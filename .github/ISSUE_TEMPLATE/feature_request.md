@@ -1,38 +1,38 @@
 ---
-name: 功能建议 / Feature Request
-about: 提出新功能或改进建议 / Suggest a new feature or improvement
+name: Funktionsvorschlag / Feature Request
+about: Neue Funktion oder Verbesserung vorschlagen / Suggest a new feature or improvement
 title: '[Feature] '
 labels: enhancement
 assignees: ''
 ---
 
 <!--
-中文用户请直接填写下方表单。
+Chinesischsprachige Nutzer füllen bitte direkt das Formular unten aus.
 English users: fill in the English fields below.
 -->
 
-## 功能描述 / Feature Description
+## Funktionsbeschreibung / Feature Description
 
-简明扼要地描述你希望增加的功能。  
+Beschreiben Sie kurz und präzise die Funktion, die Sie sich wünschen.  
 Briefly describe the feature you would like added.
 
-## 使用场景 / Use Case
+## Anwendungsszenario / Use Case
 
-描述在什么情况下需要这个功能。  
+Beschreiben Sie, in welchen Situationen diese Funktion benötigt wird.  
 Describe the situation where this feature would be useful.
 
-## 期望实现 / Proposed Solution
+## Gewünschte Umsetzung / Proposed Solution
 
-描述你期望这个功能如何工作。  
+Beschreiben Sie, wie diese Funktion Ihrer Erwartung nach funktionieren soll.  
 Describe how you would expect this feature to work.
 
-## 备选方案 / Alternatives Considered
+## Alternative Optionen / Alternatives Considered
 
-描述你考虑过的其他替代方案。  
+Beschreiben Sie andere alternative Lösungen, die Sie in Betracht gezogen haben.  
 Describe any alternative solutions you have considered.
 
-## 相关信息 / Additional Context
+## Weitere Informationen / Additional Context
 
-- 是否愿意贡献代码实现 / Willing to implement: [Yes / No]
-- 参考链接 / Reference links:
-- 其他说明 / Other notes:
+- Bereit, Code beizutragen / Willing to implement: [Yes / No]
+- Referenzlinks / Reference links:
+- Sonstige Hinweise / Other notes:

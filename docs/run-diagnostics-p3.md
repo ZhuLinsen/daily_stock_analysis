@@ -1,40 +1,40 @@
-# 运行诊断与数据可靠性 1.0（Phase 3）
+# Laufzeit-Diagnose und Datenzuverlässigkeit 1.0 (Phase 3)
 
-本文档记录 #1391 Phase 3 的交付范围：在不新增配置的前提下，补齐运行诊断可见性并将历史排障信息回填到后端上下文快照，便于自部署环境快速定位异常。
+Dieses Dokument beschreibt den Lieferumfang von Phase 3 für #1391: Ohne neue Konfiguration hinzuzufügen, werden die Sichtbarkeit der Laufzeit-Diagnose vervollständigt und historische Fehlerbehebungs-Informationen in den Backend-Kontext-Snapshot zurückgeführt, damit in Selbstbereitstellungs-Umgebungen Anomalien schnell lokalisiert werden können.
 
-## 本轮范围
+## Umfang dieser Runde
 
-- 历史报告详情新增默认折叠的「运行诊断 / 数据可靠性」区域；#1523 后 Web 展示标题调整为「运行诊断 / 运行状态」，历史阶段标题不变。
-- 任务面板对进行中任务展示默认折叠的 trace 信息，便于和后端日志、SSE、历史报告诊断串联。
-- 历史报告通过只读接口拉取诊断摘要：
+- Die Detailansicht historischer Berichte erhält eine standardmäßig eingeklappte Sektion „Laufzeit-Diagnose / Datenzuverlässigkeit“; ab #1523 wird der Web-Anzeigetitel in „Laufzeit-Diagnose / Laufzeitstatus“ angepasst, der Titel der historischen Phase bleibt unverändert.
+- Das Aufgaben-Panel zeigt für laufende Aufgaben standardmäßig eingeklappte Trace-Informationen, um sie mit Backend-Logs, SSE und historischen Berichtsdaten zu verknüpfen.
+- Historische Berichte beziehen die Diagnosezusammenfassung über eine schreibgeschützte Schnittstelle:
 
 ```http
 GET /api/v1/history/{record_id}/diagnostics
 ```
 
-- 同步分析响应若已经带有 `diagnostic_summary`，前端可直接展示，不额外请求历史接口。
-- 诊断面板支持复制后端生成的脱敏 `copy_text`，用于 issue 或部署排障。
-- 分析链路在保存历史后会补齐任务/Provider/LLM/通知诊断到 `context_snapshot.diagnostics`，历史诊断接口统一聚合为用户可读摘要。
-- 首页运行流面板复用同一 RunFlowSnapshot 契约展示 active task、completed report 与大盘复盘；active task 通过任务 SSE 的可选增量事件实时追加事件流，完成或断线后再 refetch 快照保证最终一致。
+- Wenn die synchrone Analyseresponse bereits `diagnostic_summary` enthält, kann das Frontend diese direkt anzeigen, ohne zusätzlich die Historien-Schnittstelle abzufragen.
+- Das Diagnose-Panel unterstützt das Kopieren des vom Backend erzeugten, entsensibilisierten `copy_text` für Issues oder Deployment-Fehlerbehebung.
+- Der Analysepfad ergänzt nach dem Speichern der Historie die Aufgaben-/Provider-/LLM-/Benachrichtigungsdiagnose in `context_snapshot.diagnostics`; die Historien-Diagnoseschnittstelle aggregiert sie einheitlich zu einer benutzerlesbaren Zusammenfassung.
+- Das Run-Flow-Panel der Startseite verwendet denselben `RunFlowSnapshot`-Vertrag, um aktive Tasks, abgeschlossene Reports und die Markt-Nachbetrachtung anzuzeigen; aktive Tasks erhalten über die optionalen Inkrement-Ereignisse der Task-SSE eine Echtzeit-Ereignisliste, und nach Abschluss oder Verbindungsabbruch wird der Snapshot erneut abgerufen, um endgültige Konsistenz sicherzustellen.
 
-## 运行流实时增量
+## Echtzeit-Inkrement des Run-Flows
 
-运行流增量不新增独立 SSE endpoint，继续复用：
+Der Run-Flow-Inkrement fügt keinen eigenen SSE-Endpoint hinzu und verwendet weiterhin:
 
 ```http
 GET /api/v1/analysis/tasks/stream
 ```
 
-兼容契约：
+Kompatibler Vertrag:
 
-- 事件类型仍为 `task_progress`。
-- 原有 task payload 字段保持不变。
-- 当本次进度更新来自运行诊断时，可选追加 `flow_event` 字段；旧客户端忽略该字段即可。
-- `flow_event` 使用与 `RunFlowSnapshot.events[]` 相同的脱敏事件结构：`id`、`timestamp`、`severity`、`type`、`node_id`、`title`、`message`、`metadata`。
-- active task 可追加 `provider_run_started` / `llm_run_started` 实时事件；这些事件只用于运行中的 running 卡片展示，完成后由同 `node_id` 的 `provider_run` / `llm_run` 结果事件覆盖状态，历史诊断仍以最终结果为准。
-- 后端 TaskQueue 只为每个 active task 保留最近 N 条运行流事件，避免内存无限增长；完整历史仍以 `context_snapshot.diagnostics` 和历史 RunFlowSnapshot 为准。
+- Der Ereignistyp bleibt `task_progress`.
+- Die vorhandenen Task-Payload-Felder bleiben unverändert.
+- Wenn das diesmalige Fortschrittsupdate aus der Laufzeit-Diagnose stammt, kann optional das Feld `flow_event` ergänzt werden; ältere Clients ignorieren dieses Feld einfach.
+- `flow_event` verwendet dieselbe entsensibilisierte Ereignisstruktur wie `RunFlowSnapshot.events[]`: `id`, `timestamp`, `severity`, `type`, `node_id`, `title`, `message`, `metadata`.
+- Für aktive Tasks können die Echtzeit-Ereignisse `provider_run_started` / `llm_run_started` ergänzt werden; diese Ereignisse dienen nur der Anzeige der laufenden „running“-Karte und werden nach Abschluss durch die Ergebnis-Ereignisse `provider_run` / `llm_run` mit derselben `node_id` überschrieben; die historische Diagnose richtet sich weiterhin nach dem endgültigen Ergebnis.
+- Das Backend-TaskQueue behält für jeden aktiven Task nur die letzten N Run-Flow-Ereignisse, um ein unbegrenztes Speicherwachstum zu vermeiden; die vollständige Historie bleibt in `context_snapshot.diagnostics` und den historischen `RunFlowSnapshot`-Datensätzen maßgeblich.
 
-示例：
+Beispiel:
 
 ```json
 {
@@ -43,135 +43,135 @@ GET /api/v1/analysis/tasks/stream
   "stock_code": "600519",
   "status": "processing",
   "progress": 64,
-  "message": "LLM 正在生成分析结果",
+  "message": "LLM erzeugt gerade die Analyseergebnisse",
   "flow_event": {
     "id": "flow_0002",
     "timestamp": "2026-06-08T22:30:24",
     "severity": "success",
     "type": "llm_run",
     "node_id": "llm_analysis_1",
-    "title": "LLM 成功",
-    "message": "LLM deepseek-chat 成功"
+    "title": "LLM erfolgreich",
+    "message": "LLM deepseek-chat erfolgreich"
   }
 }
 ```
 
-运行诊断记录函数会在 provider、LLM、历史保存、通知记录成功写入内存诊断后 fail-open 触发 event sink。sink 失败只记录 warning，不改变分析、保存或通知的成功/失败判定。
+Die Aufzeichnungsfunktion der Laufzeit-Diagnose löst nach dem erfolgreichen Schreiben der In-Memory-Diagnosen für Provider, LLM, Historie-Speicherung und Benachrichtigung fail-open den Event-Sink aus. Ein Sink-Fehler wird nur als warning protokolliert und ändert nicht die Erfolgs-/Fehlschlags-Bewertung von Analyse, Speicherung oder Benachrichtigung.
 
-新闻情报搜索也纳入同一 provider 诊断语义：`SearchService.search_stock_news()` 会以 `data_type=news_search` 记录 Tavily、SearXNG、Bocha、Brave 等搜索 provider 的尝试、过滤后结果数、缓存命中和失败原因。多个搜索 provider 连续尝试时，Web 运行流主图默认聚合为一个“新闻舆情”节点，卡片展示 provider 链路与状态，节点详情展示成功/失败次数、fallback / retry 次数；需要排障时可展开该聚合节点查看单次 provider 尝试。
+Auch die Nachrichten-/Intelligence-Suche wird in dieselbe Provider-Diagnosesemantik aufgenommen: `SearchService.search_stock_news()` erfasst mit `data_type=news_search` die Versuche von Such-Providern wie Tavily, SearXNG, Bocha und Brave sowie die Anzahl der gefilterten Ergebnisse, Cache-Treffer und Fehlerursachen. Wenn mehrere Such-Provider nacheinander versucht werden, wird in der Web-Run-Flow-Hauptgrafik standardmäßig ein aggregierter „Nachrichten-/Stimmungs“-Knoten angezeigt; die Karte zeigt die Provider-Kette und den Status, die Knotendetails zeigen Erfolgs-/Fehlschlags-Zahlen sowie Fallback-/Retry-Zahlen; bei Bedarf zur Fehlerbehebung kann der aggregierte Knoten aufgeklappt werden, um die einzelnen Provider-Versuche zu sehen.
 
-运行流拓扑的数据来源泳道优先按节点开始时间排序；provider / LLM 节点若只有完成时间和耗时，会以 `ended_at - duration_ms` 推导 `started_at`，并在卡片上展示开始时间。无可用时间的节点保留原展示顺序作为兜底。主图表达“入口 -> 数据来源 -> ContextPack -> LLM -> 保存/通知”的流程结构；完整排障细节保留在事件流、节点详情和聚合节点展开态中。
+Die Datenquellen-Swimlane der Run-Flow-Topologie wird bevorzugt nach der Startzeit der Knoten sortiert; wenn für Provider-/LLM-Knoten nur Abschlusszeit und Dauer vorhanden sind, wird `started_at` über `ended_at - duration_ms` abgeleitet und auf der Karte angezeigt. Knoten ohne verfügbare Zeit behalten die ursprüngliche Anzeige-Reihenfolge als Fallback. Die Hauptgrafik drückt die Prozessstruktur „Einstieg -> Datenquellen -> ContextPack -> LLM -> Speichern/Benachrichtigung“ aus; vollständige Fehlerbehebungsdetails bleiben in der Ereignisliste, den Knotendetails und dem aufgeklappten Zustand aggregierter Knoten erhalten.
 
-Web 运行流主图使用前端内部展示模型，不改变后端 `RunFlowSnapshot` 契约：
+Die Web-Run-Flow-Hauptgrafik verwendet ein internes Frontend-Anzeigemodell und ändert den Backend-`RunFlowSnapshot`-Vertrag nicht:
 
-- provider attempts 按 `metadata.data_type` 聚合为数据来源节点，例如实时行情、日线数据、新闻舆情。
-- `context_block_*` 节点默认折叠进 `ContextPack` 详情，避免与 provider attempts 在数据来源泳道混排。
-- 点击聚合节点可在详情区查看 attempts 表格；点击“展开尝试”后，当前聚合组的子 provider 节点会回到拓扑中。
-- 事件流仍展示完整事件；事件关联节点会映射到当前可见节点，折叠时指向聚合节点，展开时指向具体 attempt。
-- 拓扑连线使用多连接点策略：横向主流程走左右端口，同泳道上下关系走底部到顶部，fallback / retry 继续使用文字标签与虚线样式表达。
+- Provider-Attempts werden nach `metadata.data_type` zu Datenquellen-Knoten aggregiert, z. B. Echtzeit-Kursdaten, Tagesdaten, Nachrichten-/Stimmungslage.
+- `context_block_*`-Knoten werden standardmäßig in die `ContextPack`-Details eingeklappt, um eine Vermischung mit den Provider-Attempts in der Datenquellen-Swimlane zu vermeiden.
+- Durch Klicken auf einen aggregierten Knoten kann die Attempts-Tabelle im Detailbereich angezeigt werden; nach Klicken auf „Attempts aufklappen“ kehren die Unter-Provider-Knoten der aktuellen Aggregationsgruppe in die Topologie zurück.
+- Die Ereignisliste zeigt weiterhin alle Ereignisse; die mit Ereignissen verknüpften Knoten werden auf die aktuell sichtbaren Knoten abgebildet, bei Einklappung auf den aggregierten Knoten, bei Aufklappung auf den konkreten Attempt.
+- Topologie-Verbindungen verwenden eine Multi-Verbindungspunkt-Strategie: Der horizontale Hauptablauf verläuft über die linken und rechten Ports, die vertikalen Beziehungen innerhalb derselben Swimlane von unten nach oben, und Fallback/Retry verwenden weiterhin Text-Labels und gestrichelte Linienstile.
 
-## 运行流 API
-
-```http
-GET /api/v1/analysis/tasks/{task_id}/flow
-GET /api/v1/history/{record_id}/flow
-```
-
-- 两个接口返回同一 `RunFlowSnapshot` 契约。
-- active task 缺少 diagnostics 时返回 skeleton flow，不伪造 provider / LLM 事件。
-- active task 若已有 recent `flow_event`，snapshot 会返回这些真实事件，并可根据事件中的节点元数据补出临时节点。
-- completed history 优先从 `context_snapshot.diagnostics` 与 `analysis_context_pack_overview` 构建完整拓扑。
-- 大盘复盘历史记录使用 `code=MARKET`、`report_type=market_review`，同样走 `/history/{record_id}/flow` 与 Web 运行流面板，不提供单独 UI 分叉。
-- `cancel_requested` 与 `cancelled` 是合法运行流状态；用户取消不应映射为 `failed`。
-
-## 运行流视图
-
-运行流视图是在运行诊断摘要之上的可视化排障入口，用于串联一次分析从触发、数据获取、ContextPack 组装、LLM 生成到保存/通知的大致链路。它不替代诊断摘要的 `copy_text`，而是把同一批脱敏诊断证据组织为节点、连线、事件和摘要指标，方便从 Web 首页快速定位异常或降级环节。
-
-后端提供两个只读快照接口：
+## Run-Flow-API
 
 ```http
 GET /api/v1/analysis/tasks/{task_id}/flow
 GET /api/v1/history/{record_id}/flow
 ```
 
-- `tasks/{task_id}/flow` 面向活跃任务。任务仍在内存队列中时优先返回当前任务快照；任务已完成时可按同一 `task_id/query_id` 尝试读取历史诊断。缺少诊断时返回 skeleton flow，不伪造 provider、LLM 或通知事件。
-- `history/{record_id}/flow` 面向历史报告，支持历史记录主键 ID 或可解析的 `query_id`。普通个股分析与 `MARKET/market_review` 大盘复盘复用同一 `RunFlowSnapshot` 契约。
-- 同一页面触发个股分析时，个股流程可按需生成或复用当日大盘上下文；这不是独立的个股分析步骤，而是 Prompt 背景生成。后台会用独立 `market_context_*` query_id 与 `scope=daily_market_context` 保存该大盘上下文，避免与个股报告共用 query_id。
-- 为兼容早期已写入的混合诊断，运行流会在读取历史时按报告类型做低风险过滤：`MARKET/market_review` 记录隐藏个股行情、日线、技术、基本面与筹码 provider 节点；个股记录隐藏首次个股行情前的大盘新闻搜索，以及首次个股 LLM 前的大盘保存/通知节点。
-- 通知跳过或未配置时允许 `attempts=0`，运行流展示为 skipped，不再因 Pydantic 校验失败导致 `/flow` 返回 500。
-- 快照顶层包含 `summary`、`lanes`、`nodes`、`edges`、`events` 和 `generated_at`。节点状态使用 `pending/running/success/failed/degraded/fallback/timeout/cancel_requested/cancelled/skipped/unknown`，其中用户取消类状态不会被映射成 `failed`。
-- 旧历史、缺失 `context_snapshot.diagnostics` 或证据不足时，后端返回 `unknown` 或 skeleton 节点；Web 端按空/未知状态展示，不影响报告详情读取。
+- Beide Schnittstellen geben denselben `RunFlowSnapshot`-Vertrag zurück.
+- Wenn aktiven Tasks die Diagnose fehlt, wird ein Skeleton-Flow zurückgegeben, ohne Provider-/LLM-Ereignisse zu erfinden.
+- Wenn ein aktiver Task bereits kürzliche `flow_event`-Einträge besitzt, gibt der Snapshot diese echten Ereignisse zurück und kann anhand der Knoten-Metadaten in den Ereignissen temporäre Knoten ergänzen.
+- Abgeschlossene Historien bauen die vollständige Topologie bevorzugt aus `context_snapshot.diagnostics` und `analysis_context_pack_overview`.
+- Historische Datensätze der Markt-Nachbetrachtung verwenden `code=MARKET`, `report_type=market_review` und laufen ebenfalls über `/history/{record_id}/flow` und das Web-Run-Flow-Panel; es gibt keinen separaten UI-Zweig.
+- `cancel_requested` und `cancelled` sind gültige Run-Flow-Status; ein vom Benutzer abgebrochener Vorgang darf nicht als `failed` abgebildet werden.
 
-Web 入口：
+## Run-Flow-Ansicht
 
-- 首页活跃任务卡片提供运行流入口，打开抽屉后按 `task_id` 拉取任务快照。
-- 历史报告摘要和运行诊断区域提供运行流入口，打开抽屉后按历史记录 ID 拉取历史快照。
-- 面板展示摘要、基础拓扑、事件流和节点详情；复杂拓扑聚合、实时增量事件和布局 polish 会在后续阶段继续收敛。
+Die Run-Flow-Ansicht ist ein visueller Fehlerbehebungs-Einstieg über der Laufzeit-Diagnosezusammenfassung und dient dazu, die grobe Kette einer Analyse von der Auslösung über die Datenerfassung, den ContextPack-Aufbau und die LLM-Erzeugung bis zum Speichern/Benachrichtigen zu verbinden. Sie ersetzt nicht das `copy_text` der Diagnosezusammenfassung, sondern organisiert dieselben entsensibilisierten Diagnosenachweise als Knoten, Verbindungen, Ereignisse und Zusammenfassungsmetriken, damit Anomalien oder degradierte Abschnitte von der Web-Startseite aus schnell lokalisiert werden können.
 
-脱敏与兼容边界：
+Das Backend stellt zwei schreibgeschützte Snapshot-Schnittstellen bereit:
 
-- 运行流只读取既有任务信息、历史结果和 `context_snapshot.diagnostics` 中的低敏诊断字段，不新增配置项、不改数据库结构、不迁移旧历史。
-- `model`、`provider`、`fallback_model` 仅用于展示实际诊断到的调用信息；不参与模型选择、请求路由、Base URL 解析或配置保存。
-- `metadata`、错误信息和本地路径会经过后端裁剪与脱敏，避免暴露 API key、token、cookie、webhook、prompt/raw response、代理头和本地绝对路径。
-- 回滚时可移除 Web 入口和查询路径；后端新增只读快照接口不改变原有分析、历史、通知或诊断摘要接口的成功/失败语义。
+```http
+GET /api/v1/analysis/tasks/{task_id}/flow
+GET /api/v1/history/{record_id}/flow
+```
 
-## 状态文案
+- `tasks/{task_id}/flow` richtet sich an aktive Tasks. Solange sich die Aufgabe noch in der In-Memory-Warteschlange befindet, wird bevorzugt der aktuelle Task-Snapshot zurückgegeben; wenn die Aufgabe bereits abgeschlossen ist, kann über dieselbe `task_id`/`query_id` versucht werden, die historische Diagnose zu lesen. Fehlt die Diagnose, wird ein Skeleton-Flow zurückgegeben, ohne Provider-, LLM- oder Benachrichtigungsereignisse zu erfinden.
+- `history/{record_id}/flow` richtet sich an historische Berichte und unterstützt den Primärschlüssel des historischen Datensatzes oder eine auflösbare `query_id`. Gewöhnliche Einzelaktien-Analysen und die `MARKET`/`market_review`-Markt-Nachbetrachtung verwenden denselben `RunFlowSnapshot`-Vertrag.
+- Wenn auf derselben Seite eine Einzelaktien-Analyse ausgelöst wird, kann der Einzelaktien-Ablauf den Tages-Marktkontext bei Bedarf erzeugen oder wiederverwenden; dies ist kein separater Einzelaktien-Analyseschritt, sondern die Erzeugung des Prompt-Hintergrunds. Das Backend speichert diesen Marktkontext über eine unabhängige `market_context_*`-`query_id` mit `scope=daily_market_context`, um eine gemeinsame Nutzung der `query_id` mit dem Einzelaktien-Bericht zu vermeiden.
+- Zur Kompatibilität mit frühzeitig geschriebenen Mischdiagnosen führt der Run-Flow beim Lesen der Historie eine risikoarme Filterung nach Berichtstyp durch: `MARKET`/`market_review`-Datensätze verbergen die Provider-Knoten für Einzelaktien-Kursdaten, Tagesdaten, Technik, Fundamentaldaten und Chip-Verteilung; Einzelaktien-Datensätze verbergen die Markt-Nachrichtensuche vor dem ersten Einzelaktien-Kurs sowie die Markt-Speicher-/Benachrichtigungsknoten vor dem ersten Einzelaktien-LLM.
+- Bei übersprungenen oder nicht konfigurierten Benachrichtigungen sind `attempts=0` erlaubt; der Run-Flow zeigt dies als skipped, sodass `/flow` nicht mehr wegen fehlgeschlagener Pydantic-Validierung einen 500 zurückgibt.
+- Die Snapshot-Ebene enthält `summary`, `lanes`, `nodes`, `edges`, `events` und `generated_at`. Knotenstatus verwenden `pending/running/success/failed/degraded/fallback/timeout/cancel_requested/cancelled/skipped/unknown`, wobei vom Benutzer abgebrochene Status nicht als `failed` abgebildet werden.
+- Bei alten Historien, fehlendem `context_snapshot.diagnostics` oder unzureichenden Nachweisen gibt das Backend `unknown` oder Skeleton-Knoten zurück; die Webseite zeigt sie als leer/unbekannt an, ohne die Detailansicht des Berichts zu beeinträchtigen.
 
-总体状态：
+Web-Einstieg:
 
-- `normal`：正常
-- `degraded`：部分降级
-- `failed`：失败
-- `unknown`：未知
+- Die Karte der aktiven Aufgaben auf der Startseite bietet einen Run-Flow-Einstieg; nach dem Öffnen des Drawers wird der Task-Snapshot über `task_id` abgerufen.
+- Die Zusammenfassung historischer Berichte und der Bereich Laufzeit-Diagnose bieten einen Run-Flow-Einstieg; nach dem Öffnen des Drawers wird der Historien-Snapshot über die historische Datensatz-ID abgerufen.
+- Das Panel zeigt Zusammenfassung, Basistopologie, Ereignisliste und Knotendetails; komplexe Topologie-Aggregation, Echtzeit-Inkrement-Ereignisse und Layout-Politur werden in späteren Phasen weiter konsolidiert.
 
-组件状态：
+Entsensibilisierungs- und Kompatibilitätsgrenzen:
 
-- `ok`：正常
-- `degraded`：最近失败后已降级
-- `failed`：失败
-- `unknown`：未知
-- `not_configured`：未配置
-- `skipped`：已跳过
+- Der Run-Flow liest nur vorhandene Aufgabeninformationen, historische Ergebnisse und die niedrigsensiblen Diagnosefelder aus `context_snapshot.diagnostics`; es werden keine neuen Konfigurationsoptionen hinzugefügt, keine Datenbankstruktur geändert und keine alte Historie migriert.
+- `model`, `provider` und `fallback_model` dienen nur der Anzeige der tatsächlich diagnostizierten Aufrufinformationen; sie beteiligen sich nicht an Modellauswahl, Request-Routing, Base-URL-Auflösung oder Konfigurationsspeicherung.
+- `metadata`, Fehlermeldungen und lokale Pfade werden vom Backend gekürzt und entsensibilisiert, um API-Keys, Tokens, Cookies, Webhooks, Prompts/Rohantworten, Proxy-Header und lokale absolute Pfade nicht preiszugeben.
+- Beim Rollback können der Web-Einstieg und der Abfragepfad entfernt werden; die neu hinzugefügten schreibgeschützten Snapshot-Schnittstellen des Backends ändern nicht die Erfolgs-/Fehlschlags-Semantik der bestehenden Analyse-, Historien-, Benachrichtigungs- oder Diagnosezusammenfassungs-Schnittstellen.
 
-## 交互边界
+## Statustexte
 
-- 诊断区域默认折叠，避免挤占报告主要内容。
-- 首屏只展示总体状态、首要原因和必要 trace 信息。
-- 组件状态与高级 JSON 字段放在展开区域内；高级字段再二级折叠，避免信息过载。
-- 旧报告、接口失败或证据不足时显示 `unknown`，不影响报告阅读。
+Gesamtstatus:
 
-## 兼容性边界
+- `normal`: normal
+- `degraded`: teilweise degradiert
+- `failed`: fehlgeschlagen
+- `unknown`: unbekannt
 
-- 本轮不新增 `.env` 配置项，不修改数据库结构，不引入数据迁移。
-- Web 只消费 Phase 1/2 已追加的可选字段和只读诊断接口；后端补齐 `src/core/pipeline.py`、`src/services/run_diagnostics.py`、`src/storage.py` 与 `src/services/history_service.py` 的诊断持久化与刷新逻辑，并通过 `api/v1/endpoints/history.py` 提供可读端点。
-- 后端变更范围包含任务编排、历史保存后补写、历史诊断查询与通知结果诊断记录；这些链路只追加 `context_snapshot.diagnostics` 诊断快照和摘要，不改变分析主流程、通知发送成败语义或历史报告主体字段。
-- 复制文本由后端生成并脱敏；前端只负责展示和复制。
-- Desktop 复用 Web 构建产物，未单独改动 Electron 主进程或打包脚本。
-- 运行时配置/模型/provider/base_url 兼容语义不调整：除诊断持久化链路外，不改 provider 优先级、LiteLLM 路由、运行时清理与配置回退逻辑。
-- 旧历史与旧配置兼容规则不变：历史诊断查询新增可选字段不影响既有历史查询响应解析；回退方式为移除本轮展示与相关前端查询路径，或按现有指南恢复模型和配置。
-- 回滚策略：优先回退前端展示与查询入口；若需完全隔离新增链路，可回滚本轮 PR（回退后保留历史记录原有响应，新增诊断端点不再在 Web 中展示）。
+Komponentenstatus:
 
-### 结构化检测澄清
+- `ok`: normal
+- `degraded`: nach kürzlichem Fehlschlag degradiert
+- `failed`: fehlgeschlagen
+- `unknown`: unbekannt
+- `not_configured`: nicht konfiguriert
+- `skipped`: übersprungen
 
-本轮 review 的结构化检测命中了外部模型/API 兼容和运行时配置迁移风险；复核后结论如下：
+## Interaktionsgrenzen
 
-- 模型名/provider/Base URL：本轮不新增、不替换、不重排任何模型名、provider、Base URL、channel 或 fallback 默认值，也不改变 `LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`VISION_MODEL`、`LITELLM_FALLBACK_MODELS`、`OPENAI_*`、`GEMINI_*`、`ANTHROPIC_*`、`DEEPSEEK_*` 的解析优先级。
-- SDK/依赖默认值：本轮不修改 `requirements.txt`、`package.json` 依赖约束或 LiteLLM/OpenAI-compatible 调用默认参数；外部来源仍以 `docs/llm-providers.md` 和 `docs/LLM_CONFIG_GUIDE*.md` 中已记录的官方文档与当前锁定依赖说明为准。
-- 保存前清理/配置迁移：本轮不触发 `.env`、Web 设置页 channel、桌面端用户数据目录、Docker 运行时配置文件或历史旧配置的迁移、清理、删除、回写策略变更。
-- 本轮实际运行时改动只把既有分析 trace、provider/LLM/通知结果和脱敏错误摘要写入 `context_snapshot.diagnostics`，并通过历史只读接口和 Web 默认折叠面板展示；诊断记录失败按 fail-open 处理，不改变分析或通知的成功/失败判定。
-- 因此本次属于结构化检测误报/文档澄清；无新增官方来源、旧配置迁移步骤或 provider 回退路径需要执行。若需回退，按本节回滚策略移除诊断展示/查询入口即可，模型与运行时配置恢复路径不变。
+- Der Diagnosebereich ist standardmäßig eingeklappt, um den Hauptinhalt des Berichts nicht zu verdrängen.
+- Auf der ersten Anzeige werden nur der Gesamtstatus, die Hauptursache und die notwendigen Trace-Informationen gezeigt.
+- Komponentenstatus und erweiterte JSON-Felder liegen im aufgeklappten Bereich; die erweiterten Felder werden noch einmal sekundär eingeklappt, um Informationsüberlastung zu vermeiden.
+- Bei alten Berichten, Schnittstellenfehlern oder unzureichenden Nachweisen wird `unknown` angezeigt, ohne das Lesen des Berichts zu beeinträchtigen.
 
-## 兼容性回归与验证（PR 合并前关键证据）
+## Kompatibilitätsgrenzen
 
-- 后端回归覆盖：
+- In dieser Runde werden keine neuen `.env`-Konfigurationsoptionen hinzugefügt, die Datenbankstruktur nicht geändert und keine Datenmigration eingeführt.
+- Das Web konsumiert nur die in Phase 1/2 ergänzten optionalen Felder und die schreibgeschützten Diagnose-Schnittstellen; das Backend vervollständigt die Diagnose-Persistenz und -Aktualisierung in `src/core/pipeline.py`, `src/services/run_diagnostics.py`, `src/storage.py` und `src/services/history_service.py` und stellt über `api/v1/endpoints/history.py` lesbare Endpoints bereit.
+- Der Backend-Änderungsumfang umfasst Task-Orchestrierung, Nachschreiben nach dem Speichern der Historie, Abfrage der historischen Diagnose und Erfassung der Benachrichtigungsergebnis-Diagnose; diese Pfade ergänzen lediglich die Diagnose-Snapshots `context_snapshot.diagnostics` und die Zusammenfassung und ändern weder den Hauptanalyseablauf noch die Erfolgs-/Fehlschlags-Semantik der Benachrichtigungssendung noch die Hauptfelder des historischen Berichts.
+- Der Kopiertext wird vom Backend erzeugt und entsensibilisiert; das Frontend ist nur für Anzeige und Kopieren zuständig.
+- Desktop verwendet das Web-Build-Artefakt; Electron-Hauptprozess oder Packaging-Skripte werden nicht separat geändert.
+- Die Kompatibilitätssemantik von Laufzeitkonfiguration/Modell/Provider/base_url wird nicht angepasst: Außer im Diagnose-Persistenzpfad werden Provider-Priorität, LiteLLM-Routing, Laufzeitbereinigung und Konfigurations-Rollback-Logik nicht geändert.
+- Die Kompatibilitätsregeln für alte Historien und alte Konfigurationen bleiben unverändert: Die neuen optionalen Felder der historischen Diagnoseabfrage beeinträchtigen das Parsen bestehender Historien-Abfrageantworten nicht; der Rollback erfolgt durch Entfernen der diesmaligen Anzeige und der zugehörigen Frontend-Abfragepfade oder durch Wiederherstellen von Modell und Konfiguration gemäß den vorhandenen Leitfäden.
+- Rollback-Strategie: Zuerst Frontend-Anzeige und Abfrage-Einstieg zurückrollen; falls die neuen Pfade vollständig isoliert werden müssen, kann der PR dieser Runde zurückgerollt werden (nach dem Rollback bleibt die ursprüngliche Response der historischen Datensätze erhalten, und die neuen Diagnose-Endpoints werden nicht mehr im Web angezeigt).
+
+### Klarstellung zur strukturierten Detektion
+
+Die strukturierte Detektion der Review dieser Runde hat Risiken bei externer Modell-/API-Kompatibilität und Laufzeitkonfigurations-Migration getroffen; die Schlussfolgerung nach Prüfung lautet wie folgt:
+
+- Modellname/Provider/Base URL: In dieser Runde werden keine Modellnamen, Provider, Base-URLs, Kanäle oder Fallback-Standardwerte hinzugefügt, ersetzt oder neu geordnet; auch die Auflösungspriorität von `LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `VISION_MODEL`, `LITELLM_FALLBACK_MODELS`, `OPENAI_*`, `GEMINI_*`, `ANTHROPIC_*` und `DEEPSEEK_*` wird nicht geändert.
+- SDK-/Abhängigkeits-Standardwerte: In dieser Runde werden `requirements.txt`, die Abhängigkeitseinschränkungen von `package.json` oder die Standardparameter der LiteLLM/OpenAI-kompatiblen Aufrufe nicht geändert; externe Quellen richten sich weiterhin nach den in `docs/llm-providers.md` und `docs/LLM_CONFIG_GUIDE*.md` dokumentierten offiziellen Dokumentationen und den aktuell gesperrten Abhängigkeiten.
+- Bereinigung vor dem Speichern/Konfigurationsmigration: In dieser Runde werden keine Änderungen an Migrations-, Bereinigungs-, Lösch- oder Rückschreibstrategien für `.env`, Web-Einstellungsseiten-Kanäle, Desktop-Benutzerdatenverzeichnisse, Docker-Laufzeitkonfigurationsdateien oder alte Konfigurationen ausgelöst.
+- Die tatsächlichen Laufzeitänderungen dieser Runde schreiben lediglich vorhandene Analyse-Traces, Provider-/LLM-/Benachrichtigungsergebnisse und entsensibilisierte Fehlerzusammenfassungen in `context_snapshot.diagnostics` und stellen sie über die schreibgeschützten Historien-Schnittstellen und das standardmäßig eingeklappte Web-Panel dar; ein Fehler bei der Diagnose-Erfassung wird nach fail-open behandelt und ändert nicht die Erfolgs-/Fehlschlags-Bewertung von Analyse oder Benachrichtigung.
+- Daher handelt es sich hierbei um einen Fehlalarm/dokumentarische Klarstellung der strukturierten Detektion; es sind keine neuen offiziellen Quellen, Migrationsschritte für alte Konfigurationen oder Provider-Rollback-Pfade auszuführen. Falls ein Rollback nötig ist, genügt es, den Diagnose-Anzeige-/Abfrage-Einstieg gemäß der Rollback-Strategie dieses Abschnitts zu entfernen; die Wiederherstellungspfade für Modell und Laufzeitkonfiguration bleiben unverändert.
+
+## Kompatibilitätsregression und Validierung (wichtiger Nachweis vor PR-Merge)
+
+- Backend-Regressionsabdeckung:
   - `tests/test_pipeline_market_phase_context.py`
   - `tests/test_realtime_types.py`
   - `tests/test_scheduler_background.py`
-  - `tests/test_analysis_api_contract.py`（子集：诊断上下文入出参/状态查询契约）
-  - `tests/test_analysis_history.py`（子集：历史 API 与持久化链路）
-- 覆盖关系：API 合约由 `tests/test_analysis_api_contract.py` 与 `tests/test_analysis_history.py` 覆盖；任务编排、历史保存和 `context_snapshot.diagnostics` 由 `tests/test_pipeline_market_phase_context.py` 覆盖；通知路径通过 `./scripts/ci_gate.sh` 中的既有通知回归与导入检查兜底。
-- 回归命令（PR 合并前至少确认全部通过）：
+  - `tests/test_analysis_api_contract.py` (Teilmenge: Verträge zu Diagnose-Kontext-Ein-/Ausgabe und Statusabfrage)
+  - `tests/test_analysis_history.py` (Teilmenge: Historien-API und Persistenzpfad)
+- Abdeckungsverhältnis: Der API-Vertrag wird durch `tests/test_analysis_api_contract.py` und `tests/test_analysis_history.py` abgedeckt; Task-Orchestrierung, Historien-Speicherung und `context_snapshot.diagnostics` werden durch `tests/test_pipeline_market_phase_context.py` abgedeckt; der Benachrichtigungspfad wird durch die vorhandenen Benachrichtigungsregressionen und Importprüfungen in `./scripts/ci_gate.sh` abgesichert.
+- Regressionsbefehle (vor PR-Merge muss bestätigt werden, dass alle bestehen):
 
 ```bash
 ./scripts/ci_gate.sh
@@ -179,7 +179,7 @@ python -m pytest tests/test_realtime_types.py tests/test_scheduler_background.py
 cd apps/dsa-web && npm run lint && npm run build
 ```
 
-## 验证建议
+## Validierungsvorschlag
 
 ```bash
 cd apps/dsa-web
@@ -187,19 +187,19 @@ npm run lint
 npm run build
 ```
 
-可补充执行（非阻断）：
+Zusätzlich ausführbar (nicht blockierend):
 
 ```bash
 cd apps/dsa-web
 npm test -- --run src/components/report/__tests__/ReportDiagnostics.test.tsx src/components/tasks/__tests__/TaskPanel.test.tsx src/hooks/__tests__/useTaskStream.test.tsx
 ```
 
-可补充确定性脚本校验：
+Zusätzliche deterministische Skriptprüfung:
 
 ```bash
 python -m py_compile api/v1/endpoints/analysis.py api/v1/endpoints/history.py api/v1/schemas/analysis.py api/v1/schemas/history.py src/core/pipeline.py src/services/run_diagnostics.py src/storage.py
 ```
 
-## 回滚
+## Rollback
 
-最小回滚方式：revert Phase 3 PR。由于本轮为可选字段与可读接口增强，回滚后后端历史快照与已落库数据保留，Web 不再展示诊断面板与 trace 诊断入口。
+Minimaler Rollback: Den Phase-3-PR reverten. Da diese Runde eine Erweiterung um optionale Felder und lesbare Schnittstellen ist, bleiben nach dem Rollback die Backend-Historien-Snapshots und die bereits gespeicherten Daten erhalten; das Web zeigt das Diagnose-Panel und den Trace-Diagnose-Einstieg nicht mehr an.

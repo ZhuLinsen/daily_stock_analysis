@@ -1,118 +1,118 @@
-# 贡献指南
+# Beitragsleitfaden
 
-感谢你对本项目的关注！欢迎任何形式的贡献。
+Vielen Dank für dein Interesse an diesem Projekt! Beiträge jeder Art sind willkommen.
 
-## 🐛 报告 Bug
+## 🐛 Bug melden
 
-1. 先搜索 [Issues](https://github.com/ZhuLinsen/daily_stock_analysis/issues) 确认问题未被报告
-2. 使用 Bug Report 模板创建新 Issue
-3. 提供详细的复现步骤和环境信息
+1. Zuerst [Issues](https://github.com/ZhuLinsen/daily_stock_analysis/issues) durchsuchen, um sicherzustellen, dass das Problem noch nicht gemeldet wurde
+2. Ein neues Issue mit der Bug-Report-Vorlage erstellen
+3. Detaillierte Schritte zur Reproduktion und Umgebungsinformationen angeben
 
-## 💡 功能建议
+## 💡 Funktionsvorschläge
 
-1. 先搜索 Issues 确认建议未被提出
-2. 使用 Feature Request 模板创建新 Issue
-3. 详细描述你的使用场景和期望功能
+1. Zuerst die Issues durchsuchen, um sicherzustellen, dass der Vorschlag noch nicht eingebracht wurde
+2. Ein neues Issue mit der Feature-Request-Vorlage erstellen
+3. Dein Nutzungsszenario und die gewünschte Funktion detailliert beschreiben
 
-## 🔧 提交代码
+## 🔧 Code beitragen
 
-### 开发环境
+### Entwicklungsumgebung
 
 ```bash
-# 克隆仓库
+# Repository klonen
 git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
 
-# 创建虚拟环境
+# Virtuelle Umgebung erstellen
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # venv\Scripts\activate   # Windows
 
-# 安装依赖
+# Abhängigkeiten installieren
 pip install -r requirements.txt
 
-# 配置环境变量
+# Umgebungsvariablen konfigurieren
 cp .env.example .env
 ```
 
-### 提交流程
+### Ablauf für das Einbringen
 
-1. Fork 本仓库
-2. 创建特性分支：`git checkout -b feature/your-feature`
-3. 提交改动：`git commit -m 'feat: add some feature'`
-4. 推送分支：`git push origin feature/your-feature`
-5. 创建 Pull Request
+1. Dieses Repository forken
+2. Feature-Branch erstellen: `git checkout -b feature/your-feature`
+3. Änderungen committen: `git commit -m 'feat: add some feature'`
+4. Branch pushen: `git push origin feature/your-feature`
+5. Pull Request erstellen
 
-### Commit 规范
+### Commit-Konventionen
 
-使用 [Conventional Commits](https://www.conventionalcommits.org/) 规范：
+Die [Conventional Commits](https://www.conventionalcommits.org/)-Konvention verwenden:
 
 ```
-feat: 新功能
-fix: Bug 修复
-docs: 文档更新
-style: 代码格式（不影响功能）
-refactor: 重构
-perf: 性能优化
-test: 测试相关
-chore: 构建/工具相关
+feat: neue Funktion
+fix: Bug-Fix
+docs: Dokumentationsänderung
+style: Codeformatierung (ohne Funktionsänderung)
+refactor: Refactoring
+perf: Leistungsoptimierung
+test: Tests betreffend
+chore: Build/Werkzeuge betreffend
 ```
 
-示例：
+Beispiele:
 ```
-feat: 添加钉钉机器人支持
-fix: 修复 429 限流重试逻辑
-docs: 更新 README 部署说明
+feat: DingTalk-Roboter-Support hinzufügen
+fix: 429-Rate-Limit-Retry-Logik reparieren
+docs: README-Bereitstellungshinweise aktualisieren
 ```
 
-### 代码规范
+### Codestil
 
-- Python 代码遵循 PEP 8
-- 函数和类需要添加 docstring
-- 重要逻辑添加注释
-- 新功能需要更新相关文档
+- Python-Code folgt PEP 8
+- Funktionen und Klassen benötigen Docstrings
+- Wichtige Logik mit Kommentaren versehen
+- Neue Funktionen erfordern aktualisierte zugehörige Dokumentation
 
-### CI 自动检查
+### Automatische CI-Prüfung
 
-提交 PR 后，CI 会自动运行以下检查：
+Nach dem Einreichen des PR führt die CI automatisch die folgenden Prüfungen aus:
 
-| 检查项 | 说明 | 必须通过 |
+| Prüfpunkt | Erläuterung | Muss bestehen |
 |--------|------|:--------:|
-| backend-gate | `scripts/ci_gate.sh`（py_compile + flake8 严重错误 + 本地核心脚本 + offline pytest） | ✅ |
-| docker-build | Docker 镜像构建与关键模块导入 smoke | ✅ |
-| web-gate | 前端变更时执行 `npm run lint` + `npm run build` | ✅（触发时） |
-| pr-review | 暂停 PR 自动触发，仅保留维护者通过 `workflow_dispatch` 按 PR 编号手动运行；通过 GitHub API 读取 PR 元数据和 diff，不检出或执行 fork PR 代码 | ❌（辅助项） |
-| network-smoke | 定时/手动执行 `pytest -m network` + `scripts/test.sh quick`（非阻断） | ❌（观测项） |
+| backend-gate | `scripts/ci_gate.sh` (py_compile + schwere flake8-Fehler + lokale Kernskripte + offline pytest) | ✅ |
+| docker-build | Docker-Image-Build und Smoke-Test kritischer Modul-Importe | ✅ |
+| web-gate | Bei Frontend-Änderungen Ausführen von `npm run lint` + `npm run build` | ✅ (wenn ausgelöst) |
+| pr-review | Automatische Auslösung bei PR pausiert; nur noch manuell über `workflow_dispatch` durch Maintainer mit PR-Nummer; liest PR-Metadaten und Diff über die GitHub-API, ohne den Code von Fork-PRs zu checken oder auszuführen | ❌ (Hilfsprüfung) |
+| network-smoke | Zeitlich/manuell Ausführen von `pytest -m network` + `scripts/test.sh quick` (nicht blockierend) | ❌ (Beobachtung) |
 
-**本地运行检查：**
+**Lokale Prüfungen:**
 
 ```bash
-# backend gate（推荐）
+# Backend-Gate (empfohlen)
 pip install -r requirements.txt
 pip install flake8 pytest
 ./scripts/ci_gate.sh
 
-# 前端 gate（如修改了 apps/dsa-web）
+# Frontend-Gate (falls apps/dsa-web geändert wurde)
 cd apps/dsa-web
 npm ci
 npm run lint
 npm run build
 ```
 
-## 📋 优先贡献方向
+## 📋 Bevorzugte Beitragsrichtungen
 
-查看 [README](../README.md) 了解项目当前的核心能力与主要入口：
+Für die aktuellen Kernfunktionen und Haupteinstiegspunkte des Projekts siehe [README](../README.md):
 
-- 🔔 新通知渠道（钉钉、飞书、Telegram）
-- 🤖 新 AI 模型支持（GPT-4、Claude）
-- 📊 新数据源接入
-- 🐛 Bug 修复和性能优化
-- 📖 文档完善和翻译
+- 🔔 Neue Benachrichtigungskanäle (DingTalk, Feishu, Telegram)
+- 🤖 Neue AI-Modell-Support (GPT-4, Claude)
+- 📊 Anbindung neuer Datenquellen
+- 🐛 Bug-Fixes und Leistungsoptimierung
+- 📖 Dokumentationsverbesserung und Übersetzung
 
-## ❓ 问题解答
+## ❓ Fragen
 
-如有任何问题，欢迎：
-- 创建 Issue 讨论
-- 查看已有 Issue 和 Discussion
+Bei Fragen jederzeit gern:
+- Ein Issue zur Diskussion erstellen
+- Vorhandene Issues und Discussions ansehen
 
-再次感谢你的贡献！ 🎉
+Nochmals vielen Dank für deinen Beitrag! 🎉

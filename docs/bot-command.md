@@ -1,6 +1,6 @@
 
 
-## 一、整体设计
+## 1. Gesamtarchitektur
 
 ```mermaid
 flowchart TB
@@ -40,9 +40,9 @@ flowchart TB
 
 
 
-## 二、目录结构
+## 2. Verzeichnisstruktur
 
-在项目根目录新建 `bot/` 目录：
+Erstelle im Projektstammverzeichnis ein `bot/`-Verzeichnis:
 
 ```
 bot/
@@ -66,9 +66,9 @@ bot/
     └── telegram.py         # Telegram 机器人 （开发中）
 ```
 
-## 三、核心抽象设计
+## 3. Kern-Abstraktionsdesign
 
-### 3.1 统一消息模型 (`bot/models.py`)
+### 3.1 Einheitliches Nachrichtenmodell (`bot/models.py`)
 
 ```python
 @dataclass
@@ -92,7 +92,7 @@ class BotResponse:
     at_user: bool = True    # 是否@发送者
 ```
 
-### 3.2 平台适配器基类 (`bot/platforms/base.py`)
+### 3.2 Basisklasse für Plattform-Adapter (`bot/platforms/base.py`)
 
 ```python
 class BotPlatform(ABC):
@@ -120,7 +120,7 @@ class BotPlatform(ABC):
         pass
 ```
 
-### 3.3 命令基类 (`bot/commands/base.py`)
+### 3.3 Basisklasse für Befehle (`bot/commands/base.py`)
 
 ```python
 class BotCommand(ABC):
@@ -156,7 +156,7 @@ class BotCommand(ABC):
         pass
 ```
 
-### 3.4 命令分发器 (`bot/dispatcher.py`)
+### 3.4 Befehls-Dispatcher (`bot/dispatcher.py`)
 
 ```python
 class CommandDispatcher:
@@ -179,52 +179,46 @@ class CommandDispatcher:
         # 3. 执行并返回响应
 ```
 
-## 四、已支持的命令
+## 4. Unterstützte Befehle
 
-| 命令 | 别名 | 说明 | 示例 |
-
+| Befehl | Aliase | Beschreibung | Beispiel |
 |------|------|------|------|
+| /analyze | /a, analyse | Analysiert eine bestimmte Aktie | `/analyze 600519` |
+| /market | /m, markt | Markt-Rückblick | `/market` |
+| /batch | /b, batch | Analysiert die Watchlist in Batches | `/batch` |
+| /help | /h, hilfe | Zeigt Hilfeinformationen | `/help` |
+| /status | /s, status | Systemstatus | `/status` |
 
-| /analyze | /a, 分析 | 分析指定股票 | `/analyze 600519` |
+## 5. `/status` und Hinweise zur Diagnose der Modellkonfiguration
 
-| /market | /m, 大盘 | 大盘复盘 | `/market` |
+### Konfigurierbare Ebenen und Kriterien zur Verfügbarkeitsbeurteilung
 
-| /batch | /b, 批量 | 批量分析自选股 | `/batch` |
-
-| /help | /h, 帮助 | 显示帮助信息 | `/help` |
-
-| /status | /s, 状态 | 系统状态 | `/status` |
-
-## 五、`/status` 与模型配置诊断说明
-
-### 可配置层级与可用性判断依据
-
-- `/status` 显示的 LLM 可用性遵循系统统一运行时优先级：
-  - `LITELLM_CONFIG`（LiteLLM YAML）
+- Die von `/status` angezeigte LLM-Verfügbarkeit folgt der einheitlichen Laufzeit-Priorität des Systems:
+  - `LITELLM_CONFIG` (LiteLLM YAML)
   - `LLM_CHANNELS`
-  - legacy provider 键（`GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`）
-- 当主模型（`LITELLM_MODEL` 或 `AGENT_LITELLM_MODEL`）在当前激活层无可用来源时，会展示“AI 服务未配置”，并保留用户可见原因行。
-- 本仓库 `requirements.txt` 的运行时依赖约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`，该约束内本链路以现有兼容行为为准。
-- 该诊断规则与 `GET /api/v1/system/config/setup/status` 的 LLM 检查保持一致：`LITELLM_CONFIG`/`LLM_CHANNELS` 为高优先级；模式切换时不会做静默迁移，切回旧模式由用户显式恢复历史值或回滚。
+  - Legacy-Provider-Schlüssel (`GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`)
+- Wenn für das Hauptmodell (`LITELLM_MODEL` oder `AGENT_LITELLM_MODEL`) in der aktuell aktiven Ebene keine verfügbare Quelle existiert, wird „AI-Dienst nicht konfiguriert“ angezeigt und eine für den Nutzer sichtbare Begründungszeile beibehalten.
+- Die Laufzeit-Abhängigkeitsbeschränkung in der `requirements.txt` dieses Repos lautet `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`; innerhalb dieser Einschränkung gilt für diese Kette das bestehende Kompatibilitätsverhalten.
+- Diese Diagnoseregel entspricht der LLM-Prüfung von `GET /api/v1/system/config/setup/status`: `LITELLM_CONFIG`/`LLM_CHANNELS` haben hohe Priorität; beim Wechsel des Modus wird keine stille Migration durchgeführt. Beim Zurückwechseln in den alten Modus stellt der Nutzer historische Werte explizit wieder her oder führt einen Rollback durch.
 
-### 回退与迁移边界
+### Grenzen von Fallback und Migration
 
-- `LITELLM_CONFIG` 与 `LLM_CHANNELS` 任一生效时，下层 legacy 配置会被该层忽略（不会继续作为本次调用来源）。
-- 诊断增强不进行 silent migration：不会主动清空/删除 `GEMINI_*`、`OPENAI_*`、`ANTHROPIC_*`、`LITELLM_*` 的历史值，仅在可用性诊断上提示。
+- Wenn entweder `LITELLM_CONFIG` oder `LLM_CHANNELS` aktiv ist, wird die darunterliegende Legacy-Konfiguration von dieser Ebene ignoriert (sie dient nicht mehr als Quelle für den Aufruf).
+- Die verbesserte Diagnose führt keine stille Migration durch: Historische Werte von `GEMINI_*`, `OPENAI_*`, `ANTHROPIC_*`, `LITELLM_*` werden nicht automatisch geleert/gelöscht, sondern nur im Rahmen der Verfügbarkeitsdiagnose gemeldet.
 
-### 官方兼容来源（用于排障核对）
+### Offizielle kompatible Quellen (zur Fehlerbehebung)
 
-- LiteLLM 官网：<https://docs.litellm.ai/>
-- LiteLLM OpenAI Compatible 说明：<https://docs.litellm.ai/docs/providers/openai_compatible>
-- OpenAI Chat API：<https://platform.openai.com/docs/api-reference/chat>
-- DeepSeek API 文档：<https://api-docs.deepseek.com/>
-- Kimi Moonshot 兼容说明：<https://platform.moonshot.ai/docs/guide/compatibility>
-- Gemini OpenAI 兼容说明：<https://ai.google.dev/gemini-api/docs/openai>
-- Ollama API 文档：<https://github.com/ollama/ollama/blob/main/docs/api.md>
+- LiteLLM-Website: <https://docs.litellm.ai/>
+- LiteLLM OpenAI-Compatible-Erläuterung: <https://docs.litellm.ai/docs/providers/openai_compatible>
+- OpenAI Chat API: <https://platform.openai.com/docs/api-reference/chat>
+- DeepSeek-API-Dokumentation: <https://api-docs.deepseek.com/>
+- Kimi Moonshot Kompatibilitätshinweis: <https://platform.moonshot.ai/docs/guide/compatibility>
+- Gemini OpenAI-Kompatibilitätshinweis: <https://ai.google.dev/gemini-api/docs/openai>
+- Ollama-API-Dokumentation: <https://github.com/ollama/ollama/blob/main/docs/api.md>
 
-## 六、Webhook 路由
+## 6. Webhook-Routen
 
-在 [api/v1/router.py](../api/v1/router.py) 中注册路由：
+Routen in [api/v1/router.py](../api/v1/router.py) registrieren:
 
 ```python
 # Webhook 路由
@@ -234,9 +228,9 @@ class CommandDispatcher:
 /bot/telegram    # POST - Telegram 更新回调 （开发中）
 ```
 
-## 配置
+## Konfiguration
 
-在 [config.py](../src/config.py) 中新增机器人配置：
+Roboterkonfiguration in [config.py](../src/config.py) ergänzen:
 
 ```python
 # === 机器人配置 ===
@@ -262,27 +256,27 @@ telegram_bot_token: str                # 已有
 telegram_webhook_secret: str           # 新增：Webhook 密钥
 ```
 
-## 扩展说明
-### 怎样新增一个通知平台
+## Erweiterungshinweise
+### So fügst du eine neue Benachrichtigungsplattform hinzu
 
-1. 在 `bot/platforms/` 创建新文件
-2. 继承 `BotPlatform` 基类
-3. 实现 `verify_request`, `parse_message`, `format_response`
-4. 在路由中注册 Webhook 端点
+1. Erstelle eine neue Datei in `bot/platforms/`
+2. Erbe die Basisklasse `BotPlatform`
+3. Implementiere `verify_request`, `parse_message`, `format_response`
+4. Registriere den Webhook-Endpunkt in der Route
 
-### 怎样新增新增命令
+### So fügst du einen neuen Befehl hinzu
 
-1. 在 `bot/commands/` 创建新文件
-2. 继承 `BotCommand` 基类
-3. 实现 `execute` 方法
-4. 在分发器中注册命令
+1. Erstelle eine neue Datei in `bot/commands/`
+2. Erbe die Basisklasse `BotCommand`
+3. Implementiere die Methode `execute`
+4. Registriere den Befehl im Dispatcher
 
-## 安全相关配置
+## Sicherheitsbezogene Konfiguration
 
-- 支持命令频率限制（防刷）
-- 敏感操作（如批量分析）可设置权限白名单
+- Unterstützt die Begrenzung der Befehlsfrequenz (Schutz vor Spam)
+- Für sensible Operationen (z. B. Batch-Analyse) kann eine Berechtigungs-Whitelist eingerichtet werden
 
-在 [config.py](../src/config.py) 中新增机器人安全配置：
+Sicherheitskonfiguration für den Bot in [config.py](../src/config.py) ergänzen:
 
 ```python
     bot_rate_limit_requests: int = 10     # 频率限制：窗口内最大请求数

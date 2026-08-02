@@ -1,535 +1,535 @@
-# 📖 完整配置与部署指南
+# 📖 Vollständiger Konfigurations- und Bereitstellungsleitfaden
 
-本文档包含 A股智能分析系统的完整配置说明，适合需要高级功能或特殊部署方式的用户。
+Dieses Dokument enthält die vollständige Konfigurationsanleitung für das intelligente A-Aktien-Analysesystem und richtet sich an Nutzer, die erweiterte Funktionen oder spezielle Bereitstellungsmethoden benötigen.
 
-> 💡 快速上手请参考 [README.md](../README.md)，本文档为进阶配置。
+> 💡 Für den Schnellstart siehe [README.md](../README.md); dieses Dokument behandelt die erweiterte Konfiguration.
 
-## 📁 项目结构
+## 📁 Projektstruktur
 
 ```
 daily_stock_analysis/
-├── main.py              # 主程序入口
-├── src/                 # 核心业务逻辑
-│   ├── analyzer.py      # AI 分析器
-│   ├── config.py        # 配置管理
-│   ├── notification.py  # 消息推送
+├── main.py              # Haupteinstiegspunkt
+├── src/                 # Kern-Geschäftslogik
+│   ├── analyzer.py      # KI-Analysator
+│   ├── config.py        # Konfigurationsverwaltung
+│   ├── notification.py  # Nachrichten-Push
 │   └── ...
-├── data_provider/       # 多数据源适配器
-├── bot/                 # 机器人交互模块
-├── api/                 # FastAPI 后端服务
-├── apps/dsa-web/        # React 前端
-├── docker/              # Docker 配置
-├── docs/                # 项目文档
+├── data_provider/       # Mehrfach-Datenquellen-Adapter
+├── bot/                 # Bot-Interaktionsmodul
+├── api/                 # FastAPI-Backend-Dienst
+├── apps/dsa-web/        # React-Frontend
+├── docker/              # Docker-Konfiguration
+├── docs/                # Projektdokumentation
 └── .github/workflows/   # GitHub Actions
 ```
 
-## 📑 目录
+## 📑 Inhaltsverzeichnis
 
-- [项目结构](#项目结构)
-- [GitHub Actions 详细配置](#github-actions-详细配置)
-- [环境变量完整列表](#环境变量完整列表)
-- [Docker 部署](#docker-部署)
-- [本地运行详细配置](#本地运行详细配置)
-- [定时任务配置](#定时任务配置)
-- [通知渠道详细配置](#通知渠道详细配置)
-- [数据源配置](#数据源配置)
-- [高级功能](#高级功能)
-- [回测功能](#回测功能)
-- [本地 WebUI 管理界面](#本地-webui-管理界面)
+- [Projektstruktur](#projektstruktur)
+- [Detaillierte GitHub-Actions-Konfiguration](#detaillierte-github-actions-konfiguration)
+- [Vollständige Liste der Umgebungsvariablen](#vollständige-liste-der-umgebungsvariablen)
+- [Docker-Bereitstellung](#docker-bereitstellung)
+- [Detaillierte lokale Ausführungskonfiguration](#detaillierte-lokale-ausführungskonfiguration)
+- [Konfiguration geplanter Tasks](#konfiguration-geplanter-tasks)
+- [Detaillierte Konfiguration der Benachrichtigungskanäle](#detaillierte-konfiguration-der-benachrichtigungskanäle)
+- [Datenquellen-Konfiguration](#datenquellen-konfiguration)
+- [Erweiterte Funktionen](#erweiterte-funktionen)
+- [Backtest-Funktion](#backtest-funktion)
+- [Lokale WebUI-Verwaltungsoberfläche](#lokale-webui-verwaltungsoberfläche)
 
 ---
 
-## GitHub Actions 详细配置
+## Detaillierte GitHub-Actions-Konfiguration
 
-### 1. Fork 本仓库
+### 1. Forke dieses Repository
 
-点击右上角 `Fork` 按钮
+Klicke oben rechts auf den Button `Fork`
 
-### 2. 配置 Secrets
+### 2. Konfiguriere die Secrets
 
-进入你 Fork 的仓库 → `Settings` → `Secrets and variables` → `Actions` → `New repository secret`
+Rufe dein geforktes Repository auf → `Settings` → `Secrets and variables` → `Actions` → `New repository secret`
 
 <div align="center">
-  <img src="assets/secret_config.png" alt="GitHub Secrets 配置示意图" width="600">
+  <img src="assets/secret_config.png" alt="Schematische Darstellung der GitHub-Secrets-Konfiguration" width="600">
 </div>
 
-#### AI 模型配置（至少配置一个）
+#### KI-Modell-Konfiguration (mindestens eines konfigurieren)
 
-| Secret 名称 | 说明 | 必填 |
+| Secret-Name | Beschreibung | Pflicht |
 |------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC) API Key，一 Key 同时启用大模型和中文优化联网搜索，含本项目免费额度 | 推荐 |
-| `AIHUBMIX_KEY` | [AIHubMix](https://aihubmix.com/?aff=CfMq) API Key，一 Key 切换使用全系模型，本项目可享 10% 优惠 | 推荐 |
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 获取免费 Key | 可选 |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
-| `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
-| `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com`） | 可选 |
-| `OPENAI_MODEL` | 模型名称（如 `gemini-3.1-pro-preview`、`deepseek-v4-flash`、`gpt-5.5`） | 可选 |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC) API-Key: Ein Key aktiviert zugleich das große Sprachmodell und die für Chinesisch optimierte Websuche, inklusive kostenlosem Kontingent für dieses Projekt | Empfohlen |
+| `AIHUBMIX_KEY` | [AIHubMix](https://aihubmix.com/?aff=CfMq) API-Key: Ein Key für die gesamte Modellfamilie; für dieses Projekt 10 % Rabatt möglich | Empfohlen |
+| `GEMINI_API_KEY` | Kostenloser Key von [Google AI Studio](https://aistudio.google.com/) | Optional |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API-Key | Optional |
+| `OPENAI_API_KEY` | OpenAI-kompatibler API-Key (unterstützt DeepSeek, Tongyi Qianwen usw.) | Optional |
+| `OPENAI_BASE_URL` | OpenAI-kompatible API-Adresse (z. B. `https://api.deepseek.com`) | Optional |
+| `OPENAI_MODEL` | Modellname (z. B. `gemini-3.1-pro-preview`, `deepseek-v4-flash`, `gpt-5.5`) | Optional |
 
-> *注：以上模型 Key / 渠道至少配置一个；推荐优先从 Anspire 或 AIHubMix 这类一 Key 多模型服务开始。启动时配置校验会在缺少可用 AI 模型 Key 或模型渠道时给出明确错误提示。
+> *Hinweis: Mindestens einer der oben genannten Modell-Keys/Kanäle muss konfiguriert sein; empfohlen wird, mit einem Multi-Modell-Dienst wie Anspire oder AIHubMix zu beginnen. Beim Start gibt die Konfigurationsprüfung eine eindeutige Fehlermeldung aus, wenn ein KI-Modell-Key oder ein Modellkanal fehlt.
 
-#### 通知渠道配置（可同时配置多个，全部推送）
+#### Konfiguration der Benachrichtigungskanäle (mehrere gleichzeitig möglich, alle pushen)
 
-> 通知渠道、minimal/advanced key 分层、Actions 映射、`--check-notify` 诊断、Web 一键测试和本地 / Docker / GitHub Actions / Desktop 场景说明详见 [通知专题文档](notifications.md)。
+> Die Detail-Ebenen von Benachrichtigungskanälen, minimal/advanced Keys, Actions-Zuordnung, `--check-notify`-Diagnose, Web-Ein-Klick-Test sowie die Szenarien lokal / Docker / GitHub Actions / Desktop siehe [Benachrichtigungs-Dokument](notifications.md).
 
-| Secret 名称 | 说明 | 必填 |
+| Secret-Name | Beschreibung | Pflicht |
 |------------|------|:----:|
-| `WECHAT_WEBHOOK_URL` | 企业微信 Webhook URL | 可选 |
-| `FEISHU_WEBHOOK_URL` | 飞书 Webhook URL | 可选 |
-| `FEISHU_WEBHOOK_SECRET` | 飞书 Webhook 签名密钥（开启“签名校验”时必填） | 可选 |
-| `FEISHU_WEBHOOK_KEYWORD` | 飞书 Webhook 关键词（开启“关键词”时必填） | 可选 |
-| `DINGTALK_WEBHOOK_URL` | 钉钉群机器人 Webhook URL | 可选 |
-| `DINGTALK_SECRET` | 钉钉群机器人加签密钥 (SEC开头) | 可选 |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token（@BotFather 获取） | 可选 |
-| `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选 |
-| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID (用于发送到子话题) | 可选 |
-| `DISCORD_WEBHOOK_URL` | Discord Webhook URL（[创建方法](https://support.discord.com/hc/en-us/articles/228383668)） | 可选 |
-| `DISCORD_BOT_TOKEN` | Discord Bot Token（与 Webhook 二选一） | 可选 |
-| `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 时需要） | 可选 |
-| `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key（仅入站 Interaction/Webhook 回调验签时需要） | 可选 |
-| `SLACK_BOT_TOKEN` | Slack Bot Token（推荐，支持图片上传；同时配置时优先于 Webhook） | 可选 |
-| `SLACK_CHANNEL_ID` | Slack Channel ID（使用 Bot 时需要） | 可选 |
-| `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL（仅文本，不支持图片） | 可选 |
-| `EMAIL_SENDER` | 发件人邮箱（如 `xxx@qq.com`） | 可选 |
-| `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
-| `EMAIL_RECEIVERS` | 收件人邮箱（多个用逗号分隔，留空则发给自己） | 可选 |
-| `EMAIL_SENDER_NAME` | 发件人显示名称（默认：daily_stock_analysis股票分析助手） | 可选 |
-| `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
-| `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
-| `ASTRBOT_URL` | AstrBot Webhook URL | 可选 |
-| `ASTRBOT_TOKEN` | AstrBot Bearer Token（可选） | 可选 |
-| `NTFY_URL` | ntfy 完整 topic endpoint，必须包含 topic path，例如 `https://ntfy.sh/my-topic` | 可选 |
-| `NTFY_TOKEN` | ntfy Bearer Token（可选） | 可选 |
-| `GOTIFY_URL` | Gotify server base URL，不包含 `/message`；系统会自动拼接 `/message` | 可选 |
-| `GOTIFY_TOKEN` | Gotify application token，通过 `X-Gotify-Key` Header 发送 | 可选 |
-| `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
-| `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook 的 Bearer Token（用于需要认证的 Webhook） | 可选 |
-| `CUSTOM_WEBHOOK_BODY_TEMPLATE` | 自定义 Webhook JSON body 模板，适配 AstrBot、NapCat、自建服务等特殊 payload | 可选 |
-| `WEBHOOK_VERIFY_SSL` | 读取该配置的 webhook-style HTTPS 通知请求证书校验（默认 true）。设为 false 可支持自签名证书。警告：关闭有严重安全风险（MITM），仅限可信内网 | 可选 |
+| `WECHAT_WEBHOOK_URL` | WeCom-Webhook-URL | Optional |
+| `FEISHU_WEBHOOK_URL` | Feishu-Webhook-URL | Optional |
+| `FEISHU_WEBHOOK_SECRET` | Feishu-Webhook-Signaturschlüssel (erforderlich, wenn „Signaturprüfung“ aktiviert ist) | Optional |
+| `FEISHU_WEBHOOK_KEYWORD` | Feishu-Webhook-Keyword (erforderlich, wenn „Keyword“ aktiviert ist) | Optional |
+| `DINGTALK_WEBHOOK_URL` | DingTalk-Gruppenroboter-Webhook-URL | Optional |
+| `DINGTALK_SECRET` | DingTalk-Gruppenroboter-Signaturschlüssel (beginnt mit SEC) | Optional |
+| `TELEGRAM_BOT_TOKEN` | Telegram-Bot-Token (von @BotFather erhalten) | Optional |
+| `TELEGRAM_CHAT_ID` | Telegram Chat ID | Optional |
+| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram-Topic-ID (zum Senden in Unterthemen) | Optional |
+| `DISCORD_WEBHOOK_URL` | Discord-Webhook-URL ([Erstellungsmethode](https://support.discord.com/hc/en-us/articles/228383668)) | Optional |
+| `DISCORD_BOT_TOKEN` | Discord-Bot-Token (entweder Bot oder Webhook) | Optional |
+| `DISCORD_MAIN_CHANNEL_ID` | Discord-Kanal-ID (bei Verwendung des Bots erforderlich) | Optional |
+| `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord-Public-Key (nur zur Signaturprüfung eingehender Interaction/Webhook-Callbacks erforderlich) | Optional |
+| `SLACK_BOT_TOKEN` | Slack-Bot-Token (empfohlen, unterstützt Bild-Upload; hat Vorrang vor dem Webhook, wenn beides konfiguriert ist) | Optional |
+| `SLACK_CHANNEL_ID` | Slack-Kanal-ID (bei Verwendung des Bots erforderlich) | Optional |
+| `SLACK_WEBHOOK_URL` | Slack-Incoming-Webhook-URL (nur Text, keine Bilder) | Optional |
+| `EMAIL_SENDER` | Absender-E-Mail (z. B. `xxx@qq.com`) | Optional |
+| `EMAIL_PASSWORD` | E-Mail-Autorisierungscode (nicht das Anmeldepasswort) | Optional |
+| `EMAIL_RECEIVERS` | Empfänger-E-Mail (mehrere per Komma getrennt; leer = an sich selbst senden) | Optional |
+| `EMAIL_SENDER_NAME` | Anzeigename des Absenders (Standard: daily_stock_analysis-Aktienanalyseassistent) | Optional |
+| `PUSHPLUS_TOKEN` | PushPlus-Token ([Bezugsadresse](https://www.pushplus.plus), inländischer Push-Dienst) | Optional |
+| `SERVERCHAN3_SENDKEY` | ServerChan³-Sendkey ([Bezugsadresse](https://sc3.ft07.com/), Push-Dienst für mobile Apps) | Optional |
+| `ASTRBOT_URL` | AstrBot-Webhook-URL | Optional |
+| `ASTRBOT_TOKEN` | AstrBot-Bearer-Token (optional) | Optional |
+| `NTFY_URL` | ntfy vollständiger Topic-Endpoint, muss den Topic-Pfad enthalten, z. B. `https://ntfy.sh/my-topic` | Optional |
+| `NTFY_TOKEN` | ntfy-Bearer-Token (optional) | Optional |
+| `GOTIFY_URL` | Gotify-Server-Basis-URL, ohne `/message`; das System fügt `/message` automatisch an | Optional |
+| `GOTIFY_TOKEN` | Gotify-Anwendungstoken, wird über den `X-Gotify-Key`-Header gesendet | Optional |
+| `CUSTOM_WEBHOOK_URLS` | Benutzerdefinierte Webhooks (unterstützt DingTalk usw., mehrere per Komma getrennt) | Optional |
+| `CUSTOM_WEBHOOK_BEARER_TOKEN` | Bearer-Token für benutzerdefinierte Webhooks (für Webhooks, die eine Authentifizierung benötigen) | Optional |
+| `CUSTOM_WEBHOOK_BODY_TEMPLATE` | JSON-Body-Vorlage für benutzerdefinierte Webhooks, für spezielle Payloads wie AstrBot, NapCat, selbst gehostete Dienste usw. | Optional |
+| `WEBHOOK_VERIFY_SSL` | Zertifikatsprüfung für webhook-artige HTTPS-Benachrichtigungsanfragen, die diese Konfiguration lesen (Standard true). Mit false werden selbstsignierte Zertifikate unterstützt. Warnung: Das Deaktivieren birgt ernste Sicherheitsrisiken (MITM), nur in vertrauenswürdigen internen Netzen | Optional |
 
-> *注：至少配置一个渠道，配置多个则同时推送。启动时配置校验会提示 Telegram / 邮件成对字段缺失，以及常见 Webhook URL 未以 `http://` 或 `https://` 开头的问题。
+> *Hinweis: Mindestens einen Kanal konfigurieren; sind mehrere konfiguriert, wird in alle gepusht. Die Konfigurationsprüfung beim Start weist auf fehlende zusammengehörige Telegram-/E-Mail-Felder hin sowie darauf, dass gängige Webhook-URLs nicht mit `http://` oder `https://` beginnen.
 >
-> 当前默认 `00-daily-analysis.yml` 只显式映射固定 Secret / Variable 名称，不会自动把 `STOCK_GROUP_1`、`EMAIL_GROUP_1` 这类任意编号变量导入运行环境，也不会自动导入 `NEWS_INTEL_AUTO_FETCH_ENABLED` 这类新增可选开关。所以分组邮箱功能和本地资讯自动刷新能力目前不适用于仓库自带默认 GitHub Actions workflow；它们适用于本地 `.env`、Docker，或你自行显式扩展过 `env:` 映射的运行环境。Actions 已显式映射 `CUSTOM_WEBHOOK_BODY_TEMPLATE`、`WEBHOOK_VERIFY_SSL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_WEBHOOK_KEYWORD`、`PUSHPLUS_TOPIC`、`NTFY_URL`、`NTFY_TOKEN`、`GOTIFY_URL`、`GOTIFY_TOKEN`、P3 通知路由键以及 P4 通知降噪键；`MARKDOWN_TO_IMAGE_CHANNELS` 和 `MERGE_EMAIL_NOTIFICATION` 仍作为行为开关不在默认 workflow 中自动映射。
+> Der aktuelle Standard-Workflow `00-daily-analysis.yml` mappt nur feste Secret-/Variable-Namen und importiert beliebig nummerierte Variablen wie `STOCK_GROUP_1`, `EMAIL_GROUP_1` nicht automatisch in die Laufzeitumgebung; auch neu hinzugefügte optionale Schalter wie `NEWS_INTEL_AUTO_FETCH_ENABLED` werden nicht automatisch importiert. Die Gruppen-E-Mail-Funktion und die lokale Nachrichten-Autovervollständigung sind daher derzeit nicht für den mitgelieferten Standard-GitHub-Actions-Workflow geeignet; sie gelten für lokale `.env`, Docker oder Laufzeitumgebungen, in denen die `env:`-Zuordnung selbst explizit erweitert wurde. Die Actions haben bereits `CUSTOM_WEBHOOK_BODY_TEMPLATE`, `WEBHOOK_VERIFY_SSL`, `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD`, `PUSHPLUS_TOPIC`, `NTFY_URL`, `NTFY_TOKEN`, `GOTIFY_URL`, `GOTIFY_TOKEN`, die P3-Benachrichtigungs-Routingkeys sowie die P4-Entrauschungskey für Benachrichtigungen explizit gemappt; `MARKDOWN_TO_IMAGE_CHANNELS` und `MERGE_EMAIL_NOTIFICATION` bleiben als Verhaltensschalter bestehen und werden im Standard-Workflow nicht automatisch gemappt.
 
-#### 推送行为配置
+#### Konfiguration des Push-Verhaltens
 
-| Secret 名称 | 说明 | 必填 |
+| Secret-Name | Beschreibung | Pflicht |
 |------------|------|:----:|
-| `SINGLE_STOCK_NOTIFY` | 单股推送模式：设为 `true` 则每分析完一只股票立即推送 | 可选 |
-| `REPORT_TYPE` | 报告类型：`simple`(精简)、`full`(完整)、`brief`(3-5句概括)，Docker环境推荐设为 `full` | 可选 |
-| `REPORT_LANGUAGE` | 报告与 Agent Chat 的默认输出语言：`zh`(默认中文) / `en`(英文) / `ko`(韩文)；会同步影响 Prompt、模板、通知 fallback、Web 报告页固定文案，以及未显式传入 `context.report_language` 的问股回复。`ko` 复用英文结构骨架并通过输出语言指令约束模型用韩文输出，通知按报告语言渲染本地化标签。仓库自带 `00-daily-analysis.yml` 已显式映射该变量，直接在 Actions Secrets/Variables 中配置即可生效 | 可选 |
-| `REPORT_SUMMARY_ONLY` | 仅分析结果摘要：设为 `true` 时只推送汇总，不含个股详情；多股时适合快速浏览（默认 false，Issue #262） | 可选 |
-| `REPORT_SHOW_LLM_MODEL` | 通知报告底部是否显示本次分析使用的 LLM 模型名称，默认 `true`；设为 `false` 可隐藏运行时模型信息。该变量仅调整展示，不影响 provider/model/Base URL、LiteLLM 路由或运行时模型保存/迁移/清理语义。 | 可选 |
-| `REPORT_TEMPLATES_DIR` | Jinja2 模板目录（相对项目根，默认 `templates`） | 可选 |
-| `REPORT_RENDERER_ENABLED` | 启用 Jinja2 模板渲染（默认 `false`，保证零回归） | 可选 |
-| `REPORT_INTEGRITY_ENABLED` | 启用报告完整性校验，缺失必填字段时重试或占位补全（默认 `true`） | 可选 |
-| `REPORT_INTEGRITY_RETRY` | 完整性校验重试次数（默认 `1`，`0` 表示仅占位不重试） | 可选 |
-| `REPORT_HISTORY_COMPARE_N` | 历史信号对比条数，`0` 关闭（默认），`>0` 启用 | 可选 |
-| `ANALYSIS_DELAY` | 个股分析和大盘分析之间的延迟（秒），避免API限流，如 `10` | 可选 |
-| `SAVE_CONTEXT_SNAPSHOT` | 是否保存分析历史 `context_snapshot`，默认 `true`；设为 `false` 或使用 `--no-context-snapshot` 时不持久化整份上下文快照 | 可选 |
-| `MERGE_EMAIL_NOTIFICATION` | 个股与大盘复盘合并推送（默认 false），减少邮件数量、降低垃圾邮件风险；与 `SINGLE_STOCK_NOTIFY` 互斥（单股模式下合并不生效） | 可选 |
-| `MARKDOWN_TO_IMAGE_CHANNELS` | 将 Markdown 转为图片发送的渠道（用逗号分隔）：telegram,wechat,custom,email,slack；单股推送需同时配置且安装转图工具 | 可选 |
-| `NOTIFICATION_REPORT_CHANNELS` | report 路由渠道（单股推送、聚合日报、大盘复盘、合并推送等）；留空表示所有已配置渠道 | 可选 |
-| `NOTIFICATION_ALERT_CHANNELS` | alert 路由渠道（EventMonitor 告警）；留空表示所有已配置渠道 | 可选 |
-| `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | system_error 预留路由渠道；当前不新增自动系统错误生产者，留空表示所有已配置渠道 | 可选 |
-| `NOTIFICATION_DEDUP_TTL_SECONDS` | 通知去重 TTL 秒数，`0` 关闭；同一稳定去重 key 在 TTL 内只发送一次 | 可选 |
-| `NOTIFICATION_COOLDOWN_SECONDS` | 通知冷却秒数，`0` 关闭；同一冷却 key 在窗口内限频 | 可选 |
-| `NOTIFICATION_QUIET_HOURS` | 通知静默时段，格式 `HH:MM-HH:MM`，支持跨午夜；留空关闭 | 可选 |
-| `NOTIFICATION_TIMEZONE` | 静默时段使用的 IANA 时区，如 `Asia/Shanghai`；留空跟随 `TZ` 或系统本地时区 | 可选 |
-| `NOTIFICATION_MIN_SEVERITY` | 最低通知级别：`info`、`warning`、`error`、`critical`；留空保持现状 | 可选 |
-| `NOTIFICATION_DAILY_DIGEST_ENABLED` | 每日摘要预留开关；当前不会发送摘要或持久化摘要内容 | 可选 |
-| `MARKDOWN_TO_IMAGE_MAX_CHARS` | 超过此长度不转图片，避免超大图片（默认 15000） | 可选 |
-| `MD2IMG_ENGINE` | 转图引擎：`wkhtmltoimage`（默认，需 wkhtmltopdf）或 `markdown-to-file`（emoji 更好，需 `npm i -g markdown-to-file`） | 可选 |
-| `PREFETCH_REALTIME_QUOTES` | 设为 `false` 可禁用实时行情预取，避免 efinance/akshare_em 全市场拉取（默认 true） | 可选 |
+| `SINGLE_STOCK_NOTIFY` | Einzelaktien-Push-Modus: mit `true` wird nach jeder analysierten Aktie sofort gepusht | Optional |
+| `REPORT_TYPE` | Berichtstyp: `simple` (kompakt), `full` (vollständig), `brief` (3-5-Sätze-Zusammenfassung); in Docker-Umgebungen wird `full` empfohlen | Optional |
+| `REPORT_LANGUAGE` | Standardausgabesprache für Berichte und Agent Chat: `zh` (Standard: Chinesisch) / `en` (Englisch) / `ko` (Koreanisch); wirkt sich auch auf Prompts, Vorlagen, Benachrichtigungs-Fallbacks, feste Texte der Web-Berichtsseite und Aktienfragen-Antworten ohne explizit übergebenes `context.report_language` aus. `ko` nutzt das englische Strukturgerüst und weist das Modell über die Ausgabesprach-Anweisung an, auf Koreanisch auszugeben; Benachrichtigungen rendern lokalisierte Labels nach Berichtssprache. Das mitgelieferte `00-daily-analysis.yml` hat diese Variable bereits explizit gemappt; direkt in den Actions Secrets/Variables konfigurieren, um sie zu aktivieren | Optional |
+| `REPORT_SUMMARY_ONLY` | Nur Analyse-Zusammenfassung: mit `true` wird nur die Zusammenfassung gepusht, ohne Einzelaktien-Details; bei mehreren Aktien für einen schnellen Überblick geeignet (Standard false, Issue #262) | Optional |
+| `REPORT_SHOW_LLM_MODEL` | Ob am Ende des Benachrichtigungsberichts der Name des in dieser Analyse verwendeten LLM-Modells angezeigt wird, Standard `true`; mit `false` werden Laufzeit-Modellinformationen ausgeblendet. Diese Variable beeinflusst nur die Anzeige, nicht die Semantik von provider/model/Base URL, LiteLLM-Routing oder das Speichern/Migrieren/Bereinigen von Laufzeitmodellen. | Optional |
+| `REPORT_TEMPLATES_DIR` | Jinja2-Vorlagenverzeichnis (relativ zum Projektstamm, Standard `templates`) | Optional |
+| `REPORT_RENDERER_ENABLED` | Jinja2-Vorlagen-Rendering aktivieren (Standard `false`, gewährleistet null Regression) | Optional |
+| `REPORT_INTEGRITY_ENABLED` | Integritätsprüfung des Berichts aktivieren; bei fehlenden Pflichtfeldern wird erneut versucht oder mit Platzhaltern ergänzt (Standard `true`) | Optional |
+| `REPORT_INTEGRITY_RETRY` | Anzahl der Wiederholungen der Integritätsprüfung (Standard `1`, `0` bedeutet nur Platzhalter ohne Wiederholung) | Optional |
+| `REPORT_HISTORY_COMPARE_N` | Anzahl vergleichbarer historischer Signale; `0` deaktiviert (Standard), `>0` aktiviert | Optional |
+| `ANALYSIS_DELAY` | Verzögerung (Sekunden) zwischen Einzelaktien- und Marktanalyse, um API-Limits zu vermeiden, z. B. `10` | Optional |
+| `SAVE_CONTEXT_SNAPSHOT` | Ob der Analyseverlauf `context_snapshot` gespeichert wird, Standard `true`; mit `false` oder `--no-context-snapshot` wird keine vollständige Kontext-Snapshot persistiert | Optional |
+| `MERGE_EMAIL_NOTIFICATION` | Zusammengeführter Push von Einzelaktien- und Markt-Rückblick (Standard false), reduziert die Anzahl der E-Mails und das Spam-Risiko; schließt sich mit `SINGLE_STOCK_NOTIFY` gegenseitig aus (in Einzelaktien-Modus greift die Zusammenführung nicht) | Optional |
+| `MARKDOWN_TO_IMAGE_CHANNELS` | Kanäle, die Markdown in Bilder umwandeln und senden (per Komma getrennt): telegram,wechat,custom,email,slack; für Einzelaktien-Push müssen zudem die Bildkonvertierungswerkzeuge installiert sein | Optional |
+| `NOTIFICATION_REPORT_CHANNELS` | report-Routing-Kanäle (Einzelaktien-Push, aggregierter Tagesbericht, Markt-Rückblick, zusammengeführte Pushs usw.); leer bedeutet alle konfigurierten Kanäle | Optional |
+| `NOTIFICATION_ALERT_CHANNELS` | alert-Routing-Kanäle (EventMonitor-Warnungen); leer bedeutet alle konfigurierten Kanäle | Optional |
+| `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | reservierte system_error-Routing-Kanäle; derzeit werden keine automatischen Systemfehler-Produzenten hinzugefügt, leer bedeutet alle konfigurierten Kanäle | Optional |
+| `NOTIFICATION_DEDUP_TTL_SECONDS` | TTL-Sekunden für die Benachrichtigungs-Deduplizierung, `0` deaktiviert; derselbe stabile Dedup-Key wird innerhalb der TTL nur einmal gesendet | Optional |
+| `NOTIFICATION_COOLDOWN_SECONDS` | Benachrichtigungs-Cooldown in Sekunden, `0` deaktiviert; derselbe Cooldown-Key wird innerhalb des Fensters gedrosselt | Optional |
+| `NOTIFICATION_QUIET_HOURS` | Stillezeitraum für Benachrichtigungen, Format `HH:MM-HH:MM`, unterstützt über Mitternacht; leer deaktiviert | Optional |
+| `NOTIFICATION_TIMEZONE` | IANA-Zeitzone für den Stillezeitraum, z. B. `Asia/Shanghai`; leer folgt `TZ` oder der System-Zeitzone | Optional |
+| `NOTIFICATION_MIN_SEVERITY` | Mindest-Schweregrad der Benachrichtigung: `info`, `warning`, `error`, `critical`; leer behält den aktuellen Zustand | Optional |
+| `NOTIFICATION_DAILY_DIGEST_ENABLED` | reservierter Schalter für die tägliche Zusammenfassung; derzeit werden keine Zusammenfassungen gesendet oder Inhalte persistiert | Optional |
+| `MARKDOWN_TO_IMAGE_MAX_CHARS` | Über dieser Länge wird nicht in Bilder umgewandelt, um übergroße Bilder zu vermeiden (Standard 15000) | Optional |
+| `MD2IMG_ENGINE` | Bildkonvertierungs-Engine: `wkhtmltoimage` (Standard, benötigt wkhtmltopdf) oder `markdown-to-file` (bessere Emoji-Darstellung, benötigt `npm i -g markdown-to-file`) | Optional |
+| `PREFETCH_REALTIME_QUOTES` | Mit `false` kann der Echtzeit-Kursabruf deaktiviert werden, um efinance/akshare_em-Gesamtmarkt-Abrufe zu vermeiden (Standard true) | Optional |
 
-> 兼容性说明：`REPORT_SHOW_LLM_MODEL` 维持默认 `true` 的原始展示语义，关闭时只影响底部模型文案输出。该配置不会变更 provider/model/Base URL、LiteLLM 路由、模型保存、迁移或清理语义；回退方式为恢复或删除该变量，并设为 `true`。
+> Kompatibilitätshinweis: `REPORT_SHOW_LLM_MODEL` behält die ursprüngliche Anzeigesemantik mit Standard `true`; wenn deaktiviert, betrifft das nur die Modelltextzeile am Ende. Diese Konfiguration ändert nicht die Semantik von provider/model/Base URL, LiteLLM-Routing, Modellspeicherung, -migration oder -bereinigung; als Rückfall gilt, die Variable wiederherzustellen oder zu entfernen und auf `true` zu setzen.
 
-> 说明：`REPORT_LANGUAGE` 影响报告文本、Web 报告页固定文案与未显式指定语言的 Agent Chat 回复；WebUI 页面语言（导航、登录页、侧边栏、设置页、通用控件）使用独立状态，不与其联动。
-> WebUI 语言状态保存在浏览器 `localStorage` 的 `dsa.uiLanguage`，启动顺序为：
-> 1) 明确选择（`localStorage.dsa.uiLanguage`，仅支持 `zh`/`en`）
-> 2) 浏览器语言检测（`navigator.languages` / `navigator.language`，`zh-*` 或 `en-*`）
-> 3) 默认回退 `zh`。
+> Hinweis: `REPORT_LANGUAGE` beeinflusst Berichtstexte, feste Texte der Web-Berichtsseite und Agent-Chat-Antworten ohne explizit angegebene Sprache; die WebUI-Seitensprache (Navigation, Login-Seite, Seitenleiste, Einstellungsseite, allgemeine Steuerelemente) verwendet einen unabhängigen Zustand und ist nicht damit verknüpft.
+> Der WebUI-Sprachzustand wird im Browser-`localStorage` unter `dsa.uiLanguage` gespeichert; die Startreihenfolge ist:
+> 1) Explizite Auswahl (`localStorage.dsa.uiLanguage`, nur `zh`/`en` unterstützt)
+> 2) Browser-Spracherkennung (`navigator.languages` / `navigator.language`, `zh-*` oder `en-*`)
+> 3) Standard-Rückfall `zh`.
 
-#### 其他配置
+#### Weitere Konfiguration
 
-| Secret 名称 | 说明 | 必填 |
+| Secret-Name | Beschreibung | Pflicht |
 |------------|------|:----:|
-| `STOCK_LIST` | 自选股代码，如 `600519,300750,002594,7203.T,005930.KS`；推荐使用英文逗号，中文逗号、顿号、分号、空格和换行会被识别并规范为英文逗号 | ✅ |
-| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 针对中文内容特别优化；同一 Key 可用于搜索与 Anspire 大模型网关的兜底示例（是否可用以控制台与账号权限为准） | 推荐 |
-| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
-| `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 可选 |
-| `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
-| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隐私优先，美股优化，多个key用逗号分隔） | 可选 |
-| `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimax.io/) Coding Plan Web Search（结构化搜索结果） | 可选 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
-| `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
-| `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空（或未设置/空白）时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填写 `http://` 或 `https://` 开头的完整地址 | 可选 |
-| `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | 可选 |
-| `LONGBRIDGE_OAUTH_CLIENT_ID` | [Longbridge OpenAPI](https://open.longbridge.com/) OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | 可选 |
-| `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境恢复 SDK token 缓存 | 可选 |
-| `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | 可选 |
-| `LONGBRIDGE_APP_SECRET` | Longbridge App Secret | 可选 |
-| `LONGBRIDGE_ACCESS_TOKEN` | Longbridge Legacy Access Token（不是 OAuth access token） | 可选 |
-| `LONGBRIDGE_STATIC_INFO_TTL_SECONDS` | 长桥 `static_info` 进程内缓存秒数（默认 86400，0=不缓存） | 可选 |
-| `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` | 长桥连接关闭类异常后的冷却秒数（默认 15；冷却期内临时跳过 Longbridge，避免频繁重连） | 可选 |
-| `LONGBRIDGE_HTTP_URL` | HTTP 接口地址（默认 `https://openapi.longbridge.com`） | 可选 |
-| `LONGBRIDGE_QUOTE_WS_URL` | 行情 WebSocket 地址（默认 `wss://openapi-quote.longbridge.com/v2`） | 可选 |
-| `LONGBRIDGE_TRADE_WS_URL` | 交易 WebSocket 地址（默认 `wss://openapi-trade.longbridge.com/v2`） | 可选 |
-| `LONGBRIDGE_REGION` | 覆盖接入点；SDK 会按网络自动选择，默认 `hk`，若判断不正确可设置（如 `cn`、`hk`） | 可选 |
-| `LONGBRIDGE_ENABLE_OVERNIGHT` | 是否开启夜盘行情 `true` / `false`，默认 `false` | 可选 |
-| `LONGBRIDGE_PUSH_CANDLESTICK_MODE` | K 线推送模式：`realtime` 或 `confirmed`（默认 `realtime`） | 可选 |
-| `LONGBRIDGE_PRINT_QUOTE_PACKAGES` | 连接时是否打印行情包（未设置时默认 `false`；设为 `1`/`true`/`yes` 开启） | 可选 |
-| `ENABLE_CHIP_DISTRIBUTION` | 启用筹码分布（Actions 默认 false；需筹码数据时在 Variables 中设为 true，接口可能不稳定） | 可选 |
+| `STOCK_LIST` | Watchlist-Codes, z. B. `600519,300750,002594,7203.T,005930.KS`; englische Kommas werden empfohlen; chinesische Kommas, Aufzählungszeichen, Semikolons, Leerzeichen und Zeilenumbrüche werden erkannt und zu englischen Kommas normalisiert | ✅ |
+| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) ist für chinesische Inhalte besonders optimiert; derselbe Key kann als Fallback-Beispiel für Suche und Anspire-Großmodell-Gateway dienen (die Verfügbarkeit richtet sich nach Konsole und Kontoberechtigungen) | Empfohlen |
+| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) Verstärkung der Suchmaschinenergebnisse, geeignet für Echtzeit-Finanznachrichten | Empfohlen |
+| `TAVILY_API_KEYS` | [Tavily](https://tavily.com/)-Such-API (Nachrichtensuche) | Optional |
+| `BOCHA_API_KEYS` | [Bocha Search](https://open.bocha.cn/) Web-Search-API (für Chinesisch optimiert, unterstützt KI-Zusammenfassungen, mehrere Keys per Komma getrennt) | Optional |
+| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/)-API (datenschutzorientiert, für US-Aktien optimiert, mehrere Keys per Komma getrennt) | Optional |
+| `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimax.io/) Coding Plan Web Search (strukturierte Suchergebnisse) | Optional |
+| `SEARXNG_BASE_URLS` | Selbst gehostete SearXNG-Instanz (ohne Quoten-Fallback, erfordert `format: json` in settings.yml); leer erkennt automatisch öffentliche Instanzen | Optional |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Ob bei leerem `SEARXNG_BASE_URLS` automatisch öffentliche Instanzen von `searx.space` bezogen werden (Standard `true`) | Optional |
+| `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | Optional |
+| `TUSHARE_HTTP_URL` | Tushare-Pro-HTTP-Adresse; leer (oder nicht gesetzt/blank) wird der offizielle Endpoint `http://api.tushare.pro` verwendet; nur bei Firmen-Proxy, grenzüberschreitendem Netzwerk oder eigenem Mirror eine vollständige `http://`- oder `https://`-Adresse angeben | Optional |
+| `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org)-API-Key; optional für A-Aktien-Tages-K, Echtzeit-Kurse, Aktienlisten/-namen und Markt-Rückblick-Erweiterung; bei Fehlern oder fehlenden Berechtigungen automatischer Rückfall. | Optional |
+| `LONGBRIDGE_OAUTH_CLIENT_ID` | [Longbridge OpenAPI](https://open.longbridge.com/) OAuth client_id; leer und ohne Legacy-Access-Token wird kompatibel `LONGBRIDGE_APP_KEY` verwendet | Optional |
+| `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | Base64-Inhalt der OAuth-Token-Cache-Datei, um den SDK-Token-Cache in headless Umgebungen wie GitHub Actions / Docker wiederherzustellen | Optional |
+| `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key; ohne `LONGBRIDGE_ACCESS_TOKEN` auch als kompatibles Alias für OAuth client_id nutzbar | Optional |
+| `LONGBRIDGE_APP_SECRET` | Longbridge App Secret | Optional |
+| `LONGBRIDGE_ACCESS_TOKEN` | Longbridge Legacy Access Token (kein OAuth-Access-Token) | Optional |
+| `LONGBRIDGE_STATIC_INFO_TTL_SECONDS` | Sekunden für den prozessinternen Cache von Longbridge `static_info` (Standard 86400, 0 = kein Cache) | Optional |
+| `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` | Cooldown-Sekunden nach Longbridge-Verbindungsfehlern (Standard 15; während des Cooldowns wird Longbridge vorübergehend übersprungen, um häufige Neuverbindungen zu vermeiden) | Optional |
+| `LONGBRIDGE_HTTP_URL` | HTTP-API-Adresse (Standard `https://openapi.longbridge.com`) | Optional |
+| `LONGBRIDGE_QUOTE_WS_URL` | Kurs-WebSocket-Adresse (Standard `wss://openapi-quote.longbridge.com/v2`) | Optional |
+| `LONGBRIDGE_TRADE_WS_URL` | Handels-WebSocket-Adresse (Standard `wss://openapi-trade.longbridge.com/v2`) | Optional |
+| `LONGBRIDGE_REGION` | Überschreibt den Zugangspunkt; das SDK wählt automatisch je nach Netzwerk, Standard `hk`, bei falscher Erkennung einstellbar (z. B. `cn`, `hk`) | Optional |
+| `LONGBRIDGE_ENABLE_OVERNIGHT` | Ob der Nachthandels-Kursverlauf `true`/`false` aktiviert ist, Standard `false` | Optional |
+| `LONGBRIDGE_PUSH_CANDLESTICK_MODE` | K-Linien-Push-Modus: `realtime` oder `confirmed` (Standard `realtime`) | Optional |
+| `LONGBRIDGE_PRINT_QUOTE_PACKAGES` | Ob beim Verbinden Kurs-Pakete ausgegeben werden (Standard `false`, wenn nicht gesetzt; mit `1`/`true`/`yes` aktivieren) | Optional |
+| `ENABLE_CHIP_DISTRIBUTION` | Chip-Verteilung aktivieren (Actions Standard false; bei Bedarf in den Variables auf true setzen, die Schnittstelle kann instabil sein) | Optional |
 
-> **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY` / `TICKFLOW_*` 和上表中的 `LONGBRIDGE_*` 映射到任务环境。TickFlow 的 API Key 建议放在 **Secrets**，优先级、复权和批量开关可放在 **Variables** 或 **Secrets**。Longbridge OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
+> **GitHub Actions:** Das mitgelieferte `00-daily-analysis.yml` hat `TUSHARE_TOKEN`, `TICKFLOW_API_KEY` / `TICKFLOW_*` sowie die `LONGBRIDGE_*`-Einträge der obigen Tabelle bereits auf die Task-Umgebung gemappt. Der API-Key von TickFlow sollte in den **Secrets** liegen; Priorität, Rechte und Batch-Schalter können in den **Variables** oder **Secrets** liegen. Die Longbridge-OAuth-Methode benötigt eine client_id (bevorzugt `LONGBRIDGE_OAUTH_CLIENT_ID`; leer und ohne Legacy-Access-Token wird kompatibel `LONGBRIDGE_APP_KEY` verwendet) und die lokale Datei `~/.longbridge/openapi/tokens/<client_id>` muss base64-kodiert als Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` gespeichert werden; die Legacy-Methode kann weiterhin `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, `LONGBRIDGE_ACCESS_TOKEN` konfigurieren. Optionale Zugangspunktvariablen (z. B. `LONGBRIDGE_REGION`) können in den **Variables** oder **Secrets** liegen.
 
-> **TUSHARE_HTTP_URL 在每日 workflow 中的映射：** `00-daily-analysis.yml` 已显式映射 `TUSHARE_HTTP_URL`（采用 `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL` 优先级，与仓库现有 `TICKFLOW_PRIORITY` 等非敏感配置取值策略一致）。该地址属"接入地址"配置而非凭据，建议放 **Variables** 便于团队 review 与版本可审计。注意：真实的优先级是 `vars` 非空即胜出，**Secrets 中的同名变量无法覆盖非空 Variables**，两者中只有 vars 为空时 secrets 才被采用，请按这个真实语义做安全建模。GitHub 把 Variables 与 Secrets 设计为两套独立的写权限模型：任何对 repository Variables 有写权限的人或自动化，都可以在不读取、不修改 Secrets 的情况下，通过设置一个非空 Variable 来改写运行时端点（包括将 `TUSHARE_TOKEN` 和完整请求体指向攻击者控制的地址）；Secrets 仅保护值的机密性，并不自动提供"端点完整性"或"优先级覆盖"保障。如确需对端点施加更强的访问控制，请使用 GitHub Environment protection rules、CODEOWNERS、branch protection 或独立的部署审批流程，**不要把"只放 Secrets 而 Variables 留空"当作防改护栏**。未设置或留空时 fetcher 仍走官方 `http://api.tushare.pro` 端点，不会因为本变量缺失而报错。
+> **TUSHARE_HTTP_URL-Zuordnung im täglichen Workflow:** `00-daily-analysis.yml` hat `TUSHARE_HTTP_URL` bereits explizit gemappt (mit `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL`-Priorität, identisch zur Wertungsstrategie bestehender nicht-sensitiver Konfigurationen wie `TICKFLOW_PRIORITY`). Diese Adresse ist eine „Zugangsadresse“-Konfiguration und keine Anmeldedaten; es wird empfohlen, sie in den **Variables** zu platzieren, damit das Team sie reviewen und versionieren kann. Beachte: Die tatsächliche Priorität lautet „ein nicht leerer vars-Wert gewinnt“; **gleichnamige Variablen in den Secrets können nicht-leere Variables nicht überschreiben**. Nur wenn vars leer ist, werden secrets verwendet — modelliere deine Sicherheit nach dieser tatsächlichen Semantik. GitHub gestaltet Variables und Secrets als zwei unabhängige Schreibberechtigungsmodelle: Jede Person oder Automatisierung mit Schreibberechtigung für die Repository-Variables kann ohne Lesen oder Ändern der Secrets durch Setzen einer nicht-leeren Variable den Laufzeit-Endpoint umschreiben (einschließlich der Umleitung von `TUSHARE_TOKEN` und des vollständigen Request-Bodys auf eine von Angreifern kontrollierte Adresse); Secrets schützen nur die Vertraulichkeit der Werte und bieten automatisch weder „Endpoint-Integrität“ noch „Prioritäts-Override“. Wenn tatsächlich eine stärkere Zugriffskontrolle für Endpoints nötig ist, nutze GitHub Environment protection rules, CODEOWNERS, branch protection oder einen separaten Deployment-Genehmigungsprozess — **behandle „nur Secrets, Variables leer“ nicht als Schutzschild gegen Änderungen**. Ohne Setzung oder bei leerem Wert verwendet der Fetcher weiterhin den offiziellen `http://api.tushare.pro`-Endpoint und meldet keinen Fehler wegen fehlender Variable.
 
-> **Longbridge 运行时行为：** 未配置凭据时不会实例化 Longbridge 这个可选 fetcher；若运行时遇到 `client is closed`、`context closed`、`connection closed` 等连接关闭类异常，会进入冷却期（默认 15 秒，可用 `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` 调整），冷却期内美股/港股的实时与日线请求会自动跳过 Longbridge，退回 YFinance / AkShare 等兜底链路。
+> **Longbridge-Laufzeitverhalten:** Ohne konfigurierte Anmeldedaten wird dieser optionale Fetcher nicht instanziiert; treten zur Laufzeit Verbindungsfehler wie `client is closed`, `context closed`, `connection closed` auf, wird ein Cooldown gestartet (Standard 15 Sekunden, über `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` einstellbar). Während des Cooldowns werden Echtzeit- und Tagesanfragen für US-/Hongkong-Aktien automatisch Longbridge überspringen und auf Fallback-Pfade wie YFinance / AkShare zurückgreifen.
 
-> 补充说明
-- TUSHARE_TOKEN，当此参数配置后，但不具备港股日线接口权限时，也会出现港股数据查询不出来或者错误的情况，和老版本提示不支持港股效果相同
+> Ergänzende Hinweise
+- Bei `TUSHARE_TOKEN`: Wenn dieser Parameter konfiguriert ist, aber keine Berechtigung für die Hongkong-Aktien-Tagesdaten-Schnittstelle besteht, können Hongkong-Aktien-Daten nicht abgefragt werden oder es treten Fehler auf — derselbe Effekt wie die alte Version, die Hongkong-Aktien als nicht unterstützt meldet
 
-#### ✅ 最小配置示例
+#### ✅ Minimales Konfigurationsbeispiel
 
-如果你想快速开始，最少需要配置以下项：
+Für einen schnellen Start müssen mindestens die folgenden Punkte konfiguriert werden:
 
-1. **AI 模型**：`ANSPIRE_API_KEYS`（一 Key 同时启用大模型和搜索）、`AIHUBMIX_KEY`（[AIHubmix](https://aihubmix.com/?aff=CfMq)，一 Key 多模型）、`GEMINI_API_KEY` 或 `OPENAI_API_KEY`
-2. **通知渠道**：至少配置一个，如 `WECHAT_WEBHOOK_URL` 或 `EMAIL_SENDER` + `EMAIL_PASSWORD`
-3. **股票列表**：`STOCK_LIST`（必填）
-4. **搜索 API**：`ANSPIRE_API_KEYS` 或 `SERPAPI_API_KEYS`（推荐，用于新闻与舆情搜索）
+1. **KI-Modell**: `ANSPIRE_API_KEYS` (ein Key aktiviert zugleich Modell und Suche), `AIHUBMIX_KEY` ([AIHubmix](https://aihubmix.com/?aff=CfMq), ein Key für mehrere Modelle), `GEMINI_API_KEY` oder `OPENAI_API_KEY`
+2. **Benachrichtigungskanal**: mindestens einen konfigurieren, z. B. `WECHAT_WEBHOOK_URL` oder `EMAIL_SENDER` + `EMAIL_PASSWORD`
+3. **Aktienliste**: `STOCK_LIST` (Pflicht)
+4. **Such-API**: `ANSPIRE_API_KEYS` oder `SERPAPI_API_KEYS` (empfohlen für Nachrichten- und Stimmungsabruf)
 
-> 💡 配置完以上 4 项即可开始使用！
+> 💡 Nach der Konfiguration der oben genannten 4 Punkte kann es losgehen!
 
-### 3. 启用 Actions
+### 3. Actions aktivieren
 
-1. 进入你 Fork 的仓库
-2. 点击顶部的 `Actions` 标签
-3. 如果看到提示，点击 `I understand my workflows, go ahead and enable them`
+1. Rufe das geforkte Repository auf
+2. Klicke oben auf den Tab `Actions`
+3. Wenn ein Hinweis erscheint, klicke auf `I understand my workflows, go ahead and enable them`
 
-### 4. 手动测试
+### 4. Manueller Test
 
-1. 进入 `Actions` 标签
-2. 左侧选择 `每日股票分析` workflow
-3. 点击右侧的 `Run workflow` 按钮
-4. 选择运行模式
-5. 点击绿色的 `Run workflow` 确认
+1. Öffne den Tab `Actions`
+2. Wähle links den Workflow `Tägliche Aktienanalyse`
+3. Klicke rechts auf die Schaltfläche `Run workflow`
+4. Wähle den Ausführungsmodus
+5. Klicke zur Bestätigung auf das grüne `Run workflow`
 
-### 5. 完成！
+### 5. Fertig!
 
-默认每个工作日 **18:00（北京时间）** 自动执行。
+Standardmäßig wird automatisch an jedem Werktag um **18:00 Uhr (Pekinger Zeit)** ausgeführt.
 
 ---
 
-## 环境变量完整列表
+## Vollständige Liste der Umgebungsvariablen
 
-### AI 模型配置
+### KI-Modell-Konfiguration
 
-> 完整说明见 [LLM 配置指南](LLM_CONFIG_GUIDE.md)（三层配置、渠道模式、Vision、Agent、排错）；常用服务商预设、Actions 变量对照和错误排障见 [LLM 服务商配置指南](llm-providers.md)。
-> 兼容性说明（Issue #1306/#1391，顺带确认 #1381）：本节相关改动只复用已有历史写入链路展示大盘复盘结果，不新增 API/API 参数、Web 阶段结果独立展示、日报四阶段结构化持久化或日报状态表，不修改 `provider` / `model` / `base_url` 运行时路由与默认模型行为；#1381 同样仅为后端 runtime 复用，不新增配置迁移/清理/回写分支。若 Issue #1381 的 API/Web/日报结构化验收未同步落地，本 PR 不应作为完整交付收口，需留待后续 PR 继续交付。回退路径为发布回滚（可直接 revert 当前提交，或按现有配置回退链路）。兼容验证主要沿用既有约束检查（`requirements.txt`：`litellm` 版本约束）与既有配置回归测试：`tests/test_system_config_service.py`、`tests/test_system_config_api.py`、`tests/test_llm_channel_config.py`、`tests/test_market_review_runtime.py`；官方源参考：[LiteLLM OpenAI-compatible](https://docs.litellm.ai/docs/providers/openai_compatible)、[OpenAI Chat Completion API](https://platform.openai.com/docs/api-reference/chat)。
-> #1391 Phase 2 的结构化检测风险来自 `src/agent/factory.py` 的 `agent_max_steps` / `agent_orchestrator_timeout_s` int 安全兜底，属于配置读取侧的类型兼容增强，不会改写 `litellm_model`、`agent_litellm_model`、`openai_base_url` 或 `LLM_*` 路由状态；回归可复核 `tests/test_agent_pipeline.py::TestAgentConfig::test_build_agent_executor_does_not_mutate_llm_route_config` 与 `tests/test_agent_pipeline.py::TestAgentConfig::test_build_agent_executor_multi_arch_does_not_mutate_llm_route_config`。当配置值非法（如非数字）时，`src.agent.factory` 会记录 warning 并回退到默认值，便于排障与避免误判配置已生效。
-> #1815 Phase 3 的兼容边界说明：本轮仅收敛 JP/KR 与 Market Light 的服务边界，不新增 LLM provider/model/base_url 迁移逻辑，不改写 `.env` 主路由模型持久化语义。`MarketSymbol`、告警枚举与快照 `data_quality/limitations` 调整按已有 `.env` 原子 upsert 语义写入保存配置；未显示提交的键不会被清空。
-> 本节仅同步模型/渠道配置清单，不额外引入新的外部 provider / Base URL 兼容约定；兼容语义以当前仓库 `requirements.txt` 依赖约束和相关测试为准，历史回退路径见上述两份文档中“回退/恢复”说明。
+> Vollständige Erläuterungen siehe [LLM-Konfigurationsleitfaden](LLM_CONFIG_GUIDE.md) (Drei-Ebenen-Konfiguration, Kanalmodus, Vision, Agent, Fehlerbehebung); gängige Provider-Presets, Actions-Variablen-Vergleich und Fehlerbehebung siehe [LLM-Provider-Konfigurationsleitfaden](llm-providers.md).
+> Kompatibilitätshinweis (Issue #1306/#1391, bestätigt zusätzlich #1381): Die Änderungen dieses Abschnitts nutzen nur die vorhandene Verlaufsschreibkette zur Darstellung der Markt-Rückblick-Ergebnisse; es werden keine API/API-Parameter hinzugefügt, keine unabhängige Anzeige der Web-Phasenergebnisse, keine strukturierte Persistenz des vierstufigen Tagesberichts und keine Status-Tabelle des Tagesberichts eingeführt; das Laufzeit-Routing von `provider`/`model`/`base_url` und das Standardmodellverhalten bleiben unverändert. #1381 ist ebenfalls nur eine Backend-Runtime-Wiederverwendung ohne neue Konfigurations-Migrations-/Bereinigungs-/Rückschreibzweige. Falls die strukturierte API/Web/Tagesbericht-Abnahme von Issue #1381 nicht zeitgleich umgesetzt wird, sollte dieser PR nicht als vollständige Auslieferung gelten, sondern in einem Folge-PR weiter ausgeliefert werden. Der Rückfallweg ist ein Release-Rollback (direkt den aktuellen Commit reverten oder der bestehenden Konfigurations-Rollback-Kette folgen). Die Kompatibilitätsprüfung nutzt hauptsächlich die bestehenden Constraint-Checks (`requirements.txt`: `litellm`-Versionsbeschränkung) und bestehende Konfigurations-Regressionstests: `tests/test_system_config_service.py`, `tests/test_system_config_api.py`, `tests/test_llm_channel_config.py`, `tests/test_market_review_runtime.py`; offizielle Quellen: [LiteLLM OpenAI-compatible](https://docs.litellm.ai/docs/providers/openai_compatible), [OpenAI Chat Completion API](https://platform.openai.com/docs/api-reference/chat).
+> Das Strukturprüfungsrisiko von #1391 Phase 2 stammt aus den int-Sicherheitsfallbacks `agent_max_steps`/`agent_orchestrator_timeout_s` in `src/agent/factory.py`; es ist eine typkompatible Verstärkung auf der Konfigurationsleseseite und ändert nicht den Routing-Zustand von `litellm_model`, `agent_litellm_model`, `openai_base_url` oder `LLM_*`. Für die Regression siehe `tests/test_agent_pipeline.py::TestAgentConfig::test_build_agent_executor_does_not_mutate_llm_route_config` und `tests/test_agent_pipeline.py::TestAgentConfig::test_build_agent_executor_multi_arch_does_not_mutate_llm_route_config`. Bei ungültigen Konfigurationswerten (z. B. nicht numerisch) protokolliert `src.agent.factory` eine Warning und fällt auf den Standardwert zurück, um die Fehlersuche zu erleichtern und fälschlich als aktiv interpretierte Konfigurationen zu vermeiden.
+> Kompatibilitätsgrenzen von #1815 Phase 3: In dieser Runde werden nur die Servicegrenzen von JP/KR und Market Light konsolidiert; es wird keine LLM provider/model/base_url-Migrationslogik hinzugefügt und die Persistenzsemantik des `.env`-Hauptroutingsmodells bleibt unverändert. `MarketSymbol`, die Warnungs-Enums und die Anpassungen an `data_quality/limitations` der Snapshot werden gemäß der bestehenden atomaren `.env`-Upsert-Semantik in die gespeicherte Konfiguration geschrieben; nicht explizit übermittelte Schlüssel werden nicht geleert.
+> Dieser Abschnitt synchronisiert nur die Modell-/Kanal-Konfigurationsliste und führt keine neuen Kompatibilitätskonventionen für externe Provider / Base URLs ein; die Kompatibilitätssemantik richtet sich nach den Abhängigkeitsbeschränkungen in `requirements.txt` und den zugehörigen Tests; historische Rückfallpfade siehe die Abschnitte „Rückfall/Wiederherstellung“ in den beiden oben genannten Dokumenten.
 
-| 变量名 | 说明 | 默认值 | 必填 |
+| Variable | Beschreibung | Standardwert | Pflicht |
 |--------|------|--------|:----:|
-| `GENERATION_BACKEND` | 普通分析生成后端；支持 `litellm` 或显式 opt-in 的 `codex_cli` / `claude_code_cli` / `opencode_cli`（experimental/limited） | `litellm` | 否 |
-| `OPENCODE_CLI_MODEL` | `GENERATION_BACKEND=opencode_cli` 时可选传给 OpenCode `--model` 的模型覆盖；留空则使用本机 OpenCode 默认模型，认证和模型可用性由本机 OpenCode 配置负责 | 空 | 否 |
-| `GENERATION_FALLBACK_BACKEND` | backend 级 fallback；未配置默认 `litellm`，空值禁用，self fallback 解析为 no-op | `litellm` | 否 |
-| `GENERATION_BACKEND_TIMEOUT_SECONDS` | 单次 generation backend 调用超时秒数，主要用于本地 CLI backend；范围 `1-3600` | `300` | 否 |
-| `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | 单次本地 CLI backend 诊断 stdout/stderr 与最终响应捕获总上限；`--output-last-message` 重复打印到 stdout 的最终响应不重复计入；范围 `1-33554432` | `1048576` | 否 |
-| `GENERATION_BACKEND_MAX_CONCURRENCY` | generation backend 全局并发上限；范围 `1-16`，不改变 LiteLLM Router / `MAX_WORKERS` 行为 | `1` | 否 |
-| `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | 本地 CLI backend 并发上限；范围 `1-4`，有效并发取它与 `GENERATION_BACKEND_MAX_CONCURRENCY` 的较小值 | `1` | 否 |
-| `AGENT_BACKEND` | 现有问股 Chat 的运行方式：`auto`（推荐，保持默认模型）、`litellm` 或 `codex_app_server`（实验，仅 single-agent Chat） | `auto` | 否 |
-| `AGENT_GENERATION_BACKEND` | Agent Chat 生成后端；Web 设置页仅暴露 `auto|litellm`，手写 local CLI backend 会返回 unsupported tool-calling 诊断 | `auto` | 否 |
-| `AGENT_SKILL_CONCURRENCY` | `specialist` 模式策略专家 worker 并发上限，范围 `1-4`；最多选择 4 个策略，默认 3 个并发，第 4 个进入下一批次并共享整体超时预算 | `3` | 否 |
-| `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
-| `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
-| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |
-| `AGENT_CONTEXT_COMPRESSION_PROFILE` | 问股上下文压缩策略：`cost` / `balanced` / `long_context_raw_first` | `balanced` | 否 |
-| `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 历史 token 估算超过该值时触发压缩；留空则跟随 profile preset | - | 否 |
-| `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
-| `LITELLM_FALLBACK_MODELS` | 备选模型，逗号分隔 | - | 否 |
-| `LLM_CHANNELS` | 渠道名称列表（逗号分隔），配合 `LLM_{NAME}_*` 使用，详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) | - | 否 |
-| `LLM_HERMES_API_KEY` | Hermes reserved 本地 HTTP generation 的单一 API Key；只应来自 `.env`、运行时配置或 Secrets | - | Hermes 使用时必填 |
-| `LLM_HERMES_BASE_URL` | Hermes 本地 loopback `/v1` 地址；默认 `http://127.0.0.1:8642/v1`，不支持远程地址 | `http://127.0.0.1:8642/v1` | 否 |
-| `LLM_HERMES_MODELS` | Hermes 原始模型列表；Phase 3 默认 `hermes-agent`，运行时 route 为 `openai/hermes-agent`，不支持 Vision / stream / tools / Agent tools | `hermes-agent` | 否 |
-| `LITELLM_CONFIG` | 高级模型路由 YAML 配置文件路径（高级） | - | 否 |
-| `LLM_PROMPT_CACHE_TELEMETRY_ENABLED` | Provider prompt cache usage / diagnostics 遥测；不控制 provider implicit cache | `true` | 否 |
-| `LLM_PROMPT_CACHE_HINTS_ENABLED` | 主分析路径是否主动发送已验证的 provider-specific prompt cache hints；Agent 路径当前仅记录 diagnostics，不主动发 hints；默认关闭 | `false` | 否 |
-| `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL` | Prompt cache 诊断级别：`off` / `basic` / `debug`；basic/debug 仅在 debug 日志和测试可观察对象中提供脱敏诊断，不作为公开 Usage API 或普通设置页输出 | `off` | 否 |
-| `LLM_USAGE_HMAC_SECRET` | LLM 用量遥测 message HMAC 密钥；留空时自动使用数据目录中的本地密钥文件 | - | 否 |
-| `LLM_USAGE_HMAC_KEY_VERSION` | LLM 用量遥测 HMAC 密钥版本标签，轮换密钥时同步更新 | `local-v1` | 否 |
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC) API Key，一 Key 同时启用大模型网关和搜索 | - | 可选 |
-| `AIHUBMIX_KEY` | [AIHubmix](https://aihubmix.com/?aff=CfMq) API Key，一 Key 切换使用全系模型，无需额外配置 Base URL | - | 可选 |
-| `GEMINI_API_KEY` | Google Gemini API Key | - | 可选 |
-| `GEMINI_MODEL` | 主模型名称（legacy，`LITELLM_MODEL` 优先） | `gemini-3.1-pro-preview` | 否 |
-| `GEMINI_MODEL_FALLBACK` | 备选模型（legacy） | `gemini-3-flash-preview` | 否 |
-| `OPENAI_API_KEY` | OpenAI 兼容 API Key | - | 可选 |
-| `OPENAI_BASE_URL` | OpenAI 兼容 API 地址 | - | 可选 |
-| `OLLAMA_API_BASE` | Ollama 本地服务地址（如 `http://localhost:11434`），详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) | - | 可选 |
-| `OPENAI_MODEL` | OpenAI 模型名称（legacy，AIHubmix 用户可填如 `gemini-3.1-pro-preview`、`gpt-5.5`） | `gpt-5.5` | 可选 |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | - | 可选 |
-| `ANTHROPIC_MODEL` | Claude 模型名称 | `claude-sonnet-4-6` | 可选 |
-| `ANTHROPIC_TEMPERATURE` | Claude 温度参数（0.0-1.0） | `0.7` | 可选 |
-| `ANTHROPIC_MAX_TOKENS` | Claude 响应最大 token 数 | `8192` | 可选 |
+| `GENERATION_BACKEND` | Backend für die normale Analysegenerierung; unterstützt `litellm` oder explizit opt-in `codex_cli`/`claude_code_cli`/`opencode_cli` (experimental/limited) | `litellm` | Nein |
+| `OPENCODE_CLI_MODEL` | Optionale Modell-Überschreibung für OpenCode `--model`, wenn `GENERATION_BACKEND=opencode_cli`; leer verwendet das lokale OpenCode-Standardmodell, Authentifizierung und Modellverfügbarkeit übernimmt die lokale OpenCode-Konfiguration | leer | Nein |
+| `GENERATION_FALLBACK_BACKEND` | Backend-Fallback; nicht konfiguriert ist Standard `litellm`, leerer Wert deaktiviert, Self-Fallback wird als No-op aufgelöst | `litellm` | Nein |
+| `GENERATION_BACKEND_TIMEOUT_SECONDS` | Timeout in Sekunden für einen einzelnen Generation-Backend-Aufruf, hauptsächlich für lokale CLI-Backends; Bereich `1-3600` | `300` | Nein |
+| `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | Obergrenze für die Erfassung von stdout/stderr-Diagnose und endgültiger Antwort eines einzelnen lokalen CLI-Backend-Aufrufs; die durch `--output-last-message` wiederholt auf stdout gedruckte endgültige Antwort wird nicht erneut angerechnet; Bereich `1-33554432` | `1048576` | Nein |
+| `GENERATION_BACKEND_MAX_CONCURRENCY` | Globale Obergrenze für Generation-Backend-Nebenläufigkeit; Bereich `1-16`, ändert nicht das Verhalten von LiteLLM Router / `MAX_WORKERS` | `1` | Nein |
+| `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | Nebenläufigkeitsgrenze für lokale CLI-Backends; Bereich `1-4`, die effektive Nebenläufigkeit ist der kleinere Wert aus ihr und `GENERATION_BACKEND_MAX_CONCURRENCY` | `1` | Nein |
+| `AGENT_BACKEND` | Ausführungsmodus des bestehenden Aktienfragen-Chats: `auto` (empfohlen, behält das Standardmodell), `litellm` oder `codex_app_server` (experimentell, nur Single-Agent-Chat) | `auto` | Nein |
+| `AGENT_GENERATION_BACKEND` | Generation-Backend für Agent-Chat; die Web-Einstellungsseite legt nur `auto|litellm` offen, ein manuell eingetragenes lokales CLI-Backend liefert eine Diagnose für nicht unterstütztes Tool-Calling | `auto` | Nein |
+| `AGENT_SKILL_CONCURRENCY` | Nebenläufigkeitsgrenze für Strategie-Experten-Worker im `specialist`-Modus, Bereich `1-4`; höchstens 4 Strategien wählbar, standardmäßig 3 parallel, die 4. geht in die nächste Charge und teilt das Gesamt-Timeout-Budget | `3` | Nein |
+| `LITELLM_MODEL` | Hauptmodell, Format `provider/model` (z. B. `gemini/gemini-3.1-pro-preview`), vorzugsweise verwenden | - | Nein |
+| `AGENT_LITELLM_MODEL` | Hauptmodell für den Aktienfragen-Chat mit „Standardmodell“ (optional); leer erbt das Hauptmodell, ohne Provider-Präfix wird als `openai/<model>` aufgelöst; Codex verwendet diesen Eintrag nicht | - | Nein |
+| `AGENT_CONTEXT_COMPRESSION_ENABLED` | Schalter für die LLM-Kompression des sichtbaren Verlaufs im Aktienfragen-Chat mit „Standardmodell“; Codex verwendet die letzten 20 sichtbaren Konversationen und behält diese Konfiguration | `false` | Nein |
+| `AGENT_CONTEXT_COMPRESSION_PROFILE` | Kompressionsstrategie für den Aktienfragen-Kontext: `cost` / `balanced` / `long_context_raw_first` | `balanced` | Nein |
+| `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | Kompression wird ausgelöst, wenn die geschätzte Verlaufstoken-Zahl diesen Wert überschreitet; leer folgt dem Profile-Preset | - | Nein |
+| `AGENT_CONTEXT_PROTECTED_TURNS` | Bei der Kompression bleiben die letzten N Benutzerrunden und deren Antworten im Original erhalten; leer folgt dem Profile-Preset | - | Nein |
+| `LITELLM_FALLBACK_MODELS` | Ersatzmodelle, per Komma getrennt | - | Nein |
+| `LLM_CHANNELS` | Liste der Kanalnamen (per Komma getrennt), zusammen mit `LLM_{NAME}_*` zu verwenden, siehe [LLM-Konfigurationsleitfaden](LLM_CONFIG_GUIDE.md) | - | Nein |
+| `LLM_HERMES_API_KEY` | Einzelner API-Key für die reservierte lokale HTTP-Generierung von Hermes; nur aus `.env`, Laufzeitkonfiguration oder Secrets | - | Pflicht bei Hermes-Verwendung |
+| `LLM_HERMES_BASE_URL` | Lokale Loopback-`/v1`-Adresse von Hermes; Standard `http://127.0.0.1:8642/v1`, Remote-Adressen werden nicht unterstützt | `http://127.0.0.1:8642/v1` | Nein |
+| `LLM_HERMES_MODELS` | Liste der Rohmodelle von Hermes; Phase-3-Standard `hermes-agent`, Laufzeit-Route `openai/hermes-agent`, keine Unterstützung für Vision / Stream / Tools / Agent-Tools | `hermes-agent` | Nein |
+| `LITELLM_CONFIG` | Pfad zur YAML-Konfigurationsdatei für erweitertes Modell-Routing (erweitert) | - | Nein |
+| `LLM_PROMPT_CACHE_TELEMETRY_ENABLED` | Telemetrie für Provider-Prompt-Cache-Nutzung/-Diagnosen; steuert nicht den impliziten Provider-Cache | `true` | Nein |
+| `LLM_PROMPT_CACHE_HINTS_ENABLED` | Ob der Hauptanalysepfad aktiv verifizierte providerspezifische Prompt-Cache-Hints sendet; der Agent-Pfad protokolliert derzeit nur Diagnosen und sendet keine Hints; standardmäßig deaktiviert | `false` | Nein |
+| `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL` | Diagnosegrad für den Prompt-Cache: `off` / `basic` / `debug`; basic/debug liefern nur in Debug-Logs und testobservablen Objekten entschärfte Diagnosen, nicht als öffentliche Usage-API oder reguläre Einstellungsseitenausgabe | `off` | Nein |
+| `LLM_USAGE_HMAC_SECRET` | HMAC-Schlüssel für Nachrichten der LLM-Nutzungstelemetrie; leer wird automatisch die lokale Schlüsseldatei im Datenverzeichnis verwendet | - | Nein |
+| `LLM_USAGE_HMAC_KEY_VERSION` | Versionslabel für den HMAC-Schlüssel der LLM-Nutzungstelemetrie, bei Schlüsselrotation mit aktualisieren | `local-v1` | Nein |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC)-API-Key: Ein Key aktiviert zugleich Großmodell-Gateway und Suche | - | Optional |
+| `AIHUBMIX_KEY` | [AIHubmix](https://aihubmix.com/?aff=CfMq)-API-Key: Ein Key für die gesamte Modellfamilie, keine zusätzliche Base-URL-Konfiguration nötig | - | Optional |
+| `GEMINI_API_KEY` | Google Gemini API-Key | - | Optional |
+| `GEMINI_MODEL` | Name des Hauptmodells (legacy, `LITELLM_MODEL` hat Vorrang) | `gemini-3.1-pro-preview` | Nein |
+| `GEMINI_MODEL_FALLBACK` | Ersatzmodell (legacy) | `gemini-3-flash-preview` | Nein |
+| `OPENAI_API_KEY` | OpenAI-kompatibler API-Key | - | Optional |
+| `OPENAI_BASE_URL` | OpenAI-kompatible API-Adresse | - | Optional |
+| `OLLAMA_API_BASE` | Adresse des lokalen Ollama-Dienstes (z. B. `http://localhost:11434`), siehe [LLM-Konfigurationsleitfaden](LLM_CONFIG_GUIDE.md) | - | Optional |
+| `OPENAI_MODEL` | OpenAI-Modellname (legacy, AIHubmix-Nutzer können z. B. `gemini-3.1-pro-preview`, `gpt-5.5` eintragen) | `gpt-5.5` | Optional |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API-Key | - | Optional |
+| `ANTHROPIC_MODEL` | Claude-Modellname | `claude-sonnet-4-6` | Optional |
+| `ANTHROPIC_TEMPERATURE` | Claude-Temperaturparameter (0.0-1.0) | `0.7` | Optional |
+| `ANTHROPIC_MAX_TOKENS` | Maximale Token-Anzahl für Claude-Antworten | `8192` | Optional |
 
-> GitHub Actions 说明：仓库自带 `00-daily-analysis.yml` 在 `GENERATION_FALLBACK_BACKEND` 未配置时显式使用 `litellm`，避免未设置的 Secret/Variable 被导出为空值并意外禁用 backend fallback。若要在 Actions 中禁用 backend fallback，请将 fallback 设为 primary backend，让 resolver 走 self no-op。
+> GitHub-Actions-Hinweis: Das mitgelieferte `00-daily-analysis.yml` verwendet explizit `litellm`, wenn `GENERATION_FALLBACK_BACKEND` nicht konfiguriert ist, damit nicht gesetzte Secrets/Variables nicht als leere Werte exportiert werden und den Backend-Fallback versehentlich deaktivieren. Wenn der Backend-Fallback in Actions deaktiviert werden soll, setze den Fallback auf das primäre Backend, sodass der Resolver den Self-No-op-Weg nimmt.
 
-> 生成后端状态说明：Web 设置页的快速检查只读取已保存配置、未保存草稿，并检查本地 CLI 可执行文件是否可见，不发起真实模型请求；JSON 冒烟测试是单独的显式操作，会使用服务端固定的 JSON 提示词和 schema 发起一次真实请求。`health_status` 与 `last_error_code/message` 只表示本次状态计算或冒烟测试结果，不是历史持久健康状态。
+> Hinweis zum Generierungs-Backend-Status: Die Schnellprüfung der Web-Einstellungsseite liest nur die gespeicherte Konfiguration und ungespeicherte Entwürfe und prüft, ob die lokalen CLI-Ausführungsdateien sichtbar sind; sie löst keine echten Modellanfragen aus. Der JSON-Smoke-Test ist eine separate explizite Aktion und sendet eine echte Anfrage mit den serverseitig festgelegten JSON-Prompts und dem Schema. `health_status` und `last_error_code/message` stehen nur für das Ergebnis dieser Statusberechnung oder dieses Smoke-Tests, nicht für einen dauerhaft gesunden Zustand.
 
-> *注：`ANSPIRE_API_KEYS`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 或 `OLLAMA_API_BASE` 至少配置一个。`ANSPIRE_API_KEYS` 与 `AIHUBMIX_KEY` 无需配置 `OPENAI_BASE_URL`，系统自动适配。
+> *Hinweis: Mindestens einer von `ANSPIRE_API_KEYS`, `AIHUBMIX_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` oder `OLLAMA_API_BASE` muss konfiguriert sein. Für `ANSPIRE_API_KEYS` und `AIHUBMIX_KEY` ist keine `OPENAI_BASE_URL` nötig; das System passt sich automatisch an.
 
-> 问股 single-agent 路径会在后台为 DeepSeek V4 thinking + tool-call 保存最近 3 条 provider trace，并按原时序回放 `reasoning_content` / tool 结果；该能力不新增配置项，不进入 Web 历史 API，Claude extended thinking 仅覆盖离线 plumbing，multi-agent trace 注入留作后续增强。
+> Der Single-Agent-Pfad des Aktienfragen-Chats speichert im Hintergrund die letzten 3 Provider-Traces für DeepSeek V4 thinking + tool-call und spielt `reasoning_content`/Tool-Ergebnisse in der ursprünglichen Reihenfolge ab; diese Fähigkeit fügt keine Konfigurationsoptionen hinzu und geht nicht in die Web-Verlaufs-API ein; Claude Extended Thinking deckt nur die Offline-Plumbing ab, die Multi-Agent-Trace-Injektion bleibt eine spätere Erweiterung.
 
-> `AGENT_BACKEND=codex_app_server` 是仅作用于现有问股 Chat 的实验入口：需在运行 DSA 的设备安装并登录 Codex，Web 路径为「设置 → Agent 设置 → 问股生成方式」，选择后保持 `AGENT_ARCH=single`，并设置大于 0 的整体时限。设置页只检查配置、Codex 命令和所需协议是否允许尝试，不登录、不调用模型或读取股票数据；保存后可直接提问，第一次问题就是第一次真实执行。Codex 当前只能读取已保存的分析上下文和回测汇总；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具请改用「默认模型」。点击停止后，页面会显示“正在停止”；只有 Codex 与本轮工具任务均已退出，才显示最终“已停止”。它当前支持 macOS、Linux 和完整运行于 WSL 的 DSA 后端，暂不支持原生 Windows；Phase 2 `codex_cli` 生成能力不受影响。它不支持 Codex Multi Agent / Codex Deep Research，也不改变现有 LiteLLM Multi Agent、Deep Research、普通报告或定时任务。Codex 不是离线模型，股票问题和脱敏工具结果可能由 Codex 配置的服务处理；DSA 不读取或保存 Codex 凭据。Docker、远程服务器和 Desktop 必须分别保证其后端进程 PATH 可见 Codex。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#codex-本地-agentphase-6-实验原型)。
+> `AGENT_BACKEND=codex_app_server` ist ein experimenteller Einstieg, der nur den bestehenden Aktienfragen-Chat betrifft: Codex muss auf dem Gerät installiert und angemeldet sein, auf dem DSA läuft; der Web-Pfad ist „Einstellungen → Agent-Einstellungen → Generierungsmethode für Aktienfragen“, nach der Auswahl `AGENT_ARCH=single` beibehalten und ein Gesamtzeitlimit größer 0 setzen. Die Einstellungsseite prüft nur, ob Konfiguration, Codex-Befehl und benötigte Protokolle einen Versuch zulassen; sie loggt sich nicht ein, ruft keine Modelle auf und liest keine Aktiendaten. Nach dem Speichern kann direkt gefragt werden; die erste Frage ist die erste echte Ausführung. Codex kann derzeit nur gespeicherte Analysekontexte und Backtest-Zusammenfassungen lesen; für Echtzeit-Kurse, Nachrichten, Markt-Hotspots, Neuberechnung technischer Indikatoren, individuelle Backtest-Details und Positionswerkzeuge bitte das „Standardmodell“ verwenden. Nach Klick auf Stopp zeigt die Seite „Wird gestoppt“; erst wenn sowohl Codex als auch die Tool-Aufgaben dieser Runde beendet sind, erscheint das endgültige „Gestoppt“. Es unterstützt derzeit macOS, Linux und DSA-Backends, die vollständig in WSL laufen; natives Windows wird vorerst nicht unterstützt; die `codex_cli`-Generierungsfähigkeit von Phase 2 bleibt unberührt. Es unterstützt weder Codex Multi Agent noch Codex Deep Research und ändert auch nicht die bestehenden LiteLLM Multi Agent-, Deep-Research-, normalen Bericht- oder geplanten Task-Funktionen. Codex ist kein Offline-Modell; Aktienfragen und entschärfte Tool-Ergebnisse können von den in Codex konfigurierten Diensten verarbeitet werden; DSA liest oder speichert keine Codex-Anmeldedaten. Docker, Remote-Server und Desktop müssen jeweils sicherstellen, dass Codex im PATH ihres Backend-Prozesses sichtbar ist. Siehe [LLM-Konfigurationsleitfaden](LLM_CONFIG_GUIDE.md#codex-local-agent-phase-6-experimental-prototyp).
 
-### 通知渠道配置
+### Konfiguration der Benachrichtigungskanäle
 
-更多通知配置基线、诊断和部署场景说明见 [通知专题文档](notifications.md)。
+Weitere Basiswerte, Diagnosen und Bereitstellungsszenarien für Benachrichtigungen siehe [Benachrichtigungs-Dokument](notifications.md).
 
-| 变量名 | 说明 | 必填 |
+| Variable | Beschreibung | Pflicht |
 |--------|------|:----:|
-| `WECHAT_WEBHOOK_URL` | 企业微信机器人 Webhook URL | 可选 |
-| `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook URL | 可选 |
-| `FEISHU_WEBHOOK_SECRET` | 飞书机器人签名密钥（仅在机器人安全设置启用“签名校验”时填写） | 可选 |
-| `FEISHU_WEBHOOK_KEYWORD` | 飞书机器人关键词（仅在机器人安全设置启用“关键词”时填写） | 可选 |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 可选 |
-| `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选 |
-| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID | 可选 |
-| `DISCORD_WEBHOOK_URL` | Discord Webhook URL | 可选 |
-| `DISCORD_BOT_TOKEN` | Discord Bot Token（与 Webhook 二选一） | 可选 |
-| `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 时需要） | 可选 |
-| `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key（仅入站 Interaction/Webhook 回调验签时需要） | 可选 |
-| `DISCORD_MAX_WORDS` | Discord 单条消息 content 上限（默认 2000；运行时不会超过 Discord 2000 字符限制，长报告会自动分片并对 429 限流做有限重试） | 可选 |
-| `SLACK_BOT_TOKEN` | Slack Bot Token（推荐，支持图片上传；同时配置时优先于 Webhook） | 可选 |
-| `SLACK_CHANNEL_ID` | Slack Channel ID（使用 Bot 时需要） | 可选 |
-| `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL（仅文本，不支持图片） | 可选 |
-| `EMAIL_SENDER` | 发件人邮箱 | 可选 |
-| `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
-| `EMAIL_RECEIVERS` | 收件人邮箱（逗号分隔，留空发给自己） | 可选 |
-| `EMAIL_SENDER_NAME` | 发件人显示名称 | 可选 |
-| `STOCK_GROUP_N` / `EMAIL_GROUP_N` | 邮件分组路由（Issue #268）：`STOCK_GROUP_N` 应为 `STOCK_LIST` 子集，仅影响邮件收件人，不改变分析范围或其他通知渠道 | 可选 |
-| `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（逗号分隔） | 可选 |
-| `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook Bearer Token | 可选 |
-| `WEBHOOK_VERIFY_SSL` | 读取该配置的 webhook-style HTTPS 通知请求证书校验（默认 true）。设为 false 可支持自签名。警告：关闭有严重安全风险 | 可选 |
-| `PUSHOVER_USER_KEY` | Pushover 用户 Key | 可选 |
-| `PUSHOVER_API_TOKEN` | Pushover API Token | 可选 |
-| `NTFY_URL` | ntfy 完整 topic endpoint，必须包含 topic path，例如 `https://ntfy.sh/my-topic` | 可选 |
-| `NTFY_TOKEN` | ntfy Bearer Token（可选） | 可选 |
-| `GOTIFY_URL` | Gotify server base URL，不包含 `/message` | 可选 |
-| `GOTIFY_TOKEN` | Gotify application token，通过 `X-Gotify-Key` Header 发送 | 可选 |
-| `PUSHPLUS_TOKEN` | PushPlus Token（国内推送服务） | 可选 |
-| `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey | 可选 |
-| `ASTRBOT_URL` | AstrBot Webhook URL | 可选 |
-| `ASTRBOT_TOKEN` | AstrBot Bearer Token（可选） | 可选 |
-| `NOTIFICATION_REPORT_CHANNELS` | report 路由渠道，逗号分隔；允许值：wechat,feishu,telegram,email,pushover,ntfy,gotify,pushplus,serverchan3,custom,discord,slack,astrbot | 可选 |
-| `NOTIFICATION_ALERT_CHANNELS` | alert 路由渠道，逗号分隔；留空保持全渠道 | 可选 |
-| `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | system_error 预留路由渠道，逗号分隔；留空保持全渠道 | 可选 |
-| `NOTIFICATION_DEDUP_TTL_SECONDS` | 通知去重 TTL 秒数，`0` 关闭 | 可选 |
-| `NOTIFICATION_COOLDOWN_SECONDS` | 通知冷却秒数，`0` 关闭 | 可选 |
-| `NOTIFICATION_QUIET_HOURS` | 静默时段，格式 `HH:MM-HH:MM`，支持跨午夜 | 可选 |
-| `NOTIFICATION_TIMEZONE` | 静默时段时区，如 `Asia/Shanghai`；留空跟随 `TZ` 或系统本地时区 | 可选 |
-| `NOTIFICATION_MIN_SEVERITY` | 最低通知级别：info, warning, error, critical；留空保持现状 | 可选 |
-| `NOTIFICATION_DAILY_DIGEST_ENABLED` | 每日摘要预留开关；当前不会发送摘要 | 可选 |
+| `WECHAT_WEBHOOK_URL` | WeCom-Roboter-Webhook-URL | Optional |
+| `FEISHU_WEBHOOK_URL` | Feishu-Roboter-Webhook-URL | Optional |
+| `FEISHU_WEBHOOK_SECRET` | Feishu-Roboter-Signaturschlüssel (nur ausfüllen, wenn in den Roboter-Sicherheitseinstellungen „Signaturprüfung“ aktiviert ist) | Optional |
+| `FEISHU_WEBHOOK_KEYWORD` | Feishu-Roboter-Keyword (nur ausfüllen, wenn in den Roboter-Sicherheitseinstellungen „Keyword“ aktiviert ist) | Optional |
+| `TELEGRAM_BOT_TOKEN` | Telegram-Bot-Token | Optional |
+| `TELEGRAM_CHAT_ID` | Telegram Chat ID | Optional |
+| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram-Topic-ID | Optional |
+| `DISCORD_WEBHOOK_URL` | Discord-Webhook-URL | Optional |
+| `DISCORD_BOT_TOKEN` | Discord-Bot-Token (entweder Bot oder Webhook) | Optional |
+| `DISCORD_MAIN_CHANNEL_ID` | Discord-Kanal-ID (bei Verwendung des Bots erforderlich) | Optional |
+| `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord-Public-Key (nur zur Signaturprüfung eingehender Interaction/Webhook-Callbacks erforderlich) | Optional |
+| `DISCORD_MAX_WORDS` | Obergrenze für den Content einer einzelnen Discord-Nachricht (Standard 2000; zur Laufzeit wird die Discord-Grenze von 2000 Zeichen nicht überschritten, lange Berichte werden automatisch aufgeteilt und 429-Limits mit begrenzten Wiederholungen behandelt) | Optional |
+| `SLACK_BOT_TOKEN` | Slack-Bot-Token (empfohlen, unterstützt Bild-Upload; hat Vorrang vor dem Webhook, wenn beides konfiguriert ist) | Optional |
+| `SLACK_CHANNEL_ID` | Slack-Kanal-ID (bei Verwendung des Bots erforderlich) | Optional |
+| `SLACK_WEBHOOK_URL` | Slack-Incoming-Webhook-URL (nur Text, keine Bilder) | Optional |
+| `EMAIL_SENDER` | Absender-E-Mail | Optional |
+| `EMAIL_PASSWORD` | E-Mail-Autorisierungscode (nicht das Anmeldepasswort) | Optional |
+| `EMAIL_RECEIVERS` | Empfänger-E-Mail (per Komma getrennt; leer an sich selbst) | Optional |
+| `EMAIL_SENDER_NAME` | Anzeigename des Absenders | Optional |
+| `STOCK_GROUP_N` / `EMAIL_GROUP_N` | E-Mail-Gruppenrouting (Issue #268): `STOCK_GROUP_N` sollte eine Teilmenge von `STOCK_LIST` sein, betrifft nur die E-Mail-Empfänger, ändert nicht den Analyseumfang oder andere Benachrichtigungskanäle | Optional |
+| `CUSTOM_WEBHOOK_URLS` | Benutzerdefinierte Webhooks (per Komma getrennt) | Optional |
+| `CUSTOM_WEBHOOK_BEARER_TOKEN` | Bearer-Token für benutzerdefinierten Webhook | Optional |
+| `WEBHOOK_VERIFY_SSL` | Zertifikatsprüfung für webhook-artige HTTPS-Benachrichtigungsanfragen, die diese Konfiguration lesen (Standard true). Mit false werden selbstsignierte Zertifikate unterstützt. Warnung: Das Deaktivieren birgt ernste Sicherheitsrisiken | Optional |
+| `PUSHOVER_USER_KEY` | Pushover-Benutzerschlüssel | Optional |
+| `PUSHOVER_API_TOKEN` | Pushover-API-Token | Optional |
+| `NTFY_URL` | ntfy vollständiger Topic-Endpoint, muss den Topic-Pfad enthalten, z. B. `https://ntfy.sh/my-topic` | Optional |
+| `NTFY_TOKEN` | ntfy-Bearer-Token (optional) | Optional |
+| `GOTIFY_URL` | Gotify-Server-Basis-URL, ohne `/message` | Optional |
+| `GOTIFY_TOKEN` | Gotify-Anwendungstoken, wird über den `X-Gotify-Key`-Header gesendet | Optional |
+| `PUSHPLUS_TOKEN` | PushPlus-Token (inländischer Push-Dienst) | Optional |
+| `SERVERCHAN3_SENDKEY` | ServerChan³-Sendkey | Optional |
+| `ASTRBOT_URL` | AstrBot-Webhook-URL | Optional |
+| `ASTRBOT_TOKEN` | AstrBot-Bearer-Token (optional) | Optional |
+| `NOTIFICATION_REPORT_CHANNELS` | report-Routing-Kanäle, per Komma getrennt; erlaubte Werte: wechat,feishu,telegram,email,pushover,ntfy,gotify,pushplus,serverchan3,custom,discord,slack,astrbot | Optional |
+| `NOTIFICATION_ALERT_CHANNELS` | alert-Routing-Kanäle, per Komma getrennt; leer behält alle Kanäle | Optional |
+| `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | reservierte system_error-Routing-Kanäle, per Komma getrennt; leer behält alle Kanäle | Optional |
+| `NOTIFICATION_DEDUP_TTL_SECONDS` | TTL-Sekunden für die Benachrichtigungs-Deduplizierung, `0` deaktiviert | Optional |
+| `NOTIFICATION_COOLDOWN_SECONDS` | Benachrichtigungs-Cooldown in Sekunden, `0` deaktiviert | Optional |
+| `NOTIFICATION_QUIET_HOURS` | Stillezeitraum, Format `HH:MM-HH:MM`, unterstützt über Mitternacht | Optional |
+| `NOTIFICATION_TIMEZONE` | Zeitzone für den Stillezeitraum, z. B. `Asia/Shanghai`; leer folgt `TZ` oder der System-Zeitzone | Optional |
+| `NOTIFICATION_MIN_SEVERITY` | Mindest-Schweregrad der Benachrichtigung: info, warning, error, critical; leer behält den aktuellen Zustand | Optional |
+| `NOTIFICATION_DAILY_DIGEST_ENABLED` | reservierter Schalter für die tägliche Zusammenfassung; derzeit wird keine Zusammenfassung gesendet | Optional |
 
-> 说明：默认 `00-daily-analysis.yml` GitHub Actions workflow 只映射固定变量名，不会自动导入任意编号的 `STOCK_GROUP_N` / `EMAIL_GROUP_N`。因此分组邮箱目前仅在本地 `.env`、Docker 或其他已显式注入这些环境变量的运行环境中生效；若你要在自己的 GitHub Actions 中使用，需在 workflow 的 job `env:` 中逐组显式映射。
+> Hinweis: Der standardmäßige GitHub-Actions-Workflow `00-daily-analysis.yml` mappt nur feste Variablennamen und importiert beliebig nummerierte `STOCK_GROUP_N`/`EMAIL_GROUP_N` nicht automatisch. Daher funktioniert die Gruppen-E-Mail derzeit nur in lokalen `.env`, Docker oder anderen Laufzeitumgebungen, in denen diese Umgebungsvariablen explizit injiziert wurden; wenn du sie in deinen eigenen GitHub Actions verwenden willst, musst du sie im Job `env:` des Workflows pro Gruppe explizit mappen.
 
-#### 飞书云文档配置（可选，解决消息截断问题）
+#### Feishu-Cloud-Dokument-Konfiguration (optional, behebt das Problem abgeschnittener Nachrichten)
 
-| 变量名 | 说明 | 必填 |
+| Variable | Beschreibung | Pflicht |
 |--------|------|:----:|
-| `FEISHU_APP_ID` | 飞书应用 ID | 可选 |
-| `FEISHU_APP_SECRET` | 飞书应用 Secret | 可选 |
-| `FEISHU_FOLDER_TOKEN` | 飞书云盘文件夹 Token | 可选 |
-| `FEISHU_SEND_AS_FILE` | 飞书 App Bot 以文件形式发送报告（默认 `false`） | 可选 |
+| `FEISHU_APP_ID` | Feishu-App-ID | Optional |
+| `FEISHU_APP_SECRET` | Feishu-App-Secret | Optional |
+| `FEISHU_FOLDER_TOKEN` | Feishu-Cloud-Disk-Ordner-Token | Optional |
+| `FEISHU_SEND_AS_FILE` | Feishu-App-Bot sendet Berichte als Datei (Standard `false`) | Optional |
 
-> 飞书云文档配置步骤：
-> 1. 在 [飞书开发者后台](https://open.feishu.cn/app) 创建应用
-> 2. 配置 GitHub Secrets
-> 3. 创建群组并添加应用机器人
-> 4. 在云盘文件夹中添加群组为协作者（可管理权限）
+> Schritte zur Feishu-Cloud-Dokument-Konfiguration:
+> 1. Erstelle eine App im [Feishu-Entwicklerportal](https://open.feishu.cn/app)
+> 2. Konfiguriere die GitHub-Secrets
+> 3. Erstelle eine Gruppe und füge den App-Bot hinzu
+> 4. Füge die Gruppe im Cloud-Disk-Ordner als Mitwirkende hinzu (mit Verwaltungsberechtigung)
 >
-> 说明：`FEISHU_APP_ID` / `FEISHU_APP_SECRET` 用于飞书应用、云文档或 Stream Bot 模式，不会直接启用群 Webhook 推送。只想简单收群通知时，请优先配置 `FEISHU_WEBHOOK_URL`。
+> Hinweis: `FEISHU_APP_ID`/`FEISHU_APP_SECRET` werden für die Feishu-App, Cloud-Dokumente oder den Stream-Bot-Modus verwendet und aktivieren nicht direkt den Gruppen-Webhook-Push. Wenn du einfach nur Gruppenbenachrichtigungen erhalten möchtest, konfiguriere zuerst `FEISHU_WEBHOOK_URL`.
 >
-> 补充：若同时配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 和 `FEISHU_CHAT_ID`，则可启用飞书 App Bot 主动通知渠道，无需 Webhook 即可主动向指定 chat 或用户推送；`FEISHU_RECEIVE_ID_TYPE` 默认 `chat_id`，私聊时改为 `open_id`。该方式走飞书 OpenAPI Bot 会话，与群 Webhook 是两条独立链路。
+> Ergänzung: Wenn `FEISHU_APP_ID`, `FEISHU_APP_SECRET` und `FEISHU_CHAT_ID` zusammen konfiguriert sind, kann der aktive Benachrichtigungskanal des Feishu-App-Bots aktiviert werden, der ohne Webhook aktiv an einen bestimmten Chat oder Benutzer pusht; `FEISHU_RECEIVE_ID_TYPE` ist standardmäßig `chat_id`, für private Chats auf `open_id` ändern. Diese Methode läuft über die OpenAPI-Bot-Sitzung von Feishu und ist ein vom Gruppen-Webhook unabhängiger Pfad.
 
-### 搜索服务配置
+### Konfiguration des Suchdienstes
 
-| 变量名 | 说明 | 必填 |
+| Variable | Beschreibung | Pflicht |
 |--------|------|:----:|
-| `ANSPIRE_API_KEYS` | Anspire Open API Key（可用于搜索与大模型网关共享场景的配置示例；是否可用取决于账号权限与网关可见性，可有效增强 A 股分析效果） | 推荐 |
-| `SERPAPI_API_KEYS` | SerpAPI 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
-| `TAVILY_API_KEYS` | Tavily 搜索 API Key | 可选 |
-| `BOCHA_API_KEYS` | 博查搜索 API Key（中文优化） | 可选 |
-| `BRAVE_API_KEYS` | Brave Search API Key（美股优化） | 可选 |
-| `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search（结构化搜索结果） | 可选 |
-| `SOCIAL_SENTIMENT_API_KEY` | Stock Sentiment API Key（Reddit / X / Polymarket，可选） | 可选 |
-| `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API 地址（默认 `https://api.adanos.org`） | 可选 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
-| `NEWS_STRATEGY_PROFILE` | 新闻策略窗口档位：`ultra_short`(1天)/`short`(3天)/`medium`(7天)/`long`(30天)；实际窗口取与 `NEWS_MAX_AGE_DAYS` 的最小值 | 默认 `short` |
-| `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），搜索时限制结果在近期内 | 默认 `3` |
-| `BIAS_THRESHOLD` | 乖离率阈值（%），超过提示不追高；强势趋势股自动放宽到 1.5 倍 | 默认 `5.0` |
+| `ANSPIRE_API_KEYS` | Anspire-Open-API-Key (Konfigurationsbeispiel für Szenarien mit geteilter Suche und Großmodell-Gateway; die Verfügbarkeit hängt von Kontoberechtigungen und Gateway-Sichtbarkeit ab, kann die A-Aktien-Analyse wirkungsvoll verbessern) | Empfohlen |
+| `SERPAPI_API_KEYS` | Verstärkung der Suchmaschinenergebnisse über SerpAPI, geeignet für Echtzeit-Finanznachrichten | Empfohlen |
+| `TAVILY_API_KEYS` | Tavily-Such-API-Key | Optional |
+| `BOCHA_API_KEYS` | Bocha-Search-API-Key (für Chinesisch optimiert) | Optional |
+| `BRAVE_API_KEYS` | Brave-Search-API-Key (für US-Aktien optimiert) | Optional |
+| `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search (strukturierte Suchergebnisse) | Optional |
+| `SOCIAL_SENTIMENT_API_KEY` | Stock-Sentiment-API-Key (Reddit / X / Polymarket, optional) | Optional |
+| `SOCIAL_SENTIMENT_API_URL` | Stock-Sentiment-API-Adresse (Standard `https://api.adanos.org`) | Optional |
+| `SEARXNG_BASE_URLS` | Selbst gehostete SearXNG-Instanz (ohne Quoten-Fallback, erfordert `format: json` in settings.yml); leer erkennt automatisch öffentliche Instanzen | Optional |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Ob bei leerem `SEARXNG_BASE_URLS` automatisch öffentliche Instanzen von `searx.space` bezogen werden (Standard `true`) | Optional |
+| `NEWS_STRATEGY_PROFILE` | Nachrichtenstrategie-Fensterstufe: `ultra_short` (1 Tag)/`short` (3 Tage)/`medium` (7 Tage)/`long` (30 Tage); das tatsächliche Fenster ist der kleinere Wert mit `NEWS_MAX_AGE_DAYS` | Standard `short` |
+| `NEWS_MAX_AGE_DAYS` | Maximale Nachrichtenaktualität (Tage), begrenzt die Suchergebnisse auf den jüngsten Zeitraum | Standard `3` |
+| `BIAS_THRESHOLD` | Abweichungsschwelle (%), darüber wird vor dem Nachkaufen gewarnt; bei starken Trendaktien automatisch auf das 1,5-fache erweitert | Standard `5.0` |
 
-> 行为说明：搜索服务与社交舆情服务为可选增强链路。任一服务初始化失败时，系统会记录 warning 并降级为跳过该服务，仅影响对应环节，不会阻塞技术面主链路和主任务流。
+> Verhaltenshinweis: Der Suchdienst und der Social-Reputationsdienst sind optionale Erweiterungspfade. Schlägt die Initialisierung eines Dienstes fehl, protokolliert das System eine Warning und überspringt diesen Dienst; das betrifft nur den jeweiligen Teil und blockiert weder den Hauptpfad der technischen Analyse noch den Hauptaufgabenfluss.
 
-### 新闻检索可解释排序（Issue #1356）
+### Erklärbare Sortierung der Nachrichtenrecherche (Issue #1356)
 
-`search_stock_news` 对每条候选新闻会计算「可解释相关度」并落地为 3 类标签：
+Für jede Kandidaten-Nachricht berechnet `search_stock_news` eine „erklärbare Relevanz“ und ordnet sie einer von 3 Label-Klassen zu:
 
-- `direct_company_news`：命中目标代码、公司名（含官方/交易所来源加权）；
-- `sector_related_news`：命中行业板块语义；
-- `macro_market_news`：未命中目标主体时的宏观/市场语境新闻。
+- `direct_company_news`: Treffer auf Zielcode, Firmennamen (einschließlich Gewichtung offizieller/Börsenquellen);
+- `sector_related_news`: Treffer auf die Semantik des Branchensektors;
+- `macro_market_news`: makroökonomische/Marktkontext-Nachrichten, wenn kein Zielsubjekt getroffen wurde.
 
-排序策略为：先按类别优先级（direct > sector > macro）排序，再按语言偏好（中文优先）再按分数排序，因此当同一时窗内存在明确标的命中的新闻时会优先展示。
+Die Sortierstrategie lautet: zuerst nach Kategoriepriorität (direct > sector > macro), dann nach Sprachpräferenz (Chinesisch zuerst) und dann nach Punktzahl. Daher werden Nachrichten, die im selben Zeitfenster ein eindeutiges Ziel treffen, zuerst angezeigt.
 
-排序后还会执行一层域名无关的准入过滤：明显的下载/安装包/应用评分页、成人/招嫖服务垃圾页会被剔除；当同一批次已经存在直接标的或有分数的行业/市场候选时，`score=0` 的背景填充项不会进入 `news_context`、Agent 工具输出或历史情报缓存。该规则不内置具体网站黑名单，避免靠穷举域名维护。
+Nach der Sortierung wird zusätzlich eine domänenunabhängige Zulassungsfilterung ausgeführt: offensichtliche Download-/Installationspaket-/App-Bewertungsseiten sowie Spam-Seiten für Erwachsenendienste werden entfernt. Wenn in derselben Charge bereits ein direktes Ziel oder bewertete Branchen-/Marktkandidaten existieren, gelangen `score=0`-Hintergrundauffüller nicht in `news_context`, die Tool-Ausgabe des Agents oder den historischen Intelligenz-Cache. Diese Regel enthält keine feste Website-Blacklist, um die Wartung über Domänen-Enumeration zu vermeiden.
 
-调试入口：
+Debug-Einstieg:
 
-- 每条返回会保留 `relevance_score` / `relevance_category` / `relevance_reasons` 元数据，最终 `to_text()` 与情报上下文会附带对应「关联度」说明；
-- 搜索链路日志会输出 `[新闻相关度]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
+- Jede Rückgabe behält die Metadaten `relevance_score`/`relevance_category`/`relevance_reasons`; das finale `to_text()` und der Intelligenzkontext enthalten die entsprechende „Relevanz“-Erläuterung;
+- Das Suchpfad-Log gibt `[Nachrichtenrelevanz]`-Statistiken aus, um nachvollziehen zu können, warum diese Charge die direct/sector/macro-Schichtung ausgelöst hat.
 
-兼容与回退说明：该改动不新增/修改模型、provider、Base URL、LiteLLM route、配置清理或回写逻辑；若出现异常，只能通过回滚本次提交恢复旧排序行为，不涉及历史配置迁移。
+Kompatibilitäts- und Rückfallhinweis: Diese Änderung fügt keine Modelle, Provider, Base URLs, LiteLLM-Routen, Konfigurationsbereinigungen oder Rückschreiblogik hinzu oder ändert sie; bei Anomalien kann das alte Sortierverhalten nur durch ein Rollback dieses Commits wiederhergestellt werden; eine Migration historischer Konfigurationen ist nicht betroffen.
 
-### Futu 持仓导入配置
+### Konfiguration des Futu-Positionsimports
 
-| 变量名 | 说明 | 默认值 | 必填 |
+| Variable | Beschreibung | Standardwert | Pflicht |
 |--------|------|--------|:----:|
-| `FUTU_OPEND_HOST` | OpenD 地址；锁定的 `futu-api==10.8.6808` 仅支持 IPv4 地址或可解析到 IPv4 的主机名。跨主机连接只应使用受信网络或本机端口转发。 | `127.0.0.1` | 可选 |
-| `FUTU_OPEND_PORT` | OpenD 端口，合法范围 `1-65535`。 | `11111` | 可选 |
-| `FUTU_SECURITY_FIRM` | Futu `SecurityFirm` 枚举名；`NONE` 表示使用 SDK 官方自动识别一次，也可显式指定券商。 | `NONE` | 可选 |
-| `FUTU_ACC_ID` | 指定一个符合条件的 REAL 账户 ID；留空时合并所有状态为 `ACTIVE` 的 `NORMAL`（普通）和 `MASTER`（主）证券账户。账户 ID 应按敏感配置处理，不要提交到仓库。 | 空 | 可选 |
+| `FUTU_OPEND_HOST` | OpenD-Adresse; das gesperrte `futu-api==10.8.6808` unterstützt nur IPv4-Adressen oder Hostnamen, die zu IPv4 auflösen. Hostübergreifende Verbindungen sollten nur über vertrauenswürdige Netzwerke oder lokalen Port-Forwarding erfolgen. | `127.0.0.1` | Optional |
+| `FUTU_OPEND_PORT` | OpenD-Port, gültiger Bereich `1-65535`. | `11111` | Optional |
+| `FUTU_SECURITY_FIRM` | Name des Futu-`SecurityFirm`-Enums; `NONE` bedeutet, dass die offizielle Auto-Erkennung des SDK einmalig verwendet wird, ein Broker kann auch explizit angegeben werden. | `NONE` | Optional |
+| `FUTU_ACC_ID` | Gibt eine passende REAL-Konto-ID an; leer werden alle `NORMAL`- (normal) und `MASTER`- (Haupt) Wertpapierkonten mit Status `ACTIVE` zusammengeführt. Die Konto-ID ist als sensible Konfiguration zu behandeln und darf nicht ins Repository committet werden. | leer | Optional |
 
-`MASTER` 仅表示 Futu 的主账户角色，不表示账户具有只读属性。本集成的只读边界来自它只调用账户、持仓和证券信息查询接口，不调用交易解锁、下单、改单或撤单接口。
+`MASTER` steht nur für die Hauptkontenrolle von Futu und bedeutet keine Nur-Lese-Eigenschaft des Kontos. Die Nur-Lese-Grenze dieser Integration rührt daher, dass sie nur Abfrage-Schnittstellen für Konto, Positionen und Wertpapierinformationen aufruft, nicht aber Schnittstellen für Handelsfreischaltung, Auftragserteilung, -änderung oder -stornierung.
 
-### 数据源配置
+### Datenquellen-Konfiguration
 
-| 变量名 | 说明 | 默认值 | 必填 |
+| Variable | Beschreibung | Standardwert | Pflicht |
 |--------|------|--------|:----:|
-| `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
-| `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填 `http://` 或 `https://` 开头的完整地址 | `http://api.tushare.pro` | 可选 |
-| `TICKFLOW_API_KEY` | TickFlow API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | - | 可选 |
-| `TICKFLOW_PRIORITY` | TickFlow 日 K 数据源优先级；数字越小越早尝试，默认 `2`；未配置 API Key 时不启用；不影响实时行情，实时行情顺序由 `REALTIME_SOURCE_PRIORITY` 控制。 | `2` | 可选 |
-| `TENCENT_PRIORITY` | 腾讯直连 A 股日 K 数据源优先级；数字越小越早尝试，默认 `5`，作为 Efinance、AkShare、Tushare、TickFlow、PyTDX、Baostock 和 YFinance 之后的最终兜底；不影响实时行情。 | `5` | 可选 |
-| `TICKFLOW_KLINE_ADJUST` | TickFlow 日 K 复权模式：`none`、`forward`、`backward`、`forward_additive`、`backward_additive`。 | `none` | 可选 |
-| `TICKFLOW_BATCH_DAILY_ENABLED` | 是否启用 TickFlow 批量日 K 预取；权限不足会短期缓存失败状态，并继续走常规回退。 | `true` | 可选 |
-| `TICKFLOW_BATCH_SIZE` | TickFlow 日 K 与实时行情批量请求的单批最大标的数。 | `100` | 可选 |
-| `LONGBRIDGE_OAUTH_CLIENT_ID` | Longbridge OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | - | 可选 |
-| `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境使用 | - | 可选 |
-| `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | - | 可选 |
-| `LONGBRIDGE_APP_SECRET` | Longbridge App Secret | - | 可选 |
-| `LONGBRIDGE_ACCESS_TOKEN` | Longbridge Legacy Access Token（不是 OAuth access token） | - | 可选 |
-| `LONGBRIDGE_*`（可选） | 见官方 [环境变量](https://open.longbridge.com/zh-CN/docs/getting-started#环境变量)；另有 `LONGBRIDGE_STATIC_INFO_TTL_SECONDS` 与 `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` | - | 可选 |
-| `ENABLE_REALTIME_QUOTE` | 启用实时行情（关闭后使用历史收盘价分析） | `true` | 可选 |
-| `ENABLE_REALTIME_TECHNICAL_INDICATORS` | 盘中实时技术面：启用时用实时价计算 MA5/MA10/MA20 与多头排列（Issue #234）；关闭则用昨日收盘 | `true` | 可选 |
-| `ENABLE_CHIP_DISTRIBUTION` | 启用筹码分布分析（该接口不稳定，云端部署建议关闭）。GitHub Actions 用户需在 Repository Variables 中设置 `ENABLE_CHIP_DISTRIBUTION=true` 方可启用；workflow 默认关闭。 | `true` | 可选 |
-| `ENABLE_EASTMONEY_PATCH` | 东财接口补丁：东财接口频繁失败（如 RemoteDisconnected、连接被关闭）时建议设为 `true`，注入 NID 令牌与随机 User-Agent 以降低被限流概率 | `false` | 可选 |
-| `REALTIME_SOURCE_PRIORITY` | 实时行情源优先级，逗号分隔，例如 `tencent,akshare_sina,efinance,akshare_em`；需要显式加入 `tickflow` 才会使用 TickFlow 实时行情。 | 见 `.env.example` | 可选 |
-| `ENABLE_FUNDAMENTAL_PIPELINE` | 基本面聚合总开关；关闭时仅返回 `not_supported` 块，不改变原分析链路 | `true` | 可选 |
-| `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS` | 基本面阶段总时延预算（秒） | `8.0` | 可选 |
-| `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | 单能力源调用超时（秒）；市场结构行业/概念排行也复用该预算 | `8.0` | 可选 |
-| `FUNDAMENTAL_RETRY_MAX` | 基本面能力重试次数（含首次） | `1` | 可选 |
-| `FUNDAMENTAL_CACHE_TTL_SECONDS` | 基本面聚合缓存 TTL（秒），短缓存减轻重复拉取 | `120` | 可选 |
-| `FUNDAMENTAL_CACHE_MAX_ENTRIES` | 基本面缓存最大条目数（TTL 内按时间淘汰） | `256` | 可选 |
+| `TUSHARE_TOKEN` | Tushare Pro Token | - | Optional |
+| `TUSHARE_HTTP_URL` | Tushare-Pro-HTTP-Adresse; leer wird der offizielle Endpoint `http://api.tushare.pro` verwendet; nur bei Firmen-Proxy, grenzüberschreitendem Netzwerk oder eigenem Mirror eine vollständige `http://`- oder `https://`-Adresse angeben | `http://api.tushare.pro` | Optional |
+| `TICKFLOW_API_KEY` | TickFlow-API-Key; optional für A-Aktien-Tages-K, Echtzeit-Kurse, Aktienlisten/-namen und Markt-Rückblick-Erweiterung; bei Fehlern oder fehlenden Berechtigungen automatischer Rückfall. | - | Optional |
+| `TICKFLOW_PRIORITY` | Priorität der TickFlow-Tages-K-Datenquelle; je kleiner die Zahl, desto früher wird sie versucht, Standard `2`; ohne konfigurierten API-Key nicht aktiv; betrifft nicht die Echtzeit-Kurse, deren Reihenfolge `REALTIME_SOURCE_PRIORITY` steuert. | `2` | Optional |
+| `TENCENT_PRIORITY` | Priorität der Tencent-Direktverbindungs-A-Aktien-Tages-K-Datenquelle; je kleiner die Zahl, desto früher wird sie versucht, Standard `5`, als endgültiger Fallback nach Efinance, AkShare, Tushare, TickFlow, PyTDX, Baostock und YFinance; betrifft nicht die Echtzeit-Kurse. | `5` | Optional |
+| `TICKFLOW_KLINE_ADJUST` | Bereinigungsmodus der TickFlow-Tages-K: `none`, `forward`, `backward`, `forward_additive`, `backward_additive`. | `none` | Optional |
+| `TICKFLOW_BATCH_DAILY_ENABLED` | Ob der TickFlow-Batch-Tages-K-Vorabruf aktiviert ist; bei fehlenden Berechtigungen wird der Fehlerstatus kurz gecacht und der reguläre Fallback fortgesetzt. | `true` | Optional |
+| `TICKFLOW_BATCH_SIZE` | Maximale Anzahl von Zielen pro Charge für TickFlow-Tages-K- und Echtzeit-Batchanfragen. | `100` | Optional |
+| `LONGBRIDGE_OAUTH_CLIENT_ID` | Longbridge OAuth client_id; leer und ohne Legacy-Access-Token wird kompatibel `LONGBRIDGE_APP_KEY` verwendet | - | Optional |
+| `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | Base64-Inhalt der OAuth-Token-Cache-Datei, für headless Umgebungen wie GitHub Actions / Docker | - | Optional |
+| `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key; ohne `LONGBRIDGE_ACCESS_TOKEN` auch als kompatibles Alias für OAuth client_id nutzbar | - | Optional |
+| `LONGBRIDGE_APP_SECRET` | Longbridge App Secret | - | Optional |
+| `LONGBRIDGE_ACCESS_TOKEN` | Longbridge Legacy Access Token (kein OAuth-Access-Token) | - | Optional |
+| `LONGBRIDGE_*` (optional) | siehe offizielle [Umgebungsvariablen](https://open.longbridge.com/zh-CN/docs/getting-started#环境变量); zusätzlich `LONGBRIDGE_STATIC_INFO_TTL_SECONDS` und `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` | - | Optional |
+| `ENABLE_REALTIME_QUOTE` | Echtzeit-Kurse aktivieren (bei Deaktivierung wird mit historischen Schlusskursen analysiert) | `true` | Optional |
+| `ENABLE_REALTIME_TECHNICAL_INDICATORS` | Echtzeit-Technik während der Handelszeit: aktiviert werden MA5/MA10/MA20 und die Bullenordnung mit Echtzeitpreisen berechnet (Issue #234); deaktiviert wird der gestrige Schlusskurs verwendet | `true` | Optional |
+| `ENABLE_CHIP_DISTRIBUTION` | Chip-Verteilungsanalyse aktivieren (diese Schnittstelle ist instabil, für Cloud-Deployments empfohlen zu deaktivieren). GitHub-Actions-Nutzer müssen `ENABLE_CHIP_DISTRIBUTION=true` in den Repository Variables setzen, um sie zu aktivieren; der Workflow ist standardmäßig deaktiviert. | `true` | Optional |
+| `ENABLE_EASTMONEY_PATCH` | East-Money-Schnittstellen-Patch: Bei häufigen Fehlern der East-Money-Schnittstelle (z. B. RemoteDisconnected, Verbindung geschlossen) wird empfohlen, auf `true` zu setzen; ein NID-Token und ein zufälliger User-Agent werden injiziert, um die Wahrscheinlichkeit von Rate-Limits zu verringern | `false` | Optional |
+| `REALTIME_SOURCE_PRIORITY` | Priorität der Echtzeit-Kursquellen, per Komma getrennt, z. B. `tencent,akshare_sina,efinance,akshare_em`; `tickflow` muss explizit enthalten sein, damit TickFlow-Echtzeit-Kurse verwendet werden. | siehe `.env.example` | Optional |
+| `ENABLE_FUNDAMENTAL_PIPELINE` | Hauptschalter für die Fundamentaldaten-Aggregation; deaktiviert wird nur der `not_supported`-Block zurückgegeben, ohne die ursprüngliche Analyse-Pipeline zu ändern | `true` | Optional |
+| `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS` | Gesamt-Timeout-Budget der Fundamentaldaten-Phase (Sekunden) | `8.0` | Optional |
+| `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | Timeout für einzelne Fähigkeitsquellen-Aufrufe (Sekunden); die Branchen-/Konzept-Rankings der Marktstruktur nutzen ebenfalls dieses Budget | `8.0` | Optional |
+| `FUNDAMENTAL_RETRY_MAX` | Anzahl der Wiederholungen der Fundamentaldaten-Fähigkeiten (einschließlich des ersten Versuchs) | `1` | Optional |
+| `FUNDAMENTAL_CACHE_TTL_SECONDS` | TTL des Fundamentaldaten-Aggregationscaches (Sekunden), kurzer Cache verringert wiederholte Abrufe | `120` | Optional |
+| `FUNDAMENTAL_CACHE_MAX_ENTRIES` | Maximale Anzahl der Einträge im Fundamentaldaten-Cache (innerhalb der TTL zeitbasiert ausgeschieden) | `256` | Optional |
 
-> 行为说明：
-> - A 股：按 `valuation/growth/earnings/institution/capital_flow/dragon_tiger/boards` 聚合能力返回；
-> - ETF：返回可得项，缺失能力标记为 `not_supported`，整体不影响原流程；
-> - 美股/港股：通过 yfinance 适配器返回 `valuation/growth/earnings/belong_boards`（来源 `info.sector`/`industry`），`institution/capital_flow/dragon_tiger/boards` 暂无对应数据源仍标记 `not_supported`；yfinance 不可用或字段缺失时整体降级回 `not_supported`，仍走 fail-open；
-> - 日股/韩股：当前仅走 Yfinance 基础路径获取日线与实时行情；`institution`、`capital_flow`、`dragon_tiger`、`boards` 等依赖 A 股专属源/离岸完整版的能力会降级为 `not_supported`（详见 [市场支持与边界](market-support.md)）；
-> - 台股：在美股/港股 offshore 基础路径之外，`institution` 区块额外展示三大法人原始买卖超净额（TWSE T86 / TPEx，默认开启、fail-open，取不到数据时维持 `not_supported`）；`capital_flow`、`dragon_tiger`、`boards` 仍为 `not_supported`；
-> - 任何异常走 fail-open，仅记录错误，不影响技术面/新闻/筹码主链路。
-> - 配置 `TICKFLOW_API_KEY` 后，TickFlow 会作为可选 A 股日 K 数据源和大盘复盘增强源实例化；`TICKFLOW_PRIORITY` 只影响日 K/通用数据源回退链。实时行情优先级由 `REALTIME_SOURCE_PRIORITY` 单独控制，只有显式包含 `tickflow` 时才会使用 TickFlow 实时行情。`REALTIME_SOURCE_PRIORITY` 中排在 `tickflow` 前面的数据源会先被尝试。
-> - TickFlow 日 K 默认 `TICKFLOW_KLINE_ADJUST=none`；日线 `volume` 从手统一转为股，`amount` 保持元口径。
-> - TickFlow 日 K 区间请求会显式传入 `start_time` / `end_time` / `count`；官方 quickstart 明确说明时间范围查询仍受 `count` 限制。若返回非空但行数打满 `count` 且首个返回交易日晚于请求起始交易日，系统会判定为疑似截断，不写入缓存并让 manager 继续回退。
-> - 批量分析时，`prefetch_daily_klines()` 会在逐股 `get_daily_data()` 之前预热进程内缓存，不改变对外调用路径。
-> - TickFlow 能力按套餐权限分层：有限权限套餐仍可使用主指数查询；支持 `CN_Equity_A` 标的池查询的套餐才会启用 TickFlow 市场统计。
-> - TickFlow 可通过申万一级行业标的池与全 A 股行情生成行业涨跌排行，并优先参与市场结构行业主线 fallback；概念题材排行仍由现有 AkShare / Tushare / Efinance 链路提供。
-> - TickFlow 官方 quickstart 提供了 `quotes.get(universes=["CN_Equity_A"])` 用法，但不同 API Key 不一定拥有对应权限；批量日 K、深度和财务等能力也按权限 fail-open。
-> - TickFlow 实际返回的 `change_pct` / `amplitude` 为比例值；系统已在接入层统一转换为百分比值，确保与现有数据源字段语义一致。
-> - A 股大盘复盘报告采用盘后工作台式结构：固定包含盘面信号、指数明细、板块 Top 表、近三日市场线索、明日交易计划和风险提示；盘面信号以 `66/100（偏暖，可进攻）` 这类纯文本分数表达，避免色块进度条在不同终端显示不一致；近三日市场线索只列标题、来源和链接，不再展示搜索摘要片段；若部分数据源缺失，则保留可用区块并在对应位置降级展示。
-> - 字段契约：
->   - `fundamental_context.belong_boards` = 个股关联板块列表；A 股从 AkShare 板块名单写入，美股/港股从 yfinance `info.sector` / `info.industry` 写入，无数据时为 `[]`；
->   - `fundamental_context.boards.data` = `sector_rankings`（板块涨跌榜，结构 `{top, bottom}`，HK/US 当前不提供）；
->   - `fundamental_context.concept_boards.data` = `concept_rankings`（概念/题材涨跌榜，结构 `{top, bottom}`，当前仅 A 股提供；不可用时 fail-open 为空或缺失）；
->   - `fundamental_context.earnings.data.financial_report` = 财报摘要（报告期、营收、归母净利润、经营现金流、ROE，及 `currency` 来源 `info.financialCurrency`，HK ADR 常见为 CNY）；
->   - `fundamental_context.earnings.data.dividend` = 分红指标（仅现金分红税前口径，含 `events`、`ttm_cash_dividend_per_share`、`ttm_dividend_yield_pct`、`currency`）。`currency` 独立读取自 `info.currency`，与 `financial_report.currency` 可能不同（HK ADR 财报 CNY、分红 HKD）；TTM yield 默认按 `ttm_cash / latest_price * 100`（同币种）即时重算，仅在 TTM cash 或 latest price 缺失时回退到 yfinance `trailingAnnualDividendYield` 或 `dividendYield`；
->   - `get_stock_info.belong_boards` = 个股所属板块列表；
->   - `get_stock_info.boards` 为兼容别名，值与 `belong_boards` 相同（未来仅在大版本考虑移除）；
->   - `get_stock_info.sector_rankings` 与 `fundamental_context.boards.data` 保持一致。
->   - `AnalysisReport.details.belong_boards` = 结构化报告详情中的关联板块列表；
->   - `AnalysisReport.details.sector_rankings` = 结构化报告详情中的板块涨跌榜（用于前端板块联动展示）。
->   - `AnalysisReport.details.concept_rankings` = 结构化报告详情中的概念/题材涨跌榜（用于前端关联板块信号匹配，以及通知表格按类型区分行业/概念）。
-> - 板块涨跌榜使用数据源顺序：与全局 priority 一致。
-> - 超时控制为 `best-effort` 软超时：阶段会按预算快速降级继续执行，但不保证硬中断底层三方调用。
-> - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` 表示新增基本面阶段的目标预算，不是严格硬 SLA；Windows、Docker 或免费数据源被限流时可继续调高到 `12-15s`。
-> - 若要硬 SLA，请在后续版本升级为子进程隔离执行并在超时后强制终止。
+> Verhaltenshinweise:
+> - A-Aktien: liefert die aggregierten Fähigkeiten `valuation/growth/earnings/institution/capital_flow/dragon_tiger/boards`;
+> - ETF: gibt die verfügbaren Einträge zurück, fehlende Fähigkeiten werden als `not_supported` markiert, ohne den ursprünglichen Ablauf zu beeinflussen;
+> - US-/Hongkong-Aktien: liefert über den yfinance-Adapter `valuation/growth/earnings/belong_boards` (Quellen `info.sector`/`industry`); `institution/capital_flow/dragon_tiger/boards` haben derzeit keine entsprechende Datenquelle und bleiben `not_supported`; wenn yfinance nicht verfügbar ist oder Felder fehlen, wird insgesamt auf `not_supported` herabgestuft, weiterhin fail-open;
+> - japanische/koreanische Aktien: nutzen derzeit nur den Yfinance-Basispfad für Tageslinien und Echtzeit-Kurse; Fähigkeiten wie `institution`, `capital_flow`, `dragon_tiger`, `boards`, die auf A-Aktien-spezifischen Quellen/der vollständigen Offshore-Version beruhen, werden auf `not_supported` herabgestuft (siehe [Marktunterstützung und Grenzen](market-support.md));
+> - Taiwan-Aktien: Zusätzlich zum Offshore-Basispfad für US-/Hongkong-Aktien zeigt der `institution`-Block die Netto-Kauf-/Verkaufsbeträge der drei großen Institutionen (TWSE T86 / TPEx, standardmäßig aktiviert, fail-open, bleibt `not_supported`, wenn keine Daten verfügbar sind); `capital_flow`, `dragon_tiger`, `boards` bleiben `not_supported`;
+> - Jede Anomalie nutzt fail-open, Fehler werden nur protokolliert und beeinflussen nicht den Hauptpfad von Technik/Nachrichten/Chips.
+> - Nach der Konfiguration von `TICKFLOW_API_KEY` wird TickFlow als optionale A-Aktien-Tages-K-Datenquelle und Markt-Rückblick-Erweiterungsquelle instanziiert; `TICKFLOW_PRIORITY` betrifft nur die Tages-K-/Allgemein-Datenquellen-Fallback-Kette. Die Echtzeit-Kurspriorität wird separat von `REALTIME_SOURCE_PRIORITY` gesteuert; nur bei explizitem `tickflow` werden TickFlow-Echtzeit-Kurse verwendet. Datenquellen vor `tickflow` in `REALTIME_SOURCE_PRIORITY` werden zuerst versucht.
+> - TickFlow-Tages-K Standard `TICKFLOW_KLINE_ADJUST=none`; das Tages-`volume` wird einheitlich von Händen in Aktien umgerechnet, `amount` bleibt in Yuan (CNY).
+> - TickFlow-Tages-K-Bereichsanfragen übergeben explizit `start_time`/`end_time`/`count`; der offizielle Quickstart stellt klar, dass Zeitbereichsabfragen weiterhin durch `count` begrenzt sind. Wenn die Rückgabe nicht leer ist, aber die Zeilenzahl `count` voll ausschöpft und der erste zurückgegebene Handelstag später liegt als der angeforderte Start-Handelstag, stuft das System dies als vermutete Kürzung ein, schreibt nicht in den Cache und lässt den Manager weiter zurückfallen.
+> - Bei Batch-Analysen wärmt `prefetch_daily_klines()` den Prozess-Cache vor den einzelnen `get_daily_data()`-Aufrufen auf, ohne den externen Aufrufpfad zu ändern.
+> - TickFlow-Fähigkeiten sind nach Paketberechtigungen gestaffelt: Pakete mit begrenzten Berechtigungen können weiterhin Hauptindexabfragen nutzen; nur Pakete, die Abfragen des Zielpools `CN_Equity_A` unterstützen, aktivieren TickFlow-Marktstatistiken.
+> - TickFlow kann über den Shenwan-Erstbranchen-Zielpool und alle A-Aktien-Kurse Branchen-Auf-/Ab-Rankings erzeugen und nimmt bevorzugt am Fallback der Branchenhauptlinie der Marktstruktur teil; die Konzept-/Themen-Rankings werden weiterhin von der bestehenden AkShare-/Tushare-/Efinance-Kette geliefert.
+> - Der offizielle TickFlow-Quickstart zeigt die Verwendung von `quotes.get(universes=["CN_Equity_A"])`, aber nicht jeder API-Key hat die entsprechende Berechtigung; Batch-Tages-K, Tiefe und Finanz-Fähigkeiten sind ebenfalls berechtigungsabhängig fail-open.
+> - Die von TickFlow tatsächlich zurückgegebenen `change_pct`/`amplitude` sind Verhältniswerte; das System hat sie bereits in der Anbindungsschicht einheitlich in Prozentwerte umgerechnet, um die Semantik der bestehenden Datenquellenfelder zu gewährleisten.
+> - Der A-Aktien-Markt-Rückblickbericht verwendet eine Workbench-artige Struktur nach Börsenschluss: fest enthalten sind Markt-Signale, Index-Details, Sektor-Top-Tabelle, Markthinweise der letzten drei Tage, Handelsplan für morgen und Risikohinweise; Markt-Signale werden als reiner Text-Score wie `66/100（leicht bullish, Angriff möglich）` ausgedrückt, um uneinheitliche Darstellungen von Farbverlaufsbalken auf verschiedenen Terminals zu vermeiden; die Markthinweise der letzten drei Tage listen nur Titel, Quelle und Link, ohne Such-Snippets; wenn einige Datenquellen fehlen, bleiben die verfügbaren Blöcke erhalten und werden an den entsprechenden Stellen degradiert angezeigt.
+> - Feldkontrakt:
+>   - `fundamental_context.belong_boards` = Liste der zugehörigen Sektoren einer Aktie; bei A-Aktien aus der AkShare-Sektorliste, bei US-/Hongkong-Aktien aus yfinance `info.sector`/`info.industry`, bei fehlenden Daten `[]`;
+>   - `fundamental_context.boards.data` = `sector_rankings` (Sektor-Auf-/Ab-Ranking, Struktur `{top, bottom}`, derzeit nicht für HK/US verfügbar);
+>   - `fundamental_context.concept_boards.data` = `concept_rankings` (Konzept-/Themen-Auf-/Ab-Ranking, Struktur `{top, bottom}`, derzeit nur für A-Aktien verfügbar; bei Nichtverfügbarkeit fail-open leer oder fehlend);
+>   - `fundamental_context.earnings.data.financial_report` = Finanzbericht-Zusammenfassung (Berichtszeitraum, Umsatz, Nettoergebnis der Muttergesellschaft, operativer Cashflow, ROE, sowie `currency` aus `info.financialCurrency`, bei HK ADR üblich CNY);
+>   - `fundamental_context.earnings.data.dividend` = Dividenden-Kennzahlen (nur Bar-Dividende vor Steuern, inkl. `events`, `ttm_cash_dividend_per_share`, `ttm_dividend_yield_pct`, `currency`). `currency` wird unabhängig aus `info.currency` gelesen und kann sich von `financial_report.currency` unterscheiden (HK ADR: Finanzbericht CNY, Dividende HKD); der TTM-Yield wird standardmäßig als `ttm_cash / latest_price * 100` (gleiche Währung) sofort neu berechnet, nur wenn TTM cash oder latest price fehlen, wird auf yfinance `trailingAnnualDividendYield` oder `dividendYield` zurückgegriffen;
+>   - `get_stock_info.belong_boards` = Liste der Sektoren, zu denen die Aktie gehört;
+>   - `get_stock_info.boards` ist ein Kompatibilitäts-Alias mit demselben Wert wie `belong_boards` (eine Entfernung wird künftig nur in einer Hauptversion erwogen);
+>   - `get_stock_info.sector_rankings` bleibt konsistent mit `fundamental_context.boards.data`.
+>   - `AnalysisReport.details.belong_boards` = Liste der zugehörigen Sektoren in den Details des strukturierten Berichts;
+>   - `AnalysisReport.details.sector_rankings` = Sektor-Auf-/Ab-Ranking in den Details des strukturierten Berichts (für die verknüpfte Sektor-Anzeige im Frontend).
+>   - `AnalysisReport.details.concept_rankings` = Konzept-/Themen-Auf-/Ab-Ranking in den Details des strukturierten Berichts (für die Signalanpassung verknüpfter Sektoren im Frontend sowie die Unterscheidung von Branchen/Konzepten nach Typ in der Benachrichtigungstabelle).
+> - Das Sektor-Auf-/Ab-Ranking verwendet die Datenquellenreihenfolge: identisch zur globalen Priorität.
+> - Die Timeout-Steuerung ist ein `best-effort`-weiches Timeout: Die Phase degradiert gemäß Budget schnell und führt fort, ohne einen harten Abbruch der zugrunde liegenden Drittanbieter-Aufrufe zu garantieren.
+> - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` stellt das Zielbudget der neuen Fundamentaldaten-Phase dar, keine strikte harte SLA; unter Windows, Docker oder bei gedrosselten kostenlosen Datenquellen kann weiter auf `12-15s` erhöht werden.
+> - Für eine harte SLA bitte in späteren Versionen auf subprozess-isolierte Ausführung umstellen und nach dem Timeout gewaltsam beenden.
 
-### 其他配置
+### Weitere Konfiguration
 
-| 变量名 | 说明 | 默认值 |
+| Variable | Beschreibung | Standardwert |
 |--------|------|--------|
-| `STOCK_LIST` | 自选股代码（逗号分隔） | - |
-| `ADMIN_AUTH_ENABLED` | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password`。Web 的 `.env` 备份导入导出仅在开启该开关后可用（桌面端不受此限制）。 | `false` |
-| `TRUST_X_FORWARDED_FOR` | 单层可信反向代理部署时设为 `true`，取 `X-Forwarded-For` 最右值作为真实客户端 IP（用于登录限流等）；直连公网时保持 `false` 防伪造。多级代理/CDN 场景下限流 key 可能退化为边缘代理 IP，需额外评估 | `false` |
-| `MAX_WORKERS` | 并发线程数 | `3` |
-| `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
-| `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
-| `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(五市场)，us/jp/kr 适合仅关注单区域用户 | `cn` |
-| `MARKET_REVIEW_COLOR_SCHEME` | 大盘复盘指数涨跌颜色：`green_up`=绿涨红跌（默认），`red_up`=红涨绿跌 | `green_up` |
-| `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
-| `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
-| `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
-| `SCHEDULE_TIMES` | 多个定时执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` | 空 |
-| `LOG_DIR` | 日志目录 | `./logs` |
-| `SAVE_CONTEXT_SNAPSHOT` | 保存分析历史 `context_snapshot`；设为 `false` 时新历史不保存 enhanced_context、market_phase_summary、AnalysisContextPack overview 或诊断快照，但不关闭当次 Prompt 低敏摘要 | `true` |
+| `STOCK_LIST` | Watchlist-Codes (per Komma getrennt) | - |
+| `ADMIN_AUTH_ENABLED` | Web-Login: mit `true` wird der Passwortschutz aktiviert; beim ersten Zugriff wird das anfängliche Passwort im Web festgelegt, änderbar unter „Systemeinstellungen > Passwort ändern“; bei vergessenem Passwort `python -m src.auth reset_password` ausführen. Der Import/Export von `.env`-Backups im Web ist nur bei aktiviertem Schalter verfügbar (Desktop ist davon nicht betroffen). | `false` |
+| `TRUST_X_FORWARDED_FOR` | Bei einer einstufigen vertrauenswürdigen Reverse-Proxy-Bereitstellung auf `true` setzen; der äußerste rechte Wert von `X-Forwarded-For` wird als echte Client-IP verwendet (z. B. für Login-Rate-Limits); bei direktem öffentlichem Netz `false` beibehalten, um Fälschungen zu verhindern. In mehrstufigen Proxy-/CDN-Szenarien kann der Limit-Key auf die Edge-Proxy-IP abfallen, zusätzliche Bewertung nötig | `false` |
+| `MAX_WORKERS` | Anzahl der parallelen Threads | `3` |
+| `MARKET_REVIEW_ENABLED` | Markt-Rückblick aktivieren | `true` |
+| `DAILY_MARKET_CONTEXT_ENABLED` | Injiziert die Tagesmarkt-Umgebungszusammenfassung in den Einzelaktien-Analyse-Prompt und mildert aggressive Kaufsempfehlungen in Hochrisiko-/Rückgangsumgebungen; standardmäßig aktiviert, mit `false` kann der Markt-Rückblick weiterhin ausgeführt werden | `true` |
+| `MARKET_REVIEW_REGION` | Marktregion des Markt-Rückblicks: cn (A-Aktien), hk (Hongkong-Aktien), us (US-Aktien), jp (japanische Aktien), kr (koreanische Aktien), both (fünf Märkte); us/jp/kr eignen sich für Nutzer mit Fokus auf eine einzige Region | `cn` |
+| `MARKET_REVIEW_COLOR_SCHEME` | Farben der Index-Auf-/Ab-Bewegung im Markt-Rückblick: `green_up` = Grün steigt/Rot fällt (Standard), `red_up` = Rot steigt/Grün fällt | `green_up` |
+| `TRADING_DAY_CHECK_ENABLED` | Handelstagsprüfung: Standard `true`, an Nicht-Handelstagen wird die Ausführung übersprungen; mit `false` oder `--force-run` kann die Ausführung erzwungen werden (Issue #373) | `true` |
+| `SCHEDULE_ENABLED` | Geplante Tasks aktivieren | `false` |
+| `SCHEDULE_TIME` | Zeitpunkt der geplanten Ausführung | `18:00` |
+| `SCHEDULE_TIMES` | Mehrere Zeitpunkte der geplanten Ausführung, per Komma getrennt; leer wird `SCHEDULE_TIME` verwendet | leer |
+| `LOG_DIR` | Log-Verzeichnis | `./logs` |
+| `SAVE_CONTEXT_SNAPSHOT` | Analyseverlauf `context_snapshot` speichern; bei `false` speichert neuer Verlauf kein enhanced_context, market_phase_summary, AnalysisContextPack-Overview oder Diagnose-Snapshot, deaktiviert aber nicht die entschärfte Zusammenfassung des jeweiligen Prompts | `true` |
 
 ---
 
-## Docker 部署
+## Docker-Bereitstellung
 
-Dockerfile 使用多阶段构建，前端会在构建镜像时自动打包并内置到 `static/`。
-如需覆盖静态资源，可挂载本地 `static/` 到容器内 `/app/static`。
-运行中的 `server` 容器默认直接复用 `/app/static` 里的预构建产物，不要求容器内保留 `apps/dsa-web` 源码目录或运行时安装 `npm`；若 WebUI 无法打开，请优先确认 `/app/static/index.html` 是否存在。
+Das Dockerfile verwendet einen mehrstufigen Build; das Frontend wird beim Erstellen des Images automatisch gebündelt und in `static/` eingebettet.
+Zum Überschreiben der statischen Ressourcen kann das lokale `static/` auf `/app/static` im Container gemountet werden.
+Der laufende `server`-Container nutzt standardmäßig direkt die vorgebauten Artefakte in `/app/static`; weder muss das Quellverzeichnis `apps/dsa-web` im Container verbleiben noch `npm` zur Laufzeit installiert sein. Wenn die WebUI nicht geöffnet werden kann, prüfe zuerst, ob `/app/static/index.html` existiert.
 
-当前官方镜像发布地址：
+Aktuelle Veröffentlichungsadressen der offiziellen Images:
 
-- GHCR：`ghcr.io/zhulinsen/daily_stock_analysis:<tag>`
-- Docker Hub：`<DOCKERHUB_USERNAME>/daily_stock_analysis:<tag>`（由发布者的 `DOCKERHUB_USERNAME` secret 决定，官方发布为 `zhulinsen/daily_stock_analysis`）
+- GHCR: `ghcr.io/zhulinsen/daily_stock_analysis:<tag>`
+- Docker Hub: `<DOCKERHUB_USERNAME>/daily_stock_analysis:<tag>` (wird durch das `DOCKERHUB_USERNAME`-Secret des Veröffentlichers bestimmt, offiziell veröffentlicht als `zhulinsen/daily_stock_analysis`)
 
-### 快速启动
+### Schnellstart
 
 ```bash
-# 1. 克隆仓库
+# 1. Repository klonen
 git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
 cd daily_stock_analysis
 
-# 2. 配置环境变量
+# 2. Umgebungsvariablen konfigurieren
 cp .env.example .env
-vim .env  # 填入 API Key 和配置
+vim .env  # API-Key und Konfiguration eintragen
 
-# 3. 启动容器
-docker-compose -f ./docker/docker-compose.yml up -d server     # Web 服务模式（推荐，提供 API 与 WebUI）
-docker-compose -f ./docker/docker-compose.yml up -d analyzer   # 定时任务模式
-docker-compose -f ./docker/docker-compose.yml up -d            # 同时启动两种模式
+# 3. Container starten
+docker-compose -f ./docker/docker-compose.yml up -d server     # Web-Dienstmodus (empfohlen, bietet API und WebUI)
+docker-compose -f ./docker/docker-compose.yml up -d analyzer   # Modus für geplante Tasks
+docker-compose -f ./docker/docker-compose.yml up -d            # Beide Modi gleichzeitig starten
 
-# 4. 访问 WebUI
+# 4. WebUI aufrufen
 # http://localhost:8000
 
-# 5. 查看日志
+# 5. Logs ansehen
 docker-compose -f ./docker/docker-compose.yml logs -f server
 ```
 
-默认 Compose 为每个服务设置 `limits.memory: 1G`、`reservations.memory: 512M`。`512M` 仅建议用于轻量 Web/API、单股、低并发场景，并将 `MAX_WORKERS=1`；常规完整分析建议 `1G`，同时启动 `server + analyzer`、多股票、大盘复盘、新闻扩展、图片报告或内建选股建议 `2G+`。如果只能使用 `512M`，请避免同时启动两个服务并减少重型功能。
+Standardmäßig setzt Compose für jeden Dienst `limits.memory: 1G` und `reservations.memory: 512M`. `512M` wird nur für leichte Web-/API-, Einzelaktien- und niedrige Nebenläufigkeitsszenarien empfohlen, mit `MAX_WORKERS=1`; für reguläre vollständige Analysen wird `1G` empfohlen, bei gleichzeitigem Start von `server + analyzer`, mehreren Aktien, Markt-Rückblick, Nachrichten-Erweiterung, Bildberichten oder integrierter Aktienauswahl werden `2G+` empfohlen. Wenn nur `512M` verfügbar ist, vermeide das gleichzeitige Starten beider Dienste und reduziere schwergewichtige Funktionen.
 
-### 直接拉官方镜像运行
+### Offizielles Image direkt ziehen und ausführen
 
-如果你不打算在目标机器上保留源码，可以直接拉取官方镜像：
+Wenn du den Quellcode nicht auf der Zielmaschine behalten möchtest, kannst du das offizielle Image direkt ziehen:
 
 ```bash
-# Web/API 模式
+# Web-/API-Modus
 docker pull zhulinsen/daily_stock_analysis:latest
 docker run -d \
   --name dsa-server \
@@ -541,7 +541,7 @@ docker run -d \
   zhulinsen/daily_stock_analysis:latest \
   python main.py --serve-only --host 0.0.0.0 --port 8000
 
-# 定时任务模式
+# Modus für geplante Tasks
 docker run -d \
   --name dsa-analyzer \
   --env-file .env \
@@ -551,19 +551,19 @@ docker run -d \
   zhulinsen/daily_stock_analysis:latest
 ```
 
-如需固定版本或便于回滚，请将 `latest` 替换为具体版本 tag，例如 `v3.13.0`。
+Für eine feste Version oder einfache Rollbacks ersetze `latest` durch einen konkreten Versionstag, z. B. `v3.13.0`.
 
-### 运行模式说明
+### Erläuterung der Ausführungsmodi
 
-| 命令 | 说明 | 端口 |
+| Befehl | Beschreibung | Port |
 |------|------|------|
-| `docker-compose -f ./docker/docker-compose.yml up -d server` | Web 服务模式，提供 API 与 WebUI | 8000 |
-| `docker-compose -f ./docker/docker-compose.yml up -d analyzer` | 定时任务模式，每日自动执行 | - |
-| `docker-compose -f ./docker/docker-compose.yml up -d` | 同时启动两种模式 | 8000 |
+| `docker-compose -f ./docker/docker-compose.yml up -d server` | Web-Dienstmodus, bietet API und WebUI | 8000 |
+| `docker-compose -f ./docker/docker-compose.yml up -d analyzer` | Modus für geplante Tasks, tägliche automatische Ausführung | - |
+| `docker-compose -f ./docker/docker-compose.yml up -d` | Startet beide Modi gleichzeitig | 8000 |
 
-### Docker Compose 配置
+### Docker-Compose-Konfiguration
 
-`docker-compose.yml` 使用 YAML 锚点复用配置：
+`docker-compose.yml` nutzt YAML-Anker zur Konfigurationswiederverwendung:
 
 ```yaml
 version: '3.8'
@@ -590,12 +590,12 @@ x-common: &common
         memory: 512M
 
 services:
-  # 定时任务模式
+  # Modus für geplante Tasks
   analyzer:
     <<: *common
     container_name: stock-analyzer
 
-  # FastAPI 模式
+  # FastAPI-Modus
   server:
     <<: *common
     container_name: stock-server
@@ -604,51 +604,51 @@ services:
       - "${API_PORT:-8000}:${API_PORT:-8000}"
 ```
 
-### `.env` 与数据目录映射说明
+### Hinweise zur `.env`- und Datenverzeichnis-Zuordnung
 
-无论你使用 `docker run` 还是 Compose，都需要区分启动环境变量注入和运行时文件写入：
+Egal ob du `docker run` oder Compose verwendest, du musst zwischen der Injektion von Start-Umgebungsvariablen und dem Dateischreiben zur Laufzeit unterscheiden:
 
-- 环境变量注入：`--env-file .env` 或 Compose 的 `env_file`
-  作用：把 `.env` 中的键值作为容器启动时的环境变量传入 Python 进程。
-- 运行时配置写入：不要把宿主机 `.env` 作为单文件 bind mount 覆盖容器内 `.env` 路径。Docker 会把单文件挂载目标作为 mount point，配置保存时的 `os.replace()` 原子更新可能失败并报 `Device or resource busy`，回退写入也可能受权限限制。
+- Umgebungsvariablen-Injektion: `--env-file .env` oder Compose `env_file`
+  Wirkung: Die Schlüssel-Wert-Paare aus `.env` werden als Umgebungsvariablen beim Containerstart in den Python-Prozess übergeben.
+- Schreiben der Laufzeitkonfiguration: Mounte das Host-`.env` nicht als Single-File-Bind-Mount über den `.env`-Pfad im Container. Docker behandelt das Single-File-Mountziel als Mount-Point; die atomare Aktualisierung mit `os.replace()` beim Speichern der Konfiguration kann fehlschlagen und `Device or resource busy` melden; auch das Rückfall-Schreiben kann durch Berechtigungen eingeschränkt sein.
 
-默认 Compose 和 `docker run` 示例仅使用 `env_file` / `--env-file` 注入启动配置，不再把宿主机 `.env` 单文件挂载进容器。WebUI 设置页会在当前活跃 `.env` 文件缺少某些键时展示启动注入的同名环境变量作为兜底，避免 Docker 用户误以为配置完全未读取；但“导出 `.env`”仍只导出当前活跃配置文件内容。
+Die Standard-Compose- und `docker run`-Beispiele nutzen nur `env_file`/`--env-file` zur Injektion der Startkonfiguration und mounten das Host-`.env` nicht mehr als Single-File in den Container. Die WebUI-Einstellungsseite zeigt bei fehlenden Schlüsseln in der aktuell aktiven `.env`-Datei die gleichnamigen, beim Start injizierten Umgebungsvariablen als Fallback an, damit Docker-Nutzer nicht fälschlich glauben, die Konfiguration sei gar nicht gelesen worden; „`.env` exportieren“ exportiert jedoch weiterhin nur den Inhalt der aktuell aktiven Konfigurationsdatei.
 
-WebUI 中保存的运行时配置默认写入容器内部配置文件，不等同于回写宿主机 `.env`；删除或重建容器后仍以启动时注入的 `.env` 为准。若需要持久化运行时配置，请将写入目标放到可写数据卷中（例如通过 `ENV_FILE=/app/data/runtime.env` 指向 `data` volume 中的文件），不要使用 `.env` 单文件 bind mount。注意：如果启动时的 `env_file`、`--env-file`、`docker run -e` 或 Compose `environment:` 中仍保留同名旧值，容器重启时这些进程环境变量仍可能覆盖运行时文件中的保存值；要让 WebUI 保存值接管，请同步更新或移除启动环境中的同名覆盖。
+Die in der WebUI gespeicherte Laufzeitkonfiguration wird standardmäßig in die Konfigurationsdatei im Container geschrieben und entspricht nicht einem Rückschreiben auf das Host-`.env`; nach dem Löschen oder Neuerstellen des Containers gilt weiterhin die beim Start injizierte `.env`. Für die Persistenz der Laufzeitkonfiguration platziere das Schreibziel in einem beschreibbaren Datenvolumen (z. B. über `ENV_FILE=/app/data/runtime.env` auf eine Datei im `data`-Volume zeigen), verwende keinen Single-File-Bind-Mount für `.env`. Achtung: Wenn beim Start in `env_file`, `--env-file`, `docker run -e` oder Compose `environment:` noch gleichnamige alte Werte stehen, können diese Prozess-Umgebungsvariablen beim Container-Neustart die gespeicherten Werte in der Laufzeitdatei weiterhin überschreiben; um die in der WebUI gespeicherten Werte durchzusetzen, aktualisiere oder entferne die gleichnamigen Überschreibungen in der Startumgebung.
 
-推荐同时映射这几个目录：
+Es wird empfohlen, diese Verzeichnisse parallel zu mappen:
 
-- `./data:/app/data`：数据库、缓存和运行时数据
-- `./logs:/app/logs`：日志输出
-- `./reports:/app/reports`：生成的分析报告
-- `./strategies:/app/strategies:ro`：自定义策略 YAML（只读挂载）
+- `./data:/app/data`: Datenbank, Cache und Laufzeitdaten
+- `./logs:/app/logs`: Log-Ausgabe
+- `./reports:/app/reports`: erzeugte Analyseberichte
+- `./strategies:/app/strategies:ro`: benutzerdefinierte Strategie-YAML (schreibgeschützt gemountet)
 
-官方 Docker 镜像启动时会自动创建并修复 `/app/data`、`/app/logs`、`/app/reports` 的挂载目录权限，然后降权为容器内非 root 用户 `dsa`（UID/GID `1000:1000`）运行应用。普通 Docker / Compose 部署不需要手动 `chown` 或 `chmod` 宿主机目录。
+Beim Start des offiziellen Docker-Images werden die Mount-Verzeichnisberechtigungen von `/app/data`, `/app/logs` und `/app/reports` automatisch erstellt und repariert; anschließend wird die Anwendung als nicht-root Nutzer `dsa` (UID/GID `1000:1000`) im Container ausgeführt. Normale Docker-/Compose-Bereitstellungen benötigen kein manuelles `chown` oder `chmod` auf den Host-Verzeichnissen.
 
-如果你通过 `--user` 或 Compose `user:` 指定了其他运行用户，或使用只读挂载、rootless Docker、NFS 等限制 `chown` 的存储环境，自动修复可能无法生效。此时请确保实际运行用户对 `data`、`logs`、`reports` 具备写入权限，或改用可写卷。
+Wenn du über `--user` oder Compose `user:` einen anderen Ausführungsbenutzer angibst oder eine `chown` einschränkende Speicherumgebung wie Schreibschutz-Mounts, rootless Docker oder NFS verwendest, kann die automatische Reparatur nicht greifen. Stelle dann sicher, dass der tatsächliche Ausführungsbenutzer Schreibrechte auf `data`, `logs` und `reports` hat, oder verwende beschreibbare Volumes.
 
-如果你需要覆盖内置静态资源，还可以额外挂载：
+Wenn du die eingebauten statischen Ressourcen überschreiben möchtest, kannst du zusätzlich mounten:
 
 - `./static:/app/static:ro`
 
-### 常用命令
+### Häufige Befehle
 
 ```bash
-# 查看运行状态
+# Laufzeitstatus anzeigen
 docker-compose -f ./docker/docker-compose.yml ps
 
-# 查看日志
+# Logs anzeigen
 docker-compose -f ./docker/docker-compose.yml logs -f server
 
-# 停止服务
+# Dienst stoppen
 docker-compose -f ./docker/docker-compose.yml down
 
-# 重建镜像（代码更新后）
+# Image neu erstellen (nach Code-Updates)
 docker-compose -f ./docker/docker-compose.yml build --no-cache
 docker-compose -f ./docker/docker-compose.yml up -d server
 ```
 
-### 手动构建镜像
+### Image manuell erstellen
 
 ```bash
 docker build -f docker/Dockerfile -t stock-analysis .
@@ -665,21 +665,21 @@ docker run -d \
 
 ---
 
-## 本地运行详细配置
+## Detaillierte lokale Ausführungskonfiguration
 
-### 安装依赖
+### Abhängigkeiten installieren
 
 ```bash
-# Python 3.10+ 推荐
+# Python 3.10+ empfohlen
 pip install -r requirements.txt
 
-# 或使用 conda
+# oder conda verwenden
 conda create -n stock python=3.10
 conda activate stock
 pip install -r requirements.txt
 ```
 
-Windows PowerShell 若仍使用系统默认代码页，首次安装依赖或运行环境检查前建议先启用 UTF-8，避免第三方工具或终端输出在中文字符上失败：
+Wenn Windows PowerShell noch die systemseitige Standard-Codepage verwendet, wird empfohlen, vor der ersten Installation der Abhängigkeiten oder der Umgebungsprüfung UTF-8 zu aktivieren, damit Drittanbieter-Tools oder Terminalausgaben nicht an chinesischen Zeichen scheitern:
 
 ```powershell
 $env:PYTHONUTF8='1'
@@ -688,60 +688,60 @@ python -m pip install -r requirements.txt
 python scripts/check_env.py --config
 ```
 
-**智能导入依赖**：`pypinyin`（名称→代码拼音匹配）和 `openpyxl`（Excel .xlsx 解析）已包含在 `requirements.txt` 中，执行上述 `pip install -r requirements.txt` 时会自动安装。若使用智能导入（图片/CSV/Excel/剪贴板）功能，请确保依赖已正确安装；缺失时可能报 `ModuleNotFoundError`。
+**Abhängigkeiten für den Smart-Import**: `pypinyin` (Namens→Code-Pinyin-Abgleich) und `openpyxl` (Excel-.xlsx-Parsing) sind bereits in `requirements.txt` enthalten und werden bei der obigen `pip install -r requirements.txt` automatisch installiert. Bei Verwendung der Smart-Import-Funktion (Bild/CSV/Excel/Zwischenablage) stelle sicher, dass die Abhängigkeiten korrekt installiert sind; fehlen sie, kann ein `ModuleNotFoundError` auftreten.
 
-### 命令行参数
+### Befehlszeilenargumente
 
 ```bash
-python main.py                        # 完整分析（个股 + 大盘复盘）
-python main.py --market-review        # 仅大盘复盘
-python main.py --no-market-review     # 仅个股分析
-python main.py --stocks 600519,300750 # 指定股票
-python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
-python main.py --dry-run              # 仅获取数据，不 AI 分析
-python main.py --no-notify            # 不发送推送
-python main.py --schedule             # 定时任务模式
-python main.py --force-run            # 非交易日也强制执行（Issue #373）
-python main.py --debug                # 调试模式（详细日志）
-python main.py --workers 5            # 指定并发数
+python main.py                        # Vollständige Analyse (Einzelaktien + Markt-Rückblick)
+python main.py --market-review        # Nur Markt-Rückblick
+python main.py --no-market-review     # Nur Einzelaktienanalyse
+python main.py --stocks 600519,300750 # Bestimmte Aktien angeben
+python main.py --portfolio futu       # Futu echte LONG-Aktienpositionen verwenden (überschreibt --stocks/STOCK_LIST)
+python main.py --dry-run              # Nur Daten abrufen, keine KI-Analyse
+python main.py --no-notify            # Keine Push-Benachrichtigungen senden
+python main.py --schedule             # Modus für geplante Tasks
+python main.py --force-run            # Auch an Nicht-Handelstagen erzwungen ausführen (Issue #373)
+python main.py --debug                # Debug-Modus (detaillierte Logs)
+python main.py --workers 5            # Anzahl der parallelen Tasks angeben
 ```
 
-### Futu 真实持仓作为分析列表
+### Futu echte Positionen als Analyse-Liste
 
-标准源码安装（`pip install -r requirements.txt`）、官方 Docker 镜像和 Windows/macOS Desktop backend 已默认包含锁定的 `futu-api==10.8.6808`。仅在使用裁剪过的自定义 Python 环境时，才需要按 [Futu OpenAPI SDK 安装说明](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) 手动补装。启动并登录 Futu OpenD 后运行：
+Standard-Quellinstallation (`pip install -r requirements.txt`), offizielle Docker-Images und das Windows/macOS-Desktop-Backend enthalten bereits standardmäßig das gesperrte `futu-api==10.8.6808`. Nur bei Verwendung einer abgespeckten benutzerdefinierten Python-Umgebung muss gemäß [Futu-OpenAPI-SDK-Installationsanleitung](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) manuell nachinstalliert werden. Starte und logge dich in Futu OpenD ein und führe dann aus:
 
 ```bash
-# 仅裁剪过的自定义环境需要执行下一行
+# Nur die abgespeckte benutzerdefinierte Umgebung benötigt die nächste Zeile
 pip install "futu-api==10.8.6808"
-# 所有标准安装均可直接运行
+# Alle Standard-Installationen können direkt ausgeführt werden
 python main.py --portfolio futu
 ```
 
-`--portfolio futu` 固定读取状态明确为 `ACTIVE` 的 `REAL` 真实证券账户，并在每次分析开始前用 `refresh_cache=True` 刷新持仓；状态缺失、`N/A`、未知或 `DISABLED` 的账户一律拒绝。未设置 `FUTU_ACC_ID` 时会合并所有可用的 `NORMAL`（普通）及 `MASTER`（主）证券账户并按代码去重；设置后只读取指定的正整数账户 ID。根据 [Futu `get_acc_list` 账户角色定义](https://openapi.futunn.com/futu-api-doc/trade/get-acc-list.html)，`MASTER` 表示主账户而非只读属性，马来西亚 `IPO` 账户不属于本功能的持仓来源并会被跳过。本集成的只读边界来自它只调用查询接口。
+`--portfolio futu` liest fest die realen `REAL`-Wertpapierkonten mit eindeutigem Status `ACTIVE` und aktualisiert die Positionen vor jeder Analyse mit `refresh_cache=True`; Konten mit fehlendem Status, `N/A`, unbekanntem oder `DISABLED`-Status werden abgelehnt. Ohne `FUTU_ACC_ID` werden alle verfügbaren `NORMAL`- (normal) und `MASTER`- (Haupt) Wertpapierkonten zusammengeführt und nach Code dedupliziert; mit Setzung wird nur die angegebene positive ganzzahlige Konto-ID gelesen. Laut [Futu `get_acc_list`-Kontenrollen-Definition](https://openapi.futunn.com/futu-api-doc/trade/get-acc-list.html) steht `MASTER` für das Hauptkonto und nicht für eine Nur-Lese-Eigenschaft; malaysische `IPO`-Konten gehören nicht zu den Positionsquellen dieser Funktion und werden übersprungen. Die Nur-Lese-Grenze dieser Integration rührt daher, dass sie nur Abfrage-Schnittstellen aufruft.
 
-只有持仓方向明确为 `LONG`、Futu 静态类型为 `STOCK` 且数量非零的正股持仓会进入分析；`SHORT`、方向未知、期权、ETF、窝轮、期货等持仓会被排除。Futu 持仓代码转换仅支持沪深 A 股、港股和美股；沪深 B 股、日股及其他 Futu 市场持仓会在日志中列出代码并跳过，这不改变手工股票列表的既有市场支持边界。如果可用账户 ID 无效，或 `LONG` 持仓数量无效、非零 `LONG` 持仓代码无效、静态类型缺失 / 未知，或已确认的正股代码无法转换为当前分析格式，整次持仓导入会明确失败，不会返回静默截断的部分结果。
+Nur Aktienpositionen mit eindeutiger Richtung `LONG`, statischem Futu-Typ `STOCK` und von Null verschiedener Menge fließen in die Analyse ein; `SHORT`, unbekannte Richtungen, Optionen, ETFs, Warrants, Futures usw. werden ausgeschlossen. Die Futu-Positionscode-Konvertierung unterstützt nur A-Aktien der Börsen Shanghai/Shenzhen, Hongkong-Aktien und US-Aktien; Positionen in Shanghai/Shenzhen-B-Aktien, japanischen und anderen Futu-Märkten werden im Log mit ihrem Code aufgeführt und übersprungen, ohne die bestehende Marktunterstützungsgrenze der manuellen Aktienliste zu ändern. Wenn die verfügbare Konto-ID ungültig ist, die `LONG`-Positionsmenge ungültig ist, ein von Null verschiedener `LONG`-Positionscode ungültig ist, der statische Typ fehlt/unbekannt ist oder ein bestätigter Aktiencode nicht in das aktuelle Analyseformat konvertiert werden kann, schlägt der gesamte Positionsimport explizit fehl und liefert keine stillschweigend gekürzten Teilergebnisse zurück.
 
-OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT` 覆盖。锁定的 `futu-api==10.8.6808` 网络层使用 IPv4 socket，因此 `FUTU_OPEND_HOST` 应填写 IPv4 地址或可解析到 IPv4 的主机名，不支持 `::1` 等 IPv6 地址。在 Docker 容器中，`127.0.0.1` 指向容器自身；OpenD 运行在宿主机时，macOS / Windows 可设置 `FUTU_OPEND_HOST=host.docker.internal`，Linux 需要先为容器增加 `host.docker.internal:host-gateway` 映射后再使用该主机名。跨主机连接会传输真实账户与持仓信息；[Futu 官方建议实盘连接配置协议加密](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html)。本功能不修改进程级 SDK 加密配置，建议优先让 OpenD 与本程序同机，或使用受信网络 / 本机端口转发。未设置 `FUTU_SECURITY_FIRM` 时只使用 Futu SDK 官方的 `SecurityFirm.NONE` 自动识别一次，不会枚举多个券商或在部分探测失败后静默拼接结果；需要固定券商时可显式配置该变量。
+Die OpenD-Standardadresse ist `127.0.0.1:11111` und kann über `FUTU_OPEND_HOST`/`FUTU_OPEND_PORT` überschrieben werden. Die Netzwerkschicht des gesperrten `futu-api==10.8.6808` verwendet IPv4-Sockets, daher sollte `FUTU_OPEND_HOST` eine IPv4-Adresse oder einen zu IPv4 auflösbaren Hostnamen enthalten; IPv6-Adressen wie `::1` werden nicht unterstützt. In einem Docker-Container zeigt `127.0.0.1` auf den Container selbst; wenn OpenD auf dem Host läuft, kann unter macOS/Windows `FUTU_OPEND_HOST=host.docker.internal` gesetzt werden; unter Linux muss zuerst die Zuordnung `host.docker.internal:host-gateway` für den Container ergänzt werden, bevor dieser Hostname verwendet wird. Hostübergreifende Verbindungen übertragen echte Konto- und Positionsinformationen; [Futu empfiehlt für Live-Verbindungen die Konfiguration der Protokollverschlüsselung](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html). Diese Funktion ändert nicht die prozessweite SDK-Verschlüsselungskonfiguration; es wird empfohlen, OpenD bevorzugt auf derselben Maschine wie dieses Programm laufen zu lassen oder vertrauenswürdige Netzwerke / lokalen Port-Forwarding zu verwenden. Ohne `FUTU_SECURITY_FIRM` wird nur die offizielle `SecurityFirm.NONE`-Automatik des Futu-SDK einmalig verwendet; es werden keine mehreren Broker enumeriert oder bei teilweise fehlgeschlagener Erkennung stillschweigend Ergebnisse verknüpft; für einen festen Broker kann die Variable explizit konfiguriert werden.
 
-若同时传入 `--stocks`，Futu 持仓优先；定时模式会在每轮执行前重新读取真实持仓，而不是复用启动时快照。若没有符合条件的 Futu 持仓，本轮会跳过个股分析且不会回退到 `STOCK_LIST`；已启用的大盘复盘仍按原配置执行，大盘复盘也未请求时不会刷新股票索引或构造分析管线，已启用的自动回测仍作为独立步骤执行。单次 CLI 仅在 SDK、OpenD、账户发现、持仓读取或证券分类等持仓解析边界失败时返回非零退出码；持仓解析成功后的交易日历、分析管线和报告异常仍沿用原分析流程的记录与容错语义。已启动服务与定时调度会记录持仓导入错误并继续运行。该能力只读取账户和持仓，不执行下单、改单、撤单或交易解锁。现有分析日志会记录本轮股票代码，但不会记录账户 ID、持仓数量、成本或资金；分享运行日志前请按需脱敏。
+Wenn zugleich `--stocks` übergeben wird, haben Futu-Positionen Vorrang; der geplante Modus liest vor jeder Runde erneut die echten Positionen, statt die Snapshot vom Start wiederzuverwenden. Gibt es keine passenden Futu-Positionen, überspringt diese Runde die Einzelaktienanalyse und fällt nicht auf `STOCK_LIST` zurück; der aktivierte Markt-Rückblick wird weiterhin gemäß ursprünglicher Konfiguration ausgeführt; wenn auch kein Markt-Rückblick angefordert wird, werden Aktienindex und Analyse-Pipeline nicht aktualisiert bzw. aufgebaut, der aktivierte automatische Backtest wird weiterhin als unabhängiger Schritt ausgeführt. Eine einzelne CLI-Ausführung gibt nur dann einen von Null verschiedenen Exit-Code zurück, wenn Positions-Resolution-Grenzen wie SDK, OpenD, Kontoerkennung, Positionslesung oder Wertpapierklassifizierung fehlschlagen; nach erfolgreicher Positionsauflösung folgen Handelstagskalender-, Analyse-Pipeline- und Berichtsanomalien weiterhin der Protokollierungs- und Fehlertoleranz-Semantik des ursprünglichen Analyseablaufs. Bereits gestartete Dienste und geplante Schedules protokollieren Positionsimportfehler und laufen weiter. Diese Fähigkeit liest nur Konten und Positionen und führt keine Auftragserteilung, -änderung, -stornierung oder Handelsfreischaltung aus. Bestehende Analyse-Logs protokollieren die Aktiencodes dieser Runde, aber keine Konto-ID, Positionsmenge, Kosten oder Mittel; vor dem Teilen von Laufzeit-Logs bitte nach Bedarf entschärfen.
 
 ---
 
-## 定时任务配置
+## Konfiguration geplanter Tasks
 
-### GitHub Actions 定时
+### Zeitplanung über GitHub Actions
 
-编辑 `.github/workflows/00-daily-analysis.yml`:
+Bearbeite `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  # UTC 时间，北京时间 = UTC + 8
-  - cron: '0 10 * * 1-5'   # 周一到周五 18:00（北京时间）
+  # UTC-Zeit, Pekinger Zeit = UTC + 8
+  - cron: '0 10 * * 1-5'   # Montag bis Freitag 18:00 (Pekinger Zeit)
 ```
 
-常用时间对照：
+Gängige Zeitumrechnung:
 
-| 北京时间 | UTC cron 表达式 |
+| Pekinger Zeit | UTC-Cron-Ausdruck |
 |---------|----------------|
 | 09:30 | `'30 1 * * 1-5'` |
 | 12:00 | `'0 4 * * 1-5'` |
@@ -749,354 +749,355 @@ schedule:
 | 18:00 | `'0 10 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
 
-#### GitHub Actions 非交易日手动运行（Issue #461 / #466）
+#### Manuelle Ausführung an Nicht-Handelstagen über GitHub Actions (Issue #461 / #466)
 
-`00-daily-analysis.yml` 支持两种控制方式：
+`00-daily-analysis.yml` unterstützt zwei Steuerungsmöglichkeiten:
 
-- `TRADING_DAY_CHECK_ENABLED`：仓库级配置（`Settings → Secrets and variables → Actions`），默认 `true`
-- `workflow_dispatch.force_run`：手动触发时的单次开关，默认 `false`
+- `TRADING_DAY_CHECK_ENABLED`: Repository-weite Konfiguration (`Settings → Secrets and variables → Actions`), Standard `true`
+- `workflow_dispatch.force_run`: Einmalschalter bei manueller Auslösung, Standard `false`
 
-推荐优先级理解：
+Empfohlene Prioritäts-Sichtweise:
 
-| 配置组合 | 非交易日行为 |
+| Konfigurationskombination | Verhalten an Nicht-Handelstagen |
 |---------|-------------|
-| `TRADING_DAY_CHECK_ENABLED=true` + `force_run=false` | 跳过执行（默认行为） |
-| `TRADING_DAY_CHECK_ENABLED=true` + `force_run=true` | 本次强制执行 |
-| `TRADING_DAY_CHECK_ENABLED=false` + `force_run=false` | 始终执行（定时和手动都不检查交易日） |
-| `TRADING_DAY_CHECK_ENABLED=false` + `force_run=true` | 始终执行 |
+| `TRADING_DAY_CHECK_ENABLED=true` + `force_run=false` | Ausführung überspringen (Standardverhalten) |
+| `TRADING_DAY_CHECK_ENABLED=true` + `force_run=true` | Diese Ausführung erzwingen |
+| `TRADING_DAY_CHECK_ENABLED=false` + `force_run=false` | Immer ausführen (weder geplant noch manuell wird der Handelstag geprüft) |
+| `TRADING_DAY_CHECK_ENABLED=false` + `force_run=true` | Immer ausführen |
 
-手动触发步骤：
+Schritte zur manuellen Auslösung:
 
-1. 打开 `Actions → 每日股票分析 → Run workflow`
-2. 选择 `mode`（`full` / `market-only` / `stocks-only`）
-3. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
-4. 点击 `Run workflow`
+1. Öffne `Actions → Tägliche Aktienanalyse → Run workflow`
+2. Wähle `mode` (`full` / `market-only` / `stocks-only`)
+3. Wenn heute ein Nicht-Handelstag ist und die Ausführung dennoch gewünscht wird, setze `force_run` auf `true`
+4. Klicke auf `Run workflow`
 
-### 本地定时任务
+### Lokale geplante Tasks
 
-内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析。
+Der eingebaute Scheduler für geplante Tasks unterstützt die Ausführung der Analyse täglich zur angegebenen Zeit (Standard 18:00).
 
-#### 命令行方式
+#### Über die Befehlszeile
 
 ```bash
-# 启动定时模式（启动时立即执行一次，随后每天 18:00 执行）
+# Geplanten Modus starten (einmalige sofortige Ausführung beim Start, danach täglich um 18:00)
 python main.py --schedule
 
-# 启动定时模式（启动时不执行，仅等待下次定时触发）
+# Geplanten Modus starten (keine Ausführung beim Start, wartet nur auf die nächste geplante Auslösung)
 python main.py --schedule --no-run-immediately
 ```
 
-> 说明：定时模式每次触发前都会重新读取当前保存的 `STOCK_LIST`。如果同时传入 `--stocks`，该参数不会锁定后续计划执行的股票列表；需要临时只跑指定股票时，请使用非定时的单次运行命令。
+> Hinweis: Der geplante Modus liest vor jeder Auslösung erneut die aktuell gespeicherte `STOCK_LIST`. Wenn zugleich `--stocks` übergeben wird, sperrt dieser Parameter die künftige geplante Aktienliste nicht; für temporäre Ausführungen nur bestimmter Aktien verwende bitte den nicht geplanten Einmal-Befehl.
 >
-> 从 `python main.py --schedule` 或等价纯 CLI 调度模式启动后，WebUI 保存新的 `SCHEDULE_TIME` / `SCHEDULE_TIMES` 会在下一轮调度检查内自动重绑 daily jobs，无需重启进程；旧的执行时间不会继续保留。`python main.py --serve --schedule` 会由 Web/API runtime scheduler 接管定时任务，WebUI/API/Desktop 长运行进程保存 `SCHEDULE_ENABLED`、`SCHEDULE_TIME` 或 `SCHEDULE_TIMES` 后会按当前配置启停或重建 runtime scheduler。
+> Nach dem Start über `python main.py --schedule` oder einen gleichwertigen reinen CLI-Schedulermodus werden neue in der WebUI gespeicherte `SCHEDULE_TIME`/`SCHEDULE_TIMES` innerhalb der nächsten Schedule-Prüfung automatisch neu an die Daily-Jobs gebunden, ohne einen Prozess-Neustart; alte Ausführungszeiten bleiben nicht erhalten. `python main.py --serve --schedule` übernimmt die geplanten Tasks über den Web-/API-Runtime-Scheduler; nachdem langlaufende WebUI/API/Desktop-Prozesse `SCHEDULE_ENABLED`, `SCHEDULE_TIME` oder `SCHEDULE_TIMES` speichern, wird der Runtime-Scheduler gemäß der aktuellen Konfiguration gestartet, gestoppt oder neu aufgebaut.
 >
-> Web/API runtime scheduler 的立即执行入口只会在没有分析任务运行时接受请求；如果已有分析在执行，会返回忙碌状态而不是假装排队成功。
+> Der Sofort-Ausführungs-Einstieg des Web-/API-Runtime-Schedulers akzeptiert Anfragen nur, wenn gerade keine Analyse läuft; läuft bereits eine Analyse, wird ein Beschäftigt-Status zurückgegeben, statt vorzutäuschen, die Warteschlange hätte Erfolg.
 
-#### 环境变量方式
+#### Über Umgebungsvariablen
 
-你也可以通过环境变量配置定时行为（适用于 Docker 或 .env）：
+Du kannst das Zeitverhalten auch über Umgebungsvariablen konfigurieren (geeignet für Docker oder .env):
 
-| 变量名 | 说明 | 默认值 | 示例 |
+| Variable | Beschreibung | Standardwert | Beispiel |
 |--------|------|:-------:|:-----:|
-| `SCHEDULE_ENABLED` | 是否启用定时任务 | `false` | `true` |
-| `SCHEDULE_TIME` | 每日执行时间 (HH:MM) | `18:00` | `09:30` |
-| `SCHEDULE_TIMES` | 多个每日执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` | 空 | `09:20,12:30,15:10,18:00` |
-| `SCHEDULE_RUN_IMMEDIATELY` | 定时模式启动时是否立即运行一次；未显式设置时沿用 `RUN_IMMEDIATELY` 的运行时覆盖语义 | `true` | `false` |
-| `RUN_IMMEDIATELY` | 非定时模式启动时是否立即运行一次；同时作为未显式设置 `SCHEDULE_RUN_IMMEDIATELY` 时的 legacy 回退 | `true` | `false` |
-| `TRADING_DAY_CHECK_ENABLED` | 交易日检查：非交易日跳过执行；设为 `false` 可强制执行 | `true` | `false` |
+| `SCHEDULE_ENABLED` | Ob geplante Tasks aktiviert sind | `false` | `true` |
+| `SCHEDULE_TIME` | Tägliche Ausführungszeit (HH:MM) | `18:00` | `09:30` |
+| `SCHEDULE_TIMES` | Mehrere tägliche Ausführungszeiten, durch Kommas getrennt; wenn leer, wird `SCHEDULE_TIME` verwendet | leer | `09:20,12:30,15:10,18:00` |
+| `SCHEDULE_RUN_IMMEDIATELY` | Ob im Zeitplanmodus beim Start sofort einmal ausgeführt wird; wenn nicht explizit gesetzt, wird die Laufzeit-Override-Semantik von `RUN_IMMEDIATELY` übernommen | `true` | `false` |
+| `RUN_IMMEDIATELY` | Ob im Nicht-Zeitplanmodus beim Start sofort einmal ausgeführt wird; dient zugleich als Legacy-Fallback, wenn `SCHEDULE_RUN_IMMEDIATELY` nicht explizit gesetzt ist | `true` | `false` |
+| `TRADING_DAY_CHECK_ENABLED` | Handelstag-Prüfung: An Nicht-Handeltagen wird die Ausführung übersprungen; mit `false` kann eine Ausführung erzwungen werden | `true` | `false` |
 
-例如在 Docker 中配置：
+Zum Beispiel in Docker konfigurieren:
 
 ```bash
-# 设置启动时不立即分析
+# Start ohne sofortige Analyse konfigurieren
 docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false ...
 ```
 
-> 兼容说明：如果运行时显式传入 `RUN_IMMEDIATELY`，但没有单独传 `SCHEDULE_RUN_IMMEDIATELY`，内置调度模式会继续继承前者，避免被 `.env` 中持久化的 `SCHEDULE_RUN_IMMEDIATELY` 旧值反向覆盖。
+> Kompatibilitätshinweis: Wenn zur Laufzeit explizit `RUN_IMMEDIATELY` übergeben wird, aber kein separates `SCHEDULE_RUN_IMMEDIATELY`, übernimmt der eingebaute Zeitplanmodus weiterhin Ersteren, damit nicht ein in `.env` persistierter alter Wert von `SCHEDULE_RUN_IMMEDIATELY` überschreibend zurückwirkt.
 
-> 兼容说明（Issue #1815）：`MARKET_REVIEW_REGION=cn|hk|us|jp|kr|both` 仅扩展大盘复盘输入集合；JP/KR 仅供复盘上下文消费，不会放开 Market Light 告警。
-> - `src/config.py`、`src/core/config_registry.py`、`src/services/system_config_service.py` 的改动仅是配置语义扩展，不改 `provider`/`model`/`base_url` 的运行时路由，也不触发 provider/model/base URL 迁移或清理逻辑。
-> - 本轮实际受控配置项：`MARKET_REVIEW_REGION`、`MARKET_REVIEW_COLOR_SCHEME`；`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_BASE_URL` 等旧值保持原子 upsert 语义，不会在更新其他字段时被静默清空或覆盖。
-> - 可核验证据摘要：官方 provider / Base URL / 模型命名来源沿用 [LLM 配置指南](LLM_CONFIG_GUIDE.md#常用官方文档来源用于核对预设-provider--base-url--模型命名)，当前运行时依赖窗口沿用 `requirements.txt` 中的 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`；本轮不新增配置迁移脚本或清理分支，保存/导入仍只写本次提交键。`tests/test_system_config_service.py::SystemConfigServiceTestCase::test_update_market_review_region_does_not_trigger_runtime_model_cleanup` 覆盖只保存 `MARKET_REVIEW_REGION` 时不清空或改写 `LITELLM_CONFIG`、`LLM_CHANNELS`、`LLM_OPENAI_*`、`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_*` 等旧配置。
-> - 旧值回退策略：先恢复备份 `MARKET_REVIEW_REGION` 与配置文件即可回到旧边界，未提交的模型/路由键保留原值；必要时 `revert` PR 并按 `.env` 备份完成回退。
-> - 可回滚路径：恢复提交前 `.env` / 配置备份中的 `MARKET_REVIEW_REGION` 与相关运行时变量，或直接 revert 本 PR。
+> Kompatibilitätshinweis (Issue #1815): `MARKET_REVIEW_REGION=cn|hk|us|jp|kr|both` erweitert nur die Eingabemenge des Markt-Rückblicks; JP/KR dienen ausschließlich als Kontext für den Rückblick und aktivieren keine Market-Light-Alarme.
+> - Die Änderungen in `src/config.py`, `src/core/config_registry.py` und `src/services/system_config_service.py` sind lediglich semantische Konfigurationserweiterungen; sie verändern weder das Laufzeit-Routing von `provider`/`model`/`base_url` noch lösen sie eine Migration oder Bereinigung von provider/model/base URL aus.
+> - Kontrollierte Konfigurationselemente dieser Runde: `MARKET_REVIEW_REGION`, `MARKET_REVIEW_COLOR_SCHEME`; alte Werte wie `LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `VISION_MODEL`, `OPENAI_BASE_URL` behalten die atomare Upsert-Semantik und werden beim Aktualisieren anderer Felder nicht stillschweigend geleert oder überschrieben.
+> - Zusammenfassung der verifizierbaren Belege: Offizielle provider / Base URL / Modellnamen-Quellen folgen dem [LLM-Konfigurationsleitfaden](LLM_CONFIG_GUIDE.md#häufig-verwendete-offizielle-dokumentquellen-zur-überprüfung-von-preset-provider--base-url--modellnamen); das aktuelle Laufzeit-Abhängigkeitsfenster folgt `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` in `requirements.txt`; diese Runde fügt kein Konfigurations-Migrationsskript und keinen Bereinigungspfad hinzu, Speichern/Importieren schreibt weiterhin nur die Schlüssel dieses Commits. `tests/test_system_config_service.py::SystemConfigServiceTestCase::test_update_market_review_region_does_not_trigger_runtime_model_cleanup` deckt ab, dass beim nur-Speichern von `MARKET_REVIEW_REGION` alte Konfigurationen wie `LITELLM_CONFIG`, `LLM_CHANNELS`, `LLM_OPENAI_*`, `LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `VISION_MODEL`, `OPENAI_*` weder geleert noch umgeschrieben werden.
+> - Rückfallstrategie für alte Werte: Durch Wiederherstellung des Backups von `MARKET_REVIEW_REGION` und der Konfigurationsdatei kehrt man zur alten Grenze zurück; nicht übertragene Modell-/Routing-Schlüssel behalten ihre ursprünglichen Werte; bei Bedarf den PR `revert` und gemäß `.env`-Backup den Rückfall durchführen.
+> - Rollback-Pfad: Vor dem Commit gesicherte `MARKET_REVIEW_REGION` und zugehörige Laufzeitvariablen aus `.env` / Konfigurations-Backups wiederherstellen oder direkt diesen PR revertieren.
 
-#### 交易日判断（Issue #373）
+#### Handelstag-Erkennung (Issue #373)
 
-默认根据自选股市场（A 股 / 港股 / 美股 / 日股 / 韩股）和 `MARKET_REVIEW_REGION` 判断是否为交易日：
-- 使用 `exchange-calendars` 区分 A 股 / 港股 / 美股 / 日股 / 韩股各自的交易日历（含节假日）
-- 混合持仓时，每只股票只在其市场开市日分析，休市股票当日跳过
-- 全部相关市场均为非交易日时，整体跳过执行（不启动 pipeline、不发推送）
-- 断点续传和 `--dry-run` 的“数据已存在”判断共用同一套“最新可复用交易日”解析逻辑，不再直接使用服务器自然日
-- `最新可复用交易日` 会按股票所属市场的本地时区解析：A 股使用 `Asia/Shanghai`，港股使用 `Asia/Hong_Kong`，美股使用 `America/New_York`，日股使用 `Asia/Tokyo`，韩股使用 `Asia/Seoul`
-- 非交易日（周末 / 节假日）运行时，会回退到最近一个交易日检查本地数据；若该交易日数据已存在，则跳过重复抓取，否则继续补数
-- 交易日盘中或收盘前运行时，会以上一个已完成交易日作为复用目标；交易日收盘后运行时，当日数据已存在则可直接跳过，不存在则继续抓取
-- 覆盖方式：`TRADING_DAY_CHECK_ENABLED=false` 或 命令行 `--force-run`
+Standardmäßig wird anhand der Watchlist-Märkte (A-Aktien / Hongkong-Aktien / US-Aktien / japanische Aktien / koreanische Aktien) und `MARKET_REVIEW_REGION` bestimmt, ob es sich um einen Handelstag handelt:
+- `exchange-calendars` wird verwendet, um die jeweiligen Handelskalender (inkl. Feiertage) von A-Aktien / Hongkong-Aktien / US-Aktien / japanischen Aktien / koreanischen Aktien zu unterscheiden
+- Bei gemischten Positionen wird jede Aktie nur an Marktöffnungstagen ihres Marktes analysiert; Aktien ruhender Märkte werden an diesem Tag übersprungen
+- Sind alle relevanten Märkte Nicht-Handelstage, wird die Ausführung insgesamt übersprungen (keine Pipeline, keine Push-Benachrichtigung)
+- Die "Daten bereits vorhanden"-Prüfung von Fortsetzungsunterstützung und `--dry-run` nutzt dieselbe Logik zur Auflösung des "zuletzt wiederverwendbaren Handelstags" und verwendet nicht mehr direkt den Server-Kalendertag
+- Der `zuletzt wiederverwendbare Handelstag` wird in der lokalen Zeitzone des jeweiligen Aktienmarktes aufgelöst: A-Aktien verwenden `Asia/Shanghai`, Hongkong-Aktien `Asia/Hong_Kong`, US-Aktien `America/New_York`, japanische Aktien `Asia/Tokyo`, koreanische Aktien `Asia/Seoul`
+- Bei Ausführung an Nicht-Handelstagen (Wochenende / Feiertage) wird auf den zuletzt abgeschlossenen Handelstag für die lokale Datenprüfung zurückgegriffen; sind die Daten dieses Handelstags bereits vorhanden, wird das erneute Abrufen übersprungen, andernfalls wird nachgeladen
+- Bei Ausführung während der Handelszeit oder vor Handelsschluss wird der zuletzt abgeschlossene Handelstag als Wiederverwendungsziel verwendet; bei Ausführung nach Handelsschluss werden die Daten des Tages direkt übersprungen, wenn sie bereits vorhanden sind, andernfalls wird abgerufen
+- Überschreiben: `TRADING_DAY_CHECK_ENABLED=false` oder Kommandozeilen-Flag `--force-run`
 
-#### 市场阶段基线（Issue #1386 P0）
+#### Marktphasen-Baseline (Issue #1386 P0)
 
-P0 只新增内部市场阶段推断基线，不改变现有每日收盘报告、交易日跳过、断点续传、API、Web、Bot、Agent 或 GitHub Actions 默认行为。阶段推断用于后续 P1+ 的上下文契约准备；未安装 `exchange-calendars` 或日历异常时，阶段返回 `unknown`，但现有交易日判断和最新可复用交易日逻辑仍保持原来的 fail-open 行为。
+P0 fügt lediglich eine interne Baseline zur Marktphasen-Erkennung hinzu und verändert nicht das Standardverhalten des bestehenden täglichen Abschlussberichts, des Handelstag-Skippings, der Fortsetzungsunterstützung, der API, des Web, des Bots, des Agents oder der GitHub Actions. Die Phasen-Erkennung dient der Vorbereitung des Kontextvertrags für spätere P1+; wenn `exchange-calendars` nicht installiert ist oder der Kalender fehlerhaft ist, gibt die Phase `unknown` zurück, während die bestehende Handelstag-Erkennung und die Logik des zuletzt wiederverwendbaren Handelstags weiterhin ihr bisheriges fail-open-Verhalten behalten.
 
-阶段枚举基于 regular session 语义：
+Die Phasen-Enumeration basiert auf der Semantik der regulären Sitzung:
 
-| 阶段 | 含义 |
+| Phase | Bedeutung |
 | --- | --- |
-| `premarket` | 常规交易时段开盘前；不代表已经获取盘前扩展时段行情 |
-| `intraday` | 常规交易时段内，且不处于午休或临近收盘窗口 |
-| `lunch_break` | 市场日历提供的午间休市窗口；无午休市场不会进入此阶段 |
-| `closing_auction` | 临近收盘启发式窗口：A 股 3 分钟、港股 10 分钟、美股 5 分钟、台股 5 分钟（13:25–13:30）；不代表完整交易所竞价制度 |
-| `postmarket` | 常规交易时段收盘后；不代表已经获取盘后扩展时段行情 |
-| `non_trading` | 当前市场本地日期不是交易日 |
-| `unknown` | 未知市场、日历不可用或日历异常，无法可靠推断阶段 |
+| `premarket` | Vor Beginn der regulären Handelszeit; bedeutet nicht, dass bereits erweiterte vorbörsliche Kursdaten abgerufen wurden |
+| `intraday` | Innerhalb der regulären Handelszeit und nicht in der Mittagspause oder im Fenster kurz vor Handelsschluss |
+| `lunch_break` | Vom Marktkalender bereitgestelltes Mittagspausen-Fenster; Märkte ohne Mittagspause treten nicht in diese Phase ein |
+| `closing_auction` | Heuristik-Fenster kurz vor Handelsschluss: A-Aktien 3 Minuten, Hongkong-Aktien 10 Minuten, US-Aktien 5 Minuten, taiwanische Aktien 5 Minuten (13:25–13:30); stellt nicht das vollständige Börsenauktionssystem dar |
+| `postmarket` | Nach Schluss der regulären Handelszeit; bedeutet nicht, dass bereits erweiterte nachbörsliche Kursdaten abgerufen wurden |
+| `non_trading` | Das lokale Datum des aktuellen Marktes ist kein Handelstag |
+| `unknown` | Unbekannter Markt, Kalender nicht verfügbar oder Kalenderfehler; die Phase kann nicht zuverlässig bestimmt werden |
 
-当前入口现状：
+Aktueller Stand der Einstiegspunkte:
 
-- 普通个股分析、Agent 分析、Web 手动分析、Bot `/analyze` / `/ask`、schedule、GitHub Actions 仍沿用既有分析路径和盘后复盘口径，不会因为 P0 阶段基线自动切换 Prompt 或输出结构。
-- 大盘复盘仍按 `MARKET_REVIEW_REGION` 与交易日过滤运行，不消费市场阶段标签。
-- 跨市场混合自选股应按每个 symbol 自身市场分别推断阶段；聚合报告展示“多市场阶段不一致”留给 P1+。
+- Gewöhnliche Einzelaktienanalyse, Agent-Analyse, manuelle Web-Analyse, Bot `/analyze` / `/ask`, Schedule und GitHub Actions verwenden weiterhin die bisherigen Analysepfade und die Rückblick-Ausrichtung nach Handelsschluss; durch die P0-Phasen-Baseline wird kein Prompt oder Ausgabestruktur automatisch umgestellt.
+- Der Markt-Rückblick läuft weiterhin gemäß `MARKET_REVIEW_REGION` und der Filterung auf Handelstage und konsumiert keine Marktphasen-Labels.
+- Bei gemischten Märkten in der Watchlist sollte die Phase pro Symbol nach dessen eigenem Markt bestimmt werden; die Anzeige von "inkonsistente Marktphasen" in aggregierten Berichten bleibt P1+ überlassen.
 
-已知问题基线：
+Bekannte Problem-Baseline:
 
-- 盘中触发时，报告仍可能把尚未收盘的日内行情写成完整交易日复盘。
-- 输出仍可能偏向“今日走势复盘 / 明日关注”，而不是“当前盘中下一步观察”。
-- 实时行情时间戳、数据源、缓存和 stale 状态还没有统一进入阶段上下文。
-- 午间休市、临近收盘、非交易日强制运行等场景还没有被 Prompt 和报告结构显式表达。
+- Bei Auslösung während der Handelszeit könnte der Bericht die noch nicht abgeschlossenen Intraday-Kurse weiterhin als vollständigen Handelstags-Rückblick darstellen.
+- Die Ausgabe neigt weiterhin zu "Rückblick des heutigen Verlaufs / Fokus auf morgen" statt "nächste Beobachtung des aktuellen Intraday-Verlaufs".
+- Echtzeit-Kurszeitstempel, Datenquellen, Cache und Stale-Status sind noch nicht einheitlich in den Phasenkontext eingegangen.
+- Szenarien wie Mittagspause, kurz vor Handelsschluss und erzwungene Ausführung an Nicht-Handelstagen sind noch nicht explizit durch Prompt und Berichtsstruktur ausgedrückt.
 
-P0 不做：不接入 pipeline / Agent / API / Web / Bot，不修改报告 schema，不改告警 technical indicator 的 partial bar 判断，也不新增配置项。
+P0 macht nicht: keine Anbindung an Pipeline / Agent / API / Web / Bot, keine Änderung des Report-Schemas, keine Änderung der partial-bar-Bewertung von Technical-Indicator-Alarmen und keine neuen Konfigurationsoptionen.
 
-#### 运行态市场阶段上下文（Issue #1386 P1a）
+#### Laufzeit-Marktphasenkontext (Issue #1386 P1a)
 
-P1a 在普通个股分析 pipeline、legacy Agent context 和 multi-agent `ctx.meta` 中构造并传递内部 `market_phase_context`。该上下文包含市场、阶段、市场本地日期、最新可复用日线日期、交易日/开市/partial bar 三态标记、开收盘分钟数 best-effort 估算，以及 `unknown_market`、`calendar_unavailable`、`calendar_error` 等降级 warning code。
+P1a konstruiert und übergibt einen internen `market_phase_context` in der gewöhnlichen Einzelaktienanalyse-Pipeline, im Legacy-Agent-Kontext und in `ctx.meta` des Multi-Agent-Systems. Dieser Kontext enthält Markt, Phase, lokales Marktdatum, zuletzt wiederverwendbares Tagesdaten-Datum, die dreistufigen Markierungen Handelstag / Markt geöffnet / partial bar, eine best-effort-Schätzung der Minuten bis Eröffnung/Schluss sowie Degradierungs-Warncodes wie `unknown_market`, `calendar_unavailable` und `calendar_error`.
 
-P1a 本身不改变 Prompt 文案、API/Web/Bot 参数、报告结构、history/task status 稳定 metadata 或 quote freshness/data quality 语义；普通分析 history snapshot 和 Agent history snapshot 会剥离该运行态字段。后续 P1b 再定义可持久化 metadata 与任务状态展示契约。
+P1a selbst ändert keine Prompt-Texte, API/Web/Bot-Parameter, Reportstrukturen, stabile Metadaten von history/task status oder die Semantik von quote freshness/data quality; der History-Snapshot der gewöhnlichen Analyse und der Agent-History-Snapshot entfernen dieses Laufzeitfeld. Später definiert P1b den Vertrag für persistierbare Metadaten und die Anzeige des Task-Status.
 
-#### 市场阶段低敏 Metadata（Issue #1386 P1b）
+#### Marktphasen-Metadaten mit niedriger Sensibilität (Issue #1386 P1b)
 
-P1b 将 P1a 的 runtime `market_phase_context` 投影为稳定、低敏、可公开的 `market_phase_summary`，并写入 `analysis_history.context_snapshot` 顶层。历史详情、同步分析响应和 completed `/api/v1/analysis/status/{task_id}` 都通过 `report.meta.market_phase_summary` 返回同一份市场阶段元信息；completed 任务状态不新增 `TaskStatus` 顶层字段，只通过 `status.result.report.meta.market_phase_summary` 间接暴露。
+P1b projiziert den Laufzeit-`market_phase_context` von P1a auf eine stabile, niedrigsensible, öffentlich verfügbare `market_phase_summary` und schreibt sie auf die oberste Ebene von `analysis_history.context_snapshot`. Historie-Details, synchrone Analyseantworten und abgeschlossene `/api/v1/analysis/status/{task_id}` geben dieselbe Marktphasen-Metainformation über `report.meta.market_phase_summary` zurück; der abgeschlossene Task-Status erhält kein neues Feld auf `TaskStatus`-Top-Level, sondern legt es nur indirekt über `status.result.report.meta.market_phase_summary` offen.
 
-`market_phase_summary` 只包含市场、阶段、市场本地时间、session date、effective daily-bar date、交易日/开市/partial-bar 标记、开收盘分钟数、触发来源、分析意图和 warning code。它不暴露完整 `market_phase_context`，也不加入 quote freshness、fallback、stale 或 data_quality scoring 字段。`report.details.analysis_context_pack_overview` 仍表示 #1389 输入数据块质量摘要；API 返回的 `details.context_snapshot` 会剥离顶层 `market_phase_summary` 和 `analysis_context_pack_overview`，避免 raw snapshot 重复展示这些稳定公开字段。`SAVE_CONTEXT_SNAPSHOT=false` 时不持久化整份 `analysis_history.context_snapshot`，旧历史记录缺少 summary 时字段为空，报告仍正常返回。
+`market_phase_summary` enthält nur Markt, Phase, lokale Marktzeit, session date, effective daily-bar date, die Markierungen Handelstag / Markt geöffnet / partial-bar, Minuten bis Eröffnung/Schluss, Auslösequelle, Analyseabsicht und Warncodes. Es legt weder den vollständigen `market_phase_context` offen noch fügt es Felder wie quote freshness, fallback, stale oder data_quality scoring hinzu. `report.details.analysis_context_pack_overview` beschreibt weiterhin die Qualitätszusammenfassung der Eingabedatenblöcke aus #1389; das von der API zurückgegebene `details.context_snapshot` entfernt die Top-Level-Felder `market_phase_summary` und `analysis_context_pack_overview`, damit der Roh-Snapshot diese stabilen öffentlichen Felder nicht doppelt anzeigt. Bei `SAVE_CONTEXT_SNAPSHOT=false` wird nicht die gesamte `analysis_history.context_snapshot` persistiert; fehlt der Summary bei alten History-Einträgen, ist das Feld leer, und der Bericht wird weiterhin normal zurückgegeben.
 
-P1b 不改 Prompt、不新增 `analysis_phase` 请求参数、不做 Web 阶段标签或页面展示，也不覆盖 pending/processing TaskPanel、SSE 进行中事件、Bot、通知、`market_review` 或 P3 盘中数据质量字段。
+P1b ändert keine Prompts, fügt keinen `analysis_phase`-Anfrageparameter hinzu, macht keine Web-Phasenlabels oder Seitenanzeigen und überschreibt weder das TaskPanel für pending/processing noch laufende SSE-Ereignisse, den Bot, Benachrichtigungen, `market_review` oder die Intraday-Datenqualitätsfelder aus P3.
 
-#### 市场阶段 Prompt 注入（Issue #1386 P2-min）
+#### Marktphasen-Prompt-Injektion (Issue #1386 P2-min)
 
-P2-min 开始在已获得 `market_phase_context` 的分析路径中，把运行态市场阶段渲染为 LLM 可读的 Prompt 区块。普通分析、single Agent 和 multi-agent 会在 Prompt 中看到当前阶段、市场本地时间、最新可复用完整日线日期以及最小阶段约束：盘前不得描述“今日走势已经发生”，盘中 / 午间 / 临近收盘需说明最后一根日线可能未完成，盘后保留完整交易日复盘语义，非交易日或未知阶段保持保守表述。
+P2-min beginnt damit, in Analysepfaden, die bereits `market_phase_context` erhalten haben, die Laufzeit-Marktphase als LLM-lesbaren Prompt-Block zu rendern. Gewöhnliche Analyse, single Agent und multi-agent sehen im Prompt die aktuelle Phase, die lokale Marktzeit, das zuletzt wiederverwendbare vollständige Tagesdaten-Datum sowie die minimalen Phaseneinschränkungen: Vorbörslich darf "der heutige Verlauf ist bereits erfolgt" nicht beschrieben werden; während der Handelszeit / Mittagspause / kurz vor Schluss muss angegeben werden, dass die letzte Tageskerze möglicherweise unvollständig ist; nach Börsenschluss bleibt die vollständige Handelstags-Rückblick-Semantik erhalten; bei Nicht-Handelstagen oder unbekannter Phase wird konservativ formuliert.
 
-P2-min 仍不新增 API/Web/Bot 参数，不写入 history/task status/report metadata，不改变报告 JSON schema，也不引入完整 quote freshness、fallback、stale 或 data_quality 契约。Bot/API 直连 Agent 若未经过 P1a pipeline 构建 `market_phase_context`，仍保持旧行为；入口透传和可见展示留给后续 P4+。
+P2-min fügt weiterhin keine API/Web/Bot-Parameter hinzu, schreibt nichts in history/task status/report metadata, ändert das JSON-Schema des Berichts nicht und führt keinen vollständigen Vertrag für quote freshness, fallback, stale oder data_quality ein. Bot/API-Direktverbindungen zum Agent, die `market_phase_context` nicht über die P1a-Pipeline aufbauen, behalten das alte Verhalten; Durchreichen und sichtbare Anzeige der Einstiegspunkte bleiben späteren P4+ vorbehalten.
 
-#### 盘中数据包与实时质量控制（Issue #1386 P3）
+#### Intraday-Datenpaket und Echtzeit-Qualitätskontrolle (Issue #1386 P3)
 
-P3 补齐普通分析主路径使用的实时行情质量元数据，但仍不新增 `analysis_phase` 参数，不改 API/Web/Bot 阶段入口，不改变报告 JSON schema，也不做 #1389 P5 数据质量评分或模型置信度限制。实时 quote 会带上 `fetched_at`、`provider_timestamp`、`is_stale`、`stale_seconds`、`fallback_from`；其中 `fetched_at` 是系统获取时间，`provider_timestamp` 只在 provider 真实提供行情时间时填写。缺少 provider 时间时不会伪造 fresh，`stale_seconds` 和 `is_stale` 保持空值。
+P3 ergänzt die Qualitätsmetadaten für Echtzeitkurse, die der Hauptpfad der gewöhnlichen Analyse verwendet, fügt aber weiterhin keinen `analysis_phase`-Parameter hinzu, ändert keine API/Web/Bot-Phaseneinstiegspunkte, verändert das JSON-Schema des Berichts nicht und macht keine Datenqualitätsbewertung oder Modellkonfidenzbeschränkung aus #1389 P5. Echtzeit-Quote trägt `fetched_at`, `provider_timestamp`, `is_stale`, `stale_seconds` und `fallback_from`; `fetched_at` ist die Systemabrufzeit, `provider_timestamp` wird nur ausgefüllt, wenn der Provider tatsächlich eine Kurszeit liefert. Fehlt die Providerzeit, wird keine falsche Frische vorgetäuscht, und `stale_seconds` und `is_stale` bleiben leer.
 
-整源 fallback 的语义固定为：`source` 保留实际成功的数据源 token，`fallback_from` 记录本轮失败的最高优先级整源 token；首选源成功后只从后续源补字段时不写 `fallback_from`。`AnalysisContextBuilder` 只映射这些上游 artifact，不重新取数、不做质量评分；quote block 状态按 `STALE > FALLBACK > AVAILABLE` 归并。盘中实时价覆盖 `today` 时会标记 `is_partial_bar`、`is_estimated`、`estimated_fields`、`realtime_source` 和 quote 元数据；`daily_bars` block 仍表示 storage 中完整日线窗口，partial/estimated 只进入 technical block。freshness scoring、盘中 cache TTL 分级、Agent 工具级复用和 API/Web 展示留给后续阶段。
+Die Semantik des gesamten Quellen-Fallbacks ist festgelegt: `source` behält das Token der tatsächlich erfolgreichen Datenquelle, `fallback_from` zeichnet das Token der höchstpriorisierten gesamten Quelle auf, die in dieser Runde fehlgeschlagen ist; wenn nach erfolgreicher bevorzugter Quelle nur Felder aus nachfolgenden Quellen ergänzt werden, wird `fallback_from` nicht geschrieben. `AnalysisContextBuilder` mappt nur diese Upstream-Artefakte, ruft keine Daten erneut ab und macht keine Qualitätsbewertung; der Status des Quote-Blocks wird nach `STALE > FALLBACK > AVAILABLE` zusammengeführt. Wenn Intraday-Echtzeitkurse `today` überschreiben, werden `is_partial_bar`, `is_estimated`, `estimated_fields`, `realtime_source` und die Quote-Metadaten markiert; der `daily_bars`-Block repräsentiert weiterhin das vollständige Tagesdatenfenster im Storage, partial/estimated fließen nur in den technical-Block ein. Freshness-Scoring, gestufte Intraday-Cache-TTLs, Wiederverwendung auf Agent-Tool-Ebene und API/Web-Anzeige bleiben späteren Phasen überlassen.
 
-#### 分析阶段入口与任务队列透传（Issue #1386 P4a）
+#### Analysephasen-Einstieg und Task-Queue-Durchreichung (Issue #1386 P4a)
 
-P4a 新增 `analysis_phase=auto|premarket|intraday|postmarket` 请求参数，默认 `auto`，用于让 API 调用方显式覆盖本次分析阶段。该参数目前接入 `POST /api/v1/analysis/analyze`、异步任务队列、`AnalysisService`、普通分析 pipeline 和市场阶段上下文；Web 前端类型和 API mapper 已承接该字段，但不新增页面 selector，Bot、schedule、GitHub Actions 和 DB migration 也不在本阶段范围内。
+P4a fügt den Anfrageparameter `analysis_phase=auto|premarket|intraday|postmarket` hinzu, Standard `auto`, mit dem API-Aufrufer die Analysephase dieser Ausführung explizit überschreiben können. Der Parameter wird derzeit an `POST /api/v1/analysis/analyze`, die asynchrone Task-Queue, `AnalysisService`, die gewöhnliche Analyse-Pipeline und den Marktphasenkontext angebunden; Web-Frontend-Typen und API-Mapper haben das Feld übernommen, fügen aber keinen Seiten-Selector hinzu; Bot, Schedule, GitHub Actions und DB-Migration sind in dieser Phase nicht enthalten.
 
-`analysis_phase` 是请求覆盖值；最终报告阶段仍以 `report.meta.market_phase_summary.phase` 为准。异步 accepted response、内存任务 status、任务列表和 SSE payload 会回显请求阶段；历史 DB fallback 不新增持久化字段，旧记录仍可能为空。同股不同 phase 仍按同一个股票任务去重，避免并发重复分析。
+`analysis_phase` ist der Anforderungswert; die endgültige Berichtsphase richtet sich weiterhin nach `report.meta.market_phase_summary.phase`. Die asynchrone accepted-Antwort, der In-Memory-Task-Status, die Task-Liste und die SSE-Payload spiegeln die angeforderte Phase wider; der History-DB-Fallback fügt kein persistiertes Feld hinzu, alte Einträge können weiterhin leer sein. Derselbe Befehl mit unterschiedlichen Phasen wird weiterhin über denselben Aktien-Task dedupliziert, um parallele doppelte Analysen zu vermeiden.
 
-内部阶段上下文构造仍兼容旧参数 `analysis_intent`：仅当 `analysis_phase` 保持 `auto` 时，非 `auto` 的 `analysis_intent` 会被归一为本次请求阶段；外部调用方应优先使用 `analysis_phase`。
+Der interne Phasenkontext bleibt mit dem alten Parameter `analysis_intent` kompatibel: Nur wenn `analysis_phase` auf `auto` bleibt, wird ein nicht-`auto`-`analysis_intent` zur Phase dieser Anfrage normalisiert; externe Aufrufer sollten bevorzugt `analysis_phase` verwenden.
 
-`auto` 保持既有交易日历推断；非 `auto` 只覆盖 phase 并重算 `is_trading_day`、`is_market_open_now`、`is_partial_bar`、`minutes_to_open` 和 `minutes_to_close`。覆盖不会改写真实 `market_local_time` 或 `effective_daily_bar_date`；如果当前日期不是交易日或日历不支持对应 session，分钟字段可以为空。
+`auto` behält die bestehende Kalender-Erkennung des Handelstags bei; nicht-`auto` überschreibt nur die Phase und berechnet `is_trading_day`, `is_market_open_now`, `is_partial_bar`, `minutes_to_open` und `minutes_to_close` neu. Das Überschreiben verändert weder die echte `market_local_time` noch `effective_daily_bar_date`; wenn das aktuelle Datum kein Handelstag ist oder der Kalender die entsprechende Sitzung nicht unterstützt, können die Minutenfelder leer sein.
 
-#### Web 阶段标签展示（Issue #1386 P4b）
+#### Web-Phasenlabel-Anzeige (Issue #1386 P4b)
 
-P4b 在 Web 端补齐阶段可见性，但不新增阶段覆盖 selector。进行中的任务面板只展示 P4a 回显的请求阶段 `analysis_phase`，其中 `auto` 明确显示为“自动阶段”，不伪装成最终推断阶段。最终报告页以 `report.meta.market_phase_summary.phase` 展示实际市场阶段标签，并在 `is_partial_bar=true` 时提示“日线未完成”。
+P4b ergänzt im Web die Sichtbarkeit der Phase, fügt aber keinen Phasen-Override-Selector hinzu. Das TaskPanel für laufende Aufgaben zeigt nur die von P4a zurückgespiegelte angeforderte Phase `analysis_phase` an, wobei `auto` klar als "Automatische Phase" angezeigt wird und nicht als endgültige ermittelte Phase getarnt wird. Die endgültige Berichtsseite zeigt die tatsächliche Marktphasenlabel über `report.meta.market_phase_summary.phase` und weist bei `is_partial_bar=true` auf "Tageskerze unvollständig" hin.
 
-数据质量摘要继续复用 `report.details.analysis_context_pack_overview.data_quality` 和现有 `AnalysisContextSummary`；Web 会在同一报告详情页展示阶段标签，并继续复用低敏数据质量摘要，不暴露完整 `AnalysisContextPack`、Prompt summary、raw payload 或已剥离的 snapshot 内部字段。历史列表、Bot、schedule、GitHub Actions、Desktop、通知摘要和高级阶段覆盖入口仍为后续工作。
+Die Datenqualitätszusammenfassung verwendet weiterhin `report.details.analysis_context_pack_overview.data_quality` und die bestehende `AnalysisContextSummary`; das Web zeigt auf derselben Berichtsdetailseite das Phasenlabel an und verwendet weiterhin die niedrigsensible Datenqualitätszusammenfassung, ohne das vollständige `AnalysisContextPack`, die Prompt-Zusammenfassung, rohe Payloads oder bereits entfernte Snapshot-interne Felder offenzulegen. Historienliste, Bot, Schedule, GitHub Actions, Desktop, Benachrichtigungszusammenfassungen und erweiterte Phasen-Override-Einstiege bleiben spätere Arbeiten.
 
-#### AnalysisContextPack Prompt 摘要（Issue #1389 P3）
+#### AnalysisContextPack-Prompt-Zusammenfassung (Issue #1389 P3)
 
-P3 在普通分析和 Agent 初始上下文中接入 `AnalysisContextPack` 低敏摘要。Pipeline 会用已获取的行情、日线、趋势、筹码、基本面、新闻和市场阶段 artifacts 组装 pack，再把 `analysis_context_pack_summary` 插入 Prompt；在这个新增的 pack 摘要区块中，LLM 只看到 subject、版本、各数据块的状态/来源/warning/missing reason 和新闻结果数，不会通过该区块看到完整 `news.content`、`trend_result`、筹码或基本面原始 payload。既有 `news_context`、Agent pre-fetched JSON 和 `enhanced_context` 原始数据通道保持 P3 前行为，不由本摘要替代或脱敏。
+P3 bindet die niedrigsensible Zusammenfassung `AnalysisContextPack` in den gewöhnlichen Analyse- und Agent-Initialkontext ein. Die Pipeline setzt das Pack aus bereits abgerufenen Kursen, Tagesdaten, Trends, Chips, Fundamentaldaten, Nachrichten und Marktphasen-Artefakten zusammen und fügt `analysis_context_pack_summary` in den Prompt ein; in diesem neuen Pack-Zusammenfassungsblock sieht die LLM nur subject, Version, Status/Quelle/Warnung/fehlenden Grund der einzelnen Datenblöcke und die Anzahl der Nachrichtenergebnisse und sieht über diesen Block weder vollständiges `news.content`, `trend_result`, Chip- noch Fundamentaldaten-Rohpayloads. Die bestehenden Kanäle `news_context`, Agent pre-fetched JSON und `enhanced_context` für Rohdaten behalten ihr Verhalten vor P3 und werden weder durch diese Zusammenfassung ersetzt noch entschärft.
 
-P3 当时不新增 API/Web/Bot 参数，不写入 history/task status/report metadata，不改变报告 JSON schema，也不把完整 pack 暴露到历史、通知或 Web。Agent 工具级复用 pack 数据和 P5 数据质量评分留给后续阶段。
+P3 fügte damals keine API/Web/Bot-Parameter hinzu, schrieb nichts in history/task status/report metadata, veränderte das JSON-Schema des Berichts nicht und legte das vollständige Pack weder in History noch in Benachrichtigungen noch im Web offen. Wiederverwendung von Pack-Daten auf Agent-Tool-Ebene und das Datenqualitäts-Scoring aus P5 bleiben späteren Phasen überlassen.
 
-#### Multi-Agent 决策分歧摘要输入（Issue #1904 P1 plumbing）
+#### Eingabezusammenfassung für Multi-Agent-Meinungsdivergenzen (Issue #1904 P1 plumbing)
 
-Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreement_summary`，用于提示前序 Agent opinion 的方向分歧、风险 override 证据、风险 override 是否受当前 `AGENT_RISK_OVERRIDE` 配置启用，以及非关键阶段降级信息。该摘要只包含 agent name、signal、confidence、conflict type、decision path hint、低敏 risk control 状态和 degraded stage marker，不包含 reasoning、raw_data、原始错误文本、token 或私密 payload。
+Multi-Agent konstruiert vor dem Eintritt in `DecisionAgent` eine interne niedrigsensible `agent_disagreement_summary`, um Richtungsdivergenzen früherer Agent-Meinungen, Nachweise für Risiko-Overrides, ob Risiko-Overrides durch die aktuelle `AGENT_RISK_OVERRIDE`-Konfiguration aktiviert sind, sowie Degradierungsinformationen nicht kritischer Phasen hinzuweisen. Diese Zusammenfassung enthält nur Agentname, Signal, Konfidenz, Konflikttyp, Hinweis auf den Entscheidungspfad, den niedrigsensiblen Risikokontrollstatus und den Marker für degradierte Phasen, nicht jedoch reasoning, raw_data, ursprüngliche Fehlertexte, Token oder private Payloads.
 
-该能力当前只是 `DecisionAgent` 的内部 Prompt 输入管线：摘要写入运行态 `ctx.meta`，不进入 Agent pre-fetched data，不新增 public API、Web/Desktop 展示、history/task status/report metadata、dashboard schema 或最终解释字段。`risk_level=high` 只作为风险证据，不会单独触发 override；summary 与最终 `_apply_risk_override()` 复用同一套 override 判断，并尊重 `AGENT_RISK_OVERRIDE=false`。非关键降级阶段沿用 orchestrator 的 `intel`、`risk` 和 specialist/skill agent 降级契约，避免把单一方向意见误描述成 multi-agent 共识。#1904 的用户可见最终解释输出仍属于后续阶段。
+Diese Fähigkeit ist derzeit nur eine interne Prompt-Eingabepipeline von `DecisionAgent`: Die Zusammenfassung wird in das Laufzeit-`ctx.meta` geschrieben, geht nicht in pre-fetched Daten des Agents ein und fügt keine öffentlichen APIs, Web/Desktop-Anzeigen, history/task status/report metadata, Dashboard-Schemas oder endgültige Erklärungsfelder hinzu. `risk_level=high` dient nur als Risikobeleg und löst allein keinen Override aus; die Zusammenfassung und das endgültige `_apply_risk_override()` verwenden denselben Override-Mechanismus und respektieren `AGENT_RISK_OVERRIDE=false`. Nicht kritische Degradierungsphasen folgen den Degradierungsverträgen des Orchestrators für `intel`, `risk` und specialist/skill-Agents, um eine einseitige Meinung nicht fälschlich als Multi-Agent-Konsens darzustellen. Die benutzersichtbare endgültige Erklärungsausgabe von #1904 gehört weiterhin zu einer späteren Phase.
 
-`AgentResult.runtime_facts` 是内部可选字段，用于保存本次 Orchestrator 运行中已收集的基础 Agent 意见、degradation event、Pipeline termination 和实际 risk application。degradation event 使用 `DURING_STAGE` 区分 stage 自身失败，使用 `BEFORE_STAGE` 表示该 stage 因 Pipeline deadline 或 budget guard 未启动。stage 已完成后触发 deadline check 时不把该 stage 记录为 timeout degradation；`pipeline_termination.last_completed_stage` 从 `AgentRunStats.stage_results` 中最后一个真实 `COMPLETED` 结果取得，也可能为空。
+`AgentResult.runtime_facts` ist ein internes optionales Feld zum Speichern der in dieser Orchestrator-Ausführung bereits gesammelten Basis-Agent-Meinungen, Degradierungsereignisse, Pipeline-Terminierung und tatsächlichen Risikoanwendung. Degradierungsereignisse verwenden `DURING_STAGE`, um ein eigenes Scheitern der Stufe zu unterscheiden, und `BEFORE_STAGE`, um anzuzeigen, dass die Stufe wegen Pipeline-Deadline oder Budget-Guard nicht gestartet wurde. Wird die Deadline-Prüfung ausgelöst, nachdem eine Stufe bereits abgeschlossen ist, wird diese Stufe nicht als Timeout-Degradierung aufgezeichnet; `pipeline_termination.last_completed_stage` wird aus dem letzten echten `COMPLETED`-Ergebnis von `AgentRunStats.stage_results` bezogen und kann auch leer sein.
 
-结构化 Orchestrator dashboard 按 input preparation、单次 risk application 和 post-risk finalization 的顺序处理。post-risk finalization 更新 top-level decision/operation advice、core signal/position advice、battle-plan position strategy，以及 DecisionAgent signal/canonical payload。本阶段不处理 dashboard 其他自由文本中的方向性措辞；runtime facts 和 post-risk Agent dashboard 也不表示 Pipeline-final decision，不生成公开 explanation 字段。
+Das strukturierte Orchestrator-Dashboard wird in der Reihenfolge Input-Vorbereitung, einzelne Risikoanwendung und post-risk-Finalisierung verarbeitet. Die post-risk-Finalisierung aktualisiert Top-Level-Entscheidungs-/Handlungsempfehlung, Kernsignal-/Positionsempfehlung, battle-plan-Positionsstrategie sowie das Signal/canonical-Payload von `DecisionAgent`. Diese Phase behandelt keine richtungsweisenden Formulierungen in anderem Freitext des Dashboards; runtime facts und post-risk-Agent-Dashboard stellen auch keine endgültige Pipeline-Entscheidung dar und erzeugen keine öffentlichen explanation-Felder.
 
-Multi-Agent 结果进入 `StockAnalysisPipeline` 后，会继续完成结构与资金流、市场阶段和 daily-market context。系统在每个可能改变公开动作的步骤后使用与 DecisionSignal builder 相同的解析入口刷新八态 action，并按执行顺序记录真实的 `from_action` / `to_action` 转换。只有调整链起点、每个中间动作和最终动作都能由共享规则唯一解析时，系统才基于 `AgentResult.runtime_facts` 确定性生成可选的 `dashboard.agent_disagreement_explanation`。该字段以 `pipeline_start_action` 为调整链起点，以 `final_action` 作为唯一权威最终结论；`final_action` 与报告 `action`、历史记录 action 和 `DecisionSignal.action` 一致。三态 `decision_type` 不再作为 explanation 的最终结论；`risk_control.post_risk_signal` 仅保留为 Agent 风控阶段的统计背景事实。
+Nachdem Multi-Agent-Ergebnisse in `StockAnalysisPipeline` eingehen, werden Struktur und Kapitalfluss, Marktphase und daily-market context vervollständigt. Das System aktualisiert nach jedem Schritt, der öffentliche Aktionen verändern könnte, über denselben Parse-Einstieg wie den DecisionSignal-Builder die Acht-Zustands-Aktion und zeichnet die tatsächlichen `from_action`/`to_action`-Übergänge in Ausführungsreihenfolge auf. Nur wenn Start der Anpassungskette, jede Zwischenaktion und die endgültige Aktion eindeutig durch die gemeinsame Regel auflösbar sind, erzeugt das System basierend auf `AgentResult.runtime_facts` deterministisch das optionale `dashboard.agent_disagreement_explanation`. Dieses Feld verwendet `pipeline_start_action` als Startpunkt der Anpassungskette und `final_action` als einzige autoritative endgültige Schlussfolgerung; `final_action` stimmt mit der Berichts-`action`, der History-Aktion und der `DecisionSignal.action` überein. Der dreistufige `decision_type` dient nicht mehr als endgültige Schlussfolgerung der Erklärung; `risk_control.post_risk_signal` bleibt nur als statistischer Hintergrundfakt der Agent-Risikokontrollphase.
 
-模型返回的顶层或嵌套同名 explanation 会在共享 Agent dashboard 解析边界被删除，最终字段只由 Pipeline 构造。非法 Agent signal 沿用既有策略意见有效性规则从 runtime facts 和公开分歧统计中排除，不会静默转换成 `hold`。若自由文本无法唯一解析成八态 action，共享 resolver 保持 fail-closed：报告与历史记录保留 `action=None`，不生成 explanation，也不创建 DecisionSignal；Pipeline 不使用 `decision_type` 私自补值。字段在存在 canonical action 时随 dashboard 一起持久化，并在 DecisionSignal 提取前完成。旧报告、single Agent/非 Agent 路径和没有 `runtime_facts` 的兼容调用不要求包含该字段；本阶段不增加 Web/Desktop 专属展示、完整 trace 或 P2-P4 的权重与审计能力。
+Top-Level- oder verschachtelte gleichnamige Erklärungen, die vom Modell zurückgegeben werden, werden an der Parse-Grenze des gemeinsamen Agent-Dashboards entfernt, und das endgültige Feld wird ausschließlich von der Pipeline konstruiert. Unzulässige Agent-Signale werden gemäß der bestehenden Gültigkeitsregel für Strategiemeinungen aus runtime facts und öffentlichen Divergenzstatistiken ausgeschlossen und nicht stillschweigend in `hold` umgewandelt. Wenn Freitext nicht eindeutig in eine Acht-Zustands-Aktion auflösbar ist, bleibt der gemeinsame Resolver fail-closed: Der Bericht und die Historie behalten `action=None`, erzeugen keine Erklärung und auch keinen DecisionSignal; die Pipeline füllt keine Werte privat über `decision_type` nach. Das Feld wird bei vorhandener kanonischer Aktion zusammen mit dem Dashboard persistiert und vor der DecisionSignal-Extraktion abgeschlossen. Alte Berichte, single Agent/Nicht-Agent-Pfade und kompatible Aufrufe ohne `runtime_facts` müssen das Feld nicht enthalten; diese Phase fügt keine Web/Desktop-spezifische Anzeige, keine vollständigen Traces und keine Gewichtungs- und Audit-Fähigkeiten aus P2-P4 hinzu.
 
-#### AnalysisContextPack 低敏可见性（Issue #1389 P4）
+#### Niedrigsensible Sichtbarkeit von AnalysisContextPack (Issue #1389 P4)
 
-P4 新增 `report.details.analysis_context_pack_overview`，历史详情和 completed `/api/v1/analysis/status/{task_id}` 会从已持久化的 `context_snapshot` 返回同一份低敏 overview；同步分析响应也会读取本次已落库的 `analysis_history.context_snapshot` 提取 overview，因此 `SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回该字段。Web 端报告页在“策略点位”和“资讯”之后展示默认折叠的数据块摘要，折叠头部展示可用数、缺失数、非零的其他状态计数和触发来源，展开后展示数据块状态、来源、warning、missing reason、状态计数和新闻结果数。API 返回的 `details.context_snapshot` 会剥离顶层 `analysis_context_pack_overview`，避免透明度面板重复展示 raw snapshot。
+P4 fügt `report.details.analysis_context_pack_overview` hinzu; Historie-Details und abgeschlossene `/api/v1/analysis/status/{task_id}` geben dieselbe niedrigsensible Übersicht aus dem bereits persistierten `context_snapshot` zurück; auch synchrone Analyseantworten lesen die bereits gespeicherte `analysis_history.context_snapshot` dieser Ausführung, um die Übersicht zu extrahieren, sodass bei `SAVE_CONTEXT_SNAPSHOT=false` neue Einträge nicht garantiert dieses Feld zurückgeben. Die Web-Berichtsseite zeigt nach "Strategiepunkten" und "Informationen" eine standardmäßig eingeklappte Datenblock-Zusammenfassung; der eingeklappte Kopf zeigt verfügbare Anzahl, fehlende Anzahl, Zählungen anderer Nicht-Null-Status und Auslösequelle, und nach dem Aufklappen werden Datenblock-Status, Quelle, Warnung, fehlender Grund, Statuszählungen und Anzahl der Nachrichtenergebnisse angezeigt. Das von der API zurückgegebene `details.context_snapshot` entfernt das Top-Level-`analysis_context_pack_overview`, damit das Transparenzpanel den Roh-Snapshot nicht doppelt anzeigt.
 
-该 overview 不包含完整 pack、`analysis_context_pack_summary` Prompt 字符串、`items.value`、新闻正文、`trend_result`、筹码或基本面原始 payload。`SAVE_CONTEXT_SNAPSHOT=false` 时不持久化整份 `analysis_history.context_snapshot`，因此不会从新历史记录读取 overview；旧历史记录缺少 overview 时字段为空，报告仍正常返回。本阶段不覆盖 pending/processing TaskPanel、SSE 进行中事件、通知摘要、Bot/Desktop 专属展示、`market_review` overview 或数据质量评分。
+Diese Übersicht enthält weder das vollständige Pack, den Prompt-String `analysis_context_pack_summary`, `items.value`, den Nachrichtentext, `trend_result`, Chip- noch Fundamentaldaten-Rohpayloads. Bei `SAVE_CONTEXT_SNAPSHOT=false` wird nicht die gesamte `analysis_history.context_snapshot` persistiert, daher wird die Übersicht auch nicht aus neuen History-Einträgen gelesen; fehlt die Übersicht bei alten History-Einträgen, ist das Feld leer, und der Bericht wird weiterhin normal zurückgegeben. Diese Phase überschreibt weder das TaskPanel für pending/processing, laufende SSE-Ereignisse, Benachrichtigungszusammenfassungen, Bot/Desktop-spezifische Anzeigen, die `market_review`-Übersicht noch das Datenqualitäts-Scoring.
 
-#### AnalysisContextPack 数据质量评分与 Prompt 数据限制（Issue #1389 P5）
+#### Datenqualitäts-Scoring von AnalysisContextPack und Prompt-Datenbegrenzung (Issue #1389 P5)
 
-P5 在不修改 `PACK_VERSION = "1.0"`、不新增数据源和不改变报告 JSON schema 的前提下，给 `AnalysisContextPack` 增加轻量数据质量评分与模型可读的数据限制区块。`ContextFieldStatus` 新增 `fetch_failed`，只表示字段或数据块本次抓取明确失败；首版仅把 `fundamental_context.status == "failed"` 映射为 `fetch_failed`，空新闻、未配置搜索、无实时 quote 或 chip 缺失仍按既有 `missing` / `not_supported` 处理。
+P5 fügt, ohne `PACK_VERSION = "1.0"` zu ändern, ohne neue Datenquellen und ohne das JSON-Schema des Berichts zu verändern, eine leichte Datenqualitätsbewertung und einen modelllesbaren Block zur Datenbegrenzung für `AnalysisContextPack` hinzu. `ContextFieldStatus` erhält `fetch_failed`, das nur bedeutet, dass der Abruf des Felds oder Datenblocks in dieser Ausführung eindeutig fehlgeschlagen ist; die erste Version mappt nur `fundamental_context.status == "failed"` auf `fetch_failed`; leere Nachrichten, nicht konfigurierte Suche, kein Echtzeit-Quote oder fehlende Chips werden weiterhin gemäß dem bestehenden `missing`/`not_supported` behandelt.
 
-`DataQuality` 现在包含 `overall_score`、`level`、`block_scores`、`limitations`，并保留旧 `warnings` / `metadata`。评分固定覆盖 `quote`、`daily_bars`、`technical`、`news`、`fundamentals`、`chip` 六块，不因辅助块缺失重归一化；核心块降级会在 Prompt 的“数据限制”区块中要求模型不要输出高置信度，辅助块缺失只限制对应分析段落，不应被解释为利好或利空。该 Prompt 区块由 `format_analysis_context_pack_prompt_section()` 统一生成，普通分析、single Agent 和 multi-agent 沿用同一低敏 summary，不暴露 raw payload、新闻正文、趋势原始值、secret、token 或 webhook。
+`DataQuality` enthält jetzt `overall_score`, `level`, `block_scores` und `limitations` und behält die alten `warnings`/`metadata` bei. Die Bewertung deckt fest die sechs Blöcke `quote`, `daily_bars`, `technical`, `news`, `fundamentals` und `chip` ab und wird bei fehlenden Hilfsblöcken nicht neu normalisiert; Degradierung von Kernblöcken verlangt im Prompt-Block "Datenbegrenzung", dass das Modell keine hohe Konfidenz ausgibt, während fehlende Hilfsblöcke nur den jeweiligen Analyseabschnitt begrenzen und nicht als bullisch oder bärisch interpretiert werden sollten. Dieser Prompt-Block wird einheitlich von `format_analysis_context_pack_prompt_section()` erzeugt; gewöhnliche Analyse, single Agent und multi-agent verwenden dieselbe niedrigsensible Zusammenfassung, ohne Rohpayloads, Nachrichtentexte, Trendrohwerte, Secrets, Token oder Webhooks offenzulegen.
 
-历史详情、同步分析响应和 completed 任务状态继续只通过 `report.details.analysis_context_pack_overview` 暴露低敏字段；P5 只在该 overview 下新增 `data_quality`，包含 score、level、block_scores 和 limitations，不重复公开 `warnings`。Web 报告页仍默认折叠展示数据块摘要，折叠头部新增质量分/等级，展开后展示限制说明和 `fetch_failed` 状态；`details.context_snapshot` 继续剥离顶层 `analysis_context_pack_overview`。
+Historie-Details, synchrone Analyseantworten und abgeschlossene Task-Zustände legen weiterhin nur niedrigsensible Felder über `report.details.analysis_context_pack_overview` offen; P5 fügt unter dieser Übersicht nur `data_quality` mit score, level, block_scores und limitations hinzu und wiederholt nicht öffentlich `warnings`. Die Web-Berichtsseite zeigt die Datenblock-Zusammenfassung weiterhin standardmäßig eingeklappt; der eingeklappte Kopf zeigt Qualitätspunktzahl/Stufe, nach dem Aufklappen werden Begrenzungshinweise und der `fetch_failed`-Status angezeigt; `details.context_snapshot` entfernt weiterhin das Top-Level-`analysis_context_pack_overview`.
 
-#### AnalysisContextPack 文档、迁移与回滚（Issue #1389 P6）
+#### AnalysisContextPack-Dokumentation, Migration und Rollback (Issue #1389 P6)
 
-P6 只做文档与配置可见性收口，不新增 pack runtime、不新增 pack enable/disable feature flag、不修改 `PACK_VERSION = "1.0"`、不新增 API 参数、不改变报告 JSON schema，也不做数据库迁移。完整契约、字段状态、低敏摘要可见性、脱敏边界、迁移和回滚说明见 [AnalysisContextPack 专题文档](analysis-context-pack.md)。
+P6 macht nur Dokumentations- und Konfigurationssichtbarkeitsabschluss, fügt kein Pack-Runtime, kein Enable/Disable-Feature-Flag für das Pack, keine Änderung von `PACK_VERSION = "1.0"`, keine API-Parameter, keine Änderung des JSON-Schemas des Berichts und keine Datenbankmigration hinzu. Vollständiger Vertrag, Feldstatus, Sichtbarkeit der niedrigsensiblen Zusammenfassung, Entschärfungsgrenzen, Migration und Rollback-Hinweise finden sich im [AnalysisContextPack-Themendokument](analysis-context-pack.md).
 
-`SAVE_CONTEXT_SNAPSHOT` 是既有环境变量，P6 只是把它同步到 `.env.example`、配置注册表和 Web 设置帮助。默认 `true`；设为 `false` 或 CLI 使用 `--no-context-snapshot` 时，新历史记录不再持久化整份 `analysis_history.context_snapshot`，包括 `enhanced_context`、`market_phase_summary`、`analysis_context_pack_overview`、诊断快照和 raw snapshot 字段。该设置不关闭当次 `AnalysisContextPack` 构建，不移除 Prompt 中的低敏 `analysis_context_pack_summary`，也不改变分析结果 JSON schema 或 API 请求参数。
+`SAVE_CONTEXT_SNAPSHOT` ist eine bestehende Umgebungsvariable; P6 synchronisiert sie nur in `.env.example`, das Konfigurationsregister und die Web-Einstellungshilfe. Standard `true`; bei `false` oder mit CLI `--no-context-snapshot` wird für neue History-Einträge nicht mehr die gesamte `analysis_history.context_snapshot` persistiert, einschließlich `enhanced_context`, `market_phase_summary`, `analysis_context_pack_overview`, Diagnose-Snapshots und Roh-Snapshot-Felder. Diese Einstellung deaktiviert weder die `AnalysisContextPack`-Konstruktion dieser Ausführung, entfernt nicht die niedrigsensible `analysis_context_pack_summary` aus dem Prompt und verändert weder das JSON-Schema der Analyseergebnisse noch die API-Anfrageparameter.
 
-当前没有运行时 pack 总开关；如果需要关闭 P3-P5 的 pack Prompt 摘要、overview 或数据质量接入，只能通过发布回滚或代码回滚完成。旧历史记录没有 `analysis_context_pack_overview` / `data_quality` 时继续返回空字段，报告读取保持兼容。
+Derzeit gibt es keinen Laufzeit-Gesamtschalter für das Pack; um die Pack-Prompt-Zusammenfassung, die Übersicht oder die Datenqualitätsanbindung von P3-P5 zu deaktivieren, kann dies nur über Release- oder Code-Rollback erfolgen. Alte History-Einträge ohne `analysis_context_pack_overview`/`data_quality` geben weiterhin leere Felder zurück, und das Berichtslesen bleibt kompatibel.
 
-#### 市场结构上下文（Issue #1909）
+#### Marktstruktur-Kontext (Issue #1909)
 
-个股分析现在新增低敏 `market_structure_context`，并通过 `AnalysisReport.details.market_structure` 对历史详情、同步分析响应和 completed 任务状态暴露。该字段采用两层结构：`market_theme_context` 表示大盘/题材层，包含 A 股行业/概念榜单、活跃题材、领涨行业/概念、题材宽度和数据质量；`stock_market_position` 表示个股位置层，包含个股所属板块、主关联题材、题材阶段、个股位置、风险标签和缺失证据。
+Die Einzelaktienanalyse erhält jetzt einen niedrigsensiblen `market_structure_context` und legt ihn über `AnalysisReport.details.market_structure` für Historie-Details, synchrone Analyseantworten und abgeschlossene Task-Zustände offen. Das Feld verwendet eine zweistufige Struktur: `market_theme_context` repräsentiert die Markt-/Themenebene und enthält Branchen-/Konzeptrankings der A-Aktien, aktive Themen, führende Branchen/Konzepte, Themenbreite und Datenqualität; `stock_market_position` repräsentiert die Einzelaktien-Positionsebene und enthält den Sektor der Aktie, das primär assoziierte Thema, die Themenphase, die Aktienposition, Risikolabel und fehlende Belege.
 
-首版市场结构由 DSA 原生服务基于 `DataFetcherManager.get_sector_rankings()`、`get_concept_rankings()` 和 `fundamental_context.belong_boards` 生成，不调用内建选股引擎。内建选股中参考 AlphaSift 实现的热点详情、发酵路线、成分股和 leader stocks 可作为后续可选数据源，但当前不会被普通个股分析隐式调用。缺少成分股或 leader 证据时，`stock_role` 默认保持 `follower/edge/unknown`，并在 `missing_fields` 中标记 `hotspot_constituents`、`leader_stocks`，避免把普通关联股误写成题材龙头。
+Die erste Marktstrukturversion wird von einem nativen DSA-Dienst auf Basis von `DataFetcherManager.get_sector_rankings()`, `get_concept_rankings()` und `fundamental_context.belong_boards` erzeugt und ruft die eingebaute Aktienauswahl-Engine nicht auf. Hotspot-Details, Gärungsrouten, Bestandteile und Leader-Stocks der eingebauten Aktienauswahl, die auf AlphaSift-Implementierung verweisen, können als spätere optionale Datenquellen dienen, werden aber derzeit nicht implizit von der gewöhnlichen Einzelaktienanalyse aufgerufen. Fehlen Belege für Bestandteile oder Leader, bleibt `stock_role` standardmäßig `follower/edge/unknown` und markiert in `missing_fields` die Werte `hotspot_constituents` und `leader_stocks`, um gewöhnliche assoziierte Aktien nicht fälschlich als Themenführer zu beschreiben.
 
-兼容性边界：`market_structure_context` 中的 provider / model 快照字段（含 `model_used`、`market_structure_context.*.source.provider` 等）仅用于历史回溯和页面展示，不构成 LLM provider 路由、`base URL`、`provider/model` 运行时配置输入；不会触发 `.env` 配置清理、回写、迁移或静默变更。
+Kompatibilitätsgrenze: Die provider/model-Snapshot-Felder in `market_structure_context` (einschließlich `model_used`, `market_structure_context.*.source.provider` usw.) dienen nur der historischen Nachverfolgung und Seitenanzeige und stellen keinen Eingang für LLM-provider-Routing, `base URL` oder `provider/model`-Laufzeitkonfiguration dar; sie lösen weder eine Bereinigung, ein Zurückschreiben, eine Migration noch eine stillschweigende Änderung der `.env`-Konfiguration aus.
 
-普通 LLM、single Agent 和 multi-agent prompt 会注入市场结构低敏摘要；DecisionSignal 自动提取会把 `primary_theme`、`theme_phase`、`stock_role`、版本号和风险标签写入 metadata，不改变主字段、去重键或生命周期规则。Web 报告页在概览后展示“市场位置”卡片，分别呈现大盘题材层和个股位置层；旧历史记录缺少该字段时不展示。非 A 股市场首版返回 `not_supported`，不影响原有报告。
+Gewöhnliche LLM-, single-Agent- und multi-agent-Prompts erhalten die niedrigsensible Marktstruktur-Zusammenfassung injiziert; die automatische DecisionSignal-Extraktion schreibt `primary_theme`, `theme_phase`, `stock_role`, Versionsnummer und Risikolabel in die Metadaten, ohne Hauptfelder, Deduplizierungsschlüssel oder Lebenszyklusregeln zu verändern. Die Web-Berichtsseite zeigt nach der Übersicht eine Karte "Marktposition" mit getrennten Anzeigen für die Markt-/Themenebene und die Einzelaktien-Positionsebene; alte History-Einträge ohne dieses Feld zeigen sie nicht an. Nicht-A-Aktien-Märkte geben in der ersten Version `not_supported` zurück, ohne den bestehenden Bericht zu beeinflussen.
 
-#### 盘中决策护栏与质量校验（Issue #1386 P5）
+#### Intraday-Entscheidungs-Schutzmaßnahmen und Qualitätsprüfung (Issue #1386 P5)
 
-P5 在个股分析报告的 `dashboard.phase_decision` 中追加阶段化决策字段：`phase_context`、`action_window`、`immediate_action`、`watch_conditions`、`next_check_time`、`confidence_reason` 和 `data_limitations`。该字段只作为报告 JSON 的向后兼容扩展进入历史 `raw_result`；不新增 `analysis_phase` API 参数、不改变 Web 阶段入口、不新增配置项，也不影响每日收盘复盘默认行为。
+P5 fügt im `dashboard.phase_decision` des Einzelaktienanalyse-Berichts stufenweise Entscheidungsfelder hinzu: `phase_context`, `action_window`, `immediate_action`, `watch_conditions`, `next_check_time`, `confidence_reason` und `data_limitations`. Dieses Feld geht nur als rückwärtskompatible Erweiterung des Berichts-JSON in das rohe `raw_result` der Historie ein; es fügt keinen `analysis_phase`-API-Parameter hinzu, verändert keine Web-Phaseneinstiegspunkte, fügt keine Konfigurationsoptionen hinzu und beeinflusst das Standardverhalten des täglichen Abschluss-Rückblicks nicht.
 
-普通分析与 Agent 分析会在保存历史前复用当次 `market_phase_summary` 和 `analysis_context_pack_overview.data_quality` 执行轻量护栏：核心 quote / daily_bars / technical 数据 stale、fallback、missing、fetch_failed、partial 或 estimated 时，不允许高置信结论；盘前、非交易日或未知阶段不得输出高置信盘中买卖；盘中、午间和临近收盘会检查主结论里的盘后复盘口吻，并把明显的"今日收盘后复盘显示""明日重点关注"类措辞改为阶段安全的观察/等待表述。护栏只补低敏 `phase_context` 和数据限制，不编造观察条件或下一次检查时间；通知摘要、告警、持仓和回测联动留给后续 P6。
+Gewöhnliche Analyse und Agent-Analyse führen vor dem Speichern der Historie mithilfe der diesmaligen `market_phase_summary` und `analysis_context_pack_overview.data_quality` leichte Schutzmaßnahmen durch: Bei stale, fallback, missing, fetch_failed, partial oder estimated der Kernquote-/daily_bars-/technical-Daten sind keine hochkonfidenziellen Schlussfolgerungen zulässig; vor Börsenbeginn, an Nicht-Handelstagen oder bei unbekannter Phase dürfen keine hochkonfidenziellen Intraday-Kauf-/Verkaufsempfehlungen ausgegeben werden; während der Handelszeit, in der Mittagspause und kurz vor Schluss wird der Abschluss-Rückblick-Ton in der Hauptschlussfolgerung geprüft und Formulierungen wie "der Rückblick nach heutigem Schluss zeigt" oder "morgen besonders beobachten" in phasensichere Beobachtungs-/Wartende-Formulierungen umgewandelt. Die Schutzmaßnahmen ergänzen nur niedrigsensibles `phase_context` und Datenbegrenzungen und erfinden keine Beobachtungsbedingungen oder nächsten Prüfzeiten; die Anbindung an Benachrichtigungszusammenfassungen, Alarme, Positionen und Backtests bleibt späterem P6 überlassen.
 
-#### 信号归因分析（Issue #1742）
+#### Signalattributionsanalyse (Issue #1742)
 
-Issue #1742 在个股分析报告的 `dashboard.signal_attribution` 中新增信号归因分析字段：`technical_indicators`、`news_sentiment`、`fundamentals`、`market_conditions`（四个贡献度；有效非零贡献度归一化到 100；全零表示无有效信号）、`strongest_bullish_signal` 和 `strongest_bearish_signal`。该字段解释推荐理由的构成，帮助用户理解 AI 决策的归因权重。
+Issue #1742 fügt im `dashboard.signal_attribution` des Einzelaktienanalyse-Berichts ein Feld zur Signalattributionsanalyse hinzu: `technical_indicators`, `news_sentiment`, `fundamentals`, `market_conditions` (vier Beitragsanteile; gültige, von Null verschiedene Beitragsanteile werden auf 100 normalisiert; alle Null bedeuten keine gültigen Signale), `strongest_bullish_signal` und `strongest_bearish_signal`. Dieses Feld erklärt die Zusammensetzung der Empfehlungsbegründung und hilft dem Benutzer, die Attributionsgewichte der KI-Entscheidung zu verstehen.
 
-信号归因分析在所有报告渲染路径中同步展示：
-- `generate_dashboard_report()`（默认通知报告）
-- `generate_single_stock_report()`（单股推送报告）
-- `templates/report_markdown.j2`（Jinja2 模板）
-- `HistoryService._generate_single_stock_markdown()`（Web 历史抽屉）
+Die Signalattributionsanalyse wird synchron auf allen Berichts-Rendering-Pfaden angezeigt:
+- `generate_dashboard_report()` (Standard-Benachrichtigungsbericht)
+- `generate_single_stock_report()` (Einzelaktien-Push-Bericht)
+- `templates/report_markdown.j2` (Jinja2-Vorlage)
+- `HistoryService._generate_single_stock_markdown()` (Web-History-Schublade)
 
-归一化函数在 `_parse_response()` 和 `parse_dashboard_json()` 中显式调用，确保：
-- 字符串百分比转为 int（如 `"35%"` → `35`）
-- 负数转为 0
-- 总和≠100 时归一化为总和=100
-- 值裁剪到 [0, 100] 范围
+Die Normalisierungsfunktion wird in `_parse_response()` und `parse_dashboard_json()` explizit aufgerufen und stellt sicher:
+- String-Prozente werden in int umgewandelt (z. B. `"35%"` → `35`)
+- Negative Werte werden auf 0 gesetzt
+- Wenn die Summe ≠ 100 ist, wird auf Summe = 100 normalisiert
+- Werte werden auf den Bereich [0, 100] begrenzt
 
-`signal_attribution` 是可选展示字段（非必填）。缺失不会失败完整性检查，也不会写入 `missing` 列表或触发补全 prompt；存在时会被归一化并在支持的报告路径展示。
+`signal_attribution` ist ein optionales Anzeigefeld (nicht erforderlich). Fehlt es, schlägt die Integritätsprüfung nicht fehl, es wird nicht in die `missing`-Liste geschrieben und kein Auffüll-Prompt ausgelöst; wenn vorhanden, wird es normalisiert und auf den unterstützten Berichtspfaden angezeigt.
 
-#### 告警、持仓和历史联动（Issue #1386 P6）
+#### Anbindung an Alarme, Positionen und Historie (Issue #1386 P6)
 
-P6 将既有 `market_phase_summary` 与 `analysis_context_pack_overview` 复用到告警、持仓、历史、回测和通知链路，不新增 phase/pack 协议，也不做数据库迁移。告警触发记录仍使用现有 `diagnostics` 文本字段；当 diagnostics 可 JSON 化时，worker 会在 `status=triggered` 记录中合并写入 `analysis_visibility.market_phase_summary`、`analysis_visibility.analysis_context_pack_overview` 和 `analysis_visibility.source`。旧纯文本 diagnostics 继续保留原文，Alert API 派生字段为空且 `analysis_visibility_source=legacy_text`。
+P6 verwendet die bestehenden `market_phase_summary` und `analysis_context_pack_overview` in den Ketten für Alarme, Positionen, Historie, Backtests und Benachrichtigungen wieder, ohne neue phase/pack-Protokolle und ohne Datenbankmigration. Alarmauslöseaufzeichnungen verwenden weiterhin das bestehende Textfeld `diagnostics`; wenn diagnostics JSON-ifizierbar sind, schreibt der Worker in `status=triggered`-Einträgen zusätzlich `analysis_visibility.market_phase_summary`, `analysis_visibility.analysis_context_pack_overview` und `analysis_visibility.source` zusammen. Alte reine Text-diagnostics bleiben im Originaltext erhalten; die abgeleiteten Felder der Alert API sind leer und `analysis_visibility_source=legacy_text`.
 
-告警 phase 摘要来自触发时上下文：symbol 目标按股票市场推断，`target_scope=market` 直接使用 `cn|hk|us|jp|kr` 市场区域，账户级无法唯一定位时允许落为 `unknown`。pack overview 只来自评估器已带 overview 或最近 30 天历史 snapshot 的低敏 overview，缺失时返回 `null`，不伪造 pack，不自动触发轻量 LLM 分析。公开 source 取值为 `alert_trigger_market_context`、`analysis_history_snapshot`、`evaluator_snapshot`、`legacy_text` 或 `null`。
+Die Alarm-Phasenzusammenfassung stammt aus dem Kontext zum Auslösezeitpunkt: symbol-Ziele werden nach Aktienmarkt bestimmt, `target_scope=market` verwendet direkt die Marktregion `cn|hk|us|jp|kr`, und wenn die Kontoebene nicht eindeutig lokalisiert werden kann, darf auf `unknown` zurückgefallen werden. Die Pack-Übersicht stammt nur aus der niedrigsensiblen Übersicht, die der Evaluator bereits hat, oder aus History-Snapshots der letzten 30 Tage; fehlt sie, wird `null` zurückgegeben, es wird kein Pack vorgetäuscht und keine leichte LLM-Analyse automatisch ausgelöst. Öffentliche source-Werte sind `alert_trigger_market_context`, `analysis_history_snapshot`, `evaluator_snapshot`, `legacy_text` oder `null`.
 
-持仓页新增手动单股分析入口，对应 `POST /api/v1/portfolio/positions/{symbol}/analysis`。请求字段为 `account_id`、`analysis_phase=auto|premarket|intraday|postmarket` 和 `force`；只有当前持仓快照中非零持仓可提交，无持仓返回 404，多账户同持一只股票但未传 `account_id` 返回 `400 ambiguous_position_account`。该入口沿用异步任务 accepted / duplicate 语义，`force` 只影响分析刷新，不绕过 in-flight duplicate。后端只把低敏 `portfolio_context` 传入内部 pipeline 和 context pack 的可选 `portfolio` block；该 block 不参与既有六块数据质量总分，也不会出现在任务列表或 SSE payload 中。
+Die Positionsseite erhält einen neuen manuellen Einstieg für Einzelaktienanalysen, entsprechend `POST /api/v1/portfolio/positions/{symbol}/analysis`. Anforderungsfelder sind `account_id`, `analysis_phase=auto|premarket|intraday|postmarket` und `force`; nur Positionen ungleich Null in der aktuellen Positions-Snapshot können übermittelt werden, ohne Position wird 404 zurückgegeben, bei mehreren Konten mit derselben Aktie ohne `account_id` wird `400 ambiguous_position_account` zurückgegeben. Dieser Einstieg folgt den bestehenden asynchronen accepted/duplicate-Semantiken; `force` beeinflusst nur die Analyse-Aktualisierung und umgeht nicht das in-flight-duplicate. Das Backend übergibt nur den niedrigsensiblen `portfolio_context` an die interne Pipeline und den optionalen `portfolio`-Block des Context-Packs; dieser Block nimmt nicht an der bestehenden Gesamtpunktzahl der sechs Datenblöcke teil und erscheint weder in der Task-Liste noch im SSE-Payload.
 
-历史列表、单股历史、StockBar 和详情会从 `context_snapshot` 提取 `market_phase_summary`；旧记录、缺失 snapshot 或解析失败返回 `null`。回测结果项增加 `market_phase` 与 `market_phase_summary`，结果列表和 performance/summary 查询支持 `analysis_phase=premarket|intraday|postmarket|unknown`；统计统一把 `intraday`、`lunch_break`、`closing_auction` 归入 intraday，把 `non_trading`、缺失和非法值归入 unknown。带 phase 过滤的回测查询会在 repository 层按 SQL 条件批量读取结果和 snapshot，先 bucket 再分页，并在 summary diagnostics 中返回 `phase_breakdown` 与 `raw_phase_counts`。
+Historienliste, Einzelaktien-Historie, StockBar und Details extrahieren `market_phase_summary` aus dem `context_snapshot`; alte Einträge, fehlende Snapshots oder Parse-Fehler geben `null` zurück. Backtest-Ergebniseinträge erhalten `market_phase` und `market_phase_summary`; Ergebnislisten und performance/summary-Abfragen unterstützen `analysis_phase=premarket|intraday|postmarket|unknown`; die Statistik fasst `intraday`, `lunch_break` und `closing_auction` unter intraday zusammen und ordnet `non_trading`, fehlende und ungültige Werte unter unknown ein. Backtest-Abfragen mit Phasenfilter lesen Ergebnisse und Snapshots auf Repository-Ebene in Batches gemäß SQL-Bedingung, bucket dann und paginieren und geben in den Summary-diagnostics `phase_breakdown` und `raw_phase_counts` zurück.
 
-通知摘要复用统一公开格式化 helper，只输出阶段标签、trigger source、partial-bar warning、数据质量等级和前两条 limitations；不会输出 raw context pack、Prompt、新闻正文或持仓敏感明细。Web 告警历史、持仓、历史列表、StockBar 和回测页同步展示阶段 badge、质量摘要、phase filter 与 breakdown。
+Benachrichtigungszusammenfassungen verwenden einen einheitlichen öffentlichen Formatierungs-Helper und geben nur Phasenlabel, Auslösequelle, partial-bar-Warnung, Datenqualitätsstufe und die ersten beiden limitations aus; sie geben keine rohen Context-Packs, Prompts, Nachrichtentexte oder sensible Positionsdetails aus. Web-Alarmhistorie, Positionen, Historienliste, StockBar und Backtest-Seiten zeigen synchron Phasen-Badges, Qualitätszusammenfassungen, Phasenfilter und Breakdown an.
 
-#### 文档、配置与迁移说明（Issue #1386 P7）
+#### Dokumentation, Konfiguration und Migrationshinweise (Issue #1386 P7)
 
-P7 只做盘前 / 盘中 / 盘后分析的用户可见说明收口，不新增运行时能力、配置项、API 参数、数据库迁移、Web 阶段覆盖 selector、Bot phase 参数或 GitHub Actions 盘中 workflow。默认每日收盘分析、默认 GitHub Actions 和现有 schedule 行为保持不变。
+P7 schließt nur die benutzersichtbaren Erklärungen zur Vor-/Intraday-/Nachbörsen-Analyse ab, ohne neue Laufzeitfähigkeiten, Konfigurationsoptionen, API-Parameter, Datenbankmigrationen, Web-Phasen-Override-Selectoren, Bot-Phasenparameter oder GitHub-Actions-Intraday-Workflows. Die standardmäßige tägliche Abschlussanalyse, die standardmäßigen GitHub Actions und das bestehende Schedule-Verhalten bleiben unverändert.
 
-推荐使用方式：
+Empfohlene Verwendung:
 
-| 场景 | 推荐用途 | 说明 |
+| Szenario | Empfohlene Verwendung | Hinweis |
 | --- | --- | --- |
-| 盘前 | 生成开盘计划和观察条件 | 不能把尚未发生的今日走势写成事实；重点看上一完整交易日、隔夜信息和开盘触发条件。 |
-| 盘中 / 午间 / 临近收盘 | 做实时状态判断、风险和机会提醒 | 关注当前价、实时行情新鲜度、partial bar、数据限制和下一步观察条件，不替代盘后完整复盘。 |
-| 盘后 | 保留完整复盘和次日计划 | 使用完整交易日语义，是默认每日分析最接近的场景。 |
+| Vorbörslich | Eröffnungsplan und Beobachtungsbedingungen erzeugen | Der noch nicht erfolgte heutige Verlauf darf nicht als Tatsache beschrieben werden; Fokus auf den letzten vollständigen Handelstag, Nachrichten über Nacht und Eröffnungsauslösebedingungen. |
+| Während der Handelszeit / Mittagspause / kurz vor Schluss | Echtzeit-Statusbewertung, Risiko- und Chancenhinweise | Aktueller Kurs, Frische der Echtzeitkurse, partial bar, Datenbegrenzungen und nächste Beobachtungsbedingungen beachten; ersetzt nicht den vollständigen Rückblick nach Börsenschluss. |
+| Nach Börsenschluss | Vollständigen Rückblick und Plan für den nächsten Tag beibehalten | Verwendet die vollständige Handelstagssemantik; das Szenario, das der standardmäßigen täglichen Analyse am nächsten kommt. |
 
-入口与可见性：
+Einstiegspunkte und Sichtbarkeit:
 
-| 入口 | 阶段行为 |
+| Einstieg | Phasenverhalten |
 | --- | --- |
-| `POST /api/v1/analysis/analyze` | 支持 `analysis_phase=auto|premarket|intraday|postmarket`；不传时默认 `auto`。 |
-| Web 主分析 / 重新分析 / 持仓手动分析 | 当前没有阶段覆盖 selector；前端调用默认传 `auto`。进行中任务面板展示请求阶段，最终报告页展示最终阶段标签。 |
-| Bot / CLI / schedule / 默认 GitHub Actions | 不传 `analysis_phase`，继续走 `auto` 推断；默认收盘分析行为不变。 |
-| 历史 / 回测 / 通知 / 告警 | 只消费公开 `market_phase_summary` 和低敏 `analysis_context_pack_overview`；不公开完整 pack、Prompt summary、新闻正文或持仓敏感明细。 |
+| `POST /api/v1/analysis/analyze` | Unterstützt `analysis_phase=auto|premarket|intraday|postmarket`; ohne Angabe Standard `auto`. |
+| Web-Hauptanalyse / Reanalyse / manuelle Positionsanalyse | Derzeit kein Phasen-Override-Selector; der Frontend-Aufruf übergibt standardmäßig `auto`. Das TaskPanel für laufende Aufgaben zeigt die angeforderte Phase, die endgültige Berichtsseite zeigt das endgültige Phasenlabel. |
+| Bot / CLI / Schedule / Standard-GitHub-Actions | Übergibt kein `analysis_phase` und verwendet weiterhin die `auto`-Erkennung; das Standardverhalten der Abschlussanalyse bleibt unverändert. |
+| Historie / Backtest / Benachrichtigungen / Alarme | Konsumiert nur öffentliche `market_phase_summary` und niedrigsensibles `analysis_context_pack_overview`; legt kein vollständiges Pack, keine Prompt-Zusammenfassung, keine Nachrichtentexte und keine sensiblen Positionsdetails offen. |
 
-`analysis_phase` 是请求覆盖值，最终报告阶段仍以 `report.meta.market_phase_summary.phase` 为准。旧调用不传 `analysis_phase` 时保持兼容；旧历史缺少 `market_phase_summary` 或 `analysis_context_pack_overview` 时返回空字段，不影响报告读取。回测查询支持 `analysis_phase=premarket|intraday|postmarket|unknown` 过滤，并按 P6 规则把午间和临近收盘归入 intraday。
+`analysis_phase` ist der Anforderungswert; die endgültige Berichtsphase richtet sich weiterhin nach `report.meta.market_phase_summary.phase`. Alte Aufrufe ohne `analysis_phase` bleiben kompatibel; alte History-Einträge ohne `market_phase_summary` oder `analysis_context_pack_overview` geben leere Felder zurück und beeinflussen das Berichtslesen nicht. Backtest-Abfragen unterstützen den Filter `analysis_phase=premarket|intraday|postmarket|unknown` und ordnen Mittagspause und kurz vor Schluss gemäß P6-Regeln unter intraday ein.
 
-`SAVE_CONTEXT_SNAPSHOT=false` 或 CLI `--no-context-snapshot` 只停止新历史持久化整份 `context_snapshot`，因此新历史不再公开 phase summary / pack overview / diagnostics snapshot 等持久化摘要；它不关闭当次 `AnalysisContextPack` 构建，不移除 Prompt 中的低敏 `analysis_context_pack_summary`，也不改变报告 JSON schema。调用方若要临时回到更接近旧盘后口径的输出，可固定传 `analysis_phase=postmarket`；若要彻底移除 P0-P6 阶段/pack runtime 接入，需要发布回滚或代码回滚。
+`SAVE_CONTEXT_SNAPSHOT=false` oder CLI `--no-context-snapshot` stoppt nur die Persistierung der gesamten `context_snapshot` für neue History-Einträge, sodass neue History-Einträge keine persistierten Zusammenfassungen wie phase summary / pack overview / diagnostics snapshot mehr öffentlich machen; es deaktiviert weder die `AnalysisContextPack`-Konstruktion dieser Ausführung, entfernt nicht die niedrigsensible `analysis_context_pack_summary` aus dem Prompt und verändert das JSON-Schema des Berichts nicht. Aufrufer können, um vorübergehend zu einer Ausgabe näher am alten Nachbörsen-Duktus zurückzukehren, fest `analysis_phase=postmarket` übergeben; um die phase/pack-Runtime-Anbindung von P0-P6 vollständig zu entfernen, sind Release- oder Code-Rollback erforderlich.
 
-#### 使用 Crontab
+#### Crontab verwenden
 
-如果不想使用常驻进程，也可以使用系统的 Cron：
+Wenn kein Dauerprozess gewünscht ist, kann auch der System-Cron verwendet werden:
 
 ```bash
 crontab -e
-# 添加：0 18 * * 1-5 cd /path/to/project && python main.py
+# Hinzufügen: 0 18 * * 1-5 cd /path/to/project && python main.py
 ```
 
 ---
 
-## 通知渠道详细配置
+## Detaillierte Konfiguration der Benachrichtigungskanäle
 
-通知渠道矩阵、minimal/advanced key 分层、`--check-notify` 诊断口径和场景化配置说明见 [通知专题文档](notifications.md)。
+Die Benachrichtigungskanal-Matrix, die minimal/advanced-Key-Ebenen, das Diagnoseformat von `--check-notify` und szenariobasierte Konfigurationshinweise finden sich im [Benachrichtigungs-Themendokument](notifications.md).
 
-### 企业微信
+### WeCom
 
-1. 在企业微信群聊中添加"群机器人"
-2. 复制 Webhook URL
-3. 设置 `WECHAT_WEBHOOK_URL`
+1. In einem WeCom-Gruppenchat einen "Gruppenbot" hinzufügen
+2. Die Webhook-URL kopieren
+3. `WECHAT_WEBHOOK_URL` setzen
 
-### 飞书
+### Feishu
 
-> ⚠️ **关键区分**：`FEISHU_WEBHOOK_SECRET`（Webhook 签名密钥）和 `FEISHU_APP_SECRET`（飞书应用 Secret）是两个完全不同的配置，不能互换。
+> ⚠️ **Wichtige Unterscheidung**: `FEISHU_WEBHOOK_SECRET` (Webhook-Signaturgeheimnis) und `FEISHU_APP_SECRET` (Feishu-App-Secret) sind zwei völlig verschiedene Konfigurationen und dürfen nicht verwechselt werden.
 
-**最小可用配置（无安全限制）：**
+**Minimale verfügbare Konfiguration (ohne Sicherheitseinschränkungen):**
 
 ```env
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
 ```
 
-**完整步骤：**
+**Vollständige Schritte:**
 
-1. **在飞书群聊中创建自定义机器人**：
-   - 打开目标群聊 → 右上角「群设置」→「群机器人」→「添加机器人」→「自定义机器人」
-   - 填写机器人名称，复制生成的 **Webhook URL**（格式：`https://open.feishu.cn/open-apis/bot/v2/hook/...`）
-2. 设置 `FEISHU_WEBHOOK_URL`（即上一步复制的 URL）。
-3. 查看机器人**安全设置**，根据启用的安全项决定是否需要补充配置：
-   - **无额外安全设置**：仅填 `FEISHU_WEBHOOK_URL` 即可。
-   - **开启了「签名校验」**：把飞书显示的 secret 填到 `FEISHU_WEBHOOK_SECRET`。两端必须同时启用或同时不填，否则飞书返回签名校验失败。
-   - **开启了「关键词」**：把同一个关键词填到 `FEISHU_WEBHOOK_KEYWORD`；系统会自动在每条消息前补上，无需手动修改报告模板。
-   - **开启了 IP 白名单**：确保当前运行环境的出口 IP 在白名单中（本地/Docker/GitHub Actions 出口 IP 各不相同）。
-4. `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 是飞书应用 / Stream Bot / 云文档模式专用，不会触发群 Webhook 推送，不要只用它们替代 `FEISHU_WEBHOOK_URL`。
-5. 若已配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，再配置 `FEISHU_CHAT_ID`，则可通过飞书 App Bot 直接向指定群聊或用户推送通知，无需依赖群 Webhook；`FEISHU_RECEIVE_ID_TYPE` 默认 `chat_id`，私聊时改为 `open_id`。该方式走飞书 OpenAPI Bot 会话，与群 Webhook 是两条独立链路。
-6. App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准源码安装、Docker、GitHub Actions daily workflow 和桌面构建链路都会通过 `pip install -r requirements.txt` 安装，不需要单独安装新库。参考：[Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/)、[SDK repo](https://github.com/larksuite/oapi-sdk-python)。
+1. **Im Feishu-Gruppenchat einen Custom-Bot erstellen**:
+   - Ziel-Gruppenchat öffnen → oben rechts «Gruppeneinstellungen» → «Gruppenbots» → «Bot hinzufügen» → «Custom-Bot»
+   - Bot-Namen ausfüllen, die generierte **Webhook-URL** kopieren (Format: `https://open.feishu.cn/open-apis/bot/v2/hook/...`)
+2. `FEISHU_WEBHOOK_URL` setzen (also die im vorherigen Schritt kopierte URL).
+3. Die **Sicherheitseinstellungen** des Bots ansehen und je nach aktivierten Sicherheitselementen entscheiden, ob zusätzliche Konfigurationen nötig sind:
+   - **Keine zusätzlichen Sicherheitseinstellungen**: Nur `FEISHU_WEBHOOK_URL` ausfüllen.
+   - **«Signaturprüfung» aktiviert**: Das von Feishu angezeigte Secret in `FEISHU_WEBHOOK_SECRET` eintragen. Beide Seiten müssen gleichzeitig aktiviert oder gleichzeitig leer sein, sonst gibt Feishu einen Fehler bei der Signaturprüfung zurück.
+   - **«Schlüsselwort» aktiviert**: Dasselbe Schlüsselwort in `FEISHU_WEBHOOK_KEYWORD` eintragen; das System fügt es automatisch vor jeder Nachricht ein, ohne die Berichtsvorlage manuell ändern zu müssen.
+   - **IP-Whitelist aktiviert**: Sicherstellen, dass die Ausgangs-IP der aktuellen Laufzeitumgebung in der Whitelist steht (Ausgangs-IPs von lokal/Docker/GitHub Actions unterscheiden sich jeweils).
+4. `FEISHU_APP_ID`/`FEISHU_APP_SECRET` sind speziell für die Feishu-App-/Stream-Bot-/Cloud-Dokumentmodi gedacht und lösen keinen Gruppen-Webhook-Push aus; sie sollten nicht allein als Ersatz für `FEISHU_WEBHOOK_URL` verwendet werden.
+5. Wenn `FEISHU_APP_ID`/`FEISHU_APP_SECRET` konfiguriert sind und zusätzlich `FEISHU_CHAT_ID` konfiguriert wird, kann über den Feishu-App-Bot direkt an die angegebene Gruppe oder den Benutzer gepusht werden, ohne auf den Gruppen-Webhook angewiesen zu sein; `FEISHU_RECEIVE_ID_TYPE` ist standardmäßig `chat_id`, bei Direktnachrichten auf `open_id` ändern. Dieser Weg nutzt die Feishu-OpenAPI-Bot-Sitzung und ist ein unabhängiger Kanal vom Gruppen-Webhook.
+6. Der App-Bot-Sendepfad verwendet das bereits in `requirements.txt` enthaltene `lark-oapi>=1.0.0`; Standard-Quellcode-Installation, Docker, der tägliche GitHub-Actions-Workflow und die Desktop-Build-Kette installieren es über `pip install -r requirements.txt`, ohne eine neue Bibliothek separat installieren zu müssen. Referenz: [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create), [lark-oapi PyPI](https://pypi.org/project/lark-oapi/), [SDK repo](https://github.com/larksuite/oapi-sdk-python).
 
-**常见失败原因：**
-- 只填了 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，既没有配置 `FEISHU_WEBHOOK_URL`，也没有配置 App Bot 主动推送所需的 `FEISHU_CHAT_ID`
-- 飞书机器人开启了「签名校验」，但 `FEISHU_WEBHOOK_SECRET` 未配置（或误填为 `FEISHU_APP_SECRET`）
-- 飞书机器人开启了「关键词」，但本地没有同步配置 `FEISHU_WEBHOOK_KEYWORD`
-- 机器人没有被加入目标群，或群管理员限制了机器人发言
-- 飞书侧额外配置了 IP 白名单，但当前运行环境 IP 不在白名单中
-- 消息内容超长：飞书单条消息有长度限制，系统会自动分段发送；如需在一个文档内查看完整内容，可配置飞书云文档功能（`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_FOLDER_TOKEN`）
+**Häufige Fehlerursachen:**
+- Nur `FEISHU_APP_ID`/`FEISHU_APP_SECRET` ausgefüllt, aber weder `FEISHU_WEBHOOK_URL` noch das für den aktiven App-Bot-Push benötigte `FEISHU_CHAT_ID` konfiguriert
+- Feishu-Bot hat «Signaturprüfung» aktiviert, aber `FEISHU_WEBHOOK_SECRET` ist nicht konfiguriert (oder fälschlich als `FEISHU_APP_SECRET` eingetragen)
+- Feishu-Bot hat «Schlüsselwort» aktiviert, aber lokal ist `FEISHU_WEBHOOK_KEYWORD` nicht synchron konfiguriert
+- Der Bot wurde nicht in die Zielgruppe aufgenommen, oder Gruppenadministratoren haben die Bot-Berechtigung zum Schreiben eingeschränkt
+- Auf Feishu-Seite zusätzlich eine IP-Whitelist konfiguriert, aber die IP der aktuellen Laufzeitumgebung ist nicht in der Whitelist
+- Nachrichteninhalt zu lang: Feishu hat eine Längenbegrenzung pro Nachricht; das System sendet automatisch in Segmenten; für den vollständigen Inhalt in einem Dokument kann die Feishu-Cloud-Dokumentfunktion konfiguriert werden (`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_FOLDER_TOKEN`)
 
-更完整的图文排查请看 [docs/bot/feishu-bot-config.md](bot/feishu-bot-config.md)。
+Vollständigere Fehlersuche mit Bildern findest du in [docs/bot/feishu-bot-config.md](bot/feishu-bot-config.md).
+
 ### Telegram
 
-1. 与 @BotFather 对话创建 Bot
-2. 获取 Bot Token
-3. 获取 Chat ID（可通过 @userinfobot）
-4. 设置 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`
-5. (可选) 如需发送到 Topic，设置 `TELEGRAM_MESSAGE_THREAD_ID` (从 Topic 链接末尾获取)
+1. Ein Bot über den Dialog mit @BotFather erstellen
+2. Bot-Token abrufen
+3. Chat-ID abrufen (z. B. über @userinfobot)
+4. `TELEGRAM_BOT_TOKEN` und `TELEGRAM_CHAT_ID` setzen
+5. (Optional) Für das Senden an ein Topic `TELEGRAM_MESSAGE_THREAD_ID` setzen (vom Ende des Topic-Links abrufen)
 
-### 邮件
+### E-Mail
 
-1. 开启邮箱的 SMTP 服务
-2. 获取授权码（非登录密码）
-3. 设置 `EMAIL_SENDER`、`EMAIL_PASSWORD`、`EMAIL_RECEIVERS`
+1. Den SMTP-Dienst des E-Mail-Postfachs aktivieren
+2. Den Autorisierungscode abrufen (nicht das Anmelde-Passwort)
+3. `EMAIL_SENDER`, `EMAIL_PASSWORD`, `EMAIL_RECEIVERS` setzen
 
-支持的邮箱：
-- QQ 邮箱：smtp.qq.com:465
-- 163 邮箱：smtp.163.com:465
-- Gmail：smtp.gmail.com:587
+Unterstützte E-Mail-Anbieter:
+- QQ Mail: smtp.qq.com:465
+- 163 Mail: smtp.163.com:465
+- Gmail: smtp.gmail.com:587
 
-**股票分组发往不同邮箱**（Issue #268，可选）：
-配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。`STOCK_LIST` 仍决定本次实际分析的股票集合，`STOCK_GROUP_N` 应写成 `STOCK_LIST` 的子集；它只影响邮件收件人，不会改变 Telegram、企业微信、Webhook 等其他渠道收到的完整报告。大盘复盘会发往所有配置的邮箱。
+**Verschiedene Aktiengruppen an verschiedene E-Mails senden** (Issue #268, optional):
+Mit `STOCK_GROUP_N` und `EMAIL_GROUP_N` können Berichte verschiedener Aktiengruppen an verschiedene E-Mail-Adressen gesendet werden, z. B. um bei gemeinsam genutzten Analysen mehrere Personen nicht zu stören. `STOCK_LIST` bestimmt weiterhin die tatsächlich in dieser Ausführung analysierte Aktienmenge; `STOCK_GROUP_N` sollte als Teilmenge von `STOCK_LIST` geschrieben werden; es beeinflusst nur die E-Mail-Empfänger und verändert nicht die vollständigen Berichte, die über andere Kanäle wie Telegram, WeCom oder Webhook empfangen werden. Der Markt-Rückblick wird an alle konfigurierten E-Mail-Adressen gesendet.
 
-> GitHub Actions 限制：截至 2026-03-29，仓库自带 `00-daily-analysis.yml` 不会自动导入任意编号的 `STOCK_GROUP_N` / `EMAIL_GROUP_N`。因此如果你只在仓库 Secrets / Variables 中新增这些变量，而没有修改 workflow 显式映射，它们不会进入运行进程，看起来就像“分组配置不生效”。
+> GitHub-Actions-Einschränkung: Stand 2026-03-29 importiert der im Repository enthaltene `00-daily-analysis.yml` keine beliebig nummerierten `STOCK_GROUP_N`/`EMAIL_GROUP_N` automatisch. Wenn du diese Variablen also nur in den Repository-Secrets/Variables anlegst, ohne den Workflow explizit zu mappen, gelangen sie nicht in den laufenden Prozess und es wirkt, als ob die "Gruppenkonfiguration nicht wirksam" wäre.
 
 ```bash
 STOCK_LIST=600519,300750,002594,AAPL
@@ -1106,34 +1107,34 @@ STOCK_GROUP_2=002594,AAPL
 EMAIL_GROUP_2=user2@example.com
 ```
 
-### 自定义 Webhook
+### Custom-Webhook
 
-支持任意 POST JSON 的 Webhook，包括：
-- 钉钉机器人
-- Discord Webhook
-- Slack Webhook
-- Bark（iOS 推送）
-- 自建服务
+Unterstützt jeden Webhook, der POST-JSON empfängt, darunter:
+- DingTalk-Bot
+- Discord-Webhook
+- Slack-Webhook
+- Bark (iOS-Push)
+- Selbst gehosteter Dienst
 
-设置 `CUSTOM_WEBHOOK_URLS`，多个用逗号分隔。
+`CUSTOM_WEBHOOK_URLS` setzen, mehrere mit Kommas trennen.
 
-如需适配 AstrBot、NapCat 或自建服务的特殊 body，可设置 `CUSTOM_WEBHOOK_BODY_TEMPLATE`。这是全局模板，会先于 Bark、Slack、Discord 等 URL 自动识别 payload 生效；如果渲染后不是 JSON object，系统会回退默认 payload。推荐使用 `$content_json` / `$title_json` 避免换行和引号破坏 JSON：
+Für spezielle Bodies von AstrBot, NapCat oder selbst gehosteten Diensten kann `CUSTOM_WEBHOOK_BODY_TEMPLATE` gesetzt werden. Dies ist eine globale Vorlage, die vor der automatischen Payload-Erkennung über die URL von Bark, Slack, Discord usw. wirkt; wenn das gerenderte Ergebnis kein JSON-Objekt ist, fällt das System auf das Standard-Payload zurück. Empfohlen wird `$content_json`/`$title_json`, um Zeilenumbrüche und Anführungszeichen zu vermeiden, die das JSON brechen würden:
 
 ```env
 CUSTOM_WEBHOOK_BODY_TEMPLATE={"msg_type":"text","content":$content_json}
 ```
 
-可用占位符：`$content_json`、`$content`、`$title_json`、`$title`。其中 `$content` / `$title` 是裸字符串，不做 JSON 转义；正文含双引号或换行时可能触发 fallback。
+Verfügbare Platzhalter: `$content_json`, `$content`, `$title_json`, `$title`. Dabei sind `$content`/`$title` nackte Strings ohne JSON-Escape; bei doppelten Anführungszeichen oder Zeilenumbrüchen im Text kann der Fallback ausgelöst werden.
 
-Docker Compose 部署中，通过 Web 设置页保存时会把这些应用占位符写成 `$$content_json` / `$$title_json` 等形式，避免 Compose 重新部署时将其展开为空；应用运行时会还原为单个 `$`。如果手动编辑 Docker 使用的 `.env`，请同样使用 `$$content_json` 这类写法。
+In einer Docker-Compose-Bereitstellung werden diese Anwendungsplatzhalter beim Speichern über die Web-Einstellungsseite als `$$content_json`/`$$title_json` usw. geschrieben, damit Compose sie bei erneuter Bereitstellung nicht zu leer expandiert; beim Anwendungsstart werden sie wieder zu einem einzelnen `$` reduziert. Wenn die von Docker verwendete `.env` manuell bearbeitet wird, bitte ebenfalls die Schreibweise `$$content_json` verwenden.
 
-Bark 使用全局模板时需显式写出 Bark body：
+Bark muss bei Verwendung der globalen Vorlage den Bark-Body explizit ausschreiben:
 
 ```env
 CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$title_json,"body":$content_json,"group":"stock"}
 ```
 
-NapCat / OneBot 示例需按实际 endpoint、`user_id` 或 `group_id` 调整：
+Das NapCat-/OneBot-Beispiel muss an den tatsächlichen endpoint, `user_id` oder `group_id` angepasst werden:
 
 ```env
 CUSTOM_WEBHOOK_BODY_TEMPLATE={"user_id":123456,"message":$content_json}
@@ -1141,16 +1142,16 @@ CUSTOM_WEBHOOK_BODY_TEMPLATE={"user_id":123456,"message":$content_json}
 
 ### ntfy / Gotify
 
-ntfy 和 Gotify 都是一等通知渠道，只发送文本 / JSON，不参与 Markdown 转图片。
+ntfy und Gotify sind erstklassige Benachrichtigungskanäle; sie senden nur Text/JSON und beteiligen sich nicht an der Markdown-zu-Bild-Konvertierung.
 
-ntfy 使用完整 topic endpoint，最后一个 path segment 会作为 topic：
+ntfy verwendet den vollständigen Topic-Endpoint; das letzte Path-Segment wird als Topic verwendet:
 
 ```env
 NTFY_URL=https://ntfy.sh/my-topic
 NTFY_TOKEN=
 ```
 
-Gotify 使用 server base URL，系统会自动拼接固定 `/message` API，并通过 `X-Gotify-Key` Header 发送 application token。`GOTIFY_URL` 可包含反向代理 path prefix，但不要包含 `/message`：
+Gotify verwendet die Server-Base-URL; das System fügt automatisch die feste `/message`-API an und sendet das Application-Token über den `X-Gotify-Key`-Header. `GOTIFY_URL` kann ein Reverse-Proxy-Path-Präfix enthalten, aber kein `/message`:
 
 ```env
 GOTIFY_URL=https://gotify.example
@@ -1158,643 +1159,643 @@ GOTIFY_TOKEN=app-token
 ```
 
 ```env
-# 实际请求会发送到 https://example.com/gotify/message
+# Die tatsächliche Anfrage wird an https://example.com/gotify/message gesendet
 GOTIFY_URL=https://example.com/gotify
 GOTIFY_TOKEN=app-token
 ```
 
-`NTFY_URL` 与 `GOTIFY_URL` 的语义不同是两个服务 API 设计不同导致的刻意选择：ntfy 由用户 topic 构成 endpoint，Gotify 的 `/message` 是固定服务 API。
+Der unterschiedliche semantische Umfang von `NTFY_URL` und `GOTIFY_URL` ist eine bewusste Wahl aufgrund unterschiedlicher API-Designs der beiden Dienste: Bei ntfy bildet der Benutzer-Topic den Endpoint, bei Gotify ist `/message` eine feste Dienst-API.
 
 ### Discord
 
-Discord 支持两种方式推送：
+Discord unterstützt zwei Push-Wege:
 
-长报告会按 Discord 单条 content 2000 字符上限自动分片发送；如果某一片遇到 429 限流，发送器会按 Discord 返回的 `retry_after` 或 `Retry-After` 做有限重试，并继续尝试后续分片。`DISCORD_MAX_WORDS` 可调低单片长度，但运行时不会允许超过 2000。
+Lange Berichte werden automatisch gemäß dem 2000-Zeichen-Limit pro Discord-Content segmentiert gesendet; wenn ein Segment eine 429-Rate-Limitierung erhält, wiederholt der Sender begrenzt gemäß dem von Discord zurückgegebenen `retry_after` oder `Retry-After` und versucht weiter die folgenden Segmente. `DISCORD_MAX_WORDS` kann die Länge einzelner Segmente verringern, aber zur Laufzeit ist mehr als 2000 nicht zulässig.
 
-**方式一：Webhook（推荐，简单）**
+**Weg 1: Webhook (empfohlen, einfach)**
 
-1. 在 Discord 频道设置中创建 Webhook
-2. 复制 Webhook URL
-3. 配置环境变量：
+1. In den Discord-Kanaleinstellungen einen Webhook erstellen
+2. Die Webhook-URL kopieren
+3. Umgebungsvariablen konfigurieren:
 
 ```bash
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
 ```
 
-**方式二：Bot API（需要更多权限）**
+**Weg 2: Bot-API (benötigt mehr Berechtigungen)**
 
-1. 在 [Discord Developer Portal](https://discord.com/developers/applications) 创建应用
-2. 创建 Bot 并获取 Token
-3. 邀请 Bot 到服务器
-4. 获取频道 ID（开发者模式下右键频道复制）
-5. 配置环境变量：
+1. Im [Discord Developer Portal](https://discord.com/developers/applications) eine Anwendung erstellen
+2. Einen Bot erstellen und das Token abrufen
+3. Den Bot zum Server einladen
+4. Die Kanal-ID abrufen (im Entwicklermodus per Rechtsklick auf den Kanal kopieren)
+5. Umgebungsvariablen konfigurieren:
 
 ```bash
 DISCORD_BOT_TOKEN=your_bot_token
 DISCORD_MAIN_CHANNEL_ID=your_channel_id
 ```
 
-如果你要接收 Discord Slash Command / Interaction 回调，而不仅是向 Discord 推送消息，还需要在 Discord Developer Portal 的 `General Information -> Public Key` 复制公钥并配置：
+Wenn du Discord-Slash-Command-/Interaction-Rückrufe empfangen möchtest und nicht nur Nachrichten an Discord pushen willst, musst du zusätzlich im Discord Developer Portal unter `General Information -> Public Key` den öffentlichen Schlüssel kopieren und konfigurieren:
 
 ```bash
 DISCORD_INTERACTIONS_PUBLIC_KEY=your_public_key
 ```
 
-未配置该公钥时，系统会拒绝所有 Discord 入站 webhook 请求。
+Ohne diesen öffentlichen Schlüssel lehnt das System alle eingehenden Discord-Webhook-Anfragen ab.
 
 ### Slack
 
-Slack 支持两种方式推送，同时配置时优先使用 Bot API，确保文本与图片发送到同一频道：
+Slack unterstützt zwei Push-Wege; sind beide konfiguriert, wird bevorzugt die Bot API verwendet, damit Text und Bilder an denselben Kanal gesendet werden:
 
-**方式一：Bot API（推荐，支持图片上传）**
+**Weg 1: Bot API (empfohlen, unterstützt Bild-Upload)**
 
-1. 创建 Slack App：https://api.slack.com/apps → Create New App
-2. 添加 Bot Token Scopes：`chat:write`、`files:write`
-3. 安装到工作区并获取 Bot Token (xoxb-...)
-4. 获取频道 ID：频道详情 → 底部复制频道 ID
-5. 配置环境变量：
+1. Slack-App erstellen: https://api.slack.com/apps → Create New App
+2. Bot-Token-Scopes hinzufügen: `chat:write`, `files:write`
+3. Im Workspace installieren und Bot-Token (xoxb-...) abrufen
+4. Kanal-ID abrufen: Kanaldetails → unten Kanal-ID kopieren
+5. Umgebungsvariablen konfigurieren:
 
 ```bash
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_CHANNEL_ID=C01234567
 ```
 
-**方式二：Incoming Webhook（配置简单，仅文本）**
+**Weg 2: Incoming Webhook (einfache Konfiguration, nur Text)**
 
-1. 在 Slack App 管理页面创建 Incoming Webhook
-2. 复制 Webhook URL
-3. 配置环境变量：
+1. Im Slack-App-Verwaltungsbereich einen Incoming Webhook erstellen
+2. Die Webhook-URL kopieren
+3. Umgebungsvariablen konfigurieren:
 
 ```bash
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../xxx
 ```
 
-### Pushover（iOS/Android 推送）
+### Pushover (iOS/Android-Push)
 
-[Pushover](https://pushover.net/) 是一个跨平台的推送服务，支持 iOS 和 Android。
+[Pushover](https://pushover.net/) ist ein plattformübergreifender Push-Dienst mit Unterstützung für iOS und Android.
 
-1. 注册 Pushover 账号并下载 App
-2. 在 [Pushover Dashboard](https://pushover.net/) 获取 User Key
-3. 创建 Application 获取 API Token
-4. 配置环境变量：
+1. Pushover-Konto registrieren und App herunterladen
+2. Im [Pushover Dashboard](https://pushover.net/) den User Key abrufen
+3. Eine Application erstellen und den API-Token abrufen
+4. Umgebungsvariablen konfigurieren:
 
 ```bash
 PUSHOVER_USER_KEY=your_user_key
 PUSHOVER_API_TOKEN=your_api_token
 ```
 
-特点：
-- 支持 iOS/Android 双平台
-- 支持通知优先级和声音设置
-- 免费额度足够个人使用（每月 10,000 条）
-- 消息可保留 7 天
+Eigenschaften:
+- Unterstützt iOS/Android auf beiden Plattformen
+- Unterstützt Benachrichtigungsprioritäten und Sound-Einstellungen
+- Das kostenlose Kontingent reicht für den privaten Gebrauch (10.000 Nachrichten pro Monat)
+- Nachrichten können 7 Tage aufbewahrt werden
 
-### Markdown 转图片（可选）
+### Markdown zu Bild (optional)
 
-配置 `MARKDOWN_TO_IMAGE_CHANNELS` 可将报告以图片形式发送至不支持 Markdown 的渠道（telegram, wechat, custom, email, slack）。
+Mit `MARKDOWN_TO_IMAGE_CHANNELS` können Berichte als Bild an Kanäle gesendet werden, die kein Markdown unterstützen (telegram, wechat, custom, email, slack).
 
-**依赖安装**：
+**Abhängigkeitsinstallation**:
 
-1. **imgkit**：已包含在 `requirements.txt`，执行 `pip install -r requirements.txt` 时会自动安装
-2. **wkhtmltopdf**（默认引擎）：系统级依赖，需手动安装：
-   - **macOS**：`brew install wkhtmltopdf`
-   - **Debian/Ubuntu**：`apt install wkhtmltopdf`
-3. **markdown-to-file**（可选，emoji 支持更好）：`npm i -g markdown-to-file`，并设置 `MD2IMG_ENGINE=markdown-to-file`
+1. **imgkit**: Bereits in `requirements.txt` enthalten; wird bei `pip install -r requirements.txt` automatisch installiert
+2. **wkhtmltopdf** (Standard-Engine): Systemabhängigkeit, muss manuell installiert werden:
+   - **macOS**: `brew install wkhtmltopdf`
+   - **Debian/Ubuntu**: `apt install wkhtmltopdf`
+3. **markdown-to-file** (optional, bessere Emoji-Unterstützung): `npm i -g markdown-to-file` und `MD2IMG_ENGINE=markdown-to-file` setzen
 
-未安装或安装失败时，将自动回退为 Markdown 文本发送。
+Ist das Tool nicht installiert oder die Installation fehlgeschlagen, wird automatisch auf das Senden als Markdown-Text zurückgegriffen.
 
-**单股推送 + 图片发送**（Issue #455）：
+**Einzelaktien-Push + Bildversand** (Issue #455):
 
-单股推送模式（`SINGLE_STOCK_NOTIFY=true`）下，若希望 Telegram 等渠道以图片形式推送，需同时配置 `MARKDOWN_TO_IMAGE_CHANNELS=telegram` 并安装转图工具（wkhtmltopdf 或 markdown-to-file）。个股日报汇总同样支持转图，无需额外配置。
+Im Einzelaktien-Push-Modus (`SINGLE_STOCK_NOTIFY=true`) muss für Bild-Push über Kanäle wie Telegram zusätzlich `MARKDOWN_TO_IMAGE_CHANNELS=telegram` konfiguriert und das Konvertierungstool (wkhtmltopdf oder markdown-to-file) installiert werden. Auch die Tageszusammenfassung einzelner Aktien unterstützt die Bildkonvertierung ohne zusätzliche Konfiguration.
 
-**故障排查**：若日志出现「Markdown 转图片失败，将回退为文本发送」，请检查 `MARKDOWN_TO_IMAGE_CHANNELS` 配置及转图工具是否已正确安装（`which wkhtmltoimage` 或 `which m2f`）。
+**Fehlerbehebung**: Falls im Log «Markdown-zu-Bild-Konvertierung fehlgeschlagen, Fallback auf Textversand» erscheint, bitte die `MARKDOWN_TO_IMAGE_CHANNELS`-Konfiguration prüfen und ob das Konvertierungstool korrekt installiert ist (`which wkhtmltoimage` oder `which m2f`).
 
 ---
 
-## 数据源配置
+## Datenquellen-Konfiguration
 
-系统默认使用 AkShare（免费），也支持其他数据源：
+Das System verwendet standardmäßig AkShare (kostenlos) und unterstützt auch andere Datenquellen:
 
-### AkShare（默认）
-- 免费，无需配置
-- 数据来源：东方财富爬虫
+### AkShare (Standard)
+- Kostenlos, keine Konfiguration nötig
+- Datenquelle: Eastmoney-Crawler
 
 ### Tushare Pro
-- 需要注册获取 Token
-- 更稳定，数据更全
-- 设置 `TUSHARE_TOKEN`
+- Registrierung zum Abruf des Tokens erforderlich
+- Stabiler, vollständigere Daten
+- `TUSHARE_TOKEN` setzen
 
 ### Baostock
-- 免费，无需配置
-- 作为备用数据源
+- Kostenlos, keine Konfiguration nötig
+- Als Ersatz-Datenquelle
 
 ### YFinance
-- 免费，无需配置
-- 支持美股/港股数据
-- 美股历史数据与实时行情均统一使用 YFinance，以避免 akshare 美股复权异常导致的技术指标错误
+- Kostenlos, keine Konfiguration nötig
+- Unterstützt US-/Hongkong-Aktiendaten
+- Historische Daten und Echtzeitkurse für US-Aktien verwenden einheitlich YFinance, um durch Replikationsanomalien von akshare bei US-Aktien verursachte Fehler bei Technischen Indikatoren zu vermeiden
 
-### Longbridge（长桥）
-- 美股/港股数据兜底，补充 YFinance 缺失的量比、换手率、PE 等字段
-- 新接入推荐使用 Longbridge 官方 OAuth 2.0：client_id 优先使用 `LONGBRIDGE_OAUTH_CLIENT_ID`，留空且没有 Legacy Access Token 时兼容使用 `LONGBRIDGE_APP_KEY`；先在可交互环境执行 `python scripts/generate_longbridge_oauth_token.py --client-id <client_id>` 生成 SDK token 缓存
-- GitHub Actions / Docker 等 headless 环境不能在分析任务里等待浏览器授权；可将本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后配置为 `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`
-- OAuth 运行时依赖 SDK 提供 `OAuthBuilder` / `Config.from_oauth`；若当前 Linux/Docker 环境只能安装旧版 SDK，日志会明确提示并自动跳过 Longbridge，不影响 YFinance / AkShare 兜底
-- Legacy API Key 仍兼容：设置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`；其中 Access Token 是旧版 API Key 凭证，不是 OAuth access token
-- 可选设置 `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` 控制连接关闭类异常后的冷却秒数（默认 15）
-- 接入点可配 `LONGBRIDGE_HTTP_URL`、`LONGBRIDGE_QUOTE_WS_URL`、`LONGBRIDGE_TRADE_WS_URL`、`LONGBRIDGE_REGION`
-- 其余可选参数见官方 [环境变量说明](https://open.longbridge.com/zh-CN/docs/getting-started#环境变量)
-- 仅在 YFinance（美股）或 AkShare（港股）返回数据不完整时自动触发，不影响 A 股链路
-- 未配置凭据时不会实例化该可选数据源；若运行时出现连接关闭类异常，会在冷却期内临时跳过 Longbridge，避免请求级频繁重连
+### Longbridge (Changqiao)
+- Fallback für US-/Hongkong-Aktiendaten, ergänzt von YFinance fehlende Felder wie Volume-Verhältnis, Turnover-Rate und PE
+- Für Neuanschluss wird das offizielle Longbridge-OAuth-2.0 empfohlen: client_id bevorzugt `LONGBRIDGE_OAUTH_CLIENT_ID` verwenden; wenn leer und kein Legacy-Access-Token vorhanden ist, kompatibel `LONGBRIDGE_APP_KEY` verwenden; zuerst in einer interaktiven Umgebung `python scripts/generate_longbridge_oauth_token.py --client-id <client_id>` ausführen, um den SDK-Token-Cache zu generieren
+- Headless-Umgebungen wie GitHub Actions / Docker können im Analysetask nicht auf Browser-Autorisierung warten; die Datei `~/.longbridge/openapi/tokens/<client_id>` des lokalen Rechners kann base64-kodiert als `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` konfiguriert werden
+- OAuth setzt zur Laufzeit voraus, dass das SDK `OAuthBuilder` / `Config.from_oauth` bereitstellt; kann in der aktuellen Linux/Docker-Umgebung nur eine alte SDK-Version installiert werden, wird dies im Log klar gemeldet und Longbridge automatisch übersprungen, ohne den YFinance-/AkShare-Fallback zu beeinträchtigen
+- Legacy-API-Key bleibt kompatibel: `LONGBRIDGE_APP_KEY`, `LONGBRIDGE_APP_SECRET`, `LONGBRIDGE_ACCESS_TOKEN` setzen; der Access Token ist eine Legacy-API-Key-Anmeldedaten und kein OAuth-Access-Token
+- Optional `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` für die Cool-down-Sekunden nach Verbindungsschluss-Ausnahmen (Standard 15)
+- Zugangspunkte konfigurierbar über `LONGBRIDGE_HTTP_URL`, `LONGBRIDGE_QUOTE_WS_URL`, `LONGBRIDGE_TRADE_WS_URL`, `LONGBRIDGE_REGION`
+- Weitere optionale Parameter siehe offizielle [Umgebungsvariablen-Dokumentation](https://open.longbridge.com/zh-CN/docs/getting-started#环境变量)
+- Wird nur automatisch ausgelöst, wenn YFinance (US-Aktien) oder AkShare (Hongkong-Aktien) unvollständige Daten zurückliefert; die A-Aktien-Kette bleibt unberührt
+- Ohne konfigurierte Anmeldedaten wird diese optionale Datenquelle nicht instanziiert; tritt zur Laufzeit eine Verbindungsschluss-Ausnahme auf, wird Longbridge innerhalb der Cool-down-Periode vorübergehend übersprungen, um häufige Neuverbindungen auf Anfrageebene zu vermeiden
 
-### 东财接口频繁失败时的处理
+### Umgang mit häufigen Eastmoney-Schnittstellenfehlern
 
-若日志出现 `RemoteDisconnected`、`push2his.eastmoney.com` 连接被关闭等，多为东财限流。建议：
+Erscheinen im Log `RemoteDisconnected`, geschlossene `push2his.eastmoney.com`-Verbindungen usw., liegt meist eine Eastmoney-Rate-Limitierung vor. Empfohlen:
 
-1. 在 `.env` 中设置 `ENABLE_EASTMONEY_PATCH=true`
-2. 将 `MAX_WORKERS=1` 降低并发
-3. 若已配置 Tushare，可优先使用 Tushare 数据源
+1. In `.env` `ENABLE_EASTMONEY_PATCH=true` setzen
+2. Mit `MAX_WORKERS=1` die Parallelität reduzieren
+3. Ist Tushare konfiguriert, kann bevorzugt die Tushare-Datenquelle verwendet werden
 
 ---
 
-## 高级功能
+## Erweiterte Funktionen
 
-### 港股支持
+### Hongkong-Aktien-Unterstützung
 
-使用 `hk` 前缀指定港股代码：
+Mit dem Präfix `hk` werden Hongkong-Aktiencodes angegeben:
 
 ```bash
 STOCK_LIST=600519,hk00700,hk01810
 ```
 
-港股日线会跳过 efinance、pytdx、baostock 等不支持港股日线的数据源，避免把港股代码错配到非港股市场；默认改由 AkShare/Tushare/YFinance/Longbridge 等港股路径继续兜底。
+Hongkong-Tagesdaten überspringen Datenquellen, die keine Hongkong-Tagesdaten unterstützen (efinance, pytdx, baostock usw.), damit Hongkong-Codes nicht fälschlich einem Nicht-Hongkong-Markt zugeordnet werden; standardmäßig greifen die Hongkong-Pfade von AkShare/Tushare/YFinance/Longbridge usw. weiter als Fallback ein.
 
-### ETF 与指数分析
+### ETF- und Indexanalyse
 
-针对指数跟踪型 ETF 和美股指数（如 VOO、QQQ、SPY、510050、SPX、DJI、IXIC），分析仅关注**指数走势、跟踪误差、市场流动性**，不纳入基金管理人/发行方的公司层面风险（诉讼、声誉、高管变动等）。风险警报与业绩预期均基于指数成分股整体表现，避免将基金公司新闻误判为标的本身利空。详见 Issue #274。
+Für indexnachbildende ETFs und US-Indizes (z. B. VOO, QQQ, SPY, 510050, SPX, DJI, IXIC) konzentriert sich die Analyse nur auf **Indexverlauf, Tracking-Error und Marktliquidität** und bezieht keine Unternehmensrisiken auf Fondsmanager-/Emittentenebene ein (Rechtsstreitigkeiten, Ruf, Führungswechsel usw.). Risikoalarme und Leistungserwartungen basieren auf der Gesamtperformance der Indexbestandteile, um zu vermeiden, dass Fondsgesellschaftsnachrichten fälschlich als Nachteil des Ziels selbst interpretiert werden. Details siehe Issue #274.
 
-### 多模型切换
+### Modellwechsel bei mehreren Modellen
 
-配置多个模型，系统自动切换：
+Mehrere Modelle konfigurieren, das System wechselt automatisch:
 
 ```bash
-# Gemini（主力）
+# Gemini (Hauptmodell)
 GEMINI_API_KEY=xxx
 GEMINI_MODEL=gemini-3.1-pro-preview
 
-# OpenAI 兼容（备选）
+# OpenAI-kompatibel (Alternative)
 OPENAI_API_KEY=xxx
 OPENAI_BASE_URL=https://api.deepseek.com
 OPENAI_MODEL=deepseek-v4-flash
-# deepseek-chat / deepseek-reasoner 仍兼容，但官方已标记为 2026/07/24 后废弃
+# deepseek-chat / deepseek-reasoner bleiben kompatibel, sind aber offiziell nach 2026/07/24 als veraltet markiert
 ```
 
-### 高级模型路由（底层由 LiteLLM 驱动）
+### Erweitertes Modell-Routing (basiert auf LiteLLM)
 
-详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md)。默认使用时你只需要理解主模型、备选模型和模型渠道；如果进入这一节，说明你要直接使用底层 [LiteLLM](https://github.com/BerriAI/litellm) 路由能力，无需单独启动 Proxy 服务。
+Details siehe [LLM-Konfigurationsleitfaden](LLM_CONFIG_GUIDE.md). Für die Standardnutzung genügt es, Hauptmodell, Ersatzmodell und Modellkanäle zu verstehen; wenn du diesen Abschnitt erreicht hast, möchtest du direkt die zugrunde liegenden [LiteLLM](https://github.com/BerriAI/litellm)-Routingfähigkeiten nutzen, ohne einen separaten Proxy-Dienst starten zu müssen.
 
-**两层机制**：同一模型多 Key 轮换（Router）与跨模型降级（Fallback）分层独立，互不干扰。
+**Zweistufiger Mechanismus**: Key-Rotation bei mehreren Keys desselben Modells (Router) und modellübergreifendes Degrading (Fallback) sind getrennte Ebenen und stören sich nicht gegenseitig.
 
-**多 Key + 跨模型降级配置示例**：
+**Beispiel für Multi-Key + modellübergreifendes Degrading**:
 
 ```env
-# 主模型：3 个 Gemini Key 轮换，任一 429 时 Router 自动切换下一个 Key
+# Hauptmodell: 3 Gemini-Keys rotieren, bei jedem 429 wechselt der Router automatisch zum nächsten Key
 GEMINI_API_KEYS=key1,key2,key3
 LITELLM_MODEL=gemini/gemini-3.1-pro-preview
 
-# 跨模型降级：主模型全部 Key 均失败时，按序尝试 Claude → GPT
-# 需配置对应 API Key：ANTHROPIC_API_KEY、OPENAI_API_KEY
+# Modellübergreifendes Degrading: Scheitern alle Keys des Hauptmodells, wird der Reihe nach Claude → GPT versucht
+# Entsprechende API-Keys erforderlich: ANTHROPIC_API_KEY、OPENAI_API_KEY
 LITELLM_FALLBACK_MODELS=anthropic/claude-sonnet-4-6,openai/gpt-5.4-mini
 ```
 
-**预期行为**：首次请求用 `key1`；若 429，Router 下次用 `key2`；若 3 个 Key 均不可用，则切换到 Claude，再失败则切换到 GPT。
+**Erwartetes Verhalten**: Der erste Request verwendet `key1`; bei 429 verwendet der Router beim nächsten Mal `key2`; sind alle 3 Keys nicht verfügbar, wird zu Claude gewechselt, und bei erneutem Fehlschlag zu GPT.
 
-> ⚠️ `LITELLM_MODEL` 必须包含 provider 前缀（如 `gemini/`、`anthropic/`、`openai/`），
-> 否则系统无法识别应使用哪组 API Key。旧格式的 `GEMINI_MODEL`（无前缀）仅用于未配置 `LITELLM_MODEL` 时的自动推断。
+> ⚠️ `LITELLM_MODEL` muss ein provider-Präfix enthalten (z. B. `gemini/`、`anthropic/`、`openai/`),
+> sonst kann das System nicht erkennen, welche API-Key-Gruppe verwendet werden soll. Das alte Format `GEMINI_MODEL` (ohne Präfix) wird nur zur automatischen Ableitung verwendet, wenn `LITELLM_MODEL` nicht konfiguriert ist.
 
-**依赖说明**：`requirements.txt` 中保留 `openai>=1.0.0`，因 LiteLLM 内部依赖 OpenAI SDK 作为统一接口；显式保留可确保版本兼容性，用户无需单独配置。
+**Abhängigkeitshinweis**: `requirements.txt` behält `openai>=1.0.0`, da LiteLLM intern das OpenAI-SDK als einheitliche Schnittstelle verwendet; die explizite Beibehaltung stellt die Versionskompatibilität sicher, ohne dass der Benutzer separat konfigurieren muss.
 
-**视觉模型（图片提取股票代码）**：详见 [LLM 配置指南 - Vision](LLM_CONFIG_GUIDE.md#41-vision-模型图片识别股票代码)。
+**Vision-Modell (Aktiencodes aus Bildern extrahieren)**: Details siehe [LLM-Konfigurationsleitfaden - Vision](LLM_CONFIG_GUIDE.md#41-vision-modelle-bilder-erkennen-von-aktiencodes).
 
-从图片提取股票代码（如 `/api/v1/stocks/extract-from-image`）使用统一视觉模型接入，底层采用 LiteLLM Vision 与 OpenAI `image_url` 格式，支持 Gemini、Claude、OpenAI、DeepSeek 等 Vision-capable 模型。返回 `items`（code、name、confidence）及兼容的 `codes` 数组。
+Das Extrahieren von Aktiencodes aus Bildern (z. B. `/api/v1/stocks/extract-from-image`) nutzt eine einheitliche Vision-Modellanbindung, basiert auf LiteLLM Vision und dem OpenAI-`image_url`-Format und unterstützt Vision-fähige Modelle wie Gemini, Claude, OpenAI und DeepSeek. Zurückgegeben werden `items` (code, name, confidence) sowie ein kompatibles `codes`-Array.
 
-> 兼容性说明：`/api/v1/stocks/extract-from-image` 响应在原 `codes` 基础上新增 `items` 字段。若下游客户端使用严格 JSON Schema 且不接受未知字段，请同步更新 schema。
+> Kompatibilitätshinweis: Die Antwort von `/api/v1/stocks/extract-from-image` fügt zum ursprünglichen `codes` das Feld `items` hinzu. Verwenden Downstream-Clients ein striktes JSON-Schema und akzeptieren keine unbekannten Felder, bitte das Schema synchron aktualisieren.
 
-**智能导入**：除图片外，还支持 CSV/Excel 文件及剪贴板粘贴（`/api/v1/stocks/parse-import`），自动解析代码/名称列，名称→代码解析支持本地映射、拼音匹配及 AkShare 在线 fallback。依赖 `pypinyin`（拼音匹配）和 `openpyxl`（Excel 解析），已包含在 `requirements.txt` 中。
+**Intelligenter Import**: Neben Bildern werden auch CSV-/Excel-Dateien und Clipboard-Einfügen unterstützt (`/api/v1/stocks/parse-import`), mit automatischer Erkennung der Code-/Namensspalten; die Namens→Code-Auflösung unterstützt lokale Zuordnungen, Pinyin-Matching und AkShare-Online-Fallback. Abhängig von `pypinyin` (Pinyin-Matching) und `openpyxl` (Excel-Parsing), bereits in `requirements.txt` enthalten.
 
-- **AkShare 名称解析缓存**：名称→代码解析使用 AkShare 在线 fallback 时，结果缓存 1 小时（TTL），避免频繁请求；首次调用或缓存过期后会自动刷新。
-- **CSV/Excel 列名**：支持 `code`、`股票代码`、`代码`、`name`、`股票名称`、`名称` 等（不区分大小写）；无表头时默认第 1 列为代码、第 2 列为名称。
-- **常见解析失败**：文件过大（>2MB）、编码非 UTF-8/GBK、Excel 工作表为空或损坏、CSV 分隔符/列数不一致时，API 会返回具体错误提示。
+- **AkShare-Namensauflösungs-Cache**: Wird beim Namens→Code-Parsing der AkShare-Online-Fallback verwendet, werden Ergebnisse 1 Stunde (TTL) gecacht, um häufige Anfragen zu vermeiden; nach dem ersten Aufruf oder bei Cache-Ablauf wird automatisch aktualisiert.
+- **CSV-/Excel-Spaltennamen**: Unterstützt `code`, `股票代码`, `代码`, `name`, `股票名称`, `名称` usw. (unabhängig von Groß-/Kleinschreibung); ohne Kopfzeile gelten standardmäßig Spalte 1 als Code und Spalte 2 als Name.
+- **Häufige Parsing-Fehler**: Bei zu großer Datei (>2MB), Nicht-UTF-8/GBK-Kodierung, leerem oder beschädigtem Excel-Arbeitsblatt oder inkonsistenten CSV-Trennzeichen/Spaltenanzahl gibt die API eine konkrete Fehlermeldung zurück.
 
-- **模型优先级**：`VISION_MODEL` > `LITELLM_MODEL` > 根据已有 API Key 推断（`OPENAI_VISION_MODEL` 已废弃，请改用 `VISION_MODEL`）
-- **Provider 回退**：主模型失败时，按 `VISION_PROVIDER_PRIORITY`（默认 `gemini,anthropic,openai`）自动切换到下一个可用 provider
-- **主模型不支持 Vision 时**：若主模型为 DeepSeek 等非 Vision 模型，可显式配置 `VISION_MODEL=openai/gpt-5.5` 或 `gemini/gemini-3.1-pro-preview` 供图片提取使用
-- **配置校验**：若配置了 `VISION_MODEL` 但未配置对应 provider 的 API Key，启动时会输出 warning，图片提取功能将不可用
+- **Modellpriorität**: `VISION_MODEL` > `LITELLM_MODEL` > Ableitung aus vorhandenem API-Key (`OPENAI_VISION_MODEL` ist veraltet, bitte `VISION_MODEL` verwenden)
+- **Provider-Fallback**: Schlägt das Hauptmodell fehl, wird gemäß `VISION_PROVIDER_PRIORITY` (Standard `gemini,anthropic,openai`) automatisch zum nächsten verfügbaren Provider gewechselt
+- **Wenn das Hauptmodell kein Vision unterstützt**: Ist das Hauptmodell ein Nicht-Vision-Modell wie DeepSeek, kann für die Bilderkennung explizit `VISION_MODEL=openai/gpt-5.5` oder `gemini/gemini-3.1-pro-preview` konfiguriert werden
+- **Konfigurationsvalidierung**: Ist `VISION_MODEL` konfiguriert, aber der API-Key des entsprechenden Providers fehlt, wird beim Start eine warning ausgegeben und die Bilderkennung ist nicht verfügbar
 
-### 调试模式
+### Debug-Modus
 
 ```bash
 python main.py --debug
 ```
 
-日志文件位置：
-- 常规日志：`logs/stock_analysis_YYYYMMDD.log`
-- 调试日志：`logs/stock_analysis_debug_YYYYMMDD.log`
+Logdatei-Pfade:
+- Normales Log: `logs/stock_analysis_YYYYMMDD.log`
+- Debug-Log: `logs/stock_analysis_debug_YYYYMMDD.log`
 
-调试日志默认保留项目自身 DEBUG 信息，但会将 LiteLLM 内部日志压低到 `WARNING`，避免流式生成时按 token 写入大量第三方调试日志；如需排查 LiteLLM 内部细节，可在 `.env` 中临时设置 `LITELLM_LOG_LEVEL=DEBUG`。
+Das Debug-Log behält standardmäßig die DEBUG-Informationen des Projekts selbst bei, senkt aber interne LiteLLM-Logs auf `WARNING`, um beim Streaming pro Token große Mengen an Drittanbieter-Debug-Logs zu vermeiden; zum Untersuchen interner LiteLLM-Details kann in `.env` vorübergehend `LITELLM_LOG_LEVEL=DEBUG` gesetzt werden.
 
-### SQLite 写入稳态配置
+### Stabile SQLite-Schreibkonfiguration
 
-默认文件型 SQLite 会在连接建立时启用 `WAL` 并设置 `busy_timeout`，`save_daily_data()` 也已改为按 `(code, date)` 批量原子 upsert，以降低批量更新和并发回写时的锁竞争。
+Die Standard-Datei-SQLite aktiviert beim Verbindungsaufbau `WAL` und setzt `busy_timeout`; `save_daily_data()` wurde außerdem auf einen atomaren Batch-Upsert nach `(code, date)` umgestellt, um Lock-Konkurrenz bei Batch-Aktualisierungen und parallelen Rückschreibvorgängen zu verringern.
 
-如需调整，可在 `.env` 中设置：
+Für Anpassungen können in `.env` gesetzt werden:
 
-| 变量 | 默认值 | 说明 |
+| Variable | Standardwert | Beschreibung |
 |------|-------|------|
-| `SQLITE_WAL_ENABLED` | `true` | 文件型 SQLite 是否启用 `journal_mode=WAL` |
-| `SQLITE_BUSY_TIMEOUT_MS` | `5000` | SQLite 等锁超时（毫秒） |
-| `SQLITE_WRITE_RETRY_MAX` | `3` | 遇到 `database is locked` / `database table is locked` 时的最大重试次数 |
-| `SQLITE_WRITE_RETRY_BASE_DELAY` | `0.1` | 写入重试基础退避时间（秒，按指数退避递增） |
+| `SQLITE_WAL_ENABLED` | `true` | Ob die Datei-SQLite `journal_mode=WAL` aktiviert |
+| `SQLITE_BUSY_TIMEOUT_MS` | `5000` | SQLite-Lock-Warte-Timeout (Millisekunden) |
+| `SQLITE_WRITE_RETRY_MAX` | `3` | Maximale Wiederholungen bei `database is locked` / `database table is locked` |
+| `SQLITE_WRITE_RETRY_BASE_DELAY` | `0.1` | Basis-Backoff-Zeit für Schreibwiederholungen (Sekunden, exponentiell steigend) |
 
 ---
 
-## 分析决策可操作性
+## Analyse-Entscheidungs-Opersationalität
 
-个股报告的操作建议会结合支撑位、压力位、量能/筹码、主力资金流向和风险事件进行校准，避免仅因单日涨跌或评分跨线在“买入/卖出”之间剧烈切换。若价格处在支撑与压力之间且资金流不明确，报告会优先给出“持有、震荡观望、洗盘观察”等中性可执行建议；只有接近支撑确认、有效突破压力且量价/资金配合时才给出买入，跌破关键支撑或主力资金持续流出时才给出卖出/减仓。
-该项调整会影响可操作决策的运行时落盘与提示词约束链路，但不变更 LLM 模型、LiteLLM 路由、Provider/Key 及其兼容边界，不影响配置保存/清理语义。
-兼容性核验结论：除配置和模型侧语义外，该决策稳定性链路覆盖 `src/analyzer.py`、`src/core/pipeline.py`、`src/core/backtest_engine.py`、`src/report_language.py` 及 `src/agent` 决策路径的运行时行为，建议复核报告决策类型映射与回测入口联动。
-核验路径：相关逻辑在上述运行时路径与对应测试（`tests/test_backtest_engine.py`、`tests/test_analyzer_news_prompt.py`、`tests/test_decision_stability.py`、`tests/test_agent_pipeline.py` 等）中生效；未在 `src/config.py`、`src/report.py`、存储/持久化链路新增配置字段或清理逻辑。
+Die Handlungsempfehlung im Einzelaktienbericht wird unter Berücksichtigung von Unterstützung, Widerstand, Volumen/Chips, Hauptkapitalfluss und Risikoereignissen kalibriert, um heftige Wechsel zwischen "Kauf/Verkauf" allein aufgrund eines einzelnen Tagesgewinns/-verlusts oder eines Score-Grenzübertritts zu vermeiden. Liegt der Preis zwischen Unterstützung und Widerstand und ist der Kapitalfluss unklar, gibt der Bericht bevorzugt neutrale umsetzbare Empfehlungen wie "Halten, Seitwärtsbeobachtung, Washout-Beobachtung"; nur bei bestätigter Unterstützung, gültigem Ausbruch über den Widerstand und passendem Volumen-Preis/Kapitalfluss wird zum Kauf geraten, und bei Bruch einer entscheidenden Unterstützung oder anhaltendem Hauptkapitalabfluss zum Verkauf/Positionsabbau.
+Diese Anpassung beeinflusst die Laufzeitpersistierung umsetzbarer Entscheidungen und die Prompt-Einschränkungskette, verändert aber nicht das LLM-Modell, das LiteLLM-Routing, Provider/Key und deren Kompatibilitätsgrenzen und beeinflusst weder die Speicher-/Bereinigungssemantik der Konfiguration.
+Kompatibilitätsverifizierungsergebnis: Abgesehen von der Konfigurations- und Modellseitensemantik deckt diese Entscheidungsstabilitätskette das Laufzeitverhalten von `src/analyzer.py`, `src/core/pipeline.py`, `src/core/backtest_engine.py`, `src/report_language.py` und den Entscheidungspfaden von `src/agent` ab; empfohlen wird, die Zuordnung des Berichtsentscheidungstyps und die Verknüpfung mit dem Backtest-Einstieg zu prüfen.
+Verifizierungspfad: Die zugehörige Logik greift in den obigen Laufzeitpfaden und den entsprechenden Tests (`tests/test_backtest_engine.py`, `tests/test_analyzer_news_prompt.py`, `tests/test_decision_stability.py`, `tests/test_agent_pipeline.py` usw.); in `src/config.py`, `src/report.py` und der Speicher-/Persistenzkette wurden keine Konfigurationsfelder oder Bereinigungslogik hinzugefügt.
 
-### 建议动作 Taxonomy（#1390 P0）
+### Handlungsempfehlungs-Taxonomie (#1390 P0)
 
-个股报告在保留 `operation_advice` 自由文本的同时，新增可选 `action` / `action_label` 字段，作为 Web 历史列表、同股历史、StockBar 和回测结果行的结构化展示辅助。`decision_type` 仍保持旧的 `buy|hold|sell` 三态统计口径；`action` 为空时不会改写既有 `decision_type` 推断链。
+Der Einzelaktienbericht behält den Freitext `operation_advice` bei und fügt zusätzlich optionale Felder `action`/`action_label` als strukturierte Anzeigehilfe für Web-Historienliste, Aktienhistorie, StockBar und Backtest-Ergebniszeilen hinzu. `decision_type` behält weiterhin die alte dreistufige Statistikbasis `buy|hold|sell`; ist `action` leer, wird die bestehende `decision_type`-Ableitungskette nicht umgeschrieben.
 
-| `action` | 常见来源文本 | `decision_type` 桥接 |
+| `action` | Häufige Quelltexte | `decision_type`-Brücke |
 | --- | --- | --- |
-| `buy` | `strong_buy`、`强烈买入`、`买入`、`布局`、`建仓` | `buy` |
-| `add` | `add`、`加仓`、`增持`、`accumulate` | `buy` |
-| `hold` | `hold`、`持有`、`持有观察`、`洗盘观察` | `hold` |
-| `watch` | `watch`、`观望`、`等待`、`wait` | `hold` |
-| `reduce` | `reduce`、`减仓`、`trim` | `sell` |
-| `sell` | `sell`、`卖出`、`清仓`、`strong_sell`、`强烈卖出` | `sell` |
-| `avoid` | `avoid`、`回避`、`规避`、`不建议买入`、`避免买入`、`do not buy` | `hold` |
-| `alert` | `alert`、`风险预警`、`警惕`、`触发告警`、`risk alert` | `hold` |
+| `buy` | `strong_buy`, `强烈买入`, `买入`, `布局`, `建仓` | `buy` |
+| `add` | `add`, `加仓`, `增持`, `accumulate` | `buy` |
+| `hold` | `hold`, `持有`, `持有观察`, `洗盘观察` | `hold` |
+| `watch` | `watch`, `观望`, `等待`, `wait` | `hold` |
+| `reduce` | `reduce`, `减仓`, `trim` | `sell` |
+| `sell` | `sell`, `卖出`, `清仓`, `strong_sell`, `强烈卖出` | `sell` |
+| `avoid` | `avoid`, `回避`, `规避`, `不建议买入`, `避免买入`, `do not buy` | `hold` |
+| `alert` | `alert`, `风险预警`, `警惕`, `触发告警`, `risk alert` | `hold` |
 
-上表的 `decision_type` 桥接只说明八态 action 与旧三态统计口径的兼容关系；#1390 P0 不会把 `action` 自动反写到既有 `decision_type`。若上游显式 `action` 与 `decision_type` 同时存在但语义不一致，三态统计、回测和旧报表口径仍以 `decision_type` / 原有推断链为准，`action/action_label` 只承担结构化展示辅助。
+Die `decision_type`-Brücke in der obigen Tabelle beschreibt nur die Kompatibilitätsbeziehung zwischen den Acht-Zustands-Aktionen und der alten dreistufigen Statistikbasis; #1390 P0 schreibt `action` nicht automatisch zurück in das bestehende `decision_type`. Sind ein explizites `action` des Upstream und `decision_type` gleichzeitig vorhanden, aber semantisch inkonsistent, gelten für die dreistufige Statistik, den Backtest und die alten Berichtsformate weiterhin `decision_type`/die ursprüngliche Ableitungskette; `action/action_label` übernehmen nur die strukturierte Anzeigehilfe.
 
-未知或歧义建议不会兜底成 `watch` 或 `hold`，而是返回空 `action/action_label`。Web 历史卡片、StockBar、同股历史抽屉和回测结果行会在旧记录缺少 `action/action_label` 时从 `operation_advice` 做展示级 fallback；该 fallback 只影响前端标签，不等价于稳定 API action 或后续信号资产。Web 展示层在同时收到 `action` 与 `action_label` 时，会优先按当前界面语言从 `action` 生成标签；API 中的 `action_label` 仍按报告语言生成，供非 Web 客户端或无 `action` 的兼容展示使用。大盘复盘和其他非个股报告不会产生交易 `action`，只保留 `operation_advice` 文本。`dashboard.phase_decision.immediate_action` 属于市场阶段护栏报告字段，不参与 #1390 P0 的八态 action 派生；最终市场阶段仍来自 `report.meta.market_phase_summary.phase`。
+Unbekannte oder mehrdeutige Empfehlungen fallen nicht auf `watch` oder `hold` zurück, sondern liefern ein leeres `action/action_label`. Web-Historienkarten, StockBar, die Aktienhistorie-Schublade und Backtest-Ergebniszeilen greifen bei alten Einträgen ohne `action/action_label` auf Anzeigeebene aus `operation_advice` zurück; dieser Fallback betrifft nur das Frontend-Label und entspricht nicht einer stabilen API-Aktion oder einem späteren Signalwert. Die Web-Anzeigeebene generiert, wenn gleichzeitig `action` und `action_label` empfangen werden, das Label bevorzugt nach der aktuellen Oberflächensprache aus `action`; `action_label` in der API wird weiterhin nach der Berichtssprache erzeugt und dient Nicht-Web-Clients oder der kompatiblen Anzeige ohne `action`. Der Markt-Rückblick und andere Nicht-Einzelaktienberichte erzeugen keine Handels-`action`, sondern behalten nur den `operation_advice`-Text. `dashboard.phase_decision.immediate_action` gehört zum Berichtsfeld der Marktphasen-Schutzmaßnahmen und nimmt nicht an der Acht-Zustands-Aktionsableitung von #1390 P0 teil; die endgültige Marktphase stammt weiterhin aus `report.meta.market_phase_summary.phase`.
 
-#1390 P0 不会把后续信号资产字段平铺到现有 summary、历史列表、StockBar 或回测响应。#1390 P1 开始通过独立 `DecisionSignal` 资源承接 `horizon`、`plan_quality`、`status` 等更细粒度计划字段，仍不改变既有报告主契约、不回填历史、不新增配置项。
+#1390 P0 flacht nachfolgende Signalwertfelder nicht auf die bestehenden Summary-, Historienlisten-, StockBar- oder Backtest-Antworten aus. Ab #1390 P1 wird über die eigenständige `DecisionSignal`-Ressource die Übernahme feingranularer Planungsfelder wie `horizon`, `plan_quality` und `status` übernommen, ohne den bestehenden Hauptvertrag der Berichte zu ändern, ohne Historien zurückzufüllen und ohne neue Konfigurationsoptionen.
 
-### 决策信号资产（#1390 P1/P2/P3/P4/P5）
+### Entscheidungssignal-Assets (#1390 P1/P2/P3/P4/P5)
 
-`DecisionSignal` 是独立后端资源，用于把 AI 建议沉淀为可查询、可去重、可更新状态的信号资产。它不替换 `operation_advice`、不扩展 `decision_type=buy|hold|sell`。#1390 P2 开始，普通个股分析和 Agent 个股分析在分析历史保存成功后，会从最终 `AnalysisResult` best-effort 提取一条 `source_type=analysis` 的信号；显式 API 或 service 调用仍然保留。
+`DecisionSignal` ist eine eigenständige Backend-Ressource, um KI-Empfehlungen als abfragbare, deduplizierbare und statusaktualisierbare Signal-Assets zu verfestigen. Es ersetzt `operation_advice` nicht und erweitert nicht `decision_type=buy|hold|sell`. Ab #1390 P2 extrahieren die gewöhnliche Einzelaktienanalyse und die Agent-Einzelaktienanalyse nach erfolgreichem Speichern der Analysehistorie best-effort eine Signalquelle mit `source_type=analysis` aus dem endgültigen `AnalysisResult`; explizite API- oder Serviceaufrufe bleiben erhalten.
 
-自动提取只消费已生成报告中的结构化字段，不重新解析 Markdown，也不回填旧历史、不新增配置项、不改变报告主契约。提取失败、建议动作未知或歧义、非个股报告、无法识别市场时会跳过写入，不影响分析报告保存。`source_report_id` 使用刚保存的 `AnalysisHistory.id`；`trace_id` 优先使用运行诊断 trace，缺失时降级到 pipeline trace 或 `query_id`；`stock_name` 来自 `AnalysisResult.name`；`trigger_source` 来自运行入口，缺失时为 `system`。
+Die automatische Extraktion konsumiert nur strukturierte Felder aus dem bereits erzeugten Bericht, parst kein Markdown erneut, füllt keine alte Historie zurück, fügt keine Konfigurationsoptionen hinzu und verändert den Hauptvertrag der Berichte nicht. Bei Extraktionsfehler, unbekannter oder mehrdeutiger Handlungsempfehlung, Nicht-Einzelaktienbericht oder nicht erkennbarem Markt wird das Schreiben übersprungen, ohne das Speichern des Analyseberichts zu beeinflussen. `source_report_id` verwendet die gerade gespeicherte `AnalysisHistory.id`; `trace_id` bevorzugt die Laufzeit-Diagnose-Trace, bei Fehlen Rückfall auf die Pipeline-Trace oder `query_id`; `stock_name` stammt aus `AnalysisResult.name`; `trigger_source` stammt vom Ausführungseinstieg, bei Fehlen `system`.
 
-P2 自动提取的市场阶段优先读取保存快照中的 `market_phase_summary.phase`，其次读取 `AnalysisResult.market_phase_summary.phase`；数据质量优先读取保存快照中的 `analysis_context_pack_overview.data_quality`，其次读取 `AnalysisResult.analysis_context_pack_overview.data_quality`。价格计划复用历史保存的狙击点解析规则，从 `dashboard.battle_plan.sniper_points.ideal_buy/secondary_buy/stop_loss/take_profit` 映射到 `entry_low/entry_high/stop_loss/target_price`；只有 `ideal_buy` 时写入 `entry_low`，只有 `secondary_buy` 时写入 `entry_high`，两者同时存在时按有效价格排序为 `entry_low <= entry_high`。缺失止损或目标价只会降低 service 自动计算的 `plan_quality`，不会编造字段。`watch_conditions` 优先读取 `dashboard.phase_decision.watch_conditions`，没有时才读取 `dashboard.battle_plan.action_checklist`；`catalyst_summary` 仅在 `dashboard.intelligence.positive_catalysts` 存在且为列表时写入。`confidence` 由报告置信等级做保守映射：`高/high=0.8`、`中/medium/mid=0.6`、`低/low=0.4`，原始置信等级保留在 `metadata`。
+Die Marktphase der P2-Automatikextraktion liest bevorzugt `market_phase_summary.phase` aus dem gespeicherten Snapshot, danach `AnalysisResult.market_phase_summary.phase`; die Datenqualität liest bevorzugt `analysis_context_pack_overview.data_quality` aus dem gespeicherten Snapshot, danach `AnalysisResult.analysis_context_pack_overview.data_quality`. Der Preisplan nutzt die beim Speichern der Historie verwendeten Regeln zur Auflösung von Scharfschützenpunkten wieder und mappt `dashboard.battle_plan.sniper_points.ideal_buy/secondary_buy/stop_loss/take_profit` auf `entry_low/entry_high/stop_loss/target_price`; nur bei `ideal_buy` wird `entry_low` geschrieben, nur bei `secondary_buy` wird `entry_high` geschrieben, und bei gleichzeitigem Vorhandensein werden die gültigen Preise so sortiert, dass `entry_low <= entry_high` gilt. Ein fehlender Stop-Loss oder Zielpreis senkt nur die vom Service automatisch berechnete `plan_quality`, erfindet aber keine Felder. `watch_conditions` liest bevorzugt `dashboard.phase_decision.watch_conditions`, nur wenn diese fehlen, `dashboard.battle_plan.action_checklist`; `catalyst_summary` wird nur geschrieben, wenn `dashboard.intelligence.positive_catalysts` vorhanden und eine Liste ist. `confidence` wird konservativ aus der Berichtskonfidenzstufe gemappt: `高/high=0.8`, `中/medium/mid=0.6`, `低/low=0.4`; die ursprüngliche Konfidenzstufe bleibt in `metadata` erhalten.
 
-P3 开始，生命周期由 `DecisionSignalService` 统一补齐：显式传入的 `horizon` / `expires_at` 永远优先；未传 `horizon` 时，`alert` 或 `premarket/intraday/lunch_break/closing_auction` 默认 `intraday`，`postmarket/non_trading/unknown` 或无阶段上下文时默认 `3d`；未传 `expires_at` 时，`intraday` 优先读取 `metadata.market_phase_summary.minutes_to_close/minutes_to_open`，无上下文时使用确定性 TTL fallback（A 股 4h、港股 5.5h、美股 6.5h、未知 4h），`1d/3d/5d/10d` 按自然日，`swing/long` 不自动过期。fallback TTL 只是缺少交易日历上下文时的降级策略，不等价于真实交易所收盘时间。自动提取只把 `market_phase_summary.phase/session_date/minutes_to_open/minutes_to_close` 作为低敏 hint 写入 `metadata.market_phase_summary`，最终 `horizon/expires_at` 仍由 service 计算。
+Ab P3 vervollständigt `DecisionSignalService` den Lebenszyklus einheitlich: Explizit übergebene `horizon`/`expires_at` haben immer Vorrang; bei nicht übergebenem `horizon` gilt für `alert` oder `premarket/intraday/lunch_break/closing_auction` Standard `intraday`, für `postmarket/non_trading/unknown` oder ohne Phasenkontext Standard `3d`; bei nicht übergebenem `expires_at` liest `intraday` bevorzugt `metadata.market_phase_summary.minutes_to_close/minutes_to_open`, ohne Kontext wird ein deterministischer TTL-Fallback verwendet (A-Aktien 4h, Hongkong-Aktien 5.5h, US-Aktien 6.5h, unbekannt 4h), `1d/3d/5d/10d` nach Kalendertagen, `swing/long` laufen nicht automatisch ab. Die Fallback-TTL ist nur eine Degradierungsstrategie ohne Handelskalender-Kontext und entspricht nicht der realen Börsenschlusszeit. Die Automatikextraktion schreibt nur `market_phase_summary.phase/session_date/minutes_to_open/minutes_to_close` als niedrigsensible Hinweise in `metadata.market_phase_summary`; die endgültigen `horizon/expires_at` werden weiterhin vom Service berechnet.
 
-核心字段包括 `stock_code`、`stock_name`、`market`、`source_type`、`source_agent`、`source_report_id`、`trace_id`、`decision_profile`、`market_phase`、`trigger_source`、`action`、`action_label`、`confidence`、`score`、`horizon`、`entry_low`、`entry_high`、`stop_loss`、`target_price`、`invalidation`、`watch_conditions`、`reason`、`risk_summary`、`catalyst_summary`、`evidence`、`data_quality_summary`、`plan_quality`、`status`、`expires_at`、`created_at`、`updated_at` 和 `metadata`。`action` 复用八态建议动作；`decision_profile` 支持 `conservative|balanced|aggressive`，数据库 `NULL` 仅表示 legacy/unknown；`market_phase` 复用市场阶段枚举；`source_type` 支持 `analysis|agent|alert|market_review|manual`；`status` 支持 `active|expired|invalidated|closed|archived`；`horizon` 支持 `intraday|1d|3d|5d|10d|swing|long`。
+Zu den Kernfeldern gehören `stock_code`, `stock_name`, `market`, `source_type`, `source_agent`, `source_report_id`, `trace_id`, `decision_profile`, `market_phase`, `trigger_source`, `action`, `action_label`, `confidence`, `score`, `horizon`, `entry_low`, `entry_high`, `stop_loss`, `target_price`, `invalidation`, `watch_conditions`, `reason`, `risk_summary`, `catalyst_summary`, `evidence`, `data_quality_summary`, `plan_quality`, `status`, `expires_at`, `created_at`, `updated_at` und `metadata`. `action` nutzt die Acht-Zustands-Handlungsempfehlungen wieder; `decision_profile` unterstützt `conservative|balanced|aggressive`, `NULL` in der Datenbank bedeutet nur legacy/unknown; `market_phase` nutzt die Marktphasen-Enumeration wieder; `source_type` unterstützt `analysis|agent|alert|market_review|manual`; `status` unterstützt `active|expired|invalidated|closed|archived`; `horizon` unterstützt `intraday|1d|3d|5d|10d|swing|long`.
 
-`confidence` 为 `0.0-1.0`，`score` 为 `0-100`，与历史报告的 `sentiment_score` 解耦。价格计划字段 `entry_low`、`entry_high`、`stop_loss`、`target_price` 必须是有限正数，且同时传入 `entry_low` 和 `entry_high` 时要求 `entry_low <= entry_high`。`plan_quality` 支持 `complete|partial|minimal|unknown`：调用方显式传入合法值时直接保存；未传时由 service 计算，入场区间（`entry_low` 或 `entry_high` 任一有值）算 1 项，`stop_loss`、`target_price`、`invalidation`、`watch_conditions` 各算 1 项，满足 2 项为 `partial`，满足 4 项及以上为 `complete`，仅有 action/reason 为 `minimal`。
+`confidence` liegt bei `0.0-1.0`, `score` bei `0-100` und ist vom `sentiment_score` des historischen Berichts entkoppelt. Die Preisplan-Felder `entry_low`, `entry_high`, `stop_loss` und `target_price` müssen endliche positive Zahlen sein, und bei gleichzeitiger Übergabe von `entry_low` und `entry_high` gilt `entry_low <= entry_high`. `plan_quality` unterstützt `complete|partial|minimal|unknown`: Bei explizit übergebenem gültigen Wert wird direkt gespeichert; wird keiner übergeben, berechnet es der Service, wobei der Einstiegsbereich (`entry_low` oder `entry_high` mit Wert) als 1 Element zählt, `stop_loss`, `target_price`, `invalidation` und `watch_conditions` jeweils als 1 Element; ab 2 Elementen `partial`, ab 4 Elementen `complete`, nur mit action/reason `minimal`.
 
-新增 API：
+Neue APIs:
 
-- `POST /api/v1/decision-signals`：创建或按同源键去重，返回 `{ item, created }`，HTTP 200。新写入可省略 `decision_profile` 并默认 `balanced`，也可传合法 `conservative|balanced|aggressive`；顶层显式 `null`、空值或非法值会被拒绝。顶层缺失时才 fallback 合法 `metadata.decision_profile`，写入前会同步 `metadata.decision_profile` 为正式字段值；metadata 省略或显式 `null` 均按无 metadata 处理，object 会浅复制，非 object 会被拒绝。精确去重键为 `(source_report_id, source_type, market, stock_code, decision_profile, action, horizon, market_phase)`；没有 report 但有 `trace_id` 时使用 `(trace_id, source_type, market, stock_code, decision_profile, action, horizon, market_phase)`；两者皆无则不去重。精确匹配、relaxed fallback、horizon/phase fill、expired refresh、active invalidation 和 stale backfill invalidation 都遵循 same-profile 语义：`NULL` 只匹配 `NULL`，非空 profile 只匹配相同 profile；expired duplicate refresh 不会改写 `decision_profile`。精确匹配失败后，会按同源 + `source_type/market/stock_code/decision_profile/action` 做窄 relaxed fallback，只填补旧记录为空的 `horizon/market_phase`，且 `horizon` 只有在新值由 service 默认生成时才可填补；显式不同期限、已有不同阶段或不同 profile 仍保留多条。若命中同源 expired 同 profile 记录，且新请求为 active 并携带未来 `expires_at`，会原地刷新该记录并返回 `created=false`，这次续期按新的 active 激活事件处理。active 新建或 expired 续期后的 bullish 信号（`buy/add`）会把更早同 profile 的 active defensive 信号（`reduce/sell/avoid`）标记为 `invalidated`，反向同理；不同非空 profile 可并存，即使动作相反。active duplicate retry 也会重跑同 profile 失效修复，以恢复上次创建成功但失效写入失败的 partial create；普通旧 duplicate/replay 不作为新的激活事件。`hold/watch/alert` 不触发自动失效。刷新或重复命中都对外返回 `created=false`；本功能不提供并发唯一性保证。
-- `GET /api/v1/decision-signals`：分页查询，支持 `market`、`stock_code`、`action`、`market_phase`、`decision_profile`、`source_type`、`source_report_id`、`trace_id`、`trigger_source`、`status`、时间范围、`holding_only`、`account_id`。省略或传空 `decision_profile` 不加 profile 条件，返回所有 profile；`decision_profile=unknown` 查询 legacy `NULL` 行；合法 profile 精确匹配。
-- `GET /api/v1/decision-signals/{signal_id}`：查询单条，不存在返回 404。
-- `PATCH /api/v1/decision-signals/{signal_id}/status`：更新合法状态和可选 `metadata`；省略 metadata 时保留原值，显式 `null` 时清空为 SQL `NULL`，object 时整包替换。正式 `decision_profile` 非 `NULL` 时会覆盖 metadata 中的冲突 profile；正式字段为 legacy `NULL` 时会移除请求 object 中的 profile key，且不会提升正式字段。`expired/invalidated/closed/archived` 等 terminal 状态不能直接 PATCH 回 `active`，expired 续期仍只能重新 `POST` active + 未来 `expires_at`。
-- `GET /api/v1/decision-signals/latest/{stock_code}`：按股票查询最新 active 信号，默认 `limit=1`。
+- `POST /api/v1/decision-signals`: Erstellt oder dedupliziert nach gleichartigem Quellschlüssel, gibt `{ item, created }` mit HTTP 200 zurück. Neue Einträge können `decision_profile` weglassen und standardmäßig `balanced` annehmen oder einen gültigen Wert `conservative|balanced|aggressive` übergeben; explizites Top-Level-`null`, leere oder ungültige Werte werden abgelehnt. Nur bei fehlendem Top-Level-Wert wird auf gültiges `metadata.decision_profile` zurückgegriffen; vor dem Schreiben wird `metadata.decision_profile` mit dem formellen Feldwert synchronisiert; weggelassenes oder explizit `null` gesetztes metadata wird als kein metadata behandelt, object wird flach kopiert, Nicht-object wird abgelehnt. Der exakte Deduplizierungsschlüssel ist `(source_report_id, source_type, market, stock_code, decision_profile, action, horizon, market_phase)`; ohne report aber mit `trace_id` wird `(trace_id, source_type, market, stock_code, decision_profile, action, horizon, market_phase)` verwendet; ohne beides keine Deduplizierung. Exakte Übereinstimmung, relaxed fallback, horizon/phase fill, expired refresh, active invalidation und stale backfill invalidation folgen alle der same-profile-Semantik: `NULL` matcht nur `NULL`, ein nicht-leeres profile matcht nur dasselbe profile; die Refresh-Duplizierung abgelaufener Signale überschreibt `decision_profile` nicht. Schlägt die exakte Übereinstimmung fehl, wird ein enger relaxed fallback nach gleichartiger Quelle + `source_type/market/stock_code/decision_profile/action` versucht, der nur leere `horizon/market_phase` alter Einträge auffüllt, wobei `horizon` nur aufgefüllt werden darf, wenn der neue Wert vom Service standardmäßig erzeugt wurde; explizit unterschiedliche Laufzeiten, bereits vorhandene unterschiedliche Phasen oder unterschiedliche profile behalten mehrere Einträge. Wird ein gleichartiges abgelaufenes Signal mit gleichem profile getroffen und die neue Anfrage ist active mit zukünftigem `expires_at`, wird dieser Eintrag an Ort und Stelle aktualisiert und `created=false` zurückgegeben; diese Verlängerung wird als neues active-Aktivierungsereignis behandelt. Nach der aktiven Neuerstellung oder abgelaufenen Verlängerung markiert ein bullishes Signal (`buy/add`) frühere active defensive Signale (`reduce/sell/avoid`) mit gleichem profile als `invalidated`, und umgekehrt; unterschiedliche nicht-leere profile können koexistieren, selbst wenn die Aktionen entgegengesetzt sind. Auch ein active duplicate retry führt die Invalidierungsreparatur des gleichen profiles erneut aus, um ein partielles create wiederherzustellen, bei dem die letzte Erstellung erfolgreich war, aber die Invalidierungsschreibung fehlschlug; normale alte duplicates/replays gelten nicht als neue Aktivierungsereignisse. `hold/watch/alert` lösen keine automatische Invalidierung aus. Refresh oder Duplikat-Treffer geben nach außen `created=false` zurück; diese Funktion bietet keine Garantie für parallele Eindeutigkeit.
+- `GET /api/v1/decision-signals`: Paginierte Abfrage, unterstützt `market`, `stock_code`, `action`, `market_phase`, `decision_profile`, `source_type`, `source_report_id`, `trace_id`, `trigger_source`, `status`, Zeitbereich, `holding_only` und `account_id`. Weggelassenes oder leeres `decision_profile` fügt keine profile-Bedingung hinzu und gibt alle profiles zurück; `decision_profile=unknown` fragt Legacy-`NULL`-Zeilen ab; gültige profiles werden exakt gematcht.
+- `GET /api/v1/decision-signals/{signal_id}`: Fragt einen einzelnen Eintrag ab; 404 wenn nicht vorhanden.
+- `PATCH /api/v1/decision-signals/{signal_id}/status`: Aktualisiert den gültigen Status und optionales `metadata`; bei weggelassenem metadata bleiben die ursprünglichen Werte erhalten, bei explizitem `null` werden sie auf SQL-`NULL` geleert, bei object wird das gesamte Paket ersetzt. Ein nicht-`NULL`-`decision_profile` im formellen Feld überschreibt konfliktierende profiles im metadata; ist das formelle Feld Legacy-`NULL`, wird der profile-Key aus dem Anfrage-object entfernt und das formelle Feld nicht angehoben. Terminalzustände wie `expired/invalidated/closed/archived` können nicht direkt per PATCH zu `active` zurückgeführt werden; eine Verlängerung abgelaufener Signale ist weiterhin nur über ein erneutes `POST` active + zukünftiges `expires_at` möglich.
+- `GET /api/v1/decision-signals/latest/{stock_code}`: Fragt das neueste aktive Signal pro Aktie ab, Standard `limit=1`.
 
-读取入口会懒过期：列表、详情和 latest 查询前会把已到 `expires_at` 的 active 信号标为 expired；创建时已过期的 active 信号会直接保存为 expired；同源 expired 信号只能通过重新 `POST` active + 未来 `expires_at` 的方式延展，`PATCH /status` 不接受 `expires_at`。`expired|invalidated|closed|archived` 不会被 PATCH 直接复活，`closed|invalidated|archived` 也不会被 create 路径复活。相反信号自动失效会合并写入旧信号 `metadata`：`invalidated_by_signal_id`、`invalidated_reason`、`invalidated_at`、`previous_status`；正式 profile 非 `NULL` 时同步 metadata profile，正式 profile 为 legacy `NULL` 时保留原 metadata profile 且不提升正式字段。旧 metadata JSON 损坏或不是 object 时会替换为失效 metadata 并写入对应 replacement marker，不阻断新信号创建。时间字段按 UTC 归一化为无时区 `datetime` 保存和比较；带时区输入会先转为 UTC 后去掉 `tzinfo`，无时区输入按 UTC 处理，API 响应继续返回不带时区后缀的 ISO 字符串。股票代码入库与查询按 `market` 确定性归一化：A 股 `600519`、`SH600519`、`600519.SH` 等常见变体按同一代码匹配；港股 `00700`、`HK00700`、`00700.HK` 按 `HK00700` 匹配；美股 ticker 统一大写。`holding_only=true` 只读取 active 账户下 `portfolio_positions` 中 `quantity > 0` 的缓存持仓，并按持仓 `(market, stock_code)` 匹配信号，可选 active `account_id`；该查询不会调用组合 snapshot replay，无缓存时返回空结果，需先通过 portfolio snapshot API 刷新缓存。
+Lesende Einstiege führen eine Lazy-Ablaufprüfung durch: Vor Listen-, Detail- und latest-Abfragen werden active Signale, deren `expires_at` erreicht ist, als expired markiert; bei der Erstellung bereits abgelaufene active Signale werden direkt als expired gespeichert; gleichartige abgelaufene Signale können nur durch ein erneutes `POST` active + zukünftiges `expires_at` verlängert werden, `PATCH /status` akzeptiert kein `expires_at`. `expired|invalidated|closed|archived` werden per PATCH nicht direkt wiederbelebt, und `closed|invalidated|archived` werden auch über den create-Pfad nicht wiederbelebt. Die automatische Invalidierung durch entgegengesetzte Signale schreibt zusätzlich in das metadata des alten Signals: `invalidated_by_signal_id`, `invalidated_reason`, `invalidated_at`, `previous_status`; bei nicht-`NULL`-formellem profile wird das metadata-profile synchronisiert, bei Legacy-`NULL`-formellem profile bleibt das ursprüngliche metadata-profile erhalten und das formelle Feld wird nicht angehoben. Ist das alte metadata-JSON beschädigt oder kein object, wird es durch die Invalidierungs-metadata ersetzt und ein entsprechender replacement marker geschrieben, ohne die Erstellung neuer Signale zu blockieren. Zeitfelder werden nach UTC als zeitzonenlose `datetime` gespeichert und verglichen; zeitzonenbehaftete Eingaben werden zuerst nach UTC umgewandelt und verlieren dann das `tzinfo`, zeitzonenlose Eingaben werden als UTC behandelt, und die API-Antwort gibt weiterhin ISO-Strings ohne Zeitzonen-Suffix zurück. Aktiencodes werden beim Schreiben und Abfragen deterministisch nach `market` normalisiert: A-Aktien wie `600519`, `SH600519`, `600519.SH` usw. werden als derselbe Code gematcht; Hongkong-Aktien wie `00700`, `HK00700`, `00700.HK` werden als `HK00700` gematcht; US-Ticker werden einheitlich großgeschrieben. `holding_only=true` liest nur die gecachten Positionen mit `quantity > 0` aus `portfolio_positions` unter aktiven Konten und matcht Signale nach Positionen `(market, stock_code)`, optional mit aktivem `account_id`; diese Abfrage ruft keinen kombinerten Snapshot-Replay auf und liefert ohne Cache leere Ergebnisse; der Cache muss zuerst über die Portfolio-Snapshot-API aktualisiert werden.
 
-`source_report_id` 可为空且不强制校验历史记录存在；删除历史记录时只显式清理 `source_type=analysis` 且 `source_report_id` 命中实际删除 ID 的历史绑定信号，`manual/agent/alert/market_review` 等弱引用信号不会仅因 ID 碰撞被删除；列表接口支持按 `source_report_id` 和 `trace_id` 做 typed filter。`task_id`、`alert_trigger_id` 等后续关联字段先放入 `metadata`，P1 不新增独立列，也不提供 typed filter，后续联动阶段再提升为独立契约。JSON 字段、长文本字段和展示型短文本字段（`stock_name/source_agent/trigger_source/action_label`）会在写入前执行信号专用脱敏，覆盖敏感 key、Bearer、Authorization/Cookie header 或赋值、token-like 字符串、其他敏感赋值、webhook URL、URL userinfo 以及带敏感 query/fragment 参数的 URL；普通证据 URL 会保留以保证来源可追溯，且长文本不会套用诊断文本的 300 字符截断。`trace_id` 是同源去重身份字段，若包含会被脱敏的敏感 credential，API 会拒绝请求而不是保存有损 redaction 后的值。
+`source_report_id` darf leer sein und erzwingt keine Prüfung auf vorhandene Historie; beim Löschen von Historie-Einträgen werden nur historiengebundene Signale mit `source_type=analysis` und `source_report_id`, die die tatsächlich gelöschte ID treffen, explizit bereinigt; Schwach-Referenz-Signale wie `manual/agent/alert/market_review` werden nicht allein wegen ID-Kollisionen gelöscht; die Listen-Schnittstelle unterstützt typed filters nach `source_report_id` und `trace_id`. Folgeverknüpfungsfelder wie `task_id` und `alert_trigger_id` werden zunächst in `metadata` abgelegt; P1 fügt keine separaten Spalten und keine typed filters hinzu, und spätere Verknüpfungsphasen heben sie zu eigenständigen Verträgen an. JSON-Felder, lange Textfelder und anzeigeorientierte Kurztextfelder (`stock_name/source_agent/trigger_source/action_label`) werden vor dem Schreiben einer signal-spezifischen Entschärfung unterzogen, die sensible Keys, Bearer-, Authorization-/Cookie-Header oder -Zuweisungen, token-ähnliche Strings, andere sensible Zuweisungen, Webhook-URLs, URL-Userinfo sowie URLs mit sensiblen query-/fragment-Parametern abdeckt; gewöhnliche Beleg-URLs bleiben erhalten, damit Quellen nachvollziehbar bleiben, und lange Texte unterliegen nicht der 300-Zeichen-Kürzung für Diagnosetexte. `trace_id` ist das Identitätsfeld der gleichartigen Deduplizierung; enthält es sensible Anmeldedaten, die entschärft würden, lehnt die API die Anfrage ab, anstatt einen verlustbehafteten redacted Wert zu speichern.
 
-这些接口继承现有 `/api/v1/*` 管理员鉴权：`ADMIN_AUTH_ENABLED=true` 时必须携带有效管理员会话 Cookie；本功能不新增独立认证方式。
+Diese Schnittstellen erben die bestehende Admin-Authentifizierung von `/api/v1/*`: Bei `ADMIN_AUTH_ENABLED=true` muss ein gültiges Admin-Sitzungs-Cookie mitgeführt werden; diese Funktion fügt keine eigenständige Authentifizierungsmethode hinzu.
 
-#1390 P4 在 Web 端接入已有 `DecisionSignal` API。#1756 后侧边栏“AI 建议”入口 `/decision-signals` 仍是结构化决策信号的集中查询入口，默认展示 `status=active` 的信号，并支持按市场、股票代码、动作、市场阶段、来源、来源报告 ID 和状态筛选；时间线区域新增 profile filter，复用 list API 的 server-side `decision_profile` 查询，`unknown` 仅用于筛选和展示 legacy `NULL` 行，普通高级列表不新增 profile filter。页面还提供按股票代码查询最新 active 信号的入口。卡片、详情和时间线展示优先读取正式 `decision_profile` 字段，只有字段缺失时才 fallback legacy metadata；显式 `null`、历史缺失或非法 profile 显示为 unknown。信号详情展示动作、风格、置信度/评分、horizon、plan_quality、market_phase、价格计划、风险、观察条件、来源报告和数据质量；Web 只允许把信号标记为 `closed`、`invalidated` 或 `archived`，不提供 terminal 状态恢复为 active。
+#1390 P4 bindet im Web die bestehende `DecisionSignal`-API an. Ab #1756 ist der Einstieg "KI-Empfehlungen" in der Seitenleiste `/decision-signals` der zentrale Abfrageeinstieg für strukturierte Entscheidungssignale; standardmäßig werden Signale mit `status=active` angezeigt, und es gibt Filter nach Markt, Aktiencode, Aktion, Marktphase, Quelle, Quellbericht-ID und Status; der Zeitlinienbereich erhält einen profile filter, der die Server-seitige `decision_profile`-Abfrage der List-API wiederverwendet, wobei `unknown` nur zum Filtern und Anzeigen von Legacy-`NULL`-Zeilen dient und die normale erweiterte Liste keinen profile filter erhält. Die Seite bietet außerdem einen Einstieg zur Abfrage des neuesten aktiven Signals nach Aktiencode. Karten, Details und Zeitlinie lesen bevorzugt das formelle `decision_profile`-Feld und greifen nur bei fehlendem Feld auf Legacy-metadata zurück; explizites `null`, in der Historie fehlende oder ungültige profiles werden als unknown angezeigt. Die Signaldetails zeigen Aktion, Stil, Konfidenz/Score, horizon, plan_quality, market_phase, Preisplan, Risiko, Beobachtungsbedingungen, Quellbericht und Datenqualität; das Web erlaubt es nur, Signale als `closed`, `invalidated` oder `archived` zu markieren, und bietet keine Wiederherstellung von Terminalzuständen zu active an.
 
-#1390 P5 新增信号级反馈、后验评估和统计 sidecar，不扩展 `decision_signals` 主表，也不复用绑定 `analysis_history_id` 的 `BacktestResult`。`decision_signal_feedback` 按 `signal_id` 保存最新 `useful|not_useful` 反馈、可选原因/备注和来源；`decision_signal_outcomes` 按 `(signal_id, horizon, engine_version)` 幂等保存后验结果，当前 `engine_version=decision-signal-v1`。Outcome 在评估时冻结 `action/market/market_phase/source_type/source_agent/plan_quality/data_quality_level/holding_state` 等统计维度，历史统计不依赖后续 live join 改写。删除历史报告时，会先找出 `source_type=analysis` 且绑定被删历史 ID 的信号，再清理对应 feedback/outcome 子表。
+#1390 P5 fügt Signal-Feedback, Ex-post-Bewertung und einen Statistik-sidecar hinzu, ohne die Haupttabelle `decision_signals` zu erweitern und ohne an `analysis_history_id` gebundene `BacktestResult` wiederzuverwenden. `decision_signal_feedback` speichert nach `signal_id` das neueste `useful|not_useful`-Feedback, optionalen Grund/Bemerkung und Quelle; `decision_signal_outcomes` speichert idempotent nach `(signal_id, horizon, engine_version)` die Ex-post-Ergebnisse, aktuell `engine_version=decision-signal-v1`. Das Outcome friert bei der Bewertung statistische Dimensionen wie `action/market/market_phase/source_type/source_agent/plan_quality/data_quality_level/holding_state` ein; die historische Statistik hängt nicht von späteren live-joins ab. Beim Löschen historischer Berichte werden zuerst Signale mit `source_type=analysis`, die an die gelöschte Historie-ID gebunden sind, gefunden und dann die zugehörigen feedback/outcome-Untertabellen bereinigt.
 
-P5 后验评估只支持日线可验证的 `1d/3d/5d/10d`，窗口语义是 anchor 后 1/3/5/10 根 `StockDaily` 交易 bar，不复用 `DecisionSignalService._horizon_days()` 的自然日过期语义。`anchor_date` 优先读取 `metadata.market_phase_summary.session_date`，否则使用 `created_at.date()`；anchor 当日必须存在 `StockDaily.close`，不会回退到前一交易日。动作映射为 `buy/add -> up`、`hold -> not_down`、`reduce/sell/avoid -> not_up`；`watch/alert`、`intraday/swing/long`、缺 anchor 价、forward bars 不足等会写入 `eval_status=unable` 和明确 `unable_reason`。缺 anchor 价、非法 anchor 价、forward bars 不足、缺/非法窗口收盘价属于可恢复 unable，后续默认重跑会在数据补齐后重新评估；非方向动作、不支持 horizon 和缺 anchor date 属于终态 unable，默认保持幂等跳过。自动提取运行时可额外接收 `portfolio_context.quantity`，只把低敏 `holding_state=holding|empty|unknown` 写入 metadata 供后验快照使用，不保存数量、账户或成本。
+Die P5-Ex-post-Bewertung unterstützt nur die tagesdatenverifizierbaren `1d/3d/5d/10d`; die Fenstersemantik sind 1/3/5/10 `StockDaily`-Handelsbars nach dem Anker und verwendet nicht die Kalendertage-Ablaufsemantik von `DecisionSignalService._horizon_days()` wieder. `anchor_date` liest bevorzugt `metadata.market_phase_summary.session_date`, sonst `created_at.date()`; am Ankertag muss ein `StockDaily.close` vorhanden sein, es wird nicht auf den vorherigen Handelstag zurückgegriffen. Aktionszuordnung: `buy/add -> up`, `hold -> not_down`, `reduce/sell/avoid -> not_up`; `watch/alert`, `intraday/swing/long`, fehlender Ankerpreis, unzureichende forward bars usw. schreiben `eval_status=unable` und einen eindeutigen `unable_reason`. Fehlender Ankerpreis, ungültiger Ankerpreis, unzureichende forward bars und fehlende/ungültige Fensterschlusskurse sind wiederherstellbare unable-Zustände; spätere Standard-Neuläufe bewerten nach Datenvervollständigung erneut; Nicht-Richtungsaktionen, nicht unterstützte horizons und fehlendes Ankerdatum sind terminale unable-Zustände und bleiben standardmäßig idempotent übersprungen. Der Laufzeit der Automatikextraktion kann zusätzlich `portfolio_context.quantity` übergeben werden; nur der niedrigsensible `holding_state=holding|empty|unknown` wird für die Ex-post-Snapshot in das metadata geschrieben, keine Menge, kein Konto und keine Kosten.
 
-P5 在 Web `/decision-signals` 页面筛选区下方展示当前 outcome engine 的整体统计卡片；详情抽屉按需读取该信号 outcomes，并可提交 useful/not useful 反馈。该页面不新增导航页，不进入 BacktestPage，也不新增后台定时任务；后验计算由 `POST /api/v1/decision-signals/outcomes/run` 显式触发。批量运行默认优先推进缺失 outcome 的信号，再重试可恢复 unable，不会让已完成或终态 unable 的最新信号长期占满 `limit`。
+P5 zeigt auf der Web-`/decision-signals`-Seite unter dem Filterbereich die Gesamtstatistikkarte des aktuellen outcome-engines; das Detail-Schubladen lädt bei Bedarf die outcomes dieses Signals und kann useful/not useful-Feedback übermitteln. Die Seite fügt keine Navigationsseite hinzu, geht nicht in die BacktestPage ein und fügt keine Hintergrund-Planungsaufgaben hinzu; die Ex-post-Berechnung wird explizit über `POST /api/v1/decision-signals/outcomes/run` ausgelöst. Der Batch-Lauf priorisiert standardmäßig Signale mit fehlendem outcome, wiederholt dann wiederherstellbare unable und lässt neueste Signale mit abgeschlossenem oder terminalem unable den `limit` nicht dauerhaft belegen.
 
-#1758 在同一个 `GET /api/v1/decision-signals/outcomes/stats` 响应中追加 `profile_calibration`，按 decision profile、profile + action、profile + horizon、profile + market phase、profile + frozen data quality 和 profile source 返回结构化分组。每个分组独立要求 `completed >= 30`，不足时只保留 counts，五项描述性指标统一返回 `null`；Web 只展示样本量和“样本不足，仅供观察。”，不排名或推荐风格。命中/未命中率的分母是 `hit + miss`，无法评估率的分母是 total；最大不利波动只从 outcome 已保存的 `start_price/min_low/max_high` 计算，不触发行情读取。`decision_profile` 和 metadata-backed `profile_source` 是查询时关联信号的当前归因；action、horizon、market phase、data quality 继续使用 outcome 冻结值。新 outcome 的 data quality 在 summary 没有显式 level 时才 fallback 到规范化的 metadata level，既有 outcome 不会静默重写。Web 复用原统计请求和 Card，只提供保守/均衡/进取及按动作/按周期两个用户视图；旧后端缺少新字段时原统计仍可用。完整口径见 [DecisionSignal 决策信号专题](decision-signals.md)。
+#1758 fügt in derselben `GET /api/v1/decision-signals/outcomes/stats`-Antwort `profile_calibration` hinzu, das strukturierte Gruppen nach decision profile, profile + action, profile + horizon, profile + market phase, profile + eingefrorene data quality und profile source zurückgibt. Jede Gruppe verlangt unabhängig `completed >= 30`; bei Unterschreitung werden nur counts behalten und die fünf deskriptiven Kennzahlen einheitlich `null` zurückgegeben; das Web zeigt nur die Stichprobengröße und "Stichprobe zu klein, nur zur Beobachtung." an, ohne zu ranken oder Stile zu empfehlen. Der Nenner der Hit-/Miss-Rate ist `hit + miss`, der Nenner der nicht bewertbaren Rate ist total; der maximale nachteilige Ausschlag wird nur aus den bereits gespeicherten `start_price/min_low/max_high` des outcomes berechnet und löst kein Kurslesen aus. `decision_profile` und das metadata-gestützte `profile_source` sind die aktuelle Attribution des Signals zum Abfragezeitpunkt; action, horizon, market phase und data quality verwenden weiterhin die eingefrorenen outcome-Werte. Die data quality neuer outcomes greift nur dann auf das normalisierte metadata-level zurück, wenn das summary kein explizites level hat; bestehende outcomes werden nicht stillschweigend überschrieben. Das Web verwendet die ursprüngliche Statistik-Anfrage und Card wieder und bietet nur die zwei Benutzeransichten konservativ/ausgewogen/aggressiv und nach Aktion/Periode; wenn dem alten Backend das neue Feld fehlt, bleibt die ursprüngliche Statistik weiterhin verfügbar. Der vollständige Maßstab findet sich im [DecisionSignal-Themendokument](decision-signals.md).
 
-持仓页会把 AI 建议作为非阻断增强异步加载：组合快照和风险模块先按原逻辑渲染，随后按当前快照中的唯一持仓调用 `GET /api/v1/decision-signals/latest/{stock_code}?market=<market>&limit=1` 查询 latest active 信号；不再通过 `holding_only=true` 通用列表分页扫描，也不存在固定页数截断。单个持仓 latest 查询失败时，页面保留其他已加载信号并显示可见降级提示；无匹配信号时持仓行显示空占位。匹配逻辑复用 Web 端股票代码等价规则，覆盖 A 股 `600519/SH600519/600519.SH`、港股 `00700/HK00700/00700.HK` 和美股大小写 ticker。
+Die Positionsseite lädt KI-Empfehlungen asynchron als nicht blockierende Verbesserung: Zuerst werden Kombinations-Snapshot und Risikomodul nach der ursprünglichen Logik gerendert, danach wird für jede eindeutige Position im aktuellen Snapshot `GET /api/v1/decision-signals/latest/{stock_code}?market=<market>&limit=1` zur Abfrage des neuesten aktiven Signals aufgerufen; es gibt kein paginiertes Scannen der allgemeinen Liste über `holding_only=true` und keinen festen Seitenzahl-Abschnitt. Schlägt die latest-Abfrage einer einzelnen Position fehl, behält die Seite die anderen bereits geladenen Signale und zeigt einen sichtbaren Degradierungshinweis; ohne passendes Signal zeigt die Positionszeile einen leeren Platzhalter. Die Matching-Logik verwendet die Äquivalenzregeln für Aktiencodes im Web wieder und deckt A-Aktien `600519/SH600519/600519.SH`, Hongkong-Aktien `00700/HK00700/00700.HK` und US-Ticker mit Groß-/Kleinschreibung ab.
 
-#1390 P6 将 `DecisionSignal` 复用到告警、通知和组合风险，不新增表、迁移或配置。真实股票级告警触发会优先关联同标的 latest active 信号，并把低敏 `decision_signal_summary` 写入 `alert_triggers.diagnostics`；没有 active 信号时，worker 只创建最小 `source_type=alert`、`action=alert` 信号，`trace_id=alert-rule-<hash>` 仅用于同源重试的 best-effort 幂等去重，不覆盖 active 信号本体，且不写 `market_phase` 避免跨阶段重复。告警通知和分析通知只引用摘要中的 `action/horizon/reason/watch_conditions/risk_summary/source_report_id` 等公开字段，通知失败不影响 trigger 或信号写入。`GET /api/v1/portfolio/risk` 追加 `decision_signal_risk` 聚合块，只统计当前持仓中的 active `sell/reduce/alert` 信号，明确排除 `avoid/buy/add/hold/watch`；信号查询失败时风险接口 fail-open，Web 风险区显示降级状态。
+#1390 P6 verwendet `DecisionSignal` in Alarmen, Benachrichtigungen und Kombinationsrisiko wieder, ohne Tabellen, Migrationen oder Konfiguration. Echte Aktienalarmauslösungen verknüpfen bevorzugt das neueste aktive Signal desselben Ziels und schreiben den niedrigsensiblen `decision_signal_summary` in `alert_triggers.diagnostics`; ohne aktives Signal erstellt der worker nur ein minimales Signal mit `source_type=alert`, `action=alert`, wobei `trace_id=alert-rule-<hash>` nur der best-effort-Idempotenzdeduplizierung gleichartiger Wiederholungen dient, das aktive Signal selbst nicht überschreibt und kein `market_phase` schreibt, um phasenübergreifende Duplikate zu vermeiden. Alarmbenachrichtigungen und Analysebenachrichtigungen verweisen nur auf öffentliche Felder der Zusammenfassung wie `action/horizon/reason/watch_conditions/risk_summary/source_report_id`; ein Benachrichtigungsfehler beeinflusst weder das Trigger noch das Signal-Schreiben. `GET /api/v1/portfolio/risk` fügt einen Aggregationsblock `decision_signal_risk` hinzu, der nur aktive `sell/reduce/alert`-Signale der aktuellen Positionen zählt und `avoid/buy/add/hold/watch` explizit ausschließt; bei fehlgeschlagener Signalanfrage bleibt die Risiko-Schnittstelle fail-open, und der Web-Risikobereich zeigt einen Degradierungsstatus.
 
-#1390 P7 的收口文档见 [DecisionSignal 决策信号专题](decision-signals.md)。#1756 不新增 `DECISION_SIGNAL_*` 配置或运行时开关，但会为 `decision_signals` 增加 nullable `decision_profile` 字段、API 请求/响应字段和 profile-aware index；existing SQLite 只在缺列时 `ALTER TABLE ADD COLUMN`，不会 drop/rebuild 表，也不会删除旧 index。迁移会幂等创建 profile-aware index，并 row-by-row 防御解析 `metadata_json`，仅合法 `metadata.decision_profile` 回填，invalid JSON、非 object 或非法 profile 保持 `NULL`。当前回滚方式为 revert 对应代码。回滚后信号提取和写入停止，既有报告保存、告警触发、通知发送和组合风险主流程不依赖信号池继续运行；历史 signal、feedback 和 outcome 数据不会自动清理。
+Die Abschlussdokumentation von #1390 P7 findet sich im [DecisionSignal-Themendokument](decision-signals.md). #1756 fügt keine `DECISION_SIGNAL_*`-Konfiguration oder Laufzeitschalter hinzu, fügt aber `decision_signals` ein nullable `decision_profile`-Feld, API-Anfrage-/Antwortfelder und einen profile-bewussten Index hinzu; bestehende SQLite führt nur bei fehlender Spalte `ALTER TABLE ADD COLUMN` aus, droppt/rebuild nicht die Tabelle und löscht keine alten Indizes. Die Migration erstellt idempotent den profile-bewussten Index und parst `metadata_json` defensiv zeilenweise; nur gültiges `metadata.decision_profile` wird zurückbefüllt, invalid JSON, Nicht-object oder ungültige profiles bleiben `NULL`. Aktueller Rollback-Weg ist das Revertieren des entsprechenden Codes. Nach dem Rollback stoppen Signalextraktion und -schreiben; die bestehenden Hauptflüsse für Berichtsspeicherung, Alarmauslösung, Benachrichtigungssendung und Kombinationsrisiko laufen weiter, ohne auf den Signalpool angewiesen zu sein; historische Signal-, Feedback- und Outcome-Daten werden nicht automatisch bereinigt.
 
-普通个股历史报告详情不再内嵌展示该报告提取出的 `source_type=analysis` 信号，也不会因打开报告详情而发起 `source_report_id=<recordId>` 的信号查询；需要查看结构化 AI 建议时统一进入 `/decision-signals` 页面筛选来源报告 ID、打开 `/decision-signals?sourceReportId=<recordId>` deep link，或按股票查询。填写来源报告 ID 或使用该 URL 参数时，Web 会发起 `source_type=analysis + source_report_id=<recordId>` 的精确查询，不叠加默认 `status=active` 等其他列表筛选，以保留旧报告 best-effort 懒回填语义。
+Die Detailseite gewöhnlicher Einzelaktien-Historieberichte bindet das aus diesem Bericht extrahierte Signal mit `source_type=analysis` nicht mehr inline ein und initiiert beim Öffnen der Berichtsdetails auch keine Signalabfrage mit `source_report_id=<recordId>`; für das Ansehen strukturierter KI-Empfehlungen geht man einheitlich auf die `/decision-signals`-Seite, filtert nach Quellbericht-ID, öffnet den deep link `/decision-signals?sourceReportId=<recordId>` oder fragt nach Aktie. Beim Ausfüllen der Quellbericht-ID oder der Verwendung dieses URL-Parameters initiiert das Web eine präzise Abfrage mit `source_type=analysis + source_report_id=<recordId>`, ohne weitere Listenfilter wie den Standard `status=active` zu überlagern, um die best-effort-Lazy-Rückbefüllungssemantik alter Berichte beizubehalten.
 
-## 回测功能
+## Backtest-Funktion
 
-回测模块自动对历史 AI 分析记录进行事后验证，评估分析建议的准确性。
+Das Backtest-Modul verifiziert automatisch historische KI-Analyseaufzeichnungen nachträglich und bewertet die Genauigkeit der Analyseempfehlungen.
 
-### 工作原理
+### Funktionsweise
 
-1. 选取已过冷却期（默认 14 天）的 `AnalysisHistory` 记录
-2. 获取分析日之后的日线数据（前向 K 线）
-3. 根据操作建议推断预期方向，与实际走势对比
-4. 评估止盈/止损命中情况，模拟执行收益
-5. 汇总为整体和单股两个维度的表现指标
+1. `AnalysisHistory`-Einträge auswählen, deren Cool-down-Periode (Standard 14 Tage) abgelaufen ist
+2. Tagesdaten nach dem Analysedatum abrufen (Forward-K-Linien)
+3. Aus der Handlungsempfehlung die erwartete Richtung ableiten und mit dem tatsächlichen Verlauf vergleichen
+4. Treffen von Take-Profit/Stop-Loss bewerten und simulierten Ertrag berechnen
+5. Als Performance-Kennzahlen auf Gesamt- und Einzelaktienebene zusammenfassen
 
-### 操作建议映射
+### Zuordnung der Handlungsempfehlungen
 
-| 操作建议 | 仓位推断 | 预期方向 | 胜利条件 |
+| Handlungsempfehlung | Positionsgrößen-Ableitung | Erwartete Richtung | Siegbedingung |
 |---------|---------|---------|---------|
-| 买入/加仓/strong buy | long | up | 涨幅 ≥ 中性带 |
-| 卖出/减仓/strong sell | cash | down | 跌幅 ≥ 中性带 |
-| 持有/持有观察/震荡观望/洗盘观察/hold/hold and watch/range-bound watch/shakeout watch | long | not_down | 未显著下跌 |
-| 观望/等待/wait | cash | flat | 价格在中性带内 |
+| Kauf/Aufstocken/strong buy | long | up | Anstieg ≥ neutrale Bandbreite |
+| Verkauf/Positionsabbau/strong sell | cash | down | Rückgang ≥ neutrale Bandbreite |
+| Halten/Halten-Beobachtung/Seitwärtsbeobachtung/Washout-Beobachtung/hold/hold and watch/range-bound watch/shakeout watch | long | not_down | Kein signifikanter Rückgang |
+| Beobachten/Warten/wait | cash | flat | Preis innerhalb der neutralen Bandbreite |
 
-### 配置
+### Konfiguration
 
-在 `.env` 中设置以下变量（均有默认值，可选）：
+Folgende Variablen in `.env` setzen (alle haben Standardwerte, optional):
 
-| 变量 | 默认值 | 说明 |
+| Variable | Standardwert | Beschreibung |
 |------|-------|------|
-| `BACKTEST_ENABLED` | `true` | 是否在每日分析后自动运行回测 |
-| `BACKTEST_EVAL_WINDOW_DAYS` | `10` | 评估窗口（交易日数） |
-| `BACKTEST_MIN_AGE_DAYS` | `14` | 仅回测 N 天前的记录，避免数据不完整 |
-| `BACKTEST_ENGINE_VERSION` | `v1` | 引擎版本号，升级逻辑时用于区分结果 |
-| `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | 中性区间阈值（%），±2% 内视为震荡 |
+| `BACKTEST_ENABLED` | `true` | Ob nach der täglichen Analyse automatisch ein Backtest ausgeführt wird |
+| `BACKTEST_EVAL_WINDOW_DAYS` | `10` | Bewertungsfenster (Anzahl Handelstage) |
+| `BACKTEST_MIN_AGE_DAYS` | `14` | Nur Einträge N Tage zurück testen, um unvollständige Daten zu vermeiden |
+| `BACKTEST_ENGINE_VERSION` | `v1` | Engine-Versionsnummer, zur Unterscheidung der Ergebnisse beim Upgrade der Logik |
+| `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | Schwellwert der neutralen Zone (%), ±2 % gilt als Seitwärtsbewegung |
 
-### 自动运行
+### Automatische Ausführung
 
-回测在每日分析流程完成后自动触发（非阻塞，失败不影响通知推送）。也可通过 API 手动触发。
+Der Backtest wird automatisch nach Abschluss des täglichen Analyseablaufs ausgelöst (nicht blockierend; ein Fehler beeinflusst den Benachrichtigungspush nicht). Er kann auch über die API manuell ausgelöst werden.
 
-### 评估指标
+### Bewertungskennzahlen
 
-| 指标 | 说明 |
+| Kennzahl | Beschreibung |
 |------|------|
-| `direction_accuracy_pct` | 方向预测准确率（预期方向与实际一致） |
-| `win_rate_pct` | 胜率（胜 / (胜+负)，不含中性） |
-| `avg_stock_return_pct` | 平均股票收益率 |
-| `avg_simulated_return_pct` | 平均模拟执行收益率（含止盈止损退出） |
-| `stop_loss_trigger_rate` | 止损触发率（仅统计配置了止损的记录） |
-| `take_profit_trigger_rate` | 止盈触发率（仅统计配置了止盈的记录） |
+| `direction_accuracy_pct` | Genauigkeit der Richtungsvorhersage (erwartete Richtung stimmt mit der tatsächlichen überein) |
+| `win_rate_pct` | Gewinnrate (Gewinne / (Gewinne+Verluste), ohne neutrale) |
+| `avg_stock_return_pct` | Durchschnittliche Aktienrendite |
+| `avg_simulated_return_pct` | Durchschnittlicher simulierter Ausführungsertrag (inkl. Take-Profit-/Stop-Loss-Ausstiege) |
+| `stop_loss_trigger_rate` | Stop-Loss-Auslöserate (nur Einträge mit konfiguriertem Stop-Loss) |
+| `take_profit_trigger_rate` | Take-Profit-Auslöserate (nur Einträge mit konfiguriertem Take-Profit) |
 
 ---
 
-## 本地 WebUI 管理界面
+## Lokales WebUI-Verwaltungsinterface
 
-WebUI 与 FastAPI API 服务共用同一服务进程，启动后可在浏览器中完成配置管理、手动分析、任务进度查看、历史报告、回测、持仓管理和智能导入等操作。认证、云服务器访问和 API 调用细节见下方说明。
+Die WebUI teilt sich denselben Serviceprozess mit der FastAPI-API; nach dem Start können im Browser Konfigurationsverwaltung, manuelle Analyse, Task-Fortschrittsanzeige, Historienberichte, Backtest, Positionsverwaltung und intelligenter Import ausgeführt werden. Authentifizierung, Cloud-Server-Zugriff und API-Aufrufdetails siehe die Hinweise unten.
 
-### FastAPI API 服务
+### FastAPI-API-Dienst
 
-FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
+FastAPI stellt einen RESTful-API-Dienst bereit und unterstützt Konfigurationsverwaltung und Analyseauslösung.
 
-### 启动方式
+### Startmöglichkeiten
 
-| 命令 | 说明 |
+| Befehl | Beschreibung |
 |------|------|
-| `python main.py --serve` | 启动 API 服务 + 执行一次完整分析 |
-| `python main.py --serve-only` | 仅启动 API 服务，手动触发分析 |
+| `python main.py --serve` | API-Dienst starten + eine vollständige Analyse ausführen |
+| `python main.py --serve-only` | Nur den API-Dienst starten, Analyse manuell auslösen |
 
-### 功能特性
+### Funktionseigenschaften
 
-- 📝 **配置管理** - 查看/修改自选股列表
-- 🗂️ **首页三视图** - 首页新增「历史 / 自选 / 今日」工作区，默认进入历史视图；自选页支持批量提交全部或仅提交“今日未分析”股票
-- 🧭 **界面语言切换** - 登录态与退出态均支持界面语言快速切换（`zh` / `en`），独立于 `REPORT_LANGUAGE`，用于静态 UI 文案与导航骨架
-- 🚀 **快速分析** - 通过 API 接口触发个股分析；首页也提供“大盘复盘”按钮和单次市场选择器，可在 Docker/server 模式下按服务器默认或临时选择的单个/多个市场后台触发复盘
-- 🎯 **策略选择** - 首页支持显式选择分析策略 skill；不传 `skills` 时按系统默认策略运行，便于保持与历史行为兼容
-- 🧪 **今日状态/任务刷新防抖** - 首页「今日」与「自选」通过带有时区感知的历史区间判断并发起分页历史查询；任务完成后由最新一次 stock bar 刷新成功才清除失败态，避免旧请求乱序覆盖新状态导致重复提交
-- 🧭 **首次配置提示** - 首页会读取只读配置状态，缺少 LLM 主渠道、自选股等基础项时提示缺口并引导进入系统设置
-- 📊 **实时进度** - 分析任务状态实时更新，支持多任务并行；普通分析链路在进入 LLM 阶段后会优先尝试 LiteLLM 流式生成，并通过任务 SSE 回灌更细粒度的 `message/progress`
-- 🧪 **内建选股任务可恢复** - 选股实现参考 AlphaSift；页面提交后台任务后轮询状态，切换页面再返回会恢复当前任务进度或最终结果
-- 🗂️ **大盘复盘任务可见性** - 首页触发大盘复盘后会返回 `task_id` 并轮询 `GET /api/v1/analysis/status/{task_id}`，在进行中/完成/失败场景给出可见反馈，失败时直接透出报错内容
-- 🗂️ **市场复盘历史独立入口** - 大盘复盘历史通过专用入口与普通个股历史隔离；建议通过 `stock_code=MARKET` + `report_type=market_review` 直接查询与回放大盘复盘记录
-- 🧾 **市场复盘历史可复用** - 大盘复盘任务会持久化到分析历史，`report_type` 为 `market_review`，可直接通过历史列表/详情打开对应 Markdown 或详情页，不会重新触发分析重算
-- 🧭 **市场位置卡片** - A 股普通分析报告会展示市场题材层和个股位置层，区分大盘主线、主关联题材、题材阶段、个股位置和缺失证据
-- 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要
-- 💬 **问股追问上下文** - 从历史报告进入问股后，后续追问会持续携带当前 `stock_code/stock_name`；切回或重载已有问股会话时，会从已加载的历史用户消息恢复基础当前标的；只有用户明确切换标的时才切换上下文，含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题不会污染当前标的
-- 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
-- 🔗 **API 文档** - 访问 `/docs` 查看 Swagger UI
+- 📝 **Konfigurationsverwaltung** - Watchlist ansehen/ändern
+- 🗂️ **Startseite mit drei Ansichten** - Startseite hat einen neuen Arbeitsbereich «Historie / Watchlist / Heute», standardmäßig wird die Historienansicht geöffnet; die Watchlist-Seite unterstützt die Batch-Übermittlung aller oder nur der "heute noch nicht analysierten" Aktien
+- 🧭 **Sprachumschaltung der Oberfläche** - Sowohl im angemeldeten als auch im abgemeldeten Zustand ist eine schnelle Sprachumschaltung der Oberfläche (`zh` / `en`) möglich, unabhängig von `REPORT_LANGUAGE`, für statische UI-Texte und Navigationsgerüst
+- 🚀 **Schnellanalyse** - Auslösung der Einzelaktienanalyse über die API-Schnittstelle; die Startseite bietet außerdem eine Schaltfläche "Markt-Rückblick" und einen Einzelmarkt-Selector, um im Docker-/Servermodus einen Rückblick im Hintergrund nach den Server-Standardeinstellungen oder einem vorübergehend ausgewählten einzelnen/mehreren Markt auszulösen
+- 🎯 **Strategieauswahl** - Die Startseite unterstützt die explizite Auswahl der Analysestrategie-skill; ohne `skills` wird mit der Systemstandardstrategie ausgeführt, um die Kompatibilität mit dem bisherigen Verhalten zu wahren
+- 🧪 **Heute-Status/Task-Refresh-Entprellung** - Startseite «Heute» und «Watchlist» führen über zeitzonenbewusste Historiebereiche die Beurteilung durch und initiieren paginierte Historieabfragen; nach Task-Abschluss wird die Fehleranzeige erst durch einen erfolgreichen Refresh der letzten Stockbar gelöscht, um zu vermeiden, dass alte Anfragen den neuen Status ungeordnet überschreiben und doppelte Übermittlungen verursachen
+- 🧭 **Erstkonfigurationshinweis** - Die Startseite liest den schreibgeschützten Konfigurationsstatus und weist bei fehlenden Basiselementen wie LLM-Hauptkanal oder Watchlist auf die Lücke hin und führt in die Systemeinstellungen
+- 📊 **Echtzeit-Fortschritt** - Analysetask-Status wird in Echtzeit aktualisiert, parallele Tasks werden unterstützt; die gewöhnliche Analyse-Kette versucht nach Eintritt in die LLM-Phase bevorzugt LiteLLM-Streaming-Generierung und speist über Task-SSE feinere `message/progress` zurück
+- 🧪 **Wiederherstellbarer eingebauter Aktienauswahl-Task** - Die Aktienauswahlimplementierung verweist auf AlphaSift; nach dem Absenden des Hintergrundtasks auf der Seite wird der Status abgefragt, beim Seitenwechsel und Zurückkehren werden der aktuelle Task-Fortschritt oder das Endergebnis wiederhergestellt
+- 🗂️ **Sichtbarkeit des Markt-Rückblick-Tasks** - Nach dem Auslösen des Markt-Rückblicks auf der Startseite wird `task_id` zurückgegeben und `GET /api/v1/analysis/status/{task_id}` abgefragt; in den Szenarien laufend/abgeschlossen/fehlgeschlagen wird sichtbares Feedback gegeben, bei Fehlschlag wird der Fehlerinhalt direkt durchgereicht
+- 🗂️ **Separater Einstieg für die Markt-Rückblick-Historie** - Die Markt-Rückblick-Historie wird über einen speziellen Eintrag von der gewöhnlichen Einzelaktienhistorie isoliert; empfohlen wird die direkte Abfrage und Wiedergabe der Markt-Rückblick-Einträge über `stock_code=MARKET` + `report_type=market_review`
+- 🧾 **Wiederverwendbare Markt-Rückblick-Historie** - Markt-Rückblick-Tasks werden in der Analysehistorie persistiert, `report_type` ist `market_review`; das entsprechende Markdown oder die Detailseite kann direkt über die Historienliste/Details geöffnet werden, ohne eine erneute Analyseberechnung auszulösen
+- 🧭 **Marktpositionskarte** - Der gewöhnliche A-Aktien-Analysebericht zeigt die Markt-/Themenebene und die Einzelaktien-Positionsebene und unterscheidet Markthauptlinie, primär assoziiertes Thema, Themenphase, Aktienposition und fehlende Belege
+- 🧩 **Sichtbare Eingabedatenblöcke** - Der gewöhnliche Analysebericht gibt in Historie-Details, synchronen Antworten und abgeschlossenen Task-Zuständen den niedrigsensiblen `AnalysisContextPack`-overview zurück; die Web-Berichtsseite zeigt nach Strategiepunkten und Informationen standardmäßig eingeklappt Datenblock-Status, Quelle, fehlenden Grund und Degradierungszusammenfassung
+- 💬 **Fragen-zur-Aktie-Folgekontext** - Nach dem Wechsel von einem Historienbericht zum Fragen-zur-Aktie trägt die Folgeanfrage dauerhaft das aktuelle `stock_code/stock_name`; beim Wechsel zurück oder Neuladen einer bestehenden Fragen-zur-Aktie-Sitzung wird der Basiszielwert aus den bereits geladenen historischen Benutzernachrichten wiederhergestellt; nur wenn der Benutzer das Ziel explizit wechselt, wird der Kontext gewechselt; Anfragen mit eindeutiger Vergleichsabsicht (vergleichen/vergleich/gegenüber/Unterschied/im Vergleich zu) oder mehreren nicht-aktuellen, expliziten Aktiencodes verschmutzen das aktuelle Ziel nicht
+- 📈 **Backtest-Verifizierung** - Genauigkeit der historischen Analyse bewerten, Richtungs-Gewinnrate und simulierten Ertrag abfragen
+- 🔗 **API-Dokumentation** - Auf `/docs` die Swagger-UI ansehen
 
-### 与本变更相关的产品行为
+### Mit dieser Änderung verbundene Produktverhalten
 
-- Web 语言状态采用两层机制：`dsa.uiLanguage`（浏览器持久化）与 `REPORT_LANGUAGE`（报告及问股默认输出）解耦。
-  - `dsa.uiLanguage` 只决定 WebUI 文案与导航语言（`zh` / `en`），取值优先级为本地持久化值 -> 浏览器语言 -> 默认 `zh`。
-  - `REPORT_LANGUAGE` 控制报告文本、股票简称本地化、报告页固定文案，以及未提供 `context.report_language` 的 Agent Chat 回复（`zh` / `en` / `ko`）。
-- 页面语言切换为用户体验增强，不属于回归验证证据记录范围；截图与命令请按 PR 流程在 PR 描述中单独维护。
-- 本改动仅新增请求级报告语言覆盖参数，不改变 `provider`/`model`/`base_url` 的配置迁移与清理逻辑。
+- Der Web-Sprachstatus verwendet einen zweistufigen Mechanismus: `dsa.uiLanguage` (im Browser persistiert) und `REPORT_LANGUAGE` (Standardausgabe von Berichten und Fragen-zur-Aktie) sind entkoppelt.
+  - `dsa.uiLanguage` bestimmt nur die WebUI-Texte und die Navigationssprache (`zh` / `en`); die Wertpriorität ist lokaler persistierter Wert -> Browsersprache -> Standard `zh`.
+  - `REPORT_LANGUAGE` steuert Berichtstexte, Lokalisierung von Aktienkurzbezeichnungen, feste Texte der Berichtsseite sowie Agent-Chat-Antworten ohne `context.report_language` (`zh` / `en` / `ko`).
+- Die Sprachumschaltung der Seite ist eine Verbesserung des Benutzererlebnisses und gehört nicht zum Nachweisumfang der Regressionsverifizierung; Screenshots und Befehle bitte gemäß PR-Ablauf separat in der PR-Beschreibung pflegen.
+- Diese Änderung fügt nur einen anfrageebenen Berichtssprach-Override-Parameter hinzu und verändert die Migrations- und Bereinigungslogik von `provider`/`model`/`base_url` nicht.
 
-### API 接口
+### API-Schnittstellen
 
-| 接口 | 方法 | 说明 |
+| Schnittstelle | Methode | Beschreibung |
 |------|------|------|
-| `/api/v1/analysis/analyze` | POST | 触发股票分析 |
-| `/api/v1/analysis/market-review` | POST | 后台触发大盘复盘；请求体可传 `{"send_notification": true, "region": "cn,us"}`；`region` 仅覆盖本次请求，与 `main.py --market-review` 与 `bot` 复用同一套 `GeminiAnalyzer/SearchService/NotificationService` 组装语义 |
-| `/api/v1/analysis/tasks` | GET | 查询任务列表 |
-| `/api/v1/analysis/tasks/stream` | GET (SSE) | 订阅任务实时状态流；`task_progress` 可选携带 `flow_event` 增量运行流事件 |
-| `/api/v1/analysis/tasks/{task_id}/flow` | GET | 查询 active task 的运行流快照 |
-| `/api/v1/analysis/status/{task_id}` | GET | 查询任务状态 |
-| `/api/v1/screening/screen/tasks` | POST | 后台提交内建选股任务（需先开启 `SCREENING_ENABLED`） |
-| `/api/v1/screening/screen/tasks/{task_id}` | GET | 查询内建选股任务状态与完成结果 |
-| `/api/v1/history` | GET | 查询分析历史 |
-| `/api/v1/history/{record_id}/diagnostics` | GET | 查询历史报告运行诊断摘要与脱敏复制文本 |
-| `/api/v1/history/{record_id}/flow` | GET | 查询历史报告运行流快照，普通个股和 `MARKET/market_review` 大盘复盘复用同一契约 |
-| `/api/v1/decision-signals` | POST | 显式创建或按同源键去重决策信号，返回 `{ item, created }` |
-| `/api/v1/decision-signals` | GET | 分页查询决策信号，支持股票、市场、动作、阶段、风格、来源、状态、时间范围和 cache-only 持仓过滤 |
-| `/api/v1/decision-signals/outcomes/run` | POST | 显式触发信号后验评估，默认跳过 completed/终态 unable、重算可恢复 unable，`force=true` 重算覆盖 |
-| `/api/v1/decision-signals/outcomes` | GET | 分页查询信号后验结果 |
-| `/api/v1/decision-signals/outcomes/stats` | GET | 查询当前后验引擎统计，默认排除 archived 信号 |
-| `/api/v1/decision-signals/{signal_id}/outcomes` | GET | 查询单个信号在当前后验引擎下的结果 |
-| `/api/v1/decision-signals/{signal_id}/feedback` | GET | 查询单个信号的用户反馈；无反馈时返回 `feedback_value=null` |
-| `/api/v1/decision-signals/{signal_id}/feedback` | PUT | 写入或更新单个信号的 `useful|not_useful` 反馈 |
-| `/api/v1/decision-signals/{signal_id}` | GET | 查询单条决策信号，读取前执行懒过期 |
-| `/api/v1/decision-signals/{signal_id}/status` | PATCH | 更新决策信号状态和可选 metadata |
-| `/api/v1/decision-signals/latest/{stock_code}` | GET | 查询指定股票最新 active 决策信号 |
-| `/api/v1/usage/summary?period=today|month|all` | GET | 按调用类型与模型维度汇总 LLM 调用次数和 Token 用量 |
-| `/api/v1/usage/dashboard?period=today|month|all&limit=50` | GET | 返回 Token 用量看板数据：总量、Prompt/Completion 拆分、模型用量、调用类型分布和最近调用明细；Web 侧入口为左侧导航“用量” |
-| `/api/v1/backtest/run` | POST | 触发回测 |
-| `/api/v1/backtest/results` | GET | 查询回测结果（分页） |
-| `/api/v1/backtest/performance` | GET | 获取整体回测表现 |
-| `/api/v1/backtest/performance/{code}` | GET | 获取单股回测表现 |
-| `/api/v1/stocks/extract-from-image` | POST | 从图片提取股票代码（multipart，超时 60s） |
-| `/api/v1/stocks/parse-import` | POST | 解析 CSV/Excel/剪贴板（multipart file 或 JSON `{"text":"..."}`，文件≤2MB，文本≤100KB） |
-| `/api/health` | GET | 健康检查 |
-| `/docs` | GET | API Swagger 文档 |
+| `/api/v1/analysis/analyze` | POST | Aktienanalyse auslösen |
+| `/api/v1/analysis/market-review` | POST | Markt-Rückblick im Hintergrund auslösen; der Request-Body kann `{"send_notification": true, "region": "cn,us"}` übergeben; `region` überschreibt nur diese Anfrage und nutzt mit `main.py --market-review` und `bot` dieselbe `GeminiAnalyzer/SearchService/NotificationService`-Assemblierungssemantik |
+| `/api/v1/analysis/tasks` | GET | Task-Liste abfragen |
+| `/api/v1/analysis/tasks/stream` | GET (SSE) | Echtzeit-Statusstream der Tasks abonnieren; `task_progress` kann optional inkrementelle `flow_event`-Laufzeitablaufereignisse mitführen |
+| `/api/v1/analysis/tasks/{task_id}/flow` | GET | Laufzeitablauf-Snapshot eines aktiven Tasks abfragen |
+| `/api/v1/analysis/status/{task_id}` | GET | Task-Status abfragen |
+| `/api/v1/screening/screen/tasks` | POST | Eingebauten Aktienauswahl-Task im Hintergrund absenden (zuerst `SCREENING_ENABLED` aktivieren) |
+| `/api/v1/screening/screen/tasks/{task_id}` | GET | Status und Abschlussergebnis des eingebauten Aktienauswahl-Tasks abfragen |
+| `/api/v1/history` | GET | Analysehistorie abfragen |
+| `/api/v1/history/{record_id}/diagnostics` | GET | Laufzeit-Diagnosezusammenfassung und entschärften Kopiertext des Historienberichts abfragen |
+| `/api/v1/history/{record_id}/flow` | GET | Laufzeitablauf-Snapshot des Historienberichts abfragen; gewöhnliche Einzelaktien und `MARKET/market_review`-Markt-Rückblick nutzen denselben Vertrag |
+| `/api/v1/decision-signals` | POST | Entscheidungssignale explizit erstellen oder nach gleichartigem Quellschlüssel deduplizieren, gibt `{ item, created }` zurück |
+| `/api/v1/decision-signals` | GET | Entscheidungssignale paginiert abfragen; unterstützt Filter nach Aktie, Markt, Aktion, Phase, Stil, Quelle, Status, Zeitbereich und cache-only-Positionen |
+| `/api/v1/decision-signals/outcomes/run` | POST | Ex-post-Bewertung von Signalen explizit auslösen; standardmäßig completed/terminale unable überspringen, wiederherstellbare unable neu berechnen, `force=true` erzwingt Neuberechnung |
+| `/api/v1/decision-signals/outcomes` | GET | Ex-post-Ergebnisse von Signalen paginiert abfragen |
+| `/api/v1/decision-signals/outcomes/stats` | GET | Statistik des aktuellen Ex-post-Engines abfragen, standardmäßig archived-Signale ausschließen |
+| `/api/v1/decision-signals/{signal_id}/outcomes` | GET | Ergebnisse eines einzelnen Signals unter dem aktuellen Ex-post-Engine abfragen |
+| `/api/v1/decision-signals/{signal_id}/feedback` | GET | Benutzerfeedback eines einzelnen Signals abfragen; ohne Feedback wird `feedback_value=null` zurückgegeben |
+| `/api/v1/decision-signals/{signal_id}/feedback` | PUT | `useful|not_useful`-Feedback eines einzelnen Signals schreiben oder aktualisieren |
+| `/api/v1/decision-signals/{signal_id}` | GET | Ein einzelnes Entscheidungssignal abfragen, vor dem Lesen Lazy-Ablauf ausführen |
+| `/api/v1/decision-signals/{signal_id}/status` | PATCH | Status und optionales metadata eines Entscheidungssignals aktualisieren |
+| `/api/v1/decision-signals/latest/{stock_code}` | GET | Neuestes aktives Entscheidungssignal der angegebenen Aktie abfragen |
+| `/api/v1/usage/summary?period=today|month|all` | GET | LLM-Aufrufzahlen und Token-Verbrauch nach Aufruftyp und Modell aggregieren |
+| `/api/v1/usage/dashboard?period=today|month|all&limit=50` | GET | Token-Verbrauchs-Dashboard-Daten zurückgeben: Gesamtmenge, Prompt/Completion-Aufschlüsselung, Modellverbrauch, Aufruftypverteilung und letzte Aufrufdetails; Web-Einstieg über die linke Navigation "Verbrauch" |
+| `/api/v1/backtest/run` | POST | Backtest auslösen |
+| `/api/v1/backtest/results` | GET | Backtest-Ergebnisse abfragen (paginiert) |
+| `/api/v1/backtest/performance` | GET | Gesamte Backtest-Performance abrufen |
+| `/api/v1/backtest/performance/{code}` | GET | Backtest-Performance einer einzelnen Aktie abrufen |
+| `/api/v1/stocks/extract-from-image` | POST | Aktiencodes aus einem Bild extrahieren (multipart, Timeout 60s) |
+| `/api/v1/stocks/parse-import` | POST | CSV/Excel/Clipboard parsen (multipart-Datei oder JSON `{"text":"..."}`, Datei ≤2MB, Text ≤100KB) |
+| `/api/health` | GET | Health-Check |
+| `/docs` | GET | API-Swagger-Dokumentation |
 
-> 说明：`POST /api/v1/analysis/analyze` 在 `async_mode=false` 时仅支持单只股票；批量 `stock_codes` 需使用 `async_mode=true`。异步 `202` 响应对单股返回 `task_id`，对批量返回 `accepted` / `duplicates` 汇总结构。
-> 说明：`POST /api/v1/analysis/analyze` 支持使用 `skills` 传入策略 skill ID 列表；若未传则按服务端默认策略执行。为兼容历史调用，`strategies` 字段仍作为兼容别名保留。
-> 说明：`POST /api/v1/analysis/analyze` 支持 `analysis_phase=auto|premarket|intraday|postmarket`，默认 `auto`。非 `auto` 只覆盖本次分析阶段与派生阶段标记，不改写真实交易日历时间；accepted response、内存 task status、任务列表和 SSE 会回显请求阶段，最终报告阶段以 `report.meta.market_phase_summary.phase` 为准。
-> 说明：`POST /api/v1/analysis/analyze` 支持 `report_language=zh|en|ko`，并兼容 `reportLanguage` 作为别名；未传时回退到全局 `REPORT_LANGUAGE`（或环境中的 `Config.report_language`）。该字段仅影响本次分析的报告文本、`report.meta.report_language` 与持久化展示，不会持久化为运行时配置。
-> 说明：Web 侧首页策略下拉为显式可选策略入口。用户未手动选择时不会携带 `skills`，与历史客户端行为一致；选择策略后将透传到该接口并在任务状态与历史快照中保留。
-> 说明：`POST /api/v1/analysis/market-review` 采用后端与 CLI/Bot 共用的配置路径（`GeminiAnalyzer(config=...)` 与同样的搜索/提示词构造入口）。Provider 兼容路由会优先识别并使用 `litellm_model`、`llm_model_list`，若未配置则回退 legacy `GEMINI_*`、`OPENAI_*`、`ANTHROPIC_*`、`DEEPSEEK_*` 键；不会新增/调整 provider、Base URL 或 LiteLLM 路由语义。
-> 说明：`POST /api/v1/analysis/market-review` 额外支持 `report_language=zh|en|ko`（支持别名 `reportLanguage`）。未传时同样回退到全局 `REPORT_LANGUAGE`。该参数仅影响本次复盘报告文本与结构化返回字段中的语言相关内容；Bot、schedule、CLI 或按钮触发的 `main.py --market-review` 仍沿用全局配置，未新增请求级覆盖能力。
-> 说明：`POST /api/v1/analysis/market-review` 可选传入长度为 1–64 的字符串字段 `region`，支持 `cn`、`hk`、`us`、`jp`、`kr`、`both` 或逗号分隔的合法非空子集（如 `cn,us`）。请求层会规范大小写、空格、重复项和市场顺序；空字符串、空 token、未知 token、`both` 与其他市场混用会整体返回 4xx，不会部分执行或回退。省略字段时继续读取全局 `MARKET_REVIEW_REGION`。
-> 说明：首页市场选择器只覆盖本次 Web 触发，不调用配置读取/保存接口，也不写入 LocalStorage；选择“服务器默认”时请求会省略 `region`，UI 不会用 Web Settings 的 saved/display 值猜测运行时实际市场。后端会在任务提交边界解析唯一的 canonical 实际执行值；accepted 响应、pending/processing/completed 状态、任务列表、`task_created`/`task_started`/`task_progress`/`task_completed` SSE、完成态结构化 payload，以及 History 列表项的 `region` 与 `context_snapshot.market_review_region` 都复用该值。长期 `MARKET_REVIEW_REGION` 配置仍保留历史宽松过滤/回退语义，CLI、Bot、schedule 与默认 `cn` 语义不变。
-> 说明：`POST /api/v1/analysis/market-review` 是 Web / 桌面端的人工触发入口，点击后会直接提交大盘复盘任务，不会因 `TRADING_DAY_CHECK_ENABLED=true` 或当日相关市场休市而短路跳过；定时任务、GitHub Actions 手动运行和 CLI 默认入口仍遵循交易日检查，可用 `--force-run` 或 workflow `force_run` 覆盖。
-> 审计依据：优先级与回退语义以 `src/config.py` 的 `Config._load_from_env()` 为准（`LITELLM_CONFIG` > `LLM_CHANNELS` > legacy）。配套回归见 `tests/test_llm_channel_config.py`（配置源解析）与 `tests/test_market_review_runtime.py`（共享装配路径）。该接口当前仅提供单进程/单机级防重复能力，若为多实例部署需通过外部任务队列或分布式锁补齐全局幂等。
-> 说明：`POST /api/v1/analysis/market-review` 触发后，报告会以 `report_type=market_review` 写入历史库；你可直接查询 `/api/v1/history` 或 `/api/v1/history/{record_id}` 获取历史 Markdown，避免再次触发分析重算。
-> 说明：历史列表新增 `report_type` 查询参数；通过 `stock_code=MARKET&report_type=market_review` 可单独读取大盘复盘历史集合，与普通个股历史逻辑完全隔离。
-> 说明：`POST /api/v1/analysis/market-review` 的任务状态与历史持久化都会包含 `market_review_payload`：其中 `region` 是本次实际执行的 canonical 市场字符串，另含 `market_scope`、`sections`、`sectors`、`concepts`、`news`、`market_light`、`indices` 等结构化字段。Web 端 Markdown 渲染与历史详情会复用该结构化字段；若结构化字段为空则回退到原始 Markdown。
-> 说明：运行流快照接口返回 `lanes/nodes/edges/events/summary` 统一契约。active task 缺少 diagnostics 时返回 skeleton flow；若任务 SSE 已收到真实 `flow_event`，快照会包含最近增量事件。completed history 优先使用 `context_snapshot.diagnostics` 与 `analysis_context_pack_overview` 构建完整拓扑。`cancel_requested/cancelled` 是合法状态，不会映射为 failed。
-> 说明：`market_review_payload` 中的 `breadth` 仅在行情宽度数据真实可用时下发；当美股/港股或接口暂不可用时不下发该字段。前端显示层需按“字段缺失”降级为“暂无数据”而不是展示 0。
-> 说明：该端点若返回 `task_id`，WebUI 会轮询 `GET /api/v1/analysis/status/{task_id}` 展示状态。状态为 `completed` 时给出完成提示（报告已生成并按配置推送），状态为 `failed` 时在前端错误区域显示 `error` 原因。
-> 说明：`GET /api/v1/history/{record_id}/diagnostics` 支持历史记录主键 ID 或 `query_id`，返回 `normal/degraded/failed/unknown` 摘要、关键链路组件和可复制的脱敏 `copy_text`；旧报告缺少诊断快照时返回 `unknown`，不影响报告读取。
-> 说明：`GET /api/v1/history` 的列表摘要可按 `stock_code` 分页查询同一股票历史，并返回趋势判断、分析摘要、模型名与分析时价格/涨跌幅等可选字段；旧记录缺少快照字段时返回空值。`created_at` 与 `/api/v1/history/stocks` 的 `last_analysis_time` 使用带服务器时区偏移的 ISO 8601 时间戳；日期筛选仍按服务器本地日期解释。Web 报告页的“历史趋势”抽屉复用该接口加载同股历史。
-> 说明：`GET /api/v1/usage/dashboard` 复用 `llm_usage` 审计表，不新增配置项或数据库迁移。接口仅返回已落库的调用次数、Prompt/Completion/Total Token 聚合、模型维度用量和最近调用记录，不推导模型上下文窗口或 provider 元数据。
-> 说明（Issue #1520）：列表中的模型名展示字段仅来源于历史快照中的 `model_used`，仅用于历史回溯展示，不影响运行时模型模型路由（`litellm_model`、`llm_model_list`）、Provider、Base URL 与配置迁移/清理语义。回退方式为回退本次提交，现网历史查询/抽屉/接口链路兼容性保持不变。
-> 说明：历史详情、同步分析响应和 completed 任务状态会在 `report.details.analysis_context_pack_overview` 返回低敏输入数据块 overview；其中同步分析响应依赖本次已持久化的 `analysis_history.context_snapshot`，`SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回 overview。`details.context_snapshot` 会剥离该顶层字段，不返回完整 `AnalysisContextPack` 或 Prompt summary。
-> 说明：`POST /api/v1/agent/chat` 与 `POST /api/v1/agent/chat/stream` 会把前端传入的 `context.stock_code` 作为问股当前标的基线，并在 `context.report_language` 缺失时使用全局 `REPORT_LANGUAGE`；调用方显式提供的 `context.report_language` 保持优先。服务端会先重新判定 stock scope。前端从历史报告进入问股后会持续发送 active stock context；切回或重载已有会话时，会根据已加载的历史用户消息恢复基础 `{stock_code, stock_name: null}`。服务端会在每轮消息中重新判定 `maintain` / `switch` / `compare`：未明确切换时，带 `stock_code` 的股票工具调用只能访问当前标的；显式切换会清理旧标的历史摘要和预取数据；含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题允许本轮明确出现的多个代码，但不改写当前标的。若模型误把 TTM、PE、MACD、KDJ 等金融缩写、移动均线语境下的 `MA` 指标词，或 SH/SZ/BJ/HK/SS 等交易所片段当成股票代码调用工具，后端会返回不可重试的 `stock_scope_violation` 工具结果，而不会执行对应股票工具。工具名只解析注册表中的精确名称；任何 provider namespace 或 suffix 都不会路由到已有工具。
-> 说明：`POST /api/v1/backtest/run` 新增 `analysis_date_from` / `analysis_date_to`（`YYYY-MM-DD`）请求参数用于按历史分析日期筛选候选；若 `analysis_date_from > analysis_date_to`，接口返回 400 `invalid_params`。
-> 说明：回测执行成功但无新入库结果时，`BacktestRunResponse.message` 返回可读诊断说明，`diagnostics` 返回排查上下文（示例：`empty_reason`、`analysis_date_from`、`analysis_date_to`、`eval_window_days`、`min_age_days`、`limit`）。
-> 说明：`GET /api/v1/backtest/results`、`GET /api/v1/backtest/performance`、`GET /api/v1/backtest/performance/{code}` 同步支持 `analysis_date_from`、`analysis_date_to`；不传时保持历史行为。
+> Hinweis: `POST /api/v1/analysis/analyze` unterstützt bei `async_mode=false` nur eine einzelne Aktie; für eine Batch von `stock_codes` muss `async_mode=true` verwendet werden. Die asynchrone `202`-Antwort gibt bei einer einzelnen Aktie `task_id` zurück, bei einer Batch die Aggregatstruktur `accepted` / `duplicates`.
+> Hinweis: `POST /api/v1/analysis/analyze` unterstützt die Übergabe einer Liste von Strategie-Skill-IDs über `skills`; ohne Übergabe wird nach der Server-Standardstrategie ausgeführt. Für die Kompatibilität historischer Aufrufe bleibt das Feld `strategies` als kompatibles Alias erhalten.
+> Hinweis: `POST /api/v1/analysis/analyze` unterstützt `analysis_phase=auto|premarket|intraday|postmarket`, Standard `auto`. Nicht-`auto` überschreibt nur die Analysephase dieser Ausführung und die abgeleiteten Phasenmarkierungen, ohne die echten Handelskalenderzeiten zu verändern; die accepted-Antwort, der In-Memory-Task-Status, die Task-Liste und das SSE spiegeln die angeforderte Phase wider, die endgültige Berichtsphase richtet sich nach `report.meta.market_phase_summary.phase`.
+> Hinweis: `POST /api/v1/analysis/analyze` unterstützt `report_language=zh|en|ko` und akzeptiert kompatibel `reportLanguage` als Alias; ohne Übergabe wird auf das globale `REPORT_LANGUAGE` (oder `Config.report_language` aus der Umgebung) zurückgegriffen. Dieses Feld betrifft nur den Berichtstext dieser Ausführung, `report.meta.report_language` und die persistierte Anzeige und wird nicht als Laufzeitkonfiguration persistiert.
+> Hinweis: Das Strategie-Dropdown auf der Web-Startseite ist ein explizit wählbarer Strategieeinstieg. Hat der Benutzer nicht manuell gewählt, wird kein `skills` mitgeführt, konsistent mit dem Verhalten historischer Clients; nach der Auswahl einer Strategie wird sie an diese Schnittstelle durchgereicht und im Task-Status sowie im Historie-Snapshot aufbewahrt.
+> Hinweis: `POST /api/v1/analysis/market-review` verwendet einen mit CLI/Bot gemeinsamen Konfigurationspfad (`GeminiAnalyzer(config=...)` und dieselben Such-/Prompt-Konstruktions-Einstiege). Die Provider-kompatible Route erkennt und verwendet bevorzugt `litellm_model`, `llm_model_list`; ohne Konfiguration greift sie auf Legacy-Schlüssel `GEMINI_*`, `OPENAI_*`, `ANTHROPIC_*`, `DEEPSEEK_*` zurück; es werden keine provider-, Base-URL- oder LiteLLM-Routingsemantiken hinzugefügt/angepasst.
+> Hinweis: `POST /api/v1/analysis/market-review` unterstützt zusätzlich `report_language=zh|en|ko` (Alias `reportLanguage` unterstützt). Ohne Übergabe wird ebenfalls auf das globale `REPORT_LANGUAGE` zurückgegriffen. Dieser Parameter betrifft nur den Text des Rückblick-Berichts dieser Ausführung und die sprachbezogenen Inhalte in den strukturierten Rückgabefeldern; von Bot, Schedule, CLI oder Schaltfläche ausgelöstes `main.py --market-review` verwendet weiterhin die globale Konfiguration, ohne neue anfrageebene Überschreibungsfähigkeit.
+> Hinweis: `POST /api/v1/analysis/market-review` kann optional das String-Feld `region` mit einer Länge von 1–64 übergeben, unterstützt `cn`, `hk`, `us`, `jp`, `kr`, `both` oder ein durch Kommas getrennter gültiger, nicht leerer Teilmenge (z. B. `cn,us`). Die Anfrageebene normalisiert Groß-/Kleinschreibung, Leerzeichen, Duplikate und Marktreihenfolge; leere Strings, leere Tokens, unbekannte Tokens oder `both` gemischt mit anderen Märkten geben insgesamt 4xx zurück, ohne Teilausführung oder Fallback. Bei weggelassenem Feld wird weiterhin das globale `MARKET_REVIEW_REGION` gelesen.
+> Hinweis: Der Markt-Selector auf der Startseite überschreibt nur diese Web-Auslösung, ruft keine Konfigurations-Lese-/Speicher-Schnittstellen auf und schreibt nicht in LocalStorage; bei Auswahl von "Server-Standard" lässt die Anfrage `region` weg, und die UI errät den tatsächlichen Laufzeitmarkt nicht aus den saved/display-Werten der Web-Einstellungen. Das Backend löst an der Task-Einreichungsgrenze den einzigen kanonischen tatsächlich ausgeführten Wert auf; die accepted-Antwort, die Zustände pending/processing/completed, die Task-Liste, `task_created`/`task_started`/`task_progress`/`task_completed`-SSE, das strukturierte Payload des Abschlusszustands sowie `region` und `context_snapshot.market_review_region` der History-Listeneinträge verwenden diesen Wert wieder. Die langfristige `MARKET_REVIEW_REGION`-Konfiguration behält ihre historische lockere Filter-/Fallback-Semantik; CLI, Bot, Schedule und die Standard-`cn`-Semantik bleiben unverändert.
+> Hinweis: `POST /api/v1/analysis/market-review` ist der manuelle Auslöseeinstieg von Web/Desktop; nach dem Klick wird der Markt-Rückblick-Task direkt eingereicht und nicht wegen `TRADING_DAY_CHECK_ENABLED=true` oder an dem Tag ruhender relevanter Märkte kurzgeschlossen übersprungen; geplante Tasks, manuelle GitHub-Actions-Ausführung und der CLI-Standardeinstieg folgen weiterhin der Handelstag-Prüfung und können mit `--force-run` oder dem Workflow-`force_run` überschrieben werden.
+> Audit-Grundlage: Die Prioritäts- und Fallbacksemantik richtet sich nach `Config._load_from_env()` in `src/config.py` (`LITELLM_CONFIG` > `LLM_CHANNELS` > legacy). Begleitende Regressionen siehe `tests/test_llm_channel_config.py` (Konfigurationsquellen-Parsing) und `tests/test_market_review_runtime.py` (gemeinsamer Assemblierungspfad). Diese Schnittstelle bietet derzeit nur Fähigkeit gegen Duplikate auf Einzelprozess-/Einzelmaschinenebene; für Mehrinstanz-Bereitstellungen muss die globale Idempotenz über externe Task-Queues oder verteilte Locks ergänzt werden.
+> Hinweis: Nach Auslösung von `POST /api/v1/analysis/market-review` wird der Bericht mit `report_type=market_review` in die Historie geschrieben; du kannst direkt `/api/v1/history` oder `/api/v1/history/{record_id}` abfragen, um das historische Markdown zu erhalten, und so eine erneute Analyseberechnung vermeiden.
+> Hinweis: Die Historienliste erhält den neuen Abfrageparameter `report_type`; über `stock_code=MARKET&report_type=market_review` kann die Markt-Rückblick-Historiensammlung separat gelesen werden, vollständig isoliert von der gewöhnlichen Einzelaktien-Historie-Logik.
+> Hinweis: Task-Status und Historie-Persistierung von `POST /api/v1/analysis/market-review` enthalten beide `market_review_payload`: `region` ist der kanonische Marktstring der diesmal tatsächlichen Ausführung, außerdem enthält er strukturierte Felder wie `market_scope`, `sections`, `sectors`, `concepts`, `news`, `market_light`, `indices`. Die Web-Markdown-Renderung und die Historie-Details verwenden diese strukturierten Felder wieder; sind die strukturierten Felder leer, wird auf das ursprüngliche Markdown zurückgegriffen.
+> Hinweis: Die Laufzeitablauf-Snapshot-Schnittstelle gibt den einheitlichen Vertrag `lanes/nodes/edges/events/summary` zurück. Fehlen beim aktiven Task diagnostics, wird ein skeleton flow zurückgegeben; hat die Task-SSE bereits ein echtes `flow_event` empfangen, enthält der Snapshot die letzten inkrementellen Ereignisse. Die completed-Historie bevorzugt `context_snapshot.diagnostics` und `analysis_context_pack_overview` für die Konstruktion der vollständigen Topologie. `cancel_requested/cancelled` sind gültige Zustände und werden nicht als failed gemappt.
+> Hinweis: `breadth` im `market_review_payload` wird nur ausgeliefert, wenn Marktbreitendaten tatsächlich verfügbar sind; bei US-/Hongkong-Aktien oder wenn die Schnittstelle vorübergehend nicht verfügbar ist, wird das Feld nicht ausgeliefert. Die Frontend-Anzeigeschicht muss bei "Feld fehlt" auf "Keine Daten" degradieren und nicht 0 anzeigen.
+> Hinweis: Gibt der Endpunkt ein `task_id` zurück, fragt die WebUI per Polling `GET /api/v1/analysis/status/{task_id}` ab, um den Status anzuzeigen. Bei Status `completed` wird ein Abschlusshinweis gegeben (Bericht erzeugt und gemäß Konfiguration gepusht), bei Status `failed` wird der `error`-Grund im Frontend-Fehlerbereich angezeigt.
+> Hinweis: `GET /api/v1/history/{record_id}/diagnostics` unterstützt die Primärschlüssel-ID oder `query_id` von Historie-Einträgen und gibt die Zusammenfassung `normal/degraded/failed/unknown`, Schlüsselkettenkomponenten und den kopierbaren entschärften `copy_text` zurück; alte Berichte ohne Diagnose-Snapshot geben `unknown` zurück, ohne das Berichtslesen zu beeinflussen.
+> Hinweis: Die Listenzusammenfassung von `GET /api/v1/history` kann die Historie derselben Aktie paginiert nach `stock_code` abfragen und gibt optionale Felder wie Trendbeurteilung, Analysezusammenfassung, Modellname und Preis/Änderung zum Analysezeitpunkt zurück; alte Einträge ohne Snapshot-Felder geben leere Werte zurück. `created_at` und `last_analysis_time` von `/api/v1/history/stocks` verwenden ISO-8601-Zeitstempel mit Serverzeitzonen-Offset; die Datumsfilterung wird weiterhin nach dem lokalen Serverdatum interpretiert. Die Schublade "Historischer Trend" der Web-Berichtsseite verwendet diese Schnittstelle zum Laden derselben Aktienhistorie wieder.
+> Hinweis: `GET /api/v1/usage/dashboard` verwendet die Audit-Tabelle `llm_usage` wieder und fügt weder Konfigurationsoptionen noch Datenbankmigrationen hinzu. Die Schnittstelle gibt nur bereits persistierte Aufrufzahlen, Prompt/Completion/Total-Token-Aggregate, modellbezogenen Verbrauch und letzte Aufrufaufzeichnungen zurück, ohne Modellkontextfenster oder Provider-Metadaten abzuleiten.
+> Hinweis (Issue #1520): Das in der Liste angezeigte Modellnamensfeld stammt nur aus `model_used` im Historie-Snapshot und dient nur der historischen Nachverfolgungsanzeige; es beeinflusst nicht das Laufzeit-Modellrouting (`litellm_model`, `llm_model_list`), den Provider, die Base-URL und die Konfigurationsmigrations-/Bereinigungssemantik. Der Fallback-Weg ist das Revertieren dieses Commits; die Kompatibilität der Bestands-Historieabfrage/-Schublade/-Schnittstellen bleibt unverändert.
+> Hinweis: Historie-Details, synchrone Analyseantworten und abgeschlossene Task-Zustände geben in `report.details.analysis_context_pack_overview` die niedrigsensible Eingabedatenblock-Übersicht zurück; dabei hängen synchrone Analyseantworten von der diesmal bereits persistierten `analysis_history.context_snapshot` ab, und bei `SAVE_CONTEXT_SNAPSHOT=false` ist die Übersicht in neuen Einträgen nicht garantiert. `details.context_snapshot` entfernt dieses Top-Level-Feld und gibt weder das vollständige `AnalysisContextPack` noch eine Prompt-Zusammenfassung zurück.
+> Hinweis: `POST /api/v1/agent/chat` und `POST /api/v1/agent/chat/stream` verwenden das vom Frontend übergebene `context.stock_code` als Basiszielwert für Fragen-zur-Aktie und verwenden bei fehlendem `context.report_language` das globale `REPORT_LANGUAGE`; ein vom Aufrufer explizit angegebenes `context.report_language` bleibt bevorzugt. Der Server beurteilt zuerst den stock scope neu. Das Frontend sendet nach dem Wechsel von einem Historienbericht zu Fragen-zur-Aktie kontinuierlich den aktiven stock context; beim Wechsel zurück oder Neuladen einer bestehenden Sitzung wird basierend auf den bereits geladenen historischen Benutzernachrichten das Basis-`{stock_code, stock_name: null}` wiederhergestellt. Der Server beurteilt in jeder Nachrichtenrunde erneut `maintain`/`switch`/`compare`: ohne expliziten Wechsel kann der Aktien-Tool-Aufruf mit `stock_code` nur das aktuelle Ziel abrufen; explizites Umschalten bereinigt die alten Ziel-Historiezusammenfassungen und vorab geladenen Daten; Fragen mit eindeutiger Vergleichsabsicht (vergleichen/vergleich/gegenüber/Unterschied/im Vergleich zu) oder mehreren nicht-aktuellen, expliziten Aktiencodes erlauben die diesmal eindeutig auftretenden Codes, ohne das aktuelle Ziel umzuschreiben. Wenn das Modell Finanzabkürzungen wie TTM, PE, MACD, KDJ, das `MA`-Indikatorwort im Gleitende-Mittel-Kontext oder Börsensegmente wie SH/SZ/BJ/HK/SS fälschlich als Aktiencode für einen Tool-Aufruf behandelt, gibt das Backend ein nicht wiederholbares `stock_scope_violation`-Toolergebnis zurück, ohne das entsprechende Aktien-Tool auszuführen. Toolnamen lösen nur exakte Namen im Register auf; keine provider-Namespaces oder Suffixe werden auf vorhandene Tools geroutet.
+> Hinweis: `POST /api/v1/backtest/run` erhält neue Anfrageparameter `analysis_date_from` / `analysis_date_to` (`YYYY-MM-DD`) zum Filtern der Kandidaten nach historischem Analysedatum; ist `analysis_date_from > analysis_date_to`, gibt die Schnittstelle 400 `invalid_params` zurück.
+> Hinweis: Läuft der Backtest erfolgreich, aber ohne neue Datenbankeinträge, gibt `BacktestRunResponse.message` eine lesbare Diagnosebeschreibung zurück und `diagnostics` den Fehlersuchkontext (Beispiel: `empty_reason`, `analysis_date_from`, `analysis_date_to`, `eval_window_days`, `min_age_days`, `limit`).
+> Hinweis: `GET /api/v1/backtest/results`, `GET /api/v1/backtest/performance` und `GET /api/v1/backtest/performance/{code}` unterstützen synchron `analysis_date_from`, `analysis_date_to`; ohne Übergabe bleibt das historische Verhalten.
 
-> 兼容性审计证据：
-> - 官方来源：LiteLLM OpenAI-compatible provider 文档 <https://docs.litellm.ai/docs/providers/openai_compatible>；OpenAI Chat API 文档 <https://platform.openai.com/docs/api-reference/chat/create>；DeepSeek API 文档 <https://api-docs.deepseek.com/>。
-> - 依赖版本：项目约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（见 `requirements.txt`），以上兼容语义回归测试在该版本窗口内执行。
-> - 可复核测试：
->   - `tests/test_llm_channel_config.py`（配置源优先级与 provider/base url 映射）
->   - `tests/test_market_review_runtime.py`（`build_market_review_runtime` 复用装配路径）
->   - `tests/test_analysis_api_contract.py`（`/api/v1/analysis/market-review` 合约与任务状态链路）
-> - 回滚/回退：若新路径有问题，可先恢复历史 `LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS` 与 legacy `GEMINI_*` / `OPENAI_*` / `ANTHROPIC_*` / `DEEPSEEK_*`，或通过桌面端备份或已启用管理员鉴权的 Web 端 `POST /api/v1/system/config/import` 回滚并重启；在运行时级别可暂时清空 `LITELLM_CONFIG` / `LLM_CHANNELS` 触发 legacy 回退。
+> Kompatibilitäts-Audit-Belege:
+> - Offizielle Quellen: LiteLLM OpenAI-compatible provider Dokumentation <https://docs.litellm.ai/docs/providers/openai_compatible>; OpenAI Chat-API-Dokumentation <https://platform.openai.com/docs/api-reference/chat/create>; DeepSeek-API-Dokumentation <https://api-docs.deepseek.com/>.
+> - Abhängigkeitsversion: Das Projekt begrenzt auf `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` (siehe `requirements.txt`); die oben genannten Kompatibilitätssemantik-Regressionstests wurden innerhalb dieses Versionsfensters ausgeführt.
+> - Nachprüfbare Tests:
+>   - `tests/test_llm_channel_config.py` (Priorität der Konfigurationsquellen und provider/base-url-Zuordnung)
+>   - `tests/test_market_review_runtime.py` (Wiederverwendung des Assemblierungspfads von `build_market_review_runtime`)
+>   - `tests/test_analysis_api_contract.py` (Vertrag von `/api/v1/analysis/market-review` und Task-Statushauptkette)
+> - Rollback/Rückfall: Hat der neue Pfad Probleme, können zunächst historische `LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS` und Legacy-`GEMINI_*` / `OPENAI_*` / `ANTHROPIC_*` / `DEEPSEEK_*` wiederhergestellt werden, oder über Desktop-Backup bzw. das mit Admin-Authentifizierung aktivierte Web `POST /api/v1/system/config/import` zurückgerollt und neu gestartet werden; auf Laufzeitebene können `LITELLM_CONFIG` / `LLM_CHANNELS` vorübergehend geleert werden, um den Legacy-Fallback auszulösen.
 
-> 进度流说明：`GET /api/v1/analysis/tasks/stream` 除 `task_created / task_started / task_completed / task_failed` 外，新增 `task_progress` 事件。普通分析链路会在“行情准备 / 新闻检索 / 上下文整理 / LLM 生成 / 报告保存”等阶段持续更新 `progress` 与 `message`。LiteLLM 流式返回仅在服务端累积完整文本，最终 JSON 解析成功后才会持久化历史报告；若流式在首个 chunk 前不可用，会自动回退到原非流式调用；若已产生部分 chunk 后失败，系统先尝试同模型非流式重试，失败后再按既有主模型->备用模型顺序继续尝试。  
-> 如果任务进度回调异常，主链路不会中断，系统会提升告警为 warning 级别并在服务端日志中输出完整异常，便于排查 SSE 推送断点。
->  
-> 说明：该特性属于运行时 SSE 与回退链路细节，优先记录于完整指南（`full-guide*.md`），不在 `README.md` 中展开详细行为分支。
+> Fortschrittsstream-Hinweis: `GET /api/v1/analysis/tasks/stream` erhält zusätzlich zu `task_created / task_started / task_completed / task_failed` das Ereignis `task_progress`. Die gewöhnliche Analyse-Kette aktualisiert in Phasen wie "Kursvorbereitung / Nachrichtenabruf / Kontextaufbereitung / LLM-Generierung / Berichtsspeicherung" kontinuierlich `progress` und `message`. LiteLLM-Streaming-Rückgaben werden serverseitig nur bis zum vollständigen Text akkumuliert; erst nach erfolgreichem finalen JSON-Parsing wird der Historienbericht persistiert; ist Streaming vor dem ersten chunk nicht verfügbar, wird automatisch auf den ursprünglichen Nicht-Streaming-Aufruf zurückgegriffen; schlägt es nach bereits erzeugten Teil-chunks fehl, versucht das System zuerst einen Nicht-Streaming-Retry desselben Modells, danach gemäß der bestehenden Reihenfolge Hauptmodell -> Ersatzmodell weiter.
+> Schlägt der Task-Fortschritts-Callback fehl, wird die Hauptkette nicht unterbrochen; das System hebt den Alarm auf warning-Ebene an und gibt die vollständige Ausnahme im Server-Log aus, um die Fehlersuche bei SSE-Push-Unterbrechungen zu erleichtern.
+>
+> Hinweis: Diese Funktion gehört zu den Laufzeit-SSE- und Fallback-Ketten-Details; sie wird bevorzugt im vollständigen Leitfaden (`full-guide*.md`) dokumentiert und in `README.md` nicht in detaillierte Verhaltensverzweigungen ausgeführt.
 
-**调用示例**：
+**Aufrufbeispiele**:
 ```bash
-# 健康检查
+# Health-Check
 curl http://127.0.0.1:8000/api/health
 
-# 触发分析（A股）
+# Analyse auslösen (A-Aktien)
 curl -X POST http://127.0.0.1:8000/api/v1/analysis/analyze \
   -H 'Content-Type: application/json' \
   -d '{"stock_code": "600519"}'
 
-# 透传策略（可选）
+# Strategie durchreichen (optional)
 curl -X POST http://127.0.0.1:8000/api/v1/analysis/analyze \
   -H 'Content-Type: application/json' \
   -d '{"stock_code": "600519", "skills": ["bull_trend", "growth_quality"]}'
 
-# 查询任务状态
+# Task-Status abfragen
 curl http://127.0.0.1:8000/api/v1/analysis/status/<task_id>
 
-# 查询今日 LLM 用量
+# Heutigen LLM-Verbrauch abfragen
 curl "http://127.0.0.1:8000/api/v1/usage/summary?period=today"
 
-# 查询今日 LLM 用量看板
+# Heutiges LLM-Verbrauchs-Dashboard abfragen
 curl "http://127.0.0.1:8000/api/v1/usage/dashboard?period=today&limit=50"
 
-# 触发回测（全部股票）
+# Backtest auslösen (alle Aktien)
 curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
   -H 'Content-Type: application/json' \
   -d '{"force": false}'
 
-# 触发回测（指定股票）
+# Backtest auslösen (bestimmte Aktie)
 curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
   -H 'Content-Type: application/json' \
   -d '{"code": "600519", "force": false}'
 
-# 触发回测（按分析日期范围）
+# Backtest auslösen (nach Analysedatumsbereich)
 curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
   -H 'Content-Type: application/json' \
   -d '{"analysis_date_from": "2026-05-01", "analysis_date_to": "2026-05-31", "limit": 100}'
 
-# 触发回测（指定股票 + 日期范围 + 强制重跑）
+# Backtest auslösen (bestimmte Aktie + Datumsbereich + erzwungener Neulauf)
 curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
   -H 'Content-Type: application/json' \
   -d '{"code": "600519", "force": true, "analysis_date_from": "2026-05-01", "analysis_date_to": "2026-05-31"}'
 
-# 查询整体回测表现
+# Gesamte Backtest-Performance abfragen
 curl http://127.0.0.1:8000/api/v1/backtest/performance
 
-# 查询单股回测表现
+# Backtest-Performance einer einzelnen Aktie abfragen
 curl http://127.0.0.1:8000/api/v1/backtest/performance/600519
 
-# 分页查询回测结果
+# Backtest-Ergebnisse paginiert abfragen
 curl "http://127.0.0.1:8000/api/v1/backtest/results?page=1&limit=20"
 ```
 
-### 自定义配置
+### Benutzerdefinierte Konfiguration
 
-修改默认端口或允许局域网访问：
+Standardport ändern oder LAN-Zugriff erlauben:
 
 ```bash
 python main.py --serve-only --host 0.0.0.0 --port 8888
 ```
 
-### 支持的股票代码格式
+### Unterstützte Aktiencode-Formate
 
-| 类型 | 格式 | 示例 |
+| Typ | Format | Beispiel |
 |------|------|------|
-| A股 | 6位数字 | `600519`、`000001`、`300750` |
-| 北交所 | 8/4/92 开头 6 位，支持 `BJ` 前缀或 `.BJ` 后缀 | `920748`、`BJ920493`、`920493.BJ` |
-| 港股 | hk + 5位数字 | `hk00700`、`hk09988` |
-| 美股 | 1-5 字母（可选 .X 后缀） | `AAPL`、`TSLA`、`BRK.B` |
-| 日股 | Yahoo 后缀 `.T` | `7203.T`、`6758.T` |
-| 韩股 | Yahoo 后缀 `.KS` / `.KQ` | `005930.KS`、`035720.KQ` |
-| 美股指数 | SPX/DJI/IXIC 等 | `SPX`、`DJI`、`NASDAQ`、`VIX` |
+| A-Aktien | 6-stellige Zahl | `600519`, `000001`, `300750` |
+| Börse Peking | 6-stellig beginnend mit 8/4/92, unterstützt `BJ`-Präfix oder `.BJ`-Suffix | `920748`, `BJ920493`, `920493.BJ` |
+| Hongkong-Aktien | hk + 5-stellige Zahl | `hk00700`, `hk09988` |
+| US-Aktien | 1-5 Buchstaben (optionales .X-Suffix) | `AAPL`, `TSLA`, `BRK.B` |
+| japanische Aktien | Yahoo-Suffix `.T` | `7203.T`, `6758.T` |
+| koreanische Aktien | Yahoo-Suffix `.KS` / `.KQ` | `005930.KS`, `035720.KQ` |
+| US-Indizes | SPX/DJI/IXIC usw. | `SPX`, `DJI`, `NASDAQ`, `VIX` |
 
-### 注意事项
+### Hinweise
 
-- 浏览器访问：`http://127.0.0.1:8000`（或您配置的端口）
-- 在云服务器上部署后，不知道浏览器该输入什么地址？请看 [云服务器 Web 界面访问指南](deploy-webui-cloud.md)
-- 分析完成后自动推送通知到配置的渠道
-- 此功能在 GitHub Actions 环境中会自动禁用
-- 另见 [openclaw Skill 集成指南](openclaw-skill-integration.md)
-
----
-
-## 常见问题
-
-### Q: 推送消息被截断？
-A: 企业微信/飞书有消息长度限制，系统已自动分段发送。如需完整内容，可配置飞书云文档功能。
-
-### Q: 数据获取失败？
-A: AkShare 使用爬虫机制，可能被临时限流。系统已配置重试机制，一般等待几分钟后重试即可。
-
-### Q: 如何添加自选股？
-A: 修改 `STOCK_LIST` 环境变量，多个代码推荐用英文逗号分隔。系统也会识别中文逗号、顿号、分号、空格和换行，并在 Web 设置页保存或自选增删后规范为英文逗号。
-
-### Q: GitHub Actions 没有执行？
-A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是 UTC 时间）。
+- Browserzugriff: `http://127.0.0.1:8000` (oder der von dir konfigurierte Port)
+- Nach der Bereitstellung auf einem Cloud-Server nicht sicher, welche Adresse im Browser einzugeben ist? Siehe [Anleitung zum Web-Interface-Zugriff auf Cloud-Server](deploy-webui-cloud.md)
+- Nach Abschluss der Analyse werden automatisch Benachrichtigungen an die konfigurierten Kanäle gepusht
+- Diese Funktion wird in der GitHub-Actions-Umgebung automatisch deaktiviert
+- Siehe auch [openclaw-Skill-Integrationsleitfaden](openclaw-skill-integration.md)
 
 ---
 
-更多问题请 [提交 Issue](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
+## Häufige Fragen
 
-## Agent 工具数据缓存与持久化
+### Q: Push-Nachrichten werden abgeschnitten?
+A: WeCom/Feishu haben eine Nachrichtenlängenbegrenzung; das System sendet bereits automatisch in Segmenten. Für vollständige Inhalte kann die Feishu-Cloud-Dokumentfunktion konfiguriert werden.
 
-- `get_daily_history` 会先尝试复用本地 `stock_daily` 日线缓存；缓存新鲜且至少覆盖首页默认的 30 条记录时，不再重复请求外部数据源。
-- 当 Agent 请求的天数多于本地缓存记录数时，工具会返回实际可用记录，并通过 `partial_cache=true`、`requested_days`、`actual_records` 标明这是部分缓存命中。
-- 缓存缺失或过期时，工具仍会按原逻辑从数据源获取日线数据；获取成功后会 best-effort 写回 `stock_daily`，保存失败不会阻断 Agent 回复。
-- `search_stock_news` 与 `search_comprehensive_intel` 成功返回后会 best-effort 写入 `news_intel`，复用现有 URL / fallback key 去重逻辑。
-- `get_realtime_quote` 不复用 `stock_daily` 作为实时行情缓存，也不会把盘中实时行情写入日线表；如需实时行情缓存，应单独设计实时行情存储。
+### Q: Datenabruf fehlgeschlagen?
+A: AkShare verwendet einen Crawler-Mechanismus und kann vorübergehend rate-limitiert werden. Das System hat einen Retry-Mechanismus konfiguriert; in der Regel genügt es, ein paar Minuten zu warten und erneut zu versuchen.
 
-## Agent 事件告警监控
+### Q: Wie füge ich Watchlist-Aktien hinzu?
+A: Die Umgebungsvariable `STOCK_LIST` ändern, mehrere Codes empfohlen mit englischen Kommas trennen. Das System erkennt auch chinesische Kommas, Pausenpunkte, Semikolons, Leerzeichen und Zeilenumbrüche und normalisiert sie nach dem Speichern auf der Web-Einstellungsseite oder dem Hinzufügen/Entfernen der Watchlist auf englische Kommas.
 
-`AGENT_EVENT_MONITOR_ENABLED=true` 后，schedule 模式会按 `AGENT_EVENT_MONITOR_INTERVAL_MINUTES` 运行告警 worker。worker 每轮读取 Alert API 创建并启用的持久化规则，同时继续兼容 `AGENT_EVENT_ALERT_RULES_JSON` 中的 legacy 规则；触发后仍发送到现有通知渠道。Alert API / Web 持久化规则支持实时价、涨跌幅、成交量、日线技术指标、`watchlist`、`portfolio_holdings`、`portfolio_account`，以及 `market` 大盘红绿灯目标；legacy JSON 仍仅支持三类基础规则。
+### Q: GitHub Actions wird nicht ausgeführt?
+A: Prüfen, ob Actions aktiviert sind und ob der cron-Ausdruck korrekt ist (beachte, dass es UTC-Zeit ist).
 
-> 兼容与迁移说明：本节记录当前事件告警规则（含 `price_change_percent`）运行时行为，未变更模型名、provider、Base URL、LiteLLM、`OPENAI_*`、`DEEPSEEK_*`、`GEMINI_*` 等外部模型/API 配置语义。legacy JSON 不会被自动迁移、删除或改写；若需回退，删除或关闭 `AGENT_EVENT_MONITOR_ENABLED` 即可停止后台告警 worker。
+---
 
-| `alert_type` | 方向字段 | 阈值字段 | 说明 |
+Weitere Fragen bitte als [Issue einreichen](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
+
+## Agent-Tool-Datencache und -Persistierung
+
+- `get_daily_history` versucht zuerst, den lokalen `stock_daily`-Tagesdaten-Cache wiederzuverwenden; wenn der Cache frisch ist und mindestens die standardmäßigen 30 Einträge der Startseite abdeckt, werden externe Datenquellen nicht erneut angefragt.
+- Fordert der Agent mehr Tage an als im lokalen Cache vorhanden sind, gibt das Tool die tatsächlich verfügbaren Einträge zurück und kennzeichnet über `partial_cache=true`, `requested_days`, `actual_records`, dass es sich um einen partiellen Cache-Treffer handelt.
+- Bei fehlendem oder abgelaufenem Cache ruft das Tool die Tagesdaten weiterhin nach der ursprünglichen Logik aus der Datenquelle ab; nach erfolgreichem Abruf wird best-effort in `stock_daily` zurückgeschrieben; ein Speicherfehler blockiert die Agent-Antwort nicht.
+- `search_stock_news` und `search_comprehensive_intel` schreiben nach erfolgreicher Rückgabe best-effort in `news_intel` und verwenden die bestehende URL-/Fallback-Key-Deduplizierungslogik.
+- `get_realtime_quote` verwendet `stock_daily` nicht als Echtzeitkurs-Cache und schreibt Intraday-Echtzeitkurse auch nicht in die Tagesdatentabelle; für einen Echtzeitkurs-Cache sollte separat eine Echtzeitkurs-Speicherung entworfen werden.
+
+## Agent-Ereignis-Alarmüberwachung
+
+Nach `AGENT_EVENT_MONITOR_ENABLED=true` führt der Schedule-Modus den Alarm-worker gemäß `AGENT_EVENT_MONITOR_INTERVAL_MINUTES` aus. Der worker liest pro Runde die über die Alert-API erstellten und aktivierten persistenten Regeln und bleibt gleichzeitig mit Legacy-Regeln in `AGENT_EVENT_ALERT_RULES_JSON` kompatibel; nach der Auslösung wird weiterhin an die bestehenden Benachrichtigungskanäle gesendet. Die persistenten Regeln von Alert-API/Web unterstützen Echtzeitpreis, Änderungsrate, Handelsvolumen, Tagesdaten-Technische Indikatoren, `watchlist`, `portfolio_holdings`, `portfolio_account` sowie das `market`-Ziel der Markt-Ampel; das Legacy-JSON unterstützt weiterhin nur drei grundlegende Regeltypen.
+
+> Kompatibilitäts- und Migrationshinweis: Dieser Abschnitt dokumentiert das Laufzeitverhalten der aktuellen Ereignis-Alarmregeln (inkl. `price_change_percent`), ohne die Semantik externer Modell-/API-Konfigurationen wie Modellname, provider, Base-URL, LiteLLM, `OPENAI_*`, `DEEPSEEK_*`, `GEMINI_*` zu verändern. Das Legacy-JSON wird nicht automatisch migriert, gelöscht oder umgeschrieben; für einen Rückfall genügt das Löschen oder Deaktivieren von `AGENT_EVENT_MONITOR_ENABLED`, um den Hintergrund-Alarm-worker zu stoppen.
+
+| `alert_type` | Richtungsfeld | Schwellwertfeld | Beschreibung |
 | --- | --- | --- | --- |
-| `price_cross` | `above` / `below` | `price` | 当前价上破或下破指定价格 |
-| `price_change_percent` | `up` / `down` | `change_pct` | 涨跌幅达到指定百分比 |
-| `volume_spike` | - | `multiplier` | 最新成交量超过近 20 日均量的指定倍数 |
-| `ma_price_cross` | `above` / `below` | `window` | 日线 close 相对 MA(window) 边缘上穿或下穿 |
-| `rsi_threshold` | `above` / `below` | `period`、`threshold` | RSI 边缘上穿或下穿阈值 |
-| `macd_cross` | `bullish_cross` / `bearish_cross` | `fast_period`、`slow_period`、`signal_period` | DIF/DEA 边缘金叉或死叉 |
-| `kdj_cross` | `bullish_cross` / `bearish_cross` | `period`、`k_period`、`d_period` | K/D 边缘金叉或死叉 |
-| `cci_threshold` | `above` / `below` | `period`、`threshold` | CCI 边缘上穿或下穿阈值 |
-| `portfolio_stop_loss` | `mode=near|breach` | - | 账户级止损接近或触发 |
-| `portfolio_concentration` | - | - | 账户级 symbol 集中度 |
-| `portfolio_drawdown` | - | - | 账户级最大回撤告警 |
-| `portfolio_price_stale` | - | - | 持仓价格 stale 或 missing |
-| `market_light_status` | - | `statuses` | 当前大盘红绿灯状态命中 `red/yellow` 列表 |
-| `market_light_score_drop` | - | `min_drop` | 相比上一交易日 Market Light score 下降达到阈值 |
+| `price_cross` | `above` / `below` | `price` | Aktueller Preis durchbricht den angegebenen Preis nach oben oder unten |
+| `price_change_percent` | `up` / `down` | `change_pct` | Änderungsrate erreicht den angegebenen Prozentsatz |
+| `volume_spike` | - | `multiplier` | Neuestes Handelsvolumen überschreitet das angegebene Vielfache des Durchschnittsvolumens der letzten 20 Tage |
+| `ma_price_cross` | `above` / `below` | `window` | Tagesdaten-close kreuzt den Rand von MA(window) nach oben oder unten |
+| `rsi_threshold` | `above` / `below` | `period`, `threshold` | RSI kreuzt den Schwellwertrand nach oben oder unten |
+| `macd_cross` | `bullish_cross` / `bearish_cross` | `fast_period`, `slow_period`, `signal_period` | Goldener Kreuz oder Todeskreuz an der DIF/DEA-Kante |
+| `kdj_cross` | `bullish_cross` / `bearish_cross` | `period`, `k_period`, `d_period` | Goldener Kreuz oder Todeskreuz an der K/D-Kante |
+| `cci_threshold` | `above` / `below` | `period`, `threshold` | CCI kreuzt den Schwellwertrand nach oben oder unten |
+| `portfolio_stop_loss` | `mode=near|breach` | - | Kontoebener Stop-Loss nahe oder ausgelöst |
+| `portfolio_concentration` | - | - | Kontoebene symbol-Konzentration |
+| `portfolio_drawdown` | - | - | Kontoebener maximaler Drawdown-Alarm |
+| `portfolio_price_stale` | - | - | Positionspreis stale oder missing |
+| `market_light_status` | - | `statuses` | Aktueller Markt-Ampelstatus trifft die `red/yellow`-Liste |
+| `market_light_score_drop` | - | `min_drop` | Market-Light-Score sinkt gegenüber dem vorherigen Handelstag um den Schwellwert |
 
-示例：
+Beispiel:
 
 ```env
 AGENT_EVENT_MONITOR_ENABLED=true
@@ -1802,52 +1803,52 @@ AGENT_EVENT_MONITOR_INTERVAL_MINUTES=5
 AGENT_EVENT_ALERT_RULES_JSON=[{"stock_code":"600519","alert_type":"price_cross","direction":"above","price":1800},{"stock_code":"300750","alert_type":"price_change_percent","direction":"down","change_pct":3.0},{"stock_code":"000858","alert_type":"volume_spike","multiplier":2.5}]
 ```
 
-worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_triggers` 作为评估历史；正常未触发不写历史。DB 持久化规则的 `triggered` 历史按 `rule_id + target + data_source + data_timestamp` 对同一数据点做 best-effort 去重，重复命中会复用最早一条触发记录，`data_timestamp` 缺失时不去重。真实触发后会把每个通知渠道的 attempt 写入 `alert_notifications`，并为 Alert API 创建的持久化规则写入 `alert_cooldowns` 业务冷却状态；若读取持久化冷却失败，worker 会临时使用进程内 fingerprint 防止 DB 异常期间重复推送。legacy `AGENT_EVENT_ALERT_RULES_JSON` 规则继续使用进程内 fingerprint 抑制，不写持久化冷却；通知基础设施的 `notification_noise.py` 降噪仍独立生效。Web 规则列表使用后端返回的 `cooldown_active` 判断冷却状态，避免浏览器本地时区解析影响展示。
+Der worker schreibt `triggered`, `skipped`, `degraded` und `failed` als Bewertungshistorie in `alert_triggers`; normale, nicht ausgelöste Ereignisse schreiben keine Historie. Für die `triggered`-Historie persistenter Regeln wird nach `rule_id + target + data_source + data_timestamp` best-effort auf denselben Datenpunkt dedupliziert; bei erneutem Treffer wird der früheste Auslöse-Eintrag wiederverwendet, und bei fehlendem `data_timestamp` wird nicht dedupliziert. Nach einem echten Auslösen wird der attempt jedes Benachrichtigungskanals in `alert_notifications` geschrieben und für persistente, über die Alert-API erstellte Regeln der Geschäfts-Cool-down-Zustand in `alert_cooldowns`; schlägt das Lesen des persistenten Cool-downs fehl, verwendet der worker vorübergehend einen In-Process-Fingerprint, um doppelte Pushs während eines DB-Fehlers zu vermeiden. Legacy-`AGENT_EVENT_ALERT_RULES_JSON`-Regeln verwenden weiterhin die In-Process-Fingerprint-Unterdrückung und schreiben keinen persistenten Cool-down; die Rauschunterdrückung `notification_noise.py` der Benachrichtigungsinfrastruktur wirkt weiterhin unabhängig. Die Web-Regelliste verwendet das vom Backend zurückgegebene `cooldown_active` zur Beurteilung des Cool-down-Zustands, damit die Zeitzonenauflösung des Browsers die Anzeige nicht beeinflusst.
 
-技术指标规则只使用日线 close 的边缘触发，partial bar 处理是服务器本地时区 + 16:00 的启发式，不做市场日历精确判定。`watchlist` 每轮刷新 `STOCK_LIST` 后展开，`portfolio_holdings` 从持仓快照的非零持仓按 symbol 去重展开，`portfolio_account` 复用持仓风险服务做账户级聚合评估。`market` 规则的 target 仅支持 `cn|hk|us|jp|kr`，使用结构化 `MarketLightSnapshot`；`trade_date` 来自当次 market overview，`data_quality=unavailable` 会跳过触发，非交易日会被交易日 gate 跳过，`market_light_score_drop` 只比较跨交易日 score。WebUI 的“告警”页面可以管理持久化规则、执行一次性 dry-run 测试，并查看触发历史、通知尝试结果和只读冷却状态；批量规则的列表冷却状态是父规则摘要，子目标冷却以触发历史为准。详细边界见 [实时告警中心](alerts.md)。
+Regeln für Technische Indikatoren verwenden nur die Randauslösung des Tagesdaten-close; die partial-bar-Behandlung ist eine Heuristik mit Server-Lokalzeit + 16:00, ohne präzise Marktkalender-Beurteilung. `watchlist` wird nach jeder Runde anhand von `STOCK_LIST` expandiert, `portfolio_holdings` wird aus den Nicht-Null-Positionen des Positions-Snapshots nach symbol dedupliziert expandiert, `portfolio_account` verwendet den Positionsrisiko-Dienst für die kontoebene Aggregatbewertung. Das target der `market`-Regel unterstützt nur `cn|hk|us|jp|kr` und verwendet das strukturierte `MarketLightSnapshot`; `trade_date` stammt aus der jeweiligen Market-Übersicht, `data_quality=unavailable` überspringt die Auslösung, Nicht-Handelstage werden vom Handelstags-Gate übersprungen, und `market_light_score_drop` vergleicht nur den Score über Handelstage hinweg. Die "Alarm"-Seite der WebUI kann persistente Regeln verwalten, einmalige dry-run-Tests ausführen und die Auslösehistorie, Benachrichtigungsversuche und den schreibgeschützten Cool-down-Zustand ansehen; der Listen-Cool-down-Zustand von Batch-Regeln ist die Zusammenfassung der Elternregel, und der Cool-down von Unterzielen richtet sich nach der Auslösehistorie. Detaillierte Grenzen siehe [Echtzeit-Alarmzentrum](alerts.md).
 
-## 持仓管理说明
+## Positionsverwaltungshinweise
 
-### `/portfolio` 页面可做什么
+### Was die Seite `/portfolio` kann
 
-- 查看全量持仓或切换到单个账户视角。
-- 在 `fifo` / `avg` 两种成本法之间切换，查看快照 KPI、风险摘要和 Top Positions 集中度图表。
-- 直接在 Web 页面新增账户、删除误建账户，或录入交易、现金流水、公司行动等事件。
-- 通过 CSV 导入持仓记录，支持先 `dry_run` 预览，再决定是否正式写入。
-- 在事件列表中按账户、日期、方向、代码等条件筛选，并对单账户事件做删除修正。
+- Vollständige Positionen ansehen oder in die Einzelkonten-Perspektive wechseln.
+- Zwischen den zwei Kostenmethoden `fifo` / `avg` umschalten, Snapshot-KPI, Risikozusammenfassung und das Top-Positions-Konzentrationsdiagramm ansehen.
+- Direkt auf der Web-Seite Konten anlegen, versehentlich erstellte Konten löschen oder Ereignisse wie Trades, Cash-Flows und Unternehmensmaßnahmen erfassen.
+- Positionsaufzeichnungen per CSV importieren; zuerst `dry_run`-Vorschau, dann entscheiden, ob formal geschrieben wird.
+- In der Ereignisliste nach Konto, Datum, Richtung, Code usw. filtern und Einzelkonto-Ereignisse mit Löschkorrektur bearbeiten.
 
-### 相关接口
+### Zugehörige Schnittstellen
 
-| 接口 | 方法 | 说明 |
+| Schnittstelle | Methode | Beschreibung |
 |------|------|------|
-| `/api/v1/portfolio/snapshot` | GET | 查询持仓快照 |
-| `/api/v1/portfolio/risk` | GET | 查询风险摘要 |
-| `/api/v1/portfolio/trades` | GET | 分页查询交易记录 |
-| `/api/v1/portfolio/cash-ledger` | GET | 分页查询现金流水 |
-| `/api/v1/portfolio/corporate-actions` | GET | 分页查询公司行动 |
-| `/api/v1/portfolio/imports/csv/brokers` | GET | 查询内建 CSV 券商解析器 |
-| `/api/v1/portfolio/fx/refresh` | POST | 手动刷新汇率缓存 |
-| `/api/v1/portfolio/accounts/{account_id}` | DELETE | 删除/归档持仓账户 |
-| `/api/v1/portfolio/trades/{trade_id}` | DELETE | 删除交易记录 |
-| `/api/v1/portfolio/cash-ledger/{entry_id}` | DELETE | 删除现金流水 |
-| `/api/v1/portfolio/corporate-actions/{action_id}` | DELETE | 删除公司行动 |
+| `/api/v1/portfolio/snapshot` | GET | Positions-Snapshot abfragen |
+| `/api/v1/portfolio/risk` | GET | Risikozusammenfassung abfragen |
+| `/api/v1/portfolio/trades` | GET | Trade-Aufzeichnungen paginiert abfragen |
+| `/api/v1/portfolio/cash-ledger` | GET | Cash-Flows paginiert abfragen |
+| `/api/v1/portfolio/corporate-actions` | GET | Unternehmensmaßnahmen paginiert abfragen |
+| `/api/v1/portfolio/imports/csv/brokers` | GET | Eingebaute CSV-Broker-Parser abfragen |
+| `/api/v1/portfolio/fx/refresh` | POST | Wechselkurs-Cache manuell aktualisieren |
+| `/api/v1/portfolio/accounts/{account_id}` | DELETE | Positionskonto löschen/archivieren |
+| `/api/v1/portfolio/trades/{trade_id}` | DELETE | Trade-Aufzeichnung löschen |
+| `/api/v1/portfolio/cash-ledger/{entry_id}` | DELETE | Cash-Flow löschen |
+| `/api/v1/portfolio/corporate-actions/{action_id}` | DELETE | Unternehmensmaßnahme löschen |
 
-> 查询类接口统一支持 `account_id`、`date_from`、`date_to`、`page`、`page_size` 等常见筛选参数；事件列表会返回统一的 `items`、`total`、`page`、`page_size` 结构。
+> Abfrage-Schnittstellen unterstützen einheitlich gängige Filterparameter wie `account_id`, `date_from`, `date_to`, `page`, `page_size`; Ereignislisten geben die einheitliche Struktur `items`, `total`, `page`, `page_size` zurück.
 
-### 使用行为说明
+### Nutzungsverhaltenshinweise
 
-- CSV 导入内建 `huatai`、`citic`、`cmb` 解析器；若券商列表接口失败，Web 端会自动回退到这些内建选项。
-- 导入流程会先把 CSV 解析成标准化记录，再逐条提交到持仓账本；遇到忙碌行会计入 `failed_count`，不会因为单行冲突让整批请求整体失败。
-- 删除账户使用软删除语义：默认账户列表、快照、风险、录入入口和事件列表不再显示该账户，但交易、现金流水和公司行动不会被物理清理；如需纠正单条流水，需在账户归档前使用事件列表里的删除修正入口。
-- 交易去重优先使用账户内唯一的 `trade_uid`，缺失时回退到基于日期、代码、方向、数量、价格、费用、税费、币种的确定性哈希。
-- 卖出会先校验可用数量，超卖返回 `409 portfolio_oversell`；并发写入冲突时可能返回 `409 portfolio_busy`。
-- 持仓快照的 `positions[]` 会返回 `price_source`、`price_date`、`price_stale`、`price_available` 等价格元信息；当天快照默认会先尝试实时行情，实时价不可用或非正值时再回退到 `as_of` 当天或之前最近的历史收盘价；传入 `include_realtime=false` 时会跳过实时行情并直接使用本地历史收盘价回退路径，Web 持仓页用该模式优先渲染持仓列表，避免外部实时行情源变慢时阻塞首屏。历史 `as_of` 快照不会拉取实时价，也不会再把成本价静默当作现价；缺价持仓会标记 `price_available=false` 并从市值与未实现盈亏汇总中排除。
-- 汇率刷新会先尝试在线源；若在线获取失败，则回退到最近一次缓存并标记 `is_stale=true`，避免快照和风险页整体不可用。
-- 当 `PORTFOLIO_FX_UPDATE_ENABLED=false` 时，手动刷新接口会明确返回“在线刷新已禁用”，页面不会误导为“当前没有可刷新的汇率对”。
-- 风险摘要包含集中度、回撤、止损接近度等信息；`sector_concentration` 会优先尝试按板块归类，失败时降级到 `UNCLASSIFIED`，不会阻断风险结果返回。
+- Der CSV-Import enthält eingebaute Parser für `huatai`, `citic`, `cmb`; schlägt die Broker-Listen-Schnittstelle fehl, greift die Web-Seite automatisch auf diese eingebauten Optionen zurück.
+- Der Importablauf parst das CSV zuerst in normalisierte Einträge und übermittelt sie dann einzeln an das Positions-Hauptbuch; blockierte Zeilen werden in `failed_count` gezählt, ohne dass ein einzelner Zeilenkonflikt den gesamten Batch-Anfragestatus zum Fehlschlag bringt.
+- Das Löschen von Konten verwendet eine Soft-Delete-Semantik: Standard-Kontenliste, Snapshot, Risiko, Erfassungseinstieg und Ereignisliste zeigen das Konto nicht mehr an, aber Trades, Cash-Flows und Unternehmensmaßnahmen werden nicht physisch bereinigt; zur Korrektur einer einzelnen Buchung muss vor der Kontoarchivierung der Löschkorrektur-Einstieg in der Ereignisliste verwendet werden.
+- Trade-Deduplizierung bevorzugt die kontounique `trade_uid`; bei Fehlen wird auf einen deterministischen Hash basierend auf Datum, Code, Richtung, Menge, Preis, Gebühren, Steuern und Währung zurückgegriffen.
+- Verkäufe validieren zuerst die verfügbare Menge; Überverkauf gibt `409 portfolio_oversell` zurück; bei parallelen Schreibkonflikten kann `409 portfolio_busy` zurückgegeben werden.
+- `positions[]` im Positions-Snapshot gibt Preis-Metainformationen wie `price_source`, `price_date`, `price_stale` und `price_available` zurück; der Snapshot des Tages versucht standardmäßig zuerst den Echtzeitkurs, greift bei nicht verfügbarem oder nicht positivem Echtzeitkurs auf den historischen Schlusskurs von `as_of` oder den zuletzt davor liegenden zurück; mit `include_realtime=false` wird der Echtzeitkurs übersprungen und direkt der lokale historische Schlusskurs-Rückfallpfad verwendet, und die Web-Positionsseite verwendet diesen Modus, um die Positionsliste priorisiert zu rendern und so zu vermeiden, dass langsame externe Echtzeitquellen den ersten Screen blockieren. Historische `as_of`-Snapshots ziehen keine Echtzeitkurse ab und behandeln den Kostenpreis auch nicht stillschweigend als aktuellen Preis; Positionen ohne Preis werden mit `price_available=false` markiert und von der Marktwert- und Unrealized-Gewinn/Verlust-Aggregation ausgeschlossen.
+- Der Wechselkurs-Refresh versucht zuerst Online-Quellen; schlägt der Online-Abruf fehl, wird auf den letzten Cache zurückgegriffen und `is_stale=true` markiert, um die Gesamtverfügbarkeit von Snapshot und Risikoseite zu erhalten.
+- Bei `PORTFOLIO_FX_UPDATE_ENABLED=false` gibt die manuelle Refresh-Schnittstelle eindeutig "Online-Refresh deaktiviert" zurück; die Seite führt nicht in die Irre mit "Derzeit keine aktualisierbaren Währungspaare".
+- Die Risikozusammenfassung enthält Informationen wie Konzentration, Drawdown und Stop-Loss-Nähe; `sector_concentration` versucht bevorzugt, nach Sektor zu klassifizieren, und degradiert bei Fehlschlag auf `UNCLASSIFIED`, ohne die Rückgabe des Risikoergebnisses zu blockieren.
 
-### Agent 读取持仓
+### Agent liest Positionen
 
-- Agent 可通过 `get_portfolio_snapshot` 获取面向账户的紧凑持仓摘要，默认包含精简风险块，适合控制 Token 开销。
-- 可选参数包括 `account_id`、`cost_method`、`as_of`、`include_positions`、`include_risk`。
-- 若风险块生成失败，快照仍会返回；若当前环境未启用持仓模块，工具会返回结构化 `not_supported`。
+- Der Agent kann über `get_portfolio_snapshot` eine kontoorientierte kompakte Positionszusammenfassung abrufen, die standardmäßig einen reduzierten Risikoblock enthält und sich zur Kontrolle des Token-Verbrauchs eignet.
+- Optionale Parameter umfassen `account_id`, `cost_method`, `as_of`, `include_positions` und `include_risk`.
+- Schlägt die Erstellung des Risikoblocks fehl, wird der Snapshot weiterhin zurückgegeben; ist das Positionsmodul in der aktuellen Umgebung nicht aktiviert, gibt das Tool strukturiert `not_supported` zurück.

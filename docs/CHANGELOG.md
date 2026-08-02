@@ -8,619 +8,573 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
-- [修复] `scripts/ci_gate.sh` 的 `offline_test_suite` 给 `pytest -m "not network"` 加 `--timeout=120 -o timeout_method=thread` 与 `-o faulthandler_timeout=300`：单个测试（含其 teardown）超过 2 分钟直接 fail，单个测试（含其 teardown）超过 5 分钟时 dump 全部线程栈到 stderr。配合 `.github/requirements-ci.txt` 新增 `pytest-timeout>=2.3.0` 依赖。issue #2131 报告过 backend-gate 在 AlphaSift hotspot 用例附近间歇性无 traceback 卡住直到被 GitHub Actions 取消，此次修复让任何未来 CI hang 都会留下可定位的失败信息或 post-mortem 栈，而不是静默消亡。同步修正 `.github/workflows/docker-publish.yml` 的 `Install backend gate dependencies` 与 `setup-python cache-dependency-path` 对齐 `ci.yml` 的 backend-gate 依赖安装方式，避免发布流程跑同一个 `./scripts/ci_gate.sh` 时因缺少 `pytest-timeout` 而直接 fail。
-- [新功能] SkillAggregator 基于独立满足 30 条 evaluated 门槛的真实 Skill Outcome bucket，使用 Beta 先验收缩、unable 惩罚和多周期证据加权生成有界运行时权重；缺失、低样本或异常统计保持中性。
-- [改进] 将参考 AlphaSift 实现的选股核心与策略正式纳入 DSA，统一使用 `ScreeningService`、`SCREENING_ENABLED` 和 `/api/v1/screening`，并保留 Apache-2.0 归因与来源版本记录。
-- [新功能] 内建选股结果按 `run_id` 持久化到 DSA 数据库，新增运行历史和数据源历史 API，接入 DSA 公告事件上下文及其搜索缓存，并支持将候选连同筛选策略映射的 skill 交给 DSA 单股深度分析。
-- [修复] Outcome 候选按上次尝试时间公平调度，避免持续新增的缺失 key 使旧 `pending` outcome 永久得不到重试。
-- [新功能] 新增按 skill、horizon 与 outcome engine version 独立聚合的只读 Skill Opinion 表现统计；少于 30 条 evaluated 样本时仅返回观察性计数，不输出表现指标或调整运行时权重。
-- [修复] 统一等价股票代码的本地日线候选与同源窗口解析；冲突沪深交易所代码不再降级匹配裸码，回测仅接受快照或交易日历确认的起点，并在同一起点中优先完整的单一代码窗口。
-- [新功能] 新增按 individual SkillAgent 自身 signal、版本化 engine 与本地已存同源日线窗口计算并持久化 `skill_opinion_outcomes` 的核心服务。
-- [修复] #1970 关闭认证属于高风险操作，即使携带有效 session cookie 也强制要求再次输入当前管理员密码二次确认；后端 `auth_update_settings` 的 disable 分支统一走 currentPassword 校验，命中 rate limit 时与 enable 路径一致返回 429，前端 `AuthSettingsCard` 在关闭认证时如有缺失当前密码将阻止提交并给出内联提示。
-<!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
-<!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
-- [修复] 本地 CLI 的 `stdout_preview` / `stderr_preview` 按环境变量、JSON、YAML/日志标量与 URL 的独立契约脱敏短凭证，避免小于 32 字符的 API key、secret 或 token 进入诊断；普通字段仅按敏感名称判定，未加引号的 YAML 敏感标量则 fail-closed 脱敏至行尾（refs #1784）。
-- [修复] `redact_diagnostic_text()` 在 `export SENSITIVE_ENV=$(printenv OTHER_SECRET) session_id=...` 形态下不再因第二遍 `$(...)` 扫描与第一遍敏感赋值替换区重叠而吞掉 `session_id` 等尾随非敏感诊断字段；第二遍扫描现以 first-pass 已替换 span 列表为可信跳过表，并对 prior-head / prior-semicolon 分支的 leading regex 加上 `(?:export[ \t]+)?` 前缀，使 `export FOO=$(...)` 与 `FOO=$(...)` 在所有分支行为对齐（关闭 PR #2118 review blocker OR-COR-7c0a5d41）。
-- [修复] LongbridgeFetcher._compute_volume_ratio 调用 history_candlesticks_by_offset 时把 time 与 count 两个位置参数传反，PyO3 转换层抛 argument 'time': 'int' object cannot be converted to 'PyDateTime'，异常被 try/except 静默吞到 DEBUG 日志，导致港股/美股实时行情链路上的量比字段恒为 None 并对外表现为"未获取到数据"；改用 adaptive keyword args 调用，兼容 0.2.74 (forward, time, count) 与 4.x (forward, count, time) 两种 SDK 契约，并按 keyword args 契约覆盖两版本回归测试（fixes #2100）
+- [Fix] `offline_test_suite` von `scripts/ci_gate.sh` fügt für `pytest -m "not network"` `--timeout=120 -o timeout_method=thread` und `-o faulthandler_timeout=300` hinzu: Ein einzelner Test (einschließlich seines Teardowns), der länger als 2 Minuten dauert, schlägt direkt fehl; dauert ein einzelner Test (einschließlich seines Teardowns) länger als 5 Minuten, werden alle Thread-Stacks auf stderr gedumpt. Dazu kommt die neue Abhängigkeit `pytest-timeout>=2.3.0` in `.github/requirements-ci.txt`. Issue #2131 berichtete, dass der backend-gate in der Nähe des AlphaSift-Hotspot-Falls intermittierend ohne Traceback hängen blieb, bis er von GitHub Actions abgebrochen wurde. Dieser Fix stellt sicher, dass jeder künftige CI-Hang eine lokalisierbare Fehlermeldung oder einen Post-mortem-Stack hinterlässt, statt stillschweigend zu enden. Gleichzeitig wurden `Install backend gate dependencies` und `setup-python cache-dependency-path` in `.github/workflows/docker-publish.yml` an die backend-gate-Abhängigkeitsinstallation von `ci.yml` angeglichen, damit der Release-Workflow beim Ausführen desselben `./scripts/ci_gate.sh` nicht wegen fehlender `pytest-timeout` direkt fehlschlägt.
+- [Neues Feature] SkillAggregator generiert begrenzte Laufzeitgewichte auf Basis echter Skill-Outcome-Buckets, die die Schwelle von 30 eigenständig erfüllten evaluated Ergebnissen erfüllen, und zwar mit Beta-Prior-Kontraktion, unable-Bestrafung und mehrperiodiger Evidenzgewichtung; fehlende, zu kleine Stichproben oder anomale Statistiken bleiben neutral.
+- [Verbesserung] Der vom AlphaSift-Referenzprojekt übernommene Auswahlkern und die Strategien werden offiziell in DSA übernommen, einheitlich über `ScreeningService`, `SCREENING_ENABLED` und `/api/v1/screening`, unter Beibehaltung der Apache-2.0-Zuordnung und der Quellversionsaufzeichnung.
+- [Neues Feature] Integrierte Auswahlergebnisse werden per `run_id` in der DSA-Datenbank persistiert, neue Laufzeithistorie- und Datenquellen-Historie-APIs werden ergänzt, der DSA-Announcement-Ereigniskontext und dessen Suchcache angebunden, und Kandidaten können zusammen mit den auf die Screening-Strategie abgebildeten Skills an die DSA-Einzelaktien-Tiefenanalyse übergeben werden.
+- [Fix] Outcome-Kandidaten werden fair nach dem Zeitpunkt des letzten Versuchs geplant, damit ständig neu hinzukommende fehlende Keys alte `pending`-Outcomes nicht dauerhaft von Wiederholungen ausschließen.
+- [Neues Feature] Neue schreibgeschützte Skill-Opinion-Performance-Statistiken, unabhängig aggregiert nach Skill, Horizon und Outcome-Engine-Version; bei weniger als 30 evaluated Stichproben werden nur beobachtende Zählwerte zurückgegeben, keine Performance-Kennzahlen oder angepassten Laufzeitgewichte.
+- [Fix] Vereinheitlicht die Auflösung lokaler Tageskandidaten und gleichwertiger Codewindows für äquivalente Aktiencodes; kollidierende Codes von Shanghai-/Shenzhen-Börsen werden nicht mehr auf Bare Codes zurückgestuft, Backtests akzeptieren nur Startpunkte, die durch Snapshot oder Handelskalender bestätigt sind, und bevorzugen bei gleichem Startpunkt das vollständige Einzel-Codewindow.
+- [Neues Feature] Neuer Kernservice, der `skill_opinion_outcomes` auf Basis der Signale der jeweiligen individuellen SkillAgent-Instanz, der versionierten Engine und lokal gespeicherter gleichwertiger Tagesfenster berechnet und persistiert.
+- [Fix] #1970: Das Deaktivieren der Authentifizierung ist ein hochriskanter Vorgang; selbst mit gültigem Session-Cookie wird die erneute Eingabe des aktuellen Admin-Passworts zur zweiten Bestätigung erzwungen; der Disable-Zweig von `auth_update_settings` im Backend läuft einheitlich über die currentPassword-Prüfung und gibt bei Rate-Limit ebenso wie der Enable-Pfad 429 zurück; `AuthSettingsCard` im Frontend blockiert beim Deaktivieren der Authentifizierung das Absenden, wenn das aktuelle Passwort fehlt, und zeigt einen Inline-Hinweis.
+<!-- Format neuer Einträge: - [Typ] Beschreibung (Typwerte: Neues Feature/Verbesserung/Fix/Dokumentation/Tests/chore)-->
+<!-- Jeder Eintrag wird als eigene Zeile am Ende dieses Abschnitts angehängt, ohne Kategorietitel, um Konflikte beim Zusammenführen zu minimieren -->
+- [Fix] `stdout_preview` / `stderr_preview` der lokalen CLI maskieren kurze Credentials gemäß den unabhängigen Verträgen für Umgebungsvariablen, JSON, YAML/Log-Skalare und URLs, damit API-Keys, Secrets oder Tokens unter 32 Zeichen nicht in Diagnosen gelangen; normale Felder werden nur nach sensiblen Namen beurteilt, sensible YAML-Skalare ohne Anführungszeichen werden fail-closed bis zum Zeilenende maskiert (refs #1784).
+- [Fix] `redact_diagnostic_text()` verschluckt bei der Form `export SENSITIVE_ENV=$(printenv OTHER_SECRET) session_id=...` nicht mehr `session_id` und andere nicht sensible Diagnosefelder am Zeilenende, weil sich der zweite `$(...)`-Scan mit dem ersetzten Bereich des ersten sensiblen Zuweisungsdurchgangs überlappt hatte; der zweite Scan nutzt nun die bereits ersetzten Span-Listen des ersten Durchgangs als vertrauenswürdige Skip-Tabelle und versieht den führenden Regex der prior-head/prior-semicolon-Zweige mit dem Präfix `(?:export[ \t]+)?`, sodass `export FOO=$(...)` und `FOO=$(...)` in allen Zweigen gleich behandelt werden (behebt den PR #2118 Review-Blocker OR-COR-7c0a5d41).
+- [Fix] `LongbridgeFetcher._compute_volume_ratio` hat bei `history_candlesticks_by_offset` die beiden Positionsparameter `time` und `count` vertauscht; die PyO3-Konvertierungsschicht warf `argument 'time': 'int' object cannot be converted to 'PyDateTime'`, die Ausnahme wurde von try/except stillschweigend in ein DEBUG-Log verschluckt, wodurch das Volume-Ratio-Feld in der Echtzeit-Kurskette für Hongkong-/US-Aktien stets None war und sich extern als „Keine Daten abgerufen" äußerte; jetzt wird mit adaptiven Keyword-Argumenten aufgerufen, die sowohl den SDK-Vertrag von 0.2.74 (forward, time, count) als auch von 4.x (forward, count, time) unterstützen, und beide Versionen sind mit Regressionstests gemäß dem Keyword-Argument-Vertrag abgedeckt (fixes #2100)
 
 ## [3.28.0] - 2026-07-26
 
-### 发布亮点
+### Release-Highlights
 
-- feat: Multi-Agent 多策略综合支持分层 deliberation、mediator/self-review、revision projection 与 multi-round，并统一最终动作和解释契约。
-- feat: AI 建议页新增按决策风格分组的历史表现，specialist opinion 样本可持久化并用于后验评估。
-- feat: 新增 `--portfolio futu`，可只读导入 Futu OpenD 真实账户的沪深 A 股、港股和美股 LONG 正股持仓。
-- feat: Web 首页与 API 支持按单个或多个市场临时触发大盘复盘，不修改全局配置。
-- feat: Tushare 支持通过 `TUSHARE_HTTP_URL` 接入自建网关或兼容镜像。
-- fix: 改进港股行情路由与缓存、外股英文新闻匹配、数据源兜底顺序及桌面端发包稳定性。
+- feat: Die Multi-Agent-Mehrstrategien-Integration unterstützt geschichtete Deliberation, mediator/self-review, Revisionsprojektion und Multi-Round und vereinheitlicht die Verträge für finale Aktion und Erklärung.
+- feat: Die AI-Empfehlungsseite zeigt neu die historische Performance gruppiert nach Entscheidungsstil; specialist-Opinion-Stichproben können persistiert und für die Posterior-Auswertung verwendet werden.
+- feat: Neu `--portfolio futu`, mit dem echte Futu-OpenD-Konten schreibgeschützt LONG-Positionen in A-Aktien, Hongkong-Aktien und US-Aktien importieren können.
+- feat: Die Web-Startseite und die API unterstützen das temporäre Auslösen einer Marktreview für einzelne oder mehrere Märkte, ohne die globale Konfiguration zu ändern.
+- feat: Tushare unterstützt den Anschluss an ein selbst gehostetes Gateway oder kompatible Mirror über `TUSHARE_HTTP_URL`.
+- fix: Verbesserung der Kursrouten und des Caches für Hongkong-Aktien, der englischen Nachrichtenabgleichung für ausländische Aktien, der Reihenfolge der Datenquellen-Fallbacks sowie der Stabilität der Desktop-Verpackung.
 
-### 新功能
+### Neue Funktionen
 
-- Multi-Agent 多策略综合新增受控 deliberation v0、可注入 mediator/self-review v1-v2、只读 revision projection v3 与 multi-round v4；增强层相对上一层 baseline 只能保持或继续 softened，不覆盖权威最终信号。
-- `specialist` 模式最多选择 4 个策略专家，并通过 `AGENT_SKILL_CONCURRENCY` 控制 1–4 个 worker 并发；worker 继承主管线冻结的 target date 等上下文，单个 skill 失败不阻断其它策略或最终决策。
-- Multi-Agent 报告按八态用户 action 追踪 Pipeline 最终调整，排除非法 Agent 意见；仅在 canonical action 可唯一解析时生成 explanation 与 DecisionSignal，并以同一个 `final_action` 统一最终动作契约。
-- specialist 在分析历史保存成功后持久化版本化、低敏且幂等的有效 opinion 样本，为后续后验评估提供真实数据；本阶段不计算 outcome、不统计表现、不调整权重。
-- AI 建议页新增决策风格历史表现，按每个分组独立的 30 个已完成样本门槛展示命中、区间涨跌、无法评估和最大不利波动，并保持旧统计接口兼容。
-- 新增 `--portfolio futu`，只读导入 Futu OpenD 真实账户的沪深 A 股、港股和美股 LONG 正股持仓作为分析列表。
-- Web 首页与 `POST /api/v1/analysis/market-review` 支持用严格校验的 `region` 临时选择单个或多个复盘市场；一次性覆盖不读写全局配置，并贯穿任务提交、状态、SSE、结果与历史记录。
-- Tushare 数据源支持通过 `TUSHARE_HTTP_URL` 自定义接入地址；留空时继续使用官方默认地址（fixes #1985）。
+- Die Multi-Agent-Mehrstrategien-Integration erhält eine kontrollierte Deliberation v0, injizierbare mediator/self-review v1–v2, eine schreibgeschützte Revisionsprojektion v3 und multi-round v4; die Erweiterungsebene kann relativ zur Baseline der darunterliegenden Ebene nur gleich bleiben oder weiter abgeschwächt werden, sie überschreibt das autoritative Endsinal nicht.
+- Der Modus `specialist` wählt maximal 4 Strategie-Experten und steuert über `AGENT_SKILL_CONCURRENCY` 1–4 parallele Worker; Worker erben Kontext wie das eingefrorene Zieldatum der Hauptpipeline, und ein fehlgeschlagener Skill blockiert weder andere Strategien noch die endgültige Entscheidung.
+- Der Multi-Agent-Bericht verfolgt die endgültigen Pipeline-Anpassungen über die Benutzeraktionen in acht Zuständen und schließt ungültige Agent-Meinungen aus; nur wenn die kanonische Aktion eindeutig aufgelöst werden kann, werden explanation und DecisionSignal erzeugt, und mit demselben `final_action` wird der Vertrag für die finale Aktion vereinheitlicht.
+- specialist persistiert nach erfolgreichem Speichern der Analysehistorie versionierte, wenig sensible und idempotente gültige Opinion-Stichproben als reale Daten für spätere Posterior-Auswertungen; in dieser Phase werden keine Outcomes berechnet, keine Performance ausgewertet und keine Gewichte angepasst.
+- Die AI-Empfehlungsseite zeigt neu die historische Performance des Entscheidungsstils, mit der Schwelle von 30 abgeschlossenen Stichproben pro unabhängiger Gruppe für Treffer, Bereichsveränderung, nicht auswertbar und maximale adverse Abweichung, und bleibt zu den alten Statistik-APIs kompatibel.
+- Neu `--portfolio futu`: schreibgeschützter Import der LONG-Positionen in A-Aktien, Hongkong-Aktien und US-Aktien eines echten Futu-OpenD-Kontos als Analyseliste.
+- Die Web-Startseite und `POST /api/v1/analysis/market-review` unterstützen die temporäre Auswahl einzelner oder mehrerer Review-Märkte über eine streng validierte `region`; die einmalige Abdeckung liest/schreibt keine globale Konfiguration und durchzieht Aufgabenübermittlung, Status, SSE, Ergebnis und Verlauf.
+- Die Tushare-Datenquelle unterstützt eine benutzerdefinierte Anbindungsadresse über `TUSHARE_HTTP_URL`; bleibt sie leer, wird weiterhin die offizielle Standardadresse verwendet (fixes #1985).
 
-### 改进
+### Verbesserungen
 
-- 暂停 PR Review 的自动触发，仅保留 `workflow_dispatch` 手动入口，避免辅助评审重复运行及评论权限失败产生误导性红灯；正式 CI 检查保持不变。
-- `.env.example` 与每日分析 workflow 同步映射 `TUSHARE_HTTP_URL`，保持本地和云端配置入口一致。
+- Die automatische Auslösung der PR Review wird pausiert; nur der manuelle `workflow_dispatch`-Einstieg bleibt erhalten, um doppelte Hilfs-Reviews und irreführende rote Lichter durch fehlgeschlagene Kommentarberechtigungen zu vermeiden; die regulären CI-Prüfungen bleiben unverändert.
+- `.env.example` und der Tagesanalyse-Workflow bilden `TUSHARE_HTTP_URL` synchron ab, damit lokale und Cloud-Konfigurationszugänge konsistent bleiben.
 
-### 修复
+### Behobene Probleme
 
-- 修复外股代码映射到中文显示名时英文新闻相关性漏判，统一外股代码、英文名和别名解析，并对展开后的检索词去重（fixes #2026）。
-- 特权 `pull_request_target` 流程不再检出 fork PR head；敏感步骤仅执行主分支可信脚本，PR 元数据与 diff 通过 GitHub API 读取（fixes #2051）。
-- PR Review 事件载荷缺失、不可读或 JSON 非法时输出可定位且不泄露载荷的警告，并保留原有降级行为（fixes #2070）。
-- 修复 Windows 上 `mimetypes` 冷启动读取注册表导致进程卡死的问题。
-- 统一 `DataFetcherManager`、AkShare 与 Longbridge 对 4–5 位裸港股码的识别，避免 4 位代码被错误路由或静默失败（fixes #2091）。
-- AkShare 港股实时行情增加 20 分钟全市场缓存与并发冷启动 single-flight，热缓存命中不再等待网络限速，主接口异常时仍保留新浪备用接口降级（refs #1852）。
-- 将 `TencentFetcher` 默认优先级调整为 A 股日 K 数据源的最终兜底，并新增 `TENCENT_PRIORITY` 显式覆盖项（refs #2032）。
-- Web 设置页和通知测试入口补齐普通钉钉群机器人配置，支持安全遮罩保存 webhook 与 secret、查看帮助并发送测试通知（refs #1957）。
-- Agent Chat 普通与流式接口在请求未指定 `report_language` 时继承全局 `REPORT_LANGUAGE`，显式请求值仍优先。
-- WebUI 分开展示发布版本、代码版本与构建时间，并用构建输入摘要避免复用时间戳未变化的旧静态资源（fixes #2093）。
-- macOS unsigned 打包显式禁用 Electron 签名与 Hardened Runtime，在冻结后端和 electron-builder 阶段清理残缺签名，并审计原始应用与 DMG 产物；该缓解不替代 Apple Developer 签名与公证（refs #2075）。
+- Behebung der Fehlbewertung englischer Nachrichtenrelevanz beim Mapping ausländischer Aktiencodes auf chinesische Anzeigenamen; die Auflösung von ausländischen Aktiencodes, englischen Namen und Aliasen wird vereinheitlicht, und erweiterte Suchbegriffe werden dedupliziert (fixes #2026).
+- Der privilegierte `pull_request_target`-Workflow checkt nicht mehr den Kopf des Fork-PRs aus; sensible Schritte führen nur vertrauenswürdige Skripte des Hauptzweigs aus, PR-Metadaten und Diff werden über die GitHub API gelesen (fixes #2051).
+- Fehlt die PR-Review-Ereignis-Payload, ist sie unlesbar oder die JSON ist ungültig, wird eine lokalisierbare Warnung ohne Payload-Leck ausgegeben und das bisherige Degradationsverhalten beibehalten (fixes #2070).
+- Behebung des Windows-Problems, bei dem `mimetypes` beim Kaltstart die Registrierung las und den Prozess einfror.
+- Vereinheitlicht die Erkennung von 4–5-stelligen Bare-Hongkong-Aktiencodes in `DataFetcherManager`, AkShare und Longbridge, damit 4-stellige Codes nicht falsch geroutet werden oder stillschweigend scheitern (fixes #2091).
+- Die Echtzeit-Kursdaten für Hongkong-Aktien von AkShare erhalten einen 20-minütigen Markt-Cache und einen Concurrent-Kaltstart per single-flight; bei heißem Cache wird nicht mehr auf das Netzwerk-Rate-Limit gewartet, bei Fehlern der Hauptschnittstelle bleibt die Fallback-Schnittstelle von Sina erhalten (refs #1852).
+- Die Standardpriorität von `TencentFetcher` wird auf den letzten Fallback der Tages-K-Datenquelle für A-Aktien angepasst, und eine explizite Überschreibung `TENCENT_PRIORITY` wird ergänzt (refs #2032).
+- Die Web-Einstellungsseite und der Test-Einstieg für Benachrichtigungen ergänzen die Konfiguration für normale DingTalk-Gruppenbots, unterstützen das sichere Maskieren von Webhook und Secret, das Anzeigen der Hilfe und das Senden von Testbenachrichtigungen (refs #1957).
+- Die normalen und Streaming-Schnittstellen von Agent Chat erben, wenn die Anfrage kein `report_language` angibt, das globale `REPORT_LANGUAGE`; ein explizit angeforderter Wert hat weiterhin Vorrang.
+- Die WebUI zeigt Release-Version, Code-Version und Build-Zeit getrennt an und nutzt eine Zusammenfassung der Build-Eingaben, um die Wiederverwendung alter statischer Ressourcen bei unveränderten Zeitstempeln zu vermeiden (fixes #2093).
+- Das unsigned macOS-Paket deaktiviert explizit die Electron-Signierung und den Hardened Runtime, räumt unvollständige Signaturen in den Phasen eingefrorenes Backend und electron-builder auf und prüft die Original-App und das DMG-Artefakt; diese Abschwächung ersetzt keine Apple-Developer-Signierung und -Notarisierung (refs #2075).
 
-### 文档
+### Dokumentation
 
-- 修复文档中的失效相对链接。
+- Behebung defekter relativer Links in der Dokumentation.
 
 ## [3.27.0] - 2026-07-19
 
-### 发布亮点
+### Release-Highlights
 
-- feat: 新增 Codex App Server single-agent 问股实验原型，并保持 LiteLLM、Multi Agent、普通报告和定时任务等默认链路不变。
-- feat: Web AI 建议页支持保存基于历史报告快照重算的决策风格信号，补齐去重、续期、失效和可审计 guardrail 语义。
-- feat: 引入多策略观点结构化输出第一阶段契约，覆盖观点标准化、基础冲突检测、聚合元数据和报告兼容边界。
-- improve: 报告页明确展示输入数据状态、来源、异常影响、处理建议和诊断码，并区分页面资讯与本次分析输入。
-- fix: 修复 MiniMax 推理内容污染最终 JSON、字符串 `<think>` 包装兼容及多 Agent 风险覆盖后结论未按最终信号收敛的问题。
-- fix: 补齐美股实时行情 PE/PB 估值字段、多市场工具描述和 macOS Gatekeeper 安装排障说明。
+- feat: Neues experimentelles Prototyp für den Single-Agent-Fragedienst des Codex App Server, die Standard-Pfade LiteLLM, Multi Agent, normaler Bericht und geplanter Task bleiben unverändert.
+- feat: Die Web-AI-Empfehlungsseite unterstützt das Speichern von Entscheidungsstil-Signalen, die auf Basis von Schnappschüssen historischer Berichte neu berechnet werden, und vervollständigt die Guardrail-Semantik für Deduplikation, Verlängerung, Verfall und Prüfbarkeit.
+- feat: Erster Vertrag der strukturierten Ausgabe für Mehrstrategien-Meinungen, der Meinungsnormalisierung, grundlegende Konflikterkennung, Aggregations-Metadaten und Report-Kompatibilitätsgrenzen abdeckt.
+- improve: Die Berichtsseite zeigt Eingabedatenstatus, Quelle, Auswirkung von Anomalien, Behandlungsvorschläge und Diagnosecode klar an und unterscheidet Seiteninformationen von den Eingaben dieser Analyse.
+- fix: Behebung, dass MiniMax-Inhalte das finale JSON verschmutzen, die Kompatibilität des `<think>`-Wrappers sowie die Konvergenz der Schlussfolgerung auf das finale Signal nach der Abdeckung des Mehr-Agenten-Risikos.
+- fix: Ergänzt PE/PB-Bewertungsfelder der US-Echtzeit-Kursdaten, Beschreibungen der Multi-Markt-Tools und Hinweise zur macOS-Gatekeeper-Installation.
 
-### 新功能
+### Neue Funktionen
 
-- 新增 #1743 Phase 6 Codex App Server single-agent 问股实验原型，仅开放三个既有只读 Tool Surface 工具；默认 LiteLLM、Multi Agent、Deep Research、普通报告、定时任务与 Phase 1/2 `codex_cli` 路径保持不变。
-- Web AI 建议页支持确认保存基于历史报告快照重算的决策风格信号，以 created/existing/refreshed 区分新建、原样复用和既有记录续期或维度补齐，并复用 profile-aware 去重与失效语义。
-- 多策略观点结构化输出第一版新增策略观点标准化、基础冲突检测与聚合 metadata，作为 #1964 的阶段性基础契约；本版本不声明完成并发执行、完整策略调度 MVP 或前端完整多语言展示。
+- Neues experimentelles Prototyp für den Single-Agent-Fragedienst des Codex App Server aus #1743 Phase 6, das nur drei bestehende schreibgeschützte Tool-Surface-Werkzeuge öffnet; die Standard-Pfade LiteLLM, Multi Agent, Deep Research, normaler Bericht, geplanter Task und Phase-1/2-`codex_cli` bleiben unverändert.
+- Die Web-AI-Empfehlungsseite unterstützt das bestätigende Speichern von Entscheidungsstil-Signalen, die auf Basis von Schnappschüssen historischer Berichte neu berechnet wurden, unterscheidet über created/existing/refreshed zwischen neu erstellt, unverändert wiederverwendet und Verlängerung bzw. Dimensionalitätsergänzung bestehender Datensätze und nutzt die profile-aware Deduplikations- und Verfallssemantik erneut.
+- Die erste Version der strukturierten Ausgabe für Mehrstrategien-Meinungen ergänzt Meinungsnormalisierung, grundlegende Konflikterkennung und Aggregations-Metadaten als phasenweise Grundlage für #1964; diese Version beansprucht nicht, die parallele Ausführung, das vollständige Strategie-Scheduling-MVP oder die vollständige mehrsprachige Frontend-Anzeige fertigzustellen.
 
-### 改进
+### Verbesserungen
 
-- Codex 设置页仅检查配置、命令和所需协议是否允许尝试，用户保存后可直接提问；Chat 以服务端 `accepted` 事件提交问题并按实际 backend 停止。
-- Web 报告页输入数据块沿用状态、来源、告警和说明字段，在说明中补充异常影响、处理建议与诊断码，并区分报告页资讯和本次分析输入。
-- 更新 Anspire 数据源的项目展示信息，并将 `get_stock_info` 工具说明从 A 股限定修正为覆盖 A 股、港股和美股。
+- Die Codex-Einstellungsseite prüft nur, ob Konfiguration, Befehl und erforderliches Protokoll einen Versuch zulassen; nach dem Speichern kann der Benutzer direkt fragen; Chat übermittelt die Frage über das serverseitige `accepted`-Ereignis und stoppt nach dem tatsächlichen Backend.
+- Der Eingabedatenblock der Web-Berichtsseite übernimmt die Felder Status, Quelle, Alarm und Erklärung, ergänzt in der Erklärung Auswirkung von Anomalien, Behandlungsvorschläge und Diagnosecode und unterscheidet Seiteninformationen des Berichts von den Eingaben dieser Analyse.
+- Aktualisiert die Projektanzeigeinformationen der Anspire-Datenquelle und korrigiert die Beschreibung des Tools `get_stock_info` von der Beschränkung auf A-Aktien auf die Abdeckung von A-Aktien, Hongkong-Aktien und US-Aktien.
 
-### 修复
+### Behobene Probleme
 
-- 修复 MiniMax 分析与渠道 JSON 测试把推理内容和最终文本拼接后导致结果无法解析、无法持久化的问题；字符串响应仅剥离开头完整的 `<think>` 包装，并保留 JSON 内容中的同名字面标签。
-- 修正多 Agent 内部 runtime facts 的 timeout 归因，并让 risk application 覆盖后的 dashboard 决策字段及一句话核心结论基于 post-risk signal 完成 finalization。
-- 收敛多策略综合器语义：正确处理 Signal 枚举、缺失 signal、有效 opinion_count 和 deterministic synthesis，并兼容历史与外部 dashboard 的宽松字段形状。
-- Codex 问股只接受 App Server 明确完成的终态回答，并统一整体时限、累计输出、事件、工具预算和进程回收边界。
-- `codex_cli` 普通分析显式固定无人值守批准策略与只读沙箱，避免新版 Codex 在非交互任务中因请求人工批准而中断。
-- yfinance 美股实时行情补齐 `pe_ratio` 和 `pb_ratio`，供估值分析和下游报告使用。
+- Behebung, dass MiniMax-Analyse und Kanaltests nach dem Zusammenfügen von Reasoning-Inhalten und finalem Text das Ergebnis unparsbar und nicht persistierbar machten; bei String-Antworten wird nur der vollständige führende `<think>`-Wrapper entfernt, identische Literal-Labels im JSON-Inhalt bleiben erhalten.
+- Korrigiert die Timeout-Zuordnung der internen runtime facts von Multi Agent und lässt die Dashboard-Entscheidungsfelder sowie die Ein-Satz-Kernschlussfolgerung nach der risk-application-Abdeckung auf Basis des post-risk-Signals finalisieren.
+- Konvergiert die Semantik des Mehrstrategien-Synthesizers: korrekte Behandlung von Signal-Enum, fehlendem Signal, gültiger opinion_count und deterministischer Synthese sowie Kompatibilität mit den lockeren Feldformen historischer und externer Dashboards.
+- Der Codex-Fragedienst akzeptiert nur finale Antworten im Terminalzustand, die der App Server ausdrücklich abgeschlossen hat, und vereinheitlicht die Grenzen für Gesamtzeitlimit, kumulative Ausgabe, Ereignisse, Tool-Budget und Prozessrecycling.
+- `codex_cli` fixiert für normale Analysen explizit die Unattended-Genehmigungsstrategie und die schreibgeschützte Sandbox, damit neuere Codex-Versionen bei nicht-interaktiven Aufgaben nicht wegen einer Anfrage zur menschlichen Genehmigung unterbrochen werden.
+- Die US-Echtzeit-Kursdaten von yfinance ergänzen `pe_ratio` und `pb_ratio` für Bewertungsanalysen und nachgelagerte Berichte.
 
-### 文档
+### Dokumentation
 
-- 补充 macOS 未签名、未公证 DMG 被 Gatekeeper 拦截时的架构选择、安全排查与官方安装包临时放行步骤。
+- Ergänzt Architekturwahl, Sicherheitsanalyse und temporäre Freigabeschritte für die offizielle Installation, wenn ein unsigniertes, nicht notarisiertes DMG von macOS Gatekeeper blockiert wird.
 
-## [3.26.1] - 2026-07-12
+### Dokumentation
 
-### 发布亮点
-
-- feat: Web 首页新增历史、自选与今日工作区，支持批量分析、今日覆盖判断和评分排行。
-- feat: 新增 A 股市场结构与题材主线上下文，并贯通报告、Agent、DecisionSignal 与 Web 展示。
-- feat: 飞书支持文件形式推送报告，多 Agent 支持子 Agent 独立超时钳位。
-- feat: 补齐内部 DSA Tool Surface、DecisionAgent 分歧摘要和 DecisionSignal profile 契约。
-- fix: 统一报告动作口径，修复按股票代码批量删除历史记录和通知理由静默截断问题。
-- fix: 改进 Web、桌面端、数据源缓存及发行包资源的稳定性。
-
-### 新功能
-
-- 新增 A 股市场结构与题材主线上下文，并在报告、Agent、DecisionSignal 和 Web 市场位置卡中复用。
-- 飞书推送新增文件上传能力：`FeishuSender.send_feishu_file(file_path)` 通过 App Bot SDK (`im.v1.file.create`) 上传文件并发送文件消息；Webhook 模式回退为发送文件内容文本；新增 `FEISHU_SEND_AS_FILE=true` 配置开关，开启后飞书以文件形式发送报告而非文字消息。
-- 多 Agent 编排 Pipeline 新增子 Agent 独立超时钳位：支持 6 个环境变量为 TechnicalAgent、IntelAgent、RiskAgent、DecisionAgent、PortfolioAgent、SkillAgent 各自配置独立硬上限，互不挤占配额；默认 0 表示关闭钳位。
-
-### 改进
-
-- 为 multi-agent DecisionAgent 增加内部低敏分歧摘要输入管线，作为 #1904 P1 解释输出的前置 plumbing；不改变 public API、dashboard schema 或最终解释字段。
-- GitHub Actions 每日分析工作流补齐 TickFlow 数据源环境变量映射，并收敛 README 数据源稳定性说明到完整指南。
-- Web 首页个股栏新增历史 / 自选 / 今日切换，保留历史分析默认视图，并支持在自选页一键分析全部或仅分析今日未覆盖股票、在今日页按评分查看当天分析排行；分块提交部分失败时保留已确认计数、停止后续提交并刷新任务列表。
-- GitHub Actions 每日分析工作流新增钉钉通知环境变量映射，支持在云端定时任务中直接使用钉钉机器人。
-- `STOCK_LIST` 自选股解析支持中文逗号、顿号、分号、空格和换行等常见粘贴分隔符，运行时、定时热刷新、CLI `--stocks`、Web 设置保存和自选 API 统一识别，并在写回时规范为英文逗号。
-- 新增 `NEWS_INTEL_AUTO_FETCH_ENABLED` 单开关，开启后个股分析、Agent 分析和大盘复盘会 fail-open 自动初始化并刷新 RSS/Atom/NewsNow 本地资讯池。
-- Web AI 建议页新增主股票上下文，复用最近分析和股票索引候选，并改进表现统计零样本说明。
-- DecisionSignal 将 `decision_profile` 升级为正式 nullable 字段，统一 same-profile 查询、去重、续期和失效语义，并保持 create metadata `null` 兼容与 SQLite 幂等回填诊断。
-- 设置页移动端分类导航改为横向滚动列表并保证设置内容首屏可见，桌面端保留分类说明并收紧字段布局层级与间距。
-- 新增 #1743 Phase 6a 内部 DSA Tool Surface 契约，统一工具 schema、stock scope fail-closed guard、结构化错误、审计摘要和脱敏诊断边界，并明确外部 AgentBackend 工具能力仍需 wire-level probe 证明。
-- `src/services/analysis_service.py` 在 `report` 详情层新增 `details.raw_result` 回填，补齐与 API/历史详情的报告载荷一致性；不改变 provider、model、Base URL 或配置迁移语义。
-
-### 修复
-
-- 按股票代码删除历史记录时分批清理全部匹配项，并拒绝空白代码，避免超过 10000 条后残留记录或无筛选删除。
-- 市场结构概念排行为空或超时时复用本轮负结果，避免批量个股分析重复请求同一概念排行数据源。
-- Windows/macOS 桌面后端打包显式收集并校验 AkShare `file_fold/calendar.json`，避免发行包因缺少交易日历 package data 导致热点题材和选股日线增强降级。
-- 邮件、Telegram 与报告共享的 DecisionSignal 摘要完整展示已脱敏的理由，避免固定 120 字符在句中无提示截断；Telegram 按最终 Markdown payload 长度安全分片。
-- 推送报告、Jinja 报告与历史 Markdown 导出复用 Web/API 的评分-action 口径：高分但旧 `operation_advice` 仍为持有且无降级原因时，建议文案与三类统计展示为买入；有明确 guardrail reason 时继续保留持有/观望。
-- WebUI 启动时显式 `--host` / `--port` 不再被 `.env` 中的 `WEBUI_HOST` / `WEBUI_PORT` 覆盖，未传 CLI 参数时统一使用解析后的运行时配置。
-- Web 首页今日状态与排行使用带时区偏移的历史时间戳和完整分页数据，在查询失败、跨服务器时区边界或任务完成刷新时保持安全且准确。
-- Web 首页 stock bar 刷新序列化：并发或乱序返回时仅最新请求可清除 `stockBarRefreshFailed`，避免旧响应覆盖任务完成后的刷新结果。
-- Web 持仓页首屏快照改用 `include_realtime=false` 快速估值，跳过逐票实时行情预取后先展示持仓列表，避免外部实时行情源变慢时长时间空白等待。
-- 修复任务状态接口重建报告动作字段时把合法情绪分 `0` 当成空值的问题，确保低分报告能按评分口径纠正为卖出建议。
-- 修复 Agent 流式回复在未收到完成事件就断开时被显示为“（无内容）”的问题，改为提示流式响应中断并保留用户消息。
-- 修复桌面端 `WEBUI_HOST=*` / `WEBUI_HOST=[::]` 会被原样传给端口探测和后端启动导致无法监听的问题，启动前分别规范化为 `0.0.0.0` / `::`。
-
-### 文档
-
-- 在 README 快速开始中补充行情数据源配置说明（`TUSHARE_TOKEN` / Longbridge），明确未配置时仍可使用 AkShare、Baostock、YFinance 等免费兜底源，并同步中英文完整指南。
+- Im Schnellstart des README wird die Konfiguration der Kursdatenquelle ergänzt (`TUSHARE_TOKEN` / Longbridge), klargestellt, dass ohne Konfiguration weiterhin die kostenlosen Fallback-Quellen AkShare, Baostock, YFinance usw. genutzt werden können, und der vollständige Leitfaden wird auf Chinesisch und Englisch synchronisiert.
 
 ## [3.25.0] - 2026-07-03
 
-### 发布亮点
+### Release-Highlights
 
-- feat: 新增 `claude_code_cli`、`opencode_cli` generation-only 本地 CLI backend，并补齐生成后端状态诊断、预览、冒烟测试 API 和 Web 状态面板。
-- feat: 台股报告完整接入三大法人资料，覆盖报告渲染、LLM prompt、TWD 币别标示、收盘集合竞价识别和 fetcher 韧性加固。
-- feat: 新增钉钉群机器人通知、韩语报告输出和 AI 建议决策风格重评估预览。
-- feat: Agent `/chat/stream` 标准化 progress event，新增阶段开始/完成、pipeline timeout 和预算跳过语义。
-- fix: 修复桌面端 WebUI host/port 绑定、macOS Homebrew CLI PATH 诊断、Discord 长报告分片、AlphaSift 超时、yfinance 分红解析、A 股回测代码归一化等稳定性问题。
+- feat: Neue generation-only lokale CLI-Backends `claude_code_cli` und `opencode_cli` sowie Statusdiagnose, Vorschau, Smoke-Test-API und Web-Statuspanel für Generation-Backends.
+- feat: Der Taiwan-Aktienbericht bindet die Daten der drei großen Institutionen vollständig ein und deckt Berichts-Rendering, LLM-Prompt, TWD-Währungsauszeichnung, Erkennung des Schlussauktionskurs und Fetcher-Härtung ab.
+- feat: Neu DingTalk-Gruppenbot-Benachrichtigungen, koreanische Berichtsausgabe und die Vorschau der Entscheidungsstil-Neubewertung für AI-Empfehlungen.
+- feat: Agent `/chat/stream` standardisiert das progress-Ereignis mit neuer Semantik für Phasenstart/-abschluss, Pipeline-Timeout und Budgetüberspringung.
+- fix: Behebt Stabilitätsprobleme bei WebUI-Host/Port-Bindung auf dem Desktop, der macOS-Homebrew-CLI-PATH-Diagnose, der Aufteilung langer Discord-Berichte, AlphaSift-Timeouts, der yfinance-Dividendenparsing und der Normalisierung von A-Aktien-Codes im Backtest.
 
-### 新功能
+### Neue Funktionen
 
-- 钉钉群机器人通知支持 `DINGTALK_WEBHOOK_URL` 和 `DINGTALK_SECRET`，并对长文本自动切片以适配 20KB 限制。
-- 报告输出语言新增韩语（`REPORT_LANGUAGE=ko`），覆盖个股报告、大盘复盘、Prompt 输出语言、决策护栏、通知模板标签与 Web 报告详情页文案。
-- 新增 `claude_code_cli` 与 `opencode_cli` generation-only 本地 CLI backend，保留 LiteLLM 默认路径、Agent 工具调用边界、per-preset extractor、最小 env allowlist 与结构化错误。
-- 新增生成后端状态、预览和冒烟测试 API，以及 Web 生成后端状态面板，区分轻量检查与 JSON 冒烟测试，并保持本地 CLI “仅生成、不支持问股工具调用”的边界。
-- Agent `/chat/stream` progress event 新增 `stage_start`、`stage_done`、`pipeline_timeout`、`pipeline_budget_skipped`，补齐阶段进度、超时和预算跳过语义。
-- 台股个股报告的 institution 区块展示 TWSE T86 / TPEx 三大法人原始买卖超净额，并将三大法人净买卖超表格注入 LLM 分析 prompt 作为台股筹码过滤器。
-- 新增 AI 建议决策风格重评估预览接口与页面预览。
+- DingTalk-Gruppenbot-Benachrichtigungen unterstützen `DINGTALK_WEBHOOK_URL` und `DINGTALK_SECRET` und teilen lange Texte automatisch auf, um das 20-KB-Limit einzuhalten.
+- Neue Berichtssprache Koreanisch (`REPORT_LANGUAGE=ko`), abgedeckt sind Einzelaktienberichte, Marktreview, Prompt-Ausgabesprache, Entscheidungs-Guardrails, Benachrichtigungsvorlagen-Labels und die Texte der Web-Berichtsdetailseite.
+- Neue generation-only lokale CLI-Backends `claude_code_cli` und `opencode_cli`, die den LiteLLM-Standardpfad, die Agent-Tool-Call-Grenzen, per-preset extractor, die minimale env allowlist und strukturierte Fehler beibehalten.
+- Neue APIs für Generation-Backend-Status, Vorschau und Smoke-Test sowie das Web-Generation-Backend-Statuspanel, das leichte Prüfung von JSON-Smoke-Tests unterscheidet und die Grenze „nur generieren, keine Werkzeugaufrufe für Fragedienst" der lokalen CLI beibehält.
+- Das progress-Ereignis von Agent `/chat/stream` ergänzt `stage_start`, `stage_done`, `pipeline_timeout` und `pipeline_budget_skipped` und vervollständigt die Semantik von Phasenfortschritt, Timeout und Budgetüberspringung.
+- Der institution-Block des Taiwan-Einzelaktienberichts zeigt die Nettokauf-/Verkaufsüberhänge der drei großen Institutionen von TWSE T86 / TPEx und speist die Tabelle der Nettokauf-/Verkaufsüberhänge der drei großen Institutionen als Filter für Taiwan-Aktien-Chips in den LLM-Analyse-Prompt ein.
+- Neu Vorschau-Schnittstelle und Seitenvorschau für die Entscheidungsstil-Neubewertung von AI-Empfehlungen.
 
-### 改进
+### Verbesserungen
 
-- 台股三大法人 fetcher 增加并发缓存防击穿、TWSE/TPEx 分市场熔断、TPEx 日期保护和剩余 stage 预算复用，降低限流、端点故障和冷抓取超时带来的降级概率。
-- AlphaSift 默认依赖 pin 更新到 `9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf`，接入 wrapper 数据源 caller-side timeout、东财直连限速/抖动、策略目录元数据和防守策略。
-- 选股任务状态轮询遇到可恢复超时时提示后台任务仍会自动重试，`.env.example` 补充相关超时调优项。
-- 收敛个股分析评分与 DecisionSignal action 口径，统一 80/60/40/20 分段，并在风控降级时记录 raw/adjusted score、final action 与原因。
-- Web 设置页左侧分类切换时仅在相关分类展示首次启动检查和 AlphaSift 辅助卡片，减少跨分类残留。
+- Der Fetcher der drei großen Taiwan-Institutionen ergänzt Concurrent-Cache gegen Zusammenbruch, die Trennung der Märkte TWSE/TPEx, TPEx-Datumschutz und die Wiederverwendung des restlichen Stage-Budgets, um die Degradationswahrscheinlichkeit durch Rate-Limits, Endpunktausfälle und Cold-Fetch-Timeouts zu senken.
+- Der AlphaSift-Standard-Pin wird auf `9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf` aktualisiert; angebunden sind Caller-seitiges Timeout der Wrapper-Datenquelle, Geschwindigkeitsbegrenzung/Jitter der EastMoney-Direktverbindung, Strategieverzeichnis-Metadaten und defensive Strategien.
+- Beim Polling des Auswahlaufgabenstatus wird bei behebbaren Timeouts darauf hingewiesen, dass der Hintergrundtask automatisch erneut versucht; `.env.example` ergänzt zugehörige Timeout-Abstimmungspunkte.
+- Konvergiert den Score der Einzelaktienanalyse und die DecisionSignal-Aktion auf einen einheitlichen Konsens, vereinheitlicht die Segmente 80/60/40/20 und protokolliert bei Risikodegradation raw/adjusted score, final action und Grund.
+- Beim Wechsel der linken Kategorie der Web-Einstellungsseite werden die Erststartprüfung und die AlphaSift-Hilfskarte nur in den relevanten Kategorien angezeigt, um Reste über Kategorien hinweg zu reduzieren.
 
-### 修复
+### Behobene Probleme
 
-- 修复 Windows 桌面端启动后端时固定传入 `--host 127.0.0.1` 导致 `.env` 中 `WEBUI_HOST=0.0.0.0` 不生效、局域网无法访问 WebUI 的问题；桌面端仍默认使用 `127.0.0.1`，仅在显式配置 `WEBUI_HOST` 后按配置绑定。
-- 修复桌面端启动时 `.env` 中 `WEBUI_PORT` 与 Electron 自动选择端口不一致，导致窗口继续等待旧端口并连接超时的问题。
-- 修复 macOS 桌面端从 Finder/Dock 启动时后端 PATH 看不到 Homebrew Codex CLI 的问题，并明确 Codex CLI 主分析与 Agent LiteLLM 工具调用分流诊断。
-- 修复 Discord 长报告推送按 2000 字符上限分片逐段发送，遇到 429 限流会按 `retry_after`/`Retry-After` 有限重试，避免中途失败后只收到前半段报告。
-- 修复日股、韩股和台股 `market_phase` 收盘集合竞价识别，避免临近收盘阶段仍被标记为普通 `intraday`。
-- 修复 A 股个股分析遇到空 `belong_boards` 占位时不会继续补查所属板块、关联板块模块展示不稳定的问题。
-- 修复大盘复盘在 LLM 标题漂移或正文缺少板块段时，Web 与推送报告偶发缺少板块主线的问题。
-- 修复 Web 大盘复盘结构化数据成交额、指数点位、涨跌幅和高/低值格式化，避免浮点长尾或缺失值 `0.00` 直接展示。
-- 修复 Web 首页个股栏在 stock-bar 摘要字段缺失或动作建议无法归类时隐藏情绪分与建议标识的问题。
-- 修复 Web 设置页定时任务“立即执行一次”后台线程未传 `stock_codes` 导致任务崩溃的问题。
-- 修复 `opencode_cli` 静态指令，避免全局 JSON-only 约束影响 `generate_text()` 与大盘复盘自由文本输出。
-- 修复 yfinance 1.2.x 将 `Ticker.dividends` 返回为单列 DataFrame 时分红解析被丢弃的问题，恢复 TTM 每股分红与分红次数计算。
-- 修复台股财务金额币别标示，将 TWD 金额标注为“新台币”，避免在 A 股语境下误读为人民币。
-- 修复回测日线补全将 `605066.SH`、`SS605066`、`SS.605066` 等 A 股等价代码误向数据源请求 `SS605066`，导致回测数据不足的问题。
+- Behebt, dass die Windows-Desktop-Startseite beim Start des Backends fest `--host 127.0.0.1` übergab, wodurch `WEBUI_HOST=0.0.0.0` in `.env` wirkungslos blieb und das WebUI im LAN nicht erreichbar war; die Desktop-Version verwendet weiterhin standardmäßig `127.0.0.1` und bindet nur nach expliziter Konfiguration von `WEBUI_HOST` entsprechend.
+- Behebt, dass beim Desktop-Start die `WEBUI_PORT` aus `.env` nicht mit dem automatisch gewählten Electron-Port übereinstimmte, sodass das Fenster weiterhin auf den alten Port wartete und die Verbindung timeoutete.
+- Behebt, dass die macOS-Desktop-Version beim Start über Finder/Dock den Homebrew-Codex-CLI-Pfad im Backend-PATH nicht sah, und klärt die Diagnose zur Trennung zwischen Codex-CLI-Hauptanalyse und Agent-LiteLLM-Tool-Aufrufen.
+- Behebt, dass Discord-Langberichts-Push nach dem 2000-Zeichen-Limit segmentweise sendet und bei 429-Rate-Limits gemäß `retry_after`/`Retry-After` begrenzt wiederholt, damit nach einem Abbruch nicht nur die erste Berichtshälfte eintrifft.
+- Behebt die Erkennung der `market_phase`-Schlussauktion für japanische, koreanische und taiwanesische Aktien, damit Phasen kurz vor Handelsschluss nicht mehr fälschlich als normales `intraday` markiert werden.
+- Behebt, dass die A-Aktien-Einzelaktienanalyse bei leeren `belong_boards`-Platzhaltern nicht mehr die zugehörigen Branchen nachschlägt und der zugehörige Branchenmodul-Block instabil angezeigt wird.
+- Behebt, dass die Marktreview bei LLM-Titel-Drift oder fehlenden Branchenabschnitten im Text gelegentlich ohne Branchen-Hauptlinien in Web- und Push-Berichten angezeigt wird.
+- Behebt die Formatierung der strukturierten Marktreview-Daten im Web für Handelsvolumen, Indexpunkte, prozentuale Veränderung und Hoch/Tief-Werte, damit Gleitkomma-Langtails oder fehlende Werte nicht direkt als `0.00` angezeigt werden.
+- Behebt, dass die Aktienleiste der Web-Startseite bei fehlenden stock-bar-Zusammenfassungsfeldern oder nicht klassifizierbaren Aktionsempfehlungen die Stimmungspunktzahl und die Empfehlungsmarkierung verbirgt.
+- Behebt, dass der Hintergrundthread „Sofort einmal ausführen" des geplanten Tasks auf der Web-Einstellungsseite kein `stock_codes` übergab und der Task dadurch abstürzte.
+- Behebt die statische Anweisung von `opencode_cli`, damit die globale JSON-only-Einschränkung nicht `generate_text()` und die Freitextausgabe der Marktreview beeinflusst.
+- Behebt, dass bei yfinance 1.2.x, das `Ticker.dividends` als einspaltiges DataFrame zurückgibt, die Dividendenparsing verworfen wurde; die Berechnung von TTM-Dividende pro Aktie und Dividendenhäufigkeit wird wiederhergestellt.
+- Behebt die Währungsauszeichnung der taiwanesischen Finanzbeträge, die TWD-Beträge als „Neue Taiwan-Dollar" kennzeichnet, damit sie im A-Aktien-Kontext nicht als Renminbi fehlgelesen werden.
+- Behebt, dass die Tagesvervollständigung des Backtests bei gleichwertigen A-Aktien-Codes wie `605066.SH`, `SS605066`, `SS.605066` fälschlich `SS605066` an die Datenquelle anfragte und der Backtest dadurch zu wenig Daten hatte.
 
-### 文档
+### Dokumentation
 
-- 新增 Agent `/chat/stream` progress event 契约文档，说明新增事件字段语义、Web 兼容边界、验证方式和回滚方式。
-- 同步本地 CLI backend 隐私/部署边界，明确 local CLI 不是离线模型，Docker/CI/远端需自行安装登录，DSA 不读取 Claude/OpenCode credential 文件。
-- 更新 README 三语入口和市场支持边界，说明台股 `.TW` / `.TWO`、三大法人报告区块、TWD 标注与收盘竞价识别能力边界。
+- Neues Vertragsdokument für das progress-Ereignis von Agent `/chat/stream`, das die Semantik der neuen Ereignisfelder, die Web-Kompatibilitätsgrenzen, Verifikations- und Rollback-Verfahren erläutert.
+- Synchronisiert die Datenschutz-/Bereitstellungsgrenzen des lokalen CLI-Backends: klargestellt, dass die lokale CLI kein Offline-Modell ist, Docker/CI/Remote selbst installieren und einloggen müssen und DSA keine Claude/OpenCode-Credential-Dateien liest.
+- Aktualisiert den dreisprachigen Einstieg und die Marktunterstützungsgrenzen des README und erläutert die Grenzen von Taiwan `.TW` / `.TWO`, der Berichtsblöcke der drei großen Institutionen, der TWD-Kennzeichnung und der Erkennung der Schlussauktion.
 
-### 测试
+### Tests
 
-- 台股三大法人 fetcher 新增 live-smoke 脚本与 `@pytest.mark.network` 漂移检测测试，用于非阻断 network-smoke 定时任务核对 TWSE T86 / TPEx 核心字段与解析结果。
+- Der Fetcher der drei großen Taiwan-Institutionen ergänzt ein Live-Smoke-Skript und einen Drift-Erkennungstest mit `@pytest.mark.network`, damit nicht blockierende network-smoke-Tasks die Kernfelder von TWSE T86 / TPEx und die Parsingergebnisse abgleichen.
 
 ## [3.24.1] - 2026-06-28
 
-### 修复
+### Behobene Probleme
 
-- 修正 Longbridge SDK 版本约束为按平台选择可安装版本，避免桌面与 Docker 发布在 `pip install -r requirements.txt` 时因不存在的 `0.2.75` 版本失败。
+- Die Longbridge-SDK-Versionseinschränkung wird korrigiert, sodass je nach Plattform eine installierbare Version gewählt wird; damit schlägt die Desktop- und Docker-Veröffentlichung bei `pip install -r requirements.txt` nicht mehr wegen der nicht existierenden Version `0.2.75` fehl.
 
 ## [3.24.0] - 2026-06-28
 
-### 发布亮点
+### Release-Highlights
 
-- feat: 扩展台股、日股、韩股市场支持，覆盖台股 suffix-only 分析、台股三大法人资料层、JP/KR 大盘复盘和跨服务市场枚举。
-- feat: 新增 GenerationBackend 抽象、`codex_cli` 本地 CLI backend、reserved Hermes 本地 HTTP 渠道和 prompt cache capability registry。
-- feat: Web/API/Desktop 支持多时间定时推送与 runtime scheduler 热重建，Web 设置页补齐首次启动检查与定时任务面板。
-- feat: 报告链路补齐信号归因、单股信号时间线、概念板块排行和通知/报告关联板块展示。
-- fix: 修复 Docker/启动探针、静态资源 MIME、回测空结果、组合估值、通知 Markdown、AlphaSift 数据源和测试环境隔离等稳定性问题。
+- feat: Erweiterte Marktunterstützung für taiwanesische, japanische und koreanische Aktien, abgedeckt sind Taiwan-suffix-only-Analyse, die Datenschicht der drei großen Taiwan-Institutionen, JP/KR-Marktreview und marktübergreifende Service-Enumerationen.
+- feat: Neue GenerationBackend-Abstraktion, `codex_cli`-lokales CLI-Backend, reservierter Hermes-lokaler HTTP-Kanal und prompt cache capability registry.
+- feat: Web/API/Desktop unterstützen geplante Push-Benachrichtigungen zu mehreren Zeitpunkten und den Heißwiederaufbau des Runtime-Schedulers; die Web-Einstellungsseite ergänzt Erststartprüfung und Geplanter-Task-Panel.
+- feat: Die Berichtskette ergänzt Signalzuordnung, Einzelaktien-Signalzeitleiste, Konzeptbranchen-Ranking und die zugehörige Branchenanzeige von Benachrichtigung/Bericht.
+- fix: Behebt Stabilitätsprobleme bei Docker/Startprobe, statischem Ressourcen-MIME, leeren Backtest-Ergebnissen, Kombinationsbewertung, Benachrichtigungs-Markdown, AlphaSift-Datenquelle und Testumgebungsisolierung.
 
-### 新功能
+### Neue Funktionen
 
-- 新增台股 suffix-only 个股分析 MVP：`.TW`/`.TWO` 代码可走 YFinance 日线与近实时行情，并补齐市场识别、交易日历和 Prompt 能力边界。
-- 台股 `tw` 纳入 DecisionSignal、Portfolio、Intelligence 服务层、API 枚举和 Web 筛选，避免台股分析信号被市场归一化静默丢弃。
-- 新增台股三大法人资料层 fetcher `TwInstitutionalFetcher`，支持 TWSE/TPEx 来源、日期转换、单日缓存和 fail-open 退化。
-- 大盘复盘新增 `jp`/`kr` 市场，支持日经225/TOPIX、KOSPI/KOSDAQ 指数复盘，并扩展 `MARKET_REVIEW_REGION`、交易日过滤和 Web 设置枚举。
-- 新增 GenerationBackend Phase 1 抽象和显式 opt-in 的 `codex_cli` 本地 CLI generation backend，提供结构化错误、fallback、stream 降级和 usage unavailable contract。
-- 新增 reserved Hermes 本地 HTTP generation 渠道，提供 JSON generation、no-proxy 本地调用和 saved secret endpoint 绑定。
-- 新增 Provider Cache Capability Registry，按 provider、API surface、gateway 与 verification status 建模 prompt cache 能力。
-- 支持 `SCHEDULE_TIMES` 多时间定时推送，长运行 Web/API/Desktop 进程保存调度配置后可热启停或重建 runtime scheduler。
-- 新增信号归因分析和 Web AI 建议页单股信号时间线，并为自动生成与历史回填的 DecisionSignal 写入默认 `decision_profile` metadata。
-- 大盘复盘、Web 报告页和通知关联板块补齐概念板块排行与概念信号展示。
+- Neue Taiwan-suffix-only-Einzelaktienanalyse-MVP: `.TW`/`.TWO`-Codes können über YFinance-Tageslinien und nahezu Echtzeit-Kursdaten laufen, ergänzt um Markterkennung, Handelskalender und Prompt-Fähigkeitsgrenzen.
+- Taiwan `tw` wird in DecisionSignal, Portfolio, Intelligence-Service-Schicht, API-Enumerationen und Web-Filter aufgenommen, damit Taiwan-Analysesignale nicht durch die Marktnormalisierung stillschweigend verworfen werden.
+- Neue Datenschicht-Fetcher `TwInstitutionalFetcher` für die drei großen Taiwan-Institutionen mit Unterstützung für TWSE/TPEx-Quellen, Datumskonvertierung, Ein-Tages-Cache und fail-open-Degradation.
+- Die Marktreview ergänzt die Märkte `jp`/`kr` mit Index-Reviews von Nikkei 225/TOPIX und KOSPI/KOSDAQ sowie die Erweiterung von `MARKET_REVIEW_REGION`, Handelstagsfilterung und Web-Einstellungs-Enumerationen.
+- Neue GenerationBackend-Phase-1-Abstraktion und ein explizit opt-in `codex_cli`-lokales CLI-Generation-Backend mit strukturierten Fehlern, Fallback, Stream-Degradation und usage-unavailable-Vertrag.
+- Neuer reservierter Hermes-lokaler HTTP-Generierungskanal mit JSON-Generierung, no-proxy-lokalen Aufrufen und Bindung an den saved-secret-Endpunkt.
+- Neue Provider Cache Capability Registry, die prompt-cache-Fähigkeiten nach provider, API surface, gateway und Verifizierungsstatus modelliert.
+- Unterstützung für geplante Push-Benachrichtigungen mit `SCHEDULE_TIMES` zu mehreren Zeitpunkten; langlebige Web/API/Desktop-Prozesse können nach dem Speichern der Planungskonfiguration den Runtime-Scheduler heiß starten/stoppen oder neu aufbauen.
+- Neue Signalzuordnungsanalyse und Einzelaktien-Signalzeitleiste auf der Web-AI-Empfehlungsseite, und automatisch generierte sowie aus der Historie rückgefüllte DecisionSignals erhalten das Standard-`decision_profile`-Metadatum.
+- Marktreview, Web-Berichtsseite und zugehörige Branchen von Benachrichtigungen ergänzen Konzeptbranchen-Ranking und Konzeptsignal-Anzeige.
 
-### 改进
+### Verbesserungen
 
-- TickFlow 扩展为可选 A 股日 K、实时行情、股票列表/名称数据源，并增加 count、完整性校验和批量预取缓存保护。
-- 硬化 JP/KR/TW suffix 识别、日韩股票种子索引、YFinance 报价/基本面上下文，以及 JP/KR Portfolio 与 Market Light 边界。
-- Web 设置页新增首次启动配置检查卡与定时任务面板，隐藏内部 `SCHEDULE_TIMES` 键，并改善重复任务提示的关闭与自动消失体验。
-- Web 历史报告详情不再内嵌 AI 建议卡片，结构化决策信号集中到 AI 建议页，并保留来源报告 ID/URL 参数精确定位。
-- `GENERATION_BACKEND=codex_cli` 下普通分析与大盘复盘不再因缺少 LiteLLM API Key 被误判不可用，并改用 `--output-last-message` 文件读取最终响应。
-- 本地 CLI backend 对 stdout/stderr 诊断预览和最终响应实行执行期总量上限，并补齐新增 generation backend 数字配置最大值校验。
-- AlphaSift 默认依赖 pin 更新到 `0a7b9cd59e81718f851890535241bc105d4ddc64`，并默认走 DSA EastMoney 兜底 provider、暴露 source health 诊断。
-- Docker Compose 默认内存建议提升到 1G；每日分析 workflow 兼容误将 `STOCK_LIST` 配到同名 Environment variables 的场景。
-- Agent 路径同步 signal attribution prompt，通知报告摘要不再展开 AI 决策信号明细，完整信号保留在个股详情与单股报告。
+- TickFlow wird zu einer optionalen Datenquelle für A-Aktien-Tages-K, Echtzeit-Kursdaten und Aktienliste/-namen erweitert, mit count, Integritätsprüfung und Schutz durch Batch-Prefetch-Cache.
+- Härtet die suffix-Erkennung von JP/KR/TW, den japanisch/koreanischen Aktien-Seed-Index, den YFinance-Quoten-/Fundamental-Kontext sowie die JP/KR-Portfolio- und Market-Light-Grenzen.
+- Die Web-Einstellungsseite ergänzt eine Karte für die Erststart-Konfigurationsprüfung und ein Geplanter-Task-Panel, verbirgt den internen `SCHEDULE_TIMES`-Schlüssel und verbessert das Schließen und automatische Verschwinden von Hinweisen zu doppelten Tasks.
+- Die Web-Historie-Berichtsdetails betten keine AI-Empfehlungskarte mehr ein; strukturierte Entscheidungssignale werden auf der AI-Empfehlungsseite konzentriert, und die Quell-Berichts-ID/URL-Parameter zur präzisen Lokalisierung bleiben erhalten.
+- Unter `GENERATION_BACKEND=codex_cli` werden normale Analyse und Marktreview nicht mehr fälschlich als nicht verfügbar eingestuft, weil der LiteLLM-API-Key fehlt, und die finale Antwort wird über `--output-last-message` aus der Datei gelesen.
+- Das lokale CLI-Backend führt für stdout/stderr-Diagnosevorschau und finale Antwort ein Gesamtlimit während der Ausführung ein und ergänzt die Maximumwertprüfung der numerischen Konfiguration neuer Generation-Backends.
+- Der AlphaSift-Standard-Pin wird auf `0a7b9cd59e81718f851890535241bc105d4ddc64` aktualisiert, nutzt standardmäßig den DSA-EastMoney-Fallback-Provider und macht die source-health-Diagnose zugänglich.
+- Die Standard-Speicherempfehlung von Docker Compose wird auf 1G erhöht; der Tagesanalyse-Workflow verträgt fälschlich in gleichnamige Environment variables gesetztes `STOCK_LIST`.
+- Der Agent-Pfad synchronisiert die signal-attribution-Prompt; die Zusammenfassung der Benachrichtigungsberichte expandiert AI-Entscheidungssignaldetails nicht mehr, vollständige Signale bleiben in Einzelaktien-Details und Einzelaktienberichten.
 
-### 修复
+### Behobene Probleme
 
-- API 异步批量分析共享概念板块排行缓存，避免同批多股重复拉取全市场概念排行。
-- 修复通知 Markdown 表格转换在空单元格后将后续内容错配到错误表头的问题。
-- 修复 Market Light 区域归一化拒绝 `jp`/`kr`、日韩历史列表市场阶段摘要误传 `analysis_phase` 和默认通知报告缺少 `dashboard.phase_decision` 的问题。
-- 固定 Docker 可安装的 Longbridge SDK 版本为 0.2.75，并修复 Docker 镜像中 efinance 缓存目录属主导致 A 股数据源降级的问题。
-- 持仓快照今日估值改为受限并发预取实时价，减少持仓较多时 Web 组合页面刷新超时。
-- Web 首页重新分析完成后自动切换到同一股票最新报告，并修复 Windows 环境下 Web/Desktop 静态 JS 资源可能以 `text/plain` 返回导致黑屏的问题。
-- 修复 `--serve --schedule` 与 Web/API runtime scheduler 状态脱节、立即执行忙碌状态误提示、重建定时任务重复监听和启动参数语义丢失。
-- 修复 `main.py --serve-only` 在低配主机上因惰性 import 应用超出 uvicorn 启动自检窗口而反复重启的问题。
-- 修复 Web 回测未传分析日期范围、股票代码未归一化导致成功响应但结果为空的问题，并为空候选、行情不足和非法后缀提供诊断信息。
-- 修复 unsupported `GENERATION_BACKEND` 被当成空响应/模板 fallback、`codex_cli` stdout 重复计入输出上限和主分析 JSON schema fallback 语义回退的问题。
-- Docker 部署中 Web 设置页保存自定义 Webhook 模板时会转义 `$content_json` 等占位符，并在运行时还原，避免 Compose 重新部署展开为空。
+- Die API-Asynchron-Batch-Analyse teilt den Cache des Konzeptbranchen-Rankings, damit nicht für mehrere Aktien derselben Charge wiederholt das Konzept-Ranking des gesamten Markts abgerufen wird.
+- Behebt, dass die Benachrichtigungs-Markdown-Tabellenkonvertierung nach leeren Zellen Folgeinhalte fälschlich falschen Tabellenköpfen zuordnete.
+- Behebt, dass die Market-Light-Regionsnormalisierung `jp`/`kr` ablehnte, die Marktphasenzusammenfassung japanischer/koreanischer Verlaufslisten fälschlich `analysis_phase` übertrug und Standard-Benachrichtigungsberichten `dashboard.phase_decision` fehlte.
+- Fixiert die installierbare Longbridge-SDK-Version für Docker auf 0.2.75 und behebt, dass der Besitzer des efinance-Cache-Verzeichnisses im Docker-Image die A-Aktien-Datenquelle degradierte.
+- Die heutige Bewertung des Positions-Schnappschusses verwendet begrenzten Concurrent-Prefetch der Echtzeitkurse, um die Aktualisierungs-Timeouts der Web-Portfolio-Seite bei vielen Positionen zu verringern.
+- Die Web-Startseite wechselt nach abgeschlossener erneuter Analyse automatisch zum neuesten Bericht derselben Aktie und behebt, dass statische Web/Desktop-JS-Ressourcen unter Windows als `text/plain` zurückgegeben werden konnten und einen Black Screen verursachten.
+- Behebt, dass `--serve --schedule` und der Web/API-Runtime-Scheduler auseinanderdrifteten, der „sofort ausführen"-Beschäftigungsstatus falsch angezeigt wurde, der Neuaufbau geplanter Tasks doppelt lauschte und die Bedeutung der Startparameter verloren ging.
+- Behebt, dass `main.py --serve-only` auf schwach ausgestatteten Hosts wegen der trägen Import-Anwendung das uvicorn-Startselbsttest-Fenster überschritt und wiederholt neu startete.
+- Behebt, dass der Web-Backtest ohne Analyse-Datumsbereich und ohne normalisierte Aktiencodes erfolgreiche Antworten, aber leere Ergebnisse lieferte, und ergänzt Diagnoseinformationen für leere Kandidaten, unzureichende Kursdaten und ungültige Suffixe.
+- Behebt, dass unsupported `GENERATION_BACKEND` als leere Antwort/Template-Fallback behandelt wurde, `codex_cli`-stdout doppelt in das Ausgabelimit zählte und die JSON-Schema-Fallback-Semantik der Hauptanalyse zurückrollte.
+- In der Docker-Bereitstellung maskiert die Web-Einstellungsseite beim Speichern benutzerdefinierter Webhook-Vorlagen Platzhalter wie `$content_json` und stellt sie zur Laufzeit wieder her, damit die Compose-Wiederbereitstellung sie nicht leer expandiert.
 
-### 文档
+### Dokumentation
 
-- 补齐概念板块排行字段契约、通知报告行业/概念类型列展示和数据源稳定性与故障处理图示。
-- 补充 JP/KR/TW suffix-only MVP、`MARKET_REVIEW_REGION` 保存/校验/回退矩阵、Market Light 边界和 PR 提交流程约束。
-- 补充本地 CLI backend 隐私边界、非离线模型说明、Docker/CI 登录态限制和 `codex_cli` experimental/limited 状态。
-- 补充回测请求链路说明，并同步更新 `docs/full-guide.md` 与 `docs/full-guide_EN.md` 示例。
+- Ergänzt den Feldvertrag des Konzeptbranchen-Rankings, die Branchen-/Konzepttyp-Spaltenanzeige der Benachrichtigungsberichte sowie Diagramme zu Datenquellenstabilität und Fehlerbehandlung.
+- Ergänzt JP/KR/TW-suffix-only-MVP, die Speicher-/Prüf-/Fallback-Matrix von `MARKET_REVIEW_REGION`, die Market-Light-Grenzen und die PR-Commit-Workflow-Einschränkungen.
+- Ergänzt Datenschutzgrenzen des lokalen CLI-Backends, die Erläuterung, dass es kein Offline-Modell ist, die Login-Zustandseinschränkungen von Docker/CI und den experimentellen/begrenzten Status von `codex_cli`.
+- Ergänzt die Erläuterung der Backtest-Anfragekette und aktualisiert synchron die Beispiele von `docs/full-guide.md` und `docs/full-guide_EN.md`.
 
-### 测试
+### Tests
 
-- 新增/更新台股、JP/KR 大盘复盘、GenerationBackend、`codex_cli`、Hermes、本地 CLI、runtime scheduler、回测和概念板块排行相关回归测试。
-- 加强 `tests/test_analysis_api_contract.py`、`tests/test_analysis_history.py` 与 `tests/test_backtest_service.py` 的临时 `.env` 隔离，避免本地真实 `.env` 污染系统配置测试。
+- Neue/aktualisierte Regressionstests für Taiwan-Aktien, JP/KR-Marktreview, GenerationBackend, `codex_cli`, Hermes, lokale CLI, Runtime-Scheduler, Backtest und Konzeptbranchen-Ranking.
+- Verstärkt die temporäre `.env`-Isolierung von `tests/test_analysis_api_contract.py`, `tests/test_analysis_history.py` und `tests/test_backtest_service.py`, damit lokale echte `.env`-Dateien die Systemkonfigurationstests nicht verschmutzen.
 
 ## [3.23.0] - 2026-06-20
 
-### 发布亮点
+### Release-Highlights
 
-- feat: DecisionSignal 贯通报告提取、Web 展示、反馈/后验、告警通知和组合风险，AI 建议信号进入可追踪闭环。
-- feat: 新增合规 RSS/Atom 与 NewsNow 资讯源情报池，分析、Agent 和大盘复盘可 fail-open 复用本地资讯 evidence。
-- feat: 新增日本/韩国 suffix-only 个股分析 MVP，支持 `.T`、`.KS`、`.KQ` 标的通过 YFinance 获取行情与技术上下文。
-- feat: 新增 Token 用量监控看板、legacy LLM usage telemetry 和 message stability audit，增强 LLM 调用可观测性。
-- fix: 修复运行流 live 状态、AlphaSift 缓存/字段兼容、发布说明诊断和日韩股票输入/历史展示等稳定性问题。
+- feat: DecisionSignal verbindet Berichtsextraktion, Web-Anzeige, Feedback/Posterior, Alarmbenachrichtigung und Portfolio-Risiko durchgängig; die AI-Empfehlungssignale gelangen in eine nachverfolgbare geschlossene Schleife.
+- feat: Neuer konformer RSS/Atom- und NewsNow-Intelligenzpool als Nachrichtenquelle; Analyse, Agent und Marktreview können lokal gespeicherte Intelligenz-Evidence fail-open wiederverwenden.
+- feat: Neue Japan-/Korea-suffix-only-Einzelaktienanalyse-MVP, die `.T`, `.KS`, `.KQ`-Codes über YFinance mit Kurs- und Technikkontext versorgt.
+- feat: Neues Token-Nutzungs-Monitoring-Dashboard, legacy LLM usage telemetry und message stability audit für bessere Beobachtbarkeit von LLM-Aufrufen.
+- fix: Behebt Stabilitätsprobleme bei Live-Status des Ausführungsstroms, AlphaSift-Cache/Feldkompatibilität, Release-Notes-Diagnose und der Eingabe/Historie-Anzeige japanischer/koreanischer Aktien.
 
-### 新功能
+### Neue Funktionen
 
-- 个股分析历史成功保存后会从最终报告 best-effort 提取 `DecisionSignal` 决策信号，复用现有信号去重、计划质量计算和脱敏契约。
-- 新增 Web AI 建议页、持仓页 latest active 信号摘要、历史报告信号展示和更完整的信号详情卡片，展示评分、置信度、价格计划、催化、风险与失效条件。
-- 新增 DecisionSignal 用户反馈、信号级日线后验评估、统计 API 与 Web 展示，使用 outcome/feedback sidecar 表并保留主信号表契约。
-- 将 DecisionSignal 复用到告警、通知和组合风险：告警触发关联 latest active 信号或创建最小 alert 信号，通知追加低敏信号摘要，持仓风险聚合 active sell/reduce/alert 信号并保持 fail-open。
-- 新增合规 RSS/Atom 资讯源配置、拉取、去重、入库、查询、retention 与基础安全校验 API，作为个股/市场资讯情报池基线。
-- 资讯源新增 `newsnow` 类型、`NEWSNOW_BASE_URL` 配置和 `/api/v1/intelligence/sources/defaults` 默认源初始化接口，内置财联社热门、雪球热门股票、华尔街见闻快讯、金十数据和格隆汇事件等财经热点源。
-- 个股分析、Agent 分析和大盘复盘会 fail-open 读取本地资讯/情报池，并把来源链接作为新闻上下文和 evidence 输入。
-- 新增日本/韩国 suffix-only 个股分析 MVP：手输 `.T` / `.KS` / `.KQ` 代码可走 YFinance 日线与近实时行情，补充市场识别、交易日历、Prompt 语义、Web/API 类型和能力边界文档。
-- 新增 Token 用量监控看板与 `/api/v1/usage/dashboard` 接口，展示 LLM 调用总量、Prompt/Completion 拆分、模型用量、调用类型分布和最近调用明细。
+- Nach erfolgreichem Speichern der Einzelaktienanalyse-Historie wird aus dem finalen Bericht best-effort das `DecisionSignal`-Entscheidungssignal extrahiert; die bestehenden Verträge für Signaleduplizierung, Planqualitätsberechnung und Maskierung werden wiederverwendet.
+- Neue Web-AI-Empfehlungsseite, latest-active-Signalzusammenfassung auf der Positionsseite, Signal-Anzeige in Historienberichten und vollständigere Signaldetailkarten mit Score, Konfidenz, Preisplan, Katalysator, Risiko und Verfallbedingungen.
+- Neue DecisionSignal-Benutzerfeedback, signalstufenbezogene Posterior-Tagesbewertung, Statistik-API und Web-Anzeige, die outcome/feedback-sidecar-Tabellen nutzt und den Vertrag der Hauptsignaltabelle beibehält.
+- DecisionSignal wird auf Alarm, Benachrichtigung und Portfolio-Risiko wiederverwendet: Beim Alarmauslösen wird das latest active Signal verknüpft oder ein minimales Alert-Signal erstellt, Benachrichtigungen ergänzen eine wenig sensible Signalzusammenfassung, und das Positionsrisiko aggregiert aktive sell/reduce/alert-Signale mit fail-open.
+- Neue konforme RSS/Atom-Nachrichtenquellen-Konfiguration, Abruf, Deduplikation, Speicherung, Abfrage, Retention und grundlegende Sicherheitsprüf-API als Baseline für den Aktien-/Marktnachrichten-Intelligenzpool.
+- Die Nachrichtenquelle ergänzt den Typ `newsnow`, die Konfiguration `NEWSNOW_BASE_URL` und die API `/api/v1/intelligence/sources/defaults` zur Initialisierung der Standardsourcen, mit integrierten Finanz-Hot-Quellen wie CLS-Hot-Themen, Xueqiu-Hot-Aktien, WallstreetCN-Schnellmeldungen, Jin10-Daten und Gelunhui-Ereignissen.
+- Einzelaktienanalyse, Agent-Analyse und Marktreview lesen fail-open den lokalen Nachrichten-/Intelligenzpool und speisen Quelllinks als Nachrichtenkontext und Evidence ein.
+- Neue Japan-/Korea-suffix-only-Einzelaktienanalyse-MVP: manuell eingegebene `.T` / `.KS` / `.KQ`-Codes können über YFinance-Tageslinien und nahezu Echtzeit-Kursdaten laufen, ergänzt um Markterkennung, Handelskalender, Prompt-Semantik, Web/API-Typen und Fähigkeitsgrenzen-Dokumentation.
+- Neues Token-Nutzungs-Monitoring-Dashboard und die Schnittstelle `/api/v1/usage/dashboard` mit Anzeige der Gesamtzahl der LLM-Aufrufe, der Aufteilung Prompt/Completion, der Modellnutzung, der Verteilung der Aufrufarten und der Details der letzten Aufrufe.
 
-### 改进
+### Verbesserungen
 
-- 为 `DecisionSignal` 补齐默认生命周期、同源窄 relaxed 去重、相反 active 信号自动 invalidated、terminal 状态不可 PATCH 复活和低敏 market phase hints 提取。
-- 补充 Web decision-signals typed API wrapper 与契约隔离测试，并将历史报告 AI 建议查询收口到精确报告懒提取。
-- DSA 数据源链路新增 Tencent 日 K 直连 fetcher、daily source health 短期熔断，并升级 AlphaSift 默认 pin/runtime bridge。
-- 默认启用 `DAILY_SOURCE=auto`、Sina snapshot 优先级、候选级 quote context 与 LLM ranking timeout/max tokens 边界。
-- 新增 legacy LLM usage provider/cache telemetry、message HMAC 诊断字段和普通个股分析 legacy message stability audit，不改变公开 Usage API、prompt 或 provider 参数。
-- 问股页移动端策略选择改为默认收起的按钮入口，展开后仍可多选策略并在发送后自动收起，减少对对话内容的遮挡。
+- Vervollständigt für `DecisionSignal` den Standard-Lebenszyklus, die enge relaxed-Deduplizierung gleicher Quelle, die automatische Invalidierung gegensätzlicher aktiver Signale, die Unfähigkeit, terminale Zustände per PATCH wiederzubeleben, und die Extraktion wenig sensibler market-phase-Hinweise.
+- Ergänzt den typisierten Web-decision-signals-API-Wrapper und Vertragsisolationstests und konzentriert die AI-Empfehlungsabfrage historischer Berichte auf die präzise lazy-Extraktion des Berichts.
+- Die DSA-Datenquellenkette ergänzt den Tencent-Tages-K-Direkt-Fetcher, die kurzfristige daily-source-health-Unterbrechung und aktualisiert AlphaSift-Standard-pin/runtime bridge.
+- Aktiviert standardmäßig `DAILY_SOURCE=auto`, die Sina-Snapshot-Priorität, candidate-level quote context und die Grenzen für LLM-ranking-timeout/max tokens.
+- Ergänzt legacy LLM usage provider/cache telemetry, message-HMAC-Diagnosefelder und ein message stability audit für normale Einzelaktienanalysen der legacy-Pfade, ohne die öffentliche Usage API, Prompts oder provider-Parameter zu ändern.
+- Die Strategieauswahl der Fragedienst-Seite auf Mobilgeräten wird zu einem standardmäßig eingeklappten Button-Einstieg; nach dem Aufklappen können weiterhin mehrere Strategien ausgewählt werden und klappen nach dem Senden automatisch zusammen, um die Überdeckung des Dialoginhalts zu verringern.
 
-### 修复
+### Behobene Probleme
 
-- 修复运行流 live SSE 脱敏、后期 LLM/通知卡片重复、数据源聚合卡片过早成功、Web 首页窄侧栏挤压股票信息，以及个股分析自动生成大盘上下文时运行诊断互相串扰的问题。
-- 修复 AlphaSift 热点题材 EastMoney 瞬断且无缓存时的空态、桌面更新热点缓存保留，以及 `leader_stocks` / `stocks` 双字段兼容问题。
-- 修复 Web AI 建议页筛选/状态更新分页、价格计划单边入场价展示、持仓 latest 信号刷新、详情 JSON 安全渲染和卡片交互语义问题。
-- 仅允许历史报告存在明确 `action` 或可解析动作时才触发决策信号懒回填，避免 `decision_type=hold` 等统计口径在建议不明确场景误回填。
-- 修复 #1390 P6 DecisionSignal 在组合风险快照语义和默认聚合通知展示中的遗漏。
-- 默认禁用 `/api/v1/intelligence/sources/defaults` 新建源，避免公开示例 NewsNow 实例被默认启用，同时统一 500 响应细节仅入日志、响应返回通用错误信息。
-- Web 股票自动补全、输入校验、历史/任务展示和筛选补齐日韩 Yahoo 后缀代码、常用日韩股票索引与股票池裸码解析，避免 `000660`、`005930`、`7203.T`、`005930.KS`、`035720.KQ` 等场景崩溃、误入 A 股语义或历史分裂展示。
-- 日韩个股分析在本地历史上下文缺失时会用 YFinance 日线兜底构造 K 线与技术指标上下文，避免报告误称日股/韩股核心行情和技术数据不可用。
-- 发布说明生成查询 PR 作者失败时保留降级并输出包含 PR 编号和异常类型的 warning，便于排查 token、权限、网络或 GitHub API 异常。
+- Behebt die Maskierung des Live-SSE des Ausführungsstroms, doppelte späte LLM-/Benachrichtigungskarten, das verfrühte Erfolgsmarkieren der Datenquellen-Aggregationskarte, das Zusammenpressen der Aktieninformationen durch die schmale Seitenleiste der Web-Startseite sowie die gegenseitige Störung der Laufzeitdiagnosen bei automatisch generiertem Marktkontext der Einzelaktienanalyse.
+- Behebt den Leerzustand bei transientem Ausfall der EastMoney-Hotspot-Themen von AlphaSift ohne Cache, das Beibehalten des Hotspot-Caches beim Desktop-Update sowie die Kompatibilität der Doppelfelder `leader_stocks` / `stocks`.
+- Behebt Probleme der Web-AI-Empfehlungsseite mit Filter-/Statusaktualisierungs-Paginierung, der Anzeige einseitiger Einstiegspreise des Preisplans, der Aktualisierung des latest-Positionssignals, der sicheren JSON-Rendering von Details und der Semantik der Karteninteraktion.
+- Nur wenn ein Historienbericht eine eindeutige `action` oder eine parsbare Aktion besitzt, wird die Lazy-Rückfüllung des Entscheidungssignals ausgelöst, damit statistische Definitionen wie `decision_type=hold` in unklaren Empfehlungsszenarien nicht fälschlich rückgefüllt werden.
+- Behebt die Lücke von #1390 P6 DecisionSignal in der Semantik des Portfolio-Risiko-Schnappschusses und der Standardaggregat-Benachrichtigungsanzeige.
+- Deaktiviert standardmäßig das Anlegen neuer Quellen über `/api/v1/intelligence/sources/defaults`, damit öffentliche Beispiel-NewsNow-Instanzen nicht standardmäßig aktiviert werden, und vereinheitlicht zugleich, dass Details von 500-Antworten nur ins Log gelangen und die Antwort eine generische Fehlermeldung zurückgibt.
+- Web-Aktien-Autovervollständigung, Eingabevalidierung, Historie/Task-Anzeige und Filter vervollständigen die Yahoo-Suffix-Codes für Japan/Korea, gängige japanische/koreanische Aktienindizes und die Bare-Code-Auflösung des Aktienpools, damit Szenarien wie `000660`, `005930`, `7203.T`, `005930.KS`, `035720.KQ` nicht abstürzen, in die A-Aktien-Semantik geraten oder die Historie gespalten anzeigen.
+- Wenn bei der Analyse japanischer/koreanischer Aktien der lokale Historienkontext fehlt, wird mit YFinance-Tageslinien ein Fallback für K-Linien- und Technikindikatoren-Kontext aufgebaut, damit Berichte nicht fälschlich behaupten, Kernkurse und technische Daten japanischer/koreanischer Aktien seien nicht verfügbar.
+- Schlägt die Abfrage des PR-Autors bei der Release-Notes-Generierung fehl, bleibt die Degradation erhalten und eine Warnung mit PR-Nummer und Ausnahmetyp wird ausgegeben, um Token-, Berechtigungs-, Netzwerk- oder GitHub-API-Anomalien zu untersuchen.
 
-### 文档
+### Dokumentation
 
-- README、完整指南和市场支持文档补充日股/韩股示例（`7203.T`、`005930.KS`），并明确 `.T/.KS/.KQ` 当前为 YFinance-only MVP。
-- 新增 DecisionSignal 决策信号专题文档，补齐字段/API/Web/告警通知/组合风险/后验评估、脱敏、迁移与回滚说明，并收口 Web i18n 显示边界。
-- 补充 AlphaSift 迁移与回退边界：明确 `ALPHASIFT_INSTALL_SPEC` 显式覆盖语义、`requirements.txt + DEFAULT_ALPHASIFT_INSTALL_SPEC` 与运行时兼容边界。
-- 补充资讯源基线文档，说明 `NEWS_INTEL_*` 配置、NewsNow 自建建议、模型/provider/base URL 不变更边界，以及禁用或移除情报源变量的回退路径。
+- README, vollständiger Leitfaden und Marktunterstützungsdokumente ergänzen Beispiele für japanische/koreanische Aktien (`7203.T`, `005930.KS`) und stellen klar, dass `.T/.KS/.KQ` aktuell ein YFinance-only-MVP sind.
+- Neues Fachdokument für das DecisionSignal-Entscheidungssignal, das Felder/API/Web/Alarmbenachrichtigung/Portfolio-Risiko/Posterior-Bewertung, Maskierung, Migration und Rollback erläutert und die i18n-Anzeigegrenzen im Web abschließt.
+- Ergänzt AlphaSift-Migrations- und Rollback-Grenzen: klargestellt die explizite Übersetzungssemantik von `ALPHASIFT_INSTALL_SPEC`, `requirements.txt + DEFAULT_ALPHASIFT_INSTALL_SPEC` und die Laufzeitkompatibilitätsgrenzen.
+- Ergänzt das Basisdokument der Nachrichtenquelle, das `NEWS_INTEL_*`-Konfiguration, NewsNow-Selbsthosting-Empfehlungen, die Grenze „Modell/provider/base URL unverändert" und den Rollback-Pfad beim Deaktivieren oder Entfernen der Intelligenzpool-Variablen erläutert.
 
-### 测试
+### Tests
 
-- 新增/更新 DecisionSignal 服务、提取、反馈/后验、摘要、文档、通知、告警、持仓风险、Web 展示和 label 的回归覆盖。
-- 新增/更新 RSS/Atom / NewsNow 情报源服务、API、安全校验、分析接入和配置兼容测试。
-- 新增/更新日韩市场识别、股票索引、YFinance 行情兜底、Web 自动补全和输入校验测试。
-- 新增/更新 LLM usage、运行流、AlphaSift、发布说明生成和移动端交互相关回归。
-
+- Neue/aktualisierte Regressionsabdeckung für DecisionSignal-Dienst, -Extraktion, -Feedback/Posterior, -Zusammenfassung, -Dokumentation, -Benachrichtigung, -Alarm, -Positionsrisiko, -Web-Anzeige und -Labels.
+- Neue/aktualisierte Tests für RSS/Atom-/NewsNow-Intelligenzquellen-Dienst, -API, -Sicherheitsprüfung, -Analyseanbindung und -Konfigurationskompatibilität.
+- Neue/aktualisierte Tests für japanisch/koreanische Markterkennung, Aktienindex, YFinance-Kurs-Fallback, Web-Autovervollständigung und Eingabevalidierung.
+- Neue/aktualisierte Regressionen für LLM usage, Ausführungsstrom, AlphaSift, Release-Notes-Generierung und mobile Interaktionen.
 
 ## [3.22.0] - 2026-06-13
 
-### 发布亮点
+### Release-Highlights
 
-- feat: 新增 DecisionSignal 独立存储与 API、运行流快照 API 和 Web 运行流视图，补齐建议动作结构化字段与历史/回测展示链路。
-- feat: AlphaSift 热点题材链路升级为新版合约，支持热点榜单、题材详情、发酵路线、概念股详情、缓存与兜底数据源。
-- feat: 个股分析默认注入当日大盘环境摘要，并在高风险/退潮环境下软化激进买入建议。
-- fix: 修复问股历史追问标的上下文、自选股等价代码匹配、低质量新闻过滤、运行流脱敏与 AlphaSift 热点详情展示等稳定性问题。
+- feat: Neue unabhängige DecisionSignal-Speicherung und -API, Ausführungsstrom-Snapshot-API und Web-Ausführungsstrom-Ansicht; die strukturierten Felder der Empfehlungsaktionen und die Historie-/Backtest-Anzeigekette werden vervollständigt.
+- feat: Die AlphaSift-Hotspot-Themenkette wird auf den neuen Vertrag hochgestuft und unterstützt Hotspot-Rankings, Themen-Details, Gärungsrouten, Konzeptaktien-Details, Cache und Fallback-Datenquellen.
+- feat: Die Einzelaktienanalyse injiziert standardmäßig die Marktumgebungsübersicht des Tages und schwächt aggressive Kaufempfehlungen in Hochrisiko-/Abflutphasen ab.
+- fix: Behebt Stabilitätsprobleme bei Folgefragen mit Zielkontext, der Äquivalenzcode-Zuordnung von Watchlist-Aktien, der Filterung minderwertiger Nachrichten, der Ausführungsstrom-Maskierung und der Anzeige von AlphaSift-Hotspot-Details.
 
-### 新功能
+### Neue Funktionen
 
-- 新增独立 `DecisionSignal` 存储、Repository、Service 与 `/api/v1/decision-signals` API，支持来源/市场/股票/动作/期限/阶段去重、查询、续期、状态更新、懒过期、持仓过滤和敏感信息脱敏。
-- 新增分析任务与历史报告运行流快照 API，提供 lanes、nodes、edges、events、summary 等统一契约，并从任务队列、运行诊断和 AnalysisContextPack overview 构建脱敏数据流/信息流。
-- Web 端为活跃任务、历史报告和大盘复盘报告补充运行流视图入口，支持查看运行摘要、拓扑节点、事件流和基础排障详情。
-- 新增 AlphaSift 热点题材链路：后端提供 `/api/v1/alphasift/hotspots` 与 `/api/v1/alphasift/hotspots/{topic}` API，Web 选股页新增热点题材区域并支持发酵路线与概念股查看。
+- Neue unabhängige `DecisionSignal`-Speicherung, Repository, Service und `/api/v1/decision-signals`-API mit Deduplizierung, Abfrage, Verlängerung, Statusaktualisierung, Lazy-Verfall, Positionsfilterung und Maskierung sensibler Informationen nach Quelle/Markt/Aktie/Aktion/Frist/Phase.
+- Neue Ausführungsstrom-Snapshot-API für Analysetasks und Historienberichte mit einheitlichem Vertrag für lanes, nodes, edges, events, summary, aufgebaut aus der Task-Warteschlange, der Laufzeitdiagnose und dem AnalysisContextPack-Überblick als maskierte Daten-/Informationsströme.
+- Das Web ergänzt für aktive Tasks, Historienberichte und Marktreview-Berichte Einstiege in die Ausführungsstrom-Ansicht mit Laufzeitzusammenfassung, topologischen Knoten, Ereignisstrom und grundlegenden Fehlerbehebungsdetails.
+- Neue AlphaSift-Hotspot-Themenkette: das Backend stellt die APIs `/api/v1/alphasift/hotspots` und `/api/v1/alphasift/hotspots/{topic}` bereit, die Web-Auswahlseite ergänzt einen Hotspot-Themenbereich mit Ansicht für Gärungsroute und Konzeptaktien.
 
-### 改进
+### Verbesserungen
 
-- 个股分析新增按当日/市场复用的大盘环境摘要，普通 Pipeline 与 Agent 分析 Prompt 可读取低敏大盘背景；新增默认开启的 `DAILY_MARKET_CONTEXT_ENABLED` 配置，用户仍可显式关闭。
-- 个股分析与历史/回测展示新增可选八态 `action` / `action_label` 建议动作字段，保留 `operation_advice` 自由文本和 `decision_type=buy|hold|sell` 统计口径。
-- 补充 Web decision-signals typed API wrapper 与契约隔离测试，暂不接入 UI。
-- 完善运行时日志上下文，补充 logger name、触发来源、市场统计与实时行情预取链路状态，便于排查调度、API、Bot 和数据源降级路径。
-- 持仓管理页新增持仓账户删除入口，复用现有账户软删除接口，误建账户会从默认列表、快照、风险、录入入口和事件列表隐藏且不物理清理历史流水。
-- AlphaSift 依赖锁定更新到 `d038c52c468543726fc1fd830b53c27d3f09d6da`，并为新版 last-good snapshot、日线历史、行业/概念 provider cache、hotspot 榜单、题材发酵路线、概念股详情、上次成功热点缓存与 post-analysis 元信息补齐 DSA 运行期和 Web 适配。
-- AlphaSift 热点题材读取默认优先使用上次成功缓存，手动刷新才实时拉取并覆盖缓存，实时拉取失败时尽量回退旧缓存。
-- AlphaSift 热点题材区域改为默认折叠，展开并选中具体题材后再读取详情；发酵路线改为带时间标记的时间线展示，概念股可点击进入首页并直接启动分析。
-- AlphaSift 热点题材数据链路复用同一次东方财富板块异动快照，并从真实涨跌幅、异动次数和高频个股推导趋势分、持续分、阶段与龙头样本。
-- AlphaSift 热点题材刷新在合约层返回少量或缺少关键字段时改用 DSA 东方财富板块异动直连榜单，忽略少于 3 条的本地热点缓存，并补齐板块兜底字段。
-- AlphaSift 热点题材卡片改为更紧凑的多列布局，概念股列表改为独立“分析”按钮触发个股分析；详情优先合并东方财富成分股、同花顺解析和板块异动龙头兜底并按日聚合发酵时间线。
-- AlphaSift 热点题材详情新增 DSA 侧 30 分钟磁盘缓存，重复点开同一题材时复用发酵时间线与概念股详情；题材事件仅展示 AlphaSift 合约时间线、同花顺摘要、已配置新闻搜索或东财板块异动等真实来源。
-- AlphaSift 热点题材消息催化改为摘要展示：配置 LLM 时优先压缩为一句题材催化摘要，未配置或调用失败时回退本地短摘要。
-- AlphaSift 热点题材列表新增可选 `include_details` 详情预取，Web 默认随热点列表批量带回 Top 题材发酵路线与概念股并复用前端内存缓存；新闻催化在 LLM 不可用时改为本地事件归纳。
-- 改造 `main.py --webui-only` 启动行为：若 FastAPI 监听端口已被占用，启动即 fail-fast 抛出明确错误并退出。
+- Die Einzelaktienanalyse ergänzt eine pro Tag/Markt wiederverwendete Marktumgebungsübersicht; die normale Pipeline und die Agent-Analyse-Prompts können den wenig sensiblen Markt-Hintergrund lesen; neu die standardmäßig aktivierte Konfiguration `DAILY_MARKET_CONTEXT_ENABLED`, die Benutzer weiterhin explizit deaktivieren können.
+- Die Einzelaktienanalyse sowie die Historie-/Backtest-Anzeige ergänzen optionale Acht-Zustands-`action` / `action_label`-Empfehlungsaktionsfelder; der Freitext `operation_advice` und die statistische Definition `decision_type=buy|hold|sell` bleiben erhalten.
+- Ergänzt den typisierten Web-decision-signals-API-Wrapper und Vertragsisolationstests; die UI wird vorerst nicht angebunden.
+- Vervollständigt den Laufzeitlog-Kontext mit logger-Name, Auslösequelle, Marktstatistik und Status der Echtzeit-Kurs-Prefetch-Kette, um die Fehlersuche in Scheduling-, API-, Bot- und Datenquellen-Degradationspfaden zu erleichtern.
+- Die Positionsverwaltungsseite ergänzt das Löschen von Positionskonten, das die bestehende Soft-Delete-Schnittstelle von Konten wiederverwendet; fälschlich angelegte Konten werden aus Standardliste, Schnappschuss, Risiko, Erfassungseinstieg und Ereignisliste verborgen, ohne die historische Kontobewegung physisch zu löschen.
+- Die AlphaSift-Abhängigkeitssperre wird auf `d038c52c468543726fc1fd830b53c27d3f09d6da` aktualisiert und für den neuen last-good-Snapshot, die Tageshistorie, den Branchen-/Konzept-Provider-Cache, das Hotspot-Ranking, die Themen-Gärungsroute, die Konzeptaktien-Details, den Cache des letzten erfolgreichen Hotspots und die post-analysis-Metainformationen die DSA-Laufzeit- und Web-Anpassung vervollständigt.
+- Der AlphaSift-Hotspot-Themenabruf verwendet standardmäßig zuerst den Cache des letzten erfolgreichen Abrufs; nur die manuelle Aktualisierung ruft in Echtzeit ab und überschreibt den Cache, bei fehlgeschlagenem Echtzeitabruf wird möglichst auf den alten Cache zurückgegriffen.
+- Der AlphaSift-Hotspot-Themenbereich wird standardmäßig eingeklappt und liest Details erst nach dem Aufklappen und Auswählen eines konkreten Themas; die Gärungsroute wird als Zeitlinie mit Zeitstempeln angezeigt, Konzeptaktien können angeklickt werden, um zur Startseite zu gelangen und direkt eine Analyse zu starten.
+- Die AlphaSift-Hotspot-Themendatenkette nutzt denselben EastMoney-Branchenänderungs-Snapshot wieder und leitet Trend-Score, Fortbestehens-Score, Phase und Leader-Stichproben aus echten Prozentänderungen, Änderungshäufigkeit und Hochfrequenzaktien ab.
+- Bei der Aktualisierung des AlphaSift-Hotspot-Themas wird bei wenigen oder fehlenden Kernfeldern auf der Vertragsebene auf die direkte DSA-EastMoney-Branchenänderungs-Rankingliste zurückgegriffen, lokale Hotspot-Caches mit weniger als 3 Einträgen werden ignoriert und Fallback-Felder der Branche ergänzt.
+- Die AlphaSift-Hotspot-Themenkarte wird zu einem kompakteren Mehrspalten-Layout; die Konzeptaktienliste ergänzt eine separate Schaltfläche „Analysieren" zum Auslösen der Einzelaktienanalyse; Details bevorzugen die Zusammenführung von EastMoney-Komponentenaktien, THS-Parsing und dem Fallback des Branchenänderungs-Leaders, aggregiert nach Tagen in einer Gärungszeitlinie.
+- Die AlphaSift-Hotspot-Themendetails ergänzen einen 30-Minuten-Disk-Cache auf DSA-Seite; beim erneuten Öffnen desselben Themas werden Gärungszeitlinie und Konzeptaktien-Details wiederverwendet; Themenereignisse zeigen nur echte Quellen wie die AlphaSift-Vertragszeitlinie, die THS-Zusammenfassung, die konfigurierte Nachrichtensuche oder die EastMoney-Branchenänderung.
+- Die Nachrichtenkatalyse der AlphaSift-Hotspot-Themen wird als Zusammenfassung angezeigt: ist LLM konfiguriert, wird zuerst zu einer Ein-Satz-Themenkatalyse-Zusammenfassung komprimiert; ohne Konfiguration oder bei fehlgeschlagenem Aufruf fällt sie auf eine lokale Kurzzusammenfassung zurück.
+- Die AlphaSift-Hotspot-Themenliste ergänzt optional den Detail-Prefetch `include_details`; das Web bringt standardmäßig mit der Hotspot-Liste die Top-Themen-Gärungsrouten und Konzeptaktien in einer Charge mit und nutzt den Frontend-Speichercache erneut; Nachrichtenkatalyse wird bei nicht verfügbarem LLM zur lokalen Ereignisinduktion.
+- Umbau des Startverhaltens von `main.py --webui-only`: Ist der FastAPI-Überwachungsport bereits belegt, schlägt der Start sofort fail-fast mit einer klaren Fehlermeldung fehl und beendet sich.
 
-### 修复
+### Behobene Probleme
 
-- 问股从历史报告进入后的追问会持续携带当前标的，切回或重载已有会话时可从历史消息恢复基础当前标的，并由后端阻断未明确切换时的错误股票工具调用、交易所片段和指标缩写误路由。
-- 自选股加入和删除按等价股票代码匹配港股及大小写美股变体，避免 `00700`、`HK00700`、`00700.HK` 或 `aapl`、`AAPL` 被误判为不同标的。
-- 收紧建议动作 legacy fallback：否定/回避表达、中文金融上下文、`buy or sell`、多 guard 歧义文本以及英文复合词不再误渲染成 action badge；有结构化 `action` 时回测/历史趋势等入口按界面语言显示 action 标签。
-- 股票新闻与多维情报搜索在相关度排序后新增域名无关的准入过滤，剔除下载/安装包/应用评分页及成人/招嫖服务垃圾页，并在同批已有有效标的/行业候选时移除 `score=0` 背景填充项。
-- 修复历史报告运行流快照在混合时区事件时间戳下返回 500 的问题。
-- 修复运行流 live SSE 事件未复用快照层递归脱敏规则的问题，避免本地路径、prompt/raw response、代理头等敏感诊断字段在 refetch 前短暂暴露。
-- AlphaSift 热点题材默认加载在无缓存且旧适配层缺少 `alphasift.hotspot` 模块时返回空态，不再一打开选股页就显示 AlphaSift 未就绪；手动刷新仍会提示依赖需更新。
-- 为 THS 发酵路线补充列名兜底：当 `stock_board_concept_summary_ths` 返回缺列时仅跳过该来源富化，不影响热点题材详情 API 返回。
-- 桌面发布打包改用冻结可执行文件运行时探针校验 `alphasift.dsa_adapter`，避免 macOS PyInstaller 将模块内嵌进可执行文件时被文件系统/zip 扫描误判为缺失。
-- AlphaSift 热点题材详情展示改为优先使用后端融合后的 `route`，避免旧 `timeline` 覆盖新闻/LLM 摘要；手动刷新热点榜单时会同步绕过同题材详情缓存。
+- Folgefragen nach dem Einstieg über einen Historienbericht tragen ständig das aktuelle Ziel; beim Zurückwechseln oder Neuladen einer vorhandenen Sitzung kann der Basis-Ziel aus den Historienmeldungen wiederhergestellt werden, und das Backend blockiert falsche Aktien-Tool-Aufrufe, Börsenfragmente und die Fehlroutung von Indikatorabkürzungen, wenn nicht ausdrücklich gewechselt wurde.
+- Das Hinzufügen und Entfernen von Watchlist-Aktien gleicht äquivalente Aktiencodes für Hongkong-Aktien und Groß-/Kleinschreibungsvarianten von US-Aktien ab, damit `00700`, `HK00700`, `00700.HK` oder `aapl`, `AAPL` nicht als verschiedene Ziele fehlinterpretiert werden.
+- Strafft den legacy-Fallback der Empfehlungsaktion: Negations-/Vermeidungsausdrücke, chinesische Finanzkontexte, `buy or sell`, mehrdeutige Guard-Texte und englische Komposita werden nicht mehr fälschlich als action-Badge gerendert; bei strukturierter `action` zeigen Backtest-/Historientrend-Einstiege das action-Label in der UI-Sprache.
+- Aktiennachrichten und mehrdimensionale Intelligenzsuche ergänzen nach der Relevanzsortierung einen domänenunabhängigen Zulassungsfilter, der Download-/Installationspaket-/App-Bewertungsseiten sowie Erwachsenen-/Begleitservice-Spam-Seiten entfernt und bei bereits vorhandenen gültigen Ziel-/Branchenkandidaten derselben Charge Einträge mit `score=0` als Hintergrundfüllung entfernt.
+- Behebt, dass der Ausführungsstrom-Snapshot von Historienberichten bei Zeitstempeln mit gemischten Zeitzonen 500 zurückgab.
+- Behebt, dass Live-SSE-Ereignisse des Ausführungsstroms nicht die rekursiven Maskierungsregeln der Snapshot-Ebene wiederverwendeten, sodass sensible Diagnosefelder wie lokale Pfade, prompt/raw response und Proxy-Header vor dem Refetch kurzzeitig offengelegt wurden.
+- Die Standardlast der AlphaSift-Hotspot-Themen gibt bei fehlendem Cache und fehlendem `alphasift.hotspot`-Modul der alten Adapterebene einen Leerzustand zurück, statt beim Öffnen der Auswahlseite sofort „AlphaSift nicht bereit" anzuzeigen; die manuelle Aktualisierung weist weiterhin auf den benötigten Abhängigkeitsupdate hin.
+- Ergänzt den Spaltennamen-Fallback für die THS-Gärungsroute: Wenn `stock_board_concept_summary_ths` fehlende Spalten zurückgibt, wird nur die Anreicherung dieser Quelle übersprungen, ohne die API-Antwort der Hotspot-Themendetails zu beeinträchtigen.
+- Die Desktop-Veröffentlichungspaketierung prüft das `alphasift.dsa_adapter` über den Laufzeit-Probefinder des eingefrorenen ausführbaren Programms, damit macOS PyInstaller das Modul nicht als fehlend fehlinterpretiert, wenn es in die ausführbare Datei eingebettet ist.
+- Die Anzeige der AlphaSift-Hotspot-Themendetails bevorzugt die vom Backend fusionierte `route`, damit die alte `timeline` die Nachrichten-/LLM-Zusammenfassung nicht überschreibt; beim manuellen Aktualisieren des Hotspot-Rankings wird zugleich der Details-Cache desselben Themas umgangen.
 
-### 文档
+### Dokumentation
 
-- README 与繁中 README 快速开始入口补充视频教程链接，并将桌面客户端入口文案调整为客户端配置教程。
-- 补充 `docs/alphasift-integration.md`：明确 AlphaSift 锁定 commit 来源、Hotspot 契约边界、LLM/LiteLLM 兼容语义与关闭开关下回退路径。
-- 补充 #1381 运行时范围、兼容边界、官方语义依据与常规发布回滚说明。
+- Der Schnellstart-Einstieg des README und des traditionellen chinesischen README ergänzt Video-Tutorial-Links, und der Desktop-Client-Einstiegstext wird auf das Client-Konfigurationstutorial angepasst.
+- Ergänzt `docs/alphasift-integration.md`: klargestellt die AlphaSift-gesperrte Commit-Quelle, die Hotspot-Vertragsgrenzen, die LLM/LiteLLM-Kompatibilitätssemantik und den Rollback-Pfad bei deaktiviertem Schalter.
+- Ergänzt die Laufzeitreichweite, Kompatibilitätsgrenzen, offizielle semantische Grundlage und reguläre Release-Rollback-Erläuterungen von #1381.
 
-### 测试
+### Tests
 
-- 覆盖 #1381 后端 runtime 与兼容核验：`tests/test_main_schedule_mode.py`、`tests/test_pipeline_daily_market_context.py`、`tests/test_daily_market_context.py`、`tests/test_daily_market_context_guardrail.py`、`tests/test_agent_executor.py`、`tests/test_config_env_compat.py`、`tests/test_config_registry.py` 与 `apps/dsa-web/tests/system_config_i18n.test.ts`。
-- 新增/更新 AlphaSift 后端回归：`python -m pytest tests/test_alphasift_api.py -q`、`python -m pytest tests/test_docker_entrypoint.py -q`、`python -m pytest tests/test_main_schedule_mode.py -q -k "start_api_server_fails_before_thread_when_port_is_busy"`。
+- Abdeckung der #1381-Backend-Laufzeit- und Kompatibilitätsverifikation: `tests/test_main_schedule_mode.py`, `tests/test_pipeline_daily_market_context.py`, `tests/test_daily_market_context.py`, `tests/test_daily_market_context_guardrail.py`, `tests/test_agent_executor.py`, `tests/test_config_env_compat.py`, `tests/test_config_registry.py` und `apps/dsa-web/tests/system_config_i18n.test.ts`.
+- Neue/aktualisierte AlphaSift-Backend-Regressionen: `python -m pytest tests/test_alphasift_api.py -q`, `python -m pytest tests/test_docker_entrypoint.py -q`, `python -m pytest tests/test_main_schedule_mode.py -q -k "start_api_server_fails_before_thread_when_port_is_busy"`.
 
 ## [3.21.0] - 2026-06-07
 
-### 发布亮点
+### Release-Highlights
 
-- feat: 新增 Web UI 中英文界面语言切换和飞书 App Bot 通知模式，提升多人部署和企业通知场景体验。
-- feat: 大盘复盘报告、历史入口和个股栏继续收口到结构化数据与统一 Markdown/GFM 渲染，Web/API 人工触发入口不再被交易日 gate 短路。
-- feat: AlphaSift 选股链路改为可恢复后台任务，并完善 DSA LLM runtime bridge、默认适配层预置和兼容回归。
-- fix: 修复英文界面残留中文、诊断展示、运行时环境变量展示、健康检查、桌面更新路径、工作流变量读取和多处 Web 窄布局问题。
+- feat: Neue Sprachumschaltung der Web-UI zwischen Chinesisch und Englisch sowie der Feishu-App-Bot-Benachrichtigungsmodus für bessere Erfahrungen bei Mehrbenutzer-Deployments und Unternehmensbenachrichtigungen.
+- feat: Marktreview-Berichte, Historieneinstiege und die Aktienleiste werden weiterhin auf strukturierte Daten und einheitliches Markdown/GFM-Rendering konzentriert; manuelle Web/API-Trigger werden nicht mehr vom Handelstags-Gate kurzgeschlossen.
+- feat: Marktreview-Berichte, Historieneinstiege und die Aktienleiste werden weiterhin auf strukturierte Daten und einheitliches Markdown/GFM-Rendering konzentriert; manuelle Web/API-Trigger werden nicht mehr vom Handelstags-Gate kurzgeschlossen.
+- feat: Die AlphaSift-Auswahlkette wird zu wiederherstellbaren Hintergrundtasks umgestellt, ergänzt um die DSA-LLM-runtime-bridge, die Vorbereitung der Standard-Adapterebene und Kompatibilitätsregressionen.
+- fix: Behebt verbliebenes Chinesisch in der englischen Oberfläche, Diagnoseanzeige, Anzeige von Laufzeitumgebungsvariablen, Health-Check, Desktop-Update-Pfad, Workflow-Variablenlesen und mehrere Probleme schmaler Web-Layouts.
 
-### 新功能
+### Neue Funktionen
 
-- WebUI 新增独立界面语言状态与中英文切换入口，覆盖主导航、首页、登录、设置页和通用控件文案；UI 语言与 `report_language` 解耦，不改写报告语言链路。
-- 飞书通知新增应用机器人（App Bot）模式，支持通过 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` 配置，无需额外创建自定义机器人。
-- Web 大盘复盘报告新增专用展示视图，历史入口和首页即时结果统一使用 Markdown/GFM 渲染并隐藏个股专属模块。
-- 大盘复盘新增结构化 `market_review_payload`，Web、历史详情和推送统一基于结构化数据渲染，并保留 Markdown 兼容展示。
-- 新增默认关闭的 AlphaSift 选股页签，通过 `ALPHASIFT_ENABLED` 明确控制，并保留 `/install` 作为显式修复路径。
+- Die WebUI erhält einen unabhängigen UI-Sprachstatus und einen Umschalter für Chinesisch/Englisch, der Hauptnavigation, Startseite, Login, Einstellungsseite und allgemeine Steuerelementtexte abdeckt; die UI-Sprache ist von `report_language` entkoppelt und schreibt die Berichtssprachkette nicht um.
+- Feishu-Benachrichtigungen ergänzen den App-Bot-Modus, der über `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` konfigurierbar ist, ohne einen zusätzlichen benutzerdefinierten Bot erstellen zu müssen.
+- Die Web-Marktreview-Berichte erhalten eine spezielle Anzeigeansicht; Historieneinstiege und Sofortergebnisse der Startseite nutzen einheitlich Markdown/GFM-Rendering und blenden einzelaktien-spezifische Module aus.
+- Die Marktreview ergänzt das strukturierte `market_review_payload`; Web, Historie-Details und Push rendern einheitlich auf Basis der strukturierten Daten und behalten die Markdown-kompatible Anzeige bei.
+- Neuer standardmäßig deaktivierter AlphaSift-Auswahl-Tab, explizit gesteuert über `ALPHASIFT_ENABLED`, mit `/install` als explizitem Reparaturpfad.
 
-### 改进
+### Verbesserungen
 
-- Web/API 大盘复盘人工触发入口不再因交易日检查或相关市场休市而短路跳过；定时任务、GitHub Actions 手动运行和 CLI 默认入口仍保持原交易日 gate。
-- AlphaSift Web 选股改为后台任务提交与状态轮询，新增可恢复任务状态展示，避免外部快照、行情或 LLM 变慢时浏览器长请求超时。
-- AlphaSift 选股 API 与服务层收敛到 `AlphaSiftService`，endpoint 仅做路由参数接收与错误映射。
-- AlphaSift 与 DSA 的运行时 LLM 兼容桥接改为调用期注入，保留 `provider/model/base_url/custom headers/fallback` 语义链路，不做持久化迁移。
-- Web 首页侧栏不再单独展示大盘复盘历史集合，最新大盘复盘作为 `MARKET` 并入个股栏，按最近分析时间参与排序，并复用个股栏的选择、删除、完整报告与历史趋势查看能力。
-- 多股通知报告将市场阶段收敛为总览下方单行 `市场状态`，不再在每只股票摘要下重复展示数据质量和限制详情。
-- API 错误响应构造收敛到共享 helper，保持既有错误 envelope 形状并降低 endpoint 重复代码。
-- WebUI 绑定公网地址或 CORS 全开放且未启用管理员认证时新增运行时 warning；仅增加可观测性，不阻断启动、不改写配置。
-- 数据库初始化新增 `schema_migrations` baseline 标记表与幂等记录，用于后续 schema 演进追踪；不迁移、不清理、不改写既有业务表数据。
-- #1386 P6 复用市场阶段与 AnalysisContextPack 公开摘要联动告警、持仓手动分析、历史、回测和通知展示，不新增数据库迁移。
+- Manuelle Web/API-Trigger der Marktreview werden nicht mehr durch die Handelstagsprüfung oder Marktschluss des betreffenden Markts kurzgeschlossen und übersprungen; Geplante Tasks, manuelle GitHub-Actions-Ausführungen und der CLI-Standardeinstieg behalten das ursprüngliche Handelstags-Gate.
+- Die AlphaSift-Web-Auswahl wird auf Hintergrundtask-Übermittlung und Status-Polling umgestellt und zeigt wiederherstellbare Taskstatus, damit Browser-Langanfragen nicht timeouten, wenn externe Snapshots, Kursdaten oder LLM langsam werden.
+- Die AlphaSift-Auswahl-API und die Dienstschicht konvergieren auf `AlphaSiftService`; Endpunkte übernehmen nur Routenparameter und Fehlerzuordnung.
+- Die Laufzeit-LLM-Kompatibilitätsbrücke zwischen AlphaSift und DSA wird auf Aufrufzeit-Injektion umgestellt, behält die semantische Kette `provider/model/base_url/custom headers/fallback` bei und führt keine persistente Migration durch.
+- Die Seitenleiste der Web-Startseite zeigt die Marktreview-Verlaufssammlung nicht mehr separat; die neueste Marktreview wird als `MARKET` in die Aktienleiste aufgenommen, sortiert nach der letzten Analysezeit, und nutzt die Auswahl-, Lösch-, Vollbericht- und Historientrend-Anzeigefähigkeiten der Aktienleiste wieder.
+- Mehrfachaktien-Benachrichtigungsberichte fassen die Marktphase in einer einzelnen Zeile `Marktstatus` unter der Übersicht zusammen und zeigen Datenqualität und Limit-Details nicht mehr unter jeder Aktienzusammenfassung wiederholt an.
+- Der Aufbau von API-Fehlerantworten konvergiert auf einen gemeinsamen Helper, behält die bisherige Fehler-Envelope-Form bei und reduziert Endpunkt-Wiederholungscode.
+- Die WebUI gibt eine neue Laufzeitwarnung aus, wenn eine öffentliche Adresse gebunden ist oder CORS vollständig geöffnet ist und die Admin-Authentifizierung nicht aktiviert ist; dies erhöht nur die Beobachtbarkeit, blockiert den Start nicht und schreibt keine Konfiguration um.
+- Die Datenbankinitialisierung ergänzt die `schema_migrations`-Baseline-Markierungstabelle und idempotente Aufzeichnungen für die spätere Schema-Entwicklungsverfolgung; keine Migration, keine Bereinigung, kein Umschreiben bestehender Geschäftstabellendaten.
+- #1386 P6 nutzt Marktphase und die öffentliche AnalysisContextPack-Zusammenfassung für verknüpfte Alarme, manuelle Positionsanalysen, Historie, Backtest und Benachrichtigungsanzeige erneut, ohne neue Datenbankmigrationen.
 
-### 修复
+### Behobene Probleme
 
-- Web 英文界面补齐回测、组合风险与告警规则相关文案本地化，避免英文模式下残留中文筛选器、按钮和枚举标签。
-- 综合情报搜索中的机构分析与业绩预期维度改用 180 天 provider 请求窗口，避免默认短新闻窗口漏掉财报、研报等周期性财经材料。
-- Web 个股栏和历史卡片在窄布局下不再让市场阶段标签遮挡股票名称。
-- 问股自由文本追问不再将 TTM、PE、YOY 等金融缩写误识别为新股票代码。
-- [修复] GitHub Actions 每日分析工作流读取 SearXNG 自建实例地址时支持 Variables 优先、Secrets 回退，修复仅配置 Variables 时 URL 不生效的问题。
-- Web/桌面端左侧导航选中态改用 border 实现，避免蓝色竖条指示器溢出侧栏边界；侧栏展开宽度 116px -> 136px，新增 rail 紧凑模式。
-- Windows 桌面端自动更新安装目录不再预先加引号，避免带空格路径在自动安装时触发“缺少快捷方式 / 找不到 Daily Stock Analysis.exe”的系统弹窗。
-- Agent 分析路径生成 AnalysisContextPack overview 前复用已落库日线分析上下文，避免日线已抓取成功仍显示 `daily_bars_missing`。
-- 修正大盘复盘结构化 `breadth` 的可用性判断：当市场不支持或抓取失败时不下发 `breadth`，前端展示“暂无数据”，避免误导性 0 值。
-- 大盘复盘语言行为遵循全局 `report_language`，并在美股中文场景下本地化市场标签与策略蓝图，避免混入英文策略段落。
-- Docker Web 设置页读取配置时在活跃 `.env` 文件缺项时回退展示启动注入的同名环境变量，并补清相关挂载边界文档。
-- 报告页运行诊断会区分数据源抓取成功与进入 LLM 分析输入，相关新闻区标注为报告页补充/后续检索资讯，避免与输入数据块状态互相误读。
-- `/health` 根路径健康检查现在始终返回 JSON，避免静态 Web fallback 吞掉健康探针；`/api/health` 与 `/api/v1/health` 继续保持兼容。
-- `ALPHASIFT_ENABLED` 关闭时不触发 `alphasift` 运行时注入；开启后优先复用已配置的 DSA/provider 配置并注入 `LITELLM_*` 与 `LLM_*` 运行时变量。
-- 补齐 openai-compatible 场景下 base URL、`extra_headers` 与 `LITELLM_FALLBACK_MODELS` 的兼容路径与回退链验证。
-- 桌面/镜像打包链路保持与运行时一致的 AlphaSift 适配层预置，避免 `pip install` 作为线上修复依赖。
+- Die englische Web-Oberfläche vervollständigt die Lokalisierung von Texten für Backtest, Portfolio-Risiko und Alarmregeln, damit im englischen Modus keine chinesischen Filter, Schaltflächen und Enum-Labels zurückbleiben.
+- Die Dimensionen Institutionsanalyse und Ertragserwartung der integrierten Intelligenzsuche verwenden ein 180-Tage-provider-Anfragefenster, damit der standardmäßige kurze Nachrichtenzeitraum keine periodischen Finanzmaterialien wie Finanzberichte und Research-Reports verpasst.
+- In schmalen Layouts verdecken die Marktphasen-Labels der Web-Aktienleiste und Historienkarten den Aktiennamen nicht mehr.
+- Freitext-Folgefragen im Fragedienst erkennen Finanzabkürzungen wie TTM, PE, YOY nicht mehr fälschlich als neue Aktiencodes.
+- [Fix] Der Tagesanalyse-Workflow von GitHub Actions bevorzugt beim Lesen der selbst gehosteten SearXNG-Instanzadresse Variables und fällt auf Secrets zurück; behebt das Problem, dass die URL bei nur konfigurierten Variables nicht wirkt.
+- Der Auswahlzustand der linken Navigation von Web/Desktop wird über border umgesetzt, damit der blaue vertikale Indikator nicht über den Seitenrand hinausragt; die aufgeklappte Seitenbreite ändert sich von 116px auf 136px, neu mit kompaktem Rail-Modus.
+- Das Installationsverzeichnis der Windows-Desktop-Automatikupdates wird nicht mehr vorab in Anführungszeichen gesetzt, damit Pfade mit Leerzeichen beim automatischen Installieren nicht die Systemdialoge „Verknüpfung fehlt / Daily Stock Analysis.exe nicht gefunden" auslösen.
+- Der Agent-Analysepfad nutzt vor der Erzeugung der AnalysisContextPack-Übersicht den bereits gespeicherten Tagesanalysekontext erneut, damit `daily_bars_missing` nicht mehr angezeigt wird, obwohl die Tagesdaten erfolgreich abgerufen wurden.
+- Korrigiert die Verfügbarkeitsprüfung des strukturierten `breadth` der Marktreview: Wenn der Markt nicht unterstützt wird oder der Abruf fehlschlägt, wird `breadth` nicht gesendet und das Frontend zeigt „Keine Daten", um irreführende 0-Werte zu vermeiden.
+- Das Sprachverhalten der Marktreview folgt dem globalen `report_language` und lokalisiert im chinesischen US-Aktien-Szenario Markt-Labels und Strategie-Blueprints, damit keine englischen Strategieabsätze hineingemischt werden.
+- Beim Lesen der Konfiguration auf der Docker-Web-Einstellungsseite wird bei fehlenden Einträgen in der aktiven `.env`-Datei auf die beim Start injizierten gleichnamigen Umgebungsvariablen zurückgegriffen, und die Dokumentation der zugehörigen Mount-Grenzen wird vervollständigt.
+- Die Laufzeitdiagnose der Berichtsseite unterscheidet zwischen erfolgreichem Datenquellen-Abruf und dem Eingang in die LLM-Analyse; der zugehörige Nachrichtenbereich wird als ergänzende/spätere Suche des Berichts gekennzeichnet, damit er nicht mit dem Status des Eingabedatenblocks verwechselt wird.
+- Der Health-Check des `/health`-Wurzelpfads gibt jetzt immer JSON zurück, damit der statische Web-Fallback die Health-Probe nicht verschluckt; `/api/health` und `/api/v1/health` bleiben kompatibel.
+- Bei deaktiviertem `ALPHASIFT_ENABLED` wird keine `alphasift`-Laufzeitinjektion ausgelöst; nach dem Aktivieren werden zuerst die konfigurierten DSA/provider-Einstellungen wiederverwendet und `LITELLM_*`- und `LLM_*`-Laufzeitvariablen injiziert.
+- Vervollständigt die Kompatibilitätspfade und die Verifikation der Fallback-Kette für base URL, `extra_headers` und `LITELLM_FALLBACK_MODELS` im openai-compatible-Szenario.
+- Die Desktop-/Image-Paketierungskette behält die mit der Laufzeit konsistente Vorbereitung der AlphaSift-Adapterebene bei, damit `pip install` nicht als Online-Reparaturabhängigkeit dient.
 
-### 文档
+### Dokumentation
 
-- 明确 Issue #777 UI 语言切换采用仓内 `UiLanguageContext` + `uiText` 实现，持久化 key 为 `dsa.uiLanguage`，并补充对应可视化验收指引。
-- 明确大盘复盘展示链路、结构化 payload、语言行为、交易日 gate 差异和回滚边界。
-- 补充 LLM / LiteLLM 兼容键在 Settings 展示与校验上下文中的回退边界，说明不改写、不迁移、不清理用户现有 provider/model/base URL 持久化配置。
-- 补齐 #1602 运行诊断口径修复覆盖范围，说明仅统一输入与展示口径，回滚方式为常规发布回滚。
-- 明确 AnalysisContextPack P6 文档、迁移与回滚边界，并同步既有 `SAVE_CONTEXT_SNAPSHOT` 到 `.env.example`、配置注册表、Web 设置帮助和完整指南。
-- 补齐 #1386 P7 盘前/盘中/盘后分析的入口、迁移、回滚和用户可见说明。
-- 为 AlphaSift runtime bridge 增加官方兼容依据落点，明确 provider/model/base_url/extra_headers/fallback 与回退边界。
+- Klargestellt, dass die Issue-#777-UI-Sprachumschaltung im Repository über `UiLanguageContext` + `uiText` umgesetzt wird, der Persistierungsschlüssel `dsa.uiLanguage` ist, und die zugehörigen visuellen Abnahmehinweise ergänzt.
+- Klargestellt die Anzeigekette der Marktreview, die strukturierte Payload, das Sprachverhalten, die Unterschiede des Handelstags-Gates und die Rollback-Grenzen.
+- Ergänzt die Fallback-Grenzen der LLM-/LiteLLM-Kompatibilitätsschlüssel im Anzeige- und Prüfkontext der Settings und erläutert, dass bestehende persistente provider/model/base-URL-Konfigurationen der Benutzer weder umgeschrieben, migriert noch bereinigt werden.
+- Vervollständigt den Abdeckungsbereich des #1602-Fixes zur Laufzeitdiagnose-Definition; klargestellt, dass nur die Eingabe- und Anzeigedefinition vereinheitlicht wird, der Rollback erfolgt über den regulären Release-Rollback.
+- Klargestellt die Dokumentation, Migrations- und Rollback-Grenzen von AnalysisContextPack P6 und synchronisiert das bestehende `SAVE_CONTEXT_SNAPSHOT` in `.env.example`, Konfigurationsregister, Web-Einstellungshilfe und vollständigen Leitfaden.
+- Vervollständigt die Einstiege, Migration, Rollback und benutzersichtbaren Erläuterungen der #1386 P7-Analyse für Vorbörse/Mittag/Nachbörse.
+- Ergänzt offizielle Kompatibilitätsbelege für die AlphaSift-runtime-bridge und stellt provider/model/base_url/extra_headers/fallback und die Rückfallgrenzen klar.
 
-### 测试
+### Tests
 
-- Web 方向执行 `npm run lint`、`npm run build`、相关 Vitest 和 smoke 命令；未设置 `DSA_WEB_SMOKE_PASSWORD` 时 smoke 用例按设计 skip。
-- Web 测试运行时声明 Node `>=20.19.0 <27` 与 npm `>=10`，并补 localStorage 测试兜底以稳定 Vitest。
-- 增补 AlphaSift runtime bridge 与打包脚本静态验证，覆盖 `LLM_CHANNELS`、`LITELLM_FALLBACK_MODELS`、`alphasift.dsa_adapter`、`--collect-all alphasift`。
+- Im Web-Bereich werden `npm run lint`, `npm run build`, zugehörige Vitest- und Smoke-Befehle ausgeführt; ohne gesetztes `DSA_WEB_SMOKE_PASSWORD` werden Smoke-Fälle wie vorgesehen übersprungen.
+- Die Web-Testlaufzeit deklariert Node `>=20.19.0 <27` und npm `>=10` und ergänzt einen localStorage-Test-Fallback zur Stabilisierung von Vitest.
+- Ergänzt die statische Verifikation der AlphaSift-runtime-bridge und der Paketierskripte, abgedeckt sind `LLM_CHANNELS`, `LITELLM_FALLBACK_MODELS`, `alphasift.dsa_adapter` und `--collect-all alphasift`.
 
 ### chore
 
-- 移除随 issue / PR 验收流程误入库的截图资产，并明确一次性截图证据应保留在 PR 描述、评论、附件或 artifact 中，不作为仓库文件合入。
+- Entfernt Screenshot-Assets, die versehentlich über den Issue-/PR-Abnahmeprozess ins Repository gelangt sind, und stellt klar, dass einmalige Screenshot-Nachweise in PR-Beschreibung, Kommentaren, Anhängen oder Artifacts verbleiben und nicht als Repository-Dateien eingepflegt werden.
 
 ## [3.20.0] - 2026-06-03
 
-### 发布亮点
+### Release-Highlights
 
-- feat: 新增 AlphaSift 选股入口、自动安装与稳定适配层，支持 Web 策略执行、LLM 重排展示和默认关闭的可控启用。
-- feat: 完善个股历史、自选队列、市场阶段与 AnalysisContextPack 可见性，增强 Web 报告和 API 的结构化上下文能力。
-- feat: MiniMax 默认模型升级到 `MiniMax-M3`，并补齐相关价格、预设和测试覆盖。
-- fix: 修复健康检查、Windows 桌面更新与首次运行编码、ETF 日线 secid、LLM base_url 校验和 Agent 日线上下文误判等稳定性问题。
+- feat: Neuer AlphaSift-Auswahl-Einstieg, automatische Installation und stabile Adapterebene mit Unterstützung für Web-Strategieausführung, LLM-Reordering-Anzeige und eine standardmäßig deaktivierte, kontrollierte Aktivierung.
+- feat: Vervollständigt die Sichtbarkeit von Einzelaktien-Historie, Watchlist-Warteschlange, Marktphase und AnalysisContextPack und stärkt die strukturierten Kontextfähigkeiten von Web-Bericht und API.
+- feat: Das MiniMax-Standardmodell wird auf `MiniMax-M3` aktualisiert, ergänzt um zugehörige Preise, Presets und Testabdeckung.
+- fix: Behebt Stabilitätsprobleme bei Health-Check, Windows-Desktop-Update und Erstlauf-Kodierung, ETF-Tages-secid, LLM-base_url-Prüfung und der Fehlbeurteilung des Agent-Tageskontexts.
 
-### 新功能
+### Neue Funktionen
 
-- 新增默认关闭的 AlphaSift 选股页签，通过 `ALPHASIFT_ENABLED` 开启后经由稳定适配层读取策略并执行选股。
-- Web 首页左侧栏改为个股栏，按股票去重展示，大盘复盘置顶，点击个股加载最新报告，支持按代码变体（.SZ/.SH/.SS）归一化去重合并。保留全选、批量删除和删除确认入口；新增按股票代码批量删除 API `DELETE /api/v1/history/by-code/{stock_code}`。
-- 报告详情右侧栏新增自选操作入口，支持查看当前股票是否在自选队列、一键加入或移除；大盘复盘报告不显示该操作。
-- 问股页面输入区上方新增自选操作按钮，用户发送包含股票代码的消息后自动显示加入自选/从自选删除入口。
-- Web 报告页新增同股历史趋势抽屉入口，历史列表摘要补充趋势、摘要、模型和分析时行情字段，支持按当前股票查看历史分析并加载更多。
-- AnalysisContextPack P4 低敏 overview 接入历史详情、同步分析响应、completed 任务状态和 Web 报告页，展示数据块状态、来源、缺失原因与降级摘要。
-- #1386 P5 为个股分析报告新增 `dashboard.phase_decision` 盘中决策护栏，并在保存历史前按市场阶段与数据质量限制高置信盘中买卖结论。
-- #1386 P4a 新增 `analysis_phase=auto|premarket|intraday|postmarket` API 参数，并在异步任务 accepted、内存 status、list、SSE 与分析 pipeline 中透传请求阶段。
-- #1386 P4b Web 报告页新增最终市场阶段标签，任务面板展示请求阶段，并复用 AnalysisContextPack 低敏数据质量摘要。
-- MiniMax 渠道模型列表升级：新增 `MiniMax-M3` 并作为默认，按官方 OpenAI-compatible 文档支持 1M 输入上下文（项目保守注册为 `<=512K` 价格档：context_window 512K、`max_tokens` 128K，对应 $0.6/M 输入、$2.4/M 输出，>512K 输入价格档未建模），保留 `MiniMax-M2.7` 与 `MiniMax-M2.7-highspeed`，并保留 `MiniMax-M2.5` legacy 价格条目以兼容现有用户配置的成本估算。Web 设置页 MiniMax 预设模型与价格按 M3 刷新。
-- 新增 AnalysisContextPack P1 内部契约与脱敏序列化测试。
-- 市场阶段低敏摘要接入历史详情、同步分析响应和 completed 任务状态的 report metadata。
+- Neuer standardmäßig deaktivierter AlphaSift-Auswahl-Tab, der nach dem Aktivieren über `ALPHASIFT_ENABLED` über die stabile Adapterebene Strategien liest und die Aktienauswahl ausführt.
+- Die linke Seitenleiste der Web-Startseite wird zu einer Aktienleiste, die nach Aktien dedupliziert anzeigt, Marktreview oben, beim Klick auf eine Einzelaktie wird der neueste Bericht geladen, und Varianten (.SZ/.SH/.SS) werden über Normalisierung dedupliziert und zusammengeführt. Die Einstiege für Alles auswählen, Batch-Löschen und Löschbestätigung bleiben erhalten; neu die Batch-Lösch-API nach Aktiencode `DELETE /api/v1/history/by-code/{stock_code}`.
+- Die rechte Seitenleiste der Berichtsdetails ergänzt einen Watchlist-Aktions-Einstieg, der prüft, ob die aktuelle Aktie in der Watchlist ist, und Ein-Klick-Hinzufügen oder -Entfernen unterstützt; Marktreview-Berichte zeigen diese Aktion nicht.
+- Die Fragedienst-Seite ergänzt oberhalb des Eingabebereichs eine Watchlist-Aktionsschaltfläche; nach dem Senden einer Nachricht mit Aktiencode werden die Einstiege „Zur Watchlist hinzufügen / Aus der Watchlist entfernen" automatisch angezeigt.
+- Die Web-Berichtsseite ergänzt einen Drawer-Einstieg für den Historien-Trend derselben Aktie; die Historienlisten-Zusammenfassung ergänzt Felder für Trend, Zusammenfassung, Modell und Kursdaten zur Analysezeit und unterstützt das Anzeigen historischer Analysen der aktuellen Aktie mit „Mehr laden".
+- Die wenig sensible AnalysisContextPack-P4-Übersicht wird in Historie-Details, synchrone Analyseantworten, completed-Taskstatus und die Web-Berichtsseite eingebunden und zeigt Datenblockstatus, Quelle, Fehlergrund und Degradationszusammenfassung.
+- #1386 P5 ergänzt für Einzelaktien-Analyseberichte den `dashboard.phase_decision`-Entscheidungs-Guardrail während des Handels und beschränkt Hochkonfidenz-Kauf-/Verkaufs-Schlussfolgerungen während des Handels vor dem Speichern der Historie nach Marktphase und Datenqualität.
+- #1386 P4a ergänzt den API-Parameter `analysis_phase=auto|premarket|intraday|postmarket` und reicht die angeforderte Phase in accepted asynchroner Aufgabe, In-Memory-Status, list, SSE und Analyse-Pipeline durch.
+- #1386 P4b ergänzt auf der Web-Berichtsseite ein Label für die finale Marktphase, das Task-Panel zeigt die angeforderte Phase, und die wenig sensible AnalysisContextPack-Datenqualitätszusammenfassung wird wiederverwendet.
+- Die MiniMax-Kanalmodellliste wird hochgestuft: Neu `MiniMax-M3` als Standardmodell, das laut offizieller OpenAI-compatible-Dokumentation einen 1M-Eingabekontext unterstützt (konservativ im `<=512K`-Preisband registriert: context_window 512K, `max_tokens` 128K, entsprechend $0.6/M Eingabe, $2.4/M Ausgabe; das Preisband >512K Eingabe ist nicht modelliert); `MiniMax-M2.7` und `MiniMax-M2.7-highspeed` bleiben erhalten, und der legacy-Preiseintrag `MiniMax-M2.5` bleibt zur Kostenschätzung für bestehende Benutzerkonfigurationen erhalten. Die MiniMax-Preset-Modelle und Preise der Web-Einstellungsseite werden auf M3 aktualisiert.
+- Neue interne Vertrags- und Maskierungs-Serialisierungstests für AnalysisContextPack P1.
+- Die wenig sensible Marktphasen-Zusammenfassung wird in die report-Metadaten von Historie-Details, synchronen Analyseantworten und completed-Taskstatus eingebunden.
 
-### 改进
+### Verbesserungen
 
-- 首次运行配置校验补充缺失 AI Key、空 STOCK_LIST、Telegram/邮件成对字段和 Webhook URL 前缀诊断。
-- AlphaSift 选股入口在 Web 侧边栏中移动到“问股”下方，贴近 Agent/研究辅助工作流。
-- Docker 镜像构建阶段预置默认 AlphaSift 适配层，与桌面发布包一样避免运行期额外安装。
-- AlphaSift 选股改为依赖 `alphasift.dsa_adapter` 的稳定接口，Web 策略列表由 AlphaSift 动态提供，不再在前端硬编码。
-- AlphaSift 选股页补充 Run ID、快照数、过滤后数量、因子和风险详情，展开候选时展示真实明细，并暂时仅开放当前支持的 A 股市场。
-- Web 设置页新增 AlphaSift 选股开关卡片，可直接开启或关闭选股页签。
-- 开启 AlphaSift 选股时先切换 `ALPHASIFT_ENABLED` 并检查适配层可用性，缺失时自动调用受控安装接口，不再要求用户额外点击安装。
-- AlphaSift 已开启但适配层缺失时，策略列表和选股接口会串行化自动安装锁定来源，并强制重装以覆盖旧版 `alphasift` 包。
-- AlphaSift 选股页合并重复的快照源 fallback 提示，并保留 AlphaSift 自身的 Tushare 优先快照源逻辑。
-- AlphaSift 选股页在 LLM 重排降级时展示 warning/source error/parse error，并避免把本地因子评分误显示为 LLM 判断。
-- Web 设置页不再把 `ALPHASIFT_ENABLED` 作为普通数据源配置项重复展示，该值仅作为“开启选股”按钮背后的持久化状态。
-- AlphaSift 关闭时隐藏 Web 左侧“选股”导航入口，避免误导未开启用户。
-- 补充 AlphaSift 选股自定义策略显示逻辑，避免未匹配预设项时误显示“均衡多因子”。
-- 新增 GET /api/v1/history/stocks 端点按 code 分组返回不重复个股列表；新增 GET /api/v1/stocks/watchlist、POST /api/v1/stocks/watchlist/add、POST /api/v1/stocks/watchlist/remove 端点支持自选队列增删查。STOCK_LIST 读写保持原样，不做自动归一化；add/remove 时归一化比较判断等价代码变体。
-- 新增 useWatchlist hook 统一管理自选队列前端状态，复用 SystemConfigService 的 STOCK_LIST 配置项实现持久化。
-- AnalysisContextPack P5 增加数据质量评分、`fetch_failed` 状态、Prompt 数据限制区块和 Web 低敏质量展示。
-- #1386 P2-full 在 AnalysisContextPack Prompt 数据限制中追加市场阶段与降级数据的交叉约束，并修正中文分析 Prompt 的阶段化行情标签。
-- 通知报告默认发送路径恢复既有渠道兼容转换与分片逻辑，新增 renderer 能力仅保留为未来扩展基础。
-- 关联板块缺少类型数据时改为单行展示板块名称，避免生成整列 `N/A` 的板块表格。
-- 优化 Web 报告详情页信息层级，将输入数据块和运行诊断下移为主体内容后的折叠辅助信息。
-- 盘中分析补齐实时行情获取时间、provider 时间、stale、fallback 与 partial/estimated 标记，供 AnalysisContextPack 映射输入数据限制。
+- Die Erstlauf-Konfigurationsprüfung ergänzt Diagnosen für fehlende AI-Keys, leere STOCK_LIST, gepaarte Telegram-/E-Mail-Felder und Webhook-URL-Präfixe.
+- Der AlphaSift-Auswahl-Einstieg wird in der Web-Seitenleiste unter „Fragedienst" platziert, näher am Agent-/Recherche-Workflow.
+- Die Docker-Image-Buildphase bereitet die Standard-AlphaSift-Adapterebene vor, um wie beim Desktop-Release-Paket eine zusätzliche Laufzeitinstallation zu vermeiden.
+- Die AlphaSift-Auswahl hängt nun von der stabilen Schnittstelle `alphasift.dsa_adapter` ab; die Web-Strategieliste wird dynamisch von AlphaSift bereitgestellt und ist nicht mehr im Frontend hartkodiert.
+- Die AlphaSift-Auswahlseite ergänzt Run ID, Snapshot-Anzahl, gefilterte Anzahl, Faktoren und Risikodetails, zeigt beim Aufklappen von Kandidaten echte Details und öffnet vorerst nur den aktuell unterstützten A-Aktien-Markt.
+- Die Web-Einstellungsseite ergänzt eine AlphaSift-Auswahl-Schalterkarte zum direkten Aktivieren oder Deaktivieren des Auswahl-Tabs.
+- Beim Aktivieren der AlphaSift-Auswahl wird zuerst `ALPHASIFT_ENABLED` umgeschaltet und die Verfügbarkeit der Adapterebene geprüft; fehlt sie, wird automatisch die kontrollierte Installationsschnittstelle aufgerufen, ohne dass der Benutzer zusätzlich auf Installation klicken muss.
+- Ist AlphaSift aktiviert, die Adapterebene aber nicht vorhanden, serialisieren Strategieliste und Auswahl-Schnittstelle die automatische Installation mit gesperrter Quelle und erzwingen eine Neuinstallation, um alte `alphasift`-Pakete zu überschreiben.
+- Die AlphaSift-Auswahlseite fasst wiederholte Snapshot-Quellen-Fallback-Hinweise zusammen und behält die Tushare-erst-Snapshot-Quellenlogik von AlphaSift selbst bei.
+- Die AlphaSift-Auswahlseite zeigt bei LLM-Reordering-Degradation warning/source error/parse error und vermeidet, lokale Faktorbewertungen fälschlich als LLM-Urteil anzuzeigen.
+- Die Web-Einstellungsseite zeigt `ALPHASIFT_ENABLED` nicht mehr als normalen Datenquellen-Konfigurationseintrag doppelt an; der Wert dient nur als persistierter Zustand hinter der Schaltfläche „Aktienauswahl aktivieren".
+- Bei deaktiviertem AlphaSift wird der Navigations-Einstieg „Aktienauswahl" links im Web ausgeblendet, um Benutzer ohne Aktivierung nicht irrezuführen.
+- Ergänzt die Anzeigelogik für benutzerdefinierte AlphaSift-Strategien, damit bei nicht übereinstimmenden Presets nicht fälschlich „Balanced Multi-Factor" angezeigt wird.
+- Neuer Endpunkt GET /api/v1/history/stocks, der nach code gruppiert eine deduplizierte Einzelaktienliste zurückgibt; neue Endpunkte GET /api/v1/stocks/watchlist, POST /api/v1/stocks/watchlist/add und POST /api/v1/stocks/watchlist/remove unterstützen das Hinzufügen, Entfernen und Abfragen der Watchlist. Das Lesen/Schreiben von STOCK_LIST bleibt unverändert, keine automatische Normalisierung; bei add/remove wird per Normalisierung auf äquivalente Codevarianten verglichen.
+- Neuer Hook useWatchlist verwaltet den Frontend-Zustand der Watchlist einheitlich und nutzt den STOCK_LIST-Konfigurationseintrag des SystemConfigService für die Persistierung.
+- AnalysisContextPack P5 ergänzt Datenqualitäts-Score, den `fetch_failed`-Status, einen Prompt-Datenlimit-Block und die wenig sensible Qualitätsanzeige im Web.
+- #1386 P2-full ergänzt in den AnalysisContextPack-Prompt-Datenlimits die Kreuzbeschränkungen zwischen Marktphase und degradierten Daten und korrigiert die phasenbezogenen Kursdaten-Labels des chinesischen Analyse-Prompts.
+- Der Standard-Sendepfad von Benachrichtigungsberichten stellt die bestehende Kanal-Kompatibilitätskonvertierung und Aufteilungslogik wieder her; die neuen Renderer-Fähigkeiten bleiben nur als Basis für künftige Erweiterungen.
+- Fehlen Typdaten bei zugehörigen Branchen, wird der Branchenname einzeilig angezeigt, um Branchentabellen mit einer ganzen `N/A`-Spalte zu vermeiden.
+- Optimiert die Informationsebenen der Web-Berichtsdetailseite und verschiebt Eingabedatenblock und Laufzeitdiagnose in einklappbare Zusatzinformationen unter dem Hauptinhalt.
+- Die Intraday-Analyse ergänzt die Abrufzeit der Echtzeit-Kursdaten, provider-Zeit, stale-, fallback- und partial/estimated-Markierungen für die Zuordnung der Eingabedatenlimits durch AnalysisContextPack.
 
-### 修复
+### Behobene Probleme
 
-- Agent 分析路径生成 AnalysisContextPack overview 前复用已落库日线分析上下文，避免日线已抓取成功仍显示 `daily_bars_missing`。
-- 注册 /api/v1/health 路由并加入认证豁免，修复该路径返回 404 以及开启 ADMIN_AUTH_ENABLED 后健康探针收到 401 的问题。
-- Windows 本地首次运行环境检查兼容非 UTF-8 控制台输出，并将 `requirements.txt` 注释改为 ASCII 以降低默认代码页下的依赖安装失败概率。
-- AlphaSift DSA 适配层默认开启 LLM 重排，后端显式请求 `use_llm=True`，选股页展示 LLM 分数、判断、覆盖率和关注项。
-- AlphaSift 嵌入 DSA 时复用 DSA 已解析的 LLM 模型、渠道和密钥配置，避免 Web 已配置 LLM 但选股 LLM 重排仍因缺少 provider key 降级。
-- AlphaSift 选股复用 DSA LLM 路由时过滤未声明的托管 provider 备选模型，并把已声明渠道模型补入回退链，避免残留 Gemini fallback 覆盖可用的 DSA 渠道。
-- AlphaSift 默认安装来源改为锁定 commit 的受信任 GitHub 地址；桌面模式自动安装不要求管理员会话，非桌面部署要求管理员认证会话，并继续限制安装来源。
-- 修复 Web 开启 AlphaSift 时先安装后写配置导致默认关闭状态无法开启的问题。
-- AlphaSift 状态与安装接口不再返回 `install_spec` 明文，仅返回 `install_spec_is_default` 等非敏感状态字段。
-- AlphaSift 状态探测区分可选依赖缺失与非预期异常，异常场景记录 warning 并返回非敏感诊断信息。
-- 调整 AlphaSift 筛选调用兼容：`screen` 以 `max_results` 为主并支持历史 `max_output` 关键词，同时允许策略透传以对齐前端手动策略参数。
-- AlphaSift Web 选股请求使用独立长超时，避免开启 LLM 重排后被通用 30 秒 API 超时提前中断。
-- 桌面端打包阶段预置 AlphaSift 并收集适配层，避免发布包运行时再要求管理员自动安装。
-- AlphaSift 自动安装仅在 `status` 诊断为 `missing_module` 时触发（仅模块缺失场景）；适配层可导入但运行时异常不再自动 `pip install`，而是返回 `424` 并保留诊断，避免把真实运行时故障掩盖为重装。
-- 收口 Web 中文界面残留英文文案与设置页 help 缺口，回测页改为中文展示，并让 Web 设置页仅展示已注册且带说明的配置项。
-- Windows 桌面端自动更新静默安装时显式复用当前安装目录，避免自定义安装目录场景下卸载旧版本文件失败。
-- Windows 安装器重试旧卸载器时对 `_?=` 安装目录参数加引号，修复旧版本安装在带空格路径时返回 2 导致自动更新失败。
-- Windows 桌面端自动更新传给 NSIS 的 `/D=` 目录参数在包含空格时自动加引号，避免安装位置注册表被截断。
-- 加固 LLM channel base_url 校验，避免解析差异导致 SSRF 绕过。
-- 修正 efinance ETF 日线 Eastmoney secid 路由，避免沪市 ETF 被按深市 quote id 查询导致日线为空。
+- Der Agent-Analysepfad nutzt vor der Erzeugung der AnalysisContextPack-Übersicht den bereits gespeicherten Tagesanalysekontext erneut, damit `daily_bars_missing` nicht mehr angezeigt wird, obwohl die Tagesdaten erfolgreich abgerufen wurden.
+- Registriert die Route /api/v1/health und nimmt sie von der Authentifizierung aus; behebt, dass dieser Pfad 404 zurückgab und Health-Proben nach Aktivierung von ADMIN_AUTH_ENABLED 401 erhielten.
+- Die Windows-Erstlauf-Umgebungsprüfung ist kompatibel mit Nicht-UTF-8-Konsolenausgabe und wandelt die `requirements.txt`-Kommentare in ASCII, um die Ausfallwahrscheinlichkeit der Abhängigkeitsinstallation unter der Standard-Codepage zu senken.
+- Die AlphaSift-DSA-Adapterebene aktiviert das LLM-Reordering standardmäßig, das Backend fordert explizit `use_llm=True` an, und die Auswahlseite zeigt LLM-Score, Urteil, Abdeckung und Beobachtungspunkte.
+- Bei der Einbettung in DSA nutzt AlphaSift die bereits aufgelösten LLM-Modelle, Kanäle und Schlüsselkonfigurationen von DSA erneut, damit das Auswahl-LLM-Reordering trotz im Web konfiguriertem LLM nicht wegen fehlender provider keys degradiert.
+- Beim Wiederverwenden des DSA-LLM-Routings filtert die AlphaSift-Auswahl nicht deklarierte Fallback-Modelle gehosteter provider und ergänzt die deklarierten Kanalmodelle in die Fallback-Kette, damit ein verbliebenes Gemini-Fallback keine verfügbaren DSA-Kanäle überschreibt.
+- Die Standard-Installationsquelle von AlphaSift wird auf eine vertrauenswürdige, auf einen Commit gesperrte GitHub-Adresse umgestellt; die automatische Installation im Desktop-Modus erfordert keine Administrator-Sitzung, nicht-desktop-Bereitstellungen erfordern eine authentifizierte Administrator-Sitzung, und die Installationsquelle bleibt weiterhin eingeschränkt.
+- Behebt, dass beim Aktivieren von AlphaSift im Web erst installiert und dann konfiguriert wurde, wodurch der standardmäßig deaktivierte Zustand nicht aktiviert werden konnte.
+- Die AlphaSift-Status- und Installationsschnittstellen geben `install_spec` nicht mehr im Klartext zurück, sondern nur nicht sensible Statusfelder wie `install_spec_is_default`.
+- Die AlphaSift-Statuserkennung unterscheidet fehlende optionale Abhängigkeiten von unerwarteten Ausnahmen; im Ausnahmefall wird eine Warnung protokolliert und nicht sensible Diagnoseinformationen werden zurückgegeben.
+- Passt die Kompatibilität der AlphaSift-Screening-Aufrufe an: `screen` verwendet primär `max_results` und unterstützt das historische Keyword `max_output`, und die Strategie kann durchgereicht werden, um die manuellen Strategieparameter des Frontends auszurichten.
+- AlphaSift-Web-Auswahlanfragen verwenden ein eigenes langes Timeout, damit sie nach dem Aktivieren des LLM-Reorderings nicht durch das generische 30-Sekunden-API-Timeout vorzeitig unterbrochen werden.
+- Die Desktop-Paketierungsphase bereitet AlphaSift vor und sammelt die Adapterebene, damit das Release-Paket zur Laufzeit keine automatische Administratorinstallation mehr anfordert.
+- Die automatische AlphaSift-Installation wird nur ausgelöst, wenn `status` als `missing_module` diagnostiziert wird (nur bei fehlendem Modul); ist die Adapterebene importierbar, aber die Laufzeit fehlerhaft, wird nicht mehr automatisch `pip install` ausgeführt, sondern `424` zurückgegeben und die Diagnose beibehalten, damit echte Laufzeitfehler nicht als Neuinstallation getarnt werden.
+- Schließt verbliebene englische Texte in der chinesischen Web-Oberfläche und Lücken in der Einstellungshilfe; die Backtest-Seite zeigt auf Chinesisch an, und die Web-Einstellungsseite zeigt nur registrierte Konfigurationseinträge mit Beschreibung.
+- Die Windows-Desktop-Automatikupdates verwenden bei der stillen Installation explizit das aktuelle Installationsverzeichnis wieder, damit das Entfernen alter Versionsdateien bei benutzerdefinierten Installationsverzeichnissen nicht fehlschlägt.
+- Beim erneuten Versuch des Windows-Installers mit dem alten Uninstaller wird der `_?=`-Installationsverzeichnisparameter in Anführungszeichen gesetzt; behebt, dass bei auf einem Pfad mit Leerzeichen installierten alten Versionen 2 zurückgegeben wurde und das automatische Update scheiterte.
+- Der an NSIS übergebene `/D=`-Verzeichnisparameter der Windows-Desktop-Automatikupdates wird bei Leerzeichen automatisch in Anführungszeichen gesetzt, damit die Installationsort-Registrierung nicht abgeschnitten wird.
+- Härtet die base_url-Prüfung von LLM-Kanälen, damit Parsing-Unterschiede kein SSRF umgehen.
+- Korrigiert das Eastmoney-secid-Routing der efinance-ETF-Tagesdaten, damit Shanghai-ETFs nicht mit der Shenzhen-Quote-ID abgefragt werden und die Tagesdaten leer bleiben.
 
-### 文档
+### Dokumentation
 
-- 明确 AlphaSift 与 LiteLLM 兼容边界：仅桥接 DSA 已声明 provider/model/base URL 为调用期注入，不对 `.env` 做 provider/model 路由迁移；回退方式为关闭 AlphaSift 并恢复原有 `LITELLM_*`/`LLM_*` 配置。
-- 明确 AlphaSift 仅复用 DSA 现有 LLM/LiteLLM 配置语义，不新增 `LITELLM_MODEL`、`OPENAI_MODEL`、`OPENAI_BASE_URL`、`LLM_TIMEOUT_SEC` 等模型语义迁移；失败提示与回退路径统一沿用既有系统配置链路，仅影响 AlphaSift 选股能力本身。
-- 明确 AlphaSift 自动安装来源锁定、`missing_module` 与运行时异常行为边界，以及 LLM/provider/base URL 与自定义通道回退路径，便于问题溯源与回滚到原有 LLM 配置。
-- 明确同股历史趋势新增模型字段为历史快照展示元数据，不影响运行时 LLM Provider/Model/Base URL 路由与配置迁移清理；回退方式为按常规发布回滚本变更。
-- 明确 #1311 的兼容性边界：渲染层仅消费分析结果 `model_used` 展示字段，未改动 `wechat/slack/feishu/telegram` sender 发送链路，不触发 provider/model/base_url 兼容迁移。
-- 明确 AlphaSift 锁定 commit 的 `alphasift.dsa_adapter` 契约依据，以及当前 DSA API/Web 调用结构的兼容边界。
-- 明确 Settings 页面对 LLM 配置仅做展示分组与字段归并，不改写或触发 LLM 迁移/回退路径；兼容现有 `LLM` 配置保存与回退语义。
-- 新增 AnalysisContextPack P0 上下文盘点。
-- 补齐告警中心 P8 文档与配置收口说明，明确 legacy JSON、高级规则、Web/API、Docker、GitHub Actions 与 Desktop 边界。
+- Klargestellt die Kompatibilitätsgrenzen von AlphaSift und LiteLLM: Nur die von DSA deklarierten provider/model/base-URL-Werte werden als Aufrufzeit-Injektion überbrückt, keine provider/model-Routing-Migration für `.env`; Rollback durch Deaktivieren von AlphaSift und Wiederherstellen der ursprünglichen `LITELLM_*`/`LLM_*`-Konfiguration.
+- Klargestellt, dass AlphaSift nur die bestehende LLM/LiteLLM-Konfigurationssemantik von DSA wiederverwendet und keine Modellsemantikmigration für `LITELLM_MODEL`, `OPENAI_MODEL`, `OPENAI_BASE_URL`, `LLM_TIMEOUT_SEC` usw. einführt; Fehlerhinweise und Fallback-Pfade folgen einheitlich der bestehenden Systemkonfigurationskette und betreffen nur die AlphaSift-Auswahlfähigkeit selbst.
+- Klargestellt die Quellensperre der automatischen AlphaSift-Installation, die Grenzen von `missing_module` und Laufzeitausnahme-Verhalten sowie die Fallback-Pfade von LLM/provider/base URL und benutzerdefinierten Kanälen, um die Problemanalyse und den Rollback auf die ursprüngliche LLM-Konfiguration zu erleichtern.
+- Klargestellt, dass die neuen Modellfelder der Historien-Trends derselben Aktie Metadaten der historischen Snapshot-Anzeige sind und weder das Laufzeit-LLM-Provider/Model/Base-URL-Routing noch die Konfigurationsmigrations-Bereinigung beeinflussen; Rollback durch den regulären Release-Rollback dieser Änderung.
+- Klargestellt die Kompatibilitätsgrenzen von #1311: Die Rendering-Ebene konsumiert nur das Anzeigefeld `model_used` des Analyseergebnisses, die Sende-Kette der `wechat/slack/feishu/telegram`-Sender bleibt unverändert und es wird keine provider/model/base_url-Kompatibilitätsmigration ausgelöst.
+- Klargestellt die Vertragsgrundlage von `alphasift.dsa_adapter` bei gesperrtem AlphaSift-Commit sowie die Kompatibilitätsgrenzen der aktuellen DSA-API/Web-Aufrufstruktur.
+- Klargestellt, dass die Settings-Seite LLM-Konfigurationen nur in Anzeigegruppen und Feldzusammenführungen darstellt und weder LLM-Migrations-/Rollback-Pfade umschreibt noch auslöst; kompatibel mit der bestehenden `LLM`-Konfigurationsspeicherung und -Rückfallsemantik.
+- Neue Kontextinventur für AnalysisContextPack P0.
+- Vervollständigt die P8-Dokumentation des Alarmzentrums und die Konfigurationsabschluss-Erläuterungen; klargestellt die Grenzen von legacy JSON, erweiterten Regeln, Web/API, Docker, GitHub Actions und Desktop.
 
-### 测试
+### Tests
 
-- 同步更新 `llmProviderTemplates`、LiteLLM fallback pricing 与 MiniMax 预设相关单测，断言新默认模型。
-- 补充 ETF 日线数据源路由、输入变体、fallback 与 MA 字段回归覆盖。
+- Aktualisiert synchron die Unit-Tests zu `llmProviderTemplates`, LiteLLM-fallback-pricing und MiniMax-Presets und prüft das neue Standardmodell.
+- Ergänzt Regressionsabdeckung für ETF-Tagesdatenquellen-Routing, Eingabevarianten, Fallback und MA-Felder.
 
 ### chore
 
-- 新增通知报告渠道能力画像、PreparedMessage 与结构感知 Markdown 分片基础设施，为 #1311 全渠道渲染适配打底。
-- 预置企业微信、飞书、Telegram、钉钉、Slack 平台 renderer 元数据，暂不改变默认推送报告入口和可见版式。
+- Neue Kanal-Fähigkeitsprofile für Benachrichtigungsberichte, PreparedMessage und die strukturbewusste Markdown-Aufteilungs-Infrastruktur als Grundlage für die #1311-Kanalübergreifende Render-Adaption.
+- Bereitet Renderer-Metadaten für WeCom, Feishu, Telegram, DingTalk und Slack vor, ohne den Standard-Push-Berichtseinstieg und das sichtbare Layout vorerst zu ändern.
 
 ## [3.19.0] - 2026-05-29
 
-### 新功能
+### Neue Funktionen
 
-- 落地 #1391 Phase 1 运行诊断最小链路：任务/SSE 追加 trace_id，并记录日线与实时行情 ProviderRun 快照。
-- 告警中心新增 P7 大盘红绿灯结构化规则，支持 `market_light_status` 与 `market_light_score_drop` 并复用现有 worker、触发历史、通知和冷却链路。
-- 落地 #1391 Phase 2 运行诊断摘要：生成用户可读 RunDiagnosticSummary，提供历史报告诊断 API 与脱敏复制文本。
-- 落地 #1391 Phase 3 运行诊断可见性：报告详情和任务面板默认折叠展示运行状态、trace 与可复制排障信息；后端通过 `api/v1/history/{record_id}/diagnostics` 与 `context_snapshot.diagnostics` 提供历史链路回填。
-- 新增 AnalysisContextPack P1 内部契约与脱敏序列化测试。
-- 新增 AnalysisContextPack P2 builder，从普通分析 pipeline 已有 artifacts 组装内部上下文包。
-- 问股新增默认关闭的可见对话上下文压缩，支持 Web 开关、Agent 高级 preset、滚动摘要和最近轮次原文保护，降低长会话 token 消耗。
-- 股票自动补全索引默认支持从 GitHub main 远程刷新并缓存到本地，Web/CLI 分析入口失败时自动降级到内置索引，降低摘帽和更名后旧简称污染分析的概率。
-- 普通分析与 Agent 运行时 Prompt 接入 AnalysisContextPack 低敏摘要，保持 history/API/Web 输出兼容。
+- Setzt die minimale Laufzeitdiagnose-Kette von #1391 Phase 1 um: task/SSE ergänzen trace_id und zeichnen ProviderRun-Snapshots für Tagesdaten und Echtzeit-Kursdaten auf.
+- Das Alarmzentrum ergänzt P7 strukturierte Regeln für die Markt-Ampel, unterstützt `market_light_status` und `market_light_score_drop` und nutzt den bestehenden worker, die Auslösehistorie, Benachrichtigungen und die Cooling-Kette erneut.
+- Setzt die Laufzeitdiagnose-Zusammenfassung von #1391 Phase 2 um: generiert eine benutzerlesbare RunDiagnosticSummary, stellt die Diagnose-API für Historienberichte und maskierten Kopiertext bereit.
+- Setzt die Laufzeitdiagnose-Sichtbarkeit von #1391 Phase 3 um: Berichtsdetails und Task-Panel zeigen standardmäßig eingeklappt Laufzeitstatus, trace und kopierbare Fehlerbehebungsinformationen; das Backend stellt über `api/v1/history/{record_id}/diagnostics` und `context_snapshot.diagnostics` die Historien-Rückfüllung bereit.
+- Neue interne Vertrags- und Maskierungs-Serialisierungstests für AnalysisContextPack P1.
+- Neuer AnalysisContextPack-P2-Builder, der aus den vorhandenen Artefakten der normalen Analyse-Pipeline ein internes Kontextpaket zusammenstellt.
+- Der Fragedienst ergänzt eine standardmäßig deaktivierte sichtbare Dialogkontext-Kompression mit Web-Schalter, erweiterten Agent-Presets, scrollender Zusammenfassung und Schutz der Originaltexte der letzten Runden, um den Tokenverbrauch langer Sitzungen zu senken.
+- Der Index für die Aktien-Autovervollständigung unterstützt standardmäßig das Aktualisieren vom GitHub-main-Remote mit lokalem Cache; schlägt der Web/CLI-Analyseeinstieg fehl, wird automatisch auf den integrierten Index degradiert, um die Verschmutzung der Analyse durch alte Kurznamen nach Delisting und Umbenennung zu senken.
+- Normale Analyse und Agent-Laufzeit-Prompts binden die wenig sensible AnalysisContextPack-Zusammenfassung ein und bleiben kompatibel mit der history/API/Web-Ausgabe.
 
-### 改进
+### Verbesserungen
 
-- `scripts/fetch_tushare_stock_list.py` 可对 A 股中带 `XD`/`XR`/`DR`/`N`/`C` 前缀的名称进行回填修正，供自动补全刷新流程默认使用。
-- Web 路由页面改为按需加载，降低首包体积并增加路由加载失败恢复提示。
-- Web 完整报告 Markdown 抽屉改为按需加载。
-- 新增市场阶段推断基线并明确盘前、盘中、午休、临近收盘、盘后和非交易日语义。
-- 新增运行态市场阶段上下文构造与降级测试。
-- 设置页配置帮助阶段性补齐 Web 设置页实际展示/可配置字段的中英双语文案，覆盖 Agent、回测、报告、通知路由、系统运行时、AI legacy、数据源和通知高级配置。
-- P2-min：LLM Prompt 注入市场阶段上下文。
+- `scripts/fetch_tushare_stock_list.py` kann Namen von A-Aktien mit den Präfixen `XD`/`XR`/`DR`/`N`/`C` per Rückfüllung korrigieren und wird vom Aktualisierungsablauf der Autovervollständigung standardmäßig verwendet.
+- Die Web-Routenseite wird auf Bedarfsladung umgestellt, senkt das erste Paketvolumen und ergänzt einen Wiederherstellungshinweis bei fehlgeschlagenem Routenladen.
+- Der Markdown-Drawer des vollständigen Web-Berichts wird auf Bedarfsladung umgestellt.
+- Neue Marktphasen-Inferenz-Baseline mit klarer Semantik für Vorbörse, Handel, Mittagspause, nahe Handelsschluss, Nachbörse und Nicht-Handelstage.
+- Neue Tests für Laufzeit-Marktphasen-Kontextaufbau und -Degradation.
+- Die Konfigurationshilfe der Einstellungsseite vervollständigt phasenweise die chinesischen und englischen Texte der tatsächlich angezeigten/konfigurierbaren Felder der Web-Einstellungsseite, abgedeckt sind Agent, Backtest, Bericht, Benachrichtigungs-Routing, System-Laufzeit, AI-legacy, Datenquellen und erweiterte Benachrichtigungskonfiguration.
+- P2-min: Der LLM-Prompt injiziert den Marktphasen-Kontext.
 
-### 修复
+### Behobene Probleme
 
-- 股票自动补全索引生成缺少 `pypinyin` 时改为直接失败，避免写出缺失拼音字段的降级索引。
-- 归一腾讯实时行情成交量为股口径，避免量能变化倍数被放大并误导分析报告。
-- Docker 默认部署移除 `.env` 单文件挂载，避免 WebUI 保存配置时因 `os.replace` 更新挂载点触发 `Device or resource busy`。
-- 收敛 #1391 Phase 0 A 股代码归属边界：补齐 `SH`/`SZ` 前缀场景的归属一致性，明确 `data_provider/baostock_fetcher.py`、`data_provider/pytdx_fetcher.py`、`data_provider/tushare_fetcher.py` 的本轮修复范围。
-- 修复 `STOCK_LIST` 使用裸 A 股代码时 Baostock 等数据源 fallback 的内部格式转换，保持用户配置继续使用 6 位股票编号。
-- Windows 桌面端自动更新在用户确认重启安装后改为静默执行安装器，并在停止内置后端后清理进程引用，降低安装器提示“每日股票分析无法关闭”的概率。
-- macOS 桌面端将运行时配置迁移到用户数据目录，并在旧 `.app` 包内文件仍可访问时迁移 `.env`、数据库和日志，避免后续替换升级后重新配置。
-- 恢复 Agent/历史兼容快照中的关联板块与板块联动字段提取，修复新版首页报告缺少“板块联动”的回归问题。
-- 修正 Web 设置帮助中 legacy 告警 JSON 字段名与静默时段投递语义说明。
-- 修复 Web 中文设置页在数据源、通知、系统与 Agent 区域的配置标题、说明和关键下拉选项漏翻问题。
-- 修复问股会话切换和首页任务重连后可能残留 Agent/分析任务进行中状态的问题。
-- 问股 single-agent 新增 provider-aware trace 分轨，跨轮保留 DeepSeek V4 thinking + tool-call 的 `reasoning_content` 与工具协议材料。
-- 为 Akshare 新浪/腾讯 A 股历史兜底接口增加调用级超时，并补齐 Tushare `605xxx` 沪市代码路由回归测试，避免定时分析因数据源无响应而挂起。
-- 将 `exchange-calendars` 依赖下限提升到 `4.13.0`，避免 pandas 3 环境导入交易日历时因 Timedelta 单位 `T` 失效导致分析失败。
-- 交互式命令（钉钉会话、飞书会话、Telegram）触发的分析结果只回到来源会话，不再同时广播到静态通知渠道。
-- 适配 Longbridge OAuth 2.0 认证与 token 缓存恢复，避免新后台无 Legacy Access Token 时长桥数据源被误判为未配置。
-- Longbridge OAuth 路径在当前 SDK 不支持 `OAuthBuilder` / `Config.from_oauth` 时明确日志降级，避免 Linux/Docker 仅可安装旧 SDK 时构建失败。
-- 兼容 YFinance 日线返回未命名日期索引的场景，避免标准化后缺少 `date` 列导致美股日线 fallback 中断。
+- Die Indexgenerierung der Aktien-Autovervollständigung schlägt ohne `pypinyin` jetzt direkt fehl, statt einen degradierten Index mit fehlenden Pinyin-Feldern zu schreiben.
+- Normalisiert das Handelsvolumen der Tencent-Echtzeit-Kursdaten auf die Aktien-Definition, damit Verstärkungsfaktoren der Volumenveränderung nicht überhöht werden und Analyseberichte nicht irreführen.
+- Die Docker-Standardbereitstellung entfernt das Einzeldatei-Mount von `.env`, damit das Speichern der Konfiguration in der WebUI über `os.replace` am Mount-Punkt nicht `Device or resource busy` auslöst.
+- Konvergiert die A-Aktien-Code-Zuordnung von #1391 Phase 0: vervollständigt die Zuordnungskonsistenz für die `SH`/`SZ`-Präfixe und stellt den Reparaturumfang dieser Runde für `data_provider/baostock_fetcher.py`, `data_provider/pytdx_fetcher.py` und `data_provider/tushare_fetcher.py` klar.
+- Behebt die interne Formatkonvertierung der Fallbacks von Datenquellen wie Baostock bei nackten A-Aktien-Codes in `STOCK_LIST`, damit die Benutzerkonfiguration weiterhin 6-stellige Aktiennummern verwendet.
+- Die Windows-Desktop-Automatikupdates führen den Installer nach bestätigtem Neustart-Installieren still aus und bereinigen nach dem Stoppen des eingebetteten Backends die Prozessreferenzen, um die Wahrscheinlichkeit der Installer-Meldung „Daily Stock Analysis kann nicht geschlossen werden" zu senken.
+- Die macOS-Desktop-Version migriert die Laufzeitkonfiguration in das Benutzerdatenverzeichnis und migriert `.env`, Datenbank und Logs, solange die Dateien im alten `.app`-Paket noch zugänglich sind, damit nach der Ersatz-Upgrades keine Neukonfiguration nötig ist.
+- Stellt die Extraktion der zugehörigen Branchen und Branchenverknüpfungsfelder in den Agent-/Historie-Kompatibilitätssnapshots wieder her und behebt die Regression, dass der neuen Startseite der Berichte der Abschnitt „Branchenverknüpfung" fehlte.
+- Korrigiert die Feldnamen des legacy-Alarm-JSON und die Zustellsemantik des Stummzeitraums in der Web-Einstellungshilfe.
+- Behebt fehlende Übersetzungen von Konfigurationstiteln, Erläuterungen und wichtigen Dropdown-Optionen der chinesischen Web-Einstellungsseite in den Bereichen Datenquelle, Benachrichtigung, System und Agent.
+- Behebt, dass nach dem Sitzungswechsel im Fragedienst und dem Wiederverbinden von Startseiten-Tasks ein verbleibender „Agent/Analysetask läuft"-Status auftreten kann.
+- Der single-agent des Fragediensts ergänzt eine provider-aware trace-Trennung und behält über Runden hinweg `reasoning_content` und Tool-Protokollmaterial von DeepSeek-V4-thinking + Tool-Aufrufen.
+- Fügt den Sina/Tencent-A-Aktien-Historie-Fallback-Schnittstellen von Akshare ein Aufruf-Timeout hinzu und ergänzt Regressionsumd tests für die Shanghai-Coderoute `605xxx` von Tushare, damit geplante Analysen nicht wegen nicht reagierender Datenquellen hängen bleiben.
+- Hebt die Untergrenze der `exchange-calendars`-Abhängigkeit auf `4.13.0`, damit der Import des Handelskalenders in pandas-3-Umgebungen nicht wegen der ungültigen Timedelta-Einheit `T` fehlschlägt und die Analyse scheitert.
+- Analyseergebnisse, die von interaktiven Befehlen (DingTalk-Sitzungen, Feishu-Sitzungen, Telegram) ausgelöst wurden, gehen nur an die Quellsitzung zurück und werden nicht mehr gleichzeitig an statische Benachrichtigungskanäle übertragen.
+- Passt die Longbridge-OAuth-2.0-Authentifizierung und die Token-Cache-Wiederherstellung an, damit die Langbridge-Datenquelle ohne Legacy Access Token in neuen Backends nicht fälschlich als nicht konfiguriert eingestuft wird.
+- Der Longbridge-OAuth-Pfad protokolliert bei aktuellen SDKs ohne Unterstützung von `OAuthBuilder` / `Config.from_oauth` eine klare Degradierung, damit der Build auf Linux/Docker mit nur installierbarem alten SDK nicht fehlschlägt.
+- Kompatibel mit dem Szenario, in dem YFinance-Tagesdaten einen unbenannten Datumsindex zurückgeben, damit nach der Normalisierung eine fehlende `date`-Spalte den US-Aktien-Tages-Fallback nicht unterbricht.
 
-### 文档
+### Dokumentation
 
-- 新增 #1391 Phase 0 运行诊断契约文档，明确 trace_id、诊断摘要、关键链路范围与脱敏/fail-open/retention 边界。
-- 补齐告警中心 P8 文档与配置收口说明，明确 legacy JSON、高级规则、Web/API、Docker、GitHub Actions 与 Desktop 边界。
-- 说明本次桌面修复仅覆盖 Windows NSIS 更新安装链路与后端进程生命周期清理；未改动设置项保存/模型运行时清理语义。移除此前误入的 `docker/Dockerfile` `npm registry` 变更，恢复部署构建与更新修复的职责隔离。
-- 新增 AnalysisContextPack P0 上下文盘点，明确字段质量状态、现有状态映射和首版 pack 边界。
-- 明确 #1391 Phase 2 的结构化检测告警为非配置迁移信号：`agent_max_steps`/`agent_orchestrator_timeout_s` 非法值会 fallback 至默认并产生日志告警，新增诊断链路仅新增 `context_snapshot`/`RunDiagnosticSummary` 读写字段，不改写 `litellm_model`、`agent_litellm_model`、`openai_base_url`、LLM channel 路由或配置迁移语义。
-- 补充 #1391 Phase 3 兼容性说明：记录后端诊断持久化、历史查询与通知回写链路变更边界与回滚策略，并补齐后端门禁级验证要求。
+- Neues Vertragsdokument für die #1391-Phase-0-Laufzeitdiagnose, das trace_id, Diagnosezusammenfassung, Umfang der Schlüsselpipelines sowie die Grenzen von Maskierung/fail-open/Retention klarstellt.
+- Vervollständigt die P8-Dokumentation des Alarmzentrums und die Konfigurationsabschluss-Erläuterungen; klargestellt die Grenzen von legacy JSON, erweiterten Regeln, Web/API, Docker, GitHub Actions und Desktop.
+- Erläutert, dass dieser Desktop-Fix nur die Windows-NSIS-Update-Installationskette und die Bereinigung des Backend-Prozesslebenszyklus abdeckt; die Speichersemantik der Einstellungseinträge und die Laufzeitbereinigung der Modelle bleiben unverändert. Entfernt die versehentlich eingefügte `npm registry`-Änderung in `docker/Dockerfile` und stellt die Verantwortungstrennung zwischen Bereitstellungs-Build und Update-Fix wieder her.
+- Neue Kontextinventur für AnalysisContextPack P0 mit klarem Feldqualitätsstatus, bestehendem Statusmapping und den Grenzen des Pakets der ersten Version.
+- Klargestellt, dass die strukturierten Erkennungswarnungen von #1391 Phase 2 kein Konfigurationsmigrationssignal sind: ungültige Werte von `agent_max_steps`/`agent_orchestrator_timeout_s` fallen auf den Standard zurück und erzeugen eine Log-Warnung, die neue Diagnosekette ergänzt nur die Lese-/Schreibfelder `context_snapshot`/`RunDiagnosticSummary` und schreibt weder `litellm_model`, `agent_litellm_model`, `openai_base_url`, das LLM-Kanal-Routing noch die Konfigurationsmigrationssemantik um.
+- Ergänzt die Kompatibilitätserläuterung von #1391 Phase 3: protokolliert die Änderungsgrenzen und die Rollback-Strategie der Backend-Diagnose-Persistierung, der Historienabfrage und der Benachrichtigungs-Rückkette und vervollständigt die Gate-Verifikationsanforderungen des Backends.
 
-### 测试
+### Tests
 
-- 收敛 #1391 Phase 3 后端/API 与 Web 回归检查：`./scripts/ci_gate.sh`、`test_pipeline_market_phase_context.py`、`test_analysis_api_contract.py`、`test_analysis_history.py`、`npm run lint`、`npm run build`。
-- 执行 `python -c "import exchange_calendars as xcals; xcals.get_calendar('XSHG'); print('ok')"` 通过验证，以覆盖导入与交易日历初始化兼容性。
+- Konvergiert die Backend-/API- und Web-Regressionsprüfungen von #1391 Phase 3: `./scripts/ci_gate.sh`, `test_pipeline_market_phase_context.py`, `test_analysis_api_contract.py`, `test_analysis_history.py`, `npm run lint`, `npm run build`.
+- Ausführen von `python -c "import exchange_calendars as xcals; xcals.get_calendar('XSHG'); print('ok')"`, das erfolgreich durchläuft, um die Import- und Handelskalender-Initialisierungskompatibilität abzudecken.
 
 ## [3.18.0] - 2026-05-21
 
-### 发布亮点
+### Release-Highlights
 
-- feat: 告警中心扩展到 P2-P6，补齐后台评估、真实通知结果、业务冷却、技术指标规则，以及自选股 / 持仓 / 账户联动规则。
-- feat: 个股分析支持策略选择，新增热点题材、事件驱动、成长质量和预期重估策略，并为 HK/US 报告补充基本面、财务摘要、股东回报和关联板块。
-- feat: 新增 Finnhub / AlphaVantage 美股数据源适配器，扩展美股日线 failover 链，提升美股行情获取韧性。
-- fix: 修复桌面端发布打包、分析状态接口、AlphaVantage 涨跌幅、持仓实时估值、告警历史去重、数据库冷启动和 fallback pricing 注册等稳定性问题。
+- feat: Das Alarmzentrum wird auf P2-P6 erweitert und vervollständigt Hintergrundbewertung, echte Benachrichtigungsergebnisse, Geschäftskühlung, Technische-Indikatoren-Regeln sowie verknüpfte Regeln für Watchlist / Position / Konto.
+- feat: Die Einzelaktienanalyse unterstützt die Strategiewahl, ergänzt die Strategien Hotspot-Themen, Ereignisgetrieben, Wachstumsqualität und Erwartungs-Neubewertung und fügt für HK/US-Berichte Fundamentaldaten, Finanzzusammenfassung, Aktionärsrendite und zugehörige Branchen hinzu.
+- feat: Neue Adapter für die US-Aktien-Datenquellen Finnhub / AlphaVantage, erweitert die US-Aktien-Tages-Failover-Kette und erhöht die Robustheit des US-Kursabrufs.
+- fix: Behebt Stabilitätsprobleme bei der Desktop-Release-Paketierung, der Analyse-Status-Schnittstelle, der AlphaVantage-Prozentänderung, der Echtzeitbewertung von Positionen, der Deduplizierung der Alarmhistorie, dem Datenbank-Kaltstart und der Registrierung des fallback pricing.
 
 ### What's Changed
 
@@ -631,9 +585,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [3.17.1] - 2026-05-16
 
-### 发布亮点
+### Release-Highlights
 
-- fix: 桌面端 Windows / macOS 打包脚本显式关闭 electron-builder 自动发布，避免 tag 构建时因缺少 `GH_TOKEN` 在本地打包完成后失败；Release workflow 继续负责上传和发布产物。
+- fix: Die Windows-/macOS-Paketierskripte des Desktops deaktivieren explizit die automatische electron-builder-Veröffentlichung, damit Tag-Builds nach dem lokalen Paketieren nicht wegen fehlender `GH_TOKEN` fehlschlagen; der Release-Workflow ist weiterhin für Upload und Veröffentlichung der Artefakte zuständig.
 
 ### What's Changed
 
@@ -641,18 +595,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [3.17.0] - 2026-05-16
 
-### 发布亮点
+### Release-Highlights
 
-- feat: 新增 Alert API MVP，支持告警规则 CRUD、启停、一次性测试以及触发/通知结果查询，首版覆盖 `price_cross` / `price_change_percent` / `volume_spike` 并保持 legacy 配置兼容。
-- feat: 通知网关新增 ntfy 与 Gotify 一等渠道，并补齐通知降噪、静态渠道隔离、诊断、Web 测试和 GitHub Actions env 对照校验。
-- feat: Windows 桌面安装版接入自动更新安装链路，支持后台下载、确认重启安装、运行时文件备份/恢复和发布产物元数据校验。
-- improve: 大盘复盘新增概念排行、人气股、涨停池等底层数据源，支持指数涨跌颜色语义配置，并将复盘结果写入历史记录。
-- improve: Web 设置页支持 `.env` 配置备份导入/导出和通知/Agent 区域局部错误兜底；报告新增 `REPORT_SHOW_LLM_MODEL` 开关控制模型信息展示。
-- improve: Docker 启动入口自动修复挂载目录权限并在日志目录不可写时降级到控制台，减少普通部署的手动修复步骤。
-- fix: 数据源缺凭据或连接失败时更温和降级，Longbridge / Pytdx 加入冷却，资金流缺失时避免输出高置信买入结论。
-- fix: 分析与报告链路兼容 OpenAI-compatible `content_blocks` 响应，归一策略价格字段，并修复大盘复盘滚动和历史记录丢失问题。
-- docs: 补齐通知、告警中心、桌面打包、README / 指南和 PR title 治理说明，明确多处配置兼容边界与回滚路径。
-- test: 增加 Alert API、通知降噪/路由、Docker entrypoint、数据源预取、桌面更新链路和分析历史等回归覆盖。
+- feat: Neues Alert-API-MVP mit CRUD für Alarmregeln, Aktivieren/Deaktivieren, einmaligem Test sowie Abfrage von Auslöse-/Benachrichtigungsergebnissen; die erste Version deckt `price_cross` / `price_change_percent` / `volume_spike` ab und bleibt kompatibel zur legacy-Konfiguration.
+- feat: Der Benachrichtigungs-Gateway ergänzt ntfy und Gotify als erstklassige Kanäle sowie Benachrichtigungs-Entrauschung, statische Kanalisolation, Diagnose, Web-Tests und die Abgleichprüfung der GitHub-Actions-env.
+- feat: Die Windows-Desktop-Installationsversion bindet die automatische Update-Installationskette an, mit Hintergrund-Download, bestätigtem Neustart-Installieren, Laufzeitdatei-Backup/-Wiederherstellung und Metadatenprüfung der Release-Artefakte.
+- improve: Die Marktreview ergänzt Basisdatenquellen wie Konzept-Ranking, beliebte Aktien und Limit-up-Pool, unterstützt die Konfiguration der Farb-Semantik für Indexanstiege/-rückgänge und schreibt die Review-Ergebnisse in die Historienaufzeichnungen.
+- improve: Die Web-Einstellungsseite unterstützt Backup-Import/-Export der `.env`-Konfiguration und lokale Fehlerfallbacks der Bereiche Benachrichtigung/Agent; Berichte ergänzen den Schalter `REPORT_SHOW_LLM_MODEL` zur Steuerung der Modellinformationsanzeige.
+- improve: Der Docker-Starteinstieg repariert automatisch die Berechtigungen der gemounteten Verzeichnisse und degradiert bei nicht beschreibbarem Log-Verzeichnis auf die Konsole, um manuelle Reparaturschritte normaler Bereitstellungen zu reduzieren.
+- fix: Sanftere Degradierung bei fehlenden Credentials oder Verbindungsfehlern der Datenquelle, Longbridge / Pytdx werden gekühlt, und bei fehlendem Kapitalfluss werden keine Hochkonfidenz-Kauf-Schlussfolgerungen ausgegeben.
+- fix: Die Analyse- und Berichtskette ist kompatibel mit OpenAI-compatible-`content_blocks`-Antworten, normalisiert die Preis-Felder der Strategie und behebt Probleme beim Scrollen der Marktreview und beim Verlust von Historienaufzeichnungen.
+- docs: Vervollständigt Benachrichtigung, Alarmzentrum, Desktop-Paketierung, README / Leitfaden und die Governance-Erläuterungen für PR-Titel; stellt mehrere Konfigurationskompatibilitätsgrenzen und Rollback-Pfade klar.
+- test: Erhöht die Regressionsabdeckung für Alert-API, Benachrichtigungs-Entrauschung/-Routing, Docker-Entrypoint, Datenquellen-Prefetch, Desktop-Update-Kette und Analysehistorie.
 
 ### What's Changed
 
@@ -668,18 +622,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [3.16.0] - 2026-05-10
 
-### 发布亮点
+### Release-Highlights
 
-- feat: Web 首页新增“大盘复盘”触发入口、任务轮询与完成后报告直出；首次启动配置状态可提示缺口并引导到系统设置。
-- feat: 新增通知路由策略，支持按 report、alert、system_error 将通知收窄到指定渠道；Web 设置页支持通知渠道一键测试。
-- feat: 系统设置页新增配置项帮助入口与多语言帮助文案基础设施，首批覆盖自选股、LLM 主模型、LLM 渠道、飞书 Webhook 与 WebUI 监听地址。
-- improve: 大盘复盘 API、CLI、Bot 共用 `build_market_review_runtime` 装配路径，补齐 `litellm_model` / `llm_model_list` 与 legacy key 回退说明。
-- improve: 个股报告操作建议结合支撑/压力、量能、筹码与主力资金流校准，减少买入/卖出剧烈切换，并补强 Agent 决策兜底。
-- improve: Docker 镜像支持非 root 用户运行，LiteLLM 依赖约束放宽到后续安全 1.x 修复版本。
-- fix: 修正 LLM 渠道测试中 `Model disabled`、provider blocked 等错误分类，避免被误报为网络异常。
-- fix: 港股日线跳过不支持港股的内置历史数据源；北交所 `BJ` 前缀与 `.BJ` 后缀代码校验保持一致。
-- fix: Web 大盘复盘按钮可观测性、Windows fallback 锁进程探测和催化线索展示更稳健。
-- docs: 新增文档中心与配置帮助维护说明，清理 README、完整指南与配置指南中的临时 PR/文档同步说明。
+- feat: Die Web-Startseite ergänzt den Auslöse-Einstieg „Marktreview", Task-Polling und die direkte Berichtsausgabe nach Abschluss; der Konfigurationsstatus beim ersten Start weist auf Lücken hin und leitet zur Systemeinstellung.
+- feat: Neue Benachrichtigungs-Routingstrategie, die Benachrichtigungen nach report, alert, system_error auf festgelegte Kanäle einschränkt; die Web-Einstellungsseite unterstützt Ein-Klick-Tests der Benachrichtigungskanäle.
+- feat: Die Systemeinstellungsseite ergänzt einen Hilfe-Einstieg für Konfigurationseinträge und die mehrsprachige Hilfe-Text-Infrastruktur; die erste Charge deckt Watchlist, LLM-Hauptmodell, LLM-Kanal, Feishu-Webhook und die WebUI-Lauschadresse ab.
+- improve: Marktreview-API, CLI und Bot teilen den Assembly-Pfad `build_market_review_runtime` und vervollständigen die Erläuterungen zum Fallback von `litellm_model` / `llm_model_list` und legacy keys.
+- improve: Die Aktionsempfehlungen des Einzelaktienberichts kalibrieren mit Unterstützung/Widerstand, Volumen, Chips und Hauptkraft-Kapitalfluss, reduzieren heftige Kauf-/Verkaufswechsel und stärken den Agent-Entscheidungs-Fallback.
+- improve: Docker-Images unterstützen den Betrieb als Nicht-root-Benutzer, und die LiteLLM-Abhängigkeitsbeschränkung wird auf spätere sichere 1.x-Reparaturversionen gelockert.
+- fix: Korrigiert die Fehlerklassifizierung von `Model disabled`, provider blocked usw. in LLM-Kanaltests, damit sie nicht fälschlich als Netzwerkanomalien gemeldet werden.
+- fix: Die Hongkong-Tagesdaten überspringen eingebaute Historien-Datenquellen, die Hongkong-Aktien nicht unterstützen; die `BJ`-Präfix- und `.BJ`-Suffix-Codeprüfung der Pekinger Börse wird konsistent gehalten.
+- fix: Die Beobachtbarkeit des Web-Marktreview-Buttons, die Windows-Fallback-Sperrprozesserkennung und die Anzeige von Katalysator-Hinweisen werden robuster.
+- docs: Neue Wartungshinweise für das Dokumentationszentrum und die Konfigurationshilfe; bereinigt temporäre PR-/Dokumentationssynchronisations-Hinweise in README, vollständigem Leitfaden und Konfigurationsleitfaden.
 
 ### What's Changed
 
@@ -696,429 +650,429 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [3.15.0] - 2026-05-05
 
-### 发布亮点
+### Release-Highlights
 
-- LLM 渠道配置体验继续升级：新增 Anspire OpenAI-compatible 网关接入，并补齐常用服务商预设、官方来源、能力标签、配置注意事项和 GitHub Actions 显式映射。
-- Web LLM 配置检测更可诊断：细分错误 reason，并支持用户显式触发 JSON、tools、vision、stream 运行时 smoke。
-- LLM 运行时配置清理更稳健：只清理托管 provider 的失效运行时选择，并保留 `cohere/*`、`google/*`、`xai/*` 等直连 provider 兼容语义。
-- 通知与 Bot 状态可观测性增强：自定义 Webhook 支持 JSON body 模板，Bot `/status` 展示更完整的 LLM、Agent 与通知渠道状态。
-- 大盘复盘、实时告警、Agent weak 兜底和持仓估值继续补强，降低默认值覆盖、缺价污染和配置排障成本。
+- Die LLM-Kanal-Konfigurationserfahrung wird weiter aufgewertet: neue Anbindung des Anspire-OpenAI-compatible-Gateways sowie vollständige Presets gängiger Anbieter, offizielle Quellen, Fähigkeitslabels, Konfigurationshinweise und explizite GitHub-Actions-Zuordnungen.
+- Die Web-LLM-Konfigurationserkennung ist besser diagnostizierbar: verfeinerte Fehler-reasons und Benutzer-ausgelöste Laufzeit-Smokes für JSON, tools, vision und stream.
+- Die Bereinigung der LLM-Laufzeitkonfiguration wird robuster: nur ungültige Laufzeitauswahlen gehosteter provider werden bereinigt, die Kompatibilitätssemantik von Direktverbindungs-providern wie `cohere/*`, `google/*`, `xai/*` bleibt erhalten.
+- Erhöhte Beobachtbarkeit von Benachrichtigung und Bot-Status: Benutzerdefinierte Webhooks unterstützen JSON-body-Vorlagen, Bot `/status` zeigt vollständigere LLM-, Agent- und Benachrichtigungskanal-Status.
+- Marktreview, Echtzeit-Alarme, Agent-weak-Fallback und Positionsbewertung werden weiter gestärkt, um Kosten für Standardwert-Überschreibungen, Fehlpreis-Verschmutzung und Konfigurations-Fehlerbehebung zu senken.
 
-### 新功能
+### Neue Funktionen
 
-- 支持 `ANSPIRE_API_KEYS` 默认接入 Anspire OpenAI-compatible 大模型网关，并在 LLM 渠道编辑器补充 Anspire Open 预设。
-- 自定义 Webhook 支持 `CUSTOM_WEBHOOK_BODY_TEMPLATE` JSON body 模板，便于适配 AstrBot、NapCat 和自建推送服务。
-- 大盘复盘结构化区块新增大盘红绿灯结论，基于盘面温度输出 green/yellow/red、核心原因和操作建议。
-- EventMonitor 支持 `price_change_percent` 涨跌幅阈值规则，可按上涨或下跌方向触发实时告警。
-- Web LLM 渠道编辑器新增常用服务商配置模板与预设，覆盖 MiniMax、火山方舟、OpenAI、Claude、Gemini、Kimi、Qwen、GLM、豆包等入口。
+- Unterstützt über `ANSPIRE_API_KEYS` die Standardanbindung des Anspire-OpenAI-compatible-LLM-Gateways und ergänzt im LLM-Kanal-Editor das Anspire-Open-Preset.
+- Benutzerdefinierte Webhooks unterstützen die JSON-body-Vorlage `CUSTOM_WEBHOOK_BODY_TEMPLATE` für die Anpassung an AstrBot, NapCat und selbst gehostete Push-Dienste.
+- Der strukturierte Marktreview-Block ergänzt die Markt-Ampel-Schlussfolgerung, die basierend auf der Markttemperatur green/yellow/red, Kernursachen und Aktionsempfehlungen ausgibt.
+- EventMonitor unterstützt die Schwellenregel `price_change_percent` für Prozentänderungen und kann Echtzeit-Alarme nach Anstiegs- oder Rückgangsrichtung auslösen.
+- Der Web-LLM-Kanal-Editor ergänzt Konfigurationsvorlagen und Presets gängiger Anbieter, abgedeckt sind Einstiege wie MiniMax, Volcano Ark, OpenAI, Claude, Gemini, Kimi, Qwen, GLM und Doubao.
 
-### 改进
+### Verbesserungen
 
-- Web LLM 配置检测补充细分错误分类，并新增显式触发的 JSON/tools/vision/stream 运行时 smoke；默认测试和保存流程不变，检测结果仅作为当前配置的一次 best-effort 诊断。
-- Bot `/status` 展示统一 LLM 主模型、Agent 模型、渠道模式、YAML 配置和更多通知渠道状态。
-- Web LLM 渠道编辑器展示 provider 能力标签、官方来源链接和配置注意事项提示；这些标签仅用于配置参考，不代表运行时能力已验证通过。
-- 抽出 Web LLM provider preset 单一模板数据源，保持现有配置保存语义不变。
-- 补齐 LLM provider channel 在 GitHub Actions 中的显式映射，并同步 `.env` 示例与配置文档。
+- Die Web-LLM-Konfigurationserkennung ergänzt verfeinerte Fehlerklassifikationen und neu explizit ausgelöste Laufzeit-Smokes für JSON/tools/vision/stream; Standardtest- und Speicherablauf bleiben unverändert, das Erkennungsergebnis dient nur als einmalige best-effort-Diagnose der aktuellen Konfiguration.
+- Bot `/status` zeigt das einheitliche LLM-Hauptmodell, das Agent-Modell, den Kanalmodus, die YAML-Konfiguration und weitere Benachrichtigungskanal-Status.
+- Der Web-LLM-Kanal-Editor zeigt provider-Fähigkeitslabels, offizielle Quelllinks und Konfigurationshinweise; diese Labels dienen nur als Konfigurationsreferenz und bedeuten nicht, dass die Laufzeitfähigkeit verifiziert ist.
+- Extrahiert die einzige Vorlagen-Datenquelle der Web-LLM-provider-Presets und behält die bestehende Speichersemantik der Konfiguration bei.
+- Vervollständigt die explizite Zuordnung der LLM-provider-Kanäle in GitHub Actions und synchronisiert das `.env`-Beispiel und die Konfigurationsdokumentation.
 
-### 修复
+### Behobene Probleme
 
-- Agent weak 完整性兜底在模型缺少评分、趋势、操作建议或 dashboard 关键块时优先保留本地趋势分析结果，并只补齐真正缺失的仪表盘字段，避免首页评分被默认 50 覆盖。
-- 统一持仓快照输出现价、市值、浮盈亏、收益率与价格元信息，避免缺价或 stale 价格污染持仓估值。
-- LLM 渠道测试补充结构化诊断与设置页排障提示，便于定位 provider、模型、Base URL 和鉴权配置问题。
-- 明确 runtime 清理兼容边界：仅对托管 provider（`gemini`、`vertex_ai`、`anthropic`、`openai`、`deepseek`）触发保存前失效值清理，`cohere/*`、`google/*`、`xai/*` 直连值按 legacy 兼容路径保留，不做无提示迁移或覆写。
-- 将 MiniMax 预设调整为官方 OpenAI-compatible Base URL 和当前模型示例，并补充 MiniMax、火山方舟、LiteLLM 兼容来源与回退说明。
-- 移除截图识别对 Gemini 3 Vision 模型的过时降级逻辑，默认推断改用当前 Gemini 模型配置。
+- Der Agent-weak-Integritäts-Fallback behält bei fehlendem Score, Trend, Aktionsempfehlung oder Schlüsselblöcken des Dashboards im Modell zuerst die lokalen Trendanalyseergebnisse bei und ergänzt nur wirklich fehlende Dashboard-Felder, damit der Startseiten-Score nicht vom Standardwert 50 überschrieben wird.
+- Vereinheitlicht die Ausgabe von Aktuellpreis, Marktwert, unrealisierter Gewinn/Verlust, Rendite und Preis-Metainformationen des Positions-Schnappschusses, damit fehlende Preise oder stale Preise die Positionsbewertung nicht verschmutzen.
+- LLM-Kanaltests ergänzen strukturierte Diagnosen und Fehlerbehebungshinweise der Einstellungsseite, um Probleme bei provider, Modell, Base URL und Authentifizierungskonfiguration zu lokalisieren.
+- Klargestellt die Kompatibilitätsgrenzen der Laufzeitbereinigung: Die Bereinigung ungültiger Werte vor dem Speichern wird nur für gehostete provider (`gemini`, `vertex_ai`, `anthropic`, `openai`, `deepseek`) ausgelöst; Direktverbindungswerte von `cohere/*`, `google/*`, `xai/*` bleiben über den legacy-Kompatibilitätspfad erhalten, keine stillschweigende Migration oder Überschreibung.
+- Passt das MiniMax-Preset an die offizielle OpenAI-compatible-Base-URL und aktuelle Modellbeispiele an und ergänzt Kompatibilitätsquellen und Fallback-Erläuterungen für MiniMax, Volcano Ark und LiteLLM.
+- Entfernt die veraltete Degradationslogik der Screenshot-Erkennung für das Gemini-3-Vision-Modell; die Standard-Inferenz verwendet die aktuelle Gemini-Modellkonfiguration.
 
-### 文档
+### Dokumentation
 
-- 完善 LLM provider 配置文档，补充配置方式选择、Actions 变量对照、运行时检测边界、错误 reason 排障和回滚路径（#1180）。
-- 补充 LLM 渠道编辑器的官方来源、依赖兼容窗口、保存时的运行时模型清理规则，以及旧配置回退路径说明。
-- 为 `cohere/*`、`google/*`、`xai/*` 直连语义补充官方 provider/model 说明、`litellm>=1.80.10,<1.82.7` 兼容依据引用，并明确示例模型名仅为配置保留行为说明而非可用性背书。
-- 明确 `price_change_percent` 事件告警仅为配置与运行时规则扩展，未变更模型/provider/base URL/LiteLLM 兼容语义；回退路径为关闭/移除 Event Monitor 配置。
-- 同步 README、DEPLOY、full-guide、Anspire、AIHubMix 与 SerpAPI 相关说明，统一外链、配置口径和评审一致性说明。
+- Vervollständigt die LLM-provider-Konfigurationsdokumentation und ergänzt die Auswahl der Konfigurationsweise, den Actions-Variablen-Abgleich, die Laufzeiterkennungsgrenzen, die Fehlerbehebung per error reason und den Rollback-Pfad (#1180).
+- Ergänzt für den LLM-Kanal-Editor offizielle Quellen, das Abhängigkeitskompatibilitätsfenster, die Laufzeitmodell-Bereinigungsregeln beim Speichern und die Erläuterung des Rollback-Pfads für alte Konfigurationen.
+- Ergänzt für die Direktverbindungssemantik von `cohere/*`, `google/*`, `xai/*` offizielle provider/model-Erläuterungen und den Kompatibilitätsbeleg `litellm>=1.80.10,<1.82.7` und stellt klar, dass Beispielmodellnamen nur das Konfigurations-Erhaltungsverhalten erläutern und keine Verfügbarkeitsempfehlung darstellen.
+- Klargestellt, dass die `price_change_percent`-Ereignisalarme nur eine Erweiterung der Konfigurations- und Laufzeitregeln sind und die Modell-/provider-/base-URL-/LiteLLM-Kompatibilitätssemantik unverändert bleibt; Rollback durch Deaktivieren/Entfernen der Event-Monitor-Konfiguration.
+- Synchronisiert die zugehörigen Hinweise von README, DEPLOY, full-guide, Anspire, AIHubMix und SerpAPI und vereinheitlicht externe Links, die Konfigurationsdefinition und die Konsistenzerläuterungen der Review.
 
-### 测试
+### Tests
 
-- 补齐 AI 配置页与 `task_queue` 的 LLM 运行时清理/同步回归证据：恢复渠道模型时保留 fallback、编辑模型列表期间不静默清空运行时选择，渠道无可用模型时清理失效 runtime 引用，并覆盖 legacy key 与 `cohere/*`、`google/*`、`xai/*` 直连 provider 保留语义。
-- 覆盖 Web LLM 配置检测的细分错误分类，以及 JSON、tools、vision、stream 运行时 smoke 的显式触发路径。
+- Vervollständigt die Regressionsnachweise der LLM-Laufzeitbereinigung/-synchronisation der AI-Konfigurationsseite und von `task_queue`: beim Wiederherstellen von Kanalmodellen bleibt fallback erhalten, beim Bearbeiten der Modellliste wird die Laufzeitauswahl nicht stillschweigend geleert, bei Kanälen ohne verfügbares Modell werden ungültige Laufzeitreferenzen bereinigt, und die Erhaltungssemantik von legacy keys und Direktverbindungs-providern `cohere/*`, `google/*`, `xai/*` ist abgedeckt.
+- Abgedeckt sind die verfeinerten Fehlerklassifikationen der Web-LLM-Konfigurationserkennung und die expliziten Auslösepfade der Laufzeit-Smokes für JSON, tools, vision und stream.
 
 ## [3.14.2] - 2026-04-30
 
-### 发布亮点
+### Release-Highlights
 
-- 大盘复盘扩展到港股，并让 Bot `/market` 与 CLI/调度入口使用一致的交易日过滤语义。
-- 问股与 Agent 链路增强配置缺失、决策 fallback 和多策略选择体验。
-- LLM 与分析报告链路提升稳定性：非法 JSON 响应会继续尝试备用模型，LiteLLM DEBUG 日志默认降噪。
-- 新增只读首次启动配置状态接口，为后续配置向导和 smoke run 奠定基础。
+- Die Marktreview wird auf Hongkong-Aktien erweitert und lässt Bot `/market` sowie CLI-/Scheduling-Einstiege dieselbe Handelstagsfilter-Semantik verwenden.
+- Der Fragedienst- und Agent-Pfad verbessern die Erfahrung bei fehlender Konfiguration, Entscheidungs-Fallback und Mehrstrategie-Auswahl.
+- Die LLM- und Analyseberichtskette erhöht die Stabilität: Bei ungültigen JSON-Antworten werden weiterhin Ersatzmodelle versucht, LiteLLM-DEBUG-Logs werden standardmäßig entrauscht.
+- Neue schreibgeschützte Schnittstelle für den Erststart-Konfigurationsstatus als Grundlage für den späteren Konfigurationsassistenten und Smoke-Run.
 
-### 新功能
+### Neue Funktionen
 
-- 大盘复盘支持港股市场：`MARKET_REVIEW_REGION` 新增 `hk` 选项；`both` 扩展为 A股+港股+美股，并新增港股指数（HSI/HSTECH/HSCEI）复盘链路。
-- 新增只读首次启动配置状态接口 `GET /api/v1/system/config/setup/status`，用于识别 LLM、Agent、自选股、通知和本地存储配置缺口；该接口不会重载运行时、写入 `.env` 或创建数据库文件。
+- Die Marktreview unterstützt den Hongkong-Markt: `MARKET_REVIEW_REGION` erhält die Option `hk`; `both` wird auf A-Aktien + Hongkong-Aktien + US-Aktien erweitert, und neu die Review-Kette für Hongkong-Indizes (HSI/HSTECH/HSCEI).
+- Neue schreibgeschützte Erststart-Konfigurationsstatus-Schnittstelle `GET /api/v1/system/config/setup/status` zur Erkennung von Konfigurationslücken bei LLM, Agent, Watchlist, Benachrichtigung und lokalem Speicher; die Schnittstelle lädt die Laufzeit nicht neu, schreibt kein `.env` und erstellt keine Datenbankdateien.
 
-### 改进
+### Verbesserungen
 
-- 问股页面支持组合选择多个 Agent 策略。
+- Die Fragedienst-Seite unterstützt die kombinierte Auswahl mehrerer Agent-Strategien.
 
-### 修复
+### Behobene Probleme
 
-- Bot `/market` 命令复用 `get_open_markets_today()` / `compute_effective_region()` 做交易日过滤：结果作为 `override_region` 透传给 `run_market_review`；若结果为空字符串则跳过复盘并推送“今日相关市场休市”，与 CLI/调度入口行为一致。
-- 问股 Agent 在未配置可用 LLM 时保留后端真实错误原因并维持 `done.success=false` 失败语义，避免前端把配置缺失误当成成功回答。
-- Agent 模式未生成有效决策仪表盘时保留本地趋势分析的评分、趋势和操作建议，并将强买/强卖 fallback 归一到兼容的 `buy`/`sell` 决策类型，避免首页结果被 `50 / 观望 / 未知` 缺省值覆盖。
-- 持仓快照现价缺失时不再静默回退为持仓成本；当天快照优先使用历史收盘价，仅在缺失时使用实时价 fallback，缺价持仓不再污染市值与未实现盈亏汇总，并为持仓明细返回价格来源、日期、stale 与缺价状态。
-- 分析 Prompt 在注入 `trend_analysis` 前按最终 `trend_status` / `ma_alignment` 清洗互斥理由：空头结构移除看多理由、多头结构移除空头结构风险，并在事件/技术冲突与异常放量（>10 倍）时强制提示“事件先行、技术待确认”与量能降权。
-- LLM 返回非 JSON 响应时同样触发备用模型切换：主模型成功返回但无法解析 JSON 时，不再立即降级为纯文本 fallback，而是依次尝试 `LITELLM_FALLBACK_MODELS` 中的备用模型；所有模型均无法返回合法 JSON 时，再降级为文本 fallback。
-- LiteLLM 内部 DEBUG 日志默认压低到 WARNING，避免流式生成时 token 级日志污染 `stock_analysis_debug_*.log`；如需排查 LiteLLM 内部细节，可临时设置 `LITELLM_LOG_LEVEL=DEBUG`（Fixes #1156）。
+- Der Bot-`/market`-Befehl nutzt `get_open_markets_today()` / `compute_effective_region()` für die Handelstagsfilterung: Das Ergebnis wird als `override_region` an `run_market_review` durchgereicht; ist das Ergebnis eine leere Zeichenkette, wird die Review übersprungen und „Die betreffenden Märkte sind heute geschlossen" gepusht, konsistent mit dem Verhalten der CLI-/Scheduling-Einstiege.
+- Der Fragedienst-Agent behält bei fehlendem verfügbarem LLM die echten Backend-Fehlergründe und die Fehlersemantik `done.success=false` bei, damit das Frontend fehlende Konfiguration nicht als erfolgreiche Antwort missversteht.
+- Im Agent-Modus werden ohne erzeugtes gültiges Entscheidungs-Dashboard die Score-, Trend- und Aktionsempfehlungen der lokalen Trendanalyse beibehalten, und die Kauf-/Verkaufs-Fallbacks werden auf die kompatiblen Entscheidungstypen `buy`/`sell` normalisiert, damit Startseiten-Ergebnisse nicht von den Standardwerten `50 / abwarten / unbekannt` überschrieben werden.
+- Der Positions-Schnappschuss fällt bei fehlendem Aktuellpreis nicht mehr stillschweigend auf die Anschaffungskosten zurück; der Tages-Schnappschuss verwendet vorrangig den historischen Schlusskurs und nur bei Fehlen den Echtzeitpreis als Fallback; Positionen ohne Preis verschmutzen nicht mehr Marktwert und unrealisierte Gewinn-/Verlust-Zusammenfassung, und die Positionsdetails geben Preisquelle, Datum, stale- und Fehlpreisstatus zurück.
+- Der Analyse-Prompt bereinigt vor der Injektion von `trend_analysis` gemäß dem finalen `trend_status` / `ma_alignment` sich gegenseitig ausschließende Begründungen: Bei bärischer Struktur werden die bullischen Gründe entfernt, bei bullischer Struktur das Risiko der bärischen Struktur, und bei Ereignis-/Technik-Konflikten und anomalem Volumen (>10-fach) wird „Ereignis zuerst, Technik noch bestätigen" und die Volumen-Gewichtsabsenkung erzwungen.
+- Auch bei nicht-JSON-Antworten des LLM wird der Ersatzmodellwechsel ausgelöst: Gibt das Hauptmodell erfolgreich zurück, lässt sich die Antwort aber nicht als JSON parsen, wird nicht sofort auf den reinen Text-Fallback degradiert, sondern die Ersatzmodelle aus `LITELLM_FALLBACK_MODELS` werden nacheinander versucht; erst wenn alle Modelle kein gültiges JSON liefern, wird auf den Text-Fallback degradiert.
+- Die internen LiteLLM-DEBUG-Logs werden standardmäßig auf WARNING gesenkt, damit token-bezogene Logs beim Streaming `stock_analysis_debug_*.log` nicht verschmutzen; für die Untersuchung interner LiteLLM-Details kann vorübergehend `LITELLM_LOG_LEVEL=DEBUG` gesetzt werden (Fixes #1156).
 
-### 文档
+### Dokumentation
 
-- 补充 LLM 配置指南与 FAQ，明确问股 Agent 对 `LITELLM_CONFIG` / `LLM_CHANNELS` / legacy `GEMINI_*` `OPENAI_*` `ANTHROPIC_*` 的兼容优先级、回退路径与“不静默迁移旧配置”的结论。
+- Ergänzt den LLM-Konfigurationsleitfaden und die FAQ; klargestellt die Kompatibilitätspriorität, Fallback-Pfade und die Schlussfolgerung „Alte Konfigurationen werden nicht stillschweigend migriert" des Fragedienst-Agents für `LITELLM_CONFIG` / `LLM_CHANNELS` / legacy `GEMINI_*` `OPENAI_*` `ANTHROPIC_*`.
 
-### 测试
+### Tests
 
-- 新增 `tests/test_bot_market_command.py`，覆盖 `MARKET_REVIEW_REGION=both` + open markets `{"cn","us"}` / `{"cn","hk"}` 的 `override_region` 透传断言，并覆盖全市场休市跳过与关闭交易日检查路径；新增 `tests/test_yfinance_hk_indices.py` 覆盖港股指数符号映射与部分/全部失败降级路径。
-- 补齐 `task_queue` 轻量导入 stub 的股票代码规范化函数，恢复 `tests/test_task_queue_config_sync.py` 收集与运行。
+- Neues `tests/test_bot_market_command.py`, das die `override_region`-Durchreichung für `MARKET_REVIEW_REGION=both` + offene Märkte `{"cn","us"}` / `{"cn","hk"}` abdeckt sowie die Pfade Markt-weit geschlossen überspringen und Handelstagsprüfung deaktiviert; neues `tests/test_yfinance_hk_indices.py` deckt die Symbolzuordnung der Hongkong-Indizes und die Degradationspfade bei teilweisem/vollem Ausfall ab.
+- Vervollständigt die Funktion zur Normalisierung von Aktiencodes des Lightweight-Import-Stubs von `task_queue` und stellt Sammlung und Ausführung von `tests/test_task_queue_config_sync.py` wieder her.
 
 ## [3.14.1] - 2026-04-26
-- [测试] 修正大盘复盘 prompt 测试对“明日交易计划”标题的断言，并同步桌面端版本号，恢复发布 gate。
+- [Tests] Korrigiert die Assertion des Marktreview-Prompt-Tests für den Titel „Handelsplan für morgen" und synchronisiert die Desktop-Versionsnummer, um das Release-Gate wiederherzustellen.
 
 ## [3.14.0] - 2026-04-26
 
-### 发布亮点
+### Release-Highlights
 
-- 📊 **大盘复盘升级为盘后工作台式结构** — A 股复盘固定输出盘面温度、指数明细、板块 Top 表、新闻催化、明日交易计划和风险提示，减少纯文字复盘的重复与空泛。
-- 🖥️ **桌面端新增 GitHub Release 更新提醒** — Windows/macOS 桌面端启动后自动检测新版本，也可从设置页手动检查并跳转下载页。
-- 🤖 **Pipeline Agent 数据加载大幅降噪** — K 线工具改为 DB-first 并预热 240 天历史数据，避免同一只股票重复 HTTP 请求。
-- 🐳 **Docker 发布链路整理** — 发布工作流收敛为正式发布与手动补发两条路径，官方 Docker Hub 镜像名统一为 `zhulinsen/daily_stock_analysis`。
-- 🔧 **LLM 渠道与 DeepSeek V4 配置补强** — GitHub Actions 定时分析补齐多渠道变量透传，DeepSeek 官方渠道预设与示例同步到 V4。
-- 🧩 **桌面端静态资源一致性校验** — 打包链路和运行时都能更早发现静态资源错配，降低 Release 包白屏排查成本。
+- 📊 **Die Marktreview wird auf eine Nachbörsen-Workbench-Struktur hochgestuft** — Die A-Aktien-Review gibt fest Markttemperatur, Indexdetails, Branchen-Top-Tabelle, Nachrichtenkatalyse, Handelsplan für morgen und Risikohinweise aus und reduziert Wiederholung und Inhaltsleere reiner Text-Reviews.
+- 🖥️ **Neue GitHub-Release-Update-Erinnerung auf dem Desktop** — Die Windows/macOS-Desktop-Version erkennt nach dem Start automatisch neue Versionen, kann aber auch manuell über die Einstellungsseite geprüft werden und zur Download-Seite springen.
+- 🤖 **Deutlich weniger Datenladegeräusch im Pipeline-Agent** — Das K-Linien-Tool wird auf DB-first umgestellt und wärmt 240 Tage historischer Daten vor, um wiederholte HTTP-Anfragen für dieselbe Aktie zu vermeiden.
+- 🐳 **Aufgeräumte Docker-Release-Kette** — Der Release-Workflow wird auf zwei Pfade, offizielle Veröffentlichung und manuelle Nachveröffentlichung, konvergiert; der offizielle Docker-Hub-Imagename ist einheitlich `zhulinsen/daily_stock_analysis`.
+- 🔧 **Gestärkte LLM-Kanal- und DeepSeek-V4-Konfiguration** — Die GitHub-Actions-Plananalyse vervollständigt die Variablendurchreichung über mehrere Kanäle, und die offiziellen DeepSeek-Kanal-Presets und -Beispiele werden auf V4 synchronisiert.
+- 🧩 **Konsistenzprüfung der statischen Ressourcen auf dem Desktop** — Paketierungskette und Laufzeit können Fehlzuordnungen statischer Ressourcen früher erkennen und senken die Kosten der Fehlersuche bei leeren Release-Paketen.
 
-### 新功能
+### Neue Funktionen
 
-- 🏠 **Web 首页历史报告区新增重新分析入口** — 支持基于原始 prompt 重做同一只股票同日期的分析。
-- 🖥️ **Windows/macOS 桌面端新增 GitHub Release 更新提醒** — 启动后自动检测新版本，并支持从设置页手动检查后跳转下载页。
+- 🏠 **Neuer Einstieg für die erneute Analyse im Historienberichtsbereich der Web-Startseite** — Unterstützt das erneute Durchführen der Analyse derselben Aktie am selben Datum auf Basis des ursprünglichen Prompts.
+- 🖥️ **Neue GitHub-Release-Update-Erinnerung auf Windows/macOS-Desktop** — Erkennt nach dem Start automatisch neue Versionen und unterstützt die manuelle Prüfung über die Einstellungsseite mit Sprung zur Download-Seite.
 
-### 改进
+### Verbesserungen
 
-- 📊 **A 股大盘复盘报告改为结构化盘后工作台版式** — 固定输出盘面温度、指数明细、板块 Top 表、新闻催化和明日交易计划。
-- 🐳 **Docker 发布工作流收敛** — 更清晰地区分正式发布与手动补发链路，并统一官方 Docker Hub 镜像名为 `zhulinsen/daily_stock_analysis`。
-- 🤖 **Agent 日线工具优先复用本地缓存** — 同时持久化新获取的日线与新闻情报，减少重复数据源调用。
+- 📊 **A-Aktien-Markt-Review-Bericht auf strukturiertes Post-Market-Workbench-Format umgestellt** — fester Output von Markt-Temperatur, Indexdetails, Sektor-Top-Tabelle, News-Katalysatoren und dem Handelsplan für den nächsten Tag.
+- 🐳 **Docker-Release-Workflow konsolidiert** — offizielle Releases und manuelle Nachlieferungen werden klarer getrennt und der offizielle Docker-Hub-Imagename wird auf `zhulinsen/daily_stock_analysis` vereinheitlicht.
+- 🤖 **Agent-Tageslinien-Tools nutzen bevorzugt lokale Caches** — neu abgerufene Tageslinien und News-Informationen werden zugleich persistiert, um wiederholte Datenquellen-Aufrufe zu reduzieren.
 
-### 修复
+### Behobene Probleme
 
-- 🤖 **Pipeline Agent K 线工具 DB-first 加载** — `get_daily_history` / `analyze_trend` / `calculate_ma` / `get_volume_analysis` / `analyze_pattern` 改为优先读取本地 DB，消除同一只股票 9x5=45 次重复 HTTP 请求（Fixes #1066）。
-- 🤖 **Pipeline Agent 执行前按需预热 240 天 K 线历史到 DB** — 正常情况下 K 线工具调用无需重复网络请求。
-- 🕒 **冻结 `target_date` 并通过 ContextVar 透传到 Pipeline Agent K 线工具线程** — 消除跨收盘边界时间漂移。
-- 🪟 **Windows 桌面端后端日志转抄编码修复** — 转抄 stdout/stderr 时优先使用 UTF-8，并兼容本地代码页回退，避免中文日志乱码。
-- ⚙️ **GitHub Actions 每日分析工作流补齐 LLM 渠道变量透传** — 支持 `LLM_CHANNELS`、多 Key 与常用 `LLM_<NAME>_*`，避免本地可用的多模型配置在云端定时任务中失效（Fixes #1063, #872）。
-- 📈 **历史报告详情接口修正 `change_pct` 取值** — 使用 `is None` 判断避免把 0.0（平盘）当作缺失值丢弃，移除错误的 `change_60d` 兜底，并在缺失时回退到原始实时行情字段（Fixes #1084）。
-- 🔧 **DeepSeek 官方渠道预设与示例配置同步到 V4** — 保留 legacy `deepseek-chat` 默认值并增加废弃提示，同时修正模型发现后旧运行时选择导致保存失败的问题（Fixes #1108, #1109）。
-- 🧩 **桌面端打包链路新增静态资源一致性检查** — `scripts/check_static_assets.py` 会在源 `static/` 与 PyInstaller 产物中校验 `index.html` 引用的资源是否真实存在，运行时也会在错配时写入明确日志，避免重现 Release 包打开后白屏（Refs #1064 / #1065 / #1050）。
-- 🧩 **后端 `/assets/*` 改为显式路由托管** — 资源缺失时返回与请求扩展名匹配的 `text/javascript` / `text/css` 404，减少默认 JSON 错误响应带来的排查误导（Refs #1064）。
-- 🌙 **`kimi-k2.6` 自动使用固定温度** — 主分析、大盘复盘和 Agent 调用该模型时自动使用 `temperature=1.0`，避免模型拒绝默认温度请求（Fixes #1102）。
+- 🤖 **Pipeline-Agent-Kerzenstrick-Tools mit DB-first-Laden** — `get_daily_history` / `analyze_trend` / `calculate_ma` / `get_volume_analysis` / `analyze_pattern` lesen bevorzugt aus der lokalen DB, wodurch 9x5=45 wiederholte HTTP-Requests pro Aktie entfallen (Fixes #1066).
+- 🤖 **Pipeline-Agent wärmt vor der Ausführung bedarfsweise 240 Tage K-Linien-Historie in die DB** — normalerweise benötigen Kerzenstrick-Tool-Aufrufe keine wiederholten Netzwerkrequests.
+- 🕒 **`target_date` wird eingefroren und über ContextVar an die K-Linien-Tool-Threads des Pipeline-Agents weitergereicht** — beseitigt Zeitdrift über Handelsgrenzen hinweg.
+- 🪟 **Encoding-Fix für die Backend-Log-Übertragung im Windows-Desktop-Client** — beim Übertragen von stdout/stderr wird bevorzugt UTF-8 verwendet, mit Fallback auf die lokale Codepage, um fehlerhafte Anzeige chinesischer Logs zu vermeiden.
+- ⚙️ **Der GitHub-Actions-Tagesanalyse-Workflow vervollständigt die Durchreichung der LLM-Kanal-Variablen** — unterstützt `LLM_CHANNELS`, mehrere Keys und gängige `LLM_<NAME>_*`, damit lokal verfügbare Multi-Modell-Konfigurationen in Cloud-Scheduled-Tasks nicht wirkungslos werden (Fixes #1063, #872).
+- 📈 **Die Historienbericht-Detail-API korrigiert die Ermittlung von `change_pct`** — eine `is None`-Prüfung verhindert, dass 0.0 (unverändert) als fehlender Wert verworfen wird; der fehlerhafte `change_60d`-Fallback wird entfernt und bei fehlenden Werten auf das ursprüngliche Echtzeit-Kursfeld zurückgegriffen (Fixes #1084).
+- 🔧 **DeepSeek-Offizialkanal-Presets und Beispielkonfiguration auf V4 synchronisiert** — der legacy `deepseek-chat`-Standardwert bleibt erhalten und erhält einen Deprecation-Hinweis; zugleich wird das Problem behoben, dass die Auswahl eines alten Runtimes nach der Modellermittlung das Speichern scheitern ließ (Fixes #1108, #1109).
+- 🧩 **Neuer Konsistenzcheck für statische Ressourcen in der Desktop-Packaging-Pipeline** — `scripts/check_static_assets.py` prüft, ob die von `index.html` referenzierten Ressourcen im Quell-`static/` und im PyInstaller-Artefakt tatsächlich existieren; auch zur Laufzeit wird bei Abweichungen eine eindeutige Logmeldung geschrieben, um erneute weiße Bildschirme nach dem Öffnen von Release-Paketen zu vermeiden (Refs #1064 / #1065 / #1050).
+- 🧩 **Backend `/assets/*` auf explizites Routing umgestellt** — bei fehlenden Ressourcen wird ein zum angefragten Dateityp passender `text/javascript` / `text/css` 404 zurückgegeben, wodurch die standardmäßige JSON-Fehlerantwort weniger in die Irre führt (Refs #1064).
+- 🌙 **`kimi-k2.6` verwendet automatisch eine feste Temperatur** — bei Hauptanalyse, Markt-Review und Agent-Aufrufen wird automatisch `temperature=1.0` verwendet, um zu vermeiden, dass das Modell Requests mit Standardtemperatur ablehnt (Fixes #1102).
 
-### 文档
+### Dokumentation
 
-- 🐳 **补充官方 Docker 镜像使用说明** — 增加镜像拉取、`docker run` 用法与 `.env` / 数据目录映射说明，不再只覆盖 Compose 部署路径。
-- 📨 **修正飞书自定义机器人 Webhook 示例** — `feishu_sender.py` 中的示例改为 interactive card JSON，并补充飞书自动化 Webhook 触发器配置教程。
-- 📚 **优化根 README 结构** — 保留首页级功能特性、技术栈、快速开始、推送效果、Web、Agent、赞助商和新闻源入口，将细配置、交易纪律和基本面语义收口到完整指南，并将 Docker 徽章指向官方镜像页。
-- 🌐 **同步英文与繁中 README 的精简入口结构** — 同时补齐完整指南中的 LLM 用量 API 与持仓管理说明。
-- 🤝 **调整 AI 协作与 PR 模板中的 README 维护规则** — 明确 README 非必要不更新，细节优先进入专题文档。
+- 🐳 **Offizielle Docker-Image-Verwendung dokumentiert** — ergänzt Image-Pull, `docker run`-Verwendung sowie `.env` / Datenverzeichnis-Mapping; nicht mehr nur der Compose-Deployment-Pfad wird abgedeckt.
+- 📨 **Feishu-Custom-Bot-Webhook-Beispiel korrigiert** — das Beispiel in `feishu_sender.py` wird auf interactive-card-JSON umgestellt und ein Tutorial zur Konfiguration des Feishu-Automations-Webhook-Triggers ergänzt.
+- 📚 **Root-README-Struktur optimiert** — Einstiegspunkte wie Features auf Startseiten-Niveau, Technologie-Stack, Schnellstart, Push-Wirkung, Web, Agent, Sponsoren und News-Quellen bleiben erhalten; Feinkonfiguration, Trading-Disziplin und Fundamental-Semantik werden im vollständigen Leitfaden konsolidiert, und das Docker-Badge verweist auf die offizielle Image-Seite.
+- 🌐 **Schlanke Einstiegsstruktur der englischen und traditionell-chinesischen README synchronisiert** — zugleich werden LLM-Nutzungs-API und Positionsverwaltung im vollständigen Leitfaden ergänzt.
+- 🤝 **README-Pflegeregeln in AI-Kollaborations- und PR-Vorlagen angepasst** — klargestellt, dass die README nur bei Bedarf aktualisiert wird und Details vorrangig in spezifische Dokumente gehören.
 
-### 测试
+### Tests
 
-- 🧪 **稳定市场复盘相关测试的 LiteLLM stub 行为** — 避免本机安装的 LiteLLM 在测试收集顺序变化时影响市场复盘单元测试。
-- 🧪 **pytest 默认跳过前端依赖目录** — 本地存在 `apps/dsa-web/node_modules` 时不再被后端测试递归扫描，避免发布前 gate 被无关目录拖慢。
+- 🧪 **LiteLLM-Stub-Verhalten der Markt-Review-Tests stabilisiert** — verhindert, dass ein lokal installiertes LiteLLM die Markt-Review-Unit-Tests bei veränderter Test-Collect-Reihenfolge beeinflusst.
+- 🧪 **pytest überspringt standardmäßig Frontend-Abhängigkeitsverzeichnisse** — bei lokal vorhandenem `apps/dsa-web/node_modules` wird dieses nicht mehr rekursiv von Backend-Tests durchsucht, damit der Pre-Release-Gate nicht durch irrelevante Verzeichnisse ausgebremst wird.
 
 ## [3.13.0] - 2026-04-21
 
-### 发布亮点
+### Release-Highlights
 
-- 🌉 **长桥 OpenAPI 数据源接入** — 美股/港股行情优先使用 Longbridge，YFinance / AkShare 自动兜底；未配置时行为不变。
-- 📈 **Tushare 港股全链路扩展** — 港股日线通过 `hk_daily` 获取；筹码分布对港股返回 `None`；换算单位跟随港股口径，不再套用 A 股手/千元规则。
-- 🔍 **Anspire Search 语义搜索接入** — 配置 `ANSPIRE_*` 后即可使用 Anspire Search 获取实时行情及资讯，未配置时完全透明。
-- 🚀 **普通分析链路支持 LLM 流式生成** — 首页任务 SSE 新增 `task_progress` 事件，进度更细化；不支持流式的 provider 自动回退到非流式调用。
-- 🤖 **Web 渠道编辑器支持按需拉取可用模型列表** — `/v1/models` 统一模型发现入口，多选写回 `LLM_{CHANNEL}_MODELS`，拉取失败时保留手动输入降级。
-- 🛡️ **Agent 稳定性与预算护栏全面补强** — `AGENT_MAX_STEPS` 语义统一、技能降级不中断管线、SSE 异常透传、技能加载 warning 日志补齐。
-- 🛠️ **SQLite 写入链路原子化** — 批量原子 upsert + WAL + `busy_timeout` + 有限写入重试，显著降低批量分析并发锁竞争。
+- 🌉 **Longbridge-OpenAPI-Datenquelle angebunden** — US-/Hongkong-Kurse bevorzugen Longbridge, YFinance / AkShare greifen automatisch als Fallback ein; ohne Konfiguration bleibt das Verhalten unverändert.
+- 📈 **Tushare-Vollstreckenerweiterung für Hongkong-Aktien** — Hongkong-Tageslinien werden über `hk_daily` abgerufen; die Chip-Verteilung liefert für Hongkong-Aktien `None`; die Umrechnungseinheiten folgen der Hongkong-Definition und wenden nicht mehr die A-Aktien-Regeln für Lot/Kilo-Renminbi an.
+- 🔍 **Anspire Search semantische Suche angebunden** — nach Konfiguration von `ANSPIRE_*` liefert Anspire Search Echtzeitkurse und Nachrichten; ohne Konfiguration bleibt sie völlig transparent.
+- 🚀 **Normale Analyse-Pipeline unterstützt LLM-Streaming** — das SSE der Homepage-Aufgaben erhält ein neues `task_progress`-Ereignis für feinere Fortschrittsmeldungen; Provider ohne Streaming-Unterstützung fallen automatisch auf Nicht-Streaming-Aufrufe zurück.
+- 🤖 **Web-Kanal-Editor unterstützt bedarfsweises Abrufen verfügbarer Modelllisten** — `/v1/models` dient als vereinheitlichter Modell-Erkennungs-Einstieg; Mehrfachauswahl wird nach `LLM_{CHANNEL}_MODELS` zurückgeschrieben; bei fehlgeschlagenem Abruf bleibt die manuelle Eingabe als Fallback erhalten.
+- 🛡️ **Stabilität und Budget-Guardrails des Agents umfassend gestärkt** — einheitliche `AGENT_MAX_STEPS`-Semantik, Skill-Degradation ohne Pipeline-Abbruch, SSE-Ausnahme-Weitergabe und vervollständigte warning-Logs für Skill-Ladevorgänge.
+- 🛠️ **SQLite-Schreibpfad atomarisiert** — atomares Batch-Upsert + WAL + `busy_timeout` + begrenzte Schreib-Wiederholungen senken die Sperrenkonkurrenz bei parallelen Batch-Analysen deutlich.
 
-### 新功能
+### Neue Funktionen
 
-- 🌉 **集成 Longbridge OpenAPI 作为美股/港股可选数据源**（fixes #981）— 配置 `LONGBRIDGE_*` 后优先使用长桥获取日线与实时行情，YFinance / AkShare 兜底；未配置时行为与此前一致。联调使用 `tests/longbridge_live_smoke.py`（手动脚本，不参与 pytest 收集）。
-- 📈 **Tushare 支持港股日线查询** — 配置 Tushare 凭证后调用 `hk_daily` 接口获取港股数据；权限不足时抛出异常，与原流程一致。
-- 🔍 **集成 Anspire Search 可选语义搜索后端** — 配置 `ANSPIRE_*` 可使用 Anspire Search 获取实时行情及新闻资讯；未配置时行为与此前一致。联调使用 `tests/test_anspire_search.py`（手动脚本）。
-- 🚀 **普通分析链路支持 LiteLLM 流式生成与更细任务进度** — 股票分析在 LLM 阶段优先尝试 `stream=True` 并在服务端累积 chunk，首页任务 SSE 新增 `task_progress` 事件与更细的 `message/progress` 更新；仅在最终 JSON 解析成功后持久化历史报告；不支持流式的 provider 自动回退到非流式调用。
-- 🤖 **Web AI 模型配置支持按渠道获取可用模型列表** — 渠道编辑器支持调用 `/v1/models` 拉取可用模型，并以多选方式写回 `LLM_{CHANNEL}_MODELS`；拉取失败时保留手动输入作为降级路径。
+- 🌉 **Longbridge OpenAPI als optionale Datenquelle für US-/Hongkong-Aktien integriert** (fixes #981) — nach Konfiguration von `LONGBRIDGE_*` werden Tageslinien und Echtzeitkurse bevorzugt über Longbridge bezogen, mit YFinance / AkShare als Fallback; ohne Konfiguration bleibt das Verhalten wie bisher. Für die Verbindungstests wird `tests/longbridge_live_smoke.py` verwendet (manuelles Skript, nimmt nicht an der pytest-Sammlung teil).
+- 📈 **Tushare unterstützt Hongkong-Tageslinienabfragen** — nach Konfiguration der Tushare-Anmeldedaten werden Hongkong-Daten über die `hk_daily`-Schnittstelle abgerufen; bei fehlenden Berechtigungen wird wie im bisherigen Ablauf eine Ausnahme geworfen.
+- 🔍 **Anspire Search als optionales semantisches Such-Backend integriert** — mit `ANSPIRE_*`-Konfiguration liefert Anspire Search Echtzeitkurse und Nachrichten; ohne Konfiguration bleibt das Verhalten wie bisher. Für die Verbindungstests wird `tests/test_anspire_search.py` verwendet (manuelles Skript).
+- 🚀 **Normale Analyse-Pipeline unterstützt LiteLLM-Streaming und feinere Aufgabenfortschritte** — die Aktienanalyse versucht in der LLM-Phase zuerst `stream=True` und akkumuliert die Chunks serverseitig; das SSE der Homepage-Aufgaben erhält ein neues `task_progress`-Ereignis und feinere `message/progress`-Updates; der Historienbericht wird erst nach erfolgreichem Parsen des finalen JSON persistiert; Provider ohne Streaming-Unterstützung fallen automatisch auf Nicht-Streaming-Aufrufe zurück.
+- 🤖 **Web-AI-Modellkonfiguration unterstützt das Abrufen verfügbarer Modelllisten pro Kanal** — der Kanal-Editor kann über `/v1/models` verfügbare Modelle abrufen und als Mehrfachauswahl nach `LLM_{CHANNEL}_MODELS` zurückschreiben; bei fehlgeschlagenem Abruf bleibt die manuelle Eingabe als Degradationspfad erhalten.
 
-### 改进
+### Verbesserungen
 
-- 🔎 **SerpAPI 正文补抓范围收敛** — 自然搜索结果不再逐条同步抓取网页正文；仅对极少数高位且摘要不足的结果做延迟补抓，优先复用 SerpAPI 已返回的结构化摘要，降低搜索链路尾延迟与慢站点放大风险。
-- 🤖 **LLM 接入体验简化** — 面向用户的 AI 模型接入文案统一为"主模型 / Agent 主模型 / 备选模型 / 模型渠道"，不再把 LiteLLM 当作普通用户必学概念，现有 `LITELLM_*` / `LLM_CHANNELS` 配置键保持兼容。
-- 🧠 **IntelAgent 新增公司公告搜索与主力资金流工具** — 增加上交所/深交所/cninfo 公告搜索维度与 `get_capital_flow` 工具，修复 Agent 模式下公告和资金流数据经常缺失的问题。
-- 📦 **后端股票名称解析优先复用 `stocks.index.json`** — 懒加载缓存前端静态索引，纯后端/缺失静态资源场景静默降级回 `STOCK_NAME_MAP` 与原有数据源回退链路。
-- 📊 **TushareFetcher 港股单位适配** — `get_chip_distribution` 对港股直接返回 `None`（港股暂不支持筹码分布）；`_normalize_data` 对港股（`hk_daily`）不再做 A 股手→股、千元→元的缩放，与 Tushare 港股字段语义一致。
-- ⏱️ **Agent 超步数错误增加 `AGENT_MAX_STEPS` 调整提示** — 帮助用户自助排查步数限制问题。
-- ⚙️ **GitHub Actions 分析任务超时支持 `vars` 配置** — `daily_analysis.yml` 任务超时从 repository variables 读取，无需修改代码即可调整运行超时上限（fixes #1014）。
+- 🔎 **SerpAPI-Bodynachlieferung eingegrenzt** — natürliche Suchergebnisse werden nicht mehr einzeln synchron um Webseiten-Texte ergänzt; nur für sehr wenige hochrangige Ergebnisse mit unzureichender Zusammenfassung wird verzögert nachgeliefert, wobei die bereits von SerpAPI gelieferten strukturierten Zusammenfassungen bevorzugt werden, um Tail-Latenz und Verstärkung langsamer Seiten zu senken.
+- 🤖 **LLM-Anbindung vereinfacht** — die benutzerorientierten Texte zur AI-Modellanbindung werden auf „Hauptmodell / Agent-Hauptmodell / Alternativmodell / Modellkanal“ vereinheitlicht; LiteLLM wird nicht mehr als für Normalnutzer zwingendes Konzept dargestellt; bestehende `LITELLM_*` / `LLM_CHANNELS`-Konfigurationsschlüssel bleiben kompatibel.
+- 🧠 **IntelAgent erhält Unternehmensankündigungssuche und Hauptkapitalfluss-Tool** — es kommen die Ankündigungssuche-Dimensionen für Börse Shanghai / Börse Shenzhen / cninfo sowie das `get_capital_flow`-Tool hinzu, um das häufige Fehlen von Ankündigungs- und Kapitalflussdaten im Agent-Modus zu beheben.
+- 📦 **Backend-Aktiennamenauflösung bevorzugt Wiederverwendung von `stocks.index.json`** — der statische Frontend-Index wird lazy gecacht; in reinen Backend-/fehlenden-Statikressourcen-Szenarien wird still auf `STOCK_NAME_MAP` und den bisherigen Datenquellen-Fallback zurückgefallen.
+- 📊 **Einheitenanpassung des TushareFetcher für Hongkong-Aktien** — `get_chip_distribution` liefert für Hongkong-Aktien direkt `None` (Chip-Verteilung wird für Hongkong vorerst nicht unterstützt); `_normalize_data` wendet für Hongkong-Aktien (`hk_daily`) nicht mehr die A-Aktien-Skalierung Lot→Aktie bzw. Kilo-Renminbi→Renminbi an, passend zur Feld-Semantik von Tushare für Hongkong.
+- ⏱️ **Fehler bei überschrittenen Agent-Schritten erhalten einen `AGENT_MAX_STEPS`-Anpassungshinweis** — hilft Nutzern, Schrittlimit-Probleme selbst zu beheben.
+- ⚙️ **GitHub-Actions-Analyseaufgaben unterstützen `vars`-Konfiguration für das Timeout** — die Aufgaben-Timeoutwerte in `daily_analysis.yml` werden aus repository variables gelesen, sodass das Laufzeit-Timeout ohne Codeänderungen angepasst werden kann (fixes #1014).
 
-### 修复
+### Behobene Probleme
 
-- 📣 **大盘复盘链路接入 `REPORT_LANGUAGE`** — `REPORT_LANGUAGE=en` 时，A 股/合并复盘的 Prompt、章节标题、模板兜底文案与通知包装标题统一输出英文，避免英文正文搭配中文标题的混排问题。
-- 📈 **EfinanceFetcher 指数开盘价映射兼容**（fixes #1043）— `get_main_indices()` 的开盘价映射改为兼容 `今开 → 开盘 → open`，修复部分 efinance 版本下指数开盘价被读成缺失值的问题。
-- 🤖 **AGENT_MAX_STEPS 语义统一**（fixes #1026）— 在 orchestrator 多 Agent 模式下明确为"各子 Agent 步数上限而非硬覆盖"；TechnicalAgent 等高默认值 Agent 会被封顶，低默认值 Agent 保持原值；用户主动调高（>10）时统一覆盖所有子 Agent。修复了用户设置 12 但 TechnicalAgent 仍以默认 6 步运行并报 "Agent exceeded max steps" 的问题。
-- 🛡️ **Specialist（Skill）Agent 失败改为优雅降级** — 技能 Agent 失败不再中断整个分析管线，与 intel/risk 保持相同的降级策略。
-- 🔧 **MiniMax-M2.7 连接测试修复** — 修复 LLM 通道连接测试在 MiniMax-M2.7 下返回 "Empty response" 的问题；将 `max_tokens` 上限从 8 提升至 256 以容纳思考过程，并添加 `content_blocks` 格式解析逻辑。
-- 📊 **移除 `sentiment_score` 范围约束**（fixes #942）— 移除 `HistoryItem` 与 `ReportSummary` 响应 Schema 中 `sentiment_score` 的 `ge=0/le=100` 约束，历史库中存储的超范围值不再触发 Pydantic ValidationError。
-- 🖥️ **WebUI 前端资源缺失时发出明确警告** — `webui_frontend.py` 在 `static/index.html` 存在但 `static/assets/` 缺失时发出 warning，避免 CSS/JS 资源缺失导致页面异常变大却无从排查（fixes #944）。
-- 🔗 **分析管线可选服务降级初始化** — `StockAnalysisPipeline` 搜索服务与社交舆情服务任一初始化异常时，记录 warning 并以禁用状态继续运行，避免外部依赖抖动阻塞主分析链路。
-- 🖥️ **桌面端版本展示统一读取 `package.json`** — 统一读取 `apps/dsa-desktop/package.json`，移除 preload 中硬编码的 `0.1.0`，设置页展示真实桌面端版本；修复版本号显示错误（fixes #1048）。
-- 🐋 **港股名称获取失败修复**（fixes #940）— 修复主数据源字段缺失时无法正确回退到备用字段获取港股名称的问题。
-- 🔄 **SSE 任务流断开时 `CancelledError` 正确 re-raise**（fixes #967）— 修复 SSE 流中断时异常被静默吞掉导致故障无日志可查的问题。
-- 🔄 **Agent SSE 清理阶段后台任务异常正确上报**（fixes #969）— 流结束时后台执行器异常现在正确记录并上报，避免错误无法感知。
-- 🔇 **技能加载异常补充 `logger.warning` 日志**（fixes #970）— 在 `ask.py`、`skills/aggregator.py`、`skills/router.py` 的静默 except 块补充日志，确保技能列表为空时有日志可查。
-- 🛠️ **SQLite 写入链路原子化**（fixes #878）— `stock_daily(code,date)` 使用批量原子 upsert；文件型 SQLite 连接默认启用 WAL + `busy_timeout` + 有限写入重试；"新增数"改按本次真正插入窗口计算。
-- 💰 **多 Agent / 单 Agent 预算护栏语义统一** — 剩余预算低于最小阈值时主动跳过并降级；已完成阶段可构建降级报告时返回 `success=True` 并携带非空内容，否则返回 `success=False`。
-- ⚙️ **GitHub Actions `daily_analysis.yml` 补齐 `REPORT_LANGUAGE` 注入**（fixes #1013）— 修复用户在 Secrets/Variables 中配置 `REPORT_LANGUAGE` 后不生效的问题。
-- 📊 **任务状态 API 补齐实时价格字段**（fixes #983）— `GET /api/v1/analysis/status/{task_id}` 从数据库回填已完成任务时补齐 `current_price` / `change_pct`，修复首页报告股票名旁不显示实时价格的问题。
-- 📅 **非交易日数据返回最近交易日**（fixes #1009）— 修复非交易日（周末/节假日）筹码分布与板块排行返回倒数第二个交易日数据的问题，现在正常返回最近交易日数据。
-- 🔍 **A 股资讯搜索恢复中文优先** — `search_stock_news()` 在首个 provider 主要返回英文资讯时继续尝试后续引擎，并将同批结果中的中文资讯排到前面；非美股查询不再默认沿用 Brave 的 `en/US` 区域语言偏好。
-- 📨 **飞书群机器人通知支持签名校验** — 飞书通知现在支持 `FEISHU_WEBHOOK_SECRET` / `FEISHU_WEBHOOK_KEYWORD`；Web 设置与文档明确区分 Webhook 推送模式和 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 应用模式，降低误配风险。
-- ⚡ **LLM 适配层新增 `RateLimitError` 和 `ContextWindowExceeded` 检测** — 识别并处理速率限制与上下文窗口超出错误，提升分析链路在高负载或长文本场景下的健壮性（fixes #1002）。
+- 📣 **Markt-Review-Pipeline an `REPORT_LANGUAGE` angebunden** — bei `REPORT_LANGUAGE=en` werden Prompt, Kapitelüberschriften, Template-Fallback-Texte und Benachrichtigungs-Titel der A-Aktien-/kombinierten Reviews einheitlich auf Englisch ausgegeben, um gemischte Ausgaben mit englischem Text und chinesischen Überschriften zu vermeiden.
+- 📈 **Kompatibles Eröffnungskurs-Mapping des EfinanceFetcher für Indizes** (fixes #1043) — das Eröffnungskurs-Mapping von `get_main_indices()` wird auf „Offen (heute) → Eröffnung → open“ umgestellt, wodurch behoben wird, dass der Index-Eröffnungskurs in manchen efinance-Versionen als fehlender Wert gelesen wurde.
+- 🤖 **`AGENT_MAX_STEPS`-Semantik vereinheitlicht** (fixes #1026) — im Orchestrator-Mehr-Agenten-Modus gilt es nun eindeutig als „Schrittlimit pro Unter-Agent, nicht als hartes Überschreiben“; Agenten mit hohen Standardwerten wie TechnicalAgent werden gedeckelt, Agenten mit niedrigen Standardwerten behalten ihre Werte; eine bewusste Erhöhung durch den Nutzer (>10) überschreibt einheitlich alle Unter-Agenten. Behoben wird, dass bei einer Einstellung von 12 TechnicalAgent dennoch mit den standardmäßigen 6 Schritten lief und „Agent exceeded max steps“ meldete.
+- 🛡️ **Fehlschläge des Specialist-(Skill-)Agents auf elegante Degradation umgestellt** — ein fehlgeschlagener Skill-Agent unterbricht die Analyse-Pipeline nicht mehr und folgt der gleichen Degradationsstrategie wie intel/risk.
+- 🔧 **MiniMax-M2.7-Verbindungstest-Fix** — behebt, dass der LLM-Kanal-Verbindungstest unter MiniMax-M2.7 „Empty response“ zurückgab; das `max_tokens`-Limit wird von 8 auf 256 angehoben, um Denkprozesse aufzunehmen, und eine Parse-Logik für das `content_blocks`-Format wird ergänzt.
+- 📊 **Bereichsbegrenzung von `sentiment_score` entfernt** (fixes #942) — die `ge=0/le=100`-Begrenzung für `sentiment_score` in den Response-Schemas `HistoryItem` und `ReportSummary` wird entfernt, sodass in der Historie gespeicherte Werte außerhalb des Bereichs keine Pydantic-ValidationError mehr auslösen.
+- 🖥️ **WebUI warnt explizit bei fehlenden Frontend-Ressourcen** — `webui_frontend.py` gibt eine warning aus, wenn `static/index.html` existiert, aber `static/assets/` fehlt, damit fehlende CSS/JS-Ressourcen, die die Seite anormal aufblähen, nicht mehr unauffindbar bleiben (fixes #944).
+- 🔗 **Degradationsinitialisierung optionaler Dienste der Analyse-Pipeline** — bei Initialisierungsfehlern von Suchdienst oder Social-Sentiment-Dienst der `StockAnalysisPipeline` wird eine warning protokolliert und der Betrieb im deaktivierten Zustand fortgesetzt, damit wackelnde externe Abhängigkeiten die Hauptanalyse nicht blockieren.
+- 🖥️ **Desktop-Versionsanzeige liest einheitlich `package.json`** — einheitliches Lesen von `apps/dsa-desktop/package.json`, Entfernen des hartcodierten `0.1.0` im preload und Anzeige der echten Desktop-Version auf der Einstellungsseite; behebt die fehlerhafte Versionsanzeige (fixes #1048).
+- 🐋 **Fix für fehlgeschlagenes Abrufen von Hongkong-Aktiennamen** (fixes #940) — behebt, dass bei fehlenden Feldern der Hauptdatenquelle nicht korrekt auf Alternativfelder zurückgegriffen wurde, um den Hongkong-Aktiennamen zu ermitteln.
+- 🔄 **`CancelledError` bei getrennter SSE-Aufgabenverbindung korrekt re-raised** (fixes #967) — behebt, dass Ausnahmen beim Abbruch des SSE-Streams still verschluckt wurden und Störungen dadurch ohne protokollierte Spur blieben.
+- 🔄 **Hintergrundaufgaben-Ausnahmen in der SSE-Bereinigungsphase des Agents korrekt gemeldet** (fixes #969) — Ausnahmen des Hintergrund-Executors am Stream-Ende werden jetzt korrekt protokolliert und gemeldet, damit Fehler nicht unbemerkt bleiben.
+- 🔇 **Logs für Skill-Ladeausnahmen ergänzt** (fixes #970) — in den stillen except-Blöcken von `ask.py`, `skills/aggregator.py`, `skills/router.py` werden Logs ergänzt, damit bei leerer Skill-Liste eine protokollierte Spur existiert.
+- 🛠️ **SQLite-Schreibpfad atomarisiert** (fixes #878) — `stock_daily(code,date)` verwendet ein atomares Batch-Upsert; dateibasierte SQLite-Verbindungen aktivieren standardmäßig WAL + `busy_timeout` + begrenzte Schreib-Wiederholungen; die „Anzahl neuer Einträge“ wird anhand des tatsächlich eingefügten Fensters berechnet.
+- 💰 **Budget-Guardrail-Semantik für Multi-Agent / Single-Agent vereinheitlicht** — sinkt das verbleibende Budget unter den Mindestschwellwert, wird aktiv übersprungen und degradiert; ist für eine abgeschlossene Phase ein Degradationsbericht baubar, wird `success=True` mit nicht leerem Inhalt zurückgegeben, sonst `success=False`.
+- ⚙️ **GitHub-Actions-`daily_analysis.yml` ergänzt `REPORT_LANGUAGE`-Injektion** (fixes #1013) — behebt, dass ein in Secrets/Variables konfiguriertes `REPORT_LANGUAGE` nicht wirkte.
+- 📊 **Aufgabenstatus-API ergänzt Echtzeit-Kursfelder** (fixes #983) — `GET /api/v1/analysis/status/{task_id}` ergänzt beim Zurückfüllen abgeschlossener Aufgaben aus der Datenbank `current_price` / `change_pct`, wodurch auf der Startseite neben dem Aktiennamen im Bericht wieder der Echtzeitkurs angezeigt wird.
+- 📅 **An Nicht-Handelstagen werden die Daten des letzten Handelstags zurückgegeben** (fixes #1009) — behebt, dass an Nicht-Handelstagen (Wochenenden/Feiertagen) Chip-Verteilung und Sektor-Ranglisten Daten des vorletzten Handelstags lieferten; jetzt werden korrekt die Daten des letzten Handelstags geliefert.
+- 🔍 **Chinesisch-Priorität der A-Aktien-Nachrichtensuche wiederhergestellt** — `search_stock_news()` versucht nachfolgende Engines, wenn der erste Provider überwiegend englische Nachrichten liefert, und sortiert chinesische Nachrichten derselben Ergebnismenge nach vorn; nicht-US-Aktien-Anfragen übernehmen nicht mehr standardmäßig die `en/US`-Regionssprache von Brave.
+- 📨 **Feishu-Gruppenbot-Benachrichtigungen unterstützen Signaturprüfung** — Feishu-Benachrichtigungen unterstützen jetzt `FEISHU_WEBHOOK_SECRET` / `FEISHU_WEBHOOK_KEYWORD`; Web-Einstellungen und Dokumentation trennen den Webhook-Push-Modus klar vom `FEISHU_APP_ID` / `FEISHU_APP_SECRET`-App-Modus, um Fehlkonfigurationen zu reduzieren.
+- ⚡ **LLM-Adapterlage erkennt `RateLimitError` und `ContextWindowExceeded`** — Rate-Limit- und Kontextfenster-Überschreitungsfehler werden erkannt und behandelt, was die Robustheit der Analyse-Pipeline unter hoher Last oder bei langen Texten erhöht (fixes #1002).
 
-### 测试
+### Tests
 
-- 🧪 **TushareFetcher 港股相关单元测试** — 新增 `get_chip_distribution` 筹码分布获取与 `_normalize_data` 港股/A 股/ETF 单位处理的单元测试，覆盖港股特殊路径。
+- 🧪 **TushareFetcher-Unit-Tests für Hongkong-Aktien** — neue Unit-Tests für `get_chip_distribution` (Chip-Verteilungsabruf) und die Hongkong-/A-Aktien-/ETF-Einheitenbehandlung von `_normalize_data`, die die Sonderpfade für Hongkong abdecken.
 
-### 文档
+### Dokumentation
 
-- 📘 **DEPLOY.md 补充 UI 元素异常变大排查步骤** — 新增重建 Docker 镜像或手动执行 `npm run build` 的排查指南；`deploy-webui-cloud.md` 同步更新。
-- 📨 **飞书 Webhook 配置说明补全** — 强调 `FEISHU_WEBHOOK_URL` 是群通知必填项、签名校验须两端同时启用或关闭、`FEISHU_APP_SECRET` 仅用于应用/Stream Bot 模式；`.env.example` 补充内联注释；同步英文指南。
-- 🤝 **FAQ 补充 Ollama 连接失败排障条目（Q12c）** — 覆盖服务未启动、URL 配置错误、模型前缀缺失、模型未下载、远程防火墙等 5 个检查点（fixes #854）。
-- 🌉 **README 补充长桥数据源使用说明** — 中/英/繁 README 明确长桥"首选 / 兜底 / 未配置不调用"边界；`docs/` 内相对路径链接修复；`LONGBRIDGE_PRINT_QUOTE_PACKAGES` 配置与代码及 `.env.example` 对齐。
-- 🐋 **Docker 安装场景版本说明** — 补充最小化文档，明确 Docker 安装场景下应以 Git tag / 镜像 tag 判断版本（fixes #1091）。
+- 📘 **DEPLOY.md ergänzt Schritte zum Beheben anormal vergrößerter UI-Elemente** — neu ist eine Anleitung zum Neuerstellen des Docker-Images oder zum manuellen Ausführen von `npm run build`; `deploy-webui-cloud.md` wird synchron aktualisiert.
+- 📨 **Feishu-Webhook-Konfigurationsanleitung vervollständigt** — hervorgehoben wird, dass `FEISHU_WEBHOOK_URL` für Gruppenbenachrichtigungen Pflicht ist, die Signaturprüfung auf beiden Seiten gleichzeitig aktiviert bzw. deaktiviert sein muss und `FEISHU_APP_SECRET` nur im App-/Stream-Bot-Modus verwendet wird; `.env.example` erhält Inline-Kommentare; die englische Anleitung wird synchronisiert.
+- 🤝 **FAQ ergänzt Eintrag zur Ollama-Verbindungsfehlerbehebung (Q12c)** — deckt 5 Prüfpunkte ab: Dienst nicht gestartet, fehlerhafte URL-Konfiguration, fehlendes Modellpräfix, Modell nicht heruntergeladen, entfernte Firewall (fixes #854).
+- 🌉 **README ergänzt Nutzungsanleitung für die Longbridge-Datenquelle** — die chinesische/englische/traditionell-chinesische README klärt die Grenzen „bevorzugt / Fallback / ohne Konfiguration nicht aufgerufen“ von Longbridge; relative Pfadlinks in `docs/` werden repariert; die Konfiguration `LONGBRIDGE_PRINT_QUOTE_PACKAGES` wird mit Code und `.env.example` abgeglichen.
+- 🐋 **Versionshinweis für Docker-Installationen** — ein minimales Dokument wird ergänzt, das klärt, dass in Docker-Installationsszenarien die Version anhand von Git-Tag / Image-Tag bestimmt werden sollte (fixes #1091).
 
 ## [3.12.0] - 2026-04-01
 
-### 发布亮点
+### Release-Highlights
 
-- 📊 **回测页新增"次日验证"视图** — 可按股票与日期范围查看 AI 预测 vs 次日实际涨跌，复用历史分析与 1 日回测结果，快速验证分析准确率。
-- 🔧 **LLM 接入体验简化** — 用户侧文案统一收口为"主模型 / 备选模型 / 模型渠道"，不再把 LiteLLM 当作普通用户必学概念，现有配置键保持兼容。
-- 🐳 **Docker / WebUI 运行时稳态补强** — 修复系统设置保存后配置不生效、启动早期日志缺失、预构建静态资源复用等问题，降低容器化部署的运维摩擦。
-- 🔒 **安全与并发稳定性同步增强** — Discord 入站 Webhook 补齐 Ed25519 验签，修复并发执行时共享状态未加锁、单股推送模式通知并发复用等问题。
-- 🖥️ **桌面端与定时任务细节打磨** — Windows 安装器支持自选安装目录，内置定时调度器感知运行中 SCHEDULE_TIME 变更，断点续传改按市场时区判断。
+- 📊 **Neue „Nächster-Tag-Verifikation“-Ansicht auf der Backtest-Seite** — zeigt für Aktien und Datumsbereiche die AI-Prognose vs. die tatsächliche Kursbewegung am nächsten Tag, nutzt historische Analysen und 1-Tage-Backtest-Ergebnisse zur schnellen Verifikation der Analysegenauigkeit.
+- 🔧 **LLM-Anbindung vereinfacht** — die nutzerseitigen Texte werden auf „Hauptmodell / Alternativmodell / Modellkanal“ vereinheitlicht; LiteLLM wird nicht mehr als für Normalnutzer zwingendes Konzept dargestellt; bestehende Konfigurationsschlüssel bleiben kompatibel.
+- 🐳 **Laufzeit-Stabilität von Docker / WebUI gestärkt** — behoben werden Probleme wie nicht wirksame Konfiguration nach Speichern der Systemeinstellungen, fehlende Logs in der frühen Startphase und Wiederverwendung vorgebauter statischer Ressourcen, um den Betriebsaufwand containerisierter Deployments zu senken.
+- 🔒 **Sicherheit und Parallelitätsstabilität zugleich gestärkt** — der Discord-Eingangs-Webhook erhält die Ed25519-Signaturprüfung; behoben werden u. a. ungelockter gemeinsamer Zustand bei paralleler Ausführung und die gleichzeitige Wiederverwendung von Benachrichtigungsinstanzen im Einzelaktien-Push-Modus.
+- 🖥️ **Feinschliff für Desktop-Client und geplante Aufgaben** — der Windows-Installer unterstützt ein frei wählbares Installationsverzeichnis, der eingebaute Scheduler erkennt laufende `SCHEDULE_TIME`-Änderungen, und die Wiederaufnahme unterbrochener Downloads wird anhand der Marktzeitzone beurteilt.
 
-### 新功能
+### Neue Funktionen
 
-- 📊 **回测页新增"次日验证 / 1 日窗口"视图** — 可按股票代码与分析日期范围查看 AI 预测、次日实际涨跌及筛选区间准确率，复用历史分析与 1 日回测结果实现。
-- 🏷️ **Web 设置页新增版本信息卡片** — `apps/dsa-web` 现在会在构建时注入前端包版本与构建时间，系统设置页新增只读"版本信息"区块，展示 `WebUI 版本 / 构建标识 / 构建时间`；当 `package.json` 仍为占位版本 `0.0.0` 时，会自动回退为构建标识，方便 Docker 重建后快速确认当前静态资源是否已经生效。
-- 🪟 **Windows 桌面安装器支持自选安装目录** — 安装器改为支持在安装向导中自定义安装目录，安装到非默认盘符后仍沿用现有打包态目录逻辑在安装目录旁读写 `.env`、`data/stock_analysis.db` 和 `logs/desktop.log`，同时保留 `win-unpacked` 免安装分发方式。安装器仅支持当前用户安装、已禁用管理员提权（`allowElevation: false`），并通过 NSIS `.onVerifyInstDir` 阻止选择系统保护目录。
+- 📊 **Neue „Nächster-Tag-Verifikation / 1-Tage-Fenster“-Ansicht auf der Backtest-Seite** — für Aktiencodes und Analyse-Datumsbereiche werden AI-Prognose, tatsächliche Kursbewegung am nächsten Tag und die Genauigkeit im gefilterten Zeitraum angezeigt; realisiert durch Wiederverwendung historischer Analysen und 1-Tage-Backtest-Ergebnisse.
+- 🏷️ **Neue Versionsinformations-Karte auf der Web-Einstellungsseite** — `apps/dsa-web` injiziert jetzt zur Build-Zeit die Frontend-Paketversion und die Build-Zeit; die Systemeinstellungsseite erhält einen schreibgeschützten Bereich „Versionsinformation“ mit `WebUI-Version / Build-Kennung / Build-Zeit`; steht in `package.json` weiterhin die Platzhalterversion `0.0.0`, wird automatisch auf die Build-Kennung zurückgefallen, sodass nach einem Docker-Rebuild schnell bestätigt werden kann, ob die aktuellen statischen Ressourcen wirksam sind.
+- 🪟 **Windows-Desktop-Installer unterstützt frei wählbares Installationsverzeichnis** — der Installer erlaubt im Installationsassistenten ein benutzerdefiniertes Verzeichnis; nach Installation auf einem nicht standardmäßigen Laufwerk bleibt die bestehende Paketverzeichnislogik erhalten und `.env`, `data/stock_analysis.db` sowie `logs/desktop.log` werden weiterhin neben dem Installationsverzeichnis gelesen und geschrieben; zusätzlich bleibt die portable `win-unpacked`-Verteilung erhalten. Der Installer unterstützt nur die Installation für den aktuellen Benutzer, die Admin-Erhöhung ist deaktiviert (`allowElevation: false`), und über NSIS `.onVerifyInstDir` wird die Auswahl systemgeschützter Verzeichnisse verhindert.
 
-### 改进
+### Verbesserungen
 
-- 🔎 **SerpAPI 正文补抓范围收敛** — 自然搜索结果不再逐条同步抓取网页正文；现在仅对极少数高位且摘要明显不足的结果，在更短超时预算内做延迟补抓，并优先复用 SerpAPI 已返回的结构化摘要，降低搜索链路尾延迟与慢站点放大风险。
-- 🤖 **LLM 接入体验简化** — 面向用户的 AI 模型接入文案已统一收口为"主模型 / Agent 主模型 / 备选模型 / 模型渠道 / 高级模型路由配置"；Web 设置页、配置元数据、校验提示与中英文文档不再把 LiteLLM 当作普通用户默认必学概念，现有 `LITELLM_*` / `LLM_CHANNELS` 配置键仍保持兼容。
+- 🔎 **SerpAPI-Bodynachlieferung eingegrenzt** — natürliche Suchergebnisse werden nicht mehr einzeln synchron um Webseiten-Texte ergänzt; nur für sehr wenige hochrangige Ergebnisse mit klar unzureichender Zusammenfassung wird innerhalb eines kürzeren Timeout-Budgets verzögert nachgeliefert, wobei die bereits von SerpAPI gelieferten strukturierten Zusammenfassungen bevorzugt werden, um Tail-Latenz und Verstärkung langsamer Seiten zu senken.
+- 🤖 **LLM-Anbindung vereinfacht** — die benutzerorientierten Texte zur AI-Modellanbindung sind auf „Hauptmodell / Agent-Hauptmodell / Alternativmodell / Modellkanal / Erweiterte Modell-Routing-Konfiguration“ vereinheitlicht; Web-Einstellungsseite, Konfigurationsmetadaten, Validierungshinweise sowie chinesische und englische Dokumentation behandeln LiteLLM nicht mehr als für Normalnutzer zwingendes Konzept; bestehende `LITELLM_*` / `LLM_CHANNELS`-Konfigurationsschlüssel bleiben kompatibel.
 
-### 修复
+### Behobene Probleme
 
-- 🚀 **启动早期失败时暴露真实根因** — `python main.py` 现在通过 stderr 暴露真实根因，bootstrap 阶段不再向硬编码 `logs/` 目录写入文件日志，文件日志推迟到 `config.log_dir` 可用后创建，避免健康启动在非预期路径残留日志文件。
-- 🐳 **Docker WebUI 运行时优先复用预构建静态资源** — `prepare_webui_frontend_assets()` 现在会先检查镜像内已有的 `static/index.html` 是否可直接复用；当容器运行时不包含 `apps/dsa-web` 源码目录且未安装 `npm` 时，也不会误报"未找到前端项目，无法自动构建"，从而恢复 Docker 部署后的 WebUI 打开能力。
-- 🐳 **Docker WebUI 系统设置保存后配置生效** — Docker 场景下 WebUI 保存 `STOCK_LIST`、`SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_RUN_IMMEDIATELY`、`RUN_IMMEDIATELY` 后，`Config` 会优先读取持久化 `.env` 中的新值，避免被容器创建时注入的旧环境变量覆盖。
-- 📈 **市场复盘 LLM max_tokens 提升** — 市场复盘生成链路将 LLM `max_tokens` 从 `2048` 提升到 `8192`，降低长复盘输出因 `MAX_TOKENS` 提前截断导致内容未完成的概率。
-- ⏰ **内置定时调度器感知 SCHEDULE_TIME 运行时变更** — 调度器现在会在运行中感知 WebUI 保存后的 `SCHEDULE_TIME` 变化，并在下一轮检查时重绑 daily job。
-- 🪟 **Windows Release 渠道编辑器保留 MiniMax 模型前缀** — 渠道模式下填写 `minimax/<模型名>` 时，后端归一化与 Web 设置页运行时模型列表都会保留该值原样，不再误改写成 `openai/minimax/<模型名>`。
-- 🤖 **Discord 入站 Webhook 补齐 Ed25519 验签** — `DiscordPlatform` 现在会基于 `X-Signature-Ed25519`、`X-Signature-Timestamp` 和原始请求体校验 Discord Interaction 签名；缺失签名头、公钥格式非法或签名不匹配时直接拒绝请求，同时对 timestamp 做 ±5 分钟时效窗口校验以防御重放攻击。
-- ⚙️ **STOCK_GROUP_N / EMAIL_GROUP_N 配置关系明确化** — 明确与 `STOCK_LIST` 的关系，并在配置校验中对超出 `STOCK_LIST` 的邮件分组给出 warning。
-- 🗓️ **断点续传改按市场时区和交易日历判断**（fixes #880）— 股票数据存在性检查不再直接使用服务器自然日，而是按 A 股 / 港股 / 美股各自市场时区解析"最新可复用交易日"。
-- 📨 **单股推送模式不再并发复用共享通知实例** — `StockAnalysisPipeline.run()` 现在会保留个股分析并发，但把 `SINGLE_STOCK_NOTIFY=true` 下的即时通知挪到结果收集侧串行发送。
-- 🔇 **实时行情降级提示收口为单次告警** — 分析主流程获取股票名称时不再提前触发一次实时行情查询，只有在全部数据源都不可用时才提示已降级为历史收盘价继续分析。
-- 🔍 **A 股中文资讯搜索恢复中文优先** — `search_stock_news()` 现在会在首个 provider 主要返回英文资讯时继续尝试后续引擎，并将同批结果中的中文资讯排到前面。
-- 🔒 **并发执行时共享状态补齐统一加锁** — 修复并发执行时共享状态缺少统一加锁的问题，避免多线程场景下的数据竞争。
+- 🚀 **Bei frühen Startfehlern wird die echte Ursache offengelegt** — `python main.py` legt die echte Ursache jetzt über stderr offen; die Bootstrap-Phase schreibt keine Dateilogs mehr in das hartcodierte `logs/`-Verzeichnis, die Dateilogs werden erst erstellt, wenn `config.log_dir` verfügbar ist, sodass ein gesunder Start keine Logdateien an unerwarteten Pfaden hinterlässt.
+- 🐳 **Docker-WebUI-Laufzeit bevorzugt Wiederverwendung vorgebauter statischer Ressourcen** — `prepare_webui_frontend_assets()` prüft jetzt zuerst, ob das im Image vorhandene `static/index.html` direkt wiederverwendet werden kann; enthält die Containerlaufzeit kein `apps/dsa-web`-Quellverzeichnis und ist `npm` nicht installiert, wird auch nicht mehr fälschlich „Frontend-Projekt nicht gefunden, automatischer Build nicht möglich“ gemeldet, wodurch das Öffnen der WebUI nach Docker-Deployment wieder funktioniert.
+- 🐳 **Docker-WebUI-Konfiguration wirkt nach dem Speichern der Systemeinstellungen** — im Docker-Szenario liest `Config` nach dem Speichern von `STOCK_LIST`, `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, `SCHEDULE_RUN_IMMEDIATELY` und `RUN_IMMEDIATELY` über die WebUI zuerst die neuen Werte aus der persistierten `.env`, sodass diese nicht von beim Containerstart injizierten alten Umgebungsvariablen überschrieben werden.
+- 📈 **Markt-Review-`max_tokens` erhöht** — die Markt-Review-Generierung hebt LLM-`max_tokens` von `2048` auf `8192`, wodurch die Wahrscheinlichkeit sinkt, dass lange Review-Ausgaben durch vorzeitiges Abschneiden bei `MAX_TOKENS` unvollständig bleiben.
+- ⏰ **Eingebauter Scheduler erkennt `SCHEDULE_TIME`-Änderungen zur Laufzeit** — der Scheduler erkennt jetzt während des Betriebs nach dem Speichern in der WebUI geänderte `SCHEDULE_TIME`-Werte und bindet den daily job beim nächsten Prüfzyklus neu.
+- 🪟 **Windows-Release-Kanal-Editor erhält das MiniMax-Modellpräfix** — bei `minimax/<Modellname>` im Kanalmodus behalten sowohl die Backend-Normalisierung als auch die Laufzeit-Modellliste der Web-Einstellungsseite den Wert unverändert bei, statt ihn fälschlich in `openai/minimax/<Modellname>` umzuschreiben.
+- 🤖 **Discord-Eingangs-Webhook erhält die Ed25519-Signaturprüfung** — `DiscordPlatform` validiert die Discord-Interaction-Signatur jetzt anhand von `X-Signature-Ed25519`, `X-Signature-Timestamp` und dem rohen Request-Body; bei fehlendem Signatur-Header, ungültigem Public-Key-Format oder nicht übereinstimmender Signatur wird die Anfrage direkt abgelehnt; zusätzlich wird der Timestamp in einem ±5-Minuten-Fenster geprüft, um Replay-Angriffe abzuwehren.
+- ⚙️ **`STOCK_GROUP_N` / `EMAIL_GROUP_N`-Konfigurationsverhältnis klargestellt** — das Verhältnis zu `STOCK_LIST` wird verdeutlicht, und die Konfigurationsvalidierung gibt für E-Mail-Gruppen, die `STOCK_LIST` übersteigen, eine warning aus.
+- 🗓️ **Wiederaufnahme unterbrochener Downloads nutzt Marktzeitzonen und Handelskalender** (fixes #880) — die Existenzprüfung von Aktiendaten verwendet nicht mehr direkt den Server-Kalendertag, sondern ermittelt den „zuletzt wiederverwendbaren Handelstag“ anhand der jeweiligen Marktzeitzone für A-Aktien / Hongkong-Aktien / US-Aktien.
+- 📨 **Einzelaktien-Push-Modus nutzt keine gemeinsame Benachrichtigungsinstanz mehr parallel** — `StockAnalysisPipeline.run()` behält die parallele Einzelaktienanalyse bei, sendet die Sofortbenachrichtigungen unter `SINGLE_STOCK_NOTIFY=true` aber nun seriell auf der Ergebnisse-Erfassungsseite.
+- 🔇 **Echtzeitkurs-Degradationshinweis auf eine einzelne Warnung eingegrenzt** — der Analyse-Hauptablauf löst beim Abrufen des Aktiennamens keine vorzeitige Echtzeitkurs-Abfrage mehr aus; nur wenn alle Datenquellen nicht verfügbar sind, wird darauf hingewiesen, dass auf historische Schlusskurse degradiert wird.
+- 🔍 **Chinesisch-Priorität der A-Aktien-Nachrichtensuche wiederhergestellt** — `search_stock_news()` versucht jetzt nachfolgende Engines, wenn der erste Provider überwiegend englische Nachrichten liefert, und sortiert chinesische Nachrichten derselben Ergebnismenge nach vorn.
+- 🔒 **Einheitliches Locking für gemeinsamen Zustand bei paralleler Ausführung ergänzt** — behebt das fehlende einheitliche Locking des gemeinsamen Zustands bei paralleler Ausführung, um Datenwettläufe in Multithread-Szenarien zu vermeiden.
 
-### 测试
+### Tests
 
-- 🧪 **补充设置页版本信息回归测试** — 新增 Web 设置页版本信息渲染断言，并覆盖占位版本 `0.0.0` 自动回退为构建标识的逻辑。
-- 🧪 **UI 治理与关键路径回归补强** — 补充 `SidebarNav`、`ChatPage`、`BacktestPage` 等组件测试，并新增 UI governance 守卫，持续防止交互元素重新引入原生 `title` 属性或旧 `input-terminal` 样式回流。同步更新 smoke / markdown drawer 相关验证，覆盖主题升级后的关键主链路。
+- 🧪 **Regressions-Tests für die Versionsinformation der Einstellungsseite ergänzt** — neue Assertions zur Versionsinformations-Darstellung der Web-Einstellungsseite; abgedeckt wird auch die Logik, bei Platzhalterversion `0.0.0` automatisch auf die Build-Kennung zurückzufallen.
+- 🧪 **UI-Governance und Regressionsabdeckung kritischer Pfade gestärkt** — Komponententests für `SidebarNav`, `ChatPage`, `BacktestPage` u. a. werden ergänzt, und ein UI-Governance-Guard verhindert dauerhaft, dass interaktive Elemente wieder native `title`-Attribute oder alte `input-terminal`-Styles zurückerhalten. Smoke-/Markdown-Drawer-Verifikationen werden synchron aktualisiert und decken die kritischen Hauptpfade nach dem Theme-Upgrade ab.
 
 ## [3.11.0] - 2026-03-27
 
-### 发布亮点
+### Release-Highlights
 
-- 🎨 **Web 工作台完成一轮 UI 统一与双主题升级** — 首页、问股、回测、持仓和设置页进一步收口到统一设计 token、输入表面和状态表达；新增完整浅色主题，并支持浅色 / 深色一键切换与持久化保存。
-- 🤖 **Bot / Agent 能力重新补回主分支** — 恢复 `/history`、`/strategies`、`/research` 等命令，`/ask` 继续支持多股对比与组合视角；Deep Research、事件监控与 schedule 轮询链路重新接回主线能力。
-- 🔒 **安全性与运行稳态同步补强** — 修复 `X-Forwarded-For` 限流绕过风险，恢复 LiteLLM 官方 PyPI 安装路径，Tushare 初始化不再依赖本地 SDK，降低 Docker、桌面打包和环境重建时的脆弱点。
-- 🖥️ **日常使用细节继续打磨** — 修复首页港股自动补全提交、登录页首屏主题闪烁、历史长股票名重叠，以及 Telegram Markdown 解析失败时整条通知发送中断等问题。
+- 🎨 **Web-Workbench schließt eine Runde UI-Vereinheitlichung und Dual-Theme-Upgrade ab** — Startseite, Aktienfrage, Backtest, Positionen und Einstellungsseite werden weiter auf einheitliche Design-Tokens, Eingabeoberflächen und Zustandsdarstellungen konsolidiert; ein vollständiges helles Theme ist neu, mit Ein-Klick-Umschaltung zwischen Hell/Dunkel und persistierter Speicherung.
+- 🤖 **Bot-/Agent-Fähigkeiten wieder in den Hauptzweig übernommen** — Befehle wie `/history`, `/strategies` und `/research` werden wiederhergestellt; `/ask` unterstützt weiterhin Mehr-Aktien-Vergleich und Portfoliosicht; Deep Research, Ereignisüberwachung und die schedule-Polling-Kette sind wieder an die Hauptfunktionen angebunden.
+- 🔒 **Sicherheit und Laufzeitstabilität zugleich gestärkt** — das Rate-Limit-Umgehungsrisiko über `X-Forwarded-For` wird behoben, der offizielle PyPI-Installationspfad von LiteLLM wird wiederhergestellt, die Tushare-Initialisierung hängt nicht mehr vom lokalen SDK ab, was die Schwachstellen bei Docker, Desktop-Packaging und Umgebungs-Neuaufbau reduziert.
+- 🖥️ **Alltägliche Bedienungsdetails weiter verfeinert** — behoben werden u. a. das Einreichen der Hongkong-Autovervollständigung auf der Startseite, das Theme-Flackern beim Erstaufruf der Login-Seite, überlappende lange Aktiennamen in der Historie sowie abgebrochene Benachrichtigungen bei fehlgeschlagenem Telegram-Markdown-Parsing.
 
-### 新功能
+### Neue Funktionen
 
-- 🎨 **全新浅色主题与双主题切换上线** — Web 工作台新增完整浅色主题，并支持在侧边栏中一键切换浅色 / 深色模式；主题选择会持久化保存，刷新页面后仍保持当前偏好。此次升级不是局部配色微调，而是对卡片层级、边界对比、输入表面、状态提示和页面背景做了一整套 light theme 重绘。
-- 🤖 **补回主分支缺失的 Agent / Bot 能力** — `#648` / `#649` 已重新补回 `main`：Bot 恢复 `/history`、`/strategies`、`/research`，`/ask` 保留多股对比与组合视角；Deep Research 与 Event Monitor 的配置重新在 Web 设置页可见并可编辑，schedule 模式也重新接入事件告警轮询。
+- 🎨 **Neues vollständiges helles Theme und Dual-Theme-Umschaltung veröffentlicht** — die Web-Workbench erhält ein vollständiges helles Theme und unterstützt das Ein-Klick-Umschalten zwischen Hell/Dunkel in der Seitenleiste; die Theme-Auswahl wird persistent gespeichert und bleibt nach dem Neuladen der Seite erhalten. Dieses Upgrade ist keine lokale Farbanpassung, sondern eine vollständige Neuzeichnung des light themes für Kartenhierarchie, Kantenkontrast, Eingabeoberflächen, Statushinweise und Seitenhintergründe.
+- 🤖 **Im Hauptzweig fehlende Agent-/Bot-Fähigkeiten wieder ergänzt** — `#648` / `#649` sind wieder in `main`: Der Bot stellt `/history`, `/strategies`, `/research` wieder her, `/ask` behält Mehr-Aktien-Vergleich und Portfoliosicht; die Konfigurationen von Deep Research und Event Monitor sind auf der Web-Einstellungsseite wieder sichtbar und editierbar, und der schedule-Modus ist wieder an die Ereigniswarnungs-Polling angebunden.
 
-### 改进
+### Verbesserungen
 
-- 🖥️ **核心页面统一到同一套工作台视觉语言** — `Home / Chat / Backtest / Portfolio / Settings` 进一步收口到共享设计 token、`input-surface` 输入体系、空态/错误态表达和抽屉遮罩语义，减少页面之间的视觉割裂与局部私有样式漂移。
-- 💬 **问股交互可达性与反馈增强** — 问股页补强了会话导出、通知发送、消息复制、历史删除与追问上下文提示；AI 回复操作不再过度依赖 hover，触屏设备和小屏场景下也能直接触达关键按钮。
-- 📊 **回测与持仓页表面和状态表达继续标准化** — 回测页筛选控件、布尔状态、结果表格与汇总卡片统一到共享输入/状态原语；持仓页的导入反馈、汇率刷新提示、空态与警示信息进一步归口到共享组件，减少页面级重复实现。
-- 🧭 **导航与页面壳层协同优化** — 侧边栏主题切换、问股完成角标、移动端抽屉遮罩和主内容滚动契约进一步统一，首页、问股和回测在桌面端与移动端的切页体验更稳定。
+- 🖥️ **Kernseiten auf eine gemeinsame Workbench-Visualsprache vereinheitlicht** — `Home / Chat / Backtest / Portfolio / Settings` werden weiter auf gemeinsame Design-Tokens, das `input-surface`-Eingabesystem, Leer-/Fehlerzustandsdarstellungen und die Drawer-Masken-Semantik konsolidiert, wodurch visuelle Brüche zwischen Seiten und lokale private Style-Abweichungen reduziert werden.
+- 💬 **Barrierefreiheit und Feedback der Aktienfrage-Interaktion gestärkt** — die Aktienfrageseite erhält verstärkt Sitzungsexport, Benachrichtigungsversand, Nachrichtenkopieren, Verlaufslöschung und Kontexthinweise für Rückfragen; AI-Antwortaktionen sind nicht mehr übermäßig vom Hover abhängig, sodass wichtige Schaltflächen auch auf Touch-Geräten und kleinen Bildschirmen direkt erreichbar sind.
+- 📊 **Oberflächen- und Zustandsdarstellungen der Backtest- und Positionsseite weiter standardisiert** — Filtersteuerelemente, Boolesche Zustände, Ergebnistabellen und Zusammenfassungskarten der Backtest-Seite werden auf gemeinsame Eingabe-/Zustands-Primitive vereinheitlicht; Import-Feedback, Wechselkurs-Refresh-Hinweise, Leerzustände und Warnungen der Positionsseite werden weiter in gemeinsame Komponenten konsolidiert, wodurch seitenbezogene Doppelimplementierungen reduziert werden.
+- 🧭 **Abgestimmte Optimierung von Navigation und Seitenhülle** — Theme-Umschaltung in der Seitenleiste, Abschluss-Badge der Aktienfrage, mobile Drawer-Maske und der Scroll-Vertrag des Hauptinhalts werden weiter vereinheitlicht, wodurch der Seitenwechsel von Startseite, Aktienfrage und Backtest auf Desktop und Mobil stabiler wird.
 
-### 测试
+### Tests
 
-- 🧪 **UI 治理与关键路径回归补强** — 补充 `SidebarNav`、`ChatPage`、`BacktestPage` 等组件测试，并新增 UI governance 守卫，持续防止交互元素重新引入原生 `title` 属性或旧 `input-terminal` 样式回流。同步更新 smoke / markdown drawer 相关验证，覆盖主题升级后的关键主链路。
+- 🧪 **UI-Governance und Regressionsabdeckung kritischer Pfade gestärkt** — Komponententests für `SidebarNav`, `ChatPage`, `BacktestPage` u. a. werden ergänzt, und ein UI-Governance-Guard verhindert dauerhaft, dass interaktive Elemente wieder native `title`-Attribute oder alte `input-terminal`-Styles zurückerhalten. Smoke-/Markdown-Drawer-Verifikationen werden synchron aktualisiert und decken die kritischen Hauptpfade nach dem Theme-Upgrade ab.
 
-### 修复
+### Behobene Probleme
 
-- 🌗 **Web 首屏默认主题预设为深色** — `apps/dsa-web/index.html` 现在会在 React 挂载前读取本地保存的主题偏好；若没有已保存值，则立即给 `<html>` 预设 `dark` 并同步 `color-scheme`，避免首页和登录页首屏先闪出浅色主题。
-- 🔐 **登录页独立主题层收口** — 登录页输入框、标签、切换按钮和按钮文案现在使用独立的 `--login-*` 视觉 token，不再继承全局浅/深主题文字色；即使浏览器缓存了浅色主题，登录页仍保持稳定的深色视觉与青色密码输入表现，避免密码圆点和文案落成黑色。
-- 🖥️ **首页港股代码输入修复** — Web 首页分析输入框现在可正确接受港股代码与自动完成选中的港股项，补齐 `00700.HK` / `HK00700` 等格式识别，避免提交时误报“请输入有效的股票代码或股票名称”。
+- 🌗 **Web-Standardtheme beim ersten Aufruf auf Dunkel voreingestellt** — `apps/dsa-web/index.html` liest jetzt vor dem React-Mount die lokal gespeicherte Theme-Präferenz; gibt es keinen gespeicherten Wert, wird dem `<html>` sofort `dark` vorgegeben und `color-scheme` synchron gesetzt, damit Start- und Login-Seite beim ersten Aufruf nicht kurz ein helles Theme aufblitzen lassen.
+- 🔐 **Eigene Theme-Schicht für die Login-Seite konsolidiert** — Eingabefelder, Labels, Umschaltknopf und Schaltflächentexte der Login-Seite verwenden jetzt eigene `--login-*`-Visual-Tokens und erben nicht mehr die globale Hell-/Dunkel-Textfarbe; selbst wenn der Browser ein helles Theme gecacht hat, behält die Login-Seite die stabile dunkle Optik und die türkisfarbene Passworteingabe, sodass Passwortpunkte und Texte nicht schwarz werden.
+- 🖥️ **Eingabe von Hongkong-Aktiencodes auf der Startseite repariert** — das Analyse-Eingabefeld der Web-Startseite akzeptiert jetzt korrekt Hongkong-Aktiencodes und aus der Autovervollständigung gewählte Hongkong-Einträge; die Erkennung von Formaten wie `00700.HK` / `HK00700` wird ergänzt, damit beim Einreichen nicht fälschlich „Bitte einen gültigen Aktiencode oder Aktiennamen eingeben“ gemeldet wird.
 
-- 🔒 **认证限流 X-Forwarded-For 取值修复（CWE-345）**（#841 / #842）— `get_client_ip()` 从取 `X-Forwarded-For` 最左值改为最右值，防止攻击者通过伪造首部旋转限流桶绕过暴力破解保护；仅影响 `TRUST_X_FORWARDED_FOR=true` 且单层可信反向代理的部署场景，多级代理环境需按部署文档评估配置。
-- 📦 **恢复 LiteLLM 官方 PyPI 安装并锁定安全上限** — `requirements.txt` 重新使用 `pip install litellm` 的官方 PyPI 安装路径，并在保留历史最低要求 `>=1.80.10` 的同时增加 `<1.82.7` 的安全上限，避免误装已被移除的 `1.82.7` / `1.82.8` 风险版本；Windows 桌面打包脚本也同步回退到标准 `pip install -r requirements.txt` 链路，减少特殊下载分支带来的维护成本。
-- 📨 **Telegram Markdown 解析失败回退纯文本**（fixes #850）— `src/notification_sender/telegram_sender.py` 现在会在 Telegram 返回 `HTTP 400` 且包含 `can't parse entities` / Markdown 解析错误时，自动去掉 `parse_mode` 后重试纯文本发送，避免 `*ST` 等正文内容直接导致整条通知失败。
-- 🔢 **A 股同码实时行情保留交易所提示**（fixes #852）— `DataFetcherManager` 与 `TushareFetcher` 现在会保留 `SZ000001` / `000001.SZ` 这类显式沪深提示，旧版 Tushare 实时行情降级分支不再把深市 `000001` 误判成 `sh000001` 上证指数。
-- 🎯 **多 Agent 次优买点不再盲目复制理想买点**（fixes #851）— 当多智能体结果缺少独立 `secondary_buy` 时，仪表盘现在优先展示 `N/A` 而不是把 fallback 值硬拷贝成与 `ideal_buy` 完全相同，减少误导性的双买点展示。
-- 🧩 **Tushare 初始化不再强依赖本地 SDK 包** — `TushareFetcher` 现在直接使用内置 HTTP client 访问 Tushare Pro，不再在启动阶段先 `import tushare` 才能初始化；修复了 Docker、桌面打包或环境重建后因缺少 `tushare` 包而提前报 `No module named 'tushare'` 的问题，并补充对应回归测试。
-- ⚙️ **`daily_analysis` 工作流补齐 `DEEPSEEK_API_KEY` 映射** — GitHub Actions 每日分析工作流现在会正确透传 `DEEPSEEK_API_KEY`，避免云端任务配置了密钥却在运行时拿不到对应环境变量。
-- 🖥️ **历史列表过长股票名称截断与悬停展示**（fixes #815）— 历史列表中过长的股票名称, 现在会按字符类型自动截断（英文15/中文8/混合10字符），默认显示截断结果，悬停时展示完整名称；解决 1920x1080 分辨率下股票名称与右侧状态标签文字重叠的问题。新增 `stockName.ts` 工具函数并补充对应测试。
+- 🔒 **Fix für den `X-Forwarded-For`-Wert bei der Auth-Rate-Limitierung (CWE-345)** (#841 / #842) — `get_client_ip()` liest nun den rechtesten statt des linkesten Werts aus `X-Forwarded-For`, um zu verhindern, dass Angreifer durch gefälschte Header die Rate-Limit-Eimer rotieren und den Brute-Force-Schutz umgehen; betrifft nur Deployment-Szenarien mit `TRUST_X_FORWARDED_FOR=true` und einstufigem vertrauenswürdigem Reverse-Proxy; in Mehrstufen-Proxy-Umgebungen ist die Konfiguration gemäß der Deployment-Dokumentation zu bewerten.
+- 📦 **Offizieller LiteLLM-PyPI-Installationspfad wiederhergestellt und sicheres Obergrenzen-Locking ergänzt** — `requirements.txt` verwendet wieder den offiziellen PyPI-Installationspfad von `pip install litellm` und erhält zusätzlich zur beibehaltenen Mindestanforderung `>=1.80.10` eine Sicherheits-Obergrenze `<1.82.7`, um ein versehentliches Installieren der entfernten Risiko-Versionen `1.82.7` / `1.82.8` zu vermeiden; auch das Windows-Desktop-Packingskript fällt synchron auf die standardmäßige `pip install -r requirements.txt`-Kette zurück, was die Wartungskosten spezieller Download-Branches senkt.
+- 📨 **Telegram fällt bei fehlgeschlagenem Markdown-Parsing auf reinen Text zurück** (fixes #850) — `src/notification_sender/telegram_sender.py` entfernt bei `HTTP 400` von Telegram mit `can't parse entities` / Markdown-Parsefehler automatisch `parse_mode` und wiederholt den Versand als reinen Text, sodass Inhalte wie `*ST` nicht mehr die gesamte Benachrichtigung scheitern lassen.
+- 🔢 **Echtzeitkurse A-Aktien mit gleichem Code behalten Börsenhinweis** (fixes #852) — `DataFetcherManager` und `TushareFetcher` behalten jetzt explizite Shanghai-/Shenzhen-Hinweise wie `SZ000001` / `000001.SZ`; der Degradationszweig der alten Tushare-Echtzeitkurse verwechselt Shenzhen-`000001` nicht mehr mit dem Shanghaier `sh000001`-Index.
+- 🎯 **Multi-Agent-Zweiter-Kaufpunkt kopiert den Ideal-Kaufpunkt nicht mehr blind** (fixes #851) — fehlt in Multi-Agent-Ergebnissen ein eigenständiger `secondary_buy`, zeigt das Dashboard jetzt vorrangig `N/A` statt den Fallback-Wert hart auf exakt `ideal_buy` zu kopieren, wodurch irreführende Doppel-Kaufpunkte reduziert werden.
+- 🧩 **Tushare-Initialisierung hängt nicht mehr zwingend vom lokalen SDK-Paket ab** — `TushareFetcher` greift jetzt direkt über den eingebauten HTTP-Client auf Tushare Pro zu und muss zur Initialisierung nicht mehr erst `import tushare` ausführen; behoben wird, dass nach Docker, Desktop-Packaging oder Umgebungs-Neuaufbau ohne `tushare`-Paket vorzeitig `No module named 'tushare'` gemeldet wurde; dazu kommt ein entsprechender Regressionstest.
+- ⚙️ **`daily_analysis`-Workflow ergänzt `DEEPSEEK_API_KEY`-Mapping** — der GitHub-Actions-Tagesanalyse-Workflow reicht `DEEPSEEK_API_KEY` jetzt korrekt durch, sodass ein in der Cloud konfigurierter Schlüssel zur Laufzeit nicht mehr ohne die entsprechende Umgebungsvariable dasteht.
+- 🖥️ **Abschneiden und Hover-Anzeige überlanger Aktiennamen in der Verlaufsliste** (fixes #815) — zu lange Aktiennamen in der Verlaufsliste werden jetzt automatisch nach Zeichentyp abgeschnitten (Englisch 15 / Chinesisch 8 / Gemischt 10 Zeichen); standardmäßig wird das abgeschnittene Ergebnis angezeigt, beim Hover der vollständige Name; gelöst wird die Überlappung von Aktiennamen und Statuslabel rechts bei 1920x1080-Auflösung. Dazu kommt die neue Hilfsfunktion `stockName.ts` samt Tests.
 
-### 文档
+### Dokumentation
 
-- 🧾 **README 捐赠入口更新为小红书二维码** — README 及中英文说明中的赞助入口更新为小红书二维码素材，保持展示口径一致。
+- 🧾 **README-Spenden-Einstieg auf Xiaohongshu-QR-Code aktualisiert** — der Sponsoring-Einstieg in README sowie chinesisch- und englischsprachigen Anleitungen wird auf den Xiaohongshu-QR-Code umgestellt, um die Darstellung einheitlich zu halten.
 
 ## [3.10.1] - 2026-03-24
 
-### 新功能
+### Neue Funktionen
 
-- 🔔 **Web 端分析推送通知开关**（#808）— 首页分析按钮旁新增「推送通知」复选框，默认勾选；取消勾选时本次分析不发送 Telegram/企业微信等推送。API `POST /api/v1/analysis/analyze` 新增 `notify` 字段（`bool`，默认 `true`），不传时行为与修改前一致，Bot 和定时任务不受影响。
+- 🔔 **Schalter für Push-Benachrichtigungen bei Web-Analysen** (#808) — neben dem Analyseknopf der Startseite gibt es ein neues Kontrollkästchen „Push-Benachrichtigung“, standardmäßig aktiviert; wird es abgewählt, sendet diese Analyse keine Pushes wie Telegram/WeCom. Die API `POST /api/v1/analysis/analyze` erhält ein `notify`-Feld (`bool`, Standard `true`); ohne Angabe bleibt das Verhalten wie zuvor; Bot und geplante Aufgaben sind nicht betroffen.
 
-### 改进
+### Verbesserungen
 
-- 🖥️ **问股 / 回测页面布局与壳层协同优化** — 统一 Chat / Backtest 页面容器、共享 UI 状态和跟随问答交互路径，移除部分硬编码高度限制，让导航框架内的填充与滚动行为更连贯。
-- 🎨 **全局视觉与共享组件继续收敛** — Light theme 引入动态 HSL 阴影体系，统一侧边栏激活态、告警组件对比度和聊天气泡样式，并把部分零散内联样式收口为语义化 CSS 变量，提升一致性与可维护性。
+- 🖥️ **Abgestimmte Optimierung von Layout und Hülle der Seiten Aktienfrage / Backtest** — die Container von Chat / Backtest, gemeinsamer UI-Zustand und der der Frage-Antwort-Interaktion folgende Pfad werden vereinheitlicht; einige hartcodierte Höhenbegrenzungen werden entfernt, sodass Füllung und Scrollverhalten im Navigationsrahmen zusammenhängender sind.
+- 🎨 **Globale Optik und gemeinsame Komponenten weiter konsolidiert** — das Light theme erhält ein dynamisches HSL-Schatten-System; Aktivzustand der Seitenleiste, Kontrast von Alarmkomponenten und Chat-Bubble-Styles werden vereinheitlicht, und verstreute Inline-Styles werden in semantische CSS-Variablen überführt, was Konsistenz und Wartbarkeit verbessert.
 
-### 修复
+### Behobene Probleme
 
-- 🖼️ **系统设置智能导入文件选择恢复** — 修复了“系统设置 > 基础设置 > 智能导入”模块中 “选择图片 / 选择文件” 两个按钮点击无响应的问题。
-- 🖥️ **移动端滚动与交互层级修复** — 解决主题切换菜单在移动端被主内容遮挡的 z-index 冲突，并恢复首页长报告场景下的正常纵向滚动，不影响其他页面现有滚动行为。
-- 🧾 **Markdown 纯文本复制清洗增强** — 改进纯文本导出算法，复制分析报告时会更稳定地清除表格分隔符等 Markdown 痕迹，提升分享和归档内容的纯净度。
-- 🧠 **Trading philosophy injection 覆盖 legacy + Agent 全链路**（#810）— `GeminiAnalyzer`、单 Agent 模式和 skill-aware Prompt 现在共享同一套策略注入状态；只有隐式回落到内置默认 `bull_trend` 时才保留旧的趋势型提示，显式策略选择或自定义默认 skill 不再被偷偷叠加 `MA5>MA10>MA20` 多头基线。
-- 🛠️ **后端 CI 依赖安装链路稳态化**（#835）— 拆分 backend gate 阶段、为依赖安装增加重试，并把 CI 用的 `litellm` 安装来源调整为更稳定的 GitHub 源，降低依赖解析抖动导致的 backend gate 偶发失败。
-- 🪟 **Windows 桌面发版构建恢复 LiteLLM 安装兼容性** — `scripts/build-backend.ps1` 现在会先过滤 `requirements.txt` 中的 LiteLLM GitHub 源包，再下载对应 tag 的 zipball 到本地移除上游可选 `enterprise/` 目录后安装，绕过 Windows runner 上 Poetry 构建 wheel 时把目录误当文件打包导致的失败；同时补上 `pip install` 退出码检查，避免依赖安装失败后只在后续 `python-multipart` 校验阶段才暴露成次生报错。
+- 🖼️ **Dateiauswahl des intelligenten Imports in den Systemeinstellungen wiederhergestellt** — behoben wird, dass die beiden Schaltflächen „Bild auswählen / Datei auswählen“ im Modul „Systemeinstellungen > Grundeinstellungen > Intelligenter Import“ auf Klicks nicht reagierten.
+- 🖥️ **Mobiles Scrollen und Interaktions-Ebenen repariert** — der z-index-Konflikt wird gelöst, bei dem das Theme-Umschaltmenü auf Mobilgeräten vom Hauptinhalt verdeckt wurde; zudem wird das normale vertikale Scrollen bei langen Berichten auf der Startseite wiederhergestellt, ohne das bisherige Scrollverhalten anderer Seiten zu beeinträchtigen.
+- 🧾 **Bereinigung beim Kopieren von Markdown als reinen Text verbessert** — der Export-Algorithmus für reinen Text wird verbessert, sodass beim Kopieren von Analyseberichten Markdown-Spuren wie Tabellentrennzeichen zuverlässiger entfernt werden, was die Reinheit geteilter und archivierter Inhalte erhöht.
+- 🧠 **Trading-Philosophy-Injection deckt legacy + gesamte Agent-Kette ab** (#810) — `GeminiAnalyzer`, Single-Agent-Modus und skill-aware Prompt teilen jetzt denselben Strategie-Injektionszustand; nur beim impliziten Rückfall auf die eingebaute Standard-Strategie `bull_trend` bleibt der alte Trend-Prompt erhalten; explizite Strategiewahl oder ein benutzerdefinierter Standard-Skill bekommt keine heimlich aufgesetzte `MA5>MA10>MA20`-Long-Baseline mehr.
+- 🛠️ **Backend-CI-Abhängigkeitsinstallation stabilisiert** (#835) — die backend-gate-Phase wird aufgeteilt, die Abhängigkeitsinstallation erhält Wiederholungsversuche, und die für CI verwendete `litellm`-Installationsquelle wird auf die stabilere GitHub-Quelle umgestellt, wodurch sporadische backend-gate-Fehler durch Abhängigkeitsauflösungs-Schwankungen reduziert werden.
+- 🪟 **Windows-Desktop-Release-Build stellt die LiteLLM-Installationskompatibilität wieder her** — `scripts/build-backend.ps1` filtert zuerst das LiteLLM-GitHub-Quellpaket aus `requirements.txt`, lädt dann das Zipball des entsprechenden Tags herunter, entfernt vor der Installation das optionale `enterprise/`-Verzeichnis upstream und umgeht damit Fehler, die auf Windows-Runner entstehen, wenn Poetry beim Wheehlbau ein Verzeichnis fälschlich als Datei packt; zusätzlich wird die Exit-Code-Prüfung von `pip install` ergänzt, damit fehlgeschlagene Abhängigkeitsinstallationen nicht erst in der späteren `python-multipart`-Validierungsphase als sekundärer Fehler sichtbar werden.
 
-### 测试
+### Tests
 
-- 🧪 **问股 / 回测 / 智能导入回归覆盖补齐** — 同步更新 E2E 冒烟期望，补充 `DashboardStateBlock`、Chat 页、智能导入文件选择与相关交互回归断言，确保近期 UI 调整后的关键路径仍可稳定通过。
+- 🧪 **Regressionsabdeckung für Aktienfrage / Backtest / intelligenter Import vervollständigt** — die E2E-Smoke-Erwartungen werden synchron aktualisiert und Regressions-Assertions für `DashboardStateBlock`, Chat-Seite, Dateiauswahl des intelligenten Imports und zugehörige Interaktionen ergänzt, damit die kritischen Pfade nach den jüngsten UI-Anpassungen weiterhin stabil bestehen.
 
 ## [3.10.0] - 2026-03-24
 
-### 发布亮点
+### Release-Highlights
 
-- 🔎 **自动补全与索引工具扩展到三市场** — 补全索引生成链路现在同时覆盖 A 股、港股、美股，配套新增 Tushare 股票列表抓取工具与更完整的静态索引数据，让首页搜索入口从“能用”走向“更全、更稳”。
-- 🖥️ **Dashboard 与报告查看体验继续收口** — 首页 Dashboard 面板、状态边界、字体层级和完整报告表格密度完成一轮统一；报告详情也补齐了 Markdown/纯文本复制与更可靠的按钮交互，减少历史报告查看与分享时的摩擦。
-- 🤖 **Agent skill 与市场语义边界更清晰** — skill bundle、默认策略、回测汇总语义和兼容接口进一步收敛；同时分析 Prompt 不再默认写死 A 股上下文，美股和港股分析也能按各自市场规则生成更贴切的内容。
-- ⏰ **定时与桌面配置能力更贴近真实使用场景** — 桌面端支持 `.env` 导入导出；`python main.py --schedule --stocks ...` 也不再把启动时股票快照错误带入后续计划执行，定时任务会跟随最新保存的 `STOCK_LIST`。
-### 新功能
+- 🔎 **Autovervollständigung und Index-Tools auf drei Märkte erweitert** — die Erzeugungskette des Vervollständigungs-Index deckt jetzt A-Aktien, Hongkong-Aktien und US-Aktien ab; dazu kommen ein neues Tushare-Aktienlisten-Abruftool und vollständigere statische Indexdaten, wodurch der Sucheinstieg auf der Startseite von „nutzbar“ zu „vollständiger und stabiler“ wird.
+- 🖥️ **Dashboard- und Berichtsansicht weiter konsolidiert** — Dashboard-Panels der Startseite, Statusgrenzen, Schriftebenen und die Tabellendichte vollständiger Berichte werden in einer Runde vereinheitlicht; die Berichtsdetails erhalten zusätzlich Markdown-/Reintext-Kopieren und zuverlässigere Schaltflächen-Interaktionen, wodurch Ansehen und Teilen historischer Berichte reibungsloser wird.
+- 🤖 **Agent-Skill- und Markt-Semantikgrenzen klarer** — Skill-Bundle, Standardstrategie, Backtest-Summariesemantik und Kompatibilitätsschnittstellen werden weiter konsolidiert; zugleich wird der A-Aktien-Kontext nicht mehr standardmäßig im Analyse-Prompt festgeschrieben, sodass US- und Hongkong-Analysen passgenauere Inhalte nach ihren jeweiligen Marktregeln erzeugen.
+- ⏰ **Zeitplan- und Desktop-Konfiguration näher am echten Einsatz** — der Desktop-Client unterstützt `.env`-Export und -Import; `python main.py --schedule --stocks ...` schleppt die beim Start erstellte Aktiensnapshot nicht mehr fälschlich in spätere Planausführungen, und geplante Aufgaben folgen der jeweils zuletzt gespeicherten `STOCK_LIST`.
+### Neue Funktionen
 
-- 💾 **桌面端 `.env` 备份/恢复入口**（#754）— 桌面模式下的系统设置页新增 `导出 .env` / `导入 .env` 按钮，可直接备份当前已保存配置，或把备份文件中的键值合并恢复到当前桌面端 `.env`；导入沿用现有 `config_version` 冲突保护与运行时重载链路，不改变现有桌面端便携模式路径。
-- 📊 **Tushare 股票列表获取工具** — 新增 `scripts/fetch_tushare_stock_list.py`，支持从 Tushare Pro 获取 A股、港股、美股列表信息并保存为 CSV，配有分页读取、智能限流、错误处理和进度提示；新增对应使用文档 `docs/TUSHARE_STOCK_LIST_GUIDE.md`。
-- 🔎 **索引生成脚本多市场支持** — `generate_index_from_csv.py` 重构为支持 Tushare 和 AkShare 双数据源，同时覆盖 A股、港股、美股三个市场；新增按市场分类的别名映射（A股、港股常见别名，美股常用股票英文缩写）；添加 `--source` 参数切换数据源、`--test` 参数验证模式；严格过滤美股 DUMMY 记录。
-- 🔎 **索引生成脚本增强** — `generate_stock_index.py` 新增 `--test`/`-t` 测试模式和 `--verbose`/`-v` 详细输出模式，添加市场分布统计，优化 JSON 输出格式。
-- 📋 **首页完整报告支持双模式复制** — 历史报告详情头部新增“复制 Markdown 源码”和“复制纯文本”工具按钮；前者保留原始 Markdown 结构，后者去除常见 Markdown 格式符号，方便分享、归档和跨报告比对。复制按钮文案会跟随 `REPORT_LANGUAGE` 保持中英文一致，避免英文报告页出现中文固定文案。
-- 🧩 **个股分析页补齐关联板块展示**（#669）— A 股分析写路径现在会把 `belong_boards` 一次性写入 `fundamental_context` / `fundamental_snapshot`，结构化报告详情同步新增 `belong_boards` 与 `sector_rankings` 字段，Web 个股分析页首屏可直接展示所属板块及其是否命中当日板块涨跌榜；无数据时保持 fail-open 隐藏，不影响现有分析主流程。
+- 💾 **`.env`-Sicherung/Wiederherstellung im Desktop-Client** (#754) — die Systemeinstellungsseite im Desktop-Modus erhält neue Schaltflächen `Export .env` / `Import .env`, mit denen die aktuell gespeicherte Konfiguration gesichert oder Schlüssel-Wert-Paare aus einer Sicherungsdatei in das aktuelle Desktop-`.env` übernommen werden können; der Import nutzt weiterhin den bestehenden `config_version`-Konflikt- und Laufzeit-Reload-Pfad und verändert den bestehenden portablen Desktop-Modus-Pfad nicht.
+- 📊 **Tushare-Aktienlisten-Abruftool** — neu ist `scripts/fetch_tushare_stock_list.py`, das Listeninformationen für A-Aktien, Hongkong-Aktien und US-Aktien von Tushare Pro abruft und als CSV speichert, ausgestattet mit Paginierung, intelligenter Rate-Limitierung, Fehlerbehandlung und Fortschrittsanzeige; dazu kommt die Nutzungsdokumentation `docs/TUSHARE_STOCK_LIST_GUIDE.md`.
+- 🔎 **Index-Erzeugungsskript unterstützt mehrere Märkte** — `generate_index_from_csv.py` wird so umgebaut, dass es Tushare und AkShare als doppelte Datenquelle unterstützt und zugleich die drei Märkte A-Aktien, Hongkong-Aktien und US-Aktien abdeckt; neu sind marktbezogene Alias-Mappings (gängige Aliasse für A-Aktien und Hongkong-Aktien, übliche englische Abkürzungen für US-Aktien); ein `--source`-Parameter wechselt die Datenquelle, `--test` aktiviert den Validierungsmodus; US-DUMMY-Datensätze werden streng gefiltert.
+- 🔎 **Index-Erzeugungsskript erweitert** — `generate_stock_index.py` erhält die Modi `--test`/`-t` (Test) und `--verbose`/`-v` (detaillierte Ausgabe), Marktverteilungsstatistiken und ein optimiertes JSON-Ausgabeformat.
+- 📋 **Vollständige Berichte auf der Startseite unterstützen Zwei-Modus-Kopieren** — im Kopf der Historienbericht-Details gibt es neue Werkzeugschaltflächen „Markdown-Quelltext kopieren“ und „Reinen Text kopieren“; Ersteres erhält die originale Markdown-Struktur, Letzteres entfernt gängige Markdown-Formatierungszeichen, was Teilen, Archivieren und Vergleichen über Berichte hinweg erleichtert. Die Schaltflächenbeschriftung folgt `REPORT_LANGUAGE` und bleibt damit in Chinesisch/Englisch konsistent, sodass in englischen Berichtsseiten keine chinesischen festen Texte erscheinen.
+- 🧩 **Einzelaktien-Analyseseite zeigt zugehörige Sektoren** (#669) — der A-Aktien-Analyseschreibpfad schreibt `belong_boards` jetzt in einem Zug in `fundamental_context` / `fundamental_snapshot`; die strukturierten Berichtsdetails erhalten die Felder `belong_boards` und `sector_rankings`; die Web-Einzelaktien-Analyseseite kann auf dem ersten Bildschirm direkt die zugehörigen Sektoren sowie anzeigen, ob diese die Tages-Sektor-Rangliste erreichten; ohne Daten bleibt die Anzeige fail-open verborgen und beeinträchtigt den bestehenden Analyse-Hauptablauf nicht.
 
-### 改进
+### Verbesserungen
 
-- 🖥️ **Dashboard 面板统一化（PR7-2）** — 新增 `DashboardPanelHeader` 和 `DashboardStateBlock` 作为历史、报告、资讯、任务和透明度等面板的通用组件；统一了各面板标题层级、加载/空态/错误态和 CSS 变量 token。
-- 🖥️ **HomePage 状态边界收口（PR7-2）** — 引入 `useHomeDashboardState` hook，集中 `stockPoolStore` 状态选取逻辑，移除 `HomePage` 中重复的本地状态派生和回调定义。
-- 🧭 **Agent skill 统一到单一配置语义** — Multi-Agent runtime、API、Web chat 和配置元数据统一围绕 `skill` 概念收敛；`/api/v1/agent/skills` 成为主发现入口，`AGENT_SKILL_*` 成为主配置面，内置 skill 元数据也开始声明默认启用、排序优先级、market regime tag 等信息，减少默认策略散落在代码里的隐式耦合。
-- 🔎 **自动补全索引数据更新** — 重新生成 `stocks.index.json`，涵盖 A股、港股、美股三个市场，提升自动补全覆盖率。
-- 🧾 **Dashboard 字体与完整报告表格密度微调** — 收敛首页侧栏、空状态、历史操作区的字体层级，并将完整 Markdown 报告表格 `th/td` 的内边距调整到更紧凑的 4-6px 区间，让信息密度与现有 Dashboard 视觉节奏更一致。
+- 🖥️ **Dashboard-Panels vereinheitlicht (PR7-2)** — `DashboardPanelHeader` und `DashboardStateBlock` werden als gemeinsame Komponenten für Panels wie Historie, Bericht, Nachrichten, Aufgaben und Transparenz eingeführt; Titel-Hierarchie, Lade-/Leer-/Fehlerzustände und CSS-Variablen-Tokens aller Panels werden vereinheitlicht.
+- 🖥️ **HomePage-Zustandsgrenzen konsolidiert (PR7-2)** — der Hook `useHomeDashboardState` bündelt die Zustandsauswahl des `stockPoolStore` und entfernt doppelte lokale Zustandsableitungen und Callback-Definitionen in `HomePage`.
+- 🧭 **Agent-Skill auf eine einheitliche Konfigurationssemantik zusammengeführt** — Multi-Agent-Runtime, API, Web-Chat und Konfigurationsmetadaten werden einheitlich um das `skill`-Konzept konsolidiert; `/api/v1/agent/skills` wird zum primären Erkennungseinstieg, `AGENT_SKILL_*` zur primären Konfigurationsfläche; die eingebauten Skill-Metadaten beginnen damit, standardmäßig aktiviert zu sein sowie Prioritäten und market-regime-Tags zu deklarieren, wodurch implizite Kopplungen verstreuter Standardstrategien im Code reduziert werden.
+- 🔎 **Vervollständigungs-Indexdaten aktualisiert** — `stocks.index.json` wird neu erzeugt und deckt die drei Märkte A-Aktien, Hongkong-Aktien und US-Aktien ab, was die Abdeckung der Autovervollständigung verbessert.
+- 🧾 **Dashboard-Schrift und Tabellendichte vollständiger Berichte feinjustiert** — Schriftebenen der Startseiten-Sidebar, Leerzustände und des Verlaufsbedienbereichs werden konsolidiert und die Innenabstände von `th/td` in vollständigen Markdown-Berichtstabellen auf ein kompakteres 4-6px-Band angepasst, sodass die Informationsdichte besser zum visuellen Rhythmus des bestehenden Dashboards passt.
 
-### 修复
+### Behobene Probleme
 
-- ⏰ **定时模式不再锁定启动时 CLI 股票快照** — `python main.py --schedule --stocks ...` 现在不会让后续计划执行沿用启动时的旧股票列表；定时任务每次触发前都会重新读取最新保存的 `STOCK_LIST`，确保 WebUI 或 `.env` 更新后的自选股配置能参与后续推送。
-- 🌍 **LLM Prompt 按股票市场动态注入上下文** — 分析链路不再把市场规则写死成 A 股；系统 Prompt 会根据股票代码识别 A 股、港股或美股，并注入对应的角色描述与交易规则提示，减少跨市场分析出现口径错位或结论失真的问题。
-- 🔎 **美股自动补全复用 ticker 去重** — `generate_index_from_csv.py` 在导入 Tushare `us_basic` CSV 时会先按 `ts_code` 折叠复用的美股 ticker，优先保留更可能仍在使用的记录，避免 `stocks.index.json` 出现重复 `canonicalCode` 后让 Web 自动补全展示历史名称或提交歧义代码。
-- 🧾 **Web 报告详情复制交互稳定性修复**（#749）— `ReportDetails` 中“原始分析结果 / 分析快照”的复制按钮补齐可点击层级，避免被下方 JSON 内容覆盖；两个面板的复制提示也改为各自独立，不再出现复制一个后两个按钮同时显示“已复制”的误导反馈。
-- 📊 **Agent skill 回测与兼容接口语义收敛** — `get_skill_backtest_summary` 现在要求显式传入 `skill_id`，缺失时返回明确校验提示；仓库尚未持久化真实 skill 级汇总时会返回明确的 unsupported/info 响应，并保留 `normalized` 与 `*_pct` 兼容字段，避免沿用 overall 指标误导 Agent 或用户。
-- 🔧 **Skill 默认选择与兼容层行为加固** — `allowed-tools` 会继续仅作为 `SKILL.md` bundle 元数据保留，不再泄露到运行时工具选择；`/api/v1/agent/strategies` 恢复旧 payload 形状；显式传入 `skills: []` 时会清空陈旧上下文；当用户明确选择策略 skill 时不再偷偷叠加默认 bull-trend，而在 `AGENT_SKILLS` 为空时则统一只回落到单一主默认 skill。
+- ⏰ **Zeitplanmodus sperrt die CLI-Aktiensnapshot vom Start nicht mehr ein** — `python main.py --schedule --stocks ...` lässt nachfolgende Planausführungen nicht mehr die alte Aktienliste vom Start übernehmen; geplante Aufgaben lesen vor jedem Auslösen erneut die zuletzt gespeicherte `STOCK_LIST`, sodass nach WebUI- oder `.env`-Aktualisierungen konfigurierte Watchlists an späteren Pushes teilnehmen.
+- 🌍 **LLM-Prompt injiziert Kontext dynamisch nach Aktienmarkt** — die Analyse-Pipeline schreibt die Marktregeln nicht mehr fest auf A-Aktien; das System-Prompt erkennt anhand des Aktiencodes, ob es sich um A-Aktien, Hongkong-Aktien oder US-Aktien handelt, und injiziert entsprechende Rollenbeschreibung und Trading-Regelhinweise, wodurch Marktverwechslungen oder verzerrte Schlussfolgerungen bei marktübergreifenden Analysen reduziert werden.
+- 🔎 **US-Autovervollständigung dedupliziert wiederverwendete Ticker** — `generate_index_from_csv.py` faltet beim Import der Tushare-`us_basic`-CSV wiederverwendete US-Ticker zuerst über `ts_code` zusammen, wobei vorzugsweise weiterhin wahrscheinlich genutzte Datensätze erhalten bleiben; so zeigen weder doppelte `canonicalCode` in `stocks.index.json` alte Namen in der Web-Autovervollständigung an noch reicht die Einreichung mehrdeutige Codes ein.
+- 🧾 **Kopier-Interaktionsstabilität in der Web-Berichtsdetailansicht repariert** (#749) — die Kopierknöpfe für „Original-Analyseergebnis / Analyseschritt“ in `ReportDetails` erhalten eine anklickbare Ebene, sodass sie nicht mehr vom darunterliegenden JSON-Inhalt überdeckt werden; die Kopierhinweise der beiden Panels sind nun getrennt, sodass nicht mehr nach dem Kopieren eines Panels beide Knöpfe gleichzeitig „Kopiert“ anzeigen.
+- 📊 **Agent-Skill-Backtest- und Kompatibilitätsschnittstellen-Semantik konsolidiert** — `get_skill_backtest_summary` verlangt jetzt eine explizite Übergabe von `skill_id` und liefert bei fehlendem Wert einen klaren Validierungshinweis; sofern das Repository noch keine echten skill-bezogenen Zusammenfassungen persistiert hat, wird eine eindeutige unsupported/info-Antwort zurückgegeben, mit beibehaltenen `normalized`- und `*_pct`-Kompatibilitätsfeldern, damit Agent oder Nutzer nicht durch overall-Kennzahlen in die Irre geführt werden.
+- 🔧 **Standard-Skillauswahl und Kompatibilitätsschicht gehärtet** — `allowed-tools` bleibt weiterhin nur als `SKILL.md`-Bundle-Metadaten erhalten und wird nicht mehr in die Laufzeit-Toolauswahl durchgereicht; `/api/v1/agent/strategies` stellt die alte Payload-Form wieder her; ein explizit übergebenes `skills: []` leert veralteten Kontext; wählt der Nutzer eine Strategie-Skill explizit, wird kein Standard-bull-trend mehr heimlich aufgesetzt, während bei leerem `AGENT_SKILLS` einheitlich auf einen einzigen primären Standard-Skill zurückgefallen wird.
 
-### 测试
+### Tests
 
-- 🧪 **Dashboard 组件测试覆盖率扩展（PR7-2）** — 新增 `ReportNews` 和 `TaskPanel` 测试；对 `HistoryList`、`ReportDetails`、`HomePage`、`useDashboardLifecycle` 和 `stockPoolStore` 增强了断言覆盖，包括删除回退、移动端抽屉和任务生命周期等场景。
-- 🧪 **多市场索引生成测试补齐** — 新增 `tests/test_generate_index_from_csv.py`，覆盖 Tushare/AkShare 双数据源解析、多市场判断、美股 DUMMY 过滤与重复 ticker 去重等核心路径。
-- 🧪 **关联板块写入与 API 契约回归** — 新增 `tests/test_pipeline_related_boards.py`，并补充分析历史与分析接口契约测试，确保 `belong_boards` / `sector_rankings` 只做增量扩展且保持 fail-open。
-- 🧪 **定时模式股票列表语义回归测试** — 新增 `tests/test_main_schedule_mode.py`，覆盖定时模式忽略启动时 `--stocks` 快照、单次运行仍保留 CLI 股票覆盖的边界场景。
+- 🧪 **Testabdeckung der Dashboard-Komponenten erweitert (PR7-2)** — neue Tests für `ReportNews` und `TaskPanel`; für `HistoryList`, `ReportDetails`, `HomePage`, `useDashboardLifecycle` und `stockPoolStore` werden die Assertions ausgebaut, inklusive Szenarien wie Lösch-Rückfall, mobile Drawer und Aufgabenlebenszyklen.
+- 🧪 **Multi-Markt-Index-Erzeugungstests ergänzt** — neu ist `tests/test_generate_index_from_csv.py`, das zentrale Pfade wie Doppel-Datenquellen-Parsing von Tushare/AkShare, Multi-Markt-Erkennung, US-DUMMY-Filter und Duplikat-Ticker-Deduplizierung abdeckt.
+- 🧪 **Regressions-Tests für zugehörige Sektoren und API-Verträge** — neu ist `tests/test_pipeline_related_boards.py`; zusätzlich werden Analyse-Historie- und Analyse-API-Vertragstests ergänzt, um sicherzustellen, dass `belong_boards` / `sector_rankings` nur inkrementell erweitert werden und fail-open bleiben.
+- 🧪 **Regressions-Tests für die Aktienlisten-Semantik im Zeitplanmodus** — neu ist `tests/test_main_schedule_mode.py`, das die Randfälle abdeckt, dass der Zeitplanmodus die Start-`--stocks`-Snapshot ignoriert und Einzelausführungen die CLI-Aktienüberschreibung beibehalten.
 
-### 文档
+### Dokumentation
 
-- 📘 **新增 Tushare 股票列表工具文档** — 新增 `docs/TUSHARE_STOCK_LIST_GUIDE.md`，说明股票列表抓取工具的使用方法、数据格式和常见问题。
-- 🌍 **补齐定时模式与关联板块的双语说明** — `docs/full-guide.md` / `docs/full-guide_EN.md` 现在明确说明 scheduled mode 会在每次执行前重新读取 `STOCK_LIST`，并同步补充个股关联板块展示能力说明，减少配置预期偏差。
-- 🧭 **调整 Agent 术语兼容文案** — README、双语文档、设置页与问股界面继续以“策略”作为用户入口主称呼，同时补充 `skill` 作为内部统一命名，降低迁移期理解成本。
+- 📘 **Neue Dokumentation für das Tushare-Aktienlisten-Tool** — neu ist `docs/TUSHARE_STOCK_LIST_GUIDE.md`, das Nutzung, Datenformat und häufige Probleme des Aktienlisten-Abruftools beschreibt.
+- 🌍 **Zweisprachige Erläuterungen zu Zeitplanmodus und zugehörigen Sektoren ergänzt** — `docs/full-guide.md` / `docs/full-guide_EN.md` stellen jetzt klar, dass der scheduled mode vor jeder Ausführung erneut die `STOCK_LIST` liest, und ergänzen zugleich die Erläuterung der Einzelaktien-Sektor-Anzeige, um Fehl-Erwartungen an die Konfiguration zu reduzieren.
+- 🧭 **Agent-Terminologie-Kompatibilitätstexte angepasst** — README, zweisprachige Dokumente, Einstellungsseite und Aktienfrage-Oberfläche verwenden weiterhin „Strategie“ als primären Nutzereinstieg, ergänzen aber `skill` als interne einheitliche Benennung, um die Verständniskosten während der Migration zu senken.
 
 ## [3.9.0] - 2026-03-20
 
-### 发布亮点
+### Release-Highlights
 
-- 🤖 **模型链路与报告语言更灵活** — Agent 现在可以通过 `AGENT_LITELLM_MODEL` 独立选择模型链路，普通分析与 Agent 报告也可通过 `REPORT_LANGUAGE=zh|en` 输出统一语言，减少“英文内容 + 中文壳子”这类混排问题，并允许团队分别权衡主分析与 Agent 的成本、速度和能力。
-- 🔎 **首页分析体验完成一轮闭环优化** — 首页新增 A 股自动补全，支持代码、中文名、拼音和别名检索；同时 Dashboard 状态收口到统一 store，历史、报告、新闻与 Markdown 抽屉的交互更稳定，“Ask AI” 追问也会优先携带当前报告上下文。
-- 💬 **通知与检索能力继续外扩** — 新增 Slack 一等通知渠道；SearXNG 在未配置自建实例时可以自动发现公共实例并按受控轮询降级；Tavily 时效新闻链路修复后，严格时效过滤不再错误丢光有效结果。
-- 💼 **持仓与市场复盘链路更稳** — A 股 market review 可选接入 TickFlow 强化指数与涨跌统计；持仓账本写入改为串行化以缩小并发超卖窗口；汇率刷新入口和禁用态提示也更加清晰，减少用户误判。
+- 🤖 **Modell-Pipeline und Berichtssprache flexibler** — der Agent kann über `AGENT_LITELLM_MODEL` nun eine eigene Modell-Pipeline wählen, und normale Analysen wie Agent-Berichte können über `REPORT_LANGUAGE=zh|en` eine einheitliche Sprache ausgeben, wodurch gemischte Ausgaben wie „englischer Inhalt + chinesische Hülle“ reduziert werden und Teams Kosten, Geschwindigkeit und Fähigkeiten von Hauptanalyse und Agent getrennt abwägen können.
+- 🔎 **Startseiten-Analyseerlebnis schließt eine Runde End-to-End-Optimierung ab** — die Startseite erhält A-Aktien-Autovervollständigung mit Suche über Code, chinesischen Namen, Pinyin und Aliasse; zugleich wird der Dashboard-Zustand in einem gemeinsamen Store konsolidiert; Interaktionen von Historie, Bericht, Nachrichten und Markdown-Drawer sind stabiler, und „Ask AI“-Rückfragen transportieren bevorzugt den aktuellen Berichtskontext mit.
+- 💬 **Benachrichtigungs- und Retrieval-Fähigkeiten weiter ausgebaut** — neu ist Slack als erstklassiger Benachrichtigungskanal; SearXNG kann ohne konfigurierte eigene Instanz automatisch öffentliche Instanzen entdecken und mit gesteuerter Rotation degradieren; nach dem Fix der Tavily-Zeitnachrichten-Kette werden strikte Zeitfilter nicht mehr fälschlich alle gültigen Ergebnisse verwerfen.
+- 💼 **Positionen- und Markt-Review-Kette stabiler** — A-Aktien-Markt-Review kann optional TickFlow zur Verstärkung von Index- und Kursbewegungsstatistiken anbinden; Positionsbuch-Schreibvorgänge werden serialisiert, um das gleichzeitige Überverkaufsfenster zu verkleinern; Wechselkurs-Refresh-Einstieg und Deaktivierungs-Hinweise sind klarer, wodurch Fehlbeurteilungen der Nutzer reduziert werden.
 
-### 新功能
+### Neue Funktionen
 
-- 🔎 **Web 股票自动补全 MVP** — 首页分析输入框新增本地索引驱动的自动补全，支持股票代码、中文名、拼音和别名匹配；选中候选后会提交 canonical code，并透传 `stock_name`、`original_query`、`selection_source` 到分析请求、任务状态和 SSE 事件；索引加载失败时自动退回旧输入模式，不阻断原有提交流程。同步补充了静态索引加载器、索引生成脚本和前后端契约测试。分阶段进行开发，第一阶段仅支持 A 股。
-- 💬 **Slack 一等通知渠道** — 新增 Slack 原生通知支持，同时支持 Bot Token 和 Incoming Webhook 两种接入方式；同时配置时优先使用 Bot API，确保文本与图片发送到同一频道；Bot Token 模式支持图片上传（raw body POST，不使用 multipart）；新增 `SLACK_BOT_TOKEN`、`SLACK_CHANNEL_ID`、`SLACK_WEBHOOK_URL` 配置项，GitHub Actions 工作流同步补齐对应 Secrets 传递。
-- 🌍 **报告输出语言可配置**（Issue #758）— 新增 `REPORT_LANGUAGE=zh|en`，默认 `zh`；语言设置会同步注入普通分析与 Agent Prompt，并覆盖 Markdown/Jinja 模板、通知 fallback、历史/API `report_language` 元数据及 Web 报告页固定文案，避免“英文内容 + 中文壳子”的混合输出。
-- 🚀 **Agent 与普通分析模型解耦**（Issue #692）— 新增 `AGENT_LITELLM_MODEL`（留空继承 `LITELLM_MODEL`，无前缀按 `openai/<model>` 归一）；Agent 执行链路与 `/api/v1/agent/models` 的 `is_primary/is_fallback` 标记改为基于 Agent 实际模型链路；系统配置与启动期校验补齐 `AGENT_LITELLM_MODEL` 的 `unknown_model/missing_runtime_source` 检查；Web 设置页新增 Agent 主模型选择并与渠道模式运行时配置同步。
-- 🔎 **SearXNG 公共实例自动发现与受控轮询**（#752）— 新增 `SEARXNG_PUBLIC_INSTANCES_ENABLED`，在未配置 `SEARXNG_BASE_URLS` 时默认从 `searx.space` 拉取公共实例列表，并按受控轮询顺序选择实例；同次请求内遇到超时、连接错误、HTTP 非 200 或无效 JSON 会自动切换到下一个实例。已配置自建实例的用户保持原有优先级与语义不变；`daily_analysis` GitHub Actions 工作流也已支持显式透传该开关并在启动日志中展示当前状态。
-- 📈 **TickFlow market review enhancement** (#632) — 新增可选 `TICKFLOW_API_KEY`；配置后，A 股大盘复盘的主要指数行情优先尝试 TickFlow；若当前 TickFlow 套餐支持标的池查询，市场涨跌统计也会优先尝试 TickFlow。失败或权限不足时立即回退到现有 `AkShare / Tushare / efinance` 链路；板块涨跌榜回退顺序保持不变。接入层同时适配了真实 SDK 契约：主指数查询按单次请求上限分批拉取，并将 TickFlow 返回的比例型 `change_pct` / `amplitude` 统一转换为项目内部的百分比口径。
+- 🔎 **Web-Aktien-Autovervollständigung MVP** — das Analyse-Eingabefeld der Startseite erhält eine lokale, indexgetriebene Autovervollständigung mit Abgleich über Aktiencode, chinesischen Namen, Pinyin und Aliasse; nach Auswahl eines Kandidaten wird der canonical code eingereicht und `stock_name`, `original_query`, `selection_source` an Analyseanfrage, Aufgabenstatus und SSE-Ereignis durchgereicht; schlägt das Laden des Index fehl, wird automatisch auf den alten Eingabemodus zurückgefallen, ohne den bisherigen Einreichungsablauf zu blockieren. Synchron werden statischer Index-Loader, Index-Erzeugungsskript und Frontend-/Backend-Vertragstests ergänzt. Die Entwicklung läuft phasenweise; die erste Phase unterstützt nur A-Aktien.
+- 💬 **Slack als erstklassiger Benachrichtigungskanal** — native Slack-Benachrichtigungen werden unterstützt, mit beiden Anbindungswegen Bot Token und Incoming Webhook; bei gleichzeitiger Konfiguration wird die Bot-API bevorzugt, damit Text und Bilder im selben Kanal landen; der Bot-Token-Modus unterstützt Bild-Upload (raw body POST, ohne multipart); neu sind `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`, `SLACK_WEBHOOK_URL` als Konfigurationsoptionen, und der GitHub-Actions-Workflow reicht die entsprechenden Secrets durch.
+- 🌍 **Berichtsausgabesprache konfigurierbar** (Issue #758) — neu ist `REPORT_LANGUAGE=zh|en`, Standard `zh`; die Spracheinstellung wird synchron in normale Analysen und Agent-Prompts injiziert und deckt Markdown/Jinja-Vorlagen, Benachrichtigungs-Fallback, `report_language`-Metadaten von Historie/API sowie feste Web-Berichtsseitentexte ab, wodurch gemischte Ausgaben wie „englischer Inhalt + chinesische Hülle“ vermieden werden.
+- 🚀 **Agent und normale Analyse-Modelle entkoppelt** (Issue #692) — neu ist `AGENT_LITELLM_MODEL` (leer lässt `LITELLM_MODEL` erben, ohne Präfix wird als `openai/<model>` normalisiert); die `is_primary`/`is_fallback`-Kennzeichen von Agent-Ausführungskette und `/api/v1/agent/models` basieren auf der tatsächlichen Agent-Modellkette; Systemkonfiguration und Startvalidierung ergänzen die Prüfungen `unknown_model/missing_runtime_source` für `AGENT_LITELLM_MODEL`; die Web-Einstellungsseite erhält eine Agent-Hauptmodellauswahl, die mit der Laufzeitkonfiguration im Kanalmodus synchronisiert wird.
+- 🔎 **SearXNG-öffentliche-Instanz-Autodiscovery und gesteuerte Rotation** (#752) — neu ist `SEARXNG_PUBLIC_INSTANCES_ENABLED`, das bei nicht konfigurierten `SEARXNG_BASE_URLS` standardmäßig die Liste öffentlicher Instanzen von `searx.space` lädt und Instanzen in gesteuerter Rotationsreihenfolge auswählt; innerhalb derselben Anfrage wird bei Timeout, Verbindungsfehler, HTTP ungleich 200 oder ungültigem JSON automatisch zur nächsten Instanz gewechselt. Nutzer mit konfigurierter eigener Instanz behalten Priorität und Semantik unverändert; der GitHub-Actions-Workflow `daily_analysis` unterstützt ebenfalls die explizite Durchreichung des Schalters und zeigt den aktuellen Status im Startlog an.
+- 📈 **TickFlow-Markt-Review-Erweiterung** (#632) — neu ist die optionale `TICKFLOW_API_KEY`; nach Konfiguration versucht die Hauptindex-Kurskette des A-Aktien-Markt-Reviews bevorzugt TickFlow; unterstützt der aktuelle TickFlow-Tarif die Zielpool-Abfrage, versuchen auch Markt-Kursbewegungsstatistiken bevorzugt TickFlow. Bei Fehlern oder fehlenden Berechtigungen wird sofort auf die bestehende `AkShare / Tushare / efinance`-Kette zurückgefallen; die Fallback-Reihenfolge der Sektor-Rangliste bleibt unverändert. Die Anbindungsschicht passt sich zugleich an den echten SDK-Vertrag an: Die Hauptindex-Abfrage lädt in Chargen innerhalb des Einzelrequest-Limits und die von TickFlow gelieferten proportionalen `change_pct` / `amplitude` werden einheitlich in die prozentuale Maßgabe des Projekts umgerechnet.
 
-### 改进
+### Verbesserungen
 
-- **Dashboard state slice and workspace closure** — moved Home / Dashboard state into `stockPoolStore`, consolidated history selection, report loading, task syncing, polling refresh, and markdown drawer handling under a single state slice.
-- **Dashboard panel standardization** — kept the current dashboard layout contract stable while unifying history, report, news, and markdown presentation with shared tokens, standardized states, and bounded in-panel scrolling for the history list.
-- **Dashboard-to-chat follow-up bridge** — routed “Ask AI” follow-ups through report-context hydration instead of direct cross-page state coupling, while keeping chat sends usable when enriched history context is still loading.
-- 💼 **持仓账本并发写入串行化**（#742）— 持仓源事件写入/删除现在会在 SQLite 下先获取串行化写锁，减少并发卖出把超售流水写入账本的窗口；直接持仓写接口在锁竞争时返回 `409 portfolio_busy`，CSV 导入保持逐条提交并把 busy 计入 `failed_count`。
-- 💱 **持仓页汇率手动刷新入口补齐**（#748）— Web `/portfolio` 页面现在会在“汇率状态”卡片中展示“刷新汇率”按钮，直接调用现有 `POST /api/v1/portfolio/fx/refresh` 接口；刷新后会仅重载快照与风险数据，并以内联摘要反馈“已更新 / 仍 stale / 刷新失败”的结果，减少用户对 `fxStale` 长时间停留的误解。
+- **Dashboard-Zustandsausschnitt und Workbench-Abschluss** — der Home-/Dashboard-Zustand wurde in `stockPoolStore` verschoben; Historie-Auswahl, Berichts-Laden, Aufgaben-Sync, Polling-Refresh und Markdown-Drawer-Verarbeitung werden unter einem einzigen Zustandsausschnitt konsolidiert.
+- **Dashboard-Panel-Standardisierung** — der bestehende Dashboard-Layout-Vertrag bleibt stabil, während Historie, Bericht, Nachrichten und Markdown-Darstellung mit gemeinsamen Tokens vereinheitlicht, Zustände standardisiert und das Scrollen innerhalb der Panels für die Historie begrenzt wird.
+- **Dashboard-zu-Chat-Rückfrage-Brücke** — „Ask AI“-Rückfragen werden über die Hydration des Berichtskontexts geleitet statt über direkte Seiten-zu-Seiten-Zustandskopplung, während das Absenden im Chat nutzbar bleibt, wenn der angereicherte Historienkontext noch lädt.
+- 💼 **Positionsbuch-Schreibvorgänge parallel serialisiert** (#742) — Schreib-/Löschvorgänge von Positionsquellen-Ereignissen holen unter SQLite zuerst eine Serialisierungs-Schreibsperre, was das Fenster verkleinert, in dem parallele Verkäufe Überverkaufs-Transaktionen ins Buch schreiben; die direkte Positions-Schreibschnittstelle liefert bei Sperrenkonkurrenz `409 portfolio_busy`, CSV-Import bleibt Transaktion-für-Transaktion und zählt busy in `failed_count`.
+- 💱 **Manueller Wechselkurs-Refresh-Einstieg auf der Positionsseite ergänzt** (#748) — die Web-Seite `/portfolio` zeigt jetzt in der „Wechselkursstatus“-Karte einen „Wechselkurse aktualisieren“-Knopf, der die bestehende Schnittstelle `POST /api/v1/portfolio/fx/refresh` aufruft; nach dem Refresh werden nur Snapshot und Risikodaten neu geladen und das Ergebnis über eine Inline-Zusammenfassung „Aktualisiert / weiterhin stale / Aktualisierung fehlgeschlagen“ zurückgemeldet, wodurch Fehldeutungen über längeren `fxStale`-Aufenthalt reduziert werden.
 
-### 修复
+### Behobene Probleme
 
-- 🔎 **Web 自动补全 Enter 提交语义修正** — 股票自动补全在搜索命中候选时不再默认高亮第一项；候选列表展开但用户尚未用方向键或鼠标明确选中时，按 Enter 会继续提交原始输入，避免手动输入被第一条候选静默覆盖。
-- 🌍 **补齐 `REPORT_LANGUAGE` 启动解析与历史展示本地化边界** — `Config` 在启动时继续遵循“真实环境变量优先、`.env` 兜底”的既有语义，并在两者冲突时输出显式告警，减少 `REPORT_LANGUAGE` 来源不清带来的误判；同时 `/api/v1/history/{id}` 英文详情响应会同步本地化 `sentiment_label`，历史 Markdown 也会正确识别英文 `bias_status` 的风险等级 emoji，避免出现 `乐观` 或 `🚨Safe` 这类中英混排/误报展示。
-- 📰 **Tavily 时效新闻检索发布时间映射修复**（#782）— Tavily 在股票新闻和严格时效的情报维度中现在会显式使用 `topic="news"`，并兼容 `published_date` / `publishedDate` 两种发布时间字段；修复了 Tavily 明明返回结果却在后续硬过滤阶段被全部记为 `drop_unknown` 丢弃的问题，同时将机构分析、业绩预期、行业分析等分析型维度恢复为宽源搜索，不再被统一压缩成新闻模式。
-- 💱 **持仓页汇率刷新禁用语义修正**（#772）— 当 `PORTFOLIO_FX_UPDATE_ENABLED=false` 时，`POST /api/v1/portfolio/fx/refresh` 现在会返回显式 `refresh_enabled=false` 与 `disabled_reason`，Web `/portfolio` 页面会明确提示“汇率在线刷新已被禁用”，不再误报“当前范围无可刷新的汇率对”。
-- 🤖 **Agent timeout and config hardening** — `AGENT_ORCHESTRATOR_TIMEOUT_S` now also protects the legacy single-agent ReAct loop, parallel tool batches stop waiting once the remaining budget is exhausted, and invalid numeric `.env` values fall back to safe defaults with warnings instead of crashing startup.
-- 🌐 **CORS wildcard + credentials compatibility** — `CORS_ALLOW_ALL=true` no longer combines `allow_origins=["*"]` with credentialed requests, avoiding browser-side cross-origin failures in demo/development setups.
-- 🧭 **Unavailable Agent settings hidden from Web UI** — Deep Research / Event Monitor controls are now treated as compatibility-only metadata in the current branch and are removed from the Settings page to avoid exposing non-functional toggles.
+- 🔎 **Enter-Einreichungssemantik der Web-Autovervollständigung korrigiert** — die Aktien-Autovervollständigung hebt bei Suchtreffern nicht mehr standardmäßig den ersten Eintrag hervor; ist die Kandidatenliste geöffnet, aber vom Nutzer noch keine Pfeiltaste oder Mausauswahl erfolgt, wird beim Drücken von Enter die ursprüngliche Eingabe eingereicht, sodass manuelle Eingaben nicht still vom ersten Kandidaten überschrieben werden.
+- 🌍 **Start-Parsing von `REPORT_LANGUAGE` und Lokalisierungsgrenzen der Historienanzeige ergänzt** — `Config` folgt beim Start weiterhin der bestehenden Semantik „echte Umgebungsvariable zuerst, `.env` als Fallback“ und gibt bei Konflikten eine explizite Warnung aus, wodurch Fehlbeurteilungen über die Quelle von `REPORT_LANGUAGE` reduziert werden; zugleich lokalisiert die englische Detailantwort von `/api/v1/history/{id}` `sentiment_label` synchron, und historische Markdowns erkennen das Risikoniveau-Emoji von `bias_status` auf Englisch korrekt, sodass gemischte oder fehlgemeldete Anzeigen wie `Optimistisch` oder `🚨Safe` vermieden werden.
+- 📰 **Veröffentlichungszeit-Mapping der Tavily-Zeitnachrichten-Recherche repariert** (#782) — Tavily nutzt in den Nachrichten- und strikt-zeitkritischen Informationsdimensionen von Aktien jetzt explizit `topic="news"` und ist mit den beiden Veröffentlichungszeitfeldern `published_date` / `publishedDate` kompatibel; behoben wird, dass Tavily zwar Ergebnisse lieferte, diese aber im späteren Hartfilter-Zyklus alle als `drop_unknown` verworfen wurden; zugleich werden analytische Dimensionen wie Institutsanalysen, Ergebnis-Erwartungen und Branchenanalysen wieder als breite Quellsuche behandelt und nicht mehr einheitlich in den Nachrichtenmodus gepresst.
+- 💱 **Deaktivierungssemantik des Wechselkurs-Refresh auf der Positionsseite korrigiert** (#772) — bei `PORTFOLIO_FX_UPDATE_ENABLED=false` liefert `POST /api/v1/portfolio/fx/refresh` jetzt explizit `refresh_enabled=false` und `disabled_reason`, und die Web-Seite `/portfolio` weist klar auf „Online-Wechselkursaktualisierung ist deaktiviert“ hin, statt fälschlich „Keine aktualisierbaren Wechselkurspaare im aktuellen Bereich“ zu melden.
+- 🤖 **Agent-Timeout- und Konfigurationshärtung** — `AGENT_ORCHESTRATOR_TIMEOUT_S` schützt jetzt auch die Legacy-Single-Agent-ReAct-Schleife; parallele Tool-Chargen stoppen das Warten, sobald das verbleibende Budget erschöpft ist; ungültige numerische `.env`-Werte fallen mit Warnungen auf sichere Standardwerte zurück, statt den Start abstürzen zu lassen.
+- 🌐 **CORS-Wildcard + Credentials-Kompatibilität** — `CORS_ALLOW_ALL=true` kombiniert `allow_origins=["*"]` nicht mehr mit credentialisierten Requests und vermeidet damit Browser-seitige Cross-Origin-Fehler in Demo-/Entwicklungssetups.
+- 🧭 **Nicht verfügbare Agent-Einstellungen aus der Web-UI ausgeblendet** — Deep-Research-/Event-Monitor-Steuerelemente werden im aktuellen Zweig nur noch als Kompatibilitäts-Metadaten behandelt und aus der Einstellungsseite entfernt, um nicht funktionsfähige Schalter nicht mehr zu exponieren.
 
-### 文档
+### Dokumentation
 
-- 新增 Ollama 本地模型配置说明，同步更新 `README.md` 与 `docs/README_EN.md`（Fixes #690）
-- 完善 Ollama 配置说明：`docs/full-guide.md` / `docs/full-guide_EN.md` 环境变量表与 Note 补充 `OLLAMA_API_BASE`，避免英文用户误以为 Ollama 不能作为独立配置入口；合并重复的 `OLLAMA_API_BASE` 条目为单一条目
-- 明确文档同步治理边界：补充 `README.md`、专题文档、双语文档与交付说明之间的默认同步规则，减少后续文档漂移
+- Neue Erläuterung zur Konfiguration lokaler Ollama-Modelle, synchron aktualisiert in `README.md` und `docs/README_EN.md` (Fixes #690)
+- Ollama-Konfigurationsanleitung vervollständigt: In den Umgebungsvariablen-Tabellen und Notizen von `docs/full-guide.md` / `docs/full-guide_EN.md` wird `OLLAMA_API_BASE` ergänzt, damit englischsprachige Nutzer nicht annehmen, Ollama sei kein eigenständiger Konfigurationseinstieg; doppelte `OLLAMA_API_BASE`-Einträge werden zu einem einzigen zusammengeführt
+- Governance-Grenzen der Dokumentsynchronisation klargestellt: Standard-Synchronisationsregeln zwischen README, Themen-Dokumenten, zweisprachigen Dokumenten und Lieferhinweisen werden ergänzt, um künftige Dokumentabdrift zu reduzieren
 
 ## [3.8.0] - 2026-03-17
 
-### 发布亮点
+### Release-Highlights
 
-- 🎨 **Web 界面完成一轮骨架升级** — 新的 App Shell、侧边导航、主题能力、登录与系统设置流程已经串成统一体验，桌面端加载背景也完成对齐。
-- 📈 **分析上下文继续补强** — 美股新增社交舆情情报，A 股补齐财报与分红结构化上下文，Tushare 新接入筹码分布和行业板块涨跌数据。
-- 🔒 **运行稳定性与配置兼容性提升** — 退出登录会立即让旧会话失效，定时启动兼容旧配置，运行中的 `MAX_WORKERS` 调整和新闻时效窗口反馈更清晰。
-- 💼 **持仓纠错链路更完整** — 超售会被前置拦截，错误交易/资金流水/公司行为可以直接删除回滚，便于修复脏数据。
+- 🎨 **Web-Oberfläche schließt eine Runde Skelett-Upgrade ab** — neue App Shell, Seitennavigation, Theme-Fähigkeiten sowie Login- und Systemeinstellungs-Abläufe sind zu einer einheitlichen Erfahrung verbunden; der Desktop-Ladehintergrund ist ebenfalls angeglichen.
+- 📈 **Analysekontext weiter gestärkt** — US-Aktien erhalten Social-Sentiment-Intelligenz, A-Aktien vervollständigen strukturierte Kontexte für Finanzberichte und Dividenden, und Tushare bindet neu Chip-Verteilung sowie Sektor-/Branchen-Kursbewegungsdaten an.
+- 🔒 **Laufzeitstabilität und Konfigurationskompatibilität erhöht** — Abmelden macht alte Sitzungen sofort ungültig, zeitgesteuerter Start ist mit alter Konfiguration kompatibel, und laufende `MAX_WORKERS`-Anpassungen sowie das Nachrichten-Zeitfenster-Feedback sind klarer.
+- 💼 **Positions-Korrekturkette vollständiger** — Überverkäufe werden vorab blockiert; fehlerhafte Transaktionen/Kapitalflüsse/Unternehmensereignisse können direkt gelöscht und zurückgerollt werden, um Dreckdaten zu reparieren.
 
-### 新功能
+### Neue Funktionen
 
-- 📱 **美股社交舆情情报** — 新增 Reddit / X / Polymarket 社交媒体情绪数据源，为美股分析提供实时社交热度、情绪评分和提及量等补充指标；完全可选，仅在配置 `SOCIAL_SENTIMENT_API_KEY` 后对美股生效。
-- 📊 **A 股财报与分红结构化增强**（Issue #710）— `fundamental_context.earnings.data` 新增 `financial_report` 与 `dividend` 字段；分红统一按“仅现金分红、税前口径”计算，并补充 `ttm_cash_dividend_per_share` 与 `ttm_dividend_yield_pct`；分析/历史 API 的 `details` 追加 `financial_report`、`dividend_metrics` 可选字段，保持 fail-open 与向后兼容。
-- 🔍 **接入 Tushare 筹码与行业板块接口** — 新增筹码分布、行业板块涨跌数据获取能力，并统一纳入配置化数据源优先级；默认按上海时间区分盘中/盘后交易日取数，优先使用 Tushare 同花顺接口，必要时降级到东财。
-- 🧱 **Web UI 基础骨架升级** — 重建共享设计令牌与通用组件，新增 App Shell、Theme Provider、侧边导航，并同步调整 Electron 加载背景，为 Web / Desktop 的统一体验打底。
-- 🔐 **登录与系统设置流程重做** — 重构 Login、Settings 与 Auth 管理流程，补上显式的认证 setup-state 处理，并让 Web 端与运行时认证配置 API 行为对齐。
-- 🧪 **前端回归与冒烟覆盖补强** — 新增并扩展登录、首页、聊天、移动端 Shell、设置页、回测入口等关键路径的组件测试与 Playwright smoke coverage。
+- 📱 **Social-Sentiment-Intelligenz für US-Aktien** — neu sind die Social-Media-Stimmungsdatenquellen Reddit / X / Polymarket, die US-Analysen ergänzende Kennzahlen wie Echtzeit-Social-Hitze, Stimmungswerte und Erwähnungszahlen liefern; vollständig optional und nur nach Konfiguration von `SOCIAL_SENTIMENT_API_KEY` für US-Aktien wirksam.
+- 📊 **Strukturierte A-Aktien-Erweiterung für Finanzberichte und Dividenden** (Issue #710) — `fundamental_context.earnings.data` erhält die Felder `financial_report` und `dividend`; Dividenden werden einheitlich als „nur Bardividende, vor Steuern“ berechnet, ergänzt um `ttm_cash_dividend_per_share` und `ttm_dividend_yield_pct`; die Analyse-/Historie-APIs erhalten in `details` die optionalen Felder `financial_report`, `dividend_metrics`, mit beibehaltenem fail-open und Rückwärtskompatibilität.
+- 🔍 **Tushare-Chip- und Branchen-Sektorschnittstellen angebunden** — neue Fähigkeiten zum Abrufen der Chip-Verteilung und von Branchen-Sektor-Kursbewegungsdaten, einheitlich in die konfigurierbare Datenquellen-Priorität eingegliedert; standardmäßig wird anhand der Shanghaier Zeit zwischen Intraday-/Post-Market-Handelstagen unterschieden, bevorzugt die Tushare-Tonghuashun-Schnittstelle und degradiert bei Bedarf auf Eastmoney.
+- 🧱 **Web-UI-Basisskelett-Upgrade** — gemeinsame Design-Tokens und generische Komponenten werden neu aufgebaut, App Shell, Theme Provider und Seitennavigation ergänzt sowie der Electron-Ladehintergrund angepasst, als Grundlage für eine einheitliche Web-/Desktop-Erfahrung.
+- 🔐 **Login- und Systemeinstellungsabläufe neu gemacht** — Login-, Settings- und Auth-Verwaltungsabläufe werden umgebaut, eine explizite Behandlung des Authentifizierungs-Setup-Zustands ergänzt und die Web-Seite an die Laufzeit-Authentifizierungskonfigurations-API angeglichen.
+- 🧪 **Frontend-Regressions- und Smoke-Abdeckung gestärkt** — Komponententests für kritische Pfade wie Login, Startseite, Chat, mobiles Shell, Einstellungsseite und Backtest-Einstieg werden neu hinzugefügt und erweitert, dazu Playwright-Smoke-Abdeckung.
 
-### 变更
+### Änderungen
 
-- 🧭 **页面接入新 Shell 布局契约** — Home、Chat、Settings、Backtest 已统一接入新的页面容器、抽屉和滚动约定，降低 UI 迁移期间的页面行为不一致。
-- 💾 **设置页状态同步更稳** — 优化草稿保留、直接保存同步与冲突处理，减少模块级保存后前后端配置状态不一致的问题。
-- 🎭 **登录页视觉基线回归** — 登录页恢复到既有 `006` 分支的视觉基线，同时保留新的认证状态逻辑和统一表单交互模型。
-- 🏛️ **AI 协作治理资产加固** — 收敛并加强 `AGENTS.md`、`CLAUDE.md`、Copilot 指令和校验脚本的一致性约束，降低治理资产长期漂移风险。
+- 🧭 **Seiten an den neuen Shell-Layout-Vertrag angebunden** — Home, Chat, Settings und Backtest sind einheitlich an die neuen Seitencontainer, Drawer und Scroll-Konventionen angeschlossen, wodurch inkonsistentes Seitenverhalten während der UI-Migration reduziert wird.
+- 💾 **Zustandssynchronisation der Einstellungsseite stabiler** — Entwurfs-Speicherung, Direkt-Speichersynchronisation und Konfliktbehandlung werden optimiert, sodass nach modulbezogenem Speichern weniger Frontend-/Backend-Konfigurationszustands-Diskrepanzen auftreten.
+- 🎭 **Login-Seiten-Visualbaseline zurückgeführt** — die Login-Seite kehrt zur etablierten Visualbaseline des `006`-Zweigs zurück, während die neue Authentifizierungs-Zustandslogik und das einheitliche Formular-Interaktionsmodell erhalten bleiben.
+- 🏛️ **AI-Kollaborations-Governance-Assets gehärtet** — Konsistenzbeschränkungen von `AGENTS.md`, `CLAUDE.md`, Copilot-Anweisungen und Validierungsskripten werden konsolidiert und gestärkt, um langfristige Abdrift der Governance-Assets zu reduzieren.
 
 ### Added
 
@@ -1132,61 +1086,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Settings state consistency** — refined draft preservation, direct-save synchronization, and conflict handling so module-level saves no longer leave the page out of sync with backend config state
 - **Login visual baseline** — restored the login page visual treatment to the established `006` branch baseline while keeping the newer auth-state logic and unified form interaction model
 
-### 修复
+### Behobene Probleme
 
-- ⏰ **定时启动立即执行兼容旧配置**（Issue #726）— `SCHEDULE_RUN_IMMEDIATELY` 未设置时会回退读取 `RUN_IMMEDIATELY`，修复升级后旧 `.env` 在定时模式下的兼容性问题；同时澄清 `.env.example` / README 中两个配置项的适用范围，并注明 Outlook / Exchange 强制 OAuth2 暂不支持。
-- 🧵 **运行期 `MAX_WORKERS` 配置生效与可解释性增强**（#633）— 修复异步分析队列未按 `MAX_WORKERS` 同步的问题；新增任务队列并发 in-place 同步机制（空闲即时生效、繁忙延后），并在设置保存反馈与运行日志中明确输出 `profile/max/effective`，减少“参数未生效”误解。
-- 🔐 **退出登录立即失效现有会话** — `POST /api/v1/auth/logout` 现在会轮换 session secret，避免旧 cookie 在退出后仍可继续访问受保护接口；同浏览器标签页和并发页面会被同步登出。认证开启时，该接口也不再属于匿名白名单，未登录请求会返回 `401`，避免匿名请求触发全局 session 失效。
-- 🧮 **Tushare 板块/筹码调用限流与跨日缓存修复** — 新增的 `trade_cal`、行业板块排行、筹码分布链路统一接入 `_check_rate_limit()`；交易日历缓存改为按自然日刷新，避免服务跨天运行后继续沿用旧交易日判断取数日期。
-- 💼 **持仓超售拦截与错误流水恢复**（#718）— `POST /api/v1/portfolio/trades` 现在会在写入前校验可卖数量，超售返回 `409 portfolio_oversell`；持仓页新增交易 / 资金流水 / 公司行为删除能力，删除后会同步失效仓位缓存与未来快照，便于从错误流水中直接恢复。
-- 📧 **邮件中文发件人名编码**（#708）— 邮件通知现在会对包含中文的 `EMAIL_SENDER_NAME` 自动做 RFC 2047 编码，并在异常路径补充 SMTP 连接清理，修复 GitHub Actions / QQ SMTP 下 `'ascii' codec can't encode characters` 导致的发送失败。
-- 🐛 **港股 Agent 实时行情去重与快速路由** — 统一 `HK01810` / `1810.HK` / `01810` 等港股代码归一规则；港股实时行情改为直接走单次 `akshare_hk` 路径，避免按 A 股 source priority 重复触发同一失败接口；Agent 运行期对显式 `retriable=false` 的工具失败增加短路缓存，减少同轮分析中的重复失败调用。
-- 📰 **新闻时效硬过滤与策略分窗**（#697）— 新增 `NEWS_STRATEGY_PROFILE`（`ultra_short/short/medium/long`）并与 `NEWS_MAX_AGE_DAYS` 统一计算有效窗口；搜索结果在返回后执行发布时间硬过滤（时间未知剔除、超窗剔除、未来仅容忍 1 天），并在历史 fallback 链路追加相同约束，避免旧闻再次进入“最新动态/风险警报”。
+- ⏰ **Zeitgesteuerter Start mit Sofortausführung kompatibel mit alter Konfiguration** (Issue #726) — ist `SCHEDULE_RUN_IMMEDIATELY` nicht gesetzt, wird auf `RUN_IMMEDIATELY` zurückgefallen, was Kompatibilitätsprobleme alter `.env`-Dateien im Zeitplanmodus nach Upgrades behebt; zugleich wird der Anwendungsbereich der beiden Konfigurationsoptionen in `.env.example` / README geklärt und darauf hingewiesen, dass Outlook / Exchange erzwungenes OAuth2 vorerst nicht unterstützen.
+- 🧵 **Laufzeit-`MAX_WORKERS`-Konfiguration wirksam und erklärbar** (#633) — behoben wird, dass die asynchrone Analyse-Warteschlange nicht gemäß `MAX_WORKERS` synchronisiert wurde; eine neue In-place-Synchronisationsmechanik für die Aufgabenwarteschlangen-Parallelität wird ergänzt (sofort bei Leerlauf, verzögert bei Auslastung), und `profile/max/effective` werden im Speicher-Rückmeldung und Laufzeit-Log klar ausgegeben, wodurch „Parameter wirkungslos“-Missverständnisse reduziert werden.
+- 🔐 **Abmelden macht bestehende Sitzungen sofort ungültig** — `POST /api/v1/auth/logout` rotiert jetzt das session secret, sodass alte Cookies nach dem Abmelden nicht mehr auf geschützte Schnittstellen zugreifen können; gleiche Browser-Tabs und parallele Seiten werden synchron abgemeldet. Bei aktivierter Authentifizierung gehört die Schnittstelle nicht mehr zur anonymen Whitelist, und nicht angemeldete Anfragen erhalten `401`, sodass anonyme Anfragen keine globale Sitzungs-Invalidierung auslösen.
+- 🧮 **Rate-Limit und Tagesübergreifende-Cache-Fix für Tushare-Sektoren/Chips** — die neuen Ketten `trade_cal`, Branchen-Sektor-Ranglisten und Chip-Verteilung werden einheitlich an `_check_rate_limit()` angeschlossen; der Handelstag-Cache wird nach Kalendertag aufgefrischt, damit über Tage laufende Dienste nicht weiter mit alten Handelstags-Entscheidungen das Datum bestimmen.
+- 💼 **Überverkaufs-Blockierung und Wiederherstellung fehlerhafter Flüsse bei Positionen** (#718) — `POST /api/v1/portfolio/trades` validiert jetzt vor dem Schreiben die verkaufbare Menge und liefert bei Überverkauf `409 portfolio_oversell`; die Positionsseite erhält Löschfähigkeit für Transaktionen / Kapitalflüsse / Unternehmensereignisse; nach dem Löschen werden Positions-Cache und Zukunfts-Snapshots synchron invalidisiert, sodass aus fehlerhaften Flüssen direkt wiederhergestellt werden kann.
+- 📧 **Encoding des chinesischen Absendernamens in E-Mails** (#708) — E-Mail-Benachrichtigungen encodieren einen chinesisch enthaltenden `EMAIL_SENDER_NAME` jetzt automatisch nach RFC 2047 und ergänzen in Fehlerpfaden eine SMTP-Verbindungsbereinigung, wodurch Sendefehler durch `'ascii' codec can't encode characters` unter GitHub Actions / QQ-SMTP behoben werden.
+- 🐛 **Deduplizierung und schnelles Routing der Hongkong-Agent-Echtzeitkurse** — Normalisierungsregeln für Hongkong-Codes wie `HK01810` / `1810.HK` / `01810` werden vereinheitlicht; Hongkong-Echtzeitkurse laufen direkt über den einmaligen `akshare_hk`-Pfad statt über A-Aktien-Source-Priorität denselben fehlschlagenden Endpunkt wiederholt auszulösen; zur Laufzeit erhält der Agent für explizit `retriable=false` gescheiterte Tools einen Kurzschluss-Cache, um wiederholte Fehlaufrufe in derselben Analyse zu reduzieren.
+- 📰 **Harter Zeitfilter für Nachrichten und strategische Zeitfenster** (#697) — neu ist `NEWS_STRATEGY_PROFILE` (`ultra_short/short/medium/long`), das zusammen mit `NEWS_MAX_AGE_DAYS` das effektive Fenster berechnet; Suchergebnisse werden nach Rückkehr einem harten Veröffentlichungszeitfilter unterzogen (Zeit unbekannt verwerfen, Fensterüberschreitung verwerfen, Zukunft nur 1 Tag tolerieren), und derselbe Filter gilt in der historischen Fallback-Kette, sodass alte Nachrichten nicht erneut in „Neueste Entwicklungen / Risikoalarme“ gelangen.
 
-### 文档
+### Dokumentation
 
-- ☁️ **新增云服务器 Web 界面部署与访问教程**（Fixes #686）— 补充从云端部署到外部访问的落地说明，降低远程自托管门槛。
-- 🌍 **补齐英文文档索引与协作文档** — 新增英文文档索引、贡献指南、Bot 命令文档，并补充中英双语 issue / PR 模板，方便中英文协作与外部贡献者理解项目入口。
-- 🏷️ **本地化 README 补充 Trendshift badge** — 在多语言 README 中同步补上新版能力入口标识，减少中英文说明面不一致。
+- ☁️ **Neues Tutorial für Deployment und Zugriff der Web-Oberfläche auf Cloud-Servern** (Fixes #686) — ergänzt die konkrete Anleitung vom Cloud-Deployment bis zum externen Zugriff, was die Schwelle für Remote-Selfhosting senkt.
+- 🌍 **Englische Dokumentindex- und Kollaborationsdokumente ergänzt** — englischer Dokumentindex, Beitragsleitfaden und Bot-Befehlsdokumentation sind neu, dazu zweisprachige Issue-/PR-Vorlagen, um englisch-chinesische Kollaboration und den Einstieg externer Beitragender zu erleichtern.
+- 🏷️ **Lokalisierte README ergänzt Trendshift-Badge** — in mehrsprachigen README-Dateien wird das Badge des neuen Fähigkeitseinstiegs synchron ergänzt, um Unterschiede zwischen chinesischer und englischer Darstellung zu reduzieren.
 
 ## [3.7.0] - 2026-03-15
 
-### 新功能
+### Neue Funktionen
 
-- 💼 **持仓管理 P0 全功能上线**（#677，对应 Issue #627）
-  - **核心账本与快照闭环**：新增账户、交易、现金流水、企业行为、持仓缓存、每日快照等核心数据模型与 API 端点；支持 FIFO / AVG 双成本法回放；同日事件顺序固定为 `现金 → 企业行为 → 交易`；持仓快照写入采用原子事务。
-  - **券商 CSV 导入**：支持华泰 / 中信 / 招商首批适配，含列名别名兼容；两阶段接口（解析预览 + 确认提交）；`trade_uid` 优先、key-field hash 兜底的幂等去重；前导零股票代码完整保留。
-  - **组合风险报告**：集中度风险（Top Positions + A 股板块口径）、历史回撤监控（支持回填缺失快照）、止损接近预警；多币种统一换算 CNY 口径；汲取失败时回退最近成功汇率并标记 stale。
-  - **Web 持仓页**（`/portfolio`）：组合总览、持仓明细、集中度饼图、风险摘要、全组合 / 单账户切换；手工录入交易 / 资金流水 / 企业行为；内嵌账户创建入口；CSV 解析 + 提交闭环与券商选择器。
-  - **Agent 持仓工具**：新增 `get_portfolio_snapshot` 数据工具，默认紧凑摘要，可选持仓明细与风险数据。
-  - **事件查询 API**：新增 `GET /portfolio/trades`、`GET /portfolio/cash-ledger`、`GET /portfolio/corporate-actions`，支持日期过滤与分页。
-  - **可扩展 Parser Registry**：应用级共享注册，支持运行时注册新券商；新增 `GET /portfolio/imports/csv/brokers` 发现接口。
+- 💼 **Positionsverwaltung P0 vollständig veröffentlicht** (#677, entspricht Issue #627)
+  - **Kernbuch- und Snapshot-Kreislauf geschlossen**: Kernmodelle und API-Endpunkte für Konten, Transaktionen, Kapitalflüsse, Unternehmensereignisse, Positions-Cache und Tages-Snapshots; Unterstützung der FIFO-/AVG-Doppel-Kostenmethode-Wiedergabe; Ereignisreihenfolge am selben Tag fest als `Kapital → Unternehmensereignis → Transaktion`; Positions-Snapshot-Schreiben erfolgt in atomaren Transaktionen.
+  - **Broker-CSV-Import**: unterstützt zuerst Huatai / CITIC / China Merchants, inklusive Spaltenname-Alias-Kompatibilität; zweistufige Schnittstelle (Parse-Vorschau + Bestätigungs-Einreichung); idempotente Deduplizierung mit `trade_uid`-Priorität und key-field-hash-Fallback; führende Nullen bei Aktiencodes bleiben vollständig erhalten.
+  - **Portfolio-Risikobericht**: Konzentrationsrisiko (Top Positions + A-Aktien-Sektordefinition), historische Drawdown-Überwachung (mit Nachfüllen fehlender Snapshots), Stop-Loss-Nähewarnung; multiwährungsweise einheitliche Umrechnung in CNY; bei fehlgeschlagenem Abruf Rückfall auf den zuletzt erfolgreichen Wechselkurs und Markierung als stale.
+  - **Web-Positionsseite** (`/portfolio`): Portfolio-Übersicht, Positionsdetails, Konzentrations-Pie-Chart, Risikozusammenfassung, Gesamtportfolio-/Einzelkonto-Umschaltung; manuelle Erfassung von Transaktionen / Kapitalflüssen / Unternehmensereignissen; eingebetteter Kontoerstellungs-Einstieg; CSV-Parse + Einreichungs-Kreislauf mit Broker-Auswahl.
+  - **Agent-Positionstool**: neu ist das Datentool `get_portfolio_snapshot` mit standardmäßig kompakter Zusammenfassung und optionalen Positionsdetails und Risikodaten.
+  - **Ereignisabfrage-APIs**: neu sind `GET /portfolio/trades`, `GET /portfolio/cash-ledger`, `GET /portfolio/corporate-actions`, mit Datumsfilter und Paginierung.
+  - **Erweiterbarer Parser-Registry**: Anwendungsbezogene gemeinsame Registrierung mit Laufzeit-Registrierung neuer Broker; neu ist die Erkennungsschnittstelle `GET /portfolio/imports/csv/brokers`.
 
-- 🎨 **前端设计系统与原子组件库**（#662）
-  - 引入渐进式双主题架构（HSL 变量化设计令牌），清理历史 Legacy CSS；重构 Button / Card / Badge / Collapsible / Input / Select 等 20+ 核心组件；新增 `clsx` + `tailwind-merge` 类名合并工具；提升历史记录、LLM 配置等页面可读性。
+- 🎨 **Frontend-Designsystem und atomare Komponentenbibliothek** (#662)
+  - Einführung einer progressiven Dual-Theme-Architektur (HSL-variabilisierte Design-Tokens), Bereinigung historischer Legacy-CSS; Umbau von 20+ Kernkomponenten wie Button / Card / Badge / Collapsible / Input / Select; neue `clsx` + `tailwind-merge`-Klassen-Zusammenführungstools; Verbesserung der Lesbarkeit von Seiten wie Historienlog und LLM-Konfiguration.
 
-- ⚡ **分析 API 异步契约与启动优化**（#656）
-  - 规范 `POST /api/v1/analysis/analyze` 异步请求的返回契约；优化服务启动辅助逻辑；修复前端报告类型联合定义与后端响应对齐问题。
+- ⚡ **Asynchroner Vertrag der Analyse-API und Startoptimierung** (#656)
+  - Normierung des Rückgabevertrags für asynchrone Anfragen von `POST /api/v1/analysis/analyze`; Optimierung der Hilfslogik beim Dienststart; Behebung der Abweichung zwischen der Frontend-Union-Type-Definition für Berichte und der Backend-Antwort.
 
-### 修复
+### Behobene Probleme
 
-- 🔔 **Discord 环境变量向后兼容**（#659）：运行时新增 `DISCORD_CHANNEL_ID` → `DISCORD_MAIN_CHANNEL_ID` 的 fallback 读取；历史配置用户无需修改即可恢复 Discord Bot 通知；全部相关文档与 `.env.example` 对齐。
-- 🔧 **GitHub Actions Node 24 升级**（#665）：将所有 GitHub 官方 actions 升级至 Node 24 兼容版本，消除 CI 日志中的 Node.js 20 deprecation warning（影响 2026-06-02 强制升级窗口）。
-- 📅 **持仓页默认日期本地化**：手工录入表单默认日期改用本地时间（`getFullYear/Month/Date`），修复 UTC-N 时区用户在当天晚间出现日期偏移的问题。
-- 🔁 **CSV 导入去重逻辑加固**：dedup hash 纳入行序号作为区分因子，确保同字段合法分笔成交不被误折叠；同时在 `trade_uid` 存在时也持久化 hash，防止混合来源重复写入。
+- 🔔 **Discord-Umgebungsvariablen rückwärtskompatibel** (#659): zur Laufzeit wird der Fallback-Lesezugriff `DISCORD_CHANNEL_ID` → `DISCORD_MAIN_CHANNEL_ID` ergänzt; Nutzer mit historischer Konfiguration müssen nichts ändern, um Discord-Bot-Benachrichtigungen wiederherzustellen; alle zugehörigen Dokumente und `.env.example` werden angeglichen.
+- 🔧 **GitHub-Actions-Node-24-Upgrade** (#665): alle offiziellen GitHub-Actions werden auf Node-24-kompatible Versionen aktualisiert, wodurch die Node.js-20-Deprecation-Warnung in CI-Logs beseitigt wird (betrifft das erzwungene Upgrade-Fenster am 2026-06-02).
+- 📅 **Standarddatum der Positionsseite lokalisiert**: das Standarddatum der manuellen Erfassungsformulare verwendet jetzt die lokale Zeit (`getFullYear/Month/Date`), wodurch die Datumsverschiebung für Nutzer in UTC-N-Zeitzonen am Abend des Tages behoben wird.
+- 🔁 **Deduplizierungslogik des CSV-Imports gehärtet**: der dedup-hash bezieht die Zeilennummer als Unterscheidungsfaktor ein, sodass legale, über mehrere Zeilen verteilte Abschlüsse derselben Felder nicht fälschlich zusammengefaltet werden; zugleich wird der hash auch bei vorhandenem `trade_uid` persistiert, um doppelte Schreibvorgänge aus gemischten Quellen zu verhindern.
 
-### 变更
+### Änderungen
 
-- `POST /api/v1/portfolio/trades` 在同账户内 `trade_uid` 冲突时返回 `409`。
-- 持仓风险响应新增 `sector_concentration` 字段（增量扩展），原有 `concentration` 字段保持不变。
-- 分析 API `analyze` 接口异步行为契约文档化；前端报告类型联合更新。
+- `POST /api/v1/portfolio/trades` gibt bei `trade_uid`-Konflikt innerhalb desselben Kontos `409` zurück.
+- Die Positions-Risikoantwort erhält das Feld `sector_concentration` (inkrementelle Erweiterung); das bisherige `concentration`-Feld bleibt unverändert.
+- Das asynchrone Verhaltensmuster der `analyze`-Schnittstelle der Analyse-API wird dokumentiert; die Frontend-Berichts-Union-Type wird aktualisiert.
 
-### 测试
+### Tests
 
-- 新增持仓核心服务测试（FIFO / AVG 部分卖出、同日事件顺序、重复 `trade_uid` 返回 409、快照 API 契约）。
-- 新增 CSV 导入幂等性、合法分笔成交不误去重、去重边界、风险阈值边界、汇率降级行为测试。
-- 新增 Agent `get_portfolio_snapshot` 工具调用测试。
-- 新增分析 API 异步契约回归测试。
+- Neue Tests für den Positions-Kerndienst (FIFO / AVG Teilverkäufe, Ereignisreihenfolge am selben Tag, doppelter `trade_uid` gibt 409, Snapshot-API-Vertrag).
+- Neue Tests für CSV-Import-Idempotenz, legale Teilabschlüsse ohne Fehldeduplizierung, Deduplizierungsgrenzen, Risiko-Schwellwertgrenzen und Wechselkurs-Degradationsverhalten.
+- Neue Tests für den Agent-Toolaufruf `get_portfolio_snapshot`.
+- Neue Regressions-Tests für den asynchronen Vertrag der Analyse-API.
 
 ## [3.6.0] - 2026-03-14
 
@@ -1196,13 +1150,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - 🗑️ **History batch deletion** — Web UI now supports multi-selection and batch deletion of analysis history; added `POST /api/v1/history/batch-delete` endpoint and `ConfirmDialog` component.
 - 🔐 **Auth settings API** — new `POST /api/v1/auth/settings` endpoint to enable or disable Web authentication at runtime and set the initial admin password when needed
-- openclaw Skill 集成指南 — 新增 [docs/openclaw-skill-integration.md](openclaw-skill-integration.md)，说明如何通过 openclaw Skill 调用 DSA API
+- openclaw-Skill-Integrationsleitfaden — neu ist [docs/openclaw-skill-integration.md](openclaw-skill-integration.md), das erklärt, wie die DSA-API über einen openclaw Skill aufgerufen wird
 - ⚙️ **LLM channel protocol/test UX** — `.env` and Web settings now share the same channel shape (`LLM_CHANNELS` + `LLM_<NAME>_PROTOCOL/BASE_URL/API_KEY/MODELS/ENABLED`); settings page adds per-channel connection testing, primary/fallback/vision model selection, and protocol-aware model prefixing
 - 🤖 **Agent architecture Phase 0+1** — shared protocols (`AgentContext`, `AgentOpinion`, `StageResult`), extracted `run_agent_loop()` runner, `AGENT_ARCH` switch (`single`/`multi`), config registry entries
 - 🔍 **Bot NL routing** — two-layer natural-language routing: cheap regex pre-filter (stock codes + finance keywords) → lightweight LLM intent parsing; controlled by `AGENT_NL_ROUTING=true`; supports multi-stock and strategy extraction
 - 💬 **`/ask` multi-stock analysis** — comma or `vs` separated codes (max 5), parallel thread execution with 150s timeout (preserves partial results), Markdown comparison summary table at top
 - 📋 **`/history` command** — per-user session isolation via `{platform}_{user_id}:{scope}` format (colon delimiter prevents prefix collision); lists both `/chat` and `/ask` sessions; view detail or clear
-- 📊 **`/strategies` command** — lists available strategy YAML files grouped by category (趋势/形态/反转/框架) with ✅/⬜ activation status
+- 📊 **`/strategies` command** — lists available strategy YAML files grouped by category (Trend/Formation/Umkehr/Framework) with ✅/⬜ activation status
 - 🔧 **Backtest summary tools** — `get_strategy_backtest_summary` and `get_stock_backtest_summary` registered as read-only Agent tools
 - ⚙️ **Agent auto-detection** — `is_agent_available()` auto-detects from `LITELLM_MODEL`; explicit `AGENT_MODE=true/false` takes full precedence
 - 🏗️ **Multi-Agent orchestrator (Phase 2)** — `AgentOrchestrator` with 4 modes (`quick`/`standard`/`full`/`strategy`); drop-in replacement for `AgentExecutor` via `AGENT_ARCH=multi`; `BaseAgent` ABC with tool subset filtering, cached data injection, and structured `AgentOpinion` output
@@ -1229,15 +1183,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 🎮 **Discord channel env compatibility** — runtime now accepts legacy `DISCORD_CHANNEL_ID` as a fallback for `DISCORD_MAIN_CHANNEL_ID`, and the docs/examples now use the same variable name as the actual workflow/config implementation
 - 🐛 **Session secret rotation on Windows** — use atomic replace so auth toggles invalidate existing sessions even when `.session_secret` already exists
 - 🐛 **Auth toggle atomicity** — persist `ADMIN_AUTH_ENABLED` before rotating session secret; on rotation failure, roll back to the previous auth state
-- 🔧 **LLM runtime selection guardrails** — YAML 模式下渠道编辑器不再覆盖 `LITELLM_MODEL` / fallback / Vision；系统配置校验补上全部渠道禁用后的运行时来源检查，并修复 `vertexai/...` 这类协议别名模型被重复加前缀的问题
+- 🔧 **LLM runtime selection guardrails** — im YAML-Modus überschreibt der Kanal-Editor nicht mehr `LITELLM_MODEL` / fallback / Vision; die Systemkonfigurationsvalidierung ergänzt eine Laufzeit-Quellprüfung, wenn alle Kanäle deaktiviert sind, und behebt, dass Protokoll-Alias-Modelle wie `vertexai/...` doppelt mit Präfixen versehen wurden
 - 🐛 **Multi-stock `/ask` follow-up regressions** — portfolio overlay now shares the same timeout budget as the per-stock phase and is skipped on timeout instead of blocking the bot reply; `/history` now stores the readable per-stock summary instead of raw dashboard JSON; condensed multi-stock output now renders numeric `sniper_points` values
-- 🐛 **Decision dashboard enum compatibility** — multi-agent `DecisionAgent` now keeps `decision_type` within the legacy `buy|hold|sell` contract and normalizes stray `strong_*` outputs before risk override, pipeline conversion, and downstream统计/通知汇总
-- 🛟 **Multi-Agent partial-result fallback** — `IntelAgent` now caches parsed intel for downstream reuse, shared JSON parsing tolerates lightly malformed model output, and the orchestrator preserves/synthesizes a minimal dashboard on timeout or mid-pipeline parse failure instead of always collapsing to `50/观望/未知`
+- 🐛 **Decision dashboard enum compatibility** — multi-agent `DecisionAgent` now keeps `decision_type` within the legacy `buy|hold|sell` contract and normalizes stray `strong_*` outputs before risk override, pipeline conversion, and downstream statistics/notification aggregation
+- 🛟 **Multi-Agent partial-result fallback** — `IntelAgent` now caches parsed intel for downstream reuse, shared JSON parsing tolerates lightly malformed model output, and the orchestrator preserves/synthesizes a minimal dashboard on timeout or mid-pipeline parse failure instead of always collapsing to `50/Abwarten/Unbekannt`
 - 🐛 **Shared LiteLLM routing restored** — bot NL intent parsing and `ResearchAgent` planning/synthesis now reuse the same LiteLLM adapter / Router / fallback / `api_base` injection path as the main Agent flow, so `LLM_CHANNELS` / `LITELLM_CONFIG` / OpenAI-compatible deployments behave consistently
 - 🐛 **Bot chat session backward compatibility** — `/chat` now keeps using the legacy `{platform}_{user_id}` session id when old history already exists, and `/history` can still list / view / clear those pre-migration sessions alongside the new `{platform}_{user_id}:chat` format
 - 🐛 **EventMonitor unsupported rule rejection** — config validation/runtime loading now reject or skip alert types the monitor cannot actually evaluate yet, so schedule mode no longer silently accepts permanent no-op rules
-- 🐛 **P0 基本面聚合稳定性修复** (#614) — 修复 `get_stock_info` 板块语义回归（新增 `belong_boards` 并保留 `boards` 兼容别名）、引入基本面上下文精简返回以控制 token、为基本面缓存增加最大条目淘汰，并补齐 ETF 总体状态聚合与 NaN 板块字段过滤，保证 fail-open 与最小入侵。
-- 🔧 **GitHub Actions 搜索引擎环境变量补充** — 工作流新增 `MINIMAX_API_KEYS`、`BRAVE_API_KEYS`、`SEARXNG_BASE_URLS` 环境变量映射，使 GitHub Actions 用户可配置 MiniMax、Brave、SearXNG 搜索服务（此前 v3.5.0 已添加 provider 实现但缺少工作流配置）
+- 🐛 **P0-Stabilitätsfix für die Fundamentaldaten-Aggregation** (#614) — behebt die Sektorsemantik-Regression von `get_stock_info` (neu `belong_boards`, mit beibehaltenem `boards`-Kompatibilitätsalias), führt kompakte Rückgaben für Fundamentalkontext zur Token-Kontrolle ein, ergänzt maximale Eintrags-Eviction für den Fundamentaldaten-Cache und vervollständigt die ETF-Gesamtstatus-Aggregation sowie das Filtern von NaN-Sektorfeldern, mit fail-open und minimaler Invasivität.
+- 🔧 **GitHub-Actions-Suchmaschinen-Umgebungsvariablen ergänzt** — der Workflow erhält neue Umgebungsvariablen-Mappings für `MINIMAX_API_KEYS`, `BRAVE_API_KEYS`, `SEARXNG_BASE_URLS`, damit GitHub-Actions-Nutzer die Suchdienste MiniMax, Brave und SearXNG konfigurieren können (v3.5.0 fügte zwar die Provider-Implementierung hinzu, aber die Workflow-Konfiguration fehlte)
 - 🤖 **Multi-Agent runtime consistency** — `AGENT_MAX_STEPS` now propagates to each orchestrated sub-agent; added cooperative `AGENT_ORCHESTRATOR_TIMEOUT_S` budget to stop overlong pipelines before they cascade further
 - 🔌 **Multi-Agent feature wiring** — `AGENT_RISK_OVERRIDE` now actively downgrades final dashboards on hard risk findings; `AGENT_MEMORY_ENABLED` now injects recent analysis memory + confidence calibration into specialised agents; multi-stock `/ask` now runs `PortfolioAgent` to add portfolio-level allocation and concentration guidance
 - 🔔 **EventMonitor runtime wiring** — schedule mode can now load alert rules from `AGENT_EVENT_ALERT_RULES_JSON`, poll them at `AGENT_EVENT_MONITOR_INTERVAL_MINUTES`, and send triggered alerts through the existing notification service
@@ -1251,17 +1205,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 🧹 **ResearchAgent dedup** — `_filtered_registry()` now delegates to `BaseAgent._filtered_registry()` instead of duplicating the filtering logic
 - 🧹 **Bot trailing whitespace cleanup** — removed W291/W293 whitespace issues across `bot/handler.py`, `bot/dispatcher.py`, `bot/commands/base.py`, `bot/platforms/feishu_stream.py`, `bot/platforms/dingtalk_stream.py`
 - 🐛 **Dispatcher `_parse_intent_via_llm` safety** — replaced fragile `'raw' in dir()` with `'raw' in locals()` for undefined-variable guard in `JSONDecodeError` handler
-- 🐛 **筹码结构 LLM 未填写时兜底补全** (#589) — DeepSeek 等模型未正确填写 `chip_structure` 时，自动用数据源已获取的筹码数据补全，保证各模型展示一致；普通分析与 Agent 模式均生效
-- 🐛 **历史报告狙击点位显示原始文本** (#452) — 历史详情页现优先展示 `raw_result.dashboard.battle_plan.sniper_points` 中的原始字符串，避免 `analysis_history` 数值列把区间、说明文字或复杂点位压缩成单个数字；保留原有数值列作为回退
+- 🐛 **Fallback-Vervollständigung, wenn die LLM die Chip-Struktur nicht ausfüllt** (#589) — wenn Modelle wie DeepSeek `chip_structure` nicht korrekt ausfüllen, wird automatisch mit den bereits abgerufenen Chip-Daten der Datenquelle vervollständigt, damit alle Modelle konsistent anzeigen; gilt für normale Analyse und Agent-Modus
+- 🐛 **Historienberichte zeigen Sniper-Punkte als Originaltext** (#452) — die Historien-Detailseite zeigt jetzt vorrangig die ursprünglichen Strings aus `raw_result.dashboard.battle_plan.sniper_points`, damit die numerische `analysis_history`-Spalte Bereiche, Beschreibungstexte oder komplexe Punkte nicht zu einer einzelnen Zahl komprimiert; die ursprüngliche numerische Spalte bleibt als Rückfall erhalten
 - 🐛 **Session prefix collision** — user ID `123` could see sessions of user `1234` via `startswith`; fixed with colon delimiter in session_id format
 - 🐛 **NL pre-filter false positives** — `re.IGNORECASE` caused `[A-Z]{2,5}` to match common English words like "hello"; removed global flag, use inline `(?i:...)` only for English finance keywords
 - 🐛 **Dotted ticker in strategy args** — `_get_strategy_args()` didn't recognize `BRK.B` as a stock code, leaving it in strategy text; now accepts `TICKER.CLASS` format
-- ⏱️ **efinance 长调用挂起修复** (#660) — 为所有 efinance API 调用引入 `_ef_call_with_timeout()` 包装（默认 30 秒，可通过 `EFINANCE_CALL_TIMEOUT` 配置）；使用 `executor.shutdown(wait=False)` 确保超时后不再阻塞主线程，彻底消除 81 分钟挂起问题
-- 🛡️ **类型安全内容完整性检查** (#660) — `check_content_integrity()` 现在将非字符串类型的 `operation_advice` / `analysis_summary` 视为缺失字段，避免下游 `get_emoji()` 因 `dict.strip()` 崩溃
-- 📄 **报告保存与通知解耦** (#660) — `_save_local_report()` 不再依赖 `send_notification` 标志触发，`--no-notify` 模式下本地报告照常保存
-- 🔄 **operation_advice 字典归一化** (#660) — Pipeline 和 BacktestEngine 现在将 LLM 返回的 `dict` 格式 `operation_advice` 通过 `decision_type`（不区分大小写）映射为标准字符串，防止因模型输出格式变化导致崩溃
-- 🛡️ **runner.py usage None 防护** (#660) — `response.usage` 为 `None` 时不再抛出 `AttributeError`，回退为 0 token 计数
-- 📋 **orchestrator 静默失败改为日志警告** (#660) — `IntelAgent` / `RiskAgent` 阶段失败现在记录 `WARNING` 而非静默跳过，便于诊断
+- ⏱️ **Fix für hängende lange efinance-Aufrufe** (#660) — alle efinance-API-Aufrufe werden mit `_ef_call_with_timeout()` umschlossen (Standard 30 Sekunden, konfigurierbar über `EFINANCE_CALL_TIMEOUT`); `executor.shutdown(wait=False)` stellt sicher, dass der Hauptthread nach einem Timeout nicht mehr blockiert wird, wodurch das 81-Minuten-Hängen vollständig beseitigt wird
+- 🛡️ **Typsichere Inhaltsintegritätsprüfung** (#660) — `check_content_integrity()` behandelt `operation_advice` / `analysis_summary` mit nicht-String-Typen jetzt als fehlende Felder, um einen Absturz von `get_emoji()` durch `dict.strip()` downstream zu vermeiden
+- 📄 **Berichtsspeicherung und Benachrichtigung entkoppelt** (#660) — `_save_local_report()` hängt nicht mehr vom `send_notification`-Flag ab; im `--no-notify`-Modus wird der lokale Bericht weiterhin normal gespeichert
+- 🔄 **operation_advice-Dictionary-Normalisierung** (#660) — Pipeline und BacktestEngine mappen jetzt das von der LLM zurückgegebene `dict`-Format `operation_advice` über `decision_type` (case-insensitive) auf Standard-Strings, um Abstürze durch wechselnde Modellausgabeformate zu verhindern
+- 🛡️ **None-Schutz für usage in runner.py** (#660) — bei `response.usage` gleich `None` wird kein `AttributeError` mehr geworfen, sondern auf 0 Token-Zählung zurückgefallen
+- 📋 **Stille Fehler im Orchestrator als Log-Warnung** (#660) — Fehlschläge in den Phasen `IntelAgent` / `RiskAgent` werden jetzt als `WARNING` protokolliert statt still übersprungen, zur besseren Diagnose
 
 ### Notes
 - ⚠️ **Multi-worker auth toggles** — runtime auth updates are process-local; multi-worker deployments must restart/roll workers to keep auth state consistent
@@ -1315,27 +1269,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 🐛 **EfinanceFetcher ETF OHLCV data** (#541, #527) — switch `_fetch_etf_data` from `ef.fund.get_quote_history` (NAV-only, no OHLCV, no `beg`/`end` params) to `ef.stock.get_quote_history`; ETFs now return proper open/high/low/close/volume/amount instead of zeros; remove obsolete NAV column mappings from `_normalize_data`
 - 🐛 **tiktoken 0.12.0 `Unknown encoding cl100k_base`** (#537) — pin `tiktoken>=0.8.0,<0.12.0` in requirements.txt to avoid plugin-registration regression introduced in 0.12.0
 - 🐛 **Web UI API error classification** (#540) — frontend no longer treats every HTTP 400 as the same "server/network" failure; now distinguishes Agent disabled / missing params / model-tool incompatibility / upstream LLM errors / local connection failures
-- 🐛 **北交所代码识别失败** (#491, #533) — 8/4/92 开头的 6 位代码现正确识别为北交所；Tushare/Akshare/Yfinance 等数据源支持 .BJ 或 bj 前缀；Baostock/Pytdx 对北交所代码显式切换数据源；避免误判上海 B 股 900xxx
-- 🐛 **狙击点位解析错误** (#488, #532) — 理想买入/二次买入等字段在无「元」字时误提取括号内技术指标数字；现先截去第一个括号后内容再提取
+- 🐛 **Erkennung fehlgeschlagener Beijing Stock Exchange-Codes** (#491, #533) — 6-stellige Codes, die mit 8/4/92 beginnen, werden jetzt korrekt als BSE erkannt; Datenquellen wie Tushare/Akshare/Yfinance unterstützen den .BJ- oder bj-Präfix; Baostock/Pytdx wechseln bei BSE-Codes explizit die Datenquelle; Fehlklassifizierung der Shanghai-B-Aktien 900xxx wird vermieden
+- 🐛 **Parse-Fehler bei Sniper-Punkten** (#488, #532) — Felder wie idealer Kauf/zweiter Kauf extrahierten ohne das Zeichen „元“ fälschlich die Zahlen technischer Indikatoren in Klammern; jetzt wird zuerst der Inhalt nach der ersten Klammer abgeschnitten und dann extrahiert
 
 ### Added
-- **Markdown-to-image for dashboard report** (#455, #535) — 个股日报汇总支持 markdown 转图片推送（Telegram、WeChat、Custom、Email），与大盘复盘行为一致
-- **markdown-to-file engine** (#455) — `MD2IMG_ENGINE=markdown-to-file` 可选，对 emoji 支持更好，需 `npm i -g markdown-to-file`
-- **PREFETCH_REALTIME_QUOTES** (#455) — 设为 `false` 可禁用实时行情预取，避免 efinance/akshare_em 全市场拉取
-- **Stock name prefetch** (#455) — 分析前预取股票名称，减少报告中「股票xxxxx」占位符
-- 📊 **分析报告模型标记** (#528, #534) — 在分析报告 meta、报告末尾、推送内容中展示 `model_used`（完整 LLM 模型名）；Agent 多轮调用时记录并展示每轮实际使用的模型（支持 fallback 切换）
+- **Markdown-to-image for dashboard report** (#455, #535) — die Einzelaktien-Tagesbericht-Zusammenfassung unterstützt Markdown-zu-Bild-Pushes (Telegram, WeChat, Custom, Email), konsistent mit dem Verhalten des Markt-Reviews
+- **markdown-to-file engine** (#455) — `MD2IMG_ENGINE=markdown-to-file` ist optional und unterstützt Emojis besser; erfordert `npm i -g markdown-to-file`
+- **PREFETCH_REALTIME_QUOTES** (#455) — setzen auf `false` deaktiviert das Vorabrufen von Echtzeitkursen, um den marktweiten Abruf über efinance/akshare_em zu vermeiden
+- **Stock name prefetch** (#455) — ruft Aktiennamen vor der Analyse vorab ab und reduziert Platzhalter wie „Aktie xxxxx“ im Bericht
+- 📊 **Modell-Kennzeichnung in Analyseberichten** (#528, #534) — zeigt `model_used` (voller LLM-Modellname) im Meta des Analyseberichts, am Berichtsende und im Push-Inhalt; bei mehrrundigen Agent-Aufrufen wird das in jeder Runde tatsächlich verwendete Modell protokolliert und angezeigt (mit Fallback-Umschaltung)
 
 ### Changed
-- **Enhanced markdown-to-image failure warning** (#455) — 转图失败时提示具体依赖（wkhtmltopdf 或 m2f）
-- **WeChat-only image routing optimization** (#455) — 仅配置企业微信图片时，不再对完整报告做冗余转图，避免误导性失败日志
-- **Stock name prefetch lightweight mode** (#455) — 名称预取阶段跳过 realtime quote 查询，减少额外网络开销
+- **Enhanced markdown-to-image failure warning** (#455) — bei fehlgeschlagener Bildkonvertierung wird auf die konkrete Abhängigkeit hingewiesen (wkhtmltopdf oder m2f)
+- **WeChat-only image routing optimization** (#455) — wenn nur WeCom-Bilder konfiguriert sind, wird für den vollständigen Bericht keine redundante Bildkonvertierung mehr durchgeführt, wodurch irreführende Fehler-Logs vermieden werden
+- **Stock name prefetch lightweight mode** (#455) — die Namens-Vorabrufphase überspringt die Echtzeitkurs-Abfrage und reduziert zusätzliche Netzwerkkosten
 
 ## [3.4.9] - 2026-03-06
 
 ### Added
 - 🧠 **Structured config validation** — `ConfigIssue` dataclass and `validate_structured()` with severity-aware logging; `CONFIG_VALIDATE_MODE=strict` aborts startup on errors
 - 🖼️ **Vision model config** — `VISION_MODEL` and `VISION_PROVIDER_PRIORITY` for image stock extraction; provider fallback (Gemini → Anthropic → OpenAI → DeepSeek) when primary fails
-- 🚀 **CLI init wizard** — `python -m dsa init` 3-step interactive bootstrap (model → data source → notification), 9 provider presets, incremental merge by default
+- 🚀 **CLI init wizard** — `python -m dsa init` 3-Schritte-interaktiver Bootstrap (Modell → Datenquelle → Benachrichtigung), 9 Provider-Presets, standardmäßig inkrementelles Zusammenführen
 - 🔧 **Multi-channel LLM support** with visual channel editor (#494)
 
 ### Changed
@@ -1385,7 +1339,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Docs
 - 📝 Clarify potential ambiguities in code (#343)
 - 📝 ENABLE_EASTMONEY_PATCH guidance for Issue #453 (#456)
-
 ## [3.4.0] - 2026-02-27
 
 ### Added
@@ -1447,649 +1400,648 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [3.2.11] - 2026-02-23
 
-### 修复（#patch）
-- 🐛 **StockTrendAnalyzer 从未执行** (Issue #357)
-  - 根因：`get_analysis_context` 仅返回 2 天数据且无 `raw_data`，pipeline 中 `raw_data in context` 始终为 False
-  - 修复：Step 3 直接调用 `get_data_range` 获取 90 日历天（约 60 交易日）历史数据用于趋势分析
-  - 改善：趋势分析失败时用 `logger.warning(..., exc_info=True)` 记录完整 traceback
+### Behobene Probleme (#patch)
+- 🐛 **StockTrendAnalyzer wurde nie ausgeführt** (Issue #357)
+  - Grundursache: `get_analysis_context` liefert nur 2 Tage Daten und kein `raw_data`; in der Pipeline ist `raw_data in context` stets False
+  - Fix: Schritt 3 ruft direkt `get_data_range` auf, um 90 Kalendertage (ca. 60 Handelstage) historische Daten für die Trendanalyse zu beziehen
+  - Verbesserung: bei fehlgeschlagener Trendanalyse wird mit `logger.warning(..., exc_info=True)` der vollständige Traceback protokolliert
 
 ## [3.2.10] - 2026-02-22
 
-### 新增
-- ⚙️ 支持 `RUN_IMMEDIATELY` 配置项，设为 `true` 时定时任务触发后立即执行一次分析，无需等待首个定时点
+### Neue Funktionen
+- ⚙️ Unterstützt die Konfigurationsoption `RUN_IMMEDIATELY`; bei `true` führt ein ausgelöster Zeitplan sofort eine Analyse aus, ohne auf den ersten Zeitplanpunkt zu warten
 
-### 修复
-- 🐛 修复 Web UI 页面居中问题
-- 🐛 修复 Settings 返回 500 错误
+### Behobene Probleme
+- 🐛 Behebt das Zentrierungsproblem der Web-UI-Seite
+- 🐛 Behebt den 500-Fehler der Einstellungen
 
 ## [3.2.9] - 2026-02-22
 
-### 修复
-- 🐛 **ETF 分析仅关注指数走势**（Issue #274）
-  - 美股/港股 ETF（如 VOO、QQQ）与 A 股 ETF 不再纳入基金公司层面风险（诉讼、声誉等）
-  - 搜索维度：ETF/指数专用 risk_check、earnings、industry 查询，避免命中基金管理人新闻
-  - AI 提示：指数型标的分析约束，`risk_alerts` 不得出现基金管理人公司经营风险
+### Behobene Probleme
+- 🐛 **ETF-Analyse beachtet nur die Indexbewegung** (Issue #274)
+  - US-/Hongkong-ETFs (z. B. VOO, QQQ) und A-Aktien-ETFs fließen nicht mehr in Risiken auf Fondsebene (Rechtsstreitigkeiten, Reputation usw.) ein
+  - Suchdimensionen: ETF-/Index-spezifische risk_check-, earnings- und industry-Abfragen, um Nachrichten über den Fondsverwalter zu vermeiden
+  - AI-Hinweis: Analysierestriktion für indexartige Basiswerte; `risk_alerts` dürfen keine Betriebsrisiken des Fondsverwalters enthalten
 
 ## [3.2.8] - 2026-02-21
 
-### 修复
-- 🐛 **BOT 与 WEB UI 股票代码大小写统一**（Issue #355）
-  - BOT `/analyze` 与 WEB UI 触发分析的股票代码统一为大写（如 `aapl` → `AAPL`）
-  - 新增 `canonical_stock_code()`，在 BOT、API、Config、CLI、task_queue 入口处规范化
-  - 历史记录与任务去重逻辑可正确识别同一股票（大小写不再影响）
+### Behobene Probleme
+- 🐛 **Groß-/Kleinschreibung von Aktiencodes in BOT und WEB UI vereinheitlicht** (Issue #355)
+  - Aktiencodes, die über BOT `/analyze` und WEB UI Analysen auslösen, werden einheitlich in Großbuchstaben umgewandelt (z. B. `aapl` → `AAPL`)
+  - Neu ist `canonical_stock_code()`, das an den Einstiegen BOT, API, Config, CLI und task_queue normalisiert
+  - Historien- und Aufgaben-Deduplizierungslogik kann dieselbe Aktie korrekt erkennen (Groß-/Kleinschreibung hat keinen Einfluss mehr)
 
 ## [3.2.7] - 2026-02-20
 
-### 新增
-- 🔐 **Web 页面密码验证**（Issue #320, #349）
-  - 支持 `ADMIN_AUTH_ENABLED=true` 启用 Web 登录保护
-  - 首次访问在网页设置初始密码；支持「系统设置 > 修改密码」和 CLI `python -m src.auth reset_password` 重置
+### Neue Funktionen
+- 🔐 **Passwortprüfung der Web-Seite** (Issue #320, #349)
+  - `ADMIN_AUTH_ENABLED=true` aktiviert den Web-Login-Schutz
+  - Beim ersten Zugriff wird das anfängliche Passwort in der Web-Seite gesetzt; unterstützt das Zurücksetzen über „Systemeinstellungen > Passwort ändern“ und CLI `python -m src.auth reset_password`
 
 ## [3.2.6] - 2026-02-20
-### ⚠️ 破坏性变更（Breaking Changes）
+### ⚠️ Destruktive Änderungen (Breaking Changes)
 
-- **历史记录 API 变更 (Issue #322)**
-  - 路由变更：`GET /api/v1/history/{query_id}` → `GET /api/v1/history/{record_id}`
-  - 参数变更：`query_id` (字符串) → `record_id` (整数)
-  - 新闻接口变更：`GET /api/v1/history/{query_id}/news` → `GET /api/v1/history/{record_id}/news`
-  - 原因：`query_id` 在批量分析时可能重复，无法唯一标识单条历史记录。改用数据库主键 `id` 确保唯一性
-  - 影响范围：使用旧版历史详情 API 的所有客户端需同步更新
+- **Änderung der Historien-API (Issue #322)**
+  - Routenänderung: `GET /api/v1/history/{query_id}` → `GET /api/v1/history/{record_id}`
+  - Parameteränderung: `query_id` (String) → `record_id` (Integer)
+  - Nachrichten-Schnittstellenänderung: `GET /api/v1/history/{query_id}/news` → `GET /api/v1/history/{record_id}/news`
+  - Grund: `query_id` kann bei Batch-Analysen doppelt auftreten und einen einzelnen Historieneintrag nicht eindeutig identifizieren. Die Datenbank-Primärschlüssel `id` wird verwendet, um die Eindeutigkeit sicherzustellen
+  - Auswirkung: Alle Clients, die die alte Historien-Detail-API verwenden, müssen synchron aktualisiert werden
 
-### 修复
-- 修复美股（如 ADBE）技术指标矛盾：akshare 美股复权数据异常，统一美股历史数据源为 YFinance（Issue #311）
-- 🐛 **历史记录查询和显示问题 (Issue #322)**
-  - 修复历史记录列表查询中日期不一致问题：使用明天作为 endDate，确保包含今天全天的数据
-  - 修复服务器 UI 报告选择问题：原因是多条记录共享同一 `query_id`，导致总是显示第一条。现改用 `analysis_history.id` 作为唯一标识
-  - 历史详情、新闻接口及前端组件已全面适配 `record_id`
-  - 新增后台轮询（每 30s）与页面可见性变更时静默刷新历史列表，确保 CLI 发起的分析完成后前端能及时同步，使用 `silent` 模式避免触发 loading 状态
-- 🐛 **美股指数实时行情与日线数据** (Issue #273)
-  - 修复 SPX、DJI、IXIC、NDX、VIX、RUT 等美股指数无法获取实时行情的问题
-  - 新增 `us_index_mapping` 模块，将用户输入（如 SPX）映射为 Yahoo Finance 符号（如 ^GSPC）
-  - 美股指数与美股股票日线数据直接路由至 YfinanceFetcher，避免遍历不支持的数据源
-  - 消除重复的美股识别逻辑，统一使用 `is_us_stock_code()` 函数
+### Behobene Probleme
+- Behebt widersprüchliche technische Indikatoren für US-Aktien (z. B. ADBE): Die adjusierten Daten von akshare für US-Aktien sind anormal; die US-Historiendatenquelle wird einheitlich auf YFinance umgestellt (Issue #311)
+- 🐛 **Abfrage- und Anzeigeprobleme der Historieneinträge (Issue #322)**
+  - Behebt die Datumsinkonsistenz in den Historienlisten-Abfragen: morgen wird als endDate verwendet, um sicherzustellen, dass alle heutigen Daten enthalten sind
+  - Behebt das Berichtsauswahlproblem der Server-UI: Mehrere Einträge teilten sich dieselbe `query_id`, wodurch immer der erste angezeigt wurde. Jetzt wird `analysis_history.id` als eindeutige Kennung verwendet
+  - Historien-Details, Nachrichten-Schnittstellen und Frontend-Komponenten sind vollständig auf `record_id` umgestellt
+  - Neuer Hintergrund-Polling (alle 30 s) und stille Aktualisierung der Historienliste bei Seiten-Sichtbarkeitsänderungen sorgen dafür, dass das Frontend nach Abschluss CLI-gestarteter Analysen rechtzeitig synchronisiert; der `silent`-Modus vermeidet das Auslösen eines Ladezustands
+- 🐛 **Echtzeitkurse und Tagesdaten für US-Indizes** (Issue #273)
+  - Behebt, dass Echtzeitkurse für US-Indizes wie SPX, DJI, IXIC, NDX, VIX und RUT nicht abgerufen werden konnten
+  - Neu ist das Modul `us_index_mapping`, das Nutzereingaben (z. B. SPX) auf Yahoo-Finance-Symbole (z. B. ^GSPC) abbildet
+  - Tagesdaten von US-Indizes und US-Aktien werden direkt an YfinanceFetcher geroutet, um nicht unterstützte Datenquellen zu durchlaufen
+  - Beseitigt die doppelte US-Aktien-Erkennungslogik und verwendet einheitlich die Funktion `is_us_stock_code()`
 
-### 优化
-- 🎨 **首页输入栏与 Market Sentiment 布局对齐优化**
-  - 股票代码输入框左缘与历史记录 glass-card 框左对齐
-  - 分析按钮右缘与 Market Sentiment 外框右对齐
-  - Market Sentiment 卡片向下拉伸填满格子，消除与 STRATEGY POINTS 之间的空隙
-  - 窄屏时输入栏填满宽度，响应式对齐保持一致
+### Optimierungen
+- 🎨 **Layout-Ausrichtung von Eingabezeile der Startseite und Market Sentiment optimiert**
+  - Die linke Kante des Aktiencode-Eingabefelds ist linksbündig mit dem Glass-Card-Rahmen der Historie
+  - Die rechte Kante des Analyseknopfs ist rechtsbündig mit dem äußeren Rahmen von Market Sentiment
+  - Die Market-Sentiment-Karte wird nach unten gedehnt, um das Raster zu füllen, wodurch die Lücke zu STRATEGY POINTS beseitigt wird
+  - Auf schmalen Bildschirmen füllt die Eingabezeile die volle Breite; das responsive Alignment bleibt konsistent
 
 ## [3.2.5] - 2026-02-19
 
-### 新增
-- 🌍 **大盘复盘可选区域**（Issue #299）
-  - 支持 `MARKET_REVIEW_REGION` 环境变量：`cn`（A股）、`us`（美股）、`both`（两者）
-  - us 模式使用 SPX/纳斯达克/道指/VIX 等指数；both 模式可同时复盘 A 股与美股
-  - 默认 `cn`，保持向后兼容
+### Neue Funktionen
+- 🌍 **Optionale Regionen für den Markt-Review** (Issue #299)
+  - Unterstützt die Umgebungsvariable `MARKET_REVIEW_REGION`: `cn` (A-Aktien), `us` (US-Aktien), `both` (beide)
+  - Der us-Modus verwendet Indizes wie SPX/Nasdaq/Dow/VIX; der both-Modus kann A-Aktien und US-Aktien zugleich reviewen
+  - Standard `cn`, rückwärtskompatibel
 
 ## [3.2.4] - 2026-02-18
 
-### 修复
-- 🐛 **统一美股数据源为 YFinance**（Issue #311）
-  - akshare 美股复权数据异常，统一美股历史数据源为 YFinance
-  - 修复 ADBE 等美股股票技术指标矛盾问题
+### Behobene Probleme
+- 🐛 **US-Datenquelle einheitlich auf YFinance umgestellt** (Issue #311)
+  - Die adjusierten Daten von akshare für US-Aktien sind anormal; die US-Historiendatenquelle wird einheitlich auf YFinance umgestellt
+  - Behebt widersprüchliche technische Indikatoren für US-Aktien wie ADBE
 
 ## [3.2.3] - 2026-02-18
 
-### 修复
-- 🐛 **标普500实时数据缺失**（Issue #273）
-  - 修复 SPX、DJI、IXIC、NDX、VIX、RUT 等美股指数无法获取实时行情的问题
-  - 新增 `us_index_mapping` 模块，将用户输入（如 SPX）映射为 Yahoo Finance 符号（如 `^GSPC`）
-  - 美股指数与美股股票日线数据直接路由至 YfinanceFetcher，避免遍历不支持的数据源
+### Behobene Probleme
+- 🐛 **Fehlende Echtzeitdaten für S&P 500** (Issue #273)
+  - Behebt, dass Echtzeitkurse für US-Indizes wie SPX, DJI, IXIC, NDX, VIX und RUT nicht abgerufen werden konnten
+  - Neu ist das Modul `us_index_mapping`, das Nutzereingaben (z. B. SPX) auf Yahoo-Finance-Symbole (z. B. `^GSPC`) abbildet
+  - Tagesdaten von US-Indizes und US-Aktien werden direkt an YfinanceFetcher geroutet, um nicht unterstützte Datenquellen zu durchlaufen
 
 ## [3.2.2] - 2026-02-16
 
-### 新增
-- 📊 **PE 指标支持**（Issue #296）
-  - AI System Prompt 增加 PE 估值关注
-- 📰 **新闻时效性筛查**（Issue #296）
-  - `NEWS_MAX_AGE_DAYS`：新闻最大时效（天），默认 3，避免使用过时信息
-- 📈 **强势趋势股乖离率放宽**（Issue #296）
-  - `BIAS_THRESHOLD`：乖离率阈值（%），默认 5.0，可配置
-  - 强势趋势股（多头排列且趋势强度 ≥70）自动放宽乖离率到 1.5 倍
+### Neue Funktionen
+- 📊 **PE-Kennzahl unterstützt** (Issue #296)
+  - Das AI-System-Prompt erhält einen Fokus auf die PE-Bewertung
+- 📰 **Nachrichten-Zeitnähe-Filter** (Issue #296)
+  - `NEWS_MAX_AGE_DAYS`: maximale Nachrichten-Zeitnähe (Tage), Standard 3, um veraltete Informationen zu vermeiden
+- 📈 **Bias-Erweiterung für starke Trendaktien** (Issue #296)
+  - `BIAS_THRESHOLD`: Schwellwert für die Bias-Rate (%), Standard 5.0, konfigurierbar
+  - Starke Trendaktien (Long-Anordnung und Trendstärke ≥70) weiten die Bias-Rate automatisch auf das 1,5-Fache
 
 ## [3.2.1] - 2026-02-16
 
-### 新增
-- 🔧 **东财接口补丁可配置开关**
-  - 支持 `EFINANCE_PATCH_ENABLED` 环境变量开关东财接口补丁（默认 `true`）
-  - 补丁不可用时可降级关闭，避免影响主流程
+### Neue Funktionen
+- 🔧 **Konfigurierbarer Schalter für den Eastmoney-Schnittstellen-Patch**
+  - Die Umgebungsvariable `EFINANCE_PATCH_ENABLED` schaltet den Eastmoney-Schnittstellen-Patch um (Standard `true`)
+  - Ist der Patch nicht verfügbar, kann er degradierend deaktiviert werden, um den Hauptablauf nicht zu beeinträchtigen
 
 ## [3.2.0] - 2026-02-15
 
-### 新增
-- 🔒 **CI 门禁统一（P0）**
-  - 新增 `scripts/ci_gate.sh` 作为后端门禁单一入口
-  - 主 CI 改为 `backend-gate`、`docker-build`、`web-gate` 三段式
-  - CI 触发改为所有 PR，避免 Required Checks 因路径过滤缺失而卡住合并
-  - `web-gate` 支持前端路径变更按需触发
-  - 新增 `network-smoke` 工作流承载非阻断网络场景回归
-- 📦 **发布链路收敛（P0）**
-  - `docker-publish` 调整为 tag 主触发，并增加发布前门禁校验
-  - 手动发布增加 `release_tag` 输入与 semver/changelog 强校验
-  - 发布前新增 Docker smoke（关键模块导入）
-- 📝 **PR 模板升级（P0）**
-  - 增加背景、范围、验证命令与结果、回滚方案、Issue 关联等必填项
-- 🤖 **AI 审查覆盖增强（P0）**
-  - `pr-review` 纳入 `.github/workflows/**` 范围
-  - 新增 `AI_REVIEW_STRICT` 开关，可选将 AI 审查失败升级为阻断
+### Neue Funktionen
+- 🔒 **CI-Gate vereinheitlicht (P0)**
+  - Neu ist `scripts/ci_gate.sh` als einziger Einstieg des Backend-Gates
+  - Das Haupt-CI wird in drei Phasen aufgeteilt: `backend-gate`, `docker-build`, `web-gate`
+  - CI wird für alle PRs ausgelöst, damit Required Checks Merges nicht wegen fehlender Pfadfilter blockieren
+  - `web-gate` unterstützt bedarfsweises Auslösen bei Frontend-Pfadänderungen
+  - Neu ist der `network-smoke`-Workflow für Regressions nicht blockierender Netzwerkszenarien
+- 📦 **Release-Pipeline konsolidiert (P0)**
+  - `docker-publish` wird auf Tag-basierte Hauptauslösung umgestellt und erhält eine Pre-Release-Gate-Prüfung
+  - Manuelle Releases erhalten einen `release_tag`-Input und strikte semver/changelog-Validierung
+  - Vor dem Release wird ein Docker-Smoke-Test ergänzt (Import kritischer Module)
+- 📝 **PR-Vorlage aktualisiert (P0)**
+  - Pflichtfelder wie Hintergrund, Umfang, Validierungsbefehle und -ergebnisse, Rollback-Plan und Issue-Zuordnung werden ergänzt
+- 🤖 **AI-Review-Abdeckung gestärkt (P0)**
+  - `pr-review` wird in den Geltungsbereich `.github/workflows/**` aufgenommen
+  - Neu ist der Schalter `AI_REVIEW_STRICT`, der AI-Review-Fehlschläge optional zu Blocker-Stufe aufwerten kann
 
 ## [3.1.13] - 2026-02-15
 
-### 新增
-- 📊 **仅分析结果摘要**（Issue #262）
-  - 支持 `REPORT_SUMMARY_ONLY` 环境变量，设为 `true` 时只推送汇总，不含个股详情
-  - 默认 `false`，多股时适合快速浏览
+### Neue Funktionen
+- 📊 **Nur Zusammenfassung der Analyseergebnisse** (Issue #262)
+  - Die Umgebungsvariable `REPORT_SUMMARY_ONLY` unterstützt; bei `true` wird nur die Zusammenfassung gepusht, ohne Einzelaktien-Details
+  - Standard `false`; bei mehreren Aktien für schnelles Überfliegen geeignet
 
 ## [3.1.12] - 2026-02-15
 
-### 新增
-- 📧 **个股与大盘复盘合并推送**（Issue #190）
-  - 支持 `MERGE_EMAIL_NOTIFICATION` 环境变量，设为 `true` 时将个股分析与大盘复盘合并为一次推送
-  - 默认 `false`，减少邮件数量、降低被识别为垃圾邮件的风险
+### Neue Funktionen
+- 📧 **Zusammengeführter Push von Einzelaktien und Markt-Review** (Issue #190)
+  - Die Umgebungsvariable `MERGE_EMAIL_NOTIFICATION` unterstützt; bei `true` werden Einzelaktien-Analyse und Markt-Review zu einem einzigen Push zusammengeführt
+  - Standard `false`; reduziert die Anzahl der E-Mails und senkt das Risiko, als Spam erkannt zu werden
 
 ## [3.1.11] - 2026-02-15
 
-### 新增
-- 🤖 **Anthropic Claude API 支持**（Issue #257）
-  - 支持 `ANTHROPIC_API_KEY`、`ANTHROPIC_MODEL`、`ANTHROPIC_TEMPERATURE`、`ANTHROPIC_MAX_TOKENS`
-  - AI 分析优先级：Gemini > Anthropic > OpenAI
-- 📷 **从图片识别股票代码**（Issue #257）
-  - 上传自选股截图，通过 Vision LLM 自动提取股票代码
-  - API: `POST /api/v1/stocks/extract-from-image`；支持 JPEG/PNG/WebP/GIF，最大 5MB
-  - 支持 `OPENAI_VISION_MODEL` 单独配置图片识别模型
-- ⚙️ **通达信数据源手动配置**（Issue #257）
-  - 支持 `PYTDX_HOST`、`PYTDX_PORT` 或 `PYTDX_SERVERS` 配置自建通达信服务器
+### Neue Funktionen
+- 🤖 **Anthropic-Claude-API unterstützt** (Issue #257)
+  - Unterstützt `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_TEMPERATURE`, `ANTHROPIC_MAX_TOKENS`
+  - AI-Analysepriorität: Gemini > Anthropic > OpenAI
+- 📷 **Aktiencodes aus Bildern erkennen** (Issue #257)
+  - Hochladen eines Watchlist-Screenshots; Aktiencodes werden automatisch über die Vision-LLM extrahiert
+  - API: `POST /api/v1/stocks/extract-from-image`; unterstützt JPEG/PNG/WebP/GIF, maximal 5MB
+  - Unterstützt die separate Konfiguration des Bilderkennungsmodells über `OPENAI_VISION_MODEL`
+- ⚙️ **Manuelle Konfiguration der Tongdaxin-Datenquelle** (Issue #257)
+  - Unterstützt die Konfiguration selbst gehosteter Tongdaxin-Server über `PYTDX_HOST`, `PYTDX_PORT` oder `PYTDX_SERVERS`
 
 ## [3.1.10] - 2026-02-15
 
-### 新增
-- ⚙️ **立即运行配置**（Issue #332）
-  - 支持 `RUN_IMMEDIATELY` 环境变量，`true` 时定时任务启动后立即执行一次
-- 🐛 修复 Docker 构建问题
+### Neue Funktionen
+- ⚙️ **Konfiguration für Sofortausführung** (Issue #332)
+  - Unterstützt die Umgebungsvariable `RUN_IMMEDIATELY`; bei `true` führt der Zeitplan beim Start sofort eine Ausführung durch
+- 🐛 Behebt Docker-Build-Probleme
 
 ## [3.1.9] - 2026-02-14
 
-### 新增
-- 🔌 **东财接口补丁机制**
-  - 新增 `patch/eastmoney_patch.py` 修复 efinance 上游接口变更
-  - 不影响其他数据源的正常运行
+### Neue Funktionen
+- 🔌 **Eastmoney-Schnittstellen-Patch-Mechanismus**
+  - Neu ist `patch/eastmoney_patch.py`, das Änderungen der efinance-Upstream-Schnittstelle repariert
+  - Beeinträchtigt den Normalbetrieb anderer Datenquellen nicht
 
 ## [3.1.8] - 2026-02-14
 
-### 新增
-- 🔐 **Webhook 证书校验开关**（Issue #265）
-  - 支持 `WEBHOOK_VERIFY_SSL` 环境变量，可关闭 HTTPS 证书校验以支持自签名证书
-  - 默认保持校验，关闭存在 MITM 风险，仅建议在可信内网使用
+### Neue Funktionen
+- 🔐 **Schalter für die Webhook-Zertifikatsprüfung** (Issue #265)
+  - Die Umgebungsvariable `WEBHOOK_VERIFY_SSL` kann die HTTPS-Zertifikatsprüfung deaktivieren, um selbstsignierte Zertifikate zu unterstützen
+  - Standardmäßig bleibt die Prüfung aktiv; ein Deaktivieren birgt ein MITM-Risiko und wird nur im vertrauenswürdigen Intranet empfohlen
 
 ## [3.1.7] - 2026-02-14
 
-### 修复
-- 🐛 修复包导入错误（package import error）
+### Behobene Probleme
+- 🐛 Behebt den Paket-Importfehler (package import error)
 
 ## [3.1.6] - 2026-02-13
 
-### 修复
-- 🐛 修复 `news_intel` 中 `query_id` 不一致问题
+### Behobene Probleme
+- 🐛 Behebt die Inkonsistenz von `query_id` in `news_intel`
 
 ## [3.1.5] - 2026-02-13
 
-### 新增
-- 📷 **Markdown 转图片通知**（Issue #289）
-  - 支持 `MARKDOWN_TO_IMAGE_CHANNELS` 配置，对 Telegram、企业微信、自定义 Webhook（Discord）、邮件发送图片格式报告
-  - 邮件为内联附件，增强对不支持 HTML 客户端的兼容性
-  - 需安装 `wkhtmltopdf` 和 `imgkit`
+### Neue Funktionen
+- 📷 **Markdown-zu-Bild-Benachrichtigung** (Issue #289)
+  - Die Konfiguration `MARKDOWN_TO_IMAGE_CHANNELS` unterstützt das Senden von Berichten im Bildformat an Telegram, WeCom, Custom-Webhook (Discord) und E-Mail
+  - E-Mails verwenden Inline-Anhänge und verbessern die Kompatibilität mit Clients, die kein HTML unterstützen
+  - Erfordert die Installation von `wkhtmltopdf` und `imgkit`
 
 ## [3.1.4] - 2026-02-12
 
-### 新增
-- 📧 **股票分组发往不同邮箱**（Issue #268）
-  - 支持 `STOCK_GROUP_N` + `EMAIL_GROUP_N` 配置，不同股票组报告发送到对应邮箱
-  - 大盘复盘发往所有配置的邮箱
+### Neue Funktionen
+- 📧 **Aktiengruppen an verschiedene E-Mail-Adressen senden** (Issue #268)
+  - Die Konfiguration `STOCK_GROUP_N` + `EMAIL_GROUP_N` unterstützt; Berichte verschiedener Aktiengruppen werden an die jeweiligen E-Mail-Adressen gesendet
+  - Der Markt-Review wird an alle konfigurierten E-Mail-Adressen gesendet
 
 ## [3.1.3] - 2026-02-12
 
-### 修复
-- 🐛 修复 Docker 内运行时通过页面修改配置报错 `[Errno 16] Device or resource busy` 的问题
+### Behobene Probleme
+- 🐛 Behebt den Fehler `[Errno 16] Device or resource busy` beim Ändern der Konfiguration über die Seite innerhalb von Docker
 
 ## [3.1.2] - 2026-02-11
 
-### 修复
-- 🐛 修复 Docker 一致性问题，解决关键批次处理与通知 Bug
+### Behobene Probleme
+- 🐛 Behebt Docker-Konsistenzprobleme und löst kritische Batch-Verarbeitungs- und Benachrichtigungs-Bugs
 
 ## [3.1.1] - 2026-02-11
 
-### 变更
-- ♻️ `API_HOST` → `WEBUI_HOST`：Docker Compose 配置项统一
+### Änderungen
+- ♻️ `API_HOST` → `WEBUI_HOST`: Docker-Compose-Konfiguration vereinheitlicht
 
 ## [3.1.0] - 2026-02-11
 
-### 新增
-- 📊 **ETF 支持增强与代码规范化**
-  - 统一各数据源 ETF 代码处理逻辑
-  - 新增 `canonical_stock_code()` 统一代码格式，确保数据源路由正确
+### Neue Funktionen
+- 📊 **ETF-Unterstützung gestärkt und Codes normalisiert**
+  - Vereinheitlicht die ETF-Code-Verarbeitungslogik aller Datenquellen
+  - Neu ist `canonical_stock_code()`, das das Codeformat vereinheitlicht und korrektes Datenquellen-Routing sicherstellt
 
 ## [3.0.5] - 2026-02-08
 
-### 修复
-- 🐛 修复信号 emoji 与建议不一致的问题（复合建议如"卖出/观望"未正确映射）
-- 🐛 修复 `*ST` 股票名在微信/Dashboard 中 markdown 转义问题
-- 🐛 修复 `idx.amount` 为 None 时大盘复盘 TypeError
-- 🐛 修复分析 API 返回 `report=None` 及 ReportStrategy 类型不一致问题
-- 🐛 修复 Tushare 返回类型错误（dict → UnifiedRealtimeQuote）及 API 端点指向
+### Behobene Probleme
+- 🐛 Behebt die Inkonsistenz zwischen Signal-Emoji und Empfehlung (komposite Empfehlungen wie „Verkaufen/Abwarten“ wurden nicht korrekt zugeordnet)
+- 🐛 Behebt das Markdown-Escaping-Problem von `*ST`-Aktiennamen in WeCom/Dashboard
+- 🐛 Behebt den TypeError des Markt-Reviews, wenn `idx.amount` None ist
+- 🐛 Behebt, dass die Analyse-API `report=None` zurückgibt, sowie die Typ-Inkonsistenz von ReportStrategy
+- 🐛 Behebt den falschen Tushare-Rückgabetyp (dict → UnifiedRealtimeQuote) und die API-Endpunkt-Zuordnung
 
-### 新增
-- 📊 大盘复盘报告注入结构化数据（涨跌统计、指数表格、板块排名）
-- 🔍 搜索结果 TTL 缓存（500 条上限，FIFO 淘汰）
-- 🔧 Tushare Token 存在时自动注入实时行情优先级
-- 📰 新闻摘要截断长度 50→200 字
+### Neue Funktionen
+- 📊 Markt-Review-Berichte injizieren strukturierte Daten (Kursbewegungsstatistiken, Indextabellen, Sektor-Ranglisten)
+- 🔍 TTL-Cache für Suchergebnisse (maximal 500 Einträge, FIFO-Eviction)
+- 🔧 Bei vorhandenem Tushare-Token wird die Echtzeitkurs-Priorität automatisch injiziert
+- 📰 Trunkierungslänge der Nachrichtenzusammenfassungen von 50 auf 200 Zeichen
 
-### 优化
-- ⚡ 补充行情字段请求限制为最多 1 次，减少无效请求
+### Optimierungen
+- ⚡ Anfragen für ergänzende Kursfelder auf maximal 1 begrenzt, um nutzlose Requests zu reduzieren
 
 ## [3.0.4] - 2026-02-07
 
-### 新增
-- 📈 **回测引擎** (PR #269)
-  - 新增基于历史分析记录的回测系统，支持收益率、胜率、最大回撤等指标评估
-  - WebUI 集成回测结果展示
+### Neue Funktionen
+- 📈 **Backtest-Engine** (PR #269)
+  - Neues Backtest-System auf Basis historischer Analyseaufzeichnungen, das Kennzahlen wie Rendite, Trefferquote und maximalen Drawdown bewertet
+  - WebUI integriert die Anzeige von Backtest-Ergebnissen
 
 ## [3.0.3] - 2026-02-07
 
-### 修复
-- 🐛 修复狙击点位数据解析错误问题 (PR #271)
+### Behobene Probleme
+- 🐛 Behebt den Datenparse-Fehler der Sniper-Punkte (PR #271)
 
 ## [3.0.2] - 2026-02-06
 
-### 新增
-- ✉️ 可配置邮件发送者名称 (PR #272)
-- 🌐 外国股票支持英文关键词搜索
+### Neue Funktionen
+- ✉️ Konfigurierbarer E-Mail-Absendername (PR #272)
+- 🌐 Ausländische Aktien unterstützen die Suche mit englischen Schlüsselwörtern
 
 ## [3.0.1] - 2026-02-06
 
-### 修复
-- 🐛 修复 ETF 实时行情获取、市场数据回退、企业微信消息分块问题
-- 🔧 CI 流程简化
+### Behobene Probleme
+- 🐛 Behebt das Abrufen von ETF-Echtzeitkursen, den Marktdaten-Rückfall und das Chunking von WeCom-Nachrichten
+- 🔧 CI-Ablauf vereinfacht
 
 ## [3.0.0] - 2026-02-06
 
-### 移除
-- 🗑️ **移除旧版 WebUI**
-  - 删除基于 `http.server.ThreadingHTTPServer` 的旧版 WebUI（`web/` 包）
-  - 旧版 WebUI 的功能已完全被 FastAPI（`api/`）+ React 前端替代
-  - `--webui` / `--webui-only` 命令行参数标记为弃用，自动重定向到 `--serve` / `--serve-only`
-  - `WEBUI_ENABLED` / `WEBUI_HOST` / `WEBUI_PORT` 环境变量保持兼容，自动转发到 FastAPI 服务
-  - `webui.py` 保留为兼容入口，启动时直接调用 FastAPI 后端
-  - Docker Compose 中移除 `webui` 服务定义，统一使用 `server` 服务
+### Entfernt
+- 🗑️ **Alte WebUI entfernt**
+  - Die auf `http.server.ThreadingHTTPServer` basierende alte WebUI (Paket `web/`) wird gelöscht
+  - Die Funktionen der alten WebUI sind vollständig durch FastAPI (`api/`) + React-Frontend ersetzt
+  - Die Befehlszeilenparameter `--webui` / `--webui-only` sind als veraltet markiert und werden automatisch auf `--serve` / `--serve-only` umgeleitet
+  - Die Umgebungsvariablen `WEBUI_ENABLED` / `WEBUI_HOST` / `WEBUI_PORT` bleiben kompatibel und werden automatisch an den FastAPI-Dienst weitergeleitet
+  - `webui.py` bleibt als Kompatibilitätseinstieg erhalten und ruft beim Start direkt das FastAPI-Backend auf
+  - In Docker Compose wird die Service-Definition `webui` entfernt; einheitlich wird der Dienst `server` verwendet
 
-### 变更
-- ♻️ **服务层重构**
-  - 将 `web/services.py` 中的异步任务服务迁移至 `src/services/task_service.py`
-  - Bot 分析命令（`bot/commands/analyze.py`）改为使用 `src.services.task_service`
-  - Docker 环境变量 `WEBUI_HOST`/`WEBUI_PORT` 更名为 `API_HOST`/`API_PORT`（旧名仍兼容）
+### Änderungen
+- ♻️ **Service-Schicht umgebaut**
+  - Der asynchrone Aufgabendienst aus `web/services.py` wird nach `src/services/task_service.py` verschoben
+  - Die Bot-Analysebefehle (`bot/commands/analyze.py`) verwenden jetzt `src.services.task_service`
+  - Die Docker-Umgebungsvariablen `WEBUI_HOST`/`WEBUI_PORT` werden in `API_HOST`/`API_PORT` umbenannt (alte Namen bleiben kompatibel)
 
 ## [2.3.0] - 2026-02-01
 
-### 新增
-- 🇺🇸 **增强美股支持** (Issue #153)
-  - 实现基于 Akshare 的美股历史数据获取 (`ak.stock_us_daily()`)
-  - 实现基于 Yfinance 的美股实时行情获取（优先策略）
-  - 增加对不支持数据源（Tushare/Baostock/Pytdx/Efinance）的美股代码过滤和快速降级
+### Neue Funktionen
+- 🇺🇸 **US-Aktien-Unterstützung gestärkt** (Issue #153)
+  - Abruf von US-Historiendaten auf Basis von Akshare (`ak.stock_us_daily()`) implementiert
+  - Abruf von US-Echtzeitkursen auf Basis von Yfinance implementiert (Prioritätsstrategie)
+  - Filterung und schnelle Degradierung von US-Codes für nicht unterstützende Datenquellen (Tushare/Baostock/Pytdx/Efinance) ergänzt
 
-### 修复
-- 🐛 修复 AMD 等美股代码被误识别为 A 股的问题 (Issue #153)
+### Behobene Probleme
+- 🐛 Behebt, dass US-Codes wie AMD fälschlich als A-Aktien erkannt wurden (Issue #153)
 
 ## [2.2.5] - 2026-02-01
 
-### 新增
-- 🤖 **AstrBot 消息推送** (PR #217)
-  - 新增 AstrBot 通知渠道，支持推送到 QQ 和微信
-  - 支持 HMAC SHA256 签名验证，确保通信安全
-  - 通过 `ASTRBOT_URL` 和 `ASTRBOT_TOKEN` 配置
+### Neue Funktionen
+- 🤖 **AstrBot-Nachrichten-Push** (PR #217)
+  - Neuer AstrBot-Benachrichtigungskanal mit Push an QQ und WeChat
+  - Unterstützt die HMAC-SHA256-Signaturprüfung zur Sicherung der Kommunikation
+  - Konfiguriert über `ASTRBOT_URL` und `ASTRBOT_TOKEN`
 
 ## [2.2.4] - 2026-02-01
 
-### 新增
-- ⚙️ **可配置数据源优先级** (PR #215)
-  - 支持通过环境变量（如 `YFINANCE_PRIORITY=0`）动态调整数据源优先级
-  - 无需修改代码即可优先使用特定数据源（如 Yahoo Finance）
+### Neue Funktionen
+- ⚙️ **Konfigurierbare Datenquellen-Priorität** (PR #215)
+  - Unterstützt das dynamische Anpassen der Datenquellen-Priorität über Umgebungsvariablen (z. B. `YFINANCE_PRIORITY=0`)
+  - Eine bestimmte Datenquelle (z. B. Yahoo Finance) kann ohne Codeänderungen bevorzugt werden
 
 ## [2.2.3] - 2026-01-31
 
-### 修复
-- 📦 更新 requirements.txt，增加 `lxml_html_clean` 依赖以解决兼容性问题
+### Behobene Probleme
+- 📦 requirements.txt aktualisiert und die Abhängigkeit `lxml_html_clean` ergänzt, um Kompatibilitätsprobleme zu lösen
 
 ## [2.2.2] - 2026-01-31
 
-### 修复
-- 🐛 修复代理配置区分大小写问题 (fixes #211)
+### Behobene Probleme
+- 🐛 Behebt das Groß-/Kleinschreibungsproblem der Proxy-Konfiguration (fixes #211)
 
 ## [2.2.1] - 2026-01-31
 
-### 修复
-- 🐛 **YFinance 兼容性修复** (PR #210, fixes #209)
-  - 修复新版 yfinance 返回 MultiIndex 列名导致的数据解析错误
+### Behobene Probleme
+- 🐛 **YFinance-Kompatibilitätsfix** (PR #210, fixes #209)
+  - Behebt den Datenparse-Fehler, der durch MultiIndex-Spaltennamen in neueren yfinance-Versionen verursacht wird
 
 ## [2.2.0] - 2026-01-31
 
-### 新增
-- 🔄 **多源回退策略增强**
-  - 实现了更健壮的数据获取回退机制 (feat: multi-source fallback strategy)
-  - 优化了数据源故障时的自动切换逻辑
+### Neue Funktionen
+- 🔄 **Multi-Quellen-Fallback-Strategie gestärkt**
+  - Robustere Fallback-Mechanik für den Datenabruf implementiert (feat: multi-source fallback strategy)
+  - Automatische Umschaltlogik bei Datenquellen-Ausfällen optimiert
 
-### 修复
-- 🐛 修复 analyzer 运行后无法通过改 .env 文件的 stock_list 内容调整跟踪的股票
+### Behobene Probleme
+- 🐛 Behebt, dass nach dem Lauf des Analyzers die getrackten Aktien nicht mehr über den stock_list-Inhalt der .env-Datei angepasst werden konnten
 
 ## [2.1.14] - 2026-01-31
 
-### 文档
-- 📝 更新 README 和优化 auto-tag 规则
+### Dokumentation
+- 📝 README aktualisiert und auto-tag-Regeln optimiert
 
 ## [2.1.13] - 2026-01-31
 
-### 修复
-- 🐛 **Tushare 优先级与实时行情** (Fixed #185)
-  - 修复 Tushare 数据源优先级设置问题
-  - 修复 Tushare 实时行情获取功能
+### Behobene Probleme
+- 🐛 **Tushare-Priorität und Echtzeitkurse** (Fixed #185)
+  - Behebt das Problem der Prioritätseinstellung der Tushare-Datenquelle
+  - Behebt das Abrufen von Tushare-Echtzeitkursen
 
 ## [2.1.12] - 2026-01-30
 
-### 修复
-- 🌐 修复代理配置在某些情况下的区分大小写问题
-- 🌐 修复本地环境禁用代理的逻辑
-
+### Behobene Probleme
+- 🌐 Behebt das Groß-/Kleinschreibungsproblem der Proxy-Konfiguration in bestimmten Fällen
+- 🌐 Behebt die Logik zum Deaktivieren des Proxys in lokalen Umgebungen
 ## [2.1.11] - 2026-01-30
 
-### 优化
-- 🚀 **飞书消息流优化** (PR #192)
-  - 优化飞书 Stream 模式的消息类型处理
-  - 修改 Stream 消息模式默认为关闭，防止配置错误运行时报错
+### Optimierungen
+- 🚀 **Feishu-Nachrichtenfluss optimiert** (PR #192)
+  - Verarbeitung der Nachrichtentypen im Feishu-Stream-Modus optimiert
+  - Der Stream-Nachrichtenmodus ist standardmäßig deaktiviert, um Laufzeitfehler bei falscher Konfiguration zu vermeiden
 
 ## [2.1.10] - 2026-01-30
 
-### 合并
-- 📦 合并 PR #154 贡献
+### Zusammengeführt
+- 📦 Beitrag von PR #154 zusammengeführt
 
 ## [2.1.9] - 2026-01-30
 
-### 新增
-- 💬 **微信文本消息支持** (PR #137)
-  - 新增微信推送的纯文本消息类型支持
-  - 添加 `WECHAT_MSG_TYPE` 配置项
+### Neue Funktionen
+- 💬 **Unterstützung für WeChat-Textnachrichten** (PR #137)
+  - Unterstützung für reine Textnachrichtentypen beim WeChat-Push ergänzt
+  - Konfigurationsoption `WECHAT_MSG_TYPE` hinzugefügt
 
 ## [2.1.8] - 2026-01-30
 
-### 修复
-- 🐛 修正日志中 API 提供商显示错误 (PR #197)
+### Behobene Probleme
+- 🐛 Falsche Anzeige des API-Anbieters in den Logs korrigiert (PR #197)
 
 ## [2.1.7] - 2026-01-30
 
-### 修复
-- 🌐 禁用本地环境的代理设置，避免网络连接问题
+### Behobene Probleme
+- 🌐 Proxy-Einstellungen für lokale Umgebungen deaktiviert, um Netzwerkverbindungsprobleme zu vermeiden
 
 ## [2.1.6] - 2026-01-29
 
-### 新增
-- 📡 **Pytdx 数据源 (Priority 2)**
-  - 新增通达信数据源，免费无需注册
-  - 多服务器自动切换
-  - 支持实时行情和历史数据
-- 🏷️ **多源股票名称解析**
-  - DataFetcherManager 新增 `get_stock_name()` 方法
-  - 新增 `batch_get_stock_names()` 批量查询
-  - 自动在多数据源间回退
-  - Tushare 和 Baostock 新增股票名称/列表方法
-- 🔍 **增强搜索回退**
-  - 新增 `search_stock_price_fallback()` 用于数据源全部失败时
-  - 新增搜索维度：市场分析、行业分析
-  - 最大搜索次数从 3 增加到 5
-  - 改进搜索结果格式（每维度 4 条结果）
+### Neue Funktionen
+- 📡 **Pytdx-Datenquelle (Priorität 2)**
+  - Neue Tongdaxin-Datenquelle, kostenlos und ohne Registrierung
+  - Automatische Umschaltung zwischen mehreren Servern
+  - Unterstützt Echtzeitkurse und historische Daten
+- 🏷️ **Mehrquellen-Aktiennamenauflösung**
+  - `get_stock_name()`-Methode zu DataFetcherManager hinzugefügt
+  - Neue `batch_get_stock_names()`-Massenabfrage
+  - Automatischer Fallback zwischen mehreren Datenquellen
+  - Tushare und Baostock um Aktiennamen-/Listenmethoden ergänzt
+- 🔍 **Verbesserter Such-Fallback**
+  - Neue `search_stock_price_fallback()`-Funktion für den Fall, dass alle Datenquellen ausfallen
+  - Neue Suchdimensionen: Marktanalyse, Branchenanalyse
+  - Maximale Suchanzahl von 3 auf 5 erhöht
+  - Suchresultat-Format verbessert (4 Ergebnisse pro Dimension)
 
-### 改进
-- 更新搜索查询模板以提高相关性
-- 增强 `format_intel_report()` 输出结构
+### Verbesserungen
+- Suchabfragevorlagen aktualisiert, um die Relevanz zu erhöhen
+- Ausgabestruktur von `format_intel_report()` verbessert
 
 ## [2.1.5] - 2026-01-29
 
-### 新增
-- 📡 新增 Pytdx 数据源和多源股票名称解析功能
+### Neue Funktionen
+- 📡 Neue Pytdx-Datenquelle und Mehrquellen-Aktiennamenauflösung hinzugefügt
 
 ## [2.1.4] - 2026-01-29
 
-### 文档
-- 📝 更新赞助商信息
+### Dokumentation
+- 📝 Sponsoreninformationen aktualisiert
 
 ## [2.1.3] - 2026-01-28
 
-### 文档
-- 📝 重构 README 布局
-- 🌐 新增繁体中文翻译 (README_CHT.md)
+### Dokumentation
+- 📝 README-Layout umgebaut
+- 🌐 Neue traditionelle chinesische Übersetzung (README_CHT.md)
 
-### 修复
-- 🐛 修复 WebUI 无法输入美股代码问题
-  - 输入框逻辑改成所有字母都转换成大写
-  - 支持 `.` 的输入（如 `BRK.B`）
+### Behobene Probleme
+- 🐛 Problem behoben, dass in der WebUI keine US-Aktiencodes eingegeben werden konnten
+  - Eingabefeld-Logik geändert, sodass alle Buchstaben in Großbuchstaben umgewandelt werden
+  - Eingabe von `.` unterstützt (z. B. `BRK.B`)
 
 ## [2.1.2] - 2026-01-27
 
-### 修复
-- 🐛 修复个股分析推送失败和报告路径问题 (fixes #166)
-- 🐛 修改 CR 错误，确保微信消息最大字节配置生效
+### Behobene Probleme
+- 🐛 Fehler beim Push der Einzelaktien-Analyse und Problem mit dem Berichtspfad behoben (fixes #166)
+- 🐛 CR-Fehler korrigiert, sodass die maximale Byte-Größe der WeChat-Nachrichten wirksam wird
 
 ## [2.1.1] - 2026-01-26
 
-### 新增
-- 🔧 添加 GitHub Actions auto-tag 工作流
-- 📡 添加 yfinance 兜底数据源及数据缺失警告
+### Neue Funktionen
+- 🔧 GitHub-Actions-Auto-Tag-Workflow hinzugefügt
+- 📡 yfinance-Fallback-Datenquelle und Warnung bei fehlenden Daten hinzugefügt
 
-### 修复
-- 🐳 修复 docker-compose 路径和文档命令
-- 🐳 Dockerfile 补充 copy src 文件夹 (fixes #145)
+### Behobene Probleme
+- 🐳 docker-compose-Pfade und Dokumentationsbefehle korrigiert
+- 🐳 Dockerfile um das Kopieren des src-Ordners ergänzt (fixes #145)
 
 ## [2.1.0] - 2026-01-25
 
-### 新增
-- 🇺🇸 **美股分析支持**
-  - 支持美股代码直接输入（如 `AAPL`, `TSLA`）
-  - 使用 YFinance 作为美股数据源
-- 📈 **MACD 和 RSI 技术指标**
-  - MACD：趋势确认、金叉死叉信号（零轴上金叉⭐、金叉✅、死叉❌）
-  - RSI：超买超卖判断（超卖⭐、强势✅、超买⚠️）
-  - 指标信号纳入综合评分系统
-- 🎮 **Discord 推送支持** (PR #124, #125, #144)
-  - 支持 Discord Webhook 和 Bot API 两种方式
-  - 通过 `DISCORD_WEBHOOK_URL` 或 `DISCORD_BOT_TOKEN` + `DISCORD_MAIN_CHANNEL_ID` 配置
-- 🤖 **机器人命令交互**
-  - 钉钉机器人支持 `/分析 股票代码` 命令触发分析
-  - 支持 Stream 长连接模式
-- 🌡️ **AI 温度参数可配置** (PR #142)
-  - 支持自定义 AI 模型温度参数
-- 🐳 **Zeabur 部署支持**
-  - 添加 Zeabur 镜像部署工作流
-  - 支持 commit hash 和 latest 双标签
+### Neue Funktionen
+- 🇺🇸 **US-Aktien-Analyse unterstützt**
+  - Direkte Eingabe von US-Aktiencodes unterstützt (z. B. `AAPL`, `TSLA`)
+  - YFinance als Datenquelle für US-Aktien verwendet
+- 📈 **MACD- und RSI-Technische Indikatoren**
+  - MACD: Trendbestätigung, Goldenes-Kreuz/Todeskreuz-Signale (Goldenes Kreuz über der Nulllinie ⭐, Goldenes Kreuz ✅, Todeskreuz ❌)
+  - RSI: Überkauft-/Überverkauft-Beurteilung (Überverkauft ⭐, stark ✅, überkauft ⚠️)
+  - Indikatorsignale fließen in das Gesamtbewertungssystem ein
+- 🎮 **Discord-Push-Unterstützung** (PR #124, #125, #144)
+  - Unterstützt Discord-Webhook- und Bot-API-Varianten
+  - Konfiguration über `DISCORD_WEBHOOK_URL` oder `DISCORD_BOT_TOKEN` + `DISCORD_MAIN_CHANNEL_ID`
+- 🤖 **Bot-Befehlsinteraktion**
+  - DingTalk-Bot unterstützt das Auslösen einer Analyse über den Befehl `/分析 股票代码`
+  - Unterstützt den Stream-Langverbindungsmodus
+- 🌡️ **AI-Temperaturparameter konfigurierbar** (PR #142)
+  - Benutzerdefinierte Temperaturparameter für AI-Modelle unterstützt
+- 🐳 **Zeabur-Deployment-Unterstützung**
+  - Zeabur-Image-Deployment-Workflow hinzugefügt
+  - Unterstützt Commit-Hash- und latest-Doppeltags
 
-### 重构
-- 🏗️ **项目结构优化**
-  - 核心代码移至 `src/` 目录，根目录更清爽
-  - 文档移至 `docs/` 目录
-  - Docker 配置移至 `docker/` 目录
-  - 修复所有 import 路径，保持向后兼容
-- 🔄 **数据源架构升级**
-  - 新增数据源熔断机制，单数据源连续失败自动切换
-  - 实时行情缓存优化，批量预取减少 API 调用
-  - 网络代理智能分流，国内接口自动直连
-- 🤖 Discord 机器人重构为平台适配器架构
+### Umgebaut
+- 🏗️ **Projektstruktur optimiert**
+  - Kerncode nach `src/` verschoben, Wurzelverzeichnis aufgeräumt
+  - Dokumente nach `docs/` verschoben
+  - Docker-Konfiguration nach `docker/` verschoben
+  - Alle Importpfade korrigiert, Abwärtskompatibilität beibehalten
+- 🔄 **Datenquellen-Architektur aktualisiert**
+  - Neuer Datenquellen-Circuit-Breaker: automatische Umschaltung bei wiederholten Fehlern einer Quelle
+  - Echtzeitkurs-Cache optimiert, Massenvorabruf reduziert API-Aufrufe
+  - Intelligenter Netzwerk-Proxy-Split: Inlands-Schnittstellen automatisch direkt verbunden
+- 🤖 Discord-Roboter zur Plattform-Adapter-Architektur umgebaut
 
-### 修复
-- 🌐 **网络稳定性增强**
-  - 自动检测代理配置，对国内行情接口强制直连
-  - 修复 EfinanceFetcher 偶发的 `ProtocolError`
-  - 增加对底层网络错误的捕获和重试机制
-- 📧 **邮件渲染优化**
-  - 修复邮件中表格不渲染问题 (#134)
-  - 优化邮件排版，更紧凑美观
-- 📢 **企业微信推送修复**
-  - 修复大盘复盘推送不完整问题
-  - 增强消息分割逻辑，支持更多标题格式
-  - 增加分批发送间隔，避免限流丢失
-- 👷 **CI/CD 修复**
-  - 修复 GitHub Actions 中路径引用的错误
+### Behobene Probleme
+- 🌐 **Netzwerkstabilität erhöht**
+  - Proxy-Konfiguration automatisch erkannt, Inlands-Kurs-Schnittstellen zwangsweise direkt verbunden
+  - Gelegentlichen `ProtocolError` von EfinanceFetcher behoben
+  - Erfassung und Wiederholungsmechanismus für zugrunde liegende Netzwerkfehler ergänzt
+- 📧 **E-Mail-Rendering optimiert**
+  - Problem der nicht gerenderten Tabellen in E-Mails behoben (#134)
+  - E-Mail-Layout optimiert, kompakter und schöner
+- 📢 **WeCom-Push repariert**
+  - Problem des unvollständigen Markt-Review-Pushs behoben
+  - Nachrichtenaufteilung erweitert, mehr Titelformate unterstützt
+  - Batch-Sendeintervalle erhöht, um Limitierungen und Nachrichtenverlust zu vermeiden
+- 👷 **CI/CD-Fixes**
+  - Fehler bei Pfadreferenzen in GitHub Actions korrigiert
 
 ## [2.0.0] - 2026-01-24
 
-### 新增
-- 🇺🇸 **美股分析支持**
-  - 支持美股代码直接输入（如 `AAPL`, `TSLA`）
-  - 使用 YFinance 作为美股数据源
-- 🤖 **机器人命令交互** (PR #113)
-  - 钉钉机器人支持 `/分析 股票代码` 命令触发分析
-  - 支持 Stream 长连接模式
-  - 支持选择精简报告或完整报告
-- 🎮 **Discord 推送支持** (PR #124)
-  - 支持 Discord Webhook 推送
-  - 添加 Discord 环境变量到工作流
+### Neue Funktionen
+- 🇺🇸 **US-Aktien-Analyse unterstützt**
+  - Direkte Eingabe von US-Aktiencodes unterstützt (z. B. `AAPL`, `TSLA`)
+  - YFinance als Datenquelle für US-Aktien verwendet
+- 🤖 **Bot-Befehlsinteraktion** (PR #113)
+  - DingTalk-Bot unterstützt das Auslösen einer Analyse über den Befehl `/分析 股票代码`
+  - Unterstützt den Stream-Langverbindungsmodus
+  - Unterstützt die Auswahl von Kurzbericht oder Vollbericht
+- 🎮 **Discord-Push-Unterstützung** (PR #124)
+  - Unterstützt Discord-Webhook-Push
+  - Discord-Umgebungsvariablen zum Workflow hinzugefügt
 
-### 修复
-- 🐳 修复 WebUI 在 Docker 中绑定 0.0.0.0 (fixed #118)
-- 🔔 修复飞书长连接通知问题
-- 🐛 修复 `analysis_delay` 未定义错误
-- 🔧 启动时 config.py 检测通知渠道，修复已配置自定义渠道情况下仍然提示未配置问题
+### Behobene Probleme
+- 🐳 Behebt, dass die WebUI in Docker an 0.0.0.0 bindet (fixed #118)
+- 🔔 Feishu-Langverbindungsbenachrichtigungsproblem behoben
+- 🐛 Fehler `analysis_delay` nicht definiert behoben
+- 🔧 config.py erkennt beim Start die Benachrichtigungskanäle und behebt, dass bei bereits konfigurierten benutzerdefinierten Kanälen dennoch eine Fehlermeldung erscheint
 
-### 改进
-- 🔧 优化 Tushare 优先级判断逻辑，提升封装性
-- 🔧 修复 Tushare 优先级提升后仍排在 Efinance 之后的问题
-- ⚙️ 配置 TUSHARE_TOKEN 时自动提升 Tushare 数据源优先级
-- ⚙️ 实现 4 个用户反馈 issue (#112, #128, #38, #119)
+### Verbesserungen
+- 🔧 Tushare-Prioritätslogik optimiert, Kapselung verbessert
+- 🔧 Problem behoben, dass Tushare trotz erhöhter Priorität weiterhin hinter Efinance eingestuft wurde
+- ⚙️ Bei Konfiguration von `TUSHARE_TOKEN` wird die Tushare-Datenquellen-Priorität automatisch erhöht
+- ⚙️ 4 User-Feedback-Issues umgesetzt (#112, #128, #38, #119)
 
 ## [1.6.0] - 2026-01-19
 
-### 新增
-- 🖥️ WebUI 管理界面及 API 支持（PR #72）
-  - 全新 Web 架构：分层设计（Server/Router/Handler/Service）
-  - 核心 API：支持 `/analysis` (触发分析), `/tasks` (查询进度), `/health` (健康检查)
-  - 交互界面：支持页面直接输入代码并触发分析，实时展示进度
-  - 运行模式：新增 `--webui-only` 模式，仅启动 Web 服务
-  - 解决了 [#70](https://github.com/ZhuLinsen/daily_stock_analysis/issues/70) 的核心需求（提供触发分析的接口）
-- ⚙️ GitHub Actions 配置灵活性增强（[#79](https://github.com/ZhuLinsen/daily_stock_analysis/issues/79)）
-  - 支持从 Repository Variables 读取非敏感配置（如 STOCK_LIST, GEMINI_MODEL）
-  - 保持对 Secrets 的向下兼容
+### Neue Funktionen
+- 🖥️ WebUI-Verwaltungsoberfläche und API-Unterstützung (PR #72)
+  - Neue Web-Architektur: Schichtenaufbau (Server/Router/Handler/Service)
+  - Kern-APIs: `/analysis` (Analyse auslösen), `/tasks` (Fortschritt abfragen), `/health` (Health-Check)
+  - Interaktionsoberfläche: Codes direkt auf der Seite eingeben und Analyse auslösen, Fortschritt in Echtzeit anzeigen
+  - Laufmodus: neuer `--webui-only`-Modus, startet nur den Web-Dienst
+  - Löst die Kernanforderung von [#70](https://github.com/ZhuLinsen/daily_stock_analysis/issues/70) (Schnittstelle zum Auslösen von Analysen)
+- ⚙️ Erhöhte Flexibilität der GitHub-Actions-Konfiguration ([#79](https://github.com/ZhuLinsen/daily_stock_analysis/issues/79))
+  - Unterstützt das Lesen nicht sensibler Konfiguration aus Repository Variables (z. B. STOCK_LIST, GEMINI_MODEL)
+  - Abwärtskompatibilität mit Secrets beibehalten
 
-### 修复
-- 🐛 修复企业微信/飞书报告截断问题（[#73](https://github.com/ZhuLinsen/daily_stock_analysis/issues/73)）
-  - 移除 notification.py 中不必要的长度硬截断逻辑
-  - 依赖底层自动分片机制处理长消息
-- 🐛 修复 GitHub Workflow 环境变量缺失（[#80](https://github.com/ZhuLinsen/daily_stock_analysis/issues/80)）
-  - 修复 `CUSTOM_WEBHOOK_BEARER_TOKEN` 未正确传递到 Runner 的问题
+### Behobene Probleme
+- 🐛 Problem der abgeschnittenen WeCom-/Feishu-Berichte behoben ([#73](https://github.com/ZhuLinsen/daily_stock_analysis/issues/73))
+  - Unnötige Längen-Hartabschneidung in notification.py entfernt
+  - Verlässt sich auf den zugrunde liegenden automatischen Chunking-Mechanismus für lange Nachrichten
+- 🐛 Fehlende GitHub-Workflow-Umgebungsvariablen behoben ([#80](https://github.com/ZhuLinsen/daily_stock_analysis/issues/80))
+  - Problem behoben, dass `CUSTOM_WEBHOOK_BEARER_TOKEN` nicht korrekt an den Runner übergeben wurde
 
 ## [1.5.0] - 2026-01-17
 
-### 新增
-- 📲 单股推送模式（[#55](https://github.com/ZhuLinsen/daily_stock_analysis/issues/55)）
-  - 每分析完一只股票立即推送，不用等全部分析完
-  - 命令行参数：`--single-notify`
-  - 环境变量：`SINGLE_STOCK_NOTIFY=true`
-- 🔐 自定义 Webhook Bearer Token 认证（[#51](https://github.com/ZhuLinsen/daily_stock_analysis/issues/51)）
-  - 支持需要 Token 认证的 Webhook 端点
-  - 环境变量：`CUSTOM_WEBHOOK_BEARER_TOKEN`
+### Neue Funktionen
+- 📲 Einzelaktien-Push-Modus ([#55](https://github.com/ZhuLinsen/daily_stock_analysis/issues/55))
+  - Nach jeder analysierten Aktie sofort pushen, ohne auf das Ende aller Analysen zu warten
+  - Befehlszeilenargument: `--single-notify`
+  - Umgebungsvariable: `SINGLE_STOCK_NOTIFY=true`
+- 🔐 Benutzerdefinierte Webhook-Bearer-Token-Authentifizierung ([#51](https://github.com/ZhuLinsen/daily_stock_analysis/issues/51))
+  - Unterstützt Webhook-Endpunkte, die eine Token-Authentifizierung erfordern
+  - Umgebungsvariable: `CUSTOM_WEBHOOK_BEARER_TOKEN`
 
 ## [1.4.0] - 2026-01-17
 
-### 新增
-- 📱 Pushover 推送支持（PR #26）
-  - 支持 iOS/Android 跨平台推送
-  - 通过 `PUSHOVER_USER_KEY` 和 `PUSHOVER_API_TOKEN` 配置
-- 🔍 博查搜索 API 集成（PR #27）
-  - 中文搜索优化，支持 AI 摘要
-  - 通过 `BOCHA_API_KEYS` 配置
-- 📊 Efinance 数据源支持（PR #59）
-  - 新增 efinance 作为数据源选项
-- 🇭🇰 港股支持（PR #17）
-  - 支持 5 位代码或 HK 前缀（如 `hk00700`、`hk1810`）
+### Neue Funktionen
+- 📱 Pushover-Push unterstützt (PR #26)
+  - Unterstützt iOS/Android-geräteübergreifenden Push
+  - Konfiguration über `PUSHOVER_USER_KEY` und `PUSHOVER_API_TOKEN`
+- 🔍 Bocha-Such-API-Integration (PR #27)
+  - Chinesische Suche optimiert, unterstützt AI-Zusammenfassungen
+  - Konfiguration über `BOCHA_API_KEYS`
+- 📊 Efinance-Datenquellen-Unterstützung (PR #59)
+  - efinance als Datenquellenoption hinzugefügt
+- 🇭🇰 Hongkong-Aktien-Unterstützung (PR #17)
+  - Unterstützt 5-stellige Codes oder HK-Präfix (z. B. `hk00700`, `hk1810`)
 
-### 修复
-- 🔧 飞书 Markdown 渲染优化（PR #34）
-  - 使用交互卡片和格式化器修复渲染问题
-- ♻️ 股票列表热重载（PR #42 修复）
-  - 分析前自动重载 `STOCK_LIST` 配置
-- 🐛 钉钉 Webhook 20KB 限制处理
-  - 长消息自动分块发送，避免被截断
-- 🔄 AkShare API 重试机制增强
-  - 添加失败缓存，避免重复请求失败接口
+### Behobene Probleme
+- 🔧 Feishu-Markdown-Rendering optimiert (PR #34)
+  - Rendering-Probleme mit interaktiven Karten und Formatierern behoben
+- ♻️ Hot-Reload der Aktienliste (PR #42 Fix)
+  - `STOCK_LIST`-Konfiguration wird vor der Analyse automatisch neu geladen
+- 🐛 Behandlung des 20-KB-Limits des DingTalk-Webhooks
+  - Lange Nachrichten werden automatisch in Blöcken gesendet, um Abschneiden zu vermeiden
+- 🔄 AkShare-API-Wiederholungsmechanismus verstärkt
+  - Fehlercache hinzugefügt, um wiederholte Anfragen an fehlgeschlagene Schnittstellen zu vermeiden
 
-### 改进
-- 📝 README 精简优化
-  - 高级配置移至 `docs/full-guide.md`
+### Verbesserungen
+- 📝 README vereinfacht und optimiert
+  - Erweiterte Konfiguration nach `docs/full-guide.md` verschoben
 
 
 ## [1.3.0] - 2026-01-12
 
-### 新增
-- 🔗 自定义 Webhook 支持
-  - 支持任意 POST JSON 的 Webhook 端点
-  - 自动识别钉钉、Discord、Slack、Bark 等常见服务格式
-  - 支持配置多个 Webhook（逗号分隔）
-  - 通过 `CUSTOM_WEBHOOK_URLS` 环境变量配置
+### Neue Funktionen
+- 🔗 Benutzerdefinierte Webhook-Unterstützung
+  - Unterstützt beliebige Webhook-Endpunkte mit POST-JSON
+  - Erkennt automatisch gängige Service-Formate wie DingTalk, Discord, Slack, Bark
+  - Unterstützt die Konfiguration mehrerer Webhooks (durch Komma getrennt)
+  - Konfiguration über die Umgebungsvariable `CUSTOM_WEBHOOK_URLS`
 
-### 修复
-- 📝 企业微信长消息分批发送
-  - 解决自选股过多时内容超过 4096 字符限制导致推送失败的问题
-  - 智能按股票分析块分割，每批添加分页标记（如 1/3, 2/3）
-  - 批次间隔 1 秒，避免触发频率限制
+### Behobene Probleme
+- 📝 WeCom-Langnachrichten in Batches senden
+  - Behebt das Problem, dass bei zu vielen Watchlist-Aktien der Inhalt das 4096-Zeichen-Limit überschreitet und der Push fehlschlägt
+  - Intelligent nach Aktien-Analyseblöcken aufgeteilt, mit Paginierungsmarkierungen pro Batch (z. B. 1/3, 2/3)
+  - Batch-Intervall von 1 Sekunde, um Frequenzbegrenzungen zu vermeiden
 
 ## [1.2.0] - 2026-01-11
 
-### 新增
-- 📢 多渠道推送支持
-  - 企业微信 Webhook
-  - 飞书 Webhook（新增）
-  - 邮件 SMTP（新增）
-  - 自动识别渠道类型，配置更简单
+### Neue Funktionen
+- 📢 Mehrkanal-Push-Unterstützung
+  - WeCom-Webhook
+  - Feishu-Webhook (neu)
+  - E-Mail-SMTP (neu)
+  - Automatische Erkennung des Kanaltyps, einfachere Konfiguration
 
-### 改进
-- 统一使用 `NOTIFICATION_URL` 配置，兼容旧的 `WECHAT_WEBHOOK_URL`
-- 邮件支持 Markdown 转 HTML 渲染
+### Verbesserungen
+- Einheitliche Verwendung der `NOTIFICATION_URL`-Konfiguration, kompatibel mit altem `WECHAT_WEBHOOK_URL`
+- E-Mail unterstützt Markdown-zu-HTML-Rendering
 
 ## [1.1.0] - 2026-01-11
 
-### 新增
-- 🤖 OpenAI 兼容 API 支持
-  - 支持 DeepSeek、通义千问、Moonshot、智谱 GLM 等
-  - Gemini 和 OpenAI 格式二选一
-  - 自动降级重试机制
+### Neue Funktionen
+- 🤖 OpenAI-kompatible API-Unterstützung
+  - Unterstützt DeepSeek, Qwen, Moonshot, Zhipu GLM usw.
+  - Gemini- oder OpenAI-Format, eines von beiden
+  - Automatischer Degradations-Wiederholungsmechanismus
 
 ## [1.0.0] - 2026-01-10
 
-### 新增
-- 🎯 AI 决策仪表盘分析
-  - 一句话核心结论
-  - 精确买入/止损/目标点位
-  - 检查清单（✅⚠️❌）
-  - 分持仓建议（空仓者 vs 持仓者）
-- 📊 大盘复盘功能
-  - 主要指数行情
-  - 涨跌统计
-  - 板块涨跌榜
-  - AI 生成复盘报告
-- 🔍 多数据源支持
-  - AkShare（主数据源，免费）
+### Neue Funktionen
+- 🎯 AI-Entscheidungs-Dashboard-Analyse
+  - Kernaussage in einem Satz
+  - Präzise Kauf-/Stop-Loss-/Ziel-Punkte
+  - Checkliste (✅⚠️❌)
+  - Positionsempfehlungen nach Situation (ohne Position vs. mit Position)
+- 📊 Markt-Review-Funktion
+  - Kursverläufe der Hauptindizes
+  - Auf-/Abwärts-Statistiken
+  - Sektor-Gewinner-/Verlierer-Rangliste
+  - AI-generierter Review-Bericht
+- 🔍 Mehrdatenquellen-Unterstützung
+  - AkShare (Hauptdatenquelle, kostenlos)
   - Tushare Pro
   - Baostock
   - YFinance
-- 📰 新闻搜索服务
-  - Tavily API
+- 📰 Nachrichten-Suchdienst
+  - Tavily-API
   - SerpAPI
-- 💬 企业微信机器人推送
-- ⏰ 定时任务调度
-- 🐳 Docker 部署支持
-- 🚀 GitHub Actions 零成本部署
+- 💬 WeCom-Roboter-Push
+- ⏰ Zeitplan-Task-Scheduler
+- 🐳 Docker-Deployment-Unterstützung
+- 🚀 GitHub-Actions-Bereitstellung zu null Kosten
 
-### 技术特性
-- Gemini AI 模型（gemini-3-flash-preview）
-- 429 限流自动重试 + 模型切换
-- 请求间延时防封禁
-- 多 API Key 负载均衡
-- SQLite 本地数据存储
+### Technische Eigenschaften
+- Gemini-AI-Modell (gemini-3-flash-preview)
+- 429-Rate-Limit-Autowiederholung + Modellumschaltung
+- Verzögerung zwischen Anfragen zur Vermeidung von Sperren
+- Multi-API-Key-Lastverteilung
+- SQLite-lokale Datenspeicherung
 
 ---
 

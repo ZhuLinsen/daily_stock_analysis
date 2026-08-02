@@ -1,317 +1,317 @@
-# AnalysisContextPack：P0 盘点、P1/P2 契约、P3 Runtime Consumption、P4 可见性、P5 数据质量、#1386 P6 联动与 #1389 P6 迁移回滚
+# AnalysisContextPack：P0-Bestandsaufnahme, P1/P2-Verträge, P3-Runtime-Konsum, P4-Sichtbarkeit, P5-Datenqualität, #1386 P6-Kopplung und #1389 P6-Migration/Rollback
 
-本页是 Issue #1389 的专题文档，用于记录当前 DSA 分析上下文的真实来源、消费路径、字段状态边界，以及 `AnalysisContextPack` 内部契约、builder、运行态消费、低敏可见性、数据质量评分、告警/持仓/历史/回测联动、迁移和回滚边界。P0 负责现状盘点和契约边界；P1 只新增内部 schema/envelope、block catalog、类型约定和脱敏序列化；P2 只从 pipeline 已有 artifacts 组装 pack；P3 只把低敏摘要接入普通分析和 Agent 初始 Prompt；P4 只把低敏 overview 接入历史详情、同步分析响应、completed task status 和 Web 报告页；P5 在同一 `PACK_VERSION = "1.0"` 内补齐数据质量评分、`fetch_failed` 状态、Prompt 数据限制和 overview 低敏展示；#1386 P6 复用同一公开 overview 做告警、持仓、历史、回测和通知联动，并在手动持仓分析时加入可选辅助 `portfolio` block；#1389 P6 只补齐文档、配置可见性、迁移和回滚说明，不新增 pack runtime、pack feature flag、DB migration 或 schema 版本。
+Diese Seite ist das Themendokument für Issue #1389. Es dokumentiert die realen Quellen, Konsumpfade und Feldstatus-Grenzen des aktuellen DSA-Analysekontexts sowie die internen Verträge des `AnalysisContextPack`, den Builder, den Laufzeitkonsum, die niedrig-sensible Sichtbarkeit, die Datenqualitäts-Bewertung, die Kopplung mit Alarmen/Positionen/Historie/Backtest sowie die Migrations- und Rollback-Grenzen. P0 übernimmt die Bestandsaufnahme des Ist-Zustands und die Vertragsgrenzen; P1 fügt nur das interne schema/envelope, den Block-Katalog, die Typkonventionen und die redigierte Serialisierung hinzu; P2 assembliert das pack nur aus bereits vorhandenen Pipeline-Artefakten; P3 speist die niedrig-sensible Zusammenfassung nur in die normale Analyse und den initialen Agent-Prompt ein; P4 macht die niedrig-sensible Übersicht nur in der Historie-Detailansicht, der synchronen Analyse-Antwort, dem completed task status und der Web-Reportseite sichtbar; P5 ergänzt innerhalb derselben `PACK_VERSION = "1.0"` die Datenqualitäts-Bewertung, den `fetch_failed`-Status, die Prompt-Datenbegrenzung und die niedrig-sensible Übersichtsdarstellung; #1386 P6 nutzt dieselbe öffentliche Übersicht für die Kopplung von Alarm, Position, Historie, Backtest und Benachrichtigung und fügt bei der manuellen Positionsanalyse einen optionalen Hilfs-`portfolio`-Block hinzu; #1389 P6 ergänzt nur Dokumentation, Konfigurationssichtbarkeit sowie Migrations- und Rollback-Hinweise, ohne neues pack-runtime, pack-feature-flag, DB-Migration oder Schema-Version.
 
-## 术语与边界
+## Terminologie und Grenzen
 
-当前仓库里有多种名为 context / snapshot 的数据面，P0 必须先消歧，避免把现有运行时结构误写成未来 pack。
+Im aktuellen Repository gibt es mehrere Dateneigenen, die als context / snapshot bezeichnet werden. P0 muss diese zunächst disambiguieren, um zu vermeiden, dass bestehende Laufzeitstrukturen fälschlich als zukünftiges pack beschrieben werden.
 
-| 术语 | 当前含义 | 当前主要消费方 | P0 边界 |
+| Begriff | Aktuelle Bedeutung | Wichtigste aktuelle Konsumenten | P0-Grenze |
 | --- | --- | --- | --- |
-| `storage.get_analysis_context()` | `src/storage.py` 中从数据库最近两天 OHLCV 生成的技术面简上下文，包含 `today`、`yesterday`、`volume_change_ratio`、`price_change_ratio`、`ma_status` 等。当前实现接收 `target_date`，但实际仍取最新两天数据。 | 普通分析主链路、Agent 工具 `get_analysis_context` | 记录为历史技术面输入来源，不把它直接等同于未来 pack。 |
-| `enhanced_context` | 普通分析中由 `src/core/pipeline.py` 基于 DB 简上下文、实时行情、筹码、趋势、基本面和语言信息增强后的 prompt 上下文。 | `src/analyzer.py` prompt 渲染、`_build_context_snapshot()` | 记录当前 prompt 输入面；P0 不改变字段名或结构。 |
-| `analysis_history.context_snapshot` | 分析完成后写入历史表的持久化快照。普通分析通常包含 `enhanced_context`、`news_content`、`realtime_quote_raw`、`chip_distribution_raw`；Agent 路径保存 `initial_context`。 | 历史详情、同步 analysis/status 响应、回测、部分基本面 fallback 展示 | 记录为持久化消费面；必须保留 `context_snapshot.enhanced_context.date` 兼容。 |
-| Agent executor message context | `AgentExecutor._build_user_message()` 注入首轮用户消息的上下文，适用于 `AGENT_ARCH=single` 路径，目前包含股票代码、报告类型、输出语言、`realtime_quote`、`chip_distribution`、`news_context`。 | 单 Agent 首轮 LLM 消息 | 记录当前首轮可见字段；P0 不补 runtime 注入。 |
-| Agent orchestrator `AgentContext` | `AgentOrchestrator._build_context()` 写入多 Agent 共享上下文，适用于 `AGENT_ARCH=multi` 路径，可预注入 `realtime_quote`、`daily_history`、`chip_distribution`、`trend_result`、`news_context`。 | Technical / Intel / Risk / Decision 多 Agent 链路 | 记录为 orchestrator 内部共享数据面；不预注入 `fundamental_context`，`trend_result` 是否存在取决于 caller 是否传入。 |
+| `storage.get_analysis_context()` | Ein in `src/storage.py` aus den OHLCV-Daten der letzten zwei Tage aus der Datenbank erzeugter, vereinfachter technischer Kontext mit `today`, `yesterday`, `volume_change_ratio`, `price_change_ratio`, `ma_status` usw. Die aktuelle Implementierung akzeptiert `target_date`, nutzt aber faktisch die Daten der letzten zwei Tage. | Hauptkette der normalen Analyse, Agent-Tool `get_analysis_context` | Als historische technische Eingabequelle dokumentieren, nicht direkt mit dem zukünftigen pack gleichsetzen. |
+| `enhanced_context` | In der normalen Analyse der von `src/core/pipeline.py` anhand des vereinfachten DB-Kontexts, der Echtzeitkurse, der Chip-Verteilung, des Trends, der Fundamentaldaten und der Sprache angereicherte Prompt-Kontext. | Prompt-Rendering in `src/analyzer.py`, `_build_context_snapshot()` | Aktuelle Prompt-Eingabeebene dokumentieren; P0 ändert weder Feldnamen noch Struktur. |
+| `analysis_history.context_snapshot` | Der nach Abschluss der Analyse in die Verlaufstabelle geschriebene persistierte Schnappschuss. Die normale Analyse enthält üblicherweise `enhanced_context`, `news_content`, `realtime_quote_raw`, `chip_distribution_raw`; der Agent-Pfad speichert `initial_context`. | Verlaufsdetail, synchrone analysis/status-Antworten, Backtest, teils Fundamentaldaten-Fallback-Anzeige | Als persistierte Konsumebene dokumentieren; `context_snapshot.enhanced_context.date`-Kompatibilität muss erhalten bleiben. |
+| Agent executor message context | Von `AgentExecutor._build_user_message()` in die erste Benutzernachricht injizierter Kontext, gültig für den `AGENT_ARCH=single`-Pfad; enthält derzeit Aktiencode, Berichtstyp, Ausgabesprache, `realtime_quote`, `chip_distribution`, `news_context`. | Erste LLM-Nachricht des Einzel-Agents | Aktuelle, in der ersten Runde sichtbare Felder dokumentieren; P0 ergänzt keine Laufzeit-Injektion. |
+| Agent orchestrator `AgentContext` | Von `AgentOrchestrator._build_context()` in den geteilten Kontext des Multi-Agents geschriebene Daten, gültig für den `AGENT_ARCH=multi`-Pfad; kann `realtime_quote`, `daily_history`, `chip_distribution`, `trend_result`, `news_context` vorab injizieren. | Technical / Intel / Risk / Decision Multi-Agent-Kette | Als interne, geteilte Datengebene des Orchestrators dokumentieren; `fundamental_context` nicht vorab injizieren; ob `trend_result` existiert, hängt davon ab, ob der Caller es übergibt. |
 
-## P0 范围与非目标
+## P0-Umfang und Nicht-Ziele
 
-P0 的目标是让后续 P1/P2/P3 可以基于真实仓库边界设计 `AnalysisContextPack`，而不是提前改造运行时。
+Das Ziel von P0 ist, dass nachfolgende P1/P2/P3 das `AnalysisContextPack` auf Basis der realen Repository-Grenzen entwerfen können, statt die Laufzeit vorzeitig umzubauen.
 
-- P0 覆盖普通分析、Agent、告警、持仓、回测、历史、通知七条路径的上下文盘点。
-- P0 固定字段质量状态词；P1 已新增 `AnalysisContextPack` 内部 schema，但仍不新增 builder、不接入 runtime、不公开完整 pack。
-- P0 不新增 builder，不新增配置项，不新增数据库字段，不改变 API、报告、历史或通知 payload。
-- P0 不接入 runtime，不改 `src/` 分析、Agent、告警、持仓、回测或通知逻辑。
-- P0 不 pack 化 `market_review`、`market_light` 或大盘红绿灯专题快照；这些只作为历史快照中的其他 `report_kind` / 专题消费边界记录。
-- P0 当时不把 `fetch_failed` 加入字段质量状态词；P5 已在同一 1.0 umbrella 内追加该状态，用于明确区分“不支持”和“本次抓取失败”。
-- P0 不在 README 扩写实现细节；本页作为专题文档，由 `docs/INDEX.md` / `docs/INDEX_EN.md` 入口发现。
+- P0 deckt die Bestandsaufnahme des Kontexts über sieben Pfade ab: normale Analyse, Agent, Alarm, Position, Backtest, Historie und Benachrichtigung.
+- P0 fixiert die Wortliste der Feldqualitätsstatus; P1 hat das interne `AnalysisContextPack`-Schema bereits hinzugefügt, erstellt aber weiterhin keinen Builder, bindet kein runtime an und macht das vollständige pack nicht öffentlich.
+- P0 fügt keinen Builder, keine Konfigurationsoptionen, keine Datenbankfelder hinzu und verändert weder API-, Berichts-, Historie- noch Benachrichtigungs-Payloads.
+- P0 bindet kein runtime an, ändert keine Analyse-, Agent-, Alarm-, Positions-, Backtest- oder Benachrichtigungslogik in `src/`.
+- P0 packt `market_review`, `market_light` oder das Ampeln-Sonderpfad-Schnappschuss nicht; diese werden nur als andere `report_kind`-/Sonderpfad-Konsumgrenzen in historischen Schnappschüssen dokumentiert.
+- P0 nahm `fetch_failed` damals nicht in die Wortliste der Feldqualitätsstatus auf; P5 hat diesen Status innerhalb desselben 1.0-umbrella ergänzt, um „nicht unterstützt" klar von „dieses Abrufen ist fehlgeschlagen" zu unterscheiden.
+- P0 erweitert README nicht um Implementierungsdetails; diese Seite dient als Themendokument und wird über die Einstiege `docs/INDEX.md` / `docs/INDEX_EN.md` aufgefunden.
 
-## P1 内部契约
+## P1 Interner Vertrag
 
-P1 落地 `src/schemas/analysis_context_pack.py`，只定义内部 schema/envelope，方便 P2 builder 和 P3 runtime 消费时复用同一结构。P1 不填充运行时数据、不新增 fetcher、不改变 Prompt、不写入 history/task/report metadata，也不把完整 pack 暴露到 API、Web、Bot、Desktop 或通知。
+P1 setzt `src/schemas/analysis_context_pack.py` um und definiert nur das interne schema/envelope, damit P2-Builder und P3-runtime beim Konsum dieselbe Struktur wiederverwenden können. P1 füllt keine Laufzeitdaten, fügt keinen fetcher hinzu, ändert keinen Prompt, schreibt kein history/task/report-metadata und macht das vollständige pack weder für API, Web, Bot, Desktop noch Benachrichtigungen sichtbar.
 
-P1 schema 包含：
+Das P1-Schema umfasst:
 
-- `PACK_VERSION = "1.0"`，并通过 `AnalysisContextPack.pack_version` 标记契约版本。
-- `ContextFieldStatus`：P1 首版只允许 `available`、`missing`、`not_supported`、`fallback`、`stale`、`estimated`、`partial`；P5 已追加 `fetch_failed`，表示字段或数据块本次抓取明确失败，不代表整次分析失败。
-- `AnalysisSubject`：顶层身份槽，只包含 `code`、`stock_name`、`market`；`exchange`、`currency`、`industry` 留给后续扩展，P2 builder 不扩 P1 schema，也不重复新增 `identity` block。
-- `AnalysisContextItem`：字段级输入项，包含 `status`、`value`、`source`、`timestamp`、`fallback_from`、`missing_reason`、`warnings`、`metadata`。
-- `AnalysisContextBlock`：数据块级分组，包含 `status`、`items`、`source`、`timestamp`、`warnings`、`metadata`，其中 `items` 是 `Dict[str, AnalysisContextItem]`。
-- `DataQuality`：P1 只保留 `warnings` 与 `metadata` 容器；P5 已追加 `overall_score`、`level`、`block_scores`、`limitations`，仍保持低敏，不承载 raw payload。
-- `AnalysisContextPack`：顶层 envelope，包含 `pack_version`、`subject`、`phase`、`blocks`、`data_quality`、`metadata`、`created_at`。
+- `PACK_VERSION = "1.0"`, markiert über `AnalysisContextPack.pack_version` die Vertragsversion.
+- `ContextFieldStatus`: In der ersten P1-Version sind nur `available`, `missing`, `not_supported`, `fallback`, `stale`, `estimated`, `partial` erlaubt; P5 hat `fetch_failed` ergänzt, das bedeutet, dass der Abruf eines Felds oder Datenblocks in diesem Durchlauf eindeutig fehlgeschlagen ist, nicht aber die gesamte Analyse.
+- `AnalysisSubject`: Oberste Identitäts-Slot mit nur `code`, `stock_name`, `market`; `exchange`, `currency`, `industry` sind für spätere Erweiterungen vorgesehen. Der P2-Builder erweitert das P1-Schema nicht und fügt auch keinen neuen `identity`-Block hinzu.
+- `AnalysisContextItem`: Feldebene-Eingabeposten mit `status`, `value`, `source`, `timestamp`, `fallback_from`, `missing_reason`, `warnings`, `metadata`.
+- `AnalysisContextBlock`: Gruppierung auf Datenblock-Ebene mit `status`, `items`, `source`, `timestamp`, `warnings`, `metadata`, wobei `items` ein `Dict[str, AnalysisContextItem]` ist.
+- `DataQuality`: P1 behält nur die Container `warnings` und `metadata`; P5 hat `overall_score`, `level`, `block_scores`, `limitations` ergänzt, bleibt aber niedrig-sensibel und trägt keine raw-payload.
+- `AnalysisContextPack`: Oberstes envelope mit `pack_version`, `subject`, `phase`, `blocks`, `data_quality`, `metadata`, `created_at`.
 
-时间字段约定：
+Zeitfeld-Konvention:
 
-- `AnalysisContextPack.created_at` 使用 `datetime`，由 `model_dump(mode="json")` 输出 ISO 8601 字符串。
-- `AnalysisContextItem.timestamp` 与 `AnalysisContextBlock.timestamp` 使用 `Optional[str]`，约定为 ISO 8601 datetime 字符串；P1 schema 在构造时校验该格式，date-only、自然语言时间或斜杠分隔日期会被拒绝；P2 builder 复用现有 artifact 时间戳时不做强制二次转换。
+- `AnalysisContextPack.created_at` verwendet `datetime` und wird über `model_dump(mode="json")` als ISO-8601-Zeichenkette ausgegeben.
+- `AnalysisContextItem.timestamp` und `AnalysisContextBlock.timestamp` verwenden `Optional[str]` und sind als ISO-8601-datetime-Zeichenketten konventioniert; das P1-Schema validiert dieses Format bei der Konstruktion; reine Datumsangaben, natürliche Sprachzeit oder schrägstrichgetrennte Daten werden abgelehnt; der P2-Builder erzwingt beim Wiederverwenden bestehender Artefakt-Zeitstempel keine zweite Konvertierung.
 
-状态语义：
+Statussemantik:
 
-- `block.status` 表示整块可用性。
-- `item.status` 表示字段级质量。
-- P1 不实现 `item.status` 到 `block.status` 的自动聚合推导。
+- `block.status` beschreibt die Verfügbarkeit des gesamten Blocks.
+- `item.status` beschreibt die Qualität auf Feldebene.
+- P1 implementiert keine automatische Aggregationsableitung von `item.status` zu `block.status`.
 
-P1 Block Catalog：
+P1-Block-Katalog:
 
-| block key | P1 语义 | P1 边界 |
+| block key | P1-Semantik | P1-Grenze |
 | --- | --- | --- |
-| `quote` | 实时行情和报价相关输入 | 只定义可表达位置，不抓取或填充数据。 |
-| `daily_bars` | 完整日线窗口和最近完整日线日期 | P1 不判断 partial bar。 |
-| `technical` | 技术指标、量价结构和形态 | P1 不生成指标。 |
-| `fundamentals` | 估值、成长、盈利、财报和股东回报 | P1 不新增基本面 fetcher。 |
-| `news` | 新闻、公告、舆情和催化事件输入 | P1 不改变新闻搜索。 |
-| `portfolio` | 是否持仓、账户摘要、成本、数量、仓位和 stale 摘要 | P1 不纳入交易流水、现金流水或完整账户隐私数据。 |
-| `chip` / `capital_flow` | 筹码、资金流和主力行为 | 后续扩展键，P1 只允许契约表达。 |
-| `events` / `market_context` | 风险事件、市场宽度、指数、板块和热点环境 | 后续扩展键，不把 `market_review` / `market_light` 作为首版单股 pack。 |
+| `quote` | Echtzeitkurse und quotierungsbezogene Eingaben | Definiert nur die ausdrückbare Position, ruft keine Daten ab und füllt keine. |
+| `daily_bars` | Vollständiges Tagesbalken-Fenster und Datum des letzten vollständigen Tagesbalkens | P1 beurteilt keinen partial bar. |
+| `technical` | Technische Indikatoren, Volumen-Preis-Struktur und Formationen | P1 erzeugt keine Indikatoren. |
+| `fundamentals` | Bewertung, Wachstum, Profitabilität, Finanzberichte und Aktionärsrendite | P1 fügt keinen Fundamentaldaten-fetcher hinzu. |
+| `news` | Nachrichten, Unternehmensmeldungen, Stimmung und Katalysator-Ereignisse | P1 ändert die Nachrichtensuche nicht. |
+| `portfolio` | Ob Position gehalten, Kontozusammenfassung, Kosten, Menge, Positionsgröße und stale-Zusammenfassung | P1 bezieht keine Transaktionsströme, Kassenströme oder vollständige Kontoprivatsphäre-Daten ein. |
+| `chip` / `capital_flow` | Chip-Verteilung, Kapitalfluss und Main-Player-Verhalten | Späterer Erweiterungsschlüssel, P1 erlaubt nur den Vertragsausdruck. |
+| `events` / `market_context` | Risikoereignisse, Marktbreite, Indizes, Sektoren und Hot-Environment | Späterer Erweiterungsschlüssel; `market_review` / `market_light` werden nicht als Erstversion des Einzelaktien-packs verwendet. |
 
-`phase` 字段只接收 #1386 `MarketPhaseContext.to_dict()` 产物，保持 `Dict[str, Any]`，不重新定义 phase enum 或 phase 子模型。
+Das `phase`-Feld akzeptiert nur das Produkt von #1386 `MarketPhaseContext.to_dict()` und bleibt `Dict[str, Any]`; es definiert weder ein phase-enum noch ein phase-Submodell neu.
 
-脱敏边界：
+Redaktionsgrenzen:
 
-- `AnalysisContextPack.to_safe_dict()` 先执行 `model_dump(mode="json")`，再调用 `redact_sensitive_mapping()`。
-- `redact_sensitive_mapping()` 只做 dict/list 的 key-based 递归脱敏，命中 `api_key`、`access_token`、`refresh_token`、`authorization_header`、`webhook_url`、`password`、`cookie`、`secret`、`token`、`sendkey`、`license_key` 等敏感键或短语时把值替换为 `[REDACTED]`。
-- P1 不扫描普通字符串值，不做 URL 正则脱敏，不把 `data_api` 或裸 `api` / `key` 当作敏感命中，避免把本契约扩展成通用 secrets engine。
+- `AnalysisContextPack.to_safe_dict()` führt zuerst `model_dump(mode="json")` aus und ruft danach `redact_sensitive_mapping()` auf.
+- `redact_sensitive_mapping()` führt nur eine key-basierte, rekursive Redaktion von dict/list durch; bei Treffern sensibler Schlüssel oder Phrasen wie `api_key`, `access_token`, `refresh_token`, `authorization_header`, `webhook_url`, `password`, `cookie`, `secret`, `token`, `sendkey`, `license_key` wird der Wert durch `[REDACTED]` ersetzt.
+- P1 scannt keine gewöhnlichen Zeichenkettenwerte, führt keine URL-Regex-Redaktion durch und behandelt weder `data_api` noch bloße `api` / `key` als sensiblen Treffer, um diesen Vertrag nicht zu einer generischen secrets engine auszubauen.
 
-## P2 Builder 契约
+## P2 Builder-Vertrag
 
-P2 新增 `AnalysisContextBuilder`，但首版只做 assembler：从普通分析 pipeline 已经拿到的 artifacts 组装内部 `AnalysisContextPack`。Issue 验收项里的“复用现有数据源”在本 slice 中解释为复用 pipeline 已 fetch 的 `realtime_quote`、`base_context`、`enhanced_context`、`trend_result`、`chip_data`、`fundamental_context`、`news_context` 等 artifacts；builder 本身 zero-fetch，不调用 DB、fetcher、SearchService、Agent 工具或具体 provider。
+P2 fügt `AnalysisContextBuilder` hinzu, aber die Erstversion ist nur ein assembler: Er assembliert aus den Artefakten, die die normale Analyse-Pipeline bereits erhalten hat, das interne `AnalysisContextPack`. Der Punkt „vorhandene Datenquellen wiederverwenden" in den Issue-Abnahmekriterien wird in diesem slice so interpretiert, dass bereits von der Pipeline gefetchte Artefakte wie `realtime_quote`, `base_context`, `enhanced_context`, `trend_result`, `chip_data`, `fundamental_context`, `news_context` wiederverwendet werden; der Builder selbst ist zero-fetch, er ruft weder DB, fetcher, SearchService, Agent-Tools noch einen konkreten provider auf.
 
-P2 输入契约使用 `PipelineAnalysisArtifacts`：`code`、`stock_name`、`market`、`phase`、`base_context`、`enhanced_context`、`realtime_quote`、`trend_result`、`chip_data`、`fundamental_context`、`news_context`、`news_result_count`、`metadata`。单股 `build()` 与批量 `build_batch()` 复用同一结构，避免 P3 runtime 接入时再次改签名。
+Der P2-Eingabevertrag verwendet `PipelineAnalysisArtifacts`: `code`, `stock_name`, `market`, `phase`, `base_context`, `enhanced_context`, `realtime_quote`, `trend_result`, `chip_data`, `fundamental_context`, `news_context`, `news_result_count`, `metadata`. Der Einzelaktien-`build()` und der Batch-`build_batch()` nutzen dieselbe Struktur, damit bei der P3-runtime-Anbindung die Signatur nicht erneut geändert werden muss.
 
-P2 block 组装边界：
+P2-Block-Assemblierungsgrenzen:
 
-- `subject` 仍只写 `code`、`stock_name`、`market` 三字段，不扩 `AnalysisSubject`。
-- `phase` 只接收传入的 `MarketPhaseContext.to_dict()` 产物，不从 `enhanced_context` 反推。
-- `quote` 从 `realtime_quote` 组装；缺失为 `missing`；`source=fallback` 或显式 `fallback_from` 映射为 `fallback`，但 `source` 保留真实成功源；`fallback_from` 只在 artifact/metadata 显式提供时填写，否则只记录稳定 warning code，不伪造 provider 链。
-- `quote` 会透传 #1386 P3 的 `fetched_at`、`provider_timestamp`、`is_stale`、`stale_seconds`、`fallback_from`。状态优先级固定为 `STALE > FALLBACK > AVAILABLE`：`is_stale=True`、`price_stale`、`quote_stale`、`quote_stale_seconds` 等显式 marker 标为 `stale`；`stale_seconds` 且 `is_stale=False` 只是元数据，不单独推断 stale。builder 只映射上游 artifact，不做质量评分。
-- `daily_bars` 只表达完整日线窗口，优先读 `base_context.today`、`base_context.yesterday`、`base_context.date`、`base_context.data_missing`；date-only 放入 `value` 或 `metadata`，不写入 `timestamp`。
-- `enhanced_context.today` 上的 `is_partial_bar`、`is_estimated`、`estimated_fields` 优先进入 `technical`；缺失时仍兼容 `enhanced_context.today.data_source` 为 `realtime:*` 的旧 heuristic。partial/estimated 只进入 `technical`，`daily_bars` 不承载 partial/estimated，warning 使用 `intraday_realtime_overlay`。
-- `technical` 优先复用 `trend_result.to_dict()`；无 trend artifact 时为 `missing`。
-- `chip` 复用 `chip_data.to_dict()`；无 chip artifact 默认 `missing`，只有输入 metadata/artifact 明确 not_supported 时才标 `not_supported`。
-- `fundamentals` 只读 `fundamental_context` 参数；`ok` 映射为 `available`，`not_supported` 映射为 `not_supported`，`partial` 映射为 `partial`，P5 后 `failed` 映射为 `fetch_failed` + 稳定 reason code `fundamental_pipeline_failed`；不写入 `errors[]` 原文。
-- `news` 非空白字符串为 `available`，空白或缺失为 `missing`；`news_result_count` 写入 pack metadata。
+- `subject` schreibt weiterhin nur die drei Felder `code`, `stock_name`, `market` und erweitert `AnalysisSubject` nicht.
+- `phase` akzeptiert nur das übergebene Produkt von `MarketPhaseContext.to_dict()` und leitet es nicht aus `enhanced_context` rückwärts ab.
+- `quote` wird aus `realtime_quote` assembliert; fehlt es, gilt `missing`; `source=fallback` oder explizites `fallback_from` wird auf `fallback` abgebildet, aber `source` behält die echte erfolgreiche Quelle; `fallback_from` wird nur ausgefüllt, wenn artifact/metadata es explizit liefern, sonst wird nur ein stabiler warning-code protokolliert und keine provider-Kette erfunden.
+- `quote` gibt die `fetched_at`, `provider_timestamp`, `is_stale`, `stale_seconds`, `fallback_from` aus #1386 P3 durch. Die Statuspriorität ist fest `STALE > FALLBACK > AVAILABLE`: explizite Marker wie `is_stale=True`, `price_stale`, `quote_stale`, `quote_stale_seconds` werden als `stale` markiert; `stale_seconds` mit `is_stale=False` ist nur Metadaten und führt nicht für sich allein zu einer stale-Ableitung. Der Builder bildet nur Upstream-Artefakte ab und macht keine Qualitätsbewertung.
+- `daily_bars` drückt nur das vollständige Tagesbalken-Fenster aus und liest bevorzugt `base_context.today`, `base_context.yesterday`, `base_context.date`, `base_context.data_missing`; reine Datumsangaben kommen in `value` oder `metadata`, nicht in `timestamp`.
+- `is_partial_bar`, `is_estimated`, `estimated_fields` auf `enhanced_context.today` gehen bevorzugt in `technical`; fehlen sie, bleibt die alte heuristic mit `enhanced_context.today.data_source` als `realtime:*` kompatibel. partial/estimated gehen nur in `technical`; `daily_bars` trägt kein partial/estimated; der warning verwendet `intraday_realtime_overlay`.
+- `technical` nutzt bevorzugt `trend_result.to_dict()`; ohne trend-artifact gilt `missing`.
+- `chip` nutzt `chip_data.to_dict()`; ohne chip-artifact ist der Standard `missing`, nur wenn das eingehende metadata/artifact explizit not_supported angibt, wird `not_supported` markiert.
+- `fundamentals` liest nur den Parameter `fundamental_context`; `ok` wird auf `available`, `not_supported` auf `not_supported`, `partial` auf `partial` abgebildet; nach P5 wird `failed` auf `fetch_failed` plus stabiler reason-code `fundamental_pipeline_failed` abgebildet; der Originaltext von `errors[]` wird nicht geschrieben.
+- `news`: nicht leere Zeichenkette gilt als `available`, leer oder fehlend als `missing`; `news_result_count` wird in pack-metadata geschrieben.
 
-P2 不组装 `portfolio`、`events`、`market_context`，也不把 `capital_flow` 拆成独立 block；首版只把它保留在 fundamentals 的 coverage/source chain metadata 中。P2 当时也不改变 Prompt、不让普通分析或 Agent runtime 消费 pack、不写入 history/task/report metadata、不暴露完整 pack 到 API/Web/Bot/Desktop/通知；P5 只在现有 builder 上追加低敏评分、`fetch_failed` 细分和 Prompt 限制，不新增 fetcher。
+P2 assembliert `portfolio`, `events`, `market_context` nicht und zerlegt `capital_flow` auch nicht in einen eigenen Block; die Erstversion belässt es nur in den coverage/source-chain-metadata der fundamentals. P2 änderte damals auch keinen Prompt, ließ weder die normale Analyse noch den Agent-runtime das pack konsumieren, schrieb kein history/task/report-metadata und setzte das vollständige pack nicht für API/Web/Bot/Desktop/Benachrichtigungen aus; P5 ergänzt nur auf dem bestehenden Builder die niedrig-sensible Bewertung, die `fetch_failed`-Unterteilung und die Prompt-Begrenzung, ohne neuen fetcher.
 
-## P3 Runtime Consumption
+## P3 Runtime-Konsum
 
-P3 在 P2 `AnalysisContextBuilder` 之后接入运行态消费，但消费面限定为低敏 `analysis_context_pack_summary`。`StockAnalysisPipeline` 是 summary 的唯一生产者：在普通分析路径和 Agent 路径内完成 `PipelineAnalysisArtifacts` -> `AnalysisContextBuilder.build()` -> `format_analysis_context_pack_prompt_section()`，下游 analyzer、single-agent、multi-agent 只接收 summary 字符串，不自行构造完整 pack，也不读取 `AnalysisContextPack.to_safe_dict()` 的 block item 原始值。
+P3 bindet nach dem P2-`AnalysisContextBuilder` den Laufzeitkonsum an, begrenzt die Konsumfläche aber auf die niedrig-sensible `analysis_context_pack_summary`. `StockAnalysisPipeline` ist der einzige Produzent der summary: Im normalen Analysepfad und im Agent-Pfad werden `PipelineAnalysisArtifacts` -> `AnalysisContextBuilder.build()` -> `format_analysis_context_pack_prompt_section()` durchlaufen; nachgelagerte Komponenten (analyzer, single-agent, multi-agent) empfangen nur die summary-Zeichenkette, konstruieren selbst kein vollständiges pack und lesen auch keine block-item-Rohwerte aus `AnalysisContextPack.to_safe_dict()`.
 
-普通分析 Prompt 的顺序固定为：基础信息 -> #1386 `market_phase_context` 渲染区块 -> `analysis_context_pack_summary` -> 技术面、实时行情、新闻等既有区块。`analysis_context_pack_summary` 只包含 subject、`pack_version`、block `status` / `source` / `warnings` / `missing_reason`、`metadata.news_result_count`、`data_quality.warnings` 和 P5 低敏数据限制，不得输出 `news.content`、`trend_result`、`chip`、`fundamental_context` 等原始 payload。
+Die Reihenfolge des Prompts der normalen Analyse ist fest: Basisinformationen -> #1386 Rendering-Block `market_phase_context` -> `analysis_context_pack_summary` -> bestehende Blöcke wie technische Daten, Echtzeitkurse, Nachrichten. `analysis_context_pack_summary` enthält nur subject, `pack_version`, block `status` / `source` / `warnings` / `missing_reason`, `metadata.news_result_count`, `data_quality.warnings` und die P5-niedrig-sensible Datenbegrenzung; es darf `news.content`, `trend_result`, `chip`, `fundamental_context` und andere raw-payloads nicht ausgeben.
 
-Agent 路径同样只传 summary。`AgentExecutor._build_user_message()` 在 market phase 段之后、pre-fetched JSON 之前插入 summary；`AgentOrchestrator._build_context()` 只把 summary 放入 `ctx.meta["analysis_context_pack_summary"]`，禁止写入 `ctx.data`；`BaseAgent._build_messages()` 在 market phase user message 之后、`_inject_cached_data()` 之前插入 summary。Agent 路径会在 `_ensure_agent_history()` 预取后读取一次 `storage.get_analysis_context()` 作为 `daily_bars` 的低敏状态来源，读取失败或无可用上下文时才标记 `daily_bars_missing`，该读取 fail-open 且不把日线原始 payload 写入 Agent runtime context。Agent 首轮没有复用普通分析新闻检索，`news` block 为 `missing` 是当前 P3 的预期状态。
+Auch der Agent-Pfad übergibt nur die summary. `AgentExecutor._build_user_message()` fügt die summary nach dem market-phase-Abschnitt und vor dem pre-fetched JSON ein; `AgentOrchestrator._build_context()` legt die summary nur in `ctx.meta["analysis_context_pack_summary"]` ab und darf nicht in `ctx.data` schreiben; `BaseAgent._build_messages()` fügt die summary nach der market-phase-user-message und vor `_inject_cached_data()` ein. Der Agent-Pfad liest nach dem Vorabruf von `_ensure_agent_history()` einmal `storage.get_analysis_context()` als niedrig-sensible Statusquelle für `daily_bars`; nur bei Lesefehler oder ohne verfügbaren Kontext wird `daily_bars_missing` markiert. Dieser Lesevorgang ist fail-open und schreibt keine Rohdaten der Tagesbalken in den Agent-runtime-Kontext. Die erste Agent-Runde nutzt die Nachrichtenrecherche der normalen Analyse nicht wieder; `news`-Block als `missing` ist der aktuell erwartete P3-Zustand.
 
-P3 当时不持久化完整 pack，不新增 API/Web/Bot/Desktop 字段，不改变报告 JSON schema，不把 summary 写入 `analysis_history.context_snapshot`、task status 或 report metadata；history snapshot 和 diagnostic snapshot 会剥离 `market_phase_context`、`analysis_context_pack`、`analysis_context_pack_summary` 等 runtime prompt key。P4 在此基础上新增低敏 overview，可见性只覆盖历史详情、同步分析响应、completed task status 和 Web 报告页；P5 继续复用 summary 消费路径，不改 LLM 输出 JSON schema。Agent 工具级 pack cache 复用仍是后续工作。
+P3 persistierte damals kein vollständiges pack, fügte keine API/Web/Bot/Desktop-Felder hinzu, änderte nicht das JSON-Schema der Berichte und schrieb die summary nicht in `analysis_history.context_snapshot`, task status oder report-metadata; history-snapshot und diagnostic-snapshot entfernen runtime-Prompt-Schlüssel wie `market_phase_context`, `analysis_context_pack`, `analysis_context_pack_summary`. P4 ergänzt darauf aufbauend die niedrig-sensible Übersicht; die Sichtbarkeit deckt nur Historie-Detailansicht, synchrone Analyse-Antwort, completed task status und Web-Reportseite ab; P5 nutzt weiterhin denselben summary-Konsumpfad und ändert das von LLM ausgegebene JSON-Schema nicht. Ein Wiederverwendungs-Cache des pack auf Agent-Tool-Ebene bleibt Folgearbeit.
 
 ## #1381 Daily Market Context
 
-#1381 在 AnalysisContextPack 之外新增一个小型每日大盘环境摘要通道，避免把 `market_review` / `market_light` 直接 pack 化。`DAILY_MARKET_CONTEXT_ENABLED` 默认开启；当 `MARKET_REVIEW_ENABLED=true` 且 `DAILY_MARKET_CONTEXT_ENABLED=true` 时，`StockAnalysisPipeline` 会按个股市场（`cn` / `hk` / `us`）加载当日大盘上下文：优先复用 `analysis_history(code=MARKET, report_type=market_review)` 中同日同市场记录；没有同日记录时才调用 `run_market_review(..., return_structured=True, send_notification=False)` 生成本次上下文，且通过进程内 cache 避免同一 Pipeline 重复生成，并在 CLI/定时任务并发路径上通过 market review lock 串行化生成。`DAILY_MARKET_CONTEXT_ENABLED=false` 只关闭个股分析的低敏摘要注入与保守护栏，不关闭大盘复盘本身。
+#1381 fügt außerhalb des AnalysisContextPack einen kleinen täglichen Zusammenfassungskanal des Marktumfelds hinzu, um `market_review` / `market_light` nicht direkt zu packen. `DAILY_MARKET_CONTEXT_ENABLED` ist standardmäßig aktiviert; wenn `MARKET_REVIEW_ENABLED=true` und `DAILY_MARKET_CONTEXT_ENABLED=true` sind, lädt `StockAnalysisPipeline` je nach Aktienmarkt (`cn` / `hk` / `us`) den Marktkontext des Tages: bevorzugt wird derselbe Tageseintrag desselben Marktes aus `analysis_history(code=MARKET, report_type=market_review)` wiederverwendet; nur wenn kein Eintrag desselben Tages existiert, wird `run_market_review(..., return_structured=True, send_notification=False)` aufgerufen, um den Kontext dieses Durchlaufs zu erzeugen, wobei ein in-process-cache die doppelte Erzeugung innerhalb derselben Pipeline vermeidet und auf dem parallelen CLI/Zeitplan-Pfad über den market-review-lock serialisiert wird. `DAILY_MARKET_CONTEXT_ENABLED=false` deaktiviert nur die niedrig-sensible Zusammenfassungs-Injektion und den Schutz-Guardrail der Einzelaktien-Analyse, nicht die Marktübersicht selbst.
 
-**Background：**`#1381` 聚焦单股分析的当日大盘上下文复用与回退控制，不改变现有日内阶段、日报或状态建模架构。该段与 `docs/CHANGELOG.md` [Unreleased] 的 #1381 条目保持一致，可作为本轮变更说明的收敛边界。
-**Scope（本轮实现范围）：**`#1381` 仅覆盖后端 runtime 的大盘上下文注入、当日/目标交易日复用控制与保守护栏；不包含独立 API、Web 阶段结果独立展示、四阶段日报结构化持久化或新增日报状态表。涉及主要入口为 `main.py`（调度与 `--no-market-review`）、`src/core/pipeline.py`、`src/core/market_review.py`、`src/services/daily_market_context.py`、`src/analyzer.py`、`src/analysis_context_pack_overview.py`、`src/agent/executor.py`、`src/agent/orchestrator.py`、`src/agent/agents/base_agent.py`、`src/daily_market_context_guardrail.py`；Web 侧仅同步 `DAILY_MARKET_CONTEXT_ENABLED` 设置项文案/帮助，不新增阶段结果展示。
-**验收闭环边界：**本 PR 仅对应 `#1381` 的 runtime 接入与护栏子目标；除非独立 API、Web 阶段展示、四阶段日报持久化和日报状态表已在后续变更中落地并验证，否则不得把 Issue #1381 标记为完整验收通过。
-**Acceptance Criteria（验收边界）：**本轮仅按 runtime 与配置入口验收，不纳入 PR 过程中的 API/Web UI 独立阶段展示验收。当前验收路径限制为 `tests/test_main_schedule_mode.py`、`tests/test_pipeline_daily_market_context.py`、`tests/test_daily_market_context.py`、`tests/test_daily_market_context_guardrail.py`、`tests/test_agent_executor.py`、`tests/test_config_env_compat.py`、`tests/test_config_registry.py` 和 `apps/dsa-web/tests/system_config_i18n.test.ts`。重点覆盖项为：`--no-market-review` 禁止触发大盘复盘生成、`DAILY_MARKET_CONTEXT_ENABLED=false` 关闭个股上下文注入但保留大盘复盘、单次 schedule 复用同一 `target_date`、多市场上下文加载（`cn,us`）、`daily_market_context` 只在同一次分析主链路注入一次、普通分析与 Agent 路径应用护栏且不泄漏原始 `market_review_payload`。
-**Compatibility/Risk（兼容与风险）：**`#1381` 不改变 `provider/model/base_url`、默认模型或配置清理/回填/迁移语义；不新增数据库或运行时配置表变更。`main.py::_bootstrap_environment`、`src/core/pipeline.py`、`src/analyzer.py`、`src/agent/executor.py`、`src/agent/orchestrator.py`、`src/agent/agents/base_agent.py`、`src/services/daily_market_context.py`、`src/daily_market_context_guardrail.py` 只在既有读取链路消费 LLM 与市场复盘上下文，不新增 `SystemConfig` 保存或回写分支。官方兼容依据沿用 `LiteLLM OpenAI-compatible` 与 `OpenAI Chat Completion`（见后文“兼容性证据与核验边界”）；回滚方式为常规发布回滚（撤销相关提交），如必要可配合重启并清理 `env_file` / `--env-file` / 进程级同名环境覆盖项，恢复用户历史持久化配置。
-**兼容性证据与核验边界：**本轮仅复用既有 LLM 配置链路读取配置，不新增 `.env` 写入分支，不新增配置迁移/清理/回写入口。官方依据沿用：`LiteLLM OpenAI-compatible` <https://docs.litellm.ai/docs/providers/openai_compatible>、`OpenAI Chat Completion` <https://platform.openai.com/docs/api-reference/chat/create>；版本约束见 `requirements.txt`（`litellm`、`openai`）当前窗口。可回溯代码路径：`main.py::_bootstrap_environment`、`src/analyzer.py::_init_litellm`、`src/agent/agents/base_agent.py::_get_analyzer_config`（仅读取）、`src/agent/executor.py`、`src/agent/orchestrator.py`、`src/core/pipeline.py`、`src/services/daily_market_context.py`、`src/daily_market_context_guardrail.py`。回归核验点为 `tests/test_config_env_compat.py`、`tests/test_config_registry.py`、`tests/test_system_config_service.py`、`tests/test_system_config_api.py`、`tests/test_llm_channel_config.py`、`tests/test_market_review_runtime.py`。
+**Background：** `#1381` fokussiert die Wiederverwendung und den Fallback der Tagesmarktumgebung bei der Einzelaktien-Analyse und ändert weder die bestehende Intraday-Phase, die Tagesberichte noch die Statusmodellierung. Dieser Abschnitt stimmt mit dem #1381-Eintrag in `docs/CHANGELOG.md` [Unreleased] überein und dient als Konvergenzgrenze der Änderungsbeschreibung dieser Runde.
+**Scope (Implementierungsumfang dieser Runde):** `#1381` deckt nur die Marktkontext-Injektion des Backend-runtime, die Wiederverwendung und den Schutz-Guardrail für den Tages-/Zielhandelstag ab; es umfasst keine eigenständige API, keine eigenständige Web-Phase-Anzeige der Ergebnisse, keine strukturierte Persistenz der Vierphasen-Tagesberichte und keine neue Tagesbericht-Statustabelle. Die beteiligten Haupteinstiege sind `main.py` (Zeitplan und `--no-market-review`), `src/core/pipeline.py`, `src/core/market_review.py`, `src/services/daily_market_context.py`, `src/analyzer.py`, `src/analysis_context_pack_overview.py`, `src/agent/executor.py`, `src/agent/orchestrator.py`, `src/agent/agents/base_agent.py`, `src/daily_market_context_guardrail.py`; auf der Web-Seite werden nur der Text/Hilfetext der Einstellung `DAILY_MARKET_CONTEXT_ENABLED` synchronisiert, keine neue Phasen-Ergebnisanzeige.
+**Abnahme-Closed-Loop-Grenze:** Dieser PR entspricht nur dem runtime-Einstieg und den Guardrail-Unterzielen von `#1381`; Issue #1381 darf erst als vollständig abgenommen gelten, wenn die eigenständige API, die Web-Phasen-Anzeige, die Vierphasen-Tagesbericht-Persistenz und die Tagesbericht-Statustabelle in nachfolgenden Änderungen umgesetzt und verifiziert wurden.
+**Acceptance Criteria (Abnahmegrenze):** Diese Runde nimmt nur runtime und Konfigurationseinstiege ab und bezieht keine eigenständige Phasen-Anzeige der API/Web-UI in den PR-Prozess ein. Der aktuelle Abnahmepfad ist begrenzt auf `tests/test_main_schedule_mode.py`, `tests/test_pipeline_daily_market_context.py`, `tests/test_daily_market_context.py`, `tests/test_daily_market_context_guardrail.py`, `tests/test_agent_executor.py`, `tests/test_config_env_compat.py`, `tests/test_config_registry.py` und `apps/dsa-web/tests/system_config_i18n.test.ts`. Die Schwerpunktabdeckungen sind: `--no-market-review` unterbindet die Erzeugung der Marktübersicht, `DAILY_MARKET_CONTEXT_ENABLED=false` deaktiviert die Einzelaktien-Kontext-Injektion, behält aber die Marktübersicht, ein einzelner schedule nutzt dasselbe `target_date` wieder, Kontextladen über mehrere Märkte (`cn,us`), `daily_market_context` wird nur einmal in derselben Analyse-Hauptkette injiziert, und die normale Analyse sowie der Agent-Pfad wenden den Guardrail an, ohne das rohe `market_review_payload` weiterzugeben.
+**Compatibility/Risk (Kompatibilität und Risiko):** `#1381` ändert weder `provider/model/base_url`, Standardmodell noch die Semantik von Konfigurationsbereinigung/Backfill/Migration; es fügt keine Datenbank- oder Laufzeitkonfigurationstabellen-Änderungen hinzu. `main.py::_bootstrap_environment`, `src/core/pipeline.py`, `src/analyzer.py`, `src/agent/executor.py`, `src/agent/orchestrator.py`, `src/agent/agents/base_agent.py`, `src/services/daily_market_context.py`, `src/daily_market_context_guardrail.py` konsumieren den LLM- und Marktübersichtskontext nur in bestehenden Lese-Pfaden und fügen keine `SystemConfig`-Speicher- oder Rückschreibzweige hinzu. Als offizielle Kompatibilitätsbasis gelten weiterhin `LiteLLM OpenAI-compatible` und `OpenAI Chat Completion` (siehe unten „Kompatibilitätsnachweise und Verifikationsgrenzen"); der Rollback-Weg ist der übliche Release-Rollback (Rücknahme der zugehörigen Commits), bei Bedarf ergänzt um einen Neustart und die Bereinigung von `env_file` / `--env-file` / prozessbezogenen gleichnamigen Umgebungsüberschreibungen, um die historisch persistierten Benutzerkonfigurationen wiederherzustellen.
+**Kompatibilitätsnachweise und Verifikationsgrenzen:** Diese Runde nutzt nur den bestehenden LLM-Konfigurationslese-Pfad, fügt keinen `.env`-Schreibzweig hinzu und keine neuen Konfigurationsmigrations-/Bereinigungs-/Rückschreibeinstiege. Als offizielle Grundlage gelten: `LiteLLM OpenAI-compatible` <https://docs.litellm.ai/docs/providers/openai_compatible>, `OpenAI Chat Completion` <https://platform.openai.com/docs/api-reference/chat/create>; die Versionsbeschränkungen siehe `requirements.txt` (`litellm`, `openai`) im aktuellen Fenster. Rückverfolgbare Codepfade: `main.py::_bootstrap_environment`, `src/analyzer.py::_init_litellm`, `src/agent/agents/base_agent.py::_get_analyzer_config` (nur lesend), `src/agent/executor.py`, `src/agent/orchestrator.py`, `src/core/pipeline.py`, `src/services/daily_market_context.py`, `src/daily_market_context_guardrail.py`. Regressions-Verifikationspunkte sind `tests/test_config_env_compat.py`, `tests/test_config_registry.py`, `tests/test_system_config_service.py`, `tests/test_system_config_api.py`, `tests/test_llm_channel_config.py`, `tests/test_market_review_runtime.py`.
 
-普通分析与 Agent 分析只接收低敏字段：`daily_market_context`（region、trade_date、summary、risk_tags、source、可选 position_cap）和 `daily_market_context_summary` Prompt 段，不传递完整 `market_review_payload`、原始新闻、密钥或通知配置。普通分析 Prompt 在市场阶段段落后、技术面数据前插入大盘摘要；Agent 单体与多 Agent 路径在 market phase 后、pre-fetched 数据前插入同一摘要。Agent 自由聊天只在调用方已经提供 `daily_market_context` / `daily_market_context_summary` 时注入，不为每次聊天自动触发大盘复盘。
+Normale Analyse und Agent-Analyse empfangen nur niedrig-sensible Felder: `daily_market_context` (region, trade_date, summary, risk_tags, source, optional position_cap) und den Prompt-Abschnitt `daily_market_context_summary`; das vollständige `market_review_payload`, rohe Nachrichten, Schlüssel oder Benachrichtigungskonfiguration werden nicht weitergegeben. Die normale Analyse fügt die Marktzusammenfassung nach dem Marktphasen-Abschnitt und vor den technischen Daten in den Prompt ein; der Einzel-Agent- und der Multi-Agent-Pfad fügen dieselbe Zusammenfassung nach der market-phase und vor den pre-fetched Daten ein. Der freie Chat des Agents injiziert die Marktzusammenfassung nur, wenn der Aufrufer bereits `daily_market_context` / `daily_market_context_summary` geliefert hat; er löst nicht für jeden Chat automatisch eine Marktübersicht aus.
 
-结果后处理新增保守大盘环境护栏：当摘要或标签显示 `high_risk`、`market_cooling`、`conservative`、`low_position_cap`，且处于保守/高风险语境下时，模型给出 `buy` 决策（含“立即买入/追高/激进加仓”等买入类建议）会被软化为观望或小仓等待确认，并把高置信度降为中等。该护栏只修改当次 `AnalysisResult` 与 dashboard 中的低敏限制说明，不新增数据库表或 API 字段。回滚方式为撤销 #1381 相关服务、Prompt 注入和 guardrail 代码，既有大盘复盘历史记录保持兼容。
+Die Nachbearbeitung der Ergebnisse fügt einen konservativen Marktumfeld-Guardrail hinzu: Wenn Zusammenfassung oder Tags `high_risk`, `market_cooling`, `conservative`, `low_position_cap` zeigen und der Kontext konservativ/hochriskant ist, wird eine `buy`-Entscheidung des Modells (einschließlich Kauf-Empfehlungen wie „sofort kaufen/nachjagen/aggressiv aufstocken") zu Abwarten oder kleiner Position mit Bestätigung abgeschwächt und die hohe Konfidenz auf mittel herabgestuft. Dieser Guardrail ändert nur die niedrig-sensible Begrenzungserklärung der jeweiligen `AnalysisResult` und des dashboards und fügt keine Datenbanktabelle oder API-Felder hinzu. Der Rollback-Weg ist die Rücknahme der #1381-bezogenen Dienste, der Prompt-Injektion und des guardrail-Codes; die bestehenden Verlaufsaufzeichnungen der Marktübersicht bleiben kompatibel.
 
-## P4 历史记录、任务状态与 Web 可见性
+## P4 Historie-Datensätze, Task-Status und Web-Sichtbarkeit
 
-P4 把 P3 已构建的 `AnalysisContextPack` 投影为公共低敏 `analysis_context_pack_overview`。该 overview 由专用 renderer 生成，公共 API 不允许直接返回 `AnalysisContextPack.to_safe_dict()` 或完整 pack dump。renderer 只输出白名单字段：`pack_version`、`created_at`、`subject.code` / `stock_name` / `market`、数据块 `key` / `label` / `status` / `source` / `warnings` / `missing_reasons`、按 block status 计数的 `counts`、顶层 `data_quality.warnings` 和 `metadata.trigger_source` / `metadata.news_result_count`。P5 在同一 overview 上追加 `data_quality` 低敏对象，不重复顶层 `warnings`。
+P4 projiziert das in P3 aufgebaute `AnalysisContextPack` auf die öffentliche, niedrig-sensible `analysis_context_pack_overview`. Diese Übersicht wird von einem dedizierten renderer erzeugt; die öffentliche API darf `AnalysisContextPack.to_safe_dict()` oder einen vollständigen pack-dump nicht direkt zurückgeben. Der renderer gibt nur Whitelist-Felder aus: `pack_version`, `created_at`, `subject.code` / `stock_name` / `market`, `key` / `label` / `status` / `source` / `warnings` / `missing_reasons` der Datenblöcke, nach block-status gezählte `counts`, top-level `data_quality.warnings` und `metadata.trigger_source` / `metadata.news_result_count`. P5 ergänzt auf derselben Übersicht das niedrig-sensible Objekt `data_quality`, ohne die top-level `warnings` zu wiederholen.
 
-overview 不输出 `blocks.*.items`、`items.value`、`news.content`、`trend_result`、`chip`、`fundamental_context` 原始 payload，也不输出 `api_key`、`token`、`cookie`、`webhook_url`、`password`、`secret`、`authorization`、`sendkey`、`license_key` 等敏感键或值。
+Die Übersicht gibt `blocks.*.items`, `items.value`, `news.content`, `trend_result`, `chip`, `fundamental_context`-raw-payloads nicht aus, ebenso keine sensiblen Schlüssel oder Werte wie `api_key`, `token`, `cookie`, `webhook_url`, `password`, `secret`, `authorization`, `sendkey`, `license_key`.
 
-P4 持久化面只在 `analysis_history.context_snapshot` 顶层写入 `analysis_context_pack_overview`。运行态 prompt 字段仍会从 `enhanced_context` 和 history snapshot 中剥离：`market_phase_context`、`analysis_context_pack`、`analysis_context_pack_summary` 不进入公开历史详情或任务状态。`SAVE_CONTEXT_SNAPSHOT=false` 时不持久化整份 `analysis_history.context_snapshot`，因此也不会落库 overview、`market_phase_summary`、`enhanced_context` 或 raw snapshot 字段；旧记录或缺少 overview 的记录继续返回空字段，不影响历史详情读取。
+Die P4-Persistenzfläche schreibt `analysis_context_pack_overview` nur auf die oberste Ebene von `analysis_history.context_snapshot`. Laufzeit-Prompt-Felder werden weiterhin aus `enhanced_context` und history-snapshot entfernt: `market_phase_context`, `analysis_context_pack`, `analysis_context_pack_summary` gehen nicht in die öffentliche Historie-Detailansicht oder den Task-Status. Bei `SAVE_CONTEXT_SNAPSHOT=false` wird die gesamte `analysis_history.context_snapshot` nicht persistiert; damit werden auch overview, `market_phase_summary`, `enhanced_context` oder raw-snapshot-Felder nicht in die Datenbank geschrieben; alte Datensätze oder Datensätze ohne overview geben weiterhin leere Felder zurück, ohne das Lesen der Historie-Detailansicht zu beeinträchtigen.
 
-公共 API 字段固定为 `report.details.analysis_context_pack_overview`，Web 端经深度 camelCase 后读取 `analysisContextPackOverview`。接线面包括：
+Das öffentliche API-Feld ist fest `report.details.analysis_context_pack_overview`; die Web-Seite liest nach tiefem camelCase `analysisContextPackOverview`. Die Verdrahtungsflächen umfassen:
 
-- `GET /api/v1/history/{record_id}` 历史详情。
-- 同步 `POST /api/v1/analysis/analyze` 返回的 `AnalysisResultResponse.report.details`，但 overview 依赖已持久化的 `analysis_history.context_snapshot`；`SAVE_CONTEXT_SNAPSHOT=false` 时，新记录不保证返回 overview。
-- completed `GET /api/v1/analysis/status/{task_id}`，包括内存队列 enrichment 和 DB completed fallback。
+- `GET /api/v1/history/{record_id}` Historie-Detailansicht.
+- Die synchrone Antwort `AnalysisResultResponse.report.details` von `POST /api/v1/analysis/analyze`, wobei die overview von der bereits persistierten `analysis_history.context_snapshot` abhängt; bei `SAVE_CONTEXT_SNAPSHOT=false` ist die Rückgabe der overview für neue Datensätze nicht garantiert.
+- completed `GET /api/v1/analysis/status/{task_id}`, einschließlich In-Memory-Queue-Enrichment und DB-completed-Fallback.
 
-API 返回给 Web 的 `details.context_snapshot` 会通过 `sanitize_context_snapshot_for_api()` 剥离顶层 `analysis_context_pack_overview`，避免 raw snapshot 面板重复展示或被当作完整上下文导出；overview 只从 `extract_analysis_context_pack_overview()` 单独取出。Agent 路径与普通分析路径写入同一 overview 形状，Agent 无新闻计数时 `metadata.news_result_count` 可为空。
+Das an die Web-Seite zurückgegebene `details.context_snapshot` der API entfernt über `sanitize_context_snapshot_for_api()` die top-level `analysis_context_pack_overview`, damit das raw-snapshot-Panel sie nicht doppelt anzeigt oder als vollständigen Kontext exportiert; die overview wird nur separat über `extract_analysis_context_pack_overview()` entnommen. Der Agent-Pfad und der normale Analyse-Pfad schreiben dieselbe overview-Form; ohne Nachrichtenzählung im Agent kann `metadata.news_result_count` leer sein.
 
-P4 Web 展示只在报告详情页渲染 `AnalysisContextSummary`，位置在策略点位和资讯之后、运行诊断之前；该区域默认折叠，折叠头部展示可用数、缺失数、非零的其他状态计数和触发来源，展开后的每个数据块只展示状态、来源、告警和说明。来源为空时显示“未记录输入来源”；说明行把已知缺失原因翻译为原因、对本次分析的影响和简短处理建议，并在括号中保留诊断码，未知原因则按 block 状态提供通用建议。`fallback`、`stale`、`estimated`、`partial` 等没有缺失原因的降级状态也在同一说明行解释，不新增处理、范围或证据字段。报告页相关资讯由独立接口加载，其有无不能通过 overview 的 `metadata.news_result_count` 推断；资讯区只说明自身是报告页补充资讯，输入数据块只说明新闻是否进入本次 LLM 分析，避免把两套数据范围混为同一结果集。展开区仍展示状态计数和新闻结果数。P5 后折叠头部还会展示质量分/等级，展开后展示 `limitations` 和 `fetch_failed` 状态。无 overview 时不渲染占位。在 #1386 P4b 中，Web 会在同一报告详情页展示 `report.meta.market_phase_summary` 阶段标签，并继续复用该低敏数据质量摘要；不扩大完整 pack、Prompt summary、raw payload 或 snapshot 内部字段的公开面。P4/P5 不覆盖 pending/processing TaskPanel 的 AnalysisContextPack 数据质量摘要或 SSE 进行中 overview 可见性，不改通知摘要、Bot/Desktop 专属展示或 `market_review` overview。
+Die P4-Web-Anzeige rendert `AnalysisContextSummary` nur auf der Berichtsdetailseite, nach den Strategiepunkten und Nachrichten und vor der Laufzeitdiagnose; dieser Bereich ist standardmäßig eingeklappt. Der eingeklappte Kopf zeigt die Anzahl verfügbarer, fehlender, sonstiger Nicht-Null-Status und den Auslösegrund; jeder Datenblock zeigt im ausgeklappten Zustand nur Status, Quelle, Warnung und Erklärung. Ist die Quelle leer, wird „Eingabequelle nicht erfasst" angezeigt; die Erklärungszeile übersetzt bekannte Fehlgründe in Ursache, Auswirkung auf diese Analyse und einen kurzen Bearbeitungshinweis und behält den Diagnosecode in Klammern; bei unbekannter Ursache wird ein allgemeiner Hinweis je nach block-Status gegeben. Degradierte Status ohne Fehlgrund wie `fallback`, `stale`, `estimated`, `partial` werden ebenfalls in derselben Erklärungszeile erklärt, ohne neue Verarbeitungs-, Umfangs- oder Nachweisfelder hinzuzufügen. Die nachrichtenbezogenen Informationen der Berichtsseite werden über eine eigene Schnittstelle geladen; ob sie vorhanden sind, kann nicht über `metadata.news_result_count` der overview abgeleitet werden; der Nachrichtenbereich erläutert nur, dass er Zusatzinformationen zur Berichtsseite ist, und der Eingabedatenblock nur, ob Nachrichten in die LLM-Analyse dieses Durchlaufs eingegangen sind, damit die beiden Datenumfänge nicht als ein Ergebnis-Set vermischt werden. Der ausgeklappte Bereich zeigt weiterhin Statuszählung und Nachrichtenergebnisanzahl. Nach P5 zeigt der eingeklappte Kopf außerdem Qualitätspunktzahl/Stufe; nach dem Ausklappen werden `limitations` und der `fetch_failed`-Status angezeigt. Ohne overview wird kein Platzhalter gerendert. In #1386 P4b zeigt die Web-Seite auf derselben Berichtsdetailseite das Phasen-Label `report.meta.market_phase_summary` und nutzt weiterhin diese niedrig-sensible Datenqualitäts-Zusammenfassung; die öffentliche Fläche von vollständigem pack, prompt-summary, raw-payload oder snapshot-internen Feldern wird nicht erweitert. P4/P5 decken weder die AnalysisContextPack-Datenqualitäts-Zusammenfassung des pending/processing-TaskPanels noch die SSE-Sichtbarkeit der laufenden overview ab; sie ändern weder Benachrichtigungszusammenfassung, Bot/Desktop-spezifische Anzeige noch `market_review`-overview.
 
-## P5 数据质量评分与 Prompt 数据限制
+## P5 Datenqualitäts-Bewertung und Prompt-Datenbegrenzung
 
-P5 在不升级 `PACK_VERSION`、不新增 fetcher、不新增配置项、不做历史迁移的前提下补齐三件事：内部低敏数据质量评分、跨模型通用的 Prompt 数据限制区块，以及既有 `analysis_context_pack_overview` 的低敏可见性扩展。#1389 P5 仍不改变 LLM 输出 JSON schema，也不做后处理强制改写；#1386 P5 会消费这里的低敏输入质量，在报告 `dashboard.phase_decision` 中输出盘中动作字段与质量护栏结果。
+P5 ergänzt ohne Versionserhöhung von `PACK_VERSION`, ohne neuen fetcher, ohne neue Konfigurationsoptionen und ohne historische Migration drei Dinge: die interne niedrig-sensible Datenqualitäts-Bewertung, einen modellübergreifend einheitlichen Prompt-Datenbegrenzungs-Block sowie die niedrig-sensible Sichtbarkeitserweiterung der bestehenden `analysis_context_pack_overview`. #1389 P5 ändert weiterhin das von LLM ausgegebene JSON-Schema nicht und erzwingt auch keine Nachbearbeitungs-Umschreibung; #1386 P5 konsumiert die hier niedrig-sensible Eingabequalität und gibt im Berichts-`dashboard.phase_decision` Intraday-Aktionsfelder und Qualitäts-Guardrail-Ergebnisse aus.
 
-状态契约新增 `fetch_failed`，用于“当前字段或数据块本次抓取明确失败”。首版只在已有 artifact 明确失败时使用，例如 `fundamental_context.status == "failed"`；空新闻、未配置搜索、无实时 quote artifact 或 chip 缺失仍保持既有 `missing` / `not_supported` 语义，避免把未启用能力误报成抓取失败。`fetch_failed` 不代表整次分析失败。
+Der Statusvertrag fügt `fetch_failed` hinzu, das „der Abruf des aktuellen Felds oder Datenblocks ist in diesem Durchlauf eindeutig fehlgeschlagen" bedeutet. Die Erstversion verwendet es nur bei eindeutigem Fehlschlag eines bestehenden Artefakts, z. B. `fundamental_context.status == "failed"`; leere Nachrichten, nicht konfigurierte Suche, fehlendes realtime-quote-artifact oder fehlende Chip-Verteilung behalten die bestehende `missing` / `not_supported`-Semantik, damit nicht aktivierte Fähigkeiten nicht fälschlich als Abruffehler gemeldet werden. `fetch_failed` bedeutet nicht, dass die gesamte Analyse fehlgeschlagen ist.
 
-`DataQuality` 追加以下低敏字段，并保留旧 `warnings` / `metadata`：
+`DataQuality` ergänzt folgende niedrig-sensible Felder und behält die alten `warnings` / `metadata`:
 
-- `overall_score: Optional[int]`：0-100 总分。
-- `level: Optional["good"|"usable"|"limited"|"poor"]`：`>=85 good`、`>=70 usable`、`>=55 limited`，否则 `poor`。
-- `block_scores: Dict[str, int]`：固定六块的状态分。
-- `limitations: List[str]`：最多 5 条稳定限制说明，使用 `block: status` 形式。
+- `overall_score: Optional[int]`: Gesamtpunktzahl 0-100.
+- `level: Optional["good"|"usable"|"limited"|"poor"]`: `>=85 good`, `>=70 usable`, `>=55 limited`, sonst `poor`.
+- `block_scores: Dict[str, int]`: Statuspunktzahlen der festen sechs Blöcke.
+- `limitations: List[str]`: maximal 5 stabile Begrenzungshinweise in der Form `block: status`.
 
-评分只计算固定六块，不随辅助块缺失重归一化，未来新增 block 不自动影响总分。权重固定为 `quote=25`、`daily_bars=25`、`technical=25`、`news=10`、`fundamentals=10`、`chip=5`；状态分固定为 `available=100`、`partial=75`、`estimated=75`、`not_supported=70`、`fallback=65`、`stale=50`、`missing=35`、`fetch_failed=25`。总分公式为 `round(sum(block_score * weight) / 100)`。
+Die Bewertung berechnet nur die festen sechs Blöcke und wird durch das Fehlen von Hilfsblöcken nicht neu normalisiert; zukünftige neue Blöcke beeinflussen die Gesamtpunktzahl nicht automatisch. Die Gewichte sind fest `quote=25`, `daily_bars=25`, `technical=25`, `news=10`, `fundamentals=10`, `chip=5`; die Statuspunktzahlen sind fest `available=100`, `partial=75`, `estimated=75`, `not_supported=70`, `fallback=65`, `stale=50`, `missing=35`, `fetch_failed=25`. Die Gesamtpunktzahl lautet `round(sum(block_score * weight) / 100)`.
 
-`limitations` 优先列出核心块 `quote` / `daily_bars` / `technical` 的 `stale`、`fallback`、`missing`、`fetch_failed`、`partial`、`estimated`；其次列出辅助块 `news` / `fundamentals` / `chip` 的 `fetch_failed`、`fallback`、`stale`。辅助块单纯缺失不进入限制列表，避免把新闻缺失、未配置搜索或不支持能力解释成利好/利空。
+`limitations` listet bevorzugt `stale`, `fallback`, `missing`, `fetch_failed`, `partial`, `estimated` der Kernblöcke `quote` / `daily_bars` / `technical`; danach `fetch_failed`, `fallback`, `stale` der Hilfsblöcke `news` / `fundamentals` / `chip`. Das bloße Fehlen eines Hilfsblocks geht nicht in die Begrenzungsliste ein, damit Nachrichtenmangel, nicht konfigurierte Suche oder nicht unterstützte Fähigkeiten nicht als positiv/negativ interpretiert werden.
 
-Prompt 数据限制只在 `format_analysis_context_pack_prompt_section()` 内渲染，紧跟 pack summary，因此普通分析、single Agent 和 multi-agent 复用同一消费路径。中文输出 `数据限制`，英文输出 `Data Limitations`；只有真实 score 存在时才输出评分行。若 `quote`、`daily_bars` 或 `technical` 为 degraded 状态，Prompt 明确要求最终 JSON 的 `confidence_level` 不得为 `高` / `High`。Prompt 继续只使用 status/source/warnings/missing_reason/低敏评分，不输出 raw payload、新闻正文、趋势原始值、secret、token 或 webhook。
+Die Prompt-Datenbegrenzung wird nur innerhalb von `format_analysis_context_pack_prompt_section()` gerendert, direkt nach der pack-summary; damit nutzen normale Analyse, single Agent und multi-agent denselben Konsumpfad. In chinesischer Ausgabe `数据限制`, in englischer Ausgabe `Data Limitations`; die Bewertungszeile wird nur ausgegeben, wenn eine echte score existiert. Ist `quote`, `daily_bars` oder `technical` in degradiertem Status, verlangt der Prompt ausdrücklich, dass `confidence_level` des finalen JSON nicht `高` / `High` sein darf. Der Prompt verwendet weiterhin nur status/source/warnings/missing_reason/niedrig-sensible Bewertung und gibt kein raw-payload, keinen Nachrichtentext, keine rohen Trendwerte, keine secrets, keine tokens und kein webhook aus.
 
-#1386 P2-full 在 P5 score/limitations 之后、confidence/safety 之前追加最小的 `phase × degraded data` 交叉约束：当 `AnalysisContextPack.phase` 来自合法 `MarketPhaseContext`，且 `quote`、`daily_bars` 或 `technical` 存在 degraded 状态时，Prompt 只补充当前阶段下数据质量如何限制盘中判断、开盘计划或保守分析；它不替代 P5 的 confidence/safety 规则，也不复述 `market_phase_context` 的 phase-only 文案。`pack.phase` 缺失、非 dict 或包含非法 phase 时 fail-open，仅保留 P5 通用数据限制。
+#1386 P2-full fügt nach P5-score/limitations und vor confidence/safety eine minimale Kreuzbedingung `phase × degraded data` hinzu: Wenn `AnalysisContextPack.phase` aus einem gültigen `MarketPhaseContext` stammt und `quote`, `daily_bars` oder `technical` einen degradierten Status aufweisen, ergänzt der Prompt nur, wie die Datenqualität in der aktuellen Phase die Intraday-Beurteilung, den Eröffnungsplan oder die konservative Analyse einschränkt; er ersetzt nicht die P5-confidence/safety-Regeln und wiederholt auch nicht den phase-only-Text von `market_phase_context`. Fehlt `pack.phase`, ist es kein dict oder enthält eine ungültige phase, erfolgt fail-open und es bleibt nur die allgemeine P5-Datenbegrenzung.
 
-overview 只扩展现有公开面：`analysis_context_pack_overview.data_quality` 白名单包含 `overall_score`、`level`、`block_scores`、`limitations`，不重复公开 `warnings`。`render_analysis_context_pack_overview()` 与 `extract_analysis_context_pack_overview()` / persisted sanitizer 都会清洗该对象；旧 overview 缺少 `data_quality` 时仍正常读取。`details.context_snapshot` 继续剥离顶层 `analysis_context_pack_overview`，不公开完整 pack。
+Die overview erweitert nur die bestehende öffentliche Fläche: Die Whitelist von `analysis_context_pack_overview.data_quality` umfasst `overall_score`, `level`, `block_scores`, `limitations`, ohne `warnings` erneut öffentlich zu machen. `render_analysis_context_pack_overview()` sowie `extract_analysis_context_pack_overview()` / der persistierte sanitizer bereinigen dieses Objekt; alte overviews ohne `data_quality` werden weiterhin normal gelesen. `details.context_snapshot` entfernt weiterhin die top-level `analysis_context_pack_overview` und macht das vollständige pack nicht öffentlich.
 
-## P6 告警、持仓、历史和回测联动
+## P6 Kopplung von Alarm, Position, Historie und Backtest
 
-#1386 P6 不新增 pack 版本，也不把完整 pack 暴露到更多公共面。它只复用 P4/P5 已定义的 `analysis_context_pack_overview` 和 #1386 已定义的 `market_phase_summary`：
+#1386 P6 fügt keine neue pack-Version hinzu und macht das vollständige pack auch nicht auf weiteren öffentlichen Flächen sichtbar. Es nutzt nur die in P4/P5 definierte `analysis_context_pack_overview` und das in #1386 definierte `market_phase_summary`:
 
-- 告警触发记录仍写入现有 `alert_triggers.diagnostics` 文本字段；当 diagnostics 可 JSON 化时，worker 会合并 `analysis_visibility.analysis_context_pack_overview`，来源只允许 evaluator 已带 overview 或最近 30 天历史 snapshot。旧纯文本 diagnostics 不被覆盖，API 派生字段为空且 source 为 `legacy_text`。
-- 持仓手动分析通过 API 构造低敏 `portfolio_context` 并传入 pipeline；builder 会在 pack 中加入可选 `portfolio` block。该 block 只包含账户 ID/name、symbol、market、currency、quantity、avg cost、total cost、unrealized PnL、price source/provider/date/stale/available 和 cost method，不包含交易流水、现金流水、新闻正文、Prompt、密钥或 webhook。
-- `portfolio` block 是辅助块，`metadata={"auxiliary": true, "quality_weighted": false}`，不改变 P5 固定六块 `quote`、`daily_bars`、`technical`、`news`、`fundamentals`、`chip` 的权重、总分或 limitations 口径。
-- `portfolio_context` 只在任务执行内部透传；`TaskInfo.to_dict()`、任务列表、SSE `task_created/task_started/task_completed/task_failed/task_progress` payload 不暴露该对象。
-- 历史列表、单股历史、StockBar 和回测结果只读取 `context_snapshot` 顶层的公开 `market_phase_summary`；旧记录、`SAVE_CONTEXT_SNAPSHOT=false` 或解析失败返回 `null` / `unknown`，不失败。
-- 回测 phase filter 只基于公开 summary 做 bucket：`premarket` 保持 premarket，`intraday|lunch_break|closing_auction` 归入 intraday，`postmarket` 保持 postmarket，`non_trading|missing|invalid` 归入 unknown。带 phase 过滤时 repository 先按 SQL 条件批量读取结果和 snapshot，服务层 bucket 后再分页和统计，避免 API 层分页后临时过滤。
-- 通知摘要只消费 `market_phase_summary` 与 `analysis_context_pack_overview.data_quality`，输出阶段、trigger source、partial-bar warning、质量等级和前两条 limitations；不输出 raw pack、`analysis_context_pack_summary` Prompt 字符串、新闻正文或持仓敏感细节。
+- Alarmauslösungs-Datensätze werden weiterhin in das bestehende Textfeld `alert_triggers.diagnostics` geschrieben; wenn die diagnostics JSON-fähig sind, führt der worker `analysis_visibility.analysis_context_pack_overview` zusammen, wobei die Quelle nur eine mitgelieferte overview des evaluator oder ein historischer Snapshot der letzten 30 Tage sein darf. Alte reine Text-diagnostics werden nicht überschrieben; das abgeleitete API-Feld ist leer und die source ist `legacy_text`.
+- Die manuelle Positionsanalyse erstellt über die API einen niedrig-sensiblen `portfolio_context` und übergibt ihn an die Pipeline; der builder fügt dem pack einen optionalen `portfolio`-Block hinzu. Dieser Block enthält nur Konten-ID/Name, symbol, market, currency, quantity, avg cost, total cost, unrealisierter PnL, price source/provider/date/stale/available und cost method; keine Transaktionsströme, Kassenströme, Nachrichtentexte, Prompts, Schlüssel oder webhooks.
+- Der `portfolio`-Block ist ein Hilfsblock mit `metadata={"auxiliary": true, "quality_weighted": false}`; er ändert weder Gewichte, Gesamtpunktzahl noch limitations-Linie der festen sechs P5-Blöcke `quote`, `daily_bars`, `technical`, `news`, `fundamentals`, `chip`.
+- `portfolio_context` wird nur innerhalb der Aufgabenausführung durchgereicht; `TaskInfo.to_dict()`, die Taskliste und die SSE-Payloads `task_created/task_started/task_completed/task_failed/task_progress` setzen dieses Objekt nicht aus.
+- Historie-Liste, Einzelaktien-Historie, StockBar und Backtest-Ergebnisse lesen nur das öffentliche `market_phase_summary` auf der obersten Ebene des `context_snapshot`; alte Datensätze, `SAVE_CONTEXT_SNAPSHOT=false` oder Parsing-Fehler geben `null` / `unknown` zurück, ohne zu scheitern.
+- Der Backtest-Phase-Filter bucketed nur anhand der öffentlichen summary: `premarket` bleibt premarket, `intraday|lunch_break|closing_auction` wird intraday zugeordnet, `postmarket` bleibt postmarket, `non_trading|missing|invalid` wird unknown zugeordnet. Bei aktivem Phase-Filter liest das repository zuerst Ergebnisse und snapshots in Stapeln nach SQL-Bedingungen; die Service-Ebene bucketed und paginiert anschließend und berechnet Statistiken, um eine temporäre Filterung nach der API-Pagination zu vermeiden.
+- Die Benachrichtigungszusammenfassung konsumiert nur `market_phase_summary` und `analysis_context_pack_overview.data_quality` und gibt Phase, trigger source, partial-bar-warning, Qualitätsstufe und die ersten beiden limitations aus; kein raw-pack, keine `analysis_context_pack_summary`-Prompt-Zeichenkette, keine Nachrichtentexte und keine sensiblen Positionsdetails.
 
-## P6 文档、迁移与回滚
+## P6 Dokumentation, Migration und Rollback
 
-P6 不改变 P1-P5 的运行时行为，只把已经落地的契约、可见性、配置、迁移和回滚边界写成稳定文档。它不新增 pack enable/disable feature flag，不升级 `PACK_VERSION = "1.0"`，不新增 API 参数，不改变报告 JSON schema，也不做数据库迁移。
+P6 ändert das Laufzeitverhalten von P1-P5 nicht; es schreibt nur die bereits umgesetzten Vertrags-, Sichtbarkeits-, Konfigurations-, Migrations- und Rollback-Grenzen als stabile Dokumentation. Es fügt kein pack-enable/disable-feature-flag hinzu, erhöht `PACK_VERSION = "1.0"` nicht, fügt keine API-Parameter hinzu, ändert das Berichts-JSON-Schema nicht und führt keine Datenbankmigration durch.
 
-四个数据面必须分开理解：
+Die vier Datengebenen müssen getrennt verstanden werden:
 
-| 数据面 | 位置 | 可见性 | P6 边界 |
+| Datengebene | Ort | Sichtbarkeit | P6-Grenze |
 | --- | --- | --- | --- |
-| 内部完整 pack | `AnalysisContextPack` / `AnalysisContextBuilder` 产物 | 仅内部运行态使用 | 不作为公共 API，不写入历史，不承诺外部稳定 wire contract。 |
-| LLM 低敏摘要 | `analysis_context_pack_summary` | 普通分析、single Agent、multi-agent Prompt | 只包含 subject、pack version、block status/source/warnings/missing reason、新闻结果数和数据限制；不包含 `items.value`、新闻正文、趋势/筹码/基本面 raw payload、secret、token 或 webhook。 |
-| 公共低敏 overview | `report.details.analysis_context_pack_overview` | 历史详情、同步分析响应、completed task status、Web 报告页 | 只输出白名单字段和 `data_quality` 低敏评分；不输出完整 pack、Prompt summary 或 raw payload。 |
-| 历史上下文快照 | `analysis_history.context_snapshot` | 持久化后供历史/API/Web/诊断读取 | `details.context_snapshot` 经 `sanitize_context_snapshot_for_api()` 剥离 `analysis_context_pack_overview` 和 `market_phase_summary`，避免 raw 面板重复公开稳定摘要。 |
+| Internes vollständiges pack | Produkt von `AnalysisContextPack` / `AnalysisContextBuilder` | Nur interne Laufzeitnutzung | Keine öffentliche API, nicht in die Historie schreiben, kein extern stabiles wire-contract zusagen. |
+| Niedrig-sensible LLM-Zusammenfassung | `analysis_context_pack_summary` | Normale Analyse, single Agent, multi-agent Prompt | Enthält nur subject, pack version, block status/source/warnings/missing reason, Nachrichtenergebnisanzahl und Datenbegrenzung; keine `items.value`, keine Nachrichtentexte, keine raw-payloads von Trend/Chip/Fundamentaldaten, keine secrets, tokens oder webhooks. |
+| Öffentliche niedrig-sensible overview | `report.details.analysis_context_pack_overview` | Historie-Detailansicht, synchrone Analyse-Antwort, completed task status, Web-Reportseite | Gibt nur Whitelist-Felder und die niedrig-sensible `data_quality`-Bewertung aus; kein vollständiges pack, keine prompt-summary, kein raw-payload. |
+| Historischer Kontext-Snapshot | `analysis_history.context_snapshot` | Nach Persistenz für Historie/API/Web/Diagnose lesbar | `details.context_snapshot` entfernt über `sanitize_context_snapshot_for_api()` `analysis_context_pack_overview` und `market_phase_summary`, damit das raw-Panel die stabile Zusammenfassung nicht doppelt öffentlich macht. |
 
-摘要可见性矩阵：
+Sichtbarkeitsmatrix der Zusammenfassung:
 
-| 消费面 | 暴露内容 | 不暴露内容 |
+| Konsumfläche | Ausgesetzter Inhalt | Nicht ausgesetzter Inhalt |
 | --- | --- | --- |
-| LLM Prompt | `analysis_context_pack_summary` 低敏状态摘要和数据限制 | 完整 pack、`items.value`、新闻正文、趋势/筹码/基本面 raw payload、secret/token/webhook |
-| `GET /api/v1/history/{record_id}` | `report.details.analysis_context_pack_overview` | 完整 pack、Prompt summary、raw `analysis_context_pack_overview` duplicate |
-| 同步 `POST /api/v1/analysis/analyze` | `report.details.analysis_context_pack_overview`，前提是本次历史已持久化 `analysis_history.context_snapshot` | 完整 pack、Prompt summary |
-| completed `GET /api/v1/analysis/status/{task_id}` | `status.result.report.details.analysis_context_pack_overview` | 完整 pack、Prompt summary |
-| Web 报告页 | 默认折叠的 `AnalysisContextSummary`，展示 block 状态、来源、告警、包含影响/建议/诊断码的说明、质量分和限制 | 完整 pack、raw payload、Prompt summary、报告页独立加载的资讯结果状态 |
-| raw `details.context_snapshot` | 剥离后的历史快照 | 顶层 `analysis_context_pack_overview`、`market_phase_summary` |
-| 通知、Bot、Desktop 专属展示 | P6 不新增专属展示 | 完整 pack、Prompt summary、raw payload |
+| LLM-Prompt | Niedrig-sensible Statuszusammenfassung und Datenbegrenzung von `analysis_context_pack_summary` | Vollständiges pack, `items.value`, Nachrichtentexte, raw-payloads von Trend/Chip/Fundamentaldaten, secret/token/webhook |
+| `GET /api/v1/history/{record_id}` | `report.details.analysis_context_pack_overview` | Vollständiges pack, prompt-summary, rohes `analysis_context_pack_overview`-Duplikat |
+| Synchrone `POST /api/v1/analysis/analyze` | `report.details.analysis_context_pack_overview`, sofern `analysis_history.context_snapshot` dieses Durchlaufs bereits persistiert ist | Vollständiges pack, prompt-summary |
+| completed `GET /api/v1/analysis/status/{task_id}` | `status.result.report.details.analysis_context_pack_overview` | Vollständiges pack, prompt-summary |
+| Web-Reportseite | Standardmäßig eingeklapptes `AnalysisContextSummary` mit block-Status, Quelle, Warnung, Erklärung inkl. Auswirkung/Empfehlung/Diagnosecode, Qualitätspunktzahl und Begrenzung | Vollständiges pack, raw-payload, prompt-summary, Status der separat geladenen Nachrichteninformationen der Berichtsseite |
+| rohes `details.context_snapshot` | Bereinigter historischer Snapshot | Top-level `analysis_context_pack_overview`, `market_phase_summary` |
+| Benachrichtigungs-, Bot-, Desktop-spezifische Anzeige | P6 fügt keine spezifische Anzeige hinzu | Vollständiges pack, prompt-summary, raw-payload |
 
-字段质量状态全集保持为 `available`、`missing`、`not_supported`、`fallback`、`stale`、`estimated`、`partial`、`fetch_failed`。这些状态解释输入数据质量，不表示分析任务、告警、回测或通知投递本身成功或失败。
+Der vollständige Satz der Feldqualitätsstatus bleibt `available`, `missing`, `not_supported`, `fallback`, `stale`, `estimated`, `partial`, `fetch_failed`. Diese Status erklären die Qualität der Eingabedaten; sie drücken nicht aus, ob die Analysenaufgabe, der Alarm, der Backtest oder die Benachrichtigungszustellung selbst erfolgreich oder fehlgeschlagen ist.
 
-脱敏边界：
+Redaktionsgrenzen:
 
-- 完整 `AnalysisContextPack` 不进入公共 API、Web、通知、Bot 或 Desktop 专属展示。
-- `AnalysisContextPack.to_safe_dict()` 只作为内部安全序列化 helper；公共 overview 仍必须通过 `render_analysis_context_pack_overview()` 投影。
-- `analysis_context_pack_summary` 与 overview 都不得输出 `items.value`、新闻正文、`trend_result`、`chip`、`fundamental_context` 原始 payload、API key、token、cookie、完整 webhook URL、邮箱密码、secret、authorization、sendkey 或 license key。
-- 已持久化 overview 再读取时必须经过 `extract_analysis_context_pack_overview()` / persisted sanitizer；API 透明度面板必须继续通过 `sanitize_context_snapshot_for_api()` 剥离顶层稳定摘要。
+- Das vollständige `AnalysisContextPack` geht nicht in die öffentliche API, Web, Benachrichtigungen, Bot oder Desktop-spezifische Anzeigen.
+- `AnalysisContextPack.to_safe_dict()` dient nur als interne sichere Serialisierungs-Hilfsfunktion; die öffentliche overview muss weiterhin über `render_analysis_context_pack_overview()` projiziert werden.
+- `analysis_context_pack_summary` und overview dürfen keine `items.value`, keine Nachrichtentexte, keine raw-payloads von `trend_result`, `chip`, `fundamental_context`, keinen API-Key, kein token, kein cookie, keine vollständige webhook-URL, kein E-Mail-Passwort, kein secret, keine authorization, keinen sendkey und keinen license key ausgeben.
+- Eine bereits persistierte overview muss beim erneuten Lesen über `extract_analysis_context_pack_overview()` / den persistierten sanitizer laufen; das API-Transparenzpanel muss die top-level stabile Zusammenfassung weiterhin über `sanitize_context_snapshot_for_api()` entfernen.
 
-迁移边界：
+Migrationsgrenzen:
 
-- P6 不做 DB migration；旧历史记录缺少 `analysis_context_pack_overview` 或 `data_quality` 时返回空字段，报告仍正常读取。
-- `SAVE_CONTEXT_SNAPSHOT=true` 是默认行为，会继续把 `analysis_history.context_snapshot` 作为历史透明度和诊断来源持久化。
-- `SAVE_CONTEXT_SNAPSHOT=false` 或 CLI `--no-context-snapshot` 会停止持久化整份 `analysis_history.context_snapshot`；换言之，新历史不持久化整份 `analysis_history.context_snapshot`，包括 `enhanced_context`、`market_phase_summary`、`analysis_context_pack_overview`、`diagnostics`、`realtime_quote_raw` 和其他 raw snapshot 字段。
-- 关闭持久化不影响当次 `AnalysisContextPack` 构建、`analysis_context_pack_summary` 注入 Prompt，也不影响内存中的 `result.diagnostic_context_snapshot`。
+- P6 führt keine DB-Migration durch; alte Verlaufsdatensätze ohne `analysis_context_pack_overview` oder `data_quality` geben leere Felder zurück und der Bericht wird weiterhin normal gelesen.
+- `SAVE_CONTEXT_SNAPSHOT=true` ist das Standardverhalten und persistiert `analysis_history.context_snapshot` weiterhin als Quelle für Historie-Transparenz und Diagnose.
+- `SAVE_CONTEXT_SNAPSHOT=false` oder CLI `--no-context-snapshot` stoppt die Persistierung der gesamten `analysis_history.context_snapshot`; mit anderen Worten, neue Historie persistiert die gesamte `analysis_history.context_snapshot` nicht mehr, einschließlich `enhanced_context`, `market_phase_summary`, `analysis_context_pack_overview`, `diagnostics`, `realtime_quote_raw` und anderer raw-snapshot-Felder.
+- Das Deaktivieren der Persistierung beeinflusst weder die Erstellung des `AnalysisContextPack` dieses Durchlaufs noch die Injektion von `analysis_context_pack_summary` in den Prompt noch das In-Memory-`result.diagnostic_context_snapshot`.
 
-回滚方式：
+Rollback-Möglichkeiten:
 
-| 手段 | 作用 | 不能做什么 |
+| Mittel | Wirkung | Was es nicht kann |
 | --- | --- | --- |
-| 发布或代码回滚 P3-P5 相关改动 | 移除 pack prompt summary、overview 和数据质量接入 | - |
-| `SAVE_CONTEXT_SNAPSHOT=false` 或 `--no-context-snapshot` | 停止保存新的历史 `context_snapshot`，从而不再从新历史公开 overview / phase summary / raw snapshot | 不能关闭当次 pack 构建或 LLM Prompt 中的低敏 summary |
-| 运行时 pack 总开关 | 当前不存在 | 不能通过 env 一键关闭 P3-P5 pack 接入；需要代码回滚或后续单独设计 |
+| Release- oder Code-Rollback der P3-P5-bezogenen Änderungen | Entfernt pack-prompt-summary, overview und Datenqualitäts-Anbindung | - |
+| `SAVE_CONTEXT_SNAPSHOT=false` oder `--no-context-snapshot` | Stoppt das Speichern neuer historischer `context_snapshot`, sodass aus neuer Historie keine overview / phase summary / raw snapshot mehr öffentlich werden | Kann die pack-Erstellung dieses Durchlaufs oder die niedrig-sensible summary im LLM-Prompt nicht deaktivieren |
+| Laufzeit-Hauptschalter des packs | Existiert derzeit nicht | Kann die P3-P5-pack-Anbindung nicht per env mit einem Klick deaktivieren; Code-Rollback oder eine spätere separate Konzeption erforderlich |
 
-## 字段质量状态
+## Feldqualitätsstatus
 
-未来 pack 的字段质量状态在 P0 先固定七词；P5 在同一 1.0 umbrella 内追加 `fetch_failed`。它们描述字段或数据块的质量，不描述业务流程是否成功。
+Die Feldqualitätsstatus des zukünftigen packs werden in P0 zunächst auf sieben Wörter fixiert; P5 ergänzt `fetch_failed` innerhalb desselben 1.0-umbrella. Sie beschreiben die Qualität eines Felds oder Datenblocks, nicht ob ein Geschäftsablauf erfolgreich war.
 
-| 状态 | 含义 | 示例边界 |
+| Status | Bedeutung | Beispielgrenze |
 | --- | --- | --- |
-| `available` | 字段存在，来源和时间戳可解释，当前路径可正常使用。 | 实时行情返回价格和来源；历史 K 线窗口满足计算需求。 |
-| `missing` | 当前路径需要该字段，但实际未取到或为空。 | DB 无最近日线，普通分析进入 `data_missing` 结果。 |
-| `not_supported` | 当前市场、数据源或路径不支持该字段，不应误报为错误。 | 某些市场无筹码分布或资金流。 |
-| `fallback` | 首选来源不可用，使用了备用来源或旧路径。 | 持仓价格从实时行情 fallback 到历史收盘价。 |
-| `stale` | 字段存在，但时间新鲜度不足。 | 持仓估值中的 `price_stale` / `fx_stale`。 |
-| `estimated` | 字段是估算值，不应当作完整事实。 | 盘中用实时价补今日 bar 后生成技术估计。 |
-| `partial` | 数据块部分可用、部分缺失。 | 大盘红绿灯 `data_quality=partial` 或工具返回 `partial_cache`。 |
-| `fetch_failed` | 当前路径确认尝试过抓取，但本次抓取失败。 | `fundamental_context.status == "failed"` 映射为基本面 block 抓取失败。 |
+| `available` | Das Feld existiert, Quelle und Zeitstempel sind erklärbar und der aktuelle Pfad kann es normal verwenden. | Echtzeitkurse geben Preis und Quelle zurück; das historische K-Linien-Fenster erfüllt die Berechnungsanforderungen. |
+| `missing` | Der aktuelle Pfad benötigt das Feld, hat es aber tatsächlich nicht erhalten oder es ist leer. | DB hat keine letzten Tagesbalken; die normale Analyse geht in das `data_missing`-Ergebnis. |
+| `not_supported` | Der aktuelle Markt, die Datenquelle oder der Pfad unterstützt das Feld nicht; dies sollte nicht fälschlich als Fehler gemeldet werden. | Manche Märkte haben keine Chip-Verteilung oder keinen Kapitalfluss. |
+| `fallback` | Die bevorzugte Quelle ist nicht verfügbar; es wurde eine Ersatzquelle oder ein alter Pfad verwendet. | Positionspreis fällt von Echtzeitkurs auf historischen Schlusskurs zurück. |
+| `stale` | Das Feld existiert, aber die Zeitfrische ist unzureichend. | `price_stale` / `fx_stale` in der Positionsbewertung. |
+| `estimated` | Das Feld ist ein Schätzwert und sollte nicht als vollständige Tatsache behandelt werden. | Intraday-Tagesbalken mit Echtzeitpreis ergänzt, dann technische Schätzung erzeugt. |
+| `partial` | Der Datenblock ist teils verfügbar, teils fehlend. | Ampel `data_quality=partial` oder Tool liefert `partial_cache`. |
+| `fetch_failed` | Der aktuelle Pfad hat den Abruf nachweislich versucht, aber dieser Abruf ist fehlgeschlagen. | `fundamental_context.status == "failed"` wird als fehlgeschlagener Abruf des Fundamentaldaten-Blocks abgebildet. |
 
-## 现有状态映射
+## Bestehende Statuszuordnung
 
-当前仓库已有不少状态词。P0 只建立映射或不映射关系，避免后续把业务结果状态混入字段质量枚举。
+Das aktuelle Repository enthält bereits mehrere Statuswörter. P0 stellt nur Zuordnungen oder Nicht-Zuordnungen her, um zu vermeiden, dass Geschäftsergebnisstatus später in das Feldqualitäts-Enum gemischt werden.
 
-| 现有词或字段 | 当前位置 | 建议关系 | 说明 |
+| Bestehendes Wort oder Feld | Aktueller Ort | Empfohlene Beziehung | Erläuterung |
 | --- | --- | --- | --- |
-| `data_missing` | 普通分析缺历史数据结果 | 可映射到 `missing` | 这是核心输入缺失，不是业务成功状态。 |
-| `cache_hit` / `partial_cache` | Agent 历史数据工具 | `partial_cache` 可映射到 `partial` | `cache_hit` 是来源/缓存元数据，不是质量状态。 |
-| `source` / `data_source` / `realtime_source` | 数据源、告警、上下文快照 | 不映射 | 这些是来源元数据，应与字段质量状态并列保存。 |
-| `price_source=missing` | 持仓快照 | 可映射到 `missing` | 表示估值价格不可用。 |
-| `price_stale` / `fx_stale` | 持仓快照 | 可映射到 `stale` | 保留原字段作为业务元数据。 |
-| `triggered` / `skipped` / `degraded` / `failed` | 告警评估与记录 | 不映射 | 这是规则评估或记录结果，不是字段级质量状态。 |
-| `insufficient_data` / `completed` / `error` | 回测服务 | 不映射 | 这是回测执行状态；可在 pack 摘要中解释触发原因。 |
-| `sent` / `no_channel` / `partial_failed` / `all_failed` | 通知发送 | 不映射 | 这是通知投递结果，不能反推分析输入质量。 |
-| `data_quality=ok/partial/unavailable` | 大盘红绿灯 | `partial` 可映射，`unavailable` 视字段场景映射到 `missing` 或 `not_supported` | P0 不把大盘红绿灯纳入首版单股 pack。 |
-| `fetch_failed` | 数据质量细分 | P5 映射为 `fetch_failed` | 只在已有 artifact 明确失败时使用，不代表整次分析失败。 |
+| `data_missing` | Fehlendes Historiedaten-Ergebnis der normalen Analyse | auf `missing` abbildbar | Dies ist ein fehlender Kernerfassungs-Input, kein Geschäftserfolgsstatus. |
+| `cache_hit` / `partial_cache` | Agent-Historiedaten-Tool | `partial_cache` auf `partial` abbildbar | `cache_hit` ist Quellen-/Cache-Metadaten, kein Qualitätsstatus. |
+| `source` / `data_source` / `realtime_source` | Datenquelle, Alarm, Kontext-Snapshot | nicht abbilden | Dies sind Quellen-Metadaten und sollten parallel zu den Feldqualitätsstatus gespeichert werden. |
+| `price_source=missing` | Positions-Snapshot | auf `missing` abbildbar | Zeigt an, dass der Bewertungspreis nicht verfügbar ist. |
+| `price_stale` / `fx_stale` | Positions-Snapshot | auf `stale` abbildbar | Originalfeld als Geschäfts-Metadaten behalten. |
+| `triggered` / `skipped` / `degraded` / `failed` | Alarm-Bewertung und -Datensatz | nicht abbilden | Dies ist das Ergebnis der Regelbewertung oder des Datensatzes, kein feldebener Qualitätsstatus. |
+| `insufficient_data` / `completed` / `error` | Backtest-Dienst | nicht abbilden | Dies ist der Ausführungsstatus des Backtests; kann in der pack-Zusammenfassung zur Erklärung des Auslösegrunds dienen. |
+| `sent` / `no_channel` / `partial_failed` / `all_failed` | Benachrichtigungsversand | nicht abbilden | Dies ist das Zustellungsergebnis der Benachrichtigung und kann nicht auf die Eingabequalität der Analyse zurückgerechnet werden. |
+| `data_quality=ok/partial/unavailable` | Ampel | `partial` abbildbar, `unavailable` je nach Feldszenario auf `missing` oder `not_supported` abbildbar | P0 nimmt die Ampel nicht in das Erstversion-Einzelaktien-pack auf. |
+| `fetch_failed` | Datenqualitäts-Unterteilung | von P5 auf `fetch_failed` abgebildet | Nur bei eindeutigem Fehlschlag eines bestehenden Artefakts verwenden; bedeutet nicht, dass die gesamte Analyse fehlgeschlagen ist. |
 
-## 七路径盘点
+## Sieben-Pfade-Bestandsaufnahme
 
-### 普通分析
+### Normale Analyse
 
-普通分析主链路在 `src/core/pipeline.py` 中组装输入：先读取 `storage.get_analysis_context()`，再按可用性补充实时行情、筹码、趋势分析、新闻、基本面和报告语言，最后交给 `src/analyzer.py` 渲染 prompt。当前重复点主要是实时字段同时存在于 `enhanced_context.realtime`、`realtime_quote_raw` 和报告 meta；命名上存在 `source`、`data_source`、`realtime_source` 等多种来源字段。
+Die Hauptkette der normalen Analyse assembliert die Eingaben in `src/core/pipeline.py`: zuerst `storage.get_analysis_context()` lesen, dann je nach Verfügbarkeit Echtzeitkurse, Chip-Verteilung, Trendanalyse, Nachrichten, Fundamentaldaten und Berichtssprache ergänzen und schließlich an `src/analyzer.py` zur Prompt-Renderung übergeben. Die aktuellen Dopplungen betreffen hauptsächlich Echtzeit-Felder, die gleichzeitig in `enhanced_context.realtime`, `realtime_quote_raw` und report-meta existieren; bei den Namen gibt es mehrere Quellenfelder wie `source`, `data_source`, `realtime_source`.
 
-首版 pack 可从普通分析路径抽取单股核心身份、行情、日线、技术、新闻、基本面和数据质量摘要；P0 不改变 `_enhance_context()`、`_build_context_snapshot()` 或 analyzer prompt。
+Das Erstversion-pack kann aus dem normalen Analysepfad die Kernidentität der Einzelaktie, Kurse, Tagesbalken, Technik, Nachrichten, Fundamentaldaten und die Datenqualitäts-Zusammenfassung extrahieren; P0 ändert weder `_enhance_context()`, `_build_context_snapshot()` noch den analyzer-Prompt.
 
 ### Agent
 
-Agent 有三层需要分开记录的数据面。`src/core/pipeline.py` 的 Agent 路径会构造 `initial_context`，固定包含 `fundamental_context`，并在可用时加入 `trend_result`，最终作为 Agent 路径的 `context_snapshot` 持久化。`AgentExecutor._build_user_message()` 只适用于 `AGENT_ARCH=single`，首轮消息只显式注入 `realtime_quote`、`chip_distribution`、`news_context` 等已取上下文，不显式注入 `fundamental_context` 或 `trend_result`。`AgentOrchestrator._build_context()` 适用于 `AGENT_ARCH=multi`，可预注入 `realtime_quote`、`daily_history`、`chip_distribution`、`trend_result`、`news_context`，这些进入 `AgentContext` 的字段会作为 pre-fetched data 注入 stage agent 消息；但 orchestrator 不预注入 `fundamental_context`。`trend_result` 不是天然存在，取决于 caller 是否传入。
+Der Agent hat drei Datengebenen, die getrennt dokumentiert werden müssen. Der Agent-Pfad in `src/core/pipeline.py` erstellt `initial_context`, das fest `fundamental_context` enthält und bei Verfügbarkeit `trend_result` ergänzt und schließlich als `context_snapshot` des Agent-Pfads persistiert. `AgentExecutor._build_user_message()` gilt nur für `AGENT_ARCH=single` und injiziert in der ersten Nachricht nur explizit bereits erhaltene Kontexte wie `realtime_quote`, `chip_distribution`, `news_context`, nicht explizit `fundamental_context` oder `trend_result`. `AgentOrchestrator._build_context()` gilt für `AGENT_ARCH=multi` und kann `realtime_quote`, `daily_history`, `chip_distribution`, `trend_result`, `news_context` vorab injizieren; diese Felder, die in `AgentContext` gelangen, werden als pre-fetched data in die stage-agent-Nachrichten injiziert; der Orchestrator injiziert jedoch `fundamental_context` nicht vorab. `trend_result` existiert nicht von Natur aus, sondern hängt davon ab, ob der Caller es übergibt.
 
-Agent 工具还会独立调用 `get_realtime_quote`、`get_daily_history`、`get_chip_distribution`、`get_analysis_context`、`get_stock_info` 等工具，容易与普通分析前置获取产生重复请求。当前 pack 生成只在 Agent 历史预取后复用 `storage.get_analysis_context()` 的日线可用性状态，不复用或暴露完整工具级 pack cache；P5 再决定是否做更深的数据质量评分与工具缓存复用。
+Agent-Tools rufen außerdem eigenständig Tools wie `get_realtime_quote`, `get_daily_history`, `get_chip_distribution`, `get_analysis_context`, `get_stock_info` auf, was leicht zu doppelten Anfragen mit dem Vorabruf der normalen Analyse führt. Die aktuelle pack-Erzeugung nutzt nach dem Vorabruf der Agent-Historie nur den Tagesbalken-Verfügbarkeitsstatus aus `storage.get_analysis_context()` wieder und nutzt bzw. setzt keinen vollständigen pack-cache auf Tool-Ebene aus; P5 entscheidet später, ob eine tiefere Datenqualitäts-Bewertung und Tool-Cache-Wiederverwendung erfolgt.
 
-### 告警
+### Alarm
 
-告警链路在 `src/services/alert_worker.py` 中评估规则、记录触发历史并分发通知，具体字段语义见 [实时告警中心](alerts.md)。告警状态如 `triggered`、`skipped`、`degraded`、`failed` 是规则评估或记录状态，不能直接写入字段质量枚举。
+Die Alarmkette bewertet in `src/services/alert_worker.py` die Regeln, protokolliert die Auslösungshistorie und verteilt Benachrichtigungen; die konkrete Feldsemantik siehe [Echtzeit-Alarmzentrum](alerts.md). Alarmstatus wie `triggered`, `skipped`, `degraded`, `failed` sind Zustände der Regelbewertung oder des Datensatzes und können nicht direkt in das Feldqualitäts-Enum geschrieben werden.
 
-首版 pack 不把告警规则评估作为输入数据块；告警后续只消费 pack 的字段质量摘要，例如核心行情是否 fallback、是否 stale、是否 partial。
+Das Erstversion-pack nimmt die Alarmregel-Bewertung nicht als Eingabedatenblock auf; Alarme konsumieren später nur die Feldqualitäts-Zusammenfassung des packs, z. B. ob der Kernkurs gefallback, stale oder partial ist.
 
-### 持仓
+### Position
 
-持仓快照在 `src/services/portfolio_service.py` 中聚合账户、仓位、成本、价格、汇率和风险输入，API 输出结构在 `api/v1/schemas/portfolio.py`。当前已有 `price_source`、`price_provider`、`price_date`、`price_stale`、`price_available`、`fx_stale` 等字段。
+Der Positions-Snapshot aggregiert in `src/services/portfolio_service.py` Konto, Positionen, Kosten, Preise, Wechselkurse und Risikoeingaben; die API-Ausgabestruktur liegt in `api/v1/schemas/portfolio.py`. Es gibt bereits Felder wie `price_source`, `price_provider`, `price_date`, `price_stale`, `price_available`, `fx_stale`.
 
-首版 pack 可记录“是否持仓、账户摘要、成本、数量、仓位、浮盈浮亏、价格/汇率 stale 摘要”，但不纳入交易流水、现金流水、公司行动或完整账户隐私数据。
+Das Erstversion-pack kann „ob Position gehalten, Kontozusammenfassung, Kosten, Menge, Positionsgröße, unrealisierter Gewinn/Verlust, stale-Zusammenfassung von Preis/Wechselkurs" erfassen, bezieht aber keine Transaktionsströme, Kassenströme, Unternehmensmaßnahmen oder vollständige Kontoprivatsphäre-Daten ein.
 
-### 回测
+### Backtest
 
-回测服务在 `src/services/backtest_service.py` 和 `src/repositories/backtest_repo.py` 中消费历史分析记录与日线数据。现有 `parse_analysis_date_from_snapshot()` 依赖 `analysis_history.context_snapshot.enhanced_context.date` 解析分析日期。
+Der Backtest-Dienst konsumiert in `src/services/backtest_service.py` und `src/repositories/backtest_repo.py` historische Analyse-Datensätze und Tagesbalken-Daten. Das bestehende `parse_analysis_date_from_snapshot()` ist zur Auflösung des Analysedatums von `analysis_history.context_snapshot.enhanced_context.date` abhängig.
 
-P0 必须把 `enhanced_context.date` 标为兼容边界。后续 pack 可以新增更清晰的日期字段，但不能无迁移地删除或改名当前历史快照中的日期位置。
+P0 muss `enhanced_context.date` als Kompatibilitätsgrenze markieren. Das spätere pack kann ein klareres Datumsfeld hinzufügen, darf aber die Datumsstelle des aktuellen historischen Snapshot ohne Migration nicht löschen oder umbenennen.
 
-### 历史
+### Historie
 
-历史详情在 `src/services/history_service.py`、`api/v1/endpoints/history.py`、`api/v1/schemas/history.py` 中返回 `raw_result`、`news_content`、`context_snapshot` 等字段。同步 analysis/status 响应也会在 `api/v1/endpoints/analysis.py` 中读取 `context_snapshot.enhanced_context`、`realtime_quote_raw` 和基本面 fallback。
+Die Historie-Detailansicht gibt in `src/services/history_service.py`, `api/v1/endpoints/history.py`, `api/v1/schemas/history.py` Felder wie `raw_result`, `news_content`, `context_snapshot` zurück. Synchrone analysis/status-Antworten lesen in `api/v1/endpoints/analysis.py` ebenfalls `context_snapshot.enhanced_context`, `realtime_quote_raw` und den Fundamentaldaten-Fallback.
 
-P0 只记录历史消费面。完整 pack 不应默认公开到历史详情或公共 API；后续 P4 如需展示，应优先暴露摘要、来源和降级说明。
+P0 dokumentiert nur die Historie-Konsumfläche. Das vollständige pack sollte nicht standardmäßig in der Historie-Detailansicht oder der öffentlichen API sichtbar sein; falls P4 später etwas anzeigen möchte, sollten Zusammenfassung, Quelle und Degradationserklärung bevorzugt ausgesetzt werden.
 
-### 通知
+### Benachrichtigung
 
-通知链路在 `src/notification.py` 中消费 `AnalysisResult`、dashboard、market snapshot、data_sources 等输出，并记录 `sent`、`no_channel`、`partial_failed`、`all_failed` 等投递状态；渠道配置与边界见 [通知能力基线](notifications.md)。
+Die Benachrichtigungskette konsumiert in `src/notification.py` Ausgaben wie `AnalysisResult`, dashboard, market snapshot, data_sources und protokolliert Zustellstatus wie `sent`, `no_channel`, `partial_failed`, `all_failed`; Kanal-Konfiguration und Grenzen siehe [Benachrichtigungsfähigkeits-Baseline](notifications.md).
 
-通知不是事实数据层，不能把投递失败误写成输入质量失败。后续只应在必要时消费 pack 摘要，例如“实时行情已降级”“基本面缺失”“新闻源不足”。
+Benachrichtigungen sind keine Faktdaten-Ebene; ein Zustellfehler darf nicht fälschlich als Eingabequalitätsfehler geschrieben werden. Nachgelagert sollte die pack-Zusammenfassung nur bei Bedarf konsumiert werden, z. B. „Echtzeitkurse degradiert", „Fundamentaldaten fehlen", „Nachrichtenquelle unzureichend".
 
-## 源码锚点
+## Quellcode-Anker
 
-| 域 | 锚点 |
+| Domäne | Anker |
 | --- | --- |
-| 普通分析 | `src/core/pipeline.py`, `src/storage.py`, `src/analyzer.py` |
+| Normale Analyse | `src/core/pipeline.py`, `src/storage.py`, `src/analyzer.py` |
 | Agent | `src/agent/orchestrator.py`, `src/agent/executor.py`, `src/agent/tools/data_tools.py` |
-| 告警 | `src/services/alert_worker.py`, `docs/alerts.md` |
-| 持仓 | `src/services/portfolio_service.py`, `api/v1/schemas/portfolio.py` |
-| 回测 | `src/services/backtest_service.py`, `src/repositories/backtest_repo.py` |
-| 历史 | `src/services/history_service.py`, `api/v1/endpoints/history.py`, `api/v1/endpoints/analysis.py`, `api/v1/schemas/history.py` |
-| 通知 | `src/notification.py`, `docs/notifications.md` |
+| Alarm | `src/services/alert_worker.py`, `docs/alerts.md` |
+| Position | `src/services/portfolio_service.py`, `api/v1/schemas/portfolio.py` |
+| Backtest | `src/services/backtest_service.py`, `src/repositories/backtest_repo.py` |
+| Historie | `src/services/history_service.py`, `api/v1/endpoints/history.py`, `api/v1/endpoints/analysis.py`, `api/v1/schemas/history.py` |
+| Benachrichtigung | `src/notification.py`, `docs/notifications.md` |
 
-## 兼容与安全边界
+## Kompatibilitäts- und Sicherheitsgrenzen
 
-- `analysis_history.context_snapshot.enhanced_context.date` 是当前回测日期解析兼容点，P1/P2 不能在没有迁移的情况下破坏。
-- 完整 pack 不默认公开到历史、API、Web 或通知；P4/P5 只公开 `analysis_context_pack_overview` 低敏摘要、来源、fallback、stale、missing reason、block status count 和 `data_quality` 低敏评分。
-- pack、日志、历史快照和 API 响应不得记录 API key、token、cookie、完整 webhook URL、邮箱密码、私有环境变量或其他密钥。
-- `source`、`timestamp`、`fallback`、`stale`、`partial` 等质量元数据只用于解释输入限制，不用于阻断分析；除非现有核心路径本来就是 fail-fast。
-- #1386 的盘前 / 盘中 phase 感知是后续 `phase` / `data_quality` 字段的重要背景；P0 只记录关系，不接入 runtime。
+- `analysis_history.context_snapshot.enhanced_context.date` ist der aktuelle Kompatibilitätspunkt der Backtest-Datumsauflösung; P1/P2 dürfen ihn ohne Migration nicht brechen.
+- Das vollständige pack wird nicht standardmäßig für Historie, API, Web oder Benachrichtigungen öffentlich; P4/P5 setzen nur die niedrig-sensible Zusammenfassung `analysis_context_pack_overview`, Quelle, fallback, stale, missing reason, block-status-Zählung und die niedrig-sensible `data_quality`-Bewertung aus.
+- pack, Protokolle, historische Snapshots und API-Antworten dürfen keine API-Key, tokens, cookies, vollständige webhook-URLs, E-Mail-Passwörter, private Umgebungsvariablen oder andere Schlüssel aufzeichnen.
+- Qualitäts-Metadaten wie `source`, `timestamp`, `fallback`, `stale`, `partial` dienen nur zur Erklärung der Eingabebeschränkungen, nicht zum Blockieren der Analyse; es sei denn, der bestehende Kernpfad war von Natur aus fail-fast.
+- Die premarket / intraday-Phasenwahrnehmung von #1386 ist ein wichtiger Hintergrund für die späteren Felder `phase` / `data_quality`; P0 dokumentiert nur die Beziehung und bindet kein runtime an.

@@ -1,66 +1,66 @@
-# LLM 服务商配置指南
+# LLM-Anbieter-Konfigurationsleitfaden
 
-本文面向首次配置用户，说明如何选择 LLM 配置方式、如何把 Web 设置页「AI 模型配置」预设映射到 `.env` / GitHub Actions，以及如何处理常见检测错误。
+Dieses Dokument richtet sich an Nutzer, die zum ersten Mal konfigurieren. Es erklärt, wie die LLM-Konfigurationsweise gewählt wird, wie die Voreinstellungen der Web-Einstellungsseite "AI-Modellkonfiguration" auf `.env` / GitHub Actions abgebildet werden und wie häufige Erkennungsfehler behandelt werden.
 
-> 本页未引入新的外部 provider、模型名或 Base URL 兼容行为，仅整理配置参考与官方来源；实际兼容性仍以仓库当前运行时依赖与测试结论为准。
+> Diese Seite führt keine neuen externen Provider, Modellnamen oder Base-URL-Kompatibilitätsverhalten ein, sondern fasst nur Konfigurationsreferenzen und offizielle Quellen zusammen; die tatsächliche Kompatibilität richtet sich weiterhin nach den aktuellen Laufzeitabhängigkeiten und Testergebnissen des Repositorys.
 
-> - 运行时基础：`requirements.txt` 当前锁定 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`，兼容语义以该版本约束下实现为准。
-> - 验证闭环：系统配置链路回归见 `tests/test_system_config_service.py` 与 `tests/test_system_config_api.py`，`Web` 侧配置页交互回归见现有组件测试用例。
-> - 回退路径：保留旧变量不做自动迁移；可通过 Web/桌面导出备份后 `POST /api/v1/system/config/import` 回滚，或手动恢复历史 `LLM_*` / `LITELLM_*` / `AGENT_*` / `VISION_MODEL` 配置。
+> - Laufzeitbasis: `requirements.txt` sperrt aktuell `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`; die Kompatibilitätssemantik richtet sich nach der unter dieser Versionsbeschränkung realisierten Implementierung.
+> - Verifikationsschleife: Die Regression der Systemkonfigurationskette findet sich in `tests/test_system_config_service.py` und `tests/test_system_config_api.py`; die Interaktionsregression der Konfigurationsseite auf der `Web`-Seite findet sich in den bestehenden Komponententestfällen.
+> - Fallback-Pfad: Alte Variablen bleiben ohne automatische Migration erhalten; ein Rollback ist möglich über Web/Desktop-Export einer Sicherung mit anschließendem `POST /api/v1/system/config/import` oder über die manuelle Wiederherstellung der historischen `LLM_*`- / `LITELLM_*`- / `AGENT_*`- / `VISION_MODEL`-Konfiguration.
 
-实际可用模型、额度、区域限制和价格以各服务商控制台为准；如果模型列表拉取失败，可在 Web 中手动填写模型名。Web 设置页展示的 provider 能力标签、官方来源链接和配置注意事项来自静态 provider template，仅用于配置参考，不代表运行时能力已验证通过。
+Tatsächlich verfügbare Modelle, Kontingente, Regionseinschränkungen und Preise richten sich nach den Konsolen der jeweiligen Anbieter; schlägt das Laden der Modellliste fehl, kann der Modellname in der Web-App manuell eingetragen werden. Die von der Web-Einstellungsseite angezeigten Provider-Fähigkeits-Labels, Links zu offiziellen Quellen und Konfigurationshinweise stammen aus statischen Provider-Templates und dienen nur der Konfigurationsreferenz; sie bedeuten nicht, dass die Laufzeitfähigkeit bereits verifiziert wurde.
 
-## 先选配置方式
+## Zuerst die Konfigurationsweise wählen
 
-| 方式 | 适合谁 | 主要变量 | 说明 |
+| Weise | Für wen geeignet | Hauptvariablen | Erläuterung |
 | --- | --- | --- | --- |
-| 极简 legacy | 只想快速跑通一个模型的用户 | `LITELLM_MODEL` + 对应 provider key | 最少变量，适合本地快速开始；不适合复杂 fallback。 |
-| Channels | 需要多个 provider、多个 key 或 fallback 的用户 | `LLM_CHANNELS` + `LLM_<CHANNEL>_*` | 推荐默认路径；Web 设置页保存的也是这一层配置。 |
-| YAML | 熟悉 LiteLLM 路由、负载均衡和企业网关的用户 | `LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` | 优先级最高；一旦有效生效，Channels 和 legacy 不再参与本次请求。 |
+| Minimal-Legacy | Nutzer, die schnell ein einzelnes Modell zum Laufen bringen möchten | `LITELLM_MODEL` + passender Provider-Key | Wenigste Variablen, geeignet für den schnellen lokalen Start; nicht für komplexe Fallbacks. |
+| Channels | Nutzer mit mehreren Providern, mehreren Keys oder Fallback | `LLM_CHANNELS` + `LLM_<CHANNEL>_*` | Empfohlener Standardpfad; genau diese Konfigurationsebene speichert auch die Web-Einstellungsseite. |
+| YAML | Nutzer, die LiteLLM-Routing, Lastverteilung und Enterprise-Gateways kennen | `LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` | Höchste Priorität; sobald sie gültig wirksam ist, nehmen Channels und Legacy an dieser Anfrage nicht mehr teil. |
 
-优先级保持不变：`LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` > `LLM_CHANNELS` > legacy provider keys。P4 只补文档，不迁移、不清空、不静默改写旧配置。
+Die Priorität bleibt unverändert: `LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` > `LLM_CHANNELS` > Legacy-Provider-Keys. P4 ergänzt nur die Dokumentation, migriert, leert oder überschreibt alte Konfiguration nicht stillschweigend.
 
-Generation backend 配置是更外层的运行时选择契约。Phase 4 支持 `GENERATION_BACKEND=litellm|codex_cli|claude_code_cli|opencode_cli`，但本地 CLI backend 不是 LiteLLM provider；不要配置成 `LITELLM_MODEL=codex_cli/...`、`LITELLM_MODEL=claude_code_cli/...` 或 `LITELLM_MODEL=opencode_cli/...`。`codex_cli` preset 使用 `codex --ask-for-approval never exec --sandbox read-only --output-last-message <temp-file> -`，固定无人值守批准策略并保持只读边界；`claude_code_cli` preset 使用 `claude --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --no-session-persistence --output-format json -p <static instruction>`，完整 DSA prompt 走 stdin，并只从 JSON envelope 的 `result/success` 字段提取最终文本，参数依据见 [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)；`opencode_cli` preset 使用 `opencode --pure run --format json [--model <OPENCODE_CLI_MODEL>] <static instruction> --file <temp prompt file>`，仅在显式配置 `OPENCODE_CLI_MODEL` 时追加 `--model`，完整 DSA prompt 走权限受控的临时文件，并只从无工具事件的 JSON event text 输出提取最终文本，参数依据见 [OpenCode CLI reference](https://opencode.ai/docs/cli)，配置合并语义见 [OpenCode config reference](https://opencode.ai/docs/config)。诊断 stdout/stderr 与最终响应一起受 `GENERATION_BACKEND_MAX_OUTPUT_BYTES` 总上限约束，超限时返回结构化 `output_too_large`。`GENERATION_FALLBACK_BACKEND=` 空值会在本地 `.env` 禁用 backend-level fallback，未配置时默认回退到 `litellm`；默认 GitHub Actions workflow 未配置该变量时会显式使用 `litellm`，如需禁用 fallback 可设为 primary backend 走 self no-op。Agent 工具调用仍使用 LiteLLM；Web 设置页只暴露 `AGENT_GENERATION_BACKEND=auto|litellm`，手写 `codex_cli|claude_code_cli|opencode_cli` 不会启用 text-only Agent mode，只会返回明确 unsupported tool-calling 诊断。
+Die Generation-Backend-Konfiguration ist ein weiter außen liegender Vertrag der Laufzeitwahl. Phase 4 unterstützt `GENERATION_BACKEND=litellm|codex_cli|claude_code_cli|opencode_cli`, aber ein lokales CLI-Backend ist kein LiteLLM-Provider; konfigurieren Sie es nicht als `LITELLM_MODEL=codex_cli/...`, `LITELLM_MODEL=claude_code_cli/...` oder `LITELLM_MODEL=opencode_cli/...`. Das Preset `codex_cli` verwendet `codex --ask-for-approval never exec --sandbox read-only --output-last-message <temp-file> -`, fixiert die unbemannte Genehmigungsstrategie und hält die Read-only-Grenze; das Preset `claude_code_cli` verwendet `claude --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --no-session-persistence --output-format json -p <static instruction>`, der vollständige DSA-Prompt läuft über stdin, und nur aus dem `result/success`-Feld des JSON-Envelopes wird der Endtext extrahiert; die Begründung der Parameter findet sich in der [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference); das Preset `opencode_cli` verwendet `opencode --pure run --format json [--model <OPENCODE_CLI_MODEL>] <static instruction> --file <temp prompt file>`, `--model` wird nur bei expliziter Konfiguration von `OPENCODE_CLI_MODEL` angehängt, der vollständige DSA-Prompt läuft über eine rechtegeschützte temporäre Datei, und nur aus dem JSON-Event-Text ohne Tool-Ereignisse wird der Endtext extrahiert; die Begründung der Parameter findet sich in der [OpenCode CLI reference](https://opencode.ai/docs/cli), die Semantik der Konfigurationszusammenführung in der [OpenCode config reference](https://opencode.ai/docs/config). Diagnose-stdout/stderr unterliegen zusammen mit der finalen Antwort der Gesamtobergrenze `GENERATION_BACKEND_MAX_OUTPUT_BYTES`; bei Überschreitung wird ein strukturiertes `output_too_large` zurückgegeben. Ein leerer Wert von `GENERATION_FALLBACK_BACKEND=` deaktiviert den Backend-Level-Fallback in der lokalen `.env`; ist keine Konfiguration gesetzt, wird standardmäßig auf `litellm` zurückgegriffen; der Standard-GitHub-Actions-Workflow verwendet bei fehlender Konfiguration dieser Variablen explizit `litellm`; zum Deaktivieren des Fallbacks kann das primäre Backend als Self-no-op gesetzt werden. Agent-Tool-Aufrufe verwenden weiterhin LiteLLM; die Web-Einstellungsseite exponiert nur `AGENT_GENERATION_BACKEND=auto|litellm`, handgeschriebenes `codex_cli|claude_code_cli|opencode_cli` aktiviert keinen Text-only-Agent-Modus, sondern liefert nur eine eindeutige unsupported-tool-calling-Diagnose.
 
-生成后端状态接口与 Web 面板会把轻量检查和冒烟测试分开展示：快速检查只读取已保存 `.env`、运行时兜底值和当前草稿，不写配置、不重载运行时，也不发起真实模型请求；只有 JSON 冒烟测试会使用固定的 JSON 提示词和 schema 发起真实请求。`health_status` 与 `last_error_code/message` 是本次计算结果，不表示历史最后错误。本地 CLI preset 的 `supports_tools=false` 仅表示不支持 DSA Agent 工具调用链路，不代表普通文本生成不可用。
+Die Status-Schnittstelle und das Web-Panel des Generation-Backends zeigen leichte Checks und Smoke-Tests getrennt an: Der Schnellcheck liest nur die gespeicherte `.env`, die Laufzeit-Fallback-Werte und den aktuellen Entwurf, schreibt keine Konfiguration, lädt die Laufzeit nicht neu und löst keine echten Modellanfragen aus; nur der JSON-Smoke-Test führt mit einem festen JSON-Prompt und Schema echte Anfragen aus. `health_status` und `last_error_code/message` sind Ergebnisse der aktuellen Berechnung und stellen nicht den letzten historischen Fehler dar. `supports_tools=false` eines lokalen CLI-Presets bedeutet nur, dass die DSA-Agent-Toolaufrufkette nicht unterstützt wird, nicht dass normale Texterzeugung unverfügbar ist.
 
-Phase 6a Tool Surface 是 AgentBackend 的唯一内部工具面：统一 DSA 工具 schema、public descriptor、MCP-compatible descriptor、scope guard、结构化错误、审计摘要和脱敏诊断。stock-scoped 工具调用必须显式传入 `ToolAccessContext.stock_scope`；有 `stock_code` 参数但未声明 stock scope 的工具会 fail-closed。Phase 6 的 Codex App Server adapter 只通过该 Tool Surface 执行工具；它不把 `codex_cli` generation backend、MCP server、SDK 或最终文本 fallback 当成 Agent 工具成功。
+Phase 6a Tool Surface ist die einzige interne Tool-Oberfläche von AgentBackend: einheitliches DSA-Tool-Schema, Public-Descriptor, MCP-kompatibler Descriptor, Scope-Guard, strukturierte Fehler, Audit-Zusammenfassung und maskierte Diagnose. Stock-scoped Tool-Aufrufe müssen explizit `ToolAccessContext.stock_scope` übergeben; Tools, die einen `stock_code`-Parameter haben, aber keinen Stock-Scope deklarieren, schlagen fail-closed fehl. Der Codex-App-Server-Adapter von Phase 6 führt Tools ausschließlich über diese Tool-Oberfläche aus; er behandelt das `codex_cli`-Generation-Backend, den MCP-Server, das SDK oder den Endtext-Fallback nicht als Agent-Tool-Erfolg.
 
-## Codex App Server 问股边界
+## Grenzen der Codex-App-Server-Fragen-Funktion
 
-`AGENT_BACKEND=codex_app_server` 是现有问股 Chat 的实验运行方式，不是新的 provider 模型渠道，也不改变 `GENERATION_BACKEND`。Web 中在「设置 → Agent 设置 → 问股生成方式」选择后，必须使用 `AGENT_ARCH=single` 和大于 0 的整体时限。设置页只检查配置、Codex 命令和所需 App Server 协议是否允许尝试；保存后用户可直接提问，第一次问题就是第一次真实执行。`auto`（推荐）和 `litellm` 始终保持原有 LiteLLM 问股路径。
+`AGENT_BACKEND=codex_app_server` ist eine experimentelle Betriebsart des bestehenden Fragen-Chats, kein neuer Provider-Modellkanal und ändert auch nicht `GENERATION_BACKEND`. In der Web-App muss nach der Auswahl unter "Einstellungen -> Agent-Einstellungen -> Fragen-Erzeugungsart" `AGENT_ARCH=single` und ein Gesamtzeitlimit größer 0 verwendet werden. Die Einstellungsseite prüft nur, ob Konfiguration, Codex-Befehl und das benötigte App-Server-Protokoll einen Versuch erlauben; nach dem Speichern kann der Nutzer direkt Fragen stellen, die erste Frage ist die erste echte Ausführung. `auto` (empfohlen) und `litellm` behalten stets den ursprünglichen LiteLLM-Fragen-Pfad bei.
 
-- DSA 使用 [Codex App Server v2](https://developers.openai.com/codex/app-server/) 的 JSONL stdio、ephemeral thread 和 experimental dynamic tools，并通过 `turn/interrupt` 处理 Chat 取消。2026-07-15 的验收版本为 `codex-cli 0.144.3`，不据此硬编码最低版本。
-- Codex 必须安装并登录在运行 DSA 后端的设备；DSA 不读取或保存 Codex 凭据。Docker、远程服务器与 Desktop 的 PATH 和登录态相互独立。
-- Phase 6 Codex App Server Agent 当前支持 macOS、Linux 和完整运行于 WSL 的 DSA 后端，暂不支持原生 Windows；这不影响 Phase 2 `codex_cli` GenerationBackend 的 Windows 支持。
-- Codex 当前只开放已保存分析上下文、全局回测汇总和策略回测汇总的只读查询；本期只验证这三个工具的独立进程、停止、超时和回收闭环。实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具未纳入本期验证，因此不会暴露给 Codex；需要这些能力时应选择「默认模型」。明确股票代码或 Web 唯一匹配的股票只为已开放的历史分析上下文工具建立股票范围，跨市场同名等歧义不会猜测。
-- 问股历史的 LLM 压缩仅用于「默认模型」。Codex 始终使用最近 20 条用户可见对话，不会调用 `AGENT_LITELLM_MODEL` 生成摘要；用户已保存的压缩配置会保留，切回默认模型后继续生效。
-- 当前只支持 single-agent Chat，不支持 Codex Multi Agent / Codex Deep Research；现有 LiteLLM Multi Agent 和 Deep Research 不受影响。
-- cheap status 不发模型请求，只检查生产路径依赖的 App Server schema 能力且不绑定武断最低版本。仓库中的 `scripts/codex_app_server_gate_a.py` 仅用于维护者可行性验收，不是设置页按钮或生产 API；普通用户的第一个真实问题就是首次真实执行。
-- 用户停止 Codex 问股时，Web 会先显示“正在停止”；后端中断 Codex turn，并终止、回收本轮独立运行的工具进程。只有 Codex 与工具进程都已退出，原 SSE 请求才返回最终“已停止”。超时和客户端断开遵守相同的清理边界，不会把仍在后台运行的任务当成已经结束。默认 LiteLLM Agent 行为保持不变。
-- 基础状态只表达本机“可以尝试”，不检查登录、模型或真实工具闭环，也不缓存成功证据。正式 Chat 由服务端选择实际 backend；上下文准备和用户消息保存完成后发出唯一 `accepted` 事件，再启动模型。Web 在 `accepted` 前保留输入、股票范围、追问上下文和技能选择，并以 `accepted.backend` 决定停止方式。Codex 的累计输出、事件和工具调用均受整轮预算约束，工具调用数沿用 `AGENT_MAX_STEPS`。
-- Codex 不是离线模型；股票代码、新闻、持仓上下文及脱敏工具结果可能由 Codex 自身配置的服务处理。
+- DSA verwendet [Codex App Server v2](https://developers.openai.com/codex/app-server/) mit JSONL-stdio, ephemeral thread und experimental dynamic tools und behandelt Chat-Abbrüche über `turn/interrupt`. Die Abnahmeversion vom 2026-07-15 ist `codex-cli 0.144.3`, daraus wird keine harte Mindestversion abgeleitet.
+- Codex muss auf dem Gerät installiert und angemeldet sein, das das DSA-Backend ausführt; DSA liest oder speichert keine Codex-Anmeldedaten. PATH und Anmeldestatus von Docker, Remote-Servern und Desktop sind voneinander unabhängig.
+- Der Codex-App-Server-Agent von Phase 6 unterstützt aktuell macOS, Linux und vollständig unter WSL laufende DSA-Backends, aber noch kein natives Windows; dies berührt nicht die Windows-Unterstützung des `codex_cli`-GenerationBackend von Phase 2.
+- Codex hat aktuell nur Lesezugriff auf gespeicherte Analysekontexte, globale Backtest-Zusammenfassungen und Strategie-Backtest-Zusammenfassungen; in dieser Iteration werden nur der unabhängige Prozess, das Stoppen, das Timeout und der Wiederverwertungs-Kreislauf dieser drei Tools verifiziert. Echtzeit-Kursdaten, Nachrichten, Markt-Hotspots, Neuberechnung technischer Indikatoren, Backtest-Details einzelner Aktien und Positions-Tools sind nicht Teil der Verifikation dieser Iteration und werden daher nicht an Codex exponiert; wer diese Fähigkeiten benötigt, wählt das "Standardmodell". Eindeutige Aktiencodes oder in der Web-App eindeutig zugeordnete Aktien begründen nur für die freigegebenen Tools für historische Analysekontexte einen Aktienbereich; Mehrdeutigkeiten wie gleiche Namen über Märkte hinweg werden nicht erraten.
+- Die LLM-Komprimierung des Fragen-Verlaufs gilt nur für das "Standardmodell". Codex verwendet stets die letzten 20 für den Nutzer sichtbaren Unterhaltungen und ruft `AGENT_LITELLM_MODEL` nicht zur Zusammenfassungserzeugung auf; bereits gespeicherte Komprimierungskonfigurationen bleiben erhalten und wirken nach dem Wechsel zurück zum Standardmodell weiter.
+- Aktuell wird nur Single-Agent-Chat unterstützt, kein Codex Multi Agent / Codex Deep Research; die bestehenden LiteLLM Multi-Agent- und Deep-Research-Funktionen bleiben unberührt.
+- Der cheap-Status löst keine Modellanfragen aus, prüft nur die vom Produktionspfad abhängigen App-Server-Schema-Fähigkeiten und bindet keine willkürliche Mindestversion. `scripts/codex_app_server_gate_a.py` im Repository dient nur der Durchführbarkeitsabnahme durch Maintainer, ist kein Einstellungsseiten-Button oder eine Produktions-API; die erste echte Frage eines normalen Nutzers ist die erste echte Ausführung.
+- Wenn der Nutzer die Codex-Fragen-Funktion stoppt, zeigt die Web-App zuerst "Wird gestoppt"; das Backend unterbricht den Codex-Turn und beendet und wiederverwertet die in dieser Runde unabhängig laufenden Tool-Prozesse. Erst wenn sowohl Codex als auch die Tool-Prozesse beendet sind, gibt die ursprüngliche SSE-Anfrage das finale "Gestoppt" zurück. Timeout und Client-Verbindungsabbruch folgen derselben Bereinigungsgrenze und behandeln im Hintergrund noch laufende Aufgaben nicht als bereits beendet. Das Standardverhalten des LiteLLM-Agents bleibt unverändert.
+- Der Basisstatus drückt nur "kann es lokal versuchen" aus, prüft weder Login, Modell noch einen echten Tool-Kreislauf und cached auch keine Erfolgsbelege. Der formelle Chat wählt das tatsächliche Backend serverseitig; nach Abschluss der Kontextvorbereitung und des Speicherns der Nutzernachricht wird ein eindeutiges `accepted`-Ereignis ausgegeben, danach startet das Modell. Die Web-App behält vor `accepted` Eingabe, Aktienbereich, Nachfragekontext und Skill-Auswahl bei und entscheidet über `accepted.backend` über die Art des Stoppens. Die kumulierte Ausgabe, Ereignisse und Tool-Aufrufe von Codex unterliegen dem Budget der gesamten Runde; die Anzahl der Tool-Aufrufe übernimmt `AGENT_MAX_STEPS`.
+- Codex ist kein Offline-Modell; Aktiencodes, Nachrichten, Positionskontexte und maskierte Tool-Ergebnisse können von den durch Codex selbst konfigurierten Diensten verarbeitet werden.
 
-本 PR smoke 验证版本为 `claude 2.1.177 (Claude Code)` 与 `opencode 1.17.11`，不声明更宽最低版本。如果用户安装的 CLI 不支持这些固定 preset 参数或非交互输出契约，DSA 会返回结构化 `capability_unsupported`、`cli_contract_unsupported`、`invalid_json`、`schema_validation_failed` 或对应 backend error，并在配置 backend fallback 时回退到 `litellm`。
+Die Smoke-Verifikationsversionen dieses PR sind `claude 2.1.177 (Claude Code)` und `opencode 1.17.11`; es wird keine breitere Mindestversion deklariert. Wenn das vom Nutzer installierte CLI diese festen Preset-Parameter oder den nicht-interaktiven Ausgabevertrag nicht unterstützt, gibt DSA ein strukturiertes `capability_unsupported`, `cli_contract_unsupported`, `invalid_json`, `schema_validation_failed` oder den entsprechenden Backend-Fehler zurück und fällt bei konfiguriertem Backend-Fallback auf `litellm` zurück.
 
-本地 CLI Backend 不等于离线模型。Docker、云服务器和 CI 不天然拥有本机 CLI 登录态；macOS 从 Finder/Dock 启动桌面端时不继承 shell PATH，打包桌面端会在启动后端时补入常见 Homebrew 路径，如果设置检查仍提示找不到 CLI 可执行文件，需要完全退出并重开 DSA。DSA 不读取 Codex/Claude/OpenCode credential 文件，也不为 OpenCode 生成或搬运 provider API key；子进程可能按 CLI 自身机制使用本机登录态或配置，股票代码、新闻、持仓上下文、分析 prompt 和报告草稿可能被对应 CLI 背后的服务处理。DSA 默认只继承最小运行环境，并拒绝通配继承 `CLAUDE_*`、`ANTHROPIC_*`、`OPENCODE_*`、provider API key/token/base-url/model env 和 webhook tokens，降低父进程配置泄漏风险；`CODEX_HOME` 仅作为既有 Codex CLI 登录目录兼容的 exact-name 例外保留。
+Ein lokales CLI-Backend ist kein Offline-Modell. Docker, Cloud-Server und CI besitzen nicht natürlich den lokalen CLI-Anmeldestatus; macOS erbt beim Start des Desktop-Clients über Finder/Dock nicht den Shell-PATH, das gepackte Desktop-CLI ergänzt beim Backend-Start gängige Homebrew-Pfade. Meldet die Einstellungsprüfung weiterhin, dass die CLI ausführbare Datei nicht gefunden wird, muss DSA vollständig beendet und neu geöffnet werden. DSA liest keine Codex/Claude/OpenCode-Credential-Dateien und erzeugt oder transportiert auch keine Provider-API-Keys für OpenCode; Unterprozesse können nach dem eigenen Mechanismus des CLI den lokalen Anmeldestatus oder die Konfiguration verwenden, Aktiencodes, Nachrichten, Positionskontexte, Analyse-Prompts und Berichtsentwürfe können von den Diensten hinter dem jeweiligen CLI verarbeitet werden. DSA erbt standardmäßig nur die minimale Laufzeitumgebung und lehnt die Wildcard-Vererbung von `CLAUDE_*`, `ANTHROPIC_*`, `OPENCODE_*`, Provider-API-Key/token/base-url/model-env und Webhook-Tokens ab, um das Risiko eines Konfigurationslecks aus dem Elternprozess zu senken; `CODEX_HOME` bleibt als Exact-Name-Ausnahme zur Kompatibilität mit dem bestehenden Codex-CLI-Anmeldeverzeichnis erhalten.
 
-`opencode_cli` 是 experimental/limited generation backend，不支持 OpenCode serve / web / ACP / MCP / attach / `--dangerously-skip-permissions`。DSA 默认使用本机 OpenCode 的默认模型；`OPENCODE_CLI_MODEL` 只是可选模型覆盖值，配置时才传给 OpenCode `--model`。DSA 会在临时 cwd 写入最小项目 `opencode.json`，但 OpenCode resolved config 仍可能包含用户本机全局配置；运行时安全边界同时依赖 `--pure`、env denylist、prompt file 权限和 event extractor fail-closed。
+`opencode_cli` ist ein experimentelles/eingeschränktes Generation-Backend und unterstützt kein OpenCode serve / web / ACP / MCP / attach / `--dangerously-skip-permissions`. DSA verwendet standardmäßig das Standardmodell des lokalen OpenCode; `OPENCODE_CLI_MODEL` ist nur ein optionaler Modellüberschreibungswert und wird bei Konfiguration an OpenCode `--model` übergeben. DSA schreibt ein minimales Projekt-`opencode.json` in ein temporäres cwd, aber die aufgelöste OpenCode-Config kann weiterhin die globale lokale Nutzerkonfiguration enthalten; die Laufzeit-Sicherheitsgrenze stützt sich zugleich auf `--pure`, die Env-Denylist, die Dateiberechtigungen des Prompts und einen fail-closed Event-Extractor.
 
-## Web 设置页路径
+## Pfad der Web-Einstellungsseite
 
-推荐优先使用 Web 设置页完成 Channels 配置：
+Es wird empfohlen, die Channels-Konfiguration bevorzugt über die Web-Einstellungsseite vorzunehmen:
 
-1. 打开设置页的「AI 模型配置」。
-2. 在「快速添加渠道」选择服务商预设。
-3. 填入 API Key，必要时点击「获取模型」。
-4. 选择主模型、Agent 主模型、备选模型和 Vision 模型后保存。
-5. 点击「测试连接」确认鉴权、模型名、额度和响应格式正常。
-6. 如需确认 JSON / tools / stream / vision 能力，手动勾选「运行时能力检测」后再触发；该检测会产生真实 LLM 请求，结果只代表当前账号、模型和 endpoint 的一次 best-effort 检测，不会写回 `.env`，也不会阻止保存。
+1. Die "AI-Modellkonfiguration" der Einstellungsseite öffnen.
+2. Unter "Kanal schnell hinzufügen" eine Anbieter-Voreinstellung wählen.
+3. Den API-Key eintragen und bei Bedarf auf "Modelle abrufen" klicken.
+4. Hauptmodell, Agent-Hauptmodell, Ersatzmodell und Vision-Modell auswählen und speichern.
+5. Auf "Verbindung testen" klicken, um zu bestätigen, dass Authentifizierung, Modellname, Kontingent und Antwortformat normal sind.
+6. Sollen JSON-/tools-/stream-/vision-Fähigkeiten bestätigt werden, die "Laufzeitfähigkeits-Erkennung" manuell ankreuzen und dann auslösen; diese Erkennung erzeugt echte LLM-Anfragen, das Ergebnis repräsentiert nur eine best-effort-Erkennung des aktuellen Kontos, Modells und Endpoints, schreibt nicht in `.env` zurück und blockiert das Speichern nicht.
 
-## Channels 示例
+## Channels-Beispiele
 
-### DeepSeek 官方渠道
+### Offizieller DeepSeek-Kanal
 
 ```env
 LLM_CHANNELS=deepseek
@@ -71,7 +71,7 @@ LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
 LITELLM_MODEL=deepseek/deepseek-v4-flash
 ```
 
-### OpenAI-compatible 聚合或自定义网关
+### OpenAI-kompatibles Aggregations- oder Custom-Gateway
 
 ```env
 LLM_CHANNELS=my_proxy
@@ -81,85 +81,85 @@ LLM_MY_PROXY_API_KEY=sk-xxx
 LLM_MY_PROXY_MODELS=gpt-5.5,claude-sonnet-4-6
 ```
 
-OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/chat/completions`。本地 `.env`、Docker 和自托管脚本可以直接使用自定义 channel；GitHub Actions 需要 workflow 显式透传同名 `LLM_MY_PROXY_*` 变量。
-小米 MiMo 示例同理：适用于本地 `.env`、Docker 或自托管脚本；若在 GitHub Actions 使用 `LLM_CHANNELS=mimo`，需要在 workflow 中手动补齐 `LLM_MIMO_*` 映射后方可生效。
+Die OpenAI-kompatible Base URL füllt man nur bis zum anbieterseitig kompatiblen Einstiegspunkt aus und hängt kein zusätzliches `/chat/completions` an. Lokale `.env`, Docker und selbstgehostete Skripte können den Custom-Kanal direkt verwenden; GitHub Actions benötigt einen Workflow, der die gleichnamigen `LLM_MY_PROXY_*`-Variablen explizit durchreicht.
+Das Xiaomi-MiMo-Beispiel gilt analog: geeignet für lokale `.env`, Docker oder selbstgehostete Skripte; wird unter GitHub Actions `LLM_CHANNELS=mimo` verwendet, muss im Workflow manuell die `LLM_MIMO_*`-Zuordnung ergänzt werden, bevor sie wirksam wird.
 
-## 常用服务商预设
+## Gängige Anbieter-Voreinstellungen
 
-| 服务商 | 渠道名 | 协议 | Base URL | 模型示例 |
+| Anbieter | Kanalname | Protokoll | Base URL | Modellbeispiele |
 | --- | --- | --- | --- | --- |
 | AIHubmix | `aihubmix` | `openai` | `https://aihubmix.com/v1` | `gpt-5.5,claude-sonnet-4-6,gemini-3.1-pro-preview` |
-| Anspire Open | `anspire` | `openai` | `https://open-gateway.anspire.cn/v6`（示例） | `Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash,MiniMax-M2.7`（示例） |
+| Anspire Open | `anspire` | `openai` | `https://open-gateway.anspire.cn/v6` (Beispiel) | `Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash,MiniMax-M2.7` (Beispiel) |
 | OpenAI | `openai` | `openai` | `https://api.openai.com/v1` | `gpt-5.5,gpt-5.4-mini` |
 | DeepSeek | `deepseek` | `deepseek` | `https://api.deepseek.com` | `deepseek-v4-flash,deepseek-v4-pro` |
-| Gemini | `gemini` | `gemini` | 留空 | `gemini-3.1-pro-preview,gemini-3-flash-preview` |
-| Anthropic Claude | `anthropic` | `anthropic` | 留空 | `claude-sonnet-4-6,claude-opus-4-7` |
+| Gemini | `gemini` | `gemini` | leer | `gemini-3.1-pro-preview,gemini-3-flash-preview` |
+| Anthropic Claude | `anthropic` | `anthropic` | leer | `claude-sonnet-4-6,claude-opus-4-7` |
 | Kimi / Moonshot | `moonshot` | `openai` | `https://api.moonshot.cn/v1` | `kimi-k2.6,kimi-k2.5` |
-| 通义千问 / DashScope | `dashscope` | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus,qwen3.6-flash` |
-| 智谱 GLM | `zhipu` | `openai` | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.1,glm-4.7-flash` |
+| Tongyi Qianwen / DashScope | `dashscope` | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus,qwen3.6-flash` |
+| Zhipu GLM | `zhipu` | `openai` | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.1,glm-4.7-flash` |
 | MiniMax | `minimax` | `openai` | `https://api.minimax.io/v1` | `MiniMax-M3,MiniMax-M2.7,MiniMax-M2.7-highspeed` |
-| 小米 MiMo | `mimo` | `openai` | 官方控制台提供（Actions 默认未映射） | 官方文档/控制台为准 |
-| 火山方舟 / 豆包 | `volcengine` | `openai` | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-1-6-251015,doubao-seed-1-6-thinking-251015` |
-| 硅基流动 / SiliconFlow | `siliconflow` | `openai` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3.2,Qwen/Qwen3-235B-A22B-Thinking-2507` |
+| Xiaomi MiMo | `mimo` | `openai` | von der offiziellen Konsole bereitgestellt (in Actions standardmäßig nicht gemappt) | nach offizieller Dokumentation/Konsole |
+| Volcano Ark / Doubao | `volcengine` | `openai` | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-1-6-251015,doubao-seed-1-6-thinking-251015` |
+| SiliconFlow | `siliconflow` | `openai` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3.2,Qwen/Qwen3-235B-A22B-Thinking-2507` |
 | OpenRouter | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `~anthropic/claude-sonnet-latest,~openai/gpt-latest` |
 | Ollama | `ollama` | `ollama` | `http://127.0.0.1:11434` | `llama3.2,qwen2.5` |
 
-## 官方来源与兼容性
+## Offizielle Quellen und Kompatibilität
 
-| 服务商 | 官方来源 | 兼容说明 |
+| Anbieter | Offizielle Quelle | Kompatibilitätshinweis |
 | --- | --- | --- |
-| Anspire Open | [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` 在未配置更高优先级 OpenAI-compatible 来源时可用于大模型网关与搜索；页面与 `.env` 默认示例为 `openai/Doubao-Seed-2.0-lite` + `https://open-gateway.anspire.cn/v6`，是否可用以控制台与模型权限为准。 |
-| OpenAI | [模型列表](https://platform.openai.com/docs/models) | 官方模型页建议从 `gpt-5.5` 开始，低延迟/低成本场景使用 `gpt-5.4-mini` 或 `gpt-5.4-nano`。 |
-| DeepSeek | [快速开始](https://api-docs.deepseek.com/) | 官方 OpenAI Base URL 为 `https://api.deepseek.com`；`deepseek-chat` / `deepseek-reasoner` 将于 2026-07-24 弃用，当前模板直接使用 `deepseek-v4-flash` / `deepseek-v4-pro`。 |
-| Gemini | [模型列表](https://ai.google.dev/gemini-api/docs/models) | Gemini 3.1 Pro / Gemini 3 Flash 仍为 preview；如需生产稳定性，可在控制台改回 2.5 稳定模型。 |
-| Anthropic Claude | [模型概览](https://docs.anthropic.com/en/docs/about-claude/models/all-models) | Claude 当前 API ID 包含 `claude-sonnet-4-6`、`claude-opus-4-7`；Sonnet 更适合作为默认性价比入口。 |
-| Kimi / Moonshot | [Kimi K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[模型列表](https://platform.kimi.com/docs/models) | 官方推荐 `kimi-k2.6`；`kimi-k2` 系列将在 2026-05-25 下线，旧 `moonshot-v1-*` 仅保留为稳定旧工作负载选择。 |
-| 通义千问 / DashScope | [文本生成](https://help.aliyun.com/zh/model-studio/text-generation-model/) | 百炼推荐 `qwen3.6-plus`，确认效果后可用 `qwen3.6-flash` 降低成本。 |
-| 智谱 GLM | [模型概览](https://docs.bigmodel.cn/cn/guide/start/model-overview)、[GLM-5.1](https://docs.bigmodel.cn/cn/guide/models/text/glm-5.1) | `glm-5.1` 是当前旗舰；`glm-4.7-flash` 作为轻量/免费模型示例。 |
-| MiniMax | [OpenAI API 兼容](https://platform.minimax.io/docs/api-reference/text-chat)、[获取模型列表](https://platform.minimax.io/docs/api-reference/models/openai/list-models)、[Pricing](https://platform.minimax.io/docs/guides/pricing-paygo) | 官方 OpenAI-compatible Base URL 为 `https://api.minimax.io/v1`，并列出 `MiniMax-M3`（默认，支持图片输入，官方支持最多 1M 输入上下文，pricing 区分 `<=512K` 与 `>512K` 输入两档价格）、`MiniMax-M2.7`、`MiniMax-M2.7-highspeed`，以及 Legacy 模型 `MiniMax-M2.5`。本仓库 fallback 成本估算保守按 `<=512K` 价格档注册 M3，并保留 M2.5 legacy 定价以兼容历史用户配置；中国区 Coding 工具场景可能使用 `.com`/Anthropic 专用入口，以控制台为准。 |
-| 小米 MiMo | 官方文档 / 控制台 | 当前按 OpenAI-compatible 方式接入，Base URL、模型名与权限以 MiMo 官方文档/控制台为准；`mimo` 渠道在仓库默认 workflow 中未显式映射，Actions 使用请按本文“GitHub Actions 配置”补齐自定义映射。 |
-| 火山方舟 / 豆包 | [在线推理（常规）](https://www.volcengine.com/docs/82379/2121998)、[模型列表](https://www.volcengine.com/docs/82379/1949118) | 官方示例使用 `https://ark.cn-beijing.volces.com/api/v3` 与 `doubao-seed-1-6-251015`；如使用 Coding Plan，请改用其专用 Base URL 和模型名，不要套用本表的在线推理模板。 |
-| SiliconFlow | [模型列表](https://docs.siliconflow.cn/quickstart/models)、[获取模型列表 API](https://docs.siliconflow.cn/cn/api-reference/models/get-model-list) | 平台模型实时更新且 `/models` 需要 API Key；模板只给常见新模型示例，保存前建议在 Web 设置页点击「获取模型」确认账号可见性。 |
-| OpenRouter | [Models API](https://openrouter.ai/docs/api/api-reference/models/get-models) | OpenRouter 支持 `~anthropic/claude-sonnet-latest`、`~openai/gpt-latest` 等 latest router alias；2026-05-03 的一次手动 live smoke 以 Claude Sonnet latest 作为默认示例通过，GPT latest 保留为可按账号权限切换的备选。 |
-| LiteLLM | [OpenAI-Compatible Endpoints](https://docs.litellm.ai/docs/providers/openai_compatible) | OpenAI-compatible 端点需要把运行时模型写成 `openai/<model>`，Base URL 只填到服务商兼容入口，不额外拼接 `/chat/completions`。 |
+| Anspire Open | [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` kann, wenn keine OpenAI-kompatible Quelle mit höherer Priorität konfiguriert ist, für das LLM-Gateway und die Suche verwendet werden; das Standardbeispiel der Seite und der `.env` ist `openai/Doubao-Seed-2.0-lite` + `https://open-gateway.anspire.cn/v6`; ob es verwendbar ist, richtet sich nach Konsole und Modellberechtigungen. |
+| OpenAI | [Modellliste](https://platform.openai.com/docs/models) | Die offizielle Modellseite empfiehlt, bei `gpt-5.5` zu beginnen; für Szenarien mit niedriger Latenz/Kosten `gpt-5.4-mini` oder `gpt-5.4-nano` verwenden. |
+| DeepSeek | [Schnellstart](https://api-docs.deepseek.com/) | Die offizielle OpenAI-Base-URL ist `https://api.deepseek.com`; `deepseek-chat` / `deepseek-reasoner` werden am 2026-07-24 abgekündigt, die aktuellen Templates verwenden direkt `deepseek-v4-flash` / `deepseek-v4-pro`. |
+| Gemini | [Modellliste](https://ai.google.dev/gemini-api/docs/models) | Gemini 3.1 Pro / Gemini 3 Flash sind weiterhin Preview; für Produktionsstabilität kann in der Konsole auf die stabilen 2.5-Modelle zurückgewechselt werden. |
+| Anthropic Claude | [Modellübersicht](https://docs.anthropic.com/en/docs/about-claude/models/all-models) | Die aktuellen Claude-API-IDs umfassen `claude-sonnet-4-6`, `claude-opus-4-7`; Sonnet eignet sich besser als Standardeinstiegspunkt mit gutem Preis-Leistungs-Verhältnis. |
+| Kimi / Moonshot | [Kimi K2.6 Schnellstart](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart), [Modellliste](https://platform.kimi.com/docs/models) | Offiziell wird `kimi-k2.6` empfohlen; die `kimi-k2`-Serie wird am 2026-05-25 abgeschaltet, alte `moonshot-v1-*` bleiben nur als Wahl für stabile Altlast-Workloads erhalten. |
+| Tongyi Qianwen / DashScope | [Textgenerierung](https://help.aliyun.com/zh/model-studio/text-generation-model/) | Bailian empfiehlt `qwen3.6-plus`; nach bestätigter Wirksamkeit kann `qwen3.6-flash` die Kosten senken. |
+| Zhipu GLM | [Modellübersicht](https://docs.bigmodel.cn/cn/guide/start/model-overview), [GLM-5.1](https://docs.bigmodel.cn/cn/guide/models/text/glm-5.1) | `glm-5.1` ist das aktuelle Flaggschiff; `glm-4.7-flash` dient als Beispiel für ein leichtes/kostenloses Modell. |
+| MiniMax | [OpenAI-API-Kompatibilität](https://platform.minimax.io/docs/api-reference/text-chat), [Modellliste abrufen](https://platform.minimax.io/docs/api-reference/models/openai/list-models), [Pricing](https://platform.minimax.io/docs/guides/pricing-paygo) | Die offizielle OpenAI-kompatible Base URL ist `https://api.minimax.io/v1`; gelistet werden `MiniMax-M3` (Standard, unterstützt Bildeingabe, offiziell bis zu 1M Eingabekontext, pricing unterscheidet zwei Eingabepreisstufen `<=512K` und `>512K`), `MiniMax-M2.7`, `MiniMax-M2.7-highspeed` sowie das Legacy-Modell `MiniMax-M2.5`. Die Fallback-Kostenschätzung dieses Repositorys registriert M3 konservativ über die Preisstufe `<=512K` und behält die M2.5-Legacy-Preise für die Kompatibilität historischer Nutzerkonfigurationen bei; Coding-Tool-Szenarien in der China-Region können den dedizierten `.com`/Anthropic-Einstiegspunkt verwenden, maßgeblich ist die Konsole. |
+| Xiaomi MiMo | Offizielle Dokumentation / Konsole | Aktuell über die OpenAI-kompatible Art angebunden; Base URL, Modellname und Berechtigungen richten sich nach der offiziellen MiMo-Dokumentation/Konsole; der `mimo`-Kanal ist im Standard-Workflow des Repositorys nicht explizit gemappt, für Actions bitte die Custom-Zuordnung nach dem Abschnitt "GitHub Actions-Konfiguration" dieses Dokuments ergänzen. |
+| Volcano Ark / Doubao | [Online-Inferenz (allgemein)](https://www.volcengine.com/docs/82379/2121998), [Modellliste](https://www.volcengine.com/docs/82379/1949118) | Offizielle Beispiele verwenden `https://ark.cn-beijing.volces.com/api/v3` und `doubao-seed-1-6-251015`; bei Nutzung eines Coding-Plans bitte die dedizierte Base URL und Modellnamen verwenden und nicht das Online-Inferenz-Template dieser Tabelle anwenden. |
+| SiliconFlow | [Modellliste](https://docs.siliconflow.cn/quickstart/models), [Modellliste-API abrufen](https://docs.siliconflow.cn/cn/api-reference/models/get-model-list) | Die Plattformmodelle werden in Echtzeit aktualisiert und `/models` benötigt einen API-Key; Templates geben nur Beispiele für gängige neue Modelle; vor dem Speichern wird empfohlen, in der Web-Einstellungsseite auf "Modelle abrufen" zu klicken, um die Sichtbarkeit für das Konto zu bestätigen. |
+| OpenRouter | [Models API](https://openrouter.ai/docs/api/api-reference/models/get-models) | OpenRouter unterstützt latest-Router-Aliasse wie `~anthropic/claude-sonnet-latest`, `~openai/gpt-latest`; ein manueller Live-Smoke vom 2026-05-03 bestand mit Claude Sonnet latest als Standardbeispiel, GPT latest bleibt als je nach Kontoberechtigung umschaltbare Alternative erhalten. |
+| LiteLLM | [OpenAI-Compatible Endpoints](https://docs.litellm.ai/docs/providers/openai_compatible) | OpenAI-kompatible Endpoints verlangen, dass das Laufzeitmodell als `openai/<model>` geschrieben wird; die Base URL füllt man nur bis zum anbieterseitig kompatiblen Einstiegspunkt aus und hängt kein zusätzliches `/chat/completions` an. |
 
-本页预设只保证配置形状与当前依赖的 OpenAI-compatible 路由规则一致；实际连通性仍取决于服务商账号权限、地域、额度和模型开通状态。当前 LiteLLM 版本约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（见 `requirements.txt`），保留历史最低版本、显式排除 PyPI 事故版本，并避免未来大版本自动进入。
+Die Voreinstellungen dieser Seite garantieren nur, dass die Konfigurationsform zu den OpenAI-kompatiblen Routingregeln der aktuellen Abhängigkeiten passt; die tatsächliche Konnektivität hängt weiterhin von Kontoberechtigungen, Region, Kontingent und Modellfreischaltung des Anbieters ab. Die aktuelle LiteLLM-Versionsbeschränkung ist `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` (siehe `requirements.txt`); sie behält die historische Mindestversion, schließt explizit die PyPI-Vorfallversionen aus und verhindert, dass künftige Hauptversionen automatisch Einzug halten.
 
-## OpenAI-compatible 与 LiteLLM 规则
+## OpenAI-kompatible und LiteLLM-Regeln
 
-- OpenAI-compatible provider 的 channel `protocol` 通常是 `openai`。
-- 运行时模型名通常写成 `openai/<model>`；例如自定义网关里的 `gpt-5.5` 可以作为 `openai/gpt-5.5` 被 LiteLLM 路由。
-- `Qwen/...`、`deepseek-ai/...` 这类是服务商或模型仓库组织名前缀，不等同于 LiteLLM provider prefix；不要因为它们包含斜杠就误判为 `provider/model` 路由。
-- Base URL 只填官方或网关给出的兼容入口，通常到 `/v1`、`/api/v3` 或厂商文档指定路径；不要手动追加 `/chat/completions`。
-- 如果使用 YAML 模式，按 LiteLLM `model_list` / `litellm_params` 的原生语义配置；YAML 有效时优先级高于 Channels。
+- Das Kanal-`protocol` eines OpenAI-kompatiblen Providers ist in der Regel `openai`.
+- Der Laufzeitmodellname wird in der Regel als `openai/<model>` geschrieben; z. B. kann `gpt-5.5` in einem Custom-Gateway als `openai/gpt-5.5` über LiteLLM geroutet werden.
+- `Qwen/...`, `deepseek-ai/...` usw. sind Organisationsnamen-Präfixe von Anbietern oder Modell-Repositories und nicht gleichbedeutend mit einem LiteLLM-Provider-Präfix; wegen des enthaltenen Schrägstrichs nicht als `provider/model`-Routing fehlinterpretieren.
+- Die Base URL füllt man nur bis zum vom Anbieter oder Gateway angegebenen kompatiblen Einstiegspunkt aus, üblicherweise bis `/v1`, `/api/v3` oder einem im Herstellerdokument festgelegten Pfad; `/chat/completions` nicht manuell anhängen.
+- Im YAML-Modus nach der nativesen Semantik von LiteLLM `model_list` / `litellm_params` konfigurieren; solange das YAML gültig ist, hat es Vorrang vor Channels.
 
-## GitHub Actions 配置
+## GitHub-Actions-Konfiguration
 
-仓库自带 `.github/workflows/00-daily-analysis.yml` 只会透传 workflow 中显式列出的环境变量。使用渠道模式时，先在 Repository Variables 或 Secrets 中设置 `LLM_CHANNELS`，再按渠道名补齐对应 `LLM_<CHANNEL>_*`。
+Der mitgelieferte `.github/workflows/00-daily-analysis.yml` des Repositorys reicht nur die im Workflow explizit gelisteten Umgebungsvariablen durch. Bei der Kanalnutzung zuerst in den Repository-Variables oder Secrets `LLM_CHANNELS` setzen und dann nach Kanalnamen das passende `LLM_<CHANNEL>_*` ergänzen.
 
-| 字段 | 建议位置 | 说明 |
+| Feld | Empfohlener Ort | Erläuterung |
 | --- | --- | --- |
-| `LLM_CHANNELS` | Variables 或 Secrets | 逗号分隔渠道名，例如 `deepseek,minimax,volcengine`。 |
-| `LLM_<CHANNEL>_PROTOCOL` | Variables 或 Secrets | 非敏感，通常为 `openai`、`deepseek`、`gemini`、`anthropic` 或 `ollama`。 |
-| `LLM_<CHANNEL>_BASE_URL` | Variables 或 Secrets | 非敏感时优先放 Variables；私有网关地址可放 Secrets。 |
-| `LLM_<CHANNEL>_MODELS` | Variables 或 Secrets | 非敏感模型列表，逗号分隔。 |
-| `LLM_<CHANNEL>_ENABLED` | Variables 或 Secrets | 可选，未配置时默认启用；设为 `false` 可跳过该渠道。 |
-| `LLM_<CHANNEL>_API_KEY` / `LLM_<CHANNEL>_API_KEYS` | Secrets | 密钥字段必须放 Repository Secrets；同名 Variables 不会被 workflow 读取。 |
-| `LLM_<CHANNEL>_EXTRA_HEADERS` | Secrets 或 Variables | JSON 字符串；只要包含鉴权、租户、组织或私有网关信息，就应放 Secrets。 |
-| `LITELLM_CONFIG` | Variables 或 Secrets | YAML 文件路径；配合 `LITELLM_CONFIG_YAML` 使用时，workflow 会写入该路径。 |
-| `LITELLM_CONFIG_YAML` | Secrets 优先 | YAML 内容本身可能包含私有网关或 header，建议放 Secrets。 |
-| `LLM_USAGE_HMAC_SECRET` | Secrets | 可选；只有需要跨部署比较 usage message HMAC 时才配置同一个高熵随机密钥，例如 `openssl rand -hex 32`；不要放 Variables 或提交到版本控制。 |
-| `LLM_USAGE_HMAC_KEY_VERSION` | Variables 或 Secrets | 可选；轮换 `LLM_USAGE_HMAC_SECRET` 时同步更新版本标签，避免误比较不同密钥生成的 HMAC。 |
+| `LLM_CHANNELS` | Variables oder Secrets | Kommagetrennte Kanalnamen, z. B. `deepseek,minimax,volcengine`. |
+| `LLM_<CHANNEL>_PROTOCOL` | Variables oder Secrets | Nicht sensibel, in der Regel `openai`, `deepseek`, `gemini`, `anthropic` oder `ollama`. |
+| `LLM_<CHANNEL>_BASE_URL` | Variables oder Secrets | Bei Nicht-Sensitivität bevorzugt in Variables; private Gateway-Adressen können in Secrets. |
+| `LLM_<CHANNEL>_MODELS` | Variables oder Secrets | Nicht sensible Modellliste, kommagetrennt. |
+| `LLM_<CHANNEL>_ENABLED` | Variables oder Secrets | Optional, bei fehlender Konfiguration standardmäßig aktiviert; mit `false` kann der Kanal übersprungen werden. |
+| `LLM_<CHANNEL>_API_KEY` / `LLM_<CHANNEL>_API_KEYS` | Secrets | Schlüsselfelder müssen in die Repository-Secrets; gleichnamige Variables liest der Workflow nicht. |
+| `LLM_<CHANNEL>_EXTRA_HEADERS` | Secrets oder Variables | JSON-String; sobald Authentifizierungs-, Mandanten-, Organisations- oder private Gateway-Informationen enthalten sind, in Secrets legen. |
+| `LITELLM_CONFIG` | Variables oder Secrets | YAML-Dateipfad; bei Verwendung zusammen mit `LITELLM_CONFIG_YAML` schreibt der Workflow in diesen Pfad. |
+| `LITELLM_CONFIG_YAML` | bevorzugt Secrets | Der YAML-Inhalt kann selbst private Gateways oder Header enthalten, daher Secrets empfehlen. |
+| `LLM_USAGE_HMAC_SECRET` | Secrets | Optional; nur wenn usage-Message-HMACs über Deployments hinweg verglichen werden sollen, denselben zufälligen High-Entropy-Key konfigurieren, z. B. `openssl rand -hex 32`; nicht in Variables legen oder in die Versionskontrolle committen. |
+| `LLM_USAGE_HMAC_KEY_VERSION` | Variables oder Secrets | Optional; beim Rotieren von `LLM_USAGE_HMAC_SECRET` das Versionslabel synchron aktualisieren, um einen falschen Vergleich von HMACs unterschiedlicher Keys zu vermeiden. |
 
-默认 workflow 已显式映射 `primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
+Der Standard-Workflow hat `primary`, `secondary`, `aihubmix`, `anspire`, `deepseek`, `dashscope`, `zhipu`, `moonshot`, `minimax`, `volcengine`, `siliconflow`, `openrouter`, `gemini`, `anthropic`, `openai`, `ollama`, `hermes` explizit gemappt; `mimo` ist im Standard-Workflow nicht gemappt. Bei Verwendung von `mimo` (oder eines beliebigen nicht gelisteten Kanalnamens) müssen zusätzlich zur Konfiguration der gleichnamigen `LLM_<CHANNEL>_*` in Variables/Secrets die entsprechenden env-Zuordnungen synchron im Workflow ergänzt werden; lokale `.env`, Docker und selbstgehostete Skripte unterliegen dieser Einschränkung nicht.
 
-回滚 HMAC 遥测显式配置时，可移除 `LLM_USAGE_HMAC_SECRET` 并恢复或删除 `LLM_USAGE_HMAC_KEY_VERSION`；留空后系统会回到本地生成 `.llm_usage_hmac_secret` 的默认行为。
+Beim expliziten Rollback der HMAC-Telemetriekonfiguration kann `LLM_USAGE_HMAC_SECRET` entfernt und `LLM_USAGE_HMAC_KEY_VERSION` wiederhergestellt oder gelöscht werden; nach dem Leerlassen kehrt das System zum Standardverhalten der lokalen Erzeugung von `.llm_usage_hmac_secret` zurück.
 
-Ollama 默认 Base URL `http://127.0.0.1:11434` 主要面向本地、Docker 或能访问该服务的 self-hosted runner。GitHub-hosted runner 通常没有本地 Ollama 服务，直接配置 `LLM_CHANNELS=ollama` 大概率会连接失败。
+Die Standard-Base-URL von Ollama `http://127.0.0.1:11434` ist primär für lokale Umgebungen, Docker oder Self-hosted Runner gedacht, die den Dienst erreichen können. GitHub-hosted Runner haben in der Regel keinen lokalen Ollama-Dienst; eine direkte Konfiguration von `LLM_CHANNELS=ollama` führt sehr wahrscheinlich zu Verbindungsfehlern.
 
-### Hermes 本地 HTTP generation（Phase 3）
+### Hermes lokale HTTP-Erzeugung (Phase 3)
 
-Hermes 是 reserved 本地 HTTP generation preset，只通过 `LLM_CHANNELS=hermes` 启用。默认协议为 `openai`，默认地址为 `http://127.0.0.1:8642/v1`，默认模型为 `hermes-agent`：
+Hermes ist ein reserviertes Preset für die lokale HTTP-Erzeugung und wird nur über `LLM_CHANNELS=hermes` aktiviert. Standardprotokoll ist `openai`, Standardadresse ist `http://127.0.0.1:8642/v1`, Standardmodell ist `hermes-agent`:
 
 ```env
 LLM_CHANNELS=hermes
@@ -170,59 +170,59 @@ LLM_HERMES_MODELS=hermes-agent
 LITELLM_MODEL=openai/hermes-agent
 ```
 
-Phase 3 只支持普通分析 / JSON generation，不支持 stream/SSE、tools、Vision、Agent tools、remote Hermes 或进程生命周期管理。`LLM_HERMES_API_KEY` 应来自本地 `.env`、运行时配置或 GitHub Secrets；不要写入仓库。Hermes 只允许 loopback `/v1` endpoint，`localhost` 会按 `127.0.0.1` 规范化，`LLM_HERMES_API_KEYS` 与 `LLM_HERMES_EXTRA_HEADERS` 不受支持。Web 设置页保存 reserved Hermes 渠道时会清空这两个旧字段并显示 warning；恢复旧值请使用 `.env` 备份、Git 历史或桌面端导出备份，但非空多 Key / Extra Headers 仍会被后端拒绝。
+Phase 3 unterstützt nur normale Analyse-/JSON-Erzeugung, nicht stream/SSE, tools, Vision, Agent-Tools, Remote-Hermes oder Prozesslebenszyklusverwaltung. `LLM_HERMES_API_KEY` sollte aus der lokalen `.env`, der Laufzeitkonfiguration oder den GitHub-Secrets stammen; nicht ins Repository schreiben. Hermes erlaubt nur Loopback-`/v1`-Endpoints, `localhost` wird nach `127.0.0.1` normalisiert, `LLM_HERMES_API_KEYS` und `LLM_HERMES_EXTRA_HEADERS` werden nicht unterstützt. Beim Speichern des reservierten Hermes-Kanals in der Web-Einstellungsseite werden diese beiden alten Felder geleert und eine Warnung angezeigt; zur Wiederherstellung alter Werte die `.env`-Sicherung, die Git-Historie oder die Desktop-Export-Sicherung verwenden, aber nicht leere Multi-Keys/Extra-Headers werden vom Backend weiterhin abgelehnt.
 
-在 GitHub Actions 中，GitHub-hosted runner 的 `127.0.0.1` 是 runner 自身，不是用户电脑。只有 self-hosted runner 或同机服务能访问本地 Hermes；否则会连接失败。
+Unter GitHub Actions ist `127.0.0.1` eines GitHub-hosted Runners der Runner selbst, nicht der Nutzercomputer. Nur Self-hosted Runner oder Dienste auf demselben Rechner können auf lokales Hermes zugreifen; sonst schlägt die Verbindung fehl.
 
-## 常见错误与处理建议
+## Häufige Fehler und Bearbeitungsempfehlungen
 
-| `details.reason` / 现象 | 常见原因 | 建议处理 |
+| `details.reason` / Symptom | Häufige Ursache | Empfohlene Behandlung |
 | --- | --- | --- |
-| `missing_api_key` | API Key 为空，或 `API_KEYS` 逗号分隔后没有任何非空片段。 | 填入至少一个有效 key；本地 Ollama 或 localhost 兼容服务除外。 |
-| `api_key_rejected` | 服务商返回 401 / 403，key 无效、权限不足或项目未开通。 | 重新复制 key，检查账号项目、组织、区域和模型权限。 |
-| `insufficient_balance` | 余额不足、账单未开通或套餐额度耗尽。 | 到服务商控制台确认余额、账单状态和模型套餐。 |
-| `quota_exceeded` | 账号或组织配额耗尽。 | 检查套餐、项目额度、组织额度和服务商账单页。 |
-| `rate_limit` | RPM / TPM / 并发限制触发。 | 降低并发，换轻量模型，或在控制台提升限额。 |
-| `timeout` | 请求超时，可能是网络慢、服务商响应慢或本地服务无响应。 | 检查代理、防火墙、Base URL、模型冷启动和 timeout 设置。 |
-| `dns_error` | 域名无法解析。 | 检查 Base URL 拼写、DNS、代理和运行环境网络。 |
-| `tls_error` | TLS 证书、代理或中间人证书异常。 | 检查 HTTPS 证书链、公司代理、自签证书和系统时间。 |
-| `connection_refused` | 目标端口无服务，或本地服务未启动。 | 检查 Base URL、端口、防火墙；Ollama 确认本机或 runner 能访问服务。 |
-| `endpoint_not_found` | `/models` 或 chat endpoint 路径不存在。 | 确认 Base URL 是否填到兼容入口，不要多拼或少拼厂商要求的路径。 |
-| `invalid_url` | base_url 包含不受支持形态（空白/控制字符、反斜杠、`userinfo@host` 等）或解析语义不安全。 | 清理 `LLM_<CHANNEL>_BASE_URL`（建议先置空/删除该变量），保持 provider 默认入口；如需固定网关请先按官方兼容示例填写。 |
-| `model_access_denied` | 基于已观测 provider 文案的 best-effort 模型可用性归类：模型可能被禁用、未开通、账号不可见或当前 key 无权限访问。 | 先查看测试结果里的“本次测试模型”，在服务商控制台确认该模型已开通；必要时调整模型顺序、移除不可用模型，或点击「获取模型」核对账号可见模型。 |
-| `provider_blocked` | 服务商或中转网关明确拦截了本次请求，可能来自账号风控、地域、请求来源、模型权限、代理商策略或内容安全策略。 | 先查看测试结果里的“本次测试模型”和服务商控制台日志；检查账号/项目状态、地域或来源限制、网关策略和内容安全规则，而不是优先排查 Base URL、TLS 或本地网络。 |
-| `provider_prefix_mismatch` | LiteLLM provider prefix 与渠道协议不匹配。 | OpenAI-compatible 渠道通常使用 `openai/<model>`；不要把 `Qwen/...`、`deepseek-ai/...` 误当 provider prefix。 |
-| `non_json` | 服务商返回非 JSON 或代理返回 HTML / 文本错误页。 | 检查 Base URL、网关路径、代理错误页和 Chat Completions 兼容入口。 |
-| `null_response` | LiteLLM 没有返回可解析响应对象。 | 检查 provider 是否兼容 Chat Completions，必要时换模型或 endpoint 重试。 |
-| `null_content` | Chat completion 返回成功但 `content` 为空。 | 换用兼容文本输出的模型，或检查是否强制 tool / vision 响应。 |
-| `malformed_choices` | 响应缺少兼容的 `choices` 结构。 | 确认 endpoint 是 Chat Completions 兼容接口，不是 Embeddings、Responses 或其它协议入口。 |
-| `capability_unsupported` | JSON / tools / stream / vision smoke 参数不被当前模型或 endpoint 支持。 | 换支持该能力的模型，或把结果视为当前账号、模型和 endpoint 的一次能力诊断，不代表 provider 全局不支持。 |
-| `unknown_error` | 服务商或客户端抛出未能细分的异常。 | 先查看 `details.message` / 日志中的原始错误，再按网络、鉴权、模型名和额度逐项排查。 |
+| `missing_api_key` | API-Key ist leer oder die kommagetrennten `API_KEYS` enthalten keinen nicht leeren Teil. | Mindestens einen gültigen Key eintragen; ausgenommen lokale Ollama- oder localhost-kompatible Dienste. |
+| `api_key_rejected` | Der Anbieter gibt 401 / 403 zurück; Key ungültig, Berechtigungen unzureichend oder Projekt nicht freigeschaltet. | Key erneut kopieren; Konto-Projekt, Organisation, Region und Modellberechtigungen prüfen. |
+| `insufficient_balance` | Guthaben unzureichend, Rechnung nicht aktiviert oder Kontingent des Pakets erschöpft. | In der Anbieter-Konsole Guthaben, Rechnungsstatus und Modellpaket bestätigen. |
+| `quota_exceeded` | Kontingent des Kontos oder der Organisation erschöpft. | Paket, Projektkontingent, Organisationskontingent und die Rechnungsseite des Anbieters prüfen. |
+| `rate_limit` | RPM / TPM / Nebenläufigkeitslimit ausgelöst. | Nebenläufigkeit senken, auf ein leichtes Modell wechseln oder das Limit in der Konsole erhöhen. |
+| `timeout` | Anfrage-Timeout, möglicherweise langsames Netz, langsame Anbieterantwort oder nicht reagierender lokaler Dienst. | Proxy, Firewall, Base URL, Modell-Kaltstart und Timeout-Einstellungen prüfen. |
+| `dns_error` | Domain kann nicht aufgelöst werden. | Base-URL-Schreibweise, DNS, Proxy und Netz der Laufumgebung prüfen. |
+| `tls_error` | TLS-Zertifikat, Proxy oder Man-in-the-Middle-Zertifikat anomal. | HTTPS-Zertifikatskette, Firmenproxy, selbstsignierte Zertifikate und Systemzeit prüfen. |
+| `connection_refused` | Auf dem Zielport läuft kein Dienst oder der lokale Dienst ist nicht gestartet. | Base URL, Port, Firewall prüfen; bei Ollama bestätigen, dass der Rechner oder Runner den Dienst erreichen kann. |
+| `endpoint_not_found` | Pfad `/models` oder des Chat-Endpoints existiert nicht. | Bestätigen, ob die Base URL bis zum kompatiblen Einstiegspunkt gefüllt ist; nicht zu viel oder zu wenig vom vom Hersteller verlangten Pfad anhängen. |
+| `invalid_url` | base_url enthält nicht unterstützte Formen (Leerzeichen/Steuerzeichen, Backslash, `userinfo@host` usw.) oder die Parsing-Semantik ist unsicher. | `LLM_<CHANNEL>_BASE_URL` bereinigen (empfohlen: Variable zuerst leeren/löschen) und den Standardeinstiegspunkt des Providers behalten; für ein festes Gateway zuerst nach offiziellen kompatiblen Beispielen füllen. |
+| `model_access_denied` | Best-effort-Einordnung der Modellverfügbarkeit anhand beobachteter Provider-Texte: Modell kann deaktiviert, nicht freigeschaltet, für das Konto unsichtbar sein oder der aktuelle Key hat keinen Zugriff. | Zuerst das "in diesem Test verwendete Modell" im Testergebnis ansehen und in der Anbieter-Konsole bestätigen, dass das Modell freigeschaltet ist; bei Bedarf die Modellreihenfolge anpassen, unverfügbare Modelle entfernen oder auf "Modelle abrufen" klicken, um die für das Konto sichtbaren Modelle abzugleichen. |
+| `provider_blocked` | Der Anbieter oder das Relais-Gateway hat diese Anfrage eindeutig blockiert; möglich sind Konto-Risikokontrolle, Region, Anfragequelle, Modellberechtigungen, Reseller-Policy oder Content-Security-Policy. | Zuerst das "in diesem Test verwendete Modell" im Testergebnis und die Logs der Anbieter-Konsole ansehen; Konto-/Projektstatus, Regions- oder Quellenbeschränkungen, Gateway-Policies und Content-Security-Regeln prüfen, statt zuerst Base URL, TLS oder lokales Netz zu untersuchen. |
+| `provider_prefix_mismatch` | LiteLLM-Provider-Präfix passt nicht zum Kanalprotokoll. | OpenAI-kompatible Kanäle verwenden in der Regel `openai/<model>`; `Qwen/...`, `deepseek-ai/...` nicht als Provider-Präfix fehlinterpretieren. |
+| `non_json` | Der Anbieter gibt kein JSON zurück oder der Proxy gibt eine HTML-/Text-Fehlerseite zurück. | Base URL, Gateway-Pfad, Proxy-Fehlerseite und Chat-Completions-kompatiblen Einstiegspunkt prüfen. |
+| `null_response` | LiteLLM hat kein parsebares Antwortobjekt zurückgegeben. | Prüfen, ob der Provider mit Chat Completions kompatibel ist; bei Bedarf Modell oder Endpoint wechseln und erneut versuchen. |
+| `null_content` | Chat-Completion erfolgreich, aber `content` leer. | Auf ein kompatibles Textausgabemodell wechseln oder prüfen, ob tool-/vision-Antworten erzwungen werden. |
+| `malformed_choices` | Der Antwort fehlt eine kompatible `choices`-Struktur. | Bestätigen, dass der Endpoint eine Chat-Completions-kompatible Schnittstelle ist, kein Embeddings-, Responses- oder sonstiges Protokoll-Einstiegspunkt. |
+| `capability_unsupported` | JSON-/tools-/stream-/vision-Smoke-Parameter werden von Modell oder Endpoint nicht unterstützt. | Auf ein Modell mit dieser Fähigkeit wechseln oder das Ergebnis als einmalige Fähigkeitsdiagnose des aktuellen Kontos, Modells und Endpoints betrachten, nicht als globale Nicht-Unterstützung des Providers. |
+| `unknown_error` | Vom Anbieter oder Client wurde eine nicht weiter aufgeschlüsselte Ausnahme geworfen. | Zuerst den Rohfehler in `details.message` / den Logs ansehen und dann nacheinander Netz, Authentifizierung, Modellname und Kontingent prüfen. |
 
-完整分类逻辑以 `src/services/system_config_service.py` 中的错误分类实现为准。
+Die vollständige Klassifikationslogik richtet sich nach der Fehlerklassifikationsimplementierung in `src/services/system_config_service.py`.
 
-`model_access_denied` 不是跨 provider 的官方错误码映射。该分类的可复核依据包括：
+`model_access_denied` ist keine offizielle Fehlercode-Zuordnung über Provider hinweg. Zu den überprüfbaren Belegen dieser Klassifikation gehören:
 
-- SiliconFlow 官方错误处理文档要求接口错误排查时记录 HTTP 错误码和 `message`，说明 403 表示余额不足或权限不够，其他情况参考报错 `message`，并建议换一个模型确认问题是否仍存在（中文：<https://docs.siliconflow.cn/cn/faqs/error-code>；英文：<https://docs.siliconflow.cn/en/faqs/error-code>）。
-- Issue #1208 中真实脱敏样例来自 SiliconFlow / OpenAI Compatible 渠道测试，经 LiteLLM 返回 `litellm.APIError: APIError: OpenAIException - Model disabled.`。
-- 线上复核记录（2026-05-06T16:21:21Z）：在 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` 约束下，本地验证环境为 Python `3.13.12`、LiteLLM `1.82.3`、Base URL `https://api.siliconflow.cn/v1`、模型 `Qwen/Qwen3-235B-A22B-Thinking-2507`。直连 SiliconFlow Chat Completions 返回 HTTP `403`，响应体为 `{"code":30003,"message":"Model disabled.","data":null}`；同一模型通过 LiteLLM `completion(model="openai/Qwen/Qwen3-235B-A22B-Thinking-2507")` 返回 `APIError: OpenAIException - Model disabled.`。
+- Die offizielle Fehlerbehandlungsdokumentation von SiliconFlow verlangt, bei der Schnittstellen-Fehlerbehebung den HTTP-Fehlercode und die `message` zu protokollieren; 403 bedeutet unzureichendes Guthaben oder fehlende Berechtigung, andere Fälle orientieren sich an der Fehler-`message`, und es wird empfohlen, ein anderes Modell auszuprobieren, um zu bestätigen, ob das Problem weiterhin besteht (Chinesisch: <https://docs.siliconflow.cn/cn/faqs/error-code>; Englisch: <https://docs.siliconflow.cn/en/faqs/error-code>).
+- Das reale, maskierte Beispiel in Issue #1208 stammt aus Tests des SiliconFlow-/OpenAI-Compatiblen-Kanals und lieferte über LiteLLM `litellm.APIError: APIError: OpenAIException - Model disabled.` zurück.
+- Online-Nachverifikationsprotokoll (2026-05-06T16:21:21Z): Unter der Beschränkung `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` war die lokale Verifikationsumgebung Python `3.13.12`, LiteLLM `1.82.3`, Base URL `https://api.siliconflow.cn/v1`, Modell `Qwen/Qwen3-235B-A22B-Thinking-2507`. Der direkte Aufruf der SiliconFlow Chat Completions lieferte HTTP `403` mit dem Antwortkörper `{"code":30003,"message":"Model disabled.","data":null}`; dasselbe Modell lieferte über LiteLLM `completion(model="openai/Qwen/Qwen3-235B-A22B-Thinking-2507")` `APIError: OpenAIException - Model disabled.` zurück.
 
-因此当前运行时把该已观测 provider `message` 作为 best-effort 模型可用性诊断，而不是把它声明为官方跨 provider 错误码。实现仅在错误文本同时包含 `model` 和明确权限、禁用或不可用信号时进入该诊断；未覆盖或语义不同的 provider 文案会继续走既有兜底诊断。`provider_blocked` 同样是基于明确拦截文案的 best-effort 诊断，用于区分服务商/网关策略拦截与本地网络、TLS 或模型不可用问题。
+Daher behandelt die aktuelle Laufzeit diese beobachtete Provider-`message` als best-effort-Diagnose der Modellverfügbarkeit, statt sie als offiziellen anbieterübergreifenden Fehlercode zu deklarieren. Die Implementierung tritt nur dann in diese Diagnose ein, wenn der Fehlertext zugleich `model` und ein klares Berechtigungs-, Deaktivierungs- oder Unverfügbarkeitssignal enthält; nicht abgedeckte oder semantisch unterschiedliche Provider-Texte laufen weiter in die bestehende Fallback-Diagnose. `provider_blocked` ist ebenfalls eine best-effort-Diagnose auf Basis eindeutiger Blockierungstexte und dient dazu, Anbieter-/Gateway-Policy-Blockierungen von lokalen Netz-, TLS- oder Modellunverfügbarkeitsproblemen zu unterscheiden.
 
-## 运行时能力检测边界
+## Grenzen der Laufzeitfähigkeits-Erkennung
 
-- JSON / tools / stream / vision smoke 必须在 Web 中显式触发。
-- 检测会产生真实 LLM 请求，可能带来 token / 图像输入费用、RPM/TPM 限流、余额不足或超时。
-- 检测结果只代表当前账号、模型和 endpoint 的一次 best-effort 运行时结果。
-- 检测结果不会写回 `.env`，也不会阻止保存配置。
-- 能力检测失败不等于 provider 全局不支持；失败可能来自账号权限、模型未开通、endpoint 区域、余额、服务商兼容层或 LiteLLM 转换路径。
-- 当前实现未对所有真实 provider 做在线 smoke，兼容依据是 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（见 `requirements.txt`）、[LiteLLM Python SDK / OpenAI I/O format](https://docs.litellm.ai/)、[LiteLLM OpenAI-compatible 路由](https://docs.litellm.ai/docs/providers/openai_compatible)，以及 OpenAI Chat Completions 的 [JSON mode](https://platform.openai.com/docs/guides/structured-outputs?api-mode=chat)、[tool calling](https://platform.openai.com/docs/guides/function-calling?api-mode=chat)、[streaming](https://platform.openai.com/docs/guides/streaming-responses?api-mode=chat) 和 [vision input](https://platform.openai.com/docs/guides/images-vision?api-mode=chat) 请求形状。
+- JSON-/tools-/stream-/vision-Smokes müssen in der Web-App explizit ausgelöst werden.
+- Die Erkennung erzeugt echte LLM-Anfragen und kann Token-/Bildeingabekosten, RPM/TPM-Limits, unzureichendes Guthaben oder Timeouts mit sich bringen.
+- Das Erkennungsergebnis repräsentiert nur ein einmaliges best-effort-Laufzeitergebnis des aktuellen Kontos, Modells und Endpoints.
+- Das Erkennungsergebnis wird nicht in `.env` zurückgeschrieben und blockiert auch nicht das Speichern der Konfiguration.
+- Ein fehlgeschlagener Fähigkeitstest bedeutet nicht, dass der Provider global nicht unterstützt; der Fehlschlag kann von Kontoberechtigungen, nicht freigeschalteten Modellen, der Endpoint-Region, dem Guthaben, der anbieterseitigen Kompatibilitätsschicht oder dem LiteLLM-Konvertierungspfad stammen.
+- Die aktuelle Implementierung führt keinen Online-Smoke für alle echten Provider durch; Kompatibilitätsgrundlage sind `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` (siehe `requirements.txt`), das [LiteLLM Python SDK / OpenAI I/O format](https://docs.litellm.ai/), das [LiteLLM OpenAI-compatible Routing](https://docs.litellm.ai/docs/providers/openai_compatible) sowie die Anfrageformen [JSON mode](https://platform.openai.com/docs/guides/structured-outputs?api-mode=chat), [tool calling](https://platform.openai.com/docs/guides/function-calling?api-mode=chat), [streaming](https://platform.openai.com/docs/guides/streaming-responses?api-mode=chat) und [vision input](https://platform.openai.com/docs/guides/images-vision?api-mode=chat) der OpenAI Chat Completions.
 
-## 回滚方式
+## Rollback-Wege
 
-- Web 设置页：删除或禁用对应 channel，重新选择旧的主模型 / Agent 模型 / fallback。
-- `.env`：恢复备份中的 `LLM_*`、`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`VISION_MODEL`、`LITELLM_FALLBACK_MODELS`。
-- 从 Channels 回到 legacy：删除或清空 `LLM_CHANNELS`，保留 legacy provider key 和 `LITELLM_MODEL`。
-- 从 YAML 回到 Channels / legacy：移除 `LITELLM_CONFIG` / `LITELLM_CONFIG_YAML`，重启后下层配置重新生效。
-- WebUI / 桌面端：使用系统设置中导出的配置备份恢复。
-- PR 回滚：revert 对应 docs PR；P4 不涉及配置、数据或代码迁移。
+- Web-Einstellungsseite: Entsprechenden Kanal löschen oder deaktivieren und Hauptmodell / Agent-Modell / Fallback erneut auf die alten Werte setzen.
+- `.env`: Aus der Sicherung `LLM_*`, `LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `VISION_MODEL`, `LITELLM_FALLBACK_MODELS` wiederherstellen.
+- Von Channels zu Legacy: `LLM_CHANNELS` löschen oder leeren und Legacy-Provider-Key und `LITELLM_MODEL` beibehalten.
+- Von YAML zu Channels/Legacy: `LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` entfernen; nach dem Neustart wirkt die darunterliegende Konfiguration wieder.
+- WebUI / Desktop-CLI: Über die in den Systemeinstellungen exportierte Konfigurationssicherung wiederherstellen.
+- PR-Rollback: Den betreffenden Docs-PR revertieren; P4 betrifft keine Konfigurations-, Daten- oder Code-Migration.

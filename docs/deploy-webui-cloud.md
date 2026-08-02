@@ -1,124 +1,124 @@
-# 云服务器 Web 界面访问指南
+# Leitfaden für den Web-Zugriff auf dem Cloud-Server
 
-如果你已经把项目部署到云服务器，但不知道在浏览器里输入什么地址才能打开 Web 管理界面，这篇教程就是为你准备的。
+Wenn Sie das Projekt bereits auf einem Cloud-Server bereitgestellt haben, aber nicht wissen, welche Adresse Sie im Browser eingeben müssen, um das Web-Verwaltungsinterface zu öffnen, dann ist dieses Tutorial genau für Sie.
 
-> 其实就两步：让服务监听外网，再在浏览器里输入地址。
-
----
-
-## 目录
-
-- [方式一：直接部署（pip + python）](#方式一直接部署pip--python)
-- [方式二：Docker Compose](#方式二docker-compose)
-- [如何在浏览器里打开界面](#如何在浏览器里打开界面)
-- [如何确认 Docker 重建已生效](#如何确认-docker-重建已生效)
-- [访问不了？先检查这几项](#访问不了先检查这几项)
-- [可选：Nginx 反向代理（绑定域名 / 80 端口）](#可选nginx-反向代理绑定域名--80-端口)
-- [安全建议](#安全建议)
+> Eigentlich sind es nur zwei Schritte: Den Dienst im externen Netz lauschen lassen und dann die Adresse im Browser eingeben.
 
 ---
 
-## 方式一：直接部署（pip + python）
+## Inhaltsverzeichnis
 
-### 第一步：修改 .env 中的监听地址
+- [Methode 1: Direkte Bereitstellung (pip + python)](#methode-1-direkte-bereitstellung-pip--python)
+- [Methode 2: Docker Compose](#methode-2-docker-compose)
+- [Öffnen der Oberfläche im Browser](#öffnen-der-oberfläche-im-browser)
+- [Bestätigen, dass der Docker-Rebuild wirksam ist](#bestätigen-dass-der-docker-rebuild-wirksam-ist)
+- [Zugriff nicht möglich? Diese Punkte zuerst prüfen](#zugriff-nicht-möglich-diese-punkte-zuerst-prüfen)
+- [Optional: Nginx-Reverse-Proxy (Domain / Port 80 binden)](#optional-nginx-reverse-proxy-domain--port-80-binden)
+- [Sicherheitsempfehlungen](#sicherheitsempfehlungen)
 
-用编辑器打开 `.env`（在项目根目录，即包含 `main.py` 的目录），找到这一行：
+---
+
+## Methode 1: Direkte Bereitstellung (pip + python)
+
+### Schritt 1: Die Listenadresse in .env ändern
+
+Öffnen Sie `.env` mit einem Editor (im Projektverzeichnis, also in dem Verzeichnis, das `main.py` enthält) und suchen Sie diese Zeile:
 
 ```env
 WEBUI_HOST=127.0.0.1
 ```
 
-把 `127.0.0.1` 改成 `0.0.0.0`：
+Ändern Sie `127.0.0.1` in `0.0.0.0`:
 
 ```env
 WEBUI_HOST=0.0.0.0
 ```
 
-> `127.0.0.1` 表示只有本机能访问，`0.0.0.0` 表示允许任何来源访问。云服务器需要把 `.env` 中的 `WEBUI_HOST` 改成 `0.0.0.0`，或在启动命令里显式传入 `--host 0.0.0.0`，才能从外网打开界面。
+> `127.0.0.1` bedeutet, dass nur der eigene Rechner zugreifen kann, `0.0.0.0` bedeutet, dass Zugriffe von beliebigen Quellen erlaubt sind. Auf dem Cloud-Server muss `WEBUI_HOST` in `.env` auf `0.0.0.0` geändert werden – oder Sie übergeben im Startbefehl explizit `--host 0.0.0.0` –, damit das Interface von außen geöffnet werden kann.
 
-### 第二步：启动服务
+### Schritt 2: Dienst starten
 
-在项目根目录执行：
+Im Projektverzeichnis ausführen:
 
 ```bash
-# 只启动 Web 界面（不自动执行分析）
+# Nur das Web-Interface starten (ohne automatische Analyse)
 python main.py --webui-only
 
-# 或者：启动 Web 界面（启动时执行一次分析；需每日定时分析请加 --schedule 或设 SCHEDULE_ENABLED=true）
+# Oder: Web-Interface starten (beim Start einmalig analysieren; für die tägliche geplante Analyse --schedule hinzufügen oder SCHEDULE_ENABLED=true setzen)
 python main.py --webui
 ```
 
-启动成功后，终端会输出类似：
+Nach erfolgreichem Start gibt das Terminal etwas Ähnliches aus:
 
 ```
 FastAPI 服务已启动: http://0.0.0.0:8000
 ```
 
-如果你想让服务在退出终端后继续运行，可以用 `nohup`：
+Wenn Sie möchten, dass der Dienst nach dem Schließen des Terminals weiterläuft, können Sie `nohup` verwenden:
 
 ```bash
 nohup python main.py --webui-only > /dev/null 2>&1 &
 ```
 
-> 日志文件会由程序自动写入 `logs/` 目录，用 `tail -f logs/stock_analysis_*.log` 查看。
+> Die Logdateien werden vom Programm automatisch in das Verzeichnis `logs/` geschrieben. Ansehen können Sie sie mit `tail -f logs/stock_analysis_*.log`.
 
-### 修改端口（可选）
+### Port ändern (optional)
 
-默认端口是 8000。如果想改用其他端口，在 `.env` 里设置：
+Der Standardport ist 8000. Wenn Sie einen anderen Port verwenden möchten, setzen Sie ihn in `.env`:
 
 ```env
 WEBUI_PORT=8888
 ```
 
-然后重启服务。
+Anschließend den Dienst neu starten.
 
 ---
 
-## 方式二：Docker Compose
+## Methode 2: Docker Compose
 
-### 第一步：确认已有 .env 配置
+### Schritt 1: Sicherstellen, dass die .env-Konfiguration vorhanden ist
 
-项目的 `docker/docker-compose.yml` 在容器内部已经自动设置了 `WEBUI_HOST=0.0.0.0`，你不需要在 `.env` 里再改监听地址，Docker 会自动处理。
+Das Projekt `docker/docker-compose.yml` setzt innerhalb des Containers bereits automatisch `WEBUI_HOST=0.0.0.0`. Sie müssen die Listenadresse in `.env` nicht mehr ändern – Docker übernimmt das automatisch.
 
-Docker Compose 中的 `env_file: ../.env` 只会把 `.env` 作为**启动环境变量**注入容器，不会在容器内创建 `/app/.env`，也不会让 WebUI 保存配置时回写宿主机 `.env`。新版 WebUI 会在活跃 `.env` 文件缺少某些键时展示启动注入的同名环境变量作为兜底，因此页面上能看到 Docker 启动时注入的配置；但“导出 `.env`”仍只导出当前活跃配置文件内容。
+`env_file: ../.env` in Docker Compose injiziert `.env` lediglich als **Startumgebungsvariablen** in den Container. Es erzeugt kein `/app/.env` im Container und führt auch nicht dazu, dass die WebUI beim Speichern der Konfiguration in die `.env` des Hosts zurückschreibt. Die neue WebUI zeigt, wenn der aktiven `.env` bestimmte Schlüssel fehlen, die beim Start injizierten gleichnamigen Umgebungsvariablen als Fallback an – daher sind auf der Seite die beim Docker-Start injizierten Konfigurationen sichtbar; „Export .env" exportiert aber weiterhin nur den Inhalt der aktuell aktiven Konfigurationsdatei.
 
-如果希望 WebUI 中保存的配置在容器删除、重建或升级后继续保留，请把活跃配置文件放到已挂载的数据卷中，例如在 Compose 的 `environment` 中增加：
+Wenn die in der WebUI gespeicherten Konfigurationen auch nach dem Löschen, Neubau oder Upgrade des Containers erhalten bleiben sollen, legen Sie die aktive Konfigurationsdatei in ein eingehängtes Datenvolumen, z. B. indem Sie in `environment` der Compose-Datei ergänzen:
 
 ```yaml
 - ENV_FILE=/app/data/runtime.env
 ```
 
-同时保留 `../data:/app/data` 挂载。注意：如果启动时的 `../.env`、`docker run -e` 或 Compose `environment:` 里还保留同名旧值，容器重启后这些启动环境变量仍可能覆盖运行时文件中的保存值；要让 WebUI 保存值接管，请同步更新或移除启动环境中的同名配置。
+Gleichzeitig die Mount-Konfiguration `../data:/app/data` beibehalten. Hinweis: Wenn im `../.env` beim Start, in `docker run -e` oder im `environment:`-Block der Compose-Datei noch gleichnamige alte Werte stehen, können diese Startumgebungsvariablen nach einem Container-Neustart die in der Laufzeitdatei gespeicherten Werte weiterhin überschreiben. Damit die in der WebUI gespeicherten Werte übernehmen, bitte die gleichnamigen Konfigurationen in der Startumgebung synchron aktualisieren oder entfernen.
 
-### 第二步：启动服务
+### Schritt 2: Dienst starten
 
-在项目根目录执行：
+Im Projektverzeichnis ausführen:
 
 ```bash
-# 同时启动定时分析 + Web 界面（推荐）
+# Gleichzeitig geplante Analyse + Web-Interface starten (empfohlen)
 docker-compose -f ./docker/docker-compose.yml up -d
 
-# 或者只启动 Web 界面服务
+# Oder nur den Web-Interface-Dienst starten
 docker-compose -f ./docker/docker-compose.yml up -d server
 ```
 
-启动后查看状态：
+Nach dem Start den Status ansehen:
 
 ```bash
 docker-compose -f ./docker/docker-compose.yml ps
 ```
 
-看到 `server` 服务状态为 `running` 就说明 Web 界面已经在运行了。
+Wenn der Status des `server`-Dienstes `running` ist, läuft das Web-Interface bereits.
 
-### 修改端口（可选）
+### Port ändern (optional)
 
-默认端口是 8000。如果想改用其他端口，在 `.env` 里设置：
+Der Standardport ist 8000. Wenn Sie einen anderen Port verwenden möchten, setzen Sie ihn in `.env`:
 
 ```env
 API_PORT=8888
 ```
 
-然后重新启动容器：
+Anschließend die Container neu starten:
 
 ```bash
 docker-compose -f ./docker/docker-compose.yml down
@@ -127,67 +127,64 @@ docker-compose -f ./docker/docker-compose.yml up -d
 
 ---
 
-## 如何在浏览器里打开界面
+## Öffnen der Oberfläche im Browser
 
-服务启动后，在浏览器地址栏输入：
+Nach dem Start des Dienstes geben Sie in die Adresszeile des Browsers ein:
 
 ```
-http://你的服务器公网IP:8000
+http://ÖFFENTLICHE_IP_DEINES_SERVERS:8000
 ```
 
-例如，如果你的服务器 IP 是 `1.2.3.4`，就输入：
+Ist Ihre Server-IP zum Beispiel `1.2.3.4`, geben Sie ein:
 
 ```
 http://1.2.3.4:8000
 ```
 
-如果你的域名已经解析到这台服务器，也可以直接用域名访问：
+Wenn Ihre Domain bereits auf diesen Server aufgelöst ist, können Sie auch direkt über die Domain zugreifen:
 
 ```
 http://your-domain.com:8000
 ```
 
-> **在哪里查公网 IP？** 登录你的云服务器控制台（阿里云/腾讯云/AWS 等），在实例列表里可以看到「公网 IP」或「弹性 IP」。
+> **Wo finde ich die öffentliche IP?** Melden Sie sich in der Konsole Ihres Cloud-Servers an (Alibaba Cloud/Tencent Cloud/AWS usw.). In der Instanzliste finden Sie die „öffentliche IP" oder „elastische IP".
 
 ---
 
-## 如何确认 Docker 重建已生效
+## Bestätigen, dass der Docker-Rebuild wirksam ist
 
-先区分两件事：
+Zuerst zwei Dinge unterscheiden:
 
-1. **Docker 镜像发布版本**：看你部署时使用的镜像 tag，例如 `ghcr.io/zhulinsen/daily_stock_analysis:v3.12.0`。仓库的 Docker 发布由 `.github/workflows/docker-publish.yml` 按 `v*.*.*` Git tag 触发，所以 Docker 版本应以镜像 tag / GitHub Releases 为准。
-2. **当前页面加载的前端构建**：看 WebUI “系统设置”页里的版本信息卡片，用来确认浏览器拿到的静态资源是否已经更新。
+1. **Veröffentlichte Docker-Image-Version**: Ansehen des Image-Tags, das Sie beim Deployment verwendet haben, z. B. `ghcr.io/zhulinsen/daily_stock_analysis:v3.12.0`. Die Docker-Veröffentlichung des Repositorys wird von `.github/workflows/docker-publish.yml` anhand des Git-Tags `v*.*.*` ausgelöst, daher sollte die Docker-Version anhand des Image-Tags / der GitHub Releases bestimmt werden.
+2. **Frontend-Build, den die aktuelle Seite lädt**: Ansehen der Versionsinformationskarte auf der Seite „Systemeinstellungen" der WebUI, um zu prüfen, ob die statischen Ressourcen im Browser bereits aktualisiert sind.
 
-也就是说，**“系统设置”里的版本信息更适合判断前端是否重建成功，不等同于 Docker 镜像发布版本**。
+Das heißt: **Die Versionsinformationen unter „Systemeinstellungen" eignen sich besser dafür, festzustellen, ob das Frontend erfolgreich neu gebaut wurde; sie sind nicht gleichbedeutend mit der veröffentlichten Docker-Image-Version.**
 
-WebUI 现在会在“系统设置”页展示只读的“版本信息”卡片，包含：
+Die WebUI zeigt jetzt auf der Seite „Systemeinstellungen" eine schreibgeschützte Karte „Versionsinformationen" mit:
 
-- `WebUI 版本`
-- `代码版本`
-- `构建时间`
+- `WebUI-Version`
+- `Codeversion`
+- `Buildzeit`
 
-正式 Docker / Desktop 发布会把 release tag 注入为 `WebUI 版本`，并把对应 commit
-显示为 `代码版本`。直接从 Git clone 构建时，WebUI 会使用 `git describe` 和当前
-commit；如果构建环境既没有发布信息也没有 Git 元数据，版本会明确显示为
-`development`，不会再用构建时间冒充发布版本。
+Offizielle Docker-/Desktop-Veröffentlichungen injizieren das Release-Tag als `WebUI-Version` und zeigen den zugehörigen Commit als `Codeversion`. Beim direkten Build aus einem Git-Clone verwendet die WebUI `git describe` und den aktuellen Commit; hat die Build-Umgebung weder Release-Informationen noch Git-Metadaten, wird die Version eindeutig als `development` angezeigt und die Buildzeit gibt nicht mehr fälschlich eine Release-Version vor.
 
-当你重新执行 `docker-compose -f ./docker/docker-compose.yml up -d --build`，或者单独重新执行前端 `npm run build` 后，可以刷新浏览器并进入“系统设置”，确认“代码版本”和“构建时间”是否已经变化；两者能共同确认浏览器当前加载的静态资源来自哪次代码和构建。
+Nachdem Sie `docker-compose -f ./docker/docker-compose.yml up -d --build` erneut ausgeführt oder den Frontend-Build `npm run build` separat wiederholt haben, können Sie den Browser aktualisieren und zu „Systemeinstellungen" gehen, um zu prüfen, ob sich `Codeversion` und `Buildzeit` geändert haben; beide zusammen bestätigen, von welchem Code und Build die aktuell im Browser geladenen statischen Ressourcen stammen.
 
-如果你想确认“我现在到底部署的是哪个正式版本”，优先用下面这些方式：
+Wenn Sie prüfen möchten, „welche offizielle Version ich gerade bereitgestellt habe", bevorzugen Sie folgende Methoden:
 
 ```yaml
-# 方式 1：看 docker-compose / 部署脚本里的 image tag
+# Methode 1: image tag in docker-compose / im Deployment-Skript ansehen
 image: ghcr.io/zhulinsen/daily_stock_analysis:v3.12.0
 ```
 
 ```bash
-# 方式 2：回看你的拉取命令
+# Methode 2: Den Pull-Befehl nachsehen
 docker pull ghcr.io/zhulinsen/daily_stock_analysis:v3.12.0
 ```
 
-如果你一直使用 `latest`，建议改成显式版本 tag；否则很难仅凭容器内页面信息判断自己是否已经重复更新到同一版本。
+Wenn Sie ständig `latest` verwenden, empfiehlt es sich, auf ein explizites Versionstag umzusteigen; sonst ist es schwer, allein anhand der Seiteninformationen im Container festzustellen, ob bereits wiederholt auf dieselbe Version aktualisiert wurde.
 
-在确认本地前端打包链路时，建议执行以下命令作为最小验证闭环：
+Beim Prüfen der lokalen Frontend-Verpackungskette wird empfohlen, folgende Befehle als minimalen Verifikationsschritt auszuführen:
 
 ```bash
 cd apps/dsa-web
@@ -196,63 +193,60 @@ npm run lint
 npm run build
 ```
 
-其中 `build` 成功后，`static` 下生成的 `index.html`/JS/CSS 资源会包含本次版本、
-commit、构建时间，并生成 `build-info.json`。启动时会比较该文件中的源码摘要，
-因此即使 `rsync -a` 保留了旧时间戳，也能识别源码与静态产物不一致并重新构建。
-刷新后在“版本信息”卡片中应能见到变化。
+Nach erfolgreichem `build` enthalten die unter `static` erzeugten `index.html`/JS/CSS-Ressourcen die aktuelle Version, den Commit und die Buildzeit und erzeugen `build-info.json`. Beim Start wird der Quellcode-Hash dieser Datei verglichen – selbst wenn `rsync -a` alte Zeitstempel beibehalten hat, kann so eine Diskrepanz zwischen Quellcode und statischen Artefakten erkannt und neu gebaut werden. Nach dem Aktualisieren sollte eine Änderung in der Karte „Versionsinformationen" sichtbar sein.
 
 ---
 
-## 访问不了？先检查这几项
+## Zugriff nicht möglich? Diese Punkte zuerst prüfen
 
-### 1. 安全组 / 防火墙没有放行端口
+### 1. Sicherheitsgruppe / Firewall lässt den Port nicht durch
 
-这是最常见的原因。云服务器默认只开放 22（SSH）端口，需要手动放行 8000（或你改的端口）。
+Das ist die häufigste Ursache. Cloud-Server öffnen standardmäßig nur den Port 22 (SSH). Port 8000 (oder den geänderten Port) muss manuell freigegeben werden.
 
-**操作方法**（以阿里云为例）：
-1. 登录阿里云控制台 → 云服务器 ECS → 找到你的实例
-2. 点击「安全组」→「配置规则」→「添加安全组规则」
-3. 方向选「入方向」，端口范围填 `8000/8000`，授权对象填 `0.0.0.0/0`，点击「确定」
+**Vorgehen** (am Beispiel Alibaba Cloud):
+1. In der Alibaba-Cloud-Konsole anmelden -> Cloud Server ECS -> Ihre Instanz finden
+2. „Sicherheitsgruppe" -> „Regeln konfigurieren" -> „Sicherheitsgruppenregel hinzufügen" klicken
+3. Richtung „Eingehend" wählen, Portbereich `8000/8000` eintragen, Zugriffsobjekt `0.0.0.0/0`, dann „Bestimmen" klicken
 
-腾讯云、AWS 等云厂商操作类似，找到「安全组」或「防火墙规则」，新增一条允许 TCP 8000 端口的入站规则即可。
+Bei Tencent Cloud, AWS und anderen Anbietern funktioniert es ähnlich: „Sicherheitsgruppe" oder „Firewall-Regel" finden und eine neue Eingangsregel anlegen, die den TCP-Port 8000 erlaubt.
 
-### 2. 服务器系统防火墙拦截了
+### 2. Die Systemfirewall des Servers blockiert
 
-如果你的系统开启了 `ufw` 或 `firewalld`，也需要放行端口：
+Wenn auf Ihrem System `ufw` oder `firewalld` aktiv ist, müssen Sie den Port ebenfalls freigeben:
 
 ```bash
-# Ubuntu / Debian（ufw）
+# Ubuntu / Debian (ufw)
 sudo ufw allow 8000
 
-# CentOS / RHEL（firewalld）
+# CentOS / RHEL (firewalld)
 sudo firewall-cmd --permanent --add-port=8000/tcp
 sudo firewall-cmd --reload
 ```
 
-### 3. 直接部署时 .env 里的 WEBUI_HOST 没改
+### 3. Bei direkter Bereitstellung wurde WEBUI_HOST in .env nicht geändert
 
-这是第二常见原因。`.env` 里默认是 `WEBUI_HOST=127.0.0.1`，这样服务只监听本机，外网根本连不上。
+Das ist die zweithäufigste Ursache. In `.env` steht standardmäßig `WEBUI_HOST=127.0.0.1`. Damit lauscht der Dienst nur auf dem eigenen Rechner und ist von außen gar nicht erreichbar.
 
-改法：打开 `.env`，把 `WEBUI_HOST=127.0.0.1` 改成 `WEBUI_HOST=0.0.0.0`，然后重启服务；也可以在启动命令里显式添加 `--host 0.0.0.0`。
+So ändern: `.env` öffnen, `WEBUI_HOST=127.0.0.1` in `WEBUI_HOST=0.0.0.0` ändern und den Dienst neu starten; alternativ kann im Startbefehl explizit `--host 0.0.0.0` ergänzt werden.
 
-> Docker 方式不需要改这个，可以跳过。
+> Bei der Docker-Variante ist diese Änderung nicht nötig; dieser Schritt kann übersprungen werden.
 
-### 4. 端口号对不上
+### 4. Der Port stimmt nicht überein
 
-检查访问地址里的端口是否和 `.env` / 启动命令里设置的端口一致。
+Prüfen, ob der Port in der Zugriffsadresse mit dem in `.env` / im Startbefehl gesetzten Port übereinstimmt.
 
-- 直接部署：默认 8000，可通过 `WEBUI_PORT=xxxx` 修改
-- Docker：默认 8000，可通过 `API_PORT=xxxx` 修改
+- Direkte Bereitstellung: Standard 8000, änderbar über `WEBUI_PORT=xxxx`
+- Docker: Standard 8000, änderbar über `API_PORT=xxxx`
 
-### 5. 页面能打开，但 UI 元素异常变大 / 布局错乱
+### 5. Die Seite öffnet, aber UI-Elemente erscheinen unnatürlich groß / das Layout ist zerstört
 
-**症状**：浏览器能访问到 8000 端口，页面有内容，但文字、按钮、卡片尺寸异常大，没有正常布局与配色。
+**Symptom**: Der Browser erreicht Port 8000, die Seite hat Inhalt, aber Text, Schaltflächen und Karten erscheinen unnatürlich groß, ohne korrektes Layout und Farbschema.
 
-**根因**：`static/index.html` 存在但 CSS/JS 资源缺失（`static/assets/` 为空或不存在），浏览器加载了 HTML 框架但无法拿到样式与脚本，退化为裸 HTML 渲染。
+**Ursache**: `static/index.html` existiert, aber die CSS/JS-Ressourcen fehlen (`static/assets/` ist leer oder existiert nicht). Der Browser lädt das HTML-Gerüst, bekommt aber weder Styles noch Skripte und fällt auf ein nacktes HTML-Rendering zurück.
 
-可先用浏览器开发者工具（F12 → Network 标签页）检查是否有 `/assets/index-*.js`、`/assets/index-*.css` 的 **404** 错误。若有，按以下方式修复：
+Prüfen Sie zunächst mit den Entwicklertools des Browsers (F12 -> Tab „Network"), ob es **404**-Fehler für `/assets/index-*.js` oder `/assets/index-*.css` gibt. Falls ja, beheben Sie das wie folgt:
 
-**Docker 用户**：
+**Docker-Benutzer**:
 
 ```bash
 docker-compose -f ./docker/docker-compose.yml down
@@ -260,9 +254,9 @@ docker-compose -f ./docker/docker-compose.yml build --no-cache
 docker-compose -f ./docker/docker-compose.yml up -d
 ```
 
-重建完成后，用 `Ctrl+Shift+R` 强制刷新浏览器缓存，再访问页面。
+Nach dem Rebuild mit `Ctrl+Shift+R` den Browser-Cache hart aktualisieren und die Seite erneut aufrufen.
 
-**直接部署用户**：先确保已安装 Node.js 18+（推荐 20+），然后手动构建前端：
+**Benutzer der direkten Bereitstellung**: Zuerst sicherstellen, dass Node.js 18+ installiert ist (empfohlen 20+), dann das Frontend manuell bauen:
 
 ```bash
 cd apps/dsa-web
@@ -274,11 +268,11 @@ python main.py --webui-only
 
 ---
 
-## 可选：Nginx 反向代理（绑定域名 / 80 端口）
+## Optional: Nginx-Reverse-Proxy (Domain / Port 80 binden)
 
-如果你有域名，或者不想在地址里带 `:8000`，可以用 Nginx 做反向代理，把 80/443 端口流量转发给后端服务。
+Wenn Sie eine Domain haben oder das `:8000` in der Adresse vermeiden möchten, können Sie Nginx als Reverse-Proxy verwenden und den Traffic der Ports 80/443 an den Backend-Dienst weiterleiten.
 
-### 安装 Nginx
+### Nginx installieren
 
 ```bash
 # Ubuntu / Debian
@@ -288,9 +282,9 @@ sudo apt update && sudo apt install -y nginx
 sudo yum install -y nginx
 ```
 
-### 配置文件示例
+### Beispiel einer Konfigurationsdatei
 
-新建文件 `/etc/nginx/conf.d/stock-analyzer.conf`，内容如下（把 `your-domain.com` 改成你的域名或 IP）：
+Neue Datei `/etc/nginx/conf.d/stock-analyzer.conf` anlegen, Inhalt wie folgt (ersetzen Sie `your-domain.com` durch Ihre Domain oder IP):
 
 ```nginx
 server {
@@ -312,35 +306,35 @@ server {
 }
 ```
 
-### 启用配置并重启 Nginx
+### Konfiguration aktivieren und Nginx neu laden
 
 ```bash
-sudo nginx -t            # 检查配置有没有语法错误
+sudo nginx -t            # Prüfen, ob die Konfiguration Syntaxfehler hat
 sudo systemctl reload nginx
 ```
 
-配置成功后，直接用 `http://your-domain.com` 访问即可，不需要带端口号。
+Nach erfolgreicher Konfiguration erreichen Sie die Seite direkt über `http://your-domain.com` – ohne Portnummer.
 
-> **使用 Nginx 后的注意事项**：
-> - 如果你开启了 Web 登录认证（`ADMIN_AUTH_ENABLED=true`），建议在 `.env` 中把 `TRUST_X_FORWARDED_FOR=true` 一并打开，否则系统可能无法正确识别真实 IP。该选项适用于**单层可信反向代理**（Nginx → App）部署；如果使用多级代理或 CDN（CDN → Nginx → App），登录限流的 key 可能退化为边缘代理 IP 而非真实客户端 IP，需根据实际拓扑评估。
-> - 如需 HTTPS，可以用 [Certbot](https://certbot.eff.org/) 自动申请免费的 Let's Encrypt 证书。
+> **Hinweise bei Verwendung von Nginx**:
+> - Wenn Sie die Web-Login-Authentifizierung aktiviert haben (`ADMIN_AUTH_ENABLED=true`), empfiehlt es sich, zusätzlich `TRUST_X_FORWARDED_FOR=true` in `.env` zu aktivieren, da das System sonst die echte IP möglicherweise nicht korrekt erkennt. Diese Option gilt für Bereitstellungen mit **einer einzigen vertrauenswürdigen Reverse-Proxy-Ebene** (Nginx -> App); bei mehrstufigen Proxies oder CDN (CDN -> Nginx -> App) kann der Schlüssel für das Login-Rate-Limiting auf die Edge-Proxy-IP statt auf die echte Client-IP zurückfallen – bitte je nach tatsächlicher Topologie bewerten.
+> - Für HTTPS können Sie mit [Certbot](https://certbot.eff.org/) automatisch ein kostenloses Let's-Encrypt-Zertifikat beantragen.
 
 ---
 
-## 安全建议
+## Sicherheitsempfehlungen
 
-把 Web 界面暴露到公网之前，强烈建议开启登录密码保护：
+Bevor Sie das Web-Interface öffentlich ins Internet legen, wird dringend empfohlen, den Passwortschutz zu aktivieren:
 
-在 `.env` 中设置：
+In `.env` setzen:
 
 ```env
 ADMIN_AUTH_ENABLED=true
 ```
 
-重启服务后，第一次访问网页时会要求设置初始密码。设置完成后，每次打开设置页面都需要输入密码，可以防止 API Key 等敏感配置被他人看到。
+Nach dem Neustart des Dienstes werden Sie beim ersten Seitenbesuch aufgefordert, ein initiales Passwort festzulegen. Danach müssen Sie beim Öffnen der Einstellungsseite jedes Mal das Passwort eingeben. So wird verhindert, dass sensible Konfigurationen wie API Keys von anderen gesehen werden.
 
-> 如果忘了密码，可以在服务器上执行：`python -m src.auth reset_password`
+> Wenn Sie das Passwort vergessen haben, führen Sie auf dem Server aus: `python -m src.auth reset_password`
 
 ---
 
-遇到其他问题？欢迎 [提交 Issue](https://github.com/ZhuLinsen/daily_stock_analysis/issues)。
+Haben Sie andere Probleme? Gerne ein [Issue einreichen](https://github.com/ZhuLinsen/daily_stock_analysis/issues).

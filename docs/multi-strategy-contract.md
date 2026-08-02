@@ -1,161 +1,161 @@
-# 多策略投资建议契约：Baseline 语义、Phase 1 收敛、Phase 2/3/4 边界
+# Multi-Strategie-Anlageempfehlung: Baseline-Semantik, Phase-1-Konvergenz, Phase-2/3/4-Grenzen
 
-本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 1.5 在 Phase 1 契约上新增受控协同推理 v0（mediator_v0），只记录冲突议题、策略回应、softened 修正和置信度折减原因；Phase 1.6 新增可注入 LLM mediator v1（llm_mediator_v1），只允许 schema 合法的结构化修订，并在缺失、异常或越界时回退 v0；Phase 1.7 新增可注入 strategy self-review v2（self_review_v2），只允许冲突参与策略按固定 schema 自审，并在任一参与方越界时整轮回退 baseline；Phase 1.8 新增修订投影 v3（revision_projection），只预览采纳 softened 修订后的综合信号、置信度和冲突状态，不覆盖权威 `final_signal`；Phase 1.9 新增可配置多轮协同推理 v4（multi_round_v4），按 `max_rounds` 继续结构化修订并保留 `round_history`，任一轮越界时回到上一轮已验证结果；Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 只在 Phase 2 之上补前端多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补真实 Skill Outcome 权重反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
+Diese Seite ist das Themendokument für Issue #1964 „Multi-Strategie-Anlageempfehlung" und dokumentiert die **semantischen Konvergenzgrenzen** der Systemeinschätzungen von 2 oder mehr Strategien/Skills (Fähigkeiten): die Menge gültiger Nachweise, die Isolierung ungültiger Einschätzungen, die Lagergruppierung, der Konsensgrad und die Konsistenz über die Verbraucherflächen hinweg. Die Baseline ist für die Vertragsgrenzen und die Bestandsaufnahme des Ist-Zustands verantwortlich; Phase 1 erledigt nur innerhalb des Baseline-Vertrags die Sortierung der gültigen Nachweis-Menge, die deterministische Synthese von `strategy_synthesis`, die Konvergenz des DecisionAgent-Prompts, die Konsistenz der vier Renderer sowie die E2E-Gegenbeispiel-Abdeckung; Phase 1.5 erweitert den Phase-1-Vertrag um gesteuertes kollaboratives Reasoning v0 (`mediator_v0`), das nur Konfliktthemen, Strategieantworten, softened Korrekturen und Gründe für Konfidenzreduktionen erfasst; Phase 1.6 erweitert um einen injizierbaren LLM-Mediator v1 (`llm_mediator_v1`), der nur schema-konforme strukturierte Revisionen zulässt und bei fehlender, anomaler oder außerhalb des Bereichs liegender Ausgabe auf v0 zurückfällt; Phase 1.7 erweitert um ein injizierbares Strategie-Self-Review v2 (`self_review_v2`), das nur konfliktbeteiligten Strategien erlaubt, nach festem Schema zu prüfen, und bei Überschreitung durch einen Teilnehmer die gesamte Runde auf die Baseline zurückfallen lässt; Phase 1.8 erweitert um eine Revisionsprojektion v3 (`revision_projection`), die nur das synthetisierte Signal, die Konfidenz und den Konfliktstatus nach Annahme der softened Revisionen als Vorschau zeigt, ohne das autoritative `final_signal` zu überschreiben; Phase 1.9 erweitert um konfigurierbares mehrrundiges kollaboratives Reasoning v4 (`multi_round_v4`), das gemäß `max_rounds` strukturierte Revisionen fortsetzt und `round_history` beibehält; überschreitet eine Runde die Grenzen, kehrt es zum zuvor verifizierten Ergebnis der vorherigen Runde zurück; Phase 2 fügt nur unter dem Vertrag von Phase 1/1.5/1.6/1.7/1.8/1.9 parallele und gestaffelte Planung für 2–4 Strategien hinzu; Phase 3 ergänzt nur auf Basis von Phase 2 die vollständige mehrsprachige Darstellung im Frontend; Phase 4 ergänzt nur innerhalb desselben `CONTRACT_VERSION = "1.0"` den echten Skill-Outcome-Gewichts-Feedback-Kreislauf. Alle Einschränkungen der Baseline gelten dauerhaft für alle nachfolgenden Phasen; Phase N darf die in der Baseline bereits fixierten Grenzen nicht stillschweigend herabsetzen.
 
-## Skill opinion 样本边界（Issue #1904 P2 PR1）
+## Skill-Opinion-Stichprobengrenzen (Issue #1904 P2 PR1)
 
-`AgentRuntimeFacts.skill_opinions` 只投影 individual SkillAgent 的低敏字段：`skill_id`、canonical `signal`、`confidence` 和 opinion 时间。`skill_consensus` / `strategy_consensus`、DecisionAgent、基础 Agent 以及 Invalid Opinion 均不得进入该集合；同一次运行出现同一 `skill_id` 的多条有效观点时，只保留最后一条。SkillAgent 首次解析时必须拒绝非数字、非有限或超出 `[0, 1]` 的 confidence；AgentOpinion 保留输入合法性标记供 RuntimeFacts 防御校验，禁止将非法输入 clamp 后作为有效样本继续使用。
+`AgentRuntimeFacts.skill_opinions` projiziert nur die niedervertraulichen Felder der einzelnen SkillAgents: `skill_id`, das kanonische `signal`, `confidence` und den Zeitpunkt der Opinion. `skill_consensus` / `strategy_consensus`, der DecisionAgent, Basis-Agents sowie Invalid Opinions dürfen nicht in diese Menge gelangen; erscheinen in derselben Ausführung mehrere gültige Einschätzungen derselben `skill_id`, wird nur die letzte beibehalten. Beim ersten Parsen muss der SkillAgent eine Confidence ablehnen, die nicht numerisch, nicht endlich oder außerhalb von `[0, 1]` liegt; `AgentOpinion` behält die Eingabe-Gültigkeitsmarkierung für die defensive Prüfung der RuntimeFacts bei; es ist verboten, ungültige Eingaben zu clampen und als gültige Stichprobe weiterzuverwenden.
 
-分析历史成功保存后，Pipeline 以 best-effort 方式写入 `skill_opinion_samples` sidecar。父历史存在性检查与样本插入必须位于同一个 SQLite 原子写事务中，历史删除复用相同的写事务与 locked retry；无论插入或删除谁先执行，均不得留下孤儿样本。幂等键为 `(analysis_history_id, skill_id, sample_schema_version)`；重复执行不得覆盖首次保存的不可变样本。写入失败只记录低敏错误类型，不得使报告、历史记录或 DecisionSignal 主流程失败。
+Nach erfolgreichem Speichern des Analyseverlaufs schreibt die Pipeline das Sidecar `skill_opinion_samples` im Best-Effort-Verfahren. Die Prüfung der Existenz des Elternverlaufs und das Einfügen der Stichprobe müssen in demselben atomaren SQLite-Schreibvorgang erfolgen; das Löschen des Verlaufs nutzt denselben Schreibvorgang mit locked retry; unabhängig davon, ob das Einfügen oder das Löschen zuerst erfolgt, dürfen keine verwaisten Stichproben zurückbleiben. Der Idempotenzschlüssel ist `(analysis_history_id, skill_id, sample_schema_version)`; eine wiederholte Ausführung darf die erstmals gespeicherte unveränderliche Stichprobe nicht überschreiben. Fehler beim Schreiben protokollieren nur den niedervertraulichen Fehlertyp und dürfen weder den Bericht, noch den Verlauf, noch den DecisionSignal-Hauptfluss zum Scheitern bringen.
 
-当前 `sample_schema_version=skill-opinion-sample-v1`。`skill_version` 与 `horizon` 仅保留为空值兼容位：现有 Skill 定义和 SkillAgent 输出没有可信的版本与周期契约，因此本阶段不得从 LLM `raw_data` 猜测或伪造。PR1 不创建 outcome、不提供 skill 表现统计、不实现 `get_skill_summary()`，也不改变 `AgentMemory` / `SkillAggregator` 权重。
+Derzeit gilt `sample_schema_version=skill-opinion-sample-v1`. `skill_version` und `horizon` bleiben nur als leere Kompatibilitätsbits erhalten: Die bestehenden Skill-Definitionen und SkillAgent-Ausgaben haben keinen vertrauenswürdigen Versions- und Periodenvertrag, daher dürfen sie in dieser Phase weder aus den LLM-`raw_data` erraten noch gefälscht werden. PR1 erstellt keine Outcomes, bietet keine Skill-Leistungsstatistiken, implementiert kein `get_skill_summary()` und ändert auch die Gewichte von `AgentMemory` / `SkillAggregator` nicht.
 
-## Skill Opinion Outcome 边界（Issue #1904 P2）
+## Skill-Opinion-Outcome-Grenzen (Issue #1904 P2)
 
-`skill_opinion_outcomes` 表示一条不可变 `skill_opinion_sample` 在一个 `horizon`、一个 `engine_version` 下的独立后验结果，唯一键为 `(skill_opinion_sample_id, horizon, engine_version)`。初始 horizon 仅允许 `1d`、`3d`、`5d`、`10d`；每次运行的 `limit` 限制待处理的 `sample × horizon` outcome key 数量，不是 sample 数量。显式空 horizons、空白 skill/stock 筛选和越界 limit 必须 fail closed，不得退化为全量运行。
+`skill_opinion_outcomes` stellt eine unveränderliche `skill_opinion_sample` unter einem `horizon` und einer `engine_version` als eigenständiges Posterior-Ergebnis dar; der eindeutige Schlüssel ist `(skill_opinion_sample_id, horizon, engine_version)`. Die anfänglichen Horizons erlauben nur `1d`, `3d`, `5d`, `10d`; das `limit` jeder Ausführung begrenzt die Anzahl der zu verarbeitenden `sample × horizon`-Outcome-Schlüssel, nicht die Anzahl der Stichproben. Explizit leere Horizons, leere Skill-/Aktienfilter und ein außerhalb des Bereichs liegendes `limit` müssen fail closed und dürfen nicht zu einem vollständigen Lauf degenerieren.
 
-每条 outcome 只使用 sample 自己的 canonical `signal`，不得读取最终 Agent decision、`skill_consensus` 或其他 skill 的 signal。`strong_buy` / `buy` 按 bullish 评价，`strong_sell` / `sell` 按 bearish 评价；方向收益严格大于零才是 `hit`，零收益是 `miss`。`hold` 在价格窗口完整后保存为 `observational`，不产生方向正确性。
+Jedes Outcome verwendet ausschließlich das eigene kanonische `signal` der Stichprobe; es darf weder die finale Agent-Entscheidung noch `skill_consensus` noch die Signale anderer Skills lesen. `strong_buy` / `buy` werden als bullish bewertet, `strong_sell` / `sell` als bearish; nur eine strikt positive Richtungsrendite ist ein `hit`, eine Nullrendite ist ein `miss`. `hold` wird nach vollständigem Preisfenster als `observational` gespeichert und erzeugt keine Richtungskorrektheit.
 
-历史分析日期来自 `enhanced_context.date`，缺失时才回退到历史记录创建日期。Backtest 与 Outcome 共享股票身份解析、受支持的旧市场快照重建和权威起始 session 判定：优先使用市场一致且合法的 `market_phase_summary.effective_daily_bar_date`；缺少该字段时，只有 phase 与交易日历能够证明起点才进行推导，否则 fail closed，不允许选择任意更早的本地日线。Outcome 只接受通过判定的 `expected_start_date`。Backtest 为兼容既有历史，可在非 session `effective_daily_bar_date` 对应的精确本地 bar 已存在时，通过显式 `backtest_start_date` 只读回放；该 fallback 不属于权威 Outcome 样本，不触发无效日期 refill，也不进入 Skill Outcome 统计或权重校准。共享窗口 resolver 在指定起点中优先完整窗口，且起始与 forward bars 必须来自同一 stored code shape，不得跨候选拼接。
+Das historische Analysedatum stammt aus `enhanced_context.date` und fällt erst bei Fehlen auf das Erstellungsdatum des Verlaufs zurück. Backtest und Outcome teilen sich die Auflösung der Aktienidentität, den Wiederaufbau unterstützter alter Marktsnapshots und die Bestimmung der autoritativen Startsitzung: Bevorzugt wird ein marktkonsistentes und gültiges `market_phase_summary.effective_daily_bar_date` verwendet; fehlt dieses Feld, wird nur abgeleitet, wenn Phase und Handelskalender den Startpunkt belegen können, andernfalls fail closed — es darf kein beliebig früherer lokaler Tagesbalken gewählt werden. Outcome akzeptiert nur das geprüfte `expected_start_date`. Zur Kompatibilität mit bestehenden Verläufen darf der Backtest, wenn bereits ein exakter lokaler Balken zum nicht-Sitzungs-`effective_daily_bar_date` existiert, über ein explizites `backtest_start_date` schreibgeschützt abspielen; dieser Fallback gehört nicht zu den autoritativen Outcome-Stichproben, löst kein Refill ungültiger Daten aus und fließt nicht in die Skill-Outcome-Statistik oder die Gewichtskalibrierung ein. Der gemeinsame Fenster-Resolver bevorzugt bei einem angegebenen Startpunkt das vollständige Fenster, und Start- sowie Vorwärtsbalken müssen aus derselben gespeicherten Code-Form stammen; es darf nicht über Kandidaten hinweg zusammengefügt werden.
 
-对 Outcome 而言，权威起始 session 已确定、但对应起始 bar 尚未写入，或未来本地日线不足时，保存为可重试 `pending`。候选 key 按上次尝试时间（缺失 outcome 时按 sample 创建时间）公平调度；每次重试会刷新 `pending.updated_at` 并将其移至队尾，避免持续新增的缺失 key 饿死旧重试，也避免重试反向阻塞新样本。损坏或晚于分析日期的 `effective_daily_bar_date`、股票市场与快照市场冲突，以及无法由可信 phase 与交易日历证明起点等永久无效元数据，保存为终态 `unable`，不得伪装成 `missing_start_bar` 持续重试。同一 engine version 下只有 `pending` 可更新，`evaluated`、`observational`、`unable` 均不可覆盖；规则变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 显式清理，不能依赖 SQLite 外键开关。
+Wenn für ein Outcome die autoritative Startsitzung feststeht, der zugehörige Startbalken aber noch nicht geschrieben wurde oder zukünftige lokale Tagesbalken nicht ausreichen, wird es als wiederholbares `pending` gespeichert. Kandidatenschlüssel werden fair nach dem Zeitpunkt des letzten Versuchs geplant (bei fehlendem Outcome nach dem Erstellungszeitpunkt der Stichprobe); jeder erneute Versuch aktualisiert `pending.updated_at` und stellt ihn ans Ende der Warteschlange, damit kontinuierlich hinzukommende fehlende Schlüssel alte Wiederholungen nicht aushungern und Wiederholungen neue Stichproben nicht rückwärts blockieren. Ein beschädigtes oder nach dem Analysedatum liegendes `effective_daily_bar_date`, Konflikte zwischen Aktienmarkt und Snapshot-Markt sowie Startpunkte, die nicht durch vertrauenswürdige Phase und Handelskalender belegt werden können, werden als Endzustand `unable` gespeichert und dürfen nicht als `missing_start_bar` für dauerhafte Wiederholungen getarnt werden. Unter derselben Engine-Version ist nur `pending` aktualisierbar; `evaluated`, `observational` und `unable` sind nicht überschreibbar; Regeländerungen müssen die Engine-Version erhöhen. Das Löschen von Verläufen erfolgt in demselben Schreibvorgang explizit in der Reihenfolge outcome → sample → history und darf sich nicht auf den SQLite-Fremdschlüsselschalter verlassen.
 
-Outcome 核心阶段（#2116）基于已合并的 #2073，只提供 Outcome evaluator、repository 和 service 核心，当时未包含表现统计、样本充足度、排名或权重调整。其后的只读统计阶段在下节单独定义；该阶段仍不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不调整运行时权重。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
+Die Outcome-Kernphase (#2116) baut auf dem bereits zusammengeführten #2073 auf und liefert nur den Outcome-Evaluator, das Repository und den Service-Kern; Leistungsstatistiken, Stichproben-Suffizienz, Rangfolgen oder Gewichtsanpassungen waren damals nicht enthalten. Die darauf folgende schreibgeschützte Statistikphase wird im nächsten Abschnitt separat definiert; diese Phase fügt weiterhin weder eine Admin-API, Schema, OpenAPI noch eine automatische Auslösung der Haupt-Pipeline hinzu und passt auch keine Laufzeitgewichte an. Falls später ein Betriebszugang benötigt wird, sollte er anhand des tatsächlichen Aufrufers und des Berechtigungsvertrags unabhängig geprüft werden.
 
-### Skill Opinion Outcome 表现统计
+### Skill-Opinion-Outcome-Leistungsstatistik
 
-Outcome 统计是只读数据面，按 `skill_id + horizon + engine_version` 独立分 bucket。任何 bucket 都不能借用同 skill 的其他 horizon、其他 skill、其他 engine version 或全局样本解锁指标。当前固定门槛为 `evaluated >= 30`；只有 individual skill opinion 自身 signal 产生的 `hit` / `miss` 计入 evaluated，`pending`、`observational` 和 `unable` 只保留计数，不计入样本充足度。
+Die Outcome-Statistik ist eine schreibgeschützte Datenfläche, die je `skill_id + horizon + engine_version` unabhängig in Buckets aufgeteilt wird. Kein Bucket darf Indikatoren anderer Horizons desselben Skills, anderer Skills, anderer Engine-Versionen oder globaler Stichproben ausleihen, um sie freizuschalten. Die derzeitige feste Schwelle ist `evaluated >= 30`; nur die durch das eigene Signal der einzelnen Skill-Opinion erzeugten `hit` / `miss` zählen in `evaluated`; `pending`, `observational` und `unable` behalten nur Zähler und fließen nicht in die Stichproben-Suffizienz ein.
 
-样本不足时，bucket 的 `sample_status` 为 `observational`，计数继续返回，但 `hit_rate_pct`、`miss_rate_pct`、`avg_directional_return_pct` 和 `unable_rate_pct` 全部为 `null`，不得输出排名或推导权重。样本充足时，hit/miss rate 以 `hit + miss` 为分母，平均方向收益只使用 evaluated rows；unable rate 以终态记录 `evaluated + observational + unable` 为分母，临时 `pending` 不得稀释永久失败比例。
+Bei unzureichenden Stichproben ist der `sample_status` des Buckets `observational`; die Zähler werden weiterhin zurückgegeben, aber `hit_rate_pct`, `miss_rate_pct`, `avg_directional_return_pct` und `unable_rate_pct` sind alle `null`; es dürfen keine Rangfolgen ausgegeben oder Gewichte abgeleitet werden. Bei ausreichenden Stichproben wird die hit/miss-Rate mit `hit + miss` als Nenner berechnet, die durchschnittliche Richtungsrendite verwendet nur die evaluated-Zeilen; die unable-Rate verwendet als Nenner die Endzustandsaufzeichnungen `evaluated + observational + unable`; temporäres `pending` darf den Anteil dauerhafter Fehler nicht verwässern.
 
-只读统计阶段（PR #2119）本身不修改 `BacktestService.get_skill_summary()`、`AgentMemory` 或 `SkillAggregator`，也不新增 API、Pipeline 自动触发和 Web 展示；本页后文的 Phase 4 在该统计契约之上独立接入保守运行时权重。当前组合实现仍只读消费已经持久化的 Outcome，不负责自动触发 evaluator。
+Die schreibgeschützte Statistikphase (PR #2119) modifiziert selbst weder `BacktestService.get_skill_summary()`, `AgentMemory` noch `SkillAggregator` und fügt weder eine API, noch eine automatische Pipeline-Auslösung, noch eine Web-Darstellung hinzu; Phase 4 weiter unten schließt auf Basis dieses Statistikvertrags unabhängig ein konservatives Laufzeitgewicht an. Die derzeitige kombinierte Implementierung konsumiert weiterhin schreibgeschützt die bereits persistierten Outcomes und übernimmt nicht die automatische Auslösung des Evaluators.
 
-## 术语与边界
+## Terminologie und Grenzen
 
-当前仓库里有多种名为 opinion / signal / consensus / synthesis 的数据面，Baseline 必须先消歧，避免把现有运行时结构误写成未来 phase。
+Das aktuelle Repository enthält mehrere Datenflächen mit den Namen opinion / signal / consensus / synthesis; die Baseline muss diese zunächst disambiguieren, um zu vermeiden, dass bestehende Laufzeitstrukturen fälschlich als zukünftige Phasen beschrieben werden.
 
-| 术语 | 当前含义 | 当前主要消费方 | Baseline 边界 |
+| Terminus | Aktuelle Bedeutung | Aktuelle Hauptkonsumenten | Baseline-Grenze |
 | --- | --- | --- | --- |
-| `AgentOpinion` | `src/agent/protocols.py` 中所有 Agent（含 SkillAgent、TechnicalAgent、IntelAgent、RiskAgent、DecisionAgent）产出的观点数据类，含 `agent_name` / `signal` / `confidence` / `reasoning` / `key_levels` / `raw_data`。 | Orchestrator、Aggregator、DecisionAgent、Disagreement、Renderer | 记录为原始观点承载体；Baseline 不新增字段，也不把 `AgentOpinion` 分裂成两类。 |
-| `StrategyOpinion` | `src/agent/protocols.py` 中的内部规范化视图，含 `skill_id` / `signal` / `original_signal` / `invalid_signal`；只在 Aggregator/Synthesizer 内部使用。 | `SkillAggregator`、`ConflictDetector`、`StrategySynthesizer` | 记录为内部计算的规范化视图，不进入 `ctx.opinions`、不进入公共 payload、不进入 DecisionAgent prompt。 |
-| Signal / Canonical Signal | 交易信号规范化标签，Canonical 取值仅限 `strong_buy` / `buy` / `hold` / `sell` / `strong_sell` 五个小写字符串。 | 全链路 | 记录为下游所有计算的唯一允许输入形式；大写别名、`"strong buy"`、Signal 枚举原值都必须先经 `normalize_strategy_signal()` 转成 canonical 再参与计算。 |
-| Valid Opinion / Invalid Opinion | 通过 `is_valid_strategy_signal(signal) == True` 且未标记 `invalid_signal=True` 的观点为 Valid，其余为 Invalid。 | Orchestrator 分拣、Aggregator、DecisionAgent | 记录为契约层的合法/非法判定；Baseline 只定义判定函数与语义，不预设分拣位置。 |
-| Evidence Chain | 进入 DecisionAgent prompt 与 `strategy_synthesis` 数值计算的**有效观点集合**。 | DecisionAgent、Aggregator | 记录为决策输入面；Baseline 规定 Evidence Chain 只由 Valid Opinion 组成，Invalid 不得混入。 |
-| Diagnostics | 无效观点的诊断收纳位，仅供日志、调试、用户可见的“另有 N 个策略解析失败”计数使用。 | Renderer 展示、日志 | 记录为诊断面；Baseline 规定 Invalid 必须落到 Diagnostics，不得被静默转成 `hold` 混入 Evidence Chain。 |
-| `strategy_synthesis` | `dashboard.strategy_synthesis` 顶层 payload，含 `final_signal` / `consensus_level` / `conflict_severity` / `supporting_skills` / `opposing_skills` / `summary_params`。 | Markdown、WeChat、Notification、History 四条 renderer | 记录为公共低敏 payload；Baseline 规定该 payload 是**唯一权威合成来源**，LLM dashboard 不得反向覆盖。 |
-| `disagreement_summary` | `ctx.meta["agent_disagreement_summary"]`，低敏跨 Agent 分歧摘要，来自 `build_agent_disagreement_summary()`。 | DecisionAgent prompt、日志 | 记录为决策路径提示面；Baseline 规定只从 Valid Opinion 建桶，Invalid 不得进入 `bullish_agents` / `bearish_agents` / `neutral_agents`。 |
-| Consensus Level | `strategy_synthesis.consensus_level`，取值 `high` / `medium` / `low` / `insufficient`。 | Renderer 展示、Aggregator 内部判定 | 记录为共识度枚举；Baseline 规定 ≤ 1 valid 或 `sum(confidence) == 0` 时强制 `insufficient`，不得输出 `high`。 |
+| `AgentOpinion` | Die Opinion-Datenklasse, die von allen Agents in `src/agent/protocols.py` (einschließlich SkillAgent, TechnicalAgent, IntelAgent, RiskAgent, DecisionAgent) erzeugt wird, mit `agent_name` / `signal` / `confidence` / `reasoning` / `key_levels` / `raw_data`. | Orchestrator, Aggregator, DecisionAgent, Disagreement, Renderer | Als Träger der Roh-Opinions erfasst; die Baseline fügt keine Felder hinzu und spaltet `AgentOpinion` auch nicht in zwei Klassen auf. |
+| `StrategyOpinion` | Die interne normalisierte Sicht in `src/agent/protocols.py`, mit `skill_id` / `signal` / `original_signal` / `invalid_signal`; nur innerhalb von Aggregator/Synthesizer verwendet. | `SkillAggregator`, `ConflictDetector`, `StrategySynthesizer` | Als interne normalisierte Sicht für Berechnungen erfasst; geht weder in `ctx.opinions` noch in öffentliche Payloads noch in den DecisionAgent-Prompt ein. |
+| Signal / Kanonisches Signal | Normalisiertes Handelssignal-Label; die Canonical-Werte sind ausschließlich die fünf kleingeschriebenen Strings `strong_buy` / `buy` / `hold` / `sell` / `strong_sell`. | Gesamte Kette | Als einzige zulässige Eingabeform für alle nachgelagerten Berechnungen erfasst; Großschreibungs-Aliassee, `"strong buy"` und die Originalwerte des Signal-Enums müssen erst über `normalize_strategy_signal()` in canonical umgewandelt werden, bevor sie an Berechnungen teilnehmen. |
+| Valid Opinion / Invalid Opinion | Eine Opinion mit `is_valid_strategy_signal(signal) == True`, die nicht mit `invalid_signal=True` markiert ist, gilt als Valid, der Rest als Invalid. | Orchestrator-Sortierung, Aggregator, DecisionAgent | Als gültige/ungültige Beurteilung der Vertragsschicht erfasst; die Baseline definiert nur die Beurteilungsfunktion und die Semantik, ohne den Sortierort vorzugeben. |
+| Evidence Chain | Die **Menge gültiger Einschätzungen**, die in den DecisionAgent-Prompt und die numerischen Berechnungen von `strategy_synthesis` eingeht. | DecisionAgent, Aggregator | Als Entscheidungseingabe-Fläche erfasst; die Baseline legt fest, dass die Evidence Chain nur aus Valid Opinions besteht und Invalid nicht hineingemischt werden darf. |
+| Diagnostics | Auffangposition für die Diagnose ungültiger Einschätzungen, nur für Protokolle, Debugging und die benutzersichtbare Zählung „weitere N Strategien konnten nicht verarbeitet werden". | Renderer-Anzeige, Protokolle | Als Diagnosefläche erfasst; die Baseline legt fest, dass Invalid in die Diagnostics gelangen muss und nicht stillschweigend in `hold` umgewandelt und in die Evidence Chain gemischt werden darf. |
+| `strategy_synthesis` | Top-Level-Payload von `dashboard.strategy_synthesis`, mit `final_signal` / `consensus_level` / `conflict_severity` / `supporting_skills` / `opposing_skills` / `summary_params`. | Die vier Renderer Markdown, WeChat, Notification, History | Als öffentliche niedervertrauliche Payload erfasst; die Baseline legt fest, dass diese Payload die **einzige autoritative Synthesequelle** ist und das LLM-Dashboard sie nicht rückwärts überschreiben darf. |
+| `disagreement_summary` | `ctx.meta["agent_disagreement_summary"]`, eine niedervertrauliche Zusammenfassung von Agent-Meinungsverschiedenheiten aus `build_agent_disagreement_summary()`. | DecisionAgent-Prompt, Protokolle | Als Hinweisfläche des Entscheidungspfads erfasst; die Baseline legt fest, dass nur aus Valid Opinions gebucktet wird und Invalid nicht in `bullish_agents` / `bearish_agents` / `neutral_agents` gelangen darf. |
+| Konsensgrad | `strategy_synthesis.consensus_level`, Werte `high` / `medium` / `low` / `insufficient`. | Renderer-Anzeige, interne Beurteilung des Aggregators | Als Konsensgrad-Enum erfasst; die Baseline legt fest, dass bei ≤ 1 valid oder `sum(confidence) == 0` zwingend `insufficient` gilt und kein `high` ausgegeben werden darf. |
 
-## Baseline 范围与非目标
+## Baseline-Umfang und Nicht-Ziele
 
-Baseline 的目标是让 Phase 1/2/3/4 都基于同一份语义契约设计运行时改动，而不是每一轮 PR 重新定义"有效观点"、"共识"、"支持方"。
+Ziel der Baseline ist, dass Phase 1/2/3/4 alle Laufzeitänderungen auf Basis desselben semantischen Vertrags entwerfen, statt in jeder PR-Runde „gültige Einschätzung", „Konsens" und „Unterstützerseite" neu zu definieren.
 
-- Baseline 覆盖 SkillAgent → Orchestrator → Aggregator → Synthesizer → DecisionAgent → Disagreement → Renderer 七条消费面的语义收敛边界。
-- Baseline 固定 Canonical Signal 枚举、Valid/Invalid 判定函数、Evidence Chain / Diagnostics 分离原则、动态二分阵营语义、共识门槛梯度、`strategy_synthesis` payload schema、不变量清单和反例矩阵；Phase 1 是这些边界的第一版代码化实现。
-- Baseline 不引入并发调度、不引入前端多语言完整展示、不引入权重回测反馈；这些留给 Phase 2/3/4。
-- Baseline 不改变现有 `AgentOpinion` 字段、不新增数据库字段、不改变 API 返回结构（`strategy_synthesis` 已在此前 PR 加入）、不新增配置项。
-- Baseline 不把契约扩展成通用 opinion registry；`AgentOpinion` 结构由现有代码维护，本契约只规范其**语义处置流程**。
+- Die Baseline deckt die semantischen Konvergenzgrenzen der sieben Verbraucherflächen SkillAgent → Orchestrator → Aggregator → Synthesizer → DecisionAgent → Disagreement → Renderer ab.
+- Die Baseline fixiert das Canonical-Signal-Enum, die Valid/Invalid-Beurteilungsfunktion, das Trennungsprinzip von Evidence Chain / Diagnostics, die dynamische Zweilager-Semantik, die Konsensschwellen-Stufung, das `strategy_synthesis`-Payload-Schema, die Invariantenliste und die Gegenbeispielmatrix; Phase 1 ist die erste codebasierte Umsetzung dieser Grenzen.
+- Die Baseline führt keine parallele Planung, keine vollständige mehrsprachige Frontend-Anzeige und keine Gewichts-Backtest-Rückkopplung ein; diese bleiben Phase 2/3/4 vorbehalten.
+- Die Baseline ändert weder bestehende `AgentOpinion`-Felder, noch fügt sie Datenbankfelder hinzu, noch ändert sie die API-Rückgabestruktur (`strategy_synthesis` wurde bereits in einer früheren PR hinzugefügt), noch fügt sie Konfigurationseinträge hinzu.
+- Die Baseline erweitert den Vertrag nicht zu einem generischen Opinion-Registry; die `AgentOpinion`-Struktur wird vom bestehenden Code gepflegt, dieser Vertrag regelt nur ihren **semantischen Verarbeitungsablauf**.
 
-## Baseline 内部契约
+## Interner Baseline-Vertrag
 
-### Canonical Signal 与 Valid 判定
+### Canonical Signal und Valid-Beurteilung
 
-Canonical Signal 是 Baseline 允许的**唯一评分/加权/分组输入形式**。规范化入口是 `src/agent/protocols.py` 中的两个函数：
+Das Canonical Signal ist die **einzige zulässige Bewertungs-/Gewichtungs-/Gruppierungseingabeform** der Baseline. Der Normalisierungseinstieg sind die zwei Funktionen in `src/agent/protocols.py`:
 
-- `normalize_strategy_signal(signal)` 返回 `(canonical, invalid, original)` 三元组。它接受 `Signal` 枚举、大小写字符串、`"strong buy"` / `"strong-buy"` 别名，统一映射到 canonical 集合。无法映射时 `invalid=True`，`canonical` 退化为 `default`（默认 `"hold"`）但**必须**配合 `invalid=True` 一并传递到下游，不得被单独使用。
-- `is_valid_strategy_signal(signal)` 是 Baseline 全链路合法性判定的**单一真源**：任何模块判断“这条 opinion 是否有资格进入 Evidence Chain”都必须调用此函数。
+- `normalize_strategy_signal(signal)` gibt das Tupel `(canonical, invalid, original)` zurück. Es akzeptiert das `Signal`-Enum, Strings mit beliebiger Groß-/Kleinschreibung sowie die Aliassee `"strong buy"` / `"strong-buy"` und mappt sie einheitlich auf die canonical-Menge. Kann nicht gemappt werden, ist `invalid=True`, und `canonical` degeneriert zu `default` (standardmäßig `"hold"`), muss aber **zwingend** zusammen mit `invalid=True` an die nachgelagerten Komponenten durchgereicht werden und darf nicht allein verwendet werden.
+- `is_valid_strategy_signal(signal)` ist die **einzige Wahrheitsquelle** der Gültigkeitsbeurteilung der gesamten Baseline-Kette: Jedes Modul, das beurteilt, ob „diese Opinion für die Evidence Chain geeignet ist", muss diese Funktion aufrufen.
 
-Baseline 禁止在 `_STRATEGY_SIGNAL_ALIASES` 之外再维护第二份 canonical 映射表；ConflictDetector 与 Synthesizer 内部的 `strategy_signal_score(canonical)` 只接受 canonical 值，禁止用 `op.original_signal` 或大小写变体查表。
+Die Baseline verbietet, außerhalb von `_STRATEGY_SIGNAL_ALIASES` eine zweite canonical-Mapping-Tabelle zu pflegen; `strategy_signal_score(canonical)` innerhalb von ConflictDetector und Synthesizer akzeptiert nur canonical-Werte; es ist verboten, über `op.original_signal` oder Großschreibungsvarianten nachzuschlagen.
 
-### Evidence Chain 与 Diagnostics 分离
+### Trennung von Evidence Chain und Diagnostics
 
-Baseline 规定：
+Die Baseline legt fest:
 
-- **Evidence Chain 是且仅是 Valid Opinion 集合**。DecisionAgent prompt、`strategy_synthesis` 数值计算、`disagreement_summary` 建桶都必须从同一个 Evidence Chain 读取。
-- **Invalid Opinion 必须落到 Diagnostics**（`ctx.meta["invalid_opinions"]` 或等价字段），仅用于日志、诊断、用户可见的“另有 N 个策略解析失败”计数。
-- 两个集合**互斥且并集穷尽**：一条 opinion 要么在 Evidence Chain，要么在 Diagnostics，不得同时出现或都不出现。
-- Invalid Opinion **不得**被静默转换成 `hold` / `confidence` 保留原值 / 匿名混入 `bullish_agents` / `bearish_agents` / `neutral_agents` 桶。
+- **Die Evidence Chain ist ausschließlich die Menge der Valid Opinions.** DecisionAgent-Prompt, die numerischen Berechnungen von `strategy_synthesis` und das Bucketing von `disagreement_summary` müssen alle aus derselben Evidence Chain lesen.
+- **Invalid Opinions müssen in die Diagnostics gelangen** (`ctx.meta["invalid_opinions"]` oder ein gleichwertiges Feld), nur für Protokolle, Diagnose und die benutzersichtbare Zählung „weitere N Strategien konnten nicht verarbeitet werden".
+- Die beiden Mengen sind **disjunkt und ihre Vereinigung ist vollständig**: Eine Opinion ist entweder in der Evidence Chain oder in den Diagnostics und darf nicht gleichzeitig vorkommen oder in keiner von beiden.
+- Invalid Opinions dürfen **nicht** stillschweigend in `hold` umgewandelt, mit beibehaltenem `confidence` versehen oder anonym in die Buckets `bullish_agents` / `bearish_agents` / `neutral_agents` gemischt werden.
 
-Diagnostics 结构：
+Diagnostics-Struktur:
 
 ```python
 ctx.meta["invalid_opinions"] = [
     {
-        "agent_name": str,          # 原始 agent_name
-        "raw_signal": str | None,   # 原始 signal 字面量（未归一化）
-        "confidence": float,        # 原始 confidence，仅诊断，不参与任何计算
+        "agent_name": str,          # Originaler agent_name
+        "raw_signal": str | None,   # Originales Signal-Literal (nicht normalisiert)
+        "confidence": float,        # Originale Konfidenz, nur zur Diagnose, nimmt an keiner Berechnung teil
         "reason": str,              # "missing_signal" | "unrecognized_signal" | "invalid_flag"
     },
     ...
 ]
 ```
 
-Baseline 只规定该结构，不规定分拣发生的**代码位置**——Phase 1 会把分拣落到 Orchestrator。
+Die Baseline legt nur diese Struktur fest, nicht den **Codeort** der Sortierung — Phase 1 wird die Sortierung im Orchestrator verorten.
 
-### 动态二分阵营（Supporting / Opposing）
+### Dynamische Zweilagerung (Supporting / Opposing)
 
-给定最终信号 `final_signal` 与 canonical score `final_score = strategy_signal_score(final_signal)`，对每个 Valid Opinion `op` 计算 `op_score = strategy_signal_score(op.signal)`：
+Bei gegebenem Endsignal `final_signal` und canonical score `final_score = strategy_signal_score(final_signal)` wird für jede Valid Opinion `op` der Wert `op_score = strategy_signal_score(op.signal)` berechnet:
 
-- **当 `final_signal == "hold"`（即 `final_score == 3.0`）时**：
+- **Wenn `final_signal == "hold"` (d. h. `final_score == 3.0`) ist:**
   - `op_score == 3.0` → `supporting_skills`
-  - `op_score != 3.0` → `opposing_skills`（作为异议与分歧收纳，保证观望与分歧观点不被静默丢弃，避免展示时丢失异议背景）
+  - `op_score != 3.0` → `opposing_skills` (als Auffangbehälter für Einwände und Divergenzen, damit Beobachten- und Divergenzeinschätzungen nicht stillschweigend verworfen werden und bei der Anzeige kein Einwandhintergrund verloren geht)
 
-- **当 `final_signal` 为方向性信号（`strong_buy` / `buy` / `sell` / `strong_sell`）时**：
-  - 同向（都看涨 或 都看跌）且 `abs(op_score - final_score) ≤ 1.0` → `supporting_skills`
-  - 反向 且 `abs(op_score - final_score) ≥ 2.0` → `opposing_skills`
-  - 其余（`abs(diff) < 2.0` 且非同向）→ `opposing_skills`（并入异议，杜绝第三阵营 `neutral_skills`）
+- **Wenn `final_signal` ein Richtungssignal ist (`strong_buy` / `buy` / `sell` / `strong_sell`):**
+  - Gleichgerichtet (beide bullish oder beide bearish) und `abs(op_score - final_score) ≤ 1.0` → `supporting_skills`
+  - Gegenrichtung und `abs(op_score - final_score) ≥ 2.0` → `opposing_skills`
+  - Sonst (`abs(diff) < 2.0` und nicht gleichgerichtet) → `opposing_skills` (in die Einwände aufgenommen, um ein drittes Lager `neutral_skills` zu vermeiden)
 
-Baseline 明确 **`neutral_skills` 不作为 payload 的正式字段**。每个 Valid Opinion 必须**恰好**落入 `supporting_skills` 或 `opposing_skills` 其一，分组结果总数必须等于 `summary_params.opinion_count`。
+Die Baseline stellt klar, dass **`neutral_skills` kein formales Feld der Payload ist**. Jede Valid Opinion muss **exakt** in eines von `supporting_skills` oder `opposing_skills` fallen; die Gesamtzahl der Gruppierungsergebnisse muss gleich `summary_params.opinion_count` sein.
 
-### 共识度门槛
+### Konsensschwellen
 
-Baseline 固定共识度按 valid 样本数梯度判定：
+Die Baseline fixiert die Beurteilung des Konsensgrads gestuft nach der Anzahl der validen Stichproben:
 
-| valid 数量 | consensus_level | 说明 |
+| Anzahl valid | consensus_level | Erläuterung |
 | --- | --- | --- |
-| 0 | `insufficient` | 无证据可综合，final_signal 强制 `hold`，`confidence=0.0` |
-| 1 | `insufficient` | 单样本不构成"共识"，即使与 final 完全一致也不得输出 `high` |
-| ≥ 2，`sum(confidence) == 0` | `insufficient` | 有效证据的置信度为零，无从建立共识 |
-| ≥ 2，`sum(confidence) > 0` | 进入 aligned_ratio 判定 | 见下表 |
+| 0 | `insufficient` | Keine Nachweise zu synthetisieren, `final_signal` wird zwingend `hold`, `confidence=0.0` |
+| 1 | `insufficient` | Eine einzelne Stichprobe bildet keinen „Konsens", auch bei vollständiger Übereinstimmung mit final darf kein `high` ausgegeben werden |
+| ≥ 2, `sum(confidence) == 0` | `insufficient` | Die Konfidenz der gültigen Nachweise ist null, ein Konsens kann nicht aufgebaut werden |
+| ≥ 2, `sum(confidence) > 0` | Wechsel in die aligned_ratio-Beurteilung | Siehe Tabelle unten |
 
-Aligned Ratio 判定（valid ≥ 2 且 `sum(confidence) > 0`）：
+Aligned-Ratio-Beurteilung (valid ≥ 2 und `sum(confidence) > 0`):
 
-| 条件 | consensus_level |
+| Bedingung | consensus_level |
 | --- | --- |
 | `conflict_severity == "high"` | `low` |
-| `aligned_ratio ≥ 2/3` 且 `conflict_count == 0`（等价 `conflict_severity == "none"`） | `high` |
-| `conflict_severity == "medium"` 且 `aligned_ratio < 0.5` | `low` |
-| 其余 | `medium` |
+| `aligned_ratio ≥ 2/3` und `conflict_count == 0` (äquivalent `conflict_severity == "none"`) | `high` |
+| `conflict_severity == "medium"` und `aligned_ratio < 0.5` | `low` |
+| Sonst | `medium` |
 
-其中 `aligned = 与 final_signal 同向且 score 距离 ≤ 1.0 的 valid 数量`，`aligned_ratio = aligned / len(valid)`。
+Dabei ist `aligned = Anzahl der valid, die gleichgerichtet zu `final_signal` sind und eine Score-Distanz ≤ 1.0 haben`, `aligned_ratio = aligned / len(valid)`.
 
-Baseline 禁止使用 `sum(...) or 1.0` 之类的兜底把零权重掩盖成分母 1；零权重必须显式走 `insufficient` 分支，并让 `final_signal` 退回 `hold`。
+Die Baseline verbietet, mit Fallbacks wie `sum(...) or 1.0` Nullgewichte als Nenner 1 zu verschleiern; Nullgewichte müssen explizit über den `insufficient`-Zweig laufen und `final_signal` auf `hold` zurückfallen lassen.
 
-### `strategy_synthesis` Payload Schema
+### `strategy_synthesis`-Payload-Schema
 
 ```json
 {
   "final_signal": "hold",                 // canonical signal
-  "weighted_score": 3.0,                  // 保留 4 位小数
-  "confidence": 0.72,                     // 折减后的置信度
-  "original_confidence": 0.80,            // 折减前的加权置信度
+  "weighted_score": 3.0,                  // 4 Nachkommastellen
+  "confidence": 0.72,                     // reduzierte Konfidenz
+  "original_confidence": 0.80,            // gewichtete Konfidenz vor der Reduktion
   "conflict_count": 0,
   "conflict_severity": "none",            // none | low | medium | high
-  "conflicts": [ /* ConflictDetector 输出的 dict 列表 */ ],
+  "conflicts": [ /* Liste der vom ConflictDetector ausgegebenen dicts */ ],
   "supporting_skills": [ /* opinion item */ ],
   "opposing_skills":   [ /* opinion item */ ],
   "consensus_level": "high",              // high | medium | low | insufficient
-  "summary_key": "strategy_synthesis.no_conflicts",   // 动态 i18n 摘要键名，随共识和冲突状态确定
+  "summary_key": "strategy_synthesis.no_conflicts",   // dynamischer i18n-Zusammenfassungsschlüssel, bestimmt durch Konsens- und Konfliktstatus
   "summary_params": {
-    "opinion_count": 2,                   // valid 样本数（Evidence Chain 大小）
-    "total_opinion_count": 4,             // valid + invalid（分拣前原始输入总数）
-    "invalid_opinion_count": 2,           // Diagnostics 长度
+    "opinion_count": 2,                   // Anzahl der valid Stichproben (Größe der Evidence Chain)
+    "total_opinion_count": 4,             // valid + invalid (Original-Gesamtzahl der Eingaben vor der Sortierung)
+    "invalid_opinion_count": 2,           // Länge der Diagnostics
     "final_signal": "hold",
     "consensus_level": "high",
     "conflict_severity": "none",
     "conflict_count": 0
   },
-  "deliberation": {                       // 可选；仅 material conflicts 触发
+  "deliberation": {                       // optional; nur bei material conflicts ausgelöst
     "status": "completed",
     "mode": "multi_round_v4",
     "rounds": 2,
@@ -186,7 +186,7 @@ Baseline 禁止使用 `sum(...) or 1.0` 之类的兜底把零权重掩盖成分�
       }
     ]
   },
-  "revision_projection": {                // 可选；仅 deliberation 存在时生成的 preview
+  "revision_projection": {                // optional; Vorschau nur erzeugt, wenn deliberation vorhanden ist
     "status": "computed",
     "mode": "preview_only",
     "source_mode": "mediator_v0",
@@ -204,188 +204,189 @@ Baseline 禁止使用 `sum(...) or 1.0` 之类的兜底把零权重掩盖成分�
 }
 ```
 
-Opinion Item 结构（`supporting_skills` / `opposing_skills` 每个元素）：
+Opinion-Item-Struktur (jedes Element von `supporting_skills` / `opposing_skills`):
 
 ```json
 {
   "skill_id": "trend_v1",
   "agent_name": "skill_trend_v1",
   "signal": "hold",              // canonical
-  "confidence": 0.80,            // 保留 4 位小数
+  "confidence": 0.80,            // 4 Nachkommastellen
   "reasoning": "...",
   "score_adjustment": 0,
   "conditions_met": []
 }
 ```
 
-Baseline 明确 `strategy_synthesis` 是**由 SkillAggregator 确定性算法产出的唯一权威合成结果**。Orchestrator 的 `_collect_strategy_synthesis()` 必须优先使用 `ctx.get_data("skill_consensus")` 中的 synthesis，只有在 SkillAggregator 未产出时才允许回退到 `ctx.opinions` 中的 `skill_consensus` opinion。**LLM 返回的 dashboard 不得覆盖或修改 `dashboard.strategy_synthesis`**；`normalize_dashboard_payload` 收到 LLM 输出时应剥离 LLM 侧的 `strategy_synthesis` 字段，避免 LLM 幻觉污染权威合成结果。
+Die Baseline stellt klar, dass `strategy_synthesis` das **vom SkillAggregator deterministisch erzeugte einzige autoritative Syntheseergebnis** ist. `_collect_strategy_synthesis()` des Orchestrators muss bevorzugt die Synthese aus `ctx.get_data("skill_consensus")` verwenden und darf nur dann, wenn der SkillAggregator nichts erzeugt hat, auf die `skill_consensus`-Opinion in `ctx.opinions` zurückfallen. **Das vom LLM zurückgegebene Dashboard darf `dashboard.strategy_synthesis` nicht überschreiben oder verändern**; `normalize_dashboard_payload` muss beim Erhalt der LLM-Ausgabe das `strategy_synthesis`-Feld der LLM-Seite entfernen, um zu vermeiden, dass LLM-Halluzinationen das autoritative Syntheseergebnis verunreinigen.
 
-### Strategy Deliberation v0（Phase 1.5）
+### Strategy Deliberation v0 (Phase 1.5)
 
-`strategy_synthesis.deliberation` 是可选协同推理块，只在中高强度冲突或明确关键冲突类型出现时生成。v0 使用确定性 `mediator_v0`，不调用 LLM、不让策略自由聊天、不修改原始 opinion、不重新计算 `final_signal`。它的职责是把冲突转成可审计议题，并记录策略回应、轻量修正与综合置信度折减原因。
+`strategy_synthesis.deliberation` ist ein optionaler Block für kollaboratives Reasoning, der nur bei mittleren bis hohen Konflikten oder eindeutig kritischen Konflikttypen erzeugt wird. v0 verwendet den deterministischen `mediator_v0`, ruft kein LLM auf, lässt Strategien nicht frei chatten, verändert keine Original-Opinions und berechnet `final_signal` nicht neu. Seine Aufgabe ist es, Konflikte in prüfbare Themen zu überführen und Strategieantworten, leichte Korrekturen sowie Gründe für die Reduktion der synthetisierten Konfidenz zu erfassen.
 
-触发条件：
+Auslösebedingungen:
 
 - `len(valid_opinions) >= 2`
-- 且存在 `severity in {"medium", "high"}` 的 conflict，或 conflict type 属于 `directional_opposition` / `high_confidence_dissent`
+- und es existiert ein Konflikt mit `severity in {"medium", "high"}`, oder der Konflikttyp gehört zu `directional_opposition` / `high_confidence_dissent`
 
-v0 revision 只允许：
+v0-Revision erlaubt nur:
 
-- `unchanged`：坚持原观点。
-- `softened`：仅降低 confidence，或将 `strong_buy -> buy`、`strong_sell -> sell`；`buy` / `sell` / `hold` 不反转，只可降低 confidence。
+- `unchanged`: Die ursprüngliche Einschätzung beibehalten.
+- `softened`: Nur die Konfidenz senken oder `strong_buy -> buy`, `strong_sell -> sell`; `buy` / `sell` / `hold` werden nicht umgekehrt, nur die Konfidenz darf gesenkt werden.
 
-v0 明确禁止：
+v0 verbietet ausdrücklich:
 
-- `reversed`：不得反转观点。
-- 重新计算 `final_signal`。
-- 引入多轮 debate、并发调度、前端展示或新配置项。
+- `reversed`: Einschätzungen dürfen nicht umgekehrt werden.
+- Eine Neuberechnung von `final_signal`.
+- Die Einführung von mehrrundigem Debate, paralleler Planung, Frontend-Anzeige oder neuen Konfigurationseinträgen.
 
-`deliberation.summary.confidence_adjustment` 只作为 `StrategySynthesizer` 在原 conflict severity 折减后的额外保守折减。高冲突部分缓解时默认约 `-0.06`，未缓解时约 `-0.08`；中冲突部分缓解时默认约 `-0.04`，未缓解时约 `-0.05`。该字段必须保留在 payload 中，方便后续 renderer 或 Web UI 展示“为什么置信度被继续下调”。
+`deliberation.summary.confidence_adjustment` dient nur als zusätzliche konservative Reduktion durch den `StrategySynthesizer` nach der ursprünglichen Reduktion durch die Konfliktschwere. Bei hohem Konflikt mit teilweiser Auflösung beträgt sie standardmäßig etwa `-0.06`, ohne Auflösung etwa `-0.08`; bei mittlerem Konflikt mit teilweiser Auflösung etwa `-0.04`, ohne Auflösung etwa `-0.05`. Dieses Feld muss in der Payload erhalten bleiben, damit nachgelagerte Renderer oder die Web-UI zeigen können, „warum die Konfidenz weiter herabgesetzt wurde".
 
-### LLM Mediator v1（Phase 1.6）
+### LLM-Mediator v1 (Phase 1.6)
 
-`llm_mediator_v1` 是 `StrategyDeliberation` 的可注入增强模式，不是默认运行时行为。调用方可以向 `StrategySynthesizer(deliberation_mediator=...)` 注入 `LLMDeliberationMediator`，由它先生成 v0 baseline agenda，再把低敏结构化 opinions/conflicts/baseline payload 发送给 LLM callable。LLM 只能返回同 schema 的 JSON 对象；返回文本、坏 JSON、缺字段、ID 漂移或越界 revision 时，必须无条件回退 v0。
+`llm_mediator_v1` ist ein injizierbarer Verstärkungsmodus von `StrategyDeliberation`, kein Standardlaufzeitverhalten. Aufrufer können dem `StrategySynthesizer(deliberation_mediator=...)` einen `LLMDeliberationMediator` injizieren; dieser erzeugt zuerst die v0-Baseline-Agenda und sendet dann die niedervertraulichen strukturierten Opinions/Conflicts/Baseline-Payload an das LLM-Callable. Das LLM darf nur ein JSON-Objekt desselben Schemas zurückgeben; bei zurückgegebenem Text, schlechtem JSON, fehlenden Feldern, ID-Drift oder einer außerhalb des Bereichs liegenden Revision muss bedingungslos auf v0 zurückgefallen werden.
 
-v1 schema guard：
+v1-Schema-Guard:
 
-- `agenda` 必须保留 v0 的 `agenda_id` 集合；不得新增、删除或替换参与方。
-- `responses` 必须覆盖 v0 的 `(agenda_id, skill_id)` 集合；不得新增未参与策略。
-- `revision` 只允许 `unchanged` / `softened`；`reversed` 继续禁止。
-- v0 baseline 已经 `softened` 的 response 必须继续保持 `softened`，不得恢复 original signal，且 `revised_confidence` 不得高于 baseline 的已验证值。
-- v0 baseline 为 `unchanged` 的 response 可以保持不变，也可以按原规则继续 `softened`；不得反转 signal 或提高 confidence。
-- `summary.confidence_adjustment` 不得比 v0 baseline 更乐观，且单次额外折减下限为 `-0.10`，避免 LLM 撤销确定性折减。
+- `agenda` muss die `agenda_id`-Menge von v0 erhalten; Teilnehmer dürfen nicht hinzugefügt, entfernt oder ersetzt werden.
+- `responses` müssen die `(agenda_id, skill_id)`-Menge von v0 abdecken; nicht beteiligte Strategien dürfen nicht hinzugefügt werden.
+- `revision` erlaubt nur `unchanged` / `softened`; `reversed` bleibt verboten.
+- Eine in der v0-Baseline bereits `softened` Response muss `softened` bleiben, darf das Original-Signal nicht wiederherstellen, und `revised_confidence` darf nicht höher als der in der Baseline verifizierte Wert sein.
+- Eine in der v0-Baseline `unchanged` Response darf unverändert bleiben oder gemäß den Originalregeln weiter `softened` werden; das Signal darf nicht umgekehrt und die Konfidenz nicht erhöht werden.
+- `summary.confidence_adjustment` darf nicht optimistischer als in der v0-Baseline sein, und die einmalige zusätzliche Reduktion hat die Untergrenze `-0.10`, um zu verhindern, dass das LLM die deterministische Reduktion rückgängig macht.
 
-v1 输出通过校验时 `deliberation.mode="llm_mediator_v1"`；否则保持 `mediator_v0` 输出。v1 仍不调用策略 agent 自审、不多轮 debate、不重算 `final_signal`，也不新增配置项。
+Besteht die v1-Ausgabe die Validierung, gilt `deliberation.mode="llm_mediator_v1"`; andernfalls bleibt die `mediator_v0`-Ausgabe erhalten. v1 ruft weiterhin weder ein Strategie-Agent-Self-Review auf, betreibt kein mehrrundiges Debate, berechnet `final_signal` nicht neu und fügt keine Konfigurationseinträge hinzu.
 
-### Strategy Self-Review v2（Phase 1.7）
+### Strategy Self-Review v2 (Phase 1.7)
 
-`self_review_v2` 是 `StrategyDeliberation` 的可注入自审模式，不是默认运行时行为。调用方可以向 `StrategySynthesizer(deliberation_mediator=...)` 注入 `StrategySelfReviewMediator`，由它先获取 baseline deliberation（可以是 `mediator_v0` 或通过校验的 `llm_mediator_v1`），再按每个 baseline response 的 `(agenda_id, skill_id)` 调用自审 callable。未来该 callable 可以由真实冲突参与 strategy agent 执行；当前契约只规定输入/输出与降级行为。
+`self_review_v2` ist ein injizierbarer Self-Review-Modus von `StrategyDeliberation`, kein Standardlaufzeitverhalten. Aufrufer können dem `StrategySynthesizer(deliberation_mediator=...)` einen `StrategySelfReviewMediator` injizieren; dieser holt zuerst die Baseline-Deliberation (kann `mediator_v0` oder ein validiertes `llm_mediator_v1` sein) und ruft dann pro `(agenda_id, skill_id)` der Baseline-Response das Self-Review-Callable auf. In Zukunft kann dieses Callable von den tatsächlich konfliktbeteiligten Strategie-Agents ausgeführt werden; der aktuelle Vertrag legt nur Ein-/Ausgabe und das Degradationsverhalten fest.
 
-v2 self-review guard：
+v2-Self-Review-Guard:
 
-- 每个 baseline response 必须返回且只返回自己的 response JSON；不得修改其它策略回应。
-- 返回的 `agenda_id` / `skill_id` 必须与 baseline response 完全一致。
-- `revision` 仍只允许 `unchanged` / `softened`；`reversed` 继续禁止。
-- baseline 已经 `softened` 时不得改回 `unchanged`、恢复 original signal 或提高 baseline `revised_confidence`。
-- baseline 为 `unchanged` 时可以保持不变，也可以按原规则继续 `softened`；不得反转 signal 或提高 confidence。
-- v2 根据通过校验的 responses 重算 summary 时，最终 `confidence_adjustment` 不得比输入 baseline 更乐观。
-- 任一参与方缺失、坏 JSON、ID 漂移、越权修改或试图 `reversed`，整轮 self-review 回退到 baseline deliberation，禁止混合部分有效自审。
+- Jede Baseline-Response muss genau ihre eigene Response-JSON zurückgeben; die Antworten anderer Strategien dürfen nicht verändert werden.
+- Die zurückgegebenen `agenda_id` / `skill_id` müssen exakt mit der Baseline-Response übereinstimmen.
+- `revision` erlaubt weiterhin nur `unchanged` / `softened`; `reversed` bleibt verboten.
+- Eine bereits `softened` Baseline darf nicht auf `unchanged` zurückgesetzt, das Original-Signal nicht wiederhergestellt und die Baseline-`revised_confidence` nicht erhöht werden.
+- Eine `unchanged` Baseline darf unverändert bleiben oder gemäß den Originalregeln weiter `softened` werden; das Signal darf nicht umgekehrt und die Konfidenz nicht erhöht werden.
+- Wenn v2 die Zusammenfassung aus den validierten Responses neu berechnet, darf die endgültige `confidence_adjustment` nicht optimistischer als die Eingabe-Baseline sein.
+- Bei fehlendem Teilnehmer, schlechtem JSON, ID-Drift, unbefugten Änderungen oder dem Versuch von `reversed` fällt die gesamte Self-Review-Runde auf die Baseline-Deliberation zurück; eine Vermischung teilweise gültiger Self-Reviews ist verboten.
 
-v2 输出通过校验时 `deliberation.mode="self_review_v2"`。v2 仍只做一轮、不新增并发调度、不重算 `final_signal`、不改变原始 opinion，也不新增配置项。
+Besteht die v2-Ausgabe die Validierung, gilt `deliberation.mode="self_review_v2"`. v2 macht weiterhin nur eine Runde, fügt keine parallele Planung hinzu, berechnet `final_signal` nicht neu, verändert keine Original-Opinions und fügt keine Konfigurationseinträge hinzu.
 
-### Revision Projection v3（Phase 1.8）
+### Revisionsprojektion v3 (Phase 1.8)
 
-`strategy_synthesis.revision_projection` 是可选预览块，只在 `deliberation` 存在时由 `StrategySynthesizer` 计算。它读取已经通过 v0/v1/v2 schema guard 的 `responses`，把 `revision="softened"` 的回应应用到临时 `StrategyOpinion` 副本上，再用 confidence-weighted score 预览新的综合结果。
+`strategy_synthesis.revision_projection` ist ein optionaler Vorschau-Block, der nur bei vorhandener `deliberation` vom `StrategySynthesizer` berechnet wird. Er liest die bereits durch die v0/v1/v2-Schema-Guards geprüften `responses`, wendet Antworten mit `revision="softened"` auf temporäre `StrategyOpinion`-Kopien an und zeigt das neue Syntheseergebnis über den confidence-gewichteten Score vorab.
 
-v3 输出边界：
+v3-Ausgabegrenzen:
 
-- `revision_projection.mode` 固定为 `preview_only`。
-- `source_mode` 记录投影来源：`mediator_v0` / `llm_mediator_v1` / `self_review_v2`。
-- `projected_signal` / `projected_weighted_score` / `projected_confidence` 只描述采纳 softened 修订后的预览结果。
-- `projected_conflict_count` / `projected_conflict_severity` / `projected_consensus_level` 基于临时修订副本重新检测，不改写原始 conflicts。
-- `changed_skill_count` / `changed_skills` 只统计实际 softened 的策略。
-- `final_signal_overridden` 必须固定为 `false`，用于明确 v3 不覆盖权威最终信号。
+- `revision_projection.mode` ist fix auf `preview_only`.
+- `source_mode` erfasst die Projektionsquelle: `mediator_v0` / `llm_mediator_v1` / `self_review_v2`.
+- `projected_signal` / `projected_weighted_score` / `projected_confidence` beschreiben nur das Vorschauergebnis nach Annahme der softened Revisionen.
+- `projected_conflict_count` / `projected_conflict_severity` / `projected_consensus_level` werden auf Basis der temporären Revisionskopien neu erkannt und überschreiben die Original-Conflicts nicht.
+- `changed_skill_count` / `changed_skills` zählen nur die tatsächlich softened Strategien.
+- `final_signal_overridden` muss fix auf `false` gesetzt sein, um klarzustellen, dass v3 das autoritative Endsignal nicht überschreibt.
 
-v3 明确禁止：
+v3 verbietet ausdrücklich:
 
-- 把 `projected_signal` 回写到顶层 `final_signal`。
-- 把 `projected_weighted_score` 回写到顶层 `weighted_score`。
-- 把 `projected_confidence` 回写到顶层 `confidence`。
-- 在没有 `deliberation` 的场景输出空 projection。
-- 接受未经 v0/v1/v2 guard 的自由文本、反转信号或新增策略回应。
+- `projected_signal` zurück in das Top-Level-`final_signal` zu schreiben.
+- `projected_weighted_score` zurück in das Top-Level-`weighted_score` zu schreiben.
+- `projected_confidence` zurück in das Top-Level-`confidence` zu schreiben.
+- Ohne `deliberation` eine leere Projektion auszugeben.
+- Freitext, umgekehrte Signale oder neu hinzugefügte Strategieantworten zu akzeptieren, die nicht die v0/v1/v2-Guards durchlaufen haben.
 
-v3 在投影入口还会重新核对 `original_signal`、允许的 softened signal 与 `revised_confidence` 上界；即使调用方注入了未使用内置 mediator guard 的自定义结果，也不会把更激进的 response 应用到临时 opinion 副本。
+v3 überprüft am Projektionseinstieg außerdem erneut `original_signal`, die zulässigen softened Signale und die Obergrenze von `revised_confidence`; selbst wenn der Aufrufer ein benutzerdefiniertes Ergebnis ohne die eingebauten Mediator-Guards injiziert hat, wird keine aggressivere Response auf die temporäre Opinion-Kopie angewendet.
 
-### Configurable Multi-Round Deliberation v4（Phase 1.9）
+### Konfigurierbare Multi-Round-Deliberation v4 (Phase 1.9)
 
-`multi_round_v4` 是 `StrategyDeliberation` 的可注入多轮增强模式，不是默认运行时行为。调用方可以向 `StrategySynthesizer(deliberation_mediator=...)` 注入 `MultiRoundDeliberationMediator`，并通过构造参数配置：
+`multi_round_v4` ist ein injizierbarer mehrrundiger Verstärkungsmodus von `StrategyDeliberation`, kein Standardlaufzeitverhalten. Aufrufer können dem `StrategySynthesizer(deliberation_mediator=...)` einen `MultiRoundDeliberationMediator` injizieren und über Konstruktorparameter konfigurieren:
 
-- `fallback`：第一轮 baseline mediator，可为 `mediator_v0`、`llm_mediator_v1` 或 `self_review_v2`。
-- `max_rounds`：总轮数上限，范围 `1–4`；`1` 等价只保留 fallback baseline。
-- `stop_when_stable`：当某轮没有任何 response 变化时是否提前停止，默认开启。
-- `round_completion(round_index, messages)`：下一轮结构化修订 callable，只能返回同 schema JSON。
+- `fallback`: Der Baseline-Mediator der ersten Runde, kann `mediator_v0`, `llm_mediator_v1` oder `self_review_v2` sein.
+- `max_rounds`: Obergrenze der Gesamtrunden, Bereich `1–4`; `1` entspricht nur der Beibehaltung der Fallback-Baseline.
+- `stop_when_stable`: Ob vorzeitig gestoppt wird, wenn eine Runde keine Änderung der Responses aufweist, standardmäßig aktiviert.
+- `round_completion(round_index, messages)`: Callable für strukturierte Revision der nächsten Runde, darf nur gleich-schema JSON zurückgeben.
 
-v4 round guard：
+v4-Runden-Guard:
 
-- 每轮必须保留上一轮的 `agenda_id` 集合和 `(agenda_id, skill_id)` response 集合；不得新增、删除或替换参与方。
-- `revision` 仍只允许 `unchanged` / `softened`；`reversed` 继续禁止。
-- 上一轮已经 `softened` 的 response 不能回到 `unchanged`。
-- 上一轮已经 `softened` 的 response 不能更换 `revised_signal`，也不能提高 `revised_confidence`。
-- 上一轮 `unchanged` 的 response 可以继续 `unchanged`，也可以按原规则 `softened`。
-- `summary.confidence_adjustment` 不能为正数，也不能比上一轮更乐观；单轮下限仍按 v1 guard 钳制到 `-0.10`。
-- 任一轮坏 JSON、ID 漂移、越界 revision、撤销 softened 或提高 confidence 时，停止后续轮次并返回上一轮已验证结果；如果第 2 轮即失败，则保持 fallback baseline。
+- Jede Runde muss die `agenda_id`-Menge und die `(agenda_id, skill_id)`-Response-Menge der Vorrunde erhalten; Teilnehmer dürfen nicht hinzugefügt, entfernt oder ersetzt werden.
+- `revision` erlaubt weiterhin nur `unchanged` / `softened`; `reversed` bleibt verboten.
+- Eine in der Vorrunde bereits `softened` Response darf nicht zu `unchanged` zurückkehren.
+- Eine in der Vorrunde bereits `softened` Response darf weder `revised_signal` wechseln noch `revised_confidence` erhöhen.
+- Eine in der Vorrunde `unchanged` Response darf `unchanged` bleiben oder gemäß den Originalregeln `softened` werden.
+- `summary.confidence_adjustment` darf nicht positiv und nicht optimistischer als in der Vorrunde sein; die Untergrenze pro Runde bleibt gemäß dem v1-Guard auf `-0.10` geklemmt.
+- Bei schlechtem JSON, ID-Drift, außerhalb des Bereichs liegender Revision, Rücknahme von softened oder Erhöhung der Konfidenz in irgendeiner Runde werden die nachfolgenden Runden gestoppt und das in der Vorrunde verifizierte Ergebnis zurückgegeben; schlägt bereits Runde 2 fehl, bleibt die Fallback-Baseline erhalten.
 
-v4 输出：
+v4-Ausgabe:
 
-- 至少接受一轮额外修订时，`deliberation.mode="multi_round_v4"`。
-- `deliberation.rounds` 记录实际接受到的总轮数。
-- `deliberation.round_history` 记录 baseline 与每个已接受轮次的 `round`、`source_mode`、`status`、`changed_response_count` 和 `confidence_adjustment`。
-- v4 仍不重算顶层 `final_signal`，不改变原始 opinion，不直接覆盖顶层 `weighted_score` 或 `confidence`；顶层 confidence 只继续读取最终 `deliberation.summary.confidence_adjustment` 做保守折减。
+- Bei mindestens einer angenommenen zusätzlichen Revisionsrunde gilt `deliberation.mode="multi_round_v4"`.
+- `deliberation.rounds` erfasst die tatsächlich angenommene Gesamtzahl der Runden.
+- `deliberation.round_history` erfasst für die Baseline und jede angenommene Runde `round`, `source_mode`, `status`, `changed_response_count` und `confidence_adjustment`.
+- v4 berechnet weiterhin kein Top-Level-`final_signal` neu, verändert keine Original-Opinions und überschreibt nicht direkt Top-Level-`weighted_score` oder `confidence`; die Top-Level-Konfidenz liest weiterhin nur die endgültige `deliberation.summary.confidence_adjustment` für die konservative Reduktion.
 
-### 关键不变量
+### Zentrale Invarianten
 
-Baseline 的语义边界收敛为九条不变量。所有 Phase N 的实现必须同时满足这九条，任一违反视为契约破坏。
+Die semantischen Grenzen der Baseline verdichten sich zu neun Invarianten. Alle Implementierungen jeder Phase N müssen diese neun gleichzeitig erfüllen; jede Verletzung gilt als Vertragsbruch.
 
-| ID | 不变量 | 场景 | 期望 |
+| ID | Invariante | Szenario | Erwartung |
 | --- | --- | --- | --- |
-| I-1 | Evidence Chain 排他性 | 任何模块读取 Evidence Chain | 集合内每一条都必须 `is_valid_strategy_signal == True`；Invalid 不允许出现 |
-| I-2 | 禁止静默转换 | 缺失或无法识别的 signal | 归入 Diagnostics，不得转换成 `hold` 后混入 Evidence Chain 或建桶 |
-| I-3 | 零证据 → insufficient | 任意有效信号但 `sum(confidences) == 0`，或 valid 数量 = 0 | `final_signal="hold"`, `weighted_confidence=0.0`, `consensus_level="insufficient"`；禁止输出 `strong_sell` 或任何方向性信号 |
-| I-4 | 单样本 → insufficient | 恰好 1 个 valid opinion | `consensus_level="insufficient"`，即使与 final 完全一致 |
-| I-5 | Hold-final 一致性 | `final_signal == "hold"` 且存在 ≥ 2 个 hold valid opinion | 全部 hold opinion 必须归入 `supporting_skills`；consensus_level 与 supporting_skills 数量关系必须自洽（`high` 时 supporting 覆盖 ≥ 2/3） |
-| I-6 | Payload 与 renderer 语义一致 | `dashboard.strategy_synthesis` 值 | 四条 renderer（Markdown / WeChat / Notification / History）实际文本必须与 payload 完全一致，不得出现"共识度：高 + 支持策略：无"等自相矛盾组合 |
-| I-7 | Canonical-First 评分 | Aggregator / ConflictDetector / Synthesizer 内部的评分、加权、冲突判定、分组 | 必须使用 `normalize_strategy_signal()` 返回的 canonical 小写值；禁止用大写 `"BUY"`、别名等原始字符串直接查 `strategy_signal_score` |
-| I-8 | 多语言空占位符 | `supporting_skills` / `opposing_skills` 为空时的展示 | 必须通过 `labels.none_label` 按 `report_language` 查表；禁止在代码或模板中硬编码中文 `"无"` / 英文 `"None"` / 韩文 `"없음"` 字面量 |
-| I-9 | Deliberation 单调保守 | v1/v2/v4 基于上一层已验证 baseline 修订，v3 应用 projection | 不得撤销已有 `softened`、恢复 original signal、提高 baseline revised confidence 或提高 baseline confidence adjustment；越界结果回退上一层 |
+| I-1 | Exklusivität der Evidence Chain | Beliebiges Modul liest die Evidence Chain | Jeder Eintrag in der Menge muss `is_valid_strategy_signal == True` sein; Invalid darf nicht auftreten |
+| I-2 | Keine stillschweigende Umwandlung | Fehlendes oder nicht erkennbares Signal | In die Diagnostics einordnen, nicht in `hold` umwandeln und in die Evidence Chain oder Buckets mischen |
+| I-3 | Null-Nachweise → insufficient | Beliebiges gültiges Signal, aber `sum(confidences) == 0`, oder Anzahl valid = 0 | `final_signal="hold"`, `weighted_confidence=0.0`, `consensus_level="insufficient"`; die Ausgabe von `strong_sell` oder beliebiger Richtungssignale ist verboten |
+| I-4 | Einzelne Stichprobe → insufficient | Genau 1 Valid Opinion | `consensus_level="insufficient"`, auch bei vollständiger Übereinstimmung mit final |
+| I-5 | Hold-final-Konsistenz | `final_signal == "hold"` und mindestens 2 hold Valid Opinions vorhanden | Alle hold Opinions müssen in `supporting_skills` eingeordnet werden; die Beziehung zwischen `consensus_level` und der Anzahl der `supporting_skills` muss selbstkonsistent sein (bei `high` deckt supporting ≥ 2/3 ab) |
+| I-6 | Payload- und Renderer-Semantik konsistent | Werte von `dashboard.strategy_synthesis` | Der tatsächliche Text der vier Renderer (Markdown / WeChat / Notification / History) muss exakt mit der Payload übereinstimmen; selbstwidersprüchliche Kombinationen wie „Konsensgrad: hoch + Unterstützende Strategien: keine" dürfen nicht auftreten |
+| I-7 | Canonical-First-Bewertung | Bewertung, Gewichtung, Konfliktbeurteilung und Gruppierung innerhalb von Aggregator / ConflictDetector / Synthesizer | Muss die von `normalize_strategy_signal()` zurückgegebenen kleingeschriebenen canonical-Werte verwenden; es ist verboten, Rohstrings wie `"BUY"` in Großschreibung oder Aliassee direkt für `strategy_signal_score` nachzuschlagen |
+| I-8 | Mehrsprachige Leer-Platzhalter | Anzeige bei leerem `supporting_skills` / `opposing_skills` | Muss über `labels.none_label` nach `report_language` nachgeschlagen werden; das Harcodeieren chinesischer `"无"` / englischer `"None"` / koreanischer `"없음"`-Literale in Code oder Templates ist verboten |
+| I-9 | Monotone Konservativität der Deliberation | v1/v2/v4 revidieren auf Basis der in der oberen Schicht verifizierten Baseline, v3 wendet die Projektion an | Vorhandenes `softened` darf nicht zurückgenommen, das Original-Signal nicht wiederhergestellt, die baseline revised confidence nicht erhöht und die baseline confidence adjustment nicht erhöht werden; außerhalb des Bereichs liegende Ergebnisse fallen auf die obere Schicht zurück |
 
-## Phase 1 语义收敛（本 PR 交付范围）
+## Phase-1-Semantik-Konvergenz (Lieferumfang dieser PR)
 
-Phase 1 是 Baseline 契约的第一版代码化实现。Phase 1 **不新增契约条款**，只把 Baseline 已经写死的边界落到具体代码：Orchestrator 分拣、Aggregator/Synthesizer 计算收敛、DecisionAgent prompt 收敛、Disagreement 收敛、四条 renderer 一致性、E2E 反例覆盖。
+Phase 1 ist die erste codebasierte Umsetzung des Baseline-Vertrags. Phase 1 **fügt keine Vertragsklauseln hinzu**, sondern bringt die in der Baseline bereits fixierten Grenzen in konkreten Code: Orchestrator-Sortierung, konvergente Berechnungen von Aggregator/Synthesizer, Konvergenz des DecisionAgent-Prompts, Disagreement-Konvergenz, Konsistenz der vier Renderer, E2E-Gegenbeispiel-Abdeckung.
 
-Phase 1 涉及的入口：
+Die in Phase 1 betroffenen Einstiegspunkte:
 
-- `src/agent/protocols.py`：新增 `is_valid_strategy_signal()` 单一真源，`normalize_strategy_signal()` 保留 invalid 状态位。
-- `src/agent/skills/engine.py`：`StrategyEngine.process()` 通过 `partition_only()` 完成唯一权威分拣，再由 `process_partition()` 驱动聚合与合成；Valid 保留在 Evidence Chain，Invalid 写入 Diagnostics。
-- `src/agent/orchestrator.py`：在 DecisionAgent 运行前调用 `_run_strategy_engine(ctx)`；timeout / budget-skip 早退路径调用 `_apply_partition_fallback(ctx)`，只分拣、不合成，避免 Invalid 回流证据链。
-- `src/agent/skills/aggregator.py`：`StrategyEngine` 把 `valid_skill_opinions` 交给 `SkillAggregator.calculate()`；数学计算只使用 valid opinion，对 `valid_weight_sum == 0` 显式走 `insufficient` 分支。
-- `src/agent/skills/synthesis.py`：`ConflictDetector` / `StrategySynthesizer` 使用 canonical signal 计算；`_group_opinions()` 按 §"动态二分阵营" 实现；`_consensus_level()` 按 §"共识度门槛" 实现；`summary_params` 补齐 `invalid_opinion_count` / `total_opinion_count`。
-- `src/agent/agents/decision_agent.py`：`build_user_message()` 直接消费 `ctx.opinions`，不再二次过滤；在 prompt 中如实展示 `ctx.meta["invalid_opinions"]` 数量。
-- `src/agent/disagreement.py`：`build_agent_disagreement_summary()` 直接消费 `ctx.opinions`（因 StrategyEngine 已完成分拣并由 Orchestrator 写回），Invalid 完全不出现在 `bullish_agents` / `bearish_agents` / `neutral_agents` 三桶中。
-- `src/services/report_renderer.py`、`templates/report_markdown.j2`、`templates/report_wechat.j2`、`src/notification.py`、`src/services/history_service.py`：读取 `strategy_synthesis.supporting_skills` / `opposing_skills` / `consensus_level` / `summary_params.invalid_opinion_count`；空列表通过 `labels.none_label` 输出；不再消费 `neutral_skills`。
-- `src/report_language.py`：`labels.none_label` 在 zh/en/ko 三语中完备；共识度、诊断计数文案完备。
-- `tests/test_multi_agent.py`：新增 E2E-A..G 反例矩阵，从 SkillAgent 输入 → StrategyEngine 分拣/聚合 → DecisionAgent prompt → dashboard payload → renderer 实际文本全链路断言。
+- `src/agent/protocols.py`: Hinzufügen von `is_valid_strategy_signal()` als einzige Wahrheitsquelle; `normalize_strategy_signal()` behält das invalid-Statusbit.
+- `src/agent/skills/engine.py`: `StrategyEngine.process()` führt über `partition_only()` die einzige autoritative Sortierung durch und steuert anschließend über `process_partition()` Aggregation und Synthese; Valid bleibt in der Evidence Chain, Invalid wird in die Diagnostics geschrieben.
+- `src/agent/orchestrator.py`: Vor dem DecisionAgent-Lauf `_run_strategy_engine(ctx)` aufrufen; im timeout / budget-skip-Frühbeendigungspfad `_apply_partition_fallback(ctx)` aufrufen, das nur sortiert und nicht synthetisiert, um ein Zurückfließen von Invalid in die Nachweiskette zu vermeiden.
+- `src/agent/skills/aggregator.py`: `StrategyEngine` übergibt `valid_skill_opinions` an `SkillAggregator.calculate()`; die mathematischen Berechnungen verwenden nur Valid Opinions und gehen bei `valid_weight_sum == 0` explizit in den `insufficient`-Zweig.
+- `src/agent/skills/synthesis.py`: `ConflictDetector` / `StrategySynthesizer` berechnen mit canonical signals; `_group_opinions()` implementiert § „Dynamische Zweilagerung"; `_consensus_level()` implementiert § „Konsensschwellen"; `summary_params` ergänzt `invalid_opinion_count` / `total_opinion_count`.
+- `src/agent/agents/decision_agent.py`: `build_user_message()` konsumiert direkt `ctx.opinions` und filtert nicht erneut; im Prompt wird die Anzahl von `ctx.meta["invalid_opinions"]` wahrheitsgemäß angezeigt.
+- `src/agent/disagreement.py`: `build_agent_disagreement_summary()` konsumiert direkt `ctx.opinions` (da die StrategyEngine die Sortierung abgeschlossen und der Orchestrator sie zurückgeschrieben hat); Invalid erscheint in den drei Buckets `bullish_agents` / `bearish_agents` / `neutral_agents` überhaupt nicht.
+- `src/services/report_renderer.py`, `templates/report_markdown.j2`, `templates/report_wechat.j2`, `src/notification.py`, `src/services/history_service.py`: Lesen `strategy_synthesis.supporting_skills` / `opposing_skills` / `consensus_level` / `summary_params.invalid_opinion_count`; leere Listen werden über `labels.none_label` ausgegeben; `neutral_skills` wird nicht mehr konsumiert.
+- `src/report_language.py`: `labels.none_label` ist in den drei Sprachen zh/en/ko vollständig; die Texte für Konsensgrad und Diagnosezählung sind vollständig.
+- `tests/test_multi_agent.py`: Neue Gegenbeispielmatrix E2E-A..G, durchgängige Assertions über die gesamte Kette von SkillAgent-Eingabe → StrategyEngine-Sortierung/Aggregation → DecisionAgent-Prompt → Dashboard-Payload → Renderer-Tatsächlichtext.
 
-Phase 1 不改变 `AgentOpinion` 字段、不改变 API 返回结构、不改变数据库 schema、不新增配置项、不改变现有 skill 的执行方式。
+Phase 1 ändert weder die `AgentOpinion`-Felder, noch die API-Rückgabestruktur, noch das Datenbankschema, noch fügt es Konfigurationseinträge hinzu, noch ändert es die Ausführungsweise bestehender Skills.
 
-## Phase 2 并发调度
+## Phase 2 Parallele Planung
 
-Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调度与阶段调度：
+Phase 2 fügt nur unter dem Vertrag von Phase 1/1.5/1.6/1.7/1.8/1.9 parallele und gestaffelte Planung für 2–4 Strategien hinzu:
 
-- `src/agent/skills/scheduler.py::AgentSkillScheduler` 使用 thread pool 并发执行 specialist skill agents；每个 skill 使用 `AgentContext` 副本运行，并通过独立的 `copy_context()` 把主管线冻结的 target date 等 `ContextVar` 状态传播到 worker，主线程按路由顺序合并结构化 opinion，避免多个 skill 同时写共享 `ctx.opinions`。
-- specialist 最终入口最多选择 4 个策略；`AGENT_SKILL_CONCURRENCY` 控制同时运行的 worker 数，默认 `3`，范围 `1–4`。默认值下第 4 个策略进入下一 concurrency wave，不会被路由层静默丢弃。
-- `AGENT_SKILL_AGENT_TIMEOUT_S` 继续作为单个 skill 的独立超时上限；Pipeline 总预算开启时，`_run_stage_agent()` 仍取 Pipeline 剩余预算与 skill 独立上限的较小值。
-- 单个 skill 超时或异常，走 Diagnostics 路径（`reason="skill_timeout"` / `"skill_error"`），进入 `ctx.meta["invalid_opinions"]`，不阻塞其他 skill 与主流程。
-- Phase 2 不改变 Baseline Evidence Chain / Diagnostics 分离原则、不改变阵营语义、不改变共识门槛、不改变 `strategy_synthesis` payload schema。
-- Phase 2 不改变 renderer 展示逻辑；scheduler timeout/error/no-opinion 与 signal 校验失败统一进入 StrategyEngine 的 authoritative Diagnostics，`invalid_opinion_count` / `total_opinion_count` 覆盖这些失败 skill。
-- `ctx.meta["skill_scheduler"]` 仅作为运行时诊断，记录调度模式、并发数、单 skill timeout、调度数量、完成数量和 invalid 数量；不得参与综合评分。
+- `src/agent/skills/scheduler.py::AgentSkillScheduler` führt specialist Skill Agents über einen Thread-Pool parallel aus; jeder Skill läuft mit einer `AgentContext`-Kopie und propagiert über eigenständiges `copy_context()` die in der Hauptpipeline eingefrorenen `ContextVar`-Zustände wie das target date in die Worker; der Hauptthread führt die strukturierten Opinions in Routenreihenfolge zusammen, um zu vermeiden, dass mehrere Skills gleichzeitig das gemeinsame `ctx.opinions` schreiben.
+- Der finale Einstieg der specialists wählt höchstens 4 Strategien aus; `AGENT_SKILL_CONCURRENCY` steuert die Anzahl gleichzeitig laufender Worker, standardmäßig `3`, Bereich `1–4`. Beim Standardwert tritt die 4. Strategie in die nächste concurrency wave ein und wird von der Routenschicht nicht stillschweigend verworfen.
+- `AGENT_SKILL_AGENT_TIMEOUT_S` bleibt die unabhängige Timeout-Obergrenze für einen einzelnen Skill; bei aktiviertem Pipeline-Gesamtbudget nimmt `_run_stage_agent()` weiterhin den kleineren Wert aus verbleibendem Pipeline-Budget und der unabhängigen Skill-Obergrenze.
+- Timeout oder Exception eines einzelnen Skills führt über den Diagnostics-Pfad (`reason="skill_timeout"` / `"skill_error"`) in `ctx.meta["invalid_opinions"]` und blockiert weder andere Skills noch den Hauptfluss.
+- Phase 2 ändert weder das Trennungsprinzip von Baseline Evidence Chain / Diagnostics, noch die Lagersemantik, noch die Konsensschwellen, noch das `strategy_synthesis`-Payload-Schema.
+- Phase 2 ändert die Renderer-Anzeigelogik nicht; scheduler timeout/error/no-opinion und Signal-Validierungsfehler gehen einheitlich in die autoritativen Diagnostics der StrategyEngine ein; `invalid_opinion_count` / `total_opinion_count` decken diese fehlgeschlagenen Skills ab.
+- `ctx.meta["skill_scheduler"]` dient nur als Laufzeitdiagnose und erfasst Planungsmodus, Parallelitätszahl, Einzel-Skill-Timeout, geplante Anzahl, abgeschlossene Anzahl und invalid-Anzahl; es darf nicht an der synthetisierten Bewertung teilnehmen.
 
-## Phase 3 前端多语言完整展示（本 PR 不做）
+## Phase 3 Vollständige mehrsprachige Frontend-Darstellung (in dieser PR nicht enthalten)
 
-Phase 3 只在 Phase 2 之上补前端（`apps/dsa-web/`、`apps/dsa-desktop/`）对 `strategy_synthesis` 的完整多语言展示：
+Phase 3 ergänzt nur auf Basis von Phase 2 die vollständige mehrsprachige Darstellung von `strategy_synthesis` im Frontend (`apps/dsa-web/`, `apps/dsa-desktop/`):
 
-- Web 报告详情页展示 `final_signal` / `consensus_level` / `supporting_skills` / `opposing_skills` / `conflicts` / `invalid_opinion_count`。
-- 桌面端复用 Web 展示逻辑。
-- 多语言 label 表复用 `src/report_language.py` 已有的 zh/en/ko 三语；前端只做投影，不重新定义。
-- Phase 3 不改变 Baseline 契约、不新增 payload 字段、不新增 API 端点。
+- Die Web-Berichtsdetailseite zeigt `final_signal` / `consensus_level` / `supporting_skills` / `opposing_skills` / `conflicts` / `invalid_opinion_count`.
+- Desktop verwendet die Web-Anzeigelogik wieder.
+- Die mehrsprachige Label-Tabelle verwendet die in `src/report_language.py` vorhandenen Sprachen zh/en/ko wieder; das Frontend projiziert nur und definiert nicht neu.
+- Phase 3 ändert weder den Baseline-Vertrag, noch fügt es Payload-Felder hinzu, noch API-Endpunkte.
 
-## Phase 4 Skill Outcome 权重反馈闭环
+## Phase 4 Skill-Outcome-Gewichts-Feedback-Kreislauf
 
-Phase 4 在同一 `CONTRACT_VERSION = "1.0"` 内只使用真实、可归因的
-individual Skill Outcome 调整运行时相对权重。权重统计继续严格按
-`skill_id + horizon + engine_version` 分 bucket；每个 horizon 必须独立满足
-`evaluated >= 30`，不得跨 horizon、skill 或 engine version 拼接样本解锁权重。
+Phase 4 passt innerhalb desselben `CONTRACT_VERSION = "1.0"` nur mit echten, zurechenbaren
+individuellen Skill Outcomes die relativen Laufzeitgewichte an. Die Gewichtsstatistik bleibt
+strikt nach `skill_id + horizon + engine_version` in Buckets aufgeteilt; jeder Horizon muss
+unabhängig `evaluated >= 30` erfüllen; Stichproben dürfen nicht über Horizon, Skill oder
+Engine-Version hinweg zusammengesetzt werden, um Gewichte freizuschalten.
 
-单个充足 bucket 使用对称 `Beta(15, 15)` 先验做命中率收缩：
+Ein einzelner ausreichender Bucket verwendet die symmetrische `Beta(15, 15)`-A-priori zur Schrumpfung der Trefferquote:
 
 ```text
 n = hit + miss
@@ -396,9 +397,10 @@ bucket_score = clamp(direction_score - 0.25 * unable_rate, -1, 1)
 evidence_strength = n / (n + 30)
 ```
 
-`pending` 不进入 unable rate 分母，`observational` / `unable` 不能补足
-evaluated 门槛。当前 opinion 没有可信 horizon，因此只对已经各自满足门槛的
-bucket 做证据强度加权模型平均：
+`pending` geht nicht in den Nenner der unable-Rate ein; `observational` / `unable` können die
+evaluated-Schwelle nicht auffüllen. Da die aktuelle Opinion keinen vertrauenswürdigen Horizon hat,
+wird nur über die bereits jeweils die Schwelle erfüllenden Buckets eine evidenzgewichtete
+Modellmittelung durchgeführt:
 
 ```text
 combined_score =
@@ -408,142 +410,145 @@ performance_factor = exp(ln(1.2) * combined_score)
 effective_weight = opinion.confidence * performance_factor
 ```
 
-`performance_factor` 被限制在乘法对称区间 `[1 / 1.2, 1.2]`。没有充足
-bucket、统计读取失败、bucket 损坏、数值非有限或
-`AGENT_SKILL_AUTOWEIGHT=false` 时必须返回中性因子 `1.0`；权重失败不得中断
-分析。运行时不再使用 `BacktestService` 的全局或不可归因 summary 冒充 Skill
-表现。本阶段只读消费已经持久化的 Outcome，不新增 evaluator 的 Pipeline、API
-或定时触发入口。
+`performance_factor` ist auf das multiplikativ symmetrische Intervall `[1 / 1.2, 1.2]` begrenzt. Ohne
+ausreichende Buckets, bei fehlgeschlagenem Statistiklesen, beschädigten Buckets, nicht endlichen
+Werten oder `AGENT_SKILL_AUTOWEIGHT=false` muss der neutrale Faktor `1.0` zurückgegeben werden;
+Gewichtsfehler dürfen die Analyse nicht unterbrechen. Die Laufzeit verwendet nicht mehr die globalen
+oder nicht zurechenbaren Summaries von `BacktestService` als Ersatz für die Skill-Leistung. Diese Phase
+konsumiert schreibgeschützt bereits persistierte Outcomes und fügt weder Pipeline-, API- noch
+zeitgesteuerte Auslöseeinstiege des Evaluators hinzu.
 
-`avg_directional_return_pct` 当前仍是只读描述指标，不参与权重。只有平均值而
-没有离散度或标准误时，直接加入公式会制造伪精确；后续若要使用收益，必须先
-建立版本化的风险调整收益契约。
+`avg_directional_return_pct` bleibt derzeit eine schreibgeschützte beschreibende Kennzahl und nimmt
+nicht an der Gewichtung teil. Wenn nur der Mittelwert ohne Streuung oder Standardfehler vorliegt,
+würde eine direkte Aufnahme in die Formel eine Scheinpräzision erzeugen; bevor Renditen später
+verwendet werden, muss zuerst ein versionierter risikoadjustierter Renditevertrag aufgebaut werden.
 
-Phase 4 不改变 Baseline canonical signal / valid 判定 / 共识门槛 / 阵营语义；
-权重变化只影响 `weighted_score` 与 `confidence`，不影响 `consensus_level`
-判定路径。`AGENT_ARCH=single` 不经过 `SkillAggregator`，保持兼容。
+Phase 4 ändert weder das Baseline-Canonical-Signal, noch die Valid-Beurteilung, noch die
+Konsensschwellen, noch die Lagersemantik; Gewichtsänderungen wirken sich nur auf `weighted_score`
+und `confidence` aus, nicht auf den Beurteilungspfad von `consensus_level`. `AGENT_ARCH=single`
+durchläuft `SkillAggregator` nicht und bleibt kompatibel.
 
-## 消费面盘点
+## Verbraucherflächen-Bestandsaufnahme
 
-Baseline 的七条消费面必须严格按下表分工，不得越界互相消费对方的内部数据。
+Die sieben Verbraucherflächen der Baseline müssen strikt nach der folgenden Tabelle aufgeteilt sein und dürfen sich nicht über die Grenzen hinweg gegenseitig deren interne Daten konsumieren.
 
 ### SkillAgent
 
-各 skill 通过 `src/agent/skills/skill_agent.py` 产出 `AgentOpinion`。Baseline 允许 skill 输出任意 signal 字面量（含大写、别名、`Signal` 枚举），也允许 skill 因数据不足产出 `signal=None` / 缺失字段——这些情况由下游分拣处理，skill 本身不做自我过滤。
+Jeder Skill erzeugt über `src/agent/skills/skill_agent.py` eine `AgentOpinion`. Die Baseline erlaubt dem Skill, beliebige Signal-Literale (einschließlich Großschreibung, Aliassee, `Signal`-Enum) auszugeben, und erlaubt dem Skill auch, bei unzureichenden Daten `signal=None` / fehlende Felder zu erzeugen — diese Fälle werden von der nachgelagerten Sortierung behandelt; der Skill selbst filtert sich nicht.
 
-### StrategyEngine / Orchestrator（分拣与接线）
+### StrategyEngine / Orchestrator (Sortierung und Verdrahtung)
 
-Phase 1 在 DecisionAgent 运行前由 Orchestrator 调用 `_run_strategy_engine(ctx)`：
+Phase 1 ruft vor dem DecisionAgent-Lauf `_run_strategy_engine(ctx)` auf:
 
-- `StrategyEngine.partition_only()` 遍历所有 `agent_name` 命中 `is_skill_agent_name()` 的观点，并使用 `normalize_strategy_signal()` 保留 canonical signal。
-- Invalid 从 Evidence Chain 移除，写入 `StrategyResult.invalid_records`；Orchestrator 再把它赋给 `ctx.meta["invalid_opinions"]`。
-- `StrategyEngine.process_partition()` 只把 `valid_skill_opinions` 交给 Aggregator/Synthesizer；产出的 consensus opinion 和 `skill_consensus` 由 `_run_strategy_engine()` 一次写回 context。
-- timeout / budget-skip 发生在完整 engine 运行前时，`_apply_partition_fallback()` 复用 `partition_only()`，只完成分拣和 Diagnostics 写回，不生成 consensus。
+- `StrategyEngine.partition_only()` durchläuft alle Opinions, deren `agent_name` auf `is_skill_agent_name()` zutrifft, und verwendet `normalize_strategy_signal()`, um das canonical signal beizubehalten.
+- Invalid wird aus der Evidence Chain entfernt und in `StrategyResult.invalid_records` geschrieben; der Orchestrator weist es dann `ctx.meta["invalid_opinions"]` zu.
+- `StrategyEngine.process_partition()` übergibt nur `valid_skill_opinions` an Aggregator/Synthesizer; die erzeugte consensus opinion und `skill_consensus` werden von `_run_strategy_engine()` einmalig in den Kontext zurückgeschrieben.
+- Wenn timeout / budget-skip vor dem vollständigen Engine-Lauf auftritt, nutzt `_apply_partition_fallback()` `partition_only()` erneut, schließt nur Sortierung und Diagnostics-Rückschreiben ab und erzeugt kein consensus.
 
-Baseline 规定 `StrategyEngine.partition_only()` 是**唯一权威分拣实现**。Aggregator / DecisionAgent / Disagreement 不再各自定义 Valid/Invalid 规则，直接消费 engine 收敛后的 Evidence Chain；Orchestrator 中保留的旧 wrapper 仅用于兼容现有内部调用/测试，不属于正常运行时链路。
+Die Baseline legt fest, dass `StrategyEngine.partition_only()` die **einzige autoritative Sortierimplementierung** ist. Aggregator / DecisionAgent / Disagreement definieren nicht mehr jeweils eigene Valid/Invalid-Regeln, sondern konsumieren direkt die konvergierte Evidence Chain der Engine; der im Orchestrator verbliebene alte Wrapper dient nur zur Kompatibilität bestehender interner Aufrufe/Tests und gehört nicht zur normalen Laufzeitkette.
 
 ### SkillAggregator
 
-正常运行时由 `StrategyEngine` 调用 `SkillAggregator.calculate(valid_skill_opinions)`。Aggregator 把输入转换为内部 `StrategyOpinion`，数学计算只使用 valid opinion，并严格使用 canonical signal 查 `strategy_signal_score`；兼容入口即使收到未分拣输入也不得让 Invalid 参与权重。对以下三种状态显式走 `insufficient` 分支：
+Im normalen Lauf ruft die `StrategyEngine` `SkillAggregator.calculate(valid_skill_opinions)` auf. Der Aggregator wandelt die Eingabe in interne `StrategyOpinion` um, verwendet in den mathematischen Berechnungen nur Valid Opinions und schlägt strikt canonical signals für `strategy_signal_score` nach; selbst der Kompatibilitätseinstieg darf Invalid nicht an der Gewichtung teilnehmen lassen, wenn unsortierte Eingaben eintreffen. Für die folgenden drei Zustände wird explizit der `insufficient`-Zweig gewählt:
 
-- `len(valid) == 0`：`final_signal="hold"`, `confidence=0.0`。
-- `len(valid) == 1`：按该 opinion 的 canonical signal 输出 `final_signal`，但 `consensus_level="insufficient"`。
-- `len(valid) ≥ 2` 且 `sum(confidence) == 0`：`final_signal="hold"`, `confidence=0.0`。
+- `len(valid) == 0`: `final_signal="hold"`, `confidence=0.0`.
+- `len(valid) == 1`: `final_signal` wird gemäß dem canonical signal dieser Opinion ausgegeben, aber `consensus_level="insufficient"`.
+- `len(valid) ≥ 2` und `sum(confidence) == 0`: `final_signal="hold"`, `confidence=0.0`.
 
-产出的 `strategy_synthesis` 由 `StrategyEngine` 装入 `StrategyResult.skill_consensus_data`，再由 Orchestrator 挂到 `ctx.set_data("skill_consensus", {...})`；`_collect_strategy_synthesis()` 从这里读取，作为 dashboard 的权威合成源。
+Die erzeugte `strategy_synthesis` wird von der `StrategyEngine` in `StrategyResult.skill_consensus_data` geladen und vom Orchestrator an `ctx.set_data("skill_consensus", {...})` gehängt; `_collect_strategy_synthesis()` liest von hier als autoritative Synthesequelle des Dashboards.
 
 ### DecisionAgent
 
-`build_user_message()` 从 `ctx.opinions` 读取观点写入 prompt。因为 Orchestrator 分拣已保证 `ctx.opinions` 只含 Valid，DecisionAgent **不再**做二次过滤。Prompt 中"另有 N 个策略解析失败"的展示直接读取 `ctx.meta["invalid_opinions"]` 长度。
+`build_user_message()` liest die Einschätzungen aus `ctx.opinions` in den Prompt. Da die Orchestrator-Sortierung garantiert hat, dass `ctx.opinions` nur Valid enthält, macht der DecisionAgent **keine** zweite Filterung mehr. Die Anzeige „weitere N Strategien konnten nicht verarbeitet werden" im Prompt liest direkt die Länge von `ctx.meta["invalid_opinions"]`.
 
-DecisionAgent 输出的 dashboard JSON 不得覆盖 `dashboard.strategy_synthesis`；如果 LLM 返回中含有该字段，`normalize_dashboard_payload()` 必须剥离，保留 Aggregator 侧的权威合成。
+Das vom DecisionAgent ausgegebene Dashboard-JSON darf `dashboard.strategy_synthesis` nicht überschreiben; wenn das LLM-Ergebnis dieses Feld enthält, muss `normalize_dashboard_payload()` es entfernen und die autoritative Synthese der Aggregator-Seite beibehalten.
 
 ### Disagreement
 
-`build_agent_disagreement_summary()` 只从 `ctx.opinions` 建 `bullish_agents` / `bearish_agents` / `neutral_agents` 三桶。因为 `ctx.opinions` 已只含 Valid，Invalid 完全不出现在三桶中，也不会被 `_normalize_signal()` 静默兜底为 `hold`。
+`build_agent_disagreement_summary()` bildet die drei Buckets `bullish_agents` / `bearish_agents` / `neutral_agents` nur aus `ctx.opinions`. Da `ctx.opinions` nur noch Valid enthält, erscheint Invalid in den drei Buckets überhaupt nicht und wird auch nicht von `_normalize_signal()` stillschweigend auf `hold` zurückgesetzt.
 
-`ctx.meta["invalid_opinions"]` 长度作为 `disagreement_summary.diagnostics.invalid_count` 单独暴露给 DecisionAgent prompt，供 LLM 生成 `data_limitations` 文案参考。
+Die Länge von `ctx.meta["invalid_opinions"]` wird als `disagreement_summary.diagnostics.invalid_count` separat im DecisionAgent-Prompt exponiert, damit das LLM den Text `data_limitations` als Referenz erzeugen kann.
 
-### Renderer（四条）
+### Renderer (vier Stück)
 
-所有 renderer 读取 `dashboard.strategy_synthesis` 展示：
+Alle Renderer lesen `dashboard.strategy_synthesis` zur Anzeige:
 
-- `final_signal` / `consensus_level` / `conflict_severity` / `conflict_count`。
-- `supporting_skills` / `opposing_skills`（不再消费 `neutral_skills`）。
-- `summary_params.invalid_opinion_count` → 按语言展示"另有 N 个策略无效/解析失败"。
+- `final_signal` / `consensus_level` / `conflict_severity` / `conflict_count`.
+- `supporting_skills` / `opposing_skills` (`neutral_skills` wird nicht mehr konsumiert).
+- `summary_params.invalid_opinion_count` → sprachabhängig „weitere N Strategien ungültig / konnten nicht verarbeitet werden" anzeigen.
 
-空列表占位符必须通过 `labels.none_label`（按 `report_language` 查表）输出。四条 renderer 展示的最终文本必须与 payload 完全一致，不得出现"共识度：高 + 支持策略：无"这类内部矛盾。
+Leere-Listen-Platzhalter müssen über `labels.none_label` (nach `report_language` nachgeschlagen) ausgegeben werden. Der von den vier Renderern angezeigte Endtext muss exakt mit der Payload übereinstimmen; intern widersprüchliche Kombinationen wie „Konsensgrad: hoch + Unterstützende Strategien: keine" dürfen nicht auftreten.
 
-历史记录和外部调用方可能保留契约落地前的宽松 shape。四条 renderer 必须先通过 `normalize_strategy_synthesis_payload()` 把非 dict 顶层值视为缺失，并过滤非 dict 的策略/冲突列表项；`strategy_invalid_opinion_count()` 统一读取诊断计数，只对纯十进制正整数字符串做窄转换，其余坏值降级为 0。禁止在 History、Notification 或模板中保留平行的手写读取逻辑。
+Historische Datensätze und externe Aufrufer können die lose Shape vor Vertragsumsetzung beibehalten. Die vier Renderer müssen zuerst über `normalize_strategy_synthesis_payload()` nicht-dict Top-Level-Werte als fehlend behandeln und nicht-dict Strategie-/Konflikt-Listenelemente herausfiltern; `strategy_invalid_opinion_count()` liest einheitlich den Diagnosezähler und führt nur für reine dezimale positive Ganzzahl-Strings eine enge Konvertierung durch, andere ungültige Werte degradieren auf 0. In History, Notification oder Templates ist es verboten, parallele handgeschriebene Leselogik beizubehalten.
 
 ### Diagnostics
 
-`ctx.meta["invalid_opinions"]` 只允许被以下三类消费：
+`ctx.meta["invalid_opinions"]` darf nur von den folgenden drei Arten konsumiert werden:
 
-- 日志：记录 `agent_name` / `raw_signal` / `reason`，供排障。
-- DecisionAgent prompt：作为"另有 N 个策略解析失败"的计数来源。
-- Renderer：作为 `summary_params.invalid_opinion_count` 的来源。
+- Protokolle: Erfassen von `agent_name` / `raw_signal` / `reason` zur Fehlersuche.
+- DecisionAgent-Prompt: als Zählquelle für „weitere N Strategien konnten nicht verarbeitet werden".
+- Renderer: als Quelle für `summary_params.invalid_opinion_count`.
 
-禁止把 Diagnostics 里的 `confidence` 参与任何加权计算；禁止把 `raw_signal` 塞回 `ctx.opinions`。
+Es ist verboten, die `confidence` aus den Diagnostics an irgendeiner Gewichtungsberechnung teilnehmen zu lassen; es ist verboten, `raw_signal` zurück in `ctx.opinions` zu stopfen.
 
-## 反例矩阵
+## Gegenbeispielmatrix
 
-Phase 1 必须提供如下 E2E 反例覆盖。E2E 定义为：从 SkillAgent 输入进，穿过 Orchestrator 分拣 → SkillAggregator → DecisionAgent prompt → 最终 dashboard payload → 四条 renderer 实际文本输出。禁止用局部单元测试冒充 E2E。
+Phase 1 muss die folgende E2E-Gegenbeispiel-Abdeckung liefern. E2E ist definiert als: von der SkillAgent-Eingabe über die Orchestrator-Sortierung → SkillAggregator → DecisionAgent-Prompt → finale Dashboard-Payload → tatsächliche Textausgabe der vier Renderer. Es ist verboten, lokale Unit-Tests als E2E auszugeben.
 
-| 编号 | 输入 | 断言点 | 覆盖的不变量 |
+| Nr. | Eingabe | Assertionspunkte | Abgedeckte Invarianten |
 | --- | --- | --- | --- |
-| E2E-A | 1 valid `buy/0.8` + 2 invalid `moon/0.9` | ① DecisionAgent prompt 不含 `moon` 字面量、不含 invalid `agent_name`、不含 `0.9` 上下文；② `ctx.meta["invalid_opinions"]` 长度 = 2；③ `strategy_synthesis.summary_params.opinion_count == 1`、`invalid_opinion_count == 2`；④ `consensus_level == "insufficient"`；⑤ 四条 renderer 输出文本包含"另有 2 个策略无效/解析失败"（按语言）；⑥ `disagreement_summary.bullish_agents` / `neutral_agents` / `bearish_agents` 中都不出现 moon 转成的 hold/0.9 | I-1, I-2, I-4 |
-| E2E-B | 2 valid `hold/0.0` | `final_signal="hold"`、`weighted_confidence=0.0`、`consensus_level="insufficient"`、**绝不**出现 `strong_sell`；所有 renderer 展示"证据不足（观望）"（按语言） | I-3 |
-| E2E-C | 1 valid `buy/0.0` + 1 valid `hold/0.0` | 混合零权重场景：`final="hold"`、`confidence=0.0`、`consensus="insufficient"`、无 `strong_sell` | I-3 |
-| E2E-D | 2 valid `hold/0.8` | ① `final_signal="hold"`、`consensus_level="high"`；② `supporting_skills` 长度 = 2、`opposing_skills` 长度 = 0；③ 四条 renderer 实际文本同时包含"高共识"和两个 skill 名，不得出现"支持策略：无"配"共识度：高"的组合 | I-5, I-6 |
-| E2E-E | 1 valid `buy/0.8` + 9 invalid | `consensus_level="insufficient"`（**不得** high）；四条 renderer 展示"基于 1 个有效策略判断（另有 9 个策略无效/解析失败）" | I-4, I-6 |
-| E2E-F | 2 valid opinion，其中一个 `signal="BUY"`（大写） | Aggregator 内部计算 `weighted_score` 时使用 canonical `buy` 查分（4.0），**不得**因大写查表失败得到 0；`strategy_synthesis.final_signal` 输出 canonical 小写 | I-7 |
-| E2E-G | 空 `supporting_skills` + `report_language="en"` | 四条 renderer 输出中不出现中文 `"无"`，而是 `"None"`（或对应语言 `labels.none_label`） | I-8 |
+| E2E-A | 1 valid `buy/0.8` + 2 invalid `moon/0.9` | ① DecisionAgent-Prompt enthält weder das Literal `moon` noch den invalid `agent_name` noch den `0.9`-Kontext; ② Länge von `ctx.meta["invalid_opinions"]` = 2; ③ `strategy_synthesis.summary_params.opinion_count == 1`, `invalid_opinion_count == 2`; ④ `consensus_level == "insufficient"`; ⑤ die Textausgabe der vier Renderer enthält „weitere 2 Strategien ungültig / konnten nicht verarbeitet werden" (sprachabhängig); ⑥ in `disagreement_summary.bullish_agents` / `neutral_agents` / `bearish_agents` erscheint das zu hold/0.9 umgewandelte moon nicht | I-1, I-2, I-4 |
+| E2E-B | 2 valid `hold/0.0` | `final_signal="hold"`, `weighted_confidence=0.0`, `consensus_level="insufficient"`, **niemals** `strong_sell`; alle Renderer zeigen „unzureichende Nachweise (Beobachten)" (sprachabhängig) | I-3 |
+| E2E-C | 1 valid `buy/0.0` + 1 valid `hold/0.0` | Szenario gemischter Nullgewichte: `final="hold"`, `confidence=0.0`, `consensus="insufficient"`, kein `strong_sell` | I-3 |
+| E2E-D | 2 valid `hold/0.8` | ① `final_signal="hold"`, `consensus_level="high"`; ② Länge `supporting_skills` = 2, Länge `opposing_skills` = 0; ③ der tatsächliche Text der vier Renderer enthält gleichzeitig „hoher Konsens" und die beiden Skill-Namen; die Kombination „Unterstützende Strategien: keine" mit „Konsensgrad: hoch" darf nicht auftreten | I-5, I-6 |
+| E2E-E | 1 valid `buy/0.8` + 9 invalid | `consensus_level="insufficient"` (**kein** high); die vier Renderer zeigen „basierend auf 1 gültigen Strategie beurteilt (weitere 9 Strategien ungültig / konnten nicht verarbeitet werden)" | I-4, I-6 |
+| E2E-F | 2 Valid Opinions, eine mit `signal="BUY"` (Großschreibung) | Bei der internen Berechnung von `weighted_score` verwendet der Aggregator das canonical `buy` zum Nachschlagen (4.0) und darf **nicht** wegen Großschreibung 0 erhalten; `strategy_synthesis.final_signal` gibt canonical kleingeschrieben aus | I-7 |
+| E2E-G | Leeres `supporting_skills` + `report_language="en"` | In der Ausgabe der vier Renderer erscheint nicht das chinesische `"无"`, sondern `"None"` (oder `labels.none_label` der entsprechenden Sprache) | I-8 |
 
-## 源码锚点
+## Quellcode-Anker
 
-| 域 | 锚点 |
+| Domäne | Anker |
 | --- | --- |
-| Signal 规范化与 Valid 判定 | `src/agent/protocols.py::normalize_strategy_signal`, `is_valid_strategy_signal`, `strategy_signal_score` |
-| StrategyEngine 分拣与合成门面 | `src/agent/skills/engine.py::StrategyEngine.partition_only`, `process`, `process_partition` |
-| Orchestrator 接线与早退分拣 | `src/agent/orchestrator.py::_run_strategy_engine`, `_apply_partition_fallback` |
-| SkillAggregator | `src/agent/skills/aggregator.py::SkillAggregator.calculate`, `aggregate`（兼容入口） |
+| Signal-Normalisierung und Valid-Beurteilung | `src/agent/protocols.py::normalize_strategy_signal`, `is_valid_strategy_signal`, `strategy_signal_score` |
+| StrategyEngine-Sortierung und Synthese-Facade | `src/agent/skills/engine.py::StrategyEngine.partition_only`, `process`, `process_partition` |
+| Orchestrator-Verdrahtung und Frühbeendigungs-Sortierung | `src/agent/orchestrator.py::_run_strategy_engine`, `_apply_partition_fallback` |
+| SkillAggregator | `src/agent/skills/aggregator.py::SkillAggregator.calculate`, `aggregate` (Kompatibilitätseinstieg) |
 | ConflictDetector / StrategySynthesizer | `src/agent/skills/synthesis.py::ConflictDetector`, `StrategySynthesizer` |
-| DecisionAgent prompt | `src/agent/agents/decision_agent.py::build_user_message` |
+| DecisionAgent-Prompt | `src/agent/agents/decision_agent.py::build_user_message` |
 | Disagreement | `src/agent/disagreement.py::build_agent_disagreement_summary` |
-| Dashboard 合成挂载 | `src/agent/orchestrator.py::_collect_strategy_synthesis` |
+| Dashboard-Synthese-Montage | `src/agent/orchestrator.py::_collect_strategy_synthesis` |
 | Renderer · Markdown | `src/services/report_renderer.py::render`, `templates/report_markdown.j2` |
 | Renderer · WeChat | `templates/report_wechat.j2` |
-| Renderer · Notification | `src/notification.py`（策略综合行渲染） |
-| Renderer · History | `src/services/history_service.py`（历史详情策略综合块） |
-| 多语言与宽松 payload 防腐 | `src/report_language.py::_REPORT_LABELS`, `normalize_strategy_synthesis_payload`, `strategy_invalid_opinion_count`, `localize_strategy_synthesis_summary`, `labels.none_label` |
-| E2E 反例矩阵 | `tests/test_multi_agent.py::TestP1SemanticConvergence`, `TestStrategyEngineE2E` |
+| Renderer · Notification | `src/notification.py` (Rendering der Strategie-Synthesezeile) |
+| Renderer · History | `src/services/history_service.py` (Strategie-Syntheseblock in der Historiendetailansicht) |
+| Mehrsprachigkeit und Antikorruption loser Payloads | `src/report_language.py::_REPORT_LABELS`, `normalize_strategy_synthesis_payload`, `strategy_invalid_opinion_count`, `localize_strategy_synthesis_summary`, `labels.none_label` |
+| E2E-Gegenbeispielmatrix | `tests/test_multi_agent.py::TestP1SemanticConvergence`, `TestStrategyEngineE2E` |
 
-## 兼容与回滚
+## Kompatibilität und Rollback
 
-### 已废弃行为（Phase 1 落地后）
+### Eingestelltes Verhalten (nach Umsetzung von Phase 1)
 
-| 旧行为 | 契约后 |
+| Altes Verhalten | Nach dem Vertrag |
 | --- | --- |
-| `normalize_strategy_signal` 对未知信号静默返回 `default="hold"` 并混入证据链 | 未知信号必须归入 Diagnostics，`ctx.opinions` 中不允许出现 |
-| Aggregator 通过 `sum(...) or 1.0` 掩盖零权重 | 显式判 `valid_weight_sum == 0`，走 `insufficient` 分支，`final_signal="hold"` |
-| Renderer 硬编码 `"无"` 展示空阵营 | 通过 `labels.none_label` 按语言查表 |
-| DecisionAgent 在 prompt 层自己过滤 invalid | 分拣在 Orchestrator 完成，DecisionAgent 直接消费 `ctx.opinions` |
-| `strategy_synthesis` 输出 `neutral_skills` | 契约后该字段不存在，renderer 不再消费 |
-| LLM dashboard 覆盖 `strategy_synthesis` | 权威合成来自 Aggregator，LLM 侧字段被 `normalize_dashboard_payload` 剥离 |
+| `normalize_strategy_signal` gibt bei unbekanntem Signal stillschweigend `default="hold"` zurück und mischt es in die Nachweiskette | Unbekannte Signale müssen in die Diagnostics eingeordnet werden; in `ctx.opinions` dürfen sie nicht auftreten |
+| Der Aggregator verschleiert Nullgewichte über `sum(...) or 1.0` | Explizit `valid_weight_sum == 0` prüfen, den `insufficient`-Zweig wählen, `final_signal="hold"` |
+| Renderer harcodieren `"无"` für die Anzeige leerer Lager | Über `labels.none_label` sprachabhängig nachschlagen |
+| Der DecisionAgent filtert invalid selbst auf Prompt-Ebene | Die Sortierung erfolgt im Orchestrator, der DecisionAgent konsumiert direkt `ctx.opinions` |
+| `strategy_synthesis` gibt `neutral_skills` aus | Nach dem Vertrag existiert dieses Feld nicht, die Renderer konsumieren es nicht mehr |
+| Das LLM-Dashboard überschreibt `strategy_synthesis` | Die autoritative Synthese stammt vom Aggregator, das LLM-seitige Feld wird von `normalize_dashboard_payload` entfernt |
 
-### 已新增字段
+### Neu hinzugefügte Felder
 
-- `ctx.meta["invalid_opinions"]`：Diagnostics 收纳位（结构见"Evidence Chain 与 Diagnostics 分离"）。
-- `strategy_synthesis.summary_params.invalid_opinion_count`：Diagnostics 长度。
-- `strategy_synthesis.summary_params.total_opinion_count`：valid + invalid 的原始总数。
+- `ctx.meta["invalid_opinions"]`: Auffangposition für Diagnostics (Struktur siehe „Trennung von Evidence Chain und Diagnostics").
+- `strategy_synthesis.summary_params.invalid_opinion_count`: Länge der Diagnostics.
+- `strategy_synthesis.summary_params.total_opinion_count`: Original-Gesamtzahl von valid + invalid.
 
-### 回滚方式
+### Rollback-Methoden
 
-| 手段 | 作用 | 不能做什么 |
+| Mittel | Wirkung | Was nicht möglich ist |
 | --- | --- | --- |
-| 版本回退 Phase 1 相关提交 | 移除 Orchestrator 分拣、Aggregator/Synthesizer 收敛、renderer 一致性改动 | 无法只回退部分不变量；契约是整体收敛 |
-| 只保留契约文档、回退代码 | 保留 Baseline 文本、回到旧行为 | 只有文档意义，无运行时收益；不推荐 |
-| Phase 2/3/4 独立回退 | 各自 Phase 的运行时改动独立回退 | 不能回退 Baseline，任何 Phase 都必须始终满足 Baseline 八条不变量 |
+| Version-Rollback der Phase-1-Commit | Entfernt Orchestrator-Sortierung, Aggregator/Synthesizer-Konvergenz und Renderer-Konsistenzänderungen | Nur ein Teil der Invarianten kann nicht zurückgerollt werden; der Vertrag ist eine ganzheitliche Konvergenz |
+| Nur das Vertragsdokument behalten, Code zurückrollen | Baseline-Text beibehalten, zum alten Verhalten zurückkehren | Hat nur Dokumentationsbedeutung, keinen Laufzeitnutzen; nicht empfohlen |
+| Unabhängiges Rollback von Phase 2/3/4 | Laufzeitänderungen der jeweiligen Phase unabhängig zurückrollen | Die Baseline kann nicht zurückgerollt werden; jede Phase muss die acht Baseline-Invarianten stets erfüllen |
 
-Baseline 不新增配置项，因此无 env-level 回滚开关；这是刻意选择——契约边界应在代码中恒定生效，不通过环境变量降级。
+Die Baseline fügt keine Konfigurationseinträge hinzu, daher gibt es keinen Rollback-Schalter auf env-Ebene; dies ist eine bewusste Entscheidung — die Vertragsgrenzen sollen im Code konstant wirken und nicht über Umgebungsvariablen herabgesetzt werden.

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 股票智能分析系統
+# README (Deutsch) — Intelligentes Aktienanalysesystem
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/daily_stock_analysis?style=social)](https://github.com/ZhuLinsen/daily_stock_analysis/stargazers)
 [![CI](https://github.com/ZhuLinsen/daily_stock_analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/daily_stock_analysis/actions/workflows/ci.yml)
@@ -13,160 +13,160 @@
   <img src="https://trendshift.io/api/badge/trendshift/repositories/18527/daily?language=Python" alt="#1 Python Repository Of The Day | Trendshift" width="250" height="55"/>&nbsp;<a href="https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6daa16e405ce46ed97b4a57706aeb29f&claim_uid=pfiJMqhR9uvDGlT&theme=neutral" alt="Featured｜HelloGitHub" width="230" /></a>
 </p>
 
-**基於 AI 大模型的 A股/港股/美股/日股/韓股/台股自選股智能分析系統**
+**Intelligentes Analysesystem für A-/Hongkong-/US-/japanische-/koreanische-/taiwanische-Aktien-Watchlisten auf Basis großer AI-Modelle**
 
-每日自動分析自選股 -> 生成決策儀表盤 -> 推送到 Telegram / Discord / Slack / 郵件 / 企業微信 / 飛書。
+Analysiert die Watchlist täglich automatisch -> erzeugt das Entscheidungs-Dashboard -> pusht an Telegram / Discord / Slack / E-Mail / WeCom / Feishu.
 
-[**產品預覽**](#-產品預覽) · [**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**文檔中心**](./INDEX.md) · [**完整指南**](./full-guide.md)
+[**Produktvorschau**](#-produktvorschau) · [**Funktionen**](#-funktionen) · [**Schnellstart**](#-schnellstart) · [**Push-Wirkung**](#-push-wirkung) · [**Dokumentationszentrum**](./INDEX.md) · [**Vollständiger Leitfaden**](./full-guide.md)
 
-繁體中文 | [English](README_EN.md) | [简体中文](../README.md)
+Deutsch | [English](README_EN.md) | [Chinesisch (vereinfacht)](../README.md)
 
 </div>
 
-## 💖 贊助商 (Sponsors)
+## 💖 Sponsoren (Sponsors)
 
 <div align="center">
   <p align="center">
-    <a href="https://open.anspire.cn/?share_code=QFBC0FYC" target="_blank"><img src="assets/anspire.png" alt="Anspire Open 一站式模型和搜尋服務" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
-    <a href="https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis" target="_blank"><img src="assets/serpapi_banner_zh.png" alt="輕鬆抓取搜尋引擎上的即時金融新聞數據 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
+    <a href="https://open.anspire.cn/?share_code=QFBC0FYC" target="_blank"><img src="assets/anspire.png" alt="Anspire Open — Modell- und Suchdienst aus einer Hand" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
+    <a href="https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis" target="_blank"><img src="assets/serpapi_banner_zh.png" alt="Schnelles Abrufen von Echtzeit-Finanznachrichten aus Suchmaschinen - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
   </p>
 </div>
 
-## 🖥️ 產品預覽
+## 🖥️ Produktvorschau
 
 <p align="center">
-  <img src="assets/readme_workspace_tour_20260510.gif" alt="DSA Web 工作台演示" width="720">
+  <img src="assets/readme_workspace_tour_20260510.gif" alt="Demo der DSA-Web-Arbeitsumgebung" width="720">
 </p>
 
-## ✨ 功能特性
+## ✨ Funktionen
 
-| 能力 | 覆蓋內容 |
+| Funktion | Abgedeckter Inhalt |
 |------|------|
-| AI 決策報告 | 核心結論、評分、趨勢、買賣點位、風險警報、催化因素、操作檢查清單 |
-| 多市場數據聚合 | 覆蓋 A股、港股、美股、日股、韓股、台股和 ETF，支援行情、K 線、技術指標、新聞、公告、基本面與報告輔助數據；不同市場的數據源和能力邊界見 [市場支持邊界](market-support.md) |
-| Web / 桌面工作台 | 手動分析、任務進度、歷史報告、完整 Markdown、回測、持倉、配置管理、淺色 / 深色主題 |
-| Agent 策略問股 | 多輪追問，支援均線、纏論、波浪、趨勢、熱點、事件、成長、預期等 15 種內建策略，覆蓋 Web/Bot/API |
-| 智能匯入與補全 | 圖片、CSV/Excel、剪貼簿匯入；股票代碼/名稱/拼音/別名補全 |
-| 自動化與推送 | GitHub Actions、Docker、本地定時任務、FastAPI 服務和企業微信/飛書/Telegram/Discord/Slack/郵件推送 |
+| AI-Entscheidungsbericht | Kernschlussfolgerung, Score, Trend, Kauf-/Verkaufspunkte, Risikoalarme, Katalysatoren, Handlungs-Checkliste |
+| Aggregation mehrerer Märkte | Abdeckung von A-, Hongkong-, US-, japanischen, koreanischen und taiwanischen Aktien sowie ETF; Unterstützung von Kursdaten, K-Linien, technischen Indikatoren, Nachrichten, Unternehmensmeldungen, Fundamentaldaten und Bericht-Hilfsdaten; die Datenquellen und Fähigkeitsgrenzen der einzelnen Märkte siehe [Markt-Support-Grenzen](market-support.md) |
+| Web-/Desktop-Arbeitsumgebung | Manuelle Analyse, Aufgabenfortschritt, historische Berichte, vollständiges Markdown, Backtest, Positionen, Konfigurationsverwaltung, helles/dunkles Thema |
+| Agent-Strategieaktienabfrage | Mehrrundige Nachfragen, Unterstützung von 15 integrierten Strategien wie MA, Chan-Theorie, Wellentheorie, Trend, Hotspot, Ereignis, Wachstum, Erwartung usw.; Abdeckung von Web/Bot/API |
+| Intelligenter Import und Vervollständigung | Bild-, CSV/Excel- und Zwischenablage-Import; Vervollständigung von Aktiencode/-name/-pinyin/-alias |
+| Automatisierung und Push | GitHub Actions, Docker, lokale geplante Tasks, FastAPI-Dienst sowie WeCom/Feishu/Telegram/Discord/Slack/E-Mail-Push |
 
-> 功能細節、欄位契約、基本面 P0 超時語義、交易紀律、數據源優先級、Web/API 行為請看 [完整配置與部署指南](./full-guide.md)。
+> Funktionsdetails, Feldverträge, die P0-Timeout-Semantik für Fundamentaldaten, Handelsdisziplin, Datenquellen-Priorität und Web/API-Verhalten siehe [Vollständiger Konfigurations- und Bereitstellungsleitfaden](./full-guide.md).
 
-### 技術棧與數據來源
+### Technologie-Stack und Datenquellen
 
-| 類型 | 支援 |
+| Typ | Unterstützung |
 |------|------|
-| AI 模型 | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC)、[AIHubMix](https://aihubmix.com/?aff=CfMq)、Gemini、OpenAI 兼容、DeepSeek、通義千問、Claude、Ollama 本地模型等 |
-| 行情數據 | [TickFlow](https://tickflow.org/auth/register?ref=WDSGSPS5XC)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
-| 新聞搜尋 | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC)、[SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis)、[Tavily](https://tavily.com/)、[Bocha](https://open.bocha.cn/)、[Brave](https://brave.com/search/api/)、[MiniMax](https://platform.minimaxi.com/)、SearXNG |
-| 社交輿情 | [Stock Sentiment API](https://api.adanos.org/docs)（Reddit / X / Polymarket，僅美股，可選） |
+| AI-Modelle | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC), [AIHubMix](https://aihubmix.com/?aff=CfMq), Gemini, OpenAI-kompatibel, DeepSeek, Qwen, Claude, lokale Ollama-Modelle usw. |
+| Kursdaten | [TickFlow](https://tickflow.org/auth/register?ref=WDSGSPS5XC), AkShare, Tushare, Pytdx, Baostock, YFinance, Longbridge |
+| Nachrichtensuche | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC), [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis), [Tavily](https://tavily.com/), [Bocha](https://open.bocha.cn/), [Brave](https://brave.com/search/api/), [MiniMax](https://platform.minimaxi.com/), SearXNG |
+| Social-Stimmung | [Stock Sentiment API](https://api.adanos.org/docs) (Reddit / X / Polymarket, nur US-Aktien, optional) |
 
-> 專案預設內建 AkShare、Baostock、YFinance 等免費行情源，可零配置執行；免費源受上游限流、介面變動和網路波動影響，穩定性不保證。長期定時、批量分析或更穩定行情建議配置 TickFlow、Tushare、Longbridge 等 token 型數據源，適用市場、Actions 映射和 fallback 規則見 [數據源配置](./full-guide.md#数据源配置)。
+> Das Projekt enthält standardmäßig kostenlose Kursquellen wie AkShare, Baostock und YFinance und kann ohne Konfiguration ausgeführt werden; kostenlose Quellen unterliegen dem Rate-Limit der vorgelagerten Anbieter, Schnittstellenänderungen und Netzwerkschwankungen, die Stabilität ist nicht garantiert. Für langfristig geplante Aufgaben, Batch-Analysen oder stabilere Kursdaten wird empfohlen, Token-basierte Datenquellen wie TickFlow, Tushare und Longbridge zu konfigurieren; die geltenden Märkte, die Actions-Zuordnung und die Fallback-Regeln siehe [Datenquellen-Konfiguration](./full-guide.md#-datenquellen-konfiguration).
 
-## 🚀 快速開始
+## 🚀 Schnellstart
 
-### 方式一：[GitHub Actions（推薦）](https://www.bilibili.com/video/BV11FEb66EXG/)
+### Variante 1: [GitHub Actions (empfohlen)](https://www.bilibili.com/video/BV11FEb66EXG/)
 
-> 5 分鐘完成部署，零成本，無需伺服器。
+> In 5 Minuten bereitgestellt, null Kosten, kein Server erforderlich.
 
-#### 1. Fork 本倉庫
+#### 1. Dieses Repository forken
 
-點擊右上角 `Fork` 按鈕（順便點個 Star 支援一下）。
+Auf den `Fork`-Button oben rechts klicken (und gern auch ein Star zur Unterstützung).
 
-#### 2. 配置 Secrets
+#### 2. Secrets konfigurieren
 
 `Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`
 
-**AI 模型配置（至少配置一個）**
+**AI-Modellkonfiguration (mindestens eines konfigurieren)**
 
-預設先選一個模型服務商並填寫 API Key；需要多模型、圖片識別、本地模型或高級路由時，再參考 [LLM 配置指南](./LLM_CONFIG_GUIDE.md)。
+Standardmäßig zuerst einen Modellanbieter auswählen und den API Key eintragen; wenn mehrere Modelle, Bilderkennung, lokale Modelle oder erweitertes Routing benötigt werden, siehe [LLM-Konfigurationsleitfaden](./LLM_CONFIG_GUIDE.md).
 
-| Secret 名稱 | 說明 | 必填 |
+| Secret-Name | Erläuterung | Erforderlich |
 |-------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC) API Key，一 Key 同時啟用全球熱門大模型和聯網搜尋，含本項目免費額度 | **推薦** |
-| `AIHUBMIX_KEY` | [AIHubMix](https://aihubmix.com/?aff=CfMq) API Key，一 Key 切換使用全系模型，本項目可享 10% 優惠 | **推薦** |
-| `GEMINI_API_KEY` | Google Gemini API Key | 可選 |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可選 |
-| `OPENAI_API_KEY` | OpenAI 兼容 API Key（支援 DeepSeek、通義千問等） | 可選 |
-| `OPENAI_BASE_URL` / `OPENAI_MODEL` | 使用 OpenAI 兼容服務時填寫 | 可選 |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC) API Key; ein Key aktiviert gleichzeitig beliebte globale große Modelle und Websuche, inklusive kostenlosem Kontingent für dieses Projekt | **Empfohlen** |
+| `AIHUBMIX_KEY` | [AIHubMix](https://aihubmix.com/?aff=CfMq) API Key; ein Key für die Nutzung der gesamten Modellfamilie, für dieses Projekt 10 % Rabatt | **Empfohlen** |
+| `GEMINI_API_KEY` | Google Gemini API Key | Optional |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | Optional |
+| `OPENAI_API_KEY` | OpenAI-kompatibler API Key (unterstützt DeepSeek, Qwen usw.) | Optional |
+| `OPENAI_BASE_URL` / `OPENAI_MODEL` | Auszufüllen bei Verwendung eines OpenAI-kompatiblen Dienstes | Optional |
 
-> Ollama 更適合本地 / Docker 部署，GitHub Actions 推薦使用雲端 API。
+> Ollama eignet sich besser für lokale/Docker-Bereitstellung; für GitHub Actions werden Cloud-APIs empfohlen.
 
-**通知渠道配置（至少配置一個）**
+**Konfiguration der Benachrichtigungskanäle (mindestens einen konfigurieren)**
 
-| Secret 名稱 | 說明 |
+| Secret-Name | Erläuterung |
 |-------------|------|
-| `WECHAT_WEBHOOK_URL` | 企業微信機器人 |
-| `FEISHU_WEBHOOK_URL` | 飛書機器人 |
+| `WECHAT_WEBHOOK_URL` | WeCom-Roboter |
+| `FEISHU_WEBHOOK_URL` | Feishu-Roboter |
 | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook |
 | `SLACK_BOT_TOKEN` + `SLACK_CHANNEL_ID` | Slack Bot |
-| `EMAIL_SENDER` + `EMAIL_PASSWORD` | 郵件推送 |
+| `EMAIL_SENDER` + `EMAIL_PASSWORD` | E-Mail-Push |
 
-更多渠道、簽名校驗、分組郵件、Markdown 轉圖片等配置見 [通知渠道詳細配置](./full-guide.md#通知渠道详细配置)。
+Weitere Kanäle, Signaturprüfung, Gruppen-E-Mails, Markdown-zu-Bild usw. siehe [Detaillierte Konfiguration der Benachrichtigungskanäle](./full-guide.md#-detaillierte-konfiguration-der-benachrichtigungskan%C3%A4le).
 
-**自選股配置（必填）**
+**Watchlist-Konfiguration (erforderlich)**
 
-| Secret 名稱 | 說明 | 必填 |
+| Secret-Name | Erläuterung | Erforderlich |
 |-------------|------|:----:|
-| `STOCK_LIST` | 自選股代碼，如 `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW` | ✅ |
+| `STOCK_LIST` | Watchlist-Codes, z. B. `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW` | ✅ |
 
-**新聞源配置（推薦）**
+**Konfiguration der Nachrichtenquellen (empfohlen)**
 
-新聞源會顯著影響輿情、公告、事件和催化因素品質，建議至少配置一個搜尋服務。
+Die Nachrichtenquellen beeinflussen die Qualität von Stimmungslage, Unternehmensmeldungen, Ereignissen und Katalysatoren erheblich; es wird empfohlen, mindestens einen Suchdienst zu konfigurieren.
 
-| Secret 名稱 | 說明 | 必填 |
+| Secret-Name | Erläuterung | Erforderlich |
 |-------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/)：中文內容特別優化，可增強 A 股分析效果；同一 Key 也可作為 Anspire 大模型網關兜底示例 | **推薦** |
-| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis)：搜尋引擎結果補強，適合即時金融新聞 | **推薦** |
-| `TAVILY_API_KEYS` | [Tavily](https://tavily.com/)：通用新聞搜尋 API | 可選 |
-| `BOCHA_API_KEYS` | [博查搜尋](https://open.bocha.cn/)：中文搜尋優化，支援 AI 摘要 | 可選 |
-| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/)：隱私優先，美股資訊補強 | 可選 |
-| `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/)：結構化搜尋結果 | 可選 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建實例：無配額兜底，適合私有部署 | 可選 |
+| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/): für chinesische Inhalte besonders optimiert, kann die A-Aktien-Analyse verbessern; derselbe Key dient auch als Beispiel für den Anspire-Großmodell-Gateway-Fallback | **Empfohlen** |
+| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis): Verstärkung der Suchmaschinen-Ergebnisse, geeignet für Echtzeit-Finanznachrichten | **Empfohlen** |
+| `TAVILY_API_KEYS` | [Tavily](https://tavily.com/): allgemeine Nachrichtensuch-API | Optional |
+| `BOCHA_API_KEYS` | [Bocha Search](https://open.bocha.cn/): für die chinesische Suche optimiert, unterstützt AI-Zusammenfassung | Optional |
+| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/): datenschutzorientiert, Verstärkung der US-Aktien-Informationen | Optional |
+| `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/): strukturierte Suchergebnisse | Optional |
+| `SEARXNG_BASE_URLS` | SearXNG-Selbsthost-Instanz: quotenloser Fallback, geeignet für private Bereitstellung | Optional |
 
-更多搜尋源、社交輿情和降級規則見 [搜尋服務配置](./full-guide.md#搜索服务配置)。
+Weitere Suchquellen, Social-Stimmung und Degradierungsregeln siehe [Suchdienst-Konfiguration](./full-guide.md#-suchdienst-konfiguration).
 
-**行情數據源配置（可選）**
+**Konfiguration der Kursdatenquellen (optional)**
 
-> 預設使用 AkShare、Baostock、YFinance 等免費數據源，日誌中「未配置」的提示不影響執行。
-> 如需更穩定的行情，可按市場配置以下 Secret：
+> Standardmäßig werden kostenlose Datenquellen wie AkShare, Baostock und YFinance verwendet; Hinweise auf „nicht konfiguriert“ in den Logs beeinträchtigen die Ausführung nicht.
+> Für stabilere Kursdaten können je nach Markt die folgenden Secrets konfiguriert werden:
 
-| Secret 名稱 | 適用市場 | 說明 |
+| Secret-Name | Geltende Märkte | Erläuterung |
 |-------------|:--------:|------|
-| `TUSHARE_TOKEN` | A 股 | 提升歷史行情穩定性 |
-| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | 港股/美股 | 補齊量比、換手率、PE 等欄位 |
+| `TUSHARE_TOKEN` | A-Aktien | Verbessert die Stabilität historischer Kursdaten |
+| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | Hongkong-/US-Aktien | Ergänzt Felder wie Volumenverhältnis, Umschlagshäufigkeit, PE usw. |
 
-> 詳見 [數據源配置](./full-guide.md#数据源配置)。
+> Siehe [Datenquellen-Konfiguration](./full-guide.md#-datenquellen-konfiguration).
 
-#### 3. 啟用 Actions
+#### 3. Actions aktivieren
 
-`Actions` 標籤 -> `I understand my workflows, go ahead and enable them`
+Auf dem Tab `Actions` -> `I understand my workflows, go ahead and enable them`
 
-#### 4. 手動測試
+#### 4. Manueller Test
 
-`Actions` -> `每日股票分析` -> `Run workflow` -> `Run workflow`
+`Actions` -> `Tägliche Aktienanalyse` -> `Run workflow` -> `Run workflow`
 
-#### 完成
+#### Fertig
 
-預設每個工作日 18:00（北京時間）自動執行，也可手動觸發。預設非交易日（含 A/H/US 節假日）不執行；強制運行、交易日檢查、斷點續傳等規則見 [完整指南](./full-guide.md#定时任务配置)。
+Standardmäßig wird an jedem Werktag um 18:00 (Pekinger Zeit) automatisch ausgeführt; eine manuelle Auslösung ist ebenfalls möglich. Standardmäßig wird an Nicht-Handelstagen (einschließlich A/H/US-Feiertagen) nicht ausgeführt; Regeln für erzwungene Ausführung, Handelstagsprüfung und Fortsetzung nach Unterbrechung siehe [Vollständiger Leitfaden](./full-guide.md#-konfiguration-geplanter-tasks).
 
-### 方式二：[客戶端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地運行 / Docker 部署
+### Variante 2: [Client-Konfigurations-Tutorial](https://www.bilibili.com/video/BV11FEb66Eyr/) / Lokale Ausführung / Docker-Bereitstellung
 
 ```bash
-# 克隆項目
+# Projekt klonen
 git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
 
-# 安裝依賴
+# Abhängigkeiten installieren
 pip install -r requirements.txt
 
-# 配置環境變數
+# Umgebungsvariablen konfigurieren
 cp .env.example .env && vim .env
 
-# 運行分析
+# Analyse ausführen
 python main.py
 ```
 
-常用命令：
+Häufig verwendete Befehle:
 
 ```bash
 python main.py --debug
@@ -177,100 +177,100 @@ python main.py --schedule
 python main.py --serve-only
 ```
 
-> Docker 部署、定時任務、雲端伺服器訪問請參考 [完整指南](./full-guide.md)；桌面客戶端打包請參考 [桌面端打包說明](./desktop-package.md)。
+> Docker-Bereitstellung, geplante Tasks und Cloud-Server-Zugriff siehe [Vollständiger Leitfaden](./full-guide.md); das Packen des Desktop-Clients siehe [Hinweise zum Packen der Desktop-Version](./desktop-package.md).
 
-## 📱 推送效果
+## 📱 Push-Wirkung
 
-### 決策儀表盤
-
-```markdown
-🎯 2026-02-08 決策儀表盤
-共分析3隻股票 | 🟢買入:0 🟡觀望:2 🔴賣出:1
-
-📊 分析結果摘要
-🟡 中鎢高新(000657): 觀望 | 評分 65 | 看多
-🟡 永鼎股份(600105): 觀望 | 評分 48 | 震盪
-🔴 新萊應材(300260): 賣出 | 評分 35 | 看空
-
-🚨 風險警報:
-風險點1：主力資金出現明顯流出，需警惕短期拋壓。
-風險點2：籌碼集中度偏高，拉升阻力可能較大。
-
-✨ 利好催化:
-利好1：公司被市場定位為 AI 供應鏈核心標的。
-利好2：近期業績增長為股價提供基本面支撐。
-```
-
-### 大盤復盤
+### Entscheidungs-Dashboard
 
 ```markdown
-🎯 2026-01-10 大盤復盤
+🎯 2026-02-08 Entscheidungs-Dashboard
+Insgesamt 3 Aktien analysiert | 🟢 Kauf:0 🟡 Abwarten:2 🔴 Verkauf:1
 
-📊 主要指數
-- 上證指數: 3250.12 (+0.85%)
-- 深證成指: 10521.36 (+1.02%)
-- 創業板指: 2156.78 (+1.35%)
+📊 Zusammenfassung der Analyseergebnisse
+🟡 Zhongwu Gaoxin (000657): Abwarten | Score 65 | bullish
+🟡 Yongding (600105): Abwarten | Score 48 | seitwärts
+🔴 Xinlai Yingcai (300260): Verkauf | Score 35 | bearish
 
-📈 市場概況
-上漲: 3920 | 下跌: 1349 | 漲停: 155 | 跌停: 3
+🚨 Risikoalarm:
+Risikopunkt 1: Bei den Hauptmitteln ist ein deutlicher Abfluss zu beobachten; kurzfristiger Verkaufsdruck ist zu beachten.
+Risikopunkt 2: Die Chip-Konzentration ist recht hoch; die Widerstände für einen Anstieg können größer sein.
+
+✨ Positive Katalysatoren:
+Katalysator 1: Das Unternehmen wird vom Markt als Kernziel der AI-Lieferkette positioniert.
+Katalysator 2: Das jüngste Gewinnwachstum bietet den Aktienkursen fundamentale Unterstützung.
 ```
 
-## ⚙️ 配置說明
+### Markt-Nachbetrachtung
 
-完整環境變數、模型渠道、通知渠道、數據源優先級、交易紀律、基本面 P0 語義和部署說明請參考 [完整配置指南](./full-guide.md)。
+```markdown
+🎯 2026-01-10 Markt-Nachbetrachtung
 
-## 🖥️ Web 介面
+📊 Hauptindizes
+- Shanghai Composite: 3250.12 (+0.85%)
+- Shenzhen Component: 10521.36 (+1.02%)
+- ChiNext: 2156.78 (+1.35%)
 
-Web 工作台提供配置管理、任務監控、手動分析、歷史報告、完整 Markdown 報告、Agent 問股、回測、持倉管理、智能匯入和淺色 / 深色主題。啟動方式：
+📈 Marktüberblick
+Gestiegen: 3920 | Gefallen: 1349 | Limit-up: 155 | Limit-down: 3
+```
+
+## ⚙️ Konfigurationshinweise
+
+Vollständige Umgebungsvariablen, Modellkanäle, Benachrichtigungskanäle, Datenquellen-Priorität, Handelsdisziplin, P0-Semantik für Fundamentaldaten und Bereitstellungshinweise siehe [Vollständiger Konfigurationsleitfaden](./full-guide.md).
+
+## 🖥️ Web-Oberfläche
+
+Die Web-Arbeitsumgebung bietet Konfigurationsverwaltung, Aufgabenüberwachung, manuelle Analyse, historische Berichte, vollständige Markdown-Berichte, Agent-Aktienabfrage, Backtest, Positionsverwaltung, intelligenten Import sowie helles/dunkles Thema. Starten mit:
 
 ```bash
 python main.py --webui
 python main.py --webui-only
 ```
 
-訪問 `http://127.0.0.1:8000` 即可使用。認證、智能匯入、搜尋補全、歷史報告複製、雲端伺服器訪問等細節見 [本地 WebUI 管理介面](./full-guide.md#本地-webui-管理界面)。
+Nach dem Zugriff auf `http://127.0.0.1:8000` ist es einsatzbereit. Details zu Authentifizierung, intelligentem Import, Suchvervollständigung, Kopieren historischer Berichte und Cloud-Server-Zugriff siehe [Lokale WebUI-Verwaltungsoberfläche](./full-guide.md#-lokale-webui-verwaltungsoberfl%C3%A4che).
 
-## 🤖 Agent 策略問股
+## 🤖 Agent-Strategieaktienabfrage
 
-配置任意可用 AI API Key 後，Web `/chat` 頁面即可使用策略問股；如需顯式關閉可設定 `AGENT_MODE=false`。
+Nach dem Konfigurieren eines beliebigen verfügbaren AI-API-Keys kann die Strategieaktienabfrage auf der Web-Seite `/chat` verwendet werden; zum expliziten Deaktivieren kann `AGENT_MODE=false` gesetzt werden.
 
-- 支援均線金叉、纏論、波浪理論、多頭趨勢、熱點題材、事件驅動、成長品質、預期重估等內建策略
-- 支援即時行情、K 線、技術指標、新聞和風險資訊調用
-- 支援多輪追問、會話匯出、發送到通知渠道和後台執行
-- 支援自訂策略文件與多 Agent 編排（實驗性）
+- Unterstützt integrierte Strategien wie MA-Golden-Cross, Chan-Theorie, Wellentheorie, bullische Trends, heiße Themen, ereignisgetrieben, Wachstumsqualität, Erwartungs-Neubewertung usw.
+- Unterstützt den Abruf von Echtzeit-Kursdaten, K-Linien, technischen Indikatoren, Nachrichten und Risikoinformationen
+- Unterstützt mehrrundige Nachfragen, Sitzungsexport, Senden an Benachrichtigungskanäle und Hintergrundausführung
+- Unterstützt benutzerdefinierte Strategiedateien und Multi-Agent-Orchestrierung (experimentell)
 
-> Agent 具體參數、`skill` 命名兼容、多 Agent 模式和預算護欄見 [完整指南](./full-guide.md#本地-webui-管理界面) 與 [LLM 配置指南](./LLM_CONFIG_GUIDE.md)。
+> Konkrete Agent-Parameter, `skill`-Namenskompatibilität, Multi-Agent-Modus und Budget-Guardrails siehe [Vollständiger Leitfaden](./full-guide.md#-lokale-webui-verwaltungsoberfl%C3%A4che) und [LLM-Konfigurationsleitfaden](./LLM_CONFIG_GUIDE.md).
 
-## 🧩 相關項目 (Related Projects)
+## 🧩 Verwandte Projekte (Related Projects)
 
-> DSA 聚焦日常分析報告；內建選股實作參考 AlphaSift，AlphaEvo 用於策略驗證與進化。
+> DSA fokussiert auf tägliche Analyseberichte; die integrierte Aktienauswahl orientiert sich an AlphaSift, AlphaEvo dient der Strategievalidierung und -evolution.
 
-| 項目 | 定位 |
+| Projekt | Positionierung |
 |------|------|
-| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | DSA 內建選股引擎的參考專案 |
-| [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | 策略回測與自我進化，用於驗證策略規則，並透過迭代探索策略參數與組合 |
+| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | Referenzprojekt für die integrierte Aktienauswahl-Engine von DSA |
+| [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | Strategie-Backtest und Selbst-Evolution; dient der Validierung von Strategieregeln und erkundet über Iterationen Strategieparameter und -kombinationen |
 
-## 📬 聯繫與合作
+## 📬 Kontakt und Zusammenarbeit
 
 <table>
   <tr>
-    <td width="92" valign="top"><strong>合作郵箱</strong></td>
+    <td width="92" valign="top"><strong>Kooperations-E-Mail</strong></td>
     <td valign="top">
       <a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a><br>
-      項目諮詢、部署支援與功能擴展
+      Projektberatung, Bereitstellungs-Support und Funktionserweiterung
     </td>
     <td align="center" rowspan="3" valign="middle" width="148">
-      <a href="http://xhslink.com/m/tU520DWCKT" target="_blank"><img src="assets/xiaohongshu_tick.jpg" width="112" alt="小紅書二維碼"></a><br>
-      <sub>掃碼關注小紅書</sub>
+      <a href="http://xhslink.com/m/tU520DWCKT" target="_blank"><img src="assets/xiaohongshu_tick.jpg" width="112" alt="Xiaohongshu-QR-Code"></a><br>
+      <sub>QR-Code scannen, um Xiaohongshu zu folgen</sub>
     </td>
   </tr>
   <tr>
-    <td width="92" valign="top"><strong>小紅書</strong></td>
-    <td valign="top"><a href="http://xhslink.com/m/tU520DWCKT">歡迎關注小紅書</a></td>
+    <td width="92" valign="top"><strong>Xiaohongshu</strong></td>
+    <td valign="top"><a href="http://xhslink.com/m/tU520DWCKT">Willkommen bei Xiaohongshu</a></td>
   </tr>
   <tr>
-    <td width="92" valign="top"><strong>問題反饋</strong></td>
-    <td valign="top"><a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues">提交 Issue</a></td>
+    <td width="92" valign="top"><strong>Problem-Feedback</strong></td>
+    <td valign="top"><a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues">Issue einreichen</a></td>
   </tr>
 </table>
 
@@ -278,8 +278,8 @@ python main.py --webui-only
 
 [MIT License](../LICENSE) © 2026 ZhuLinsen
 
-如果你在項目中使用或基於本項目進行二次開發，非常歡迎在 README 或文檔中註明來源並附上本倉庫鏈接。
+Wenn du dieses Projekt verwendest oder als Grundlage für eine Weiterentwicklung nutzt, ist eine Quellenangabe im README oder in der Dokumentation mit Link zu diesem Repository sehr willkommen.
 
-## ⚠️ 免責聲明
+## ⚠️ Haftungsausschluss
 
-本項目僅供學習和研究使用，不構成任何投資建議。股市有風險，投資需謹慎。作者不對使用本項目產生的任何損失負責。
+Dieses Projekt dient nur zu Lern- und Forschungszwecken und stellt keine Anlageberatung dar. Aktienmärkte bergen Risiken; investiere mit Bedacht. Der Autor übernimmt keine Haftung für Verluste, die durch die Nutzung dieses Projekts entstehen.

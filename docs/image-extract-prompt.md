@@ -1,12 +1,12 @@
 # Image Extract Prompt (Vision LLM)
 
-本文档记录 `src/services/image_stock_extractor.py` 中 `EXTRACT_PROMPT` 的完整内容，便于 PR 审查时评估指令效果。
+Dieses Dokument hält den vollständigen Inhalt von `EXTRACT_PROMPT` in `src/services/image_stock_extractor.py` fest, damit bei PR-Reviews die Wirkung der Anweisungen bewertet werden kann.
 
-**当修改 EXTRACT_PROMPT 时**：请同步更新此文件，并在 PR 描述中展示完整变更（before/after），以便审查者评估针对 code+name+confidence 提取的优化程度。
+**Wenn `EXTRACT_PROMPT` geändert wird**: Bitte diese Datei synchron aktualisieren und die vollständige Änderung (before/after) in der PR-Beschreibung zeigen, damit der Prüfer den Grad der Optimierung für die code+name+confidence-Extraktion bewerten kann.
 
 ---
 
-## 当前 Prompt（完整）
+## Aktueller Prompt (vollständig)
 
 ```
 请分析这张股票市场截图或图片，提取其中所有可见的股票代码及名称。

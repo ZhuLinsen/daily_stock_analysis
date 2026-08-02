@@ -1,28 +1,28 @@
-# 内建选股引擎
+# Integrierte Screening-Engine
 
-DSA 将选股能力作为主项目的一部分维护。实现参考 [AlphaSift](https://github.com/ZhuLinsen/alphasift) 提交 [`9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf`](https://github.com/ZhuLinsen/alphasift/commit/9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf)，并按 Apache License 2.0 修改和分发。衍生文件保留来源头，许可证位于 `src/services/screening/LICENSE`，第三方声明见根目录 `THIRD_PARTY_NOTICES.md`。
+DSA pflegt die Screening-Fähigkeiten als Teil des Hauptprojekts. Die Implementierung orientiert sich an [AlphaSift](https://github.com/ZhuLinsen/alphasift) im Commit [`9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf`](https://github.com/ZhuLinsen/alphasift/commit/9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf) und wird gemäß Apache License 2.0 modifiziert und vertrieben. Abgeleitete Dateien behalten die Quellen-Header; die Lizenz liegt unter `src/services/screening/LICENSE`, Drittanbieter-Angaben finden sich in der Datei `THIRD_PARTY_NOTICES.md` im Wurzelverzeichnis.
 
-## 代码边界
+## Codegrenzen
 
-- `src/services/screening/`：快照、日 K、策略加载、过滤、评分、风险、LLM 重排与热点实现。
-- `src/services/screening/strategies/`：随 DSA 版本发布的策略 YAML。
-- `src/services/screening/pipeline.py`：内建筛选流程的直接入口。
-- `src/services/screening_service.py`：DSA 业务编排，直接调用 pipeline，负责配置、数据源上下文、响应归一化、缓存与错误映射。
-- `src/storage.py`：使用 DSA 现有 SQLAlchemy/SQLite 基础设施持久化已完成的选股运行，不另建文件数据库。
-- `api/v1/endpoints/screening.py`：`/api/v1/screening` API。
-- `apps/dsa-web/src/api/screening.ts` 与 `StockScreeningPage.tsx`：Web 调用与展示。
+- `src/services/screening/`: Snapshot, Tages-K, Strategieladung, Filterung, Scoring, Risiko, LLM-Reranking und Hotspot-Implementierung.
+- `src/services/screening/strategies/`: Mit den DSA-Versionen veröffentlichte Strategie-YAMLs.
+- `src/services/screening/pipeline.py`: Direkter Einstiegspunkt der integrierten Screening-Pipeline.
+- `src/services/screening_service.py`: DSA-Business-Orchestrierung, ruft die Pipeline direkt auf und ist für Konfiguration, Datenquellenkontext, Antwortnormalisierung, Caching und Fehlerzuordnung zuständig.
+- `src/storage.py`: Persistiert abgeschlossene Screening-Läufe über die bestehende SQLAlchemy/SQLite-Infrastruktur von DSA, ohne eine separate Dateidatenbank anzulegen.
+- `api/v1/endpoints/screening.py`: Die `/api/v1/screening`-API.
+- `apps/dsa-web/src/api/screening.ts` und `StockScreeningPage.tsx`: Web-Aufruf und -Anzeige.
 
-服务层静态调用 `screening.pipeline`、`screening.strategy` 和 `screening.hotspot`。核心逻辑不通过模块名探测、动态适配器或多套路由分发，因此代码结构、错误边界和打包收集目标均由主项目直接定义。
+Die Serviceschicht ruft `screening.pipeline`, `screening.strategy` und `screening.hotspot` statisch auf. Die Kernlogik nutzt keine Modulnamen-Detektion, keine dynamischen Adapter und keine mehrfachen Routing-Verteilungen; daher werden Codestruktur, Fehlergrenzen und Verpackungs-Sammeleinstellungen direkt vom Hauptprojekt definiert.
 
-## 配置
+## Konfiguration
 
-默认关闭：
+Standardmäßig deaktiviert:
 
 ```dotenv
 SCREENING_ENABLED=false
 ```
 
-常用可选项：
+Häufige Optionen:
 
 ```dotenv
 SCREENING_DATA_DIR=data/screening
@@ -33,118 +33,118 @@ SCREENING_EASTMONEY_MIN_INTERVAL_SEC=1.0
 SCREENING_EASTMONEY_JITTER_SEC=0.3
 ```
 
-路径、超时和限流项只影响内建选股链路。完整示例以 `.env.example` 为准。
+Pfad-, Timeout- und Rate-Limiting-Einträge betreffen nur die integrierte Screening-Kette. Das vollständige Beispiel richtet sich nach `.env.example`.
 
-## API 契约
+## API-Vertrag
 
-| 路径 | 方法 | 行为 |
+| Pfad | Methode | Verhalten |
 | --- | --- | --- |
-| `/api/v1/screening/status` | GET | 返回开关、引擎状态、契约版本、参考项目和数据源健康信息 |
-| `/api/v1/screening/strategies` | GET | 返回内建策略 |
-| `/api/v1/screening/hotspots` | GET | 读取缓存或显式刷新热点题材 |
-| `/api/v1/screening/hotspots/{topic}` | GET | 返回题材路线、成分股与核心股 |
-| `/api/v1/screening/screen` | POST | 同步执行选股 |
-| `/api/v1/screening/screen/tasks` | POST | 提交后台选股任务 |
-| `/api/v1/screening/screen/tasks/{task_id}` | GET | 查询任务进度、错误或最终结果 |
-| `/api/v1/screening/history` | GET | 按策略、市场查询最近完成的选股运行摘要 |
-| `/api/v1/screening/history/{run_id}` | GET | 读取一条持久化的完整选股结果 |
-| `/api/v1/screening/source-history` | GET | 汇总历史运行中的快照源命中、错误和降级次数 |
+| `/api/v1/screening/status` | GET | Gibt Schalter, Engine-Status, Vertragsversion, Referenzprojekt und Datenquellen-Health-Informationen zurück |
+| `/api/v1/screening/strategies` | GET | Gibt integrierte Strategien zurück |
+| `/api/v1/screening/hotspots` | GET | Liest den Cache oder aktualisiert Hotspot-Themen explizit |
+| `/api/v1/screening/hotspots/{topic}` | GET | Gibt Themenrouten, Komponentenaktien und Kernaktien zurück |
+| `/api/v1/screening/screen` | POST | Führt das Screening synchron aus |
+| `/api/v1/screening/screen/tasks` | POST | Reicht Hintergrund-Screening-Aufgaben ein |
+| `/api/v1/screening/screen/tasks/{task_id}` | GET | Fragt Aufgabenfortschritt, Fehler oder Endergebnis ab |
+| `/api/v1/screening/history` | GET | Fragt Zusammenfassungen der letzten abgeschlossenen Screening-Läufe nach Strategie und Markt ab |
+| `/api/v1/screening/history/{run_id}` | GET | Liest einen einzelnen vollständig persistierten Screening-Ergebnislauf |
+| `/api/v1/screening/source-history` | GET | Aggregiert Snapshot-Quellentreffer, Fehler und Degradierungszahlen über historische Läufe |
 
-后台任务使用 `report_type=screening_screen`，Web 会保存活动任务 ID，并在页面恢复时继续轮询。任务队列仍负责运行态进度；完成后的结果同时写入 DSA 数据库，因此服务重启后仍可按 `run_id` 查询。
+Hintergrundaufgaben verwenden `report_type=screening_screen`; die Web-App speichert die ID der aktiven Aufgabe und pollt bei der Seitenwiederherstellung weiter. Die Aufgabenwarteschlange bleibt für den Laufzeitfortschritt zuständig; nach Abschluss wird das Ergebnis zusätzlich in die DSA-Datenbank geschrieben, sodass es nach einem Dienstneustart weiterhin über `run_id` abfragbar ist.
 
-## 核心流程
+## Kernablauf
 
 ```text
-策略加载
-  -> 全市场快照与字段标准化
-  -> 硬过滤
-  -> 因子评分与风险调整
-  -> 候选上下文补充
-  -> LLM 重排（可降级）
-  -> Top 候选 DSA 行情/基本面/新闻增强
-  -> API 归一化响应与 DSA 数据库持久化
-  -> 用户按需进入 DSA 单股深度分析
+Strategieladung
+  -> Gesamtmarkt-Snapshot und Feldnormalisierung
+  -> Harte Filterung
+  -> Faktor-Scoring und Risikoadjustierung
+  -> Kandidatenkontext-Ergänzung
+  -> LLM-Reranking (degradierbar)
+  -> Top-Kandidaten: DSA Kursdaten/Fundamentaldaten/Nachrichten-Anreicherung
+  -> API-normalisierte Antwort und Persistierung in der DSA-Datenbank
+  -> Nutzer wechselt bei Bedarf in die DSA-Tiefenanalyse einzelner Aktien
 ```
 
-- 全市场快照按配置的数据源优先级尝试；单一数据源失败后继续降级，并记录 source health 与 last-good 缓存。
-- 有 `TUSHARE_TOKEN` 时默认优先 Tushare，否则默认从 Sina 开始；显式 `SNAPSHOT_SOURCE_PRIORITY` 始终优先。
-- 日 K 优先复用 DSA 历史行情链路，无结果时再走筛选引擎的数据源降级。
-- LLM 重排前只补充有限候选上下文，最终候选再补行情、基本面、新闻和摘要，控制请求量。
-- 模型、渠道、base URL、额外 headers、fallback、timeout 和 token 上限在单次调用范围内注入，不改写用户配置。
-- 热点实时请求失败时优先使用 last-good cache；无缓存时返回稳定空态与明确错误。
+- Der Gesamtmarkt-Snapshot versucht es gemäß der konfigurierten Datenquellenpriorität; nach einem Fehlschlag einer einzelnen Datenquelle wird degradiert weitergeführt, dabei werden Source-Health und Last-Good-Cache protokolliert.
+- Mit `TUSHARE_TOKEN` wird standardmäßig Tushare bevorzugt, sonst standardmäßig bei Sina gestartet; ein explizites `SNAPSHOT_SOURCE_PRIORITY` hat immer Vorrang.
+- Bei der Tages-K wird bevorzugt die historische DSA-Kursdatenkette wiederverwendet; gibt es kein Ergebnis, greift die Datenquellen-Degradierung der Screening-Engine.
+- Vor dem LLM-Reranking wird nur begrenzter Kandidatenkontext ergänzt; die Endkandidaten erhalten anschließend Kursdaten, Fundamentaldaten, Nachrichten und Zusammenfassungen, um die Anfragemenge zu begrenzen.
+- Modell, Kanal, base URL, zusätzliche Header, Fallback, Timeout und Token-Obergrenze werden im Umfang eines einzelnen Aufrufs injiziert, ohne die Nutzerkonfiguration zu überschreiben.
+- Schlägt eine Echtzeit-Hotspot-Anfrage fehl, wird bevorzugt der Last-Good-Cache verwendet; ohne Cache wird ein stabiler Leerzustand mit klarer Fehlermeldung zurückgegeben.
 
-## 缓存与持久化
+## Caching und Persistierung
 
-| 数据 | 位置 | 有效期/行为 |
+| Daten | Ort | Gültigkeit/Verhalten |
 | --- | --- | --- |
-| 全市场快照 | `data/screening/snapshot.last_good.json` | 实时源全部失败时使用；受最大陈旧时间约束并标记 stale/fallback |
-| 个股日 K | `data/screening/daily_history/` | 按代码、来源和回看窗口分键，默认 TTL 24 小时；实时源全部失败时可使用过期缓存并标记 stale |
-| 行业/概念映射 | `data/screening/industry_provider_cache/` | 默认 TTL 24 小时，并保存板块热度历史用于趋势计算 |
-| 热点列表与历史 | `data/screening/hotspots.json`、`hotspot.history.jsonl` | 显式刷新写入；实时失败时回退最近可用快照 |
-| 热点详情 | `data/screening/hotspot_details/` | 默认 TTL 30 分钟；实时失败时可回退过期详情并返回陈旧时长 |
-| DSA 实时行情 | `DataFetcherManager` 的行情缓存 | 默认 TTL 10 分钟，沿用 `REALTIME_CACHE_TTL` |
-| DSA 基本面/资金流 | `DataFetcherManager` 的基本面缓存 | 默认 TTL 120 秒，沿用 `FUNDAMENTAL_CACHE_TTL_SECONDS` |
-| DSA 新闻/公告事件 | `SearchService` 内存缓存 | 成功结果默认 TTL 10 分钟；服务重启后重新查询 |
-| 完整选股结果 | DSA 数据库 `screening_runs` 表 | 完成后按 `run_id` 幂等写入；数据库写入失败不阻断选股主流程 |
+| Gesamtmarkt-Snapshot | `data/screening/snapshot.last_good.json` | Wird verwendet, wenn alle Echtzeitquellen fehlschlagen; unterliegt einer maximalen Altersbeschränkung und wird als stale/fallback markiert |
+| Einzelaktien-Tages-K | `data/screening/daily_history/` | Nach Code, Quelle und Rückschaufenster abgelegt, Standard-TTL 24 Stunden; bei vollständigem Ausfall der Echtzeitquellen kann abgelaufener Cache verwendet und als stale markiert werden |
+| Branchen-/Konzept-Zuordnung | `data/screening/industry_provider_cache/` | Standard-TTL 24 Stunden; speichert zusätzlich die Sektor-Hitze-Historie für Trendberechnungen |
+| Hotspot-Liste und -Historie | `data/screening/hotspots.json`, `hotspot.history.jsonl` | Schreiben bei explizitem Refresh; bei Echtzeit-Fehlschlag Rückfall auf den letzten verfügbaren Snapshot |
+| Hotspot-Details | `data/screening/hotspot_details/` | Standard-TTL 30 Minuten; bei Echtzeit-Fehlschlag kann auf abgelaufene Details zurückgegriffen und das Alter der Daten zurückgegeben werden |
+| DSA-Echtzeit-Kursdaten | Kursdaten-Cache des `DataFetcherManager` | Standard-TTL 10 Minuten, übernimmt `REALTIME_CACHE_TTL` |
+| DSA-Fundamentaldaten/Kapitalfluss | Fundamentaldaten-Cache des `DataFetcherManager` | Standard-TTL 120 Sekunden, übernimmt `FUNDAMENTAL_CACHE_TTL_SECONDS` |
+| DSA-Nachrichten/Meldungsereignisse | In-Memory-Cache des `SearchService` | Erfolgreiche Ergebnisse Standard-TTL 10 Minuten; nach Dienstneustart werden sie erneut abgefragt |
+| Vollständiges Screening-Ergebnis | DSA-Datenbank, Tabelle `screening_runs` | Nach Abschluss idempotent über `run_id` geschrieben; ein Datenbankschreibfehler blockiert den Screening-Hauptablauf nicht |
 
-候选上下文模块也支持 24 小时文件缓存，但 DSA 集成默认关闭其独立新闻/公告抓取，改用 DSA 自己的资讯、基本面和实时行情链路，避免同一候选重复请求两套数据源。
+Das Kandidatenkontext-Modul unterstützt zusätzlich einen 24-Stunden-Datei-Cache, doch die DSA-Integration deaktiviert standardmäßig dessen eigenständiges Abrufen von Nachrichten/Meldungen und nutzt stattdessen die eigenen Nachrichten-, Fundamentaldaten- und Echtzeit-Kursdaten-Ketten von DSA, um zu vermeiden, dass dieselben Kandidaten zwei Datenquellen-Sätze doppelt anfragen.
 
-## 两类策略的边界
+## Grenze zwischen den beiden Strategietypen
 
-DSA 中存在两类用途不同的策略文件：
+In DSA existieren zwei Strategiedateien mit unterschiedlichen Zwecken:
 
-| 位置 | 解决的问题 | 加载方 | 执行阶段 |
+| Ort | Gelöstes Problem | Laderseite | Ausführungsphase |
 | --- | --- | --- | --- |
-| `src/services/screening/strategies/*.yaml` | 从全市场筛出哪些候选 | `src/services/screening/strategy.py` | 快照过滤、因子评分、风险和排序 |
-| `strategies/*.yaml` | 对单只股票如何分析和形成结论 | `src/agent/skills/base.py` | DSA Agent/报告分析 |
+| `src/services/screening/strategies/*.yaml` | Welche Kandidaten aus dem Gesamtmarkt gefiltert werden | `src/services/screening/strategy.py` | Snapshot-Filterung, Faktor-Scoring, Risiko und Sortierung |
+| `strategies/*.yaml` | Wie eine einzelne Aktie analysiert und zu einer Schlussfolgerung geführt wird | `src/agent/skills/base.py` | DSA-Agent-/Berichtanalyse |
 
-即使 `shrink_pullback`、`volume_breakout` 同名，两者也使用不同目录、Schema 和 loader，不会相互覆盖。筛选策略可通过 `analysis_skills` 声明下一阶段建议使用的 DSA 分析 skill；Web 的“用 DSA 深度分析”会显式携带这些 skill。未声明映射的筛选策略继续使用用户当前选择或 DSA 默认分析策略，不做含义不可靠的强行映射。
+Selbst bei gleichem Namen wie `shrink_pullback` oder `volume_breakout` verwenden beide unterschiedliche Verzeichnisse, Schemas und Loader und überschreiben sich nicht gegenseitig. Screening-Strategien können über `analysis_skills` die für die nächste Phase empfohlenen DSA-Analyse-Skills deklarieren; die Web-Schaltfläche "Mit DSA tief analysieren" trägt diese Skills explizit mit. Screening-Strategien ohne deklarierte Zuordnung verwenden weiterhin die aktuell ausgewählte Strategie des Nutzers oder die DSA-Standard-Analysestrategie, ohne eine unzuverlässige Zwangszuordnung vorzunehmen.
 
-## DSA 原生能力复用
+## Wiederverwendung nativer DSA-Fähigkeiten
 
-- 行情：日 K 优先调用 DSA `DataFetcherManager`，无结果才进入筛选模块自己的多源 fallback；最终候选继续补 DSA 实时行情。
-- 基本面与资讯：最终候选复用 DSA 基本面上下文和 `SearchService`；资本流向来自 DSA 基本面上下文，重要公告/业绩/减持事件调用 DSA `search_stock_events`，不重复维护独立资讯入口。
-- 模型：沿用 DSA LiteLLM 模型、渠道、fallback、base URL、额外 headers、超时和 token 配置。
-- 任务与页面：复用 DSA 后台任务队列、Web 轮询和桌面端同源 Web 资源。
-- 存储与后续分析：运行结果写入 DSA 数据库；候选可进入 DSA 原生单股分析并携带策略 skill。
+- Kursdaten: Bei der Tages-K wird bevorzugt der DSA-`DataFetcherManager` aufgerufen; nur ohne Ergebnis greift der eigene Multi-Quellen-Fallback des Screening-Moduls; die Endkandidaten werden weiterhin mit DSA-Echtzeit-Kursdaten ergänzt.
+- Fundamentaldaten und Nachrichten: Die Endkandidaten nutzen den DSA-Fundamentaldatenkontext und den `SearchService` wieder; der Kapitalfluss stammt aus dem DSA-Fundamentaldatenkontext, wichtige Meldungs-/Gewinn-/Veräußerungsereignisse rufen DSA `search_stock_events` auf, ohne einen separaten eigenen Nachrichtenzugang zu pflegen.
+- Modell: Übernommen werden die DSA-LiteLLM-Modelle, Kanäle, Fallback, base URL, zusätzliche Header, Timeout und Token-Konfiguration.
+- Aufgaben und Seiten: Wiederverwendet werden die DSA-Hintergrundaufgabenwarteschlange, das Web-Polling und die gleichnamigen Web-Ressourcen des Desktop-Clients.
+- Speicherung und Folgeanalyse: Laufergebnisse werden in die DSA-Datenbank geschrieben; Kandidaten können in die native DSA-Einzelaktienanalyse wechseln und tragen dabei die Strategie-Skills mit.
 
-对照固定参考提交，快照、日 K、美股、行业/概念、热点、候选新闻/公告/资金流、字段标准化、过滤、评分、风险、排序和数据源熔断等原始数据与选股能力均已纳入；其中公告/事件和资金流在 DSA 编排层分别接入原生事件搜索与基本面上下文。参考项目另外提供独立 CLI/server、JSON 文件 store、报告渲染、doctor、运行/数据源历史和 T+N 评估：本实现只吸收 DSA 确实缺少的运行历史与数据源历史，并接到 DSA 数据库；CLI/server 不重复建设，T+N 评估与表现统计继续复用 DSA 已有 BacktestService，避免形成第二套回测真源。实时 source health 已在 `/status` 返回，历史稳定性由 `/source-history` 补齐。
+Im Vergleich zum festen Referenz-Commit sind Snapshot, Tages-K, US-Aktien, Branchen/Konzepte, Hotspots, Kandidaten-Nachrichten/Meldungen/Kapitalfluss, Feldnormalisierung, Filterung, Scoring, Risiko, Sortierung und Datenquellen-Circuit-Breaker als rohe Daten- und Screening-Fähigkeiten vollständig übernommen; darunter werden Meldungen/Ereignisse und Kapitalfluss in der DSA-Orchestrierungsschicht jeweils an die native Ereignissuche und den Fundamentaldatenkontext angeschlossen. Das Referenzprojekt bietet darüber hinaus einen separaten CLI/Server, einen JSON-Datei-Store, Berichts-Rendering, Doctor, Lauf-/Datenquellen-Historie und T+N-Bewertung: Diese Implementierung übernimmt nur die Betriebshistorie und Datenquellen-Historie, die DSA tatsächlich fehlen, und schließt sie an die DSA-Datenbank an; CLI/Server werden nicht doppelt aufgebaut, T+N-Bewertung und Performance-Statistiken nutzen weiterhin den bestehenden DSA-`BacktestService`, um eine zweite Backtest-Wahrheitsquelle zu vermeiden. Die Echtzeit-Source-Health wird bereits über `/status` zurückgegeben, die historische Stabilität wird über `/source-history` ergänzt.
 
-## 收益
+## Nutzen
 
-1. 选股服务、策略、API、Web 和打包脚本在同一版本中演进，避免契约漂移。
-2. 服务层只有一套原生调用路径，状态探针和业务请求反映相同实现。
-3. Docker 与桌面产物直接收集同一份模块和策略资源，部署结果更一致。
-4. 数据源降级、评分和策略变化可以在主仓库完成端到端审查与回归。
-5. 来源 commit、许可证和逐文件归因明确，便于后续选择性同步上游修复。
+1. Screening-Service, Strategien, API, Web und Verpackungsskripte entwickeln sich in derselben Version weiter und vermeiden Vertragsdrift.
+2. Die Serviceschicht hat nur einen nativen Aufrufpfad; Statusproben und Business-Anfragen spiegeln dieselbe Implementierung wider.
+3. Docker- und Desktop-Artefakte sammeln direkt dieselben Modul- und Strategieressourcen, das Deployment-Ergebnis ist konsistenter.
+4. Datenquellen-Degradierung, Scoring und Strategieänderungen können im Haupt-Repository vollständig überprüft und regressionstestet werden.
+5. Quell-Commit, Lizenz und dateiweise Zuordnung sind klar, sodass Upstream-Fixes später gezielt synchronisiert werden können.
 
-## 风险与控制
+## Risiken und Kontrollen
 
-| 风险 | 影响 | 控制措施 |
+| Risiko | Auswirkung | Kontrollmaßnahme |
 | --- | --- | --- |
-| 主仓库维护面扩大 | 数据源或策略问题由 DSA 直接承担 | 模块边界、契约测试和 CI 打包探针共同约束 |
-| 与参考项目逐渐分叉 | 上游修复不能直接覆盖 | 固定参考 revision，逐模块比较并选择性移植 |
-| 数据源限流或字段变化 | 快照、热点或日 K 降级 | timeout、retry、source health 与 last-good cache |
-| LLM 超时或格式异常 | 重排不可用或解释字段缺失 | 保留因子排序，记录 parse error 和 warning |
-| 缓存目录变化 | 升级后旧缓存不会自动复用 | 新目录独立为 `data/screening`；升级前按需备份 |
-| 运行历史增长 | 完整候选结果会增加数据库体积 | 历史接口默认只读摘要，运维可按现有数据库备份/保留策略管理 |
-| 配置与 API 更名 | 旧自动化需同步调整 | 在发布说明明确 `SCREENING_ENABLED` 与 `/api/v1/screening` |
-| 许可证归因遗漏 | 发布合规风险 | 保留 LICENSE、THIRD_PARTY_NOTICES 和衍生文件头 |
+| Größere Pflegefläche des Haupt-Repositorys | Datenquellen- oder Strategieprobleme werden von DSA direkt getragen | Modulgrenzen, Vertragstests und CI-Verpackungsproben wirken zusammen |
+| Zunehmende Abweichung vom Referenzprojekt | Upstream-Fixes lassen sich nicht direkt übernehmen | Festes Referenz-Revison, Modul-für-Modul-Vergleich und selektive Portierung |
+| Rate-Limiting oder Feldänderungen bei Datenquellen | Degradierung von Snapshot, Hotspots oder Tages-K | Timeout, Retry, Source-Health und Last-Good-Cache |
+| LLM-Timeout oder Formatfehler | Reranking unverfügbar oder Erklärfelder fehlen | Faktor-Sortierung beibehalten, Parse-Error und Warning protokollieren |
+| Änderung der Cache-Verzeichnisse | Alte Caches werden nach dem Upgrade nicht automatisch wiederverwendet | Neues Verzeichnis ist unabhängig als `data/screening`; vor dem Upgrade bei Bedarf sichern |
+| Wachstum der Lauferstellung | Vollständige Kandidatenergebnisse vergrößern die Datenbank | Historische Schnittstellen lesen standardmäßig nur Zusammenfassungen; der Betrieb kann nach bestehender DB-Sicherungs-/Aufbewahrungsstrategie verwalten |
+| Umbenennung von Konfiguration und API | Alte Automatisierung muss angepasst werden | `SCREENING_ENABLED` und `/api/v1/screening` in den Release-Hinweisen klar benennen |
+| Lizenzattributionslücke | Compliance-Risiko bei der Veröffentlichung | LICENSE, THIRD_PARTY_NOTICES und abgeleitete Datei-Header beibehalten |
 
-选股结果仅用于研究和辅助判断，不构成投资建议，也不保证收益或数据完整性。
+Screening-Ergebnisse dienen nur der Recherche und unterstützenden Einschätzung, stellen keine Anlageberatung dar und garantieren weder Rendite noch Datenvollständigkeit.
 
-## 更新参考实现
+## Referenzimplementierung aktualisieren
 
-AlphaSift 是参考来源，不是自动同步源。更新时应：
+AlphaSift ist eine Referenzquelle, keine automatische Synchronisationsquelle. Bei Updates gilt:
 
-1. 记录目标 commit 和许可证变化；
-2. 比较 `src/services/screening/` 的 DSA 特有修改，按模块选择性移植；
-3. 更新衍生文件头、`REFERENCE_REVISION` 和 `THIRD_PARTY_NOTICES.md`；
-4. 检查 pipeline、API/Web 字段、数据源降级、策略资源与冻结打包；
-5. 更新本文档和 `docs/CHANGELOG.md`，完成后端、Web、Docker/桌面验证。
+1. Ziel-Commit und Lizenzänderungen dokumentieren;
+2. die DSA-spezifischen Änderungen in `src/services/screening/` vergleichen und Modul für Modul selektiv portieren;
+3. abgeleitete Datei-Header, `REFERENCE_REVISION` und `THIRD_PARTY_NOTICES.md` aktualisieren;
+4. Pipeline, API/Web-Felder, Datenquellen-Degradierung, Strategieressourcen und eingefrorene Verpackung prüfen;
+5. dieses Dokument und `docs/CHANGELOG.md` aktualisieren, anschließend Backend-, Web- und Docker-/Desktop-Verifikation durchführen.
 
-## 回滚
+## Rollback
 
-- 业务回滚：设置 `SCREENING_ENABLED=false` 并重启；普通个股分析、报告、通知和问股不受影响。
-- 代码回滚：revert 引入内建引擎的提交并重建后端、Docker 与桌面产物。
-- 数据回滚：如需保留选股缓存和运行历史，先备份 `data/screening/` 与 DSA 数据库；代码回滚不会主动删除 `screening_runs` 用户数据。
+- Business-Rollback: `SCREENING_ENABLED=false` setzen und neu starten; normale Einzelaktienanalyse, Berichte, Benachrichtigungen und die Fragen-Funktion bleiben unberührt.
+- Code-Rollback: Den Commit revertieren, der die integrierte Engine eingeführt hat, und Backend, Docker und Desktop-Artefakte neu bauen.
+- Daten-Rollback: Falls Screening-Caches und Lauferstellung erhalten bleiben sollen, zuerst `data/screening/` und die DSA-Datenbank sichern; ein Code-Rollback löscht die Nutzerdaten in `screening_runs` nicht aktiv.

@@ -1,21 +1,21 @@
-# 运行诊断与数据可靠性 1.0（Phase 1）
+# Laufzeit-Diagnose und Datenzuverlässigkeit 1.0 (Phase 1)
 
-本文档记录 #1391 Phase 1 的最小运行时落地范围：统一 `trace_id`，并为首批关键数据链路记录结构化 provider 尝试。
+Dieses Dokument beschreibt den minimalen Laufzeit-Umsetzungsumfang von Phase 1 für #1391: Vereinheitlichung von `trace_id` sowie strukturierte Erfassung der Provider-Versuche für die ersten kritischen Datenpfade.
 
-## 本轮范围
+## Umfang dieser Runde
 
-- API / Web 异步任务创建时，`TaskInfo` 使用 `task_id` 作为默认 `trace_id`。
-- 任务列表、任务状态与 SSE 事件追加 `trace_id` 字段；旧客户端可忽略该字段。
-- 同步分析使用本次 `query_id` 作为默认 `trace_id`。
-- pipeline 运行时建立轻量诊断上下文，贯穿日线准备与单股分析。
-- `data_provider/base.py` 对以下链路记录 `ProviderRun` 风格事件：
+- Beim Erstellen von asynchronen API-/Web-Aufgaben verwendet `TaskInfo` `task_id` als standardmäßige `trace_id`.
+- Aufgabenliste, Aufgabenstatus und SSE-Ereignisse erhalten zusätzlich das Feld `trace_id`; ältere Clients können dieses Feld ignorieren.
+- Bei der synchronen Analyse wird die jeweilige `query_id` als standardmäßige `trace_id` verwendet.
+- Die Pipeline erstellt zur Laufzeit einen leichtgewichtigen Diagnose-Kontext, der die Tagesdaten-Vorbereitung und die Einzelaktien-Analyse durchgängig begleitet.
+- `data_provider/base.py` erfasst für die folgenden Pfade Ereignisse im `ProviderRun`-Stil:
   - `daily_data`
   - `realtime_quote`
-- 诊断记录写入内存上下文，随分析 `context_snapshot.diagnostics` 保存；旧历史记录缺少该字段时保持兼容。
+- Die Diagnose-Einträge werden in den Speicher-Kontext geschrieben und mit `context_snapshot.diagnostics` der Analyse gespeichert; alte historische Datensätze ohne dieses Feld bleiben kompatibel.
 
-## `ProviderRun` 字段
+## `ProviderRun`-Felder
 
-首版字段保持最小：
+Die Felder der ersten Version bleiben minimal:
 
 - `trace_id`
 - `data_type`
@@ -29,15 +29,15 @@
 - `record_count`
 - `created_at`
 
-错误摘要会做基础脱敏，避免输出 token、API key、Authorization、Cookie、包含敏感参数的 webhook URL 等内容。
+Fehlerzusammenfassungen werden grundlegend entsensibilisiert, um die Ausgabe von Tokens, API-Keys, Authorization, Cookies oder Webhook-URLs mit sensiblen Parametern zu vermeiden.
 
-## 稳定性边界
+## Stabilitätsgrenzen
 
-- 诊断记录失败只记录 warning，不影响主分析、数据源 fallback 或历史保存。
-- 本轮不新增配置项，不改变数据源优先级，不改变 fallback 策略。
-- 本轮不新增 Web 展示组件；`trace_id` 和 provider runs 先进入 API/SSE/历史快照，供后续 Phase 2/3 聚合与展示复用。
+- Ein Fehler bei der Diagnose-Erfassung wird nur als warning aufgezeichnet und beeinträchtigt weder die Hauptanalyse, den Datenquellen-Fallback noch das Speichern der Historie.
+- In dieser Runde werden keine neuen Konfigurationsoptionen hinzugefügt, die Datenquellen-Priorität nicht geändert und die Fallback-Strategie nicht verändert.
+- In dieser Runde werden keine neuen Web-Anzeigekomponenten hinzugefügt; `trace_id` und Provider-Runs gehen zunächst in API/SSE/Historien-Snapshots ein, damit spätere Phasen 2/3 sie aggregieren und anzeigen können.
 
-## 验证建议
+## Validierungsvorschlag
 
 ```bash
 python -m pytest tests/test_run_diagnostics_p1.py tests/test_analysis_api_contract.py::AnalysisApiContractTestCase::test_get_analysis_status_normalizes_completed_queue_result_contract

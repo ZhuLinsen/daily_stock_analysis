@@ -1,33 +1,33 @@
-# LLM (大模型) 配置指南
+# LLM (Large Model) Konfigurationsleitfaden
 
-欢迎！无论你是刚接触 AI 的新手小白，还是精通各种 API 的高玩老手，这份指南都能帮你快速把大模型（LLM）跑起来。
+Willkommen! Egal ob du ein völliger Neuling im Umgang mit AI bist oder ein erfahrener Profi, der alle APIs beherrscht — dieser Leitfaden hilft dir, das Large Model (LLM) schnell zum Laufen zu bringen.
 
-本项目对外提供统一的 AI 模型接入体验，支持主流官方 API、OpenAI 兼容平台以及本地模型。底层由 [LiteLLM](https://docs.litellm.ai/) 驱动，但大多数用户只需要理解“选服务商、填 API Key、选主模型/渠道”这条默认路径。为了照顾不同阶段的用户，我们设计了“三层优先级”配置，按需选择最适合你的方式即可。
+Dieses Projekt bietet extern eine einheitliche AI-Modell-Anbindung und unterstützt offizielle Haupt-APIs, OpenAI-kompatible Plattformen sowie lokale Modelle. Im Hintergrund wird dies von [LiteLLM](https://docs.litellm.ai/) angetrieben, aber die meisten Nutzer müssen nur den Standardpfad „Anbieter wählen, API-Key eintragen, Hauptmodell/Kanal wählen" verstehen. Um Nutzern in verschiedenen Stadien gerecht zu werden, haben wir eine „Drei-Ebenen-Prioritäts"-Konfiguration entworfen — wähle einfach die Methode, die am besten zu dir passt.
 
-如果你正在选择具体服务商、配置 GitHub Actions Secrets / Variables、排查 `details.reason` 错误或准备回滚配置，请优先查看 [LLM 服务商配置指南](./llm-providers.md)。该文档集中维护 provider 预设、Actions 变量对照、运行时能力检测边界和常见错误处理建议。
+Wenn du gerade einen konkreten Anbieter auswählst, GitHub-Actions-Secrets/Variables konfigurierst, `details.reason`-Fehler untersuchst oder eine Konfiguration zurückrollen möchtest, schau bitte zuerst in den [LLM-Anbieter-Konfigurationsleitfaden](./llm-providers.md). Dieses Dokument pflegt zentral die Provider-Presets, Actions-Variablen-Zuordnung, Laufzeit-Fähigkeitserkennungsgrenzen und Empfehlungen zur Fehlerbehandlung.
 
-> 本页的 provider/model/Base URL 说明本次未新增外部兼容语义，仅用于同步现网约定；实际兼容判断仍按当前仓库锁定依赖与运行时实现执行：
-> - 依赖边界：`litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（与 `requirements.txt` 一致）。
-> - 兼容验证入口：`tests/test_system_config_service.py`、`tests/test_system_config_api.py` 以及现有前端模型配置页回归用例。
-> - 回退路径：优先使用 `.env` 配置备份 + `POST /api/v1/system/config/import` 恢复；也可在重启前手动回填旧 `LITELLM_MODEL` / `LLM_*` / `AGENT_LITELLM_MODEL` / `VISION_MODEL` / `LLM_TEMPERATURE` / `LLM_USAGE_HMAC_*`。
+> Die provider/model/Base-URL-Erläuterungen auf dieser Seite fügen dieses Mal keine neuen externen Kompatibilitätssemantiken hinzu; sie dienen nur zur Synchronisierung der laufenden Konventionen. Die tatsächliche Kompatibilitätsbeurteilung folgt weiterhin den im aktuellen Repository gesperrten Abhängigkeiten und der Laufzeitimplementierung:
+> - Abhängigkeitsgrenze: `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` (konsistent mit `requirements.txt`).
+> - Kompatibilitäts-Verifikationseintritt: `tests/test_system_config_service.py`, `tests/test_system_config_api.py` sowie die bestehenden Frontend-Regressionsfälle der Modellkonfigurationsseite.
+> - Rückfallpfad: Bevorzugt die `.env`-Konfigurationssicherung + `POST /api/v1/system/config/import` zur Wiederherstellung verwenden; alternativ können vor dem Neustart die alten `LITELLM_MODEL` / `LLM_*` / `AGENT_LITELLM_MODEL` / `VISION_MODEL` / `LLM_TEMPERATURE` / `LLM_USAGE_HMAC_*` manuell nachgefüllt werden.
 
-> **说明**：本页对 provider/model/base URL 的说明同步沿用当前依赖约束与历史约定，仅做文档补充，不引入新的运行时 provider、模型或 Base URL 行为变更。
-
----
-
-## 快速导航：你应该看哪一节？
-
-1. **【新手小白】** "我只想赶紧把系统跑起来，越简单越好！" -> [指路【方式一：极简单模型配置】](#方式一极简单模型配置适合新手)
-2. **【进阶用户】** "我有好几个 Key，想配置备用模型，还要改自定义网址(Base URL)。" -> [指路【方式二：渠道(Channels)模式配置】](#方式二渠道channels模式配置适合进阶多模型)
-3. **【高玩老手】** "我要做复杂的负载均衡、请求路由、甚至多异构平台高可用！" -> [指路【方式三：YAML 高级配置】](#方式三yaml高级配置适合老手自定义)
-4. **【本地模型】** "我想用 Ollama 本地模型！" -> [指路【示例 4：使用 Ollama 本地模型】](#示例-4使用-ollama-本地模型)
-5. **【视觉模型】** "我想用图片识别股票代码！" -> [指路【扩展功能：看图模型(Vision)配置】](#扩展功能看图模型vision配置)
+> **Hinweis**: Die Erläuterungen zu provider/model/base URL auf dieser Seite folgen den aktuellen Abhängigkeitseinschränkungen und historischen Konventionen und sind nur Dokumentationsergänzung; es werden keine neuen Laufzeit-Provider, Modelle oder Base-URL-Verhaltensänderungen eingeführt.
 
 ---
 
-## Generation Backend（Phase 4）
+## Schnellnavigation: Welchen Abschnitt solltest du lesen?
 
-Generation backend 是普通分析、大盘复盘和 `generate_text()` 的外层运行时选择。默认仍是 `litellm`，零配置路径与历史行为保持一致；`codex_cli` / `claude_code_cli` / `opencode_cli` 是显式 opt-in 的本地 CLI backend，当前标记为 **experimental/limited**。
+1. **【Neuling】** "Ich will das System nur schnell zum Laufen bringen, so einfach wie möglich!" -> [Weg zu Methode 1: Extrem einfache Modellkonfiguration](#methode-1-extrem-einfache-modellkonfiguration-für-neulinge)
+2. **【Fortgeschritten】** "Ich habe mehrere Keys, möchte Backup-Modelle konfigurieren und eigene URLs (Base URL) ändern." -> [Weg zu Methode 2: Kanal(Channels)-Modus-Konfiguration](#methode-2-kanalchannels-modus-konfiguration-für-fortgeschrittenemehrere-modelle)
+3. **【Profi】** "Ich möchte komplexes Load Balancing, Request-Routing und sogar hochverfügbare Multi-Heterogen-Plattformen!" -> [Weg zu Methode 3: YAML-Erweiterte Konfiguration](#methode-3-yaml-erweiterte-konfiguration-für-profis)
+4. **【Lokales Modell】** "Ich möchte das lokale Ollama-Modell verwenden!" -> [Weg zu Beispiel 4: Verwenden des lokalen Ollama-Modells](#beispiel-4-verwenden-des-lokalen-ollama-modells)
+5. **【Bildmodell】** "Ich möchte Aktiencodes per Bilderkennung erfassen!" -> [Weg zu Erweiterte Funktion: Bildmodell (Vision)-Konfiguration](#erweiterte-funktion-bildmodell-vision-konfiguration)
+
+---
+
+## Generation Backend (Phase 4)
+
+Das Generation-Backend ist die äußere Laufzeitwahl für normale Analysen, den Marktrückblick und `generate_text()`. Standard bleibt `litellm`; der Null-Konfigurationspfad und das historische Verhalten bleiben unverändert. `codex_cli` / `claude_code_cli` / `opencode_cli` sind explizit opt-in lokale CLI-Backends und derzeit als **experimental/limited** markiert.
 
 ```env
 GENERATION_BACKEND=litellm
@@ -36,230 +36,230 @@ GENERATION_BACKEND_TIMEOUT_SECONDS=300
 GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576
 GENERATION_BACKEND_MAX_CONCURRENCY=1
 LOCAL_CLI_BACKEND_MAX_CONCURRENCY=1
-# 可选：留空时使用本机 OpenCode 默认模型；配置时作为 --model 覆盖值传给 OpenCode。
+# Optional: Bei leer lassen wird das Standardmodell der lokalen OpenCode-Instanz verwendet; bei Konfiguration wird es als --model-Override an OpenCode übergeben.
 # OPENCODE_CLI_MODEL=provider/model
 AGENT_BACKEND=auto
 AGENT_GENERATION_BACKEND=auto
 ```
 
-- `GENERATION_BACKEND=litellm|codex_cli|claude_code_cli|opencode_cli`。本地 CLI backend 是 generation backend，不是 LiteLLM provider；不要写 `LITELLM_MODEL=codex_cli/...`、`LITELLM_MODEL=claude_code_cli/...` 或 `LITELLM_MODEL=opencode_cli/...`。
-- `GENERATION_BACKEND=opencode_cli` 时默认不传 `--model`，由本机 OpenCode 使用自身默认模型配置；`OPENCODE_CLI_MODEL` 只是可选覆盖值，配置时才作为单个 `--model` 参数传给 OpenCode。provider 认证、账号和模型可用性由本机 OpenCode 自身配置负责；DSA 不接管这些配置。
-- `GENERATION_FALLBACK_BACKEND` 未配置时默认 `litellm`；本地 `.env` 显式空值 `GENERATION_FALLBACK_BACKEND=` 表示禁用 backend-level fallback；primary 与 fallback 相同时解析为 no-op。仓库自带 GitHub Actions workflow 未配置该变量时会显式导出 `litellm`，如果要在 Actions 中禁用 backend fallback，请把 fallback 设为 primary backend，例如 `GENERATION_BACKEND=codex_cli` + `GENERATION_FALLBACK_BACKEND=codex_cli`。
-- `GENERATION_BACKEND=codex_cli|claude_code_cli` 且没有 Gemini/OpenAI/Anthropic/DeepSeek API Key 时，普通分析和大盘复盘仍会尝试本地 CLI backend；如果对应 executable 不存在，会返回结构化 `command_not_found`，不会报“API Key 未配置”。
-- 当前 `codex_cli` preset 使用 `codex --ask-for-approval never exec --sandbox read-only --output-last-message <temp-file> -`：普通分析是无人值守生成任务，固定 `never` 可避免非交互运行停在人工批准请求，同时仍由 `read-only` 保持只读边界。DSA 从临时文件读取最终响应；Codex CLI 同时打印到 stdout 的重复内容会从诊断预览和输出大小统计中剔除，不参与主分析 JSON 解析。官方依据见 [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) 与 [Codex CLI command line options](https://developers.openai.com/codex/cli/reference)。本仓库当前真实验证 `codex-cli 0.144.3`，不声明更宽最低版本；如果 CLI 版本不支持 preset 参数，DSA 会返回结构化 `capability_unsupported` / `cli_contract_unsupported` 诊断，并在配置 backend fallback 时回退到 `litellm`。
-- 当前 `claude_code_cli` preset 使用 `claude --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --no-session-persistence --output-format json -p <static instruction>`，完整 DSA prompt 通过 stdin 传入。DSA 只从 Claude JSON envelope 的 `result/success` 最终字段提取文本；如果后续启用 `--json-schema`，schema mode 必须提取 `structured_output`，并且仍会继续经过 DSA 现有 JSON validator、minimal parser contract、`_parse_response()`、integrity retry、placeholder fill 和 usage telemetry。参数依据见 [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)；本 PR smoke 验证版本为 `claude 2.1.177 (Claude Code)`，不声明更宽最低版本。
-- 当前 `opencode_cli` preset 使用 `opencode --pure run --format json [--model <OPENCODE_CLI_MODEL>] <static instruction> --file <temp prompt file>`；只有显式配置 `OPENCODE_CLI_MODEL` 时才追加 `--model`，完整 DSA prompt 写入权限受控的临时文件，不进入 argv。DSA 只解析 OpenCode JSON event 输出中无工具事件的 `text` 内容，并要求正常 `step_finish`；出现 `tool_use`、`error`、`question`、`permission` 等事件会结构化失败。参数依据见 [OpenCode CLI reference](https://opencode.ai/docs/cli)，项目配置合并语义见 [OpenCode config reference](https://opencode.ai/docs/config)；本 PR smoke 验证版本为 `opencode 1.17.11`，不声明更宽最低版本。
-- 本地 CLI backend 不支持 streaming。请求 stream 时会自动降级为 non-stream，不会因此返回 `capability_unsupported`。
-- 本地 CLI usage 通常不可用，系统不会写入 fake 0 token、fake cost 或 fake cache telemetry。
-- 本地 CLI 执行上限有硬边界：`GENERATION_BACKEND_TIMEOUT_SECONDS` 最大 `3600`，`GENERATION_BACKEND_MAX_OUTPUT_BYTES` 最大 `33554432`，`GENERATION_BACKEND_MAX_CONCURRENCY` 最大 `16`，`LOCAL_CLI_BACKEND_MAX_CONCURRENCY` 最大 `4`。诊断 stdout/stderr 与最终响应合计超过输出上限时会返回结构化 `output_too_large`；对 `--output-last-message` preset，stdout 中重复打印的最终响应不会重复计入，也不会作为 `stdout_preview` 暴露。
-- 本地 CLI 的 `stdout_preview` / `stderr_preview` 在写入结构化 diagnostics 前会脱敏短凭证赋值，不依赖值长度：大写环境变量赋值沿用 child-env 的 fail-closed 敏感名称判定，JSON 与 YAML / 普通日志中的标量赋值使用更窄的凭证字段 allowlist，URL 继续使用独立的 userinfo / webhook / 敏感参数规则。`token_budget`、`session_id`、`sort_key` 等普通排障字段不会仅因包含 `token`、`session` 或 `key` 子串而被删除；但未加引号的 YAML 敏感标量没有可靠的同行边界，因此从该值起到行尾会 fail-closed 脱敏，同行后续字段也不会保留。
-- 本地 CLI 默认并发为 1；有效并发为 `min(LOCAL_CLI_BACKEND_MAX_CONCURRENCY, GENERATION_BACKEND_MAX_CONCURRENCY)`，不继承 `MAX_WORKERS`。
-- `AGENT_GENERATION_BACKEND=auto` 不会继承 `GENERATION_BACKEND` 的 local CLI 值；Agent 工具调用继续使用 LiteLLM。Web 设置页仅暴露 `auto|litellm`；手写 `AGENT_GENERATION_BACKEND=codex_cli|claude_code_cli|opencode_cli` 不实现 text-only Agent mode，会返回明确 unsupported tool-calling 诊断。
-- Phase 6a 的 DSA Tool Surface 仍是唯一工具 schema、权限元数据、scope guard、结构化错误和审计/脱敏边界；Phase 6 的 Codex AgentBackend 只能通过该 Tool Surface 执行工具。`codex_cli` / `claude_code_cli` / `opencode_cli` 仍是 generation-only，不能作为 Agent tool fallback。
-- Web 设置页的生成后端快速检查只读取已保存的 `.env`、运行时兜底值和未保存草稿；它不会写配置、重载运行时，也不会发起真实模型请求。`available` 只表示当前配置具备尝试运行的条件。JSON 冒烟测试是单独的显式操作，会使用服务端固定的 JSON 提示词和 schema 发起一次真实的生成后端请求，用于验证提取器、JSON 契约、超时、输出限制和 usage-unavailable 语义。
-- `GET /api/v1/system/config/generation-backends/status` 只读取已保存配置；未保存草稿需调用 `POST /api/v1/system/config/generation-backends/status/preview` 或 `POST /api/v1/system/config/generation-backends/smoke-test`。被遮罩的密钥字段会继续沿用已保存值。`health_status` 与 `last_error_code/message` 只代表本次计算结果，不是历史持久健康状态。
+- `GENERATION_BACKEND=litellm|codex_cli|claude_code_cli|opencode_cli`. Lokale CLI-Backends sind Generation-Backends, keine LiteLLM-Provider; schreibe nicht `LITELLM_MODEL=codex_cli/...`, `LITELLM_MODEL=claude_code_cli/...` oder `LITELLM_MODEL=opencode_cli/...`.
+- Bei `GENERATION_BACKEND=opencode_cli` wird standardmäßig kein `--model` übergeben; die lokale OpenCode-Instanz verwendet ihre eigene Standardmodell-Konfiguration. `OPENCODE_CLI_MODEL` ist nur ein optionaler Override-Wert und wird bei Konfiguration als einzelner `--model`-Parameter an OpenCode übergeben. Provider-Authentifizierung, Konto und Modellverfügbarkeit werden von der lokalen OpenCode-Instanz selbst verwaltet; DSA übernimmt diese Konfigurationen nicht.
+- `GENERATION_FALLBACK_BACKEND` ist standardmäßig `litellm`, wenn nicht konfiguriert; ein expliziter leerer Wert `GENERATION_FALLBACK_BACKEND=` in der lokalen `.env` deaktiviert das Backend-Level-Fallback; wenn primary und fallback gleich sind, wird dies als no-op aufgelöst. Wenn der mitgelieferte GitHub-Actions-Workflow diese Variable nicht konfiguriert, exportiert er explizit `litellm`; um das Backend-Fallback in Actions zu deaktivieren, setze das Fallback auf das primary backend, z. B. `GENERATION_BACKEND=codex_cli` + `GENERATION_FALLBACK_BACKEND=codex_cli`.
+- Bei `GENERATION_BACKEND=codex_cli|claude_code_cli` ohne Gemini/OpenAI/Anthropic/DeepSeek-API-Key versuchen normale Analysen und der Marktrückblick weiterhin das lokale CLI-Backend; wenn die entsprechende executable nicht existiert, wird ein strukturiertes `command_not_found` zurückgegeben, nicht „API Key nicht konfiguriert".
+- Das aktuelle `codex_cli`-Preset verwendet `codex --ask-for-approval never exec --sandbox read-only --output-last-message <temp-file> -`: Normale Analysen sind unbemannte Generation-Aufgaben; festes `never` verhindert, dass nicht-interaktive Ausführungen bei manuellen Genehmigungsanfragen hängen bleiben, während `read-only` weiterhin eine Nur-Lese-Grenze sicherstellt. DSA liest die endgültige Antwort aus der temporären Datei; die gleichzeitig an stdout gedruckten Duplikatinhalte von Codex CLI werden aus der Diagnosevorschau und der Ausgabegrößenstatistik ausgeschlossen und nehmen nicht an der Hauptanalyse-JSON-Parsing teil. Offizielle Referenzen: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) und [Codex CLI command line options](https://developers.openai.com/codex/cli/reference). Dieses Repository hat real `codex-cli 0.144.3` verifiziert und deklariert keine breitere Mindestversion; wenn die CLI-Version die Preset-Parameter nicht unterstützt, gibt DSA strukturierte `capability_unsupported` / `cli_contract_unsupported`-Diagnosen zurück und fällt bei konfiguriertem Backend-Fallback auf `litellm` zurück.
+- Das aktuelle `claude_code_cli`-Preset verwendet `claude --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --no-session-persistence --output-format json -p <static instruction>`, das vollständige DSA-Prompt wird über stdin übergeben. DSA extrahiert Text nur aus den finalen `result/success`-Feldern des Claude-JSON-Envelopes; wenn später `--json-schema` aktiviert wird, muss der Schema-Modus `structured_output` extrahieren und läuft weiterhin durch die bestehenden DSA-Validatoren: JSON-Validator, minimal parser contract, `_parse_response()`, integrity retry, placeholder fill und usage telemetry. Parameterreferenz: [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference); die in diesem PR smoke-verifizierte Version ist `claude 2.1.177 (Claude Code)`, es wird keine breitere Mindestversion deklariert.
+- Das aktuelle `opencode_cli`-Preset verwendet `opencode --pure run --format json [--model <OPENCODE_CLI_MODEL>] <static instruction> --file <temp prompt file>`; `--model` wird nur bei expliziter Konfiguration von `OPENCODE_CLI_MODEL` angehängt. Das vollständige DSA-Prompt wird in eine zugriffsgeschützte temporäre Datei geschrieben und gelangt nicht in argv. DSA parst nur den `text`-Inhalt ohne Tool-Events aus dem OpenCode-JSON-Event-Output und verlangt ein normales `step_finish`; Ereignisse wie `tool_use`, `error`, `question`, `permission` führen zu strukturierten Fehlern. Parameterreferenz: [OpenCode CLI reference](https://opencode.ai/docs/cli), Projektkonfigurations-Zusammenführungssemantik: [OpenCode config reference](https://opencode.ai/docs/config); die in diesem PR smoke-verifizierte Version ist `opencode 1.17.11`, es wird keine breitere Mindestversion deklariert.
+- Lokale CLI-Backends unterstützen kein Streaming. Bei angefordertem Stream wird automatisch auf non-stream heruntergestuft; dadurch wird kein `capability_unsupported` zurückgegeben.
+- Lokale CLI-Usage ist normalerweise nicht verfügbar; das System schreibt keine fake 0-Token, fake cost oder fake cache-Telemetrie.
+- Die lokale CLI-Ausführungsgrenzen sind hart begrenzt: `GENERATION_BACKEND_TIMEOUT_SECONDS` maximal `3600`, `GENERATION_BACKEND_MAX_OUTPUT_BYTES` maximal `33554432`, `GENERATION_BACKEND_MAX_CONCURRENCY` maximal `16`, `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` maximal `4`. Wenn die Summe aus diagnostischem stdout/stderr und finaler Antwort das Ausgabelimit überschreitet, wird ein strukturiertes `output_too_large` zurückgegeben; beim `--output-last-message`-Preset wird die in stdout mehrfach gedruckte finale Antwort nicht doppelt gezählt und nicht als `stdout_preview` freigegeben.
+- `stdout_preview` / `stderr_preview` der lokalen CLI werden vor dem Schreiben strukturierter Diagnostics von kurzen Credential-Zuweisungen desensibilisiert, unabhängig von der Wertlänge: Großbuchstaben-Umgebungsvariablen-Zuweisungen folgen der fail-closed-Sensitivnamen-Entscheidung des Child-Env; skalare Zuweisungen in JSON, YAML und normalen Logs verwenden eine engere Credential-Feld-Allowlist; URLs verwenden weiterhin unabhängige Regeln für userinfo / webhook / sensitive Parameter. Gewöhnliche Troubleshooting-Felder wie `token_budget`, `session_id`, `sort_key` werden nicht allein wegen der Teilstrings `token`, `session` oder `key` gelöscht; unquotierte sensitive YAML-Skalare haben jedoch keine zuverlässige Zeilengrenze, daher wird ab diesem Wert bis zum Zeilenende fail-closed desensibilisiert, und nachfolgende Felder in derselben Zeile werden ebenfalls nicht erhalten.
+- Die Standard-Nebenläufigkeit lokaler CLIs ist 1; die effektive Nebenläufigkeit ist `min(LOCAL_CLI_BACKEND_MAX_CONCURRENCY, GENERATION_BACKEND_MAX_CONCURRENCY)` und erbt nicht `MAX_WORKERS`.
+- `AGENT_GENERATION_BACKEND=auto` erbt die local-CLI-Werte von `GENERATION_BACKEND` nicht; Agent-Tool-Aufrufe verwenden weiterhin LiteLLM. Die Web-Einstellungsseite legt nur `auto|litellm` offen; das manuelle Schreiben von `AGENT_GENERATION_BACKEND=codex_cli|claude_code_cli|opencode_cli` implementiert keinen text-only Agent-Modus und gibt eine eindeutige unsupported-tool-calling-Diagnose zurück.
+- Die DSA-Tool-Oberfläche aus Phase 6a bleibt die einzige Toolschema-, Berechtigungsmetadaten-, Scope-Guard-, strukturierte Fehler- und Audit-/Desensibilisierungsgrenze; der Codex-AgentBackend aus Phase 6 kann Tools nur über diese Tool-Oberfläche ausführen. `codex_cli` / `claude_code_cli` / `opencode_cli` bleiben generation-only und können nicht als Agent-Tool-Fallback verwendet werden.
+- Die Schnellprüfung des Generation-Backends auf der Web-Einstellungsseite liest nur die gespeicherte `.env`, Laufzeit-Fallback-Werte und ungespeicherte Entwürfe; sie schreibt keine Konfiguration, lädt die Laufzeit nicht neu und initiiert keine echten Modellanfragen. `available` bedeutet nur, dass die aktuelle Konfiguration die Bedingungen für einen Versuch erfüllt. Der JSON-Smoke-Test ist eine separate explizite Operation, die einen echten Generation-Backend-Request mit einem serverseitig festen JSON-Prompt und -Schema initiiert, um Extractor, JSON-Kontrakt, Timeout, Ausgabelimits und usage-unavailable-Semantik zu verifizieren.
+- `GET /api/v1/system/config/generation-backends/status` liest nur die gespeicherte Konfiguration; ungespeicherte Entwürfe erfordern `POST /api/v1/system/config/generation-backends/status/preview` oder `POST /api/v1/system/config/generation-backends/smoke-test`. Maskierte Schlüsselfelder verwenden weiterhin die gespeicherten Werte. `health_status` und `last_error_code/message` repräsentieren nur das Ergebnis der aktuellen Berechnung, keinen historisch persistenten Health-Status.
 
-### Codex 本地 Agent（Phase 6 实验原型）
+### Codex Local Agent (Phase 6 Experimental Prototyp)
 
-`AGENT_BACKEND` 只决定现有问股 Chat 的运行方式，不影响普通报告、定时分析、大盘复盘、普通 Agent 分析 pipeline、LiteLLM Multi Agent 或 Deep Research：
+`AGENT_BACKEND` bestimmt nur die Ausführung der bestehenden Ask-Stock-Chats und beeinflusst weder normale Berichte, geplante Analysen, Marktrückblick, die normale Agent-Analyse-Pipeline, den LiteLLM-Multi-Agent noch Deep Research:
 
 ```env
-# auto（推荐）不会自动启用实验性的 Codex；auto 与 litellm 均保持原有默认模型路径。
+# auto (empfohlen) aktiviert das experimentelle Codex nicht automatisch; auto und litellm behalten den ursprünglichen Standardmodellpfad bei.
 AGENT_BACKEND=auto
-# 显式启用时：
+# Bei expliziter Aktivierung:
 # AGENT_BACKEND=codex_app_server
 # AGENT_ARCH=single
 ```
 
-Web 启用步骤：打开「设置 → Agent 设置 → 问股生成方式」，选择「Codex 本地 Agent（实验）」，确认架构为「单 Agent」，并将 Agent 整体时限设置为大于 0 后保存。设置页只检查当前配置、本机 Codex 命令和所需 App Server 协议是否允许尝试，不登录、不调用模型，也不读取股票数据。保存后可直接回到问股页提问；第一次问题就是第一次真实执行。要恢复原有行为，选择「自动（推荐）」并保存。
+Web-Aktivierungsschritte: Öffne „Einstellungen → Agent-Einstellungen → Ask-Stock-Generierungsmethode", wähle „Codex Local Agent (Experimentell)", bestätige die Architektur als „Einzelner Agent" und setze das Gesamtzeitlimit des Agents auf einen Wert größer als 0 und speichere. Die Einstellungsseite prüft nur, ob die aktuelle Konfiguration, der lokale Codex-Befehl und das benötigte App-Server-Protokoll einen Versuch zulassen; sie loggt sich nicht ein, ruft keine Modelle auf und liest keine Aktiendaten. Nach dem Speichern kannst du direkt zur Ask-Stock-Seite zurückkehren und eine Frage stellen; die erste Frage ist die erste reale Ausführung. Um das ursprüngliche Verhalten wiederherzustellen, wähle „Automatisch (empfohlen)" und speichere.
 
-- Codex 必须安装并登录在**运行 DSA 后端的设备**上；DSA 不读取或保存 Codex 凭据，App Server 进程使用 Codex 自身登录态。Docker、远程服务器和 Desktop 的 PATH / 登录态彼此独立。在 Desktop 中从 Finder/Dock 启动时，后端只继承 Desktop 构造的真实 PATH；若状态提示找不到 Codex，请将 Codex CLI 安装到后端 PATH 可见位置并完全重启 DSA，不要只在另一个终端窗口验证。
-- Phase 6 的 Codex App Server Agent 当前支持 macOS、Linux，以及 DSA 后端完整运行于 WSL 的环境；原生 Windows 后端会在状态检查和 transport 启动前明确拒绝。此限制不影响 Phase 2 `GENERATION_BACKEND=codex_cli` 已有的 Windows 生成能力。
-- Codex 当前只开放已保存分析上下文、全局回测汇总和策略回测汇总的只读查询。本期只验证并承诺这三个工具的独立进程、停止、超时和回收闭环；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具未纳入本期验证，因此不会出现在 Codex 的工具列表中。需要这些能力时，请在 Web 中选择「默认模型」。明确股票代码或 Web 已选择的唯一股票只会为已开放的历史分析上下文工具建立股票范围；遇到同名歧义时不会猜测。
-- 该能力不是离线模型。股票代码、问题、新闻、持仓上下文和脱敏后的工具结果可能由 Codex 自身配置的服务处理。
-- 当前只支持 single-agent Chat；不支持 Codex Multi Agent 或 Codex Deep Research。现有 LiteLLM Multi Agent 与 Deep Research 不受影响。
-- 每次 Chat 都创建新的 ephemeral App Server thread；DSA 继续保存原有可见会话历史，并在下一轮注入，但不会注入 LiteLLM provider trace。Web 客户端不会收到 chain-of-thought、原始 JSON-RPC、stderr 或完整工具参数/结果；Codex 只接收完成该轮分析所需的脱敏工具结果。
-- 用户停止问股时，页面会先显示“正在停止”。DSA 会中断 Codex turn，并结束、回收本轮独立运行的工具进程；只有确认 Codex 与工具进程均已退出后，原问股请求才返回最终“已停止”。超时和客户端断开也遵守同一清理边界，不会在后台仍有本轮任务时提前宣告结束。该契约仅作用于 Codex，不改变默认 LiteLLM Agent 的执行方式。
-- Codex 必须使用大于 0 的 `AGENT_ORCHESTRATOR_TIMEOUT_S`，以保证成功、失败、超时或停止都在明确时间内结束；`0` 关闭时限的旧语义只保留给默认 LiteLLM 路径，选择 Codex 时会在保存与运行前明确拒绝，不会静默替换成 600 秒。
-- 快速状态只检查配置、可执行文件、版本和生产路径实际依赖的 App Server schema 能力，不发模型请求，也不证明 Codex 已登录、模型可用或真实工具闭环。状态只表达“可以尝试”；真实命令、协议、登录、模型和工具错误在用户发送问题时按原始类别返回。Chat 每次加载检查一次，失败后由用户手动重新检查，不自动重试。
-- 正式 Chat 由服务端选择实际 backend。服务端完成上下文准备并保存用户问题后，SSE 才发出唯一 `accepted` 事件，然后开始模型执行。Web 在 `accepted` 前保留输入、股票范围、追问上下文和技能选择；因此环境或保存失败不会产生页面中的幽灵消息。`accepted` 返回的实际 backend 决定停止方式。
-- 每次问股共享一份整轮资源预算：App Server 的累计输出和事件数有界，工具调用总数服从现有 `AGENT_MAX_STEPS`，完成后立即清理本轮状态。工具进程按原始 UTF-8 结果字节计量，不会因 JSON 转义把合法结果误报为 handler 崩溃；超限统一返回明确错误并回收本轮进程，不重试或切换后端。
-- 当前依据 [Codex App Server v2 文档](https://developers.openai.com/codex/app-server/) 使用 JSONL stdio、ephemeral `thread/start`、`turn/start` / `turn/interrupt` 与 experimental dynamic tools。2026-07-15 的本地验收版本为 `codex-cli 0.144.3`；本项目不据此猜测通用最低版本。设置页兼容性检查只决定是否允许尝试，最终可用性以用户问题的真实执行结果为准。
+- Codex muss auf dem Gerät installiert und eingeloggt sein, **auf dem das DSA-Backend läuft**; DSA liest oder speichert keine Codex-Anmeldedaten, der App-Server-Prozess verwendet den eigenen Login-Status von Codex. Docker, Remote-Server und Desktop haben voneinander unabhängige PATHs / Login-Status. Wenn der Desktop aus Finder/Dock gestartet wird, erbt das Backend nur den von der Desktop-App konstruierten echten PATH; wenn der Statusbericht Codex nicht findet, installiere die Codex-CLI an einer im Backend-PATH sichtbaren Position und starte DSA vollständig neu; verifiziere nicht nur in einem anderen Terminalfenster.
+- Der Codex-App-Server-Agent aus Phase 6 unterstützt derzeit macOS, Linux und Umgebungen, in denen das DSA-Backend vollständig in WSL läuft; ein natives Windows-Backend wird vor der Statusprüfung und dem Transportstart klar abgelehnt. Diese Einschränkung betrifft nicht die bestehende Windows-Generierungsfähigkeit von `GENERATION_BACKEND=codex_cli` aus Phase 2.
+- Codex bietet derzeit nur schreibgeschützte Abfragen für den gespeicherten Analysekontext, die globale Backtest-Zusammenfassung und die Strategie-Backtest-Zusammenfassung. Diese Phase verifiziert und verspricht nur die unabhängigen Prozess-, Stop-, Timeout- und Reclaim-Schleifen dieser drei Tools; Echtzeitkurse, Nachrichten, Markt-Hotspots, Neuberechnung technischer Indikatoren, Detail-Backtests einzelner Aktien und Positionstools sind in dieser Phase nicht enthalten und erscheinen daher nicht in der Tool-Liste von Codex. Wenn du diese Fähigkeiten benötigst, wähle in der Web-Oberfläche „Standardmodell". Ein expliziter Aktiencode oder die in der Web-Oberfläche ausgewählte einzige Aktie legt nur für die freigegebenen historischen Analysekontext-Tools einen Aktienbereich fest; bei Namensmehrdeutigkeiten wird nicht geraten.
+- Diese Fähigkeit ist kein Offline-Modell. Aktiencodes, Fragen, Nachrichten, Positionskontext und desensibilisierte Tool-Ergebnisse können von den von Codex selbst konfigurierten Diensten verarbeitet werden.
+- Derzeit wird nur Single-Agent-Chat unterstützt; Codex Multi Agent und Codex Deep Research werden nicht unterstützt. Die bestehenden LiteLLM-Multi-Agent- und Deep-Research-Funktionen sind davon nicht betroffen.
+- Jeder Chat erstellt einen neuen ephemeren App-Server-Thread; DSA speichert weiterhin den ursprünglichen sichtbaren Sitzungsverlauf und injiziert ihn in der nächsten Runde, injiziert jedoch keinen LiteLLM-Provider-Trace. Der Web-Client erhält keine Chain-of-Thought, rohes JSON-RPC, stderr oder vollständige Tool-Parameter/Ergebnisse; Codex empfängt nur die desensibilisierten Tool-Ergebnisse, die für die Vervollständigung der aktuellen Analyse erforderlich sind.
+- Wenn der Benutzer die Ask-Stock-Funktion stoppt, zeigt die Seite zuerst „Wird gestoppt". DSA unterbricht die Codex-Runde und beendet und recycelt die in dieser Runde unabhängig laufenden Tool-Prozesse; erst nach Bestätigung, dass sowohl Codex als auch die Tool-Prozesse beendet wurden, gibt die ursprüngliche Ask-Stock-Anfrage das finale „Gestoppt" zurück. Timeout und Client-Verbindungsabbruch folgen derselben Bereinigungsgrenze und kündigen keine vorzeitige Beendigung an, solange noch Aufgaben dieser Runde im Hintergrund laufen. Dieser Vertrag gilt nur für Codex und ändert nicht die Ausführungsweise des Standard-LiteLLM-Agents.
+- Codex muss ein `AGENT_ORCHESTRATOR_TIMEOUT_S` größer als 0 verwenden, um sicherzustellen, dass Erfolg, Fehler, Timeout oder Stop innerhalb einer klaren Zeitspanne enden; die alte Semantik von `0` (Zeitlimit deaktivieren) bleibt nur dem Standard-LiteLLM-Pfad vorbehalten. Bei der Auswahl von Codex wird vor dem Speichern und Ausführen klar abgelehnt, nicht stillschweigend durch 600 Sekunden ersetzt.
+- Die Schnellstatusprüfung prüft nur Konfiguration, executable, Version und die App-Server-Schemafähigkeiten, von denen der Produktionspfad tatsächlich abhängt; sie sendet keine Modell-Anfragen und beweist auch nicht, dass Codex eingeloggt ist, das Modell verfügbar ist oder der echte Tool-Kreislauf funktioniert. Der Status drückt nur „kann es versuchen" aus; echte Befehls-, Protokoll-, Login-, Modell- und Tool-Fehler werden beim Senden einer Frage durch den Benutzer in der ursprünglichen Kategorie zurückgegeben. Der Chat wird bei jedem Laden einmal geprüft; nach einem Fehler muss der Benutzer manuell erneut prüfen, kein automatischer Retry.
+- Der formelle Chat wählt das tatsächliche Backend serverseitig. Erst nachdem der Server die Kontextvorbereitung abgeschlossen und die Benutzerfrage gespeichert hat, sendet SSE das einzige `accepted`-Ereignis und startet dann die Modellausführung. Die Web-Oberfläche behält vor `accepted` Eingabe, Aktienbereich, Nachfragekontext und Fähigkeitsauswahl bei; daher erzeugen Umgebungs- oder Speicherfehler keine Geister-Nachrichten auf der Seite. Das in `accepted` zurückgegebene tatsächliche Backend bestimmt die Art des Stopps.
+- Jede Ask-Stock-Runde teilt ein Gesamtressourcenbudget der gesamten Runde: Die kumulierte Ausgabe und Ereignisanzahl des App-Servers ist begrenzt, die Gesamtzahl der Tool-Aufrufe folgt dem bestehenden `AGENT_MAX_STEPS`, und der Zustand dieser Runde wird nach Abschluss sofort aufgeräumt. Tool-Prozesse werden nach den ursprünglichen UTF-8-Ergebnis-Bytes gemessen und melden gültige Ergebnisse nicht wegen JSON-Escaping fälschlich als Handler-Absturz; bei Überschreitung wird ein eindeutiger Fehler zurückgegeben und die Prozesse dieser Runde werden recycelt, ohne Retry oder Backend-Wechsel.
+- Aktuell wird gemäß der [Codex App Server v2 Dokumentation](https://developers.openai.com/codex/app-server/) JSONL stdio, ephemeres `thread/start`, `turn/start` / `turn/interrupt` und experimentelle dynamische Tools verwendet. Die lokale Akzeptanzversion vom 2026-07-15 ist `codex-cli 0.144.3`; dieses Projekt rät daraus nicht auf eine allgemeine Mindestversion. Die Kompatibilitätsprüfung der Einstellungsseite entscheidet nur, ob ein Versuch erlaubt ist; die endgültige Verfügbarkeit richtet sich nach dem realen Ausführungsergebnis der Benutzerfrage.
 
-### Local CLI 本地 backend 隐私与边界
+### Datenschutz und Grenzen des lokalen CLI-Backends
 
-- 本地 CLI Backend 不等于离线模型；Codex / Claude Code / OpenCode 背后的服务可能处理股票代码、新闻、持仓上下文、分析 prompt、报告草稿等内容。
-- Docker、云服务器、CI 不天然拥有你本机的 CLI 登录态。
-- GitHub Actions 只负责透传配置值，不安装或登录本地 CLI；如果在 Actions 中 opt-in local CLI backend，runner 上缺少可执行文件或登录态时应看到结构化失败。
-- DSA 不读取 Codex/Claude/OpenCode credential 文件，但子进程可能读取 CLI 自身登录态。
-- macOS 从 Finder/Dock 启动桌面端时不继承 shell PATH；打包桌面端会在启动后端时补入常见 Homebrew 路径（如 `/opt/homebrew/bin`、`/usr/local/bin`）。如果设置检查仍提示找不到 CLI 可执行文件，请完全退出并重开 DSA；打开 CLI 交互窗口不会改变已运行后端的 PATH。
-- DSA 默认只继承最小运行环境，并拒绝通配继承 `CLAUDE_*`、`ANTHROPIC_*`、`OPENCODE_*`、`OPENAI_*`、`GOOGLE_*`、`GEMINI_*`、`AWS_*`、`AZURE_*`、`VERTEX_*`、`*_API_KEY`、`*_AUTH_TOKEN`、`*_ACCESS_TOKEN`、`*_SECRET`、`*_PASSWORD`，降低 DSA API keys、provider tokens 和 webhook tokens 泄漏风险。`CODEX_HOME` 是为兼容既有 Codex CLI 登录目录保留的精确例外；不会恢复 `CODEX_CLI_*` 通配。
-- `opencode_cli` 会在临时 cwd 写入最小项目 `opencode.json` 以关闭分享、自动更新、快照和常见工具权限，但 OpenCode resolved config 仍可能包含用户本机全局配置；运行时安全边界同时依赖 `--pure`、env denylist、prompt file 权限和 event extractor fail-closed。
-- Web 设置页只暴露安全 preset，不允许提交任意 command / argv / shell string。
-- `codex_cli` / `claude_code_cli` / `opencode_cli` 仍标记为 experimental/limited；如果你的 CLI 版本不支持本仓库已验证的非交互输出契约，DSA 会返回结构化 `capability_unsupported`、`cli_contract_unsupported`、`invalid_json`、`schema_validation_failed` 或对应 backend error，并在配置 backend fallback 时回退到 `litellm`。无法接受该版本漂移风险时，请保持 `GENERATION_BACKEND=litellm`。
-- `opencode_cli` 不支持 OpenCode serve / web / ACP / MCP / attach / `--dangerously-skip-permissions`；DSA 不把 OpenCode final text 当成 Agent tool success。
+- Das lokale CLI-Backend ist kein Offline-Modell; die Dienste hinter Codex / Claude Code / OpenCode können Aktiencodes, Nachrichten, Positionskontext, Analyse-Prompts, Berichtsentwürfe usw. verarbeiten.
+- Docker, Cloud-Server und CI besitzen nicht automatisch deinen lokalen CLI-Login-Status.
+- GitHub Actions gibt nur Konfigurationswerte weiter und installiert oder loggt keine lokalen CLIs ein; wenn du das lokale CLI-Backend in Actions opt-in aktivierst und auf dem Runner die executable oder der Login-Status fehlt, solltest du einen strukturierten Fehler sehen.
+- DSA liest keine Codex/Claude/OpenCode-Credential-Dateien, aber Subprozesse können den eigenen Login-Status der CLI lesen.
+- Beim Start des Desktops über Finder/Dock auf macOS wird der shell PATH nicht geerbt; das gepackte Desktop-Paket ergänzt beim Starten des Backends gängige Homebrew-Pfade (z. B. `/opt/homebrew/bin`, `/usr/local/bin`). Wenn die Einstellungsprüfung weiterhin die CLI-executable nicht findet, beende und öffne DSA vollständig neu; das Öffnen des CLI-Interaktionsfensters ändert den PATH des bereits laufenden Backends nicht.
+- DSA erbt standardmäßig nur eine minimale Laufzeitumgebung und lehnt die Wildcard-Vererbung von `CLAUDE_*`, `ANTHROPIC_*`, `OPENCODE_*`, `OPENAI_*`, `GOOGLE_*`, `GEMINI_*`, `AWS_*`, `AZURE_*`, `VERTEX_*`, `*_API_KEY`, `*_AUTH_TOKEN`, `*_ACCESS_TOKEN`, `*_SECRET`, `*_PASSWORD` ab, um das Risiko von Lecks bei DSA-API-Keys, Provider-Tokens und Webhook-Tokens zu verringern. `CODEX_HOME` ist eine präzise Ausnahme zur Kompatibilität mit dem bestehenden Codex-CLI-Login-Verzeichnis; die `CODEX_CLI_*`-Wildcard wird nicht wiederhergestellt.
+- `opencode_cli` schreibt eine minimale Projekt-`opencode.json` in ein temporäres cwd, um Teilen, automatische Updates, Snapshots und häufige Tool-Berechtigungen zu deaktivieren; die aufgelöste OpenCode-Konfiguration kann jedoch weiterhin die lokale globale Konfiguration des Benutzers enthalten. Die Laufzeitsicherheitsgrenze hängt gleichzeitig von `--pure`, der env-Denylist, den Prompt-Datei-Berechtigungen und dem fail-closed Event-Extractor ab.
+- Die Web-Einstellungsseite legt nur sichere Presets offen und erlaubt keine beliebigen command / argv / shell-Strings.
+- `codex_cli` / `claude_code_cli` / `opencode_cli` bleiben als experimental/limited markiert; wenn deine CLI-Version den im Repository verifizierten nicht-interaktiven Ausgabevertrag nicht unterstützt, gibt DSA strukturierte `capability_unsupported`, `cli_contract_unsupported`, `invalid_json`, `schema_validation_failed` oder entsprechende Backend-Fehler zurück und fällt bei konfiguriertem Backend-Fallback auf `litellm` zurück. Wenn du das Risiko von Versionsdrift nicht akzeptieren kannst, behalte `GENERATION_BACKEND=litellm` bei.
+- `opencode_cli` unterstützt kein OpenCode serve / web / ACP / MCP / attach / `--dangerously-skip-permissions`; DSA behandelt OpenCode-Final-Text nicht als Agent-Tool-Erfolg.
 
-## 方式一：极简单模型配置（适合新手）
+## Methode 1: Extrem einfache Modellkonfiguration (für Neulinge)
 
-**目标：** 只要记得填入 API Key 和对应的模型名就能立刻用。不需要折腾复杂概念。
+**Ziel:** Du musst nur den API-Key und den passenden Modellnamen eintragen, um sofort loszulegen. Keine komplizierten Konzepte nötig.
 
-如果你只打算用一种模型，这是最快捷的办法。打开项目根目录下的 `.env` 文件（如果没有，复制一份 `.env.example` 并重命名为 `.env`）。
+Wenn du nur ein Modell verwenden willst, ist dies der schnellste Weg. Öffne die `.env`-Datei im Projektstammverzeichnis (falls keine vorhanden, kopiere `.env.example` und benenne sie in `.env` um).
 
-### Anspire Open 示例：
+### Anspire-Open-Beispiel:
 
-> 💡 **推荐 [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC)**：支持中文优化的联网搜索与 OpenAI-compatible 路径一体化体验，适合只准备一个 Key 的用户。
-> - 以下为配置示例，模型与网关可用性以账号权限和 Anspire 控制台为准；文档示例不替代实际连通性验证。
-> - 建议在 Web 设置页点击“测试连接”进行实际鉴权与模型可用性检查，避免以文档默认值直接当作可用性承诺。
+> 💡 **Empfohlen: [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC)**: Bietet eine integrierte Erfahrung aus chinesisch-optimierter Online-Suche und OpenAI-kompatiblem Pfad — ideal für Nutzer, die nur einen Key vorbereiten möchten.
+> - Die folgenden Konfigurationsbeispiele dienen der Veranschaulichung; Modell- und Gateway-Verfügbarkeit richten sich nach der Kontoberechtigung und der Anspire-Konsole; Dokumentationsbeispiele ersetzen keine tatsächliche Konnektivitätsverifikation.
+> - Empfohlen wird, auf der Web-Einstellungsseite auf „Verbindung testen" zu klicken, um echte Authentifizierung und Modellverfügbarkeit zu prüfen, statt Dokumentstandardwerte als Verfügbarkeitszusagen zu betrachten.
 
 ```env
-# Anspire Open API Keys（支持多个，逗号分隔）
-# 获取: https://open.anspire.cn/?share_code=QFBC0FYC
-# 满足默认优先级条件时，系统会复用该 Key 处理搜索与 LLM（仅限示例兜底路径）。
-# 示例模型：Doubao-Seed-2.0-lite；示例网关：https://open-gateway.anspire.cn/v6
+# Anspire Open API Keys (mehrere unterstützt, kommagetrennt)
+# Erhalt: https://open.anspire.cn/?share_code=QFBC0FYC
+# Wenn die Standard-Prioritätsbedingung erfüllt ist, nutzt das System diesen Key für Suche und LLM (nur Beispiel-Fallback-Pfad).
+# Beispielmodell: Doubao-Seed-2.0-lite; Beispiel-Gateway: https://open-gateway.anspire.cn/v6
 ANSPIRE_API_KEYS=sk-xxxxxxxxxxxxxxxx
-# 可选：按控制台可用性切换模型或网关
+# Optional: Modell oder Gateway je nach Konsolenverfügbarkeit wechseln
 # ANSPIRE_LLM_MODEL=Doubao-Seed-2.0-pro
 # ANSPIRE_LLM_BASE_URL=https://open-gateway.anspire.ai/v6
 ```
 
-### 示例 1：使用通用第三方平台（兼容 OpenAI 格式，推荐）
+### Beispiel 1: Verwendung einer allgemeinen Drittanbieter-Plattform (OpenAI-kompatibel, empfohlen)
 
-现在市面上绝大多数第三方聚合平台（例如硅基流动、AIHubmix、阿里百炼、智谱等）都兼容 OpenAI 的接口格式。只要平台提供了 API Key 和 Base URL，你都可以按照以下格式无脑配置：
+Die überwiegende Mehrheit der Drittanbieter-Aggregationsplattformen (z. B. SiliconFlow, AIHubmix, Alibaba Bailian, Zhipu usw.) ist mit dem OpenAI-Interface-Format kompatibel. Solange die Plattform einen API-Key und eine Base-URL bereitstellt, kannst du sie nach folgendem Format problemlos konfigurieren:
 
 ```env
-# 填入平台提供给你的 API Key
+# Den von der Plattform bereitgestellten API-Key eintragen
 OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-# 填入平台的接口地址 (非常重要：结尾通常必须带有 /v1)
+# Die Interface-Adresse der Plattform eintragen (sehr wichtig: endet in der Regel mit /v1)
 OPENAI_BASE_URL=https://api.siliconflow.cn/v1
-# 填入该平台上具体的模型名称（非常重要：注意前面必须加上 openai/ 前缀帮系统识别）
+# Den konkreten Modellnamen auf der Plattform eintragen (sehr wichtig: das Präfix openai/ für die Systemerkennung nicht vergessen)
 LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3 
 ```
 
-### 示例 2：使用 DeepSeek 官方接口
+### Beispiel 2: Verwendung des offiziellen DeepSeek-Interfaces
 ```env
-# 填入你在 DeepSeek 官方平台申请的 API Key
+# Den bei der offiziellen DeepSeek-Plattform beantragten API-Key eintragen
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*兼容提示：仅填这一行时，系统仍会默认使用 `deepseek/deepseek-chat` 并在日志提示迁移。*
-`deepseek-chat` / `deepseek-reasoner` 仍可用于兼容旧配置，但 DeepSeek 官方已标记为 2026/07/24 后废弃；新配置建议通过 Web 快速渠道或显式 `LITELLM_MODEL=deepseek/deepseek-v4-flash` 迁移到 `deepseek-v4-flash` / `deepseek-v4-pro`。
+*Kompatibilitätshinweis: Wenn nur diese Zeile eingetragen wird, verwendet das System weiterhin standardmäßig `deepseek/deepseek-chat` und weist im Log auf die Migration hin.*
+`deepseek-chat` / `deepseek-reasoner` bleiben für die Kompatibilität mit alten Konfigurationen nutzbar, aber DeepSeek hat sie offiziell als nach 2026/07/24 veraltet markiert; für neue Konfigurationen wird empfohlen, über den Web-Schnellkanal oder explizit `LITELLM_MODEL=deepseek/deepseek-v4-flash` auf `deepseek-v4-flash` / `deepseek-v4-pro` zu migrieren.
 
-### 示例 3：使用 Gemini 免费 API
+### Beispiel 3: Verwendung der kostenlosen Gemini-API
 ```env
-# 填入你获取的 Google Gemini Key
+# Den erhaltenen Google-Gemini-Key eintragen
 GEMINI_API_KEY=AIzac...
 ```
 
-### 示例 4：使用 Ollama 本地模型
+### Beispiel 4: Verwendung des lokalen Ollama-Modells
 ```env
-# Ollama 无需 API Key，本地运行 ollama serve 后即可使用
+# Ollama benötigt keinen API-Key; nach lokalem `ollama serve` sofort nutzbar
 OLLAMA_API_BASE=http://localhost:11434
 LITELLM_MODEL=ollama/qwen3:8b
 ```
 
-> **重要**：Ollama 必须使用 `OLLAMA_API_BASE` 配置，**不要**使用 `OPENAI_BASE_URL`，否则系统会错误拼接 URL（如 404、`api/generate/api/show`）。远程 Ollama 时，将 `OLLAMA_API_BASE` 设为实际地址（如 `http://192.168.1.100:11434`）。当前依赖约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（与 requirements.txt 一致）。
+> **Wichtig**: Ollama muss über `OLLAMA_API_BASE` konfiguriert werden, **nicht** über `OPENAI_BASE_URL`; sonst fügt das System die URL falsch zusammen (z. B. 404, `api/generate/api/show`). Bei Remote-Ollama setze `OLLAMA_API_BASE` auf die tatsächliche Adresse (z. B. `http://192.168.1.100:11434`). Die aktuellen Abhängigkeitseinschränkungen sind `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` (konsistent mit requirements.txt).
 
-> **恭喜！小白读到这里就可以去运行程序了！**
-> 想测测看通没通？在主目录打开命令行输入：`python scripts/check_env.py --llm`
+> **Glückwunsch! Neulinge können ab hier das Programm ausführen!**
+> Du willst testen, ob es funktioniert? Gib im Hauptverzeichnis in der Befehlszeile ein: `python scripts/check_env.py --llm`
 
 ---
 
-## 方式二：渠道(Channels)模式配置（适合进阶/多模型）
+## Methode 2: Kanal(Channels)-Modus-Konfiguration (für Fortgeschrittene/mehrere Modelle)
 
-**目标：** 我有多个不同平台的 Key 想要混着用，如果主模型卡了/网络挂了，我希望它能自动切换到备用模型。
+**Ziel:** Ich habe Keys von mehreren verschiedenen Plattformen und möchte sie gemischt verwenden. Wenn das Hauptmodell hängt oder das Netzwerk ausfällt, soll automatisch auf ein Backup-Modell umgeschaltet werden.
 
-**网页端可以直接配：** 你可以启动程序后，在 **Web UI 的“系统设置 -> AI 模型 -> AI 模型接入”** 中非常直观地进行可视化配置！
+**Die Webseite kann direkt konfigurieren:** Nach dem Start kannst du in **Web UI → „Systemeinstellungen -> AI-Modell -> AI-Modell-Anbindung"** sehr anschaulich visuell konfigurieren!
 
-> **新版编辑体验补充**：对于 DeepSeek、阿里百炼（DashScope）以及其他兼容 OpenAI `/v1/models` 的渠道，设置页现在支持直接点击“获取模型”，从 `{base_url}/models` 拉取可用模型并多选；底层仍会保存为原来的 `LLM_{CHANNEL}_MODELS=model1,model2` 逗号格式。若渠道不支持该接口、鉴权失败或暂时不可达，仍可继续手动填写模型列表，不影响保存。
+> **Ergänzung zur neuen Editor-Umgebung**: Für DeepSeek, Alibaba Bailian (DashScope) sowie andere OpenAI-kompatible `/v1/models`-Kanäle unterstützt die Einstellungsseite jetzt direkt „Modelle abrufen", lädt die verfügbaren Modelle von `{base_url}/models` und lässt Mehrfachauswahl zu; im Hintergrund wird weiterhin das ursprüngliche Kommaformat `LLM_{CHANNEL}_MODELS=model1,model2` gespeichert. Wenn der Kanal dieses Interface nicht unterstützt, die Authentifizierung fehlschlägt oder derzeit nicht erreichbar ist, kann die Modellliste weiterhin manuell ausgefüllt werden, ohne das Speichern zu beeinträchtigen.
 
-### 首次启动配置状态
+### Status der Erstkonfiguration
 
-后端提供只读状态接口 `GET /api/v1/system/config/setup/status`，用于判断首次启动闭环中最基础的几类配置是否已经就绪：LLM 主渠道、Agent 渠道、自选股、通知渠道和本地存储。这个接口只读取已保存的 `.env` 与当前进程环境变量，不会重载运行时配置、写入 `.env`、测试真实模型或创建数据库文件；前端向导和后续 smoke run 可以基于该接口逐步接入。
+Das Backend bietet einen schreibgeschützten Status-Endpunkt `GET /api/v1/system/config/setup/status`, um zu prüfen, ob die grundlegendsten Konfigurationstypen im Erststart-Kreislauf bereits bereit sind: LLM-Hauptkanal, Agent-Kanal, Watchlist, Benachrichtigungskanäle und lokaler Speicher. Dieser Endpunkt liest nur die gespeicherte `.env` und die Umgebungsvariablen des aktuellen Prozesses; er lädt die Laufzeitkonfiguration nicht neu, schreibt nicht in `.env`, testet keine echten Modelle und erstellt keine Datenbankdateien; der Frontend-Assistent und spätere Smoke-Runs können schrittweise auf diesem Endpunkt aufbauen.
 
-### Web 渠道编辑器的兼容性 / 迁移 / 回退规则
+### Kompatibilitäts- / Migrations- / Rollback-Regeln des Web-Kanal-Editors
 
-- 预设里的 provider / Base URL / 示例模型只用于**初始化表单**；真正落盘时仍是你当前输入的 `LLM_{CHANNEL}_PROTOCOL`、`LLM_{CHANNEL}_BASE_URL`、`LLM_{CHANNEL}_MODELS`、`LLM_{CHANNEL}_API_KEY(S)`，不会在后台偷偷改成别的 provider 名或 URL。
-- 设置页的“获取模型”只对 `OpenAI Compatible` / `DeepSeek` 渠道调用 `{base_url}/models`；“测试连接”默认只对模型列表首项发起一次最小聊天请求，并在结果中展示后端规范化后的 `resolved_model`。若返回 `details.reason=model_access_denied`（例如 Issue #1208 中已观测到的 SiliconFlow / OpenAI Compatible 经 LiteLLM 返回 `Model disabled`），请把它视为基于 provider 文案的 best-effort 模型可用性诊断，优先确认该模型是否已在当前账号/key 下开通，必要时调整模型顺序或移除不可用模型后重试；未覆盖或语义不同的 provider 文案会继续走兜底诊断。可选的“运行时能力检测”必须由用户显式选择后触发，会额外发起 JSON / tools / stream / vision smoke 请求，结果仅代表当前账号、模型和 endpoint 的一次 best-effort 检测。上述检测返回的 `stage / error_code / details / latency_ms / capability_results` 仅用于结构化诊断提示，**不会写回** `.env`，也不会阻止保存。
-- 若返回 `details.reason=provider_blocked`，表示服务商或中转网关明确拦截了本次请求；它区别于本地网络 / TLS 异常和 `model_access_denied`，应优先检查账号风控、地域或请求来源限制、模型权限、代理商网关策略和内容安全策略。
-- 运行时能力检测会产生真实 LLM 请求，可能带来 token / 图像输入费用、RPM/TPM 限流、余额不足或超时。检测失败可能来自账号权限、模型未开通、endpoint 区域、余额、服务商兼容层或 LiteLLM 转换路径，不等于该 provider 全局不支持对应能力。P3 未对所有真实 provider 做在线 smoke；兼容依据来自当前依赖约束 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` 下的 LiteLLM `completion()` / OpenAI I/O format / streaming / exception mapping，以及 OpenAI Chat Completions 的 JSON mode、tool calling、streaming 和 vision input 形状。
-- 相关外部来源：LiteLLM Python SDK / OpenAI I/O format / streaming / exception mapping：<https://docs.litellm.ai/>；LiteLLM OpenAI-compatible 路由：<https://docs.litellm.ai/docs/providers/openai_compatible>；OpenAI Chat Completions：<https://platform.openai.com/docs/api-reference/chat/create>；JSON mode：<https://platform.openai.com/docs/guides/structured-outputs?api-mode=chat>；tool calling：<https://platform.openai.com/docs/guides/function-calling?api-mode=chat>；streaming：<https://platform.openai.com/docs/guides/streaming-responses?api-mode=chat>；vision input：<https://platform.openai.com/docs/guides/images-vision?api-mode=chat>。
-- 保存渠道时，只会更新这次提交的 key；不会因为切换渠道模式而静默迁移整个旧配置。唯一会被**同步清理**的是运行时模型引用：如果 `LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`VISION_MODEL` 或 `LITELLM_FALLBACK_MODELS` 指向了当前已启用渠道里已经不存在的模型，设置页会在保存前把这些失效引用清空/移除，避免运行时继续指向无效模型；即使当前启用渠道没有任何可选模型，也会清理缺少 legacy Key 支撑的托管 provider 旧值。`cohere/*`、`google/*`、`xai/*` 这类直连模型仅用于说明历史 `direct-env` 兼容保留语义，不等于可用性承诺，是否可用请按各厂商官方模型/API 文档再做实际验证。
-- 后端一致性依据：配置校验链路在 `SystemConfigService._validate_llm_runtime_selection`（`src/services/system_config_service.py`）中通过 `_uses_direct_env_provider`（`src/config.py`）判断运行时来源；当前仅 `gemini`、`vertex_ai`、`anthropic`、`openai`、`deepseek` 属于托管 key provider，`cohere`、`google`、`xai` 不在该白名单中，因此会保留为直连模型。
-- 回退方式也保持最小：把对应渠道模型列表改回去后重新选择主模型 / fallback，或直接用桌面端导出备份 / 手动 `.env` 还原之前的 `LLM_*`、`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`VISION_MODEL`、`LLM_TEMPERATURE`、`LLM_USAGE_HMAC_*` 即可，不需要额外跑迁移脚本。Web 端如需恢复配置，也可在启用管理员鉴权（`ADMIN_AUTH_ENABLED=true`）后通过 `POST /api/v1/system/config/import` 回滚。
-- 当前仓库对此链路的依赖约束是 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（见 `requirements.txt`）；回归覆盖包括 `tests/test_system_config_service.py`、`tests/test_system_config_api.py` 和 `apps/dsa-web/src/components/settings/__tests__/LLMChannelEditor.test.tsx`。
+- Die provider / Base-URL / Beispielmodelle in den Presets dienen nur der **Formularinitialisierung**; beim tatsächlichen Speichern werden die aktuell eingegebenen `LLM_{CHANNEL}_PROTOCOL`, `LLM_{CHANNEL}_BASE_URL`, `LLM_{CHANNEL}_MODELS`, `LLM_{CHANNEL}_API_KEY(S)` geschrieben, ohne im Hintergrund heimlich auf andere Providernamen oder URLs zu ändern.
+- „Modelle abrufen" auf der Einstellungsseite ruft `{base_url}/models` nur für `OpenAI Compatible` / `DeepSeek`-Kanäle auf; „Verbindung testen" initiiert standardmäßig eine minimale Chat-Anfrage nur für das erste Element der Modellliste und zeigt das backend-normalisierte `resolved_model` im Ergebnis an. Wenn `details.reason=model_access_denied` zurückgegeben wird (z. B. das in Issue #1208 beobachtete SiliconFlow / OpenAI Compatible, das über LiteLLM `Model disabled` zurückgibt), behandle es als best-effort-Modellverfügbarkeits-Diagnose auf Basis des Providertexts; prüfe zuerst, ob das Modell unter dem aktuellen Konto/Key freigeschaltet ist, passe ggf. die Modellreihenfolge an oder entferne nicht verfügbare Modelle und versuche erneut; nicht abgedeckte oder semantisch abweichende Providertexte laufen weiter in die Fallback-Diagnose. Die optionale „Laufzeit-Fähigkeitsprüfung" wird nur nach expliziter Auswahl durch den Benutzer ausgelöst und initiiert zusätzliche JSON-/Tools-/Stream-/Vision-Smoke-Anfragen; die Ergebnisse repräsentieren nur eine best-effort-Prüfung für das aktuelle Konto, Modell und den Endpunkt. Die von der obigen Prüfung zurückgegebenen `stage / error_code / details / latency_ms / capability_results` dienen nur strukturierten Diagnosehinweisen, werden **nicht** in `.env` zurückgeschrieben und verhindern auch kein Speichern.
+- Wenn `details.reason=provider_blocked` zurückgegeben wird, hat der Anbieter oder das Transit-Gateway diese Anfrage eindeutig blockiert; dies unterscheidet sich von lokalen Netzwerk-/TLS-Anomalien und `model_access_denied`; prüfe zuerst Kontorrisiko-Kontrolle, Region oder Anfragequellenbeschränkungen, Modellberechtigungen, Agent-Gateway-Richtlinien und Content-Security-Richtlinien.
+- Die Laufzeit-Fähigkeitsprüfung erzeugt echte LLM-Anfragen und kann Kosten für Token/Bildinput, RPM/TPM-Limits, unzureichendes Guthaben oder Timeouts verursachen. Ein fehlgeschlagener Test kann aus Kontoberechtigung, nicht freigeschaltetem Modell, Endpunktregion, Guthaben, Kompatibilitätsschicht des Anbieters oder der LiteLLM-Konvertierungspfad stammen und bedeutet nicht, dass der Provider die entsprechende Fähigkeit global nicht unterstützt. P3 hat nicht alle realen Provider online smoke-getestet; die Kompatibilitätsgrundlage stammt aus der LiteLLM-`completion()` / OpenAI-I/O-Format / Streaming / Exception-Mapping unter den aktuellen Abhängigkeitseinschränkungen `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` sowie den JSON-Mode-, Tool-Calling-, Streaming- und Vision-Input-Formen der OpenAI Chat Completions.
+- Zugehörige externe Quellen: LiteLLM Python SDK / OpenAI-I/O-Format / Streaming / Exception-Mapping: <https://docs.litellm.ai/>; LiteLLM OpenAI-kompatibles Routing: <https://docs.litellm.ai/docs/providers/openai_compatible>; OpenAI Chat Completions: <https://platform.openai.com/docs/api-reference/chat/create>; JSON mode: <https://platform.openai.com/docs/guides/structured-outputs?api-mode=chat>; tool calling: <https://platform.openai.com/docs/guides/function-calling?api-mode=chat>; streaming: <https://platform.openai.com/docs/guides/streaming-responses?api-mode=chat>; vision input: <https://platform.openai.com/docs/guides/images-vision?api-mode=chat>.
+- Beim Speichern eines Kanals wird nur der in dieser Übermittlung abgegebene Key aktualisiert; die gesamte alte Konfiguration wird durch einen Kanalmodus-Wechsel nicht stillschweigend migriert. Einzig synchron **bereinigt** werden Laufzeitmodell-Referenzen: Wenn `LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `VISION_MODEL` oder `LITELLM_FALLBACK_MODELS` auf Modelle zeigen, die in den aktuell aktivierten Kanälen nicht mehr existieren, werden diese ungültigen Referenzen vor dem Speichern auf der Einstellungsseite geleert/entfernt, damit die Laufzeit nicht weiter auf ungültige Modelle zeigt; selbst wenn die aktuell aktivierten Kanäle keine wählbaren Modelle haben, werden alte Werte von verwalteten Providern bereinigt, denen der legacy Key fehlt. Direktverbindungsmodelle wie `cohere/*`, `google/*`, `xai/*` dienen nur der Erläuterung der historischen `direct-env`-Kompatibilitäts-Erhaltungssemantik und sind keine Verfügbarkeitszusagen; ob sie verfügbar sind, ist anhand der offiziellen Modell-/API-Dokumente der jeweiligen Hersteller zu verifizieren.
+- Backend-Konsistenzgrundlage: Der Konfigurationsvalidierungspfad in `SystemConfigService._validate_llm_runtime_selection` (`src/services/system_config_service.py`) bestimmt die Laufzeitquelle über `_uses_direct_env_provider` (`src/config.py`); derzeit sind nur `gemini`, `vertex_ai`, `anthropic`, `openai`, `deepseek` verwaltete Key-Provider; `cohere`, `google`, `xai` stehen nicht auf dieser Whitelist und bleiben daher Direktverbindungsmodelle.
+- Der Rollback-Weg bleibt ebenfalls minimal: Setze die Modellliste des betreffenden Kanals zurück und wähle Hauptmodell / Fallback erneut, oder stelle die früheren `LLM_*`, `LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `VISION_MODEL`, `LLM_TEMPERATURE`, `LLM_USAGE_HMAC_*` über den Desktop-Export-Backup / manuelles `.env` wieder her; kein zusätzliches Migrationsskript nötig. Für die Web-Wiederherstellung kann nach Aktivierung der Administrator-Authentifizierung (`ADMIN_AUTH_ENABLED=true`) auch `POST /api/v1/system/config/import` zum Rollback verwendet werden.
+- Die Abhängigkeitseinschränkung dieses Repositories für diesen Pfad ist `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` (siehe `requirements.txt`); die Regressionsabdeckung umfasst `tests/test_system_config_service.py`, `tests/test_system_config_api.py` und `apps/dsa-web/src/components/settings/__tests__/LLMChannelEditor.test.tsx`.
 
-> **外部 provider 示例模型说明**：`cohere/*`、`google/*`、`xai/*` 等 provider 前缀值仅用于说明当前保存清理语义，**不代表该依赖约束内的逐型号可用性保证**。文档或测试中的具体模型名都是配置保留行为样例，不是生产推荐；实际可用性请以对应官方模型文档为准，并结合仓库依赖约束 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` 复核。
+> **Hinweis zu externen Provider-Beispielmodellen**: Provider-Präfixwerte wie `cohere/*`, `google/*`, `xai/*` dienen nur der Erläuterung der aktuellen Speicherbereinigungssemantik und **stellen keine Modell-für-Modell-Verfügbarkeitszusicherung innerhalb dieser Abhängigkeitseinschränkung dar**. Konkrete Modellnamen in Dokumenten oder Tests sind Stichproben für das Konfigurations-Erhaltungsverhalten, keine Produktionsempfehlungen; die tatsächliche Verfügbarkeit richtet sich nach den offiziellen Modelldokumenten des jeweiligen Anbieters und ist mit der Repository-Abhängigkeitseinschränkung `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` abzugleichen.
 
-### 回退与兼容性证据
+### Rollback- und Kompatibilitätsnachweise
 
-- 依赖约束与静默清理范围：在 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` 下，保存仅清理失效的 runtime 模型引用（`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`VISION_MODEL`、`LITELLM_FALLBACK_MODELS`），`cohere/*`、`google/*`、`xai/*` 等非渠道直连模型会被保留。
-- 回退方式：可直接用桌面端导出备份后通过 `POST /api/v1/system/config/import` 恢复；也可手动把 `.env` 中历史 `LITELLM_* / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE / LLM_USAGE_HMAC_*` 回填后重启生效。Web 端执行导入前请先开启管理员鉴权（`ADMIN_AUTH_ENABLED=true`）。
-- 回退回归证据：`tests/test_system_config_service.py::test_import_desktop_env_restores_runtime_models_after_cleanup` 覆盖“清理后用桌面导出备份恢复 runtime 引用”。
-- 直连 provider 回归证据：`tests/test_system_config_service.py::SystemConfigServiceTestCase::test_validate_accepts_minimax_model_as_direct_env_provider`、`test_validate_accepts_cohere_model_as_direct_env_provider`、`test_validate_accepts_google_model_as_direct_env_provider`、`test_validate_accepts_xai_model_as_direct_env_provider` 覆盖直连 provider 保留语义。
-- 前端回归命令：`cd apps/dsa-web && npm run lint && npm run build && npm run test -- src/components/settings/__tests__/LLMChannelEditor.test.tsx`。
-- 建议回退操作链路（含设置页刷新）：先导出桌面备份，`POST /api/v1/system/config/import` 导入后，再通过 `GET /api/v1/system/config` 刷新页面配置，再确认 `LITELLM_MODEL / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE / LLM_USAGE_HMAC_*` 与模型列表一致后再继续使用。
+- Abhängigkeitseinschränkung und Umfang der stillen Bereinigung: Unter `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` bereinigt das Speichern nur ungültige Laufzeitmodell-Referenzen (`LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `VISION_MODEL`, `LITELLM_FALLBACK_MODELS`); Nicht-Kanal-Direktverbindungsmodelle wie `cohere/*`, `google/*`, `xai/*` werden beibehalten.
+- Rollback-Weg: Nach Desktop-Export eines Backups kann die Wiederherstellung über `POST /api/v1/system/config/import` erfolgen; alternativ die historischen `LITELLM_* / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE / LLM_USAGE_HMAC_*` manuell in `.env` nachfüllen und nach Neustart wirksam werden. Vor der Web-Importierung die Administrator-Authentifizierung aktivieren (`ADMIN_AUTH_ENABLED=true`).
+- Rollback-Regressionsnachweis: `tests/test_system_config_service.py::test_import_desktop_env_restores_runtime_models_after_cleanup` deckt „Laufzeitreferenzen nach Bereinigung mit Desktop-Export-Backup wiederherstellen" ab.
+- Direktverbindungs-Provider-Regressionsnachweise: `tests/test_system_config_service.py::SystemConfigServiceTestCase::test_validate_accepts_minimax_model_as_direct_env_provider`, `test_validate_accepts_cohere_model_as_direct_env_provider`, `test_validate_accepts_google_model_as_direct_env_provider`, `test_validate_accepts_xai_model_as_direct_env_provider` decken die Erhaltungssemantik der Direktverbindungs-Provider ab.
+- Frontend-Regressionsbefehl: `cd apps/dsa-web && npm run lint && npm run build && npm run test -- src/components/settings/__tests__/LLMChannelEditor.test.tsx`.
+- Empfohlene Rollback-Operationskette (inkl. Einstellungsseiten-Aktualisierung): Zuerst Desktop-Backup exportieren, `POST /api/v1/system/config/import` ausführen, dann über `GET /api/v1/system/config` die Seitenkonfiguration aktualisieren und bestätigen, dass `LITELLM_MODEL / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE / LLM_USAGE_HMAC_*` mit der Modellliste übereinstimmen, bevor du fortfährst.
 
-### 常用官方文档来源（用于核对预设 provider / Base URL / 模型命名）
+### Häufige offizielle Dokumentquellen (zum Abgleichen von Preset-Provider / Base URL / Modellnamen)
 
-- OpenAI Compatible 规范（LiteLLM）：<https://docs.litellm.ai/docs/providers/openai_compatible>
-- OpenAI 官方：<https://platform.openai.com/docs/api-reference/chat>
-- DeepSeek 官方：<https://api-docs.deepseek.com/>
-- Anspire Open：<https://open.anspire.cn/?share_code=QFBC0FYC>
-- 阿里百炼 DashScope 兼容模式：<https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope>
-- Moonshot / Kimi 官方：<https://platform.moonshot.ai/docs/guide/compatibility>
-- Anthropic 官方：<https://docs.anthropic.com/en/api/messages>
-- Gemini 官方：<https://ai.google.dev/gemini-api/docs/openai>
-- Cohere 官方：<https://docs.cohere.com/>
-- Cohere API 参考：<https://docs.cohere.com/reference/>
-- Cohere LiteLLM Provider：<https://docs.litellm.ai/docs/providers/cohere>
-- Google Gemini API 与模型：<https://ai.google.dev/gemini-api/docs/openai>、<https://ai.google.dev/gemini-api/docs/models>
-- Google LiteLLM Provider：<https://docs.litellm.ai/docs/providers/gemini>
-- xAI 官方：<https://docs.x.ai/docs>
-- xAI LiteLLM Provider：<https://docs.litellm.ai/docs/providers/xai>
-- Ollama 官方：<https://github.com/ollama/ollama/blob/main/docs/api.md>
+- OpenAI Compatible Spezifikation (LiteLLM): <https://docs.litellm.ai/docs/providers/openai_compatible>
+- OpenAI offiziell: <https://platform.openai.com/docs/api-reference/chat>
+- DeepSeek offiziell: <https://api-docs.deepseek.com/>
+- Anspire Open: <https://open.anspire.cn/?share_code=QFBC0FYC>
+- Alibaba Bailian DashScope Kompatibilitätsmodus: <https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope>
+- Moonshot / Kimi offiziell: <https://platform.moonshot.ai/docs/guide/compatibility>
+- Anthropic offiziell: <https://docs.anthropic.com/en/api/messages>
+- Gemini offiziell: <https://ai.google.dev/gemini-api/docs/openai>
+- Cohere offiziell: <https://docs.cohere.com/>
+- Cohere API-Referenz: <https://docs.cohere.com/reference/>
+- Cohere LiteLLM Provider: <https://docs.litellm.ai/docs/providers/cohere>
+- Google Gemini API und Modelle: <https://ai.google.dev/gemini-api/docs/openai>, <https://ai.google.dev/gemini-api/docs/models>
+- Google LiteLLM Provider: <https://docs.litellm.ai/docs/providers/gemini>
+- xAI offiziell: <https://docs.x.ai/docs>
+- xAI LiteLLM Provider: <https://docs.litellm.ai/docs/providers/xai>
+- Ollama offiziell: <https://github.com/ollama/ollama/blob/main/docs/api.md>
 
-如果不方便用网页版，在 `.env` 文件中配置也非常丝滑，它能让你同时管理多个第三方平台。规则如下：
+Wenn die Web-Version nicht praktisch ist, ist die Konfiguration in der `.env`-Datei ebenfalls sehr geschmeidig; sie ermöglicht die gleichzeitige Verwaltung mehrerer Drittanbieter-Plattformen. Die Regeln lauten:
 
-1. **先声明你有几个渠道**：`LLM_CHANNELS=渠道名称1,渠道名称2`
-2. **给每个渠道分别填写配置**（注意全大写）：`LLM_{渠道名}_XXX`
+1. **Zuerst deklarieren, wie viele Kanäle du hast**: `LLM_CHANNELS=Kanalname1,Kanalname2`
+2. **Für jeden Kanal die Konfiguration separat ausfüllen** (beachte: alles GROSSSCHREIBEN): `LLM_{Kanalname}_XXX`
 
-### 示例：同时配置 DeepSeek 和某中转平台，并设置备用切换
+### Beispiel: Gleichzeitige Konfiguration von DeepSeek und einer Aggregationsplattform mit Backup-Umschaltung
 ```env
-# 1. 开启渠道模式，声明这里有两个渠道：deepseek 和 aihubmix
+# 1. Kanalmodus aktivieren, hier zwei Kanäle deklarieren: deepseek und aihubmix
 LLM_CHANNELS=deepseek,aihubmix
 
-# 2. 渠道一：配置 DeepSeek 官方
+# 2. Kanal eins: DeepSeek offiziell konfigurieren
 LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com
 LLM_DEEPSEEK_API_KEY=sk-1111111111111
 LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
 
-# 3. 渠道二：配置一个常用的聚合中转 API
+# 3. Kanal zwei: Eine gängige Aggregations-Transit-API konfigurieren
 LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
 LLM_AIHUBMIX_API_KEY=sk-2222222222222
 LLM_AIHUBMIX_MODELS=gpt-5.5,claude-sonnet-4-6
 
-# 4. 【关键】指定主模型和备用模型列表
-# 平时首选用 deepseek 这款模型：
+# 4. 【Entscheidend】Hauptmodell und Backup-Modellliste festlegen
+# Normalerweise wird bevorzugt dieses deepseek-Modell verwendet:
 LITELLM_MODEL=deepseek/deepseek-v4-flash
-# 可选：Agent 问股单独指定主模型（留空则继承主模型）
+# Optional: Agent-Ask-Stock separat ein Hauptmodell zuweisen (leer = erbt das Hauptmodell)
 AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro
-# 主模型崩了立刻挨个尝试下面这俩备用模型：
+# Wenn das Hauptmodell ausfällt, werden sofort nacheinander diese beiden Backup-Modelle versucht:
 LITELLM_FALLBACK_MODELS=openai/gpt-5.4-mini,anthropic/claude-sonnet-4-6
 ```
 
-### 示例：Ollama 渠道模式（本地模型，无需 API Key）
+### Beispiel: Ollama-Kanalmodus (lokales Modell, kein API-Key nötig)
 ```env
-# 1. 开启渠道模式，声明 ollama 渠道
+# 1. Kanalmodus aktivieren, ollama-Kanal deklarieren
 LLM_CHANNELS=ollama
 
-# 2. 配置 Ollama 地址（本地默认 11434 端口）
+# 2. Ollama-Adresse konfigurieren (lokal standardmäßig Port 11434)
 LLM_OLLAMA_BASE_URL=http://localhost:11434
 LLM_OLLAMA_MODELS=qwen3:8b,llama3.2
 
-# 3. 指定主模型
+# 3. Hauptmodell festlegen
 LITELLM_MODEL=ollama/qwen3:8b
 ```
 
-### 示例：Hermes 本地 HTTP Generation（Phase 3）
+### Beispiel: Hermes lokale HTTP-Generation (Phase 3)
 ```env
 LLM_CHANNELS=hermes
 LLM_HERMES_PROTOCOL=openai
@@ -269,110 +269,110 @@ LLM_HERMES_MODELS=hermes-agent
 LITELLM_MODEL=openai/hermes-agent
 ```
 
-Hermes 是保留渠道名，只支持本机 loopback `/v1` OpenAI-compatible generation。Phase 3 只验证普通分析与 JSON 输出；不支持 Stream/SSE、Tools、Vision、Agent tools、远程 Hermes 或进程生命周期管理。Hermes API Key 只能使用单个 `LLM_HERMES_API_KEY`，不要配置 `LLM_HERMES_API_KEYS` 或 `LLM_HERMES_EXTRA_HEADERS`。如果 Hermes 配置非法，系统会阻止 legacy provider silent fallback，避免错误地改用外部模型。Web 设置页保存 reserved Hermes 渠道时，会显式清空旧的 `LLM_HERMES_API_KEYS` / `LLM_HERMES_EXTRA_HEADERS` 并返回 warning；如需恢复旧值，请从 `.env` 备份、Git 历史或桌面端导出备份手动还原，但 Phase 3 仍会拒绝非空的多 Key / Extra Headers 配置。
+Hermes ist ein reservierter Kanalname und unterstützt nur lokale Loopback-`/v1`-OpenAI-kompatible Generation. Phase 3 verifiziert nur normale Analysen und JSON-Ausgaben; Stream/SSE, Tools, Vision, Agent-Tools, Remote-Hermes und Prozesslebenszyklusverwaltung werden nicht unterstützt. Der Hermes-API-Key kann nur mit einem einzelnen `LLM_HERMES_API_KEY` verwendet werden; konfiguriere nicht `LLM_HERMES_API_KEYS` oder `LLM_HERMES_EXTRA_HEADERS`. Wenn die Hermes-Konfiguration ungültig ist, verhindert das System ein stillschweigendes Legacy-Provider-Fallback, um eine fälschliche Verwendung externer Modelle zu vermeiden. Beim Speichern des reservierten Hermes-Kanals in der Web-Einstellungsseite werden alte `LLM_HERMES_API_KEYS` / `LLM_HERMES_EXTRA_HEADERS` explizit geleert und eine Warnung zurückgegeben; zur Wiederherstellung alter Werte diese manuell aus der `.env`-Sicherung, der Git-Historie oder dem Desktop-Export-Backup wiederherstellen, aber Phase 3 lehnt weiterhin nicht-leere Multi-Key-/Extra-Headers-Konfigurationen ab.
 
-### MiniMax 渠道模型填写说明
+### Hinweise zum Ausfüllen von MiniMax-Kanalmodellen
 
-- 如果你通过 OpenAI Compatible 渠道接 MiniMax，请在渠道模型里直接填写 `minimax/<模型名>`，例如 `minimax/MiniMax-M1`。
-- Web 设置页里的主模型、Agent 主模型、Fallback、Vision 下拉会保留这个值原样展示，不会再错误改写成 `openai/minimax/<模型名>`。
+- Wenn du MiniMax über einen OpenAI-kompatiblen Kanal anbindest, fülle im Kanalmodell direkt `minimax/<Modellname>` ein, z. B. `minimax/MiniMax-M1`.
+- Die Dropdowns für Hauptmodell, Agent-Hauptmodell, Fallback und Vision auf der Web-Einstellungsseite behalten diesen Wert unverändert bei und schreiben ihn nicht mehr fälschlich in `openai/minimax/<Modellname>` um.
 
-### 默认模型问股 / LiteLLM 配置兼容说明
+### Kompatibilitätshinweis für Standardmodell-Ask-Stock / LiteLLM-Konfiguration
 
-- `AGENT_BACKEND=auto|litellm` 时，问股 Agent 沿用与普通分析相同的三层优先级：`LITELLM_CONFIG`（LiteLLM YAML）> `LLM_CHANNELS` > legacy provider keys。只要上层配置有效生效，下层配置就不会再参与本次请求；Codex 不使用这套模型路由。
-- YAML 模式下，Agent 直接复用 LiteLLM `model_list` / `model_name` 路由语义；渠道模式下，优先读取 `AGENT_LITELLM_MODEL`，留空时继承 `LITELLM_MODEL`，再按 `LITELLM_FALLBACK_MODELS` 继续 fallback。
-- 如果你没有启用 YAML / Channels，且 `AGENT_LITELLM_MODEL` 也留空，但本地仍保留 legacy 环境变量，问股 Agent 依然会继承旧配置：`GEMINI_API_KEY + GEMINI_MODEL` -> `gemini/<model>`，`OPENAI_API_KEY + OPENAI_MODEL` -> `openai/<model>`，`ANTHROPIC_API_KEY + ANTHROPIC_MODEL` -> `anthropic/<model>`。
-- 该兼容逻辑只增强“失败时保留后端真实错误原因”和“未配置 LLM 时给出更具体诊断”，**不会**静默删除、清空、迁移或改写你现有的 `GEMINI_*` / `OPENAI_*` / `ANTHROPIC_*` / `LITELLM_*` 配置。
-- 如果当前环境没有任何有效 Agent 模型链路，问股页面会继续按失败语义返回，并直接展示后端真实配置诊断；补齐任一有效模型来源后即可恢复，无需额外执行配置迁移脚本。
-- 推荐的新配置方式仍然是显式设置 `LITELLM_MODEL` / `AGENT_LITELLM_MODEL` 或使用 `LLM_CHANNELS`；legacy provider keys 目前保留为兼容回退路径，方便旧 `.env`、本地 macOS 开发环境和历史部署平滑继续运行。
+- Bei `AGENT_BACKEND=auto|litellm` verwendet der Ask-Stock-Agent dieselbe Drei-Ebenen-Priorität wie normale Analysen: `LITELLM_CONFIG` (LiteLLM-YAML) > `LLM_CHANNELS` > legacy-Provider-Keys. Solange eine obere Konfiguration wirksam ist, nimmt die untere Konfiguration nicht mehr an dieser Anfrage teil; Codex verwendet dieses Modell-Routing nicht.
+- Im YAML-Modus nutzt der Agent direkt die LiteLLM-`model_list` / `model_name`-Routingsemantik; im Kanalmodus wird bevorzugt `AGENT_LITELLM_MODEL` gelesen, bei leer übernimmt es `LITELLM_MODEL` und fällt dann nach `LITELLM_FALLBACK_MODELS` weiter zurück.
+- Wenn du YAML / Channels nicht aktiviert hast und `AGENT_LITELLM_MODEL` ebenfalls leer ist, aber lokal weiterhin legacy-Umgebungsvariablen vorhanden sind, erbt der Ask-Stock-Agent weiterhin die alte Konfiguration: `GEMINI_API_KEY + GEMINI_MODEL` -> `gemini/<model>`, `OPENAI_API_KEY + OPENAI_MODEL` -> `openai/<model>`, `ANTHROPIC_API_KEY + ANTHROPIC_MODEL` -> `anthropic/<model>`.
+- Diese Kompatibilitätslogik erweitert nur „bei Fehlern die echte Backend-Fehlerursache beibehalten" und „bei nicht konfiguriertem LLM eine spezifischere Diagnose geben" und **löscht, leert, migriert oder schreibt** deine bestehenden `GEMINI_*` / `OPENAI_*` / `ANTHROPIC_*` / `LITELLM_*`-Konfigurationen **nicht** stillschweigend um.
+- Wenn die aktuelle Umgebung keine gültige Agent-Modellkette hat, gibt die Ask-Stock-Seite weiterhin nach Fehlersemantik zurück und zeigt direkt die echte Backend-Konfigurationsdiagnose; sobald eine gültige Modellquelle ergänzt ist, ist die Funktion wiederhergestellt, ohne ein zusätzliches Konfigurationsmigrationsskript auszuführen.
+- Die empfohlene neue Konfigurationsweise bleibt das explizite Setzen von `LITELLM_MODEL` / `AGENT_LITELLM_MODEL` oder die Verwendung von `LLM_CHANNELS`; legacy-Provider-Keys bleiben derzeit als Kompatibilitäts-Rollback-Pfad erhalten, damit alte `.env`, lokale macOS-Entwicklungsumgebungen und historische Deployments reibungslos weiterlaufen.
 
-### 问股可见对话上下文压缩
+### Komprimierung des sichtbaren Ask-Stock-Konversationskontexts
 
-默认情况下，问股仍按历史行为只注入最近 20 条可见对话。以下 LLM 压缩只适用于「默认模型」问股：Codex Agent 始终使用最近 20 条用户可见对话，不会调用 `AGENT_LITELLM_MODEL` 生成历史摘要。切换到 Codex 不会清空已保存的压缩配置，切回「默认模型」后会继续生效。需要为默认模型长会话省 token 时，可开启：
+Standardmäßig injiziert die Ask-Stock-Funktion weiterhin nur die letzten 20 sichtbaren Unterhaltungen gemäß historischem Verhalten. Die folgende LLM-Komprimierung gilt nur für Ask-Stock mit „Standardmodell": Der Codex-Agent verwendet immer die letzten 20 benutzersichtbaren Unterhaltungen und ruft `AGENT_LITELLM_MODEL` nicht auf, um eine Verlaufssummary zu erzeugen. Ein Wechsel zu Codex löscht die gespeicherte Komprimierungskonfiguration nicht; nach dem Wechsel zurück zu „Standardmodell" wirkt sie weiter. Um bei langen Sitzungen des Standardmodells Token zu sparen, kann Folgendes aktiviert werden:
 
 ```env
 AGENT_CONTEXT_COMPRESSION_ENABLED=true
 AGENT_CONTEXT_COMPRESSION_PROFILE=balanced
-# 留空则跟随 profile preset
+# Bei leer folgt dem profile preset
 AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS=
 AGENT_CONTEXT_PROTECTED_TURNS=
 ```
 
-压缩只处理 `session_id` 下用户可见的 `user` / `assistant` 文本历史，不处理 provider trace、thinking blocks、tool calls 或 tool results，也不会改变同轮工具调用透传。三档 preset 分别是 `cost`（6000 tokens / 保护 2 轮）、`balanced`（12000 / 4）和 `long_context_raw_first`（24000 / 6）；trigger / protected 留空时跟随当前 profile，显式填写时覆盖 profile。
+Die Komprimierung verarbeitet nur die unter `session_id` sichtbaren `user` / `assistant`-Textverläufe, nicht provider traces, thinking blocks, tool calls oder tool results, und ändert auch nicht die Durchleitung von Tool-Aufrufen derselben Runde. Die drei Presets sind `cost` (6000 tokens / 2 geschützte Runden), `balanced` (12000 / 4) und `long_context_raw_first` (24000 / 6); wenn trigger / protected leer sind, folgen sie dem aktuellen profile, bei expliziter Angabe überschreiben sie das profile.
 
-问股 single-agent 路径会额外维护一条 provider-aware trace 分轨，用于 DeepSeek V4 thinking + tool-call 的跨轮协议回放：只有同一轮同时出现 `tool_calls` 与 `reasoning_content` 时才会按当前 `session_id + provider + model` 保存最近 3 条最小协议材料，并在下一轮按原始时序插回对应可见 assistant 回复之前。该 trace 只能原样保留或整段丢弃，不参与摘要、不写入 Web 会话消息、不新增 `.env` 配置；model/provider 不匹配、锚点已被 summary 覆盖或预算不足时会整段跳过。Claude extended thinking 本轮只覆盖 adapter/storage 级 opaque `thinking` / `redacted_thinking` / `signature` blocks plumbing 与离线 fixture，不声明生产端到端支持；multi-agent trace 注入仍是 follow-up。外部协议依据包括 DeepSeek thinking mode 文档（<https://api-docs.deepseek.com/guides/thinking_mode>）和 Anthropic Claude extended thinking 文档（<https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking>），LiteLLM 兼容窗口仍以 `requirements.txt` 的 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` 为准。
+Der Single-Agent-Pfad der Ask-Stock-Funktion pflegt zusätzlich einen provider-aware Trace-Split für die Cross-Round-Protokollwiedergabe von DeepSeek-V4-Thinking + Tool-Calls: Nur wenn in derselben Runde gleichzeitig `tool_calls` und `reasoning_content` auftreten, werden die letzten 3 minimalen Protokollmaterialien unter `session_id + provider + model` gespeichert und in der nächsten Runde in der ursprünglichen Reihenfolge vor die entsprechende sichtbare assistant-Antwort zurückinjiziert. Dieser Trace kann nur unverändert erhalten oder vollständig verworfen werden; er nimmt nicht an Summarys teil, wird nicht in Web-Sitzungsnachrichten geschrieben und fügt keine `.env`-Konfiguration hinzu; bei nicht übereinstimmendem model/provider, durch Summary überdecktem Anker oder unzureichendem Budget wird er vollständig übersprungen. Claude extended thinking deckt in dieser Runde nur adapter/storage-Level-opaque `thinking` / `redacted_thinking` / `signature`-Block-Plumbing und Offline-Fixtures ab; es wird keine Produktions-End-to-End-Unterstützung deklariert; die Multi-Agent-Trace-Injektion bleibt Follow-up. Externe Protokollreferenzen umfassen die DeepSeek-Thinking-Mode-Dokumentation (<https://api-docs.deepseek.com/guides/thinking_mode>) und die Anthropic-Claude-extended-thinking-Dokumentation (<https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking>); das LiteLLM-Kompatibilitätsfenster richtet sich weiterhin nach `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` in `requirements.txt`.
 
-### 严格 temperature 模型兼容说明
+### Kompatibilitätshinweis für strikte temperature-Modelle
 
-- Moonshot 官方说明 Kimi API 兼容 OpenAI 接口，Base URL 使用 `https://api.moonshot.ai/v1`：<https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart>
-- LiteLLM 官方要求 OpenAI Compatible 渠道模型名使用 `openai/` 前缀：<https://docs.litellm.ai/docs/providers/openai_compatible>
-- Moonshot 官方兼容性文档区分两种固定值：**thinking 模式固定 `1.0`，non-thinking 模式固定 `0.6`**；传其它值会被接口拒绝：<https://platform.moonshot.ai/docs/guide/compatibility#parameters-differences-in-request-body>
-- OpenAI Chat Completions 规范中 `temperature` 是可选参数；对 GPT-5 / o 系列等只接受默认温度的模型，本项目会在请求层省略 `temperature`，让服务端使用默认值，而不是改写你的 `LLM_TEMPERATURE`：<https://platform.openai.com/docs/api-reference/chat/create>
-- 当前仓库的运行时依赖约束是 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（见 `requirements.txt`）；本次兼容逻辑按该约束回归验证了主分析、大盘复盘、Agent 直连 LiteLLM，以及系统设置页的渠道连通性测试。
-- 因此本项目会在请求发出前按**实际请求模式**归一化 `kimi-k2.6` 及其 `kimi-k2.6-*` 变体：默认 / thinking 路径使用 `temperature=1.0`；如果你的 LiteLLM YAML 路由别名里显式写了 `litellm_params.extra_body.thinking.type: disabled`（或等价 non-thinking 配置），则自动切到 `temperature=0.6`。你在 `.env` 或 Web 设置里保存的 `LLM_TEMPERATURE` 不会被改写。
-- 如果兼容平台对未收录的新模型返回明确的参数错误（例如 `temperature` 不支持、只能使用默认 `1.0`、`top_p` 不支持），运行时会对**当前请求**做一次参数修正并重试；只有重试成功后才把该策略缓存在当前进程内。该缓存不会写回 `.env`，服务重启后会重新按配置与适配规则判断。
-- 对已经产生部分内容的流式响应，系统不会在半截输出后切换参数；仍沿用原有“同模型非流式重试 / fallback 模型”的稳定路径，避免拼接出不一致的回答。
-- `SystemConfigService` 在 Web 设置保存 / 桌面端 `.env` 导入时只更新你提交的 key，不会因为切到严格 temperature 模型静默清空、迁移或重写已有 `LLM_TEMPERATURE`；渠道测试请求里的临时参数策略也不会回写到配置文件。
-- 非严格主模型、非严格 fallback 以及切回普通模型后的请求，仍继续使用你配置的温度；也就是说旧配置无需迁移，切换模型即可自动恢复原行为。
-- 本仓库兼容性回归覆盖见：`tests/test_llm_channel_config.py`、`tests/test_market_analyzer_generate_text.py`、`tests/test_agent_pipeline.py`、`tests/test_system_config_service.py`。
-- 最小回滚方式：直接回退本次 LLM 参数适配相关改动，无需单独迁移已有 `LLM_TEMPERATURE` 配置。
+- Moonshot gibt offiziell an, dass die Kimi-API mit dem OpenAI-Interface kompatibel ist und die Base-URL `https://api.moonshot.ai/v1` lautet: <https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart>
+- LiteLLM verlangt offiziell, dass OpenAI-kompatible Kanalmodellnamen das Präfix `openai/` verwenden: <https://docs.litellm.ai/docs/providers/openai_compatible>
+- Die offizielle Kompatibilitätsdokumentation von Moonshot unterscheidet zwei feste Werte: **thinking-Modus fest `1.0`, non-thinking-Modus fest `0.6`**; andere Werte werden vom Interface abgelehnt: <https://platform.moonshot.ai/docs/guide/compatibility#parameters-differences-in-request-body>
+- Im OpenAI-Chat-Completions-Standard ist `temperature` ein optionaler Parameter; für Modelle wie GPT-5 / o-Serie, die nur die Standardtemperature akzeptieren, lässt dieses Projekt `temperature` auf der Anfrageebene weg, damit der Server den Standardwert verwendet, statt dein `LLM_TEMPERATURE` umzuschreiben: <https://platform.openai.com/docs/api-reference/chat/create>
+- Die aktuelle Laufzeit-Abhängigkeitseinschränkung des Repositories ist `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` (siehe `requirements.txt`); diese Kompatibilitätslogik wurde unter dieser Einschränkung für Hauptanalyse, Marktrückblick, Agent-Direktverbindung zu LiteLLM und den Kanal-Konnektivitätstest der Systemeinstellungsseite regressionsverifiziert.
+- Daher normalisiert dieses Projekt `kimi-k2.6` und seine `kimi-k2.6-*`-Varianten vor dem Senden der Anfrage nach **tatsächlichem Anfragemodus**: Der Standard-/Thinking-Pfad verwendet `temperature=1.0`; wenn in deinem LiteLLM-YAML-Routing-Alias explizit `litellm_params.extra_body.thinking.type: disabled` (oder eine äquivalente non-thinking-Konfiguration) geschrieben steht, wird automatisch auf `temperature=0.6` umgeschaltet. Dein gespeichertes `LLM_TEMPERATURE` in `.env` oder den Web-Einstellungen wird nicht umgeschrieben.
+- Wenn eine kompatible Plattform für nicht registrierte neue Modelle einen eindeutigen Parameterfehler zurückgibt (z. B. `temperature` nicht unterstützt, nur Standard `1.0` erlaubt, `top_p` nicht unterstützt), korrigiert die Laufzeit die Parameter **für die aktuelle Anfrage** einmal und wiederholt; erst nach erfolgreichem Retry wird diese Strategie prozessintern gecacht. Dieser Cache wird nicht in `.env` zurückgeschrieben; nach einem Dienstneustart wird erneut nach Konfiguration und Anpassungsregeln entschieden.
+- Für Streaming-Antworten, die bereits Teile erzeugt haben, wechselt das System die Parameter nicht nach halber Ausgabe; es bleibt beim stabilen Pfad „non-streaming-Retry mit gleichem Modell / Fallback-Modell", um inkonsistente Antworten zu vermeiden.
+- `SystemConfigService` aktualisiert beim Speichern in den Web-Einstellungen / Desktop-`.env`-Import nur den von dir übermittelten Key; es leert, migriert oder schreibt das bestehende `LLM_TEMPERATURE` nicht stillschweigend, weil auf ein striktes temperature-Modell umgeschaltet wurde; temporäre Parameterstrategien in Kanal-Testanfragen werden ebenfalls nicht in die Konfigurationsdatei zurückgeschrieben.
+- Nicht-strikte Hauptmodelle, nicht-strikte Fallbacks und Anfragen nach dem Zurückschalten auf normale Modelle verwenden weiterhin deine konfigurierte Temperatur; das heißt, alte Konfigurationen müssen nicht migriert werden — ein Modellwechsel stellt das ursprüngliche Verhalten automatisch wieder her.
+- Die Kompatibilitäts-Regressionsabdeckung dieses Repositories siehe: `tests/test_llm_channel_config.py`, `tests/test_market_analyzer_generate_text.py`, `tests/test_agent_pipeline.py`, `tests/test_system_config_service.py`.
+- Minimale Rollback-Methode: Die diesbezüglichen Änderungen der LLM-Parameter-Anpassung direkt zurückrollen; keine separate Migration des bestehenden `LLM_TEMPERATURE` nötig.
 
-### 兼容性与回退复核清单（按 PR 审核口径）
+### Kompatibilitäts- und Rollback-Prüfcheckliste (nach PR-Review-Kriterien)
 
-- 运行时依赖约束：`litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（与 `requirements.txt` 一致）。
-- 回归验证入口：
-  - 渠道模型发现与连接：`tests/test_llm_channel_config.py`
-  - 运行时源清理与恢复（含桌面导出备份链路）：`tests/test_system_config_service.py`
-  - 接口校验与问题面向字段：`tests/test_system_config_api.py`
-  - 设置页交互与保存后提示：`apps/dsa-web/src/components/settings/__tests__/LLMChannelEditor.test.tsx`
-- 旧配置回退路径：`桌面端导出备份 -> /api/v1/system/config/import`，或手动恢复 `LLM_* / LITELLM_* / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE / LLM_USAGE_HMAC_*`；Web 导入备份前同样要求 `ADMIN_AUTH_ENABLED=true`，否则会返回 403。
+- Laufzeit-Abhängigkeitseinschränkung: `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` (konsistent mit `requirements.txt`).
+- Regressionsverifikations-Eintritte:
+  - Kanalmodell-Erkennung und -Verbindung: `tests/test_llm_channel_config.py`
+  - Laufzeitquellen-Bereinigung und -Wiederherstellung (inkl. Desktop-Export-Backup-Kette): `tests/test_system_config_service.py`
+  - Interface-Validierung und problemorientierte Felder: `tests/test_system_config_api.py`
+  - Einstellungsseiten-Interaktion und Hinweise nach dem Speichern: `apps/dsa-web/src/components/settings/__tests__/LLMChannelEditor.test.tsx`
+- Rollback-Pfad für alte Konfigurationen: `Desktop-Export-Backup -> /api/v1/system/config/import` oder manuelle Wiederherstellung von `LLM_* / LITELLM_* / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE / LLM_USAGE_HMAC_*`; vor der Web-Importierung eines Backups ist ebenfalls `ADMIN_AUTH_ENABLED=true` erforderlich, sonst wird 403 zurückgegeben.
 
-> **致命避坑说明**：如果你启用了 `LLM_CHANNELS`，那么你直接写在外面的 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 将**全部失效（系统一律无视）**！二者**选其一即可**，千万不要既写了新手模式又写了渠道模式结果产生冲突。
-> **Docker 注意**：如果你在 `docker compose environment:` 或 `docker run -e` 中显式传入 `LITELLM_MODEL`、`LLM_CHANNELS`、`LLM_DEEPSEEK_MODELS` 等变量，容器重启后这些环境变量会覆盖 Web 设置页写入的 `.env`，需要同步修改部署配置。
+> **Kritischer Stolperfalle-Hinweis**: Wenn du `LLM_CHANNELS` aktivierst, werden die direkt außerhalb geschriebenen `DEEPSEEK_API_KEY` oder `OPENAI_API_KEY` **vollständig wirkungslos (vom System komplett ignoriert)**! Verwende **nur eines von beiden** — schreibe niemals sowohl den Neulingsmodus als auch den Kanalmodus, sonst kommt es zu Konflikten.
+> **Docker-Hinweis**: Wenn du in `docker compose environment:` oder `docker run -e` Variablen wie `LITELLM_MODEL`, `LLM_CHANNELS`, `LLM_DEEPSEEK_MODELS` explizit übergibst, überschreiben diese Umgebungsvariablen nach dem Container-Neustart die von der Web-Einstellungsseite geschriebene `.env`; die Deployment-Konfiguration muss synchron angepasst werden.
 
-### 兼容依据与回退审计说明（本次 PR 适配说明）
+### Kompatibilitätsgrundlage und Rollback-Audit-Erläuterung (Erläuterung zur diesbezüglichen PR-Anpassung)
 
-- 官方与运行时兼容依据采用两层：第一层为官方接口语义（LiteLLM OpenAI-compatible 路由、OpenAI Chat Completions、Moonshot/Kimi 文档与官方模型说明）；第二层为本仓库当前运行时语义（`litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`）下的实际错误归类。
-- 本次兼容恢复只使用“本地运行时错误归类 + 单请求修正重试 + 进程内缓存”策略，不写入 `.env`、不做配置迁移，仅在执行路径上动态规避不支持参数（`temperature`、`top_p`、`presence_penalty`、`frequency_penalty`、`seed`）。若要回退，不需要额外迁移命令，恢复旧值即可。
-- 回归与证据：`tests/test_llm_param_recovery.py`、`tests/test_system_config_service.py`、`tests/test_llm_channel_config.py`、`tests/test_system_config_api.py`、`tests/test_market_analyzer_generate_text.py`、`tests/test_agent_pipeline.py`；桌面导入与运行时清理回退另有 `test_import_desktop_env_restores_runtime_models_after_cleanup` 直接覆盖。
+- Offizielle und Laufzeit-Kompatibilitätsgrundlage in zwei Ebenen: Ebene eins ist die offizielle Interface-Semantik (LiteLLM-OpenAI-kompatibles Routing, OpenAI Chat Completions, Moonshot/Kimi-Dokumente und offizielle Modellbeschreibungen); Ebene zwei ist die tatsächliche Fehlerklassifizierung unter der aktuellen Laufzeitsemantik dieses Repositories (`litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`).
+- Die diesbezügliche Kompatibilitätswiederherstellung verwendet nur die Strategie „lokale Laufzeitfehlerklassifizierung + Einzelanfragen-Korrektur-Retry + prozessinterner Cache", schreibt nicht in `.env`, führt keine Konfigurationsmigration durch und umgeht auf dem Ausführungspfad dynamisch nicht unterstützte Parameter (`temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `seed`). Zum Rollback ist kein zusätzlicher Migrationsbefehl nötig; die alten Werte wiederherstellen genügt.
+- Regression und Nachweise: `tests/test_llm_param_recovery.py`, `tests/test_system_config_service.py`, `tests/test_llm_channel_config.py`, `tests/test_system_config_api.py`, `tests/test_market_analyzer_generate_text.py`, `tests/test_agent_pipeline.py`; für Desktop-Import und Laufzeitbereinigungs-Rollback gibt es zusätzlich die direkte Abdeckung durch `test_import_desktop_env_restores_runtime_models_after_cleanup`.
 
 ---
 
-### LLM usage HMAC 遥测
+### LLM-usage-HMAC-Telemetrie
 
-P0a usage telemetry 会为实际发送的 message 生成 HMAC-SHA256 指纹，用于后续判断相同 prompt/message 前缀是否稳定。该能力只写入本地 `llm_usage` 记录，不改变 prompt、provider 参数、cache hint、模型输出或 fallback 顺序。
+Die P0a-Usage-Telemetrie erzeugt für tatsächlich gesendete Messages einen HMAC-SHA256-Fingerprint, um später zu beurteilen, ob dieselben Prompt-/Message-Präfixe stabil sind. Diese Fähigkeit schreibt nur lokale `llm_usage`-Datensätze und ändert weder Prompt, Provider-Parameter, Cache-Hinweise, Modellausgabe noch die Fallback-Reihenfolge.
 
-Usage 来源按三层读取：
+Die Usage-Quelle wird in drei Ebenen gelesen:
 
-- 优先读取 provider / LiteLLM 公开响应字段 `usage`。
-- 其次读取 LiteLLM 公开响应字段 `usage_metadata`。
-- 最后才读取 `_hidden_params["usage"]`，这是 LiteLLM private/internal 的 best-effort fallback，不是稳定公共契约；缺失时只代表 usage/cache telemetry 可能不完整，不代表模型请求失败。
+- Bevorzugt werden die öffentlichen Antwortfelder `usage` des Provider / LiteLLM gelesen.
+- Danach wird das öffentliche LiteLLM-Antwortfeld `usage_metadata` gelesen.
+- Zuletzt wird `_hidden_params["usage"]` gelesen; dies ist ein best-effort-Fallback von LiteLLM private/internal und kein stabiler öffentlicher Vertrag; fehlt es, bedeutet das nur, dass die usage/cache-Telemetrie möglicherweise unvollständig ist, nicht dass die Modellanfrage fehlgeschlagen ist.
 
-Cache token 归一化只做 allowlisted best-effort normalization。外部字段依据和运行时边界如下，避免把官方稳定契约、LiteLLM 当前归一化行为和本仓库兼容 allowlist 混为一谈：
+Die Cache-Token-Normalisierung führt nur eine allowlistete best-effort-Normalisierung durch. Externe Feldgrundlagen und Laufzeitgrenzen sind wie folgt, um offizielle stabile Verträge, das aktuelle LiteLLM-Normalisierungsverhalten und die Kompatibilitäts-Allowlist dieses Repositories nicht zu vermischen:
 
-| Provider / 来源 | 读取字段 | 依据与边界 | 覆盖情况 |
+| Provider / Quelle | Gelesenes Feld | Grundlage und Grenze | Abdeckung |
 | --- | --- | --- | --- |
-| OpenAI | `usage.prompt_tokens_details.cached_tokens` | 官方 Prompt Caching 文档说明 1024 tokens 以下也会返回 `cached_tokens=0`：<https://developers.openai.com/api/docs/guides/prompt-caching> | unit/mock 覆盖；本 PR 未做 OpenAI live smoke |
-| Anthropic | `cache_creation_input_tokens` / `cache_read_input_tokens` / `input_tokens` | 官方 Prompt Caching 文档定义 `total_input_tokens = cache_read_input_tokens + cache_creation_input_tokens + input_tokens`：<https://platform.claude.com/docs/en/build-with-claude/prompt-caching> | unit/mock 覆盖；本 PR 未做 Anthropic live smoke |
-| Gemini / Vertex AI | 官方字段为 `UsageMetadata.cachedContentTokenCount`；运行时消费 LiteLLM 暴露的 snake_case / normalized 字段，如 `cached_content_token_count`、`cache_read_input_tokens` 或 `prompt_tokens_details.cached_tokens` | Gemini `UsageMetadata` 官方字段见 <https://ai.google.dev/api/generate-content#UsageMetadata>；本仓库不新增 native camelCase runtime fallback，运行时边界以 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` 为准 | unit/mock 覆盖；本 PR 未做 Gemini / Vertex live smoke |
-| DeepSeek | `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` | DeepSeek Chat Completion 文档说明 `prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`：<https://api-docs.deepseek.com/api/create-chat-completion> | unit/mock 覆盖；本 PR 只做一次脱敏 DeepSeek smoke，不保存完整响应 |
-| GLM / OpenAI-compatible / StepFun 等兼容平台 | 已建模 token/cache count allowlist 中能映射到统一字段的值 | 不声明官方稳定 cache telemetry contract；仅表示在当前 LiteLLM / OpenAI-compatible shape 下做 best-effort normalization，未建模 metadata 不持久化 | unit/fixture/mock 覆盖；本 PR 未做这些 provider 的 live smoke |
-| LiteLLM public response shape | `usage` / `usage_metadata` | 按当前依赖窗口 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` 的 response / `Usage` object shape 消费；不作为 LiteLLM 2.x 兼容承诺 | Analyzer / Agent / usage tests 覆盖 |
-| LiteLLM private fallback | `_hidden_params["usage"]` | private/internal best-effort fallback，不是 LiteLLM 稳定公共契约；仅在 public usage zero-only/no-signal 等窄场景补足 streaming usage，不改变 provider 请求参数 | unit/mock 覆盖；缺失时只影响 telemetry 完整性，不代表模型请求失败 |
+| OpenAI | `usage.prompt_tokens_details.cached_tokens` | Die offizielle Prompt-Caching-Dokumentation erklärt, dass unter 1024 Tokens ebenfalls `cached_tokens=0` zurückgegeben wird: <https://developers.openai.com/api/docs/guides/prompt-caching> | unit/mock-Abdeckung; dieser PR hat kein OpenAI-live-smoke durchgeführt |
+| Anthropic | `cache_creation_input_tokens` / `cache_read_input_tokens` / `input_tokens` | Die offizielle Prompt-Caching-Dokumentation definiert `total_input_tokens = cache_read_input_tokens + cache_creation_input_tokens + input_tokens`: <https://platform.claude.com/docs/en/build-with-claude/prompt-caching> | unit/mock-Abdeckung; dieser PR hat kein Anthropic-live-smoke durchgeführt |
+| Gemini / Vertex AI | Offizielles Feld ist `UsageMetadata.cachedContentTokenCount`; die Laufzeit konsumiert die von LiteLLM freigegebenen snake_case-/normalisierten Felder wie `cached_content_token_count`, `cache_read_input_tokens` oder `prompt_tokens_details.cached_tokens` | Offizielle Gemini-`UsageMetadata`-Felder siehe <https://ai.google.dev/api/generate-content#UsageMetadata>; dieses Repository fügt kein natives camelCase-Runtime-Fallback hinzu; die Laufzeitgrenze richtet sich nach `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` | unit/mock-Abdeckung; dieser PR hat kein Gemini-/Vertex-live-smoke durchgeführt |
+| DeepSeek | `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` | Die DeepSeek-Chat-Completion-Dokumentation erklärt `prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`: <https://api-docs.deepseek.com/api/create-chat-completion> | unit/mock-Abdeckung; dieser PR hat nur ein desensibilisiertes DeepSeek-smoke durchgeführt und speichert keine vollständige Antwort |
+| GLM / OpenAI-kompatible / StepFun und andere kompatible Plattformen | Werte, die aus der modellierten token/cache-count-Allowlist auf einheitliche Felder abgebildet werden können | Kein offizieller stabiler Cache-Telemetrie-Vertrag deklariert; nur best-effort-Normalisierung unter dem aktuellen LiteLLM-/OpenAI-kompatiblen Shape; nicht modellierte Metadaten werden nicht persistiert | unit/fixture/mock-Abdeckung; dieser PR hat für diese Provider kein live-smoke durchgeführt |
+| LiteLLM öffentliche Antwortform | `usage` / `usage_metadata` | Konsumiert nach der Response-/`Usage`-Objekform des aktuellen Abhängigkeitsfensters `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`; keine LiteLLM-2.x-Kompatibilitätszusage | Analyzer / Agent / usage-Tests abgedeckt |
+| LiteLLM privater Fallback | `_hidden_params["usage"]` | private/internal best-effort-Fallback, kein stabiler öffentlicher LiteLLM-Vertrag; ergänzt nur in engen Szenarien wie public usage zero-only/no-signal die Streaming-Usage und ändert keine Provider-Anfrageparameter | unit/mock-Abdeckung; bei fehlen betrifft es nur die Telemetrie-Vollständigkeit, nicht einen Modellanfragefehler |
 
 ```env
 LLM_USAGE_HMAC_SECRET=
 LLM_USAGE_HMAC_KEY_VERSION=local-v1
 ```
 
-- `LLM_USAGE_HMAC_SECRET` 留空时，系统会在数据目录生成 `.llm_usage_hmac_secret`，适合单部署本地比较。
-- 只有需要跨部署比较 HMAC 时，才显式配置同一个高熵随机密钥；建议使用 `openssl rand -hex 32` 生成。
-- `.llm_usage_hmac_secret` 是本地 secret artifact，已在 `.gitignore` 中按文件名忽略。
-- 轮换密钥时同步更新 `LLM_USAGE_HMAC_KEY_VERSION`，避免不同密钥生成的 HMAC 被误比较。
-- 不要复用登录 session secret，也不要把真实密钥提交到版本控制或暴露在 issue、日志、截图中。
+- Wenn `LLM_USAGE_HMAC_SECRET` leer ist, generiert das System im Datenverzeichnis `.llm_usage_hmac_secret`, geeignet für lokale Vergleiche bei Single-Deployment.
+- Nur wenn HMAC über Deployments hinweg verglichen werden soll, wird explizit dasselbe hoch-entrope Zufallsgeheimnis konfiguriert; empfohlen wird die Generierung mit `openssl rand -hex 32`.
+- `.llm_usage_hmac_secret` ist ein lokales Secret-Artefakt und wird in `.gitignore` nach Dateiname ignoriert.
+- Beim Rotieren des Secrets muss `LLM_USAGE_HMAC_KEY_VERSION` synchron aktualisiert werden, damit HMACs, die mit verschiedenen Secrets erzeugt wurden, nicht fälschlich verglichen werden.
+- Reuse nicht das Login-Session-Secret und committe keine echten Secrets in die Versionskontrolle oder setze sie in Issues, Logs oder Screenshots aus.
 
-### Provider prompt cache 配置（P1 / P1.5）
+### Provider-Prompt-Cache-Konfiguration (P1 / P1.5)
 
-Prompt cache 配置只控制本项目是否记录 cache usage / diagnostics，以及主分析路径是否主动发送已验证的 provider-specific hint；它不控制 OpenAI、Gemini、DeepSeek 等 provider 的 implicit / provider-managed cache。
+Die Prompt-Cache-Konfiguration steuert nur, ob dieses Projekt Cache-Usage/-Diagnosen aufzeichnet und ob der Hauptanalysepfad aktiv verifizierte provider-spezifische Hinweise sendet; sie steuert nicht das implizite / provider-verwaltete Caching von OpenAI, Gemini, DeepSeek und anderen Providern.
 
 ```env
 LLM_PROMPT_CACHE_TELEMETRY_ENABLED=true
@@ -380,123 +380,123 @@ LLM_PROMPT_CACHE_HINTS_ENABLED=false
 LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL=off
 ```
 
-- `LLM_PROMPT_CACHE_TELEMETRY_ENABLED=false` 时，不持久化 provider raw usage JSON、normalized cache fields 和 cache decision diagnostics；基础 token usage 记录保持兼容。
-- `LLM_PROMPT_CACHE_HINTS_ENABLED=true` 只允许主分析 / analyzer LiteLLM 路径向 registry 中已验证或 smoke-tested 的 provider / route 发送 `prompt_cache_key`、`cache_control`、`user_id` 等 hint。问股 Agent 路径当前只记录 capability / usage diagnostics，不主动发送 provider-specific hints。未知 OpenAI-compatible gateway 默认 telemetry only。
-- `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL=basic` 只在 debug 日志和测试可观察对象中提供 provider、api surface、verification status、hint applied / disabled reason 等非敏感枚举。`debug` 在同一范围内额外提供 HMAC-derived route/cache diagnostics 和 matched caps id，但仍禁止 raw prompt、request body、message content、股票/用户原文、webhook 或 API key；这些诊断不是公开 Usage API 或普通设置页输出。
-- Provider Cache Capability Registry 是 `src/llm/provider_cache.py` 中的 code-level 手工能力表。条目带 `doc_sources`、`last_verified_at` 和 `verification_status`；新增 provider 或升级 LiteLLM 后应同步更新条目与测试。
-- Prompt cache key、route key 和 DeepSeek session isolation 复用 `LLM_USAGE_HMAC_SECRET` / `.llm_usage_hmac_secret` 做 domain-separated HMAC，不新增 prompt-cache 专用 secret。
+- Bei `LLM_PROMPT_CACHE_TELEMETRY_ENABLED=false` werden raw-usage-JSON des Providers, normalisierte Cache-Felder und Cache-Entscheidungs-Diagnosen nicht persistiert; die grundlegende Token-Usage-Aufzeichnung bleibt kompatibel.
+- `LLM_PROMPT_CACHE_HINTS_ENABLED=true` erlaubt nur dem Hauptanalyse-/Analyzer-LiteLLM-Pfad, an im Registry verifizierte oder smoke-getestete Provider/Routen Hinweise wie `prompt_cache_key`, `cache_control`, `user_id` zu senden. Der Ask-Stock-Agent-Pfad zeichnet derzeit nur Fähigkeits-/Usage-Diagnosen auf und sendet keine provider-spezifischen Hinweise aktiv. Unbekannte OpenAI-kompatible Gateways sind standardmäßig telemetry-only.
+- `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL=basic` bietet nur in Debug-Logs und testbeobachtbaren Objekten nicht-sensitive Enumerationen wie provider, api surface, verification status, hint applied / disabled reason. `debug` bietet im selben Umfang zusätzlich HMAC-abgeleitete route/cache-Diagnosen und matched caps id, verbietet aber weiterhin raw prompt, request body, message content, Aktien-/Benutzeroriginaltext, webhook oder API key; diese Diagnosen sind kein Output der öffentlichen Usage-API oder der normalen Einstellungsseite.
+- Die Provider-Cache-Capability-Registry ist eine code-level manuelle Fähigkeitstabelle in `src/llm/provider_cache.py`. Einträge tragen `doc_sources`, `last_verified_at` und `verification_status`; nach dem Hinzufügen neuer Provider oder dem Upgrade von LiteLLM sollten Einträge und Tests synchron aktualisiert werden.
+- Prompt-Cache-Key, Route-Key und DeepSeek-Session-Isolation verwenden `LLM_USAGE_HMAC_SECRET` / `.llm_usage_hmac_secret` für domain-separated HMAC; es wird kein Prompt-Cache-spezifisches Secret neu eingeführt.
 
-### Legacy message stability audit（P0.5a）
+### Legacy-Message-Stabilitätsaudit (P0.5a)
 
-P0.5a 在普通个股分析路径为 legacy `[system, user]` message 追加内部稳定性审计字段，继续写入本地 `llm_usage`。它复用上面的 message HMAC，不修改 prompt 内容、message 顺序、provider 请求参数、cache hint、模型输出、fallback 顺序，也不扩展公开 Usage API 或 Web 页面。
+P0.5a fügt im normalen Einzelaktien-Analysepfad interne Stabilitätsaudit-Felder zu den legacy `[system, user]`-Messages hinzu und schreibt sie weiterhin in lokale `llm_usage`. Es verwendet das oben genannte Message-HMAC, ändert weder Prompt-Inhalt, Message-Reihenfolge, Provider-Anfrageparameter, Cache-Hinweise, Modellausgabe noch Fallback-Reihenfolge und erweitert auch nicht die öffentliche Usage-API oder die Web-Seite.
 
-新增字段只用于维护者诊断：
+Neue Felder dienen nur der Wartungsdiagnose:
 
-- `language`、`market_group`、`analysis_mode`、`legacy_prompt_mode`、`provider`、`transport`、`message_count` 描述本次普通个股分析调用的低敏路由上下文。
-- `skill_config_hmac` 是基于已解析 skill prompt 片段、默认 skill 策略和 legacy prompt 模式生成的 HMAC-SHA256，用于判断 system message 是否随 skill configuration 变化；不会保存 skill 原文。
-- `known_dynamic_marker_positions` 是 JSON string，只记录 `marker_name`、`message_role`、`char_offset`；不会保存股票代码、股票名称、日期、新闻正文、行情值、headers、response text 或 prompt 片段。
-- `estimated_total_prompt_tokens`、`approx_common_prefix_chars`、`approx_common_prefix_tokens` 基于项目内稳定 canonical render 估算：按 message 顺序拼接 `role + "\n" + content`，并用固定分隔符连接。该口径不声称等同 provider 真实 wire bytes。
-- `char_offset` 是 marker 在对应 message `content` 内的位置；`approx_common_prefix_chars` 是 canonical render 起点到第一个已知动态 marker 之前的字符数。没有 marker 时 common-prefix 字段为 `NULL`。
-- token 估算使用 `ceil(chars / 3)`，只作 diagnostics，不替代 provider usage，也不参与 cache threshold 判定；中文场景可能偏低。
+- `language`, `market_group`, `analysis_mode`, `legacy_prompt_mode`, `provider`, `transport`, `message_count` beschreiben den niederempfindlichen Routingkontext dieses normalen Einzelaktien-Analyseaufrufs.
+- `skill_config_hmac` ist ein HMAC-SHA256, der aus den geparsten Skill-Prompt-Fragmenten, der Standard-Skill-Strategie und dem legacy Prompt-Modus erzeugt wird, um zu beurteilen, ob sich die System-Message mit der Skill-Konfiguration ändert; der Skill-Originaltext wird nicht gespeichert.
+- `known_dynamic_marker_positions` ist ein JSON-String und zeichnet nur `marker_name`, `message_role`, `char_offset` auf; es werden keine Aktiencodes, Aktiennamen, Daten, Nachrichtentexte, Kursdatenwerte, headers, Antworttexte oder Prompt-Fragmente gespeichert.
+- `estimated_total_prompt_tokens`, `approx_common_prefix_chars`, `approx_common_prefix_tokens` werden basierend auf einer stabilen kanonischen Render-Darstellung im Projekt geschätzt: `role + "\n" + content` in Message-Reihenfolge verketten und mit festen Trennzeichen verbinden. Diese Definition beansprucht nicht, den echten Wire-Bytes des Providers zu entsprechen.
+- `char_offset` ist die Position des Markers innerhalb des `content` der zugehörigen Message; `approx_common_prefix_chars` ist die Anzahl der Zeichen vom Start der kanonischen Render-Darstellung bis zum ersten bekannten dynamischen Marker. Ohne Marker sind die Common-Prefix-Felder `NULL`.
+- Die Token-Schätzung verwendet `ceil(chars / 3)`, dient nur der Diagnose, ersetzt weder die Provider-Usage noch nimmt sie an der Cache-Threshold-Entscheidung teil; bei chinesischen Szenarien kann sie zu niedrig liegen.
 
-P0.5a 不引入 PromptBlock IR、`block_id`、`stability_class`、`static_prefix_hash` 或 `dynamic_context_hash`。Agent、research 与 market review 路径暂不接入该审计。
+P0.5a führt kein PromptBlock-IR, `block_id`, `stability_class`, `static_prefix_hash` oder `dynamic_context_hash` ein. Die Pfade Agent, research und market review sind vorerst nicht an dieses Audit angebunden.
 
 ---
 
-## 方式三：YAML 高级配置（适合老手自定义）
+## Methode 3: YAML-Erweiterte Konfiguration (für Profis)
 
-**目标：** 我不在乎学习门槛，我要最高控制权，我要用原生规则做企业级高可用！
+**Ziel:** Mir ist die Lernschwelle egal; ich will maximale Kontrolle und mit nativen Regeln unternehmensgerechte Hochverfügbarkeit!
 
-这一层会直接映射到底层 LiteLLM 路由能力，支持高并发、自动重试、按 RPM/TPM 负载均衡等操作。
+Diese Ebene wird direkt auf die LiteLLM-Routingfähigkeiten der zugrunde liegenden Schicht abgebildet und unterstützt hohe Nebenläufigkeit, automatische Retries, RPM/TPM-Load-Balancing und mehr.
 
-### 本地运行 / Docker 部署模式配置说明
+### Konfigurationshinweise für lokale Ausführung / Docker-Bereitstellung
 
-1. 在 `.env` 中只保留一行指向声明：
+1. In `.env` nur eine Zeile als Verweis auf die Deklaration lassen:
    ```env
    LITELLM_CONFIG=./litellm_config.yaml
    ```
-2. 在项目根目录创建一个 `litellm_config.yaml`（可以参考自带的 `docs/examples/litellm_config.example.yaml`）。
+2. Im Projektstammverzeichnis eine `litellm_config.yaml` erstellen (orientiere dich an der mitgelieferten `docs/examples/litellm_config.example.yaml`).
 
-示例 `litellm_config.yaml`：
+Beispiel `litellm_config.yaml`:
 ```yaml
 model_list:
   - model_name: my-smart-model
     litellm_params:
       model: deepseek/deepseek-v4-flash
       api_base: https://api.deepseek.com
-      api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # 从环境变量读取 Key，安全防泄漏
+      api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # Key aus der Umgebungsvariable lesen, sicher gegen Leck
 
-  # Ollama 本地模型（无需 api_key）
+  # Ollama lokales Modell (kein api_key nötig)
   - model_name: ollama/qwen3:8b
     litellm_params:
       model: ollama/qwen3:8b
       api_base: http://localhost:11434
 ```
 
-### GitHub Actions配置说明
+### GitHub-Actions-Konfigurationshinweise
 
-1. `Settings` → `Secrets and variables` → `Actions`。非敏感配置（如模型名、开关、Base URL）可以放在 `Secret` 或 `Variables`；凡是 `*_API_KEY` / `*_API_KEYS` 以及 `LLM_<NAME>_API_KEY` / `LLM_<NAME>_API_KEYS` 这类密钥字段，请统一放在 `Secret` 标签页的 `New repository secret`
+1. `Settings` → `Secrets and variables` → `Actions`. Nicht-sensitive Konfigurationen (z. B. Modellnamen, Schalter, Base-URL) können in `Secret` oder `Variables` abgelegt werden; alle Schlüsselfelder wie `*_API_KEY` / `*_API_KEYS` und `LLM_<NAME>_API_KEY` / `LLM_<NAME>_API_KEYS` bitte einheitlich unter dem Tab `Secret` → `New repository secret` ablegen.
 
-2. 按下表配置，只有全部必填配置正确配置，YAML 高级配置模式才可以生效，YAML配置文件的写法，可以参考自带的 `docs/examples/litellm_config.example.yaml`
+2. Gemäß der Tabelle konfigurieren; nur wenn alle Pflichtkonfigurationen korrekt sind, kann der YAML-Erweiterte-Konfigurationsmodus wirksam werden. Die Schreibweise der YAML-Konfigurationsdatei richtet sich nach der mitgelieferten `docs/examples/litellm_config.example.yaml`.
 
-| Secret 名称 | 说明 | 必填 |
+| Secret-Name | Beschreibung | Pflicht |
 |------------|------|:----:|
-| `LITELLM_CONFIG` | 高级模型路由配置文件路径，通常配置 `./litellm_config.yaml` | 必填 |
-| `LITELLM_MODEL` | 默认主模型名称或路由别名 | 必填 |
-| `LITELLM_CONFIG_YAML` | 存放 YAML 配置文件内容，可不在仓库中提交实体文件 | 可选 |
-| `LITELLM_API_KEY` | 用于存储API Key，可在配置文件中引用（环境变量引用方式）。由于GitHub Actions必须要指定导入的环境变量，因此你不能像本地运行模式那样自由命名环境变量 | 可选，必须配置到repository secret中 |
-| `ANTHROPIC_API_KEY` | 如果要多个API Key，这个变量名称也能拿来用 | 可选，必须配置到repository secret中 |
-| `OPENAI_API_KEY` | 同上，可以用来存储API Key | 可选，必须配置到repository secret中 |
+| `LITELLM_CONFIG` | Pfad zur erweiterten Modellrouting-Konfigurationsdatei, in der Regel `./litellm_config.yaml` | Pflicht |
+| `LITELLM_MODEL` | Standard-Hauptmodellname oder Routing-Alias | Pflicht |
+| `LITELLM_CONFIG_YAML` | Enthält den Inhalt der YAML-Konfigurationsdatei; eine physische Datei im Repository muss nicht eingecheckt werden | Optional |
+| `LITELLM_API_KEY` | Zum Speichern des API-Keys, der in der Konfigurationsdatei referenziert werden kann (Umgebungsvariablen-Referenz). Da GitHub Actions die importierte Umgebungsvariable explizit angeben muss, kannst du Umgebungsvariablen nicht frei benennen wie im lokalen Ausführungsmodus | Optional, muss im repository secret konfiguriert werden |
+| `ANTHROPIC_API_KEY` | Wenn mehrere API-Keys benötigt werden, kann dieser Variablenname ebenfalls verwendet werden | Optional, muss im repository secret konfiguriert werden |
+| `OPENAI_API_KEY` | Wie oben, kann zum Speichern des API-Keys verwendet werden | Optional, muss im repository secret konfiguriert werden |
 
-渠道模式无需上传 YAML 文件。仓库自带 `00-daily-analysis.yml` 已显式透传以下常用字段：
+Der Kanalmodus erfordert kein Hochladen der YAML-Datei. Die mitgelieferte `00-daily-analysis.yml` leitet bereits explizit die folgenden gängigen Felder durch:
 
-- 运行时选择：`GENERATION_BACKEND`、`GENERATION_FALLBACK_BACKEND`、`GENERATION_BACKEND_TIMEOUT_SECONDS`、`GENERATION_BACKEND_MAX_OUTPUT_BYTES`、`GENERATION_BACKEND_MAX_CONCURRENCY`、`LOCAL_CLI_BACKEND_MAX_CONCURRENCY`、`AGENT_GENERATION_BACKEND`、`LLM_CHANNELS`、`LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`AGENT_LITELLM_MODEL`、`VISION_MODEL`、`VISION_PROVIDER_PRIORITY`、`LLM_TEMPERATURE`、`LLM_USAGE_HMAC_SECRET`、`LLM_USAGE_HMAC_KEY_VERSION`、`LLM_PROMPT_CACHE_TELEMETRY_ENABLED`、`LLM_PROMPT_CACHE_HINTS_ENABLED`、`LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL`
-- 多 Key：`GEMINI_API_KEYS`、`ANTHROPIC_API_KEYS`、`OPENAI_API_KEYS`、`DEEPSEEK_API_KEYS`（当前 workflow 仅从 repository secrets 导入，不会读取同名 Variables）
-- 常用渠道名：`primary`、`secondary`、`aihubmix`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`
+- Laufzeitauswahl: `GENERATION_BACKEND`, `GENERATION_FALLBACK_BACKEND`, `GENERATION_BACKEND_TIMEOUT_SECONDS`, `GENERATION_BACKEND_MAX_OUTPUT_BYTES`, `GENERATION_BACKEND_MAX_CONCURRENCY`, `LOCAL_CLI_BACKEND_MAX_CONCURRENCY`, `AGENT_GENERATION_BACKEND`, `LLM_CHANNELS`, `LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `AGENT_LITELLM_MODEL`, `VISION_MODEL`, `VISION_PROVIDER_PRIORITY`, `LLM_TEMPERATURE`, `LLM_USAGE_HMAC_SECRET`, `LLM_USAGE_HMAC_KEY_VERSION`, `LLM_PROMPT_CACHE_TELEMETRY_ENABLED`, `LLM_PROMPT_CACHE_HINTS_ENABLED`, `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL`
+- Mehrere Keys: `GEMINI_API_KEYS`, `ANTHROPIC_API_KEYS`, `OPENAI_API_KEYS`, `DEEPSEEK_API_KEYS` (der aktuelle Workflow importiert nur aus repository secrets und liest keine gleichnamigen Variables)
+- Gängige Kanalnamen: `primary`, `secondary`, `aihubmix`, `deepseek`, `dashscope`, `zhipu`, `moonshot`, `minimax`, `volcengine`, `siliconflow`, `openrouter`, `gemini`, `anthropic`, `openai`, `ollama`
 
-例如在 GitHub Actions 中配置 `LLM_CHANNELS=primary,deepseek` 时，需同步配置 `LLM_PRIMARY_*` / `LLM_DEEPSEEK_*`。其中 `LLM_<NAME>_API_KEY` / `LLM_<NAME>_API_KEYS` 当前也仅从 repository secrets 导入；如果你把这些值放在 Variables，运行时不会生效。若使用自定义渠道名（如 `my_proxy`），GitHub Actions 还必须在 workflow `env:` 中显式新增对应的 `LLM_MY_PROXY_*` 映射；本地 `.env` 和 Docker 不受这个限制。
+Wenn du z. B. in GitHub Actions `LLM_CHANNELS=primary,deepseek` konfigurierst, müssen synchron `LLM_PRIMARY_*` / `LLM_DEEPSEEK_*` konfiguriert werden. Dabei werden `LLM_<NAME>_API_KEY` / `LLM_<NAME>_API_KEYS` derzeit ebenfalls nur aus repository secrets importiert; wenn du diese Werte in Variables ablegst, greifen sie zur Laufzeit nicht. Bei benutzerdefinierten Kanalnamen (z. B. `my_proxy`) muss GitHub Actions außerdem in der Workflow-`env:` explizit die zugehörige `LLM_MY_PROXY_*`-Abbildung hinzufügen; lokale `.env` und Docker sind von dieser Einschränkung nicht betroffen.
 
 
-> **三层配置互斥准则**：YAML 优先级最高！只要配置了 YAML，**渠道模式** 和 **新手极简模式** 统统被忽略。系统优先级为：`YAML配置 > 渠道模式 > 极简单模型`。
+> **Drei-Ebenen-Mutual-Exclusion-Regel**: Die YAML hat die höchste Priorität! Sobald eine YAML konfiguriert ist, werden **Kanalmodus** und **Neulings-Einfachmodus** alle ignoriert. Die Systempriorität lautet: `YAML-Konfiguration > Kanalmodus > Einfaches Einzelmodell`.
 
 ---
 
-## 扩展功能：看图模型 (Vision) 配置
+## Erweiterte Funktion: Bildmodell (Vision)-Konfiguration
 
-系统中有些特定功能（比如上传股票软件截图，让 AI 提取出截图里的股票代码并放入自选股池）必须用到具备“视觉能力”的模型。你需在 `.env` 单独给它指派一个懂图片的模型。
+Einige spezifische Funktionen im System (z. B. das Hochladen eines Aktiensoftware-Screenshots, damit die AI den Aktiencode aus dem Screenshot extrahiert und in die Watchlist aufnimmt) benötigen zwingend ein Modell mit „visuellen Fähigkeiten". Du musst ihm in `.env` separat ein bildfähiges Modell zuweisen.
 
 ```env
-# 指定你看图专用的模型名
+# Den für die Bilderkennung speziell verwendeten Modellnamen angeben
 VISION_MODEL=openai/gpt-5.5
-# 别忘了填写它对应提供商的 API KEY，如果是 OpenAI 兼容渠道就提供 OPENAI_API_KEY：
+# Vergiss nicht, den API-KEY des entsprechenden Anbieters einzutragen; für OpenAI-kompatible Kanäle OPENAI_API_KEY angeben:
 # OPENAI_API_KEY=xxx
 ```
 
-**备用看图机制：** 为了防止偶尔罢工，系统内置了切换策略。如果主视觉模型调用失败，它会按照下方的顺位尝试寻找是否有其他看图模型的 Key：
+**Backup-Bilderkennungsmechanismus:** Um gelegentliche Ausfälle zu verhindern, verfügt das System über eine integrierte Umschaltstrategie. Wenn der Hauptvision-Modellaufruf fehlschlägt, versucht es in der folgenden Reihenfolge, ob es einen Key für ein anderes Bildmodell gibt:
 ```env
-# 默认的备用顺序：
+# Standard-Backup-Reihenfolge:
 VISION_PROVIDER_PRIORITY=gemini,anthropic,openai
 ```
 
 ---
 
-## 检测与排错 (Troubleshooting)
+## Erkennung und Fehlerbehebung (Troubleshooting)
 
-配好了之后心惊胆战不知道对不对？在命令行（Terminal）里敲入下面代码帮你挂号问诊：
+Nach der Konfiguration bist du nervös, ob alles stimmt? Gib in der Befehlszeile (Terminal) den folgenden Code ein, um einen „Arzttermin" zu buchen:
 
-- `python scripts/check_env.py --config` ：纯检测 `.env` 配置文件里的逻辑写得对不对，是不是少写了什么。（秒出结果，不调用网络，纯检查本地文本拼写）
-- `python scripts/check_env.py --llm` ：系统会真的发一句问候语给大模型，让你亲眼看到他的回答。这能彻底测出你的**网络通不通、账号有没有欠费**。
+- `python scripts/check_env.py --config` : Reine Prüfung, ob die Logik in der `.env`-Konfigurationsdatei korrekt ist und ob etwas fehlt. (Ergebnis in Sekunden, keine Netzwerkaufrufe, reine lokale Text-/Schreibprüfung)
+- `python scripts/check_env.py --llm` : Das System sendet dem Large Model tatsächlich eine Begrüßung, damit du seine Antwort mit eigenen Augen siehst. Damit lässt sich gründlich testen, ob **dein Netzwerk funktioniert und das Konto Guthaben hat**.
 
-### 常见踩坑答疑台
+### Häufige Stolperfalle-Antwortstation
 
-| 遇到了什么诡异报错？ | 罪魁祸首可能是啥？ | 该怎么收拾它？ |
+| Welcher merkwürdige Fehler tritt auf? | Was könnte der Übeltäter sein? | Wie behebt man es? |
 |----------------------|----------------------|------------------|
-| **界面提示主模型未配置** | 系统不知道你到底想用哪家的哪个模型 | 在 `.env` 中写上一句明白话：`LITELLM_MODEL=provider/你的模型名`。比如 `openai/gpt-5.5` |
-| **我写了好几家的Key，为什么死活只有一个生效？修改还没用？** | 你把 **极简模式** 和 **渠道模式** 混着写了！ | 想好一条路走到黑——只要简单就删掉 `LLM_CHANNELS` 开头的；想要丰富备用切换就要全部转投到 `LLM_CHANNELS` 下的编制里。 |
-| **错误码报 400 或 401 或 Invalid API Key** | API Key 填错、少复制了一截、账号充值没到账、或者模型名字敲错（极度常见）。 | 1. 检查复制的 Key 前后是否有误填空格。<br> 2. 检查 Base URL 最后是不是少了一个 `/v1`。<br> 3. 检查模型名是否少写了 `openai/` 之类的前缀！ |
-| **Kimi K2.6 报 `invalid temperature`（可能提示只允许 `1.0` 或 `0.6`）** | 该模型按 thinking / non-thinking 模式要求不同固定 temperature；旧配置或调用入口可能还在传 `0.7`。 | 升级后系统会对 `kimi-k2.6` 默认 / thinking 请求自动使用 `temperature=1.0`；如果你在 LiteLLM YAML 路由里显式关闭 thinking，则自动改用 `0.6`。模型名建议写成 `openai/kimi-k2.6` 并配合 Moonshot / 聚合平台的 OpenAI 兼容 Base URL 与 API Key。非 Kimi fallback 仍会继续使用你配置的 `LLM_TEMPERATURE`。 |
-| **GPT-5 / o 系列报 `temperature` 不支持或只允许默认值** | 这类模型只接受服务端默认采样参数，但旧调用入口会显式传 `0.7`。 | 升级后请求层会省略 `temperature`，让服务端使用默认值；`.env` / Web 设置中的 `LLM_TEMPERATURE` 不会被改写，切回普通模型后仍按原值发送。 |
-| **转圈转不停，最后报 Timeout / ConnectionRefused 等** | 1. 在国内使用国外原版（像 Google、OpenAI），没开代理被墙了。<br>2. 你买的云服务器压根不能出境。 | 非常推荐使用**国内官方**（如DeepSeek、阿里）或者各种**兼容 OpenAI 的聚合中转接口**。因为中转站把网络问题帮你解决好了。 |
-| **Ollama 报 404、`Could not get model info` 或 `api/generate/api/show`** | 误用 `OPENAI_BASE_URL` 配置 Ollama，系统会错误拼接 URL | 改用 `OLLAMA_API_BASE=http://localhost:11434` 或渠道模式（`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`） |
+| **Die Oberfläche meldet Hauptmodell nicht konfiguriert** | Das System weiß nicht, welches Modell von welchem Anbieter du verwenden willst | In `.env` eine klare Angabe schreiben: `LITELLM_MODEL=provider/deinModellname`. Z. B. `openai/gpt-5.5` |
+| **Ich habe Keys mehrerer Anbieter geschrieben, warum greift hartnäckig nur einer? Und Änderungen wirken nicht?** | Du hast **Einfachmodus** und **Kanalmodus** vermischt! | Entscheide dich für einen einzigen Weg — wenn du Einfachheit willst, lösche alles, was mit `LLM_CHANNELS` beginnt; wenn du reichhaltige Backup-Umschaltung willst, wechsle alles vollständig in die Reihen unter `LLM_CHANNELS`. |
+| **Fehlercode 400 oder 401 oder Invalid API Key** | API-Key falsch eingetragen, ein Teil fehlt beim Kopieren, Kontoaufladung noch nicht eingegangen oder Modellname falsch getippt (extrem häufig). | 1. Prüfe, ob vor/nach dem kopierten Key fälschliche Leerzeichen stehen.<br> 2. Prüfe, ob am Ende der Base-URL ein `/v1` fehlt.<br> 3. Prüfe, ob beim Modellnamen ein Präfix wie `openai/` fehlt! |
+| **Kimi K2.6 meldet `invalid temperature` (evtl. Hinweis, dass nur `1.0` oder `0.6` erlaubt sind)** | Das Modell verlangt je nach thinking/non-thinking-Modus unterschiedliche feste temperature; alte Konfiguration oder Aufruf-Einstieg kann noch `0.7` übergeben. | Nach dem Upgrade verwendet das System für `kimi-k2.6` Standard-/Thinking-Anfragen automatisch `temperature=1.0`; wenn du in der LiteLLM-YAML-Route thinking explizit deaktivierst, wird automatisch `0.6` verwendet. Der Modellname wird empfohlen als `openai/kimi-k2.6` in Verbindung mit der OpenAI-kompatiblen Base-URL und dem API-Key von Moonshot / Aggregationsplattform. Nicht-Kimi-Fallbacks verwenden weiterhin dein konfiguriertes `LLM_TEMPERATURE`. |
+| **GPT-5 / o-Serie meldet `temperature` nicht unterstützt oder nur Standardwert erlaubt** | Diese Modelle akzeptieren nur die serverseitigen Standard-Sampling-Parameter, aber alte Aufruf-Einstiege übergeben explizit `0.7`. | Nach dem Upgrade lässt die Anfrageebene `temperature` weg, sodass der Server den Standardwert verwendet; `.env` / Web-Einstellungen `LLM_TEMPERATURE` wird nicht umgeschrieben, nach dem Zurückschalten auf normale Modelle wird weiterhin der Originalwert gesendet. |
+| **Es dreht sich endlos, am Ende Timeout / ConnectionRefused usw.** | 1. Im Inland die ausländischen Originale (wie Google, OpenAI) ohne Proxy verwenden, dadurch blockiert.<br>2. Dein gekaufter Cloud-Server kann keine Auslandsverbindungen herstellen. | **Inländische offizielle** Anbieter (wie DeepSeek, Alibaba) oder **OpenAI-kompatible Aggregations-Transit-Interfaces** werden sehr empfohlen. Denn die Transit-Station löst die Netzwerkprobleme für dich. |
+| **Ollama meldet 404, `Could not get model info` oder `api/generate/api/show`** | Ollama fälschlich über `OPENAI_BASE_URL` konfiguriert; das System fügt die URL falsch zusammen | Auf `OLLAMA_API_BASE=http://localhost:11434` oder den Kanalmodus (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`) umstellen |
 
-*进阶老手的叮嘱：如果你开启了 **Agent (深度思考网络搜索问股) 模式**，这里有个经验之谈，推荐选用如 `deepseek-v4-pro` 这种逻辑推导能力更强的大模型。如果为了省钱用小微模型跑 Agent，它逻辑能力大概率跟不上，不仅达不到预期，还会白跑一堆空流程。*
+*Eine Mahnung für fortgeschrittene Profis: Wenn du den **Agent-Modus (Deep-Thinking-Online-Suche Ask-Stock)** aktivierst, ist hier ein Erfahrungstipp: Bevorzuge ein Large Model mit stärkerer logischer Ableitungsfähigkeit wie `deepseek-v4-pro`. Wenn du zur Kostenersparnis ein kleines Modell für den Agent verwendest, wird seine logische Fähigkeit wahrscheinlich nicht mithalten — nicht nur, dass die Erwartungen nicht erfüllt werden, sondern es werden auch viele leere Abläufe vergeblich durchlaufen.*

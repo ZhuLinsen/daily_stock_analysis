@@ -1,133 +1,133 @@
-# 实时告警中心
+# Echtzeit-Alarmzentrum
 
-本文档记录 Issue #1202 告警中心的运行基线、数据契约、分阶段实现范围和兼容边界。
+Dieses Dokument beschreibt die Laufzeit-Baseline, den Datenvertrag, die phasenweise umgesetzten Umfänge und die Kompatibilitätsgrenzen des Alarmzentrums aus Issue #1202.
 
-## 当前基线
+## Aktuelle Baseline
 
-当前运行时告警由 `src/services/alert_worker.py` 中的后台 worker 统一调度，底层规则评估复用 `src/services/alert_service.py` 与 `src/agent/events.py` 中的 EventMonitor 规则模型。
+Die aktuellen Laufzeit-Alarme werden einheitlich durch den Hintergrund-worker in `src/services/alert_worker.py` geplant; die Regelbewertung darunter nutzt das EventMonitor-Regelmodell aus `src/services/alert_service.py` und `src/agent/events.py` wieder.
 
-- 配置入口：`AGENT_EVENT_MONITOR_ENABLED`、`AGENT_EVENT_MONITOR_INTERVAL_MINUTES`、`AGENT_EVENT_ALERT_RULES_JSON`。
-- 运行入口：`main.py` 在 schedule 模式中注册 `agent_event_monitor` 后台任务；后台 worker 每轮读取持久化 active rules，并继续兼容 legacy `AGENT_EVENT_ALERT_RULES_JSON`。
-- 通知投递：触发后复用 `NotificationService.send(..., route_type="alert")`，继续遵守通知网关的 alert 路由配置。
-- Web/System 配置校验：`src/services/system_config_service.py` 会对 `AGENT_EVENT_ALERT_RULES_JSON` 做 JSON 与规则语义校验。
+- Konfigurationseinstieg: `AGENT_EVENT_MONITOR_ENABLED`, `AGENT_EVENT_MONITOR_INTERVAL_MINUTES`, `AGENT_EVENT_ALERT_RULES_JSON`.
+- Laufzeiteinstieg: `main.py` registriert in der schedule-Mode den Hintergrund-Task `agent_event_monitor`; der Hintergrund-worker liest pro Runde die persistierten active rules und bleibt kompatibel mit dem legacy-`AGENT_EVENT_ALERT_RULES_JSON`.
+- Benachrichtigungszustellung: Nach Auslösung wird `NotificationService.send(..., route_type="alert")` wiederverwendet und weiterhin die alert-Routingskonfiguration des Benachrichtigungs-Gateways eingehalten.
+- Web/System-Konfigurationsvalidierung: `src/services/system_config_service.py` validiert `AGENT_EVENT_ALERT_RULES_JSON` hinsichtlich JSON und Regelsemantik.
 
-当前 runtime 支持三类规则：
+Das aktuelle runtime unterstützt drei Regeltypen:
 
-| `alert_type` | 方向字段 | 阈值字段 | 当前语义 |
+| `alert_type` | Richtungsfeld | Schwellenfeld | Aktuelle Semantik |
 | --- | --- | --- | --- |
-| `price_cross` | `direction`: `above` / `below` | `price` | 实时价格上破或下破固定价格 |
-| `price_change_percent` | `direction`: `up` / `down` | `change_pct` | 实时涨跌幅达到指定百分比 |
-| `volume_spike` | - | `multiplier` | 最新成交量超过近 20 日均量的指定倍数 |
+| `price_cross` | `direction`: `above` / `below` | `price` | Echtzeitpreis durchbricht einen festen Preis nach oben oder unten |
+| `price_change_percent` | `direction`: `up` / `down` | `change_pct` | Echtzeit-Kursänderung erreicht einen bestimmten Prozentsatz |
+| `volume_spike` | - | `multiplier` | Das neueste Volumen übersteigt das angegebene Vielfache des durchschnittlichen Volumens der letzten 20 Tage |
 
-`sentiment_shift`、`risk_flag`、`custom` 等类型只作为未来扩展占位；当前运行时不接受这些类型作为可执行规则。
+Typen wie `sentiment_shift`, `risk_flag`, `custom` dienen nur als Platzhalter für zukünftige Erweiterungen; das aktuelle runtime akzeptiert diese Typen nicht als ausführbare Regeln.
 
-## Legacy 配置兼容
+## Legacy-Konfigurationskompatibilität
 
-`AGENT_EVENT_ALERT_RULES_JSON` 作为 legacy 运行时规则来源继续保留，不自动迁移、删除、覆盖或改写用户已有 `.env` / Web 配置。
+`AGENT_EVENT_ALERT_RULES_JSON` bleibt als Quelle für legacy-Laufzeitregeln erhalten; bestehende `.env`- / Web-Konfigurationen des Benutzers werden nicht automatisch migriert, gelöscht, überschrieben oder umgeschrieben.
 
-- 空字符串或空数组表示未配置 legacy 规则；schedule 模式仍会注册后台 worker，以便后续 API 创建的持久化 active rules 无需重启即可被评估。
-- Web/System 配置保存时执行严格校验，JSON 无效、字段缺失、方向非法、阈值非法或 unsupported rule type 都应返回配置错误。
-- 运行时加载时允许跳过单条无效规则，剩余有效规则继续工作，避免单条配置破坏整个 schedule 进程。
-- 当前 worker 使用进程内 fingerprint 避免持续触发条件重复推送；这不是告警中心冷却模型，也不提供跨进程或重启后的冷却状态。
+- Eine leere Zeichenkette oder ein leeres Array bedeutet: keine legacy-Regeln konfiguriert; die schedule-Mode registriert den Hintergrund-worker trotzdem, damit später über die API erstellte persistierte active rules ohne Neustart bewertet werden können.
+- Beim Speichern der Web/System-Konfiguration wird eine strenge Validierung durchgeführt; ungültiges JSON, fehlende Felder, ungültige Richtung, ungültige Schwelle oder unsupported rule type müssen einen Konfigurationsfehler zurückgeben.
+- Beim Laden zur Laufzeit darf eine einzelne ungültige Regel übersprungen werden; die übrigen gültigen Regeln arbeiten weiter, damit eine einzelne Konfiguration nicht den gesamten schedule-Prozess zerstört.
+- Der aktuelle worker verwendet einen in-process-fingerprint, um wiederholte Pushs bei dauerhaft erfüllten Bedingungen zu vermeiden; dies ist kein Kühlungsmodell des Alarmzentrums und bietet auch keinen cross-prozessualen oder nach dem Neustart erhaltenen Kühlungszustand.
 
-## 数据契约
+## Datenvertrag
 
-以下契约用于后续 P1+ API、worker、Web 和存储实现对齐。P0 只定义字段和语义边界，不代表当前已经存在这些持久化实体。
+Die folgenden Verträge dienen der Ausrichtung der nachgelagerten P1+-API-, worker-, Web- und Speicherimplementierung. P0 definiert nur Felder und Semantikgrenzen; das bedeutet nicht, dass diese persistierten Entitäten derzeit bereits existieren.
 
 ### `alert_rule`
 
-可管理的告警规则。
+Eine verwaltbare Alarmregel.
 
-| 字段 | 说明 |
+| Feld | Beschreibung |
 | --- | --- |
-| `id` | 规则 ID；legacy JSON 规则在 P0 中没有持久化 ID |
-| `name` | 用户可读名称；没有提供时可由规则类型和目标生成 |
-| `target_scope` | 目标范围，例如 single symbol、watchlist、portfolio、market |
-| `target` | 目标标的或目标引用，例如股票代码、watchlist ID、portfolio ID |
-| `alert_type` | 规则类型；P1 初始只允许 `price_cross`、`price_change_percent`、`volume_spike` |
-| `parameters` | 规则参数，例如 `direction`、`price`、`change_pct`、`multiplier` |
-| `severity` | 告警等级，例如 info、warning、critical |
-| `enabled` | 是否启用 |
-| `cooldown_policy` | 冷却策略；P0 只定义字段，P4 才实现执行语义 |
-| `notification_policy` | 通知策略；默认复用 `NotificationService` 的 alert 路由 |
-| `source` | 创建来源，例如 legacy_env、web、api、import |
-| `created_at` / `updated_at` | 创建和更新时间 |
+| `id` | Regel-ID; legacy-JSON-Regeln haben in P0 keine persistierte ID |
+| `name` | Benutzerlesbarer Name; kann bei Nichtangabe aus Regeltyp und Ziel erzeugt werden |
+| `target_scope` | Zielumfang, z. B. single symbol, watchlist, portfolio, market |
+| `target` | Zielwert oder Zielreferenz, z. B. Aktiencode, watchlist-ID, portfolio-ID |
+| `alert_type` | Regeltyp; P1 erlaubt zunächst nur `price_cross`, `price_change_percent`, `volume_spike` |
+| `parameters` | Regelparameter, z. B. `direction`, `price`, `change_pct`, `multiplier` |
+| `severity` | Alarmstufe, z. B. info, warning, critical |
+| `enabled` | Ob aktiviert |
+| `cooldown_policy` | Kühlungsrichtlinie; P0 definiert nur das Feld, P4 implementiert die Ausführungssemantik |
+| `notification_policy` | Benachrichtigungsrichtlinie; Standardmäßig wird die alert-Route von `NotificationService` wiederverwendet |
+| `source` | Erstellungsquelle, z. B. legacy_env, web, api, import |
+| `created_at` / `updated_at` | Erstellungs- und Aktualisierungszeit |
 
 ### `alert_trigger`
 
-一次真实或可记录的规则触发。
+Eine reale oder protokollierbare Regelauslösung.
 
-| 字段 | 说明 |
+| Feld | Beschreibung |
 | --- | --- |
-| `id` | 触发记录 ID |
-| `rule_id` | 对应规则 ID；legacy env 规则可记录临时引用 |
-| `target` | 实际触发目标 |
-| `observed_value` | 观察值，例如现价、涨跌幅、成交量倍数 |
-| `threshold` | 触发阈值 |
-| `reason` | 可读触发原因 |
-| `data_source` | 数据源或 provider |
-| `data_timestamp` | 数据时间；缺失时不得伪造为当前时间 |
-| `triggered_at` | 触发时间 |
-| `status` | 触发状态，例如 triggered、skipped、degraded、failed |
-| `diagnostics` | 脱敏后的诊断信息 |
+| `id` | Auslösungsdatensatz-ID |
+| `rule_id` | Zugehörige Regel-ID; legacy-env-Regeln können einen temporären Verweis protokollieren |
+| `target` | Tatsächliches Auslöseziel |
+| `observed_value` | Beobachtungswert, z. B. aktueller Preis, Kursänderungsprozentsatz, Volumenvielfaches |
+| `threshold` | Auslöseschwelle |
+| `reason` | Lesbarer Auslösegrund |
+| `data_source` | Datenquelle oder provider |
+| `data_timestamp` | Datenzeit; bei fehlender Zeit darf nicht die aktuelle Zeit vorgetäuscht werden |
+| `triggered_at` | Auslösezeit |
+| `status` | Auslösestatus, z. B. triggered, skipped, degraded, failed |
+| `diagnostics` | Redigierte Diagnoseinformationen |
 
 ### `alert_notification`
 
-一次触发对应的通知尝试。
+Ein Benachrichtigungsversuch zu einer Auslösung.
 
-| 字段 | 说明 |
+| Feld | Beschreibung |
 | --- | --- |
-| `id` | 通知尝试 ID |
-| `trigger_id` | 对应触发记录 ID |
-| `channel` | 通知渠道 |
-| `attempt` | 第几次尝试 |
-| `success` | 是否成功 |
-| `error_code` | 结构化错误码 |
-| `retryable` | 是否建议重试 |
-| `latency_ms` | 耗时 |
-| `diagnostics` | 脱敏后的发送诊断，不得包含 token、完整 webhook URL、邮箱密码或 bot secret |
-| `created_at` | 尝试时间 |
+| `id` | Benachrichtigungsversuchs-ID |
+| `trigger_id` | Zugehöriger Auslösungsdatensatz-ID |
+| `channel` | Benachrichtigungskanal |
+| `attempt` | Wie vielter Versuch |
+| `success` | Ob erfolgreich |
+| `error_code` | Strukturierter Fehlercode |
+| `retryable` | Ob ein Retry empfohlen wird |
+| `latency_ms` | Benötigte Zeit |
+| `diagnostics` | Redigierte Sende-Diagnose; darf kein token, keine vollständige webhook-URL, kein E-Mail-Passwort und kein bot secret enthalten |
+| `created_at` | Versuchszeit |
 
 ### `alert_cooldown`
 
-规则或目标维度的冷却状态。
+Kühlungszustand auf Regel- oder Zieldimension.
 
-| 字段 | 说明 |
+| Feld | Beschreibung |
 | --- | --- |
-| `rule_id` | 对应规则 ID |
-| `target` | 冷却目标 |
-| `severity` | 可选等级维度 |
-| `last_triggered_at` | 最近触发时间 |
-| `cooldown_until` | 冷却截止时间 |
-| `reason` | 冷却原因 |
-| `state` | 当前状态，例如 active、expired |
-| `updated_at` | 更新时间 |
+| `rule_id` | Zugehörige Regel-ID |
+| `target` | Kühlungsziel |
+| `severity` | Optionale Stufen-Dimension |
+| `last_triggered_at` | Letzte Auslösezeit |
+| `cooldown_until` | Kühlungsendezeitpunkt |
+| `reason` | Kühlungsgrund |
+| `state` | Aktueller Zustand, z. B. active, expired |
+| `updated_at` | Aktualisierungszeit |
 
-## 存储方案评估
+## Bewertung der Speicherlösung
 
-当前仓库已有 SQLite 存储层和 repository/service 分层：
+Das aktuelle Repository hat bereits eine SQLite-Speicherschicht und eine repository/service-Schichtung:
 
-- `src/storage.py` 管理 SQLite 连接、SQLAlchemy ORM 模型和 `DatabaseManager`。
-- `src/repositories/` 放置数据访问层，例如 `PortfolioRepository`。
-- `src/services/` 放置业务服务层，例如 `PortfolioService`、`PortfolioRiskService`。
-- 默认数据库路径跟随现有配置，通常落在 `data/stock_analysis.db`。
+- `src/storage.py` verwaltet die SQLite-Verbindung, SQLAlchemy-ORM-Modelle und den `DatabaseManager`.
+- `src/repositories/` enthält die Datenzugriffsschicht, z. B. `PortfolioRepository`.
+- `src/services/` enthält die Geschäftsserviceschicht, z. B. `PortfolioService`, `PortfolioRiskService`.
+- Der Standard-Datenbankpfad folgt der bestehenden Konfiguration und liegt üblicherweise unter `data/stock_analysis.db`.
 
-P1/P2 实现告警持久化时，推荐优先复用以上模式：在 storage 层定义 alert ORM 模型，在 repository 层封装 CRUD 和查询，在 service 层处理规则校验、评估状态、通知结果和冷却语义。P0 不新建表，不改变现有数据库。
+Bei der Implementierung der Alarm-Persistenz in P1/P2 wird empfohlen, die obigen Muster bevorzugt wiederzuverwenden: alert-ORM-Modelle in der Speicherschicht definieren, CRUD und Abfragen in der repository-Schicht kapseln und in der service-Schicht Regelvalidierung, Bewertungsstatus, Benachrichtigungsergebnisse und Kühlungssemantik verarbeiten. P0 erstellt keine neuen Tabellen und ändert die bestehende Datenbank nicht.
 
-如果后续 PR 需要 schema 变更，必须同时给出：
+Wenn ein späterer PR eine Schema-Änderung benötigt, müssen zugleich geliefert werden:
 
-- 幂等初始化：重复启动或重复执行初始化时不得破坏已有数据。
-- 向后兼容：未配置告警中心时不影响每日分析、问股、通知、大盘复盘和持仓功能。
-- 回滚说明：最小回滚方式至少包括 revert PR；若创建了新表或索引，需要说明是否保留数据、如何手动清理。
-- 数据迁移边界：不得自动迁移、删除或覆盖 `AGENT_EVENT_ALERT_RULES_JSON`，除非用户显式执行导入动作。
+- Idempotente Initialisierung: Wiederholte Starts oder wiederholte Initialisierungen dürfen bestehende Daten nicht zerstören.
+- Rückwärtskompatibilität: Ohne konfiguriertes Alarmzentrum bleiben Tagesanalyse, Fragen zur Aktie, Benachrichtigungen, Marktübersicht und Positionsfunktionen unbeeinflusst.
+- Rollback-Erläuterung: Der minimale Rollback-Weg umfasst mindestens den Revert des PR; wurden neue Tabellen oder Indexe erstellt, muss erläutert werden, ob die Daten erhalten bleiben und wie manuell bereinigt wird.
+- Datenmigrationsgrenze: `AGENT_EVENT_ALERT_RULES_JSON` darf nicht automatisch migriert, gelöscht oder überschrieben werden, es sei denn, der Benutzer führt explizit eine Importaktion aus.
 
 ## P1 Alert API MVP
 
-P1 新增后端 Alert API 与 schema，锁定告警中心最小 API 契约，不接入 Web 页面或后台 worker。
+P1 fügt die Backend-Alert-API und das Schema hinzu, fixiert den minimalen API-Vertrag des Alarmzentrums und bindet weder eine Web-Seite noch den Hintergrund-worker an.
 
-- 新增 API 文件：`api/v1/endpoints/alerts.py`。
-- 新增 schema 文件：`api/v1/schemas/alerts.py`。
-- API 范围：
+- Neue API-Datei: `api/v1/endpoints/alerts.py`.
+- Neue Schema-Datei: `api/v1/schemas/alerts.py`.
+- API-Umfang:
   - `GET /api/v1/alerts/rules`
   - `POST /api/v1/alerts/rules`
   - `GET /api/v1/alerts/rules/{rule_id}`
@@ -138,325 +138,325 @@ P1 新增后端 Alert API 与 schema，锁定告警中心最小 API 契约，不
   - `POST /api/v1/alerts/rules/{rule_id}/test`
   - `GET /api/v1/alerts/triggers`
   - `GET /api/v1/alerts/notifications`
-- 首版规则仍只支持 `price_cross`、`price_change_percent`、`volume_spike`；`sentiment_shift`、`risk_flag`、`custom` 等未来类型返回结构化 unsupported 错误。
-- `test` 接口只做一次性 dry-run 评估，不发送通知，不写入真实触发记录或通知 attempt。
-- `cooldown_policy` / `notification_policy` 在 P1 中只是保留字段：API 可存储和返回这些 opaque 配置，但不执行冷却或自定义通知语义。
-- API 响应必须脱敏，不回显 token、完整 webhook URL、邮箱密码、cookie、bot secret。
-- `AGENT_EVENT_ALERT_RULES_JSON` 继续保留为 legacy 配置入口；P1 不自动迁移、删除、覆盖或改写 legacy 配置。
+- Die Erstversion der Regeln unterstützt weiterhin nur `price_cross`, `price_change_percent`, `volume_spike`; zukünftige Typen wie `sentiment_shift`, `risk_flag`, `custom` geben einen strukturierten unsupported-Fehler zurück.
+- Die `test`-Schnittstelle führt nur eine einmalige dry-run-Bewertung aus, sendet keine Benachrichtigung und schreibt keine echten Auslöse- oder Benachrichtigungsversuchsdatensätze.
+- `cooldown_policy` / `notification_policy` sind in P1 nur reservierte Felder: Die API kann diese opaque-Konfigurationen speichern und zurückgeben, führt aber keine Kühlungs- oder benutzerdefinierte Benachrichtigungssemantik aus.
+- API-Antworten müssen redigiert werden; token, vollständige webhook-URL, E-Mail-Passwort, cookie und bot secret werden nicht zurückgespiegelt.
+- `AGENT_EVENT_ALERT_RULES_JSON` bleibt als legacy-Konfigurationseinstieg erhalten; P1 migriert, löscht, überschreibt oder schreibt die legacy-Konfiguration nicht automatisch um.
 
-P1 不做：
+P1 macht nicht:
 
-- 不新增 Web 告警中心页面、路由或侧边栏入口。
-- 不让 schedule worker 加载持久化 active rules，也不实现持久化规则与 legacy JSON 的合并/去重。
-- 不实现真实 `alert_trigger` / `alert_notification` 写入；P1 只提供查询接口和表结构。
-- 不实现 `alert_cooldown` 执行语义。
-- 不实现 MACD、KDJ、CCI、RSI、持仓风险或 Market Light 告警规则。
+- Fügt keine Web-Alarmzentrum-Seite, keine Route und keinen Seitenleisten-Einstieg hinzu.
+- Lässt den schedule-worker keine persistierten active rules laden und implementiert auch keine Zusammenführung/Dedupe persistierter Regeln mit legacy-JSON.
+- Implementiert kein echtes Schreiben von `alert_trigger` / `alert_notification`; P1 bietet nur Abfrage-Schnittstellen und Tabellenstrukturen.
+- Implementiert keine `alert_cooldown`-Ausführungssemantik.
+- Implementiert keine MACD-, KDJ-, CCI-, RSI-, Positionsrisiko- oder Market-Light-Alarmregeln.
 
-## P2 告警评估 Worker
+## P2 Alarmbewertungs-Worker
 
-P2 将 schedule 运行时从启动时一次性构建 legacy `EventMonitor`，切换为每轮后台 worker 评估持久化 active rules 与 legacy JSON 规则。
+P2 stellt das schedule-runtime von einem einmalig beim Start erzeugten legacy-`EventMonitor` auf die Bewertung persistierter active rules und legacy-JSON-Regeln durch den Hintergrund-worker pro Runde um.
 
-- `AGENT_EVENT_MONITOR_ENABLED` 继续作为总开关，后台任务名保持 `agent_event_monitor`。
-- worker 每轮读取 DB 中 `enabled=true` 的 `alert_rules`，并重新解析 `AGENT_EVENT_ALERT_RULES_JSON`；新增 API 规则不需要重启 schedule 进程。
-- DB 规则与 legacy 规则按 `target_scope + target + alert_type + canonical(parameters)` 去重，冲突时 DB 规则优先；legacy 配置不自动迁移、删除或改写。
-- 每条规则独立评估，单条失败只写 `failed` 评估状态，不影响同轮其他规则或主分析流程。
-- `alert_triggers` 在 P2 用于记录最小评估历史：`triggered`、`skipped`、`degraded`、`failed`；正常 `not_triggered` 不写历史，避免轮询刷表。
-- 实时行情缺失、字段缺失或非可评估场景记录 `skipped`；日线数据不可用或结构不完整记录 `degraded`；诊断信息会脱敏。
-- 触发后仍调用 `NotificationService.send(..., route_type="alert")`；进程内 fingerprint 只避免持续触发条件重复推送，不执行 `cooldown_policy`。
+- `AGENT_EVENT_MONITOR_ENABLED` bleibt der Hauptschalter; der Hintergrund-Taskname bleibt `agent_event_monitor`.
+- Der worker liest pro Runde die `alert_rules` mit `enabled=true` aus der DB und parst `AGENT_EVENT_ALERT_RULES_JSON` erneut; neue API-Regeln erfordern keinen Neustart des schedule-Prozesses.
+- DB-Regeln und legacy-Regeln werden nach `target_scope + target + alert_type + canonical(parameters)` dedupliziert; bei Konflikten haben DB-Regeln Vorrang; die legacy-Konfiguration wird nicht automatisch migriert, gelöscht oder umgeschrieben.
+- Jede Regel wird unabhängig bewertet; ein Einzelausfall schreibt nur den Bewertungsstatus `failed` und beeinflusst weder andere Regeln derselben Runde noch den Hauptanalyseablauf.
+- `alert_triggers` werden in P2 zum Protokollieren einer minimalen Bewertungshistorie verwendet: `triggered`, `skipped`, `degraded`, `failed`; normales `not_triggered` wird nicht protokolliert, um ein Auffüllen der Tabelle durch Polling zu vermeiden.
+- Fehlende Echtzeitkurse, fehlende Felder oder nicht bewertbare Szenarien werden als `skipped` protokolliert; nicht verfügbare oder strukturell unvollständige Tagesdaten werden als `degraded` protokolliert; Diagnoseinformationen werden redigiert.
+- Nach Auslösung wird weiterhin `NotificationService.send(..., route_type="alert")` aufgerufen; der in-process-fingerprint vermeidet nur wiederholte Pushs bei dauerhaft erfüllten Bedingungen und führt keine `cooldown_policy` aus.
 
-P2 不做：
+P2 macht nicht:
 
-- 不新增 Web 告警中心页面、路由或侧边栏入口。
-- 不写 `alert_notifications`，不记录 per-channel notification attempt。
-- 不实现 `alert_cooldown`、`cooldown_policy` 或 `notification_policy` 执行语义。
-- 不实现 MACD、KDJ、CCI、RSI、持仓风险或 Market Light 告警规则。
+- Fügt keine Web-Alarmzentrum-Seite, keine Route und keinen Seitenleisten-Einstieg hinzu.
+- Schreibt keine `alert_notifications` und protokolliert keine per-channel-Benachrichtigungsversuche.
+- Implementiert keine Ausführungssemantik von `alert_cooldown`, `cooldown_policy` oder `notification_policy`.
+- Implementiert keine MACD-, KDJ-, CCI-, RSI-, Positionsrisiko- oder Market-Light-Alarmregeln.
 
-## P3 Web 告警中心 MVP
+## P3 Web-Alarmzentrum MVP
 
-P3 在 WebUI 中新增 `/alerts` 告警中心入口，让用户不需要直接编辑 legacy JSON 即可管理当前三类运行时规则。
+P3 fügt in der WebUI den Einstieg `/alerts` zum Alarmzentrum hinzu, damit der Benutzer die aktuellen drei Laufzeitregeln verwalten kann, ohne legacy-JSON direkt bearbeiten zu müssen.
 
-- 侧边栏新增“告警”入口，页面支持规则列表、分页、启停筛选和规则类型筛选。
-- 规则创建表单只支持 `single_symbol` 目标范围和当前已可执行的三类规则：
-  - `price_cross`：`direction` 为 `above` / `below`，并填写 `price`。
-  - `price_change_percent`：`direction` 为 `up` / `down`，并填写 `change_pct`。
-  - `volume_spike`：填写 `multiplier`。
-- 规则操作支持启用、停用、删除和一次性 dry-run 测试。
-- dry-run 测试只展示 `AlertRuleTestResponse` 已声明字段：规则 ID、状态、是否触发、观察值和消息；`threshold`、`data_source`、`data_timestamp` 等扩展诊断字段需要后端 schema 明确暴露后再展示。
-- 触发历史展示 P2 worker 已写入的 `triggered`、`skipped`、`degraded`、`failed` 记录；正常 `not_triggered` 仍不会写入历史。
-- 通知尝试区域只查询现有 `GET /api/v1/alerts/notifications`；由于 P2 运行时不写 per-channel notification attempt，当前通常显示“暂无通知尝试记录”空态，不把触发状态推断为通知投递结果。
-- Web 页面不暴露 `AGENT_EVENT_ALERT_RULES_JSON` 编辑入口，不自动迁移、删除或改写 legacy 配置。
+- In der Seitenleiste wird der Einstieg „Alarme" hinzugefügt; die Seite unterstützt Regel-Lists, Pagination, Aktivierungsfilter und Regeltypen-Filter.
+- Das Formular zur Regel-Erstellung unterstützt nur den Zielumfang `single_symbol` und die drei aktuell ausführbaren Regeltypen:
+  - `price_cross`: `direction` ist `above` / `below`, und `price` wird ausgefüllt.
+  - `price_change_percent`: `direction` ist `up` / `down`, und `change_pct` wird ausgefüllt.
+  - `volume_spike`: `multiplier` wird ausgefüllt.
+- Regelaktionen unterstützen Aktivieren, Deaktivieren, Löschen und einen einmaligen dry-run-Test.
+- Der dry-run-Test zeigt nur die deklarierten Felder von `AlertRuleTestResponse`: Regel-ID, Status, ob ausgelöst, Beobachtungswert und Nachricht; erweiterte Diagnosefelder wie `threshold`, `data_source`, `data_timestamp` werden erst angezeigt, wenn das Backend-Schema sie explizit freigibt.
+- Die Auslösungshistorie zeigt die vom P2-worker geschriebenen `triggered`, `skipped`, `degraded`, `failed`-Datensätze; normales `not_triggered` wird weiterhin nicht in die Historie geschrieben.
+- Der Bereich der Benachrichtigungsversuche fragt nur die bestehende `GET /api/v1/alerts/notifications` ab; da das P2-runtime keine per-channel-Benachrichtigungsversuche schreibt, zeigt der Bereich aktuell üblicherweise den Leerzustand „Keine Benachrichtigungsversuche" und leitet den Auslösestatus nicht als Benachrichtigungszustellungsergebnis ab.
+- Die Web-Seite setzt keinen Bearbeitungseinstieg für `AGENT_EVENT_ALERT_RULES_JSON` aus und migriert, löscht oder schreibt die legacy-Konfiguration nicht automatisch um.
 
-P3 不做：
+P3 macht nicht:
 
-- 不新增或修改后端 API、schema、storage 或 worker 行为。
-- 不实现规则编辑、target/source 高级筛选、watchlist/portfolio 目标、技术指标规则或 Market Light 联动。
-- 不执行 `cooldown_policy` / `notification_policy`，不写 `alert_notifications`。
+- Fügt kein Backend-API-, schema-, storage- oder worker-Verhalten hinzu bzw. ändert es.
+- Implementiert keine Regelbearbeitung, keine erweiterte Ziel-/Quellenfilterung, keine watchlist/portfolio-Ziele, keine technischen Indikatorregeln und keine Market-Light-Kopplung.
+- Führt `cooldown_policy` / `notification_policy` nicht aus und schreibt keine `alert_notifications`.
 
-## P4 通知结果与持久化冷却
+## P4 Benachrichtigungsergebnisse und persistierte Kühlung
 
-P4 让真实告警触发具备可排障的通知结果，并让通过 Alert API 创建的持久化规则具备可重启保持的业务冷却状态。
+P4 verleiht echten Alarmauslösungen fehlerdiagnostizierbare Benachrichtigungsergebnisse und verleiht über die Alert-API erstellten persistierten Regeln einen über Neustarts erhaltenen Geschäftskühlungszustand.
 
-- DB 持久化规则的 `triggered` 历史按 `rule_id + target + data_source + data_timestamp` 做同一数据点去重：同一触发事件只保留最早一条 `alert_triggers`，重复轮询命中会复用已有触发记录；`data_timestamp` 缺失时不做去重，避免误合并无法证明同源的数据点。即使后续被冷却或通知降噪抑制，仍通过 `alert_notifications` 记录对应的通知尝试或 synthetic 抑制状态。
-- `alert_notifications` 记录真实 per-channel notification attempt，包括 `channel`、`success`、`error_code`、`retryable`、`latency_ms` 和脱敏后的 `diagnostics`。
-- 非渠道发送状态使用 synthetic channel 记录：
-  - `__cooldown__`：告警业务冷却抑制，`error_code="cooldown_active"`。
-  - `__cooldown_read_failed__`：读取持久化冷却状态失败后，由 worker 进程内临时兜底抑制，`error_code="cooldown_read_failed"`。
-  - `__noise_suppressed__`：通知基础设施降噪抑制，`error_code="noise_suppressed"`。
-  - `__no_channel__`：alert 路由未命中任何可用通知渠道。
-  - `__dispatch__`：通知调度级 fallback 或异常。
-- cooldown 分层：
-  - DB 持久化规则正常路径使用 `alert_cooldowns` 作为告警业务冷却，不再由 worker 进程内 fingerprint 决定；仅当读取持久化冷却状态失败时，临时使用进程内 fingerprint 防止同一规则在 DB 异常期间每轮重复推送。
-  - legacy `AGENT_EVENT_ALERT_RULES_JSON` 规则继续使用 worker 进程内 fingerprint，不写 `alert_cooldowns`。
-  - `notification_noise.py` 仍作为通知基础设施层的全局安全网；它不是告警业务 cooldown，且被其抑制时不会写入或延长 `alert_cooldowns`。
-- DB 规则的 `cooldown_policy.cooldown_seconds` 归一为非负整数；缺失时使用默认 24 小时业务冷却，`0` 表示关闭 DB 业务冷却。
-- `GET /api/v1/alerts/rules` 会返回只读 `last_triggered_at` / `cooldown_until` / `cooldown_active` 摘要；`cooldown_active` 由后端按同一冷却时间语义计算，Web 不在浏览器本地解析 naive ISO 字符串来推断状态。
-- Web 告警中心只读展示冷却状态和通知结果，不提供 cooldown policy 编辑表单。
+- Die `triggered`-Historie DB-persistierter Regeln wird nach `rule_id + target + data_source + data_timestamp` für denselben Datenpunkt dedupliziert: Dasselbe Auslöseereignis behält nur den frühesten `alert_triggers`-Datensatz; wiederholte Polling-Treffer verwenden den bestehenden Auslöse-Datensatz wieder; bei fehlendem `data_timestamp` wird nicht dedupliziert, um Datenpunkte ohne nachweisbare Same-Source nicht fälschlich zusammenzuführen. Auch wenn spätere Kühlung oder Benachrichtigungs-Rauschunterdrückung sie unterdrückt, werden über `alert_notifications` die zugehörigen Benachrichtigungsversuche oder synthetischen Unterdrückungszustände protokolliert.
+- `alert_notifications` protokollieren echte per-channel-Benachrichtigungsversuche, einschließlich `channel`, `success`, `error_code`, `retryable`, `latency_ms` und redigierter `diagnostics`.
+- Nicht-Kanal-Sendezustände werden über synthetische Kanäle protokolliert:
+  - `__cooldown__`: Geschäftskühlung des Alarms unterdrückt, `error_code="cooldown_active"`.
+  - `__cooldown_read_failed__`: Nach fehlgeschlagenem Lesen des persistierten Kühlungszustands wird durch einen temporären Fallback im worker-Prozess unterdrückt, `error_code="cooldown_read_failed"`.
+  - `__noise_suppressed__`: Rauschunterdrückung der Benachrichtigungsinfrastruktur, `error_code="noise_suppressed"`.
+  - `__no_channel__`: Die alert-Route trifft keinen verfügbaren Benachrichtigungskanal.
+  - `__dispatch__`: Fallback oder Ausnahme auf Benachrichtigungs-Dispositionsebene.
+- Kühlungsschichtung:
+  - Der normale Pfad DB-persistierter Regeln verwendet `alert_cooldowns` als Geschäftskühlung des Alarms; der in-process-fingerprint des workers entscheidet nicht mehr darüber; nur wenn das Lesen des persistierten Kühlungszustands fehlschlägt, wird der in-process-fingerprint vorübergehend verwendet, um wiederholte Pushs derselben Regel pro Runde während einer DB-Ausnahme zu verhindern.
+  - legacy-`AGENT_EVENT_ALERT_RULES_JSON`-Regeln verwenden weiterhin den in-process-fingerprint des workers und schreiben kein `alert_cooldowns`.
+  - `notification_noise.py` bleibt der globale Sicherheitsnetz auf der Ebene der Benachrichtigungsinfrastruktur; es ist kein Geschäft-cooldown des Alarms, und wenn es unterdrückt, werden `alert_cooldowns` weder geschrieben noch verlängert.
+- `cooldown_policy.cooldown_seconds` DB-basierter Regeln wird auf eine nicht-negative Ganzzahl normalisiert; bei fehlendem Wert gilt standardmäßig 24 Stunden Geschäftskühlung, `0` bedeutet, dass die DB-Geschäftskühlung deaktiviert ist.
+- `GET /api/v1/alerts/rules` gibt die schreibgeschützte Zusammenfassung `last_triggered_at` / `cooldown_until` / `cooldown_active` zurück; `cooldown_active` wird vom Backend nach derselben Kühlzeit-Semantik berechnet; die Web-Seite analysiert naive-ISO-Zeichenketten nicht lokal im Browser, um den Zustand abzuleiten.
+- Das Web-Alarmzentrum zeigt Kühlungszustand und Benachrichtigungsergebnisse nur lesend an und bietet kein Bearbeitungsformular für die cooldown-policy.
 
-P4 不做：
+P4 macht nicht:
 
-- 不新增技术指标、持仓、自选股、portfolio、watchlist 或 Market Light 告警规则。
-- 不实现 target-level 跨规则合并冷却；目标级合并留到持仓/市场联动阶段。
-- 不重写通知渠道网关；`NotificationService.send()` 继续保持布尔返回兼容，结构化结果通过新增兼容接口提供。
-- 不自动迁移、删除或改写 legacy `AGENT_EVENT_ALERT_RULES_JSON`。
+- Fügt keine technischen Indikator-, Positions-, Watchlist-, portfolio-, watchlist- oder Market-Light-Alarmregeln hinzu.
+- Implementiert keine target-level-übergreifende zusammengeführte Kühlung von Regeln; die Zusammenführung auf Ziel-Ebene bleibt der Positions-/Marktkopplungsphase vorbehalten.
+- Schreibt das Benachrichtigungskanal-Gateway nicht neu; `NotificationService.send()` behält die boolesche Rückgabe-Kompatibilität bei, strukturierte Ergebnisse werden über neue kompatible Schnittstellen bereitgestellt.
+- Migriert, löscht oder schreibt legacy-`AGENT_EVENT_ALERT_RULES_JSON` nicht automatisch um.
 
-## P5 技术指标规则
+## P5 Technische Indikatorregeln
 
-P5 在现有 Alert API、Web 告警中心和 `src/services/alert_worker.py` 评估链路中新增日线技术指标规则。规则仍写入 `alert_rules`，触发、降级、失败、通知结果和持久化冷却继续复用 P2-P4 的 `alert_triggers`、`alert_notifications` 与 `alert_cooldowns` 语义。
+P5 fügt in die bestehende Bewertungskette der Alert-API, des Web-Alarmzentrums und von `src/services/alert_worker.py` Tagesbalken-Indikatorregeln hinzu. Regeln werden weiterhin in `alert_rules` geschrieben; Auslösung, Degradierung, Fehler, Benachrichtigungsergebnisse und persistierte Kühlung nutzen weiterhin die P2-P4-Semantik von `alert_triggers`, `alert_notifications` und `alert_cooldowns`.
 
-P5 支持的 `alert_type` 与 `parameters`：
+Von P5 unterstützte `alert_type` und `parameters`:
 
-| alert_type | parameters | 触发语义 |
+| alert_type | parameters | Auslösesemantik |
 | --- | --- | --- |
-| `ma_price_cross` | `direction=above|below`，`window` 默认 `20`，整数 `[2,250]` | close 相对 MA(window) 边缘上穿/下穿 |
-| `rsi_threshold` | `direction=above|below`，`period` 默认 `12`，整数 `[2,250]`，`threshold` 必填且 `0..100` | RSI 相对阈值边缘上穿/下穿 |
-| `macd_cross` | `direction=bullish_cross|bearish_cross`，`fast_period=12`，`slow_period=26`，`signal_period=9`，均为 `[2,250]` 且 `fast_period < slow_period` | DIF/DEA 边缘金叉/死叉 |
-| `kdj_cross` | `direction=bullish_cross|bearish_cross`，`period=9`，`k_period=3`，`d_period=3`，均为 `[2,250]` | K/D 边缘金叉/死叉 |
-| `cci_threshold` | `direction=above|below`，`period` 默认 `14`，整数 `[2,250]`，`threshold` 必填且为有限数值 | CCI 相对阈值边缘上穿/下穿 |
+| `ma_price_cross` | `direction=above|below`, `window` Standard `20`, Ganzzahl `[2,250]` | close kreuzt die MA(window)-Kante nach oben/unten |
+| `rsi_threshold` | `direction=above|below`, `period` Standard `12`, Ganzzahl `[2,250]`, `threshold` Pflicht und `0..100` | RSI kreuzt die Schwelle-Kante nach oben/unten |
+| `macd_cross` | `direction=bullish_cross|bearish_cross`, `fast_period=12`, `slow_period=26`, `signal_period=9`, alle `[2,250]` und `fast_period < slow_period` | DIF/DEA golden cross/death cross an der Kante |
+| `kdj_cross` | `direction=bullish_cross|bearish_cross`, `period=9`, `k_period=3`, `d_period=3`, alle `[2,250]` | K/D golden cross/death cross an der Kante |
+| `cci_threshold` | `direction=above|below`, `period` Standard `14`, Ganzzahl `[2,250]`, `threshold` Pflicht und endliche Zahl | CCI kreuzt die Schwelle-Kante nach oben/unten |
 
-评估规则：
+Bewertungsregeln:
 
-- 首版统一使用日线 close，不做分钟线。
-- 边缘触发只比较最近两根已收盘日线；非边缘但当前 level 已满足阈值时仍返回 `not_triggered`，避免规则创建首日把历史状态误报为新触发。
-- 边缘触发包含前一根刚好等于阈值或零轴的情况：`above` / `bullish_cross` 使用 `prev <= threshold < current`，`below` / `bearish_cross` 使用 `prev >= threshold > current`。
-- partial bar 只使用服务器本地时区启发式：当前本地时间早于 16:00 时，最后一行日期等于本地今天或日期不可判定都会保守丢弃；不区分 A 股、港股、美股市场时区或交易日历。Issue #1386 P0 的市场阶段基线暂不接入技术指标规则，告警 partial bar 精确判定留到后续阶段。
-- `src/services/alert_indicators.py` 自行归一化 OHLCV 并计算 MA、RSI、MACD、KDJ、CCI，不依赖 fetcher 预计算的 MA5/MA10/MA20。
-- RSI 使用 Wilder's EMA / SMMA：`avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()`，`avg_loss` 同理，不使用 rolling SMA。
-- MACD 使用 `EMA(fast_period) - EMA(slow_period)` 得到 DIF，DEA 为 DIF 的 `EMA(signal_period)`；金叉/死叉比较 DIF-DEA 相对 0 的边缘穿越。
-- KDJ 使用最近 `period` 日最高/最低价计算 RSV，并用 `alpha=1/k_period`、`alpha=1/d_period` 的 EMA 得到 K/D；金叉/死叉比较 K-D 相对 0 的边缘穿越。
-- CCI 使用典型价格 `(high + low + close) / 3`，按 `period` 日均值和平均绝对偏差计算 `(TP - MA(TP)) / (0.015 * mean_deviation)`。
-- `compute_required_bars(alert_type, params)` 定义最少有效 closed bars：MA=`window+1`，RSI=`period+1`，MACD=`slow_period+signal_period+1`，KDJ=`period+k_period+d_period+1`，CCI=`period+1`。
-- 拉取天数使用 `requested_days = min(max(required_bars * 3, required_bars + 30), 365)`；API 会拒绝 `required_bars > 365` 的组合周期，避免创建永久样本不足的规则；同一 worker 轮次按 `(stock_code, requested_days)` 缓存日线数据，轮次结束释放。
-- 缺数据、缺列或有效样本少于 `required_bars` 写入 `degraded`；数据源异常沿用 `volume_spike` 语义返回 `evaluation_error` / `failed`，不发送通知。
+- Die Erstversion verwendet einheitlich den Tagesbalken-close, keine Minutenbalken.
+- Kantenauslösung vergleicht nur die letzten beiden geschlossenen Tagesbalken; wenn das aktuelle level die Schwelle bereits erfüllt, aber nicht an der Kante liegt, wird weiterhin `not_triggered` zurückgegeben, um zu vermeiden, dass am ersten Erstellungstag historische Zustände als neue Auslösung fehlgemeldet werden.
+- Kantenauslösung umfasst den Fall, dass der vorherige Balken genau gleich der Schwelle oder der Nulllinie ist: `above` / `bullish_cross` verwendet `prev <= threshold < current`, `below` / `bearish_cross` verwendet `prev >= threshold > current`.
+- partial bar verwendet nur eine Heuristik der Server-Lokalzeit: Ist die aktuelle lokale Zeit vor 16:00, wird die letzte Zeile konservativ verworfen, wenn ihr Datum dem lokalen Heute entspricht oder das Datum nicht bestimmbar ist; es wird weder zwischen A-Aktien-, Hongkong- und US-Marktzeitzonen noch Handelskalendern unterschieden. Die Marktphasen-Baseline von Issue #1386 P0 wird vorerst nicht an technische Indikatorregeln angebunden; die präzise partial-bar-Bestimmung des Alarms bleibt späteren Phasen vorbehalten.
+- `src/services/alert_indicators.py` normalisiert OHLCV selbst und berechnet MA, RSI, MACD, KDJ, CCI; es verlässt sich nicht auf vom fetcher vorberechnete MA5/MA10/MA20.
+- RSI verwendet Wilder's EMA / SMMA: `avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()`, `avg_loss` analog, kein rolling SMA.
+- MACD verwendet `EMA(fast_period) - EMA(slow_period)` für DIF, DEA ist das `EMA(signal_period)` von DIF; golden cross/death cross vergleichen den Kantenübergang von DIF-DEA relativ zu 0.
+- KDJ verwendet die Höchst-/Tiefstpreise der letzten `period` Tage für RSV und erhält K/D über EMA mit `alpha=1/k_period`, `alpha=1/d_period`; golden cross/death cross vergleichen den Kantenübergang von K-D relativ zu 0.
+- CCI verwendet den typischen Preis `(high + low + close) / 3` und berechnet `(TP - MA(TP)) / (0.015 * mean_deviation)` über den `period`-Tagesmittelwert und die mittlere absolute Abweichung.
+- `compute_required_bars(alert_type, params)` definiert die Mindestanzahl gültiger closed bars: MA=`window+1`, RSI=`period+1`, MACD=`slow_period+signal_period+1`, KDJ=`period+k_period+d_period+1`, CCI=`period+1`.
+- Die Abruf-Tage verwenden `requested_days = min(max(required_bars * 3, required_bars + 30), 365)`; die API lehnt Kombinationsperioden mit `required_bars > 365` ab, um Regeln mit dauerhaft unzureichender Stichprobe zu vermeiden; Tagesdaten werden in derselben worker-Runde nach `(stock_code, requested_days)` gecacht und am Rundenende freigegeben.
+- Fehlende Daten, fehlende Spalten oder weniger als `required_bars` gültige Stichproben schreiben `degraded`; Datenquellenausnahmen folgen der `volume_spike`-Semantik und geben `evaluation_error` / `failed` zurück, ohne Benachrichtigung zu senden.
 
-兼容边界：
+Kompatibilitätsgrenzen:
 
-- `AGENT_EVENT_ALERT_RULES_JSON` 仍是 legacy JSON 路径，只支持 `price_cross`、`price_change_percent`、`volume_spike` 三类规则；P5 技术指标只通过 Alert API / Web 创建。
-- 不扩展 `src/agent/events.py` 的 legacy `AlertType` 或 `_RUNTIME_SUPPORTED_ALERT_TYPES`。
-- P5 创建/更新参数错误沿用现有 Alert API 错误契约：HTTP 400 + `validation_error`；unsupported 类型返回 HTTP 400 + `unsupported_alert_type`。
-- Web 告警中心只扩展现有创建表单、列表展示、类型筛选和 dry-run 测试，不新增规则编辑器；dry-run 测试不写触发历史，且 API 响应仍沿用 `triggered` / `not_triggered` / `evaluation_error` 三态，worker 写入的 `degraded` 状态通过触发历史查看。
-- 回滚 P5 PR 后，数据库中已创建的技术指标规则记录会保留；旧代码在 worker 加载阶段遇到 unsupported `alert_type` 会 skip，不影响 legacy 三类规则继续执行。如需清理，需要维护者确认后手动删除相关 `alert_rules` 记录。
+- `AGENT_EVENT_ALERT_RULES_JSON` bleibt der legacy-JSON-Pfad und unterstützt nur die drei Regeltypen `price_cross`, `price_change_percent`, `volume_spike`; P5-technische Indikatoren werden nur über Alert-API / Web erstellt.
+- `src/agent/events.py`'s legacy-`AlertType` oder `_RUNTIME_SUPPORTED_ALERT_TYPES` werden nicht erweitert.
+- Parameterfehler bei P5-Erstellung/-Aktualisierung folgen dem bestehenden Fehlervertrag der Alert-API: HTTP 400 + `validation_error`; unsupported-Typen geben HTTP 400 + `unsupported_alert_type` zurück.
+- Das Web-Alarmzentrum erweitert nur das bestehende Erstellungsformular, die Listenanzeige, den Typfilter und den dry-run-Test; kein neuer Regel-Editor; der dry-run-Test schreibt keine Auslösungshistorie, und die API-Antwort verwendet weiterhin den Dreizustand `triggered` / `not_triggered` / `evaluation_error`; der vom worker geschriebene `degraded`-Status wird über die Auslösungshistorie eingesehen.
+- Nach dem Rollback des P5-PR bleiben die in der Datenbank erstellten technischen Indikatorregel-Datensätze erhalten; der alte Code überspringt bei der worker-Ladephase unsupported-`alert_type`-Einträge, ohne die Ausführung der drei legacy-Regeltypen zu beeinträchtigen. Für eine Bereinigung muss der Maintainer die zugehörigen `alert_rules`-Datensätze nach Bestätigung manuell löschen.
 
-P5 不做：
+P5 macht nicht:
 
-- 不支持 MACD 柱体放大/收缩。
-- 不支持 KDJ 超买/超卖区规则。
-- 不支持 MA 与 MA 双均线交叉。
-- 不支持分钟线、市场日历精确判定或多市场时区精确 partial bar。
-- 不支持 legacy `AGENT_EVENT_ALERT_RULES_JSON` 技术指标规则。
-- 不引入 DSL、规则引擎、新数据库表或分析报告 pipeline 内的技术指标规则引擎。
+- Unterstützt keine MACD-Balken-Vergrößerung/-Verkleinerung.
+- Unterstützt keine KDJ-Überkauft/Überverkauft-Bereichsregeln.
+- Unterstützt keine MA-MA-Doppelgleitendenschnitt-Kreuzungen.
+- Unterstützt keine Minutenbalken, keine präzise Marktkalenderbestimmung und keine präzisen partial bars mehrerer Marktzeitzonen.
+- Unterstützt keine legacy-`AGENT_EVENT_ALERT_RULES_JSON`-technischen Indikatorregeln.
+- Führt kein DSL, keine Regelengine, keine neuen Datenbanktabellen und keine technische Indikatorregelengine innerhalb der Analyse-Berichtspipeline ein.
 
-## P6 持仓与自选股联动
+## P6 Kopplung von Positionen und Watchlist
 
-P6 在现有 Alert API、Web 告警中心和 `src/services/alert_worker.py` 评估链路中新增 `watchlist`、`portfolio_holdings`、`portfolio_account` 三类目标范围。规则仍写入 `alert_rules`，触发、降级、失败、通知结果和持久化冷却继续复用 P2-P4 的 `alert_triggers`、`alert_notifications` 与 `alert_cooldowns` 语义，不新增表或迁移。
+P6 fügt in die bestehende Bewertungskette der Alert-API, des Web-Alarmzentrums und von `src/services/alert_worker.py` die drei Zielumfänge `watchlist`, `portfolio_holdings`, `portfolio_account` hinzu. Regeln werden weiterhin in `alert_rules` geschrieben; Auslösung, Degradierung, Fehler, Benachrichtigungsergebnisse und persistierte Kühlung nutzen weiterhin die P2-P4-Semantik von `alert_triggers`, `alert_notifications` und `alert_cooldowns`, ohne neue Tabellen oder Migrationen.
 
-### P6 scope/type 矩阵
+### P6 scope/type-Matrix
 
-| `target_scope` | `target` | 允许的 `alert_type` | 评估方式 |
+| `target_scope` | `target` | Erlaubte `alert_type` | Bewertungsart |
 | --- | --- | --- | --- |
-| `single_symbol` | 股票代码 | P1 三类价格/成交量规则 + P5 技术指标 | 单规则单标的 |
-| `watchlist` | `default` | P1 三类价格/成交量规则 + P5 技术指标 | 每轮刷新并读取当前 `STOCK_LIST`，按股票代码展开 |
-| `portfolio_holdings` | `all` 或 active account ID | P1 三类价格/成交量规则 + P5 技术指标 | 从持仓 snapshot 的非零持仓展开 symbol，按 symbol 去重 |
-| `portfolio_account` | `all` 或 active account ID | `portfolio_stop_loss`、`portfolio_concentration`、`portfolio_drawdown`、`portfolio_price_stale` | 账户级风险评估，不展开为单标的 |
+| `single_symbol` | Aktiencode | P1-Drei-Typen Preis/Volumen + P5-technische Indikatoren | Einzelregel-Einzelziel |
+| `watchlist` | `default` | P1-Drei-Typen Preis/Volumen + P5-technische Indikatoren | `STOCK_LIST` pro Runde aktualisieren und lesen, nach Aktiencode expandieren |
+| `portfolio_holdings` | `all` oder active account ID | P1-Drei-Typen Preis/Volumen + P5-technische Indikatoren | symbol aus Nicht-Null-Positionen des Positions-Snapshots expandieren, nach symbol deduplizieren |
+| `portfolio_account` | `all` oder active account ID | `portfolio_stop_loss`, `portfolio_concentration`, `portfolio_drawdown`, `portfolio_price_stale` | Kontostufige Risikobewertung, keine Expansion zu Einzelzielen |
 
-创建/更新规则时，`watchlist` / `portfolio_holdings` 不把父级 `target` 当股票代码校验；`portfolio_account` 禁止 price/volume/技术指标类型；`portfolio_holdings` 和 `portfolio_account` 在 `target=<id>` 时会校验账户存在且 active，不存在返回 HTTP 400 + `validation_error`。legacy `AGENT_EVENT_ALERT_RULES_JSON` 不支持 watchlist、portfolio 或技术指标扩展，继续仅支持 `single_symbol` 的 `price_cross`、`price_change_percent`、`volume_spike`。
+Bei der Erstellung/Aktualisierung von Regeln validieren `watchlist` / `portfolio_holdings` das übergeordnete `target` nicht als Aktiencode; `portfolio_account` verbietet Preis-/Volumen-/technische Indikatortypen; `portfolio_holdings` und `portfolio_account` validieren bei `target=<id>`, dass das Konto existiert und active ist; falls nicht, HTTP 400 + `validation_error`. legacy-`AGENT_EVENT_ALERT_RULES_JSON` unterstützt keine watchlist-, portfolio- oder technischen Indikatorerweiterungen und unterstützt weiterhin nur `single_symbol` mit `price_cross`, `price_change_percent`, `volume_spike`.
 
 ### Target Identity Contract
 
-P6 将可展示目标与可持久化目标分离：
+P6 trennt darstellbare Ziele von persistierbaren Zielen:
 
-| 场景 | `effective_target` | `display_target` |
+| Szenario | `effective_target` | `display_target` |
 | --- | --- | --- |
 | `single_symbol` | `<symbol>` | `<symbol>` |
-| `watchlist` 展开子目标 | `<symbol>` | `自选股 - <symbol>` |
-| `portfolio_holdings` 展开子目标 | `<symbol>` | `持仓 - <symbol>` |
-| `portfolio_account target=all` | `account:all` | `全部账户` |
-| `portfolio_account target=<id>` | `account:<id>` | `账户 <id>` |
+| `watchlist`-expandiertes Unterziel | `<symbol>` | `Watchlist - <symbol>` |
+| `portfolio_holdings`-expandiertes Unterziel | `<symbol>` | `Position - <symbol>` |
+| `portfolio_account target=all` | `account:all` | `Alle Konten` |
+| `portfolio_account target=<id>` | `account:<id>` | `Konto <id>` |
 
-- `alert_triggers.target`、`alert_cooldowns.target`、P4 `rule_id + target + data_source + data_timestamp` 去重全部使用 `effective_target`。
-- `RuntimeAlertRule.key` 对展开后的子目标使用 `{parent_key}|{effective_target}`，避免 DB cooldown 读取失败时的进程内 fallback 把同一父规则下的不同子目标互相 suppress。
-- `display_target` 不写入 `alert_triggers.target`，仅用于通知标题、dry-run `target_results` 和 Web 展示。
-- P6 不做跨规则同标的通知合并；同一股票若同时命中 watchlist 子规则和独立 `single_symbol` 规则，会按每条规则独立记录和通知。
+- `alert_triggers.target`, `alert_cooldowns.target` und das P4-Dedupe `rule_id + target + data_source + data_timestamp` verwenden alle `effective_target`.
+- `RuntimeAlertRule.key` verwendet für expandierte Unterziele `{parent_key}|{effective_target}`, damit der in-process-Fallback bei fehlgeschlagenem DB-cooldown-Lesen verschiedene Unterziele derselben übergeordneten Regel nicht gegenseitig unterdrückt.
+- `display_target` wird nicht in `alert_triggers.target` geschrieben, sondern nur für Benachrichtigungstitel, dry-run-`target_results` und Web-Anzeige verwendet.
+- P6 macht keine übergreifende Benachrichtigungszusammenführung desselben Ziels über Regeln; trifft dieselbe Aktie gleichzeitig eine watchlist-Unterregel und eine unabhängige `single_symbol`-Regel, wird pro Regel unabhängig protokolliert und benachrichtigt.
 
-### Dry-run 聚合
+### Dry-run-Aggregation
 
-- `POST /api/v1/alerts/rules/{rule_id}/test` 对批量规则返回聚合字段：`evaluated_count`、`triggered_count`、`degraded_count`、`skipped_count`、`target_results`。
-- 展开目标 soft cap 为 100；dry-run 中超过 soft cap 的目标记为 `degraded` 聚合结果并写日志。worker 运行时只评估前 100 个展开目标并写 warning，不为 overflow 本身写 `alert_triggers` 历史。
-- dry-run 使用受限并发评估，单目标超时 10 秒，总评估超时 30 秒；未完成目标记为 `skipped`。
-- 任一目标 triggered 时顶层 `status=triggered`；无触发但存在成功评估、skipped 或 degraded 时顶层 `status=not_triggered`；无法展开或全部失败时才返回 `evaluation_error`。
-- 空 watchlist / 空 holdings：dry-run 返回 `not_triggered` 并在 `target_results` 中给出 `record_status=skipped`；worker 会写 `skipped` 历史。
-- `degraded_count` 统计全部展开评估结果中 `record_status=degraded` 的条目；`target_results` 仅展示前 20 条，排序为 triggered 优先，其次 degraded/failed，再按 target 排序。
+- `POST /api/v1/alerts/rules/{rule_id}/test` gibt für Batch-Regeln aggregierte Felder zurück: `evaluated_count`, `triggered_count`, `degraded_count`, `skipped_count`, `target_results`.
+- Der Soft-Cap der expandierten Ziele ist 100; Ziele über dem Soft-Cap im dry-run werden als aggregiertes Ergebnis `degraded` markiert und protokolliert. Zur worker-Laufzeit werden nur die ersten 100 expandierten Ziele bewertet und eine warning geschrieben; für den overflow selbst wird keine `alert_triggers`-Historie geschrieben.
+- Der dry-run verwendet begrenzte parallele Bewertung, Einzelziel-Timeout 10 Sekunden, Gesamtbewertungs-Timeout 30 Sekunden; nicht abgeschlossene Ziele werden als `skipped` markiert.
+- Ist ein Ziel triggered, ist das top-level `status=triggered`; ohne Auslösung, aber mit erfolgreicher Bewertung, skipped oder degraded ist das top-level `status=not_triggered`; nur wenn keine Expansion möglich ist oder alles fehlschlägt, wird `evaluation_error` zurückgegeben.
+- Leere watchlist / leere holdings: dry-run gibt `not_triggered` zurück und gibt in `target_results` `record_status=skipped` an; der worker schreibt die `skipped`-Historie.
+- `degraded_count` zählt alle Einträge mit `record_status=degraded` unter den vollständigen Expansions-Bewertungsergebnissen; `target_results` zeigt nur die ersten 20 Einträge, sortiert mit triggered zuerst, dann degraded/failed, dann nach target.
 
-### 持仓风险规则
+### Positionsrisikoregeln
 
-| `alert_type` | 参数 | 观察值 | 触发语义 |
+| `alert_type` | Parameter | Beobachtungswert | Auslösesemantik |
 | --- | --- | --- | --- |
-| `portfolio_stop_loss` | `mode=near|breach`，默认 `near` | 受影响标的最大 `loss_pct` | `near` 使用 `stop_loss.near_alert`，`breach` 只统计 `is_triggered=true` 的 items；每账户每轮最多一条 trigger |
+| `portfolio_stop_loss` | `mode=near|breach`, Standard `near` | maximales `loss_pct` der betroffenen Ziele | `near` verwendet `stop_loss.near_alert`, `breach` zählt nur items mit `is_triggered=true`; pro Konto pro Runde maximal eine Auslösung |
 | `portfolio_concentration` | - | `concentration.top_weight_pct` | `top_weight_pct >= portfolio_risk_concentration_alert_pct` |
-| `portfolio_drawdown` | - | `drawdown.max_drawdown_pct` | 复用 `PortfolioRiskService` 的 `drawdown.alert`；`current_drawdown_pct` 写 diagnostics |
-| `portfolio_price_stale` | - | stale/missing 价格持仓数量 | 任一 position `price_stale=true` 或 `price_available=false` |
+| `portfolio_drawdown` | - | `drawdown.max_drawdown_pct` | nutzt `drawdown.alert` von `PortfolioRiskService` wieder; `current_drawdown_pct` wird in diagnostics geschrieben |
+| `portfolio_price_stale` | - | Anzahl der Positionen mit stale/missing Preis | jede Position mit `price_stale=true` oder `price_available=false` |
 
-portfolio diagnostics 必含 `account_id`（或 `all`）、`currency`、`as_of`、`price_stale`、`fx_stale`、`data_available`、`top_affected_symbols`。`portfolio_stop_loss`、`portfolio_concentration`、`portfolio_drawdown` 复用 `PortfolioRiskService.get_risk_report()`；`portfolio_price_stale` 复用 `PortfolioService.get_portfolio_snapshot()` 的 position price metadata。
+portfolio-diagnostics müssen `account_id` (oder `all`), `currency`, `as_of`, `price_stale`, `fx_stale`, `data_available`, `top_affected_symbols` enthalten. `portfolio_stop_loss`, `portfolio_concentration`, `portfolio_drawdown` nutzen `PortfolioRiskService.get_risk_report()` wieder; `portfolio_price_stale` nutzt die position-price-metadata von `PortfolioService.get_portfolio_snapshot()` wieder.
 
-### Web 与 cooldown 摘要
+### Web- und cooldown-Zusammenfassung
 
-- Web 创建表单新增目标范围选择；`watchlist` / `portfolio_holdings` 只显示 price/volume/P5 技术指标类型，`portfolio_account` 只显示四类 portfolio 风险类型。
-- `portfolio_holdings` / `portfolio_account` 加载账户列表失败时，表单保留 `all` 选项并展示错误。
-- 规则列表上的 `cooldown_active` 对 `single_symbol` 和 `portfolio_account` 准确；`watchlist` / `portfolio_holdings` 是父规则摘要，不代表每个子目标的冷却状态，子目标冷却以触发历史和 `effective_target` 为准。
-- dry-run UI 展示聚合计数和最多 20 条 `target_results` 明细。
+- Das Web-Erstellungsformular erhält eine Zielumfang-Auswahl; `watchlist` / `portfolio_holdings` zeigen nur price/volume/P5-technische Indikatortypen, `portfolio_account` nur die vier portfolio-Risikotypen.
+- Schlägt das Laden der Kontenliste bei `portfolio_holdings` / `portfolio_account` fehl, behält das Formular die Option `all` und zeigt den Fehler.
+- `cooldown_active` in der Regelliste ist für `single_symbol` und `portfolio_account` genau; `watchlist` / `portfolio_holdings` sind übergeordnete Regelzusammenfassungen und stellen nicht den Kühlungszustand jedes Unterziels dar; der Unterziel-Kühlungszustand richtet sich nach Auslösungshistorie und `effective_target`.
+- Die dry-run-UI zeigt aggregierte Zählungen und bis zu 20 `target_results`-Detailzeilen.
 
-P6 不做：
+P6 macht nicht:
 
-- 不做 P7 Market Light。
-- 不做财报日前、分红除权日前提醒；这类规则需要稳定日期契约后另起 follow-up。
-- 不做 sector 级集中度告警；P6 集中度使用 symbol 维度 `top_weight_pct`。
-- 不做跨规则同标的通知合并、分钟线、多市场时区精确判定或 legacy JSON 扩展。
+- Macht kein P7-Market-Light.
+- Macht keine Erinnerungen vor Finanzberichts- oder Dividenden-/Ex-Datum; solche Regeln benötigen nach einem stabilen Datumsvertrag ein separates Follow-up.
+- Macht keine Sektorstufen-Konzentrationsalarme; die P6-Konzentration verwendet die symbol-Dimension `top_weight_pct`.
+- Macht keine übergreifende Benachrichtigungszusammenführung desselben Ziels über Regeln, keine Minutenbalken, keine präzise Bestimmung mehrerer Marktzeitzonen und keine legacy-JSON-Erweiterung.
 
-## 阶段感知与公开摘要联动（Refs #1386 P6）
+## Phasenwahrnehmung und öffentliche Zusammenfassungskopplung (Refs #1386 P6)
 
-本节描述 #1386 P6 的告警可见性联动，区别于上面的“P6 持仓与自选股联动”。本联动不新增告警表、不做 migration、不自动触发轻量 LLM 分析，只把触发当时可公开的 phase/pack 摘要写入既有触发历史。
+Dieser Abschnitt beschreibt die Alarm-Sichtbarkeitskopplung von #1386 P6, abgegrenzt von dem obigen „P6 Kopplung von Positionen und Watchlist". Diese Kopplung fügt keine Alarmtabellen hinzu, macht keine Migration und löst keine leichte LLM-Analyse automatisch aus; sie schreibt nur die zum Auslösezeitpunkt öffentlichen phase/pack-Zusammenfassungen in die bestehende Auslösungshistorie.
 
-- `AlertTriggerItem` 保留 `diagnostics` 字符串，并新增派生字段 `market_phase_summary`、`analysis_context_pack_overview`、`analysis_visibility_source`。
-- 真实 `status=triggered` 的 worker 记录会在 JSON diagnostics 中合并 sibling key `analysis_visibility`，包含 `market_phase_summary`、`analysis_context_pack_overview`、`source`。旧纯文本 diagnostics 保留原文，API 派生字段返回 `null`，source 返回 `legacy_text`。
-- `analysis_visibility_source` 取值为 `alert_trigger_market_context`、`analysis_history_snapshot`、`evaluator_snapshot`、`legacy_text` 或 `null`。
-- symbol 目标使用 `get_market_for_stock(normalize_stock_code(effective_target))` 构造触发时 phase；`target_scope=market` 直接用 `normalize_market_region(target)`，不会把 `cn|hk|us|jp|kr` 当作股票代码推断；账户级无法唯一定位市场时允许 summary 落为 `unknown`。
-- `analysis_context_pack_overview` 只来自 evaluator 已带 overview 或最近 30 天内的历史 snapshot。最近历史查询复用历史服务的代码变体候选，并以 best-effort + 批内短缓存方式执行；缺失或解析失败返回 `null`，不伪造 pack。
-- 告警通知只输出公开摘要：阶段标签、trigger source、partial-bar warning、数据质量等级和前两条 limitations。通知不得输出 raw context pack、Prompt、新闻正文、完整 diagnostics JSON、webhook URL、token 或持仓敏感细节。
-- Web 告警历史展示 phase badge、数据质量等级和 limitations 空态；旧触发记录缺少公开摘要时不影响列表读取。
-- #1390 P6 进一步复用 `DecisionSignal`：股票级真实触发会优先关联同标的 latest active 信号，并把低敏 `decision_signal_summary` 写入 diagnostics；无 active 信号时只创建最小 `source_type=alert/action=alert` 信号。`trace_id=alert-rule-<hash>` 只用于同源重试的 best-effort 幂等去重，不覆盖 active 信号；新建告警信号不写 `market_phase`，避免同一规则跨阶段重复创建。`market`、`portfolio_account`、overflow 或无法解析为具体股票的触发不会创建个股信号。
+- `AlertTriggerItem` behält die `diagnostics`-Zeichenkette und erhält die abgeleiteten Felder `market_phase_summary`, `analysis_context_pack_overview`, `analysis_visibility_source`.
+- Echte `status=triggered`-worker-Datensätze fügen in den JSON-diagnostics den sibling-key `analysis_visibility` zusammen, der `market_phase_summary`, `analysis_context_pack_overview`, `source` enthält. Alte reine Text-diagnostics behalten den Originaltext; die abgeleiteten API-Felder geben `null` zurück, source gibt `legacy_text` zurück.
+- `analysis_visibility_source` nimmt Werte `alert_trigger_market_context`, `analysis_history_snapshot`, `evaluator_snapshot`, `legacy_text` oder `null` an.
+- symbol-Ziele konstruieren die Auslösephase über `get_market_for_stock(normalize_stock_code(effective_target))`; `target_scope=market` verwendet direkt `normalize_market_region(target)` und leitet `cn|hk|us|jp|kr` nicht als Aktiencode ab; kann die kontostufige Phase den Markt nicht eindeutig bestimmen, darf die Zusammenfassung auf `unknown` fallen.
+- `analysis_context_pack_overview` stammt nur aus einer bereits vom evaluator mitgeführten overview oder einem historischen Snapshot der letzten 30 Tage. Die jüngste historische Abfrage nutzt die Codevarianten-Kandidaten des Historie-Dienstes wieder und wird best-effort mit kurzer In-Batch-Caching ausgeführt; fehlt oder kann sie nicht geparst werden, wird `null` zurückgegeben, ohne pack zu erfinden.
+- Alarmbenachrichtigungen geben nur öffentliche Zusammenfassungen aus: Phasen-Label, trigger source, partial-bar-warning, Datenqualitätsstufe und die ersten beiden limitations. Benachrichtigungen dürfen kein raw-context-pack, keinen Prompt, keinen Nachrichtentext, kein vollständiges diagnostics-JSON, keine webhook-URL, kein token und keine sensiblen Positionsdetails ausgeben.
+- Die Web-Alarmhistorie zeigt phase-badge, Datenqualitätsstufe und limitations-Leerzustand; alte Auslösungsdatensätze ohne öffentliche Zusammenfassung beeinträchtigen das Lesen der Liste nicht.
+- #1390 P6 nutzt `DecisionSignal` weiter wieder: Echte Auslösungen auf Aktienebene verknüpfen bevorzugt das neueste aktive Signal desselben Ziels und schreiben das niedrig-sensible `decision_signal_summary` in diagnostics; ohne aktives Signal wird nur ein minimales `source_type=alert/action=alert`-Signal erzeugt. `trace_id=alert-rule-<hash>` dient nur dem best-effort-idempotenten Dedupe von Same-Source-Wiederholungen und überschreibt nicht das aktive Signal; neu erzeugte Alarmsignale schreiben kein `market_phase`, um eine wiederholte Erzeugung derselben Regel über Phasen hinweg zu vermeiden. Auslösungen von `market`, `portfolio_account`, overflow oder nicht in eine konkrete Aktie auflösbare Auslösungen erzeugen kein Einzelaktien-Signal.
 
-DecisionSignal 字段、脱敏、迁移与回滚边界见 [DecisionSignal 决策信号专题](decision-signals.md)。
+Felder, Redaktion, Migration und Rollback-Grenzen von DecisionSignal siehe [DecisionSignal — Themendokument zu Entscheidungssignalen](decision-signals.md).
 
-#1386 P7 的用户边界：告警联动只解释触发时已经可公开的阶段和数据质量摘要，不会自动发起轻量 LLM 盘中分析，也不会新增告警表、规则类型、环境变量或 migration。需要阶段化分析时，仍应通过分析 API / Web 手动分析入口触发；告警通知只保留阶段标签、trigger source、partial-bar warning、数据质量等级和前两条 limitations。
+Benutzergrenze von #1386 P7: Die Alarmkopplung erklärt nur die zum Auslösezeitpunkt bereits öffentlichen Phasen- und Datenqualitätszusammenfassungen; sie löst keine leichte LLM-Intraday-Analyse automatisch aus und fügt keine Alarmtabellen, Regeltypen, Umgebungsvariablen oder Migrationen hinzu. Für eine phasenweise Analyse sollte weiterhin der manuelle Analyse-Einstieg über Analyse-API / Web ausgelöst werden; Alarmbenachrichtigungen behalten nur Phasen-Label, trigger source, partial-bar-warning, Datenqualitätsstufe und die ersten beiden limitations.
 
-回滚本联动只需要 revert 对 worker/API/Web 的改动；已有 `diagnostics.analysis_visibility` 会作为普通 JSON diagnostics 保留，旧代码不会读取该 sibling key。
+Der Rollback dieser Kopplung erfordert nur den Revert der worker/API/Web-Änderungen; das bestehende `diagnostics.analysis_visibility` bleibt als gewöhnliche JSON-diagnostics erhalten, und der alte Code liest diesen sibling-key nicht.
 
-## P7 大盘红绿灯结构化告警
+## P7 Strukturierte Ampel-Alarme
 
-P7 在现有 Alert API、Web 告警中心和 `src/services/alert_worker.py` 中新增 `target_scope=market`，消费结构化 `MarketLightSnapshot`，不解析 Markdown，不扩展 legacy `AGENT_EVENT_ALERT_RULES_JSON`，不新增表。大盘复盘历史仍写一条 `analysis_history(code=MARKET, report_type=market_review)`；多市场复盘通过 `context_snapshot.market_light_snapshots` 按 region 保存本次实际复盘的快照 map。
+P7 fügt in die bestehende Alert-API, das Web-Alarmzentrum und `src/services/alert_worker.py` den `target_scope=market` hinzu, konsumiert das strukturierte `MarketLightSnapshot`, parst kein Markdown, erweitert kein legacy-`AGENT_EVENT_ALERT_RULES_JSON` und fügt keine Tabellen hinzu. Die Marktübersichtshistorie schreibt weiterhin einen `analysis_history(code=MARKET, report_type=market_review)`-Datensatz; die Multi-Markt-Übersicht speichert über `context_snapshot.market_light_snapshots` die Snapshot-Karte der diesmal tatsächlich durchgeführten Übersicht je region.
 
-### P7 scope/type 矩阵
+### P7 scope/type-Matrix
 
-| `target_scope` | `target` | 允许的 `alert_type` | 参数 | 触发语义 |
+| `target_scope` | `target` | Erlaubte `alert_type` | Parameter | Auslösesemantik |
 | --- | --- | --- | --- | --- |
-| `market` | `cn` / `hk` / `us` / `jp` / `kr` | `market_light_status` | `statuses=["red","yellow"]`，只允许 `red/yellow`，默认 `["red","yellow"]` | 当前 `MarketLightSnapshot.status` 命中列表时触发 |
-| `market` | `cn` / `hk` / `us` / `jp` / `kr` | `market_light_score_drop` | `min_drop > 0` | `prev.score - current.score >= min_drop`，且 `prev.trade_date < current.trade_date` |
+| `market` | `cn` / `hk` / `us` / `jp` / `kr` | `market_light_status` | `statuses=["red","yellow"]`, nur `red/yellow` erlaubt, Standard `["red","yellow"]` | löst aus, wenn der aktuelle `MarketLightSnapshot.status` in der Liste ist |
+| `market` | `cn` / `hk` / `us` / `jp` / `kr` | `market_light_score_drop` | `min_drop > 0` | `prev.score - current.score >= min_drop`, und `prev.trade_date < current.trade_date` |
 
-scope/type 校验是双向约束：`target_scope=market` 只能使用两类 Market Light 规则；`market_light_*` 规则也只能使用 `target_scope=market`。`target` 会 `strip().lower()` 后严格限定为 `cn|hk|us|jp|kr`，非法 target 返回 HTTP 400 + `validation_error`。
+Die scope/type-Validierung ist eine zweiseitige Einschränkung: `target_scope=market` kann nur die zwei Market-Light-Regeltypen verwenden; `market_light_*`-Regeln können nur `target_scope=market` verwenden. `target` wird nach `strip().lower()` strikt auf `cn|hk|us|jp|kr` begrenzt; ein ungültiges target gibt HTTP 400 + `validation_error` zurück.
 
-### `MarketLightSnapshot` 契约
+### `MarketLightSnapshot`-Vertrag
 
-结构化快照字段为：`region`、`trade_date`、`status`、`score`、`label`、`temperature_label`、`reasons`、`guidance`、`dimensions`、`data_quality`。`trade_date` 首版固定取 `MarketOverview.date`；P7 不解析 provider quote as-of。
+Die Felder des strukturierten Snapshots sind: `region`, `trade_date`, `status`, `score`, `label`, `temperature_label`, `reasons`, `guidance`, `dimensions`, `data_quality`. `trade_date` nimmt in der Erstversion fest `MarketOverview.date`; P7 parst kein provider-quote-as-of.
 
-`dimensions` 使用 canonical scorer 单一来源，`build_market_light_snapshot()`、大盘复盘注入块和告警 service 不重复实现 scoring。`_build_market_temperature()` 只是 thin wrapper；红绿灯 `status` 阈值保持 `60/40`，temperature label 阈值保持 `70/55/40`。
+`dimensions` verwenden den canonical scorer als einzige Quelle; `build_market_light_snapshot()`, der Marktübersichts-Injektionsblock und der Alarm-Service implementieren das scoring nicht erneut. `_build_market_temperature()` ist nur ein thin wrapper; die `status`-Schwelle der Ampel bleibt `60/40`, die temperature-label-Schwelle bleibt `70/55/40`.
 
-| dimension | `available=true` 条件 | fallback score |
+| dimension | `available=true`-Bedingung | fallback score |
 | --- | --- | --- |
 | `breadth` | `has_market_stats && (up_count + down_count) > 0` | `50` |
-| `index` | `indices` 非空且至少一个 `change_pct != None` | `50` |
+| `index` | `indices` nicht leer und mindestens ein `change_pct != None` | `50` |
 | `limit` | `has_market_stats && (limit_up_count + limit_down_count) > 0` | `50` |
 
-`data_quality=unavailable` 表示 `index.available=false`，两类 market rule 都返回 `skipped` 且不触发通知；`partial` 表示至少一个维度 fallback，`ok` 表示三项均 available。`market_light_status` 在 `ok/partial` 下可触发；`partial` 触发时 diagnostics 必含 `missing_dimensions`。`market_light_score_drop` 直接比较 canonical aggregate score；任一侧 `partial` 仍允许比较，但 diagnostics 必含 `partial_comparison=true` 和 `missing_dimensions`。
+`data_quality=unavailable` bedeutet `index.available=false`, beide market-Regeltypen geben `skipped` zurück und lösen keine Benachrichtigung aus; `partial` bedeutet mindestens eine dimension mit Fallback, `ok` bedeutet alle drei available. `market_light_status` kann unter `ok/partial` auslösen; bei `partial`-Auslösung müssen diagnostics `missing_dimensions` enthalten. `market_light_score_drop` vergleicht direkt die canonical aggregate score; `partial` auf beiden Seiten erlaubt weiterhin den Vergleich, aber diagnostics müssen `partial_comparison=true` und `missing_dimensions` enthalten.
 
-### 基线、交易日与去重
+### Baseline, Handelstage und Dedupe
 
-- 大盘复盘持久化必须使用与报告生成共用的同一份 `MarketOverview` 生成 `MarketLightSnapshot`，禁止 persist 阶段二次拉行情。
-- `load_previous_snapshot(region, before_trade_date)` 扫描 `analysis_history(code=MARKET, report_type=market_review)`，跳过缺少 `context_snapshot.market_light_snapshots[region]` 的 legacy 记录，先选出小于 `before_trade_date` 的最大 `snapshot.trade_date`，再在同一 `trade_date` 内按 `created_at DESC, id DESC` 取最新 valid 快照；更晚插入的旧交易日 backfill 不会覆盖正确基线。
-- 若目标 `trade_date` 只有损坏快照，`market_light_score_drop` 返回 `degraded`，不会自动退回更旧交易日做 best-effort 比较。
-- `market_light_score_drop` 首版只做跨交易日比较；无上一交易日基线或同日基线返回 `skipped`，查询/解析异常返回 `degraded`。
-- worker 对 `target_scope=market` 做 region 交易日 gate，并尊重 `TRADING_DAY_CHECK_ENABLED` / `config.trading_day_check_enabled`；检查关闭时允许评估，检查开启且 region 非交易日时返回 `skipped`，不拉取当前快照。
-- 触发历史写 `target=<region>`、`observed_value=<score>`、`data_source=market_light`、`data_timestamp=<trade_date 00:00:00>`，继续复用 P4 的 `rule_id + target + data_source + data_timestamp` 去重。
+- Die Marktübersichtspersistenz muss das `MarketLightSnapshot` aus derselben `MarketOverview` erzeugen, die auch die Berichtserzeugung nutzt; ein zweites Kurzarufen in der persist-Phase ist verboten.
+- `load_previous_snapshot(region, before_trade_date)` scannt `analysis_history(code=MARKET, report_type=market_review)`, überspringt legacy-Datensätze ohne `context_snapshot.market_light_snapshots[region]`, wählt zuerst das größte `snapshot.trade_date` kleiner als `before_trade_date` und nimmt dann innerhalb desselben `trade_date` nach `created_at DESC, id DESC` den neuesten gültigen Snapshot; ein später eingefügter Backfill eines alten Handelstags überschreibt die korrekte Baseline nicht.
+- Ist das Ziel-`trade_date` nur ein beschädigter Snapshot, gibt `market_light_score_drop` `degraded` zurück und fällt nicht automatisch auf einen älteren Handelstag für einen best-effort-Vergleich zurück.
+- `market_light_score_drop` macht in der Erstversion nur Vergleiche über Handelstage hinweg; ohne Baseline des vorherigen Handelstags oder bei Baseline desselben Tages wird `skipped` zurückgegeben, bei Abfrage-/Parse-Ausnahmen `degraded`.
+- Der worker führt für `target_scope=market` einen region-Handelstags-Gate aus und respektiert `TRADING_DAY_CHECK_ENABLED` / `config.trading_day_check_enabled`; bei deaktivierter Prüfung ist die Bewertung erlaubt, bei aktivierter Prüfung und Nicht-Handelstag der region wird `skipped` zurückgegeben, ohne den aktuellen Snapshot abzurufen.
+- Die Auslösungshistorie schreibt `target=<region>`, `observed_value=<score>`, `data_source=market_light`, `data_timestamp=<trade_date 00:00:00>` und nutzt weiterhin das P4-Dedupe `rule_id + target + data_source + data_timestamp`.
 
-### Web 与回滚边界
+### Web- und Rollbackgrenzen
 
-- Web 告警中心新增 `market` scope、region 选择、两类 market rule 参数控件、类型筛选、region 展示和参数展示；API snake_case 映射使用 `statuses` 与 `min_drop`。
-- legacy `AGENT_EVENT_ALERT_RULES_JSON` 不支持 market 规则；P7 不更新 `.env.example`，因为没有新增配置项。
-- P7 不做指数跌幅、板块异动、涨跌停结构恶化、分钟线、多市场时区精确 quote as-of 解析，也不新增 DSL/规则引擎。
+- Das Web-Alarmzentrum erhält `market`-scope, region-Auswahl, Parametersteuerungen der zwei market-Regeltypen, Typfilter, region-Anzeige und Parameteranzeige; die API-snake_case-Zuordnung verwendet `statuses` und `min_drop`.
+- legacy-`AGENT_EVENT_ALERT_RULES_JSON` unterstützt keine market-Regeln; P7 aktualisiert `.env.example` nicht, da keine neuen Konfigurationsoptionen hinzugefügt werden.
+- P7 macht keine Index-Kursverfall-', Sektor-Bewegungs-, Limit-Preis-Strukturverschlechterungs-, Minutenbalken-, mehrzeitzonen-präzise-quote-as-of-Analyse und führt kein DSL/keine Regelengine ein.
 
-## P8 用户配置与部署边界
+## P8 Benutzerkonfiguration und Deployment-Grenzen
 
-P8 不新增规则类型、API、表结构或 worker 行为；它把 P0-P7 已合并能力整理成面向用户和部署者的配置说明。告警 worker 只在 schedule 模式注册，核心开关仍是 `AGENT_EVENT_MONITOR_ENABLED`，轮询间隔仍是 `AGENT_EVENT_MONITOR_INTERVAL_MINUTES`。通知渠道继续走 alert 路由，详见 [通知配置](notifications.md) 中的 `NOTIFICATION_ALERT_CHANNELS` 与 `route_type=alert`。
+P8 fügt keine Regeltypen, keine API, keine Tabellenstrukturen und kein worker-Verhalten hinzu; es fasst die in P0-P7 zusammengeführten Fähigkeiten als Konfigurationsbeschreibung für Benutzer und Betreiber zusammen. Der Alarm-worker wird nur in der schedule-Mode registriert; der Kernschalter bleibt `AGENT_EVENT_MONITOR_ENABLED`, das Polling-Intervall bleibt `AGENT_EVENT_MONITOR_INTERVAL_MINUTES`. Die Benachrichtigungskanäle laufen weiter über die alert-Route; Details siehe `NOTIFICATION_ALERT_CHANNELS` und `route_type=alert` in [Benachrichtigungskonfiguration](notifications.md).
 
-### 本地配置
+### Lokale Konfiguration
 
-本地运行 `python main.py --schedule`、`python main.py --serve --schedule` 或等价内置调度模式时，设置 `AGENT_EVENT_MONITOR_ENABLED=true` 后会启动后台告警 worker；`AGENT_EVENT_MONITOR_INTERVAL_MINUTES` 控制轮询间隔。
+Beim lokalen Ausführen von `python main.py --schedule`, `python main.py --serve --schedule` oder einer äquivalenten eingebauten schedule-Mode wird nach dem Setzen von `AGENT_EVENT_MONITOR_ENABLED=true` der Hintergrund-Alarm-worker gestartet; `AGENT_EVENT_MONITOR_INTERVAL_MINUTES` steuert das Polling-Intervall.
 
-规则来源有两类：
+Es gibt zwei Regelquellen:
 
-- Alert API / Web 告警中心持久化规则：推荐入口，支持 `single_symbol`、`watchlist`、`portfolio_holdings`、`portfolio_account`、`market`，覆盖实时价、涨跌幅、成交量、日线技术指标、持仓风险与大盘红绿灯规则。
-- legacy `AGENT_EVENT_ALERT_RULES_JSON`：只兼容 `single_symbol` 的 `price_cross`、`price_change_percent`、`volume_spike` 三类基础规则；不支持 P5 技术指标、P6 watchlist/portfolio 或 P7 market light。系统不会自动迁移、删除或改写 legacy JSON。
+- Über Alert-API / Web-Alarmzentrum persistierte Regeln: empfohlener Einstieg, unterstützt `single_symbol`, `watchlist`, `portfolio_holdings`, `portfolio_account`, `market` und deckt Echtzeitpreis, Kursänderungsprozentsatz, Volumen, Tagesbalken-technische Indikatoren, Positionsrisiko und Ampel-Regeln ab.
+- legacy-`AGENT_EVENT_ALERT_RULES_JSON`: unterstützt nur die drei Basisregeltypen `price_cross`, `price_change_percent`, `volume_spike` von `single_symbol`; unterstützt keine P5-technischen Indikatoren, kein P6-watchlist/portfolio und kein P7-market-light. Das System migriert, löscht oder schreibt legacy-JSON nicht automatisch um.
 
 ### Docker
 
-仓库 `docker/Dockerfile` 默认命令是 `python main.py --schedule`，因此容器内只要配置 `AGENT_EVENT_MONITOR_ENABLED=true` 就会在 schedule 模式中启用告警 worker。Web/API 持久化规则依赖应用数据库；Docker 部署时需要保留 `data/` 数据库卷，避免容器重建后丢失规则、触发历史、通知尝试和冷却状态。legacy JSON 仍通过环境变量注入，不是 Docker 专用配置体系。
+Der Standardbefehl von `docker/Dockerfile` im Repository ist `python main.py --schedule`; daher aktiviert die Konfiguration von `AGENT_EVENT_MONITOR_ENABLED=true` im Container den Alarm-worker in der schedule-Mode. Web/API-persistierte Regeln hängen von der Anwendungsdatenbank ab; bei Docker-Deployment muss das `data/`-Datenbankvolume erhalten bleiben, damit nach einem Container-Neubau Regeln, Auslösungshistorie, Benachrichtigungsversuche und Kühlungszustand nicht verloren gehen. Legacy-JSON wird weiterhin über Umgebungsvariablen injiziert und ist kein Docker-spezifisches Konfigurationssystem.
 
 ### GitHub Actions
 
-仓库自带 `.github/workflows/00-daily-analysis.yml` 是一次性分析 workflow，实际调用 `python main.py`、`python main.py --market-review` 或 `python main.py --no-market-review`，不运行 `--schedule` 后台 alert worker，也没有映射 `AGENT_EVENT_*` 变量。仅在 repository Secrets / Variables 中新增 `AGENT_EVENT_MONITOR_ENABLED` 或 `AGENT_EVENT_ALERT_RULES_JSON` 不会让默认 Actions 开始持续轮询告警。
+Der mitgelieferte `.github/workflows/00-daily-analysis.yml` ist ein einmaliger Analyse-Workflow, der tatsächlich `python main.py`, `python main.py --market-review` oder `python main.py --no-market-review` aufruft; er führt keinen `--schedule`-Hintergrund-Alarm-worker aus und mappt auch keine `AGENT_EVENT_*`-Variablen. Das bloße Hinzufügen von `AGENT_EVENT_MONITOR_ENABLED` oder `AGENT_EVENT_ALERT_RULES_JSON` in repository Secrets / Variables lässt die Standard-Actions nicht mit kontinuierlichem Alarm-Polling beginnen.
 
-如需 GitHub Actions 里的告警轮询，需要后续单独 PR 明确 schedule 启动方式、env 映射、规则来源和持久化数据库策略；P8 不改变现有 workflow。
+Für Alarm-Polling in GitHub Actions ist ein späterer separater PR erforderlich, der die schedule-Startweise, env-Zuordnung, Regelquellen und die persistierte Datenbankstrategie klärt; P8 ändert den bestehenden Workflow nicht.
 
-### Web 与 Desktop
+### Web und Desktop
 
-Web 告警中心 `/alerts` 是持久化规则的主要入口：可以创建、启停、删除规则，执行一次性 dry-run 测试，查看触发历史、通知尝试和只读冷却状态。批量规则的列表冷却状态是父规则摘要，子目标是否冷却以触发历史中的 `target` / `effective_target` 为准。
+Das Web-Alarmzentrum `/alerts` ist der Haupteinstieg für persistierte Regeln: Regeln können erstellt, aktiviert/deaktiviert, gelöscht und einmalig dry-run-getestet werden; Auslösungshistorie, Benachrichtigungsversuche und schreibgeschützter Kühlungszustand werden eingesehen. Der Listen-Kühlungszustand von Batch-Regeln ist eine übergeordnete Regelzusammenfassung; ob ein Unterziel gekühlt ist, richtet sich nach `target` / `effective_target` in der Auslösungshistorie.
 
-Desktop 不新增原生告警管理界面；桌面用户复用内置或外部 WebUI 的 `/alerts` 页面。Desktop 回滚不需要清理额外状态。
+Desktop fügt keine native Alarmverwaltungsoberfläche hinzu; Desktop-Benutzer nutzen die `/alerts`-Seite des eingebauten oder externen WebUI wieder. Desktop-Rollback erfordert keine Bereinigung zusätzlichen Zustands.
 
-### 状态、通知与回滚
+### Status, Benachrichtigung und Rollback
 
-worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_triggers` 作为评估历史；正常未触发不写历史。`skipped` 表示规则本轮没有可评估条件，例如 market 非交易日或缺少上一交易日基线；`degraded` 表示数据源、持仓快照、历史快照或解析过程出现异常，结果不可用于触发通知。
+Der worker schreibt `triggered`, `skipped`, `degraded`, `failed` in `alert_triggers` als Bewertungshistorie; normal nicht ausgelöst wird nicht protokolliert. `skipped` bedeutet, dass die Regel in dieser Runde keine bewertbare Bedingung hatte, z. B. Nicht-Handelstag des Marktes oder fehlende Baseline des vorherigen Handelstags; `degraded` bedeutet, dass Datenquelle, Positions-Snapshot, historischer Snapshot oder Parse-Prozess eine Ausnahme aufwiesen und das Ergebnis nicht zur Auslösung einer Benachrichtigung verwendet werden kann.
 
-真实触发后会写入 `alert_notifications` 和 `alert_cooldowns`；DB 持久化规则按 `rule_id + target + data_source + data_timestamp` 对同一数据点做 best-effort 去重。legacy JSON 规则继续只使用进程内 fingerprint，不写持久化冷却。
+Nach echten Auslösungen werden `alert_notifications` und `alert_cooldowns` geschrieben; DB-persistierte Regeln deduplizieren denselben Datenpunkt best-effort nach `rule_id + target + data_source + data_timestamp`. legacy-JSON-Regeln verwenden weiterhin nur den in-process-fingerprint und schreiben keine persistierte Kühlung.
 
-回滚 P8 只需 revert 文档、配置说明和 Web 文案改动；没有数据库迁移或用户数据清理。回滚早期 Phase 时，已创建的持久化规则不会自动删除，按下方 Phase 回滚说明处理。
+Der Rollback von P8 erfordert nur den Revert von Dokument-, Konfigurationsbeschreibungs- und Web-Textänderungen; es gibt keine Datenbankmigration oder Benutzerdatenbereinigung. Beim Rollback früherer Phasen werden bereits erstellte persistierte Regeln nicht automatisch gelöscht; sie werden gemäß der Phasen-Rollback-Erläuterung unten behandelt.
 
-## Phase 边界
+## Phasengrenzen
 
-- P0：本文档、契约、存储评估和兼容测试。
-- P1：Alert API MVP，首版只覆盖现有三类 runtime 规则。
-- P2：告警评估 worker 与 runtime 统一，让持久化 active rules 与 legacy JSON 共存。
-- P3：Web 告警中心 MVP。
-- P4：触发历史、通知结果与冷却状态。
-- P5：技术指标规则。
-- P6：持仓与自选股联动。
-- P7：大盘红绿灯与市场联动。
-- P8：文档、迁移与收口。
+- P0: Dieses Dokument, Verträge, Speicherbewertung und Kompatibilitätstests.
+- P1: Alert-API MVP, Erstversion deckt nur die bestehenden drei Laufzeitregeltypen ab.
+- P2: Alarmbewertungs-worker und runtime-Vereinheitlichung, sodass persistierte active rules und legacy-JSON koexistieren.
+- P3: Web-Alarmzentrum MVP.
+- P4: Auslösungshistorie, Benachrichtigungsergebnisse und Kühlungszustand.
+- P5: Technische Indikatorregeln.
+- P6: Kopplung von Positionen und Watchlist.
+- P7: Ampel und Marktkopplung.
+- P8: Dokumentation, Migration und Abschluss.
 
-## P0 不做
+## P0 macht nicht
 
-- P0 阶段不新增 `api/v1/schemas/alerts.py` 或 Alert API。
-- P0 阶段不新增 Web 告警中心页面、路由或侧边栏入口。
-- P0 阶段不新增数据库表、repository 或 migration。
-- P0 阶段不实现触发历史、通知结果或冷却状态写入。
-- P0 阶段不自动迁移、删除或覆盖 `AGENT_EVENT_ALERT_RULES_JSON`。
-- P0 阶段不实现 MACD、KDJ、CCI、RSI、持仓风险或 Market Light 告警规则。
-- P0 阶段不重写 `NotificationService` 或通知路由框架。
+- P0 fügt kein `api/v1/schemas/alerts.py` oder keine Alert-API hinzu.
+- P0 fügt keine Web-Alarmzentrum-Seite, keine Route und keinen Seitenleisten-Einstieg hinzu.
+- P0 fügt keine Datenbanktabellen, kein repository und keine Migration hinzu.
+- P0 implementiert kein Schreiben von Auslösungshistorie, Benachrichtigungsergebnissen oder Kühlungszustand.
+- P0 migriert, löscht oder überschreibt `AGENT_EVENT_ALERT_RULES_JSON` nicht automatisch.
+- P0 implementiert keine MACD-, KDJ-, CCI-, RSI-, Positionsrisiko- oder Market-Light-Alarmregeln.
+- P0 schreibt `NotificationService` oder das Benachrichtigungs-Routingframework nicht neu.
 
-## 回滚
+## Rollback
 
-- P0 是文档和测试收口。若只回滚 P0，revert 对应 PR 即可；没有数据库、配置或用户数据迁移需要额外处理。
-- P1 新增 Alert API 代码和 `alert_rules` / `alert_triggers` / `alert_notifications` SQLite 表。最小回滚方式是 revert P1 PR；revert 会移除 API、service、repository、schema 和 ORM 定义，但已经由 `Base.metadata.create_all()` 创建的 SQLite 表与数据不会自动删除。如需清理，需要维护者在确认不再需要历史数据后手动删除相关表。
-- P3 是 Web 和文档改动。最小回滚方式是 revert P3 PR；不会删除已有规则、触发历史或 legacy JSON 配置。
-- P4 新增 `alert_cooldowns` SQLite 表并开始写入 `alert_notifications`。最小回滚方式是 revert P4 PR；已经创建的 `alert_cooldowns`、`alert_triggers`、`alert_notifications` 数据不会自动删除。如需清理，需要维护者确认后手动删除对应表或记录。
-- P5 新增 Alert API/Web 支持的技术指标规则。最小回滚方式是 revert P5 PR；已创建的 P5 `alert_rules` 记录不会自动删除，旧代码会在 worker 加载阶段 skip unsupported `alert_type`，不影响 legacy 三类规则执行。如需清理，需要维护者确认后手动删除相关规则记录。
-- P6 新增 Alert API/Web 支持的 watchlist、portfolio holdings 与 portfolio account 规则。最小回滚方式是 revert P6 PR；没有新表或迁移，已创建的 P6 `alert_rules` 会保留。回滚前建议 disable/delete 非 `single_symbol` 的 P6 规则；否则旧 worker 可能把 `watchlist` / `portfolio_holdings` 的父级 `target` 当作股票代码评估并产生 failed/skipped 噪声，portfolio 专用 `alert_type` 会在 worker 加载阶段被 skip。
-- P7 新增 Alert API/Web 支持的 `market` 规则和大盘复盘 `market_light_snapshots` 历史快照。最小回滚方式是 revert P7 PR；没有新表或迁移，已创建的 P7 `alert_rules` 会保留。回滚前建议 disable/delete `target_scope=market` 规则；旧 worker 会 skip unsupported `market_light_*` 类型或因 scope/type 不识别产生配置噪声。
+- P0 ist der Abschluss von Dokument und Tests. Wird nur P0 zurückgerollt, reicht der Revert des zugehörigen PR; es gibt keine Datenbank-, Konfigurations- oder Benutzerdatenmigration, die zusätzlich behandelt werden muss.
+- P1 fügt Alert-API-Code und die SQLite-Tabellen `alert_rules` / `alert_triggers` / `alert_notifications` hinzu. Der minimale Rollback-Weg ist der Revert des P1-PR; der Revert entfernt API, service, repository, schema und ORM-Definitionen, aber die von `Base.metadata.create_all()` bereits erstellten SQLite-Tabellen und -Daten werden nicht automatisch gelöscht. Für eine Bereinigung muss der Maintainer die zugehörigen Tabellen nach Bestätigung, dass die historischen Daten nicht mehr benötigt werden, manuell löschen.
+- P3 ist eine Web- und Dokumentänderung. Der minimale Rollback-Weg ist der Revert des P3-PR; bestehende Regeln, Auslösungshistorie und legacy-JSON-Konfiguration werden nicht gelöscht.
+- P4 fügt die SQLite-Tabelle `alert_cooldowns` hinzu und beginnt, `alert_notifications` zu schreiben. Der minimale Rollback-Weg ist der Revert des P4-PR; bereits erstellte `alert_cooldowns`-, `alert_triggers`-, `alert_notifications`-Daten werden nicht automatisch gelöscht. Für eine Bereinigung muss der Maintainer die entsprechenden Tabellen oder Datensätze nach Bestätigung manuell löschen.
+- P5 fügt von Alert-API/Web unterstützte technische Indikatorregeln hinzu. Der minimale Rollback-Weg ist der Revert des P5-PR; bereits erstellte P5-`alert_rules`-Datensätze werden nicht automatisch gelöscht, und der alte Code überspringt unsupported-`alert_type`-Einträge in der worker-Ladephase, ohne die Ausführung der drei legacy-Regeltypen zu beeinträchtigen. Für eine Bereinigung muss der Maintainer die zugehörigen Regel-Datensätze nach Bestätigung manuell löschen.
+- P6 fügt von Alert-API/Web unterstützte watchlist-, portfolio-holdings- und portfolio-account-Regeln hinzu. Der minimale Rollback-Weg ist der Revert des P6-PR; es gibt keine neuen Tabellen oder Migrationen, und bereits erstellte P6-`alert_rules` bleiben erhalten. Vor dem Rollback wird empfohlen, P6-Regeln, die nicht `single_symbol` sind, zu deaktivieren/löschen; sonst könnte der alte worker das übergeordnete `target` von `watchlist` / `portfolio_holdings` als Aktiencode bewerten und failed/skipped-Rauschen erzeugen; portfolio-spezifische `alert_type`-Werte werden in der worker-Ladephase übersprungen.
+- P7 fügt von Alert-API/Web unterstützte `market`-Regeln und die `market_light_snapshots`-Historie der Marktübersicht hinzu. Der minimale Rollback-Weg ist der Revert des P7-PR; es gibt keine neuen Tabellen oder Migrationen, und bereits erstellte P7-`alert_rules` bleiben erhalten. Vor dem Rollback wird empfohlen, Regeln mit `target_scope=market` zu deaktivieren/löschen; der alte worker überspringt unsupported-`market_light_*`-Typen oder erzeugt Konfigurationsrauschen wegen nicht erkannter scope/type.

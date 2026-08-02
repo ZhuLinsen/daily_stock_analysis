@@ -1,113 +1,113 @@
 ---
 name: "stock_analyzer"
-description: "分析股票和市场。当用户想要分析单个或多个股票，或进行市场复盘时调用。"
+description: "Analysiert Aktien und den Markt. Wird aufgerufen, wenn der Benutzer eine einzelne oder mehrere Aktien analysieren oder einen Marktrückblick durchführen möchte."
 ---
 
-# 股票分析器
+# Aktienanalysator
 
-本技能基于 `src/services/analyzer_service.py` 的逻辑，提供分析股票和整体市场的功能。
+Diese Skill basiert auf der Logik in `src/services/analyzer_service.py` und bietet Funktionen zur Analyse einzelner Aktien und des gesamten Markts.
 
-## 输出结构 (`AnalysisResult`)
+## Ausgabestruktur (`AnalysisResult`)
 
-分析函数返回一个 `AnalysisResult` 对象（或其列表），该对象具有丰富的结构。以下是其关键组件的简要概述，并附有真实的输出示例：
+Die Analysefunktionen geben ein `AnalysisResult`-Objekt (oder eine Liste davon) zurück, das eine umfangreiche Struktur aufweist. Im Folgenden ein kurzer Überblick über seine Kernkomponenten mit einem realen Beispielausgabe:
 
-`dashboard` 属性包含核心分析，分为四个主要部分：
-1.  **`core_conclusion`**: 一句话总结、信号类型和仓位建议。
-2.  **`data_perspective`**: 技术数据，包括趋势状态、价格位置、量能分析和筹码结构。
-3.  **`intelligence`**: 定性信息，如新闻、风险警报和积极催化剂。
-4.  **`battle_plan`**: 可操作的策略，包括狙击点（买/卖目标）、仓位策略和风险控制清单。
+Die `dashboard`-Eigenschaft enthält die Kernanalyse und ist in vier Hauptabschnitte unterteilt:
+1.  **`core_conclusion`**: Eine Ein-Satz-Zusammenfassung, Signaltyp und Positionsgrößen-Empfehlung.
+2.  **`data_perspective`**: Technische Daten, einschließlich Trendstatus, Preislage, Volumenanalyse und Chip-Struktur.
+3.  **`intelligence`**: Qualitative Informationen wie Nachrichten, Risikoalarme und positive Katalysatoren.
+4.  **`battle_plan`**: Umsetzbare Strategien, einschließlich Präzisionspunkten (Kauf-/Verkaufsziele), Positionsgrößenstrategie und Risikokontroll-Checkliste.
 
-## 配置 (`Config`)
+## Konfiguration (`Config`)
 
-所有分析函数都可以接受一个可选的 `config` 对象。该对象包含应用程序的所有配置，例如 API 密钥、通知设置和分析参数。
+Alle Analysefunktionen können ein optionales `config`-Objekt akzeptieren. Dieses Objekt enthält sämtliche Konfigurationen der Anwendung, z. B. API-Schlüssel, Benachrichtigungseinstellungen und Analyseparameter.
 
-如果未提供 `config` 对象，函数将自动使用从 `.env` 文件加载的全局单例实例。
+Wenn kein `config`-Objekt übergeben wird, verwenden die Funktionen automatisch die globale Singleton-Instanz, die aus der `.env`-Datei geladen wird.
 
-**参考:** [`Config`](src/config.py)
+**Referenz:** [`Config`](src/config.py)
 
-## 函数
+## Funktionen
 
-### 1. 分析单只股票
+### 1. Eine einzelne Aktie analysieren
 
-**描述:** 分析单只股票并返回分析结果。
+**Beschreibung:** Analysiert eine einzelne Aktie und gibt das Analyseergebnis zurück.
 
-**何时使用:** 当用户要求分析特定股票时。
+**Wann verwenden:** Wenn der Benutzer die Analyse einer bestimmten Aktie anfordert.
 
-**输入:**
-- `stock_code` (str): 要分析的股票代码。
-- `config` (Config, 可选): 配置对象。默认为 `None`。
-- `full_report` (bool, 可选): 是否生成完整报告。默认为 `False`。
-- `notifier` (NotificationService, 可选): 通知服务对象。默认为 `None`。
+**Eingaben:**
+- `stock_code` (str): Der zu analysierende Aktiencode.
+- `config` (Config, optional): Konfigurationsobjekt. Standard: `None`.
+- `full_report` (bool, optional): Ob ein vollständiger Bericht erstellt werden soll. Standard: `False`.
+- `notifier` (NotificationService, optional): Benachrichtigungsservice-Objekt. Standard: `None`.
 
-**输出:** `Optional[AnalysisResult]`
-一个包含分析结果的 `AnalysisResult` 对象，如果分析失败则为 `None`。
+**Ausgabe:** `Optional[AnalysisResult]`
+Ein `AnalysisResult`-Objekt mit dem Analyseergebnis, oder `None`, wenn die Analyse fehlschlägt.
 
-**示例:**
+**Beispiel:**
 
 ```python
 from src.services.analyzer_service import analyze_stock
 
-# 分析单只股票
+# Analyse einer einzelnen Aktie
 result = analyze_stock("600989")
 if result:
-    print(f"股票: {result.name} ({result.code})")
-    print(f"情绪得分: {result.sentiment_score}")
-    print(f"操作建议: {result.operation_advice}")
+    print(f"Aktie: {result.name} ({result.code})")
+    print(f"Stimmungswert: {result.sentiment_score}")
+    print(f"Handlungsempfehlung: {result.operation_advice}")
 ```
 
-**参考:** [`analyze_stock`](src/services/analyzer_service.py)
+**Referenz:** [`analyze_stock`](src/services/analyzer_service.py)
 
-### 2. 分析多只股票
+### 2. Mehrere Aktien analysieren
 
-**描述:** 分析一个股票列表并返回分析结果列表。
+**Beschreibung:** Analysiert eine Liste von Aktien und gibt eine Liste von Analyseergebnissen zurück.
 
-**何时使用:** 当用户想要一次分析多只股票时。
+**Wann verwenden:** Wenn der Benutzer mehrere Aktien gleichzeitig analysieren möchte.
 
-**输入:**
-- `stock_codes` (List[str]): 要分析的股票代码列表。
-- `config` (Config, 可选): 配置对象。默认为 `None`。
-- `full_report` (bool, 可选): 是否为每只股票生成完整报告。默认为 `False`。
-- `notifier` (NotificationService, 可选): 通知服务对象。默认为 `None`。
+**Eingaben:**
+- `stock_codes` (List[str]): Die Liste der zu analysierenden Aktiencodes.
+- `config` (Config, optional): Konfigurationsobjekt. Standard: `None`.
+- `full_report` (bool, optional): Ob für jede Aktie ein vollständiger Bericht erstellt werden soll. Standard: `False`.
+- `notifier` (NotificationService, optional): Benachrichtigungsservice-Objekt. Standard: `None`.
 
-**输出:** `List[AnalysisResult]`
-一个 `AnalysisResult` 对象列表。
+**Ausgabe:** `List[AnalysisResult]`
+Eine Liste von `AnalysisResult`-Objekten.
 
-**示例:**
+**Beispiel:**
 
 ```python
 from src.services.analyzer_service import analyze_stocks
 
-# 分析多只股票
+# Analyse mehrerer Aktien
 results = analyze_stocks(["600989", "000001"])
 for result in results:
-    print(f"股票: {result.name}, 操作建议: {result.operation_advice}")
+    print(f"Aktie: {result.name}, Handlungsempfehlung: {result.operation_advice}")
 ```
 
-**参考:** [`analyze_stocks`](src/services/analyzer_service.py)
+**Referenz:** [`analyze_stocks`](src/services/analyzer_service.py)
 
 
-### 3. 执行大盘复盘
+### 3. Marktrückblick durchführen
 
-**描述:** 对整体市场进行复盘并返回一份报告。
+**Beschreibung:** Führt einen Rückblick über den gesamten Markt durch und gibt einen Bericht zurück.
 
-**何时使用:** 当用户要求市场概览、摘要或复盘时。
+**Wann verwenden:** Wenn der Benutzer einen Marktüberblick, eine Zusammenfassung oder einen Rückblick anfordert.
 
-**输入:**
-- `config` (Config, 可选): 配置对象。默认为 `None`。
-- `notifier` (NotificationService, 可选): 通知服务对象。默认为 `None`。
+**Eingaben:**
+- `config` (Config, optional): Konfigurationsobjekt. Standard: `None`.
+- `notifier` (NotificationService, optional): Benachrichtigungsservice-Objekt. Standard: `None`.
 
-**输出:** `Optional[str]`
-一个包含市场复盘报告的字符串，如果失败则为 `None`。
+**Ausgabe:** `Optional[str]`
+Ein String mit dem Marktrückblick-Bericht, oder `None`, wenn er fehlschlägt.
 
-**示例:**
+**Beispiel:**
 
 ```python
 from src.services.analyzer_service import perform_market_review
 
-# 执行大盘复盘
+# Marktrückblick durchführen
 report = perform_market_review()
 if report:
     print(report)
 ```
 
-**参考:** [`perform_market_review`](src/services/analyzer_service.py)
+**Referenz:** [`perform_market_review`](src/services/analyzer_service.py)

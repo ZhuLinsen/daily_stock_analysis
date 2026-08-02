@@ -1,22 +1,22 @@
-# 飞书通知配置指南
+# Leitfaden zur Feishu-Benachrichtigungskonfiguration
 
-本文只解决两类常见诉求：
+Dieses Dokument behandelt nur zwei häufige Anforderungen:
 
-1. 把分析结果推送到飞书群
-2. 避免把飞书应用模式、App Bot 主动推送和群机器人 Webhook 模式混用
+1. Analyseergebnisse in eine Feishu-Gruppe pushen
+2. Vermeiden, den Feishu-App-Modus, aktive App-Bot-Pushes und den Gruppenbot-Webhook-Modus zu vermischen
 
-## 先分清两种模式
+## Zuerst die beiden Modi unterscheiden
 
-### 模式一：群机器人 Webhook 推送
+### Modus 1: Gruppenbot-Webhook-Push
 
-适用场景：
-- 你只想把分析报告推送到飞书群
-- 不需要处理飞书消息回调
-- 不需要 Stream Bot
+Anwendungsfälle:
+- Du möchtest die Analyseberichte nur in eine Feishu-Gruppe pushen
+- Du musst keine Feishu-Message-Callbacks verarbeiten
+- Du benötigst keinen Stream Bot
 
-这也是本项目最推荐、最容易落地的飞书通知方式。
+Dies ist zugleich die empfohlene und am einfachsten umsetzbare Feishu-Benachrichtigungsmethode dieses Projekts.
 
-需要配置的变量：
+Zu konfigurierende Variablen:
 
 ```env
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
@@ -25,15 +25,15 @@ FEISHU_WEBHOOK_SECRET=your_sign_secret
 FEISHU_WEBHOOK_KEYWORD=股票日报
 ```
 
-### 模式二：飞书应用 / App Bot / Stream Bot / 云文档
+### Modus 2: Feishu-App / App Bot / Stream Bot / Cloud-Dokumente
 
-适用场景：
-- 你要用飞书 App Bot 主动向指定群或用户推送通知
-- 你要做飞书应用机器人交互
-- 你要启用 Stream 模式
-- 你要用飞书云文档能力
+Anwendungsfälle:
+- Du möchtest mit dem Feishu App Bot aktiv Benachrichtigungen an eine bestimmte Gruppe oder einen Nutzer senden
+- Du möchtest Bot-Interaktionen in der Feishu-App umsetzen
+- Du möchtest den Stream-Modus aktivieren
+- Du möchtest die Feishu-Cloud-Dokumentfunktion nutzen
 
-相关变量：
+Zugehörige Variablen:
 
 ```env
 FEISHU_APP_ID=cli_xxx
@@ -46,92 +46,92 @@ FEISHU_RECEIVE_ID_TYPE=chat_id
 FEISHU_STREAM_ENABLED=true
 ```
 
-注意：
-- `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不会直接开启群 Webhook 推送
-- 简单群通知优先配置 `FEISHU_WEBHOOK_URL`
-- 不用 Webhook 时，App Bot 主动推送必须同时配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 和 `FEISHU_CHAT_ID`
-- `FEISHU_STREAM_ENABLED` 只代表事件订阅 / Stream Bot，不参与主动通知是否配置完成的判断
-- 如果你做的是应用机器人 / Stream Bot，可直接看文末保留的原流程截图参考
-- App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准安装使用 `pip install -r requirements.txt`；参考 [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/) 和 [SDK repo](https://github.com/larksuite/oapi-sdk-python)
+Hinweise:
+- `FEISHU_APP_ID` / `FEISHU_APP_SECRET` aktivieren nicht direkt den Gruppen-Webhook-Push
+- Für einfache Gruppenbenachrichtigungen wird bevorzugt `FEISHU_WEBHOOK_URL` konfiguriert
+- Ohne Webhook müssen für den aktiven App-Bot-Push `FEISHU_APP_ID`, `FEISHU_APP_SECRET` und `FEISHU_CHAT_ID` gemeinsam konfiguriert werden
+- `FEISHU_STREAM_ENABLED` steht nur für Event-Abo / Stream Bot und fließt nicht in die Beurteilung ein, ob aktive Benachrichtigungen vollständig konfiguriert sind
+- Wenn du einen App-Bot / Stream Bot umsetzt, kannst du direkt die am Dokumentende beibehaltenen Screenshots des ursprünglichen Ablaufs als Referenz ansehen
+- Der Sendepfad des App Bot nutzt das bereits in `requirements.txt` vorhandene `lark-oapi>=1.0.0`; für die Standardinstallation wird `pip install -r requirements.txt` verwendet; siehe [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create), [lark-oapi PyPI](https://pypi.org/project/lark-oapi/) und [SDK repo](https://github.com/larksuite/oapi-sdk-python)
 
-### 文件发送模式（FEISHU_SEND_AS_FILE）
+### Datei-Sendemodus (FEISHU_SEND_AS_FILE)
 
-开启后，飞书 App Bot 将报告以 `.md` 文件形式发送，而非文字/卡片消息：
+Nach dem Aktivieren sendet der Feishu App Bot die Berichte als `.md`-Dateien statt als Text-/Kartennachrichten:
 
 ```bash
 FEISHU_SEND_AS_FILE=true
 ```
 
-- **需要应用权限**：`im:message`（发送消息）+ `im:file`（上传文件）
-- **依赖版本**：`lark-oapi>=1.0.0` 需包含 `im.v1.file.create` API（文件上传类）
-- **Webhook 模式**：回退为发送文件内容文本（Webhook 不支持文件上传）
-- **生效范围**：仅对 `route_type="report"` 的报告推送生效；告警、系统通知等不受影响
-- **GitHub Actions 定时任务**：已通过 `.github/workflows/00-daily-analysis.yml` 映射，在 repo Settings → Secrets and variables → Actions 中添加同名变量或 secret 即可启用
-- **配置方式**：支持 `.env` 文件、GitHub Actions Secret/Variable 或 Web/桌面设置页配置
+- **Erforderliche App-Berechtigungen**: `im:message` (Nachrichten senden) + `im:file` (Dateien hochladen)
+- **Abhängigkeitsversion**: `lark-oapi>=1.0.0` muss die `im.v1.file.create`-API (Datei-Upload) enthalten
+- **Webhook-Modus**: Es wird auf das Senden des Dateiinhalts als Text zurückgefallen (Webhook unterstützt keinen Datei-Upload)
+- **Wirkungsbereich**: Gilt nur für Bericht-Pushes mit `route_type="report"`; Alarme, Systembenachrichtigungen usw. sind nicht betroffen
+- **GitHub-Actions-Zeitplanaufgaben**: Wurde über `.github/workflows/00-daily-analysis.yml` zugeordnet; füge im Repo unter Settings → Secrets and variables → Actions gleichnamige Variablen oder Secrets hinzu, um es zu aktivieren
+- **Konfigurationsmöglichkeiten**: unterstützt `.env`-Dateien, GitHub-Actions-Secrets/-Variablen oder die Web-/Desktop-Einstellungsseite
 
-## Webhook 推送的正确配置步骤
+## Korrekte Konfigurationsschritte für den Webhook-Push
 
-### 1. 在飞书群里创建自定义机器人
+### 1. In der Feishu-Gruppe einen benutzerdefinierten Bot erstellen
 
-路径通常是：
-- 群聊
-- 群设置
-- 群机器人
-- 添加机器人
-- 自定义机器人
+Der Pfad ist üblicherweise:
+- Gruppenchat
+- Gruppeneinstellungen
+- Gruppenbot
+- Bot hinzufügen
+- Benutzerdefinierter Bot
 
-完成后复制机器人提供的 Webhook URL。
+Kopiere anschließend die vom Bot bereitgestellte Webhook-URL.
 
-示例：
+Beispiel:
 
 ```env
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
-### 2. 查看机器人安全设置
+### 2. Sicherheitseinstellungen des Bots prüfen
 
-飞书群机器人常见有三种安全限制：
+Bei Feishu-Gruppenbots gibt es üblicherweise drei Arten von Sicherheitseinschränkungen:
 
-1. 不加任何安全设置
-2. 开启“关键词”
-3. 开启“签名校验”
+1. Keine Sicherheitseinstellungen hinzufügen
+2. „Stichwort“ aktivieren
+3. „Signaturprüfung“ aktivieren
 
-如果你的机器人开启了额外安全项，项目侧也必须同步配置，否则请求会被飞书拒绝。
+Wenn für deinen Bot zusätzliche Sicherheitselemente aktiviert sind, muss auch das Projekt entsprechend konfiguriert werden, sonst werden Anfragen von Feishu abgelehnt.
 
-#### 开启了关键词
+#### Stichwort aktiviert
 
-把飞书里配置的同一个关键词写到：
+Trage dasselbe Stichwort, das in Feishu konfiguriert ist, ein in:
 
 ```env
 FEISHU_WEBHOOK_KEYWORD=股票日报
 ```
 
-项目会自动在每条飞书消息前补上这个关键词，你不需要手工改报告模板。
+Das Projekt setzt dieses Stichwort automatisch vor jede Feishu-Nachricht; du musst die Berichtsvorlage nicht von Hand anpassen.
 
-#### 开启了签名校验
+#### Signaturprüfung aktiviert
 
-把飞书里显示的 secret 写到：
+Trage das in Feishu angezeigte secret ein in:
 
 ```env
 FEISHU_WEBHOOK_SECRET=your_sign_secret
 ```
 
-项目会自动按飞书要求为每条消息补 `timestamp` 和 `sign`。
+Das Projekt ergänzt automatisch gemäß den Feishu-Anforderungen für jede Nachricht `timestamp` und `sign`.
 
-### 3. 启动并验证
+### 3. Starten und verifizieren
 
-只要配置了 `FEISHU_WEBHOOK_URL`，通知发送就会走 Webhook 通道。
+Sobald `FEISHU_WEBHOOK_URL` konfiguriert ist, läuft das Senden der Benachrichtigungen über den Webhook-Kanal.
 
-如果你还同时填了：
+Falls du zusätzlich eingetragen hast:
 
 ```env
 FEISHU_APP_ID=...
 FEISHU_APP_SECRET=...
 ```
 
-也不会影响 Webhook 推送；但它们本身不能替代 `FEISHU_WEBHOOK_URL`。
+beeinflusst das den Webhook-Push nicht; sie können aber `FEISHU_WEBHOOK_URL` nicht ersetzen.
 
-如果未配置 Webhook，也可以用 App Bot 主动推送：
+Wenn kein Webhook konfiguriert ist, kann auch mit dem App Bot aktiv gepusht werden:
 
 ```env
 FEISHU_APP_ID=cli_xxx
@@ -140,13 +140,13 @@ FEISHU_CHAT_ID=oc_xxx
 FEISHU_RECEIVE_ID_TYPE=chat_id
 ```
 
-此时 `FEISHU_STREAM_ENABLED` 不需要开启；它只用于事件订阅 / Stream Bot。
+In diesem Fall muss `FEISHU_STREAM_ENABLED` nicht aktiviert werden; es dient nur für Event-Abo / Stream Bot.
 
-### 4. 在飞书自动化里配置 Webhook 触发器
+### 4. Webhook-Trigger in der Feishu-Automatisierung konfigurieren
 
-如果你在飞书自动化流程里消费本项目推送的卡片消息，请按下面配置：
+Wenn du in Feishu-Automatisierungsabläufen die vom Projekt gepushten Kartennachrichten verarbeitest, konfiguriere wie folgt:
 
-1. 在创建 Webhook 触发器时，**参数** 填写下面 JSON（`content` 可按需保留占位符）：
+1. Fülle beim Erstellen des Webhook-Triggers die **Parameter** mit dem folgenden JSON aus (`content` kann je nach Bedarf Platzhalter enthalten):
 
 ```json
 {
@@ -172,82 +172,82 @@ FEISHU_RECEIVE_ID_TYPE=chat_id
 }
 ```
 
-2. 在 **操作/消息内容** 部分，不要手填纯文本；点击加号选择 **Webhook 触发**，并映射到：
+2. Trage im Abschnitt **Aktion/Nachrichteninhalt** keinen reinen Text ein; klicke auf das Pluszeichen, wähle **Webhook auslösen** und ordne zu:
 
 `card.elements[0].text.content`
 
 ![img_11.png](img_11.png)
 
-## 最常见的失败原因
+## Die häufigsten Fehlerursachen
 
-### 1. 只填了 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`
+### 1. Nur `FEISHU_APP_ID` / `FEISHU_APP_SECRET` ausgefüllt
 
-现象：
-- 你觉得“飞书已经配好了”
-- 实际完全收不到群通知
+Symptom:
+- Du denkst „Feishu ist eingerichtet“
+- Tatsächlich kommen überhaupt keine Gruppenbenachrichtigungen an
 
-原因：
-- 这两个变量只是应用凭据；主动推送还需要 `FEISHU_CHAT_ID`，群 Webhook 推送则需要 `FEISHU_WEBHOOK_URL`
+Ursache:
+- Diese beiden Variablen sind nur App-Anmeldeinformationen; für den aktiven Push wird zusätzlich `FEISHU_CHAT_ID` benötigt, für den Gruppen-Webhook-Push `FEISHU_WEBHOOK_URL`
 
-正确做法：
-- 简单群推送：补 `FEISHU_WEBHOOK_URL`
-- App Bot 主动推送：补 `FEISHU_CHAT_ID`，并确认应用有发消息权限且机器人在目标群中
+Richtige Vorgehensweise:
+- Einfacher Gruppenpush: `FEISHU_WEBHOOK_URL` ergänzen
+- Aktiver App-Bot-Push: `FEISHU_CHAT_ID` ergänzen und bestätigen, dass die App die Berechtigung zum Senden von Nachrichten hat und der Bot in der Zielgruppe ist
 
-### 2. 飞书机器人开启了关键词，但本地没配 `FEISHU_WEBHOOK_KEYWORD`
+### 2. Feishu-Bot hat ein Stichwort aktiviert, aber lokal ist `FEISHU_WEBHOOK_KEYWORD` nicht konfiguriert
 
-现象：
-- 其他 App 能发
-- 本项目发不进去，或者飞书直接返回校验失败
+Symptom:
+- Andere Apps können senden
+- Dieses Projekt kann nicht senden, oder Feishu gibt direkt einen Prüfungsfehler zurück
 
-正确做法：
-- 把飞书机器人安全设置中的关键词原样填到 `FEISHU_WEBHOOK_KEYWORD`
+Richtige Vorgehensweise:
+- Das Stichwort aus den Sicherheitseinstellungen des Feishu-Bots unverändert in `FEISHU_WEBHOOK_KEYWORD` eintragen
 
-### 3. 飞书机器人开启了签名校验，但本地没配 `FEISHU_WEBHOOK_SECRET`
+### 3. Feishu-Bot hat die Signaturprüfung aktiviert, aber lokal ist `FEISHU_WEBHOOK_SECRET` nicht konfiguriert
 
-现象：
-- Webhook URL 看起来没问题
-- 但飞书返回签名相关错误
+Symptom:
+- Die Webhook-URL sieht korrekt aus
+- Aber Feishu gibt signaturbezogene Fehler zurück
 
-正确做法：
-- 把机器人 secret 填到 `FEISHU_WEBHOOK_SECRET`
+Richtige Vorgehensweise:
+- Das Bot-secret in `FEISHU_WEBHOOK_SECRET` eintragen
 
-### 4. 机器人没在目标群里，或者没有发言权限
+### 4. Der Bot ist nicht in der Zielgruppe oder hat keine Schreibberechtigung
 
-检查：
-- 机器人是否真的被添加到了目标群
-- 群管理员是否限制了机器人发消息
+Prüfe:
+- ob der Bot tatsächlich zur Zielgruppe hinzugefügt wurde
+- ob der Gruppenadministrator das Senden von Nachrichten durch den Bot eingeschränkt hat
 
-### 5. 飞书侧配置了 IP 白名单
+### 5. Auf Feishu-Seite ist eine IP-Whitelist konfiguriert
 
-如果你在云服务器、Docker、GitHub Actions 上跑，出口 IP 可能和本地不同。
+Wenn du auf einem Cloud-Server, in Docker oder GitHub Actions läufst, kann die Ausgangs-IP von der lokalen abweichen.
 
-检查：
-- 飞书机器人是否启用了 IP 白名单
-- 当前运行环境出口 IP 是否在白名单里
+Prüfe:
+- ob für den Feishu-Bot eine IP-Whitelist aktiviert ist
+- ob die Ausgangs-IP der aktuellen Laufzeitumgebung in der Whitelist steht
 
-## 建议的最小可用配置
+## Empfohlene minimale funktionsfähige Konfiguration
 
-### 无额外安全限制
+### Ohne zusätzliche Sicherheitseinschränkungen
 
 ```env
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
 ```
 
-### 开启关键词
+### Stichwort aktiviert
 
 ```env
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
 FEISHU_WEBHOOK_KEYWORD=股票日报
 ```
 
-### 开启签名校验
+### Signaturprüfung aktiviert
 
 ```env
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
 FEISHU_WEBHOOK_SECRET=your_sign_secret
 ```
 
-### 同时开启关键词和签名
+### Stichwort und Signatur gleichzeitig aktiviert
 
 ```env
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/your_hook_token
@@ -255,20 +255,20 @@ FEISHU_WEBHOOK_SECRET=your_sign_secret
 FEISHU_WEBHOOK_KEYWORD=股票日报
 ```
 
-## 排查顺序建议
+## Empfohlene Reihenfolge der Fehlersuche
 
-1. 先确认你要的是“群 Webhook 推送”还是“应用 / Stream Bot”
-2. 只做简单群推送时，先保证 `FEISHU_WEBHOOK_URL` 已配置
-3. 不用 Webhook 而走 App Bot 主动推送时，确认 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` 三项齐全
-4. 回到飞书机器人安全设置，确认是否启用了关键词或签名
-5. 若启用了，就补齐 `FEISHU_WEBHOOK_KEYWORD` / `FEISHU_WEBHOOK_SECRET`
-6. 最后再检查机器人是否在群里、是否有权限、是否命中 IP 白名单
+1. Kläre zuerst, ob du „Gruppen-Webhook-Push“ oder „App / Stream Bot“ möchtest.
+2. Für einen einfachen Gruppenpush stelle zuerst sicher, dass `FEISHU_WEBHOOK_URL` konfiguriert ist.
+3. Wenn du ohne Webhook den aktiven App-Bot-Push nutzt, stelle sicher, dass `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` vollständig vorhanden sind.
+4. Kehre zu den Sicherheitseinstellungen des Feishu-Bots zurück und prüfe, ob ein Stichwort oder eine Signatur aktiviert ist.
+5. Falls aktiviert, ergänze `FEISHU_WEBHOOK_KEYWORD` / `FEISHU_WEBHOOK_SECRET`.
+6. Prüfe zuletzt, ob der Bot in der Gruppe ist, ob er Berechtigungen hat und ob die IP-Whitelist greift.
 
-## 附：应用 / Stream Bot 原流程截图参考
+## Anhang: Screenshots des ursprünglichen Ablaufs für App / Stream Bot als Referenz
 
-如果你不是单纯做群 Webhook 推送，而是要继续配置飞书应用、长连接机器人或云文档，可以参考下面这组原截图。
+Wenn du nicht nur den Gruppen-Webhook-Push umsetzt, sondern weiterhin eine Feishu-App, einen Long-Connection-Bot oder Cloud-Dokumente konfigurieren möchtest, kannst du die folgende Gruppe von Originalscreenshots als Referenz verwenden.
 
-### 1. 创建应用
+### 1. App erstellen
 
 https://open.feishu.cn/document/develop-an-echo-bot/introduction
 
@@ -276,18 +276,18 @@ https://open.feishu.cn/document/develop-an-echo-bot/introduction
 
 ![img_8.png](img_8.png)
 
-### 2. 获取密钥
+### 2. Secret abrufen
 
 ![img_7.png](img_7.png)
 
-### 3. 发布应用
+### 3. App veröffentlichen
 
 ![img_5.png](img_5.png)
 
-### 4. 在飞书中打开应用
+### 4. Die App in Feishu öffnen
 
 ![img_9.png](img_9.png)
 
-### 5. 消息交互
+### 5. Nachrichteninteraktion
 
 ![img_10.png](img_10.png)

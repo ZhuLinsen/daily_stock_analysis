@@ -1,34 +1,34 @@
-# 资讯 / 情报源 MVP
+# MVP für Informations-/Nachrichtenquellen
 
-Issue #1707 的首版能力聚焦“合规资讯源采集、本地沉淀、可查询证据”，不把 RSS/Atom 混入按需搜索语义，也不默认新增独立舆情页。
+Die erste Version von Issue #1707 konzentriert sich auf "konforme Erfassung von Nachrichtenquellen, lokale Speicherung und abfragbare Belege" und vermischt RSS/Atom nicht mit der Semantik der bedarfsgerechten Suche und fügt auch nicht standardmäßig eine separate Stimmungs-/Medienseite hinzu.
 
-## 能力范围
+## Funktionsumfang
 
-- 支持配置 RSS / Atom HTTP(S) 资讯源。
-- 支持 NewsNow HTTP JSON 源，默认内置财联社热门、雪球热门股票、华尔街见闻快讯、金十数据和格隆汇事件等主流财经源。
-- 支持查询内置 RSS/Atom/NewsNow 模板，并可从模板创建可测试、可启停的资讯源；也可以一键创建全部内置默认源。
-- 保存资讯源配置、启用状态、作用域和最近一次拉取状态。
-- 拉取条目落库到 `intelligence_items`，保存标题、摘要、URL、来源、发布时间、拉取时间、市场与作用域。
-- 按 URL 去重；无 URL 条目使用 `no-url:intel:<hash>` 兜底键。
-- 支持 `symbol` / `market` / `sector` 作用域，以及 `cn` / `hk` / `us` / `jp` / `kr` / `tw` / `global` 市场标记。
-- 拉取批处理采用 fail-open：单个源失败不会阻塞其他源或主分析链路。
-- 支持 retention 清理，避免资讯池无限增长。
+- Unterstützt die Konfiguration von RSS-/Atom-HTTP(S)-Quellen.
+- Unterstützt NewsNow-HTTP-JSON-Quellen; standardmäßig sind gängige Finanzquellen wie CLS Trending, Xueqiu-Hot-Stocks, Wallstreetcn-Schnellnachrichten, Jin10-Daten und Gelonghui-Ereignisse integriert.
+- Unterstützt die Abfrage integrierter RSS/Atom/NewsNow-Vorlagen und erlaubt es, aus einer Vorlage testbare, start- und stoppbare Nachrichtenquellen zu erstellen; ebenso lassen sich alle integrierten Standardquellen per Klick anlegen.
+- Speichert Quellkonfiguration, Aktivierungsstatus, Geltungsbereich und den Status des letzten Abrufs.
+- Abgerufene Einträge werden in `intelligence_items` gespeichert: Titel, Zusammenfassung, URL, Quelle, Veröffentlichungszeit, Abrufzeit, Markt und Geltungsbereich.
+- Deduplizierung über die URL; Einträge ohne URL verwenden den Fallback-Schlüssel `no-url:intel:<hash>`.
+- Unterstützt Geltungsbereiche `symbol` / `market` / `sector` sowie Marktkennzeichen `cn` / `hk` / `us` / `jp` / `kr` / `tw` / `global`.
+- Der Abruf-Batch verwendet Fail-open: Ein fehlgeschlagener einzelner Feed blockiert weder andere Feeds noch die Haupt-Analysekette.
+- Unterstützt eine Retention-Bereinigung, um ein unbegrenztes Wachstum des Nachrichtenpools zu vermeiden.
 
-## 安全边界
+## Sicherheitsgrenzen
 
-自定义 URL 会做基础校验：
+Benutzerdefinierte URLs durchlaufen eine Basisvalidierung:
 
-- 只允许绝对 `http` / `https` URL；
-- 禁止 URL 中携带 username/password；
-- 禁止 `localhost`、`.local`、回环地址、内网地址、链路本地地址、保留地址、共享地址段和组播地址；
-- 解析与拉取阶段显式禁用环境代理（如 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`），避免通过环境代理绕过校验边界；
-- 实际连接阶段会再次校验目标主机 DNS 解析结果，避免校验后解析漂移到受限地址；
-- 重定向后的最终 URL 也会再次校验；
-- 错误消息会脱敏常见 `token` / `key` / `secret` 查询参数。
+- Es sind nur absolute `http`-/`https`-URLs erlaubt.
+- URLs mit username/password sind untersagt.
+- `localhost`, `.local`, Loopback-Adressen, interne Adressen, Link-Local-Adressen, Reservierte Adressen, Shared-Adressbereiche und Multicast-Adressen sind verboten.
+- In den Phasen Auflösung und Abruf werden Umgebungsproxys (wie `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) explizit deaktiviert, um zu verhindern, dass die Validierungsgrenze über Umgebungsproxys umgangen wird.
+- In der Verbindungsphase wird das DNS-Auflösungsergebnis des Ziel-Hosts erneut geprüft, um zu vermeiden, dass die Auflösung nach der Validierung zu eingeschränkten Adressen driftet.
+- Auch die finale URL nach Weiterleitungen wird erneut validiert.
+- Fehlermeldungen maskieren gängige `token`- / `key`- / `secret`-Query-Parameter.
 
-明确非目标：不做反爬、模拟登录、Cookie 抓取或非授权门户直抓。
+Ausdrücklich kein Ziel: kein Anti-Scraping, kein simulierter Login, kein Cookie-Auslesen und kein direkter Abruf nicht autorisierter Portale.
 
-## 配置项
+## Konfigurationseinträge
 
 ```env
 NEWS_INTEL_RETENTION_DAYS=30
@@ -38,90 +38,90 @@ NEWS_INTEL_AUTO_FETCH_ENABLED=false
 NEWSNOW_BASE_URL=https://newsnow.busiyi.world
 ```
 
-`NEWSNOW_BASE_URL` 用于拼出 `GET {NEWSNOW_BASE_URL}/api/s?id=<source_id>`。
+`NEWSNOW_BASE_URL` wird verwendet, um `GET {NEWSNOW_BASE_URL}/api/s?id=<source_id>` zusammenzusetzen.
 
-`NEWS_INTEL_AUTO_FETCH_ENABLED` 默认关闭。设为 `true` 后，个股分析、Agent 分析和大盘复盘在读取本地资讯池前会先执行一次 fail-open 自动刷新：缺少内置资讯源时自动创建并启用默认源，已有但禁用的内置默认源会重新启用，然后拉取全部启用源并写入 `intelligence_items`。为避免每只股票重复请求外部站点，运行进程内有 60 分钟冷却；冷却内复用本地库数据。
+`NEWS_INTEL_AUTO_FETCH_ENABLED` ist standardmäßig deaktiviert. Nach dem Setzen auf `true` führen Einzelaktien-Analyse, Agent-Analyse und Markt-Review vor dem Lesen des lokalen Nachrichtenpools einen Fail-open-Auto-Refresh aus: Fehlende integrierte Nachrichtenquellen werden automatisch erstellt und aktiviert, vorhandene, aber deaktivierte integrierte Standardquellen werden reaktiviert, anschließend werden alle aktivierten Quellen abgerufen und in `intelligence_items` geschrieben. Um zu vermeiden, dass für jede Aktie erneut externe Seiten angefragt werden, gilt innerhalb des laufenden Prozesses eine Abkühlzeit von 60 Minuten; innerhalb dieser Zeit werden die lokalen Datenbankdaten wiederverwendet.
 
-**外部依赖兼容性说明：**
+**Hinweis zur Kompatibilität externer Abhängigkeiten:**
 
-- **官方项目与部署指南**：https://github.com/qqhann/newsnow
-- **当前默认值** `https://newsnow.busiyi.world` 是公开示例实例，**非官方部署**，存在以下风险：
-  - 可能因官方维护、限流或停止服务而不可用
-  - 不保证稳定性、可靠性或数据准确性，仅用于演示和测试
-  - 每个用户都指向同一公开实例，可能遭遇限流
-- **生产环境强烈建议**：自建 NewsNow 实例或接入已确认可控的私有/企业部署，以确保稳定性和数据可靠性
+- **Offizielles Projekt und Deployment-Anleitung**: https://github.com/qqhann/newsnow
+- **Der aktuelle Standardwert** `https://newsnow.busiyi.world` ist eine öffentliche Beispielinstanz, **kein offizielles Deployment**, und birgt folgende Risiken:
+  - Sie kann durch offizielle Wartung, Rate-Limiting oder die Einstellung des Dienstes unverfügbar werden.
+  - Es wird keine Stabilität, Zuverlässigkeit oder Datenkorrektheit garantiert; die Instanz dient nur der Vorführung und dem Test.
+  - Alle Nutzer zeigen auf dieselbe öffentliche Instanz, was zu Rate-Limiting führen kann.
+- **Starke Empfehlung für die Produktion**: Eine eigene NewsNow-Instanz betreiben oder eine bestätigt kontrollierbare private/unternehmensinterne Bereitstellung anbinden, um Stabilität und Datenzuverlässigkeit sicherzustellen.
 
-**API 契约兼容性核验（部署前必做）：**
+**Verifikation der API-Vertragskompatibilität (vor dem Deployment zwingend):**
 
-- 验证基础可达性和返回格式：
+- Grundlegende Erreichbarkeit und Rückgabeformat prüfen:
   ```bash
   curl -sS "${NEWSNOW_BASE_URL}/api/s?id=cls-hot" | python -c "import sys, json; data=json.load(sys.stdin); assert isinstance(data, dict) and isinstance(data.get('items'), list); print('OK')"
   ```
-- 详细字段兼容性可参考自动化测试：`test_newsnow_source_fetches_json_items`，涵盖 `status`、`id`、`items[].title`、`items[].url`/`mobileUrl`、`items[].pubDate`/`items[].extra.date` 等字段
-- **部署实例不在自动化上线保障范围内**；如果依赖公开示例实例，部署前务必在实际生产环境执行上述验证
+- Die Feldkompatibilität im Detail kann anhand des automatisierten Tests `test_newsnow_source_fetches_json_items` geprüft werden; abgedeckt sind u. a. `status`, `id`, `items[].title`, `items[].url`/`mobileUrl`, `items[].pubDate`/`items[].extra.date`.
+- **Die Deployment-Instanz liegt nicht im Umfang der automatisierten Freigabeprüfung**; wenn man sich auf die öffentliche Beispielinstanz verlässt, muss die obige Verifikation vor dem Deployment zwingend in der tatsächlichen Produktionsumgebung durchgeführt werden.
 
 ## API
 
-所有接口位于 `/api/v1/intelligence`。
+Alle Schnittstellen befinden sich unter `/api/v1/intelligence`.
 
-- `POST /sources`：创建资讯源。
-- `GET /sources`：查询资讯源。
-- `GET /sources/templates?market=hk`：查询内置资讯源模板。
-- `POST /sources/templates/{template_id}`：从内置模板创建资讯源，可覆盖名称、启用状态、作用域和说明。
-- `POST /sources/defaults`：一键创建全部内置默认源；接口幂等，已存在的同名源会返回 `created=false`，不会重复插入。默认不传 `enabled` 时以 `false` 创建；如需默认启用可传 `{ "enabled": true }`。
-- `POST /sources/test`：测试 payload，不落库。
-- `POST /sources/{source_id}/fetch?dry_run=false`：拉取单个源。
-- `POST /sources/fetch-enabled`：fail-open 拉取全部启用源。
-- `GET /items?scope_type=market&market=cn&days=7`：查询资讯条目。
+- `POST /sources`: Erstellt eine Nachrichtenquelle.
+- `GET /sources`: Fragt Nachrichtenquellen ab.
+- `GET /sources/templates?market=hk`: Fragt Vorlagen integrierter Nachrichtenquellen ab.
+- `POST /sources/templates/{template_id}`: Erstellt eine Nachrichtenquelle aus einer integrierten Vorlage; Name, Aktivierungsstatus, Geltungsbereich und Beschreibung können überschrieben werden.
+- `POST /sources/defaults`: Erstellt per Klick alle integrierten Standardquellen; die Schnittstelle ist idempotent, vorhandene gleichnamige Quellen geben `created=false` zurück und werden nicht erneut angelegt. Wird kein `enabled` übergeben, werden sie standardmäßig mit `false` erstellt; für eine standardmäßige Aktivierung kann `{ "enabled": true }` übergeben werden.
+- `POST /sources/test`: Testet die Payload, ohne sie zu speichern.
+- `POST /sources/{source_id}/fetch?dry_run=false`: Ruft eine einzelne Quelle ab.
+- `POST /sources/fetch-enabled`: Ruft Fail-open alle aktivierten Quellen ab.
+- `GET /items?scope_type=market&market=cn&days=7`: Fragt Nachrichteneinträge ab.
 
-如果希望在本地 `.env`、Docker 或其他已显式透传环境变量的运行环境中自动完成“建源 -> 拉取 -> 入库 -> 分析消费”，设置：
+Wenn in der lokalen `.env`, unter Docker oder in anderen Laufumgebungen mit explizit durchgereichten Umgebungsvariablen automatisch "Quelle anlegen -> abrufen -> speichern -> analysieren und konsumieren" ablaufen soll, setzen Sie:
 
 ```env
 NEWS_INTEL_AUTO_FETCH_ENABLED=true
 ```
 
-该开关代表用户明确同意运行时访问已配置的外部 RSS/Atom/NewsNow HTTP 源；默认关闭是为了避免未确认的外部请求、公开 NewsNow 示例实例压力和分析 prompt 输入变化。
+Dieser Schalter bedeutet, dass der Nutzer ausdrücklich zustimmt, dass die Laufzeit auf die konfigurierten externen RSS/Atom/NewsNow-HTTP-Quellen zugreift; er ist standardmäßig aus, um unbestätigte externe Anfragen, Last auf der öffentlichen NewsNow-Beispielinstanz und Veränderungen der Analyse-Prompts zu vermeiden.
 
-> 说明：该开关只有在实际执行进程环境变量中可见时才会生效。仓库默认随带的 `00-daily-analysis.yml` 为 `env` 采用 allowlist 映射策略，未显式列入映射时，即便在仓库 Variables/Secrets 中设置同名变量也不会注入运行环境，因此默认 workflow 中不会自动接收该开关。若要在仓库自带每日分析任务里开启该能力，请在 workflow 中显式添加该变量透传，或改为本地/Docker 直接配置环境变量运行。
+> Hinweis: Der Schalter wirkt nur, wenn er in den Umgebungsvariablen des tatsächlich ausführenden Prozesses sichtbar ist. Die im Repository mitgelieferte `00-daily-analysis.yml` verwendet für `env` eine Allowlist-Mapping-Strategie; wird eine Variable nicht explizit in das Mapping aufgenommen, wird sie selbst dann nicht in die Laufumgebung injiziert, wenn sie in den Repository-Variables/Secrets gesetzt ist. Daher empfängt der Standard-Workflow diesen Schalter nicht automatisch. Um diese Funktion im mitgelieferten Tagesanalyse-Workflow zu aktivieren, müssen Sie die Variable explizit im Workflow durchreichen oder die Umgebungsvariablen direkt lokal/per Docker konfigurieren.
 
-## NewsNow 默认源
+## NewsNow-Standardquellen
 
-NewsNow 不是 RSS，而是一个聚合热点平台。DSA 直接按 HTTP API 读取它的 JSON 返回，不需要 MCP：
+NewsNow ist kein RSS, sondern eine aggregierte Trend-Plattform. DSA liest die JSON-Antworten direkt über die HTTP-API, ohne dass MCP erforderlich ist:
 
 ```text
 GET {NEWSNOW_BASE_URL}/api/s?id=cls-hot
 ```
 
-本 PR 先接入以下财经相关默认源，保证流程能从“源配置 -> 拉取 -> 落库 -> 分析读取”跑通：
+Dieser PR bindet zunächst die folgenden finanzbezogenen Standardquellen an, damit die Kette "Quellenkonfiguration -> Abruf -> Speicherung -> Analyse lesen" durchläuft:
 
-- `cls-hot`：财联社热门，偏 A 股和题材热点。
-- `xueqiu-hotstock`：雪球热门股票，偏个股关注度。
-- `wallstreetcn-quick`：华尔街见闻快讯，偏宏观、商品和市场事件。
-- `jin10`：金十数据，偏全球宏观和外盘事件。
-- `gelonghui`：格隆汇事件，偏港股和中概股上下文。
+- `cls-hot`: CLS Trending, eher A-Aktien und thematische Trends.
+- `xueqiu-hotstock`: Xueqiu-Hot-Stocks, eher Einzelaktien-Aufmerksamkeit.
+- `wallstreetcn-quick`: Wallstreetcn-Schnellnachrichten, eher Makro, Rohstoffe und Marktereignisse.
+- `jin10`: Jin10-Daten, eher globale Makro- und Auslandsmarktereignisse.
+- `gelonghui`: Gelonghui-Ereignisse, eher Hongkong-Aktien- und China-Concept-Stock-Kontext.
 
-如果需要更多国内平台，可以继续通过 `POST /sources` 手动添加 NewsNow 源，`source_type=newsnow`，`url` 填 `https://<your-newsnow>/api/s?id=<source_id>`。如果更偏好 RSS，也可以用 RSSHub 等合规 RSS 源继续按 `source_type=rss` 接入。
+Wenn weitere inländische Plattformen benötigt werden, können über `POST /sources` manuell weitere NewsNow-Quellen hinzugefügt werden, mit `source_type=newsnow` und der `url` `https://<your-newsnow>/api/s?id=<source_id>`. Falls RSS bevorzugt wird, können auch konforme RSS-Quellen wie RSSHub über `source_type=rss` angebunden werden.
 
-## 后续接入建议
+## Empfehlungen für spätere Anbindungen
 
-首版基线之上，分析链路会 best-effort 读取本地资讯池：
+Auf der Basis der ersten Version liest die Analyse-Kette den lokalen Nachrichtenpool best-effort:
 
-- 个股传统分析会优先读取 `symbol=<股票代码>` 的资讯，并补充同市场 `market` 级资讯；内容追加到既有 `news_context`，随 AnalysisContextPack 摘要和历史 `news_content` 保存。
-- Agent 分析同样通过 `news_context` 注入本地资讯证据，避免 Agent 必须重新搜索才能看到已沉淀新闻。
-- 大盘复盘会把同市场 `market` 级资讯合并到市场新闻列表，Prompt、结构化 payload 和报告 news 字段都能看到来源链接。
-- 如果 `NEWS_INTEL_AUTO_FETCH_ENABLED=true`，上述入口会先 fail-open 自动刷新本地资讯池；刷新失败不会阻塞分析。
-- 本次能力仅新增本地资讯消费路径，不改模型名、provider/base URL、默认模型策略、回退策略、`save_context_snapshot` 前清理逻辑或运行时配置语义；兼容现有部署配置，回滚方式为清退本地资讯接入入口或移除本地资讯源配置/数据。
+- Die traditionelle Einzelaktien-Analyse liest bevorzugt Nachrichten zu `symbol=<Aktiencode>` und ergänzt `market`-bezogene Nachrichten des gleichen Marktes; der Inhalt wird an den bestehenden `news_context` angehängt und zusammen mit der AnalysisContextPack-Zusammenfassung und dem historischen `news_content` gespeichert.
+- Auch die Agent-Analyse injiziert lokale Nachrichtenbelege über `news_context`, sodass der Agent nicht erneut suchen muss, um die bereits gespeicherten Nachrichten zu sehen.
+- Das Markt-Review führt `market`-bezogene Nachrichten des gleichen Marktes in die Marktnachrichtenliste zusammen; Prompt, strukturierte Payload und das Nachrichtenfeld des Berichts zeigen Quellenlinks.
+- Wenn `NEWS_INTEL_AUTO_FETCH_ENABLED=true` gesetzt ist, führt der oben genannte Einstiegspunkt zuerst einen Fail-open-Auto-Refresh des lokalen Nachrichtenpools aus; ein fehlgeschlagener Refresh blockiert die Analyse nicht.
+- Diese Funktion fügt nur einen lokalen Nachrichten-Konsumpfad hinzu und ändert weder Modellnamen, provider/base URL, die Standardmodell-Strategie, die Fallback-Strategie, die Bereinigung vor `save_context_snapshot` noch die Semantik der Laufzeitkonfiguration; bestehende Deployment-Konfigurationen bleiben kompatibel, als Rollback reicht es, den lokalen Nachrichten-Konsumpfad zu deaktivieren oder die lokalen Nachrichtenquellen-Konfiguration/Daten zu entfernen.
 
-后续 PR 可以继续完善 NewsNow HTTP provider、报告 evidence 展示和 Web 设置/报告查看入口。
+Spätere PRs können den NewsNow-HTTP-Provider, die Beleg-Anzeige im Bericht sowie die Web-Einstellungen/Berichtsansicht weiter ausbauen.
 
-## 兼容性与回滚说明（Issue #1707）
+## Hinweise zu Kompatibilität und Rollback (Issue #1707)
 
-- 本功能不改动第三方 LLM provider 语义，不新增 provider/model/base URL/默认模型策略/运行时路由或配置迁移分支。
-- 结构化检测提示中的模型/API 兼容风险在本次改动中不成立：`news_context` 注入链路仅复用现有 LLM 分析输入构造流程（`src/core/pipeline.py`、`src/market_analyzer.py`、`src/analyzer.py`），且不新增 `.env` 写入、保存前清理、清空/回填逻辑。
-- 回滚方式：`revert` 本 PR；如需降级配置，仅需停用并移除本地资讯源配置（含 `sources` 表与 `intelligence_items` 存量）即可，不影响原有模型、provider 或其它历史分析链路。
+- Diese Funktion ändert nicht die Semantik der Drittanbieter-LLM-Provider, fügt keine neuen provider/model/base-URL/Standardmodell-Strategie/Laufzeit-Routing- oder Konfigurations-Migrationszweige hinzu.
+- Das Modell-/API-Kompatibilitätsrisiko in den strukturierten Detektions-Hinweisen ist bei dieser Änderung nicht gegeben: Die `news_context`-Injektionskette verwendet ausschließlich die bestehende Konstruktion der LLM-Analyseeingaben (`src/core/pipeline.py`, `src/market_analyzer.py`, `src/analyzer.py`) und fügt weder `.env`-Schreibvorgänge noch Bereinigung vor dem Speichern oder Leer-/Rückschreiblogik hinzu.
+- Rollback-Methode: `revert` dieses PR; falls nur eine Downgrade-Konfiguration nötig ist, genügt es, die lokalen Nachrichtenquellen-Konfigurationen zu deaktivieren und zu entfernen (einschließlich der Bestände der Tabelle `sources` und von `intelligence_items`), ohne Auswirkungen auf die bestehenden Modelle, Provider oder andere historische Analyse-Ketten.
 
-## PR 描述可复用内容（Issue #1707）
+## Wiederverwendbarer Inhalt für die PR-Beschreibung (Issue #1707)
 
 - Refs: `#1707`
-- 兼容性结论：本次仅新增本地资讯消费链路，不改模型名/provider/base URL/默认模型策略/回退策略/保存前清理逻辑/运行时配置迁移。`news_context` 与 `market_review_payload` 的扩展为 best-effort 追加，不影响既有契约与兼容性边界。
-- 回滚方案：最小回滚路径为 `revert this PR`；如仅需降级接入，可在运行时停用并清理本地资讯源（`sources` 与 `intelligence_items`）。
+- Kompatibilitätsfazit: Diese Änderung fügt nur eine lokale Nachrichten-Konsumkette hinzu und ändert weder Modellnamen/provider/base URL noch Standardmodell-Strategie, Fallback-Strategie, Bereinigung vor dem Speichern oder Laufzeit-Konfigurationsmigration. Die Erweiterungen von `news_context` und `market_review_payload` sind best-effort-Anhängungen und beeinflussen weder bestehende Verträge noch die Kompatibilitätsgrenze.
+- Rollback-Plan: Der minimale Rollback-Pfad ist `revert this PR`; falls nur eine Downgrade-Anbindung nötig ist, können die lokalen Nachrichtenquellen (`sources` und `intelligence_items`) zur Laufzeit deaktiviert und bereinigt werden.

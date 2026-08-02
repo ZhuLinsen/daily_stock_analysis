@@ -1,129 +1,129 @@
-# 小白客户端安装与配置指南
+# Einrichtungsleitfaden für den Anfänger-Client
 
-这份文档写给不会代码、只想下载客户端直接用的用户。目标很简单：下载客户端，填一个模型服务密钥（Key），填股票代码，然后生成第一份分析报告。
+Dieses Dokument ist für Benutzer gedacht, die keinen Code schreiben können und den Client einfach herunterladen und direkt verwenden möchten. Das Ziel ist einfach: Client herunterladen, einen Modellservice-Key eintragen, Aktiencodes eintragen und dann den ersten Analysebericht erzeugen.
 
-> 本项目生成的是辅助分析报告，不构成投资建议。真实交易请自行判断风险。
+> Dieses Projekt erzeugt unterstützende Analyseberichte, die keine Anlageberatung darstellen. Beim echten Handel musst du das Risiko selbst einschätzen.
 
-## 先准备
+## Vorbereitung
 
-1. Windows 或 macOS 电脑。
-2. 一个模型服务密钥（Key），推荐从下面任选一个：
-   - [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC)：支持全球主流模型，一个 Key 可同时用于模型和新闻搜索，第一次配置最省事。
-   - [AIHubMix](https://aihubmix.com/?aff=CfMq)：支持全球主流模型，适合想在一个平台切换多种模型的用户。
-3. 想分析的股票代码，例如 `600519,hk00700,AAPL`。
+1. Ein Windows- oder macOS-Computer.
+2. Ein Modellservice-Key; empfohlen wird, einen der folgenden auszuwählen:
+   - [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC): Unterstützt gängige globale Modelle; ein Key kann gleichzeitig für Modell und Nachrichtensuche verwendet werden — für die erste Konfiguration am wenigsten Aufwand.
+   - [AIHubMix](https://aihubmix.com/?aff=CfMq): Unterstützt gängige globale Modelle, geeignet für Benutzer, die auf einer Plattform mehrere Modelle wechseln möchten.
+3. Die Aktiencodes, die du analysieren möchtest, z. B. `600519,hk00700,AAPL`.
 
-## 1. 下载客户端
+## 1. Client herunterladen
 
-打开发布页：
+Die Release-Seite öffnen:
 
 <https://github.com/ZhuLinsen/daily_stock_analysis/releases/latest>
 
-在页面下方 `Assets`（附件）里下载：
+Im Abschnitt `Assets` (Anlagen) unten auf der Seite herunterladen:
 
-| 电脑 | 下载哪个 |
+| Computer | Welches herunterladen |
 | --- | --- |
-| Windows | `daily-stock-analysis-windows-installer-<版本号>.exe` |
-| Windows 不想安装 | `daily-stock-analysis-windows-noinstall-<版本号>.zip` |
-| macOS Apple 芯片 | `daily-stock-analysis-macos-arm64-<版本号>.dmg` |
-| macOS Intel 芯片 | `daily-stock-analysis-macos-x64-<版本号>.dmg` |
+| Windows | `daily-stock-analysis-windows-installer-<Versionsnummer>.exe` |
+| Windows, keine Installation gewünscht | `daily-stock-analysis-windows-noinstall-<Versionsnummer>.zip` |
+| macOS Apple-Chip | `daily-stock-analysis-macos-arm64-<Versionsnummer>.dmg` |
+| macOS Intel-Chip | `daily-stock-analysis-macos-x64-<Versionsnummer>.dmg` |
 
-不用下载 `latest.yml`、`*.blockmap`，它们不是客户端安装包。
+Lade `latest.yml` und `*.blockmap` nicht herunter; es sind keine Client-Installationspakete.
 
-不知道 Mac 是哪种芯片：点击左上角苹果图标 -> 关于本机，看到 M1/M2/M3/M4 就选 `arm64`，看到 Intel 就选 `x64`。
+Du weißt nicht, welcher Chip in deinem Mac steckt: Klicke oben links auf das Apple-Symbol -> Über diesen Mac; bei M1/M2/M3/M4 wähle `arm64`, bei Intel wähle `x64`.
 
-## 2. 安装并打开
+## 2. Installieren und öffnen
 
-- Windows 安装包：双击 `.exe`，按提示安装，安装目录用默认位置即可。
-- Windows 免安装包：解压 `.zip`，双击 `Daily Stock Analysis.exe`。
-- macOS：双击 `.dmg`，把应用拖到 `Applications`。当前 DMG 未经 Apple Developer 签名和公证，Gatekeeper 仍可能阻止启动；仅对 GitHub Releases 官方附件尝试在“隐私与安全性”中允许打开，完整限制与排查方式见 `docs/desktop-package.md`。
+- Windows-Installationspaket: `.exe` doppelklicken, den Anweisungen folgen; der Installationsordner kann beim Standardwert bleiben.
+- Windows-Installationsfreies Paket: `.zip` entpacken, `Daily Stock Analysis.exe` doppelklicken.
+- macOS: `.dmg` doppelklicken, die App in den `Programme`-Ordner (Applications) ziehen. Das aktuelle DMG ist nicht mit der Apple-Developer-Signatur signiert und nicht notariell beglaubigt; Gatekeeper kann den Start weiterhin blockieren; öffne nur die offiziellen Anlagen von GitHub Releases unter „Datenschutz und Sicherheit" zum Öffnen; vollständige Einschränkungen und Troubleshooting siehe `docs/desktop-package.md`.
 
-macOS 用户升级前建议先在客户端设置里导出一次配置备份。
+macOS-Benutzer sollten vor einem Upgrade empfehlenswerterweise in den Client-Einstellungen ein Konfigurations-Backup exportieren.
 
-## 3. 配置 AI 模型
+## 3. AI-Modell konfigurieren
 
-打开客户端，进入：
+Den Client öffnen und gehen zu:
 
-`系统设置 -> AI 模型`
+`Systemeinstellungen -> AI-Modell`
 
-只选下面一个方案即可。
+Nur eines der folgenden Schemata auswählen.
 
-> 重要：每次改完设置后，都要点击页面上的保存按钮；看到保存成功提示后，再切换页面或回到首页。
+> Wichtig: Nach jeder Änderung an den Einstellungen auf die Speichern-Schaltfläche der Seite klicken; erst wenn der Speicher-Erfolgshinweis erscheint, die Seite wechseln oder zur Startseite zurückkehren.
 
-### 方案 A：Anspire Open
+### Schema A: Anspire Open
 
-1. 打开 [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC)，注册 / 登录后创建 API Key。
-2. 回到客户端，在快速添加渠道里选择 `Anspire Open`。
-3. 粘贴 API Key。
-4. 模型名选择控制台里已开通的模型；不确定就先选控制台推荐或轻量模型。
-5. 点击保存；看到保存成功后，再点击测试连接。
+1. [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC) öffnen, registrieren / einloggen und einen API-Key erstellen.
+2. Zurück im Client im Schnellhinzufügen-Kanal `Anspire Open` auswählen.
+3. Den API-Key einfügen.
+4. Beim Modellnamen ein in der Konsole freigeschaltetes Modell auswählen; wenn unsicher, zuerst das von der Konsole empfohlene oder ein leichtgewichtiges Modell wählen.
+5. Auf Speichern klicken; nach dem Erfolgshinweis auf Verbindung testen klicken.
 
-### 方案 B：AIHubMix
+### Schema B: AIHubMix
 
-1. 打开 [AIHubMix](https://aihubmix.com/?aff=CfMq)，注册 / 登录后创建 API Key。
-2. 回到客户端，在快速添加渠道里选择 `AIHubmix（聚合平台）`。
-3. 粘贴 API Key。
-4. 模型名选择控制台里已开通的模型；不确定就先选控制台推荐模型。
-5. 点击保存；看到保存成功后，再点击测试连接。
+1. [AIHubMix](https://aihubmix.com/?aff=CfMq) öffnen, registrieren / einloggen und einen API-Key erstellen.
+2. Zurück im Client im Schnellhinzufügen-Kanal `AIHubmix (Aggregationsplattform)` auswählen.
+3. Den API-Key einfügen.
+4. Beim Modellnamen ein in der Konsole freigeschaltetes Modell auswählen; wenn unsicher, zuerst das von der Konsole empfohlene Modell wählen.
+5. Auf Speichern klicken; nach dem Erfolgshinweis auf Verbindung testen klicken.
 
-看到测试成功，就继续下一步。
+Wenn der Test erfolgreich ist, mit dem nächsten Schritt fortfahren.
 
-## 4. 填写自选股
+## 4. Watchlist ausfüllen
 
-进入：
+Gehen zu:
 
-`系统设置 -> 基础设置`
+`Systemeinstellungen -> Grundeinstellungen`
 
-找到 `自选股列表`，填写：
+`Watchlist` finden und ausfüllen:
 
 `600519,hk00700,AAPL`
 
-多个股票用英文逗号隔开。常见写法：
+Mehrere Aktien mit englischen Kommas trennen. Häufige Schreibweisen:
 
-- A 股：`600519`、`300750`、`000001`
-- 港股：`hk00700`、`hk09988`
-- 美股：`AAPL`、`TSLA`、`NVDA`
+- A-Aktien: `600519`, `300750`, `000001`
+- Hongkong-Aktien: `hk00700`, `hk09988`
+- US-Aktien: `AAPL`, `TSLA`, `NVDA`
 
-填完点击保存，看到保存成功后再回首页。
+Nach dem Ausfüllen auf Speichern klicken und erst nach dem Erfolgshinweis zur Startseite zurückkehren.
 
-## 5. 建议配置新闻源
+## 5. Empfohlene Konfiguration einer Nachrichtenquelle
 
-新闻源不是必填，但建议配置。它会影响近期新闻、公告、事件驱动、热点题材和风险提示。
+Eine Nachrichtenquelle ist nicht Pflicht, aber eine Konfiguration wird empfohlen. Sie beeinflusst aktuelle Nachrichten, Unternehmensmeldungen, ereignisgesteuerte Themen, Hot-Spot-Themen und Risikohinweise.
 
-进入：
+Gehen zu:
 
-`系统设置 -> 数据源`
+`Systemeinstellungen -> Datensources`
 
-按你的模型服务选择：
+Nach deinem Modellservice auswählen:
 
-1. 用 Anspire Open：找到 `Anspire API Keys`，填入同一个 Anspire Key，保存成功后即可。
-2. 用 AIHubMix：建议再申请 [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 或 [Tavily](https://tavily.com/) 的 Key，填到 `SerpAPI API Keys` 或 `Tavily API Keys`，保存成功后即可。
+1. Mit Anspire Open: `Anspire API Keys` finden, denselben Anspire-Key eintragen, nach erfolgreichem Speichern fertig.
+2. Mit AIHubMix: Empfohlen wird, zusätzlich einen Key von [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) oder [Tavily](https://tavily.com/) zu beantragen und in `SerpAPI API Keys` bzw. `Tavily API Keys` einzutragen; nach erfolgreichem Speichern fertig.
 
-想先试用也可以跳过新闻源，客户端仍然能生成基础分析。
+Wenn du zuerst ausprobieren möchtest, kannst du die Nachrichtenquelle auch überspringen; der Client kann weiterhin Basisanalysen erzeugen.
 
-## 6. 开始分析
+## 6. Analyse starten
 
-回到首页：
+Zurück zur Startseite:
 
-1. 输入股票代码，例如 `600519`。
-2. 点击分析。
-3. 等任务从排队、分析中变成分析完成。
-4. 在历史记录里查看报告。
+1. Einen Aktiencode eingeben, z. B. `600519`.
+2. Auf Analyse klicken.
+3. Warten, bis die Aufgabe von „In der Warteschlange", „Wird analysiert" zu „Analyse abgeschlossen" wechselt.
+4. Den Bericht im Verlauf ansehen.
 
-## 常见问题
+## Häufige Fragen
 
-### 下载页面里文件很多，该下哪个？
+### Auf der Download-Seite gibt es viele Dateien, welche soll ich herunterladen?
 
-普通 Windows 用户下载 `.exe` 安装包。不要下载 `latest.yml` 或 `*.blockmap`。
+Normale Windows-Benutzer laden das Installationspaket `.exe` herunter. Lade `latest.yml` oder `*.blockmap` nicht herunter.
 
-### API Key 填了还是不能用？
+### Der API-Key ist eingetragen, funktioniert aber trotzdem nicht?
 
-检查这几项：
+Diese Punkte prüfen:
 
-1. Key 是否复制完整，没有多余空格。
-2. 平台账号是否有余额或额度。
-3. 当前模型是否已开通。
-4. 测试连接里是否提示模型不存在、权限不足或余额不足。
+1. Ob der Key vollständig kopiert wurde und keine überflüssigen Leerzeichen enthält.
+2. Ob das Plattformkonto ein Guthaben oder Kontingent hat.
+3. Ob das aktuelle Modell freigeschaltet ist.
+4. Ob der Verbindungstest „Modell existiert nicht", „Unzureichende Berechtigung" oder „Unzureichendes Guthaben" meldet.
 
-### 配置乱了怎么办？
+### Die Konfiguration ist durcheinander, was tun?
 
-在客户端设置里导出配置备份。出问题时可以导入之前的备份，或者只保留这三项重新配置：AI 模型、自选股、新闻源。
+In den Client-Einstellungen ein Konfigurations-Backup exportieren. Bei Problemen kann das frühere Backup importiert werden, oder nur diese drei Punkte neu konfigurieren: AI-Modell, Watchlist, Nachrichtenquelle.

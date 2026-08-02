@@ -1,26 +1,26 @@
-# 桌面端打包说明 (Electron + React UI)
+# Hinweise zum Desktop-Paket (Electron + React UI)
 
-本项目可打包为桌面应用，使用 Electron 作为桌面壳，`apps/dsa-web` 的 React UI 作为界面。
+Dieses Projekt lässt sich als Desktop-Anwendung verpacken. Electron dient dabei als Desktop-Shell, die React UI von `apps/dsa-web` als Oberfläche.
 
-## 架构说明
+## Architektur-Übersicht
 
-- React UI（Vite 构建）由本地 FastAPI 服务托管
-- Electron 启动时自动拉起后端服务，等待 `/api/health` 就绪后加载 UI
-- Windows 便携/安装模式下，用户配置文件 `.env` 和数据库放在 exe 同级目录；macOS 打包版使用 Electron 用户数据目录保存运行时配置
-- 桌面端会自动从本机 `8000-8100` 选择可用端口，并把实际选择的端口同步给内置后端；桌面端不依赖 `.env` 里的 `WEBUI_PORT` 来决定窗口连接地址，避免用户改端口后 Electron 仍等待旧端口导致启动超时
-- Desktop backend 默认随 `requirements.txt` 安装并冻结 `futu-api==10.8.6808`；Windows/macOS 构建脚本会在源码环境和 PyInstaller 产物中分别执行 `import futu`，防止发布包只安装但未携带 SDK。
+- Die React UI (mit Vite gebaut) wird vom lokalen FastAPI-Dienst bereitgestellt
+- Beim Start zieht Electron den Backend-Dienst automatisch hoch und lädt die UI, sobald `/api/health` bereit ist
+- Im Windows-Portable-/Installationsmodus liegen die Benutzerkonfiguration `.env` und die Datenbank im selben Verzeichnis wie die exe; die macOS-Paketversion nutzt das Electron-Benutzerdatenverzeichnis für Laufzeitkonfiguration
+- Der Desktop startet automatisch einen verfügbaren Port aus dem Bereich `8000-8100` des lokalen Rechners und synchronisiert den tatsächlich gewählten Port an das eingebaute Backend; die Desktop-Version ist nicht von `WEBUI_PORT` in der `.env` abhängig, um die Fenster-Verbindungsadresse zu bestimmen. So wird vermieden, dass Electron nach einer Portänderung durch den Benutzer weiterhin auf den alten Port wartet und dadurch beim Start ein Timeout auftritt
+- Das Desktop-Backend wird standardmäßig zusammen mit `requirements.txt` installiert und `futu-api==10.8.6808` eingefroren; die Windows-/macOS-Build-Skripte führen im Quellcode-Umfeld und im PyInstaller-Artefakt jeweils ein `import futu` aus, damit das Release-Paket das SDK tatsächlich mitführt und es nicht nur installiert ist.
 
-## 本地开发
+## Lokale Entwicklung
 
-一键启动（开发模式）：
+Ein-Klick-Start (Entwicklungsmodus):
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts\run-desktop.ps1
 ```
 
-或手动执行：
+Oder manuell ausführen:
 
-1) 构建 React UI（输出到 `static/`）
+1) React UI bauen (Ausgabe nach `static/`)
 
 ```bash
 cd apps/dsa-web
@@ -28,7 +28,7 @@ npm install
 npm run build
 ```
 
-2) 启动 Electron 应用（自动拉起后端）
+2) Electron-App starten (zieht das Backend automatisch hoch)
 
 ```bash
 cd apps/dsa-desktop
@@ -36,86 +36,86 @@ npm install
 npm run dev
 ```
 
-首次运行时会自动从 `.env.example` 复制生成 `.env`。
+Beim ersten Start wird automatisch aus `.env.example` eine `.env` erzeugt.
 
-## 打包 (Windows)
+## Verpacken (Windows)
 
-### 前置条件
+### Voraussetzungen
 
 - Node.js 18+
 - Python 3.10+
-- 开启 Windows 开发者模式（electron-builder 需要创建符号链接）
-  - 设置 -> 隐私和安全性 -> 开发者选项 -> 开发者模式
+- Windows-Entwicklermodus aktivieren (electron-builder benötigt symbolische Verknüpfungen)
+  - Einstellungen -> Datenschutz und Sicherheit -> Entwickleroptionen -> Entwicklermodus
 
-### 一键打包
+### Ein-Klick-Verpacken
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
 ```
 
-该脚本会依次执行：
-1. 构建 React UI
-2. 安装 Python 依赖
-3. PyInstaller 打包后端
-4. electron-builder 打包桌面应用
+Dieses Skript führt der Reihe nach aus:
+1. React UI bauen
+2. Python-Abhängigkeiten installieren
+3. Backend mit PyInstaller verpacken
+4. Desktop-Anwendung mit electron-builder verpacken
 
-当前 Windows 安装包使用 NSIS 向导式安装流程，仅支持当前用户安装且已禁用管理员提权，安装时可手动选择目标目录（例如非 C 盘）。安装器通过 NSIS `.onVerifyInstDir` 回调在安装器层面阻止选择 `Program Files`、`Windows` 等系统保护目录——选择这些路径时"下一步"按钮会被自动禁用。安装完成后，桌面端仍会按现有逻辑在安装目录旁生成/读取 `.env`、`data/stock_analysis.db`（含 `data/stock_analysis.db-wal` / `data/stock_analysis.db-shm`）和 `logs/desktop.log`。推荐使用默认的 per-user 安装目录。如果不想安装，仍可继续分发 `win-unpacked` 免安装包。
+Das aktuelle Windows-Installationsprogramm nutzt den NSIS-Assistenten, unterstützt nur die Installation für den aktuellen Benutzer und deaktiviert die Admin-Erhöhung. Beim Installieren lässt sich das Zielverzeichnis manuell wählen (z. B. außerhalb des C-Laufwerks). Das Installationsprogramm verhindert über den NSIS-Rückruf `.onVerifyInstDir` auf Installer-Ebene die Auswahl von geschützten Systemverzeichnissen wie `Program Files` oder `Windows` – bei diesen Pfaden wird die Schaltfläche „Weiter" automatisch deaktiviert. Nach der Installation erzeugt bzw. liest die Desktop-Version weiterhin nach bestehender Logik neben dem Installationsverzeichnis `.env`, `data/stock_analysis.db` (inklusive `data/stock_analysis.db-wal` / `data/stock_analysis.db-shm`) und `logs/desktop.log`. Empfohlen wird das standardmäßige per-user Installationsverzeichnis. Falls keine Installation gewünscht ist, kann weiterhin das portable `win-unpacked`-Paket verteilt werden.
 
-## GitHub CI 自动打包并发布 Release
+## Automatisches Verpacken und Release über GitHub CI
 
-仓库已支持通过 GitHub Actions 自动构建桌面端并上传到 GitHub Releases：
+Das Repository unterstützt es, über GitHub Actions die Desktop-Version automatisch zu bauen und auf GitHub Releases hochzuladen:
 
-- 工作流：`.github/workflows/desktop-release.yml`
-- 触发方式：
-  - 推送语义化 tag（如 `v3.2.12`）后自动触发
-  - 在 Actions 页面手动触发并指定 `release_tag`
-- 产物：
-  - Windows 安装包：Release 附件和本地 `apps/dsa-desktop/dist/` 中统一为 `daily-stock-analysis-windows-installer-<tag>.exe`
-  - Windows 自动更新元数据：Release 附件会额外保留 `latest.yml` 和 `*.blockmap`，供安装版桌面端后台下载与校验更新；普通用户无需手动下载这些元数据。下载完成后用户确认“重启安装”时，桌面端会先停止内置后端、备份运行时文件，并以静默模式执行安装器。
-  - Windows 免安装包：`daily-stock-analysis-windows-noinstall-<tag>.zip`
-  - macOS Intel：`daily-stock-analysis-macos-x64-<tag>.dmg`
-  - macOS Apple Silicon：`daily-stock-analysis-macos-arm64-<tag>.dmg`
+- Workflow: `.github/workflows/desktop-release.yml`
+- Auslöser:
+  - Automatisch nach dem Pushen eines semantischen Tags (z. B. `v3.2.12`)
+  - Manuell auf der Actions-Seite auslösen und `release_tag` angeben
+- Artefakte:
+  - Windows-Installationsprogramm: In den Release-Anhängen und lokal unter `apps/dsa-desktop/dist/` einheitlich als `daily-stock-analysis-windows-installer-<tag>.exe`
+  - Metadaten für Windows-Auto-Update: Die Release-Anhänge enthalten zusätzlich `latest.yml` und `*.blockmap`, damit die installierte Desktop-Version Updates im Hintergrund herunterladen und prüfen kann; normale Benutzer müssen diese Metadaten nicht manuell herunterladen. Nach dem Download führt der Benutzer die Bestätigung „Neu starten und installieren" aus; die Desktop-Version stoppt dann zuerst das eingebaute Backend, sichert die Laufzeitdateien und führt den Installer im stillen Modus aus.
+  - Windows-Portablepaket: `daily-stock-analysis-windows-noinstall-<tag>.zip`
+  - macOS Intel: `daily-stock-analysis-macos-x64-<tag>.dmg`
+  - macOS Apple Silicon: `daily-stock-analysis-macos-arm64-<tag>.dmg`
 
-### macOS 提示“应用已损坏，无法打开”
+### macOS meldet „Anwendung ist beschädigt und kann nicht geöffnet werden"
 
-当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。构建配置会显式生成 unsigned 应用，在 PyInstaller 产物首次执行前清理残缺签名，并通过 electron-builder `afterPack` hook 在 DMG 创建前再次清理完整 `.app`；CI 还会检查 Electron 原始 `.app` 和 DMG 挂载后的 `.app`，阻止再次发布带有 `code has no resources but signature indicates they must be present` 等损坏签名的产物。该处理只能缓解 v3.27.0 的残缺签名缺陷，**不会让应用获得 Apple 信任**。通过浏览器下载后，macOS Gatekeeper 仍可能提示“无法验证开发者”、阻止启动，或要求用户人工确认。
+Das aktuelle macOS-DMG ist noch nicht mit einem Apple-Developer-Zertifikat signiert und notarisiert. Die Build-Konfiguration erzeugt explizit eine unsigned App, bereinigt vor der ersten Ausführung des PyInstaller-Artefakts eine unvollständige Signatur und entfernt sie über den electron-builder `afterPack`-Hook vor der DMG-Erstellung erneut aus der kompletten `.app`; die CI prüft zusätzlich die originale Electron-`.app` sowie die nach dem DMG-Mount erzeugte `.app`, um eine erneute Veröffentlichung von Artefakten mit beschädigter Signatur wie `code has no resources but signature indicates they must be present` zu verhindern. Diese Behandlung kann nur die unvollständige Signatur aus v3.27.0 abschwächen, **verleiht der Anwendung aber kein Vertrauen von Apple**. Nach dem Download über den Browser kann macOS Gatekeeper weiterhin „Der Entwickler kann nicht verifiziert werden" melden, den Start blockieren oder eine manuelle Bestätigung des Benutzers verlangen.
 
-请按以下顺序排查：
+Bitte prüfen Sie in der folgenden Reihenfolge:
 
-1. 只从项目的 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) 下载附件，并确认安装包架构与 Mac 一致：Apple 芯片（M1/M2/M3/M4 等）使用 `daily-stock-analysis-macos-arm64-<tag>.dmg`，Intel 芯片使用 `daily-stock-analysis-macos-x64-<tag>.dmg`。不要对第三方转载或来源不明的安装包绕过 Gatekeeper。
-2. 打开 DMG，将 `Daily Stock Analysis` 拖入“应用程序”后尝试启动一次。若被拦截，进入“系统设置 -> 隐私与安全性”，在安全性提示处确认应用名称，然后点击“仍要打开”，按系统提示再次确认。较旧 macOS 的对应入口为“系统偏好设置 -> 安全性与隐私 -> 通用”。
-3. 仅当安装包确认来自上述官方 Release、且“仍要打开”仍无法放行时，打开“终端”清除该应用的下载隔离属性，然后重新启动：
+1. Laden Sie die Anhänge nur von den offiziellen [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) des Projekts herunter und prüfen Sie, dass die Installationsarchitektur zum Mac passt: Apple-Chips (M1/M2/M3/M4 usw.) verwenden `daily-stock-analysis-macos-arm64-<tag>.dmg`, Intel-Chips `daily-stock-analysis-macos-x64-<tag>.dmg`. Umgehen Sie Gatekeeper nicht bei Installationsprogrammen von Dritten oder unbekannter Herkunft.
+2. Öffnen Sie das DMG, ziehen Sie `Daily Stock Analysis` in den „Programme"-Ordner und starten Sie es einmal. Wird es blockiert, gehen Sie zu „Systemeinstellungen -> Datenschutz & Sicherheit", bestätigen Sie den Anwendungsnamen an der Sicherheitsmeldung und klicken Sie dann auf „Trotzdem öffnen" und bestätigen Sie gemäß der Systemmeldung erneut. Bei älteren macOS-Versionen lautet der entsprechende Einstieg „Systemeinstellungen -> Sicherheit -> Allgemein".
+3. Nur wenn das Installationsprogramm nachweislich aus dem obigen offiziellen Release stammt und „Trotzdem öffnen" weiterhin nicht weiterhilft, öffnen Sie „Terminal", entfernen das Download-Isolationsattribut der Anwendung und starten sie erneut:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
 ```
 
-如果应用不在 `/Applications`，请将命令中的路径替换为实际 `.app` 路径。不要对整个“应用程序”目录执行 `xattr`，也不要对来源不明的应用执行此命令。不同 macOS 版本可能仍拒绝 unsigned 应用，清除 quarantine 不保证能够放行。长期彻底消除该提示需要在发布流程中接入 Apple Developer 签名与 notarization（公证），不属于上述临时放行步骤。
+Falls die App nicht in `/Applications` liegt, ersetzen Sie den Pfad im Befehl durch den tatsächlichen `.app`-Pfad. Führen Sie `xattr` nicht auf dem gesamten „Programme"-Ordner aus und auch nicht bei Anwendungen unbekannter Herkunft. Unterschiedliche macOS-Versionen können unsigned Anwendungen weiterhin ablehnen; das Entfernen der quarantine-Garantie bedeutet nicht, dass sie dadurch freigegeben wird. Um die Meldung dauerhaft zu beseitigen, muss die Apple-Developer-Signierung und Notarisierung (notarization) in den Release-Prozess eingebunden werden; das gehört nicht zu den obigen vorübergehenden Freigabeschritten.
 
-维护者可用以下命令区分“预期的 unsigned 拒绝”和“不可发布的残缺签名”：
+Wartende können mit folgenden Befehlen zwischen „erwarteter unsigned Ablehnung" und „nicht veröffentlichbarer unvollständiger Signatur" unterscheiden:
 
 ```bash
 codesign -d "/Applications/Daily Stock Analysis.app"
 spctl --assess --type execute --verbose=4 "/Applications/Daily Stock Analysis.app"
 ```
 
-当前 unsigned 产物的 `codesign -d` 预期包含 `code object is not signed at all`，`spctl` 预期拒绝；如果输出 `code has no resources but signature indicates they must be present` 或其它签名损坏信息，应视为发布阻断。
+Bei den aktuellen unsigned Artefakten enthält `codesign -d` erwartungsgemäß `code object is not signed at all`, und `spctl` lehnt erwartungsgemäß ab; wenn die Ausgabe `code has no resources but signature indicates they must be present` oder eine andere Signaturbeschädigung zeigt, sollte dies als Release-Blockade gewertet werden.
 
-建议发布流程：
+Empfohlener Release-Prozess:
 
-1. 合并代码到 `main`
-2. 由自动打 tag 工作流生成版本（或手动创建 tag）
-3. `desktop-release` 工作流自动构建并把两个平台安装包附加到对应 GitHub Release
+1. Code in `main` zusammenführen
+2. Version über den automatischen Tag-Workflow erzeugen (oder Tag manuell erstellen)
+3. Der `desktop-release`-Workflow baut automatisch und hängt die Installationsprogramme beider Plattformen an die entsprechende GitHub Release an
 
-## 发版前可复现验证（桌面更新链路）
+## Reproduzierbare Verifikation vor dem Release (Desktop-Updatekette)
 
-桌面端自动更新链路依赖 Windows NSIS 安装产物、`latest.yml` 与 `*.blockmap` 元数据。当前桌面 CI 不覆盖 `desktop-release` 打包产物可发布链路，提交前建议补充如下本地验证：
+Die Auto-Updatekette der Desktop-Version hängt vom Windows-NSIS-Installationsartefakt sowie den Metadaten `latest.yml` und `*.blockmap` ab. Die aktuelle Desktop-CI deckt den veröffentlichbaren Pfad der `desktop-release`-Paketartefakte nicht ab. Vor dem Commit werden folgende lokale Verifikationen empfohlen:
 
-说明：该清单专注于 Windows NSIS 安装版与 `electron-updater` 发布元数据。当前 Linux 环境无法直接产出 Windows 安装包和 updater 元数据（`latest.yml` / `*.blockmap`），此类链路需在 Windows 发布执行器或 Windows 本机环境复核。
+Hinweis: Diese Checkliste konzentriert sich auf die Windows-NSIS-Installationsversion und die Release-Metadaten von `electron-updater`. Die aktuelle Linux-Umgebung kann Windows-Installationsprogramme und Updater-Metadaten (`latest.yml` / `*.blockmap`) nicht direkt erzeugen; solche Ketten müssen in der Windows-Release-Umgebung (Release-Executor) oder auf einem Windows-Rechner nachgeprüft werden.
 
-若在非 Windows 环境无法完成上述验证，请在 PR 验收说明中明确补齐 Windows 发布链路复核人、复核时间窗及 `desktop-release` 产物检查结果（release/tag 与 `daily-stock-analysis-windows-installer-<tag>.exe`、`latest.yml`、`*.blockmap` 版本一致性与可下载性）。
+Falls die obige Verifikation in einer Nicht-Windows-Umgebung nicht abgeschlossen werden kann, geben Sie bitte in den PR-Abnahmehinweisen explizit den verantwortlichen Prüfer der Windows-Releasekette, das Prüfzeitfenster sowie das Prüfergebnis der `desktop-release`-Artefakte an (Konsistenz und Herunterladbarkeit von Release/tag sowie `daily-stock-analysis-windows-installer-<tag>.exe`, `latest.yml`, `*.blockmap`).
 
-1. 先构建 Web 静态产物（桌面端主窗口与设置页入口依赖）
+1. Zuerst die statischen Web-Artefakte bauen (Einstiegspunkte für Desktop-Hauptfenster und Einstellungsseite)
 
 ```bash
 cd apps/dsa-web
@@ -124,7 +124,7 @@ npm run lint
 npm run build
 ```
 
-2. 回到桌面端，补齐依赖、运行 preload 单测、再执行 Electron 打包
+2. Zurück zur Desktop-Version, Abhängigkeiten vervollständigen, Preload-Unit-Tests ausführen und dann Electron-Paket bauen
 
 ```bash
 cd ../dsa-desktop
@@ -133,22 +133,22 @@ npm test
 npm run build
 ```
 
-在 Windows 发布复核环境，还可额外执行：
+In der Windows-Release-Prüfumgebung kann zusätzlich ausgeführt werden:
 
 ```powershell
 ./scripts/verify-desktop-updater-artifacts.ps1 -ReleaseTag v$(node -p "require('./apps/dsa-desktop/package.json').version")
 ```
 
-> 预期当前执行环境不支持生成 Windows NSIS 安装器时，请在交付说明中明确注明平台限制，并要求指定的 Windows 发布链路复核人补齐该项验证。
+> Falls die aktuelle Ausführungsumgebung keine Windows-NSIS-Installer erzeugen kann, geben Sie bitte in den Übergabe-Hinweisen die Plattformbeschränkung ausdrücklich an und verlangen Sie, dass der zuständige Prüfer der Windows-Releasekette diese Verifikation nachholt.
 
-3. 检查更新元数据是否产出
+3. Prüfen, ob die Update-Metadaten erzeugt wurden
 
 ```bash
 ls -1 dist | sort
 ls -1 dist/*.yml dist/*.blockmap 2>/dev/null || true
 ```
 
-4. 强制对齐版本与发布附件（可在 Windows 环境或能产出 NSIS 产物的执行器上复核）
+4. Version und Release-Anhänge zwangsweise angleichen (kann in der Windows-Umgebung oder auf einem Executor, der NSIS-Artefakte erzeugen kann, nachgeprüft werden)
 
 ```bash
 RELEASE_TAG="v$(node -p \"require('./package.json').version\")"
@@ -159,21 +159,21 @@ for f in dist/*latest.yml dist/*.blockmap dist/daily-stock-analysis-windows-inst
 done
 
 if [ -f dist/latest.yml ]; then
-  echo \"---- latest.yml 版本片段 ----\"
+  echo \"---- Version-Auszug aus latest.yml ----\"
   grep -E \"^version:|^files:|^sha512:\" dist/latest.yml
 fi
 
-echo \"---- Release 清单（人工核对）----\"
+echo \"---- Release-Liste (manuell abzugleichen) ----\"
 echo \"Release Tag: $RELEASE_TAG\"
-echo \"Release 地址: https://github.com/$REPO/releases/tag/$RELEASE_TAG\"
-echo \"应核对附件是否包含:\"
+echo \"Release-Adresse: https://github.com/$REPO/releases/tag/$RELEASE_TAG\"
+echo \"Zu prüfende Anhänge:\"
 echo \"- daily-stock-analysis-windows-installer-*.exe\"
 echo \"- latest.yml\"
 echo \"- *.blockmap\"
-echo \"并确保 latest.yml 中 version 与 tag 的语义化版本一致，path/url 与安装包附件名一致\"
+echo \"Außerdem prüfen, dass die Semver-Version in latest.yml mit dem Tag übereinstimmt und path/url mit dem Anhangnamen des Installationsprogramms übereinstimmt\"
 ```
 
-5a. 建议在 PR 描述里记录的“可复核输出”（Windows）：
+5a. Empfohlene „nachprüfbare Ausgaben" für die PR-Beschreibung (Windows):
 
 ```bash
 echo "release-tag=${RELEASE_TAG}"
@@ -185,30 +185,30 @@ echo "packaging artifacts:"
 ls -1 dist/*.yml dist/*.blockmap dist/*installer*.exe 2>/dev/null | sort
 ```
 
-Windows 发布链路复核清单（在 PR 后由发布团队/维护者执行）：
+Prüfliste der Windows-Releasekette (nach dem PR vom Release-Team/Wartenden ausgeführt):
 
-- release/tag 与 `daily-stock-analysis-windows-installer-<tag>.exe` 的版本号一致；
-- `latest.yml`、`daily-stock-analysis-windows-installer-<tag>.exe`、`*.blockmap` 同 tag 同步出现且可下载；
-- `latest.yml` 中 `version` 与 Release tag 语义一致（去掉 `v` 前缀后比对），且 `path` / `files.url` 与安装包附件名一致；
-- 如缺少上述文件或 `release-tag` 不匹配，需标注阻断并补齐 `desktop-release` 打包流程。
+- Version von release/tag und `daily-stock-analysis-windows-installer-<tag>.exe` stimmen überein;
+- `latest.yml`, `daily-stock-analysis-windows-installer-<tag>.exe` und `*.blockmap` erscheinen zum selben Tag synchron und sind herunterladbar;
+- `version` in `latest.yml` ist semantisch mit dem Release-Tag konsistent (Vergleich nach Entfernen des `v`-Präfixes), und `path` / `files.url` stimmen mit dem Anhangnamen des Installationsprogramms überein;
+- Fehlen die oben genannten Dateien oder stimmt `release-tag` nicht überein, muss dies als Blockade markiert und der `desktop-release`-Verpackungsprozess nachgeholt werden.
 
-5. Windows/NSIS 产物与发布附件一致性请在 Windows 环境手动验证（可人工触发发布流程），并在升级后核对运行时文件留存：
+5. Die Konsistenz zwischen Windows/NSIS-Artefakten und Release-Anhängen bitte manuell in einer Windows-Umgebung prüfen (der Release-Prozess kann manuell ausgelöst werden) und nach dem Upgrade den Verbleib der Laufzeitdateien überprüfen:
 
-   1. 安装前后分别记录安装目录中的 `.env`、`data/stock_analysis.db`、`data/stock_analysis.db-wal`、`data/stock_analysis.db-shm`、`logs/desktop.log` 的 SHA256；
-   2. 确认桌面端下一次启动后，上述文件仍存在且与安装前记录一致；
-   3. 如不一致，可在应用退出后检查用户数据目录中的 `.dsa-desktop-update-backup` 是否清理完整，并结合最新日志串联排查。
+   1. Vor und nach der Installation jeweils die SHA256 von `.env`, `data/stock_analysis.db`, `data/stock_analysis.db-wal`, `data/stock_analysis.db-shm` und `logs/desktop.log` im Installationsverzeichnis erfassen;
+   2. Nach dem nächsten Start der Desktop-Version prüfen, dass die oben genannten Dateien weiterhin existieren und mit der Aufzeichnung vor der Installation übereinstimmen;
+   3. Bei Abweichung kann nach dem Beenden der Anwendung geprüft werden, ob `.dsa-desktop-update-backup` im Benutzerdatenverzeichnis vollständig bereinigt wurde, und anhand der neuesten Logs zusammenhängend nachvollzogen werden.
 
-Windows 平台建议使用 PowerShell 执行：
+Unter Windows wird die Ausführung mit PowerShell empfohlen:
 
 ```bash
 Get-FileHash .env,data\\stock_analysis.db,data\\stock_analysis.db-wal,data\\stock_analysis.db-shm,logs\\desktop.log -Algorithm SHA256
 ```
 
-说明：应用已在 Windows NSIS 安装版的“重启安装”前停止内置后端、备份安装目录旁上述运行时文件，并以静默模式运行更新安装器，目的是避免安装向导抢先覆盖仍在运行的桌面端进程，同时降低更新过程中文件丢失风险；若恢复失败，桌面端会显示更新安装错误并保留手动下载路径供回退处理。此次修复仅改动 Windows 更新安装链路与内置后端进程生命周期处理，不涉及设置保存语义、模型运行时清理策略或配置迁移行为。
+Hinweis: Vor „Neu starten und installieren" in der Windows-NSIS-Installationsversion stoppt die Anwendung das eingebaute Backend, sichert die obigen Laufzeitdateien neben dem Installationsverzeichnis und führt den Update-Installer im stillen Modus aus. Ziel ist es, zu vermeiden, dass der Installationsassistent den noch laufenden Desktop-Prozess vorzeitig überschreibt, und gleichzeitig das Risiko von Dateiverlust während des Updates zu senken; schlägt die Wiederherstellung fehl, zeigt die Desktop-Version einen Update-Installationsfehler an und behält einen manuellen Download-Pfad für den Rückfall bei. Diese Korrektur betrifft nur die Windows-Update-Installationskette und die Behandlung des Prozesslebenszyklus des eingebauten Backends; sie berührt weder die Speichersemantik der Einstellungen noch die Laufzeit-Bereinigungsstrategie des Modells noch das Konfigurationsmigrationsverhalten.
 
-### 分步打包
+### Schrittweises Verpacken
 
-1) 构建 React UI
+1) React UI bauen
 
 ```bash
 cd apps/dsa-web
@@ -216,23 +216,23 @@ npm install
 npm run build
 ```
 
-2) 按现有脚本打包 Python 后端（脚本会收集 DSA 内建选股引擎、Futu SDK 与 AkShare 数据文件）
+2) Python-Backend nach dem bestehenden Skript verpacken (das Skript sammelt die eingebaute DSA-Aktienauswahl-Engine, das Futu SDK und die AkShare-Datendateien)
 
-- Windows：
+- Windows:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 ```
 
-- macOS：
+- macOS:
 
 ```bash
 bash scripts/build-backend-macos.sh
 ```
 
-该脚本会在安装依赖后执行 `--collect-all src.services.screening`、`--collect-all futu` 和 `--collect-data akshare`。构建完成后会通过冻结可执行文件校验 `src.services.screening.pipeline`、`futu`、`orjson` 均可导入，核对内建策略数量，并确认 AkShare 的 `file_fold/calendar.json` 已进入冻结产物，避免发行包在选股、热点题材、Futu 持仓导入或日线增强路径中因缺少模块/package data 降级。内建选股实现参考 AlphaSift。PR 主 CI 在 `requirements.txt`、Futu broker、Desktop 打包入口或相关 workflow 变化时，会分别运行 `desktop-futu-package-windows` 与 `desktop-futu-package-macos` 阻断检查。
+Das Skript führt nach der Installation der Abhängigkeiten `--collect-all src.services.screening`, `--collect-all futu` und `--collect-data akshare` aus. Nach dem Build wird über die eingefrorene ausführbare Datei geprüft, dass `src.services.screening.pipeline`, `futu` und `orjson` importierbar sind, die Anzahl der eingebauten Strategien abgeglichen und bestätigt, dass `file_fold/calendar.json` von AkShare in das eingefrorene Artefakt gelangt ist. So wird vermieden, dass das Release-Paket in den Pfaden Aktienauswahl, Hot-Topics, Futu-Positionsimport oder Tageslinien-Anreicherung wegen fehlender Module/package data degradiert. Die eingebaute Aktienauswahl-Implementierung orientiert sich an AlphaSift. Bei Änderungen an `requirements.txt`, dem Futu-Broker, dem Desktop-Verpackungseinstieg oder den zugehörigen Workflows führt die PR-Haupt-CI jeweils die Blockade-Prüfungen `desktop-futu-package-windows` und `desktop-futu-package-macos` aus.
 
-3) 打包 Electron 桌面应用
+3) Electron-Desktop-Anwendung verpacken
 
 ```bash
 cd apps/dsa-desktop
@@ -240,110 +240,110 @@ npm install
 npm run build
 ```
 
-打包产物位于 `apps/dsa-desktop/dist/`。Windows 安装器会生成 `daily-stock-analysis-windows-installer-<tag>.exe`，安装向导中可选择安装目录。
+Die Verpackungsartefakte liegen unter `apps/dsa-desktop/dist/`. Der Windows-Installer erzeugt `daily-stock-analysis-windows-installer-<tag>.exe`; im Installationsassistenten kann das Installationsverzeichnis gewählt werden.
 
-## 目录结构
+## Verzeichnisstruktur
 
-Windows 安装包模式下，安装器仅支持当前用户安装且已禁用管理员提权，用户可在安装向导中选择安装目录；安装器会在安装器层面阻止选择 `Program Files`、`Windows` 等系统保护目录（选择时"下一步"按钮自动禁用），安装完成后，应用会在安装目录旁生成/读取 `.env`、`data/stock_analysis.db`（含 `data/stock_analysis.db-wal` / `data/stock_analysis.db-shm`）和 `logs/desktop.log`。请保留默认的 per-user 安装位置或选择其他用户可写目录。
+Im Windows-Installationsmodus unterstützt der Installer nur die Installation für den aktuellen Benutzer und deaktiviert die Admin-Erhöhung; der Benutzer kann das Installationsverzeichnis im Assistenten wählen; der Installer verhindert auf Installer-Ebene die Auswahl von geschützten Systemverzeichnissen wie `Program Files` oder `Windows` (bei Auswahl wird „Weiter" automatisch deaktiviert). Nach der Installation erzeugt bzw. liest die Anwendung neben dem Installationsverzeichnis `.env`, `data/stock_analysis.db` (inklusive `data/stock_analysis.db-wal` / `data/stock_analysis.db-shm`) und `logs/desktop.log`. Bitte behalten Sie den Standard-Pfad per-user bei oder wählen Sie ein anderes vom Benutzer beschreibbares Verzeichnis.
 
-`win-unpacked` 免安装模式下，目录结构如下：
+Im `win-unpacked`-Modus ohne Installation sieht die Verzeichnisstruktur so aus:
 
 ```
 win-unpacked/
-  Daily Stock Analysis.exe    <- 双击启动
-  .env                        <- 用户配置文件（首次启动自动生成）
+  Daily Stock Analysis.exe    <- Doppelklick zum Starten
+  .env                        <- Benutzerkonfigurationsdatei (beim ersten Start automatisch erzeugt)
   data/
-    stock_analysis.db         <- 数据库主文件
-    stock_analysis.db-wal     <- WAL 日志文件（更新备份/恢复）
-    stock_analysis.db-shm     <- WAL 共享元文件（更新备份/恢复）
+    stock_analysis.db         <- Hauptdatenbankdatei
+    stock_analysis.db-wal     <- WAL-Protokolldatei (Update-Backup/Wiederherstellung)
+    stock_analysis.db-shm     <- WAL-Shared-Meta-Datei (Update-Backup/Wiederherstellung)
   logs/
-    desktop.log               <- 运行日志
+    desktop.log               <- Laufzeitprotokoll
   resources/
-    .env.example              <- 配置模板
+    .env.example              <- Konfigurationsvorlage
     backend/
-      stock_analysis.exe      <- 后端服务
+      stock_analysis.exe      <- Backend-Dienst
 ```
 
-## 配置文件说明
+## Hinweise zur Konfigurationsdatei
 
-- Windows 桌面端的 `.env` 放在 exe 同目录下
-- macOS 打包版的 `.env`、`data/` 和 `logs/` 放在 Electron 用户数据目录，避免替换 `.app` 时丢失
-- 首次启动时自动从 `.env.example` 复制生成
-- 从旧版本升级时，如果旧 `.app` 包内部的 `.env`、`data/stock_analysis.db` 或日志文件仍可访问，新版本会在目标文件不存在时自动迁移到用户数据目录；已有目标文件不会被覆盖
-- 用户需要编辑 `.env` 配置以下内容：
-  - `GEMINI_API_KEY` 或 `OPENAI_API_KEY`：AI 分析必需
-  - `STOCK_LIST`：自选股列表（逗号分隔）
-  - 其他可选配置参考 `.env.example`
+- Die `.env` der Windows-Desktop-Version liegt im selben Verzeichnis wie die exe
+- Bei der macOS-Paketversion liegen `.env`, `data/` und `logs/` im Electron-Benutzerdatenverzeichnis, um einen Verlust beim Ersetzen der `.app` zu vermeiden
+- Beim ersten Start wird automatisch aus `.env.example` eine Kopie erzeugt
+- Beim Upgrade von einer alten Version migriert die neue Version, wenn die `.env`, `data/stock_analysis.db` oder die Logdateien im alten `.app`-Paket noch zugänglich sind, diese automatisch in das Benutzerdatenverzeichnis, sofern die Zieldateien nicht existieren; vorhandene Zieldateien werden nicht überschrieben
+- Der Benutzer muss in `.env` Folgendes konfigurieren:
+  - `GEMINI_API_KEY` oder `OPENAI_API_KEY`: für die KI-Analyse erforderlich
+  - `STOCK_LIST`: Watchlist-Liste (kommasepariert)
+  - Weitere optionale Konfigurationen siehe `.env.example`
 
-### 配置备份 / 恢复 `.env`
+### Konfigurations-Backup / Wiederherstellung `.env`
 
-- WebUI 与桌面端都可以从 `系统设置 -> 配置备份` 看到 `导出 .env` 和 `导入 .env` 按钮
-- WebUI 非桌面运行时需要先开启管理员认证并完成登录；未开启认证时按钮会禁用，API 返回 `403`
-- `导出 .env` 会导出当前**已保存**的 `.env` 备份文件；页面上尚未点击“保存配置”的本地草稿不会被导出
-- `导入 .env` 会读取备份文件中的键值并合并到当前配置中，导入后会立即触发配置重载
-- 导入是“键级覆盖”而不是整文件替换：备份文件中出现的键会覆盖当前值，未出现的键保持不变
-- 如果当前页面还有未保存草稿，导入前会先提示确认，避免把本地草稿和已保存配置混在一起
-- Web 端默认 `ADMIN_AUTH_ENABLED=false` 时，设置页会展示按钮为禁用态并提示先启用管理员鉴权；桌面端不受该配置影响，仍可直接使用配置备份/恢复能力。
+- Sowohl WebUI als auch Desktop können unter `Systemeinstellungen -> Konfigurations-Backup` die Schaltflächen `Export .env` und `Import .env` sehen
+- Die WebUI benötigt im Nicht-Desktop-Betrieb zuerst die Aktivierung der Administrator-Authentifizierung und einen Login; ohne Authentifizierung sind die Schaltflächen deaktiviert und die API gibt `403` zurück
+- `Export .env` exportiert die aktuell **gespeicherte** `.env`-Backupdatei; lokal vorhandene Entwürfe, bei denen auf der Seite noch nicht „Konfiguration speichern" geklickt wurde, werden nicht exportiert
+- `Import .env` liest die Schlüssel-Wert-Paare der Backupdatei und führt sie in die aktuelle Konfiguration zusammen; nach dem Import wird sofort ein Konfigurations-Reload ausgelöst
+- Der Import ist eine „Schlüssel-Ebene-Überschreibung" und kein kompletter Dateiaustausch: Schlüssel, die in der Backupdatei vorkommen, überschreiben den aktuellen Wert; Schlüssel, die nicht vorkommen, bleiben unverändert
+- Wenn auf der aktuellen Seite noch nicht gespeicherte Entwürfe vorhanden sind, wird vor dem Import eine Bestätigung angezeigt, um lokale Entwürfe und gespeicherte Konfiguration nicht zu vermischen
+- Wenn die Webseite standardmäßig `ADMIN_AUTH_ENABLED=false` hat, zeigt die Einstellungsseite die Schaltflächen deaktiviert an und weist darauf hin, zuerst die Admin-Authentifizierung zu aktivieren; die Desktop-Version ist von dieser Konfiguration nicht betroffen und kann das Konfigurations-Backup/die Wiederherstellung weiterhin direkt nutzen.
 
-> 建议：从旧版本升级的 macOS 用户仍可在升级前执行一次 `导出 .env` 作为保险；如果旧 `.app` 已经被整体替换，包内旧文件无法凭空恢复，只能通过备份导入。
+> Empfehlung: macOS-Benutzer, die von einer alten Version upgraden, können vor dem Upgrade einmal `Export .env` als Sicherung ausführen; wenn die alte `.app` bereits vollständig ersetzt wurde, können die alten Dateien im Paket nicht aus dem Nichts wiederhergestellt werden, sondern nur über den Backup-Import.
 
-### 设置页版本信息
+### Versionsinformationen auf der Einstellungsseite
 
-- `系统设置 -> 版本信息` 中的“桌面端版本”由 Electron 主进程的 `app.getVersion()` 提供，并通过 preload bridge 暴露给前端
-- 开发态 `npm run dev` 与打包态 `npm run build` / 安装包都会复用同一条版本注入链路，不再在 `preload.js` 里维护独立硬编码版本号
-- `README.md` 继续保留安装和运行入口说明；这类桌面端运行时细节统一落在本专题文档维护，避免入门文档膨胀
+- „Desktop-Version" unter `Systemeinstellungen -> Versionsinformationen` wird von `app.getVersion()` des Electron-Hauptprozesses bereitgestellt und über die Preload-Bridge an das Frontend durchgereicht
+- Der Entwicklungsmodus `npm run dev` und der Verpackungsmodus `npm run build` / das Installationsprogramm nutzen beide dieselbe Versions-Injektionskette; in `preload.js` wird keine separate, fest verdrahtete Versionsnummer mehr gepflegt
+- `README.md` behält weiterhin die Einstiegs-Hinweise zu Installation und Ausführung; solche Laufzeitdetails der Desktop-Version werden einheitlich in diesem Fachdokument gepflegt, damit das Einsteigerdokument nicht aufbläht
 
-### 局域网访问 Windows 桌面端 WebUI
+### Zugriff auf die Windows-Desktop-WebUI im LAN
 
-- 桌面端默认仍按 `WEBUI_HOST=127.0.0.1` 只允许本机访问，避免安装后无意暴露后端服务
-- 如需让同一局域网内其他设备访问，在桌面端 `.env` 或 `系统设置 -> WebUI 监听地址` 中设置 `WEBUI_HOST=0.0.0.0`，保存后重启桌面端
-- 桌面端会自动选择 `8000-8100` 中可用端口并传给后端；常见情况下仍是 `8000`，若端口被占用，可在 `logs/desktop.log` 查看 `Using port ...` 和 `Backend launch command=...`
-- Windows 防火墙或服务器安全组仍需放行实际监听端口；对外暴露前建议同时启用 `ADMIN_AUTH_ENABLED`
-- 即使后端绑定 `0.0.0.0`，桌面窗口自身仍会使用本机可访问地址完成健康检查和页面加载
+- Die Desktop-Version erlaubt standardmäßig weiterhin über `WEBUI_HOST=127.0.0.1` nur den Zugriff vom lokalen Rechner, um eine unbeabsichtigte Freigabe des Backend-Dienstes nach der Installation zu vermeiden
+- Um anderen Geräten im selben LAN Zugriff zu ermöglichen, setzen Sie in der `.env` der Desktop-Version oder unter `Systemeinstellungen -> WebUI-Listenadresse` `WEBUI_HOST=0.0.0.0` und starten Sie die Desktop-Version nach dem Speichern neu
+- Die Desktop-Version wählt automatisch einen freien Port aus `8000-8100` und übergibt ihn an das Backend; im Normalfall ist es weiterhin `8000`. Ist der Port belegt, kann in `logs/desktop.log` nach `Using port ...` und `Backend launch command=...` gesucht werden
+- Die Windows-Firewall oder die Security-Group des Servers muss den tatsächlich lauschenden Port noch freigeben; vor einer externen Freigabe wird empfohlen, zusätzlich `ADMIN_AUTH_ENABLED` zu aktivieren
+- Selbst wenn das Backend an `0.0.0.0` bindet, verwendet das Desktop-Fenster für die Health-Checks und das Laden der Seite weiterhin eine lokal erreichbare Adresse
 
-### 桌面端更新提醒
+### Update-Hinweis der Desktop-Version
 
-- 应用在主界面加载完成后会后台检查 GitHub Releases 的最新正式版，并与当前 `app.getVersion()` 做语义化版本比较
-- Windows NSIS 安装版会通过内置 GitHub 更新源自动下载新版本；下载完成后弹出一次性提醒，用户确认后静默重启并安装
-- 自动更新静默安装会复用当前安装目录；如果用户安装时选择了非默认目录或带空格目录，后续自动更新仍会覆盖同一目录
-- `系统设置 -> 版本信息` 中的“桌面端更新”区域可手动检查更新；若更新已下载，会展示“重启安装”操作
-- Windows 免安装包、开发态和 macOS DMG 仍保持“提醒 + 跳转下载页”的兼容路径，不会因为网络失败而阻断桌面端启动
-- 版本检查失败、GitHub API 超时、更新元数据缺失或下载安装异常时，会记录到 `logs/desktop.log`，设置页手动检查时会展示错误状态
+- Nach dem Laden der Hauptoberfläche prüft die Anwendung im Hintergrund die neueste offizielle Version der GitHub Releases und vergleicht sie per semantischer Version mit der aktuellen `app.getVersion()`
+- Die Windows-NSIS-Installationsversion lädt die neue Version automatisch über die eingebaute GitHub-Updatequelle herunter; nach dem Download erscheint eine einmalige Benachrichtigung; nach Bestätigung durch den Benutzer wird still neu gestartet und installiert
+- Die stille Installation des automatischen Updates nutzt das aktuelle Installationsverzeichnis erneut; hat der Benutzer bei der Installation ein Nicht-Standardverzeichnis oder ein Verzeichnis mit Leerzeichen gewählt, wird beim späteren automatischen Update weiterhin dasselbe Verzeichnis überschrieben
+- Im Bereich „Desktop-Update" unter `Systemeinstellungen -> Versionsinformationen` kann manuell nach Updates gesucht werden; ist ein Update bereits heruntergeladen, wird die Aktion „Neu starten und installieren" angezeigt
+- Das Windows-Portablepaket, der Entwicklungsmodus und das macOS-DMG behalten weiterhin den kompatiblen Pfad „Benachrichtigung + Sprung zur Downloadseite" bei; ein Netzwerkfehler blockiert den Start der Desktop-Version nicht
+- Fehler bei der Versionsprüfung, GitHub-API-Timeout, fehlende Update-Metadaten oder Anomalien beim Download/der Installation werden in `logs/desktop.log` protokolliert; bei der manuellen Prüfung auf der Einstellungsseite wird ein Fehlerstatus angezeigt
 
-## 常见问题
+## Häufige Probleme
 
-### 启动后一直显示 "Preparing backend..."
+### Nach dem Start bleibt „Preparing backend..." dauerhaft sichtbar
 
-1. 检查 `logs/desktop.log` 查看错误信息
-2. 确认 `.env` 文件存在且配置正确
-3. 确认端口 8000-8100 未被占用；桌面端会自动选择其中一个可用端口，无需通过 `.env` 手动改 `WEBUI_PORT`
-4. 如果日志里显示 Electron 等待的端口和后端实际监听端口不一致，优先升级到包含桌面端端口同步修复的版本
+1. `logs/desktop.log` auf Fehlermeldungen prüfen
+2. Sicherstellen, dass die `.env` existiert und korrekt konfiguriert ist
+3. Sicherstellen, dass die Ports 8000-8100 nicht belegt sind; die Desktop-Version wählt automatisch einen dieser freien Ports, ein manuelles Ändern von `WEBUI_PORT` über die `.env` ist nicht nötig
+4. Zeigt das Log an, dass der von Electron erwartete Port und der tatsächlich vom Backend lauschende Port nicht übereinstimmen, sollte vorrangig auf eine Version mit der Port-Synchronisationskorrektur der Desktop-Version aktualisiert werden
 
-### 后端启动报 ModuleNotFoundError
+### Backend meldet beim Start ModuleNotFoundError
 
-PyInstaller 打包时缺少模块，需要在 Windows 与 macOS 后端构建脚本中同步增加 `--hidden-import`，并对冻结产物执行运行时导入校验。当前脚本会显式安装、冻结并探测 LiteLLM 运行路径需要的 `orjson`；若日志包含 `No module named 'orjson'`，请升级到修复版本并重新构建，不能只在已发布目录中手工安装依赖。
+Beim Verpacken mit PyInstaller fehlte ein Modul. Es müssen in den Backend-Build-Skripten für Windows und macOS synchron `--hidden-import`-Einträge ergänzt und die eingefrorenen Artefakte einer Laufzeit-Importprüfung unterzogen werden. Die aktuellen Skripte installieren, frieren ein und prüfen explizit das für den LiteLLM-Laufzeitpfad benötigte `orjson`; enthält das Log `No module named 'orjson'`, bitte auf eine korrigierte Version upgraden und neu bauen – Abhängigkeiten dürfen nicht nur manuell in das bereits veröffentlichte Verzeichnis installiert werden.
 
-如果日志提示缺少 `akshare/file_fold/calendar.json`，说明后端冻结产物没有完整收集 AkShare package data。请使用仓库当前的 `scripts/build-backend.ps1` 或 `scripts/build-backend-macos.sh` 重新构建；脚本会在生成桌面包前检查该文件，缺失时直接终止构建。
+Meldet das Log, dass `akshare/file_fold/calendar.json` fehlt, bedeutet das, dass das eingefrorene Backend-Artefakt die AkShare package data nicht vollständig eingesammelt hat. Bitte mit den aktuellen `scripts/build-backend.ps1` oder `scripts/build-backend-macos.sh` neu bauen; das Skript prüft diese Datei, bevor der Desktop-Pfad erzeugt wird, und bricht bei fehlender Datei direkt ab.
 
-### UI 加载空白
+### UI lädt eine leere Seite
 
-确认 `static/index.html` 存在，如不存在需重新构建 React UI。
+Sicherstellen, dass `static/index.html` existiert; falls nicht, muss die React UI neu gebaut werden.
 
-### macOS 升级后配置迁移
+### Konfigurationsmigration nach macOS-Upgrade
 
-旧版本曾把运行时 `.env`、数据库和日志写在 `.app` 包内部。新版本改为使用 Electron 用户数据目录，并在旧 `.app` 包内文件仍可访问时做一次性迁移。迁移规则是“目标不存在才复制”，避免覆盖用户已经在新版本中保存的配置。
+Alte Versionen schrieben die Laufzeit-`.env`, die Datenbank und Logs in das `.app`-Paket. Die neue Version nutzt stattdessen das Electron-Benutzerdatenverzeichnis und führt eine einmalige Migration durch, solange die Dateien im alten `.app`-Paket noch zugänglich sind. Die Migrationsregel lautet „nur kopieren, wenn das Ziel nicht existiert", um die in der neuen Version bereits gespeicherte Konfiguration nicht zu überschreiben.
 
-如果旧 `.app` 已经被整体替换，旧包内 `.env` 无法由新版本自动恢复。此时可使用升级前导出的 `.env` 在 `系统设置 -> 配置备份` 中手动导入；完成一次迁移或重新配置后，后续版本会继续复用用户数据目录，不再随 `.app` 替换丢失。
+Wurde die alte `.app` bereits vollständig ersetzt, kann die `.env` im alten Paket von der neuen Version nicht automatisch wiederhergestellt werden. In diesem Fall kann die vor dem Upgrade exportierte `.env` unter `Systemeinstellungen -> Konfigurations-Backup` manuell importiert werden; nach einer abgeschlossenen Migration oder Neukonfiguration nutzen spätere Versionen weiterhin das Benutzerdatenverzeichnis und gehen beim Ersetzen der `.app` nicht mehr verloren.
 
-## 分发给用户
+## Verteilung an Benutzer
 
-Windows 分发现在有两种方式：
+Die Windows-Verteilung hat jetzt zwei Varianten:
 
-1. 安装包：分发 `apps/dsa-desktop/dist/` 下的 `daily-stock-analysis-windows-installer-<tag>.exe`，用户安装时可自行选择目标目录
-2. 免安装包：将 `apps/dsa-desktop/dist/win-unpacked/` 整个文件夹打包发给用户
+1. Installationsprogramm: `daily-stock-analysis-windows-installer-<tag>.exe` unter `apps/dsa-desktop/dist/` verteilen; der Benutzer kann beim Installieren das Zielverzeichnis selbst wählen
+2. Portable Variante: den gesamten Ordner `apps/dsa-desktop/dist/win-unpacked/` an den Benutzer verteilen
 
-使用 `win-unpacked` 免安装包时，用户只需：
+Bei der `win-unpacked`-Portable-Variante muss der Benutzer nur:
 
-1. 解压文件夹
-2. 编辑 `.env` 配置 API Key 和股票列表
-3. 双击 `Daily Stock Analysis.exe` 启动
+1. Den Ordner entpacken
+2. In `.env` den API Key und die Aktienliste konfigurieren
+3. Per Doppelklick auf `Daily Stock Analysis.exe` starten

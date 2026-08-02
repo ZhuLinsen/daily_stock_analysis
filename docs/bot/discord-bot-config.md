@@ -1,53 +1,53 @@
-# Discord机器人配置
+# Discord-Bot-Konfiguration
 
-## Discord机器人
-Discord机器人接收消息需要使用Discord Developer Portal创建机器人应用
+## Discord-Bot
+Damit der Discord-Bot Nachrichten empfangen kann, muss im Discord Developer Portal eine Bot-Anwendung erstellt werden.
 https://discord.com/developers/applications
 
-Discord机器人支持两种消息发送方式：
-1. **Webhook模式**：配置简单，权限低，适合只需要发送消息的场景
-2. **Bot API模式**：权限高，支持接收命令，需要配置Bot Token和频道ID
+Der Discord-Bot unterstützt zwei Methoden zum Senden von Nachrichten:
+1. **Webhook-Modus**: einfache Konfiguration, geringe Berechtigungen, geeignet für Szenarien, in denen nur Nachrichten gesendet werden müssen
+2. **Bot-API-Modus**: hohe Berechtigungen, unterstützt den Empfang von Befehlen, benötigt einen Bot-Token und eine Kanal-ID
 
-## 创建Discord机器人
+## Discord-Bot erstellen
 
-### 1. 登录Discord Developer Portal
-访问 https://discord.com/developers/applications 并使用你的Discord账号登录
+### 1. Beim Discord Developer Portal anmelden
+Öffne https://discord.com/developers/applications und melde dich mit deinem Discord-Konto an.
 
-### 2. 创建应用
-点击"New Application"按钮，输入应用名称（例如：A股智能分析机器人），然后点击"Create"
+### 2. Anwendung erstellen
+Klicke auf die Schaltfläche „New Application“, gib einen Anwendungsnamen ein (z. B. „Intelligenter A-Aktien-Analyse-Bot“) und klicke dann auf „Create“.
 
-### 3. 配置机器人
-在左侧导航栏中点击"Bot"，然后点击"Add Bot"按钮，确认添加
+### 3. Bot konfigurieren
+Klicke in der linken Navigationsleiste auf „Bot“ und dann auf die Schaltfläche „Add Bot“; bestätige das Hinzufügen.
 
-### 4. 获取Bot Token
-在Bot页面，点击"Reset Token"按钮，然后复制生成的Token（这是你的`DISCORD_BOT_TOKEN`）
+### 4. Bot-Token abrufen
+Klicke auf der Bot-Seite auf die Schaltfläche „Reset Token“ und kopiere das erzeugte Token (dies ist dein `DISCORD_BOT_TOKEN`).
 
-### 5. 配置权限
-在Bot页面的"Privileged Gateway Intents"部分，开启以下选项：
+### 5. Berechtigungen konfigurieren
+Aktiviere im Abschnitt „Privileged Gateway Intents“ der Bot-Seite die folgenden Optionen:
 - Presence Intent
 - Server Members Intent
 - Message Content Intent
 
-### 6. 添加到服务器
-1. 在左侧导航栏中点击"OAuth2" > "URL Generator"
-2. 在"Scopes"中选择：
+### 6. Zum Server hinzufügen
+1. Klicke in der linken Navigationsleiste auf „OAuth2“ > „URL Generator“
+2. Wähle unter „Scopes“:
    - `bot`
    - `applications.commands`
-3. 在"Bot Permissions"中选择：
+3. Wähle unter „Bot Permissions“:
    - Send Messages
    - Embed Links
    - Attach Files
    - Read Message History
    - Use Slash Commands
-4. 复制生成的URL，在浏览器中打开，选择要添加机器人的服务器
+4. Kopiere die erzeugte URL, öffne sie im Browser und wähle den Server, zu dem der Bot hinzugefügt werden soll.
 
-### 7. 获取频道ID
-1. 在Discord客户端中，开启开发者模式：设置 > 高级 > 开发者模式
-2. 右键点击你想要机器人发送消息的频道，选择"Copy ID"（这是你的`DISCORD_MAIN_CHANNEL_ID`）
+### 7. Kanal-ID abrufen
+1. Aktiviere im Discord-Client den Entwicklermodus: Einstellungen > Erweitert > Entwicklermodus
+2. Klicke mit der rechten Maustaste auf den Kanal, in den der Bot Nachrichten senden soll, und wähle „Copy ID“ (dies ist deine `DISCORD_MAIN_CHANNEL_ID`).
 
-## 配置环境变量
+## Umgebungsvariablen konfigurieren
 
-将以下配置添加到你的`.env`文件中：
+Füge die folgende Konfiguration zu deiner `.env`-Datei hinzu:
 
 ```env
 # Discord 机器人配置
@@ -58,54 +58,54 @@ DISCORD_INTERACTIONS_PUBLIC_KEY=your-public-key (仅接收入站 Interaction/Web
 DISCORD_BOT_STATUS=A股智能分析 | /help
 ```
 
-如果你配置了 Discord Interaction / Webhook 入站回调，务必在 Discord Developer Portal 的 `General Information -> Public Key` 复制公钥并填入 `DISCORD_INTERACTIONS_PUBLIC_KEY`；系统会使用该公钥校验每个入站请求的 Ed25519 签名，验签失败会直接拒绝请求。
+Wenn du eingehende Callbacks für Discord Interaction / Webhook konfiguriert hast, kopiere unbedingt den öffentlichen Schlüssel unter `General Information -> Public Key` im Discord Developer Portal und trage ihn in `DISCORD_INTERACTIONS_PUBLIC_KEY` ein; das System prüft mit diesem Schlüssel die Ed25519-Signatur jedes eingehenden Anfangs und lehnt Anfragen mit fehlgeschlagener Signaturprüfung direkt ab.
 
-## Webhook模式配置（可选）
+## Webhook-Modus-Konfiguration (optional)
 
-如果你只想使用Webhook模式发送消息，不需要Bot Token，可以按照以下步骤配置：
+Wenn du Nachrichten nur im Webhook-Modus senden möchtest und keinen Bot-Token benötigst, kannst du die folgende Konfiguration vornehmen:
 
-1. 右键点击频道，选择"编辑频道"
-2. 点击"集成" > "Webhooks" > "新建Webhook"
-3. 配置Webhook名称和头像
-4. 复制Webhook URL（这是你的`DISCORD_WEBHOOK_URL`）
+1. Klicke mit der rechten Maustaste auf den Kanal und wähle „Kanal bearbeiten“
+2. Klicke auf „Integrationen“ > „Webhooks“ > „Neuen Webhook erstellen“
+3. Konfiguriere den Namen und das Avatar des Webhooks
+4. Kopiere die Webhook-URL (dies ist deine `DISCORD_WEBHOOK_URL`).
 
-## 支持的命令
+## Unterstützte Befehle
 
-Discord机器人支持以下Slash命令：
+Der Discord-Bot unterstützt die folgenden Slash-Befehle:
 
-1. `/analyze <stock_code> [full_report]` - 分析指定股票代码
-   - `stock_code`: 股票代码，如 600519
-   - `full_report`: 可选，是否生成完整报告（包含大盘）
+1. `/analyze <stock_code> [full_report]` - Analysiert eine bestimmte Aktienkennzahl
+   - `stock_code`: die Aktienkennzahl, z. B. 600519
+   - `full_report`: optional, ob ein vollständiger Bericht erzeugt werden soll (einschließlich Markt)
 
-2. `/market_review` - 获取大盘复盘报告
+2. `/market_review` - Ruft den Markt-Rückblickbericht ab
 
-3. `/help` - 查看帮助信息
+3. `/help` - Zeigt Hilfeinformationen an
 
-## 测试机器人
+## Bot testen
 
-1. 确保机器人已成功添加到你的服务器
-2. 在频道中输入`/help`，机器人会返回帮助信息
-3. 输入`/analyze 600519`测试股票分析功能
-4. 输入`/market_review`测试大盘复盘功能
+1. Stelle sicher, dass der Bot erfolgreich zu deinem Server hinzugefügt wurde.
+2. Gib im Kanal `/help` ein; der Bot liefert die Hilfeinformationen zurück.
+3. Gib `/analyze 600519` ein, um die Aktienanalyse zu testen.
+4. Gib `/market_review` ein, um die Markt-Rückblickfunktion zu testen.
 
-## 注意事项
+## Hinweise
 
-1. 确保你的机器人有足够的权限在频道中发送消息和使用Slash命令
-2. 定期更新你的Bot Token，确保安全性
-3. 不要将你的Bot Token分享给任何人
-4. 如果机器人没有响应，检查：
-   - Bot Token是否正确
-   - 频道ID是否正确
-   - 机器人是否在线
-   - 机器人是否有消息发送权限
+1. Stelle sicher, dass dein Bot ausreichend Berechtigungen hat, um in Kanälen Nachrichten zu senden und Slash-Befehle zu verwenden.
+2. Aktualisiere deinen Bot-Token regelmäßig, um die Sicherheit zu gewährleisten.
+3. Gib deinen Bot-Token an niemanden weiter.
+4. Wenn der Bot nicht reagiert, prüfe Folgendes:
+   - ob der Bot-Token korrekt ist
+   - ob die Kanal-ID korrekt ist
+   - ob der Bot online ist
+   - ob der Bot über die Berechtigung zum Senden von Nachrichten verfügt
 
-## 故障排除
+## Fehlerbehebung
 
-- **机器人不响应命令**：检查Bot Token和频道ID是否正确，确保机器人已添加到服务器
-- **Slash命令不显示**：等待一段时间（Discord需要同步命令），或重新添加机器人
-- **消息发送失败**：检查频道权限，确保机器人有发送消息的权限
+- **Bot reagiert nicht auf Befehle**: Prüfe, ob Bot-Token und Kanal-ID korrekt sind, und stelle sicher, dass der Bot zum Server hinzugefügt wurde.
+- **Slash-Befehle werden nicht angezeigt**: Warte eine Weile (Discord muss die Befehle synchronisieren) oder füge den Bot erneut hinzu.
+- **Nachrichtenversand fehlgeschlagen**: Prüfe die Kanalberechtigungen und stelle sicher, dass der Bot die Berechtigung zum Senden von Nachrichten hat.
 
-## 相关链接
+## Verwandte Links
 
 - [Discord Developer Portal](https://discord.com/developers/applications)
 - [Discord Bot Documentation](https://discordpy.readthedocs.io/en/stable/)
