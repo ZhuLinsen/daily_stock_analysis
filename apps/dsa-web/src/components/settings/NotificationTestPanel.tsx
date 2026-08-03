@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import { Send } from 'lucide-react';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import type { UiLanguage } from '../../i18n/uiText';
 import { getParsedApiError, type ParsedApiError } from '../../api/error';
 import { systemConfigApi } from '../../api/systemConfig';
 import type {
@@ -12,19 +13,21 @@ import type {
 import { ApiErrorAlert, Badge, Button, InlineAlert, Input, Select } from '../common';
 import { SettingsSectionCard } from './SettingsSectionCard';
 
-function getChannelOptions(language: 'zh' | 'en'): Array<{ value: NotificationTestChannel; label: string }> {
+function getChannelOptions(language: UiLanguage): Array<{ value: NotificationTestChannel; label: string }> {
+  // Channel brand names are language-neutral; de uses the English labels.
+  const useEnglish = language !== 'zh';
   return [
-    { value: 'wechat', label: language === 'en' ? 'WeCom' : '企业微信' },
-    { value: 'feishu', label: language === 'en' ? 'Feishu Webhook' : '飞书 Webhook' },
-    { value: 'dingtalk', label: language === 'en' ? 'DingTalk' : '钉钉' },
+    { value: 'wechat', label: useEnglish ? 'WeCom' : '企业微信' },
+    { value: 'feishu', label: useEnglish ? 'Feishu Webhook' : '飞书 Webhook' },
+    { value: 'dingtalk', label: useEnglish ? 'DingTalk' : '钉钉' },
     { value: 'telegram', label: 'Telegram' },
-    { value: 'email', label: language === 'en' ? 'Email' : '邮件' },
+    { value: 'email', label: useEnglish ? 'Email' : '邮件' },
     { value: 'pushover', label: 'Pushover' },
     { value: 'ntfy', label: 'ntfy' },
     { value: 'gotify', label: 'Gotify' },
     { value: 'pushplus', label: 'PushPlus' },
     { value: 'serverchan3', label: 'ServerChan3' },
-    { value: 'custom', label: language === 'en' ? 'Custom Webhook' : '自定义 Webhook' },
+    { value: 'custom', label: useEnglish ? 'Custom Webhook' : '自定义 Webhook' },
     { value: 'discord', label: 'Discord' },
     { value: 'slack', label: 'Slack' },
     { value: 'astrbot', label: 'AstrBot' },

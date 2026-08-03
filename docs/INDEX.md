@@ -72,4 +72,4 @@ Dies ist der Einstiegspunkt in die Projektdokumentation. Das README ist für Pro
 | --- | --- |
 | [Englisches Dokumentationsverzeichnis](INDEX_EN.md) | English documentation index |
 | [Englisches README](README_EN.md) | English project overview and quick start |
-| [Deutsches README](README_CHT.md) | Projektüberblick und Schnellstart auf Deutsch |
+| [Deutsches README](README_DE.md) | Projektüberblick und Schnellstart auf Deutsch |

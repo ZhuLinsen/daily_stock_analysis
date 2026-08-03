@@ -111,10 +111,10 @@ describe('AlertsPage', () => {
   it('loads rules, trigger history, and notification empty state', async () => {
     render(<AlertsPage />);
 
-    expect(screen.getByText('管理事件告警、日线技术指标、自选股、持仓/账户联动和大盘红绿灯规则，执行一次性测试，并查看后台评估任务记录的触发历史。')).toBeInTheDocument();
+    expect(screen.getByText('Verwalten Sie Regeln für Ereignisalarme, tägliche technische Indikatoren, Beobachtungsliste, Portfolio-/Kontoverknüpfung und die Markt-Ampel, führen Sie einmalige Tests aus und sehen Sie den Auslöseverlauf der Hintergrundbewertung ein.')).toBeInTheDocument();
     expect(await screen.findByText('茅台价格突破')).toBeInTheDocument();
     expect(await screen.findByText('600519 price above 1800')).toBeInTheDocument();
-    expect(await screen.findByText('暂无通知尝试记录')).toBeInTheDocument();
+    expect(await screen.findByText('Keine Benachrichtigungsversuche')).toBeInTheDocument();
     expect(listRules).toHaveBeenCalledWith({
       enabled: undefined,
       alertType: undefined,
@@ -132,9 +132,9 @@ describe('AlertsPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '测试' }));
 
     await waitFor(() => expect(testRule).toHaveBeenCalledWith(1));
-    expect(await screen.findByText('测试结果')).toBeInTheDocument();
+    expect(await screen.findByText('Testergebnis')).toBeInTheDocument();
     expect(screen.getByText(/600519 price above 1800/)).toBeInTheDocument();
-    expect(screen.getByText(/观察值：1801/)).toBeInTheDocument();
+    expect(screen.getByText(/Beobachtungswert: 1801/)).toBeInTheDocument();
     expect(screen.queryByText(/realtime_quote/)).not.toBeInTheDocument();
   });
 
@@ -175,7 +175,7 @@ describe('AlertsPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '测试' }));
 
-    expect(await screen.findByText(/评估 2 · 触发 1 · 降级 1 · 跳过 0/)).toBeInTheDocument();
+    expect(await screen.findByText(/Bewertet 2 · Ausgelöst 1 · Degradiert 1 · Übersprungen 0/)).toBeInTheDocument();
     expect(screen.getByText('自选股 - 600519')).toBeInTheDocument();
     expect(screen.getByText(/not_triggered \/ degraded/)).toBeInTheDocument();
   });
@@ -195,7 +195,7 @@ describe('AlertsPage', () => {
         parameters: { direction: 'above', price: 200 },
       }));
     });
-    expect(await screen.findByText(/已创建告警规则/)).toBeInTheDocument();
+    expect(await screen.findByText(/Alarmregel .* erstellt/)).toBeInTheDocument();
   });
 
   it('keeps create form values when create API fails', async () => {

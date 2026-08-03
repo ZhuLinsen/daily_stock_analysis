@@ -80,12 +80,26 @@ _KO_POSTMARKET_RECAP_PATTERNS = (
 _IMMEDIATE_ACTION_MARKERS_KO = ("즉시 매수", "지금 매수", "즉시 비중확대", "즉시 매도", "지금 매도", "즉시 비중축소")
 _NEGATION_PREFIXES_KO = ("하지", "권하지 않", "금지", "삼가", "불필요", "피하", "불가", "않", "안")
 
+_DE_POSTMARKET_RECAP_PATTERNS = (
+    "nach Handelsschluss",
+    "nach Börsenschluss",
+    "Rückblick nach dem Handelsschluss",
+    "Rezension nach Handelsschluss",
+    "Fokus auf morgen",
+    "Fokus morgen",
+    "komplette Handelstags-Rezension",
+)
+_IMMEDIATE_ACTION_MARKERS_DE = ("jetzt kaufen", "sofort kaufen", "jetzt aufstocken", "sofort aufstocken", "jetzt verkaufen", "sofort verkaufen", "jetzt reduzieren", "sofort reduzieren")
+_NEGATION_PREFIXES_DE = ("nicht", "kein", "keine", "keinen", "vermeiden", "ohne", "unterlassen")
+
 
 def _recap_patterns_for(language: str) -> tuple[str, ...]:
     if language == "en":
         return _EN_POSTMARKET_RECAP_PATTERNS
     if language == "ko":
         return _KO_POSTMARKET_RECAP_PATTERNS
+    if language == "de":
+        return _DE_POSTMARKET_RECAP_PATTERNS
     return _ZH_POSTMARKET_RECAP_PATTERNS
 
 
@@ -94,6 +108,8 @@ def _immediate_markers_for(language: str) -> tuple[str, ...]:
         return _IMMEDIATE_ACTION_MARKERS_EN
     if language == "ko":
         return _IMMEDIATE_ACTION_MARKERS_KO
+    if language == "de":
+        return _IMMEDIATE_ACTION_MARKERS_DE
     return _IMMEDIATE_ACTION_MARKERS_ZH
 
 
@@ -102,14 +118,18 @@ def _negations_for(language: str) -> tuple[str, ...]:
         return _NEGATION_PREFIXES_EN
     if language == "ko":
         return _NEGATION_PREFIXES_KO
+    if language == "de":
+        return _NEGATION_PREFIXES_DE
     return _NEGATION_PREFIXES_ZH
 
 
-def _reason_text(language: str, *, en: str, zh: str, ko: str) -> str:
+def _reason_text(language: str, *, en: str, zh: str, ko: str, de: Optional[str] = None) -> str:
     if language == "en":
         return en
     if language == "ko":
         return ko
+    if language == "de":
+        return de if de is not None else en
     return zh
 
 

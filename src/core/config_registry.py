@@ -2549,7 +2549,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "REPORT_LANGUAGE": {
         "title": "Report Language",
-        "description": "Default output language for reports, Agent Chat fallback replies, and notification templates. Supported values: zh, en, ko.",
+        "description": "Default output language for reports, Agent Chat fallback replies, and notification templates. Supported values: zh, en, ko, de.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "select",
@@ -2561,14 +2561,16 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {"label": "Chinese", "value": "zh"},
             {"label": "English", "value": "en"},
             {"label": "Korean", "value": "ko"},
+            {"label": "German", "value": "de"},
         ],
-        "validation": {"enum": ["zh", "en", "ko"]},
+        "validation": {"enum": ["zh", "en", "ko", "de"]},
         "display_order": 56,
         "help_key": "settings.notification.report_output",
         "examples": [
             "REPORT_LANGUAGE=zh",
             "REPORT_LANGUAGE=en",
             "REPORT_LANGUAGE=ko",
+            "REPORT_LANGUAGE=de",
         ],
         "docs": [
             {

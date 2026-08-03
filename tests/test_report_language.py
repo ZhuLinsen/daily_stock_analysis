@@ -11,9 +11,12 @@ from src.report_language import (
     get_sentiment_label,
     get_signal_level,
     infer_decision_type_from_advice,
-    localize_operation_advice,
-    localize_trend_prediction,
     localize_bias_status,
+    localize_operation_advice,
+    localize_strategy_conflict_description,
+    localize_strategy_skill,
+    localize_strategy_synthesis_summary,
+    localize_trend_prediction,
     normalize_report_language,
 )
 
@@ -85,6 +88,90 @@ class ReportLanguageTestCase(unittest.TestCase):
             infer_decision_type_from_advice("不破支撑后仍可持有"),
             "hold",
         )
+
+
+class GermanReportLanguageTestCase(unittest.TestCase):
+    def test_german_is_supported(self) -> None:
+        self.assertIn("de", SUPPORTED_REPORT_LANGUAGES)
+
+    def test_normalize_german_aliases(self) -> None:
+        self.assertEqual(normalize_report_language("de"), "de")
+        self.assertEqual(normalize_report_language("german"), "de")
+        self.assertEqual(normalize_report_language("de-DE"), "de")
+        self.assertEqual(normalize_report_language("de_DE"), "de")
+        self.assertEqual(normalize_report_language("de-ch"), "de")
+
+    def test_unknown_language_falls_back_to_default(self) -> None:
+        self.assertEqual(normalize_report_language("fr"), "zh")
+        self.assertEqual(normalize_report_language(None), "zh")
+
+    def test_german_labels_cover_full_english_key_set(self) -> None:
+        de_labels = get_report_labels("de")
+        en_labels = get_report_labels("en")
+        zh_labels = get_report_labels("zh")
+        self.assertEqual(set(de_labels.keys()), set(en_labels.keys()))
+        self.assertEqual(set(de_labels.keys()), set(zh_labels.keys()))
+        self.assertEqual(de_labels["dashboard_title"], "Entscheidungs-Dashboard")
+        self.assertEqual(de_labels["stop_loss_label"], "Stop-Loss")
+        self.assertEqual(de_labels["not_investment_advice"], "KI-generiert, nur zu Referenzzwecken. Keine Anlageberatung.")
+
+    def test_german_sentiment_label_bands(self) -> None:
+        self.assertEqual(get_sentiment_label(80, "de"), "Sehr Bullisch")
+        self.assertEqual(get_sentiment_label(60, "de"), "Bullisch")
+        self.assertEqual(get_sentiment_label(40, "de"), "Neutral")
+        self.assertEqual(get_sentiment_label(20, "de"), "Bärisch")
+        self.assertEqual(get_sentiment_label(0, "de"), "Sehr Bärisch")
+
+    def test_german_operation_advice_and_trend(self) -> None:
+        self.assertEqual(localize_operation_advice("买入", "de"), "Kaufen")
+        self.assertEqual(localize_operation_advice("strong sell", "de"), "Starker Verkauf")
+        self.assertEqual(localize_trend_prediction("bullish", "de"), "Bullisch")
+        self.assertEqual(localize_trend_prediction("震荡", "de"), "Seitwärts")
+
+    def test_german_localized_stock_name_placeholder(self) -> None:
+        self.assertEqual(
+            get_localized_stock_name("股票AAPL", "AAPL", "de"),
+            "Unbestätigte Aktie",
+        )
+
+    def test_german_strategy_skill_and_conflict(self) -> None:
+        self.assertEqual(localize_strategy_skill("箱体震荡", "de"), "Box-Konsolidierung")
+        conflict = localize_strategy_conflict_description("directional_opposition", "de")
+        self.assertIn("bullisch", conflict)
+        self.assertIn("bärisch", conflict)
+
+    def test_german_strategy_synthesis_summary(self) -> None:
+        payload = {
+            "summary_params": {"opinion_count": 3, "invalid_opinion_count": 0},
+            "final_signal": "买入",
+            "consensus_level": "高",
+            "conflict_severity": "无",
+            "conflict_count": 0,
+            "supporting_skills": [],
+            "opposing_skills": [],
+        }
+        summary = localize_strategy_synthesis_summary(payload, "de")
+        self.assertIn("Synthese aus 3 Strategien", summary)
+        self.assertIn("Kaufen", summary)
+
+    def test_existing_languages_unchanged(self) -> None:
+        self.assertEqual(get_sentiment_label(80, "en"), "Very Bullish")
+        self.assertEqual(get_sentiment_label(40, "zh"), "中性")
+        self.assertEqual(get_sentiment_label(80, "ko"), "매우 낙관")
+
+    def test_german_advice_canonicalizes_to_decision_type(self) -> None:
+        self.assertEqual(infer_decision_type_from_advice("Kaufen"), "buy")
+        self.assertEqual(infer_decision_type_from_advice("Verkaufen"), "sell")
+        self.assertEqual(infer_decision_type_from_advice("Halten"), "hold")
+        self.assertEqual(infer_decision_type_from_advice("Beobachten"), "hold")
+
+    def test_german_advice_resolves_signal_level(self) -> None:
+        self.assertEqual(get_signal_level("Kaufen", 72, "de"), ("Kaufen", "🟢", "buy"))
+        self.assertEqual(get_signal_level("Verkaufen", 30, "de"), ("Verkaufen", "🔴", "sell"))
+
+    def test_german_values_canonicalize_back_for_other_languages(self) -> None:
+        self.assertEqual(localize_trend_prediction("Bullisch", "en"), "Bullish")
+        self.assertEqual(localize_operation_advice("Kaufen", "zh"), "买入")
 
 
 class KoreanReportLanguageTestCase(unittest.TestCase):

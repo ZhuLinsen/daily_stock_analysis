@@ -1,4 +1,4 @@
-import type { UiTextKey } from '../../i18n/uiText';
+import type { UiLanguage, UiTextKey } from '../../i18n/uiText';
 import type {
   RunFlowEdgeKind,
   RunFlowEventSeverity,
@@ -102,7 +102,7 @@ export const formatDuration = (value: number | null | undefined, t: RunFlowT): s
 
 export const formatDateTime = (
   value: string | null | undefined,
-  language: 'zh' | 'en',
+  language: UiLanguage,
   t: RunFlowT,
 ): string => {
   if (!value) {
@@ -112,7 +112,8 @@ export const formatDateTime = (
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return date.toLocaleString(language === 'en' ? 'en-US' : 'zh-CN');
+  const locale = language === 'en' ? 'en-US' : language === 'de' ? 'de-DE' : 'zh-CN';
+  return date.toLocaleString(locale);
 };
 
 export const compactText = (value: string | null | undefined, maxLength = 64): string => {

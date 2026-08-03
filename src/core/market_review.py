@@ -136,6 +136,17 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "kr_title": "# 한국 시황 리뷰",
             "separator": "> 다음 시장 시황 리뷰",
         }
+    if normalized == "de":
+        return {
+            "root_title": "# 🎯 Marktüberblick",
+            "push_title": "🎯 Marktüberblick",
+            "cn_title": "# A-Aktien-Marktüberblick",
+            "us_title": "# US-Marktüberblick",
+            "hk_title": "# HK-Marktüberblick",
+            "jp_title": "# Japan-Marktüberblick",
+            "kr_title": "# Korea-Marktüberblick",
+            "separator": "\n\n> Nächster Marktüberblick folgt",
+        }
     return {
         "root_title": "# 🎯 大盘复盘",
         "push_title": "🎯 大盘复盘",
@@ -663,7 +674,12 @@ def _render_sector_payload_markdown_block(
     if not sector_block:
         return ""
     language = normalize_report_language(payload.get("language"))
-    title = "Sector Highlights" if language == "en" else "板块主线"
+    if language == "en":
+        title = "Sector Highlights"
+    elif language == "de":
+        title = "Sektor-Highlights"
+    else:
+        title = "板块主线"
     heading = f"{title_prefix} / {title}" if title_prefix else title
     return f"### {heading}\n\n{sector_block}".strip()
 
@@ -741,6 +757,8 @@ def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
     if top:
         if language == "en":
             lines.extend(["#### Leading Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
+        elif language == "de":
+            lines.extend(["#### Führende Sektoren", "| Rang | Sektor | Veränderung |", "|------|--------|-------------|"])
         else:
             lines.extend(["#### 领涨板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
         for rank, sector in enumerate(top[:5], 1):
@@ -753,6 +771,8 @@ def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
             lines.append("")
         if language == "en":
             lines.extend(["#### Lagging Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
+        elif language == "de":
+            lines.extend(["#### Schwache Sektoren", "| Rang | Sektor | Veränderung |", "|------|--------|-------------|"])
         else:
             lines.extend(["#### 领跌板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
         for rank, sector in enumerate(bottom[:5], 1):
@@ -802,6 +822,10 @@ def _persist_market_review_history(
             stock_name = "시황 리뷰"
             operation_advice = "리뷰 보기"
             trend_prediction = "시황 리뷰"
+        elif report_language == "de":
+            stock_name = "Marktüberblick"
+            operation_advice = "Überblick ansehen"
+            trend_prediction = "Marktüberblick"
         else:
             stock_name = "大盘复盘"
             operation_advice = "查看复盘"

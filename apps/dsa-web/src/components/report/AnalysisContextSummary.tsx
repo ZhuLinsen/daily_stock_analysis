@@ -60,6 +60,14 @@ const BLOCK_LABELS: Record<ReportLanguage, Record<string, string>> = {
     fundamentals: '펀더멘털',
     chip: '매물대',
   },
+  de: {
+    quote: 'Kurs',
+    daily_bars: 'Tageskerzen',
+    technical: 'Technik',
+    news: 'Nachrichten',
+    fundamentals: 'Fundamentaldaten',
+    chip: 'Positionsverteilung',
+  },
 };
 
 const TEXT = {
@@ -159,6 +167,38 @@ const TEXT = {
       fetch_failed: '수집 실패',
     },
   },
+  de: {
+    eyebrow: 'DATENKONTEXT',
+    title: 'Eingabeblöcke',
+    counts: 'Statuszahlen',
+    source: 'Quelle',
+    sourceUnavailable: 'Eingabequelle nicht erfasst',
+    warnings: 'Warnungen',
+    missingReasons: 'Details',
+    diagnosticCode: 'Diagnosecode',
+    inputScope: 'Analyseeingaben',
+    evidenceScope: 'Zeigt nur Eingaben dieses LLM-Laufs, nicht den Erfolg der Datenquelle',
+    qualityScore: 'Qualität',
+    limitations: 'Datenlimits',
+    newsResultCount: 'Nachrichtenergebnisse',
+    triggerSource: 'Auslöser',
+    qualityLevel: {
+      good: 'Gut',
+      usable: 'Verwendbar',
+      limited: 'Eingeschränkt',
+      poor: 'Schwach',
+    },
+    status: {
+      available: 'Verfügbar',
+      missing: 'Fehlt',
+      not_supported: 'Nicht unterstützt',
+      fallback: 'Fallback',
+      stale: 'Veraltet',
+      estimated: 'Geschätzt',
+      partial: 'Teilweise',
+      fetch_failed: 'Abruf fehlgeschlagen',
+    },
+  },
 } as const;
 
 const MISSING_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
@@ -207,12 +247,28 @@ const MISSING_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
     today_missing: '당일 데이터가 포함되지 않아 장중 판단이 제한될 수 있습니다. 실시간 시세와 대조한 후 다시 분석하세요',
     yesterday_missing: '전일 데이터가 포함되지 않아 일봉 비교가 불완전할 수 있습니다. 소스 갱신 후 다시 분석하세요',
   },
+  de: {
+    daily_bars_missing: 'Tageskerzen waren nicht enthalten, daher können technische Indikatoren unvollständig sein; prüfen Sie die Tagesdatenquelle, das Netzwerk oder Limits und führen Sie die Analyse erneut aus',
+    news_context_missing: 'Nachrichten waren in diesem LLM-Lauf nicht enthalten, daher verwendete die Schlussfolgerung keinen Nachrichtenkontext; verwandte Nachrichten auf der Berichtsseite werden separat geladen und bedeuten nicht, dass sie in dieser Analyse verwendet wurden. Prüfen Sie die Suchkonfiguration, das Netzwerk oder Limits und führen Sie die Analyse erneut aus',
+    realtime_quote_missing: 'Realtime-Kurse waren nicht enthalten, daher können preisbezogene Schlussfolgerungen eingeschränkt sein; prüfen Sie die Kursquelle, das Netzwerk oder Limits und führen Sie die Analyse erneut aus',
+    trend_result_missing: 'Die technische Analyse war nicht enthalten, daher kann die technische Einschätzung unvollständig sein; prüfen Sie die Vollständigkeit der Tageskerzen und führen Sie die Analyse erneut aus',
+    fundamental_context_missing: 'Fundamentaldaten waren nicht enthalten, daher verwendete die Schlussfolgerung keine Fundamentaldaten; prüfen Sie die Datenquelle, das Netzwerk oder Limits und führen Sie die Analyse erneut aus',
+    fundamental_pipeline_failed: 'Der Abruf der Fundamentaldaten ist fehlgeschlagen und diese Analyse hat keine Fundamentaldaten verwendet; prüfen Sie die Datenquellenkonfiguration, das Netzwerk oder Limits und führen Sie die Analyse erneut aus',
+    fundamentals_not_supported: 'Fundamentaldaten werden für diesen Markt oder dieses Wertpapier nicht unterstützt und wurden nicht verwendet; prüfen Sie dies mit anderen Indikatoren',
+    fundamental_coverage_missing: 'Die Fundamentaldaten-Abdeckung war nicht enthalten, daher können einige Finanzinformationen fehlen; prüfen Sie die Quellenabdeckung und führen Sie die Analyse erneut aus',
+    fundamental_source_chain_missing: 'Metadaten zur Quellenkette der Fundamentaldaten wurden nicht erfasst; verwenden Sie den aktuellen Status, um zu bestimmen, ob Fundamentaldaten enthalten waren, und prüfen Sie Quelle und Warnungen für die Herkunft',
+    chip_distribution_missing: 'Positionsverteilung war nicht enthalten und wurde in der Schlussfolgerung nicht verwendet; bestätigen Sie die Unterstützung für diesen Markt oder dieses Wertpapier',
+    chip_not_supported: 'Positionsdaten werden für diesen Markt oder dieses Wertpapier nicht unterstützt und wurden nicht verwendet; prüfen Sie dies mit anderen Indikatoren',
+    today_missing: 'Die heutigen Daten waren nicht enthalten, daher können Intraday-Schlussfolgerungen eingeschränkt sein; prüfen Sie die Realtime-Kurse und führen Sie die Analyse erneut aus',
+    yesterday_missing: 'Die gestrigen Daten waren nicht enthalten, daher können Tagesvergleiche unvollständig sein; warten Sie auf die Aktualisierung der Quelle und führen Sie die Analyse erneut aus',
+  },
 };
 
 const UNKNOWN_REASON_DETAILS: Record<ReportLanguage, string> = {
   zh: '未记录明确原因；请结合状态、来源和告警排查',
   en: 'No specific reason was recorded; review the status, source, and warnings',
   ko: '명확한 원인이 기록되지 않았습니다. 상태, 출처 및 경고를 함께 확인하세요',
+  de: 'Es wurde kein spezifischer Grund erfasst; prüfen Sie Status, Quelle und Warnungen',
 };
 
 const STATUS_FALLBACK_GUIDANCE: Record<
@@ -245,6 +301,15 @@ const STATUS_FALLBACK_GUIDANCE: Record<
     stale: '이번 분석은 최신이 아닐 수 있는 데이터를 사용했습니다. 갱신 시각을 확인하고 필요하면 다시 분석하세요',
     estimated: '이번 분석은 추정 데이터를 사용했습니다. 원본 데이터와 결과를 교차 확인하세요',
     partial: '데이터의 일부만 포함되어 관련 결론이 불완전할 수 있습니다. 경고와 데이터 소스를 확인한 후 다시 분석하세요',
+  },
+  de: {
+    missing: 'Daten waren nicht enthalten, daher können verwandte Schlussfolgerungen unvollständig sein; prüfen Sie Datenquelle, Konfiguration oder Netzwerk und führen Sie die Analyse erneut aus',
+    fetch_failed: 'Der Datenabruf ist fehlgeschlagen und diese Analyse hat die Daten nicht verwendet; prüfen Sie Quelle, Netzwerk oder Limits und führen Sie die Analyse erneut aus',
+    not_supported: 'Diese Daten werden für den aktuellen Markt oder das Wertpapier nicht unterstützt und wurden nicht verwendet; prüfen Sie dies mit anderen Indikatoren',
+    fallback: 'Diese Analyse hat einen Fallback-Datenpfad verwendet; prüfen Sie das Ergebnis anhand von Quelle und Warnungen',
+    stale: 'Diese Analyse hat Daten verwendet, die möglicherweise nicht aktuell sind; prüfen Sie den Zeitstempel und führen Sie die Analyse bei Bedarf erneut aus',
+    estimated: 'Diese Analyse hat geschätzte Daten verwendet; prüfen Sie das Ergebnis gegen die Quelldaten',
+    partial: 'Nur ein Teil der Daten war enthalten, daher können verwandte Schlussfolgerungen unvollständig sein; prüfen Sie Warnungen und Datenquelle und führen Sie die Analyse erneut aus',
   },
 };
 

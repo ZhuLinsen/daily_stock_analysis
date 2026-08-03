@@ -22,6 +22,16 @@ const categoryTitleMap: Record<UiLanguage, Record<SystemConfigCategory, string>>
     backtest: 'Backtest',
     uncategorized: 'Other',
   },
+  de: {
+    base: 'Basis-Einstellungen',
+    data_source: 'Datenquellen',
+    ai_model: 'KI-Modelle',
+    notification: 'Benachrichtigungen',
+    system: 'System',
+    agent: 'Agent',
+    backtest: 'Backtest',
+    uncategorized: 'Sonstiges',
+  },
 };
 
 const categoryDescriptionMap: Record<UiLanguage, Partial<Record<SystemConfigCategory, string>>> = {
@@ -44,6 +54,16 @@ const categoryDescriptionMap: Record<UiLanguage, Partial<Record<SystemConfigCate
     agent: 'Manage Agent mode, strategies, and multi-agent orchestration.',
     backtest: 'Manage backtest switches, evaluation windows, and engine parameters.',
     uncategorized: 'Other uncategorized settings.',
+  },
+  de: {
+    base: 'Beobachtungslisten und Basis-Runtime-Parameter verwalten.',
+    data_source: 'Marktdatenquellen und Prioritätsstrategien verwalten.',
+    ai_model: 'Modell-Dienste, Modellnamen und Inferenzparameter verwalten.',
+    notification: 'Bots, Webhooks und Nachrichtenzustellung verwalten.',
+    system: 'Planung, Protokollierung, Ports und Systemparameter verwalten.',
+    agent: 'Agent-Modus, Strategien und Multi-Agent-Orchestrierung verwalten.',
+    backtest: 'Backtest-Schalter, Bewertungsfenster und Engine-Parameter verwalten.',
+    uncategorized: 'Andere nicht kategorisierte Einstellungen.',
   },
 };
 
@@ -401,6 +421,7 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
     zh: '中文',
     en: '英文',
     ko: '韩文',
+    de: '德语',
     chinese: '中文',
     english: '英文',
   },
@@ -485,6 +506,7 @@ const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
     zh: 'Chinese',
     en: 'English',
     ko: 'Korean',
+    de: 'German',
     chinese: 'Chinese',
     english: 'English',
   },
@@ -591,7 +613,7 @@ export function getFieldOptionLabel(
   fallbackLabel?: string,
   locale: UiLanguage = 'zh',
 ): string {
-  const map = locale === 'en' ? fieldOptionLabelMapEn[key] : fieldOptionLabelMap[key];
+  const map = locale === 'en' || locale === 'de' ? fieldOptionLabelMapEn[key] : fieldOptionLabelMap[key];
   if (!map) {
     return fallbackLabel ?? value;
   }

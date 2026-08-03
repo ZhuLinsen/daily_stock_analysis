@@ -129,6 +129,40 @@ const TEXT = {
       unknown: '알 수 없음',
     },
   },
+  de: {
+    eyebrow: 'MARKTPOSITION',
+    title: 'Themen und Aktienposition',
+    marketLayer: 'Markt-Themenebene',
+    stockLayer: 'Aktienpositionsebene',
+    activeThemes: 'Aktive Themen',
+    leadingConcepts: 'Führende Konzepte',
+    leadingIndustries: 'Führende Branchen',
+    primaryTheme: 'Hauptthema',
+    themePhase: 'Themenphase',
+    stockRole: 'Aktienrolle',
+    riskTags: 'Risiko-Tags',
+    dataQuality: 'Datenqualität',
+    missingFields: 'Fehlende Belege',
+    empty: 'Keine',
+    status: {
+      ok: 'Verfügbar',
+      partial: 'Teilweise',
+      unknown: 'Unbekannt',
+      not_supported: 'Nicht unterstützt',
+    },
+    phase: {
+      warming: 'Erwärmung',
+      accelerating: 'Beschleunigung',
+      cooling: 'Abkühlung',
+      unknown: 'Unbekannt',
+    },
+    role: {
+      leader: 'Führer',
+      follower: 'Folger',
+      edge: 'Rand',
+      unknown: 'Unbekannt',
+    },
+  },
 } as const;
 
 const RISK_TAG_TEXT = {
@@ -146,6 +180,11 @@ const RISK_TAG_TEXT = {
     theme_data_partial: '테마 데이터가 불완전합니다',
     stock_theme_evidence_partial: '종목 보드가 테마 랭킹과 일치하지 않았습니다',
     board_membership_missing: '종목 보드 근거가 없어 테마 위치를 판단할 수 없습니다',
+  },
+  de: {
+    theme_data_partial: 'Markt-Themendaten sind unvollständig',
+    stock_theme_evidence_partial: 'Aktien-Board entsprach nicht den Themenrankings',
+    board_membership_missing: 'Belege zur Board-Zugehörigkeit der Aktie fehlen',
   },
 } as const;
 

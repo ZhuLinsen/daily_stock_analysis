@@ -161,10 +161,11 @@ class MarketAnalyzer:
         )
 
     def _get_review_language(self) -> str:
-        # Structural/template language. Korean reuses the English scaffolding;
-        # the Korean output directive is applied in the prompt builder.
+        # Structural/template language. Korean and German reuse the English
+        # scaffolding; the target-language output directive is applied in the
+        # prompt builder.
         language = self._get_output_language()
-        return "en" if language == "ko" else language
+        return "en" if language in ("ko", "de") else language
 
     def _get_template_review_language(self) -> str:
         return self._get_review_language()

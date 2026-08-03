@@ -17,7 +17,7 @@
 
 [**Produktvorschau**](#-produktvorschau) · [**Funktionsübersicht**](#-funktionsübersicht) · [**Schnellstart**](#-schnellstart) · [**Push-Beispiele**](#-push-beispiele) · [**Dokumentationszentrum**](docs/INDEX.md) · [**Vollständiger Leitfaden**](docs/full-guide.md)
 
-Chinesisch | [Englisch](docs/README_EN.md) | [Traditionelles Chinesisch](docs/README_CHT.md)
+Deutsch | [Englisch](docs/README_EN.md) | [Deutsches README](docs/README_DE.md)
 
 </div>
 

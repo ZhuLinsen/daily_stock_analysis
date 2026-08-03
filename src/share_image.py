@@ -350,6 +350,8 @@ def _poster_label(language: str, label: str) -> str:
         return label.replace("观察 ", "Watch ", 1)
     if language == "ko" and label.startswith("观察 "):
         return label.replace("观察 ", "관찰 ", 1)
+    if language == "de" and label.startswith("观察 "):
+        return label.replace("观察 ", "Beobachten ", 1)
     return label
 
 
@@ -1247,7 +1249,7 @@ def _stock_data_from_payload(
 def _market_title(markdown_text: str) -> str:
     first_title = next((title for title, _body, _level in _extract_sections(markdown_text)), "")
     language = _poster_language(markdown_text)
-    if language in {"en", "ko"} and _is_market_review_title(first_title):
+    if language in {"en", "ko", "de"} and _is_market_review_title(first_title):
         return first_title
     market = _market_label(first_title)
     if market:

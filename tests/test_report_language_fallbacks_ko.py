@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Korean (ko) deterministic fallback coverage for the report-language sweep (#1614)."""
+"""Korean (ko) / German (de) deterministic fallback coverage for the report-language sweep (#1614)."""
 
 import unittest
 
@@ -22,6 +22,25 @@ class KoreanFallbackTextTestCase(unittest.TestCase):
         self.assertEqual(text["push_title"], "🎯 시황 리뷰")
         self.assertIn("시황 리뷰", text["root_title"])
         self.assertIn("한국", text["kr_title"])
+
+    def test_market_review_titles_unchanged_for_en_zh(self) -> None:
+        self.assertEqual(_get_market_review_text("en")["push_title"], "🎯 Market Review")
+        self.assertEqual(_get_market_review_text("zh")["push_title"], "🎯 大盘复盘")
+
+
+class GermanFallbackTextTestCase(unittest.TestCase):
+    def test_placeholder_unknown_no_data_have_german(self) -> None:
+        self.assertEqual(get_placeholder_text("de"), "Noch offen")
+        self.assertEqual(get_unknown_text("de"), "Unbekannt")
+        self.assertEqual(get_no_data_text("de"), "Keine Daten")
+
+    def test_market_review_titles_german(self) -> None:
+        text = _get_market_review_text("de")
+        self.assertEqual(text["push_title"], "🎯 Marktüberblick")
+        self.assertIn("Marktüberblick", text["root_title"])
+        self.assertIn("Korea", text["kr_title"])
+        self.assertIn("A-Aktien", text["cn_title"])
+        self.assertIn("US-Marktüberblick", text["us_title"])
 
     def test_market_review_titles_unchanged_for_en_zh(self) -> None:
         self.assertEqual(_get_market_review_text("en")["push_title"], "🎯 Market Review")

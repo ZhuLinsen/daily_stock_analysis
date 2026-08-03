@@ -2418,8 +2418,1237 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
 };
 
+const settingsHelpDe: SettingsHelpMap = {
+  'settings.base.STOCK_LIST': {
+    title: 'Beobachtungsliste',
+    summary: 'Legt die Aktiencodes fest, die für die Analyse benötigt werden. Grundlage für manuelle Analysen, geplante Aufgaben und Benachrichtigungsberichte.',
+    usage: 'Für mehrere Aktiencodes wird ein englischer Komma empfohlen. Beim Einfügen aus Tabellen oder Chats werden auch chinesische Kommas, Aufzählungszeichen, Semikolons, Leerzeichen und Zeilenumbrüche erkannt und beim Speichern zu englischen Kommas normalisiert.',
+    valueNotes: [
+      'Im Zeitplan-Modus wird die gespeicherte STOCK_LIST vor jeder Ausführung erneut gelesen.',
+      'Ein vorübergehend über die Kommandozeile übergebenes --stocks betrifft nur diesen manuellen Lauf und sperrt spätere geplante Aufgaben nicht.',
+      'STOCK_GROUP_N in der E-Mail-Gruppierung sollte eine Teilmenge von STOCK_LIST sein; es betrifft nur die E-Mail-Empfänger, nicht den Analyseumfang.',
+    ],
+    impact: [
+      'Beeinflusst die Hauptanalyse, den Einzelaktienumfang im Marktbericht, die Benachrichtigungsinhalte und den Verlauf der Berichte.',
+    ],
+    notes: [
+      'Die gespeicherte STOCK_LIST wird einheitlich mit englischen Kommas geschrieben.',
+      'Nach dem Speichern kann die Konfiguration von späteren Aufgaben gelesen werden.',
+    ],
+  },
+  'settings.ai_model.GENERATION_BACKEND': {
+    title: 'Analyse-Generierungsmethode',
+    showFieldKey: false,
+    summary: 'Legt fest, auf welche Weise das System Einzelaktienanalysen, Marktrückblicke und normale Textantworten generiert.',
+    usage: 'Normalerweise „Standardmodell-Konfiguration“ beibehalten. Wählen Sie eine lokale CLI-Generierungsmethode nur, wenn die entsprechende CLI auf diesem Rechner installiert und angemeldet ist und Sie ihr die Verarbeitung von Analyseinhalten zutrauen (experimentell).',
+    valueNotes: [
+      'Lokale CLI-Generierung ist ein lokales Kommandozeilenprogramm und kein Offline-Modell. Der dahinterstehende Dienst kann Aktiencodes, Nachrichten, Positionskontext, Analyseanfragen und Berichtsentwürfe verarbeiten.',
+      'Docker, Cloud-Server und CI verfügen nicht automatisch über den lokalen Anmeldestatus. DSA liest keine Codex/Claude/OpenCode-Anmeldeinformationsdateien, aber die jeweilige CLI selbst kann ihren Anmeldestatus verwenden.',
+    ],
+    impact: ['Beeinflusst normale Analysen, Marktrückblicke und Textgenerierungseinstiege; ändert nicht die Regeln der Aktienassistenten-Toolausführung.'],
+    notes: [
+      'Um zum Standardverhalten zurückzukehren, wählen Sie „Standardmodell-Konfiguration“ und speichern Sie die Konfiguration.',
+      'Die lokale CLI-Generierung ist derzeit experimentell. Wenn die Ausgabe instabil ist oder häufig fehlschlägt, stellen Sie wieder auf die Standardmodell-Konfiguration um.',
+      'Die Standardmodell-Konfiguration verwendet weiterhin die vorhandenen API-Keys, Modellkanäle und Ersatzmodell-Einstellungen.',
+    ],
+    examples: [],
+  },
+  'settings.ai_model.GENERATION_FALLBACK_BACKEND': {
+    title: 'Ersatz-Generierungsmethode',
+    showFieldKey: false,
+    summary: 'Legt fest, ob bei einem Fehlschlag der lokalen CLI-Generierung direkt ein Fehler gemeldet oder die Standardmodell-Konfiguration versucht wird.',
+    usage: '„Deaktiviert“ bedeutet: Bei Fehlschlag wird ein Fehler gemeldet. „Standardmodell-Konfiguration“ bedeutet: Das bereits konfigurierte normale Modell wird versucht.',
+    valueNotes: [
+      'Wenn Sie nur ein Ersatzmodell für den Fall eines Fehlers des Hauptmodells einrichten möchten, verwenden Sie „Ersatzmodelle“, nicht dieses Feld.',
+      'Wenn die Hauptgenerierungsmethode bereits die Standardmodell-Konfiguration ist, hat dieses Feld keine zusätzliche Wirkung.',
+    ],
+    impact: ['Ändert nicht die Reihenfolge der vorhandenen Ersatzmodelle und auch nicht die Modellkonfiguration im Kanal-Editor.'],
+    notes: [
+      'Wählen Sie „Deaktiviert“, wenn Fehler der lokalen CLI sofort sichtbar sein sollen; wählen Sie „Standardmodell-Konfiguration“, wenn weiterhin Cloud-Modelle versucht werden sollen.',
+    ],
+    examples: [],
+  },
+  'settings.ai_model.OPENCODE_CLI_MODEL': {
+    title: 'OpenCode-CLI-Modell',
+    showFieldKey: true,
+    summary: 'Optional: Legt den Modellnamen fest, den DSA bei OpenCode run über --model übergibt.',
+    usage: 'Wirkt nur, wenn „Analyse-Generierungsmethode“ auf OpenCode CLI gesetzt ist. Wenn leer, übergibt DSA kein --model und verwendet die lokale Standardmodell-Konfiguration von OpenCode.',
+    valueNotes: [
+      'Verfügbarkeit und Authentifizierung des Modells regelt die lokale OpenCode-Konfiguration.',
+      'Der Wert wird als einzelnes argv-Argument an OpenCode übergeben und darf keine Leerzeichen oder Shell-Metazeichen enthalten.',
+    ],
+    impact: ['Beeinflusst OpenCode-CLI-Aufrufe für normale Analysen, Marktrückblicke und Textgenerierung; nicht den Aktienassistenten.'],
+    examples: ['OPENCODE_CLI_MODEL=provider/model'],
+  },
+  'settings.ai_model.GENERATION_BACKEND_TIMEOUT_SECONDS': {
+    title: 'Generierungs-Timeout (Sekunden)',
+    summary: 'Begrenzt, wie lange eine Modellgenerierung maximal warten darf.',
+    usage: 'Standard 300 Sekunden, hauptsächlich für Kommandozeilen-Generierungsmethoden wie lokale CLI.',
+    valueNotes: ['Nach dem Timeout wird die Generierung gestoppt und ein klarer Timeout-Fehler im Protokoll erfasst.'],
+  },
+  'settings.ai_model.GENERATION_BACKEND_MAX_OUTPUT_BYTES': {
+    title: 'Maximale Ausgabegröße (Bytes)',
+    summary: 'Begrenzt die Ausgabegröße, die eine lokale Kommandozeilengenerierung lesen darf.',
+    usage: 'Standard 1048576 Bytes. Bei Überschreitung wird die Analyse gestoppt und ein „Ausgabe zu groß“-Fehler erfasst.',
+    valueNotes: ['Das Protokoll zeigt nur redigierte Auszüge, keine vollständigen Analyseinhalte, Umgebungsvariablen, Geheimnisse oder lokalen Pfade.'],
+  },
+  'settings.ai_model.GENERATION_BACKEND_MAX_CONCURRENCY': {
+    title: 'Maximale Parallelität der Modellgenerierung',
+    summary: 'Begrenzt die Anzahl gleichzeitig laufender Modellgenerierungsaufgaben.',
+    usage: 'Standard 1. Bei lokaler CLI-Generierung wird die tatsächliche Parallelität zusätzlich durch „Maximale Parallelität lokaler Kommandozeile“ begrenzt.',
+    valueNotes: ['Bei Verwendung der Standardmodell-Konfiguration ändert dieses Feld nicht die Anzahl der Analyse-Threads.'],
+  },
+  'settings.ai_model.LOCAL_CLI_BACKEND_MAX_CONCURRENCY': {
+    title: 'Maximale Parallelität lokaler Kommandozeile',
+    summary: 'Begrenzt, wie viele lokale Kommandozeilen-Generierungsprozesse gleichzeitig gestartet werden.',
+    usage: 'Standard 1, um zu vermeiden, dass mehrere lokale CLI-Prozesse gleichzeitig gestartet werden und den Rechner verlangsamen oder sich gegenseitig stören.',
+    valueNotes: ['Die endgültige Parallelität überschreitet nie die „Maximale Parallelität der Modellgenerierung“.'],
+  },
+  'settings.ai_model.LITELLM_MODEL': {
+    title: 'Hauptmodell',
+    summary: 'Legt das Standard-LLM-Modell für den normalen Analyseablauf fest.',
+    usage: 'Empfohlen wird das Format provider/model, z. B. deepseek/deepseek-v4-flash, gemini/gemini-3.1-pro-preview oder ollama/qwen3:8b.',
+    valueNotes: [
+      'Die Systempriorität lautet: LITELLM_CONFIG > LLM_CHANNELS > Legacy-Provider-Keys.',
+      'Wenn leer, versucht das System, das Modell anhand der konfigurierten API-Keys oder Kanäle automatisch abzuleiten.',
+      'Agenten können über AGENT_LITELLM_MODEL ein eigenes Modell festlegen; wenn leer, wird das Hauptmodell übernommen.',
+    ],
+    impact: [
+      'Beeinflusst normale Einzelaktienanalysen, Marktrückblicke, Berichtsgenerierung und Agent-Aufrufe ohne eigenes Modell.',
+    ],
+    notes: [
+      'Ohne Provider-Präfix kann LiteLLM möglicherweise nicht bestimmen, welcher Satz an API-Keys verwendet werden soll.',
+      'Ollama-Lokalmodelle sollten mit OLLAMA_API_BASE oder einem Ollama-Kanal verwendet werden, nicht fälschlich mit OPENAI_BASE_URL.',
+    ],
+  },
+  'settings.ai_model.LLM_CHANNELS': {
+    title: 'LLM-Kanalliste',
+    summary: 'Deklariert mehrere Modellkanäle für mehrere Provider, Keys, Ersatzmodelle und die visuelle Kanalverwaltung.',
+    usage: 'Kommagetrennte Kanalnamen angeben, z. B. deepseek,aihubmix; für jeden Kanal dann LLM_<NAME>_BASE_URL, LLM_<NAME>_API_KEY(S), LLM_<NAME>_MODELS usw. konfigurieren.',
+    valueNotes: [
+      'Nach Aktivierung des Kanalmodus liest die Laufzeit bei gleicher Ebene zuerst die Kanal-Konfiguration.',
+      'In Docker oder GitHub Actions explizit injizierte Umgebungsvariablen überschreiben die über die Web-Einstellungsseite geschriebene .env.',
+      'Beim Speichern aktualisiert der Kanal-Editor nur die Keys dieser Übergabe und migriert nicht stillschweigend die gesamte alte Konfiguration.',
+    ],
+    impact: [
+      'Beeinflusst die verfügbaren Quellen für Haupt-, Agent-, Fallback- und Vision-Modelle.',
+    ],
+    notes: [
+      'Kombinieren Sie nicht minimale Legacy-Keys und Channels in der Erwartung, dass beide gleichzeitig wirken.',
+      'Benutzerdefinierte Kanalnamen benötigen in GitHub Actions meist noch eine explizite Zuordnung der Umgebungsvariablen im Workflow.',
+    ],
+  },
+  'settings.ai_model.AGENT_LITELLM_MODEL': {
+    title: 'Agent-Hauptmodell',
+    summary: 'Legt ein eigenes Modell für Agent-Ketten wie den Aktien- oder Strategie-Assistenten fest.',
+    usage: 'Format provider/model verwenden. Wenn leer, wird das normale Hauptmodell übernommen; ein nackter Modellname wird aus Kompatibilitätsgründen zu openai/<model> normalisiert. Bei Auswahl des lokalen Codex-Agenten bleibt der Wert erhalten, wird aber vom Codex-Aktienassistenten nicht verwendet.',
+    valueNotes: [
+      'Geeignet, um Agenten ein Modell mit stärkerer Reasoning-Fähigkeit oder längerem Kontext zu geben.',
+      'Dieses Feld betrifft nur die Agent-Kette, nicht das Hauptmodell der normalen Einzelaktienanalyse.',
+    ],
+    impact: ['Beeinflusst den Aktienassistenten mit Standardmodell, die Strategieauswahl und zugehörige Tool-Aufrufe; nicht den lokalen Codex-Agenten.'],
+    notes: ['Bitte bestätigen Sie, dass das Modell über aktivierte Kanäle, YAML-Routing oder Legacy-Provider-Keys erreichbar ist.'],
+  },
+  'settings.ai_model.LITELLM_FALLBACK_MODELS': {
+    title: 'Ersatzmodelle',
+    summary: 'Liste der Ersatzmodelle, die bei Fehlern des Hauptmodells der Reihe nach versucht werden.',
+    usage: 'Mehrere Modelle mit englischen Kommas trennen; das Format provider/model wird empfohlen.',
+    valueNotes: [
+      'Ersatzmodelle werden nur verwendet, wenn das Hauptmodell fehlschlägt, ein Timeout auftritt oder die Antwort nicht nutzbar ist.',
+      'Beim Speichern bereinigt der Kanal-Editor Referenzen auf nicht mehr erreichbare verwaltete Provider-Modelle.',
+    ],
+    impact: ['Erhöht die Verfügbarkeit bei LLM-Fehlern, kann aber Kosten und Antwortunterschiede über Provider hinweg erhöhen.'],
+    notes: ['Fügen Sie das Hauptmodell nicht doppelt in die Ersatzliste ein.'],
+  },
+  'settings.ai_model.LITELLM_CONFIG': {
+    title: 'Erweitertes Modell-Routing-YAML',
+    summary: 'Gibt die native LiteLLM-YAML-Routingdatei an, geeignet für komplexes Routing, Rate Limits und Expertenkonfiguration.',
+    usage: 'Pfad zu einer YAML-Datei angeben, die das Projekt erreichen kann, z. B. ./litellm_config.yaml.',
+    valueNotes: [
+      'Wenn sie parsebar ist und model_list enthält, hat sie Vorrang vor LLM_CHANNELS und Legacy-Provider-Keys.',
+      'Der Web-Kanal-Editor ändert die YAML-Datei selbst nicht.',
+    ],
+    impact: ['Beeinflusst Modellauswahl, Routing, Fallback und die Deklaration verfügbarer Modelle.'],
+    notes: ['Wenn die YAML-Konfiguration ungültig wird, fällt das System auf den Kanal- oder Legacy-Konfigurationspfad zurück.'],
+  },
+  'settings.ai_model.LLM_TEMPERATURE': {
+    title: 'Temperature',
+    summary: 'Steuert die Zufälligkeit der Modellausgabe.',
+    usage: 'Wertebereich 0,0 bis 2,0; niedriger = stabiler, höher = divergenter.',
+    valueNotes: [
+      '0 eignet sich für stabile strukturierte Ausgaben.',
+      '0,7 ist der allgemeine Standardwert und verbindet Stabilität mit Ausdrucksflexibilität.',
+    ],
+    impact: ['Beeinflusst Analysetexte, Berichtston und die Stabilität strukturierter Ausgaben.'],
+    notes: ['Verschiedene Provider können unterschiedliche tatsächliche Unterstützungsbereiche für temperature haben.'],
+  },
+  'settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED': {
+    title: 'Prompt-Cache-Telemetrie',
+    summary: 'Erfasst die vom Provider gemeldete Prompt-Cache-Nutzung und normalisierte Diagnose.',
+    usage: 'Standardmäßig aktiviert. Nach dem Deaktivieren werden provider raw usage JSON, normalisierte Cache-Felder und Cache-Entscheidungsdiagnosen nicht persistent gespeichert; die grundlegende Token-Nutzung bleibt kompatibel.',
+    valueNotes: ['Dieser Schalter steuert keinen impliziten Provider-Cache und ändert keine Anforderungsparameter.'],
+    impact: ['Beeinflusst die Vollständigkeit der Provider-/Cache-Telemetrie in llm_usage.'],
+    notes: ['Für die Fehlersuche bei Cache-Hit/Miss oder Provider-Usage-Shapes aktiviert lassen.'],
+  },
+  'settings.ai_model.LLM_PROMPT_CACHE_HINTS_ENABLED': {
+    title: 'Prompt-Cache-Hints',
+    summary: 'Erlaubt dem Hauptanalysepfad, verifizierte providerspezifische Cache-Hints aktiv zu senden.',
+    usage: 'Standardmäßig deaktiviert. Nach dem Aktivieren werden Hints wie prompt_cache_key, cache_control oder user_id nur für verified oder smoke-getestete Provider/Routen im Registry gesendet.',
+    valueNotes: ['Unbekannte OpenAI-kompatible Gateways sind standardmäßig nur Telemetrie und senden keine Cache-Parameter automatisch.'],
+    impact: ['Kann die Provider-Request-Shape des Hauptanalysepfads verändern; der Agent-Pfad erfasst derzeit nur Diagnosen und sendet keine Hints aktiv.'],
+    notes: ['Vor dem Aktivieren sollte bestätigt werden, dass die aktuelle LiteLLM-Version und die Provider-Route die Request-Shape-Tests bestehen.'],
+  },
+  'settings.ai_model.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL': {
+    title: 'Prompt-Cache-Diagnoseebene',
+    summary: 'Steuert die Detailstufe der Diagnose zu Prompt-Cache-Fähigkeiten und Hint-Entscheidungen.',
+    usage: 'Optional off, basic oder debug. Ungültige Werte fallen auf off zurück.',
+    valueNotes: [
+      'basic enthält nur Enums wie Provider, API-Oberfläche, Verifizierungsstatus, angewendeter Hint und Grund für die Deaktivierung.',
+      'debug kann HMAC-abgeleitete Routen-/Cache-Diagnosen und die übereinstimmende Caps-ID enthalten, aber weiterhin keine rohen Prompts, Request-Bodies, Nachrichteninhalte, Webhooks oder API-Keys.',
+    ],
+    impact: ['Beeinflusst die Sichtbarkeit für Wartungspersonal bei Cache-Fähigkeitsabgleich und Hint-Lowering.'],
+    notes: ['debug-Diagnosen dienen nur redigierten Protokollen und testbaren Beobachtungsobjekten und werden nicht in provider_usage_json geschrieben.'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_SECRET': {
+    title: 'LLM-Nutzungs-HMAC-Geheimnis',
+    summary: 'Signiert HMAC-Fingerabdrücke auf Nachrichtenebene für die LLM-Nutzungstelemetrie.',
+    usage: 'Normalerweise leer lassen; das System erzeugt im Datenverzeichnis eine lokale Schlüsseldatei. Nur wenn deploymentsübergreifend HMACs vergleichbar sein sollen, ein identisches hochentropes Zufallsgeheimnis konfigurieren, z. B. openssl rand -hex 32.',
+    valueNotes: [
+      'Dieses Geheimnis wird nicht an Provider gesendet und ändert weder Prompts, Modellparameter noch Berichtsinhalte.',
+      'Nach Änderung sind alte und neue HMACs nicht mehr vergleichbar; LLM_USAGE_HMAC_KEY_VERSION sollte synchron aktualisiert werden.',
+    ],
+    impact: ['Beeinflusst die Vergleichbarkeit von messages_hmac, system_message_hmac und user_message_hmac in der Tabelle llm_usage.'],
+    notes: ['Verwenden Sie nicht das Anmelde-Session-Geheimnis und committen Sie kein echtes Geheimnis in die Versionskontrolle, Issues, Protokolle oder Screenshots.'],
+  },
+  'settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION': {
+    title: 'LLM-Nutzungs-HMAC-Version',
+    summary: 'Markiert die aktuelle Version des LLM-Nutzungs-HMAC-Schlüssels.',
+    usage: 'Beim Rotieren von LLM_USAGE_HMAC_SECRET mit aktualisieren, z. B. prod-2026-06.',
+    valueNotes: ['Wenn leer, wird local-v1 verwendet.'],
+    impact: ['Hilft, HMACs aus verschiedenen Schlüsseln zu unterscheiden und einen falschen Vergleich über Deployments oder Versionen zu vermeiden.'],
+    notes: ['Dieses Feld ist nur ein Versionslabel, kein Geheimnis.'],
+  },
+  'settings.ai_model.provider_keys': {
+    title: 'Modellservice-API-Key',
+    summary: 'Konfiguriert Zugangsschlüssel für Modellanbieter oder Aggregations-Gateways.',
+    usage: 'Nach Erstellung des API-Keys in der Provider-Konsole eintragen; für Rotation oder Lastverteilung werden die entsprechenden Multi-Key-Varianten mit englischen Kommas getrennt.',
+    valueNotes: [
+      'Schlüsselfelder werden in der Web-Einstellungsseite als Passwortfeld angezeigt und nach dem Speichern meist nur maskiert dargestellt.',
+      'Im Kanalmodus werden zuerst LLM_<NAME>_API_KEY(S) gelesen; Legacy-Keys dienen hauptsächlich der Kompatibilität alter Konfigurationen.',
+    ],
+    impact: ['Beeinflusst Modellaufrufe, Verbindungstests und die Erkennung verfügbarer Modelle des jeweiligen Providers.'],
+    notes: ['Setzen Sie echte Keys nicht in Issues, Protokollen oder Screenshots aus.'],
+  },
+  'settings.ai_model.anspire_llm': {
+    title: 'Anspire-LLM-Gateway',
+    summary: 'Verwendet den Anspire-API-Key als kompatiblen Einstieg für ein OpenAI-kompatibles Modell-Gateway.',
+    usage: 'ANSPIRE_LLM_ENABLED steuert, ob dieser Kompatibilitätspfad aktiviert ist; ANSPIRE_LLM_BASE_URL legt die Gateway-Adresse fest; ANSPIRE_LLM_MODEL legt das Standardmodell fest, wenn kein Hauptmodell explizit gewählt wurde.',
+    valueNotes: [
+      'Dieser Pfad dient vor allem der Kompatibilität in vereinfachten Szenarien ohne LLM_CHANNELS oder LITELLM_MODEL.',
+      'Wenn LITELLM_CONFIG, LLM_CHANNELS oder ein explizites LITELLM_MODEL konfiguriert ist, wählt die Laufzeit die Modellquelle nach der bestehenden Priorität.',
+    ],
+    impact: ['Beeinflusst Standardmodell und Gateway-Adresse, wenn der Anspire-API-Key an LLM-Aufrufen beteiligt ist.'],
+    notes: ['Ändern Sie die Base-URL nicht auf einen anderen Provider und verwenden Sie dabei weiter den Anspire-Key.'],
+  },
+  'settings.ai_model.legacy_provider_params': {
+    title: 'Legacy-Provider-Parameter',
+    summary: 'Legt für den alten providerspezifischen Konfigurationspfad Modellname, Temperatur oder Token-Obergrenze fest.',
+    usage: 'Diese Felder dienen der Kompatibilität alter Konfigurationen; neue Konfigurationen bevorzugen LITELLM_MODEL, LITELLM_FALLBACK_MODELS, VISION_MODEL, LLM_TEMPERATURE oder LLM Channels.',
+    valueNotes: [
+      'Nach Aktivierung von LLM Channels werden zugehörige Legacy-Felder meist aus dem allgemeinen Formular ausgeblendet.',
+      'Die Felder betreffen nur den Legacy-Pfad des jeweiligen Providers und werden nicht automatisch in Kanal-Konfigurationen migriert.',
+    ],
+    impact: ['Beeinflusst Modellauswahl und Sampling-Parameter des Legacy-Providers, wenn kein Kanal-/YAML-Routing verwendet wird.'],
+    notes: ['Wenn sowohl Legacy-Felder als auch Channels gepflegt werden, richten Sie sich nach der tatsächlich angezeigten Laufzeit-Modellquelle auf der Einstellungsseite.'],
+  },
+  'settings.ai_model.OPENAI_BASE_URL': {
+    title: 'OpenAI-kompatible Base-URL',
+    summary: 'Legt die Schnittstellen-Root-Adresse eines OpenAI-kompatiblen Dienstes fest.',
+    usage: 'Endet meist mit /v1; offizielle Schnittstellen, Relay-Gateways und lokale kompatible Dienste haben unterschiedliche Adressen.',
+    valueNotes: [
+      'Die Base-URL muss zum Dienst des API-Keys passen.',
+      'Offizielle SDK-Pfade wie Gemini oder Anthropic benötigen meist keine OPENAI_BASE_URL.',
+    ],
+    impact: ['Beeinflusst Modellanfragen unter dem OpenAI-kompatiblen Legacy-Konfigurationspfad.'],
+    notes: ['Im Kanalmodus wird vorrangig LLM_<NAME>_BASE_URL des jeweiligen Kanals gepflegt.'],
+  },
+  'settings.data_source.TUSHARE_TOKEN': {
+    title: 'Tushare-Token',
+    summary: 'Für den Zugriff auf die Tushare-Pro-Datenschnittstelle.',
+    usage: 'Token im Tushare-Konto abrufen und eintragen.',
+    valueNotes: ['Unterschiedliche Tushare-Berechtigungen beeinflussen verfügbare Schnittstellen und Datenvollständigkeit.'],
+    impact: ['Beeinflusst Teile der A-Aktien-Basisdaten, Aktienlisten und zugehöriger Zusatzdaten.'],
+    notes: ['Token nicht ins Repository oder in öffentliche Protokolle committen.'],
+  },
+  'settings.data_source.TICKFLOW_API_KEY': {
+    title: 'TickFlow-API-Key',
+    summary: 'Aktiviert optionale TickFlow-A-Aktien-Tages-K-Linien, Echtzeitkurse, Aktienliste/-name und Marktrückblick-Zusatzdaten.',
+    usage: 'API-Key bei TickFlow beziehen und eintragen; ohne Konfiguration nutzt das System weiter andere verfügbare Datenquellen und Fallback-Pfade.',
+    valueNotes: ['Dieser Key ist eine optionale Erweiterung, keine Pflichtangabe für den Hauptanalyseablauf.', 'Batch-Tages-K, Echtzeitkurse, Ex-Faktoren und Tiefenberechtigungen können je nach TickFlow-Tarif unterschiedlich sein.'],
+    impact: ['Beeinflusst die Abdeckung von A-Aktien-Tagesdaten-Fallback, Echtzeitkursen, Aktienname/-liste und Marktrückblick.'],
+    notes: ['Setzen Sie echte Keys nicht in Issues, Protokollen oder Screenshots aus.'],
+  },
+  'settings.data_source.TICKFLOW_PRIORITY': {
+    title: 'TickFlow-Tages-K-Priorität',
+    summary: 'Steuert die Position von TickFlow in der Fallback-Kette der A-Aktien-Tages-K-Datenquellen.',
+    usage: 'Ganzzahl eintragen; je kleiner die Zahl, desto früher wird versucht, Standard 2. Ohne konfiguriertes TICKFLOW_API_KEY hat die Priorität keine Wirkung.',
+    valueNotes: ['Diese Einstellung betrifft nur die Fallback-Kette allgemeiner Datenquellen wie Tages-K, nicht die Reihenfolge der Echtzeitkursquellen.'],
+    impact: ['Beeinflusst die Reihenfolge der Datenquellen beim Abruf der A-Aktien-Tages-K; Echtzeitkurse werden weiterhin separat von REALTIME_SOURCE_PRIORITY bestimmt.'],
+    notes: ['Wenn TickFlow-Tages-K bevorzugt werden soll, den Wert etwas senken; wenn Echtzeitkurse TickFlow bevorzugen sollen, tickflow explizit in REALTIME_SOURCE_PRIORITY aufnehmen.'],
+  },
+  'settings.data_source.TICKFLOW_KLINE_ADJUST': {
+    title: 'TickFlow-Tages-K-Bereinigungsmodus',
+    summary: 'Steuert die Bereinigungsweise der TickFlow-Tages-K-Linien.',
+    usage: 'Optional none, forward, backward, forward_additive oder backward_additive. Standard none.',
+    valueNotes: ['none hält die Konsistenz mit den bestehenden unbereinigten technischen Indikatoren.'],
+    impact: ['Beeinflusst die Berechnung von gleitenden Durchschnitten, Kursänderungen und anderen technischen Indikatoren auf Basis der TickFlow-Tages-K.'],
+    notes: ['Bis alle Datenquellen eine einheitliche Bereinigung verwenden, wird Standard none empfohlen.'],
+  },
+  'settings.data_source.TICKFLOW_BATCH_DAILY_ENABLED': {
+    title: 'TickFlow-Batch-Tages-K-Vorabruf',
+    summary: 'Steuert, ob bei Batch-Analysen zuerst die TickFlow-Batch-Schnittstelle den Tages-K-Cache vorwärmt.',
+    usage: 'Standardmäßig aktiviert. Wenn der aktuelle Tarif keine Batch-Tages-K-Berechtigung hat, merkt sich das System den Fehlschlag kurzzeitig und fährt mit dem Fallback fort.',
+    valueNotes: ['Dieser Schalter ändert nicht den externen Aufrufweg von get_daily_data, sondern füllt nur den prozessinternen Cache vorab.'],
+    impact: ['Kann bei Batch-Berechtigung die wiederholten Tages-K-Anfragen bei der Analyse mehrerer A-Aktien reduzieren.'],
+    notes: ['Bei fehlender Berechtigung erfolgt ein fail-open; die vorhandene Datenquellenkette wird nicht blockiert.'],
+  },
+  'settings.data_source.TICKFLOW_BATCH_SIZE': {
+    title: 'TickFlow-Batchgröße',
+    summary: 'Steuert die maximale Anzahl von Zielen pro Batch-Anfrage für TickFlow-Tages-K und Echtzeitkurse.',
+    usage: 'Positive Ganzzahl eintragen, Standard 100. Bei mehr Zielen teilt das System die Anfragen in mehrere Batches.',
+    valueNotes: ['Zu große Batches können an Tarif- oder Serverbeschränkungen stoßen; meist genügt der Standardwert.'],
+    impact: ['Beeinflusst die Anzahl der Anfragen und die Last pro Anfrage beim TickFlow-Batch-Vorabruf.'],
+    notes: ['Diese Konfiguration betrifft nur den TickFlow-Batch-Pfad.'],
+  },
+  'settings.data_source.stock_index_remote': {
+    title: 'Remote-Update des Aktienindex',
+    summary: 'Ruft den neuesten Aktien-Autovervollständigungsindex vom GitHub-main-Zweig ab und speichert ihn lokal im Cache.',
+    usage: 'Standardmäßig aktiviert; wenn die Laufzeitumgebung nicht auf GitHub raw zugreifen kann, kann der Schalter deaktiviert werden. Remote-URL, Prüfhäufigkeit und Timeout sind systeminterne Werte.',
+    valueNotes: ['Das System prüft standardmäßig alle 48 Stunden auf Updates, um häufige GitHub-Zugriffe zu vermeiden.', 'Fehlgeschlagene Remote-Prüfungen blockieren weder WebUI noch den Analyseablauf.'],
+    impact: ['Beeinflusst die Aktualität der Aktienkürzel für die Web-Autovervollständigung und die Aktienname-Auflösung im Backend.'],
+    notes: ['Bei fehlgeschlagenem Remote-Download werden der vorhandene Cache oder der mitgelieferte eingebaute Index weiterverwendet.'],
+  },
+  'settings.data_source.SCREENING_ENABLED': {
+    title: 'Aktienauswahl',
+    summary: 'Steuert, ob die Seite für die Aktienauswahl aktiviert wird; Umsetzung in Anlehnung an AlphaSift.',
+    usage: 'Standardmäßig deaktiviert. Auf true setzen, um den Einstieg zur Aktienauswahl anzuzeigen und Auswahlstrategien zu aktivieren.',
+    valueNotes: ['Die Auswahlergebnisse dienen nur der Rechercheunterstützung und stellen keine Anlageberatung dar.'],
+    impact: ['Beeinflusst den Web-Einstieg zur Aktienauswahl, das Lesen der Strategien und die Auswahl-API.'],
+    notes: ['Beim Deaktivieren bleiben Analyse, Berichte und Benachrichtigungen unverändert.'],
+  },
+  'settings.data_source.REALTIME_SOURCE_PRIORITY': {
+    title: 'Priorität der Echtzeitkursquellen',
+    summary: 'Konfiguriert die Versuchsreihenfolge mehrerer Echtzeitkursquellen.',
+    usage: 'Prioritäten mit englischen Kommas trennen; das System versucht die verfügbaren Datenquellen der Reihe nach.',
+    valueNotes: ['Die vorderen Datenquellen werden bevorzugt; bei Fehlern wird auf die folgenden Quellen zurückgegriffen.'],
+    impact: ['Beeinflusst aktuelle Kurse, Intraday-Analysen und Berichtsfelder, die von Echtzeitkursen abhängen.'],
+    notes: ['Ein Fehlschlag einer einzelnen Datenquelle sollte auf die nächste Quelle zurückgreifen und den Hauptablauf nicht blockieren.'],
+  },
+  'settings.data_source.realtime_quotes': {
+    title: 'Echtzeitkurs-Konfiguration',
+    summary: 'Steuert, ob Echtzeitkurse und Intraday-Technikindikatoren aktiviert werden.',
+    usage: 'Schalterfelder verwenden true/false; die Quellenreihenfolge wird separat über REALTIME_SOURCE_PRIORITY konfiguriert.',
+    valueNotes: [
+      'Nach dem Deaktivieren der Echtzeitkurse stützt sich die Analyse stärker auf historische Schlusskurse.',
+      'Echtzeit-Technikindikatoren beziehen Intraday-Kurse in die Berechnung von gleitenden Durchschnitten und Trend ein.',
+    ],
+    impact: ['Beeinflusst aktuelle Kurse, Technikindikatoren, Intraday-Analysen und einige Berichtsfelder.'],
+    notes: ['Ein Fehlschlag einer einzelnen Datenquelle sollte auf die nächste Quelle zurückgreifen und den Hauptablauf nicht blockieren.'],
+  },
+  'settings.data_source.search_api_keys': {
+    title: 'API-Keys für Suchdienste',
+    summary: 'Konfiguriert Schlüssel für Drittanbieter-Suchdienste, die für Nachrichten- und Suche-Erweiterungen benötigt werden.',
+    usage: 'Multi-Key-Felder mit englischen Kommas trennen; das System wählt den Dienst anhand der bestehenden Suchpriorität und Verfügbarkeit.',
+    valueNotes: ['Die Suchergebnisse ergänzen den Kontext aus Nachrichten, Bekanntmachungen und Marktinformationen.'],
+    impact: ['Beeinflusst die Abdeckung und Aktualität der Nachrichtenrecherche sowie externe Informationen in Agenten/Berichten.'],
+    notes: ['Suchdienste können sich in Kontingent, Rate-Limits und regionaler Verfügbarkeit unterscheiden.'],
+  },
+  'settings.data_source.SEARXNG_BASE_URLS': {
+    title: 'SearXNG-Instanzadressen',
+    summary: 'Konfiguriert selbst gehostete oder vertrauenswürdige SearXNG-Suchinstanzen.',
+    usage: 'Mehrere Instanzen mit englischen Kommas trennen; selbst gehostete Instanzen müssen das JSON-Ausgabeformat aktivieren.',
+    valueNotes: ['Nach Deaktivierung der automatischen Erkennung öffentlicher Instanzen werden nur die hier konfigurierten Instanzen verwendet.'],
+    impact: ['Beeinflusst die Fallback-Fähigkeit für Nachrichten- und Websuchen, wenn keine kommerziellen Such-Keys vorhanden sind.'],
+    notes: ['Öffentliche Instanzen sind in der Stabilität nicht steuerbar; in der Produktion werden selbst gehostete oder vertrauenswürdige Instanzen empfohlen.'],
+  },
+  'settings.data_source.ENABLE_CHIP_DISTRIBUTION': {
+    title: 'Analyse der Chip-Verteilung',
+    summary: 'Steuert, ob die Analyse der Chip-Verteilung aktiviert wird.',
+    usage: 'Bei Cloud-Deployments oder instabilen Datenquellen auf false setzen.',
+    valueNotes: ['Nach dem Deaktivieren werden zugehörige Datenanfragen und Fehlrauschen reduziert.'],
+    impact: ['Beeinflusst Aussagen zur Chip-Verteilung und zu Kostenbereichen in Berichten.'],
+    notes: ['Diese Fähigkeit hängt von der Stabilität externer Datenquellen ab.'],
+  },
+  'settings.data_source.BIAS_THRESHOLD': {
+    title: 'Abweichungsschwelle (BIAS)',
+    summary: 'Setzt die Risikohinweis-Schwelle für die Abweichung des Kurses von der MA5.',
+    usage: 'Prozentwert eintragen; wenn die Abweichung vom MA5 die Schwelle überschreitet, weist der Bericht darauf hin, nicht hinterherzujagen oder auf Rückkehrrisiken zu achten.',
+    valueNotes: ['Bei starken Trendaktien kann die Schwelle nach Laufzeitregeln entsprechend gelockert werden.'],
+    impact: ['Beeinflusst die Hinweisstärke zu Nachjagrisiken, MA-Abweichung und Handlungsempfehlungen in der technischen Analyse.'],
+    notes: ['Eine zu niedrige Schwelle erhöht das Rauschen von Risikohinweisen, eine zu hohe kann die Nachjag-Warnung abschwächen.'],
+  },
+  'settings.data_source.pytdx': {
+    title: 'Pytdx-Tongdaxin-Server',
+    summary: 'Konfiguriert Tongdaxin-Marktdatenserver und überschreibt die eingebauten Standard-Server.',
+    usage: 'Entweder PYTDX_HOST/PYTDX_PORT einzeln ausfüllen oder mit PYTDX_SERVERS mehrere ip:port angeben; PYTDX_SERVERS hat höhere Priorität.',
+    valueNotes: ['Mehrere Server mit englischen Kommas trennen; das System versucht die Verbindung nach der bestehenden Datenquellenlogik.'],
+    impact: ['Beeinflusst das Verbindungsziel und die Verfügbarkeit der Marktdaten bei Nutzung der Pytdx-Datenquelle.'],
+    notes: ['Bei nicht erreichbarem Server sollte auf den Datenquellen-Fallback vertraut werden; es wird nicht empfohlen, nur eine einzige instabile Adresse zu konfigurieren.'],
+  },
+  'settings.data_source.news_window': {
+    title: 'Nachrichten-Zeitfenster',
+    summary: 'Steuert den Aktualitätsbereich von Nachrichten, die in den Analysekontext aufgenommen werden.',
+    usage: 'NEWS_MAX_AGE_DAYS legt die maximale Tagesanzahl fest, NEWS_STRATEGY_PROFILE wählt die Fensterstrategie.',
+    valueNotes: ['Das tatsächliche Fenster wird durch Profil und maximale Tagesanzahl gemeinsam begrenzt.'],
+    impact: ['Beeinflusst Anzahl, Aktualität und Berichtslänge des Nachrichtenkontexts.'],
+    notes: ['Ein zu langes Fenster kann veraltete Informationen einbringen, ein zu kurzes kann langsam entwickelnde Ereignisse übersehen.'],
+  },
+  'settings.notification.FEISHU_WEBHOOK_URL': {
+    title: 'Feishu-Gruppenbot-Webhook',
+    summary: 'Konfiguriert einen benutzerdefinierten Feishu-Gruppenbot, um Analyseberichte an eine bestimmte Feishu-Gruppe zu senden.',
+    usage: 'Nach dem Hinzufügen eines benutzerdefinierten Bots in der Feishu-Gruppe die mit open-apis/bot/v2/hook beginnende Webhook-URL hierher kopieren.',
+    valueNotes: [
+      'Wenn der Bot die „Signaturprüfung“ aktiviert hat, muss zusätzlich FEISHU_WEBHOOK_SECRET ausgefüllt werden.',
+      'Wenn der Bot „Stichwörter“ aktiviert hat, muss zusätzlich FEISHU_WEBHOOK_KEYWORD ausgefüllt werden; das System fügt es automatisch vor der Nachricht ein.',
+      'FEISHU_APP_ID / FEISHU_APP_SECRET dienen der Feishu-App, den Cloud-Dokumenten oder dem Stream Bot und aktivieren nicht direkt die Gruppen-Webhook-Zustellung.',
+    ],
+    impact: [
+      'Beeinflusst den Feishu-Benachrichtigungskanal; ein Fehlschlag darf den Hauptanalyseablauf nicht blockieren und betrifft nur die Zustellung dieses Kanals.',
+    ],
+    notes: [
+      'FEISHU_APP_SECRET nicht als FEISHU_WEBHOOK_SECRET verwenden.',
+      'Wenn auf Feishu-Seite eine IP-Whitelist konfiguriert ist, muss die ausgehende IP der Laufzeitumgebung zur Whitelist hinzugefügt werden.',
+    ],
+  },
+  'settings.notification.FEISHU_STREAM_ENABLED': {
+    title: 'Feishu-Stream-Modus',
+    summary: 'Aktiviert den Long-Connection-Modus des Feishu-App-Bots / Stream Bots, nicht den Feishu-Gruppen-Webhook-Schalter.',
+    usage: 'Nur aktivieren, wenn eine Feishu-App erstellt, veröffentlicht und für Berechtigungen und Event-Abonnements konfiguriert wurde; zusätzlich sind FEISHU_APP_ID und FEISHU_APP_SECRET erforderlich.',
+    valueNotes: [
+      'true erlaubt der Laufzeit die Nutzung des App-Bot-Stream-Modus.',
+      'false deaktiviert den Stream-Modus; Gruppen-Nachrichten werden weiterhin über FEISHU_WEBHOOK_URL gesendet.',
+      'Nur App-ID/Secret auszufüllen oder nur Stream zu aktivieren entspricht nicht der Aktivierung des Gruppen-Webhook-Versands.',
+    ],
+    impact: [
+      'Beeinflusst die Interaktion des Feishu-App-Bots oder den Stream-Bot-Pfad.',
+      'Ändert nicht die Gruppen-Webhook-Zustellungssemantik von FEISHU_WEBHOOK_URL.',
+    ],
+    notes: [
+      'Nach dem Speichern müssen die zugehörigen Bot-/Dienstprozesse meist neu gestartet werden; bestehende Long-Connections werden nicht automatisch neu aufgebaut.',
+      'Ein Fehlschlag sollte nur den Feishu-App-Bot-Pfad betreffen, nicht den Hauptanalyseablauf.',
+    ],
+  },
+  'settings.notification.FEISHU_CHAT_ID': {
+    title: 'Feishu-App-Bot-Ziel',
+    summary: 'Konfiguriert das Ziel chat_id (Gruppenmodus) oder open_id (Privatmodus) für die aktive Zustellung des Feishu-App-Bots.',
+    usage: 'Zusätzlich müssen FEISHU_APP_ID und FEISHU_APP_SECRET ausgefüllt werden. Im Gruppenmodus eine mit oc_ beginnende chat_id eintragen; im Privatmodus eine mit ou_ beginnende open_id und FEISHU_RECEIVE_ID_TYPE auf open_id setzen.',
+    valueNotes: [
+      'Allein mit FEISHU_APP_ID / FEISHU_APP_SECRET wird keine Gruppen-Webhook-Zustellung aktiviert.',
+      'App-Bot-Modus und Webhook-Modus schließen sich gegenseitig aus: Webhook-URL hat Vorrang, nur ohne konfigurierte Webhook wird der App-Bot verwendet.',
+    ],
+    impact: [
+      'Beeinflusst das Zustellungsziel des Feishu-App-Bot-Benachrichtigungskanals.',
+      'Ein Fehlschlag darf den Hauptanalyseablauf nicht blockieren und betrifft nur die Zustellung dieses Kanals.',
+    ],
+    notes: [
+      'Der App-Bot benötigt die Berechtigung im:message:send_as_bot.',
+      'Für den Privatmodus muss der Benutzer in Feishu zuvor den Dialog mit dem App-Bot geöffnet haben.',
+    ],
+  },
+  'settings.notification.FEISHU_RECEIVE_ID_TYPE': {
+    title: 'Feishu-Empfänger-ID-Typ',
+    summary: 'Legt den Typ von FEISHU_CHAT_ID fest: chat_id für Gruppenchat, open_id für private Nachrichten.',
+    usage: 'Für Gruppen chat_id wählen; für private Nachrichten (P2P an einen bestimmten Benutzer) open_id wählen.',
+    valueNotes: [
+      'Wirkt nur, wenn FEISHU_CHAT_ID ausgefüllt ist.',
+      'Ein falscher Typ führt zu fehlgeschlagenen Nachrichten; bei einem invalid receive_id-Fehler muss geprüft werden, ob der Wert mit dem tatsächlichen ID-Typ übereinstimmt.',
+    ],
+    impact: ['Beeinflusst die Routing-Art von Feishu-App-Bot-Nachrichten.'],
+    notes: ['Die meisten Szenarien verwenden chat_id; wenn der Wert weder chat_id noch open_id ist, fällt die Laufzeit automatisch auf chat_id zurück.'],
+  },
+  'settings.notification.FEISHU_DOMAIN': {
+    title: 'Feishu-API-Domain',
+    summary: 'Wählt die Region der Feishu-API: feishu für die chinesische Version (feishu.cn), lark für die internationale Version (larksuite.com).',
+    usage: 'Inländische Benutzer wählen feishu; internationale / Lark-Benutzer wählen lark.',
+    valueNotes: [
+      'Betrifft nur die API-Domain der aktiven App-Bot-Zustellung, nicht die Webhook-URL.',
+      'Eine falsche Wahl führt zu API-Fehlern (das SDK verbindet den falschen Server).',
+    ],
+    impact: ['Beeinflusst die API-Konnektivität der aktiven Feishu-App-Bot-Zustellung.'],
+    notes: ['Wenn der Wert weder feishu noch lark ist, fällt die Laufzeit automatisch auf feishu zurück.'],
+  },
+  'settings.notification.DINGTALK_STREAM_ENABLED': {
+    title: 'DingTalk-Stream-Modus',
+    summary: 'Aktiviert den Long-Connection-Modus des DingTalk-App-Bots, nicht den normalen DingTalk-Gruppenbot-Webhook-Schalter.',
+    usage: 'Zuerst muss ein App-Bot in der DingTalk-Open-Plattform konfiguriert werden, dann DINGTALK_APP_KEY und DINGTALK_APP_SECRET ausfüllen.',
+    valueNotes: [
+      'true erlaubt der Laufzeit die Nutzung des DingTalk-App-Bot-Stream-/Long-Connection-Modus.',
+      'false deaktiviert diesen Long-Connection-Modus; DingTalk-Gruppenbot-Adressen in benutzerdefinierten Webhooks laufen weiter über CUSTOM_WEBHOOK_URLS.',
+    ],
+    impact: [
+      'Beeinflusst die Interaktion des DingTalk-App-Bots oder den Long-Connection-Pfad.',
+      'Ändert nicht den Sendepfad der benutzerdefinierten Webhook-Benachrichtigungen.',
+    ],
+    notes: [
+      'Nach dem Speichern müssen die zugehörigen Bot-/Dienstprozesse meist neu gestartet werden; bestehende Long-Connections werden nicht automatisch neu aufgebaut.',
+      'Stream-Modus und Gruppenbot-Webhook nicht als denselben Konfigurationspfad behandeln.',
+    ],
+  },
+  'settings.notification.DINGTALK_WEBHOOK_URL': {
+    title: 'DingTalk-Gruppenbot-Webhook',
+    summary: 'Sendet Benachrichtigungen über einen normalen DingTalk-Gruppenbot-Webhook, unabhängig vom App-/Stream-Modus.',
+    usage: 'In den Sicherheitseinstellungen der DingTalk-Gruppe einen benutzerdefinierten Bot hinzufügen und die mit oapi.dingtalk.com/robot/send beginnende Webhook-Adresse kopieren.',
+    valueNotes: [
+      'Der Webhook enthält ein access_token und muss wie ein Geheimnis geschützt werden.',
+      'Wenn der Bot den Stichwort-Sicherheitsmodus aktiviert hat, muss der Benachrichtigungsinhalt das konfigurierte Stichwort enthalten.',
+    ],
+    impact: ['Beeinflusst das Zustellungsziel der DingTalk-Gruppenbot-Benachrichtigungen.'],
+    notes: ['Nicht den App Key der DingTalk-App eintragen; App-/Stream-Modus verwenden eine separate Konfiguration.'],
+  },
+  'settings.notification.DINGTALK_SECRET': {
+    title: 'DingTalk-Gruppenbot-Signaturschlüssel',
+    summary: 'Konfiguriert den mit SEC beginnenden Signaturschlüssel aus den Sicherheitseinstellungen des DingTalk-Gruppenbots.',
+    usage: 'Nur ausfüllen, wenn der Bot die Sicherheitseinstellung „Signatur“ aktiviert hat; sonst leer lassen.',
+    valueNotes: ['Dieser Wert ist eine sensible Anmeldeinformation; die Web-Einstellungsseite zeigt nur eine Maske.'],
+    impact: ['Nach dem Ausfüllen fügt der Sender jeder Webhook-Anfrage die Parameter timestamp und sign hinzu.'],
+    notes: ['Stichwort und Signatur können von DingTalk gleichzeitig verlangt werden und müssen jeweils erfüllt sein.'],
+  },
+  'settings.notification.webhooks': {
+    title: 'Enterprise-WeChat-Webhook',
+    summary: 'Konfiguriert einen Enterprise-WeChat-Gruppenbot-Webhook, um Analyseberichte an eine bestimmte Gruppe zu senden.',
+    usage: 'Nach der Erstellung eines Bots in der Enterprise-WeChat-Gruppe die mit qyapi.weixin.qq.com/cgi-bin/webhook/send beginnende Webhook-URL kopieren.',
+    valueNotes: [
+      'Webhook-URLs enthalten oft sensible Tokens und sollten wie Geheimnisse behandelt werden.',
+      'Verschiedene Plattformen haben unterschiedliche Begrenzungen für Nachrichtenlänge, -format und -frequenz.',
+    ],
+    impact: ['Beeinflusst die Zustellung der Berichte über den entsprechenden Webhook-Kanal.'],
+    notes: ['Ein Fehlschlag eines einzelnen Benachrichtigungskanals sollte den Hauptanalyseablauf nicht blockieren.'],
+  },
+  'settings.notification.CUSTOM_WEBHOOK_URLS': {
+    title: 'Benutzerdefinierte Webhooks',
+    summary: 'Sendet Berichte an jeden Dienst, der POST JSON unterstützt.',
+    usage: 'Mehrere URLs mit englischen Kommas trennen; für einen benutzerdefinierten Body kann CUSTOM_WEBHOOK_BODY_TEMPLATE konfiguriert werden.',
+    valueNotes: [
+      'Das Template muss als JSON-Objekt gerendert werden.',
+      'Empfohlen werden $content_json und $title_json, um zu vermeiden, dass Zeilenumbrüche und Anführungszeichen das JSON zerstören.',
+      'Beim Speichern in .env in Docker-Deployments werden sie automatisch als $$content_json und $$title_json geschrieben; zur Laufzeit wird wieder der einzelne $-Platzhalter hergestellt.',
+      'Dieses Feld betrifft nur das Payload-Verhalten der benutzerdefinierten Webhooks und ändert weder LLM-Provider, Modellnamen, Base-URL noch Migrationspriorität.',
+    ],
+    impact: ['Beeinflusst benutzerdefinierte Zustellungen wie AstrBot, NapCat oder selbst gehostete Dienste.'],
+    notes: ['Zuerst einen Webhook erfolgreich verifizieren, dann auf mehrere Ziele erweitern.'],
+  },
+  'settings.notification.WEBHOOK_VERIFY_SSL': {
+    title: 'Webhook-SSL-Prüfung',
+    summary: 'Steuert, ob beim Senden von HTTPS-Webhooks das Zertifikat verifiziert wird.',
+    usage: 'Standardmäßig true beibehalten; false nur bei vertrauenswürdigen internen selbstsignierten Zertifikaten in Betracht ziehen.',
+    valueNotes: ['Das Deaktivieren der Prüfung reduziert den Schutz vor Man-in-the-Middle-Angriffen.'],
+    impact: ['Beeinflusst das TLS-Prüfverhalten aller benutzerdefinierten Webhook-HTTPS-Anfragen.'],
+    notes: ['In öffentlichen Netzwerken die SSL-Prüfung nicht deaktivieren.'],
+  },
+  'settings.notification.telegram': {
+    title: 'Telegram-Zustellung',
+    summary: 'Sendet Berichte über einen Telegram-Bot an Einzelpersonen, Gruppen oder Topics.',
+    usage: 'Mit @BotFather einen Bot erstellen, Bot-Token und Ziel-Chat-ID eintragen; für Gruppen-Topics kann zusätzlich eine Thread-ID angegeben werden.',
+    valueNotes: ['Der Bot muss zur Zielgruppe hinzugefügt werden und über Schreibrechte verfügen.'],
+    impact: ['Beeinflusst den Telegram-Benachrichtigungskanal.'],
+    notes: ['Gruppen-Chat-IDs sind oft negativ oder beginnen mit -100.'],
+  },
+  'settings.notification.email': {
+    title: 'E-Mail-Benachrichtigung',
+    summary: 'Sendet Analyseberichte über ein SMTP-Postfach.',
+    usage: 'Absender-Postfach, SMTP-Autorisierungscode und Empfängerliste eintragen; mehrere Empfänger mit englischen Kommas trennen.',
+    valueNotes: [
+      'EMAIL_PASSWORD ist meist der E-Mail-Autorisierungscode, nicht das Web-Login-Passwort.',
+      'Mit STOCK_GROUP_N / EMAIL_GROUP_N können Gruppenempfänger konfiguriert werden.',
+    ],
+    impact: ['Beeinflusst den E-Mail-Berichtsversand, Gruppenempfänger und die Zustellung der Marktrückblick-E-Mails.'],
+    notes: ['Verschiedene E-Mail-Anbieter müssen zuerst den SMTP-Dienst aktivieren.'],
+  },
+  'settings.notification.chat_bots': {
+    title: 'Chat-Plattform-Bots',
+    summary: 'Konfiguriert Discord, Slack, Pushover, ServerChan und andere Chat- oder Zustellungsplattformen.',
+    usage: 'Je nach Plattform den Webhook- oder Bot-Token-Modus wählen; der Bot-Modus benötigt meist zusätzlich eine Kanal-ID.',
+    valueNotes: ['Wenn auf derselben Plattform sowohl Bot als auch Webhook konfiguriert sind, wählt der Code nach der festgelegten Priorität eine Variante.'],
+    impact: ['Beeinflusst den Benachrichtigungskanal der jeweiligen Chat-Plattform.'],
+    notes: ['Bot-Tokens, Webhook-URLs und SendKeys müssen wie Geheimnisse behandelt werden.'],
+  },
+  'settings.notification.report_output': {
+    title: 'Berichtsausgabe-Einstellungen',
+    summary: 'Steuert die Detailtiefe der Benachrichtigungsberichte, die Standard-Ausgabesprache und die Template-Ausgabe.',
+    usage: 'REPORT_TYPE kann simple/full/brief sein, REPORT_LANGUAGE zh/en/ko; Agent Chat übernimmt diese Standardsprache nur, wenn context.report_language nicht explizit übergeben wird.',
+    valueNotes: ['Die Berichtssprache beeinflusst Standard-Templates, Benachrichtigungstexte und Agent-Chat-Antworten ohne eigene Sprachangabe; sie ist nicht gleichbedeutend mit der Frontend-Sprache.'],
+    impact: ['Beeinflusst Länge und Sprache der Benachrichtigung sowie die Lesbarkeit von Agent-Chat-Antworten ohne explizite Sprachangabe.'],
+    notes: ['full-Berichte können länger sein und auf manchen Plattformen in Teilen gesendet werden.'],
+  },
+  'settings.system.WEBUI_HOST': {
+    title: 'WebUI-Listenadresse',
+    summary: 'Steuert, an welche Netzwerkadresse der WebUI-Dienst gebunden wird.',
+    usage: 'Für den lokalen Zugriff meist 127.0.0.1; für Cloud-Server, Docker oder externen Zugriff meist 0.0.0.0.',
+    valueNotes: [
+      'Ein beim Start explizit übergebenes --host hat Vorrang; ohne --host wird WEBUI_HOST (oder dessen Standardwert) aus der Laufzeitkonfiguration verwendet.',
+      'Beim Speichern auf der Einstellungsseite wird nur .env geschrieben und das Laufzeitkonfigurationsobjekt neu geladen; der laufende WebUI/API-Prozess bindet die Listenadresse nicht neu.',
+      'In Docker Compose wird im Container meist 0.0.0.0 verwendet; der Hostzugriff hängt zusätzlich vom Port-Mapping ab.',
+    ],
+    impact: [
+      'Beeinflusst, ob nach einem Neustart der Browser die WebUI von lokal, im LAN oder aus dem öffentlichen Internet erreichen kann.',
+    ],
+    notes: [
+      'Nach einer Änderung von WEBUI_HOST müssen der laufende Prozess, der Docker-Container oder der Dienstmanager neu gestartet werden.',
+      'Bei direktem öffentlichen Zugriff wird die Aktivierung von ADMIN_AUTH_ENABLED empfohlen.',
+      'Hinter einem Reverse-Proxy sollten für die Login-Limits und die Erkennung echter IPs auch TRUST_X_FORWARDED_FOR berücksichtigt werden.',
+    ],
+  },
+  'settings.system.WEBUI_PORT': {
+    title: 'WebUI-Port',
+    summary: 'Steuert den Port, den der WebUI-Dienst abhört.',
+    usage: 'Lokal Standard 8000; bei Portkonflikten kann ein anderer Port im Bereich 1-65535 gewählt werden.',
+    valueNotes: [
+      'Ein beim Start explizit übergebenes --port hat Vorrang; ohne --port wird WEBUI_PORT (oder dessen Standardwert) aus der Laufzeitkonfiguration verwendet.',
+      'Der Zugriff über Docker oder Cloud-Server hängt zusätzlich vom Host-Port-Mapping und den Firewall-Regeln ab.',
+      'Beim Speichern auf der Einstellungsseite wird nur .env geschrieben; der laufende WebUI/API-Prozess bindet den Port nicht neu.',
+    ],
+    impact: ['Beeinflusst den Browser-URL-Port für den Zugriff auf die WebUI nach einem Neustart.'],
+    notes: ['Nach einer Änderung von WEBUI_PORT müssen der laufende Prozess, der Docker-Container oder der Dienstmanager neu gestartet werden.'],
+  },
+  'settings.system.LOG_DIR': {
+    title: 'Protokollverzeichnis',
+    summary: 'Konfiguriert das Ausgabeverzeichnis für Anwendungsprotokolle.',
+    usage: 'Ein Verzeichnis eintragen, das der laufende Benutzer oder Container beschreiben kann; lokal Standard ./logs, im Container üblich /app/logs.',
+    valueNotes: [
+      'Relative Pfade werden relativ zum Arbeitsverzeichnis des laufenden Prozesses aufgelöst.',
+      'Komponenten wie das Longbridge-SDK können in diesem Verzeichnis ebenfalls Protokolldateien schreiben.',
+    ],
+    impact: [
+      'Beeinflusst den Ablageort von Anwendungsprotokollen, einigen SDK-Protokollen und Fehlerbehebungsdateien.',
+    ],
+    notes: [
+      'Nach einer Änderung muss der Prozess meist neu gestartet werden; bereits initialisierte Logger wechseln das Verzeichnis nicht unbedingt sofort.',
+      'Docker, Desktop und lokaler Quellcode-Betrieb haben unterschiedliche beschreibbare Pfade; vor dem Speichern die Berechtigungen prüfen.',
+    ],
+  },
+  'settings.system.WEBUI_ENABLED': {
+    title: 'WebUI standardmäßig starten',
+    summary: 'Steuert, ob beim Start standardmäßig der WebUI/API-Dienstmodus aufgerufen wird.',
+    usage: 'Dies ist eine Startzeit-Konfiguration für die Kompatibilität mit dem alten Starteinstieg; nach dem Speichern wird die aktuelle Seite nicht sofort gestartet oder beendet.',
+    valueNotes: [
+      'true lässt spätere Starts über den Standardeinstieg den WebUI/API-Dienstmodus bevorzugen.',
+      'false behält das Standard-Startverhalten ohne WebUI bei; explizite CLI-Parameter können die Konfiguration weiterhin überschreiben.',
+    ],
+    impact: [
+      'Beeinflusst den Standardmodus beim nächsten Start von main.py oder des zugehörigen Diensteinstiegs.',
+    ],
+    notes: [
+      'Nach dem Speichern müssen die zugehörigen Prozesse neu gestartet werden, damit die Änderung wirkt.',
+      'Diesen Schalter nicht als sofortigen Start-/Stopp-Knopf der aktuellen Web-Einstellungsseite verstehen.',
+    ],
+  },
+  'settings.system.WEBUI_AUTO_BUILD': {
+    title: 'Frontend vor dem Start automatisch bauen',
+    summary: 'Steuert, ob das Backend vor dem Start der WebUI automatisch die statischen Frontend-Artefakte prüft und erstellt.',
+    usage: 'Bei Quellcode-Deployment meist true beibehalten; bei vorgebauten Images, Offline-Umgebungen oder eingeschränkten Umgebungen kann false gesetzt werden.',
+    valueNotes: [
+      'Bei true versucht der Startablauf, die statischen Artefakte von apps/dsa-web vorzubereiten.',
+      'Bei false werden nur vorhandene Build-Artefakte geprüft; fehlen die Artefakte, kann die WebUI nicht verfügbar sein oder es werden nur Backend-Warnungen angezeigt.',
+    ],
+    impact: [
+      'Beeinflusst, ob die statischen Frontend-Ressourcen beim nächsten WebUI-Start automatisch vorbereitet werden.',
+    ],
+    notes: [
+      'Nach dem Speichern wird nicht sofort ein Build ausgelöst; der zugehörige Backend-Prozess muss neu gestartet werden.',
+      'Vor dem Deaktivieren in Docker oder Installationspaketen bestätigen, dass die Build-Artefakte bereits im Image oder Paket enthalten sind.',
+    ],
+  },
+  'settings.system.ADMIN_AUTH_ENABLED': {
+    title: 'Web-Loginschutz',
+    summary: 'Aktiviert den Administratorkennwortschutz der WebUI.',
+    usage: 'Bitte über den Authentifizierungseinstieg der WebUI aktivieren oder deaktivieren; bei vergessenem Kennwort python -m src.auth reset_password ausführen.',
+    valueNotes: ['Bei direktem öffentlichen Zugriff, LAN-Freigabe oder Reverse-Proxy-Deployment wird die Aktivierung empfohlen.', 'Dieses Feld wird auf der allgemeinen Konfigurationsseite nur erklärend angezeigt, um den Authentifizierungseinstellungsablauf nicht zu umgehen.'],
+    impact: ['Beeinflusst WebUI-Login, Zugriff auf die Einstellungsseite und den Schutz von Verwaltungsoperationen.'],
+    notes: ['Vor der Aktivierung bestätigen, dass die Deployment-Umgebung Authentifizierungsdaten persistent speichern kann; nach manueller .env-Änderung muss der Prozess neu gestartet oder der Authentifizierungseinstellungsablauf zum Aktualisieren des Status verwendet werden.'],
+  },
+  'settings.system.TRUST_X_FORWARDED_FOR': {
+    title: 'X-Forwarded-For vertrauen',
+    summary: 'Verwendet X-Forwarded-For zur Erkennung der echten Client-IP hinter einem vertrauenswürdigen Reverse-Proxy.',
+    usage: 'Nur bei einem einzelnen vertrauenswürdigen Reverse-Proxy true setzen; bei direktem öffentlichen Zugriff false beibehalten.',
+    valueNotes: ['Bei mehrstufigen Proxys oder CDNs können die Rate-Limit-Keys auf die IP des Edge-Proxys zurückfallen.'],
+    impact: ['Beeinflusst Login-Rate-Limits, Auditierung und die Erkennung der echten IP.'],
+    notes: ['Die Aktivierung in einer nicht vertrauenswürdigen Proxy-Kette erlaubt Clients, die Quell-IP zu fälschen.'],
+  },
+  'settings.system.schedule': {
+    title: 'Geplante Aufgaben',
+    summary: 'Steuert, ob die tägliche geplante Analyse aktiviert wird und ob beim Start sofort eine Ausführung erfolgt.',
+    usage: 'SCHEDULE_TIME verwendet das 24-Stunden-Format HH:MM; SCHEDULE_TIMES kann mehrere kommagetrennte HH:MM-Zeitpunkte konfigurieren; SCHEDULE_ENABLED steuert, ob der Laufzeit-Scheduler aktiviert ist.',
+    valueNotes: [
+      'Ein bereits laufender Schedule-Modus liest bei der nächsten Scheduler-Prüfung die neuen Werte von SCHEDULE_TIME / SCHEDULE_TIMES und baut die täglichen Jobs neu auf.',
+      'Langlebige WebUI/API/Desktop-Prozesse starten, stoppen oder bauen den Laufzeit-Scheduler nach dem Speichern von SCHEDULE_ENABLED, SCHEDULE_TIME oder SCHEDULE_TIMES gemäß der neuen Konfiguration um.',
+      'Beim Auslösen der geplanten Aufgaben wird die aktuell gespeicherte STOCK_LIST gelesen.',
+    ],
+    impact: ['Beeinflusst die Häufigkeit der automatischen Analysen, das Startverhalten und den Zeitpunkt der Benachrichtigungen im Schedule-Modus.'],
+    notes: [
+      'Auf die Zeitzone der Laufzeitumgebung achten; Container und Server können eine andere Zeitzone als der lokale Rechner haben.',
+      'SCHEDULE_RUN_IMMEDIATELY bleibt ein Startzeit-Verhalten; nach dem Speichern wird nicht sofort eine Analyse ausgelöst.',
+    ],
+  },
+  'settings.system.RUN_IMMEDIATELY': {
+    title: 'Nach dem Start sofort ausführen',
+    summary: 'Steuert, ob beim Start im Nicht-Schedule-Modus sofort eine Analyse ausgeführt wird.',
+    usage: 'false setzen, wenn nur der Dienst gestartet werden soll, ohne sofort zu analysieren.',
+    valueNotes: ['Steuert zusammen mit SCHEDULE_RUN_IMMEDIATELY getrennt den Nicht-Schedule- und den Schedule-Modus.'],
+    impact: ['Beeinflusst das Verhalten der ersten Analyse nach dem Dienststart.'],
+    notes: [
+      'Dies ist eine Startzeit-Einzelausführungskonfiguration des Nicht-Schedule-Modus; nach dem Speichern wird im laufenden WebUI/API-Prozess keine Analyse ausgelöst.',
+      'CLI-Parameter und der Betriebsmodus beeinflussen ebenfalls das endgültige Verhalten; nach der Änderung einen Nicht-Schedule-Prozess neu starten.',
+    ],
+  },
+  'settings.system.TRADING_DAY_CHECK_ENABLED': {
+    title: 'Handelstag-Prüfung',
+    summary: 'Steuert, ob an Nicht-Handelstagen auf Analysen verzichtet wird.',
+    usage: 'Standard true; für erzwungene Ausführungen false setzen oder --force-run verwenden.',
+    valueNotes: ['Kombiniert den Marktkalender zur Bestimmung, ob Märkte wie A-Aktien, Hongkong oder USA geöffnet sind.'],
+    impact: ['Beeinflusst, ob geplante Aufgaben, CLI und GitHub-Actions-Manual-Läufe an Ruhetagen ausgeführt werden; die Web/API-Marktrückblick-Schaltfläche reicht Aufgaben direkt ein.'],
+    notes: ['Nach dem Deaktivieren können an Ruhetagen Berichte ohne Echtzeitkurse erzeugt werden.'],
+  },
+  'settings.system.HTTP_PROXY': {
+    title: 'Netzwerk-Proxy',
+    summary: 'Konfiguriert eine Proxy-Adresse für externe APIs, Modelldienste oder Suchanfragen.',
+    usage: 'In der Form http://host:port eintragen; HTTPS_PROXY kann für HTTPS-Anfragen verwendet werden.',
+    valueNotes: ['Ob der Proxy wirkt, hängt von der zugrunde liegenden Bibliothek und der Art des Lesens der Umgebungsvariablen ab.'],
+    impact: ['Beeinflusst externe Netzwerkanfragen von Datenquellen, LLM, Suche und Benachrichtigungen.'],
+    notes: ['Die Proxy-Adresse nicht als 127.0.0.1 schreiben, das nur lokal sichtbar, aber im Container nicht erreichbar ist.'],
+  },
+  'settings.llm_channel.channel_name': {
+    title: 'Kanalname',
+    summary: 'Der Kanalname dient zur Erzeugung der Umgebungsvariablen LLM_<NAME>_*.',
+    usage: 'Nur Kleinbuchstaben, Zahlen und Unterstriche verwenden; nach dem Speichern wird LLM_CHANNELS geschrieben.',
+    valueNotes: ['Z. B. entspricht deepseek den Variablen LLM_DEEPSEEK_BASE_URL, LLM_DEEPSEEK_API_KEY(S) und LLM_DEEPSEEK_MODELS.'],
+    impact: ['Beeinflusst die Benennung der Kanal-Umgebungsvariablen, die Laufzeitauswahl und die explizite GitHub-Actions-Zuordnung.'],
+    notes: ['Eine Umbenennung migriert nicht automatisch alle externen Umgebungsvariablen des alten Kanals.'],
+  },
+  'settings.llm_channel.protocol': {
+    title: 'Kanalprotokoll',
+    summary: 'Deklariert, welche Art kompatiblen Protokolls dieser Kanal verwendet.',
+    usage: 'OpenAI Compatible eignet sich für die meisten Relay- und kompatiblen Dienste; offizielle Gemini-/Anthropic-/DeepSeek-Dienste können das jeweilige Protokoll wählen.',
+    valueNotes: ['Das Protokoll beeinflusst die Normalisierung des Modellnamen-Präfixes, Verbindungstests und die Art der Modellerkennung.'],
+    impact: ['Beeinflusst den Anforderungsadapter, die Analyse der Modellliste und die Laufzeit-Modellreferenzen.'],
+    notes: ['Protokoll, Base-URL und API-Key müssen zum selben Dienst gehören.'],
+  },
+  'settings.llm_channel.base_url': {
+    title: 'Base-URL',
+    summary: 'Die Schnittstellen-Root-Adresse dieses Kanals.',
+    usage: 'OpenAI-kompatible Dienste verwenden meist eine mit /v1 endende Adresse; einige offizielle SDK-Kanäle können leer bleiben.',
+    valueNotes: ['Die Provider-Voreinstellungen sind nur Referenzwerte; die tatsächliche Verfügbarkeit hängt vom Konto, der Region und der aktuellen Provider-Schnittstelle ab.'],
+    impact: ['Beeinflusst Verbindungstests, Modellerkennung und alle LLM-Anfragen über diesen Kanal.'],
+    notes: ['API-Key und Base-URL verschiedener Provider nicht vermischen.'],
+  },
+  'settings.llm_channel.api_key': {
+    title: 'API-Key',
+    summary: 'Der Zugangsschlüssel, den dieser Kanal für den Aufruf des Modelldienstes benötigt.',
+    usage: 'Einzelner Key direkt eintragen; mehrere Keys mit englischen Kommas trennen.',
+    valueNotes: ['Lokale Dienste ohne Authentifizierung wie lokales Ollama können leer bleiben.'],
+    impact: ['Beeinflusst Verbindungstests, Modellerkennung, Laufzeitaufrufe und die Key-Rotation.'],
+    notes: ['Echte Keys nicht in Screenshots, Protokollen oder Issues ausstellen.'],
+  },
+  'settings.llm_channel.models': {
+    title: 'Kanalmodellliste',
+    summary: 'Deklariert die Modelle, die diesem Kanal zur Laufzeitauswahl zur Verfügung stehen.',
+    usage: 'Per „Modelle abrufen“ aus Kanälen mit /models-Unterstützung laden oder eine kommagetrennte Liste manuell eintragen.',
+    valueNotes: ['Beim Speichern verweisen Laufzeit-Hauptmodell, Agent-Modell, Vision-Modell und Fallback auf diese Modelle.'],
+    impact: ['Beeinflusst die auswählbaren Modelle, die Bereinigung ungültiger Modelle vor dem Speichern und das Laufzeit-Modellrouting.'],
+    notes: ['Ob ein Modell tatsächlich verfügbar ist, hängt weiterhin von den Provider-Berechtigungen und den Laufzeit-Verbindungstests ab.'],
+  },
+  'settings.llm_channel.capability_checks': {
+    title: 'Laufzeit-Fähigkeitsprüfung',
+    summary: 'Prüft manuell, ob das aktuelle Kanalmodell JSON, tools, stream oder vision unterstützt.',
+    usage: 'Fähigkeit auswählen und Prüfung starten; die Prüfung sendet echte LLM-Anfragen.',
+    valueNotes: ['Eine Mehrfachprüfung kann 20-40 Sekunden dauern und Provider-Kontingent verbrauchen.'],
+    impact: ['Betrifft nur die Diagnoseergebnisse der aktuellen Seite; die gespeicherte Konfiguration wird nicht geändert.'],
+    notes: ['Fähigkeits-Labels sind Referenzen; maßgeblich sind die Prüfungsergebnisse und echte Aufrufe.'],
+  },
+  'settings.llm_channel.temperature': {
+    title: 'Temperature',
+    summary: 'Einheitliche Sampling-Temperatur zur Laufzeit.',
+    usage: 'Schiebereglerbereich 0 bis 2; niedrige Werte stabiler, hohe Werte zufälliger.',
+    valueNotes: ['Nach dem Speichern wird LLM_TEMPERATURE geschrieben.'],
+    impact: ['Beeinflusst die Stabilität der Modellausgabe in normalen Analysen, bei Agenten und in der Berichtsgenerierung.'],
+    notes: ['Bei instabilen strukturierten Ausgaben zuerst die Temperatur senken.'],
+  },
+  'settings.llm_channel.primary_model': {
+    title: 'Hauptmodell',
+    summary: 'Das Standard-Laufzeitmodell des normalen Analyseablaufs.',
+    usage: 'Aus der Modellliste aktivierter Kanäle wählen; der Automatikmodus verwendet das erste verfügbare Modell.',
+    valueNotes: ['Nach dem Speichern wird LITELLM_MODEL geschrieben.'],
+    impact: ['Beeinflusst Einzelaktienanalysen, Marktrückblicke und die Standard-Berichtsgenerierung.'],
+    notes: ['Wenn das Modell nicht in der Liste der aktivierten Kanäle enthalten ist, kann es beim Speichern bereinigt oder eine Neuauswahl verlangt werden.'],
+  },
+  'settings.llm_channel.agent_primary_model': {
+    title: 'Agent-Hauptmodell',
+    summary: 'Dediziertes Hauptmodell für Agent-Ketten.',
+    usage: 'Ein eigenes Modell wählbar; der Automatikmodus übernimmt das Hauptmodell der normalen Analyse.',
+    valueNotes: ['Nach dem Speichern wird AGENT_LITELLM_MODEL geschrieben.'],
+    impact: ['Beeinflusst den Aktienassistenten, Strategie-Agenten und zugehörige Tool-Aufrufe.'],
+    notes: ['Ein stärkeres Agent-Modell kann auch höhere Kosten und Latenz bedeuten.'],
+  },
+  'settings.llm_channel.fallback_models': {
+    title: 'Ersatzmodelle',
+    summary: 'Menge der Ersatzmodelle, die bei Fehlern des Hauptmodells verwendet werden.',
+    usage: 'Ein oder mehrere Modelle auswählen; das Hauptmodell wird nicht doppelt in die Ersatzmodelle aufgenommen.',
+    valueNotes: ['Nach dem Speichern wird LITELLM_FALLBACK_MODELS geschrieben.'],
+    impact: ['Beeinflusst die Erfolgsrate des Fallbacks bei LLM-Fehlern und Verhaltensunterschiede über Provider hinweg.'],
+    notes: ['Ersatzmodelle sollten zuvor mit Verbindungstests oder echten Aufrufen validiert werden.'],
+  },
+  'settings.llm_channel.vision_model': {
+    title: 'Vision-Modell',
+    summary: 'Modell für Screenshot-Erkennung, Bildeingabe oder visuelle Fähigkeiten.',
+    usage: 'Ein Modell mit Bildeingabe-Unterstützung wählen; der Automatikmodus folgt der Standard-Vision-Logik.',
+    valueNotes: ['Nach dem Speichern wird VISION_MODEL geschrieben.'],
+    impact: ['Beeinflusst die Extraktion aus Bildern/Screenshots und die visuelle Analyse.'],
+    notes: ['Textmodelle wie DeepSeek unterstützen möglicherweise kein Vision; bitte mit der Fähigkeitsprüfung bestätigen.'],
+  },
+  // ------------------------------------------------------------------
+  // Agent-Konfiguration
+  // ------------------------------------------------------------------
+  'settings.agent.AGENT_MODE': {
+    title: 'Agent-Modus',
+    summary: 'Aktiviert den ReAct-Agenten für die Aktienanalyse als Ersatz für den normalen Analyseablauf.',
+    usage: 'Nach der Aktivierung verwendet das System einen mehrstufigen Reasoning-Agenten anstelle einer einstufigen LLM-Analyse; er kann Tools aufrufen, Nachrichten abrufen und komplexe Reasoning-Ketten ausführen.',
+    valueNotes: [
+      'Bei Deaktivierung wird der normale einstufige LLM-Analysemodus verwendet.',
+      'Der Agent-Modus kann mit AGENT_ARCH kombiniert werden, um single (klassisches ReAct) oder multi (Orchestrator-Pipeline) zu wählen.',
+    ],
+    impact: ['Beeinflusst den Einzelaktienanalyseablauf, die Berichtsqualität und die Anzahl der LLM-Aufrufe.'],
+    notes: ['Der Agent-Modus verbraucht mehr Tokens und Zeit und eignet sich für Szenarien mit tiefem Reasoning.'],
+  },
+  'settings.agent.AGENT_BACKEND': {
+    title: 'Frage-Methode für den Aktienassistenten',
+    showFieldKey: false,
+    summary: 'Wählt, ob der Aktien-Chat die Standardmodell-Konfiguration oder Codex auf dem Gerät verwendet, auf dem DSA läuft.',
+    usage: 'Normalerweise „Automatisch (empfohlen)“ beibehalten. Der Automatikmodus aktiviert kein experimentelles Codex; nur nach Bestätigung, dass das DSA-Gerät Codex installiert und angemeldet hat, den lokalen Codex-Agenten wählen.',
+    valueNotes: [
+      '„Automatisch (empfohlen)“ und „Standardmodell-Konfiguration“ verwenden beide weiterhin die vorhandene Modell- und API-Konfiguration.',
+      '„Codex lokaler Agent (experimentell)“ unterstützt derzeit nur Einzel-Agent-Fragen, nicht Codex Multi Agent oder Codex Deep Research.',
+      'Der lokale Codex-Agent unterstützt aktuell macOS, Linux sowie ein vollständig in WSL laufendes DSA-Backend; native Windows-Backends werden vorerst nicht unterstützt.',
+      'Ein lokaler Agent ist kein Offline-Modell; Aktienfragen und Tool-Ergebnisse können von Diensten verarbeitet werden, die in der Codex-Konfiguration festgelegt sind.',
+    ],
+    impact: ['Betrifft nur den Aktien-Chat; normale Berichte, geplante Analysen, vorhandene Multi-Agent- und Deep-Research-Funktionen bleiben unverändert.'],
+    notes: [
+      'DSA liest oder speichert keine Codex-Anmeldeinformationen; der Codex-Prozess verwendet seinen eigenen Anmeldestatus.',
+      'Die Einstellungsseite prüft nur Konfiguration, Codex-Befehl und benötigtes Protokoll; sie meldet sich nicht an, ruft keine Modelle auf und liest keine Aktiendaten; „Kann versucht werden“ bedeutet nicht, dass die Verfügbarkeit verifiziert wurde.',
+      'Nach dem Speichern kann direkt auf der Frage-Seite gefragt werden; die erste Frage ist die erste echte Ausführung. Falls Codex-Anmeldung oder -Dienst nicht verfügbar ist, behält die Seite die Frage und zeigt den Grund.',
+      'Zum Wiederherstellen des ursprünglichen Verhaltens „Automatisch (empfohlen)“ wählen und speichern.',
+    ],
+    examples: [],
+  },
+  'settings.agent.AGENT_GENERATION_BACKEND': {
+    title: 'Generierungsmethode des Aktienassistenten',
+    showFieldKey: false,
+    summary: 'Legt fest, auf welche Weise der Aktienassistent Antworten erzeugt und mit Tools Kurse, Nachrichten und Verlaufsdaten abruft.',
+    usage: 'Normalerweise „Automatisch“ beibehalten. Das System wählt die aktuell verfügbare Methode zur Beantwortung und zum Aufruf der Datentools; ohne eindeutigen Festlegungswunsch keine Anpassung nötig.',
+    valueNotes: [
+      'Bei Unsicherheit einfach „Automatisch“ wählen.',
+      'Nur wenn eindeutig die normale Modellkonfiguration festgelegt werden soll, auf „Standardmodell-Konfiguration“ ändern.',
+      'Lokale CLI-Generierung kann derzeit nicht direkt für Datentool-Aufrufe des Aktienassistenten verwendet werden; bei expliziter Auswahl wird die Unverfügbarkeit angezeigt oder gemäß Konfiguration auf die normale Modellkonfiguration zurückgegriffen.',
+    ],
+    impact: ['Beeinflusst Antwortgenerierung und Tool-Einstieg des Aktienassistenten; ändert nicht, welche Tools er verwenden kann.'],
+    notes: [
+      'Zum Wiederherstellen des Standardverhaltens „Automatisch“ wählen und speichern.',
+      'Diese Einstellung betrifft nur den Aktienassistenten, nicht die Generierungsmethode normaler Einzelaktienanalysen und Marktrückblicke.',
+    ],
+    examples: [],
+  },
+  'settings.agent.AGENT_MAX_STEPS': {
+    title: 'Maximale Reasoning-Schritte des Agenten',
+    summary: 'Begrenzt die Obergrenze der Reasoning-Schritte des Standardmodell-Agenten sowie die Obergrenze der Tool-Aufrufe des Codex pro Aktienfrage.',
+    usage: 'Beim Standardmodell-Agenten lässt der Standardwert jedes Unter-Agenten seine jeweils voreingestellte Schrittzahl verwenden; eine Erhöhung hebt alle an, eine Senkung kürzt die voreingestellten Schritte. Bei Codex begrenzt dieser Wert, wie oft Datentools pro Aktienfrage aufgerufen werden dürfen.',
+    valueNotes: [
+      'Je höher die Schritte, desto tiefer das Reasoning, aber desto größer auch Dauer und Token-Verbrauch.',
+      'Manche komplexen Szenarien (z. B. Multi-Strategie-Orchestrierung) können höhere Schritte benötigen.',
+    ],
+    impact: ['Beeinflusst die Reasoning-Tiefe des Standardmodell-Agenten oder die Anzahl der Datentool-Aufrufe des Codex pro Aktienfrage sowie die entsprechende Dauer und den Token-Verbrauch.'],
+    notes: ['Sehr niedrige Werte können zu unvollständigem Reasoning führen.'],
+  },
+  'settings.agent.AGENT_SKILLS': {
+    title: 'Agent-Strategieliste',
+    summary: 'Legt die Liste der vom Agenten verwendeten Strategie-Fähigkeiten fest.',
+    usage: 'Strategienamen mit englischen Kommas trennen; leer lassen für die Standardstrategie (bull_trend); auf all setzen, um alle Strategien zu aktivieren.',
+    valueNotes: [
+      'Bei konkreten Strategien (nicht all) verwenden geplante Aufgaben automatisch die Agent-Pipeline.',
+      'Die verfügbaren Strategien hängen von den Definitionsdateien im Verzeichnis strategies/ ab.',
+    ],
+    impact: ['Beeinflusst die Strategieauswahl und die endgültige Signalkombination bei der Agent-Analyse.'],
+    notes: ['Benutzerdefinierte Strategien müssen im durch AGENT_SKILL_DIR angegebenen Verzeichnis liegen.'],
+  },
+  'settings.agent.AGENT_SKILL_DIR': {
+    title: 'Strategieverzeichnis',
+    summary: 'Verzeichnis, das die Definitionsdateien der Agent-Strategien enthält.',
+    usage: 'Einen Pfad relativ zum Projektstamm angeben; im Verzeichnis können Strategiedefinitionen im YAML- oder SKILL.md-Format liegen.',
+    valueNotes: ['Das Standardverzeichnis strategies enthält eingebaute Strategien.'],
+    impact: ['Beeinflusst die Liste der vom Agenten auffindbaren Strategien.'],
+    notes: ['Nach einer Änderung des Verzeichnisses sicherstellen, dass gültige Strategiedefinitionsdateien enthalten sind.'],
+  },
+  'settings.agent.AGENT_NL_ROUTING': {
+    title: 'Natürlichsprachliches Routing',
+    summary: 'Erlaubt dem Bot-Dispatcher, Aktienanfragen über natürliche Spracherkennung an den Agenten weiterzuleiten.',
+    usage: 'Nach der Aktivierung werden hochvertrauenswürdige aktienbezogene Nachrichten im Privatchat (oder @-Erwähnungen in Gruppen) automatisch ohne expliziten Befehl an den Agenten weitergeleitet.',
+    valueNotes: ['Betrifft nur Bot-Integrationen (Feishu, Telegram usw.), nicht die Web-API.'],
+    impact: ['Beeinflusst die Bot-Interaktionserfahrung und die Art der Agent-Auslösung.'],
+    notes: ['Agent-Modus und der entsprechende Bot-Kanal müssen gleichzeitig aktiviert sein.'],
+  },
+  'settings.agent.AGENT_ARCH': {
+    title: 'Agent-Architektur',
+    summary: 'Wählt die Ausführungsarchitektur des Agenten.',
+    usage: 'single verwendet den klassischen ReAct-Executor; multi verwendet die Orchestrator-Pipeline, die mehrere spezialisierte Unter-Agenten zuweisen kann.',
+    valueNotes: [
+      'single eignet sich für einfache Szenarien mit kurzer Reasoning-Kette.',
+      'multi eignet sich für komplexe Analysen und unterstützt die Zusammenarbeit spezialisierter Unter-Agenten für Technikanalyse, Informationsbeschaffung und Risikobewertung.',
+    ],
+    impact: ['Beeinflusst den Agent-Analyseablauf, die Unter-Agenten-Planung und die endgültige Berichtsstruktur.'],
+    notes: ['Nach der Wahl von multi kann die Pipeline über AGENT_ORCHESTRATOR_MODE angepasst werden.'],
+  },
+  'settings.agent.AGENT_ORCHESTRATOR_MODE': {
+    title: 'Orchestrator-Modus',
+    summary: 'Wirkt nur bei AGENT_ARCH=multi und steuert, welche Unter-Agenten die Pipeline enthält.',
+    usage: 'quick: Technik→Entscheidung; standard: Technik→Information→Entscheidung; full: Technik→Information→Risiko→Entscheidung; specialist: full + spezialisierter Agent pro Strategie.',
+    valueNotes: [
+      'Je vollständiger der Modus, desto tiefer die Analyse, aber desto größer auch Dauer und Token-Verbrauch.',
+      'Der specialist-Modus startet für jede Strategie einen eigenen Agenten.',
+    ],
+    impact: ['Beeinflusst die Tiefe und den Ressourcenverbrauch der Multi-Agent-Analyse.'],
+    notes: ['Dieses Feld wirkt nur bei AGENT_ARCH=multi.'],
+  },
+  'settings.agent.AGENT_ORCHESTRATOR_TIMEOUT_S': {
+    title: 'Agent-Timeout',
+    summary: 'Gemeinsames Timeout-Budget (Sekunden) für die Agent-Ausführung.',
+    usage: 'Im single-Modus als Gesamt-Timeout der ReAct-Schleife; im multi-Modus als Gesamt-Timeout der kooperierenden Pipeline. Auf 0 gesetzt wird das Timeout deaktiviert.',
+    valueNotes: [
+      'Nach dem Timeout gibt der Agent die bereits fertigen Teilergebnisse zurück.',
+      'Bei der Analyse mehrerer Aktien oder im specialist-Modus wird eine angemessene Erhöhung empfohlen.',
+    ],
+    impact: ['Beeinflusst die maximale Wartezeit der Agent-Analyse.'],
+    notes: ['Das Timeout beeinflusst nicht die Analyseabläufe anderer Aktien.'],
+  },
+  'settings.agent.AGENT_SKILL_CONCURRENCY': {
+    title: 'Parallelität der Strategie-Experten',
+    summary: 'Steuert, wie viele Strategie-Experten-Agenten im specialist-Modus gleichzeitig laufen dürfen.',
+    usage: 'Standard 3, erlaubter Bereich 1 bis 4. Niedriger reduzieren kann den momentanen Modellaufrufdruck senken; höher kann die Wartezeit der Multi-Strategie-Batchverarbeitung verkürzen.',
+    valueNotes: [
+      'Dieser Wert begrenzt nur die Parallelität des Strategie-Experten-Batches und ändert nicht die Strategieauswahl der endgültigen Kombination.',
+      'Das Gesamt-Agent-Timeout bleibt ein gemeinsames Budget; liegt die Strategieanzahl über der Parallelität, teilt sich eine einzelne Strategie das Restbudget je nach Anzahl der Wellen.',
+    ],
+    impact: ['Beeinflusst Parallelität, Dauer und den Spitzenwert der Modellaufrufe bei der specialist-Multi-Strategie-Analyse.'],
+    notes: ['Ein Fehlschlag oder Timeout einer einzelnen Strategie geht in die Diagnoseinformationen ein und blockiert weder andere Strategien noch die endgültige Entscheidung.'],
+  },
+  'settings.agent.AGENT_RISK_OVERRIDE': {
+    title: 'Vetorecht des Risiko-Agenten',
+    summary: 'Erlaubt dem Risiko-Agenten, Kaufsignale bei erkannten kritischen Risikosignalen abzulehnen.',
+    usage: 'Nach der Aktivierung kann der Risiko-Agent im full/specialist-Modus eine Kaufempfehlung auf Abwarten oder Verkauf herabstufen.',
+    valueNotes: ['Wirkt nur, wenn AGENT_ORCHESTRATOR_MODE die Risiko-Phase enthält.'],
+    impact: ['Beeinflusst den Risikokonservatismus der endgültigen Anlageempfehlungen.'],
+    notes: ['Nach der Deaktivierung ist die Meinung des Risiko-Agenten nur eine Referenz und kann die Entscheidung nicht ablehnen.'],
+  },
+  'settings.agent.DEEP_RESEARCH': {
+    title: 'Deep Research',
+    summary: 'Steuert Token-Budget und Timeout von Deep Research.',
+    usage: 'AGENT_DEEP_RESEARCH_BUDGET legt das maximale Token-Budget fest; AGENT_DEEP_RESEARCH_TIMEOUT legt die Timeout-Sekunden fest.',
+    valueNotes: [
+      'Das Budget umfasst Planung, anschließende Recherche und die endgültige Synthese.',
+      'Ein höheres Budget ermöglicht tiefere Recherchen, verbraucht aber auch mehr.',
+    ],
+    impact: ['Beeinflusst Tiefe und Dauer der Deep-Research-Funktion.'],
+    notes: ['Deep Research ist im Agent-Modus verfügbar.'],
+  },
+  'settings.agent.AGENT_MEMORY_ENABLED': {
+    title: 'Agent-Gedächtnissystem',
+    summary: 'Aktiviert das Gedächtnis- und Kalibrierungssystem, das die Vorhersagegenauigkeit des Agenten verfolgt und die Konfidenz anpasst.',
+    usage: 'Nach der Aktivierung erfasst das System jedes Vorhersageergebnis und vergleicht es mit der späteren tatsächlichen Kursentwicklung, um die Konfidenz künftiger Analysen zu kalibrieren.',
+    valueNotes: ['Der Kalibrierungseffekt tritt erst nach ausreichender Ansammlung von Gedächtnisdaten ein.'],
+    impact: ['Beeinflusst die Konfidenzkalibrierung des Agenten und die langfristige Analysequalität.'],
+    notes: ['In Kombination mit der Backtest-Funktion wirkt es am besten.'],
+  },
+  'settings.agent.AGENT_SKILL_AUTOWEIGHT': {
+    title: 'Automatische Strategiegewichtung',
+    summary: 'Gewichtet Strategien konservativ anhand echter, zurechenbarer und ausreichend bemusterter Skill-Outcomes.',
+    usage: 'Nach der Aktivierung verwendet das System die Bayes’sche Schrumpfung zur Anpassung der Gewichte des kombinierten Signals nur, wenn eine einzelne Skill, ein Horizont und eine Auswertungs-Engine-Version unabhängig 30 ausgewertete Outcomes erreicht.',
+    valueNotes: ['Ohne echte Outcomes, unzureichende Stichproben oder statistische Anomalien bleibt das neutrale Gewicht 1.0.'],
+    impact: ['Beeinflusst die relativen Gewichte bei der Multi-Strategie-Kombination; ein einzelner Leistungsfaktor ist auf etwa 0,833 bis 1,2 begrenzt.'],
+    notes: ['Globale Backtest-Gewinnquoten ersetzen nicht die Skill-Leistung; die durchschnittliche Richtungsrendite fließt derzeit nicht in die Gewichtsformel ein.'],
+  },
+  'settings.agent.AGENT_SKILL_ROUTING': {
+    title: 'Strategie-Routing-Modus',
+    summary: 'Steuert die Art der Strategieauswahl.',
+    usage: 'Im auto-Modus erkennt das System automatisch die Marktumgebung und wählt passende Strategien; im manual-Modus werden nur die in AGENT_SKILLS manuell angegebenen Strategien verwendet.',
+    valueNotes: ['Im auto-Modus wird die Strategieauswahl dynamisch an den Marktzustand (Bullenmarkt/Bärenmarkt/Schwankung usw.) angepasst.'],
+    impact: ['Beeinflusst die Strategieabdeckung bei der Agent-Analyse.'],
+    notes: ['Im manual-Modus sicherstellen, dass AGENT_SKILLS korrekt konfiguriert ist.'],
+  },
+  'settings.agent.context_compression': {
+    title: 'Kontextkompression des Aktienassistenten',
+    summary: 'Steuert die rollierende Zusammenfassungskompression des sichtbaren Chatverlaufs des Aktienassistenten; standardmäßig deaktiviert, um das bestehende Verhalten zu erhalten.',
+    usage: 'Nach Aktivierung von AGENT_CONTEXT_COMPRESSION_ENABLED wird nur der für den Benutzer sichtbare Textverlauf (user/assistant) derselben session_id komprimiert; das Profil steuert den Standard-Trigger-Schwellenwert und die geschützten Runden.',
+    valueNotes: [
+      'cost, balanced und long_context_raw_first bevorzugen jeweils Token-Ersparnis, ausgewogenes Verhalten und das Behalten von mehr Originalkontext.',
+      'Wenn AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS und AGENT_CONTEXT_PROTECTED_TURNS leer bleiben, folgen sie dem aktuellen Profil-Preset; bei expliziter Angabe überschreiben sie das Preset.',
+    ],
+    impact: ['Reduziert den Token-Verbrauch langer Aktienassistenten-Sitzungen, kann aber dazu führen, dass frühere Gesprächsdetails als Zusammenfassung in spätere Antworten eingehen.'],
+    notes: [
+      'Diese Funktion verarbeitet keine Provider-Traces, Thinking-Blöcke, Tool-Aufrufe oder Tool-Ergebnisse und ändert nicht die Durchreichung von Tool-Aufrufen derselben Runde.',
+      'Diese Konfiguration betrifft nur die Kompression des sichtbaren Verlaufs des Aktienassistenten; sie ändert nicht die Semantik von LLM-Provider, Modell, Base-URL, Speicherbereinigung oder Laufzeitpriorität.',
+      'Diese LLM-Kompression gilt derzeit nur für den Aktienassistenten mit „Standardmodell“. Der Codex-Agent verwendet immer die letzten 20 benutzersichtbaren Nachrichten und ruft für Zusammenfassungen kein Agent-Hauptmodell auf. Die gespeicherten Kompressionseinstellungen werden nicht gelöscht und wirken nach der Rückkehr zum Standardmodell weiter.',
+    ],
+  },
+  'settings.agent.event_monitor': {
+    title: 'Ereignisüberwachung',
+    summary: 'Aktiviert im Schedule-Modus eine Hintergrund-Ereignisüberwachung, die Alarmregeln regelmäßig abfragt.',
+    usage: 'AGENT_EVENT_MONITOR_ENABLED aktiviert die Hintergrundüberwachung; AGENT_EVENT_MONITOR_INTERVAL_MINUTES legt das Abfrageintervall (Minuten) fest.',
+    valueNotes: [
+      'Wirkt nur im Schedule-Modus.',
+      'Ein zu kurzes Abfrageintervall kann die API-Aufrufhäufigkeit erhöhen.',
+    ],
+    impact: ['Beeinflusst die Häufigkeit der Hintergrund-Alarmerkennung und den Zeitpunkt der Benachrichtigungen.'],
+    notes: ['Muss zusammen mit Alarmregeln verwendet werden.'],
+  },
+  'settings.agent.EVENT_ALERT_RULES_JSON': {
+    title: 'Ereignis-Alarmregeln (Legacy-JSON)',
+    summary: 'Konfiguriert grundlegende Kurs- und Volumen-Alarmregeln über ein JSON-Array.',
+    usage: 'JSON-Array-Format; jede Regel enthält alert_type, stock_code und Bedingungsfelder. Nur die drei Grundtypen price_cross, price_change_percent und volume_spike werden unterstützt.',
+    valueNotes: [
+      'Erweiterte Regeln wie Technikindikatoren, Beobachtungsliste, Positionen oder Marktampel werden über die Alert-API oder das Web-Alarmzentrum verwaltet und nicht in diesem JSON konfiguriert.',
+      'Im Schedule-Modus werden die Regeln von der Ereignisüberwachung regelmäßig ausgewertet.',
+    ],
+    impact: ['Beeinflusst die Hintergrund-Alarmerkennung und die Benachrichtigungszustellung.'],
+    notes: ['Dieses Feld ist eine Legacy-Konfigurationsmethode; für erweiterte Regeln das Alarmzentrum verwenden.'],
+  },
+  // ------------------------------------------------------------------
+  // Backtest-Konfiguration
+  // ------------------------------------------------------------------
+  'settings.backtest.BACKTEST_ENABLED': {
+    title: 'Backtest-Schalter',
+    summary: 'Aktiviert oder deaktiviert die Backtest-Funktion der historischen Analyse.',
+    usage: 'Nach der Aktivierung vergleicht das System regelmäßig historische Analyseergebnisse mit der späteren tatsächlichen Kursentwicklung, um die Strategiegenauigkeit zu bewerten.',
+    valueNotes: [
+      'Backtest-Datensätze werden weiterhin für die Bewertung historischer Analysen und den bestehenden Gedächtniskalibrierungspfad verwendet; die automatische Skill-Gewichtung nutzt separate zurechenbare Outcome-Daten.',
+      'Das Deaktivieren des Backtests stoppt neue Bewertungen, behält aber bestehende Datensätze.',
+    ],
+    impact: ['Beeinflusst die historische Backtest-Bewertung, die Gedächtniskalibrierung und die Backtest-Berichtsgenerierung; steuert die Skill-Outcome-Gewichtung nicht direkt.'],
+    notes: ['AGENT_SKILL_AUTOWEIGHT hängt nicht mehr von der globalen Backtest-Gewinnquote ab.'],
+  },
+  'settings.backtest.eval_params': {
+    title: 'Backtest-Auswertungsparameter',
+    summary: 'Steuert die Parametergruppe aus Auswertungsfenster, Mindestalter der Datensätze und neutraler Renditezone.',
+    usage: 'BACKTEST_EVAL_WINDOW_DAYS legt das Auswertungsfenster (Handelstage) fest; BACKTEST_MIN_AGE_DAYS bewertet nur Datensätze, deren Erstellungszeit älter als diese Tage ist; BACKTEST_NEUTRAL_BAND_PCT legt den Prozentsatz der neutralen Renditezone fest.',
+    valueNotes: [
+      'Je länger das Auswertungsfenster, desto mehr Handelstage enthält es; die Ergebnisse sind stabiler, aber verzögerter.',
+      'BACKTEST_MIN_AGE_DAYS schließt zu neue Analyse-Datensätze aus und wartet auf ausreichend spätere Kursdaten.',
+      'Kursänderungen innerhalb von BACKTEST_NEUTRAL_BAND_PCT werden als neutral markiert und nicht als richtig oder falsch bewertet.',
+    ],
+    impact: ['Beeinflusst die Bewertungskriterien, die Abdeckung und die Berechnung der Strategiegewichte von Backtest-Ergebnissen.'],
+    notes: ['Die drei Parameter wirken gemeinsam auf das Backtest-Ergebnis; eine Kombinationsanpassung wird empfohlen.'],
+  },
+  'settings.backtest.BACKTEST_ENGINE_VERSION': {
+    title: 'Backtest-Engine-Version',
+    summary: 'Versionslabel der Backtest-Engine.',
+    usage: 'Meist keine Änderung nötig; das Versionslabel kennzeichnet die aktuell verwendete Version der Bewertungslogik.',
+    valueNotes: ['Verschiedene Versionen können unterschiedliche Bewertungsalgorithmen oder Bewertungsregeln verwenden.'],
+    impact: ['Beeinflusst den Backtest-Bewertungsalgorithmus und die Ergebnisse.'],
+    notes: ['Außer bei expliziter Versionsanforderung den Standard beibehalten.'],
+  },
+  // ------------------------------------------------------------------
+  // Berichts-Konfiguration
+  // ------------------------------------------------------------------
+  'settings.report.REPORT_SUMMARY_ONLY': {
+    title: 'Nur Zusammenfassung senden',
+    summary: 'Sendet nur die Analysezusammenfassung, ohne Einzelaktien-Details. Geeignet für einen schnellen Überblick beim Verfolgen vieler Aktien.',
+    usage: 'Nach der Aktivierung enthält die Benachrichtigung nur die Gesamtzusammenfassung; nach der Deaktivierung die Detailanalyse jeder Aktie.',
+    valueNotes: ['Beim Verfolgen vieler Aktien reduziert die Aktivierung den Benachrichtigungsumfang.'],
+    impact: ['Beeinflusst den Detailgrad der Benachrichtigungsinhalte.'],
+    notes: ['Beeinflusst nicht die Berichtsanzeige im Web.'],
+  },
+  'settings.report.REPORT_SHOW_LLM_MODEL': {
+    title: 'Modellname im Bericht anzeigen',
+    summary: 'Zeigt im Berichtsfuß den Namen des für diese Analyse verwendeten LLM-Modells an.',
+    usage: 'Nach der Aktivierung zeigt der Fuß der Benachrichtigungsberichte die Modellkennung; nach der Deaktivierung wird sie ausgeblendet.',
+    valueNotes: ['Betrifft nur die Berichtswiedergabe, nicht Modellauswahl, Laufzeit-Routing oder Migrationsverhalten.'],
+    impact: ['Beeinflusst die Sichtbarkeit der Modellinformationen in Benachrichtigungsberichten.'],
+    notes: ['Zur Fehlersuche bei Modellwechselproblemen kann er vorübergehend aktiviert werden.'],
+  },
+  'settings.report.REPORT_TEMPLATES_DIR': {
+    title: 'Verzeichnis der Berichtsvorlagen',
+    summary: 'Ablageverzeichnis für Jinja2-Berichtsvorlagen.',
+    usage: 'Einen Pfad relativ zum Projektstamm angeben; im Verzeichnis liegen die Jinja2-Template-Dateien.',
+    valueNotes: ['Für die Template-Wiedergabe muss zusätzlich REPORT_RENDERER_ENABLED aktiviert sein.'],
+    impact: ['Beeinflusst die Template-Quelle der Berichtswiedergabe.'],
+    notes: ['Benutzerdefinierte Vorlagen müssen der Jinja2-Syntax entsprechen und die erforderlichen Variablen-Platzhalter enthalten.'],
+  },
+  'settings.report.REPORT_RENDERER_ENABLED': {
+    title: 'Berichts-Rendering-Engine',
+    summary: 'Aktiviert die Jinja2-Template-Rendering-Engine für die Berichtsausgabe.',
+    usage: 'Standardmäßig deaktiviert; nach der Aktivierung werden Berichte über Jinja2-Vorlagen gerendert und unterstützen benutzerdefinierte Formate.',
+    valueNotes: ['Standardmäßig deaktiviert, um ein Rückfallrisiko von null zu gewährleisten.'],
+    impact: ['Beeinflusst das endgültige Ausgabeformat der Berichte.'],
+    notes: ['Vor der Aktivierung bestätigen, dass im REPORT_TEMPLATES_DIR gültige Vorlagendateien vorhanden sind.'],
+  },
+  'settings.report.REPORT_INTEGRITY_ENABLED': {
+    title: 'Berichtsintegritätsprüfung',
+    summary: 'Prüft nach der LLM-Ausgabe Pflichtfelder; bei fehlenden Feldern wird wiederholt oder ein Platzhalter verwendet.',
+    usage: 'Nach der Aktivierung prüft das System, ob Berichte die erforderlichen Analysefelder enthalten; REPORT_INTEGRITY_RETRY steuert die Anzahl der Wiederholungen.',
+    valueNotes: [
+      'Fehlgeschlagene Prüffelder werden mit Platzhaltern gefüllt.',
+      'Wiederholungen erhöhen die Anzahl der LLM-Aufrufe und die Dauer.',
+    ],
+    impact: ['Beeinflusst die Berichtsvollständigkeit und die Anzahl der LLM-Aufrufe.'],
+    notes: ['Bei REPORT_INTEGRITY_RETRY=0 wird nicht wiederholt, sondern nur ein Platzhalter verwendet.'],
+  },
+  'settings.report.REPORT_HISTORY_COMPARE_N': {
+    title: 'Vergleich historischer Signale',
+    summary: 'Zeigt den Signalvergleich der letzten N Analysen pro Aktie. Auf 0 gesetzt wird die Funktion deaktiviert.',
+    usage: 'Nach der Aktivierung zeigt der Bericht eine Vergleichstabelle der Signale der letzten N Analysen.',
+    valueNotes: ['Je größer N, desto breiter der Vergleichsbereich, aber desto länger die Tabelle.'],
+    impact: ['Beeinflusst die Darstellung des Abschnitts zum Vergleich historischer Signale im Bericht.'],
+    notes: ['Auf 0 setzen, um die Funktion zu deaktivieren.'],
+  },
+  'settings.report.SINGLE_STOCK_NOTIFY': {
+    title: 'Sofortige Zustellung pro Aktie',
+    summary: 'Sendet direkt nach Abschluss der Analyse einer Aktie eine Benachrichtigung, statt nach Abschluss aller Analysen gesammelt zu senden.',
+    usage: 'Nach der Aktivierung sendet jede abgeschlossene Aktienanalyse eine eigene Benachrichtigung; nach der Deaktivierung wird gesammelt gesendet.',
+    valueNotes: ['Nach der Aktivierung sind Benachrichtigungen zeitnaher, aber die Zustellfrequenz ist höher.'],
+    impact: ['Beeinflusst Zeitpunkt und Häufigkeit der Benachrichtigungszustellung.'],
+    notes: ['Beim Verfolgen vieler Aktien können viele Benachrichtigungen entstehen.'],
+  },
+  'settings.report.MERGE_EMAIL_NOTIFICATION': {
+    title: 'E-Mail-Benachrichtigung zusammenführen',
+    summary: 'Fasst Einzelaktienanalyse und Marktrückblick in einer E-Mail zusammen.',
+    usage: 'Nach der Aktivierung werden Einzelaktienanalyse und Marktrückblick in derselben E-Mail gesendet.',
+    valueNotes: ['Wirkt nur, wenn sowohl Einzelaktienanalyse als auch Marktrückblick aktiviert sind.'],
+    impact: ['Beeinflusst die Anzahl der E-Mail-Benachrichtigungen und die Inhaltsorganisation.'],
+    notes: ['Nach der Deaktivierung werden Einzelaktienanalyse und Marktrückblick getrennt gesendet.'],
+  },
+  // ------------------------------------------------------------------
+  // Benachrichtigungs-Routing
+  // ------------------------------------------------------------------
+  'settings.notification.channel_routing': {
+    title: 'Benachrichtigungskanal-Routing',
+    summary: 'Legt für verschiedene Benachrichtigungstypen die Ziel-Zustellungskanäle fest.',
+    usage: 'Die drei Routing-Felder steuern die Zielkanäle für Berichtszustellung, Alarmzustellung und Systemfehlerzustellung. Kanalnamen mit englischen Kommas trennen; leer lassen, um an alle konfigurierten Kanäle zu senden.',
+    valueNotes: [
+      'NOTIFICATION_REPORT_CHANNELS steuert die Kanäle der täglichen Analysebericht-Zustellung.',
+      'NOTIFICATION_ALERT_CHANNELS steuert die Kanäle der Ereignis-Alarmzustellung.',
+      'NOTIFICATION_SYSTEM_ERROR_CHANNELS steuert die Kanäle der Systemfehlerzustellung.',
+      'Die verfügbaren Kanäle hängen von den konfigurierten Benachrichtigungskanälen ab (z. B. email, feishu, telegram).',
+    ],
+    impact: ['Beeinflusst die Zustellziele verschiedener Benachrichtigungstypen.'],
+    notes: ['Die angegebenen Kanäle müssen entsprechend konfiguriert sein, sonst wirken sie nicht.'],
+  },
+  'settings.notification.dedup': {
+    title: 'Benachrichtigungs-Deduplizierung und -Abkühlung',
+    summary: 'Steuert das Deduplizierungs-Zeitfenster und die Abkühlzeit für statische Benachrichtigungen.',
+    usage: 'NOTIFICATION_DEDUP_TTL_SECONDS legt das Deduplizierungs-Zeitfenster fest, in dem derselbe Dedup-Key nur einmal gesendet wird; NOTIFICATION_COOLDOWN_SECONDS legt die Abkühlzeit fest, in der derselbe Cooldown-Key nur einmal gesendet wird.',
+    valueNotes: [
+      'Die beiden Mechanismen wirken unabhängig voneinander.',
+      'Wenn beide auf 0 gesetzt sind, wird die jeweilige Deduplizierung oder Abkühlung deaktiviert.',
+    ],
+    impact: ['Beeinflusst die Zustellhäufigkeit und die Duplikatkontrolle von Benachrichtigungen.'],
+    notes: ['Dynamische Benachrichtigungen (z. B. Alarme) haben eine eigene Auslöse- und Abkühllogik.'],
+  },
+  'settings.notification.quiet_hours': {
+    title: 'Ruhezeiten',
+    summary: 'Unterdrückt die Benachrichtigungszustellung innerhalb eines angegebenen Zeitfensters.',
+    usage: 'NOTIFICATION_QUIET_HOURS verwendet das Format HH:MM-HH:MM und unterstützt Zeiträume über Mitternacht; NOTIFICATION_TIMEZONE legt die entsprechende Zeitzone fest.',
+    valueNotes: [
+      'Leer lassen, um die Ruhezeiten zu deaktivieren.',
+      'Bei leerer Zeitzone wird die lokale Systemzeitzone verwendet.',
+    ],
+    impact: ['Beeinflusst den Zeitraum der Benachrichtigungszustellung.'],
+    notes: ['Statische Benachrichtigungen innerhalb der Ruhezeiten werden unterdrückt und übersprungen; sie werden nach Ablauf des Zeitfensters nicht nachgesendet.'],
+  },
+  'settings.notification.MIN_SEVERITY': {
+    title: 'Mindest-Benachrichtigungsstufe',
+    summary: 'Filtert statische Benachrichtigungen unterhalb der angegebenen Stufe heraus.',
+    usage: 'Bei warning werden nur Benachrichtigungen ab Stufe warning gesendet; leer lassen behält das aktuelle Verhalten.',
+    valueNotes: ['Die Stufen von niedrig nach hoch: info, warning, error, critical.'],
+    impact: ['Beeinflusst die Zustellmenge statischer Benachrichtigungen.'],
+    notes: ['Dynamische Benachrichtigungen (z. B. Alarme) haben eine eigene Ereignis- und Stufenbewertung.'],
+  },
+  'settings.notification.DAILY_DIGEST_ENABLED': {
+    title: 'Tägliche Zusammenfassung (reserviert)',
+    summary: 'Reservierter Funktionsschalter; derzeit wird keine tägliche Zusammenfassung gesendet.',
+    usage: 'Dieses Feld ist eine für P4 reservierte Funktion; das Aktivieren hat derzeit keine Wirkung.',
+    valueNotes: ['Für eine spätere tägliche Zusammenfassungs-Zustellfunktion reserviert.'],
+    impact: ['Derzeit keine tatsächliche Wirkung.'],
+    notes: ['In einer künftigen Version werden die Benachrichtigungen des Tages zu einer Zusammenfassungs-Zustellung aggregiert.'],
+  },
+  // ------------------------------------------------------------------
+  // System-Laufzeit
+  // ------------------------------------------------------------------
+  'settings.system.LOG_LEVEL': {
+    title: 'Protokollstufe',
+    summary: 'Steuert die Detailtiefe der Anwendungsprotokollausgabe.',
+    usage: 'Optional DEBUG, INFO, WARNING, ERROR, CRITICAL; je höher die Stufe, desto weniger Ausgabe.',
+    valueNotes: [
+      'DEBUG gibt die detailliertesten Protokolle aus und eignet sich zur Fehlersuche.',
+      'Einige Laufzeitkomponenten werden möglicherweise erst nach einem Neustart vollständig wirksam.',
+    ],
+    impact: ['Beeinflusst Umfang und Detailgrad der Protokollausgabe.'],
+    notes: ['Nach einer Änderung müssen einige Laufzeitkomponenten möglicherweise neu gestartet werden, um vollständig zu wirken.'],
+  },
+  'settings.system.DEBUG': {
+    title: 'Debug-Modus',
+    summary: 'Aktiviert den Debug-Modus und gibt detaillierte Protokollinformationen aus.',
+    usage: 'Nach der Aktivierung werden mehr interne Zustände und Debug-Informationen ausgegeben.',
+    valueNotes: ['In der Produktion wird die Deaktivierung empfohlen, um den Protokollumfang zu reduzieren.'],
+    impact: ['Beeinflusst den Protokolldetailgrad und das Laufzeitverhalten.'],
+    notes: ['Der Debug-Modus kann die Leistung beeinflussen; ein langfristiger Betrieb wird nicht empfohlen.'],
+  },
+  'settings.system.MAX_WORKERS': {
+    title: 'Maximale Anzahl gleichzeitiger Threads',
+    summary: 'Steuert die Anzahl gleichzeitig ausgeführter Aktienanalyse-Threads.',
+    usage: 'Die Anzahl der Arbeits-Threads für parallele Analysen festlegen; je höher der Wert, desto höher die Parallelität, aber desto größer auch das Risiko von API-Limits.',
+    valueNotes: [
+      'Ein niedriger Wert wird empfohlen, um Frequenzbegrenzungen von Datenquellen oder der LLM-API zu vermeiden.',
+      'Begrenzt durch API-Key-Kontingente und Netzwerkbandbreite.',
+    ],
+    impact: ['Beeinflusst die Gesamtdauer der Analyse und die Häufigkeit der API-Aufrufe.'],
+    notes: ['Eine zu hohe Parallelität kann zu Rate-Limit-Fehlern der API führen.'],
+  },
+  'settings.system.ANALYSIS_DELAY': {
+    title: 'Analyseintervall',
+    summary: 'Steuert die Sekunden zwischen den Analysen einzelner Aktien zur Drosselung.',
+    usage: 'Auf 0 gesetzt kein Intervall; bei einem positiven Wert wartet das System nach jeder Aktie die angegebene Sekundenzahl, bevor die nächste analysiert wird.',
+    valueNotes: ['Geeignet, wenn die API strenge Frequenzbegrenzungen hat.'],
+    impact: ['Beeinflusst die Gesamtdauer der Analyse.'],
+    notes: ['Gesamtdauer ≈ Anzahl der Aktien × Dauer pro Aktie + (Anzahl-1) × ANALYSIS_DELAY.'],
+  },
+  'settings.system.SAVE_CONTEXT_SNAPSHOT': {
+    title: 'Analysekontext-Snapshot speichern',
+    summary: 'Steuert, ob der vollständige context_snapshot des Analyseverlaufs in der Datenbank persistent gespeichert wird.',
+    usage: 'Standardmäßig aktiviert. Nach der Deaktivierung speichern neue Verlaufsdatensätze keine context_snapshot-Inhalte wie enhanced_context, market_phase_summary, AnalysisContextPack-Übersicht oder Laufzeit-Diagnosesnapshots.',
+    valueNotes: [
+      'Nach der Deaktivierung können neue Verlaufsdatensätze in den Details, dem completed-Task-Status und den Web-Berichtsseiten keine Zusammenfassungen niedrig sensibler Eingabeblöcke lesen.',
+      'Dieser Schalter deaktiviert weder den Aufbau des AnalysisContextPack für die aktuelle Ausführung noch die niedrig sensible Pack-Zusammenfassung in LLM-Prompts.',
+      'Das CLI-Flag --no-context-snapshot entspricht der Persistenzwirkung von false.',
+    ],
+    impact: ['Beeinflusst die Transparenz des Verlaufs, die für Backtests/Diagnosen verfügbaren Kontext-Snapshot-Informationen und die Datenquellen-Zusammenfassungen der Web-Berichtsseiten.'],
+    notes: ['Für eine vollständige Deaktivierung der P3-P5-Pack-Integration muss der zugehörige Code zurückgerollt werden; es gibt derzeit keinen Laufzeit-Gesamtschalter für Packs.'],
+  },
+  'settings.system.market_review': {
+    title: 'Marktrückblick',
+    summary: 'Steuert den Schalter der Marktrückblick-Funktion, die unterstützte Marktteilmenge und das Farbschema.',
+    usage: 'MARKET_REVIEW_ENABLED aktiviert den Marktrückblick; DAILY_MARKET_CONTEXT_ENABLED ist standardmäßig aktiviert und fügt die tägliche Marktzusammenfassung in die Prompts und die konservativen Schutzleisten der Einzelaktienanalyse ein; MARKET_REVIEW_REGION akzeptiert eine kommagetrennte Marktteilmenge (z. B. cn,us,jp oder cn,us,jp,kr), ohne Angabe wird auf cn zurückgegriffen; MARKET_REVIEW_COLOR_SCHEME wählt das Farbschema.',
+    valueNotes: [
+      'cn umfasst A-Aktien, hk Hongkong, us US-Aktien, jp Japan, kr Korea, both alles (cn,hk,us,jp,kr).',
+      'MARKET_REVIEW_REGION wird direkt in das Textfeld geschrieben und unterstützt kommagetrennte Teilmengen; leere oder ungültige Werte fallen auf cn zurück.',
+      'DAILY_MARKET_CONTEXT_ENABLED ist standardmäßig aktiviert; bei false wird weiterhin ein Marktrückblick-Bericht erzeugt, aber die Einzelaktienanalyse liest keine Marktzusammenfassung und mildert keine Kauf-/Aufstockungsempfehlungen.',
+      'Das Farbschema beeinflusst die Farbdarstellung von Indexgewinnen/-verlusten im Marktrückblick: green_up = grün bei Gewinn/rot bei Verlust, red_up = rot bei Gewinn/grün bei Verlust.',
+    ],
+    impact: ['Beeinflusst Inhalt und visuelle Darstellung des Marktüberblicks in den Analyseberichten.'],
+    notes: ['Der Marktrückblick hängt von der Verfügbarkeit der Indexdatenquellen der entsprechenden Märkte ab.'],
+  },
+};
+
 function getPreferredHelpMap(locale?: string | null): SettingsHelpMap {
-  if (locale?.toLowerCase().startsWith('en')) {
+  const normalized = locale?.toLowerCase() ?? '';
+  if (normalized.startsWith('de')) {
+    return settingsHelpDe;
+  }
+  if (normalized.startsWith('en')) {
     return settingsHelpEnUS;
   }
   return settingsHelpZhCN;
@@ -2434,14 +3663,28 @@ export function getSettingsHelpContent(
     return null;
   }
 
-  const localized = getPreferredHelpMap(locale)[helpKey] ?? settingsHelpZhCN[helpKey];
+  const preferredMap = getPreferredHelpMap(locale);
+  let localized = preferredMap[helpKey];
+  if (!localized) {
+    // German falls back to English first, then Chinese; other locales fall back to Chinese directly.
+    localized =
+      preferredMap === settingsHelpDe
+        ? settingsHelpEnUS[helpKey] ?? settingsHelpZhCN[helpKey]
+        : settingsHelpZhCN[helpKey];
+  }
   if (localized) {
     return localized;
   }
 
   if (fallbackDescription) {
+    const normalized = locale?.toLowerCase() ?? '';
+    const title = normalized.startsWith('en')
+      ? 'Configuration help'
+      : normalized.startsWith('de')
+        ? 'Hilfe zur Konfiguration'
+        : '配置说明';
     return {
-      title: locale?.toLowerCase().startsWith('en') ? 'Configuration help' : '配置说明',
+      title,
       summary: fallbackDescription,
     };
   }

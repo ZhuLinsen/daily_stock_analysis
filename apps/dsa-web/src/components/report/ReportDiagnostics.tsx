@@ -123,6 +123,36 @@ const TEXT = {
       skipped: '건너뜀',
     },
   },
+  de: {
+    eyebrow: 'LAUFDIAGNOSE',
+    title: 'Laufstatus',
+    loading: 'Diagnose wird geladen...',
+    unavailable: 'Diagnose nicht verfügbar',
+    noComponents: 'Keine Komponentendiagnose',
+    components: 'Kernpfad',
+    advanced: 'Erweiterte Felder',
+    copy: 'Diagnose kopieren',
+    copied: 'Kopiert',
+    scope: 'Abruf / LLM / Speichern / Benachrichtigungspfad',
+    trace: 'Trace',
+    task: 'Task',
+    query: 'Query',
+    trigger: 'Auslöser',
+    overall: {
+      normal: 'Normal',
+      degraded: 'Degradiert',
+      failed: 'Fehlgeschlagen',
+      unknown: 'Unbekannt',
+    },
+    component: {
+      ok: 'Normal',
+      degraded: 'Letzter Fehler',
+      failed: 'Fehlgeschlagen',
+      unknown: 'Unbekannt',
+      not_configured: 'Nicht konfiguriert',
+      skipped: 'Übersprungen',
+    },
+  },
 } as const;
 
 const OVERALL_STATUS_STYLE: Record<RunDiagnosticStatus, { variant: BadgeVariant; tone: StatusTone }> = {

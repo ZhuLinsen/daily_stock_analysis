@@ -1,7 +1,7 @@
 import type { ReportLanguage } from '../types/analysis';
 
 export const normalizeReportLanguage = (value?: string | null): ReportLanguage =>
-  value === 'en' ? 'en' : value === 'ko' ? 'ko' : 'zh';
+  value === 'en' ? 'en' : value === 'ko' ? 'ko' : value === 'de' ? 'de' : 'zh';
 
 const REPORT_TEXT = {
   zh: {
@@ -153,6 +153,56 @@ const REPORT_TEXT = {
     laggingBoard: '약세',
     neutralBoard: '중립',
     reanalyze: '재분석',
+  },
+  de: {
+    keyInsights: 'WICHTIGSTE ERKENNTNISSE',
+    noAnalysisSummary: 'Noch keine Analysezusammenfassung',
+    actionAdvice: 'Handlungsempfehlung',
+    noAdvice: 'Noch keine Empfehlung',
+    trendPrediction: 'Trendausblick',
+    noPrediction: 'Noch keine Prognose',
+    marketSentiment: 'Marktstimmung',
+    strategyPoints: 'STRATEGIEPUNKTE',
+    sniperLevels: 'Aktionskurse',
+    idealBuy: 'Idealer Einstieg',
+    secondaryBuy: 'Zweiter Einstieg',
+    stopLoss: 'Stop-Loss',
+    takeProfit: 'Take-Profit',
+    noValue: '—',
+    newsFeed: 'NEWS-FEED',
+    relatedNews: 'Verwandte Nachrichten',
+    refresh: 'Aktualisieren',
+    retry: 'Erneut versuchen',
+    dismiss: 'Schließen',
+    details: 'Details ansehen',
+    loadingNews: 'Nachrichten werden geladen...',
+    noNews: 'Keine verwandten Nachrichten',
+    noNewsDescription: 'Aktualisieren Sie später, um die neuesten Updates zu sehen.',
+    openLink: 'Öffnen',
+    transparency: 'TRANSPARENZ',
+    traceability: 'Datenrückverfolgbarkeit',
+    rawResult: 'Roh-Ergebnis der Analyse',
+    analysisSnapshot: 'Analyse-Schnappschuss',
+    copy: 'Kopieren',
+    copied: 'Kopiert!',
+    recordId: 'Datensatz-ID',
+    fullReport: 'Vollständiger Analysebericht',
+    loadingReport: 'Bericht wird geladen...',
+    loadReportFailed: 'Bericht konnte nicht geladen werden',
+    copyMarkdownSource: 'Markdown-Quelle kopieren',
+    copyPlainText: 'Nur Text kopieren',
+    generateShareImage: 'Teilen',
+    generatingShareImage: 'Wird vorbereitet...',
+    shareImageReady: 'Fertig',
+    shareImageFailed: 'Erneut versuchen',
+    analysisModel: 'Modell',
+    fearGreedIndex: 'Angst- und Gier-Index',
+    boardLinkage: 'SEKTOR-VERKNÜPFUNG',
+    relatedBoards: 'Verwandte Sektoren',
+    leadingBoard: 'Führend',
+    laggingBoard: 'Nachzügler',
+    neutralBoard: 'Neutral',
+    reanalyze: 'Erneut analysieren',
   },
 } as const;
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for Korean (ko) output-language directives in analysis prompts (#1614)."""
+"""Tests for Korean (ko) / German (de) output-language directives in analysis prompts (#1614)."""
 
 import unittest
 
@@ -48,6 +48,15 @@ class DecisionAgentLanguageDirectiveTestCase(unittest.TestCase):
         prompt = self._system_prompt("zh")
         self.assertIn("所有面向用户的人类可读文本值必须使用中文。", prompt)
 
+    def test_german_dashboard_directive(self) -> None:
+        prompt = self._system_prompt("de")
+        self.assertIn("Write all human-readable JSON values in German (Deutsch).", prompt)
+        self.assertIn("`decision_type` must remain `buy|hold|sell`.", prompt)
+
+    def test_german_chat_directive(self) -> None:
+        prompt = self._system_prompt("de", chat=True)
+        self.assertIn("Antworte immer auf Deutsch.", prompt)
+
 
 class StructuralLanguageRoutingTestCase(unittest.TestCase):
     def test_context_pack_korean_reuses_english_scaffolding(self) -> None:
@@ -55,11 +64,20 @@ class StructuralLanguageRoutingTestCase(unittest.TestCase):
         self.assertEqual(normalize_analysis_context_pack_language("en"), "en")
         self.assertEqual(normalize_analysis_context_pack_language("zh"), "zh")
 
+    def test_context_pack_german_reuses_english_scaffolding(self) -> None:
+        self.assertEqual(normalize_analysis_context_pack_language("de"), "en")
+
     def test_market_phase_korean_matches_english_structure(self) -> None:
         ko_section = format_market_phase_prompt_section(_phase_ctx(), report_language="ko")
         en_section = format_market_phase_prompt_section(_phase_ctx(), report_language="en")
         self.assertEqual(ko_section, en_section)
         self.assertIn("## Market Phase Context", ko_section)
+
+    def test_market_phase_german_matches_english_structure(self) -> None:
+        de_section = format_market_phase_prompt_section(_phase_ctx(), report_language="de")
+        en_section = format_market_phase_prompt_section(_phase_ctx(), report_language="en")
+        self.assertEqual(de_section, en_section)
+        self.assertIn("## Market Phase Context", de_section)
 
 
 if __name__ == "__main__":

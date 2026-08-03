@@ -101,9 +101,10 @@ SENSITIVE_MARKERS = (
 
 
 def normalize_analysis_context_pack_language(report_language: str = "zh") -> str:
-    # Korean reuses the English structural context labels; the model is
-    # constrained to Korean output via the analysis output-language directive.
-    return "en" if str(report_language or "").lower() in {"en", "ko"} else "zh"
+    # Korean and German reuse the English structural context labels; the
+    # model is constrained to the target output language via the analysis
+    # output-language directive.
+    return "en" if str(report_language or "").lower() in {"en", "ko", "de"} else "zh"
 
 
 def get_analysis_context_pack_block_labels(report_language: str = "zh") -> Dict[str, str]:

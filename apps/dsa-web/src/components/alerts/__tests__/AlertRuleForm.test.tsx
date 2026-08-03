@@ -188,7 +188,7 @@ describe('AlertRuleForm', () => {
     render(<AlertRuleForm onSubmit={onSubmit} />);
 
     fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'watchlist' } });
-    expect(screen.queryByText('组合止损')).not.toBeInTheDocument();
+    expect(screen.queryByText('Portfolio-Stop-Loss')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('价格阈值'), { target: { value: '10' } });
     fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
 
@@ -207,7 +207,7 @@ describe('AlertRuleForm', () => {
 
     fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'portfolio_account' } });
     await waitFor(() => expect(getAccounts).toHaveBeenCalledWith(false));
-    expect(screen.queryByText('价格突破')).not.toBeInTheDocument();
+    expect(screen.queryByText('Kursdurchbruch')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('账户'), { target: { value: '9' } });
     fireEvent.change(screen.getByLabelText('止损模式'), { target: { value: 'breach' } });
     fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
