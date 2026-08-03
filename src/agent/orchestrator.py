@@ -1523,10 +1523,15 @@ class AgentOrchestrator:
         data_perspective = dashboard_block.get("data_perspective")
         if not isinstance(data_perspective, dict):
             data_perspective = {}
+        # 始终用确定性行情/趋势量比重写 LLM 占位（避免 N/A 与 0.0 并存）
+        built_data_perspective = self._build_data_perspective(ctx, key_levels)
         if not data_perspective:
-            built_data_perspective = self._build_data_perspective(ctx, key_levels)
-            if built_data_perspective:
-                data_perspective = built_data_perspective
+            data_perspective = built_data_perspective or {}
+        else:
+            data_perspective = self._reconcile_data_perspective(
+                data_perspective,
+                built_data_perspective,
+            )
         if data_perspective:
             dashboard_block["data_perspective"] = data_perspective
 
@@ -1698,10 +1703,15 @@ class AgentOrchestrator:
                 "resistance_level": key_levels.get("resistance") or key_levels.get("current_resistance") or "N/A",
             }
             data_perspective["volume_analysis"] = {
-                "volume_ratio": (realtime or {}).get("volume_ratio", "N/A"),
-                "turnover_rate": (realtime or {}).get("turnover_rate", "N/A"),
-                "volume_status": trend_dict.get("volume_status") or tech_raw.get("volume_status", "N/A"),
-                "volume_meaning": tech_raw.get("reasoning", "") if tech_raw else "",
+                "volume_ratio": self._resolve_volume_ratio(realtime or {}, trend_dict, tech_raw),
+                "turnover_rate": self._resolve_turnover_rate(realtime or {}),
+                "volume_status": trend_dict.get("volume_status")
+                    or tech_raw.get("volume_status", "N/A"),
+                "volume_meaning": (
+                    trend_dict.get("volume_trend")
+                    or (tech_raw.get("reasoning", "") if tech_raw else "")
+                    or ""
+                ),
             }
 
         if isinstance(chip, dict):
@@ -1716,6 +1726,79 @@ class AgentOrchestrator:
             }
 
         return data_perspective
+
+
+    @staticmethod
+    def _is_valid_volume_ratio(value) -> bool:
+        """判定量比是否为可用数值（排除 None / N/A / 0 等 LLM 占位）。"""
+        if value is None or value == "" or value == "N/A":
+            return False
+        try:
+            return float(value) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _resolve_volume_ratio(cls, realtime: dict, trend_dict: dict, tech_raw: dict):
+        """优先实时量比，其次日线 volume_ratio_5d；都没有则 N/A。"""
+        for source in (realtime, trend_dict, tech_raw):
+            if not isinstance(source, dict):
+                continue
+            for key in ("volume_ratio", "volume_ratio_5d"):
+                raw = source.get(key)
+                if cls._is_valid_volume_ratio(raw):
+                    return round(float(raw), 2)
+        return "N/A"
+
+    @staticmethod
+    def _resolve_turnover_rate(realtime: dict):
+        """实时换手率缺失时返回 N/A，避免 LLM 填 0。"""
+        if not isinstance(realtime, dict):
+            return "N/A"
+        value = realtime.get("turnover_rate")
+        if value is None or value == "" or value == "N/A":
+            return "N/A"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return value
+        if number < 0:
+            return "N/A"
+        return round(number, 4) if number < 1 else round(number, 2)
+
+    def _reconcile_data_perspective(
+        self,
+        llm_perspective: dict,
+        built_perspective: dict | None,
+    ) -> dict:
+        """合并 LLM 数据透视与确定性字段：量比/换手率以确定性为准。"""
+        result = dict(llm_perspective or {})
+        built = built_perspective if isinstance(built_perspective, dict) else {}
+        built_vol = built.get("volume_analysis") if isinstance(built.get("volume_analysis"), dict) else {}
+        llm_vol = result.get("volume_analysis") if isinstance(result.get("volume_analysis"), dict) else {}
+        merged_vol = dict(llm_vol)
+
+        built_ratio = built_vol.get("volume_ratio", "N/A")
+        if self._is_valid_volume_ratio(built_ratio):
+            merged_vol["volume_ratio"] = built_ratio
+        elif not self._is_valid_volume_ratio(merged_vol.get("volume_ratio")):
+            merged_vol["volume_ratio"] = "N/A"
+
+        built_turnover = built_vol.get("turnover_rate", "N/A")
+        if built_turnover not in (None, "", "N/A"):
+            merged_vol["turnover_rate"] = built_turnover
+        elif merged_vol.get("turnover_rate") in (None, "", 0, 0.0, "0", "0.0"):
+            merged_vol["turnover_rate"] = "N/A"
+
+        if built_vol.get("volume_status") and built_vol.get("volume_status") != "N/A":
+            if not merged_vol.get("volume_status"):
+                merged_vol["volume_status"] = built_vol["volume_status"]
+        if built_vol.get("volume_meaning") and not merged_vol.get("volume_meaning"):
+            merged_vol["volume_meaning"] = built_vol["volume_meaning"]
+
+        result["volume_analysis"] = merged_vol
+        return result
+
 
     def _collect_risk_alerts(
         self,

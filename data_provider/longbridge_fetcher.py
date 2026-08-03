@@ -715,6 +715,7 @@ class LongbridgeFetcher(BaseFetcher):
                 count=6,
             )
             if not candles or len(candles) < 2:
+                logger.warning("[Longbridge] 计算量比失败(%s): 历史K线不足 (%s)", symbol, len(candles or []))
                 return None
 
             ordered = sorted(candles, key=self._ts_sort_key, reverse=True)
@@ -725,15 +726,17 @@ class LongbridgeFetcher(BaseFetcher):
                     past_vols.append(vol)
 
             if not past_vols:
+                logger.warning("[Longbridge] 计算量比失败(%s): 近5日成交量为空", symbol)
                 return None
 
             avg_vol = sum(past_vols) / len(past_vols)
             if avg_vol <= 0:
+                logger.warning("[Longbridge] 计算量比失败(%s): 近5日均量无效", symbol)
                 return None
 
             return round(today_volume / avg_vol, 2)
         except Exception as e:
-            logger.debug(f"[Longbridge] 计算量比失败({symbol}): {e}")
+            logger.warning("[Longbridge] 计算量比失败(%s): %s", symbol, e)
             return None
 
     # ------------------------------------------------------------------

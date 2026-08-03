@@ -89,7 +89,7 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
 
 ## 规则
 
-1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果。
+1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果；量比/换手率缺失时填 `null`（勿填 `0`）。
 2. **系统化分析** — 严格按工作流程分阶段执行，每阶段完整返回后再进入下一阶段，**禁止**将不同阶段的工具合并到同一次调用中。
 3. **应用交易技能** — 评估每个激活技能的条件，在报告中体现技能判断结果。
 4. **输出格式** — 最终响应必须是有效的决策仪表盘 JSON。
@@ -123,7 +123,7 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
         "data_perspective": {{
             "trend_status": {{"ma_alignment": "", "is_bullish": true, "trend_score": 0}},
             "price_position": {{"current_price": 0, "ma5": 0, "ma10": 0, "ma20": 0, "bias_ma5": 0, "bias_status": "", "support_level": 0, "resistance_level": 0}},
-            "volume_analysis": {{"volume_ratio": 0, "volume_status": "", "turnover_rate": 0, "volume_meaning": ""}},
+            "volume_analysis": {{"volume_ratio": null, "volume_status": "", "turnover_rate": null, "volume_meaning": ""}},
             "chip_structure": {{"profit_ratio": 0, "avg_cost": 0, "concentration": 0, "chip_health": ""}}
         }},
         "intelligence": {{
@@ -248,7 +248,7 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 
 ## 规则
 
-1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果。
+1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果；量比/换手率缺失时填 `null`（勿填 `0`）。
 2. **系统化分析** — 严格按工作流程分阶段执行，每阶段完整返回后再进入下一阶段，**禁止**将不同阶段的工具合并到同一次调用中。
 3. **应用交易技能** — 评估每个激活技能的条件，在报告中体现技能判断结果。
 4. **输出格式** — 最终响应必须是有效的决策仪表盘 JSON。
@@ -282,7 +282,7 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
         "data_perspective": {{
             "trend_status": {{"ma_alignment": "", "is_bullish": true, "trend_score": 0}},
             "price_position": {{"current_price": 0, "ma5": 0, "ma10": 0, "ma20": 0, "bias_ma5": 0, "bias_status": "", "support_level": 0, "resistance_level": 0}},
-            "volume_analysis": {{"volume_ratio": 0, "volume_status": "", "turnover_rate": 0, "volume_meaning": ""}},
+            "volume_analysis": {{"volume_ratio": null, "volume_status": "", "turnover_rate": null, "volume_meaning": ""}},
             "chip_structure": {{"profit_ratio": 0, "avg_cost": 0, "concentration": 0, "chip_health": ""}}
         }},
         "intelligence": {{
@@ -407,7 +407,7 @@ LEGACY_DEFAULT_CHAT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mark
 
 ## 规则
 
-1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果。
+1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果；量比/换手率缺失时填 `null`（勿填 `0`）。
 2. **应用交易技能** — 评估每个激活技能的条件，在回答中体现技能判断结果。
 3. **自由对话** — 根据用户的问题，自由组织语言回答，不需要输出 JSON。
 4. **风险优先** — 必须排查风险（股东减持、业绩预警、监管问题）。
@@ -444,7 +444,7 @@ CHAT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数�
 
 ## 规则
 
-1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果。
+1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果；量比/换手率缺失时填 `null`（勿填 `0`）。
 2. **应用交易技能** — 评估每个激活技能的条件，在回答中体现技能判断结果。
 3. **自由对话** — 根据用户的问题，自由组织语言回答，不需要输出 JSON。
 4. **风险优先** — 必须排查风险（股东减持、业绩预警、监管问题）。

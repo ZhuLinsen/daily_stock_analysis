@@ -581,6 +581,9 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
 
+            # 实时行情缺量比时，用日线 volume_ratio_5d 回填，供 snapshot / Agent 共用
+            realtime_quote = self._fill_volume_ratio_from_trend(realtime_quote, trend_result, code)
+
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
                 self._emit_progress(58, f"{stock_name}：正在切换 Agent 分析链路")
@@ -938,6 +941,8 @@ class StockAnalysisPipeline:
         # 添加实时行情（兼容不同数据源的字段差异）
         if realtime_quote:
             # 使用 getattr 安全获取字段，缺失字段返回 None 或默认值
+            # 防御性再填一次：部分路径可能未走 _fill_volume_ratio_from_trend
+            realtime_quote = self._fill_volume_ratio_from_trend(realtime_quote, trend_result, enhanced.get('code', ''))
             volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
             quote_source = getattr(realtime_quote, 'source', None)
             quote_source_name = getattr(quote_source, 'value', quote_source)
@@ -2435,6 +2440,36 @@ class StockAnalysisPipeline:
                 return int(match.group())
         return default
     
+    @staticmethod
+    def _fill_volume_ratio_from_trend(realtime_quote, trend_result, code: str = ""):
+        """实时 volume_ratio 缺失时，用趋势分析的 volume_ratio_5d 回填。"""
+        if realtime_quote is None or trend_result is None:
+            return realtime_quote
+        current = getattr(realtime_quote, "volume_ratio", None)
+        try:
+            if current is not None and float(current) > 0:
+                return realtime_quote
+        except (TypeError, ValueError):
+            pass
+        fallback = getattr(trend_result, "volume_ratio_5d", None)
+        try:
+            fallback_num = float(fallback) if fallback is not None else 0.0
+        except (TypeError, ValueError):
+            fallback_num = 0.0
+        if fallback_num <= 0:
+            return realtime_quote
+        filled = round(fallback_num, 2)
+        try:
+            realtime_quote.volume_ratio = filled
+            logger.info(
+                "[%s] 实时量比缺失，已用日线量比回填: volume_ratio=%s",
+                code or getattr(realtime_quote, "code", ""),
+                filled,
+            )
+        except Exception as exc:
+            logger.debug("[%s] 回填实时量比失败: %s", code, exc)
+        return realtime_quote
+
     def _describe_volume_ratio(self, volume_ratio: float) -> str:
         """
         量比描述
