@@ -69,4 +69,6 @@ services:
     command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "${API_PORT:-8000}"]
     # 若使用 network_mode: host，则以下 ports 映射无效，端口由 command 中的 --port 指定
     ports:
-      - "${API_PORT:-8000}:${API_PORT:-8000}"
+      # Bound to localhost only: the Web UI stays reachable on this machine
+      # without being exposed to the network.
+      - "127.0.0.1:${API_PORT:-8000}:${API_PORT:-8000}"
