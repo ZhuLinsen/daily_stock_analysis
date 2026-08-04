@@ -52,10 +52,12 @@ const DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES = Object.freeze([
   path.join('data', 'stock_analysis.db'),
   path.join('data', 'stock_analysis.db-wal'),
   path.join('data', 'stock_analysis.db-shm'),
-  path.join('data', 'alphasift', 'hotspots.json'),
-  path.join('data', 'alphasift', 'hotspot.history.jsonl'),
-  path.join('data', 'alphasift', 'hotspot_details'),
-  path.join('data', 'alphasift', 'snapshot.last_good.json'),
+  path.join('data', 'screening', 'hotspots.json'),
+  path.join('data', 'screening', 'hotspot.history.jsonl'),
+  path.join('data', 'screening', 'hotspot_details'),
+  path.join('data', 'screening', 'snapshot.last_good.json'),
+  path.join('data', 'screening', 'daily_history'),
+  path.join('data', 'screening', 'industry_provider_cache'),
   path.join('logs', 'desktop.log'),
 ]);
 

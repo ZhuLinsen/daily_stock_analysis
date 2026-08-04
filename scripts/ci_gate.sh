@@ -23,7 +23,19 @@ deterministic_checks() {
 
 offline_test_suite() {
   echo "==> backend-gate: offline test suite"
-  python -m pytest -m "not network"
+  # ``--timeout=120`` hard-fails any single test that runs longer than two
+  # minutes (issue #2131: backend-gate previously hung indefinitely around
+  # AlphaSift hotspot cases without leaving any traceback). ``-o
+  # timeout_method=thread`` makes pytest-timeout use a watcher thread that
+  # is reliable even when the test has swallowed Ctrl-C / signal handling
+  # (yfinance, AlphaSift). ``-o faulthandler_timeout=300`` dumps all
+  # thread + interpreter stacks to stderr after five minutes of total
+  # test silence, giving us a post-mortem root cause for any future
+  # CI hang instead of ``backend-gate`` being silently cancelled by the
+  # workflow timeout.
+  python -m pytest -m "not network" \
+    --timeout=120 -o timeout_method=thread \
+    -o faulthandler_timeout=300
 }
 
 run_all() {

@@ -20,6 +20,10 @@ MIN_MAX_WORDS = 10
 MIN_MAX_BYTES = 40
 FENCED_CODE_BLOCK_RE = re.compile(r"(^```[^\n]*\n.*?^```[ \t]*$)", re.MULTILINE | re.DOTALL)
 FENCED_CODE_BLOCK_PLACEHOLDER = "@@DSA_FENCED_CODE_BLOCK_{}@@"
+HIDDEN_MARKDOWN_METADATA_RE = re.compile(
+    r"^\[dsa-[^\]]+\]:\s+#\s+\([^)\n]*\)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # Unicode code point ranges for special characters.
 _SPECIAL_CHAR_RANGE = (0x10000, 0xFFFFF)
@@ -233,6 +237,9 @@ def markdown_to_plain_text(markdown_text: str) -> str:
     移除 Markdown 格式标记，保留可读性
     """
     text = markdown_text
+
+    # 移除 Markdown reference definitions（例如隐藏元数据标记）
+    text = strip_markdown_reference_definitions(text)
     
     # 移除标题标记 # ## ###
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
@@ -260,6 +267,18 @@ def markdown_to_plain_text(markdown_text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     
     return text.strip()
+
+
+def strip_hidden_markdown_metadata(markdown_text: str) -> str:
+    """Strip hidden internal Markdown metadata lines while preserving normal refs."""
+
+    return HIDDEN_MARKDOWN_METADATA_RE.sub("", markdown_text)
+
+
+def strip_markdown_reference_definitions(markdown_text: str) -> str:
+    """Strip Markdown reference-definition lines while preserving the rest."""
+
+    return re.sub(r'^\[[^\]]+\]:\s+.*$', '', markdown_text, flags=re.MULTILINE)
 
 
 def _bytes(s: str) -> int:

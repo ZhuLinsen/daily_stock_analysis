@@ -11,6 +11,7 @@
 """
 
 import logging
+import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -154,6 +155,13 @@ def _get_market_review_market_heading(language: Any, market: str) -> str:
         "",
     )
     return str(review_text.get(title_key) or market.upper()).lstrip("#").strip()
+
+
+def _market_review_region_metadata(region: Any) -> str:
+    normalized = str(region or "").strip().lower()
+    if normalized in {market for market, _, _ in _MARKET_REVIEW_MARKETS}:
+        return f"[dsa-market-region]: # ({normalized})\n\n"
+    return ""
 
 
 def _resolve_market_review_regions(raw_region: Optional[str]) -> list[str]:
@@ -357,7 +365,19 @@ def run_market_review(
                     wrapper_title=review_text["push_title"],
                 )
 
-                success = notifier.send(report_content, email_send_to_all=True, route_type="report")
+                send_kwargs: Dict[str, Any] = {
+                    "email_send_to_all": True,
+                    "route_type": "report",
+                }
+                try:
+                    supports_payload = (
+                        "structured_payload" in inspect.signature(notifier.send).parameters
+                    )
+                except (TypeError, ValueError):
+                    supports_payload = False
+                if supports_payload:
+                    send_kwargs["structured_payload"] = market_review_payload
+                success = notifier.send(report_content, **send_kwargs)
                 _record_market_review_notification_run(
                     query_id=history_query_id,
                     channel="report",
@@ -497,10 +517,11 @@ def _render_market_review_payload_markdown(
     wrapper_title: Optional[str] = None,
 ) -> str:
     """Render Markdown from the structured market-review payload for file/push compatibility."""
+    metadata = _market_review_region_metadata(payload.get("region"))
     body = _render_market_review_payload_body(payload)
     if wrapper_title:
-        return f"{wrapper_title}\n\n{body}".strip()
-    return body.strip()
+        return f"{metadata}{wrapper_title}\n\n{body}".strip()
+    return f"{metadata}{body}".strip()
 
 
 def _render_market_review_merge_markdown(

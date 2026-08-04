@@ -88,6 +88,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
+open "/Applications/Daily Stock Analysis.app"
 ```
 
 如果应用不在 `/Applications`，请将命令中的路径替换为实际 `.app` 路径。不要对整个“应用程序”目录执行 `xattr`，也不要对来源不明的应用执行此命令。不同 macOS 版本可能仍拒绝 unsigned 应用，清除 quarantine 不保证能够放行。长期彻底消除该提示需要在发布流程中接入 Apple Developer 签名与 notarization（公证），不属于上述临时放行步骤。
@@ -216,7 +217,7 @@ npm install
 npm run build
 ```
 
-2) 按现有脚本打包 Python 后端（脚本已内置 AlphaSift、Futu SDK 与 AkShare 数据文件收集）
+2) 按现有脚本打包 Python 后端（脚本会收集 DSA 选股引擎、Futu SDK 与 AkShare 数据文件）
 
 - Windows：
 
@@ -230,7 +231,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 bash scripts/build-backend-macos.sh
 ```
 
-该脚本会在安装依赖后执行 `--collect-all alphasift`、`--collect-all futu` 和 `--collect-data akshare`。构建完成后会通过冻结可执行文件校验 `alphasift.dsa_adapter`、`futu`、`orjson` 均可导入，并确认 AkShare 的 `file_fold/calendar.json` 已进入冻结产物，避免发行包在热点题材、Futu 持仓导入或日线增强路径中因缺少依赖/package data 降级。PR 主 CI 在 `requirements.txt`、Futu broker、Desktop 打包入口或相关 workflow 变化时，会分别运行 `desktop-futu-package-windows` 与 `desktop-futu-package-macos` 阻断检查。
+该脚本会在安装依赖后执行 `--collect-all src.services.screening`、`--collect-all futu` 和 `--collect-data akshare`。构建完成后会通过冻结可执行文件校验 `src.services.screening.pipeline`、`futu`、`orjson` 均可导入，核对选股策略数量，并确认 AkShare 的 `file_fold/calendar.json` 已进入冻结产物，避免发行包在选股、热点题材、Futu 持仓导入或日线增强路径中因缺少模块/package data 降级。选股实现参考 AlphaSift。PR 主 CI 在 `requirements.txt`、Futu broker、Desktop 打包入口或相关 workflow 变化时，会分别运行 `desktop-futu-package-windows` 与 `desktop-futu-package-macos` 阻断检查。
 
 3) 打包 Electron 桌面应用
 

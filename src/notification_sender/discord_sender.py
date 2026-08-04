@@ -12,7 +12,11 @@ from typing import Optional
 import requests
 
 from src.config import Config
-from src.formatters import MIN_MAX_WORDS, chunk_content_by_max_words
+from src.formatters import (
+    MIN_MAX_WORDS,
+    chunk_content_by_max_words,
+    strip_hidden_markdown_metadata,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -67,8 +71,13 @@ class DiscordSender:
         Returns:
             是否发送成功
         """
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        if not sanitized_content:
+            logger.warning("Discord 消息内容为空，跳过推送")
+            return False
+
         # 分割内容，避免单条消息超过 Discord 限制
-        chunks = self._split_discord_content(content)
+        chunks = self._split_discord_content(sanitized_content)
 
         # 优先使用 Webhook（配置简单，权限低）
         if self._discord_config['webhook_url']:

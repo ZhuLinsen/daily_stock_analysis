@@ -224,6 +224,31 @@ class TestStockIndexLoader(unittest.TestCase):
                 self.assertEqual(stock_index_loader.resolve_index_stock_code("005930"), "005930.KS")
                 self.assertEqual(stock_index_loader.resolve_index_stock_code("7203"), "7203.T")
 
+    def test_resolve_index_stock_code_rejects_cross_market_bare_alias(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            bundled_path.write_text(
+                json.dumps(
+                    [
+                        ["08035.HK", "08035", "HK 8035", "hk8035", "hk", [], "HK", "stock", True, 100],
+                        ["8035.T", "8035.T", "JP 8035", "jp8035", "jp", [], "JP", "stock", True, 100],
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                stock_index_loader,
+                "get_remote_stock_index_cache_path",
+                return_value=Path(temp_dir) / "missing.json",
+            ), patch.object(
+                stock_index_loader,
+                "get_stock_index_candidate_paths",
+                return_value=(bundled_path,),
+            ):
+                self.assertIsNone(stock_index_loader.resolve_index_stock_code("8035"))
+
     def test_resolve_index_stock_code_reuses_cached_lookup(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             bundled_path = Path(temp_dir) / "stocks.index.json"

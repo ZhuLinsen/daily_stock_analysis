@@ -17,7 +17,7 @@ import smtplib
 
 from data_provider.base import normalize_stock_code
 from src.config import Config
-from src.formatters import markdown_to_html_document
+from src.formatters import markdown_to_html_document, strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -164,9 +164,11 @@ class EmailSender:
             if subject is None:
                 date_str = datetime.now().strftime('%Y-%m-%d')
                 subject = f"📈 股票智能分析报告 - {date_str}"
+
+            sanitized_content = strip_hidden_markdown_metadata(content).strip()
             
             # 将 Markdown 转换为简单 HTML
-            html_content = markdown_to_html_document(content)
+            html_content = markdown_to_html_document(sanitized_content)
             
             # 构建邮件
             msg = MIMEMultipart('alternative')
@@ -175,7 +177,7 @@ class EmailSender:
             msg['To'] = ', '.join(receivers)
             
             # 添加纯文本和 HTML 两个版本
-            text_part = MIMEText(content, 'plain', 'utf-8')
+            text_part = MIMEText(sanitized_content, 'plain', 'utf-8')
             html_part = MIMEText(html_content, 'html', 'utf-8')
             msg.attach(text_part)
             msg.attach(html_part)

@@ -13,7 +13,7 @@ from typing import Optional
 import requests
 
 from src.config import Config
-from src.formatters import chunk_content_by_max_bytes
+from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +59,17 @@ class SlackSender:
         Returns:
             是否发送成功
         """
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        if not sanitized_content:
+            logger.warning("Slack 消息内容为空，跳过推送")
+            return False
+
         # 按字节分块，避免单条消息超限
         try:
-            chunks = chunk_content_by_max_bytes(content, _TEXT_LIMIT, add_page_marker=True)
+            chunks = chunk_content_by_max_bytes(sanitized_content, _TEXT_LIMIT, add_page_marker=True)
         except Exception as e:
             logger.error(f"分割 Slack 消息失败: {e}, 尝试整段发送。")
-            chunks = [content]
+            chunks = [sanitized_content]
 
         # 优先使用 Bot API（与 _send_slack_image 保持一致）
         if self._use_bot:

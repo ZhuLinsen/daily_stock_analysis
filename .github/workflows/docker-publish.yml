@@ -59,12 +59,28 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            .github/requirements-ci.txt
 
       - name: Install backend gate dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install flake8 pytest
+          # 使用与 backend-gate (ci.yml) 一致的依赖安装方式：
+          # `.github/requirements-ci.txt` 递归拉 `requirements.txt` + 加
+          # pytest-timeout 等 CI-only 依赖（issue #2131 让 ci_gate.sh 用了
+          # `--timeout=120`，发布前 gate 也需要该插件）。
+          for attempt in 1 2 3; do
+            if pip install -r .github/requirements-ci.txt; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Dependency install failed after ${attempt} attempts." >&2
+              exit 1
+            fi
+            echo "Dependency install attempt ${attempt} failed, retrying in 15s..." >&2
+            sleep 15
+          done
 
       - name: Run backend gate before publish
         run: ./scripts/ci_gate.sh

@@ -44,6 +44,8 @@ FEISHU_CHAT_ID=oc_xxx
 FEISHU_RECEIVE_ID_TYPE=chat_id
 # 事件订阅 / Stream Bot 时才开启
 FEISHU_STREAM_ENABLED=true
+# Lark 国际版必须设置为 lark；飞书国内版保持 feishu
+FEISHU_DOMAIN=feishu
 ```
 
 注意：
@@ -51,6 +53,7 @@ FEISHU_STREAM_ENABLED=true
 - 简单群通知优先配置 `FEISHU_WEBHOOK_URL`
 - 不用 Webhook 时，App Bot 主动推送必须同时配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 和 `FEISHU_CHAT_ID`
 - `FEISHU_STREAM_ENABLED` 只代表事件订阅 / Stream Bot，不参与主动通知是否配置完成的判断
+- `FEISHU_DOMAIN=lark` 会让 App Bot 主动发送、Stream 长连接和消息回复统一使用 `open.larksuite.com`；飞书国内版使用默认值 `feishu`
 - 如果你做的是应用机器人 / Stream Bot，可直接看文末保留的原流程截图参考
 - App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准安装使用 `pip install -r requirements.txt`；参考 [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/) 和 [SDK repo](https://github.com/larksuite/oapi-sdk-python)
 

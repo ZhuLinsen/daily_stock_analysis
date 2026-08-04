@@ -12,11 +12,12 @@ import hmac
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 import uuid as uuid_mod
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 
@@ -26,6 +27,7 @@ from src.formatters import (
     PAGE_MARKER_SAFE_BYTES,
     chunk_content_by_max_bytes,
     format_feishu_markdown,
+    strip_hidden_markdown_metadata,
 )
 
 logger = logging.getLogger(__name__)
@@ -371,9 +373,10 @@ class FeishuSender:
         if content is None:
             logger.error("send_to_feishu: content 不能为 None")
             return False
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if self._feishu_url:
-            return self._send_via_webhook(content, timeout_seconds=timeout_seconds)
-        return self._send_via_app_bot(content)
+            return self._send_via_webhook(sanitized_content, timeout_seconds=timeout_seconds)
+        return self._send_via_app_bot(sanitized_content)
 
     def send_feishu_file(self, file_path: str) -> bool:
         """
@@ -397,14 +400,50 @@ class FeishuSender:
             logger.error("send_feishu_file: 文件不存在: %s", file_path)
             return False
 
-        if self._feishu_url:
-            # Webhook mode: send file content as a message (best-effort).
-            return self._send_file_via_webhook(path)
+        upload_path, display_name = self._prepare_sanitized_file(path)
+        try:
+            if self._feishu_url:
+                # Webhook mode: send file content as a message (best-effort).
+                return self._send_file_via_webhook(upload_path, display_name=display_name)
 
-        # App Bot mode: upload file via SDK.
-        return self._send_file_via_app_bot(path)
+            # App Bot mode: upload file via SDK.
+            return self._send_file_via_app_bot(upload_path, display_name=display_name)
+        finally:
+            if upload_path != path:
+                try:
+                    upload_path.unlink()
+                except OSError:
+                    logger.warning("清理飞书临时文件失败: %s", upload_path)
 
-    def _send_file_via_app_bot(self, path: Path) -> bool:
+    @staticmethod
+    def _prepare_sanitized_file(path: Path) -> Tuple[Path, str]:
+        display_name = path.name
+        if path.suffix.lower() not in {".md", ".markdown", ".txt"}:
+            return path, display_name
+
+        try:
+            raw_text = path.read_text("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return path, display_name
+        if not isinstance(raw_text, str):
+            return path, display_name
+
+        sanitized_text = strip_hidden_markdown_metadata(raw_text).strip()
+        if sanitized_text == raw_text:
+            return path, display_name
+
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=path.suffix,
+            prefix="feishu_sanitized_",
+            delete=False,
+        )
+        with temp_file:
+            temp_file.write(sanitized_text)
+        return Path(temp_file.name), display_name
+
+    def _send_file_via_app_bot(self, path: Path, *, display_name: Optional[str] = None) -> bool:
         """Upload *path* to Feishu via App Bot SDK and send as file message."""
         if not FEISHU_FILE_SDK_AVAILABLE:
             logger.warning("lark-oapi SDK does not support file upload; upgrade lark-oapi")
@@ -418,7 +457,7 @@ class FeishuSender:
         if client is None:
             return False
 
-        file_name = path.name
+        file_name = display_name or path.name
         # Determine file_type from extension; fall back to "stream" for unknown types.
         feishu_file_types = {
             ".opus": "opus", ".aac": "aac", ".amr": "amr", ".mp3": "mp3",
@@ -479,7 +518,7 @@ class FeishuSender:
         labels = {".md": "Markdown", ".txt": "文本", ".pdf": "PDF", ".csv": "CSV"}
         return labels.get(suffix, suffix.lstrip(".").upper() or "文件")
 
-    def _send_file_via_webhook(self, path: Path) -> bool:
+    def _send_file_via_webhook(self, path: Path, *, display_name: Optional[str] = None) -> bool:
         """Send file *content* as a Feishu message (webhook fallback)."""
         try:
             text = path.read_text("utf-8")
@@ -488,8 +527,8 @@ class FeishuSender:
             return False
 
         file_label = self._guess_mime_for_webhook(path)
-        header = f"**📄 {file_label} 文件内容: {path.name}**\n\n"
-        content = header + text
+        header = f"**📄 {file_label} 文件内容: {display_name or path.name}**\n\n"
+        content = header + strip_hidden_markdown_metadata(text).strip()
         # Delegate to the existing webhook send path.
         return self._send_via_webhook(content)
 

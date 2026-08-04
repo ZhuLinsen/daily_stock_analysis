@@ -34,6 +34,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     UniqueConstraint,
+    CheckConstraint,
     Text,
     text,
     select,
@@ -297,6 +298,32 @@ class FundamentalSnapshot(Base):
 
     def __repr__(self) -> str:
         return f"<FundamentalSnapshot(query_id={self.query_id}, code={self.code})>"
+
+
+class ScreeningRun(Base):
+    """A completed built-in screening run persisted by DSA."""
+
+    __tablename__ = 'screening_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    strategy = Column(String(64), nullable=False, index=True)
+    market = Column(String(16), nullable=False, index=True)
+    snapshot_source = Column(String(64), index=True)
+    snapshot_count = Column(Integer)
+    after_filter_count = Column(Integer)
+    candidate_count = Column(Integer, nullable=False, default=0)
+    llm_ranked = Column(Boolean)
+    daily_enriched = Column(Boolean)
+    source_errors_json = Column(Text)
+    warnings_json = Column(Text)
+    result_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+    __table_args__ = (
+        Index('ix_screening_run_strategy_created', 'strategy', 'created_at'),
+        Index('ix_screening_run_market_created', 'market', 'created_at'),
+    )
 
 
 class AnalysisHistory(Base):
@@ -1171,6 +1198,83 @@ class SkillOpinionSampleRecord(Base):
             'ix_skill_opinion_sample_stock_created',
             'stock_code',
             'created_at',
+        ),
+    )
+
+
+class SkillOpinionOutcomeRecord(Base):
+    """Forward outcome for one immutable skill opinion sample and horizon."""
+
+    __tablename__ = 'skill_opinion_outcomes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    skill_opinion_sample_id = Column(
+        Integer,
+        ForeignKey('skill_opinion_samples.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    horizon = Column(String(16), nullable=False, index=True)
+    engine_version = Column(String(32), nullable=False, index=True)
+    eval_status = Column(String(24), nullable=False, default='pending', index=True)
+    outcome = Column(String(16), index=True)
+    direction_correct = Column(Boolean)
+    unable_reason = Column(String(64), index=True)
+    analysis_date = Column(Date, index=True)
+    start_trade_date = Column(Date, index=True)
+    end_trade_date = Column(Date, index=True)
+    start_price = Column(Float)
+    end_close = Column(Float)
+    stock_return_pct = Column(Float)
+    directional_return_pct = Column(Float)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'skill_opinion_sample_id',
+            'horizon',
+            'engine_version',
+            name='uix_skill_opinion_outcome_key',
+        ),
+        CheckConstraint(
+            "horizon IN ('1d', '3d', '5d', '10d')",
+            name='ck_skill_opinion_outcome_horizon',
+        ),
+        CheckConstraint(
+            "eval_status IN ('pending', 'evaluated', 'observational', 'unable')",
+            name='ck_skill_opinion_outcome_eval_status',
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('hit', 'miss', 'observational')",
+            name='ck_skill_opinion_outcome_value',
+        ),
+        CheckConstraint(
+            "(eval_status IN ('pending', 'unable') "
+            "AND outcome IS NULL "
+            "AND direction_correct IS NULL "
+            "AND directional_return_pct IS NULL) "
+            "OR (eval_status = 'observational' "
+            "AND outcome = 'observational' "
+            "AND direction_correct IS NULL "
+            "AND directional_return_pct IS NULL) "
+            "OR (eval_status = 'evaluated' "
+            "AND outcome IN ('hit', 'miss') "
+            "AND direction_correct IS NOT NULL "
+            "AND directional_return_pct IS NOT NULL)",
+            name='ck_skill_opinion_outcome_state_fields',
+        ),
+        Index(
+            'ix_skill_opinion_outcome_candidate',
+            'engine_version',
+            'eval_status',
+            'updated_at',
+        ),
+        Index(
+            'ix_skill_opinion_outcome_horizon_status',
+            'engine_version',
+            'horizon',
+            'eval_status',
         ),
     )
 
@@ -2097,6 +2201,174 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             except Exception:
                 return None
 
+    def save_screening_run(self, payload: Dict[str, Any]) -> int:
+        """Persist one completed screening response without blocking screening on DB errors."""
+        run_id = str(payload.get("run_id") or "").strip()
+        if not run_id:
+            return 0
+        normalized_payload = dict(payload)
+        warnings = self._screening_warning_values(normalized_payload)
+        normalized_payload["warnings"] = warnings
+
+        values = {
+            "strategy": str(normalized_payload.get("strategy") or "").strip() or "unknown",
+            "market": str(normalized_payload.get("market") or "").strip() or "cn",
+            "snapshot_source": str(normalized_payload.get("snapshot_source") or "").strip() or None,
+            "snapshot_count": self._optional_int(normalized_payload.get("snapshot_count")),
+            "after_filter_count": self._optional_int(normalized_payload.get("after_filter_count")),
+            "candidate_count": self._optional_int(normalized_payload.get("candidate_count")) or 0,
+            "llm_ranked": self._optional_bool(normalized_payload.get("llm_ranked")),
+            "daily_enriched": self._optional_bool(normalized_payload.get("daily_enriched")),
+            "source_errors_json": self._safe_json_dumps(normalized_payload.get("source_errors") or []),
+            "warnings_json": self._safe_json_dumps(warnings),
+            "result_json": self._safe_json_dumps(normalized_payload),
+        }
+
+        try:
+            def _write(session: Session) -> int:
+                row = session.execute(
+                    select(ScreeningRun).where(ScreeningRun.run_id == run_id)
+                ).scalar_one_or_none()
+                if row is None:
+                    session.add(ScreeningRun(run_id=run_id, **values))
+                else:
+                    for key, value in values.items():
+                        setattr(row, key, value)
+                return 1
+
+            return self._run_write_transaction(
+                f"save_screening_run[{run_id}]",
+                _write,
+            )
+        except Exception as exc:
+            logger.warning(
+                "选股运行历史写入失败（fail-open）: run_id=%s err=%s",
+                run_id,
+                exc,
+            )
+            return 0
+
+    def list_screening_runs(
+        self,
+        *,
+        limit: int = 20,
+        strategy: Optional[str] = None,
+        market: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List recent screening runs as compact summaries."""
+        normalized_limit = max(0, min(int(limit), 100))
+        if normalized_limit <= 0:
+            return []
+
+        with self.get_session() as session:
+            statement = select(ScreeningRun)
+            if strategy:
+                statement = statement.where(ScreeningRun.strategy == str(strategy).strip())
+            if market:
+                statement = statement.where(ScreeningRun.market == str(market).strip())
+            rows = session.execute(
+                statement.order_by(desc(ScreeningRun.created_at), desc(ScreeningRun.id)).limit(normalized_limit)
+            ).scalars().all()
+            return [self._screening_run_to_dict(row, include_result=False) for row in rows]
+
+    def get_screening_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Load a completed screening run by its stable run id."""
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            return None
+        with self.get_session() as session:
+            row = session.execute(
+                select(ScreeningRun).where(ScreeningRun.run_id == normalized_run_id)
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return self._screening_run_to_dict(row, include_result=True)
+
+    @staticmethod
+    def _optional_int(value: Any) -> Optional[int]:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _optional_bool(value: Any) -> Optional[bool]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+            return None
+        return bool(value)
+
+    @staticmethod
+    def _screening_json_list(value: Optional[str]) -> List[Any]:
+        try:
+            decoded = json.loads(value or "[]")
+        except (TypeError, ValueError):
+            return []
+        return decoded if isinstance(decoded, list) else []
+
+    @staticmethod
+    def _screening_text_list(value: Any) -> List[str]:
+        if isinstance(value, list):
+            result = []
+            for item in value:
+                text = str(item or "").strip()
+                if text:
+                    result.append(text)
+            return result
+        text = str(value or "").strip()
+        return [text] if text else []
+
+    @classmethod
+    def _screening_warning_values(cls, payload: Dict[str, Any]) -> List[str]:
+        warnings: List[str] = []
+        seen: set[str] = set()
+        for key in ("warnings", "degradation"):
+            for item in cls._screening_text_list(payload.get(key)):
+                if item in seen:
+                    continue
+                seen.add(item)
+                warnings.append(item)
+        return warnings
+
+    @classmethod
+    def _screening_run_to_dict(
+        cls,
+        row: ScreeningRun,
+        *,
+        include_result: bool,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "run_id": row.run_id,
+            "strategy": row.strategy,
+            "market": row.market,
+            "snapshot_source": row.snapshot_source or "",
+            "snapshot_count": row.snapshot_count,
+            "after_filter_count": row.after_filter_count,
+            "candidate_count": row.candidate_count,
+            "llm_ranked": row.llm_ranked,
+            "daily_enriched": row.daily_enriched,
+            "source_errors": cls._screening_json_list(row.source_errors_json),
+            "warnings": cls._screening_json_list(row.warnings_json),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        if include_result:
+            try:
+                result = json.loads(row.result_json or "{}")
+            except (TypeError, ValueError):
+                result = {}
+            payload["result"] = result if isinstance(result, dict) else {}
+        return payload
+
     def get_recent_news(self, code: str, days: int = 7, limit: int = 20) -> List[NewsIntel]:
         """
         获取指定股票最近 N 天的新闻情报
@@ -2484,6 +2756,21 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             session.execute(
                 delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(existing_ids))
             )
+            linked_skill_sample_ids = sorted(
+                session.execute(
+                    select(SkillOpinionSampleRecord.id).where(
+                        SkillOpinionSampleRecord.analysis_history_id.in_(existing_ids)
+                    )
+                ).scalars().all()
+            )
+            if linked_skill_sample_ids:
+                session.execute(
+                    delete(SkillOpinionOutcomeRecord).where(
+                        SkillOpinionOutcomeRecord.skill_opinion_sample_id.in_(
+                            linked_skill_sample_ids
+                        )
+                    )
+                )
             session.execute(
                 delete(SkillOpinionSampleRecord).where(
                     SkillOpinionSampleRecord.analysis_history_id.in_(existing_ids)

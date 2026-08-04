@@ -1,59 +1,68 @@
 # -*- coding: utf-8 -*-
-"""AlphaSift service facade and DSA runtime bridge."""
+"""DSA-native stock screening service.
+
+The bundled screening implementation incorporates code derived from AlphaSift;
+see ``THIRD_PARTY_NOTICES.md`` and per-file headers for attribution.
+"""
 
 from __future__ import annotations
 
 import importlib
 import hashlib
-import inspect
 import json
 import logging
 import math
 import os
 import re
-import subprocess
-import sys
 import threading
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from contextlib import contextmanager
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from urllib.parse import urlparse
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from src.auth import COOKIE_NAME, is_auth_enabled, refresh_auth_state, verify_session
-from src.config import Config, DEFAULT_ALPHASIFT_INSTALL_SPEC, get_configured_llm_models
+from src.config import Config, get_configured_llm_models
+from src.services.screening import REFERENCE_PROJECT, REFERENCE_REVISION, __version__ as SCREENING_VERSION
+from src.services.screening import hotspot as screening_hotspot
+from src.services.screening.config import Config as ScreeningPipelineConfig
+from src.services.screening.pipeline import screen as run_screening_pipeline
+from src.services.screening.source_guard import parse_source_timeout_seconds
+from src.services.screening.strategy import list_strategies as load_screening_strategies
+from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
-ALPHASIFT_DSA_ADAPTER_MODULE = "alphasift.dsa_adapter"
-ALPHASIFT_EXPECTED_MISSING_MODULES = frozenset({"alphasift", ALPHASIFT_DSA_ADAPTER_MODULE})
-ALLOWED_ALPHASIFT_INSTALL_SPECS = frozenset({DEFAULT_ALPHASIFT_INSTALL_SPEC})
-_ALPHASIFT_INSTALL_LOCK = threading.RLock()
-ALPHASIFT_MANAGED_LITELLM_PROVIDERS = frozenset({"gemini", "vertex_ai", "anthropic", "openai", "deepseek"})
-_ALPHASIFT_RUNTIME_ENV_LOCK = threading.RLock()
+SCREENING_MANAGED_LITELLM_PROVIDERS = frozenset({"gemini", "vertex_ai", "anthropic", "openai", "deepseek"})
+SCREENING_CONTRACT_VERSION = "1"
+_SCREENING_RUNTIME_ENV_LOCK = threading.RLock()
 DSA_ENRICHMENT_MAX_CANDIDATES = 3
 DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES = 3
-DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER = 2
-DSA_ALPHASIFT_LLM_MAX_CANDIDATES = 12
-DSA_ALPHASIFT_DAILY_FETCH_RETRIES = 3
-DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter"
-DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
-DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS = "news,fund_flow,announcement,quote"
-DSA_ALPHASIFT_DATA_DIR = Path("data") / "alphasift"
-DSA_ALPHASIFT_HOTSPOT_CACHE_PATH = DSA_ALPHASIFT_DATA_DIR / "hotspots.json"
-DSA_ALPHASIFT_HOTSPOT_HISTORY_PATH = DSA_ALPHASIFT_DATA_DIR / "hotspot.history.jsonl"
-DSA_ALPHASIFT_MIN_HOTSPOT_CACHE_COUNT = 3
-DSA_ALPHASIFT_HOTSPOT_DETAIL_CACHE_TTL_SECONDS = 30 * 60
-DSA_ALPHASIFT_HOTSPOT_EVENT_SUMMARY_MAX_CHARS = 90
-DSA_ALPHASIFT_HOTSPOT_PREFETCH_DETAIL_COUNT = 8
-DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE = "eastmoney_hotspot_unavailable"
-DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_MESSAGE = "热点源连接中断，暂无可用缓存。"
-DSA_ALPHASIFT_HOTSPOT_CONNECTIVITY_ERROR_MARKERS = (
+DSA_SCREENING_LLM_CANDIDATE_MULTIPLIER = 2
+DSA_SCREENING_LLM_MAX_CANDIDATES = 12
+DSA_SCREENING_DAILY_FETCH_RETRIES = 3
+DSA_SCREENING_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter"
+DSA_SCREENING_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
+DSA_SCREENING_CANDIDATE_CONTEXT_PROVIDERS = "news,fund_flow,announcement,quote"
+DSA_SCREENING_DATA_DIR = Path("data") / "screening"
+DSA_SCREENING_HOTSPOT_CACHE_PATH = DSA_SCREENING_DATA_DIR / "hotspots.json"
+DSA_SCREENING_HOTSPOT_HISTORY_PATH = DSA_SCREENING_DATA_DIR / "hotspot.history.jsonl"
+DSA_SCREENING_MIN_HOTSPOT_CACHE_COUNT = 3
+DSA_SCREENING_HOTSPOT_DETAIL_CACHE_TTL_SECONDS = 30 * 60
+DSA_SCREENING_HOTSPOT_EVENT_SUMMARY_MAX_CHARS = 90
+DSA_SCREENING_HOTSPOT_PREFETCH_DETAIL_COUNT = 8
+DSA_SCREENING_HOTSPOT_CALL_TIMEOUT_SECONDS = 8
+DSA_SCREENING_HOTSPOT_SEARCH_TIMEOUT_SECONDS = 12
+DSA_SCREENING_HOTSPOT_UNAVAILABLE_CODE = "eastmoney_hotspot_unavailable"
+DSA_SCREENING_HOTSPOT_UNAVAILABLE_MESSAGE = "热点源连接中断，暂无可用缓存。"
+DSA_SCREENING_HOTSPOT_CONNECTIVITY_ERROR_MARKERS = (
     "remote disconnected",
     "remote end closed connection",
     "connection aborted",
@@ -71,12 +80,16 @@ DSA_ALPHASIFT_HOTSPOT_CONNECTIVITY_ERROR_MARKERS = (
 _DSA_FETCHER_MANAGER_LOCK = threading.RLock()
 _DSA_FETCHER_MANAGER: Any = None
 _FUNDAMENTAL_BLOCKS = ("valuation", "growth", "earnings", "institution", "capital_flow", "boards")
-_ALPHASIFT_LITELLM_COMPLETION_ROUTES: ContextVar[Optional[Tuple[Dict[str, Any], ...]]] = ContextVar(
-    "alphasift_litellm_completion_routes",
+_SCREENING_LITELLM_COMPLETION_ROUTES: ContextVar[Optional[Tuple[Dict[str, Any], ...]]] = ContextVar(
+    "screening_litellm_completion_routes",
     default=None,
 )
-_ALPHASIFT_LITELLM_COMPLETION_ATTR = "_alphasift_litellm_completion_bridge"
-_ALPHASIFT_LITELLM_COMPLETION_LOCK = threading.Lock()
+_DSA_HOTSPOT_CALL_DEADLINE: ContextVar[Optional[float]] = ContextVar(
+    "dsa_hotspot_call_deadline",
+    default=None,
+)
+_SCREENING_LITELLM_COMPLETION_ATTR = "_screening_litellm_completion_bridge"
+_SCREENING_LITELLM_COMPLETION_LOCK = threading.Lock()
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -95,33 +108,33 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _resolve_alphasift_data_dir() -> Path:
-    configured = _env_text(os.getenv("ALPHASIFT_DATA_DIR"))
+def _resolve_screening_data_dir() -> Path:
+    configured = _env_text(os.getenv("SCREENING_DATA_DIR"))
     if configured:
         return Path(configured)
-    return DSA_ALPHASIFT_DATA_DIR
+    return DSA_SCREENING_DATA_DIR
 
 
-def _alphasift_hotspot_cache_path() -> Path:
-    if _env_text(os.getenv("ALPHASIFT_DATA_DIR")):
-        return _resolve_alphasift_data_dir() / "hotspots.json"
-    return DSA_ALPHASIFT_HOTSPOT_CACHE_PATH
+def _screening_hotspot_cache_path() -> Path:
+    if _env_text(os.getenv("SCREENING_DATA_DIR")):
+        return _resolve_screening_data_dir() / "hotspots.json"
+    return DSA_SCREENING_HOTSPOT_CACHE_PATH
 
 
-def _alphasift_hotspot_history_path() -> Path:
-    if _env_text(os.getenv("ALPHASIFT_DATA_DIR")):
-        return _resolve_alphasift_data_dir() / "hotspot.history.jsonl"
-    return DSA_ALPHASIFT_HOTSPOT_HISTORY_PATH
+def _screening_hotspot_history_path() -> Path:
+    if _env_text(os.getenv("SCREENING_DATA_DIR")):
+        return _resolve_screening_data_dir() / "hotspot.history.jsonl"
+    return DSA_SCREENING_HOTSPOT_HISTORY_PATH
 
 
-def _alphasift_hotspot_detail_cache_dir() -> Path:
-    return _resolve_alphasift_data_dir() / "hotspot_details"
+def _screening_hotspot_detail_cache_dir() -> Path:
+    return _resolve_screening_data_dir() / "hotspot_details"
 
 
-def _alphasift_hotspot_detail_cache_path(*, provider: str, topic: str) -> Path:
+def _screening_hotspot_detail_cache_path(*, provider: str, topic: str) -> Path:
     provider_text = re.sub(r"[^A-Za-z0-9_.-]+", "_", _env_text(provider) or "akshare")
     digest = hashlib.sha1(f"{provider_text}\0{_env_text(topic)}".encode("utf-8")).hexdigest()
-    return _alphasift_hotspot_detail_cache_dir() / f"{provider_text}.{digest}.json"
+    return _screening_hotspot_detail_cache_dir() / f"{provider_text}.{digest}.json"
 
 
 def _parse_cache_datetime(value: Any) -> Optional[datetime]:
@@ -137,19 +150,35 @@ def _parse_cache_datetime(value: Any) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
-def _load_alphasift_hotspot_detail_cache(
+def _strip_hotspot_search_augmentation(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the cacheable hotspot detail without request-scoped search data."""
+    base = dict(payload)
+    for key in ("route", "timeline"):
+        rows = base.get(key)
+        if isinstance(rows, list):
+            base[key] = [
+                item
+                for item in rows
+                if not (isinstance(item, dict) and bool(item.get("search_result")))
+            ]
+    base.pop("news_search_requested", None)
+    base.pop("news_search_status", None)
+    return base
+
+
+def _load_screening_hotspot_detail_cache(
     *,
     provider: str,
     topic: str,
     allow_stale: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    cache_path = _alphasift_hotspot_detail_cache_path(provider=provider, topic=topic)
+    cache_path = _screening_hotspot_detail_cache_path(provider=provider, topic=topic)
     try:
         raw = json.loads(cache_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except Exception as exc:
-        logger.warning("Failed to read AlphaSift hotspot detail cache from %s: %s", cache_path, exc)
+        logger.warning("Failed to read Screening hotspot detail cache from %s: %s", cache_path, exc)
         return None
 
     payload = raw.get("payload") if isinstance(raw, dict) else None
@@ -160,11 +189,13 @@ def _load_alphasift_hotspot_detail_cache(
     if cached_dt is None:
         return None
     age_seconds = max(0.0, (datetime.now(timezone.utc) - cached_dt).total_seconds())
-    stale = age_seconds > DSA_ALPHASIFT_HOTSPOT_DETAIL_CACHE_TTL_SECONDS
+    stale = age_seconds > DSA_SCREENING_HOTSPOT_DETAIL_CACHE_TTL_SECONDS
     if stale and not allow_stale:
         return None
 
-    cached = _ensure_hotspot_detail_compat_fields(dict(payload))
+    cached = _ensure_hotspot_detail_compat_fields(
+        _strip_hotspot_search_augmentation(payload)
+    )
     cached.update({
         "enabled": True,
         "provider": provider or cached.get("provider") or "akshare",
@@ -178,11 +209,15 @@ def _load_alphasift_hotspot_detail_cache(
     return _remove_non_finite_json_values(cached)
 
 
-def _write_alphasift_hotspot_detail_cache(*, provider: str, topic: str, payload: Dict[str, Any]) -> None:
-    cache_path = _alphasift_hotspot_detail_cache_path(provider=provider, topic=topic)
+def _write_screening_hotspot_detail_cache(*, provider: str, topic: str, payload: Dict[str, Any]) -> None:
+    cache_path = _screening_hotspot_detail_cache_path(provider=provider, topic=topic)
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cleaned = _remove_non_finite_json_values(_ensure_hotspot_detail_compat_fields(dict(payload)))
+        cleaned = _remove_non_finite_json_values(
+            _ensure_hotspot_detail_compat_fields(
+                _strip_hotspot_search_augmentation(payload)
+            )
+        )
         cached_at = _utc_now_iso()
         cache_path.write_text(
             json.dumps(
@@ -199,11 +234,11 @@ def _write_alphasift_hotspot_detail_cache(*, provider: str, topic: str, payload:
             encoding="utf-8",
         )
     except Exception as exc:
-        logger.warning("Failed to write AlphaSift hotspot detail cache for %s: %s", topic, exc)
+        logger.warning("Failed to write Screening hotspot detail cache for %s: %s", topic, exc)
 
 
 def _ensure_hotspot_detail_compat_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep old and new AlphaSift hotspot detail consumers on the same shape."""
+    """Keep old and new Screening hotspot detail consumers on the same shape."""
     stocks = payload.get("stocks")
     leader_stocks = payload.get("leader_stocks")
     if not isinstance(stocks, list):
@@ -232,17 +267,17 @@ def _extract_nested_hotspot_leader_stocks(payload: Dict[str, Any]) -> List[Any]:
     return []
 
 
-def _load_alphasift_hotspot_cache(*, provider: str, top: int) -> Optional[Dict[str, Any]]:
-    cache_path = _alphasift_hotspot_cache_path()
+def _load_screening_hotspot_cache(*, provider: str, top: int) -> Optional[Dict[str, Any]]:
+    cache_path = _screening_hotspot_cache_path()
     try:
         raw = json.loads(cache_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except Exception as exc:
-        logger.warning("Failed to read AlphaSift hotspot cache from %s: %s", cache_path, exc)
+        logger.warning("Failed to read Screening hotspot cache from %s: %s", cache_path, exc)
         return None
 
-    payload = _normalize_alphasift_hotspot_cache_payload(raw)
+    payload = _normalize_screening_hotspot_cache_payload(raw)
     if not isinstance(payload, dict):
         return None
     hotspots = payload.get("hotspots")
@@ -250,11 +285,11 @@ def _load_alphasift_hotspot_cache(*, provider: str, top: int) -> Optional[Dict[s
         return None
 
     top_count = max(1, min(int(top or 12), 50))
-    if len(hotspots) < min(DSA_ALPHASIFT_MIN_HOTSPOT_CACHE_COUNT, top_count):
+    if len(hotspots) < min(DSA_SCREENING_MIN_HOTSPOT_CACHE_COUNT, top_count):
         logger.info(
-            "Ignoring AlphaSift hotspot cache with too few rows: %s < %s",
+            "Ignoring Screening hotspot cache with too few rows: %s < %s",
             len(hotspots),
-            min(DSA_ALPHASIFT_MIN_HOTSPOT_CACHE_COUNT, top_count),
+            min(DSA_SCREENING_MIN_HOTSPOT_CACHE_COUNT, top_count),
         )
         return None
 
@@ -272,7 +307,7 @@ def _load_alphasift_hotspot_cache(*, provider: str, top: int) -> Optional[Dict[s
     return _remove_non_finite_json_values(cached)
 
 
-def _normalize_alphasift_hotspot_cache_payload(raw: Any) -> Optional[Dict[str, Any]]:
+def _normalize_screening_hotspot_cache_payload(raw: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict):
         return None
     payload = raw.get("payload")
@@ -300,111 +335,117 @@ def _normalize_alphasift_hotspot_cache_payload(raw: Any) -> Optional[Dict[str, A
     }
 
 
-def _hotspot_route_has_external_event(route: Any) -> bool:
-    if not isinstance(route, list):
-        return False
-    generated_sources = {"", "eastmoney_board_change", "fallback", "dsa_topic_catalyst", "ths_info"}
-    for item in route:
-        if not isinstance(item, dict):
-            continue
-        source = _env_text(item.get("source"))
-        if source and source not in generated_sources:
-            return True
-    return False
+@dataclass(frozen=True)
+class _HotspotSearchAugmentation:
+    routes: List[Dict[str, Any]]
+    status: str
 
 
-def _has_configured_hotspot_news_source(config: Config) -> bool:
-    fields = (
-        "bocha_api_keys",
-        "tavily_api_keys",
-        "anspire_api_keys",
-        "brave_api_keys",
-        "serpapi_api_keys",
-        "minimax_api_keys",
-        "searxng_base_urls",
-    )
-    return any(bool(getattr(config, field, None)) for field in fields)
-
-
-def _build_hotspot_event_routes_from_search(topic: str, config: Config) -> List[Dict[str, Any]]:
+def _build_hotspot_event_routes_from_search(topic: str) -> _HotspotSearchAugmentation:
     topic_text = _env_text(topic)
-    if not topic_text or not _has_configured_hotspot_news_source(config):
-        return []
+    if not topic_text:
+        return _HotspotSearchAugmentation(routes=[], status="unavailable")
     try:
-        from src.search_service import SearchService
-
-        service = SearchService(
-            bocha_keys=getattr(config, "bocha_api_keys", None),
-            tavily_keys=getattr(config, "tavily_api_keys", None),
-            anspire_keys=getattr(config, "anspire_api_keys", None),
-            brave_keys=getattr(config, "brave_api_keys", None),
-            serpapi_keys=getattr(config, "serpapi_api_keys", None),
-            minimax_keys=getattr(config, "minimax_api_keys", None),
-            searxng_base_urls=getattr(config, "searxng_base_urls", None),
-            searxng_public_instances_enabled=False,
-            news_max_age_days=int(getattr(config, "news_max_age_days", 3) or 3),
-            news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
+        service = _get_dsa_search_service()
+        if not getattr(service, "is_available", False):
+            return _HotspotSearchAugmentation(routes=[], status="unavailable")
+        configured_timeout = parse_source_timeout_seconds(
+            "SCREENING_HOTSPOT_SEARCH_TIMEOUT_SEC",
+            default=DSA_SCREENING_HOTSPOT_SEARCH_TIMEOUT_SECONDS,
         )
-        response = service.search_stock_news(
-            topic_text,
+        response = service.search_topic_news_bounded(
             topic_text,
             max_results=3,
-            focus_keywords=[topic_text, "A股", "题材", "催化", "涨价"],
+            focus_keywords=[f'"{topic_text}"', "A股", "最新消息", "催化"],
+            # Bounded search owns a killable subprocess and therefore always
+            # needs a concrete hard deadline. Disabling the caller-side
+            # screening guard falls back to this safety ceiling.
+            timeout_seconds=(
+                configured_timeout
+                if configured_timeout is not None
+                else float(DSA_SCREENING_HOTSPOT_SEARCH_TIMEOUT_SECONDS)
+            ),
         )
     except Exception as exc:
-        logger.info("AlphaSift hotspot event search skipped for %s: %s", topic_text, exc)
-        return []
+        logger.info("Screening hotspot event search skipped for %s: %s", topic_text, exc)
+        return _HotspotSearchAugmentation(routes=[], status="unavailable")
 
     if not bool(getattr(response, "success", False)):
-        return []
+        return _HotspotSearchAugmentation(routes=[], status="unavailable")
     today = datetime.now().date().isoformat()
-    event_parts: List[str] = []
-    sources: List[str] = []
-    first_url = ""
-    first_date = ""
-    first_published = ""
-    for result in list(getattr(response, "results", []) or [])[:2]:
+    routes: List[Dict[str, Any]] = []
+    for result in list(getattr(response, "results", []) or []):
         title = _env_text(getattr(result, "title", ""))
         snippet = _env_text(getattr(result, "snippet", ""))
         if not title and not snippet:
             continue
-        event_text = _compact_hotspot_news_text(title=title, snippet=snippet)
-        if event_text:
-            event_parts.append(event_text)
+        url = _normalize_external_http_url(getattr(result, "url", ""))
+        if not url:
+            continue
         published = _env_text(getattr(result, "published_date", ""))
         source = _env_text(getattr(result, "source", "")) or _env_text(getattr(response, "provider", "")) or "news_search"
-        if source and source not in sources:
-            sources.append(source)
-        if not first_url:
-            first_url = _env_text(getattr(result, "url", ""))
-        if not first_date:
-            first_date = _extract_date_text(published) or _extract_date_text(event_text)
-        if not first_published:
-            first_published = published
-    if not event_parts:
-        return []
-    description = _summarize_hotspot_news_event(
-        topic=topic_text,
-        title="",
-        snippet="；".join(event_parts),
-        config=config,
+        description = _summarize_hotspot_news_event(
+            topic=topic_text,
+            title=title,
+            snippet=snippet,
+        )
+        if not description:
+            continue
+        date = _extract_date_text(published) or _extract_date_text(description) or today
+        routes.append({
+            "title": _truncate_text(title, 48) or "消息催化",
+            "description": description,
+            "source": source,
+            "date": date,
+            "published_at": published or date,
+            "url": url,
+            "search_result": True,
+        })
+        if len(routes) >= 2:
+            break
+    return _HotspotSearchAugmentation(
+        routes=routes,
+        status="available" if routes else "no_results",
     )
-    date = first_date or _extract_date_text(description) or today
-    return [{
-        "title": "消息催化",
-        "description": description,
-        "source": ",".join(sources) if sources else "news_search",
-        "date": date,
-        "published_at": first_published or date,
-        "url": first_url,
-    }]
 
 
-def _summarize_hotspot_news_event(*, topic: str, title: str, snippet: str, config: Config) -> str:
+def _normalize_external_http_url(value: Any) -> str:
+    """Accept only absolute HTTP(S) links for user-visible search events."""
+    text = _env_text(value)
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return text
+
+
+def _with_hotspot_search_augmentation(payload: Dict[str, Any], *, topic: str) -> Dict[str, Any]:
+    """Attach opt-in search results to one response without changing its base detail."""
+    augmented = _strip_hotspot_search_augmentation(payload)
+    search_result = _build_hotspot_event_routes_from_search(topic)
+    search_routes = search_result.routes
+    if search_routes:
+        route = augmented.get("route")
+        existing_routes = route if isinstance(route, list) else []
+        timeline = augmented.get("timeline")
+        existing_timeline = timeline if isinstance(timeline, list) else []
+        combined_routes = [*search_routes, *existing_routes]
+        augmented["route"] = combined_routes
+        # Search is an additive response-only augmentation. Keep raw timeline
+        # records under their existing field instead of replacing them with the
+        # display-oriented route summaries.
+        augmented["timeline"] = [*search_routes, *existing_timeline]
+    augmented["news_search_requested"] = True
+    augmented["news_search_status"] = search_result.status
+    return _remove_non_finite_json_values(augmented)
+
+
+def _summarize_hotspot_news_event(*, topic: str, title: str, snippet: str) -> str:
     compact_text = _compact_hotspot_news_text(title=title, snippet=snippet)
-    llm_summary = _summarize_hotspot_news_event_with_llm(topic=topic, text=compact_text, config=config)
-    if llm_summary:
-        return _truncate_text(llm_summary, DSA_ALPHASIFT_HOTSPOT_EVENT_SUMMARY_MAX_CHARS)
     return _summarize_hotspot_news_event_locally(topic=topic, text=compact_text)
 
 
@@ -420,8 +461,8 @@ def _summarize_hotspot_news_event_locally(*, topic: str, text: str) -> str:
         summary = f"{catalyst}，市场关注{topic}相关产业链机会。"
     else:
         summary = _first_meaningful_hotspot_sentence(cleaned)
-    summary = _truncate_text(summary, DSA_ALPHASIFT_HOTSPOT_EVENT_SUMMARY_MAX_CHARS).rstrip(".。…")
-    return _truncate_text(f"{summary}。", DSA_ALPHASIFT_HOTSPOT_EVENT_SUMMARY_MAX_CHARS)
+    summary = _truncate_text(summary, DSA_SCREENING_HOTSPOT_EVENT_SUMMARY_MAX_CHARS).rstrip(".。…")
+    return _truncate_text(f"{summary}。", DSA_SCREENING_HOTSPOT_EVENT_SUMMARY_MAX_CHARS)
 
 
 def _strip_hotspot_news_noise(text: str) -> str:
@@ -514,56 +555,6 @@ def _truncate_text(text: str, max_chars: int) -> str:
     return text[: max(0, max_chars - 3)].rstrip("，,；;：: ") + "..."
 
 
-def _summarize_hotspot_news_event_with_llm(*, topic: str, text: str, config: Config) -> str:
-    model, _fallback_models = _resolve_alphasift_llm_models(config)
-    if not _env_text(model) or not text:
-        return ""
-    try:
-        import litellm
-
-        prompt = (
-            "请把下面新闻压缩成一句 A 股热点题材催化摘要。"
-            "要求：不超过 70 个中文字符，只保留事件、影响方向和相关链条；"
-            "不要输出完整报道、股票价格流水、免责声明或投资建议。\n\n"
-            f"题材：{topic}\n新闻：{text}"
-        )
-        with _alphasift_litellm_headers(config):
-            response = litellm.completion(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "你是A股题材事件摘要助手，只输出一句短摘要。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
-                max_tokens=120,
-                timeout=8,
-            )
-        return _clean_hotspot_llm_summary(_extract_litellm_message_content(response))
-    except Exception as exc:
-        logger.info("AlphaSift hotspot LLM event summary skipped for %s: %s", topic, exc)
-        return ""
-
-
-def _extract_litellm_message_content(response: Any) -> str:
-    try:
-        choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
-        if choices:
-            choice = choices[0]
-            message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
-            if isinstance(message, dict):
-                return _env_text(message.get("content"))
-            return _env_text(getattr(message, "content", ""))
-    except Exception:
-        return ""
-    return ""
-
-
-def _clean_hotspot_llm_summary(text: str) -> str:
-    summary = _normalize_inline_text(text).strip(" 　\"'“”‘’")
-    summary = re.sub(r"^(摘要|总结|消息催化|事件催化)\s*[:：]\s*", "", summary)
-    return summary
-
-
 def _extract_date_text(text: str) -> str:
     match = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", text or "")
     if not match:
@@ -573,7 +564,7 @@ def _extract_date_text(text: str) -> str:
 
 
 def _hotspot_rows_are_thin(rows: List[Any], *, top: int) -> bool:
-    if len(rows) < min(DSA_ALPHASIFT_MIN_HOTSPOT_CACHE_COUNT, max(1, top)):
+    if len(rows) < min(DSA_SCREENING_MIN_HOTSPOT_CACHE_COUNT, max(1, top)):
         return True
     rich_count = 0
     metric_count = 0
@@ -601,7 +592,7 @@ def _enrich_hotspot_rows_from_provider(rows: List[Any], provider: Any, *, top: i
     try:
         provider_rows = provider.hotspot_rows(top=max(top, len(rows), 30))
     except Exception as exc:
-        logger.warning("AlphaSift hotspot metric enrichment failed: %s", exc)
+        logger.warning("Screening hotspot metric enrichment failed: %s", exc)
         return [dict(item) if isinstance(item, dict) else item for item in rows]
     by_topic: Dict[str, Dict[str, Any]] = {}
     for item in provider_rows or []:
@@ -647,14 +638,36 @@ def _enrich_hotspot_rows_from_provider(rows: List[Any], provider: Any, *, top: i
     return enriched
 
 
-def _write_alphasift_hotspot_cache(payload: Dict[str, Any]) -> None:
-    cache_path = _alphasift_hotspot_cache_path()
+def _write_screening_hotspot_cache(payload: Dict[str, Any]) -> None:
+    cache_path = _screening_hotspot_cache_path()
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cached_at = _utc_now_iso()
         cache_payload = dict(payload)
         cache_payload["cache_used"] = False
         cache_payload["cached_at"] = cached_at
+        current_hotspots = cache_payload.get("hotspots")
+        if not isinstance(current_hotspots, list):
+            current_hotspots = []
+            cache_payload["hotspots"] = current_hotspots
+        existing_payload = _load_screening_hotspot_cache_payload_for_write(cache_path)
+        if isinstance(existing_payload, dict):
+            existing_provider = _env_text(existing_payload.get("provider"))
+            current_provider = _env_text(cache_payload.get("provider"))
+            existing_hotspots = existing_payload.get("hotspots")
+            if (
+                isinstance(existing_hotspots, list)
+                and existing_hotspots
+                and (not current_provider or not existing_provider or existing_provider == current_provider)
+            ):
+                merged_hotspots = _merge_screening_hotspot_cache_rows(current_hotspots, existing_hotspots)
+                if len(merged_hotspots) > len(current_hotspots):
+                    cache_payload["hotspots"] = merged_hotspots
+                    cache_payload["hotspot_count"] = len(merged_hotspots)
+                    cache_payload["details"] = _merge_screening_hotspot_cache_details(
+                        cache_payload.get("details"),
+                        existing_payload.get("details"),
+                    )
         cache_path.write_text(
             json.dumps(
                 {
@@ -678,7 +691,51 @@ def _write_alphasift_hotspot_cache(payload: Dict[str, Any]) -> None:
             encoding="utf-8",
         )
     except Exception as exc:
-        logger.warning("Failed to write AlphaSift hotspot cache to %s: %s", cache_path, exc)
+        logger.warning("Failed to write Screening hotspot cache to %s: %s", cache_path, exc)
+
+
+def _merge_screening_hotspot_cache_rows(current_rows: List[Any], existing_rows: List[Any]) -> List[Any]:
+    merged: List[Any] = []
+    seen_topics: set[str] = set()
+    target_count = max(len(current_rows), len(existing_rows))
+
+    def append_rows(rows: List[Any]) -> None:
+        for row in rows:
+            if isinstance(row, dict):
+                topic = _hotspot_topic_from_row(row)
+                if topic:
+                    if topic in seen_topics:
+                        continue
+                    seen_topics.add(topic)
+                merged.append(dict(row))
+                continue
+            if row in merged:
+                continue
+            merged.append(row)
+
+    append_rows(current_rows)
+    append_rows(existing_rows)
+    return merged[:target_count]
+
+
+def _merge_screening_hotspot_cache_details(current_details: Any, existing_details: Any) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    if isinstance(existing_details, dict):
+        merged.update(existing_details)
+    if isinstance(current_details, dict):
+        merged.update(current_details)
+    return merged
+
+
+def _load_screening_hotspot_cache_payload_for_write(cache_path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.warning("Failed to read existing Screening hotspot cache from %s: %s", cache_path, exc)
+        return None
+    return _normalize_screening_hotspot_cache_payload(raw)
 
 
 def _hotspot_topic_from_row(row: Any) -> str:
@@ -697,11 +754,11 @@ def _attach_cached_hotspot_details(
     if not isinstance(rows, list) or not rows:
         return payload
     details = dict(payload.get("details") if isinstance(payload.get("details"), dict) else {})
-    for row in rows[:max(0, min(int(top or 0), DSA_ALPHASIFT_HOTSPOT_PREFETCH_DETAIL_COUNT))]:
+    for row in rows[:max(0, min(int(top or 0), DSA_SCREENING_HOTSPOT_PREFETCH_DETAIL_COUNT))]:
         topic = _hotspot_topic_from_row(row)
         if not topic or topic in details:
             continue
-        cached = _load_alphasift_hotspot_detail_cache(provider=provider, topic=topic)
+        cached = _load_screening_hotspot_detail_cache(provider=provider, topic=topic)
         if cached is not None:
             details[topic] = cached
     if details:
@@ -711,7 +768,7 @@ def _attach_cached_hotspot_details(
     return payload
 
 
-def _empty_alphasift_hotspot_payload(
+def _empty_screening_hotspot_payload(
     *,
     provider: str,
     provider_used: str = "",
@@ -780,7 +837,7 @@ def _is_known_eastmoney_hotspot_connectivity_error(exc: BaseException) -> bool:
         if isinstance(current, retryable_tuple):
             return True
         message = f"{current.__class__.__name__}: {current}".lower()
-        if any(marker in message for marker in DSA_ALPHASIFT_HOTSPOT_CONNECTIVITY_ERROR_MARKERS):
+        if any(marker in message for marker in DSA_SCREENING_HOTSPOT_CONNECTIVITY_ERROR_MARKERS):
             return True
         cause = getattr(current, "__cause__", None)
         context = getattr(current, "__context__", None)
@@ -799,14 +856,14 @@ def _has_degraded_eastmoney_hotspot_failure(provider_arg: Any, source_errors: Li
     if not isinstance(provider_arg, DsaEastMoneyHotspotProvider):
         return False
     for source_error in source_errors:
-        if source_error == DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE:
+        if source_error == DSA_SCREENING_HOTSPOT_UNAVAILABLE_CODE:
             return True
         if _is_known_eastmoney_hotspot_connectivity_error(RuntimeError(source_error)):
             return True
     return False
 
 
-class AlphaSiftStrategyResponse(BaseModel):
+class ScreeningStrategyResponse(BaseModel):
     id: str
     name: str = ""
     title: str = ""
@@ -816,25 +873,29 @@ class AlphaSiftStrategyResponse(BaseModel):
     tags: List[str] = Field(default_factory=list)
     market_scope: List[str] = Field(default_factory=list)
     market: str = ""
+    analysis_skills: List[str] = Field(default_factory=list)
 
 
-class AlphaSiftService:
-    """Coordinate AlphaSift calls with DSA-owned runtime capabilities."""
+class ScreeningService:
+    """Coordinate stock screening with DSA-owned capabilities."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, db_manager: Optional[DatabaseManager] = None):
         self.config = config
+        self.db_manager = db_manager
 
     def status(self) -> Dict[str, Any]:
-        adapter_status, available, diagnostics = _get_alphasift_status_snapshot()
+        engine_status, available, diagnostics = _get_screening_status_snapshot()
         payload = {
-            "enabled": bool(self.config.alphasift_enabled),
+            "enabled": bool(self.config.screening_enabled),
             "available": available,
-            "install_spec_is_default": _is_default_alphasift_install_spec(self.config.alphasift_install_spec),
-            "contract_version": adapter_status.get("contract_version"),
-            "version": adapter_status.get("version"),
-            "strategy_count": adapter_status.get("strategy_count"),
+            "engine": engine_status.get("engine") or "builtin",
+            "contract_version": engine_status.get("contract_version"),
+            "version": engine_status.get("version"),
+            "strategy_count": engine_status.get("strategy_count"),
+            "reference_project": engine_status.get("reference_project"),
+            "reference_revision": engine_status.get("reference_revision"),
         }
-        source_health = _get_alphasift_source_health_snapshot()
+        source_health = _get_screening_source_health_snapshot()
         if source_health:
             payload["source_health"] = source_health
         if diagnostics:
@@ -842,8 +903,8 @@ class AlphaSiftService:
         return payload
 
     def strategies(self) -> Dict[str, Any]:
-        _ensure_alphasift_enabled(self.config)
-        _ensure_alphasift_available_for_use()
+        _ensure_screening_enabled(self.config)
+        _ensure_screening_available_for_use()
         strategies = _list_strategies()
         return {
             "enabled": True,
@@ -851,10 +912,56 @@ class AlphaSiftService:
             "strategy_count": len(strategies),
         }
 
-    def install(self, *, request: Request) -> Dict[str, Any]:
-        _ensure_alphasift_install_access(request)
-        _ensure_alphasift_enabled(self.config)
-        return _install_alphasift(self.config)
+    def history(
+        self,
+        *,
+        limit: int = 20,
+        strategy: str = "",
+        market: str = "",
+    ) -> Dict[str, Any]:
+        _ensure_screening_enabled(self.config)
+        db_manager = self._require_history_database()
+        runs = db_manager.list_screening_runs(
+            limit=limit,
+            strategy=_env_text(strategy) or None,
+            market=_env_text(market) or None,
+        )
+        return {
+            "enabled": True,
+            "runs": runs,
+            "run_count": len(runs),
+        }
+
+    def history_detail(self, run_id: str) -> Dict[str, Any]:
+        _ensure_screening_enabled(self.config)
+        db_manager = self._require_history_database()
+        run = db_manager.get_screening_run(run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "screening_run_not_found",
+                    "message": f"选股运行 {run_id} 不存在。",
+                },
+            )
+        return {"enabled": True, **run}
+
+    def source_history(self, *, limit: int = 100) -> Dict[str, Any]:
+        _ensure_screening_enabled(self.config)
+        db_manager = self._require_history_database()
+        runs = db_manager.list_screening_runs(limit=limit)
+        return _summarize_screening_source_history(runs)
+
+    def _require_history_database(self) -> DatabaseManager:
+        if self.db_manager is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "screening_history_unavailable",
+                    "message": "DSA 数据库未注入，无法读取选股运行历史。",
+                },
+            )
+        return self.db_manager
 
     def hotspots(
         self,
@@ -864,38 +971,35 @@ class AlphaSiftService:
         refresh: bool = False,
         include_details: bool = False,
     ) -> Dict[str, Any]:
-        _ensure_alphasift_enabled(self.config)
-        _ensure_alphasift_available_for_use()
+        _ensure_screening_enabled(self.config)
+        _ensure_screening_available_for_use()
         provider_name, provider_arg = _resolve_hotspot_provider(provider)
         top_count = max(1, min(int(top or 12), 50))
+        cache_top_count = max(top_count, DSA_SCREENING_MIN_HOTSPOT_CACHE_COUNT)
         if not refresh:
-            cached = _load_alphasift_hotspot_cache(provider=provider_name, top=top_count)
+            cached = _load_screening_hotspot_cache(provider=provider_name, top=top_count)
             if cached is not None:
                 return _attach_cached_hotspot_details(cached, provider=provider_name, top=top_count) if include_details else cached
-            return _empty_alphasift_hotspot_payload(
+            return _empty_screening_hotspot_payload(
                 provider=provider_name,
-                message="No cached AlphaSift hotspot snapshot. Click refresh to fetch live hotspots.",
+                message="No cached Screening hotspot snapshot. Click refresh to fetch live hotspots.",
             )
 
-        hotspot_module = _import_alphasift_hotspot()
-        discover_hotspots = _get_adapter_callable(
-            hotspot_module,
-            "discover_hotspots",
-            "discover_hotspots() is not callable.",
-        )
-
         try:
-            with _alphasift_runtime_env(self.config):
-                raw = discover_hotspots(
-                    provider=provider_arg,
-                    top=top_count,
-                    history_path=_alphasift_hotspot_history_path(),
-                    fallback_cache_path=_alphasift_hotspot_cache_path(),
-                )
+            # Hotspot providers receive their runtime inputs explicitly. Do not
+            # hold the process-wide Screening environment lock during network
+            # I/O, otherwise a hotspot refresh that starts first can delay a
+            # concurrent stock-screening request for the full source timeout.
+            raw = screening_hotspot.discover_hotspots(
+                provider=provider_arg,
+                top=cache_top_count,
+                history_path=_screening_hotspot_history_path(),
+                fallback_cache_path=_screening_hotspot_cache_path(),
+            )
         except HTTPException:
             raise
         except Exception as exc:
-            cached = _load_alphasift_hotspot_cache(provider=provider_name, top=top_count)
+            cached = _load_screening_hotspot_cache(provider=provider_name, top=top_count)
             if cached is not None:
                 errors = list(cached.get("source_errors") or [])
                 errors.append(f"live refresh failed: {exc}")
@@ -904,44 +1008,45 @@ class AlphaSiftService:
                 cached["cache_used"] = True
                 return _attach_cached_hotspot_details(cached, provider=provider_name, top=top_count) if include_details else cached
             if not _should_return_eastmoney_hotspot_unavailable(provider_arg, exc):
-                diagnostics = _log_unexpected_alphasift_exception("hotspot_refresh", exc)
+                diagnostics = _log_unexpected_screening_exception("hotspot_refresh", exc)
                 raise HTTPException(
                     status_code=424,
                     detail={
-                        "error": "alphasift_hotspot_refresh_failed",
-                        "message": f"AlphaSift hotspot refresh failed: {exc}",
+                        "error": "screening_hotspot_refresh_failed",
+                        "message": f"Screening hotspot refresh failed: {exc}",
                         "diagnostics": diagnostics,
                     },
                 ) from exc
-            logger.warning("AlphaSift hotspot live refresh failed without cache: %s", exc)
-            return _empty_alphasift_hotspot_payload(
+            logger.warning("Screening hotspot live refresh failed without cache: %s", exc)
+            return _empty_screening_hotspot_payload(
                 provider=provider_name,
                 provider_used=type(provider_arg).__name__,
-                source_errors=[DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE],
-                message=DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_MESSAGE,
+                source_errors=[DSA_SCREENING_HOTSPOT_UNAVAILABLE_CODE],
+                message=DSA_SCREENING_HOTSPOT_UNAVAILABLE_MESSAGE,
             )
 
         items = _remove_non_finite_json_values(_to_plain(raw))
         if not isinstance(items, list):
             items = []
-        selected = items[:top_count]
+        cache_rows = items[:cache_top_count]
         source_errors = _list_text_values(getattr(raw, "source_errors", []))
         direct_hotspot_fallback_used = False
-        if isinstance(provider_arg, DsaEastMoneyHotspotProvider) and _hotspot_rows_are_thin(selected, top=top_count):
+        if isinstance(provider_arg, DsaEastMoneyHotspotProvider) and _hotspot_rows_are_thin(cache_rows, top=cache_top_count):
             try:
-                direct_hotspots = provider_arg.hotspot_rows(top=top_count)
+                direct_hotspots = provider_arg.hotspot_rows(top=cache_top_count)
             except Exception as exc:
-                logger.warning("AlphaSift DSA direct hotspot fallback failed: %s", exc)
+                logger.warning("Screening DSA direct hotspot fallback failed: %s", exc)
                 direct_hotspots = []
                 source_errors.append(f"dsa_direct_hotspots_failed: {exc}")
-            if len(direct_hotspots) > len(selected):
-                selected = direct_hotspots
+            if len(direct_hotspots) > len(cache_rows):
+                cache_rows = direct_hotspots
                 direct_hotspot_fallback_used = True
-                source_errors.append("AlphaSift hotspot rows were thin; used DSA EastMoney board-change rows.")
-        if isinstance(provider_arg, DsaEastMoneyHotspotProvider) and selected:
-            selected = _enrich_hotspot_rows_from_provider(selected, provider_arg, top=top_count)
+                source_errors.append("Screening hotspot rows were thin; used DSA EastMoney board-change rows.")
+        if isinstance(provider_arg, DsaEastMoneyHotspotProvider) and cache_rows:
+            cache_rows = _enrich_hotspot_rows_from_provider(cache_rows, provider_arg, top=cache_top_count)
+        selected = cache_rows[:top_count]
         if not selected and source_errors:
-            cached = _load_alphasift_hotspot_cache(provider=provider_name, top=top_count)
+            cached = _load_screening_hotspot_cache(provider=provider_name, top=top_count)
             if cached is not None:
                 errors = list(cached.get("source_errors") or [])
                 errors.extend(source_errors)
@@ -950,11 +1055,11 @@ class AlphaSiftService:
                 cached["cache_used"] = True
                 return _attach_cached_hotspot_details(cached, provider=provider_name, top=top_count) if include_details else cached
             if _has_degraded_eastmoney_hotspot_failure(provider_arg, source_errors):
-                return _empty_alphasift_hotspot_payload(
+                return _empty_screening_hotspot_payload(
                     provider=provider_name,
                     provider_used=str(getattr(raw, "provider_used", "") or type(provider_arg).__name__),
-                    source_errors=[DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE],
-                    message=DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_MESSAGE,
+                    source_errors=[DSA_SCREENING_HOTSPOT_UNAVAILABLE_CODE],
+                    message=DSA_SCREENING_HOTSPOT_UNAVAILABLE_MESSAGE,
                 )
 
         payload = {
@@ -973,7 +1078,10 @@ class AlphaSiftService:
         if selected and include_details:
             payload = self._prefetch_hotspot_details(payload, provider=provider_name, refresh=False)
         if selected:
-            _write_alphasift_hotspot_cache(payload)
+            cache_payload = dict(payload)
+            cache_payload["hotspots"] = cache_rows
+            cache_payload["hotspot_count"] = len(cache_rows)
+            _write_screening_hotspot_cache(cache_payload)
         return payload
 
     def _prefetch_hotspot_details(self, payload: Dict[str, Any], *, provider: str, refresh: bool) -> Dict[str, Any]:
@@ -982,7 +1090,7 @@ class AlphaSiftService:
             return payload
         details = dict(payload.get("details") if isinstance(payload.get("details"), dict) else {})
         source_errors = _list_text_values(payload.get("source_errors"))
-        for row in rows[:DSA_ALPHASIFT_HOTSPOT_PREFETCH_DETAIL_COUNT]:
+        for row in rows[:DSA_SCREENING_HOTSPOT_PREFETCH_DETAIL_COUNT]:
             topic = _hotspot_topic_from_row(row)
             if not topic or (topic in details and not refresh):
                 continue
@@ -999,120 +1107,145 @@ class AlphaSiftService:
             attached["source_errors"] = source_errors
         return attached
 
-    def hotspot_detail(self, *, topic: str, provider: str = "", refresh: bool = False) -> Dict[str, Any]:
-        _ensure_alphasift_enabled(self.config)
-        _ensure_alphasift_available_for_use()
+    def hotspot_detail(
+        self,
+        *,
+        topic: str,
+        provider: str = "",
+        refresh: bool = False,
+        include_search: bool = False,
+    ) -> Dict[str, Any]:
+        _ensure_screening_enabled(self.config)
+        _ensure_screening_available_for_use()
         topic_text = _env_text(topic)
         if not topic_text:
             raise HTTPException(
                 status_code=400,
-                detail={"error": "alphasift_hotspot_topic_required", "message": "热点题材名称不能为空。"},
+                detail={"error": "screening_hotspot_topic_required", "message": "热点题材名称不能为空。"},
             )
         provider_name, provider_arg = _resolve_hotspot_provider(provider)
         if not isinstance(provider_arg, DsaEastMoneyHotspotProvider):
             provider_arg = DsaEastMoneyHotspotProvider()
-        cached = None if refresh else _load_alphasift_hotspot_detail_cache(provider=provider_name, topic=topic_text)
+        cached = None if refresh else _load_screening_hotspot_detail_cache(provider=provider_name, topic=topic_text)
         if cached is not None:
-            return cached
+            if not include_search:
+                return cached
+            return _with_hotspot_search_augmentation(cached, topic=topic_text)
         normalized: Dict[str, Any] = {}
         hotspot_helper_error: str = ""
         try:
             try:
-                hotspot_module = _import_alphasift_hotspot()
-                get_hotspot_detail = getattr(hotspot_module, "get_hotspot_detail", None)
+                get_hotspot_detail = screening_hotspot.get_hotspot_detail
             except Exception:
                 get_hotspot_detail = None
-            with _alphasift_runtime_env(self.config):
-                if callable(get_hotspot_detail) and type(provider_arg) is DsaEastMoneyHotspotProvider:
-                    try:
-                        detail = get_hotspot_detail(
-                            topic_text,
-                            provider=provider_arg,
-                            top_stocks=30,
-                            history_path=_alphasift_hotspot_history_path(),
-                            fallback_cache_path=_alphasift_hotspot_cache_path(),
-                        )
-                        normalized = _normalize_alphasift_hotspot_detail(
-                            detail,
-                            provider=provider_name,
-                            requested_topic=topic_text,
-                        )
-                        normalized = _merge_provider_hotspot_route_fallback(
-                            normalized,
-                            provider=provider_arg,
-                            topic=topic_text,
-                        )
-                    except Exception as exc:
-                        hotspot_helper_error = f"{exc}"
-                        logger.warning(
-                            "AlphaSift contract hotspot detail fallback to provider for topic=%s: %s",
-                            topic_text,
-                            hotspot_helper_error,
-                        )
-                else:
-                    normalized = provider_arg.hotspot_detail(topic_text)
-                if not normalized:
-                    normalized = provider_arg.hotspot_detail(topic_text)
+            if callable(get_hotspot_detail) and type(provider_arg) is DsaEastMoneyHotspotProvider:
+                try:
+                    detail = get_hotspot_detail(
+                        topic_text,
+                        provider=provider_arg,
+                        top_stocks=30,
+                        history_path=_screening_hotspot_history_path(),
+                        fallback_cache_path=_screening_hotspot_cache_path(),
+                    )
+                    normalized = _normalize_screening_hotspot_detail(
+                        detail,
+                        provider=provider_name,
+                        requested_topic=topic_text,
+                    )
+                    normalized = _merge_provider_hotspot_route_fallback(
+                        normalized,
+                        provider=provider_arg,
+                        topic=topic_text,
+                    )
+                except Exception as exc:
+                    hotspot_helper_error = f"{exc}"
+                    logger.warning(
+                        "Screening hotspot helper fallback to provider for topic=%s: %s",
+                        topic_text,
+                        hotspot_helper_error,
+                    )
+            else:
+                normalized = provider_arg.hotspot_detail(topic_text)
+            if not normalized:
+                normalized = provider_arg.hotspot_detail(topic_text)
         except Exception as exc:
-            stale_cached = _load_alphasift_hotspot_detail_cache(
+            stale_cached = _load_screening_hotspot_detail_cache(
                 provider=provider_name,
                 topic=topic_text,
                 allow_stale=True,
             )
             if stale_cached is not None:
                 source_errors = _list_text_values(stale_cached.get("source_errors"))
-                source_errors.append(f"alphasift_hotspot_detail_stale_cache: {exc}")
+                source_errors.append(f"screening_hotspot_detail_stale_cache: {exc}")
                 stale_cached["source_errors"] = source_errors
                 stale_cached["fallback_used"] = True
+                if include_search:
+                    return _with_hotspot_search_augmentation(stale_cached, topic=topic_text)
                 return stale_cached
             raise HTTPException(
                 status_code=424,
-                detail={"error": "alphasift_hotspot_detail_failed", "message": f"AlphaSift hotspot detail failed: {exc}"},
+                detail={"error": "screening_hotspot_detail_failed", "message": f"Screening hotspot detail failed: {exc}"},
             ) from exc
         if hotspot_helper_error:
             source_errors = _list_text_values(normalized.get("source_errors"))
-            source_errors.append(f"alphasift_hotspot_detail_fallback: {hotspot_helper_error}")
+            source_errors.append(f"screening_hotspot_detail_fallback: {hotspot_helper_error}")
             normalized["source_errors"] = source_errors
             normalized["fallback_used"] = True
             normalized["provider"] = provider_name
-        if not _hotspot_route_has_external_event(normalized.get("route")):
-            search_routes = _build_hotspot_event_routes_from_search(topic_text, self.config)
-            if search_routes:
-                route = normalized.get("route")
-                normalized["route"] = search_routes + (route if isinstance(route, list) else [])
         normalized = _ensure_hotspot_detail_compat_fields(normalized)
         normalized["enabled"] = True
         normalized["provider"] = provider_name
-        cleaned = _remove_non_finite_json_values(normalized)
-        _write_alphasift_hotspot_detail_cache(provider=provider_name, topic=topic_text, payload=cleaned)
-        return cleaned
+        base_detail = _remove_non_finite_json_values(
+            _strip_hotspot_search_augmentation(normalized)
+        )
+        _write_screening_hotspot_detail_cache(
+            provider=provider_name,
+            topic=topic_text,
+            payload=base_detail,
+        )
+        if include_search:
+            return _with_hotspot_search_augmentation(base_detail, topic=topic_text)
+        return base_detail
 
-    def screen(self, *, strategy: str, market: str, max_results: int) -> Dict[str, Any]:
-        _ensure_alphasift_enabled(self.config)
-        _ensure_alphasift_available_for_use()
+    def screen(
+        self,
+        *,
+        strategy: str,
+        market: str,
+        max_results: int,
+        selection_seed: str = "",
+        progress_callback: Callable[[int, str], None] | None = None,
+    ) -> Dict[str, Any]:
+        _ensure_screening_enabled(self.config)
+        _ensure_screening_available_for_use()
         _ensure_supported_market(market)
         _ensure_supported_strategy(strategy)
 
-        adapter = _get_dsa_adapter()
-        screen = _get_adapter_callable(adapter, "screen", "screen() 不可调用。")
         try:
-            raw = _call_alphasift_screen(screen, strategy, market, max_results, self.config)
+            raw = _call_screening_screen(
+                strategy,
+                market,
+                max_results,
+                self.config,
+                selection_seed=selection_seed,
+                progress_callback=progress_callback,
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,
-                detail={"error": "alphasift_screen_rejected", "message": str(exc)},
+                detail={"error": "screening_screen_rejected", "message": str(exc)},
             ) from exc
         except (TypeError, KeyError) as exc:
             raise HTTPException(
                 status_code=422,
-                detail={"error": "alphasift_invalid_input", "message": f"AlphaSift 参数非法：{exc}"},
+                detail={"error": "screening_invalid_input", "message": f"Screening 参数非法：{exc}"},
             ) from exc
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(
                 status_code=424,
-                detail={"error": "alphasift_screen_failed", "message": f"AlphaSift 选股运行失败：{exc}"},
+                detail={"error": "screening_screen_failed", "message": f"Screening 选股运行失败：{exc}"},
             ) from exc
 
         raw_data = _to_plain(raw)
@@ -1122,12 +1255,18 @@ class AlphaSiftService:
 
         candidates = _normalize_candidates(raw_data)
         selected = candidates[:max_results]
+        _emit_screening_progress(
+            progress_callback,
+            92,
+            "正在补充入选股票的新闻与事件",
+        )
         selected, dsa_enrichment = _enrich_candidates_with_dsa(selected)
-        return {
+        warnings = _collect_screening_warning_messages(raw_data)
+        response = {
             "enabled": True,
             "candidates": selected,
             "candidate_count": len(selected),
-            "run_id": raw_data.get("run_id"),
+            "run_id": raw_data.get("run_id") or uuid.uuid4().hex,
             "strategy": raw_data.get("strategy") or strategy,
             "market": raw_data.get("market") or market,
             "snapshot_count": raw_data.get("snapshot_count"),
@@ -1139,7 +1278,14 @@ class AlphaSiftService:
             "llm_portfolio_risk": raw_data.get("llm_portfolio_risk") or "",
             "llm_coverage": raw_data.get("llm_coverage"),
             "llm_parse_errors": _list_text_values(raw_data.get("llm_parse_errors")),
-            "warnings": _list_text_values(raw_data.get("warnings")),
+            "llm_model_used": raw_data.get("llm_model_used") or "",
+            "llm_attempted_models": _list_text_values(raw_data.get("llm_attempted_models")),
+            "llm_failure_reason": raw_data.get("llm_failure_reason") or "",
+            "ranking_mode": raw_data.get("ranking_mode") or (
+                "llm" if raw_data.get("llm_ranked") else "factor"
+            ),
+            "degradation": _list_text_values(raw_data.get("degradation")),
+            "warnings": warnings,
             "source_errors": _list_text_values(raw_data.get("source_errors")),
             "dsa_enrichment": dsa_enrichment,
             "deep_analysis_requested": raw_data.get("deep_analysis_requested"),
@@ -1149,10 +1295,29 @@ class AlphaSiftService:
             "risk_enabled": raw_data.get("risk_enabled"),
             "portfolio_diversity_enabled": raw_data.get("portfolio_diversity_enabled"),
             "portfolio_concentration_notes": raw_data.get("portfolio_concentration_notes") or [],
+            "result_variant_applied": bool(raw_data.get("result_variant_applied")),
+            "result_variant_pool_size": raw_data.get("result_variant_pool_size") or 0,
+            "result_variant_rotated_slots": raw_data.get("result_variant_rotated_slots") or 0,
         }
+        if self.db_manager is not None:
+            self.db_manager.save_screening_run(response)
+        return response
 
 
-def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested_topic: str) -> Dict[str, Any]:
+def _emit_screening_progress(
+    callback: Callable[[int, str], None] | None,
+    progress: int,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(progress, message)
+    except Exception as exc:  # noqa: BLE001 - progress reporting must not fail screening.
+        logger.debug("Screening service progress callback failed: %s", exc)
+
+
+def _normalize_screening_hotspot_detail(detail: Any, *, provider: str, requested_topic: str) -> Dict[str, Any]:
     raw_value = _remove_non_finite_json_values(_to_plain(detail))
     raw: Dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
     summary_value = raw.get("summary")
@@ -1175,7 +1340,7 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
     summary_text = (
         summary_text_value
         if isinstance(summary_text_value, str)
-        else _build_alphasift_hotspot_summary_text(summary, topic=topic, canonical_topic=canonical_topic)
+        else _build_screening_hotspot_summary_text(summary, topic=topic, canonical_topic=canonical_topic)
     )
     return _ensure_hotspot_detail_compat_fields({
         "enabled": True,
@@ -1227,7 +1392,7 @@ def _hotspot_timeline_to_route(timeline: List[Any]) -> List[Dict[str, Any]]:
         if not title:
             continue
         date = _env_text(item.get("date") or item.get("published_at"))
-        source = _env_text(item.get("source")) or "alphasift_timeline"
+        source = _env_text(item.get("source")) or "screening_timeline"
         route.append({
             "title": title,
             "description": f"{date}：{title}" if date else title,
@@ -1256,7 +1421,7 @@ def _merge_provider_hotspot_route_fallback(
         provider_detail = provider.hotspot_detail(topic)
     except Exception as exc:
         logger.warning(
-            "AlphaSift provider route fallback failed for %s; keeping contract detail route: %s",
+            "Screening provider route fallback failed for %s; keeping engine detail route: %s",
             topic,
             exc,
         )
@@ -1298,174 +1463,71 @@ def _has_meaningful_hotspot_route(route: Any) -> bool:
     return False
 
 
-def _build_alphasift_hotspot_summary_text(summary: Dict[str, Any], *, topic: str, canonical_topic: str) -> str:
+def _build_screening_hotspot_summary_text(summary: Dict[str, Any], *, topic: str, canonical_topic: str) -> str:
     display_topic = canonical_topic or topic
-    quality = _env_text(summary.get("quality_status"))
     heat = _safe_float(summary.get("heat_score"))
     stage = _env_text(summary.get("stage"))
     leaders = summary.get("leaders") if isinstance(summary.get("leaders"), list) else []
-    parts = [f"{display_topic} 当前热点详情"]
+    parts = [display_topic]
     if heat is not None:
         parts.append(f"热度 {heat:.1f}")
     if stage:
         parts.append(f"阶段 {stage}")
     if leaders:
         parts.append("核心股 " + "、".join(_env_text(item) for item in leaders[:3] if _env_text(item)))
-    if quality:
-        parts.append(f"质量状态 {quality}")
     return "，".join(part for part in parts if part) + "。"
 
 
-def _install_alphasift(config: Config) -> Dict[str, Any]:
-    with _ALPHASIFT_INSTALL_LOCK:
-        install_spec_is_default = _is_default_alphasift_install_spec(config.alphasift_install_spec)
-        if _is_alphasift_available():
-            _get_dsa_adapter()
-            return _build_install_response(
-                already_installed=True,
-                install_spec_is_default=install_spec_is_default,
-            )
-
-        install_spec = _validate_install_spec(config.alphasift_install_spec)
-
-        try:
-            _purge_alphasift_modules()
-            importlib.invalidate_caches()
-            completed = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", install_spec],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=424,
-                detail={"error": "alphasift_install_failed", "message": f"修复安装 AlphaSift 失败：{exc}"},
-            ) from exc
-
-        if completed.returncode != 0:
-            stderr = (completed.stderr or "").strip()
-            stdout = (completed.stdout or "").strip()
-            detail = stderr or stdout or f"pip exited with code {completed.returncode}"
-            raise HTTPException(
-                status_code=424,
-                detail={
-                    "error": "alphasift_install_failed",
-                    "message": f"修复安装 AlphaSift 失败：{detail}",
-                },
-            )
-
-        importlib.invalidate_caches()
-        _purge_alphasift_modules()
-        adapter_status = _call_alphasift_status()
-        if not _is_adapter_available(adapter_status):
-            raise HTTPException(
-                status_code=424,
-                detail={"error": "alphasift_unavailable", "message": "AlphaSift 安装完成，但适配层当前不可用（available=false）。请检查当前 Python 环境和安装状态后重试。"},
-            )
-        _get_dsa_adapter()
-
-        return _build_install_response(
-            already_installed=False,
-            install_spec_is_default=_is_default_alphasift_install_spec(install_spec),
-        )
-
-
-def _validate_install_spec(raw_install_spec: str) -> str:
-    install_spec = (raw_install_spec or "").strip()
-    if not install_spec or install_spec.lower() == "alphasift":
-        raise HTTPException(
-            status_code=424,
-            detail={
-                "error": "alphasift_install_spec_missing",
-                "message": f"请先将 ALPHASIFT_INSTALL_SPEC 配置为受信任来源：{DEFAULT_ALPHASIFT_INSTALL_SPEC}。",
-            },
-        )
-
-    if install_spec not in ALLOWED_ALPHASIFT_INSTALL_SPECS:
+def _ensure_screening_enabled(config: Config) -> None:
+    if not config.screening_enabled:
         raise HTTPException(
             status_code=403,
-            detail={
-                "error": "alphasift_install_spec_not_allowed",
-                "message": (
-                    "出于安全考虑，修复安装 AlphaSift 仅允许使用受信任来源："
-                    f"{DEFAULT_ALPHASIFT_INSTALL_SPEC}。如需使用本地路径或 wheel，请先手动安装到当前 Python 环境。"
-                ),
-            },
-        )
-
-    return install_spec
-
-
-def _ensure_alphasift_enabled(config: Config) -> None:
-    if not config.alphasift_enabled:
-        raise HTTPException(
-            status_code=403,
-            detail={"error": "alphasift_disabled", "message": "ALPHASIFT_ENABLED is false."},
+            detail={"error": "screening_disabled", "message": "SCREENING_ENABLED is false."},
         )
 
 
-def _ensure_alphasift_ready(config: Config, *, request: Request) -> None:
-    # Backward-compatible helper for tests/extensions. Normal strategies/screen
-    # calls no longer mutate the Python environment; AlphaSift is installed with
-    # project dependencies and `/install` remains an explicit repair action.
-    _ensure_alphasift_available_for_use()
-
-
-def _ensure_alphasift_available_for_use() -> None:
-    _, available, diagnostics = _get_alphasift_status_snapshot()
+def _ensure_screening_available_for_use() -> None:
+    _, available, diagnostics = _get_screening_status_snapshot()
     if available:
         return
-    normalized_diagnostics = _include_alphasift_diagnostic_suffix(diagnostics)
-    if _is_missing_alphasift_module(diagnostics):
-        raise _alphasift_unavailable_exception(
-            "AlphaSift 是 DSA 的项目依赖，但当前运行环境未安装适配层。请先执行 `pip install -r requirements.txt`，或重建 Docker/桌面后端产物。",
-            diagnostics=normalized_diagnostics,
-        )
-    raise _alphasift_unavailable_exception(
-        "AlphaSift 已开启但当前运行时状态异常。已保留异常诊断，避免自动重装掩盖真实问题。",
+    normalized_diagnostics = _include_screening_diagnostic_suffix(diagnostics)
+    raise _screening_unavailable_exception(
+        "选股功能初始化失败，请检查策略文件、依赖和服务端日志。",
         diagnostics=normalized_diagnostics,
     )
 
 
-def _is_missing_alphasift_module(diagnostics: Optional[Dict[str, str]]) -> bool:
-    return bool(diagnostics and diagnostics.get("reason") == "missing_module")
-
-
-def _include_alphasift_diagnostic_suffix(
+def _include_screening_diagnostic_suffix(
     diagnostics: Optional[Dict[str, str]],
 ) -> Optional[Dict[str, str]]:
     if diagnostics is None:
         return None
-    if diagnostics.get("reason") == "missing_module":
-        return diagnostics
     normalized = dict(diagnostics)
-    normalized.setdefault("resolution", "no_auto_install")
+    normalized.setdefault("resolution", "builtin_engine")
     normalized.setdefault(
         "message",
-        "请先检查后端日志并修复运行时异常，当前未触发修复安装。",
+        "请检查后端日志、策略资源和基础数据依赖。",
     )
     return normalized
 
 
-def _get_alphasift_status_snapshot() -> Tuple[Dict[str, Any], bool, Optional[Dict[str, str]]]:
+def _get_screening_status_snapshot() -> Tuple[Dict[str, Any], bool, Optional[Dict[str, str]]]:
     try:
-        adapter_status = _call_alphasift_status()
+        engine_status = _call_screening_status()
     except HTTPException as exc:
-        return {}, False, _extract_alphasift_diagnostics(exc)
+        return {}, False, _extract_screening_diagnostics(exc)
     except Exception as exc:
-        diagnostics = _log_unexpected_alphasift_exception("status_probe", exc)
+        diagnostics = _log_unexpected_screening_exception("status_probe", exc)
         return {}, False, diagnostics
 
-    return adapter_status, _is_adapter_available(adapter_status), None
+    return engine_status, _is_engine_available(engine_status), None
 
 
-def _get_alphasift_source_health_snapshot() -> Dict[str, Any]:
+def _get_screening_source_health_snapshot() -> Dict[str, Any]:
     health: Dict[str, Any] = {}
     for module_name, key, function_name in (
-        ("alphasift.snapshot", "snapshot", "snapshot_source_health_snapshot"),
-        ("alphasift.daily", "daily", "daily_source_health_snapshot"),
+        ("src.services.screening.snapshot", "snapshot", "snapshot_source_health_snapshot"),
+        ("src.services.screening.daily", "daily", "daily_source_health_snapshot"),
     ):
         try:
             module = importlib.import_module(module_name)
@@ -1475,206 +1537,49 @@ def _get_alphasift_source_health_snapshot() -> Dict[str, Any]:
                 if snapshot:
                     health[key] = snapshot
         except Exception as exc:
-            logger.debug("AlphaSift %s source health snapshot unavailable: %s", key, exc)
+            logger.debug("Screening %s source health snapshot unavailable: %s", key, exc)
     return health
 
 
-def _ensure_alphasift_install_access(request: Request) -> None:
-    if os.getenv("DSA_DESKTOP_MODE") == "true":
-        return
-    refresh_auth_state()
-    if not is_auth_enabled():
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "alphasift_install_access_denied",
-                "message": "AlphaSift 修复安装仅允许桌面模式或已启用管理员认证的会话。请先启用管理员认证后重试。",
-            },
-        )
-
-    cookie_val = request.cookies.get(COOKIE_NAME)
-    if cookie_val and verify_session(cookie_val):
-        return
-
-    raise HTTPException(
-        status_code=401,
-        detail={
-            "error": "alphasift_install_access_denied",
-            "message": "AlphaSift 修复安装需要有效管理员会话。",
-        },
-    )
-
-
-def _is_alphasift_available() -> bool:
-    _, available, _ = _get_alphasift_status_snapshot()
-    return available
-
-
-def _is_adapter_available(adapter_status: Any) -> bool:
-    if isinstance(adapter_status, dict):
-        return bool(adapter_status.get("available", True))
+def _is_engine_available(engine_status: Any) -> bool:
+    if isinstance(engine_status, dict):
+        return bool(engine_status.get("available", True))
     return True
 
 
-def _import_alphasift() -> Any:
+def _call_screening_status() -> Dict[str, Any]:
     try:
-        _prepare_alphasift_runtime_env()
-        return importlib.import_module(ALPHASIFT_DSA_ADAPTER_MODULE)
-    except ModuleNotFoundError as exc:
-        if _is_expected_alphasift_missing(exc):
-            diagnostics = {
-                "reason": "missing_module",
-                "stage": "import_adapter",
-                "error_type": exc.__class__.__name__,
-                "module": str(getattr(exc, "name", ALPHASIFT_DSA_ADAPTER_MODULE)),
-            }
-            raise _alphasift_unavailable_exception(
-                f"AlphaSift 未安装或未挂载到当前 Python 环境，无法导入 {ALPHASIFT_DSA_ADAPTER_MODULE}：{exc}",
-                diagnostics=diagnostics,
-            ) from exc
-        diagnostics = _log_unexpected_alphasift_exception("import_adapter", exc)
-        raise _alphasift_unavailable_exception(
-            f"AlphaSift 适配层导入失败，请检查依赖完整性和当前 Python 环境：{exc}",
-            diagnostics=diagnostics,
-        ) from exc
+        strategy_count = len(load_screening_strategies())
     except Exception as exc:
-        diagnostics = _log_unexpected_alphasift_exception("import_adapter", exc)
-        raise _alphasift_unavailable_exception(
-            f"AlphaSift 适配层导入失败，请检查依赖完整性和当前 Python 环境：{exc}",
+        diagnostics = _log_unexpected_screening_exception("strategy_load", exc)
+        raise _screening_unavailable_exception(
+            f"选股功能状态检查失败：{exc}",
             diagnostics=diagnostics,
         ) from exc
+    return {
+        "available": True,
+        "engine": "builtin",
+        "version": SCREENING_VERSION,
+        "contract_version": SCREENING_CONTRACT_VERSION,
+        "strategy_count": strategy_count,
+        "reference_project": REFERENCE_PROJECT,
+        "reference_revision": REFERENCE_REVISION,
+    }
 
 
-def _import_alphasift_hotspot() -> Any:
-    try:
-        _prepare_alphasift_runtime_env()
-        return importlib.import_module("alphasift.hotspot")
-    except ModuleNotFoundError as exc:
-        if getattr(exc, "name", None) in {"alphasift", "alphasift.hotspot"}:
-            diagnostics = {
-                "reason": "missing_module",
-                "stage": "import_hotspot",
-                "error_type": exc.__class__.__name__,
-                "module": str(getattr(exc, "name", "alphasift.hotspot")),
-            }
-            raise _alphasift_unavailable_exception(
-                f"AlphaSift hotspot module is unavailable: {exc}",
-                diagnostics=diagnostics,
-            ) from exc
-        diagnostics = _log_unexpected_alphasift_exception("import_hotspot", exc)
-        raise _alphasift_unavailable_exception(
-            f"AlphaSift hotspot module import failed: {exc}",
-            diagnostics=diagnostics,
-        ) from exc
-    except Exception as exc:
-        diagnostics = _log_unexpected_alphasift_exception("import_hotspot", exc)
-        raise _alphasift_unavailable_exception(
-            f"AlphaSift hotspot module import failed: {exc}",
-            diagnostics=diagnostics,
-        ) from exc
-
-
-def _prepare_alphasift_runtime_env() -> None:
-    if os.getenv("STRATEGIES_DIR"):
-        return
-
-    spec = importlib.util.find_spec("alphasift")
-    if not spec or not spec.origin:
-        return
-
-    package_strategies_dir = Path(spec.origin).resolve().parent / "strategies"
-    if package_strategies_dir.is_dir():
-        os.environ["STRATEGIES_DIR"] = str(package_strategies_dir)
-
-
-def _get_dsa_adapter() -> Any:
-    adapter = _import_alphasift()
-    for attr in ("get_status", "list_strategies", "screen"):
-        _get_adapter_callable(adapter, attr, f"{attr}() 不可调用。")
-    return adapter
-
-
-def _get_adapter_callable(adapter: Any, name: str, missing_error: str) -> Any:
-    callable_obj = getattr(adapter, name, None)
-    if not callable(callable_obj):
-        raise HTTPException(
-            status_code=424,
-            detail={"error": "alphasift_unavailable", "message": f"已导入 alphasift 适配层，但 {missing_error}"},
-        )
-    return callable_obj
-
-
-def _call_alphasift_status() -> Dict[str, Any]:
-    try:
-        adapter = _import_alphasift()
-    except ModuleNotFoundError as exc:
-        if _is_expected_alphasift_missing(exc):
-            logger.warning("AlphaSift import missing expected module during status probe: %s", exc)
-            diagnostics = {
-                "reason": "missing_module",
-                "stage": "import_adapter",
-                "error_type": exc.__class__.__name__,
-                "module": str(getattr(exc, "name", ALPHASIFT_DSA_ADAPTER_MODULE)),
-            }
-            raise _alphasift_unavailable_exception(
-                f"AlphaSift 未安装或未挂载到当前 Python 环境，无法导入 {ALPHASIFT_DSA_ADAPTER_MODULE}：{exc}",
-                diagnostics=diagnostics,
-            ) from exc
-
-        diagnostics = _log_unexpected_alphasift_exception("import_adapter", exc)
-        raise _alphasift_unavailable_exception(
-            f"AlphaSift 适配层导入失败，请检查依赖完整性和当前 Python 环境：{exc}",
-            diagnostics=diagnostics,
-        ) from exc
-    try:
-        get_status = _get_adapter_callable(adapter, "get_status", "get_status() 不可调用。")
-    except HTTPException as exc:
-        diagnostics = _log_unexpected_alphasift_exception("get_status_callable", exc)
-        raise _alphasift_unavailable_exception(
-            "AlphaSift 适配层 get_status 不可调用，请检查适配层版本。",
-            diagnostics=diagnostics,
-        ) from exc
-    try:
-        result = _to_plain(get_status())
-    except Exception as exc:
-        diagnostics = _log_unexpected_alphasift_exception("get_status", exc)
-        raise _alphasift_unavailable_exception(
-            f"AlphaSift 适配层 get_status 调用失败：{exc}",
-            diagnostics=diagnostics,
-        ) from exc
-    if not isinstance(result, dict):
-        exc = TypeError(f"get_status returned {type(result).__name__}, expected dict")
-        diagnostics = _log_unexpected_alphasift_exception("get_status_result", exc)
-        raise _alphasift_unavailable_exception(
-            "AlphaSift 适配层 get_status 返回结构非法，请检查适配层版本。",
-            diagnostics=diagnostics,
-        ) from exc
-    return result
-
-
-def _is_expected_alphasift_missing(exc: ModuleNotFoundError) -> bool:
-    return getattr(exc, "name", None) in ALPHASIFT_EXPECTED_MISSING_MODULES
-
-
-def _purge_alphasift_modules() -> None:
-    for module_name in list(sys.modules):
-        if module_name == "alphasift" or module_name.startswith("alphasift."):
-            sys.modules.pop(module_name, None)
-
-
-def _alphasift_unavailable_exception(
+def _screening_unavailable_exception(
     message: str,
     *,
     diagnostics: Optional[Dict[str, str]] = None,
 ) -> HTTPException:
-    detail: Dict[str, Any] = {"error": "alphasift_unavailable", "message": message}
+    detail: Dict[str, Any] = {"error": "screening_unavailable", "message": message}
     if diagnostics:
         detail["diagnostics"] = diagnostics
     return HTTPException(status_code=424, detail=detail)
 
 
-def _log_unexpected_alphasift_exception(stage: str, exc: BaseException) -> Dict[str, str]:
-    logger.warning("Unexpected AlphaSift %s failure: %s", stage, exc, exc_info=exc.__traceback__ is not None)
+def _log_unexpected_screening_exception(stage: str, exc: BaseException) -> Dict[str, str]:
+    logger.warning("Unexpected Screening %s failure: %s", stage, exc, exc_info=exc.__traceback__ is not None)
     return {
         "reason": "unexpected_exception",
         "stage": stage,
@@ -1682,7 +1587,7 @@ def _log_unexpected_alphasift_exception(stage: str, exc: BaseException) -> Dict[
     }
 
 
-def _extract_alphasift_diagnostics(exc: HTTPException) -> Optional[Dict[str, str]]:
+def _extract_screening_diagnostics(exc: HTTPException) -> Optional[Dict[str, str]]:
     detail = exc.detail if isinstance(exc.detail, dict) else {}
     diagnostics = detail.get("diagnostics")
     if not isinstance(diagnostics, dict):
@@ -1691,13 +1596,11 @@ def _extract_alphasift_diagnostics(exc: HTTPException) -> Optional[Dict[str, str
 
 
 def _list_strategies() -> List[Dict[str, Any]]:
-    adapter = _get_dsa_adapter()
-    list_strategies = _get_adapter_callable(adapter, "list_strategies", "list_strategies() 不可调用。")
-    raw = _to_plain(list_strategies())
+    raw = _to_plain(load_screening_strategies())
     if not isinstance(raw, list):
         raise HTTPException(
             status_code=424,
-            detail={"error": "alphasift_invalid_result", "message": "AlphaSift list_strategies 返回非列表。"},
+            detail={"error": "screening_invalid_result", "message": "选股策略列表结构非法。"},
         )
 
     normalized: List[Dict[str, Any]] = []
@@ -1729,7 +1632,7 @@ def _normalize_strategy(raw: Any) -> Dict[str, Any]:
         or item.get("name")
         or "",
     )
-    name = str(item.get("name") or item.get("title") or strategy_id)
+    name = str(item.get("display_name") or item.get("name") or item.get("title") or strategy_id)
     category = str(item.get("category") or item.get("tag") or "")
     return _strategy_model(
         id=strategy_id,
@@ -1741,15 +1644,73 @@ def _normalize_strategy(raw: Any) -> Dict[str, Any]:
         tags=[str(tag) for tag in tags],
         market_scope=[str(market) for market in market_scope],
         market=str(item.get("market") or item.get("market_id") or ""),
+        analysis_skills=_list_text_values(
+            item.get("analysis_skills") or item.get("analysisSkills")
+        ),
     )
 
 
 def _strategy_model(**kwargs: Any) -> Dict[str, Any]:
-    normalized = AlphaSiftStrategyResponse(**kwargs)
+    normalized = ScreeningStrategyResponse(**kwargs)
     try:
         return normalized.model_dump()
     except AttributeError:
         return normalized.dict()
+
+
+def _summarize_screening_source_history(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    source_stats: Dict[str, Dict[str, Any]] = {}
+    fallback_runs = 0
+
+    def source_entry(source: str) -> Dict[str, Any]:
+        return source_stats.setdefault(
+            source,
+            {
+                "selected_runs": 0,
+                "error_count": 0,
+                "last_seen_at": None,
+                "error_samples": [],
+            },
+        )
+
+    for run in runs:
+        created_at = run.get("created_at")
+        selected_source = _env_text(run.get("snapshot_source")) or "unknown"
+        selected = source_entry(selected_source)
+        selected["selected_runs"] += 1
+        if not selected["last_seen_at"]:
+            selected["last_seen_at"] = created_at
+
+        errors = _list_text_values(run.get("source_errors"))
+        warnings = _collect_screening_warning_messages(run)
+        if errors or any("fallback" in warning.lower() or "降级" in warning for warning in warnings):
+            fallback_runs += 1
+        for error in errors:
+            source = _screening_source_from_error(error)
+            entry = source_entry(source)
+            entry["error_count"] += 1
+            if not entry["last_seen_at"]:
+                entry["last_seen_at"] = created_at
+            samples = entry["error_samples"]
+            if error not in samples and len(samples) < 5:
+                samples.append(error)
+
+    return {
+        "enabled": True,
+        "runs_analyzed": len(runs),
+        "fallback_runs": fallback_runs,
+        "sources": dict(sorted(source_stats.items())),
+    }
+
+
+def _screening_source_from_error(error: str) -> str:
+    text = _env_text(error)
+    match = re.search(
+        r"(?:snapshot source fallback:\s*)?([a-zA-Z][a-zA-Z0-9_-]{1,31})\s*(?:after\s+\d+\s+attempts)?\s*:",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).lower() if match else "unknown"
 
 
 def _ensure_supported_strategy(strategy: str) -> None:
@@ -1761,74 +1722,49 @@ def _ensure_supported_strategy(strategy: str) -> None:
     if strategy in ids:
         return
 
-    # 兼容“策略列表为空时手动输入”以及“用户手动覆盖策略参数”场景，
-    # 策略由适配层进行最终校验，因此在列表外仍保持透传。
+    # 策略参数由选股引擎执行最终校验，这里保持透传以支持自定义策略。
 
 
-def _call_alphasift_screen(screen: Any, strategy: str, market: str, max_results: int, config: Config) -> Any:
-    signature = inspect.signature(screen)
-    params = signature.parameters
-    supports_var_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in params.values())
-    positional_params = [
-        parameter
-        for parameter in params.values()
-        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    ]
-    supports_var_positional = any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in params.values())
+def _call_screening_screen(
+    strategy: str,
+    market: str,
+    max_results: int,
+    config: Config,
+    *,
+    selection_seed: str = "",
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> Any:
+    # Environment bridging is process-global, so keep it brief: materialize an
+    # immutable pipeline config while holding the lock, then release it before
+    # any network or LLM work. Hotspot refreshes can then run alongside screening.
+    with _screening_runtime_env(config, max_results=max_results):
+        pipeline_config = ScreeningPipelineConfig.from_env()
+        pipeline_context = _build_screening_context(config, max_results=max_results)
 
-    supports_max_results = "max_results" in params or supports_var_kwargs
-    supports_max_output = "max_output" in params or supports_var_kwargs
-    supports_use_llm = "use_llm" in params or supports_var_kwargs
-    supports_context = "context" in params or supports_var_kwargs
-
-    kwargs: Dict[str, Any] = {"market": market}
-    if supports_max_results:
-        kwargs["max_results"] = max_results
-    elif supports_max_output:
-        kwargs["max_output"] = max_results
-    else:
-        kwargs["max_results"] = max_results
-
-    if supports_use_llm:
-        kwargs["use_llm"] = True
-    if supports_context:
-        kwargs["context"] = _build_alphasift_context(config, max_results=max_results)
-
-    with (
-        _alphasift_runtime_env(config, max_results=max_results),
-        _alphasift_dsa_daily_history_provider(),
-        _alphasift_litellm_headers(config),
-    ):
-        try:
-            return screen(strategy, **kwargs)
-        except TypeError as exc:
-            message = str(exc)
-            signature_mismatch = ("keyword" in message and "argument" in message) or (
-                "positional" in message and "given" in message
-            )
-            if not signature_mismatch:
-                raise
-            if "context" in kwargs:
-                retry_kwargs = dict(kwargs)
-                retry_kwargs.pop("context", None)
-                try:
-                    return screen(strategy, **retry_kwargs)
-                except TypeError as retry_exc:
-                    exc = retry_exc
-            if not (supports_var_kwargs or supports_var_positional or len(positional_params) >= 3):
-                raise exc
-            return screen(strategy, market, max_results)
+    daily_history_fetcher = _build_screening_dsa_daily_history_fetcher()
+    with _screening_litellm_headers(config):
+        return run_screening_pipeline(
+            strategy,
+            market=market,
+            max_output=max_results,
+            use_llm=True,
+            selection_seed=selection_seed,
+            context=pipeline_context,
+            config=pipeline_config,
+            progress_callback=progress_callback,
+            daily_history_fetcher=daily_history_fetcher,
+        )
 
 
 @contextmanager
-def _alphasift_runtime_env(config: Config, *, max_results: Optional[int] = None) -> Iterator[None]:
-    updates = _build_alphasift_runtime_env(config, max_results=max_results)
+def _screening_runtime_env(config: Config, *, max_results: Optional[int] = None) -> Iterator[None]:
+    updates = _build_screening_runtime_env(config, max_results=max_results)
     if not updates:
         yield
         return
 
     sentinel = object()
-    with _ALPHASIFT_RUNTIME_ENV_LOCK:
+    with _SCREENING_RUNTIME_ENV_LOCK:
         previous = {key: os.environ.get(key, sentinel) for key in updates}
         os.environ.update(updates)
         try:
@@ -1841,18 +1777,21 @@ def _alphasift_runtime_env(config: Config, *, max_results: Optional[int] = None)
                     os.environ[key] = value  # type: ignore[assignment]
 
 
-@contextmanager
-def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
+def _build_screening_dsa_daily_history_fetcher() -> Optional[Callable[..., Any]]:
+    """Build one request-local DSA-first daily-history fetcher.
+
+    The returned closure captures the bundled Screening fetcher as its
+    fallback. It never replaces ``daily.fetch_daily_history``, so overlapping
+    screening requests cannot restore stale wrappers or build wrapper chains.
+    """
     try:
-        daily_module = importlib.import_module("alphasift.daily")
+        daily_module = importlib.import_module("src.services.screening.daily")
     except Exception:
-        yield
-        return
+        return None
 
     original_fetch = getattr(daily_module, "fetch_daily_history", None)
     if not callable(original_fetch):
-        yield
-        return
+        return None
 
     def fetch_daily_history_with_dsa(
         code: str,
@@ -1860,38 +1799,70 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
         lookback_days: int = 120,
         source: str = "akshare",
         retries: int = 2,
+        cache_dir: str | Path | None = None,
+        cache_ttl_seconds: float | None = None,
     ) -> Any:
         try:
             dsa_df, dsa_source = get_dsa_daily_history(code, lookback_days=lookback_days)
             normalized = _normalize_dsa_daily_history(dsa_df)
             if normalized is not None and not normalized.empty:
-                normalized.attrs["source"] = f"dsa:{dsa_source}"
+                resolved_source = f"dsa:{dsa_source}"
+                normalized_code = code
+                normalize_code = getattr(daily_module, "_normalize_daily_code", None)
+                if callable(normalize_code):
+                    normalized_code = normalize_code(code)
+                normalized.attrs["source"] = resolved_source
+                normalized.attrs["daily_source"] = resolved_source
+                normalized.attrs["daily_requested_source"] = source
+                normalized.attrs["daily_source_order"] = [resolved_source]
+                normalized.attrs["daily_source_order_notes"] = []
+                normalized.attrs["source_errors"] = []
+                normalized.attrs["daily_source_health"] = {}
+                if cache_dir is not None:
+                    cache_path_builder = getattr(daily_module, "_daily_history_cache_path", None)
+                    cache_writer = getattr(daily_module, "_write_daily_history_cache", None)
+                    if callable(cache_path_builder) and callable(cache_writer):
+                        cache_path = cache_path_builder(
+                            cache_dir,
+                            code=normalized_code,
+                            source=source,
+                            lookback_days=int(lookback_days),
+                        )
+                        cache_writer(
+                            cache_path,
+                            normalized,
+                            code=normalized_code,
+                            source=source,
+                            lookback_days=int(lookback_days),
+                        )
                 return normalized
         except Exception as exc:
             logger.warning(
-                "AlphaSift DSA daily history fetch failed for %s; falling back to AlphaSift source %s: %s",
+                "Screening DSA daily history fetch failed for %s; falling back to Screening source %s: %s",
                 code,
                 source,
                 exc,
             )
-        return original_fetch(code, lookback_days=lookback_days, source=source, retries=retries)
+        return original_fetch(
+            code,
+            lookback_days=lookback_days,
+            source=source,
+            retries=retries,
+            cache_dir=cache_dir,
+            cache_ttl_seconds=cache_ttl_seconds,
+        )
 
-    with _ALPHASIFT_RUNTIME_ENV_LOCK:
-        setattr(daily_module, "fetch_daily_history", fetch_daily_history_with_dsa)
-        try:
-            yield
-        finally:
-            setattr(daily_module, "fetch_daily_history", original_fetch)
+    return fetch_daily_history_with_dsa
 
 
-def _resolve_alphasift_snapshot_source_priority(config: Config) -> str:
+def _resolve_screening_snapshot_source_priority(config: Config) -> str:
     token = _env_text(getattr(config, "tushare_token", None) or os.getenv("TUSHARE_TOKEN"))
     if token:
-        return DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE
-    return DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY
+        return DSA_SCREENING_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE
+    return DSA_SCREENING_SNAPSHOT_SOURCE_PRIORITY
 
 
-def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] = None) -> Dict[str, str]:
+def _build_screening_runtime_env(config: Config, *, max_results: Optional[int] = None) -> Dict[str, str]:
     # Bridge runtime only: only inject resolved DSA values for this request/process scope.
     # User .env/config is never rewritten here; unset channels/models are not silently migrated.
     # 与 LiteLLM provider/model、openai-compatible `api_base` 与 headers 注入语义保持一致，
@@ -1909,7 +1880,7 @@ def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] =
             return
         put(key, value)
 
-    litellm_model, fallback_models = _resolve_alphasift_llm_models(config)
+    litellm_model, fallback_models = _resolve_screening_llm_models(config)
     put("LITELLM_MODEL", litellm_model)
     if fallback_models:
         put("LITELLM_FALLBACK_MODELS", ",".join(fallback_models))
@@ -1957,18 +1928,18 @@ def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] =
 
     put("OPENAI_BASE_URL", config.openai_base_url or _first_channel_base_url(channels, {"openai"}))
     put_default("DAILY_SOURCE", "auto")
-    put_default("DAILY_FETCH_RETRIES", str(DSA_ALPHASIFT_DAILY_FETCH_RETRIES))
+    put_default("DAILY_FETCH_RETRIES", str(DSA_SCREENING_DAILY_FETCH_RETRIES))
     put_default("DAILY_FETCH_MAX_WORKERS", "1")
     put("LLM_CANDIDATE_CONTEXT_ENABLED", "false")
-    put_default("LLM_CANDIDATE_CONTEXT_PROVIDERS", DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS)
-    put_default("LLM_CANDIDATE_MULTIPLIER", str(DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER))
+    put_default("LLM_CANDIDATE_CONTEXT_PROVIDERS", DSA_SCREENING_CANDIDATE_CONTEXT_PROVIDERS)
+    put_default("LLM_CANDIDATE_MULTIPLIER", str(DSA_SCREENING_LLM_CANDIDATE_MULTIPLIER))
     put_default("LLM_MAX_CANDIDATES", str(_resolve_dsa_llm_max_candidates(max_results)))
-    put_default("SNAPSHOT_SOURCE_PRIORITY", _resolve_alphasift_snapshot_source_priority(config))
-    alphasift_data_dir = _resolve_alphasift_data_dir()
-    put_default("ALPHASIFT_DATA_DIR", str(alphasift_data_dir))
-    put_default("ALPHASIFT_FALLBACK_SNAPSHOT_PATH", str(alphasift_data_dir / "snapshot.last_good.json"))
-    put_default("ALPHASIFT_DAILY_HISTORY_CACHE_DIR", str(alphasift_data_dir / "daily_history"))
-    put_default("ALPHASIFT_INDUSTRY_PROVIDER_CACHE_DIR", str(alphasift_data_dir / "industry_provider_cache"))
+    put_default("SNAPSHOT_SOURCE_PRIORITY", _resolve_screening_snapshot_source_priority(config))
+    screening_data_dir = _resolve_screening_data_dir()
+    put_default("SCREENING_DATA_DIR", str(screening_data_dir))
+    put_default("SCREENING_FALLBACK_SNAPSHOT_PATH", str(screening_data_dir / "snapshot.last_good.json"))
+    put_default("SCREENING_DAILY_HISTORY_CACHE_DIR", str(screening_data_dir / "daily_history"))
+    put_default("SCREENING_INDUSTRY_PROVIDER_CACHE_DIR", str(screening_data_dir / "industry_provider_cache"))
     return env
 
 
@@ -1987,10 +1958,13 @@ def _resolve_hotspot_provider(provider: str) -> Tuple[str, Any]:
 
 
 class DsaEastMoneyHotspotProvider:
-    """Minimal EastMoney board provider for AlphaSift hotspot scoring."""
+    """Minimal EastMoney board provider for Screening hotspot scoring."""
 
+    _screening_source_calls_bounded = True
     _BASE_URL = "https://push2.eastmoney.com/api/qt/clist/get"
-    _HTTP_TIMEOUT_SECONDS = 8
+    _AKSHARE_CALL_TIMEOUT_SECONDS = 4.0
+    _CONSTITUENT_HTTP_TIMEOUT = (1.0, 2.0)
+    _CONSTITUENT_WORKER_SLOTS = threading.BoundedSemaphore(4)
     _COMMON_PARAMS = {
         "pn": "1",
         "po": "1",
@@ -2087,6 +2061,10 @@ class DsaEastMoneyHotspotProvider:
         "白银": "贵金属",
         "贵金属": "贵金属",
     }
+    _THS_TOPIC_ALIASES = {
+        "文字媒体": ("文化传媒概念", "文化传媒"),
+    }
+
     def __init__(self) -> None:
         import requests
 
@@ -2098,17 +2076,71 @@ class DsaEastMoneyHotspotProvider:
         self._last_request_ts = 0.0
         self._min_request_interval = 0.25
 
+    @contextmanager
+    def _source_call_budget(self) -> Iterator[None]:
+        """Apply one configured budget to a board, constituent, or detail call.
+
+        The provider uses killable subprocesses for AkShare and socket
+        timeouts for direct HTTP, so it must not be wrapped in the generic
+        daemon-thread timeout. Nested public calls reuse the same deadline to
+        prevent fallback steps from each receiving a fresh full budget.
+        """
+        if _DSA_HOTSPOT_CALL_DEADLINE.get() is not None:
+            yield
+            return
+        timeout = parse_source_timeout_seconds(
+            "SCREENING_HOTSPOT_CALL_TIMEOUT_SEC",
+            default=DSA_SCREENING_HOTSPOT_CALL_TIMEOUT_SECONDS,
+        )
+        if timeout is None:
+            yield
+            return
+        token = _DSA_HOTSPOT_CALL_DEADLINE.set(time.monotonic() + timeout)
+        try:
+            yield
+        finally:
+            _DSA_HOTSPOT_CALL_DEADLINE.reset(token)
+
+    def _remaining_source_timeout(self, fallback: float) -> float:
+        deadline = _DSA_HOTSPOT_CALL_DEADLINE.get()
+        if deadline is None:
+            return float(fallback)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("screening hotspot provider call exceeded its configured timeout")
+        return remaining
+
+    def _akshare_timeout_seconds(self) -> float:
+        return self._remaining_source_timeout(self._AKSHARE_CALL_TIMEOUT_SECONDS)
+
+    def _http_timeout(self) -> Tuple[float, float]:
+        deadline = _DSA_HOTSPOT_CALL_DEADLINE.get()
+        if deadline is None:
+            return self._CONSTITUENT_HTTP_TIMEOUT
+        remaining = self._remaining_source_timeout(sum(self._CONSTITUENT_HTTP_TIMEOUT))
+        connect = min(self._CONSTITUENT_HTTP_TIMEOUT[0], max(remaining / 2.0, 0.001))
+        read = max(remaining - connect, 0.001)
+        return connect, read
+
+    def _sleep_within_source_budget(self, seconds: float) -> None:
+        deadline = _DSA_HOTSPOT_CALL_DEADLINE.get()
+        if deadline is not None and self._remaining_source_timeout(seconds) <= seconds:
+            raise TimeoutError("screening hotspot provider call exceeded its configured timeout")
+        time.sleep(seconds)
+
     def _eastmoney_get_once(self, url: str, **kwargs: Any) -> Any:
         with self._request_lock:
             elapsed = time.monotonic() - self._last_request_ts
             if elapsed < self._min_request_interval:
-                time.sleep(self._min_request_interval - elapsed)
+                self._sleep_within_source_budget(self._min_request_interval - elapsed)
+            kwargs["timeout"] = self._http_timeout()
             try:
                 return self._session.get(url, **kwargs)
             finally:
                 self._last_request_ts = time.monotonic()
 
     def _eastmoney_get(self, url: str, **kwargs: Any) -> Any:
+        """Retry short-lived EastMoney failures without extending each socket wait."""
         import requests
 
         retryable_errors = (
@@ -2126,38 +2158,41 @@ class DsaEastMoneyHotspotProvider:
                 if attempt >= len(delays):
                     break
                 logger.warning(
-                    "AlphaSift EastMoney hotspot request failed; retrying attempt=%s: %s",
+                    "Screening EastMoney hotspot request failed; retrying attempt=%s: %s",
                     attempt + 1,
                     exc,
                 )
-                time.sleep(delays[attempt])
+                self._sleep_within_source_budget(delays[attempt])
         assert last_error is not None
         raise last_error
 
     def stock_board_concept_name_em(self) -> Any:
-        frame = self._fetch_board_changes_with_fallback()
-        if frame is not None and not frame.empty:
-            return frame
-        frame = self._fetch_rankings_with_fallback("concept")
-        if frame is not None and not frame.empty:
-            return frame
-        return self._fetch_board_names(source_fs="m:90 t:3 f:!50")
+        with self._source_call_budget():
+            frame = self._fetch_board_changes_with_fallback()
+            if frame is not None and not frame.empty:
+                return frame
+            frame = self._fetch_rankings_with_fallback("concept")
+            if frame is not None and not frame.empty:
+                return frame
+            return self._fetch_board_names(source_fs="m:90 t:3 f:!50")
 
     def stock_board_industry_name_em(self) -> Any:
-        concept_frame = self._fetch_board_changes_with_fallback()
-        if concept_frame is not None and not concept_frame.empty:
-            import pandas as pd
+        with self._source_call_budget():
+            concept_frame = self._fetch_board_changes_with_fallback()
+            if concept_frame is not None and not concept_frame.empty:
+                import pandas as pd
 
-            return pd.DataFrame()
-        frame = self._fetch_rankings_with_fallback("industry")
-        if frame is not None and not frame.empty:
-            return frame
-        return self._fetch_board_names(source_fs="m:90 t:2 f:!50")
+                return pd.DataFrame()
+            frame = self._fetch_rankings_with_fallback("industry")
+            if frame is not None and not frame.empty:
+                return frame
+            return self._fetch_board_names(source_fs="m:90 t:2 f:!50")
 
     def hotspot_rows(self, *, top: int = 12) -> List[Dict[str, Any]]:
         import pandas as pd
 
-        frame = self.stock_board_concept_name_em()
+        with self._source_call_budget():
+            frame = self.stock_board_concept_name_em()
         df = pd.DataFrame(frame)
         if df.empty:
             return []
@@ -2204,41 +2239,102 @@ class DsaEastMoneyHotspotProvider:
         return rows
 
     def stock_board_concept_cons_em(self, symbol: str = "") -> Any:
-        cached = self._get_constituent_cache("concept", symbol)
-        if cached is not None:
-            return cached
-        frames = [self._fetch_eastmoney_constituents(symbol, source="concept")]
-        try:
-            frames.append(self._fetch_ths_constituents(symbol))
-        except Exception as exc:
-            logger.warning(
-                "AlphaSift THS constituent fetch failed for %s; falling back to alternative sources: %s",
-                symbol,
-                exc,
-            )
-        frames.append(self._fallback_constituents(symbol))
-        frames.append(self._related_hotspot_constituents(symbol))
-        frame = self._merge_constituent_frames(frames)
-        self._set_constituent_cache("concept", symbol, frame)
-        return frame
+        with self._source_call_budget():
+            cached = self._get_constituent_cache("concept", symbol)
+            if cached is not None:
+                return cached
+            frames = self._fetch_constituent_sources(symbol, source="concept")
+            frames.append(self._fallback_constituents(symbol))
+            frames.append(self._related_hotspot_constituents(symbol))
+            frame = self._merge_constituent_frames(frames)
+            self._set_constituent_cache("concept", symbol, frame)
+            return frame
 
     def stock_board_industry_cons_em(self, symbol: str = "") -> Any:
-        cached = self._get_constituent_cache("industry", symbol)
-        if cached is not None:
-            return cached
-        frame = self._merge_constituent_frames([
-            self._fetch_eastmoney_constituents(symbol, source="industry"),
-            self._fallback_constituents(symbol),
-        ])
-        self._set_constituent_cache("industry", symbol, frame)
-        return frame
+        with self._source_call_budget():
+            cached = self._get_constituent_cache("industry", symbol)
+            if cached is not None:
+                return cached
+            frames = self._fetch_constituent_sources(symbol, source="industry")
+            frames.append(self._fallback_constituents(symbol))
+            frame = self._merge_constituent_frames(frames)
+            self._set_constituent_cache("industry", symbol, frame)
+            return frame
+
+    def _fetch_constituent_sources(self, topic: str, *, source: str) -> List[Any]:
+        """Fetch independent sources in parallel without orphan workers.
+
+        AkShare calls run in DSA's killable timeout subprocess; direct HTTP
+        calls have connect/read timeouts. A process-wide semaphore prevents
+        repeated upstream failures from creating unbounded active tasks, and
+        the executor joins every admitted worker before this method returns.
+        """
+        fetchers: List[Tuple[str, Callable[[], Any]]] = [
+            ("eastmoney", lambda: self._fetch_eastmoney_constituents(topic, source=source)),
+        ]
+        if source == "concept":
+            fetchers.append(("ths", lambda: self._fetch_ths_constituents(topic)))
+
+        source_deadline = _DSA_HOTSPOT_CALL_DEADLINE.get()
+
+        def run(fetch: Callable[[], Any]) -> Any:
+            token = (
+                _DSA_HOTSPOT_CALL_DEADLINE.set(source_deadline)
+                if source_deadline is not None
+                else None
+            )
+            try:
+                return fetch()
+            finally:
+                if token is not None:
+                    _DSA_HOTSPOT_CALL_DEADLINE.reset(token)
+                self._CONSTITUENT_WORKER_SLOTS.release()
+
+        frames_by_source: Dict[str, Any] = {}
+        with ThreadPoolExecutor(
+            max_workers=len(fetchers),
+            thread_name_prefix="screening-constituents",
+        ) as executor:
+            futures = {}
+            for label, fetch in fetchers:
+                if not self._CONSTITUENT_WORKER_SLOTS.acquire(blocking=False):
+                    logger.info(
+                        "Screening %s constituent source skipped for %s: worker capacity exhausted",
+                        label,
+                        topic,
+                    )
+                    continue
+                try:
+                    futures[executor.submit(run, fetch)] = label
+                except BaseException:  # noqa: BLE001 - release capacity if submission fails.
+                    self._CONSTITUENT_WORKER_SLOTS.release()
+                    raise
+            for future in as_completed(futures):
+                label = futures[future]
+                try:
+                    payload = future.result()
+                except BaseException as exc:  # noqa: BLE001 - external source failures are isolated.
+                    logger.info("Screening %s constituent source failed for %s: %s", label, topic, exc)
+                    continue
+                if payload is None or bool(getattr(payload, "empty", False)):
+                    continue
+                frames_by_source[label] = payload
+        return [
+            frames_by_source[label]
+            for label, _fetch in fetchers
+            if label in frames_by_source
+        ]
 
     def hotspot_detail(self, topic: str) -> Dict[str, Any]:
+        with self._source_call_budget():
+            return self._hotspot_detail(topic)
+
+    def _hotspot_detail(self, topic: str) -> Dict[str, Any]:
         try:
             summary = self._find_board_change(topic)
         except Exception as exc:
             logger.warning(
-                "AlphaSift board-change summary fetch failed for %s; continuing without summary: %s",
+                "Screening board-change summary fetch failed for %s; continuing without summary: %s",
                 topic,
                 exc,
             )
@@ -2247,7 +2343,6 @@ class DsaEastMoneyHotspotProvider:
             stocks = self._normalize_constituent_records(self.stock_board_industry_cons_em(topic))
         else:
             stocks = self._normalize_constituent_records(self.stock_board_concept_cons_em(topic))
-        stocks = self._enrich_constituent_quotes(stocks)
         route = self._build_hotspot_route(topic, summary)
         info = self._fetch_ths_info(topic)
         if info:
@@ -2323,10 +2418,15 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_board_changes_raw(self) -> Any:
         import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
         if self._board_changes_raw_cache is not None:
             return self._board_changes_raw_cache.copy()
-        df = ak.stock_board_change_em()
+        df = _akshare_call_with_timeout(
+            ak.stock_board_change_em,
+            timeout=self._akshare_timeout_seconds(),
+            call_name="screening.stock_board_change_em",
+        )
         self._board_changes_raw_cache = df
         return df.copy() if df is not None else df
 
@@ -2336,7 +2436,7 @@ class DsaEastMoneyHotspotProvider:
         try:
             return self._fetch_board_changes()
         except Exception as exc:
-            logger.warning("AlphaSift hotspot board-change fetch failed; falling back to ranking/board names: %s", exc)
+            logger.warning("Screening hotspot board-change fetch failed; falling back to ranking/board names: %s", exc)
             return pd.DataFrame()
 
     def _is_broad_board(self, name: str) -> bool:
@@ -2344,10 +2444,15 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_rankings(self, source: str) -> Any:
         import pandas as pd
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
-        manager = _get_dsa_fetcher_manager()
-        fetch = manager.get_concept_rankings if source == "concept" else manager.get_sector_rankings
-        top, _bottom = fetch(100)
+        top, _bottom = _akshare_call_with_timeout(
+            _fetch_dsa_hotspot_rankings,
+            source,
+            100,
+            timeout=self._akshare_timeout_seconds(),
+            call_name=f"screening.dsa_{source}_rankings",
+        )
         rows = []
         for index, item in enumerate(top or []):
             name = _env_text((item or {}).get("name"))
@@ -2366,7 +2471,7 @@ class DsaEastMoneyHotspotProvider:
         try:
             return self._fetch_rankings(source)
         except Exception as exc:
-            logger.warning("AlphaSift hotspot %s ranking fetch failed; falling back to board names: %s", source, exc)
+            logger.warning("Screening hotspot %s ranking fetch failed; falling back to board names: %s", source, exc)
             return pd.DataFrame()
 
     def _fetch_board_names(self, *, source_fs: str) -> Any:
@@ -2377,7 +2482,7 @@ class DsaEastMoneyHotspotProvider:
         response = self._eastmoney_get(
             self._BASE_URL,
             params=params,
-            timeout=self._HTTP_TIMEOUT_SECONDS,
+            timeout=self._http_timeout(),
             headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"},
         )
         response.raise_for_status()
@@ -2425,7 +2530,7 @@ class DsaEastMoneyHotspotProvider:
             frame = self.stock_board_industry_name_em()
         except Exception as exc:
             logger.warning(
-                "AlphaSift industry hotspot source check failed for %s; using concept constituents: %s",
+                "Screening industry hotspot source check failed for %s; using concept constituents: %s",
                 topic,
                 exc,
             )
@@ -2582,17 +2687,17 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_ths_summary_event(self, topic: str) -> str:
         import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
         try:
-            df = ak.stock_board_concept_summary_ths()
+            df = _akshare_call_with_timeout(
+                ak.stock_board_concept_summary_ths,
+                timeout=self._akshare_timeout_seconds(),
+                call_name="screening.stock_board_concept_summary_ths",
+            )
         except Exception:
             return ""
-        if df is None or df.empty:
-            return ""
-        if "概念名称" not in df.columns:
-            logger.warning(
-                "AlphaSift THS summary missing required column '概念名称'; skip enrichment.",
-            )
+        if df is None or df.empty or "概念名称" not in df.columns:
             return ""
         rows = df[df["概念名称"].astype(str) == topic]
         if rows.empty:
@@ -2606,9 +2711,15 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_ths_info(self, topic: str) -> Dict[str, str]:
         import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
         try:
-            df = ak.stock_board_concept_info_ths(symbol=topic)
+            df = _akshare_call_with_timeout(
+                ak.stock_board_concept_info_ths,
+                symbol=topic,
+                timeout=self._akshare_timeout_seconds(),
+                call_name="screening.stock_board_concept_info_ths",
+            )
         except Exception:
             return {}
         if df is None or df.empty or "项目" not in df.columns or "值" not in df.columns:
@@ -2621,13 +2732,19 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_eastmoney_constituents(self, topic: str, *, source: str) -> Any:
         import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
-        try:
-            if source == "industry":
-                return ak.stock_board_industry_cons_em(symbol=topic)
-            return ak.stock_board_concept_cons_em(symbol=topic)
-        except Exception:
-            return None
+        fetch = (
+            ak.stock_board_industry_cons_em
+            if source == "industry"
+            else ak.stock_board_concept_cons_em
+        )
+        return _akshare_call_with_timeout(
+            fetch,
+            symbol=topic,
+            timeout=self._akshare_timeout_seconds(),
+            call_name=f"screening.{fetch.__name__}",
+        )
 
     def _fetch_ths_constituents(self, topic: str) -> Any:
         import pandas as pd
@@ -2636,11 +2753,10 @@ class DsaEastMoneyHotspotProvider:
         code = self._resolve_ths_concept_code(topic)
         if not code:
             return pd.DataFrame()
-        url = f"http://q.10jqka.com.cn/gn/detail/code/{code}/"
         response = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "http://q.10jqka.com.cn/gn/"},
-            timeout=self._HTTP_TIMEOUT_SECONDS,
+            f"https://q.10jqka.com.cn/gn/detail/code/{code}/",
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://q.10jqka.com.cn/gn/"},
+            timeout=self._http_timeout(),
         )
         response.raise_for_status()
         html = response.content.decode("gbk", "ignore")
@@ -2658,23 +2774,34 @@ class DsaEastMoneyHotspotProvider:
         return pd.DataFrame(rows)
 
     def _resolve_ths_concept_code(self, topic: str) -> str:
-        import akshare as ak
-
-        try:
-            df = ak.stock_board_concept_name_ths()
-        except Exception:
-            return ""
+        df = self._fetch_ths_concept_names()
         if df is None or df.empty:
             return ""
-        rows = df[df["name"].astype(str) == topic]
-        if rows.empty:
-            rows = df[df["name"].astype(str).str.contains(re.escape(topic), case=False, na=False)]
-        if rows.empty and topic.endswith("概念"):
-            base = topic[:-2]
-            rows = df[df["name"].astype(str).str.contains(re.escape(base), case=False, na=False)]
-        if rows.empty:
-            return ""
-        return _env_text(rows.iloc[0].get("code"))
+        names = df["name"].map(_env_text)
+        candidates = _dedupe_strings([topic, *self._THS_TOPIC_ALIASES.get(topic, ())])
+        for candidate in candidates:
+            rows = df[names == candidate]
+            if not rows.empty:
+                return _env_text(rows.iloc[0].get("code"))
+        for candidate in candidates:
+            rows = df[names.str.contains(re.escape(candidate), case=False, na=False)]
+            if not rows.empty:
+                return _env_text(rows.iloc[0].get("code"))
+        if topic.endswith("概念"):
+            rows = df[names.str.contains(re.escape(topic[:-2]), case=False, na=False)]
+            if not rows.empty:
+                return _env_text(rows.iloc[0].get("code"))
+        return ""
+
+    def _fetch_ths_concept_names(self) -> Any:
+        import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
+
+        return _akshare_call_with_timeout(
+            ak.stock_board_concept_name_ths,
+            timeout=self._akshare_timeout_seconds(),
+            call_name="screening.stock_board_concept_name_ths",
+        )
 
     def _fallback_constituents(self, topic: str) -> Any:
         import pandas as pd
@@ -2683,7 +2810,7 @@ class DsaEastMoneyHotspotProvider:
             summary = self._find_board_change(topic)
         except Exception as exc:
             logger.warning(
-                "AlphaSift board-change constituent fallback failed for %s; trying other sources: %s",
+                "Screening board-change constituent fallback failed for %s; trying other sources: %s",
                 topic,
                 exc,
             )
@@ -2779,46 +2906,6 @@ class DsaEastMoneyHotspotProvider:
                 merged.append(record)
         return pd.DataFrame(merged)
 
-    def _enrich_constituent_quotes(self, stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        codes = [str(item.get("code") or "").strip() for item in stocks if item.get("code")]
-        codes = [code for code in codes if code][:12]
-        if len(codes) < 4:
-            return stocks
-        try:
-            manager = _get_dsa_fetcher_manager()
-            manager.prefetch_realtime_quotes(codes)
-        except Exception as exc:
-            logger.debug("AlphaSift hotspot quote prefetch skipped: %s", exc)
-            return stocks
-        quote_by_code: Dict[str, Any] = {}
-        for code in codes:
-            try:
-                quote = manager.get_realtime_quote(code, log_final_failure=False)
-            except Exception:
-                quote = None
-            if quote is not None:
-                quote_by_code[code] = quote
-        if not quote_by_code:
-            return stocks
-        enriched: List[Dict[str, Any]] = []
-        for item in stocks:
-            next_item = dict(item)
-            code = str(next_item.get("code") or "").strip()
-            quote = quote_by_code.get(code)
-            if quote is not None:
-                if next_item.get("change_pct") is None:
-                    next_item["change_pct"] = _safe_float(getattr(quote, "change_pct", None))
-                if next_item.get("amount") is None:
-                    next_item["amount"] = _safe_float(getattr(quote, "amount", None))
-                if next_item.get("turnover_rate") is None:
-                    next_item["turnover_rate"] = _safe_float(getattr(quote, "turnover_rate", None))
-                if next_item.get("volume_ratio") is None:
-                    next_item["volume_ratio"] = _safe_float(getattr(quote, "volume_ratio", None))
-                if next_item.get("hot_stock_score") in (None, 0.0):
-                    next_item["hot_stock_score"] = min(99.0, max(1.0, abs(next_item.get("change_pct") or 0.0) * 8.0))
-            enriched.append(next_item)
-        return enriched
-
     def _normalize_constituent_records(self, frame: Any) -> List[Dict[str, Any]]:
         import pandas as pd
 
@@ -2844,21 +2931,21 @@ class DsaEastMoneyHotspotProvider:
         return records
 
 
-def _build_alphasift_context(config: Config, *, max_results: Optional[int] = None) -> Dict[str, Any]:
+def _build_screening_context(config: Config, *, max_results: Optional[int] = None) -> Dict[str, Any]:
     # context.llm.model/fallback/model_list 与 LiteLLM 路由语义保持一致，
     # 参见 https://docs.litellm.ai/docs/proxy/configs#the-model_list-key
     channels = _normalize_dsa_llm_channels(config)
-    litellm_model, fallback_models = _resolve_alphasift_llm_models(config)
+    litellm_model, fallback_models = _resolve_screening_llm_models(config)
     return {
         "llm": {
             "model": litellm_model,
             "fallback_models": fallback_models,
             "temperature": config.llm_temperature,
             "channels": channels,
-            "model_list": _build_alphasift_litellm_model_list(config, channels),
+            "model_list": _build_screening_litellm_model_list(config, channels),
             "litellm_config_path": config.litellm_config_path or "",
             "candidate_context_enabled": False,
-            "candidate_multiplier": DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER,
+            "candidate_multiplier": DSA_SCREENING_LLM_CANDIDATE_MULTIPLIER,
             "max_candidates": _resolve_dsa_llm_max_candidates(max_results),
         },
         "dsa": {
@@ -2872,6 +2959,7 @@ def _build_alphasift_context(config: Config, *, max_results: Optional[int] = Non
                 "daily_history",
                 "realtime_quote",
                 "fundamental_context",
+                "stock_events",
             ],
             "get_candidate_context": get_dsa_candidate_context,
             "get_daily_history": get_dsa_daily_history,
@@ -2880,9 +2968,10 @@ def _build_alphasift_context(config: Config, *, max_results: Optional[int] = Non
         },
     }
 
+
 @contextmanager
-def _alphasift_litellm_headers(config: Config) -> Iterator[None]:
-    header_routes = _build_alphasift_litellm_header_routes(config)
+def _screening_litellm_headers(config: Config) -> Iterator[None]:
+    header_routes = _build_screening_litellm_header_routes(config)
     if not header_routes:
         yield
         return
@@ -2898,23 +2987,23 @@ def _alphasift_litellm_headers(config: Config) -> Iterator[None]:
         yield
         return
 
-    bridge_completion = getattr(completion, _ALPHASIFT_LITELLM_COMPLETION_ATTR, None)
+    bridge_completion = getattr(completion, _SCREENING_LITELLM_COMPLETION_ATTR, None)
     if bridge_completion:
-        token = _ALPHASIFT_LITELLM_COMPLETION_ROUTES.set(
+        token = _SCREENING_LITELLM_COMPLETION_ROUTES.set(
             tuple(route.copy() for route in header_routes),
         )
         try:
             yield
         finally:
-            _ALPHASIFT_LITELLM_COMPLETION_ROUTES.reset(token)
+            _SCREENING_LITELLM_COMPLETION_ROUTES.reset(token)
         return
 
     original_completion = completion
 
     def completion_with_dsa_headers(*args: Any, **kwargs: Any) -> Any:
-        routes = _ALPHASIFT_LITELLM_COMPLETION_ROUTES.get()
+        routes = _SCREENING_LITELLM_COMPLETION_ROUTES.get()
         if routes:
-            headers = _match_alphasift_litellm_headers(args, kwargs, routes)
+            headers = _match_screening_litellm_headers(args, kwargs, routes)
             if headers:
                 existing_headers = kwargs.get("extra_headers")
                 if isinstance(existing_headers, dict):
@@ -2927,25 +3016,25 @@ def _alphasift_litellm_headers(config: Config) -> Iterator[None]:
                     kwargs["extra_headers"] = dict(headers)
         return original_completion(*args, **kwargs)
 
-    setattr(completion_with_dsa_headers, _ALPHASIFT_LITELLM_COMPLETION_ATTR, True)
-    setattr(completion_with_dsa_headers, "_alphasift_litellm_completion_original", original_completion)
+    setattr(completion_with_dsa_headers, _SCREENING_LITELLM_COMPLETION_ATTR, True)
+    setattr(completion_with_dsa_headers, "_screening_litellm_completion_original", original_completion)
     completion_with_dsa_headers.__name__ = "completion_with_dsa_headers"
 
     if completion is not completion_with_dsa_headers:
-        with _ALPHASIFT_LITELLM_COMPLETION_LOCK:
-            if not getattr(getattr(litellm_module, "completion", None), _ALPHASIFT_LITELLM_COMPLETION_ATTR, False):
+        with _SCREENING_LITELLM_COMPLETION_LOCK:
+            if not getattr(getattr(litellm_module, "completion", None), _SCREENING_LITELLM_COMPLETION_ATTR, False):
                 setattr(litellm_module, "completion", completion_with_dsa_headers)
 
-    token = _ALPHASIFT_LITELLM_COMPLETION_ROUTES.set(
+    token = _SCREENING_LITELLM_COMPLETION_ROUTES.set(
         tuple(route.copy() for route in header_routes),
     )
     try:
         yield
     finally:
-        _ALPHASIFT_LITELLM_COMPLETION_ROUTES.reset(token)
+        _SCREENING_LITELLM_COMPLETION_ROUTES.reset(token)
 
 
-def _build_alphasift_litellm_model_list(config: Config, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_screening_litellm_model_list(config: Config, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     explicit_model_list = _to_plain(config.llm_model_list or [])
     if isinstance(explicit_model_list, list) and explicit_model_list:
         return explicit_model_list
@@ -2974,9 +3063,9 @@ def _channel_litellm_model_list(channels: List[Dict[str, Any]]) -> List[Dict[str
     return model_list
 
 
-def _build_alphasift_litellm_header_routes(config: Config) -> List[Dict[str, Any]]:
+def _build_screening_litellm_header_routes(config: Config) -> List[Dict[str, Any]]:
     channels = _normalize_dsa_llm_channels(config)
-    model_list = _build_alphasift_litellm_model_list(config, channels)
+    model_list = _build_screening_litellm_model_list(config, channels)
     routes: List[Dict[str, Any]] = []
     for entry in model_list:
         if not isinstance(entry, dict):
@@ -3004,7 +3093,7 @@ def _build_alphasift_litellm_header_routes(config: Config) -> List[Dict[str, Any
     return routes
 
 
-def _match_alphasift_litellm_headers(
+def _match_screening_litellm_headers(
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
     routes: List[Dict[str, Any]],
@@ -3034,12 +3123,12 @@ def _match_alphasift_litellm_headers(
 def _resolve_dsa_llm_max_candidates(max_results: Optional[int]) -> int:
     requested = max_results if isinstance(max_results, int) and max_results > 0 else DSA_ENRICHMENT_MAX_CANDIDATES
     return min(
-        DSA_ALPHASIFT_LLM_MAX_CANDIDATES,
-        max(requested, requested * DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER),
+        DSA_SCREENING_LLM_MAX_CANDIDATES,
+        max(requested, requested * DSA_SCREENING_LLM_CANDIDATE_MULTIPLIER),
     )
 
 
-def _resolve_alphasift_llm_models(config: Config) -> Tuple[str, List[str]]:
+def _resolve_screening_llm_models(config: Config) -> Tuple[str, List[str]]:
     primary = _env_text(config.litellm_model)
     configured_models = get_configured_llm_models(config.llm_model_list or [])
     configured_model_set = set(configured_models)
@@ -3076,7 +3165,7 @@ def _is_managed_litellm_model(model: str) -> bool:
     if not text:
         return False
     provider = text.split("/", 1)[0].lower() if "/" in text else "openai"
-    return provider in ALPHASIFT_MANAGED_LITELLM_PROVIDERS
+    return provider in SCREENING_MANAGED_LITELLM_PROVIDERS
 
 
 def _normalize_dsa_llm_channels(config: Config) -> List[Dict[str, Any]]:
@@ -3146,6 +3235,18 @@ def _dedupe_strings(values: Any) -> List[str]:
     return result
 
 
+def _collect_screening_warning_messages(payload: Dict[str, Any]) -> List[str]:
+    warnings: List[str] = []
+    seen: set[str] = set()
+    for key in ("warnings", "degradation"):
+        for value in _list_text_values(payload.get(key)):
+            if value in seen:
+                continue
+            seen.add(value)
+            warnings.append(value)
+    return warnings
+
+
 def _env_text(value: Any) -> str:
     if value is None:
         return ""
@@ -3166,6 +3267,13 @@ def _get_dsa_fetcher_manager() -> Any:
 
                 _DSA_FETCHER_MANAGER = DataFetcherManager()
     return _DSA_FETCHER_MANAGER
+
+
+def _fetch_dsa_hotspot_rankings(source: str, limit: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Load DSA's ranking fallback inside the caller's killable subprocess."""
+    manager = _get_dsa_fetcher_manager()
+    fetch = manager.get_concept_rankings if source == "concept" else manager.get_sector_rankings
+    return fetch(limit)
 
 
 def _get_dsa_search_service() -> Any:
@@ -3259,8 +3367,26 @@ def search_dsa_stock_news(stock_code: str, stock_name: str = "", max_results: in
         }
 
     response = service.search_stock_news(stock_code, stock_name or stock_code, max_results=max_results)
+    return _normalize_dsa_search_response(response, max_results=max_results)
+
+
+def search_dsa_stock_events(stock_code: str, stock_name: str = "", max_results: int = 3) -> Dict[str, Any]:
+    """Reuse DSA event search for earnings, reduction and announcement context."""
+    service = _get_dsa_search_service()
+    if not getattr(service, "is_available", False):
+        return {
+            "success": False,
+            "error": "DSA search service unavailable",
+            "results": [],
+        }
+
+    response = service.search_stock_events(stock_code, stock_name or stock_code)
+    return _normalize_dsa_search_response(response, max_results=max_results)
+
+
+def _normalize_dsa_search_response(response: Any, *, max_results: int) -> Dict[str, Any]:
     results = []
-    for item in getattr(response, "results", []) or []:
+    for item in (getattr(response, "results", []) or [])[:max(0, int(max_results))]:
         results.append(
             {
                 "title": getattr(item, "title", ""),
@@ -3293,6 +3419,7 @@ def get_dsa_candidate_context(
     context = _build_dsa_candidate_context(
         candidate,
         include_news=include_news,
+        include_events=include_news,
         include_fundamentals=include_fundamentals,
         profile=mode or "pre_rank_light",
     )
@@ -3335,7 +3462,7 @@ def _enrich_candidates_with_dsa(candidates: List[Dict[str, Any]]) -> Tuple[List[
             code = candidate.get("code") or f"rank-{candidate.get('rank', index + 1)}"
             message = f"{code}: {exc}"
             warnings.append(message)
-            logger.warning("DSA enrichment failed for AlphaSift candidate %s: %s", code, exc)
+            logger.warning("DSA enrichment failed for Screening candidate %s: %s", code, exc)
             candidate["dsa_context"] = {
                 "enriched": False,
                 "warnings": [message],
@@ -3373,6 +3500,7 @@ def _build_dsa_candidate_context(
     candidate: Dict[str, Any],
     *,
     include_news: bool = True,
+    include_events: bool = True,
     include_fundamentals: bool = True,
     profile: str = "post_rank_full",
 ) -> Dict[str, Any]:
@@ -3399,6 +3527,8 @@ def _build_dsa_candidate_context(
     )
     existing_news = existing_context.get("news") if isinstance(existing_context.get("news"), dict) else {}
     news: Dict[str, Any] = dict(existing_news) if existing_news else {"success": False, "results": []}
+    existing_events = existing_context.get("events") if isinstance(existing_context.get("events"), dict) else {}
+    events: Dict[str, Any] = dict(existing_events) if existing_events else {"success": False, "results": []}
     existing_warnings = existing_context.get("warnings") or []
     if isinstance(existing_warnings, list):
         warnings.extend(str(item) for item in existing_warnings if item)
@@ -3454,19 +3584,43 @@ def _build_dsa_candidate_context(
             "results": [],
         }
 
-    summary = _build_dsa_analysis_summary(candidate, quote, fundamentals, news)
+    if include_events:
+        if not _news_has_results(events):
+            try:
+                events = search_dsa_stock_events(
+                    code,
+                    _env_text(candidate.get("name")) or name or code,
+                    max_results=3,
+                )
+                if not events.get("success"):
+                    warnings.append(events.get("error") or "stock_events_unavailable")
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"stock_events_failed: {exc}")
+                events = {"success": False, "error": str(exc), "results": []}
+    elif not _news_has_results(events):
+        events = {
+            "success": False,
+            "skipped": True,
+            "reason": "pre_rank_light_context",
+            "results": [],
+        }
+
+    summary = _build_dsa_analysis_summary(candidate, quote, fundamentals, news, events)
     context = {
-        "enriched": bool(quote or fundamentals or news.get("results")),
+        "enriched": bool(quote or fundamentals or news.get("results") or events.get("results")),
         "profile": profile,
         "news_included": bool(include_news),
+        "events_included": bool(include_events),
         "quote": quote,
         "fundamentals": fundamentals,
         "news": news,
+        "events": events,
         "warnings": _dedupe_strings(warnings),
     }
     return {
         "dsa_context": context,
         "dsa_news": news.get("results") or [],
+        "dsa_events": events.get("results") or [],
         "dsa_analysis_summary": summary,
     }
 
@@ -3504,6 +3658,7 @@ def _build_dsa_analysis_summary(
     quote: Dict[str, Any],
     fundamentals: Dict[str, Any],
     news: Dict[str, Any],
+    events: Optional[Dict[str, Any]] = None,
 ) -> str:
     parts: List[str] = []
     price = _first_non_empty(quote.get("price"), candidate.get("price"))
@@ -3527,13 +3682,20 @@ def _build_dsa_analysis_summary(
         if titles:
             parts.append(f"DSA新闻：{'；'.join(titles[:2])}")
 
+    event_results = events.get("results") if isinstance(events, dict) else []
+    if isinstance(event_results, list) and event_results:
+        titles = [str(item.get("title") or "").strip() for item in event_results if isinstance(item, dict)]
+        titles = [title for title in titles if title]
+        if titles:
+            parts.append(f"DSA事件：{'；'.join(titles[:2])}")
+
     if not parts:
         return ""
     return "；".join(parts)
 
 
 def _ensure_supported_market(market: str) -> None:
-    status = _call_alphasift_status()
+    status = _call_screening_status()
     supported_markets = status.get("supported_markets") or status.get("markets") or status.get("market")
     if not supported_markets:
         return
@@ -3550,9 +3712,9 @@ def _ensure_supported_market(market: str) -> None:
         raise HTTPException(
             status_code=422,
             detail={
-                "error": "alphasift_invalid_market",
+                "error": "screening_invalid_market",
                 "message": (
-                    f"市场 {market} 不在 AlphaSift 适配层支持范围内"
+                    f"市场 {market} 不在选股功能支持范围内"
                     f"（支持市场：{', '.join(map(str, normalized)) or '未知'}）。"
                 ),
             },
@@ -3579,6 +3741,7 @@ def _normalize_candidate(raw: Any, rank: int) -> Dict[str, Any]:
     source = item.get("raw") if isinstance(item.get("raw"), dict) else item
     dsa_context = item.get("dsa_context") or source.get("dsa_context") or {}
     dsa_news = item.get("dsa_news") or source.get("dsa_news") or _extract_dsa_news_from_context(dsa_context)
+    dsa_events = item.get("dsa_events") or source.get("dsa_events") or _extract_dsa_events_from_context(dsa_context)
     dsa_analysis_summary = (
         item.get("dsa_analysis_summary")
         or source.get("dsa_analysis_summary")
@@ -3611,6 +3774,7 @@ def _normalize_candidate(raw: Any, rank: int) -> Dict[str, Any]:
         "factor_scores": item.get("factor_scores") or source.get("factor_scores") or {},
         "dsa_context": dsa_context,
         "dsa_news": dsa_news,
+        "dsa_events": dsa_events,
         "dsa_analysis_summary": dsa_analysis_summary,
         "post_analysis_summaries": item.get("post_analysis_summaries") or source.get("post_analysis_summaries") or {},
         "post_analysis_tags": item.get("post_analysis_tags") or source.get("post_analysis_tags") or [],
@@ -3626,6 +3790,21 @@ def _extract_dsa_news_from_context(context: Any) -> List[Dict[str, Any]]:
         results = news.get("results")
     elif isinstance(news, list):
         results = news
+    else:
+        results = None
+    if not isinstance(results, list):
+        return []
+    return [item for item in results if isinstance(item, dict)]
+
+
+def _extract_dsa_events_from_context(context: Any) -> List[Dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+    events = context.get("events")
+    if isinstance(events, dict):
+        results = events.get("results")
+    elif isinstance(events, list):
+        results = events
     else:
         results = None
     if not isinstance(results, list):
@@ -3710,15 +3889,3 @@ def _remove_non_finite_json_values(value: Any) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     return value
-
-
-def _build_install_response(already_installed: bool, install_spec_is_default: bool) -> Dict[str, Any]:
-    return {
-        "installed": True,
-        "already_installed": already_installed,
-        "install_spec_is_default": install_spec_is_default,
-    }
-
-
-def _is_default_alphasift_install_spec(install_spec: str) -> bool:
-    return (install_spec or "").strip() == DEFAULT_ALPHASIFT_INSTALL_SPEC

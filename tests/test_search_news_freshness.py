@@ -83,6 +83,25 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         kwargs = mock_search.call_args[1]
         self.assertEqual(kwargs["days"], 3)
 
+    def test_search_topic_news_reuses_provider_and_freshness_without_stock_identity_filter(self) -> None:
+        today = datetime.now().date().isoformat()
+        service, mock_search = self._create_service_with_mock_provider(
+            response=_response([
+                _result(
+                    "影视传媒订单与政策催化",
+                    today,
+                    snippet="板块近期出现新订单。",
+                )
+            ]),
+        )
+
+        response = service.search_topic_news("影视传媒", max_results=2)
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.results[0].title, "影视传媒订单与政策催化")
+        self.assertIn('"影视传媒"', mock_search.call_args.args[0])
+        self.assertEqual(mock_search.call_args.kwargs["days"], 3)
+
     def test_invalid_profile_falls_back_to_short(self) -> None:
         """Invalid profile should fallback to short (3 days)."""
         service, mock_search = self._create_service_with_mock_provider(
@@ -2322,6 +2341,28 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         q = captured_query.get("value", "")
         self.assertIn("Microsoft", q)
         self.assertNotIn("微软", q)
+
+    def test_search_stock_events_reuses_search_cache(self) -> None:
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+        )
+        provider = SimpleNamespace(
+            is_available=True,
+            name="EventProvider",
+            search=MagicMock(
+                return_value=_response(
+                    [_result("贵州茅台年度报告", datetime.now().date().isoformat())]
+                )
+            ),
+        )
+        service._providers = [provider]
+
+        first = service.search_stock_events("600519", "贵州茅台")
+        second = service.search_stock_events("600519", "贵州茅台")
+
+        self.assertIs(second, first)
+        provider.search.assert_called_once()
 
     def test_stock_english_name_map_is_subset_of_stock_name_map_foreign_keys(self) -> None:
         """Single source of truth invariant (massif-01 blocker 3):

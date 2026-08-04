@@ -2827,7 +2827,8 @@ class TestMarketAnalyzerBypassFix:
         assert "A-share Market Recap" in result
         assert "### 1. Market Summary" in result
         assert "### 3. Breadth & Liquidity" in result
-        assert "Turnover (CNY 100m)" in result
+        assert "- **Market Signal**:" in result
+        assert "Turnover 14567 (CNY 100m)" in result
         assert "### 4. Sector / Theme Highlights" in result
         assert "### 6. Strategy Framework" in result
         assert "### 一、市场总结" not in result
@@ -3077,6 +3078,116 @@ Sector text.
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### 行业板块领跌 Top 5" in result
         assert "| 1 | 煤炭 | -1.12% |" in result
+
+    @pytest.mark.parametrize(
+        ("region", "profile_name", "index_code", "index_name", "report_title"),
+        [
+            ("us", "US_PROFILE", "SPX", "S&P 500", "US Market Recap"),
+            ("hk", "HK_PROFILE", "HSI", "Hang Seng Index", "HK Market Recap"),
+        ],
+    )
+    def test_inject_data_into_review_keeps_market_signal_for_markets_without_breadth(
+        self, region, profile_name, index_code, index_name, report_title
+    ):
+        import src.core.market_profile as market_profile
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = region
+        ma.profile = getattr(market_profile, profile_name)
+        ma.config.report_language = "en"
+        overview = MarketOverview(
+            date="2026-03-06",
+            indices=[MarketIndex(code=index_code, name=index_name, current=5000.0, change_pct=0.5)],
+        )
+        snapshot = ma.build_market_light_snapshot(overview)
+        review = f"""## 2026-03-06 {report_title}
+
+### 1. Market Summary
+Summary text.
+
+### 2. Major Indices
+Index text.
+"""
+
+        result = ma._inject_data_into_review(review, overview)
+
+        assert (
+            f"- **Market Signal**: {snapshot['score']}/100 "
+            f"({snapshot['temperature_label']}, {snapshot['label']})"
+        ) in result
+        assert f"- **Drivers**: {'; '.join(snapshot['reasons'])}" in result
+        assert f"- **Guidance**: {snapshot['guidance']}" in result
+        assert "- **Breadth**:" not in result
+
+    @pytest.mark.parametrize(
+        ("region", "profile_name", "index_code", "index_name"),
+        [
+            ("us", "US_PROFILE", "SPX", "S&P 500"),
+            ("hk", "HK_PROFILE", "HSI", "Hang Seng Index"),
+        ],
+    )
+    def test_template_review_keeps_market_signal_for_markets_without_breadth(
+        self, region, profile_name, index_code, index_name
+    ):
+        import src.core.market_profile as market_profile
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = region
+        ma.profile = getattr(market_profile, profile_name)
+        ma.config.report_language = "en"
+        overview = MarketOverview(
+            date="2026-03-06",
+            indices=[MarketIndex(code=index_code, name=index_name, current=5000.0, change_pct=0.5)],
+        )
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        result = ma._generate_template_review(overview, [])
+
+        assert f"- **Market Signal**: {snapshot['score']}/100" in result
+        assert f"- **Guidance**: {snapshot['guidance']}" in result
+        assert "- **Breadth**:" not in result
+
+    def test_template_review_keeps_market_signal_for_hk_without_breadth_in_chinese(self):
+        from src.core.market_profile import HK_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "hk"
+        ma.profile = HK_PROFILE
+        ma.config.report_language = "zh"
+        overview = MarketOverview(
+            date="2026-03-06",
+            indices=[MarketIndex(code="HSI", name="恒生指数", current=18200.0, change_pct=1.2)],
+        )
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        result = ma._generate_template_review(overview, [])
+
+        assert f"- **盘面信号**：{snapshot['score']}/100" in result
+        assert f"- **操作建议**：{snapshot['guidance']}" in result
+        assert "| 上涨/下跌/平盘 |" not in result
+
+    def test_generate_template_review_uses_configured_red_up_markers_in_english_fallback(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.config.report_language = "en"
+        ma.config.market_review_color_scheme = "red_up"
+        overview = MarketOverview(
+            date="2026-07-31",
+            indices=[
+                MarketIndex(code="SPX", name="S&P 500", current=5000.0, change_pct=0.8),
+                MarketIndex(code="IXIC", name="Nasdaq", current=18000.0, change_pct=-0.2),
+            ],
+        )
+
+        result = ma._generate_template_review(overview, [])
+
+        assert "- **S&P 500**: 5000.00 (🔴 +0.80%)" in result
+        assert "- **Nasdaq**: 18000.00 (🟢 -0.20%)" in result
 
     def test_market_review_payload_sections_skip_top_report_title(self):
         from src.market_analyzer import MarketAnalyzer
@@ -3328,6 +3439,26 @@ Sector text.
 
         assert "breadth" not in payload
         assert payload["indices"][0]["code"] == "SPX"
+        assert payload["color_scheme"] == "green_up"
+
+    def test_market_review_payload_persists_red_up_color_scheme(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        ma.config.market_review_color_scheme = "red_up"
+
+        payload = ma.build_market_review_payload(
+            MarketOverview(
+                date="2026-08-01",
+                indices=[
+                    MarketIndex(code="000001", name="上证指数", current=3500, change_pct=0.8),
+                ],
+            ),
+            [],
+            "A股复盘报告",
+        )
+
+        assert payload["color_scheme"] == "red_up"
 
     def test_market_review_payload_omits_breadth_for_cn_market_without_available_stats(self):
         from src.market_analyzer import MarketIndex, MarketOverview

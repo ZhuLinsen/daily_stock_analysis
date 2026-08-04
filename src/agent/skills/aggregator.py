@@ -6,10 +6,10 @@ SkillAggregator — weighted aggregation of skill opinions.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from src.agent.memory import AgentMemory
 from src.agent.protocols import AgentContext, AgentOpinion, StrategyConflict, StrategyOpinion
 from src.agent.skills.defaults import (
     SKILL_CONSENSUS_AGENT_NAME,
@@ -21,6 +21,11 @@ from src.agent.skills.synthesis import (
     StrategySynthesizer,
     strategy_opinion_from_agent_opinion,
     strategy_signal_score,
+)
+from src.services.skill_opinion_weight_service import (
+    MAX_SKILL_OPINION_WEIGHT_FACTOR,
+    MIN_SKILL_OPINION_WEIGHT_FACTOR,
+    SkillOpinionWeightService,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +59,9 @@ class AggregationData:
 class SkillAggregator:
     """Aggregate multiple skill-agent opinions into one consensus."""
 
+    def __init__(self, *, weight_service: Optional[Any] = None):
+        self._weight_service = weight_service
+
     def aggregate(
         self,
         ctx: AgentContext,
@@ -85,15 +93,7 @@ class SkillAggregator:
             return None
 
         skill_ids = [extract_skill_id(op.agent_name) or op.agent_name for op in skill_opinions]
-        memory = AgentMemory.from_config()
-        perf_weights = (
-            memory.compute_skill_weights(
-                skill_ids,
-                use_backtest=self._use_backtest_autoweight(),
-            )
-            if memory.enabled
-            else {}
-        )
+        perf_weights = self._performance_weights(skill_ids)
 
         weights: List[float] = []
         for op in skill_opinions:
@@ -208,38 +208,61 @@ class SkillAggregator:
         min_samples: int,
         perf_weight: Optional[float] = None,
     ) -> float:
+        del min_samples  # Retained for compatibility with existing callers.
         base_weight = opinion.confidence
-        if perf_weight is not None:
+        if (
+            isinstance(perf_weight, (int, float))
+            and not isinstance(perf_weight, bool)
+            and math.isfinite(perf_weight)
+            and perf_weight > 0
+        ):
             return base_weight * perf_weight
-        return base_weight * self._backtest_factor(opinion.agent_name, min_samples)
+        return base_weight
 
-    @staticmethod
-    def _backtest_factor(agent_name: str, min_samples: int) -> float:
-        if not SkillAggregator._use_backtest_autoweight():
-            return 1.0
+    def _performance_weights(
+        self,
+        skill_ids: List[str],
+    ) -> Dict[str, float]:
+        neutral = {skill_id: 1.0 for skill_id in skill_ids}
+        if not self._use_outcome_autoweight():
+            return neutral
 
-        skill_id = extract_skill_id(agent_name) or agent_name
         try:
-            from src.services.backtest_service import BacktestService
-
-            service = BacktestService()
-            summary = service.get_skill_summary(skill_id)
-            if summary and summary.get("total_evaluations", 0) >= min_samples:
-                win_rate = summary.get("win_rate", 0.5)
-                return 0.5 + win_rate
+            if self._weight_service is None:
+                self._weight_service = SkillOpinionWeightService()
+            computed = self._weight_service.compute_weights(skill_ids)
+            if not isinstance(computed, dict):
+                return neutral
+            for skill_id in neutral:
+                factor = computed.get(skill_id)
+                if (
+                    isinstance(factor, (int, float))
+                    and not isinstance(factor, bool)
+                    and math.isfinite(factor)
+                    and MIN_SKILL_OPINION_WEIGHT_FACTOR
+                    <= factor
+                    <= MAX_SKILL_OPINION_WEIGHT_FACTOR
+                ):
+                    neutral[skill_id] = float(factor)
         except Exception:
-            logger.debug("Failed to compute backtest factor for %s", agent_name, exc_info=True)
-        return 1.0
+            logger.debug(
+                "Failed to compute Skill Opinion outcome weights",
+                exc_info=True,
+            )
+        return neutral
 
     @staticmethod
-    def _use_backtest_autoweight() -> bool:
+    def _use_outcome_autoweight() -> bool:
         try:
             from src.config import get_config
 
             config = get_config()
             return getattr(config, "agent_skill_autoweight", True)
         except Exception:
-            logger.debug("Failed to get backtest autoweight config, defaulting to True", exc_info=True)
+            logger.debug(
+                "Failed to get Outcome autoweight config, defaulting to True",
+                exc_info=True,
+            )
             return True
 
 
