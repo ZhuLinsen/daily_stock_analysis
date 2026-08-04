@@ -652,6 +652,16 @@ describe('HomePage', () => {
         items: [],
       });
     });
+    vi.mocked(historyApi.getDetail).mockResolvedValue({
+      ...historyReport,
+      meta: {
+        ...historyReport.meta,
+        id: 12,
+        queryId: 'q-aapl',
+        stockCode: 'AAPL',
+        stockName: 'Apple',
+      },
+    });
 
     render(
       <MemoryRouter>
@@ -664,7 +674,10 @@ describe('HomePage', () => {
     await waitFor(() => {
       expect(historyApi.getList).toHaveBeenCalledWith({ stockCode: 'AAPL', limit: 1 });
     });
-    expect(await screen.findByLabelText('确认今日状态中')).toBeInTheDocument();
+    const loadingStatus = await screen.findByLabelText('确认今日状态中');
+    fireEvent.click(loadingStatus.closest('.home-subpanel')!);
+    expect(screen.queryByText('AAPL 暂无分析报告')).not.toBeInTheDocument();
+    expect(historyApi.getDetail).not.toHaveBeenCalled();
 
     const analyzePendingButton = screen.getByRole('button', { name: '仅未分析' });
     expect(analyzePendingButton).toBeDisabled();
@@ -690,6 +703,86 @@ describe('HomePage', () => {
       await aaplHistoryPromise;
     });
     expect(await screen.findByLabelText('今日已分析')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Apple').closest('.home-subpanel')!);
+    expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
+    expect(historyApi.getDetail).toHaveBeenCalledWith(12);
+  });
+
+  it('clears a no-report watchlist state when task completion selects a new report', async () => {
+    let taskCompleted = false;
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['EMPTY']);
+    vi.mocked(historyApi.getStockBarList).mockImplementation(() => Promise.resolve({
+      total: taskCompleted ? 1 : 0,
+      items: taskCompleted ? [{
+        id: 12,
+        stockCode: 'NVDA',
+        stockName: 'NVIDIA',
+        reportType: 'detailed',
+        sentimentScore: 90,
+        operationAdvice: '买入',
+        analysisCount: 1,
+        lastAnalysisTime: '2026-03-18T11:00:00Z',
+      }] : [],
+    }));
+    vi.mocked(historyApi.getList).mockImplementation((params: { stockCode?: string; limit?: number } = {}) => {
+      if (params.stockCode === 'EMPTY') {
+        return Promise.resolve({ total: 0, page: 1, limit: 1, items: [] });
+      }
+      return Promise.resolve({
+        total: taskCompleted ? 1 : 0,
+        page: 1,
+        limit: params.limit ?? 20,
+        items: taskCompleted ? [{
+          id: 12,
+          queryId: 'q-nvda',
+          stockCode: 'NVDA',
+          stockName: 'NVIDIA',
+          reportType: 'detailed' as const,
+          createdAt: '2026-03-18T11:00:00Z',
+        }] : [],
+      });
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue({
+      ...historyReport,
+      meta: {
+        ...historyReport.meta,
+        id: 12,
+        queryId: 'q-nvda',
+        stockCode: 'NVDA',
+        stockName: 'NVIDIA',
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+    const emptyStatus = await screen.findByLabelText('今日未分析');
+    fireEvent.click(emptyStatus.closest('.home-subpanel')!);
+    expect(await screen.findByText('EMPTY 暂无分析报告')).toBeInTheDocument();
+
+    const taskStreamOptions = vi.mocked(useTaskStream).mock.calls.at(-1)?.[0];
+    taskCompleted = true;
+    act(() => {
+      taskStreamOptions?.onTaskCompleted?.({
+        taskId: 'task-nvda',
+        stockCode: 'NVDA',
+        stockName: 'NVIDIA',
+        status: 'completed',
+        progress: 100,
+        reportType: 'detailed',
+        createdAt: '2026-03-18T10:59:00Z',
+        completedAt: '2026-03-18T11:00:00Z',
+      });
+    });
+
+    expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
+    expect(screen.queryByText('EMPTY 暂无分析报告')).not.toBeInTheDocument();
+    expect(historyApi.getDetail).toHaveBeenCalledWith(12);
   });
 
   it('waits for stock-bar load before launching watchlist fallback lookups', async () => {

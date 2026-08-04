@@ -133,6 +133,9 @@ const WatchlistRowItem: React.FC<{
           onClick(item.id);
           return;
         }
+        if (row.isTodayStatusLoading || row.isTodayStatusUnknown) {
+          return;
+        }
         onEmptyClick(row.code);
       }}
     >

@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] #1970 关闭认证属于高风险操作，即使携带有效 session cookie 也强制要求再次输入当前管理员密码二次确认；后端 `auth_update_settings` 的 disable 分支统一走 currentPassword 校验，命中 rate limit 时与 enable 路径一致返回 429，前端 `AuthSettingsCard` 在关闭认证时如有缺失当前密码将阻止提交并给出内联提示。
 - [新功能] 新增按 individual SkillAgent 自身 signal、版本化 engine 与本地已存同源日线窗口计算并持久化 `skill_opinion_outcomes` 的核心服务；本阶段不提供管理员 API、表现统计、样本充足度或权重调整。
 - [修复] 自选股条目支持点击打开对应股票的最新分析报告，并避免删除操作误触发详情。
+- [修复] 自选股历史回查期间不再误入“暂无分析报告”空态，任务完成自动选中新报告时会同步清除旧空态。
 - [改进] 分析任务面板支持会话内保持的折叠状态，折叠后保留任务数量与总体进度摘要。
 - [改进] 压缩自选股统计、批量操作、添加区与列表卡片，并将刷新入口移至标题栏，为自选列表释放更多可视空间。
 - [改进] 无历史报告的自选股条目也可点击，并在主内容区展示专属空态。

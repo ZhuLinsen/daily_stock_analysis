@@ -241,6 +241,7 @@ const HomePage: React.FC = () => {
   useEffect(() => stopMarketReviewPolling, [stopMarketReviewPolling]);
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
   const [emptyWatchlistStockCode, setEmptyWatchlistStockCode] = useState<string | null>(null);
+  const emptyWatchlistSelectedReportIdRef = useRef<number | undefined>(undefined);
 
   const {
     query,
@@ -675,23 +676,29 @@ const HomePage: React.FC = () => {
   const handleHistoryItemClick = useCallback((recordId: number) => {
     clearMarketReviewState();
     setEmptyWatchlistStockCode(null);
+    emptyWatchlistSelectedReportIdRef.current = undefined;
     void selectHistoryItem(recordId);
     setSidebarOpen(false);
   }, [clearMarketReviewState, selectHistoryItem]);
 
   const handleEmptyWatchlistItemClick = useCallback((stockCode: string) => {
     clearMarketReviewState();
+    emptyWatchlistSelectedReportIdRef.current = selectedReport?.meta.id;
     setEmptyWatchlistStockCode(stockCode);
     setSidebarOpen(false);
-  }, [clearMarketReviewState]);
+  }, [clearMarketReviewState, selectedReport?.meta.id]);
 
   useEffect(() => {
     if (
       emptyWatchlistStockCode
       && selectedReport?.meta.stockCode
-      && normalizeStockCode(selectedReport.meta.stockCode) === normalizeStockCode(emptyWatchlistStockCode)
+      && (
+        selectedReport.meta.id !== emptyWatchlistSelectedReportIdRef.current
+        || normalizeStockCode(selectedReport.meta.stockCode) === normalizeStockCode(emptyWatchlistStockCode)
+      )
     ) {
       setEmptyWatchlistStockCode(null);
+      emptyWatchlistSelectedReportIdRef.current = undefined;
     }
   }, [emptyWatchlistStockCode, selectedReport]);
 
