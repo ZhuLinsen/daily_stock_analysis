@@ -570,6 +570,53 @@ class TestReviewBlockerRegressions:
         assert target.normalized_prefix == expected_prefix
         assert target.normalized_code == expected_bare
 
+    # ---- OR-COR-0e285b84: us-prefixed dotted uppercase US base accepted-path
+    # regression (PR #2129 round-5 review) -----------------------------
+
+    @pytest.mark.parametrize(
+        "ticker,expected_canonical,expected_prefix,expected_bare",
+        [
+            # mixed-case us-prefix + bare US base: usAAPL / usBRK — the
+            # explicit ``us`` prefix is recorded in ``normalized_prefix``
+            # and the bare US ticker form is the canonical id.
+            ("usAAPL", "AAPL", "us", "AAPL"),
+            ("usBRK", "BRK", "us", "BRK"),
+            # mixed-case us-prefix + dotted uppercase US base (the new
+            # contract): usBRK.B and usABC.US must preserve the explicit
+            # ``us`` prefix and pass the bare US short-circuit in
+            # ``_split_prefix`` intact — they are valid US-ticker shapes
+            # that carry the user's intent of a ``us`` prefix.
+            ("usBRK.B", "BRK.B", "us", "BRK.B"),
+            ("usABC.US", "ABC.US", "us", "ABC.US"),
+        ],
+    )
+    def test_us_prefixed_dotted_uppercase_us_base_preserves_prefix(
+        self, ticker: str, expected_canonical: str, expected_prefix: str, expected_bare: str
+    ) -> None:
+        """Explicit ``us`` prefix paired with a dotted uppercase US base
+        must not be silently rewritten to a bare ticker shape.
+
+        Regression for PR #2129 round-5 review blocker
+        ``OR-COR-0e285b84``: previously ``usBRK.B`` / ``usABC.US`` were
+        uppercased to ``USBRK.B`` / ``USABC.US`` and then short-circuited
+        by ``_split_prefix`` as bare US tickers, swallowing the user's
+        explicit ``us`` prefix and producing a different canonical id
+        (e.g. canonical ``USBRK.B`` instead of bare ``BRK.B`` with
+        ``normalized_prefix='us'``).
+
+        The fix extends the ``us``-prefix recovery gate at
+        ``stock_list_parser.py:~825`` to match the same
+        ``_US_TICKER_SHAPE_RE`` shape the upfront guard at
+        ``~566-585`` already accepts, while keeping the bare all-uppercase
+        short-circuit exclusion (``bare USFD.US`` / ``BRK.B``) intact.
+        """
+        target = parse_analysis_target(ticker)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == "US"
+        assert target.canonical_id == expected_canonical
+        assert target.normalized_prefix == expected_prefix
+        assert target.normalized_code == expected_bare
+
     # ---- OR-COR-1b643ee6: bare A-share ETF routing ------------------------
 
     @pytest.mark.parametrize(

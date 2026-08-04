@@ -806,22 +806,41 @@ def parse_analysis_target(
         # (so we do NOT touch it here); an all-uppercase token >5 letters
         # (``USAAPL``) flows into this branch and is split as an explicit
         # ``us`` prefix.
+        #
+        # PR #2129 round-5 follow-up (OpenReview Bot OR-COR-0e285b84,
+        # 2026-08-01): a mixed-case ``us`` prefix paired with a *dotted*
+        # uppercase US base such as ``usBRK.B`` / ``usABC.US`` was previously
+        # filtered out by the ``raw.isalpha()`` gate below — the dotted base
+        # is not all-alpha. After uppercasing it became ``USBRK.B`` /
+        # ``USABC.US``, which ``_split_prefix`` short-circuits as a bare
+        # dotted US ticker (matches ``_US_TICKER_SHAPE_RE``), silently
+        # swallowing the user-supplied ``us`` prefix and producing a
+        # different canonical id. We extend the eligible form to the same
+        # ``_US_TICKER_SHAPE_RE`` shape the upfront guard accepts, while
+        # keeping the bare-short-circuit exclusion (`raw.isupper() and
+        # len(raw) <= 5` — bare all-upper USFD/USM) so as not to overrun
+        # `_split_prefix`'s bare path. The dotted branch and the existing
+        # all-alpha branch are siblings of the same ``us``-prefix recovery
+        # rule, and together they mirror the shape gate at lines 566-585.
         if (
-            raw.isalpha()
-            and len(raw) > 2
+            len(raw) > 2
             and raw[:2].lower() == "us"
-            and raw[2:].isupper()
-            and not (raw.isupper() and len(raw) <= 5)
+            # Only recover an explicit ``us`` prefix when the first two
+            # characters are NOT both uppercase — that mixed-case shape is
+            # the user's signal that ``us`` is a prefix, not the leading
+            # letters of a bare US ticker (``SHOP.US`` / ``HKD.US`` /
+            # ``USFD.US`` / ``BJRI.US``). A bare dotted all-uppercase US
+            # ticker must keep flowing through ``_split_prefix``'s bare
+            # short-circuit, so we exclude it here.
+            and not raw[:2].isupper()
+            and _US_TICKER_SHAPE_RE.match(raw[2:])
         ):
             bare_from_us = raw[2:]
-            norm_bare, _ = _normalize_code_and_exchange(bare_from_us)
-            if (
-                norm_bare
-                and norm_bare.lower() == bare_from_us.lower()
-            ):
-                raw = f"us{norm_bare}"
-            else:
-                raw = norm_code
+            # Strip the explicit prefix; the dot-suffixed base survives
+            # verbatim (preserves ``BRK.B`` / ``ABC.US`` rather than
+            # collapsing `.`).
+            restored = f"us{bare_from_us}"
+            raw = restored
         else:
             raw = norm_code
 
