@@ -284,12 +284,23 @@ def test_agent_chat_inherits_saved_skills_without_rewriting_session_state(tmp_pa
          patch("api.v1.endpoints.agent._build_executor", return_value=executor) as build_executor:
         response = TestClient(create_app(static_dir=tmp_path / "static")).post(
             "/api/v1/agent/chat",
-            json={"message": "follow up", "session_id": "saved-session"},
+            json={
+                "message": "follow up",
+                "session_id": "saved-session",
+                "context": {
+                    "stock_code": "600519",
+                    "skills": ["old_skill"],
+                    "strategies": ["older_strategy"],
+                },
+            },
         )
 
     assert response.status_code == 200
     build_executor.assert_called_once_with(config, ["technical"])
-    assert executor.chat.call_args.kwargs["context"]["skills"] == ["technical"]
+    context = executor.chat.call_args.kwargs["context"]
+    assert context["stock_code"] == "600519"
+    assert context["skills"] == ["technical"]
+    assert "strategies" not in context
     assert executor.chat.call_args.kwargs["selected_skill_ids"] is None
 
 

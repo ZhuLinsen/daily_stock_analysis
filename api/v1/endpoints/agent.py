@@ -68,6 +68,8 @@ class ChatRequest(BaseModel):
 def _build_agent_chat_context(request: ChatRequest, config, skills: Optional[List[str]]) -> Dict[str, Any]:
     """Build the shared context contract for regular and streaming Agent Chat."""
     context = dict(request.context or {})
+    context.pop("skills", None)
+    context.pop("strategies", None)
     if skills is not None:
         context["skills"] = skills
     report_language = context.get("report_language")
