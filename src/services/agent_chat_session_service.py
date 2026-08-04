@@ -52,6 +52,13 @@ class AgentChatSessionService:
             )
 
         normalized = normalize_requested_skill_ids(config, requested_skill_ids)
+        if not normalized:
+            return ChatSkillSelection(
+                effective_skill_ids=(
+                    self.db.get_conversation_session_selected_skill_ids(session_id)
+                ),
+                selected_skill_ids_update=None,
+            )
         return ChatSkillSelection(
             effective_skill_ids=normalized,
             selected_skill_ids_update=normalized,

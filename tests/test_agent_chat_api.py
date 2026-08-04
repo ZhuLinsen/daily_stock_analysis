@@ -304,6 +304,37 @@ def test_agent_chat_inherits_saved_skills_without_rewriting_session_state(tmp_pa
     assert executor.chat.call_args.kwargs["selected_skill_ids"] is None
 
 
+def test_agent_chat_all_invalid_skills_inherit_without_clearing_state(tmp_path: Path) -> None:
+    db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'all-invalid.db'}")
+    db.save_conversation_user_turn("saved-session", "first", ["technical"])
+    config = _litellm_config()
+    executor = MagicMock()
+    executor.chat.return_value = _result()
+    skill_manager = MagicMock()
+    skill_manager.list_skills.return_value = [SimpleNamespace(name="technical")]
+
+    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.v1.endpoints.agent.get_config", return_value=config), \
+         patch("src.agent.factory.get_skill_manager", return_value=skill_manager), \
+         patch("api.v1.endpoints.agent._build_executor", return_value=executor) as build_executor:
+        response = TestClient(create_app(static_dir=tmp_path / "static")).post(
+            "/api/v1/agent/chat",
+            json={
+                "message": "follow up",
+                "session_id": "saved-session",
+                "skills": ["old_technical"],
+            },
+        )
+
+    assert response.status_code == 200
+    build_executor.assert_called_once_with(config, ["technical"])
+    assert executor.chat.call_args.kwargs["context"]["skills"] == ["technical"]
+    assert executor.chat.call_args.kwargs["selected_skill_ids"] is None
+    assert db.get_conversation_session_selected_skill_ids("saved-session") == [
+        "technical"
+    ]
+
+
 def test_chat_session_messages_returns_null_when_state_is_missing(tmp_path: Path) -> None:
     db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'default-state.db'}")
     db.save_conversation_message("legacy-session", "user", "legacy question")
@@ -460,6 +491,76 @@ def test_stream_forwards_normalized_skill_selection_to_prepare_turn() -> None:
         context={"skills": ["risk"], "report_language": "zh"},
         selected_skill_ids=["risk"],
     )
+
+
+def test_stream_all_invalid_skills_inherit_without_clearing_state() -> None:
+    db = DatabaseManager(db_url="sqlite:///:memory:")
+    db.save_conversation_user_turn("saved-session", "first", ["technical"])
+    session_service = AgentChatSessionService(db)
+    executor = _executor(_result(backend="litellm"))
+    config = _litellm_config()
+    skill_manager = MagicMock()
+    skill_manager.list_skills.return_value = [SimpleNamespace(name="technical")]
+
+    async def exercise() -> list[dict]:
+        with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
+             patch("api.v1.endpoints.agent.get_config", return_value=config), \
+             patch("src.agent.factory.get_skill_manager", return_value=skill_manager), \
+             patch("api.v1.endpoints.agent._build_executor", return_value=executor) as build_executor:
+            response = await agent_endpoint.agent_chat_stream(
+                agent_endpoint.ChatRequest(
+                    message="follow up",
+                    session_id="saved-session",
+                    skills=["old_technical"],
+                ),
+                session_service=session_service,
+            )
+            events = [
+                json.loads(chunk.removeprefix("data: ").strip())
+                async for chunk in response.body_iterator
+            ]
+
+        build_executor.assert_called_once_with(config, ["technical"])
+        return events
+
+    events = asyncio.run(exercise())
+
+    assert [event["type"] for event in events] == ["accepted", "done"]
+    executor.prepare_turn.assert_called_once_with(
+        message="follow up",
+        session_id="saved-session",
+        context={"skills": ["technical"], "report_language": "zh"},
+        selected_skill_ids=None,
+    )
+    assert db.get_conversation_session_selected_skill_ids("saved-session") == [
+        "technical"
+    ]
+
+
+def test_codex_stream_skill_resolution_failure_does_not_register_request() -> None:
+    request_id = "skill-resolution-failure"
+    session_service = MagicMock(spec=AgentChatSessionService)
+    session_service.resolve_skill_selection.side_effect = RuntimeError("database read failed")
+
+    try:
+        with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
+             pytest.raises(RuntimeError, match="database read failed"):
+            asyncio.run(
+                agent_endpoint.agent_chat_stream(
+                    agent_endpoint.ChatRequest(
+                        message="question",
+                        session_id="failed-session",
+                        request_id=request_id,
+                    ),
+                    session_service=session_service,
+                )
+            )
+
+        with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
+            assert request_id not in agent_endpoint._ACTIVE_CODEX_STREAMS
+    finally:
+        with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
+            agent_endpoint._ACTIVE_CODEX_STREAMS.pop(request_id, None)
 
 
 @pytest.mark.parametrize("failure", ["context preparation failed", "database write failed"])

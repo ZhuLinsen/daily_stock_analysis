@@ -501,6 +501,15 @@ async def agent_chat_stream(
     queue: asyncio.Queue = asyncio.Queue()
     cancel_event = threading.Event()
     request_id = request.request_id or str(uuid.uuid4())
+    skill_selection = session_service.resolve_skill_selection(
+        config,
+        session_id,
+        request.effective_skills,
+    )
+    skills = skill_selection.effective_skill_ids
+    selected_skill_ids = skill_selection.selected_skill_ids_update
+    stream_ctx = _build_agent_chat_context(request, config, skills)
+
     if backend_id == "codex_app_server":
         with _ACTIVE_CODEX_STREAMS_LOCK:
             if request_id in _ACTIVE_CODEX_STREAMS:
@@ -512,15 +521,6 @@ async def agent_chat_stream(
                     },
                 )
             _ACTIVE_CODEX_STREAMS[request_id] = cancel_event
-
-    skill_selection = session_service.resolve_skill_selection(
-        config,
-        session_id,
-        request.effective_skills,
-    )
-    skills = skill_selection.effective_skill_ids
-    selected_skill_ids = skill_selection.selected_skill_ids_update
-    stream_ctx = _build_agent_chat_context(request, config, skills)
 
     def progress_callback(event: dict):
         if backend_id == "codex_app_server" and cancel_event.is_set():
