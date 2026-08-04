@@ -48,21 +48,16 @@ def test_skill_selection_distinguishes_inherit_clear_and_explicit() -> None:
     )
 
 
-def test_session_detail_resolves_runtime_default_without_persisting_it() -> None:
+def test_session_detail_preserves_missing_persisted_state() -> None:
     db = DatabaseManager(db_url="sqlite:///:memory:")
     service = AgentChatSessionService(db)
     db.save_conversation_message("legacy-session", "user", "legacy question")
 
-    with patch(
-        "src.services.agent_chat_session_service.resolve_skill_prompt_state",
-        return_value=SimpleNamespace(skills_to_activate=["bull_trend"]),
-    ):
-        detail = service.get_session_detail(
-            SimpleNamespace(),
-            "legacy-session",
-            limit=100,
-        )
+    detail = service.get_session_detail(
+        "legacy-session",
+        limit=100,
+    )
 
     assert [message["content"] for message in detail.messages] == ["legacy question"]
-    assert detail.selected_skill_ids == ["bull_trend"]
+    assert detail.selected_skill_ids is None
     assert db.get_conversation_session_selected_skill_ids("legacy-session") is None

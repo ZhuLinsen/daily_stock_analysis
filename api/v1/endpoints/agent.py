@@ -261,7 +261,7 @@ class SessionsResponse(BaseModel):
     sessions: List[SessionItem]
 
 class SessionStateResponse(BaseModel):
-    selected_skill_ids: List[str]
+    selected_skill_ids: Optional[List[str]]
 
 class SessionMessagesResponse(BaseModel):
     session_id: str
@@ -297,7 +297,6 @@ async def get_chat_session_messages(
 ):
     """获取单个会话的完整消息"""
     detail = session_service.get_session_detail(
-        get_config(),
         session_id,
         limit,
     )

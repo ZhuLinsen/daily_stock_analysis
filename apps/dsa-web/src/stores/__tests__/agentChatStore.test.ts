@@ -637,6 +637,31 @@ describe('agentChatStore session Skill state', () => {
     ]);
   });
 
+  it('preserves null when an initial legacy session has no persisted Skill state', async () => {
+    localStorage.setItem('dsa_chat_session_id', 'legacy-session');
+    useAgentChatStore.setState({ hasInitialLoad: false });
+    vi.mocked(agentApi.getChatSessions).mockResolvedValue([
+      {
+        session_id: 'legacy-session',
+        title: 'legacy',
+        message_count: 1,
+        created_at: null,
+        last_active: null,
+      },
+    ]);
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue({
+      session_id: 'legacy-session',
+      messages: [
+        { id: 'msg-1', role: 'user', content: '分析 AAPL', created_at: null },
+      ],
+      session_state: { selected_skill_ids: null },
+    });
+
+    await useAgentChatStore.getState().loadInitialSession();
+
+    expect(useAgentChatStore.getState().selectedSkillIds).toBeNull();
+  });
+
   it('clears the previous session Skill selection for a new chat', () => {
     useAgentChatStore.setState({ selectedSkillIds: ['risk'] });
 

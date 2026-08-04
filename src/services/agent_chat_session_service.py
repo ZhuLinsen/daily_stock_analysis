@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from src.agent.factory import normalize_requested_skill_ids, resolve_skill_prompt_state
+from src.agent.factory import normalize_requested_skill_ids
 from src.storage import DatabaseManager
 
 
@@ -20,10 +20,10 @@ class ChatSkillSelection:
 
 @dataclass(frozen=True)
 class ChatSessionDetail:
-    """Visible messages and the resolved Skill selection for one session."""
+    """Visible messages and the persisted Skill selection for one session."""
 
     messages: List[Dict[str, Any]]
-    selected_skill_ids: List[str]
+    selected_skill_ids: Optional[List[str]]
 
 
 class AgentChatSessionService:
@@ -70,14 +70,12 @@ class AgentChatSessionService:
 
     def get_session_detail(
         self,
-        config,
         session_id: str,
         limit: int,
     ) -> ChatSessionDetail:
         messages = self.db.get_conversation_messages(session_id, limit=limit)
         selected_skill_ids = self.db.get_conversation_session_selected_skill_ids(session_id)
-        if selected_skill_ids is None:
-            selected_skill_ids = resolve_skill_prompt_state(config).skills_to_activate
+
         return ChatSessionDetail(
             messages=messages,
             selected_skill_ids=selected_skill_ids,

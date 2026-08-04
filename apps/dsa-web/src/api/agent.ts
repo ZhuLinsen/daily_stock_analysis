@@ -70,7 +70,7 @@ export interface ChatSessionDetail {
   session_id: string;
   messages: ChatSessionMessage[];
   session_state: {
-    selected_skill_ids: string[];
+    selected_skill_ids: string[] | null;
   };
 }
 

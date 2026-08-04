@@ -293,23 +293,19 @@ def test_agent_chat_inherits_saved_skills_without_rewriting_session_state(tmp_pa
     assert executor.chat.call_args.kwargs["selected_skill_ids"] is None
 
 
-def test_chat_session_messages_uses_runtime_default_when_state_is_missing(tmp_path: Path) -> None:
+def test_chat_session_messages_returns_null_when_state_is_missing(tmp_path: Path) -> None:
     db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'default-state.db'}")
     db.save_conversation_message("legacy-session", "user", "legacy question")
 
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
-         patch(
-            "src.services.agent_chat_session_service.resolve_skill_prompt_state",
-            return_value=SimpleNamespace(skills_to_activate=["bull_trend"]),
-        ):
+         patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()):
         response = TestClient(create_app(static_dir=tmp_path / "static")).get(
             "/api/v1/agent/chat/sessions/legacy-session"
         )
 
     assert response.status_code == 200
     assert response.json()["session_state"] == {
-        "selected_skill_ids": ["bull_trend"],
+        "selected_skill_ids": None,
     }
 
 

@@ -879,6 +879,35 @@ describe('ChatPage', () => {
     expect(mockStartStream.mock.calls.at(-1)?.[0]).not.toHaveProperty('skills');
   });
 
+  it('omits skills when continuing a legacy session without persisted Skill state', async () => {
+    mockStoreState.messages = [
+      { id: 'legacy-user', role: 'user', content: '分析 AAPL' },
+      { id: 'legacy-assistant', role: 'assistant', content: '历史分析结果' },
+    ];
+    mockStoreState.selectedSkillIds = null;
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole('checkbox', { name: '趋势分析' })).toBeChecked();
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '继续分析' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalled());
+    expect(mockStartStream.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        message: '继续分析',
+        session_id: 'session-1',
+      }),
+    );
+    expect(mockStartStream.mock.calls.at(-1)?.[0]).not.toHaveProperty('skills');
+  });
+
   it('sends multiple selected skills in order', async () => {
     mockGetSkills.mockResolvedValue({
       skills: [
