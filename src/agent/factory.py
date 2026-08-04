@@ -111,6 +111,23 @@ def _normalize_skill_ids(
     return normalized, unknown
 
 
+def normalize_requested_skill_ids(config, skill_ids: List[str]) -> List[str]:
+    """Normalize API-requested Skill ids with the AgentFactory catalog rules."""
+    skill_manager = get_skill_manager(config)
+    available_skill_ids = {
+        str(getattr(skill, "name", "")).strip()
+        for skill in skill_manager.list_skills()
+        if str(getattr(skill, "name", "")).strip()
+    }
+    normalized, unknown = _normalize_skill_ids(
+        skill_ids,
+        available_skill_ids=available_skill_ids,
+    )
+    if unknown:
+        logger.warning("[AgentFactory] Ignoring unknown request skill ids: %s", unknown)
+    return normalized
+
+
 def _resolve_selected_skill_ids(
     *,
     requested_skills: Optional[List[str]],

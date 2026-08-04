@@ -111,6 +111,7 @@ function getStreamFailureError(
 
 interface AgentChatState {
   messages: Message[];
+  selectedSkillIds: string[] | null;
   loading: boolean;
   progressSteps: ProgressStep[];
   sessionId: string;
@@ -129,6 +130,7 @@ interface AgentChatState {
 }
 
 interface AgentChatActions {
+  setSelectedSkillIds: (skillIds: string[]) => void;
   setCurrentRoute: (path: string) => void;
   clearCompletionBadge: () => void;
   loadSessions: () => Promise<void>;
@@ -158,6 +160,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
 
   return {
   messages: [],
+  selectedSkillIds: null,
   loading: false,
   progressSteps: [],
   sessionId: getInitialSessionId(),
@@ -173,6 +176,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
   stopping: false,
   terminalStatus: null,
   stopError: false,
+
+  setSelectedSkillIds: (skillIds) => set({ selectedSkillIds: skillIds }),
 
   setCurrentRoute: (path) => set({ currentRoute: path }),
 
@@ -203,19 +208,20 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       if (savedId) {
         const sessionExists = sessionList.some((s) => s.session_id === savedId);
         if (sessionExists) {
-          const msgs = await agentApi.getChatSessionMessages(savedId);
-          if (msgs.length > 0) {
+          const detail = await agentApi.getChatSessionMessages(savedId);
+          if (detail.messages.length > 0) {
             set({
-              messages: msgs.map((m) => ({
+              messages: detail.messages.map((m) => ({
                 id: m.id,
                 role: m.role,
                 content: m.content,
               })),
+              selectedSkillIds: detail.session_state.selected_skill_ids,
             });
           }
         } else {
           const newId = generateUUID();
-          set({ sessionId: newId });
+          set({ sessionId: newId, selectedSkillIds: null });
           localStorage.setItem(STORAGE_KEY_SESSION, newId);
         }
       } else {
@@ -235,6 +241,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     abortController?.abort();
     set({
       messages: [],
+      selectedSkillIds: null,
       sessionId: targetSessionId,
       loading: false,
       progressSteps: [],
@@ -249,16 +256,17 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     localStorage.setItem(STORAGE_KEY_SESSION, targetSessionId);
 
     try {
-      const msgs = await agentApi.getChatSessionMessages(targetSessionId);
+      const detail = await agentApi.getChatSessionMessages(targetSessionId);
       if (get().sessionId !== targetSessionId) {
         return;
       }
       set({
-        messages: msgs.map((m) => ({
+        messages: detail.messages.map((m) => ({
           id: m.id,
           role: m.role,
           content: m.content,
         })),
+        selectedSkillIds: detail.session_state.selected_skill_ids,
       });
     } catch {
       // Ignore
@@ -272,6 +280,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     set({
       sessionId: newId,
       messages: [],
+      selectedSkillIds: null,
       loading: false,
       progressSteps: [],
       chatError: null,

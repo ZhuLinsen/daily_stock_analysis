@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.agent_backend import AgentBackend, AgentRunRequest
 from src.agent.conversation import conversation_manager
@@ -56,11 +56,13 @@ class AgentChatExecutor:
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         context: Optional[Dict[str, Any]] = None,
         cancel_event=None,
+        selected_skill_ids: Optional[List[str]] = None,
     ) -> AgentResult:
         turn = self.prepare_turn(
             message=message,
             session_id=session_id,
             context=context,
+            selected_skill_ids=selected_skill_ids,
         )
         return self.execute_turn(
             turn,
@@ -74,6 +76,7 @@ class AgentChatExecutor:
         message: str,
         session_id: str,
         context: Optional[Dict[str, Any]] = None,
+        selected_skill_ids: Optional[List[str]] = None,
     ) -> PreparedAgentChatTurn:
         """Prepare context and persist the user message without starting a backend."""
         conversation_manager.get_or_create(session_id)
@@ -92,7 +95,11 @@ class AgentChatExecutor:
         )
         baseline_len = len(prepared.history_messages) + 2
         run_id = str(uuid.uuid4())
-        user_message_id = conversation_manager.add_message(session_id, "user", message)
+        user_message_id = conversation_manager.add_user_message(
+            session_id,
+            message,
+            selected_skill_ids,
+        )
         return PreparedAgentChatTurn(
             message=message,
             session_id=session_id,
