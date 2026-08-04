@@ -4,3 +4,4 @@
 # Test and lint tooling used by backend-gate.
 flake8
 pytest
+pytest-timeout>=2.3.0

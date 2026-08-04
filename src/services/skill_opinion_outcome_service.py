@@ -109,6 +109,16 @@ class SkillOpinionOutcomeService:
                     "error_type": type(exc).__name__,
                 }
                 errors.append(error)
+                try:
+                    self._record_retry_attempt(candidate)
+                except Exception:
+                    logger.warning(
+                        "Failed to advance Skill opinion outcome retry marker: "
+                        "sample_id=%s horizon=%s",
+                        error["sample_id"],
+                        error["horizon"],
+                        exc_info=True,
+                    )
                 logger.warning(
                     "Skill opinion outcome evaluation deferred after transient failure: "
                     "sample_id=%s horizon=%s error_type=%s",
@@ -129,6 +139,21 @@ class SkillOpinionOutcomeService:
             "limit_unit": "outcome_key",
             "engine_version": SKILL_OPINION_OUTCOME_ENGINE_VERSION,
         }
+
+    def _record_retry_attempt(
+        self,
+        candidate: SkillOpinionOutcomeCandidate,
+    ) -> None:
+        self.repo.persist_outcome(
+            {
+                "skill_opinion_sample_id": int(candidate.sample.id),
+                "horizon": candidate.horizon,
+                "engine_version": SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+                "eval_status": "pending",
+                "outcome": None,
+                "direction_correct": None,
+            }
+        )
 
     def _evaluate_candidate(
         self,

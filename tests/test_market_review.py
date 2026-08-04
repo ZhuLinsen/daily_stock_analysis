@@ -100,9 +100,9 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
 
         self.assertEqual(result, "## 2026-04-10 A-share Market Recap\n\nBody")
         saved_content = notifier.save_report_to_file.call_args.args[0]
-        self.assertTrue(saved_content.startswith("# 🎯 Market Review\n\n"))
+        self.assertTrue(saved_content.startswith("[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\n"))
         sent_content = notifier.send.call_args.args[0]
-        self.assertTrue(sent_content.startswith("🎯 Market Review\n\n"))
+        self.assertTrue(sent_content.startswith("[dsa-market-region]: # (cn)\n\n🎯 Market Review\n\n"))
         self.assertTrue(notifier.send.call_args.kwargs["email_send_to_all"])
         self.assertEqual(notifier.send.call_args.kwargs["route_type"], "report")
         persist_history.assert_called_once()
@@ -165,7 +165,11 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
 
         self.assertEqual(analyzer_cls.call_args.kwargs["config"], request_config)
         self.assertEqual(persist_history.call_args.kwargs["config"], request_config)
-        self.assertTrue(notifier.save_report_to_file.call_args.args[0].startswith("# 🎯 Market Review\n\n"))
+        self.assertTrue(
+            notifier.save_report_to_file.call_args.args[0].startswith(
+                "[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\n"
+            )
+        )
         self.assertEqual(result.market_review_payload["language"], "en")
         self.assertEqual(result.report, "English market review body")
 
@@ -559,6 +563,25 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
 
         self.assertEqual(markdown.count("2026-06-03 大盘复盘"), 1)
         self.assertTrue(markdown.startswith("🎯 大盘复盘\n\n## 2026-06-03 大盘复盘"))
+
+    def test_render_market_review_payload_markdown_prefixes_single_region_metadata(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "region": "us",
+                "title": "2026-06-03 大盘复盘",
+                "sections": [
+                    {
+                        "key": "overview",
+                        "title": "2026-06-03 大盘复盘",
+                        "markdown": "> 今晚重点观察科技股承接。",
+                    }
+                ],
+            },
+            wrapper_title="🎯 大盘复盘",
+        )
+
+        self.assertTrue(markdown.startswith("[dsa-market-region]: # (us)\n\n🎯 大盘复盘"))
+        self.assertEqual(markdown.count("[dsa-market-region]: # (us)"), 1)
 
     def test_render_market_review_payload_markdown_appends_structured_sector_fallback(self) -> None:
         markdown = market_review_module._render_market_review_payload_markdown(

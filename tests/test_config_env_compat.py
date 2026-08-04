@@ -7,12 +7,43 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.config import Config, DEFAULT_ALPHASIFT_INSTALL_SPEC, setup_env
+from src.config import Config, setup_env
 
 
 class ConfigEnvCompatibilityTestCase(unittest.TestCase):
     def tearDown(self):
         Config.reset_instance()
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_share_image_social_branding_is_optional_and_configurable(
+        self, _mock_parse_stock_email_groups, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "SHARE_IMAGE_XIAOHONGSHU_URL": "https://example.com/xhs",
+                "SHARE_IMAGE_XIAOHONGSHU_HANDLE": "@自定义账号",
+                "SHARE_IMAGE_XIAOHONGSHU_ID": "123456",
+                "SHARE_IMAGE_XIAOHONGSHU_QR_PATH": "assets/custom-xhs.png",
+            },
+            clear=True,
+        ):
+            configured = Config._load_from_env()
+
+        self.assertEqual(configured.share_image_xiaohongshu_url, "https://example.com/xhs")
+        self.assertEqual(configured.share_image_xiaohongshu_handle, "@自定义账号")
+        self.assertEqual(configured.share_image_xiaohongshu_id, "123456")
+        self.assertEqual(configured.share_image_xiaohongshu_qr_path, "assets/custom-xhs.png")
+
+        with patch.dict(os.environ, {}, clear=True):
+            disabled = Config._load_from_env()
+
+        self.assertIsNone(disabled.share_image_xiaohongshu_url)
+        self.assertIsNone(disabled.share_image_xiaohongshu_handle)
+        self.assertIsNone(disabled.share_image_xiaohongshu_id)
+        self.assertIsNone(disabled.share_image_xiaohongshu_qr_path)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -309,16 +340,6 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
-    def test_alphasift_install_spec_defaults_only_when_env_missing(
-        self, _mock_parse_litellm_yaml, _mock_setup_env
-    ):
-        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
-            config = Config._load_from_env()
-
-        self.assertEqual(config.alphasift_install_spec, DEFAULT_ALPHASIFT_INSTALL_SPEC)
-
-    @patch("src.config.setup_env")
-    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_news_intel_envs_do_not_change_llm_runtime_contract(
         self,
         _mock_parse_litellm_yaml,
@@ -388,33 +409,6 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(with_jpkr.openai_model, baseline.openai_model)
         self.assertEqual(with_jpkr.openai_api_key, baseline.openai_api_key)
         self.assertEqual(with_jpkr.openai_base_url, baseline.openai_base_url)
-
-    def test_env_example_alphasift_install_spec_matches_trusted_default(self):
-        env_example = Path(__file__).resolve().parents[1] / ".env.example"
-
-        for line in env_example.read_text(encoding="utf-8").splitlines():
-            if line.startswith("ALPHASIFT_INSTALL_SPEC="):
-                self.assertEqual(
-                    line,
-                    f"ALPHASIFT_INSTALL_SPEC={DEFAULT_ALPHASIFT_INSTALL_SPEC}",
-                )
-                break
-        else:
-            self.fail("ALPHASIFT_INSTALL_SPEC missing from .env.example")
-
-    @patch("src.config.setup_env")
-    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
-    def test_alphasift_install_spec_honors_explicit_empty(
-        self, _mock_parse_litellm_yaml, _mock_setup_env
-    ):
-        with patch.dict(
-            os.environ,
-            {"STOCK_LIST": "600519", "ALPHASIFT_INSTALL_SPEC": ""},
-            clear=True,
-        ):
-            config = Config._load_from_env()
-
-        self.assertEqual(config.alphasift_install_spec, "")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

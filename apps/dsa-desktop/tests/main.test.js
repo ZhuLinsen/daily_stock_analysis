@@ -721,14 +721,14 @@ test('auto download prompt falls back to error when install path fails', async (
   });
 });
 
-test('auto update backup copies AlphaSift hotspot detail directories recursively', async (t) => {
+test('auto update backup copies Screening hotspot detail directories recursively', async (t) => {
   const updaterEvents = {};
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa desktop updater details '));
   const exeDir = path.join(tempRoot, 'app');
   const userDataDir = path.join(tempRoot, 'userData');
   const exePath = path.join(exeDir, 'Daily Stock Analysis.exe');
   const uninstallPath = path.join(exeDir, 'Uninstall Daily Stock Analysis.exe');
-  const detailRelativePath = path.join('data', 'alphasift', 'hotspot_details');
+  const detailRelativePath = path.join('data', 'screening', 'hotspot_details');
   const detailFileRelativePath = path.join(detailRelativePath, 'ai-compute.json');
   const detailFile = path.join(exeDir, detailFileRelativePath);
   const backupRoot = path.join(userDataDir, '.dsa-desktop-update-backup');
@@ -808,13 +808,15 @@ test('desktop update backup list includes WAL and SHM artifacts', (t) => {
   assert.ok(files.includes(path.join('logs', 'desktop.log')));
 });
 
-test('desktop update backup list preserves AlphaSift caches', (t) => {
+test('desktop update backup list preserves Screening caches', (t) => {
   const mainModule = loadMainModule(t);
   const files = mainModule.DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES || [];
-  assert.ok(files.includes(path.join('data', 'alphasift', 'hotspots.json')));
-  assert.ok(files.includes(path.join('data', 'alphasift', 'hotspot.history.jsonl')));
-  assert.ok(files.includes(path.join('data', 'alphasift', 'hotspot_details')));
-  assert.ok(files.includes(path.join('data', 'alphasift', 'snapshot.last_good.json')));
+  assert.ok(files.includes(path.join('data', 'screening', 'hotspots.json')));
+  assert.ok(files.includes(path.join('data', 'screening', 'hotspot.history.jsonl')));
+  assert.ok(files.includes(path.join('data', 'screening', 'hotspot_details')));
+  assert.ok(files.includes(path.join('data', 'screening', 'snapshot.last_good.json')));
+  assert.ok(files.includes(path.join('data', 'screening', 'daily_history')));
+  assert.ok(files.includes(path.join('data', 'screening', 'industry_provider_cache')));
 });
 
 test('desktop update backup and restore preserve generation and Agent backend env keys', (t) => {
@@ -872,12 +874,12 @@ test('desktop update backup and restore preserve generation and Agent backend en
   assert.equal(fs.existsSync(backupRoot), false);
 });
 
-test('desktop update backup and restore preserve AlphaSift detail directories recursively', (t) => {
+test('desktop update backup and restore preserve Screening detail directories recursively', (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-dir-backup-'));
   const appDir = path.join(tempRoot, 'app');
   const userDataDir = path.join(tempRoot, 'userData');
   const backupRoot = path.join(userDataDir, '.dsa-desktop-update-backup');
-  const detailRelativePath = path.join('data', 'alphasift', 'hotspot_details');
+  const detailRelativePath = path.join('data', 'screening', 'hotspot_details');
   const topicDetailPath = path.join(appDir, detailRelativePath, 'AI算力', 'detail.json');
   const nestedDetailPath = path.join(appDir, detailRelativePath, 'AI算力', 'events', 'latest.json');
   let currentVersion = '3.12.0';
@@ -931,7 +933,7 @@ test('macOS packaged runtime state uses userData and migrates old app bundle fil
   const exePath = path.join(oldAppDir, 'Daily Stock Analysis');
   const oldDbPath = path.join(oldAppDir, 'data', 'stock_analysis.db');
   const oldLogPath = path.join(oldAppDir, 'logs', 'desktop.log');
-  const oldHotspotDetailPath = path.join(oldAppDir, 'data', 'alphasift', 'hotspot_details', 'AI算力', 'detail.json');
+  const oldHotspotDetailPath = path.join(oldAppDir, 'data', 'screening', 'hotspot_details', 'AI算力', 'detail.json');
 
   fs.mkdirSync(path.dirname(oldDbPath), { recursive: true });
   fs.mkdirSync(path.dirname(oldLogPath), { recursive: true });
@@ -968,14 +970,14 @@ test('macOS packaged runtime state uses userData and migrates old app bundle fil
     [
       '.env',
       path.join('data', 'stock_analysis.db'),
-      path.join('data', 'alphasift', 'hotspot_details'),
+      path.join('data', 'screening', 'hotspot_details'),
       path.join('logs', 'desktop.log'),
     ].sort()
   );
   assert.equal(fs.readFileSync(path.join(userDataDir, '.env'), 'utf-8'), 'OPENAI_API_KEY=old-key\n');
   assert.equal(fs.readFileSync(path.join(userDataDir, 'data', 'stock_analysis.db'), 'utf-8'), 'old-db');
   assert.equal(
-    fs.readFileSync(path.join(userDataDir, 'data', 'alphasift', 'hotspot_details', 'AI算力', 'detail.json'), 'utf-8'),
+    fs.readFileSync(path.join(userDataDir, 'data', 'screening', 'hotspot_details', 'AI算力', 'detail.json'), 'utf-8'),
     '{"topic":"AI算力"}\n'
   );
   assert.equal(fs.readFileSync(path.join(userDataDir, 'logs', 'desktop.log'), 'utf-8'), 'old-log\n');

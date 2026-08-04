@@ -29,6 +29,23 @@ class SkillOpinionOutcomeCandidate:
     existing_outcome: Optional[SkillOpinionOutcomeRecord]
 
 
+@dataclass(frozen=True)
+class SkillOpinionPerformanceBucket:
+    """Raw persisted counts for one skill, horizon, and engine version."""
+
+    skill_id: str
+    horizon: str
+    engine_version: str
+    total: int
+    pending: int
+    evaluated: int
+    observational: int
+    unable: int
+    hit: int
+    miss: int
+    avg_directional_return_pct: Optional[float]
+
+
 class SkillOpinionOutcomeRepository:
     """Read candidates and persist outcomes through the shared write guard."""
 
@@ -87,10 +104,6 @@ class SkillOpinionOutcomeRepository:
                     .outerjoin(SkillOpinionOutcomeRecord, join_condition)
                     .where(and_(*conditions))
                     .order_by(
-                        case(
-                            (SkillOpinionOutcomeRecord.id.is_(None), 0),
-                            else_=1,
-                        ),
                         func.coalesce(
                             SkillOpinionOutcomeRecord.updated_at,
                             SkillOpinionSampleRecord.created_at,
@@ -112,10 +125,10 @@ class SkillOpinionOutcomeRepository:
         horizon_rank = {horizon: index for index, horizon in enumerate(horizons)}
         candidates.sort(
             key=lambda item: (
-                item.existing_outcome is not None,
                 self._candidate_time(item),
                 int(item.sample.id),
                 horizon_rank[item.horizon],
+                item.existing_outcome is not None,
             )
         )
         return candidates[:limit]
@@ -187,6 +200,86 @@ class SkillOpinionOutcomeRepository:
                 )
                 .limit(1)
             ).scalar_one_or_none()
+
+    def list_performance_buckets(
+        self,
+        *,
+        engine_version: str,
+        skill_id: Optional[str] = None,
+        skill_ids: Optional[Sequence[str]] = None,
+        horizons: Optional[Sequence[str]] = None,
+    ) -> List[SkillOpinionPerformanceBucket]:
+        """Aggregate persisted outcome facts without applying sample policy."""
+
+        status = SkillOpinionOutcomeRecord.eval_status
+        outcome = SkillOpinionOutcomeRecord.outcome
+        conditions = [
+            SkillOpinionOutcomeRecord.engine_version == engine_version
+        ]
+        if skill_id is not None:
+            conditions.append(SkillOpinionSampleRecord.skill_id == skill_id)
+        if skill_ids is not None:
+            conditions.append(
+                SkillOpinionSampleRecord.skill_id.in_(list(skill_ids))
+            )
+        if horizons is not None:
+            conditions.append(
+                SkillOpinionOutcomeRecord.horizon.in_(list(horizons))
+            )
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(
+                    SkillOpinionSampleRecord.skill_id,
+                    SkillOpinionOutcomeRecord.horizon,
+                    SkillOpinionOutcomeRecord.engine_version,
+                    func.count(SkillOpinionOutcomeRecord.id),
+                    func.sum(case((status == "pending", 1), else_=0)),
+                    func.sum(case((status == "evaluated", 1), else_=0)),
+                    func.sum(case((status == "observational", 1), else_=0)),
+                    func.sum(case((status == "unable", 1), else_=0)),
+                    func.sum(case((outcome == "hit", 1), else_=0)),
+                    func.sum(case((outcome == "miss", 1), else_=0)),
+                    func.avg(
+                        case(
+                            (
+                                status == "evaluated",
+                                SkillOpinionOutcomeRecord.directional_return_pct,
+                            ),
+                            else_=None,
+                        )
+                    ),
+                )
+                .join(
+                    SkillOpinionSampleRecord,
+                    SkillOpinionSampleRecord.id
+                    == SkillOpinionOutcomeRecord.skill_opinion_sample_id,
+                )
+                .where(and_(*conditions))
+                .group_by(
+                    SkillOpinionSampleRecord.skill_id,
+                    SkillOpinionOutcomeRecord.horizon,
+                    SkillOpinionOutcomeRecord.engine_version,
+                )
+            ).all()
+
+        return [
+            SkillOpinionPerformanceBucket(
+                skill_id=str(row[0]),
+                horizon=str(row[1]),
+                engine_version=str(row[2]),
+                total=int(row[3] or 0),
+                pending=int(row[4] or 0),
+                evaluated=int(row[5] or 0),
+                observational=int(row[6] or 0),
+                unable=int(row[7] or 0),
+                hit=int(row[8] or 0),
+                miss=int(row[9] or 0),
+                avg_directional_return_pct=(
+                    float(row[10]) if row[10] is not None else None
+                ),
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def _candidate_time(candidate: SkillOpinionOutcomeCandidate) -> datetime:

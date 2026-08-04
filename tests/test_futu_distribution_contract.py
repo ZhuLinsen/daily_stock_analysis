@@ -36,7 +36,10 @@ def test_futu_sdk_is_pinned_and_verified_across_linux_distributions() -> None:
     manual_publish = _workflow(".github/workflows/ghcr-dockerhub.yml")
 
     assert requirements.count("futu-api==10.8.6808") == 1
-    assert 'python -c "import alphasift.dsa_adapter; import futu"' in dockerfile
+    assert (
+        'python -c "import src.services.screening.pipeline; import futu"'
+        in dockerfile
+    )
     assert "import futu" in _job_run_text(ci["jobs"]["backend-gate"])
     assert "import futu" in _job_run_text(ci["jobs"]["docker-build"])
     assert "import futu" in _job_run_text(daily["jobs"]["analyze"])
@@ -72,8 +75,8 @@ def test_futu_sdk_is_collected_and_probed_in_desktop_backends() -> None:
 
     assert '"${PYTHON_BIN}" -c "import futu"' in macos_script
     assert 'cmd+=("--collect-all" "futu")' in macos_script
-    assert "for module in alphasift.dsa_adapter futu orjson" in macos_script
+    assert "for module in src.services.screening.pipeline futu orjson" in macos_script
 
     assert 'Test-PythonCode -Python $pythonBin -Code "import futu"' in windows_script
     assert "'--collect-all', 'futu'" in windows_script
-    assert "@('alphasift.dsa_adapter', 'futu', 'orjson')" in windows_script
+    assert "@('src.services.screening.pipeline', 'futu', 'orjson')" in windows_script

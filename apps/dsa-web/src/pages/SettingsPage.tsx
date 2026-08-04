@@ -5,7 +5,7 @@ import { useAuth, useSystemConfig } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { analysisApi } from '../api/analysis';
-import { alphasiftApi, notifyAlphaSiftConfigChanged, notifySystemConfigChanged } from '../api/alphasift';
+import { screeningApi, notifyScreeningConfigChanged, notifySystemConfigChanged } from '../api/screening';
 import { systemConfigApi } from '../api/systemConfig';
 import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/common';
 import {
@@ -857,11 +857,11 @@ const SettingsPage: React.FC = () => {
   const { language: uiLanguage, t } = useUiLanguage();
   const [envBackupActionError, setEnvBackupActionError] = useState<ParsedApiError | null>(null);
   const [envBackupActionSuccess, setEnvBackupActionSuccess] = useState<string>('');
-  const [alphaSiftActionError, setAlphaSiftActionError] = useState<ParsedApiError | null>(null);
-  const [alphaSiftActionSuccess, setAlphaSiftActionSuccess] = useState<string>('');
+  const [screeningActionError, setScreeningActionError] = useState<ParsedApiError | null>(null);
+  const [screeningActionSuccess, setScreeningActionSuccess] = useState<string>('');
   const [isExportingEnv, setIsExportingEnv] = useState(false);
   const [isImportingEnv, setIsImportingEnv] = useState(false);
-  const [isUpdatingAlphaSift, setIsUpdatingAlphaSift] = useState(false);
+  const [isUpdatingScreening, setIsUpdatingScreening] = useState(false);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
   const [isCheckingDesktopUpdate, setIsCheckingDesktopUpdate] = useState(false);
@@ -1045,10 +1045,10 @@ const SettingsPage: React.FC = () => {
   const rawActiveItems = itemsByCategory[activeCategory] || [];
   const rawActiveItemMap = new Map(rawActiveItems.map((item) => [item.key, String(item.value ?? '')]));
   const firstSetupStockCode = parseSetupStockList(getConfigItem(itemsByCategory.base || [], 'STOCK_LIST')?.value)[0] || '';
-  const alphasiftItem = (itemsByCategory.data_source || []).find((item) => item.key === 'ALPHASIFT_ENABLED');
-  const alphasiftEnabled = String(alphasiftItem?.value ?? '').trim().toLowerCase() === 'true';
+  const screeningItem = (itemsByCategory.base || []).find((item) => item.key === 'SCREENING_ENABLED');
+  const screeningEnabled = String(screeningItem?.value ?? '').trim().toLowerCase() === 'true';
   const shouldShowFirstRunSetup = activeCategory === 'base';
-  const shouldShowAlphaSiftSettings = activeCategory === 'data_source' && Boolean(alphasiftItem);
+  const shouldShowScreeningSettings = activeCategory === 'base' && Boolean(screeningItem);
   const hasConfiguredChannels = Boolean((rawActiveItemMap.get('LLM_CHANNELS') || '').trim());
   const hasLitellmConfig = Boolean((rawActiveItemMap.get('LITELLM_CONFIG') || '').trim());
   const hasRuntimeSchedulerMismatch =
@@ -1103,12 +1103,14 @@ const SettingsPage: React.FC = () => {
     'ADMIN_AUTH_ENABLED',
     ...SCHEDULER_SETTING_KEYS,
   ]);
-  const DATA_SOURCE_HIDDEN_KEYS = new Set([
-    'ALPHASIFT_ENABLED',
+  const BASE_HIDDEN_KEYS = new Set([
+    'SCREENING_ENABLED',
   ]);
   const AGENT_HIDDEN_KEYS = new Set(['AGENT_GENERATION_BACKEND']);
   const activeItems =
-    activeCategory === 'ai_model'
+    activeCategory === 'base'
+      ? rawActiveItems.filter((item) => !BASE_HIDDEN_KEYS.has(item.key))
+    : activeCategory === 'ai_model'
       ? rawActiveItems.filter((item) => {
         if (hasConfiguredChannels && LLM_CHANNEL_KEY_RE.test(item.key)) {
           return false;
@@ -1120,8 +1122,6 @@ const SettingsPage: React.FC = () => {
       })
       : activeCategory === 'system'
         ? rawActiveItems.filter((item) => !SYSTEM_HIDDEN_KEYS.has(item.key))
-      : activeCategory === 'data_source'
-        ? rawActiveItems.filter((item) => !DATA_SOURCE_HIDDEN_KEYS.has(item.key))
       : activeCategory === 'agent'
         ? rawActiveItems.filter((item) => !AGENT_HIDDEN_KEYS.has(item.key))
       : rawActiveItems;
@@ -1234,15 +1234,15 @@ const SettingsPage: React.FC = () => {
     }
   };
 
-  const updateAlphaSiftEnabled = async (nextEnabled: boolean) => {
-    setAlphaSiftActionError(null);
-    setAlphaSiftActionSuccess('');
-    setIsUpdatingAlphaSift(true);
+  const updateScreeningEnabled = async (nextEnabled: boolean) => {
+    setScreeningActionError(null);
+    setScreeningActionSuccess('');
+    setIsUpdatingScreening(true);
     try {
       if (nextEnabled) {
-        await alphasiftApi.enable();
-        await refreshAfterExternalSave(['ALPHASIFT_ENABLED']);
-        setAlphaSiftActionSuccess(t('settings.enabledAlphaSiftSuccess'));
+        await screeningApi.enable();
+        await refreshAfterExternalSave(['SCREENING_ENABLED']);
+        setScreeningActionSuccess(t('settings.enabledScreeningSuccess'));
         return;
       }
 
@@ -1250,16 +1250,16 @@ const SettingsPage: React.FC = () => {
         configVersion,
         maskToken,
         reloadNow: true,
-        items: [{ key: 'ALPHASIFT_ENABLED', value: 'false' }],
+        items: [{ key: 'SCREENING_ENABLED', value: 'false' }],
       });
-      notifyAlphaSiftConfigChanged();
-      await refreshAfterExternalSave(['ALPHASIFT_ENABLED']);
-      setAlphaSiftActionSuccess(t('settings.disabledAlphaSiftSuccess'));
+      notifyScreeningConfigChanged();
+      await refreshAfterExternalSave(['SCREENING_ENABLED']);
+      setScreeningActionSuccess(t('settings.disabledScreeningSuccess'));
     } catch (error: unknown) {
-      setAlphaSiftActionError(getParsedApiError(error));
-      await refreshAfterExternalSave(['ALPHASIFT_ENABLED']);
+      setScreeningActionError(getParsedApiError(error));
+      await refreshAfterExternalSave(['SCREENING_ENABLED']);
     } finally {
-      setIsUpdatingAlphaSift(false);
+      setIsUpdatingScreening(false);
     }
   };
 
@@ -1274,7 +1274,7 @@ const SettingsPage: React.FC = () => {
       ? [{ key: 'SCHEDULE_ENABLED', value: schedulerOverrideFromUi ? 'true' : 'false' }]
       : [];
     const changedItemsToSave = [...changedItems, ...schedulerSyncItem];
-    const changedAlphaSiftItem = changedItems.find((item) => item.key === 'ALPHASIFT_ENABLED');
+    const changedScreeningItem = changedItems.find((item) => item.key === 'SCREENING_ENABLED');
     const changedSchedulerSettings = changedItemsToSave.some((item) => SCHEDULER_SETTING_KEYS.has(item.key));
     const result = await save(changedItemsToSave);
     if (!result.success) {
@@ -1285,26 +1285,26 @@ const SettingsPage: React.FC = () => {
       setSchedulerStatusRefreshToken((current) => current + 1);
     }
     void refreshSetupStatus();
-    if (!changedAlphaSiftItem) {
+    if (!changedScreeningItem) {
       return;
     }
 
-    setAlphaSiftActionError(null);
-    setAlphaSiftActionSuccess('');
+    setScreeningActionError(null);
+    setScreeningActionSuccess('');
     try {
-      const isAlphaSiftEnabled = changedAlphaSiftItem.value.trim().toLowerCase() === 'true';
-      if (isAlphaSiftEnabled) {
-        await alphasiftApi.enable();
-        await refreshAfterExternalSave(['ALPHASIFT_ENABLED']);
-        setAlphaSiftActionSuccess(t('settings.enabledAlphaSiftSuccess'));
+      const isScreeningEnabled = changedScreeningItem.value.trim().toLowerCase() === 'true';
+      if (isScreeningEnabled) {
+        await screeningApi.enable();
+        await refreshAfterExternalSave(['SCREENING_ENABLED']);
+        setScreeningActionSuccess(t('settings.enabledScreeningSuccess'));
         return;
       }
 
-      notifyAlphaSiftConfigChanged();
-      setAlphaSiftActionSuccess(t('settings.disabledAlphaSiftSuccess'));
+      notifyScreeningConfigChanged();
+      setScreeningActionSuccess(t('settings.disabledScreeningSuccess'));
     } catch (error: unknown) {
-      setAlphaSiftActionError(getParsedApiError(error));
-      await refreshAfterExternalSave(['ALPHASIFT_ENABLED']);
+      setScreeningActionError(getParsedApiError(error));
+      await refreshAfterExternalSave(['SCREENING_ENABLED']);
     }
   };
 
@@ -1564,51 +1564,44 @@ const SettingsPage: React.FC = () => {
                 t={t}
               />
             ) : null}
-            {shouldShowAlphaSiftSettings ? (
+            {shouldShowScreeningSettings ? (
               <SettingsSectionCard
-                title={t('settings.alphaSift')}
-                description={t('settings.alphaSiftDescription')}
+                title={t('settings.screening')}
+                description={t('settings.screeningDescription')}
               >
                 <div className="flex flex-col gap-4 rounded-2xl border settings-border bg-background/35 px-4 py-4 md:flex-row md:items-center md:justify-between">
                   <div>
                     <p className="text-sm font-semibold text-foreground">
-                      {alphasiftEnabled ? t('settings.alphaSiftEnabled') : t('settings.alphaSiftDisabled')}
+                      {screeningEnabled ? t('settings.screeningEnabled') : t('settings.screeningDisabled')}
                     </p>
                     <p className="mt-1 text-xs leading-6 text-muted-text">
-                      {t('settings.alphaSiftSummary')}
+                      {t('settings.screeningSummary')}
                     </p>
                     <p className="mt-2 text-xs leading-6 text-amber-700 dark:text-amber-300">
-                      {t('settings.alphaSiftRisk')}
+                      {t('settings.screeningRisk')}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
                       type="button"
-                      variant="settings-secondary"
-                      onClick={() => setActiveCategory('data_source')}
+                      variant={screeningEnabled ? 'settings-secondary' : 'settings-primary'}
+                      onClick={() => void updateScreeningEnabled(!screeningEnabled)}
+                      disabled={isSaving || isLoading || isUpdatingScreening}
+                      isLoading={isUpdatingScreening}
+                      loadingText={screeningEnabled ? t('settings.disablingScreening') : t('settings.enablingScreening')}
                     >
-                      {t('settings.viewConfigItems')}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={alphasiftEnabled ? 'settings-secondary' : 'settings-primary'}
-                      onClick={() => void updateAlphaSiftEnabled(!alphasiftEnabled)}
-                      disabled={isSaving || isLoading || isUpdatingAlphaSift}
-                      isLoading={isUpdatingAlphaSift}
-                      loadingText={alphasiftEnabled ? t('settings.disablingAlphaSift') : t('settings.enablingAlphaSift')}
-                    >
-                      {alphasiftEnabled ? t('settings.disableAlphaSift') : t('settings.enableAlphaSift')}
+                      {screeningEnabled ? t('settings.disableScreening') : t('settings.enableScreening')}
                     </Button>
                   </div>
                 </div>
-                {alphaSiftActionError ? (
+                {screeningActionError ? (
                   <div className="mt-3">
-                    <ApiErrorAlert error={alphaSiftActionError} />
+                    <ApiErrorAlert error={screeningActionError} />
                   </div>
                 ) : null}
-                {!alphaSiftActionError && alphaSiftActionSuccess ? (
+                {!screeningActionError && screeningActionSuccess ? (
                   <div className="mt-3">
-                    <SettingsAlert title={t('settings.actionSuccess')} message={alphaSiftActionSuccess} variant="success" />
+                    <SettingsAlert title={t('settings.actionSuccess')} message={screeningActionSuccess} variant="success" />
                   </div>
                 ) : null}
               </SettingsSectionCard>

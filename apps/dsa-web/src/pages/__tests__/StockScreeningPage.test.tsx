@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ScreeningHotspotDetail } from '../../api/screening';
 import StockScreeningPage from '../StockScreeningPage';
 
 const {
-  enableAlphaSift,
-  getAlphaSiftStatus,
+  enableScreening,
+  getScreeningStatus,
   getHotspotDetail,
   getHotspots,
   getStrategies,
@@ -22,7 +23,7 @@ const {
       taskId: 'screen-task-1',
       traceId: 'screen-task-1',
       status: 'pending',
-      message: 'AlphaSift 选股任务已提交',
+      message: 'Screening 选股任务已提交',
       strategy: 'dual_low',
       market: 'cn',
       maxResults: 3,
@@ -40,8 +41,8 @@ const {
     };
   });
   return {
-    enableAlphaSift: vi.fn(),
-    getAlphaSiftStatus: vi.fn(),
+    enableScreening: vi.fn(),
+    getScreeningStatus: vi.fn(),
     getHotspotDetail: vi.fn(),
     getHotspots: vi.fn(),
     getStrategies: vi.fn(),
@@ -63,10 +64,10 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-vi.mock('../../api/alphasift', () => ({
-  alphasiftApi: {
-    enable: () => enableAlphaSift(),
-    getStatus: () => getAlphaSiftStatus(),
+vi.mock('../../api/screening', () => ({
+  screeningApi: {
+    enable: () => enableScreening(),
+    getStatus: () => getScreeningStatus(),
     getHotspotDetail: (payload: unknown) => getHotspotDetail(payload),
     getHotspots: (payload: unknown) => getHotspots(payload),
     getStrategies: () => getStrategies(),
@@ -105,8 +106,8 @@ function createDeferred<T>() {
 
 describe('StockScreeningPage', () => {
   beforeEach(() => {
-    enableAlphaSift.mockReset();
-    getAlphaSiftStatus.mockReset();
+    enableScreening.mockReset();
+    getScreeningStatus.mockReset();
     getHotspotDetail.mockReset();
     getHotspots.mockReset();
     getStrategies.mockReset();
@@ -145,39 +146,48 @@ describe('StockScreeningPage', () => {
     window.sessionStorage.clear();
   });
 
-  it('re-syncs enabled state when AlphaSift availability check fails after config is enabled', async () => {
-    getAlphaSiftStatus
+  it('keeps implementation attribution and repeated guidance off the operation page', async () => {
+    getScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    expect(screen.queryByText(/AlphaSift/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/theme_heat/)).not.toBeInTheDocument();
+    expect(screen.queryByText('实验功能与风险提示')).not.toBeInTheDocument();
+    expect(screen.queryByText('选股结果')).not.toBeInTheDocument();
+  });
+
+  it('re-syncs enabled state when Screening availability check fails after config is enabled', async () => {
+    getScreeningStatus
       .mockResolvedValueOnce({
         enabled: false,
         available: false,
-        installSpecIsDefault: true,
       })
       .mockResolvedValueOnce({
         enabled: true,
         available: false,
-        installSpecIsDefault: true,
       });
-    enableAlphaSift.mockRejectedValueOnce(new Error('AlphaSift 适配层不可用。请执行 pip install -r requirements.txt'));
+    enableScreening.mockRejectedValueOnce(new Error('选股功能不可用，请检查后端日志'));
 
     render(<StockScreeningPage />);
 
-    expect(await screen.findByText('选股未开启')).toBeInTheDocument();
+    expect((await screen.findAllByText('选股未开启')).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: /运行选股/ })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole('button', { name: '开启 AlphaSift' }));
+    fireEvent.click(screen.getByRole('button', { name: '开启选股' }));
 
-    await waitFor(() => expect(getAlphaSiftStatus).toHaveBeenCalledTimes(2));
-    expect(screen.getByText('选股未开启')).toBeInTheDocument();
+    await waitFor(() => expect(getScreeningStatus).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByText('选股未开启').length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: /运行选股/ })).toBeDisabled();
-    expect(screen.getByText(/适配层当前不可用/)).toBeInTheDocument();
-    expect(screen.getByText('AlphaSift 适配层不可用。请执行 pip install -r requirements.txt')).toBeInTheDocument();
+    expect(screen.getByText('选股功能不可用')).toBeInTheDocument();
+    expect(screen.getByText('选股功能不可用，请检查后端日志')).toBeInTheDocument();
   });
 
-  it('loads AlphaSift hotspot themes on demand', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('loads Screening hotspot themes on demand', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots
       .mockResolvedValueOnce({
@@ -222,18 +232,19 @@ describe('StockScreeningPage', () => {
     await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledWith({ topic: 'AI算力', provider: 'akshare', refresh: false }));
     await waitFor(() => expect(screen.getAllByText('AI算力').length).toBeGreaterThan(0));
     expect(screen.getByText('强势领先')).toBeInTheDocument();
-    expect(screen.getByText(/中际旭创、工业富联/)).toBeInTheDocument();
+    expect(screen.getAllByText(/中际旭创、工业富联/).length).toBeGreaterThan(0);
     expect(screen.getByText(/覆盖 8 股/)).toBeInTheDocument();
     expect(await screen.findByText('发酵时间线')).toBeInTheDocument();
     expect(screen.getByText('标准题材：算力')).toBeInTheDocument();
-    expect(screen.getByText('质量 stale')).toBeInTheDocument();
+    expect(screen.getByText('质量 缓存')).toBeInTheDocument();
     expect(screen.getByText('缓存回退 2.5h')).toBeInTheDocument();
     expect(screen.getByText('详情数据已降级，展开查看原因')).toBeInTheDocument();
-    expect(screen.getByText(/缺失字段：live_stocks/)).toBeInTheDocument();
+    expect(screen.getByText(/暂缺：实时概念股行情/)).toBeInTheDocument();
+    expect(screen.getByText('热点明细请求超时')).toBeInTheDocument();
     expect(screen.getByText('盘中发酵')).toBeInTheDocument();
     expect(screen.getByText('概念股')).toBeInTheDocument();
     expect(screen.getByText('中际旭创')).toBeInTheDocument();
-    expect(screen.getByText(/来源 last_good_cache\.leader_stocks · 置信 65% · 回退/)).toBeInTheDocument();
+    expect(screen.queryByText(/last_good_cache|置信 65%/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '分析 中际旭创' }));
     expect(navigate).toHaveBeenCalledWith('/', {
@@ -241,16 +252,217 @@ describe('StockScreeningPage', () => {
         stockCode: '300000',
         stockName: '中际旭创',
         autoAnalyze: true,
-        selectionSource: 'alphasift_hotspot',
+        selectionSource: 'screening_hotspot',
+        skills: ['hot_theme'],
       },
     });
   });
 
+  it('searches recent hotspot news only when requested and links the result', async () => {
+    getScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
+    getHotspots.mockResolvedValueOnce({
+      enabled: true,
+      provider: 'akshare',
+      hotspots: [{ topic: 'AI算力', name: 'AI算力', heatScore: 88 }],
+      hotspotCount: 1,
+    });
+    getHotspotDetail
+      .mockResolvedValueOnce({
+        enabled: true,
+        provider: 'akshare',
+        topic: 'AI算力',
+        route: [{ title: '盘中发酵', description: '概念股活跃。' }],
+        stocks: [],
+        stockCount: 0,
+      })
+      .mockResolvedValueOnce({
+        enabled: true,
+        provider: 'akshare',
+        topic: 'AI算力',
+        newsSearchRequested: true,
+        newsSearchStatus: 'available',
+        route: [{
+          title: '算力产业链出现新催化',
+          description: '近期订单与政策预期升温。',
+          url: 'https://example.com/ai-news',
+          searchResult: true,
+        }],
+        stocks: [],
+        stockCount: 0,
+      });
+
+    render(<StockScreeningPage />);
+
+    await screen.findByText('选股已开启');
+    fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+    await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole('button', { name: '搜索最新消息' }));
+
+    await waitFor(() => expect(getHotspotDetail).toHaveBeenLastCalledWith({
+      topic: 'AI算力',
+      provider: 'akshare',
+      refresh: false,
+      includeSearch: true,
+    }));
+    const link = await screen.findByRole('link', { name: '查看消息' });
+    expect(link).toHaveAttribute('href', 'https://example.com/ai-news');
+
+    getHotspotDetail.mockResolvedValueOnce({
+      enabled: true,
+      provider: 'akshare',
+      topic: 'AI算力',
+      newsSearchRequested: true,
+      newsSearchStatus: 'unavailable',
+      route: [{ title: '盘中发酵', description: '概念股活跃。' }],
+      stocks: [],
+      stockCount: 0,
+    });
+    fireEvent.click(screen.getByRole('button', { name: '搜索最新消息' }));
+
+    expect(await screen.findByText('消息搜索失败，请稍后重试。')).toBeInTheDocument();
+    expect(screen.getByText('盘中发酵')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '查看消息' })).not.toBeInTheDocument();
+
+    getHotspotDetail.mockResolvedValueOnce({
+      enabled: true,
+      provider: 'akshare',
+      topic: 'AI算力',
+      newsSearchRequested: true,
+      newsSearchStatus: 'no_results',
+      route: [{ title: '盘中发酵', description: '概念股活跃。' }],
+      stocks: [],
+      stockCount: 0,
+    });
+    fireEvent.click(screen.getByRole('button', { name: '搜索最新消息' }));
+
+    expect(await screen.findByText('暂未搜到该题材近期的有效消息。')).toBeInTheDocument();
+    expect(screen.queryByText('消息搜索失败，请稍后重试。')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /收起热点题材/ }));
+    fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /AI算力/ }));
+
+    await waitFor(() => expect(screen.queryByRole('link', { name: '查看消息' })).not.toBeInTheDocument());
+    expect(screen.getByText('盘中发酵')).toBeInTheDocument();
+    expect(getHotspotDetail).toHaveBeenCalledTimes(4);
+  });
+
+  it('renders hotspot details as user-facing Chinese without provider internals', async () => {
+    getScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
+    getHotspots.mockResolvedValueOnce({
+      enabled: true,
+      provider: 'akshare',
+      providerUsed: 'DsaEastMoneyHotspotProvider',
+      hotspots: [{
+        topic: '文字媒体',
+        name: '文字媒体',
+        heatScore: 100,
+        stage: '初次异动',
+        leaders: ['中文在线'],
+      }],
+      hotspotCount: 1,
+    });
+    getHotspotDetail.mockResolvedValueOnce({
+      enabled: true,
+      provider: 'akshare',
+      topic: '文字媒体',
+      name: '文字媒体',
+      summary: '文字媒体 当前热点详情，热度 100.0，阶段 初次异动，核心股 中文在线，质量状态 available。',
+      qualityStatus: 'available',
+      fallbackUsed: true,
+      cacheUsed: false,
+      stale: false,
+      sourceErrors: [
+        'DsaEastMoneyHotspotProvider.stock_board_concept_cons_em: hotspot source DsaEastMoneyHotspotProvider.stock_board_concept_cons_em timed out after 20s',
+      ],
+      route: [{
+        date: '2026-08-01',
+        title: 'Current fermentation',
+        description: '文字媒体 heat 100.0; stage 初次异动; leaders 中文在线',
+        source: 'DsaEastMoneyHotspotProvider',
+      }],
+      stocks: [{
+        code: '300364',
+        name: '中文在线',
+        role: 'laggard',
+        hotStockScore: 35,
+        source: 'DsaEastMoneyHotspotProvider.concept_constituents',
+        sourceConfidence: 1,
+      }],
+      stockCount: 1,
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByRole('heading', { name: '选股' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /文字媒体/ }));
+
+    expect(await screen.findByText('文字媒体：热度 100.0，阶段 初次异动，核心股 中文在线。')).toBeInTheDocument();
+    expect(screen.getByText('质量 可用')).toBeInTheDocument();
+    expect(screen.getByText('备用数据源')).toBeInTheDocument();
+    expect(screen.queryByText(/^缓存回退/)).not.toBeInTheDocument();
+    expect(screen.getByText('当前发酵')).toBeInTheDocument();
+    expect(screen.getByText('文字媒体热度 100.0，阶段 初次异动，核心股 中文在线。')).toBeInTheDocument();
+    expect(screen.queryByText('详情数据已降级，展开查看原因')).not.toBeInTheDocument();
+    expect(screen.queryByText('热点明细请求超时（20 秒）')).not.toBeInTheDocument();
+    expect(screen.getByText('掉队')).toBeInTheDocument();
+    expect(screen.getByText(/暂无行情/)).toBeInTheDocument();
+    expect(screen.queryByText(/Current fermentation|quality status|available|DsaEastMoneyHotspotProvider|concept_constituents/)).not.toBeInTheDocument();
+  });
+
+  it('shows cached hotspot preview while full details are still loading', async () => {
+    const detailRequest = createDeferred<ScreeningHotspotDetail>();
+    getScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
+    getHotspots.mockResolvedValueOnce({
+      enabled: true,
+      provider: 'akshare',
+      hotspots: [{
+        topic: '机器人',
+        name: '机器人',
+        heatScore: 92,
+        stage: '加速主升',
+        leaders: ['拓斯达'],
+        leaderStocks: [{ code: '300607', name: '拓斯达', role: '核心龙头', hotStockScore: 86 }],
+        sampleStockCount: 1,
+        qualityStatus: 'available',
+      }],
+      hotspotCount: 1,
+    });
+    getHotspotDetail.mockReturnValueOnce(detailRequest.promise);
+
+    render(<StockScreeningPage />);
+
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /机器人/ }));
+
+    expect(await screen.findByText('机器人：热度 92.0，阶段 加速主升，核心股 拓斯达。')).toBeInTheDocument();
+    expect(screen.getByText('正在补充详情')).toBeInTheDocument();
+    expect(screen.getAllByText('拓斯达').length).toBeGreaterThan(0);
+
+    act(() => {
+      detailRequest.resolve({
+        enabled: true,
+        provider: 'akshare',
+        topic: '机器人',
+        name: '机器人',
+        summary: '机器人详情已更新。',
+        route: [{ title: '盘中发酵', description: '概念股活跃度提升。' }],
+        stocks: [{ code: '300607', name: '拓斯达', role: '核心龙头', hotStockScore: 86 }],
+        stockCount: 1,
+      });
+    });
+    await waitFor(() => expect(screen.queryByText('正在补充详情')).not.toBeInTheDocument());
+    expect(screen.getByText('盘中发酵')).toBeInTheDocument();
+  });
+
   it('localizes backend hotspot no-cache hint on initial load', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -258,20 +470,22 @@ describe('StockScreeningPage', () => {
       providerUsed: 'akshare',
       hotspots: [],
       hotspotCount: 0,
-      message: 'No cached AlphaSift hotspot snapshot. Click refresh to fetch live hotspots.',
+      message: 'No cached Screening hotspot snapshot. Click refresh to fetch live hotspots.',
     });
 
     render(<StockScreeningPage />);
 
-    expect(await screen.findByText('暂无缓存热点题材，展开后可点击刷新拉取实时数据。')).toBeInTheDocument();
-    expect(screen.queryByText(/No cached AlphaSift hotspot snapshot/)).not.toBeInTheDocument();
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('暂无热点缓存')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
+    expect(await screen.findByText('暂无热点缓存')).toBeInTheDocument();
+    expect(screen.queryByText(/No cached Screening hotspot snapshot/)).not.toBeInTheDocument();
   });
 
   it('shows backend hotspot empty message before raw source diagnostics', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -285,15 +499,16 @@ describe('StockScreeningPage', () => {
 
     render(<StockScreeningPage />);
 
+    await waitFor(() => expect(getHotspots).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: /展开热点题材/ }));
     expect(await screen.findByText('热点源连接中断，暂无可用缓存。')).toBeInTheDocument();
     expect(screen.queryByText(/RemoteDisconnected/)).not.toBeInTheDocument();
   });
 
   it('prefers merged hotspot route summaries over raw timeline items', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -327,10 +542,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('uses prefetched hotspot details from the hotspot list response', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -365,10 +579,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('loads selected hotspot detail once when switching themes', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -411,10 +624,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('clears loaded hotspot detail while loading a different theme', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -470,7 +682,8 @@ describe('StockScreeningPage', () => {
       expect(getHotspotDetail).toHaveBeenLastCalledWith({ topic: '机器人执行器', provider: 'akshare', refresh: false }),
     );
     expect(screen.getAllByText('机器人执行器').length).toBeGreaterThan(0);
-    expect(screen.getByText('正在读取发酵路线与概念股...')).toBeInTheDocument();
+    expect(screen.getByText('正在补充详情')).toBeInTheDocument();
+    expect(screen.getByText('当前发酵')).toBeInTheDocument();
     expect(screen.queryByText('盘中发酵')).not.toBeInTheDocument();
     expect(screen.queryByText('中际旭创')).not.toBeInTheDocument();
 
@@ -492,10 +705,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('ignores stale hotspot detail responses when switching themes', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -576,11 +788,10 @@ describe('StockScreeningPage', () => {
     expect(screen.queryByText('中际旭创')).not.toBeInTheDocument();
   });
 
-  it('reloads selected hotspot detail when refreshed themes keep the same topic', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('refreshes selected hotspot detail when refreshing the list retains the same topic', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots
       .mockResolvedValueOnce({
@@ -633,9 +844,9 @@ describe('StockScreeningPage', () => {
         provider: 'akshare',
         topic: 'AI算力',
         name: 'AI算力',
-        summary: 'AI算力 刷新后继续发酵。',
-        route: [{ title: '刷新发酵', description: '刷新后仍在榜内。', source: 'eastmoney_board_change' }],
-        stocks: [{ code: '601138', name: '工业富联', role: '核心龙头', hotStockScore: 90 }],
+        summary: 'AI算力 刷新后发酵。',
+        route: [{ title: '刷新后发酵', description: '榜单与详情来自同次刷新。', source: 'eastmoney_board_change' }],
+        stocks: [{ code: '601138', name: '工业富联', role: '核心龙头', hotStockScore: 92 }],
         stockCount: 1,
       });
 
@@ -649,17 +860,21 @@ describe('StockScreeningPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /刷新热点题材/ }));
 
     await waitFor(() => expect(getHotspots).toHaveBeenCalledWith({ provider: 'akshare', top: 12, refresh: true }));
-    await waitFor(() => expect(getHotspotDetail).toHaveBeenCalledTimes(2));
-    expect(getHotspotDetail).toHaveBeenLastCalledWith({ topic: 'AI算力', provider: 'akshare', refresh: true });
-    expect(await screen.findByText('刷新发酵')).toBeInTheDocument();
+    await waitFor(() => expect(getHotspotDetail).toHaveBeenLastCalledWith({
+      topic: 'AI算力',
+      provider: 'akshare',
+      refresh: true,
+    }));
+    expect(await screen.findByText('刷新后发酵')).toBeInTheDocument();
     expect(screen.getByText('工业富联')).toBeInTheDocument();
+    expect(screen.queryByText('盘中发酵')).not.toBeInTheDocument();
+    expect(screen.queryByText('中际旭创')).not.toBeInTheDocument();
   });
 
   it('keeps existing hotspot cards when manual refresh fails', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots
       .mockResolvedValueOnce({
@@ -700,10 +915,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('shows input strategy when strategy is not in preset list', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValue({
       enabled: true,
@@ -714,7 +928,10 @@ describe('StockScreeningPage', () => {
     render(<StockScreeningPage />);
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('策略参数'), {
+    fireEvent.change(screen.getByLabelText('策略'), {
+      target: { value: '__custom_strategy__' },
+    });
+    fireEvent.change(screen.getByLabelText('自定义策略 ID'), {
       target: { value: 'custom_strategy_alpha' },
     });
 
@@ -725,7 +942,7 @@ describe('StockScreeningPage', () => {
     await waitFor(() => expect(screen.getByText(/自定义策略 \(custom_strategy_alpha\)/)).toBeInTheDocument());
   });
 
-  it('uses supported AlphaSift strategy ids and cn market', async () => {
+  it('uses supported Screening strategy ids and cn market', async () => {
     getStrategies.mockResolvedValueOnce({
       enabled: true,
       strategies: [
@@ -737,10 +954,9 @@ describe('StockScreeningPage', () => {
       ],
       strategyCount: 5,
     });
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValue({
       enabled: true,
@@ -755,14 +971,19 @@ describe('StockScreeningPage', () => {
     const marketSelect = screen.getByLabelText('市场') as HTMLSelectElement;
     expect(Array.from(marketSelect.options).map((option) => option.value)).toEqual(['cn']);
 
-    [
-      ['平衡选股', 'balanced_alpha'],
-      ['资金热度', 'capital_heat'],
-      ['超跌', 'oversold_reversal'],
-      ['缩量回踩', 'shrink_pullback'],
-    ].forEach(([label, id]) => {
-      fireEvent.click(screen.getByRole('button', { name: new RegExp(label) }));
-      expect(screen.getByDisplayValue(id)).toBeInTheDocument();
+    const strategySelect = screen.getByLabelText('策略') as HTMLSelectElement;
+    expect(Array.from(strategySelect.options).map((option) => option.textContent)).toEqual([
+      '平衡选股',
+      '资金热度',
+      '双低',
+      '超跌',
+      '缩量回踩',
+      '自定义策略…',
+    ]);
+
+    ['balanced_alpha', 'capital_heat', 'oversold_reversal', 'shrink_pullback'].forEach((id) => {
+      fireEvent.change(strategySelect, { target: { value: id } });
+      expect(strategySelect.value).toBe(id);
     });
 
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
@@ -783,10 +1004,9 @@ describe('StockScreeningPage', () => {
       ],
       strategyCount: 2,
     });
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -811,18 +1031,72 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('旧策略股票')).toBeInTheDocument();
     expect(screen.getByText('选股完成')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /资金热度/ }));
+    fireEvent.change(screen.getByLabelText('策略'), { target: { value: 'capital_heat' } });
 
     expect(screen.queryByText('旧策略股票')).not.toBeInTheDocument();
-    expect(screen.getByText('等待运行')).toBeInTheDocument();
-    expect(screen.getByText('当前策略：资金热度 · A 股')).toBeInTheDocument();
+    expect(screen.queryByText('选股完成')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('策略')).toHaveValue('capital_heat');
+  });
+
+  it('hands a screening candidate to DSA analysis with mapped skills', async () => {
+    getStrategies.mockResolvedValueOnce({
+      enabled: true,
+      strategies: [
+        {
+          id: 'dual_low',
+          name: '双低选股',
+          description: 'desc',
+          category: '价值',
+          analysisSkills: ['growth_quality'],
+        },
+      ],
+      strategyCount: 1,
+    });
+    getScreeningStatus.mockResolvedValueOnce({
+      enabled: true,
+      available: true,
+    });
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '600519',
+          name: '贵州茅台',
+          score: 88.5,
+          reason: '候选摘要',
+          raw: {},
+        },
+      ],
+      candidateCount: 1,
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+    expect(await screen.findByText('贵州茅台')).toBeInTheDocument();
+    const expandButton = screen.queryByRole('button', { name: '展开查看' });
+    if (expandButton) {
+      fireEvent.click(expandButton);
+    }
+    fireEvent.click(screen.getByRole('button', { name: '进一步深度分析' }));
+
+    expect(navigate).toHaveBeenCalledWith('/', {
+      state: {
+        stockCode: '600519',
+        stockName: '贵州茅台',
+        autoAnalyze: true,
+        selectionSource: 'screening_result',
+        skills: ['growth_quality'],
+      },
+    });
   });
 
   it('restores an in-flight screening task after remounting the page', async () => {
-    getAlphaSiftStatus.mockResolvedValue({
+    getScreeningStatus.mockResolvedValue({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -844,7 +1118,7 @@ describe('StockScreeningPage', () => {
         traceId: 'screen-task-1',
         status: 'processing',
         progress: 35,
-        message: '正在执行 AlphaSift 选股',
+        message: '正在执行 Screening 选股',
         result: null,
       })
       .mockResolvedValueOnce({
@@ -875,23 +1149,22 @@ describe('StockScreeningPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
 
     expect(await screen.findByText('选股运行中')).toBeInTheDocument();
-    expect(window.sessionStorage.getItem('dsa.alphasift.activeScreenTask.v1')).toContain('screen-task-1');
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
 
     firstRender.unmount();
     render(<StockScreeningPage />);
 
     expect(await screen.findByText('恢复后的候选')).toBeInTheDocument();
     expect(screen.getByText('选股完成')).toBeInTheDocument();
-    expect(window.sessionStorage.getItem('dsa.alphasift.activeScreenTask.v1')).toBeNull();
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toBeNull();
   });
 
   it('keeps a restored screening task recoverable when status polling times out', async () => {
-    getAlphaSiftStatus.mockResolvedValue({
+    getScreeningStatus.mockResolvedValue({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
-    window.sessionStorage.setItem('dsa.alphasift.activeScreenTask.v1', JSON.stringify({
+    window.sessionStorage.setItem('dsa.screening.activeScreenTask.v1', JSON.stringify({
       taskId: 'screen-task-1',
       market: 'cn',
       strategy: 'dual_low',
@@ -903,19 +1176,17 @@ describe('StockScreeningPage', () => {
 
     render(<StockScreeningPage />);
 
-    expect(await screen.findByText('选股任务运行中')).toBeInTheDocument();
     await waitFor(() => expect(getScreenTask).toHaveBeenCalledTimes(1));
     expect(screen.getByText('选股运行中')).toBeInTheDocument();
     expect(screen.getByText('选股任务仍在后台运行，状态轮询暂时超时，将自动重试。')).toBeInTheDocument();
     expect(screen.queryByText(/连接上游服务超时/)).not.toBeInTheDocument();
-    expect(window.sessionStorage.getItem('dsa.alphasift.activeScreenTask.v1')).toContain('screen-task-1');
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
   });
 
-  it('surfaces AlphaSift LLM fallback instead of showing empty LLM fields as normal', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('surfaces Screening LLM fallback instead of showing empty LLM fields as normal', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -938,6 +1209,9 @@ describe('StockScreeningPage', () => {
       snapshotCount: 5193,
       afterFilterCount: 20,
       llmRanked: false,
+      rankingMode: 'factor',
+      llmFailureReason: 'invalid_response',
+      llmParseErrors: ['no_json_found'],
       warnings: ['LLM ranking failed, falling back to screen_score: Missing gemini_api_key'],
     });
 
@@ -946,20 +1220,19 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
 
-    expect(await screen.findByText('LLM 已降级')).toBeInTheDocument();
+    expect(await screen.findByText('当前使用因子排序')).toBeInTheDocument();
     expect(screen.getByText(/缺少可用 LLM API Key/)).toBeInTheDocument();
     expect(screen.queryByText(/Missing gemini_api_key/)).not.toBeInTheDocument();
-    expect(screen.getByText('未重排')).toBeInTheDocument();
-    expect(screen.getByText('本次 LLM 重排失败或未返回判断，当前展示的是本地因子评分结果。')).toBeInTheDocument();
-    expect(screen.getByText('LLM 元数据未返回')).toBeInTheDocument();
-    expect(screen.getAllByText('未返回（LLM 已降级）')).toHaveLength(2);
+    expect(screen.getByText(/排序：确定性因子/)).toBeInTheDocument();
+    expect(screen.getByText('因子排序')).toBeInTheDocument();
+    expect(screen.getByText(/主要优势：流动性 93、估值 87/)).toBeInTheDocument();
+    expect(screen.queryByText(/LLM 已降级/)).not.toBeInTheDocument();
   });
 
-  it('deduplicates AlphaSift snapshot fallback warnings and source errors', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('deduplicates Screening snapshot fallback warnings and source errors', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -985,16 +1258,15 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
 
-    expect(await screen.findByText('AlphaSift 提示')).toBeInTheDocument();
+    expect(await screen.findByText('选股提示')).toBeInTheDocument();
     expect(screen.getAllByText('数据源降级：tushare（交易日历暂无可用开市日）')).toHaveLength(1);
     expect(screen.queryByText(/trade_cal returned no open trading days/)).not.toBeInTheDocument();
   });
 
-  it('sanitizes long AlphaSift source diagnostics and keeps the alert constrained', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('sanitizes long Screening source diagnostics and keeps the alert constrained', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -1031,10 +1303,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('shows DSA enrichment summary, news, and enrichment metadata', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -1044,7 +1315,7 @@ describe('StockScreeningPage', () => {
           code: '600519',
           name: '贵州茅台',
           score: 91.2,
-          reason: 'AlphaSift pick',
+          reason: 'Screening pick',
           dsaAnalysisSummary: 'DSA行情：现价 1688，涨跌幅 1.2%；DSA新闻：贵州茅台最新公告',
           dsaNews: [{ title: '贵州茅台最新公告', source: '测试源' }],
           dsaContext: {
@@ -1067,13 +1338,13 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
 
-    expect(await screen.findByText('DSA增强：1 / 1')).toBeInTheDocument();
+    expect(await screen.findByText('深度补充：1 / 1')).toBeInTheDocument();
 
-    expect(screen.getByText('DSA 增强摘要')).toBeInTheDocument();
-    expect(screen.getByText(/DSA行情：现价 1688/)).toBeInTheDocument();
-    expect(screen.getByText('DSA 新闻')).toBeInTheDocument();
+    expect(screen.getByText('增强摘要')).toBeInTheDocument();
+    expect(screen.getByText(/行情：现价 1688/)).toBeInTheDocument();
+    expect(screen.getByText('相关新闻')).toBeInTheDocument();
     expect(screen.getByText('贵州茅台最新公告')).toBeInTheDocument();
-    expect(screen.getByText('DSA 增强提示')).toBeInTheDocument();
+    expect(screen.getByText('数据补充提示')).toBeInTheDocument();
     expect(screen.getByText('stock_news_unavailable')).toBeInTheDocument();
   });
 });

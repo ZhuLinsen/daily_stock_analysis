@@ -14,7 +14,7 @@ from fastapi import APIRouter
 from api.v1.endpoints import (
     agent,
     alerts,
-    alphasift,
+    screening,
     analysis,
     auth,
     backtest,
@@ -99,9 +99,9 @@ router.include_router(
 )
 
 router.include_router(
-    alphasift.router,
-    prefix="/alphasift",
-    tags=["AlphaSift"]
+    screening.router,
+    prefix="/screening",
+    tags=["Screening"]
 )
 
 router.include_router(

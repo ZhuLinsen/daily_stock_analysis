@@ -19,6 +19,10 @@ from src.config import Config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE
 from src.repositories.backtest_repo import BacktestRepository
 from src.services.backtest_service import BacktestService
+from src.services.stock_daily_start_resolver import (
+    DailyStockStartResolution,
+    resolve_stock_daily_start,
+)
 from src.storage import AnalysisHistory, BacktestResult, BacktestSummary, DatabaseManager, StockDaily
 
 
@@ -1231,6 +1235,87 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertEqual(result.eval_status, "completed")
             self.assertEqual(result.start_price, 100.0)
             self.assertEqual(result.end_close, 103.0)
+
+    def test_non_session_resolution_exposes_backtest_only_local_start(
+        self,
+    ) -> None:
+        resolution = resolve_stock_daily_start(
+            stock_code="600520",
+            context_snapshot=_phase_snapshot(
+                date(2024, 1, 6),
+                phase="postmarket",
+                market="cn",
+                effective_date=date(2024, 1, 6),
+                trigger_source="api",
+            ),
+            analysis_date=date(2024, 1, 6),
+        )
+
+        self.assertIsNone(resolution.expected_start_date)
+        self.assertEqual(
+            resolution.failure_reason,
+            "invalid_effective_daily_bar_date",
+        )
+        self.assertEqual(
+            resolution.backtest_start_date,
+            date(2024, 1, 6),
+        )
+
+    def test_run_backtest_consumes_explicit_backtest_only_start(self) -> None:
+        analysis_date = date(2024, 1, 6)
+        self._seed_analysis(
+            query_id="q_explicit_backtest_only_start",
+            code="600521",
+            analysis_date=analysis_date,
+            created_at=datetime(2024, 1, 6, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(
+                    code="600521",
+                    date=date(2024, 1, 8),
+                    high=103.0,
+                    low=99.0,
+                    close=102.0,
+                )
+            ],
+            phase="postmarket",
+        )
+        identity = resolve_stock_daily_start(
+            stock_code="600521",
+            context_snapshot=_phase_snapshot(
+                analysis_date,
+                phase="postmarket",
+                market="cn",
+                effective_date=analysis_date,
+                trigger_source="api",
+            ),
+            analysis_date=analysis_date,
+        ).identity
+        resolution = DailyStockStartResolution(
+            identity=identity,
+            expected_start_date=None,
+            failure_reason="invalid_effective_daily_bar_date",
+            legacy_backtest_start_date=analysis_date,
+        )
+
+        with patch(
+            "src.services.backtest_service.resolve_stock_daily_start",
+            return_value=resolution,
+        ):
+            stats = BacktestService(self.db).run_backtest(
+                code="600521",
+                force=False,
+                eval_window_days=1,
+                min_age_days=0,
+                analysis_date_from=analysis_date,
+                analysis_date_to=analysis_date,
+                limit=10,
+            )
+
+        self.assertEqual(stats["completed"], 1)
+        self.assertEqual(stats["insufficient"], 0)
 
     def test_run_backtest_rebuilds_legacy_cn_snapshot_for_jp_history(self) -> None:
         legacy_snapshot = json.dumps(

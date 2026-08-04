@@ -6,15 +6,32 @@ Shared stock code utilities.
 from __future__ import annotations
 
 import re
+from importlib import import_module
 from dataclasses import dataclass
 from typing import List, Optional
 
-from data_provider.base import canonical_stock_code, is_bse_code
-from data_provider.us_index_mapping import is_us_index_code
+from data_provider.base import canonical_stock_code
 from src.services.market_symbol_utils import (
     get_suffix_market,
     normalize_suffix_market_symbol,
     suffix_base_lookup_allowed,
+)
+
+def _load_optional_provider_attr(module_name: str, attr_name: str):
+    """Load optional provider helpers without masking unrelated import failures."""
+    try:
+        module = import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name in {module_name, module_name.split(".", 1)[0]}:
+            return None
+        raise
+    return getattr(module, attr_name, None)
+
+
+_provider_is_bse_code = _load_optional_provider_attr("data_provider.base", "is_bse_code")
+_provider_is_us_index_code = _load_optional_provider_attr(
+    "data_provider.us_index_mapping",
+    "is_us_index_code",
 )
 
 
@@ -44,6 +61,23 @@ _SUFFIX_DIGIT_LENS: dict = {
 }
 
 _PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
+_US_INDEX_CODES = {
+    "SPX",
+    "^GSPC",
+    "GSPC",
+    "DJI",
+    "^DJI",
+    "DJIA",
+    "IXIC",
+    "^IXIC",
+    "NASDAQ",
+    "NDX",
+    "^NDX",
+    "VIX",
+    "^VIX",
+    "RUT",
+    "^RUT",
+}
 
 
 @dataclass(frozen=True)
@@ -88,11 +122,30 @@ def _infer_cn_exchange(base: str) -> str:
     if not (base.isdigit() and len(base) == 6):
         return ""
 
-    if is_bse_code(base):
+    if _is_bse_code(base):
         return "BJ"
     if base.startswith(("5", "6", "9")):
         return "SH"
     return "SZ"
+
+
+def _is_bse_code(code: str) -> bool:
+    """Use provider logic when available; keep a local equivalent for lightweight tests."""
+    if _provider_is_bse_code is not None:
+        return _provider_is_bse_code(code)
+
+    normalized = (code or "").strip().split(".")[0]
+    if len(normalized) != 6 or not normalized.isdigit():
+        return False
+    if normalized.startswith("900"):
+        return False
+    return normalized.startswith(("92", "43", "81", "82", "83", "87", "88"))
+
+
+def _is_us_index_code(code: str) -> bool:
+    if _provider_is_us_index_code is not None:
+        return _provider_is_us_index_code(code)
+    return (code or "").strip().upper() in _US_INDEX_CODES
 
 
 def _valid_exchange_code(exchange: str, base: str, digit_lens: tuple[int, ...]) -> bool:
@@ -249,7 +302,7 @@ def _build_market_code_variants(
             exchange = "SH"
         elif explicit_exchange == "SZ":
             exchange = "SZ"
-        elif explicit_exchange == "BJ" or is_bse_code(normalized_upper):
+        elif explicit_exchange == "BJ" or _is_bse_code(normalized_upper):
             exchange = "BJ"
         elif normalized_upper.startswith(("5", "6", "9")):
             exchange = "SH"
@@ -349,7 +402,7 @@ def resolve_daily_stock_identity(
         elif len(indexed_offshore) == 1:
             identity_code = indexed_offshore[0][0]
 
-    if is_us_index_code(identity_code):
+    if _is_us_index_code(identity_code):
         normalized_code, explicit_exchange = identity_code, ""
     elif identity_code.isdigit() and len(identity_code) == 4:
         normalized_code, explicit_exchange = identity_code.zfill(5), "HK"
@@ -365,7 +418,7 @@ def resolve_daily_stock_identity(
         market = "hk"
     elif suffix_market:
         market = suffix_market
-    elif is_us_index_code(normalized_code):
+    elif _is_us_index_code(normalized_code):
         market = "us"
     elif re.fullmatch(r"[A-Z]{1,5}(?:\.(?:US|[A-Z]))?", normalized_code):
         market = "us"

@@ -229,6 +229,7 @@ BOT_COMMAND_PREFIX=/
 # --- Feishu (Lark) bot ---
 FEISHU_APP_ID=
 FEISHU_APP_SECRET=
+FEISHU_DOMAIN=feishu             # feishu (China) or lark (international/Lark)
 FEISHU_VERIFICATION_TOKEN=    # Event verification token
 FEISHU_ENCRYPT_KEY=           # Encryption key (optional)
 

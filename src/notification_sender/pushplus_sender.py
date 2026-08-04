@@ -12,7 +12,7 @@ from datetime import datetime
 import requests
 
 from src.config import Config
-from src.formatters import chunk_content_by_max_bytes
+from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -71,23 +71,29 @@ class PushplusSender:
         if title is None:
             date_str = datetime.now().strftime('%Y-%m-%d')
             title = f"📈 股票分析报告 - {date_str}"
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
 
         try:
-            content_bytes = len(content.encode('utf-8'))
+            content_bytes = len(sanitized_content.encode('utf-8'))
             if content_bytes > self._pushplus_max_bytes:
                 logger.info(
                     "PushPlus 消息内容超长(%s字节/%s字符)，将分批发送",
                     content_bytes,
-                    len(content),
+                    len(sanitized_content),
                 )
                 return self._send_pushplus_chunked(
                     api_url,
-                    content,
+                    sanitized_content,
                     title,
                     self._pushplus_max_bytes,
                 )
 
-            return self._send_pushplus_message(api_url, content, title, timeout_seconds=timeout_seconds)
+            return self._send_pushplus_message(
+                api_url,
+                sanitized_content,
+                title,
+                timeout_seconds=timeout_seconds,
+            )
         except Exception as e:
             logger.error(f"发送 PushPlus 消息失败: {e}")
             return False

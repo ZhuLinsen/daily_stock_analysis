@@ -55,6 +55,7 @@ type StockAnalysisNavigationState = {
   stockName?: string;
   autoAnalyze?: boolean;
   selectionSource?: string;
+  skills?: string[];
 };
 
 const DUPLICATE_BANNER_AUTO_DISMISS_MS = 5000;
@@ -717,13 +718,14 @@ const HomePage: React.FC = () => {
       stockCode?: string,
       stockName?: string,
       selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
+      analysisSkills?: string[],
     ) => {
       void submitAnalysis({
         stockCode,
         stockName,
         originalQuery: query,
         selectionSource: selectionSource ?? 'manual',
-        skills: selectedAnalysisSkills,
+        skills: analysisSkills ?? selectedAnalysisSkills,
       });
     },
     [query, selectedAnalysisSkills, submitAnalysis],
@@ -739,7 +741,7 @@ const HomePage: React.FC = () => {
     setQuery(stockCode);
     navigate(location.pathname, { replace: true, state: null });
     if (state?.autoAnalyze) {
-      handleSubmitAnalysis(stockCode, stockName || undefined, 'import');
+      handleSubmitAnalysis(stockCode, stockName || undefined, 'import', state.skills);
     }
   }, [handleSubmitAnalysis, location.pathname, location.state, navigate, setQuery]);
 

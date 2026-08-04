@@ -12,6 +12,7 @@ A股自选股智能分析系统 - 搜索服务模块
 """
 
 import logging
+import multiprocessing
 import re
 import threading
 import time
@@ -45,6 +46,126 @@ from src.data.stock_mapping import (
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 
 logger = logging.getLogger(__name__)
+
+_SEARCH_TIMEOUT_PROCESS_START_METHOD = "spawn"
+_SEARCH_TIMEOUT_PROCESS_JOIN_GRACE_SECONDS = 1.0
+_SEARCH_TIMEOUT_WORKER_SLOTS = threading.BoundedSemaphore(4)
+
+
+def _terminate_search_process(process: Any) -> None:
+    """Stop and reap a search subprocess, escalating to kill when needed."""
+    if not process.is_alive():
+        return
+    process.terminate()
+    process.join(_SEARCH_TIMEOUT_PROCESS_JOIN_GRACE_SECONDS)
+    if process.is_alive() and hasattr(process, "kill"):
+        process.kill()
+        process.join(_SEARCH_TIMEOUT_PROCESS_JOIN_GRACE_SECONDS)
+
+
+def _search_topic_news_process_worker(
+    conn: Any,
+    constructor_kwargs: Dict[str, Any],
+    topic: str,
+    max_results: int,
+    focus_keywords: Optional[List[str]],
+) -> None:
+    """Run the provider portion of a topic-news search in an isolated process."""
+    try:
+        service = SearchService(**constructor_kwargs)
+        response = service.search_topic_news(
+            topic,
+            max_results=max_results,
+            focus_keywords=focus_keywords,
+        )
+        conn.send((True, response))
+    except BaseException as exc:
+        try:
+            conn.send((False, exc))
+        except BaseException:
+            try:
+                conn.send((False, RuntimeError(f"{type(exc).__name__}: {exc}")))
+            except BaseException:
+                pass
+    finally:
+        conn.close()
+
+
+def _call_topic_news_in_subprocess(
+    *,
+    constructor_kwargs: Dict[str, Any],
+    topic: str,
+    max_results: int,
+    focus_keywords: Optional[List[str]],
+    timeout_seconds: float,
+    deadline: Optional[float] = None,
+) -> "SearchResponse":
+    """Execute a topic-news provider chain with a hard, process-level deadline."""
+    wait_seconds = max(0.01, float(timeout_seconds))
+    if not _SEARCH_TIMEOUT_WORKER_SLOTS.acquire(blocking=False):
+        raise RuntimeError("题材新闻搜索并发已满，请稍后重试")
+
+    process: Any = None
+    process_started = False
+    parent_conn: Any = None
+    child_conn: Any = None
+    try:
+        try:
+            multiprocessing.freeze_support()
+            ctx = multiprocessing.get_context(_SEARCH_TIMEOUT_PROCESS_START_METHOD)
+            parent_conn, child_conn = ctx.Pipe(duplex=False)
+            process = ctx.Process(
+                target=_search_topic_news_process_worker,
+                args=(
+                    child_conn,
+                    constructor_kwargs,
+                    topic,
+                    max_results,
+                    focus_keywords,
+                ),
+                name="search-topic-news",
+                daemon=True,
+            )
+            process.start()
+            process_started = True
+            child_conn.close()
+            child_conn = None
+
+            poll_seconds = (
+                wait_seconds
+                if deadline is None
+                else max(0.0, deadline - time.monotonic())
+            )
+            if poll_seconds <= 0 or not parent_conn.poll(poll_seconds):
+                _terminate_search_process(process)
+                raise TimeoutError(f"题材新闻搜索超过 {wait_seconds:g}s，已终止请求进程")
+            try:
+                ok, value = parent_conn.recv()
+            except EOFError as exc:
+                raise RuntimeError("题材新闻搜索进程未返回结果") from exc
+        finally:
+            try:
+                if child_conn is not None:
+                    child_conn.close()
+            finally:
+                try:
+                    if parent_conn is not None:
+                        parent_conn.close()
+                finally:
+                    if process_started:
+                        try:
+                            process.join(_SEARCH_TIMEOUT_PROCESS_JOIN_GRACE_SECONDS)
+                        finally:
+                            _terminate_search_process(process)
+    finally:
+        # Capacity belongs to the accepted call, not to a successfully started
+        # process. Release it even if Process.start() or cleanup itself fails.
+        _SEARCH_TIMEOUT_WORKER_SLOTS.release()
+
+    if ok:
+        return value
+    raise value
+
 
 # Transient network errors (retryable)
 _SEARCH_TRANSIENT_EXCEPTIONS = (
@@ -2287,6 +2408,18 @@ class SearchService:
             news_max_age_days: 新闻最大时效（天）
             news_strategy_profile: 新闻窗口策略档位（ultra_short/short/medium/long）
         """
+        self._constructor_kwargs: Dict[str, Any] = {
+            "bocha_keys": list(bocha_keys or []),
+            "tavily_keys": list(tavily_keys or []),
+            "anspire_keys": list(anspire_keys or []),
+            "brave_keys": list(brave_keys or []),
+            "serpapi_keys": list(serpapi_keys or []),
+            "minimax_keys": list(minimax_keys or []),
+            "searxng_base_urls": list(searxng_base_urls or []),
+            "searxng_public_instances_enabled": bool(searxng_public_instances_enabled),
+            "news_max_age_days": int(news_max_age_days),
+            "news_strategy_profile": news_strategy_profile,
+        }
         self._providers: List[BaseSearchProvider] = []
         self.news_max_age_days = max(1, news_max_age_days)
         raw_profile = (news_strategy_profile or "short").strip().lower()
@@ -2581,9 +2714,52 @@ class SearchService:
                 self._cache_inflight.pop(key, None)
                 event.set()
 
-    def _wait_for_cached(self, key: str, event: threading.Event) -> Optional['SearchResponse']:
-        event.wait(timeout=max(1.0, min(float(self._cache_ttl), 30.0)))
+    def _wait_for_cached(
+        self,
+        key: str,
+        event: threading.Event,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> Optional['SearchResponse']:
+        wait_seconds = (
+            max(1.0, min(float(self._cache_ttl), 30.0))
+            if timeout_seconds is None
+            else max(0.0, float(timeout_seconds))
+        )
+        event.wait(timeout=wait_seconds)
         return self._get_cached(key)
+
+    def _get_cached_or_wait_for_reservation(
+        self,
+        key: str,
+        *,
+        deadline: Optional[float] = None,
+    ) -> Tuple[Optional['SearchResponse'], bool, Optional[threading.Event], bool]:
+        """Return a cache hit or exclusive ownership of one cache fill.
+
+        Waiters never proceed to provider work without becoming the owner. If
+        an owner finishes without a cacheable response, all waiters compete for
+        the next reservation and the losers keep waiting on that new owner.
+        """
+        waited = False
+        while True:
+            cached, cache_owner, cache_event = self._get_cached_or_reserve(key)
+            if cached is not None or cache_owner:
+                return cached, cache_owner, cache_event, waited
+            if cache_event is None:  # Defensive: the reservation API promises an event here.
+                raise RuntimeError("搜索缓存请求合并状态异常")
+            waited = True
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise TimeoutError("题材新闻搜索等待超过调用截止时间")
+            if remaining is None:
+                cached = self._wait_for_cached(key, cache_event)
+            else:
+                cached = self._wait_for_cached(key, cache_event, timeout_seconds=remaining)
+            if cached is not None:
+                return cached, False, None, waited
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("题材新闻搜索等待超过调用截止时间")
 
     def _put_cache(self, key: str, response: 'SearchResponse') -> None:
         """Store a successful SearchResponse in cache."""
@@ -3659,6 +3835,161 @@ class SearchService:
             record_count=record_count,
         )
 
+    def search_topic_news(
+        self,
+        topic: str,
+        max_results: int = 5,
+        focus_keywords: Optional[List[str]] = None,
+    ) -> SearchResponse:
+        """Search recent topic/sector news without applying single-stock identity filters."""
+        topic_text = (topic or "").strip()
+        if not topic_text or not self.is_available:
+            return SearchResponse(
+                query=topic_text,
+                results=[],
+                provider="None",
+                success=False,
+                error_message="未配置搜索能力或题材为空",
+            )
+
+        search_days = self._effective_news_window_days()
+        provider_max_results = self._provider_request_size(max_results)
+        query_terms = [str(item).strip() for item in (focus_keywords or []) if str(item).strip()]
+        query = " ".join(query_terms) if query_terms else f'"{topic_text}" A股 最新消息 催化'
+        prefer_chinese = self._contains_chinese_text(query)
+        cache_key = self._cache_key(f"topic_news:{topic_text}:{query}", max_results, search_days)
+        cached, cache_owner, cache_event, _waited = self._get_cached_or_wait_for_reservation(cache_key)
+        if cached is not None:
+            return cached
+
+        had_provider_success = False
+        try:
+            for provider in self._providers:
+                if not provider.is_available:
+                    continue
+                search_kwargs: Dict[str, Any] = {}
+                if isinstance(provider, TavilySearchProvider):
+                    search_kwargs["topic"] = "news"
+                elif isinstance(provider, BraveSearchProvider):
+                    search_kwargs.update(self._brave_search_locale("", prefer_chinese=prefer_chinese))
+
+                started_at = time.monotonic()
+                try:
+                    record_provider_run_started(
+                        data_type="news_search",
+                        provider=provider.name,
+                        operation="search_topic_news",
+                    )
+                    response = provider.search(query, provider_max_results, days=search_days, **search_kwargs)
+                except Exception as exc:
+                    self._record_news_search_run(
+                        provider=provider.name,
+                        operation="search_topic_news",
+                        success=False,
+                        latency_ms=self._elapsed_ms(started_at),
+                        error_type=type(exc).__name__,
+                        error_message=exc,
+                    )
+                    logger.warning("%s 题材搜索失败: %s，尝试下一个引擎", provider.name, exc)
+                    continue
+
+                had_provider_success = had_provider_success or bool(response.success)
+                filtered = self._filter_news_response(
+                    response,
+                    search_days=search_days,
+                    max_results=provider_max_results,
+                    log_scope=f"{topic_text}:{provider.name}:topic_news",
+                )
+                if filtered.success and filtered.results:
+                    prioritized, _preferred_count = self._prioritize_news_language(
+                        filtered,
+                        prefer_chinese=prefer_chinese,
+                    )
+                    limited = self._limit_search_response(prioritized, max_results=max_results)
+                    self._record_news_search_run(
+                        provider=provider.name,
+                        operation="search_topic_news",
+                        success=True,
+                        latency_ms=self._elapsed_ms(started_at),
+                        record_count=len(limited.results or []),
+                    )
+                    self._put_cache(cache_key, limited)
+                    return limited
+
+                self._record_news_search_run(
+                    provider=provider.name,
+                    operation="search_topic_news",
+                    success=False,
+                    latency_ms=self._elapsed_ms(started_at),
+                    record_count=0,
+                    error_type="NoUsableNews",
+                    error_message=response.error_message or "过滤后无有效题材新闻",
+                )
+
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="Filtered" if had_provider_success else "None",
+                success=had_provider_success,
+                error_message=None if had_provider_success else "所有搜索引擎都不可用或搜索失败",
+            )
+        finally:
+            if cache_owner and cache_event is not None:
+                self._release_cache_fill(cache_key, cache_event)
+
+    def search_topic_news_bounded(
+        self,
+        topic: str,
+        max_results: int = 5,
+        focus_keywords: Optional[List[str]] = None,
+        *,
+        timeout_seconds: float = 12.0,
+    ) -> SearchResponse:
+        """Search topic news within one cache-wait and provider deadline."""
+        topic_text = (topic or "").strip()
+        if not topic_text or not self.is_available:
+            return SearchResponse(
+                query=topic_text,
+                results=[],
+                provider="None",
+                success=False,
+                error_message="未配置搜索能力或题材为空",
+            )
+
+        wait_seconds = float(timeout_seconds)
+        if wait_seconds <= 0:
+            raise ValueError("题材新闻搜索超时必须大于 0 秒")
+        deadline = time.monotonic() + wait_seconds
+        search_days = self._effective_news_window_days()
+        query_terms = [str(item).strip() for item in (focus_keywords or []) if str(item).strip()]
+        query = " ".join(query_terms) if query_terms else f'"{topic_text}" A股 最新消息 催化'
+        cache_key = self._cache_key(f"topic_news:{topic_text}:{query}", max_results, search_days)
+        cached, cache_owner, cache_event, _waited = self._get_cached_or_wait_for_reservation(
+            cache_key,
+            deadline=deadline,
+        )
+        if cached is not None:
+            return cached
+
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("题材新闻搜索等待超过调用截止时间")
+            response = _call_topic_news_in_subprocess(
+                constructor_kwargs=self._constructor_kwargs,
+                topic=topic_text,
+                max_results=max_results,
+                focus_keywords=focus_keywords,
+                timeout_seconds=remaining,
+                deadline=deadline,
+            )
+            if response.success and response.results:
+                self._put_cache(cache_key, response)
+            return response
+        finally:
+            if cache_owner and cache_event is not None:
+                self._release_cache_fill(cache_key, cache_event)
+
     def search_stock_news(
         self,
         stock_code: str,
@@ -3744,12 +4075,17 @@ class SearchService:
             max_results,
             search_days,
         )
-        cached, cache_owner, cache_event = self._get_cached_or_reserve(cache_key)
+        cached, cache_owner, cache_event, waited = self._get_cached_or_wait_for_reservation(cache_key)
         if cached is not None:
-            logger.info(f"使用缓存搜索结果: {stock_name}({stock_code})")
+            logger.info(
+                "%s: %s(%s)",
+                "使用并发填充后的缓存搜索结果" if waited else "使用缓存搜索结果",
+                stock_name,
+                stock_code,
+            )
             self._record_news_search_run(
                 provider=cached.provider or "SearchCache",
-                operation="search_stock_news_cache",
+                operation="search_stock_news_cache_wait" if waited else "search_stock_news_cache",
                 success=bool(cached.success),
                 latency_ms=0,
                 record_count=len(cached.results or []),
@@ -3757,34 +4093,6 @@ class SearchService:
                 error_message=cached.error_message,
             )
             return cached
-
-        if not cache_owner and cache_event is not None:
-            cached = self._wait_for_cached(cache_key, cache_event)
-            if cached is not None:
-                logger.info(f"使用并发填充后的缓存搜索结果: {stock_name}({stock_code})")
-                self._record_news_search_run(
-                    provider=cached.provider or "SearchCache",
-                    operation="search_stock_news_cache_wait",
-                    success=bool(cached.success),
-                    latency_ms=0,
-                    record_count=len(cached.results or []),
-                    cache_hit=True,
-                    error_message=cached.error_message,
-                )
-                return cached
-            cached, cache_owner, cache_event = self._get_cached_or_reserve(cache_key)
-            if cached is not None:
-                logger.info(f"使用等待后命中的缓存搜索结果: {stock_name}({stock_code})")
-                self._record_news_search_run(
-                    provider=cached.provider or "SearchCache",
-                    operation="search_stock_news_cache_retry",
-                    success=bool(cached.success),
-                    latency_ms=0,
-                    record_count=len(cached.results or []),
-                    cache_hit=True,
-                    error_message=cached.error_message,
-                )
-                return cached
 
         try:
             # 依次尝试各个搜索引擎（若过滤后为空，继续尝试下一引擎）
@@ -4008,6 +4316,15 @@ class SearchService:
         # 构建针对性查询
         event_query = " OR ".join(event_types)
         query = f"{effective_name} ({event_query})"
+        cache_key = self._cache_key(
+            f"stock_events:{query}|target={stock_code}:{stock_name}",
+            5,
+            0,
+        )
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            logger.info("使用缓存事件搜索结果: %s(%s)", stock_name, stock_code)
+            return cached
         
         logger.info(f"搜索股票事件: {stock_name}({stock_code}) - {event_types}")
         
@@ -4019,6 +4336,7 @@ class SearchService:
             response = provider.search(query, max_results=5)
             
             if response.success:
+                self._put_cache(cache_key, response)
                 return response
         
         return SearchResponse(
