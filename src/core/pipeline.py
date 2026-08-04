@@ -838,6 +838,8 @@ class StockAnalysisPipeline:
 
             # Step 8: 保存分析历史记录
             if result and result.success:
+                from src.services.quant_enrichment_service import attach_quant_enrichment
+                attach_quant_enrichment(result, self.config)
                 try:
                     self._emit_progress(97, f"{stock_name}：正在保存分析报告")
                     context_snapshot = self._build_context_snapshot(
@@ -1659,6 +1661,8 @@ class StockAnalysisPipeline:
 
             # 保存分析历史记录
             if result and result.success:
+                from src.services.quant_enrichment_service import attach_quant_enrichment
+                attach_quant_enrichment(result, self.config)
                 try:
                     agent_context_snapshot = self._build_context_snapshot(
                         enhanced_context={

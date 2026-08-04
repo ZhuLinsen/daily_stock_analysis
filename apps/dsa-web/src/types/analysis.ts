@@ -365,6 +365,73 @@ export interface ReportDetails {
   sectorRankings?: SectorRankings;
   conceptRankings?: SectorRankings;
   marketStructure?: MarketStructureContext | null;
+  quantEnrichment?: QuantEnrichment | null;
+}
+
+export interface QuantEnrichment {
+  status?: string;
+  error?: string;
+  symbol?: string;
+  displayName?: string;
+  asOf?: string;
+  lastClose?: number;
+  source?: string;
+  dataQuality?: { status?: string; summary?: string };
+  adjustments?: string[];
+  technical?: {
+    states?: string[];
+    weeklyStates?: string[];
+    indicatorReadings?: QuantIndicatorReading[];
+    weeklyIndicatorReadings?: QuantIndicatorReading[];
+    events?: QuantSignalEvent[];
+    newEventIds?: string[];
+    recentDays?: number;
+  };
+  kronos?: {
+    model?: string;
+    points?: Array<{
+      date?: string; open?: number; high?: number; low?: number; close?: number;
+      closeLow?: number; closeHigh?: number;
+    }>;
+    endReturnPct?: number;
+    endReturnLowPct?: number;
+    endReturnHighPct?: number;
+    positivePathRatio?: number;
+    pathCount?: number;
+    abuBias?: string;
+    combinedView?: string;
+  } | null;
+  validation?: {
+    status?: string;
+    message?: string;
+    horizonDays?: number;
+    sampleCount?: number;
+    directionWinRate?: number;
+    medianDirectionalReturn?: number;
+    maxAdverseExcursion?: number;
+    confidence?: string;
+    meanDirectionalReturn?: number;
+    signalSignatures?: string[];
+  } | null;
+}
+
+export interface QuantIndicatorReading {
+  category?: string;
+  indicator?: string;
+  parameters?: string;
+  values?: string;
+  status?: string;
+  direction?: 'bullish' | 'bearish' | 'neutral' | string;
+  rationale?: string;
+}
+
+export interface QuantSignalEvent {
+  eventId?: string;
+  date?: string;
+  timeframe?: string;
+  name?: string;
+  direction?: 'bullish' | 'bearish' | 'neutral' | string;
+  detail?: string;
 }
 
 /** Full analysis report */

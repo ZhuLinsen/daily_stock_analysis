@@ -1532,6 +1532,7 @@ class NotificationService(
 
                 # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
                 self._append_fundamental_blocks(report_lines, result)
+                self._append_quant_enrichment(report_lines, result, compact=False)
 
                 # 如果没有 dashboard，显示传统格式
                 if not dashboard:
@@ -1581,6 +1582,44 @@ class NotificationService(
             report_lines.append(f"*{labels['analysis_model_label']}：{', '.join(models)}*")
 
         return "\n".join(report_lines)
+
+    @staticmethod
+    def _append_quant_enrichment(lines: List[str], result: AnalysisResult, *, compact: bool) -> None:
+        payload = getattr(result, "quant_enrichment", None)
+        if not isinstance(payload, dict):
+            return
+        lines.extend(["### 📐 量化增强分析", ""])
+        if payload.get("status") != "ok":
+            lines.extend([f"- 状态：不可用（{payload.get('error', '未知原因')}）", ""])
+            return
+        quality = payload.get("data_quality") or {}
+        lines.append(f"- 数据质量：{quality.get('status', '未检查')}；数据截止 {payload.get('as_of', 'N/A')}")
+        technical = payload.get("technical") or {}
+        states = (technical.get("states") or [])[:2]
+        weekly = (technical.get("weekly_states") or [])[:1]
+        if states or weekly:
+            lines.append("- ABU：" + "；".join(str(item) for item in states + weekly))
+        kronos = payload.get("kronos")
+        if isinstance(kronos, dict):
+            lines.append(
+                f"- Kronos（{str(kronos.get('model', '')).rsplit('/', 1)[-1]}）："
+                f"未来{len(kronos.get('points') or [])}日中位收益 {float(kronos.get('end_return_pct', 0)):+.2f}%，"
+                f"上涨路径 {float(kronos.get('positive_path_ratio', 0)):.0%}"
+            )
+        validation = payload.get("validation")
+        if isinstance(validation, dict):
+            if validation.get("status") == "ok":
+                lines.append(
+                    f"- vn.py历史验证：样本 {validation.get('sample_count', 0)}，"
+                    f"{validation.get('horizon_days', 5)}日方向胜率 {float(validation.get('direction_win_rate', 0)):.1%}，"
+                    f"收益中位数 {float(validation.get('median_directional_return', 0)):.2%}；"
+                    f"可信度 {validation.get('confidence', 'low')}"
+                )
+            else:
+                lines.append(f"- vn.py历史验证：{validation.get('message', '样本不足')}")
+        if not compact:
+            lines.append("- 说明：ABU是规则信号，Kronos是概率预测；vn.py仅评价历史结果，不是另一项预测。")
+        lines.append("")
 
     def generate_wechat_dashboard(self, results: List[AnalysisResult]) -> str:
         """
@@ -1987,6 +2026,8 @@ class NotificationService(
 
         if info_added:
             lines.append("")
+
+        self._append_quant_enrichment(lines, result, compact=True)
 
         # 狙击点位
         sniper = battle.get('sniper_points', {}) if battle else {}

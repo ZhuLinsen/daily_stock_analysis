@@ -72,6 +72,32 @@
 
 {{ market_snapshot(result) }}
 
+{% set quant = result.quant_enrichment if result.quant_enrichment else {} %}
+{% if quant %}
+### 📐 量化增强分析
+
+{% if quant.get('status') != 'ok' %}
+- 状态：不可用（{{ quant.get('error', '未知原因') }}）
+{% else %}
+{% set quality = quant.get('data_quality') or {} %}
+- 数据质量：{{ quality.get('status', '未检查') }}；数据截止 {{ quant.get('as_of', 'N/A') }}
+{% set technical = quant.get('technical') or {} %}
+{% if technical.get('states') %}- ABU日线：{{ (technical.get('states') or [])[:2]|join('；') }}
+{% endif %}
+{% if technical.get('weekly_states') %}- ABU周线：{{ (technical.get('weekly_states') or [])[:1]|join('；') }}
+{% endif %}
+{% set kronos = quant.get('kronos') %}
+{% if kronos %}- Kronos：未来{{ (kronos.get('points') or [])|length }}日中位收益 {{ '%+.2f%%'|format(kronos.get('end_return_pct', 0)) }}；上涨路径 {{ '%.0f%%'|format(kronos.get('positive_path_ratio', 0) * 100) }}
+{% endif %}
+{% set validation = quant.get('validation') %}
+{% if validation and validation.get('status') == 'ok' %}- vn.py历史验证：样本 {{ validation.get('sample_count', 0) }}；{{ validation.get('horizon_days', 5) }}日方向胜率 {{ '%.1f%%'|format(validation.get('direction_win_rate', 0) * 100) }}；收益中位数 {{ '%+.2f%%'|format(validation.get('median_directional_return', 0) * 100) }}；可信度 {{ validation.get('confidence', 'low') }}
+{% elif validation %}- vn.py历史验证：{{ validation.get('message', '样本不足') }}
+{% endif %}
+- 说明：ABU是规则信号，Kronos是概率预测；vn.py仅评价历史结果，不是另一项预测。
+{% endif %}
+
+{% endif %}
+
 {% if data_persp %}
 ### 📊 {{ labels.data_perspective_heading }}
 

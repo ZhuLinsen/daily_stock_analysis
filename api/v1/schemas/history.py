@@ -266,6 +266,7 @@ class ReportDetails(BaseModel):
     sector_rankings: Optional[Any] = Field(None, description="板块涨跌榜（结构 {top, bottom}）")
     concept_rankings: Optional[Any] = Field(None, description="概念板块涨跌榜（结构 {top, bottom}）")
     market_structure: Optional[Any] = Field(None, description="市场结构上下文（题材层 + 个股位置层）")
+    quant_enrichment: Optional[Any] = Field(None, description="ABU/Kronos分析与vn.py历史评价")
 
     @model_validator(mode="after")
     def populate_context_derived_details(self) -> "ReportDetails":

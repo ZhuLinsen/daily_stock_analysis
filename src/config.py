@@ -963,6 +963,16 @@ class Config:
     report_integrity_retry: int = 1  # Retry count when mandatory fields missing (0 = placeholder only)
     report_history_compare_n: int = 0  # History comparison count (0 = disabled)
 
+    # Optional external ABU/Kronos analysis and vn.py historical validation.
+    quant_enrichment_enabled: bool = False
+    quant_abu_root: str = ""
+    quant_abu_config: str = ""
+    quant_abu_python: str = ""
+    quant_vnpy_root: str = ""
+    quant_vnpy_python: str = ""
+    quant_vnpy_validation_enabled: bool = True
+    quant_enrichment_timeout_seconds: int = 600
+
     # PushPlus 推送配置
     pushplus_token: Optional[str] = None  # PushPlus Token
     pushplus_topic: Optional[str] = None  # PushPlus 群组编码（一对多推送）
@@ -1916,6 +1926,14 @@ class Config:
             report_integrity_enabled=os.getenv('REPORT_INTEGRITY_ENABLED', 'true').lower() == 'true',
             report_integrity_retry=parse_env_int(os.getenv('REPORT_INTEGRITY_RETRY'), 1, field_name='REPORT_INTEGRITY_RETRY', minimum=0),
             report_history_compare_n=parse_env_int(os.getenv('REPORT_HISTORY_COMPARE_N'), 0, field_name='REPORT_HISTORY_COMPARE_N', minimum=0),
+            quant_enrichment_enabled=parse_env_bool(os.getenv('QUANT_ENRICHMENT_ENABLED'), default=False),
+            quant_abu_root=(os.getenv('QUANT_ABU_ROOT') or '').strip(),
+            quant_abu_config=(os.getenv('QUANT_ABU_CONFIG') or '').strip(),
+            quant_abu_python=(os.getenv('QUANT_ABU_PYTHON') or '').strip(),
+            quant_vnpy_root=(os.getenv('QUANT_VNPY_ROOT') or '').strip(),
+            quant_vnpy_python=(os.getenv('QUANT_VNPY_PYTHON') or '').strip(),
+            quant_vnpy_validation_enabled=parse_env_bool(os.getenv('QUANT_VNPY_VALIDATION_ENABLED'), default=True),
+            quant_enrichment_timeout_seconds=parse_env_int(os.getenv('QUANT_ENRICHMENT_TIMEOUT_SECONDS'), 600, field_name='QUANT_ENRICHMENT_TIMEOUT_SECONDS', minimum=1, maximum=3600),
             analysis_delay=parse_env_float(os.getenv('ANALYSIS_DELAY'), 0.0, field_name='ANALYSIS_DELAY', minimum=0.0),
             merge_email_notification=os.getenv('MERGE_EMAIL_NOTIFICATION', 'false').lower() == 'true',
             feishu_max_bytes=parse_env_int(os.getenv('FEISHU_MAX_BYTES'), 20000, field_name='FEISHU_MAX_BYTES', minimum=1),

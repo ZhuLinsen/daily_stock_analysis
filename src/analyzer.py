@@ -1737,6 +1737,7 @@ class AnalysisResult:
     # ========== 基本面上下文（仅运行时，用于通知拼装；不持久化到 to_dict）==========
     fundamental_context: Optional[Dict[str, Any]] = None
     market_structure_context: Optional[Dict[str, Any]] = None
+    quant_enrichment: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -1777,6 +1778,7 @@ class AnalysisResult:
             'change_pct': self.change_pct,
             'model_used': self.model_used,
             'market_structure_context': self.market_structure_context,
+            'quant_enrichment': self.quant_enrichment,
         }
 
     def get_core_conclusion(self) -> str:

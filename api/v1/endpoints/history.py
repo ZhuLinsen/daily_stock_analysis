@@ -597,6 +597,7 @@ def get_history_detail(
             sector_rankings=extracted_boards.get("sector_rankings"),
             concept_rankings=extracted_boards.get("concept_rankings"),
             market_structure=market_structure,
+            quant_enrichment=raw_result.get("quant_enrichment"),
         )
         
         return AnalysisReport(

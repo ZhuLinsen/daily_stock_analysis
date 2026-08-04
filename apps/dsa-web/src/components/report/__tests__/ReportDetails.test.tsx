@@ -73,4 +73,22 @@ describe('ReportDetails', () => {
     const { container } = render(<ReportDetails />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('renders ABU, Kronos, and vn.py as separate evidence cards', () => {
+    render(<ReportDetails details={{
+      quantEnrichment: {
+        status: 'ok',
+        asOf: '2026-08-01',
+        dataQuality: { status: '正常' },
+        technical: { states: ['EMA多头排列'] },
+        kronos: { points: [{}, {}, {}, {}, {}], endReturnPct: 1.25, positivePathRatio: 0.6, pathCount: 20 },
+        validation: { status: 'ok', sampleCount: 24, horizonDays: 5, directionWinRate: 0.625, medianDirectionalReturn: 0.008, confidence: 'medium' },
+      },
+    }} />);
+
+    expect(screen.getByText('ABU 规则信号')).toBeInTheDocument();
+    expect(screen.getByText('Kronos 概率预测')).toBeInTheDocument();
+    expect(screen.getByText('vn.py 历史评价')).toBeInTheDocument();
+    expect(screen.getByText(/样本 24 · 胜率 62.5%/)).toBeInTheDocument();
+  });
 });
