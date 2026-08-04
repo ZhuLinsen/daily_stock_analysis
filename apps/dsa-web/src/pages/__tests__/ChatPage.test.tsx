@@ -143,7 +143,6 @@ vi.mock('../../stores/agentChatStore', () => {
       ...mockStoreState,
       selectedSkillIds,
       setSelectedSkillIds: (skillIds) => {
-        mockStoreState.selectedSkillIds = skillIds;
         setSelectedSkillIdsState(skillIds);
       },
     };
