@@ -140,11 +140,18 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
           const events = technical?.events || [];
           const recentDays = technical?.recentDays || 7;
           const asOf = quant.asOf ? new Date(`${quant.asOf}T00:00:00`).getTime() : 0;
-          const recentEvents = events.filter((event) => {
-            if (!event.date) return false;
-            if (event.timeframe === '1w') return true;
+          const recentDailyEvents = events.filter((event) => {
+            if (!event.date || event.timeframe !== '1d') return false;
             return !asOf || asOf - new Date(`${event.date}T00:00:00`).getTime() <= recentDays * 86400000;
-          }).slice(-30).reverse();
+          });
+          const recentWeeklyEvents = events.filter((event) => {
+            if (!event.date || event.timeframe !== '1w') return false;
+            return !asOf || asOf - new Date(`${event.date}T00:00:00`).getTime() <= 8 * 7 * 86400000;
+          });
+          const recentEvents = [...recentDailyEvents, ...recentWeeklyEvents].sort((left, right) =>
+            (right.date || '').localeCompare(left.date || '') ||
+            (right.timeframe || '').localeCompare(left.timeframe || ''),
+          );
           const newIds = new Set(technical?.newEventIds || []);
           const newEvents = events.filter((event) => event.eventId && newIds.has(event.eventId)).reverse();
           const positiveRatio = quant.kronos?.positivePathRatio ?? 0;

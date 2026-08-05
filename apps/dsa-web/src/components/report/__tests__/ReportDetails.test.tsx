@@ -91,4 +91,26 @@ describe('ReportDetails', () => {
     expect(screen.getByText('vn.py 历史评价')).toBeInTheDocument();
     expect(screen.getByText(/样本 24 · 胜率 62.5%/)).toBeInTheDocument();
   });
+
+  it('shows recent daily signals before older weekly signals', () => {
+    render(<ReportDetails details={{
+      quantEnrichment: {
+        status: 'ok',
+        asOf: '2026-08-05',
+        technical: {
+          recentDays: 7,
+          events: [
+            { eventId: 'old-week', date: '2026-06-26', timeframe: '1w', direction: 'bearish', name: '旧周线信号', detail: '旧信号' },
+            { eventId: 'recent-day', date: '2026-08-05', timeframe: '1d', direction: 'bullish', name: '20日新高突破', detail: '最新信号' },
+          ],
+        },
+      },
+    }} />);
+
+    const recentSignalPanel = screen.getByText(/最近 7 日及 8 周信号/).parentElement;
+    expect(recentSignalPanel).not.toBeNull();
+    const panelText = recentSignalPanel?.textContent || '';
+    expect(panelText).toContain('20日新高突破');
+    expect(panelText.indexOf('20日新高突破')).toBeLessThan(panelText.indexOf('旧周线信号'));
+  });
 });
