@@ -21,6 +21,9 @@ from api.v1.schemas.decision_signals import (
     DecisionSignalOutcomeRunRequest,
     DecisionSignalOutcomeRunResponse,
     DecisionSignalOutcomeStatsResponse,
+    DecisionSignalReassessRequest,
+    DecisionSignalReassessErrorResponse,
+    DecisionSignalReassessResponse,
     DecisionSignalStatusUpdateRequest,
 )
 from src.auth import COOKIE_NAME
@@ -30,6 +33,13 @@ from src.services.decision_signal_service import (
     DecisionSignalStorageError,
 )
 from src.services.decision_signal_outcome_service import DecisionSignalOutcomeService
+from src.services.decision_signal_reassess_service import (
+    DecisionSignalReassessGuardrailBlockedError,
+    DecisionSignalReassessService,
+    DecisionSignalSourceReportNotFoundError,
+    DecisionSignalUnsupportedReportSnapshotError,
+    DecisionSignalUnsupportedReportTypeError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -63,12 +73,29 @@ def _not_found(exc: Exception) -> HTTPException:
     )
 
 
+def _error(status_code: int, exc: Exception, *, error: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"error": error, "message": str(exc)},
+    )
+
+
 def _internal_error(message: str, exc: Exception) -> HTTPException:
     logger.error("%s: %s", message, exc, exc_info=True)
     return HTTPException(
         status_code=500,
         detail={"error": "internal_error", "message": message},
     )
+
+
+def _guardrail_blocked(exc: DecisionSignalReassessGuardrailBlockedError) -> HTTPException:
+    response = DecisionSignalReassessErrorResponse(
+        error="guardrail_blocked",
+        message="Reassessed decision signal was blocked by guardrail.",
+        blocked_reason=exc.blocked_reason,
+        warnings=exc.warnings,
+    )
+    return HTTPException(status_code=400, detail=response.model_dump())
 
 
 @router.post(
@@ -123,10 +150,14 @@ def create_signal(request: DecisionSignalCreateRequest) -> DecisionSignalMutatio
     operation_id="listDecisionSignals",
 )
 def list_signals(
-    market: Optional[str] = Query(None, description="Optional market filter: cn/hk/us/jp/kr"),
+    market: Optional[str] = Query(None, description="Optional market filter: cn/hk/us/jp/kr/tw"),
     stock_code: Optional[str] = Query(None, description="Optional stock code filter"),
     action: Optional[str] = Query(None, description="Optional decision action filter"),
     market_phase: Optional[str] = Query(None, description="Optional market phase filter"),
+    decision_profile: Optional[str] = Query(
+        None,
+        description="Optional decision profile filter: conservative/balanced/aggressive/unknown",
+    ),
     source_type: Optional[str] = Query(None, description="Optional source type filter"),
     source_report_id: Optional[int] = Query(None, description="Optional source report id filter"),
     trace_id: Optional[str] = Query(None, description="Optional trace id filter"),
@@ -152,6 +183,7 @@ def list_signals(
                 stock_code=stock_code,
                 action=action,
                 market_phase=market_phase,
+                decision_profile=decision_profile,
                 source_type=source_type,
                 source_report_id=source_report_id,
                 trace_id=trace_id,
@@ -291,6 +323,45 @@ def get_outcome_stats(
         raise _internal_error("Get decision signal outcome stats failed", exc)
 
 
+@router.post(
+    "/reassess",
+    response_model=DecisionSignalReassessResponse,
+    responses={
+        **AUTH_RESPONSE,
+        400: {"model": DecisionSignalReassessErrorResponse, "description": "历史报告不适用或持久化被风控阻断"},
+        404: {"model": ErrorResponse, "description": "来源历史报告不存在"},
+        422: {"model": ErrorResponse, "description": "请求体校验失败"},
+        500: {"model": ErrorResponse, "description": "重评估失败"},
+    },
+    summary="重评估决策风格并可选保存",
+    description=(
+        "基于 source_report_id 对应的持久化历史报告快照重新计算 decision_profile 信号；"
+        "persist=false 返回只读 preview，persist=true 将通过 guardrail 的服务端结果写入 DecisionSignal。"
+    ),
+    operation_id="reassessDecisionSignalPreview",
+)
+def reassess_signal(request: DecisionSignalReassessRequest) -> DecisionSignalReassessResponse:
+    service = DecisionSignalReassessService()
+    try:
+        return DecisionSignalReassessResponse(
+            **service.reassess(
+                source_report_id=request.source_report_id,
+                decision_profile=request.decision_profile,
+                persist=request.persist,
+            )
+        )
+    except DecisionSignalSourceReportNotFoundError as exc:
+        raise _error(404, exc, error="source_report_not_found")
+    except DecisionSignalUnsupportedReportTypeError as exc:
+        raise _error(400, exc, error="unsupported_report_type")
+    except DecisionSignalUnsupportedReportSnapshotError as exc:
+        raise _error(400, exc, error="unsupported_report_snapshot")
+    except DecisionSignalReassessGuardrailBlockedError as exc:
+        raise _guardrail_blocked(exc)
+    except Exception as exc:
+        raise _internal_error("Reassess decision signal failed", exc)
+
+
 @router.get(
     "/latest/{stock_code}",
     response_model=DecisionSignalListResponse,
@@ -306,7 +377,7 @@ def get_outcome_stats(
 )
 def get_latest_active(
     stock_code: str,
-    market: Optional[str] = Query(None, description="Optional market filter: cn/hk/us/jp/kr"),
+    market: Optional[str] = Query(None, description="Optional market filter: cn/hk/us/jp/kr/tw"),
     limit: int = Query(1, ge=1, le=100),
 ) -> DecisionSignalListResponse:
     service = DecisionSignalService()
@@ -443,7 +514,8 @@ def put_feedback(signal_id: int, request: DecisionSignalFeedbackRequest) -> Deci
     },
     summary="更新决策信号状态",
     description=(
-        "只更新合法状态和可选 metadata；传入 metadata 时按整包替换保存。"
+        "只更新合法状态和可选 metadata；省略 metadata 时保留原值，null 时清空，"
+        "object 时按整包替换并保持正式 decision_profile 身份。"
         "expired/invalidated/closed/archived 等 terminal 状态不能直接 PATCH 回 active。"
     ),
     operation_id="updateDecisionSignalStatus",

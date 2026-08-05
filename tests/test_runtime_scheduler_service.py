@@ -80,6 +80,12 @@ class _NoopThread:
         return False
 
 
+class _SynchronousThread(_NoopThread):
+    def start(self):
+        if self.target is not None:
+            self.target()
+
+
 class RuntimeSchedulerServiceTestCase(unittest.TestCase):
     def test_run_analysis_args_include_workers(self) -> None:
         config = SimpleNamespace(
@@ -181,6 +187,38 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         status = service.status()
         self.assertEqual(status["last_skip_reason"], "analysis_already_running")
         self.assertIsNotNone(status["last_skipped_at"])
+
+    def test_run_now_runs_analysis_with_default_stock_scope(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        seen_stock_codes = []
+
+        def runner(config_arg, args, stock_codes):
+            seen_stock_codes.append(stock_codes)
+            return True
+
+        service = RuntimeSchedulerService(
+            config_provider=lambda: config,
+            task_runner=runner,
+        )
+        service._reload_config = lambda: config
+
+        with patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _SynchronousThread,
+        ):
+            result = service.run_now()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(seen_stock_codes, [None])
+        status = service.status()
+        self.assertFalse(status["running"])
+        self.assertIsNotNone(status["last_run_at"])
+        self.assertIsNotNone(status["last_success_at"])
+        self.assertIsNone(status["last_error"])
 
     def test_run_now_uses_shared_lock_across_service_instances(self) -> None:
         config = SimpleNamespace(

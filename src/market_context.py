@@ -12,6 +12,8 @@ Fixes: https://github.com/ZhuLinsen/daily_stock_analysis/issues/644
 import re
 from typing import Optional
 
+from src.services.market_symbol_utils import get_suffix_market
+
 
 def detect_market(stock_code: Optional[str]) -> str:
     """Detect market from stock code.
@@ -34,12 +36,11 @@ def detect_market(stock_code: Optional[str]) -> str:
     if code.isdigit() and len(code) == 5:
         return "hk"
 
-    # Japan/Korea suffix-only symbols supported by Yahoo Finance.
-    # Bare Korean six-digit codes remain A-share fallback to avoid collision.
-    if re.match(r'^\d{4,5}\.T$', code):
-        return "jp"
-    if re.match(r'^\d{6}\.(KS|KQ)$', code):
-        return "kr"
+    # Suffix-only Yahoo symbols for JP/KR/TW. Bare Korean/Taiwan numeric
+    # codes keep existing fallback semantics to avoid cross-market collisions.
+    suffix_market = get_suffix_market(code)
+    if suffix_market:
+        return suffix_market
 
     # US stocks: 1-5 uppercase letters (AAPL, TSLA, GOOGL)
     # Also handles suffixed forms like BRK.B
@@ -72,6 +73,10 @@ _MARKET_ROLES = {
     "kr": {
         "zh": "韩股",
         "en": "Korea stock",
+    },
+    "tw": {
+        "zh": "台股",
+        "en": "Taiwan stock",
     },
 }
 
@@ -126,6 +131,21 @@ _MARKET_GUIDELINES = {
             "- Use Korea-market context: KRW FX, Bank of Korea policy, semiconductor/internet cycles, and local trading rules; do not apply China A-share concepts such as daily price-limit boards, Northbound flows, Dragon Tiger lists, or margin-financing narratives."
         ),
     },
+    "tw": {
+        "zh": (
+            "- 本次分析对象为 **台股**（台湾证券交易所上市 `.TW`，或台湾柜买中心上柜 `.TWO`）。\n"
+            "- 请按台湾市场语境分析，关注新台币（TWD）汇率、台湾央行政策、半导体/电子代工产业链、"
+            "三大法人（外资／投信／自营商）买卖超、融资融券与当冲，以及 TWSE/TPEx ±10% 涨跌停制度；"
+            "不要套用 A 股专属的北向资金、龙虎榜等概念（台股的法人结构与资金流口径与 A 股不同）。"
+        ),
+        "en": (
+            "- This analysis covers a **Taiwan stock** (TWSE-listed `.TW`, or TPEx/OTC `.TWO`).\n"
+            "- Use Taiwan-market context: TWD FX, Central Bank of the ROC policy, the semiconductor/"
+            "electronics-foundry supply chain, the three institutional investor groups (foreign / "
+            "investment-trust / dealer), margin trading and day trading, and the TWSE/TPEx ±10% daily "
+            "price limit; do not apply China A-share-specific concepts such as Northbound flows or Dragon Tiger lists."
+        ),
+    },
 }
 
 
@@ -140,7 +160,7 @@ def get_market_role(stock_code: Optional[str], lang: str = "zh") -> str:
         Role string like 'A 股投资分析' or 'US stock investment analysis'.
     """
     market = detect_market(stock_code)
-    lang_key = "en" if lang == "en" else "zh"
+    lang_key = "en" if lang in ("en", "ko") else "zh"
     return _MARKET_ROLES.get(market, _MARKET_ROLES["cn"])[lang_key]
 
 
@@ -155,5 +175,5 @@ def get_market_guidelines(stock_code: Optional[str], lang: str = "zh") -> str:
         Multi-line string with market-specific guidelines.
     """
     market = detect_market(stock_code)
-    lang_key = "en" if lang == "en" else "zh"
+    lang_key = "en" if lang in ("en", "ko") else "zh"
     return _MARKET_GUIDELINES.get(market, _MARKET_GUIDELINES["cn"])[lang_key]

@@ -18,6 +18,7 @@ from src.services.market_light_service import (
     MARKET_LIGHT_HISTORY_BATCH_SIZE,
     build_current_snapshot,
     load_previous_snapshot,
+    normalize_market_region,
 )
 from src.storage import AnalysisHistory, DatabaseManager
 
@@ -55,6 +56,12 @@ class MarketLightServiceTestCase(unittest.TestCase):
         Config.reset_instance()
         os.environ.pop("DATABASE_PATH", None)
         self.temp_dir.cleanup()
+
+    def test_normalize_market_region_rejects_unknown_regions(self) -> None:
+        for region in ("global", "tw"):
+            with self.subTest(region=region):
+                with self.assertRaisesRegex(ValueError, "cn, hk, us, jp, kr"):
+                    normalize_market_region(region)
 
     def _add_history(self, *, created_at: datetime, context_snapshot: dict | None) -> None:
         with self.db.get_session() as session:
@@ -204,6 +211,20 @@ class MarketLightServiceTestCase(unittest.TestCase):
         analyzer.build_market_light_snapshot.assert_called_once_with(overview)
         self.assertEqual(snapshot["region"], "cn")
         self.assertEqual(snapshot["score"], 33)
+
+    def test_market_light_service_accepts_jp_kr_regions(self) -> None:
+        self._add_history(
+            created_at=datetime(2026, 3, 6, 18, 0),
+            context_snapshot={"market_light_snapshots": {"jp": _snapshot("jp", "2026-03-06", 54)}},
+        )
+
+        previous = load_previous_snapshot("JP", before_trade_date="2026-03-07", db_manager=self.db)
+
+        self.assertEqual(normalize_market_region("KR"), "kr")
+        self.assertIsNotNone(previous)
+        assert previous is not None
+        self.assertEqual(previous["region"], "jp")
+        self.assertEqual(previous["score"], 54)
 
 
 if __name__ == "__main__":

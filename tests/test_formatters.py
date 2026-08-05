@@ -342,6 +342,21 @@ class TestNotificationMarkdownFormatters(unittest.TestCase):
         self.assertNotIn("价格指标：MA5", result)
         self.assertNotIn("类型：N/A", result)
 
+    def test_markdown_tables_to_key_value_rows_preserves_empty_cells(self):
+        text = (
+            "| Header1 | Header2 | Header3 |\n"
+            "|---------|---------|---------|\n"
+            "| Value1  |         | Value3  |\n"
+            "| Tail1   | Tail2   |         |"
+        )
+        colon = "\uff1a"
+
+        result = markdown_tables_to_key_value_rows(text)
+
+        self.assertIn(f"Header1{colon}Value1 | Header2{colon} | Header3{colon}Value3", result)
+        self.assertIn(f"Header1{colon}Tail1 | Header2{colon}Tail2 | Header3{colon}", result)
+        self.assertNotIn(f"Header2{colon}Value3", result)
+
     def test_markdown_tables_to_key_value_rows_keeps_fenced_code_tables(self):
         text = (
             "```markdown\n"
@@ -371,6 +386,19 @@ class TestNotificationMarkdownFormatters(unittest.TestCase):
         self.assertIn("💬 风险提示", result)
         self.assertIn("• 股票：600519 | 信号：强势", result)
         self.assertIn("• 关注量能", result)
+
+    def test_feishu_formatter_preserves_empty_table_cells(self):
+        text = (
+            "| Header1 | Header2 | Header3 |\n"
+            "|---------|---------|---------|\n"
+            "| Value1  |         | Value3  |"
+        )
+        colon = "\uff1a"
+
+        result = format_feishu_markdown(text)
+
+        self.assertIn(f"Header1{colon}Value1 | Header2{colon} | Header3{colon}Value3", result)
+        self.assertNotIn(f"Header2{colon}Value3", result)
 
     def test_telegram_formatter_uses_supported_markdown(self):
         text = "## 日报\n\n| 股票 | 信号 |\n| --- | --- |\n| 600519 | 强势 |\n\n[详情](https://example.com/report)"

@@ -20,6 +20,10 @@ MIN_MAX_WORDS = 10
 MIN_MAX_BYTES = 40
 FENCED_CODE_BLOCK_RE = re.compile(r"(^```[^\n]*\n.*?^```[ \t]*$)", re.MULTILINE | re.DOTALL)
 FENCED_CODE_BLOCK_PLACEHOLDER = "@@DSA_FENCED_CODE_BLOCK_{}@@"
+HIDDEN_MARKDOWN_METADATA_RE = re.compile(
+    r"^\[dsa-[^\]]+\]:\s+#\s+\([^)\n]*\)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # Unicode code point ranges for special characters.
 _SPECIAL_CHAR_RANGE = (0x10000, 0xFFFFF)
@@ -233,6 +237,9 @@ def markdown_to_plain_text(markdown_text: str) -> str:
     移除 Markdown 格式标记，保留可读性
     """
     text = markdown_text
+
+    # 移除 Markdown reference definitions（例如隐藏元数据标记）
+    text = strip_markdown_reference_definitions(text)
     
     # 移除标题标记 # ## ###
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
@@ -260,6 +267,18 @@ def markdown_to_plain_text(markdown_text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     
     return text.strip()
+
+
+def strip_hidden_markdown_metadata(markdown_text: str) -> str:
+    """Strip hidden internal Markdown metadata lines while preserving normal refs."""
+
+    return HIDDEN_MARKDOWN_METADATA_RE.sub("", markdown_text)
+
+
+def strip_markdown_reference_definitions(markdown_text: str) -> str:
+    """Strip Markdown reference-definition lines while preserving the rest."""
+
+    return re.sub(r'^\[[^\]]+\]:\s+.*$', '', markdown_text, flags=re.MULTILINE)
 
 
 def _bytes(s: str) -> int:
@@ -458,8 +477,12 @@ def _is_markdown_table_separator(row: str) -> bool:
 
 
 def _parse_markdown_table_row(row: str) -> List[str]:
-    cells = [c.strip() for c in row.strip().strip('|').split('|')]
-    return [c for c in cells if c]
+    stripped = row.strip()
+    if stripped.startswith('|'):
+        stripped = stripped[1:]
+    if stripped.endswith('|'):
+        stripped = stripped[:-1]
+    return [c.strip() for c in stripped.split('|')]
 
 
 def _strip_inline_markdown(text: str) -> str:
@@ -500,6 +523,8 @@ def _flush_table_as_key_value_rows(buffer: List[str], output: List[str], *, bull
     header = rows[0]
     data_rows = rows[1:] if len(rows) > 1 else []
     for row in data_rows:
+        if len(row) < len(header):
+            row = row + [""] * (len(header) - len(row))
         if len(header) == 2 and len(row) >= 2:
             output.append(f"{bullet} {_format_two_column_table_row(header, row)}")
             continue
@@ -772,8 +797,7 @@ def format_feishu_markdown(content: str) -> str:
 
         def _parse_row(row: str) -> List[str]:
             """解析表格行，提取单元格"""
-            cells = [c.strip() for c in row.strip().strip('|').split('|')]
-            return [c for c in cells if c]
+            return _parse_markdown_table_row(row)
 
         rows = []
         for raw in buffer:
@@ -790,6 +814,8 @@ def format_feishu_markdown(content: str) -> str:
         header = rows[0]
         data_rows = rows[1:] if len(rows) > 1 else []
         for row in data_rows:
+            if len(row) < len(header):
+                row = row + [""] * (len(header) - len(row))
             pairs = []
             for idx, cell in enumerate(row):
                 key = header[idx] if idx < len(header) else f"列{idx + 1}"

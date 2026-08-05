@@ -36,21 +36,44 @@ from src.notification_contracts import (
     is_feishu_app_bot_configured,
     is_feishu_static_configured,
 )
+from src.services.stock_list_parser import split_stock_list
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
+    GENERATION_ONLY_BACKEND_IDS,
+    LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
+    OPENCODE_CLI_BACKEND_ID,
     SUPPORTED_AGENT_GENERATION_BACKENDS,
+    SUPPORTED_AGENT_UI_BACKENDS,
     SUPPORTED_GENERATION_BACKENDS,
 )
+from src.llm.local_cli_backend import (
+    DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
+    DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
+    DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
+    DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
+    MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
+    MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
+    MAX_LOCAL_CLI_OUTPUT_BYTES,
+    MAX_LOCAL_CLI_TIMEOUT_SECONDS,
+)
 from src.llm import generation_params as llm_generation_params
+from src.llm.hermes import (
+    HERMES_DEFAULT_BASE_URL,
+    HERMES_DEFAULT_MODEL,
+    HERMES_DEFAULT_PROTOCOL,
+    HermesConfigIssue,
+    hermes_model_info,
+    is_reserved_hermes_name,
+    parse_hermes_channel,
+    route_identity_candidates,
+    route_deployment_origins,
+    route_has_hermes,
+)
 from src.scheduler import normalize_schedule_times
+from src.utils.market_review_region import normalize_market_review_region_lenient
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_ALPHASIFT_INSTALL_SPEC = (
-    "git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8"
-)
-
 
 @dataclass
 class ConfigIssue:
@@ -66,6 +89,7 @@ class ConfigIssue:
     severity: Literal["error", "warning", "info"]
     message: str
     field: str = ""
+    code: str = ""
 
     def __str__(self) -> str:  # noqa: D105
         return self.message
@@ -75,6 +99,8 @@ _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", 
 SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
 PROMPT_CACHE_DIAGNOSTICS_LEVELS = {"off", "basic", "debug"}
+SUPPORTED_AGENT_BACKENDS = {"auto", "litellm", "codex_app_server"}
+TICKFLOW_KLINE_ADJUST_VALUES = {"none", "forward", "backward", "forward_additive", "backward_additive"}
 # Fallback defaults used when ANSPIRE_API_KEYS is reused as legacy OpenAI-compatible source.
 # These are compatibility examples; actual availability should be validated by Anspire console/model entitlement.
 ANSPIRE_LLM_BASE_URL_DEFAULT = "https://open-gateway.anspire.cn/v6"
@@ -104,6 +130,18 @@ def _has_gotify_base_url(value: Optional[str]) -> bool:
         return False
     path_segments = [segment for segment in parsed.path.split("/") if segment]
     return not (path_segments and path_segments[-1].lower() == "message")
+
+
+def normalize_tickflow_kline_adjust(value: Optional[str]) -> str:
+    """Normalize TickFlow daily K-line adjustment mode."""
+    normalized = (value or "none").strip().lower()
+    if normalized in TICKFLOW_KLINE_ADJUST_VALUES:
+        return normalized
+    logger.warning(
+        "Invalid TICKFLOW_KLINE_ADJUST=%r; falling back to none",
+        value,
+    )
+    return "none"
 
 
 def parse_prompt_cache_diagnostics_level(value: Optional[str]) -> str:
@@ -553,6 +591,17 @@ def _uses_direct_env_provider(model: str) -> bool:
     return bool(provider) and provider not in _MANAGED_LITELLM_KEY_PROVIDERS
 
 
+def _matches_route_set(model: str, routes: set[str]) -> bool:
+    """Loose safety match for Hermes/provenance checks, not normal route availability."""
+    return bool(route_identity_candidates(model) & set(routes or set()))
+
+
+def _matches_exact_route(model: str, routes: set[str]) -> bool:
+    """Match the Router's top-level model_name exactly for normal availability checks."""
+    normalized_model = str(model or "").strip()
+    return bool(normalized_model) and normalized_model in set(routes or set())
+
+
 def normalize_agent_litellm_model(
     model: str,
     configured_models: Optional[set[str]] = None,
@@ -668,6 +717,10 @@ class Config:
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
     tickflow_api_key: Optional[str] = None
+    tickflow_kline_adjust: str = "none"
+    tickflow_priority: int = 2
+    tickflow_batch_daily_enabled: bool = True
+    tickflow_batch_size: int = 100
     finnhub_api_key: Optional[str] = None
     alphavantage_api_key: Optional[str] = None
     longbridge_app_key: Optional[str] = None
@@ -676,13 +729,17 @@ class Config:
     longbridge_oauth_client_id: Optional[str] = None
     stock_index_remote_update_enabled: bool = True
 
-    # === AlphaSift optional stock screening integration ===
-    alphasift_enabled: bool = False
-    alphasift_install_spec: str = DEFAULT_ALPHASIFT_INSTALL_SPEC
+    # === Built-in stock screening ===
+    screening_enabled: bool = False
 
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
     generation_fallback_backend: str = LITELLM_BACKEND_ID
+    generation_backend_timeout_seconds: int = DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS
+    generation_backend_max_output_bytes: int = DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES
+    generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
+    local_cli_backend_max_concurrency: int = DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY
+    opencode_cli_model: str = ""
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
@@ -705,6 +762,12 @@ class Config:
     # Raw channel names requested through LLM_CHANNELS, including channels that
     # were skipped during parsing because required channel fields were missing.
     llm_channel_names: List[str] = field(default_factory=list)
+    # Structured parse issues raised while turning LLM_CHANNELS into deployments.
+    llm_channel_config_issues: List[Dict[str, str]] = field(default_factory=list)
+    # True when invalid explicit channel config must prevent legacy key inference.
+    llm_blocks_legacy_fallback: bool = False
+    # Canonical Hermes route names that were requested but blocked by atomic parse issues.
+    llm_blocked_hermes_routes: List[str] = field(default_factory=list)
     # Pre-built LiteLLM Router model_list (populated from channels, YAML, or legacy keys)
     llm_model_list: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -765,10 +828,12 @@ class Config:
     news_intel_retention_days: int = 30  # 本地资讯池保留天数
     news_intel_fetch_timeout_sec: float = 8.0  # 单个资讯源拉取超时
     news_intel_max_items_per_source: int = 50  # 单次每个资讯源最多采集条数
+    news_intel_auto_fetch_enabled: bool = False  # 是否在分析前自动初始化并拉取本地资讯源
     newsnow_base_url: str = "https://newsnow.busiyi.world"  # NewsNow HTTP API base URL (数据源侧，不影响 LLM/provider base URL)
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
 
     # === Agent 模式配置 ===
+    agent_backend: str = "auto"
     agent_generation_backend: str = AUTO_AGENT_BACKEND_ID
     agent_litellm_model: str = ""  # Optional Agent-only primary model; empty inherits LITELLM_MODEL
     agent_mode: bool = False
@@ -780,11 +845,18 @@ class Config:
     agent_arch: str = "single"     # Agent architecture: 'single' (legacy) or 'multi' (orchestrator)
     agent_orchestrator_mode: str = "standard"  # Orchestrator mode: quick/standard/full/specialist
     agent_orchestrator_timeout_s: int = 600  # Cooperative timeout budget for the whole multi-agent pipeline
+    agent_technical_agent_timeout_s: float = 0
+    agent_intel_agent_timeout_s: float = 0
+    agent_risk_agent_timeout_s: float = 0
+    agent_decision_agent_timeout_s: float = 0
+    agent_portfolio_agent_timeout_s: float = 0
+    agent_skill_agent_timeout_s: float = 0
+    agent_skill_concurrency: int = 3
     agent_risk_override: bool = True  # Allow risk agent to veto buy signals
     agent_deep_research_budget: int = 30000  # Max token budget for deep research
     agent_deep_research_timeout: int = 180  # Max seconds for /research command before returning timeout
     agent_memory_enabled: bool = False  # Enable memory & calibration system
-    agent_skill_autoweight: bool = True  # Auto-weight skills by backtest performance
+    agent_skill_autoweight: bool = True  # Weight skills by attributable Outcome performance
     agent_skill_routing: str = "auto"  # Skill routing: 'auto' (regime-based) or 'manual'
     agent_context_compression_enabled: bool = False  # Compress visible chat history before Agent calls
     agent_context_compression_profile: str = AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE
@@ -803,6 +875,8 @@ class Config:
     feishu_webhook_url: Optional[str] = None
     feishu_webhook_secret: Optional[str] = None  # 自定义机器人签名密钥（可选）
     feishu_webhook_keyword: Optional[str] = None  # 自定义机器人关键词（可选）
+    dingtalk_webhook_url: Optional[str] = None
+    dingtalk_secret: Optional[str] = None
 
     # 飞书应用机器人（App Bot）通知
     feishu_chat_id: Optional[str] = None  # 目标群会话 chat_id（群聊模式），或用户 open_id（P2P 模式）
@@ -889,6 +963,16 @@ class Config:
     report_integrity_retry: int = 1  # Retry count when mandatory fields missing (0 = placeholder only)
     report_history_compare_n: int = 0  # History comparison count (0 = disabled)
 
+    # Optional external ABU/Kronos analysis and vn.py historical validation.
+    quant_enrichment_enabled: bool = False
+    quant_abu_root: str = ""
+    quant_abu_config: str = ""
+    quant_abu_python: str = ""
+    quant_vnpy_root: str = ""
+    quant_vnpy_python: str = ""
+    quant_vnpy_validation_enabled: bool = True
+    quant_enrichment_timeout_seconds: int = 600
+
     # PushPlus 推送配置
     pushplus_token: Optional[str] = None  # PushPlus Token
     pushplus_topic: Optional[str] = None  # PushPlus 群组编码（一对多推送）
@@ -904,6 +988,7 @@ class Config:
 
     # 消息长度限制（字节）- 超长自动分批发送
     feishu_max_bytes: int = 20000  # 飞书限制约 20KB，默认 20000 字节
+    feishu_send_as_file: bool = False  # 飞书是否以文件形式发送报告（默认文字消息）
     wechat_max_bytes: int = 4000   # 企业微信限制 4096 字节，默认 4000 字节
     discord_max_words: int = 2000  # Discord 限制 2000 字，默认 2000 字
     wechat_msg_type: str = "markdown"  # 企业微信消息类型，默认 markdown 类型
@@ -911,7 +996,11 @@ class Config:
     # Markdown 转图片（Issue #289）：对不支持 Markdown 的渠道以图片发送
     markdown_to_image_channels: List[str] = field(default_factory=list)  # 逗号分隔：telegram,wechat,custom,email
     markdown_to_image_max_chars: int = 15000  # 超过此长度不转换，避免超大图片
-    md2img_engine: str = "wkhtmltoimage"  # wkhtmltoimage | markdown-to-file (Issue #455, better emoji support)
+    md2img_engine: str = "wkhtmltoimage"  # wkhtmltoimage | markdown-to-file | playwright
+    share_image_xiaohongshu_url: Optional[str] = None
+    share_image_xiaohongshu_handle: Optional[str] = None
+    share_image_xiaohongshu_id: Optional[str] = None
+    share_image_xiaohongshu_qr_path: Optional[str] = None
 
     # 实时行情预取（Issue #455）：设为 false 可禁用，避免 efinance/akshare_em 全市场拉取
     prefetch_realtime_quotes: bool = True
@@ -951,7 +1040,7 @@ class Config:
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     daily_market_context_enabled: bool = True   # 是否将大盘环境摘要用于个股分析 Prompt 与保守护栏
-    # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、both(三市场)，us 适合仅关注美股的用户
+    # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(全部市场)
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
@@ -984,7 +1073,7 @@ class Config:
     # 基本面阶段总预算（秒）
     fundamental_stage_timeout_seconds: float = FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT
     # 单能力源调用超时（秒）
-    fundamental_fetch_timeout_seconds: float = 3.0
+    fundamental_fetch_timeout_seconds: float = 8.0
     # 单能力失败重试次数（已包含首次）
     fundamental_retry_max: int = 1
     # 基本面上下文短 TTL（秒）
@@ -1185,7 +1274,7 @@ class Config:
         )
         stock_list = [
             (c or "").strip().upper()
-            for c in stock_list_str.split(',')
+            for c in split_stock_list(stock_list_str)
             if (c or "").strip()
         ]
         
@@ -1256,49 +1345,34 @@ class Config:
             openai_api_keys = list(anspire_api_keys)
             openai_base_url = anspire_llm_base_url
 
-        # LITELLM_MODEL: explicit config takes precedence; else infer from available keys
-        litellm_model = os.getenv('LITELLM_MODEL', '').strip()
+        # LITELLM_MODEL / LITELLM_FALLBACK_MODELS explicit values are recorded
+        # before YAML/channels are parsed, but legacy inference is delayed until
+        # the higher-priority sources and Hermes blocking issues are known.
+        litellm_model_explicit = os.getenv('LITELLM_MODEL', '').strip()
+        litellm_model = litellm_model_explicit
         inferred_legacy_deepseek_model = False
         _openai_model_env = os.getenv('OPENAI_MODEL', '').strip()
         if using_anspire_llm_legacy:
             _openai_model_name = _anspire_llm_model_env or _openai_model_env or ANSPIRE_LLM_MODEL_DEFAULT
         else:
             _openai_model_name = _openai_model_env or 'gpt-5.5'
-        if not litellm_model:
-            _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
-            _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
-            if gemini_api_keys:
-                litellm_model = f'gemini/{_gemini_model_name}'
-            elif anthropic_api_keys:
-                litellm_model = f'anthropic/{_anthropic_model_name}'
-            elif deepseek_api_keys:
-                litellm_model = 'deepseek/deepseek-chat'
-                inferred_legacy_deepseek_model = True
-            elif openai_api_keys:
-                # For openai-compatible models, add prefix only if not already prefixed
-                if '/' not in _openai_model_name:
-                    litellm_model = f'openai/{_openai_model_name}'
-                else:
-                    litellm_model = _openai_model_name
 
         # LITELLM_FALLBACK_MODELS: comma-separated list of fallback models
         _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
+        litellm_fallback_models_explicit = bool(_fallback_str.strip())
         if _fallback_str.strip():
             litellm_fallback_models = [m.strip() for m in _fallback_str.split(',') if m.strip()]
         else:
-            # Backward compat: use gemini_model_fallback when primary is gemini
-            _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview').strip()
-            if litellm_model.startswith('gemini/') and _gemini_fallback:
-                _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
-                litellm_fallback_models = [_fb]
-            else:
-                litellm_fallback_models = []
+            litellm_fallback_models = []
 
         # === LLM Channels + YAML config ===
         litellm_config_path = os.getenv('LITELLM_CONFIG', '').strip() or None
         llm_models_source = "legacy_env"
         llm_channels: List[Dict[str, Any]] = []
         llm_channel_names: List[str] = []
+        llm_channel_config_issues: List[Dict[str, str]] = []
+        llm_blocks_legacy_fallback = False
+        llm_blocked_hermes_routes: List[str] = []
         llm_model_list: List[Dict[str, Any]] = []
 
         # Priority 1: LITELLM_CONFIG (standard LiteLLM YAML config file)
@@ -1316,13 +1390,31 @@ class Config:
                     for ch in _channels_str.split(',')
                     if ch.strip()
                 ]
-                llm_channels = cls._parse_llm_channels(_channels_str)
+                (
+                    llm_channels,
+                    hermes_issues,
+                    llm_blocks_legacy_fallback,
+                    llm_blocked_hermes_routes,
+                ) = cls._parse_llm_channels_with_issues(_channels_str)
+                llm_channel_config_issues = [issue.as_dict() for issue in hermes_issues]
                 llm_model_list = cls._channels_to_model_list(llm_channels)
                 if llm_model_list:
                     llm_models_source = "llm_channels"
 
-        # Priority 3: Legacy env vars → auto-build model_list (backward compatible)
-        if not llm_model_list:
+        route_models = get_configured_llm_models(llm_model_list)
+        if route_models:
+            if not litellm_model:
+                litellm_model = route_models[0]
+            if not litellm_fallback_models and not litellm_fallback_models_explicit and litellm_model:
+                _seen = {litellm_model}
+                litellm_fallback_models = [
+                    model for model in route_models
+                    if model not in _seen and not _seen.add(model)  # type: ignore[func-returns-value]
+                ]
+
+        # Priority 3: Legacy env vars → auto-build model_list (backward compatible).
+        # This is skipped when an explicit invalid Hermes channel blocks legacy fallback.
+        if not llm_model_list and not llm_blocks_legacy_fallback:
             llm_model_list = cls._legacy_keys_to_model_list(
                 gemini_api_keys, anthropic_api_keys, openai_api_keys,
                 openai_base_url,
@@ -1330,6 +1422,30 @@ class Config:
             )
             if llm_model_list:
                 llm_models_source = "legacy_env"
+
+            if not litellm_model:
+                _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
+                _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
+                if gemini_api_keys:
+                    litellm_model = f'gemini/{_gemini_model_name}'
+                elif anthropic_api_keys:
+                    litellm_model = f'anthropic/{_anthropic_model_name}'
+                elif deepseek_api_keys:
+                    litellm_model = 'deepseek/deepseek-chat'
+                    inferred_legacy_deepseek_model = True
+                elif openai_api_keys:
+                    # For openai-compatible models, add prefix only if not already prefixed
+                    if '/' not in _openai_model_name:
+                        litellm_model = f'openai/{_openai_model_name}'
+                    else:
+                        litellm_model = _openai_model_name
+
+            if not litellm_fallback_models and not litellm_fallback_models_explicit:
+                # Backward compat: use gemini_model_fallback when primary is gemini
+                _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview').strip()
+                if litellm_model.startswith('gemini/') and _gemini_fallback:
+                    _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
+                    litellm_fallback_models = [_fb]
 
         if (
             inferred_legacy_deepseek_model
@@ -1342,36 +1458,48 @@ class Config:
                 "please migrate to deepseek-v4-flash."
             )
 
-        # Auto-infer LITELLM_MODEL from channels when not explicitly set
-        if not litellm_model and llm_channels:
-            for _ch in llm_channels:
-                if _ch.get('models'):
-                    litellm_model = _ch['models'][0]
-                    break
-
-        # Auto-infer LITELLM_FALLBACK_MODELS from channels when not explicitly set
-        if not litellm_fallback_models and llm_channels and litellm_model:
-            _all_ch_models: List[str] = []
-            for _ch in llm_channels:
-                _all_ch_models.extend(_ch.get('models', []))
-            _seen = {litellm_model}
-            litellm_fallback_models = [
-                m for m in _all_ch_models
-                if m not in _seen and not _seen.add(m)  # type: ignore[func-returns-value]
-            ]
-
         generation_backend = (
             os.getenv('GENERATION_BACKEND', LITELLM_BACKEND_ID).strip().lower()
             or LITELLM_BACKEND_ID
         )
-        generation_fallback_backend = (
-            os.getenv('GENERATION_FALLBACK_BACKEND', LITELLM_BACKEND_ID).strip().lower()
-            or LITELLM_BACKEND_ID
-        )
+        _generation_fallback_raw = os.getenv('GENERATION_FALLBACK_BACKEND')
+        if _generation_fallback_raw is None:
+            generation_fallback_backend = LITELLM_BACKEND_ID
+        else:
+            generation_fallback_backend = _generation_fallback_raw.strip().lower()
         agent_generation_backend = (
             os.getenv('AGENT_GENERATION_BACKEND', AUTO_AGENT_BACKEND_ID).strip().lower()
             or AUTO_AGENT_BACKEND_ID
         )
+        generation_backend_timeout_seconds = parse_env_int(
+            os.getenv('GENERATION_BACKEND_TIMEOUT_SECONDS'),
+            DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
+            field_name='GENERATION_BACKEND_TIMEOUT_SECONDS',
+            minimum=1,
+            maximum=MAX_LOCAL_CLI_TIMEOUT_SECONDS,
+        )
+        generation_backend_max_output_bytes = parse_env_int(
+            os.getenv('GENERATION_BACKEND_MAX_OUTPUT_BYTES'),
+            DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
+            field_name='GENERATION_BACKEND_MAX_OUTPUT_BYTES',
+            minimum=1,
+            maximum=MAX_LOCAL_CLI_OUTPUT_BYTES,
+        )
+        generation_backend_max_concurrency = parse_env_int(
+            os.getenv('GENERATION_BACKEND_MAX_CONCURRENCY'),
+            DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
+            field_name='GENERATION_BACKEND_MAX_CONCURRENCY',
+            minimum=1,
+            maximum=MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
+        )
+        local_cli_backend_max_concurrency = parse_env_int(
+            os.getenv('LOCAL_CLI_BACKEND_MAX_CONCURRENCY'),
+            DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
+            field_name='LOCAL_CLI_BACKEND_MAX_CONCURRENCY',
+            minimum=1,
+            maximum=MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
+        )
+        opencode_cli_model = (os.getenv('OPENCODE_CLI_MODEL', '') or '').strip()
 
         agent_litellm_model = normalize_agent_litellm_model(
             os.getenv('AGENT_LITELLM_MODEL', ''),
@@ -1506,6 +1634,10 @@ class Config:
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
+            tickflow_kline_adjust=normalize_tickflow_kline_adjust(os.getenv('TICKFLOW_KLINE_ADJUST')),
+            tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
+            tickflow_batch_daily_enabled=parse_env_bool(os.getenv('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
+            tickflow_batch_size=parse_env_int(os.getenv('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,
             alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or None,
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
@@ -1518,6 +1650,11 @@ class Config:
             ),
             generation_backend=generation_backend,
             generation_fallback_backend=generation_fallback_backend,
+            generation_backend_timeout_seconds=generation_backend_timeout_seconds,
+            generation_backend_max_output_bytes=generation_backend_max_output_bytes,
+            generation_backend_max_concurrency=generation_backend_max_concurrency,
+            local_cli_backend_max_concurrency=local_cli_backend_max_concurrency,
+            opencode_cli_model=opencode_cli_model,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
@@ -1525,6 +1662,9 @@ class Config:
             llm_models_source=llm_models_source,
             llm_channels=llm_channels,
             llm_channel_names=llm_channel_names,
+            llm_channel_config_issues=llm_channel_config_issues,
+            llm_blocks_legacy_fallback=llm_blocks_legacy_fallback,
+            llm_blocked_hermes_routes=llm_blocked_hermes_routes,
             llm_model_list=llm_model_list,
             llm_prompt_cache_telemetry_enabled=parse_env_bool(
                 os.getenv("LLM_PROMPT_CACHE_TELEMETRY_ENABLED"),
@@ -1605,8 +1745,13 @@ class Config:
                 minimum=1,
                 maximum=200,
             ),
+            news_intel_auto_fetch_enabled=parse_env_bool(
+                os.getenv('NEWS_INTEL_AUTO_FETCH_ENABLED'),
+                False,
+            ),
             newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
             bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
+            agent_backend=(os.getenv('AGENT_BACKEND', 'auto') or 'auto').strip().lower(),
             agent_generation_backend=agent_generation_backend,
             agent_litellm_model=agent_litellm_model,
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
@@ -1627,6 +1772,37 @@ class Config:
                 600,
                 field_name='AGENT_ORCHESTRATOR_TIMEOUT_S',
                 minimum=0,
+            ),
+            agent_technical_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_TECHNICAL_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_TECHNICAL_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_intel_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_INTEL_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_INTEL_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_risk_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_RISK_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_RISK_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_decision_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_DECISION_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_DECISION_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_portfolio_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_PORTFOLIO_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_PORTFOLIO_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_skill_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_SKILL_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_SKILL_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_skill_concurrency=parse_env_int(
+                os.getenv('AGENT_SKILL_CONCURRENCY'),
+                3,
+                field_name='AGENT_SKILL_CONCURRENCY',
+                minimum=1,
+                maximum=4,
             ),
             agent_risk_override=os.getenv('AGENT_RISK_OVERRIDE', 'true').lower() == 'true',
             agent_deep_research_budget=parse_env_int(
@@ -1669,6 +1845,9 @@ class Config:
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
             feishu_webhook_keyword=os.getenv('FEISHU_WEBHOOK_KEYWORD'),
+            dingtalk_webhook_url=os.getenv('DINGTALK_WEBHOOK_URL'),
+            dingtalk_secret=os.getenv('DINGTALK_SECRET'),
+            
 
             feishu_chat_id=os.getenv('FEISHU_CHAT_ID'),
             feishu_receive_id_type=os.getenv('FEISHU_RECEIVE_ID_TYPE', 'chat_id'),
@@ -1747,9 +1926,18 @@ class Config:
             report_integrity_enabled=os.getenv('REPORT_INTEGRITY_ENABLED', 'true').lower() == 'true',
             report_integrity_retry=parse_env_int(os.getenv('REPORT_INTEGRITY_RETRY'), 1, field_name='REPORT_INTEGRITY_RETRY', minimum=0),
             report_history_compare_n=parse_env_int(os.getenv('REPORT_HISTORY_COMPARE_N'), 0, field_name='REPORT_HISTORY_COMPARE_N', minimum=0),
+            quant_enrichment_enabled=parse_env_bool(os.getenv('QUANT_ENRICHMENT_ENABLED'), default=False),
+            quant_abu_root=(os.getenv('QUANT_ABU_ROOT') or '').strip(),
+            quant_abu_config=(os.getenv('QUANT_ABU_CONFIG') or '').strip(),
+            quant_abu_python=(os.getenv('QUANT_ABU_PYTHON') or '').strip(),
+            quant_vnpy_root=(os.getenv('QUANT_VNPY_ROOT') or '').strip(),
+            quant_vnpy_python=(os.getenv('QUANT_VNPY_PYTHON') or '').strip(),
+            quant_vnpy_validation_enabled=parse_env_bool(os.getenv('QUANT_VNPY_VALIDATION_ENABLED'), default=True),
+            quant_enrichment_timeout_seconds=parse_env_int(os.getenv('QUANT_ENRICHMENT_TIMEOUT_SECONDS'), 600, field_name='QUANT_ENRICHMENT_TIMEOUT_SECONDS', minimum=1, maximum=3600),
             analysis_delay=parse_env_float(os.getenv('ANALYSIS_DELAY'), 0.0, field_name='ANALYSIS_DELAY', minimum=0.0),
             merge_email_notification=os.getenv('MERGE_EMAIL_NOTIFICATION', 'false').lower() == 'true',
             feishu_max_bytes=parse_env_int(os.getenv('FEISHU_MAX_BYTES'), 20000, field_name='FEISHU_MAX_BYTES', minimum=1),
+            feishu_send_as_file=os.getenv('FEISHU_SEND_AS_FILE', '').lower() in ('true', '1', 'yes'),
             wechat_max_bytes=wechat_max_bytes,
             wechat_msg_type=wechat_msg_type_lower,
             discord_max_words=parse_env_int(os.getenv('DISCORD_MAX_WORDS'), 2000, field_name='DISCORD_MAX_WORDS', minimum=1),
@@ -1765,6 +1953,10 @@ class Config:
                 minimum=1,
             ),
             md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
+            share_image_xiaohongshu_url=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_URL') or '').strip() or None,
+            share_image_xiaohongshu_handle=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_HANDLE') or '').strip() or None,
+            share_image_xiaohongshu_id=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_ID') or '').strip() or None,
+            share_image_xiaohongshu_qr_path=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_QR_PATH') or '').strip() or None,
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
             sqlite_wal_enabled=os.getenv('SQLITE_WAL_ENABLED', 'true').lower() == 'true',
@@ -1876,7 +2068,7 @@ class Config:
             ),
             fundamental_fetch_timeout_seconds=parse_env_float(
                 os.getenv('FUNDAMENTAL_FETCH_TIMEOUT_SECONDS'),
-                3.0,
+                8.0,
                 field_name='FUNDAMENTAL_FETCH_TIMEOUT_SECONDS',
                 minimum=0.0,
             ),
@@ -1924,12 +2116,7 @@ class Config:
                 minimum=1,
             ),
             portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
-            alphasift_enabled=parse_env_bool(os.getenv('ALPHASIFT_ENABLED'), default=False),
-            alphasift_install_spec=(
-                DEFAULT_ALPHASIFT_INSTALL_SPEC
-                if os.getenv('ALPHASIFT_INSTALL_SPEC') is None
-                else os.getenv('ALPHASIFT_INSTALL_SPEC', '').strip()
-            ),
+            screening_enabled=parse_env_bool(os.getenv('SCREENING_ENABLED'), default=False),
         )
     
     @classmethod
@@ -1980,6 +2167,15 @@ class Config:
 
     @classmethod
     def _parse_llm_channels(cls, channels_str: str) -> List[Dict[str, Any]]:
+        """Backward-compatible channel parser returning only valid channels."""
+        channels, _issues, _blocks, _blocked_routes = cls._parse_llm_channels_with_issues(channels_str)
+        return channels
+
+    @classmethod
+    def _parse_llm_channels_with_issues(
+        cls,
+        channels_str: str,
+    ) -> Tuple[List[Dict[str, Any]], List[HermesConfigIssue], bool, List[str]]:
         """Parse LLM_CHANNELS env var and per-channel env vars.
 
         Format:
@@ -1994,6 +2190,9 @@ class Config:
         _logger = logging.getLogger(__name__)
 
         channels: List[Dict[str, Any]] = []
+        issues: List[HermesConfigIssue] = []
+        blocks_legacy_fallback = False
+        blocked_hermes_routes: List[str] = []
         for raw_name in channels_str.split(','):
             ch_name = raw_name.strip()
             if not ch_name:
@@ -2017,8 +2216,8 @@ class Config:
             # API keys: LLM_{NAME}_API_KEYS (multi) > LLM_{NAME}_API_KEY (single)
             api_keys_raw = os.getenv(f'LLM_{ch_upper}_API_KEYS', '')
             api_keys = [k.strip() for k in api_keys_raw.split(',') if k.strip()]
+            single_key = os.getenv(f'LLM_{ch_upper}_API_KEY', '').strip()
             if not api_keys:
-                single_key = os.getenv(f'LLM_{ch_upper}_API_KEY', '').strip()
                 if single_key:
                     api_keys = [single_key]
             if not api_keys and ch_lower == "anspire":
@@ -2034,6 +2233,34 @@ class Config:
                 ).strip()
                 if anspire_model:
                     raw_models = [anspire_model]
+
+            if is_reserved_hermes_name(ch_name):
+                if not raw_models:
+                    raw_models = [HERMES_DEFAULT_MODEL]
+                result = parse_hermes_channel(
+                    enabled=enabled,
+                    protocol=protocol_raw or HERMES_DEFAULT_PROTOCOL,
+                    base_url=base_url or HERMES_DEFAULT_BASE_URL,
+                    api_key=single_key,
+                    api_keys_raw=api_keys_raw,
+                    extra_headers_raw=os.getenv(f'LLM_{ch_upper}_EXTRA_HEADERS', ''),
+                    models=raw_models,
+                )
+                issues.extend(result.issues)
+                blocks_legacy_fallback = blocks_legacy_fallback or result.blocks_legacy_fallback
+                for route_name in result.blocked_route_names:
+                    if route_name not in blocked_hermes_routes:
+                        blocked_hermes_routes.append(route_name)
+                if result.channel is None:
+                    if not enabled:
+                        _logger.info("LLM channel '%s': disabled, skipped", ch_name)
+                    else:
+                        _logger.warning("LLM channel '%s': invalid reserved Hermes channel, skipped", ch_name)
+                    continue
+                channels.append(result.channel)
+                _logger.info("LLM channel '%s': Hermes preset with %d model(s)", ch_name, len(result.channel["models"]))
+                continue
+
             protocol = resolve_llm_channel_protocol(protocol_raw, base_url=base_url, models=raw_models, channel_name=ch_name)
             models = [normalize_llm_channel_model(m, protocol, base_url) for m in raw_models]
 
@@ -2079,7 +2306,7 @@ class Config:
             })
             _logger.info(f"LLM channel '{ch_name}': {len(models)} model(s), {len(api_keys)} key(s)")
 
-        return channels
+        return channels, issues, blocks_legacy_fallback, blocked_hermes_routes
 
     @classmethod
     def _channels_to_model_list(cls, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2091,10 +2318,17 @@ class Config:
         """
         model_list: List[Dict[str, Any]] = []
         for ch in channels:
+            hermes_refs = {
+                str(ref.get("route_model") or ""): ref
+                for ref in (ch.get("model_refs") or [])
+                if isinstance(ref, dict)
+            }
             for model_name in ch['models']:
                 for api_key in ch['api_keys']:
+                    model_ref = hermes_refs.get(str(model_name))
+                    wire_model = str((model_ref or {}).get("wire_model") or model_name)
                     litellm_params: Dict[str, Any] = {
-                        'model': model_name,
+                        'model': wire_model,
                     }
                     if api_key:
                         litellm_params['api_key'] = api_key
@@ -2107,10 +2341,15 @@ class Config:
                     if headers:
                         litellm_params['extra_headers'] = headers
 
-                    model_list.append({
+                    entry: Dict[str, Any] = {
                         'model_name': model_name,
                         'litellm_params': litellm_params,
-                    })
+                    }
+                    if ch.get("is_hermes") or is_reserved_hermes_name(str(ch.get("name") or "")):
+                        entry["model_info"] = hermes_model_info(
+                            str((model_ref or {}).get("display_model") or "")
+                        )
+                    model_list.append(entry)
         return model_list
 
     @classmethod
@@ -2351,7 +2590,7 @@ class Config:
         raw = (value or "").strip()
         if raw and not is_supported_report_language_value(raw):
             logging.getLogger(__name__).warning(
-                "REPORT_LANGUAGE '%s' invalid, fallback to 'zh' (valid: zh/en)",
+                "REPORT_LANGUAGE '%s' invalid, fallback to 'zh' (valid: zh/en/ko)",
                 value,
             )
         return normalized
@@ -2379,12 +2618,12 @@ class Config:
     @classmethod
     def _parse_market_review_region(cls, value: str) -> str:
         """解析大盘复盘市场区域，非法值记录警告后回退为 cn"""
-        import logging
-        v = (value or 'cn').strip().lower()
-        if v in ('cn', 'us', 'hk', 'both'):
-            return v
+        normalized = normalize_market_review_region_lenient(value)
+        if normalized is not None:
+            return normalized
+
         logging.getLogger(__name__).warning(
-            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / hk / us / both）"
+            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / hk / us / jp / kr / both；支持逗号分隔有效值）"
         )
         return 'cn'
 
@@ -2405,13 +2644,13 @@ class Config:
     def _parse_md2img_engine(cls, value: str) -> str:
         """Parse MD2IMG_ENGINE, fallback to wkhtmltoimage for invalid values (Issue #455)."""
         v = (value or 'wkhtmltoimage').strip().lower()
-        if v in ('wkhtmltoimage', 'markdown-to-file'):
+        if v in ('wkhtmltoimage', 'markdown-to-file', 'playwright'):
             return v
         if v:
             import logging
             logging.getLogger(__name__).warning(
                 f"MD2IMG_ENGINE '{value}' invalid, fallback to 'wkhtmltoimage' "
-                "(valid: wkhtmltoimage | markdown-to-file)"
+                "(valid: wkhtmltoimage | markdown-to-file | playwright)"
             )
         return 'wkhtmltoimage'
 
@@ -2474,25 +2713,38 @@ class Config:
 
         Decision table:
 
-        +-----------------------+----------------------------------+---------+
-        | AGENT_MODE env        | effective Agent primary model set| Result  |
-        +-----------------------+----------------------------------+---------+
-        | ``true``              | any                              | True    |
-        | ``false`` (explicit)  | any                              | False   |
-        | not set (default)     | yes                              | True    |
-        | not set (default)     | no                               | False   |
-        +-----------------------+----------------------------------+---------+
+        +-----------------------+----------------------------+-----------------+
+        | AGENT_MODE env        | Agent-safe route available | Result          |
+        +-----------------------+----------------------------+-----------------+
+        | ``false`` (explicit)  | any                        | False           |
+        | ``true``              | yes                        | True            |
+        | ``true``              | no                         | False           |
+        | not set (default)     | yes                        | True            |
+        | not set (default)     | no                         | False           |
+        +-----------------------+----------------------------+-----------------+
 
-        This keeps backward compatibility: users who never touch
-        ``AGENT_MODE`` get agent features automatically once they configure an
-        Agent-effective model, while ``AGENT_MODE=false`` acts as an explicit
-        kill-switch.
+        ``AGENT_MODE=true`` expresses user intent, but Phase 3 Hermes safety
+        still requires a non-Hermes Agent route. Hermes-only deployments cannot
+        satisfy Agent tool roundtrip support; mixed routes are usable only via
+        their non-Hermes deployments. ``AGENT_MODE=false`` remains an explicit
+        kill-switch. Explicit local CLI Agent backends are unavailable because
+        they are text generation backends, not Agent tool-calling runtimes.
         """
-        # Explicit AGENT_MODE takes full precedence
+        if (self.agent_generation_backend or AUTO_AGENT_BACKEND_ID).strip().lower() in GENERATION_ONLY_BACKEND_IDS:
+            return False
+        # Phase 3 no longer lets AGENT_MODE=true bypass tool-route safety.
         if self._agent_mode_explicit:
-            return self.agent_mode
+            if not self.agent_mode:
+                return False
+            primary_model = get_effective_agent_primary_model(self)
+            origins = route_deployment_origins(self.llm_model_list, primary_model)
+            return not origins.is_hermes_only
         # Auto-detect: Agent inherits global model when AGENT_LITELLM_MODEL is empty.
-        return bool(get_effective_agent_primary_model(self))
+        primary_model = get_effective_agent_primary_model(self)
+        if not primary_model:
+            return False
+        origins = route_deployment_origins(self.llm_model_list, primary_model)
+        return not origins.is_hermes_only
 
     def refresh_stock_list(self) -> None:
         """
@@ -2518,7 +2770,7 @@ class Config:
 
         stock_list = [
             (c or "").strip().upper()
-            for c in stock_list_str.split(',')
+            for c in split_stock_list(stock_list_str)
             if (c or "").strip()
         ]
 
@@ -2588,46 +2840,115 @@ class Config:
 
         # --- Generation backend selection ---
         generation_backend = (self.generation_backend or LITELLM_BACKEND_ID).strip().lower()
-        generation_fallback_backend = (
-            self.generation_fallback_backend or LITELLM_BACKEND_ID
-        ).strip().lower()
+        generation_fallback_backend = str(self.generation_fallback_backend or "").strip().lower()
         agent_generation_backend = (
             self.agent_generation_backend or AUTO_AGENT_BACKEND_ID
         ).strip().lower()
+        agent_backend = (self.agent_backend or "auto").strip().lower()
         if generation_backend not in SUPPORTED_GENERATION_BACKENDS:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "GENERATION_BACKEND 当前仅支持 litellm。"
+                    "GENERATION_BACKEND 当前支持 "
+                    f"{'、'.join(sorted(SUPPORTED_GENERATION_BACKENDS))}。"
                     f"已配置的值为：{generation_backend}。"
                 ),
                 field="GENERATION_BACKEND",
             ))
-        if generation_fallback_backend not in SUPPORTED_GENERATION_BACKENDS:
+        if generation_fallback_backend and generation_fallback_backend == generation_backend:
+            generation_fallback_backend = ""
+        if generation_fallback_backend and generation_fallback_backend != LITELLM_BACKEND_ID:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "GENERATION_FALLBACK_BACKEND 当前仅支持 litellm。"
+                    "GENERATION_FALLBACK_BACKEND 当前支持 litellm、与 primary 相同的 no-op 值，或空字符串。"
                     f"已配置的值为：{generation_fallback_backend}。"
                 ),
                 field="GENERATION_FALLBACK_BACKEND",
             ))
         if agent_generation_backend not in SUPPORTED_AGENT_GENERATION_BACKENDS:
+            agent_ui_backends = "、".join(sorted(SUPPORTED_AGENT_UI_BACKENDS))
+            local_toolless_backends = "、".join(sorted(GENERATION_ONLY_BACKEND_IDS))
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "AGENT_GENERATION_BACKEND 当前仅支持 auto 或 litellm。"
+                    f"AGENT_GENERATION_BACKEND 当前支持 {agent_ui_backends}；"
+                    f"local CLI backend（{local_toolless_backends}）仅作为显式 unsupported diagnostic 保留，"
+                    "不支持 Agent 工具调用。"
                     f"已配置的值为：{agent_generation_backend}。"
                 ),
                 field="AGENT_GENERATION_BACKEND",
             ))
+        if agent_backend not in SUPPORTED_AGENT_BACKENDS:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "AGENT_BACKEND 当前支持 auto、litellm、codex_app_server。"
+                    f"已配置的值为：{agent_backend}。"
+                ),
+                field="AGENT_BACKEND",
+                code="capability_unsupported",
+            ))
+        if agent_backend == "codex_app_server" and self.agent_arch != "single":
+            issues.append(ConfigIssue(
+                severity="error",
+                message="Codex 本地 Agent 当前只支持单 Agent 问股，请将 AGENT_ARCH 设为 single。",
+                field="AGENT_ARCH",
+                code="unsupported_agent_arch",
+            ))
+        litellm_model_lower = (self.litellm_model or "").strip().lower()
+        local_model_prefix = next(
+            (
+                backend_id
+                for backend_id in GENERATION_ONLY_BACKEND_IDS
+                if litellm_model_lower.startswith(f"{backend_id}/")
+            ),
+            "",
+        )
+        if local_model_prefix:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    f"{local_model_prefix} 是 GENERATION_BACKEND，不是 LiteLLM provider。"
+                    f"请不要使用 LITELLM_MODEL={local_model_prefix}/...。"
+                ),
+                field="LITELLM_MODEL",
+            ))
+        if generation_backend == OPENCODE_CLI_BACKEND_ID:
+            opencode_model = (self.opencode_cli_model or "").strip()
+            unsafe_model = bool(opencode_model) and (
+                any(ch.isspace() for ch in opencode_model)
+                or any(
+                    marker in opencode_model
+                    for marker in ("|", ">", "<", ";", "`", "&&", "||", "$")
+                )
+            )
+            if unsafe_model:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "OPENCODE_CLI_MODEL 是可选的 OpenCode 模型覆盖值。"
+                        "配置时会作为单个 --model 参数传给 OpenCode，不能包含空白或 shell 元字符；"
+                        "不配置时 DSA 将使用 OpenCode 自身默认模型。"
+                    ),
+                    field="OPENCODE_CLI_MODEL",
+                ))
 
         # --- LLM availability ---
+        for raw_issue in self.llm_channel_config_issues or []:
+            issues.append(ConfigIssue(
+                severity=raw_issue.get("severity", "error"),  # type: ignore[arg-type]
+                message=raw_issue.get("message", "LLM channel configuration is invalid"),
+                field=raw_issue.get("field", "LLM_CHANNELS"),
+                code=raw_issue.get("code", "invalid_channel_config"),
+            ))
+
         # llm_model_list is populated for YAML / channels / managed legacy keys.
         # Other LiteLLM-native providers (for example cohere/*) run through the
         # direct litellm env path and therefore do not populate llm_model_list.
         has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
-        if not self.llm_model_list and not has_direct_env_model:
+        local_generation_backend = generation_backend in LOCAL_CLI_GENERATION_BACKEND_IDS
+        if not local_generation_backend and not self.llm_model_list and not has_direct_env_model:
             if self.litellm_config_path:
                 issues.append(ConfigIssue(
                     severity="error",
@@ -2658,7 +2979,7 @@ class Config:
                     ),
                     field="LITELLM_CONFIG",
                 ))
-        elif not self.litellm_model:
+        elif not local_generation_backend and not self.litellm_model:
             issues.append(ConfigIssue(
                 severity="info",
                 message=(
@@ -2689,10 +3010,22 @@ class Config:
         effective_agent_primary_model = get_effective_agent_primary_model(self)
 
         if available_router_model_set:
+            if self.litellm_model:
+                origins = route_deployment_origins(self.llm_model_list, self.litellm_model)
+                if origins.is_mixed:
+                    issues.append(ConfigIssue(
+                        severity="error",
+                        message=(
+                            "Hermes/non-Hermes mixed generation routes are not supported in Phase 3. "
+                            "请选择纯 Hermes 或纯非 Hermes 主模型。"
+                        ),
+                        field="LITELLM_MODEL",
+                        code="mixed_hermes_route_unsupported",
+                    ))
             if (
                 self.litellm_model
                 and not _uses_direct_env_provider(self.litellm_model)
-                and self.litellm_model not in available_router_model_set
+                and not _matches_exact_route(self.litellm_model, available_router_model_set)
             ):
                 issues.append(ConfigIssue(
                     severity="error",
@@ -2703,11 +3036,24 @@ class Config:
                     field="LITELLM_MODEL",
                 ))
 
+            if configured_agent_primary_model and effective_agent_primary_model:
+                origins = route_deployment_origins(self.llm_model_list, effective_agent_primary_model)
+                if origins.is_hermes_only:
+                    issues.append(ConfigIssue(
+                        severity="error",
+                        message=(
+                            "Hermes-only route 不能作为 Agent 主模型。"
+                            "请选择包含非 Hermes deployment 的 Agent-safe route。"
+                        ),
+                        field="AGENT_LITELLM_MODEL",
+                        code="explicit_agent_model_no_safe_deployment",
+                    ))
+
             if (
                 configured_agent_primary_model
                 and effective_agent_primary_model
                 and not _uses_direct_env_provider(effective_agent_primary_model)
-                and effective_agent_primary_model not in available_router_model_set
+                and not _matches_exact_route(effective_agent_primary_model, available_router_model_set)
             ):
                 issues.append(ConfigIssue(
                     severity="error",
@@ -2718,9 +3064,24 @@ class Config:
                     field="AGENT_LITELLM_MODEL",
                 ))
 
+            mixed_fallbacks = [
+                model for model in (self.litellm_fallback_models or [])
+                if route_deployment_origins(self.llm_model_list, model).is_mixed
+            ]
+            if mixed_fallbacks:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "Hermes/non-Hermes mixed generation routes are not supported as fallback models in Phase 3: "
+                        f"{', '.join(mixed_fallbacks[:3])}"
+                    ),
+                    field="LITELLM_FALLBACK_MODELS",
+                    code="mixed_hermes_route_unsupported",
+                ))
+
             invalid_fallbacks = [
                 model for model in (self.litellm_fallback_models or [])
-                if model and model not in available_router_model_set
+                if model and not _matches_exact_route(model, available_router_model_set)
                 and not _uses_direct_env_provider(model)
             ]
             if invalid_fallbacks:
@@ -2736,7 +3097,7 @@ class Config:
             if (
                 self.vision_model
                 and not _uses_direct_env_provider(self.vision_model)
-                and self.vision_model not in available_router_model_set
+                and not _matches_exact_route(self.vision_model, available_router_model_set)
             ):
                 issues.append(ConfigIssue(
                     severity="warning",
@@ -2745,6 +3106,15 @@ class Config:
                         f" 当前可用模型：{', '.join(available_router_models[:6])}"
                     ),
                     field="VISION_MODEL",
+                ))
+            if self.vision_model and route_has_hermes(self.llm_model_list, self.vision_model):
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=(
+                        "Hermes Phase 3 未验证 Vision 能力，VISION_MODEL 不能选择包含 Hermes deployment 的 route。"
+                    ),
+                    field="VISION_MODEL",
+                    code="hermes_vision_unsupported",
                 ))
         elif (
             configured_agent_primary_model
@@ -2837,6 +3207,7 @@ class Config:
         for field, value in (
             ("WECHAT_WEBHOOK_URL", self.wechat_webhook_url),
             ("FEISHU_WEBHOOK_URL", self.feishu_webhook_url),
+            ("DINGTALK_WEBHOOK_URL", self.dingtalk_webhook_url),
             ("DISCORD_WEBHOOK_URL", self.discord_webhook_url),
             ("SLACK_WEBHOOK_URL", self.slack_webhook_url),
             ("ASTRBOT_URL", self.astrbot_url),

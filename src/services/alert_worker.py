@@ -38,7 +38,7 @@ from src.services.decision_signal_summary import (
     summarize_decision_signal,
 )
 from src.services.history_service import HistoryService
-from src.services.market_light_service import normalize_market_region
+from src.services.market_light_service import normalize_market_alert_region
 
 logger = logging.getLogger(__name__)
 
@@ -543,7 +543,7 @@ class AlertWorker:
             rule = getattr(runtime_rule, "rule", runtime_rule)
             target_scope = str(getattr(rule, "target_scope", "") or "")
             if target_scope == "market":
-                market = normalize_market_region(getattr(rule, "target", self._effective_target(runtime_rule)))
+                market = normalize_market_alert_region(getattr(rule, "target", self._effective_target(runtime_rule)))
             elif target_scope in {"portfolio_account"}:
                 market = None
             else:

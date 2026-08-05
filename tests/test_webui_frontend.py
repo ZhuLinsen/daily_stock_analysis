@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 
 import src.webui_frontend as webui_frontend
 
@@ -21,6 +23,22 @@ def _create_full_static(repo_root):
     (assets_dir / "index-abc123.js").write_text("/* js */", encoding="utf-8")
     (assets_dir / "index-abc123.css").write_text("/* css */", encoding="utf-8")
     return static_dir
+
+
+def _create_frontend_source(repo_root):
+    frontend_dir = repo_root / "apps" / "dsa-web"
+    source_dir = frontend_dir / "src"
+    source_dir.mkdir(parents=True)
+    (frontend_dir / "package.json").write_text('{"version":"0.0.0"}', encoding="utf-8")
+    (source_dir / "main.ts").write_text("export const value = 1;\n", encoding="utf-8")
+    return frontend_dir
+
+
+def _write_build_metadata(static_dir, source_fingerprint):
+    (static_dir / "build-info.json").write_text(
+        json.dumps({"schemaVersion": 1, "sourceFingerprint": source_fingerprint}),
+        encoding="utf-8",
+    )
 
 
 def test_prepare_webui_frontend_assets_reuses_prebuilt_static_without_source(tmp_path, monkeypatch, caplog):
@@ -88,6 +106,90 @@ def test_prepare_webui_frontend_assets_auto_build_disabled_warns_when_assets_mis
 
     assert result is True  # index.html present, still returns True
     assert "目录不存在或无 CSS/JS 文件" in caplog.text
+
+
+def test_needs_frontend_build_uses_content_fingerprint_when_mtime_is_preserved(tmp_path):
+    repo_root = tmp_path / "repo"
+    frontend_dir = _create_frontend_source(repo_root)
+    static_dir = _create_full_static(repo_root)
+    source_file = frontend_dir / "src" / "main.ts"
+    source_fingerprint = webui_frontend._calculate_source_fingerprint(frontend_dir)
+    _write_build_metadata(static_dir, source_fingerprint)
+
+    needs_build, _ = webui_frontend._needs_frontend_build(frontend_dir, force_build=False)
+    assert needs_build is False
+
+    source_file.write_text("export const value = 2;\n", encoding="utf-8")
+    # Simulate rsync -a preserving a timestamp older than the existing bundle.
+    os.utime(source_file, (1, 1))
+    needs_build, _ = webui_frontend._needs_frontend_build(frontend_dir, force_build=False)
+    assert needs_build is True
+
+
+def test_needs_frontend_build_rebuilds_legacy_artifact_once(tmp_path):
+    repo_root = tmp_path / "repo"
+    frontend_dir = _create_frontend_source(repo_root)
+    _create_full_static(repo_root)
+
+    needs_build, _ = webui_frontend._needs_frontend_build(frontend_dir, force_build=False)
+
+    assert needs_build is True
+
+
+def test_dependency_install_uses_content_fingerprint_when_mtime_is_preserved(tmp_path):
+    frontend_dir = _create_frontend_source(tmp_path / "repo")
+    lock_file = frontend_dir / "package-lock.json"
+    lock_file.write_text('{"lockfileVersion":3,"packages":{}}', encoding="utf-8")
+    node_modules = frontend_dir / "node_modules"
+    node_modules.mkdir()
+    webui_frontend._write_installed_dependency_fingerprint(frontend_dir)
+
+    assert webui_frontend._needs_dependency_install(
+        frontend_dir,
+        frontend_dir / "package.json",
+        lock_file,
+        force_build=False,
+    ) is False
+
+    lock_file.write_text('{"lockfileVersion":3,"packages":{"node_modules/new":{}}}', encoding="utf-8")
+    os.utime(lock_file, (1, 1))
+
+    assert webui_frontend._needs_dependency_install(
+        frontend_dir,
+        frontend_dir / "package.json",
+        lock_file,
+        force_build=False,
+    ) is True
+
+
+def test_source_input_discovery_errors_fall_back_without_aborting(tmp_path, monkeypatch, caplog):
+    frontend_dir = _create_frontend_source(tmp_path / "repo")
+
+    def raise_permission_error(_frontend_dir):
+        raise PermissionError("unreadable source directory")
+
+    monkeypatch.setattr(webui_frontend, "_collect_build_input_files", raise_permission_error)
+
+    with caplog.at_level(logging.WARNING):
+        assert webui_frontend._calculate_source_fingerprint(frontend_dir) is None
+
+    assert "回退到文件时间检查" in caplog.text
+
+
+def test_undecodable_build_metadata_is_treated_as_stale(tmp_path, monkeypatch, caplog):
+    repo_root = _prepare_fake_repo(tmp_path, monkeypatch)
+    frontend_dir = _create_frontend_source(repo_root)
+    static_dir = _create_full_static(repo_root)
+    (static_dir / "build-info.json").write_bytes(b"\xff\xfe\x00broken")
+
+    needs_build, _ = webui_frontend._needs_frontend_build(frontend_dir, force_build=False)
+    assert needs_build is True
+
+    monkeypatch.setenv("WEBUI_AUTO_BUILD", "false")
+    with caplog.at_level(logging.WARNING):
+        assert webui_frontend.prepare_webui_frontend_assets() is True
+
+    assert "源码与现有静态产物不一致" in caplog.text
 
 
 def test_has_static_assets_returns_false_for_missing_dir(tmp_path):

@@ -118,6 +118,33 @@ class TestDiscordSender(unittest.TestCase):
         self.assertIn("username", call_kw["json"])
 
     @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_text_payload(self, mock_post):
+        mock_post.return_value = _response(204)
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1")
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        call_kw = mock_post.call_args[1]
+        self.assertNotIn("[dsa-market-region]", call_kw["json"]["content"])
+        self.assertIn("# 🎯 Market Review", call_kw["json"]["content"])
+        self.assertIn("Body", call_kw["json"]["content"])
+
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_preserves_standard_markdown_reference_definitions(self, mock_post):
+        mock_post.return_value = _response(204)
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1")
+        sender = DiscordSender(cfg)
+
+        content = "[详情][ref]\n\n[ref]: https://example.com/report"
+        result = sender.send_to_discord(content)
+
+        self.assertTrue(result)
+        call_kw = mock_post.call_args[1]
+        self.assertEqual(call_kw["json"]["content"], content)
+
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
     def test_send_webhook_http_error_returns_false(self, mock_post):
         mock_post.return_value = _response(400)
         cfg = _config(discord_webhook_url="https://discord.com/webhook/1")
@@ -135,6 +162,94 @@ class TestDiscordSender(unittest.TestCase):
         self.assertIn("discord.com/api/v10/channels/CH123/messages", mock_post.call_args[0][0])
         call_kw = mock_post.call_args[1]
         self.assertEqual(call_kw["headers"]["Authorization"], "Bot TOKEN")
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_long_content_sends_all_chunks(self, mock_post, mock_sleep):
+        mock_post.return_value = _response(204)
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1", discord_max_words=2000)
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("A" * 6000)
+
+        self.assertTrue(result)
+        self.assertGreater(mock_post.call_count, 1)
+        self.assertEqual(mock_sleep.call_count, mock_post.call_count - 1)
+        payload_lengths = [len(call.kwargs["json"]["content"]) for call in mock_post.call_args_list]
+        self.assertTrue(all(length <= 2000 for length in payload_lengths))
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_long_content_retries_429_and_continues(self, mock_post, mock_sleep):
+        mock_post.side_effect = [
+            _response(204),
+            _response(429, {"retry_after": 0}),
+            _response(204),
+            _response(204),
+            _response(204),
+        ]
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1", discord_max_words=2000)
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("A" * 6000)
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_count, 5)
+        mock_sleep.assert_any_call(0.0)
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_long_content_does_not_short_circuit_after_failed_chunk(self, mock_post, _mock_sleep):
+        mock_post.side_effect = [
+            _response(204),
+            _response(400),
+            _response(204),
+            _response(204),
+        ]
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1", discord_max_words=2000)
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("A" * 6000)
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, 4)
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_long_content_continues_after_request_exception(self, mock_post, _mock_sleep):
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1", discord_max_words=2000)
+        sender = DiscordSender(cfg)
+        content = "A" * 6000
+        chunk_count = len(sender._split_discord_content(content))
+        request_error = requests.exceptions.ChunkedEncodingError("broken response")
+        mock_post.side_effect = (
+            [_response(204)]
+            + [request_error] * 3
+            + [_response(204)] * (chunk_count - 2)
+        )
+
+        result = sender.send_to_discord(content)
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, chunk_count + 2)
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_bot_clamps_configured_limit_to_discord_content_limit(self, mock_post, _mock_sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(
+            discord_bot_token="TOKEN",
+            discord_main_channel_id="CH123",
+            discord_max_words=5000,
+        )
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("A" * 4500)
+
+        self.assertTrue(result)
+        self.assertGreater(mock_post.call_count, 1)
+        payload_lengths = [len(call.kwargs["json"]["content"]) for call in mock_post.call_args_list]
+        self.assertTrue(all(length <= 2000 for length in payload_lengths))
 
 
 class TestWechatSender(unittest.TestCase):
@@ -154,6 +269,21 @@ class TestWechatSender(unittest.TestCase):
         result = sender.send_to_wechat("hello")
         self.assertTrue(result)
 
+    @mock.patch("src.notification_sender.wechat_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_text_payload(self, mock_post):
+        mock_post.return_value = _response(200, {"errcode": 0})
+        cfg = _config(wechat_webhook_url="https://wechat.example/hook", wechat_msg_type="text")
+        sender = WechatSender(cfg)
+
+        result = sender.send_to_wechat("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["msgtype"], "text")
+        self.assertNotIn("[dsa-market-region]", payload["text"]["content"])
+        self.assertIn("# 🎯 Market Review", payload["text"]["content"])
+        self.assertIn("Body", payload["text"]["content"])
+
     def test_gen_wechat_payload_markdown(self):
         cfg = _config(wechat_webhook_url="u", wechat_msg_type="markdown")
         sender = WechatSender(cfg)
@@ -167,6 +297,15 @@ class TestWechatSender(unittest.TestCase):
         payload = sender._gen_wechat_payload("plain")
         self.assertEqual(payload["msgtype"], "text")
         self.assertEqual(payload["text"]["content"], "plain")
+
+    def test_gen_wechat_payload_text_strips_hidden_market_region_metadata(self):
+        cfg = _config(wechat_webhook_url="u", wechat_msg_type="text")
+        sender = WechatSender(cfg)
+        payload = sender._gen_wechat_payload("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
+        self.assertEqual(payload["msgtype"], "text")
+        self.assertNotIn("[dsa-market-region]", payload["text"]["content"])
+        self.assertIn("# 🎯 Market Review", payload["text"]["content"])
+        self.assertIn("Body", payload["text"]["content"])
 
     @mock.patch("src.notification_sender.wechat_sender.requests.post")
     def test_send_wechat_image_over_limit_returns_false(self, mock_post):
@@ -194,6 +333,16 @@ class TestFeishuSender(unittest.TestCase):
         sender = FeishuSender(cfg)
         result = sender.send_to_feishu("hello")
         self.assertTrue(result)
+
+    @mock.patch.object(FeishuSender, "_send_via_webhook", return_value=True)
+    def test_send_strips_hidden_market_region_metadata_before_routing(self, mock_send):
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        mock_send.assert_called_once_with("# 🎯 Market Review\n\nBody", timeout_seconds=None)
 
     @mock.patch("src.notification_sender.feishu_sender.requests.post")
     def test_send_http_error_returns_false(self, mock_post):
@@ -590,6 +739,223 @@ class TestFeishuSender(unittest.TestCase):
         create.assert_not_called()
         mock_sleep.assert_not_called()
 
+    # ------------------------------------------------------------------
+    # send_feishu_file tests
+    # ------------------------------------------------------------------
+
+    @mock.patch("src.notification_sender.feishu_sender.Path")
+    def test_send_feishu_file_returns_false_when_file_not_found(self, mock_path_cls):
+        """send_feishu_file returns False when the file does not exist."""
+        mock_path = mock_path_cls.return_value
+        mock_path.is_file.return_value = False
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+        result = sender.send_feishu_file("/nonexistent/report.md")
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.feishu_sender.Path")
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_feishu_file_webhook_reads_file_and_sends_content(self, mock_post, mock_path_cls):
+        """Webhook fallback reads the file and sends its content as a message."""
+        mock_post.return_value = _response(200, {"code": 0})
+        mock_path = mock_path_cls.return_value
+        mock_path.is_file.return_value = True
+        mock_path.name = "report_20260705.md"
+        mock_path.suffix = ".md"
+        mock_path.read_text.return_value = "# Test Report\n\nHello"
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+        result = sender.send_feishu_file("/tmp/report_20260705.md")
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        payload = mock_post.call_args.kwargs["json"]
+        rendered = payload["card"]["elements"][0]["text"]["content"]
+        self.assertIn("📄 Markdown 文件内容: report_20260705.md", rendered)
+        self.assertIn("**Test Report**", rendered)
+
+    @mock.patch("src.notification_sender.feishu_sender.Path")
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_feishu_file_webhook_strips_hidden_metadata_from_file_content(self, mock_post, mock_path_cls):
+        mock_post.return_value = _response(200, {"code": 0})
+        mock_path = mock_path_cls.return_value
+        mock_path.is_file.return_value = True
+        mock_path.name = "report.md"
+        mock_path.suffix = ".md"
+        mock_path.read_text.return_value = "[dsa-market-region]: # (cn)\n\n# Test Report\n\nHello"
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+
+        result = sender.send_feishu_file("/tmp/report.md")
+
+        self.assertTrue(result)
+        rendered = mock_post.call_args.kwargs["json"]["card"]["elements"][0]["text"]["content"]
+        self.assertNotIn("[dsa-market-region]", rendered)
+        self.assertIn("**Test Report**", rendered)
+
+    @mock.patch("src.notification_sender.feishu_sender.Path")
+    def test_send_feishu_file_webhook_unreadable_file_returns_false(self, mock_path_cls):
+        """Webhook fallback returns False when the file cannot be read."""
+        mock_path = mock_path_cls.return_value
+        mock_path.is_file.return_value = True
+        mock_path.read_text.side_effect = OSError("Permission denied")
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+        result = sender.send_feishu_file("/tmp/protected.md")
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.feishu_sender.Path")
+    def test_send_feishu_file_app_bot_missing_chat_id_returns_false(self, mock_path_cls):
+        """App Bot mode returns False when chat_id is not configured."""
+        mock_path = mock_path_cls.return_value
+        mock_path.is_file.return_value = True
+        cfg = _config(feishu_app_id="cli_app", feishu_app_secret="secret")
+        sender = FeishuSender(cfg)
+        result = sender.send_feishu_file("/tmp/report.md")
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequestBody", create=True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequest", create=True)
+    @mock.patch("src.notification_sender.feishu_sender.FEISHU_FILE_SDK_AVAILABLE", True)
+    @mock.patch("src.notification_sender.feishu_sender.Path")
+    def test_send_feishu_file_app_bot_uploads_file_and_sends_message(self, *_):
+        """App Bot uploads the file via SDK and sends a file message."""
+        mock_path = mock.MagicMock()
+        mock_path.is_file.return_value = True
+        mock_path.name = "report.md"
+        mock_path.suffix = ".md"
+        mock_path.open.return_value.__enter__.return_value = mock.MagicMock()
+        with mock.patch("src.notification_sender.feishu_sender.Path", return_value=mock_path):
+            cfg = _config(
+                feishu_app_id="cli_app",
+                feishu_app_secret="secret",
+                feishu_chat_id="oc_chat",
+            )
+            sender = FeishuSender(cfg)
+            dummy_client = mock.MagicMock()
+            file_resp = mock.MagicMock()
+            file_resp.success.return_value = True
+            file_resp.code = 0
+            file_resp.msg = "ok"
+            file_resp.data.file_key = "file_key_abc"
+            dummy_client.im.v1.file.create.return_value = file_resp
+            with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=dummy_client), \
+                 mock.patch.object(FeishuSender, "_app_send_raw", return_value=True) as mock_raw:
+                result = sender.send_feishu_file("/tmp/report.md")
+        self.assertTrue(result)
+        dummy_client.im.v1.file.create.assert_called_once()
+        mock_raw.assert_called_once()
+        self.assertEqual(mock_raw.call_args[0][1], "file")
+        content_json = json.loads(mock_raw.call_args[0][2])
+        self.assertEqual(content_json["file_key"], "file_key_abc")
+
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequestBody", create=True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequest", create=True)
+    @mock.patch("src.notification_sender.feishu_sender.FEISHU_FILE_SDK_AVAILABLE", True)
+    @mock.patch("src.notification_sender.feishu_sender.tempfile.NamedTemporaryFile")
+    def test_send_feishu_file_app_bot_strips_hidden_metadata_before_upload(self, mock_tmpfile, *_):
+        mock_path = mock.MagicMock()
+        mock_path.is_file.return_value = True
+        mock_path.name = "report.md"
+        mock_path.suffix = ".md"
+        mock_path.read_text.return_value = "[dsa-market-region]: # (cn)\n\n# Test Report\n\nHello"
+
+        temp_handle = mock.MagicMock()
+        temp_handle.name = "/tmp/feishu_sanitized.md"
+        temp_handle.__enter__.return_value = temp_handle
+        temp_handle.__exit__.return_value = None
+        mock_tmpfile.return_value = temp_handle
+
+        sanitized_path = mock.MagicMock()
+        sanitized_path.name = "feishu_sanitized.md"
+        sanitized_path.suffix = ".md"
+        sanitized_path.open.return_value.__enter__.return_value = mock.MagicMock()
+        sanitized_path.unlink.return_value = None
+
+        with mock.patch("src.notification_sender.feishu_sender.Path", side_effect=[mock_path, sanitized_path]):
+            cfg = _config(
+                feishu_app_id="cli_app",
+                feishu_app_secret="secret",
+                feishu_chat_id="oc_chat",
+            )
+            sender = FeishuSender(cfg)
+            dummy_client = mock.MagicMock()
+            file_resp = mock.MagicMock()
+            file_resp.success.return_value = True
+            file_resp.code = 0
+            file_resp.msg = "ok"
+            file_resp.data.file_key = "file_key_abc"
+            dummy_client.im.v1.file.create.return_value = file_resp
+            with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=dummy_client), \
+                 mock.patch.object(FeishuSender, "_app_send_raw", return_value=True):
+                result = sender.send_feishu_file("/tmp/report.md")
+
+        self.assertTrue(result)
+        temp_handle.write.assert_called_once()
+        written_content = temp_handle.write.call_args.args[0]
+        self.assertNotIn("[dsa-market-region]", written_content)
+        self.assertIn("# Test Report", written_content)
+        sanitized_path.open.assert_called_once()
+        sanitized_path.unlink.assert_called_once()
+
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequestBody", create=True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequest", create=True)
+    @mock.patch("src.notification_sender.feishu_sender.FEISHU_FILE_SDK_AVAILABLE", True)
+    def test_send_feishu_file_app_bot_upload_failure_returns_false(self, *_):
+        """App Bot returns False when the file upload fails."""
+        mock_path = mock.MagicMock()
+        mock_path.is_file.return_value = True
+        mock_path.name = "report.md"
+        mock_path.suffix = ".md"
+        mock_path.open.return_value.__enter__.return_value = mock.MagicMock()
+        with mock.patch("src.notification_sender.feishu_sender.Path", return_value=mock_path):
+            cfg = _config(
+                feishu_app_id="cli_app",
+                feishu_app_secret="secret",
+                feishu_chat_id="oc_chat",
+            )
+            sender = FeishuSender(cfg)
+            dummy_client = mock.MagicMock()
+            file_resp = mock.MagicMock()
+            file_resp.success.return_value = False
+            file_resp.code = 999
+            file_resp.msg = "upload failed"
+            dummy_client.im.v1.file.create.return_value = file_resp
+            with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=dummy_client):
+                result = sender.send_feishu_file("/tmp/report.md")
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequestBody", create=True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequest", create=True)
+    @mock.patch("src.notification_sender.feishu_sender.FEISHU_FILE_SDK_AVAILABLE", True)
+    def test_send_feishu_file_app_bot_missing_file_key_returns_false(self, *_):
+        """App Bot returns False when upload succeeds but file_key is missing."""
+        mock_path = mock.MagicMock()
+        mock_path.is_file.return_value = True
+        mock_path.name = "report.md"
+        mock_path.suffix = ".md"
+        mock_path.open.return_value.__enter__.return_value = mock.MagicMock()
+        with mock.patch("src.notification_sender.feishu_sender.Path", return_value=mock_path):
+            cfg = _config(
+                feishu_app_id="cli_app",
+                feishu_app_secret="secret",
+                feishu_chat_id="oc_chat",
+            )
+            sender = FeishuSender(cfg)
+            dummy_client = mock.MagicMock()
+            file_resp = mock.MagicMock()
+            file_resp.success.return_value = True
+            file_resp.data = None
+            dummy_client.im.v1.file.create.return_value = file_resp
+            with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=dummy_client):
+                result = sender.send_feishu_file("/tmp/report.md")
+        self.assertFalse(result)
+
+    def test_file_upload_sdk_classes_exist_non_mock(self):
+        """Smoke: lark-oapi SDK actually exports CreateFileRequest/RequestBody."""
+        from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
+        self.assertTrue(hasattr(CreateFileRequest, 'builder'))
+        self.assertTrue(hasattr(CreateFileRequestBody, 'builder'))
+
 
 class TestEmailSender(unittest.TestCase):
     """Unit tests for EmailSender (config and receiver logic; send path covered via service)."""
@@ -679,6 +1045,23 @@ class TestEmailSender(unittest.TestCase):
         server.quit.assert_called_once()
 
     @mock.patch("smtplib.SMTP_SSL")
+    def test_send_to_email_strips_hidden_market_metadata(self, mock_smtp_ssl):
+        cfg = _config(
+            email_sender="a@qq.com",
+            email_password="p",
+            email_receivers=["b@qq.com"],
+        )
+        sender = EmailSender(cfg)
+
+        result = sender.send_to_email("[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        msg = mock_smtp_ssl.return_value.send_message.call_args[0][0]
+        payloads = msg.get_payload()
+        self.assertNotIn("[dsa-market-region]", payloads[0].get_payload(decode=True).decode("utf-8"))
+        self.assertNotIn("[dsa-market-region]", payloads[1].get_payload(decode=True).decode("utf-8"))
+
+    @mock.patch("smtplib.SMTP_SSL")
     def test_send_image_email_encodes_non_ascii_sender_name(self, mock_smtp_ssl):
         cfg = _config(
             email_sender="a@qq.com",
@@ -742,6 +1125,20 @@ class TestNtfySender(unittest.TestCase):
         self.assertEqual(call_kw["headers"]["Authorization"], "Bearer secret-token")
         self.assertEqual(call_kw["timeout"], 5)
         self.assertFalse(call_kw["verify"])
+
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_message(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"]["message"],
+            "# 🎯 Market Review\n\nBody",
+        )
 
     @mock.patch("src.notification_sender.ntfy_sender.requests.post")
     def test_send_supports_self_hosted_path_prefix(self, mock_post):
@@ -851,6 +1248,20 @@ class TestGotifySender(unittest.TestCase):
         self.assertFalse(call_kw["verify"])
 
     @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_message(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(gotify_url="https://gotify.example", gotify_token="secret-token")
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"]["message"],
+            "# 🎯 Market Review\n\nBody",
+        )
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
     def test_send_supports_reverse_proxy_path_prefix(self, mock_post):
         mock_post.return_value = _response(200)
         cfg = _config(gotify_url="https://example.com/gotify", gotify_token="secret-token")
@@ -902,6 +1313,20 @@ class TestAstrbotSender(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(mock_post.call_args[0][0], "https://astrbot.example/api")
 
+    @mock.patch("src.notification_sender.astrbot_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_before_html_conversion(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(astrbot_url="https://astrbot.example/api")
+        sender = AstrbotSender(cfg)
+
+        result = sender.send_to_astrbot("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]["content"]
+        self.assertNotIn("[dsa-market-region]", payload)
+        self.assertIn("Market Review", payload)
+        self.assertIn("Body", payload)
+
 
 class TestCustomWebhookSender(unittest.TestCase):
     """Unit tests for CustomWebhookSender."""
@@ -921,6 +1346,20 @@ class TestCustomWebhookSender(unittest.TestCase):
         self.assertTrue(result)
         body = mock_post.call_args[1]["data"].decode("utf-8")
         self.assertIn("hello", body)
+
+    @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_payload(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(custom_webhook_urls=["https://example.com/webhook"])
+        sender = CustomWebhookSender(cfg)
+
+        result = sender.send_to_custom("[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        body = mock_post.call_args.kwargs["data"].decode("utf-8")
+        self.assertNotIn("[dsa-market-region]", body)
+        self.assertIn("Market Review", body)
+        self.assertIn("Body", body)
 
     @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
     def test_send_returns_true_when_one_custom_webhook_succeeds(self, mock_post):
@@ -1131,6 +1570,20 @@ class TestPushoverSender(unittest.TestCase):
         self.assertEqual(call_data["user"], "U")
         self.assertEqual(call_data["token"], "T")
 
+    @mock.patch("src.notification_sender.pushover_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_plain_text(self, mock_post):
+        mock_post.return_value = _response(200, {"status": 1})
+        cfg = _config(pushover_user_key="U", pushover_api_token="T")
+        sender = PushoverSender(cfg)
+
+        result = sender.send_to_pushover("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        call_data = mock_post.call_args[1]["data"]
+        self.assertNotIn("[dsa-market-region]", call_data["message"])
+        self.assertIn("🎯 Market Review", call_data["message"])
+        self.assertIn("Body", call_data["message"])
+
     @mock.patch("time.sleep")
     @mock.patch("src.notification_sender.pushover_sender.requests.post")
     def test_send_chunked_uses_test_timeout(self, mock_post, _mock_sleep):
@@ -1162,6 +1615,20 @@ class TestPushplusSender(unittest.TestCase):
         result = sender.send_to_pushplus("hello")
         self.assertTrue(result)
 
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_content(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 200})
+        cfg = _config(pushplus_token="TOKEN")
+        sender = PushplusSender(cfg)
+
+        result = sender.send_to_pushplus("[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"]["content"],
+            "# 🎯 Market Review\n\nBody",
+        )
+
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
     def test_send_long_message_chunks_pushplus_requests(self, mock_post, _mock_sleep):
@@ -1191,6 +1658,20 @@ class TestServerchan3Sender(unittest.TestCase):
         sender = Serverchan3Sender(cfg)
         result = sender.send_to_serverchan3("hello")
         self.assertTrue(result)
+
+    @mock.patch("src.notification_sender.serverchan3_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_desp(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(serverchan3_sendkey="SCT123")
+        sender = Serverchan3Sender(cfg)
+
+        result = sender.send_to_serverchan3("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"]["desp"],
+            "# 🎯 Market Review\n\nBody",
+        )
 
 
 class TestSlackSender(unittest.TestCase):
@@ -1281,6 +1762,40 @@ class TestSlackSender(unittest.TestCase):
         payload = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
         self.assertIn("## 日报", payload["text"])
         self.assertIn("[详情](https://example.com/report)", payload["text"])
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_text_payload(self, mock_post):
+        resp = mock.MagicMock()
+        resp.status_code = 200
+        resp.text = "ok"
+        mock_post.return_value = resp
+        cfg = _config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        sender = SlackSender(cfg)
+
+        result = sender.send_to_slack("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        payload = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        self.assertNotIn("[dsa-market-region]", payload["text"])
+        self.assertIn("# 🎯 Market Review", payload["text"])
+        self.assertIn("Body", payload["text"])
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_preserves_standard_markdown_reference_definitions(self, mock_post):
+        resp = mock.MagicMock()
+        resp.status_code = 200
+        resp.text = "ok"
+        mock_post.return_value = resp
+        cfg = _config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        sender = SlackSender(cfg)
+
+        content = "[详情][ref]\n\n[ref]: https://example.com/report"
+        result = sender.send_to_slack(content)
+
+        self.assertTrue(result)
+        payload = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        self.assertIn("[详情][ref]", payload["text"])
+        self.assertIn("[ref]: https://example.com/report", payload["text"])
 
     @mock.patch("src.notification_sender.slack_sender.requests.post")
     def test_send_text_prefers_bot_when_both_configured(self, mock_post):
@@ -1412,6 +1927,71 @@ class TestTelegramSender(unittest.TestCase):
         self.assertIn("| 股票 | 信号 |", rendered)
         self.assertIn("[详情](https://example.com/report)", rendered)
         self.assertNotIn("# 日报", rendered)
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata_from_text_payload(self, mock_post):
+        mock_post.return_value = _response(200, {"ok": True})
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+
+        result = sender.send_to_telegram("[dsa-market-region]: # (us)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertNotIn("[dsa-market-region]", payload["text"])
+        self.assertIn("🎯 Market Review", payload["text"])
+        self.assertIn("Body", payload["text"])
+
+    @mock.patch.object(TelegramSender, "_send_telegram_message", return_value=True)
+    def test_send_telegram_chunked_splits_large_reason_without_delimiter(self, mock_send_telegram_message):
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        long_reason = "原因过长需分段测试：" + ("A" * 5000)
+        content = f"**AI 决策信号**\n- 理由: {long_reason}\n"
+
+        result = sender._send_telegram_chunked(
+            "http://api.telegram.org",
+            "CHAT",
+            sender._convert_to_telegram_markdown(content),
+            max_length=4096,
+            timeout_seconds=3,
+        )
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(len(mock_send_telegram_message.call_args_list), 2)
+        for call in mock_send_telegram_message.call_args_list:
+            sent_text = call.args[2]
+            self.assertLessEqual(len(sent_text), 4096)
+
+    @mock.patch.object(TelegramSender, "_send_telegram_message", return_value=True)
+    def test_send_to_telegram_chunked_path_with_long_reason_without_delimiter(self, mock_send_telegram_message):
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        long_reason = "原因过长需分段测试：" + ("B" * 5000)
+        content = f"**AI 决策信号**\n- 理由: {long_reason}\n"
+
+        result = sender.send_to_telegram(content)
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(len(mock_send_telegram_message.call_args_list), 2)
+        for call in mock_send_telegram_message.call_args_list:
+            sent_text = call.args[2]
+            self.assertLessEqual(len(sent_text), 4096)
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_chunks_by_final_markdown_payload_length(self, mock_post):
+        mock_post.return_value = _response(200, {"ok": True})
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        content = "(" * 4090
+
+        result = sender.send_to_telegram(content)
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(mock_post.call_count, 2)
+        payload_texts = [call.kwargs["json"]["text"] for call in mock_post.call_args_list]
+        self.assertTrue(all(len(text) <= 4096 for text in payload_texts))
+        self.assertEqual("".join(payload_texts), sender._convert_to_telegram_markdown(content))
 
     @mock.patch("src.notification_sender.telegram_sender.requests.post")
     def test_send_plain_text_fallback_handles_non_json_200(self, mock_post):

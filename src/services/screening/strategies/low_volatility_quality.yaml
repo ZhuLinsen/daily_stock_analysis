@@ -1,0 +1,91 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
+# 低波动质量策略
+name: low_volatility_quality
+display_name: 低波质量
+description: 偏防守的质量型候选，优先选择波动较低、回撤浅、估值不过热且数据质量可靠的股票
+version: "1.0"
+category: quality
+tags: [quality, defensive, low_volatility, daily_k]
+style:
+  risk_profile: defensive
+  holding_period: swing
+  execution_style: quality_defensive
+  market_regime: [risk_off, range_bound, low_volatility]
+  capital_profile: medium_liquidity
+  ui_badge: 质量
+
+screening:
+  enabled: true
+  market_scope: [cn]
+  hard_filters:
+    exclude_st: true
+    amount_min: 100000000
+    market_cap_min: 12000000000
+    pe_ttm_min: 0
+    pe_ttm_max: 45
+    pb_min: 0
+    pb_max: 5.0
+    change_pct_min: -3.0
+    change_pct_max: 5.0
+    price_min: 4
+    price_max: 180
+    change_60d_min: -10.0
+    change_60d_max: 35.0
+    signal_score_min: 55
+    range_20d_pct_max: 28.0
+    volatility_20d_pct_max: 32.0
+    max_drawdown_20d_pct_min: -8.0
+    atr_20_pct_max: 4.5
+  tech_weight: 0.30
+  factor_weights:
+    stability: 0.30
+    value: 0.20
+    liquidity: 0.15
+    momentum: 0.12
+    activity: 0.08
+    size: 0.08
+    theme_heat: 0.05
+    reversal: 0.02
+  scoring_profile:
+    momentum_60d_overheat_pct: 32.0
+    momentum_chase_start_pct: 4.0
+    momentum_chase_penalty_slope: 18.0
+    activity_ideal_volume_ratio: 1.4
+    activity_ideal_turnover_rate: 2.5
+    stability_hot_change_pct: 5.0
+    stability_high_volatility_pct: 30.0
+    stability_max_drawdown_floor_pct: -8.0
+    stability_high_atr_pct: 4.2
+    stability_low_daily_quality_score: 88.0
+    stability_low_daily_quality_penalty_slope: 0.45
+  risk_profile:
+    chase_change_pct: 5.5
+    abnormal_volume_ratio: 4.5
+    high_turnover_rate: 10.0
+    weak_signal_score: 52.0
+    low_daily_quality_score: 85.0
+    low_daily_quality_points: 2.5
+    stale_daily_cache_points: 3.0
+    fetch_failed_daily_points: 7.0
+  portfolio_profile:
+    max_same_bucket: 1
+    concentration_penalty: 3.5
+    buckets:
+      金融: [券商, 银行, 保险]
+      消费: [白酒, 食品, 家电, 零售, 消费]
+      医药: [医药, 医疗, 创新药]
+      公用事业: [电力, 燃气, 水务, 环保, 公用事业]
+      红利资产: [运营商, 高速, 港口, 煤炭, 电力]
+  scorecard_profile:
+    value_quality_stability_min: 72.0
+    value_quality_bonus: 2.2
+    hot_money_penalty: 2.8
+    volume_spike_ratio: 4.0
+    volume_spike_penalty: 1.8
+  ranking_hints: |
+    优先关注：
+    1. 20 日波动和 ATR 较低、最大回撤可控，适合防守型观察仓
+    2. 估值不过热，日 K 数据质量高，避免 stale/cache 或拉取失败样本
+    3. 主题热度可以加分，但不要让短线热度覆盖稳定性和估值约束
+  max_output: 5

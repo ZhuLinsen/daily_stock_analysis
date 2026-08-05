@@ -55,6 +55,18 @@ class TestSymbolConversion(unittest.TestCase):
         self.assertEqual(_to_longbridge_symbol("00700"), "0700.HK")
         self.assertEqual(_to_longbridge_symbol("09988"), "9988.HK")
 
+    def test_hk_stock_4digit_bare_code_issue_2091(self):
+        """4 位裸港股码 (0001 长和 / 0941 中国移动) 必须路由到 .HK 后缀。
+
+        与 ``data_provider.base._is_hk_market`` 的 4-5 位裸港股契约一致,
+        Longbridge 作为 HK-capable provider 也必须接受同一输入,避免
+        上游路由判 HK、下游 provider 静默跳过的部分调用链失败。
+        """
+        self.assertTrue(_is_hk_code("0001"))
+        self.assertTrue(_is_hk_code("0941"))
+        self.assertEqual(_to_longbridge_symbol("0001"), "0001.HK")
+        self.assertEqual(_to_longbridge_symbol("0941"), "0941.HK")
+
     def test_hk_stock_already_suffixed(self):
         self.assertEqual(_to_longbridge_symbol("0700.HK"), "0700.HK")
 
@@ -569,6 +581,114 @@ class TestLongbridgeFetcherMocked(unittest.TestCase):
         avg_vol = (40000000 + 38000000 + 42000000 + 41000000 + 39000000) / 5
         expected_ratio = round(50000000 / avg_vol, 2)
         self.assertEqual(quote.volume_ratio, expected_ratio)
+
+    def test_volume_ratio_history_candlesticks_by_offset_arg_order(self):
+        """Regression for #2100: verify keyword args used in
+        history_candlesticks_by_offset call, immune to positional signature
+        drift between longbridge 0.2.74 (Linux: forward, time, count)
+        and 4.x (Windows/macOS/Python>=3.12: forward, count, time).
+
+        Before the fix, `_compute_volume_ratio` invoked
+        `ctx.history_candlesticks_by_offset(symbol, period, adjust_type, forward, 6, datetime.now())`
+        — i.e. `time` slot got `6` (int) and `count` slot got `datetime.now()`,
+        which made the PyO3 binding raise
+        `argument 'time': 'int' object cannot be converted to 'PyDateTime'`
+        inside the longbridge SDK, swallowed into DEBUG log and surfaced as
+        volume_ratio=None.
+        """
+        import types
+        from datetime import datetime as dt_cls, date as dt_date, timedelta
+
+        mock_lb_module = types.ModuleType("longbridge")
+        mock_lb_openapi = types.ModuleType("longbridge.openapi")
+        mock_lb_openapi.Period = MagicMock()
+        mock_lb_openapi.AdjustType = MagicMock()
+        with patch.dict("sys.modules", {
+            "longbridge": mock_lb_module,
+            "longbridge.openapi": mock_lb_openapi,
+        }):
+            fetcher, ctx = self._make_fetcher_with_mock_ctx()
+            ctx.quote.return_value = [self._make_mock_quote(volume=50000000)]
+            ctx.static_info.return_value = [self._make_mock_static()]
+
+            base = dt_date.today() - timedelta(days=6)
+            mock_candles = []
+            for i, vol in enumerate([40000000, 38000000, 42000000, 41000000, 39000000]):
+                c = MagicMock()
+                c.volume = vol
+                past_date = base + timedelta(days=i)
+                c.timestamp = MagicMock()
+                c.timestamp.date.return_value = past_date
+                mock_candles.append(c)
+            ctx.history_candlesticks_by_offset.return_value = mock_candles
+
+            with patch("data_provider.longbridge_fetcher.datetime", wraps=dt_cls) as mocked_dt:
+                fetcher.get_realtime_quote("AAPL")
+
+            ctx.history_candlesticks_by_offset.assert_called_once()
+            call_kwargs = ctx.history_candlesticks_by_offset.call_args.kwargs
+            # keyword args 跨 SDK 版本契约兼容：
+            # 0.2.74 positional signature: (symbol, period, adjust_type, forward, time, count)
+            # 4.x positional signature: (symbol, period, adjust_type, forward, count, time)
+            # keyword args 不受位置变化影响
+            self.assertIn("time", call_kwargs, "keyword arg 'time' must be present")
+            self.assertIn("count", call_kwargs, "keyword arg 'count' must be present")
+            self.assertIn("symbol", call_kwargs, "keyword arg 'symbol' must be present")
+            self.assertIsInstance(call_kwargs["time"], dt_cls,
+                f"time kwarg got {call_kwargs['time']!r} (type {type(call_kwargs['time']).__name__}); "
+                "expected datetime — see #2100")
+            self.assertIsInstance(call_kwargs["count"], int,
+                f"count kwarg got {call_kwargs['count']!r} (type {type(call_kwargs['count']).__name__}); "
+                "expected int — see #2100")
+            self.assertEqual(call_kwargs["count"], 6)
+            self.assertEqual(call_kwargs["symbol"], "AAPL.US")
+            mocked_dt.now.assert_called()
+
+    def test_volume_ratio_keyword_args_cross_sdk_compat(self):
+        """Verify keyword args work regardless of positional signature drift.
+
+        Simulates a 4.x-style mock where positional order is
+        (symbol, period, adjust_type, forward, count, time) — the opposite
+        of 0.2.74's (symbol, period, adjust_type, forward, time, count).
+        Keyword args in the production code make both signatures callable
+        with the same keyword dict.
+        """
+        import types
+        from datetime import datetime as dt_cls, date as dt_date, timedelta
+
+        mock_lb_module = types.ModuleType("longbridge")
+        mock_lb_openapi = types.ModuleType("longbridge.openapi")
+        mock_lb_openapi.Period = MagicMock()
+        mock_lb_openapi.AdjustType = MagicMock()
+        with patch.dict("sys.modules", {
+            "longbridge": mock_lb_module,
+            "longbridge.openapi": mock_lb_openapi,
+        }):
+            fetcher, ctx = self._make_fetcher_with_mock_ctx()
+            ctx.quote.return_value = [self._make_mock_quote(volume=50000000)]
+            ctx.static_info.return_value = [self._make_mock_static()]
+
+            base = dt_date.today() - timedelta(days=6)
+            mock_candles = []
+            for i, vol in enumerate([40000000, 38000000, 42000000, 41000000, 39000000]):
+                c = MagicMock()
+                c.volume = vol
+                past_date = base + timedelta(days=i)
+                c.timestamp = MagicMock()
+                c.timestamp.date.return_value = past_date
+                mock_candles.append(c)
+            ctx.history_candlesticks_by_offset.return_value = mock_candles
+
+            with patch("data_provider.longbridge_fetcher.datetime", wraps=dt_cls):
+                fetcher.get_realtime_quote("AAPL")
+
+            ctx.history_candlesticks_by_offset.assert_called_once()
+            call_kwargs = ctx.history_candlesticks_by_offset.call_args.kwargs
+            self.assertEqual(call_kwargs["count"], 6,
+                "count should be 6 regardless of positional signature version")
+            self.assertIsInstance(call_kwargs["time"], dt_cls,
+                "time should be datetime even when 4.x positional order is (forward, count, time)")
+            self.assertEqual(call_kwargs["symbol"], "AAPL.US")
 
     def test_quote_api_failure_returns_none(self):
         """If ctx.quote() raises, return None gracefully."""

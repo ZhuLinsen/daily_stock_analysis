@@ -11,20 +11,25 @@ from typing import Any, Callable, Dict, Optional, Protocol
 class GenerationErrorCode(str, Enum):
     """Structured generation backend error codes.
 
-    Phase 1 uses the LiteLLM-related subset directly and reserves the local
-    CLI / HTTP-oriented codes so future backends share the same contract.
+    Shared across LiteLLM and local CLI generation backends.
     """
 
     BACKEND_NOT_CONFIGURED = "backend_not_configured"
     COMMAND_NOT_FOUND = "command_not_found"
+    COMMAND_NOT_EXECUTABLE = "command_not_executable"
     TIMEOUT = "timeout"
+    NON_ZERO_EXIT = "non_zero_exit"
     EMPTY_OUTPUT = "empty_output"
+    OUTPUT_TOO_LARGE = "output_too_large"
     INVALID_JSON = "invalid_json"
     SCHEMA_VALIDATION_FAILED = "schema_validation_failed"
     UNSUPPORTED_TOOL_CALLING = "unsupported_tool_calling"
+    INTERACTIVE_PROMPT_REQUIRED = "interactive_prompt_required"
+    APPROVAL_REQUIRED = "approval_required"
     LOGIN_REQUIRED = "login_required"
     CAPABILITY_UNSUPPORTED = "capability_unsupported"
     UNSAFE_CONFIG = "unsafe_config"
+    UNKNOWN_BACKEND_ERROR = "unknown_backend_error"
 
 
 @dataclass(frozen=True)
@@ -56,10 +61,9 @@ class GenerationResult:
 class GenerationError(Exception):
     """Structured generation backend failure.
 
-    ``stage`` is intentionally descriptive rather than a closed enum. Phase 1
-    uses ``generation``, ``validation``, and ``fallback``; later backends may
-    add stages such as ``configuration``, ``execution``, ``parsing``, or
-    ``health_check``.
+    ``stage`` is intentionally descriptive rather than a closed enum. Current
+    generation paths use values such as ``generation``, ``configuration``,
+    ``execution``, ``validation``, and ``fallback``.
     """
 
     error_code: GenerationErrorCode
@@ -71,6 +75,8 @@ class GenerationError(Exception):
     details: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not self.provider:
+            self.provider = self.backend
         Exception.__init__(self, self.message)
 
     @property

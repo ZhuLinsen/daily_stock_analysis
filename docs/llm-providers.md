@@ -20,7 +20,32 @@
 
 优先级保持不变：`LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` > `LLM_CHANNELS` > legacy provider keys。P4 只补文档，不迁移、不清空、不静默改写旧配置。
 
-Generation backend 配置是更外层的运行时选择契约。Phase 1 只支持 `GENERATION_BACKEND=litellm`、`GENERATION_FALLBACK_BACKEND=litellm` 和 `AGENT_GENERATION_BACKEND=auto|litellm`；这些字段不会改变本页所述的 provider/model/Base URL 三层路由优先级。配置本地 CLI、Hermes 或其他非 `litellm` backend 会得到明确配置错误，不会自动降级到 LiteLLM。
+Generation backend 配置是更外层的运行时选择契约。Phase 4 支持 `GENERATION_BACKEND=litellm|codex_cli|claude_code_cli|opencode_cli`，但本地 CLI backend 不是 LiteLLM provider；不要配置成 `LITELLM_MODEL=codex_cli/...`、`LITELLM_MODEL=claude_code_cli/...` 或 `LITELLM_MODEL=opencode_cli/...`。`codex_cli` preset 使用 `codex --ask-for-approval never exec --sandbox read-only --output-last-message <temp-file> -`，固定无人值守批准策略并保持只读边界；`claude_code_cli` preset 使用 `claude --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --no-session-persistence --output-format json -p <static instruction>`，完整 DSA prompt 走 stdin，并只从 JSON envelope 的 `result/success` 字段提取最终文本，参数依据见 [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)；`opencode_cli` preset 使用 `opencode --pure run --format json [--model <OPENCODE_CLI_MODEL>] <static instruction> --file <temp prompt file>`，仅在显式配置 `OPENCODE_CLI_MODEL` 时追加 `--model`，完整 DSA prompt 走权限受控的临时文件，并只从无工具事件的 JSON event text 输出提取最终文本，参数依据见 [OpenCode CLI reference](https://opencode.ai/docs/cli)，配置合并语义见 [OpenCode config reference](https://opencode.ai/docs/config)。诊断 stdout/stderr 与最终响应一起受 `GENERATION_BACKEND_MAX_OUTPUT_BYTES` 总上限约束，超限时返回结构化 `output_too_large`。`GENERATION_FALLBACK_BACKEND=` 空值会在本地 `.env` 禁用 backend-level fallback，未配置时默认回退到 `litellm`；默认 GitHub Actions workflow 未配置该变量时会显式使用 `litellm`，如需禁用 fallback 可设为 primary backend 走 self no-op。Agent 工具调用仍使用 LiteLLM；Web 设置页只暴露 `AGENT_GENERATION_BACKEND=auto|litellm`，手写 `codex_cli|claude_code_cli|opencode_cli` 不会启用 text-only Agent mode，只会返回明确 unsupported tool-calling 诊断。
+
+生成后端状态接口与 Web 面板会把轻量检查和冒烟测试分开展示：快速检查只读取已保存 `.env`、运行时兜底值和当前草稿，不写配置、不重载运行时，也不发起真实模型请求；只有 JSON 冒烟测试会使用固定的 JSON 提示词和 schema 发起真实请求。`health_status` 与 `last_error_code/message` 是本次计算结果，不表示历史最后错误。本地 CLI preset 的 `supports_tools=false` 仅表示不支持 DSA Agent 工具调用链路，不代表普通文本生成不可用。
+
+Phase 6a Tool Surface 是 AgentBackend 的唯一内部工具面：统一 DSA 工具 schema、public descriptor、MCP-compatible descriptor、scope guard、结构化错误、审计摘要和脱敏诊断。stock-scoped 工具调用必须显式传入 `ToolAccessContext.stock_scope`；有 `stock_code` 参数但未声明 stock scope 的工具会 fail-closed。Phase 6 的 Codex App Server adapter 只通过该 Tool Surface 执行工具；它不把 `codex_cli` generation backend、MCP server、SDK 或最终文本 fallback 当成 Agent 工具成功。
+
+## Codex App Server 问股边界
+
+`AGENT_BACKEND=codex_app_server` 是现有问股 Chat 的实验运行方式，不是新的 provider 模型渠道，也不改变 `GENERATION_BACKEND`。Web 中在「设置 → Agent 设置 → 问股生成方式」选择后，必须使用 `AGENT_ARCH=single` 和大于 0 的整体时限。设置页只检查配置、Codex 命令和所需 App Server 协议是否允许尝试；保存后用户可直接提问，第一次问题就是第一次真实执行。`auto`（推荐）和 `litellm` 始终保持原有 LiteLLM 问股路径。
+
+- DSA 使用 [Codex App Server v2](https://developers.openai.com/codex/app-server/) 的 JSONL stdio、ephemeral thread 和 experimental dynamic tools，并通过 `turn/interrupt` 处理 Chat 取消。2026-07-15 的验收版本为 `codex-cli 0.144.3`，不据此硬编码最低版本。
+- Codex 必须安装并登录在运行 DSA 后端的设备；DSA 不读取或保存 Codex 凭据。Docker、远程服务器与 Desktop 的 PATH 和登录态相互独立。
+- Phase 6 Codex App Server Agent 当前支持 macOS、Linux 和完整运行于 WSL 的 DSA 后端，暂不支持原生 Windows；这不影响 Phase 2 `codex_cli` GenerationBackend 的 Windows 支持。
+- Codex 当前只开放已保存分析上下文、全局回测汇总和策略回测汇总的只读查询；本期只验证这三个工具的独立进程、停止、超时和回收闭环。实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具未纳入本期验证，因此不会暴露给 Codex；需要这些能力时应选择「默认模型」。明确股票代码或 Web 唯一匹配的股票只为已开放的历史分析上下文工具建立股票范围，跨市场同名等歧义不会猜测。
+- 问股历史的 LLM 压缩仅用于「默认模型」。Codex 始终使用最近 20 条用户可见对话，不会调用 `AGENT_LITELLM_MODEL` 生成摘要；用户已保存的压缩配置会保留，切回默认模型后继续生效。
+- 当前只支持 single-agent Chat，不支持 Codex Multi Agent / Codex Deep Research；现有 LiteLLM Multi Agent 和 Deep Research 不受影响。
+- cheap status 不发模型请求，只检查生产路径依赖的 App Server schema 能力且不绑定武断最低版本。仓库中的 `scripts/codex_app_server_gate_a.py` 仅用于维护者可行性验收，不是设置页按钮或生产 API；普通用户的第一个真实问题就是首次真实执行。
+- 用户停止 Codex 问股时，Web 会先显示“正在停止”；后端中断 Codex turn，并终止、回收本轮独立运行的工具进程。只有 Codex 与工具进程都已退出，原 SSE 请求才返回最终“已停止”。超时和客户端断开遵守相同的清理边界，不会把仍在后台运行的任务当成已经结束。默认 LiteLLM Agent 行为保持不变。
+- 基础状态只表达本机“可以尝试”，不检查登录、模型或真实工具闭环，也不缓存成功证据。正式 Chat 由服务端选择实际 backend；上下文准备和用户消息保存完成后发出唯一 `accepted` 事件，再启动模型。Web 在 `accepted` 前保留输入、股票范围、追问上下文和技能选择，并以 `accepted.backend` 决定停止方式。Codex 的累计输出、事件和工具调用均受整轮预算约束，工具调用数沿用 `AGENT_MAX_STEPS`。
+- Codex 不是离线模型；股票代码、新闻、持仓上下文及脱敏工具结果可能由 Codex 自身配置的服务处理。
+
+本 PR smoke 验证版本为 `claude 2.1.177 (Claude Code)` 与 `opencode 1.17.11`，不声明更宽最低版本。如果用户安装的 CLI 不支持这些固定 preset 参数或非交互输出契约，DSA 会返回结构化 `capability_unsupported`、`cli_contract_unsupported`、`invalid_json`、`schema_validation_failed` 或对应 backend error，并在配置 backend fallback 时回退到 `litellm`。
+
+本地 CLI Backend 不等于离线模型。Docker、云服务器和 CI 不天然拥有本机 CLI 登录态；macOS 从 Finder/Dock 启动桌面端时不继承 shell PATH，打包桌面端会在启动后端时补入常见 Homebrew 路径，如果设置检查仍提示找不到 CLI 可执行文件，需要完全退出并重开 DSA。DSA 不读取 Codex/Claude/OpenCode credential 文件，也不为 OpenCode 生成或搬运 provider API key；子进程可能按 CLI 自身机制使用本机登录态或配置，股票代码、新闻、持仓上下文、分析 prompt 和报告草稿可能被对应 CLI 背后的服务处理。DSA 默认只继承最小运行环境，并拒绝通配继承 `CLAUDE_*`、`ANTHROPIC_*`、`OPENCODE_*`、provider API key/token/base-url/model env 和 webhook tokens，降低父进程配置泄漏风险；`CODEX_HOME` 仅作为既有 Codex CLI 登录目录兼容的 exact-name 例外保留。
+
+`opencode_cli` 是 experimental/limited generation backend，不支持 OpenCode serve / web / ACP / MCP / attach / `--dangerously-skip-permissions`。DSA 默认使用本机 OpenCode 的默认模型；`OPENCODE_CLI_MODEL` 只是可选模型覆盖值，配置时才传给 OpenCode `--model`。DSA 会在临时 cwd 写入最小项目 `opencode.json`，但 OpenCode resolved config 仍可能包含用户本机全局配置；运行时安全边界同时依赖 `--pure`、env denylist、prompt file 权限和 event extractor fail-closed。
 
 ## Web 设置页路径
 
@@ -126,11 +151,28 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 | `LLM_USAGE_HMAC_SECRET` | Secrets | 可选；只有需要跨部署比较 usage message HMAC 时才配置同一个高熵随机密钥，例如 `openssl rand -hex 32`；不要放 Variables 或提交到版本控制。 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Variables 或 Secrets | 可选；轮换 `LLM_USAGE_HMAC_SECRET` 时同步更新版本标签，避免误比较不同密钥生成的 HMAC。 |
 
-默认 workflow 已显式映射 `primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
+默认 workflow 已显式映射 `primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
 
 回滚 HMAC 遥测显式配置时，可移除 `LLM_USAGE_HMAC_SECRET` 并恢复或删除 `LLM_USAGE_HMAC_KEY_VERSION`；留空后系统会回到本地生成 `.llm_usage_hmac_secret` 的默认行为。
 
 Ollama 默认 Base URL `http://127.0.0.1:11434` 主要面向本地、Docker 或能访问该服务的 self-hosted runner。GitHub-hosted runner 通常没有本地 Ollama 服务，直接配置 `LLM_CHANNELS=ollama` 大概率会连接失败。
+
+### Hermes 本地 HTTP generation（Phase 3）
+
+Hermes 是 reserved 本地 HTTP generation preset，只通过 `LLM_CHANNELS=hermes` 启用。默认协议为 `openai`，默认地址为 `http://127.0.0.1:8642/v1`，默认模型为 `hermes-agent`：
+
+```env
+LLM_CHANNELS=hermes
+LLM_HERMES_PROTOCOL=openai
+LLM_HERMES_BASE_URL=http://127.0.0.1:8642/v1
+LLM_HERMES_API_KEY=sk-local-hermes
+LLM_HERMES_MODELS=hermes-agent
+LITELLM_MODEL=openai/hermes-agent
+```
+
+Phase 3 只支持普通分析 / JSON generation，不支持 stream/SSE、tools、Vision、Agent tools、remote Hermes 或进程生命周期管理。`LLM_HERMES_API_KEY` 应来自本地 `.env`、运行时配置或 GitHub Secrets；不要写入仓库。Hermes 只允许 loopback `/v1` endpoint，`localhost` 会按 `127.0.0.1` 规范化，`LLM_HERMES_API_KEYS` 与 `LLM_HERMES_EXTRA_HEADERS` 不受支持。Web 设置页保存 reserved Hermes 渠道时会清空这两个旧字段并显示 warning；恢复旧值请使用 `.env` 备份、Git 历史或桌面端导出备份，但非空多 Key / Extra Headers 仍会被后端拒绝。
+
+在 GitHub Actions 中，GitHub-hosted runner 的 `127.0.0.1` 是 runner 自身，不是用户电脑。只有 self-hosted runner 或同机服务能访问本地 Hermes；否则会连接失败。
 
 ## 常见错误与处理建议
 

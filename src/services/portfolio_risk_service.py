@@ -42,12 +42,14 @@ class PortfolioRiskService:
         account_id: Optional[int] = None,
         as_of: Optional[date] = None,
         cost_method: str = "fifo",
+        include_realtime: bool = True,
     ) -> Dict[str, Any]:
         as_of_date = as_of or date.today()
         snapshot = self.portfolio_service.get_portfolio_snapshot(
             account_id=account_id,
             as_of=as_of_date,
             cost_method=cost_method,
+            include_realtime=include_realtime,
         )
 
         thresholds = {
@@ -73,6 +75,7 @@ class PortfolioRiskService:
             as_of_date=as_of_date,
             cost_method=cost_method,
             lookback_days=thresholds["lookback_days"],
+            include_realtime=include_realtime,
         )
         drawdown = self._build_drawdown(
             account_id=account_id,
@@ -204,6 +207,7 @@ class PortfolioRiskService:
         as_of_date: date,
         cost_method: str,
         lookback_days: int,
+        include_realtime: bool,
     ) -> None:
         if lookback_days <= 0:
             return
@@ -231,6 +235,7 @@ class PortfolioRiskService:
                         account_id=account_id,
                         as_of=current_date,
                         cost_method=cost_method,
+                        include_realtime=include_realtime,
                     )
                     existing_dates.add(current_date)
                 current_date += timedelta(days=1)
@@ -247,6 +252,7 @@ class PortfolioRiskService:
                     account_id=None,
                     as_of=current_date,
                     cost_method=cost_method,
+                    include_realtime=include_realtime,
                 )
                 for aid in account_ids:
                     existing_pairs.add((aid, current_date))

@@ -17,6 +17,10 @@ import type {
   DecisionSignalOutcomeStatsBucket,
   DecisionSignalOutcomeStatsParams,
   DecisionSignalOutcomeStatsResponse,
+  DecisionSignalProfileCalibrationBucket,
+  DecisionSignalReassessRequest,
+  DecisionSignalReassessBlockedError,
+  DecisionSignalReassessResponse,
   DecisionSignalStatusUpdateRequest,
 } from '../types/decisionSignals';
 
@@ -50,6 +54,49 @@ function toDecisionSignalMutationResponse(data: Record<string, unknown>): Decisi
   const response = toCamelCase<DecisionSignalMutationResponse>(data);
   response.item = toDecisionSignalItem(data.item as Record<string, unknown>);
   return response;
+}
+
+function toDecisionSignalReassessResponse(data: Record<string, unknown>): DecisionSignalReassessResponse {
+  const response = toCamelCase<DecisionSignalReassessResponse>(data);
+  const rawPreview = data.preview;
+  if (rawPreview !== null && (typeof rawPreview !== 'object' || Array.isArray(rawPreview))) {
+    throw new Error('DecisionSignal reassess response preview must be an object');
+  }
+  if (rawPreview) {
+    response.preview = toCamelCase<DecisionSignalReassessResponse['preview']>(rawPreview);
+    if (response.preview) {
+      response.preview.metadata = (rawPreview as Record<string, unknown>).metadata as Record<string, unknown> ?? {};
+    }
+  } else {
+    response.preview = null;
+  }
+  if (data.item) {
+    response.item = toDecisionSignalItem(data.item as Record<string, unknown>);
+  }
+  return response;
+}
+
+export function getDecisionSignalReassessBlockedError(
+  error: unknown,
+): DecisionSignalReassessBlockedError | null {
+  if (!error || typeof error !== 'object') return null;
+  const response = (error as { response?: { data?: unknown } }).response;
+  const data = response?.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const payload = data as Record<string, unknown>;
+  if (payload.error !== 'guardrail_blocked' || typeof payload.blocked_reason !== 'string') return null;
+  const warnings = Array.isArray(payload.warnings)
+    ? payload.warnings.filter((warning): warning is Record<string, unknown> => (
+      Boolean(warning) && typeof warning === 'object' && !Array.isArray(warning)
+    )).filter((warning) => typeof warning.code === 'string').map((warning) => ({
+      code: warning.code as string,
+      message: typeof warning.message === 'string' ? warning.message : undefined,
+      params: warning.params && typeof warning.params === 'object' && !Array.isArray(warning.params)
+        ? warning.params as Record<string, unknown>
+        : undefined,
+    }))
+    : [];
+  return { blockedReason: payload.blocked_reason, warnings };
 }
 
 function toDecisionSignalListResponse(data: Record<string, unknown>): DecisionSignalListResponse {
@@ -89,6 +136,10 @@ function toDecisionSignalStatsBucket(data: Record<string, unknown>): DecisionSig
   return bucket;
 }
 
+function toProfileCalibrationBuckets(value: unknown): DecisionSignalProfileCalibrationBucket[] {
+  return Array.isArray(value) ? value as DecisionSignalProfileCalibrationBucket[] : [];
+}
+
 function toDecisionSignalOutcomeStatsResponse(data: Record<string, unknown>): DecisionSignalOutcomeStatsResponse {
   const response = toCamelCase<DecisionSignalOutcomeStatsResponse>(data);
   response.unableReasons = (data.unable_reasons as Record<string, number> | undefined) ?? {};
@@ -100,6 +151,27 @@ function toDecisionSignalOutcomeStatsResponse(data: Record<string, unknown>): De
         ? buckets.map((bucket) => toDecisionSignalStatsBucket(bucket as Record<string, unknown>))
         : [];
     }
+  }
+  const calibration = response.profileCalibration;
+  const calibrationBreakdowns = calibration?.breakdowns;
+  if (
+    calibration
+    && calibrationBreakdowns
+    && typeof calibrationBreakdowns === 'object'
+    && !Array.isArray(calibrationBreakdowns)
+  ) {
+    calibration.breakdowns = {
+      decisionProfile: toProfileCalibrationBuckets(calibrationBreakdowns.decisionProfile),
+      decisionProfileAction: toProfileCalibrationBuckets(calibrationBreakdowns.decisionProfileAction),
+      decisionProfileHorizon: toProfileCalibrationBuckets(calibrationBreakdowns.decisionProfileHorizon),
+      decisionProfileMarketPhase: toProfileCalibrationBuckets(calibrationBreakdowns.decisionProfileMarketPhase),
+      decisionProfileDataQualityLevel: toProfileCalibrationBuckets(
+        calibrationBreakdowns.decisionProfileDataQualityLevel,
+      ),
+      profileSource: toProfileCalibrationBuckets(calibrationBreakdowns.profileSource),
+    };
+  } else {
+    response.profileCalibration = undefined;
   }
   return response;
 }
@@ -117,6 +189,7 @@ function toSnakeCreatePayload(payload: DecisionSignalCreateRequest): Record<stri
     source_agent: payload.sourceAgent,
     source_report_id: payload.sourceReportId,
     trace_id: payload.traceId,
+    decision_profile: payload.decisionProfile,
     market_phase: payload.marketPhase,
     trigger_source: payload.triggerSource,
     action: payload.action,
@@ -157,12 +230,21 @@ function toSnakeOutcomeRunPayload(payload: DecisionSignalOutcomeRunRequest): Rec
   });
 }
 
+function toSnakeReassessPayload(payload: DecisionSignalReassessRequest): Record<string, unknown> {
+  return {
+    source_report_id: payload.sourceReportId,
+    decision_profile: payload.decisionProfile,
+    persist: payload.persist ?? false,
+  };
+}
+
 function toListParams(params: DecisionSignalListParams = {}): Record<string, string | number | boolean> {
   return omitUndefined({
     market: params.market,
     stock_code: params.stockCode,
     action: params.action,
     market_phase: params.marketPhase,
+    decision_profile: params.decisionProfile,
     source_type: params.sourceType,
     source_report_id: params.sourceReportId,
     trace_id: params.traceId,
@@ -261,6 +343,14 @@ export const decisionSignalsApi = {
       { params: toLatestParams(params) },
     );
     return toDecisionSignalListResponse(response.data);
+  },
+
+  async reassess(payload: DecisionSignalReassessRequest): Promise<DecisionSignalReassessResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/decision-signals/reassess',
+      toSnakeReassessPayload(payload),
+    );
+    return toDecisionSignalReassessResponse(response.data);
   },
 
   async updateStatus(

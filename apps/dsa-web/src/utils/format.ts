@@ -44,8 +44,7 @@ export const getRecentStartDate = (days: number): string => {
 
 /**
  * Returns today's date as YYYY-MM-DD in Asia/Shanghai timezone.
- * Use this instead of browser-local date to stay consistent with the backend,
- * which stores and filters timestamps in server local time (Asia/Shanghai).
+ * Use this instead of the browser-local date for market-day UI semantics.
  */
 export const getTodayInShanghai = (): string =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());

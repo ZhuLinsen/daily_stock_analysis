@@ -11,6 +11,7 @@ const signal: DecisionSignalItem = {
   market: 'cn',
   sourceType: 'analysis',
   sourceReportId: 3001,
+  decisionProfile: 'aggressive',
   marketPhase: 'intraday',
   triggerSource: 'web',
   action: 'hold',
@@ -34,7 +35,7 @@ const signal: DecisionSignalItem = {
   expiresAt: '2026-06-18T09:30:00',
   createdAt: '2026-06-17T09:30:00',
   updatedAt: '2026-06-17T09:30:00',
-  metadata: { source: 'test' },
+  metadata: { source: 'test', decision_profile: 'balanced' },
 };
 
 function renderCard(onSelect?: (item: DecisionSignalItem) => void) {
@@ -53,6 +54,7 @@ describe('DecisionSignalCard', () => {
 
     expect(screen.getByText('贵州茅台').closest('button')).toBeNull();
     expect(screen.getByText('72%')).toBeInTheDocument();
+    expect(screen.getByText('风格: 进取')).toBeInTheDocument();
     expect(screen.getByText('1600 - 1620')).toBeInTheDocument();
     expect(screen.getByText('业绩窗口')).toBeInTheDocument();
     expect(screen.getByText('跌破 1550')).toBeInTheDocument();
@@ -123,7 +125,25 @@ describe('DecisionSignalDetails', () => {
     expect(screen.getByText('3 日')).toBeInTheDocument();
     expect(screen.getByText('完整')).toBeInTheDocument();
     expect(screen.getByText('盘中')).toBeInTheDocument();
+    expect(screen.getByText('风格')).toBeInTheDocument();
+    expect(screen.getAllByText('进取').length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText('3d')).not.toBeInTheDocument();
+  });
+
+  it('renders explicit null profile as unknown on card and details', () => {
+    window.localStorage.setItem('dsa.uiLanguage', 'zh');
+    render(
+      <UiLanguageProvider>
+        <>
+          <DecisionSignalCard item={{ ...signal, decisionProfile: null, metadata: { decision_profile: 'balanced' } }} />
+          <DecisionSignalDetails item={{ ...signal, decisionProfile: null, metadata: { decision_profile: 'balanced' } }} />
+        </>
+      </UiLanguageProvider>,
+    );
+
+    expect(screen.getAllByText('风格: 未知').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('风格').closest('div')).toHaveTextContent('未知');
+    expect(screen.queryByText('均衡')).not.toBeInTheDocument();
   });
 
   it('renders opaque JSON fields without creating html nodes from their string values', () => {

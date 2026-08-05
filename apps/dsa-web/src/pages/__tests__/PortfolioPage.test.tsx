@@ -97,7 +97,7 @@ vi.mock('recharts', () => ({
 type AccountItem = {
   id: number;
   name: string;
-  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
   baseCurrency?: string;
 };
 
@@ -121,6 +121,8 @@ function makeSnapshot(options: {
   accountId?: number;
   fxStale?: boolean;
   accountCount?: number;
+  dataQuality?: string;
+  limitations?: string[];
   positions?: Array<Record<string, unknown>>;
 } = {}) {
   const accountId = options.accountId ?? 1;
@@ -137,6 +139,8 @@ function makeSnapshot(options: {
     feeTotal: 0,
     taxTotal: 0,
     fxStale: options.fxStale ?? true,
+    dataQuality: options.dataQuality ?? 'ok',
+    limitations: options.limitations ?? [],
     accounts: [
       {
         accountId,
@@ -341,6 +345,15 @@ describe('PortfolioPage FX refresh', () => {
     );
   }
 
+  it('uses fast portfolio valuation for page snapshot and risk loads', async () => {
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    expect(getSnapshot).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: false });
+    expect(getRisk).toHaveBeenCalledWith({ accountId: undefined, costMethod: 'fifo', includeRealtime: false });
+  });
+
   it('renders stale FX status with a manual refresh button', async () => {
     render(<PortfolioPage />);
 
@@ -348,6 +361,21 @@ describe('PortfolioPage FX refresh', () => {
 
     expect(await screen.findByText('过期')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '刷新汇率' })).toBeInTheDocument();
+  });
+
+  it('shows aggregate partial valuation limitations near summary totals', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      dataQuality: 'partial',
+      limitations: ['realtime_quote_best_effort', 'fx_and_cost_basis_partial'],
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    expect(await screen.findByText('组合估值限制')).toBeInTheDocument();
+    expect(screen.getByText(/实时行情为尽力获取/)).toBeInTheDocument();
+    expect(screen.getByText(/汇率与成本基础为部分口径/)).toBeInTheDocument();
   });
 
   it('renders portfolio risk drawdown labels in English UI mode', async () => {
@@ -460,7 +488,7 @@ describe('PortfolioPage FX refresh', () => {
     fireEvent.change(accountSelect, { target: { value: '1' } });
 
     await waitFor(() => {
-      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo' });
+      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false });
     });
 
     const snapshotCallsBeforeRefresh = getSnapshot.mock.calls.length;
@@ -630,7 +658,7 @@ describe('PortfolioPage FX refresh', () => {
     fireEvent.change(accountSelect, { target: { value: '2' } });
 
     await waitFor(() => {
-      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo' });
+      expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo', includeRealtime: false });
     });
     expect(screen.queryByText('账号信号')).not.toBeInTheDocument();
     expect(getLatestDecisionSignals).toHaveBeenCalledTimes(signalCallsBeforeSwitch);
@@ -982,13 +1010,13 @@ describe('PortfolioPage FX refresh', () => {
 
     const accountSelect = screen.getAllByRole('combobox')[0];
     fireEvent.change(accountSelect, { target: { value: '1' } });
-    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo' }));
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
 
     fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
     expect(await screen.findByRole('button', { name: '刷新中...' })).toBeDisabled();
 
     fireEvent.change(accountSelect, { target: { value: '2' } });
-    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo' }));
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 2, costMethod: 'fifo', includeRealtime: false }));
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新汇率' })).not.toBeDisabled());
 
     const snapshotCallsAfterSwitch = getSnapshot.mock.calls.length;
@@ -1032,7 +1060,7 @@ describe('PortfolioPage FX refresh', () => {
     expect(await screen.findByRole('button', { name: '刷新中...' })).toBeDisabled();
 
     fireEvent.change(costMethodSelect, { target: { value: 'avg' } });
-    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: undefined, costMethod: 'avg' }));
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: undefined, costMethod: 'avg', includeRealtime: false }));
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新汇率' })).not.toBeDisabled());
 
     const snapshotCallsAfterSwitch = getSnapshot.mock.calls.length;
@@ -1067,7 +1095,7 @@ describe('PortfolioPage FX refresh', () => {
     const accountSelect = screen.getAllByRole('combobox')[0];
     fireEvent.change(accountSelect, { target: { value: '1' } });
 
-    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo' }));
+    await waitFor(() => expect(getSnapshot).toHaveBeenLastCalledWith({ accountId: 1, costMethod: 'fifo', includeRealtime: false }));
     fireEvent.click(screen.getByRole('button', { name: '删除账户' }));
 
     const dialog = await screen.findByText('删除持仓账户');

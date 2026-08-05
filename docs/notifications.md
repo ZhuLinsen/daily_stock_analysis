@@ -6,6 +6,7 @@
 
 | 渠道 | 类型 | Minimal key | Advanced key | 说明 |
 | --- | --- | --- | --- | --- |
+| 钉钉 Webhook | 静态配置 | `DINGTALK_WEBHOOK_URL` | `DINGTALK_SECRET` | 支持加签安全方式，已接入 Web UI 设置页与单渠道测试。 |
 | 企业微信 | 静态配置 | `WECHAT_WEBHOOK_URL` | `WECHAT_MSG_TYPE` | 配置后参与批量通知发送 |
 | 飞书 Webhook / App Bot | 静态配置 | `FEISHU_WEBHOOK_URL` 或 `FEISHU_APP_ID` + `FEISHU_APP_SECRET` + `FEISHU_CHAT_ID` | `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD`, `FEISHU_RECEIVE_ID_TYPE`, `FEISHU_DOMAIN` | Webhook URL 优先；未配置 Webhook 时，App Bot 三元组可主动向指定群/用户推送。`FEISHU_STREAM_ENABLED` 仅代表事件订阅 / Stream Bot，不参与主动通知配置完成判断 |
 | Telegram | 静态配置 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `TELEGRAM_MESSAGE_THREAD_ID` | token 与 chat id 必须同时存在 |
@@ -24,6 +25,8 @@
 | 飞书会话 | 运行时上下文 | - | - | 从来源消息上下文提取，交互式命令结果仅回到来源会话 |
 | Telegram 会话 | 运行时上下文 | - | - | 从来源消息上下文提取，交互式命令结果仅回到来源会话 |
 
+Discord 长报告发送复用现有分片链路：单条 `content` 运行时不会超过 Discord 2000 字符限制，Webhook 与 Bot API 都会逐片发送并在片与片之间短暂等待；遇到 429 时按 Discord 返回的 `retry_after` 或 `Retry-After` 做有限重试，避免中途限流后只收到前半段报告。
+
 ## Minimal / Advanced 分层
 
 - Minimal key：足以启用一个通知渠道的最小配置。
@@ -34,7 +37,7 @@
 - `WEBHOOK_VERIFY_SSL` 是读取该配置的 webhook-style HTTPS 通知请求共用的证书校验开关。
 - WebPush、Apprise、更细粒度路由、跨进程降噪和真实每日摘要暂不进入运行时实现；相关配置如未来引入，应先更新本文档、`.env.example`、Web 元数据与回归测试。
 - Bark 保持 custom webhook 基线，不新增 `BARK_*` 一等配置。
-- 飞书 App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，不是新增依赖；标准源码安装、Docker、GitHub Actions daily workflow 和桌面构建链路均通过 `pip install -r requirements.txt` 安装。官方依据：[Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/)、[SDK repo](https://github.com/larksuite/oapi-sdk-python)。
+- 飞书 App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，不是新增依赖；标准源码安装、Docker、GitHub Actions daily workflow 和桌面构建链路均通过 `pip install -r requirements.txt` 安装。官方依据：[Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/)、[SDK repo](https://github.com/larksuite/oapi-sdk-python)。App Bot 文件上传依赖同一 SDK 的 `im.v1.file.create` API，官方文档：[Feishu file create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/file/create)。
 
 ## 报告渲染与分片
 
@@ -43,11 +46,11 @@
 默认发送路径沿用既有 sender 行为，不接入新增 renderer：飞书和 Telegram 继续使用原有兼容转换，企业微信、Slack 继续使用原有分片逻辑，避免改变线上可见报告版式。新增的渠道能力画像、PreparedMessage、renderer preset 和结构感知分片仅作为后续扩展基础；如需启用企业微信、飞书、Telegram、Slack 等渠道专用 renderer，应通过显式配置、真实发送验证和回归测试逐步接入。
 
 兼容性排除说明：
-- 本轮未改动 `src/notification_sender/wechat_sender.py`、`src/notification_sender/slack_sender.py`、`src/notification_sender/feishu_sender.py`、`src/notification_sender/telegram_sender.py` 的发送路径；现有 `send_to_*` 调用链（`src/notification.py -> sender method`）沿用既有行为。
+- 本轮未改动 `src/notification_sender/wechat_sender.py`、`src/notification_sender/slack_sender.py`、`src/notification_sender/telegram_sender.py` 的发送路径；`src/notification_sender/feishu_sender.py` 新增 `send_feishu_file()` 文件发送路径，Webhook 模式回退为发送文件内容文本，App Bot 文字发送路径（`send_to_feishu` → `_send_via_app_bot`）保持不变。
 - `model_used` 只在报告渲染末尾展示，不参与 provider/model/base_url 的 runtime 选择、保存、清理或迁移。若某次 CI 扫描到“provider/API 兼容迁移”类关键词，命中范围应优先回归到测试夹具中的 `model_used` 示例与报告快照 fixture（`tests/fixtures/notification_reports/*.md`），以及 `src/notification.py` 对 `report_show_llm_model` 的仅展示开关逻辑。
 - `REPORT_SHOW_LLM_MODEL` 与 `report_renderer_enabled` 均为展示/降级策略开关：关闭仅影响报告可见结构，不会触发配置迁移或运行时参数回退；回退方式为恢复 `true`（或移除该项）或恢复默认配置。
 
-关联板块渲染保持报告正文生成阶段处理：当板块表现数据不可用且所有板块类型均缺失时，只输出一行板块名称；有板块类型或板块涨跌榜信号时继续使用表格。
+关联板块渲染保持报告正文生成阶段处理：没有行业/概念涨跌榜信号时，推送报告沿用原有单行样式，例如 `通信线缆及配套 / 通信设备 / 通信 / 江苏板块 / 科技风格`，不额外展示“类型”列。只有命中 `fundamental_context.boards.data` / `sector_rankings` 或 `fundamental_context.concept_boards.data` / `concept_rankings` 的领涨/领跌信号时，才使用表格展示“板块 / 类型 / 板块表现 / 板块涨跌幅”，其中“类型”列用于标明“行业板块”或“概念板块”。该逻辑仅影响报告展示，不改变 provider/model/Base URL、LiteLLM 路由、模型保存、迁移或清理逻辑。
 
 ## GitHub Actions 映射
 
@@ -62,6 +65,8 @@
 | `FEISHU_WEBHOOK_URL` | minimal | feishu | Secret | - |
 | `FEISHU_WEBHOOK_SECRET` | advanced | feishu | Secret | - |
 | `FEISHU_WEBHOOK_KEYWORD` | advanced | feishu | Variable or Secret | - |
+| `DINGTALK_WEBHOOK_URL` | minimal | dingtalk | Secret | - |
+| `DINGTALK_SECRET` | advanced | dingtalk | Secret | - |
 | `TELEGRAM_BOT_TOKEN` | minimal | telegram | Secret | - |
 | `TELEGRAM_CHAT_ID` | minimal | telegram | Secret | - |
 | `TELEGRAM_MESSAGE_THREAD_ID` | advanced | telegram | Secret | - |
@@ -89,6 +94,7 @@
 | `FEISHU_CHAT_ID` | minimal | feishu | Variable or Secret | - |
 | `FEISHU_RECEIVE_ID_TYPE` | advanced | feishu | Variable or Secret | - |
 | `FEISHU_DOMAIN` | advanced | feishu | Variable or Secret | - |
+| `FEISHU_SEND_AS_FILE` | advanced | feishu | Variable or Secret | - |
 | `ASTRBOT_URL` | minimal | astrbot | Secret | - |
 | `ASTRBOT_TOKEN` | advanced | astrbot | Secret | - |
 | `SERVERCHAN3_SENDKEY` | minimal | serverchan3 | Secret | - |
@@ -109,6 +115,17 @@
 
 默认 workflow 仍不映射 `MARKDOWN_TO_IMAGE_CHANNELS` 与 `MERGE_EMAIL_NOTIFICATION`。它们是发送形态或聚合行为开关，不是渠道凭证；在 Actions 中自动开始读取同名 Secret/Variable 会引入额外行为变化。
 
+## 图片报告分享模板
+
+配置 `MARKDOWN_TO_IMAGE_CHANNELS` 后，个股分析、聚合报告与大盘复盘会沿用现有通知路由，在转图阶段套用 1080px 宽的品牌分享模板。单只个股按“结论—点位—技术—风险—持仓”生成决策卡，大盘按“信号—指数—宽度—强弱板块—资金观察—重点跟踪—策略—风险”生成复盘卡；多股报告保留聚合布局。底部展示 GitHub 仓库地址、可选的小红书账号区域，以及“仅供研究交流，不构成投资建议”的风险提示。
+
+- 小红书 URL、账号、ID 与二维码路径由 `SHARE_IMAGE_XIAOHONGSHU_*` 配置；全部留空时不显示该区域。二维码转图时嵌入 HTML，不依赖外部图片服务或运行时网络。
+- 模板只展示报告已有的 0–100 评分、八态动作和 `battle_plan.sniper_points` 点位；理想/次优买入点、止损位和目标位会使用专门的高对比交易卡片，不生成额外评分或多空占比。
+- 结构化字段、缺失值行为、个股/大盘映射和本地预览示例见 [分享图片模板与数据填充](share-images.md)。
+- `wkhtmltoimage`、`markdown-to-file` 与 `playwright` 使用同一份海报 HTML；现有 `MD2IMG_ENGINE`、`MARKDOWN_TO_IMAGE_MAX_CHARS` 和转换失败后回退文本的行为不变。Playwright 模式需先安装 Web 依赖并执行 `npx playwright install chromium`。
+- 模板按正文长度生成长图，不会为适配固定画幅而截断报告。内容超过 `MARKDOWN_TO_IMAGE_MAX_CHARS` 时仍跳过转图。
+- GitHub Actions 默认仍不映射 `MARKDOWN_TO_IMAGE_CHANNELS`；如需在 fork 的工作流中启用，应显式补充环境变量映射并安装所选转图工具。
+
 ## CLI 诊断
 
 ```bash
@@ -124,7 +141,7 @@ python main.py --check-notify
 
 Web 设置页的“通知渠道”分类提供单渠道测试入口。测试会使用当前页面草稿值合成临时配置，发送一条真实测试通知，但不会保存 `.env`，也不会修改运行时全局配置。
 
-- 测试范围：13 个静态通知渠道，不包含 `UNKNOWN` 和运行时上下文渠道。
+- 测试范围：14 个静态通知渠道，不包含 `UNKNOWN` 和运行时上下文渠道。
 - 普通渠道：返回单次发送结果、耗时和通用错误码。
 - 自定义 Webhook：按 URL 顺序返回 attempts，展示每个 URL 的成功/失败、HTTP 状态、耗时和错误码；多个 URL 部分成功时，顶层 message 会标出成功数 / 总数。
 - 返回结果会脱敏 token、secret、password、Bearer、完整 webhook query 和疑似 path token。
@@ -208,7 +225,7 @@ P3 新增三类通知路由配置：
 | `alert` | `NOTIFICATION_ALERT_CHANNELS` | EventMonitor 触发通知 |
 | `system_error` | `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | 预留能力；当前不新增自动系统错误生产者 |
 
-配置值为逗号分隔渠道枚举：`wechat,feishu,telegram,email,pushover,ntfy,gotify,pushplus,serverchan3,custom,discord,slack,astrbot`。
+配置值为逗号分隔渠道枚举：`wechat,dingtalk,feishu,telegram,email,pushover,ntfy,gotify,pushplus,serverchan3,custom,discord,slack,astrbot`。
 
 - 留空或未配置：保持旧行为，发送到所有已配置静态渠道。
 - 非空：只发送到路由列表与已配置渠道的交集；交集为空时不会 fallback 到全渠道。

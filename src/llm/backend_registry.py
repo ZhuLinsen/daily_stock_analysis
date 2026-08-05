@@ -9,10 +9,35 @@ from typing import Any, Optional
 from src.llm.generation_backend import GenerationError, GenerationErrorCode
 
 LITELLM_BACKEND_ID = "litellm"
+CODEX_CLI_BACKEND_ID = "codex_cli"
+CLAUDE_CODE_CLI_BACKEND_ID = "claude_code_cli"
+OPENCODE_CLI_BACKEND_ID = "opencode_cli"
 AUTO_AGENT_BACKEND_ID = "auto"
 
-SUPPORTED_GENERATION_BACKENDS = frozenset({LITELLM_BACKEND_ID})
-SUPPORTED_AGENT_GENERATION_BACKENDS = frozenset({AUTO_AGENT_BACKEND_ID, LITELLM_BACKEND_ID})
+LOCAL_CLI_GENERATION_BACKEND_IDS = frozenset({
+    CODEX_CLI_BACKEND_ID,
+    CLAUDE_CODE_CLI_BACKEND_ID,
+    OPENCODE_CLI_BACKEND_ID,
+})
+AGENT_CAPABLE_BACKEND_IDS = frozenset({LITELLM_BACKEND_ID})
+# Phase 4 local CLI backends are generation-only today. Keep this derived so a
+# future agent-capable local backend does not remain classified as generation-only.
+GENERATION_ONLY_BACKEND_IDS = LOCAL_CLI_GENERATION_BACKEND_IDS - AGENT_CAPABLE_BACKEND_IDS
+
+SUPPORTED_GENERATION_BACKENDS = frozenset({
+    LITELLM_BACKEND_ID,
+    *LOCAL_CLI_GENERATION_BACKEND_IDS,
+})
+SUPPORTED_GENERATION_FALLBACK_BACKENDS = frozenset({LITELLM_BACKEND_ID})
+SUPPORTED_AGENT_GENERATION_BACKENDS = frozenset({
+    AUTO_AGENT_BACKEND_ID,
+    *AGENT_CAPABLE_BACKEND_IDS,
+    *GENERATION_ONLY_BACKEND_IDS,
+})
+SUPPORTED_AGENT_UI_BACKENDS = frozenset({
+    AUTO_AGENT_BACKEND_ID,
+    *AGENT_CAPABLE_BACKEND_IDS,
+})
 
 
 def _read_backend_config_value(config: Any, field_name: str, default: str) -> Any:
@@ -39,16 +64,23 @@ def normalize_backend_id(value: Any, *, default: str) -> str:
 
 
 def _unsupported_backend_error(backend_id: str, *, field: str) -> GenerationError:
+    if field == "AGENT_GENERATION_BACKEND":
+        supported = SUPPORTED_AGENT_GENERATION_BACKENDS
+    elif field == "GENERATION_FALLBACK_BACKEND":
+        supported = SUPPORTED_GENERATION_FALLBACK_BACKENDS
+    else:
+        supported = SUPPORTED_GENERATION_BACKENDS
     return GenerationError(
         error_code=GenerationErrorCode.BACKEND_NOT_CONFIGURED,
         stage="generation",
         retryable=False,
         fallbackable=False,
         backend=backend_id,
+        provider=backend_id,
         details={
             "field": field,
             "requested_backend": backend_id,
-            "supported_backends": sorted(SUPPORTED_GENERATION_BACKENDS),
+            "supported_backends": sorted(supported),
         },
     )
 
@@ -67,27 +99,30 @@ def resolve_generation_backend_id(config: Any) -> str:
 def resolve_generation_fallback_backend_id(config: Any) -> Optional[str]:
     """Return the backend-level fallback target, or None for self/no-op."""
     primary = resolve_generation_backend_id(config)
-    fallback = normalize_backend_id(
-        _read_backend_config_value(
-            config,
-            "generation_fallback_backend",
-            LITELLM_BACKEND_ID,
-        ),
-        default=LITELLM_BACKEND_ID,
+    raw_fallback = _read_backend_config_value(
+        config,
+        "generation_fallback_backend",
+        None,
     )
-    if fallback not in SUPPORTED_GENERATION_BACKENDS:
-        raise _unsupported_backend_error(fallback, field="GENERATION_FALLBACK_BACKEND")
+    if raw_fallback is None:
+        fallback = LITELLM_BACKEND_ID
+    else:
+        fallback = str(raw_fallback).strip().lower()
+        if not fallback:
+            return None
     if fallback == primary:
         return None
+    if fallback != LITELLM_BACKEND_ID:
+        raise _unsupported_backend_error(fallback, field="GENERATION_FALLBACK_BACKEND")
     return fallback
 
 
 def resolve_agent_generation_backend_id(config: Any) -> str:
-    """Return the Agent backend id for Phase 1.
+    """Return the Agent tool-calling backend id.
 
-    Full contract: auto may reuse the primary generation backend only when it
-    supports tools; otherwise Agent must use the LiteLLM tool backend or fail
-    explicitly. Phase 1 has only LiteLLM, so auto resolves to litellm.
+    Phase 4 keeps Agent tool-calling on LiteLLM for auto. Explicit local
+    backends are returned so the Agent adapter can reject or fallback
+    explicitly instead of treating text-only output as successful tool use.
     """
     backend_id = normalize_backend_id(
         _read_backend_config_value(
@@ -98,18 +133,7 @@ def resolve_agent_generation_backend_id(config: Any) -> str:
         default=AUTO_AGENT_BACKEND_ID,
     )
     if backend_id not in SUPPORTED_AGENT_GENERATION_BACKENDS:
-        raise GenerationError(
-            error_code=GenerationErrorCode.BACKEND_NOT_CONFIGURED,
-            stage="generation",
-            retryable=False,
-            fallbackable=False,
-            backend=backend_id,
-            details={
-                "field": "AGENT_GENERATION_BACKEND",
-                "requested_backend": backend_id,
-                "supported_backends": sorted(SUPPORTED_AGENT_GENERATION_BACKENDS),
-            },
-        )
+        raise _unsupported_backend_error(backend_id, field="AGENT_GENERATION_BACKEND")
     if backend_id == AUTO_AGENT_BACKEND_ID:
         return LITELLM_BACKEND_ID
     return backend_id

@@ -44,6 +44,8 @@ FEISHU_CHAT_ID=oc_xxx
 FEISHU_RECEIVE_ID_TYPE=chat_id
 # 事件订阅 / Stream Bot 时才开启
 FEISHU_STREAM_ENABLED=true
+# Lark 国际版必须设置为 lark；飞书国内版保持 feishu
+FEISHU_DOMAIN=feishu
 ```
 
 注意：
@@ -51,8 +53,24 @@ FEISHU_STREAM_ENABLED=true
 - 简单群通知优先配置 `FEISHU_WEBHOOK_URL`
 - 不用 Webhook 时，App Bot 主动推送必须同时配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 和 `FEISHU_CHAT_ID`
 - `FEISHU_STREAM_ENABLED` 只代表事件订阅 / Stream Bot，不参与主动通知是否配置完成的判断
+- `FEISHU_DOMAIN=lark` 会让 App Bot 主动发送、Stream 长连接和消息回复统一使用 `open.larksuite.com`；飞书国内版使用默认值 `feishu`
 - 如果你做的是应用机器人 / Stream Bot，可直接看文末保留的原流程截图参考
 - App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准安装使用 `pip install -r requirements.txt`；参考 [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/) 和 [SDK repo](https://github.com/larksuite/oapi-sdk-python)
+
+### 文件发送模式（FEISHU_SEND_AS_FILE）
+
+开启后，飞书 App Bot 将报告以 `.md` 文件形式发送，而非文字/卡片消息：
+
+```bash
+FEISHU_SEND_AS_FILE=true
+```
+
+- **需要应用权限**：`im:message`（发送消息）+ `im:file`（上传文件）
+- **依赖版本**：`lark-oapi>=1.0.0` 需包含 `im.v1.file.create` API（文件上传类）
+- **Webhook 模式**：回退为发送文件内容文本（Webhook 不支持文件上传）
+- **生效范围**：仅对 `route_type="report"` 的报告推送生效；告警、系统通知等不受影响
+- **GitHub Actions 定时任务**：已通过 `.github/workflows/00-daily-analysis.yml` 映射，在 repo Settings → Secrets and variables → Actions 中添加同名变量或 secret 即可启用
+- **配置方式**：支持 `.env` 文件、GitHub Actions Secret/Variable 或 Web/桌面设置页配置
 
 ## Webhook 推送的正确配置步骤
 

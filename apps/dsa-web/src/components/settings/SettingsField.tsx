@@ -224,11 +224,14 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   const schema = item.schema;
   const isMultiValue = isMultiValueField(item);
   const helpContent = getSettingsHelpContent(schema?.helpKey, schema?.description, language);
+  const localizationKey = schema?.key ?? item.key;
   const fallbackTitle = schema?.title ?? item.key;
-  const title = language === 'zh' ? getFieldTitleZh(item.key, fallbackTitle) : fallbackTitle;
+  const title = language === 'zh'
+    ? getFieldTitleZh(localizationKey, getFieldTitleZh(item.key, fallbackTitle))
+    : fallbackTitle;
   const description = language === 'en'
     ? helpContent?.summary ?? schema?.description ?? ''
-    : getFieldDescriptionZh(item.key, schema?.description);
+    : getFieldDescriptionZh(localizationKey, getFieldDescriptionZh(item.key, schema?.description));
   const hasError = issues.some((issue) => issue.severity === 'error');
   const [isPasswordEditable, setIsPasswordEditable] = useState(false);
   const controlId = `setting-${item.key}`;
@@ -237,40 +240,41 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   return (
     <div
       className={cn(
-        'rounded-[1.15rem] border bg-[var(--settings-surface)] p-4 shadow-soft-card transition-[background-color,border-color,box-shadow] duration-200',
-        hasError ? 'border-danger/40 hover:border-danger/55' : 'border-[var(--settings-border)] hover:border-[var(--settings-border-strong)]',
-        'hover:bg-[var(--settings-surface-hover)]',
+        'grid gap-3 px-4 py-4 transition-colors duration-200 md:grid-cols-[minmax(0,250px)_minmax(0,1fr)] md:gap-6',
+        hasError ? 'bg-danger/5' : 'hover:bg-[var(--settings-surface-hover)]',
       )}
     >
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <label className="text-sm font-semibold text-foreground" htmlFor={controlId}>
-          {title}
-        </label>
-        <SettingsHelpButton
-          fieldKey={item.key}
-          title={title}
-          schema={schema}
-          description={description}
-        />
-        {schema?.isSensitive ? (
-          <Badge variant="history" size="sm">
-            {t('common.sensitive')}
-          </Badge>
-        ) : null}
-        {!schema?.isEditable ? (
-          <Badge variant="default" size="sm">
-            {t('common.readOnly')}
-          </Badge>
+      <div className="min-w-0 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-sm font-semibold text-foreground" htmlFor={controlId}>
+            {title}
+          </label>
+          <SettingsHelpButton
+            fieldKey={localizationKey}
+            title={title}
+            schema={schema}
+            description={description}
+          />
+          {schema?.isSensitive ? (
+            <Badge variant="history" size="sm">
+              {t('common.sensitive')}
+            </Badge>
+          ) : null}
+          {!schema?.isEditable ? (
+            <Badge variant="default" size="sm">
+              {t('common.readOnly')}
+            </Badge>
+          ) : null}
+        </div>
+
+        {description ? (
+          <p className="text-xs leading-5 text-muted-text">
+            {description}
+          </p>
         ) : null}
       </div>
 
-      {description ? (
-        <p className="mb-3 max-w-full text-xs leading-5 text-muted-text">
-          {description}
-        </p>
-      ) : null}
-
-      <div>
+      <div className="min-w-0">
         {renderFieldControl(
           item,
           displayValue,
@@ -282,27 +286,27 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
           language,
           t,
         )}
+
+        {schema?.isSensitive ? (
+          <p className="mt-2 text-[11px] leading-5 text-secondary-text">
+            {t('settings.fieldSensitiveHint')}
+            {isMultiValue ? t('settings.fieldSensitiveMultiHint') : ''}
+          </p>
+        ) : null}
+
+        {issues.length ? (
+          <div className="mt-2 space-y-1">
+            {issues.map((issue, index) => (
+              <p
+                key={`${issue.code}-${issue.key}-${index}`}
+                className={issue.severity === 'error' ? 'text-xs text-danger' : 'text-xs text-warning'}
+              >
+                {issue.message}
+              </p>
+            ))}
+          </div>
+        ) : null}
       </div>
-
-      {schema?.isSensitive ? (
-        <p className="mt-3 text-[11px] leading-5 text-secondary-text">
-          {t('settings.fieldSensitiveHint')}
-          {isMultiValue ? t('settings.fieldSensitiveMultiHint') : ''}
-        </p>
-      ) : null}
-
-      {issues.length ? (
-        <div className="mt-2 space-y-1">
-          {issues.map((issue, index) => (
-            <p
-              key={`${issue.code}-${issue.key}-${index}`}
-              className={issue.severity === 'error' ? 'text-xs text-danger' : 'text-xs text-warning'}
-            >
-              {issue.message}
-            </p>
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 };

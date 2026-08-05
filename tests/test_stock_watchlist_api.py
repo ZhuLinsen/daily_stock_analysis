@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Watchlist API regressions for stock-code variant matching."""
 
-from api.v1.endpoints.stocks import add_to_watchlist, remove_from_watchlist
+from api.v1.endpoints.stocks import add_to_watchlist, get_watchlist, remove_from_watchlist
 from api.v1.schemas.history import WatchlistRequest
 
 
@@ -64,3 +64,24 @@ def test_watchlist_matching_is_case_insensitive_for_us_tickers() -> None:
     assert add_response.stock_codes == ["aapl"]
     assert remove_response.stock_codes == []
     assert service.update_calls == [""]
+
+
+def test_watchlist_reads_common_copy_paste_separators() -> None:
+    service = FakeSystemConfigService("600519，300750  AAPL")
+
+    response = get_watchlist(service=service)
+
+    assert response.stock_codes == ["600519", "300750", "AAPL"]
+
+
+def test_watchlist_add_normalizes_existing_mixed_separators_on_write() -> None:
+    service = FakeSystemConfigService("600519，300750")
+
+    response = add_to_watchlist(
+        WatchlistRequest(stock_code="AAPL"),
+        service=service,
+    )
+
+    assert response.stock_codes == ["600519", "300750", "AAPL"]
+    assert service.stock_list == "600519,300750,AAPL"
+    assert service.update_calls == ["600519,300750,AAPL"]

@@ -56,7 +56,9 @@ def format_market_phase_prompt_section(
     if not isinstance(market_phase_context, dict) or not market_phase_context:
         return ""
 
-    lang = "en" if str(report_language or "").lower() == "en" else "zh"
+    # Korean reuses the English structural context; the output-language
+    # directive (see decision agent) constrains the model to write in Korean.
+    lang = "en" if str(report_language or "").lower() in {"en", "ko"} else "zh"
     raw_phase = market_phase_context.get("phase")
     phase = raw_phase if isinstance(raw_phase, str) and raw_phase in _KNOWN_PHASES else "unknown"
 

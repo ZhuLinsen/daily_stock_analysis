@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { UI_TEXT } from '../src/i18n/uiText';
 import { getSettingsHelpContent } from '../src/locales/settingsHelp';
 import { getFieldDescriptionZh, getFieldOptionLabelZh, getFieldTitleZh } from '../src/utils/systemConfigI18n';
 
 const requiredLocalizedKeys = [
   'TICKFLOW_API_KEY',
+  'TICKFLOW_PRIORITY',
+  'TICKFLOW_KLINE_ADJUST',
+  'TICKFLOW_BATCH_DAILY_ENABLED',
+  'TICKFLOW_BATCH_SIZE',
   'STOCK_INDEX_REMOTE_UPDATE_ENABLED',
   'SEARXNG_BASE_URLS',
   'ENABLE_REALTIME_QUOTE',
@@ -14,6 +19,10 @@ const requiredLocalizedKeys = [
   'BIAS_THRESHOLD',
   'GENERATION_BACKEND',
   'GENERATION_FALLBACK_BACKEND',
+  'GENERATION_BACKEND_TIMEOUT_SECONDS',
+  'GENERATION_BACKEND_MAX_OUTPUT_BYTES',
+  'GENERATION_BACKEND_MAX_CONCURRENCY',
+  'LOCAL_CLI_BACKEND_MAX_CONCURRENCY',
   'LLM_PROMPT_CACHE_TELEMETRY_ENABLED',
   'LLM_PROMPT_CACHE_HINTS_ENABLED',
   'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL',
@@ -122,6 +131,7 @@ describe('systemConfigI18n option label localization', () => {
     ['REPORT_TYPE', 'brief', undefined, '简报'],
     ['REPORT_LANGUAGE', 'zh', 'Chinese', '中文'],
     ['REPORT_LANGUAGE', 'en', 'English', '英文'],
+    ['REPORT_LANGUAGE', 'ko', 'Korean', '韩文'],
     ['NOTIFICATION_MIN_SEVERITY', '', 'Not set', '未设置'],
     ['NOTIFICATION_MIN_SEVERITY', 'info', 'info', '信息'],
     ['NOTIFICATION_MIN_SEVERITY', 'warning', 'warning', '警告'],
@@ -135,16 +145,12 @@ describe('systemConfigI18n option label localization', () => {
     ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'off', undefined, '关闭'],
     ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'basic', undefined, '基础'],
     ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'debug', undefined, '调试'],
-    ['MARKET_REVIEW_REGION', 'cn', undefined, 'A 股'],
-    ['MARKET_REVIEW_REGION', 'hk', undefined, '港股'],
-    ['MARKET_REVIEW_REGION', 'us', undefined, '美股'],
-    ['MARKET_REVIEW_REGION', 'both', undefined, '全部市场'],
     ['MARKET_REVIEW_COLOR_SCHEME', 'green_up', 'Green Up / Red Down', '绿涨红跌'],
     ['MARKET_REVIEW_COLOR_SCHEME', 'red_up', 'Red Up / Green Down', '红涨绿跌'],
     ['GENERATION_BACKEND', 'litellm', undefined, '默认模型配置'],
     ['GENERATION_FALLBACK_BACKEND', 'litellm', undefined, '默认模型配置'],
     ['AGENT_GENERATION_BACKEND', 'auto', 'Auto', '自动'],
-    ['AGENT_GENERATION_BACKEND', 'litellm', undefined, '默认模型工具调用'],
+    ['AGENT_GENERATION_BACKEND', 'litellm', undefined, '默认模型配置'],
     ['AGENT_ARCH', 'single', 'Single Agent', '单 Agent'],
     ['AGENT_ARCH', 'multi', 'Multi Agent (Orchestrator)', '多 Agent（编排）'],
     ['AGENT_ORCHESTRATOR_MODE', 'quick', 'Quick', '快速'],
@@ -165,6 +171,11 @@ describe('systemConfigI18n option label localization', () => {
         expect(label).not.toBe(fallbackLabel);
       }
     });
+  });
+
+  it('treats free-text config keys as passthrough for option labels', () => {
+    expect(getFieldOptionLabelZh('MARKET_REVIEW_REGION', 'cn')).toBe('cn');
+    expect(getFieldOptionLabelZh('MARKET_REVIEW_REGION', 'cn,us,jp,kr')).toBe('cn,us,jp,kr');
   });
 });
 
@@ -193,6 +204,14 @@ describe('generation backend settings help contract', () => {
       getFieldDescriptionZh('GENERATION_BACKEND', ''),
       getFieldTitleZh('GENERATION_FALLBACK_BACKEND', ''),
       getFieldDescriptionZh('GENERATION_FALLBACK_BACKEND', ''),
+      getFieldTitleZh('GENERATION_BACKEND_TIMEOUT_SECONDS', ''),
+      getFieldDescriptionZh('GENERATION_BACKEND_TIMEOUT_SECONDS', ''),
+      getFieldTitleZh('GENERATION_BACKEND_MAX_OUTPUT_BYTES', ''),
+      getFieldDescriptionZh('GENERATION_BACKEND_MAX_OUTPUT_BYTES', ''),
+      getFieldTitleZh('GENERATION_BACKEND_MAX_CONCURRENCY', ''),
+      getFieldDescriptionZh('GENERATION_BACKEND_MAX_CONCURRENCY', ''),
+      getFieldTitleZh('LOCAL_CLI_BACKEND_MAX_CONCURRENCY', ''),
+      getFieldDescriptionZh('LOCAL_CLI_BACKEND_MAX_CONCURRENCY', ''),
       getFieldTitleZh('AGENT_GENERATION_BACKEND', ''),
       getFieldDescriptionZh('AGENT_GENERATION_BACKEND', ''),
     ].join('\n');
@@ -244,8 +263,12 @@ describe('generation backend settings help contract', () => {
     ].join('\n');
 
     expect(zhBackend?.title).toBe('分析生成方式');
-    expect(zhFallback?.title).toBe('备用生成方式（预留）');
+    expect(zhFallback?.title).toBe('备用生成方式');
     expect(zhAgent?.title).toBe('问股生成方式');
+    expect(getFieldTitleZh('GENERATION_BACKEND_TIMEOUT_SECONDS', '')).toBe('生成超时（秒）');
+    expect(getFieldTitleZh('GENERATION_BACKEND_MAX_OUTPUT_BYTES', '')).toBe('最大输出大小（字节）');
+    expect(getFieldTitleZh('GENERATION_BACKEND_MAX_CONCURRENCY', '')).toBe('模型生成最大并发');
+    expect(getFieldTitleZh('LOCAL_CLI_BACKEND_MAX_CONCURRENCY', '')).toBe('本地命令行最大并发');
     expect(zhBackend?.showFieldKey).toBe(false);
     expect(zhFallback?.showFieldKey).toBe(false);
     expect(zhAgent?.showFieldKey).toBe(false);
@@ -254,36 +277,75 @@ describe('generation backend settings help contract', () => {
     expect(zhAgent?.examples).toEqual([]);
     expect(zhInlineText).toContain('个股分析');
     expect(zhInlineText).toContain('问股助手');
-    expect(zhInlineText).toContain('当前可用的模型工具调用方式');
+    expect(zhInlineText).toContain('当前可用的方式');
     expect(zhInlineText).not.toContain('沿用当前可用的模型通道');
     expect(zhText).toContain('个股分析');
     expect(zhText).toContain('大盘复盘');
     expect(zhText).toContain('自动');
     expect(zhBackend?.usage).toContain('默认模型配置');
     expect(zhFallback?.usage).toContain('默认模型配置');
-    expect(zhAgent?.usage).toContain('当前可用的模型工具调用方式');
+    expect(zhAgent?.usage).toContain('当前可用的方式');
     expect(zhAgent?.valueNotes).toContain('如果不确定，选择“自动”即可。');
-    expect(zhBackend?.notes?.join('\n')).toContain('高级说明');
-    expect(zhBackend?.notes?.join('\n')).toContain('LiteLLM');
     expect(zhText).not.toContain('优先选择当前可用');
     expect(zhText).not.toContain('unsupported_tool_calling');
     expect(zhText).not.toContain('run_agent_loop');
+    [
+      'Backend',
+      'backend',
+      'backend-level',
+      'generation backend',
+      'self fallback',
+      'stdout',
+      'stderr',
+      'contract',
+      'MAX_WORKERS',
+      'Router',
+      'diagnostics',
+      'executable',
+      'coding-agent',
+      'experimental/limited',
+      'fail-fast',
+      'LiteLLM',
+    ].forEach((term) => {
+      expect(zhInlineText).not.toContain(term);
+      expect(zhText).not.toContain(term);
+    });
 
     expect(enBackend?.title).toBe('Analysis Generation Method');
-    expect(enFallback?.title).toBe('Fallback Generation Method (reserved)');
+    expect(enFallback?.title).toBe('Fallback Generation Method');
     expect(enAgent?.title).toBe('Ask-Stock Generation Method');
     expect(enText).toContain('stock analysis');
     expect(enText).toContain('market reviews');
     expect(enText).toContain('Auto');
     expect(enBackend?.usage).toContain('Default model settings');
     expect(enFallback?.usage).toContain('Default model settings');
-    expect(enAgent?.usage).toContain('currently available model tool-calling method');
+    expect(enAgent?.usage).toContain('currently available method');
     expect(enAgent?.valueNotes).toContain('If you are unsure, choose Auto.');
-    expect(enBackend?.notes?.join('\n')).toContain('Advanced note');
-    expect(enBackend?.notes?.join('\n')).toContain('LiteLLM');
+    expect(enBackend?.notes?.join('\n')).toContain('Default model settings continue');
+    expect(enBackend?.notes?.join('\n')).not.toContain('Advanced note');
+    expect(enBackend?.notes?.join('\n')).not.toContain('LiteLLM');
     expect(enText).not.toContain('current available model channel');
     expect(enText).not.toContain('unsupported_tool_calling');
     expect(enText).not.toContain('run_agent_loop');
+  });
+});
+
+describe('generation backend status panel i18n contract', () => {
+  it('keeps the new status panel copy localized in both UI languages', () => {
+    expect(UI_TEXT.zh['settings.generationBackendStatus']).toBe('生成后端状态');
+    expect(UI_TEXT.zh['settings.generationBackendSmokeTest']).toBe('JSON 冒烟测试');
+    expect(UI_TEXT.zh['settings.generationBackendPrimary']).toBe('主后端');
+    expect(UI_TEXT.zh['settings.generationBackendFallback']).toBe('备用后端');
+    expect(UI_TEXT.zh['settings.generationBackendGenerationOnly']).toBe('仅生成');
+    expect(UI_TEXT.zh['settings.generationBackendStatusDescription']).toContain('快速检查');
+    expect(UI_TEXT.zh['settings.generationBackendStatusDescription']).not.toContain('cheap check');
+    expect(UI_TEXT.zh['settings.generationBackendSmokePassed']).not.toContain('Smoke test');
+
+    expect(UI_TEXT.en['settings.generationBackendStatus']).toBe('Generation backend status');
+    expect(UI_TEXT.en['settings.generationBackendSmokeTest']).toBe('JSON smoke test');
+    expect(UI_TEXT.en['settings.generationBackendPrimary']).toBe('Primary backend');
+    expect(UI_TEXT.en['settings.generationBackendFallback']).toBe('Fallback backend');
+    expect(UI_TEXT.en['settings.generationBackendGenerationOnly']).toBe('Generation only');
   });
 });
 

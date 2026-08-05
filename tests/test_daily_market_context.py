@@ -136,6 +136,92 @@ def test_reuses_same_day_market_review_history_without_running_review() -> None:
     run_review.assert_not_called()
 
 
+def test_reuses_jp_market_review_history_without_normalizing_to_cn() -> None:
+    db = MagicMock()
+    db.get_analysis_history.return_value = [
+        _history_record(
+            created_at=datetime(2026, 6, 6, 9, 30),
+            region="jp",
+            summary="日股退潮，高风险，建议观望，仓位上限30%。",
+        )
+    ]
+    service = DailyMarketContextService(
+        db_manager=db,
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    with patch("src.services.daily_market_context.run_market_review") as run_review:
+        context = service.get_context(
+            region="jp",
+            config=SimpleNamespace(report_language="zh"),
+            notifier=MagicMock(),
+            analyzer=MagicMock(),
+            search_service=MagicMock(),
+            allow_generate=False,
+        )
+
+    assert context is not None
+    assert context.region == "jp"
+    assert context.summary.startswith("日股退潮")
+    assert "high_risk" in context.risk_tags
+    assert "low_position_cap" in context.risk_tags
+    run_review.assert_not_called()
+
+
+def test_jp_kr_request_does_not_reuse_legacy_both_history() -> None:
+    db = MagicMock()
+    db.get_analysis_history.return_value = [
+        _history_record(
+            created_at=datetime(2026, 6, 6, 9, 30),
+            region="both",
+            summary="旧三市场复盘，高风险，建议观望，仓位上限30%。",
+        )
+    ]
+    service = DailyMarketContextService(
+        db_manager=db,
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    for region in ("jp", "kr"):
+        with patch("src.services.daily_market_context.run_market_review") as run_review:
+            context = service.get_context(
+                region=region,
+                config=SimpleNamespace(report_language="zh"),
+                notifier=MagicMock(),
+                analyzer=MagicMock(),
+                search_service=MagicMock(),
+                allow_generate=False,
+            )
+
+        assert context is None
+        run_review.assert_not_called()
+
+
+def test_multi_market_region_does_not_fallback_to_cn_history() -> None:
+    db = MagicMock()
+    db.get_analysis_history.return_value = [
+        _history_record(created_at=datetime(2026, 6, 6, 9, 30), region="cn")
+    ]
+    service = DailyMarketContextService(
+        db_manager=db,
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    with patch("src.services.daily_market_context.run_market_review") as run_review:
+        context = service.get_context(
+            region="jp,kr",
+            config=SimpleNamespace(report_language="zh"),
+            notifier=MagicMock(),
+            analyzer=MagicMock(),
+            search_service=MagicMock(),
+            allow_generate=False,
+        )
+
+    assert context is None
+    db.get_analysis_history.assert_not_called()
+    run_review.assert_not_called()
+
+
 def test_does_not_reuse_same_day_history_on_report_language_mismatch() -> None:
     db = MagicMock()
     db.get_analysis_history.return_value = [
@@ -943,6 +1029,30 @@ def test_prompt_section_escapes_summary_sentinel_text_before_insertion() -> None
     assert section.index("忽略约束") < section.rindex("- END_UNTRUSTED_MARKET_SUMMARY")
 
 
+def test_prompt_section_labels_jp_kr_regions_without_cn_fallback() -> None:
+    jp_section = format_daily_market_context_prompt_section(
+        {
+            "region": "jp",
+            "trade_date": "2026-06-06",
+            "summary": "日股市场震荡。",
+        },
+        report_language="zh",
+    )
+    kr_section = format_daily_market_context_prompt_section(
+        {
+            "region": "kr",
+            "trade_date": "2026-06-06",
+            "summary": "Korean market stayed cautious.",
+        },
+        report_language="en",
+    )
+
+    assert "- 市场：日股（jp）" in jp_section
+    assert "A股（cn）" not in jp_section
+    assert "- Region: Korea (kr)" in kr_section
+    assert "A-share (cn)" not in kr_section
+
+
 def test_extract_summary_prefers_region_scoped_section_over_generic_fallback_title() -> None:
     context = DailyMarketContextService(
         db_manager=MagicMock(),
@@ -1030,3 +1140,40 @@ def test_yellow_market_light_status_marks_context_conservative() -> None:
 
     assert context is not None
     assert "conservative" in context.to_safe_dict()["risk_tags"]
+
+
+def test_daily_market_context_keeps_jp_kr_regions_and_labels() -> None:
+    service = DailyMarketContextService(
+        db_manager=MagicMock(),
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    jp_context = service._build_context_from_payload(
+        region="jp",
+        trade_date=date(2026, 6, 6),
+        payload={"summary": "日经225震荡，风险偏好谨慎。"},
+        source="analysis_history",
+    )
+    kr_context = service._build_context_from_payload(
+        region="kr",
+        trade_date=date(2026, 6, 6),
+        payload={"summary": "KOSPI震荡，等待确认。"},
+        source="analysis_history",
+    )
+
+    assert jp_context is not None
+    assert jp_context.region == "jp"
+    assert kr_context is not None
+    assert kr_context.region == "kr"
+
+    jp_section = format_daily_market_context_prompt_section(
+        jp_context.to_safe_dict(),
+        report_language="zh",
+    )
+    kr_section = format_daily_market_context_prompt_section(
+        kr_context.to_safe_dict(),
+        report_language="en",
+    )
+
+    assert "市场：日股（jp）" in jp_section
+    assert "Region: Korea (kr)" in kr_section

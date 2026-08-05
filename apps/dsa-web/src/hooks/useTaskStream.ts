@@ -119,6 +119,9 @@ const toTaskInfo = (data: Record<string, unknown>): TaskInfo => {
   if (typeof data.trace_id === 'string' && data.trace_id.trim()) {
     task.traceId = data.trace_id;
   }
+  if (typeof data.region === 'string' && data.region.trim()) {
+    task.region = data.region;
+  }
 
   return task;
 };

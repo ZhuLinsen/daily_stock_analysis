@@ -13,12 +13,11 @@ from typing import Any, Dict, List, Optional
 from src.config import (
     AGENT_CONTEXT_COMPRESSION_PROFILES,
     AGENT_MAX_STEPS_DEFAULT,
-    DEFAULT_ALPHASIFT_INSTALL_SPEC,
 )
 from src.notification_noise import NOTIFICATION_SEVERITIES
 from src.notification_routing import ROUTABLE_NOTIFICATION_CHANNELS
 
-SCHEMA_VERSION = "2026-06-22"
+SCHEMA_VERSION = "2026-06-29-claude-code-cli-backend"
 
 _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {
@@ -85,7 +84,7 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "STOCK_LIST": {
         "title": "Stock List",
-        "description": "Comma-separated watchlist stock codes.",
+        "description": "Watchlist stock codes. English commas are recommended; common pasted separators are normalized on save.",
         "category": "base",
         "data_type": "array",
         "ui_control": "textarea",
@@ -126,11 +125,47 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_required": False,
         "is_editable": True,
         "default_value": "litellm",
-        "options": [{"label": "Default model settings", "value": "litellm"}],
-        "validation": {"enum": ["litellm"]},
+        "options": [
+            {"label": "Default model settings", "value": "litellm"},
+            {"label": "Codex CLI (experimental)", "value": "codex_cli"},
+            {"label": "Claude Code CLI (experimental)", "value": "claude_code_cli"},
+            {"label": "OpenCode CLI (experimental)", "value": "opencode_cli"},
+        ],
+        "validation": {"enum": ["litellm", "codex_cli", "claude_code_cli", "opencode_cli"]},
         "display_order": 0,
         "help_key": "settings.ai_model.GENERATION_BACKEND",
-        "examples": ["GENERATION_BACKEND=litellm"],
+        "examples": [
+            "GENERATION_BACKEND=litellm",
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_BACKEND=claude_code_cli",
+            "GENERATION_BACKEND=opencode_cli",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "OPENCODE_CLI_MODEL": {
+        "title": "OpenCode CLI Model",
+        "description": "Optional model override passed to OpenCode CLI when GENERATION_BACKEND=opencode_cli. Leave empty to use OpenCode's default model.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "",
+        "placeholder": "optional provider/model override",
+        "validation": {"pattern": r"^$|^[^\s|<>;`$]+$"},
+        "display_order": 1,
+        "help_key": "settings.ai_model.OPENCODE_CLI_MODEL",
+        "examples": [
+            "OPENCODE_CLI_MODEL=provider/model",
+            "OPENCODE_CLI_MODEL=opencode/model-name",
+        ],
         "docs": [
             {
                 "label": "LLM 配置指南",
@@ -140,8 +175,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "warning_codes": [],
     },
     "GENERATION_FALLBACK_BACKEND": {
-        "title": "Fallback Generation Method (reserved)",
-        "description": "Reserved fallback method for future multi-method generation; keep the default model settings for the current default behavior.",
+        "title": "Fallback Generation Method",
+        "description": "Backend-level fallback method. Empty disables backend fallback; litellm can be used as fallback for local CLI generation backends.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "select",
@@ -149,11 +184,109 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_required": False,
         "is_editable": True,
         "default_value": "litellm",
-        "options": [{"label": "Default model settings", "value": "litellm"}],
-        "validation": {"enum": ["litellm"]},
+        "options": [
+            {"label": "Disabled", "value": ""},
+            {"label": "Default model settings", "value": "litellm"},
+        ],
+        "validation": {"enum": ["", "litellm"]},
         "display_order": 0,
         "help_key": "settings.ai_model.GENERATION_FALLBACK_BACKEND",
-        "examples": ["GENERATION_FALLBACK_BACKEND=litellm"],
+        "examples": ["GENERATION_FALLBACK_BACKEND=litellm", "GENERATION_FALLBACK_BACKEND="],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "GENERATION_BACKEND_TIMEOUT_SECONDS": {
+        "title": "Generation Backend Timeout",
+        "description": "Maximum seconds allowed for one generation backend call. Applies to local CLI backends; LiteLLM behavior is unchanged.",
+        "category": "ai_model",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "300",
+        "options": [],
+        "validation": {"min": 1, "max": 3600},
+        "display_order": 1,
+        "help_key": "settings.ai_model.GENERATION_BACKEND_TIMEOUT_SECONDS",
+        "examples": ["GENERATION_BACKEND_TIMEOUT_SECONDS=300"],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "GENERATION_BACKEND_MAX_OUTPUT_BYTES": {
+        "title": "Generation Backend Max Output Bytes",
+        "description": (
+            "Maximum captured diagnostic stdout/stderr and final-response bytes "
+            "for one local CLI backend call."
+        ),
+        "category": "ai_model",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "1048576",
+        "options": [],
+        "validation": {"min": 1, "max": 33554432},
+        "display_order": 1,
+        "help_key": "settings.ai_model.GENERATION_BACKEND_MAX_OUTPUT_BYTES",
+        "examples": ["GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576"],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "GENERATION_BACKEND_MAX_CONCURRENCY": {
+        "title": "Generation Backend Max Concurrency",
+        "description": "Global generation backend concurrency cap. Local CLI effective concurrency also respects LOCAL_CLI_BACKEND_MAX_CONCURRENCY.",
+        "category": "ai_model",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "1",
+        "options": [],
+        "validation": {"min": 1, "max": 16},
+        "display_order": 1,
+        "help_key": "settings.ai_model.GENERATION_BACKEND_MAX_CONCURRENCY",
+        "examples": ["GENERATION_BACKEND_MAX_CONCURRENCY=1"],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": {
+        "title": "Local CLI Backend Max Concurrency",
+        "description": "Local CLI backend concurrency cap. Effective local CLI concurrency is the minimum of this value and GENERATION_BACKEND_MAX_CONCURRENCY.",
+        "category": "ai_model",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "1",
+        "options": [],
+        "validation": {"min": 1, "max": 4},
+        "display_order": 1,
+        "help_key": "settings.ai_model.LOCAL_CLI_BACKEND_MAX_CONCURRENCY",
+        "examples": ["LOCAL_CLI_BACKEND_MAX_CONCURRENCY=1"],
         "docs": [
             {
                 "label": "LLM 配置指南",
@@ -647,7 +780,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "TICKFLOW_API_KEY": {
         "title": "TickFlow API Key",
-        "description": "API key for TickFlow market review enhancement (A-share indices, plus market stats when universe queries are enabled).",
+        "description": "API key for optional TickFlow A-share daily K-lines, realtime quotes, stock list/name lookup, and market review enhancement. Permission failures fail open to existing providers.",
         "category": "data_source",
         "data_type": "string",
         "ui_control": "password",
@@ -658,6 +791,62 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 15,
+    },
+    "TICKFLOW_PRIORITY": {
+        "title": "TickFlow Daily K-line Priority",
+        "description": "Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier; realtime quote order is controlled separately by REALTIME_SOURCE_PRIORITY.",
+        "category": "data_source",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "2",
+        "options": [],
+        "validation": {"min": 0, "max": 99},
+        "display_order": 16,
+    },
+    "TICKFLOW_KLINE_ADJUST": {
+        "title": "TickFlow K-line Adjust",
+        "description": "Adjustment mode for TickFlow daily K-lines. Default none preserves the existing unadjusted technical-indicator baseline.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "none",
+        "options": ["none", "forward", "backward", "forward_additive", "backward_additive"],
+        "validation": {},
+        "display_order": 17,
+    },
+    "TICKFLOW_BATCH_DAILY_ENABLED": {
+        "title": "TickFlow Batch Daily Enabled",
+        "description": "Enable TickFlow batch daily K-line prefetch when the current plan allows it. Permission failures fail open and fall back to per-stock providers.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 18,
+    },
+    "TICKFLOW_BATCH_SIZE": {
+        "title": "TickFlow Batch Size",
+        "description": "Maximum symbols per TickFlow batch request for daily K-lines and realtime quotes.",
+        "category": "data_source",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "100",
+        "options": [],
+        "validation": {"min": 1, "max": 500},
+        "display_order": 19,
     },
     "STOCK_INDEX_REMOTE_UPDATE_ENABLED": {
         "title": "Remote Stock Index Updates",
@@ -685,10 +874,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
-    "ALPHASIFT_ENABLED": {
-        "title": "AlphaSift Screening",
-        "description": "Enable the built-in AlphaSift stock screening tab. Disabled by default. This switch only affects the AlphaSift screening path; it does not migrate, sanitize, or clear existing LLM/runtime fields in `.env`.",
-        "category": "data_source",
+    "SCREENING_ENABLED": {
+        "title": "Built-in Stock Screening",
+        "description": "Enable DSA's built-in stock screening tab. The implementation is based on AlphaSift and maintained as part of DSA. Disabled by default.",
+        "category": "base",
         "data_type": "boolean",
         "ui_control": "switch",
         "is_sensitive": False,
@@ -698,10 +887,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 17,
-        "help_key": "settings.data_source.ALPHASIFT_ENABLED",
+        "help_key": "settings.base.SCREENING_ENABLED",
         "examples": [
-            "ALPHASIFT_ENABLED=false",
-            "ALPHASIFT_ENABLED=true",
+            "SCREENING_ENABLED=false",
+            "SCREENING_ENABLED=true",
         ],
         "docs": [
             {
@@ -717,36 +906,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
                 "href": "https://platform.openai.com/docs/api-reference/authentication",
             },
             {
-                "label": "AlphaSift 集成说明",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/alphasift-integration.md",
-            },
-        ],
-    },
-    "ALPHASIFT_INSTALL_SPEC": {
-        "title": "AlphaSift Install Spec",
-        "description": "Pinned AlphaSift pip source used for explicit repair installs and source verification. It is not used for normal runtime calls after startup dependency installation; runtime compatibility is built from DSA's resolved LLM/runtime context.",
-        "category": "data_source",
-        "data_type": "string",
-        "ui_control": "password",
-        "is_sensitive": True,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": DEFAULT_ALPHASIFT_INSTALL_SPEC,
-        "options": [],
-        "validation": {},
-        "display_order": 18,
-        "help_key": "settings.data_source.ALPHASIFT_INSTALL_SPEC",
-        "examples": [
-            f"ALPHASIFT_INSTALL_SPEC={DEFAULT_ALPHASIFT_INSTALL_SPEC}",
-        ],
-        "docs": [
-            {
-                "label": "requirements.txt（版本与依赖边界）",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/requirements.txt",
-            },
-            {
-                "label": "AlphaSift 集成说明",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/alphasift-integration.md",
+                "label": "选股说明",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/screening-engine.md",
             },
         ],
     },
@@ -1482,6 +1643,59 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             },
         ],
         "warning_codes": ["not_webhook_delivery", "restart_required"],
+    },
+    "DINGTALK_WEBHOOK_URL": {
+        "title": "DingTalk Bot Webhook",
+        "description": "DingTalk group robot webhook URL. This is separate from App/Stream mode.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {
+            "item_type": "url",
+            "allowed_schemes": ["http", "https"],
+        },
+        "display_order": 18,
+        "help_key": "settings.notification.DINGTALK_WEBHOOK_URL",
+        "examples": [
+            "DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=your_token",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：通知渠道配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#通知渠道详细配置",
+            },
+        ],
+        "warning_codes": ["webhook_secret_value"],
+    },
+    "DINGTALK_SECRET": {
+        "title": "DingTalk Signing Secret",
+        "description": "Signing secret for a DingTalk group robot. Leave empty when signing is disabled.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 19,
+        "help_key": "settings.notification.DINGTALK_SECRET",
+        "examples": [
+            "DINGTALK_SECRET=your_dingtalk_signing_secret",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：通知渠道配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#通知渠道详细配置",
+            },
+        ],
+        "warning_codes": ["secret_value"],
     },
     "PUSHPLUS_TOKEN": {
         "title": "PushPlus Token",
@@ -2335,7 +2549,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "REPORT_LANGUAGE": {
         "title": "Report Language",
-        "description": "Default output language for reports and notification templates. Supported values: zh, en.",
+        "description": "Default output language for reports, Agent Chat fallback replies, and notification templates. Supported values: zh, en, ko.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "select",
@@ -2346,13 +2560,15 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [
             {"label": "Chinese", "value": "zh"},
             {"label": "English", "value": "en"},
+            {"label": "Korean", "value": "ko"},
         ],
-        "validation": {"enum": ["zh", "en"]},
+        "validation": {"enum": ["zh", "en", "ko"]},
         "display_order": 56,
         "help_key": "settings.notification.report_output",
         "examples": [
             "REPORT_LANGUAGE=zh",
             "REPORT_LANGUAGE=en",
+            "REPORT_LANGUAGE=ko",
         ],
         "docs": [
             {
@@ -3225,20 +3441,21 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "MARKET_REVIEW_REGION": {
         "title": "Market Review Region",
-        "description": "Market region for review: cn (A-shares), hk (Hong Kong), us (US stocks), or both (all markets).",
+        "description": "Market region for review: cn (A-shares), hk (Hong Kong), us (US stocks), jp (Japan), kr (Korea), or both (all markets).",
         "category": "system",
         "data_type": "string",
-        "ui_control": "select",
+        "ui_control": "text",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
         "default_value": "cn",
-        "options": ["cn", "hk", "us", "both"],
-        "validation": {"enum": ["cn", "hk", "us", "both"]},
+        "options": ["cn", "hk", "us", "jp", "kr", "both"],
+        "validation": {"allowed_values": ["cn", "hk", "us", "jp", "kr", "both"], "delimiter": ","},
         "display_order": 48,
         "help_key": "settings.system.market_review",
         "examples": [
             "MARKET_REVIEW_REGION=cn",
+            "MARKET_REVIEW_REGION=jp",
             "MARKET_REVIEW_REGION=both",
         ],
         "docs": [
@@ -3543,6 +3760,37 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "AGENT_BACKEND": {
+        "title": "Ask-Stock Backend",
+        "description": "Choose how the ask-stock Chat runs. Auto keeps the current default-model route and never selects experimental Codex automatically.",
+        "category": "agent",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "auto",
+        "options": [
+            {"label": "Auto (recommended)", "value": "auto"},
+            {"label": "Default model settings", "value": "litellm"},
+            {"label": "Codex local Agent (experimental)", "value": "codex_app_server"},
+        ],
+        "validation": {"enum": ["auto", "litellm", "codex_app_server"]},
+        "display_order": 2,
+        "help_key": "settings.agent.AGENT_BACKEND",
+        "examples": [
+            "AGENT_BACKEND=auto",
+            "AGENT_BACKEND=litellm",
+            "AGENT_BACKEND=codex_app_server",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
     "AGENT_GENERATION_BACKEND": {
         "title": "Ask-Stock Generation Method",
         "description": "Generation method used by the ask-stock assistant to generate replies and use tools.",
@@ -3555,10 +3803,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "auto",
         "options": [
             {"label": "Auto", "value": "auto"},
-            {"label": "Default model tool calling", "value": "litellm"},
+            {"label": "Default model settings", "value": "litellm"},
         ],
         "validation": {"enum": ["auto", "litellm"]},
-        "display_order": 2,
+        "display_order": 3,
         "help_key": "settings.agent.AGENT_GENERATION_BACKEND",
         "examples": [
             "AGENT_GENERATION_BACKEND=auto",
@@ -3574,7 +3822,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_MAX_STEPS": {
         "title": "Agent Max Steps",
-        "description": f"Maximum reasoning-step limit for Agent mode. At the default ({AGENT_MAX_STEPS_DEFAULT}), each sub-agent keeps its own preset. When raised above {AGENT_MAX_STEPS_DEFAULT}, all sub-agents adopt this value. When lowered below a sub-agent's preset, that sub-agent is capped at this value.",
+        "description": f"Maximum reasoning-step limit for the default-model Agent and per-turn tool-call limit for Codex. At the default ({AGENT_MAX_STEPS_DEFAULT}), each default-model sub-agent keeps its own preset. When raised above {AGENT_MAX_STEPS_DEFAULT}, all sub-agents adopt this value. When lowered below a sub-agent's preset, that sub-agent is capped at this value.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -3739,7 +3987,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_ORCHESTRATOR_TIMEOUT_S": {
         "title": "Agent Timeout",
-        "description": "Shared timeout budget in seconds for Agent execution. Single-agent runs use it as the overall ReAct loop budget; multi-agent mode uses it as the cooperative pipeline budget. Set to 0 to disable.",
+        "description": "Shared timeout budget in seconds for Agent execution. Single-agent runs use it as the overall ReAct loop budget; multi-agent mode uses it as the cooperative pipeline budget. Set to 0 to disable only for the default LiteLLM path; Codex requires a positive value so every request ends within a known time.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -3780,6 +4028,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "examples": [
             "AGENT_RISK_OVERRIDE=true",
             "AGENT_RISK_OVERRIDE=false",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：Agent 配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "AGENT_SKILL_CONCURRENCY": {
+        "title": "Strategy Skill Concurrency",
+        "description": "Maximum number of specialist strategy-skill agents to run concurrently in specialist mode.",
+        "category": "agent",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "3",
+        "options": [],
+        "validation": {"min": 1, "max": 4},
+        "display_order": 64,
+        "help_key": "settings.agent.AGENT_SKILL_CONCURRENCY",
+        "examples": [
+            "AGENT_SKILL_CONCURRENCY=3",
+            "AGENT_SKILL_CONCURRENCY=4",
         ],
         "docs": [
             {
@@ -3869,7 +4143,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_SKILL_AUTOWEIGHT": {
         "title": "Auto-Weight Strategies",
-        "description": "Automatically weight strategy-skill opinions by their historical backtest performance.",
+        "description": "Conservatively weight strategy-skill opinions from sufficient attributable Outcome samples.",
         "category": "agent",
         "data_type": "boolean",
         "ui_control": "switch",
@@ -4329,6 +4603,26 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         ],
         "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
         "warning_codes": ["secret_value"],
+    },
+    "TICKFLOW_PRIORITY": {
+        "help_key": "settings.data_source.TICKFLOW_PRIORITY",
+        "examples": ["TICKFLOW_PRIORITY=2"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+    },
+    "TICKFLOW_KLINE_ADJUST": {
+        "help_key": "settings.data_source.TICKFLOW_KLINE_ADJUST",
+        "examples": ["TICKFLOW_KLINE_ADJUST=none"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+    },
+    "TICKFLOW_BATCH_DAILY_ENABLED": {
+        "help_key": "settings.data_source.TICKFLOW_BATCH_DAILY_ENABLED",
+        "examples": ["TICKFLOW_BATCH_DAILY_ENABLED=true"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+    },
+    "TICKFLOW_BATCH_SIZE": {
+        "help_key": "settings.data_source.TICKFLOW_BATCH_SIZE",
+        "examples": ["TICKFLOW_BATCH_SIZE=100"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
     },
     "SERPAPI_API_KEYS": {
         "help_key": "settings.data_source.search_api_keys",

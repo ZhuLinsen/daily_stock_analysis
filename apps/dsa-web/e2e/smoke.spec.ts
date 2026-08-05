@@ -199,7 +199,7 @@ test.describe('web smoke', () => {
     await captureSmokeScreenshot(page, testInfo, 'smoke-settings-page-en');
   });
 
-  test('backtest page renders filter controls after login', async ({ page }) => {
+  test('backtest page renders filter controls after login', async ({ page }, testInfo) => {
     await login(page);
 
     // Navigate to backtest page by clicking the link
@@ -212,5 +212,7 @@ test.describe('web smoke', () => {
     await expect(filterInput).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole('button', { name: '筛选' })).toBeVisible();
     await expect(page.getByRole('button', { name: '运行回测' })).toBeVisible();
+
+    await captureSmokeScreenshot(page, testInfo, 'smoke-backtest-page-zh', { fullPage: true });
   });
 });

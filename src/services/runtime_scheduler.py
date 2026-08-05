@@ -29,6 +29,7 @@ SCHEDULE_ARGS_OVERRIDE_KEYS = {
     "single_notify",
     "no_context_snapshot",
     "workers",
+    "portfolio",
 }
 
 
@@ -155,6 +156,7 @@ class RuntimeSchedulerService:
             "serve": False,
             "serve_only": True,
             "stocks": None,
+            "portfolio": None,
             "workers": None,
         }
         defaults.update(self._schedule_args_overrides)
@@ -341,7 +343,7 @@ class RuntimeSchedulerService:
 
         def run_and_release() -> None:
             try:
-                self._run_analysis_locked()
+                self._run_analysis_locked(None)
             finally:
                 self._run_lock.release()
 

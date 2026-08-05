@@ -13,6 +13,7 @@ from src.config import (
     get_effective_agent_primary_model,
     get_effective_agent_models_to_try,
 )
+from src.agent.litellm_route_resolution import resolve_agent_litellm_route
 from src.agent.provider_trace import (
     TRACE_MODEL_KEY,
     TRACE_PROVIDER_KEY,
@@ -120,9 +121,16 @@ def build_visible_chat_history(
     session_id: str,
     llm_adapter: Any,
     config: Any,
+    *,
+    allow_llm_compression: bool = True,
 ) -> List[Dict[str, str]]:
     """Return visible chat history according to the compression state table."""
-    state = _build_visible_history_state(session_id, llm_adapter, config)
+    state = _build_visible_history_state(
+        session_id,
+        llm_adapter,
+        config,
+        allow_llm_compression=allow_llm_compression,
+    )
     return _strip_internal_message_ids(state.messages)
 
 
@@ -140,8 +148,11 @@ def build_agent_chat_context_bundle(
     state = _build_visible_history_state(session_id, llm_adapter, config)
     diagnostics = TraceDiagnostics(visible_tokens=state.visible_tokens)
     db = get_db()
-    candidate_models = get_effective_agent_models_to_try(config)
-    if not candidate_models:
+    resolution = resolve_agent_litellm_route(config)
+    candidate_models = resolution.models_to_try if resolution.available else []
+    if not candidate_models and not resolution.reason:
+        candidate_models = get_effective_agent_models_to_try(config)
+    if not candidate_models and not resolution.reason:
         candidate_models = [get_effective_agent_primary_model(config)]
     candidate_trace_targets = _build_trace_match_targets(candidate_models, config)
     turns = db.get_agent_provider_turns(session_id, must_roundtrip_only=True)
@@ -218,10 +229,12 @@ def _build_visible_history_state(
     session_id: str,
     llm_adapter: Any,
     config: Any,
+    *,
+    allow_llm_compression: bool = True,
 ) -> VisibleHistoryState:
     """Return visible history with private ``_message_id`` anchors."""
     db = get_db()
-    if not getattr(config, "agent_context_compression_enabled", False):
+    if not allow_llm_compression or not getattr(config, "agent_context_compression_enabled", False):
         selected = _load_visible_messages(session_id, limit=20)
         messages = _to_chat_messages(selected, include_ids=True)
         return VisibleHistoryState(

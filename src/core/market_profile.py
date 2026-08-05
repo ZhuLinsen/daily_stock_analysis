@@ -3,7 +3,7 @@
 大盘复盘市场区域配置
 
 定义各市场区域的指数、新闻搜索词、Prompt 提示等元数据，
-供 MarketAnalyzer 按 region 切换 A 股/美股复盘行为。
+供 MarketAnalyzer 按 region 切换 A 股/港股/美股/日韩复盘行为。
 """
 
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ from typing import List
 class MarketProfile:
     """大盘复盘市场区域配置"""
 
-    region: str  # "cn" | "us"
+    region: str  # "cn" | "hk" | "us" | "jp" | "kr"
     # 用于判断整体走势的指数代码，cn 用上证 000001，us 用标普 SPX
     mood_index_code: str
     # 新闻搜索关键词
@@ -66,6 +66,32 @@ HK_PROFILE = MarketProfile(
     has_sector_rankings=False,
 )
 
+JP_PROFILE = MarketProfile(
+    region="jp",
+    mood_index_code="N225",
+    news_queries=[
+        "日本股市 日经225",
+        "Japan stock market Nikkei TOPIX",
+        "日经225 东证指数 行情",
+    ],
+    prompt_index_hint="分析日经225、东证指数等日本主要指数走势特点",
+    has_market_stats=False,
+    has_sector_rankings=False,
+)
+
+KR_PROFILE = MarketProfile(
+    region="kr",
+    mood_index_code="KS11",
+    news_queries=[
+        "韩国股市 KOSPI",
+        "Korea stock market KOSPI KOSDAQ",
+        "KOSPI KOSDAQ 行情",
+    ],
+    prompt_index_hint="分析 KOSPI、KOSDAQ 等韩国主要指数走势特点",
+    has_market_stats=False,
+    has_sector_rankings=False,
+)
+
 
 def get_profile(region: str) -> MarketProfile:
     """根据 region 返回对应的 MarketProfile"""
@@ -73,4 +99,8 @@ def get_profile(region: str) -> MarketProfile:
         return US_PROFILE
     if region == "hk":
         return HK_PROFILE
+    if region == "jp":
+        return JP_PROFILE
+    if region == "kr":
+        return KR_PROFILE
     return CN_PROFILE

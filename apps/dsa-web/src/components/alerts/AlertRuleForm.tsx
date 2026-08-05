@@ -93,11 +93,6 @@ const STOP_LOSS_MODE_OPTIONS = [
   { value: 'breach', label: '已触发止损' },
 ];
 
-const MARKET_REGION_OPTIONS = [
-  { value: 'cn', label: 'A 股（cn）' },
-  { value: 'hk', label: '港股（hk）' },
-  { value: 'us', label: '美股（us）' },
-];
 
 const MARKET_LIGHT_STATUS_OPTIONS: Array<{ value: MarketLightStatus; label: string }> = [
   { value: 'red', label: '红灯' },
@@ -453,7 +448,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         <Select
           label={text.marketRegion}
           value={marketRegion}
-          options={language === 'zh' ? MARKET_REGION_OPTIONS : ALERT_MARKET_REGION_OPTIONS[language]}
+          options={ALERT_MARKET_REGION_OPTIONS[language]}
           disabled={isSubmitting}
           onChange={(value) => setMarketRegion(value as MarketRegion)}
         />

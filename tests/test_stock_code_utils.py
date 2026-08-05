@@ -9,10 +9,121 @@ import pytest
 from unittest.mock import patch
 
 from src.services.stock_code_utils import (
+    build_daily_code_candidates,
     is_code_like,
     normalize_code,
+    resolve_daily_stock_identity,
     resolve_index_stock_code_for_analysis,
 )
+
+
+class TestBuildDailyCodeCandidates:
+    @pytest.mark.parametrize(
+        "code",
+        ["600519.SZ", "000001.SH", "920748.SH", "SH920748", "600519.HK"],
+    )
+    def test_rejects_conflicting_explicit_exchange_before_any_candidate(self, code):
+        assert build_daily_code_candidates(code) == []
+
+    @pytest.mark.parametrize(
+        ("code", "required_candidates"),
+        [
+            (
+                "600519.SH",
+                {
+                    "600519.SH",
+                    "600519",
+                    "SH600519",
+                    "SH.600519",
+                    "SS600519",
+                },
+            ),
+            ("600519", {"600519", "600519.SH"}),
+            ("000001.SZ", {"000001.SZ", "000001"}),
+            ("920748", {"920748", "BJ920748", "920748.BJ"}),
+            ("1810", {"1810", "01810", "HK01810", "01810.HK"}),
+            ("01810", {"1810", "01810", "HK01810", "01810.HK"}),
+            ("1810.HK", {"1810", "1810.HK", "01810", "HK01810", "01810.HK"}),
+            ("HK.01810", {"1810", "HK.01810", "01810", "HK01810", "01810.HK"}),
+            ("AAPL", {"AAPL", "AAPL.US"}),
+            ("AAPL.US", {"AAPL.US", "AAPL"}),
+            ("NASDAQ", {"NASDAQ"}),
+            ("^GSPC", {"^GSPC"}),
+        ],
+    )
+    def test_preserves_valid_explicit_and_legacy_bare_codes(
+        self,
+        code,
+        required_candidates,
+    ):
+        assert set(build_daily_code_candidates(code)) >= required_candidates
+
+    @pytest.mark.parametrize(
+        ("code", "normalized_code", "market", "refill_code"),
+        [
+            ("600519.SH", "600519", "cn", "600519"),
+            ("1810", "01810", "hk", "HK01810"),
+            ("HK.01810", "01810", "hk", "HK01810"),
+            ("AAPL.US", "AAPL", "us", "AAPL"),
+            ("BRK.B", "BRK.B", "us", "BRK.B"),
+            ("NASDAQ", "NASDAQ", "us", "NASDAQ"),
+            ("^GSPC", "^GSPC", "us", "^GSPC"),
+            ("7203.T", "7203.T", "jp", "7203.T"),
+        ],
+    )
+    def test_one_identity_drives_candidates_market_and_refill(
+        self,
+        code,
+        normalized_code,
+        market,
+        refill_code,
+    ):
+        identity = resolve_daily_stock_identity(code)
+
+        assert identity is not None
+        assert identity.normalized_code == normalized_code
+        assert identity.market == market
+        assert identity.refill_code == refill_code
+        assert code in identity.code_candidates
+        assert refill_code in identity.code_candidates
+
+    def test_kr_suffix_adds_only_its_legacy_bare_candidate(self):
+        identity = resolve_daily_stock_identity("005930.KS")
+
+        assert identity is not None
+        assert identity.market == "kr"
+        assert identity.code_candidates == ("005930.KS", "005930")
+
+    def test_bare_code_with_unsupported_market_hint_fails_closed(self):
+        assert resolve_daily_stock_identity("005930", market_hint="tw") is None
+
+    def test_cross_market_bare_code_without_hint_fails_closed(self):
+        assert resolve_daily_stock_identity("8035") is None
+
+    def test_cross_market_suffix_code_does_not_add_ambiguous_bare_alias(self):
+        identity = resolve_daily_stock_identity("8035.T")
+
+        assert identity is not None
+        assert identity.market == "jp"
+        assert identity.code_candidates == ("8035.T",)
+
+    def test_cross_market_hk_code_does_not_add_ambiguous_bare_alias(self):
+        identity = resolve_daily_stock_identity("08035.HK")
+
+        assert identity is not None
+        assert identity.market == "hk"
+        assert "8035" not in identity.code_candidates
+        assert "08035.HK" in identity.code_candidates
+        assert "8035.HK" in identity.code_candidates
+
+    def test_trusted_legacy_jp_identity_keeps_its_raw_bare_code(self):
+        identity = resolve_daily_stock_identity("8035", market_hint="jp")
+
+        assert identity is not None
+        assert identity.market == "jp"
+        assert identity.code_candidates[0] == "8035"
+        assert "8035" in identity.code_candidates
+        assert "8035.T" in identity.code_candidates
 
 
 class TestIsCodeLike:
@@ -58,6 +169,11 @@ class TestIsCodeLike:
     def test_suffix_sh_rejects_5_digit_base(self):
         assert is_code_like("00700.SH") is False
 
+    def test_suffix_a_share_rejects_wrong_exchange(self):
+        assert is_code_like("600519.SZ") is False
+        assert is_code_like("000001.SH") is False
+        assert is_code_like("920748.SH") is False
+
     # --- Exchange prefix format (Issue #6 fix) ---
     def test_prefix_sh_upper(self):
         assert is_code_like("SH600519") is True
@@ -85,6 +201,20 @@ class TestIsCodeLike:
 
     def test_prefix_hk_rejects_6_digit_base(self):
         assert is_code_like("HK600519") is False
+
+    def test_dotted_prefix_cn(self):
+        assert is_code_like("SH.600519") is True
+        assert is_code_like("SZ.000001") is True
+        assert is_code_like("BJ.920493") is True
+
+    def test_dotted_prefix_bj_rejects_non_bse_base(self):
+        assert is_code_like("BJ.600519") is False
+
+    def test_prefix_a_share_rejects_wrong_exchange(self):
+        assert is_code_like("SH000001") is False
+        assert is_code_like("SZ600519") is False
+        assert is_code_like("SH920748") is False
+        assert is_code_like("SH.920748") is False
 
     # --- US tickers ---
     def test_us_ticker(self):
@@ -146,6 +276,11 @@ class TestNormalizeCode:
     def test_suffix_sh_rejects_5_digit_base(self):
         assert normalize_code("00700.SH") is None
 
+    def test_suffix_a_share_rejects_wrong_exchange(self):
+        assert normalize_code("600519.SZ") is None
+        assert normalize_code("000001.SH") is None
+        assert normalize_code("920748.SH") is None
+
     # --- Exchange prefix format (Issue #6 fix) ---
     def test_prefix_sh_upper(self):
         assert normalize_code("SH600519") == "600519"
@@ -174,6 +309,28 @@ class TestNormalizeCode:
     def test_prefix_hk_rejects_6_digit_base(self):
         assert normalize_code("HK600519") is None
 
+    def test_dotted_prefix_cn_strips(self):
+        assert normalize_code("SH.600519") == "600519"
+        assert normalize_code("SZ.000001") == "000001"
+        assert normalize_code("BJ.920493") == "920493"
+
+    def test_dotted_prefix_bj_rejects_non_bse_base(self):
+        assert normalize_code("BJ.600519") is None
+
+    def test_prefix_a_share_rejects_wrong_exchange(self):
+        assert normalize_code("SH000001") is None
+        assert normalize_code("SZ600519") is None
+        assert normalize_code("SH920748") is None
+        assert normalize_code("SH.920748") is None
+
+    def test_bse_exchange_prefix_suffix_regression(self):
+        assert normalize_code("920748.BJ") == "920748"
+        assert normalize_code("BJ920748") == "920748"
+        assert is_code_like("920748.BJ") is True
+        assert is_code_like("BJ920748") is True
+        assert normalize_code("bj920748") == "920748"
+        assert is_code_like("bj.920748") is True
+
     # --- US tickers ---
     def test_us_ticker(self):
         assert normalize_code("AAPL") == "AAPL"
@@ -194,6 +351,11 @@ class TestResolveIndexStockCodeForAnalysis:
     def test_resolves_via_stock_index(self):
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value="005930.KS"):
             assert resolve_index_stock_code_for_analysis("005930") == "005930.KS"
+
+    def test_resolves_indexed_4_digit_jp_base(self):
+        assert is_code_like("7203") is False
+        with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value="7203.T"):
+            assert resolve_index_stock_code_for_analysis("7203") == "7203.T"
 
     def test_falls_back_to_canonical_when_index_miss(self):
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value=None):

@@ -1,0 +1,73 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
+# 超跌反转策略
+name: oversold_reversal
+display_name: 超跌反转
+description: 跌幅可控、流动性仍在、具备修复观察价值的反转候选
+version: "1.1"
+category: reversal
+tags: [reversal, oversold, repair]
+analysis_skills: [bottom_volume]
+style:
+  risk_profile: balanced
+  holding_period: short_term
+  execution_style: reversal
+  market_regime: [oversold_repair, range_bound]
+  capital_profile: medium_liquidity
+  ui_badge: 反转
+
+screening:
+  enabled: true
+  market_scope: [cn]
+  hard_filters:
+    exclude_st: true
+    amount_min: 80000000
+    turnover_rate_min: 1.0
+    change_pct_min: -8.0
+    change_pct_max: -1.0
+    pe_ttm_min: 0
+    pe_ttm_max: 80
+    pb_min: 0
+    pb_max: 8.0
+    price_min: 3
+    price_max: 180
+  tech_weight: 0.45
+  factor_weights:
+    reversal: 0.40
+    stability: 0.20
+    liquidity: 0.18
+    value: 0.16
+    activity: 0.06
+  scoring_profile:
+    reversal_ideal_change_pct: -3.5
+    reversal_collapse_start_pct: -7.0
+    reversal_collapse_penalty_slope: 12.0
+    reversal_chase_start_pct: 0.0
+    rsi_oversold_bonus: 14.0
+    momentum_downside_start_pct: -4.0
+    activity_ideal_volume_ratio: 1.6
+    activity_ideal_turnover_rate: 3.0
+  risk_profile:
+    breakdown_change_pct: -8.5
+    chase_change_pct: 5.0
+    abnormal_volume_ratio: 5.0
+    high_turnover_rate: 12.0
+    weak_signal_score: 35.0
+  portfolio_profile:
+    max_same_bucket: 1
+    concentration_penalty: 4.0
+    buckets:
+      地产链: [地产, 房地产, 建材, 家居, 物业]
+      消费: [白酒, 食品, 家电, 零售, 消费]
+      周期: [钢铁, 煤炭, 有色, 化工]
+      金融: [券商, 银行, 保险]
+  scorecard_profile:
+    controlled_reversal_min: 70.0
+    controlled_reversal_bonus: 2.0
+    volume_spike_ratio: 5.5
+  ranking_hints: |
+    优先关注：
+    1. 下跌幅度可控、不是基本面或退市风险驱动的连续杀跌
+    2. 成交额和换手仍能支撑后续修复，避免流动性塌陷
+    3. 若存在错杀、事件落地或板块修复线索，可提高优先级
+  max_output: 5

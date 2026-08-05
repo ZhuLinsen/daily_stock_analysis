@@ -117,6 +117,9 @@ class TestNormalizeStockCode(unittest.TestCase):
         self.assertEqual(normalize_stock_code("sh.600519"), "600519")
         self.assertEqual(normalize_stock_code("SZ.000001"), "000001")
         self.assertEqual(normalize_stock_code("sz.000001"), "000001")
+        self.assertEqual(normalize_stock_code("SS600519"), "600519")
+        self.assertEqual(normalize_stock_code("SS.600519"), "600519")
+        self.assertEqual(normalize_stock_code("600519.SS"), "600519")
         self.assertEqual(normalize_stock_code("BJ.920748"), "920748")
 
 

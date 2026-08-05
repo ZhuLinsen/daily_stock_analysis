@@ -18,6 +18,7 @@ ensure_litellm_stub()
 
 _ENV_BEFORE_MAIN_IMPORT = dict(os.environ)
 import main
+from src.brokers.futu.portfolio import FutuPortfolioError
 from src.config import Config
 
 _MAIN_IMPORT_ENV_ADDITIONS = frozenset(set(os.environ) - set(_ENV_BEFORE_MAIN_IMPORT))
@@ -88,12 +89,13 @@ class MainScheduleModeTestCase(unittest.TestCase):
         defaults = {
             "debug": False,
             "stocks": None,
+            "portfolio": None,
             "webui": False,
             "webui_only": False,
             "serve": False,
             "serve_only": False,
-            "host": "0.0.0.0",
-            "port": 8000,
+            "host": None,
+            "port": None,
             "backtest": False,
             "market_review": False,
             "schedule": False,
@@ -114,6 +116,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
         defaults = {
             "log_dir": self.temp_dir.name,
             "webui_enabled": False,
+            "webui_host": "127.0.0.1",
+            "webui_port": 8000,
             "dingtalk_stream_enabled": False,
             "feishu_stream_enabled": False,
             "schedule_enabled": False,
@@ -127,6 +131,65 @@ class MainScheduleModeTestCase(unittest.TestCase):
         }
         defaults.update(overrides)
         return _DummyConfig(**defaults)
+
+    def test_daily_market_context_target_date_routes_jp_kr_calendars(self) -> None:
+        current_time = datetime(2026, 5, 7, 0, 30, tzinfo=timezone.utc)
+        calls = []
+
+        def resolve_effective_date(market, *, current_time=None):
+            calls.append((market, current_time))
+            return date(2026, 5, 7)
+
+        with patch(
+            "src.core.trading_calendar.get_effective_trading_date",
+            side_effect=resolve_effective_date,
+        ):
+            self.assertEqual(
+                main._resolve_daily_market_context_target_date("jp", current_time),
+                date(2026, 5, 7),
+            )
+            self.assertEqual(
+                main._resolve_daily_market_context_target_date("kr", current_time),
+                date(2026, 5, 7),
+            )
+            self.assertEqual(
+                main._resolve_daily_market_context_target_date("jp,kr", current_time),
+                date(2026, 5, 7),
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("jp", current_time),
+                ("kr", current_time),
+                ("jp", current_time),
+            ],
+        )
+
+    def test_compute_trading_day_filter_supports_comma_list_regions(self) -> None:
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_enabled=True,
+            market_review_region="jp,kr",
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+
+        stock_codes = ["cn-stock", "jp-stock", "kr-stock", "us-stock", "none-stock"]
+
+        with patch(
+            "src.core.trading_calendar.get_market_for_stock",
+            side_effect=lambda code: {"cn-stock": "cn", "jp-stock": "jp", "kr-stock": "kr", "us-stock": "us"}.get(code),
+        ), patch("src.core.trading_calendar.get_open_markets_today", return_value={"jp", "kr"}):
+            filtered_codes, effective_region, should_skip_all = main._compute_trading_day_filter(
+                config,
+                args,
+                stock_codes,
+            )
+
+        self.assertEqual(filtered_codes, ["jp-stock", "kr-stock", "none-stock"])
+        self.assertEqual(effective_region, "jp,kr")
+        self.assertFalse(should_skip_all)
 
     def test_public_webui_bind_warns_when_auth_is_disabled(self) -> None:
         with patch("src.auth.is_auth_enabled", return_value=False), \
@@ -143,6 +206,64 @@ class MainScheduleModeTestCase(unittest.TestCase):
             main._warn_if_public_webui_without_auth("127.0.0.1")
 
         warning_log.assert_not_called()
+
+    def test_web_service_bind_uses_config_when_cli_omits_host_and_port(self) -> None:
+        args = self._make_args(host=None, port=None)
+        config = self._make_config(webui_host="127.0.0.1", webui_port=18000)
+
+        host, port = main._resolve_web_service_bind(args, config)
+
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, 18000)
+
+    def test_web_service_bind_keeps_explicit_cli_host_and_port(self) -> None:
+        args = self._make_args(host="0.0.0.0", port=8000)
+        config = self._make_config(webui_host="127.0.0.1", webui_port=18000)
+
+        host, port = main._resolve_web_service_bind(args, config)
+
+        self.assertEqual(host, "0.0.0.0")
+        self.assertEqual(port, 8000)
+
+    def test_serve_only_uses_config_bind_when_cli_omits_host_and_port(self) -> None:
+        args = self._make_args(serve_only=True)
+        config = self._make_config(webui_enabled=False, webui_host="127.0.0.1", webui_port=18000)
+        observed_bind = []
+
+        def fake_start_api_server(host, port, config):
+            observed_bind.append((host, port))
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main.start_api_server", side_effect=fake_start_api_server), \
+             patch("main.start_bot_stream_clients"), \
+             patch("main.time.sleep", side_effect=KeyboardInterrupt):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(observed_bind, [("127.0.0.1", 18000)])
+
+    def test_serve_only_keeps_explicit_cli_bind_over_config(self) -> None:
+        args = self._make_args(serve_only=True, host="0.0.0.0", port=8000)
+        config = self._make_config(webui_enabled=False, webui_host="127.0.0.1", webui_port=18000)
+        observed_bind = []
+
+        def fake_start_api_server(host, port, config):
+            observed_bind.append((host, port))
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main.start_api_server", side_effect=fake_start_api_server), \
+             patch("main.start_bot_stream_clients"), \
+             patch("main.time.sleep", side_effect=KeyboardInterrupt):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(observed_bind, [("0.0.0.0", 8000)])
 
     def test_start_api_server_fails_before_thread_when_port_is_busy(self) -> None:
         config = self._make_config(log_level="INFO")
@@ -304,6 +425,72 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_full_analysis.assert_called_once()
         _, _, stock_codes = run_full_analysis.call_args.args
         self.assertEqual(stock_codes, ["005930.KS"])
+
+    def test_standalone_futu_portfolio_failure_returns_nonzero(self) -> None:
+        args = self._make_args(portfolio="futu")
+        config = self._make_config(run_immediately=True)
+        error = FutuPortfolioError("OpenD unavailable")
+
+        with (
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.setup_logging"),
+            patch("main._refresh_stock_index_cache_for_analysis"),
+            patch(
+                "src.brokers.futu.portfolio.load_futu_stock_codes",
+                side_effect=error,
+            ) as loader,
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        loader.assert_called_once_with()
+
+    def test_standalone_futu_portfolio_success_returns_zero(self) -> None:
+        args = self._make_args(portfolio="futu")
+        config = self._make_config(run_immediately=True)
+
+        with (
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.setup_logging"),
+            patch("main._refresh_stock_index_cache_for_analysis"),
+            patch(
+                "src.brokers.futu.portfolio.load_futu_stock_codes",
+                return_value=["AAPL"],
+            ) as loader,
+            patch(
+                "main._compute_trading_day_filter",
+                return_value=([], "", True),
+            ),
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        loader.assert_called_once_with()
+
+    def test_standalone_futu_downstream_failure_keeps_existing_exit_semantics(self) -> None:
+        args = self._make_args(portfolio="futu")
+        config = self._make_config(run_immediately=True)
+
+        with (
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.setup_logging"),
+            patch("main._refresh_stock_index_cache_for_analysis"),
+            patch(
+                "src.brokers.futu.portfolio.load_futu_stock_codes",
+                return_value=["AAPL"],
+            ) as loader,
+            patch(
+                "main._compute_trading_day_filter",
+                side_effect=RuntimeError("calendar unavailable"),
+            ),
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        loader.assert_called_once_with()
 
     def test_schedule_mode_reload_uses_latest_runtime_config(self) -> None:
         args = self._make_args(schedule=True)
@@ -612,18 +799,26 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_with_schedule.assert_not_called()
 
     def test_serve_mode_uses_shared_analysis_lock_for_immediate_run_full_analysis(self) -> None:
-        args = self._make_args(serve=True, schedule=False, host="127.0.0.1", port=8000)
+        args = self._make_args(
+            serve=True,
+            schedule=False,
+            portfolio="futu",
+            host="127.0.0.1",
+            port=8000,
+        )
         config = self._make_config(webui_enabled=False, run_immediately=True)
 
-        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
-             patch("main.parse_arguments", return_value=args), \
-             patch("main.get_config", return_value=config), \
-             patch("main.prepare_webui_frontend_assets", return_value=True), \
-             patch("main.start_api_server"), \
-             patch("main.start_bot_stream_clients") as start_bots, \
-             patch("main.time.sleep", side_effect=KeyboardInterrupt), \
-             patch("main.run_full_analysis") as run_full_analysis, \
-             patch("main._run_analysis_with_runtime_scheduler_lock") as run_with_lock:
+        with (
+            patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False),
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.prepare_webui_frontend_assets", return_value=True),
+            patch("main.start_api_server"),
+            patch("main.start_bot_stream_clients") as start_bots,
+            patch("main.time.sleep", side_effect=KeyboardInterrupt),
+            patch("main.run_full_analysis") as run_full_analysis,
+            patch("main._run_analysis_with_runtime_scheduler_lock") as run_with_lock,
+        ):
             exit_code = main.main()
 
         self.assertEqual(exit_code, 0)
@@ -631,6 +826,41 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_with_lock.assert_called_once_with(config, args, None)
         run_full_analysis.assert_not_called()
         start_bots.assert_called_once_with(config)
+
+    def test_serve_mode_keeps_running_after_futu_portfolio_load_failure(self) -> None:
+        args = self._make_args(
+            serve=True,
+            schedule=False,
+            portfolio="futu",
+            host="127.0.0.1",
+            port=8000,
+        )
+        config = self._make_config(webui_enabled=False, run_immediately=True)
+        error = FutuPortfolioError("OpenD unavailable")
+
+        with (
+            patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False),
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.prepare_webui_frontend_assets", return_value=True),
+            patch("main.start_api_server"),
+            patch("main.start_bot_stream_clients") as start_bots,
+            patch("main.time.sleep", side_effect=KeyboardInterrupt),
+            patch(
+                "main._run_analysis_with_runtime_scheduler_lock",
+                side_effect=error,
+            ) as run_with_lock,
+            patch("main.logger.exception") as exception_log,
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        run_with_lock.assert_called_once_with(config, args, None)
+        start_bots.assert_called_once_with(config)
+        exception_log.assert_any_call(
+            "Futu 持仓导入失败，Web/API 服务继续运行: %s",
+            error,
+        )
 
     def test_serve_schedule_flag_enables_api_runtime_scheduler(self) -> None:
         from src.services.runtime_scheduler import (
@@ -1108,6 +1338,28 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_market_review.assert_not_called()
         refresh.assert_called_once_with(config)
         pipeline.run.assert_called_once()
+
+    def test_resolve_daily_market_context_target_date_passes_jp_kr_to_trading_calendar(self) -> None:
+        current_time = datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc)
+        target_date = date(2026, 3, 25)
+
+        with patch("src.core.trading_calendar.get_effective_trading_date", return_value=target_date) as get_date:
+            self.assertEqual(
+                main._resolve_daily_market_context_target_date("jp", current_time),
+                target_date,
+            )
+            self.assertEqual(
+                main._resolve_daily_market_context_target_date("kr", current_time),
+                target_date,
+            )
+
+        self.assertEqual(
+            get_date.call_args_list,
+            [
+                unittest.mock.call("jp", current_time=current_time),
+                unittest.mock.call("kr", current_time=current_time),
+            ],
+        )
 
     def test_run_full_analysis_does_not_reuse_single_context_for_multi_market_review(self) -> None:
         args = self._make_args()
@@ -1811,6 +2063,37 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertTrue(call_args.kwargs["send_notification"])
         self.assertNotIn("merge_notification", call_args.kwargs)
         self.assertEqual(call_args.kwargs["override_region"], "cn,us")
+        self.assertEqual(call_args.kwargs["trigger_source"], "cli")
+
+    def test_market_review_mode_respects_comma_list_market_review_region(self) -> None:
+        args = self._make_args(market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_region="jp,kr",
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        runtime_notifier = MagicMock()
+        runtime_analyzer = MagicMock()
+        runtime_search_service = MagicMock()
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._run_market_review_with_shared_lock") as run_with_lock, \
+             patch(
+                 "src.core.market_review_runtime.build_market_review_runtime",
+                 return_value=(runtime_notifier, runtime_analyzer, runtime_search_service),
+             ) as runtime_builder, \
+             patch("src.core.market_review.run_market_review"), \
+             patch("src.core.trading_calendar.get_open_markets_today", return_value={"jp", "kr"}):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        runtime_builder.assert_called_once_with(config)
+        call_args = run_with_lock.call_args
+        self.assertIs(call_args.args[0], config)
+        self.assertEqual(call_args.kwargs["override_region"], "jp,kr")
         self.assertEqual(call_args.kwargs["trigger_source"], "cli")
 
     def test_bootstrap_logging_persists_when_config_load_fails(self) -> None:

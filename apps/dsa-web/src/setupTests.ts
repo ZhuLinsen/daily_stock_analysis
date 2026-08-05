@@ -51,7 +51,10 @@ Object.defineProperty(globalThis, 'IntersectionObserver', {
 
 const hasLocalStorage = (() => {
   try {
-    return typeof globalThis.localStorage !== 'undefined';
+    return typeof globalThis.localStorage?.getItem === 'function'
+      && typeof globalThis.localStorage?.setItem === 'function'
+      && typeof globalThis.localStorage?.removeItem === 'function'
+      && typeof globalThis.localStorage?.clear === 'function';
   } catch {
     return false;
   }

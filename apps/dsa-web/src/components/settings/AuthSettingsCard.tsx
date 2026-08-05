@@ -75,6 +75,15 @@ export const AuthSettingsCard: React.FC = () => {
       }
     }
 
+    // Issue #1970 hardening: disabling auth is a high-risk action. Even when the
+    // request carries a valid session cookie, the backend now requires the current
+    // admin password to be re-entered. Block the submit on the client side too so
+    // users get an inline hint instead of a 400 from the API.
+    if (authEnabled && !desiredEnabled && !currentPassword.trim()) {
+      setError(t('settings.authDisableRequiredCurrentPassword'));
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       await authApi.updateSettings(

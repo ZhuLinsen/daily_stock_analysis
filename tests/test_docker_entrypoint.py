@@ -24,14 +24,14 @@ def test_dockerfile_uses_entrypoint_to_drop_privileges() -> None:
     assert "USER dsa" not in dockerfile
 
 
-def test_dockerfile_bundles_default_alphasift_adapter() -> None:
+def test_dockerfile_bundles_builtin_screening_engine() -> None:
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
     requirements = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
 
-    assert "git \\" in dockerfile
-    assert "git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8#egg=alphasift" in requirements
-    assert "pip install --no-cache-dir -r requirements.txt" in dockerfile
-    assert "import alphasift.dsa_adapter" in dockerfile
+    assert "screening.git" not in requirements.lower()
+    assert "pip install -r requirements.txt" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
+    assert "import src.services.screening.pipeline" in dockerfile
 
 
 def test_docker_entrypoint_repairs_ownership_and_user_permissions() -> None:
@@ -58,6 +58,35 @@ def test_docker_compose_injects_env_without_single_file_env_mount() -> None:
     assert "../.env:/app/.env" not in common["volumes"]
     assert not any(str(volume).startswith("../.env:") for volume in common["volumes"])
     assert "../longbridge_tokens:/home/dsa/.longbridge" in common["volumes"]
+
+
+def test_docker_compose_default_memory_recommendation_is_not_512m() -> None:
+    compose_text = (REPO_ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = yaml.safe_load(compose_text)
+    resources = compose["x-common"]["deploy"]["resources"]
+
+    assert resources["limits"]["memory"] == "1G"
+    assert resources["reservations"]["memory"] == "512M"
+    assert "512M" in compose_text
+    assert "MAX_WORKERS=1" in compose_text
+
+
+def test_docker_memory_guides_describe_resource_profiles() -> None:
+    doc_paths = (
+        "docs/DEPLOY.md",
+        "docs/DEPLOY_EN.md",
+        "docs/full-guide.md",
+        "docs/full-guide_EN.md",
+        "docs/docker/zeabur-deployment.md",
+    )
+
+    for doc_path in doc_paths:
+        doc = (REPO_ROOT / doc_path).read_text(encoding="utf-8")
+
+        assert "512M" in doc
+        assert "1G" in doc
+        assert "2G+" in doc
+        assert "MAX_WORKERS=1" in doc
 
 
 def test_docker_guides_do_not_recommend_single_file_env_bind_mount() -> None:

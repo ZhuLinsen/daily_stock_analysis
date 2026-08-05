@@ -20,6 +20,7 @@ SWITCH_CLEANUP_KEYS = {
     "trend_result",
     "news_context",
     "fundamental_context",
+    "market_structure_context",
     "analysis_context_pack_summary",
     "market_phase_context",
 }
@@ -72,7 +73,7 @@ def _normalize_stock_code(value: Any) -> str:
     if not text:
         return ""
     try:
-        from src.agent.runner import _normalize_tool_stock_code
+        from src.agent.tools.execution import _normalize_tool_stock_code
 
         normalized = _normalize_tool_stock_code(text)
     except Exception:
@@ -180,6 +181,7 @@ def resolve_stock_scope(
     context: Optional[Dict[str, Any]],
     *,
     skills: Optional[Iterable[str]] = None,
+    strict_initial_scope: bool = False,
 ) -> StockScopeResolution:
     """Resolve the effective context and stock tool scope for one chat turn."""
     original_context = dict(context or {})
@@ -193,8 +195,13 @@ def resolve_stock_scope(
         current_code = ""
 
     if not current_code:
-        if invalid_context_code:
+        if invalid_context_code or strict_initial_scope:
             candidates = extract_stock_codes(message_text)
+            if strict_initial_scope and not invalid_context_code and not candidates:
+                return StockScopeResolution(
+                    effective_context=_with_skills(original_context, skills),
+                    stock_scope=None,
+                )
             allowed = set(candidates)
             expected = candidates[0] if len(candidates) == 1 else ""
             effective_context = dict(original_context)

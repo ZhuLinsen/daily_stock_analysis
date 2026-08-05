@@ -11,7 +11,12 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Literal, Optional, TypedDict, get_args
 
-from src.report_language import normalize_report_language
+from src.report_language import localize_operation_advice, normalize_report_language
+from src.schemas.decision_scale import (
+    action_for_score,
+    extract_decision_guardrail_reason,
+    score_action_conflicts_without_guardrail,
+)
 
 DecisionAction = Literal["buy", "add", "hold", "reduce", "sell", "watch", "avoid", "alert"]
 
@@ -25,14 +30,14 @@ _ACTION_VALUES = set(get_args(DecisionAction))
 _NON_STOCK_REPORT_TYPES = {"market_review"}
 
 _ACTION_LABELS: Dict[str, Dict[str, str]] = {
-    "buy": {"zh": "买入", "en": "Buy"},
-    "add": {"zh": "加仓", "en": "Add"},
-    "hold": {"zh": "持有", "en": "Hold"},
-    "reduce": {"zh": "减仓", "en": "Reduce"},
-    "sell": {"zh": "卖出", "en": "Sell"},
-    "watch": {"zh": "观望", "en": "Watch"},
-    "avoid": {"zh": "回避", "en": "Avoid"},
-    "alert": {"zh": "预警", "en": "Alert"},
+    "buy": {"zh": "买入", "en": "Buy", "ko": "매수"},
+    "add": {"zh": "加仓", "en": "Add", "ko": "추가 매수"},
+    "hold": {"zh": "持有", "en": "Hold", "ko": "보유"},
+    "reduce": {"zh": "减仓", "en": "Reduce", "ko": "비중축소"},
+    "sell": {"zh": "卖出", "en": "Sell", "ko": "매도"},
+    "watch": {"zh": "观望", "en": "Watch", "ko": "관망"},
+    "avoid": {"zh": "回避", "en": "Avoid", "ko": "회피"},
+    "alert": {"zh": "预警", "en": "Alert", "ko": "경고"},
 }
 
 _EXPLICIT_ALIASES: Dict[str, DecisionAction] = {
@@ -346,6 +351,8 @@ def normalize_decision_action(value: Any) -> Optional[DecisionAction]:
 
     if len(matches) == 1:
         return next(iter(matches))
+    if matches and matches <= {"hold", "watch"}:
+        return "watch" if "watch" in matches else "hold"
     return None
 
 
@@ -364,6 +371,9 @@ def build_action_fields(
     explicit_action: Any = None,
     report_type: Any = None,
     report_language: Optional[str] = "zh",
+    sentiment_score: Any = None,
+    guardrail_reason: Any = None,
+    align_with_score: bool = False,
 ) -> DecisionActionFields:
     """Build optional public action fields without mutating legacy contracts."""
 
@@ -376,7 +386,125 @@ def build_action_fields(
         if advice_text:
             action = normalize_decision_action(advice_text)
 
+    if align_with_score and score_action_conflicts_without_guardrail(
+        score=sentiment_score,
+        action=action,
+        guardrail_reason=guardrail_reason,
+    ):
+        score_action = action_for_score(sentiment_score)
+        if score_action in _ACTION_VALUES:
+            action = score_action  # type: ignore[assignment]
+
     return {
         "action": action,
         "action_label": localize_action_label(action, report_language) if action else None,
     }
+
+
+def _result_guardrail_reason(result: Any) -> Optional[str]:
+    return extract_decision_guardrail_reason(
+        {
+            "guardrail_reason": getattr(result, "guardrail_reason", None),
+            "downgrade_reason": getattr(result, "downgrade_reason", None),
+            "dashboard": getattr(result, "dashboard", None),
+            "metadata": getattr(result, "metadata", None),
+        }
+    )
+
+
+def display_action_fields(
+    *,
+    operation_advice: Any = None,
+    explicit_action: Any = None,
+    action_label: Any = None,
+    report_type: Any = None,
+    report_language: Optional[str] = "zh",
+    sentiment_score: Any = None,
+    guardrail_reason: Any = None,
+) -> DecisionActionFields:
+    """Resolve one canonical action for every public display surface."""
+
+    action_source = explicit_action
+    if normalize_decision_action(action_source) is None and str(action_label or "").strip():
+        action_source = action_label
+    return build_action_fields(
+        operation_advice=operation_advice,
+        explicit_action=action_source,
+        report_type=report_type,
+        report_language=report_language,
+        sentiment_score=sentiment_score,
+        guardrail_reason=guardrail_reason,
+        align_with_score=True,
+    )
+
+
+def _display_result_kwargs(
+    result: Any,
+    *,
+    report_language: Optional[str] = None,
+    report_type: Any = None,
+) -> dict[str, Any]:
+    return {
+        "operation_advice": getattr(result, "operation_advice", None),
+        "explicit_action": getattr(result, "action", None),
+        "action_label": getattr(result, "action_label", None),
+        "report_type": report_type or getattr(result, "report_type", None),
+        "report_language": report_language or getattr(result, "report_language", "zh"),
+        "sentiment_score": getattr(result, "sentiment_score", None),
+        "guardrail_reason": _result_guardrail_reason(result),
+    }
+
+
+def display_action_fields_for_result(
+    result: Any,
+    *,
+    report_language: Optional[str] = None,
+    report_type: Any = None,
+) -> DecisionActionFields:
+    return display_action_fields(
+        **_display_result_kwargs(result, report_language=report_language, report_type=report_type)
+    )
+
+
+def display_operation_advice_for_result(
+    result: Any,
+    *,
+    report_language: Optional[str] = None,
+    report_type: Any = None,
+) -> str:
+    """Return the same localized action label used by Web/API display fields."""
+
+    fields = display_action_fields_for_result(
+        result,
+        report_language=report_language,
+        report_type=report_type,
+    )
+    if fields["action_label"]:
+        return fields["action_label"]
+    language = report_language or getattr(result, "report_language", "zh")
+    return localize_operation_advice(getattr(result, "operation_advice", None), language)
+
+
+def display_decision_type_for_result(
+    result: Any,
+    *,
+    report_language: Optional[str] = None,
+    report_type: Any = None,
+) -> str:
+    """Map the displayed eight-state action to the legacy three summary buckets."""
+
+    action = display_action_fields_for_result(
+        result,
+        report_language=report_language,
+        report_type=report_type,
+    )["action"]
+    if action in {"buy", "add"}:
+        return "buy"
+    if action in {"reduce", "sell"}:
+        return "sell"
+    if action is not None:
+        return "hold"
+    legacy = str(getattr(result, "decision_type", "") or "").strip().lower()
+    if legacy in {"buy", "hold", "sell"}:
+        return legacy
+    return "hold"

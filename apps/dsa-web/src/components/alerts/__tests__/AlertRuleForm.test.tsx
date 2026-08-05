@@ -234,10 +234,27 @@ describe('AlertRuleForm', () => {
     expect(screen.queryByText('组合回撤')).not.toBeInTheDocument();
   });
 
+  it('shows JP/KR options for market region in Chinese UI mode', () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'market' } });
+
+    expect(screen.getByRole('option', { name: 'A 股（cn）' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '港股（hk）' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '美股（us）' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '日股（jp）' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '韩股（kr）' })).toBeInTheDocument();
+  });
+
   it('submits a market light status rule payload', async () => {
     render(<AlertRuleForm onSubmit={onSubmit} />);
 
     fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'market' } });
+    expect(screen.getByRole('option', { name: 'A 股（cn）' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '港股（hk）' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '美股（us）' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '日股（jp）' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '韩股（kr）' })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('市场区域'), { target: { value: 'hk' } });
     fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
 
@@ -249,6 +266,18 @@ describe('AlertRuleForm', () => {
         parameters: { statuses: ['red', 'yellow'] },
       }));
     });
+  });
+
+  it('keeps JP/KR out of market light options in English UI mode', () => {
+    renderEnglishForm();
+
+    fireEvent.change(screen.getByLabelText('Target scope'), { target: { value: 'market' } });
+
+    expect(screen.getByRole('option', { name: 'A-shares (cn)' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Hong Kong (hk)' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'US (us)' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Japan (jp)' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Korea (kr)' })).not.toBeInTheDocument();
   });
 
   it('submits a market light score-drop rule payload', async () => {

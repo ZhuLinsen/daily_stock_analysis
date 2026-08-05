@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Activity, BarChart3, Bell, BriefcaseBusiness, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
-import { ALPHASIFT_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, alphasiftApi } from '../../api/alphasift';
+import { SCREENING_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, screeningApi } from '../../api/screening';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -44,36 +44,36 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
   const { t } = useUiLanguage();
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [showAlphaSiftNav, setShowAlphaSiftNav] = useState(false);
+  const [showScreeningNav, setShowScreeningNav] = useState(false);
 
   useEffect(() => {
     let active = true;
 
-    const refreshAlphaSiftStatus = async () => {
+    const refreshScreeningStatus = async () => {
       try {
-        const status = await alphasiftApi.getStatus();
+        const status = await screeningApi.getStatus();
         if (active) {
-          setShowAlphaSiftNav(status.enabled);
+          setShowScreeningNav(status.enabled);
         }
       } catch {
         if (active) {
-          setShowAlphaSiftNav(false);
+          setShowScreeningNav(false);
         }
       }
     };
 
-    void refreshAlphaSiftStatus();
-    window.addEventListener(ALPHASIFT_CONFIG_CHANGED_EVENT, refreshAlphaSiftStatus);
-    window.addEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshAlphaSiftStatus);
+    void refreshScreeningStatus();
+    window.addEventListener(SCREENING_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
+    window.addEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
 
     return () => {
       active = false;
-      window.removeEventListener(ALPHASIFT_CONFIG_CHANGED_EVENT, refreshAlphaSiftStatus);
-      window.removeEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshAlphaSiftStatus);
+      window.removeEventListener(SCREENING_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
+      window.removeEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
     };
   }, []);
 
-  const navItems = showAlphaSiftNav ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.key !== 'screening');
+  const navItems = showScreeningNav ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.key !== 'screening');
   const isRail = variant === 'rail';
   const itemBaseClass = cn(
     'group relative flex h-[var(--nav-item-height)] w-full items-center overflow-hidden rounded-2xl border border-transparent text-sm leading-none text-secondary-text transition-all',

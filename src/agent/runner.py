@@ -25,12 +25,40 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
+from src.agent.protocols import StageFailureReason
+from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
+from src.agent.tools.execution import (
+    _build_tool_cache_key,
+    _guard_tool_stock_scope,
+    _is_non_retriable_tool_result,
+    _is_stock_scoped_tool,
+    _normalize_guard_stock_code,
+    _normalize_tool_stock_code,
+    execute_runner_tool_call,
+    serialize_tool_result,
+)
 from src.agent.stock_scope import StockScope
 from src.llm.usage import should_persist_usage_telemetry
+from src.utils.data_processing import normalize_report_signal_attribution
 from src.storage import persist_llm_usage as _persist_usage
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "RunLoopResult",
+    "parse_dashboard_json",
+    "run_agent_loop",
+    "serialize_tool_result",
+    "try_parse_json",
+    "_build_tool_cache_key",
+    "_guard_tool_stock_scope",
+    "_is_non_retriable_tool_result",
+    "_is_stock_scoped_tool",
+    "_normalize_guard_stock_code",
+    "_normalize_tool_stock_code",
+]
 
 # Tool name → friendly label for progress messages
 _THINKING_TOOL_LABELS: Dict[str, str] = {
@@ -69,6 +97,7 @@ class RunLoopResult:
     provider: str = ""
     models_used: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    failure_reason: Optional[StageFailureReason] = None
     # Raw messages list at the end of the loop (callers may want to persist)
     messages: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -81,130 +110,6 @@ class RunLoopResult:
 # ============================================================
 # Helpers
 # ============================================================
-
-def serialize_tool_result(result: Any) -> str:
-    """Serialize a tool result to a JSON string consumable by an LLM."""
-    if result is None:
-        return json.dumps({"result": None})
-    if isinstance(result, str):
-        return result
-    if isinstance(result, (dict, list)):
-        try:
-            return json.dumps(result, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
-            return str(result)
-    if hasattr(result, "__dict__"):
-        try:
-            d = {k: v for k, v in result.__dict__.items() if not k.startswith("_")}
-            return json.dumps(d, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
-            return str(result)
-    return str(result)
-
-
-def _normalize_tool_stock_code(value: Any) -> Any:
-    """Canonicalize stock code arguments so equivalent HK variants share one cache key."""
-    if not isinstance(value, str):
-        return value
-
-    text = value.strip().upper()
-    if not text:
-        return text
-
-    if text.endswith(".HK"):
-        base = text[:-3]
-        if base.isdigit() and 1 <= len(base) <= 5:
-            return f"HK{base.zfill(5)}"
-
-    if text.startswith("HK"):
-        base = text[2:]
-        if base.isdigit() and 1 <= len(base) <= 5:
-            return f"HK{base.zfill(5)}"
-
-    if text.isdigit() and len(text) == 5:
-        return f"HK{text}"
-
-    try:
-        from data_provider.base import canonical_stock_code, normalize_stock_code
-
-        return canonical_stock_code(normalize_stock_code(text))
-    except Exception:
-        return text
-
-
-def _build_tool_cache_key(tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
-    """Build a stable cache key for tool calls with normalized stock-code arguments."""
-    if not isinstance(arguments, dict):
-        return None
-
-    normalized_args: Dict[str, Any] = {}
-    for key, value in arguments.items():
-        if key == "stock_code":
-            normalized_args[key] = _normalize_tool_stock_code(value)
-        else:
-            normalized_args[key] = value
-
-    try:
-        payload = json.dumps(normalized_args, ensure_ascii=False, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        return None
-    return f"{tool_name}:{payload}"
-
-
-def _is_non_retriable_tool_result(result: Any) -> bool:
-    """Return True when a tool result explicitly tells the agent not to retry."""
-    return (
-        isinstance(result, dict)
-        and bool(result.get("error"))
-        and result.get("retriable") is False
-    )
-
-
-def _is_stock_scoped_tool(tool_registry: ToolRegistry, tool_name: str) -> bool:
-    tool_def = tool_registry.resolve(tool_name)
-    if tool_def is None:
-        return False
-    return any(param.name == "stock_code" for param in tool_def.parameters)
-
-
-def _normalize_guard_stock_code(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    raw = value if isinstance(value, str) else str(value)
-    normalized = _normalize_tool_stock_code(raw)
-    return normalized if isinstance(normalized, str) else str(normalized)
-
-
-def _guard_tool_stock_scope(tool_registry: ToolRegistry, tool_name: str, arguments: Dict[str, Any], stock_scope: Optional[StockScope]) -> Optional[Dict[str, Any]]:
-    if stock_scope is None or not isinstance(arguments, dict):
-        return None
-    if not _is_stock_scoped_tool(tool_registry, tool_name):
-        return None
-    if "stock_code" not in arguments:
-        return None
-
-    requested = _normalize_guard_stock_code(arguments.get("stock_code"))
-
-    expected = _normalize_guard_stock_code(stock_scope.expected_stock_code)
-    allowed = {
-        normalized
-        for code in stock_scope.allowed_stock_codes
-        for normalized in [_normalize_guard_stock_code(code)]
-        if normalized
-    }
-    if requested and (requested == expected or requested in allowed):
-        return None
-
-    return {
-        "error": "stock_scope_violation",
-        "expected_stock_code": expected,
-        "requested_stock_code": requested,
-        "allowed_stock_codes": sorted(allowed),
-        "retriable": False,
-    }
-
 
 def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     """Extract and parse a Decision Dashboard JSON from agent text.
@@ -226,20 +131,20 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
         for block in json_blocks:
             parsed = _try_parse_json(block)
             if parsed is not None:
-                return parsed
+                return _finalize_dashboard_payload(parsed)
             parsed = _try_repair_json(block, repair_json)
             if parsed is not None:
-                return parsed
+                return _finalize_dashboard_payload(parsed)
 
     # Strategy 2: raw parse
     parsed = _try_parse_json(content)
     if parsed is not None:
-        return parsed
+        return _finalize_dashboard_payload(parsed)
 
     # Strategy 3: json_repair on full content
     parsed = _try_repair_json(content, repair_json)
     if parsed is not None:
-        return parsed
+        return _finalize_dashboard_payload(parsed)
 
     # Strategy 4: brace-delimited
     brace_start = content.find("{")
@@ -248,13 +153,20 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
         candidate = content[brace_start : brace_end + 1]
         parsed = _try_parse_json(candidate)
         if parsed is not None:
-            return parsed
+            return _finalize_dashboard_payload(parsed)
         parsed = _try_repair_json(candidate, repair_json)
         if parsed is not None:
-            return parsed
+            return _finalize_dashboard_payload(parsed)
 
     logger.warning("Failed to parse dashboard JSON from agent response")
     return None
+
+
+def _finalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize reserved fields before running normal dashboard normalization."""
+    sanitized = sanitize_agent_dashboard_payload(payload)
+    normalize_report_signal_attribution(sanitized)
+    return sanitized
 
 
 def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
@@ -369,6 +281,7 @@ def _build_timeout_result(
         provider=provider_used,
         models_used=models_used,
         error=f"Agent timed out after {elapsed:.2f}s (limit: {max_wall_clock_seconds:.2f}s)",
+        failure_reason=StageFailureReason.TIMEOUT,
         messages=messages,
     )
 
@@ -398,6 +311,7 @@ def _build_budget_guard_result(
             "Agent step skipped due to insufficient budget: "
             f"{remaining_timeout_s:.2f}s remaining, minimum {min_step_budget_s:.1f}s required"
         ),
+        failure_reason=StageFailureReason.BUDGET_SKIP,
         messages=messages,
     )
 
@@ -417,6 +331,7 @@ def run_agent_loop(
     max_wall_clock_seconds: Optional[float] = None,
     tool_call_timeout_seconds: Optional[float] = None,
     stock_scope: Optional[StockScope] = None,
+    emit_stage_events: bool = True,
 ) -> RunLoopResult:
     """Execute the ReAct LLM ↔ tool loop.
 
@@ -434,6 +349,9 @@ def run_agent_loop(
         thinking_labels: Override map of tool_name → friendly label.
         max_wall_clock_seconds: Optional overall timeout budget for the loop.
         tool_call_timeout_seconds: Optional timeout for one parallel tool batch.
+        emit_stage_events: Whether to emit the synthetic ``agent_loop``
+            stage lifecycle. Orchestrated business stages disable this so
+            ``stage_start`` / ``stage_done`` only describe real stages.
 
     Returns:
         A :class:`RunLoopResult` with the final content, stats, and the
@@ -456,6 +374,27 @@ def run_agent_loop(
     # even when the total budget is small.
     _MIN_STEP_BUDGET_S = 8.0
 
+    def _finish(result: RunLoopResult) -> RunLoopResult:
+        if progress_callback and emit_stage_events:
+            progress_callback(
+                stream_event(
+                    "stage_done",
+                    stage="agent_loop",
+                    status="completed" if result.success else "failed",
+                    duration=round(time.time() - start_time, 2),
+                )
+            )
+        return result
+
+    if progress_callback and emit_stage_events:
+        progress_callback(
+            stream_event(
+                "stage_start",
+                stage="agent_loop",
+                message="Starting agent analysis...",
+            )
+        )
+
     for step in range(max_steps):
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         timeout_exhausted = remaining_timeout is not None and remaining_timeout <= 0
@@ -473,7 +412,7 @@ def run_agent_loop(
                     remaining_timeout,
                     _MIN_STEP_BUDGET_S,
                 )
-                return _build_budget_guard_result(
+                return _finish(_build_budget_guard_result(
                     start_time=start_time,
                     step=step,
                     tool_calls_log=tool_calls_log,
@@ -483,11 +422,11 @@ def run_agent_loop(
                     messages=messages,
                     remaining_timeout_s=remaining_timeout,
                     min_step_budget_s=_MIN_STEP_BUDGET_S,
-                )
+                ))
 
             if remaining_timeout <= 0:
                 logger.warning("Agent timed out before step %d", step + 1)
-            return _build_timeout_result(
+            return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
                 step=step,
@@ -496,7 +435,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
-            )
+            ))
 
         logger.info("Agent step %d/%d", step + 1, max_steps)
 
@@ -508,7 +447,7 @@ def run_agent_loop(
                 last_tool = tool_calls_log[-1].get("tool", "")
                 label = labels.get(last_tool, last_tool)
                 thinking_msg = f"「{label}」已完成，继续深入分析..."
-            progress_callback({"type": "thinking", "step": step + 1, "message": thinking_msg})
+            progress_callback(stream_event("thinking", step=step + 1, message=thinking_msg))
 
         # --- LLM call ---
         response = llm_adapter.call_with_tools(
@@ -528,7 +467,7 @@ def run_agent_loop(
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         if remaining_timeout is not None and remaining_timeout <= 0:
             logger.warning("Agent timed out after LLM call at step %d", step + 1)
-            return _build_timeout_result(
+            return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
                 step=step + 1,
@@ -537,7 +476,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
-            )
+            ))
 
         if response.tool_calls:
             # ---- tool execution branch ----
@@ -604,7 +543,7 @@ def run_agent_loop(
             remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
             if remaining_timeout is not None and remaining_timeout <= 0:
                 logger.warning("Agent timed out after tool execution at step %d", step + 1)
-                return _build_timeout_result(
+                return _finish(_build_timeout_result(
                     start_time=start_time,
                     max_wall_clock_seconds=float(max_wall_clock_seconds),
                     step=step + 1,
@@ -613,7 +552,7 @@ def run_agent_loop(
                     provider_used=provider_used,
                     models_used=models_used,
                     messages=messages,
-                )
+                ))
 
         else:
             # ---- final answer branch ----
@@ -624,12 +563,12 @@ def run_agent_loop(
                 total_tokens,
             )
             if progress_callback:
-                progress_callback({"type": "generating", "step": step + 1, "message": "正在生成最终分析..."})
+                progress_callback(stream_event("generating", step=step + 1, message="正在生成最终分析..."))
 
             final_content = response.content or ""
             is_error = response.provider == "error"
 
-            return RunLoopResult(
+            return _finish(RunLoopResult(
                 success=not is_error and bool(final_content),
                 content=final_content if not is_error else "",
                 tool_calls_log=tool_calls_log,
@@ -638,12 +577,13 @@ def run_agent_loop(
                 provider=provider_used,
                 models_used=models_used,
                 error=final_content if is_error else None,
+                failure_reason=(StageFailureReason.STAGE_FAILURE if is_error else None),
                 messages=messages,
-            )
+            ))
 
     # Max steps exceeded
     logger.warning("Agent hit max steps (%d)", max_steps)
-    return RunLoopResult(
+    return _finish(RunLoopResult(
         success=False,
         content="",
         tool_calls_log=tool_calls_log,
@@ -652,8 +592,9 @@ def run_agent_loop(
         provider=provider_used,
         models_used=models_used,
         error=f"Agent exceeded max steps ({max_steps}). Try increasing AGENT_MAX_STEPS if analysis tasks are complex.",
+        failure_reason=StageFailureReason.STAGE_FAILURE,
         messages=messages,
-    )
+    ))
 
 
 # ============================================================
@@ -676,51 +617,19 @@ def _execute_tools(
     """
 
     def _exec_single(tc_item):
-        t0 = time.time()
-        cache_key = _build_tool_cache_key(tc_item.name, tc_item.arguments)
-        guard_result = _guard_tool_stock_scope(tool_registry, tc_item.name, tc_item.arguments, stock_scope)
-        if guard_result is not None:
-            dur = round(time.time() - t0, 2)
-            result_str = serialize_tool_result(guard_result)
-            if cache_key and non_retriable_tool_results is not None:
-                non_retriable_tool_results[cache_key] = result_str
-            logger.warning(
-                "Tool '%s' blocked by stock scope: requested=%s expected=%s allowed=%s",
-                tc_item.name,
-                guard_result.get("requested_stock_code"),
-                guard_result.get("expected_stock_code"),
-                guard_result.get("allowed_stock_codes"),
-            )
-            return tc_item, result_str, False, dur, False, guard_result
-
-        if cache_key and non_retriable_tool_results is not None and cache_key in non_retriable_tool_results:
-            dur = round(time.time() - t0, 2)
-            logger.info(
-                "Tool '%s' skipped via non-retriable cache for arguments=%s",
-                tc_item.name,
-                tc_item.arguments,
-            )
-            return tc_item, non_retriable_tool_results[cache_key], False, dur, True, None
-
-        try:
-            res = tool_registry.execute(tc_item.name, **tc_item.arguments)
-            res_str = serialize_tool_result(res)
-            ok = True
-            if cache_key and non_retriable_tool_results is not None and _is_non_retriable_tool_result(res):
-                non_retriable_tool_results[cache_key] = res_str
-        except Exception as e:
-            res_str = json.dumps({"error": str(e)})
-            ok = False
-            logger.warning("Tool '%s' failed: %s", tc_item.name, e)
-        dur = round(time.time() - t0, 2)
-        return tc_item, res_str, ok, dur, False, None
+        return execute_runner_tool_call(
+            tool_call=tc_item,
+            tool_registry=tool_registry,
+            stock_scope=stock_scope,
+            non_retriable_tool_results=non_retriable_tool_results,
+        )
 
     results: List[Dict[str, Any]] = []
 
     if len(tool_calls) == 1:
         tc = tool_calls[0]
         if progress_callback:
-            progress_callback({"type": "tool_start", "step": step, "tool": tc.name})
+            progress_callback(stream_event("tool_start", step=step, tool=tc.name))
         timeout_triggered = False
         if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0:
             pool = ThreadPoolExecutor(max_workers=1)
@@ -747,7 +656,7 @@ def _execute_tools(
         else:
             _, result_str, success, dur, cached, guard_result = _exec_single(tc)
         if progress_callback:
-            progress_callback({"type": "tool_done", "step": step, "tool": tc.name, "success": success, "duration": dur})
+            progress_callback(stream_event("tool_done", step=step, tool=tc.name, success=success, duration=dur))
         log_entry = {
             "step": step, "tool": tc.name, "arguments": tc.arguments,
             "success": success, "duration": dur, "result_length": len(result_str),
@@ -771,7 +680,7 @@ def _execute_tools(
     else:
         for tc in tool_calls:
             if progress_callback:
-                progress_callback({"type": "tool_start", "step": step, "tool": tc.name})
+                progress_callback(stream_event("tool_start", step=step, tool=tc.name))
 
         pool = ThreadPoolExecutor(max_workers=min(len(tool_calls), 5))
         timeout_triggered = False
@@ -785,7 +694,7 @@ def _execute_tools(
                 pending.discard(future)
                 tc_item, result_str, success, dur, cached, guard_result = future.result()
                 if progress_callback:
-                    progress_callback({"type": "tool_done", "step": step, "tool": tc_item.name, "success": success, "duration": dur})
+                    progress_callback(stream_event("tool_done", step=step, tool=tc_item.name, success=success, duration=dur))
                 log_entry = {
                     "step": step, "tool": tc_item.name, "arguments": tc_item.arguments,
                     "success": success, "duration": dur, "result_length": len(result_str),
@@ -816,13 +725,13 @@ def _execute_tools(
                         "timeout": True,
                     })
                     if progress_callback:
-                        progress_callback({
-                            "type": "tool_done",
-                            "step": step,
-                            "tool": tc_item.name,
-                            "success": False,
-                            "duration": round(tool_wait_timeout_seconds or 0.0, 2),
-                        })
+                        progress_callback(stream_event(
+                            "tool_done",
+                            step=step,
+                            tool=tc_item.name,
+                            success=False,
+                            duration=round(tool_wait_timeout_seconds or 0.0, 2),
+                        ))
                     tool_calls_log.append({
                         "step": step,
                         "tool": tc_item.name,

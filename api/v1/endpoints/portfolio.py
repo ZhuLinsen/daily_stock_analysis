@@ -421,6 +421,10 @@ def get_snapshot(
     account_id: Optional[int] = Query(None, description="Optional account id, default returns all accounts"),
     as_of: Optional[date] = Query(None, description="Snapshot date, default today"),
     cost_method: str = Query("fifo", description="Cost method: fifo or avg"),
+    include_realtime: bool = Query(
+        True,
+        description="Whether today's snapshot should try realtime quotes before historical close fallback",
+    ),
 ) -> PortfolioSnapshotResponse:
     service = PortfolioService()
     try:
@@ -428,6 +432,7 @@ def get_snapshot(
             account_id=account_id,
             as_of=as_of,
             cost_method=cost_method,
+            include_realtime=include_realtime,
         )
         return PortfolioSnapshotResponse(**data)
     except ValueError as exc:
@@ -651,10 +656,19 @@ def get_risk_report(
     account_id: Optional[int] = Query(None, description="Optional account id"),
     as_of: Optional[date] = Query(None, description="Risk report date, default today"),
     cost_method: str = Query("fifo", description="Cost method: fifo or avg"),
+    include_realtime: bool = Query(
+        True,
+        description="Whether today's risk snapshot should try realtime quotes before historical close fallback",
+    ),
 ) -> PortfolioRiskResponse:
     service = PortfolioRiskService()
     try:
-        data = service.get_risk_report(account_id=account_id, as_of=as_of, cost_method=cost_method)
+        data = service.get_risk_report(
+            account_id=account_id,
+            as_of=as_of,
+            cost_method=cost_method,
+            include_realtime=include_realtime,
+        )
         return PortfolioRiskResponse(**data)
     except ValueError as exc:
         raise _bad_request(exc)

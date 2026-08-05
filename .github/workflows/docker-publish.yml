@@ -37,7 +37,9 @@ jobs:
           fetch-depth: 0
 
       - name: Resolve release ref
+        id: release_ref
         run: |
+          set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             RELEASE_TAG="${{ inputs.release_tag }}"
             [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -46,19 +48,39 @@ jobs:
             git checkout "$RELEASE_TAG"
             echo "Using manual release tag: $RELEASE_TAG"
           else
-            echo "Using event ref: ${GITHUB_REF_NAME}"
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            echo "Using event ref: $RELEASE_TAG"
           fi
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            .github/requirements-ci.txt
 
       - name: Install backend gate dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install flake8 pytest
+          # 使用与 backend-gate (ci.yml) 一致的依赖安装方式：
+          # `.github/requirements-ci.txt` 递归拉 `requirements.txt` + 加
+          # pytest-timeout 等 CI-only 依赖（issue #2131 让 ci_gate.sh 用了
+          # `--timeout=120`，发布前 gate 也需要该插件）。
+          for attempt in 1 2 3; do
+            if pip install -r .github/requirements-ci.txt; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Dependency install failed after ${attempt} attempts." >&2
+              exit 1
+            fi
+            echo "Dependency install attempt ${attempt} failed, retrying in 15s..." >&2
+            sleep 15
+          done
 
       - name: Run backend gate before publish
         run: ./scripts/ci_gate.sh
@@ -129,13 +151,18 @@ jobs:
 
       - name: Pre-publish docker smoke
         run: |
-          docker build -t stock-analysis:release -f docker/Dockerfile .
+          docker build \
+            --build-arg DSA_WEB_VERSION="${{ steps.release_ref.outputs.version }}" \
+            --build-arg DSA_WEB_REVISION="${{ steps.release_ref.outputs.revision }}" \
+            -t stock-analysis:release \
+            -f docker/Dockerfile .
           docker run --rm stock-analysis:release python -c "
           from src.config import get_config; print('ok-config')
           from src.storage import DatabaseManager; print('ok-storage')
           from src.notification import NotificationService; print('ok-notification')
           from data_provider import DataFetcherManager; print('ok-data-provider')
           from src.analyzer import GeminiAnalyzer; print('ok-analyzer')
+          import futu; print('ok-futu')
           print('release-smoke-ok')
           "
 
@@ -150,6 +177,9 @@ jobs:
             ${{ steps.meta-ghcr.outputs.tags }}
             ${{ steps.meta-dockerhub.outputs.tags }}
           labels: ${{ steps.meta-ghcr.outputs.labels }}
+          build-args: |
+            DSA_WEB_VERSION=${{ steps.release_ref.outputs.version }}
+            DSA_WEB_REVISION=${{ steps.release_ref.outputs.revision }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

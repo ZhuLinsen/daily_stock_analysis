@@ -9,6 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, desc, func, or_, select
 
+from src.schemas.decision_profile import (
+    DECISION_PROFILE_FILTER_ALL,
+    DecisionProfileFilter,
+)
 from src.storage import (
     DatabaseManager,
     DecisionSignalRecord,
@@ -46,6 +50,7 @@ class DecisionSignalRepository:
         "trigger_source",
         "market",
         "stock_code",
+        "decision_profile",
         "action",
         "horizon",
         "market_phase",
@@ -159,6 +164,7 @@ class DecisionSignalRepository:
         market: Optional[str] = None,
         action: Optional[str] = None,
         market_phase: Optional[str] = None,
+        decision_profile_filter: DecisionProfileFilter = DECISION_PROFILE_FILTER_ALL,
         source_type: Optional[str] = None,
         source_report_id: Optional[int] = None,
         trace_id: Optional[str] = None,
@@ -182,6 +188,7 @@ class DecisionSignalRepository:
             market=market,
             action=action,
             market_phase=market_phase,
+            decision_profile_filter=decision_profile_filter,
             source_type=source_type,
             source_report_id=source_report_id,
             trace_id=trace_id,
@@ -242,6 +249,7 @@ class DecisionSignalRepository:
         market: str,
         stock_code: str,
         actions: List[str],
+        decision_profile: Optional[str],
         exclude_signal_id: Optional[int] = None,
     ) -> List[DecisionSignalRecord]:
         self.expire_due_signals()
@@ -251,6 +259,7 @@ class DecisionSignalRepository:
             DecisionSignalRecord.status == "active",
             DecisionSignalRecord.market == market,
             DecisionSignalRecord.stock_code == stock_code,
+            self._same_profile_condition(decision_profile),
             DecisionSignalRecord.action.in_(actions),
         ]
         if exclude_signal_id is not None:
@@ -344,12 +353,14 @@ class DecisionSignalRepository:
         action = fields.get("action")
         horizon = fields.get("horizon")
         market_phase = fields.get("market_phase")
+        decision_profile = fields.get("decision_profile")
         if source_report_id is not None:
             conditions = [
                 DecisionSignalRecord.source_report_id == source_report_id,
                 DecisionSignalRecord.source_type == source_type,
                 DecisionSignalRecord.market == market,
                 DecisionSignalRecord.stock_code == stock_code,
+                DecisionSignalRepository._same_profile_condition(decision_profile),
                 DecisionSignalRecord.action == action,
                 DecisionSignalRecord.horizon == horizon,
                 DecisionSignalRecord.market_phase == market_phase,
@@ -360,6 +371,7 @@ class DecisionSignalRepository:
                 DecisionSignalRecord.source_type == source_type,
                 DecisionSignalRecord.market == market,
                 DecisionSignalRecord.stock_code == stock_code,
+                DecisionSignalRepository._same_profile_condition(decision_profile),
                 DecisionSignalRecord.action == action,
                 DecisionSignalRecord.horizon == horizon,
                 DecisionSignalRecord.market_phase == market_phase,
@@ -390,6 +402,7 @@ class DecisionSignalRepository:
             DecisionSignalRecord.source_type == fields.get("source_type"),
             DecisionSignalRecord.market == fields.get("market"),
             DecisionSignalRecord.stock_code == fields.get("stock_code"),
+            cls._same_profile_condition(fields.get("decision_profile")),
             DecisionSignalRecord.action == fields.get("action"),
         ]
         if source_report_id is not None:
@@ -457,14 +470,16 @@ class DecisionSignalRepository:
             existing.updated_at = utc_naive_now()
         return changed
 
-    @staticmethod
+    @classmethod
     def _build_conditions(
+        cls,
         *,
         stock_codes: Optional[List[str]],
         stock_identities: Optional[List[Tuple[str, str]]],
         market: Optional[str],
         action: Optional[str],
         market_phase: Optional[str],
+        decision_profile_filter: DecisionProfileFilter,
         source_type: Optional[str],
         source_report_id: Optional[int],
         trace_id: Optional[str],
@@ -493,6 +508,7 @@ class DecisionSignalRepository:
             conditions.append(DecisionSignalRecord.action == action)
         if market_phase:
             conditions.append(DecisionSignalRecord.market_phase == market_phase)
+        cls._append_profile_filter_condition(conditions, decision_profile_filter)
         if source_type:
             conditions.append(DecisionSignalRecord.source_type == source_type)
         if source_report_id is not None:
@@ -512,3 +528,22 @@ class DecisionSignalRepository:
         if expires_to:
             conditions.append(DecisionSignalRecord.expires_at <= expires_to)
         return conditions
+
+    @staticmethod
+    def _same_profile_condition(profile: Optional[str]) -> Any:
+        if profile is None:
+            return DecisionSignalRecord.decision_profile.is_(None)
+        return DecisionSignalRecord.decision_profile == profile
+
+    @classmethod
+    def _append_profile_filter_condition(
+        cls,
+        conditions: List[Any],
+        decision_profile_filter: DecisionProfileFilter,
+    ) -> None:
+        if decision_profile_filter.is_all:
+            return
+        if decision_profile_filter.is_unknown:
+            conditions.append(DecisionSignalRecord.decision_profile.is_(None))
+            return
+        conditions.append(cls._same_profile_condition(decision_profile_filter.profile))
