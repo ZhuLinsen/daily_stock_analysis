@@ -66,6 +66,7 @@ def test_daily_analysis_maps_all_provider_template_channels() -> None:
         prefix = f"LLM_{channel.upper()}_"
         for suffix in (
             "PROTOCOL",
+            "API_SURFACE",
             "BASE_URL",
             "API_KEY",
             "API_KEYS",
@@ -88,7 +89,7 @@ def test_daily_analysis_keeps_channel_secrets_in_secrets_context() -> None:
             key = f"LLM_{upper}_{suffix}"
             assert env[key] == f"${{{{ secrets.{key} }}}}"
 
-        for suffix in ("PROTOCOL", "BASE_URL", "MODELS", "ENABLED", "EXTRA_HEADERS"):
+        for suffix in ("PROTOCOL", "API_SURFACE", "BASE_URL", "MODELS", "ENABLED", "EXTRA_HEADERS"):
             key = f"LLM_{upper}_{suffix}"
             assert f"vars.{key}" in env[key]
             assert f"secrets.{key}" in env[key]

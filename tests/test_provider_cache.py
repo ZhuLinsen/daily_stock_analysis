@@ -91,6 +91,43 @@ def test_registry_does_not_match_qwen_openai_compatible_route_to_dashscope_nativ
     assert caps.provider == "unknown"
 
 
+def test_route_context_uses_explicit_responses_surface_from_model_list():
+    route_context = build_provider_cache_route_context(
+        model="openai/gpt-5.6-sol",
+        provider="openai",
+        model_list=[
+            {
+                "model_name": "openai/gpt-5.6-sol",
+                "litellm_params": {"model": "openai/responses/gpt-5.6-sol"},
+                "model_info": {"dsa_api_surface": "responses"},
+            }
+        ],
+    )
+
+    assert route_context.api_surface == "responses"
+
+
+def test_route_context_marks_mixed_surface_alias_unknown():
+    route_context = build_provider_cache_route_context(
+        model="openai/shared-model",
+        provider="openai",
+        model_list=[
+            {
+                "model_name": "openai/shared-model",
+                "litellm_params": {"model": "openai/responses/shared-model"},
+                "model_info": {"dsa_api_surface": "responses"},
+            },
+            {
+                "model_name": "openai/shared-model",
+                "litellm_params": {"model": "openai/shared-model"},
+            },
+        ],
+    )
+
+    assert route_context.api_surface == "unknown"
+    assert resolve_provider_cache_caps(route_context).provider == "unknown"
+
+
 def test_registry_matches_dashscope_native_surface_only_for_native_route():
     caps = resolve_provider_cache_caps(
         ProviderCacheRouteContext(

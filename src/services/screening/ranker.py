@@ -9,6 +9,7 @@ import logging
 import os
 from dataclasses import dataclass
 
+from src.config import apply_litellm_api_surface
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
 from src.services.screening.models import Pick
@@ -1042,20 +1043,27 @@ def _build_litellm_attempts(
     channels: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     attempts = []
+    matched_channel = False
     for channel in channels:
         if not _channel_matches_model(channel, model):
             continue
+        matched_channel = True
         api_keys = channel.get("api_keys", [])
         if not isinstance(api_keys, list) or not api_keys:
             api_keys = [api_key] if api_key else [""]
+        wire_model = apply_litellm_api_surface(
+            model,
+            str(channel.get("api_surface", "") or ""),
+        )
         for channel_key in api_keys:
             attempts.append(_completion_kwargs(
-                model,
+                wire_model,
                 api_key=str(channel_key or ""),
                 base_url=str(channel.get("base_url", "") or base_url or ""),
             ))
 
-    attempts.append(_completion_kwargs(model, api_key=api_key, base_url=base_url))
+    if not matched_channel:
+        attempts.append(_completion_kwargs(model, api_key=api_key, base_url=base_url))
     return _unique_attempts(attempts)
 
 

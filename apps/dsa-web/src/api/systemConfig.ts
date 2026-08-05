@@ -98,6 +98,7 @@ function toSnakeTestChannelPayload(payload: TestLLMChannelRequest): Record<strin
   const request: Record<string, unknown> = {
     name: payload.name,
     protocol: payload.protocol,
+    api_surface: payload.apiSurface ?? 'chat_completions',
     base_url: payload.baseUrl ?? '',
     api_key: payload.apiKey ?? '',
     models: payload.models,

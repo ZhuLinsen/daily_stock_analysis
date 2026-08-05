@@ -582,6 +582,7 @@ def test_llm_channel(
         payload = service.test_llm_channel(
             name=request.name,
             protocol=request.protocol,
+            api_surface=request.api_surface,
             base_url=request.base_url,
             api_key=request.api_key,
             models=request.models,

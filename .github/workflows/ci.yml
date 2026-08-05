@@ -13,6 +13,8 @@ jobs:
     name: 🔎 Change Detection
     runs-on: ubuntu-latest
     outputs:
+      backend: ${{ steps.backend-filter.outputs.backend_non_web == 'true' || steps.filter.outputs.backend_web_contract == 'true' }}
+      docker: ${{ steps.filter.outputs.docker }}
       frontend: ${{ steps.filter.outputs.frontend }}
       futu_packaging: ${{ steps.filter.outputs.futu_packaging }}
     steps:
@@ -23,6 +25,24 @@ jobs:
         uses: dorny/paths-filter@v3
         with:
           filters: |
+            backend_web_contract:
+              # Public assets are shared runtime inputs: Python loaders and
+              # packaged deployments may consume them outside the Web app.
+              - 'apps/dsa-web/public/**'
+              - 'apps/dsa-web/src/components/settings/llmProviderTemplates.ts'
+              - 'apps/dsa-web/src/locales/settingsHelp.ts'
+            docker:
+              - '*.py'
+              - 'api/**'
+              - 'bot/**'
+              - 'data_provider/**'
+              - 'src/**'
+              - 'strategies/**'
+              - 'apps/dsa-web/**'
+              - 'docker/**'
+              - 'requirements.txt'
+              - '.dockerignore'
+              - '.github/workflows/ci.yml'
             frontend:
               - 'apps/dsa-web/**'
             futu_packaging:
@@ -37,6 +57,15 @@ jobs:
               - 'apps/dsa-desktop/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/desktop-release.yml'
+      - name: 🧭 Filter backend-safe frontend paths
+        id: backend-filter
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            backend_non_web:
+              - '**'
+              - '!apps/dsa-web/**'
 
   ai-governance:
     name: ai-governance
@@ -54,7 +83,8 @@ jobs:
   backend-gate:
     name: backend-gate
     runs-on: ubuntu-latest
-    needs: [ai-governance]
+    needs: [changes, ai-governance]
+    if: needs.changes.outputs.backend == 'true'
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v5
@@ -94,7 +124,8 @@ jobs:
   docker-build:
     name: docker-build
     runs-on: ubuntu-latest
-    needs: [ai-governance]
+    needs: [changes, ai-governance]
+    if: needs.changes.outputs.docker == 'true'
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v5

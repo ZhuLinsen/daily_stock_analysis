@@ -17,9 +17,9 @@ import random
 import re
 import sys
 import time
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from src.config import Config, get_config
+from src.config import Config, channel_allows_empty_api_key, get_config
 from src.llm.hermes import route_has_hermes
 
 logger = logging.getLogger(__name__)
@@ -227,13 +227,44 @@ def _resolve_vision_model() -> str:
     return model
 
 
+def _matching_vision_deployments(model: str, cfg: Config) -> List[Dict[str, Any]]:
+    """Return configured LiteLLM deployments for a public vision route."""
+    normalized_model = (model or "").strip()
+    if not normalized_model:
+        return []
+    return [
+        entry
+        for entry in (getattr(cfg, "llm_model_list", []) or [])
+        if isinstance(entry, dict)
+        and str(entry.get("model_name") or "").strip() == normalized_model
+        and isinstance(entry.get("litellm_params"), dict)
+    ]
+
+
 def _get_api_keys_for_model(model: str, cfg: Config) -> List[str]:
     """Return available API keys for the given litellm model."""
+    deployment_keys: List[str] = []
+    for deployment in _matching_vision_deployments(model, cfg):
+        key = str((deployment.get("litellm_params") or {}).get("api_key") or "").strip()
+        if key and len(key) >= 8 and key not in deployment_keys:
+            deployment_keys.append(key)
+    if deployment_keys:
+        return deployment_keys
     if model.startswith("gemini/") or model.startswith("vertex_ai/"):
         return [k for k in cfg.gemini_api_keys if k and len(k) >= 8]
     if model.startswith("anthropic/"):
         return [k for k in cfg.anthropic_api_keys if k and len(k) >= 8]
     return [k for k in cfg.openai_api_keys if k and len(k) >= 8]
+
+
+def _deployment_allows_empty_api_key(deployment: Dict[str, Any]) -> bool:
+    """Return whether a configured vision deployment is a supported keyless endpoint."""
+    params = deployment.get("litellm_params") or {}
+    if str(params.get("api_key") or "").strip():
+        return False
+    wire_model = str(params.get("model") or "").strip()
+    protocol = wire_model.split("/", 1)[0] if "/" in wire_model else None
+    return channel_allows_empty_api_key(protocol, params.get("api_base"))
 
 
 def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] = None) -> str:
@@ -246,14 +277,36 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     if route_has_hermes(getattr(cfg, "llm_model_list", []) or [], model):
         raise ValueError("Hermes Vision 未验证：VISION_MODEL 不能选择包含 Hermes deployment 的 route。")
 
+    deployments = _matching_vision_deployments(model, cfg)
     keys = _get_api_keys_for_model(model, cfg)
-    if not keys:
+    key = api_key if api_key and api_key in keys else (random.choice(keys) if keys else None)
+
+    deployment_params: Dict[str, Any] = {}
+    if deployments:
+        deployment = next(
+            (
+                item
+                for item in deployments
+                if str((item.get("litellm_params") or {}).get("api_key") or "").strip() == key
+            ),
+            None,
+        )
+        if deployment is None:
+            deployment = next(
+                (item for item in deployments if _deployment_allows_empty_api_key(item)),
+                None,
+            )
+            if deployment is not None:
+                key = None
+        if deployment is not None:
+            deployment_params = dict(deployment.get("litellm_params") or {})
+    if key is None and not deployment_params:
         raise ValueError(f"No API key found for vision model {model}")
-    key = api_key if api_key and api_key in keys else random.choice(keys)
+    wire_model = str(deployment_params.get("model") or model).strip()
 
     data_url = f"data:{mime_type};base64,{image_b64}"
     call_kwargs: dict = {
-        "model": model,
+        "model": wire_model,
         "messages": [
             {
                 "role": "user",
@@ -264,11 +317,17 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
             }
         ],
         "max_tokens": 1024,
-        "api_key": key,
         "timeout": VISION_API_TIMEOUT,
     }
+    effective_api_key = str(deployment_params.get("api_key") or key or "").strip()
+    if effective_api_key:
+        call_kwargs["api_key"] = effective_api_key
+    if deployment_params.get("api_base"):
+        call_kwargs["api_base"] = deployment_params["api_base"]
+    if deployment_params.get("extra_headers"):
+        call_kwargs["extra_headers"] = dict(deployment_params["extra_headers"])
     # Add api_base and custom headers for OpenAI-compatible providers
-    if not model.startswith("gemini/") and not model.startswith("anthropic/") and not model.startswith("vertex_ai/"):
+    if not deployment_params and not model.startswith("gemini/") and not model.startswith("anthropic/") and not model.startswith("vertex_ai/"):
         if cfg.openai_base_url:
             call_kwargs["api_base"] = cfg.openai_base_url
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:

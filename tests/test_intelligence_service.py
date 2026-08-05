@@ -220,7 +220,13 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             if "bad" in url:
                 raise RuntimeError("network token=secret should not leak")
             return self._mock_response()
-        with patch("src.services.intelligence_service.requests.get", side_effect=fake_get):
+        # This case verifies batch fail-open behavior and request isolation. URL/DNS
+        # validation has dedicated coverage below; keeping it out of this test also
+        # avoids coupling the aggregation contract to process-global DNS patching.
+        with patch.object(self.service, "_validate_url"), patch(
+            "src.services.intelligence_service.requests.get",
+            side_effect=fake_get,
+        ):
             result = self.service.fetch_enabled_sources()
         self.assertEqual(result["source_count"], 2)
         self.assertEqual(result["saved_count"], 2)

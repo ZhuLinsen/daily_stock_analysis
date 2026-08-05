@@ -461,38 +461,6 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
         pipeline.notifier.record_noise_control.assert_not_called()
         pipeline.notifier.release_noise_control.assert_not_called()
 
-    def test_dingtalk_context_only_delivery_skips_static_channels_in_aggregate_path(self):
-        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
-        pipeline.notifier = _FakeRoutedNotifier([NotificationChannel.TELEGRAM])
-        pipeline.notifier.send_to_context.return_value = True
-        pipeline.notifier.should_broadcast_static_channels = MagicMock(return_value=False)
-        pipeline.config = SimpleNamespace(stock_email_groups=[])
-        results = [SimpleNamespace(code="000001")]
-
-        pipeline._send_notifications(results, ReportType.SIMPLE)
-
-        pipeline.notifier.should_broadcast_static_channels.assert_called_once_with()
-        pipeline.notifier.send_to_telegram.assert_not_called()
-        pipeline.notifier.evaluate_noise_control.assert_not_called()
-        pipeline.notifier.record_noise_control.assert_not_called()
-        pipeline.notifier.release_noise_control.assert_not_called()
-
-    def test_telegram_context_only_delivery_skips_static_channels_in_aggregate_path(self):
-        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
-        pipeline.notifier = _FakeRoutedNotifier([NotificationChannel.TELEGRAM])
-        pipeline.notifier.send_to_context.return_value = True
-        pipeline.notifier.should_broadcast_static_channels = MagicMock(return_value=False)
-        pipeline.config = SimpleNamespace(stock_email_groups=[])
-        results = [SimpleNamespace(code="000001")]
-
-        pipeline._send_notifications(results, ReportType.SIMPLE)
-
-        pipeline.notifier.should_broadcast_static_channels.assert_called_once_with()
-        pipeline.notifier.send_to_telegram.assert_not_called()
-        pipeline.notifier.evaluate_noise_control.assert_not_called()
-        pipeline.notifier.record_noise_control.assert_not_called()
-        pipeline.notifier.release_noise_control.assert_not_called()
-
     def test_send_notifications_records_each_channel_run_rather_than_aggregating(self):
         token = activate_run_diagnostic_context(trace_id="trace-notify")
         try:

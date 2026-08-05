@@ -3,7 +3,7 @@ import type React from 'react';
 import type { ParsedApiError } from '../../api/error';
 import { getParsedApiError } from '../../api/error';
 import { systemConfigApi } from '../../api/systemConfig';
-import type { LLMCapabilityCheck, LLMCapabilityCheckResult } from '../../types/systemConfig';
+import type { LLMApiSurface, LLMCapabilityCheck, LLMCapabilityCheckResult } from '../../types/systemConfig';
 import { ApiErrorAlert, Badge, Button, InlineAlert, Input, Select, StatusDot, Tooltip } from '../common';
 import type { ChannelProtocol } from './llmProviderTemplates';
 import {
@@ -24,32 +24,13 @@ const PROTOCOL_OPTIONS: Array<{ value: ChannelProtocol; label: string }> = [
   { value: 'ollama', label: 'Ollama' },
 ];
 
-const KNOWN_MODEL_PREFIXES = new Set([
-  'openai',
-  'anthropic',
-  'gemini',
-  'vertex_ai',
-  'deepseek',
-  'minimax',
-  'ollama',
-  'cohere',
-  'huggingface',
-  'bedrock',
-  'sagemaker',
-  'azure',
-  'replicate',
-  'together_ai',
-  'palm',
-  'text-completion-openai',
-  'command-r',
-  'groq',
-  'cerebras',
-  'fireworks_ai',
-  'friendliai',
-]);
+const API_SURFACE_OPTIONS: Array<{ value: LLMApiSurface; label: string }> = [
+  { value: 'chat_completions', label: 'Chat Completions（默认）' },
+  { value: 'responses', label: 'Responses API' },
+];
 
-const CHANNEL_FIELD_SUFFIXES = ['PROTOCOL', 'BASE_URL', 'API_KEY', 'API_KEYS', 'MODELS', 'EXTRA_HEADERS', 'ENABLED'] as const;
-const CHANNEL_FIELD_KEY_PATTERN = /^LLM_([A-Z0-9_]+)_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
+const CHANNEL_FIELD_SUFFIXES = ['PROTOCOL', 'API_SURFACE', 'BASE_URL', 'API_KEY', 'API_KEYS', 'MODELS', 'EXTRA_HEADERS', 'ENABLED'] as const;
+const CHANNEL_FIELD_KEY_PATTERN = /^LLM_([A-Z0-9_]+)_(PROTOCOL|API_SURFACE|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
 const FALSEY_VALUES = new Set(['0', 'false', 'no', 'off']);
 const HERMES_CHANNEL_NAME = 'hermes';
 const HERMES_DEFAULT_MODEL = 'hermes-agent';
@@ -119,6 +100,7 @@ interface ChannelConfig {
   id: string;
   name: string;
   protocol: ChannelProtocol;
+  apiSurface: string;
   baseUrl: string;
   apiKey: string;
   models: string;
@@ -158,6 +140,7 @@ interface LLMChannelEditorProps {
   items: Array<{ key: string; value: string; rawValueExists?: boolean }>;
   configVersion: string;
   maskToken: string;
+  modelProviderPrefixes?: string[];
   onSaved: (updatedItems: Array<{ key: string; value: string }>) => void | Promise<void>;
   onDraftItemsChange?: (items: Array<{ key: string; value: string }>) => void;
   disabled?: boolean;
@@ -172,6 +155,7 @@ interface ChannelRowProps {
   testState?: ChannelTestState;
   discoveryState?: ChannelDiscoveryState;
   capabilityState?: ChannelCapabilityState;
+  modelProviderPrefixes: ReadonlySet<string>;
   onUpdate: (index: number, field: keyof ChannelConfig, value: string | boolean) => void;
   onRemove: (index: number) => void;
   onToggleExpand: (index: number) => void;
@@ -231,6 +215,7 @@ function parseChannelFieldKeys(channel: ChannelConfig): string[] {
   const upperName = channel.name.trim().toUpperCase();
   return [
     `LLM_${upperName}_PROTOCOL`,
+    `LLM_${upperName}_API_SURFACE`,
     `LLM_${upperName}_BASE_URL`,
     `LLM_${upperName}_ENABLED`,
     `LLM_${upperName}_API_KEY`,
@@ -379,6 +364,9 @@ function buildChangedItemKeys(
     if (current.protocol !== previous.protocol) {
       changedKeys.add(`${prefix}_PROTOCOL`);
     }
+    if (current.apiSurface !== previous.apiSurface) {
+      changedKeys.add(`${prefix}_API_SURFACE`);
+    }
     if (current.baseUrl !== previous.baseUrl) {
       changedKeys.add(`${prefix}_BASE_URL`);
     }
@@ -406,6 +394,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   testState,
   discoveryState,
   capabilityState,
+  modelProviderPrefixes,
   onUpdate,
   onRemove,
   onToggleExpand,
@@ -427,7 +416,9 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
     : RUNTIME_CAPABILITY_OPTIONS;
   const discoveredModels = discoveryState?.models || [];
   const manualOnlyModels = selectedModels.filter(
-    (model) => !discoveredModels.some((discoveredModel) => areModelsEquivalent(model, discoveredModel, channel.protocol)),
+    (model) => !discoveredModels.some((discoveredModel) => (
+      areModelsEquivalent(model, discoveredModel, channel.protocol, modelProviderPrefixes)
+    )),
   );
   const modelCount = selectedModels.length;
   const hasKey = channel.apiKey.length > 0;
@@ -443,9 +434,16 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   const capabilityBusy = capabilityState?.status === 'loading';
   const channelNameInputId = `llm-channel-${channel.id}-name`;
   const protocolInputId = `llm-channel-${channel.id}-protocol`;
+  const apiSurfaceInputId = `llm-channel-${channel.id}-api-surface`;
   const baseUrlInputId = `llm-channel-${channel.id}-base-url`;
   const apiKeyInputId = `llm-channel-${channel.id}-api-key`;
   const modelsInputId = `llm-channel-${channel.id}-models`;
+  const apiSurfaceOptions = API_SURFACE_OPTIONS.some((option) => option.value === channel.apiSurface)
+    ? API_SURFACE_OPTIONS
+    : [
+        { value: channel.apiSurface, label: `无效配置：${channel.apiSurface}` },
+        ...API_SURFACE_OPTIONS,
+      ];
 
   return (
     <div className="mb-2 overflow-hidden rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface)] shadow-soft-card transition-[background-color,border-color,box-shadow] duration-200 hover:border-[var(--settings-border-strong)] hover:bg-[var(--settings-surface-hover)]">
@@ -535,7 +533,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 
       {expanded ? (
         <div className="settings-surface-overlay-soft space-y-4 px-4 py-4">
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-2 sm:grid-cols-3">
             <div>
               <HelpLabel
                 htmlFor={channelNameInputId}
@@ -567,6 +565,23 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                 options={PROTOCOL_OPTIONS}
                 disabled={busy}
                 placeholder="选择协议"
+              />
+            </div>
+            <div className="space-y-2">
+              <HelpLabel
+                htmlFor={apiSurfaceInputId}
+                label="API Surface"
+                fieldKey="LLM_CHANNEL_API_SURFACE"
+                helpKey="settings.llm_channel.api_surface"
+                examples={['LLM_ANSPIRE_API_SURFACE=responses', 'LLM_OPENAI_API_SURFACE=chat_completions']}
+              />
+              <Select
+                id={apiSurfaceInputId}
+                value={channel.apiSurface}
+                onChange={(value) => onUpdate(index, 'apiSurface', value)}
+                options={apiSurfaceOptions}
+                disabled={busy || (isHermesChannel(channel) && channel.apiSurface === 'chat_completions')}
+                placeholder="选择 API Surface"
               />
             </div>
           </div>
@@ -699,10 +714,14 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                       <input
                         type="checkbox"
                         checked={selectedModels.some((selectedModel) => (
-                          areModelsEquivalent(selectedModel, model, channel.protocol)
+                          areModelsEquivalent(selectedModel, model, channel.protocol, modelProviderPrefixes)
                         ))}
                         disabled={busy}
-                        onChange={() => onUpdate(index, 'models', toggleModelSelection(channel.models, model, channel.protocol))}
+                        onChange={() => onUpdate(
+                          index,
+                          'models',
+                          toggleModelSelection(channel.models, model, channel.protocol, modelProviderPrefixes),
+                        )}
                         className="settings-input-checkbox h-4 w-4 rounded border-border/70 bg-base"
                       />
                       <span>{model}</span>
@@ -958,8 +977,12 @@ function parseModelRef(model: string): ParsedModelRef {
   };
 }
 
-function getModelComparisonKey(model: string, protocol: ChannelProtocol): string {
-  const normalizedModel = normalizeModelForRuntime(model, protocol).trim();
+function getModelComparisonKey(
+  model: string,
+  protocol: ChannelProtocol,
+  modelProviderPrefixes: ReadonlySet<string>,
+): string {
+  const normalizedModel = normalizeModelForRuntime(model, protocol, modelProviderPrefixes).trim();
   const parsed = parseModelRef(normalizedModel);
   if (!parsed.name) {
     return '';
@@ -967,15 +990,27 @@ function getModelComparisonKey(model: string, protocol: ChannelProtocol): string
   return `${parsed.provider}/${parsed.name}`;
 }
 
-function areModelsEquivalent(a: string, b: string, protocol: ChannelProtocol): boolean {
-  const left = getModelComparisonKey(a, protocol);
-  const right = getModelComparisonKey(b, protocol);
+function areModelsEquivalent(
+  a: string,
+  b: string,
+  protocol: ChannelProtocol,
+  modelProviderPrefixes: ReadonlySet<string>,
+): boolean {
+  const left = getModelComparisonKey(a, protocol, modelProviderPrefixes);
+  const right = getModelComparisonKey(b, protocol, modelProviderPrefixes);
   return left !== '' && left === right;
 }
 
-function toggleModelSelection(models: string, targetModel: string, protocol: ChannelProtocol): string {
+function toggleModelSelection(
+  models: string,
+  targetModel: string,
+  protocol: ChannelProtocol,
+  modelProviderPrefixes: ReadonlySet<string>,
+): string {
   const selectedModels = splitModels(models);
-  const index = selectedModels.findIndex((model) => areModelsEquivalent(model, targetModel, protocol));
+  const index = selectedModels.findIndex((model) => (
+    areModelsEquivalent(model, targetModel, protocol, modelProviderPrefixes)
+  ));
   if (index >= 0) {
     return selectedModels.filter((_, itemIndex) => itemIndex !== index).join(',');
   }
@@ -991,7 +1026,11 @@ const PROTOCOL_ALIASES: Record<string, string> = {
   openai_compat: 'openai',
 };
 
-function normalizeModelForRuntime(model: string, protocol: ChannelProtocol): string {
+function normalizeModelForRuntime(
+  model: string,
+  protocol: ChannelProtocol,
+  modelProviderPrefixes: ReadonlySet<string>,
+): string {
   const trimmedModel = model.trim();
   if (!trimmedModel) {
     return trimmedModel;
@@ -1001,8 +1040,9 @@ function normalizeModelForRuntime(model: string, protocol: ChannelProtocol): str
     const rawPrefix = trimmedModel.split('/', 1)[0].trim();
     const lowerPrefix = rawPrefix.toLowerCase();
     const canonicalPrefix = PROTOCOL_ALIASES[lowerPrefix] || lowerPrefix;
-    if (KNOWN_MODEL_PREFIXES.has(lowerPrefix) || KNOWN_MODEL_PREFIXES.has(canonicalPrefix)) {
-      if (canonicalPrefix !== lowerPrefix && KNOWN_MODEL_PREFIXES.has(canonicalPrefix)) {
+    const isProtocolPrefix = canonicalPrefix === protocol;
+    if (isProtocolPrefix || modelProviderPrefixes.has(lowerPrefix) || modelProviderPrefixes.has(canonicalPrefix)) {
+      if (canonicalPrefix !== lowerPrefix && (isProtocolPrefix || modelProviderPrefixes.has(canonicalPrefix))) {
         return `${canonicalPrefix}/${trimmedModel.split('/').slice(1).join('/')}`;
       }
       return trimmedModel;
@@ -1013,8 +1053,14 @@ function normalizeModelForRuntime(model: string, protocol: ChannelProtocol): str
   return `${protocol}/${trimmedModel}`;
 }
 
-function resolveModelPreview(models: string, protocol: ChannelProtocol): string[] {
-  return splitModels(models).map((model) => normalizeModelForRuntime(model, protocol));
+function resolveModelPreview(
+  models: string,
+  protocol: ChannelProtocol,
+  modelProviderPrefixes: ReadonlySet<string>,
+): string[] {
+  return splitModels(models).map((model) => (
+    normalizeModelForRuntime(model, protocol, modelProviderPrefixes)
+  ));
 }
 
 interface RouteProvenance {
@@ -1023,22 +1069,28 @@ interface RouteProvenance {
   hasNonHermes: boolean;
 }
 
-function resolveChannelRouteModels(channel: ChannelConfig): string[] {
+function resolveChannelRouteModels(
+  channel: ChannelConfig,
+  modelProviderPrefixes: ReadonlySet<string>,
+): string[] {
   if (isHermesChannel(channel)) {
     const models = splitModels(channel.models);
     return (models.length > 0 ? models : [HERMES_DEFAULT_MODEL]).map(canonicalizeHermesRouteModel);
   }
-  return resolveModelPreview(channel.models, channel.protocol);
+  return resolveModelPreview(channel.models, channel.protocol, modelProviderPrefixes);
 }
 
-function buildRouteProvenanceMap(channels: ChannelConfig[]): Map<string, RouteProvenance> {
+function buildRouteProvenanceMap(
+  channels: ChannelConfig[],
+  modelProviderPrefixes: ReadonlySet<string>,
+): Map<string, RouteProvenance> {
   const provenance = new Map<string, RouteProvenance>();
   for (const channel of channels) {
     if (!channel.enabled || !channel.name.trim()) {
       continue;
     }
     const hermes = isHermesChannel(channel);
-    for (const routeName of resolveChannelRouteModels(channel)) {
+    for (const routeName of resolveChannelRouteModels(channel, modelProviderPrefixes)) {
       if (!routeName) continue;
       const existing = provenance.get(routeName) || {
         routeName,
@@ -1069,6 +1121,7 @@ function buildModelOptions(models: string[], selectedModel: string, autoLabel: s
 const LLM_STAGE_LABELS: Record<string, string> = {
   model_discovery: '模型发现',
   chat_completion: '聊天调用',
+  responses: 'Responses 调用',
   response_parse: '响应解析',
   capability_json: 'JSON 能力',
   capability_tools: 'Tools 能力',
@@ -1359,6 +1412,17 @@ function parseRuntimeConfigFromItems(items: Array<{ key: string; value: string }
   };
 }
 
+function normalizeApiSurface(value: string | undefined): string {
+  const normalized = (value || '').trim().toLowerCase().replaceAll('-', '_');
+  if (normalized === 'responses' || normalized === 'response' || normalized === 'responses_api') {
+    return 'responses';
+  }
+  if (!normalized || normalized === 'chat' || normalized === 'chat_completion' || normalized === 'completions') {
+    return 'chat_completions';
+  }
+  return normalized;
+}
+
 function parseChannelsFromItems(
   items: Array<{ key: string; value: string }>,
   itemSourceByKey: Map<string, boolean> = new Map(),
@@ -1379,6 +1443,7 @@ function parseChannelsFromItems(
       id: `parsed:${index}:${upperName}`,
       name: name.toLowerCase(),
       protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models),
+      apiSurface: normalizeApiSurface(itemMap.get(`LLM_${upperName}_API_SURFACE`)),
       baseUrl,
       apiKey: resolveInitialChannelApiKeyValue(name, itemMap, itemSourceByKey),
       models: rawModels,
@@ -1409,6 +1474,7 @@ function channelsToUpdateItems(
     const prefix = `LLM_${channel.name.toUpperCase()}`;
     const isMultiKey = channel.apiKey.includes(',');
     updates.push({ key: `${prefix}_PROTOCOL`, value: channel.protocol });
+    updates.push({ key: `${prefix}_API_SURFACE`, value: channel.apiSurface });
     updates.push({ key: `${prefix}_BASE_URL`, value: channel.baseUrl });
     updates.push({ key: `${prefix}_ENABLED`, value: channel.enabled ? 'true' : 'false' });
     if (isHermesChannel(channel)) {
@@ -1430,6 +1496,7 @@ function channelsToUpdateItems(
 
     const prefix = `LLM_${upperName}`;
     updates.push({ key: `${prefix}_PROTOCOL`, value: '' });
+    updates.push({ key: `${prefix}_API_SURFACE`, value: '' });
     updates.push({ key: `${prefix}_BASE_URL`, value: '' });
     updates.push({ key: `${prefix}_ENABLED`, value: '' });
     updates.push({ key: `${prefix}_API_KEY`, value: '' });
@@ -1521,6 +1588,7 @@ function channelsAreEqual(left: ChannelConfig, right: ChannelConfig): boolean {
   return (
     left.name === right.name
     && left.protocol === right.protocol
+    && left.apiSurface === right.apiSurface
     && left.baseUrl === right.baseUrl
     && left.apiKey === right.apiKey
     && left.models === right.models
@@ -1532,6 +1600,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   items,
   configVersion,
   maskToken,
+  modelProviderPrefixes = [],
   onSaved,
   onDraftItemsChange,
   disabled = false,
@@ -1573,6 +1642,10 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     [items],
   );
   const managesRuntimeConfig = !hasLitellmConfig;
+  const modelProviderPrefixSet = useMemo(
+    () => new Set(modelProviderPrefixes.map((provider) => provider.trim().toLowerCase()).filter(Boolean)),
+    [modelProviderPrefixes],
+  );
 
   const channelsFingerprint = useMemo(() => JSON.stringify(initialChannels), [initialChannels]);
   const runtimeFingerprint = useMemo(() => JSON.stringify(initialRuntimeConfig), [initialRuntimeConfig]);
@@ -1636,8 +1709,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     if (!managesRuntimeConfig) {
       return new Map<string, RouteProvenance>();
     }
-    return buildRouteProvenanceMap(channels);
-  }, [channels, managesRuntimeConfig]);
+    return buildRouteProvenanceMap(channels, modelProviderPrefixSet);
+  }, [channels, managesRuntimeConfig, modelProviderPrefixSet]);
 
   const availableModels = useMemo(
     () => Array.from(routeProvenanceMap.values())
@@ -1746,6 +1819,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
             updated.baseUrl = newPreset.baseUrl;
           }
           updated.protocol = newPreset.protocol;
+          updated.apiSurface = 'chat_completions';
           if (!updated.models || updated.models === (oldPreset?.placeholderModels ?? '')) {
             updated.models = newPreset.placeholderModels;
           }
@@ -1846,6 +1920,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
           id: `added:${addChannelIdRef.current += 1}`,
           name: nextName,
           protocol: preset.protocol,
+          apiSurface: 'chat_completions',
           baseUrl: preset.baseUrl,
           apiKey: '',
           models: preset.placeholderModels || '',
@@ -1987,6 +2062,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       const result = await systemConfigApi.testLLMChannel({
         name: channel.name,
         protocol: channel.protocol,
+        apiSurface: channel.apiSurface as LLMApiSurface,
         baseUrl: channel.baseUrl,
         apiKey: channel.apiKey,
         models: splitModels(channel.models),
@@ -2144,6 +2220,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       const result = await systemConfigApi.testLLMChannel({
         name: channel.name,
         protocol: channel.protocol,
+        apiSurface: channel.apiSurface as LLMApiSurface,
         baseUrl: channel.baseUrl,
         apiKey: channel.apiKey,
         models: splitModels(channel.models),
@@ -2288,6 +2365,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                 testState={testStates[index]}
                 discoveryState={discoveryStates[channel.id]}
                 capabilityState={capabilityStates[channel.id]}
+                modelProviderPrefixes={modelProviderPrefixSet}
                 onUpdate={updateChannel}
                 onRemove={removeChannel}
                 onToggleExpand={toggleExpand}

@@ -3609,6 +3609,141 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(env["SNAPSHOT_SOURCE_PRIORITY"], "tushare,sina,efinance,akshare_em,em_datacenter")
 
+    def test_screening_runtime_env_preserves_responses_api_surface(self) -> None:
+        config = Config(
+            screening_enabled=True,
+            litellm_model="openai/gpt-5.6-sol",
+            llm_channels=[
+                {
+                    "name": "draft",
+                    "protocol": "openai",
+                    "api_surface": "responses",
+                    "enabled": True,
+                    "base_url": "https://api.example.com/v1",
+                    "api_keys": ["sk-draft"],
+                    "models": ["openai/gpt-5.6-sol"],
+                }
+            ],
+        )
+
+        env = screening_service._build_screening_runtime_env(config)
+
+        self.assertEqual(env["LLM_DRAFT_API_SURFACE"], "responses")
+        with patch.dict(os.environ, env, clear=True):
+            runtime_config = ScreeningPipelineConfig.from_env()
+        self.assertEqual(runtime_config.llm_channels[0]["api_surface"], "responses")
+
+    def test_screening_runtime_env_skips_unknown_api_surface(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "draft",
+                "LLM_DRAFT_PROTOCOL": "openai",
+                "LLM_DRAFT_API_SURFACE": "respones",
+                "LLM_DRAFT_API_KEY": "sk-draft",
+                "LLM_DRAFT_MODELS": "gpt-5.6-sol",
+            },
+            clear=True,
+        ):
+            runtime_config = ScreeningPipelineConfig.from_env()
+
+        self.assertEqual(runtime_config.llm_channels, [])
+
+    def test_screening_runtime_env_uses_provider_protocol_before_validating_surface(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "gemini",
+                "LLM_GEMINI_API_SURFACE": "responses",
+                "LLM_GEMINI_API_KEY": "gemini-key",
+                "LLM_GEMINI_MODELS": "gemini-2.5-flash",
+            },
+            clear=True,
+        ):
+            runtime_config = ScreeningPipelineConfig.from_env()
+
+        self.assertEqual(runtime_config.llm_channels, [])
+
+    def test_screening_runtime_env_skips_openai_responses_channel_with_non_openai_model(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "draft",
+                "LLM_DRAFT_PROTOCOL": "openai",
+                "LLM_DRAFT_API_SURFACE": "responses",
+                "LLM_DRAFT_API_KEY": "sk-draft",
+                "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-4-6",
+            },
+            clear=True,
+        ):
+            runtime_config = ScreeningPipelineConfig.from_env()
+
+        self.assertEqual(runtime_config.llm_channels, [])
+
+    def test_screening_runtime_env_skips_openai_responses_channel_with_direct_provider_model(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "draft",
+                "LLM_DRAFT_PROTOCOL": "openai",
+                "LLM_DRAFT_API_SURFACE": "responses",
+                "LLM_DRAFT_API_KEY": "sk-draft",
+                "LLM_DRAFT_MODELS": "xai/grok-beta",
+            },
+            clear=True,
+        ):
+            runtime_config = ScreeningPipelineConfig.from_env()
+
+        self.assertEqual(runtime_config.llm_channels, [])
+
+    def test_screening_runtime_env_skips_duplicate_route_alias_with_mixed_surfaces(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "chat,responses",
+                "LLM_CHAT_PROTOCOL": "openai",
+                "LLM_CHAT_API_KEY": "sk-chat",
+                "LLM_CHAT_MODELS": "gpt-5.6-sol",
+                "LLM_RESPONSES_PROTOCOL": "openai",
+                "LLM_RESPONSES_API_SURFACE": "responses",
+                "LLM_RESPONSES_API_KEY": "sk-responses",
+                "LLM_RESPONSES_MODELS": "gpt-5.6-sol",
+            },
+            clear=True,
+        ):
+            runtime_config = ScreeningPipelineConfig.from_env()
+
+        self.assertEqual(runtime_config.llm_channels, [])
+
+    def test_screening_runtime_env_keeps_generic_channel_openai_default(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "draft",
+                "LLM_DRAFT_API_KEY": "sk-draft",
+                "LLM_DRAFT_MODELS": "gpt-5.6-sol",
+            },
+            clear=True,
+        ):
+            runtime_config = ScreeningPipelineConfig.from_env()
+
+        self.assertEqual(runtime_config.llm_channels[0]["protocol"], "openai")
+
+    def test_screening_runtime_env_skips_unsupported_hermes_responses_surface(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "hermes",
+                "LLM_HERMES_API_SURFACE": "responses",
+                "LLM_HERMES_API_KEY": "sk-hermes",
+                "LLM_HERMES_MODELS": "hermes-agent",
+            },
+            clear=True,
+        ):
+            runtime_config = ScreeningPipelineConfig.from_env()
+
+        self.assertEqual(runtime_config.llm_channels, [])
+
     def test_screen_preserves_explicit_candidate_context_provider_override(self) -> None:
         config = self._config(enabled=True)
         captured: dict[str, object] = {}

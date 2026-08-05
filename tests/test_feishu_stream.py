@@ -108,6 +108,11 @@ def test_invalid_stream_domain_falls_back_to_feishu(caplog):
 
 
 def test_reply_text_chunked_keeps_reply_and_at_user(monkeypatch):
+    sleep_calls = []
+    monkeypatch.setattr(
+        "bot.platforms.feishu_stream.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
     client = DummyFeishuReplyClient(max_bytes=1000)
 
     message_id = "msg_123"
@@ -119,6 +124,7 @@ def test_reply_text_chunked_keeps_reply_and_at_user(monkeypatch):
     assert result is True
     # Should produce multiple chunks
     assert len(client.calls) >= 2
+    assert sleep_calls == [1] * (len(client.calls) - 1)
 
     for call in client.calls:
         assert call["message_id"] == message_id
@@ -138,6 +144,11 @@ def test_reply_text_uses_legacy_feishu_markdown_formatter():
 
 
 def test_send_to_chat_chunked_uses_chat_id(monkeypatch):
+    sleep_calls = []
+    monkeypatch.setattr(
+        "bot.platforms.feishu_stream.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
     client = DummyFeishuReplyClient(max_bytes=1000)
 
     chat_id = "chat_123"
@@ -147,6 +158,7 @@ def test_send_to_chat_chunked_uses_chat_id(monkeypatch):
 
     assert result is True
     assert len(client.calls) >= 2
+    assert sleep_calls == [1] * (len(client.calls) - 1)
 
     for call in client.calls:
         assert call["message_id"] is None

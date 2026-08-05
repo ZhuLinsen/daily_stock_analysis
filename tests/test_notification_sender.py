@@ -578,11 +578,16 @@ class TestFeishuSender(unittest.TestCase):
         sender = FeishuSender(cfg)
 
         with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=object()), \
-             mock.patch.object(FeishuSender, "_app_send_raw", return_value=False) as mock_raw:
+             mock.patch.object(FeishuSender, "_app_send_raw", return_value=False) as mock_raw, \
+             mock.patch("src.notification_sender.feishu_sender.time.sleep") as mock_sleep:
             result = sender.send_to_feishu("A" * 500)
 
         self.assertFalse(result)  # All chunks fail
         self.assertGreater(mock_raw.call_count, 1)
+        self.assertEqual(
+            [item.args[0] for item in mock_sleep.call_args_list],
+            [1, 1, 1],
+        )
 
     @mock.patch.object(FeishuSender, "_app_send_raw", return_value=True)
     def test_app_bot_request_shape_interactive(self, mock_raw):

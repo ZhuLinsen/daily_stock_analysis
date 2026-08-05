@@ -393,11 +393,12 @@ def build_provider_cache_route_context(
         _model_list_api_base(model, model_list),
     )
     family = infer_provider_family(model=model, provider=provider, api_base=api_base)
+    configured_api_surface = _model_list_api_surface(model, model_list)
     return ProviderCacheRouteContext(
         model=model,
         provider=provider or family,
         api_base=api_base,
-        api_surface=_infer_api_surface(family, api_base),
+        api_surface=configured_api_surface or _infer_api_surface(family, api_base),
         gateway=_infer_gateway(api_base, family),
         cloud_platform=_infer_cloud_platform(api_base, family),
         call_type=call_type,
@@ -724,6 +725,38 @@ def _model_list_api_base(model: str, model_list: Optional[List[Dict[str, Any]]])
         if normalized_model not in names:
             continue
         return _first_non_empty(params.get("api_base"), params.get("base_url"))
+    return None
+
+
+def _model_list_api_surface(model: str, model_list: Optional[List[Dict[str, Any]]]) -> Optional[ApiSurface]:
+    """Return the endpoint surface attached to a matching Router deployment."""
+    normalized_model = (model or "").strip()
+    if not normalized_model or not model_list:
+        return None
+    surfaces: set[str] = set()
+    for entry in model_list:
+        if not isinstance(entry, Mapping):
+            continue
+        params = entry.get("litellm_params", {}) or {}
+        if not isinstance(params, Mapping):
+            params = {}
+        names = {
+            str(entry.get("model_name") or "").strip(),
+            str(params.get("model") or "").strip(),
+        }
+        if normalized_model not in names:
+            continue
+        model_info = entry.get("model_info", {}) or {}
+        if not isinstance(model_info, Mapping):
+            model_info = {}
+        surface = str(model_info.get("dsa_api_surface") or "chat_completions").strip().lower()
+        surfaces.add(surface)
+    if len(surfaces) == 1:
+        surface = next(iter(surfaces))
+        if surface in {"responses", "chat_completions"}:
+            return surface
+    if len(surfaces) > 1:
+        return "unknown"
     return None
 
 

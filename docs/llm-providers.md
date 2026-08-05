@@ -76,6 +76,7 @@ LITELLM_MODEL=deepseek/deepseek-v4-flash
 ```env
 LLM_CHANNELS=my_proxy
 LLM_MY_PROXY_PROTOCOL=openai
+LLM_MY_PROXY_API_SURFACE=chat_completions
 LLM_MY_PROXY_BASE_URL=https://your-proxy.example.com/v1
 LLM_MY_PROXY_API_KEY=sk-xxx
 LLM_MY_PROXY_MODELS=gpt-5.5,claude-sonnet-4-6
@@ -83,6 +84,23 @@ LLM_MY_PROXY_MODELS=gpt-5.5,claude-sonnet-4-6
 
 OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/chat/completions`。本地 `.env`、Docker 和自托管脚本可以直接使用自定义 channel；GitHub Actions 需要 workflow 显式透传同名 `LLM_MY_PROXY_*` 变量。
 小米 MiMo 示例同理：适用于本地 `.env`、Docker 或自托管脚本；若在 GitHub Actions 使用 `LLM_CHANNELS=mimo`，需要在 workflow 中手动补齐 `LLM_MIMO_*` 映射后方可生效。
+
+### Anspire Responses API（GPT-5.6 名称为观测样本）
+
+Anspire 官方接入页公开了 `https://open-gateway.anspire.cn/v6/responses` 调用方式：<https://open.anspire.cn/model?link=sample&tab=models>。如果实时 `/models`、服务商说明和连接测试确认目标模型使用 Responses，可把模型放在同一渠道，并显式把 API Surface 设为 `responses`。下面的 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 是当前网关观测样本，不作为长期模型清单承诺：
+
+```env
+LLM_CHANNELS=anspire
+LLM_ANSPIRE_PROTOCOL=openai
+LLM_ANSPIRE_API_SURFACE=responses
+LLM_ANSPIRE_BASE_URL=https://open-gateway.anspire.cn/v6
+LLM_ANSPIRE_API_KEY=sk-xxx
+LLM_ANSPIRE_MODELS=gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna
+LITELLM_MODEL=openai/gpt-5.6-sol
+LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
+```
+
+这里的能力不依赖 `gpt-5.6-*` 命名：任何服务商明确声明为 Responses-only 的模型都可使用同一配置方式。模型清单和账号权限可能变化，应以服务商 `/models` 返回、官方说明及实际连接测试为准。一个渠道只能使用一种 API Surface；若还要同时使用 Anspire 的 Chat Completions 模型，请为它们建立另一个 OpenAI-compatible 渠道，不要把两类模型混在同一渠道中。Web 设置页的「测试连接」会使用当前选择的 Surface，运行时不会在失败后静默改用另一个 endpoint。
 
 ## 常用服务商预设
 
@@ -128,6 +146,8 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 ## OpenAI-compatible 与 LiteLLM 规则
 
 - OpenAI-compatible provider 的 channel `protocol` 通常是 `openai`。
+- `LLM_<CHANNEL>_API_SURFACE` 默认是 `chat_completions`；Responses-only 模型显式设为 `responses`。Responses 渠道要求协议及每个模型的实际 LiteLLM provider 都是 `openai`；直连 provider 从当前安装的 LiteLLM registry 获取，并由系统配置 API 返回给 Web 编辑器作为共同真源。因此显式 `anthropic/`、`gemini/`、`xai/` 以及未来新增的冲突前缀都会在所有配置入口被一致识别，网关自有的 `deepseek-ai/...`、`Qwen/...` 等带斜杠模型 ID 则会规范化到 `openai/<model>`。同一个规范化公开 alias 不得跨渠道混用 Chat 与 Responses，避免 Router 在不同 Surface deployment 间负载均衡。运行时保留公开模型别名 `openai/<model>`，并通过 LiteLLM 的 `openai/responses/<model>` 桥接调用 `/responses`。
+- 该设计与主流项目的显式路由方式一致：[LiteLLM](https://github.com/BerriAI/litellm/blob/main/litellm/responses/main.py) 提供 Chat-to-Responses bridge，[OpenAI Agents SDK](https://openai.github.io/openai-agents-python/models/) 使用独立 Responses/Chat 模型类，[LangChain](https://docs.langchain.com/oss/python/integrations/chat/openai) 使用 `use_responses_api` 显式选择并仅在已知条件下自动路由。DSA 不在请求失败后猜测 endpoint，避免双请求、重复计费及掩盖真实服务端错误。
 - 运行时模型名通常写成 `openai/<model>`；例如自定义网关里的 `gpt-5.5` 可以作为 `openai/gpt-5.5` 被 LiteLLM 路由。
 - `Qwen/...`、`deepseek-ai/...` 这类是服务商或模型仓库组织名前缀，不等同于 LiteLLM provider prefix；不要因为它们包含斜杠就误判为 `provider/model` 路由。
 - Base URL 只填官方或网关给出的兼容入口，通常到 `/v1`、`/api/v3` 或厂商文档指定路径；不要手动追加 `/chat/completions`。
@@ -141,6 +161,7 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 | --- | --- | --- |
 | `LLM_CHANNELS` | Variables 或 Secrets | 逗号分隔渠道名，例如 `deepseek,minimax,volcengine`。 |
 | `LLM_<CHANNEL>_PROTOCOL` | Variables 或 Secrets | 非敏感，通常为 `openai`、`deepseek`、`gemini`、`anthropic` 或 `ollama`。 |
+| `LLM_<CHANNEL>_API_SURFACE` | Variables 或 Secrets | 可选；`chat_completions`（默认）或 `responses`。Responses 当前只支持 `openai` 协议。 |
 | `LLM_<CHANNEL>_BASE_URL` | Variables 或 Secrets | 非敏感时优先放 Variables；私有网关地址可放 Secrets。 |
 | `LLM_<CHANNEL>_MODELS` | Variables 或 Secrets | 非敏感模型列表，逗号分隔。 |
 | `LLM_<CHANNEL>_ENABLED` | Variables 或 Secrets | 可选，未配置时默认启用；设为 `false` 可跳过该渠道。 |

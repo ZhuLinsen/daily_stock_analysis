@@ -20,15 +20,23 @@ import requests
 from src.config import (
     ANSPIRE_LLM_BASE_URL_DEFAULT,
     ANSPIRE_LLM_MODEL_DEFAULT,
+    SUPPORTED_LLM_CHANNEL_API_SURFACES,
     SUPPORTED_LLM_CHANNEL_PROTOCOLS,
     Config,
     _get_litellm_provider,
     _uses_direct_env_provider,
+    apply_litellm_api_surface,
+    canonicalize_llm_channel_api_surface,
     canonicalize_llm_channel_protocol,
     channel_allows_empty_api_key,
+    find_incompatible_llm_channel_models,
+    find_llm_channel_surface_conflicts,
+    get_litellm_model_providers,
     get_configured_llm_models,
+    is_supported_llm_channel_api_surface_value,
     normalize_agent_litellm_model,
     normalize_news_strategy_profile,
+    normalize_llm_channel_api_surface,
     normalize_llm_channel_model,
     parse_env_bool,
     parse_env_int,
@@ -160,7 +168,7 @@ class SystemConfigService:
         "ANSPIRE_API_KEYS",
     }
     _GENERATION_BACKEND_STATUS_LLM_CHANNEL_RE = re.compile(
-        r"^LLM_[A-Z0-9_]+_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$"
+        r"^LLM_[A-Z0-9_]+_(PROTOCOL|API_SURFACE|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$"
     )
     _AGENT_BACKEND_STATUS_EXACT_KEYS = {
         "AGENT_BACKEND",
@@ -174,7 +182,7 @@ class SystemConfigService:
     _LLM_CAPABILITY_ORDER: Tuple[str, ...] = ("json", "tools", "stream", "vision")
     _LLM_STREAM_CHUNK_LIMIT = 8
     _WEB_SETTINGS_LLM_CHANNEL_SUPPORT_KEY_RE = re.compile(
-        r"^LLM_([A-Z0-9_]+)_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$"
+        r"^LLM_([A-Z0-9_]+)_(PROTOCOL|API_SURFACE|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$"
     )
     _LLM_CAPABILITY_PROBE_IMAGE = (
         "data:image/png;base64,"
@@ -492,6 +500,7 @@ class SystemConfigService:
             "config_version": self._manager.get_config_version(),
             "mask_token": mask_token,
             "items": items,
+            "llm_model_providers": sorted(get_litellm_model_providers()),
             "updated_at": self._manager.get_updated_at(),
         }
 
@@ -1193,6 +1202,7 @@ class SystemConfigService:
         *,
         name: str,
         protocol: str,
+        api_surface: str = "chat_completions",
         base_url: str,
         api_key: str,
         models: Sequence[str],
@@ -1205,13 +1215,15 @@ class SystemConfigService:
         requested_capabilities = self._normalize_llm_capability_checks(capability_checks)
         raw_models = [str(model).strip() for model in models if str(model).strip()]
         channel_name = name.strip() or "channel"
+        resolved_api_surface = normalize_llm_channel_api_surface(api_surface)
+        generation_stage = "responses" if resolved_api_surface == "responses" else "chat_completion"
         resolved_secret, secret_error, redaction_values = self._resolve_hermes_saved_secret(
             channel_name=channel_name,
             protocol=protocol,
             base_url=base_url,
             submitted_api_key=api_key,
             use_saved_secret=use_saved_secret,
-            stage="chat_completion",
+            stage=generation_stage,
         )
         if resolved_secret is None:
             result = secret_error
@@ -1229,7 +1241,7 @@ class SystemConfigService:
             secret_error = self._validate_hermes_submitted_secret(
                 api_key=api_key,
                 use_saved_secret=use_saved_secret,
-                stage="chat_completion",
+                stage=generation_stage,
                 capability_checks=requested_capabilities,
                 redaction_values=redaction_values,
             )
@@ -1242,7 +1254,7 @@ class SystemConfigService:
                     success=False,
                     message="Hermes Base URL is invalid",
                     error=str(exc),
-                    stage="chat_completion",
+                    stage=generation_stage,
                     error_code="invalid_config",
                     retryable=False,
                     details={
@@ -1264,6 +1276,7 @@ class SystemConfigService:
         validation_issues = self._validate_llm_channel_definition(
             channel_name=channel_name,
             protocol_value=protocol,
+            api_surface_value=api_surface,
             base_url_value=base_url,
             api_key_value=api_key,
             model_values=raw_models,
@@ -1277,7 +1290,7 @@ class SystemConfigService:
                 success=False,
                 message="LLM channel configuration is invalid",
                 error=errors[0]["message"],
-                stage="chat_completion",
+                stage=generation_stage,
                 error_code="invalid_config",
                 retryable=False,
                 details={
@@ -1302,12 +1315,13 @@ class SystemConfigService:
         resolved_model = resolved_models[0]
         if is_reserved_hermes_name(channel_name):
             resolved_model = canonicalize_hermes_model_ref(raw_models[0]).wire_model
+        wire_model = apply_litellm_api_surface(resolved_model, resolved_api_surface)
         api_keys = [segment.strip() for segment in api_key.split(",") if segment.strip()]
         selected_api_key = api_keys[0] if api_keys else ""
         redaction_values.update(self._build_redaction_values(selected_api_key))
 
         call_kwargs: Dict[str, Any] = {
-            "model": resolved_model,
+            "model": wire_model,
             "messages": [{"role": "user", "content": "Reply with OK"}],
             "max_tokens": 256,  # Increased to allow MiniMax-M3 thinking process + response
             "timeout": max(5.0, float(timeout_seconds)),
@@ -1318,7 +1332,7 @@ class SystemConfigService:
             call_kwargs["api_base"] = base_url.strip()
         call_kwargs = apply_litellm_generation_params(
             call_kwargs,
-            resolved_model,
+            wire_model,
             self._get_runtime_llm_temperature(),
         )
 
@@ -1354,7 +1368,7 @@ class SystemConfigService:
                     hermes_call_kwargs.pop("api_base", None)
                     response = call_litellm_with_param_recovery(
                         lambda kwargs: litellm.completion(**kwargs),
-                        model=resolved_model,
+                        model=wire_model,
                         call_kwargs=hermes_call_kwargs,
                         logger=logger,
                         log_label="[Hermes channel test]",
@@ -1362,7 +1376,7 @@ class SystemConfigService:
             else:
                 response = call_litellm_with_param_recovery(
                     lambda kwargs: litellm.completion(**kwargs),
-                    model=resolved_model,
+                    model=wire_model,
                     call_kwargs=call_kwargs,
                     logger=logger,
                     log_label="[LLM channel test]",
@@ -1385,6 +1399,7 @@ class SystemConfigService:
                     details={"response_error": parse_error, "reason": parse_reason},
                     resolved_protocol=resolved_protocol or None,
                     resolved_model=resolved_model,
+                    resolved_api_surface=resolved_api_surface,
                     latency_ms=latency_ms,
                     capability_results=self._build_skipped_capability_results(
                         requested_capabilities,
@@ -1409,7 +1424,7 @@ class SystemConfigService:
             elif requested_capabilities:
                 capability_results = self._run_llm_capability_checks(
                     litellm_module=litellm,
-                    resolved_model=resolved_model,
+                    resolved_model=wire_model,
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
@@ -1419,12 +1434,13 @@ class SystemConfigService:
                 success=True,
                 message="LLM channel test succeeded",
                 error=None,
-                stage="chat_completion",
+                stage=generation_stage,
                 error_code=None,
                 retryable=False,
                 details={"response_preview": content[:80]},
                 resolved_protocol=resolved_protocol or None,
                 resolved_model=resolved_model,
+                resolved_api_surface=resolved_api_surface,
                 latency_ms=latency_ms,
                 capability_results=capability_results,
                 redaction_values=redaction_values,
@@ -1440,12 +1456,13 @@ class SystemConfigService:
                 success=False,
                 message=diagnostic.message,
                 error=str(exc),
-                stage="chat_completion",
+                stage=generation_stage,
                 error_code=diagnostic.error_code,
                 retryable=diagnostic.retryable,
                 details=self._merge_llm_diagnostic_details({"model": resolved_model}, diagnostic),
                 resolved_protocol=resolved_protocol or None,
                 resolved_model=resolved_model,
+                resolved_api_surface=resolved_api_surface,
                 latency_ms=None,
                 redaction_values=redaction_values,
                 capability_results=self._build_skipped_capability_results(
@@ -3432,6 +3449,9 @@ class SystemConfigService:
             protocol = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
             if name.lower() == "anspire" and not protocol:
                 protocol = "openai"
+            api_surface = (effective_map.get(f"{prefix}_API_SURFACE") or "").strip()
+            if not is_supported_llm_channel_api_surface_value(api_surface):
+                continue
             api_key = (
                 (effective_map.get(f"{prefix}_API_KEYS") or "").strip()
                 or (effective_map.get(f"{prefix}_API_KEY") or "").strip()
@@ -3447,6 +3467,8 @@ class SystemConfigService:
                     ).strip()
                 ]
             if is_reserved_hermes_name(name):
+                if normalize_llm_channel_api_surface(api_surface) == "responses":
+                    continue
                 result = parse_hermes_channel(
                     enabled=True,
                     protocol=protocol or HERMES_DEFAULT_PROTOCOL,
@@ -3469,6 +3491,13 @@ class SystemConfigService:
                 channel_name=name,
             )
             if not raw_models or not resolved_protocol:
+                continue
+            if find_incompatible_llm_channel_models(
+                raw_models,
+                resolved_protocol,
+                api_surface,
+                base_url,
+            ):
                 continue
             if not api_key and not channel_allows_empty_api_key(resolved_protocol, base_url):
                 continue
@@ -3963,6 +3992,7 @@ class SystemConfigService:
         retryable: Optional[bool],
         details: Optional[Dict[str, Any]] = None,
         resolved_protocol: Optional[str] = None,
+        resolved_api_surface: Optional[str] = None,
         resolved_model: Optional[str] = None,
         models: Optional[List[str]] = None,
         latency_ms: Optional[int] = None,
@@ -3981,6 +4011,10 @@ class SystemConfigService:
                 resolved_protocol,
                 redaction_values=redaction_values,
             ) if resolved_protocol is not None else None,
+            "resolved_api_surface": cls._sanitize_llm_error_text(
+                resolved_api_surface,
+                redaction_values=redaction_values,
+            ) if resolved_api_surface is not None else None,
             "latency_ms": latency_ms,
         }
         if resolved_model is not None or models is None:
@@ -4621,9 +4655,11 @@ class SystemConfigService:
             seen_names.add(normalized_upper)
             normalized_names.append(name)
 
+        validated_channels: List[Dict[str, Any]] = []
         for name in normalized_names:
             prefix = f"LLM_{name.upper()}"
             protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
+            api_surface_value = (effective_map.get(f"{prefix}_API_SURFACE") or "").strip()
             if name.lower() == "anspire" and not protocol_value:
                 protocol_value = "openai"
             base_url_value = (effective_map.get(f"{prefix}_BASE_URL") or "").strip()
@@ -4654,7 +4690,36 @@ class SystemConfigService:
             if name.lower() == "anspire" and not (enabled_raw or "").strip():
                 enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
             enabled = parse_env_bool(enabled_raw, default=True)
+            if not enabled:
+                continue
             if is_reserved_hermes_name(name):
+                if not is_supported_llm_channel_api_surface_value(api_surface_value):
+                    issues.append(
+                        {
+                            "key": f"{prefix}_API_SURFACE",
+                            "code": "invalid_api_surface",
+                            "message": (
+                                f"Unsupported LLM API surface '{api_surface_value}'. "
+                                f"Supported: {', '.join(SUPPORTED_LLM_CHANNEL_API_SURFACES)}"
+                            ),
+                            "severity": "error",
+                            "expected": ",".join(SUPPORTED_LLM_CHANNEL_API_SURFACES),
+                            "actual": api_surface_value,
+                        }
+                    )
+                    continue
+                if normalize_llm_channel_api_surface(api_surface_value) == "responses":
+                    issues.append(
+                        {
+                            "key": f"{prefix}_API_SURFACE",
+                            "code": "hermes_responses_unsupported",
+                            "message": "The reserved Hermes channel does not support the Responses API surface",
+                            "severity": "error",
+                            "expected": "chat_completions",
+                            "actual": "responses",
+                        }
+                    )
+                    continue
                 result = parse_hermes_channel(
                     enabled=enabled,
                     protocol=protocol_value or HERMES_DEFAULT_PROTOCOL,
@@ -4675,18 +4740,52 @@ class SystemConfigService:
                             "actual": "",
                         }
                     )
+                if result.channel is not None and not result.issues:
+                    validated_channels.append(result.channel)
                 continue
-            issues.extend(
-                SystemConfigService._validate_llm_channel_definition(
+            channel_issues = SystemConfigService._validate_llm_channel_definition(
+                channel_name=name,
+                protocol_value=protocol_value,
+                api_surface_value=api_surface_value,
+                base_url_value=base_url_value,
+                api_key_value=api_key_value,
+                model_values=models_value,
+                enabled=enabled,
+                field_prefix=prefix,
+                require_complete=enabled,
+            )
+            issues.extend(channel_issues)
+            if not any(issue.get("severity") == "error" for issue in channel_issues):
+                resolved_protocol = resolve_llm_channel_protocol(
+                    protocol_value,
+                    base_url=base_url_value,
+                    models=models_value,
                     channel_name=name,
-                    protocol_value=protocol_value,
-                    base_url_value=base_url_value,
-                    api_key_value=api_key_value,
-                    model_values=models_value,
-                    enabled=enabled,
-                    field_prefix=prefix,
-                    require_complete=enabled,
                 )
+                validated_channels.append(
+                    {
+                        "name": name.lower(),
+                        "protocol": resolved_protocol,
+                        "api_surface": normalize_llm_channel_api_surface(api_surface_value),
+                        "base_url": base_url_value,
+                        "models": models_value,
+                        "enabled": True,
+                    }
+                )
+
+        for model, surfaces in find_llm_channel_surface_conflicts(validated_channels).items():
+            issues.append(
+                {
+                    "key": "LLM_CHANNELS",
+                    "code": "mixed_api_surfaces_for_route",
+                    "message": (
+                        f"LLM route alias '{model}' is declared with multiple API surfaces: "
+                        f"{', '.join(surfaces)}"
+                    ),
+                    "severity": "error",
+                    "expected": "one API surface per normalized route alias",
+                    "actual": ",".join(surfaces),
+                }
             )
 
         return issues
@@ -4722,6 +4821,7 @@ class SystemConfigService:
             protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
             if name.lower() == "anspire" and not protocol_value:
                 protocol_value = "openai"
+            api_surface_value = (effective_map.get(f"{prefix}_API_SURFACE") or "").strip()
             raw_models = [
                 model.strip()
                 for model in (effective_map.get(f"{prefix}_MODELS") or "").split(",")
@@ -4735,6 +4835,11 @@ class SystemConfigService:
                     ).strip()
                 ]
             if is_reserved_hermes_name(name):
+                if (
+                    not is_supported_llm_channel_api_surface_value(api_surface_value)
+                    or normalize_llm_channel_api_surface(api_surface_value) == "responses"
+                ):
+                    continue
                 result = parse_hermes_channel(
                     enabled=True,
                     protocol=protocol_value or HERMES_DEFAULT_PROTOCOL,
@@ -4751,6 +4856,16 @@ class SystemConfigService:
                         models.append(model)
                 continue
             resolved_protocol = resolve_llm_channel_protocol(protocol_value, base_url=base_url_value, models=raw_models, channel_name=name)
+            if (
+                not is_supported_llm_channel_api_surface_value(api_surface_value)
+                or find_incompatible_llm_channel_models(
+                    raw_models,
+                    resolved_protocol,
+                    api_surface_value,
+                    base_url_value,
+                )
+            ):
+                continue
             for model in raw_models:
                 normalized_model = normalize_llm_channel_model(model, resolved_protocol, base_url_value)
                 if not normalized_model or normalized_model in seen:
@@ -4779,6 +4894,12 @@ class SystemConfigService:
             if not enabled:
                 continue
 
+            api_surface_value = (effective_map.get(f"{prefix}_API_SURFACE") or "").strip()
+            if (
+                not is_supported_llm_channel_api_surface_value(api_surface_value)
+                or normalize_llm_channel_api_surface(api_surface_value) == "responses"
+            ):
+                continue
             raw_models = SystemConfigService._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
             result = parse_hermes_channel(
                 enabled=True,
@@ -4823,6 +4944,9 @@ class SystemConfigService:
             protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
             if name.lower() == "anspire" and not protocol_value:
                 protocol_value = "openai"
+            api_surface_value = (effective_map.get(f"{prefix}_API_SURFACE") or "").strip()
+            if not is_supported_llm_channel_api_surface_value(api_surface_value):
+                continue
             raw_models = SystemConfigService._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
             if name.lower() == "anspire" and not raw_models:
                 raw_models = [
@@ -4837,6 +4961,13 @@ class SystemConfigService:
                 models=raw_models,
                 channel_name=name,
             )
+            if find_incompatible_llm_channel_models(
+                raw_models,
+                resolved_protocol,
+                api_surface_value,
+                base_url_value,
+            ):
+                continue
             for raw_model in raw_models:
                 model = normalize_llm_channel_model(raw_model, resolved_protocol, base_url_value)
                 if model and model not in seen:
@@ -5216,6 +5347,7 @@ class SystemConfigService:
         *,
         channel_name: str,
         protocol_value: str,
+        api_surface_value: str,
         base_url_value: str,
         api_key_value: str,
         model_values: Sequence[str],
@@ -5237,6 +5369,73 @@ class SystemConfigService:
             require_base_url=False,
         )
         models_key = f"{field_prefix}_MODELS" if field_prefix != "test_channel" else "models"
+        api_surface_key = (
+            f"{field_prefix}_API_SURFACE"
+            if field_prefix != "test_channel"
+            else "api_surface"
+        )
+        canonical_api_surface = canonicalize_llm_channel_api_surface(api_surface_value)
+        resolved_api_surface = normalize_llm_channel_api_surface(api_surface_value)
+        if (
+            canonical_api_surface
+            and canonical_api_surface not in SUPPORTED_LLM_CHANNEL_API_SURFACES
+        ):
+            issues.append(
+                {
+                    "key": api_surface_key,
+                    "code": "invalid_api_surface",
+                    "message": (
+                        f"Unsupported LLM API surface '{api_surface_value}'. "
+                        f"Supported: {', '.join(SUPPORTED_LLM_CHANNEL_API_SURFACES)}"
+                    ),
+                    "severity": "error",
+                    "expected": ",".join(SUPPORTED_LLM_CHANNEL_API_SURFACES),
+                    "actual": api_surface_value,
+                }
+            )
+        elif resolved_api_surface == "responses" and resolved_protocol != "openai":
+            issues.append(
+                {
+                    "key": api_surface_key,
+                    "code": "responses_requires_openai_protocol",
+                    "message": "Responses API surface currently requires the openai protocol",
+                    "severity": "error",
+                    "expected": "openai",
+                    "actual": resolved_protocol or protocol_value,
+                }
+            )
+        elif resolved_api_surface == "responses" and is_reserved_hermes_name(channel_name):
+            issues.append(
+                {
+                    "key": api_surface_key,
+                    "code": "hermes_responses_unsupported",
+                    "message": "The reserved Hermes channel does not support the Responses API surface",
+                    "severity": "error",
+                    "expected": "chat_completions",
+                    "actual": resolved_api_surface,
+                }
+            )
+        elif resolved_api_surface == "responses":
+            incompatible_models = find_incompatible_llm_channel_models(
+                list(model_values),
+                resolved_protocol,
+                resolved_api_surface,
+                base_url_value,
+            )
+            if incompatible_models:
+                issues.append(
+                    {
+                        "key": models_key,
+                        "code": "responses_requires_openai_model_provider",
+                        "message": (
+                            "Responses API surface requires every model to use the OpenAI "
+                            f"provider route; incompatible: {', '.join(incompatible_models[:3])}"
+                        ),
+                        "severity": "error",
+                        "expected": "openai/<model> or an unprefixed OpenAI-compatible model ID",
+                        "actual": ", ".join(incompatible_models[:3]),
+                    }
+                )
 
         if not model_values:
             issues.append(

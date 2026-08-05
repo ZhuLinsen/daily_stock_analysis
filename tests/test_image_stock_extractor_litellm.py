@@ -190,6 +190,75 @@ class TestCallLitellmVision:
             assert kwargs["api_base"] == "https://aihubmix.com/v1"
             assert kwargs["extra_headers"]["APP-Code"] == "GPIJ3886"
 
+    def test_responses_vision_route_uses_deployment_wire_model_and_credentials(self):
+        cfg = _cfg(
+            vision_model="openai/gpt-5.6-sol",
+            openai_api_keys=[_OPENAI_KEY],
+            openai_base_url="https://legacy.example/v1",
+            llm_model_list=[{
+                "model_name": "openai/gpt-5.6-sol",
+                "litellm_params": {
+                    "model": "openai/responses/gpt-5.6-sol",
+                    "api_key": "sk-channel-test-value",
+                    "api_base": "https://responses.example/v1",
+                    "extra_headers": {"X-Channel": "responses"},
+                },
+                "model_info": {"dsa_api_surface": "responses"},
+            }],
+        )
+        with patch("src.services.image_stock_extractor.get_config", return_value=cfg), \
+             patch("src.services.image_stock_extractor.litellm.completion",
+                   return_value=self._good_response()) as mock_comp:
+            _call_litellm_vision("b64", "image/jpeg")
+
+        kwargs = mock_comp.call_args.kwargs
+        assert kwargs["model"] == "openai/responses/gpt-5.6-sol"
+        assert kwargs["api_key"] == "sk-channel-test-value"
+        assert kwargs["api_base"] == "https://responses.example/v1"
+        assert kwargs["extra_headers"] == {"X-Channel": "responses"}
+
+    def test_responses_vision_route_allows_keyless_loopback_deployment(self):
+        cfg = _cfg(
+            vision_model="openai/gpt-5.6-sol",
+            openai_api_keys=[],
+            llm_model_list=[{
+                "model_name": "openai/gpt-5.6-sol",
+                "litellm_params": {
+                    "model": "openai/responses/gpt-5.6-sol",
+                    "api_base": "http://127.0.0.1:8642/v1",
+                },
+                "model_info": {"dsa_api_surface": "responses"},
+            }],
+        )
+        with patch("src.services.image_stock_extractor.get_config", return_value=cfg), \
+             patch("src.services.image_stock_extractor.litellm.completion",
+                   return_value=self._good_response()) as mock_comp:
+            _call_litellm_vision("b64", "image/jpeg")
+
+        kwargs = mock_comp.call_args.kwargs
+        assert kwargs["model"] == "openai/responses/gpt-5.6-sol"
+        assert kwargs["api_base"] == "http://127.0.0.1:8642/v1"
+        assert "api_key" not in kwargs
+
+    def test_responses_vision_route_rejects_keyless_remote_deployment(self):
+        cfg = _cfg(
+            vision_model="openai/gpt-5.6-sol",
+            openai_api_keys=[],
+            llm_model_list=[{
+                "model_name": "openai/gpt-5.6-sol",
+                "litellm_params": {
+                    "model": "openai/responses/gpt-5.6-sol",
+                    "api_base": "https://responses.example/v1",
+                },
+                "model_info": {"dsa_api_surface": "responses"},
+            }],
+        )
+        with patch("src.services.image_stock_extractor.get_config", return_value=cfg), \
+             patch("src.services.image_stock_extractor.litellm.completion") as mock_comp:
+            with pytest.raises(ValueError, match="No API key found"):
+                _call_litellm_vision("b64", "image/jpeg")
+        mock_comp.assert_not_called()
+
     def test_raises_when_model_not_configured(self):
         cfg = _cfg(openai_vision_model=None, litellm_model="", gemini_api_keys=[], anthropic_api_keys=[], openai_api_keys=[])
         with patch("src.services.image_stock_extractor.get_config", return_value=cfg):
@@ -404,6 +473,10 @@ class TestExtractStockCodesFromImage:
         jpeg = _make_jpeg_bytes()
         with patch("src.services.image_stock_extractor.get_config", return_value=cfg), \
              patch("src.services.image_stock_extractor.litellm.completion",
-                   side_effect=RuntimeError("network down")):
+                   side_effect=RuntimeError("network down")) as mock_completion, \
+             patch("src.services.image_stock_extractor.time.sleep") as mock_sleep:
             with pytest.raises(ValueError, match="Vision API 调用失败"):
                 extract_stock_codes_from_image(jpeg, "image/jpeg")
+
+        assert mock_completion.call_count == 3
+        assert [item.args[0] for item in mock_sleep.call_args_list] == [1, 2]

@@ -7,6 +7,16 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.config import (
+    is_supported_llm_channel_api_surface_value,
+    find_incompatible_llm_channel_models,
+    find_llm_channel_surface_conflicts,
+    normalize_llm_channel_api_surface,
+    normalize_llm_channel_model,
+    resolve_llm_channel_protocol,
+)
+from src.llm.hermes import is_reserved_hermes_name
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_POST_ANALYZERS = ["scorecard"]
@@ -409,19 +419,52 @@ def _parse_llm_channels_env() -> list[dict[str, object]]:
             continue
         key = name.upper()
         enabled = _parse_bool_env(f"LLM_{key}_ENABLED", True)
+        base_url = os.getenv(f"LLM_{key}_BASE_URL", "").strip()
+        protocol = os.getenv(f"LLM_{key}_PROTOCOL", "").strip().lower()
+        api_surface_raw = os.getenv(f"LLM_{key}_API_SURFACE", "")
+        api_surface = normalize_llm_channel_api_surface(api_surface_raw)
         api_keys = (
             _parse_csv_env(f"LLM_{key}_API_KEYS", [])
             or _parse_csv_env(f"LLM_{key}_API_KEY", [])
         )
+        models = _parse_csv_env(f"LLM_{key}_MODELS", [])
+        resolved_protocol = resolve_llm_channel_protocol(
+            protocol,
+            base_url=base_url,
+            models=models,
+            channel_name=name,
+        )
+        if not is_supported_llm_channel_api_surface_value(api_surface_raw):
+            continue
+        effective_protocol = resolved_protocol or "openai"
+        if api_surface == "responses" and effective_protocol != "openai":
+            continue
+        if is_reserved_hermes_name(name) and api_surface == "responses":
+            continue
+        if find_incompatible_llm_channel_models(models, effective_protocol, api_surface, base_url):
+            continue
+        normalized_models = [
+            normalize_llm_channel_model(model, effective_protocol, base_url)
+            for model in models
+        ]
         channels.append({
             "name": name.lower(),
-            "protocol": os.getenv(f"LLM_{key}_PROTOCOL", "openai").strip().lower(),
-            "base_url": os.getenv(f"LLM_{key}_BASE_URL", "").strip(),
+            "protocol": effective_protocol,
+            "api_surface": api_surface,
+            "base_url": base_url,
             "api_keys": api_keys,
-            "models": _parse_csv_env(f"LLM_{key}_MODELS", []),
+            "models": normalized_models,
             "enabled": enabled,
         })
-    return [channel for channel in channels if channel["enabled"]]
+    enabled_channels = [channel for channel in channels if channel["enabled"]]
+    surface_conflicts = set(find_llm_channel_surface_conflicts(enabled_channels))
+    if not surface_conflicts:
+        return enabled_channels
+    return [
+        channel
+        for channel in enabled_channels
+        if not set(channel.get("models", [])).intersection(surface_conflicts)
+    ]
 
 
 def _resolve_llm_model(channels: list[dict[str, object]]) -> str:

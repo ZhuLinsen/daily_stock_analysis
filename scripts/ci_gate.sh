@@ -35,7 +35,8 @@ offline_test_suite() {
   # workflow timeout.
   python -m pytest -m "not network" \
     --timeout=120 -o timeout_method=thread \
-    -o faulthandler_timeout=300
+    -o faulthandler_timeout=300 \
+    --durations=30 --durations-min=0.5
 }
 
 run_all() {
