@@ -72,6 +72,44 @@ describe('TaskPanel', () => {
     expect(container.querySelector('.home-subpanel')).toBeTruthy();
   });
 
+  it('collapses into a one-line summary and expands back with aria state', () => {
+    render(
+      <TaskPanel
+        tasks={[
+          {
+            ...baseTask,
+            progress: 40,
+          },
+          {
+            ...baseTask,
+            taskId: 'task-2',
+            stockCode: 'AAPL',
+            stockName: 'Apple',
+            status: 'pending',
+            progress: 0,
+          },
+        ]}
+      />,
+    );
+
+    const collapseButton = screen.getByRole('button', { name: '折叠任务面板' });
+    expect(collapseButton).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(collapseButton);
+
+    const expandButton = screen.getByRole('button', { name: '展开任务面板' });
+    expect(expandButton).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('1 进行中');
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('1 等待中');
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('平均进度 40%');
+    expect(screen.queryByTestId('task-panel-item')).not.toBeInTheDocument();
+
+    fireEvent.click(expandButton);
+
+    expect(screen.getByRole('button', { name: '折叠任务面板' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getAllByTestId('task-panel-item')).toHaveLength(2);
+  });
+
   it('keeps narrow sidebar task metadata in rows instead of squeezing diagnostics vertically', () => {
     render(
       <TaskPanel

@@ -9,16 +9,18 @@ import {
   Loader2,
   Play,
   Plus,
+  RefreshCw,
   Star,
   Trash2,
 } from 'lucide-react';
-import { Badge, Button, Input, ScrollArea, StatusDot } from '../common';
+import { Badge, Button, InlineAlert, Input, ScrollArea, StatusDot } from '../common';
 import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
 import { StockBar } from '../history';
 import type { StockBarItem, TaskInfo } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { formatDateTime } from '../../utils/format';
+import { areStockCodesEquivalent } from '../../utils/stockCode';
 import { truncateStockName } from '../../utils/stockName';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey, UiTextParams } from '../../i18n/uiText';
@@ -111,16 +113,44 @@ const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
 const WatchlistRowItem: React.FC<{
   row: HomeWatchlistRow;
   onRemove: (code: string) => Promise<void>;
+  onOpenDetail: (row: HomeWatchlistRow) => void;
   disabled: boolean;
-}> = ({ row, onRemove, disabled }) => {
+  selected: boolean;
+}> = ({ row, onRemove, onOpenDetail, disabled, selected }) => {
   const { t } = useUiLanguage();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
-  const item = row.latestItem;
-  const stockName = item?.stockName || row.code;
+  const isLatestDetailLoading = Boolean(row.isTodayStatusLoading);
+  const isLatestDetailUnavailable = !isLatestDetailLoading && Boolean(row.isTodayStatusUnknown);
+  const item = isLatestDetailLoading || isLatestDetailUnavailable ? undefined : row.latestItem;
+  const stockName = row.latestItem?.stockName || row.code;
+  const canOpenDetail = typeof item?.id === 'number';
+
+  const handleOpenDetail = () => {
+    onOpenDetail(row);
+  };
 
   return (
-    <div className="home-subpanel grid min-w-0 gap-2 px-3 py-2.5">
-      <div className="flex min-w-0 items-start justify-between gap-2">
+    <div
+      className={`home-subpanel group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 px-3 py-2.5 text-left transition-colors ${
+        selected
+          ? 'border-primary/35 bg-primary/10'
+          : 'hover:border-subtle-hover hover:bg-base/65'
+      }`}
+      data-testid={`watchlist-row-${row.code}`}
+    >
+      <button
+        type="button"
+        aria-pressed={selected}
+        aria-label={canOpenDetail
+          ? t('watchlist.openLatestDetailAria', { code: row.code })
+          : isLatestDetailLoading
+            ? t('watchlist.latestDetailLoadingAria', { code: row.code })
+            : isLatestDetailUnavailable
+              ? t('watchlist.latestDetailUnavailableAria', { code: row.code })
+            : t('watchlist.noLatestDetailAria', { code: row.code })}
+        className="grid min-w-0 cursor-pointer gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/30"
+        onClick={handleOpenDetail}
+      >
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-semibold text-foreground">
@@ -145,32 +175,43 @@ const WatchlistRowItem: React.FC<{
               </>
             ) : null}
           </div>
+          <div className="flex min-w-0 items-center justify-between gap-2 text-[11px]">
+            <span className={`truncate ${canOpenDetail ? 'text-primary' : isLatestDetailLoading ? 'text-muted-text' : 'text-warning'}`}>
+              {canOpenDetail
+                ? t('common.details')
+                : isLatestDetailLoading
+                  ? t('watchlist.latestDetailLoadingCta')
+                  : isLatestDetailUnavailable
+                    ? t('watchlist.latestDetailUnavailableCta')
+                    : t('watchlist.noLatestDetailCta')}
+            </span>
+          </div>
+          {row.activeTask ? (
+            <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-text">
+              <StatusDot
+                tone={row.activeTask.status === 'processing' ? 'info' : 'neutral'}
+                pulse={row.activeTask.status === 'processing'}
+                className="h-1.5 w-1.5"
+              />
+              <span className="truncate">{t('watchlist.taskRunning', { status: taskLabel })}</span>
+            </div>
+          ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <ScoreBadge item={item} />
-          <Button
-            type="button"
-            variant="ghost"
-            size="xsm"
-            className="h-7 w-7 px-0"
-            disabled={disabled}
-            aria-label={t('watchlist.removeAria', { code: row.code })}
-            onClick={() => void onRemove(row.code)}
-          >
-            <Trash2 className="h-3.5 w-3.5 text-danger" aria-hidden="true" />
-          </Button>
-        </div>
+      </button>
+      <div className="flex shrink-0 items-start gap-1.5">
+        <ScoreBadge item={item} />
+        <Button
+          type="button"
+          variant="ghost"
+          size="xsm"
+          className="h-7 w-7 px-0"
+          disabled={disabled}
+          aria-label={t('watchlist.removeAria', { code: row.code })}
+          onClick={() => void onRemove(row.code)}
+        >
+          <Trash2 className="h-3.5 w-3.5 text-danger" aria-hidden="true" />
+        </Button>
       </div>
-      {row.activeTask ? (
-        <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-text">
-          <StatusDot
-            tone={row.activeTask.status === 'processing' ? 'info' : 'neutral'}
-            pulse={row.activeTask.status === 'processing'}
-            className="h-1.5 w-1.5"
-          />
-          <span className="truncate">{t('watchlist.taskRunning', { status: taskLabel })}</span>
-        </div>
-      ) : null}
     </div>
   );
 };
@@ -225,6 +266,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
 }) => {
   const { t } = useUiLanguage();
   const [draftCode, setDraftCode] = useState('');
+  const [workspaceNoticeCode, setWorkspaceNoticeCode] = useState<string | null>(null);
   const pendingWatchlistCount = watchlistRows
     .filter((row) => !row.analyzedToday && !row.isTodayStatusLoading && !row.isTodayStatusUnknown)
     .length;
@@ -243,11 +285,40 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
     return 'border-success/30 bg-success/10 text-success';
   }, [batchStatus]);
 
+  const visibleWorkspaceNotice = useMemo(() => {
+    if (!workspaceNoticeCode) return null;
+    const row = watchlistRows.find((item) => areStockCodesEquivalent(item.code, workspaceNoticeCode));
+    if (!row) return null;
+    if (row.isTodayStatusLoading) {
+      return { message: t('watchlist.latestDetailLoading') };
+    }
+    if (row.isTodayStatusUnknown) {
+      return { message: t('watchlist.latestDetailUnavailable') };
+    }
+    if (row.latestItem) return null;
+    return { message: t('watchlist.noLatestDetail') };
+  }, [t, watchlistRows, workspaceNoticeCode]);
+
   const handleAddSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     const code = draftCode.trim();
     if (!code) return;
+    setWorkspaceNoticeCode(null);
     void onAddToWatchlist(code).then(() => setDraftCode(''));
+  };
+
+  const handleWatchlistRowOpen = (row: HomeWatchlistRow) => {
+    if (row.isTodayStatusLoading || row.isTodayStatusUnknown) {
+      setWorkspaceNoticeCode(row.code);
+      return;
+    }
+    const recordId = row.latestItem?.id;
+    if (typeof recordId === 'number') {
+      setWorkspaceNoticeCode(null);
+      onHistoryItemClick(recordId);
+      return;
+    }
+    setWorkspaceNoticeCode(row.code);
   };
 
   const renderTabs = (
@@ -262,7 +333,10 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
             className={`h-8 rounded-lg px-2 text-xs font-medium transition-colors ${
               selected ? 'bg-primary/15 text-primary shadow-inner' : 'text-secondary-text hover:bg-hover hover:text-foreground'
             }`}
-            onClick={() => onTabChange(tab.key)}
+            onClick={() => {
+              setWorkspaceNoticeCode(null);
+              onTabChange(tab.key);
+            }}
           >
             {tab.label}
           </button>
@@ -291,7 +365,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
 
   return (
     <aside className={`glass-card flex min-h-0 flex-1 flex-col overflow-hidden ${className}`}>
-      <div className="space-y-3 border-b border-subtle px-4 py-4">
+      <div className="space-y-2.5 border-b border-subtle px-3 py-3 sm:px-4">
         {renderTabs}
 
         {activeTab === 'watchlist' ? (
@@ -301,24 +375,40 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               title={t('watchlist.title')}
               titleClassName="text-sm font-medium"
               leading={<Star className="h-4 w-4 text-primary" aria-hidden="true" />}
-              actions={<span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: watchlistRows.length })}</span>}
+              actions={(
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: watchlistRows.length })}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xsm"
+                    className="h-7 w-7 px-0"
+                    disabled={watchlistLoading}
+                    onClick={() => {
+                      setWorkspaceNoticeCode(null);
+                      void onRefreshWatchlist();
+                    }}
+                    aria-label={t('watchlist.refreshAria')}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
+                </div>
+              )}
             />
-            <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-xl border border-subtle bg-base/35 px-3 py-2">
-                <p className="text-[11px] text-muted-text">{t('watchlist.todayCoverage')}</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{watchlistAnalyzedTodayCount}/{watchlistRows.length}</p>
-              </div>
-              <div className="rounded-xl border border-subtle bg-base/35 px-3 py-2">
-                <p className="text-[11px] text-muted-text">{t('watchlist.pendingToday')}</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{pendingWatchlistCount}</p>
-              </div>
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant="default" className="gap-1 shadow-none text-[11px]">
+                {t('watchlist.todayCoverage')} {watchlistAnalyzedTodayCount}/{watchlistRows.length}
+              </Badge>
+              <Badge variant="default" className="gap-1 shadow-none text-[11px]">
+                {t('watchlist.pendingToday')} {pendingWatchlistCount}
+              </Badge>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 size="sm"
                 variant="home-action-ai"
-                className="whitespace-nowrap px-2 text-xs"
+                className="h-8 flex-1 whitespace-nowrap px-2 text-xs sm:flex-none"
                 disabled={watchlistRows.length === 0 || isBatchAnalyzing}
                 isLoading={isBatchAnalyzing}
                 loadingText={t('watchlist.submitting')}
@@ -331,7 +421,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 type="button"
                 size="sm"
                 variant="home-action-report"
-                className="whitespace-nowrap px-2 text-xs"
+                className="h-8 flex-1 whitespace-nowrap px-2 text-xs sm:flex-none"
                 disabled={pendingWatchlistCount === 0 || isTodayStatusUnavailable || isBatchAnalyzing}
                 onClick={() => void onAnalyzeWatchlist('pending')}
               >
@@ -344,7 +434,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 value={draftCode}
                 onChange={(event) => setDraftCode(event.target.value)}
                 placeholder={t('watchlist.addPlaceholder')}
-                className="h-9 rounded-lg px-3 text-xs"
+                className="h-8 rounded-lg px-3 text-xs"
                 disabled={watchlistActioning}
                 aria-label={t('watchlist.addPlaceholder')}
               />
@@ -352,7 +442,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 type="submit"
                 size="sm"
                 variant="secondary"
-                className="h-9 w-9 px-0"
+                className="h-8 w-8 px-0"
                 disabled={!draftCode.trim() || watchlistActioning}
                 isLoading={watchlistActioning}
                 aria-label={t('watchlist.add')}
@@ -370,6 +460,13 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 {watchlistMessage}
               </div>
             ) : null}
+            {visibleWorkspaceNotice ? (
+              <InlineAlert
+                variant="warning"
+                message={visibleWorkspaceNotice.message}
+                className="rounded-xl px-3 py-2 text-xs shadow-none"
+              />
+            ) : null}
           </>
         ) : (
           <>
@@ -380,23 +477,19 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               leading={<CalendarDays className="h-4 w-4 text-cyan" aria-hidden="true" />}
               actions={<span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: todayItems.length })}</span>}
             />
-            <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-xl border border-subtle bg-base/35 px-3 py-2">
-                <p className="text-[11px] text-muted-text">{t('watchlist.watchlistCoverage')}</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{watchlistAnalyzedTodayCount}/{watchlistRows.length}</p>
-              </div>
-              <div className="rounded-xl border border-subtle bg-base/35 px-3 py-2">
-                <p className="text-[11px] text-muted-text">{t('watchlist.topScore')}</p>
-                <p className="mt-1 truncate text-sm font-semibold text-foreground">
-                  {topTodayItem?.sentimentScore ?? '-'}
-                </p>
-              </div>
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant="default" className="gap-1 shadow-none text-[11px]">
+                {t('watchlist.watchlistCoverage')} {watchlistAnalyzedTodayCount}/{watchlistRows.length}
+              </Badge>
+              <Badge variant="default" className="gap-1 shadow-none text-[11px]">
+                {t('watchlist.topScore')} {topTodayItem?.sentimentScore ?? '-'}
+              </Badge>
             </div>
           </>
         )}
       </div>
 
-      <ScrollArea viewportClassName="p-4" className="min-h-0 flex-1">
+      <ScrollArea viewportClassName="px-3 py-3 sm:px-4" className="min-h-0 flex-1">
         {activeTab === 'watchlist' ? (
           watchlistLoading ? (
             <DashboardStateBlock loading compact title={t('watchlist.loading')} />
@@ -407,7 +500,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               description={t('watchlist.emptyDescription')}
             />
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center gap-2 text-[11px] text-muted-text">
                 <ArrowDownWideNarrow className="h-3.5 w-3.5" aria-hidden="true" />
                 {t('watchlist.listHint')}
@@ -416,8 +509,22 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 <WatchlistRowItem
                   key={row.code}
                   row={row}
-                  onRemove={onRemoveFromWatchlist}
+                  onRemove={async (code) => {
+                    setWorkspaceNoticeCode(null);
+                    await onRemoveFromWatchlist(code);
+                  }}
+                  onOpenDetail={handleWatchlistRowOpen}
                   disabled={watchlistActioning}
+                  selected={
+                    (typeof selectedRecordId === 'number' && selectedRecordId === row.latestItem?.id)
+                    || (
+                      Boolean(selectedStockCode)
+                      && (
+                        areStockCodesEquivalent(selectedStockCode ?? '', row.code)
+                        || areStockCodesEquivalent(selectedStockCode ?? '', row.latestItem?.stockCode ?? '')
+                      )
+                    )
+                  }
                 />
               ))}
             </div>
@@ -448,21 +555,6 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
           </div>
         )}
       </ScrollArea>
-
-      {activeTab === 'watchlist' ? (
-        <div className="border-t border-subtle px-4 py-3">
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="w-full"
-            disabled={watchlistLoading}
-            onClick={() => void onRefreshWatchlist()}
-          >
-            {t('watchlist.refresh')}
-          </Button>
-        </div>
-      ) : null}
     </aside>
   );
 };

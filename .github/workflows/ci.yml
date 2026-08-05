@@ -80,11 +80,15 @@ jobs:
       - name: 🤖 Check AI governance assets
         run: python scripts/check_ai_assets.py
 
-  backend-gate:
-    name: backend-gate
+  backend-tests:
+    name: backend-tests (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     needs: [changes, ai-governance]
     if: needs.changes.outputs.backend == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v5
@@ -111,15 +115,46 @@ jobs:
             sleep 15
           done
       - name: 🔌 Verify global Futu SDK
+        if: matrix.shard == 1
         run: python -c "import futu; print('✅ futu SDK import OK')"
       - name: ✅ Python syntax check
+        if: matrix.shard == 1
         run: ./scripts/ci_gate.sh syntax
       - name: ✅ Flake8 critical checks
+        if: matrix.shard == 1
         run: ./scripts/ci_gate.sh flake8
       - name: ✅ Local deterministic checks
+        if: matrix.shard == 1
         run: ./scripts/ci_gate.sh deterministic
-      - name: ✅ Offline test suite
+      - name: ✅ Offline test suite shard ${{ matrix.shard }}/3
+        env:
+          PYTEST_SPLITS: '3'
+          PYTEST_GROUP: ${{ matrix.shard }}
+          PYTEST_FIRST_SHARD_OVERHEAD: '20'
         run: ./scripts/ci_gate.sh offline-tests
+
+  backend-gate:
+    name: backend-gate
+    runs-on: ubuntu-latest
+    needs: [changes, ai-governance, backend-tests]
+    if: always()
+    steps:
+      - name: ✅ Summarize backend gate
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          AI_GOVERNANCE_RESULT: ${{ needs.ai-governance.result }}
+          BACKEND_REQUIRED: ${{ needs.changes.outputs.backend }}
+          BACKEND_TESTS_RESULT: ${{ needs.backend-tests.result }}
+        run: |
+          if [ "$CHANGES_RESULT" != "success" ] || [ "$AI_GOVERNANCE_RESULT" != "success" ]; then
+            echo "Prerequisite failed: changes=$CHANGES_RESULT ai-governance=$AI_GOVERNANCE_RESULT" >&2
+            exit 1
+          fi
+          if [ "$BACKEND_REQUIRED" = "true" ] && [ "$BACKEND_TESTS_RESULT" != "success" ]; then
+            echo "Backend shards did not all pass: $BACKEND_TESTS_RESULT" >&2
+            exit 1
+          fi
+          echo "backend-gate passed (required=$BACKEND_REQUIRED, shards=$BACKEND_TESTS_RESULT)"
 
   docker-build:
     name: docker-build

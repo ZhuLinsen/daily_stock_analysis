@@ -1,4 +1,5 @@
 import type React from 'react';
+import { useId, useState } from 'react';
 import { ChevronDown, RefreshCw, Workflow } from 'lucide-react';
 import { Badge, Button, Card, StatusDot, Tooltip } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
@@ -158,6 +159,10 @@ interface TaskPanelProps {
   className?: string;
   /** 打开运行流面板 */
   onOpenRunFlow?: (task: TaskInfo) => void;
+  /** 是否折叠 */
+  collapsed?: boolean;
+  /** 折叠状态变化 */
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
 
 /**
@@ -170,12 +175,17 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   title,
   className = '',
   onOpenRunFlow,
+  collapsed,
+  onCollapsedChange,
 }) => {
   const { t } = useUiLanguage();
+  const contentId = useId();
+  const [internalCollapsed, setInternalCollapsed] = useState(false);
   // 筛选活跃任务（pending / processing / cancel requested）
   const activeTasks = tasks.filter(
     (t) => t.status === 'pending' || t.status === 'processing' || t.status === 'cancel_requested'
   );
+  const isCollapsed = collapsed ?? internalCollapsed;
 
   // 无任务或不可见时不渲染
   if (!visible || activeTasks.length === 0) {
@@ -184,14 +194,30 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
 
   const pendingCount = activeTasks.filter((t) => t.status === 'pending').length;
   const processingCount = activeTasks.filter((t) => t.status === 'processing').length;
+  const cancelRequestedCount = activeTasks.filter((t) => t.status === 'cancel_requested').length;
+  const averageProgress = processingCount > 0
+    ? Math.round(
+      activeTasks
+        .filter((t) => t.status === 'processing')
+        .reduce((total, task) => total + Math.max(0, Math.min(100, task.progress || 0)), 0) / processingCount,
+    )
+    : 0;
+
+  const handleCollapsedChange = () => {
+    const nextCollapsed = !isCollapsed;
+    if (collapsed === undefined) {
+      setInternalCollapsed(nextCollapsed);
+    }
+    onCollapsedChange?.(nextCollapsed);
+  };
 
   return (
     <Card
       variant="bordered"
       padding="none"
-      className={`home-panel-card overflow-hidden ${className}`}
+      className={`home-panel-card shrink-0 overflow-hidden ${className}`}
     >
-      <div className="border-b border-subtle px-3 py-3">
+      <div className="px-3 py-3">
         <DashboardPanelHeader
           className="mb-0"
           title={title ?? t('taskPanel.title')}
@@ -201,31 +227,71 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
           )}
           headingClassName="items-center"
           actions={(
-            <div className="flex items-center gap-2 text-xs text-muted-text">
-              {processingCount > 0 && (
-                <span className="flex items-center gap-1">
-                  <StatusDot tone="info" pulse className="h-1.5 w-1.5" aria-label="进行中任务" />
-                  {t('taskPanel.processingTasks', { count: processingCount })}
-                </span>
-              )}
-              {pendingCount > 0 ? (
-                <span className="flex items-center gap-1">
-                  <StatusDot tone="neutral" className="h-1.5 w-1.5" aria-label="等待中任务" />
-                  {t('taskPanel.pendingTasks', { count: pendingCount })}
-                </span>
-              ) : null}
+            <div className="flex items-center gap-1.5">
+              <div className="hidden items-center gap-2 text-xs text-muted-text sm:flex">
+                {processingCount > 0 && (
+                  <span className="flex items-center gap-1">
+                    <StatusDot tone="info" pulse className="h-1.5 w-1.5" />
+                    {t('taskPanel.processingTasks', { count: processingCount })}
+                  </span>
+                )}
+                {pendingCount > 0 ? (
+                  <span className="flex items-center gap-1">
+                    <StatusDot tone="neutral" className="h-1.5 w-1.5" />
+                    {t('taskPanel.pendingTasks', { count: pendingCount })}
+                  </span>
+                ) : null}
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xsm"
+                className="h-7 w-7 px-0"
+                aria-expanded={!isCollapsed}
+                aria-controls={contentId}
+                aria-label={isCollapsed ? t('taskPanel.expand') : t('taskPanel.collapse')}
+                onClick={handleCollapsedChange}
+              >
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${isCollapsed ? '-rotate-90' : ''}`}
+                  aria-hidden="true"
+                />
+              </Button>
             </div>
           )}
         />
       </div>
 
-      <div className="max-h-64 overflow-y-auto p-2">
-        <div className="space-y-2">
-          {activeTasks.map((task) => (
-            <TaskItem key={task.taskId} task={task} onOpenRunFlow={onOpenRunFlow} />
-          ))}
+      {isCollapsed ? (
+        <div
+          id={contentId}
+          className="border-t border-subtle px-3 py-2.5 text-xs text-muted-text"
+          data-testid="task-panel-collapsed-summary"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            {processingCount > 0 ? (
+              <span>{t('taskPanel.processingTasks', { count: processingCount })}</span>
+            ) : null}
+            {pendingCount > 0 ? (
+              <span>{t('taskPanel.pendingTasks', { count: pendingCount })}</span>
+            ) : null}
+            {cancelRequestedCount > 0 ? (
+              <span>{t('taskPanel.cancelRequestedTasks', { count: cancelRequestedCount })}</span>
+            ) : null}
+            {processingCount > 0 ? (
+              <span>{t('taskPanel.averageProgress', { progress: averageProgress })}</span>
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div id={contentId} className="max-h-64 overflow-y-auto border-t border-subtle p-2">
+          <div className="space-y-2">
+            {activeTasks.map((task) => (
+              <TaskItem key={task.taskId} task={task} onOpenRunFlow={onOpenRunFlow} />
+            ))}
+          </div>
+        </div>
+      )}
     </Card>
   );
 };

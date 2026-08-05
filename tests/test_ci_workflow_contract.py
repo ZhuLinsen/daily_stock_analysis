@@ -31,7 +31,7 @@ def _change_filters(ci: dict) -> tuple[dict, dict, dict]:
     return changes_job, filter_step, backend_filter_step
 
 
-def test_heavy_ci_jobs_are_path_filtered_without_parallel_test_workers() -> None:
+def test_heavy_ci_jobs_are_path_filtered_and_backend_tests_are_sharded() -> None:
     ci = _workflow(".github/workflows/ci.yml")
     changes_job, filter_step, backend_filter_step = _change_filters(ci)
     filters = str(filter_step["with"]["filters"])
@@ -57,16 +57,47 @@ def test_heavy_ci_jobs_are_path_filtered_without_parallel_test_workers() -> None
         "apps/dsa-web/src/locales/settingsHelp.ts",
     } == backend_contract_paths
 
-    backend_job = ci["jobs"]["backend-gate"]
+    backend_tests_job = ci["jobs"]["backend-tests"]
+    backend_gate_job = ci["jobs"]["backend-gate"]
     docker_job = ci["jobs"]["docker-build"]
-    assert backend_job["needs"] == ["changes", "ai-governance"]
+    assert backend_tests_job["needs"] == ["changes", "ai-governance"]
+    assert backend_tests_job["if"] == "needs.changes.outputs.backend == 'true'"
+    assert backend_tests_job["strategy"]["fail-fast"] == "false"
+    assert backend_tests_job["strategy"]["matrix"]["shard"] == ["1", "2", "3"]
+    assert backend_gate_job["needs"] == [
+        "changes",
+        "ai-governance",
+        "backend-tests",
+    ]
+    assert backend_gate_job["if"] == "always()"
     assert docker_job["needs"] == ["changes", "ai-governance"]
-    assert backend_job["if"] == "needs.changes.outputs.backend == 'true'"
     assert docker_job["if"] == "needs.changes.outputs.docker == 'true'"
+
+    install_step = next(
+        step
+        for step in backend_tests_job["steps"]
+        if step["name"] == "📦 Install dependencies"
+    )
+    assert "python -m pip install -r .github/requirements-ci.txt" in install_step["run"]
+    shard_step = next(
+        step
+        for step in backend_tests_job["steps"]
+        if step["name"] == "✅ Offline test suite shard ${{ matrix.shard }}/3"
+    )
+    assert shard_step["env"] == {
+        "PYTEST_SPLITS": "3",
+        "PYTEST_GROUP": "${{ matrix.shard }}",
+        "PYTEST_FIRST_SHARD_OVERHEAD": "20",
+    }
+
     requirements = _read(".github/requirements-ci.txt")
     ci_gate = _read("scripts/ci_gate.sh")
     assert "pytest-xdist" not in requirements
     assert "PYTEST_WORKERS" not in ci_gate
+    assert "pytest-split" not in requirements
+    assert 'python scripts/ci_test_shard.py' in ci_gate
+    assert '--first-shard-overhead "${PYTEST_FIRST_SHARD_OVERHEAD:-0}"' in ci_gate
+    assert '.github/ci-test-durations.json' in ci_gate
     assert '--durations=30' in ci_gate
 
 
