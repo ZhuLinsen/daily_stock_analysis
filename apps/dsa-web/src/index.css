@@ -2387,6 +2387,13 @@ textarea {
   padding: 0.75rem;
 }
 
+.chat-prose table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .chat-prose th,
 .chat-prose td {
   padding: 0.25rem 0.375rem;
