@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from src.config import Config, get_configured_llm_models
+from src.config import Config, get_configured_llm_models, normalize_llm_channel_api_surface
 from src.services.screening import REFERENCE_PROJECT, REFERENCE_REVISION, __version__ as SCREENING_VERSION
 from src.services.screening import hotspot as screening_hotspot
 from src.services.screening.config import Config as ScreeningPipelineConfig
@@ -1895,6 +1895,7 @@ def _build_screening_runtime_env(config: Config, *, max_results: Optional[int] =
             prefix = channel["name"].upper()
             put(f"LLM_{prefix}_ENABLED", "true")
             put(f"LLM_{prefix}_PROTOCOL", channel.get("protocol"))
+            put(f"LLM_{prefix}_API_SURFACE", channel.get("api_surface"))
             put(f"LLM_{prefix}_BASE_URL", channel.get("base_url"))
             put(f"LLM_{prefix}_API_KEYS", ",".join(channel.get("api_keys") or []))
             put(f"LLM_{prefix}_MODELS", ",".join(channel.get("models") or []))
@@ -3179,6 +3180,7 @@ def _normalize_dsa_llm_channels(config: Config) -> List[Dict[str, Any]]:
         channel = {
             "name": name,
             "protocol": _env_text(raw.get("protocol")),
+            "api_surface": normalize_llm_channel_api_surface(raw.get("api_surface")),
             "base_url": _env_text(raw.get("base_url")),
             "api_keys": api_keys,
             "models": models,

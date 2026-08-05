@@ -49,6 +49,7 @@ from src.config import Config, get_config
 from src.search_service import (
     AnspireSearchProvider,
     SearchService,
+    _get_with_retry,
     get_search_service,
     reset_search_service,
 )
@@ -274,11 +275,18 @@ class TestAnspireSearchProvider(unittest.TestCase):
             
         mock_requests.get = MagicMock(side_effect=timeout_exc())
         
-        response = self.provider.search("测试查询", max_results=3)
+        with patch.object(_get_with_retry.retry, "sleep", return_value=None) as mock_sleep:
+            response = self.provider.search("测试查询", max_results=3)
         
         self.assertFalse(response.success)
         self.assertEqual(response.provider, "Anspire")
         self.assertEqual(len(response.results), 0)
+        self.assertEqual(mock_requests.get.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertEqual(
+            [float(item.args[0]) for item in mock_sleep.call_args_list],
+            [1.0, 2.0],
+        )
         # 错误消息检查
         self.assertTrue("超时" in response.error_message or "Timeout" in response.error_message)
     
@@ -295,11 +303,18 @@ class TestAnspireSearchProvider(unittest.TestCase):
 
         mock_requests.get = MagicMock(side_effect=conn_exc())
         
-        response = self.provider.search("测试查询", max_results=3)
+        with patch.object(_get_with_retry.retry, "sleep", return_value=None) as mock_sleep:
+            response = self.provider.search("测试查询", max_results=3)
         
         self.assertFalse(response.success)
         self.assertEqual(response.provider, "Anspire")
         self.assertEqual(len(response.results), 0)
+        self.assertEqual(mock_requests.get.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertEqual(
+            [float(item.args[0]) for item in mock_sleep.call_args_list],
+            [1.0, 2.0],
+        )
         self.assertTrue("网络" in response.error_message or "Connection" in response.error_message)
     
     @patch('src.search_service.requests')

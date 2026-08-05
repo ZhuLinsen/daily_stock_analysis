@@ -61,6 +61,8 @@ type StockAnalysisNavigationState = {
 const DUPLICATE_BANNER_AUTO_DISMISS_MS = 5000;
 const BATCH_ANALYSIS_CHUNK_SIZE = 50;
 const TODAY_ANALYSIS_PAGE_SIZE = 100;
+const WATCHLIST_HISTORY_LOOKUP_CONCURRENCY = 4;
+const TASK_PANEL_COLLAPSED_STORAGE_KEY = 'dsa.home.taskPanelCollapsed';
 const SERVER_LOCAL_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
 
 type BatchAnalyzeStatus = {
@@ -73,6 +75,45 @@ type WatchlistHistoryLookupState = {
   settledKeys: Set<string>;
   failedKeys: Set<string>;
 };
+
+type WatchlistHistoryLookupResult = {
+  code: string;
+  item: HistoryItem | null;
+  failed: boolean;
+};
+
+async function lookupWatchlistHistory(
+  codes: string[],
+  isCanceled: () => boolean,
+  signal: AbortSignal,
+): Promise<WatchlistHistoryLookupResult[]> {
+  const results: Array<WatchlistHistoryLookupResult | undefined> = new Array(codes.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (!isCanceled()) {
+      const index = nextIndex;
+      if (index >= codes.length) {
+        return;
+      }
+      nextIndex += 1;
+      const code = codes[index];
+      try {
+        const response = await historyApi.getList(
+          { stockCode: code, limit: 1 },
+          { signal },
+        );
+        results[index] = { code, item: response.items[0] ?? null, failed: false };
+      } catch {
+        results[index] = { code, item: null, failed: true };
+      }
+    }
+  };
+
+  const workerCount = Math.min(WATCHLIST_HISTORY_LOOKUP_CONCURRENCY, codes.length);
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  return results.filter((entry): entry is WatchlistHistoryLookupResult => entry !== undefined);
+}
 
 function getShanghaiDateKey(value?: string | null): string {
   if (!value) return '';
@@ -112,6 +153,31 @@ function chunkStockCodes(codes: string[]): string[][] {
     chunks.push(codes.slice(index, index + BATCH_ANALYSIS_CHUNK_SIZE));
   }
   return chunks;
+}
+
+function readTaskPanelCollapsedPreference(): boolean | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const rawValue = window.sessionStorage.getItem(TASK_PANEL_COLLAPSED_STORAGE_KEY);
+    if (rawValue === 'true') return true;
+    if (rawValue === 'false') return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeTaskPanelCollapsedPreference(collapsed: boolean): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(TASK_PANEL_COLLAPSED_STORAGE_KEY, String(collapsed));
+  } catch {
+    // Session storage is best-effort; keep the in-memory toggle state working.
+  }
 }
 
 function countBatchAccepted(result: AnalyzeAsyncResponse): { accepted: number; duplicates: number } {
@@ -195,6 +261,9 @@ const HomePage: React.FC = () => {
   const [runFlowDrawer, setRunFlowDrawer] = useState<RunFlowDrawerState>({ open: false });
   const [duplicateBannerVisible, setDuplicateBannerVisible] = useState(false);
   const [sidebarWorkspaceTab, setSidebarWorkspaceTab] = useState<HomeWorkspaceTab>('history');
+  const [isTaskPanelCollapsed, setIsTaskPanelCollapsed] = useState<boolean>(() => (
+    readTaskPanelCollapsedPreference() ?? false
+  ));
   const [isBatchAnalyzingWatchlist, setIsBatchAnalyzingWatchlist] = useState(false);
   const [batchAnalyzeStatus, setBatchAnalyzeStatus] = useState<BatchAnalyzeStatus>(null);
   const [watchlistHistoryItemsByCode, setWatchlistHistoryItemsByCode] = useState<Map<string, StockBarItem>>(new Map());
@@ -203,14 +272,19 @@ const HomePage: React.FC = () => {
     settledKeys: new Set(),
     failedKeys: new Set(),
   });
+  const [watchlistHistoryRetryVersion, setWatchlistHistoryRetryVersion] = useState(0);
   const [todayHistoryItems, setTodayHistoryItems] = useState<StockBarItem[]>([]);
   const [isLoadingTodayAnalysisItems, setIsLoadingTodayAnalysisItems] = useState(false);
   const [todayAnalysisLoadFailed, setTodayAnalysisLoadFailed] = useState(false);
   const [todayAnalysisRefreshVersion, setTodayAnalysisRefreshVersion] = useState(0);
   const [isStockBarInitialLoadSettled, setIsStockBarInitialLoadSettled] = useState(false);
+  const [completedTaskRefreshPendingCounts, setCompletedTaskRefreshPendingCounts] = useState<Map<string, number>>(
+    new Map(),
+  );
   const duplicateBannerTimer = useRef<number | null>(null);
   const marketReviewPollTimer = useRef<number | null>(null);
   const stockBarLoadStartedRef = useRef(false);
+  const taskPanelPreferenceSettledRef = useRef(readTaskPanelCollapsedPreference() !== null);
   const dashboardScrollRef = useRef<HTMLElement | null>(null);
   const strategyMenuRef = useRef<HTMLDivElement | null>(null);
   const strategyButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -317,6 +391,22 @@ const HomePage: React.FC = () => {
 
     return clearDuplicateBannerTimer;
   }, [clearDuplicateBannerTimer, duplicateError]);
+
+  useEffect(() => {
+    if (taskPanelPreferenceSettledRef.current || activeTasks.length === 0) {
+      return;
+    }
+    const nextCollapsed = activeTasks.length > 1;
+    setIsTaskPanelCollapsed(nextCollapsed);
+    writeTaskPanelCollapsedPreference(nextCollapsed);
+    taskPanelPreferenceSettledRef.current = true;
+  }, [activeTasks.length]);
+
+  const handleTaskPanelCollapsedChange = useCallback((collapsed: boolean) => {
+    setIsTaskPanelCollapsed(collapsed);
+    taskPanelPreferenceSettledRef.current = true;
+    writeTaskPanelCollapsedPreference(collapsed);
+  }, []);
 
   useEffect(() => {
     document.title = t('home.pageTitle');
@@ -509,10 +599,42 @@ const HomePage: React.FC = () => {
     return requiredNeedsAction.slice(0, 3).join(uiLanguage === 'en' ? ', ' : '、');
   }, [setupStatus, uiLanguage]);
 
-  const handleCompletedTaskDataRefreshed = useCallback((task: TaskInfo) => {
-    if (task.reportType !== 'market_review') {
-      setTodayAnalysisRefreshVersion((version) => version + 1);
+  const handleCompletedTaskDataRefreshStarted = useCallback((task: TaskInfo) => {
+    if (task.reportType === 'market_review') {
+      return;
     }
+    const key = getStockCodeKey(task.stockCode);
+    if (!key) {
+      return;
+    }
+    setCompletedTaskRefreshPendingCounts((current) => {
+      const next = new Map(current);
+      next.set(key, (next.get(key) ?? 0) + 1);
+      return next;
+    });
+  }, []);
+
+  const handleCompletedTaskDataRefreshed = useCallback((task: TaskInfo) => {
+    if (task.reportType === 'market_review') {
+      return;
+    }
+    const key = getStockCodeKey(task.stockCode);
+    if (key) {
+      setCompletedTaskRefreshPendingCounts((current) => {
+        const pendingCount = current.get(key) ?? 0;
+        if (pendingCount === 0) {
+          return current;
+        }
+        const next = new Map(current);
+        if (pendingCount === 1) {
+          next.delete(key);
+        } else {
+          next.set(key, pendingCount - 1);
+        }
+        return next;
+      });
+    }
+    setTodayAnalysisRefreshVersion((version) => version + 1);
   }, []);
 
   const handleDashboardDataRefresh = useCallback(() => {
@@ -533,6 +655,7 @@ const HomePage: React.FC = () => {
     refreshActiveTasks,
     removeTask,
     onDashboardDataRefresh: handleDashboardDataRefresh,
+    onCompletedTaskDataRefreshStarted: handleCompletedTaskDataRefreshStarted,
     onCompletedTaskDataRefreshed: handleCompletedTaskDataRefreshed,
   });
 
@@ -547,6 +670,7 @@ const HomePage: React.FC = () => {
   }, [isLoadingStockBar, stockBarItems.length]);
 
   const watchlistState = useWatchlist();
+  const refreshWatchlist = watchlistState.refresh;
   const watchlistCodesByNormalized = useMemo(() => {
     const codesByNormalized = new Map<string, string>();
     for (const code of watchlistState.watchlistCodes) {
@@ -607,18 +731,14 @@ const HomePage: React.FC = () => {
     }
 
     let isCanceled = false;
+    const abortController = new AbortController();
     setWatchlistHistoryLookupState({ signature: currentSignature, settledKeys: new Set(), failedKeys: new Set() });
     void (async () => {
       try {
-        const results = await Promise.all(
-          missingCodes.map(async (code) => {
-            try {
-              const response = await historyApi.getList({ stockCode: code, limit: 1 });
-              return { code, item: response.items[0] ?? null, failed: false };
-            } catch {
-              return { code, item: null, failed: true };
-            }
-          }),
+        const results = await lookupWatchlistHistory(
+          missingCodes,
+          () => isCanceled,
+          abortController.signal,
         );
 
         if (isCanceled) {
@@ -660,8 +780,9 @@ const HomePage: React.FC = () => {
 
     return () => {
       isCanceled = true;
+      abortController.abort();
     };
-  }, [canLookupWatchlistHistory, watchlistMissingHistoryEntries, watchlistMissingHistorySignature]);
+  }, [canLookupWatchlistHistory, watchlistHistoryRetryVersion, watchlistMissingHistoryEntries, watchlistMissingHistorySignature]);
 
   const clearMarketReviewState = useCallback(() => {
     stopMarketReviewPolling();
@@ -676,6 +797,14 @@ const HomePage: React.FC = () => {
     void selectHistoryItem(recordId);
     setSidebarOpen(false);
   }, [clearMarketReviewState, selectHistoryItem]);
+
+  const handleRefreshWatchlist = useCallback(async () => {
+    await Promise.all([
+      refreshWatchlist(),
+      refreshStockBar(),
+    ]);
+    setWatchlistHistoryRetryVersion((version) => version + 1);
+  }, [refreshStockBar, refreshWatchlist]);
 
   const [isDeletingStock, setIsDeletingStock] = useState(false);
   const handleDeleteStock = useCallback(async (stockCode: string) => {
@@ -983,22 +1112,12 @@ const HomePage: React.FC = () => {
   const watchlistRows = useMemo<HomeWatchlistRow[]>(() => (
     watchlistState.watchlistCodes.map((code) => {
       const key = getStockCodeKey(code);
-      const latestItem = key
+      const latestItemCandidate = key
         ? stockBarItemByCode.get(key) ?? watchlistHistoryItemsByCode.get(key)
         : undefined;
       const isMissingFromStockBar = Boolean(key && !stockBarItemByCode.has(key));
-      const isTodayStatusUnknown = Boolean(
-        stockBarRefreshFailed
-        || (
-          isMissingFromStockBar
-          && canLookupWatchlistHistory
-          && watchlistHistoryLookupState.signature === watchlistMissingHistorySignature
-          && watchlistHistoryLookupState.failedKeys.has(key)
-        ),
-      );
-      const isTodayStatusLoading = Boolean(
+      const hasPendingHistoryLookup = Boolean(
         isMissingFromStockBar
-        && !isTodayStatusUnknown
         && (
           !canLookupWatchlistHistory
           ||
@@ -1006,6 +1125,24 @@ const HomePage: React.FC = () => {
           || !watchlistHistoryLookupState.settledKeys.has(key)
         ),
       );
+      const hasFailedHistoryLookup = Boolean(
+        isMissingFromStockBar
+        && canLookupWatchlistHistory
+        && watchlistHistoryLookupState.signature === watchlistMissingHistorySignature
+        && watchlistHistoryLookupState.failedKeys.has(key)
+      );
+      const isTodayStatusLoading = Boolean(
+        isLoadingStockBar
+        || hasPendingHistoryLookup
+        || (key && completedTaskRefreshPendingCounts.has(key))
+      );
+      const isTodayStatusUnknown = Boolean(
+        hasFailedHistoryLookup
+        || (stockBarRefreshFailed && !hasPendingHistoryLookup)
+      );
+      const latestItem = isTodayStatusLoading || isTodayStatusUnknown
+        ? undefined
+        : latestItemCandidate;
       return {
         code,
         latestItem,
@@ -1018,6 +1155,8 @@ const HomePage: React.FC = () => {
   ), [
     activeTaskByCode,
     canLookupWatchlistHistory,
+    completedTaskRefreshPendingCounts,
+    isLoadingStockBar,
     stockBarRefreshFailed,
     stockBarItemByCode,
     todayDateKey,
@@ -1219,8 +1358,13 @@ const HomePage: React.FC = () => {
 
   const sidebarContent = useMemo(
     () => (
-      <div className="flex min-h-0 h-full flex-col gap-3 overflow-hidden">
-        <TaskPanel tasks={activeTasks} onOpenRunFlow={openTaskRunFlow} />
+      <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden">
+        <TaskPanel
+          tasks={activeTasks}
+          onOpenRunFlow={openTaskRunFlow}
+          collapsed={isTaskPanelCollapsed}
+          onCollapsedChange={handleTaskPanelCollapsedChange}
+        />
         <HomeStockWorkspace
           activeTab={sidebarWorkspaceTab}
           onTabChange={setSidebarWorkspaceTab}
@@ -1230,7 +1374,7 @@ const HomePage: React.FC = () => {
           watchlistMessage={watchlistState.actionMessage}
           onAddToWatchlist={watchlistState.addToWatchlist}
           onRemoveFromWatchlist={watchlistState.removeFromWatchlist}
-          onRefreshWatchlist={watchlistState.refresh}
+          onRefreshWatchlist={handleRefreshWatchlist}
           onAnalyzeWatchlist={handleAnalyzeWatchlist}
           isBatchAnalyzing={isBatchAnalyzingWatchlist}
           batchStatus={batchAnalyzeStatus}
@@ -1255,10 +1399,13 @@ const HomePage: React.FC = () => {
       handleAnalyzeWatchlist,
       handleDeleteStock,
       handleHistoryItemClick,
+      handleRefreshWatchlist,
+      handleTaskPanelCollapsedChange,
       isBatchAnalyzingWatchlist,
       isDeletingStock,
       isLoadingStockBar,
       isLoadingTodayAnalysisItems,
+      isTaskPanelCollapsed,
       todayAnalysisLoadFailed,
       mergedStockBarItems,
       openTaskRunFlow,
@@ -1272,7 +1419,6 @@ const HomePage: React.FC = () => {
       watchlistState.addToWatchlist,
       watchlistState.isActioning,
       watchlistState.isLoading,
-      watchlistState.refresh,
       watchlistState.removeFromWatchlist,
     ],
   );

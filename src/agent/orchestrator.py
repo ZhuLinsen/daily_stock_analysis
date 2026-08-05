@@ -379,6 +379,7 @@ class AgentOrchestrator:
         session_id: str,
         progress_callback: Optional[Callable] = None,
         context: Optional[Dict[str, Any]] = None,
+        selected_skill_ids: Optional[List[str]] = None,
     ) -> "AgentResult":
         """Run the pipeline in chat mode (free-form answer, no dashboard parse).
 
@@ -390,6 +391,7 @@ class AgentOrchestrator:
             message=message,
             session_id=session_id,
             context=context,
+            selected_skill_ids=selected_skill_ids,
         )
         return self.execute_turn(
             turn,
@@ -402,6 +404,7 @@ class AgentOrchestrator:
         message: str,
         session_id: str,
         context: Optional[Dict[str, Any]] = None,
+        selected_skill_ids: Optional[List[str]] = None,
     ) -> PreparedOrchestratorChatTurn:
         """Prepare context and persist the user turn before SSE acceptance."""
         from src.agent.conversation import conversation_manager
@@ -420,7 +423,11 @@ class AgentOrchestrator:
             ctx.meta["conversation_history"] = history
 
         # Persist user turn
-        conversation_manager.add_message(session_id, "user", message)
+        conversation_manager.add_user_message(
+            session_id,
+            message,
+            selected_skill_ids,
+        )
 
         return PreparedOrchestratorChatTurn(
             session_id=session_id,

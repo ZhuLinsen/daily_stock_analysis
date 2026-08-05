@@ -66,6 +66,8 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         payload = self.service.get_config(include_schema=True)
         items = {item["key"]: item for item in payload["items"]}
 
+        self.assertIn("openai", payload["llm_model_providers"])
+        self.assertIn("xai", payload["llm_model_providers"])
         self.assertIn("GEMINI_API_KEY", items)
         self.assertEqual(items["GEMINI_API_KEY"]["value"], "secret-key-value")
         self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
@@ -2035,6 +2037,146 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "missing_api_key" for issue in validation["issues"]))
 
+    def test_validate_rejects_unknown_llm_api_surface(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "primary"},
+                {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                {"key": "LLM_PRIMARY_API_SURFACE", "value": "automatic"},
+                {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "gpt-4o-mini"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_api_surface" for issue in validation["issues"]))
+
+    def test_validate_rejects_unknown_anspire_llm_api_surface(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "anspire"},
+                {"key": "LLM_ANSPIRE_API_SURFACE", "value": "respones"},
+                {"key": "ANSPIRE_API_KEYS", "value": "sk-anspire-test-value"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "LLM_ANSPIRE_API_SURFACE"
+                and issue["code"] == "invalid_api_surface"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_requires_openai_protocol_for_responses_surface(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "primary"},
+                {"key": "LLM_PRIMARY_PROTOCOL", "value": "deepseek"},
+                {"key": "LLM_PRIMARY_API_SURFACE", "value": "responses"},
+                {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "deepseek-v4-flash"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(issue["code"] == "responses_requires_openai_protocol" for issue in validation["issues"])
+        )
+
+    def test_validate_rejects_non_openai_model_provider_for_responses_surface(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "primary"},
+                {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                {"key": "LLM_PRIMARY_API_SURFACE", "value": "responses"},
+                {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "anthropic/claude-sonnet-4-6"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "LLM_PRIMARY_MODELS"
+                and issue["code"] == "responses_requires_openai_model_provider"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_rejects_litellm_direct_provider_for_responses_surface(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "primary"},
+                {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                {"key": "LLM_PRIMARY_API_SURFACE", "value": "responses"},
+                {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "xai/grok-beta"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "LLM_PRIMARY_MODELS"
+                and issue["code"] == "responses_requires_openai_model_provider"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_rejects_duplicate_route_alias_with_mixed_surfaces(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "chat,responses"},
+                {"key": "LLM_CHAT_PROTOCOL", "value": "openai"},
+                {"key": "LLM_CHAT_API_KEY", "value": "sk-chat"},
+                {"key": "LLM_CHAT_MODELS", "value": "gpt-5.6-sol"},
+                {"key": "LLM_RESPONSES_PROTOCOL", "value": "openai"},
+                {"key": "LLM_RESPONSES_API_SURFACE", "value": "responses"},
+                {"key": "LLM_RESPONSES_API_KEY", "value": "sk-responses"},
+                {"key": "LLM_RESPONSES_MODELS", "value": "gpt-5.6-sol"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "LLM_CHANNELS"
+                and issue["code"] == "mixed_api_surfaces_for_route"
+                and "openai/gpt-5.6-sol" in issue["message"]
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_rejects_responses_surface_for_hermes_channel(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "hermes"},
+                {"key": "LLM_HERMES_API_SURFACE", "value": "responses"},
+                {"key": "LLM_HERMES_API_KEY", "value": "sk-test-value"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(issue["code"] == "hermes_responses_unsupported" for issue in validation["issues"])
+        )
+
+    def test_validate_skips_stale_responses_surface_for_disabled_hermes_channel(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "hermes"},
+                {"key": "LLM_HERMES_ENABLED", "value": "false"},
+                {"key": "LLM_HERMES_API_SURFACE", "value": "responses"},
+            ]
+        )
+
+        self.assertTrue(validation["valid"], validation["issues"])
+        self.assertFalse(
+            any(issue["key"] == "LLM_HERMES_API_SURFACE" for issue in validation["issues"])
+        )
+
     def test_validate_preserves_model_based_protocol_inference_for_ollama_channel(self) -> None:
         validation = self.service.validate(
             items=[
@@ -3422,6 +3564,50 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(mock_completion.call_args_list[0].kwargs["temperature"], 0.42)
         self.assertNotIn("temperature", mock_completion.call_args_list[1].kwargs)
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_routes_responses_surface_through_litellm_bridge(
+        self,
+        mock_completion,
+    ) -> None:
+        mock_completion.return_value = self._mock_completion_response("OK")
+
+        payload = self.service.test_llm_channel(
+            name="anspire",
+            protocol="openai",
+            api_surface="responses",
+            base_url="https://open-gateway.anspire.cn/v6",
+            api_key="sk-test-value",
+            models=["gpt-5.6-sol"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["stage"], "responses")
+        self.assertEqual(payload["resolved_api_surface"], "responses")
+        self.assertEqual(payload["resolved_model"], "openai/gpt-5.6-sol")
+        self.assertEqual(
+            mock_completion.call_args.kwargs["model"],
+            "openai/responses/gpt-5.6-sol",
+        )
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_rejects_non_openai_model_before_network_call(
+        self,
+        mock_completion,
+    ) -> None:
+        payload = self.service.test_llm_channel(
+            name="primary",
+            protocol="openai",
+            api_surface="responses",
+            base_url="https://api.example.com/v1",
+            api_key="sk-test-value",
+            models=["anthropic/claude-sonnet-4-6"],
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "invalid_config")
+        self.assertEqual(payload["details"]["issue_code"], "responses_requires_openai_model_provider")
+        mock_completion.assert_not_called()
 
     @patch("litellm.completion")
     @patch("src.services.system_config_service.Config._load_from_env")

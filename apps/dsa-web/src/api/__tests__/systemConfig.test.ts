@@ -33,6 +33,25 @@ describe('systemConfigApi', () => {
     });
   });
 
+  it('maps backend LiteLLM provider metadata into the Web config contract', async () => {
+    get.mockResolvedValueOnce({
+      data: {
+        config_version: 'v1',
+        mask_token: '******',
+        items: [],
+        llm_model_providers: ['openai', 'xai'],
+        updated_at: null,
+      },
+    });
+
+    const config = await systemConfigApi.getConfig(false);
+
+    expect(get).toHaveBeenCalledWith('/api/v1/system/config', {
+      params: { include_schema: false },
+    });
+    expect(config.llmModelProviders).toEqual(['openai', 'xai']);
+  });
+
   it('omits capability_checks from basic LLM channel test payloads', async () => {
     await systemConfigApi.testLLMChannel({
       name: 'openai',
@@ -61,6 +80,22 @@ describe('systemConfigApi', () => {
     expect(post).toHaveBeenCalledWith(
       '/api/v1/system/config/llm/test-channel',
       expect.objectContaining({ capability_checks: ['json', 'stream'] }),
+    );
+  });
+
+  it('sends the selected LLM API surface', async () => {
+    await systemConfigApi.testLLMChannel({
+      name: 'anspire',
+      protocol: 'openai',
+      apiSurface: 'responses',
+      baseUrl: 'https://open-gateway.anspire.cn/v6',
+      apiKey: 'sk-test',
+      models: ['gpt-5.6-sol'],
+    });
+
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/system/config/llm/test-channel',
+      expect.objectContaining({ api_surface: 'responses' }),
     );
   });
 

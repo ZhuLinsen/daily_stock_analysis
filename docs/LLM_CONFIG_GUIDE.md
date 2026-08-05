@@ -177,8 +177,8 @@ LITELLM_MODEL=ollama/qwen3:8b
 
 ### Web 渠道编辑器的兼容性 / 迁移 / 回退规则
 
-- 预设里的 provider / Base URL / 示例模型只用于**初始化表单**；真正落盘时仍是你当前输入的 `LLM_{CHANNEL}_PROTOCOL`、`LLM_{CHANNEL}_BASE_URL`、`LLM_{CHANNEL}_MODELS`、`LLM_{CHANNEL}_API_KEY(S)`，不会在后台偷偷改成别的 provider 名或 URL。
-- 设置页的“获取模型”只对 `OpenAI Compatible` / `DeepSeek` 渠道调用 `{base_url}/models`；“测试连接”默认只对模型列表首项发起一次最小聊天请求，并在结果中展示后端规范化后的 `resolved_model`。若返回 `details.reason=model_access_denied`（例如 Issue #1208 中已观测到的 SiliconFlow / OpenAI Compatible 经 LiteLLM 返回 `Model disabled`），请把它视为基于 provider 文案的 best-effort 模型可用性诊断，优先确认该模型是否已在当前账号/key 下开通，必要时调整模型顺序或移除不可用模型后重试；未覆盖或语义不同的 provider 文案会继续走兜底诊断。可选的“运行时能力检测”必须由用户显式选择后触发，会额外发起 JSON / tools / stream / vision smoke 请求，结果仅代表当前账号、模型和 endpoint 的一次 best-effort 检测。上述检测返回的 `stage / error_code / details / latency_ms / capability_results` 仅用于结构化诊断提示，**不会写回** `.env`，也不会阻止保存。
+- 预设里的 provider / API Surface / Base URL / 示例模型只用于**初始化表单**；真正落盘时仍是你当前输入的 `LLM_{CHANNEL}_PROTOCOL`、`LLM_{CHANNEL}_API_SURFACE`、`LLM_{CHANNEL}_BASE_URL`、`LLM_{CHANNEL}_MODELS`、`LLM_{CHANNEL}_API_KEY(S)`，不会在后台偷偷改成别的 provider 名、Surface 或 URL。
+- `LLM_{CHANNEL}_API_SURFACE` 可选 `chat_completions`（默认）或 `responses`；Responses 当前只支持 OpenAI-compatible 协议，而且渠道内每个模型的实际 LiteLLM provider 都必须是 `openai`。系统从当前安装的 LiteLLM provider registry 识别直连前缀，并通过 `GET /api/v1/system/config` 的 `llm_model_providers` 返回给 Web 编辑器；前后端不再各自维护 provider 表。因此 `anthropic/claude-*`、`xai/grok-*` 以及未来 LiteLLM 新增的直连 provider 不会因本地白名单滞后而被错误包装成 OpenAI route；冲突配置会在保存、启动、状态诊断和筛选入口一致拒绝，不会生成 `anthropic/responses/...`。`deepseek-ai/DeepSeek-V3`、`Qwen/...` 这类不在 registry 中的网关自有模型 ID 会规范化为 `openai/<网关模型 ID>`。同一渠道中的模型必须使用同一种 Surface，并且同一个规范化 route alias 不能跨渠道混用 Chat 与 Responses，否则 Router 可能把同一次公开 alias 调度到错误 endpoint；需要两种 Surface 时必须使用不同别名。设置页的“获取模型”仍只调用 `{base_url}/models`；“测试连接”会按选中的 Surface 对模型列表首项发起一次最小请求，并展示 `resolved_model` 与 `resolved_api_surface`，不会在失败后静默重试另一 endpoint。若返回 `details.reason=model_access_denied`（例如 Issue #1208 中已观测到的 SiliconFlow / OpenAI Compatible 经 LiteLLM 返回 `Model disabled`），请把它视为基于 provider 文案的 best-effort 模型可用性诊断，优先确认该模型是否已在当前账号/key 下开通，必要时调整模型顺序或移除不可用模型后重试；未覆盖或语义不同的 provider 文案会继续走兜底诊断。可选的“运行时能力检测”必须由用户显式选择后触发，会额外发起 JSON / tools / stream / vision smoke 请求，结果仅代表当前账号、模型和 endpoint 的一次 best-effort 检测。上述检测返回的结构化诊断字段**不会写回** `.env`，也不会阻止保存。
 - 若返回 `details.reason=provider_blocked`，表示服务商或中转网关明确拦截了本次请求；它区别于本地网络 / TLS 异常和 `model_access_denied`，应优先检查账号风控、地域或请求来源限制、模型权限、代理商网关策略和内容安全策略。
 - 运行时能力检测会产生真实 LLM 请求，可能带来 token / 图像输入费用、RPM/TPM 限流、余额不足或超时。检测失败可能来自账号权限、模型未开通、endpoint 区域、余额、服务商兼容层或 LiteLLM 转换路径，不等于该 provider 全局不支持对应能力。P3 未对所有真实 provider 做在线 smoke；兼容依据来自当前依赖约束 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` 下的 LiteLLM `completion()` / OpenAI I/O format / streaming / exception mapping，以及 OpenAI Chat Completions 的 JSON mode、tool calling、streaming 和 vision input 形状。
 - 相关外部来源：LiteLLM Python SDK / OpenAI I/O format / streaming / exception mapping：<https://docs.litellm.ai/>；LiteLLM OpenAI-compatible 路由：<https://docs.litellm.ai/docs/providers/openai_compatible>；OpenAI Chat Completions：<https://platform.openai.com/docs/api-reference/chat/create>；JSON mode：<https://platform.openai.com/docs/guides/structured-outputs?api-mode=chat>；tool calling：<https://platform.openai.com/docs/guides/function-calling?api-mode=chat>；streaming：<https://platform.openai.com/docs/guides/streaming-responses?api-mode=chat>；vision input：<https://platform.openai.com/docs/guides/images-vision?api-mode=chat>。
@@ -221,6 +221,21 @@ LITELLM_MODEL=ollama/qwen3:8b
 
 1. **先声明你有几个渠道**：`LLM_CHANNELS=渠道名称1,渠道名称2`
 2. **给每个渠道分别填写配置**（注意全大写）：`LLM_{渠道名}_XXX`
+
+### 示例：Anspire Responses API（GPT-5.6 名称为观测样本）
+
+```env
+LLM_CHANNELS=anspire
+LLM_ANSPIRE_PROTOCOL=openai
+LLM_ANSPIRE_API_SURFACE=responses
+LLM_ANSPIRE_BASE_URL=https://open-gateway.anspire.cn/v6
+LLM_ANSPIRE_API_KEY=sk-xxx
+LLM_ANSPIRE_MODELS=gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna
+LITELLM_MODEL=openai/gpt-5.6-sol
+LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
+```
+
+Anspire 官方接入页公开了 `https://open-gateway.anspire.cn/v6/responses` 调用方式：<https://open.anspire.cn/model?link=sample&tab=models>。Responses 路由不按模型名写死；上面的 GPT-5.6 名称只是当前网关观测样本，不作为长期模型清单承诺。模型、Surface 与账号权限请以渠道实时 `/models` 返回、服务商说明和连接测试为准。
 
 ### 示例：同时配置 DeepSeek 和某中转平台，并设置备用切换
 ```env

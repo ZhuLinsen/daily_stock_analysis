@@ -73,6 +73,7 @@ export function useSystemConfig() {
   const [configVersion, setConfigVersion] = useState<string>('');
   const [maskToken, setMaskToken] = useState<string>('******');
   const [serverItems, setServerItems] = useState<SystemConfigItem[]>([]);
+  const [llmModelProviders, setLlmModelProviders] = useState<string[]>([]);
 
   // UI state
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
@@ -226,6 +227,7 @@ export function useSystemConfig() {
 
     try {
       const config = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(config.llmModelProviders || []);
       applyServerPayload(config.items, config.configVersion, config.maskToken);
       setToast(null);
       return true;
@@ -261,6 +263,7 @@ export function useSystemConfig() {
   const refreshAfterExternalSave = useCallback(
     async (committedKeys: string[]) => {
       const config = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(config.llmModelProviders || []);
       applyServerPayload(config.items, config.configVersion, config.maskToken, {
         preserveDirty: true,
         committedKeys,
@@ -338,6 +341,7 @@ export function useSystemConfig() {
       });
 
       const refreshed = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(refreshed.llmModelProviders || []);
       applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
 
       const warningText = updateResult.warnings?.length
@@ -394,6 +398,7 @@ export function useSystemConfig() {
     configVersion,
     maskToken,
     serverItems,
+    llmModelProviders,
     categories,
     itemsByCategory,
     issueByKey,

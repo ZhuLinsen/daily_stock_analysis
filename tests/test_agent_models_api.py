@@ -342,6 +342,26 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
             ],
         )
 
+    def test_chat_context_without_effective_skills_discards_legacy_selection_fields(self) -> None:
+        request = agent.ChatRequest(
+            message="hello",
+            context={
+                "stock_code": "600519",
+                "skills": ["old_skill"],
+                "strategies": ["older_strategy"],
+            },
+        )
+
+        context = agent._build_agent_chat_context(
+            request,
+            SimpleNamespace(report_language="zh"),
+            skills=None,
+        )
+
+        self.assertEqual(context["stock_code"], "600519")
+        self.assertNotIn("skills", context)
+        self.assertNotIn("strategies", context)
+
     def test_chat_request_empty_skills_clears_context_without_triggering_activate_all(self) -> None:
         config = SimpleNamespace(
             is_agent_available=lambda: True,
@@ -349,7 +369,11 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
         )
         executor = MagicMock()
         executor.chat.return_value = SimpleNamespace(success=True, content="ok", error=None)
-        request = agent.ChatRequest(message="hello", skills=[], context={"skills": ["old_skill"]})
+        request = agent.ChatRequest(
+            message="hello",
+            skills=[],
+            context={"skills": ["old_skill"], "strategies": ["older_strategy"]},
+        )
         real_get_running_loop = asyncio.get_running_loop
 
         class _ImmediateLoop:
@@ -368,11 +392,18 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
             "api.v1.endpoints.agent.asyncio.get_running_loop",
             side_effect=lambda: _ImmediateLoop(real_get_running_loop()),
         ):
-            payload = asyncio.run(agent.agent_chat(request)).model_dump()
+            payload = asyncio.run(
+                agent.agent_chat(
+                    request,
+                    session_service=agent.AgentChatSessionService(),
+                )
+            ).model_dump()
 
         mock_build_executor.assert_called_once_with(config, None)
         executor.chat.assert_called_once()
         self.assertEqual(executor.chat.call_args.kwargs["context"]["skills"], [])
+        self.assertNotIn("strategies", executor.chat.call_args.kwargs["context"])
+        self.assertEqual(executor.chat.call_args.kwargs["selected_skill_ids"], [])
         self.assertEqual(payload["content"], "ok")
 class AgentModelsSourceDetectionTestCase(unittest.TestCase):
     @patch("src.config.setup_env")

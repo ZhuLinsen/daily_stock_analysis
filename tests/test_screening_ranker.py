@@ -58,6 +58,114 @@ def test_screening_ranker_direct_call_omits_temperature_for_gpt5() -> None:
     assert "temperature" not in completion_calls[0]
 
 
+def test_screening_ranker_direct_call_uses_responses_wire_model_for_matching_channel() -> None:
+    completion_calls: list[dict[str, object]] = []
+
+    def completion(**kwargs):
+        completion_calls.append(dict(kwargs))
+        return _response()
+
+    fake_litellm = SimpleNamespace(completion=completion)
+
+    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+        result = _call_llm(
+            "rank candidates",
+            api_key="test-key",
+            model="openai/gpt-5.6-sol",
+            base_url="",
+            json_mode=False,
+            channels=[
+                {
+                    "name": "draft",
+                    "protocol": "openai",
+                    "api_surface": "responses",
+                    "api_keys": ["sk-draft"],
+                    "base_url": "https://api.example.com/v1",
+                    "models": ["openai/gpt-5.6-sol"],
+                }
+            ],
+        )
+
+    assert result == "ok"
+    assert len(completion_calls) == 1
+    assert completion_calls[0]["model"] == "openai/responses/gpt-5.6-sol"
+    assert completion_calls[0]["api_key"] == "sk-draft"
+    assert completion_calls[0]["api_base"] == "https://api.example.com/v1"
+
+
+def test_screening_ranker_does_not_retry_public_alias_after_responses_attempt_failure() -> None:
+    completion_calls: list[dict[str, object]] = []
+
+    def completion(**kwargs):
+        completion_calls.append(dict(kwargs))
+        raise RuntimeError("responses endpoint rejected request")
+
+    fake_litellm = SimpleNamespace(completion=completion)
+
+    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+        try:
+            _call_llm(
+                "rank candidates",
+                api_key="test-key",
+                model="openai/gpt-5.6-sol",
+                base_url="https://fallback.example.com/v1",
+                json_mode=False,
+                channels=[
+                    {
+                        "name": "draft",
+                        "protocol": "openai",
+                        "api_surface": "responses",
+                        "api_keys": ["sk-draft"],
+                        "base_url": "https://api.example.com/v1",
+                        "models": ["openai/gpt-5.6-sol"],
+                    }
+                ],
+            )
+        except RuntimeError as exc:
+            assert "responses endpoint rejected request" in str(exc)
+        else:
+            raise AssertionError("expected _call_llm to raise")
+
+    assert len(completion_calls) == 1
+    assert completion_calls[0]["model"] == "openai/responses/gpt-5.6-sol"
+    assert completion_calls[0]["api_base"] == "https://api.example.com/v1"
+
+
+def test_screening_ranker_rejects_invalid_responses_wire_route_before_call() -> None:
+    completion_calls: list[dict[str, object]] = []
+
+    def completion(**kwargs):
+        completion_calls.append(dict(kwargs))
+        return _response()
+
+    fake_litellm = SimpleNamespace(completion=completion)
+
+    with patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False):
+        try:
+            _call_llm(
+                "rank candidates",
+                api_key="test-key",
+                model="anthropic/claude-sonnet-4-6",
+                base_url="",
+                json_mode=False,
+                channels=[
+                    {
+                        "name": "draft",
+                        "protocol": "openai",
+                        "api_surface": "responses",
+                        "api_keys": ["sk-draft"],
+                        "models": ["anthropic/claude-sonnet-4-6"],
+                    }
+                ],
+            )
+        except ValueError as exc:
+            assert "normalized openai" in str(exc)
+        else:
+            raise AssertionError("expected invalid Responses route to raise")
+
+    assert completion_calls == []
+
+
 def test_screening_ranker_direct_call_retries_temperature_with_param_recovery() -> None:
     clear_litellm_generation_param_recovery_cache()
     completion_calls: list[dict[str, object]] = []

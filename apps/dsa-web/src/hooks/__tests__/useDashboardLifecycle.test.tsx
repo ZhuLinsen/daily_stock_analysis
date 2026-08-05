@@ -117,6 +117,7 @@ describe('useDashboardLifecycle', () => {
     const refreshHistoryForCompletedTask = vi.fn().mockResolvedValue(undefined);
     const syncTaskUpdated = vi.fn();
     const removeTask = vi.fn();
+    const onCompletedTaskDataRefreshStarted = vi.fn();
     const onCompletedTaskDataRefreshed = vi.fn();
 
     renderHook(() =>
@@ -129,6 +130,7 @@ describe('useDashboardLifecycle', () => {
         syncTaskUpdated,
         syncTaskFailed: vi.fn(),
         removeTask,
+        onCompletedTaskDataRefreshStarted,
         onCompletedTaskDataRefreshed,
         ...defaultMocks,
       }),
@@ -144,6 +146,7 @@ describe('useDashboardLifecycle', () => {
     });
 
     expect(syncTaskUpdated).toHaveBeenCalledWith(completedTask);
+    expect(onCompletedTaskDataRefreshStarted).toHaveBeenCalledWith(completedTask);
     expect(refreshHistoryForCompletedTask).toHaveBeenCalledWith(completedTask);
     expect(refreshHistory).not.toHaveBeenCalledWith(true);
     expect(defaultMocks.refreshMarketReviewHistory).toHaveBeenCalledWith(true);

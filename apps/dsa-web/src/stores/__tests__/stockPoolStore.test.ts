@@ -1219,6 +1219,7 @@ describe('stockPoolStore', () => {
     expect(useStockPoolStore.getState().isLoadingStockBar).toBe(true);
 
     const refreshPromise = useStockPoolStore.getState().refreshStockBar();
+    expect(useStockPoolStore.getState().isLoadingStockBar).toBe(true);
     refreshStockBarRequest.resolve({
       total: 1,
       items: [stockBarItem],

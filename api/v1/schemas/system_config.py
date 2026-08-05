@@ -99,6 +99,7 @@ class SystemConfigResponse(BaseModel):
     config_version: str
     mask_token: str
     items: List[SystemConfigItem]
+    llm_model_providers: List[str] = Field(default_factory=list)
     updated_at: Optional[str] = None
 
 
@@ -275,6 +276,7 @@ class TestLLMChannelRequest(BaseModel):
 
     name: str = "channel"
     protocol: str = "openai"
+    api_surface: Literal["chat_completions", "responses"] = "chat_completions"
     base_url: str = ""
     api_key: str = ""
     models: List[str] = Field(default_factory=list)
@@ -307,6 +309,7 @@ class TestLLMChannelResponse(BaseModel):
     retryable: Optional[bool] = None
     details: Dict[str, Any] = Field(default_factory=dict)
     resolved_protocol: Optional[str] = None
+    resolved_api_surface: Optional[str] = None
     resolved_model: Optional[str] = None
     latency_ms: Optional[int] = None
     capability_results: Dict[str, LLMCapabilityCheckResult] = Field(default_factory=dict)

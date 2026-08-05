@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
 import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-dom';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
@@ -63,6 +63,7 @@ const mockStartNewChat = vi.fn();
 
 const mockStoreState = {
   messages: [] as Message[],
+  selectedSkillIds: null as string[] | null,
   loading: false,
   progressSteps: [] as ProgressStep[],
   sessionId: 'session-1',
@@ -129,9 +130,24 @@ vi.mock('../../hooks/useStockIndex', () => ({
 }));
 
 vi.mock('../../stores/agentChatStore', () => {
+  type MockStore = typeof mockStoreState & {
+    setSelectedSkillIds: (skillIds: string[]) => void;
+  };
   const useAgentChatStore = (
-    selector?: (state: typeof mockStoreState) => unknown
-  ) => (typeof selector === 'function' ? selector(mockStoreState) : mockStoreState);
+    selector?: (state: MockStore) => unknown
+  ) => {
+    const [selectedSkillIds, setSelectedSkillIdsState] = useState(
+      mockStoreState.selectedSkillIds,
+    );
+    const state: MockStore = {
+      ...mockStoreState,
+      selectedSkillIds,
+      setSelectedSkillIds: (skillIds) => {
+        setSelectedSkillIdsState(skillIds);
+      },
+    };
+    return typeof selector === 'function' ? selector(state) : state;
+  };
 
   useAgentChatStore.getState = () => ({
     startNewChat: mockStartNewChat,
@@ -176,6 +192,7 @@ beforeEach(() => {
   window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
   mockGetStatus.mockReset();
   mockStoreState.messages = [];
+  mockStoreState.selectedSkillIds = null;
   mockStoreState.loading = false;
   mockStoreState.progressSteps = [];
   mockStoreState.chatError = null;
@@ -813,6 +830,84 @@ describe('ChatPage', () => {
     expect(screen.getByRole('checkbox', { name: '通用分析' })).not.toBeChecked();
   });
 
+  it('keeps the restored session skills when the Skill catalog finishes loading', async () => {
+    mockStoreState.selectedSkillIds = ['ma_golden_cross'];
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '趋势分析', description: '默认趋势' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '均线交叉' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole('checkbox', { name: '均线金叉' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: '趋势分析' })).not.toBeChecked();
+
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '继续分析' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({ skills: ['ma_golden_cross'] }),
+        expect.any(Object),
+      );
+    });
+  });
+
+  it('omits skills for an untouched new session so the server resolves its default', async () => {
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole('checkbox', { name: '趋势分析' })).toBeChecked();
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '分析 AAPL' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalled());
+    expect(mockStartStream.mock.calls.at(-1)?.[0]).not.toHaveProperty('skills');
+  });
+
+  it('omits skills when continuing a legacy session without persisted Skill state', async () => {
+    mockStoreState.messages = [
+      { id: 'legacy-user', role: 'user', content: '分析 AAPL' },
+      { id: 'legacy-assistant', role: 'assistant', content: '历史分析结果' },
+    ];
+    mockStoreState.selectedSkillIds = null;
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole('checkbox', { name: '趋势分析' })).toBeChecked();
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '继续分析' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalled());
+    expect(mockStartStream.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        message: '继续分析',
+        session_id: 'session-1',
+      }),
+    );
+    expect(mockStartStream.mock.calls.at(-1)?.[0]).not.toHaveProperty('skills');
+  });
+
   it('sends multiple selected skills in order', async () => {
     mockGetSkills.mockResolvedValue({
       skills: [
@@ -926,7 +1021,7 @@ describe('ChatPage', () => {
     expect(skillPanel).toHaveClass('hidden');
   });
 
-  it('omits skills when all concrete skills are cleared', async () => {
+  it('sends an explicit empty skills list when all concrete skills are cleared', async () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>
         <ChatPage />
@@ -945,8 +1040,10 @@ describe('ChatPage', () => {
       expect(mockStartStream).toHaveBeenCalled();
     });
     const lastCall = mockStartStream.mock.calls[mockStartStream.mock.calls.length - 1];
-    expect(lastCall[0]).toEqual(expect.objectContaining({ message: '分析 AAPL' }));
-    expect(lastCall[0]).not.toHaveProperty('skills');
+    expect(lastCall[0]).toEqual(expect.objectContaining({
+      message: '分析 AAPL',
+      skills: [],
+    }));
     expect(lastCall[1]).toEqual(expect.objectContaining({
       skillNames: ['通用'],
       skillName: '通用',

@@ -388,6 +388,142 @@ def test_litellm_channel_route_is_used_for_status_and_smoke_config() -> None:
     assert config.llm_model_list[0]["litellm_params"]["api_base"] == "https://api.example.com/v1"
 
 
+def test_litellm_channel_route_preserves_responses_surface_for_smoke_config() -> None:
+    _CapturingAnalyzer.configs = []
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "LLM_CHANNELS": "draft",
+            "LLM_DRAFT_PROTOCOL": "openai",
+            "LLM_DRAFT_API_SURFACE": "responses",
+            "LLM_DRAFT_BASE_URL": "https://api.example.com/v1",
+            "LLM_DRAFT_API_KEY": "sk-draft",
+            "LLM_DRAFT_MODELS": "gpt-5.6-sol",
+        },
+        analyzer_factory=lambda config: _CapturingAnalyzer(config),
+    )
+
+    status = service.get_status()
+    smoke = service.smoke_test(mode="json")
+
+    assert status["primary"]["available"] is True
+    assert smoke["success"] is True
+    config = _CapturingAnalyzer.configs[-1]
+    assert config.litellm_model == "openai/gpt-5.6-sol"
+    assert config.llm_model_list[0]["litellm_params"]["model"] == "openai/responses/gpt-5.6-sol"
+    assert config.llm_model_list[0]["model_info"]["dsa_api_surface"] == "responses"
+
+
+def test_litellm_status_skips_unknown_channel_api_surface() -> None:
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "LLM_CHANNELS": "draft",
+            "LLM_DRAFT_PROTOCOL": "openai",
+            "LLM_DRAFT_API_SURFACE": "respones",
+            "LLM_DRAFT_BASE_URL": "https://api.example.com/v1",
+            "LLM_DRAFT_API_KEY": "sk-draft",
+            "LLM_DRAFT_MODELS": "gpt-5.6-sol",
+        }
+    )
+
+    status = service.get_status()
+
+    assert status["primary"]["available"] is False
+    assert status["primary"]["last_error_code"] == "backend_not_configured"
+
+
+def test_litellm_status_skips_responses_surface_for_non_openai_protocol() -> None:
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "LLM_CHANNELS": "draft",
+            "LLM_DRAFT_PROTOCOL": "anthropic",
+            "LLM_DRAFT_API_SURFACE": "responses",
+            "LLM_DRAFT_API_KEY": "sk-draft",
+            "LLM_DRAFT_MODELS": "claude-sonnet-4-6",
+        }
+    )
+
+    status = service.get_status()
+
+    assert status["primary"]["available"] is False
+    assert status["primary"]["last_error_code"] == "backend_not_configured"
+
+
+def test_litellm_status_skips_openai_responses_channel_with_non_openai_model_provider() -> None:
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "LLM_CHANNELS": "draft",
+            "LLM_DRAFT_PROTOCOL": "openai",
+            "LLM_DRAFT_API_SURFACE": "responses",
+            "LLM_DRAFT_API_KEY": "sk-draft",
+            "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-4-6",
+        }
+    )
+
+    status = service.get_status()
+
+    assert status["primary"]["available"] is False
+    assert status["primary"]["last_error_code"] == "backend_not_configured"
+
+
+def test_litellm_status_skips_openai_responses_channel_with_direct_provider_prefix() -> None:
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "LLM_CHANNELS": "draft",
+            "LLM_DRAFT_PROTOCOL": "openai",
+            "LLM_DRAFT_API_SURFACE": "responses",
+            "LLM_DRAFT_API_KEY": "sk-draft",
+            "LLM_DRAFT_MODELS": "xai/grok-beta",
+        }
+    )
+
+    status = service.get_status()
+
+    assert status["primary"]["available"] is False
+    assert status["primary"]["last_error_code"] == "backend_not_configured"
+
+
+def test_litellm_status_skips_duplicate_route_alias_with_mixed_surfaces() -> None:
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "LLM_CHANNELS": "chat,responses",
+            "LLM_CHAT_PROTOCOL": "openai",
+            "LLM_CHAT_API_KEY": "sk-chat",
+            "LLM_CHAT_MODELS": "gpt-5.6-sol",
+            "LLM_RESPONSES_PROTOCOL": "openai",
+            "LLM_RESPONSES_API_SURFACE": "responses",
+            "LLM_RESPONSES_API_KEY": "sk-responses",
+            "LLM_RESPONSES_MODELS": "gpt-5.6-sol",
+        }
+    )
+
+    status = service.get_status()
+
+    assert status["primary"]["available"] is False
+    assert status["primary"]["last_error_code"] == "backend_not_configured"
+
+
+def test_litellm_status_skips_unsupported_hermes_responses_surface() -> None:
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "LLM_CHANNELS": "hermes",
+            "LLM_HERMES_API_SURFACE": "responses",
+            "LLM_HERMES_API_KEY": "sk-hermes",
+        }
+    )
+
+    status = service.get_status()
+
+    assert status["primary"]["available"] is False
+    assert status["primary"]["last_error_code"] == "backend_not_configured"
+
+
 def test_public_effective_config_builder_preserves_smoke_overrides() -> None:
     service = GenerationBackendStatusService(
         effective_map={

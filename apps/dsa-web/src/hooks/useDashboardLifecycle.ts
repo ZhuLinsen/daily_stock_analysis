@@ -16,6 +16,7 @@ type UseDashboardLifecycleOptions = {
   syncTaskFailed: (task: TaskInfo) => void;
   removeTask: (taskId: string) => void;
   onDashboardDataRefresh?: () => void;
+  onCompletedTaskDataRefreshStarted?: (task: TaskInfo) => void;
   onCompletedTaskDataRefreshed?: (task: TaskInfo) => void;
   enabled?: boolean;
 };
@@ -34,6 +35,7 @@ export function useDashboardLifecycle({
   syncTaskFailed,
   removeTask,
   onDashboardDataRefresh,
+  onCompletedTaskDataRefreshStarted,
   onCompletedTaskDataRefreshed,
   enabled = true,
 }: UseDashboardLifecycleOptions): void {
@@ -110,6 +112,7 @@ export function useDashboardLifecycle({
     },
     onTaskCompleted: (task) => {
       syncTaskUpdated(task);
+      onCompletedTaskDataRefreshStarted?.(task);
       const historyRefresh = refreshHistoryForCompletedTask
         ? refreshHistoryForCompletedTask(task)
         : refreshHistory(true);

@@ -40,7 +40,7 @@ def test_futu_sdk_is_pinned_and_verified_across_linux_distributions() -> None:
         'python -c "import src.services.screening.pipeline; import futu"'
         in dockerfile
     )
-    assert "import futu" in _job_run_text(ci["jobs"]["backend-gate"])
+    assert "import futu" in _job_run_text(ci["jobs"]["backend-tests"])
     assert "import futu" in _job_run_text(ci["jobs"]["docker-build"])
     assert "import futu" in _job_run_text(daily["jobs"]["analyze"])
     assert "import futu" in _job_run_text(docker_publish["jobs"]["build-and-push"])
