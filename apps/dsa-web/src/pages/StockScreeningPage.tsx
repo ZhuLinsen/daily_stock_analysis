@@ -924,6 +924,7 @@ const StockScreeningPage: React.FC = () => {
     setCandidates([]);
     setScreenMeta(null);
     setExpandedCode(null);
+    clearPersistedScreenTask();
   };
 
   const loadHotspotDetail = useCallback(async (
@@ -1274,6 +1275,7 @@ const StockScreeningPage: React.FC = () => {
           setError(formatParsedApiError(parsedError) || '选股任务不可恢复，请重新提交。');
           setCandidates([]);
           setScreenMeta(null);
+          clearPersistedScreenTask();
           finishTask();
           return;
         }

@@ -5,6 +5,8 @@ import StockScreeningPage from '../StockScreeningPage';
 
 const {
   enableScreening,
+  getHistory,
+  getRun,
   getScreeningStatus,
   getHotspotDetail,
   getHotspots,
@@ -42,6 +44,8 @@ const {
   });
   return {
     enableScreening: vi.fn(),
+    getHistory: vi.fn(),
+    getRun: vi.fn(),
     getScreeningStatus: vi.fn(),
     getHotspotDetail: vi.fn(),
     getHotspots: vi.fn(),
@@ -70,6 +74,8 @@ vi.mock('../../api/screening', () => ({
     getStatus: () => getScreeningStatus(),
     getHotspotDetail: (payload: unknown) => getHotspotDetail(payload),
     getHotspots: (payload: unknown) => getHotspots(payload),
+    getHistory: (payload: unknown) => getHistory(payload),
+    getRun: (runId: string) => getRun(runId),
     getStrategies: () => getStrategies(),
     getScreenTask: (taskId: string) => getScreenTask(taskId),
     screen: (payload: unknown) => screenStocks(payload),
@@ -107,6 +113,8 @@ function createDeferred<T>() {
 describe('StockScreeningPage', () => {
   beforeEach(() => {
     enableScreening.mockReset();
+    getHistory.mockReset();
+    getRun.mockReset();
     getScreeningStatus.mockReset();
     getHotspotDetail.mockReset();
     getHotspots.mockReset();
@@ -143,6 +151,15 @@ describe('StockScreeningPage', () => {
       stockCount: 1,
     });
     getHotspots.mockResolvedValue({ enabled: true, provider: 'akshare', hotspots: [], hotspotCount: 0 });
+    getHistory.mockResolvedValue({ runs: [] });
+    getRun.mockRejectedValue(Object.assign(new Error('run not found'), {
+      parsedError: {
+        title: '选股任务不可恢复',
+        message: '服务端没有找到这次选股任务，可能后端已重启或任务记录已清理，请重新运行选股。',
+        rawMessage: 'screening_screen_task_not_found',
+        category: 'http_error',
+      },
+    }));
     window.sessionStorage.clear();
   });
 
@@ -1182,6 +1199,78 @@ describe('StockScreeningPage', () => {
     expect(screen.getByText('选股任务仍在后台运行，状态轮询暂时超时，将自动重试。')).toBeInTheDocument();
     expect(screen.queryByText(/连接上游服务超时/)).not.toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
+  });
+
+  it('clears the persisted recovery state when a restored task becomes unrecoverable', async () => {
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    window.sessionStorage.setItem('dsa.screening.activeScreenTask.v1', JSON.stringify({
+      taskId: 'screen-task-1',
+      market: 'cn',
+      strategy: 'dual_low',
+      maxResults: 3,
+    }));
+    getScreenTask.mockRejectedValueOnce(Object.assign(new Error('选股任务不可恢复'), {
+      parsedError: {
+        title: '选股任务不可恢复',
+        message: '服务端没有找到这次选股任务，可能后端已重启或任务记录已清理，请重新运行选股。',
+        rawMessage: 'screening_screen_task_not_found',
+        category: 'http_error',
+      },
+    }));
+
+    render(<StockScreeningPage />);
+
+    await waitFor(() => expect(getScreenTask).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/选股任务不可恢复/)).toBeInTheDocument();
+    expect(screen.queryByText('选股运行中')).not.toBeInTheDocument();
+    // 不可恢复分支必须清理持久化恢复状态，避免刷新后反复恢复同一条失效任务
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toBeNull();
+  });
+
+  it('does not restore a stale run after screening filters change and the page remounts', async () => {
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '000001',
+          name: '旧筛选条件下的候选',
+          score: 88.5,
+          reason: 'old filter result',
+          raw: {},
+        },
+      ],
+      candidateCount: 1,
+      runId: 'run-1',
+    });
+
+    const firstRender = render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+
+    expect(await screen.findByText('旧筛选条件下的候选')).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('run-1');
+
+    // 修改筛选条件（返回数量 3 -> 5），应同步清空持久化的旧 runId/taskId
+    fireEvent.change(screen.getByRole('spinbutton', { name: /返回数量/ }), { target: { value: '5' } });
+    expect(screen.queryByText('旧筛选条件下的候选')).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toBeNull();
+
+    // 刷新页面（重新挂载）：不得再从 storage 恢复旧 run 的结果
+    firstRender.unmount();
+    render(<StockScreeningPage />);
+
+    await waitFor(() => expect(getScreeningStatus).toHaveBeenCalled());
+    expect(screen.queryByText('旧筛选条件下的候选')).not.toBeInTheDocument();
+    expect(screen.queryByText(/已从历史记录恢复/)).not.toBeInTheDocument();
   });
 
   it('surfaces Screening LLM fallback instead of showing empty LLM fields as normal', async () => {
