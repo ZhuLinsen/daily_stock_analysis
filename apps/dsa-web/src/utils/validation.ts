@@ -10,6 +10,7 @@ const STOCK_CODE_PATTERNS = [
   /^\d{6}$/, // A-share 6-digit code
   /^(SH|SZ|BJ)\d{6}$/, // A-share code with exchange prefix
   /^\d{6}\.(SH|SZ|SS|BJ)$/, // A-share code with exchange suffix
+  /^\d{4}$/, // HK 4-digit code without prefix, e.g. 0001 / 0941
   /^\d{5}$/, // HK code without prefix
   /^HK\d{1,5}$/, // HK-prefixed code, for example HK00700
   /^\d{1,5}\.HK$/, // HK suffix format, for example 00700.HK

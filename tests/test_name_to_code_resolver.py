@@ -51,7 +51,7 @@ class TestIsCodeLike:
 
     def test_rejects_non_code(self):
         assert _is_code_like("贵州茅台") is False
-        assert _is_code_like("1234") is False  # too short
+        assert _is_code_like("1234") is True  # bare 4-digit HK code
         assert _is_code_like("1234567") is False  # too long
         assert _is_code_like("") is False
         assert _is_code_like("   ") is False
@@ -84,7 +84,8 @@ class TestNormalizeCode:
 
     def test_returns_none_for_invalid(self):
         assert _normalize_code("") is None
-        assert _normalize_code("1234") is None
+        assert _normalize_code("0001") == "0001"  # bare 4-digit HK code
+        assert _normalize_code("1234") == "1234"
         assert _normalize_code("贵州茅台") is None
 
 

@@ -134,8 +134,13 @@ class TestIsCodeLike:
     def test_plain_5_digit(self):
         assert is_code_like("00700") is True
 
-    def test_4_digit_rejected(self):
-        assert is_code_like("6001") is False
+    def test_plain_4_digit_hk(self):
+        # Bare 4-digit numerics are HK codes (issue #2091 examples:
+        # 0001 长和 / 0941 中国移动), consistent with _is_hk_market,
+        # resolve_daily_stock_identity and parse_analysis_target.
+        assert is_code_like("0001") is True
+        assert is_code_like("0941") is True
+        assert is_code_like("6001") is True
 
     # --- Suffix format ---
     def test_suffix_sh(self):
@@ -353,7 +358,9 @@ class TestResolveIndexStockCodeForAnalysis:
             assert resolve_index_stock_code_for_analysis("005930") == "005930.KS"
 
     def test_resolves_indexed_4_digit_jp_base(self):
-        assert is_code_like("7203") is False
+        # Bare 4-digit numerics are code-like (HK default contract), but an
+        # index hit still takes precedence over the numeric HK default.
+        assert is_code_like("7203") is True
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value="7203.T"):
             assert resolve_index_stock_code_for_analysis("7203") == "7203.T"
 

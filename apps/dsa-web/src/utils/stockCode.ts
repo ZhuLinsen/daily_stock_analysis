@@ -25,9 +25,9 @@ export function normalizeStockCode(stockCode: string): string {
     }
   }
 
-  // Pure 5-digit codes are HK stocks by validateStockCode() contract.
-  if (/^\d{5}$/.test(upper)) {
-    return `HK${upper}`;
+  // Pure 4-5 digit codes are HK stocks by validateStockCode() contract.
+  if (/^\d{4,5}$/.test(upper)) {
+    return `HK${upper.padStart(5, '0')}`;
   }
 
   // Strip SH/SZ prefix (e.g. SH600519 → 600519)

@@ -195,11 +195,17 @@ def _normalize_explicit_exchange_parts(
 
 
 def is_code_like(value: str) -> bool:
-    """Check if string looks like a stock code (5-6 digits, 1-5 letters, or prefixed code)."""
+    """Check if string looks like a stock code (4-6 digits, 1-5 letters, or prefixed code).
+
+    Bare 4-digit numeric codes are HK stocks (e.g. ``0001`` 长和 / ``0941``
+    中国移动). This mirrors ``data_provider.base._is_hk_market`` and
+    ``parse_analysis_target`` so all input boundaries treat 4-5 digit bare
+    numerics as HK, not as free text (fixes #2091 contract drift).
+    """
     text = value.strip().upper()
     if not text:
         return False
-    if text.isdigit() and len(text) in (5, 6):
+    if text.isdigit() and len(text) in (4, 5, 6):
         return True
     explicit_parts = _split_explicit_exchange(text)
     if explicit_parts is not None:
@@ -213,7 +219,7 @@ def normalize_code(raw: str) -> Optional[str]:
     """Normalize and validate a single stock code.
 
     Supports:
-    - Plain digit codes: 600519, 00700
+    - Plain digit codes: 600519, 00700, 0001 (bare 4-digit HK)
     - Suffix format: 600519.SH, 600519.SZ, 920493.BJ, 00700.HK
     - Prefix format: SH600519, SH.600519, SZ000001, BJ920493, HK00700 (case-insensitive)
     - US ticker symbols: AAPL, TSLA
@@ -227,7 +233,7 @@ def _normalize_code_and_exchange(raw: str) -> tuple[Optional[str], str]:
     text = raw.strip().upper()
     if not text:
         return None, ""
-    if text.isdigit() and len(text) in (5, 6):
+    if text.isdigit() and len(text) in (4, 5, 6):
         return text, ""
     explicit_parts = _split_explicit_exchange(text)
     explicit_exchange = explicit_parts[0] if explicit_parts is not None else ""
