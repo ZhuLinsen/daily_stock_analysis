@@ -1230,7 +1230,7 @@ describe('StockScreeningPage', () => {
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toBeNull();
   });
 
-  it('does not restore a stale run after screening filters change and the page remounts', async () => {
+  it('keeps the persisted recovery state and history visible after filters change', async () => {
     getScreeningStatus.mockResolvedValue({
       enabled: true,
       available: true,
@@ -1251,7 +1251,7 @@ describe('StockScreeningPage', () => {
       runId: 'run-1',
     });
 
-    const firstRender = render(<StockScreeningPage />);
+    render(<StockScreeningPage />);
 
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
@@ -1259,18 +1259,44 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('旧筛选条件下的候选')).toBeInTheDocument();
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('run-1');
 
-    // 修改筛选条件（返回数量 3 -> 5），应同步清空持久化的旧 runId/taskId
+    // 修改筛选条件（返回数量 3 -> 5）：当前结果视图清空，但持久化恢复状态必须保留
     fireEvent.change(screen.getByRole('spinbutton', { name: /返回数量/ }), { target: { value: '5' } });
     expect(screen.queryByText('旧筛选条件下的候选')).not.toBeInTheDocument();
-    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toBeNull();
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('run-1');
 
-    // 刷新页面（重新挂载）：不得再从 storage 恢复旧 run 的结果
-    firstRender.unmount();
+    // 历史记录区块仍然可见（筛选条件切换不影响历史可获取性）
+    expect(screen.getByText('历史记录')).toBeInTheDocument();
+  });
+
+  it('shows the screening conditions on each history entry', async () => {
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    getHistory.mockResolvedValue({
+      enabled: true,
+      runs: [
+        {
+          runId: 'run-1',
+          strategy: 'dual_low',
+          market: 'cn',
+          candidateCount: 3,
+          snapshotCount: 50,
+          llmRanked: true,
+          createdAt: '2026-08-05T10:00:00Z',
+        },
+      ],
+      runCount: 1,
+    });
+
     render(<StockScreeningPage />);
 
-    await waitFor(() => expect(getScreeningStatus).toHaveBeenCalled());
-    expect(screen.queryByText('旧筛选条件下的候选')).not.toBeInTheDocument();
-    expect(screen.queryByText(/已从历史记录恢复/)).not.toBeInTheDocument();
+    // 历史条目展示筛选条件：策略中文名 + 市场标签 + 返回数量（该次 run 实际候选数）
+    expect(await screen.findByText(/返回 3 只/)).toBeInTheDocument();
+    expect(screen.getAllByText('Dual Low').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('A 股').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/快照 50/)).toBeInTheDocument();
+    expect(screen.getByText(/智能重排/)).toBeInTheDocument();
   });
 
   it('surfaces Screening LLM fallback instead of showing empty LLM fields as normal', async () => {

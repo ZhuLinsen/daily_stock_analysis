@@ -88,6 +88,16 @@ const formatRunCreatedAt = (value: string | null | undefined) => {
   });
 };
 
+// 历史条目里展示筛选条件：策略 ID → 中文名（找不到时回退到原始 ID）
+const formatHistoryStrategyName = (strategyId: string, strategies: ScreeningStrategy[]): string => {
+  const matched = strategies.find((item) => item.id === strategyId);
+  return matched?.name || matched?.title || strategyId || '未知策略';
+};
+
+// 历史条目里展示筛选条件：市场 ID → 中文标签
+const formatHistoryMarketLabel = (marketId: string | null | undefined): string =>
+  MARKETS.find((item) => item.id === marketId)?.label || marketId || 'cn';
+
 const readPersistedScreenTask = (): PersistedScreenTask | null => {
   if (typeof window === 'undefined') {
     return null;
@@ -924,7 +934,6 @@ const StockScreeningPage: React.FC = () => {
     setCandidates([]);
     setScreenMeta(null);
     setExpandedCode(null);
-    clearPersistedScreenTask();
   };
 
   const loadHotspotDetail = useCallback(async (
@@ -1779,13 +1788,13 @@ const StockScreeningPage: React.FC = () => {
               >
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-semibold text-foreground">
-                    {run.strategy || '未知策略'}
+                    {formatHistoryStrategyName(run.strategy, strategies)}
                     <span className="ml-2 text-xs font-normal text-secondary-text">
-                      {run.market || 'cn'}
+                      {formatHistoryMarketLabel(run.market)}
                     </span>
                   </span>
                   <span className="mt-0.5 block text-xs text-secondary-text">
-                    {run.candidateCount ?? 0} 条候选
+                    返回 {run.candidateCount ?? 0} 只
                     {run.snapshotCount != null ? ` · 快照 ${run.snapshotCount}` : ''}
                     {run.llmRanked ? ' · 智能重排' : ''}
                   </span>
