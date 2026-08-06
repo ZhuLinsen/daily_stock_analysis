@@ -74,7 +74,7 @@ export const StockBar: React.FC<StockBarProps> = ({
   }, [onDeleteStock, selectedCodes]);
 
   return (
-    <aside className={`glass-card overflow-hidden flex flex-col ${className}`}>
+    <aside className={`glass-card overflow-visible flex flex-col ${className}`}>
       <ScrollArea
         viewportClassName="p-4"
         testId="home-stock-bar-scroll"

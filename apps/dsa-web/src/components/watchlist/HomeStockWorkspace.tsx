@@ -357,14 +357,14 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
           onItemClick={onHistoryItemClick}
           onDeleteStock={onDeleteStock}
           isDeleting={isDeleting}
-          className="flex-1 overflow-hidden"
+          className="flex-1 overflow-visible"
         />
       </div>
     );
   }
 
   return (
-    <aside className={`glass-card flex min-h-0 flex-1 flex-col overflow-hidden ${className}`}>
+    <aside className={`glass-card flex min-h-0 flex-1 flex-col overflow-visible ${className}`}>
       <div className="space-y-2.5 border-b border-subtle px-3 py-3 sm:px-4">
         {renderTabs}
 
