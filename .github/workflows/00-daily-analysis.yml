@@ -466,6 +466,8 @@ jobs:
           AUTO_SELECT_MIN_AMOUNT: ${{ vars.AUTO_SELECT_MIN_AMOUNT || '100000000' }}
           AUTO_SELECT_MIN_PRICE: ${{ vars.AUTO_SELECT_MIN_PRICE || '2' }}
           AUTO_SELECT_MAX_PRICE: ${{ vars.AUTO_SELECT_MAX_PRICE || '200' }}
+          WEBUI_SYNC_URL: ${{ vars.WEBUI_SYNC_URL || secrets.WEBUI_SYNC_URL }}
+          WEBUI_SYNC_TOKEN: ${{ secrets.WEBUI_SYNC_TOKEN }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
           
@@ -623,6 +625,53 @@ jobs:
           else
             python main.py --stocks "$STOCK_LIST" $FORCE_RUN_ARG
           fi
+
+      - name: 同步候选列表到 WebUI
+        if: success() && github.event_name == 'schedule'
+        env:
+          WEBUI_SYNC_URL: ${{ vars.WEBUI_SYNC_URL || secrets.WEBUI_SYNC_URL }}
+          WEBUI_SYNC_TOKEN: ${{ secrets.WEBUI_SYNC_TOKEN }}
+        run: |
+          if [ "$RUN_MODE" = "market-only" ]; then
+            echo "收盘复盘任务不包含个股候选，跳过 WebUI 同步。"
+            exit 0
+          fi
+          if [ -z "${WEBUI_SYNC_URL:-}" ] || [ -z "${WEBUI_SYNC_TOKEN:-}" ]; then
+            echo "未配置 WEBUI_SYNC_URL/WEBUI_SYNC_TOKEN，跳过 WebUI 同步。"
+            exit 0
+          fi
+          if [ ! -s reports/intraday_candidates.json ]; then
+            echo "候选文件不存在，无法同步 WebUI。"
+            exit 1
+          fi
+          python - <<'PY' > /tmp/dsa-webui-sync-payload.json
+          import json
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          with open("reports/intraday_candidates.json", encoding="utf-8") as handle:
+              candidates = json.load(handle)
+          now = datetime.now(ZoneInfo("Asia/Shanghai"))
+          target = os.environ.get("TARGET_TIME") or "manual"
+          payload = {
+              "run_id": f"github-{now:%Y%m%d}-{target.replace(':', '')}",
+              "target_time": target,
+              "mode": os.environ.get("RUN_MODE", "stocks-only"),
+              "source": "github_actions",
+              "run_url": f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              "created_at": now.isoformat(),
+              "candidate_count": len(candidates),
+              "candidates": candidates,
+          }
+          print(json.dumps(payload, ensure_ascii=False))
+          PY
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            -X POST "$WEBUI_SYNC_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-DSA-Sync-Token: $WEBUI_SYNC_TOKEN" \
+            --data-binary @/tmp/dsa-webui-sync-payload.json
+          echo "✅ 已同步 ${AUTO_SELECT_COUNT:-10} 支候选股到 WebUI。"
 
       - name: 校验分析与通知结果
         if: success()

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import uuid
+import hmac
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -58,6 +60,26 @@ class ScreeningScreenTaskStatus(BaseModel):
     message: Optional[str] = None
     error: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
+
+
+class ScheduledSyncRequest(BaseModel):
+    """Candidate snapshot submitted by the GitHub Actions owner run."""
+
+    run_id: str = Field(..., min_length=1, max_length=64)
+    target_time: str = Field("", max_length=16)
+    mode: str = Field("stocks-only", max_length=32)
+    source: str = Field("github_actions", max_length=32)
+    run_url: str = Field("", max_length=500)
+    created_at: str = Field("", max_length=64)
+    candidate_count: int = Field(0, ge=0, le=100)
+    candidates: List[Dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
+def _require_scheduled_sync_token(request: Request) -> None:
+    expected = os.getenv("WEBUI_SYNC_TOKEN", "").strip()
+    supplied = request.headers.get("X-DSA-Sync-Token", "").strip()
+    if not expected or not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid scheduled sync token")
 
 
 def _service(config: Config, db_manager: Any = None) -> ScreeningService:
@@ -215,6 +237,76 @@ def screening_screen(
         max_results=request.max_results,
         selection_seed=request.variant_seed,
     )
+
+
+@router.post("/scheduled-sync")
+def scheduled_sync(
+    request: ScheduledSyncRequest,
+    http_request: Request,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> Dict[str, Any]:
+    """Ingest the owner GitHub run's candidate list for WebUI display.
+
+    This endpoint deliberately does not trigger analysis or notifications.
+    GitHub Actions remains the single owner of the scheduled analysis and
+    Telegram delivery path, preventing duplicate model calls and pushes.
+    """
+
+    _require_scheduled_sync_token(http_request)
+    candidates = request.candidates[:100]
+    payload = {
+        "run_id": request.run_id,
+        "strategy": "github_intraday_auto",
+        "market": "cn",
+        "snapshot_source": "github_actions",
+        "snapshot_count": request.candidate_count,
+        "after_filter_count": request.candidate_count,
+        "candidate_count": len(candidates),
+        "llm_ranked": False,
+        "daily_enriched": False,
+        "source_errors": [],
+        "warnings": [],
+        "target_time": request.target_time,
+        "mode": request.mode,
+        "source": request.source,
+        "run_url": request.run_url,
+        "created_at_source": request.created_at,
+        "candidates": candidates,
+    }
+    saved = db_manager.save_screening_run(payload)
+    if not saved:
+        raise HTTPException(status_code=503, detail="Failed to persist scheduled candidate snapshot")
+    return {
+        "ok": True,
+        "run_id": request.run_id,
+        "candidate_count": len(candidates),
+        "message": "Scheduled candidate snapshot synced",
+    }
+
+
+@router.get("/scheduled-latest")
+def scheduled_latest(
+    target_time: str = Query("", max_length=16),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> Dict[str, Any]:
+    """Return the latest GitHub-owned intraday candidate snapshot."""
+
+    runs = db_manager.list_screening_runs(
+        limit=20,
+        strategy="github_intraday_auto",
+        market="cn",
+    )
+    for summary in runs:
+        detail = db_manager.get_screening_run(summary.get("run_id", "")) or {}
+        result = detail.get("result") if isinstance(detail.get("result"), dict) else {}
+        if target_time and str(result.get("target_time", "")) != target_time:
+            continue
+        return {
+            "available": True,
+            "run": detail,
+            "candidates": result.get("candidates", []),
+        }
+    return {"available": False, "run": None, "candidates": []}
 
 
 @router.get("/history")

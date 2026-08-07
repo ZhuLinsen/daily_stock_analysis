@@ -17,6 +17,7 @@ import { Badge, Button, InlineAlert, Input, ScrollArea, StatusDot } from '../com
 import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
 import { StockBar } from '../history';
 import type { StockBarItem, TaskInfo } from '../../types/analysis';
+import type { ScreeningCandidate } from '../../api/screening';
 import { getSentimentColor } from '../../types/analysis';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { formatDateTime } from '../../utils/format';
@@ -60,6 +61,9 @@ interface HomeStockWorkspaceProps {
   todayLoadError: boolean;
   watchlistAnalyzedTodayCount: number;
   historyItems: StockBarItem[];
+  scheduledCandidates?: ScreeningCandidate[];
+  scheduledCandidateTime?: string;
+  scheduledCandidateRunUrl?: string;
   isLoadingHistory: boolean;
   selectedStockCode?: string;
   selectedRecordId?: number;
@@ -256,6 +260,9 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   todayLoadError,
   watchlistAnalyzedTodayCount,
   historyItems,
+  scheduledCandidates = [],
+  scheduledCandidateTime = '',
+  scheduledCandidateRunUrl = '',
   isLoadingHistory,
   selectedStockCode,
   selectedRecordId,
@@ -545,6 +552,34 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
           />
         ) : (
           <div className="space-y-2">
+            {scheduledCandidates.length ? (
+              <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-primary">GitHub Actions Top10</span>
+                  <span className="text-[11px] text-muted-text">{scheduledCandidateTime || '今日'}</span>
+                </div>
+                <div className="mt-1 text-[11px] text-secondary-text">
+                  已同步 {scheduledCandidates.length} 支候选股；完整分析报告可在下方“今日”列表查看。
+                </div>
+                {scheduledCandidateRunUrl ? (
+                  <a
+                    href={scheduledCandidateRunUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 inline-block text-[11px] text-primary hover:underline"
+                  >
+                    查看 GitHub 运行记录
+                  </a>
+                ) : null}
+                <div className="mt-2 grid grid-cols-2 gap-1 text-[11px] sm:grid-cols-3">
+                  {scheduledCandidates.map((candidate) => (
+                    <span key={candidate.code} className="truncate rounded-md bg-base/60 px-1.5 py-1 text-secondary-text">
+                      {candidate.code} {candidate.name || ''}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="flex items-center gap-2 text-[11px] text-muted-text">
               <ArrowDownWideNarrow className="h-3.5 w-3.5" aria-hidden="true" />
               {t('watchlist.todaySortHint')}

@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import { historyApi } from '../api/history';
+import { screeningApi, type ScreeningCandidate } from '../api/screening';
 import { agentApi, type SkillInfo } from '../api/agent';
 import { systemConfigApi } from '../api/systemConfig';
 import { ApiErrorAlert, Button, Drawer, EmptyState, InlineAlert } from '../components/common';
@@ -277,6 +278,9 @@ const HomePage: React.FC = () => {
   const [isLoadingTodayAnalysisItems, setIsLoadingTodayAnalysisItems] = useState(false);
   const [todayAnalysisLoadFailed, setTodayAnalysisLoadFailed] = useState(false);
   const [todayAnalysisRefreshVersion, setTodayAnalysisRefreshVersion] = useState(0);
+  const [scheduledCandidates, setScheduledCandidates] = useState<ScreeningCandidate[]>([]);
+  const [scheduledCandidateTime, setScheduledCandidateTime] = useState('');
+  const [scheduledCandidateRunUrl, setScheduledCandidateRunUrl] = useState('');
   const [isStockBarInitialLoadSettled, setIsStockBarInitialLoadSettled] = useState(false);
   const [completedTaskRefreshPendingCounts, setCompletedTaskRefreshPendingCounts] = useState<Map<string, number>>(
     new Map(),
@@ -1171,6 +1175,25 @@ const HomePage: React.FC = () => {
     [watchlistRows],
   );
 
+  useEffect(() => {
+    let active = true;
+    void screeningApi.getScheduledLatest().then((snapshot) => {
+      if (!active) return;
+      setScheduledCandidates(snapshot.candidates || []);
+      const result = snapshot.run?.result || {};
+      setScheduledCandidateTime(String(result.target_time || result.targetTime || ''));
+      setScheduledCandidateRunUrl(String(result.run_url || result.runUrl || ''));
+    }).catch(() => {
+      if (!active) return;
+      setScheduledCandidates([]);
+      setScheduledCandidateTime('');
+      setScheduledCandidateRunUrl('');
+    });
+    return () => {
+      active = false;
+    };
+  }, [todayAnalysisRefreshVersion]);
+
   const pendingWatchlistCodes = useMemo(
     () => watchlistRows
       .filter((row) => !row.analyzedToday && !row.isTodayStatusLoading && !row.isTodayStatusUnknown)
@@ -1383,6 +1406,9 @@ const HomePage: React.FC = () => {
           todayLoadError={todayAnalysisLoadFailed}
           watchlistAnalyzedTodayCount={watchlistAnalyzedTodayCount}
           historyItems={mergedStockBarItems}
+          scheduledCandidates={scheduledCandidates}
+          scheduledCandidateTime={scheduledCandidateTime}
+          scheduledCandidateRunUrl={scheduledCandidateRunUrl}
           isLoadingHistory={isLoadingStockBar}
           selectedStockCode={selectedReport?.meta.stockCode}
           selectedRecordId={selectedReport?.meta.id}
@@ -1409,6 +1435,9 @@ const HomePage: React.FC = () => {
       todayAnalysisLoadFailed,
       mergedStockBarItems,
       openTaskRunFlow,
+      scheduledCandidateRunUrl,
+      scheduledCandidateTime,
+      scheduledCandidates,
       selectedReport?.meta.id,
       selectedReport?.meta.stockCode,
       sidebarWorkspaceTab,

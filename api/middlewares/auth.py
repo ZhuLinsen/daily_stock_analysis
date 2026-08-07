@@ -25,6 +25,9 @@ EXEMPT_PATHS = frozenset({
     "/docs",
     "/redoc",
     "/openapi.json",
+    # GitHub Actions authenticates this ingest endpoint with its own
+    # dedicated token; it must remain reachable without a browser session.
+    "/api/v1/screening/scheduled-sync",
 })
 
 

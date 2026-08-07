@@ -87,6 +87,23 @@ export type ScreeningCandidate = {
   raw: Record<string, unknown>;
 };
 
+export type ScheduledCandidateSnapshot = {
+  available: boolean;
+  run?: {
+    runId?: string;
+    createdAt?: string | null;
+    result?: {
+      target_time?: string;
+      targetTime?: string;
+      mode?: string;
+      run_url?: string;
+      runUrl?: string;
+      candidates?: ScreeningCandidate[];
+    };
+  } | null;
+  candidates: ScreeningCandidate[];
+};
+
 export type ScreeningStrategy = {
   id: string;
   name: string;
@@ -354,6 +371,18 @@ export const screeningApi = {
   async getStatus(): Promise<ScreeningStatus> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/screening/status');
     return toCamelCase<ScreeningStatus>(response.data);
+  },
+
+  async getScheduledLatest(targetTime = ''): Promise<ScheduledCandidateSnapshot> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/screening/scheduled-latest', {
+      params: targetTime ? { target_time: targetTime } : undefined,
+    });
+    const payload = response.data || {};
+    return {
+      available: Boolean(payload.available),
+      run: payload.run as ScheduledCandidateSnapshot['run'],
+      candidates: Array.isArray(payload.candidates) ? payload.candidates as ScreeningCandidate[] : [],
+    };
   },
 
   async screen(payload: { market: string; strategy: string; maxResults: number }): Promise<ScreeningScreenResponse> {
