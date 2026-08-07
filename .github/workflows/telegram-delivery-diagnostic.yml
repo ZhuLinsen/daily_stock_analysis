@@ -1,0 +1,47 @@
+name: Telegram 投递诊断
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 验证机器人和目标会话
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "Telegram Secret 不完整：必须同时配置 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID。"
+            exit 1
+          fi
+
+          me="$(curl --fail-with-body --silent --show-error --retry 2 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")"
+          chat="$(curl --fail-with-body --silent --show-error --retry 2 --get \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getChat" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}")"
+
+          echo "机器人身份：$(printf '%s' "$me" | jq -r '.result.username // .description // "未知"')"
+          echo "目标会话类型：$(printf '%s' "$chat" | jq -r '.result.type // .description // "未知"')"
+          echo "目标会话名称：$(printf '%s' "$chat" | jq -r '.result.title // .result.username // ((.result.first_name // "") + " " + (.result.last_name // "")) // "未知"')"
+          echo "目标 Chat ID 后四位：${TELEGRAM_CHAT_ID: -4}"
+
+          message="✅ Telegram 投递诊断成功\n仓库：${GITHUB_REPOSITORY}\n运行：${GITHUB_RUN_ID}\n如果你看到这条消息，说明当前 Secret 已指向本会话。"
+          args=(
+            --fail-with-body --silent --show-error --retry 2
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}"
+            --data-urlencode "text=${message}"
+          )
+          if [ -n "${TELEGRAM_MESSAGE_THREAD_ID:-}" ]; then
+            args+=(--data-urlencode "message_thread_id=${TELEGRAM_MESSAGE_THREAD_ID}")
+            echo "已使用配置的话题 ID。"
+          else
+            echo "未配置话题 ID，发送到目标会话默认位置。"
+          fi
+          result="$(curl "${args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage")"
+          printf '%s' "$result" | jq -e '.ok == true' >/dev/null
+          echo "Telegram API 已接受测试消息。"
