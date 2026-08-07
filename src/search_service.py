@@ -20,9 +20,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from html import unescape
 from typing import List, Dict, Any, Optional, Tuple
 from itertools import cycle
 from urllib.parse import parse_qsl, unquote, urlparse
+import xml.etree.ElementTree as ET
 import requests
 from newspaper import Article, Config
 from tenacity import (
@@ -2287,6 +2289,83 @@ class SearXNGSearchProvider(BaseSearchProvider):
         )
 
 
+class GoogleNewsRSSSearchProvider(BaseSearchProvider):
+    """Free, keyless news fallback backed by Google News RSS."""
+
+    ENDPOINT = "https://news.google.com/rss/search"
+    TIMEOUT_SECONDS = 10
+
+    def __init__(self) -> None:
+        super().__init__([], "Google News RSS")
+
+    @property
+    def is_available(self) -> bool:
+        return True
+
+    @staticmethod
+    def _clean_text(value: Any) -> str:
+        text = unescape(str(value or ""))
+        return re.sub(r"<[^>]+>", " ", text).strip()
+
+    @staticmethod
+    def _parse_date(value: str) -> Optional[str]:
+        if not value:
+            return None
+        try:
+            return parsedate_to_datetime(value).date().isoformat()
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
+        started_at = time.time()
+        try:
+            response = requests.get(
+                self.ENDPOINT,
+                params={
+                    "q": f"{query} when:{max(1, min(int(days), 30))}d",
+                    "hl": "zh-CN",
+                    "gl": "CN",
+                    "ceid": "CN:zh-Hans",
+                },
+                headers={"User-Agent": "Mozilla/5.0 (compatible; DailyStockAnalysis/1.0)"},
+                timeout=self.TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            results: List[SearchResult] = []
+            for item in root.findall("./channel/item")[: max(1, max_results)]:
+                title = self._clean_text(item.findtext("title"))
+                url = (item.findtext("link") or "").strip()
+                if not title or not url:
+                    continue
+                results.append(
+                    SearchResult(
+                        title=title,
+                        snippet=self._clean_text(item.findtext("description"))[:500],
+                        url=url,
+                        source=self._clean_text(item.findtext("source")) or "Google News",
+                        published_date=self._parse_date(item.findtext("pubDate") or ""),
+                    )
+                )
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=bool(results),
+                error_message=None if results else "Google News RSS 未返回结果",
+                search_time=time.time() - started_at,
+            )
+        except (requests.RequestException, ET.ParseError, ValueError) as exc:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"Google News RSS 请求失败: {exc}",
+                search_time=time.time() - started_at,
+            )
+
+
 class SearchService:
     """
     搜索服务
@@ -2531,7 +2610,13 @@ class SearchService:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
 
-        # 6. SearXNG（自建实例优先；未配置时可自动发现公共实例）
+        # 6. Google News RSS：无 API Key 的免费新闻主路径。
+        # 公共 RSS 比公共 SearXNG 实例更稳定，先使用它避免无意义的
+        # 403/429/500 重试阻塞新闻舆情链路。
+        self._providers.append(GoogleNewsRSSSearchProvider())
+        logger.info("已启用 Google News RSS 免费新闻主路径")
+
+        # 7. SearXNG（自建实例优先；未配置时可自动发现公共实例）
         searxng_provider = SearXNGSearchProvider(
             searxng_base_urls,
             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
@@ -2543,7 +2628,7 @@ class SearchService:
             else:
                 logger.info("已启用 SearXNG 公共实例自动发现模式")
 
-        # 7. Anspire Search（实时智能搜索优化）
+        # 8. Anspire Search（实时智能搜索优化）
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
