@@ -637,8 +637,9 @@ jobs:
             exit 0
           fi
 
-          telegram_success_count="$(rg -o "Telegram 消息发送成功" logs 2>/dev/null | wc -l | tr -d ' ' || true)"
-          telegram_failure_count="$(rg -o "通知发送完成：成功 [0-9]+ 个，失败 [1-9][0-9]* 个" logs 2>/dev/null | wc -l | tr -d ' ' || true)"
+          # logs/ 通常在 .gitignore 中被忽略；校验时必须显式关闭 ignore 规则。
+          telegram_success_count="$(rg --no-ignore -o "Telegram 消息发送成功" logs 2>/dev/null | wc -l | tr -d ' ' || true)"
+          telegram_failure_count="$(rg --no-ignore -o "通知发送完成：成功 [0-9]+ 个，失败 [1-9][0-9]* 个" logs 2>/dev/null | wc -l | tr -d ' ' || true)"
           echo "Telegram 成功发送记录：${telegram_success_count:-0}"
           echo "Telegram 失败汇总记录：${telegram_failure_count:-0}"
           {
