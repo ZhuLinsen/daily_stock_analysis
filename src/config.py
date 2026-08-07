@@ -1508,7 +1508,10 @@ class Config:
 
         # LITELLM_FALLBACK_MODELS: comma-separated list of fallback models
         _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
-        litellm_fallback_models_explicit = bool(_fallback_str.strip())
+        disable_llm_fallback = os.getenv('DISABLE_LLM_FALLBACK', '').strip().lower() in {
+            '1', 'true', 'yes', 'on'
+        }
+        litellm_fallback_models_explicit = bool(_fallback_str.strip()) or disable_llm_fallback
         if _fallback_str.strip():
             litellm_fallback_models = [m.strip() for m in _fallback_str.split(',') if m.strip()]
         else:
