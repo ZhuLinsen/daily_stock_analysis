@@ -1187,6 +1187,24 @@ textarea {
   box-shadow: var(--shadow-soft-card);
 }
 
+/*
+ * Keep the mobile home sidebar's layout shells out of the scroll chain.
+ * This rule is intentionally unlayered and more specific than .glass-card so
+ * Tailwind overflow utilities cannot silently restore clipping on these cards.
+ * The nested ScrollArea viewport remains the only vertical scroll container.
+ */
+.home-stock-scroll-shell,
+.glass-card.home-stock-scroll-shell {
+  overflow: visible;
+}
+
+@media (min-width: 48rem) {
+  .home-stock-scroll-shell,
+  .glass-card.home-stock-scroll-shell {
+    overflow: hidden;
+  }
+}
+
 .glass-card::before {
   content: "";
   position: absolute;

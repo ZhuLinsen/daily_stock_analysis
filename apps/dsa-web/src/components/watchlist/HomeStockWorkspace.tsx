@@ -347,7 +347,10 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
 
   if (activeTab === 'history') {
     return (
-      <div className={`flex min-h-0 flex-1 flex-col gap-2 ${className}`}>
+      <div
+        data-testid="home-stock-workspace"
+        className={`home-stock-scroll-shell flex min-h-0 flex-1 flex-col gap-2 ${className}`}
+      >
         {renderTabs}
         <StockBar
           items={historyItems}
@@ -357,14 +360,17 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
           onItemClick={onHistoryItemClick}
           onDeleteStock={onDeleteStock}
           isDeleting={isDeleting}
-          className="flex-1 overflow-hidden"
+          className="flex-1"
         />
       </div>
     );
   }
 
   return (
-    <aside className={`glass-card flex min-h-0 flex-1 flex-col overflow-hidden ${className}`}>
+    <aside
+      data-testid="home-stock-workspace"
+      className={`glass-card home-stock-scroll-shell flex min-h-0 flex-1 flex-col ${className}`}
+    >
       <div className="space-y-2.5 border-b border-subtle px-3 py-3 sm:px-4">
         {renderTabs}
 
@@ -489,7 +495,11 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
         )}
       </div>
 
-      <ScrollArea viewportClassName="px-3 py-3 sm:px-4" className="min-h-0 flex-1">
+      <ScrollArea
+        viewportClassName="px-3 py-3 sm:px-4 overscroll-y-contain touch-pan-y"
+        className="min-h-0 flex-1"
+        testId="home-stock-workspace-scroll"
+      >
         {activeTab === 'watchlist' ? (
           watchlistLoading ? (
             <DashboardStateBlock loading compact title={t('watchlist.loading')} />
