@@ -559,7 +559,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                   <span className="text-[11px] text-muted-text">{scheduledCandidateTime || '今日'}</span>
                 </div>
                 <div className="mt-1 text-[11px] text-secondary-text">
-                  已同步 {scheduledCandidates.length} 支候选股；完整分析报告可在下方“今日”列表查看。
+                  已同步 {scheduledCandidates.length} 支候选股；完整分析报告请查看 Telegram 推送或对应的 GitHub Actions 运行记录。
                 </div>
                 {scheduledCandidateRunUrl ? (
                   <a
