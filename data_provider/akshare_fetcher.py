@@ -666,9 +666,10 @@ class AkshareFetcher(BaseFetcher):
         
         # 防封禁策略 1
 
-... [OUTPUT TRUNCATED - 41,020 chars omitted out of 90,947 total] ...
+... [OUTPUT TRUNCATED - 45,050 chars omitted out of 94,977 total] ...
 
- g_x = factor - 1
+== l:
+                g_x = factor - 1
             else:
                 g_x = 2.0 / (h - l)
             g_y = int((avg - min_price) // accuracy)
