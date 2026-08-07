@@ -2316,7 +2316,17 @@ class GoogleNewsRSSSearchProvider(BaseSearchProvider):
         except (TypeError, ValueError, OverflowError):
             return None
 
-    def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+    ) -> SearchResponse:
+        del api_key
+        return self._search_rss(query, max_results=max_results, days=days)
+
+    def _search_rss(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
         started_at = time.time()
         try:
             response = requests.get(
@@ -2364,6 +2374,9 @@ class GoogleNewsRSSSearchProvider(BaseSearchProvider):
                 error_message=f"Google News RSS 请求失败: {exc}",
                 search_time=time.time() - started_at,
             )
+
+    def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
+        return self._search_rss(query, max_results=max_results, days=days)
 
 
 class SearchService:
