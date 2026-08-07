@@ -26,9 +26,10 @@ on:
         default: false
         type: boolean
 
-# 并发控制：同一时间只运行一个分析任务
+# 第一阶段：按计划时段隔离并发，避免上午、下午和收盘任务相互排队。
+# 手动运行按模式隔离，避免重复点击同一模式造成无边界排队。
 concurrency:
-  group: stock-analysis
+  group: stock-analysis-${{ github.event.schedule || github.event.inputs.mode || 'manual' }}
   cancel-in-progress: false
 
 jobs:
@@ -69,20 +70,25 @@ jobs:
             '42 1 * * 1-5')
               echo "RUN_MODE=stocks-only" >> "$GITHUB_ENV"
               echo "TARGET_TIME=09:47" >> "$GITHUB_ENV"
+              echo "SCHEDULE_LABEL=上午盘中选股" >> "$GITHUB_ENV"
               ;;
             '2 6 * * 1-5')
               echo "RUN_MODE=stocks-only" >> "$GITHUB_ENV"
               echo "TARGET_TIME=14:07" >> "$GITHUB_ENV"
+              echo "SCHEDULE_LABEL=下午盘中选股" >> "$GITHUB_ENV"
               ;;
             '15 7 * * 1-5')
               echo "RUN_MODE=market-only" >> "$GITHUB_ENV"
               echo "TARGET_TIME=15:20" >> "$GITHUB_ENV"
+              echo "SCHEDULE_LABEL=收盘复盘" >> "$GITHUB_ENV"
               ;;
             *)
               echo "RUN_MODE=$INPUT_MODE" >> "$GITHUB_ENV"
               echo "TARGET_TIME=" >> "$GITHUB_ENV"
+              echo "SCHEDULE_LABEL=手动运行" >> "$GITHUB_ENV"
               ;;
           esac
+          echo "SCHEDULE_CRON=$EVENT_SCHEDULE" >> "$GITHUB_ENV"
 
       - name: 等待北京时间目标时刻
         if: github.event_name == 'schedule'
@@ -103,6 +109,20 @@ jobs:
           else:
               print(f"⏰ 当前北京时间 {now:%H:%M:%S}，目标时刻已到，立即开始分析")
           PY
+
+      - name: 记录运行元数据
+        run: |
+          RUN_STARTED_AT_BEIJING="$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          echo "RUN_STARTED_AT_BEIJING=$RUN_STARTED_AT_BEIJING" >> "$GITHUB_ENV"
+          {
+            echo "## 运行概览"
+            echo "- 计划任务：${SCHEDULE_LABEL:-未标记}"
+            echo "- 计划 Cron：${SCHEDULE_CRON:-手动运行}"
+            echo "- 目标时间（北京时间）：${TARGET_TIME:-手动运行}"
+            echo "- 实际分析开始（北京时间）：$RUN_STARTED_AT_BEIJING"
+            echo "- 触发方式：${{ github.event_name }}"
+            echo "- 工作流运行：${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"
       
       - name: 执行股票分析
         env:
@@ -584,6 +604,8 @@ jobs:
               $FORCE_RUN_ARG)"
             if [ "$SELECTED_STOCKS" = "SKIP_NON_TRADING_DAY" ]; then
               echo "📅 今日不是 A 股交易日，跳过选股、分析和推送。"
+              echo "SKIPPED_NON_TRADING_DAY=true" >> "$GITHUB_ENV"
+              echo "- 执行结果：非交易日跳过分析和推送" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             if [ -z "$SELECTED_STOCKS" ]; then
@@ -602,6 +624,34 @@ jobs:
             python main.py --stocks "$STOCK_LIST" --no-market-review $FORCE_RUN_ARG
           else
             python main.py --stocks "$STOCK_LIST" $FORCE_RUN_ARG
+          fi
+
+      - name: 校验分析与通知结果
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${SKIPPED_NON_TRADING_DAY:-false}" = "true" ]; then
+            exit 0
+          fi
+
+          telegram_success_count="$(rg -o "Telegram 消息发送成功" logs 2>/dev/null | wc -l | tr -d ' ' || true)"
+          telegram_failure_count="$(rg -o "通知发送完成：成功 [0-9]+ 个，失败 [1-9][0-9]* 个" logs 2>/dev/null | wc -l | tr -d ' ' || true)"
+          echo "Telegram 成功发送记录：${telegram_success_count:-0}"
+          echo "Telegram 失败汇总记录：${telegram_failure_count:-0}"
+          {
+            echo "- Telegram 成功发送记录：${telegram_success_count:-0}"
+            echo "- Telegram 失败汇总记录：${telegram_failure_count:-0}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ] && [ "${telegram_success_count:-0}" -eq 0 ]; then
+            echo "未发现 Telegram 成功发送记录。"
+            exit 1
+          fi
+          if [ "${telegram_failure_count:-0}" -gt 0 ]; then
+            echo "检测到 Telegram 通知失败记录。"
+            exit 1
           fi
       
       - name: 上传分析报告
