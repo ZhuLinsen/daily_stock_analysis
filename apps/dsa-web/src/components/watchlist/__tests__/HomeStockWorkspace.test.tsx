@@ -73,7 +73,7 @@ describe('HomeStockWorkspace', () => {
     const stockBar = screen.getByTestId('home-stock-bar');
     expect(workspace).toHaveClass('home-stock-scroll-shell');
     expect(workspace).not.toHaveClass('overflow-hidden');
-    expect(stockBar).toHaveClass('glass-card', 'home-stock-scroll-shell');
+    expect(stockBar).toHaveClass('glass-card', 'home-stock-scroll-shell', 'min-h-0');
     expect(stockBar).not.toHaveClass('overflow-hidden');
     expect(screen.getByTestId('home-stock-bar-scroll')).toHaveClass('touch-pan-y');
   });

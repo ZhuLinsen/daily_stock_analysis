@@ -76,7 +76,7 @@ export const StockBar: React.FC<StockBarProps> = ({
   return (
     <aside
       data-testid="home-stock-bar"
-      className={`glass-card home-stock-scroll-shell flex flex-col ${className}`}
+      className={`glass-card home-stock-scroll-shell flex min-h-0 flex-col ${className}`}
     >
       <ScrollArea
         viewportClassName="p-4 overscroll-y-contain touch-pan-y"
