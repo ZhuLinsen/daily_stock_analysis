@@ -637,9 +637,23 @@ jobs:
             exit 0
           fi
 
-          # logs/ 通常在 .gitignore 中被忽略；校验时必须显式关闭 ignore 规则。
-          telegram_success_count="$(rg --no-ignore -o "Telegram 消息发送成功" logs 2>/dev/null | wc -l | tr -d ' ' || true)"
-          telegram_failure_count="$(rg --no-ignore -o "通知发送完成：成功 [0-9]+ 个，失败 [1-9][0-9]* 个" logs 2>/dev/null | wc -l | tr -d ' ' || true)"
+          # 使用 Python 标准库读取日志，避免依赖 runner 是否预装 rg，
+          # 同时覆盖 .gitignore 规则不会影响工作区文件读取的问题。
+          readarray -t telegram_counts < <(python - <<'PY'
+          from pathlib import Path
+          import re
+
+          log_text = "\n".join(
+              path.read_text(encoding="utf-8", errors="ignore")
+              for path in Path("logs").rglob("*")
+              if path.is_file()
+          )
+          print(log_text.count("Telegram 消息发送成功"))
+          print(len(re.findall(r"通知发送完成：成功 [0-9]+ 个，失败 [1-9][0-9]* 个", log_text)))
+          PY
+          )
+          telegram_success_count="${telegram_counts[0]:-0}"
+          telegram_failure_count="${telegram_counts[1]:-0}"
           echo "Telegram 成功发送记录：${telegram_success_count:-0}"
           echo "Telegram 失败汇总记录：${telegram_failure_count:-0}"
           {
