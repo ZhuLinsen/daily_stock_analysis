@@ -1117,6 +1117,10 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     import uvicorn
 
     probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
+    # The WebUI is restarted by systemd while browsers may still have active
+    # keep-alive connections. Reuse the address during the short TCP
+    # TIME_WAIT window so a clean restart is not misreported as a port clash.
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         probe.bind((host, port))
     except OSError as exc:
