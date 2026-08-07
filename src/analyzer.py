@@ -3166,45 +3166,13 @@ class GeminiAnalyzer:
 
                 model_short = model.split("/")[-1] if "/" in model else model
                 extra = get_thinking_extra_body(model_short)
-                # Groq 免费层按“输入提示词 + 最大输出”共同计算 TPM。当前股票
-                # 分析提示词通常包含行情、新闻和财务数据，直接沿用主模型的
-                # 8192 输出上限会让免费层在请求尚未发送前就返回 413/429。
-                # 仅压缩 Groq 后备请求，避免改变 Gemini/其他主模型的分析质量。
-                model_prompt = prompt
-                model_system_prompt = effective_system_prompt
-                model_max_tokens = max_tokens
-                if model.lower().startswith("groq/"):
-                    prompt_limit = int(os.getenv("GROQ_FALLBACK_PROMPT_MAX_CHARS", "3800"))
-                    output_limit = int(os.getenv("GROQ_FALLBACK_MAX_OUTPUT_TOKENS", "1800"))
-
-                    def _compact(text: str, limit: int) -> str:
-                        if len(text) <= limit:
-                            return text
-                        head = max(1, int(limit * 0.62))
-                        tail = max(1, limit - head)
-                        return (
-                            text[:head]
-                            + "\n\n[Groq 后备请求已压缩：中间的低优先级原始数据已省略]\n\n"
-                            + text[-tail:]
-                        )
-
-                    original_prompt_len = len(model_prompt)
-                    model_prompt = _compact(model_prompt, prompt_limit)
-                    model_max_tokens = min(model_max_tokens, output_limit)
-                    if len(model_prompt) != original_prompt_len or model_max_tokens != max_tokens:
-                        logger.warning(
-                            "[LiteLLM] Groq 后备请求已压缩: prompt %s -> %s 字符, max_tokens=%s",
-                            original_prompt_len,
-                            len(model_prompt),
-                            model_max_tokens,
-                        )
                 call_kwargs: Dict[str, Any] = {
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": model_system_prompt},
-                        {"role": "user", "content": model_prompt},
+                        {"role": "system", "content": effective_system_prompt},
+                        {"role": "user", "content": prompt},
                     ],
-                    "max_tokens": model_max_tokens,
+                    "max_tokens": max_tokens,
                 }
                 if requested_timeout not in (None, ""):
                     call_kwargs["timeout"] = requested_timeout
