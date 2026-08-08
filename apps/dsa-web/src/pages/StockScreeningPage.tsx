@@ -34,6 +34,7 @@ import {
   type ScreeningHotspot,
   type ScreeningHotspotsResponse,
   type ScreeningScreenResponse,
+  type ScreeningPerformanceSummary,
   type ScreeningScreenTaskStatus,
   type ScreeningStrategy,
 } from '../api/screening';
@@ -831,6 +832,9 @@ const StockScreeningPage: React.FC = () => {
   const [loadingHotspots, setLoadingHotspots] = useState(false);
   const [hotspotError, setHotspotError] = useState('');
   const [screenMeta, setScreenMeta] = useState<ScreeningScreenResponse | null>(null);
+  const [performance, setPerformance] = useState<ScreeningPerformanceSummary | null>(null);
+  const [loadingPerformance, setLoadingPerformance] = useState(false);
+  const [performanceMessage, setPerformanceMessage] = useState('');
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(restoredTask?.taskId));
   const [enabling, setEnabling] = useState(false);
@@ -873,6 +877,21 @@ const StockScreeningPage: React.FC = () => {
     setCandidates([]);
     setScreenMeta(null);
     setExpandedCode(null);
+  };
+
+  const refreshPerformance = async () => {
+    setLoadingPerformance(true);
+    setPerformanceMessage('');
+    try {
+      const run = await screeningApi.runPerformance({ strategy, limit: 20 });
+      const summary = await screeningApi.getPerformance({ strategy, limit: 100 });
+      setPerformance(summary);
+      setPerformanceMessage(`已更新 ${run.evaluated} 条表现记录；${run.pending} 条仍在等待后续交易日数据。`);
+    } catch (err) {
+      setPerformanceMessage(toApiErrorMessage(err, '表现跟踪更新失败，请稍后重试。'));
+    } finally {
+      setLoadingPerformance(false);
+    }
   };
 
   const loadHotspotDetail = useCallback(async (
@@ -1906,6 +1925,41 @@ const StockScreeningPage: React.FC = () => {
             </table>
           </div>
         )}
+        </section>
+      ) : null}
+
+      {screenMeta ? (
+        <section className="rounded-2xl border border-border bg-card/95 p-4 shadow-soft-card">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-foreground">选股表现跟踪</h2>
+              <p className="mt-1 text-xs text-secondary-text">仅作历史描述，不自动调整策略参数。基准：沪深300。</p>
+            </div>
+            <Button size="sm" variant="secondary" isLoading={loadingPerformance} loadingText="更新中..." onClick={() => void refreshPerformance()}>
+              <RefreshCw className="h-4 w-4" />
+              更新表现
+            </Button>
+          </div>
+          {performanceMessage ? <p className="mb-3 text-xs text-secondary-text">{performanceMessage}</p> : null}
+          {performance?.horizons?.length ? (
+            <div className="grid gap-3 md:grid-cols-3">
+              {performance.horizons.map((item) => (
+                <div key={item.horizonDays} className="rounded-xl border border-border/70 bg-surface/60 p-3">
+                  <p className="text-xs font-semibold text-secondary-text">T+{item.horizonDays}</p>
+                  <p className="mt-2 text-sm text-foreground">样本 {item.sampleCount}</p>
+                  <p className="mt-1 text-xs text-secondary-text">
+                    股票 {item.avgStockReturnPct == null ? '-' : `${item.avgStockReturnPct.toFixed(2)}%`} ·
+                    超额 {item.avgExcessReturnPct == null ? '-' : `${item.avgExcessReturnPct.toFixed(2)}%`}
+                  </p>
+                  <p className="mt-1 text-xs text-secondary-text">
+                    平均回撤 {item.avgMaxDrawdownPct == null ? '-' : `${item.avgMaxDrawdownPct.toFixed(2)}%`}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-secondary-text">尚无足够的后续交易日数据，点击“更新表现”后可持续补齐。</p>
+          )}
         </section>
       ) : null}
     </AppPage>

@@ -16,6 +16,7 @@ from api.deps import get_config_dep, get_database_manager
 from api.v1.errors import api_error
 from src.config import Config
 from src.services.screening_service import ScreeningService
+from src.services.screening_performance_service import ScreeningPerformanceService
 from src.services.task_queue import TaskStatus as QueueTaskStatus
 from src.services.task_queue import get_task_queue
 from src.storage import DatabaseManager
@@ -75,6 +76,14 @@ class ScheduledSyncRequest(BaseModel):
     created_at: str = Field("", max_length=64)
     candidate_count: int = Field(0, ge=0, le=100)
     candidates: List[Dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+
+class ScreeningPerformanceRequest(BaseModel):
+    run_id: str = Field("", max_length=64)
+    strategy: str = Field("", max_length=64)
+    limit: int = Field(20, ge=1, le=100)
+    horizons: List[int] = Field(default_factory=lambda: [1, 5, 10], max_length=3)
+    benchmark_code: str = Field("sh000300", min_length=1, max_length=32)
 
 
 def _require_scheduled_sync_token(request: Request) -> None:
@@ -351,6 +360,44 @@ def screening_screen(
     )
 
 
+@router.post("/performance/run")
+def screening_performance_run(
+    request: ScreeningPerformanceRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> Dict[str, Any]:
+    """Evaluate persisted screening candidates against forward bars."""
+    try:
+        return ScreeningPerformanceService(db_manager).run(
+            run_id=request.run_id,
+            strategy=request.strategy,
+            limit=request.limit,
+            horizons=request.horizons,
+            benchmark_code=request.benchmark_code,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": str(exc)}) from exc
+    except Exception as exc:
+        logger.exception("选股表现跟踪失败: %s", exc)
+        raise HTTPException(status_code=424, detail={"error": "screening_performance_failed", "message": str(exc)}) from exc
+
+
+@router.get("/performance")
+def screening_performance(
+    strategy: str = Query("", max_length=64),
+    horizon: Optional[int] = Query(None, ge=1, le=10),
+    limit: int = Query(100, ge=1, le=500),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> Dict[str, Any]:
+    """Return descriptive screening performance and benchmark comparison."""
+    if horizon is not None and horizon not in {1, 5, 10}:
+        raise HTTPException(status_code=400, detail={"error": "invalid_params", "message": "horizon must be 1, 5, or 10"})
+    return ScreeningPerformanceService(db_manager).summary(
+        strategy=strategy,
+        horizon=horizon,
+        limit=limit,
+    )
+
+
 @router.post("/scheduled-sync")
 def scheduled_sync(
     request: ScheduledSyncRequest,
@@ -383,6 +430,7 @@ def scheduled_sync(
         "source": request.source,
         "run_url": request.run_url,
         "created_at_source": request.created_at,
+        "analysis_date": str(request.created_at or "")[:10],
         "candidates": candidates,
     }
     saved = db_manager.save_screening_run(payload)

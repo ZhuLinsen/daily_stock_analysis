@@ -267,6 +267,28 @@ export type ScreeningScreenResponse = {
   resultVariantRotatedSlots?: number;
 };
 
+export type ScreeningPerformanceSummary = {
+  sampleCount: number;
+  horizons: Array<{
+    horizonDays: number;
+    sampleCount: number;
+    avgStockReturnPct?: number | null;
+    avgBenchmarkReturnPct?: number | null;
+    avgExcessReturnPct?: number | null;
+    avgMaxDrawdownPct?: number | null;
+  }>;
+  records?: Array<Record<string, unknown>>;
+};
+
+export type ScreeningPerformanceRunResponse = {
+  processedRuns: number;
+  evaluated: number;
+  pending: number;
+  errors: number;
+  horizons: number[];
+  benchmarkCode: string;
+};
+
 export type ScreeningScreenAccepted = {
   taskId: string;
   traceId?: string | null;
@@ -427,6 +449,28 @@ export const screeningApi = {
       },
     });
     return toCamelCase<ScreeningHistoryResponse>(response.data);
+  },
+
+  async runPerformance(payload: { runId?: string; strategy?: string; limit?: number } = {}): Promise<ScreeningPerformanceRunResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/screening/performance/run', {
+      run_id: payload.runId || '',
+      strategy: payload.strategy || '',
+      limit: payload.limit ?? 20,
+      horizons: [1, 5, 10],
+      benchmark_code: 'sh000300',
+    }, { timeout: SCREENING_REQUEST_TIMEOUT_MS });
+    return toCamelCase<ScreeningPerformanceRunResponse>(response.data);
+  },
+
+  async getPerformance(payload: { strategy?: string; horizon?: number; limit?: number } = {}): Promise<ScreeningPerformanceSummary> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/screening/performance', {
+      params: {
+        strategy: payload.strategy || undefined,
+        horizon: payload.horizon,
+        limit: payload.limit ?? 100,
+      },
+    });
+    return toCamelCase<ScreeningPerformanceSummary>(response.data);
   },
 
   async getRun(runId: string): Promise<ScreeningRunDetail> {

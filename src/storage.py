@@ -326,6 +326,46 @@ class ScreeningRun(Base):
     )
 
 
+class ScreeningPerformance(Base):
+    """Forward performance snapshot for one screening candidate and horizon."""
+
+    __tablename__ = 'screening_performance'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    screening_run_id = Column(String(64), nullable=False, index=True)
+    strategy = Column(String(64), nullable=False, index=True)
+    market = Column(String(16), nullable=False, index=True)
+    code = Column(String(32), nullable=False, index=True)
+    name = Column(String(128), nullable=False, default='')
+    rank = Column(Integer)
+    horizon_days = Column(Integer, nullable=False)
+    eval_status = Column(String(24), nullable=False, default='pending', index=True)
+    analysis_date = Column(Date, index=True)
+    end_date = Column(Date, index=True)
+    start_price = Column(Float)
+    end_close = Column(Float)
+    stock_return_pct = Column(Float)
+    benchmark_code = Column(String(32), nullable=False, default='sh000300')
+    benchmark_start = Column(Float)
+    benchmark_end = Column(Float)
+    benchmark_return_pct = Column(Float)
+    excess_return_pct = Column(Float)
+    max_drawdown_pct = Column(Float)
+    data_source = Column(String(64))
+    benchmark_source = Column(String(64))
+    message = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'screening_run_id', 'code', 'horizon_days',
+            name='uix_screening_performance_run_code_horizon',
+        ),
+        Index('ix_screening_performance_strategy_horizon', 'strategy', 'horizon_days', 'eval_status'),
+    )
+
+
 class AnalysisHistory(Base):
     """
     分析结果历史记录模型

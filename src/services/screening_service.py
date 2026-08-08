@@ -22,6 +22,7 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -1270,6 +1271,7 @@ class ScreeningService:
             "run_id": raw_data.get("run_id") or uuid.uuid4().hex,
             "strategy": raw_data.get("strategy") or strategy,
             "market": raw_data.get("market") or market,
+            "analysis_date": raw_data.get("analysis_date") or datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat(),
             "snapshot_count": raw_data.get("snapshot_count"),
             "snapshot_source": raw_data.get("snapshot_source") or "",
             "after_filter_count": raw_data.get("after_filter_count"),
