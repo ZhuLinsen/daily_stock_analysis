@@ -238,6 +238,9 @@ export type ScreeningScreenResponse = {
   llmAttemptedModels?: string[];
   llmFailureReason?: 'invalid_response' | 'timeout' | 'call_failed' | 'no_model_configured' | string;
   rankingMode?: 'llm' | 'factor' | string;
+  snapshotRequestedDate?: string;
+  snapshotTradeDate?: string;
+  snapshotNonTradingDay?: boolean;
   warnings?: string[];
   sourceErrors?: string[];
   qualityStatus?: 'verified' | 'degraded' | 'insufficient' | string;

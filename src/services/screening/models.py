@@ -224,6 +224,9 @@ class ScreenResult:
     ranking_mode: str = "factor"
     degradation: list[str] = field(default_factory=list)
     snapshot_source: str = ""
+    snapshot_requested_date: str = ""
+    snapshot_trade_date: str = ""
+    snapshot_non_trading_day: bool = False
     source_errors: list[str] = field(default_factory=list)
     snapshot_fallback_used: bool = False
     snapshot_stale_age_hours: float | None = None

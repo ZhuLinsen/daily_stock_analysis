@@ -1711,6 +1711,14 @@ const StockScreeningPage: React.FC = () => {
                   ? ` · 快照约 ${screenMeta.snapshotStaleAgeHours.toFixed(1)} 小时前`
                   : ''}
               </span>
+              {screenMeta?.snapshotTradeDate ? (
+                <span>
+                  快照交易日：{screenMeta.snapshotTradeDate}
+                  {screenMeta.snapshotNonTradingDay && screenMeta.snapshotRequestedDate
+                    ? `（${screenMeta.snapshotRequestedDate} 非交易日，已回退）`
+                    : ''}
+                </span>
+              ) : null}
             </div>
           </details>
         </section>

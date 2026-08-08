@@ -22,6 +22,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from src.services.screening.source_guard import call_with_timeout, parse_source_timeout_seconds
+from src.core.trading_calendar import get_effective_trading_date, get_market_now
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ def fetch_cn_snapshot(source: str = "efinance") -> pd.DataFrame:
         return _call_snapshot_wrapper(_fetch_em_datacenter, source=source)
     elif source == "tushare":
         return _call_snapshot_wrapper(_fetch_tushare, source=source)
+    elif source == "tencent":
+        return _call_snapshot_wrapper(_fetch_tencent, source=source)
     else:
         raise ValueError(f"Unknown snapshot source: {source}")
 
@@ -77,6 +80,7 @@ def fetch_snapshot_with_fallback(
 
     errors = []
     required = required_columns or []
+    requested_snapshot_date, effective_snapshot_date, non_trading_day = _snapshot_date_context(market)
     if cache_ttl_seconds > 0:
         cached = _read_last_good_snapshot(
             fallback_snapshot_path,
@@ -87,6 +91,12 @@ def fetch_snapshot_with_fallback(
             requested_snapshot_sources=sources,
         )
         if cached is not None:
+            _attach_snapshot_date_context(
+                cached,
+                requested_date=requested_snapshot_date,
+                effective_date=effective_snapshot_date,
+                non_trading_day=non_trading_day,
+            )
             return cached
 
     for source in sources:
@@ -108,6 +118,12 @@ def fetch_snapshot_with_fallback(
                 df.attrs["fallback_used"] = False
                 df.attrs["stale"] = False
                 df.attrs["stale_age_hours"] = None
+                _attach_snapshot_date_context(
+                    df,
+                    requested_date=requested_snapshot_date,
+                    effective_date=effective_snapshot_date,
+                    non_trading_day=non_trading_day,
+                )
                 _write_last_good_snapshot(
                     fallback_snapshot_path,
                     df,
@@ -130,9 +146,45 @@ def fetch_snapshot_with_fallback(
         max_age_hours=fallback_max_age_hours,
     )
     if cached is not None:
+        _attach_snapshot_date_context(
+            cached,
+            requested_date=requested_snapshot_date,
+            effective_date=effective_snapshot_date,
+            non_trading_day=non_trading_day,
+        )
         return cached
 
     raise RuntimeError(f"All snapshot sources failed: {'; '.join(errors)}")
+
+
+def _snapshot_date_context(market: str) -> tuple[str, str, bool]:
+    """Return requested date and the latest completed daily-bar date."""
+    now = get_market_now(market)
+    requested = now.date()
+    try:
+        effective = get_effective_trading_date(market, current_time=now)
+    except Exception as exc:  # pragma: no cover - calendar is fail-open by design.
+        logger.warning("Failed to resolve snapshot effective date: %s", exc)
+        effective = requested
+    return requested.isoformat(), effective.isoformat(), effective != requested
+
+
+def _attach_snapshot_date_context(
+    df: pd.DataFrame,
+    *,
+    requested_date: str,
+    effective_date: str,
+    non_trading_day: bool,
+) -> None:
+    df.attrs["snapshot_requested_date"] = requested_date
+    df.attrs["snapshot_trade_date"] = effective_date
+    df.attrs["snapshot_non_trading_day"] = non_trading_day
+    if non_trading_day:
+        logger.info(
+            "Snapshot uses latest completed trading date %s instead of non-trading date %s",
+            effective_date,
+            requested_date,
+        )
 
 
 def _fetch_us_snapshot_with_fallback(
@@ -259,6 +311,9 @@ def _write_last_good_snapshot(
             "created_at": datetime.now(timezone.utc).isoformat(),
             "metadata": {
                 "snapshot_source": str(df.attrs.get("snapshot_source", "")),
+                "snapshot_requested_date": str(df.attrs.get("snapshot_requested_date", "")),
+                "snapshot_trade_date": str(df.attrs.get("snapshot_trade_date", "")),
+                "snapshot_non_trading_day": bool(df.attrs.get("snapshot_non_trading_day", False)),
                 "source_priority": [
                     str(source).strip()
                     for source in (source_priority or [])
@@ -363,6 +418,9 @@ def _read_last_good_snapshot(
     cached.attrs["stale"] = not fresh
     cached.attrs["stale_age_hours"] = stale_age_hours
     cached.attrs["source_errors"] = list(source_errors)
+    cached.attrs["snapshot_requested_date"] = str(metadata.get("snapshot_requested_date", ""))
+    cached.attrs["snapshot_trade_date"] = str(metadata.get("snapshot_trade_date", ""))
+    cached.attrs["snapshot_non_trading_day"] = bool(metadata.get("snapshot_non_trading_day", False))
     cached.attrs["last_good_snapshot_source"] = str(
         metadata.get("snapshot_source", "")
     )
@@ -472,6 +530,115 @@ def _fetch_sina() -> pd.DataFrame:
             # Sina exposes market caps in ten-thousand yuan; normalize to yuan.
             df[col] = pd.to_numeric(df[col], errors="coerce") * 10000
     return _normalize(df, source="sina")
+
+
+def _fetch_tencent() -> pd.DataFrame:
+    """Fetch a full A-share snapshot from Tencent's batched quote endpoint.
+
+    Tencent does not expose a wildcard full-market endpoint, so the local
+    stock index supplies the universe and Tencent is queried in bounded
+    batches. This keeps the source independent from the Eastmoney wrappers
+    used by Efinance and AkShare.
+    """
+    from src.data.stock_index_loader import get_stock_index_candidate_paths
+
+    symbols = _load_tencent_stock_symbols(get_stock_index_candidate_paths())
+    if not symbols:
+        raise RuntimeError("Tencent snapshot has no local A-share stock universe")
+
+    rows: list[dict[str, object]] = []
+    batch_size = 180
+    for offset in range(0, len(symbols), batch_size):
+        batch = symbols[offset : offset + batch_size]
+        response = requests.get(
+            "https://qt.gtimg.cn/q=" + ",".join(item[0] for item in batch),
+            headers={
+                "Referer": "https://finance.qq.com/",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=12,
+        )
+        response.raise_for_status()
+        response.encoding = "gbk"
+        rows.extend(_parse_tencent_snapshot_response(response.text))
+
+    if not rows:
+        raise RuntimeError("Tencent snapshot returned no usable quotes")
+    return _normalize(pd.DataFrame(rows), source="tencent")
+
+
+def _load_tencent_stock_symbols(paths: tuple[Path, ...]) -> list[tuple[str, str]]:
+    """Load distinct SH/SZ symbols and names from the generated local index."""
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        result: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in payload if isinstance(payload, list) else []:
+            if not isinstance(item, list) or len(item) < 2:
+                continue
+            canonical = str(item[0] or "").strip().upper()
+            display = str(item[1] or "").strip().upper()
+            name = str(item[2] or "").strip() if len(item) > 2 else ""
+            code = canonical or display
+            if "." in code:
+                base, suffix = code.rsplit(".", 1)
+                if suffix in {"SH", "SZ"}:
+                    code = base
+            code = code.removeprefix("SH").removeprefix("SZ")
+            if not code.isdigit() or len(code) != 6 or code.startswith(("4", "8", "9")):
+                continue
+            prefix = "sh" if code.startswith(("5", "6")) else "sz"
+            symbol = prefix + code
+            if symbol not in seen:
+                seen.add(symbol)
+                result.append((symbol, name))
+        if result:
+            return result
+    return []
+
+
+def _parse_tencent_snapshot_response(text: str) -> list[dict[str, object]]:
+    """Parse Tencent's GBK ``v_shxxxxxx=\"...\"`` quote lines."""
+    from data_provider.akshare_fetcher import _normalize_tencent_volume, _parse_tencent_amount
+
+    rows: list[dict[str, object]] = []
+    for line in str(text or "").splitlines():
+        if '="' not in line:
+            continue
+        left, payload = line.split('="', 1)
+        fields = payload.rsplit('"', 1)[0].split("~")
+        if len(fields) < 45 or not fields[2].strip().isdigit():
+            continue
+
+        def number(index: int) -> float | None:
+            if len(fields) <= index or not fields[index].strip():
+                return None
+            try:
+                return float(fields[index])
+            except (TypeError, ValueError):
+                return None
+
+        code = fields[2].strip()
+        rows.append(
+            {
+                "code": code,
+                "name": fields[1].strip(),
+                "price": number(3),
+                "change_pct": number(32),
+                "amount": _parse_tencent_amount(fields),
+                "total_mv": (number(45) or 0) * 100000000,
+                "circ_mv": (number(44) or 0) * 100000000,
+                "pe_ratio": number(39),
+                "pb_ratio": number(46),
+                "volume_ratio": number(49),
+                "turnover_rate": number(38),
+                "volume": _normalize_tencent_volume(fields),
+            }
+        )
+    return rows
 
 
 def _fetch_em_datacenter() -> pd.DataFrame:

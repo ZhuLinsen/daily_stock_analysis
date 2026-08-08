@@ -176,12 +176,20 @@ def screen(
         degradation.extend(f"Industry/concepts enrichment: {item}" for item in industry_notes)
     snapshot_count = len(snapshot_df)
     snapshot_source = str(snapshot_df.attrs.get("snapshot_source", ""))
+    snapshot_requested_date = str(snapshot_df.attrs.get("snapshot_requested_date", "") or "")
+    snapshot_trade_date = str(snapshot_df.attrs.get("snapshot_trade_date", "") or "")
+    snapshot_non_trading_day = bool(snapshot_df.attrs.get("snapshot_non_trading_day", False))
     source_errors = [str(item) for item in snapshot_df.attrs.get("source_errors", [])]
     snapshot_fallback_used = bool(snapshot_df.attrs.get("fallback_used"))
     snapshot_stale_age_hours = _safe_float(snapshot_df.attrs.get("stale_age_hours"))
     snapshot_last_good_source = str(snapshot_df.attrs.get("last_good_snapshot_source", "") or "")
     snapshot_last_good_created_at = str(snapshot_df.attrs.get("last_good_created_at", "") or "")
     degradation.extend(f"Snapshot source fallback: {item}" for item in source_errors)
+    if snapshot_trade_date:
+        date_note = f"Snapshot effective trading date: {snapshot_trade_date}"
+        if snapshot_non_trading_day and snapshot_requested_date:
+            date_note += f" (requested {snapshot_requested_date}, non-trading day)"
+        degradation.append(date_note)
     if bool(snapshot_df.attrs.get("fallback_used")):
         stale_age = snapshot_df.attrs.get("stale_age_hours")
         if stale_age is None:
@@ -224,6 +232,9 @@ def screen(
             run_id=run_id,
             degradation=[*degradation, "No candidates after hard filter"],
             snapshot_source=snapshot_source,
+            snapshot_requested_date=snapshot_requested_date,
+            snapshot_trade_date=snapshot_trade_date,
+            snapshot_non_trading_day=snapshot_non_trading_day,
             source_errors=source_errors,
             snapshot_fallback_used=snapshot_fallback_used,
             snapshot_stale_age_hours=snapshot_stale_age_hours,
@@ -328,6 +339,9 @@ def screen(
             run_id=run_id,
             degradation=[*degradation, "No candidates after daily hard filter"],
             snapshot_source=snapshot_source,
+            snapshot_requested_date=snapshot_requested_date,
+            snapshot_trade_date=snapshot_trade_date,
+            snapshot_non_trading_day=snapshot_non_trading_day,
             source_errors=source_errors,
             snapshot_fallback_used=snapshot_fallback_used,
             snapshot_stale_age_hours=snapshot_stale_age_hours,
@@ -566,6 +580,9 @@ def screen(
         ranking_mode="llm" if llm_ranked else "factor",
         degradation=degradation,
         snapshot_source=snapshot_source,
+        snapshot_requested_date=snapshot_requested_date,
+        snapshot_trade_date=snapshot_trade_date,
+        snapshot_non_trading_day=snapshot_non_trading_day,
         source_errors=source_errors,
         snapshot_fallback_used=snapshot_fallback_used,
         snapshot_stale_age_hours=snapshot_stale_age_hours,
