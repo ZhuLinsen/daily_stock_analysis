@@ -84,8 +84,8 @@ class TestNormalizeCode:
 
     def test_returns_none_for_invalid(self):
         assert _normalize_code("") is None
-        assert _normalize_code("0001") == "0001"  # bare 4-digit HK code
-        assert _normalize_code("1234") == "1234"
+        assert _normalize_code("0001") == "HK00001"  # bare 4-digit HK code
+        assert _normalize_code("1234") == "HK01234"
         assert _normalize_code("贵州茅台") is None
 
 

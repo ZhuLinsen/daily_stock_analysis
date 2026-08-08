@@ -247,6 +247,14 @@ class TestNormalizeCode:
     def test_plain_5_digit(self):
         assert normalize_code("00700") == "00700"
 
+    def test_plain_4_digit_canonicalizes_to_hk(self):
+        # Bare 4-digit numerics follow the HK contract (issue #2164 / PR #2163):
+        # canonicalize to the padded HK form so import/merge and config-driven
+        # analysis keep the HK market context instead of persisting the raw code.
+        assert normalize_code("0001") == "HK00001"
+        assert normalize_code("0941") == "HK00941"
+        assert normalize_code("1810") == "HK01810"
+
     def test_whitespace_stripped(self):
         assert normalize_code("  600519  ") == "600519"
 

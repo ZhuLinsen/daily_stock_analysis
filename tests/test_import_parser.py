@@ -50,13 +50,14 @@ class TestParseImportFromBytesCsv:
     def test_parses_csv_with_bare_4_digit_hk_code(self):
         # Bare 4-digit HK codes (0001 长和 / 0941 中国移动 / 1810) follow the shared
         # HK contract and must survive import instead of being treated as
-        # invalid text (issue #2164 / PR #2163).
+        # invalid text (issue #2164 / PR #2163). They are canonicalized to the
+        # padded HK form so merge-to-watchlist persists the HK context.
         data = "code,name\n0001,长和\n0941,中国移动\n1810,小米集团".encode("utf-8")
         result = parse_import_from_bytes(data, "a.csv")
         assert result == [
-            ("0001", "长和", "medium"),
-            ("0941", "中国移动", "medium"),
-            ("1810", "小米集团", "medium"),
+            ("HK00001", "长和", "medium"),
+            ("HK00941", "中国移动", "medium"),
+            ("HK01810", "小米集团", "medium"),
         ]
 
     def test_skips_empty_rows(self):

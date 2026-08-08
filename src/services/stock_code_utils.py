@@ -219,12 +219,16 @@ def normalize_code(raw: str) -> Optional[str]:
     """Normalize and validate a single stock code.
 
     Supports:
-    - Plain digit codes: 600519, 00700, 0001 (bare 4-digit HK)
+    - Plain digit codes: 600519, 00700, 0001 (bare 4-digit HK canonicalized
+      to the padded ``HKxxxxx`` form so persisted/driven analysis keeps the
+      HK market context)
     - Suffix format: 600519.SH, 600519.SZ, 920493.BJ, 00700.HK
     - Prefix format: SH600519, SH.600519, SZ000001, BJ920493, HK00700 (case-insensitive)
     - US ticker symbols: AAPL, TSLA
     """
     normalized, _ = _normalize_code_and_exchange(raw)
+    if normalized is not None and normalized.isdigit() and len(normalized) == 4:
+        return f"HK{normalized.zfill(5)}"
     return normalized
 
 
