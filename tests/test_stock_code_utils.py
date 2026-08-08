@@ -357,12 +357,15 @@ class TestResolveIndexStockCodeForAnalysis:
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value="005930.KS"):
             assert resolve_index_stock_code_for_analysis("005930") == "005930.KS"
 
-    def test_resolves_indexed_4_digit_jp_base(self):
-        # Bare 4-digit numerics are code-like (HK default contract), but an
-        # index hit still takes precedence over the numeric HK default.
+    def test_bare_4_digit_code_keeps_hk_contract_before_index_lookup(self):
+        # A bare 4-digit value is ambiguous with JP aliases such as 7203.
+        # The shared input contract treats it as HK; JP requires an explicit
+        # Yahoo suffix to preserve the market context.
         assert is_code_like("7203") is True
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value="7203.T"):
-            assert resolve_index_stock_code_for_analysis("7203") == "7203.T"
+            assert resolve_index_stock_code_for_analysis("7203") == "HK07203"
+
+        assert resolve_index_stock_code_for_analysis("7203.T") == "7203.T"
 
     def test_falls_back_to_canonical_when_index_miss(self):
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value=None):

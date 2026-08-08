@@ -42,6 +42,12 @@ class AnalysisInputHkBareCodeTestCase(unittest.TestCase):
         self.assertEqual(_resolve_and_normalize_input("0001"), "HK00001")
         self.assertEqual(_resolve_and_normalize_input("0941"), "HK00941")
         self.assertEqual(_resolve_and_normalize_input("1810"), "HK01810")
+        # Ambiguous 4-digit JP aliases stay HK unless the explicit `.T`
+        # suffix is supplied.
+        self.assertEqual(_resolve_and_normalize_input("7203"), "HK07203")
+
+    def test_explicit_jp_suffix_still_resolves_as_japan(self) -> None:
+        self.assertEqual(_resolve_and_normalize_input("7203.T"), "7203.T")
 
     def test_bare_5_digit_hk_codes_still_work(self) -> None:
         self.assertEqual(_resolve_and_normalize_input("00700"), "00700")

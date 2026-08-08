@@ -480,17 +480,16 @@ def build_daily_code_candidates(code: Optional[str]) -> List[str]:
 
 
 def resolve_index_stock_code_for_analysis(raw: str) -> str:
-    """Resolve bare JP/KR candidates via stock index and keep suffix forms.
+    """Resolve indexed JP/KR candidates while preserving the bare-code contract.
 
-    For code-like inputs and indexed 4-digit JP bare bases:
-    - Existing index-backed entries (e.g. ``005930`` -> ``005930.KS``) are
-      preferred.
-    - Non-matching code-like inputs keep the canonicalized input.
+    Bare 4-digit numerics are an HK input contract. They are canonicalized to
+    the padded ``HKxxxxx`` form before any JP/KR index lookup, so an ambiguous
+    value such as ``7203`` cannot silently change market context. Japan and
+    Korea inputs must use their explicit Yahoo suffix (for example,
+    ``7203.T`` or ``005930.KS``).
 
-    Bare 4-digit HK codes are canonicalized to the padded ``HKxxxxx`` form
-    when no indexed JP/KR identity claims them. This keeps the downstream
-    market-context and provider routing layers aligned with the shared HK
-    input contract while preserving indexed suffix identities.
+    Other code-like inputs may still resolve through the stock index (for
+    example, ``005930`` -> ``005930.KS`` when the indexed identity is unique).
 
     Non-code-like values are still canonicalized only, letting callers keep
     their own validation policy (e.g. API name resolution path).
@@ -499,14 +498,14 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
     if not text:
         return ""
 
-    if is_code_like(text) or (text.isdigit() and len(text) == 4):
+    if text.isdigit() and len(text) == 4:
+        return f"HK{text.zfill(5)}"
+
+    if is_code_like(text):
         from src.data.stock_index_loader import resolve_index_stock_code
 
         resolved = resolve_index_stock_code(text)
         if resolved:
             return canonical_stock_code(resolved)
-
-        if text.isdigit() and len(text) == 4:
-            return f"HK{text.zfill(5)}"
 
     return canonical_stock_code(text)
