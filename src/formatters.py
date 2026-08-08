@@ -947,8 +947,8 @@ def _chunk_by_separators(content: str) -> tuple[list[str], str]:
         separator = "\n---\n"
     elif "\n# " in content:
         # 按 # 分割 (兼容一级标题)
-        parts = content.split("\n## ")
-        sections = [parts[0]] + [f"## {p}" for p in parts[1:]]
+        parts = content.split("\n# ")
+        sections = [parts[0]] + [f"# {p}" for p in parts[1:]]
         separator = "\n"
     elif "\n## " in content:
         # 按 ## 分割 (兼容二级标题)
