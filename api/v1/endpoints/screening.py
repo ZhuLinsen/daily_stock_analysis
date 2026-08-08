@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import uuid
 import hmac
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,7 @@ from src.services.task_queue import get_task_queue
 from src.storage import DatabaseManager
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class ScreeningScreenRequest(BaseModel):
@@ -93,6 +95,100 @@ def _screening_task_not_found(task_id: str) -> HTTPException:
         "screening_screen_task_not_found",
         f"选股任务 {task_id} 不存在或已过期",
     )
+
+
+def _build_screening_notification(
+    *,
+    result: Dict[str, Any],
+    strategy: str,
+    market: str,
+) -> str:
+    """Build a compact result notification for WebUI-triggered screening."""
+    candidates = result.get("candidates") if isinstance(result.get("candidates"), list) else []
+    candidate_count = int(result.get("candidate_count") or len(candidates))
+    ranking_mode = str(result.get("ranking_mode") or "factor").strip()
+    llm_model = str(result.get("llm_model_used") or "").strip()
+    if ranking_mode == "llm" and llm_model:
+        ranking_text = f"LLM重排（{llm_model}）"
+    elif result.get("llm_failure_reason"):
+        ranking_text = "因子排序（LLM重排未完成）"
+    else:
+        ranking_text = "因子排序"
+
+    lines = [
+        "📊 **WebUI选股完成**",
+        "",
+        f"策略：{strategy}",
+        f"市场：{market}",
+        f"结果：{candidate_count} 支候选股",
+        f"排序：{ranking_text}",
+        "",
+    ]
+    if candidates:
+        lines.append("候选列表：")
+        for index, candidate in enumerate(candidates, start=1):
+            if not isinstance(candidate, dict):
+                continue
+            code = str(candidate.get("code") or "-").strip()
+            name = str(candidate.get("name") or code).strip()
+            score = candidate.get("score")
+            change_pct = candidate.get("change_pct")
+            score_text = f"评分 {float(score):.1f}" if isinstance(score, (int, float)) else "评分 -"
+            change_text = (
+                f"涨跌 {float(change_pct):+.2f}%"
+                if isinstance(change_pct, (int, float))
+                else "涨跌 -"
+            )
+            lines.append(f"{index}. {name}（{code}）｜{score_text}｜{change_text}")
+    else:
+        lines.append("本次没有返回候选股票。")
+
+    warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+    if warnings:
+        lines.extend(["", "提示：" + "；".join(str(item) for item in warnings[:3])])
+    return "\n".join(lines)
+
+
+def _notify_screening_result(
+    *,
+    task_id: str,
+    result: Dict[str, Any],
+    strategy: str,
+    market: str,
+) -> None:
+    """Send a WebUI screening result without affecting task success."""
+    try:
+        from src.notification import NotificationService
+
+        content = _build_screening_notification(
+            result=result,
+            strategy=strategy,
+            market=market,
+        )
+        dispatch = NotificationService().send_with_results(
+            content,
+            route_type="report",
+            dedup_key=f"webui-screening:{task_id}",
+        )
+        if not dispatch.success:
+            logger.warning(
+                "WebUI screening result notification failed: task_id=%s status=%s message=%s",
+                task_id,
+                getattr(dispatch, "status", "unknown"),
+                getattr(dispatch, "message", ""),
+            )
+        else:
+            logger.info(
+                "WebUI screening result notification sent: task_id=%s status=%s",
+                task_id,
+                getattr(dispatch, "status", "sent"),
+            )
+    except Exception as exc:  # Notification must not turn a completed screen into a failed task.
+        logger.exception(
+            "WebUI screening result notification raised: task_id=%s error=%s",
+            task_id,
+            exc,
+        )
 
 
 @router.get("/status")
@@ -183,6 +279,12 @@ def screening_start_screen_task(
             task_id,
             98,
             f"选股已完成，正在整理 {result.get('candidate_count', 0)} 条候选",
+        )
+        _notify_screening_result(
+            task_id=task_id,
+            result=result,
+            strategy=request.strategy,
+            market=request.market,
         )
         return result
 

@@ -2357,12 +2357,18 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         with (
             patch("api.v1.endpoints.screening.get_task_queue", return_value=fake_queue),
             patch("api.v1.endpoints.screening.uuid.uuid4", return_value=SimpleNamespace(hex="screen-task-1")),
+            patch("src.notification.NotificationService") as notification_service,
             patch.object(
                 screening_endpoint.ScreeningService,
                 "screen",
                 return_value={"enabled": True, "candidates": [], "candidate_count": 0},
             ) as screen_mock,
         ):
+            notification_service.return_value.send_with_results.return_value = SimpleNamespace(
+                success=True,
+                status="sent",
+                message="",
+            )
             payload = screening_endpoint.screening_start_screen_task(
                 screening_endpoint.ScreeningScreenRequest(market="cn", strategy="dual_low", max_results=3),
                 http_request=self._request(),
@@ -2384,6 +2390,11 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         )
         screen_mock.call_args.kwargs["progress_callback"](66, "正在执行 LLM 候选重排")
         self.assertEqual(result["candidate_count"], 0)
+        notification_service.return_value.send_with_results.assert_called_once()
+        notification_args = notification_service.return_value.send_with_results.call_args
+        self.assertIn("WebUI选股完成", notification_args.args[0])
+        self.assertEqual(notification_args.kwargs["route_type"], "report")
+        self.assertEqual(notification_args.kwargs["dedup_key"], "webui-screening:screen-task-1")
         fake_queue.update_task_progress.assert_any_call(
             "screen-task-1",
             20,
