@@ -49,6 +49,19 @@ def test_watchlist_add_accepts_four_digit_hk_code_and_deduplicates_padded_varian
     assert service.update_calls == []
 
 
+def test_watchlist_add_persists_four_digit_hk_code_in_canonical_form() -> None:
+    service = FakeSystemConfigService("")
+
+    response = add_to_watchlist(
+        WatchlistRequest(stock_code="0001"),
+        service=service,
+    )
+
+    assert response.stock_codes == ["HK00001"]
+    assert service.stock_list == "HK00001"
+    assert service.update_calls == ["HK00001"]
+
+
 def test_watchlist_remove_accepts_four_digit_hk_code() -> None:
     service = FakeSystemConfigService("0001")
 
