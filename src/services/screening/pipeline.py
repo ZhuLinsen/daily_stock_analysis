@@ -176,6 +176,10 @@ def screen(
     snapshot_count = len(snapshot_df)
     snapshot_source = str(snapshot_df.attrs.get("snapshot_source", ""))
     source_errors = [str(item) for item in snapshot_df.attrs.get("source_errors", [])]
+    snapshot_fallback_used = bool(snapshot_df.attrs.get("fallback_used"))
+    snapshot_stale_age_hours = _safe_float(snapshot_df.attrs.get("stale_age_hours"))
+    snapshot_last_good_source = str(snapshot_df.attrs.get("last_good_snapshot_source", "") or "")
+    snapshot_last_good_created_at = str(snapshot_df.attrs.get("last_good_created_at", "") or "")
     degradation.extend(f"Snapshot source fallback: {item}" for item in source_errors)
     if bool(snapshot_df.attrs.get("fallback_used")):
         stale_age = snapshot_df.attrs.get("stale_age_hours")
@@ -213,6 +217,10 @@ def screen(
             degradation=[*degradation, "No candidates after hard filter"],
             snapshot_source=snapshot_source,
             source_errors=source_errors,
+            snapshot_fallback_used=snapshot_fallback_used,
+            snapshot_stale_age_hours=snapshot_stale_age_hours,
+            snapshot_last_good_source=snapshot_last_good_source,
+            snapshot_last_good_created_at=snapshot_last_good_created_at,
             strategy_version=strat.version,
             strategy_category=strat.category,
             post_analyzers=analyzer_names,
@@ -312,6 +320,10 @@ def screen(
             degradation=[*degradation, "No candidates after daily hard filter"],
             snapshot_source=snapshot_source,
             source_errors=source_errors,
+            snapshot_fallback_used=snapshot_fallback_used,
+            snapshot_stale_age_hours=snapshot_stale_age_hours,
+            snapshot_last_good_source=snapshot_last_good_source,
+            snapshot_last_good_created_at=snapshot_last_good_created_at,
             post_analyzers=analyzer_names,
             daily_enriched=daily_enriched,
             daily_enrich_count=daily_enrich_count,
@@ -545,6 +557,10 @@ def screen(
         degradation=degradation,
         snapshot_source=snapshot_source,
         source_errors=source_errors,
+        snapshot_fallback_used=snapshot_fallback_used,
+        snapshot_stale_age_hours=snapshot_stale_age_hours,
+        snapshot_last_good_source=snapshot_last_good_source,
+        snapshot_last_good_created_at=snapshot_last_good_created_at,
         deep_analysis_requested=("dsa" in analyzer_names),
         post_analyzers=analyzer_names,
         daily_enriched=daily_enriched,

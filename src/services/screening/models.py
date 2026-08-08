@@ -223,6 +223,10 @@ class ScreenResult:
     degradation: list[str] = field(default_factory=list)
     snapshot_source: str = ""
     source_errors: list[str] = field(default_factory=list)
+    snapshot_fallback_used: bool = False
+    snapshot_stale_age_hours: float | None = None
+    snapshot_last_good_source: str = ""
+    snapshot_last_good_created_at: str = ""
     deep_analysis_requested: bool = False
     post_analyzers: list[str] = field(default_factory=list)
     daily_enriched: bool = False

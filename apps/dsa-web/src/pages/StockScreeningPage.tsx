@@ -470,6 +470,12 @@ const ScreenAlertMessage: React.FC<{ messages: string[] }> = ({ messages }) => {
   );
 };
 
+const qualityStatusLabel = (status?: string) => ({
+  verified: '数据质量正常',
+  degraded: '数据部分降级',
+  insufficient: '数据不足，建议复核',
+}[String(status || '')] || '数据质量未评估');
+
 const hasLlmInsight = (item: ScreeningCandidate) =>
   Boolean(
     item.llmThesis ||
@@ -1676,6 +1682,13 @@ const StockScreeningPage: React.FC = () => {
               <span>
                 深度补充：{screenMeta?.dsaEnrichment?.enrichedCount ?? '-'} / {screenMeta?.dsaEnrichment?.requestedCount ?? '-'}
               </span>
+              <span>
+                数据质量：{qualityStatusLabel(screenMeta?.qualityStatus)}
+                {screenMeta?.qualityScore != null ? ` · ${screenMeta.qualityScore}/100` : ''}
+                {screenMeta?.snapshotFallbackUsed && screenMeta.snapshotStaleAgeHours != null
+                  ? ` · 快照约 ${screenMeta.snapshotStaleAgeHours.toFixed(1)} 小时前`
+                  : ''}
+              </span>
             </div>
           </details>
         </section>
@@ -1686,6 +1699,18 @@ const StockScreeningPage: React.FC = () => {
           variant={llmFailed ? 'warning' : 'info'}
           title={llmFailed ? '当前使用因子排序' : '选股提示'}
           message={<ScreenAlertMessage messages={alertMessages} />}
+        />
+      ) : null}
+
+      {screenMeta && screenMeta.qualityStatus && screenMeta.qualityStatus !== 'verified' ? (
+        <InlineAlert
+          variant={screenMeta.qualityStatus === 'insufficient' ? 'danger' : 'warning'}
+          title={qualityStatusLabel(screenMeta.qualityStatus)}
+          message={
+            screenMeta.qualityReasons?.length
+              ? screenMeta.qualityReasons.join('；')
+              : '本次结果包含降级或缺失信息，建议结合原始行情复核。'
+          }
         />
       ) : null}
 

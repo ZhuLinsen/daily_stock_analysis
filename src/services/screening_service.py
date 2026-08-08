@@ -1262,6 +1262,7 @@ class ScreeningService:
         )
         selected, dsa_enrichment = _enrich_candidates_with_dsa(selected)
         warnings = _collect_screening_warning_messages(raw_data)
+        quality = _assess_screening_quality(raw_data, candidates, warnings)
         response = {
             "enabled": True,
             "candidates": selected,
@@ -1287,6 +1288,13 @@ class ScreeningService:
             "degradation": _list_text_values(raw_data.get("degradation")),
             "warnings": warnings,
             "source_errors": _list_text_values(raw_data.get("source_errors")),
+            "quality_status": quality["status"],
+            "quality_score": quality["score"],
+            "quality_reasons": quality["reasons"],
+            "snapshot_fallback_used": bool(raw_data.get("snapshot_fallback_used")),
+            "snapshot_stale_age_hours": raw_data.get("snapshot_stale_age_hours"),
+            "snapshot_last_good_source": raw_data.get("snapshot_last_good_source") or "",
+            "snapshot_last_good_created_at": raw_data.get("snapshot_last_good_created_at") or "",
             "dsa_enrichment": dsa_enrichment,
             "deep_analysis_requested": raw_data.get("deep_analysis_requested"),
             "post_analyzers": raw_data.get("post_analyzers") or [],
@@ -3247,6 +3255,62 @@ def _collect_screening_warning_messages(payload: Dict[str, Any]) -> List[str]:
             seen.add(value)
             warnings.append(value)
     return warnings
+
+
+def _assess_screening_quality(
+    payload: Dict[str, Any],
+    candidates: List[Dict[str, Any]],
+    warnings: List[str],
+) -> Dict[str, Any]:
+    """Return a conservative, auditable quality label for one screening run.
+
+    This is a data/process quality indicator, not a probability of profit. It
+    intentionally leaves the ranking untouched and only makes degradation
+    visible to API, UI, history, and Telegram consumers.
+    """
+    score = 100
+    reasons: List[str] = []
+    source_errors = _list_text_values(payload.get("source_errors"))
+    fallback_used = bool(payload.get("snapshot_fallback_used"))
+    stale_age = _safe_float(payload.get("snapshot_stale_age_hours"))
+    llm_failed = bool(payload.get("llm_failure_reason")) or any(
+        "llm ranking failed" in item.lower() or "模型调用失败" in item
+        for item in warnings
+    )
+
+    if not candidates:
+        score -= 55
+        reasons.append("未返回候选股票")
+    if source_errors:
+        score -= min(25, 10 + len(source_errors) * 5)
+        reasons.append(f"{len(source_errors)} 个数据源尝试失败")
+    if fallback_used:
+        score -= 20
+        reasons.append("使用了最近一次成功快照")
+        if stale_age is None:
+            score -= 10
+            reasons.append("缓存年龄无法确认")
+        elif stale_age > 24:
+            score -= 25
+            reasons.append(f"快照已陈旧约 {stale_age:.1f} 小时")
+        elif stale_age > 4:
+            score -= 10
+            reasons.append(f"快照已陈旧约 {stale_age:.1f} 小时")
+    if llm_failed:
+        score -= 10
+        reasons.append("LLM 重排未完成，采用确定性因子排序")
+    if any("enrichment" in item.lower() and ("failed" in item.lower() or "error" in item.lower()) for item in warnings):
+        score -= 5
+        reasons.append("部分候选辅助信息未补齐")
+
+    score = max(0, min(100, int(score)))
+    if not candidates or score < 50:
+        status = "insufficient"
+    elif score < 85 or reasons:
+        status = "degraded"
+    else:
+        status = "verified"
+    return {"status": status, "score": score, "reasons": _dedupe_strings(reasons)}
 
 
 def _env_text(value: Any) -> str:

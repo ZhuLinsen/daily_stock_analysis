@@ -144,6 +144,16 @@ def _build_screening_notification(
         lines.append("本次没有返回候选股票。")
 
     warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+    quality_status = str(result.get("quality_status") or "").strip()
+    quality_score = result.get("quality_score")
+    if quality_status:
+        quality_label = {
+            "verified": "数据质量：正常",
+            "degraded": "数据质量：部分降级",
+            "insufficient": "数据质量：不足，建议复核",
+        }.get(quality_status, quality_status)
+        score_text = f"（{int(quality_score)}/100）" if isinstance(quality_score, (int, float)) else ""
+        lines.extend(["", f"{quality_label}{score_text}"])
     if warnings:
         lines.extend(["", "提示：" + "；".join(str(item) for item in warnings[:3])])
     return "\n".join(lines)

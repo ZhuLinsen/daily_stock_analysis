@@ -240,6 +240,13 @@ export type ScreeningScreenResponse = {
   rankingMode?: 'llm' | 'factor' | string;
   warnings?: string[];
   sourceErrors?: string[];
+  qualityStatus?: 'verified' | 'degraded' | 'insufficient' | string;
+  qualityScore?: number | null;
+  qualityReasons?: string[];
+  snapshotFallbackUsed?: boolean;
+  snapshotStaleAgeHours?: number | null;
+  snapshotLastGoodSource?: string;
+  snapshotLastGoodCreatedAt?: string;
   dsaEnrichment?: {
     enabled?: boolean;
     maxCandidates?: number;

@@ -86,6 +86,29 @@ def _screening_unavailable_diagnostics() -> Dict[str, str]:
 
 
 class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
+    def test_screening_quality_marks_live_clean_result_verified(self) -> None:
+        quality = screening_service._assess_screening_quality(
+            {"source_errors": [], "snapshot_fallback_used": False, "llm_failure_reason": ""},
+            [{"code": "000001"}],
+            [],
+        )
+        self.assertEqual(quality["status"], "verified")
+        self.assertEqual(quality["score"], 100)
+
+    def test_screening_quality_exposes_stale_fallback_and_llm_degradation(self) -> None:
+        quality = screening_service._assess_screening_quality(
+            {
+                "source_errors": ["sina: timeout", "efinance: timeout"],
+                "snapshot_fallback_used": True,
+                "snapshot_stale_age_hours": 30.0,
+                "llm_failure_reason": "timeout",
+            },
+            [{"code": "000001"}],
+            ["LLM ranking failed: fell back to screen_score"],
+        )
+        self.assertEqual(quality["status"], "insufficient")
+        self.assertLess(quality["score"], 50)
+        self.assertTrue(any("陈旧" in reason for reason in quality["reasons"]))
     def setUp(self) -> None:
         Config.reset_instance()
         self.env_patch = patch.dict(os.environ, {"SCREENING_DATA_DIR": ""}, clear=False)
