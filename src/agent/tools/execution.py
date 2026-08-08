@@ -188,8 +188,8 @@ def _normalize_tool_stock_code(value: Any) -> Any:
         if base.isdigit() and 1 <= len(base) <= 5:
             return f"HK{base.zfill(5)}"
 
-    if text.isdigit() and len(text) == 5:
-        return f"HK{text}"
+    if text.isdigit() and len(text) in (4, 5):
+        return f"HK{text.zfill(5)}"
 
     try:
         from data_provider.base import canonical_stock_code, normalize_stock_code

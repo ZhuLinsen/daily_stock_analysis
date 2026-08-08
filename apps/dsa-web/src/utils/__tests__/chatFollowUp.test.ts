@@ -1,9 +1,17 @@
 import { describe, expect, test } from 'vitest';
 
-import { buildChatFollowUpContext } from '../chatFollowUp';
+import { buildChatFollowUpContext, sanitizeFollowUpStockCode } from '../chatFollowUp';
 import type { AnalysisReport } from '../../types/analysis';
 
 describe('chat follow-up context', () => {
+  test('sanitizeFollowUpStockCode canonicalizes bare 4-digit HK codes', () => {
+    expect(sanitizeFollowUpStockCode('0001')).toBe('HK00001');
+    expect(sanitizeFollowUpStockCode('0941')).toBe('HK00941');
+    expect(sanitizeFollowUpStockCode('600519')).toBe('600519');
+    expect(sanitizeFollowUpStockCode('7203.T')).toBe('7203.T');
+    expect(sanitizeFollowUpStockCode('not-a-code')).toBeNull();
+  });
+
   test('includes market_structure_context in snake_case for history follow-up', () => {
     const report = {
       meta: {

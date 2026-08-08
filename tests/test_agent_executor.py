@@ -422,6 +422,16 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(result.effective_context["stock_code"], "600519")
         self.assertEqual(result.stock_scope.allowed_stock_codes, {"600519"})
 
+    def test_resolve_stock_scope_canonicalizes_bare_4_digit_context_to_hk(self):
+        # A bare 4-digit follow-up context (0001 长和) follows the HK contract:
+        # it must be canonicalized so the agent prompt keeps the HK market role
+        # instead of falling back to A-share guidance (issue #2164 / PR #2163).
+        result = resolve_stock_scope("继续", {"stock_code": "0001", "stock_name": "长和"})
+
+        self.assertEqual(result.stock_scope.mode, "maintain")
+        self.assertEqual(result.effective_context["stock_code"], "HK00001")
+        self.assertEqual(result.stock_scope.allowed_stock_codes, {"HK00001"})
+
     def test_run_agent_loop_does_not_persist_agent_usage_without_provider_usage(self):
         registry = _make_registry_with_echo()
         adapter = _make_mock_adapter()

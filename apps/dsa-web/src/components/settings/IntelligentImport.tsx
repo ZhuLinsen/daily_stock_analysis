@@ -7,6 +7,7 @@ import { Badge, Button, InlineAlert } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiLanguage } from '../../i18n/uiText';
 import { parseStockListValue } from '../../utils/stockList';
+import { findMatchingStockCode } from '../../utils/stockCode';
 
 const IMG_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
 const IMG_MAX = 5 * 1024 * 1024; // 5MB
@@ -260,7 +261,19 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
       return;
     }
     const current = parseCurrentList();
-    const merged = [...new Set([...current, ...toMerge])];
+    const merged: string[] = [];
+    for (const code of [...current, ...toMerge]) {
+      const trimmed = code.trim();
+      if (!trimmed) {
+        continue;
+      }
+      // Bare 4-digit numerics follow the HK contract: persist the padded HK
+      // form so scheduled/config-driven analysis keeps the HK market context.
+      const canonical = /^\d{4}$/.test(trimmed) ? `HK${trimmed.padStart(5, '0')}` : trimmed;
+      if (!findMatchingStockCode(merged, canonical)) {
+        merged.push(canonical);
+      }
+    }
     const value = merged.join(',');
 
     setIsMerging(true);

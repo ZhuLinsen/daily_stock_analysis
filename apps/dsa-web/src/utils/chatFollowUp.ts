@@ -1,6 +1,7 @@
 import type { AnalysisReport } from '../types/analysis';
 import { historyApi } from '../api/history';
 import { validateStockCode } from './validation';
+import { normalizeStockCode } from './stockCode';
 
 export interface ChatFollowUpContext {
   stock_code: string;
@@ -33,7 +34,7 @@ export function sanitizeFollowUpStockCode(stockCode: string | null): string | nu
   }
 
   const { valid, normalized } = validateStockCode(stockCode);
-  return valid ? normalized : null;
+  return valid ? normalizeStockCode(normalized) : null;
 }
 
 export function sanitizeFollowUpStockName(stockName: string | null): string | null {
