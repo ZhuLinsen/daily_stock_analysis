@@ -1682,6 +1682,9 @@ const StockScreeningPage: React.FC = () => {
               <span>
                 深度补充：{screenMeta?.dsaEnrichment?.enrichedCount ?? '-'} / {screenMeta?.dsaEnrichment?.requestedCount ?? '-'}
               </span>
+              {screenMeta?.qualityGateRejectedCount ? (
+                <span>质量门槛剔除：{screenMeta.qualityGateRejectedCount} 条无效候选</span>
+              ) : null}
               <span>
                 数据质量：{qualityStatusLabel(screenMeta?.qualityStatus)}
                 {screenMeta?.qualityScore != null ? ` · ${screenMeta.qualityScore}/100` : ''}

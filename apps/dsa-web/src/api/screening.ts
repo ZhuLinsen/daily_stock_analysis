@@ -247,6 +247,7 @@ export type ScreeningScreenResponse = {
   snapshotStaleAgeHours?: number | null;
   snapshotLastGoodSource?: string;
   snapshotLastGoodCreatedAt?: string;
+  qualityGateRejectedCount?: number;
   dsaEnrichment?: {
     enabled?: boolean;
     maxCandidates?: number;

@@ -162,6 +162,8 @@ class Pick:
     daily_quality_score: float | None = None
     daily_quality_flags: str = ""
     daily_source: str = ""
+    data_quality_score: float | None = None
+    data_quality_flags: str = ""
     factor_scores: dict[str, float] = field(default_factory=dict)
     llm_confidence: float | None = None
     llm_sector: str = ""
@@ -227,6 +229,7 @@ class ScreenResult:
     snapshot_stale_age_hours: float | None = None
     snapshot_last_good_source: str = ""
     snapshot_last_good_created_at: str = ""
+    quality_gate_rejected_count: int = 0
     deep_analysis_requested: bool = False
     post_analyzers: list[str] = field(default_factory=list)
     daily_enriched: bool = False

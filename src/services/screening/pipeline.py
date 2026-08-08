@@ -19,6 +19,7 @@ from src.services.screening.daily import enrich_daily_features
 from src.services.screening.dsa_provider import apply_dsa_provider_context
 from src.services.screening.filter import (
     apply_hard_filters,
+    apply_candidate_quality_gate,
     hard_filter_rejection_summary,
     hard_filter_waterfall,
     requires_daily_features,
@@ -190,6 +191,13 @@ def screen(
                 f"Snapshot source fallback: last_good_cache stale_age_hours={stale_age}"
             )
 
+    snapshot_df, quality_gate_notes = apply_candidate_quality_gate(snapshot_df)
+    quality_gate_rejected_count = sum(
+        int(item.rsplit(" ", 2)[-2]) for item in quality_gate_notes if item.rsplit(" ", 2)[-2].isdigit()
+    ) if quality_gate_notes else 0
+    if quality_gate_notes:
+        degradation.append("Candidate quality gate: " + "；".join(quality_gate_notes))
+
     # 3. L1 hard filter. If a strategy needs daily features, first apply only
     # snapshot-safe filters, then enrich a narrowed candidate pool.
     if explain_filters:
@@ -221,6 +229,7 @@ def screen(
             snapshot_stale_age_hours=snapshot_stale_age_hours,
             snapshot_last_good_source=snapshot_last_good_source,
             snapshot_last_good_created_at=snapshot_last_good_created_at,
+            quality_gate_rejected_count=quality_gate_rejected_count,
             strategy_version=strat.version,
             strategy_category=strat.category,
             post_analyzers=analyzer_names,
@@ -324,6 +333,7 @@ def screen(
             snapshot_stale_age_hours=snapshot_stale_age_hours,
             snapshot_last_good_source=snapshot_last_good_source,
             snapshot_last_good_created_at=snapshot_last_good_created_at,
+            quality_gate_rejected_count=quality_gate_rejected_count,
             post_analyzers=analyzer_names,
             daily_enriched=daily_enriched,
             daily_enrich_count=daily_enrich_count,
@@ -561,6 +571,7 @@ def screen(
         snapshot_stale_age_hours=snapshot_stale_age_hours,
         snapshot_last_good_source=snapshot_last_good_source,
         snapshot_last_good_created_at=snapshot_last_good_created_at,
+        quality_gate_rejected_count=quality_gate_rejected_count,
         deep_analysis_requested=("dsa" in analyzer_names),
         post_analyzers=analyzer_names,
         daily_enriched=daily_enriched,
@@ -643,6 +654,8 @@ def _df_to_picks(df: pd.DataFrame) -> list[Pick]:
             daily_quality_score=_safe_float(row.get("daily_quality_score")),
             daily_quality_flags=_safe_text(row.get("daily_quality_flags")),
             daily_source=_safe_text(row.get("daily_source")),
+            data_quality_score=_safe_float(row.get("data_quality_score")),
+            data_quality_flags=_safe_text(row.get("data_quality_flags")),
             factor_scores=factor_scores,
         ))
     return picks

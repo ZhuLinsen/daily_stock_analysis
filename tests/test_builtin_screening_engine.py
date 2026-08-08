@@ -16,7 +16,7 @@ from src.services.screening import REFERENCE_REVISION
 from src.services.screening.dsa_provider import apply_dsa_provider_context
 from src.services.screening import pipeline as screening_pipeline
 from src.services.screening import post_analysis as screening_post_analysis
-from src.services.screening.filter import apply_hard_filters
+from src.services.screening.filter import apply_candidate_quality_gate, apply_hard_filters
 from src.services.screening.config import Config as ScreeningRuntimeConfig
 from src.services.screening.models import HardFilterConfig, Pick, ScreeningConfig, Strategy
 from src.services.screening.scorer import compute_screen_scores
@@ -120,6 +120,37 @@ def test_screening_config_reads_snapshot_cache_ttl() -> None:
         config = ScreeningRuntimeConfig.from_env()
 
     assert config.snapshot_cache_ttl_seconds == 120.0
+
+
+def test_candidate_quality_gate_removes_unidentifiable_or_unpriced_rows() -> None:
+    frame = pd.DataFrame([
+        {"code": "000001", "name": "Ping An", "price": 10.0},
+        {"code": "", "name": "Missing Code", "price": 10.0},
+        {"code": "000002", "name": "Zero Price", "price": 0.0},
+    ])
+
+    filtered, notes = apply_candidate_quality_gate(frame)
+
+    assert filtered["code"].tolist() == ["000001"]
+    assert any("代码" in note for note in notes)
+    assert any("价格" in note for note in notes)
+
+
+def test_screen_score_penalizes_missing_optional_data_and_exposes_quality() -> None:
+    complete = {
+        "code": "000001", "name": "Complete", "price": 10.0, "amount": 1000,
+        "change_pct": 1.0, "turnover_rate": 2.0, "volume_ratio": 1.2,
+        "pe_ratio": 10.0, "pb_ratio": 1.0,
+    }
+    incomplete = {"code": "000002", "name": "Incomplete", "price": 10.0}
+    scored = compute_screen_scores(
+        pd.DataFrame([complete, incomplete]),
+        ScreeningConfig(factor_weights={"value": 1.0}),
+    ).set_index("code")
+
+    assert scored.loc["000001", "data_quality_score"] == 100
+    assert scored.loc["000002", "data_quality_score"] < 100
+    assert scored.loc["000002", "data_quality_flags"]
 
 
 def test_pipeline_passes_daily_history_cache_settings_to_enrichment(monkeypatch) -> None:

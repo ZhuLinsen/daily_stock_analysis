@@ -95,6 +95,9 @@ def compute_screen_scores(df: pd.DataFrame, config: ScreeningConfig) -> pd.DataF
     Adds a 'screen_score' column (0-100). Higher is better.
     """
     result = df.copy()
+    quality_score, quality_flags = _compute_data_quality(result)
+    result["data_quality_score"] = quality_score.round(2)
+    result["data_quality_flags"] = quality_flags
     factors = _compute_factor_scores(result, config)
     for name, series in factors.items():
         result[_FACTOR_COLUMNS[name]] = series.round(4)
@@ -106,6 +109,11 @@ def compute_screen_scores(df: pd.DataFrame, config: ScreeningConfig) -> pd.DataF
             result["screen_score"] += factors[factor] * weight
 
     result["screen_score"] = result["screen_score"].clip(0, 100)
+    # Keep complete rows unchanged. Incomplete optional fields receive a
+    # bounded penalty so missing data cannot silently look equally strong.
+    result["screen_score"] = (
+        result["screen_score"] - (100.0 - result["data_quality_score"]).clip(lower=0) * 0.12
+    ).clip(0, 100).round(4)
 
     return result
 
@@ -113,6 +121,30 @@ def compute_screen_scores(df: pd.DataFrame, config: ScreeningConfig) -> pd.DataF
 def factor_score_columns() -> dict[str, str]:
     """Return the stable factor-score column mapping used in Pick output."""
     return dict(_FACTOR_COLUMNS)
+
+
+def _compute_data_quality(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Score row completeness without treating missing fundamentals as zero."""
+    score = pd.Series(100.0, index=df.index)
+    flags = pd.Series("", index=df.index, dtype="object")
+    optional_weights = {
+        "amount": 10.0,
+        "change_pct": 8.0,
+        "turnover_rate": 8.0,
+        "volume_ratio": 8.0,
+        "pe_ratio": 8.0,
+        "pb_ratio": 8.0,
+    }
+    for column, penalty in optional_weights.items():
+        if column not in df.columns:
+            missing = pd.Series(True, index=df.index)
+        else:
+            values = pd.to_numeric(df[column], errors="coerce")
+            missing = values.isna()
+        score = score - missing.astype(float) * penalty
+        flags = flags.where(~missing, flags.astype(str).str.cat(pd.Series(column, index=df.index), sep=";"))
+    flags = flags.astype(str).str.strip(";")
+    return score.clip(0, 100), flags
 
 
 def _normalized_factor_weights(config: ScreeningConfig) -> dict[str, float]:

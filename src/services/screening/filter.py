@@ -43,6 +43,43 @@ class SnapshotFieldMissingError(ValueError):
     """Raised when a configured hard filter cannot be evaluated safely."""
 
 
+def apply_candidate_quality_gate(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Remove rows that cannot identify or price a candidate safely.
+
+    Optional fundamentals remain eligible and are scored with an explicit
+    completeness penalty. Missing identity or non-positive prices are not
+    eligible for ranking because they cannot be audited or acted upon.
+    """
+    if df.empty:
+        return df.copy(), []
+
+    result = df.copy()
+    mask = pd.Series(True, index=result.index)
+    diagnostics: list[str] = []
+
+    def non_blank(columns: list[str]) -> pd.Series:
+        column = _find_col(result, columns)
+        if not column:
+            return pd.Series(False, index=result.index)
+        return result[column].notna() & result[column].astype(str).str.strip().ne("")
+
+    code_mask = non_blank(["code", "代码", "symbol", "证券代码"])
+    name_mask = non_blank(["name", "股票名称", "名称"])
+    price_col = _find_col(result, ["price", "最新价", "现价"])
+    if price_col:
+        price = pd.to_numeric(result[price_col], errors="coerce")
+        price_mask = price.notna() & price.gt(0)
+    else:
+        price_mask = pd.Series(False, index=result.index)
+
+    for label, field_mask in (("代码或代码格式无效", code_mask), ("股票名称缺失", name_mask), ("价格无效", price_mask)):
+        removed = int((mask & ~field_mask).sum())
+        if removed:
+            diagnostics.append(f"{label} {removed} 条")
+        mask &= field_mask
+    return result.loc[mask].copy(), diagnostics
+
+
 def apply_hard_filters(df: pd.DataFrame, filters: HardFilterConfig) -> pd.DataFrame:
     """Filter snapshot DataFrame by hard conditions. Returns filtered copy."""
     result = df.copy()
