@@ -367,4 +367,5 @@ class TestResolveIndexStockCodeForAnalysis:
     def test_falls_back_to_canonical_when_index_miss(self):
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value=None):
             assert resolve_index_stock_code_for_analysis("005930") == "005930"
+            assert resolve_index_stock_code_for_analysis("0001") == "HK00001"
             assert resolve_index_stock_code_for_analysis("AAPL") == "AAPL"

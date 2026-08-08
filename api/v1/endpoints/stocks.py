@@ -81,6 +81,7 @@ _STOCK_CODE_RE = re.compile(
     r"|\d{6}\.(?:SH|SZ|SS|BJ)"                # exchange-suffixed A-share
     r"|\d{1,5}\.HK"                           # HK suffix format
     r"|HK\d{1,5}"                             # HK prefix format
+    r"|\d{4}"                                 # bare 4-digit HK code
     r"|\d{5}"                                 # bare 5-digit HK code
     r"|[A-Z]{1,5}(?:\.(?:US|[A-Z]))?"         # US ticker
     r")$",
@@ -113,8 +114,8 @@ def _validate_and_normalize_stock_code(code: str) -> str:
 def _watchlist_match_key(code: str) -> str:
     """Return the equivalence key used for watchlist add/remove matching."""
     normalized = normalize_stock_code(code.strip())
-    if re.fullmatch(r"\d{5}", normalized):
-        return f"HK{normalized}"
+    if re.fullmatch(r"\d{4,5}", normalized):
+        return f"HK{normalized.zfill(5)}"
     return normalized.upper()
 
 

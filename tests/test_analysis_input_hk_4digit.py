@@ -39,9 +39,9 @@ def tearDownModule() -> None:
 class AnalysisInputHkBareCodeTestCase(unittest.TestCase):
     def test_bare_4_digit_hk_codes_are_accepted(self) -> None:
         # Issue #2091 core examples: 0001 长和 / 0941 中国移动.
-        self.assertEqual(_resolve_and_normalize_input("0001"), "0001")
-        self.assertEqual(_resolve_and_normalize_input("0941"), "0941")
-        self.assertEqual(_resolve_and_normalize_input("1810"), "1810")
+        self.assertEqual(_resolve_and_normalize_input("0001"), "HK00001")
+        self.assertEqual(_resolve_and_normalize_input("0941"), "HK00941")
+        self.assertEqual(_resolve_and_normalize_input("1810"), "HK01810")
 
     def test_bare_5_digit_hk_codes_still_work(self) -> None:
         self.assertEqual(_resolve_and_normalize_input("00700"), "00700")

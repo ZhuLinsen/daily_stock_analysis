@@ -36,6 +36,32 @@ def test_watchlist_add_deduplicates_raw_hk_code_against_prefixed_variant() -> No
     assert service.update_calls == []
 
 
+def test_watchlist_add_accepts_four_digit_hk_code_and_deduplicates_padded_variant() -> None:
+    service = FakeSystemConfigService("HK00001")
+
+    response = add_to_watchlist(
+        WatchlistRequest(stock_code="0001"),
+        service=service,
+    )
+
+    assert response.stock_codes == ["HK00001"]
+    assert service.stock_list == "HK00001"
+    assert service.update_calls == []
+
+
+def test_watchlist_remove_accepts_four_digit_hk_code() -> None:
+    service = FakeSystemConfigService("0001")
+
+    response = remove_from_watchlist(
+        WatchlistRequest(stock_code="HK00001"),
+        service=service,
+    )
+
+    assert response.stock_codes == []
+    assert service.stock_list == ""
+    assert service.update_calls == [""]
+
+
 def test_watchlist_remove_deletes_raw_hk_code_from_prefixed_variant_request() -> None:
     service = FakeSystemConfigService("00700")
 

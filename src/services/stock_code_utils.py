@@ -487,6 +487,11 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
       preferred.
     - Non-matching code-like inputs keep the canonicalized input.
 
+    Bare 4-digit HK codes are canonicalized to the padded ``HKxxxxx`` form
+    when no indexed JP/KR identity claims them. This keeps the downstream
+    market-context and provider routing layers aligned with the shared HK
+    input contract while preserving indexed suffix identities.
+
     Non-code-like values are still canonicalized only, letting callers keep
     their own validation policy (e.g. API name resolution path).
     """
@@ -500,5 +505,8 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
         resolved = resolve_index_stock_code(text)
         if resolved:
             return canonical_stock_code(resolved)
+
+        if text.isdigit() and len(text) == 4:
+            return f"HK{text.zfill(5)}"
 
     return canonical_stock_code(text)
