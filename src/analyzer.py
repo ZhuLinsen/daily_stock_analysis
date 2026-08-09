@@ -16,7 +16,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Tuple, Callable
+from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 
 import litellm
 from json_repair import repair_json
@@ -62,6 +62,7 @@ from src.llm.generation_backend import (
     GenerationBackend,
     GenerationError,
     GenerationErrorCode,
+    GenerationResult,
 )
 from src.llm.usage import (
     attach_legacy_message_stability_audit,
@@ -2980,7 +2981,8 @@ class GeminiAnalyzer:
         stream_progress_callback: Optional[Callable[[int], None]] = None,
         response_validator: Optional[Callable[[str], None]] = None,
         audit_context: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, str, Dict[str, Any]]:
+        return_generation_result: bool = False,
+    ) -> Union[Tuple[str, str, Dict[str, Any]], GenerationResult]:
         """Compatibility wrapper around the configured generation backend."""
         preflight_error = self.get_generation_backend_config_error()
         if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
@@ -3078,6 +3080,8 @@ class GeminiAnalyzer:
                         "fallback_error": str(fallback_exc),
                     },
                 ) from fallback_exc
+        if return_generation_result:
+            return result
         return result.text, result.model, result.usage
 
     def _call_litellm_impl(
@@ -3352,6 +3356,38 @@ class GeminiAnalyzer:
             raise
         except Exception as exc:
             logger.error("[generate_text] LLM call failed: %s", exc)
+            return None
+
+    def get_generation_backend_identity(self) -> Tuple[str, str]:
+        """Return the configured primary backend identity for live diagnostics."""
+        backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+            return backend_id, backend_id
+        config = self._get_runtime_config()
+        return backend_id, str(getattr(config, "litellm_model", "") or "")
+
+    def generate_text_with_metadata(
+        self,
+        prompt: str,
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+    ) -> Optional[GenerationResult]:
+        """Generate text and return the actual backend/model used for diagnostics."""
+        try:
+            result = self._call_litellm(
+                prompt,
+                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                return_generation_result=True,
+            )
+            if not isinstance(result, GenerationResult):
+                raise TypeError("generation backend returned an invalid result")
+            if should_persist_usage_telemetry(result.usage):
+                persist_llm_usage(result.usage, result.model, call_type="market_review")
+            return result
+        except GenerationError:
+            raise
+        except Exception as exc:
+            logger.error("[generate_text_with_metadata] LLM call failed: %s", exc)
             return None
 
     def analyze(

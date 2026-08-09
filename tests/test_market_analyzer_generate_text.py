@@ -206,6 +206,27 @@ class TestAnalyzerGenerateText:
         assert result == "复盘"
         mock_persist.assert_not_called()
 
+    def test_generate_text_with_metadata_returns_actual_backend_result(self):
+        from src.llm.generation_backend import GenerationResult
+
+        analyzer = self._make_analyzer()
+        generation_result = GenerationResult(
+            text="复盘",
+            provider="codex_cli",
+            model="codex_cli",
+            backend="codex_cli",
+            usage={"usage_available": False, "usage_source": "unavailable"},
+        )
+        with patch.object(analyzer, "_call_litellm", return_value=generation_result) as mock_call:
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is generation_result
+        mock_call.assert_called_once_with(
+            "写一份复盘",
+            generation_config={"max_tokens": 2048, "temperature": 0.7},
+            return_generation_result=True,
+        )
+
     @pytest.mark.parametrize(
         ("generation_backend", "executable_name"),
         [
@@ -2621,7 +2642,21 @@ class TestMarketAnalyzerBypassFix:
             analyzer._router = None
             analyzer._litellm_available = True
             analyzer._config_override = cfg
-            analyzer.generate_text = MagicMock(return_value=return_value)
+            analyzer.get_generation_backend_identity = MagicMock(
+                return_value=("litellm", cfg.litellm_model)
+            )
+            analyzer.generate_text_with_metadata = MagicMock(
+                return_value=(
+                    None
+                    if return_value is None
+                    else SimpleNamespace(
+                        text=return_value,
+                        provider="litellm",
+                        model=cfg.litellm_model,
+                        backend="litellm",
+                    )
+                )
+            )
 
             ma = MarketAnalyzer.__new__(MarketAnalyzer)
             ma.analyzer = analyzer
@@ -2632,16 +2667,15 @@ class TestMarketAnalyzerBypassFix:
             return ma
 
     def test_no_access_to_private_model_attribute(self):
-        """generate_text() must be called; _model must never be accessed."""
+        """The public metadata API must be called; _model must never be accessed."""
         ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
         # Ensure _model attribute does not exist (simulates PR #494 state)
         assert not hasattr(ma.analyzer, "_model") or ma.analyzer._model is None, (
             "_model should not be set on the LiteLLM-based analyzer"
         )
-        # generate_text is a MagicMock, so calling it won't crash
-        result = ma.analyzer.generate_text("prompt")
-        assert isinstance(result, str) and len(result) > 0
-        ma.analyzer.generate_text.assert_called_once()
+        result = ma.analyzer.generate_text_with_metadata("prompt")
+        assert result.text == "复盘结果"
+        ma.analyzer.generate_text_with_metadata.assert_called_once()
 
     def test_generate_text_none_falls_back_to_template(self):
         """generate_market_review() falls back to template when generate_text returns None."""
@@ -2662,7 +2696,7 @@ class TestMarketAnalyzerBypassFix:
         )
         result = ma.generate_market_review(overview, [])
         assert isinstance(result, str) and len(result) > 0
-        ma.analyzer.generate_text.assert_called_once()
+        ma.analyzer.generate_text_with_metadata.assert_called_once()
 
     def test_generation_backend_config_error_does_not_template_fallback(self):
         from src.llm.generation_backend import GenerationError
@@ -2691,7 +2725,7 @@ class TestMarketAnalyzerBypassFix:
         assert exc_info.value.details["field"] == "GENERATION_BACKEND"
         assert exc_info.value.details["requested_backend"] == "codex"
         template_review.assert_not_called()
-        ma.analyzer.generate_text.assert_not_called()
+        ma.analyzer.generate_text_with_metadata.assert_not_called()
         mock_record_llm_run.assert_called_once()
         diagnostic = mock_record_llm_run.call_args.kwargs
         assert diagnostic["success"] is False
@@ -2704,7 +2738,7 @@ class TestMarketAnalyzerBypassFix:
         from src.market_analyzer import MarketOverview, MarketIndex
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
-        ma.analyzer.generate_text.side_effect = GenerationError(
+        ma.analyzer.generate_text_with_metadata.side_effect = GenerationError(
             error_code=GenerationErrorCode.COMMAND_NOT_FOUND,
             stage="configuration",
             retryable=False,
@@ -2792,10 +2826,52 @@ class TestMarketAnalyzerBypassFix:
         result = ma.generate_market_review(overview, [])
 
         assert isinstance(result, str) and len(result) > 0
-        ma.analyzer.generate_text.assert_called_once()
-        _, kwargs = ma.analyzer.generate_text.call_args
+        ma.analyzer.generate_text_with_metadata.assert_called_once()
+        _, kwargs = ma.analyzer.generate_text_with_metadata.call_args
         assert kwargs["max_tokens"] == 8192
         assert kwargs["temperature"] == 0.7
+
+    def test_market_review_records_actual_codex_backend(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="codex_cli",
+            model="codex_cli",
+            backend="codex_cli",
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "codex_cli"
+        assert recorded.call_args.kwargs["model"] == "codex_cli"
+
+    def test_market_review_records_actual_litellm_fallback(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="openai",
+            model="openai/qwen3.7-max",
+            backend="litellm",
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "openai"
+        assert recorded.call_args.kwargs["model"] == "openai/qwen3.7-max"
 
     def test_generate_template_review_uses_english_shell_for_cn_when_report_language_is_en(self):
         from src.market_analyzer import MarketOverview, MarketIndex

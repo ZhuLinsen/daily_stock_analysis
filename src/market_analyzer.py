@@ -669,8 +669,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
             record_llm_run(
                 success=False,
-                provider="litellm",
-                model=getattr(self.config, "litellm_model", None),
+                provider=backend_error.provider or backend_error.backend,
+                model=backend_error.backend,
                 call_type="market_review",
                 error_type=type(backend_error).__name__,
                 error_message=backend_error,
@@ -688,20 +688,29 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         prompt = self._build_review_prompt(overview, news)
 
         logger.info("[大盘] %s action=generate_review status=start", self._log_context())
-        # Use the public generate_text() entry point - never access private analyzer attributes.
+        # Use public analyzer APIs so diagnostics reflect the actual execution backend.
         llm_started_at = time.perf_counter()
+        provider, model = self.analyzer.get_generation_backend_identity()
         try:
             record_llm_run_started(
-                provider="litellm",
-                model=getattr(self.config, "litellm_model", None),
+                provider=provider,
+                model=model,
                 call_type="market_review",
             )
-            review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
+            generation_result = self.analyzer.generate_text_with_metadata(
+                prompt,
+                max_tokens=8192,
+                temperature=0.7,
+            )
+            review = generation_result.text if generation_result else None
+            if generation_result is not None:
+                provider = generation_result.provider or generation_result.backend or provider
+                model = generation_result.model or model
         except Exception as exc:
             record_llm_run(
                 success=False,
-                provider="litellm",
-                model=getattr(self.config, "litellm_model", None),
+                provider=getattr(exc, "provider", None) or getattr(exc, "backend", None) or provider,
+                model=getattr(exc, "backend", None) or model,
                 call_type="market_review",
                 duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
                 error_type=type(exc).__name__,
@@ -711,8 +720,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         record_llm_run(
             success=bool(review),
-            provider="litellm",
-            model=getattr(self.config, "litellm_model", None),
+            provider=provider,
+            model=model,
             call_type="market_review",
             duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
             error_type=None if review else "EmptyResponse",
