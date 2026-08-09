@@ -54,6 +54,25 @@ class TestChunkContentByMaxWords(unittest.TestCase):
         self.assertGreaterEqual(len(result), 2)
         self.assertEqual("".join(result), text)
 
+    def test_level_one_heading_content_splits_without_recursive_failure(self):
+        part_a = "A" * 40
+        part_b = "B" * 40
+        text = f"{part_a}\n# Section\n{part_b}"
+
+        result = chunk_content_by_max_words(text, 60)
+
+        self.assertGreaterEqual(len(result), 2)
+        joined = "".join(result).replace(TRUNCATION_SUFFIX, "")
+        self.assertEqual(joined, text)
+
+    def test_long_level_one_section_does_not_duplicate_buffered_preamble(self):
+        text = "Intro\n# Section\n" + "B" * 2500
+
+        result = chunk_content_by_max_words(text, 2000)
+
+        joined = "".join(result).replace(TRUNCATION_SUFFIX, "")
+        self.assertEqual(joined, text)
+
     def test_long_content_without_separators_gets_force_split_with_suffix(self):
         long_text = "X" * 200
         result = chunk_content_by_max_words(long_text, 50)
@@ -130,6 +149,17 @@ class TestChunkContentByMaxBytes(unittest.TestCase):
         part_b = "B" * 150
         text = f"{part_a}\n---\n{part_b}"
         result = chunk_content_by_max_bytes(text, 200)
+        self.assertGreaterEqual(len(result), 2)
+        joined = "".join(result).replace(TRUNCATION_SUFFIX, "")
+        self.assertEqual(joined, text)
+
+    def test_level_one_heading_content_splits_without_recursive_failure(self):
+        part_a = "A" * 80
+        part_b = "B" * 80
+        text = f"{part_a}\n# Section\n{part_b}"
+
+        result = chunk_content_by_max_bytes(text, 100)
+
         self.assertGreaterEqual(len(result), 2)
         joined = "".join(result).replace(TRUNCATION_SUFFIX, "")
         self.assertEqual(joined, text)

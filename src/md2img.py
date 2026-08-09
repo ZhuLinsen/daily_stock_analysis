@@ -21,18 +21,17 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from src.share_image import ShareImageBranding, build_share_image_html
+from src.share_image import (
+    ShareImageBranding,
+    build_share_image_html,
+    share_image_branding_from_config,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _share_image_branding(config: object) -> ShareImageBranding:
-    return ShareImageBranding(
-        xiaohongshu_url=str(getattr(config, "share_image_xiaohongshu_url", None) or ""),
-        xiaohongshu_handle=str(getattr(config, "share_image_xiaohongshu_handle", None) or ""),
-        xiaohongshu_id=str(getattr(config, "share_image_xiaohongshu_id", None) or ""),
-        xiaohongshu_qr_path=str(getattr(config, "share_image_xiaohongshu_qr_path", None) or ""),
-    )
+    return share_image_branding_from_config(config)
 
 
 def _resolve_playwright_command() -> Optional[str]:
@@ -249,7 +248,7 @@ def markdown_to_image(
         branding = _share_image_branding(config)
     except Exception:
         engine = "wkhtmltoimage"
-        branding = ShareImageBranding()
+        branding = share_image_branding_from_config(object())
 
     if engine == "markdown-to-file":
         return _markdown_to_image_m2f(markdown_text, structured_payload, branding)

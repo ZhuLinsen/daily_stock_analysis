@@ -947,8 +947,8 @@ def _chunk_by_separators(content: str) -> tuple[list[str], str]:
         separator = "\n---\n"
     elif "\n# " in content:
         # 按 # 分割 (兼容一级标题)
-        parts = content.split("\n## ")
-        sections = [parts[0]] + [f"## {p}" for p in parts[1:]]
+        parts = content.split("\n# ")
+        sections = [parts[0]] + [f"# {p}" for p in parts[1:]]
         separator = "\n"
     elif "\n## " in content:
         # 按 ## 分割 (兼容二级标题)
@@ -1059,6 +1059,8 @@ def chunk_content_by_max_words(
                 # 先保存当前积累的内容
                 if current_chunk:
                     chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_word_len = 0
 
                 # 强制截断这个超长 section
                 section_chunks = _chunk(

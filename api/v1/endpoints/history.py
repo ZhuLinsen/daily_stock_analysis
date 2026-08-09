@@ -13,7 +13,7 @@ import logging
 from typing import Any, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Body
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 
 from api.deps import get_database_manager
 from api.v1.schemas.history import (
@@ -59,6 +59,11 @@ from src.analysis_context_pack_overview import (
 from src.market_phase_summary import extract_market_phase_summary
 from src.config import get_config
 from src.md2img import markdown_to_image
+from src.share_image import (
+    ShareImageBranding,
+    build_share_image_html,
+    share_image_branding_from_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +83,50 @@ def _history_share_image_payload(result: Mapping[str, Any]) -> Optional[Mapping[
 
     raw_result = result.get("raw_result")
     return raw_result if isinstance(raw_result, Mapping) else None
+
+
+def _history_share_image_input(
+    record_id: str,
+    db_manager: DatabaseManager,
+) -> tuple[Mapping[str, Any], str]:
+    """Load the shared persisted input used by PNG and desktop HTML renderers."""
+
+    service = HistoryService(db_manager)
+    result = service.resolve_and_get_detail(record_id)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": f"未找到 id/query_id={record_id} 的分析记录",
+            },
+        )
+
+    try:
+        markdown_content = service.get_markdown_report(record_id)
+    except MarkdownReportGenerationError as exc:
+        logger.error("Share image report generation failed for %s: %s", record_id, exc.message)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "generation_failed",
+                "message": f"生成分享图片所需报告失败: {exc.message}",
+            },
+        ) from exc
+
+    if not markdown_content:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": f"未找到 id/query_id={record_id} 的报告内容",
+            },
+        )
+    return result, markdown_content
+
+
+def _history_share_image_branding(config: object) -> ShareImageBranding:
+    return share_image_branding_from_config(config)
 
 
 def _normalize_code_for_grouping(code: str) -> str:
@@ -764,6 +813,60 @@ def get_history_news(
 
 
 @router.get(
+    "/{record_id}/share-image-html",
+    response_class=HTMLResponse,
+    responses={
+        200: {"description": "供桌面端内置 Chromium 渲染的分享图 HTML"},
+        404: {"description": "报告不存在", "model": ErrorResponse},
+        413: {"description": "报告内容超过分享图长度上限", "model": ErrorResponse},
+        500: {"description": "报告生成失败", "model": ErrorResponse},
+    },
+    summary="获取历史报告分享图 HTML",
+    description="根据历史报告与持久化结构化数据生成只供桌面端本地截图的确定性 HTML",
+)
+def get_history_share_image_html(
+    record_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> HTMLResponse:
+    result, markdown_content = _history_share_image_input(record_id, db_manager)
+    config = get_config()
+    max_chars = getattr(config, "markdown_to_image_max_chars", 15000)
+    if len(markdown_content) > max_chars:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": "share_image_too_large",
+                "message": f"报告内容超过分享图片上限 {max_chars} 字符",
+            },
+        )
+
+    try:
+        html = build_share_image_html(
+            markdown_content,
+            structured_payload=_history_share_image_payload(result),
+            branding=_history_share_image_branding(config),
+        )
+    except Exception as exc:
+        logger.error("Share image HTML generation failed for %s: %s", record_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "generation_failed",
+                "message": "生成桌面分享图片内容失败",
+            },
+        ) from exc
+
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(
     "/{record_id}/share-image",
     response_class=Response,
     responses={
@@ -779,37 +882,7 @@ def get_history_share_image(
     record_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> Response:
-    service = HistoryService(db_manager)
-    result = service.resolve_and_get_detail(record_id)
-    if result is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "not_found",
-                "message": f"未找到 id/query_id={record_id} 的分析记录",
-            },
-        )
-
-    try:
-        markdown_content = service.get_markdown_report(record_id)
-    except MarkdownReportGenerationError as exc:
-        logger.error("Share image report generation failed for %s: %s", record_id, exc.message)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "generation_failed",
-                "message": f"生成分享图片所需报告失败: {exc.message}",
-            },
-        ) from exc
-
-    if not markdown_content:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "not_found",
-                "message": f"未找到 id/query_id={record_id} 的报告内容",
-            },
-        )
+    result, markdown_content = _history_share_image_input(record_id, db_manager)
 
     config = get_config()
     image_bytes = markdown_to_image(

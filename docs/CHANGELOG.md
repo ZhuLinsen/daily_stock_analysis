@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [修复] 首页移动端侧栏的历史、自选与今日列表恢复纵向触摸滚动：外层卡片不再覆盖移动端滚动壳层的 `overflow`，实际滚动视口明确启用纵向手势与边界约束，桌面端继续保留卡片裁剪
+- [修复] Electron 桌面端恢复历史个股报告、市场复盘和完整报告的“分享”入口，复用安装包自带 Chromium 从本机受限 HTML 生成 PNG；Web 与桌面端在未配置自定义品牌时统一使用随包分发的小红书二维码，并在二维码下展示昵称 `@霸天土小豆`。
 - [新功能] Agent Chat 按会话持久化 Skill 选择，支持刷新和会话切换恢复，并区分省略 `skills`、显式空列表与非空选择；无持久化状态的历史会话继续使用运行时默认且不会被静默转为显式选择，复用分析 `context` 中残留的 legacy `skills` / `strategies` 也不会覆盖顶层三态或会话状态，非空但全部无效的 Skill 请求不会被当成显式空列表并清空既有选择
 - [改进] 后端 CI 在不跳过离线测试的前提下按完整测试文件分成三个独立 runner 并行执行，由单一 `backend-gate` 汇总门禁结果；实测文件耗时和首分片静态检查成本共同参与负载平衡，新测试文件自动纳入，现有 pip 安装和测试参数保持不变，避免 xdist 进程内并发的全局状态竞态。
 - [测试] 后端 CI 默认覆盖所有非 Web 改动，仅对已证明安全的纯 Web 路径跳过，并将整个 Web public 目录及前端渠道模板、设置帮助视为跨层运行合同；补充纯 Web、共享 Web 资产及 Web/非 Web 混合改动的过滤语义回归，明确 `predicate-quantifier: every` 按单文件匹配全部规则、再以任一匹配文件触发门禁。Docker CI 继续按构建输入过滤。离线测试保留稳定的串行执行与慢用例摘要，并移除重复用例和测试内真实等待。
@@ -51,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] FAQ 补充 macOS 桌面应用被 Gatekeeper quarantine 阻止启动时的受信任安装包临时放行步骤（refs #2113）。
 - [新功能] LLM 渠道新增显式 Chat Completions / Responses API Surface，支持 Anspire GPT-5.6 系列等 Responses-only 模型，并统一连接测试、主分析、筛选、图片识别与状态诊断路由；所有运行路径先按同一规则解析协议再校验 Surface，混合 Surface 的同名路由按未知能力保守处理；显式 Anspire 渠道独占共享 Key，非法 Surface 或协议不匹配时不会把该 Key 回退为旧版 Chat 部署，同时保留无关的 Gemini/OpenAI 等 legacy provider；本地 loopback 渠道可在图片识别路径继续无 Key 调用，远端渠道仍要求凭据；禁用渠道不会因残留 Surface 配置阻断其他兼容 fallback；Web 编辑器不会静默改写非法历史值，并允许将 Hermes 非法 Surface 修复为 Chat Completions。
 - [修复] 将 Responses 渠道的协议、模型 provider、公开 route alias 与 wire-model 构造收敛为统一路由契约，保存校验、运行时加载、状态诊断、选股入口和 Web 编辑器共同使用当前安装的 LiteLLM provider registry，拒绝 `openai` 协议下显式非 OpenAI provider 的模型、拒绝同一 alias 混用 Chat/Responses，并保留 OpenAI-compatible 网关自有的带斜杠模型 ID。
+- [修复] 长通知包含一级 Markdown 标题时按对应标题边界正确分片，避免错误递归耗尽长度预算并中断发送。
 
 ## [3.29.0] - 2026-08-02
 

@@ -130,7 +130,7 @@ describe('ShareImageButton', () => {
     expect(mockedGetShareImage).toHaveBeenCalledWith(19);
   });
 
-  it('does not render or prefetch share images during desktop runtime', () => {
+  it('keeps the button hidden for an older desktop bridge without image rendering', () => {
     mockedGetShareImage.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
     Object.defineProperty(window, 'dsaDesktop', {
       configurable: true,
@@ -147,6 +147,30 @@ describe('ShareImageButton', () => {
 
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
     expect(mockedGetShareImage).not.toHaveBeenCalled();
+  });
+
+  it('renders and downloads share images through the desktop bridge', async () => {
+    const renderShareImage = vi.fn().mockResolvedValue(
+      new TextEncoder().encode('png').buffer,
+    );
+    Object.defineProperty(window, 'dsaDesktop', {
+      configurable: true,
+      value: { version: '3.30.0', renderShareImage },
+    });
+
+    render(
+      <ShareImageButton
+        recordId={24}
+        reportTitle="桌面端报告"
+        reportLanguage="zh"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '分享' }));
+    await waitFor(() => expect(renderShareImage).toHaveBeenCalledWith(24));
+    await waitFor(() => expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled());
+    expect(mockedGetShareImage).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '已生成' })).toBeInTheDocument();
   });
 
   it('clears the previous success reset timer when switching to another record', async () => {

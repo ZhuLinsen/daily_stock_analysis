@@ -17,6 +17,7 @@ let lastPromptedInstallVersion = '';
 let electronAutoUpdater = undefined;
 let electronAutoUpdaterConfigured = false;
 let electronUpdateCheckInFlight = false;
+let desktopBackendOrigin = '';
 
 function resolveWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#08080c' : '#f4f7fb';
@@ -33,6 +34,9 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const DESKTOP_UPDATE_BACKUP_DIR = '.dsa-desktop-update-backup';
 const DESKTOP_UPDATE_BACKUP_MANIFEST_FILE = 'runtime-state.json';
 const DESKTOP_BACKEND_DEFAULT_HOST = '127.0.0.1';
+const DESKTOP_SHARE_IMAGE_WIDTH = 1080;
+const DESKTOP_SHARE_IMAGE_INITIAL_HEIGHT = 720;
+const DESKTOP_SHARE_IMAGE_MAX_HEIGHT = 20000;
 const PUBLIC_BIND_HOSTS = Object.freeze(new Set(['0.0.0.0', '::', '[::]', '*']));
 const MAC_DESKTOP_CLI_PATH_ENTRIES = Object.freeze([
   '/opt/homebrew/bin',
@@ -1338,6 +1342,118 @@ function buildMainPageUrl(port, timestamp = Date.now(), host = DESKTOP_BACKEND_D
   return url.toString();
 }
 
+function buildDesktopShareImageUrl(pageUrl, recordId, expectedBackendOrigin = '') {
+  if (!Number.isSafeInteger(recordId) || recordId <= 0) {
+    throw new Error('Invalid share image record ID');
+  }
+
+  let page;
+  try {
+    page = new URL(pageUrl);
+  } catch (_error) {
+    throw new Error('Desktop backend URL is unavailable');
+  }
+
+  let expectedOrigin = page.origin;
+  if (expectedBackendOrigin) {
+    try {
+      expectedOrigin = new URL(expectedBackendOrigin).origin;
+    } catch (_error) {
+      throw new Error('Desktop backend origin is invalid');
+    }
+  }
+  if (page.protocol !== 'http:' || !page.port || page.origin !== expectedOrigin) {
+    throw new Error('Desktop share images require the configured backend origin');
+  }
+
+  return new URL(
+    `/api/v1/history/${recordId}/share-image-html`,
+    page.origin
+  ).toString();
+}
+
+async function renderDesktopShareImage(
+  recordId,
+  {
+    sourceWindow = mainWindow,
+    BrowserWindowClass = BrowserWindow,
+    backendOrigin = '',
+  } = {}
+) {
+  if (!sourceWindow || sourceWindow.isDestroyed() || !sourceWindow.webContents) {
+    throw new Error('Desktop window is unavailable');
+  }
+
+  const targetUrl = buildDesktopShareImageUrl(
+    sourceWindow.webContents.getURL(),
+    recordId,
+    backendOrigin
+  );
+  let renderWindow = null;
+  try {
+    renderWindow = new BrowserWindowClass({
+      show: false,
+      width: DESKTOP_SHARE_IMAGE_WIDTH,
+      height: DESKTOP_SHARE_IMAGE_INITIAL_HEIGHT,
+      ...(isMac ? { enableLargerThanScreen: true } : {}),
+      useContentSize: true,
+      backgroundColor: '#eef4fd',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
+    });
+    renderWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    renderWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+      if (navigationUrl !== targetUrl) {
+        event.preventDefault();
+      }
+    });
+
+    await renderWindow.loadURL(targetUrl);
+    const pageMetrics = await renderWindow.webContents.executeJavaScript(`({
+      contentType: document.contentType,
+      width: Math.ceil(Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)),
+      height: Math.ceil(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight))
+    })`);
+    if (!pageMetrics || pageMetrics.contentType !== 'text/html') {
+      throw new Error('Desktop share image source did not return HTML');
+    }
+    if (
+      !Number.isFinite(pageMetrics.width)
+      || pageMetrics.width !== DESKTOP_SHARE_IMAGE_WIDTH
+      || !Number.isFinite(pageMetrics.height)
+      || pageMetrics.height < 1
+      || pageMetrics.height > DESKTOP_SHARE_IMAGE_MAX_HEIGHT
+    ) {
+      throw new Error(`Desktop share image has invalid dimensions: ${pageMetrics.width}x${pageMetrics.height}`);
+    }
+
+    renderWindow.setContentSize(DESKTOP_SHARE_IMAGE_WIDTH, pageMetrics.height);
+    await renderWindow.webContents.executeJavaScript(
+      'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+    );
+    const image = await renderWindow.webContents.capturePage({
+      x: 0,
+      y: 0,
+      width: DESKTOP_SHARE_IMAGE_WIDTH,
+      height: pageMetrics.height,
+    });
+    if (!image || image.isEmpty()) {
+      throw new Error('Desktop share image capture returned an empty image');
+    }
+
+    const png = image.toPNG();
+    return png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength);
+  } finally {
+    if (renderWindow && !renderWindow.isDestroyed()) {
+      renderWindow.destroy();
+    }
+  }
+}
+
 function isWindowsNsisInstalledApp() {
   if (!isWindows || !app.isPackaged) {
     return false;
@@ -1742,8 +1858,21 @@ ipcMain.handle('desktop:open-release-page', async (_event, releaseUrl) => {
   await shell.openExternal(sanitizeReleaseUrl(releaseUrl));
   return true;
 });
+ipcMain.handle('desktop:render-share-image', async (event, recordId) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    throw new Error('Share image request did not originate from the desktop window');
+  }
+  try {
+    return await renderDesktopShareImage(recordId, { backendOrigin: desktopBackendOrigin });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logLine(`[share-image] desktop render failed for record=${recordId}: ${message}`);
+    throw error;
+  }
+});
 
 async function createWindow() {
+  desktopBackendOrigin = '';
   const restoreResult = isWindowsNsisInstalledApp() ? restorePackagedRuntimeStateFromBackup() : null;
   const macMigrationResult = migrateMacPackagedRuntimeState();
   initLogging();
@@ -1843,6 +1972,7 @@ async function createWindow() {
   const portFindStartedAt = Date.now();
   const port = await findAvailablePort(8000, 8100, backendBindHost);
   logStartup(`Using port ${port} (selected in ${Date.now() - portFindStartedAt}ms)`);
+  desktopBackendOrigin = new URL(buildBackendUrl(backendConnectHost, port)).origin;
   logStartup(`App directory=${appDir}`);
 
   const dbPath = path.join(appDir, 'data', 'stock_analysis.db');
@@ -1981,6 +2111,7 @@ module.exports = {
   fetchLatestReleaseJson,
   findAvailablePort,
   buildMainPageUrl,
+  buildDesktopShareImageUrl,
   migrateMacPackagedRuntimeState,
   normalizeVersionString,
   parseSemver,
@@ -1988,6 +2119,7 @@ module.exports = {
   resolveAppDir,
   resolveBackendBindHost,
   resolveDesktopConnectHost,
+  renderDesktopShareImage,
   restorePackagedRuntimeStateFromBackup,
   sanitizeReleaseUrl,
   startBackend,

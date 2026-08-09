@@ -1,6 +1,6 @@
 # 分享图片模板与数据填充
 
-分享图片用于把个股分析和市场复盘转换为适合社交平台传播的 1080px 长图。个股和大盘使用两套独立的信息结构，但共用 DSA 品牌、仓库标识 `ZhuLinsen/daily_stock_analysis` 和风险声明。GitHub 区不放二维码；小红书区域由部署配置决定，未配置时整块隐藏，避免 fork 或私有部署默认宣传维护者账号。
+分享图片用于把个股分析和市场复盘转换为适合社交平台传播的 1080px 长图。个股和大盘使用两套独立的信息结构，但共用 DSA 品牌、仓库标识 `ZhuLinsen/daily_stock_analysis` 和风险声明。GitHub 区不放二维码；Web 与桌面端分享图默认展示仓库内置小红书二维码及昵称 `@霸天土小豆`，部署配置可替换二维码和账号信息。
 
 ## 运行时如何填充
 
@@ -22,7 +22,7 @@
 
 `MARKDOWN_TO_IMAGE_CHANNELS`、`MD2IMG_ENGINE`、`MARKDOWN_TO_IMAGE_MAX_CHARS` 继续控制哪些通知渠道转图、使用哪个引擎以及最大输入长度。转换失败时仍回退为文本通知。
 
-小红书品牌使用以下可选配置，四项全部留空即关闭该区域：
+小红书品牌使用以下可选配置。全部留空时展示仓库内置二维码及昵称 `@霸天土小豆`；配置任一自定义值后仅使用这组自定义品牌信息，避免把自定义账号与默认二维码混合：
 
 ```dotenv
 SHARE_IMAGE_XIAOHONGSHU_URL=https://example.com/my-xiaohongshu
@@ -31,15 +31,15 @@ SHARE_IMAGE_XIAOHONGSHU_ID=123456789
 SHARE_IMAGE_XIAOHONGSHU_QR_PATH=assets/my-xiaohongshu-qr.png
 ```
 
-二维码路径支持绝对路径或相对项目根目录路径；冻结桌面后端也会从 PyInstaller 资源目录解析相对路径。账号 URL 只接受 `http://` 或 `https://`。二维码在转图时以内嵌 Data URI 渲染，不依赖运行时网络。
+二维码路径支持绝对路径或相对项目根目录路径；冻结桌面后端也会从 PyInstaller 资源目录解析相对路径。账号 URL 只接受 `http://` 或 `https://`。二维码在转图时以内嵌 Data URI 渲染，不依赖运行时网络。未配置 `SHARE_IMAGE_XIAOHONGSHU_QR_PATH` 时，统一回退到随源码和桌面包分发的 `src/assets/share_image/xiaohongshu_qr.jpg`，因此 Web PNG 与桌面 Electron PNG 都会保留二维码。
 
 ## Web 一键分享
 
 浏览器版历史个股报告、市场复盘和完整报告抽屉右上角都会显示“分享”按钮。页面加载报告时不会生成图片；只有用户点击“分享”后，页面才调用 `GET /api/v1/history/{record_id}/share-image` 按需生成或读取缓存 PNG。支持文件分享的浏览器会在图片准备好后提示“再次点击分享”，由第二次点击同步打开系统分享面板，避免异步生成过程使浏览器的用户激活状态失效；其他浏览器会在首次生成完成后直接下载 PNG。如果系统分享面板打开失败，除用户主动取消外也会自动回退下载已经生成的 PNG。
 
-Electron 桌面运行时默认不展示该按钮。当前 Windows/macOS 打包版不会随包分发 `wkhtmltoimage`、`markdown-to-file` 或 Playwright/Chromium renderer，避免桌面用户在页面加载时就命中 `share_image_unavailable` 失败态。
+Electron 桌面端同样展示“分享”按钮，但不依赖额外分发 `wkhtmltoimage`、`markdown-to-file` 或 Playwright。用户点击后，桌面 preload 通过受限 IPC 让主进程打开本地 `GET /api/v1/history/{record_id}/share-image-html`，使用 Electron 自带的隐藏 Chromium 窗口按完整页面高度截图为 PNG，随后走与浏览器一致的下载回退。IPC 只接受正整数记录 ID，主进程只允许当前桌面窗口请求本次启动时确定的后端 origin（包括显式配置的局域网 `WEBUI_HOST`），HTML 响应使用 CSP 禁止脚本、外部资源和网络加载。
 
-Web 手工生成不受 `MARKDOWN_TO_IMAGE_CHANNELS` 限制，但服务端仍需配置可用的 `MD2IMG_ENGINE`。使用 Playwright 时先执行：
+Web 手工生成不受 `MARKDOWN_TO_IMAGE_CHANNELS` 限制，但服务端仍需配置可用的 `MD2IMG_ENGINE`。桌面端手工生成复用 Electron，不读取 `MD2IMG_ENGINE`。Web 使用 Playwright 时先执行：
 
 ```bash
 cd apps/dsa-web
@@ -151,6 +151,6 @@ png_bytes = markdown_to_image(
 - 涨跌颜色优先使用结构化 payload 持久化的 `color_scheme`，旧记录则从最终报告颜色标记恢复；模板不按市场地区硬编码涨跌色。
 - 分享图中的买入、止损和目标只保留可扫描的价格或“等待企稳”；完整条件始终保留在原报告中。
 - 没有真实价格序列时不绘制伪 K 线；顶部仅保留非数据化的品牌光晕。
-- 小红书 URL、账号、ID 和二维码路径来自运行时配置；全部留空时不渲染小红书区域。GitHub 固定展示仓库标识 `ZhuLinsen/daily_stock_analysis`，不生成二维码。
+- 小红书 URL、昵称、ID 和二维码路径可由运行时配置覆盖；全部留空时使用内置昵称 `@霸天土小豆` 和仓库内置二维码，默认不展示数字 ID。GitHub 固定展示仓库标识 `ZhuLinsen/daily_stock_analysis`，不生成二维码。
 - 大盘报告在核心模块已成功提取时不重复附加完整 Markdown；额外的详情章节保留在原报告中，分享图只呈现结构化摘要。
 - 图片底部固定说明“AI 生成，仅供研究交流，不构成投资建议”。
