@@ -81,6 +81,8 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | Optional |
 | `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID (for sending to topics) | Optional |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL ([How to create](https://support.discord.com/hc/en-us/articles/228383668)) | Optional |
+| `DISCORD_WEBHOOK_USERNAME` | Discord Webhook message display name, default `A股分析机器人`, maximum 80 characters; non-sensitive, use a Repository Variable in Actions | Optional |
+| `DISCORD_WEBHOOK_AVATAR_URL` | Discord Webhook message avatar; must be a publicly reachable HTTPS image URL; non-sensitive, use a Repository Variable in Actions | Optional |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token (choose one with Webhook) | Optional |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID (required when using Bot) | Optional |
 | `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key (required only for inbound Interaction/Webhook signature verification) | Optional |
@@ -264,6 +266,8 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | Optional |
 | `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID | Optional |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL | Optional |
+| `DISCORD_WEBHOOK_USERNAME` | Webhook message display name (default `A股分析机器人`, maximum 80 characters) | Optional |
+| `DISCORD_WEBHOOK_AVATAR_URL` | Webhook message avatar (publicly reachable HTTPS image URL) | Optional |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token (choose one with Webhook) | Optional |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID (required when using Bot) | Optional |
 | `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key (required only for inbound Interaction/Webhook signature verification) | Optional |
@@ -1070,7 +1074,13 @@ Long reports are automatically split under Discord's 2000-character per-message 
 
 ```bash
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
+DISCORD_WEBHOOK_USERNAME=US Market Close Assistant
+DISCORD_WEBHOOK_AVATAR_URL=https://example.com/bot-avatar.png
 ```
+
+The sender sets the username and avatar in every payload, overriding the defaults configured on the Discord Webhook page. Empty values preserve the existing identity: username `A股分析机器人` and avatar `https://picsum.photos/200`. The avatar URL must use HTTPS and be publicly reachable by Discord.
+
+In GitHub Actions, store both the username and avatar settings as **Repository Variables**.
 
 **Method 2: Bot API (Requires more permissions)**
 

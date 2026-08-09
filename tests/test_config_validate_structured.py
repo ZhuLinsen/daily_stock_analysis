@@ -825,6 +825,39 @@ class TestVisionKeyValidation:
 class TestEnvAliasCompatibility:
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_report_personalization_defaults_are_loaded(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ):
+        with patch.dict("os.environ", {}, clear=True):
+            config = Config._load_from_env()
+
+        assert config.discord_webhook_username == "A股分析机器人"
+        assert config.discord_webhook_avatar_url == "https://picsum.photos/200"
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_discord_webhook_identity_custom_values_are_loaded(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ):
+        with patch.dict(
+            "os.environ",
+            {
+                "DISCORD_WEBHOOK_USERNAME": "美股收盘助手",
+                "DISCORD_WEBHOOK_AVATAR_URL": "https://example.com/avatar.png",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        assert config.discord_webhook_username == "美股收盘助手"
+        assert config.discord_webhook_avatar_url == "https://example.com/avatar.png"
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_discord_channel_id_legacy_alias_is_still_loaded(
         self,
         _mock_parse_yaml,

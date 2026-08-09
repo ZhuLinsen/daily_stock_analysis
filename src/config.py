@@ -77,6 +77,9 @@ from src.utils.market_review_region import normalize_market_review_region_lenien
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_DISCORD_WEBHOOK_USERNAME = "A股分析机器人"
+DEFAULT_DISCORD_WEBHOOK_AVATAR_URL = "https://picsum.photos/200"
+
 @dataclass
 class ConfigIssue:
     """Structured configuration validation issue with a severity level.
@@ -1084,6 +1087,8 @@ class Config:
     discord_bot_token: Optional[str] = None  # Discord Bot Token
     discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
     discord_webhook_url: Optional[str] = None  # Discord Webhook URL
+    discord_webhook_username: str = DEFAULT_DISCORD_WEBHOOK_USERNAME
+    discord_webhook_avatar_url: str = DEFAULT_DISCORD_WEBHOOK_AVATAR_URL
     discord_interactions_public_key: Optional[str] = None  # Discord Interaction 入站验签公钥
 
     # Slack 通知配置
@@ -2031,6 +2036,12 @@ class Config:
                 or os.getenv('DISCORD_CHANNEL_ID')
             ),
             discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
+            discord_webhook_username=(
+                os.getenv('DISCORD_WEBHOOK_USERNAME') or DEFAULT_DISCORD_WEBHOOK_USERNAME
+            ).strip(),
+            discord_webhook_avatar_url=(
+                os.getenv('DISCORD_WEBHOOK_AVATAR_URL') or DEFAULT_DISCORD_WEBHOOK_AVATAR_URL
+            ).strip(),
             discord_interactions_public_key=os.getenv('DISCORD_INTERACTIONS_PUBLIC_KEY'),
             slack_webhook_url=os.getenv('SLACK_WEBHOOK_URL'),
             slack_bot_token=os.getenv('SLACK_BOT_TOKEN'),

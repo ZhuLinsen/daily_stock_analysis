@@ -360,6 +360,8 @@ jobs:
           
           # 方式八：Discord
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_USERNAME: ${{ vars.DISCORD_WEBHOOK_USERNAME || 'A股分析机器人' }}
+          DISCORD_WEBHOOK_AVATAR_URL: ${{ vars.DISCORD_WEBHOOK_AVATAR_URL || 'https://picsum.photos/200' }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_MAIN_CHANNEL_ID: ${{ secrets.DISCORD_MAIN_CHANNEL_ID }}
           

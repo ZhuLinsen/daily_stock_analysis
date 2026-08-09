@@ -162,7 +162,11 @@ CHANNEL_SPECS: Tuple[NotificationChannelSpec, ...] = (
         kind="configured",
         minimal_keys=("DISCORD_WEBHOOK_URL",),
         alternative_minimal_keys=(("DISCORD_BOT_TOKEN", "DISCORD_MAIN_CHANNEL_ID"),),
-        advanced_keys=("DISCORD_INTERACTIONS_PUBLIC_KEY",),
+        advanced_keys=(
+            "DISCORD_WEBHOOK_USERNAME",
+            "DISCORD_WEBHOOK_AVATAR_URL",
+            "DISCORD_INTERACTIONS_PUBLIC_KEY",
+        ),
         note="Webhook URL or bot token + channel ID can enable Discord.",
     ),
     NotificationChannelSpec(

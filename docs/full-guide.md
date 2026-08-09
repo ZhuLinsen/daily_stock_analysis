@@ -83,6 +83,8 @@ daily_stock_analysis/
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选 |
 | `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID (用于发送到子话题) | 可选 |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL（[创建方法](https://support.discord.com/hc/en-us/articles/228383668)） | 可选 |
+| `DISCORD_WEBHOOK_USERNAME` | Discord Webhook 消息显示名称，默认 `A股分析机器人`，最长 80 字符；非敏感，Actions 中使用 Repository Variable | 可选 |
+| `DISCORD_WEBHOOK_AVATAR_URL` | Discord Webhook 消息头像，必须是公网可访问的 HTTPS 图片 URL；非敏感，Actions 中使用 Repository Variable | 可选 |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（与 Webhook 二选一） | 可选 |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 时需要） | 可选 |
 | `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key（仅入站 Interaction/Webhook 回调验签时需要） | 可选 |
@@ -301,6 +303,8 @@ daily_stock_analysis/
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选 |
 | `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID | 可选 |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL | 可选 |
+| `DISCORD_WEBHOOK_USERNAME` | Webhook 消息显示名称（默认 `A股分析机器人`，最长 80 字符） | 可选 |
+| `DISCORD_WEBHOOK_AVATAR_URL` | Webhook 消息头像（公网可访问 HTTPS 图片 URL） | 可选 |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（与 Webhook 二选一） | 可选 |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 时需要） | 可选 |
 | `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key（仅入站 Interaction/Webhook 回调验签时需要） | 可选 |
@@ -1182,7 +1186,13 @@ Discord 支持两种方式推送：
 
 ```bash
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
+DISCORD_WEBHOOK_USERNAME=美股收盘助手
+DISCORD_WEBHOOK_AVATAR_URL=https://example.com/bot-avatar.png
 ```
+
+名称和头像由发送 payload 显式设置，会覆盖 Discord Webhook 页面中的默认身份。留空时保持原行为：名称 `A股分析机器人`、头像 `https://picsum.photos/200`。头像 URL 必须能由 Discord 公网访问且使用 HTTPS。
+
+GitHub Actions 中名称和头像两项配置均应放在 **Repository Variables**。
 
 **方式二：Bot API（需要更多权限）**
 

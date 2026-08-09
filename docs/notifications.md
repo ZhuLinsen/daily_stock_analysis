@@ -17,7 +17,7 @@
 | PushPlus | 静态配置 | `PUSHPLUS_TOKEN` | `PUSHPLUS_TOPIC` | `PUSHPLUS_TOPIC` 仅在 token 存在时生效 |
 | Server酱3 | 静态配置 | `SERVERCHAN3_SENDKEY` | - | 手机 App 推送 |
 | 自定义 Webhook | 静态配置 | `CUSTOM_WEBHOOK_URLS` | `CUSTOM_WEBHOOK_BEARER_TOKEN`, `CUSTOM_WEBHOOK_BODY_TEMPLATE`, `WEBHOOK_VERIFY_SSL` | 支持多个 URL，逗号分隔 |
-| Discord | 静态配置 | `DISCORD_WEBHOOK_URL` 或 `DISCORD_BOT_TOKEN` + `DISCORD_MAIN_CHANNEL_ID` | `DISCORD_INTERACTIONS_PUBLIC_KEY` | Webhook 与 Bot 均可启用发送 |
+| Discord | 静态配置 | `DISCORD_WEBHOOK_URL` 或 `DISCORD_BOT_TOKEN` + `DISCORD_MAIN_CHANNEL_ID` | `DISCORD_WEBHOOK_USERNAME`、`DISCORD_WEBHOOK_AVATAR_URL`、`DISCORD_INTERACTIONS_PUBLIC_KEY` | Webhook 与 Bot 均可启用发送 |
 | Slack | 静态配置 | `SLACK_WEBHOOK_URL` 或 `SLACK_BOT_TOKEN` + `SLACK_CHANNEL_ID` | - | Bot 优先用于文本与图片同频道发送 |
 | AstrBot | 静态配置 | `ASTRBOT_URL` | `ASTRBOT_TOKEN`, `WEBHOOK_VERIFY_SSL` | `ASTRBOT_TOKEN` 可选 |
 | `UNKNOWN` | 兜底枚举 | - | - | 仅为未知渠道兜底，不由静态环境变量启用 |
@@ -26,6 +26,8 @@
 | Telegram 会话 | 运行时上下文 | - | - | 从来源消息上下文提取，交互式命令结果仅回到来源会话 |
 
 Discord 长报告发送复用现有分片链路：单条 `content` 运行时不会超过 Discord 2000 字符限制，Webhook 与 Bot API 都会逐片发送并在片与片之间短暂等待；遇到 429 时按 Discord 返回的 `retry_after` 或 `Retry-After` 做有限重试，避免中途限流后只收到前半段报告。
+
+Discord Webhook 身份可通过非敏感的 `DISCORD_WEBHOOK_USERNAME` 与 `DISCORD_WEBHOOK_AVATAR_URL` 配置；后者必须是公网可访问的 HTTPS 图片 URL。默认值继续为 `A股分析机器人` 与 `https://picsum.photos/200`。Actions 中两项均使用 Repository Variables。
 
 ## Minimal / Advanced 分层
 
@@ -87,6 +89,8 @@ Discord 长报告发送复用现有分片链路：单条 `content` 运行时不�
 | `CUSTOM_WEBHOOK_BODY_TEMPLATE` | advanced | custom | Variable or Secret | - |
 | `WEBHOOK_VERIFY_SSL` | advanced | ntfy, gotify, custom, astrbot | Variable or Secret | `true` |
 | `DISCORD_WEBHOOK_URL` | minimal | discord | Secret | - |
+| `DISCORD_WEBHOOK_USERNAME` | advanced | discord | Variable | `A股分析机器人` |
+| `DISCORD_WEBHOOK_AVATAR_URL` | advanced | discord | Variable | `https://picsum.photos/200` |
 | `DISCORD_BOT_TOKEN` | minimal | discord | Secret | - |
 | `DISCORD_MAIN_CHANNEL_ID` | minimal | discord | Secret | - |
 | `FEISHU_APP_ID` | minimal | feishu | Secret | - |

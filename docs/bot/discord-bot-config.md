@@ -69,6 +69,17 @@ DISCORD_BOT_STATUS=A股智能分析 | /help
 3. 配置Webhook名称和头像
 4. 复制Webhook URL（这是你的`DISCORD_WEBHOOK_URL`）
 
+可选配置发送身份：
+
+```env
+DISCORD_WEBHOOK_USERNAME=美股收盘助手
+DISCORD_WEBHOOK_AVATAR_URL=https://example.com/bot-avatar.png
+```
+
+名称最长 80 字符；头像必须是 Discord 可从公网访问的 HTTPS 图片 URL。两项留空时继续使用现有默认值 `A股分析机器人` 与 `https://picsum.photos/200`。发送器会在每次 payload 中显式设置它们，因此会覆盖 Discord Webhook 页面里的默认名称和头像。
+
+GitHub Actions 中这两项均使用 Repository Variables，而不是 Secrets。
+
 ## 支持的命令
 
 Discord机器人支持以下Slash命令：

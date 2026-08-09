@@ -8,10 +8,15 @@ Discord 发送提醒服务
 import logging
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
-from src.config import Config
+from src.config import (
+    Config,
+    DEFAULT_DISCORD_WEBHOOK_AVATAR_URL,
+    DEFAULT_DISCORD_WEBHOOK_USERNAME,
+)
 from src.formatters import (
     MIN_MAX_WORDS,
     chunk_content_by_max_words,
@@ -40,6 +45,12 @@ class DiscordSender:
             'bot_token': getattr(config, 'discord_bot_token', None),
             'channel_id': getattr(config, 'discord_main_channel_id', None),
             'webhook_url': getattr(config, 'discord_webhook_url', None),
+            'webhook_username': self._normalize_webhook_username(
+                getattr(config, 'discord_webhook_username', DEFAULT_DISCORD_WEBHOOK_USERNAME)
+            ),
+            'webhook_avatar_url': self._normalize_webhook_avatar_url(
+                getattr(config, 'discord_webhook_avatar_url', DEFAULT_DISCORD_WEBHOOK_AVATAR_URL)
+            ),
         }
         self._discord_max_words = self._normalize_max_words(
             getattr(config, 'discord_max_words', DISCORD_MAX_CONTENT_LENGTH)
@@ -53,6 +64,19 @@ class DiscordSender:
         except (TypeError, ValueError):
             configured = DISCORD_MAX_CONTENT_LENGTH
         return max(MIN_MAX_WORDS, min(configured, DISCORD_MAX_CONTENT_LENGTH))
+
+    @staticmethod
+    def _normalize_webhook_username(value) -> str:
+        username = " ".join(str(value or "").split())[:80].strip()
+        return username or DEFAULT_DISCORD_WEBHOOK_USERNAME
+
+    @staticmethod
+    def _normalize_webhook_avatar_url(value) -> str:
+        avatar_url = str(value or "").strip()
+        parsed = urlparse(avatar_url)
+        if parsed.scheme.lower() == "https" and parsed.netloc:
+            return avatar_url
+        return DEFAULT_DISCORD_WEBHOOK_AVATAR_URL
     
     def _is_discord_configured(self) -> bool:
         """检查 Discord 配置是否完整（支持 Bot 或 Webhook）"""
@@ -162,8 +186,8 @@ class DiscordSender:
         """
         payload = {
             'content': content,
-            'username': 'A股分析机器人',
-            'avatar_url': 'https://picsum.photos/200'
+            'username': self._discord_config['webhook_username'],
+            'avatar_url': self._discord_config['webhook_avatar_url'],
         }
 
         return self._post_discord_message(

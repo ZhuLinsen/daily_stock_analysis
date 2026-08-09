@@ -9,6 +9,7 @@ import re
 import unittest
 from pathlib import Path
 
+from api.v1.schemas.system_config import SystemConfigSchemaResponse
 from src.core.config_registry import (
     SCHEMA_VERSION,
     WEB_SETTINGS_HIDDEN_FROM_UI,
@@ -66,6 +67,44 @@ class TestSlackFieldsRegistered(unittest.TestCase):
                                f"{key} should appear after Discord")
             self.assertLess(order, pushover["display_order"],
                             f"{key} should appear before Pushover")
+
+
+class TestDiscordWebhookIdentityFieldsRegistered(unittest.TestCase):
+    def test_fields_are_explicit_and_non_sensitive(self):
+        for key in (
+            "DISCORD_WEBHOOK_USERNAME",
+            "DISCORD_WEBHOOK_AVATAR_URL",
+        ):
+            field = get_field_definition(key)
+            self.assertNotEqual(field["display_order"], 9000)
+            self.assertFalse(field["is_sensitive"])
+
+    def test_avatar_requires_https(self):
+        field = get_field_definition("DISCORD_WEBHOOK_AVATAR_URL")
+        self.assertEqual(field["validation"]["item_type"], "url")
+        self.assertEqual(field["validation"]["allowed_schemes"], ["https"])
+
+    def test_fields_validate_through_system_config_api_response_schema(self):
+        response = SystemConfigSchemaResponse.model_validate(build_schema_response())
+        notification = next(
+            category
+            for category in response.categories
+            if category.category == "notification"
+        )
+        fields = {
+            field.key: field
+            for field in notification.fields
+            if field.key
+            in {
+                "DISCORD_WEBHOOK_USERNAME",
+                "DISCORD_WEBHOOK_AVATAR_URL",
+            }
+        }
+
+        self.assertEqual(len(fields), 2)
+        for field in fields.values():
+            self.assertIsInstance(field.display_order, int)
+
 
 
 class TestFeishuWebhookFieldsRegistered(unittest.TestCase):

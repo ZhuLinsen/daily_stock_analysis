@@ -115,7 +115,40 @@ class TestDiscordSender(unittest.TestCase):
         mock_post.assert_called_once()
         call_kw = mock_post.call_args[1]
         self.assertEqual(call_kw["json"]["content"], "content")
-        self.assertIn("username", call_kw["json"])
+        self.assertEqual(call_kw["json"]["username"], "A股分析机器人")
+        self.assertEqual(call_kw["json"]["avatar_url"], "https://picsum.photos/200")
+
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_uses_custom_identity(self, mock_post):
+        mock_post.return_value = _response(204)
+        cfg = _config(
+            discord_webhook_url="https://discord.com/webhook/1",
+            discord_webhook_username="美股收盘助手",
+            discord_webhook_avatar_url="https://example.com/avatar.png",
+        )
+
+        result = DiscordSender(cfg).send_to_discord("content")
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["username"], "美股收盘助手")
+        self.assertEqual(payload["avatar_url"], "https://example.com/avatar.png")
+
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_invalid_custom_identity_falls_back_safely(self, mock_post):
+        mock_post.return_value = _response(204)
+        cfg = _config(
+            discord_webhook_url="https://discord.com/webhook/1",
+            discord_webhook_username="  ",
+            discord_webhook_avatar_url="http://private.example/avatar.png",
+        )
+
+        result = DiscordSender(cfg).send_to_discord("content")
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["username"], "A股分析机器人")
+        self.assertEqual(payload["avatar_url"], "https://picsum.photos/200")
 
     @mock.patch("src.notification_sender.discord_sender.requests.post")
     def test_send_strips_hidden_market_region_metadata_from_text_payload(self, mock_post):

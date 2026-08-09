@@ -259,6 +259,8 @@ class SystemConfigService:
         "CUSTOM_WEBHOOK_BODY_TEMPLATE": ("custom_webhook_body_template", "string"),
         "WEBHOOK_VERIFY_SSL": ("webhook_verify_ssl", "bool"),
         "DISCORD_WEBHOOK_URL": ("discord_webhook_url", "string"),
+        "DISCORD_WEBHOOK_USERNAME": ("discord_webhook_username", "string"),
+        "DISCORD_WEBHOOK_AVATAR_URL": ("discord_webhook_avatar_url", "string"),
         "DISCORD_BOT_TOKEN": ("discord_bot_token", "string"),
         "DISCORD_MAIN_CHANNEL_ID": ("discord_main_channel_id", "string"),
         "DISCORD_CHANNEL_ID": ("discord_main_channel_id", "string"),
