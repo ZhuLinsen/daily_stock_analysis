@@ -195,7 +195,7 @@ To get started quickly, you need at minimum:
 
 ### 5. Done!
 
-Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
+Default schedule: Every weekday at **16:30 New York time**, 30 minutes after the Nasdaq regular session closes.
 
 ---
 
@@ -682,19 +682,12 @@ Edit `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  # UTC time, Beijing time = UTC + 8
-  - cron: '0 10 * * 1-5'   # Monday to Friday 18:00 (Beijing Time)
+  # Monday to Friday at 16:30 New York time; follows U.S. daylight saving time
+  - cron: '30 16 * * 1-5'
+    timezone: 'America/New_York'
 ```
 
-Common time reference:
-
-| Beijing Time | UTC cron expression |
-|---------|----------------|
-| 09:30 | `'30 1 * * 1-5'` |
-| 12:00 | `'0 4 * * 1-5'` |
-| 15:00 | `'0 7 * * 1-5'` |
-| 18:00 | `'0 10 * * 1-5'` |
-| 21:00 | `'0 13 * * 1-5'` |
+GitHub Actions interprets the cron expression in `America/New_York`, so no manual UTC conversion is needed when daylight saving time changes.
 
 ### Local Scheduled Tasks
 

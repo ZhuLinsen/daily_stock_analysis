@@ -426,22 +426,17 @@ git push
 
 ### Schedule Details
 
-Default configuration: **Monday to Friday, 18:00 Beijing Time** auto-execution
+Default configuration: **Monday to Friday at 16:30 New York time**, 30 minutes after the Nasdaq regular session closes. The `America/New_York` timezone automatically follows U.S. daylight saving time.
 
 Modify time: Edit cron expression in `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  - cron: '0 10 * * 1-5'  # UTC time, +8 = Beijing time
+  - cron: '30 16 * * 1-5'
+    timezone: 'America/New_York'
 ```
 
-Common cron examples:
-| Expression | Description |
-|--------|------|
-| `'0 10 * * 1-5'` | Mon-Fri 18:00 (Beijing) |
-| `'30 7 * * 1-5'` | Mon-Fri 15:30 (Beijing) |
-| `'0 10 * * *'` | Daily 18:00 (Beijing) |
-| `'0 2 * * 1-5'` | Mon-Fri 10:00 (Beijing) |
+With `timezone`, the cron expression is interpreted in the named timezone. To change the post-close delay, update only the hour and minute fields.
 
 ### Modify Watchlist
 
