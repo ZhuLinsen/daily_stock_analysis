@@ -3,16 +3,18 @@ import { describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { HomeStockWorkspace } from '../HomeStockWorkspace';
-import type { HomeWatchlistRow } from '../HomeStockWorkspace';
+import type { HomeWatchlistRow, HomeWorkspaceTab } from '../HomeStockWorkspace';
 
 function renderWorkspace({
   watchlistRows,
   selectedRecordId,
   selectedStockCode,
+  activeTab = 'watchlist',
 }: {
   watchlistRows: HomeWatchlistRow[];
   selectedRecordId?: number;
   selectedStockCode?: string;
+  activeTab?: HomeWorkspaceTab;
 }) {
   const onHistoryItemClick = vi.fn();
   const onRemoveFromWatchlist = vi.fn().mockResolvedValue(undefined);
@@ -21,7 +23,7 @@ function renderWorkspace({
   const renderView = (rows: HomeWatchlistRow[]) => (
     <UiLanguageProvider>
       <HomeStockWorkspace
-        activeTab="watchlist"
+        activeTab={activeTab}
         onTabChange={vi.fn()}
         watchlistRows={rows}
         watchlistLoading={false}
@@ -55,6 +57,27 @@ function renderWorkspace({
 }
 
 describe('HomeStockWorkspace', () => {
+  it('uses the mobile scroll-shell contract for watchlist and today content', () => {
+    renderWorkspace({ watchlistRows: [] });
+
+    const workspace = screen.getByTestId('home-stock-workspace');
+    expect(workspace).toHaveClass('glass-card', 'home-stock-scroll-shell');
+    expect(workspace).not.toHaveClass('overflow-hidden');
+    expect(screen.getByTestId('home-stock-workspace-scroll')).toHaveClass('overscroll-y-contain', 'touch-pan-y');
+  });
+
+  it('uses the same mobile scroll-shell contract around history and StockBar', () => {
+    renderWorkspace({ watchlistRows: [], activeTab: 'history' });
+
+    const workspace = screen.getByTestId('home-stock-workspace');
+    const stockBar = screen.getByTestId('home-stock-bar');
+    expect(workspace).toHaveClass('home-stock-scroll-shell');
+    expect(workspace).not.toHaveClass('overflow-hidden');
+    expect(stockBar).toHaveClass('glass-card', 'home-stock-scroll-shell', 'min-h-0');
+    expect(stockBar).not.toHaveClass('overflow-hidden');
+    expect(screen.getByTestId('home-stock-bar-scroll')).toHaveClass('touch-pan-y');
+  });
+
   it('opens the latest watchlist detail from a native button and keeps the row selected', () => {
     const { onHistoryItemClick } = renderWorkspace({
       watchlistRows: [{

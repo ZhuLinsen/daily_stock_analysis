@@ -26,6 +26,8 @@ import markdown2
 PROJECT_URL = "https://github.com/ZhuLinsen/daily_stock_analysis"
 PROJECT_REPOSITORY = "ZhuLinsen/daily_stock_analysis"
 PROJECT_DISPLAY_NAME = "股票智能分析系统"
+DEFAULT_XIAOHONGSHU_QR_PATH = "src/assets/share_image/xiaohongshu_qr.jpg"
+DEFAULT_XIAOHONGSHU_HANDLE = "@霸天土小豆"
 _MARKET_RE = re.compile(
     r"(?:大盘复盘|市场复盘|market\s+(?:review|recap)|시황\s*리뷰)", re.IGNORECASE
 )
@@ -164,17 +166,38 @@ class ShareImageBranding:
 
     xiaohongshu_url: str = ""
     xiaohongshu_handle: str = ""
+    # Kept for compatibility with persisted configs. The poster deliberately
+    # renders only the public nickname/handle below the QR code.
     xiaohongshu_id: str = ""
     xiaohongshu_qr_path: str = ""
 
     @property
     def has_xiaohongshu(self) -> bool:
         return any((
-            self.xiaohongshu_url,
-            self.xiaohongshu_handle,
-            self.xiaohongshu_id,
-            self.xiaohongshu_qr_path,
+            self.xiaohongshu_url.strip(),
+            self.xiaohongshu_handle.strip(),
+            self.xiaohongshu_qr_path.strip(),
         ))
+
+
+def share_image_branding_from_config(config: object) -> ShareImageBranding:
+    """Build poster branding with bundled defaults applied only as an atomic pair."""
+
+    url = str(getattr(config, "share_image_xiaohongshu_url", None) or "").strip()
+    handle = str(getattr(config, "share_image_xiaohongshu_handle", None) or "").strip()
+    account_id = str(getattr(config, "share_image_xiaohongshu_id", None) or "").strip()
+    qr_path = str(getattr(config, "share_image_xiaohongshu_qr_path", None) or "").strip()
+
+    if not any((url, handle, qr_path)):
+        handle = DEFAULT_XIAOHONGSHU_HANDLE
+        qr_path = DEFAULT_XIAOHONGSHU_QR_PATH
+
+    return ShareImageBranding(
+        xiaohongshu_url=url,
+        xiaohongshu_handle=handle,
+        xiaohongshu_id=account_id,
+        xiaohongshu_qr_path=qr_path,
+    )
 
 
 @dataclass
@@ -1973,11 +1996,8 @@ def _xiaohongshu_card(branding: ShareImageBranding, language: str) -> str:
         return ""
 
     label = _poster_text(language, "xiaohongshu")
-    account_parts = [part for part in (
-        branding.xiaohongshu_handle.strip(),
-        f"ID {branding.xiaohongshu_id.strip()}" if branding.xiaohongshu_id.strip() else "",
-    ) if part]
-    account = " · ".join(account_parts) or branding.xiaohongshu_url.strip()
+    handle = branding.xiaohongshu_handle.strip()
+    account = handle or branding.xiaohongshu_url.strip()
     qr_data_uri = _asset_data_uri(branding.xiaohongshu_qr_path)
     qr_alt = f"{label}二维码" if language == "zh" else f"{label} QR"
     image = (
@@ -1987,9 +2007,8 @@ def _xiaohongshu_card(branding: ShareImageBranding, language: str) -> str:
     url = _safe_web_url(branding.xiaohongshu_url)
     if image and url:
         image = f'<a href="{_escape(url)}">{image}</a>'
-    account_markup = (
-        f'<span><b>{_escape(label)}</b>{(" " + _escape(account)) if account else ""}</span>'
-    )
+    separator = "" if handle.startswith("@") else (" " if account else "")
+    account_markup = f'<span><b>{_escape(label)}</b>{separator}{_escape(account)}</span>'
     if url:
         account_markup = f'<a class="social-link" href="{_escape(url)}">{account_markup}</a>'
     return (
@@ -2118,7 +2137,7 @@ def build_share_image_html(
     .index-grid {{ display:table; width:100%; margin:0 0 24px; border-spacing:10px 0; table-layout:fixed; }} .index-card{{display:table-cell;padding:16px 18px;border:1px solid #d0dced;border-radius:18px;background:linear-gradient(160deg,#fff,#f6f9ff);box-shadow:0 8px 22px rgba(25,78,153,.05)}} .index-card span,.index-card small{{display:block}} .index-card span{{font-weight:750}} .index-card strong{{display:block;margin:8px 0 0;font-size:35px}} .index-card strong.red{{color:#ed3f36}} .index-card strong.green{{color:#0a9c58}} .index-card small{{color:#3d506f;font-size:19px}}
     .breadth-grid .metric{{background:linear-gradient(160deg,#fff,#f7faff)}} .breadth-grid .metric strong{{font-size:29px}} .dimension-grid .metric{{height:94px;background:linear-gradient(145deg,#f7faff,#fff)}} .dimension-grid .metric strong{{font-size:33px}} .market-two-column{{display:table;width:calc(100% - 20px);margin:0 10px 24px;border-spacing:8px 0;table-layout:fixed}} .market-left,.market-right{{display:table-cell;width:50%;vertical-align:top}} .market-two-column .poster-section{{min-height:238px;margin:0;padding:20px 22px;border:1px solid #d3dfef;border-radius:19px;background:linear-gradient(160deg,#fff,#f8fbff)}} .ranking-row{{display:table;width:100%;padding:13px 0;border-bottom:1px solid #e6edf6}} .ranking-row:last-child{{border:0}} .ranking-row>*{{display:table-cell;vertical-align:middle}} .ranking-row b{{width:44px;color:#fff;border-radius:9px;text-align:center;background:linear-gradient(135deg,#1677ff,#6a5cff)}} .ranking-row:nth-child(2) b{{background:linear-gradient(135deg,#ff8a00,#ffb020)}} .ranking-row:nth-child(3) b{{background:linear-gradient(135deg,#12a66a,#37c98a)}} .ranking-row span{{padding-left:13px;font-weight:700}} .ranking-row strong{{text-align:right}} .ranking-row strong.red{{color:#ed3f36}} .ranking-row strong.green{{color:#0a9c58}} .ranking-row.lagging b{{background:linear-gradient(135deg,#64748b,#94a3b8)}} .market-details .poster-section{{min-height:214px}} .focus-row,.fund-row{{display:table;width:100%;padding:10px 0;border-bottom:1px solid #e6edf6}} .focus-row:last-child,.fund-row:last-child{{border:0}} .focus-row b,.focus-row span,.fund-row span,.fund-row strong{{display:table-cell;vertical-align:middle}} .focus-row b{{width:66px;color:#fff;border-radius:8px;text-align:center;background:#1677ff}} .focus-row.avoid b{{background:#ef4444}} .focus-row span{{padding-left:14px;font-weight:700}} .fund-row span{{color:#52647f}} .fund-row strong{{text-align:right;color:#1768e8}} .fund-row.positive strong{{color:#0a9c58}} .fund-row.warning strong{{color:#f59e0b}} .strategy-strip{{padding:16px 22px;border:1px solid #cbdcf4;border-radius:17px;background:linear-gradient(90deg,#f6faff,#fff)}} .strategy-strip ul{{display:table;width:100%;padding-left:25px}} .strategy-strip li{{display:table-cell;width:33.33%;padding-right:20px;font-size:19px;vertical-align:top}}
     .risk-strip{{padding:16px 22px;border:1px solid #ffc5c5;border-radius:17px;background:linear-gradient(90deg,#fff3f3,#fffafa)}} .risk-strip h2{{color:#e7373f}} .risk-strip ul{{display:table;width:100%;padding-left:25px}} .risk-strip li{{display:table-cell;width:50%;padding-right:24px;font-size:19px}}
-    .report-fallback {{ margin:0 10px 26px; padding:24px 28px; border:1px solid #d5e1f0; border-radius:18px; background:#fff; }} .report-content h1,.report-content h2,.report-content h3{{color:#153d78}} .report-content h2{{font-size:29px}} .report-content h3{{font-size:25px}} .report-content table{{width:100%;border-collapse:collapse;font-size:19px}} .report-content th,.report-content td{{padding:10px;border:1px solid #dbe4f1}} .report-content th{{background:#eef4fc}} .report-content blockquote{{margin:15px 0;padding:12px 18px;border-left:5px solid #4385ef;background:#f3f7fd}}
+    .report-fallback {{ margin:0 10px 26px; padding:24px 28px; border:1px solid #d5e1f0; border-radius:18px; background:#fff; }} .report-content{{overflow-wrap:anywhere}} .report-content h1,.report-content h2,.report-content h3{{color:#153d78;overflow-wrap:anywhere;word-break:break-word}} .report-content h2{{font-size:29px}} .report-content h3{{font-size:25px}} .report-content p,.report-content li,.report-content th,.report-content td,.report-content blockquote,.report-content a{{overflow-wrap:anywhere;word-break:break-word}} .report-content table{{width:100%;border-collapse:collapse;font-size:19px;table-layout:fixed}} .report-content th,.report-content td{{padding:10px;border:1px solid #dbe4f1}} .report-content th{{background:#eef4fc}} .report-content pre{{max-width:100%;margin:16px 0;padding:16px 18px;overflow-x:auto;border-radius:14px;background:#f4f7fc;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}} .report-content code{{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}} .report-content blockquote{{margin:15px 0;padding:12px 18px;border-left:5px solid #4385ef;background:#f3f7fd}}
     .poster-footer {{ display:table; width:100%; margin-top:18px; padding:14px 34px 5px; border-top:1px solid #ccdaec; table-layout:fixed; }} .footer-brand,.qr-card{{display:table-cell;vertical-align:middle}} .footer-brand{{width:74%;padding-left:6px}} .footer-brand.full{{width:100%}} .footer-title{{display:flex;align-items:baseline;gap:15px}} .footer-title strong{{color:#1768e8;font-size:43px;font-style:italic;line-height:1}} .footer-title span{{font-size:24px;font-weight:800}} .footer-brand>small{{display:block;margin-top:4px;color:#536683;font-size:16px}} .repo-line{{display:flex;align-items:center;gap:9px;margin-top:11px;color:#111827}} .repo-line svg{{width:25px;height:25px;flex:none;fill:currentColor}} .repo-line div{{min-width:0}} .repo-line em,.repo-line b{{display:block;font-style:normal}} .repo-line em{{margin-bottom:1px;color:#64748b;font-size:12px;letter-spacing:.6px}} .repo-line b{{font-size:16px;line-height:1.15;white-space:nowrap}} .qr-card{{width:26%;text-align:center;font-size:16px;font-weight:750;line-height:1.2}} .qr-card.text-only{{padding-left:18px}} .qr-card .social-link{{color:inherit;text-decoration:none}} .qr-card span b{{color:#ff2442}} .qr-frame{{width:132px;height:132px;margin:0 auto 5px;padding:4px;border:1px solid #d3deed;border-radius:13px;background:#fff}} .qr-frame img{{display:block;width:122px;height:122px;object-fit:contain}} .disclaimer{{margin:6px -34px -24px;padding:8px 34px;color:#285b9d;font-size:14px;text-align:center;background:#eaf3ff}}
   </style>
 </head>
@@ -2134,9 +2153,12 @@ def build_share_image_html(
 
 
 __all__ = [
+    "DEFAULT_XIAOHONGSHU_HANDLE",
+    "DEFAULT_XIAOHONGSHU_QR_PATH",
     "PROJECT_REPOSITORY",
     "PROJECT_DISPLAY_NAME",
     "PROJECT_URL",
     "ShareImageBranding",
     "build_share_image_html",
+    "share_image_branding_from_config",
 ]

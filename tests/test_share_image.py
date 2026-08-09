@@ -2,14 +2,18 @@
 
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from src.share_image import (
+    DEFAULT_XIAOHONGSHU_HANDLE,
+    DEFAULT_XIAOHONGSHU_QR_PATH,
     PROJECT_DISPLAY_NAME,
     PROJECT_REPOSITORY,
     ShareImageBranding,
     build_share_image_html,
+    share_image_branding_from_config,
 )
 
 XIAOHONGSHU_HANDLE = "@示例账号"
@@ -41,8 +45,8 @@ def test_stock_share_image_uses_configured_xiaohongshu_branding():
     assert PROJECT_REPOSITORY in html
     assert "小红书二维码" in html
     assert PROJECT_DISPLAY_NAME in html
-    assert XIAOHONGSHU_HANDLE in html
-    assert f"<b>小红书</b> {XIAOHONGSHU_HANDLE} · ID 123456" in html
+    assert f"<b>小红书</b>{XIAOHONGSHU_HANDLE}" in html
+    assert "123456" not in html
     assert 'href="https://example.com/xiaohongshu"' in html
     assert "2026-07-31" in html
     assert html.count("<h1>") == 1
@@ -57,6 +61,109 @@ def test_stock_share_image_omits_unconfigured_social_account():
     assert 'class="qr-card' not in html
     assert "小红书" not in html
     assert 'class="footer-brand full"' in html
+
+
+def test_runtime_branding_defaults_to_bundled_xiaohongshu_qr():
+    branding = share_image_branding_from_config(object())
+
+    assert branding.xiaohongshu_handle == DEFAULT_XIAOHONGSHU_HANDLE
+    assert branding.xiaohongshu_id == ""
+    assert branding.xiaohongshu_qr_path == DEFAULT_XIAOHONGSHU_QR_PATH
+    html = build_share_image_html(
+        "# 贵州茅台 600519 分析报告\n\n## 核心判断\n\n- 趋势偏多\n",
+        generated_on=date(2026, 7, 31),
+        branding=branding,
+    )
+
+    assert html.count('class="qr-frame"') == 1
+    assert html.count("data:image/jpeg;base64,") == 1
+    assert f"<b>小红书</b>{DEFAULT_XIAOHONGSHU_HANDLE}" in html
+    assert " ID " not in html
+
+
+def test_runtime_branding_does_not_mix_default_qr_with_custom_identity():
+    branding = share_image_branding_from_config(
+        SimpleNamespace(
+            share_image_xiaohongshu_url="https://example.com/custom",
+            share_image_xiaohongshu_handle="@自定义账号",
+            share_image_xiaohongshu_id="custom-id",
+        )
+    )
+
+    assert branding.xiaohongshu_id == "custom-id"
+    assert branding.xiaohongshu_qr_path == ""
+
+    html = build_share_image_html(
+        "# 贵州茅台 600519 分析报告\n\n## 核心判断\n\n- 趋势偏多\n",
+        generated_on=date(2026, 7, 31),
+        branding=branding,
+    )
+
+    assert "<b>小红书</b>@自定义账号" in html
+    assert "custom-id" not in html
+    assert "data:image/jpeg;base64," not in html
+    assert DEFAULT_XIAOHONGSHU_HANDLE not in html
+
+
+def test_runtime_branding_does_not_mix_default_pair_with_custom_handle_or_url():
+    branding = share_image_branding_from_config(
+        SimpleNamespace(
+            share_image_xiaohongshu_url="https://example.com/custom",
+            share_image_xiaohongshu_handle="@自定义账号",
+        )
+    )
+
+    assert branding.xiaohongshu_handle == "@自定义账号"
+    assert branding.xiaohongshu_id == ""
+    assert branding.xiaohongshu_qr_path == ""
+
+    html = build_share_image_html(
+        "# 贵州茅台 600519 分析报告\n\n## 核心判断\n\n- 趋势偏多\n",
+        generated_on=date(2026, 7, 31),
+        branding=branding,
+    )
+
+    assert "@自定义账号" in html
+    assert 'href="https://example.com/custom"' in html
+    assert "data:image/jpeg;base64," not in html
+    assert DEFAULT_XIAOHONGSHU_HANDLE not in html
+
+
+def test_runtime_branding_does_not_mix_default_handle_with_custom_qr():
+    branding = share_image_branding_from_config(
+        SimpleNamespace(
+            share_image_xiaohongshu_qr_path=str(
+                Path(__file__).parents[1] / "src" / "assets" / "share_image" / "xiaohongshu_qr.jpg"
+            ),
+        )
+    )
+
+    assert branding.xiaohongshu_id == ""
+    assert branding.xiaohongshu_qr_path
+
+    html = build_share_image_html(
+        "# 贵州茅台 600519 分析报告\n\n## 核心判断\n\n- 趋势偏多\n",
+        generated_on=date(2026, 7, 31),
+        branding=branding,
+    )
+
+    assert html.count("data:image/jpeg;base64,") == 1
+    assert DEFAULT_XIAOHONGSHU_HANDLE not in html
+
+
+def test_runtime_branding_treats_whitespace_only_values_as_unconfigured():
+    branding = share_image_branding_from_config(
+        SimpleNamespace(
+            share_image_xiaohongshu_url="  ",
+            share_image_xiaohongshu_handle="  ",
+            share_image_xiaohongshu_id="  ",
+            share_image_xiaohongshu_qr_path="  ",
+        )
+    )
+
+    assert branding.xiaohongshu_handle == DEFAULT_XIAOHONGSHU_HANDLE
+    assert branding.xiaohongshu_id == ""
+    assert branding.xiaohongshu_qr_path == DEFAULT_XIAOHONGSHU_QR_PATH
 
 
 def test_stock_share_image_does_not_link_unsafe_social_url():
@@ -713,6 +820,34 @@ def test_market_share_image_preserves_report_color_scheme_from_index_markers():
 
     assert '<strong class="red">+0.80%</strong>' in html
     assert 'class="metric red"><span>上涨</span>' in html
+
+
+def test_generic_share_image_wraps_long_preformatted_lines_and_urls_in_fallback():
+    html = build_share_image_html(
+        """# 完整报告
+
+## 原始链接
+
+https://example.com/this-is-a-very-long-url-with-no-natural-breakpoints/abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ
+
+## 调试片段
+
+```text
+TRACEBACK_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz_TRACEBACK_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz
+```
+""",
+        generated_on=date(2026, 8, 1),
+    )
+
+    assert 'class="poster dashboard"' in html
+    assert '<section class="report-fallback">' in html
+    assert "<pre>" in html
+    assert "<code>" in html
+    assert ".report-content{overflow-wrap:anywhere}" in html
+    assert ".report-content h1,.report-content h2,.report-content h3{color:#153d78;overflow-wrap:anywhere;word-break:break-word}" in html
+    assert ".report-content p,.report-content li,.report-content th,.report-content td,.report-content blockquote,.report-content a{overflow-wrap:anywhere;word-break:break-word}" in html
+    assert ".report-content pre{max-width:100%;" in html
+    assert "white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word" in html
 
 
 def test_real_single_stock_shape_uses_h2_title_score_and_sniper_contract():
