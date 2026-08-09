@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tests for async-friendly bot dispatcher execution."""
 
+import json
 import sys
 import unittest
 from datetime import datetime
@@ -229,11 +230,72 @@ class TestHandleWebhookAsync(unittest.IsolatedAsyncioTestCase):
         fake_config = MagicMock()
         fake_config.bot_enabled = False
 
-        with patch("src.config.get_config", return_value=fake_config):
+        with patch("src.config.get_config", return_value=fake_config), patch(
+            "bot.handler.get_platform"
+        ) as get_platform:
             result = await handle_webhook_async("feishu", {}, b'{}')
 
         # WebhookResponse.success() returns status_code 200
         self.assertEqual(result.status_code, 200)
+        get_platform.assert_not_called()
+
+    async def test_webhook_debug_log_redacts_nested_sensitive_fields(self):
+        from bot.handler import handle_webhook_async
+
+        fake_platform = MagicMock()
+        fake_platform.handle_webhook.return_value = (None, None)
+        fake_config = MagicMock(bot_enabled=True)
+        payload = {
+            "type": 2,
+            "token": "token-secret",
+            "normal": "keep-top-level",
+            "nested": {
+                "access_token": "access-token-secret",
+                "refresh_token": "suffix-token-secret",
+                "secret": "secret-value",
+                "client_secret": "suffix-secret-value",
+                "api_key": "api-key-secret",
+                "vendor_api_key": "suffix-api-key-secret",
+                "authorization": "authorization-secret",
+                "name": "help",
+            },
+            "items": [
+                {"token": "list-token-secret", "label": "keep-list-item"},
+                "keep-list-scalar",
+            ],
+        }
+        body = json.dumps(payload).encode("utf-8")
+
+        with patch("src.config.get_config", return_value=fake_config), patch(
+            "bot.handler.get_platform", return_value=fake_platform
+        ), self.assertLogs("bot.handler", level="DEBUG") as captured:
+            await handle_webhook_async("discord", {}, body)
+
+        rendered = "\n".join(captured.output)
+        for secret in (
+            "token-secret",
+            "access-token-secret",
+            "suffix-token-secret",
+            "secret-value",
+            "suffix-secret-value",
+            "api-key-secret",
+            "suffix-api-key-secret",
+            "authorization-secret",
+            "list-token-secret",
+        ):
+            self.assertNotIn(secret, rendered)
+        self.assertIn("[REDACTED]", rendered)
+        self.assertIn("help", rendered)
+        self.assertIn("keep-top-level", rendered)
+        self.assertIn("keep-list-item", rendered)
+        self.assertIn("keep-list-scalar", rendered)
+
+        received_payload = fake_platform.handle_webhook.call_args.args[2]
+        self.assertEqual(received_payload, payload)
+        self.assertEqual(received_payload["token"], "token-secret")
+        self.assertEqual(
+            received_payload["nested"]["access_token"], "access-token-secret"
+        )
 
 
 class TestChatCommandCompatibility(unittest.TestCase):

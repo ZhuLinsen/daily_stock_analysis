@@ -44,6 +44,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from api.discord import DiscordDeferredCallbackMiddleware
+from api.discord import router as discord_router
+
 logger = logging.getLogger(__name__)
 
 # Match src="/assets/foo.js" / href="/assets/foo.css" produced by the
@@ -370,12 +373,17 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     )
 
     add_auth_middleware(app)
+    # Registered after BaseHTTP auth so this pure ASGI middleware is the
+    # outermost response boundary. Discord follow-up work starts only after
+    # the final body has been handed to the server's ASGI send callable.
+    app.add_middleware(DiscordDeferredCallbackMiddleware)
     
     # ============================================================
     # 注册路由
     # ============================================================
     
     app.include_router(api_v1_router, prefix="/api/v1")
+    app.include_router(discord_router)
     add_error_handlers(app)
     
     # ============================================================

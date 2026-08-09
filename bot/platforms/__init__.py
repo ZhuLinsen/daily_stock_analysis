@@ -13,10 +13,12 @@
 
 from bot.platforms.base import BotPlatform
 from bot.platforms.dingtalk import DingtalkPlatform
+from bot.platforms.discord import DiscordPlatform
 
 # 所有可用平台（Webhook 模式）
 ALL_PLATFORMS = {
     'dingtalk': DingtalkPlatform,
+    'discord': DiscordPlatform,
 }
 
 # 钉钉 Stream 模式（可选）
@@ -56,6 +58,7 @@ except ImportError:
 __all__ = [
     'BotPlatform',
     'DingtalkPlatform',
+    'DiscordPlatform',
     'ALL_PLATFORMS',
     # 钉钉 Stream 模式
     'DingtalkStreamClient',

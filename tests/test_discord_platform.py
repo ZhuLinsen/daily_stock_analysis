@@ -208,7 +208,7 @@ def test_format_response_wraps_interaction_callback():
 
 
 def test_send_followup_patches_original_message():
-    """send_followup 应 PATCH Discord follow-up webhook。"""
+    """send_followup 应 PATCH Discord deferred 原始响应的官方 endpoint。"""
     from bot.models import BotMessage, BotResponse, ChatType
 
     platform = _make_platform("00" * 32)
@@ -235,13 +235,17 @@ def test_send_followup_patches_original_message():
 
     assert result is True
     mock_requests.patch.assert_called_once()
+    mock_requests.post.assert_not_called()
     call_args = mock_requests.patch.call_args
-    assert "/app-123/interaction-token/messages/@original" in call_args[0][0]
+    assert call_args[0][0] == (
+        "https://discord.com/api/v10/webhooks/"
+        "app-123/interaction-token/messages/@original"
+    )
     assert call_args[1]["json"]["content"] == "分析结果"
 
 
 def test_send_followup_chunks_long_content():
-    """超过 2000 字符的 follow-up 应被分块：首块 PATCH，后续 POST。"""
+    """超过 2000 字符的 follow-up 应先编辑原响应，再 POST 后续块。"""
     from bot.models import BotMessage, BotResponse, ChatType
 
     platform = _make_platform("00" * 32)
@@ -270,14 +274,16 @@ def test_send_followup_chunks_long_content():
         result = platform.send_followup(response, message)
 
     assert result is True
-    # 首块使用 PATCH
     mock_requests.patch.assert_called_once()
-    patch_url = mock_requests.patch.call_args[0][0]
-    assert "/messages/@original" in patch_url
-    # 后续块使用 POST
+    assert mock_requests.patch.call_args.args[0] == (
+        "https://discord.com/api/v10/webhooks/"
+        "app-123/interaction-token/messages/@original"
+    )
     assert mock_requests.post.call_count >= 1
-    post_url = mock_requests.post.call_args[0][0]
-    assert post_url.endswith("/app-123/interaction-token")
+    for call in mock_requests.post.call_args_list:
+        assert call.args[0] == (
+            "https://discord.com/api/v10/webhooks/app-123/interaction-token"
+        )
 
 
 def test_send_followup_missing_token_returns_false():

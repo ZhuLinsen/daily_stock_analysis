@@ -55,10 +55,56 @@ DISCORD_BOT_TOKEN=your-discord-bot-token
 DISCORD_MAIN_CHANNEL_ID=your-channel-id
 DISCORD_WEBHOOK_URL=your-webhook-url (可选)
 DISCORD_INTERACTIONS_PUBLIC_KEY=your-public-key (仅接收入站 Interaction/Webhook 回调时需要)
-DISCORD_BOT_STATUS=A股智能分析 | /help
 ```
 
 如果你配置了 Discord Interaction / Webhook 入站回调，务必在 Discord Developer Portal 的 `General Information -> Public Key` 复制公钥并填入 `DISCORD_INTERACTIONS_PUBLIC_KEY`；系统会使用该公钥校验每个入站请求的 Ed25519 签名，验签失败会直接拒绝请求。
+
+## 配置 Interaction 回调
+
+1. 使用仅启动服务的方式运行，避免服务器同时执行每日调度：
+
+   ```bash
+   python main.py --serve-only --host 0.0.0.0 --port 8000
+   ```
+
+2. 为服务配置稳定的公网 HTTPS 域名。在 Discord Developer Portal 的
+   `General Information -> Interactions Endpoint URL` 填写：
+
+   ```text
+   https://你的域名/bot/discord
+   ```
+
+3. 保存时 Discord 会发送已签名的 PING。服务验签成功后返回 PONG；缺少或
+   无效签名会返回 HTTP 401。该公开路由不使用管理员 Cookie，但
+   `ADMIN_AUTH_ENABLED=true` 时 `/api/v1/*` 仍继续要求管理员登录。
+
+Slash 命令会先收到 Discord 要求的延迟确认，分析结果完成后再更新原始回复。
+因此云服务必须持续运行，不能使用会在请求结束后立即冻结后台工作的托管模式。
+
+## 注册 Slash 命令
+
+先在一个测试服务器注册，通常更适合首次验证：
+
+```powershell
+python scripts/register_discord_commands.py `
+  --application-id "你的Application ID" `
+  --guild-id "你的Server/Guild ID" `
+  --dry-run
+```
+
+确认 JSON 载荷后，删除 `--dry-run` 执行真实 Guild 注册。脚本优先从进程环境变量
+`DISCORD_BOT_TOKEN` 读取 Token；如果环境变量为空且当前是交互式终端，会使用
+不回显的安全提示要求输入。正式全局注册使用：
+
+```powershell
+python scripts/register_discord_commands.py `
+  --application-id "你的Application ID" `
+  --global
+```
+
+脚本使用 Discord bulk overwrite 接口，使远端命令与当前列表一致。不要把真实
+Token 写进脚本、文档、Git 或命令行参数；脚本不会从 argv 接收 Token，错误输出
+也不会回显 Token。
 
 ## Webhook模式配置（可选）
 
@@ -84,20 +130,23 @@ GitHub Actions 中这两项均使用 Repository Variables，而不是 Secrets。
 
 Discord机器人支持以下Slash命令：
 
-1. `/analyze <stock_code> [full_report]` - 分析指定股票代码
-   - `stock_code`: 股票代码，如 600519
-   - `full_report`: 可选，是否生成完整报告（包含大盘）
-
-2. `/market_review` - 获取大盘复盘报告
-
-3. `/help` - 查看帮助信息
+- `/help [command]`：查看帮助
+- `/status`：查看系统状态
+- `/analyze <stock_code> [full]`：分析单只股票
+- `/market`：执行大盘复盘
+- `/batch [count]`：批量分析自选股
+- `/ask <stock_codes> [strategy]`：使用 Agent 技能分析股票
+- `/chat <question>`：与 AI 助手自由对话
+- `/research <topic> [question]`：深度研究股票或市场主题
+- `/strategies [active]`：查看可用策略
+- `/history [session]`：查看会话历史，参数也可使用 `clear`
 
 ## 测试机器人
 
 1. 确保机器人已成功添加到你的服务器
 2. 在频道中输入`/help`，机器人会返回帮助信息
 3. 输入`/analyze 600519`测试股票分析功能
-4. 输入`/market_review`测试大盘复盘功能
+4. 输入`/market`测试大盘复盘功能
 
 ## 注意事项
 
@@ -113,7 +162,7 @@ Discord机器人支持以下Slash命令：
 ## 故障排除
 
 - **机器人不响应命令**：检查Bot Token和频道ID是否正确，确保机器人已添加到服务器
-- **Slash命令不显示**：等待一段时间（Discord需要同步命令），或重新添加机器人
+- **Slash命令不显示**：先使用 `--guild-id` 注册并确认应用已通过 `applications.commands` scope 加入服务器；全局命令同步可能需要等待
 - **消息发送失败**：检查频道权限，确保机器人有发送消息的权限
 
 ## 相关链接

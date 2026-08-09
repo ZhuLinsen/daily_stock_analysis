@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] Discord Webhook 支持通过非敏感配置自定义消息名称与公网 HTTPS 头像，并同步接入本地/Web 设置、GitHub Actions Variables 与中英文文档。
 - [改进] GitHub Actions 每日分析改为纽约时间工作日 16:30 运行，即纳斯达克常规交易收盘后 30 分钟，并自动适配美国夏令时。
+- [新功能] 新增经 Ed25519 验签的 Discord Interaction 公网入口与 Slash 命令注册脚本，支持 Guild/Global 注册、安全 dry-run、非回显 Token 输入及敏感载荷日志脱敏。
+- [修复] Discord HTTP Interaction 在 type=5 ACK 响应体发送完成后才启动命令派发与 follow-up，避免快速命令抢先编辑尚未建立的原始响应。
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->

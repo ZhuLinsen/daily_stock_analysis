@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Awaitable, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from bot.models import WebhookResponse
 from bot.dispatcher import get_dispatcher
@@ -24,6 +24,36 @@ logger = logging.getLogger(__name__)
 
 # 平台实例缓存
 _platform_instances: Dict[str, 'BotPlatform'] = {}
+
+_SENSITIVE_PAYLOAD_KEYS = frozenset({
+    "authorization",
+    "api_key",
+    "secret",
+    "token",
+})
+
+
+def _redact_sensitive_data(value):
+    """Return a recursively redacted copy suitable for diagnostic logging."""
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            normalized_key = str(key).lower()
+            if (
+                normalized_key in _SENSITIVE_PAYLOAD_KEYS
+                or normalized_key.endswith("_token")
+                or normalized_key.endswith("_secret")
+                or normalized_key.endswith("_api_key")
+            ):
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = _redact_sensitive_data(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_data(item) for item in value)
+    return value
 
 
 def get_platform(platform_name: str) -> Optional['BotPlatform']:
@@ -75,7 +105,8 @@ def handle_webhook(
     from src.config import get_config
     config = get_config()
 
-    if not getattr(config, 'bot_enabled', True):
+    bot_enabled = getattr(config, 'bot_enabled', True)
+    if not bot_enabled and platform_name != 'discord':
         logger.info("[BotHandler] 机器人功能未启用")
         return WebhookResponse.success()
 
@@ -91,10 +122,16 @@ def handle_webhook(
         logger.error(f"[BotHandler] JSON 解析失败: {e}")
         return WebhookResponse.error("Invalid JSON", 400)
 
-    logger.debug(f"[BotHandler] 请求数据: {json.dumps(data, ensure_ascii=False)[:500]}")
+    safe_data = _redact_sensitive_data(data)
+    logger.debug(f"[BotHandler] 请求数据: {json.dumps(safe_data, ensure_ascii=False)[:500]}")
 
     # 处理 Webhook
     message, immediate_response = platform.handle_webhook(headers, body, data)
+
+    # Discord still requires a protocol-valid response when command handling
+    # is disabled. Preserve PONG/deferred ACK, but do not dispatch work.
+    if not bot_enabled:
+        return immediate_response or WebhookResponse.success()
 
     # 如果是验证/错误响应且没有消息需要处理，直接返回
     if immediate_response and not message:
@@ -140,7 +177,8 @@ async def handle_webhook_async(
     platform_name: str,
     headers: Dict[str, str],
     body: bytes,
-    query_params: Optional[Dict[str, list]] = None
+    query_params: Optional[Dict[str, list]] = None,
+    deferred_callbacks: Optional[List[Callable[[], Awaitable[None]]]] = None,
 ) -> WebhookResponse:
     """Async version of :func:`handle_webhook`.
 
@@ -152,7 +190,8 @@ async def handle_webhook_async(
     from src.config import get_config
     config = get_config()
 
-    if not getattr(config, 'bot_enabled', True):
+    bot_enabled = getattr(config, 'bot_enabled', True)
+    if not bot_enabled and platform_name != 'discord':
         logger.info("[BotHandler] 机器人功能未启用")
         return WebhookResponse.success()
 
@@ -166,9 +205,15 @@ async def handle_webhook_async(
         logger.error(f"[BotHandler] JSON 解析失败: {e}")
         return WebhookResponse.error("Invalid JSON", 400)
 
-    logger.debug(f"[BotHandler] 请求数据: {json.dumps(data, ensure_ascii=False)[:500]}")
+    safe_data = _redact_sensitive_data(data)
+    logger.debug(f"[BotHandler] 请求数据: {json.dumps(safe_data, ensure_ascii=False)[:500]}")
 
     message, immediate_response = platform.handle_webhook(headers, body, data)
+
+    # Discord still requires a protocol-valid response when command handling
+    # is disabled. Preserve PONG/deferred ACK, but do not dispatch work.
+    if not bot_enabled:
+        return immediate_response or WebhookResponse.success()
 
     if immediate_response and not message:
         logger.info("[BotHandler] 返回验证响应")
@@ -186,7 +231,12 @@ async def handle_webhook_async(
             except Exception as exc:
                 logger.error("[BotHandler] 延迟命令处理失败: %s", exc)
 
-        asyncio.ensure_future(_deferred_dispatch())
+        if deferred_callbacks is not None:
+            # HTTP adapters can attach this callback to the response lifecycle
+            # so Discord sees the type=5 ACK before a fast follow-up request.
+            deferred_callbacks.append(_deferred_dispatch)
+        else:
+            asyncio.ensure_future(_deferred_dispatch())
         return immediate_response
 
     if not message:
