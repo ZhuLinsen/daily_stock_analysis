@@ -1059,6 +1059,8 @@ def chunk_content_by_max_words(
                 # 先保存当前积累的内容
                 if current_chunk:
                     chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_word_len = 0
 
                 # 强制截断这个超长 section
                 section_chunks = _chunk(
