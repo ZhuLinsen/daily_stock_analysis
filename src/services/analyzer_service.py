@@ -132,10 +132,45 @@ def _build_readiness_details(config: "Config") -> Dict[str, Any]:
     pipeline_available = _module_available("src.core.pipeline")
     pandas_available = _module_available("pandas")
     litellm_available = _module_available("litellm")
+    validation_issues: List[Dict[str, str]] = []
+    validate_structured = getattr(config, "validate_structured", None)
+    if callable(validate_structured):
+        try:
+            raw_issues = validate_structured()
+        except Exception as exc:
+            validation_issues.append(
+                {
+                    "severity": "error",
+                    "message": f"配置校验失败: {exc}",
+                    "field": "",
+                    "code": "config_validation_failed",
+                }
+            )
+        else:
+            for issue in raw_issues:
+                severity = str(getattr(issue, "severity", "error")).lower()
+                if severity not in {"error", "warning", "info"}:
+                    severity = "error"
+                validation_issues.append(
+                    {
+                        "severity": severity,
+                        "message": str(getattr(issue, "message", issue)),
+                        "field": str(getattr(issue, "field", "") or ""),
+                        "code": str(getattr(issue, "code", "") or ""),
+                    }
+                )
+
+    validation_errors = [
+        issue for issue in validation_issues if issue["severity"] == "error"
+    ]
+    config_valid = not validation_errors
     data_mode_ready = pipeline_available and pandas_available
-    full_analysis_ready = data_mode_ready and litellm_available
+    full_analysis_ready = data_mode_ready and litellm_available and config_valid
     return {
         "config_loaded": True,
+        "config_valid": config_valid,
+        "config_validation_issues": validation_issues,
+        "config_validation_errors": validation_errors,
         "pipeline_module_available": pipeline_available,
         "market_data_runtime_available": pandas_available,
         "llm_runtime_available": litellm_available,
@@ -195,7 +230,7 @@ def run_stock_analysis(
             success=success,
             query_id=query_id,
             details=details,
-            error=None if success else "本地运行环境不完整",
+            error=None if success else "本地配置或运行环境不完整",
         )
 
     try:
