@@ -633,7 +633,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AIHUBMIX_KEY": {
         "title": "AIHubmix Key",
-        "description": "AIHubmix one-stop API key – access all mainstream models with a single key, no VPN required. Auto-sets base URL to aihubmix.com/v1. Get key: https://aihubmix.com/?aff=CfMq",
+        "description": "AIHubmix one-stop API key – access all mainstream models with a single key, no VPN required. Auto-sets base URL to aihubmix.com/v1. Get key: https://inferera.com/?aff=CfMq",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "password",

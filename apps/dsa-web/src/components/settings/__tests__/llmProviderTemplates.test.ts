@@ -84,6 +84,13 @@ describe('llmProviderTemplates', () => {
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.openai.configHint).toBeUndefined();
   });
 
+  it('uses the mainland-accessible AIHubmix referral without changing its API base URL', () => {
+    expect(LLM_PROVIDER_TEMPLATE_BY_ID.aihubmix).toMatchObject({
+      baseUrl: 'https://aihubmix.com/v1',
+      officialSources: [{ label: 'AIHubmix', url: 'https://inferera.com/?aff=CfMq' }],
+    });
+  });
+
   it('keeps basic metadata on non-custom provider templates', () => {
     for (const template of LLM_PROVIDER_TEMPLATES.filter((item) => item.channelId !== 'custom')) {
       expect(template.capabilities.length).toBeGreaterThan(0);

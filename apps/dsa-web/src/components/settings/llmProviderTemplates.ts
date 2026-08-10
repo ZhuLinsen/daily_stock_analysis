@@ -56,7 +56,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     baseUrl: 'https://aihubmix.com/v1',
     placeholderModels: 'gpt-5.5,claude-sonnet-4-6,gemini-3.1-pro-preview',
     capabilities: ['openai-compatible', 'aggregator'],
-    officialSources: [{ label: 'AIHubmix', url: 'https://aihubmix.com/' }],
+    officialSources: [{ label: 'AIHubmix', url: 'https://inferera.com/?aff=CfMq' }],
   },
   {
     channelId: 'anspire',
