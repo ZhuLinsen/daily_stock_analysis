@@ -98,24 +98,24 @@ jobs:
           LLM_HERMES_MODELS: ${{ vars.LLM_HERMES_MODELS || secrets.LLM_HERMES_MODELS }}
           LLM_HERMES_ENABLED: ${{ vars.LLM_HERMES_ENABLED || secrets.LLM_HERMES_ENABLED }}
 
-          # OPENAI AI（主选）
+          # DEEPSEEK AI（主选）
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
-          OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           OPENAI_BASE_URL: https://api.deepseek.com
           MODEL_NAME: deepseek-chat
           
           # AIHubMix（优先于 OPENAI_API_KEY，自动适配 base_url，推荐国内用户）
           AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
 
-          # DeepSeek
-          OPENAI_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
-          OPENAI_BASE_URL: https://api.moonshot.cn/v1
-          MODEL_NAME: moonshot-v1-8k
+          # Kimi
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          MOONSHOT_BASE_URL: https://api.moonshot.cn/v1
+          MOONSHOT_MODEL_NAME: moonshot-v1-8k
           
           # Qwen
-          OPENAI_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
-          OPENAI_BASE_URL: https://dashscope.aliyun.com/compatible-mode/v1
-          MODEL_NAME: qwen-plus
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DASHSCOPE_BASE_URL: https://dashscope.aliyun.com/compatible-mode/v1
+          DASHSCOPE_MODEL_NAME: qwen-plus
             
           # LLM 渠道模式（常见渠道名需显式映射，GitHub Actions 不会自动导入任意 Secret/Variable）
           LLM_PRIMARY_PROTOCOL: ${{ vars.LLM_PRIMARY_PROTOCOL || secrets.LLM_PRIMARY_PROTOCOL }}
