@@ -119,6 +119,73 @@ def test_check_mode_keeps_warnings_visible_without_failing():
     assert outcome.details["config_validation_issues"][0]["severity"] == "warning"
 
 
+def test_check_mode_downgrades_errors_unrelated_to_explicit_no_notify_run():
+    config = _config()
+    config.validate_structured = MagicMock(
+        return_value=[
+            SimpleNamespace(
+                severity="error",
+                message="未配置 STOCK_LIST",
+                field="STOCK_LIST",
+                code="",
+            ),
+            SimpleNamespace(
+                severity="error",
+                message="Telegram 通知配置不完整",
+                field="TELEGRAM_CHAT_ID",
+                code="",
+            ),
+            SimpleNamespace(
+                severity="error",
+                message="通知时区配置无效",
+                field="NOTIFICATION_TIMEZONE",
+                code="",
+            ),
+        ]
+    )
+
+    with patch("src.services.analyzer_service._module_available", return_value=True):
+        outcome = run_stock_analysis("600519", mode="check", config=config)
+
+    assert outcome.success is True
+    assert outcome.details["config_valid"] is True
+    assert outcome.details["config_validation_errors"] == []
+    assert {
+        issue["field"]: issue["severity"]
+        for issue in outcome.details["config_validation_issues"]
+    } == {
+        "STOCK_LIST": "warning",
+        "TELEGRAM_CHAT_ID": "warning",
+        "NOTIFICATION_TIMEZONE": "warning",
+    }
+
+
+def test_check_mode_keeps_notification_errors_blocking_when_requested():
+    config = _config()
+    config.validate_structured = MagicMock(
+        return_value=[
+            SimpleNamespace(
+                severity="error",
+                message="Telegram 通知配置不完整",
+                field="TELEGRAM_CHAT_ID",
+                code="",
+            )
+        ]
+    )
+
+    with patch("src.services.analyzer_service._module_available", return_value=True):
+        outcome = run_stock_analysis(
+            "600519",
+            mode="check",
+            config=config,
+            notifier=object(),
+        )
+
+    assert outcome.success is False
+    assert outcome.details["config_valid"] is False
+    assert outcome.details["config_validation_errors"][0]["field"] == "TELEGRAM_CHAT_ID"
+
+
 def test_data_mode_fetches_only_without_analysis_or_notification():
     pipeline = MagicMock()
     pipeline.fetch_and_save_stock_data.return_value = (True, None)
