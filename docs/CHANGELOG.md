@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
+- [新功能] 股票分析服务 CLI 新增 `check`、`data`、`full` 模式，明确本地配置体检、行情获取、LLM 分析与显式通知边界。
+
 ## [3.30.0] - 2026-08-09
 
 ### 发布亮点
