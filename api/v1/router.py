@@ -14,15 +14,16 @@ from fastapi import APIRouter
 from api.v1.endpoints import (
     agent,
     alerts,
-    screening,
     analysis,
     auth,
     backtest,
     decision_signals,
     health,
     history,
+    institutional_holdings,
     intelligence,
     portfolio,
+    screening,
     stocks,
     system_config,
     usage,
@@ -66,6 +67,12 @@ router.include_router(
     backtest.router,
     prefix="/backtest",
     tags=["Backtest"]
+)
+
+router.include_router(
+    institutional_holdings.router,
+    prefix="/institutional-holdings",
+    tags=["InstitutionalHoldings"]
 )
 
 router.include_router(
