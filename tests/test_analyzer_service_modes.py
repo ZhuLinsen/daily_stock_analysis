@@ -59,6 +59,66 @@ def test_check_mode_never_builds_pipeline_or_allows_external_calls():
     assert outcome.details["pipeline_module_available"] is True
 
 
+def test_check_mode_fails_on_structured_config_errors():
+    config = _config()
+    config.validate_structured = MagicMock(
+        return_value=[
+            SimpleNamespace(
+                severity="error",
+                message="未配置可用的 LLM 渠道",
+                field="LLM_CHANNELS",
+                code="missing_llm_channel",
+            ),
+            SimpleNamespace(
+                severity="warning",
+                message="搜索增强未配置",
+                field="TAVILY_API_KEY",
+                code="",
+            ),
+        ]
+    )
+
+    with patch("src.services.analyzer_service._module_available", return_value=True):
+        outcome = run_stock_analysis("600519", mode="check", config=config)
+
+    config.validate_structured.assert_called_once_with()
+    assert outcome.success is False
+    assert outcome.error == "本地配置或运行环境不完整"
+    assert outcome.details["config_valid"] is False
+    assert outcome.details["full_analysis_ready"] is False
+    assert outcome.details["config_validation_errors"] == [
+        {
+            "severity": "error",
+            "message": "未配置可用的 LLM 渠道",
+            "field": "LLM_CHANNELS",
+            "code": "missing_llm_channel",
+        }
+    ]
+    assert len(outcome.details["config_validation_issues"]) == 2
+
+
+def test_check_mode_keeps_warnings_visible_without_failing():
+    config = _config()
+    config.validate_structured = MagicMock(
+        return_value=[
+            SimpleNamespace(
+                severity="warning",
+                message="搜索增强未配置",
+                field="TAVILY_API_KEY",
+                code="",
+            )
+        ]
+    )
+
+    with patch("src.services.analyzer_service._module_available", return_value=True):
+        outcome = run_stock_analysis("600519", mode="check", config=config)
+
+    assert outcome.success is True
+    assert outcome.details["config_valid"] is True
+    assert outcome.details["config_validation_errors"] == []
+    assert outcome.details["config_validation_issues"][0]["severity"] == "warning"
+
+
 def test_data_mode_fetches_only_without_analysis_or_notification():
     pipeline = MagicMock()
     pipeline.fetch_and_save_stock_data.return_value = (True, None)
