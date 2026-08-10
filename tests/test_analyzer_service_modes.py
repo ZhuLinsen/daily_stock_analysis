@@ -186,6 +186,42 @@ def test_check_mode_keeps_notification_errors_blocking_when_requested():
     assert outcome.details["config_validation_errors"][0]["field"] == "TELEGRAM_CHAT_ID"
 
 
+def test_check_mode_fails_when_selected_local_cli_is_missing():
+    config = _config()
+    config.generation_backend = "codex_cli"
+
+    with patch(
+        "src.services.analyzer_service._module_available",
+        return_value=True,
+    ), patch("src.llm.local_cli_backend.shutil.which", return_value=None):
+        outcome = run_stock_analysis("600519", mode="check", config=config)
+
+    assert outcome.success is False
+    assert outcome.details["generation_backend"] == "codex_cli"
+    assert outcome.details["generation_backend_ready"] is False
+    assert outcome.details["generation_backend_config_error"]["error_code"] == "command_not_found"
+    assert outcome.details["generation_backend_config_error"]["reason"] == "executable_not_found"
+
+
+def test_check_mode_local_cli_does_not_require_litellm_runtime():
+    config = _config()
+    config.generation_backend = "codex_cli"
+
+    with patch(
+        "src.services.analyzer_service._module_available",
+        side_effect=lambda module_name: module_name != "litellm",
+    ), patch(
+        "src.llm.local_cli_backend.shutil.which",
+        return_value="/usr/local/bin/codex",
+    ), patch("src.llm.local_cli_backend.os.access", return_value=True):
+        outcome = run_stock_analysis("600519", mode="check", config=config)
+
+    assert outcome.success is True
+    assert outcome.details["llm_runtime_available"] is False
+    assert outcome.details["generation_backend_ready"] is True
+    assert outcome.details["generation_backend_config_error"] is None
+
+
 def test_data_mode_fetches_only_without_analysis_or_notification():
     pipeline = MagicMock()
     pipeline.fetch_and_save_stock_data.return_value = (True, None)
