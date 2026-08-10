@@ -1,0 +1,95 @@
+name: 大宗交易雷达
+
+on:
+  schedule:
+    # 交易时段每10分钟扫描一次（UTC时间1:00-7:00 = 北京时间9:00-15:00）
+    - cron: '*/10 1-7 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install akshare
+      
+      - name: Scan block trades
+        env:
+          BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
+          BARK_SERVER_URL: ${{ secrets.BARK_SERVER_URL }}
+        run: |
+          python << 'EOF'
+          import akshare as ak
+          import datetime
+          import os
+          import json
+          import urllib.request
+
+          today = datetime.datetime.now().strftime("%Y%m%d")
+          
+          try:
+              # 获取当日大宗交易明细
+              df = ak.stock_dzjy_mrmx(symbol="A股", 
+                                      start_date=today, 
+                                      end_date=today)
+          except Exception as e:
+              print(f"数据获取失败: {e}")
+              exit(0)
+          
+          if df is None or len(df) == 0:
+              print("今日暂无大宗交易数据")
+              exit(0)
+          
+          alerts = []
+          for _, row in df.iterrows():
+              # 计算折溢价率（需对齐当日收盘价，此处简化为直接使用数据中的溢价率字段）
+              premium_rate = row.get('溢价率', 0)
+              amount = row.get('成交额', 0)
+              
+              # 阈值判断：溢价>5% 或 折价>8% 且 成交额>5000万
+              if (premium_rate > 5 or premium_rate < -8) and amount > 50000000:
+                  alerts.append({
+                      'code': row['股票代码'],
+                      'name': row['股票名称'],
+                      'price': row['成交价'],
+                      'amount': amount / 10000,  # 转为万元
+                      'premium': premium_rate,
+                      'buyer': row.get('买方营业部', ''),
+                      'seller': row.get('卖方营业部', '')
+                  })
+          
+          if not alerts:
+              print("未触发阈值")
+              exit(0)
+          
+          # 推送每条预警到 iPhone
+          for a in alerts[:5]:  # 最多推送5条，避免轰炸
+              title = f"🔥 大宗交易预警 {a['name']}({a['code']})"
+              if a['premium'] > 0:
+                  body = f"溢价 {a['premium']:.2f}% | 成交额 {a['amount']:.0f}万 | 买方:{a['buyer']}"
+              else:
+                  body = f"折价 {abs(a['premium']):.2f}% | 成交额 {a['amount']:.0f}万 | 卖方:{a['seller']}"
+              
+              bark_url = f"{os.environ['BARK_SERVER_URL']}/push"
+              data = {
+                  "device_key": os.environ['BARK_DEVICE_KEY'],
+                  "title": title,
+                  "body": body,
+                  "level": "timeSensitive",
+                  "group": "大宗交易雷达"
+              }
+              req = urllib.request.Request(
+                  bark_url,
+                  data=json.dumps(data).encode('utf-8'),
+                  headers={'Content-Type': 'application/json'}
+              )
+              urllib.request.urlopen(req)
+              print(f"已推送: {a['name']}")
+          EOF
