@@ -28,6 +28,7 @@ SEC_USER_AGENT_ENV = "SEC_USER_AGENT"
 SUPPORTED_13F_FORMS = frozenset({"13F-HR", "13F-HR/A"})
 FORM_13F_DOLLAR_VALUES_EFFECTIVE_DATE = date(2023, 1, 3)
 _ACCESSION_PATTERN = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+_ARCHIVE_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 @dataclass(frozen=True)
@@ -230,9 +231,7 @@ class Sec13FClient:
                     if index < len(acceptance_values)
                     else f"{filed_date.isoformat()}T00:00:00Z"
                 )
-                primary_document = str(recent["primaryDocument"][index]).strip()
-                if not primary_document or "/" in primary_document or "\\" in primary_document:
-                    raise ValueError("invalid primary document name")
+                primary_document = _normalize_primary_document_name(recent["primaryDocument"][index])
             except (IndexError, KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"invalid SEC filing metadata at index {index}: {exc}") from exc
 
@@ -255,8 +254,9 @@ class Sec13FClient:
     def fetch_snapshot(self, reference: FilingReference) -> FilingSnapshotData:
         directory_url = reference.archive_directory_url
         index_payload = self._get_json(f"{directory_url}/index.json")
+        primary_document_name = _select_primary_document_name(index_payload, reference.primary_document)
         information_table_name = _select_information_table_name(index_payload)
-        primary_url = f"{directory_url}/{reference.primary_document}"
+        primary_url = f"{directory_url}/{primary_document_name}"
         information_table_url = f"{directory_url}/{information_table_name}"
         primary_xml = self._get_bytes(primary_url)
         information_table_xml = self._get_bytes(information_table_url)
@@ -482,9 +482,7 @@ def _concentration(holdings: Sequence[HoldingRecord], count: int) -> float:
 
 
 def _select_information_table_name(index_payload: Dict[str, Any]) -> str:
-    items = index_payload.get("directory", {}).get("item", [])
-    names = [str(item.get("name") or "").strip() for item in items if isinstance(item, dict)]
-    names = [name for name in names if name and "/" not in name and "\\" not in name]
+    names = _archive_item_names(index_payload)
     preferred = [
         name for name in names if name.lower().endswith(".xml") and "info" in name.lower() and "table" in name.lower()
     ]
@@ -493,6 +491,35 @@ def _select_information_table_name(index_payload: Dict[str, Any]) -> str:
     if not candidates:
         raise ValueError("SEC filing directory has no information-table XML")
     return sorted(candidates, key=lambda name: (len(name), name.lower()))[0]
+
+
+def _select_primary_document_name(index_payload: Dict[str, Any], preferred_name: str) -> str:
+    preferred = _normalize_primary_document_name(preferred_name)
+    matches = [name for name in _archive_item_names(index_payload) if name.lower() == preferred.lower()]
+    if not matches:
+        raise ValueError(f"SEC filing directory is missing primary document {preferred!r}")
+    return sorted(matches)[0]
+
+
+def _archive_item_names(index_payload: Dict[str, Any]) -> List[str]:
+    items = index_payload.get("directory", {}).get("item", [])
+    names = [str(item.get("name") or "").strip() for item in items if isinstance(item, dict)]
+    return [name for name in names if _ARCHIVE_FILENAME_PATTERN.fullmatch(name)]
+
+
+def _normalize_primary_document_name(value: Any) -> str:
+    """Map SEC's XSL display path to the archive's real leaf filename."""
+
+    raw = str(value or "").strip()
+    if not raw or "\\" in raw:
+        raise ValueError("invalid primary document name")
+    parts = raw.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("invalid primary document name")
+    filename = parts[-1]
+    if not _ARCHIVE_FILENAME_PATTERN.fullmatch(filename):
+        raise ValueError("invalid primary document name")
+    return filename
 
 
 def _local_name(tag: str) -> str:

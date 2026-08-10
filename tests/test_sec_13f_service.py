@@ -178,7 +178,11 @@ def test_sec_client_lists_only_13f_filings_and_sends_identity_header() -> None:
                                 "2026-05-15T12:00:00Z",
                                 "2026-05-18T20:22:08Z",
                             ],
-                            "primaryDocument": ["primary.xml", "primary.xml", "primary_doc.xml"],
+                            "primaryDocument": [
+                                "xslN-PX_X01/primary_doc.xml",
+                                "xslForm13F_X02/primary_doc.xml",
+                                "xslForm13F_X02/primary_doc.xml",
+                            ],
                         }
                     },
                 }
@@ -193,6 +197,7 @@ def test_sec_client_lists_only_13f_filings_and_sends_identity_header() -> None:
 
     filings = client.list_recent_filings("1759760")
     assert [item.form_type for item in filings] == ["13F-HR/A", "13F-HR"]
+    assert [item.primary_document for item in filings] == ["primary_doc.xml", "primary_doc.xml"]
     assert session.calls[0][1]["headers"]["User-Agent"].endswith("tests@example.com")
 
 
