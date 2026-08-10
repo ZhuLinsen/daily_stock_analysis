@@ -25,11 +25,45 @@ description: "分析股票和市场。当用户想要分析单个或多个股票
 
 **参考:** [`Config`](src/config.py)
 
+## 推荐入口与运行模式
+
+优先使用 `run_stock_analysis()`，并明确选择运行模式。该入口返回统一的
+`StockAnalysisRunResult`，会标明本次是否允许网络、LLM 和通知能力。
+
+1. **`check`（默认）**：只检查本地配置与依赖，不访问行情、不调用 LLM、不推送。
+2. **`data`**：只获取并保存行情数据，不调用 LLM、不搜索新闻、不推送。
+3. **`full`**：执行原有的行情、新闻、AI 分析流程；只有显式传入 `notifier` 才推送。
+
+```python
+from src.services.analyzer_service import run_stock_analysis
+
+# 先做零成本本地体检
+check = run_stock_analysis("600519", mode="check")
+
+# 体检通过后，仅验证行情链路
+market_data = run_stock_analysis("600519", mode="data")
+
+# 用户明确需要完整报告时再调用 LLM
+full = run_stock_analysis("600519", mode="full", full_report=True)
+analysis = full.analysis if full.success else None
+```
+
+也可以使用文件式命令行入口，避免交互式标准输入触发部分行情库的多进程问题：
+在项目根目录执行；如果存在 `.venv/bin/python`，始终优先使用它，避免误用缺少项目依赖的系统 Python。
+
+```bash
+.venv/bin/python -m src.services.analyzer_service 600519 --mode check
+.venv/bin/python -m src.services.analyzer_service 600519 --mode data
+.venv/bin/python -m src.services.analyzer_service 600519 --mode full --full-report
+```
+
+除非用户明确要求完整 AI 分析，否则先运行 `check`；需要验证行情源时再运行 `data`。
+
 ## 函数
 
 ### 1. 分析单只股票
 
-**描述:** 分析单只股票并返回分析结果。
+**描述:** 向后兼容的完整 AI 分析入口，分析单只股票并返回分析结果。
 
 **何时使用:** 当用户要求分析特定股票时。
 
@@ -59,7 +93,7 @@ if result:
 
 ### 2. 分析多只股票
 
-**描述:** 分析一个股票列表并返回分析结果列表。
+**描述:** 向后兼容的完整 AI 分析入口，分析一个股票列表并返回分析结果列表。
 
 **何时使用:** 当用户想要一次分析多只股票时。
 
