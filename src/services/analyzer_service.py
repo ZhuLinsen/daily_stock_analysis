@@ -128,7 +128,45 @@ def _module_available(module_name: str) -> bool:
         return False
 
 
-def _build_readiness_details(config: "Config") -> Dict[str, Any]:
+_NOTIFICATION_CONFIG_FIELD_PREFIXES = (
+    "WECHAT_",
+    "FEISHU_",
+    "DINGTALK_",
+    "TELEGRAM_",
+    "EMAIL_",
+    "PUSHOVER_",
+    "NTFY_",
+    "GOTIFY_",
+    "PUSHPLUS_",
+    "SERVERCHAN",
+    "CUSTOM_WEBHOOK_",
+    "ASTRBOT_",
+    "DISCORD_",
+    "SLACK_",
+    "NOTIFICATION_",
+)
+
+
+def _config_issue_is_optional_for_check(
+    field: str,
+    *,
+    explicit_stock_code: bool,
+    notification_requested: bool,
+) -> bool:
+    normalized_field = field.strip().upper()
+    if explicit_stock_code and normalized_field in {"STOCK_LIST", "STOCK_GROUP_N"}:
+        return True
+    return not notification_requested and normalized_field.startswith(
+        _NOTIFICATION_CONFIG_FIELD_PREFIXES
+    )
+
+
+def _build_readiness_details(
+    config: "Config",
+    *,
+    stock_code: str = "",
+    notification_requested: bool = False,
+) -> Dict[str, Any]:
     pipeline_available = _module_available("src.core.pipeline")
     pandas_available = _module_available("pandas")
     litellm_available = _module_available("litellm")
@@ -151,11 +189,18 @@ def _build_readiness_details(config: "Config") -> Dict[str, Any]:
                 severity = str(getattr(issue, "severity", "error")).lower()
                 if severity not in {"error", "warning", "info"}:
                     severity = "error"
+                field = str(getattr(issue, "field", "") or "")
+                if severity == "error" and _config_issue_is_optional_for_check(
+                    field,
+                    explicit_stock_code=bool(stock_code.strip()),
+                    notification_requested=notification_requested,
+                ):
+                    severity = "warning"
                 validation_issues.append(
                     {
                         "severity": severity,
                         "message": str(getattr(issue, "message", issue)),
-                        "field": str(getattr(issue, "field", "") or ""),
+                        "field": field,
                         "code": str(getattr(issue, "code", "") or ""),
                     }
                 )
@@ -222,7 +267,11 @@ def run_stock_analysis(
         )
 
     if normalized_mode is StockAnalysisMode.CHECK:
-        details = _build_readiness_details(resolved_config)
+        details = _build_readiness_details(
+            resolved_config,
+            stock_code=code,
+            notification_requested=notifier is not None,
+        )
         success = bool(details["full_analysis_ready"])
         return StockAnalysisRunResult(
             stock_code=code,
