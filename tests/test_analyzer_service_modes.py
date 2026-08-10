@@ -1,0 +1,179 @@
+# -*- coding: utf-8 -*-
+"""Focused coverage for the cost-bounded stock analyzer service entrypoint."""
+
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+from src.enums import ReportType
+from src.services.analyzer_service import (
+    StockAnalysisMode,
+    StockAnalysisRunResult,
+    _module_available,
+    analyze_stock,
+    analyze_stocks,
+    run_stock_analysis,
+)
+
+
+def _config() -> SimpleNamespace:
+    return SimpleNamespace(
+        generation_backend="litellm",
+        realtime_source_priority="tencent,efinance",
+        max_workers=2,
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("check", StockAnalysisMode.CHECK),
+        ("preflight", StockAnalysisMode.CHECK),
+        ("dry-run", StockAnalysisMode.DATA),
+        ("fetch_only", StockAnalysisMode.DATA),
+        ("ai", StockAnalysisMode.FULL),
+    ],
+)
+def test_mode_aliases(value, expected):
+    assert StockAnalysisMode.from_value(value) is expected
+
+
+def test_module_probe_accepts_an_already_loaded_test_double(monkeypatch):
+    monkeypatch.setitem(sys.modules, "stubbed_runtime", SimpleNamespace(__spec__=None))
+
+    assert _module_available("stubbed_runtime") is True
+
+
+def test_check_mode_never_builds_pipeline_or_allows_external_calls():
+    with patch("src.services.analyzer_service._build_pipeline") as build_pipeline:
+        outcome = run_stock_analysis("600519", mode="check", config=_config())
+
+    build_pipeline.assert_not_called()
+    assert outcome.success is True
+    assert outcome.network_allowed is False
+    assert outcome.llm_allowed is False
+    assert outcome.notification_allowed is False
+    assert outcome.details["config_loaded"] is True
+    assert outcome.details["pipeline_module_available"] is True
+
+
+def test_data_mode_fetches_only_without_analysis_or_notification():
+    pipeline = MagicMock()
+    pipeline.fetch_and_save_stock_data.return_value = (True, None)
+
+    with patch("src.services.analyzer_service._build_pipeline", return_value=pipeline):
+        outcome = run_stock_analysis(
+            "600519",
+            mode="data",
+            config=_config(),
+            force_refresh=True,
+            notifier=object(),
+        )
+
+    pipeline.fetch_and_save_stock_data.assert_called_once_with("600519", force_refresh=True)
+    pipeline.process_single_stock.assert_not_called()
+    assert outcome.success is True
+    assert outcome.network_allowed is True
+    assert outcome.llm_allowed is False
+    assert outcome.notification_allowed is False
+    assert outcome.details == {"force_refresh": True, "data_ready": True}
+
+
+def test_data_mode_keeps_fetch_error_visible():
+    pipeline = MagicMock()
+    pipeline.fetch_and_save_stock_data.return_value = (False, "provider unavailable")
+
+    with patch("src.services.analyzer_service._build_pipeline", return_value=pipeline):
+        outcome = run_stock_analysis("600519", mode="data", config=_config())
+
+    assert outcome.success is False
+    assert outcome.error == "provider unavailable"
+    assert outcome.details["data_ready"] is False
+
+
+def test_full_mode_preserves_pipeline_contract_and_explicit_notification():
+    analysis = SimpleNamespace(success=True)
+    pipeline = MagicMock()
+    pipeline.process_single_stock.return_value = analysis
+    notifier = object()
+
+    with patch("src.services.analyzer_service._build_pipeline", return_value=pipeline):
+        outcome = run_stock_analysis(
+            "600519",
+            mode="full",
+            config=_config(),
+            full_report=True,
+            notifier=notifier,
+        )
+
+    assert pipeline.notifier is notifier
+    pipeline.process_single_stock.assert_called_once_with(
+        code="600519",
+        skip_analysis=False,
+        single_stock_notify=True,
+        report_type=ReportType.FULL,
+    )
+    assert outcome.analysis is analysis
+    assert outcome.success is True
+    assert outcome.network_allowed is True
+    assert outcome.llm_allowed is True
+    assert outcome.notification_allowed is True
+
+
+def test_legacy_analyze_stock_still_returns_analysis_result():
+    analysis = object()
+    outcome = StockAnalysisRunResult(
+        stock_code="600519",
+        mode=StockAnalysisMode.FULL,
+        success=True,
+        query_id="q1",
+        analysis=analysis,
+    )
+    config = _config()
+    notifier = object()
+
+    with patch("src.services.analyzer_service.run_stock_analysis", return_value=outcome) as run:
+        result = analyze_stock("600519", config, True, notifier)
+
+    assert result is analysis
+    run.assert_called_once_with(
+        "600519",
+        mode=StockAnalysisMode.FULL,
+        config=config,
+        full_report=True,
+        notifier=notifier,
+    )
+
+
+def test_legacy_analyze_stocks_keeps_positional_per_stock_calls_and_filters_none():
+    first = object()
+    second = object()
+    config = _config()
+    notifier = object()
+
+    with patch(
+        "src.services.analyzer_service.analyze_stock",
+        side_effect=[first, None, second],
+    ) as analyze:
+        results = analyze_stocks(["600519", "000001", "AAPL"], config, True, notifier)
+
+    assert results == [first, second]
+    assert analyze.call_args_list == [
+        call("600519", config, True, notifier),
+        call("000001", config, True, notifier),
+        call("AAPL", config, True, notifier),
+    ]
+
+
+def test_blank_stock_code_fails_before_config_or_pipeline_loading():
+    with patch("src.services.analyzer_service._resolve_config") as resolve_config, patch(
+        "src.services.analyzer_service._build_pipeline"
+    ) as build_pipeline:
+        outcome = run_stock_analysis("  ", mode="full")
+
+    resolve_config.assert_not_called()
+    build_pipeline.assert_not_called()
+    assert outcome.success is False
+    assert outcome.error == "股票代码不能为空"
