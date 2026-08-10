@@ -161,6 +161,71 @@ def _config_issue_is_optional_for_check(
     )
 
 
+def _generation_backend_error_details(error: Exception) -> Dict[str, str]:
+    error_code = getattr(error, "error_code", "unknown_backend_error")
+    details = getattr(error, "details", {}) or {}
+    return {
+        "error_code": str(getattr(error_code, "value", error_code)),
+        "message": str(error),
+        "backend": str(getattr(error, "backend", "") or ""),
+        "stage": str(getattr(error, "stage", "configuration") or "configuration"),
+        "reason": str(details.get("reason", "") or ""),
+    }
+
+
+def _check_generation_backend(
+    config: "Config",
+    *,
+    litellm_available: bool,
+) -> tuple[str, bool, Optional[Dict[str, str]]]:
+    from src.llm.backend_registry import (
+        LITELLM_BACKEND_ID,
+        LOCAL_CLI_GENERATION_BACKEND_IDS,
+        resolve_generation_backend_id,
+    )
+    from src.llm.generation_backend import GenerationError
+
+    try:
+        backend_id = resolve_generation_backend_id(config)
+    except GenerationError as exc:
+        return str(exc.backend or ""), False, _generation_backend_error_details(exc)
+
+    if backend_id == LITELLM_BACKEND_ID:
+        if litellm_available:
+            return backend_id, True, None
+        return backend_id, False, {
+            "error_code": "runtime_unavailable",
+            "message": "litellm runtime module is unavailable",
+            "backend": backend_id,
+            "stage": "configuration",
+            "reason": "module_not_found",
+        }
+
+    if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+        from src.llm.local_cli_backend import (
+            LocalCliGenerationBackend,
+            resolve_local_cli_preset,
+        )
+
+        backend = LocalCliGenerationBackend(
+            config,
+            preset_id=backend_id,
+            preset=resolve_local_cli_preset(backend_id),
+        )
+        error = backend.get_config_error()
+        if error is not None:
+            return backend_id, False, _generation_backend_error_details(error)
+        return backend_id, True, None
+
+    return backend_id, False, {
+        "error_code": "backend_not_configured",
+        "message": f"unsupported generation backend: {backend_id}",
+        "backend": backend_id,
+        "stage": "configuration",
+        "reason": "unsupported_generation_backend",
+    }
+
+
 def _build_readiness_details(
     config: "Config",
     *,
@@ -210,7 +275,15 @@ def _build_readiness_details(
     ]
     config_valid = not validation_errors
     data_mode_ready = pipeline_available and pandas_available
-    full_analysis_ready = data_mode_ready and litellm_available and config_valid
+    (
+        generation_backend,
+        generation_backend_ready,
+        generation_backend_config_error,
+    ) = _check_generation_backend(
+        config,
+        litellm_available=litellm_available,
+    )
+    full_analysis_ready = data_mode_ready and generation_backend_ready and config_valid
     return {
         "config_loaded": True,
         "config_valid": config_valid,
@@ -221,7 +294,9 @@ def _build_readiness_details(
         "llm_runtime_available": litellm_available,
         "data_mode_ready": data_mode_ready,
         "full_analysis_ready": full_analysis_ready,
-        "generation_backend": getattr(config, "generation_backend", None),
+        "generation_backend": generation_backend,
+        "generation_backend_ready": generation_backend_ready,
+        "generation_backend_config_error": generation_backend_config_error,
         "realtime_source_priority": getattr(config, "realtime_source_priority", None),
         "max_workers": getattr(config, "max_workers", None),
     }
