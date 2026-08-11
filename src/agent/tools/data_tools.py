@@ -62,7 +62,7 @@ def _get_fetcher_manager():
     if _fetcher_manager_singleton is None:
         with _fetcher_manager_lock:
             if _fetcher_manager_singleton is None:
-                _fetcher_manager_singleton = DataFetcherManager()
+                _fetcher_manager_singleton = DataFetcherManager.get_instance()
     return _fetcher_manager_singleton
 
 
@@ -71,6 +71,8 @@ def reset_fetcher_manager() -> None:
     global _fetcher_manager_singleton
     with _fetcher_manager_lock:
         _fetcher_manager_singleton = None
+    from data_provider import DataFetcherManager
+    DataFetcherManager.reset_instance()
 
 
 def _get_db():

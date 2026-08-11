@@ -43,7 +43,7 @@ class StockService:
             # 调用数据获取器获取实时行情
             from data_provider.base import DataFetcherManager
             
-            manager = DataFetcherManager()
+            manager = DataFetcherManager.get_instance()
             quote = manager.get_realtime_quote(stock_code)
             
             if quote is None:
@@ -116,7 +116,7 @@ class StockService:
             # 调用数据获取器获取历史数据
             from data_provider.base import DataFetcherManager
             
-            manager = DataFetcherManager()
+            manager = DataFetcherManager.get_instance()
             df, source = manager.get_daily_data(stock_code, days=days)
             
             if df is None or df.empty:

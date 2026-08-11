@@ -263,7 +263,7 @@ class EventMonitor:
     def _fetch_realtime_quote(self, stock_code: str) -> Any:
         from data_provider import DataFetcherManager
 
-        return DataFetcherManager().get_realtime_quote(stock_code)
+        return DataFetcherManager.get_instance().get_realtime_quote(stock_code)
 
     async def _get_realtime_quote(self, stock_code: str) -> Any:
         return await asyncio.to_thread(self._fetch_realtime_quote, stock_code)
@@ -338,7 +338,7 @@ class EventMonitor:
             def _fetch_daily_data():
                 from data_provider import DataFetcherManager
 
-                fm = DataFetcherManager()
+                fm = DataFetcherManager.get_instance()
                 return fm.get_daily_data(rule.stock_code, days=20)
 
             result = await asyncio.to_thread(_fetch_daily_data)

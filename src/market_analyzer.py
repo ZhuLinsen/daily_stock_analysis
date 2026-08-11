@@ -146,7 +146,7 @@ class MarketAnalyzer:
         self.config = config or get_config()
         self.search_service = search_service
         self.analyzer = analyzer
-        self.data_manager = DataFetcherManager()
+        self.data_manager = DataFetcherManager.get_instance()
         self.region = region if region in ("cn", "us", "hk", "jp", "kr") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)

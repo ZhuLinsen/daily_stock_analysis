@@ -615,6 +615,36 @@ class DataFetcherManager:
     - 所有数据源都失败时抛出异常
     """
 
+    _shared_instance: Optional["DataFetcherManager"] = None
+    _shared_instance_lock = RLock()
+
+    @classmethod
+    def get_instance(cls) -> "DataFetcherManager":
+        """Return the process-wide shared DataFetcherManager (lazy init).
+
+        Creating a new manager on every use re-runs Tushare token detection and
+        API initialization (~1-2 s of network round-trips). Under concurrent
+        analysis tasks (MAX_WORKERS > 1), requests issued while another task's
+        manager is still initializing miss the Tushare entry (priority -1) and
+        fall back to lower-priority sources (e.g. AkShare), causing chip
+        distribution to fail even though TUSHARE_TOKEN is valid.
+        """
+        if cls._shared_instance is None:
+            with cls._shared_instance_lock:
+                if cls._shared_instance is None:
+                    cls._shared_instance = cls()
+        return cls._shared_instance
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Drop the shared instance so the next get_instance() re-initializes.
+
+        Used after runtime config reloads (e.g. API key changes) so a stale
+        fetcher list is not kept forever.
+        """
+        with cls._shared_instance_lock:
+            cls._shared_instance = None
+
     _DAILY_MARKET_FETCHER_SUPPORT = {
         "EfinanceFetcher": {"cn"},
         "TencentFetcher": {"cn"},

@@ -53,7 +53,7 @@ def _get_fetcher_manager():
         with _fetcher_lock:
             if _fetcher_singleton is None:
                 from data_provider import DataFetcherManager
-                _fetcher_singleton = DataFetcherManager()
+                _fetcher_singleton = DataFetcherManager.get_instance()
     return _fetcher_singleton
 
 

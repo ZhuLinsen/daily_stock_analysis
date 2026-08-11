@@ -1199,7 +1199,7 @@ class PortfolioService:
             try:
                 from data_provider.base import DataFetcherManager
 
-                DataFetcherManager().prefetch_realtime_quotes(unique_symbols)
+                DataFetcherManager.get_instance().prefetch_realtime_quotes(unique_symbols)
             except Exception as exc:
                 logger.warning("Failed to prefetch realtime portfolio quotes: %s", exc)
 
@@ -1229,7 +1229,7 @@ class PortfolioService:
         try:
             from data_provider.base import DataFetcherManager
 
-            fetcher_manager = DataFetcherManager()
+            fetcher_manager = DataFetcherManager.get_instance()
             quote = fetcher_manager.get_realtime_quote(symbol, log_final_failure=False)
         except Exception as exc:
             logger.warning("Failed to fetch realtime portfolio price for %s: %s", symbol, exc)

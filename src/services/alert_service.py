@@ -438,7 +438,7 @@ class AlertService:
         def _fetch_daily_data():
             from data_provider import DataFetcherManager
 
-            return DataFetcherManager().get_daily_data(rule.stock_code, days=20)
+            return DataFetcherManager.get_instance().get_daily_data(rule.stock_code, days=20)
 
         try:
             result = await asyncio.to_thread(_fetch_daily_data)
@@ -533,7 +533,7 @@ class AlertService:
         def _fetch_daily_data():
             from data_provider import DataFetcherManager
 
-            return DataFetcherManager().get_daily_data(rule.stock_code, days=requested_days)
+            return DataFetcherManager.get_instance().get_daily_data(rule.stock_code, days=requested_days)
 
         try:
             if daily_cache is not None and cache_key in daily_cache:

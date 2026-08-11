@@ -43,7 +43,7 @@ class MarketStructureService:
         fetcher_manager: Optional[DataFetcherManager] = None,
         hotspot_service: Optional[MarketHotspotService] = None,
     ) -> None:
-        self.fetcher_manager = fetcher_manager or DataFetcherManager()
+        self.fetcher_manager = fetcher_manager or DataFetcherManager.get_instance()
         self.hotspot_service = hotspot_service or MarketHotspotService(
             fetcher_manager=self.fetcher_manager,
         )

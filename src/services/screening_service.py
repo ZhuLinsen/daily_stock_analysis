@@ -3267,7 +3267,7 @@ def _get_dsa_fetcher_manager() -> Any:
             if _DSA_FETCHER_MANAGER is None:
                 from data_provider import DataFetcherManager
 
-                _DSA_FETCHER_MANAGER = DataFetcherManager()
+                _DSA_FETCHER_MANAGER = DataFetcherManager.get_instance()
     return _DSA_FETCHER_MANAGER
 
 

@@ -457,7 +457,7 @@ class PortfolioRiskService:
         try:
             from data_provider import DataFetcherManager
 
-            self._data_manager = DataFetcherManager()
+            self._data_manager = DataFetcherManager.get_instance()
             return self._data_manager
         except Exception as exc:  # pragma: no cover - fail-open initialization
             self._data_manager_init_error = str(exc)

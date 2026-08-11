@@ -1648,7 +1648,7 @@ def get_stock_name_multi_source(
     if data_manager is None:
         try:
             from data_provider.base import DataFetcherManager
-            data_manager = DataFetcherManager()
+            data_manager = DataFetcherManager.get_instance()
         except Exception as e:
             logger.debug(f"无法初始化 DataFetcherManager: {e}")
 
