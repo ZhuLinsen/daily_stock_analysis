@@ -49,6 +49,7 @@ from src.report_language import (
     normalize_report_language,
 )
 from src.search_service import SearchService
+from src.agent.tools.search_tools import pop_agent_news_context
 from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt_section
 from src.analysis_context_pack_overview import render_analysis_context_pack_overview
 from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY, render_market_phase_summary
@@ -254,7 +255,7 @@ class StockAnalysisPipeline:
         
         # 初始化各模块
         self.db = get_db()
-        self.fetcher_manager = DataFetcherManager()
+        self.fetcher_manager = DataFetcherManager.get_instance()
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
         self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
@@ -1476,6 +1477,42 @@ class StockAnalysisPipeline:
             )
             if result:
                 result.query_id = query_id
+            # Agent-mode news_context write-back.
+            # The agent searches news via search_comprehensive_intel while the
+            # pipeline itself skipped Step-4 news search (Agent branch returns
+            # early). The tool echoed its report into a registry; consume it
+            # here so the AnalysisContextPack news block and saved history
+            # actually reflect the news the agent consumed. Without this every
+            # Agent-mode report showed ``news_context_missing`` (upstream #1602
+            # only adjusted the UI wording, not the data flow).
+            agent_news_context = pop_agent_news_context(code)
+            if agent_news_context:
+                initial_context["news_context"] = agent_news_context
+                # Rebuild the pack overview so the news block flips to
+                # AVAILABLE and downstream consumers (guardrail, snapshot,
+                # history) see the real news evidence.
+                (
+                    analysis_context_pack_summary,
+                    analysis_context_pack_overview,
+                ) = self._build_analysis_context_pack_outputs(
+                    self._build_agent_analysis_artifacts(
+                        code=code,
+                        stock_name=stock_name,
+                        market=market,
+                        phase=market_phase_context,
+                        initial_context=initial_context,
+                        fundamental_context=fundamental_context,
+                        query_id=query_id,
+                        base_context=analysis_context,
+                        portfolio_context=portfolio_context,
+                    ),
+                    report_language=report_language,
+                    code=code,
+                    query_id=query_id,
+                )
+                if analysis_context_pack_summary:
+                    initial_context["analysis_context_pack_summary"] = analysis_context_pack_summary
+                logger.info(f"[{code}] Agent mode: news_context written back ({len(agent_news_context)} chars)")
             # Agent weak integrity: placeholder fill only, no LLM retry
             if result and getattr(self.config, "report_integrity_enabled", False):
                 from src.analyzer import check_content_integrity, apply_placeholder_fill
@@ -1677,7 +1714,7 @@ class StockAnalysisPipeline:
                         result=result,
                         query_id=query_id,
                         report_type=report_type.value,
-                        news_content=None,
+                        news_content=initial_context.get("news_context"),
                         context_snapshot=agent_context_snapshot,
                         save_snapshot=self.save_context_snapshot,
                     )

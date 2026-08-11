@@ -8,10 +8,48 @@ Tools:
 """
 
 import logging
+import threading
 
 from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Agent-mode news_context echo registry.
+#
+# In Agent mode the pipeline skips the traditional Step-4 news search and the
+# agent discovers news itself through the search_comprehensive_intel tool.
+# Those tool results were previously only returned to the LLM and persisted to
+# news_intel; they were never written back into the AnalysisContextPack
+# news_context, so every Agent-mode report surfaced ``news_context_missing``
+# (upstream #1602 only fixed the UI wording, not the data flow).
+#
+# This module-level registry lets the pipeline read back exactly what the
+# agent actually consumed and feed it into the context pack / history news
+# content. Keyed by canonical stock code; guarded by a lock because multiple
+# analysis workers run concurrently (MAX_WORKERS=3).
+# ---------------------------------------------------------------------------
+_AGENT_NEWS_REGISTRY: dict = {}
+_AGENT_NEWS_LOCK = threading.Lock()
+
+
+def record_agent_news_context(stock_code: str, news_context: str) -> None:
+    """Store the agent-visible news report for later pipeline write-back."""
+    if not stock_code or not news_context:
+        return
+    key = _canonical_search_code(stock_code)
+    with _AGENT_NEWS_LOCK:
+        _AGENT_NEWS_REGISTRY[key] = news_context
+
+
+def pop_agent_news_context(stock_code: str) -> str:
+    """Consume (and remove) the stored news report for a stock code."""
+    if not stock_code:
+        return ""
+    key = _canonical_search_code(stock_code)
+    with _AGENT_NEWS_LOCK:
+        return _AGENT_NEWS_REGISTRY.pop(key, "") or ""
+
 
 _NEWS_READ_POLICY = ToolPolicy.declared(
     read_only=True,
@@ -167,6 +205,17 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
 
     # Format into readable report
     report = service.format_intel_report(intel_results, stock_name)
+
+    # Echo the agent-visible news report so the pipeline can write it back
+    # into the AnalysisContextPack news_context (upstream #1602 only fixed
+    # the UI wording; the data flow still left news_context empty in Agent
+    # mode). Only dimensions with results are echoed to avoid a report that
+    # is all "未找到相关信息".
+    if any(
+        resp and resp.success and resp.results
+        for resp in intel_results.values()
+    ):
+        record_agent_news_context(stock_code, report)
 
     # Also return structured data
     dimensions = {}
