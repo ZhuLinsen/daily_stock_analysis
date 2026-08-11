@@ -143,7 +143,7 @@ class TestTushareFundamentalAdapter:
 class TestPreferredWiring:
     def test_bundle_prefers_tushare(self):
         from data_provider.base import DataFetcherManager
-        m = DataFetcherManager.get_instance()
+        m = DataFetcherManager(fetchers=[])
         tushare = MagicMock()
         tushare.get_fundamental_bundle.return_value = {
             "status": "partial", "growth": {"roe": 3.77}, "earnings": {}, "valuation": {},
@@ -158,7 +158,7 @@ class TestPreferredWiring:
 
     def test_bundle_falls_back_to_akshare_on_not_supported(self):
         from data_provider.base import DataFetcherManager
-        m = DataFetcherManager.get_instance()
+        m = DataFetcherManager(fetchers=[])
         tushare = MagicMock()
         tushare.get_fundamental_bundle.return_value = {"status": "not_supported"}
         m._tushare_fundamental_adapter = tushare
@@ -171,7 +171,7 @@ class TestPreferredWiring:
 
     def test_capital_flow_prefers_tushare(self):
         from data_provider.base import DataFetcherManager
-        m = DataFetcherManager.get_instance()
+        m = DataFetcherManager(fetchers=[])
         tushare = MagicMock()
         tushare.get_capital_flow.return_value = {"status": "partial", "stock_flow": {"main_net_inflow": 1.0}}
         m._tushare_fundamental_adapter = tushare
@@ -183,7 +183,7 @@ class TestPreferredWiring:
 
     def test_dragon_tiger_prefers_tushare(self):
         from data_provider.base import DataFetcherManager
-        m = DataFetcherManager.get_instance()
+        m = DataFetcherManager(fetchers=[])
         tushare = MagicMock()
         tushare.get_dragon_tiger_flag.return_value = {"status": "ok", "is_on_list": True}
         m._tushare_fundamental_adapter = tushare
