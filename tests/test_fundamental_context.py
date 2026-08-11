@@ -189,6 +189,10 @@ class TestFundamentalContext(unittest.TestCase):
                 patch(
                     "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_fundamental_bundle",
                     return_value=bundle,
+                ), \
+                patch(
+                    "data_provider.tushare_fundamental_adapter.TushareFundamentalAdapter.get_fundamental_bundle",
+                    return_value=bundle,
                 ):
             ctx = manager.get_fundamental_context("159915")
         self.assertEqual(ctx["market"], "cn")
@@ -286,6 +290,17 @@ class TestFundamentalContext(unittest.TestCase):
                     "source_chain": [],
                     "errors": [],
                 }), \
+                patch(
+                    "data_provider.tushare_fundamental_adapter.TushareFundamentalAdapter.get_fundamental_bundle",
+                    return_value={
+                        "status": "not_supported",
+                        "growth": {},
+                        "earnings": {},
+                        "institution": {},
+                        "source_chain": [],
+                        "errors": [],
+                    },
+                ), \
                 patch.object(manager, "get_capital_flow_context", return_value={"status": "not_supported", "source_chain": []}), \
                 patch.object(manager, "get_dragon_tiger_context", return_value={"status": "not_supported", "source_chain": []}), \
                 patch.object(manager, "get_board_context", return_value={"status": "not_supported", "source_chain": []}):
@@ -327,6 +342,17 @@ class TestFundamentalContext(unittest.TestCase):
                     "source_chain": [],
                     "errors": [],
                 }), \
+                patch(
+                    "data_provider.tushare_fundamental_adapter.TushareFundamentalAdapter.get_fundamental_bundle",
+                    return_value={
+                        "status": "not_supported",
+                        "growth": {},
+                        "earnings": {},
+                        "institution": {},
+                        "source_chain": [],
+                        "errors": [],
+                    },
+                ), \
                 patch.object(manager, "get_capital_flow_context", return_value={"status": "not_supported", "source_chain": []}), \
                 patch.object(manager, "get_dragon_tiger_context", return_value={"status": "not_supported", "source_chain": []}), \
                 patch.object(manager, "get_board_context", return_value={"status": "not_supported", "source_chain": []}):
@@ -505,6 +531,16 @@ class TestFundamentalContext(unittest.TestCase):
         with patch("src.config.get_config", return_value=cfg), \
                 patch(
                     "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_capital_flow",
+                    return_value={
+                        "status": "not_supported",
+                        "stock_flow": {},
+                        "sector_rankings": {"top": [], "bottom": []},
+                        "source_chain": [],
+                        "errors": [],
+                    },
+                ), \
+                patch(
+                    "data_provider.tushare_fundamental_adapter.TushareFundamentalAdapter.get_capital_flow",
                     return_value={
                         "status": "not_supported",
                         "stock_flow": {},

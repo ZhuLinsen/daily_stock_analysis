@@ -29,6 +29,7 @@ from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 from .fundamental_adapter import AkshareFundamentalAdapter
+from .tushare_fundamental_adapter import TushareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
 from .realtime_types import CircuitBreaker
 
@@ -657,6 +658,7 @@ class DataFetcherManager:
             # 默认数据源将在首次使用时延迟加载
             self._init_default_fetchers()
         self._fundamental_adapter = AkshareFundamentalAdapter()
+        self._tushare_fundamental_adapter = TushareFundamentalAdapter()
         self._yfinance_fundamental_adapter = YfinanceFundamentalAdapter()
         self._tickflow_fetcher = None
         self._tickflow_api_key: Optional[str] = None
@@ -3112,6 +3114,58 @@ class DataFetcherManager:
             **blocks,
         }
 
+    def _get_fundamental_bundle_preferred(self, stock_code: str) -> Dict[str, Any]:
+        """Fundamental bundle with Tushare as the preferred source and AkShare
+        as fallback.
+
+        Tushare (paid token) returns growth/earnings/valuation in 0.5-1.5s per
+        call, while the AkShare Eastmoney bundle polls at ~1.4-2.2 rows/s and
+        takes ~15s — which frequently blows the stage budget and leaves the
+        report with a partial fundamental block. Prefer Tushare whenever it is
+        configured; fall back to AkShare if it errors or is unavailable.
+        """
+        try:
+            tushare_result = self._tushare_fundamental_adapter.get_fundamental_bundle(stock_code)
+            if isinstance(tushare_result, dict):
+                status = str(tushare_result.get("status", ""))
+                has_content = bool(
+                    tushare_result.get("growth")
+                    or tushare_result.get("earnings")
+                    or tushare_result.get("valuation")
+                )
+                if status != "not_supported" or has_content:
+                    return tushare_result
+        except Exception as exc:
+            logger.debug("Tushare fundamental bundle failed for %s: %s", stock_code, exc)
+        return self._fundamental_adapter.get_fundamental_bundle(stock_code)
+
+    def _get_capital_flow_preferred(self, stock_code: str, top_n: int = 5) -> Dict[str, Any]:
+        """Capital flow with Tushare preferred, AkShare fallback."""
+        try:
+            tushare_result = self._tushare_fundamental_adapter.get_capital_flow(stock_code, top_n=top_n)
+            if isinstance(tushare_result, dict):
+                status = str(tushare_result.get("status", ""))
+                has_content = bool(tushare_result.get("stock_flow"))
+                if status != "not_supported" or has_content:
+                    return tushare_result
+        except Exception as exc:
+            logger.debug("Tushare capital flow failed for %s: %s", stock_code, exc)
+        return self._fundamental_adapter.get_capital_flow(stock_code, top_n=top_n)
+
+    def _get_dragon_tiger_preferred(self, stock_code: str, lookback_days: int = 20) -> Dict[str, Any]:
+        """Dragon-tiger flag with Tushare preferred, AkShare fallback."""
+        try:
+            tushare_result = self._tushare_fundamental_adapter.get_dragon_tiger_flag(
+                stock_code, lookback_days=lookback_days
+            )
+            if isinstance(tushare_result, dict):
+                status = str(tushare_result.get("status", ""))
+                if status not in ("not_supported", "failed"):
+                    return tushare_result
+        except Exception as exc:
+            logger.debug("Tushare dragon-tiger failed for %s: %s", stock_code, exc)
+        return self._fundamental_adapter.get_dragon_tiger_flag(stock_code, lookback_days=lookback_days)
+
     def get_fundamental_context(
         self,
         stock_code: str,
@@ -3223,7 +3277,7 @@ class DataFetcherManager:
         else:
             bundle_timeout = min(fetch_timeout, remaining_seconds)
             bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
-                lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+                lambda: self._get_fundamental_bundle_preferred(stock_code),
                 bundle_timeout,
                 "fundamental_bundle",
             )
@@ -3439,7 +3493,7 @@ class DataFetcherManager:
                 ["fundamental stage timeout"],
             )
         payload, err, cost_ms = self._run_with_retry(
-            lambda: self._fundamental_adapter.get_capital_flow(stock_code),
+            lambda: self._get_capital_flow_preferred(stock_code),
             timeout,
             "capital_flow",
         )
@@ -3503,7 +3557,7 @@ class DataFetcherManager:
                 ["fundamental stage timeout"],
             )
         payload, err, cost_ms = self._run_with_retry(
-            lambda: self._fundamental_adapter.get_dragon_tiger_flag(stock_code),
+            lambda: self._get_dragon_tiger_preferred(stock_code),
             timeout,
             "dragon_tiger",
         )
