@@ -309,6 +309,7 @@ jobs:
           BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
           SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS || secrets.SEARXNG_BASE_URLS }}
           SEARXNG_PUBLIC_INSTANCES_ENABLED: ${{ vars.SEARXNG_PUBLIC_INSTANCES_ENABLED || secrets.SEARXNG_PUBLIC_INSTANCES_ENABLED }}
+          PARALLEL_SEARCH_MCP_ENABLED: ${{ vars.PARALLEL_SEARCH_MCP_ENABLED || secrets.PARALLEL_SEARCH_MCP_ENABLED }}
           
           # ==========================================
           # 通知渠道（可同时配置多个，全部推送）
@@ -501,6 +502,14 @@ jobs:
               ;;
             *)
               echo "  SearXNG Public Instances: ✅ 已启用"
+              ;;
+          esac
+          case "${PARALLEL_SEARCH_MCP_ENABLED,,}" in
+            1|true|yes|on)
+              echo "  Parallel Search MCP: ✅ 已启用（末位兜底）"
+              ;;
+            *)
+              echo "  Parallel Search MCP: ⚪ 未启用"
               ;;
           esac
           echo ""

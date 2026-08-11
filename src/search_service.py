@@ -11,11 +11,13 @@ A股自选股智能分析系统 - 搜索服务模块
 4. 搜索结果缓存和格式化
 """
 
+import json
 import logging
 import multiprocessing
 import re
 import threading
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -2220,6 +2222,267 @@ class SearXNGSearchProvider(BaseSearchProvider):
         )
 
 
+class ParallelMcpSearchProvider(BaseSearchProvider):
+    """Anonymous Parallel Search MCP provider with an isolated lifecycle per search."""
+
+    ENDPOINT = "https://search.parallel.ai/mcp"
+    CLIENT_PROTOCOL_VERSION = "2025-06-18"
+    REQUEST_TIMEOUT_SECONDS = 20
+
+    def __init__(self) -> None:
+        # This provider is intentionally keyless. Its custom ``search`` method
+        # bypasses BaseSearchProvider's API-key rotation without changing the
+        # shared base contract used by incumbent providers.
+        super().__init__([], "Parallel Search MCP")
+        self._search_session_id = f"dsa-{uuid.uuid4().hex}"
+
+    @property
+    def is_available(self) -> bool:
+        return True
+
+    @staticmethod
+    def _response_header(response: requests.Response, name: str) -> Optional[str]:
+        for key, value in response.headers.items():
+            if key.lower() == name.lower():
+                return str(value)
+        return None
+
+    @staticmethod
+    def _sse_payloads(text: str) -> List[Any]:
+        payloads: List[Any] = []
+        data_lines: List[str] = []
+
+        def flush() -> None:
+            if not data_lines:
+                return
+            raw = "\n".join(data_lines)
+            data_lines.clear()
+            if raw == "[DONE]":
+                return
+            try:
+                payloads.append(json.loads(raw))
+            except json.JSONDecodeError as exc:
+                raise ValueError("Parallel MCP returned malformed SSE JSON") from exc
+
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip("\r")
+            if not line:
+                flush()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+        flush()
+        return payloads
+
+    @classmethod
+    def _jsonrpc_result(cls, response: requests.Response, request_id: int) -> Dict[str, Any]:
+        response.raise_for_status()
+        content_type = cls._response_header(response, "content-type") or ""
+        try:
+            if "text/event-stream" in content_type.lower():
+                payloads = cls._sse_payloads(response.text)
+            else:
+                payloads = [response.json()]
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("Parallel MCP returned malformed JSON") from exc
+
+        envelope = next(
+            (
+                payload
+                for payload in payloads
+                if isinstance(payload, dict) and payload.get("id") == request_id
+            ),
+            None,
+        )
+        if envelope is None:
+            raise ValueError("Parallel MCP response did not match the request ID")
+        if envelope.get("error") is not None:
+            raise RuntimeError("Parallel MCP returned a JSON-RPC error")
+        result = envelope.get("result")
+        if not isinstance(result, dict):
+            raise ValueError("Parallel MCP response did not include an object result")
+        return result
+
+    @staticmethod
+    def _tool_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+
+        content = result.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "text":
+                    continue
+                text = item.get("text")
+                if not isinstance(text, str):
+                    continue
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    return payload
+        raise ValueError("Parallel MCP tool result did not include structured search data")
+
+    @staticmethod
+    def _normalize_results(payload: Dict[str, Any], max_results: int) -> List[SearchResult]:
+        if max_results <= 0:
+            return []
+        raw_results = payload.get("results")
+        if not isinstance(raw_results, list):
+            raise ValueError("Parallel MCP search data did not include a results list")
+
+        normalized: List[SearchResult] = []
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url")
+            if not isinstance(url, str):
+                continue
+            parsed_url = urlparse(url)
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                continue
+
+            excerpts = item.get("excerpts")
+            snippet = (
+                "\n".join(part for part in excerpts if isinstance(part, str)).strip()
+                if isinstance(excerpts, list)
+                else ""
+            )
+            raw_title = item.get("title")
+            source = parsed_url.netloc.removeprefix("www.")
+            title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else source
+            raw_publish_date = item.get("publish_date")
+            published_date = raw_publish_date if isinstance(raw_publish_date, str) else None
+            normalized.append(
+                SearchResult(
+                    title=title,
+                    snippet=snippet[:500],
+                    url=url,
+                    source=source,
+                    published_date=published_date,
+                )
+            )
+            if len(normalized) >= max(0, max_results):
+                break
+        return normalized
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+    ) -> SearchResponse:
+        """Satisfy the base interface; this keyless provider ignores ``api_key``."""
+        return self._search_mcp(query, max_results=max_results, days=days)
+
+    def _search_mcp(self, query: str, max_results: int, days: int) -> SearchResponse:
+        base_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        session = requests.Session()
+        try:
+            initialize_id = 1
+            initialize_response = session.post(
+                self.ENDPOINT,
+                headers=base_headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": initialize_id,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": self.CLIENT_PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "daily-stock-analysis",
+                            "version": "1",
+                        },
+                    },
+                },
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+            initialize_result = self._jsonrpc_result(initialize_response, initialize_id)
+            negotiated_protocol = initialize_result.get("protocolVersion")
+            if not isinstance(negotiated_protocol, str) or not negotiated_protocol:
+                raise ValueError("Parallel MCP initialization did not negotiate a protocol version")
+
+            active_headers = {
+                **base_headers,
+                "MCP-Protocol-Version": negotiated_protocol,
+            }
+            mcp_session_id = self._response_header(initialize_response, "mcp-session-id")
+            if mcp_session_id:
+                active_headers["Mcp-Session-Id"] = mcp_session_id
+
+            initialized_response = session.post(
+                self.ENDPOINT,
+                headers=active_headers,
+                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+            initialized_response.raise_for_status()
+
+            call_id = 2
+            call_response = session.post(
+                self.ENDPOINT,
+                headers=active_headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": call_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "web_search",
+                        "arguments": {
+                            "objective": (
+                                "Find current web information relevant to this stock-analysis query. "
+                                f"Prefer results published within the last {max(1, days)} days: {query}"
+                            ),
+                            "search_queries": [query],
+                            "session_id": self._search_session_id,
+                        },
+                    },
+                },
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+            call_result = self._jsonrpc_result(call_response, call_id)
+            payload = self._tool_payload(call_result)
+            return SearchResponse(
+                query=query,
+                results=self._normalize_results(payload, max_results),
+                provider=self.name,
+                success=True,
+            )
+        finally:
+            session.close()
+
+    def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
+        start_time = time.time()
+        try:
+            response = self._search_mcp(query, max_results=max_results, days=days)
+            response.search_time = time.time() - start_time
+            logger.info(
+                "[%s] 搜索 '%s' 成功，返回 %s 条结果，耗时 %.2fs",
+                self.name,
+                query,
+                len(response.results),
+                response.search_time,
+            )
+            return response
+        except Exception as exc:
+            elapsed = time.time() - start_time
+            logger.warning("[%s] 搜索 '%s' 失败: %s", self.name, query, exc)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=str(exc),
+                search_time=elapsed,
+            )
+
+
 class SearchService:
     """
     搜索服务
@@ -2390,6 +2653,7 @@ class SearchService:
         minimax_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         searxng_public_instances_enabled: bool = True,
+        parallel_search_mcp_enabled: bool = False,
         news_max_age_days: int = 3,
         news_strategy_profile: str = "short",
     ):
@@ -2405,6 +2669,7 @@ class SearchService:
             minimax_keys: MiniMax API Key 列表
             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
+            parallel_search_mcp_enabled: 是否启用 Parallel Search MCP 末位兜底
             news_max_age_days: 新闻最大时效（天）
             news_strategy_profile: 新闻窗口策略档位（ultra_short/short/medium/long）
         """
@@ -2417,6 +2682,7 @@ class SearchService:
             "minimax_keys": list(minimax_keys or []),
             "searxng_base_urls": list(searxng_base_urls or []),
             "searxng_public_instances_enabled": bool(searxng_public_instances_enabled),
+            "parallel_search_mcp_enabled": bool(parallel_search_mcp_enabled),
             "news_max_age_days": int(news_max_age_days),
             "news_strategy_profile": news_strategy_profile,
         }
@@ -2480,6 +2746,11 @@ class SearchService:
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
+
+        # 8. Parallel Search MCP（显式启用，始终保留为末位兜底）
+        if parallel_search_mcp_enabled:
+            self._providers.append(ParallelMcpSearchProvider())
+            logger.info("已启用 Parallel Search MCP 末位兜底")
             
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
@@ -4890,6 +5161,11 @@ def get_search_service() -> SearchService:
                     minimax_keys=config.minimax_api_keys,
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
+                    parallel_search_mcp_enabled=getattr(
+                        config,
+                        "parallel_search_mcp_enabled",
+                        False,
+                    ),
                     news_max_age_days=config.news_max_age_days,
                     news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
                 )

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [改进] AIHubMix 注册与引流链接统一使用 inferera.com，改善中国大陆网络直连体验。
+- [新功能] 新增默认关闭的 Parallel Search MCP 末位搜索兜底，无需账号或 API Key，且保持现有搜索服务顺序不变。
 
 ## [3.30.0] - 2026-08-09
 
