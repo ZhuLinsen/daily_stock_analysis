@@ -2,11 +2,18 @@
 """Contract tests for the opt-in Parallel Search MCP provider."""
 
 import json
-from unittest.mock import patch
+from datetime import date
+from unittest.mock import MagicMock, patch
 
+import pytest
 import requests
 
-from src.search_service import ParallelMcpSearchProvider, SearchService
+from src.search_service import (
+    ParallelMcpSearchProvider,
+    SearchResponse,
+    SearchResult,
+    SearchService,
+)
 
 
 class _FakeResponse:
@@ -175,6 +182,95 @@ def test_parallel_provider_is_default_off_and_last_when_enabled():
         "Parallel Search MCP",
     ]
     assert enabled._constructor_kwargs["parallel_search_mcp_enabled"] is True
+
+
+def _intel_response(provider: str, title: str | None, *, success: bool = True) -> SearchResponse:
+    results = []
+    if title is not None:
+        results.append(
+            SearchResult(
+                title=title,
+                snippet="Relevant current coverage.",
+                url=f"https://example.com/{title}",
+                source="example.com",
+                published_date=date.today().isoformat(),
+            )
+        )
+    return SearchResponse(
+        query="query",
+        results=results,
+        provider=provider,
+        success=success,
+        error_message=None if success else "provider failed",
+    )
+
+
+def test_comprehensive_intel_keeps_parallel_out_of_normal_rotation():
+    service = SearchService(
+        searxng_public_instances_enabled=False,
+        parallel_search_mcp_enabled=True,
+    )
+    first_incumbent = MagicMock(name="first_incumbent")
+    first_incumbent.name = "First incumbent"
+    first_incumbent.is_available = True
+    first_incumbent.search.return_value = _intel_response("First incumbent", "first")
+    second_incumbent = MagicMock(name="second_incumbent")
+    second_incumbent.name = "Second incumbent"
+    second_incumbent.is_available = True
+    second_incumbent.search.return_value = _intel_response("Second incumbent", "second")
+    parallel = service._parallel_fallback_provider
+    assert parallel is not None
+    service._providers = [first_incumbent, second_incumbent, parallel]
+
+    with (
+        patch.object(parallel, "search") as parallel_search,
+        patch("src.search_service.time.sleep"),
+    ):
+        results = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=2)
+
+    assert [results[dimension].provider for dimension in ("latest_news", "market_analysis")] == [
+        "First incumbent",
+        "Second incumbent",
+    ]
+    first_incumbent.search.assert_called_once()
+    second_incumbent.search.assert_called_once()
+    parallel_search.assert_not_called()
+
+
+@pytest.mark.parametrize("primary_success", [False, True])
+def test_comprehensive_intel_uses_parallel_only_after_incumbent_has_no_usable_results(
+    primary_success: bool,
+):
+    service = SearchService(
+        searxng_public_instances_enabled=False,
+        parallel_search_mcp_enabled=True,
+    )
+    incumbent = MagicMock(name="incumbent")
+    incumbent.name = "Incumbent"
+    incumbent.is_available = True
+    incumbent.search.return_value = _intel_response(
+        "Incumbent",
+        None,
+        success=primary_success,
+    )
+    parallel = service._parallel_fallback_provider
+    assert parallel is not None
+    service._providers = [incumbent, parallel]
+
+    with (
+        patch.object(
+            parallel,
+            "search",
+            return_value=_intel_response("Parallel Search MCP", "parallel-fallback"),
+        ) as parallel_search,
+        patch("src.search_service.time.sleep"),
+    ):
+        results = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=1)
+
+    incumbent.search.assert_called_once()
+    parallel_search.assert_called_once()
+    assert results["latest_news"].provider == "Parallel Search MCP"
+    assert [item.title for item in results["latest_news"].results] == ["parallel-fallback"]
 
 
 def test_parallel_flag_is_a_search_capability_without_changing_default():

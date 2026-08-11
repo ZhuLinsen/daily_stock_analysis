@@ -584,6 +584,21 @@ class TestEnvExampleWebSettingsCoverage(unittest.TestCase):
             [],
         )
 
+    def test_parallel_search_mcp_is_registered_as_default_off_switch(self) -> None:
+        field = get_field_definition("PARALLEL_SEARCH_MCP_ENABLED")
+
+        self.assertEqual(field["category"], "data_source")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["default_value"], "false")
+        self.assertFalse(field["is_sensitive"])
+        self.assertTrue(field["is_editable"])
+        self.assertEqual(
+            field["help_key"],
+            "settings.data_source.PARALLEL_SEARCH_MCP_ENABLED",
+        )
+        self.assertIn("PARALLEL_SEARCH_MCP_ENABLED=true", field["examples"])
+
 
 class TestSettingsHelpContract(unittest.TestCase):
     """Help keys must map to registry metadata or be editor-only.

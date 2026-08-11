@@ -1114,6 +1114,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 53,
     },
+    "PARALLEL_SEARCH_MCP_ENABLED": {
+        "title": "Parallel Search MCP",
+        "description": "Enable the fixed keyless Parallel Search MCP endpoint as a final fallback after incumbent search providers. Default: false.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 54,
+        "help_key": "settings.data_source.PARALLEL_SEARCH_MCP_ENABLED",
+        "examples": [
+            "PARALLEL_SEARCH_MCP_ENABLED=true",
+            "PARALLEL_SEARCH_MCP_ENABLED=false",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：搜索服务配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#搜索服务配置",
+            },
+        ],
+        "warning_codes": ["provider_priority_order"],
+    },
     "ENABLE_REALTIME_QUOTE": {
         "title": "Enable Realtime Quote",
         "description": "Enable realtime market quotes. Disable to only use historical close prices.",

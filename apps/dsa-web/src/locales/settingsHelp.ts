@@ -367,6 +367,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响无商业搜索 Key 时的新闻和网页搜索兜底能力。'],
     notes: ['公共实例稳定性不可控，生产环境建议使用自建或可信实例。'],
   },
+  'settings.data_source.PARALLEL_SEARCH_MCP_ENABLED': {
+    title: 'Parallel Search MCP 末位兜底',
+    summary: '启用固定的免账号、免 API Key 搜索端点，默认关闭。',
+    usage: '开启后，Parallel 只在现有搜索服务失败或过滤后没有可用结果时尝试，不参与正常的多引擎轮换。',
+    valueNotes: ['端点固定为 https://search.parallel.ai/mcp，不能在设置页修改。'],
+    impact: ['仅影响已开启该开关且现有搜索服务无法提供可用结果的搜索请求。'],
+    notes: ['关闭开关即可恢复原有搜索链；现有服务顺序和默认行为保持不变。'],
+  },
   'settings.data_source.ENABLE_CHIP_DISTRIBUTION': {
     title: '筹码分布分析',
     summary: '控制是否启用筹码分布相关分析。',
@@ -1569,6 +1577,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['When public discovery is disabled, only these instances are used.'],
     impact: ['Affects fallback web search when commercial search keys are absent.'],
     notes: ['For production, prefer self-hosted or trusted instances over public ones.'],
+  },
+  'settings.data_source.PARALLEL_SEARCH_MCP_ENABLED': {
+    title: 'Parallel Search MCP fallback',
+    summary: 'Enables the fixed account-free, API-key-free search endpoint. Disabled by default.',
+    usage: 'When enabled, Parallel is tried only after an incumbent search provider fails or yields no usable results; it never joins normal multi-provider rotation.',
+    valueNotes: ['The endpoint is fixed at https://search.parallel.ai/mcp and cannot be edited in settings.'],
+    impact: ['Affects only searches that reach the final fallback after this switch is enabled.'],
+    notes: ['Turn the switch off to restore the incumbent-only chain; existing provider order and defaults remain unchanged.'],
   },
   'settings.data_source.ENABLE_CHIP_DISTRIBUTION': {
     title: 'Chip Distribution',

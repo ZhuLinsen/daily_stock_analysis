@@ -2687,6 +2687,7 @@ class SearchService:
             "news_strategy_profile": news_strategy_profile,
         }
         self._providers: List[BaseSearchProvider] = []
+        self._parallel_fallback_provider: Optional[ParallelMcpSearchProvider] = None
         self.news_max_age_days = max(1, news_max_age_days)
         raw_profile = (news_strategy_profile or "short").strip().lower()
         self.news_strategy_profile = normalize_news_strategy_profile(news_strategy_profile)
@@ -2749,7 +2750,8 @@ class SearchService:
 
         # 8. Parallel Search MCP（显式启用，始终保留为末位兜底）
         if parallel_search_mcp_enabled:
-            self._providers.append(ParallelMcpSearchProvider())
+            self._parallel_fallback_provider = ParallelMcpSearchProvider()
+            self._providers.append(self._parallel_fallback_provider)
             logger.info("已启用 Parallel Search MCP 末位兜底")
             
         if not self._providers:
@@ -4779,59 +4781,47 @@ class SearchService:
         
         # 轮流使用不同的搜索引擎
         provider_index = 0
-        
-        for dim in search_dimensions:
-            if search_count >= max_searches:
-                break
-            
-            # 选择搜索引擎（轮流使用）
-            available_providers = [p for p in self._providers if p.is_available]
-            if not available_providers:
-                break
-            
-            provider = available_providers[provider_index % len(available_providers)]
-            provider_index += 1
-            
-            request_days = (
-                self.ANALYTICAL_INTEL_LOOKBACK_DAYS
-                if dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS
-                else search_days
-            )
 
+        def run_dimension_search(
+            provider: BaseSearchProvider,
+            dimension: Dict[str, Any],
+            request_days: int,
+        ) -> Tuple[SearchResponse, SearchResponse]:
+            """Run and normalize one intelligence dimension for one provider."""
             logger.info(
                 "[情报搜索] %s: 使用 %s，请求窗口: 近%s天",
-                dim['desc'],
+                dimension['desc'],
                 provider.name,
                 request_days,
             )
 
-            if isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
+            if isinstance(provider, TavilySearchProvider) and dimension.get('tavily_topic'):
                 response = provider.search(
-                    dim['query'],
+                    dimension['query'],
                     max_results=provider_max_results,
                     days=request_days,
-                    topic=dim['tavily_topic'],
+                    topic=dimension['tavily_topic'],
                 )
             else:
                 response = provider.search(
-                    dim['query'],
+                    dimension['query'],
                     max_results=provider_max_results,
                     days=request_days,
                 )
-            if dim['strict_freshness']:
+            if dimension['strict_freshness']:
                 filtered_response = self._filter_news_response(
                     response,
                     search_days=search_days,
                     max_results=provider_max_results,
-                    log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
+                    log_scope=f"{stock_code}:{provider.name}:{dimension['name']}",
                 )
-            elif dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS:
+            elif dimension['name'] in self.ANALYTICAL_INTEL_DIMENSIONS:
                 filtered_response = self._filter_news_response(
                     response,
                     search_days=self.ANALYTICAL_INTEL_LOOKBACK_DAYS,
                     max_results=provider_max_results,
                     keep_unknown=True,
-                    log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
+                    log_scope=f"{stock_code}:{provider.name}:{dimension['name']}",
                 )
             else:
                 filtered_response = self._normalize_and_limit_response(
@@ -4844,16 +4834,64 @@ class SearchService:
                 stock_name=stock_name,
                 prefer_chinese=self._should_prefer_chinese_news(stock_code, stock_name),
                 max_results=provider_max_results,
-                log_scope=f"{stock_code}:{provider.name}:{dim['name']}:rank",
+                log_scope=f"{stock_code}:{provider.name}:{dimension['name']}:rank",
             )
             filtered_response = self._filter_ranked_news_for_context(
                 filtered_response,
-                log_scope=f"{stock_code}:{provider.name}:{dim['name']}:admission",
+                log_scope=f"{stock_code}:{provider.name}:{dimension['name']}:admission",
             )
             filtered_response = self._limit_search_response(
                 filtered_response,
                 max_results=target_per_dimension,
             )
+            return response, filtered_response
+
+        for dim in search_dimensions:
+            if search_count >= max_searches:
+                break
+
+            # Parallel is fallback-only: rotate incumbents, then try it only
+            # when the selected incumbent fails or yields no usable results.
+            available_incumbents = [
+                provider
+                for provider in self._providers
+                if provider.is_available and provider is not self._parallel_fallback_provider
+            ]
+            if not available_incumbents:
+                break
+
+            provider = available_incumbents[provider_index % len(available_incumbents)]
+            provider_index += 1
+
+            request_days = (
+                self.ANALYTICAL_INTEL_LOOKBACK_DAYS
+                if dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS
+                else search_days
+            )
+            response, filtered_response = run_dimension_search(provider, dim, request_days)
+
+            fallback_provider = self._parallel_fallback_provider
+            if (
+                fallback_provider is not None
+                and fallback_provider.is_available
+                and (not response.success or not filtered_response.results)
+            ):
+                logger.info(
+                    "[情报搜索] %s: %s 无可用结果，尝试末位兜底 %s",
+                    dim['desc'],
+                    provider.name,
+                    fallback_provider.name,
+                )
+                fallback_response, fallback_filtered = run_dimension_search(
+                    fallback_provider,
+                    dim,
+                    request_days,
+                )
+                if fallback_filtered.success and fallback_filtered.results:
+                    response, filtered_response = fallback_response, fallback_filtered
+                elif not response.success:
+                    response, filtered_response = fallback_response, fallback_filtered
+
             results[dim['name']] = filtered_response
             search_count += 1
             

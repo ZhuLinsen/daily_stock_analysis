@@ -147,7 +147,7 @@ test.describe('web smoke', () => {
     await captureSmokeScreenshot(page, testInfo, 'smoke-mobile-shell-nav');
   });
 
-  test('settings page renders title and save actions after login', async ({ page }, testInfo) => {
+  test('settings page shows Parallel MCP as a default-off fallback', async ({ page }, testInfo) => {
     await login(page);
 
     // Navigate to settings page by clicking the link
@@ -160,7 +160,18 @@ test.describe('web smoke', () => {
     await expect(page.getByRole('button', { name: '重置' })).toBeVisible();
     await expect(page.getByRole('button', { name: /保存配置/ })).toBeVisible();
 
-    await captureSmokeScreenshot(page, testInfo, 'smoke-settings-page-zh');
+    await page.getByRole('button', { name: /数据源/ }).click();
+    const parallelSwitch = page.getByRole('checkbox', { name: 'Parallel Search MCP 末位兜底' });
+    await expect(parallelSwitch).toBeVisible();
+    await expect(parallelSwitch).not.toBeChecked();
+
+    await page.getByRole('button', { name: '查看 Parallel Search MCP 末位兜底 配置说明' }).click();
+    const helpDialog = page.getByRole('dialog');
+    await expect(helpDialog).toContainText('默认关闭');
+    await expect(helpDialog).toContainText('不参与正常的多引擎轮换');
+    await expect(helpDialog).toContainText('https://search.parallel.ai/mcp');
+
+    await captureSmokeScreenshot(page, testInfo, 'smoke-settings-parallel-mcp-help-zh');
   });
 
   test('language switch updates UI copy and persists after page refresh', async ({ page }, testInfo) => {
