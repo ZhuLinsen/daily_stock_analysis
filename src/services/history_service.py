@@ -557,6 +557,26 @@ class HistoryService:
         return display_points
 
     @staticmethod
+    def _market_review_summary_excerpt(markdown: str, limit: int = 120) -> str:
+        """Return a short plain-text excerpt for summary display."""
+        lines = []
+        for line in markdown.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("[dsa-market-region]"):
+                continue
+            stripped = stripped.lstrip("#").strip()
+            if stripped.startswith(">"):
+                stripped = stripped.lstrip(">").strip()
+            stripped = stripped.lstrip("-*+").strip()
+            stripped = stripped.replace("**", "").replace("`", "").replace("|", " ")
+            lines.append(stripped)
+        text = " ".join(lines)
+        text = " ".join(text.split())
+        if len(text) > limit:
+            text = text[:limit].rstrip() + "\u2026"
+        return text
+
+    @staticmethod
     def _extract_market_review_content(record, raw_result: Any) -> Optional[str]:
         """Return persisted market review content from raw_result or news_content."""
         if isinstance(raw_result, dict):
@@ -603,7 +623,7 @@ class HistoryService:
             "report_type": record.report_type,
             "created_at": self._serialize_created_at(record.created_at),
             "model_used": model_used,
-            "analysis_summary": market_review_content or record.analysis_summary,
+            "analysis_summary": record.analysis_summary or (self._market_review_summary_excerpt(market_review_content) if market_review_content else None),
             "operation_advice": record.operation_advice,
             "action": action_fields["action"],
             "action_label": action_fields["action_label"],
