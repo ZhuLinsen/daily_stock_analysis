@@ -339,13 +339,13 @@ class AgentDisagreementExplanation(BaseModel):
 class Dashboard(BaseModel):
     """Dashboard block."""
 
-    core_conclusion: Optional[CoreConclusion] = None
-    data_perspective: Optional[DataPerspective] = None
-    intelligence: Optional[Intelligence] = None
-    battle_plan: Optional[BattlePlan] = None
-    phase_decision: Optional[PhaseDecision] = None
-    signal_attribution: Optional[SignalAttribution] = None
-    agent_disagreement_explanation: Optional[AgentDisagreementExplanation] = None
+    core_conclusion: Optional[CoreConclusion] = Field(default_factory=list)
+    data_perspective: Optional[DataPerspective] = Field(default_factory=list)
+    intelligence: Optional[Intelligence] = Field(default_factory=list)
+    battle_plan: Optional[BattlePlan] = Field(default_factory=list)
+    phase_decision: Optional[PhaseDecision] = Field(default_factory=list)
+    signal_attribution: Optional[SignalAttribution] = Field(default_factory=list)
+    agent_disagreement_explanation: Optional[AgentDisagreementExplanation] = Field(default_factory=list)
 
 
 class AnalysisReportSchema(BaseModel):
