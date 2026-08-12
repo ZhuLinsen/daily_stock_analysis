@@ -4413,7 +4413,10 @@ class GeminiAnalyzer:
             try:
                 _obj, end = json.JSONDecoder().raw_decode(stripped)
             except json.JSONDecodeError:
-                pass
+                # 1. 记录错误日志，方便排查问题
+                # 记录一下出了什么错
+                logger.error(f"JSON 解析失败，原文: {stripped}") # 先记录
+            raise ValueError("AI返回了无法解析的乱码")       # 再报错中断
             else:
                 if stripped[end:].strip():
                     raise
@@ -4436,11 +4439,7 @@ class GeminiAnalyzer:
                 _obj, end = decoder.raw_decode(text[index:])
             except json.JSONDecodeError:
                 continue
-            count += 1
-            before = text[:index].strip()
-            after = text[index + end:].strip()
-            if count > 1 or before or after:
-                return True
+            # 解析失败说明不是有效的 JSON，直接返回 False
         return False
 
     def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
