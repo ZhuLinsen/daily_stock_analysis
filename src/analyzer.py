@@ -4417,16 +4417,15 @@ class GeminiAnalyzer:
                 # 记录一下出了什么错
                 logger.error(f"JSON 解析失败，原文: {stripped}") # 先记录
             raise ValueError("AI返回了无法解析的乱码")       # 再报错中断
-        if stripped[end:].strip():
-            raise
-
-        if not (stripped.startswith("{") and stripped.endswith("}")):
-            raise
-            repaired = self._fix_json_string(stripped)
-            data = json.loads(repaired)
-        if not isinstance(data, dict):
+            if stripped[end:].strip():
+                raise
+            if not (stripped.startswith("{") and stripped.endswith("}")):
+                raise
+                repaired = self._fix_json_string(stripped)
+                data = json.loads(repaired)
+            if not isinstance(data, dict):
                 raise TypeError("json_root_not_object")
-        return data
+            return data
 
     @staticmethod
     def _contains_embedded_json_object(text: str) -> bool:
