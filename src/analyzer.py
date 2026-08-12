@@ -4444,12 +4444,12 @@ class GeminiAnalyzer:
     def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
         try:
             def sanitize_nulls(obj):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if isinstance(v, dict):
-                sanitize_nulls(v)
-            elif v is None:
-                obj[k] = []
+                if isinstance(obj, dict):
+                   for k, v in obj.items():
+                       if isinstance(v, dict):
+                           sanitize_nulls(v)
+                       elif v is None:
+                           obj[k] = []
 sanitize_nulls(data)
             AnalysisReportSchema.model_validate(data)
         except Exception as exc:
