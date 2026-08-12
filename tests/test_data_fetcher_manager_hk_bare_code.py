@@ -17,9 +17,11 @@ daily fetchers (``YfinanceFetcher`` / ``AkshareFetcher`` /
 ``TushareFetcher`` / ``LongbridgeFetcher``), never to CN-only fetchers.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from data_provider.base import (
     BaseFetcher,
@@ -186,6 +188,59 @@ class TestManagerRoutesFiveDigitBareHkUnchanged:
         assert yfinance.calls == ["00700"]
         assert efinance.calls == []
         assert baostock.calls == []
+
+
+class TestPaddedHkCodesShareTheWorkerProviderPath:
+    """The two accepted HK prefix widths must reach identical provider keys."""
+
+    @pytest.mark.parametrize("raw_code", ["HK0001", "HK00001"])
+    def test_manager_canonicalizes_both_prefix_forms_before_daily_fetch(self, raw_code):
+        yfinance = _FakeFetcher("YfinanceFetcher")
+        manager = DataFetcherManager(fetchers=[yfinance])
+
+        with patch("data_provider.base.record_provider_run_started"), patch(
+            "data_provider.base.record_provider_run"
+        ):
+            df, source = manager.get_daily_data(raw_code)
+
+        assert not df.empty
+        assert source == "YfinanceFetcher"
+        assert yfinance.calls == ["HK00001"]
+
+    def test_yfinance_maps_both_prefix_forms_to_one_yahoo_symbol(self):
+        from data_provider.yfinance_fetcher import YfinanceFetcher
+
+        fetcher = YfinanceFetcher()
+
+        assert fetcher._convert_stock_code("HK0001") == "0001.HK"
+        assert fetcher._convert_stock_code("HK00001") == "0001.HK"
+
+    def test_tushare_maps_both_prefix_forms_to_one_ts_code(self):
+        from data_provider.tushare_fetcher import TushareFetcher
+
+        fetcher = TushareFetcher()
+
+        assert fetcher._convert_hk_stock_code_for_tushare("HK0001") == "00001.HK"
+        assert fetcher._convert_hk_stock_code_for_tushare("HK00001") == "00001.HK"
+
+    def test_akshare_maps_both_prefix_forms_to_one_hk_history_symbol(self):
+        from data_provider.akshare_fetcher import AkshareFetcher
+
+        fetcher = AkshareFetcher()
+        seen_symbols = []
+
+        def fake_stock_hk_hist(*, symbol, **_kwargs):
+            seen_symbols.append(symbol)
+            return pd.DataFrame()
+
+        fake_akshare = SimpleNamespace(stock_hk_hist=fake_stock_hk_hist)
+        with patch.dict("sys.modules", {"akshare": fake_akshare}), patch.object(
+            fetcher, "_set_random_user_agent"
+        ), patch.object(fetcher, "_enforce_rate_limit"):
+            fetcher._fetch_hk_data("HK0001", "2026-01-01", "2026-01-02")
+            fetcher._fetch_hk_data("HK00001", "2026-01-01", "2026-01-02")
+
+        assert seen_symbols == ["00001", "00001"]
 
 
 class TestManagerStillRoutesSixDigitToCn:
