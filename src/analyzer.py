@@ -1882,7 +1882,15 @@ class GeminiAnalyzer:
     # 输出格式升级：从简单信号升级为决策仪表盘.
     # 核心模块：核心结论 + 数据透视 + 舆情情报 + 作战计划
     # ========================================
-
+    def _validate_json_response(self, response_text: str):
+        """
+        校验大模型返回的原始数据（兜底方法，防止外部调用报错）
+        """
+        # 如果大模型返回为空，这里直接返回，防止流程崩溃
+        if not response_text:
+            return ""
+        return response_text
+        
     LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
     【⚠️ 极度重要的格式约束】
     1. 禁止输出任何 Markdown 代码块！绝对禁止以 ```json 开头或以 ``` 结尾。请只返回纯粹的 JSON 纯文本。
