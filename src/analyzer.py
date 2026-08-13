@@ -4444,34 +4444,39 @@ class GeminiAnalyzer:
                 continue
             # 解析失败说明不是有效的 JSON，直接返回 False
         return False
+        
+def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
+    try:
+        def sanitize_nulls(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(v, dict):
+                        sanitize_nulls(v)
+                    elif v is None:
+                        obj[k] = []
+        sanitize_nulls(data)
 
-    def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
-        try:
-            def sanitize_nulls(obj):
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        if isinstance(v, dict):
-                            sanitize_nulls(v)
-                        elif v is None:
-                            obj[k] = []
-            sanitize_nulls(data)
-            
-            # --- 补丁：给可能缺失的列表字段补充默认空数组，避免校验失败 ---
-            data.setdefault("dashboard_phase_decision_immediate_action", [])
-            data.setdefault("dashboard_phase_decision_watch_conditions", [])
-            data.setdefault("dashboard_phase_decision_next_check_time", [])
-            data.setdefault("dashboard_phase_decision_confidence_reason", [])
-            data.setdefault("dashboard_phase_decision_operation_advice", [])
-            # --------------------------------------------------
+        # ===== 升级补丁：防崩溃判断 + 补缺省值 =====
+        # 1. 如果大模型断了导致 data 是 None，直接跳过该股票，防止程序崩掉
+        if data is None:
+            return
 
-            AnalysisReportSchema.model_validate(data)
-        except Exception as exc:
-            # 打印出被校验失败的原始数据，这样你就知道是哪只股票、具体缺什么字段了
-            logger.error(f"LLM 数据模型校验失败！原始返回数据: {data}")
-            logger.warning(
-                "AnalysisReportSchema validation failed; continuing with raw parser contract: %s",
-                str(exc)[:200],
-            )
+        # 2. 给可能缺失的列表字段补充默认空数组，避免校验失败
+        data.setdefault("dashboard_phase_decision_immediate_action", [])
+        data.setdefault("dashboard_phase_decision_watch_conditions", [])
+        data.setdefault("dashboard_phase_decision_next_check_time", [])
+        data.setdefault("dashboard_phase_decision_confidence_reason", [])
+        data.setdefault("dashboard_phase_decision_operation_advice", [])
+        # ==============================================
+
+        AnalysisReportSchema.model_validate(data)
+    except Exception as exc:
+        # 打印出被校验失败的原始数据
+        logger.error(f"LLM 数据模型校验失败！原始返回数据: {data}")
+        logger.warning(
+            "AnalysisReportSchema validation failed; continuing with raw parser contract: %s",
+            str(exc)[:200],
+        )
         minimal_keys = {
             "sentiment_score",
             "trend_prediction",
