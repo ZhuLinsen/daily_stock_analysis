@@ -4453,6 +4453,8 @@ class GeminiAnalyzer:
             sanitize_nulls(data)
             AnalysisReportSchema.model_validate(data)
         except Exception as exc:
+            # 打印出被校验失败的原始数据，这样你就知道是哪只股票、具体缺什么字段了
+            logger.error(f"LLM 数据模型校验失败！原始返回数据: {data}")
             logger.warning(
                 "AnalysisReportSchema validation failed; continuing with raw parser contract: %s",
                 str(exc)[:200],
