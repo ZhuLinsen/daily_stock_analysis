@@ -70,3 +70,57 @@ def test_pipeline_handles_analyzer_attribute_error_gracefully():
         assert called_args.get("success") is False
         assert called_args.get("call_type") == "analysis"
         assert "AttributeError" in str(called_args.get("error_type")) or called_args.get("error_type") == "AttributeError"
+
+
+def test_pipeline_handles_analyzer_type_error_gracefully():
+    """Simulate analyzer.analyze raising a TypeError (e.g. signature mismatch).
+    The pipeline should treat it as a per-stock failure and record the LLM run as failed.
+    """
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+
+    pipeline.config = SimpleNamespace(
+        report_language="zh",
+        enable_realtime_quote=False,
+        enable_chip_distribution=False,
+        save_context_snapshot=False,
+        max_workers=1,
+    )
+
+    fm = MagicMock()
+    fm.get_stock_name.return_value = "测试股票"
+    fm.get_realtime_quote.return_value = None
+    fm.get_chip_distribution.return_value = None
+    fm.get_fundamental_context.return_value = {}
+    pipeline.fetcher_manager = fm
+
+    db = MagicMock()
+    db.get_data_range.return_value = None
+    db.has_today_data.return_value = False
+    pipeline.db = db
+
+    pipeline.trend_analyzer = MagicMock()
+
+    bad_analyzer = MagicMock()
+
+    def raise_type_error(*args, **kwargs):
+        raise TypeError("analyzer.analyze() got unexpected keyword argument 'foo'")
+
+    bad_analyzer.analyze.side_effect = raise_type_error
+    pipeline.analyzer = bad_analyzer
+
+    pipeline.notifier = MagicMock()
+    pipeline.notifier.is_available.return_value = False
+
+    with patch("src.core.pipeline.record_llm_run") as mock_record_llm_run:
+        result = pipeline.analyze_stock(
+            code="000001",
+            report_type=ReportType.SIMPLE,
+            query_id="test-qid-2",
+        )
+
+        assert result is None
+        assert mock_record_llm_run.called
+        called_args = mock_record_llm_run.call_args[1]
+        assert called_args.get("success") is False
+        assert called_args.get("call_type") == "analysis"
+        assert "TypeError" in str(called_args.get("error_type")) or called_args.get("error_type") == "TypeError"
