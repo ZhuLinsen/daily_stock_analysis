@@ -1882,14 +1882,19 @@ class GeminiAnalyzer:
     # 输出格式升级：从简单信号升级为决策仪表盘.
     # 核心模块：核心结论 + 数据透视 + 舆情情报 + 作战计划
     # ========================================
-    def _validate_json_response(self, response_text: str):
-        """
-        校验大模型返回的原始数据（兜底方法，防止外部调用报错）
-        """
-        # 如果大模型返回为空，这里直接返回，防止流程崩溃
+    def _parse_response(self, response_text: str):
+        import json
+        # 打印出大模型实际返回的内容。只要这里打印出东西，就说明国内网络完全没问题！
+        logger.info(f"[网络验证] 大模型原始返回内容长度: {len(str(response_text))}") 
+        
         if not response_text:
-            return ""
-        return response_text
+            return {}
+        try:
+            if isinstance(response_text, dict):
+                return response_text
+            return json.loads(response_text.strip())
+        except json.JSONDecodeError:
+            return response_text
         
     LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
     【⚠️ 极度重要的格式约束】
