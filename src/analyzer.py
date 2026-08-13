@@ -4441,7 +4441,7 @@ class GeminiAnalyzer:
             # 解析失败说明不是有效的 JSON，直接返回 False
         return False
 
-     def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
+    def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
         try:
             def sanitize_nulls(obj):
                 if isinstance(obj, dict):
