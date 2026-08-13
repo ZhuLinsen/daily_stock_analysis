@@ -6,10 +6,16 @@ from src.core.pipeline import StockAnalysisPipeline
 from src.enums import ReportType
 
 
+def _last_record_llm_run_kwargs(mock_call):
+    # Helper to get the kwargs of the last record_llm_run call
+    assert mock_call.called, "record_llm_run was not called"
+    return mock_call.call_args_list[-1][1]
+
+
 def test_pipeline_handles_analyzer_attribute_error_gracefully():
-    """When the analyzer.analyze raises AttributeError/TypeError, the pipeline should
+    """When the analyzer.analyze raises AttributeError, the pipeline should
     treat it as a per-stock failure (return None) and record the LLM run as failed,
-    rather than raising and aborting the batch.
+    with structured telemetry including error_type and error_message.
     """
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
 
@@ -20,6 +26,7 @@ def test_pipeline_handles_analyzer_attribute_error_gracefully():
         enable_chip_distribution=False,
         save_context_snapshot=False,
         max_workers=1,
+        litellm_model="test-model",
     )
 
     # Minimal fetcher_manager that the pipeline expects
@@ -64,17 +71,29 @@ def test_pipeline_handles_analyzer_attribute_error_gracefully():
         assert result is None
 
         # Ensure record_llm_run was called to record the failure
-        assert mock_record_llm_run.called
-        # The most important assertion: it should be recorded as a failure
-        called_args = mock_record_llm_run.call_args[1]  # kwargs
-        assert called_args.get("success") is False
-        assert called_args.get("call_type") == "analysis"
-        assert "AttributeError" in str(called_args.get("error_type")) or called_args.get("error_type") == "AttributeError"
+        called_kwargs = _last_record_llm_run_kwargs(mock_record_llm_run)
+        assert called_kwargs.get("success") is False
+        assert called_kwargs.get("call_type") == "analysis"
+
+        # error_type should be present and indicate AttributeError
+        error_type = called_kwargs.get("error_type")
+        assert error_type is not None
+        assert "AttributeError" in str(error_type) or error_type == "AttributeError"
+
+        # error_message should include the original message for debugability
+        error_message = called_kwargs.get("error_message")
+        assert error_message is not None
+        assert "validate_json_response" in str(error_message)
+
+        # duration_ms should be an integer (telemetry metric)
+        duration_ms = called_kwargs.get("duration_ms")
+        assert isinstance(duration_ms, int) and duration_ms >= 0
 
 
 def test_pipeline_handles_analyzer_type_error_gracefully():
     """Simulate analyzer.analyze raising a TypeError (e.g. signature mismatch).
-    The pipeline should treat it as a per-stock failure and record the LLM run as failed.
+    The pipeline should treat it as a per-stock failure and record the LLM run as failed
+    with structured telemetry including error_type and a descriptive message.
     """
     pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
 
@@ -84,6 +103,7 @@ def test_pipeline_handles_analyzer_type_error_gracefully():
         enable_chip_distribution=False,
         save_context_snapshot=False,
         max_workers=1,
+        litellm_model="test-model",
     )
 
     fm = MagicMock()
@@ -119,8 +139,18 @@ def test_pipeline_handles_analyzer_type_error_gracefully():
         )
 
         assert result is None
-        assert mock_record_llm_run.called
-        called_args = mock_record_llm_run.call_args[1]
-        assert called_args.get("success") is False
-        assert called_args.get("call_type") == "analysis"
-        assert "TypeError" in str(called_args.get("error_type")) or called_args.get("error_type") == "TypeError"
+
+        called_kwargs = _last_record_llm_run_kwargs(mock_record_llm_run)
+        assert called_kwargs.get("success") is False
+        assert called_kwargs.get("call_type") == "analysis"
+
+        error_type = called_kwargs.get("error_type")
+        assert error_type is not None
+        assert "TypeError" in str(error_type) or error_type == "TypeError"
+
+        error_message = called_kwargs.get("error_message")
+        assert error_message is not None
+        assert "unexpected keyword" in str(error_message)
+
+        duration_ms = called_kwargs.get("duration_ms")
+        assert isinstance(duration_ms, int) and duration_ms >= 0
