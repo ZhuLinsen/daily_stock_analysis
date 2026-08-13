@@ -4441,7 +4441,7 @@ class GeminiAnalyzer:
             # 解析失败说明不是有效的 JSON，直接返回 False
         return False
 
-    def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
+     def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
         try:
             def sanitize_nulls(obj):
                 if isinstance(obj, dict):
@@ -4450,14 +4450,12 @@ class GeminiAnalyzer:
                             sanitize_nulls(v)
                         elif v is None:
                             obj[k] = []
-
             sanitize_nulls(data)
             AnalysisReportSchema.model_validate(data)
         except Exception as exc:
             logger.warning(
                 "AnalysisReportSchema validation failed; continuing with raw parser contract: %s",
                 str(exc)[:200],
-            )
             )
         minimal_keys = {
             "sentiment_score",
