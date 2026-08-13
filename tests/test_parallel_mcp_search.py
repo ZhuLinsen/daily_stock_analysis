@@ -123,6 +123,31 @@ def test_provider_runs_isolated_mcp_lifecycle_and_normalizes_results():
     assert all("Authorization" not in call[1]["headers"] for call in session.calls)
 
 
+def test_provider_uses_a_new_parallel_session_id_for_each_search_task():
+    sessions = [
+        _FakeSession(
+            [
+                _initialize_response(),
+                _FakeResponse(status_code=202, text=""),
+                _tool_response(),
+            ]
+        )
+        for _ in range(2)
+    ]
+    provider = ParallelMcpSearchProvider()
+
+    with patch("src.search_service.requests.Session", side_effect=sessions):
+        provider.search("First independent task")
+        provider.search("Second independent task")
+
+    session_ids = [
+        session.calls[2][1]["json"]["params"]["arguments"]["session_id"]
+        for session in sessions
+    ]
+    assert all(session_id.startswith("dsa-") for session_id in session_ids)
+    assert session_ids[0] != session_ids[1]
+
+
 def test_provider_accepts_sse_and_text_content_fallback():
     provider = ParallelMcpSearchProvider()
     tool_payload = _tool_response(structured=False)._payload
@@ -235,6 +260,38 @@ def test_comprehensive_intel_keeps_parallel_out_of_normal_rotation():
     first_incumbent.search.assert_called_once()
     second_incumbent.search.assert_called_once()
     parallel_search.assert_not_called()
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_comprehensive_intel_uses_parallel_when_it_is_the_only_available_provider(
+    success: bool,
+):
+    service = SearchService(
+        searxng_public_instances_enabled=False,
+        parallel_search_mcp_enabled=True,
+    )
+    parallel = service._parallel_fallback_provider
+    assert parallel is not None
+
+    with (
+        patch.object(
+            parallel,
+            "search",
+            return_value=_intel_response(
+                "Parallel Search MCP",
+                "parallel-only" if success else None,
+                success=success,
+            ),
+        ) as parallel_search,
+        patch("src.search_service.time.sleep"),
+    ):
+        results = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=1)
+
+    parallel_search.assert_called_once()
+    assert results["latest_news"].provider == "Parallel Search MCP"
+    assert [item.title for item in results["latest_news"].results] == (
+        ["parallel-only"] if success else []
+    )
 
 
 @pytest.mark.parametrize("primary_success", [False, True])

@@ -2234,11 +2234,14 @@ class ParallelMcpSearchProvider(BaseSearchProvider):
         # bypasses BaseSearchProvider's API-key rotation without changing the
         # shared base contract used by incumbent providers.
         super().__init__([], "Parallel Search MCP")
-        self._search_session_id = f"dsa-{uuid.uuid4().hex}"
 
     @property
     def is_available(self) -> bool:
         return True
+
+    @staticmethod
+    def _new_search_session_id() -> str:
+        return f"dsa-{uuid.uuid4().hex}"
 
     @staticmethod
     def _response_header(response: requests.Response, name: str) -> Optional[str]:
@@ -2375,9 +2378,21 @@ class ParallelMcpSearchProvider(BaseSearchProvider):
         days: int = 7,
     ) -> SearchResponse:
         """Satisfy the base interface; this keyless provider ignores ``api_key``."""
-        return self._search_mcp(query, max_results=max_results, days=days)
+        return self._search_mcp(
+            query,
+            max_results=max_results,
+            days=days,
+            search_session_id=self._new_search_session_id(),
+        )
 
-    def _search_mcp(self, query: str, max_results: int, days: int) -> SearchResponse:
+    def _search_mcp(
+        self,
+        query: str,
+        max_results: int,
+        days: int,
+        *,
+        search_session_id: str,
+    ) -> SearchResponse:
         base_headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -2440,7 +2455,7 @@ class ParallelMcpSearchProvider(BaseSearchProvider):
                                 f"Prefer results published within the last {max(1, days)} days: {query}"
                             ),
                             "search_queries": [query],
-                            "session_id": self._search_session_id,
+                            "session_id": search_session_id,
                         },
                     },
                 },
@@ -2459,8 +2474,17 @@ class ParallelMcpSearchProvider(BaseSearchProvider):
 
     def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
         start_time = time.time()
+        # A provider instance may outlive many independent stock-analysis tasks.
+        # Generate once at the task boundary so future transport retries can
+        # reuse it without leaking the identifier into the next search task.
+        search_session_id = self._new_search_session_id()
         try:
-            response = self._search_mcp(query, max_results=max_results, days=days)
+            response = self._search_mcp(
+                query,
+                max_results=max_results,
+                days=days,
+                search_session_id=search_session_id,
+            )
             response.search_time = time.time() - start_time
             logger.info(
                 "[%s] 搜索 '%s' 成功，返回 %s 条结果，耗时 %.2fs",
@@ -4850,18 +4874,22 @@ class SearchService:
             if search_count >= max_searches:
                 break
 
-            # Parallel is fallback-only: rotate incumbents, then try it only
-            # when the selected incumbent fails or yields no usable results.
+            # Keep Parallel out of normal rotation while an incumbent is
+            # available, but let it serve directly when it is the only
+            # available search capability.
+            fallback_provider = self._parallel_fallback_provider
             available_incumbents = [
                 provider
                 for provider in self._providers
-                if provider.is_available and provider is not self._parallel_fallback_provider
+                if provider.is_available and provider is not fallback_provider
             ]
-            if not available_incumbents:
+            if available_incumbents:
+                provider = available_incumbents[provider_index % len(available_incumbents)]
+                provider_index += 1
+            elif fallback_provider is not None and fallback_provider.is_available:
+                provider = fallback_provider
+            else:
                 break
-
-            provider = available_incumbents[provider_index % len(available_incumbents)]
-            provider_index += 1
 
             request_days = (
                 self.ANALYTICAL_INTEL_LOOKBACK_DAYS
@@ -4870,9 +4898,9 @@ class SearchService:
             )
             response, filtered_response = run_dimension_search(provider, dim, request_days)
 
-            fallback_provider = self._parallel_fallback_provider
             if (
-                fallback_provider is not None
+                provider is not fallback_provider
+                and fallback_provider is not None
                 and fallback_provider.is_available
                 and (not response.success or not filtered_response.results)
             ):
