@@ -4451,6 +4451,15 @@ class GeminiAnalyzer:
                         elif v is None:
                             obj[k] = []
             sanitize_nulls(data)
+            
+            # --- 补丁：给可能缺失的列表字段补充默认空数组，避免校验失败 ---
+            data.setdefault("dashboard_phase_decision_immediate_action", [])
+            data.setdefault("dashboard_phase_decision_watch_conditions", [])
+            data.setdefault("dashboard_phase_decision_next_check_time", [])
+            data.setdefault("dashboard_phase_decision_confidence_reason", [])
+            data.setdefault("dashboard_phase_decision_operation_advice", [])
+            # --------------------------------------------------
+
             AnalysisReportSchema.model_validate(data)
         except Exception as exc:
             # 打印出被校验失败的原始数据，这样你就知道是哪只股票、具体缺什么字段了
