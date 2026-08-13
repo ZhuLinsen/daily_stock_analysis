@@ -513,3 +513,19 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
             return canonical_stock_code(resolved)
 
     return canonical_stock_code(text)
+
+
+def analysis_stock_code_key(raw: str) -> str:
+    """Return one identity key for duplicate analysis submissions.
+
+    Analysis accepts several equivalent Hong Kong spellings (for example,
+    ``0001``, ``00001``, ``HK0001`` and ``00001.HK``).  Keep the submitted
+    code unchanged for display, but use the padded ``HKxxxxx`` refill form as
+    the duplicate-detection key so batch and in-flight checks share one
+    identity.
+    """
+    resolved = resolve_index_stock_code_for_analysis(raw)
+    identity = resolve_daily_stock_identity(resolved)
+    if identity is not None and identity.refill_code:
+        return identity.refill_code
+    return canonical_stock_code(resolved)

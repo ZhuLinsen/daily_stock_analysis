@@ -9,12 +9,21 @@ import pytest
 from unittest.mock import patch
 
 from src.services.stock_code_utils import (
+    analysis_stock_code_key,
     build_daily_code_candidates,
     is_code_like,
     normalize_code,
     resolve_daily_stock_identity,
     resolve_index_stock_code_for_analysis,
 )
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["0001", "00001", "HK0001", "HK00001", "00001.HK"],
+)
+def test_analysis_stock_code_key_unifies_equivalent_hk_forms(code):
+    assert analysis_stock_code_key(code) == "HK00001"
 
 
 class TestBuildDailyCodeCandidates:

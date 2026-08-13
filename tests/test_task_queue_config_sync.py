@@ -99,6 +99,11 @@ class TaskQueueConfigSyncTestCase(unittest.TestCase):
     def test_dedupe_stock_code_key_normalizes_market_suffix(self) -> None:
         self.assertEqual(_dedupe_stock_code_key(" 600519.sh "), "600519")
 
+    def test_dedupe_stock_code_key_unifies_equivalent_hk_widths(self) -> None:
+        expected = "HK00001"
+        for code in ("0001", "00001", "HK0001", "HK00001", "00001.HK"):
+            self.assertEqual(_dedupe_stock_code_key(code), expected)
+
     def test_get_task_queue_defers_sync_when_busy(self) -> None:
         queue = AnalysisTaskQueue(max_workers=3)
         queue._analyzing_stocks["600519"] = "task1"

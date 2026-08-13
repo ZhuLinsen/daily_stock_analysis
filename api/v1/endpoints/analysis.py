@@ -54,7 +54,7 @@ from api.v1.schemas.history import (
     ReportDetails,
 )
 from api.v1.schemas.run_flow import RunFlowSnapshot
-from data_provider.base import canonical_stock_code, normalize_stock_code
+from data_provider.base import canonical_stock_code
 from src.data.stock_index_loader import resolve_index_stock_code
 from src.config import Config
 from src.core.market_review_lock import (
@@ -74,7 +74,11 @@ from src.market_phase_summary import (
     extract_market_phase_summary,
     rebuild_market_phase_summary_for_stock_code,
 )
-from src.services.stock_code_utils import is_code_like, resolve_index_stock_code_for_analysis
+from src.services.stock_code_utils import (
+    analysis_stock_code_key,
+    is_code_like,
+    resolve_index_stock_code_for_analysis,
+)
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.schemas.decision_action import build_action_fields
 from src.services.name_to_code_resolver import resolve_name_to_code
@@ -320,8 +324,9 @@ def trigger_analysis(
     for code in resolved:
         if not code:
             continue
-        # Use normalize_stock_code to ensure '600519' and '600519.SH' are merged
-        norm = normalize_stock_code(code)
+        # Use the shared analysis identity key so equivalent HK forms such as
+        # ``0001`` and ``00001`` are merged before reaching the task queue.
+        norm = analysis_stock_code_key(code)
         if norm not in seen:
             seen.add(norm)
             unique_codes.append(code)

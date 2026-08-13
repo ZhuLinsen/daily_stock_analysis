@@ -34,7 +34,7 @@ from src.services.run_diagnostics import (
     reset_run_diagnostic_context,
 )
 from src.utils.analysis_metadata import SELECTION_SOURCES
-from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
+from src.services.stock_code_utils import analysis_stock_code_key, resolve_index_stock_code_for_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def _dedupe_stock_code_key(stock_code: str) -> str:
     The task queue should treat equivalent market code shapes as the same
     underlying stock, e.g. ``600519`` and ``600519.SH``.
     """
-    return resolve_index_stock_code_for_analysis(normalize_stock_code(stock_code))
+    return analysis_stock_code_key(normalize_stock_code(stock_code))
 
 
 class TaskStatus(str, Enum):
