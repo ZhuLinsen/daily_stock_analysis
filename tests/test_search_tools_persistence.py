@@ -2,6 +2,7 @@
 """Tests for Agent search tool news persistence."""
 
 import unittest
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +10,7 @@ from src.agent.tools.search_tools import (
     _handle_search_comprehensive_intel,
     _handle_search_stock_news,
 )
-from src.search_service import SearchResponse, SearchResult
+from src.search_service import SearchResponse, SearchResult, SearchService
 
 
 def _response(query: str, *, success: bool = True) -> SearchResponse:
@@ -79,6 +80,41 @@ class SearchToolsPersistenceTest(unittest.TestCase):
             response=latest,
             query_context=None,
         )
+
+    def test_search_comprehensive_intel_agent_path_supports_parallel_only(self) -> None:
+        service = SearchService(
+            searxng_public_instances_enabled=False,
+            parallel_search_mcp_enabled=True,
+        )
+        parallel = service._parallel_fallback_provider
+        self.assertIsNotNone(parallel)
+        response = SearchResponse(
+            query="贵州茅台 600519 latest news",
+            provider="Parallel Search MCP",
+            success=True,
+            results=[
+                SearchResult(
+                    title="贵州茅台 600519 最新消息",
+                    snippet="贵州茅台最新经营与市场动态。",
+                    url="https://example.com/parallel-only",
+                    source="example.com",
+                    published_date=date.today().isoformat(),
+                )
+            ],
+        )
+        db = SimpleNamespace(save_news_intel=MagicMock(return_value=1))
+
+        with patch.object(parallel, "search", return_value=response) as parallel_search, \
+             patch("src.agent.tools.search_tools._get_search_service", return_value=service), \
+             patch("src.agent.tools.search_tools._get_db", return_value=db), \
+             patch("src.search_service.time.sleep"):
+            result = _handle_search_comprehensive_intel("600519", "贵州茅台")
+
+        self.assertNotIn("error", result)
+        self.assertIn("贵州茅台 600519 最新消息", result["report"])
+        self.assertEqual(result["dimensions"]["latest_news"]["results_count"], 1)
+        self.assertEqual(parallel_search.call_count, 6)
+        self.assertEqual(db.save_news_intel.call_count, 6)
 
     def test_persistence_failure_keeps_search_result(self) -> None:
         response = _response("贵州茅台 600519 latest news")
