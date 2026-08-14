@@ -393,13 +393,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
           
-          # 方式四：邮件
-          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
-          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
-          
-          # 方式五：Pushover
+          # 方式四：Pushover
           PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
           PUSHOVER_API_TOKEN: ${{ secrets.PUSHOVER_API_TOKEN }}
 
