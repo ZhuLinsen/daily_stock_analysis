@@ -1,6 +1,6 @@
 import type React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
 import type { SetupStatusResponse } from '../../types/systemConfig';
 import SettingsPage from '../SettingsPage';
