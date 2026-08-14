@@ -913,6 +913,22 @@ def run_full_analysis(
                     else:
                         logger.warning("合并推送失败")
 
+        # Public Finsance export is an allow-list projection; never serialize
+        # the full report because it contains private trading levels.
+        if not getattr(args, "dry_run", False):
+            try:
+                from src.services.public_daily_export import write_daily_export
+
+                public_path = write_daily_export(
+                    results,
+                    report_date=analysis_reference_time.date(),
+                )
+                if public_path:
+                    logger.info("Finsance public daily artifact written: %s", public_path)
+            except Exception as exc:
+                # A public export failure must not erase a valid private report.
+                logger.warning("Finsance public daily export failed (ignored): %s", exc)
+
         # 输出摘要
         if results:
             logger.info("\n===== 分析结果摘要 =====")
