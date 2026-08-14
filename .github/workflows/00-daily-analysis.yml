@@ -77,7 +77,7 @@ jobs:
           LITELLM_CONFIG_YAML: ${{ vars.LITELLM_CONFIG_YAML || secrets.LITELLM_CONFIG_YAML }}
           LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
           LITELLM_MODEL: ${{ vars.LITELLM_MODEL || secrets.LITELLM_MODEL }}
-          LITELLM_FALLBACK_MODELS: ${{ vars.LITELLM_FALLBACK_MODELS || secrets.LITELLM_FALLBACK_MODELS }}
+          LITELLM_FALLBACK_MODELS: ${{ vars.LITELLM_FALLBACK_MODELS || secrets.LITELLM_FALLBACK_MODELS || 'gemini/gemini-2.5-flash,openai/gpt-5.5' }}
           AGENT_LITELLM_MODEL: ${{ vars.AGENT_LITELLM_MODEL || secrets.AGENT_LITELLM_MODEL }}
           VISION_MODEL: ${{ vars.VISION_MODEL || secrets.VISION_MODEL }}
           OPENAI_VISION_MODEL: ${{ vars.OPENAI_VISION_MODEL || secrets.OPENAI_VISION_MODEL }}
@@ -104,6 +104,10 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
           GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
           GEMINI_REQUEST_DELAY: '3.0'
+          # Gemini 主模型/配额失败时先换 Gemini 轻量模型，再走 OpenAI-compatible fallback。
+          FINSANCE_PUBLICATION_ENABLED: ${{ vars.FINSANCE_PUBLICATION_ENABLED || 'false' }}
+          FINSANCE_COMMERCIAL_MODE: ${{ vars.FINSANCE_COMMERCIAL_MODE || 'false' }}
+          FINSANCE_COMMERCIAL_PROVIDER: ${{ vars.FINSANCE_COMMERCIAL_PROVIDER || secrets.FINSANCE_COMMERCIAL_PROVIDER }}
           
           # AIHubMix（优先于 OPENAI_API_KEY，自动适配 base_url，推荐国内用户）
           AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
@@ -532,6 +536,42 @@ jobs:
             python main.py --no-market-review $FORCE_RUN_ARG
           else
             python main.py $FORCE_RUN_ARG
+          fi
+
+      - name: ตรวจสอบและเผยแพร่ Finsance daily artifact
+        if: ${{ success() && vars.FINSANCE_PUBLICATION_ENABLED == 'true' }}
+        env:
+          FINSANCE_REPO: ${{ vars.FINSANCE_REPO }}
+          FINSANCE_BRANCH: ${{ vars.FINSANCE_BRANCH || 'main' }}
+          FINSANCE_PUSH_TOKEN: ${{ secrets.FINSANCE_REPO_TOKEN || secrets.GH_PAT }}
+        run: |
+          test -n "$FINSANCE_REPO" || { echo "Missing Actions variable: FINSANCE_REPO"; exit 1; }
+          test -n "$FINSANCE_PUSH_TOKEN" || { echo "Missing Actions secret: FINSANCE_REPO_TOKEN or GH_PAT"; exit 1; }
+
+      - name: Checkout Finsance Website
+        if: ${{ success() && vars.FINSANCE_PUBLICATION_ENABLED == 'true' }}
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ vars.FINSANCE_REPO }}
+          ref: ${{ vars.FINSANCE_BRANCH || 'main' }}
+          token: ${{ secrets.FINSANCE_REPO_TOKEN || secrets.GH_PAT }}
+          path: .finsance
+          fetch-depth: 1
+
+      - name: Push validated daily artifact to Finsance
+        if: ${{ success() && vars.FINSANCE_PUBLICATION_ENABLED == 'true' }}
+        env:
+          FINSANCE_BRANCH: ${{ vars.FINSANCE_BRANCH || 'main' }}
+        run: |
+          python .github/scripts/publish_finsance_daily.py --source reports/finsance --destination .finsance/content/quanttrade --render-trigger .finsance/.render-quanttrade-trigger
+          git -C .finsance config user.name "github-actions[bot]"
+          git -C .finsance config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C .finsance add content/quanttrade .render-quanttrade-trigger
+          if git -C .finsance diff --cached --quiet; then
+            echo "Finsance artifact unchanged; nothing to push."
+          else
+            git -C .finsance commit -m "chore: update daily stock analysis"
+            git -C .finsance push origin "HEAD:$FINSANCE_BRANCH"
           fi
       
       - name: 上传分析报告
