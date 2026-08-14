@@ -8,6 +8,7 @@ graceful degradation when yfinance is unavailable.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
@@ -54,6 +55,16 @@ class TestYfinanceSymbolConversion(unittest.TestCase):
 
 
 class TestYfinanceFundamentalAdapter(unittest.TestCase):
+    @staticmethod
+    def _freeze_dividend_as_of():
+        class _FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                frozen = datetime(2026, 8, 14, tzinfo=timezone.utc)
+                return frozen if tz is None else frozen.astimezone(tz)
+
+        return patch("data_provider.yfinance_fundamental_adapter.datetime", _FrozenDateTime)
+
     def test_populates_growth_earnings_dividend_boards_for_us_stock(self) -> None:
         info = {
             "financialCurrency": "USD",
@@ -113,7 +124,7 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
         )
         ticker = _build_mock_ticker(info, income_df_with_yoy, cashflow_df, dividends)
 
-        with patch("yfinance.Ticker", return_value=ticker):
+        with patch("yfinance.Ticker", return_value=ticker), self._freeze_dividend_as_of():
             bundle = YfinanceFundamentalAdapter().get_fundamental_bundle("AAPL")
 
         self.assertEqual(bundle["status"], "partial")
@@ -130,11 +141,11 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
         self.assertEqual(fr["currency"], "USD")
 
         div = bundle["earnings"]["dividend"]
-        self.assertEqual(div["ttm_event_count"], 4)
-        self.assertAlmostEqual(div["ttm_cash_dividend_per_share"], 1.05, places=2)
-        # Yield is recomputed: ttm_cash (1.05) / currentPrice (210) * 100 = 0.5%.
+        self.assertEqual(div["ttm_event_count"], 3)
+        self.assertAlmostEqual(div["ttm_cash_dividend_per_share"], 0.79, places=2)
+        # Yield is recomputed: ttm_cash (0.79) / currentPrice (210) * 100 ≈ 0.3762%.
         # info.dividendYield (0.36) is intentionally ignored when TTM cash exists.
-        self.assertAlmostEqual(div["ttm_dividend_yield_pct"], 0.5, places=2)
+        self.assertAlmostEqual(div["ttm_dividend_yield_pct"], 0.3762, places=4)
         self.assertEqual(div["currency"], "USD")
         self.assertEqual(
             bundle["belong_boards"],
@@ -168,14 +179,36 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
             "trailingAnnualDividendRate": 99.0,  # a WRONG fallback we must NOT fall back to
         }
         ticker = _build_mock_ticker(info, dividends=dividends_df)
-        with patch("yfinance.Ticker", return_value=ticker):
+        with patch("yfinance.Ticker", return_value=ticker), self._freeze_dividend_as_of():
             bundle = YfinanceFundamentalAdapter().get_fundamental_bundle("AAPL")
 
         div = bundle["earnings"]["dividend"]
-        self.assertEqual(div["ttm_event_count"], 4)          # was 0 before the fix
+        self.assertEqual(div["ttm_event_count"], 3)          # was 0 before the fix
         self.assertEqual(len(div["events"]), 4)
-        # summed TTM (0.26*3 + 0.27 = 1.05), NOT the trailingAnnualDividendRate 99.0 fallback
-        self.assertAlmostEqual(div["ttm_cash_dividend_per_share"], 1.05, places=2)
+        # summed TTM within 365 days as of 2026-08-14 (0.26*2 + 0.27 = 0.79),
+        # NOT the trailingAnnualDividendRate 99.0 fallback.
+        self.assertAlmostEqual(div["ttm_cash_dividend_per_share"], 0.79, places=2)
+
+    def test_ttm_dividend_window_uses_as_of_date_cutoff(self) -> None:
+        idx = pd.DatetimeIndex(
+            ["2025-08-11", "2025-11-10", "2026-02-09", "2026-05-11"],
+            tz="America/New_York",
+        )
+        dividends = pd.Series([0.26, 0.26, 0.26, 0.27], index=idx, name="Dividends")
+        info = {
+            "currency": "USD",
+            "financialCurrency": "USD",
+            "currentPrice": 210,
+        }
+        ticker = _build_mock_ticker(info, dividends=dividends)
+
+        with patch("yfinance.Ticker", return_value=ticker), self._freeze_dividend_as_of():
+            bundle = YfinanceFundamentalAdapter().get_fundamental_bundle("AAPL")
+
+        div = bundle["earnings"]["dividend"]
+        self.assertEqual(div["as_of"], "2026-08-14")
+        self.assertEqual(div["ttm_event_count"], 3)
+        self.assertAlmostEqual(div["ttm_cash_dividend_per_share"], 0.79, places=2)
 
     def test_falls_back_to_info_when_statements_only_have_4_quarters(self) -> None:
         """yfinance default is 4 quarters → statement-derived YoY refuses to use QoQ.

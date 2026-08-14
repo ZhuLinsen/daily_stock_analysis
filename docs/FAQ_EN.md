@@ -164,8 +164,21 @@ First confirm whether `LITELLM_CONFIG` or `LLM_CHANNELS` is active, because eith
 1. **Auto-chunking**: Latest version implements automatic long message splitting
 2. **Single stock push mode**: Set `SINGLE_STOCK_NOTIFY=true`, push immediately after each stock analysis
 3. **Brief report**: Set `REPORT_TYPE=simple` for simplified format
+4. **Local file fallback**: Even with no notification channel configured, `SINGLE_STOCK_NOTIFY=true` still saves each stock report to `reports/report_YYYYMMDD_<stock_code>.md`
 
 ---
+
+### Q8.1: Analysis finished, but no report file was created under `reports/`?
+
+**Common causes**:
+1. `STOCK_LIST` is empty and market review was not enabled for this run
+2. The stock list is non-empty, but every stock analysis failed so no successful result was produced
+3. Stock results were produced, but writing to `reports/` failed (for example due to permissions or mount issues)
+
+**Current behavior**:
+1. CLI-triggered analysis now logs the exact failure reason for these cases
+2. Standalone non-`--serve` runs now return a non-zero exit code so workflows do not treat “no report generated” as success
+3. In single-stock push mode, local Markdown report saving still happens even when notifications are not configured
 
 ### Q9: Not receiving Telegram push messages?
 

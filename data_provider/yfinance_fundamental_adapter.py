@@ -268,6 +268,7 @@ class YfinanceFundamentalAdapter:
 
         # ---------------- dividend block ----------------
         events: List[Dict[str, Any]] = []
+        as_of_date = datetime.now(timezone.utc).date()
         try:
             div_series = ticker.dividends
         except Exception as exc:
@@ -281,8 +282,7 @@ class YfinanceFundamentalAdapter:
             if hasattr(div_series, "columns"):
                 div_series = div_series.iloc[:, 0]
             try:
-                # Index is timezone-aware (ex-dividend date)
-                cutoff = pd.Timestamp.now(tz=div_series.index.tz) - pd.Timedelta(days=365)
+                cutoff = pd.Timestamp(as_of_date).tz_localize(div_series.index.tz) - pd.Timedelta(days=365)
                 for ts, value in div_series.items():
                     per_share = _safe_float(value)
                     if per_share is None or per_share <= 0:
@@ -325,7 +325,7 @@ class YfinanceFundamentalAdapter:
                 "ttm_cash_dividend_per_share": round(ttm_cash, 6) if ttm_cash is not None else None,
                 "coverage": "cash_dividend_pre_tax",
                 "currency": dividend_currency,
-                "as_of": datetime.now(timezone.utc).date().isoformat(),
+                "as_of": as_of_date.isoformat(),
             }
 
             # Yield: prefer recomputing from TTM cash / latest price so the

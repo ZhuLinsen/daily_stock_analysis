@@ -4,12 +4,14 @@ Regression tests for single-stock notification behavior in StockAnalysisPipeline
 """
 
 import os
+import tempfile
 import sys
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -17,6 +19,7 @@ from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
 
+import src.notification as notification_module
 from src.analyzer import AnalysisResult
 from src.core.pipeline import StockAnalysisPipeline
 from src.enums import ReportType
@@ -27,6 +30,7 @@ class _TrackingNotifier:
         self.thread_names = []
         self.email_stock_codes = []
         self.sent_reports = []
+        self.saved_reports = []
         self._lock = threading.Lock()
         self._inflight = 0
         self.max_inflight = 0
@@ -40,7 +44,12 @@ class _TrackingNotifier:
         self.generate_single_stock_report = MagicMock(
             side_effect=lambda result: f"single:{result.code}"
         )
+        self.save_report_to_file = MagicMock(side_effect=self._save_report_to_file)
         self.send = MagicMock(side_effect=self._send)
+
+    def _save_report_to_file(self, content, filename=None):
+        self.saved_reports.append((content, filename))
+        return f"/tmp/{filename or 'report_20260814.md'}"
 
     def _send(
         self,
@@ -147,6 +156,9 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
 
         self.assertIsNotNone(result)
         pipeline.notifier.generate_brief_report.assert_called_once_with([result])
+        save_call = pipeline.notifier.save_report_to_file.call_args
+        self.assertEqual(save_call.args[0], "brief:600519")
+        self.assertEqual(save_call.kwargs["filename"], "report_20260814_600519.md")
         pipeline.notifier.send.assert_called_once_with(
             "brief:600519",
             email_stock_codes=["600519"],
@@ -155,6 +167,27 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
             dedup_key="report:single:600519:brief",
             cooldown_key="report:single:600519:brief",
         )
+
+    def test_process_single_stock_saves_report_even_when_notifier_is_unavailable(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.fetch_and_save_stock_data = MagicMock(return_value=(True, None))
+        pipeline.analyze_stock = MagicMock(return_value=_make_result("600519"))
+        pipeline.notifier = _TrackingNotifier()
+        pipeline.notifier.is_available.return_value = False
+
+        result = pipeline.process_single_stock(
+            code="600519",
+            skip_analysis=False,
+            single_stock_notify=True,
+            report_type=ReportType.SIMPLE,
+            analysis_query_id="query-1",
+        )
+
+        self.assertIsNotNone(result)
+        save_call = pipeline.notifier.save_report_to_file.call_args
+        self.assertEqual(save_call.args[0], "single:600519")
+        self.assertEqual(save_call.kwargs["filename"], "report_20260814_600519.md")
+        pipeline.notifier.send.assert_not_called()
 
     def test_process_single_stock_updates_saved_diagnostics_after_notification(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
@@ -217,7 +250,57 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertFalse(result.success)
         pipeline.notifier.generate_brief_report.assert_not_called()
+        pipeline.notifier.save_report_to_file.assert_not_called()
         pipeline.notifier.send.assert_not_called()
+
+    def test_save_local_report_falls_back_when_notifier_save_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+            pipeline.notifier = MagicMock()
+            pipeline.notifier.save_report_to_file = MagicMock(side_effect=OSError("permission denied"))
+            pipeline.notifier.generate_aggregate_report = MagicMock(return_value="dashboard")
+            pipeline.notifier.generate_dashboard_report = MagicMock(return_value="dashboard")
+
+            with patch.object(
+                StockAnalysisPipeline,
+                "_report_output_dir",
+                return_value=Path(temp_dir),
+            ):
+                result_path = pipeline._save_local_report([_make_result("600519")], ReportType.SIMPLE)
+
+            self.assertIsNotNone(result_path)
+            self.assertTrue(result_path.startswith(temp_dir))
+            self.assertEqual(pipeline._last_local_report_path, result_path)
+            self.assertIsNone(pipeline._last_local_report_error)
+            pipeline.notifier.save_report_to_file.assert_called_once()
+            self.assertTrue(Path(result_path).exists())
+
+    def test_save_local_report_records_explicit_error_when_notifier_returns_empty_path(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = MagicMock()
+        pipeline.notifier.save_report_to_file = MagicMock(return_value=None)
+        pipeline.notifier.generate_aggregate_report = MagicMock(return_value="dashboard")
+        pipeline.notifier.generate_dashboard_report = MagicMock(return_value="dashboard")
+
+        with patch.object(
+            StockAnalysisPipeline,
+            "_fallback_save_report_to_file",
+            return_value=None,
+        ):
+            result_path = pipeline._save_local_report([_make_result("600519")], ReportType.SIMPLE)
+
+        self.assertIsNone(result_path)
+        self.assertIsNone(pipeline._last_local_report_path)
+        self.assertEqual(
+            pipeline._last_local_report_error,
+            "notifier returned empty report path",
+        )
+
+    def test_fallback_report_output_dir_matches_notification_service(self):
+        self.assertEqual(
+            StockAnalysisPipeline._report_output_dir(),
+            Path(notification_module.__file__).resolve().parent.parent / "reports",
+        )
 
 
 if __name__ == "__main__":
