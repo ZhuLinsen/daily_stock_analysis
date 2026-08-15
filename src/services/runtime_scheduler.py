@@ -12,6 +12,7 @@ import threading
 import _thread
 import time
 from datetime import datetime
+from functools import partial
 from queue import Empty
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -362,12 +363,20 @@ class RuntimeSchedulerService:
                 result_queue.cancel_join_thread()
                 result_queue.close()
 
-    def _start_analysis_watchdog(self, stock_codes: Optional[List[str]] = None) -> bool:
+    def _start_analysis_watchdog(
+        self,
+        stock_codes: Optional[List[str]] = None,
+        *,
+        generation: Optional[int] = None,
+    ) -> bool:
+        with self._analysis_process_lock:
+            current_generation = self._analysis_generation
+            if generation is not None and generation != current_generation:
+                return False
+            generation = current_generation
         if not self._run_lock.acquire(blocking=False):
             self._record_analysis_busy_skip()
             return False
-        with self._analysis_process_lock:
-            generation = self._analysis_generation
         worker = threading.Thread(
             target=lambda: self._run_analysis_with_watchdog(
                 stock_codes,
@@ -458,6 +467,12 @@ class RuntimeSchedulerService:
                 return
             background_tasks = self._current_background_tasks(config)
             self.stop()
+            with self._analysis_process_lock:
+                generation = self._analysis_generation
+            scheduled_analysis = partial(
+                self._start_analysis_watchdog,
+                generation=generation,
+            )
             times = normalize_schedule_times(
                 getattr(config, "schedule_times", None),
                 fallback_time=getattr(config, "schedule_time", "18:00"),
@@ -469,10 +484,10 @@ class RuntimeSchedulerService:
                 register_signals=False,
             )
             if run_immediately and self._run_immediately_in_background:
-                scheduler.set_daily_task(self._start_analysis_watchdog, run_immediately=False)
+                scheduler.set_daily_task(scheduled_analysis, run_immediately=False)
             else:
                 scheduler.set_daily_task(
-                    self._start_analysis_watchdog,
+                    scheduled_analysis,
                     run_immediately=run_immediately,
                 )
             for entry in background_tasks:
@@ -483,7 +498,7 @@ class RuntimeSchedulerService:
                     name=entry.get("name"),
                 )
             if run_immediately and self._run_immediately_in_background:
-                self._run_in_background_thread(self._start_analysis_watchdog)
+                self._run_in_background_thread(scheduled_analysis)
             thread = threading.Thread(
                 target=scheduler.run,
                 daemon=True,
@@ -495,17 +510,18 @@ class RuntimeSchedulerService:
             thread.start()
 
     def stop(self) -> None:
-        with self._analysis_process_lock:
-            self._analysis_generation += 1
-            process = self._analysis_process
-        scheduler = self._scheduler
-        if scheduler is not None:
-            scheduler.stop()
-        if process is not None:
-            _terminate_analysis_process_tree(process)
-        self._scheduler = None
-        self._thread = None
-        self._enabled = False
+        with self._lock:
+            with self._analysis_process_lock:
+                self._analysis_generation += 1
+                process = self._analysis_process
+            scheduler = self._scheduler
+            if scheduler is not None:
+                scheduler.stop()
+            if process is not None:
+                _terminate_analysis_process_tree(process)
+            self._scheduler = None
+            self._thread = None
+            self._enabled = False
 
     def reconcile_from_config(
         self,

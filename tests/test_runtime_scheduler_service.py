@@ -300,12 +300,39 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         deadline = time.monotonic() + 5
         while service.status()["last_run_at"] is None and time.monotonic() < deadline:
             time.sleep(0.05)
+        self.assertIsNotNone(service.status()["last_run_at"])
 
         service.stop()
 
         deadline = time.monotonic() + 5
         while service.status()["running"] and time.monotonic() < deadline:
             time.sleep(0.05)
+        self.assertFalse(service.status()["running"])
+
+    def test_stale_scheduled_callback_cannot_start_after_stop(self) -> None:
+        fake_schedule = _FakeScheduleModule()
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+
+        with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.start()
+
+        callback = fake_schedule.get_jobs()[0].job_func
+        service.stop()
+
+        with patch(
+            "src.services.runtime_scheduler.multiprocessing.get_context"
+        ) as get_context:
+            self.assertFalse(callback())
+
+        get_context.assert_not_called()
         self.assertFalse(service.status()["running"])
 
     def test_watchdog_reads_large_worker_result_before_joining(self) -> None:
@@ -387,7 +414,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         with patch.object(
             service,
             "_start_analysis_watchdog",
-            side_effect=lambda stock_codes=None: calls.append("run") or True,
+            side_effect=lambda stock_codes=None, **kwargs: calls.append("run") or True,
         ), patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
             "src.services.runtime_scheduler.threading.Thread",
             _NoopThread,
@@ -427,7 +454,7 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         with patch.object(
             service,
             "_start_analysis_watchdog",
-            side_effect=lambda stock_codes=None: calls.append("run") or True,
+            side_effect=lambda stock_codes=None, **kwargs: calls.append("run") or True,
         ), patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
             "src.services.runtime_scheduler.threading.Thread",
             _NoopThread,
