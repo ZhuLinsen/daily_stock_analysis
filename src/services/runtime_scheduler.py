@@ -6,8 +6,11 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import signal
+import subprocess
 import threading
 import _thread
+import time
 from datetime import datetime
 from queue import Empty
 from types import SimpleNamespace
@@ -61,9 +64,49 @@ def _run_scheduled_analysis_process(
     schedule_args_overrides: Dict[str, Any],
 ) -> None:
     """Run one analysis in a spawn-safe child process."""
+    if os.name == "posix":
+        try:
+            os.setsid()
+        except OSError:
+            pass
     service = RuntimeSchedulerService(schedule_args_overrides=schedule_args_overrides)
     success = service._run_analysis_locked(stock_codes)
     result_queue.put({"success": success, "error": service._last_error})
+
+
+def _terminate_analysis_process_tree(process: Any) -> None:
+    """Stop an analysis worker and any descendants it created."""
+    if not process.is_alive():
+        return
+
+    try:
+        if os.name == "posix" and process.pid:
+            os.killpg(process.pid, signal.SIGTERM)
+        elif os.name == "nt" and process.pid:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        else:
+            process.terminate()
+    except (OSError, subprocess.SubprocessError):
+        process.terminate()
+
+    process.join(10)
+    if not process.is_alive():
+        return
+
+    try:
+        if os.name == "posix" and process.pid:
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except (OSError, AttributeError):
+        process.terminate()
+    process.join(10)
 
 
 def _agent_event_monitor_interval_seconds(config: Config) -> int:
@@ -157,6 +200,9 @@ class RuntimeSchedulerService:
         self._last_skipped_at: Optional[str] = None
         self._last_skip_reason: Optional[str] = None
         self._analysis_process_target = _run_scheduled_analysis_process
+        self._analysis_process: Optional[Any] = None
+        self._analysis_process_lock = threading.Lock()
+        self._analysis_generation = 0
 
     def _make_schedule_args(self) -> SimpleNamespace:
         defaults = {
@@ -238,10 +284,14 @@ class RuntimeSchedulerService:
         stock_codes: Optional[List[str]] = None,
         *,
         lock_held: bool = False,
+        generation: Optional[int] = None,
     ) -> None:
         if not lock_held and not self._run_lock.acquire(blocking=False):
             self._record_analysis_busy_skip()
             return
+        if generation is None:
+            with self._analysis_process_lock:
+                generation = self._analysis_generation
 
         result_queue = None
         try:
@@ -253,29 +303,45 @@ class RuntimeSchedulerService:
                 name="runtime-scheduled-analysis",
             )
             timeout = self._analysis_timeout_seconds()
+            with self._analysis_process_lock:
+                if generation != self._analysis_generation:
+                    return
+                process.start()
+                self._analysis_process = process
             self._last_run_at = datetime.now().isoformat()
-            process.start()
-            process.join(timeout)
-            if process.is_alive():
+
+            result = None
+            deadline = time.monotonic() + timeout
+            while result is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    result = result_queue.get(timeout=min(0.2, remaining))
+                except Empty:
+                    if not process.is_alive():
+                        deadline = min(deadline, time.monotonic() + 2)
+
+            if result is None and process.is_alive():
                 logger.error(
                     "Runtime scheduled analysis exceeded %ss; terminating worker",
                     timeout,
                 )
-                process.terminate()
-                process.join(10)
-                if process.is_alive():
-                    process.kill()
-                    process.join(10)
+                _terminate_analysis_process_tree(process)
                 self._last_error = f"runtime scheduled analysis timed out after {timeout}s"
                 return
 
-            try:
-                result = result_queue.get(timeout=2)
-            except Empty:
+            if result is None:
                 self._last_error = (
                     "runtime scheduled analysis worker exited without a result "
                     f"(exit code {process.exitcode})"
                 )
+                return
+
+            process.join(2)
+            if process.is_alive():
+                _terminate_analysis_process_tree(process)
+                self._last_error = "runtime scheduled analysis worker did not exit"
                 return
 
             if result.get("success"):
@@ -288,6 +354,10 @@ class RuntimeSchedulerService:
             logger.exception("Runtime scheduler watchdog failed: %s", exc)
         finally:
             self._run_lock.release()
+            if "process" in locals():
+                with self._analysis_process_lock:
+                    if self._analysis_process is process:
+                        self._analysis_process = None
             if result_queue is not None:
                 result_queue.cancel_join_thread()
                 result_queue.close()
@@ -296,8 +366,14 @@ class RuntimeSchedulerService:
         if not self._run_lock.acquire(blocking=False):
             self._record_analysis_busy_skip()
             return False
+        with self._analysis_process_lock:
+            generation = self._analysis_generation
         worker = threading.Thread(
-            target=lambda: self._run_analysis_with_watchdog(stock_codes, lock_held=True),
+            target=lambda: self._run_analysis_with_watchdog(
+                stock_codes,
+                lock_held=True,
+                generation=generation,
+            ),
             daemon=True,
             name="runtime-scheduler-watchdog",
         )
@@ -419,9 +495,14 @@ class RuntimeSchedulerService:
             thread.start()
 
     def stop(self) -> None:
+        with self._analysis_process_lock:
+            self._analysis_generation += 1
+            process = self._analysis_process
         scheduler = self._scheduler
         if scheduler is not None:
             scheduler.stop()
+        if process is not None:
+            _terminate_analysis_process_tree(process)
         self._scheduler = None
         self._thread = None
         self._enabled = False

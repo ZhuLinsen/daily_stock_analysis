@@ -104,6 +104,10 @@ def _successful_spawn_runner(result_queue, stock_codes, schedule_args_overrides)
     result_queue.put({"success": True, "error": None})
 
 
+def _large_failure_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    result_queue.put({"success": False, "error": "x" * (1024 * 1024)})
+
+
 class RuntimeSchedulerServiceTestCase(unittest.TestCase):
     def test_run_analysis_args_include_workers(self) -> None:
         config = SimpleNamespace(
@@ -282,6 +286,44 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         finally:
             _BLOCKING_THREAD_RELEASE.set()
             trigger.join(timeout=5)
+
+    def test_stop_terminates_active_analysis_worker(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _blocking_spawn_runner
+
+        self.assertTrue(service.run_now()["accepted"])
+        deadline = time.monotonic() + 5
+        while service.status()["last_run_at"] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+        service.stop()
+
+        deadline = time.monotonic() + 5
+        while service.status()["running"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(service.status()["running"])
+
+    def test_watchdog_reads_large_worker_result_before_joining(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _large_failure_spawn_runner
+        service._analysis_timeout_seconds = lambda: 2
+
+        self.assertTrue(service.run_now()["accepted"])
+        deadline = time.monotonic() + 5
+        while service.status()["last_error"] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+        self.assertTrue(service.status()["last_error"].startswith("x"))
 
     def test_run_now_uses_shared_lock_across_service_instances(self) -> None:
         config = SimpleNamespace(
