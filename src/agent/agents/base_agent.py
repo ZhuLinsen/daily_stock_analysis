@@ -257,7 +257,9 @@ class BaseAgent(ABC):
             return self.tool_registry
 
         from src.agent.tools.registry import ToolRegistry as TR
-        filtered = TR()
+        # Carry the source registry's category-timeout map so the filtered subset
+        # still enforces the per-category ceilings (review OR-COM-7f3d3f5b).
+        filtered = TR(category_timeout_map=self.tool_registry.category_timeout_map)
         for name in self.tool_names:
             tool_def = self.tool_registry.get(name)
             if tool_def:
