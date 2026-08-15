@@ -7,6 +7,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -84,6 +86,22 @@ class _SynchronousThread(_NoopThread):
     def start(self):
         if self.target is not None:
             self.target()
+
+
+_BLOCKING_THREAD_RELEASE = threading.Event()
+
+
+def _blocking_thread_runner(config, args, stock_codes):
+    _BLOCKING_THREAD_RELEASE.wait(timeout=5)
+    return True
+
+
+def _blocking_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    time.sleep(10)
+
+
+def _successful_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    result_queue.put({"success": True, "error": None})
 
 
 class RuntimeSchedulerServiceTestCase(unittest.TestCase):
@@ -194,31 +212,76 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
             schedule_time="18:00",
             schedule_times=["18:00"],
         )
-        seen_stock_codes = []
-
-        def runner(config_arg, args, stock_codes):
-            seen_stock_codes.append(stock_codes)
-            return True
-
-        service = RuntimeSchedulerService(
-            config_provider=lambda: config,
-            task_runner=runner,
-        )
-        service._reload_config = lambda: config
-
-        with patch(
-            "src.services.runtime_scheduler.threading.Thread",
-            _SynchronousThread,
-        ):
-            result = service.run_now()
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _successful_spawn_runner
+        result = service.run_now()
 
         self.assertTrue(result["accepted"])
-        self.assertEqual(seen_stock_codes, [None])
+        deadline = time.monotonic() + 4
+        while service.status()["last_success_at"] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
         status = service.status()
         self.assertFalse(status["running"])
         self.assertIsNotNone(status["last_run_at"])
         self.assertIsNotNone(status["last_success_at"])
         self.assertIsNone(status["last_error"])
+
+    def test_blocked_scheduled_analysis_times_out_and_allows_next_run(self) -> None:
+        fake_schedule = _FakeScheduleModule()
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(
+            config_provider=lambda: config,
+            task_runner=_blocking_thread_runner,
+        )
+        service._reload_config = lambda: config
+        service._analysis_process_target = _blocking_spawn_runner
+        service._analysis_timeout_seconds = lambda: 1
+
+        with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.reconcile_from_config()
+
+        callback_returned = threading.Event()
+        trigger = threading.Thread(
+            target=lambda: (fake_schedule.run_pending(), callback_returned.set()),
+            daemon=True,
+        )
+        _BLOCKING_THREAD_RELEASE.clear()
+        trigger.start()
+        try:
+            self.assertTrue(
+                callback_returned.wait(timeout=0.5),
+                "the scheduler callback remained blocked by analysis",
+            )
+
+            deadline = time.monotonic() + 4
+            while service.status()["last_error"] is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+            status = service.status()
+            self.assertFalse(status["running"])
+            self.assertIn("timed out after 1s", status["last_error"])
+
+            service._analysis_process_target = _successful_spawn_runner
+            self.assertTrue(service.run_now()["accepted"])
+
+            deadline = time.monotonic() + 4
+            while service.status()["last_success_at"] is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+            status = service.status()
+            self.assertFalse(status["running"])
+            self.assertIsNotNone(status["last_success_at"])
+            self.assertIsNone(status["last_error"])
+        finally:
+            _BLOCKING_THREAD_RELEASE.set()
+            trigger.join(timeout=5)
 
     def test_run_now_uses_shared_lock_across_service_instances(self) -> None:
         config = SimpleNamespace(
@@ -279,7 +342,11 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         )
         service._reload_config = lambda: config
 
-        with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
+        with patch.object(
+            service,
+            "_start_analysis_watchdog",
+            side_effect=lambda stock_codes=None: calls.append("run") or True,
+        ), patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
             "src.services.runtime_scheduler.threading.Thread",
             _NoopThread,
         ):
@@ -315,7 +382,11 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         )
         service._reload_config = lambda: config
 
-        with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
+        with patch.object(
+            service,
+            "_start_analysis_watchdog",
+            side_effect=lambda stock_codes=None: calls.append("run") or True,
+        ), patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
             "src.services.runtime_scheduler.threading.Thread",
             _NoopThread,
         ):

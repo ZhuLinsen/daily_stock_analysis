@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 import threading
 import _thread
 from datetime import datetime
+from queue import Empty
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -20,6 +22,8 @@ RUNTIME_SCHEDULER_FORCE_ENABLED_ENV = "DSA_RUNTIME_SCHEDULER_FORCE_ENABLED"
 RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV = "DSA_RUNTIME_SCHEDULER_RUN_IMMEDIATELY"
 RUNTIME_SCHEDULER_SUPPRESS_START_ENV = "DSA_RUNTIME_SCHEDULER_SUPPRESS_START"
 RUNTIME_SCHEDULER_ARGS_ENV = "DSA_RUNTIME_SCHEDULER_ARGS"
+RUNTIME_SCHEDULER_TIMEOUT_ENV = "DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS"
+DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS = 45 * 60
 _RUNTIME_ANALYSIS_LOCK = threading.Lock()
 SCHEDULE_ARGS_OVERRIDE_KEYS = {
     "no_notify",
@@ -49,6 +53,17 @@ def run_with_global_analysis_lock(
     finally:
         _RUNTIME_ANALYSIS_LOCK.release()
     return True
+
+
+def _run_scheduled_analysis_process(
+    result_queue: Any,
+    stock_codes: Optional[List[str]],
+    schedule_args_overrides: Dict[str, Any],
+) -> None:
+    """Run one analysis in a spawn-safe child process."""
+    service = RuntimeSchedulerService(schedule_args_overrides=schedule_args_overrides)
+    success = service._run_analysis_locked(stock_codes)
+    result_queue.put({"success": success, "error": service._last_error})
 
 
 def _agent_event_monitor_interval_seconds(config: Config) -> int:
@@ -141,6 +156,7 @@ class RuntimeSchedulerService:
         self._last_error: Optional[str] = None
         self._last_skipped_at: Optional[str] = None
         self._last_skip_reason: Optional[str] = None
+        self._analysis_process_target = _run_scheduled_analysis_process
 
     def _make_schedule_args(self) -> SimpleNamespace:
         defaults = {
@@ -172,7 +188,7 @@ class RuntimeSchedulerService:
         self._last_skip_reason = "analysis_already_running"
         logger.warning("Runtime scheduler skipped run: analysis already running")
 
-    def _run_analysis_locked(self, stock_codes: Optional[List[str]]) -> None:
+    def _run_analysis_locked(self, stock_codes: Optional[List[str]]) -> bool:
         try:
             config = self._reload_config()
             runner = self._task_runner
@@ -186,9 +202,11 @@ class RuntimeSchedulerService:
                 raise RuntimeError("runtime scheduled analysis reported failure")
             self._last_success_at = datetime.now().isoformat()
             self._last_error = None
+            return True
         except Exception as exc:  # noqa: BLE001 - scheduled runs must not kill API process.
             self._last_error = str(exc)
             logger.exception("Runtime scheduled analysis failed: %s", exc)
+            return False
 
     def _run_analysis_once(self, stock_codes: Optional[List[str]] = None) -> bool:
         if not self._run_lock.acquire(blocking=False):
@@ -198,6 +216,96 @@ class RuntimeSchedulerService:
             self._run_analysis_locked(stock_codes)
         finally:
             self._run_lock.release()
+        return True
+
+    def _analysis_timeout_seconds(self) -> int:
+        try:
+            value = os.getenv(
+                RUNTIME_SCHEDULER_TIMEOUT_ENV,
+                str(DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS),
+            )
+            return max(60, int(value))
+        except ValueError:
+            logger.warning(
+                "Invalid %s; using %ss",
+                RUNTIME_SCHEDULER_TIMEOUT_ENV,
+                DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS,
+            )
+            return DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS
+
+    def _run_analysis_with_watchdog(
+        self,
+        stock_codes: Optional[List[str]] = None,
+        *,
+        lock_held: bool = False,
+    ) -> None:
+        if not lock_held and not self._run_lock.acquire(blocking=False):
+            self._record_analysis_busy_skip()
+            return
+
+        result_queue = None
+        try:
+            context = multiprocessing.get_context("spawn")
+            result_queue = context.Queue()
+            process = context.Process(
+                target=self._analysis_process_target,
+                args=(result_queue, stock_codes, dict(self._schedule_args_overrides)),
+                name="runtime-scheduled-analysis",
+            )
+            timeout = self._analysis_timeout_seconds()
+            self._last_run_at = datetime.now().isoformat()
+            process.start()
+            process.join(timeout)
+            if process.is_alive():
+                logger.error(
+                    "Runtime scheduled analysis exceeded %ss; terminating worker",
+                    timeout,
+                )
+                process.terminate()
+                process.join(10)
+                if process.is_alive():
+                    process.kill()
+                    process.join(10)
+                self._last_error = f"runtime scheduled analysis timed out after {timeout}s"
+                return
+
+            try:
+                result = result_queue.get(timeout=2)
+            except Empty:
+                self._last_error = (
+                    "runtime scheduled analysis worker exited without a result "
+                    f"(exit code {process.exitcode})"
+                )
+                return
+
+            if result.get("success"):
+                self._last_success_at = datetime.now().isoformat()
+                self._last_error = None
+            else:
+                self._last_error = result.get("error") or "runtime scheduled analysis failed"
+        except Exception as exc:  # noqa: BLE001 - watchdog failures must release the scheduler.
+            self._last_error = str(exc)
+            logger.exception("Runtime scheduler watchdog failed: %s", exc)
+        finally:
+            self._run_lock.release()
+            if result_queue is not None:
+                result_queue.cancel_join_thread()
+                result_queue.close()
+
+    def _start_analysis_watchdog(self, stock_codes: Optional[List[str]] = None) -> bool:
+        if not self._run_lock.acquire(blocking=False):
+            self._record_analysis_busy_skip()
+            return False
+        worker = threading.Thread(
+            target=lambda: self._run_analysis_with_watchdog(stock_codes, lock_held=True),
+            daemon=True,
+            name="runtime-scheduler-watchdog",
+        )
+        try:
+            worker.start()
+        except Exception:
+            self._run_lock.release()
+            raise
         return True
 
     def _current_times(self) -> List[str]:
@@ -285,9 +393,12 @@ class RuntimeSchedulerService:
                 register_signals=False,
             )
             if run_immediately and self._run_immediately_in_background:
-                scheduler.set_daily_task(self._run_analysis_once, run_immediately=False)
+                scheduler.set_daily_task(self._start_analysis_watchdog, run_immediately=False)
             else:
-                scheduler.set_daily_task(self._run_analysis_once, run_immediately=run_immediately)
+                scheduler.set_daily_task(
+                    self._start_analysis_watchdog,
+                    run_immediately=run_immediately,
+                )
             for entry in background_tasks:
                 scheduler.add_background_task(
                     entry["task"],
@@ -296,7 +407,7 @@ class RuntimeSchedulerService:
                     name=entry.get("name"),
                 )
             if run_immediately and self._run_immediately_in_background:
-                self._run_in_background_thread(self._run_analysis_once)
+                self._run_in_background_thread(self._start_analysis_watchdog)
             thread = threading.Thread(
                 target=scheduler.run,
                 daemon=True,
@@ -333,30 +444,12 @@ class RuntimeSchedulerService:
             self.stop()
 
     def run_now(self) -> Dict[str, Any]:
-        if not self._run_lock.acquire(blocking=False):
-            self._record_analysis_busy_skip()
+        if not self._start_analysis_watchdog():
             return {
                 "accepted": False,
                 "running": True,
                 "reason": "analysis_already_running",
             }
-
-        def run_and_release() -> None:
-            try:
-                self._run_analysis_locked(None)
-            finally:
-                self._run_lock.release()
-
-        worker = threading.Thread(
-            target=run_and_release,
-            daemon=True,
-            name="runtime-scheduler-run-now",
-        )
-        try:
-            worker.start()
-        except Exception:
-            self._run_lock.release()
-            raise
         return {"accepted": True, "running": True}
 
     def status(self) -> Dict[str, Any]:
