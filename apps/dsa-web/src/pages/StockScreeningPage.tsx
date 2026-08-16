@@ -917,6 +917,14 @@ const StockScreeningPage: React.FC = () => {
       const detail = await screeningApi.getRun(runId);
       if (detail?.result) {
         applyScreenResult(detail.result);
+        // 同步历史 run 的策略与市场上下文，确保结果区文案和后续深度分析
+        // 使用该历史 run 对应的 strategy/market，而不是当前表单的选择
+        if (detail.strategy) {
+          setStrategy(detail.strategy);
+        }
+        if (detail.market) {
+          setMarket(detail.market);
+        }
         setError('');
         setTaskProgress(100);
         setTaskMessage('已加载历史选股结果');
@@ -1181,6 +1189,14 @@ const StockScreeningPage: React.FC = () => {
         }
         if (detail?.result) {
           applyScreenResult(detail.result);
+          // 同步恢复该历史 run 的策略与市场上下文，避免结果区展示和
+          // 深度分析沿用当前表单策略（与 handleHistoryRunSelect 一致）
+          if (detail.strategy) {
+            setStrategy(detail.strategy);
+          }
+          if (detail.market) {
+            setMarket(detail.market);
+          }
           setError('');
           setTaskProgress(100);
           setTaskMessage('已从历史记录恢复上次选股结果');

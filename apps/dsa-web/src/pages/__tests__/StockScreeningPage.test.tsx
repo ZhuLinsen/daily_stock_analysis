@@ -1299,6 +1299,63 @@ describe('StockScreeningPage', () => {
     expect(screen.getByText(/智能重排/)).toBeInTheDocument();
   });
 
+  it('syncs strategy and market context when opening a history run', async () => {
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    getHistory.mockResolvedValue({
+      enabled: true,
+      runs: [
+        {
+          runId: 'run-1',
+          strategy: 'capital_heat',
+          market: 'cn',
+          candidateCount: 3,
+          snapshotCount: 50,
+          llmRanked: true,
+          createdAt: '2026-08-05T10:00:00Z',
+        },
+      ],
+      runCount: 1,
+    });
+    getRun.mockResolvedValue({
+      runId: 'run-1',
+      strategy: 'capital_heat',
+      market: 'cn',
+      candidateCount: 3,
+      enabled: true,
+      result: {
+        enabled: true,
+        candidates: [
+          {
+            rank: 1,
+            code: '00700',
+            name: '腾讯控股',
+            score: 88.5,
+            reason: '热度因子领先',
+            amount: 1042000000,
+            factorScores: { heat: 92 },
+            raw: {},
+          },
+        ],
+        candidateCount: 1,
+        snapshotCount: 50,
+        afterFilterCount: 10,
+        llmRanked: true,
+      },
+    });
+
+    render(<StockScreeningPage />);
+
+    // 点击历史记录中的 run 条目（策略 capital_heat，与当前表单默认 dual_low 不同）
+    fireEvent.click(await screen.findByText('capital_heat'));
+
+    // 结果区上下文同步为该历史 run 的策略与市场
+    expect(await screen.findByText(/自定义策略 \(capital_heat\) · A 股/)).toBeInTheDocument();
+    expect(getRun).toHaveBeenCalledWith('run-1');
+  });
+
   it('surfaces Screening LLM fallback instead of showing empty LLM fields as normal', async () => {
     getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
