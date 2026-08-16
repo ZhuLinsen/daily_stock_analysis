@@ -11,7 +11,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -58,19 +58,21 @@ def run_once(orchestrator, when: datetime, *, dry_run: bool, force: bool):
 
 
 def finalize_with_wait(orchestrator, run_id: str, top, *, wait_seconds: int) -> None:
+    """Poll DSA status without finalizing/sending until the wait is over."""
     if not top:
         return
     deadline = time.monotonic() + max(0, wait_seconds)
-    final = []
     while True:
         now = _now()
-        final = orchestrator.finalize(run_id, top, now)
-        completed = sum(1 for item in final if item.dsa and item.dsa.status == "completed")
+        analyses = orchestrator.dsa_gateway.collect_available(top, now) if orchestrator.config.dsa_enabled else {}
+        completed = sum(1 for item in analyses.values() if item.status == "completed")
         if completed >= min(len(top), orchestrator.config.final_top_n):
             break
         if time.monotonic() >= deadline:
             break
         time.sleep(5)
+
+    final = orchestrator.finalize(run_id, top, _now())
     print("\n=== Final Top ===")
     for idx, item in enumerate(final, 1):
         dsa = "--" if not item.dsa or item.dsa.dsa_score is None else f"{item.dsa.dsa_score:.0f}"
