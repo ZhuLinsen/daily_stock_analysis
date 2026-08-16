@@ -40,7 +40,13 @@ class JsonRunStateRepository:
         path.write_text(json.dumps(self._jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
     def is_completed(self, run_id: str) -> bool:
-        return self._read(run_id).get("status") == "completed"
+        """Return True once a run has produced preliminary output or final output.
+
+        The historical method name is kept for the domain port, but the semantic
+        is deliberately "already claimed" so a second scheduler tick cannot
+        duplicate Top10 notifications or DSA submissions.
+        """
+        return self._read(run_id).get("status") in {"preliminary", "completed"}
 
     def save_preliminary(self, run_id: str, candidates: Sequence[Any], metadata: dict[str, Any]) -> None:
         payload = self._read(run_id)
