@@ -848,6 +848,7 @@ const StockScreeningPage: React.FC = () => {
   const selectedHotspotTopicRef = useRef<string | null>(null);
   const hotspotDetailRequestIdRef = useRef(0);
   const hotspotDetailsByTopicRef = useRef<Record<string, ScreeningHotspotDetail>>({});
+  const historyRunRequestIdRef = useRef(0);
   const [hotspotDetail, setHotspotDetail] = useState<ScreeningHotspotDetail | null>(null);
   const [loadingHotspotDetail, setLoadingHotspotDetail] = useState(false);
   const [searchingHotspotNews, setSearchingHotspotNews] = useState(false);
@@ -911,10 +912,17 @@ const StockScreeningPage: React.FC = () => {
   }, []);
 
   const handleHistoryRunSelect = useCallback(async (runId: string) => {
+    // 竞态防护：快速切换历史条目时，只应用最新一次请求的响应
+    const requestId = historyRunRequestIdRef.current + 1;
+    historyRunRequestIdRef.current = requestId;
+    const isCurrentRequest = () => historyRunRequestIdRef.current === requestId;
     setHistoryError('');
     setLoading(true);
     try {
       const detail = await screeningApi.getRun(runId);
+      if (!isCurrentRequest()) {
+        return;
+      }
       if (detail?.result) {
         applyScreenResult(detail.result);
         // 同步历史 run 的策略与市场上下文，确保结果区文案和后续深度分析
@@ -932,9 +940,14 @@ const StockScreeningPage: React.FC = () => {
         setError('历史记录中未找到该次运行的结果。');
       }
     } catch (err) {
+      if (!isCurrentRequest()) {
+        return;
+      }
       setError(toApiErrorMessage(err, '历史结果加载失败'));
     } finally {
-      setLoading(false);
+      if (isCurrentRequest()) {
+        setLoading(false);
+      }
     }
   }, [applyScreenResult]);
 

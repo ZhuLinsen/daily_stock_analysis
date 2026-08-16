@@ -1356,6 +1356,115 @@ describe('StockScreeningPage', () => {
     expect(getRun).toHaveBeenCalledWith('run-1');
   });
 
+  it('ignores stale history-detail responses when switching runs quickly', async () => {
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    getHistory.mockResolvedValue({
+      enabled: true,
+      runs: [
+        {
+          runId: 'run-a',
+          strategy: 'capital_heat',
+          market: 'cn',
+          candidateCount: 1,
+          createdAt: '2026-08-05T10:00:00Z',
+        },
+        {
+          runId: 'run-b',
+          strategy: 'dual_low',
+          market: 'cn',
+          candidateCount: 1,
+          createdAt: '2026-08-06T10:00:00Z',
+        },
+      ],
+      runCount: 2,
+    });
+    const runADetail = createDeferred<unknown>();
+    const runBDetail = createDeferred<unknown>();
+    getRun.mockImplementation((runId: string) => {
+      if (runId === 'run-a') {
+        return runADetail.promise;
+      }
+      if (runId === 'run-b') {
+        return runBDetail.promise;
+      }
+      return Promise.reject(new Error(`unexpected runId: ${runId}`));
+    });
+
+    render(<StockScreeningPage />);
+
+    // 先点 run-a（capital_heat，请求挂起），再点 run-b（dual_low）
+    fireEvent.click(await screen.findByText('capital_heat'));
+    fireEvent.click(screen.getByRole('button', { name: /Dual Low/ }));
+    await waitFor(() => expect(getRun).toHaveBeenLastCalledWith('run-b'));
+
+    // run-b 先返回：结果区展示 dual_low 上下文
+    await act(async () => {
+      runBDetail.resolve({
+        runId: 'run-b',
+        strategy: 'dual_low',
+        market: 'cn',
+        candidateCount: 1,
+        enabled: true,
+        result: {
+          enabled: true,
+          candidates: [
+            {
+              rank: 1,
+              code: '000001',
+              name: '平安银行',
+              score: 88.5,
+              reason: '双低策略',
+              amount: 1042000000,
+              factorScores: { value: 92 },
+              raw: {},
+            },
+          ],
+          candidateCount: 1,
+          snapshotCount: 50,
+          afterFilterCount: 10,
+          llmRanked: true,
+        },
+      });
+    });
+    expect(await screen.findByText(/Dual Low · A 股/)).toBeInTheDocument();
+
+    // run-a 迟到返回：不得覆盖 run-b 的结果与上下文
+    await act(async () => {
+      runADetail.resolve({
+        runId: 'run-a',
+        strategy: 'capital_heat',
+        market: 'cn',
+        candidateCount: 1,
+        enabled: true,
+        result: {
+          enabled: true,
+          candidates: [
+            {
+              rank: 1,
+              code: '00700',
+              name: '腾讯控股',
+              score: 90,
+              reason: '热度因子领先',
+              amount: 1042000000,
+              factorScores: { heat: 92 },
+              raw: {},
+            },
+          ],
+          candidateCount: 1,
+          snapshotCount: 50,
+          afterFilterCount: 10,
+          llmRanked: true,
+        },
+      });
+    });
+    expect(screen.getByText(/Dual Low · A 股/)).toBeInTheDocument();
+    expect(screen.queryByText(/自定义策略 \(capital_heat\)/)).not.toBeInTheDocument();
+    expect(screen.queryByText('腾讯控股')).not.toBeInTheDocument();
+  });
+
   it('surfaces Screening LLM fallback instead of showing empty LLM fields as normal', async () => {
     getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
