@@ -2246,6 +2246,22 @@ describe('extractStockCodeFromMessage', () => {
     expect(extractStockCodesFromMessage('hello tsla')).toEqual([]);
   });
 
+  it('returns bare 4-digit HK codes with explicit stock intent', () => {
+    expect(extractStockCodesFromMessage('分析 0001')).toEqual(['HK00001']);
+    expect(extractStockCodesFromMessage('改看 9988')).toEqual(['HK09988']);
+    expect(extractStockCodesFromMessage('港股 0941')).toEqual(['HK00941']);
+  });
+
+  it('returns standalone bare 4-digit HK codes', () => {
+    expect(extractStockCodesFromMessage('9988')).toEqual(['HK09988']);
+  });
+
+  it('does not treat years or prices as bare 4-digit HK codes', () => {
+    expect(extractStockCodesFromMessage('2026 年')).toEqual([]);
+    expect(extractStockCodesFromMessage('价格 1000 元')).toEqual([]);
+    expect(extractStockCodesFromMessage('分析 2026 年的走势')).toEqual([]);
+  });
+
   it('returns all HK and A-share variants without exchange affix tokens', () => {
     expect(extractStockCodesFromMessage('比较 01810 和 AAPL')).toEqual(['HK01810', 'AAPL']);
     expect(extractStockCodesFromMessage('比较 1810.HK 和 AAPL')).toEqual(['HK01810', 'AAPL']);

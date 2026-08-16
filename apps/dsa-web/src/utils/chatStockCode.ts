@@ -2,6 +2,8 @@ import { validateStockCode } from './validation';
 import { normalizeStockCode } from './stockCode';
 
 const EXCHANGE_PREFIXES = new Set(['SH', 'SZ', 'BJ', 'HK', 'US', 'SS']);
+const BARE_HK_INTENT_RE = /换成|改看|分析|看看|研究|诊断|港股|股份|股票|建仓|关注|跟踪|比较|对比|\bvs\b|差异(?!化)|区别|不同|相比|对照|比一比/i;
+const BARE_HK_AFTER_UNIT_RE = /^\s*(?:年|月|日|元|万|亿|点|个|股|手|％|%|块|角|分|千|百)/;
 const LOWERCASE_TICKER_CONTEXT_RE = /换成|改看|分析|看看|研究|诊断|比较|对比|\bvs\b|和[^，。,.!?！？]{0,40}比|差异(?!化)|区别|不同|相比|对照|比一比|哪个|哪只|哪一个|谁更|更值得|更适合|怎么选|选哪|二选一/i;
 const CONTEXTUAL_INDICATOR_TOKENS = new Set(['MA']);
 const INDICATOR_CONTEXT_RE = /指标|均线|移动平均|排列|多头|空头|金叉|死叉|支撑|压力|MA\d|SMA|EMA/i;
@@ -46,12 +48,22 @@ function isDeniedTickerCandidate(value: string, message: string): boolean {
   );
 }
 
+function isBareHkIntent(message: string): boolean {
+  const text = message.trim();
+  return /^\d{4}$/.test(text) || BARE_HK_INTENT_RE.test(text);
+}
+
+function hasBareHkUnitMarker(message: string, index: number, length: number): boolean {
+  return BARE_HK_AFTER_UNIT_RE.test(message.slice(index + length));
+}
+
 export function extractStockCodeFromMessage(message: string): string | null {
   return extractStockCodesFromMessage(message)[0] ?? null;
 }
 
 export function extractStockCodesFromMessage(message: string): string[] {
   // More specific patterns first to avoid greedy \d{6} capturing inside .SH/.SZ codes
+  const bare4DigitIndex = 10;
   const patterns = [
     /\b(30\d{4}\.SZ)\b/gi,
     /\b(68\d{4}\.SH)\b/gi,
@@ -63,9 +75,14 @@ export function extractStockCodesFromMessage(message: string): string[] {
     /\b(hk\d{4,5})\b/gi,
     /\b(\d{1,5}\.HK)\b/gi,
     /\b(\d{5,6})\b/g,
+  ];
+  if (isBareHkIntent(message)) {
+    patterns.push(/\b(\d{4})\b/g);
+  }
+  patterns.push(
     /\b([A-Z]{2,5}\.[A-Z]{1,2})\b/g,
     /\b([A-Z]{2,5})\b/g,
-  ];
+  );
   if (LOWERCASE_TICKER_CONTEXT_RE.test(message)) {
     patterns.push(/\b([a-z]{2,5}(?:\.[a-z]{1,2})?)\b/g);
   }
@@ -78,6 +95,9 @@ export function extractStockCodesFromMessage(message: string): string[] {
       const start = match.index ?? 0;
       const end = start + value.length;
       if (/^[A-Z]{2,5}$/.test(value) && (message[start - 1] === '.' || message[end] === '.')) {
+        continue;
+      }
+      if (priority === bare4DigitIndex && hasBareHkUnitMarker(message, start, value.length)) {
         continue;
       }
       matches.push({

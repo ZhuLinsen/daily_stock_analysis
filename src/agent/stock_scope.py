@@ -32,6 +32,12 @@ _LINKED_COMPARE_PATTERN = re.compile(
     r"(?:和|与|跟|同)(?P<body>[^，。,.!?！？]{0,40})(?:差异(?!化)|区别|不同|相比|对照|比一比)"
 )
 _SWITCH_PATTERN = re.compile(r"换成|改看|分析|看看|研究|诊断")
+_BARE_HK_INTENT_PATTERN = re.compile(
+    r"换成|改看|分析|看看|研究|诊断|港股|股份|股票|建仓|关注|跟踪|"
+    r"比较|对比|\bvs\b|差异(?!化)|区别|不同|相比|对照|比一比",
+    re.IGNORECASE,
+)
+_BARE_HK_AFTER_UNIT_PATTERN = re.compile(r"^\s*(?:年|月|日|元|万|亿|点|个|股|手|％|%|块|角|分|千|百)")
 _LOWERCASE_TICKER_PATTERN = re.compile(r"(?<![a-zA-Z.])([a-z]{2,5}(?:\.[a-z]{1,2})?)(?![a-zA-Z0-9])")
 _EXCHANGE_TOKEN_CANDIDATES = {"SH", "SZ", "BJ", "HK", "SS"}
 _CONTEXTUAL_INDICATOR_TOKENS = {"MA"}
@@ -95,6 +101,24 @@ def _is_denied_candidate(candidate: str, text: str = "") -> bool:
         return False
 
 
+def _is_bare_hk_number_candidate(text: str, match) -> bool:
+    """Accept a bare 4-digit run only as an explicit HK input.
+
+    Plain 4-digit values in chat are usually years, prices, or quantities
+    (``2026 年``, ``价格 1000 元``).  Treat them as HK codes only when the
+    message is exactly that code or carries an explicit stock intent, and
+    never when the number is adjacent to a unit/date marker.
+    """
+    if re.fullmatch(r"\d{4}", text.strip()):
+        return True
+    if not _BARE_HK_INTENT_PATTERN.search(text):
+        return False
+    after = text[match.end() :]
+    if _BARE_HK_AFTER_UNIT_PATTERN.search(after):
+        return False
+    return True
+
+
 def _append_candidate(candidates: List[str], candidate: str, text: str = "") -> None:
     normalized = _normalize_stock_code(candidate)
     if not normalized or _is_denied_candidate(normalized, text):
@@ -110,15 +134,19 @@ def extract_stock_codes(text: str) -> List[str]:
 
     candidates: List[str] = []
 
-    for pattern, flags in (
-        (r"(?<![a-zA-Z])(?:SH|SZ|BJ)\d{6}(?!\d)", re.IGNORECASE),
-        (r"(?<![a-zA-Z])hk\d{4,5}(?!\d)", re.IGNORECASE),
-        (r"(?<![a-zA-Z])\d{1,5}\.HK(?![a-zA-Z])", re.IGNORECASE),
-        (r"(?<!\d)(?:[03648]\d{5}|92\d{4})(?!\d)", 0),
-        (r"(?<!\d)\d{5}(?!\d)", 0),
-        (r"(?<![a-zA-Z.])([A-Z]{2,5}(?:\.[A-Z]{1,2})?)(?![a-zA-Z0-9])", 0),
-    ):
+    patterns = [
+        (r"(?<![a-zA-Z])(?:SH|SZ|BJ)\d{6}(?!\d)", re.IGNORECASE, False),
+        (r"(?<![a-zA-Z])hk\d{4,5}(?!\d)", re.IGNORECASE, False),
+        (r"(?<![a-zA-Z])\d{1,5}\.HK(?![a-zA-Z])", re.IGNORECASE, False),
+        (r"(?<!\d)(?:[03648]\d{5}|92\d{4})(?!\d)", 0, False),
+        (r"(?<!\d)\d{5}(?!\d)", 0, False),
+        (r"(?<!\d)\d{4}(?!\d)", 0, True),
+        (r"(?<![a-zA-Z.])([A-Z]{2,5}(?:\.[A-Z]{1,2})?)(?![a-zA-Z0-9])", 0, False),
+    ]
+    for pattern, flags, is_bare_hk in patterns:
         for match in re.finditer(pattern, text, flags):
+            if is_bare_hk and not _is_bare_hk_number_candidate(text, match):
+                continue
             raw = match.group(1) if match.lastindex else match.group(0)
             _append_candidate(candidates, raw, text)
 

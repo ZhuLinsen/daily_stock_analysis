@@ -36,7 +36,7 @@ from src.agent.executor import (
 )
 from src.agent.llm_adapter import LLMResponse, ToolCall
 from src.agent.runner import parse_dashboard_json, run_agent_loop, serialize_tool_result
-from src.agent.stock_scope import StockScope, resolve_stock_scope
+from src.agent.stock_scope import StockScope, extract_stock_codes, resolve_stock_scope
 from src.agent.tools.registry import ToolRegistry, ToolDefinition, ToolParameter
 from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt_section
 from src.config import Config
@@ -431,6 +431,33 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(result.stock_scope.mode, "maintain")
         self.assertEqual(result.effective_context["stock_code"], "HK00001")
         self.assertEqual(result.stock_scope.allowed_stock_codes, {"HK00001"})
+
+    def test_resolve_stock_scope_switches_to_bare_4_digit_hk(self):
+        result = resolve_stock_scope(
+            "改看 0001",
+            {"stock_code": "600519", "stock_name": "贵州茅台"},
+        )
+
+        self.assertEqual(result.stock_scope.mode, "switch")
+        self.assertEqual(result.stock_scope.expected_stock_code, "HK00001")
+        self.assertEqual(result.stock_scope.allowed_stock_codes, {"HK00001"})
+        self.assertEqual(result.effective_context["stock_code"], "HK00001")
+
+    def test_resolve_stock_scope_initial_scope_accepts_bare_4_digit_hk(self):
+        result = resolve_stock_scope("分析 0001", None, strict_initial_scope=True)
+
+        self.assertEqual(result.stock_scope.mode, "switch")
+        self.assertEqual(result.stock_scope.expected_stock_code, "HK00001")
+        self.assertEqual(result.stock_scope.allowed_stock_codes, {"HK00001"})
+
+    def test_extract_stock_codes_bare_4_digit_hk_requires_intent(self):
+        self.assertEqual(extract_stock_codes("分析 0001"), ["HK00001"])
+        self.assertEqual(extract_stock_codes("改看 9988"), ["HK09988"])
+        self.assertEqual(extract_stock_codes("港股 0941"), ["HK00941"])
+        self.assertEqual(extract_stock_codes("9988"), ["HK09988"])
+        self.assertEqual(extract_stock_codes("2026 年"), [])
+        self.assertEqual(extract_stock_codes("价格 1000 元"), [])
+        self.assertEqual(extract_stock_codes("分析 2026 年的走势"), [])
 
     def test_run_agent_loop_does_not_persist_agent_usage_without_provider_usage(self):
         registry = _make_registry_with_echo()
