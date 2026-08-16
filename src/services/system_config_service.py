@@ -3632,6 +3632,56 @@ class SystemConfigService:
         effective_map: Dict[str, str],
         primary_check: Dict[str, Any],
     ) -> Dict[str, Any]:
+        selected_agent_backend = (
+            effective_map.get("AGENT_BACKEND") or "auto"
+        ).strip().lower()
+        if selected_agent_backend == "codex_app_server":
+            try:
+                codex_status = AgentBackendStatusService(
+                    effective_map=effective_map,
+                ).get_status()
+            except (TypeError, ValueError) as exc:
+                return self._setup_check(
+                    "llm_agent",
+                    "Agent 渠道",
+                    "agent",
+                    True,
+                    "needs_action",
+                    f"Codex 本地 Agent 配置无效: {exc}",
+                    "请在 Agent 设置中检查单 Agent 架构和大于 0 的整体时限。",
+                )
+            if codex_status.get("available"):
+                version = (codex_status.get("version") or "").strip()
+                version_suffix = f"（{version}）" if version else ""
+                return self._setup_check(
+                    "llm_agent",
+                    "Agent 渠道",
+                    "agent",
+                    True,
+                    "configured",
+                    f"已启用 Codex 本地 Agent{version_suffix}，问股无需 LiteLLM 模型配置。",
+                )
+
+            error_code = (codex_status.get("error_code") or "").strip()
+            next_steps = {
+                "command_not_found": "请安装 Codex CLI，并确保 DSA 后端进程可从 PATH 找到它。",
+                "platform_unsupported": "请在 macOS、Linux 或完整 WSL 后端中使用 Codex 本地 Agent。",
+                "unsupported_agent_arch": "请将 AGENT_ARCH 设置为 single。",
+                "invalid_timeout": "请将 AGENT_ORCHESTRATOR_TIMEOUT_S 设置为大于 0 的秒数。",
+            }
+            return self._setup_check(
+                "llm_agent",
+                "Agent 渠道",
+                "agent",
+                True,
+                "needs_action",
+                codex_status.get("message") or "Codex 本地 Agent 当前不可用。",
+                next_steps.get(
+                    error_code,
+                    "请前往 Agent 设置检查 Codex CLI 安装、登录态和协议兼容状态。",
+                ),
+            )
+
         generation_backend = normalize_backend_id(
             effective_map.get("GENERATION_BACKEND"),
             default=LITELLM_BACKEND_ID,

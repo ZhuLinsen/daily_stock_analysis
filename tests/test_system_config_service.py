@@ -21,6 +21,7 @@ ensure_litellm_stub()
 from src.config import ANSPIRE_LLM_MODEL_DEFAULT, Config
 from src.core.config_manager import ConfigManager
 from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
+from src.services.agent_backend_status_service import AgentBackendStatusService
 from src.services.system_config_service import ConfigConflictError, ConfigImportError, ConfigValidationError, SystemConfigService
 
 
@@ -1259,6 +1260,67 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertIn("Codex CLI", checks["llm_primary"]["message"])
         self.assertNotIn("llm_primary", status["required_missing_keys"])
         self.assertIn("llm_agent", status["required_missing_keys"])
+
+    def test_get_setup_status_accepts_codex_app_server_agent_without_litellm(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_FALLBACK_BACKEND=",
+            "AGENT_BACKEND=codex_app_server",
+            "AGENT_ARCH=single",
+            "AGENT_ORCHESTRATOR_TIMEOUT_S=600",
+            "STOCK_LIST=600519",
+        )
+        codex_status = {
+            "backend": "codex_app_server",
+            "available": True,
+            "experimental": True,
+            "version": "codex-cli test",
+            "error_code": None,
+            "message": None,
+        }
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"), \
+             patch.object(AgentBackendStatusService, "get_status", return_value=codex_status):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertTrue(status["is_complete"])
+        self.assertTrue(status["ready_for_smoke"])
+        self.assertEqual(checks["llm_primary"]["status"], "configured")
+        self.assertEqual(checks["llm_agent"]["status"], "configured")
+        self.assertIn("无需 LiteLLM", checks["llm_agent"]["message"])
+        self.assertEqual(status["required_missing_keys"], [])
+
+    def test_get_setup_status_surfaces_unavailable_codex_app_server_agent(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_FALLBACK_BACKEND=",
+            "AGENT_BACKEND=codex_app_server",
+            "AGENT_ARCH=single",
+            "AGENT_ORCHESTRATOR_TIMEOUT_S=600",
+            "STOCK_LIST=600519",
+        )
+        codex_status = {
+            "backend": "codex_app_server",
+            "available": False,
+            "experimental": True,
+            "version": None,
+            "error_code": "command_not_found",
+            "message": "Codex was not found on the DSA process PATH",
+        }
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"), \
+             patch.object(AgentBackendStatusService, "get_status", return_value=codex_status):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertFalse(status["is_complete"])
+        self.assertEqual(checks["llm_agent"]["status"], "needs_action")
+        self.assertIn("PATH", checks["llm_agent"]["message"])
+        self.assertIn("安装 Codex CLI", checks["llm_agent"]["next_step"])
+        self.assertEqual(status["required_missing_keys"], ["llm_agent"])
 
     def test_get_setup_status_allows_local_cli_primary_smoke_without_agent_model(self) -> None:
         self._rewrite_env(
