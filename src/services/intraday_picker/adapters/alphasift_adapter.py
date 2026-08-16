@@ -54,6 +54,21 @@ def _candidate_rows(payload: Any) -> Iterable[dict[str, Any]]:
         yield from _candidate_rows(nested)
 
 
+def _flatten_candidate_context(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep the stable DSA shape while surfacing deterministic factor fields."""
+    merged: dict[str, Any] = {}
+    nested_raw = row.get("raw")
+    if isinstance(nested_raw, dict):
+        merged.update(nested_raw)
+    for key in ("factor_scores", "dsa_context"):
+        nested = row.get(key)
+        if isinstance(nested, dict):
+            for nested_key, nested_value in nested.items():
+                merged.setdefault(nested_key, nested_value)
+    merged.update(row)
+    return merged
+
+
 class AlphaSiftStrategyAdapter:
     def __init__(self, picker_config: IntradayPickerConfig):
         self.picker_config = picker_config
@@ -79,8 +94,6 @@ class AlphaSiftStrategyAdapter:
             try:
                 return screen(strategy_id, **kwargs)
             except TypeError:
-                # Backward-compatible fallback for older adapters exposing only
-                # positional strategy/market/max_results.
                 return screen(strategy_id, "cn", max_results)
 
     def _run_strategy(self, strategy_id: str, max_results: int) -> list[StrategyHit]:
@@ -91,6 +104,7 @@ class AlphaSiftStrategyAdapter:
             if not code:
                 continue
             raw_score = row.get("final_score", row.get("score", row.get("strategy_score", 0)))
+            raw = _flatten_candidate_context(row)
             hits.append(
                 StrategyHit(
                     stock_code=code,
@@ -101,7 +115,7 @@ class AlphaSiftStrategyAdapter:
                     strategy_score=_num(raw_score),
                     source="alphasift",
                     quality_score=_num(row.get("quality_score"), 0.0) if row.get("quality_score") is not None else None,
-                    raw=dict(row),
+                    raw=raw,
                 )
             )
         return hits
@@ -124,19 +138,17 @@ class AlphaSiftStrategyAdapter:
             except Exception:
                 continue
 
-        normalized: list[StrategyHit] = []
-        for hit in hits:
-            normalized.append(
-                StrategyHit(
-                    stock_code=hit.stock_code,
-                    strategy_id=hit.strategy_id,
-                    strategy_score=hit.strategy_score,
-                    source=hit.source,
-                    stock_name=hit.stock_name,
-                    price=hit.price,
-                    change_pct=hit.change_pct,
-                    quality_score=quality_by_code.get(hit.stock_code, hit.quality_score),
-                    raw=hit.raw,
-                )
+        return [
+            StrategyHit(
+                stock_code=hit.stock_code,
+                strategy_id=hit.strategy_id,
+                strategy_score=hit.strategy_score,
+                source=hit.source,
+                stock_name=hit.stock_name,
+                price=hit.price,
+                change_pct=hit.change_pct,
+                quality_score=quality_by_code.get(hit.stock_code, hit.quality_score),
+                raw=hit.raw,
             )
-        return normalized
+            for hit in hits
+        ]
