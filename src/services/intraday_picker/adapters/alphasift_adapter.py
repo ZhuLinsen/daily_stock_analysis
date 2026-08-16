@@ -1,17 +1,26 @@
-"""AlphaSift adapter for intraday candidate discovery.
+"""AlphaSift adapter for fast intraday candidate discovery.
 
 This is the only intraday-picker module allowed to import the existing
-AlphaSift bridge. It normalizes multiple possible AlphaSift result shapes and
-keeps current AlphaSift endpoint/default behaviour untouched.
+AlphaSift bridge. Intraday discovery intentionally calls the AlphaSift adapter
+with ``use_llm=False`` so DSA deep analysis happens only after Top10 is known.
+The existing AlphaSift service/API behaviour remains unchanged.
 """
 
 from __future__ import annotations
 
+import inspect
 from datetime import datetime
 from typing import Any, Iterable
 
 from src.config import get_config
-from src.services.alphasift_service import AlphaSiftService
+from src.services.alphasift_service import (
+    _alphasift_dsa_daily_history_provider,
+    _alphasift_runtime_env,
+    _ensure_alphasift_available_for_use,
+    _ensure_alphasift_enabled,
+    _get_adapter_callable,
+    _get_dsa_adapter,
+)
 
 from ..config import IntradayPickerConfig
 from ..models import StrategyHit
@@ -48,14 +57,34 @@ def _candidate_rows(payload: Any) -> Iterable[dict[str, Any]]:
 class AlphaSiftStrategyAdapter:
     def __init__(self, picker_config: IntradayPickerConfig):
         self.picker_config = picker_config
-        self._service = AlphaSiftService(config=get_config())
+        self._config = get_config()
+
+    def _screen_deterministic(self, strategy_id: str, max_results: int) -> Any:
+        _ensure_alphasift_enabled(self._config)
+        _ensure_alphasift_available_for_use()
+        adapter = _get_dsa_adapter()
+        screen = _get_adapter_callable(adapter, "screen", "screen() unavailable")
+        signature = inspect.signature(screen)
+        params = signature.parameters
+        supports_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        kwargs: dict[str, Any] = {"market": "cn"}
+        if "max_results" in params or supports_var_kwargs:
+            kwargs["max_results"] = max_results
+        elif "max_output" in params:
+            kwargs["max_output"] = max_results
+        if "use_llm" in params or supports_var_kwargs:
+            kwargs["use_llm"] = False
+
+        with _alphasift_runtime_env(self._config, max_results=max_results), _alphasift_dsa_daily_history_provider():
+            try:
+                return screen(strategy_id, **kwargs)
+            except TypeError:
+                # Backward-compatible fallback for older adapters exposing only
+                # positional strategy/market/max_results.
+                return screen(strategy_id, "cn", max_results)
 
     def _run_strategy(self, strategy_id: str, max_results: int) -> list[StrategyHit]:
-        payload = self._service.screen(
-            strategy=strategy_id,
-            market="cn",
-            max_results=max_results,
-        )
+        payload = self._screen_deterministic(strategy_id, max_results)
         hits: list[StrategyHit] = []
         for row in _candidate_rows(payload):
             code = str(row.get("code") or row.get("stock_code") or row.get("symbol") or "").strip()
@@ -78,19 +107,15 @@ class AlphaSiftStrategyAdapter:
         return hits
 
     def screen(self, profile: str, now: datetime) -> list[StrategyHit]:
-        del now  # AlphaSift reads the current market snapshot itself.
+        del now
         profile_config = get_profile(profile)
         hits: list[StrategyHit] = []
         for strategy_id in profile_config.get("alphasift", ()):
             try:
                 hits.extend(self._run_strategy(strategy_id, self.picker_config.candidate_limit_per_strategy))
             except Exception:
-                # Strategy isolation: one AlphaSift source/strategy failure must not
-                # terminate the remaining candidate discovery paths.
                 continue
 
-        # Quality-reference strategies do not create extra universe breadth when a
-        # stock is already present; they only attach a quality score when matched.
         quality_by_code: dict[str, float] = {}
         for strategy_id in profile_config.get("quality_reference", ()):
             try:
@@ -101,7 +126,6 @@ class AlphaSiftStrategyAdapter:
 
         normalized: list[StrategyHit] = []
         for hit in hits:
-            quality = quality_by_code.get(hit.stock_code, hit.quality_score)
             normalized.append(
                 StrategyHit(
                     stock_code=hit.stock_code,
@@ -111,7 +135,7 @@ class AlphaSiftStrategyAdapter:
                     stock_name=hit.stock_name,
                     price=hit.price,
                     change_pct=hit.change_pct,
-                    quality_score=quality,
+                    quality_score=quality_by_code.get(hit.stock_code, hit.quality_score),
                     raw=hit.raw,
                 )
             )
