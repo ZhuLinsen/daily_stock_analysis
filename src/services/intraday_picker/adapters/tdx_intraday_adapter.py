@@ -13,24 +13,36 @@ from data_provider.pytdx_fetcher import PytdxFetcher
 class TdxIntradayAdapter:
     """Read 5-minute bars without changing existing PytdxFetcher behaviour."""
 
-    BAR_COUNT = 800
+    PAGE_SIZE = 800
+    DEFAULT_BARS = 1200  # ~25 A-share sessions of 5-minute bars
 
     def __init__(self, fetcher: PytdxFetcher | None = None):
         self.fetcher = fetcher or PytdxFetcher()
 
     def _bars(self, stock_code: str, count: int | None = None) -> pd.DataFrame:
+        requested = max(1, int(count or self.DEFAULT_BARS))
         market, code = self.fetcher._get_market_code(stock_code)
+        frames: list[pd.DataFrame] = []
         with self.fetcher._pytdx_session() as api:
-            rows = api.get_security_bars(
-                category=0,  # 5-minute bars
-                market=market,
-                code=code,
-                start=0,
-                count=count or self.BAR_COUNT,
-            )
-            if not rows:
-                return pd.DataFrame()
-            df = api.to_df(rows)
+            start = 0
+            while start < requested:
+                page_count = min(self.PAGE_SIZE, requested - start)
+                rows = api.get_security_bars(
+                    category=0,  # 5-minute bars
+                    market=market,
+                    code=code,
+                    start=start,
+                    count=page_count,
+                )
+                if not rows:
+                    break
+                frames.append(api.to_df(rows))
+                if len(rows) < page_count:
+                    break
+                start += len(rows)
+        if not frames:
+            return pd.DataFrame()
+        df = pd.concat(frames, ignore_index=True).drop_duplicates()
         if "datetime" in df.columns:
             df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
             df = df.dropna(subset=["datetime"]).sort_values("datetime")
@@ -50,12 +62,14 @@ class TdxIntradayAdapter:
         amount = pd.to_numeric(work.get("amount"), errors="coerce").fillna(0).sum() if "amount" in work else 0.0
         volume_col = "vol" if "vol" in work.columns else "volume" if "volume" in work.columns else None
         volume = pd.to_numeric(work[volume_col], errors="coerce").fillna(0).sum() if volume_col else 0.0
+        high_series = pd.to_numeric(work.get("high"), errors="coerce") if "high" in work else pd.Series(dtype=float)
+        low_series = pd.to_numeric(work.get("low"), errors="coerce") if "low" in work else pd.Series(dtype=float)
         return {
             "price": float(last.get("close", 0) or 0),
             "close": float(last.get("close", 0) or 0),
             "open": float(first.get("open", 0) or 0),
-            "high": float(pd.to_numeric(work.get("high"), errors="coerce").max() or 0),
-            "low": float(pd.to_numeric(work.get("low"), errors="coerce").min() or 0),
+            "high": float(high_series.max()) if not high_series.empty else 0.0,
+            "low": float(low_series.min()) if not low_series.empty else 0.0,
             "cumulative_amount": float(amount),
             "cumulative_volume": float(volume),
         }
@@ -82,7 +96,8 @@ class TdxIntradayAdapter:
         now: datetime,
         days: int,
     ) -> list[dict[str, Any]]:
-        df = self._bars(stock_code)
+        requested_bars = max(self.DEFAULT_BARS, int(days) * 50 + 100)
+        df = self._bars(stock_code, requested_bars)
         if df.empty:
             return []
         trigger_hhmm = now.strftime("%H:%M")
