@@ -8,13 +8,22 @@ def test_env_example_documents_searxng_actions_variable_mapping() -> None:
     env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
 
     start = env_example.index("# SearXNG 实例地址")
-    end = env_example.index("SEARXNG_PUBLIC_INSTANCES_ENABLED=true", start)
+    end = env_example.index("SEARXNG_PUBLIC_INSTANCES_ENABLED=", start)
     searxng_block = env_example[start:end]
 
     assert "GitHub Actions" in searxng_block
     assert "Variables 优先" in searxng_block
     assert "Secrets" in searxng_block
     assert "需配置为 Secret" not in searxng_block
+
+
+def test_env_example_defaults_public_searxng_instances_off() -> None:
+    """公共实例发现默认关闭：公共实例普遍限流或不返回 JSON，
+    默认开启会让未配置搜索 key 的用户每次分析白等 30~60 秒且拿到空新闻面。"""
+    env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+
+    assert "SEARXNG_PUBLIC_INSTANCES_ENABLED=false" in env_example
+    assert "SEARXNG_PUBLIC_INSTANCES_ENABLED=true" not in env_example
 
 
 def test_daily_analysis_workflow_matches_documented_searxng_variable_mapping() -> None:
