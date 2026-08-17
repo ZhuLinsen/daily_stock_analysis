@@ -1326,7 +1326,21 @@ def _reload_runtime_config() -> Config:
     """Reload config from the latest persisted `.env` values for scheduled runs."""
     _reload_env_file_values_preserving_overrides()
     Config.reset_instance()
-    return get_config()
+    new_config = get_config()
+
+    # Drop the module-level ToolRegistry so the next
+    # ``build_agent_executor`` / ``build_agent_chat_executor`` call rebuilds
+    # it against the freshly-loaded Config and picks up new
+    # ``AGENT_*_TOOL_TIMEOUT_S`` overrides (Issue #1890). Wrap in try/except
+    # so a future runtime reset helper cannot crash scheduled-job bootstrap.
+    try:
+        from src.agent.factory import reset_tool_registry
+
+        reset_tool_registry()
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("Failed to reset tool registry during config reload: %s", exc)
+
+    return new_config
 
 
 def _build_schedule_time_provider(default_schedule_time: str):
