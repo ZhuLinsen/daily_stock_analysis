@@ -4659,8 +4659,8 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
     "SEARXNG_PUBLIC_INSTANCES_ENABLED": {
         "help_key": "settings.data_source.SEARXNG_BASE_URLS",
         "examples": [
-            "SEARXNG_PUBLIC_INSTANCES_ENABLED=true",
             "SEARXNG_PUBLIC_INSTANCES_ENABLED=false",
+            "SEARXNG_PUBLIC_INSTANCES_ENABLED=true",
         ],
         "docs": _DOC_FULL_GUIDE_SEARCH,
         "warning_codes": ["public_instance_stability"],

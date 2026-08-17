@@ -1714,7 +1714,7 @@ class Config:
             )
         searxng_public_instances_enabled = parse_env_bool(
             os.getenv('SEARXNG_PUBLIC_INSTANCES_ENABLED'),
-            default=True,
+            default=False,
         )
 
         # 企微消息类型与最大字节数逻辑

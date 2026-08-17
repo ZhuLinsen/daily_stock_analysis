@@ -45,3 +45,41 @@ def test_changelog_mentions_searxng_actions_variable_mapping() -> None:
         "- [修复] GitHub Actions 每日分析工作流读取 SearXNG 自建实例地址时"
         "支持 Variables 优先、Secrets 回退，修复仅配置 Variables 时 URL 不生效的问题。"
     ) in changelog
+
+
+def test_runtime_default_disables_public_searxng_instances(monkeypatch) -> None:
+    """未设置环境变量时，运行时必须解析为关闭。
+
+    这是本项改动真正生效的地方：只改 .env.example 只影响复制了新模板的用户，
+    已有安装和 GitHub Actions（未配置 Variable/Secret 时变量为空）仍会
+    走公共实例发现，继续承受 30~60 秒的失败重试。
+    """
+    from src.config import parse_env_bool
+
+    monkeypatch.delenv("SEARXNG_PUBLIC_INSTANCES_ENABLED", raising=False)
+    import os
+
+    assert (
+        parse_env_bool(os.getenv("SEARXNG_PUBLIC_INSTANCES_ENABLED"), default=False)
+        is False
+    )
+
+
+def test_config_module_uses_false_as_runtime_default() -> None:
+    """锁住 config.py 里的默认值，防止后续改动悄悄回退。"""
+    src = (ROOT_DIR / "src" / "config.py").read_text(encoding="utf-8")
+    idx = src.index("SEARXNG_PUBLIC_INSTANCES_ENABLED")
+    window = src[idx : idx + 200]
+
+    assert "default=False" in window
+    assert "default=True" not in window
+
+
+def test_workflow_reports_disabled_when_variable_unset() -> None:
+    """工作流诊断不得把「未设置」显示成已开启，否则与运行时行为不一致。"""
+    workflow = (
+        ROOT_DIR / ".github" / "workflows" / "00-daily-analysis.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "默认开启" not in workflow
+    assert "默认关闭" in workflow
