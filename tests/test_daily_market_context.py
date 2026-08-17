@@ -1053,6 +1053,34 @@ def test_prompt_section_labels_jp_kr_regions_without_cn_fallback() -> None:
     assert "A-share (cn)" not in kr_section
 
 
+def test_daily_market_context_keeps_tw_region_and_labels() -> None:
+    # 核心回归：tw 不得在 daily_market_context 被静默回退为 "cn"
+    assert daily_market_context_module._normalize_region("tw") == "tw"
+    assert daily_market_context_module._normalize_context_region("tw") == "tw"
+
+    tw_section_zh = format_daily_market_context_prompt_section(
+        {
+            "region": "tw",
+            "trade_date": "2026-06-06",
+            "summary": "台股加权指数震荡。",
+        },
+        report_language="zh",
+    )
+    tw_section_en = format_daily_market_context_prompt_section(
+        {
+            "region": "tw",
+            "trade_date": "2026-06-06",
+            "summary": "Taiwan market stayed cautious.",
+        },
+        report_language="en",
+    )
+
+    assert "- 市场：台股（tw）" in tw_section_zh
+    assert "A股（cn）" not in tw_section_zh
+    assert "- Region: Taiwan (tw)" in tw_section_en
+    assert "A-share (cn)" not in tw_section_en
+
+
 def test_extract_summary_prefers_region_scoped_section_over_generic_fallback_title() -> None:
     context = DailyMarketContextService(
         db_manager=MagicMock(),

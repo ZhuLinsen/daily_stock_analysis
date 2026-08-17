@@ -4,7 +4,7 @@
  * Stock data index for autocomplete functionality
  */
 
-export type Market = 'CN' | 'HK' | 'US' | 'JP' | 'KR' | 'INDEX' | 'ETF' | 'BSE';
+export type Market = 'CN' | 'HK' | 'US' | 'JP' | 'KR' | 'TW' | 'INDEX' | 'ETF' | 'BSE';
 export type AssetType = 'stock' | 'index' | 'etf';
 
 /**

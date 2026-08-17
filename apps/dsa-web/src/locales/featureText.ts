@@ -30,7 +30,7 @@ export const ALERT_TYPE_LABELS: Record<UiLanguage, Record<AlertType, string>> = 
 };
 export const ALERT_SEVERITY_LABELS: Record<UiLanguage, Record<string, string>> = { zh: { info: '提示', warning: '警告', critical: '严重' }, en: { info: 'Info', warning: 'Warning', critical: 'Critical' } };
 export const ALERT_SCOPE_LABELS: Record<UiLanguage, Record<AlertTargetScope, string>> = { zh: { single_symbol: '单标的', watchlist: '自选股', portfolio_holdings: '持仓标的', portfolio_account: '持仓账户', market: '大盘市场' }, en: { single_symbol: 'Single symbol', watchlist: 'Watchlist', portfolio_holdings: 'Portfolio holdings', portfolio_account: 'Portfolio account', market: 'Market' } };
-export const ALERT_MARKET_REGION_LABELS: Record<UiLanguage, Record<MarketRegion, string>> = { zh: { cn: 'A 股', hk: '港股', us: '美股' }, en: { cn: 'A-shares', hk: 'Hong Kong', us: 'US' } };
+export const ALERT_MARKET_REGION_LABELS: Record<UiLanguage, Record<MarketRegion, string>> = { zh: { cn: 'A 股', hk: '港股', us: '美股', tw: '台股' }, en: { cn: 'A-shares', hk: 'Hong Kong', us: 'US', tw: 'Taiwan' } };
 export const ALERT_MARKET_LIGHT_STATUS_LABELS: Record<UiLanguage, Record<MarketLightStatus, string>> = { zh: { yellow: '黄灯', red: '红灯' }, en: { yellow: 'Yellow', red: 'Red' } };
 export const ALERT_DIRECTION_LABELS = {
   zh: { abovePrice: '上破', belowPrice: '下破', upChange: '上涨', downChange: '下跌', aboveThreshold: '上穿', belowThreshold: '下穿', bullishCross: '金叉', bearishCross: '死叉', stopLossNear: '接近止损', stopLossBreach: '已触发止损' },
@@ -56,7 +56,7 @@ export const ALERT_CHANGE_DIRECTION_OPTIONS: Record<UiLanguage, Array<Option<'up
 export const ALERT_THRESHOLD_DIRECTION_OPTIONS: Record<UiLanguage, Array<Option<'above' | 'below'>>> = { zh: [{ value: 'above', label: '上穿' }, { value: 'below', label: '下穿' }], en: [{ value: 'above', label: 'Crosses above' }, { value: 'below', label: 'Crosses below' }] };
 export const ALERT_CROSS_DIRECTION_OPTIONS: Record<UiLanguage, Array<Option<'bullish_cross' | 'bearish_cross'>>> = { zh: [{ value: 'bullish_cross', label: '金叉' }, { value: 'bearish_cross', label: '死叉' }], en: [{ value: 'bullish_cross', label: 'Bullish cross' }, { value: 'bearish_cross', label: 'Bearish cross' }] };
 export const ALERT_STOP_LOSS_MODE_OPTIONS: Record<UiLanguage, Array<Option<PortfolioStopLossMode>>> = { zh: [{ value: 'near', label: '接近止损' }, { value: 'breach', label: '已触发止损' }], en: [{ value: 'near', label: 'Near stop loss' }, { value: 'breach', label: 'Stop loss breached' }] };
-export const ALERT_MARKET_REGION_OPTIONS: Record<UiLanguage, Array<Option<MarketRegion>>> = { zh: [{ value: 'cn', label: 'A 股（cn）' }, { value: 'hk', label: '港股（hk）' }, { value: 'us', label: '美股（us）' }], en: [{ value: 'cn', label: 'A-shares (cn)' }, { value: 'hk', label: 'Hong Kong (hk)' }, { value: 'us', label: 'US (us)' }] };
+export const ALERT_MARKET_REGION_OPTIONS: Record<UiLanguage, Array<Option<MarketRegion>>> = { zh: [{ value: 'cn', label: 'A 股（cn）' }, { value: 'hk', label: '港股（hk）' }, { value: 'us', label: '美股（us）' }, { value: 'tw', label: '台股（tw）' }], en: [{ value: 'cn', label: 'A-shares (cn)' }, { value: 'hk', label: 'Hong Kong (hk)' }, { value: 'us', label: 'US (us)' }, { value: 'tw', label: 'Taiwan (tw)' }] };
 export const ALERT_MARKET_LIGHT_STATUS_OPTIONS: Record<UiLanguage, Array<Option<MarketLightStatus>>> = { zh: [{ value: 'red', label: '红灯' }, { value: 'yellow', label: '黄灯' }], en: [{ value: 'red', label: 'Red' }, { value: 'yellow', label: 'Yellow' }] };
 
 export const PORTFOLIO_TEXT = {

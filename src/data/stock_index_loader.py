@@ -114,9 +114,9 @@ def _add_code_lookup(
     lookup.setdefault(candidate, set()).add(canonical)
 
 
-def _is_jp_kr_index_code(code: str) -> bool:
-    """Return True for index-backed JP/KR suffix symbols eligible for lookup."""
-    return get_suffix_market(code) in {"jp", "kr"}
+def _is_suffix_index_code(code: str) -> bool:
+    """Return True for index-backed JP/KR/TW suffix symbols eligible for lookup."""
+    return get_suffix_market(code) in {"jp", "kr", "tw"}
 
 
 def _build_stock_code_candidates(raw_items: list) -> dict[str, set[str]]:
@@ -138,12 +138,12 @@ def _build_stock_code_candidates(raw_items: list) -> dict[str, set[str]]:
             if len(item) > 6
             else ""
         )
-        if indexed_market not in {"cn", "hk", "jp", "kr"}:
+        if indexed_market not in {"cn", "hk", "jp", "kr", "tw"}:
             indexed_market = get_suffix_market(canonical_code) or ""
-        if indexed_market not in {"cn", "hk", "jp", "kr"}:
+        if indexed_market not in {"cn", "hk", "jp", "kr", "tw"}:
             continue
 
-        if indexed_market in {"jp", "kr"}:
+        if indexed_market in {"jp", "kr", "tw"}:
             _add_code_lookup(candidates, canonical_code, canonical_code)
             _add_code_lookup(candidates, display_code, canonical_code)
             if "." in canonical_code and suffix_base_lookup_allowed(canonical_code):
@@ -304,7 +304,7 @@ def resolve_index_stock_code(query: str) -> str | None:
     if len(candidates) != 1:
         return None
     candidate = candidates[0]
-    return candidate if _is_jp_kr_index_code(candidate) else None
+    return candidate if _is_suffix_index_code(candidate) else None
 
 
 def resolve_index_stock_code_candidates(query: str) -> tuple[str, ...]:
@@ -366,7 +366,7 @@ def get_stock_code_index_map() -> Dict[str, str]:
         merged_lookup = {
             key: values[0]
             for key, values in get_stock_code_candidates_map().items()
-            if len(values) == 1 and _is_jp_kr_index_code(values[0])
+            if len(values) == 1 and _is_suffix_index_code(values[0])
         }
 
         _STOCK_CODE_LOOKUP_CACHE = merged_lookup

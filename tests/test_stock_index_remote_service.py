@@ -184,6 +184,18 @@ def test_validate_stock_index_payload_accepts_jp_and_kr_markets() -> None:
     assert service.validate_stock_index_payload(payload) is payload
 
 
+def test_validate_stock_index_payload_accepts_tw_market() -> None:
+    payload = _stock_index_payload()
+    payload[0][0] = "2330.TW"
+    payload[0][1] = "2330.TW"
+    payload[0][6] = "TW"
+    payload[1][0] = "6488.TWO"
+    payload[1][1] = "6488.TWO"
+    payload[1][6] = "TW"
+
+    assert service.validate_stock_index_payload(payload) is payload
+
+
 @pytest.mark.parametrize("popularity", [None, "100", True, float("nan"), float("inf")])
 def test_validate_stock_index_payload_rejects_invalid_popularity(popularity: object) -> None:
     payload = _stock_index_payload()

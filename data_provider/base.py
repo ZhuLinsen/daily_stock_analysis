@@ -2486,8 +2486,14 @@ class DataFetcherManager:
                 continue
         return []
 
-    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
-        """获取市场涨跌统计（自动切换数据源）"""
+    def get_market_stats(self, *, purpose: str = "unspecified", market: Optional[str] = None) -> Dict[str, Any]:
+        """获取市场涨跌统计（自动切换数据源）
+
+        ``market="tw"`` 时改走 :class:`TwMarketBreadthFetcher`（台股 TWSE/TPEx 宽度）；
+        不传 ``market`` 时走既有 CN 候选链（TickFlow→akshare→efinance→tushare），行为零变化。
+        """
+        if market == "tw":
+            return self._get_tw_market_stats()
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
         tickflow_fetcher = self._get_tickflow_fetcher()
         if tickflow_fetcher is not None:
@@ -2554,6 +2560,33 @@ class DataFetcherManager:
                 )
                 continue
         logger.warning("[MarketStats] component=market_stats action=complete status=empty purpose=%s", purpose)
+        return {}
+
+    def _get_tw_market_breadth_fetcher(self):
+        """Lazily construct and cache the tw market-breadth fetcher (fail-open)."""
+        fetcher = getattr(self, "_tw_market_breadth_fetcher", None)
+        if fetcher is None:
+            try:
+                from data_provider.tw_market_breadth_fetcher import TwMarketBreadthFetcher
+
+                fetcher = TwMarketBreadthFetcher()
+                self._tw_market_breadth_fetcher = fetcher
+            except Exception as exc:  # noqa: BLE001 - wiring failure: loud but fail-open
+                logger.error("[tw-breadth] fetcher init failed (wiring bug?): %s", exc)
+                fetcher = None
+        return fetcher
+
+    def _get_tw_market_stats(self) -> Dict[str, Any]:
+        """Fetch Taiwan whole-market breadth via TwMarketBreadthFetcher (fail-open)."""
+        fetcher = self._get_tw_market_breadth_fetcher()
+        if fetcher is None:
+            return {}
+        try:
+            data = fetcher.get_market_stats()
+            if data:
+                return data
+        except Exception as exc:  # noqa: BLE001 - fail-open by contract
+            logger.warning("[MarketStats] tw breadth failed: %s", exc)
         return {}
 
     def _run_with_timeout(
@@ -3641,8 +3674,21 @@ class DataFetcherManager:
 
             return [], [], source_chain, last_error
 
-    def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
-        """获取板块涨跌榜（自动切换数据源）"""
+    def get_sector_rankings(self, n: int = 5, market: Optional[str] = None) -> Tuple[List[Dict], List[Dict]]:
+        """获取板块涨跌榜（自动切换数据源）
+
+        ``market="tw"`` 时改走 :class:`TwMarketBreadthFetcher`（台股產業分類指數）；
+        不传 ``market`` 时走既有 CN 候选链，行为零变化。
+        """
+        if market == "tw":
+            fetcher = self._get_tw_market_breadth_fetcher()
+            if fetcher is None:
+                return [], []
+            try:
+                return fetcher.get_sector_rankings(n)
+            except Exception as exc:  # noqa: BLE001 - fail-open by contract
+                logger.warning("[板块排行] tw sector rankings failed: %s", exc)
+                return [], []
         # 按需求固定回退顺序：Akshare(EM) -> Akshare(Sina) -> Tushare -> Efinance
         top, bottom, _, last_error = self._get_sector_rankings_with_meta(n)
         if top or bottom:

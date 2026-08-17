@@ -101,8 +101,9 @@ def suffix_base_lookup_allowed(canonical_code: str) -> bool:
     """Return True when a suffix-market code may be resolved from its bare base.
 
     JP/KR intentionally allow stock-index-backed bare-code lookup to support the
-    existing MVP behavior. TW remains strict suffix-only for now because its
-    follow-up index work is not part of this issue.
+    existing MVP behavior. TW remains strict suffix-only because its 4-6 digit
+    base overlaps HK 4/5 digit bare codes; opening TW to bare-code lookup would
+    make ``2330`` ambiguous against HK codes and break bare-code semantics.
     """
 
     return get_suffix_market(canonical_code) in {"jp", "kr"}

@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from src.services.market_light_alerts import (
+    MARKET_REGION_LABELS,
     MarketLightAlert,
     evaluate_market_light_alert,
     normalize_market_alert_parameters,
@@ -59,13 +60,26 @@ class MarketLightAlertsTestCase(unittest.TestCase):
     def test_market_light_alert_rejects_jp_kr_targets(self) -> None:
         for region in ("jp", "kr"):
             with self.subTest(region=region):
-                with self.assertRaisesRegex(ValueError, "cn, hk, us"):
+                with self.assertRaisesRegex(ValueError, "cn, hk, us, tw"):
                     MarketLightAlert(
                         target_scope="market",
                         target=region,
                         alert_type="market_light_status",
                         parameters={"statuses": ["red"]},
                     )
+
+    def test_market_light_alert_accepts_tw_target(self) -> None:
+        alert = MarketLightAlert(
+            target_scope="market",
+            target="tw",
+            alert_type="market_light_status",
+            parameters={"statuses": ["red"]},
+        )
+        self.assertEqual(alert.target, "tw")
+
+    def test_market_region_labels_includes_tw(self) -> None:
+        self.assertEqual(MARKET_REGION_LABELS["tw"], "台股大盘")
+        self.assertEqual(MARKET_REGION_LABELS["cn"], "A股大盘")
 
     def test_status_unavailable_is_skipped(self) -> None:
         result = evaluate_market_light_alert(

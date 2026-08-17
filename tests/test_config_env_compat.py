@@ -117,7 +117,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(config.market_review_region, "cn,us,kr")
 
     def test_market_review_region_keeps_legacy_mixed_both_and_empty_token_compatibility(self) -> None:
-        self.assertEqual(Config._parse_market_review_region("both,us"), "cn,hk,us,jp,kr")
+        self.assertEqual(Config._parse_market_review_region("both,us"), "cn,hk,us,jp,kr,tw")
         self.assertEqual(Config._parse_market_review_region("cn,,us"), "cn,us")
 
     @patch("src.config.setup_env")
@@ -409,6 +409,16 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(with_jpkr.openai_model, baseline.openai_model)
         self.assertEqual(with_jpkr.openai_api_key, baseline.openai_api_key)
         self.assertEqual(with_jpkr.openai_base_url, baseline.openai_base_url)
+
+        with_tw_env = dict(base_env)
+        with_tw_env["MARKET_REVIEW_REGION"] = "tw"
+        with patch.dict(os.environ, with_tw_env, clear=True):
+            with_tw = Config._load_from_env()
+
+        self.assertEqual(with_tw.litellm_model, baseline.litellm_model)
+        self.assertEqual(with_tw.litellm_fallback_models, baseline.litellm_fallback_models)
+        self.assertEqual(with_tw.openai_model, baseline.openai_model)
+        self.assertEqual(with_tw.openai_base_url, baseline.openai_base_url)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -929,6 +939,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
     def test_parse_market_review_region_accepts_jp_kr_values_and_comma_lists(self) -> None:
         self.assertEqual(Config._parse_market_review_region("jp"), "jp")
         self.assertEqual(Config._parse_market_review_region("KR"), "kr")
+        self.assertEqual(Config._parse_market_review_region("tw"), "tw")
         self.assertEqual(
             Config._parse_market_review_region("kr,jp,us"),
             "us,jp,kr",
@@ -938,8 +949,12 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             "cn,us",
         )
         self.assertEqual(
+            Config._parse_market_review_region("cn,tw"),
+            "cn,tw",
+        )
+        self.assertEqual(
             Config._parse_market_review_region("both"),
-            "cn,hk,us,jp,kr",
+            "cn,hk,us,jp,kr,tw",
         )
 
     @patch("src.config.setup_env")

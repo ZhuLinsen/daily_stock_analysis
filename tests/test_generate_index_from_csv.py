@@ -65,6 +65,16 @@ class TestExtractSymbol:
         result = extract_symbol_from_ts_code("005930.KS", "KR")
         assert result == "005930.KS"
 
+    def test_tw_stock_preserves_suffix(self):
+        """测试台股保留 Yahoo 后缀以避免与港股裸代码冲突"""
+        result = extract_symbol_from_ts_code("2330.TW", "TW")
+        assert result == "2330.TW"
+
+    def test_tw_tpex_stock_preserves_suffix(self):
+        """测试台股上柜保留 .TWO 后缀"""
+        result = extract_symbol_from_ts_code("6488.TWO", "TW")
+        assert result == "6488.TWO"
+
     def test_empty_ts_code(self):
         """测试空 ts_code"""
         result = extract_symbol_from_ts_code("", "CN")
@@ -138,6 +148,21 @@ class TestDetermineMarket:
         """测试韩股 KOSDAQ Yahoo 后缀"""
         result = determine_market("035720.KQ")
         assert result == "KR"
+
+    def test_tw_stock_with_yahoo_suffix(self):
+        """测试台股 Yahoo 后缀"""
+        result = determine_market("2330.TW")
+        assert result == "TW"
+
+    def test_tw_tpex_stock_with_yahoo_suffix(self):
+        """测试台股上柜 .TWO 后缀"""
+        result = determine_market("6488.TWO")
+        assert result == "TW"
+
+    def test_tw_suffix_not_confused_with_jp(self):
+        """测试 .TW 后缀不与日股 .T 后缀混淆"""
+        assert determine_market("7203.T") == "JP"
+        assert determine_market("2330.TW") == "TW"
 
 
 class TestGetStockName:
@@ -271,6 +296,22 @@ class TestDataCleaning:
         assert result['market'] == 'KR'
         assert result['aliases'] == ['Samsung', 'Samsung Electronics', '三星']
 
+    def test_valid_tw_stock_with_seed_aliases(self):
+        """测试有效的台股种子记录（displayCode 保留后缀，绝不剥成裸码）"""
+        row = {
+            'ts_code': '2330.TW',
+            'name': '台积电',
+            'enname': 'Taiwan Semiconductor Manufacturing Co. Ltd.',
+            'aliases': '台积电|TSMC|台積電',
+        }
+        result = parse_stock_row(row, 'TW')
+        assert result is not None
+        assert result['ts_code'] == '2330.TW'
+        assert result['symbol'] == '2330.TW'
+        assert result['name'] == '台积电'
+        assert result['market'] == 'TW'
+        assert result['aliases'] == ['台积电', 'TSMC', '台積電']
+
     def test_us_dummy_filtered(self):
         """测试美股 DUMMY 记录被过滤"""
         row = {
@@ -326,6 +367,36 @@ class TestDataCleaning:
         assert get_us_delist_priority({'delist_date': ''}) == 2
         assert get_us_delist_priority({'delist_date': 'NaT'}) == 1
         assert get_us_delist_priority({'delist_date': '20250131'}) == 0
+
+
+class TestTaiwanSeed:
+    """测试台股种子文件与 TW 市场解析的端到端一致性"""
+
+    def _load_seed_rows(self):
+        seed_path = (
+            Path(__file__).parent.parent
+            / 'scripts' / 'stock_index_seeds' / 'stock_list_tw.csv'
+        )
+        with open(seed_path, encoding='utf-8-sig') as f:
+            return list(csv.DictReader(f))
+
+    def test_seed_rows_parse_to_tw_market_with_suffix(self):
+        """每条台股种子必须解析为 TW 市场，且 displayCode 保留后缀不剥成裸码"""
+        rows = self._load_seed_rows()
+        assert len(rows) >= 20
+        for row in rows:
+            parsed = parse_stock_row(row)
+            assert parsed is not None, f"seed row {row.get('ts_code')} should parse"
+            assert parsed['market'] == 'TW'
+            assert parsed['symbol'] == parsed['ts_code']
+            assert parsed['symbol'].endswith(('.TW', '.TWO'))
+
+    def test_seed_contains_known_anchors(self):
+        """台股种子应命中已知锚点：台积电 / 环球晶"""
+        rows = self._load_seed_rows()
+        by_code = {parse_stock_row(r)['ts_code']: parse_stock_row(r) for r in rows}
+        assert by_code['2330.TW']['name'] == '台积电'
+        assert by_code['6488.TWO']['name'] == '环球晶'
 
 
 class TestNormalizeStockNameForIndex:

@@ -27,4 +27,26 @@ describe('stock code validation', () => {
       expect(result.valid).toBe(false);
     }
   );
+
+  test.each([
+    ['2330.TW', '2330.TW'],
+    ['0050.tw', '0050.TW'],
+    ['00878.TW', '00878.TW'],
+    ['6488.TWO', '6488.TWO'],
+    ['6505.two', '6505.TWO'],
+  ])('accepts Taiwan Yahoo suffix code %s', (input, normalized) => {
+    expect(looksLikeStockCode(input)).toBe(true);
+    expect(validateStockCode(input)).toEqual({
+      valid: true,
+      normalized,
+    });
+    expect(isObviouslyInvalidStockQuery(input)).toBe(false);
+  });
+
+  test.each(['2330', '2330.TWX', '233.TW', '1234567.TW'])(
+    'does not treat ambiguous Taiwan-like query %s as a valid suffix code',
+    (input) => {
+      expect(validateStockCode(input).valid).toBe(false);
+    }
+  );
 });

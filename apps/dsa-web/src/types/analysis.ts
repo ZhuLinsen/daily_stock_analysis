@@ -8,7 +8,7 @@
 export type StockReportType = 'simple' | 'detailed' | 'full' | 'brief';
 export type ReportType = StockReportType | 'market_review';
 export type AnalysisPhase = 'auto' | 'premarket' | 'intraday' | 'postmarket';
-export type MarketReviewRegion = 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+export type MarketReviewRegion = 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
 
 export interface AnalysisRequest {
   stockCode?: string;

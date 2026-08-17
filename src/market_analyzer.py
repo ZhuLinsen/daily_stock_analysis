@@ -96,6 +96,8 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
+    # 台股宽度源级完整性：ok（TWSE+TPEx 齐全）/ partial（单一交易所）
+    market_stats_data_quality: str = "ok"
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
@@ -140,14 +142,14 @@ class MarketAnalyzer:
         Args:
             search_service: 搜索服务实例
             analyzer: AI分析器实例（用于调用LLM）
-            region: 市场区域 cn=A股 hk=港股 us=美股 jp=日本 kr=韩国
+            region: 市场区域 cn=A股 hk=港股 us=美股 jp=日本 kr=韩国 tw=台湾
             config: 本次复盘使用的配置；未传时读取全局配置
         """
         self.config = config or get_config()
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
-        self.region = region if region in ("cn", "us", "hk", "jp", "kr") else "cn"
+        self.region = region if region in ("cn", "us", "hk", "jp", "kr", "tw") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
 
@@ -179,6 +181,8 @@ class MarketAnalyzer:
             return "Japan market" if review_language == "en" else "日本市场"
         if self.region == "kr":
             return "Korea market" if review_language == "en" else "韩国市场"
+        if self.region == "tw":
+            return "Taiwan market" if review_language == "en" else "台湾市场"
         if review_language == "en":
             return "A-share market"
         return "A股市场"
@@ -193,17 +197,48 @@ class MarketAnalyzer:
             return "JPY bn" if self._get_review_language() == "en" else "十亿日元"
         if self.region == "kr":
             return "KRW bn" if self._get_review_language() == "en" else "十亿韩元"
+        if self.region == "tw":
+            return "TWD bn" if self._get_review_language() == "en" else "十亿新台币"
         return "CNY 100m" if self._get_review_language() == "en" else "亿"
 
     def _format_turnover_value(self, amount_raw: float) -> str:
         """Format raw turnover according to market-specific units."""
         if amount_raw == 0.0:
             return "N/A"
-        if self.region in ("us", "hk", "jp", "kr"):
+        if self.region in ("us", "hk", "jp", "kr", "tw"):
             return f"{amount_raw / 1e9:.2f}"
         if amount_raw > 1e6:
             return f"{amount_raw / 1e8:.0f}"
         return f"{amount_raw:.0f}"
+
+    def _turnover_amount_str(self, total_amount: float) -> str:
+        """Format the market ``total_amount`` in the current region's unit.
+
+        CN stores ``total_amount`` pre-divided to 亿元; offshore (tw) stores the
+        raw TWD amount, so tw divides by 1e9 to yield 「十亿新台币」. This is
+        DISTINCT from :meth:`_format_turnover_value`, which formats per-index raw
+        amount and must never be fed a CN 亿元 value.
+        """
+        if self.region == "tw":
+            return f"{total_amount / 1e9:.2f}"
+        return f"{total_amount:.0f}"
+
+    def _turnover_label(self) -> str:
+        """Return the zh turnover row label (台股成交额 vs 两市成交额)."""
+        return "台股成交额" if self.region == "tw" else "两市成交额"
+
+    def _breadth_partial_warning(self, overview: MarketOverview) -> str:
+        """Localized warning when breadth covers only one Taiwan exchange.
+
+        TW breadth fetcher marks ``data_quality="partial"`` when only TWSE or
+        TPEx produced data; surface that boundary in the rendered report so
+        half-market counts are never presented as full-market breadth.
+        """
+        if getattr(overview, "market_stats_data_quality", "ok") != "partial":
+            return ""
+        if self._get_review_language() == "en":
+            return "Breadth data is partial (single exchange only); counts may not represent the full Taiwan market."
+        return "宽度数据不完整（仅覆盖单一交易所），以上涨跌家数/涨跌停/成交额可能不代表全市场。"
 
     def _get_index_change_arrow(self, change_pct: float) -> str:
         if change_pct == 0:
@@ -220,6 +255,7 @@ class MarketAnalyzer:
                 "hk": "HK Market Recap",
                 "jp": "Japan Market Recap",
                 "kr": "Korea Market Recap",
+                "tw": "Taiwan Market Recap",
             }
             market_name = market_names.get(self.region, "A-share Market Recap")
             return f"## {date} {market_name}"
@@ -235,6 +271,8 @@ class MarketAnalyzer:
                 return "Analyze the key moves in the Nikkei 225, TOPIX, and other major Japanese indices."
             if self.region == "kr":
                 return "Analyze the key moves in the KOSPI, KOSDAQ, and other major Korean indices."
+            if self.region == "tw":
+                return "Analyze the key moves in the TWII, TWOII, and other major Taiwan indices."
             return "Analyze the price action in the SSE, SZSE, ChiNext, and other major indices."
         return self.profile.prompt_index_hint
 
@@ -320,6 +358,33 @@ Focus on KOSPI, KOSDAQ, semiconductor heavyweights, and global technology risk a
 - Risk-on: KOSPI and KOSDAQ rise together with confirmed technology leadership and improving external risk appetite.
 - Neutral: index or heavyweight divergence; keep sizing controlled and wait for confirmation.
 - Risk-off: technology heavyweights weaken or external risk rises; prioritize drawdown control."""
+        if self.region == "tw" and self._get_review_language() == "en":
+            return """## Strategy Blueprint: Taiwan Market Regime Strategy
+Focus on TAIEX, TPEx, institutional flows, and the semiconductor/electronics supply chain to define the next-session trading plan.
+
+### Strategy Principles
+- Read TAIEX and TPEx alignment first, then assess the three major institutional net buy/sell and the semiconductor/electronics supply chain.
+- Translate index conclusions into position sizing, trading pace, and risk-control actions.
+- Base judgments only on available index data, news, and price action without inventing breadth or sector statistics.
+
+### Analysis Dimensions
+- Trend Regime: Classify Taiwan equities as advancing, range-bound, or defensive.
+  - Are TAIEX and TPEx directionally aligned
+  - Have key index ranges been reclaimed or lost
+  - Are large-cap weights and the electronics chain moving together
+- Institutional Flows & FX: Map the three major institutional flows and TWD into equity impact.
+  - Three major institutional net buy/sell direction and magnitude
+  - TWD direction and implications for foreign investors and exporters
+  - Semiconductor/electronics supply-chain rotation
+- Theme Signals: Identify durable leadership and crowded areas to avoid.
+  - Semiconductor/electronics manufacturing persistence
+  - AI hardware and server-chain catalysts
+  - Whether news catalysts confirm price action
+
+### Action Framework
+- Risk-on: TAIEX and TPEx rise together with net institutional buying and stronger leadership.
+- Neutral: index divergence or TWD disruption; avoid chasing and wait for confirmation.
+- Risk-off: indices weaken or institutional selling expands; prioritize drawdown control."""
         if self.region == "us" and self._get_review_language() == "zh":
             return """## 美股市场三段式复盘策略
 聚焦指数趋势、宏观叙事与板块轮动，给出次日风控与仓位框架。
@@ -386,6 +451,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 - **Trend Regime**: Classify Korea equities as advancing, range-bound, or defensive based on KOSPI/KOSDAQ alignment.
 - **Technology Cycle**: Track semiconductor, AI hardware, and global technology read-through for market risk appetite.
 - **Theme Signals**: Focus on battery, auto, internet-platform, and KOSDAQ growth-stock rotation.
+"""
+        if self.region == "tw" and review_language == "en":
+            return """### 6. Strategy Framework
+- **Trend Regime**: Classify Taiwan equities as advancing, range-bound, or defensive based on TAIEX/TPEx alignment.
+- **Institutional Flows & FX**: Track the three major institutional net buy/sell and TWD for foreign-investor and exporter implications.
+- **Theme Signals**: Focus on semiconductor/electronics supply-chain and AI hardware/server-chain rotation.
 """
         if self.region == "us" and review_language == "zh":
             return """### 六、策略框架
@@ -496,7 +567,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         try:
             logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
-            stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
+            stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}", market=self.region)
 
             if stats:
                 overview.up_count = stats.get('up_count', 0)
@@ -505,6 +576,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 overview.limit_up_count = stats.get('limit_up_count', 0)
                 overview.limit_down_count = stats.get('limit_down_count', 0)
                 overview.total_amount = stats.get('total_amount', 0.0)
+                overview.market_stats_data_quality = stats.get('data_quality', 'ok')
 
                 logger.info(
                     "[大盘] %s action=get_market_stats status=success up=%s down=%s flat=%s "
@@ -528,7 +600,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         try:
             logger.info("[大盘] %s action=get_sector_rankings status=start", self._log_context())
 
-            top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
+            top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5, market=self.region)
 
             if top_sectors or bottom_sectors:
                 overview.top_sectors = top_sectors
@@ -547,7 +619,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             logger.error("[大盘] %s action=get_sector_rankings status=failed error=%s", self._log_context(), e)
 
     def _get_concept_rankings(self, overview: MarketOverview):
-        """获取概念/题材涨跌榜（fail-open）。"""
+        """获取概念/题材涨跌榜（fail-open，仅 A 股有概念/题材数据）。
+
+        台股/港股/美股等 offshore 市场没有「概念/题材」数据源，直接跳过，
+        避免把 A 股概念板块混入台股复盘。
+        """
+        if self.region != "cn":
+            return
         try:
             logger.info("[大盘] %s action=get_concept_rankings status=start", self._log_context())
 
@@ -615,6 +693,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "hk": "港股市场" if review_language == "zh" else "HK market",
             "jp": "日本股市" if review_language == "zh" else "Japan stock market",
             "kr": "韩国股市" if review_language == "zh" else "Korea stock market",
+            "tw": "台湾股市" if review_language == "zh" else "Taiwan stock market",
         }
         
         try:
@@ -982,8 +1061,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     f"- **Breadth**: Advancers {overview.up_count} / Decliners {overview.down_count} / "
                     f"Flat {overview.flat_count}; "
                     f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count}; "
-                    f"Turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"
+                    f"Turnover {self._turnover_amount_str(overview.total_amount)} ({self._get_turnover_unit_label()})"
                 )
+            partial_warning = self._breadth_partial_warning(overview)
+            if partial_warning:
+                if lines:
+                    lines.append("")
+                lines.append(f"- ⚠️ {partial_warning}")
             return "\n".join(lines)
         lines = []
         score = light["score"] if isinstance(light, dict) else None
@@ -1008,9 +1092,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     "|------|------|------|",
                     f"| 上涨/下跌/平盘 | {overview.up_count} / {overview.down_count} / {overview.flat_count} | 上涨占比(不含平盘) {up_ratio:.1%} |",
                     f"| 涨停/跌停 | {overview.limit_up_count} / {overview.limit_down_count} | 涨跌停差 {limit_spread:+d} |",
-                    f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |",
+                    f"| {self._turnover_label()} | {self._turnover_amount_str(overview.total_amount)} {self._get_turnover_unit_label()} | {self._describe_turnover(overview.total_amount)} |",
                 ]
             )
+        partial_warning = self._breadth_partial_warning(overview)
+        if partial_warning:
+            if lines:
+                lines.append("")
+            lines.append(f"- ⚠️ {partial_warning}")
         return "\n".join(lines)
 
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
@@ -1082,7 +1171,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"涨跌停差 {overview.limit_up_count - overview.limit_down_count:+d}")
         if not reasons and overview.total_amount:
-            reasons.append(f"成交额 {overview.total_amount:.0f} 亿，{self._describe_turnover(overview.total_amount)}")
+            reasons.append(f"成交额 {self._turnover_amount_str(overview.total_amount)} {self._get_turnover_unit_label()}，{self._describe_turnover(overview.total_amount)}")
         if not reasons:
             reasons.append("结构化涨跌数据有限，按可用行情综合判断")
         return reasons[:4]
@@ -1105,7 +1194,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"limit-up/down spread {overview.limit_up_count - overview.limit_down_count:+d}")
         if not reasons and overview.total_amount:
-            reasons.append(f"turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})")
+            reasons.append(f"turnover {self._turnover_amount_str(overview.total_amount)} ({self._get_turnover_unit_label()})")
         if not reasons:
             reasons.append("limited structured breadth data; using available market inputs")
         return reasons[:4]
@@ -1258,13 +1347,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def _escape_markdown_link_label(value: str) -> str:
         return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
-    @staticmethod
-    def _describe_turnover(total_amount: float) -> str:
-        if total_amount >= 15000:
+    def _describe_turnover(self, total_amount: float) -> str:
+        """Describe turnover activity level, comparing in the region's unit.
+
+        CN stores ``total_amount`` in 亿元; tw stores raw TWD 元, so normalize tw
+        to 亿元 (÷1e8) before comparing against the 15000/9000 亿元 thresholds.
+        """
+        normalized = total_amount / 1e8 if self.region == "tw" else total_amount
+        if normalized >= 15000:
             return "高活跃度"
-        if total_amount >= 9000:
+        if normalized >= 9000:
             return "中等活跃"
-        if total_amount > 0:
+        if normalized > 0:
             return "缩量观望"
         return "暂无数据"
 
@@ -1301,6 +1395,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         elif all(dimension["available"] for dimension in dimensions.values()):
             data_quality = "ok"
         else:
+            data_quality = "partial"
+        # 台股宽度源级降级：宽度只覆盖单一交易所时不能标 ok。
+        if data_quality == "ok" and getattr(overview, "market_stats_data_quality", "ok") == "partial":
             data_quality = "partial"
 
         score = int(round(breadth_score * 0.45 + index_score * 0.35 + limit_score * 0.20))
@@ -1455,7 +1552,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 stats_block = f"""## Market Breadth
 - Advancers: {overview.up_count} | Decliners: {overview.down_count} | Flat: {overview.flat_count}
 - Limit-up: {overview.limit_up_count} | Limit-down: {overview.limit_down_count}
-- Turnover: {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"""
+- Turnover: {self._turnover_amount_str(overview.total_amount)} ({self._get_turnover_unit_label()})"""
+                partial_warning = self._breadth_partial_warning(overview)
+                if partial_warning:
+                    stats_block += f"\n- ⚠️ {partial_warning}"
 
             if self.profile.has_sector_rankings:
                 sector_block = f"""## Sector / Theme Performance
@@ -1478,7 +1578,10 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 stats_block = f"""## 市场概况
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
-- 两市成交额: {overview.total_amount:.0f} 亿元"""
+- {self._turnover_label()}: {self._turnover_amount_str(overview.total_amount)} {self._get_turnover_unit_label()}"""
+                partial_warning = self._breadth_partial_warning(overview)
+                if partial_warning:
+                    stats_block += f"\n- ⚠️ {partial_warning}"
 
             if self.profile.has_sector_rankings:
                 sector_block = f"""## 板块表现
@@ -1535,7 +1638,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         output_template_sections = self._build_output_template_sections(review_language)
         zh_market_scope_name = self._get_market_scope_name("zh")
         zh_report_title = f"{overview.date} 大盘复盘"
-        if self.region in ("jp", "kr"):
+        if self.region in ("jp", "kr", "tw"):
             zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
         workflow_hint = (
             "报告要像交易员盘后工作台：先给结论，再按数据表、主线、催化、计划展开"
@@ -1716,6 +1819,7 @@ Output the report content directly, no extra commentary.
                 "hk": "HK Market Recap",
                 "jp": "Japan Market Recap",
                 "kr": "Korea Market Recap",
+                "tw": "Taiwan Market Recap",
             }
             market_name = market_names.get(self.region, "A-share Market Recap")
             report = f"""## {overview.date} {market_name}
@@ -1737,7 +1841,7 @@ Market conditions can change quickly. The data above is for reference only and d
 """
             return report
 
-        market_labels = {"cn": "A股", "us": "美股", "hk": "港股", "jp": "日股", "kr": "韩股"}
+        market_labels = {"cn": "A股", "us": "美股", "hk": "港股", "jp": "日股", "kr": "韩股", "tw": "台股"}
         market_label = market_labels.get(self.region, "A股")
         dashboard_block = (
             self._build_stats_block(overview)

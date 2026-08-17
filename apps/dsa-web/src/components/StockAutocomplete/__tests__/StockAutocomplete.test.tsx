@@ -110,6 +110,16 @@ const jpSuggestion = {
   score: 60,
 };
 
+const twSuggestion = {
+  canonicalCode: "2330.TW",
+  displayCode: "2330.TW",
+  nameZh: "台积电",
+  market: "TW" as const,
+  matchType: "contains" as const,
+  matchField: "code" as const,
+  score: 60,
+};
+
 describe('StockAutocomplete', () => {
   const mockOnChange = vi.fn();
   const mockOnSubmit = vi.fn();
@@ -643,6 +653,40 @@ describe('StockAutocomplete', () => {
       expect(screen.getByText('7203.T')).toBeInTheDocument();
     });
 
+    it('renders the TW market badge in the suggestion list', () => {
+      autocompleteHookImpl = () => ({
+        query: '',
+        setQuery: vi.fn(),
+        suggestions: [twSuggestion],
+        isOpen: true,
+        highlightedIndex: 0,
+        setHighlightedIndex: vi.fn(),
+        highlightPrevious: vi.fn(),
+        highlightNext: vi.fn(),
+        handleSelect: vi.fn(),
+        close: vi.fn(),
+        reset: vi.fn(),
+        isComposing: false,
+        setIsComposing: vi.fn(),
+        runtimeFallback: false,
+        error: null,
+      });
+
+      render(
+        <StockAutocomplete
+          value="2330"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+        />
+      );
+
+      const input = screen.getByDisplayValue('2330');
+      fireEvent.focus(input);
+
+      expect(screen.getByText('台股')).toBeInTheDocument();
+      expect(screen.getByText('2330.TW')).toBeInTheDocument();
+    });
+
     it('falls back to the plain input when the autocomplete tree throws during render', () => {
       autocompleteHookImpl = () => {
         throw new Error('Autocomplete render failed');
@@ -660,8 +704,7 @@ describe('StockAutocomplete', () => {
       expect(input).toHaveAttribute('data-autocomplete-mode', 'fallback');
     });
 
-    it('falls back to the plain input when a suggestion contains an unsupported market', () => {
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    it('renders a fallback badge for an unknown market without falling back to plain input', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
@@ -701,10 +744,10 @@ describe('StockAutocomplete', () => {
       const input = screen.getByDisplayValue('TEST');
       fireEvent.focus(input);
 
-      const fallbackInput = screen.getByDisplayValue('TEST');
-      expect(fallbackInput).toHaveAttribute('data-autocomplete-mode', 'fallback');
-      expect(consoleErrorSpy).toHaveBeenCalled();
-      consoleErrorSpy.mockRestore();
+      // 未知市场不再抛异常回退到普通输入框，而是渲染默认徽章继续展示
+      expect(input).not.toHaveAttribute('data-autocomplete-mode', 'fallback');
+      expect(screen.getByText('其他')).toBeInTheDocument();
+      expect(screen.getByText('TEST')).toBeInTheDocument();
     });
   });
 });

@@ -127,9 +127,9 @@ class MarketReviewRequest(BaseModel):
         min_length=1,
         max_length=64,
         description=(
-            "本次大盘复盘市场覆盖。合法 token 为 cn、hk、us、jp、kr、both；"
+            "本次大盘复盘市场覆盖。合法 token 为 cn、hk、us、jp、kr、tw、both；"
             "both 只能单独使用，其余 token 可用逗号组合。输入会忽略大小写和 token 两侧空格、"
-            "去重并按 cn,hk,us,jp,kr 排序；空值、空 token、未知 token、both 混用或超过 "
+            "去重并按 cn,hk,us,jp,kr,tw 排序；空值、空 token、未知 token、both 混用或超过 "
             "64 个字符会整体返回 4xx，不会部分执行。未传时使用运行时全局 MARKET_REVIEW_REGION。"
         ),
         json_schema_extra={

@@ -343,7 +343,7 @@ const fieldDescriptionMap: Record<string, string> = {
   RUN_IMMEDIATELY: '程序启动后立即执行一次分析任务。',
   MARKET_REVIEW_ENABLED: '是否启用大盘复盘流程。',
   DAILY_MARKET_CONTEXT_ENABLED: '默认开启。开启后会把当日大盘摘要注入个股分析，并在高风险或退潮环境下软化激进买入建议；关闭后仍可运行大盘复盘。',
-  MARKET_REVIEW_REGION: '大盘复盘默认市场区域（如 cn/hk/us/jp/kr/both），支持逗号分隔子集，如 `cn,us,jp`。',
+  MARKET_REVIEW_REGION: '大盘复盘默认市场区域（如 cn/hk/us/jp/kr/tw/both），支持逗号分隔子集，如 `cn,us,jp`。',
   MARKET_REVIEW_COLOR_SCHEME: '控制大盘复盘指数涨跌幅图标颜色：green_up 为绿涨红跌，red_up 为红涨绿跌。',
   ANALYSIS_DELAY: '启动任务前的延迟秒数，可用于等待依赖服务就绪。',
   SAVE_CONTEXT_SNAPSHOT: '控制是否持久化整份分析历史 context_snapshot；关闭后不会保存低敏输入概览、市场阶段摘要和增强上下文，但不影响当次分析的 pack 构建或 Prompt 摘要。',

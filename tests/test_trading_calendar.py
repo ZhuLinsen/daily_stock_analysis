@@ -944,6 +944,15 @@ class ComputeEffectiveRegionTestCase(unittest.TestCase):
     def test_single_region_closed(self):
         self.assertEqual(trading_calendar.compute_effective_region("hk", {"cn", "us"}), "")
 
+    def test_single_region_tw_open(self):
+        self.assertEqual(trading_calendar.compute_effective_region("tw", {"tw"}), "tw")
+
+    def test_single_region_tw_closed(self):
+        self.assertEqual(trading_calendar.compute_effective_region("tw", {"cn"}), "")
+
+    def test_both_includes_tw_when_open(self):
+        self.assertEqual(trading_calendar.compute_effective_region("both", {"cn", "tw"}), "cn,tw")
+
     def test_invalid_region_defaults_to_cn(self):
         result = trading_calendar.compute_effective_region("invalid", {"cn"})
         self.assertEqual(result, "cn")

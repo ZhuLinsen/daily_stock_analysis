@@ -143,7 +143,9 @@ def test_request_models_accept_korean_report_language() -> None:
         (" jp , kr ", "jp,kr"),
         ("kr,jp", "jp,kr"),
         ("cn,cn,us", "cn,us"),
-        ("both", "cn,hk,us,jp,kr"),
+        ("tw", "tw"),
+        ("cn,tw", "cn,tw"),
+        ("both", "cn,hk,us,jp,kr,tw"),
     ],
 )
 def test_market_review_request_normalizes_strict_region_input(
@@ -181,7 +183,15 @@ def test_market_review_request_openapi_exposes_only_region_override_name() -> No
     assert string_schema["minLength"] == 1
     assert region_schema["examples"] == ["cn", "jp,kr", "both"]
     description = region_schema["description"]
-    for contract_text in ("cn", "both 只能单独使用", "空 token", "整体返回 4xx", "64"):
+    for contract_text in (
+        "cn",
+        "tw",
+        "cn,hk,us,jp,kr,tw",
+        "both 只能单独使用",
+        "空 token",
+        "整体返回 4xx",
+        "64",
+    ):
         assert contract_text in description
     assert "market_review_region" not in schema["properties"]
 

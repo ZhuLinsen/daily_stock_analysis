@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Market strategy blueprints for CN/HK/US daily market recap."""
+"""Region-specific market strategy blueprints (CN/HK/US/JP/KR/TW)."""
 
 from dataclasses import dataclass
 from typing import List
@@ -229,6 +229,39 @@ KR_BLUEPRINT = MarketStrategyBlueprint(
     ],
 )
 
+TW_BLUEPRINT = MarketStrategyBlueprint(
+    region="tw",
+    title="台湾市场三段式复盘策略",
+    positioning="聚焦加权指数、柜买指数、三大法人与半导体电子链，形成次日交易计划。",
+    principles=[
+        "先看加权指数与柜买指数是否同向，再看三大法人买卖超与半导体/电子代工链。",
+        "把指数结论映射到仓位、节奏与风险控制动作。",
+        "只基于可得指数、新闻与价格行为判断，不臆造市场广度或板块统计。",
+    ],
+    dimensions=[
+        StrategyDimension(
+            name="趋势结构",
+            objective="判断台湾市场处于上攻、震荡还是防守阶段。",
+            checkpoints=["加权指数/柜买指数是否同向", "指数是否突破或跌破关键区间", "权重股与电子链是否共振"],
+        ),
+        StrategyDimension(
+            name="资金与法人",
+            objective="识别三大法人买卖超与 TWD 汇率对市场的影响。",
+            checkpoints=["三大法人买卖超方向与规模", "TWD 汇率对外资与出口链的影响", "半导体/电子代工链资金轮动"],
+        ),
+        StrategyDimension(
+            name="主题线索",
+            objective="提炼可延续主线与需要规避的拥挤方向。",
+            checkpoints=["半导体/电子代工链持续性", "AI 硬件与服务器链催化", "新闻催化是否支撑价格行为"],
+        ),
+    ],
+    action_framework=[
+        "进攻：加权指数与柜买指数共振上行 + 三大法人买超 + 主线强化。",
+        "均衡：指数分化或汇率扰动，控制仓位并等待确认。",
+        "防守：指数转弱或外资卖超扩大，优先控制回撤。",
+    ],
+)
+
 def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
     """Return strategy blueprint by market region."""
     if region == "us":
@@ -239,4 +272,6 @@ def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
         return JP_BLUEPRINT
     if region == "kr":
         return KR_BLUEPRINT
+    if region == "tw":
+        return TW_BLUEPRINT
     return CN_BLUEPRINT

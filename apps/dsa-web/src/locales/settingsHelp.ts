@@ -1237,7 +1237,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制大盘分析功能的开关、支持的市场子集和配色方案。',
     usage: 'MARKET_REVIEW_ENABLED 开启大盘分析；DAILY_MARKET_CONTEXT_ENABLED 默认开启，会把当日大盘摘要用于个股分析 Prompt 与保守护栏；MARKET_REVIEW_REGION 支持输入逗号分隔的市场子集（如 cn,us,jp 或 cn,us,jp,kr），不传可回退为 cn；MARKET_REVIEW_COLOR_SCHEME 选择配色。',
     valueNotes: [
-      'cn 覆盖 A 股，hk 覆盖港股，us 覆盖美股，jp 覆盖日股，kr 覆盖韩股，both 覆盖全部（cn,hk,us,jp,kr）。',
+      'cn 覆盖 A 股，hk 覆盖港股，us 覆盖美股，jp 覆盖日股，kr 覆盖韩股，tw 覆盖台股，both 覆盖全部（cn,hk,us,jp,kr,tw）。',
       'MARKET_REVIEW_REGION 直接写入文本框，支持逗号分隔的子集；空值或非法值会回退到 cn。',
       '默认开启 DAILY_MARKET_CONTEXT_ENABLED；设为 false 后仍可生成大盘复盘报告，但个股分析不会读取大盘摘要或软化买入/加仓建议。',
       '配色方案影响大盘报告中指数涨跌的颜色显示：green_up 为绿涨红跌，red_up 为红涨绿跌。',

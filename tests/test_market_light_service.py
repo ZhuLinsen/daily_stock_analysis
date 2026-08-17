@@ -18,6 +18,7 @@ from src.services.market_light_service import (
     MARKET_LIGHT_HISTORY_BATCH_SIZE,
     build_current_snapshot,
     load_previous_snapshot,
+    normalize_market_alert_region,
     normalize_market_region,
 )
 from src.storage import AnalysisHistory, DatabaseManager
@@ -58,10 +59,16 @@ class MarketLightServiceTestCase(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_normalize_market_region_rejects_unknown_regions(self) -> None:
-        for region in ("global", "tw"):
+        for region in ("global", "eu"):
             with self.subTest(region=region):
-                with self.assertRaisesRegex(ValueError, "cn, hk, us, jp, kr"):
+                with self.assertRaisesRegex(ValueError, "cn, hk, us, jp, kr, tw"):
                     normalize_market_region(region)
+
+    def test_normalize_market_region_and_alert_region_accept_tw(self) -> None:
+        self.assertEqual(normalize_market_region("tw"), "tw")
+        self.assertEqual(normalize_market_region("TW"), "tw")
+        self.assertEqual(normalize_market_alert_region("tw"), "tw")
+        self.assertEqual(normalize_market_alert_region("TW"), "tw")
 
     def _add_history(self, *, created_at: datetime, context_snapshot: dict | None) -> None:
         with self.db.get_session() as session:
@@ -225,6 +232,113 @@ class MarketLightServiceTestCase(unittest.TestCase):
         assert previous is not None
         self.assertEqual(previous["region"], "jp")
         self.assertEqual(previous["score"], 54)
+
+    def test_build_market_light_snapshot_tw_is_index_only(self) -> None:
+        from types import SimpleNamespace
+
+        from src.core.market_profile import get_profile
+        from src.market_analyzer import MarketAnalyzer
+
+        analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+        analyzer.region = "tw"
+        analyzer.profile = get_profile("tw")
+        analyzer.config = SimpleNamespace(report_language="zh")
+
+        overview = MarketOverview(
+            date="2026-03-07",
+            indices=[
+                MarketIndex(code="TWII", name="TAIEX", current=23000, change_pct=1.5),
+                MarketIndex(code="TWOII", name="TPEx", current=7600, change_pct=0.5),
+            ],
+        )
+
+        snapshot = analyzer.build_market_light_snapshot(overview)
+
+        self.assertEqual(snapshot["region"], "tw")
+        self.assertEqual(snapshot["data_quality"], "partial")
+        self.assertFalse(snapshot["dimensions"]["breadth"]["available"])
+        self.assertTrue(snapshot["dimensions"]["index"]["available"])
+        self.assertFalse(snapshot["dimensions"]["limit"]["available"])
+
+    def test_tw_market_light_index_score_responds_to_index_change(self) -> None:
+        from types import SimpleNamespace
+
+        from src.core.market_profile import get_profile
+        from src.market_analyzer import MarketAnalyzer
+
+        analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+        analyzer.region = "tw"
+        analyzer.profile = get_profile("tw")
+        analyzer.config = SimpleNamespace(report_language="zh")
+
+        up = analyzer.build_market_light_snapshot(
+            MarketOverview(
+                date="2026-03-07",
+                indices=[MarketIndex(code="TWII", name="TAIEX", current=23000, change_pct=2.0)],
+            )
+        )["dimensions"]["index"]["score"]
+        down = analyzer.build_market_light_snapshot(
+            MarketOverview(
+                date="2026-03-07",
+                indices=[MarketIndex(code="TWII", name="TAIEX", current=23000, change_pct=-2.0)],
+            )
+        )["dimensions"]["index"]["score"]
+
+        self.assertGreater(up, down)
+
+    def test_build_market_light_snapshot_tw_full_when_breadth_available(self) -> None:
+        from types import SimpleNamespace
+
+        from src.core.market_profile import get_profile
+        from src.market_analyzer import MarketAnalyzer
+
+        analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+        analyzer.region = "tw"
+        analyzer.profile = get_profile("tw")
+        analyzer.config = SimpleNamespace(report_language="zh")
+
+        overview = MarketOverview(
+            date="2026-03-07",
+            indices=[MarketIndex(code="TWII", name="TAIEX", current=23000, change_pct=1.5)],
+            up_count=600,
+            down_count=300,
+            limit_up_count=30,
+            limit_down_count=10,
+        )
+
+        snapshot = analyzer.build_market_light_snapshot(overview)
+
+        self.assertEqual(snapshot["data_quality"], "ok")
+        self.assertTrue(snapshot["dimensions"]["breadth"]["available"])
+        self.assertTrue(snapshot["dimensions"]["index"]["available"])
+        self.assertTrue(snapshot["dimensions"]["limit"]["available"])
+
+    def test_market_light_downgrades_when_breadth_source_partial(self) -> None:
+        from types import SimpleNamespace
+
+        from src.core.market_profile import get_profile
+        from src.market_analyzer import MarketAnalyzer
+
+        analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+        analyzer.region = "tw"
+        analyzer.profile = get_profile("tw")
+        analyzer.config = SimpleNamespace(report_language="zh")
+
+        overview = MarketOverview(
+            date="2026-03-07",
+            indices=[MarketIndex(code="TWII", name="TAIEX", current=23000, change_pct=1.5)],
+            up_count=600,
+            down_count=300,
+            limit_up_count=30,
+            limit_down_count=10,
+            market_stats_data_quality="partial",  # 单一交易所宽度
+        )
+
+        snapshot = analyzer.build_market_light_snapshot(overview)
+
+        # 维度齐全本应 ok，但源级 partial 必须降级
+        self.assertEqual(snapshot["data_quality"], "partial")
+        self.assertTrue(snapshot["dimensions"]["breadth"]["available"])
 
 
 if __name__ == "__main__":

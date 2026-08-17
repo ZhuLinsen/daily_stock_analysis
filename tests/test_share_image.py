@@ -1354,6 +1354,52 @@ def test_multi_market_review_uses_each_structured_market_payload():
     assert html.count("赚钱效应") == 1
 
 
+def test_multi_market_review_pairs_taiwan_segment_with_payload():
+    payload = {
+        "kind": "market_review",
+        "region": "cn,tw",
+        "language": "zh",
+        "markets": {
+            "cn": {
+                "region": "cn",
+                "title": "A股市场复盘",
+                "color_scheme": "green_up",
+                "indices": [{"name": "结构化上证", "current": 3999, "change_pct": 0.9}],
+            },
+            "tw": {
+                "region": "tw",
+                "title": "台股市场复盘",
+                "color_scheme": "green_up",
+                "indices": [{"name": "结构化加权指数", "current": 23000, "change_pct": 1.1}],
+            },
+        },
+    }
+    html = build_share_image_html(
+        """# A股大盘复盘
+
+## 指数结构
+
+| 指数 | 最新 | 涨跌幅 |
+| --- | --- | --- |
+| 上证指数 | 3200 | +0.80% |
+
+# 台股大盘复盘
+
+## 指数结构
+
+| 指数 | 最新 | 涨跌幅 |
+| --- | --- | --- |
+| 加权指数 | 22000 | +1.00% |
+""",
+        generated_on=date(2026, 8, 1),
+        structured_payload=payload,
+    )
+
+    assert "结构化上证" in html
+    assert "结构化加权指数" in html
+    assert "23000" in html
+
+
 @pytest.mark.parametrize("action", ["强烈买入", "Strong Buy"])
 def test_stock_share_image_preserves_compound_buy_action(action):
     html = build_share_image_html(

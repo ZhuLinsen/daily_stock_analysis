@@ -2899,6 +2899,7 @@ class TestMarketAnalyzerBypassFix:
         [
             ("jp", "JP_PROFILE", "N225", "Nikkei 225", "Japan Market Recap", "今日日股市场整体呈现"),
             ("kr", "KR_PROFILE", "KS11", "KOSPI", "Korea Market Recap", "今日韩股市场整体呈现"),
+            ("tw", "TW_PROFILE", "TWII", "TAIEX", "Taiwan Market Recap", "今日台股市场整体呈现"),
         ],
     )
     def test_generate_template_review_uses_jp_kr_labels_for_no_llm_fallback(

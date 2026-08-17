@@ -82,17 +82,21 @@ const MARKET_BADGE_CONFIG = {
   US: { label: '美股', className: 'border-cyan/25 bg-cyan/10 text-cyan' },
   JP: { label: '日股', className: 'border-indigo-500/25 bg-indigo-500/10 text-indigo-500' },
   KR: { label: '韩股', className: 'border-rose-500/25 bg-rose-500/10 text-rose-500' },
+  TW: { label: '台股', className: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-500' },
   INDEX: { label: '指数', className: 'border-purple/25 bg-purple/10 text-purple' },
   ETF: { label: 'ETF', className: 'border-warning/25 bg-warning/10 text-warning' },
   BSE: { label: '北交所', className: 'border-orange-500/25 bg-orange-500/10 text-orange-500' },
 } as const;
 
-function MarketBadge({ market }: { market: string }) {
-  const config = MARKET_BADGE_CONFIG[market as keyof typeof MARKET_BADGE_CONFIG];
+const FALLBACK_MARKET_BADGE = {
+  label: '其他',
+  className: 'border-border/55 bg-elevated/75 text-muted-text',
+} as const;
 
-  if (!config) {
-    throw new Error(`Unsupported market in stock suggestion: ${market}`);
-  }
+function MarketBadge({ market }: { market: string }) {
+  const config =
+    MARKET_BADGE_CONFIG[market as keyof typeof MARKET_BADGE_CONFIG] ??
+    FALLBACK_MARKET_BADGE;
 
   return (
     <Badge variant="default" size="sm" className={cn('min-w-[3rem] justify-center shadow-none', config.className)}>

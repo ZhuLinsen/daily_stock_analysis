@@ -3441,7 +3441,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "MARKET_REVIEW_REGION": {
         "title": "Market Review Region",
-        "description": "Market region for review: cn (A-shares), hk (Hong Kong), us (US stocks), jp (Japan), kr (Korea), or both (all markets).",
+        "description": "Market region for review: cn (A-shares), hk (Hong Kong), us (US stocks), jp (Japan), kr (Korea), tw (Taiwan), or both (all markets).",
         "category": "system",
         "data_type": "string",
         "ui_control": "text",
@@ -3449,13 +3449,14 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_required": False,
         "is_editable": True,
         "default_value": "cn",
-        "options": ["cn", "hk", "us", "jp", "kr", "both"],
-        "validation": {"allowed_values": ["cn", "hk", "us", "jp", "kr", "both"], "delimiter": ","},
+        "options": ["cn", "hk", "us", "jp", "kr", "tw", "both"],
+        "validation": {"allowed_values": ["cn", "hk", "us", "jp", "kr", "tw", "both"], "delimiter": ","},
         "display_order": 48,
         "help_key": "settings.system.market_review",
         "examples": [
             "MARKET_REVIEW_REGION=cn",
             "MARKET_REVIEW_REGION=jp",
+            "MARKET_REVIEW_REGION=tw",
             "MARKET_REVIEW_REGION=both",
         ],
         "docs": [

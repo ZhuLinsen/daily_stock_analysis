@@ -5,7 +5,7 @@ Generate Stock Index from CSV File
 
 Input:
   - Tushare format: data/stock_list_{a,hk,us}.csv
-  - Seed format: scripts/stock_index_seeds/stock_list_{jp,kr}.csv
+  - Seed format: scripts/stock_index_seeds/stock_list_{jp,kr,tw}.csv
   - AkShare format: logs/stock_basic_*.csv
 
 Output: apps/dsa-web/public/stocks.index.json
@@ -110,6 +110,7 @@ def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
         'US': data_dir / 'stock_list_us.csv',
         'JP': _csv_path('stock_list_jp.csv'),
         'KR': _csv_path('stock_list_kr.csv'),
+        'TW': _csv_path('stock_list_tw.csv'),
     }
 
     for market_name, csv_file in market_files.items():
@@ -303,7 +304,7 @@ def extract_symbol_from_ts_code(ts_code: str, market: str) -> Optional[str]:
     - A股：000001.SZ → 000001
     - 港股：00700.HK → 00700
     - 美股：AAPL → AAPL
-    - 日股/韩股：7203.T / 005930.KS → 保留后缀，避免与其他市场裸代码冲突
+    - 日股/韩股/台股：7203.T / 005930.KS / 2330.TW → 保留后缀，避免与其他市场裸代码冲突
 
     Args:
         ts_code: TS代码
@@ -315,8 +316,8 @@ def extract_symbol_from_ts_code(ts_code: str, market: str) -> Optional[str]:
     if not ts_code:
         return None
 
-    if market in {'US', 'JP', 'KR'}:
-        # 美股常见 class/share 后缀、日韩 Yahoo 后缀都是代码身份的一部分。
+    if market in {'US', 'JP', 'KR', 'TW'}:
+        # 美股常见 class/share 后缀、日韩台 Yahoo 后缀都是代码身份的一部分。
         return ts_code
 
     if '.' in ts_code:
@@ -427,7 +428,7 @@ def determine_market(ts_code: str) -> str:
         ts_code: Trading code (e.g., 000001.SZ, AAPL, BRK.B, 7203.T, 005930.KS)
 
     Returns:
-        Market code (CN, HK, US, BSE, JP, KR)
+        Market code (CN, HK, US, BSE, JP, KR, TW)
     """
     if '.' in ts_code:
         # 有后缀的情况
@@ -443,6 +444,8 @@ def determine_market(ts_code: str) -> str:
             return 'JP'
         elif suffix in ['KS', 'KQ']:
             return 'KR'
+        elif suffix in ['TW', 'TWO']:
+            return 'TW'
         # 有后缀但不是中国市场后缀，检查是否为美股
         # 美股可能有点号后缀（如 BRK.B, GOOG.A, AAPL.U）
         prefix = ts_code.split('.')[0]

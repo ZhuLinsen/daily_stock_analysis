@@ -8,10 +8,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-MarketRegion = Literal["cn", "hk", "us", "jp", "kr"]
+MarketRegion = Literal["cn", "hk", "us", "jp", "kr", "tw"]
 MarketLightStatus = Literal["green", "yellow", "red"]
 MarketLightDataQuality = Literal["ok", "partial", "unavailable"]
-MARKET_LIGHT_REGIONS = frozenset(("cn", "hk", "us"))
+MARKET_LIGHT_REGIONS = frozenset(("cn", "hk", "us", "tw"))
 
 
 class MarketLightDimension(BaseModel):
