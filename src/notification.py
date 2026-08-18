@@ -1037,6 +1037,15 @@ class NotificationService(
                         *news_lines,
                         "",
                     ])
+                elif getattr(result, "news_result_count", None) == 0:
+                    # 检索执行了但一条都没拿到：必须说出来。
+                    # 否则这一段直接消失，读者无从判断是确实没新闻，
+                    # 还是检索静默失败了（如搜索源限流、未配置可用渠道）。
+                    report_lines.extend([
+                        "#### 📰 消息面/情绪面",
+                        "⚠️ 本次未获取到可用的新闻面数据，以下结论未纳入新闻维度证据。",
+                        "",
+                    ])
 
                 # 综合分析
                 if result.analysis_summary:

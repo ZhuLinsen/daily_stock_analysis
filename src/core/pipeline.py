@@ -762,6 +762,10 @@ class StockAnalysisPipeline:
                     analysis_context_pack_summary=analysis_context_pack_summary,
                 )
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
+                if result is not None:
+                    # 交给展示层判断「确实没新闻」还是「检索静默失败」。
+                    # 该值此前只进了诊断快照，报告层拿不到。
+                    result.news_result_count = news_result_count
                 record_llm_run(
                     success=bool(result and getattr(result, "success", True)),
                     model=getattr(result, "model_used", None) if result else None,
