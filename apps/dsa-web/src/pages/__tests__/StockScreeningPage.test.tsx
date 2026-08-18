@@ -1465,6 +1465,199 @@ describe('StockScreeningPage', () => {
     expect(screen.queryByText('腾讯控股')).not.toBeInTheDocument();
   });
 
+  it('ignores late auto-restore responses after the user manually picks a history run', async () => {
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    // 持久化 run-a：挂载时会触发自动恢复的 getRun('run-a')
+    window.sessionStorage.setItem('dsa.screening.activeScreenTask.v1', JSON.stringify({
+      taskId: 'task-a',
+      runId: 'run-a',
+      strategy: 'capital_heat',
+      market: 'cn',
+      maxResults: 3,
+    }));
+    getHistory.mockResolvedValue({
+      enabled: true,
+      runs: [
+        {
+          runId: 'run-b',
+          strategy: 'dual_low',
+          market: 'cn',
+          candidateCount: 1,
+          createdAt: '2026-08-05T10:00:00Z',
+        },
+      ],
+      runCount: 1,
+    });
+
+    const runA = createDeferred();
+    getRun.mockImplementation((runId: string) => {
+      if (runId === 'run-a') {
+        return runA.promise;
+      }
+      return Promise.resolve({
+        runId: 'run-b',
+        strategy: 'dual_low',
+        market: 'cn',
+        candidateCount: 1,
+        enabled: true,
+        result: {
+          enabled: true,
+          candidates: [
+            {
+              rank: 1,
+              code: '600000',
+              name: '浦发银行',
+              score: 88,
+              reason: '低估值',
+              amount: 1042000000,
+              factorScores: { value: 87 },
+              raw: {},
+            },
+          ],
+          candidateCount: 1,
+          snapshotCount: 50,
+          afterFilterCount: 10,
+          llmRanked: true,
+        },
+      });
+    });
+
+    render(<StockScreeningPage />);
+
+    // 自动恢复 run-a 还在挂起时，用户手动点开历史里的 run-b（策略 dual_low → 显示 Dual Low）
+    fireEvent.click(await screen.findByText(/返回 1 只/));
+    expect(await screen.findByText(/Dual Low · A 股/)).toBeInTheDocument();
+    expect(screen.getByText('浦发银行')).toBeInTheDocument();
+
+    // run-a 较晚返回：不得覆盖用户手动选择的 run-b
+    await act(async () => {
+      runA.resolve({
+        runId: 'run-a',
+        strategy: 'capital_heat',
+        market: 'cn',
+        candidateCount: 1,
+        enabled: true,
+        result: {
+          enabled: true,
+          candidates: [
+            {
+              rank: 1,
+              code: '00700',
+              name: '腾讯控股',
+              score: 90,
+              reason: '热度因子领先',
+              amount: 1042000000,
+              factorScores: { heat: 92 },
+              raw: {},
+            },
+          ],
+          candidateCount: 1,
+          snapshotCount: 50,
+          afterFilterCount: 10,
+          llmRanked: true,
+        },
+      });
+    });
+    expect(screen.getByText(/Dual Low · A 股/)).toBeInTheDocument();
+    expect(screen.getByText('浦发银行')).toBeInTheDocument();
+    expect(screen.queryByText(/自定义策略 \(capital_heat\)/)).not.toBeInTheDocument();
+    expect(screen.queryByText('腾讯控股')).not.toBeInTheDocument();
+  });
+
+  it('cancels an in-flight screening task when a history run is selected', async () => {
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    getHistory.mockResolvedValue({
+      enabled: true,
+      runs: [
+        {
+          runId: 'run-hist',
+          strategy: 'capital_heat',
+          market: 'cn',
+          candidateCount: 1,
+          createdAt: '2026-08-05T10:00:00Z',
+        },
+      ],
+      runCount: 1,
+    });
+    // 提交一个未完成的任务（pending）：进入后台轮询
+    getScreenTask.mockResolvedValueOnce({
+      taskId: 'screen-task-1',
+      traceId: 'screen-task-1',
+      status: 'running',
+      progress: 40,
+      message: 'Screening 正在分析...',
+      result: null,
+    });
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '600000',
+          name: '任务候选',
+          score: 80,
+          reason: '任务原因',
+          amount: 100,
+          factorScores: { value: 80 },
+          raw: {},
+        },
+      ],
+      candidateCount: 1,
+      snapshotCount: 50,
+      afterFilterCount: 10,
+      llmRanked: true,
+    });
+    getRun.mockResolvedValueOnce({
+      runId: 'run-hist',
+      strategy: 'capital_heat',
+      market: 'cn',
+      candidateCount: 1,
+      enabled: true,
+      result: {
+        enabled: true,
+        candidates: [
+          {
+            rank: 1,
+            code: '00700',
+            name: '历史候选',
+            score: 90,
+            reason: '历史原因',
+            amount: 1042000000,
+            factorScores: { heat: 92 },
+            raw: {},
+          },
+        ],
+        candidateCount: 1,
+        snapshotCount: 50,
+        afterFilterCount: 10,
+        llmRanked: true,
+      },
+    });
+
+    render(<StockScreeningPage />);
+
+    // 等待选股开启后，提交选股任务进入轮询
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+    await waitFor(() => expect(startScreenTask).toHaveBeenCalled());
+    await waitFor(() => expect(getScreenTask).toHaveBeenCalled());
+
+    // 任务仍在轮询时，点击历史记录 run（策略 capital_heat）
+    fireEvent.click(await screen.findByText('capital_heat'));
+    expect(await screen.findByText(/自定义策略 \(capital_heat\)/)).toBeInTheDocument();
+    expect(screen.getByText('历史候选')).toBeInTheDocument();
+
+    // 后台任务随后完成，也不得把任务候选回写到历史上下文中
+    expect(screen.queryByText('任务候选')).not.toBeInTheDocument();
+    expect(screen.getByText(/自定义策略 \(capital_heat\)/)).toBeInTheDocument();
+  });
+
   it('surfaces Screening LLM fallback instead of showing empty LLM fields as normal', async () => {
     getScreeningStatus.mockResolvedValueOnce({
       enabled: true,

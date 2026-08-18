@@ -916,6 +916,9 @@ const StockScreeningPage: React.FC = () => {
     const requestId = historyRunRequestIdRef.current + 1;
     historyRunRequestIdRef.current = requestId;
     const isCurrentRequest = () => historyRunRequestIdRef.current === requestId;
+    // 与运行中的选股任务互斥：手动选择历史记录后，暂停/取消后台任务轮询，
+    // 避免任务完成后把当前任务的候选结果回写到历史上下文中。
+    setActiveTaskId(null);
     setHistoryError('');
     setLoading(true);
     try {
@@ -1194,10 +1197,14 @@ const StockScreeningPage: React.FC = () => {
     }
     let active = true;
     setLoading(true);
+    // 记录自动恢复的请求基准：若在自动恢复返回前用户手动点开了历史记录
+    // （historyRunRequestIdRef 被 handleHistoryRunSelect 递增），则放弃本次自动恢复响应，
+    // 避免较晚返回的自动恢复把页面切回旧 run，覆盖用户最新一次的历史选择。
+    const restoreRequestBase = historyRunRequestIdRef.current;
     screeningApi
       .getRun(runId)
       .then((detail) => {
-        if (!active) {
+        if (!active || historyRunRequestIdRef.current !== restoreRequestBase) {
           return;
         }
         if (detail?.result) {
@@ -1217,8 +1224,9 @@ const StockScreeningPage: React.FC = () => {
         }
       })
       .catch(() => {
-        // 历史记录恢复失败（run 不存在或服务重启），回退到 task 轮询
-        if (active) {
+        // 历史记录恢复失败（run 不存在或服务重启），回退到 task 轮询；
+        // 若用户已手动选择了历史记录，则不再回退，保持用户的选择。
+        if (active && historyRunRequestIdRef.current === restoreRequestBase) {
           setActiveTaskId(restoredTask?.taskId ?? null);
         }
       })
