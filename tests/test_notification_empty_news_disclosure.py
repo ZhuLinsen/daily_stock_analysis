@@ -44,12 +44,18 @@ def _make_result(*, news_summary="", news_result_count=None):
     )
 
 
+def _make_service():
+    """造一个用于渲染的 NotificationService。
+
+    走真实 __init__ 以拿到全部渲染所需属性；本测试只读取返回的报告文本，
+    不调用任何推送方法，因此不会向外发送。
+    """
+    return NotificationService()
+
+
 class EmptyNewsDisclosureTestCase(unittest.TestCase):
     def setUp(self):
-        # 只测报告渲染，不触碰任何推送渠道：用 __new__ 跳过依赖配置的初始化，
-        # 再补上 generate_daily_report 实际用到的少量属性。
-        self.service = NotificationService.__new__(NotificationService)
-        self.service._report_summary_only = False
+        self.service = _make_service()
 
     def _render(self, result):
         return NotificationService.generate_daily_report(
@@ -91,6 +97,74 @@ class ResultFieldContractTestCase(unittest.TestCase):
         result = _make_result()
 
         self.assertIsNone(result.news_result_count)
+
+
+class ActiveRenderersDiscloseTestCase(unittest.TestCase):
+    """真实流程走的是 dashboard / brief / single_stock，不是 generate_daily_report。
+
+    只在 generate_daily_report 里加提示等于没加——标准 REPORT_TYPE 一个都覆盖不到。
+    这些用例锁住四个渲染器全部接入同一个共享判定。
+    """
+
+    def setUp(self):
+        self.service = _make_service()
+
+    def test_dashboard_report_discloses_empty_news(self):
+        report = NotificationService.generate_dashboard_report(
+            self.service, [_make_result(news_result_count=0)], report_date="2026-08-18"
+        )
+
+        self.assertIn(DISCLOSURE, report)
+
+    def test_brief_report_discloses_empty_news(self):
+        report = NotificationService.generate_brief_report(
+            self.service, [_make_result(news_result_count=0)], report_date="2026-08-18"
+        )
+
+        self.assertIn(DISCLOSURE, report)
+
+    def test_single_stock_report_discloses_empty_news(self):
+        report = NotificationService.generate_single_stock_report(
+            self.service, _make_result(news_result_count=0)
+        )
+
+        self.assertIn(DISCLOSURE, report)
+
+    def test_renderers_stay_silent_when_search_not_performed(self):
+        for name, call in (
+            ("dashboard", lambda r: NotificationService.generate_dashboard_report(
+                self.service, [r], report_date="2026-08-18")),
+            ("brief", lambda r: NotificationService.generate_brief_report(
+                self.service, [r], report_date="2026-08-18")),
+            ("single", lambda r: NotificationService.generate_single_stock_report(
+                self.service, r)),
+        ):
+            with self.subTest(renderer=name):
+                self.assertNotIn(DISCLOSURE, call(_make_result(news_result_count=None)))
+
+
+class DisclosureIndependentOfModelTextTestCase(unittest.TestCase):
+    """最糟的组合：检索零命中，但模型仍按 schema 写出了情绪判断。
+
+    此时若以「消息面文字是否为空」决定是否提示，报告会展示模型生成的情绪，
+    同时隐瞒没有新闻证据这一事实。判定必须独立于模型输出。
+    """
+
+    def setUp(self):
+        self.service = _make_service()
+
+    def test_warns_even_when_model_supplied_sentiment(self):
+        result = _make_result(news_result_count=0)
+        result.market_sentiment = "市场情绪偏中性。"
+        result.hot_topics = "暂无明显热点。"
+
+        report = NotificationService.generate_daily_report(
+            self.service, [result], report_date="2026-08-18"
+        )
+
+        self.assertIn(DISCLOSURE, report)
+        self.assertIn("市场情绪偏中性", report)
+
 
 
 if __name__ == "__main__":

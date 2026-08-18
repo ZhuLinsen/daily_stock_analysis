@@ -410,6 +410,27 @@ class NotificationService(
         self._history_compare_cache[cache_key] = history_by_code
         return {"history_by_code": history_by_code}
 
+    @staticmethod
+    def _empty_news_disclosure(result: "AnalysisResult", language: str = "zh") -> Optional[str]:
+        """检索执行了但零命中时，返回一行需要写进报告的提示；否则返回 None。
+
+        必须独立于「模型有没有写出消息面文字」来判断：analyzer 的输出 schema
+        即使没有新闻也会要求填 market_sentiment / hot_topics，若以这些字段
+        是否为空来决定，就会出现「展示模型生成的情绪判断，却隐瞒无新闻证据」
+        这一最糟的组合。
+
+        news_result_count 的语义：None = 未执行检索（用户未配搜索渠道，不是失败，
+        不该报警）；0 = 执行了但一条没拿到（静默失败，必须如实告知）。
+        """
+        if getattr(result, "news_result_count", None) != 0:
+            return None
+        if language == "en":
+            return (
+                "⚠️ No news data could be retrieved for this run; "
+                "the conclusions below do not incorporate news-based evidence."
+            )
+        return "⚠️ 本次未获取到可用的新闻面数据，以下结论未纳入新闻维度证据。"
+
     def generate_aggregate_report(
         self,
         results: List[AnalysisResult],
@@ -1031,21 +1052,13 @@ class NotificationService(
                     news_lines.append(f"**市场情绪**：{result.market_sentiment}")
                 if hasattr(result, 'hot_topics') and result.hot_topics:
                     news_lines.append(f"**相关热点**：{result.hot_topics}")
-                if news_lines:
-                    report_lines.extend([
-                        "#### 📰 消息面/情绪面",
-                        *news_lines,
-                        "",
-                    ])
-                elif getattr(result, "news_result_count", None) == 0:
-                    # 检索执行了但一条都没拿到：必须说出来。
-                    # 否则这一段直接消失，读者无从判断是确实没新闻，
-                    # 还是检索静默失败了（如搜索源限流、未配置可用渠道）。
-                    report_lines.extend([
-                        "#### 📰 消息面/情绪面",
-                        "⚠️ 本次未获取到可用的新闻面数据，以下结论未纳入新闻维度证据。",
-                        "",
-                    ])
+                news_disclosure = self._empty_news_disclosure(result, report_language)
+                if news_lines or news_disclosure:
+                    report_lines.append("#### 📰 消息面/情绪面")
+                    if news_disclosure:
+                        report_lines.append(news_disclosure)
+                    report_lines.extend(news_lines)
+                    report_lines.append("")
 
                 # 综合分析
                 if result.analysis_summary:
@@ -1568,12 +1581,14 @@ class NotificationService(
                             report_lines.append(f"**{volume_analysis_label}**: {result.volume_analysis}")
                         report_lines.append("")
                     # 消息面
-                    if result.news_summary:
-                        report_lines.extend([
-                            f"### 📰 {news_heading}",
-                            f"{result.news_summary}",
-                            "",
-                        ])
+                    news_disclosure = self._empty_news_disclosure(result, report_language)
+                    if result.news_summary or news_disclosure:
+                        report_lines.append(f"### 📰 {news_heading}")
+                        if news_disclosure:
+                            report_lines.append(news_disclosure)
+                        if result.news_summary:
+                            report_lines.append(f"{result.news_summary}")
+                        report_lines.append("")
 
                 report_lines.extend([
                     "---",
@@ -1903,6 +1918,9 @@ class NotificationService(
                 f"{signal_text} | "
                 f"{labels['score_label']} {r.sentiment_score} | {one}"
             )
+            news_disclosure = self._empty_news_disclosure(r, report_language)
+            if news_disclosure:
+                lines.append(news_disclosure)
         lines.append("")
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         models = self._collect_models_used(results)
@@ -1959,6 +1977,12 @@ class NotificationService(
 
         # 重要信息（舆情+基本面）
         info_added = False
+        news_disclosure = self._empty_news_disclosure(result, report_language)
+        if news_disclosure:
+            lines.append(f"### 📰 {labels['info_heading']}")
+            lines.append("")
+            lines.append(news_disclosure)
+            info_added = True
         if intel:
             if intel.get('earnings_outlook'):
                 if not info_added:
