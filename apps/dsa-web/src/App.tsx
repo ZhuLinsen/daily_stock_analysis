@@ -1,6 +1,11 @@
 import type React from 'react';
-import { lazy, useEffect } from 'react';
-import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { lazy, useEffect, useMemo } from 'react';
+import {
+  Navigate,
+  createBrowserRouter,
+  useLocation,
+  RouterProvider,
+} from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
 import {
   PageLoadingFallback,
@@ -71,37 +76,48 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <Routes>
-      <Route
-        element={(
-          <Shell>
-            <RouteOutletBoundary />
-          </Shell>
-        )}
-      >
-        <Route path="/" element={<HomePage />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/portfolio" element={<PortfolioPage />} />
-        <Route path="/decision-signals" element={<DecisionSignalsPage />} />
-        <Route path="/screening" element={<StockScreeningPage />} />
-        <Route path="/backtest" element={<BacktestPage />} />
-        <Route path="/alerts" element={<AlertsPage />} />
-        <Route path="/usage" element={<TokenUsagePage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-    </Routes>
+    <Shell>
+      <RouteOutletBoundary />
+    </Shell>
   );
 };
 
+const routeChildren = [
+  { path: '/', element: <HomePage /> },
+  { path: '/chat', element: <ChatPage /> },
+  { path: '/portfolio', element: <PortfolioPage /> },
+  { path: '/decision-signals', element: <DecisionSignalsPage /> },
+  { path: '/screening', element: <StockScreeningPage /> },
+  { path: '/backtest', element: <BacktestPage /> },
+  { path: '/alerts', element: <AlertsPage /> },
+  { path: '/usage', element: <TokenUsagePage /> },
+  { path: '/settings', element: <SettingsPage /> },
+  { path: '*', element: <NotFoundPage /> },
+];
+
 const App: React.FC = () => {
+  // Construct the data router lazily on first mount. `createBrowserRouter`
+  // reads `window.location` at construction time, so for it to honour the
+  // current URL (especially under tests that `window.history.pushState(...)`
+  // before rendering, and to react when navigating the same module instance
+  // across different entry URLs) it must be built inside the React tree, not
+  // at module import time.
+  const router = useMemo(
+    () =>
+      createBrowserRouter([
+        {
+          element: <AppContent />,
+          children: routeChildren,
+        },
+      ]),
+    [],
+  );
+
   return (
     <UiLanguageProvider>
-      <Router>
-        <AuthProvider>
-          <AppContent />
-        </AuthProvider>
-      </Router>
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
     </UiLanguageProvider>
   );
 };
