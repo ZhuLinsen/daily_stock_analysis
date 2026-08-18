@@ -16,13 +16,13 @@
 ## 推荐对接顺序
 
 1. 先让 DSA API 长期可访问：`python main.py --serve-only` 或 Docker。GitHub Actions 只做定时任务，不长期暴露 API。
-2. 在 Grok Bot 里放一条 Skill（可直接改 [openclaw Skill](openclaw-skill-integration.md) 的 `SKILL.md` 示例）。
+2. 在 Grok Bot 里放一条 Skill（可直接改 [openclaw Skill](openclaw-skill-integration.md) 的 `SKILL.md` 示例，或用 [`docs/examples/grok_bot/SKILL.md`](examples/grok_bot/SKILL.md)）。
 3. 需要盘中盯盘 / 早报时，用 Bot Routine 调 `DecisionSignal` 查询，而不是反复跑完整分析。
 4. 只有 Bot 已经能稳定调通 HTTP 之后，才考虑把同一组接口挂到 MCP Connector。本仓库 **P0 不提供 MCP server**。
 
 ## Skill：触发个股分析
 
-与 openclaw 相同的主入口：
+与 openclaw 相同的主入口。Bot / Routine **默认 `async_mode: true`**：
 
 ```http
 POST {DSA_BASE_URL}/api/v1/analysis/analyze
@@ -32,22 +32,29 @@ Content-Type: application/json
   "stock_code": "600519",
   "report_type": "detailed",
   "force_refresh": true,
-  "async_mode": false
+  "async_mode": true
 }
 ```
 
-- 同步模式大约 2–5 分钟，HTTP 超时建议 ≥300 秒。
-- 异步：`async_mode: true` 返回 202 + `task_id`，再 `GET /api/v1/analysis/status/{task_id}`。
+- 异步：返回 202 + `task_id`，再 `GET /api/v1/analysis/status/{task_id}` 直到 `status: completed`。完成报告在 `result.report`（`TaskStatus.result` 是 `AnalysisResultResponse`），不要读响应根上的 `report`。
+- 不要在同步超时后改发异步重跑。同步超时后服务端 `_handle_sync_analysis` 仍会继续跑且不进 `TaskQueue`，再发 `async_mode: true` 会绕过队列去重，造成重复 LLM 费用与推送。
+- 仅当 HTTP 超时 ≥300 秒且用户在等单次结果时，才用 `async_mode: false`。同步响应的报告在根级 `report`。
 - 健康检查：`GET /api/health`。
 - 问股 Agent（需 `AGENT_MODE=true`）：`POST /api/v1/agent/chat`。
 
 结果读取约定（与 openclaw Skill 一致，避免平行字段）：
 
-- 自由文本：`report.summary.operation_advice`、`trend_prediction`、`analysis_summary`
+- 自由文本：`report.summary.operation_advice`、`trend_prediction`、`analysis_summary`（异步前缀 `result.`）
 - 结构化动作：可选 `action` / `action_label`（八态 `buy|add|hold|reduce|sell|watch|avoid|alert`）
 - 旧历史缺字段时回退 `operation_advice`；旧三态统计仍以 `decision_type` 为准
 
 Grok Bot Skill 正文见 [`docs/examples/grok_bot/SKILL.md`](examples/grok_bot/SKILL.md)，也可复用 [openclaw Skill](openclaw-skill-integration.md) 示例。环境变量统一为 `DSA_BASE_URL`。
+
+## Skill：大盘复盘
+
+`POST {DSA_BASE_URL}/api/v1/analysis/market-review` 固定返回 202 接受体 + `task_id`，不是复盘正文。请求体可传 `send_notification`、`region`。
+
+轮询 `GET /api/v1/analysis/status/{task_id}` 直到 `status: completed`，从 `TaskStatus` 顶层读 `market_review_report` 或 `market_review_payload`（不在 `result.report`）。
 
 ## Routine：消费 DecisionSignal
 
@@ -85,5 +92,6 @@ Grok Bot Skill 正文见 [`docs/examples/grok_bot/SKILL.md`](examples/grok_bot/S
 
 1. DSA：`python scripts/check_env.py --config`；若走 xAI 模型再跑 `python scripts/check_env.py --llm`。
 2. `GET {DSA_BASE_URL}/api/health` 成功。
-3. Bot Skill 对一只真实代码（如 `AAPL` 或 `600519`）拿到 `operation_advice` 或 `action`。
-4. Routine 能读到 `GET /api/v1/decision-signals/latest/{stock_code}` 的 JSON，而无需重跑分析。
+3. Bot Skill 对一只真实代码（如 `AAPL` 或 `600519`）拿到 `operation_advice` 或 `action`（异步路径从 `result.report` 读）。
+4. 大盘复盘能从 status 拿到 `market_review_report` 或 `market_review_payload`，而不是只拿到 202 accepted。
+5. Routine 能读到 `GET /api/v1/decision-signals/latest/{stock_code}` 的 JSON，而无需重跑分析。
