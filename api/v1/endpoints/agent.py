@@ -578,6 +578,9 @@ async def agent_chat_stream(
 
     async def event_generator():
         fut = None
+        intent_confirmed = False
+        web_intent_session: Any = None
+        web_intent_resolution: Any = None
 
         def _accepted_event() -> dict:
             # accepted 是流协议的第一条事件（提交边界）：Web store 只有在收到
@@ -612,9 +615,6 @@ async def agent_chat_stream(
                 # accepted 首事件已在此块之前发出：意图解析即使触发 LLM 兜底
                 # （8s 超时 + 一次重试）也不会推迟前端用户气泡的渲染。
                 # ============================================================
-                intent_confirmed = False
-                web_intent_session: Any = None
-                web_intent_resolution: Any = None
                 if getattr(config, "agent_web_intent_enabled", False):
                     try:
                         # ---- 延迟 import，避免非 Web 场景加载意图模块 ----
@@ -625,7 +625,7 @@ async def agent_chat_stream(
                             build_action_required_event,    # 构建“需用户确认”SSE 事件
                             build_clarification_message,    # 构建澄清问题文本
                             build_intent_resolved_event,    # 构建“意图已解析”SSE 事件
-                            clear_pending_actions,          # 确认流程失败时清理待确认状态
+                            clear_pending_actions,          # 确认流程失败/新请求被拒时清理待确认状态
                         )
                         # 获取或创建当前会话（session_id 唯一标识一次对话）
                         web_intent_session = conversation_manager.get_or_create(session_id)
@@ -764,7 +764,9 @@ async def agent_chat_stream(
                     # prepare_turn 是服务端持久化提交点：意图层上下文必须等它
                     # 成功后才写入会话。若 prepare_turn 失败，上面的异常路径只发
                     # request_not_accepted，会话 recent_stocks / last_intent 保持
-                    # 不变，避免被拒绝的请求污染后续追问解释。
+                    # 不变，避免被拒绝的请求污染后续追问解释；上一轮遗留的
+                    # pending_actions 会在外层 except 中清空，确认窗口随本轮
+                    # 新请求关闭。
                     if web_intent_session is not None and web_intent_resolution is not None:
                         try:
                             apply_resolution_to_session(web_intent_session, web_intent_resolution)
@@ -777,6 +779,23 @@ async def agent_chat_stream(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # 新请求被拒（request_not_accepted）同样意味着上一轮遗留的
+                # 确认窗口已关闭：只要本轮意图解析成功且不是确认回复，就清掉
+                # 旧的 pending_actions，避免下一轮无关消息被误消费为陈旧确认。
+                if (
+                    web_intent_session is not None
+                    and web_intent_resolution is not None
+                    and getattr(web_intent_resolution, "source", None) != "confirmation"
+                ):
+                    try:
+                        from src.agent.web_intent_resolver import clear_pending_actions
+                        clear_pending_actions(web_intent_session)
+                    except Exception:
+                        logger.warning(
+                            "Failed to clear stale pending intent actions "
+                            "after request_not_accepted",
+                            exc_info=True,
+                        )
                 logger.error("Agent request preparation failed: %s", exc, exc_info=True)
                 event = {
                     "type": "error",

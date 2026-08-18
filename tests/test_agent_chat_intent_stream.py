@@ -389,7 +389,8 @@ def test_prepare_turn_failure_keeps_session_context_unchanged() -> None:
     意图解析器在 prepare_turn 之前已完成分类（例如"分析一下贵州茅台" →
     600519 / stock_research），但 prepare_turn 失败时端点只发送
     request_not_accepted 终态；该请求不应被视作已接受的会话边界，因此
-    recent_stocks / last_intent / pending_actions 必须保持解析前的状态，
+    recent_stocks / last_intent 必须保持解析前的状态；上一轮遗留的
+    pending_actions 则会被清空（本用例预置为空，所以整体快照仍不变），
     否则下一轮追问（如"它还能涨吗"）会继承一个被拒绝请求的股票上下文。
     """
     config = _intent_config()
@@ -427,6 +428,63 @@ def test_prepare_turn_failure_keeps_session_context_unchanged() -> None:
     assert executor.prepare_turn.call_args.kwargs["context"]["stock_code"] == "600519"
     # 但会话上下文必须保持解析前的快照：被拒绝的请求不得成为后续追问的上下文
     assert session.context == context_before
+
+
+def test_prepare_turn_failure_clears_stale_confirm_pending() -> None:
+    """prepare_turn 失败且本轮为新请求时，必须清空上一轮遗留 pending_actions。
+
+    复现：第 1 轮歧义请求写入 confirm_stock 待确认动作；第 2 轮新请求
+    （如"分析一下贵州茅台"）被意图层判定为显式股票，但 prepare_turn 抛错
+    走到 request_not_accepted。若不清空 pending_actions，第 3 轮无关消息
+    会被 _consume_pending_action 误当成第 1 轮的确认回复，执行旧的歧义股票。
+    """
+    config = _intent_config()
+    executor = _executor(_result())
+    executor.prepare_turn.side_effect = RuntimeError("prepare_turn failed")
+    session = ConversationSession(session_id="prepare-fail-stale-pending-session")
+    session.update_context("recent_stocks", ["000001"])
+    session.update_context("last_intent", WebIntent.GENERAL_CHAT)
+    stale_pending = _ambiguous_resolution().pending_action
+    session.update_context("pending_actions", [stale_pending])
+
+    async def exercise() -> list[dict]:
+        with patch("api.v1.endpoints.agent.get_config", return_value=config), \
+             patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
+             patch("src.agent.conversation.conversation_manager") as cm, \
+             patch("src.agent.web_intent_resolver.WebIntentResolver") as resolver_cls, \
+             patch("api.v1.endpoints.agent._build_executor", return_value=executor):
+            cm.get_or_create.return_value = session
+            resolver_cls.return_value.resolve.return_value = _simple_resolution()
+            return await _collect_stream_events(
+                agent_endpoint.ChatRequest(
+                    message="分析一下贵州茅台",
+                    session_id=session.session_id,
+                )
+            )
+
+    events = asyncio.run(exercise())
+
+    assert [event["type"] for event in events] == ["accepted", "error"]
+    terminal = events[-1]
+    assert terminal["type"] == "error"
+    assert terminal["error_code"] == "request_not_accepted"
+    executor.execute_turn.assert_not_called()
+    # 意图解析确实发生在 prepare_turn 之前（stock_code 已注入请求上下文）
+    assert executor.prepare_turn.call_args.kwargs["context"]["stock_code"] == "600519"
+    # 被拒的新请求不污染 recent_stocks / last_intent
+    assert session.context["recent_stocks"] == ["000001"]
+    assert session.context["last_intent"] == WebIntent.GENERAL_CHAT
+    # 但上一轮遗留的确认窗口必须关闭
+    assert session.context["pending_actions"] == []
+
+    # 复核反馈反例：后续无关消息不再被消费为确认回复
+    follow_up = WebIntentResolver(None).resolve(
+        "港股",
+        session_context=session.context,
+        request_context={},
+    )
+    assert follow_up.source != "confirmation"
+    assert not follow_up.needs_confirmation
 
 
 def test_prepare_turn_success_commits_intent_context() -> None:

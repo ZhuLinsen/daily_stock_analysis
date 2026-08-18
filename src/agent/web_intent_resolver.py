@@ -1735,12 +1735,14 @@ def apply_resolution_to_session(session: Any, resolution: WebIntentResolution) -
 
 
 def clear_pending_actions(session: Any) -> None:
-    """清除会话中残留的待确认动作（确认流程失败时的清理入口）。
+    """清除会话中残留的待确认动作（确认流程失败/新请求被拒时的清理入口）。
 
     apply_resolution_to_session 在 needs_confirmation 时先把 pending_actions
     写入会话；若随后澄清文本构建 / 会话历史写入失败，端点短路返回错误，
     必须同步清掉已写入的待确认状态，否则下一轮消息会被 _consume_pending_action
-    误当成上一轮失败确认流程的回复，执行旧的歧义请求。
+    误当成上一轮失败确认流程的回复，执行旧的歧义请求。同样地，当一条全新请求
+    被服务端拒绝（request_not_accepted）时，上一轮遗留的确认窗口也已关闭，
+    端点也会调用本函数清理陈旧 pending_actions。
     """
     context = getattr(session, "context", None)
     if not isinstance(context, dict):
