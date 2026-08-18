@@ -281,6 +281,46 @@ class TestAgentExecutor(unittest.TestCase):
         assert messages[-1] == {"role": "user", "content": "当前问题"}
         assert captured["stock_scope"].expected_stock_code == "600519"
 
+    def test_chat_confirmed_compare_turn_renders_resolved_codes_and_scope(self):
+        """确认消费轮（OR-COR-1f4c2d7a）：确认回复"港股"不含任何代码，
+        意图层注入的已解析比较对必须同时进入上下文渲染与工具作用域，
+        否则范围守卫无范围可依、后端也不知道本轮该分析哪些标的。
+        """
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter._config = MagicMock()
+        executor = AgentExecutor(registry, adapter, max_steps=2)
+        captured = {}
+
+        def fake_run_loop(messages, tool_decls, parse_dashboard, progress_callback=None, stock_scope=None):
+            captured["messages"] = messages
+            captured["stock_scope"] = stock_scope
+            return AgentResult(success=True, content="assistant reply")
+
+        with patch.object(executor, "_run_loop", side_effect=fake_run_loop):
+            with patch(
+                "src.agent.executor.build_agent_chat_context_bundle",
+                return_value=SimpleNamespace(context_messages=[], diagnostics={}),
+            ):
+                with patch("src.agent.conversation.conversation_manager.get_or_create"):
+                    with patch("src.agent.conversation.conversation_manager.add_message"):
+                        executor.chat(
+                            "港股",
+                            "session-confirm-compare",
+                            context={
+                                "resolved_stock_codes": ["09988", "00700"],
+                                "web_intent_original_request": "对比阿里巴巴和腾讯控股",
+                            },
+                        )
+
+        context_message = captured["messages"][1]["content"]
+        assert "本轮已确认的分析标的: 09988、00700" in context_message
+        assert "原始请求：对比阿里巴巴和腾讯控股" in context_message
+        scope = captured["stock_scope"]
+        assert scope.mode == "compare"
+        assert scope.expected_stock_code == ""
+        assert scope.allowed_stock_codes == {"HK09988", "HK00700"}
+
     def test_chat_switches_effective_context_and_clears_previous_stock_fields(self):
         registry = _make_registry_with_echo()
         adapter = _make_mock_adapter()
@@ -421,6 +461,35 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(result.stock_scope.mode, "maintain")
         self.assertEqual(result.effective_context["stock_code"], "600519")
         self.assertEqual(result.stock_scope.allowed_stock_codes, {"600519"})
+
+    def test_resolved_stock_codes_build_compare_scope_without_message_codes(self):
+        # 确认消费轮：确认回复（如"港股"）不含代码，意图层注入的已解析
+        # 比较对必须独立构建比较作用域（默认与 strict 初始模式行为一致）
+        context = {"resolved_stock_codes": ["09988", "00700"]}
+
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                result = resolve_stock_scope("港股", context, strict_initial_scope=strict)
+
+                self.assertEqual(result.stock_scope.mode, "compare")
+                self.assertEqual(result.stock_scope.expected_stock_code, "")
+                # 5 位港股代码按守卫规范格式（HK 前缀）进入允许集合
+                self.assertEqual(result.stock_scope.allowed_stock_codes, {"HK09988", "HK00700"})
+                # 注入键只参与作用域推导，不得流入下游 effective_context
+                self.assertNotIn("resolved_stock_codes", result.effective_context)
+
+    def test_resolved_stock_codes_merge_with_message_codes(self):
+        # 确认回复顺带提及其他显式代码时，与注入比较对合并且范围不缩水
+        result = resolve_stock_scope(
+            "顺带看下600519",
+            {"resolved_stock_codes": ["09988", "00700"]},
+        )
+
+        self.assertEqual(result.stock_scope.mode, "compare")
+        self.assertEqual(
+            result.stock_scope.allowed_stock_codes,
+            {"HK09988", "HK00700", "600519"},
+        )
 
     def test_run_agent_loop_does_not_persist_agent_usage_without_provider_usage(self):
         registry = _make_registry_with_echo()

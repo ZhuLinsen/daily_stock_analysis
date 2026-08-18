@@ -189,14 +189,23 @@ def resolve_stock_scope(
     current_code = _normalize_stock_code(original_context.get("stock_code"))
     invalid_context_code = bool(current_code and _is_denied_candidate(current_code, message_text))
     original_context.pop("allowed_stock_codes", None)
+    # 意图层已解析的股票（确认消费轮的多股比较对）：确认回复（如"港股"）
+    # 本身不含任何代码，这些代码作为显式候选参与作用域推导，且不得流入
+    # 下游 effective_context。
+    resolved_codes: List[str] = []
+    for code in (original_context.pop("resolved_stock_codes", None) or []):
+        normalized = _normalize_stock_code(code)
+        if normalized and normalized not in resolved_codes:
+            resolved_codes.append(normalized)
     if invalid_context_code:
         original_context.pop("stock_code", None)
         original_context.pop("stock_name", None)
         current_code = ""
 
     if not current_code:
-        if invalid_context_code or strict_initial_scope:
+        if invalid_context_code or strict_initial_scope or resolved_codes:
             candidates = extract_stock_codes(message_text)
+            candidates.extend(code for code in resolved_codes if code not in candidates)
             if strict_initial_scope and not invalid_context_code and not candidates:
                 return StockScopeResolution(
                     effective_context=_with_skills(original_context, skills),
@@ -223,6 +232,7 @@ def resolve_stock_scope(
         )
 
     candidates = extract_stock_codes(message_text)
+    candidates.extend(code for code in resolved_codes if code not in candidates)
     new_candidates = [code for code in candidates if code != current_code]
     mode = "maintain"
     effective_context = dict(original_context)

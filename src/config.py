@@ -1005,6 +1005,7 @@ class Config:
     agent_skills: List[str] = field(default_factory=list)
     agent_skill_dir: Optional[str] = None
     agent_nl_routing: bool = False  # Enable natural language routing in bot dispatcher
+    agent_web_intent_enabled: bool = True  # Enable intent recognition layer in web chat SSE stream
     agent_arch: str = "single"     # Agent architecture: 'single' (legacy) or 'multi' (orchestrator)
     agent_orchestrator_mode: str = "standard"  # Orchestrator mode: quick/standard/full/specialist
     agent_orchestrator_timeout_s: int = 600  # Cooperative timeout budget for the whole multi-agent pipeline
@@ -1921,6 +1922,7 @@ class Config:
             agent_skills=[s.strip() for s in os.getenv('AGENT_SKILLS', '').split(',') if s.strip()],
             agent_skill_dir=os.getenv('AGENT_SKILL_DIR') or os.getenv('AGENT_STRATEGY_DIR'),
             agent_nl_routing=os.getenv('AGENT_NL_ROUTING', 'false').lower() == 'true',
+            agent_web_intent_enabled=os.getenv('AGENT_WEB_INTENT_ENABLED', 'true').lower() == 'true',
             agent_arch=os.getenv('AGENT_ARCH', 'single').lower(),
             agent_orchestrator_mode=os.getenv('AGENT_ORCHESTRATOR_MODE', 'standard').lower(),
             agent_orchestrator_timeout_s=parse_env_int(

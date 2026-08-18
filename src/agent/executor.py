@@ -583,8 +583,8 @@ def prepare_agent_chat(
             )
         )
 
+    context_parts = []
     if effective_context:
-        context_parts = []
         if effective_context.get("stock_code"):
             context_parts.append(f"股票代码: {effective_context['stock_code']}")
         if effective_context.get("stock_name"):
@@ -613,19 +613,32 @@ def prepare_agent_chat(
         )
         if market_structure_section:
             context_parts.append(market_structure_section.strip())
-        if context_parts:
-            history_messages.extend(
-                [
-                    {
-                        "role": "user",
-                        "content": "[系统提供的历史分析上下文，可供参考对比]\n" + "\n".join(context_parts),
-                    },
-                    {
-                        "role": "assistant",
-                        "content": "好的，我已了解该股票的历史分析数据。请告诉我你想了解什么？",
-                    },
-                ]
-            )
+    # 确认消费轮注入的已解析比较对：确认回复（如"港股"）不含代码，
+    # 工具作用域又只放行这些代码，必须显式告知后端本轮标的与原始请求
+    resolved_stock_codes = [
+        str(code).strip()
+        for code in ((context or {}).get("resolved_stock_codes") or [])
+        if isinstance(code, str) and code.strip()
+    ]
+    if resolved_stock_codes:
+        confirmed_line = "本轮已确认的分析标的: " + "、".join(resolved_stock_codes)
+        original_request = str((context or {}).get("web_intent_original_request") or "").strip()
+        if original_request:
+            confirmed_line += f"（原始请求：{original_request}）"
+        context_parts.append(confirmed_line)
+    if context_parts:
+        history_messages.extend(
+            [
+                {
+                    "role": "user",
+                    "content": "[系统提供的历史分析上下文，可供参考对比]\n" + "\n".join(context_parts),
+                },
+                {
+                    "role": "assistant",
+                    "content": "好的，我已了解该股票的历史分析数据。请告诉我你想了解什么？",
+                },
+            ]
+        )
 
     return PreparedAgentChat(
         system_prompt=system_prompt,

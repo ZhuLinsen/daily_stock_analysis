@@ -42,6 +42,9 @@ Unknown event types should be ignored or displayed with a generic fallback.
 
 | Type | Producer | Meaning | Important Fields |
 | --- | --- | --- | --- |
+| `accepted` | SSE endpoint | The stream commit boundary and mandatory first event. It is emitted immediately, before executor construction, web intent resolution (`intent_resolved` LLM fallback / stock-name downloads) and `prepare_turn`, so the Web store renders the user message bubble right away instead of waiting for intent resolution or agent analysis. | `backend`, `request_id`, `session_id` |
+| `intent_resolved` | web intent resolver (SSE endpoint) | The web intent layer classified the message before any agent work started. Emitted after `accepted` (the stream commit boundary) when `AGENT_WEB_INTENT_ENABLED=true`. | `intent`, `confidence`, `source`, `stock_codes`, `candidates`, `inherited_stock_code`, `needs_confirmation` |
+| `action_required` | web intent resolver (SSE endpoint) | The intent layer will not execute yet: the user must confirm an ambiguous stock pick or a low-confidence intent. A `done` event with the clarification question as `content` follows immediately. The confirmation branch emits the full sequence `accepted` → `intent_resolved` → `action_required` → `done`; `accepted` remains the mandatory first event so existing Web stores do not treat clarification as a protocol error. | `action`, `intent`, `reason`, `candidates`, `unresolved_names`, `message` |
 | `stage_start` | single-agent loop, multi-agent orchestrator | An agent or pipeline stage has started. | `stage`, `message` |
 | `stage_done` | single-agent loop, multi-agent orchestrator | An agent or pipeline stage has completed. | `stage`, `status`, `duration` |
 | `thinking` | single-agent loop | The agent is deciding the next action. | `step`, `message` |
@@ -83,7 +86,7 @@ are mock identifiers only.
 Recommended checks for changes to this contract:
 
 ```bash
-python -m pytest tests/test_agent_stream_events.py tests/test_agent_sse_cleanup.py
+python -m pytest tests/test_agent_stream_events.py tests/test_agent_sse_cleanup.py tests/test_web_intent_resolver.py tests/test_agent_chat_intent_stream.py
 ```
 
 ```bash

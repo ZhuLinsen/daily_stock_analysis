@@ -423,10 +423,18 @@ def test_agent_models_does_not_hide_unexpected_backend_resolution_errors() -> No
         asyncio.run(agent_endpoint.get_agent_models())
 
 
-def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> None:
+def test_stream_emits_accepted_before_preparing_then_starts_backend() -> None:
+    """accepted 必须是首事件，且先于 prepare_turn 发出。
+
+    前端 store 只在收到 accepted 后才把用户消息渲染成气泡；若 accepted 被
+    延迟到意图解析（LLM 兜底 8s 超时 + 一次重试）或 prepare_turn 之后才发，
+    用户输入的气泡会被拖到解析/准备完成后才显示。本测试锁定新契约：
+    首事件为 accepted、且此刻 prepare_turn 尚未被调用；prepare/持久化仍
+    发生在 execute_turn 之前（提交边界语义不变）。
+    """
     executor = _executor(_result(backend="codex_app_server"))
 
-    async def exercise() -> dict:
+    async def exercise() -> tuple[dict, list[dict]]:
         with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
              patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
              patch("api.v1.endpoints.agent._get_agent_chat_status", side_effect=AssertionError("status probe repeated")), \
@@ -442,24 +450,31 @@ def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> N
             )
             iterator = response.body_iterator
             first = json.loads((await anext(iterator)).removeprefix("data: ").strip())
-            executor.prepare_turn.assert_called_once_with(
-                message="分析 AAPL",
-                session_id="accepted-session",
-                context={"stock_code": "AAPL", "report_language": "zh"},
-                selected_skill_ids=None,
-            )
+            # 首事件先于 prepare_turn：此刻生成器只 yield 了 accepted，
+            # executor 构建 / prepare_turn 均尚未执行。
+            executor.prepare_turn.assert_not_called()
             executor.execute_turn.assert_not_called()
-            await iterator.aclose()
-            return first
+            rest = [
+                json.loads(chunk.removeprefix("data: ").strip())
+                async for chunk in iterator
+            ]
+            return first, rest
 
-    first_event = asyncio.run(exercise())
+    first_event, rest_events = asyncio.run(exercise())
     assert first_event == {
         "type": "accepted",
         "backend": "codex_app_server",
         "request_id": "accepted-request",
         "session_id": "accepted-session",
     }
-    executor.execute_turn.assert_not_called()
+    assert [event["type"] for event in rest_events] == ["done"]
+    executor.prepare_turn.assert_called_once_with(
+        message="分析 AAPL",
+        session_id="accepted-session",
+        context={"stock_code": "AAPL", "report_language": "zh"},
+        selected_skill_ids=None,
+    )
+    executor.execute_turn.assert_called_once()
 
 
 def test_stream_forwards_normalized_skill_selection_to_prepare_turn() -> None:
@@ -564,7 +579,13 @@ def test_codex_stream_skill_resolution_failure_does_not_register_request() -> No
 
 
 @pytest.mark.parametrize("failure", ["context preparation failed", "database write failed"])
-def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(failure: str) -> None:
+def test_stream_preparation_failure_keeps_accepted_first_and_never_starts_backend(failure: str) -> None:
+    """准备失败时 accepted 首事件契约保持不变，且绝不启动后端执行。
+
+    accepted 是流协议的首事件，即使 prepare_turn 失败也必须先发出
+    （前端先渲染用户气泡，再消费随后的 error 终态）；失败路径序列为
+    accepted → error（error_code=request_not_accepted），execute_turn 绝不执行。
+    """
     executor = _executor()
     executor.prepare_turn.side_effect = RuntimeError(failure)
 
@@ -582,8 +603,9 @@ def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(f
             ]
 
     events = asyncio.run(exercise())
-    assert [event["type"] for event in events] == ["error"]
-    assert events[0]["error_code"] == "request_not_accepted"
+    assert [event["type"] for event in events] == ["accepted", "error"]
+    assert events[0]["type"] == "accepted"
+    assert events[1]["error_code"] == "request_not_accepted"
     executor.execute_turn.assert_not_called()
 
 

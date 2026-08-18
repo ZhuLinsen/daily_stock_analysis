@@ -12,6 +12,26 @@ import pytest
 from unittest.mock import patch
 from src.services.name_to_code_resolver import resolve_name_to_code
 
+
+@pytest.fixture(autouse=True)
+def _restore_resolver_state():
+    """快照/还原 name_to_code_resolver 模块级可变状态，防止基准用例的
+    AkShare mock 数据（extend_AkShare 合并进全局 stockDB 并置位
+    _akshare_merged）泄漏给同进程内后续运行的测试文件。"""
+    from src.services import name_to_code_resolver as resolver_mod
+
+    db = dict(resolver_mod.stockDB)
+    cache = resolver_mod._akshare_cache
+    merged = resolver_mod._akshare_merged
+    yield
+    resolver_mod.stockDB.clear()
+    resolver_mod.stockDB.update(db)
+    resolver_mod._akshare_cache = cache
+    resolver_mod._akshare_merged = merged
+    # stockDB 原地增删，按对象身份缓存的名称/拼音列表可能已陈旧，强制重建
+    resolver_mod._database_names_cache[:] = [None, None, None]
+
+
 class TestSearchPerformance:
     """Benchmark tests for stock search resolution."""
 

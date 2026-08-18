@@ -481,6 +481,15 @@ async def agent_chat_stream(
     """
     Chat with the AI Agent, streaming progress via SSE.
     Each SSE event is a JSON object with a 'type' field:
+      - accepted: 请求已被接收（流协议提交边界，始终为第一条事件，
+        包括意图确认分支）；在意图识别与 prepare_turn 之前立即发出，
+        前端收到后立刻渲染用户消息气泡，无需等待意图解析或 AI 分析
+      - intent_resolved: Web 意图层已完成消息分类（在 accepted 之后发出）
+      - action_required: 意图层判定需要用户确认后执行（多候选股票
+        或低置信度）；客户端应展示确认界面，用户确认后重新发消息。
+        该事件后紧跟一个 'done' 事件，其 'content' 字段携带澄清问题文本。
+        确认分支的完整事件序列为 accepted → intent_resolved →
+        action_required → done（不发 accepted 会被 Web store 判为协议错误）
       - thinking: AI is deciding next action
       - stage_start: an agent or orchestrator stage has begun
       - stage_done: an agent or orchestrator stage finished
@@ -569,16 +578,202 @@ async def agent_chat_stream(
 
     async def event_generator():
         fut = None
+
+        def _accepted_event() -> dict:
+            # accepted 是流协议的第一条事件（提交边界）：Web store 只有在收到
+            # 它之后才会渲染用户消息气泡，因此必须在任何耗时准备之前发出——
+            # 意图解析的 LLM 兜底（8s 超时 + 一次重试）、AkShare 扩展下载、
+            # executor 构建与 prepare_turn 持久化都发生在它之后。否则用户输入
+            # （如"分析三花"触发 LLM 兜底时）要等解析完成才显示气泡。
+            return {
+                "type": "accepted",
+                "backend": backend_id,
+                "request_id": request_id,
+                "session_id": session_id,
+            }
+
         try:
+            # accepted 首事件立即送达：前端无需等待意图识别或 AI 分析即可
+            # 渲染用户消息。后续所有分支（正常执行 / 确认短路 / 确认失败 /
+            # 准备失败）都只消费这一个 accepted，绝不重复发出。
+            yield "data: " + json.dumps(_accepted_event(), ensure_ascii=False) + "\n\n"
+
             try:
                 executor = await asyncio.to_thread(_build_executor, config, skills or None)
-                turn = await asyncio.to_thread(
-                    executor.prepare_turn,
-                    message=request.message,
-                    session_id=session_id,
-                    context=stream_ctx,
-                    selected_skill_ids=selected_skill_ids,
-                )
+
+                # ============================================================
+                # Web 意图识别层（issue #1125 需求方向）
+                # 在 Agent 编排前对用户消息做意图分类，发 intent_resolved 事件；
+                # 需用户确认时（多候选股票 / 低置信度）短路返回 action_required，避免未确认即执行分析。
+                # getattr 默认值 False：测试/机器人等临时 Config 走原有路径；
+                # 正式环境 Config（settings.json / env）默认开启此开关。
+                # 必须位于 prepare_turn 之前：解析注入的 stock_code/web_intent
+                # 写入 stream_ctx 后，prepare_agent_chat 在 prepare 阶段才会固化股票作用域。
+                # accepted 首事件已在此块之前发出：意图解析即使触发 LLM 兜底
+                # （8s 超时 + 一次重试）也不会推迟前端用户气泡的渲染。
+                # ============================================================
+                intent_confirmed = False
+                web_intent_session: Any = None
+                web_intent_resolution: Any = None
+                if getattr(config, "agent_web_intent_enabled", False):
+                    try:
+                        # ---- 延迟 import，避免非 Web 场景加载意图模块 ----
+                        from src.agent.conversation import conversation_manager
+                        from src.agent.web_intent_resolver import (
+                            WebIntentResolver,              # 意图解析器：分类 + 股票消歧
+                            apply_resolution_to_session,    # 将解析结果写入会话上下文
+                            build_action_required_event,    # 构建“需用户确认”SSE 事件
+                            build_clarification_message,    # 构建澄清问题文本
+                            build_intent_resolved_event,    # 构建“意图已解析”SSE 事件
+                            clear_pending_actions,          # 确认流程失败时清理待确认状态
+                        )
+                        # 获取或创建当前会话（session_id 唯一标识一次对话）
+                        web_intent_session = conversation_manager.get_or_create(session_id)
+
+                        def _resolve_web_intent() -> Any:
+                            # 意图解析可能触发 LLM 兜底（同步网络调用：8s 超时 +
+                            # 一次重试）或 AkShare 扩展下载，必须在工作线程执行，
+                            # 否则会阻塞 SSE 事件循环。
+
+                            return WebIntentResolver(config).resolve(
+                                request.message,              # 用户原始输入
+                                session_context=web_intent_session.context,  # 会话历史上下文
+                                request_context=stream_ctx,       # 请求级上下文（skills 等）
+                            )
+
+                        web_intent_resolution = await asyncio.to_thread(_resolve_web_intent)
+
+                        # ---- 需要用户确认的分支 ----
+                        if web_intent_resolution.needs_confirmation:
+                            # 一旦判定需要确认，立即短路：确认分支内任何一步失败
+                            # 都绝不退回 Agent 执行，否则会绕过“未确认不执行”安全门，
+                            # 对歧义请求直接分析。
+                            intent_confirmed = True
+                            try:
+                                # 构建澄清问题文本（如“您是指招商银行还是招商证券？”）
+                                clarification = build_clarification_message(web_intent_resolution)
+                                # 将用户原始消息和澄清回复写入会话历史（本地 SQLite 写，
+                                # 移出事件循环线程，与意图解析保持一致）
+                                await asyncio.to_thread(
+                                    conversation_manager.add_message,
+                                    session_id,
+                                    "user",
+                                    request.message,
+                                )
+                                await asyncio.to_thread(
+                                    conversation_manager.add_message,
+                                    session_id,
+                                    "assistant",
+                                    clarification,
+                                )
+                                # 确认分支的服务器持久化（user + assistant 会话历史）
+                                # 已成功，此时才把意图层上下文写入会话，保证 Web 状态
+                                # 与服务器持久化共享同一提交点。
+                                apply_resolution_to_session(web_intent_session, web_intent_resolution)
+                                # accepted 首事件已在流开头发出（首事件契约），
+                                # 确认分支只需按序补发后续事件；确认分支已处于
+                                # 事件循环线程内：直接同步入队，保证
+                                # intent_resolved → action_required → done 顺序送达。
+                                # 不能用 progress_callback：其 run_coroutine_threadsafe
+                                # 只是调度，会被紧随其后的 done 抢先消费，导致
+                                # action_required 永远到不了前端确认界面。
+                                await queue.put(build_intent_resolved_event(web_intent_resolution))
+                                await queue.put(build_action_required_event(web_intent_resolution))
+                                # 发送 done 事件结束本次 SSE 流（content 携带澄清文本）
+                                await queue.put({
+                                    "type": "done",
+                                    "success": True,
+                                    "content": clarification,
+                                    "error": None,
+                                    "total_steps": 0,       # 未执行分析步骤
+                                    "session_id": session_id,
+                                })
+                            except Exception:
+                                # 确认分支失败（如会话历史写入异常）仍保持短路：
+                                # 绝不执行未确认的歧义请求，发兜底终端事件结束流。
+                                # 同时清空已写入会话的待确认动作，避免下一轮消息
+                                # 被误当成本轮失败确认流程的回复而执行旧歧义请求。
+                                # 清理本身失败也只记警告，不改变"确认失败仅 error
+                                # 终态"的短路契约。
+                                try:
+                                    clear_pending_actions(web_intent_session)
+                                except Exception:
+                                    logger.warning(
+                                        "Failed to clear pending intent actions "
+                                        "after confirmation branch failure",
+                                        exc_info=True,
+                                    )
+                                logger.warning(
+                                    "Web intent confirmation branch failed, "
+                                    "skipping analysis of unconfirmed request",
+                                    exc_info=True,
+                                )
+                                await queue.put({
+                                    "type": "error",
+                                    "message": "无法完成该请求的确认流程，请稍后重试",
+                                    "error_code": "confirmation_failed",
+                                    "backend": backend_id,
+                                    "request_id": request_id,
+                                })
+
+                        # ---- 意图已确定，无需确认的分支 ----
+                        else:
+                            # 推送意图解析结果事件到 SSE 流（非确认分支经后续
+                            # await to_thread 挂起点被执行，仍按序送达）
+                            progress_callback(build_intent_resolved_event(web_intent_resolution))
+                            # 将解析出的主股票代码注入上下文（#1619 股票作用域锁定），
+                            # 后续追问或仅提股票名的消息自动锁定同一只股票。
+                            primary_code = web_intent_resolution.primary_stock_code
+                            if primary_code and not stream_ctx.get("stock_code"):
+                                # 仅在上下文未指定 stock_code 时才覆盖（显式传入优先）
+                                stream_ctx["stock_code"] = primary_code
+                            # 将解析出的意图类型写入上下文，供编排器按意图分流策略
+                            stream_ctx["web_intent"] = web_intent_resolution.intent
+                            # 确认消费轮的多股比较：确认回复本身（如"港股"）不带
+                            # 任何代码，primary_stock_code 又为空串；已解析的比较对
+                            # 与原始请求必须显式注入本轮上下文，否则 prepare_turn
+                            # 只看到裸确认回复，无法构建比较作用域，工具调用不再
+                            # 受比较对约束，退化为泛市场追问或单股回答。
+                            if web_intent_resolution.source == "confirmation":
+                                resolved_codes = [
+                                    stock.code
+                                    for stock in web_intent_resolution.stocks
+                                    if getattr(stock, "code", "")
+                                ]
+                                if len(resolved_codes) >= 2:
+                                    stream_ctx["resolved_stock_codes"] = resolved_codes
+                                    if web_intent_resolution.original_request:
+                                        stream_ctx["web_intent_original_request"] = (
+                                            web_intent_resolution.original_request
+                                        )
+                    except Exception:
+                        # 意图解析失败时降级：记录警告，继续走原有编排流程
+                        logger.warning(
+                            "Web intent resolution failed, continuing without it",
+                            exc_info=True,
+                        )
+
+                if not intent_confirmed:
+                    turn = await asyncio.to_thread(
+                        executor.prepare_turn,
+                        message=request.message,
+                        session_id=session_id,
+                        context=stream_ctx,
+                        selected_skill_ids=selected_skill_ids,
+                    )
+                    # prepare_turn 是服务端持久化提交点：意图层上下文必须等它
+                    # 成功后才写入会话。若 prepare_turn 失败，上面的异常路径只发
+                    # request_not_accepted，会话 recent_stocks / last_intent 保持
+                    # 不变，避免被拒绝的请求污染后续追问解释。
+                    if web_intent_session is not None and web_intent_resolution is not None:
+                        try:
+                            apply_resolution_to_session(web_intent_session, web_intent_resolution)
+                        except Exception:
+                            logger.warning(
+                                "Failed to persist web intent session context "
+                                "after turn preparation; continuing without it",
+                                exc_info=True,
+                            )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -593,17 +788,10 @@ async def agent_chat_stream(
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                 return
 
-            accepted_event = {
-                "type": "accepted",
-                "backend": backend_id,
-                "request_id": request_id,
-                "session_id": session_id,
-            }
-            yield "data: " + json.dumps(accepted_event, ensure_ascii=False) + "\n\n"
-
-            # Backend execution starts only after the accepted event has been
-            # yielded, so Web state and server persistence share one commit point.
-            fut = loop.run_in_executor(None, run_sync, executor, turn)
+            if not intent_confirmed:
+                # accepted 首事件已在流开头发出；prepare_turn 完成（含会话
+                # 持久化）后才启动后端执行，提交边界语义保持不变。
+                fut = loop.run_in_executor(None, run_sync, executor, turn)
             while True:
                 try:
                     if backend_id == "codex_app_server":
