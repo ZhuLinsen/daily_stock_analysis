@@ -1,6 +1,8 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { useBlocker } from 'react-router-dom';
+import type { Location } from 'react-router-dom';
 import { useAuth, useSystemConfig } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
@@ -1086,6 +1088,30 @@ const SettingsPage: React.FC = () => {
     };
   }, [effectiveHasDirty, t]);
 
+  // Issue #1948 acceptance point 4 (in-app navigation): also guard SPA route
+  // changes (sidebar / top NavLink clicks, programmatic navigate(), browser
+  // back/forward). React Router's `useBlocker` only works under a data
+  // router (createBrowserRouter + RouterProvider, see App.tsx). We use the
+  // `BlockerFunction` shape so that:
+  //   - dirty=false clears any pending blocker and never blocks (covers
+  //     "save success / reset / dirty drops to zero => immediately unblock"
+  //     per reviewer contract point 5),
+  //   - we never block a navigation that originates from the same settings
+  //     pathname (e.g. switching the active settings category tab via
+  //     `setActiveCategory` stays inside /settings).
+  const settingsBlocker = useBlocker(
+    useCallback(
+      ({ currentLocation, nextLocation }: { currentLocation: Location; nextLocation: Location }) =>
+        effectiveHasDirty && nextLocation.pathname !== '/settings'
+        // Only block when actually leaving /settings. Reload-stay on
+        // /settings?foo=bar (search-only change on the same pathname) would
+        // otherwise prompt unnecessarily.
+        ? nextLocation.pathname !== currentLocation.pathname
+        : false,
+      [effectiveHasDirty],
+    ),
+  );
+
 
   const handleSchedulerRuntimeStateChange = useCallback(({ runtimeEnabled, overrideEnabled }: {
     runtimeEnabled: boolean | null;
@@ -1922,6 +1948,27 @@ const SettingsPage: React.FC = () => {
         }}
         onCancel={() => {
           setShowImportConfirm(false);
+        }}
+      />
+      <ConfirmDialog
+        isOpen={settingsBlocker.state === 'blocked'}
+        title={t('settings.unsavedChangesTitle')}
+        message={t('settings.unsavedChangesMessage')}
+        confirmText={t('settings.unsavedChangesDiscard')}
+        cancelText={t('common.cancel')}
+        onConfirm={() => {
+          // Discard the in-memory draft first so we don't carry stale
+          // overrides back into the next visit; this honours the reviewer
+          // contract point 4 ("选择离开时清除/放弃本次草稿后继续原目标
+          // 导航"). Calling resetDraft flips `effectiveHasDirty` to false,
+          // which also lets `useBlocker`'s underlying blocker transition to
+          // `unblocked` cleanly before `proceed()` re-runs the pending
+          // navigation.
+          resetDraft();
+          settingsBlocker.proceed?.();
+        }}
+        onCancel={() => {
+          settingsBlocker.reset?.();
         }}
       />
     </div>
