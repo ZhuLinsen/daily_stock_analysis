@@ -83,7 +83,7 @@ for result in results:
     print(f"股票: {result.name}, 操作建议: {result.operation_advice}")
 ```
 
-**参考:** [`analyze_stocks`](src/services.analyzer_service.py)
+**参考:** [`analyze_stocks`](src/services/analyzer_service.py)
 
 ### 3. 执行大盘复盘
 
