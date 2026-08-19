@@ -51,3 +51,10 @@ __all__ = [
     "AgentOrchestrator",
     "AgentMemory",
 ]
+
+from src.agent.research_provider import ResearchProvider
+from src.agent.research_orchestrator import (
+    OrchestrationResult,
+    ProviderRunResult,
+    ResearchOrchestrator,
+)

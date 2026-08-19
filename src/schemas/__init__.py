@@ -28,3 +28,28 @@ __all__ = [
     "ContextFieldStatus",
     "DataQuality",
 ]
+
+from src.schemas.research_contracts import (
+    Claim,
+    ClaimKind,
+    ConflictItem,
+    ConflictResolutionStatus,
+    ConflictType,
+    EvidenceFreshness,
+    EvidenceRef,
+    FailMode,
+    FrameworkOpinion,
+    Horizon,
+    HorizonDecision,
+    IntegratedDecision,
+    ProviderCapabilities,
+    ProviderError,
+    ProviderErrorCode,
+    ProviderRole,
+    Reproducibility,
+    ResearchRequest,
+    SCHEMA_VERSION,
+    SensitiveLevel,
+    Stance,
+    to_json,
+)
