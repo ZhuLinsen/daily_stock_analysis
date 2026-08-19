@@ -1649,6 +1649,8 @@ def main() -> int:
                     raise RuntimeError(
                         f"scheduled analysis reported failure: {reason}"
                     )
+                from src.agent.research_jobs import maybe_run_scheduled_research
+                maybe_run_scheduled_research(scheduled_stock_codes)
 
             background_tasks = []
             if getattr(config, 'agent_event_monitor_enabled', False):

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增只读 `DsaTechnicalProvider`：包装既有行情工具，失败则该尺度 abstain，测试用 mock 快照、不打外网。
 - [新功能] 新增只读 `AiBerkshireProvider`：锁定参考仓 SHA/origin/干净树，缺报告则长期 abstain，不拷贝仓库进 `src/`。
 - [新功能] 新增 `XiaolonglongProvider`：私有索引只写批准根目录，对外仅 `private://` 不透明引用，授权不可自声明且可撤销。
+- [新功能] 研究编排器接入任务表与定时入口：状态机 queued/running/succeeded/partial/failed/cancelled/timed_out，取消向下传，默认定时关闭。
 - [修复] 已配置钉钉 Webhook 时不再误报“未配置通知渠道”；钉钉 Stream 仍仅用于交互，不作为定时静态推送渠道。
 - [修复] WebUI/API/Desktop 以 `--serve-only` 重启后会恢复已启用的定时任务，同时保持启动时不立即执行分析；通知路由示例补充钉钉 Webhook 渠道。
 - [改进] AIHubMix 注册与引流链接统一使用 inferera.com，改善中国大陆网络直连体验。
