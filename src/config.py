@@ -3423,6 +3423,7 @@ class Config:
         # --- Notification channels ---
         has_notification = bool(
             self.wechat_webhook_url
+            or self.dingtalk_webhook_url
             or self.feishu_webhook_url
             or (
                 (self.feishu_app_id or "")
