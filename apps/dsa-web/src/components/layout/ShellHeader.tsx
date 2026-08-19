@@ -21,6 +21,7 @@ const TITLES: Record<string, { title: UiTextKey; description: UiTextKey }> = {
   '/alerts': { title: 'layout.route.alerts.title', description: 'layout.route.alerts.description' },
   '/usage': { title: 'layout.route.usage.title', description: 'layout.route.usage.description' },
   '/settings': { title: 'layout.route.settings.title', description: 'layout.route.settings.description' },
+  '/research': { title: 'layout.route.research.title', description: 'layout.route.research.description' },
 };
 
 export const ShellHeader: React.FC<ShellHeaderProps> = ({

@@ -15,6 +15,7 @@ from api.v1.endpoints import (
     agent,
     alerts,
     screening,
+    research,
     analysis,
     auth,
     backtest,
@@ -102,6 +103,12 @@ router.include_router(
     screening.router,
     prefix="/screening",
     tags=["Screening"]
+)
+
+router.include_router(
+    research.router,
+    prefix="/research",
+    tags=["Research"]
 )
 
 router.include_router(
