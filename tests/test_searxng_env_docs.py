@@ -83,3 +83,44 @@ def test_workflow_reports_disabled_when_variable_unset() -> None:
 
     assert "默认开启" not in workflow
     assert "默认关闭" in workflow
+
+
+def test_docs_describe_public_searxng_discovery_as_opt_in() -> None:
+    chinese_docs = [
+        ROOT_DIR / "docs" / "full-guide.md",
+        ROOT_DIR / "docs" / "DEPLOY.md",
+        ROOT_DIR / "docs" / "docker" / "zeabur-deployment.md",
+    ]
+    for path in chinese_docs:
+        content = path.read_text(encoding="utf-8")
+        base_url_lines = [
+            line for line in content.splitlines() if "`SEARXNG_BASE_URLS`" in line
+        ]
+        public_toggle_lines = [
+            line
+            for line in content.splitlines()
+            if "`SEARXNG_PUBLIC_INSTANCES_ENABLED`" in line
+        ]
+        assert base_url_lines
+        assert public_toggle_lines
+        assert all("留空时默认自动发现公共实例" not in line for line in base_url_lines)
+        assert all("默认 `false`" in line for line in public_toggle_lines)
+
+    english_guide = (ROOT_DIR / "docs" / "full-guide_EN.md").read_text(
+        encoding="utf-8"
+    )
+    english_base_url_lines = [
+        line for line in english_guide.splitlines() if "`SEARXNG_BASE_URLS`" in line
+    ]
+    english_public_toggle_lines = [
+        line
+        for line in english_guide.splitlines()
+        if "`SEARXNG_PUBLIC_INSTANCES_ENABLED`" in line
+    ]
+    assert english_base_url_lines
+    assert english_public_toggle_lines
+    assert all(
+        "when empty the app auto-discovers public instances" not in line
+        for line in english_base_url_lines
+    )
+    assert all("default `false`" in line for line in english_public_toggle_lines)
