@@ -69,6 +69,13 @@ model_list:
   #     model: anthropic/claude-3-5-sonnet-20241022
   #     api_key: "os.environ/ANTHROPIC_API_KEY"
 
+  # --- xAI Grok (LiteLLM 直连 provider，不是托管渠道) ---
+  # 模型 ID 以 https://docs.x.ai/docs 为准；下面只是配置形状示例。
+  # - model_name: xai/grok-4.5
+  #   litellm_params:
+  #     model: xai/grok-4.5
+  #     api_key: "os.environ/XAI_API_KEY"
+
   # --- OpenRouter (聚合平台) ---
   # - model_name: openai/meta-llama/llama-3-70b-instruct
   #   litellm_params:
