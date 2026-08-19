@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [新功能] 新增内部研究 Provider 契约、编排器与脱敏 Mock（无现网入口、不接入真实 Provider 或自动交易）。
 - [修复] 研究编排器拒绝无证据的非 abstain 结论；超时/取消后有界等待工作线程；总截止时间裁剪单次 Provider 等待；required / fail_closed 失败不再降级为 PARTIAL。
+- [修复] 研究编排器执行 `max_evidence_count`；`validate()` 的普通异常按 Provider 角色封成 UNKNOWN，optional 仍可 PARTIAL。
 - [修复] 已配置钉钉 Webhook 时不再误报“未配置通知渠道”；钉钉 Stream 仍仅用于交互，不作为定时静态推送渠道。
 - [修复] WebUI/API/Desktop 以 `--serve-only` 重启后会恢复已启用的定时任务，同时保持启动时不立即执行分析；通知路由示例补充钉钉 Webhook 渠道。
 - [改进] AIHubMix 注册与引流链接统一使用 inferera.com，改善中国大陆网络直连体验。

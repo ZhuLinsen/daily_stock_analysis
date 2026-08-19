@@ -10,7 +10,7 @@ Orchestrates multiple ``ResearchProvider`` instances for a single
 - concurrency limit
 - cancellation propagation with worker quiescence
 - evidence validation (every claim must reference existing evidence)
-- output size enforcement
+- output size and max_evidence_count enforcement
 - conflict-aware integration into an ``IntegratedDecision`` with
   independent short / medium / long horizons (no simple averaging)
 
@@ -401,7 +401,8 @@ class ResearchOrchestrator:
         requested = request.provider_timeout_seconds or self._default_timeout
         timeout = min(requested, remaining_total)
 
-        # Validate first (fail-closed for contract violations)
+        # Validate first. ProviderError stays scoped; any other exception is
+        # also scoped so an optional provider cannot fail the whole task.
         try:
             provider.validate(request)
         except ProviderError as exc:
@@ -412,6 +413,10 @@ class ResearchOrchestrator:
                 started_at=started,
                 finished_at=_now_iso(),
                 attempts=attempt,
+            )
+        except Exception as exc:  # noqa: BLE001 - must stay provider-scoped
+            return self._unexpected_error(
+                provider, request, "validate", exc, started, attempt
             )
 
         worker = _Worker(provider, request)
@@ -459,24 +464,8 @@ class ResearchOrchestrator:
                 provider, request, started, attempt, used_timeout=timeout
             )
         if worker.exception is not None:
-            return ProviderRunResult(
-                provider_id=provider.provider_id,
-                status=ResearchTaskStatus.FAILED,
-                error=ProviderError(
-                    request_id=request.request_id,
-                    run_id=request.run_id,
-                    code=ProviderErrorCode.UNKNOWN,
-                    stage="research",
-                    retryable=False,
-                    fallbackable=True,
-                    provider_id=provider.provider_id,
-                    provider_version=provider.provider_version,
-                    partial=False,
-                    message=str(worker.exception)[:500],
-                ),
-                started_at=started,
-                finished_at=_now_iso(),
-                attempts=attempt,
+            return self._unexpected_error(
+                provider, request, "research", worker.exception, started, attempt
             )
 
         outcome = worker.result
@@ -529,6 +518,31 @@ class ResearchOrchestrator:
                     partial=False,
                     details={"violations": list(violations)},
                     message="; ".join(violations)[:500],
+                ),
+                started_at=started,
+                finished_at=_now_iso(),
+                attempts=attempt,
+            )
+
+        if len(outcome.evidence_refs) > request.max_evidence_count:
+            return ProviderRunResult(
+                provider_id=provider.provider_id,
+                status=ResearchTaskStatus.FAILED,
+                error=ProviderError(
+                    request_id=request.request_id,
+                    run_id=request.run_id,
+                    code=ProviderErrorCode.CONTRACT_VIOLATION,
+                    stage="evidence_validation",
+                    retryable=False,
+                    fallbackable=True,
+                    provider_id=provider.provider_id,
+                    provider_version=provider.provider_version,
+                    partial=False,
+                    details={
+                        "actual_evidence": len(outcome.evidence_refs),
+                        "max_evidence_count": request.max_evidence_count,
+                    },
+                    message="opinion exceeds max_evidence_count",
                 ),
                 started_at=started,
                 finished_at=_now_iso(),
@@ -589,6 +603,42 @@ class ResearchOrchestrator:
                     f"claim {claim.claim_id} references missing evidence {mid}"
                 )
         return tuple(violations)
+
+    def _unexpected_error(
+        self,
+        provider: ResearchProvider,
+        request: ResearchRequest,
+        stage: str,
+        exc: BaseException,
+        started: str,
+        attempt: int,
+    ) -> ProviderRunResult:
+        role = self._provider_role(provider)
+        fail_mode = (
+            FailMode.FAIL_CLOSED
+            if role == ProviderRole.REQUIRED
+            else FailMode.FAIL_OPEN
+        )
+        return ProviderRunResult(
+            provider_id=provider.provider_id,
+            status=ResearchTaskStatus.FAILED,
+            error=ProviderError(
+                request_id=request.request_id,
+                run_id=request.run_id,
+                code=ProviderErrorCode.UNKNOWN,
+                stage=stage,
+                retryable=False,
+                fallbackable=True,
+                fail_mode=fail_mode,
+                provider_id=provider.provider_id,
+                provider_version=provider.provider_version,
+                partial=role == ProviderRole.OPTIONAL,
+                message=str(exc)[:500],
+            ),
+            started_at=started,
+            finished_at=_now_iso(),
+            attempts=attempt,
+        )
 
     def _timeout_result(
         self,

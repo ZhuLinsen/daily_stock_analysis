@@ -11,6 +11,7 @@ Scenarios (constructor options, test-only):
 - ``abstain_all``: force abstain opinions (abstain tests)
 - ``bad_evidence``: emit claims referencing missing evidence (validation tests)
 - ``empty_evidence``: emit a non-abstain opinion with empty evidence lists
+- ``extra_evidence``: attach all mock evidence refs to one opinion (budget tests)
 """
 
 from __future__ import annotations
@@ -109,6 +110,7 @@ class MockResearchProvider(ResearchProvider):
         abstain_all: bool = False,
         bad_evidence: bool = False,
         empty_evidence: bool = False,
+        extra_evidence: bool = False,
     ) -> None:
         self._provider_id = provider_id
         self._delay_seconds = max(0.0, delay_seconds)
@@ -120,6 +122,7 @@ class MockResearchProvider(ResearchProvider):
         self._abstain_all = abstain_all
         self._bad_evidence = bad_evidence
         self._empty_evidence = empty_evidence
+        self._extra_evidence = extra_evidence
         self.started_event = threading.Event()
         self._cancel_event = threading.Event()
 
@@ -242,7 +245,7 @@ class MockResearchProvider(ResearchProvider):
                     confidence=0.7,
                 ),
             )
-            evidence_refs = (evidence,)
+            evidence_refs = _MOCK_EVIDENCE if self._extra_evidence else (evidence,)
 
         return FrameworkOpinion(
             request_id=request.request_id,

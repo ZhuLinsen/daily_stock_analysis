@@ -221,6 +221,18 @@ class TestOutputSize:
         result = orch.run(make_request(max_output_bytes=65536))
         assert result.status == ResearchTaskStatus.SUCCEEDED
 
+    def test_evidence_count_over_budget_rejected(self) -> None:
+        good = MockResearchProvider(extra_evidence=True)
+        orch = ResearchOrchestrator([good])
+        result = orch.run(make_request(horizons=(Horizon.SHORT,), max_evidence_count=1))
+        run = result.provider_results[0]
+        assert run.status == ResearchTaskStatus.FAILED
+        assert run.error is not None
+        assert run.error.code == ProviderErrorCode.CONTRACT_VIOLATION
+        assert "max_evidence_count" in run.error.message
+        assert run.error.details["actual_evidence"] == 3
+        assert result.integrated is None
+
 
 class TestConflictIntegration:
     def test_conflicting_stances_create_conflict(self) -> None:
@@ -401,6 +413,17 @@ class TestProviderRole:
         assert result.status == ResearchTaskStatus.FAILED
         assert result.integrated is None
 
+    def test_optional_validate_exception_degrades_to_partial(self) -> None:
+        orch = ResearchOrchestrator([MockResearchProvider(), _BoomValidateProvider()])
+        result = orch.run(make_request(horizons=(Horizon.SHORT,)))
+        assert result.status == ResearchTaskStatus.PARTIAL
+        assert result.integrated is not None
+        boom = [r for r in result.provider_results if r.provider_id == "boom-validate"]
+        assert boom[0].status == ResearchTaskStatus.FAILED
+        assert boom[0].error is not None
+        assert boom[0].error.code == ProviderErrorCode.UNKNOWN
+        assert boom[0].error.stage == "validate"
+
     def test_optional_provider_failure_degrades_to_partial(self) -> None:
         optional_fail = _OptionalFailProvider()
         good = MockResearchProvider()
@@ -484,6 +507,33 @@ class _OptionalFailProvider(ResearchProvider):
             partial=False,
             message="optional provider failed",
         )
+
+    def cancel(self, task_id):
+        return False
+
+    def health(self):
+        return True
+
+
+class _BoomValidateProvider(ResearchProvider):
+    """Optional provider that raises a plain exception during validate()."""
+
+    provider_id = "boom-validate"
+    provider_version = "1.0"
+
+    def capabilities(self):
+        from src.schemas.research_contracts import ProviderCapabilities, ProviderRole
+        return ProviderCapabilities(
+            provider_id=self.provider_id,
+            provider_version=self.provider_version,
+            role=ProviderRole.OPTIONAL,
+        )
+
+    def validate(self, request):
+        raise ValueError("schema drift")
+
+    def research(self, request, context=None):
+        return MockResearchProvider().research(request)
 
     def cancel(self, task_id):
         return False
