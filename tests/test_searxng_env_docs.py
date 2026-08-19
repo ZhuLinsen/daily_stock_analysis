@@ -65,6 +65,13 @@ def test_runtime_default_disables_public_searxng_instances(monkeypatch) -> None:
     )
 
 
+def test_config_constructor_defaults_public_searxng_instances_off() -> None:
+    """直接构造 Config 时也必须遵循公共实例发现默认关闭的契约。"""
+    from src.config import Config
+
+    assert Config().searxng_public_instances_enabled is False
+
+
 def test_config_module_uses_false_as_runtime_default() -> None:
     """锁住 config.py 里的默认值，防止后续改动悄悄回退。"""
     src = (ROOT_DIR / "src" / "config.py").read_text(encoding="utf-8")
