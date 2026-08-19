@@ -709,7 +709,7 @@ crontab -e
 
 > Note: Scheduled mode reloads the saved `STOCK_LIST` before each run. If you also pass `--stocks`, it will not pin future scheduled executions to the startup snapshot; use a normal one-off run when you want to analyze a temporary stock list.
 >
-> When the built-in scheduler is started via `python main.py --schedule` or an equivalent CLI-only mode, saving a new `SCHEDULE_TIME` / `SCHEDULE_TIMES` from the WebUI will rebind the daily jobs on the next scheduler poll without restarting the process. The previous trigger times are removed instead of being kept alongside the new ones. `python main.py --serve --schedule` is owned by the Web/API runtime scheduler, so long-running WebUI/API/Desktop processes start, stop, or rebuild the runtime scheduler after saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES`.
+> When the built-in scheduler is started via `python main.py --schedule` or an equivalent CLI-only mode, saving a new `SCHEDULE_TIME` / `SCHEDULE_TIMES` from the WebUI will rebind the daily jobs on the next scheduler poll without restarting the process. The previous trigger times are removed instead of being kept alongside the new ones. `python main.py --serve --schedule` is owned by the Web/API runtime scheduler, so long-running WebUI/API/Desktop processes start, stop, or rebuild the runtime scheduler after saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES`. Restarting `python main.py --serve-only` or Desktop restores enabled daily jobs, while service startup itself never runs an immediate analysis.
 >
 > The Web/API runtime scheduler run-now endpoint only accepts a request when no analysis is already running; if an analysis is in progress, it returns a busy response instead of reporting a queued run.
 
@@ -1400,7 +1400,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 | Command | Description |
 |------|------|
 | `python main.py --serve` | Start API service + run full analysis once |
-| `python main.py --serve-only` | Start API service only, manually trigger analysis |
+| `python main.py --serve-only` | Start API service only; allow manual runs and restore enabled schedules without an immediate startup analysis |
 
 ### Features
 

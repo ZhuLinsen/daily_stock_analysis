@@ -795,7 +795,7 @@ python main.py --schedule --no-run-immediately
 
 > 说明：定时模式每次触发前都会重新读取当前保存的 `STOCK_LIST`。如果同时传入 `--stocks`，该参数不会锁定后续计划执行的股票列表；需要临时只跑指定股票时，请使用非定时的单次运行命令。
 >
-> 从 `python main.py --schedule` 或等价纯 CLI 调度模式启动后，WebUI 保存新的 `SCHEDULE_TIME` / `SCHEDULE_TIMES` 会在下一轮调度检查内自动重绑 daily jobs，无需重启进程；旧的执行时间不会继续保留。`python main.py --serve --schedule` 会由 Web/API runtime scheduler 接管定时任务，WebUI/API/Desktop 长运行进程保存 `SCHEDULE_ENABLED`、`SCHEDULE_TIME` 或 `SCHEDULE_TIMES` 后会按当前配置启停或重建 runtime scheduler。
+> 从 `python main.py --schedule` 或等价纯 CLI 调度模式启动后，WebUI 保存新的 `SCHEDULE_TIME` / `SCHEDULE_TIMES` 会在下一轮调度检查内自动重绑 daily jobs，无需重启进程；旧的执行时间不会继续保留。`python main.py --serve --schedule` 会由 Web/API runtime scheduler 接管定时任务，WebUI/API/Desktop 长运行进程保存 `SCHEDULE_ENABLED`、`SCHEDULE_TIME` 或 `SCHEDULE_TIMES` 后会按当前配置启停或重建 runtime scheduler。重启 `python main.py --serve-only` 或 Desktop 时，已启用的 daily jobs 会自动恢复，但服务启动本身不会立即执行分析。
 >
 > Web/API runtime scheduler 的立即执行入口只会在没有分析任务运行时接受请求；如果已有分析在执行，会返回忙碌状态而不是假装排队成功。
 
@@ -1561,7 +1561,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | 命令 | 说明 |
 |------|------|
 | `python main.py --serve` | 启动 API 服务 + 执行一次完整分析 |
-| `python main.py --serve-only` | 仅启动 API 服务，手动触发分析 |
+| `python main.py --serve-only` | 仅启动 API 服务；可手动触发分析，并恢复配置中已启用的定时任务，但启动时不立即分析 |
 
 ### 功能特性
 

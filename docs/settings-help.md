@@ -94,7 +94,7 @@ Issue #1512 收口后，Web 设置页只展示后端配置注册表中的正式�
 - `WEBUI_HOST`、`WEBUI_PORT`：监听地址和端口只在进程启动时绑定，保存后必须重启当前进程、Docker 容器或服务管理器才会生效。
 - `RUN_IMMEDIATELY`：非 schedule 模式启动期单次运行配置，保存后不会让已运行的 WebUI/API 进程立即触发分析。
 - Web 设置页不直接暴露 `SCHEDULE_TIME` / `SCHEDULE_TIMES` / `SCHEDULE_RUN_IMMEDIATELY` 等内部键；用户通过“定时任务”卡片维护启用状态、多个执行时间和立即执行一次。
-- `SCHEDULE_ENABLED`：WebUI/API/Desktop 长运行进程（包括 `python main.py --serve --schedule`）会在保存后按新值启动或停止 runtime scheduler；纯 CLI schedule 模式（`python main.py --schedule`）仍按启动时参数和配置运行。
+- `SCHEDULE_ENABLED`：WebUI/API/Desktop 长运行进程（包括 `python main.py --serve --schedule`）会在保存后按新值启动或停止 runtime scheduler；重启 `--serve-only` 或 Desktop 进程时也会恢复已启用的 daily jobs，但不会因此立即执行分析。纯 CLI schedule 模式（`python main.py --schedule`）仍按启动时参数和配置运行。
 - `SCHEDULE_TIME`、`SCHEDULE_TIMES`：不是重启必需项。`SCHEDULE_TIMES` 为空时使用 `SCHEDULE_TIME`；已运行的 scheduler 会按新时间重建 daily jobs。
 - `SCHEDULE_RUN_IMMEDIATELY`：schedule 模式启动行为，保存后不会让当前进程立即执行一次分析；手动执行请使用 runtime scheduler 的 run-now API。
 - runtime scheduler 的 run-now API 只会在没有分析任务运行时接受请求；如果已有分析在执行，会返回忙碌状态，Web 设置页会提示稍后重试。

@@ -1498,19 +1498,18 @@ def main() -> int:
         # This keeps Web settings, status, and run-now actions attached to the real
         # scheduler instead of a separate CLI loop.
         os.environ.pop(CLI_SCHEDULER_OWNER_ENV, None)
-        if args.serve_only:
-            os.environ[RUNTIME_SCHEDULER_SUPPRESS_START_ENV] = "true"
-        else:
-            os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
-        runtime_schedule_requested = not args.serve_only and (
-            args.schedule or config.schedule_enabled
-        )
-        if not args.serve_only and args.schedule:
+        os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
+        runtime_schedule_requested = args.schedule or config.schedule_enabled
+        if args.schedule:
             os.environ[RUNTIME_SCHEDULER_FORCE_ENABLED_ENV] = "true"
         else:
             os.environ.pop(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, None)
         if runtime_schedule_requested:
-            runtime_run_immediately = config.schedule_run_immediately
+            # ``--serve-only`` must restore persisted schedules, but it must not
+            # turn service/Desktop startup into an immediate analysis run.
+            runtime_run_immediately = (
+                False if args.serve_only else config.schedule_run_immediately
+            )
             if getattr(args, 'no_run_immediately', False):
                 runtime_run_immediately = False
             os.environ[RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV] = (
