@@ -10,6 +10,7 @@ Scenarios (constructor options, test-only):
 - ``stance_map``: override per-horizon stance (conflict tests)
 - ``abstain_all``: force abstain opinions (abstain tests)
 - ``bad_evidence``: emit claims referencing missing evidence (validation tests)
+- ``empty_evidence``: emit a non-abstain opinion with empty evidence lists
 """
 
 from __future__ import annotations
@@ -107,6 +108,7 @@ class MockResearchProvider(ResearchProvider):
         stance_map: Optional[Dict[Horizon, Stance]] = None,
         abstain_all: bool = False,
         bad_evidence: bool = False,
+        empty_evidence: bool = False,
     ) -> None:
         self._provider_id = provider_id
         self._delay_seconds = max(0.0, delay_seconds)
@@ -117,6 +119,7 @@ class MockResearchProvider(ResearchProvider):
         }
         self._abstain_all = abstain_all
         self._bad_evidence = bad_evidence
+        self._empty_evidence = empty_evidence
         self.started_event = threading.Event()
         self._cancel_event = threading.Event()
 
@@ -198,6 +201,17 @@ class MockResearchProvider(ResearchProvider):
         evidence_refs: Tuple[EvidenceRef, ...]
         if self._abstain_all:
             claims = ()
+            evidence_refs = ()
+        elif self._empty_evidence:
+            claims = (
+                Claim(
+                    claim_id=f"mock-claim-{horizon.value}",
+                    claim_kind=ClaimKind.OPINION,
+                    text=f"Unsupported {stance.value} claim for {request.subject}",
+                    evidence_ids=(),
+                    confidence=0.7,
+                ),
+            )
             evidence_refs = ()
         else:
             evidence = _MOCK_EVIDENCE[0] if horizon == Horizon.SHORT else (

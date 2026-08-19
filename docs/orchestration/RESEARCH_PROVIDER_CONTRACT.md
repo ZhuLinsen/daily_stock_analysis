@@ -21,7 +21,7 @@
 ### FrameworkOpinion
 - `schema_version`、`request_id`、`run_id`、`provider_id`、`provider_version`、`framework`、`framework_version`、`as_of`、`horizon`；
 - `stance`（bullish/bearish/neutral/abstain）、`confidence`、`data_quality`、`warnings`、`invalidation_conditions`；
-- 声明必须逐项关联 `evidence_ids`；
+- 声明必须逐项关联非空 `evidence_ids`；非 abstain 意见若 `evidence_refs` 为空，校验失败，不得进入 `IntegratedDecision`；
 - 每项声明标记 `claim_kind`（fact/opinion/inference）；推断必须列出所依赖的事实 claim，观点不得伪装为事实；
 - 风险、假设、反证、缺口、数据截止时间；
 - 不允许只有总分而没有可审计推理。
@@ -62,7 +62,7 @@ health()  # 不应隐式联网或泄露秘密
 | HermesResearchProvider | Hermes 编排式研究/检索 | 必须真实能力声明；不能以 HTTP 生成通道冒充 Agent |
 
 ## 并发、取消与预算
-编排层设置总截止时间、每 Provider semaphore、最大并发、输出字节、证据数量和 token 预算。取消向下传播；不支持安全取消的 Provider 不进入交互路径。超时后不得接受迟到结果写入最终决策。
+编排层设置总截止时间、每 Provider semaphore、最大并发、输出字节、证据数量和 token 预算。单次 Provider 等待取 `provider_timeout_seconds` 与剩余总预算的较小值。取消向下传播；超时或取消后只有界等待工作线程退出，迟到结果不得写入最终决策。不配合取消的 Provider 不得阻塞 `run()` 返回。required Provider 失败或 `fail_mode=fail_closed` 时整体 fail-closed，不产出可消费的 `IntegratedDecision`。
 
 ## 证据与冲突规则
 - 证据新鲜度按 evidence type + horizon 配置，不使用单一固定天数；

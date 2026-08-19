@@ -32,16 +32,23 @@ from src.schemas.research_contracts import (
     ConflictItem,
     ConflictResolutionStatus,
     ConflictType,
+    FailMode,
     FrameworkOpinion,
     Horizon,
     HorizonDecision,
     IntegratedDecision,
+    ProviderCapabilities,
     ProviderError,
     ProviderErrorCode,
+    ProviderRole,
     ResearchRequest,
     Stance,
     to_json,
 )
+
+# After cancel/timeout, wait this long for a cooperative worker to exit.
+# An uncooperative provider must not block run() for the rest of the request.
+_JOIN_GRACE_SECONDS = 0.2
 
 
 class ResearchTaskStatus(str, Enum):
@@ -101,7 +108,7 @@ class _Worker(threading.Thread):
         provider: ResearchProvider,
         request: ResearchRequest,
     ) -> None:
-        super().__init__(name=f"research-provider:{provider.provider_id}", daemon=False)
+        super().__init__(name=f"research-provider:{provider.provider_id}", daemon=True)
         self._provider = provider
         self._request = request
         self.result: Optional[FrameworkOpinion | ProviderError] = None
@@ -153,6 +160,7 @@ class ResearchOrchestrator:
         warnings: List[str] = []
         integrated: Optional[IntegratedDecision] = None
         deadline = time.monotonic() + request.total_timeout_seconds
+        roles = {p.provider_id: self._provider_role(p) for p in self._providers}
 
         try:
             for provider in self._providers:
@@ -165,11 +173,16 @@ class ResearchOrchestrator:
                 # An opinion is single-horizon; fan out per horizon so every
                 # requested horizon is covered by every provider.
                 for horizon in request.horizons or (Horizon.SHORT,):
+                    if time.monotonic() >= deadline:
+                        status = ResearchTaskStatus.TIMED_OUT
+                        break
                     if self._is_cancelled(task_id):
                         status = ResearchTaskStatus.CANCELLED
                         break
                     horizon_request = replace(request, horizons=(horizon,))
-                    result = self._run_provider(provider, horizon_request, task_id)
+                    result = self._run_provider(
+                        provider, horizon_request, task_id, total_deadline=deadline
+                    )
                     results.append(result)
                     if result.error is not None:
                         warnings.append(
@@ -181,13 +194,19 @@ class ResearchOrchestrator:
                         ResearchTaskStatus.CANCELLED,
                     }:
                         break
-                if status == ResearchTaskStatus.CANCELLED:
+                if status in {
+                    ResearchTaskStatus.CANCELLED,
+                    ResearchTaskStatus.TIMED_OUT,
+                }:
                     break
-            # Integration
-            if results and any(r.opinion is not None for r in results):
+            fail_closed = self._has_fail_closed(results, roles)
+            if (
+                results
+                and any(r.opinion is not None for r in results)
+                and not fail_closed
+            ):
                 integrated = self.integrate(request, results)
-            # Final status
-            status = self._final_status(results, status)
+            status = self._final_status(results, status, roles)
         except Exception as exc:  # noqa: BLE001 - orchestrator must not raise
             warnings.append(f"orchestrator error: {exc}")
             status = ResearchTaskStatus.FAILED
@@ -357,8 +376,12 @@ class ResearchOrchestrator:
         provider: ResearchProvider,
         request: ResearchRequest,
         task_id: str,
+        *,
+        total_deadline: float,
     ) -> ProviderRunResult:
-        return self._run_provider_once(provider, request, task_id, attempt=1)
+        return self._run_provider_once(
+            provider, request, task_id, attempt=1, total_deadline=total_deadline
+        )
 
     def _run_provider_once(
         self,
@@ -366,9 +389,17 @@ class ResearchOrchestrator:
         request: ResearchRequest,
         task_id: str,
         attempt: int,
+        *,
+        total_deadline: float,
     ) -> ProviderRunResult:
         started = _now_iso()
-        timeout = request.provider_timeout_seconds or self._default_timeout
+        remaining_total = total_deadline - time.monotonic()
+        if remaining_total <= 0:
+            return self._timeout_result(
+                provider, request, started, attempt, used_timeout=0.0
+            )
+        requested = request.provider_timeout_seconds or self._default_timeout
+        timeout = min(requested, remaining_total)
 
         # Validate first (fail-closed for contract violations)
         try:
@@ -384,7 +415,7 @@ class ResearchOrchestrator:
             )
 
         worker = _Worker(provider, request)
-        deadline = time.monotonic() + timeout
+        call_deadline = time.monotonic() + timeout
         timed_out = False
         with self._semaphore:
             if self._is_cancelled(task_id):
@@ -399,7 +430,7 @@ class ResearchOrchestrator:
             while worker.is_alive():
                 if self._is_cancelled(task_id):
                     provider.cancel(task_id)
-                    worker.join()
+                    self._join_bounded(worker, total_deadline)
                     return ProviderRunResult(
                         provider_id=provider.provider_id,
                         status=ResearchTaskStatus.CANCELLED,
@@ -407,11 +438,11 @@ class ResearchOrchestrator:
                         finished_at=_now_iso(),
                         attempts=attempt,
                     )
-                remaining = deadline - time.monotonic()
+                remaining = min(call_deadline, total_deadline) - time.monotonic()
                 if remaining <= 0:
                     timed_out = True
                     provider.cancel(task_id)
-                    worker.join()
+                    self._join_bounded(worker, total_deadline)
                     break
                 worker.join(timeout=min(0.01, remaining))
 
@@ -424,24 +455,8 @@ class ResearchOrchestrator:
                 attempts=attempt,
             )
         if timed_out:
-            return ProviderRunResult(
-                provider_id=provider.provider_id,
-                status=ResearchTaskStatus.TIMED_OUT,
-                error=ProviderError(
-                    request_id=request.request_id,
-                    run_id=request.run_id,
-                    code=ProviderErrorCode.TIMEOUT,
-                    stage="research",
-                    retryable=True,
-                    fallbackable=True,
-                    provider_id=provider.provider_id,
-                    provider_version=provider.provider_version,
-                    partial=False,
-                    message=f"provider timed out after {timeout}s",
-                ),
-                started_at=started,
-                finished_at=_now_iso(),
-                attempts=attempt,
+            return self._timeout_result(
+                provider, request, started, attempt, used_timeout=timeout
             )
         if worker.exception is not None:
             return ProviderRunResult(
@@ -495,7 +510,8 @@ class ResearchOrchestrator:
                 attempts=attempt,
             )
 
-        # Evidence validation: every claim must reference existing evidence
+        # Evidence validation: every claim must reference existing evidence;
+        # a non-abstain opinion cannot enter integration without evidence.
         violations = self._validate_evidence(outcome)
         if violations:
             return ProviderRunResult(
@@ -512,7 +528,7 @@ class ResearchOrchestrator:
                     provider_version=provider.provider_version,
                     partial=False,
                     details={"violations": list(violations)},
-                    message="opinion claims reference missing evidence",
+                    message="; ".join(violations)[:500],
                 ),
                 started_at=started,
                 finished_at=_now_iso(),
@@ -555,27 +571,115 @@ class ResearchOrchestrator:
         )
 
     def _validate_evidence(self, op: FrameworkOpinion) -> Tuple[str, ...]:
-        """Return violations where a claim references missing evidence."""
+        """Return evidence-contract violations for an opinion."""
         valid_ids = _evidence_ids(op)
         violations: List[str] = []
+        if op.stance != Stance.ABSTAIN:
+            if not op.evidence_refs:
+                violations.append("non-abstain opinion has no evidence_refs")
+            if not op.claims:
+                violations.append("non-abstain opinion has no claims")
         for claim in op.claims:
+            if not claim.evidence_ids:
+                violations.append(f"claim {claim.claim_id} has no evidence_ids")
+                continue
             missing = [e for e in claim.evidence_ids if e not in valid_ids]
-            for m in missing:
-                violations.append(f"claim {claim.claim_id} references missing evidence {m}")
+            for mid in missing:
+                violations.append(
+                    f"claim {claim.claim_id} references missing evidence {mid}"
+                )
         return tuple(violations)
+
+    def _timeout_result(
+        self,
+        provider: ResearchProvider,
+        request: ResearchRequest,
+        started: str,
+        attempt: int,
+        *,
+        used_timeout: float,
+    ) -> ProviderRunResult:
+        role = self._provider_role(provider)
+        fail_mode = (
+            FailMode.FAIL_CLOSED
+            if role == ProviderRole.REQUIRED
+            else FailMode.FAIL_OPEN
+        )
+        return ProviderRunResult(
+            provider_id=provider.provider_id,
+            status=ResearchTaskStatus.TIMED_OUT,
+            error=ProviderError(
+                request_id=request.request_id,
+                run_id=request.run_id,
+                code=ProviderErrorCode.TIMEOUT,
+                stage="research",
+                retryable=True,
+                fallbackable=True,
+                fail_mode=fail_mode,
+                provider_id=provider.provider_id,
+                provider_version=provider.provider_version,
+                partial=False,
+                message=f"provider timed out after {used_timeout}s",
+            ),
+            started_at=started,
+            finished_at=_now_iso(),
+            attempts=attempt,
+        )
+
+    def _join_bounded(self, worker: threading.Thread, total_deadline: float) -> None:
+        grace = min(_JOIN_GRACE_SECONDS, max(0.0, total_deadline - time.monotonic()))
+        worker.join(timeout=grace)
+
+    def _provider_role(self, provider: ResearchProvider) -> ProviderRole:
+        try:
+            caps = provider.capabilities()
+        except Exception:
+            return ProviderRole.REQUIRED
+        if isinstance(caps, ProviderCapabilities):
+            return caps.role
+        return ProviderRole.REQUIRED
+
+    def _is_fail_closed_result(
+        self,
+        result: ProviderRunResult,
+        roles: Dict[str, ProviderRole],
+    ) -> bool:
+        if result.status in {
+            ResearchTaskStatus.SUCCEEDED,
+            ResearchTaskStatus.CANCELLED,
+        }:
+            return False
+        if roles.get(result.provider_id, ProviderRole.OPTIONAL) == ProviderRole.REQUIRED:
+            return True
+        return (
+            result.error is not None
+            and result.error.fail_mode == FailMode.FAIL_CLOSED
+        )
+
+    def _has_fail_closed(
+        self,
+        results: Sequence[ProviderRunResult],
+        roles: Dict[str, ProviderRole],
+    ) -> bool:
+        return any(self._is_fail_closed_result(r, roles) for r in results)
 
     def _final_status(
         self,
         results: List[ProviderRunResult],
         running_status: ResearchTaskStatus,
+        roles: Dict[str, ProviderRole],
     ) -> ResearchTaskStatus:
-        if running_status in {
-            ResearchTaskStatus.CANCELLED,
-            ResearchTaskStatus.TIMED_OUT,
-        }:
-            return running_status
-        if any(r.status == ResearchTaskStatus.CANCELLED for r in results):
+        if running_status == ResearchTaskStatus.CANCELLED or any(
+            r.status == ResearchTaskStatus.CANCELLED for r in results
+        ):
             return ResearchTaskStatus.CANCELLED
+        fail_closed = [r for r in results if self._is_fail_closed_result(r, roles)]
+        if fail_closed:
+            if any(r.status == ResearchTaskStatus.TIMED_OUT for r in fail_closed):
+                return ResearchTaskStatus.TIMED_OUT
+            return ResearchTaskStatus.FAILED
+        if running_status == ResearchTaskStatus.TIMED_OUT:
+            return ResearchTaskStatus.TIMED_OUT
         if not results:
             return ResearchTaskStatus.FAILED
         statuses = {r.status for r in results}
@@ -585,7 +689,6 @@ class ResearchOrchestrator:
             return ResearchTaskStatus.TIMED_OUT
         if statuses == {ResearchTaskStatus.FAILED}:
             return ResearchTaskStatus.FAILED
-        # Mixed outcome: at least one success/timed-out among failures.
         if statuses & {ResearchTaskStatus.SUCCEEDED, ResearchTaskStatus.TIMED_OUT}:
             return ResearchTaskStatus.PARTIAL
         return ResearchTaskStatus.FAILED

@@ -54,12 +54,13 @@ class TestTaskStateMachine:
         assert result.status == ResearchTaskStatus.SUCCEEDED
         assert all(r.status == ResearchTaskStatus.SUCCEEDED for r in result.provider_results)
 
-    def test_partial_when_one_fails(self) -> None:
-        # A provider that fails validation -> contract violation
+    def test_fail_closed_mixed_outcome_is_failed(self) -> None:
+        # Optional provider + FAIL_CLOSED must not degrade to PARTIAL.
         bad = _FailProvider()
         orch = ResearchOrchestrator([MockResearchProvider(), bad])
         result = orch.run(make_request())
-        assert result.status == ResearchTaskStatus.PARTIAL
+        assert result.status == ResearchTaskStatus.FAILED
+        assert result.integrated is None
         statuses = {r.status for r in result.provider_results}
         assert ResearchTaskStatus.SUCCEEDED in statuses
         assert ResearchTaskStatus.FAILED in statuses
@@ -81,6 +82,41 @@ class TestTaskStateMachine:
         assert result.provider_results[0].status == ResearchTaskStatus.TIMED_OUT
         assert result.provider_results[0].error is not None
         assert result.provider_results[0].error.code == ProviderErrorCode.TIMEOUT
+
+    def test_total_timeout_clips_provider_timeout(self) -> None:
+        slow = MockResearchProvider(delay_seconds=1.0)
+        orch = ResearchOrchestrator([slow], default_timeout_seconds=30.0)
+        started = time.monotonic()
+        result = orch.run(
+            make_request(
+                horizons=(Horizon.SHORT,),
+                provider_timeout_seconds=30.0,
+                total_timeout_seconds=0.1,
+            )
+        )
+        elapsed = time.monotonic() - started
+        assert result.status == ResearchTaskStatus.TIMED_OUT
+        assert elapsed < 1.0
+        assert result.provider_results[0].opinion is None
+
+    def test_uncooperative_provider_does_not_block_timeout(self) -> None:
+        orch = ResearchOrchestrator([_UncooperativeProvider()])
+        started = time.monotonic()
+        result = orch.run(
+            make_request(
+                horizons=(Horizon.SHORT,),
+                provider_timeout_seconds=0.05,
+                total_timeout_seconds=0.4,
+            )
+        )
+        elapsed = time.monotonic() - started
+        assert result.status == ResearchTaskStatus.TIMED_OUT
+        assert elapsed < 1.0
+        assert result.provider_results[0].opinion is None
+        assert result.integrated is None
+        for thread in threading.enumerate():
+            if thread.name.startswith("research-provider:uncooperative"):
+                thread.join(timeout=2)
 
     def test_cancelled_status(self) -> None:
         # Cancel mid-flight: run a slow provider in a worker thread and
@@ -149,6 +185,23 @@ class TestEvidenceValidation:
         orch = ResearchOrchestrator([good])
         result = orch.run(make_request())
         assert result.status == ResearchTaskStatus.SUCCEEDED
+
+    def test_empty_evidence_ids_rejected(self) -> None:
+        empty = MockResearchProvider(empty_evidence=True)
+        orch = ResearchOrchestrator([empty])
+        result = orch.run(make_request(horizons=(Horizon.SHORT,)))
+        run = result.provider_results[0]
+        assert run.status == ResearchTaskStatus.FAILED
+        assert run.error is not None
+        assert run.error.code == ProviderErrorCode.CONTRACT_VIOLATION
+        assert "no evidence_ids" in run.error.message
+        assert result.integrated is None
+
+    def test_empty_evidence_refs_rejected_for_non_abstain(self) -> None:
+        empty = MockResearchProvider(empty_evidence=True)
+        orch = ResearchOrchestrator([empty])
+        result = orch.run(make_request(horizons=(Horizon.SHORT,)))
+        assert "no evidence_refs" in result.provider_results[0].error.message
 
 
 class TestOutputSize:
@@ -342,6 +395,12 @@ class TestProviderRole:
         result = orch.run(make_request())
         assert result.status == ResearchTaskStatus.FAILED
 
+    def test_required_provider_failure_blocks_optional_success(self) -> None:
+        orch = ResearchOrchestrator([_RequiredFailProvider(), MockResearchProvider()])
+        result = orch.run(make_request(horizons=(Horizon.SHORT,)))
+        assert result.status == ResearchTaskStatus.FAILED
+        assert result.integrated is None
+
     def test_optional_provider_failure_degrades_to_partial(self) -> None:
         optional_fail = _OptionalFailProvider()
         good = MockResearchProvider()
@@ -433,6 +492,69 @@ class _OptionalFailProvider(ResearchProvider):
         return True
 
 
+class _RequiredFailProvider(ResearchProvider):
+    """Required provider that fails with FAIL_OPEN — role still fail-closes."""
+
+    provider_id = "required-fail"
+    provider_version = "1.0"
+
+    def capabilities(self):
+        from src.schemas.research_contracts import ProviderCapabilities, ProviderRole
+        return ProviderCapabilities(
+            provider_id=self.provider_id,
+            provider_version=self.provider_version,
+            role=ProviderRole.REQUIRED,
+        )
+
+    def validate(self, request):
+        return None
+
+    def research(self, request, context=None):
+        from src.schemas.research_contracts import FailMode
+        return ProviderError(
+            code=ProviderErrorCode.DEPENDENCY_UNAVAILABLE,
+            stage="research",
+            fail_mode=FailMode.FAIL_OPEN,
+            provider_id=self.provider_id,
+            message="required provider unavailable",
+        )
+
+    def cancel(self, task_id):
+        return False
+
+    def health(self):
+        return True
+
+
+class _UncooperativeProvider(ResearchProvider):
+    """Ignores cancel() and blocks past the provider timeout."""
+
+    provider_id = "uncooperative"
+    provider_version = "1.0"
+
+    def capabilities(self):
+        from src.schemas.research_contracts import ProviderCapabilities, ProviderRole
+        return ProviderCapabilities(
+            provider_id=self.provider_id,
+            provider_version=self.provider_version,
+            supports_cancellation=False,
+            role=ProviderRole.OPTIONAL,
+        )
+
+    def validate(self, request):
+        return None
+
+    def research(self, request, context=None):
+        time.sleep(1.0)
+        return MockResearchProvider().research(request)
+
+    def cancel(self, task_id):
+        return False
+
+    def health(self):
+        return True
+
+
 class _FailProvider(ResearchProvider):
     """Provider that always fails validation (CONTRACT_VIOLATION)."""
 
@@ -443,8 +565,12 @@ class _FailProvider(ResearchProvider):
         self.calls = 0
 
     def capabilities(self):
-        from src.schemas.research_contracts import ProviderCapabilities
-        return ProviderCapabilities(provider_id=self.provider_id, provider_version=self.provider_version)
+        from src.schemas.research_contracts import ProviderCapabilities, ProviderRole
+        return ProviderCapabilities(
+            provider_id=self.provider_id,
+            provider_version=self.provider_version,
+            role=ProviderRole.OPTIONAL,
+        )
 
     def validate(self, request):
         self.calls += 1
