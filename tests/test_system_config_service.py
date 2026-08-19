@@ -714,6 +714,16 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "false")
         self.assertTrue(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
 
+    def test_get_config_defaults_public_searxng_instances_off(self) -> None:
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+        public_instances = items["SEARXNG_PUBLIC_INSTANCES_ENABLED"]
+
+        self.assertEqual(public_instances["value"], "false")
+        self.assertFalse(public_instances["raw_value_exists"])
+        self.assertEqual(public_instances["schema"]["default_value"], "false")
+        self.assertIn("Default: false", public_instances["schema"]["description"])
+
     def test_get_config_preserves_manual_agent_codex_cli_value_without_schema_option(self) -> None:
         for backend in sorted(GENERATION_ONLY_BACKEND_IDS):
             with self.subTest(backend=backend):

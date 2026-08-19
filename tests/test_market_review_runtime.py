@@ -78,6 +78,24 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
         self.assertIs(runtime_analyzer, analyzer)
         self.assertIsNone(runtime_search)
 
+    def test_build_market_review_runtime_defaults_legacy_public_discovery_off(self) -> None:
+        config = self._base_config()
+        del config.searxng_public_instances_enabled
+        config.has_search_capability_enabled = lambda: True
+        notifier = MagicMock()
+        search_service = MagicMock()
+
+        with patch("src.notification.NotificationService", return_value=notifier), \
+             patch("src.search_service.SearchService", return_value=search_service) as search_cls:
+            runtime_notifier, runtime_analyzer, runtime_search = build_market_review_runtime(config)
+
+        self.assertFalse(
+            search_cls.call_args.kwargs["searxng_public_instances_enabled"]
+        )
+        self.assertIs(runtime_notifier, notifier)
+        self.assertIsNone(runtime_analyzer)
+        self.assertIs(runtime_search, search_service)
+
     def test_build_market_review_runtime_supports_litellm_channel_model_list(self) -> None:
         config = self._base_config()
         config.litellm_model = ""

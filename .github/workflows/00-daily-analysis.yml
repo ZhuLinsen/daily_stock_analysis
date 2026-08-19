@@ -497,7 +497,7 @@ jobs:
               echo "  SearXNG Public Instances: ❌ 已禁用"
               ;;
             "")
-              echo "  SearXNG Public Instances: ✅ 默认开启"
+              echo "  SearXNG Public Instances: ⚪ 默认关闭（公共实例普遍限流，如需启用请显式设为 true）"
               ;;
             *)
               echo "  SearXNG Public Instances: ✅ 已启用"

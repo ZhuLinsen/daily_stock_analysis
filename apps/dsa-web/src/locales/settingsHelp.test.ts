@@ -11,6 +11,16 @@ const flattenHelp = (help: ReturnType<typeof getSettingsHelpContent>) => [
   ...(help?.notes ?? []),
 ].filter(Boolean).join(' ');
 
+describe('SearXNG settings help', () => {
+  it('describes public SearXNG discovery as opt-in in Chinese', () => {
+    const description = getFieldDescriptionZh('SEARXNG_PUBLIC_INSTANCES_ENABLED');
+
+    expect(description).toContain('默认关闭');
+    expect(description).toContain('设为 true');
+    expect(description).not.toContain('设为 false 可禁用该默认行为');
+  });
+});
+
 describe('Skill Outcome auto-weight settings help', () => {
   it('describes the attributable Outcome threshold in Chinese', () => {
     const help = getSettingsHelpContent(
