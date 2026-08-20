@@ -64,6 +64,7 @@ from src.agent.news_evidence import (
     get_current_news_evidence,
     reset_news_evidence_scope,
 )
+from src.services.empty_news import news_evidence_present
 from src.formatters import strip_hidden_markdown_metadata
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.daily_market_context import (
@@ -776,6 +777,11 @@ class StockAnalysisPipeline:
                     # 交给展示层区分「未配置渠道」「检索零命中」和「正常命中」。
                     # 该值此前只进了诊断快照，报告层拿不到。
                     result.news_result_count = news_result_count
+                    # news_context 此时已合入实时检索、社交情绪与本地资讯池三路来源，
+                    # 是「本次结论用到的消息面证据」的唯一事实；只看计数会漏掉后两路。
+                    result.news_evidence_present = news_evidence_present(
+                        news_context, news_result_count
+                    )
                 record_llm_run(
                     success=bool(result and getattr(result, "success", True)),
                     model=getattr(result, "model_used", None) if result else None,
@@ -1491,6 +1497,12 @@ class StockAnalysisPipeline:
                         self.search_service is not None
                         and self.search_service.is_available
                     ),
+                )
+                # Agent 的证据有两个来源：注入 initial_context 的本地资讯池等内容，
+                # 以及运行期它自己调用搜索工具拿到的结果。任一非空都算用到了新闻面证据。
+                result.news_evidence_present = news_evidence_present(
+                    initial_context.get("news_context"),
+                    result.news_result_count,
                 )
             record_llm_run(
                 success=bool(result and getattr(result, "success", True)),

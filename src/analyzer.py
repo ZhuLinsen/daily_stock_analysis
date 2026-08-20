@@ -1726,6 +1726,12 @@ class AnalysisResult:
     # 旧历史记录未持久化 news_result_count，重建时必须与明确的 None 区分，
     # 否则会把未知旧数据误报成「未配置搜索渠道」。实时分析默认值始终可信。
     news_result_count_known: bool = True
+    # 本次分析实际收到的消息面证据（news_context）是否非空。
+    # news_result_count 只是「实时搜索命中了几条」，而披露断言的是「结论有没有用到
+    # 新闻面证据」——两者是不同命题：news_context 还可能来自社交情绪或本地已落库的
+    # 资讯池，这些同样进入模型输入却不产生搜索命中。只看计数会把这类分析误报成
+    # 「未纳入新闻面证据」。
+    news_evidence_present: bool = False
     data_sources: str = ""  # 数据来源说明
     success: bool = True
     error_message: Optional[str] = None
@@ -1779,6 +1785,7 @@ class AnalysisResult:
             'search_performed': self.search_performed,
             'news_result_count': self.news_result_count,
             'news_result_count_known': self.news_result_count_known,
+            'news_evidence_present': self.news_evidence_present,
             'success': self.success,
             'error_message': self.error_message,
             'current_price': self.current_price,

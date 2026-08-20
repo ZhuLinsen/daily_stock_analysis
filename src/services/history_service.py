@@ -41,6 +41,7 @@ from src.services.run_diagnostics import build_run_diagnostic_summary
 from src.services.empty_news import (
     empty_news_disclosure,
     empty_news_disclosure_from_stored,
+    persisted_news_evidence_present,
     persisted_news_result_state,
 )
 from src.market_phase_summary import (
@@ -923,6 +924,9 @@ class HistoryService:
                 search_performed=raw_result.get("search_performed", False),
                 news_result_count=news_result_count,
                 news_result_count_known=news_result_count_known,
+                news_evidence_present=persisted_news_evidence_present(
+                    raw_result, news_result_count
+                ),
                 data_sources=raw_result.get("data_sources", ""),
                 success=raw_result.get("success", True),
                 error_message=raw_result.get("error_message"),

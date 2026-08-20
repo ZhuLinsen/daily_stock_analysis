@@ -41,7 +41,13 @@ KO_NO_CHANNEL_DISCLOSURE = (
 )
 
 
-def _make_result(*, news_summary="", news_result_count=None, report_language="zh"):
+def _make_result(
+    *,
+    news_summary="",
+    news_result_count=None,
+    report_language="zh",
+    news_evidence_present=False,
+):
     """构造一个最小可渲染的分析结果。
 
     只填渲染日报必需的字段，避免与被测行为无关的细节耦合。
@@ -58,6 +64,7 @@ def _make_result(*, news_summary="", news_result_count=None, report_language="zh
         report_language=report_language,
         news_summary=news_summary,
         news_result_count=news_result_count,
+        news_evidence_present=news_evidence_present,
         success=True,
     )
 
@@ -627,6 +634,103 @@ class AgentNewsEvidenceTestCase(unittest.TestCase):
         self.news_evidence.record_news_evidence(99)
 
         self.assertEqual(0, outer.resolve(search_available=True))
+
+
+class NewsEvidenceSourcesTestCase(unittest.TestCase):
+    """披露断言的是「结论有没有用到新闻面证据」，不是「搜索命中了几条」。
+
+    `news_context` 由三路来源拼成，只有实时检索会产生计数：
+
+    1. 实时多维检索 —— 更新 news_result_count
+    2. 社交情绪（美股）—— 不更新计数
+    3. 本地已落库的资讯池 —— 不更新计数
+
+    只看计数就会把后两路参与的分析误报成「未纳入新闻面证据」
+    （review OR-COR-2e4b9d61 点名了第 3 路；第 2 路是同一缺陷类，一并锁住）。
+    """
+
+    def _result(self, *, count, evidence):
+        return _make_result(news_result_count=count, news_evidence_present=evidence)
+
+    def test_local_intel_without_search_channel_is_not_reported_as_missing(self):
+        """本地资讯池已进入分析输入，即使没配搜索渠道也不能说未纳入新闻证据。"""
+        report = NotificationService.generate_daily_report(
+            _make_service(),
+            [self._result(count=None, evidence=True)],
+            report_date="2026-08-20",
+        )
+        self.assertNotIn(NO_CHANNEL_DISCLOSURE, report)
+        self.assertNotIn(ZERO_HIT_DISCLOSURE, report)
+
+    def test_social_sentiment_without_search_hits_is_not_reported_as_missing(self):
+        """社交情绪同样进入 news_context，零命中也不能否认已用证据。"""
+        report = NotificationService.generate_daily_report(
+            _make_service(),
+            [self._result(count=0, evidence=True)],
+            report_date="2026-08-20",
+        )
+        self.assertNotIn(ZERO_HIT_DISCLOSURE, report)
+        self.assertNotIn(NO_CHANNEL_DISCLOSURE, report)
+
+    def test_no_evidence_at_all_still_discloses_with_the_right_reason(self):
+        """真的没有任何证据时，原有两种原因文案必须照旧。"""
+        no_channel = NotificationService.generate_daily_report(
+            _make_service(),
+            [self._result(count=None, evidence=False)],
+            report_date="2026-08-20",
+        )
+        zero_hit = NotificationService.generate_daily_report(
+            _make_service(),
+            [self._result(count=0, evidence=False)],
+            report_date="2026-08-20",
+        )
+        self.assertIn(NO_CHANNEL_DISCLOSURE, no_channel)
+        self.assertIn(ZERO_HIT_DISCLOSURE, zero_hit)
+
+    def test_evidence_helper_treats_any_non_blank_context_as_evidence(self):
+        from src.services.empty_news import news_evidence_present
+
+        self.assertTrue(news_evidence_present("本地资讯证据池：……", None))
+        self.assertTrue(news_evidence_present(None, 3))
+        self.assertFalse(news_evidence_present(None, 0))
+        self.assertFalse(news_evidence_present("", None))
+        self.assertFalse(news_evidence_present("   \n\t ", 0))
+
+    def test_stored_record_round_trips_the_evidence_flag(self):
+        from src.services.empty_news import (
+            empty_news_disclosure_from_stored,
+            persisted_news_evidence_present,
+        )
+
+        stored = self._result(count=None, evidence=True).to_dict()
+        self.assertIn("news_evidence_present", stored)
+        self.assertTrue(persisted_news_evidence_present(stored, None))
+        self.assertIsNone(empty_news_disclosure_from_stored(stored, None, "zh"))
+
+    def test_legacy_record_without_the_flag_keeps_its_original_behaviour(self):
+        """旧记录没有该字段时按计数推断，不追溯改变当时的报告表现。"""
+        from src.services.empty_news import persisted_news_evidence_present
+
+        self.assertTrue(persisted_news_evidence_present({"news_result_count": 4}, 4))
+        self.assertFalse(persisted_news_evidence_present({"news_result_count": 0}, 0))
+
+    def test_pipeline_derives_evidence_from_news_context_not_only_the_count(self):
+        """两条 pipeline 路径都必须把 news_context 交给判定函数。
+
+        源码断言：只要哪条路径改回只传计数，本用例就会失败。
+        """
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[1] / "src" / "core" / "pipeline.py").read_text(
+            encoding="utf-8"
+        )
+        code_only = "\n".join(
+            line for line in src.splitlines() if not line.strip().startswith("#")
+        )
+
+        self.assertIn("result.news_evidence_present = news_evidence_present(", code_only)
+        self.assertIn("news_context, news_result_count", code_only)
+        self.assertIn('initial_context.get("news_context")', code_only)
 
 
 if __name__ == "__main__":

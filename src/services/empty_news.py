@@ -5,10 +5,15 @@
 （src/services/report_renderer.py + templates/*.j2）共用本模块，避免
 同一份分析结果在部分渠道披露、在另一些渠道沉默。
 
-news_result_count 的三态语义：
-    None  未执行检索（未配置搜索渠道）——明确说明新闻面证据未纳入
-    0     执行了检索但零命中（限流、全部失败等）——静默失败，必须提示
-    > 0   正常拿到新闻——不提示
+披露断言的是「本次结论有没有用到新闻面证据」，因此第一依据是分析实际收到的消息面
+证据（news_context）是否非空，而不是搜索命中了几条。news_context 可能来自实时检索、
+社交情绪或本地已落库的资讯池，后两者同样进入模型输入却不产生搜索命中；只看计数会把
+这类分析误报成「未纳入新闻面证据」（review OR-COR-2e4b9d61）。
+
+news_result_count 因此退居第二位，只用来解释「确实没有证据」时的原因：
+    None  未执行检索（未配置搜索渠道）
+    0     执行了检索但零命中（限流、全部失败等）
+    > 0   实时检索有命中（此时证据必然存在）
 """
 
 from __future__ import annotations
@@ -71,10 +76,22 @@ def persisted_news_result_state(
     return None, False
 
 
+def news_evidence_present(news_context: Any, news_result_count: Optional[int]) -> bool:
+    """本次分析是否真的收到了消息面证据。
+
+    任何进入 news_context 的来源都算证据，包括实时检索、社交情绪和本地已落库的
+    资讯池。pipeline 的两条路径都用本函数得出该结论，不要在别处另写判断。
+    """
+    if news_context is not None and str(news_context).strip():
+        return True
+    return bool(news_result_count)
+
+
 def _disclosure_for_state(
     news_result_count: Optional[int],
     *,
     known: bool,
+    evidence_present: bool,
     language: str,
 ) -> Optional[str]:
     try:
@@ -83,6 +100,9 @@ def _disclosure_for_state(
         raise ValueError(f"Unsupported report language for empty-news disclosure: {language}") from exc
 
     if not known:
+        return None
+    # 证据存在就不提示，无论它来自哪一路来源；计数只解释「没有证据」的原因。
+    if evidence_present:
         return None
     if news_result_count is None:
         return not_configured
@@ -101,12 +121,15 @@ def empty_news_disclosure(result: Any, language: str = "zh") -> Optional[str]:
     """
     if isinstance(result, Mapping):
         news_result_count, known = persisted_news_result_state(result)
+        evidence_present = persisted_news_evidence_present(result, news_result_count)
     else:
         news_result_count = getattr(result, "news_result_count", None)
         known = getattr(result, "news_result_count_known", True)
+        evidence_present = bool(getattr(result, "news_evidence_present", False))
     return _disclosure_for_state(
         news_result_count,
         known=known,
+        evidence_present=evidence_present,
         language=language,
     )
 
@@ -121,5 +144,17 @@ def empty_news_disclosure_from_stored(
     return _disclosure_for_state(
         news_result_count,
         known=known,
+        evidence_present=persisted_news_evidence_present(raw_result, news_result_count),
         language=language,
     )
+
+
+def persisted_news_evidence_present(raw_result: Any, news_result_count: Optional[int]) -> bool:
+    """从持久化载荷恢复「本次分析是否用到新闻面证据」。
+
+    本 PR 之前写入的记录没有该字段，此时退回按计数推断：>0 说明确有证据，
+    其余按无证据处理，与该记录当时的报告表现一致，不会追溯改变旧报告。
+    """
+    if isinstance(raw_result, Mapping) and "news_evidence_present" in raw_result:
+        return bool(raw_result.get("news_evidence_present"))
+    return bool(news_result_count)
