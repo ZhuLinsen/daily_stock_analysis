@@ -23,9 +23,25 @@ from src.notification import NotificationService
 
 ZERO_HIT_DISCLOSURE = "⚠️ 本次未获取到可用的新闻面数据，以下结论未纳入新闻维度证据。"
 NO_CHANNEL_DISCLOSURE = "⚠️ 未配置搜索渠道，本次分析未纳入新闻面证据。"
+EN_ZERO_HIT_DISCLOSURE = (
+    "⚠️ No news data could be retrieved for this run; "
+    "the conclusions below do not incorporate news-based evidence."
+)
+EN_NO_CHANNEL_DISCLOSURE = (
+    "⚠️ No news search channel is configured; "
+    "this analysis does not incorporate news-based evidence."
+)
+KO_ZERO_HIT_DISCLOSURE = (
+    "⚠️ 이번 분석에서 사용 가능한 뉴스 데이터를 가져오지 못해 "
+    "아래 결론에는 뉴스 근거를 반영하지 않았습니다."
+)
+KO_NO_CHANNEL_DISCLOSURE = (
+    "⚠️ 뉴스 검색 채널이 설정되지 않아 이번 분석에는 "
+    "뉴스 근거를 반영하지 않았습니다."
+)
 
 
-def _make_result(*, news_summary="", news_result_count=None):
+def _make_result(*, news_summary="", news_result_count=None, report_language="zh"):
     """构造一个最小可渲染的分析结果。
 
     只填渲染日报必需的字段，避免与被测行为无关的细节耦合。
@@ -39,6 +55,7 @@ def _make_result(*, news_summary="", news_result_count=None):
         trend_prediction="震荡",
         operation_advice="观望",
         analysis_summary="用于测试的综合分析。",
+        report_language=report_language,
         news_summary=news_summary,
         news_result_count=news_result_count,
         success=True,
@@ -281,6 +298,118 @@ class NoSearchProviderDisclosureTestCase(unittest.TestCase):
         )
         self.assertIn(NO_CHANNEL_DISCLOSURE, report)
         self.assertNotIn(ZERO_HIT_DISCLOSURE, report)
+
+
+class SupportedLanguageDisclosureTestCase(unittest.TestCase):
+    """每种受支持报告语言都必须显式映射，不能把未知语言默认为中文。"""
+
+    EXPECTED = {
+        "zh": (NO_CHANNEL_DISCLOSURE, ZERO_HIT_DISCLOSURE),
+        "en": (EN_NO_CHANNEL_DISCLOSURE, EN_ZERO_HIT_DISCLOSURE),
+        "ko": (KO_NO_CHANNEL_DISCLOSURE, KO_ZERO_HIT_DISCLOSURE),
+    }
+
+    def setUp(self):
+        self.service = _make_service()
+
+    def _string_renderers(self, result):
+        return {
+            "daily": NotificationService.generate_daily_report(
+                self.service, [result], report_date="2026-08-18"
+            ),
+            "dashboard": NotificationService.generate_dashboard_report(
+                self.service, [result], report_date="2026-08-18"
+            ),
+            "brief": NotificationService.generate_brief_report(
+                self.service, [result], report_date="2026-08-18"
+            ),
+            "single": NotificationService.generate_single_stock_report(
+                self.service, result
+            ),
+            "wechat_dashboard": NotificationService.generate_wechat_dashboard(
+                self.service, [result]
+            ),
+            "wechat_summary": NotificationService.generate_wechat_summary(
+                self.service, [result]
+            ),
+        }
+
+    def test_every_supported_language_is_used_by_string_renderers(self):
+        from src.report_language import SUPPORTED_REPORT_LANGUAGES
+
+        self.assertEqual(set(SUPPORTED_REPORT_LANGUAGES), set(self.EXPECTED))
+        for language in SUPPORTED_REPORT_LANGUAGES:
+            for count, expected_index in ((None, 0), (0, 1)):
+                expected = self.EXPECTED[language][expected_index]
+                result = _make_result(
+                    news_result_count=count,
+                    report_language=language,
+                )
+                for renderer, report in self._string_renderers(result).items():
+                    with self.subTest(
+                        language=language,
+                        count=count,
+                        renderer=renderer,
+                    ):
+                        self.assertIn(expected, report)
+                        if language != "zh":
+                            self.assertNotIn(NO_CHANNEL_DISCLOSURE, report)
+                            self.assertNotIn(ZERO_HIT_DISCLOSURE, report)
+
+    def test_every_supported_language_is_used_by_templates(self):
+        from src.report_language import SUPPORTED_REPORT_LANGUAGES
+        from src.services.report_renderer import render
+
+        for language in SUPPORTED_REPORT_LANGUAGES:
+            result = _make_result(news_result_count=0, report_language=language)
+            for platform in ("markdown", "brief", "wechat"):
+                for summary_only in (False, True):
+                    with self.subTest(
+                        language=language,
+                        platform=platform,
+                        summary_only=summary_only,
+                    ):
+                        out = render(
+                            platform=platform,
+                            results=[result],
+                            report_date="2026-08-18",
+                            summary_only=summary_only,
+                            extra_context={"report_language": language},
+                        )
+                        self.assertIn(self.EXPECTED[language][1], out or "")
+                        if language != "zh":
+                            self.assertNotIn(ZERO_HIT_DISCLOSURE, out or "")
+
+    def test_summary_only_string_renderers_keep_disclosure(self):
+        self.service._report_summary_only = True
+        result = _make_result(news_result_count=0)
+
+        for renderer, report in (
+            (
+                "daily",
+                NotificationService.generate_daily_report(
+                    self.service, [result], report_date="2026-08-18"
+                ),
+            ),
+            (
+                "dashboard",
+                NotificationService.generate_dashboard_report(
+                    self.service, [result], report_date="2026-08-18"
+                ),
+            ),
+            (
+                "wechat",
+                NotificationService.generate_wechat_dashboard(self.service, [result]),
+            ),
+        ):
+            with self.subTest(renderer=renderer):
+                self.assertIn(ZERO_HIT_DISCLOSURE, report)
+
+    def test_unknown_language_fails_loudly(self):
+        from src.services.empty_news import empty_news_disclosure
+
+        with self.assertRaisesRegex(ValueError, "Unsupported report language"):
+            empty_news_disclosure(_make_result(news_result_count=0), "future-language")
 
 
 class PipelineCountSemanticsTestCase(unittest.TestCase):

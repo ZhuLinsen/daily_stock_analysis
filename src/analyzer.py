@@ -1723,6 +1723,9 @@ class AnalysisResult:
     # 新闻检索实际命中的条数。None 表示未执行检索（如未配置搜索渠道），
     # 0 表示执行了检索但一条也没拿到；报告会针对两种原因使用不同披露文案。
     news_result_count: Optional[int] = None
+    # 旧历史记录未持久化 news_result_count，重建时必须与明确的 None 区分，
+    # 否则会把未知旧数据误报成「未配置搜索渠道」。实时分析默认值始终可信。
+    news_result_count_known: bool = True
     data_sources: str = ""  # 数据来源说明
     success: bool = True
     error_message: Optional[str] = None
@@ -1774,6 +1777,8 @@ class AnalysisResult:
             'buy_reason': self.buy_reason,
             'market_snapshot': self.market_snapshot,
             'search_performed': self.search_performed,
+            'news_result_count': self.news_result_count,
+            'news_result_count_known': self.news_result_count_known,
             'success': self.success,
             'error_message': self.error_message,
             'current_price': self.current_price,

@@ -1766,6 +1766,10 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         news_component = result["diagnostic_summary"]["components"]["news"]
         self.assertEqual(news_component["status"], "unknown")
+        self.assertEqual(
+            result["report"]["details"]["empty_news_disclosure"],
+            "⚠️ 未配置搜索渠道，本次分析未纳入新闻面证据。",
+        )
 
     def test_build_analysis_response_includes_market_phase_summary_from_result_snapshot(self) -> None:
         service = AnalysisService()

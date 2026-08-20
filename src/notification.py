@@ -949,6 +949,9 @@ class NotificationService(
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
+                news_disclosure = self._empty_news_disclosure(r, report_language)
+                if news_disclosure:
+                    report_lines.append(news_disclosure)
         else:
             report_lines.extend([f"## 📈 {labels['report_title']}", ""])
             # 逐个股票的详细分析
@@ -1315,6 +1318,10 @@ class NotificationService(
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
+                if self._report_summary_only:
+                    news_disclosure = self._empty_news_disclosure(r, report_language)
+                    if news_disclosure:
+                        report_lines.append(news_disclosure)
             report_lines.extend([
                 "",
                 "---",
@@ -1651,6 +1658,9 @@ class NotificationService(
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
+                news_disclosure = self._empty_news_disclosure(r, report_language)
+                if news_disclosure:
+                    lines.append(news_disclosure)
         else:
             for result in sorted_results:
                 signal_text, signal_emoji, _ = self._get_signal_level(result)
@@ -1828,6 +1838,9 @@ class NotificationService(
                 f"{labels['score_label']}:{result.sentiment_score} | "
                 f"{localize_trend_prediction(result.trend_prediction, report_language)}"
             )
+            news_disclosure = self._empty_news_disclosure(result, report_language)
+            if news_disclosure:
+                lines.append(news_disclosure)
 
             # 操作理由（截断）
             if hasattr(result, 'buy_reason') and result.buy_reason:
