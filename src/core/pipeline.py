@@ -59,6 +59,11 @@ from src.agent.final_explanation import (
     build_pipeline_final_explanation,
     capture_pipeline_action_adjustment,
 )
+from src.agent.news_evidence import (
+    activate_news_evidence_scope,
+    get_current_news_evidence,
+    reset_news_evidence_scope,
+)
 from src.formatters import strip_hidden_markdown_metadata
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.daily_market_context import (
@@ -1444,6 +1449,11 @@ class StockAnalysisPipeline:
             else:
                 message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
             llm_started_at = time.monotonic()
+            # Agent 自己调用搜索工具取证，所以披露计数只能来自这些工具的真实返回；
+            # 分析结束后补打的 search_stock_news() 与 Agent 消费的证据无关。
+            # 累加器对象在这里持有引用，reset 之后仍可安全读取。
+            news_evidence_token = activate_news_evidence_scope()
+            news_evidence = get_current_news_evidence()
             try:
                 record_llm_run_started(
                     model=getattr(self.config, "agent_litellm_model", None),
@@ -1460,6 +1470,8 @@ class StockAnalysisPipeline:
                     error_message=exc,
                 )
                 raise
+            finally:
+                reset_news_evidence_scope(news_evidence_token)
 
             # 转换为 AnalysisResult
             result = self._agent_result_to_analysis_result(
@@ -1470,6 +1482,16 @@ class StockAnalysisPipeline:
                 query_id,
                 trend_result=trend_result,
             )
+
+            # 三态计数取自 Agent 实际消费的搜索工具结果：渠道不可用为 None（未执行
+            # 检索），渠道可用则从 0 起步、拿到多少算多少。
+            if result is not None and news_evidence is not None:
+                result.news_result_count = news_evidence.resolve(
+                    search_available=bool(
+                        self.search_service is not None
+                        and self.search_service.is_available
+                    ),
+                )
             record_llm_run(
                 success=bool(result and getattr(result, "success", True)),
                 model=getattr(result, "model_used", None) if result else getattr(agent_result, "model", None),
@@ -1655,14 +1677,10 @@ class StockAnalysisPipeline:
                         stock_name=resolved_stock_name,
                         max_results=5
                     )
-                    # Agent 模式同样要记录检索命中数，否则零命中在这条路上仍会静默：
-                    # None = 未执行检索，0 = 执行了但零命中，报告会分别披露原因。
-                    if result is not None:
-                        result.news_result_count = (
-                            len(news_response.results)
-                            if news_response.success and news_response.results
-                            else 0
-                        )
+                    # 这次补查只为持久化新闻情报（Fixes #396），刻意不写
+                    # result.news_result_count：它发生在分析结束之后，与 Agent 实际
+                    # 消费的证据无关，用它做披露判定会两个方向都失真。真正的计数在
+                    # executor.run() 的证据作用域里收集（见上文）。
                     if news_response.success and news_response.results:
                         query_context = self._build_query_context(query_id=query_id)
                         self.db.save_news_intel(

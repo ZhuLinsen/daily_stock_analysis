@@ -442,13 +442,191 @@ class PipelineCountSemanticsTestCase(unittest.TestCase):
             "计数必须在发起检索之前置 0，否则整体失败时会落回 None",
         )
 
-    def test_agent_path_records_count(self):
-        """Agent 模式自行检索后必须回写计数。"""
+    def test_post_hoc_persistence_query_does_not_write_the_count(self):
+        """分析结束后的补查只为持久化情报，绝不能回写计数。
+
+        它发生在 executor.run() 之后，与 Agent 实际消费的证据无关；用它做披露
+        判定会两个方向都失真（review OR-COR-5f5d7a2e）。真正的计数由
+        src/agent/news_evidence.py 的证据作用域收集。
+        """
         src = self._read_pipeline_source()
         idx = src.index("Agent 模式: 新闻情报已保存")
         window = src[max(0, idx - 1200) : idx]
+        # 只看代码：解释这条约束的注释本身就含有该标识符。
+        code_only = "\n".join(
+            line for line in window.splitlines() if not line.strip().startswith("#")
+        )
 
-        self.assertIn("result.news_result_count", window)
+        self.assertNotIn("result.news_result_count", code_only)
+
+
+class _StubSearchResult:
+    def __init__(self, index):
+        self.title = f"标题{index}"
+        self.snippet = f"摘要{index}"
+        self.url = f"https://example.invalid/{index}"
+        self.source = "stub"
+        self.published_date = "2026-08-20"
+
+
+class _StubSearchResponse:
+    def __init__(self, count, *, success=True, query="stub-query"):
+        self.success = success
+        self.results = [_StubSearchResult(i) for i in range(count)]
+        self.query = query
+        self.provider = "stub"
+        self.error_message = None if success else "stub failure"
+
+
+class _StubSearchService:
+    """只实现搜索工具真正会用到的接口。
+
+    intel_counts 是 Agent 通过 search_comprehensive_intel 实际拿到的证据，
+    news_count 是 pipeline 事后为持久化而补打的 search_stock_news 的结果 ——
+    两者刻意不同，用来证明披露跟随的是前者。
+    """
+
+    def __init__(self, *, intel_counts=None, news_count=0, news_success=True, available=True):
+        self._intel_counts = intel_counts or {}
+        self._news_count = news_count
+        self._news_success = news_success
+        self._available = available
+
+    @property
+    def is_available(self):
+        return self._available
+
+    def search_comprehensive_intel(self, stock_code, stock_name, max_searches=6):
+        return {
+            dimension: _StubSearchResponse(count)
+            for dimension, count in self._intel_counts.items()
+        }
+
+    def format_intel_report(self, intel_results, stock_name):
+        return "stub intel report"
+
+    def search_stock_news(self, stock_code, stock_name, max_results=5):
+        return _StubSearchResponse(self._news_count, success=self._news_success)
+
+
+class AgentNewsEvidenceTestCase(unittest.TestCase):
+    """Agent 模式的披露必须跟随 Agent 真正消费的新闻证据。
+
+    曾经的缺口（review OR-COR-5f5d7a2e）：计数取自分析结束后补打的一次
+    search_stock_news()。Agent 明明通过 search_comprehensive_intel 用了新闻，
+    却可能因补查失败被标成「未纳入新闻面证据」；反过来 Agent 什么都没拿到，
+    也可能因补查有结果而错误地不提示。
+    """
+
+    def setUp(self):
+        from src.agent import news_evidence
+
+        self.news_evidence = news_evidence
+        token = news_evidence.activate_news_evidence_scope()
+        self.accumulator = news_evidence.get_current_news_evidence()
+        self.addCleanup(news_evidence.reset_news_evidence_scope, token)
+
+    def _install_service(self, service):
+        from unittest.mock import patch
+
+        patcher = patch(
+            "src.agent.tools.search_tools._get_search_service", return_value=service
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        db_patcher = patch("src.agent.tools.search_tools._get_db")
+        db_patcher.start()
+        self.addCleanup(db_patcher.stop)
+
+    def test_agent_evidence_survives_a_failing_post_hoc_query(self):
+        """Agent 用了 6 条新闻，事后补查零命中 —— 不得谎称未纳入新闻证据。"""
+        from src.agent.tools.search_tools import _handle_search_comprehensive_intel
+
+        service = _StubSearchService(
+            intel_counts={"latest_news": 4, "risk_check": 2}, news_count=0
+        )
+        self._install_service(service)
+
+        _handle_search_comprehensive_intel("600519", "测试标的")
+
+        # pipeline 事后的持久化补查返回完全不同的结果，且不经过证据作用域
+        post_hoc = service.search_stock_news("600519", "测试标的", max_results=5)
+        self.assertEqual(0, len(post_hoc.results))
+
+        self.assertEqual(6, self.accumulator.resolve(search_available=True))
+
+    def test_agent_zero_hit_is_not_masked_by_a_successful_post_hoc_query(self):
+        """反方向：Agent 一条没拿到，事后补查有结果 —— 提示不得被抑制。"""
+        from src.agent.tools.search_tools import _handle_search_comprehensive_intel
+
+        service = _StubSearchService(
+            intel_counts={"latest_news": 0}, news_count=5
+        )
+        self._install_service(service)
+
+        _handle_search_comprehensive_intel("600519", "测试标的")
+
+        post_hoc = service.search_stock_news("600519", "测试标的", max_results=5)
+        self.assertEqual(5, len(post_hoc.results))
+
+        self.assertEqual(0, self.accumulator.resolve(search_available=True))
+
+    def test_failed_agent_search_records_zero_rather_than_nothing(self):
+        """检索发起但失败，是「搜过但没拿到」，不是「未配置渠道」。"""
+        from src.agent.tools.search_tools import _handle_search_stock_news
+
+        service = _StubSearchService(news_count=0, news_success=False)
+        self._install_service(service)
+
+        _handle_search_stock_news("600519", "测试标的")
+
+        self.assertEqual(0, self.accumulator.resolve(search_available=True))
+
+    def test_unavailable_channel_resolves_to_not_configured(self):
+        """渠道不可用时工具直接返回错误、不记录，计数必须是 None。"""
+        from src.agent.tools.search_tools import _handle_search_stock_news
+
+        service = _StubSearchService(available=False)
+        self._install_service(service)
+
+        _handle_search_stock_news("600519", "测试标的")
+
+        self.assertIsNone(self.accumulator.resolve(search_available=False))
+
+    def test_available_channel_never_searched_reports_zero_hit_not_missing_channel(self):
+        """渠道可用但 Agent 一次都没搜：仍是「没拿到新闻」，不能谎称未配置渠道。"""
+        self.assertEqual(0, self.accumulator.resolve(search_available=True))
+
+    def test_tool_threads_accumulate_into_the_parent_scope(self):
+        """工具在线程池中执行，累加必须对 pipeline 可见。
+
+        src/agent/runner.py 用 contextvars.copy_context() + pool.submit(ctx.run, ...)
+        提交工具调用。ContextVar 里必须是可变累加器对象，换成不可变值父线程就读不到。
+        """
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+
+        record = self.news_evidence.record_news_evidence
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = []
+            for count in (2, 0, 5):
+                ctx = contextvars.copy_context()
+                futures.append(pool.submit(ctx.run, record, count))
+            for future in futures:
+                future.result()
+
+        self.assertEqual(7, self.accumulator.resolve(search_available=True))
+
+    def test_recording_outside_a_scope_is_ignored(self):
+        """报告页的后续资讯检索等场景不得影响本次分析的披露判定。"""
+        token = self.news_evidence.activate_news_evidence_scope()
+        outer = self.news_evidence.get_current_news_evidence()
+        self.news_evidence.reset_news_evidence_scope(token)
+
+        self.news_evidence.record_news_evidence(99)
+
+        self.assertEqual(0, outer.resolve(search_available=True))
 
 
 if __name__ == "__main__":
