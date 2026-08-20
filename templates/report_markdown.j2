@@ -24,6 +24,9 @@
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
 
+{% if e.empty_news_disclosure %}
+{{ e.empty_news_disclosure }}
+{% endif %}
 {% if intel %}
 ### 📰 {{ labels.info_heading }}
 

@@ -24,6 +24,9 @@
 {% if one_sentence %}
 📌 **{{ one_sentence[:80] }}**
 {% endif %}
+{% if e.empty_news_disclosure %}
+{{ e.empty_news_disclosure }}
+{% endif %}
 {% if intel.get('earnings_outlook') %}
 📊 {{ labels.earnings_outlook_label }}: {{ intel.earnings_outlook[:60] }}
 {% endif %}

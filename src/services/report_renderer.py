@@ -87,6 +87,9 @@ def _resolve_templates_dir() -> Path:
     return templates_dir
 
 
+from src.services.empty_news import empty_news_disclosure
+
+
 def render(
     platform: str,
     results: List[AnalysisResult],
@@ -161,6 +164,7 @@ def render(
         rn = get_localized_stock_name(r.name, r.code, report_language)
         sorted_enriched.append({
             "result": r,
+            "empty_news_disclosure": empty_news_disclosure(r, report_language),
             "signal_text": display_advice,
             "signal_emoji": se,
             "stock_name": _escape_md(rn),

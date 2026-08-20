@@ -169,3 +169,95 @@ class DisclosureIndependentOfModelTextTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TemplateRendererDiscloseTestCase(unittest.TestCase):
+    """REPORT_RENDERER_ENABLED=true 时走模板链路，会在 render() 处提前返回。
+
+    此前只修了字符串拼接分支，模板链路一路沉默——同一份分析结果在部分渠道
+    披露、在另一些渠道不披露，跨渠道事实呈现不一致。
+    """
+
+    def setUp(self):
+        self.service = _make_service()
+
+    def _render_with_templates(self, method, result, platform_hint=""):
+        from unittest.mock import patch
+        from src.config import get_config
+
+        cfg = get_config()
+        with patch.object(type(cfg), "report_renderer_enabled", True, create=True):
+            return method(self.service, [result], report_date="2026-08-18")
+
+    def test_markdown_template_discloses_empty_news(self):
+        from src.services.report_renderer import render
+
+        out = render(
+            platform="markdown",
+            results=[_make_result(news_result_count=0)],
+            report_date="2026-08-18",
+            summary_only=False,
+            extra_context={"report_language": "zh"},
+        )
+        self.assertTrue(out)
+        self.assertIn(DISCLOSURE, out)
+
+    def test_brief_template_discloses_empty_news(self):
+        from src.services.report_renderer import render
+
+        out = render(
+            platform="brief",
+            results=[_make_result(news_result_count=0)],
+            report_date="2026-08-18",
+            summary_only=False,
+            extra_context={"report_language": "zh"},
+        )
+        self.assertTrue(out)
+        self.assertIn(DISCLOSURE, out)
+
+    def test_wechat_template_discloses_empty_news(self):
+        from src.services.report_renderer import render
+
+        out = render(
+            platform="wechat",
+            results=[_make_result(news_result_count=0)],
+            report_date="2026-08-18",
+            summary_only=False,
+            extra_context={"report_language": "zh"},
+        )
+        self.assertTrue(out)
+        self.assertIn(DISCLOSURE, out)
+
+    def test_templates_stay_silent_when_search_not_performed(self):
+        from src.services.report_renderer import render
+
+        for platform in ("markdown", "brief", "wechat"):
+            with self.subTest(platform=platform):
+                out = render(
+                    platform=platform,
+                    results=[_make_result(news_result_count=None)],
+                    report_date="2026-08-18",
+                    summary_only=False,
+                    extra_context={"report_language": "zh"},
+                )
+                self.assertNotIn(DISCLOSURE, out or "")
+
+
+class WechatDashboardDiscloseTestCase(unittest.TestCase):
+    """generate_wechat_dashboard 是企业微信非 brief 场景的真实入口，
+    pipeline 会直接调用它，此前完全没有接入披露。"""
+
+    def setUp(self):
+        self.service = _make_service()
+
+    def test_wechat_dashboard_discloses_empty_news(self):
+        out = NotificationService.generate_wechat_dashboard(
+            self.service, [_make_result(news_result_count=0)]
+        )
+        self.assertIn(DISCLOSURE, out)
+
+    def test_wechat_dashboard_silent_when_search_not_performed(self):
+        out = NotificationService.generate_wechat_dashboard(
+            self.service, [_make_result(news_result_count=None)]
+        )
+        self.assertNotIn(DISCLOSURE, out)

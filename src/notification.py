@@ -412,24 +412,14 @@ class NotificationService(
 
     @staticmethod
     def _empty_news_disclosure(result: "AnalysisResult", language: str = "zh") -> Optional[str]:
-        """检索执行了但零命中时，返回一行需要写进报告的提示；否则返回 None。
+        """零命中时返回披露文案；判定与文案由 src/services/empty_news 统一持有。
 
-        必须独立于「模型有没有写出消息面文字」来判断：analyzer 的输出 schema
-        即使没有新闻也会要求填 market_sentiment / hot_topics，若以这些字段
-        是否为空来决定，就会出现「展示模型生成的情绪判断，却隐瞒无新闻证据」
-        这一最糟的组合。
-
-        news_result_count 的语义：None = 未执行检索（用户未配搜索渠道，不是失败，
-        不该报警）；0 = 执行了但一条没拿到（静默失败，必须如实告知）。
+        字符串拼接渲染器与模板渲染链路共用同一实现，避免同一份分析结果
+        在部分渠道披露、在另一些渠道沉默。
         """
-        if getattr(result, "news_result_count", None) != 0:
-            return None
-        if language == "en":
-            return (
-                "⚠️ No news data could be retrieved for this run; "
-                "the conclusions below do not incorporate news-based evidence."
-            )
-        return "⚠️ 本次未获取到可用的新闻面数据，以下结论未纳入新闻维度证据。"
+        from src.services.empty_news import empty_news_disclosure
+
+        return empty_news_disclosure(result, language)
 
     def generate_aggregate_report(
         self,
@@ -1683,6 +1673,11 @@ class NotificationService(
                     lines.append("")
                 # 重要信息区（舆情+基本面）
                 info_lines = []
+
+                # 新闻零命中时必须披露，否则企业微信这一路会静默省略
+                news_disclosure = self._empty_news_disclosure(result, report_language)
+                if news_disclosure:
+                    info_lines.append(news_disclosure)
 
                 # 业绩预期
                 if intel.get('earnings_outlook'):
