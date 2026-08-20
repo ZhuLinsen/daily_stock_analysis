@@ -261,3 +261,42 @@ class WechatDashboardDiscloseTestCase(unittest.TestCase):
             self.service, [_make_result(news_result_count=None)]
         )
         self.assertNotIn(DISCLOSURE, out)
+
+
+class PipelineCountSemanticsTestCase(unittest.TestCase):
+    """计数的三态语义必须在 pipeline 侧就正确产生，否则展示层再周全也无用。
+
+    两个曾经的缺口：
+    1. 搜索服务整体失败（intel_results 为空）时计数停留在 None，
+       于是「所有搜索源全线失败」这一最该提示的场景反而不提示；
+    2. Agent 模式（_analyze_with_agent）自行检索却从不记录计数，
+       该路径下零命中永远静默。
+    """
+
+    def _read_pipeline_source(self):
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parents[1] / "src" / "core" / "pipeline.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_count_set_to_zero_once_search_is_attempted(self):
+        """检索一旦发起就置 0，不能等到拿到结果对象才赋值。"""
+        src = self._read_pipeline_source()
+        idx = src.index("开始多维度情报搜索")
+        window = src[idx : idx + 600]
+
+        self.assertIn("news_result_count = 0", window)
+        self.assertLess(
+            window.index("news_result_count = 0"),
+            window.index("search_comprehensive_intel"),
+            "计数必须在发起检索之前置 0，否则整体失败时会落回 None",
+        )
+
+    def test_agent_path_records_count(self):
+        """Agent 模式自行检索后必须回写计数。"""
+        src = self._read_pipeline_source()
+        idx = src.index("Agent 模式: 新闻情报已保存")
+        window = src[max(0, idx - 1200) : idx]
+
+        self.assertIn("result.news_result_count", window)

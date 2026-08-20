@@ -615,6 +615,11 @@ class StockAnalysisPipeline:
             if self.search_service is not None and self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
+                # 检索已发起：此后即使一条都没拿到，也是「执行了但零命中」而非
+                # 「未执行检索」。若停留在 None，搜索源全线失败这一最该提示的场景
+                # 反而不会提示。
+                news_result_count = 0
+
                 # 使用多维度搜索（最多5次搜索）
                 intel_results = self.search_service.search_comprehensive_intel(
                     stock_code=code,
@@ -1650,6 +1655,14 @@ class StockAnalysisPipeline:
                         stock_name=resolved_stock_name,
                         max_results=5
                     )
+                    # Agent 模式同样要记录检索命中数，否则零命中在这条路上仍会静默：
+                    # None = 未执行检索，0 = 执行了但零命中，需在报告中如实披露。
+                    if result is not None:
+                        result.news_result_count = (
+                            len(news_response.results)
+                            if news_response.success and news_response.results
+                            else 0
+                        )
                     if news_response.success and news_response.results:
                         query_context = self._build_query_context(query_id=query_id)
                         self.db.save_news_intel(
