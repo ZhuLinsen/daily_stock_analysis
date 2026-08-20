@@ -412,10 +412,10 @@ class NotificationService(
 
     @staticmethod
     def _empty_news_disclosure(result: "AnalysisResult", language: str = "zh") -> Optional[str]:
-        """零命中时返回披露文案；判定与文案由 src/services/empty_news 统一持有。
+        """新闻检索未执行或零命中时返回对应披露文案。
 
-        字符串拼接渲染器与模板渲染链路共用同一实现，避免同一份分析结果
-        在部分渠道披露、在另一些渠道沉默。
+        判定与文案由 src/services/empty_news 统一持有；字符串拼接渲染器与模板
+        渲染链路共用同一实现，避免同一份分析结果在部分渠道披露、另一些渠道沉默。
         """
         from src.services.empty_news import empty_news_disclosure
 

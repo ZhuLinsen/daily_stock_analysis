@@ -768,7 +768,7 @@ class StockAnalysisPipeline:
                 )
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
                 if result is not None:
-                    # 交给展示层判断「确实没新闻」还是「检索静默失败」。
+                    # 交给展示层区分「未配置渠道」「检索零命中」和「正常命中」。
                     # 该值此前只进了诊断快照，报告层拿不到。
                     result.news_result_count = news_result_count
                 record_llm_run(
@@ -1656,7 +1656,7 @@ class StockAnalysisPipeline:
                         max_results=5
                     )
                     # Agent 模式同样要记录检索命中数，否则零命中在这条路上仍会静默：
-                    # None = 未执行检索，0 = 执行了但零命中，需在报告中如实披露。
+                    # None = 未执行检索，0 = 执行了但零命中，报告会分别披露原因。
                     if result is not None:
                         result.news_result_count = (
                             len(news_response.results)

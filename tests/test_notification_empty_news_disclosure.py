@@ -6,10 +6,10 @@
 未配置可用渠道等）。这会把「抓取失败」呈现成「确实没有新闻」，
 比单纯的慢更容易误导结论。
 
-这些用例锁住三件事：
-1. 检索执行了但为空（count == 0）时，必须出现明确提示；
-2. 未执行检索（count is None）时不得误报，那是用户没配搜索渠道，不是失败；
-3. 正常拿到新闻时，行为与此前完全一致。
+这些用例锁住三个状态：
+1. 未执行检索（count is None）时，说明未配置渠道且未纳入新闻面证据；
+2. 检索执行了但为空（count == 0）时，保留原有零命中提示；
+3. 正常拿到新闻（count > 0）时，不出现缺失提示。
 """
 
 import os
@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.notification import NotificationService
 
 
-DISCLOSURE = "未获取到可用的新闻面数据"
+ZERO_HIT_DISCLOSURE = "⚠️ 本次未获取到可用的新闻面数据，以下结论未纳入新闻维度证据。"
+NO_CHANNEL_DISCLOSURE = "⚠️ 未配置搜索渠道，本次分析未纳入新闻面证据。"
 
 
 def _make_result(*, news_summary="", news_result_count=None):
@@ -66,14 +67,16 @@ class EmptyNewsDisclosureTestCase(unittest.TestCase):
         """检索执行了但零命中：报告必须说出来。"""
         report = self._render(_make_result(news_result_count=0))
 
-        self.assertIn(DISCLOSURE, report)
+        self.assertIn(ZERO_HIT_DISCLOSURE, report)
+        self.assertNotIn(NO_CHANNEL_DISCLOSURE, report)
         self.assertIn("消息面", report)
 
-    def test_stays_silent_when_search_was_not_performed(self):
-        """未执行检索不是失败，不该报警——否则没配搜索渠道的用户每份报告都被吓一次。"""
+    def test_discloses_when_search_was_not_performed(self):
+        """未配置搜索渠道时，报告必须说明新闻面证据没有纳入。"""
         report = self._render(_make_result(news_result_count=None))
 
-        self.assertNotIn(DISCLOSURE, report)
+        self.assertIn(NO_CHANNEL_DISCLOSURE, report)
+        self.assertNotIn(ZERO_HIT_DISCLOSURE, report)
 
     def test_unchanged_when_news_is_available(self):
         """拿到新闻时行为与改动前一致：渲染正文，不出现提示。"""
@@ -82,7 +85,8 @@ class EmptyNewsDisclosureTestCase(unittest.TestCase):
         )
 
         self.assertIn("公司发布季度财报", report)
-        self.assertNotIn(DISCLOSURE, report)
+        self.assertNotIn(ZERO_HIT_DISCLOSURE, report)
+        self.assertNotIn(NO_CHANNEL_DISCLOSURE, report)
 
     def test_disclosure_states_the_consequence_not_just_the_absence(self):
         """提示要说清后果，让读者知道结论该打几折，而不只是「没数据」。"""
@@ -93,7 +97,7 @@ class EmptyNewsDisclosureTestCase(unittest.TestCase):
 
 class ResultFieldContractTestCase(unittest.TestCase):
     def test_result_defaults_to_none_not_zero(self):
-        """默认必须是 None：默认成 0 会让所有未检索的报告都误报失败。"""
+        """默认必须是 None，才能与执行后零命中使用不同披露文案。"""
         result = _make_result()
 
         self.assertIsNone(result.news_result_count)
@@ -114,23 +118,23 @@ class ActiveRenderersDiscloseTestCase(unittest.TestCase):
             self.service, [_make_result(news_result_count=0)], report_date="2026-08-18"
         )
 
-        self.assertIn(DISCLOSURE, report)
+        self.assertIn(ZERO_HIT_DISCLOSURE, report)
 
     def test_brief_report_discloses_empty_news(self):
         report = NotificationService.generate_brief_report(
             self.service, [_make_result(news_result_count=0)], report_date="2026-08-18"
         )
 
-        self.assertIn(DISCLOSURE, report)
+        self.assertIn(ZERO_HIT_DISCLOSURE, report)
 
     def test_single_stock_report_discloses_empty_news(self):
         report = NotificationService.generate_single_stock_report(
             self.service, _make_result(news_result_count=0)
         )
 
-        self.assertIn(DISCLOSURE, report)
+        self.assertIn(ZERO_HIT_DISCLOSURE, report)
 
-    def test_renderers_stay_silent_when_search_not_performed(self):
+    def test_renderers_disclose_when_search_not_performed(self):
         for name, call in (
             ("dashboard", lambda r: NotificationService.generate_dashboard_report(
                 self.service, [r], report_date="2026-08-18")),
@@ -140,7 +144,9 @@ class ActiveRenderersDiscloseTestCase(unittest.TestCase):
                 self.service, r)),
         ):
             with self.subTest(renderer=name):
-                self.assertNotIn(DISCLOSURE, call(_make_result(news_result_count=None)))
+                report = call(_make_result(news_result_count=None))
+                self.assertIn(NO_CHANNEL_DISCLOSURE, report)
+                self.assertNotIn(ZERO_HIT_DISCLOSURE, report)
 
 
 class DisclosureIndependentOfModelTextTestCase(unittest.TestCase):
@@ -162,7 +168,7 @@ class DisclosureIndependentOfModelTextTestCase(unittest.TestCase):
             self.service, [result], report_date="2026-08-18"
         )
 
-        self.assertIn(DISCLOSURE, report)
+        self.assertIn(ZERO_HIT_DISCLOSURE, report)
         self.assertIn("市场情绪偏中性", report)
 
 
@@ -200,7 +206,7 @@ class TemplateRendererDiscloseTestCase(unittest.TestCase):
             extra_context={"report_language": "zh"},
         )
         self.assertTrue(out)
-        self.assertIn(DISCLOSURE, out)
+        self.assertIn(ZERO_HIT_DISCLOSURE, out)
 
     def test_brief_template_discloses_empty_news(self):
         from src.services.report_renderer import render
@@ -213,7 +219,7 @@ class TemplateRendererDiscloseTestCase(unittest.TestCase):
             extra_context={"report_language": "zh"},
         )
         self.assertTrue(out)
-        self.assertIn(DISCLOSURE, out)
+        self.assertIn(ZERO_HIT_DISCLOSURE, out)
 
     def test_wechat_template_discloses_empty_news(self):
         from src.services.report_renderer import render
@@ -226,9 +232,9 @@ class TemplateRendererDiscloseTestCase(unittest.TestCase):
             extra_context={"report_language": "zh"},
         )
         self.assertTrue(out)
-        self.assertIn(DISCLOSURE, out)
+        self.assertIn(ZERO_HIT_DISCLOSURE, out)
 
-    def test_templates_stay_silent_when_search_not_performed(self):
+    def test_templates_disclose_when_search_not_performed(self):
         from src.services.report_renderer import render
 
         for platform in ("markdown", "brief", "wechat"):
@@ -240,7 +246,8 @@ class TemplateRendererDiscloseTestCase(unittest.TestCase):
                     summary_only=False,
                     extra_context={"report_language": "zh"},
                 )
-                self.assertNotIn(DISCLOSURE, out or "")
+                self.assertIn(NO_CHANNEL_DISCLOSURE, out or "")
+                self.assertNotIn(ZERO_HIT_DISCLOSURE, out or "")
 
 
 class WechatDashboardDiscloseTestCase(unittest.TestCase):
@@ -254,13 +261,31 @@ class WechatDashboardDiscloseTestCase(unittest.TestCase):
         out = NotificationService.generate_wechat_dashboard(
             self.service, [_make_result(news_result_count=0)]
         )
-        self.assertIn(DISCLOSURE, out)
+        self.assertIn(ZERO_HIT_DISCLOSURE, out)
 
-    def test_wechat_dashboard_silent_when_search_not_performed(self):
+    def test_wechat_dashboard_discloses_when_search_not_performed(self):
         out = NotificationService.generate_wechat_dashboard(
             self.service, [_make_result(news_result_count=None)]
         )
-        self.assertNotIn(DISCLOSURE, out)
+        self.assertIn(NO_CHANNEL_DISCLOSURE, out)
+        self.assertNotIn(ZERO_HIT_DISCLOSURE, out)
+
+
+class NoSearchProviderDisclosureTestCase(unittest.TestCase):
+    """锁住 #2225 的 fresh-clone 场景：没有 key，公共实例默认关闭。"""
+
+    def test_no_registered_providers_discloses_missing_news_evidence(self):
+        from src.search_service import SearchService
+
+        search_service = SearchService(searxng_public_instances_enabled=False)
+        self.assertEqual([], search_service._providers)
+        self.assertFalse(search_service.is_available)
+
+        report = NotificationService.generate_daily_report(
+            _make_service(), [_make_result(news_result_count=None)], report_date="2026-08-18"
+        )
+        self.assertIn(NO_CHANNEL_DISCLOSURE, report)
+        self.assertNotIn(ZERO_HIT_DISCLOSURE, report)
 
 
 class PipelineCountSemanticsTestCase(unittest.TestCase):

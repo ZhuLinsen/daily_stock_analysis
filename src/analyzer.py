@@ -1721,7 +1721,7 @@ class AnalysisResult:
     raw_response: Optional[str] = None  # 原始响应（调试用）
     search_performed: bool = False  # 是否执行了联网搜索
     # 新闻检索实际命中的条数。None 表示未执行检索（如未配置搜索渠道），
-    # 0 表示执行了检索但一条也没拿到——两者对用户的含义不同，不能混为一谈。
+    # 0 表示执行了检索但一条也没拿到；报告会针对两种原因使用不同披露文案。
     news_result_count: Optional[int] = None
     data_sources: str = ""  # 数据来源说明
     success: bool = True
