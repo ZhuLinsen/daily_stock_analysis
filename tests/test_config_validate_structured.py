@@ -520,6 +520,15 @@ class TestValidateStructuredNotification:
         issues = cfg.validate_structured()
         assert not any(i.severity == "warning" and "通知渠道" in i.message for i in issues)
 
+    def test_dingtalk_webhook_counts_as_notification_channel(self):
+        cfg = _make_config(
+            wechat_webhook_url=None,
+            dingtalk_webhook_url="https://oapi.dingtalk.com/robot/send?access_token=test",
+        )
+        issues = cfg.validate_structured()
+
+        assert not any(i.severity == "warning" and "通知渠道" in i.message for i in issues)
+
     @pytest.mark.parametrize(
         ("kwargs", "missing_field"),
         [
