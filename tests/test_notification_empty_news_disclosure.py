@@ -172,11 +172,6 @@ class DisclosureIndependentOfModelTextTestCase(unittest.TestCase):
         self.assertIn("市场情绪偏中性", report)
 
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TemplateRendererDiscloseTestCase(unittest.TestCase):
     """REPORT_RENDERER_ENABLED=true 时走模板链路，会在 render() 处提前返回。
 
@@ -325,3 +320,7 @@ class PipelineCountSemanticsTestCase(unittest.TestCase):
         window = src[max(0, idx - 1200) : idx]
 
         self.assertIn("result.news_result_count", window)
+
+
+if __name__ == "__main__":
+    unittest.main()
