@@ -76,15 +76,31 @@ def persisted_news_result_state(
     return None, False
 
 
-def news_evidence_present(news_context: Any, news_result_count: Optional[int]) -> bool:
-    """本次分析是否真的收到了消息面证据。
+def news_evidence_present(*sources: Any) -> bool:
+    """本次分析是否真的收到了消息面证据。任一来源为真即为真。
 
-    任何进入 news_context 的来源都算证据，包括实时检索、社交情绪和本地已落库的
-    资讯池。pipeline 的两条路径都用本函数得出该结论，不要在别处另写判断。
+    每个来源要么是真实条数（int），要么是**已排除占位文本**的内容字符串。
+    实时检索、社交情绪、本地资讯池各算一路，pipeline 两条路径都用本函数，
+    不要在别处另写判断。
+
+    **不要把 pipeline 拼好的整段 news_context 传进来。**
+    `src/search_service.py` 的 `format_intel_report()` 在零命中时仍会输出
+    `【XX 情报搜索结果】` 标题和每个维度的「未找到相关信息」占位文本，整段永远
+    非空；用它判定会把「搜了但一条没拿到」翻成「有证据」，恰好吞掉本模块要补的
+    披露（review OR-COR-8f4c2d1b）。判定必须按来源逐个登记，不能闻字符串。
     """
-    if news_context is not None and str(news_context).strip():
-        return True
-    return bool(news_result_count)
+    for source in sources:
+        if source is None or isinstance(source, bool):
+            if source:
+                return True
+            continue
+        if isinstance(source, (int, float)):
+            if source > 0:
+                return True
+            continue
+        if str(source).strip():
+            return True
+    return False
 
 
 def _disclosure_for_state(

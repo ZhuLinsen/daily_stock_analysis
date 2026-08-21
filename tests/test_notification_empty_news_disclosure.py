@@ -687,14 +687,55 @@ class NewsEvidenceSourcesTestCase(unittest.TestCase):
         self.assertIn(NO_CHANNEL_DISCLOSURE, no_channel)
         self.assertIn(ZERO_HIT_DISCLOSURE, zero_hit)
 
-    def test_evidence_helper_treats_any_non_blank_context_as_evidence(self):
+    def test_evidence_helper_registers_sources_one_by_one(self):
         from src.services.empty_news import news_evidence_present
 
-        self.assertTrue(news_evidence_present("本地资讯证据池：……", None))
-        self.assertTrue(news_evidence_present(None, 3))
-        self.assertFalse(news_evidence_present(None, 0))
-        self.assertFalse(news_evidence_present("", None))
-        self.assertFalse(news_evidence_present("   \n\t ", 0))
+        # 真实命中数 / 社交情绪 / 本地资讯池，任一为真即算有证据
+        self.assertTrue(news_evidence_present(4, None, None))
+        self.assertTrue(news_evidence_present(0, "reddit 讨论……", None))
+        self.assertTrue(news_evidence_present(0, None, "## 本地资讯证据池"))
+        self.assertFalse(news_evidence_present(0, None, None))
+        self.assertFalse(news_evidence_present(0, "", "   \n\t "))
+        self.assertFalse(news_evidence_present(None, None, None))
+
+    def test_zero_hit_placeholder_report_is_not_mistaken_for_evidence(self):
+        """零命中时 format_intel_report 仍吐占位文本，绝不能被当成证据。
+
+        这是真实反例（review OR-COR-8f4c2d1b）：`format_intel_report()` 即使所有
+        维度都失败，也会输出「【XX 情报搜索结果】」标题和每个维度的「未找到相关
+        信息」，整段永远非空。曾经的实现把整段 news_context 传进判定函数，于是
+        「搜了但一条没拿到」被翻成「有证据」，恰好吞掉本 PR 要补的那条披露。
+        这里用真实函数产出反例，不用 mock。
+        """
+        from src.search_service import SearchService
+        from src.services.empty_news import news_evidence_present
+
+        class _FailedResponse:
+            success = False
+            results = []
+            provider = "stub"
+
+        service = SearchService.__new__(SearchService)
+        placeholder = SearchService.format_intel_report(
+            service,
+            {"latest_news": _FailedResponse(), "risk_check": _FailedResponse()},
+            "测试标的",
+        )
+
+        # 前提：这段占位文本确实非空，否则这条反例就失去意义
+        self.assertTrue(placeholder.strip())
+        self.assertIn("未找到相关信息", placeholder)
+
+        # 按来源登记：实时 0 条、无社交、无本地资讯池 —— 必须判定为没有证据
+        self.assertFalse(news_evidence_present(0, None, None))
+
+        # 端到端：这种情况报告必须出现零命中披露
+        report = NotificationService.generate_daily_report(
+            _make_service(),
+            [_make_result(news_result_count=0, news_evidence_present=False)],
+            report_date="2026-08-21",
+        )
+        self.assertIn(ZERO_HIT_DISCLOSURE, report)
 
     def test_stored_record_round_trips_the_evidence_flag(self):
         from src.services.empty_news import (
@@ -714,10 +755,11 @@ class NewsEvidenceSourcesTestCase(unittest.TestCase):
         self.assertTrue(persisted_news_evidence_present({"news_result_count": 4}, 4))
         self.assertFalse(persisted_news_evidence_present({"news_result_count": 0}, 0))
 
-    def test_pipeline_derives_evidence_from_news_context_not_only_the_count(self):
-        """两条 pipeline 路径都必须把 news_context 交给判定函数。
+    def test_pipeline_registers_sources_and_never_passes_the_whole_context(self):
+        """两条 pipeline 路径都必须按来源登记，且都不许传拼好的整段 news_context。
 
-        源码断言：只要哪条路径改回只传计数，本用例就会失败。
+        源码断言：谁把整段 news_context 交回判定函数，本用例就会失败——那正是
+        零命中占位文本冒充证据的入口。
         """
         from pathlib import Path
 
@@ -728,9 +770,17 @@ class NewsEvidenceSourcesTestCase(unittest.TestCase):
             line for line in src.splitlines() if not line.strip().startswith("#")
         )
 
-        self.assertIn("result.news_evidence_present = news_evidence_present(", code_only)
-        self.assertIn("news_context, news_result_count", code_only)
-        self.assertIn('initial_context.get("news_context")', code_only)
+        calls = code_only.count("result.news_evidence_present = news_evidence_present(")
+        self.assertEqual(2, calls, "普通路径与 Agent 路径各要有一次登记")
+
+        # 三路来源都要出现在登记参数里
+        self.assertIn("social_evidence_context", code_only)
+        self.assertIn("persisted_intelligence_context", code_only)
+
+        # 整段 news_context 不许再被交给判定函数
+        self.assertNotIn("news_evidence_present(\n                        news_context", code_only)
+        self.assertNotIn("news_evidence_present(news_context", code_only)
+        self.assertNotIn('news_evidence_present(\n                    initial_context.get("news_context")', code_only)
 
 
 if __name__ == "__main__":

@@ -662,11 +662,13 @@ class StockAnalysisPipeline:
                 logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
+            social_evidence_context: Optional[str] = None
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
                         logger.info(f"{stock_name}({code}) Social sentiment data retrieved")
+                        social_evidence_context = social_context
                         if news_context:
                             news_context = news_context + "\n\n" + social_context
                         else:
@@ -777,10 +779,13 @@ class StockAnalysisPipeline:
                     # 交给展示层区分「未配置渠道」「检索零命中」和「正常命中」。
                     # 该值此前只进了诊断快照，报告层拿不到。
                     result.news_result_count = news_result_count
-                    # news_context 此时已合入实时检索、社交情绪与本地资讯池三路来源，
-                    # 是「本次结论用到的消息面证据」的唯一事实；只看计数会漏掉后两路。
+                    # 三路来源逐个登记，不看拼好的 news_context 整段：
+                    # format_intel_report() 零命中时仍输出占位文本，整段永远非空，
+                    # 拿它判定会把「搜了但一条没拿到」误判成有证据。
                     result.news_evidence_present = news_evidence_present(
-                        news_context, news_result_count
+                        news_result_count,
+                        social_evidence_context,
+                        persisted_intelligence_context,
                     )
                 record_llm_run(
                     success=bool(result and getattr(result, "success", True)),
@@ -1395,10 +1400,12 @@ class StockAnalysisPipeline:
             # Agent path: inject social sentiment as news_context so both
             # executor (_build_user_message) and orchestrator (ctx.set_data)
             # can consume it through the existing news_context channel
+            social_evidence_context: Optional[str] = None
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
+                        social_evidence_context = social_context
                         existing = initial_context.get("news_context")
                         if existing:
                             initial_context["news_context"] = existing + "\n\n" + social_context
@@ -1498,11 +1505,13 @@ class StockAnalysisPipeline:
                         and self.search_service.is_available
                     ),
                 )
-                # Agent 的证据有两个来源：注入 initial_context 的本地资讯池等内容，
-                # 以及运行期它自己调用搜索工具拿到的结果。任一非空都算用到了新闻面证据。
+                # 与普通路径同样按来源逐个登记：Agent 运行期自己搜到的条数、注入的
+                # 社交情绪、注入的本地资讯池。这条路径不经过 format_intel_report()，
+                # 但仍不传拼好的整段，避免以后有人往里加会造占位文本的来源。
                 result.news_evidence_present = news_evidence_present(
-                    initial_context.get("news_context"),
                     result.news_result_count,
+                    social_evidence_context,
+                    persisted_intelligence_context,
                 )
             record_llm_run(
                 success=bool(result and getattr(result, "success", True)),
