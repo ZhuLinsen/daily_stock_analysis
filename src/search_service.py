@@ -2220,6 +2220,117 @@ class SearXNGSearchProvider(BaseSearchProvider):
         )
 
 
+class MiaoxiangSearchProvider(BaseSearchProvider):
+    """妙想（东方财富 MX_API）金融资讯搜索。
+
+    返回结构化资讯（新闻/公告/研报，含日期与机构信息），
+    作为 SearXNG 等通用网页搜索之后的垂直资讯兜底。
+    """
+
+    API_ENDPOINT = "https://mkapi2.dfcfs.com/finskillshub/api/claw/news-search"
+    _TYPE_LABELS = {"NEWS": "新闻", "REPORT": "研报", "ANNOUNCEMENT": "公告", "NOTICE": "公告"}
+    _REQUEST_TIMEOUT_SECONDS = 20
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "Miaoxiang")
+
+    def _format_source(self, item: Dict[str, Any]) -> str:
+        type_label = self._TYPE_LABELS.get(str(item.get("informationType", "")), "资讯")
+        ins_name = str(item.get("insName", "") or "").strip()
+        return f"妙想-{type_label}({ins_name})" if ins_name else f"妙想-{type_label}"
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        start_time = time.time()
+        try:
+            response = requests.post(
+                self.API_ENDPOINT,
+                headers={"Content-Type": "application/json", "apikey": api_key},
+                json={"query": query},
+                timeout=self._REQUEST_TIMEOUT_SECONDS,
+            )
+            if response.status_code != 200:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=f"HTTP {response.status_code}",
+                    search_time=time.time() - start_time,
+                )
+            payload = response.json()
+            if payload.get("status") != 0:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=f"MX status={payload.get('status')} {str(payload.get('message',''))[:80]}",
+                    search_time=time.time() - start_time,
+                )
+            items = (
+                payload.get("data", {})
+                .get("data", {})
+                .get("llmSearchResponse", {})
+                .get("data", [])
+            )
+            if not isinstance(items, list):
+                items = []
+
+            results: List[SearchResult] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title", "")).strip()
+                content = re.sub(r"<[^>]+>", " ", str(item.get("content", "") or ""))
+                content = re.sub(r"\s+", " ", content).strip()
+                if not title and not content:
+                    continue
+                raw_date = str(item.get("date", "") or "").strip()
+                results.append(
+                    SearchResult(
+                        title=title[:200],
+                        snippet=content[:500],
+                        url=str(item.get("url", "") or ""),
+                        source=self._format_source(item),
+                        published_date=raw_date.split()[0] if raw_date else None,
+                    )
+                )
+                if len(results) >= max_results:
+                    break
+
+            if not results:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message="未找到相关资讯",
+                    search_time=time.time() - start_time,
+                )
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True,
+                search_time=time.time() - start_time,
+            )
+        except requests.exceptions.Timeout:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message="请求超时", search_time=time.time() - start_time,
+            )
+        except requests.exceptions.RequestException as e:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message=f"网络请求失败: {e}", search_time=time.time() - start_time,
+            )
+        except Exception as e:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message=f"未知错误: {e}", search_time=time.time() - start_time,
+            )
+
+
 class SearchService:
     """
     搜索服务
@@ -2390,6 +2501,7 @@ class SearchService:
         minimax_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         searxng_public_instances_enabled: bool = False,
+        mx_apikey: Optional[str] = None,
         news_max_age_days: int = 3,
         news_strategy_profile: str = "short",
     ):
@@ -2476,7 +2588,12 @@ class SearchService:
             else:
                 logger.info("已启用 SearXNG 公共实例自动发现模式")
 
-        # 7. Anspire Search（实时智能搜索优化）
+        # 7. 妙想（东方财富 MX_API）金融资讯搜索：结构化新闻/公告/研报兜底
+        if mx_apikey:
+            self._providers.append(MiaoxiangSearchProvider([mx_apikey]))
+            logger.info("已配置妙想(MX_API)金融资讯搜索")
+
+        # 8. Anspire Search（实时智能搜索优化）
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
@@ -4890,6 +5007,7 @@ def get_search_service() -> SearchService:
                     minimax_keys=config.minimax_api_keys,
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
+                    mx_apikey=getattr(config, "mx_apikey", None),
                     news_max_age_days=config.news_max_age_days,
                     news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
                 )
