@@ -7,6 +7,7 @@ description: "分析股票和市场。当用户想要分析单个或多个股票
 
 本技能基于 `src/services/analyzer_service.py` 的逻辑，提供分析股票和整体市场的功能。
 
+
 ## 输出结构 (`AnalysisResult`)
 
 分析函数返回一个 `AnalysisResult` 对象（或其列表），该对象具有丰富的结构。以下是其关键组件的简要概述，并附有真实的输出示例：
