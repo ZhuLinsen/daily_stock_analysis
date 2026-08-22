@@ -1755,6 +1755,8 @@ class TestStorage(unittest.TestCase):
         finally:
             DatabaseManager.reset_instance()
             self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_migration_raises_when_column_inspection_fails(self):
         """AC: inspect() failure on stock_daily must raise (no silent downgrade).
 
         Mirrors the decision_profile inspection-failure test (L417-438). The

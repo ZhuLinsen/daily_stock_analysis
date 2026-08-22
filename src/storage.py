@@ -1621,10 +1621,14 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         3. inspect() whether the ``canonical_id`` column already exists (idempotent).
         4. ``ALTER TABLE ... ADD COLUMN canonical_id VARCHAR(32)`` (nullable —
            SQLite can't add NOT NULL/UNIQUE columns via ALTER).
-        5. Backfill existing rows with ``parse_analysis_target(code).canonical_id``
-           in id-batched chunks (5000/batch), using ``WHERE canonical_id IS NULL``
-           so re-runs are safe. Function-level lazy import keeps the storage layer
-           free of a circular import on ``src.services.stock_list_parser``.
+         5. Backfill existing rows with ``_derive_canonical_id(code)`` in
+            id-batched chunks (5000/batch), using ``WHERE canonical_id IS NULL``
+            so re-runs are safe. ``_derive_canonical_id`` is index-aware: a
+            bare registered index code (e.g. ``000300``) resolves to the index
+            canonical_id (``sh000300``) rather than the stock-path key
+            (``sz000300``), preventing same-index split across buckets.
+            Function-level lazy import keeps the storage layer free of a
+            circular import on ``src.services.stock_list_parser``.
         6. Create a plain (non-unique) index ``ix_stock_daily_canonical_id`` so
            historical alias rows sharing one canonical_id + date can coexist (AC 9).
 
@@ -3163,8 +3167,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         - 同一批次内若存在重复日期，以最后一条记录为准
         - SQLite 分支按 chunk 写入以避免绑定参数上限
         - ``canonical_id``（Expand-Contract PR2）：显式传入则双写；
-          未传（``None``）时用 ``parse_analysis_target(code).canonical_id``
-          延迟推导，推导失败写 NULL 降级（D1）。
+          未传（``None``）时用 ``_derive_canonical_id(code)`` 延迟推导
+          （index-aware：裸指数码命中注册表时统一到指数 canonical_id），
+          推导失败写 NULL 降级（D1）。
         
         Args:
             df: 包含日线数据的 DataFrame
