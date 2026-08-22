@@ -131,3 +131,31 @@ def test_docs_describe_public_searxng_discovery_as_opt_in() -> None:
         for line in english_base_url_lines
     )
     assert all("default `false`" in line for line in english_public_toggle_lines)
+
+
+def test_constructor_kwargs_carry_searxng_timeout_for_subprocess_rebuild() -> None:
+    """bounded 题材搜索在子进程中重建 SearchService 时必须带上超时配置（PR #2249 blocker）。"""
+    from src.search_service import SearchService
+
+    service = SearchService(
+        searxng_base_urls=["http://searxng.local:8080"],
+        searxng_timeout_seconds=25,
+    )
+    kwargs = service._constructor_kwargs
+    assert kwargs["searxng_timeout_seconds"] == 25
+    assert kwargs["searxng_base_urls"] == ["http://searxng.local:8080"]
+
+    # 子进程按同一 kwargs 重建后,provider 应拿到相同超时
+    rebuilt = SearchService(**kwargs)
+    searxng = next(p for p in rebuilt._providers if p.name == "SearXNG")
+    assert searxng._self_hosted_timeout_seconds == 25
+
+
+def test_daily_analysis_workflow_maps_searxng_timeout_variable() -> None:
+    workflow = (
+        ROOT_DIR / ".github" / "workflows" / "00-daily-analysis.yml"
+    ).read_text(encoding="utf-8")
+    assert (
+        "SEARXNG_TIMEOUT_SECONDS: ${{ vars.SEARXNG_TIMEOUT_SECONDS || secrets.SEARXNG_TIMEOUT_SECONDS }}"
+        in workflow
+    )
