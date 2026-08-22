@@ -40,6 +40,12 @@ from src.report_language import (
 )
 from src.storage import DatabaseManager
 from src.services.run_diagnostics import build_run_diagnostic_summary
+from src.services.empty_news import (
+    empty_news_disclosure,
+    empty_news_disclosure_from_stored,
+    persisted_news_evidence_present,
+    persisted_news_result_state,
+)
 from src.market_phase_summary import (
     extract_market_phase_summary,
     rebuild_market_phase_summary_for_stock_code,
@@ -629,6 +635,15 @@ class HistoryService:
             except json.JSONDecodeError:
                 context_snapshot = record.context_snapshot
 
+        report_language = normalize_report_language(
+            raw_result.get("report_language") if isinstance(raw_result, dict) else None
+        )
+        news_disclosure = empty_news_disclosure_from_stored(
+            raw_result,
+            context_snapshot,
+            report_language,
+        )
+
         market_review_content = None
         analysis_summary = record.analysis_summary
         if getattr(record, "report_type", None) == "market_review":
@@ -662,6 +677,7 @@ class HistoryService:
             "stop_loss": sniper_points.get("stop_loss"),
             "take_profit": sniper_points.get("take_profit"),
             "news_content": market_review_content or record.news_content,
+            "empty_news_disclosure": news_disclosure,
             "raw_result": raw_result,
             "context_snapshot": context_snapshot,
             "market_phase_summary": market_phase_summary,
@@ -915,6 +931,11 @@ class HistoryService:
             from src.analyzer import AnalysisResult
             # Extract dashboard data if available
             dashboard = raw_result.get("dashboard", {})
+            context_snapshot = parse_json_field(getattr(record, "context_snapshot", None))
+            news_result_count, news_result_count_known = persisted_news_result_state(
+                raw_result,
+                context_snapshot,
+            )
 
             # Build AnalysisResult with available data
             result = AnalysisResult(
@@ -948,6 +969,11 @@ class HistoryService:
                 buy_reason=raw_result.get("buy_reason", ""),
                 market_snapshot=raw_result.get("market_snapshot"),
                 search_performed=raw_result.get("search_performed", False),
+                news_result_count=news_result_count,
+                news_result_count_known=news_result_count_known,
+                news_evidence_present=persisted_news_evidence_present(
+                    raw_result, news_result_count
+                ),
                 data_sources=raw_result.get("data_sources", ""),
                 success=raw_result.get("success", True),
                 error_message=raw_result.get("error_message"),
@@ -1019,6 +1045,10 @@ class HistoryService:
             "---",
             "",
         ]
+
+        news_disclosure = empty_news_disclosure(result, report_language)
+        if news_disclosure:
+            report_lines.extend([news_disclosure, ""])
 
         # ========== 舆情与基本面概览（放在最前面）==========
         intel = dashboard.get('intelligence', {}) if dashboard else {}

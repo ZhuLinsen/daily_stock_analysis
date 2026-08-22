@@ -31,6 +31,7 @@ from src.services.run_diagnostics import (
     get_current_diagnostic_context,
     reset_run_diagnostic_context,
 )
+from src.services.empty_news import empty_news_disclosure
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,7 @@ class AnalysisService:
             },
             "details": {
                 "news_summary": result.news_summary,
+                "empty_news_disclosure": empty_news_disclosure(result, report_language),
                 "technical_analysis": result.technical_analysis,
                 "fundamental_analysis": result.fundamental_analysis,
                 "risk_warning": result.risk_warning,

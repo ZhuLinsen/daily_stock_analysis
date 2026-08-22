@@ -136,7 +136,7 @@ class ReportMeta(BaseModel):
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     report_type: Optional[str] = Field(None, description="报告类型")
-    report_language: Optional[str] = Field(None, description="报告输出语言（zh/en）")
+    report_language: Optional[str] = Field(None, description="报告输出语言（zh/en/ko）")
     created_at: Optional[str] = Field(None, description="创建时间")
     current_price: Optional[float] = Field(None, description="分析时股价")
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
@@ -254,6 +254,10 @@ class ReportDetails(BaseModel):
     """报告详情区"""
     
     news_content: Optional[str] = Field(None, description="新闻摘要")
+    empty_news_disclosure: Optional[str] = Field(
+        None,
+        description="新闻检索未执行或零命中时的用户可见披露",
+    )
     raw_result: Optional[Any] = Field(None, description="原始分析结果（JSON）")
     context_snapshot: Optional[Any] = Field(None, description="分析时上下文快照（JSON）")
     analysis_context_pack_overview: Optional[AnalysisContextPackOverview] = Field(
