@@ -12,10 +12,12 @@ Responsibilities:
 from __future__ import annotations
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
+from src.formatters import markdown_to_plain_text
 from src.data.stock_index_loader import resolve_index_stock_code
 from src.report_language import (
     get_bias_status_emoji,
@@ -334,6 +336,13 @@ class HistoryService:
             getattr(record, "context_snapshot", None),
         )
         action_fields = self._decision_action_fields_for_record(record, raw_result)
+        analysis_summary = record.analysis_summary
+        if getattr(record, "report_type", None) == "market_review":
+            market_review_content = self._extract_market_review_content(record, raw_result)
+            analysis_summary = self._market_review_summary(
+                record.analysis_summary,
+                market_review_content,
+            )
 
         return {
             "id": record.id,
@@ -345,7 +354,7 @@ class HistoryService:
                 getattr(record, "context_snapshot", None)
             ),
             "trend_prediction": record.trend_prediction,
-            "analysis_summary": record.analysis_summary,
+            "analysis_summary": analysis_summary,
             "sentiment_score": record.sentiment_score,
             "operation_advice": record.operation_advice,
             "action": action_fields["action"],
@@ -570,6 +579,39 @@ class HistoryService:
             return news_content
         return None
 
+    @staticmethod
+    def _market_review_summary(
+        persisted_summary: Any,
+        markdown: Any,
+        *,
+        limit: int = 120,
+    ) -> Optional[str]:
+        """Return a stable short summary without leaking report Markdown or metadata."""
+        persisted = str(persisted_summary or "").strip()
+        if persisted:
+            return persisted
+
+        source = str(markdown or "").strip()
+        if not source:
+            return None
+
+        # Full reports can contain internal reference metadata, tables, links and
+        # fenced diagnostic payloads. Keep readable prose only for summary fields.
+        source = re.sub(r"```[^\n]*\n.*?```", " ", source, flags=re.DOTALL)
+        source = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", source)
+        source = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", source)
+        source = re.sub(r"<[^>]+>", " ", source)
+        text = markdown_to_plain_text(source)
+        text = re.sub(r"[`~|]", " ", text)
+        text = re.sub(r"^\s*:?-{3,}:?(?:\s+:?-{3,}:?)+\s*$", " ", text, flags=re.MULTILINE)
+        text = re.sub(r"^[+\d]+[.)]\s+", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\s+", " ", text).strip(" •-—")
+        if not text:
+            return None
+        if len(text) > limit:
+            return text[:limit].rstrip() + "…"
+        return text
+
     def _record_to_detail_dict(self, record) -> Dict[str, Any]:
         """
         Convert an AnalysisHistory ORM record to a detail response dict.
@@ -588,8 +630,13 @@ class HistoryService:
                 context_snapshot = record.context_snapshot
 
         market_review_content = None
+        analysis_summary = record.analysis_summary
         if getattr(record, "report_type", None) == "market_review":
             market_review_content = self._extract_market_review_content(record, raw_result)
+            analysis_summary = self._market_review_summary(
+                record.analysis_summary,
+                market_review_content,
+            )
 
         action_fields = self._decision_action_fields_for_record(record, raw_result)
         display_code = self._display_stock_code(record.code)
@@ -603,7 +650,7 @@ class HistoryService:
             "report_type": record.report_type,
             "created_at": self._serialize_created_at(record.created_at),
             "model_used": model_used,
-            "analysis_summary": market_review_content or record.analysis_summary,
+            "analysis_summary": analysis_summary,
             "operation_advice": record.operation_advice,
             "action": action_fields["action"],
             "action_label": action_fields["action_label"],

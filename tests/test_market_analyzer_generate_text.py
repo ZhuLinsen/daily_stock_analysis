@@ -206,6 +206,489 @@ class TestAnalyzerGenerateText:
         assert result == "复盘"
         mock_persist.assert_not_called()
 
+    def test_generate_text_with_metadata_returns_actual_backend_result(self):
+        from src.llm.generation_backend import GenerationResult
+
+        analyzer = self._make_analyzer()
+        generation_result = GenerationResult(
+            text="复盘",
+            provider="codex_cli",
+            model="codex_cli",
+            backend="codex_cli",
+            usage={"usage_available": False, "usage_source": "unavailable"},
+        )
+        with patch.object(analyzer, "_call_litellm", return_value=generation_result) as mock_call:
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is generation_result
+        mock_call.assert_called_once_with(
+            "写一份复盘",
+            generation_config={"max_tokens": 2048, "temperature": 0.7},
+            return_generation_result=True,
+        )
+
+    def test_generate_text_with_metadata_resolves_router_alias_provider(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "litellm"
+        analyzer._config_override.generation_fallback_backend = ""
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+            }
+        ]
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="复盘"))],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is not None
+        assert result.backend == "litellm"
+        assert result.model == "analysis-route"
+        assert result.provider == "anthropic"
+        assert result.usage["provider"] == "anthropic"
+
+    def test_generate_text_with_metadata_prefers_actual_response_model(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "litellm"
+        analyzer._config_override.generation_fallback_backend = ""
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/gpt-4o-mini"},
+            },
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+            },
+        ]
+        response = SimpleNamespace(
+            model="anthropic/claude-sonnet-test",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="复盘"))],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is not None
+        assert result.backend == "litellm"
+        assert result.model == "anthropic/claude-sonnet-test"
+        assert result.provider == "anthropic"
+        assert result.usage["provider"] == "anthropic"
+        assert result.usage["response_model"] == "anthropic/claude-sonnet-test"
+
+    def test_generate_text_with_metadata_preserves_fallback_provider_for_unqualified_response_model(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "litellm"
+        analyzer._config_override.generation_fallback_backend = ""
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+            },
+        ]
+        response = SimpleNamespace(
+            model="claude-sonnet-test",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="复盘"))],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is not None
+        assert result.backend == "litellm"
+        assert result.model == "claude-sonnet-test"
+        assert result.provider == "anthropic"
+        assert result.usage["provider"] == "anthropic"
+        assert result.usage["response_model"] == "claude-sonnet-test"
+
+    def test_generate_text_with_metadata_preserves_openrouter_provider_for_latest_alias(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "litellm"
+        analyzer._config_override.generation_fallback_backend = ""
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+        ]
+        response = SimpleNamespace(
+            model="anthropic/claude-sonnet-4.6",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="复盘"))],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is not None
+        assert result.backend == "litellm"
+        assert result.model == "anthropic/claude-sonnet-4.6"
+        assert result.provider == "openrouter"
+        assert result.usage["provider"] == "openrouter"
+        assert result.usage["response_model"] == "anthropic/claude-sonnet-4.6"
+
+    def test_generate_text_with_metadata_preserves_openrouter_provider_for_latest_alias_deployment_echo(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "litellm"
+        analyzer._config_override.generation_fallback_backend = ""
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+        ]
+        response = SimpleNamespace(
+            model="openai/~anthropic/claude-sonnet-latest",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="复盘"))],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is not None
+        assert result.backend == "litellm"
+        assert result.model == "openai/~anthropic/claude-sonnet-latest"
+        assert result.provider == "openrouter"
+        assert result.usage["provider"] == "openrouter"
+        assert result.usage["response_model"] == "openai/~anthropic/claude-sonnet-latest"
+
+    def test_generate_text_with_metadata_prefers_actual_response_model_provider_for_openrouter_first_duplicate_aliases(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "litellm"
+        analyzer._config_override.generation_fallback_backend = ""
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-4.6"},
+            },
+        ]
+        response = SimpleNamespace(
+            model="anthropic/claude-sonnet-4.6",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="复盘"))],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is not None
+        assert result.backend == "litellm"
+        assert result.model == "anthropic/claude-sonnet-4.6"
+        assert result.provider == "anthropic"
+        assert result.usage["provider"] == "anthropic"
+        assert result.usage["response_model"] == "anthropic/claude-sonnet-4.6"
+
+    @pytest.mark.parametrize(
+        "configured_model,response_model",
+        [
+            ("openai/Qwen/Qwen3-235B-A22B-Thinking-2507", "Qwen/Qwen3-235B-A22B-Thinking-2507"),
+            ("openai/deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-V3"),
+        ],
+    )
+    def test_generate_text_with_metadata_preserves_fallback_provider_for_gateway_slash_model_ids(
+        self,
+        configured_model,
+        response_model,
+    ):
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "litellm"
+        analyzer._config_override.generation_fallback_backend = ""
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": configured_model},
+            },
+        ]
+        response = SimpleNamespace(
+            model=response_model,
+            choices=[SimpleNamespace(message=SimpleNamespace(content="复盘"))],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert result is not None
+        assert result.backend == "litellm"
+        assert result.model == response_model
+        assert result.provider == "openai"
+        assert result.usage["provider"] == "openai"
+        assert result.usage["response_model"] == response_model
+
+    def test_generate_text_with_metadata_preserves_exhausted_fallback_failure(self):
+        from src.analyzer import _AllModelsFailedError
+        from src.llm.generation_backend import GenerationError
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "codex_cli"
+        analyzer._config_override.generation_fallback_backend = "litellm"
+        exhausted = _AllModelsFailedError(
+            "all fallback models failed",
+            last_model="analysis-route",
+            last_provider="anthropic",
+            last_usage={},
+        )
+
+        with patch.object(analyzer, "_call_litellm", side_effect=exhausted):
+            with pytest.raises(GenerationError) as exc_info:
+                analyzer.generate_text_with_metadata("写一份复盘")
+
+        error = exc_info.value
+        assert error.stage == "fallback"
+        assert error.backend == "litellm"
+        assert error.provider == "anthropic"
+        assert error.details == {
+            "reason": "all_models_failed",
+            "configured_primary_backend": "codex_cli",
+            "configured_fallback_backend": "litellm",
+            "last_model": "analysis-route",
+        }
+
+    def test_generate_text_with_metadata_preserves_primary_litellm_exhaustion_metadata(self):
+        from src.analyzer import _AllModelsFailedError
+        from src.llm.generation_backend import GenerationResult
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override.generation_backend = "litellm"
+        analyzer._config_override.generation_fallback_backend = ""
+        exhausted = _AllModelsFailedError(
+            "all primary models failed",
+            last_model="analysis-route",
+            last_provider="anthropic",
+            last_usage={},
+        )
+
+        with patch.object(analyzer, "_call_litellm", side_effect=exhausted):
+            result = analyzer.generate_text_with_metadata("写一份复盘")
+
+        assert isinstance(result, GenerationResult)
+        assert result.text == ""
+        assert result.backend == "litellm"
+        assert result.provider == "anthropic"
+        assert result.model == "analysis-route"
+        assert result.usage["provider"] == "anthropic"
+        assert result.diagnostics == {
+            "reason": "all_models_failed",
+            "configured_primary_backend": "litellm",
+            "configured_fallback_backend": None,
+            "last_model": "analysis-route",
+            "template_fallback": True,
+        }
+
+    def test_call_litellm_impl_tracks_last_model_when_all_attempts_fail(self):
+        from src.analyzer import _AllModelsFailedError
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override.litellm_model = "openai/primary-model"
+        analyzer._config_override.litellm_fallback_models = ["openai/fallback-model"]
+        analyzer._config_override.llm_model_list = []
+
+        def fake_dispatch(model, call_kwargs, **kwargs):
+            if model == "openai/primary-model":
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=None))],
+                    usage=None,
+                )
+            raise RuntimeError("fallback transport error")
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=fake_dispatch):
+            with pytest.raises(_AllModelsFailedError) as exc_info:
+                analyzer._call_litellm_impl(
+                    "写一份复盘",
+                    {"max_tokens": 128, "temperature": 0.7},
+                )
+
+        assert exc_info.value.last_model == "openai/fallback-model"
+        assert exc_info.value.last_provider == "openai"
+
+    def test_call_litellm_impl_preserves_resolved_provider_for_router_alias_failure(self):
+        from src.analyzer import _AllModelsFailedError
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+            }
+        ]
+
+        with patch.object(
+            analyzer,
+            "_dispatch_litellm_completion",
+            side_effect=RuntimeError("router transport error"),
+        ):
+            with pytest.raises(_AllModelsFailedError) as exc_info:
+                analyzer._call_litellm_impl(
+                    "写一份复盘",
+                    {"max_tokens": 128, "temperature": 0.7},
+                )
+
+        assert exc_info.value.last_model == "analysis-route"
+        assert exc_info.value.last_provider == "anthropic"
+
+    def test_call_litellm_impl_uses_last_router_deployment_provider_for_alias_failure(self):
+        from src.analyzer import _AllModelsFailedError
+
+        class RouterTransportError(RuntimeError):
+            def __init__(self):
+                super().__init__("router transport error")
+                self.model = "anthropic/claude-sonnet-test"
+                self.llm_provider = "anthropic"
+
+        analyzer = self._make_analyzer()
+        analyzer._router = MagicMock()
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/gpt-4o-mini"},
+            },
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+            },
+        ]
+
+        with patch.object(
+            analyzer,
+            "_dispatch_litellm_completion",
+            side_effect=RouterTransportError(),
+        ):
+            with pytest.raises(_AllModelsFailedError) as exc_info:
+                analyzer._call_litellm_impl(
+                    "写一份复盘",
+                    {"max_tokens": 128, "temperature": 0.7},
+                )
+
+        assert exc_info.value.last_model == "anthropic/claude-sonnet-test"
+        assert exc_info.value.last_provider == "anthropic"
+
+    def test_call_litellm_impl_preserves_openrouter_provider_for_exhausted_latest_alias_failure(self):
+        from src.analyzer import _AllModelsFailedError
+
+        class RouterTransportError(RuntimeError):
+            def __init__(self):
+                super().__init__("router transport error")
+                self.model = "openai/~anthropic/claude-sonnet-latest"
+                self.llm_provider = "openai"
+
+        analyzer = self._make_analyzer()
+        analyzer._router = MagicMock()
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+        ]
+
+        with patch.object(
+            analyzer,
+            "_dispatch_litellm_completion",
+            side_effect=RouterTransportError(),
+        ):
+            with pytest.raises(_AllModelsFailedError) as exc_info:
+                analyzer._call_litellm_impl(
+                    "写一份复盘",
+                    {"max_tokens": 128, "temperature": 0.7},
+                )
+
+        assert exc_info.value.last_model == "openai/~anthropic/claude-sonnet-latest"
+        assert exc_info.value.last_provider == "openrouter"
+
+    def test_call_litellm_impl_preserves_response_model_for_empty_router_response(self):
+        from src.analyzer import _AllModelsFailedError
+
+        analyzer = self._make_analyzer()
+        analyzer._router = MagicMock()
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+        ]
+
+        response = SimpleNamespace(
+            model="anthropic/claude-sonnet-4.6",
+            choices=[SimpleNamespace(message=SimpleNamespace(content=None))],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            with pytest.raises(_AllModelsFailedError) as exc_info:
+                analyzer._call_litellm_impl(
+                    "写一份复盘",
+                    {"max_tokens": 128, "temperature": 0.7},
+                )
+
+        assert exc_info.value.last_model == "anthropic/claude-sonnet-4.6"
+        assert exc_info.value.last_provider == "openrouter"
+
+    def test_call_litellm_impl_prefers_transport_provider_for_unqualified_failure_model(self):
+        from src.analyzer import _AllModelsFailedError
+
+        class RouterTransportError(RuntimeError):
+            def __init__(self):
+                super().__init__("router transport error")
+                self.deployment_model = "claude-sonnet-test"
+                self.llm_provider = "anthropic"
+
+        analyzer = self._make_analyzer()
+        analyzer._router = MagicMock()
+        analyzer._config_override.litellm_model = "analysis-route"
+        analyzer._config_override.litellm_fallback_models = []
+        analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+            },
+        ]
+
+        with patch.object(
+            analyzer,
+            "_dispatch_litellm_completion",
+            side_effect=RouterTransportError(),
+        ):
+            with pytest.raises(_AllModelsFailedError) as exc_info:
+                analyzer._call_litellm_impl(
+                    "写一份复盘",
+                    {"max_tokens": 128, "temperature": 0.7},
+                )
+
+        assert exc_info.value.last_model == "claude-sonnet-test"
+        assert exc_info.value.last_provider == "anthropic"
+
     @pytest.mark.parametrize(
         ("generation_backend", "executable_name"),
         [
@@ -502,7 +985,10 @@ class TestAnalyzerGenerateText:
             fallbackable=True,
             backend="litellm",
             provider="gemini",
-            details={"reason": "invalid_json"},
+            details={
+                "reason": "invalid_json",
+                "route_name": "invalid-shared-route",
+            },
         )
         primary_backend = MagicMock(spec=GenerationBackend)
         primary_backend.generate.side_effect = primary_error
@@ -520,6 +1006,7 @@ class TestAnalyzerGenerateText:
         assert error.stage == "fallback"
         assert error.error_code is GenerationErrorCode.INVALID_JSON
         assert error.details["reason"] == "fallback_backend_failed"
+        assert error.details["route_name"] == "invalid-shared-route"
         assert error.details["primary_error"]["error_code"] == "command_not_found"
         assert error.details["primary_error"]["details"]["reason"] == "executable_not_found"
         assert error.details["fallback_error"]["error_code"] == "invalid_json"
@@ -1725,6 +2212,48 @@ class TestAnalyzerGenerateText:
         assert "贵州茅台" not in usage["known_dynamic_marker_positions"]
         assert "2026-06-19" not in usage["known_dynamic_marker_positions"]
 
+    def test_call_litellm_non_stream_preserves_resolved_provider_with_audit_context(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="analysis-route",
+            litellm_fallback_models=[],
+            llm_model_list=[
+                {
+                    "model_name": "analysis-route",
+                    "litellm_params": {"model": "openai/gpt-4o-mini"},
+                },
+                {
+                    "model_name": "analysis-route",
+                    "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+                },
+            ],
+        )
+        response = SimpleNamespace(
+            model="anthropic/claude-sonnet-test",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1, total_tokens=11),
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            text, model_used, usage = analyzer._call_litellm(
+                "same user prompt 600519",
+                {"max_tokens": 128, "temperature": 0.2},
+                system_prompt="system prompt zh cn",
+                audit_context={
+                    "language": "zh",
+                    "market_group": "cn",
+                    "analysis_mode": "stock_analysis",
+                },
+            )
+
+        assert text == "ok"
+        assert model_used == "anthropic/claude-sonnet-test"
+        _assert_usage_contains(usage, {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11})
+        assert usage["provider"] == "anthropic"
+        assert usage["response_model"] == "anthropic/claude-sonnet-test"
+        assert usage["transport"] == "litellm"
+        assert usage["analysis_mode"] == "stock_analysis"
+
     def test_call_litellm_system_hmac_distinguishes_language_and_market_prompt(self):
         analyzer = self._make_analyzer()
         analyzer._config_override = SimpleNamespace(
@@ -2621,7 +3150,21 @@ class TestMarketAnalyzerBypassFix:
             analyzer._router = None
             analyzer._litellm_available = True
             analyzer._config_override = cfg
-            analyzer.generate_text = MagicMock(return_value=return_value)
+            analyzer.get_generation_backend_identity = MagicMock(
+                return_value=("litellm", cfg.litellm_model)
+            )
+            analyzer.generate_text_with_metadata = MagicMock(
+                return_value=(
+                    None
+                    if return_value is None
+                    else SimpleNamespace(
+                        text=return_value,
+                        provider="litellm",
+                        model=cfg.litellm_model,
+                        backend="litellm",
+                    )
+                )
+            )
 
             ma = MarketAnalyzer.__new__(MarketAnalyzer)
             ma.analyzer = analyzer
@@ -2632,16 +3175,15 @@ class TestMarketAnalyzerBypassFix:
             return ma
 
     def test_no_access_to_private_model_attribute(self):
-        """generate_text() must be called; _model must never be accessed."""
+        """The public metadata API must be called; _model must never be accessed."""
         ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
         # Ensure _model attribute does not exist (simulates PR #494 state)
         assert not hasattr(ma.analyzer, "_model") or ma.analyzer._model is None, (
             "_model should not be set on the LiteLLM-based analyzer"
         )
-        # generate_text is a MagicMock, so calling it won't crash
-        result = ma.analyzer.generate_text("prompt")
-        assert isinstance(result, str) and len(result) > 0
-        ma.analyzer.generate_text.assert_called_once()
+        result = ma.analyzer.generate_text_with_metadata("prompt")
+        assert result.text == "复盘结果"
+        ma.analyzer.generate_text_with_metadata.assert_called_once()
 
     def test_generate_text_none_falls_back_to_template(self):
         """generate_market_review() falls back to template when generate_text returns None."""
@@ -2662,7 +3204,7 @@ class TestMarketAnalyzerBypassFix:
         )
         result = ma.generate_market_review(overview, [])
         assert isinstance(result, str) and len(result) > 0
-        ma.analyzer.generate_text.assert_called_once()
+        ma.analyzer.generate_text_with_metadata.assert_called_once()
 
     def test_generation_backend_config_error_does_not_template_fallback(self):
         from src.llm.generation_backend import GenerationError
@@ -2691,7 +3233,7 @@ class TestMarketAnalyzerBypassFix:
         assert exc_info.value.details["field"] == "GENERATION_BACKEND"
         assert exc_info.value.details["requested_backend"] == "codex"
         template_review.assert_not_called()
-        ma.analyzer.generate_text.assert_not_called()
+        ma.analyzer.generate_text_with_metadata.assert_not_called()
         mock_record_llm_run.assert_called_once()
         diagnostic = mock_record_llm_run.call_args.kwargs
         assert diagnostic["success"] is False
@@ -2704,7 +3246,7 @@ class TestMarketAnalyzerBypassFix:
         from src.market_analyzer import MarketOverview, MarketIndex
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
-        ma.analyzer.generate_text.side_effect = GenerationError(
+        ma.analyzer.generate_text_with_metadata.side_effect = GenerationError(
             error_code=GenerationErrorCode.COMMAND_NOT_FOUND,
             stage="configuration",
             retryable=False,
@@ -2771,6 +3313,63 @@ class TestMarketAnalyzerBypassFix:
             template_review.assert_not_called()
             mock_record_llm_run.assert_called_once()
 
+    def test_generation_backend_config_error_records_failing_route_model(self):
+        from src.llm.generation_backend import GenerationError, GenerationErrorCode
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.analyzer.get_generation_backend_config_error = MagicMock(return_value=GenerationError(
+            error_code=GenerationErrorCode.UNSAFE_CONFIG,
+            stage="configuration",
+            retryable=False,
+            fallbackable=False,
+            backend="litellm",
+            provider="hermes",
+            details={
+                "reason": "invalid_model",
+                "field": "LLM_HERMES_MODELS",
+            },
+        ))
+        ma.config.litellm_model = "bad hermes route"
+
+        with patch("src.market_analyzer.record_llm_run") as mock_record_llm_run:
+            with pytest.raises(GenerationError):
+                ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        diagnostic = mock_record_llm_run.call_args.kwargs
+        assert diagnostic["provider"] == "hermes"
+        assert diagnostic["model"] == "bad hermes route"
+        assert diagnostic["success"] is False
+
+    def test_generation_backend_config_error_prefers_route_name_diagnostics(self):
+        from src.llm.generation_backend import GenerationError, GenerationErrorCode
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.analyzer.get_generation_backend_config_error = MagicMock(return_value=GenerationError(
+            error_code=GenerationErrorCode.UNSAFE_CONFIG,
+            stage="configuration",
+            retryable=False,
+            fallbackable=False,
+            backend="litellm",
+            provider="hermes",
+            details={
+                "reason": "mixed_hermes_route_unsupported",
+                "field": "LLM_CHANNELS",
+                "route_name": "invalid-shared-route",
+            },
+        ))
+        ma.config.litellm_model = "configured-primary-route"
+
+        with patch("src.market_analyzer.record_llm_run") as mock_record_llm_run:
+            with pytest.raises(GenerationError):
+                ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        diagnostic = mock_record_llm_run.call_args.kwargs
+        assert diagnostic["provider"] == "hermes"
+        assert diagnostic["model"] == "invalid-shared-route"
+        assert diagnostic["success"] is False
+
     def test_market_review_uses_8192_max_tokens(self):
         """generate_market_review() should request a larger output budget to avoid truncation."""
         from src.market_analyzer import MarketOverview, MarketIndex
@@ -2792,10 +3391,530 @@ class TestMarketAnalyzerBypassFix:
         result = ma.generate_market_review(overview, [])
 
         assert isinstance(result, str) and len(result) > 0
-        ma.analyzer.generate_text.assert_called_once()
-        _, kwargs = ma.analyzer.generate_text.call_args
+        ma.analyzer.generate_text_with_metadata.assert_called_once()
+        _, kwargs = ma.analyzer.generate_text_with_metadata.call_args
         assert kwargs["max_tokens"] == 8192
         assert kwargs["temperature"] == 0.7
+
+    def test_market_review_supports_legacy_injected_analyzer_contract(self):
+        from src.market_analyzer import MarketOverview
+
+        class LegacyAnalyzer:
+            def __init__(self):
+                self.calls = []
+
+            def is_available(self):
+                return True
+
+            def generate_text(self, prompt, max_tokens=2048, temperature=0.7):
+                self.calls.append(
+                    {
+                        "prompt": prompt,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    }
+                )
+                return "复盘结果"
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="unused")
+        ma.analyzer = LegacyAnalyzer()
+
+        with patch.object(ma, "_build_review_prompt", return_value="legacy prompt"), \
+             patch.object(ma, "_inject_data_into_review", return_value="渲染后复盘"), \
+             patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            result = ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert result == "渲染后复盘"
+        assert ma.analyzer.calls == [
+            {
+                "prompt": "legacy prompt",
+                "max_tokens": 8192,
+                "temperature": 0.7,
+            }
+        ]
+        assert started.call_args.kwargs["provider"] == "legacy_analyzer"
+        assert started.call_args.kwargs["model"] == "legacy_analyzer"
+        assert recorded.call_args.kwargs["provider"] == "legacy_analyzer"
+        assert recorded.call_args.kwargs["model"] == "legacy_analyzer"
+
+    def test_market_review_legacy_injected_analyzer_ignores_invalid_backend_config(self):
+        from src.market_analyzer import MarketOverview
+
+        class LegacyAnalyzer:
+            def __init__(self):
+                self.calls = []
+
+            def is_available(self):
+                return True
+
+            def generate_text(self, prompt, max_tokens=2048, temperature=0.7):
+                self.calls.append(
+                    {
+                        "prompt": prompt,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    }
+                )
+                return "复盘结果"
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="unused")
+        ma.analyzer = LegacyAnalyzer()
+        ma.config.generation_backend = "broken-backend"
+
+        with patch.object(ma, "_build_review_prompt", return_value="legacy prompt"), \
+             patch.object(ma, "_inject_data_into_review", return_value="渲染后复盘"), \
+             patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            result = ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert result == "渲染后复盘"
+        assert ma.analyzer.calls == [
+            {
+                "prompt": "legacy prompt",
+                "max_tokens": 8192,
+                "temperature": 0.7,
+            }
+        ]
+        assert started.call_args.kwargs["provider"] == "legacy_analyzer"
+        assert started.call_args.kwargs["model"] == "legacy_analyzer"
+        assert recorded.call_args.kwargs["provider"] == "legacy_analyzer"
+        assert recorded.call_args.kwargs["model"] == "legacy_analyzer"
+
+    def test_market_review_records_actual_codex_backend(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="codex_cli",
+            model="codex_cli",
+            backend="codex_cli",
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "codex_cli"
+        assert recorded.call_args.kwargs["model"] == "codex_cli"
+
+    def test_market_review_records_actual_litellm_fallback(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="openai",
+            model="openai/qwen3.7-max",
+            backend="litellm",
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "openai"
+        assert recorded.call_args.kwargs["model"] == "openai/qwen3.7-max"
+
+    def test_market_review_prefers_generation_usage_provider_when_recording(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="openai",
+            model="analysis-route",
+            backend="litellm",
+            usage={"provider": "anthropic"},
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "anthropic"
+        assert recorded.call_args.kwargs["model"] == "analysis-route"
+
+    def test_market_review_resolves_litellm_alias_provider_before_recording(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.config.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+            }
+        ]
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="openai",
+            model="analysis-route",
+            backend="litellm",
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "anthropic"
+        assert recorded.call_args.kwargs["model"] == "analysis-route"
+
+    def test_market_review_prefers_actual_response_model_provider_for_duplicate_aliases(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.config.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/gpt-4o-mini"},
+            },
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-test"},
+            },
+        ]
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="openai",
+            model="analysis-route",
+            backend="litellm",
+            usage={"response_model": "anthropic/claude-sonnet-test"},
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "anthropic"
+        assert recorded.call_args.kwargs["model"] == "analysis-route"
+
+    def test_market_review_preserves_openrouter_provider_for_latest_alias(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.config.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+        ]
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="anthropic",
+            model="analysis-route",
+            backend="litellm",
+            usage={"response_model": "anthropic/claude-sonnet-4.6"},
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "openrouter"
+        assert recorded.call_args.kwargs["model"] == "analysis-route"
+
+    def test_market_review_preserves_openrouter_provider_for_latest_alias_deployment_echo(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.config.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+        ]
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="openai",
+            model="analysis-route",
+            backend="litellm",
+            usage={
+                "provider": "openai",
+                "response_model": "openai/~anthropic/claude-sonnet-latest",
+            },
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "openrouter"
+        assert recorded.call_args.kwargs["model"] == "analysis-route"
+
+    def test_market_review_prefers_actual_response_model_provider_for_openrouter_first_duplicate_aliases(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text("复盘结果")
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.config.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "anthropic/claude-sonnet-4.6"},
+            },
+        ]
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="复盘结果",
+            provider="openrouter",
+            model="analysis-route",
+            backend="litellm",
+            usage={"response_model": "anthropic/claude-sonnet-4.6"},
+        )
+
+        with patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "anthropic"
+        assert recorded.call_args.kwargs["model"] == "analysis-route"
+
+    def test_market_review_records_failed_fallback_last_model(self):
+        from src.analyzer import _AllModelsFailedError
+        from src.llm.generation_backend import GenerationError
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.analyzer._config_override.generation_backend = "codex_cli"
+        ma.analyzer._config_override.generation_fallback_backend = "litellm"
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.analyzer.get_generation_backend_config_error = MagicMock(return_value=None)
+        ma.analyzer.generate_text_with_metadata = ma.analyzer.__class__.generate_text_with_metadata.__get__(
+            ma.analyzer,
+            ma.analyzer.__class__,
+        )
+        exhausted = _AllModelsFailedError(
+            "all fallback models failed",
+            last_model="analysis-route",
+            last_provider="anthropic",
+        )
+
+        with patch.object(ma.analyzer, "_call_litellm", side_effect=exhausted), \
+             patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            with pytest.raises(GenerationError) as exc_info:
+                ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert exc_info.value.stage == "fallback"
+        assert exc_info.value.backend == "litellm"
+        assert exc_info.value.provider == "anthropic"
+        assert exc_info.value.details["last_model"] == "analysis-route"
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "anthropic"
+        assert recorded.call_args.kwargs["model"] == "analysis-route"
+        assert recorded.call_args.kwargs["success"] is False
+
+    def test_market_review_records_openrouter_provider_for_exhausted_latest_alias_failure(self):
+        from src.analyzer import _AllModelsFailedError
+        from src.llm.generation_backend import GenerationError
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.analyzer._config_override.generation_backend = "codex_cli"
+        ma.analyzer._config_override.generation_fallback_backend = "litellm"
+        ma.analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+        ]
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.analyzer.get_generation_backend_config_error = MagicMock(return_value=None)
+        ma.analyzer.generate_text_with_metadata = ma.analyzer.__class__.generate_text_with_metadata.__get__(
+            ma.analyzer,
+            ma.analyzer.__class__,
+        )
+        exhausted = _AllModelsFailedError(
+            "all fallback models failed",
+            last_model="openai/~anthropic/claude-sonnet-latest",
+            last_provider="openrouter",
+        )
+
+        with patch.object(ma.analyzer, "_call_litellm", side_effect=exhausted), \
+             patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            with pytest.raises(GenerationError) as exc_info:
+                ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert exc_info.value.stage == "fallback"
+        assert exc_info.value.backend == "litellm"
+        assert exc_info.value.provider == "openrouter"
+        assert exc_info.value.details["last_model"] == "openai/~anthropic/claude-sonnet-latest"
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "openrouter"
+        assert recorded.call_args.kwargs["model"] == "openai/~anthropic/claude-sonnet-latest"
+        assert recorded.call_args.kwargs["success"] is False
+
+    def test_market_review_records_response_model_for_empty_router_response_failure(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.analyzer._router = MagicMock()
+        ma.analyzer._config_override.generation_backend = "litellm"
+        ma.analyzer._config_override.generation_fallback_backend = ""
+        ma.analyzer._config_override.litellm_model = "analysis-route"
+        ma.analyzer._config_override.litellm_fallback_models = []
+        ma.analyzer._config_override.llm_model_list = [
+            {
+                "model_name": "analysis-route",
+                "litellm_params": {"model": "openai/~anthropic/claude-sonnet-latest"},
+            },
+        ]
+        ma.config.llm_model_list = ma.analyzer._config_override.llm_model_list
+        ma.analyzer.get_generation_backend_identity.return_value = ("litellm", "analysis-route")
+        ma.analyzer.get_generation_backend_config_error = MagicMock(return_value=None)
+        ma.analyzer.generate_text_with_metadata = ma.analyzer.__class__.generate_text_with_metadata.__get__(
+            ma.analyzer,
+            ma.analyzer.__class__,
+        )
+        response = SimpleNamespace(
+            model="anthropic/claude-sonnet-4.6",
+            choices=[SimpleNamespace(message=SimpleNamespace(content=None))],
+            usage=None,
+        )
+
+        with patch.object(ma.analyzer, "_dispatch_litellm_completion", return_value=response), \
+             patch.object(ma, "_generate_template_review", wraps=ma._generate_template_review) as template_review, \
+             patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            result = ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert isinstance(result, str) and len(result) > 0
+        template_review.assert_called_once()
+        assert started.call_args.kwargs["provider"] == "litellm"
+        assert started.call_args.kwargs["model"] == "analysis-route"
+        assert recorded.call_args.kwargs["provider"] == "openrouter"
+        assert recorded.call_args.kwargs["model"] == "anthropic/claude-sonnet-4.6"
+        assert recorded.call_args.kwargs["success"] is False
+        assert recorded.call_args.kwargs["error_type"] == "AllModelsFailed"
+
+    def test_market_review_records_nested_fallback_route_on_failure(self):
+        from src.llm.generation_backend import GenerationBackend, GenerationError, GenerationErrorCode
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.analyzer._config_override.generation_backend = "codex_cli"
+        ma.analyzer._config_override.generation_fallback_backend = "litellm"
+        ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
+        ma.analyzer.get_generation_backend_config_error = MagicMock(return_value=None)
+        ma.analyzer.generate_text_with_metadata = ma.analyzer.__class__.generate_text_with_metadata.__get__(
+            ma.analyzer,
+            ma.analyzer.__class__,
+        )
+        primary_error = GenerationError(
+            error_code=GenerationErrorCode.COMMAND_NOT_FOUND,
+            stage="configuration",
+            retryable=False,
+            fallbackable=True,
+            backend="codex_cli",
+            provider="codex_cli",
+            details={"reason": "executable_not_found"},
+        )
+        fallback_error = GenerationError(
+            error_code=GenerationErrorCode.INVALID_JSON,
+            stage="validation",
+            retryable=True,
+            fallbackable=True,
+            backend="litellm",
+            provider="hermes",
+            details={
+                "reason": "mixed_hermes_route_unsupported",
+                "route_name": "invalid-shared-route",
+            },
+        )
+        primary_backend = MagicMock(spec=GenerationBackend)
+        primary_backend.generate.side_effect = primary_error
+        fallback_backend = MagicMock(spec=GenerationBackend)
+        fallback_backend.generate.side_effect = fallback_error
+
+        def _backend_for(backend_id):
+            return primary_backend if backend_id == "codex_cli" else fallback_backend
+
+        with patch.object(ma.analyzer, "_get_generation_backend", side_effect=_backend_for), \
+             patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            with pytest.raises(GenerationError) as exc_info:
+                ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
+
+        assert exc_info.value.details["route_name"] == "invalid-shared-route"
+        assert started.call_args.kwargs["provider"] == "codex_cli"
+        assert started.call_args.kwargs["model"] == "codex_cli"
+        assert recorded.call_args.kwargs["provider"] == "hermes"
+        assert recorded.call_args.kwargs["model"] == "invalid-shared-route"
+        assert recorded.call_args.kwargs["success"] is False
+
+    def test_market_review_preserves_template_fallback_for_primary_litellm_exhaustion(self):
+        from src.market_analyzer import MarketOverview, MarketIndex
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.analyzer.get_generation_backend_identity.return_value = ("litellm", "analysis-route")
+        overview = MarketOverview(
+            date="2026-03-05",
+            indices=[
+                MarketIndex(
+                    code="000001",
+                    name="上证指数",
+                    current=3300.0,
+                    change=5.0,
+                    change_pct=0.15,
+                )
+            ],
+        )
+        ma.analyzer.generate_text_with_metadata.return_value = SimpleNamespace(
+            text="",
+            provider="anthropic",
+            model="analysis-route",
+            backend="litellm",
+            usage={"provider": "anthropic"},
+            diagnostics={
+                "reason": "all_models_failed",
+                "configured_primary_backend": "litellm",
+                "configured_fallback_backend": None,
+                "last_model": "analysis-route",
+                "template_fallback": True,
+            },
+        )
+
+        with patch.object(ma, "_generate_template_review", wraps=ma._generate_template_review) as template_review, \
+             patch("src.market_analyzer.record_llm_run_started") as started, \
+             patch("src.market_analyzer.record_llm_run") as recorded:
+            result = ma.generate_market_review(overview, [])
+
+        assert isinstance(result, str) and len(result) > 0
+        template_review.assert_called_once()
+        assert started.call_args.kwargs["provider"] == "litellm"
+        assert recorded.call_args.kwargs["provider"] == "anthropic"
+        assert recorded.call_args.kwargs["model"] == "analysis-route"
+        assert recorded.call_args.kwargs["success"] is False
+        assert recorded.call_args.kwargs["error_type"] == "AllModelsFailed"
 
     def test_generate_template_review_uses_english_shell_for_cn_when_report_language_is_en(self):
         from src.market_analyzer import MarketOverview, MarketIndex
