@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@remixicon/react": "^4.9.0",
-    "axios": "^1.13.4",
+    "axios": "^1.18.0",
     "camelcase-keys": "^10.0.2",
     "clsx": "^2.1.1",
     "lucide-react": "^0.555.0",
