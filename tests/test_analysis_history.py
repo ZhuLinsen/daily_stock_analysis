@@ -1947,10 +1947,40 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         report = get_history_detail(str(record_id), db_manager=self.db)
 
         self.assertEqual(report.meta.report_type, "market_review")
-        self.assertEqual(report.summary.analysis_summary, report_content)
+        self.assertEqual(report.summary.analysis_summary, "今日大盘复盘")
         self.assertIsNone(report.summary.action)
         self.assertIsNone(report.summary.action_label)
         self.assertEqual(report.details.news_content, report_content)
+
+    def test_market_review_summary_falls_back_to_sanitized_excerpt(self) -> None:
+        service = HistoryService(self.db)
+        markdown = (
+            "[dsa-market-region]: # (cn)\n\n"
+            "# 🎯 大盘复盘\n\n"
+            "## 今日观点\n\n"
+            "**成交活跃**，关注 [科技板块](https://example.com)。\n\n"
+            "| 指标 | 数值 |\n| --- | --- |\n| 涨跌 | +1% |\n\n"
+            "```json\n{\"internal\": true}\n```"
+        )
+
+        summary = service._market_review_summary("  ", markdown)
+
+        self.assertEqual(summary, "🎯 大盘复盘 今日观点 成交活跃，关注 科技板块。 指标 数值 涨跌 +1%")
+        self.assertNotIn("dsa-market-region", summary)
+        self.assertNotIn("internal", summary)
+
+    def test_market_review_summary_prefers_persisted_summary_and_truncates_fallback(self) -> None:
+        service = HistoryService(self.db)
+
+        self.assertEqual(
+            service._market_review_summary(" 已保存的短摘要 ", "# 不应使用"),
+            "已保存的短摘要",
+        )
+        self.assertEqual(
+            service._market_review_summary(None, "# " + "复" * 130),
+            "复" * 120 + "…",
+        )
+        self.assertIsNone(service._market_review_summary(None, "[dsa-market-region]: # (cn)"))
 
     def test_history_detail_localizes_english_summary_fields(self) -> None:
         """History detail should localize summary enums for English reports."""
