@@ -1696,6 +1696,38 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 f"actual={actual_indexes.get('ix_stock_daily_canonical_id')}"
             )
 
+    def _derive_canonical_id(self, code: str) -> Optional[str]:
+        """Derive a Phase 1 ``canonical_id`` for ``code``, index-aware.
+
+        Closes review blocker ``OR-COR-4f9ffc38``: when a bare code hits the
+        index registry (``parse_analysis_target(code).matched_index is not
+        None``) we unify to the index's ``canonical_id`` so the same
+        underlying index doesn't split across buckets — e.g. bare ``000300``
+        resolves to ``sh000300`` (the CSI-300 index canonical_id) instead of
+        ``sz000300`` (the stock-path canonical_id the classifier would
+        synthesise for a 6-digit ``0``-prefixed code). When no index is
+        matched, the parser's stock/explicit-index ``canonical_id`` is
+        returned unchanged.
+
+        Lazy-imports ``parse_analysis_target`` inside the method (the parser
+        module transitively touches the storage layer) and degrades to
+        ``None`` on import failure or empty canonical_id so callers can
+        persist NULL (D1) without raising.
+        """
+        try:
+            from src.services.stock_list_parser import parse_analysis_target
+        except Exception as exc:
+            logger.warning(
+                "_derive_canonical_id: cannot import parse_analysis_target "
+                "for code=%r: %s — returning None",
+                code, exc,
+            )
+            return None
+        target = parse_analysis_target(code)
+        if target.matched_index is not None:
+            return target.matched_index.canonical_id or None
+        return target.canonical_id or None
+
     def _backfill_stock_daily_canonical_id(self) -> None:
         """Backfill ``canonical_id`` for existing rows using the Phase 1 parser.
 
@@ -1708,25 +1740,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         rows") so a row whose derivation fails can never trap this loop: it is
         skipped past in this run and naturally retried on next startup while
         its ``canonical_id`` is still NULL.
-        """
 
-        # Function-level lazy import: ``src.services.stock_list_parser`` imports
-        # ``src.services.stock_code_utils`` which (transitively) may touch the
-        # storage layer; deferring the import breaks the cycle and keeps the
-        # storage module importable in isolation.
-        try:
-            from src.services.stock_list_parser import parse_analysis_target
-        except Exception as exc:
-            # Keep the storage layer importable in isolation: if the parser
-            # cannot be imported (import cycle / missing dependency), skip the
-            # backfill with a warning instead of crashing database startup.
-            # Rows stay NULL and are retried on a later startup.
-            logger.warning(
-                "[StockDaily] canonical_id backfill skipped: cannot import "
-                "parse_analysis_target: %s",
-                exc,
-            )
-            return
+        Derivation is index-aware via :meth:`_derive_canonical_id` so a bare
+        index code (e.g. ``000300``) backfills to the index canonical_id
+        (``sh000300``) rather than the stock-path canonical_id (``sz000300``).
+        """
 
         _BATCH_SIZE = 5000
         total_backfilled = 0
@@ -1754,7 +1772,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     last_id = row_id
                     derived = None
                     try:
-                        derived = parse_analysis_target(code).canonical_id
+                        derived = self._derive_canonical_id(code)
                     except Exception as exc:
                         # D1 decision: parser failure degrades to NULL rather
                         # than crashing the whole migration. The row keeps
@@ -3165,10 +3183,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         # D1: canonical_id=None → derive via the Phase 1 parser; on failure
         # degrade to NULL (do NOT raise — read path still uses ``code``).
         # Empty string is treated like None (never persisted as a key).
+        # Derivation is index-aware (OR-COR-4f9ffc38): a bare index code
+        # (e.g. ``000300``) resolves to the index canonical_id (``sh000300``)
+        # rather than the stock-path canonical_id (``sz000300``).
         if not canonical_id:
             try:
-                from src.services.stock_list_parser import parse_analysis_target
-                canonical_id = parse_analysis_target(code).canonical_id
+                canonical_id = self._derive_canonical_id(code)
             except Exception as exc:
                 logger.warning(
                     "save_daily_data: canonical_id derivation failed for "

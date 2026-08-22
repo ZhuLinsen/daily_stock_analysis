@@ -1329,8 +1329,14 @@ class TestStorage(unittest.TestCase):
             Config.reset_instance()
             self._cleanup_temp_dir(db_dir)
 
-    def test_canonical_id_backfill_bare_code_defaults_to_stock(self):
-        """AC 8: bare ``000300`` backfills to ``sz000300`` (contract #2 — bare → stock)."""
+    def test_canonical_id_backfill_bare_index_unifies_to_index_canonical_id(self):
+        """Index-aware backfill (OR-COR-4f9ffc38): bare ``000300`` hits the
+        index registry (``matched_index`` is non-None) and backfills to the
+        index canonical_id ``sh000300`` — NOT ``sz000300`` (the stock-path
+        canonical_id the classifier would synthesise for a 6-digit
+        ``0``-prefixed code). Without this unification the same CSI-300 index
+        would split across two canonical_id buckets depending on whether the
+        caller passed a bare code or an explicit ``sh000300`` prefix."""
         DatabaseManager.reset_instance()
         db_dir, db_path = self._make_temp_db_path()
 
@@ -1349,9 +1355,38 @@ class TestStorage(unittest.TestCase):
                     "SELECT canonical_id FROM stock_daily WHERE code='000300'"
                 ).fetchone()[0]
 
-            # Bare code never resolves to index on its own (contract #2); the
-            # classifier routes a 6-digit ``0``-prefixed code to SZ stock.
-            self.assertEqual(canonical_id, "sz000300")
+            # Bare index code unifies to the index canonical_id via
+            # ``matched_index.canonical_id`` so bare ``000300`` and explicit
+            # ``sh000300`` land in the same bucket.
+            self.assertEqual(canonical_id, "sh000300")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_backfill_bare_non_index_code_stays_stock(self):
+        """Index-aware backfill does not affect bare non-index codes: ``600519``
+        has no registry hit (``matched_index is None``) and backfills to the
+        stock-path canonical_id ``sh600519`` (contract #2 — bare → stock)."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_without_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)",
+                    ("600519", "2026-01-01", 1600.0),
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                canonical_id = conn.execute(
+                    "SELECT canonical_id FROM stock_daily WHERE code='600519'"
+                ).fetchone()[0]
+
+            self.assertEqual(canonical_id, "sh600519")
         finally:
             DatabaseManager.reset_instance()
             Config.reset_instance()
@@ -1648,7 +1683,78 @@ class TestStorage(unittest.TestCase):
             DatabaseManager.reset_instance()
             self._cleanup_temp_dir(db_dir)
 
-    def test_canonical_id_migration_raises_when_column_inspection_fails(self):
+    def test_save_daily_data_derives_index_aware_canonical_id_for_bare_index_code(self):
+        """OR-COR-4f9ffc38: ``save_daily_data(df, code="000300")`` with no
+        explicit canonical_id writes ``sh000300`` (index canonical_id), not
+        ``sz000300`` (stock-path canonical_id the classifier would synthesise
+        for a 6-digit ``0``-prefixed code)."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        'date': date(2026, 4, 5),
+                        'open': 10, 'high': 11, 'low': 9, 'close': 10.5,
+                        'volume': 100, 'amount': 1050, 'pct_chg': 1.2,
+                        'ma5': 10.1, 'ma10': 10.2, 'ma20': 10.3, 'volume_ratio': 1.0,
+                    }
+                ]
+            )
+            db.save_daily_data(df, code="000300", data_source="test")
+            with db.get_session() as session:
+                row = session.execute(
+                    select(StockDaily).where(
+                        and_(StockDaily.code == "000300", StockDaily.date == date(2026, 4, 5))
+                    )
+                ).scalar_one()
+            self.assertEqual(row.canonical_id, "sh000300")
+        finally:
+            DatabaseManager.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_save_daily_data_converges_alias_and_prefix_to_same_canonical_id(self):
+        """OR-COR-4f9ffc38: bare ``000300``, ``sh000300`` and ``000300.SH``
+        all converge to the same canonical_id ``sh000300`` when written via
+        ``save_daily_data`` (no explicit canonical_id), so the same underlying
+        index is never split across buckets by input form."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        'date': date(2026, 4, 6),
+                        'open': 10, 'high': 11, 'low': 9, 'close': 10.5,
+                        'volume': 100, 'amount': 1050, 'pct_chg': 1.2,
+                        'ma5': 10.1, 'ma10': 10.2, 'ma20': 10.3, 'volume_ratio': 1.0,
+                    }
+                ]
+            )
+            for code in ("000300", "sh000300", "000300.SH"):
+                db.save_daily_data(df, code=code, data_source="test")
+
+            with db.get_session() as session:
+                rows = session.execute(
+                    select(StockDaily).order_by(StockDaily.id)
+                ).scalars().all()
+
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(
+                {row.code: row.canonical_id for row in rows},
+                {
+                    "000300": "sh000300",
+                    "sh000300": "sh000300",
+                    "000300.SH": "sh000300",
+                },
+            )
+        finally:
+            DatabaseManager.reset_instance()
+            self._cleanup_temp_dir(db_dir)
         """AC: inspect() failure on stock_daily must raise (no silent downgrade).
 
         Mirrors the decision_profile inspection-failure test (L417-438). The
