@@ -137,3 +137,62 @@ class TestDailyNotSupported:
 
         with pytest.raises(DataFetchError):
             fetcher._fetch_raw_data("001205", "2026-01-01", "2026-01-31")
+
+
+class TestCapitalFlowBudgetContract:
+    """资金流补充必须受剩余阶段预算硬约束（PR #2247 评审 blocker）。"""
+
+    def _manager_with_slow_supplement(self, sleep_seconds: float):
+        import threading
+        import time as _time
+
+        from data_provider.base import DataFetcherManager
+
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        manager._fetchers = []
+        manager._fetchers_lock = threading.RLock()
+        manager._fetchers_by_name = {}
+        manager._fetcher_call_locks = {}
+        manager._fetcher_call_locks_lock = manager._fetchers_lock
+        manager._stock_name_cache = {}
+        manager._stock_name_cache_lock = manager._fetchers_lock
+        manager._priority_override_names = set()
+        manager._fundamental_timeout_worker_limit = 8
+        manager._fundamental_timeout_slots = __import__("threading").BoundedSemaphore(8)
+
+        class _SlowSupplementFetcher:
+            name = "SlowSupplementFetcher"
+            priority = 90
+            calls = 0
+
+            def get_capital_flow(self, stock_code):
+                _SlowSupplementFetcher.calls += 1
+                _time.sleep(sleep_seconds)
+                return {"stock_flow": {"main_net_inflow": 1.0}, "source_chain": []}
+
+        manager._fetchers = [_SlowSupplementFetcher()]
+        return manager, _SlowSupplementFetcher
+
+    def test_zero_budget_skips_supplement_entirely(self):
+        manager, cls = self._manager_with_slow_supplement(sleep_seconds=0.0)
+        payload = {"stock_flow": {}, "sector_rankings": {"top": [], "bottom": []}, "source_chain": [], "errors": []}
+        manager._supplement_capital_flow_from_fetchers("001205", payload, budget_seconds=0.0)
+        assert payload["stock_flow"] == {}
+        assert cls.calls == 0
+        assert "capital_flow supplement budget exhausted" in payload["errors"]
+
+    def test_slow_supplement_is_cut_off_by_remaining_budget(self):
+        manager, cls = self._manager_with_slow_supplement(sleep_seconds=5.0)
+        payload = {"stock_flow": {}, "sector_rankings": {"top": [], "bottom": []}, "source_chain": [], "errors": []}
+        start = __import__("time").time()
+        manager._supplement_capital_flow_from_fetchers("001205", payload, budget_seconds=0.5)
+        elapsed = __import__("time").time() - start
+        # 线程超时硬切断:总耗时不得显著超过预算
+        assert elapsed < 3.0, f"supplement blocked for {elapsed:.1f}s beyond budget"
+        assert payload["stock_flow"] == {}  # 未拿到结果
+        assert any("timeout" in str(e) for e in payload["errors"])
+
+    def test_default_request_timeout_is_budget_friendly(self):
+        """妙想请求默认超时必须与基本面阶段预算同量级（≤10s）。"""
+        fetcher = MiaoxiangFetcher(api_key="test-key")
+        assert fetcher.timeout <= 10

@@ -97,7 +97,7 @@ class MiaoxiangFetcher(BaseFetcher):
         self,
         api_key: str = "",
         priority: int = 6,
-        timeout: int = 30,
+        timeout: int = 10,
         base_url: str = MX_API_BASE_URL,
         cache_ttl: float = MX_CACHE_TTL_SECONDS,
     ) -> None:

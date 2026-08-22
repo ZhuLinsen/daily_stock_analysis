@@ -3434,25 +3434,36 @@ class DataFetcherManager:
             self._prune_fundamental_cache(cache_ttl, cache_max_entries)
         return result_ctx
 
-    def _supplement_capital_flow_from_fetchers(self, stock_code: str, payload: Dict[str, Any]) -> None:
+    def _supplement_capital_flow_from_fetchers(
+        self,
+        stock_code: str,
+        payload: Dict[str, Any],
+        budget_seconds: float,
+    ) -> None:
         """主链路未取到个股资金流时，尝试实现了 get_capital_flow 的补充数据源（如妙想）。
 
+        每次补充调用都通过 _run_with_timeout 受剩余阶段预算硬约束，
+        不突破 FUNDAMENTAL_*_TIMEOUT_SECONDS 的 fail-open 语义；
         就地更新 payload 的 stock_flow / source_chain / errors。
         """
         stock_flow = payload.get("stock_flow") or {}
         if isinstance(stock_flow, dict) and any(v is not None for v in stock_flow.values()):
             return
+        remaining = max(0.0, float(budget_seconds))
         for fetcher in self._get_fetchers_snapshot():
             getter = getattr(fetcher, "get_capital_flow", None)
             if not callable(getter):
                 continue
-            try:
-                supplemental = getter(stock_code)
-            except Exception as exc:
+            if remaining <= 0:
                 if isinstance(payload.get("errors"), list):
-                    payload["errors"].append(f"{fetcher.name}: {exc}")
-                logger.warning("[资金流] %s 获取 %s 失败: %s", fetcher.name, stock_code, exc)
-                continue
+                    payload["errors"].append("capital_flow supplement budget exhausted")
+                break
+            supplemental, sup_err, sup_cost_ms = self._run_with_timeout(
+                lambda f=getter: f(stock_code),
+                remaining,
+                "capital_flow_supplement",
+            )
+            remaining = max(0.0, remaining - sup_cost_ms / 1000.0)
             if isinstance(supplemental, dict) and supplemental.get("stock_flow"):
                 payload["stock_flow"] = supplemental["stock_flow"]
                 if supplemental.get("source_chain"):
@@ -3460,11 +3471,16 @@ class DataFetcherManager:
                 if supplemental.get("errors"):
                     payload.setdefault("errors", []).extend(supplemental["errors"])
                 logger.info(
-                    "[资金流] %s 使用 %s 补充个股资金流",
+                    "[资金流] %s 使用 %s 补充个股资金流 (%dms)",
                     stock_code,
                     fetcher.name,
+                    sup_cost_ms,
                 )
                 break
+            if sup_err:
+                if isinstance(payload.get("errors"), list):
+                    payload["errors"].append(f"{fetcher.name}: {sup_err}")
+                logger.warning("[资金流] %s 获取 %s 失败: %s", fetcher.name, stock_code, sup_err)
 
     def get_capital_flow_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
         """资金流向块（fail-open）。"""
@@ -3482,31 +3498,6 @@ class DataFetcherManager:
             )
 
         if timeout <= 0:
-            # 阶段预算耗尽时仍给补充数据源一次机会（多为国内直连+带缓存，秒级返回），
-            # 避免前面阶段把预算烧完后资金流块永远为空
-            skeleton = {
-                "status": "failed",
-                "stock_flow": {},
-                "sector_rankings": {"top": [], "bottom": []},
-                "source_chain": [],
-                "errors": ["fundamental stage timeout"],
-            }
-            self._supplement_capital_flow_from_fetchers(stock_code, skeleton)
-            if skeleton.get("stock_flow"):
-                return self._build_fundamental_block(
-                    "partial",
-                    {
-                        "stock_flow": skeleton.get("stock_flow", {}),
-                        "sector_rankings": skeleton.get("sector_rankings", {}),
-                    },
-                    self._normalize_source_chain(
-                        skeleton.get("source_chain", []),
-                        "capital_flow",
-                        "partial",
-                        0,
-                    ),
-                    list(skeleton.get("errors", [])),
-                )
             return self._build_fundamental_block(
                 "failed",
                 {},
@@ -3536,8 +3527,9 @@ class DataFetcherManager:
                 "errors": [err or "capital_flow failed"],
             }
 
-        # 主链路（akshare/东财）未取到个股资金流时，尝试实现了 get_capital_flow 的补充数据源（如妙想）
-        self._supplement_capital_flow_from_fetchers(stock_code, payload)
+        # 主链路（akshare/东财）未取到个股资金流时，用剩余预算尝试补充数据源（如妙想）
+        remaining_budget = max(0.0, timeout - cost_ms / 1000.0)
+        self._supplement_capital_flow_from_fetchers(stock_code, payload, remaining_budget)
 
         stock_flow = payload.get("stock_flow") or {}
         sector_rankings = payload.get("sector_rankings") or {}
