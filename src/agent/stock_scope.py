@@ -37,7 +37,10 @@ _BARE_HK_INTENT_PATTERN = re.compile(
     r"比较|对比|\bvs\b|差异(?!化)|区别|不同|相比|对照|比一比",
     re.IGNORECASE,
 )
-_BARE_HK_AFTER_UNIT_PATTERN = re.compile(r"^\s*(?:年|月|日|元|万|亿|点|个|股|手|％|%|块|角|分|千|百)")
+_BARE_HK_AFTER_UNIT_PATTERN = re.compile(r"^\s*(?:年|月|日|元|万|亿|点|个|股(?![价票份权])|手|％|%|块|角|分|千|百)")
+_BARE_HK_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
+_YEAR_CONTEXT_RE = re.compile(r"年|月|日|财年|年度|业绩|财报|差异|对比|同比|环比")
+_NUMERIC_SUFFIX_RE = re.compile(r"^\.[A-Za-z]")
 _LOWERCASE_TICKER_PATTERN = re.compile(r"(?<![a-zA-Z.])([a-z]{2,5}(?:\.[a-z]{1,2})?)(?![a-zA-Z0-9])")
 _EXCHANGE_TOKEN_CANDIDATES = {"SH", "SZ", "BJ", "HK", "SS"}
 _CONTEXTUAL_INDICATOR_TOKENS = {"MA"}
@@ -101,6 +104,27 @@ def _is_denied_candidate(candidate: str, text: str = "") -> bool:
         return False
 
 
+def _has_numeric_suffix(text: str, match) -> bool:
+    return bool(_NUMERIC_SUFFIX_RE.match(text[match.end() :]))
+
+
+def _is_year_like_bare_hk(text: str, match) -> bool:
+    candidate = match.group(0)
+    if not _BARE_HK_YEAR_RE.match(candidate):
+        return False
+    start = max(0, match.start() - 12)
+    end = min(len(text), match.end() + 12)
+    window = text[start:end]
+    if _YEAR_CONTEXT_RE.search(window):
+        return True
+    if re.search(r"\d{4}\s*[与和]\s*\d{4}", window):
+        return True
+    after = text[match.end() : match.end() + 12]
+    if re.match(r"^\s*[与和]\s*\d{4}", after):
+        return True
+    return False
+
+
 def _is_bare_hk_number_candidate(text: str, match) -> bool:
     """Accept a bare 4-digit run only as an explicit HK input.
 
@@ -113,8 +137,12 @@ def _is_bare_hk_number_candidate(text: str, match) -> bool:
         return True
     if not _BARE_HK_INTENT_PATTERN.search(text):
         return False
+    if _has_numeric_suffix(text, match):
+        return False
     after = text[match.end() :]
     if _BARE_HK_AFTER_UNIT_PATTERN.search(after):
+        return False
+    if _is_year_like_bare_hk(text, match):
         return False
     return True
 
@@ -140,6 +168,7 @@ def extract_stock_codes(text: str) -> List[str]:
         (r"(?<![a-zA-Z])\d{1,5}\.HK(?![a-zA-Z])", re.IGNORECASE, False),
         (r"(?<!\d)(?:[03648]\d{5}|92\d{4})(?!\d)", 0, False),
         (r"(?<!\d)\d{5}(?!\d)", 0, False),
+        (r"(?<!\d)\d{4,5}\.[A-Za-z]{1,4}(?![A-Za-z0-9])", 0, False),
         (r"(?<!\d)\d{4}(?!\d)", 0, True),
         (r"(?<![a-zA-Z.])([A-Z]{2,5}(?:\.[A-Z]{1,2})?)(?![a-zA-Z0-9])", 0, False),
     ]
