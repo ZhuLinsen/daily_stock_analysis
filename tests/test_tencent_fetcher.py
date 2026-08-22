@@ -7,9 +7,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
+from requests import Response
 
 from data_provider.tencent_fetcher import TencentFetcher, _to_tencent_symbol
 
@@ -107,6 +108,66 @@ def test_tencent_symbol_conversion_supports_a_share_markets() -> None:
     assert _to_tencent_symbol("600519") == "sh600519"
     assert _to_tencent_symbol("000001") == "sz000001"
     assert _to_tencent_symbol("920748") == "bj920748"
+    assert _to_tencent_symbol("sh000016") == "sh000016"
+    assert _to_tencent_symbol("000016.SH") == "sh000016"
+    assert _to_tencent_symbol("sz399001") == "sz399001"
+
+
+def test_tencent_fetcher_preserves_explicit_index_market_for_daily_request() -> None:
+    payload = {
+        "data": {
+            "sh000016": {
+                "qfqday": [
+                    ["2026-08-21", "100", "101", "102", "99", "1000", "101000"]
+                ]
+            }
+        }
+    }
+    response = MagicMock()
+    response.json.return_value = payload
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=response) as request:
+        df = TencentFetcher().get_daily_data(
+            "sh000016", start_date="2026-08-01", end_date="2026-08-21"
+        )
+
+    assert not df.empty
+    assert request.call_args.kwargs["params"]["param"].startswith("sh000016,day,")
+
+
+def test_tencent_fetcher_get_stock_name_uses_lightweight_quote_request() -> None:
+    response = MagicMock()
+    response.text = 'v_sh000016="1~上证50~000016~0";'
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=response) as request:
+        name = TencentFetcher().get_stock_name("sh000016")
+
+    assert name == "上证50"
+    assert request.call_args.args[0] == "https://qt.gtimg.cn/q=sh000016"
+    response.raise_for_status.assert_called_once_with()
+
+
+def test_tencent_fetcher_get_stock_name_rejects_mismatched_response_code() -> None:
+    response = MagicMock()
+    response.text = 'v_sh000016="1~沪深300~000300~0";'
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=response):
+        name = TencentFetcher().get_stock_name("sh000016")
+
+    assert name is None
+
+
+def test_tencent_fetcher_get_stock_name_decodes_real_gbk_response() -> None:
+    response = Response()
+    response.status_code = 200
+    response.url = "https://qt.gtimg.cn/q=sh000016"
+    response.encoding = "ISO-8859-1"
+    response._content = 'v_sh000016="1~上证50~000016~0";'.encode("gbk")
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=response):
+        name = TencentFetcher().get_stock_name("sh000016")
+
+    assert name == "上证50"
 
 
 def test_tencent_fetcher_parses_qfq_daily_response() -> None:
