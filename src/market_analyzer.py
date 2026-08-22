@@ -20,16 +20,19 @@ from typing import Optional, Dict, Any, List
 
 import pandas as pd
 
+from src.agent.provider_trace import resolved_model_provider_identity
 from src.config import get_config
 from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.core.market_profile import get_profile, MarketProfile
 from src.core.market_strategy import get_market_strategy_blueprint
 from src.llm.backend_registry import (
+    LOCAL_CLI_GENERATION_BACKEND_IDS,
+    LITELLM_BACKEND_ID,
     resolve_generation_backend_id,
     resolve_generation_fallback_backend_id,
 )
-from src.llm.generation_backend import GenerationError
+from src.llm.generation_backend import GenerationError, GenerationResult
 from src.schemas.market_light import MARKET_LIGHT_REGIONS, MarketLightSnapshot
 from src.services.run_diagnostics import record_llm_run, record_llm_run_started
 from src.services.intelligence_service import IntelligenceService
@@ -37,6 +40,7 @@ from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
 
+_LEGACY_ANALYZER_BACKEND_ID = "legacy_analyzer"
 
 _ENGLISH_SECTION_PATTERNS = {
     "market_summary": r"###\s*(?:1\.\s*)?Market Summary",
@@ -153,6 +157,130 @@ class MarketAnalyzer:
 
     def _log_context(self) -> str:
         return f"component=market_review region={self.region}"
+
+    @staticmethod
+    def _resolve_configured_response_provider(
+        configured_model: str,
+        response_model: str,
+        model_list: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Match the actual response model against all deployments of one alias."""
+        normalized_configured_model = str(configured_model or "").strip()
+        normalized_response_model = str(response_model or "").strip().lower()
+        if not normalized_configured_model or not normalized_response_model or not model_list:
+            return ""
+
+        for entry in model_list:
+            params = entry.get("litellm_params", {}) or {}
+            model_name = str(entry.get("model_name") or "").strip()
+            if not model_name:
+                model_name = str(params.get("model") or "").strip()
+            if model_name != normalized_configured_model:
+                continue
+
+            deployment_model = str(params.get("model") or "").strip()
+            if deployment_model.lower() != normalized_response_model:
+                continue
+
+            normalized_deployment_model = deployment_model.lower()
+            if normalized_deployment_model.startswith("openai/~") or "openrouter" in normalized_deployment_model:
+                return "openrouter"
+
+            _resolved_model, resolved_provider = resolved_model_provider_identity(
+                deployment_model,
+            )
+            if resolved_provider:
+                return resolved_provider
+        return ""
+
+    def _resolve_recorded_provider(
+        self,
+        *,
+        provider: str,
+        model: str,
+        backend: str,
+        usage_provider: str = "",
+        response_model: str = "",
+    ) -> str:
+        """Resolve LiteLLM router aliases before persisting diagnostics."""
+        normalized_backend = str(backend or "").strip().lower()
+        normalized_model = str(model or "").strip()
+        normalized_usage_provider = str(usage_provider or "").strip()
+        normalized_response_model = str(response_model or "").strip()
+        normalized_provider = str(provider or "").strip()
+        resolved_route_provider = ""
+        if normalized_backend == "litellm" and normalized_model:
+            resolved_route_model, resolved_route_provider = resolved_model_provider_identity(
+                normalized_model,
+                getattr(self.config, "llm_model_list", None) or [],
+            )
+            normalized_route = str(resolved_route_model or normalized_model).strip().lower()
+            if normalized_route.startswith("openai/~") or "openrouter" in normalized_route:
+                resolved_route_provider = "openrouter"
+        resolved_response_provider = ""
+        if normalized_response_model:
+            resolved_response_provider = self._resolve_configured_response_provider(
+                normalized_model,
+                normalized_response_model,
+                getattr(self.config, "llm_model_list", None) or [],
+            )
+            if resolved_response_provider == "openrouter":
+                return resolved_response_provider
+        if normalized_usage_provider:
+            return normalized_usage_provider
+        if normalized_response_model:
+            if resolved_response_provider:
+                return resolved_response_provider
+            if resolved_route_provider == "openrouter":
+                return resolved_route_provider
+            _wire_model, resolved_provider = resolved_model_provider_identity(
+                normalized_response_model,
+            )
+            if resolved_provider:
+                return resolved_provider
+        if normalized_backend != "litellm" or not normalized_model:
+            return normalized_provider
+        return resolved_route_provider or normalized_provider or "openai"
+
+    def _resolve_recorded_error_model(
+        self,
+        *,
+        error: Any,
+        fallback_model: str = "",
+    ) -> str:
+        """Preserve route/model diagnostics for LiteLLM configuration failures."""
+        details = getattr(error, "details", None)
+        if isinstance(details, dict):
+            visited: set[int] = set()
+
+            def _find_error_model(payload: Dict[str, Any]) -> str:
+                payload_id = id(payload)
+                if payload_id in visited:
+                    return ""
+                visited.add(payload_id)
+                for key in ("last_model", "route_name"):
+                    candidate = str(payload.get(key) or "").strip()
+                    if candidate:
+                        return candidate
+                fallback_error = payload.get("fallback_error")
+                if isinstance(fallback_error, dict):
+                    nested_details = fallback_error.get("details")
+                    if isinstance(nested_details, dict):
+                        candidate = _find_error_model(nested_details)
+                        if candidate:
+                            return candidate
+                    return _find_error_model(fallback_error)
+                return ""
+
+            candidate = _find_error_model(details)
+            if candidate:
+                return candidate
+        backend = str(getattr(error, "backend", "") or "").strip()
+        configured_model = str(getattr(self.config, "litellm_model", "") or "").strip()
+        normalized_fallback_model = str(fallback_model or "").strip()
+        if backend == "litellm":
+            return normalized_fallback_model or configured_model or backend
+        return normalized_fallback_model or backend
 
     def _get_output_language(self) -> str:
         """Return the truthful report language (zh/en/ko) for payload and directives."""
@@ -669,8 +797,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
             record_llm_run(
                 success=False,
-                provider="litellm",
-                model=getattr(self.config, "litellm_model", None),
+                provider=backend_error.provider or backend_error.backend,
+                model=self._resolve_recorded_error_model(error=backend_error),
                 call_type="market_review",
                 error_type=type(backend_error).__name__,
                 error_message=backend_error,
@@ -688,20 +816,48 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         prompt = self._build_review_prompt(overview, news)
 
         logger.info("[大盘] %s action=generate_review status=start", self._log_context())
-        # Use the public generate_text() entry point - never access private analyzer attributes.
+        # Use public analyzer APIs so diagnostics reflect the actual execution backend.
         llm_started_at = time.perf_counter()
+        provider, model = self._get_analyzer_generation_backend_identity()
         try:
             record_llm_run_started(
-                provider="litellm",
-                model=getattr(self.config, "litellm_model", None),
+                provider=provider,
+                model=model,
                 call_type="market_review",
             )
-            review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
+            generation_result = self._generate_market_review_with_metadata(
+                prompt,
+                provider=provider,
+                model=model,
+            )
+            review = generation_result.text if generation_result else None
+            generation_diagnostics = (
+                getattr(generation_result, "diagnostics", None) if generation_result is not None else None
+            )
+            if generation_result is not None:
+                model = generation_result.model or model
+                usage_payload = getattr(generation_result, "usage", None)
+                provider = self._resolve_recorded_provider(
+                    provider=generation_result.provider or generation_result.backend or provider,
+                    model=model,
+                    backend=generation_result.backend or "",
+                    usage_provider=(
+                        usage_payload.get("provider") if isinstance(usage_payload, dict) else ""
+                    ),
+                    response_model=(
+                        usage_payload.get("response_model") if isinstance(usage_payload, dict) else ""
+                    ),
+                )
         except Exception as exc:
+            error_provider = getattr(exc, "provider", None) or getattr(exc, "backend", None) or provider
+            error_model = self._resolve_recorded_error_model(
+                error=exc,
+                fallback_model=model,
+            )
             record_llm_run(
                 success=False,
-                provider="litellm",
-                model=getattr(self.config, "litellm_model", None),
+                provider=error_provider,
+                model=error_model,
                 call_type="market_review",
                 duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
                 error_type=type(exc).__name__,
@@ -709,14 +865,26 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
             raise
 
+        failed_all_models = (
+            isinstance(generation_diagnostics, dict)
+            and generation_diagnostics.get("reason") == "all_models_failed"
+        )
         record_llm_run(
             success=bool(review),
-            provider="litellm",
-            model=getattr(self.config, "litellm_model", None),
+            provider=provider,
+            model=model,
             call_type="market_review",
             duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
-            error_type=None if review else "EmptyResponse",
-            error_message=None if review else "empty market review response",
+            error_type=None if review else ("AllModelsFailed" if failed_all_models else "EmptyResponse"),
+            error_message=(
+                None
+                if review
+                else (
+                    generation_diagnostics
+                    if failed_all_models
+                    else "empty market review response"
+                )
+            ),
         )
 
         if review:
@@ -751,6 +919,74 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             return None
         error = method()
         return error if isinstance(error, GenerationError) else None
+
+    def _get_configured_generation_backend_identity(self) -> tuple[str, str]:
+        """Best-effort backend identity for legacy analyzers without metadata APIs."""
+        backend_id = str(getattr(self.config, "generation_backend", "") or "").strip().lower()
+        if not backend_id:
+            backend_id = LITELLM_BACKEND_ID
+        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+            return backend_id, backend_id
+        return backend_id, str(getattr(self.config, "litellm_model", "") or "")
+
+    def _get_legacy_analyzer_generation_backend_identity(self) -> tuple[str, str]:
+        """Return a neutral identity for injected analyzers that expose no metadata APIs."""
+        return _LEGACY_ANALYZER_BACKEND_ID, _LEGACY_ANALYZER_BACKEND_ID
+
+    def _get_analyzer_generation_backend_identity(self) -> tuple[str, str]:
+        """Use analyzer metadata API when available, otherwise fall back to configured identity."""
+        if self.analyzer is None:
+            return self._get_configured_generation_backend_identity()
+        missing = object()
+        if getattr_static(self.analyzer, "get_generation_backend_identity", missing) is not missing:
+            method = getattr(self.analyzer, "get_generation_backend_identity", None)
+            if callable(method):
+                return method()
+        return self._get_legacy_analyzer_generation_backend_identity()
+
+    def _generate_market_review_with_metadata(
+        self,
+        prompt: str,
+        *,
+        provider: str,
+        model: str,
+    ) -> Optional[GenerationResult]:
+        """Support legacy analyzers that only implement the public generate_text() contract."""
+        if self.analyzer is None:
+            return None
+        missing = object()
+        if getattr_static(self.analyzer, "generate_text_with_metadata", missing) is not missing:
+            method = getattr(self.analyzer, "generate_text_with_metadata", None)
+            if callable(method):
+                return method(
+                    prompt,
+                    max_tokens=8192,
+                    temperature=0.7,
+                )
+
+        if getattr_static(self.analyzer, "generate_text", missing) is missing:
+            raise AttributeError(
+                "analyzer must implement generate_text_with_metadata() or generate_text()"
+            )
+        legacy_method = getattr(self.analyzer, "generate_text", None)
+        if not callable(legacy_method):
+            raise AttributeError(
+                "analyzer must implement generate_text_with_metadata() or generate_text()"
+            )
+        review = legacy_method(
+            prompt,
+            max_tokens=8192,
+            temperature=0.7,
+        )
+        if review is None:
+            return None
+        return GenerationResult(
+            text=review,
+            provider=provider,
+            model=model,
+            backend=provider,
+            usage={},
+        )
 
     def build_market_review_payload(
         self,
