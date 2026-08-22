@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 按最新 review 复核收敛 3 处正确性问题（OR-COM-7f3d3f5b / 3d6b61f8 / a1e8b0c2）：`BaseAgent._filtered_registry()` 携带源 registry 的类别超时映射（工具子集仍生效类别上限，不再绕过 #1890 类别超时）；并行批次 >5 时排队调用的 per-tool 超时自 worker 实际开始起算（不再提交即烧预算导致对未启动调用的假超时）；`get_tool_registry()` 缓存命中快路径在锁内读取一致对（消除与 `reset_tool_registry()` 竞态返回 `None` 或错配 registry）。新增对应回归测试。
 - [新功能] 股票名称解析引擎重构增强：新增 `resolver_name_to_code_list()` 公开 API，返回按市场排序（A 股→港股→美股）的 `Stock` 候选列表（最多 5 个），新增 `US_stock_code_match()` 匹配美股 ticker（1~5 位字母且仅限本地库已存在代码，避免 hello/open 等英文词误判为股票）；AkShare 全量 A 股数据经幂等 `extend_AkShare()` 合并进全局 `stockDB`（30 分钟缓存 + 失败 5 分钟退避 + Future 单飞：TTL 过期 stale-while-revalidate 零等待、冷启动等待上界由拉取超时推导（拉取经子进程封顶 25s）、worker 先清账唤醒等待者再做日志/落盘（finally 兜底 BaseException）、成功拉取落盘 `data/cache` 跨重启复用，非中文输入跳过网络扩展），匹配策略升级为「精确→子串（≥2 汉字）→拼音子串（≥5 字母）→difflib 模糊（0.8，单字误写 0.7 兜底）」；`resolve_name_to_code()` 保持既有本地优先语义（本地精确命中零网络，调用方离线低延迟契约不变），跨市场候选能力由 `resolver_name_to_code_list()` 独立提供；解析全链路线程安全（`stockDB` 读写加锁、名称/拼音索引随库变更自动失效），新增 40 个单元测试覆盖精确/跨市场排序/子串/拼音/模糊/幂等扩展/失败退避/多候选场景。
 
+- [新功能] Web Chat 意图识别分词层：新增 `web_intent_types.py`（Token/Market 数据结构、全套 `TAG_*` 语义标签、wrong/unknown 代码标签工厂与判定、关键词表与正则编译）与 `web_intent_tokenizer.py`（六步分词管道 `_preprocess_text`：代码形提取与库校验 `_identify_stock_codes`（经 PR-1 的 `lookup_stock_by_code` / `is_known_stock_name` / `is_market_db_complete` 区分「库命中代码 / wrong_code / unknown_code」，防 LLM 幻觉代码注入 stocks）、股票全名精确匹配、市场词消歧 `_split_market_tokens`、`_extract_markets_from_tokens`、识别率统计 `_recognition_rate`）；`Token.stocks` 透传已解析实体避免下游重复解析（frozen dataclass，内部归一 tuple 保持可哈希）；新增 87 个离线单元测试（AkShare 扩展路径以最小 mock 数据覆盖，不依赖真实网络）；本阶段合入后生产代码尚无调用方，无外部行为变化，供后续意图解析器（PR-3）消费。
+
+
 ## [3.30.0] - 2026-08-09
 
 ### 发布亮点
