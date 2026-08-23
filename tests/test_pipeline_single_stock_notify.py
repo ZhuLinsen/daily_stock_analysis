@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -49,7 +50,7 @@ class _TrackingNotifier:
 
     def _save_report_to_file(self, content, filename=None):
         self.saved_reports.append((content, filename))
-        return f"/tmp/{filename or 'report_20260814.md'}"
+        return f"/tmp/{filename or 'report.md'}"
 
     def _send(
         self,
@@ -89,6 +90,8 @@ def _make_result(code: str, success: bool = True) -> AnalysisResult:
 
 
 class TestPipelineSingleStockNotify(unittest.TestCase):
+    _FROZEN_REPORT_TIME = datetime(2030, 1, 2, 12, 0, 0)
+
     @staticmethod
     def _build_batch_pipeline() -> StockAnalysisPipeline:
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
@@ -146,19 +149,21 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
         pipeline.analyze_stock = MagicMock(return_value=_make_result("600519"))
         pipeline.notifier = _TrackingNotifier()
 
-        result = pipeline.process_single_stock(
-            code="600519",
-            skip_analysis=False,
-            single_stock_notify=True,
-            report_type=ReportType.BRIEF,
-            analysis_query_id="query-1",
-        )
+        with patch("src.core.pipeline.datetime") as mock_datetime:
+            mock_datetime.now.return_value = self._FROZEN_REPORT_TIME
+            result = pipeline.process_single_stock(
+                code="600519",
+                skip_analysis=False,
+                single_stock_notify=True,
+                report_type=ReportType.BRIEF,
+                analysis_query_id="query-1",
+            )
 
         self.assertIsNotNone(result)
         pipeline.notifier.generate_brief_report.assert_called_once_with([result])
         save_call = pipeline.notifier.save_report_to_file.call_args
         self.assertEqual(save_call.args[0], "brief:600519")
-        self.assertEqual(save_call.kwargs["filename"], "report_20260814_600519.md")
+        self.assertEqual(save_call.kwargs["filename"], "report_20300102_600519.md")
         pipeline.notifier.send.assert_called_once_with(
             "brief:600519",
             email_stock_codes=["600519"],
@@ -175,18 +180,20 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
         pipeline.notifier = _TrackingNotifier()
         pipeline.notifier.is_available.return_value = False
 
-        result = pipeline.process_single_stock(
-            code="600519",
-            skip_analysis=False,
-            single_stock_notify=True,
-            report_type=ReportType.SIMPLE,
-            analysis_query_id="query-1",
-        )
+        with patch("src.core.pipeline.datetime") as mock_datetime:
+            mock_datetime.now.return_value = self._FROZEN_REPORT_TIME
+            result = pipeline.process_single_stock(
+                code="600519",
+                skip_analysis=False,
+                single_stock_notify=True,
+                report_type=ReportType.SIMPLE,
+                analysis_query_id="query-1",
+            )
 
         self.assertIsNotNone(result)
         save_call = pipeline.notifier.save_report_to_file.call_args
         self.assertEqual(save_call.args[0], "single:600519")
-        self.assertEqual(save_call.kwargs["filename"], "report_20260814_600519.md")
+        self.assertEqual(save_call.kwargs["filename"], "report_20300102_600519.md")
         pipeline.notifier.send.assert_not_called()
 
     def test_process_single_stock_updates_saved_diagnostics_after_notification(self):

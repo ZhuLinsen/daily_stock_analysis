@@ -85,6 +85,7 @@ from src.services.task_queue import (
 )
 from src.services.run_diagnostics import build_run_diagnostic_summary
 from src.services.run_flow import build_task_run_flow_snapshot
+from src.services.empty_news import empty_news_disclosure_from_stored
 from src.utils.data_processing import (
     normalize_model_used,
     parse_json_field,
@@ -1173,6 +1174,11 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 context_snapshot,
                 raw_result,
             )
+            news_disclosure = empty_news_disclosure_from_stored(
+                raw_result,
+                context_snapshot,
+                report_language,
+            )
             has_board_details = (
                 bool(extracted_boards.get("belong_boards"))
                 or extracted_boards.get("sector_rankings") is not None
@@ -1185,9 +1191,11 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 or market_structure is not None
                 or context_snapshot is not None
                 or analysis_context_pack_overview is not None
+                or news_disclosure is not None
             ):
                 details = ReportDetails(
                     news_content=getattr(record, "news_content", None),
+                    empty_news_disclosure=news_disclosure,
                     raw_result=raw_result,
                     context_snapshot=api_context_snapshot,
                     analysis_context_pack_overview=analysis_context_pack_overview,
@@ -1470,6 +1478,13 @@ def _build_analysis_report(
             break
     analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
     api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
+    news_disclosure = empty_news_disclosure_from_stored(
+        raw_result_data,
+        context_snapshot,
+        report_language,
+    )
+    if news_disclosure is None and isinstance(details_data, dict):
+        news_disclosure = details_data.get("empty_news_disclosure")
     details = None
     has_board_details = (
         bool(extracted_boards.get("belong_boards"))
@@ -1483,9 +1498,11 @@ def _build_analysis_report(
         or market_structure is not None
         or context_snapshot is not None
         or analysis_context_pack_overview is not None
+        or news_disclosure is not None
     ):
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
+            empty_news_disclosure=news_disclosure,
             raw_result=raw_result_data,
             context_snapshot=api_context_snapshot,
             analysis_context_pack_overview=analysis_context_pack_overview,

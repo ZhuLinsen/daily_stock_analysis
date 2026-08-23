@@ -379,7 +379,10 @@ Token budget remaining: ~{remaining_budget}
                 llm_adapter=self.llm_adapter,
                 max_steps=4,
                 max_wall_clock_seconds=timeout_seconds,
-                tool_call_timeout_seconds=timeout_seconds,
+                # NOTE: do not pass tool_call_timeout_seconds here — under the
+                # first-wins contract it would override the per-tool / category
+                # limits, letting one tool consume the whole sub-question budget.
+                # The remaining wall-clock budget alone keeps tools bounded.
             )
             if not result.success and self._looks_like_timeout_error(result.error):
                 return {

@@ -313,9 +313,15 @@ class SystemConfigService:
     @staticmethod
     def _reload_runtime_singletons() -> None:
         """Reset runtime singleton services after config reload."""
+        from src.agent.factory import reset_tool_registry
         from src.agent.tools.data_tools import reset_fetcher_manager
         from src.search_service import reset_search_service
 
+        # Drop the module-level ToolRegistry so the next
+        # ``build_agent_executor`` / ``build_agent_chat_executor`` call
+        # rebuilds ``_TOOL_REGISTRY`` against the fresh Config and picks up
+        # new ``AGENT_*_TOOL_TIMEOUT_S`` overrides (Issue #1890).
+        reset_tool_registry()
         reset_fetcher_manager()
         reset_search_service()
 

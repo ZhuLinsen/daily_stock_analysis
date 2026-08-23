@@ -1326,7 +1326,21 @@ def _reload_runtime_config() -> Config:
     """Reload config from the latest persisted `.env` values for scheduled runs."""
     _reload_env_file_values_preserving_overrides()
     Config.reset_instance()
-    return get_config()
+    new_config = get_config()
+
+    # Drop the module-level ToolRegistry so the next
+    # ``build_agent_executor`` / ``build_agent_chat_executor`` call rebuilds
+    # it against the freshly-loaded Config and picks up new
+    # ``AGENT_*_TOOL_TIMEOUT_S`` overrides (Issue #1890). Wrap in try/except
+    # so a future runtime reset helper cannot crash scheduled-job bootstrap.
+    try:
+        from src.agent.factory import reset_tool_registry
+
+        reset_tool_registry()
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("Failed to reset tool registry during config reload: %s", exc)
+
+    return new_config
 
 
 def _build_schedule_time_provider(default_schedule_time: str):
@@ -1484,19 +1498,18 @@ def main() -> int:
         # This keeps Web settings, status, and run-now actions attached to the real
         # scheduler instead of a separate CLI loop.
         os.environ.pop(CLI_SCHEDULER_OWNER_ENV, None)
-        if args.serve_only:
-            os.environ[RUNTIME_SCHEDULER_SUPPRESS_START_ENV] = "true"
-        else:
-            os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
-        runtime_schedule_requested = not args.serve_only and (
-            args.schedule or config.schedule_enabled
-        )
-        if not args.serve_only and args.schedule:
+        os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
+        runtime_schedule_requested = args.schedule or config.schedule_enabled
+        if args.schedule:
             os.environ[RUNTIME_SCHEDULER_FORCE_ENABLED_ENV] = "true"
         else:
             os.environ.pop(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, None)
         if runtime_schedule_requested:
-            runtime_run_immediately = config.schedule_run_immediately
+            # ``--serve-only`` must restore persisted schedules, but it must not
+            # turn service/Desktop startup into an immediate analysis run.
+            runtime_run_immediately = (
+                False if args.serve_only else config.schedule_run_immediately
+            )
             if getattr(args, 'no_run_immediately', False):
                 runtime_run_immediately = False
             os.environ[RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV] = (

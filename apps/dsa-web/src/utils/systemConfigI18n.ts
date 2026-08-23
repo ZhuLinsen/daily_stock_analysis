@@ -226,7 +226,7 @@ const fieldDescriptionMap: Record<string, string> = {
   BRAVE_API_KEYS: '用于新闻检索的 Brave Search 密钥，支持逗号分隔多个。',
   STOCK_INDEX_REMOTE_UPDATE_ENABLED: '控制是否从 GitHub main 远程刷新股票自动补全索引；失败会降级到本地缓存或内置索引，不影响主分析流程。',
   SEARXNG_BASE_URLS: 'SearXNG 自建实例地址（逗号分隔，无配额兜底，需在 settings.yml 启用 format: json）。',
-  SEARXNG_PUBLIC_INSTANCES_ENABLED: '当未配置 SearXNG 自建实例时，自动从 searx.space 获取公共实例并轮询使用；设为 false 可禁用该默认行为。',
+  SEARXNG_PUBLIC_INSTANCES_ENABLED: '默认关闭；设为 true 后，当未配置 SearXNG 自建实例时，会从 searx.space 获取公共实例并轮询使用。',
   MINIMAX_API_KEYS: '用于新闻检索的 MiniMax 密钥，支持逗号分隔多个（最低优先级）。',
   NEWS_STRATEGY_PROFILE: '新闻窗口档位：ultra_short=1天，short=3天，medium=7天，long=30天。',
   NEWS_MAX_AGE_DAYS: '新闻最大时效上限。实际窗口 = min(策略档位天数, NEWS_MAX_AGE_DAYS)。例如 ultra_short + 7 仍为 1 天。',

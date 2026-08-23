@@ -356,6 +356,7 @@ export interface AnalysisContextPackOverview {
 /** Details section */
 export interface ReportDetails {
   newsContent?: string;
+  emptyNewsDisclosure?: string;
   rawResult?: Record<string, unknown>;
   contextSnapshot?: Record<string, unknown> & { marketReviewPayload?: MarketReviewPayload };
   analysisContextPackOverview?: AnalysisContextPackOverview | null;
