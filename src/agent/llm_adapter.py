@@ -51,6 +51,8 @@ from src.llm.provider_cache import (
     resolve_provider_cache_caps,
 )
 
+from src.llm.reasoning_effort import apply_reasoning_effort, resolve_reasoning_effort
+
 logger = logging.getLogger(__name__)
 
 
@@ -703,6 +705,9 @@ class LLMToolAdapter:
 
         if extra:
             call_kwargs["extra_body"] = extra
+
+        # 思考等级：未配置时为 auto（不下发，沿用渠道默认行为）
+        apply_reasoning_effort(call_kwargs, resolve_reasoning_effort())
 
         if tools:
             call_kwargs["tools"] = tools

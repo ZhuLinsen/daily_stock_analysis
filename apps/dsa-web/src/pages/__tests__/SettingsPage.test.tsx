@@ -1334,6 +1334,50 @@ describe('SettingsPage', () => {
     ]);
   });
 
+  it('renders the model reasoning-effort selector as a regular AI-model field', () => {
+    // 这是全局思考等级（问股/个股分析/大盘复盘/选股重排都受它影响），
+    // 因此归在「AI 模型」分类的常规字段列表里，而不是选股区块。
+    const state = buildSystemConfigState({ activeCategory: 'ai_model' });
+    useSystemConfigMock.mockReturnValue({
+      ...state,
+      itemsByCategory: {
+        ...state.itemsByCategory,
+        ai_model: [
+          ...state.itemsByCategory.ai_model,
+          {
+            key: 'LLM_REASONING_EFFORT',
+            value: 'high',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'LLM_REASONING_EFFORT',
+              category: 'ai_model',
+              dataType: 'string',
+              uiControl: 'select',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              defaultValue: 'auto',
+              options: [
+                { label: 'High (deepest thinking)', value: 'high' },
+                { label: 'Minimal (barely thinks, fastest)', value: 'minimal' },
+              ],
+              validation: { enum: ['high', 'minimal'] },
+              displayOrder: 46,
+            },
+          },
+        ],
+      },
+    });
+
+    render(<SettingsPage />);
+
+    // 恰好渲染一次；配了渠道时 LLM_<渠道>_* 会被正则隐藏，这个键不能被误伤
+    expect(screen.getAllByTestId('settings-field-LLM_REASONING_EFFORT')).toHaveLength(1);
+    expect(screen.getByTestId('settings-field-LLM_REASONING_EFFORT'))
+      .toHaveAttribute('data-disabled', 'false');
+  });
+
   it('notifies screening status after generic save when SCREENING_ENABLED is set false', async () => {
     save.mockResolvedValue({ success: true });
     getChangedItems.mockReturnValue([{ key: 'SCREENING_ENABLED', value: 'false' }]);

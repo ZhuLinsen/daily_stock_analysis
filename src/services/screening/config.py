@@ -3,6 +3,7 @@
 # Licensed under Apache-2.0 and modified for daily_stock_analysis.
 """Configuration."""
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,10 +17,35 @@ from src.config import (
     resolve_llm_channel_protocol,
 )
 from src.llm.hermes import is_reserved_hermes_name
+from src.llm.reasoning_effort import (
+    DEFAULT_SCREENING_REASONING_EFFORT,
+    REASONING_EFFORT_LEVELS,
+    normalize_reasoning_effort,
+    resolve_reasoning_effort,
+)
+
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_POST_ANALYZERS = ["scorecard"]
+
+# 思考等级（reasoning effort）的定义、归一化与下发统一在 src/llm/reasoning_effort，
+# 这里只保留选股模块的公开名字，并绑定「选股默认 high」这一档：重排要在候选之间做
+# 跨股票比较，是本项目里最吃推理深度的一步，所以默认比通用分析链路更高。
+LLM_REASONING_EFFORT_LEVELS = REASONING_EFFORT_LEVELS
+DEFAULT_LLM_REASONING_EFFORT = DEFAULT_SCREENING_REASONING_EFFORT
+
+
+def normalize_llm_reasoning_effort(value: object) -> str:
+    """Normalize a screening reasoning-effort setting; "" means do not send it."""
+    return normalize_reasoning_effort(value, fallback=DEFAULT_LLM_REASONING_EFFORT)
+
+
+def _parse_reasoning_effort_env(name: str) -> str:
+    return resolve_reasoning_effort(default=DEFAULT_LLM_REASONING_EFFORT)
+
+
 DEFAULT_LLM_MODEL = "gemini/gemini-2.5-flash"
 DEFAULT_SNAPSHOT_SOURCE_PRIORITY = ["sina", "efinance", "akshare_em", "em_datacenter"]
 TUSHARE_FIRST_SOURCE_PRIORITY = ["tushare", "sina", "efinance", "akshare_em", "em_datacenter"]
@@ -183,6 +209,7 @@ class Config:
     llm_context_max_chars: int = 4000
     llm_timeout_sec: float = 60.0
     llm_max_tokens: int = 2048
+    llm_reasoning_effort: str = DEFAULT_LLM_REASONING_EFFORT
 
     # Snapshot data source priority
     snapshot_source_priority: list[str] = field(
@@ -318,6 +345,7 @@ class Config:
             llm_context_max_chars=max(500, int(os.getenv("LLM_CONTEXT_MAX_CHARS", "4000"))),
             llm_timeout_sec=max(1.0, _parse_float_env("LLM_TIMEOUT_SEC", 60.0)),
             llm_max_tokens=max(1, int(os.getenv("LLM_MAX_TOKENS", "2048"))),
+            llm_reasoning_effort=_parse_reasoning_effort_env("LLM_REASONING_EFFORT"),
             snapshot_source_priority=_resolve_snapshot_source_priority(),
             fallback_snapshot_path=fallback_snapshot_path,
             snapshot_cache_ttl_seconds=max(

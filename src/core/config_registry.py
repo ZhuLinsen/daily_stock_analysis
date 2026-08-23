@@ -874,6 +874,52 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "LLM_REASONING_EFFORT": {
+        "title": "Model Reasoning Effort",
+        "description": (
+            "Reasoning effort (thinking level) for every LLM call: chat, single-stock analysis, "
+            "market review, and screening re-rank. Levels run none / minimal / low / medium / "
+            "high / xhigh / max, from no thinking to the deepest. Not every model honors every "
+            "level; unsupported levels are dropped for one retry instead of failing the call. "
+            "Leave it on the provider default to send no parameter at all, which suits gateways "
+            "that reject it. "
+            "When unset, general analysis keeps the provider default while screening re-rank "
+            "leans high, because it compares candidates against each other and is the most "
+            "reasoning-heavy step. Thinking tokens count against the output budget, so raise "
+            "LLM_MAX_TOKENS and LLM_TIMEOUT_SEC alongside the level."
+        ),
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "auto",
+        "options": [
+            {"label": "Max (deepest thinking, slowest)", "value": "max"},
+            {"label": "Extra high", "value": "xhigh"},
+            {"label": "High", "value": "high"},
+            {"label": "Medium", "value": "medium"},
+            {"label": "Low", "value": "low"},
+            {"label": "Minimal (barely thinks)", "value": "minimal"},
+            {"label": "None (thinking off)", "value": "none"},
+            {"label": "Provider default (screening still leans high)", "value": "auto"},
+        ],
+        "validation": {},
+        "display_order": 46,
+        "help_key": "settings.ai_model.LLM_REASONING_EFFORT",
+        "examples": [
+            "LLM_REASONING_EFFORT=high",
+            "LLM_REASONING_EFFORT=minimal",
+            "LLM_REASONING_EFFORT=auto",
+        ],
+        "docs": [
+            {
+                "label": "LiteLLM Reasoning Content（官方）",
+                "href": "https://docs.litellm.ai/docs/reasoning_content",
+            },
+        ],
+    },
     "SCREENING_ENABLED": {
         "title": "Built-in Stock Screening",
         "description": "Enable DSA's built-in stock screening tab. The implementation is based on AlphaSift and maintained as part of DSA. Disabled by default.",

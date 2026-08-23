@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from src.config import apply_litellm_api_surface
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.reasoning_effort import apply_reasoning_effort as _apply_reasoning_effort
+from src.services.screening.config import DEFAULT_LLM_REASONING_EFFORT
 from src.services.screening.models import Pick
 from src.services.screening.normalize import (
     bounded_float as _bounded_float,
@@ -81,6 +83,7 @@ def rank_candidates(
     timeout_sec: float = 60.0,
     max_prompt_chars: int | None = _DEFAULT_RANKING_PROMPT_MAX_CHARS,
     max_tokens: int | None = 2048,
+    reasoning_effort: str = DEFAULT_LLM_REASONING_EFFORT,
 ) -> list[Pick]:
     """Use LLM to re-rank candidates and add ranking_reason / risk_summary.
 
@@ -105,6 +108,7 @@ def rank_candidates(
         timeout_sec=timeout_sec,
         max_prompt_chars=max_prompt_chars,
         max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
     ).picks
 
 
@@ -129,6 +133,7 @@ def rank_candidates_with_metadata(
     max_prompt_chars: int | None = _DEFAULT_RANKING_PROMPT_MAX_CHARS,
     degradation: list[str] | None = None,
     max_tokens: int | None = 2048,
+    reasoning_effort: str = DEFAULT_LLM_REASONING_EFFORT,
 ) -> LLMRankingResult:
     """Use LLM to re-rank candidates and return global research metadata."""
     if not candidates:
@@ -175,6 +180,7 @@ def rank_candidates_with_metadata(
                     config_path=config_path,
                     timeout_sec=timeout_sec,
                     max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
                 )
             except Exception as exc:
                 failure_reason = "timeout" if _is_timeout_error(exc) else "call_failed"
@@ -528,6 +534,7 @@ def _call_llm(
     config_path: str = "",
     timeout_sec: float = 60.0,
     max_tokens: int | None = 2048,
+    reasoning_effort: str = DEFAULT_LLM_REASONING_EFFORT,
 ) -> str:
     """Call LLM via litellm with fallback models and channel configs."""
     import litellm
@@ -549,6 +556,7 @@ def _call_llm(
             json_mode=json_mode,
             timeout_sec=timeout_sec,
             max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         )
         if router_result is not None:
             return router_result
@@ -567,6 +575,7 @@ def _call_llm(
                 kwargs["max_tokens"] = int(max_tokens)
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
+            _apply_reasoning_effort(kwargs, reasoning_effort)
             kwargs = _apply_screening_litellm_generation_params(
                 kwargs,
                 model=candidate_model,
@@ -929,6 +938,7 @@ def _call_litellm_router(
     json_mode: bool,
     timeout_sec: float,
     max_tokens: int | None = 2048,
+    reasoning_effort: str = DEFAULT_LLM_REASONING_EFFORT,
 ) -> str | None:
     try:
         import yaml
@@ -950,6 +960,7 @@ def _call_litellm_router(
                 kwargs["max_tokens"] = int(max_tokens)
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
+            _apply_reasoning_effort(kwargs, reasoning_effort)
             kwargs = _apply_screening_litellm_generation_params(
                 kwargs,
                 model=model,

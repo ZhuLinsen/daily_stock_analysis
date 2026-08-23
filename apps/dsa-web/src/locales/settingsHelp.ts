@@ -324,6 +324,19 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 Web 自动补全和后端股票名称解析使用的股票简称新鲜度。'],
     notes: ['远程下载失败时会继续使用已有缓存或随应用打包的内置索引。'],
   },
+  'settings.ai_model.LLM_REASONING_EFFORT': {
+    title: '模型思考等级',
+    summary: '内置选股做 LLM 候选重排时使用的思考等级（reasoning effort）。',
+    usage: '作用于问股、个股分析、大盘复盘与选股重排。追求质量往 high / xhigh / max 调，追求速度往 minimal / none 调。选择「跟随渠道默认」则不下发该参数——此时通用分析沿用渠道默认，选股重排仍偏向 high。',
+    valueNotes: [
+      '档位从低到高：none（不思考）/ minimal / low / medium / high / xhigh / max（思考最深、最慢）。',
+      '并非每个模型都真正区分所有档位：实测 glm-5.3 上 minimal 思考量为 0、max 约为 high 的 1.6 倍，而 xhigh 与 high 区分不明显。',
+      '思考 token 计入 LLM_MAX_TOKENS 预算，调高等级时预算和 LLM_TIMEOUT_SEC 要留够余量，否则正文会被思考挤掉、重排静默降级为本地因子打分。',
+      '部分网关不支持该参数，会被自动摘除后重试一次；也可直接选「跟随渠道默认」。',
+    ],
+    impact: ['只影响选股的 LLM 重排质量与耗时，不影响问股与个股分析。'],
+    notes: ['非推理模型对该参数无感，设置任何等级都不会改变行为。'],
+  },
   'settings.base.SCREENING_ENABLED': {
     title: '选股',
     summary: '控制是否启用选股页；实现参考 AlphaSift。',
@@ -1529,6 +1542,19 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['The system checks for updates every 48 hours to avoid frequent GitHub access.', 'Remote check failures do not block WebUI or analysis.'],
     impact: ['Affects stock-name freshness for Web autocomplete and backend stock-name resolution.'],
     notes: ['When remote download fails, the app keeps using an existing cache or the bundled index.'],
+  },
+  'settings.ai_model.LLM_REASONING_EFFORT': {
+    title: 'Model Reasoning Effort',
+    summary: 'Reasoning effort used by the built-in screening LLM re-rank.',
+    usage: 'Applies to chat, single-stock analysis, market review, and screening re-rank. Raise toward high / xhigh / max for quality, lower toward minimal / none for speed. Picking the provider default sends no parameter — general analysis then follows the provider while screening re-rank still leans high.',
+    valueNotes: [
+      'Levels run none / minimal / low / medium / high / xhigh / max, from no thinking to the deepest and slowest.',
+      'Not every model separates all of them: on glm-5.3, minimal spends zero thinking tokens and max spends roughly 1.6x high, while xhigh is hard to tell apart from high.',
+      'Thinking tokens count against LLM_MAX_TOKENS, so raise that budget and LLM_TIMEOUT_SEC alongside the level, otherwise thinking crowds out the answer and the re-rank silently degrades to local factor scoring.',
+      'Some gateways reject the parameter; it is dropped for one retry automatically, or pick the provider default instead.',
+    ],
+    impact: ['Only affects screening re-rank quality and latency; chat and single-stock analysis are unchanged.'],
+    notes: ['Non-reasoning models ignore the parameter, so any level behaves the same for them.'],
   },
   'settings.base.SCREENING_ENABLED': {
     title: 'Screening',

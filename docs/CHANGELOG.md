@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [新功能] 新增模型思考等级 `LLM_REASONING_EFFORT`，取值 `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（从不思考到思考最深），或 `auto` 表示不下发该参数。作用于所有 LLM 调用：问股、个股分析、大盘复盘与选股重排，可在「AI 模型」设置页下拉切换，改动即时生效无需重启。未设置时保持两级默认：通用分析沿用渠道默认（与改动前行为一致），选股重排偏向 high——它要在候选之间做跨股票比较，是最吃推理深度的一步。并非每个模型都区分所有档位，不支持的档位会被自动摘除后重试一次，不会让整次调用失败。注意思考 token 计入输出预算，调高等级时需为 `LLM_MAX_TOKENS` 与 `LLM_TIMEOUT_SEC` 留够余量。实现集中在 `src/llm/reasoning_effort.py`。
+- [修复] `reasoning_effort` 现随 `allowed_openai_params` 一起下发：LiteLLM 只对自己模型表里声明支持该参数的模型放行，OpenAI 兼容网关上的自定义模型名（如 `openai/glm-5.3`）此前会在 LiteLLM 本地就抛 `UnsupportedParamsError`，导致思考等级被静默摘除、各档位行为完全一致。同时把「思考等级 + 放行声明」加入生成参数一次性恢复列表并令其同进同退，不支持的渠道降级为默认思考行为而不是整次重排失败。
 
 ## [3.31.0] - 2026-08-23
 

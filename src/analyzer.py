@@ -28,6 +28,7 @@ from src.agent.llm_adapter import (
     register_fallback_model_pricing,
 )
 from src.agent.provider_trace import resolved_model_provider_identity
+from src.llm.reasoning_effort import apply_reasoning_effort, resolve_reasoning_effort
 from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_ZH
 from src.config import (
     Config,
@@ -3393,6 +3394,8 @@ class GeminiAnalyzer:
                     call_kwargs["timeout"] = requested_timeout
                 if extra:
                     call_kwargs["extra_body"] = extra
+                # 思考等级：未配置时为 auto（不下发，沿用渠道默认行为）
+                apply_reasoning_effort(call_kwargs, resolve_reasoning_effort())
                 uses_router = (
                     (use_channel_router and self._router and model in router_model_names)
                     or (self._router and model == config.litellm_model and not use_channel_router)

@@ -103,6 +103,21 @@ def classify_litellm_generation_param_error(
                 reason="temperature_unsupported",
             )
 
+    # reasoning_effort 是推理模型的思考等级。不认它的网关（或不认 allowed_openai_params
+    # 放行机制的 LiteLLM 版本）会直接报错，这里一次性把「思考等级 + 放行声明」一起摘掉再重试，
+    # 让调用降级成默认思考行为，而不是让整次请求失败。两者必须同进同退：只留下
+    # allowed_openai_params 会把一个空放行声明发给不认识它的后端。
+    if "reasoning_effort" in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
+        return GenerationParamRecovery(
+            omit_params=("reasoning_effort", "allowed_openai_params"),
+            reason="reasoning_effort_unsupported",
+        )
+    if "allowed_openai_params" in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
+        return GenerationParamRecovery(
+            omit_params=("reasoning_effort", "allowed_openai_params"),
+            reason="allowed_openai_params_unsupported",
+        )
+
     for param in ("top_p", "presence_penalty", "frequency_penalty", "seed"):
         if param in text and any(marker in text for marker in _UNSUPPORTED_PARAM_MARKERS):
             return GenerationParamRecovery(
