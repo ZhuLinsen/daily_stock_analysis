@@ -2,6 +2,7 @@
 import unittest
 import sys
 import os
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -9,7 +10,7 @@ from datetime import date
 from unittest.mock import patch
 
 import pandas as pd
-from sqlalchemy import and_, create_engine as sqlalchemy_create_engine, select
+from sqlalchemy import and_, create_engine as sqlalchemy_create_engine, inspect, select
 from sqlalchemy.sql import func
 
 # Ensure src module can be imported
@@ -17,6 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.config import Config
 from src.storage import Base, CURRENT_SCHEMA_VERSION, DatabaseManager, DatabaseSchemaMigration, StockDaily
+from src.services import stock_list_parser as stock_list_parser_module
 
 class TestStorage(unittest.TestCase):
 
@@ -1157,6 +1159,643 @@ class TestStorage(unittest.TestCase):
         finally:
             temp_dir.cleanup()
             DatabaseManager.reset_instance()
+
+    # ------------------------------------------------------------------
+    # Story 1.2 — canonical_id column + dual-write (issue #2207 PR2)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _create_legacy_stock_daily_without_canonical_id(db_path: str) -> None:
+        """Pre-PR2 ``stock_daily`` schema: no ``canonical_id`` column."""
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """CREATE TABLE stock_daily (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code VARCHAR(10) NOT NULL,
+                date DATE NOT NULL,
+                open FLOAT,
+                high FLOAT,
+                low FLOAT,
+                close FLOAT,
+                volume FLOAT,
+                amount FLOAT,
+                pct_chg FLOAT,
+                ma5 FLOAT,
+                ma10 FLOAT,
+                ma20 FLOAT,
+                volume_ratio FLOAT,
+                data_source VARCHAR(50),
+                created_at DATETIME,
+                updated_at DATETIME
+            )"""
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX uix_code_date ON stock_daily (code, date)"
+            )
+            conn.execute(
+                "CREATE INDEX ix_code_date ON stock_daily (code, date)"
+            )
+
+    @staticmethod
+    def _make_temp_db_path() -> tuple:
+        """Return (db_dir, db_path); Windows-safe cleanup via shutil.rmtree."""
+        db_dir = tempfile.mkdtemp(prefix="dsa_canonical_id_")
+        db_path = os.path.join(db_dir, "test.db")
+        return db_dir, db_path
+
+    @staticmethod
+    def _cleanup_temp_dir(db_dir: str) -> None:
+        # Windows: the SQLAlchemy engine pool may still hold the SQLite file
+        # handle briefly after dispose(); ignore_errors lets teardown succeed.
+        shutil.rmtree(db_dir, ignore_errors=True)
+
+    def test_canonical_id_migration_adds_column_and_backfills_existing_rows(self):
+        """AC 1: ALTER adds ``canonical_id``; existing rows backfilled via parser."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_without_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.executemany(
+                    """INSERT INTO stock_daily (
+                    code, date, close, data_source
+                ) VALUES (?, ?, ?, ?)""",
+                    [
+                        ("sh000300", "2026-01-01", 4000.0, "legacy"),
+                        ("600519", "2026-01-01", 1600.0, "legacy"),
+                        ("AAPL", "2026-01-01", 150.0, "legacy"),
+                    ],
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(stock_daily)").fetchall()}
+                rows = {
+                    code: canonical_id
+                    for code, canonical_id in conn.execute(
+                        "SELECT code, canonical_id FROM stock_daily ORDER BY id"
+                    ).fetchall()
+                }
+
+            self.assertIn("canonical_id", columns)
+            # sh000300 is a registered index alias → sh000300
+            self.assertEqual(rows["sh000300"], "sh000300")
+            # 600519 bare A-share → sh600519 (contract: bare codes default stock,
+            # classifier routes 6-prefixed to SH)
+            self.assertEqual(rows["600519"], "sh600519")
+            # AAPL bare US ticker → AAPL (canonical US form, no prefix)
+            self.assertEqual(rows["AAPL"], "AAPL")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_migration_is_idempotent(self):
+        """AC 2: second startup detects the column and skips ALTER; backfill is a no-op."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_without_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)",
+                    ("600519", "2026-01-01", 1600.0),
+                )
+
+            # First run: adds column + backfills.
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+            with sqlite3.connect(db_path) as conn:
+                first_pass = conn.execute(
+                    "SELECT canonical_id FROM stock_daily WHERE code='600519'"
+                ).fetchone()[0]
+            self.assertEqual(first_pass, "sh600519")
+
+            DatabaseManager.reset_instance()
+            # Second run: must not raise, must not duplicate the column.
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+            with sqlite3.connect(db_path) as conn:
+                columns = [row[1] for row in conn.execute("PRAGMA table_info(stock_daily)").fetchall()]
+                second_pass = conn.execute(
+                    "SELECT canonical_id FROM stock_daily WHERE code='600519'"
+                ).fetchone()[0]
+
+            self.assertEqual(columns.count("canonical_id"), 1)
+            self.assertEqual(second_pass, "sh600519")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_migration_on_fresh_empty_db(self):
+        """AC: empty/new DB has the column from create_all; backfill finds 0 rows."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(stock_daily)").fetchall()}
+                count = conn.execute("SELECT COUNT(*) FROM stock_daily").fetchone()[0]
+
+            self.assertIn("canonical_id", columns)
+            self.assertEqual(count, 0)
+
+            indexes = self._list_sqlite_indexes(db_path, "stock_daily")
+            self.assertEqual(indexes.get("ix_stock_daily_canonical_id"), ["canonical_id"])
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_migration_creates_plain_non_unique_index(self):
+        """AC 6/9: index is plain (not unique) so alias rows can coexist."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            unique_indexes = self._list_sqlite_unique_indexes(db_path, "stock_daily")
+            self.assertNotIn("ix_stock_daily_canonical_id", unique_indexes)
+
+            indexes = self._list_sqlite_indexes(db_path, "stock_daily")
+            self.assertEqual(indexes.get("ix_stock_daily_canonical_id"), ["canonical_id"])
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_backfill_bare_index_unifies_to_index_canonical_id(self):
+        """Index-aware backfill (OR-COR-4f9ffc38): bare ``000300`` hits the
+        index registry (``matched_index`` is non-None) and backfills to the
+        index canonical_id ``sh000300`` — NOT ``sz000300`` (the stock-path
+        canonical_id the classifier would synthesise for a 6-digit
+        ``0``-prefixed code). Without this unification the same CSI-300 index
+        would split across two canonical_id buckets depending on whether the
+        caller passed a bare code or an explicit ``sh000300`` prefix."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_without_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)",
+                    ("000300", "2026-01-01", 4000.0),
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                canonical_id = conn.execute(
+                    "SELECT canonical_id FROM stock_daily WHERE code='000300'"
+                ).fetchone()[0]
+
+            # Bare index code unifies to the index canonical_id via
+            # ``matched_index.canonical_id`` so bare ``000300`` and explicit
+            # ``sh000300`` land in the same bucket.
+            self.assertEqual(canonical_id, "sh000300")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_backfill_bare_non_index_code_stays_stock(self):
+        """Index-aware backfill does not affect bare non-index codes: ``600519``
+        has no registry hit (``matched_index is None``) and backfills to the
+        stock-path canonical_id ``sh600519`` (contract #2 — bare → stock)."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_without_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)",
+                    ("600519", "2026-01-01", 1600.0),
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                canonical_id = conn.execute(
+                    "SELECT canonical_id FROM stock_daily WHERE code='600519'"
+                ).fetchone()[0]
+
+            self.assertEqual(canonical_id, "sh600519")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_backfill_preserves_duplicate_alias_rows(self):
+        """AC 9: multiple rows sharing canonical_id + date coexist (plain index)."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_without_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                # Two distinct code aliases for the same underlying, same date.
+                conn.executemany(
+                    """INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)""",
+                    [
+                        ("sh000300", "2026-01-01", 4000.0),
+                        ("000300.SH", "2026-01-01", 4001.0),
+                    ],
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT code, canonical_id FROM stock_daily ORDER BY id"
+                ).fetchall()
+
+            self.assertEqual(len(rows), 2)
+            # Both survive — the plain index allows duplicate canonical_ids.
+            canonical_ids = {row[1] for row in rows}
+            self.assertEqual(canonical_ids, {"sh000300"})
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_backfill_survives_per_row_derivation_failure(self):
+        """D1 degrade: one unparseable row must not trap the batch scan loop.
+
+        The backfill advances an id cursor, so a row whose derivation raises
+        is skipped past (left NULL, retried next startup) instead of being
+        re-selected forever. Good rows after the bad one must still backfill.
+        """
+        real_parse = stock_list_parser_module.parse_analysis_target
+
+        def flaky_parse(code):
+            if code == "!!broken!!":
+                raise RuntimeError("parser boom")
+            return real_parse(code)
+
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_without_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                # Bad row FIRST, good rows after — maximizes re-select exposure
+                # if the scan ever regresses to "re-select NULL rows".
+                conn.executemany(
+                    """INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)""",
+                    [
+                        ("!!broken!!", "2026-01-01", 1.0),
+                        ("sh600519", "2026-01-01", 1700.0),
+                        ("AAPL", "2026-01-01", 210.0),
+                    ],
+                )
+
+            with patch(
+                "src.services.stock_list_parser.parse_analysis_target",
+                side_effect=flaky_parse,
+            ):
+                DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                rows = dict(
+                    conn.execute(
+                        "SELECT code, canonical_id FROM stock_daily"
+                    ).fetchall()
+                )
+
+            self.assertIsNone(rows["!!broken!!"])
+            self.assertEqual(rows["sh600519"], "sh600519")
+            self.assertEqual(rows["AAPL"], "AAPL")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_backfill_skips_empty_derived_values(self):
+        """Review fix: parser returning None/'' (without raising) must not
+        count as backfilled nor persist an empty string as a stable key."""
+        real_parse = stock_list_parser_module.parse_analysis_target
+
+        def empty_parse(code):
+            if code == "!!empty!!":
+                return None
+            return real_parse(code)
+
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_without_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.executemany(
+                    """INSERT INTO stock_daily (code, date, close) VALUES (?, ?, ?)""",
+                    [
+                        ("!!empty!!", "2026-01-01", 1.0),
+                        ("sh600519", "2026-01-01", 1700.0),
+                    ],
+                )
+
+            with patch(
+                "src.services.stock_list_parser.parse_analysis_target",
+                side_effect=empty_parse,
+            ):
+                DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                rows = dict(
+                    conn.execute(
+                        "SELECT code, canonical_id FROM stock_daily"
+                    ).fetchall()
+                )
+
+            self.assertIsNone(rows["!!empty!!"])
+            self.assertEqual(rows["sh600519"], "sh600519")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_save_daily_data_dual_writes_explicit_canonical_id(self):
+        """AC 3: explicit ``canonical_id`` is written to both columns on upsert."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        'date': date(2026, 4, 1),
+                        'open': 10, 'high': 11, 'low': 9, 'close': 10.5,
+                        'volume': 100, 'amount': 1050, 'pct_chg': 1.2,
+                        'ma5': 10.1, 'ma10': 10.2, 'ma20': 10.3, 'volume_ratio': 1.0,
+                    }
+                ]
+            )
+            db.save_daily_data(
+                df,
+                code="sh000016",
+                data_source="tencent",
+                canonical_id="sh000016",
+            )
+
+            with db.get_session() as session:
+                row = session.execute(
+                    select(StockDaily).where(
+                        and_(StockDaily.code == "sh000016", StockDaily.date == date(2026, 4, 1))
+                    )
+                ).scalar_one()
+
+            self.assertEqual(row.code, "sh000016")
+            self.assertEqual(row.canonical_id, "sh000016")
+
+            # Upsert path: re-saving updates canonical_id too.
+            db.save_daily_data(
+                df,
+                code="sh000016",
+                data_source="tencent",
+                canonical_id="sh000016-v2",
+            )
+            with db.get_session() as session:
+                row = session.execute(
+                    select(StockDaily).where(
+                        and_(StockDaily.code == "sh000016", StockDaily.date == date(2026, 4, 1))
+                    )
+                ).scalar_one()
+            self.assertEqual(row.canonical_id, "sh000016-v2")
+        finally:
+            DatabaseManager.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_save_daily_data_derives_canonical_id_when_omitted(self):
+        """D1/AC: ``canonical_id`` omitted → auto-derive via parser; parser failure → NULL, no raise."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        'date': date(2026, 4, 1),
+                        'open': 10, 'high': 11, 'low': 9, 'close': 10.5,
+                        'volume': 100, 'amount': 1050, 'pct_chg': 1.2,
+                        'ma5': 10.1, 'ma10': 10.2, 'ma20': 10.3, 'volume_ratio': 1.0,
+                    }
+                ]
+            )
+            # Main path: bare A-share → sh600519.
+            db.save_daily_data(df, code="600519", data_source="test")
+            with db.get_session() as session:
+                row = session.execute(
+                    select(StockDaily).where(
+                        and_(StockDaily.code == "600519", StockDaily.date == date(2026, 4, 1))
+                    )
+                ).scalar_one()
+            self.assertEqual(row.canonical_id, "sh600519")
+
+            # Degraded path: parser failure on re-save must NOT overwrite a
+            # previously backfilled non-NULL canonical_id with NULL (review
+            # fix: coalesce preserves the existing value). No exception
+            # bubbles out of save_daily_data (D1).
+            with patch(
+                "src.services.stock_list_parser.parse_analysis_target",
+                side_effect=RuntimeError("parser boom"),
+            ):
+                db.save_daily_data(df, code="600519", data_source="test")
+            with db.get_session() as session:
+                row = session.execute(
+                    select(StockDaily).where(
+                        and_(StockDaily.code == "600519", StockDaily.date == date(2026, 4, 1))
+                    )
+                ).scalar_one()
+            self.assertEqual(row.canonical_id, "sh600519")
+        finally:
+            DatabaseManager.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_save_daily_data_empty_string_canonical_id_triggers_derivation(self):
+        """Review fix: empty-string canonical_id is treated like None —
+        derived via parser, never persisted as an empty key."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        'date': date(2026, 4, 3),
+                        'open': 10, 'high': 11, 'low': 9, 'close': 10.5,
+                        'volume': 100, 'amount': 1050, 'pct_chg': 1.2,
+                        'ma5': 10.1, 'ma10': 10.2, 'ma20': 10.3, 'volume_ratio': 1.0,
+                    }
+                ]
+            )
+            db.save_daily_data(df, code="600519", data_source="test", canonical_id="")
+            with db.get_session() as session:
+                row = session.execute(
+                    select(StockDaily).where(
+                        and_(StockDaily.code == "600519", StockDaily.date == date(2026, 4, 3))
+                    )
+                ).scalar_one()
+            self.assertEqual(row.canonical_id, "sh600519")
+        finally:
+            DatabaseManager.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_save_daily_data_first_insert_parser_failure_writes_null(self):
+        """D1: first insert with parser failure → row created with NULL canonical_id, no raise."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        'date': date(2026, 4, 2),
+                        'open': 10, 'high': 11, 'low': 9, 'close': 10.5,
+                        'volume': 100, 'amount': 1050, 'pct_chg': 1.2,
+                        'ma5': 10.1, 'ma10': 10.2, 'ma20': 10.3, 'volume_ratio': 1.0,
+                    }
+                ]
+            )
+            with patch(
+                "src.services.stock_list_parser.parse_analysis_target",
+                side_effect=RuntimeError("parser boom"),
+            ):
+                db.save_daily_data(df, code="600519", data_source="test")
+            with db.get_session() as session:
+                row = session.execute(
+                    select(StockDaily).where(
+                        and_(StockDaily.code == "600519", StockDaily.date == date(2026, 4, 2))
+                    )
+                ).scalar_one()
+            self.assertIsNone(row.canonical_id)
+        finally:
+            DatabaseManager.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_save_daily_data_derives_index_aware_canonical_id_for_bare_index_code(self):
+        """OR-COR-4f9ffc38: ``save_daily_data(df, code="000300")`` with no
+        explicit canonical_id writes ``sh000300`` (index canonical_id), not
+        ``sz000300`` (stock-path canonical_id the classifier would synthesise
+        for a 6-digit ``0``-prefixed code)."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        'date': date(2026, 4, 5),
+                        'open': 10, 'high': 11, 'low': 9, 'close': 10.5,
+                        'volume': 100, 'amount': 1050, 'pct_chg': 1.2,
+                        'ma5': 10.1, 'ma10': 10.2, 'ma20': 10.3, 'volume_ratio': 1.0,
+                    }
+                ]
+            )
+            db.save_daily_data(df, code="000300", data_source="test")
+            with db.get_session() as session:
+                row = session.execute(
+                    select(StockDaily).where(
+                        and_(StockDaily.code == "000300", StockDaily.date == date(2026, 4, 5))
+                    )
+                ).scalar_one()
+            self.assertEqual(row.canonical_id, "sh000300")
+        finally:
+            DatabaseManager.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_save_daily_data_converges_alias_and_prefix_to_same_canonical_id(self):
+        """OR-COR-4f9ffc38: bare ``000300``, ``sh000300`` and ``000300.SH``
+        all converge to the same canonical_id ``sh000300`` when written via
+        ``save_daily_data`` (no explicit canonical_id), so the same underlying
+        index is never split across buckets by input form."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        'date': date(2026, 4, 6),
+                        'open': 10, 'high': 11, 'low': 9, 'close': 10.5,
+                        'volume': 100, 'amount': 1050, 'pct_chg': 1.2,
+                        'ma5': 10.1, 'ma10': 10.2, 'ma20': 10.3, 'volume_ratio': 1.0,
+                    }
+                ]
+            )
+            for code in ("000300", "sh000300", "000300.SH"):
+                db.save_daily_data(df, code=code, data_source="test")
+
+            with db.get_session() as session:
+                rows = session.execute(
+                    select(StockDaily).order_by(StockDaily.id)
+                ).scalars().all()
+
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(
+                {row.code: row.canonical_id for row in rows},
+                {
+                    "000300": "sh000300",
+                    "sh000300": "sh000300",
+                    "000300.SH": "sh000300",
+                },
+            )
+        finally:
+            DatabaseManager.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_migration_raises_when_column_inspection_fails(self):
+        """AC: inspect() failure on stock_daily must raise (no silent downgrade).
+
+        Mirrors the decision_profile inspection-failure test (L417-438). The
+        patched inspector only breaks for ``stock_daily`` so the earlier
+        ``decision_signal_profile`` migration (which runs first in the
+        ``__init__`` ensure chain) still passes and execution reaches the
+        ``_ensure_stock_daily_canonical_id`` step.
+        """
+        real_inspector = inspect
+
+        class BrokenInspector:
+            def __init__(self, engine):
+                self._real = real_inspector(engine)
+
+            def has_table(self, table_name: str) -> bool:
+                return self._real.has_table(table_name)
+
+            def get_columns(self, table_name: str):
+                if table_name == StockDaily.__tablename__:
+                    raise RuntimeError("inspection failed")
+                return self._real.get_columns(table_name)
+
+            def get_indexes(self, table_name: str):
+                return self._real.get_indexes(table_name)
+
+        DatabaseManager.reset_instance()
+        try:
+            with patch("src.storage.inspect", side_effect=BrokenInspector):
+                with self.assertLogs("src.storage", level="ERROR") as logs:
+                    with self.assertRaises(RuntimeError):
+                        DatabaseManager(db_url="sqlite:///:memory:")
+
+            self.assertIn(
+                "canonical_id migration cannot continue safely",
+                "\n".join(logs.output),
+            )
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
 
 if __name__ == '__main__':
     unittest.main()

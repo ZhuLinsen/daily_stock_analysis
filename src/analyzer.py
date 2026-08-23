@@ -16,7 +16,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Tuple, Callable
+from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 
 import litellm
 from json_repair import repair_json
@@ -35,6 +35,7 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
+    get_explicit_llm_channel_model_provider,
     resolve_news_window_days,
 )
 from src.llm.hermes import (
@@ -62,6 +63,7 @@ from src.llm.generation_backend import (
     GenerationBackend,
     GenerationError,
     GenerationErrorCode,
+    GenerationResult,
 )
 from src.llm.usage import (
     attach_legacy_message_stability_audit,
@@ -275,8 +277,9 @@ class _AllModelsFailedError(Exception):
     that *did* return a response (but whose JSON could not be validated), so
     callers can still attempt a best-effort text fallback.
 
-    ``last_model`` and ``last_usage`` record the model name and token usage
-    from the last attempt so callers can persist usage even on fallback.
+    ``last_model``, ``last_provider`` and ``last_usage`` record the resolved
+    route identity and token usage from the last attempt so callers can persist
+    diagnostics even on fallback.
     """
 
     def __init__(
@@ -285,11 +288,13 @@ class _AllModelsFailedError(Exception):
         *,
         last_response_text: Optional[str] = None,
         last_model: Optional[str] = None,
+        last_provider: Optional[str] = None,
         last_usage: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(message)
         self.last_response_text = last_response_text
         self.last_model = last_model
+        self.last_provider = last_provider
         self.last_usage = last_usage or {}
 
 
@@ -1720,6 +1725,18 @@ class AnalysisResult:
     market_snapshot: Optional[Dict[str, Any]] = None  # 当日行情快照（展示用）
     raw_response: Optional[str] = None  # 原始响应（调试用）
     search_performed: bool = False  # 是否执行了联网搜索
+    # 新闻检索实际命中的条数。None 表示未执行检索（如未配置搜索渠道），
+    # 0 表示执行了检索但一条也没拿到；报告会针对两种原因使用不同披露文案。
+    news_result_count: Optional[int] = None
+    # 旧历史记录未持久化 news_result_count，重建时必须与明确的 None 区分，
+    # 否则会把未知旧数据误报成「未配置搜索渠道」。实时分析默认值始终可信。
+    news_result_count_known: bool = True
+    # 本次分析实际收到的消息面证据（news_context）是否非空。
+    # news_result_count 只是「实时搜索命中了几条」，而披露断言的是「结论有没有用到
+    # 新闻面证据」——两者是不同命题：news_context 还可能来自社交情绪或本地已落库的
+    # 资讯池，这些同样进入模型输入却不产生搜索命中。只看计数会把这类分析误报成
+    # 「未纳入新闻面证据」。
+    news_evidence_present: bool = False
     data_sources: str = ""  # 数据来源说明
     success: bool = True
     error_message: Optional[str] = None
@@ -1771,6 +1788,9 @@ class AnalysisResult:
             'buy_reason': self.buy_reason,
             'market_snapshot': self.market_snapshot,
             'search_performed': self.search_performed,
+            'news_result_count': self.news_result_count,
+            'news_result_count_known': self.news_result_count_known,
+            'news_evidence_present': self.news_evidence_present,
             'success': self.success,
             'error_message': self.error_message,
             'current_price': self.current_price,
@@ -2810,6 +2830,190 @@ class GeminiAnalyzer:
             return obj.get(key)
         return getattr(obj, key, None)
 
+    @staticmethod
+    def _resolve_configured_response_provider(
+        configured_model: str,
+        response_model: str,
+        model_list: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Match the actual response model against all deployments of one alias."""
+        normalized_configured_model = str(configured_model or "").strip()
+        normalized_response_model = str(response_model or "").strip().lower()
+        if not normalized_configured_model or not normalized_response_model or not model_list:
+            return ""
+
+        for entry in model_list:
+            params = entry.get("litellm_params", {}) or {}
+            model_name = str(entry.get("model_name") or "").strip()
+            if not model_name:
+                model_name = str(params.get("model") or "").strip()
+            if model_name != normalized_configured_model:
+                continue
+
+            deployment_model = str(params.get("model") or "").strip()
+            if deployment_model.lower() != normalized_response_model:
+                continue
+
+            normalized_deployment_model = deployment_model.lower()
+            if normalized_deployment_model.startswith("openai/~") or "openrouter" in normalized_deployment_model:
+                return "openrouter"
+
+            _resolved_model, resolved_provider = resolved_model_provider_identity(
+                deployment_model,
+            )
+            if resolved_provider:
+                return resolved_provider
+        return ""
+
+    def _resolve_response_model_provider(
+        self,
+        response: Any,
+        *,
+        fallback_provider: Optional[str] = None,
+        configured_model: str = "",
+        model_list: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[str, str]:
+        """Return the actual response model/provider when LiteLLM exposes them."""
+        configured_provider = str(fallback_provider or "").strip()
+        normalized_configured_model = str(configured_model or "").strip()
+        if normalized_configured_model:
+            resolved_configured_model, _ = resolved_model_provider_identity(
+                normalized_configured_model,
+                model_list,
+            )
+            configured_route = str(resolved_configured_model or normalized_configured_model).strip().lower()
+            if configured_route.startswith("openai/~") or "openrouter" in configured_route:
+                configured_provider = "openrouter"
+        response_model = str(self._get_response_field(response, "model") or "").strip()
+        if response_model:
+            if "/" not in response_model:
+                return response_model, configured_provider
+            matched_provider = self._resolve_configured_response_provider(
+                normalized_configured_model,
+                response_model,
+                model_list,
+            )
+            if matched_provider:
+                return response_model, matched_provider
+            if configured_provider == "openrouter":
+                return response_model, configured_provider
+            response_provider = get_explicit_llm_channel_model_provider(response_model)
+            if response_provider:
+                return response_model, response_provider
+            return response_model, configured_provider
+        return "", configured_provider
+
+    @staticmethod
+    def _promote_error_identity(details: Any) -> Dict[str, str]:
+        """Lift route/model diagnostics from nested GenerationError details."""
+        if not isinstance(details, dict):
+            return {}
+        promoted: Dict[str, str] = {}
+        for key in ("last_model", "route_name", "last_provider"):
+            candidate = str(details.get(key) or "").strip()
+            if candidate:
+                promoted[key] = candidate
+        return promoted
+
+    def _resolve_router_failure_identity(
+        self,
+        exc: Any,
+        *,
+        route_name: str,
+        recovery_model_list: List[Dict[str, Any]],
+    ) -> Tuple[str, str]:
+        """Resolve the final Router deployment identity from a transport exception."""
+        normalized_route_name = str(route_name or "").strip()
+        origins = route_deployment_origins(recovery_model_list, normalized_route_name)
+        deployment_count = len(origins.hermes_deployments) + len(origins.non_hermes_deployments)
+        candidate_models: List[str] = []
+        candidate_provider = ""
+        seen_payloads: set[int] = set()
+
+        def _remember_model(value: Any) -> None:
+            normalized = str(value or "").strip()
+            if not normalized:
+                return
+            if deployment_count > 1 and normalized == normalized_route_name:
+                return
+            if normalized not in candidate_models:
+                candidate_models.append(normalized)
+
+        def _remember_provider(value: Any) -> None:
+            nonlocal candidate_provider
+            normalized = str(value or "").strip()
+            if normalized and not candidate_provider:
+                candidate_provider = normalized
+
+        def _walk(payload: Any) -> None:
+            if payload is None:
+                return
+            payload_id = id(payload)
+            if payload_id in seen_payloads:
+                return
+            seen_payloads.add(payload_id)
+
+            if isinstance(payload, dict):
+                params = payload.get("litellm_params")
+                if isinstance(params, dict):
+                    _remember_model(params.get("model"))
+                    _remember_provider(
+                        params.get("custom_llm_provider") or params.get("provider")
+                    )
+                for key in (
+                    "litellm_model",
+                    "response_model",
+                    "deployment_model",
+                    "model",
+                    "model_name",
+                ):
+                    _remember_model(payload.get(key))
+                _remember_provider(
+                    payload.get("llm_provider")
+                    or payload.get("litellm_provider")
+                    or payload.get("custom_llm_provider")
+                    or payload.get("provider")
+                )
+                for key in ("response", "error", "details", "metadata", "body"):
+                    _walk(payload.get(key))
+                return
+
+            for key in ("response", "error", "details", "metadata", "body"):
+                nested = getattr(payload, key, None)
+                if nested is not payload:
+                    _walk(nested)
+            _remember_provider(
+                getattr(payload, "llm_provider", None)
+                or getattr(payload, "litellm_provider", None)
+                or getattr(payload, "custom_llm_provider", None)
+                or getattr(payload, "provider", None)
+            )
+            for key in (
+                "litellm_model",
+                "response_model",
+                "deployment_model",
+                "model",
+                "model_name",
+            ):
+                _remember_model(getattr(payload, key, None))
+
+        _walk(exc)
+        for candidate_model in candidate_models:
+            resolved_model, resolved_provider = resolved_model_provider_identity(
+                candidate_model,
+                recovery_model_list,
+            )
+            normalized_route = str(resolved_model or candidate_model).strip().lower()
+            explicit_provider = get_explicit_llm_channel_model_provider(candidate_model)
+            route_text = f"{candidate_provider} {normalized_route}".strip().lower()
+            if normalized_route.startswith("openai/~") or "openrouter" in route_text:
+                return resolved_model or candidate_model, "openrouter"
+            if candidate_provider and not explicit_provider:
+                return resolved_model or candidate_model, candidate_provider
+            if resolved_provider:
+                return resolved_model or candidate_model, resolved_provider
+        return "", candidate_provider
+
     def _extract_text_blocks(self, blocks: Any, *, strip: bool = True) -> str:
         """Extract final-answer text from OpenAI-compatible content blocks.
 
@@ -2980,7 +3184,8 @@ class GeminiAnalyzer:
         stream_progress_callback: Optional[Callable[[int], None]] = None,
         response_validator: Optional[Callable[[str], None]] = None,
         audit_context: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, str, Dict[str, Any]]:
+        return_generation_result: bool = False,
+    ) -> Union[Tuple[str, str, Dict[str, Any]], GenerationResult]:
         """Compatibility wrapper around the configured generation backend."""
         preflight_error = self.get_generation_backend_config_error()
         if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
@@ -3033,6 +3238,7 @@ class GeminiAnalyzer:
             except _AllModelsFailedError:
                 raise
             except GenerationError as fallback_exc:
+                fallback_identity = self._promote_error_identity(fallback_exc.details)
                 raise GenerationError(
                     error_code=fallback_exc.error_code,
                     stage="fallback",
@@ -3042,6 +3248,7 @@ class GeminiAnalyzer:
                     provider=fallback_exc.provider,
                     details={
                         "reason": "fallback_backend_failed",
+                        **fallback_identity,
                         "primary_error": {
                             "error_code": exc.error_code.value,
                             "backend": exc.backend,
@@ -3078,6 +3285,8 @@ class GeminiAnalyzer:
                         "fallback_error": str(fallback_exc),
                     },
                 ) from fallback_exc
+        if return_generation_result:
+            return result
         return result.text, result.model, result.usage
 
     def _call_litellm_impl(
@@ -3128,10 +3337,12 @@ class GeminiAnalyzer:
         last_error = None
         last_response_text: Optional[str] = None
         last_model: Optional[str] = None
+        last_provider: Optional[str] = None
         last_usage: Dict[str, Any] = {}
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
+            last_model = model
             origins = route_deployment_origins(config.llm_model_list, model)
             model_stream = bool(stream and not origins.has_hermes)
             recovery_model_list = config.llm_model_list
@@ -3139,6 +3350,8 @@ class GeminiAnalyzer:
             if legacy_router_model_list and model == config.litellm_model and not use_channel_router:
                 recovery_model_list = legacy_router_model_list
             usage_model, usage_provider = resolved_model_provider_identity(model, recovery_model_list)
+            if usage_provider:
+                last_provider = usage_provider
 
             try:
                 def _attach_usage_audit(
@@ -3151,7 +3364,9 @@ class GeminiAnalyzer:
                             config,
                         )
                     effective_audit_context = dict(audit_context)
-                    effective_audit_context["provider"] = usage_provider
+                    effective_audit_context["provider"] = (
+                        usage.get("provider") or usage_provider
+                    )
                     effective_audit_context["transport"] = (
                         effective_audit_context.get("transport") or "litellm"
                     )
@@ -3265,7 +3480,11 @@ class GeminiAnalyzer:
                 if _stream_text is not None:
                     last_response_text = _stream_text
                     last_model = model
+                    if usage_provider:
+                        _stream_usage["provider"] = usage_provider
                     _stream_usage = _attach_usage_audit(_stream_usage, call_kwargs["messages"])
+                    if usage_provider:
+                        _stream_usage.setdefault("provider", usage_provider)
                     last_usage = _stream_usage
                     if response_validator is not None:
                         response_validator(_stream_text)
@@ -3285,26 +3504,55 @@ class GeminiAnalyzer:
                     logger=logger,
                 )
 
+                response_model, response_provider = self._resolve_response_model_provider(
+                    response,
+                    fallback_provider=usage_provider,
+                    configured_model=model,
+                    model_list=recovery_model_list,
+                )
+                actual_model = response_model or model
+                if response_model:
+                    last_model = actual_model
+                if response_provider:
+                    last_provider = response_provider
                 content = self._extract_completion_text(response)
                 if content:
                     usage_messages = None if audit_context is not None else call_kwargs["messages"]
                     usage = self._normalize_usage(
                         extract_usage_payload(response),
-                        model=usage_model or model,
-                        provider=usage_provider,
+                        model=response_model or usage_model or model,
+                        provider=response_provider or usage_provider,
                         messages=usage_messages,
                     )
+                    if response_provider or usage_provider:
+                        usage["provider"] = response_provider or usage_provider
                     if audit_context is not None:
                         usage = _attach_usage_audit(usage, call_kwargs["messages"])
+                    if response_model:
+                        usage.setdefault("response_model", response_model)
+                    if response_provider or usage_provider:
+                        usage.setdefault("provider", response_provider or usage_provider)
                     last_response_text = content
-                    last_model = model
+                    last_model = actual_model
+                    if response_provider:
+                        last_provider = response_provider
                     last_usage = usage
                     if response_validator is not None:
                         response_validator(content)
-                    return (content, model, usage)
+                    return (content, actual_model, usage)
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
+                if uses_router:
+                    router_model, router_provider = self._resolve_router_failure_identity(
+                        e,
+                        route_name=model,
+                        recovery_model_list=recovery_model_list,
+                    )
+                    if router_model:
+                        last_model = router_model
+                    if router_provider:
+                        last_provider = router_provider
                 safe_error = self._sanitize_litellm_exception_text(e, config=config, model=model)
                 logger.warning("[LiteLLM] %s failed: %s", model, safe_error)
                 last_error = RuntimeError(f"{type(e).__name__}: {safe_error}")
@@ -3314,6 +3562,7 @@ class GeminiAnalyzer:
             f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}",
             last_response_text=last_response_text,
             last_model=last_model,
+            last_provider=last_provider,
             last_usage=last_usage,
         )
 
@@ -3353,6 +3602,77 @@ class GeminiAnalyzer:
         except Exception as exc:
             logger.error("[generate_text] LLM call failed: %s", exc)
             return None
+
+    def get_generation_backend_identity(self) -> Tuple[str, str]:
+        """Return the configured primary backend identity for live diagnostics."""
+        backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+            return backend_id, backend_id
+        config = self._get_runtime_config()
+        return backend_id, str(getattr(config, "litellm_model", "") or "")
+
+    def generate_text_with_metadata(
+        self,
+        prompt: str,
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+    ) -> Optional[GenerationResult]:
+        """Generate text and return the actual backend/model used for diagnostics."""
+        try:
+            result = self._call_litellm(
+                prompt,
+                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                return_generation_result=True,
+            )
+            if not isinstance(result, GenerationResult):
+                raise TypeError("generation backend returned an invalid result")
+            if should_persist_usage_telemetry(result.usage):
+                persist_llm_usage(result.usage, result.model, call_type="market_review")
+            return result
+        except GenerationError:
+            raise
+        except _AllModelsFailedError as exc:
+            backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+            if not fallback_backend_id and backend_id == LITELLM_BACKEND_ID:
+                logger.warning(
+                    "[generate_text_with_metadata] Primary LiteLLM exhausted all configured models; "
+                    "returning empty GenerationResult so caller fallback can continue"
+                )
+                usage = dict(exc.last_usage or {})
+                if exc.last_provider:
+                    usage.setdefault("provider", exc.last_provider)
+                return GenerationResult(
+                    text="",
+                    model=exc.last_model or str(getattr(self._get_runtime_config(), "litellm_model", "") or ""),
+                    provider=exc.last_provider or backend_id,
+                    backend=backend_id,
+                    usage=usage,
+                    diagnostics={
+                        "reason": "all_models_failed",
+                        "configured_primary_backend": backend_id,
+                        "configured_fallback_backend": fallback_backend_id,
+                        "last_model": exc.last_model,
+                        "template_fallback": True,
+                    },
+                )
+            failed_backend = fallback_backend_id or backend_id
+            raise GenerationError(
+                error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                stage="fallback" if fallback_backend_id else "generation",
+                retryable=False,
+                fallbackable=False,
+                backend=failed_backend,
+                provider=exc.last_provider or failed_backend,
+                details={
+                    "reason": "all_models_failed",
+                    "configured_primary_backend": backend_id,
+                    "configured_fallback_backend": fallback_backend_id,
+                    "last_model": exc.last_model,
+                },
+            ) from exc
+        except Exception as exc:
+            logger.error("[generate_text_with_metadata] LLM call failed: %s", exc)
+            raise
 
     def analyze(
         self, 

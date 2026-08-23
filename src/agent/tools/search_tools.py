@@ -9,6 +9,7 @@ Tools:
 
 import logging
 
+from src.agent.news_evidence import record_news_evidence
 from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
@@ -91,11 +92,16 @@ def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
     response = service.search_stock_news(stock_code, stock_name, max_results=5)
 
     if not response.success:
+        # 检索已发起但失败：Agent 这一轮没有拿到新闻证据，必须记 0 而不是不记，
+        # 否则报告会把「搜过但失败」误报成「未配置搜索渠道」。
+        record_news_evidence(0)
         return {
             "query": response.query,
             "success": False,
             "error": response.error_message,
         }
+
+    record_news_evidence(len(response.results))
 
     _persist_news_response(
         stock_code=stock_code,
@@ -163,15 +169,21 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
     )
 
     if not intel_results:
+        # 多维检索已发起但整体没有结果，同样必须记 0（见 _handle_search_stock_news）。
+        record_news_evidence(0)
         return {"error": "Comprehensive intel search returned no results"}
 
     # Format into readable report
     report = service.format_intel_report(intel_results, stock_name)
 
+    # 本次真正交给 Agent 的证据条数，按维度累计后一次性记录。
+    evidence_count = 0
+
     # Also return structured data
     dimensions = {}
     for dim_name, response in intel_results.items():
         if response and response.success:
+            evidence_count += len(response.results)
             _persist_news_response(
                 stock_code=stock_code,
                 stock_name=stock_name,
@@ -190,6 +202,8 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
                     for r in response.results[:3]  # limit to 3 per dimension to save tokens
                 ],
             }
+
+    record_news_evidence(evidence_count)
 
     return {
         "report": report,

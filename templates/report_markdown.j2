@@ -10,6 +10,9 @@
 
 {% for e in enriched %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% if summary_only and e.empty_news_disclosure %}
+{{ e.empty_news_disclosure }}
+{% endif %}
 {% endfor %}
 
 ---
@@ -24,6 +27,9 @@
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
 
+{% if e.empty_news_disclosure %}
+{{ e.empty_news_disclosure }}
+{% endif %}
 {% if intel %}
 ### 📰 {{ labels.info_heading }}
 
