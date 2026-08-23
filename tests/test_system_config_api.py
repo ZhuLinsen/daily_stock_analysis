@@ -108,13 +108,14 @@ class SystemConfigApiTestCase(unittest.TestCase):
         add_auth_middleware(app)
         return app
 
-    def test_get_config_keeps_regular_secret_value_unmasked(self) -> None:
+    def test_get_config_masks_regular_secret_value(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
         item_map = {item["key"]: item for item in payload["items"]}
         self.assertIn("openai", payload["llm_model_providers"])
         self.assertIn("xai", payload["llm_model_providers"])
-        self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "secret-key-value")
-        self.assertFalse(item_map["GEMINI_API_KEY"]["is_masked"])
+        self.assertEqual(item_map["GEMINI_API_KEY"]["value"], payload["mask_token"])
+        self.assertTrue(item_map["GEMINI_API_KEY"]["is_masked"])
+        self.assertTrue(item_map["GEMINI_API_KEY"]["raw_value_exists"])
 
     def test_get_config_masks_llm_usage_hmac_secret(self) -> None:
         self._rewrite_env(

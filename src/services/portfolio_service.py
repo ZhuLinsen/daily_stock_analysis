@@ -22,6 +22,11 @@ from src.repositories.portfolio_repo import (
 
 logger = logging.getLogger(__name__)
 
+# 组合汇总统一折算到这个币种。汇率刷新必须覆盖「账户本币 → 汇总币种」这一对，
+# 否则 USD 账户永远刷不到 USD/CNY，_convert_amount 只能走 fallback_1_to_1，
+# 结果是 USD 金额被贴上 CNY 的标签（只留一个 fx_stale=True 提示）。
+PORTFOLIO_AGGREGATE_CURRENCY = "CNY"
+
 PortfolioBusyError = RepoPortfolioBusyError
 
 try:
@@ -486,7 +491,7 @@ class PortfolioService:
             account_rows = self.repo.list_accounts(include_inactive=False)
 
         accounts_payload: List[Dict[str, Any]] = []
-        aggregate_currency = "CNY"
+        aggregate_currency = PORTFOLIO_AGGREGATE_CURRENCY
         aggregate = {
             "total_cash": 0.0,
             "total_market_value": 0.0,
@@ -1490,6 +1495,12 @@ class PortfolioService:
         """Return distinct non-base currencies participating in refresh for one account."""
         base_currency = self._normalize_currency(account.base_currency)
         currencies: Set[str] = set()
+        # 汇总口径固定为 PORTFOLIO_AGGREGATE_CURRENCY，因此非本币账户必须刷到
+        # 「本币 → 汇总币种」这一对；此前只从流水里收集币种，USD 账户的流水也全是
+        # USD，于是 pair_count 恒为 0，汇总数字实际未换汇。
+        aggregate_currency = self._normalize_currency(PORTFOLIO_AGGREGATE_CURRENCY)
+        if aggregate_currency != base_currency:
+            currencies.add(aggregate_currency)
         rows = list(self.repo.list_trades(account.id, as_of=as_of_date))
         rows.extend(self.repo.list_cash_ledger(account.id, as_of=as_of_date))
         for row in rows:

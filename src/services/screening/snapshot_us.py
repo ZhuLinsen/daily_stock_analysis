@@ -13,12 +13,19 @@ rather than silently screening the US pool.
 
 import logging
 import os
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from io import StringIO
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 _SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+_SP500_FETCH_TIMEOUT = 20
+_WIKI_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 
 _DEFAULT_US_UNIVERSE = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK-B",
@@ -65,7 +72,13 @@ def fetch_us_universe(source: str = "auto") -> list[str]:
 
 
 def _fetch_sp500_tickers() -> list[str]:
-    tables = pd.read_html(_SP500_WIKI_URL)
+    # pandas 自带的 urllib 请求不带 User-Agent，Wikipedia 一律回 403，
+    # 于是 fetch_us_universe("auto") 每次都静默回落到 49 只硬编码大盘股。
+    # 自己带 UA 取回 HTML 再交给 read_html 解析。
+    request = urllib.request.Request(_SP500_WIKI_URL, headers={"User-Agent": _WIKI_USER_AGENT})
+    with urllib.request.urlopen(request, timeout=_SP500_FETCH_TIMEOUT) as response:
+        html = response.read().decode("utf-8", errors="replace")
+    tables = pd.read_html(StringIO(html))
     for tbl in tables:
         if "Symbol" in tbl.columns:
             return sorted(tbl["Symbol"].dropna().str.strip().str.replace(".", "-", regex=False).tolist())

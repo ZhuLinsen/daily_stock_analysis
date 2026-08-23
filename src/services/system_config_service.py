@@ -481,7 +481,15 @@ class SystemConfigService:
             field_schema = schema_by_key[key]
             display_value = self._resolve_display_value(raw_value, field_schema, raw_value_exists)
             is_masked = False
-            if key in self._SERVER_MASKED_CONFIG_KEYS and display_value:
+            if display_value and (
+                key in self._SERVER_MASKED_CONFIG_KEYS
+                or bool(field_schema.get("is_sensitive", False))
+            ):
+                # 设置页每次加载都会读这个接口，此前只有 _SERVER_MASKED_CONFIG_KEYS
+                # 里的 4 个键被掩码，其余 40 多个 is_sensitive 字段（各家 LLM Key、
+                # 搜索 Key、Webhook、邮箱密码）都是明文回传。写入侧本就支持用 mask
+                # token 占位保留原值（config_manager.apply_updates 的 skipped_masked），
+                # 所以这里可以安全地统一掩码。
                 display_value = mask_token
                 is_masked = True
             item: Dict[str, Any] = {
@@ -759,6 +767,18 @@ class SystemConfigService:
             content=content,
             reload_now=reload_now,
         )
+
+    def _saved_channel_api_key(self, channel_name: str) -> str:
+        """Return the persisted API key for one named LLM channel, or empty string."""
+        normalized = str(channel_name or "").strip().upper()
+        if not normalized:
+            return ""
+        saved_map = self._manager.read_config_map()
+        for suffix in ("API_KEY", "API_KEYS"):
+            value = str(saved_map.get(f"LLM_{normalized}_{suffix}") or "").strip()
+            if value and not is_masked_secret_placeholder(value):
+                return value
+        return ""
 
     def _resolve_hermes_saved_secret(
         self,
@@ -1223,6 +1243,10 @@ class SystemConfigService:
         channel_name = name.strip() or "channel"
         resolved_api_surface = normalize_llm_channel_api_surface(api_surface)
         generation_stage = "responses" if resolved_api_surface == "responses" else "chat_completion"
+        if not is_reserved_hermes_name(channel_name) and is_masked_secret_placeholder(api_key):
+            # get_config 现在对 is_sensitive 字段统一回传 mask token，设置页把它原样
+            # 提交回来时代表「沿用已保存的密钥」，与写入侧的占位语义保持一致。
+            api_key = self._saved_channel_api_key(channel_name)
         resolved_secret, secret_error, redaction_values = self._resolve_hermes_saved_secret(
             channel_name=channel_name,
             protocol=protocol,

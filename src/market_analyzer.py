@@ -57,6 +57,26 @@ _CHINESE_SECTION_PATTERNS = {
 }
 
 
+# 波动率指数与风险偏好反向，混进「主要指数平均涨跌幅」会让方向反转：
+# 实测美股三大指数 -0.69/-0.94/-1.17%、VIX +8% 时算出 +1.32%，
+# index_score = 50 + avg*12 被抬到 66，普跌日被判成「偏暖」。
+_VOLATILITY_INDEX_CODES = {"VIX", "^VIX", "VXN", "^VXN", "VHSI", "^VHSI"}
+
+
+def _is_volatility_index(index: "MarketIndex") -> bool:
+    """Return True for volatility gauges, which invert the risk-appetite reading."""
+    return str(getattr(index, "code", "") or "").strip().upper() in _VOLATILITY_INDEX_CODES
+
+
+def _directional_index_changes(indices) -> List[float]:
+    """Collect index changes that move with risk appetite (volatility gauges excluded)."""
+    return [
+        idx.change_pct
+        for idx in (indices or [])
+        if idx.change_pct is not None and not _is_volatility_index(idx)
+    ]
+
+
 @dataclass
 class MarketIndex:
     """大盘指数数据"""
@@ -1311,7 +1331,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，亏钱效应较强")
             else:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，市场分化")
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        index_changes = _directional_index_changes(overview.indices)
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"主要指数平均涨跌幅 {avg_change:+.2f}%")
@@ -1334,7 +1354,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"advancers ratio {up_ratio:.0%}, downside pressure dominates")
             else:
                 reasons.append(f"advancers ratio {up_ratio:.0%}, breadth is mixed")
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        index_changes = _directional_index_changes(overview.indices)
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"average major-index change {avg_change:+.2f}%")
@@ -1513,7 +1533,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
 
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        index_changes = _directional_index_changes(overview.indices)
         index_available = bool(overview.indices and index_changes)
         index_score = 50
         if index_available:

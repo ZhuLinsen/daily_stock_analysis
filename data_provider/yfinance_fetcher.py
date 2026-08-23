@@ -323,14 +323,40 @@ class YfinanceFetcher(BaseFetcher):
         hist = ticker.history(period='2d')
         if hist.empty:
             return None
-        today_row = hist.iloc[-1]
-        prev_row = hist.iloc[-2] if len(hist) > 1 else today_row
+        # Yahoo 有时只为最新交易日回填 volume，OHLC 全部为 NaN；
+        # 直接取 iloc[-1] 会把 NaN 写进大盘复盘报告，先剔除这类无效行。
+        valid_hist = hist.dropna(subset=['Close'])
+        if valid_hist.empty:
+            logger.warning(f"[Yfinance] {name} 近两日 K 线均无有效收盘价，跳过")
+            return None
+        today_row = valid_hist.iloc[-1]
+        prev_row = valid_hist.iloc[-2] if len(valid_hist) > 1 else today_row
         price = float(today_row['Close'])
         prev_close = float(prev_row['Close'])
-        change = price - prev_close
-        change_pct = (change / prev_close) * 100 if prev_close else 0
+        open_price = float(today_row['Open'])
         high = float(today_row['High'])
         low = float(today_row['Low'])
+        volume = float(today_row['Volume'])
+        # 出现以下两种情况时用 fast_info 补回当日行情（与实时行情链路口径一致），
+        # 拿不到就退回历史数据，至少保证报告里不出现 NaN：
+        #   1. 最新交易日的 OHLC 被剔除；
+        #   2. 只有一根有效 K 线（昨收会退化成今收，涨跌幅恒为 0，如 ^VIX）。
+        if len(valid_hist) < len(hist) or len(valid_hist) < 2:
+            snapshot = self._latest_quote_from_fast_info(ticker)
+            if snapshot:
+                price = snapshot['price']
+                prev_close = snapshot['prev_close'] if snapshot['prev_close'] is not None else price
+                open_price = snapshot['open'] if snapshot['open'] is not None else open_price
+                high = snapshot['high'] if snapshot['high'] is not None else high
+                low = snapshot['low'] if snapshot['low'] is not None else low
+                volume = snapshot['volume'] if snapshot['volume'] is not None else volume
+                logger.debug(f"[Yfinance] {name} 最新交易日 OHLC 缺失，已用 fast_info 补全")
+            else:
+                logger.warning(
+                    f"[Yfinance] {name} 最新交易日 OHLC 缺失且 fast_info 不可用，已回退到上一交易日数据"
+                )
+        change = price - prev_close
+        change_pct = (change / prev_close) * 100 if prev_close else 0
         # 振幅 = (最高 - 最低) / 昨收 * 100
         amplitude = ((high - low) / prev_close * 100) if prev_close else 0
         return {
@@ -339,13 +365,47 @@ class YfinanceFetcher(BaseFetcher):
             'current': price,
             'change': change,
             'change_pct': change_pct,
-            'open': float(today_row['Open']),
+            'open': open_price,
             'high': high,
             'low': low,
             'prev_close': prev_close,
-            'volume': float(today_row['Volume']),
+            'volume': volume,
             'amount': 0.0,  # Yahoo Finance 不提供准确成交额
             'amplitude': amplitude,
+        }
+
+    def _latest_quote_from_fast_info(self, ticker) -> Optional[Dict[str, Optional[float]]]:
+        """用 fast_info 兜底获取当前交易日行情（Yahoo 未回填当日 OHLC 时使用）。"""
+        try:
+            info = ticker.fast_info
+        except Exception as exc:
+            logger.debug(f"[Yfinance] fast_info 读取失败: {exc}")
+            return None
+        if info is None:
+            return None
+
+        def _read(*names: str) -> Optional[float]:
+            for field in names:
+                value = _safe_float(getattr(info, field, None))
+                if value is None and hasattr(info, 'get'):
+                    try:
+                        value = _safe_float(info.get(field))
+                    except Exception:
+                        value = None
+                if value is not None:
+                    return value
+            return None
+
+        price = _read('lastPrice', 'last_price')
+        if price is None or price <= 0:
+            return None
+        return {
+            'price': price,
+            'prev_close': _read('previousClose', 'previous_close'),
+            'open': _read('open'),
+            'high': _read('dayHigh', 'day_high'),
+            'low': _read('dayLow', 'day_low'),
+            'volume': _read('lastVolume', 'last_volume'),
         }
 
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:

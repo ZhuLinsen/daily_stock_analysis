@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [修复] 系统配置读取接口（`GET /api/v1/system/config`）现对所有 `is_sensitive` 字段统一返回掩码：此前只有 4 个写死的键走服务端掩码，其余 40 多个敏感字段（各家 LLM API Key、搜索 Key、Webhook 地址与密钥、邮箱密码）在设置页每次加载时都以明文回传。写入侧原本就支持用 mask token 占位保留原值，本次让读取侧与之对齐；LLM 渠道连接测试收到 mask token 时回落到已保存的密钥，设置页「测试渠道」按钮行为不变。
+- [修复] 大盘复盘的「主要指数平均涨跌幅」与盘面信号打分不再把 VIX 等波动率指数计入：波动率与风险偏好反向，此前美股三大指数分别 -0.69%/-0.94%/-1.17% 而 VIX +8% 的普跌交易日会被算成 +1.32%，`index_score = 50 + avg*12` 抬到 66，最终给出「偏暖」结论。波动率指数仍照常显示在报表中，只是不参与方向性均值。
+- [修复] Agent Chat 流式接口（`POST /api/v1/agent/chat/stream`）新增 20 秒 SSE 心跳（注释行，前端无需改动），避免单个编排阶段长时间无工具事件时被 CDN/反代按空闲连接断开；300 秒空闲预算语义不变，Codex 后端仍由其自身 deadline 主导。
+- [修复] 美股选股股票池不再静默退化：`_fetch_sp500_tickers` 直接调用 `pd.read_html(url)` 时不带 User-Agent，被 Wikipedia 返回 403，导致 `fetch_us_universe("auto")` 每次都回落到 49 只硬编码大盘股。改为自带 UA 取回 HTML 再交给 `read_html` 解析，实测恢复到 503 只。
+- [修复] 组合汇率刷新补上「账户本币 → 汇总币种」这一对：此前只收集与账户本币不同的流水币种，USD 账户的流水也全是 USD，于是 `pair_count` 恒为 0、USD/CNY 汇率永不获取，`_convert_amount` 只能走 1:1 兜底，汇总金额实际是未换汇的原币值却贴着 CNY 标签。
+- [修复] 深度研究接口（`POST /api/v1/agent/research`）在所有子问题都返回空内容时不再报成功：子问题 agent 撞到步数上限会返回空 `content`，而合成阶段只拼接有内容的条目，此前会带着空的 Research Findings 段调用模型、拿回一份「研究材料缺失」的正文，却仍以 `success: true` 返回。现改为返回 `success: false` 与 `error: no_usable_findings`，`findings_count` 也只统计可用发现。
 
 ## [3.31.0] - 2026-08-23
 

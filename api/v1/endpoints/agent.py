@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# SSE 保活：心跳间隔必须明显小于 Cloudflare 约 100 秒的静默断流阈值；
+# 空闲预算保持原先的 300 秒语义（收到任何事件即重置）。
+_STREAM_HEARTBEAT_SECONDS = 20.0
+_STREAM_IDLE_TIMEOUT_SECONDS = 300.0
+
+
 _ACTIVE_CODEX_STREAMS: Dict[str, threading.Event] = {}
 _ACTIVE_CODEX_STREAMS_LOCK = threading.Lock()
 
@@ -604,19 +610,31 @@ async def agent_chat_stream(
             # Backend execution starts only after the accepted event has been
             # yielded, so Web state and server persistence share one commit point.
             fut = loop.run_in_executor(None, run_sync, executor, turn)
+            idle_seconds = 0.0
             while True:
                 try:
-                    if backend_id == "codex_app_server":
-                        # Codex owns one authoritative backend deadline.  A
-                        # second API timeout would race it and could emit a
-                        # terminal event before process cleanup finishes.
-                        event = await queue.get()
-                    else:
-                        event = await asyncio.wait_for(queue.get(), timeout=300.0)
+                    event = await asyncio.wait_for(
+                        queue.get(), timeout=_STREAM_HEARTBEAT_SECONDS
+                    )
                 except asyncio.TimeoutError:
-                    event = {"type": "error", "message": "分析超时"}
-                    yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
-                    break
+                    # Cloudflare 会断开静默超过约 100 秒的流，而单个编排阶段实测
+                    # 出现过 111 秒无工具调用的静默（1 步直接生成）。SSE 注释行不会
+                    # 被 EventSource 当成事件，补心跳保活无需前端配合。
+                    idle_seconds += _STREAM_HEARTBEAT_SECONDS
+                    # Codex owns one authoritative backend deadline.  A second
+                    # API timeout would race it and could emit a terminal event
+                    # before process cleanup finishes, so only the default
+                    # backend enforces the idle budget here.
+                    if (
+                        backend_id != "codex_app_server"
+                        and idle_seconds >= _STREAM_IDLE_TIMEOUT_SECONDS
+                    ):
+                        event = {"type": "error", "message": "分析超时"}
+                        yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                        break
+                    yield ": heartbeat\n\n"
+                    continue
+                idle_seconds = 0.0
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                 if event.get("type") in ("done", "error"):
                     break

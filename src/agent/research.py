@@ -177,22 +177,37 @@ class ResearchAgent:
         if progress_callback:
             progress_callback({"type": "research_phase", "phase": "synthesize", "message": "Synthesising research report..."})
 
-        report = (
-            self._synthesise_report(
-                query,
-                all_findings,
-                context,
-                timeout_seconds=self._remaining_timeout_seconds(started_at, timeout_seconds),
+        # 子问题 agent 撞到步数上限时会返回空 content，而 _synthesise_report 只拼接
+        # 有 content 的条目（见 findings_text）。此前只判断 all_findings 非空，于是
+        # 空内容也会走合成，模型收到空的 Research Findings 段、输出一份「研究材料缺失」，
+        # 却仍以 success=True 返回。这里按「可用发现」判断，并让失败显式暴露。
+        usable_findings = [
+            finding for finding in all_findings
+            if str(finding.get("content") or "").strip()
+        ]
+        if not usable_findings:
+            return ResearchResult(
+                success=False,
+                report="",
+                sub_questions=questions,
+                findings_count=0,
+                total_tokens=tokens_used,
+                duration_s=round(time.monotonic() - started_at, 2),
+                error="no_usable_findings",
             )
-            if all_findings
-            else {"content": "No findings gathered.", "tokens": 0}
+
+        report = self._synthesise_report(
+            query,
+            usable_findings,
+            context,
+            timeout_seconds=self._remaining_timeout_seconds(started_at, timeout_seconds),
         )
         tokens_used += report.get("tokens", 0)
         if report.get("timed_out"):
             return self._build_timeout_result(
                 query=query,
                 questions=questions,
-                findings_count=len(all_findings),
+                findings_count=len(usable_findings),
                 total_tokens=tokens_used,
                 duration_s=round(time.monotonic() - started_at, 2),
                 timeout_seconds=timeout_seconds,
@@ -204,7 +219,7 @@ class ResearchAgent:
             success=not report.get("error"),
             report=report.get("content", ""),
             sub_questions=questions,
-            findings_count=len(all_findings),
+            findings_count=len(usable_findings),
             total_tokens=tokens_used,
             duration_s=duration,
             error=report.get("error"),

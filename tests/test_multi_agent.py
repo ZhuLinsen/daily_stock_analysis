@@ -3209,7 +3209,13 @@ class TestResearchAgentFilteredRegistry(unittest.TestCase):
 
         agent = ResearchAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
         with patch.object(agent, "_decompose_query", return_value={"questions": ["Q1"], "tokens": 3}), \
-             patch.object(agent, "_research_sub_question", return_value={"summary": "done", "tokens": 7}), \
+             patch.object(
+                 agent,
+                 "_research_sub_question",
+                 # 与 _research_sub_question 的真实返回保持一致（含 content），
+                 # 否则会被「无可用发现」短路，测不到本用例要验证的合成失败冒泡。
+                 return_value={"question": "Q1", "content": "done", "tokens": 7, "success": True},
+             ), \
              patch.object(agent, "_synthesise_report", return_value={"content": "fallback", "tokens": 5, "error": "boom"}):
             result = agent.research("分析 600519")
 
