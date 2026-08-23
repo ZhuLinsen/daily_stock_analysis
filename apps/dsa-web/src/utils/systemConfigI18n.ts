@@ -232,7 +232,7 @@ const fieldDescriptionMap: Record<string, string> = {
   NEWS_MAX_AGE_DAYS: '新闻最大时效上限。实际窗口 = min(策略档位天数, NEWS_MAX_AGE_DAYS)。例如 ultra_short + 7 仍为 1 天。',
   REALTIME_SOURCE_PRIORITY: '按逗号分隔填写数据源调用优先级。',
   TICKFLOW_API_KEY: '用于接入 TickFlow 数据服务的 API 密钥。',
-  TICKFLOW_PRIORITY: '控制 TickFlow 在 A 股日 K 数据源回退链中的尝试顺序；不控制实时行情，实时行情顺序由 REALTIME_SOURCE_PRIORITY 决定。',
+  TICKFLOW_PRIORITY: '控制 TickFlow 在普通 A 股日 K 回退链中的尝试顺序；已登记指数使用 Tencent → AkShare → TickFlow → YFinance 固定链，不读取本配置；实时行情顺序由 REALTIME_SOURCE_PRIORITY 决定。',
   TICKFLOW_KLINE_ADJUST: '控制 TickFlow 日 K 线的复权口径，默认 none 保持未复权技术指标基线。',
   TICKFLOW_BATCH_DAILY_ENABLED: '批量分析前是否使用 TickFlow 批量日 K 接口预热缓存；权限不足时会继续回退。',
   TICKFLOW_BATCH_SIZE: '控制 TickFlow 日 K 和实时行情批量请求的单批最大标的数。',

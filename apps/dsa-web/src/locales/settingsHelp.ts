@@ -286,10 +286,10 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.data_source.TICKFLOW_PRIORITY': {
     title: 'TickFlow 日 K 优先级',
-    summary: '控制 TickFlow 在 A 股日 K 数据源回退链中的位置。',
-    usage: '填写整数；数字越小越早尝试，默认 2。未配置 TICKFLOW_API_KEY 时该优先级不会生效。',
-    valueNotes: ['该设置只影响日 K 等通用数据源回退链，不控制实时行情源顺序。'],
-    impact: ['影响 A 股日 K 获取的数据源尝试顺序；实时行情仍由 REALTIME_SOURCE_PRIORITY 单独决定。'],
+    summary: '控制 TickFlow 在普通 A 股日 K 数据源回退链中的位置。',
+    usage: '填写整数；数字越小越早尝试，默认 2。未配置 TICKFLOW_API_KEY 时该优先级不会生效；已登记指数固定按 Tencent → AkShare → TickFlow → YFinance 降级，不读取本配置。',
+    valueNotes: ['该设置只影响普通 A 股日 K 等通用数据源回退链，不控制已登记指数或实时行情源顺序。'],
+    impact: ['影响普通 A 股日 K 获取的数据源尝试顺序；已登记指数和实时行情均使用各自独立顺序。'],
     notes: ['如果希望优先使用 TickFlow 日 K，可以适当调低该值；如果希望实时行情优先使用 TickFlow，请在 REALTIME_SOURCE_PRIORITY 中显式加入 tickflow。'],
   },
   'settings.data_source.TICKFLOW_KLINE_ADJUST': {
@@ -1492,10 +1492,10 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.data_source.TICKFLOW_PRIORITY': {
     title: 'TickFlow Daily K-line Priority',
-    summary: 'Controls where TickFlow sits in the A-share daily K-line provider fallback chain.',
-    usage: 'Use an integer. Lower numbers are tried earlier. The default is 2. This has no effect unless TICKFLOW_API_KEY is configured.',
-    valueNotes: ['This setting only affects the daily K-line/general data-source fallback chain; it does not control realtime quote provider order.'],
-    impact: ['Affects provider order for A-share daily K-line fetching. Realtime quotes are still controlled separately by REALTIME_SOURCE_PRIORITY.'],
+    summary: 'Controls where TickFlow sits in the generic A-share daily K-line provider fallback chain.',
+    usage: 'Use an integer. Lower numbers are tried earlier. The default is 2. This has no effect unless TICKFLOW_API_KEY is configured. Registered indices use the fixed Tencent → AkShare → TickFlow → YFinance chain and ignore this setting.',
+    valueNotes: ['This setting only affects generic A-share daily K-lines; it does not control registered-index or realtime-quote provider order.'],
+    impact: ['Affects provider order for generic A-share daily K-line fetching. Registered indices and realtime quotes use separate ordering.'],
     notes: ['Lower this value only if you want TickFlow daily K-lines to be tried earlier. Add tickflow to REALTIME_SOURCE_PRIORITY when you want TickFlow realtime quotes in the realtime fallback chain.'],
   },
   'settings.data_source.TICKFLOW_KLINE_ADJUST': {

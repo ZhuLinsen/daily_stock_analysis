@@ -794,7 +794,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "TICKFLOW_PRIORITY": {
         "title": "TickFlow Daily K-line Priority",
-        "description": "Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier; realtime quote order is controlled separately by REALTIME_SOURCE_PRIORITY.",
+        "description": "Priority for TickFlow in the generic A-share daily K-line route. Registered indices use the fixed Tencent -> AkShare -> TickFlow -> YFinance chain and ignore this setting; realtime quote order is controlled separately by REALTIME_SOURCE_PRIORITY.",
         "category": "data_source",
         "data_type": "integer",
         "ui_control": "number",
