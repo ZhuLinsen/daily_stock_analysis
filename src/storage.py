@@ -134,15 +134,23 @@ class StockDaily(Base):
     
     # 数据来源
     data_source = Column(String(50))  # 记录数据来源（如 AkshareFetcher）
-    
+
+    # canonical_id：Phase 1 前缀格式的稳定分析目标键（如 sh000300 / sh600519 / AAPL）。
+    # Expand-Contract PR2：仅加列 + 双写，读路径仍用 ``code`` 列；PR3/PR4 再切读路径。
+    # 可空：存量行由自愈式迁移 backfill；新写由 ``save_daily_data`` 推导或显式传入。
+    # 普通索引（非唯一）：历史别名行可能共享同一 canonical_id + date，唯一索引会撞。
+    canonical_id = Column(String(32), nullable=True)
+
     # 更新时间
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-    
+
     # 唯一约束：同一股票同一日期只能有一条数据
     __table_args__ = (
         UniqueConstraint('code', 'date', name='uix_code_date'),
         Index('ix_code_date', 'code', 'date'),
+        # 普通索引：允许历史别名行（同 canonical_id + date）共存（AC 9）。
+        Index('ix_stock_daily_canonical_id', 'canonical_id'),
     )
     
     def __repr__(self):
@@ -165,6 +173,7 @@ class StockDaily(Base):
             'ma20': self.ma20,
             'volume_ratio': self.volume_ratio,
             'data_source': self.data_source,
+            'canonical_id': self.canonical_id,
         }
 
 
@@ -1372,6 +1381,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
+            self._ensure_stock_daily_canonical_id()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1598,6 +1608,221 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             stats["non_object_count"],
             stats["invalid_profile_count"],
             stats["skipped_existing_profile_count"],
+        )
+
+    def _ensure_stock_daily_canonical_id(self) -> None:
+        """Self-healing migration: add + backfill the ``canonical_id`` column.
+
+        Expand-Contract PR2 (issue #2207). Mirrors the
+        ``_ensure_decision_signal_profile_schema`` 6-step pattern:
+
+        1. SQLite-only (non-SQLite engines rely on ``Base.metadata.create_all``).
+        2. inspect() whether the ``stock_daily`` table exists at all.
+        3. inspect() whether the ``canonical_id`` column already exists (idempotent).
+        4. ``ALTER TABLE ... ADD COLUMN canonical_id VARCHAR(32)`` (nullable —
+           SQLite can't add NOT NULL/UNIQUE columns via ALTER).
+         5. Backfill existing rows with ``_derive_canonical_id(code)`` in
+            id-batched chunks (5000/batch), using ``WHERE canonical_id IS NULL``
+            so re-runs are safe. ``_derive_canonical_id`` is index-aware: a
+            bare registered index code (e.g. ``000300``) resolves to the index
+            canonical_id (``sh000300``) rather than the stock-path key
+            (``sz000300``), preventing same-index split across buckets.
+            Function-level lazy import keeps the storage layer free of a
+            circular import on ``src.services.stock_list_parser``.
+        6. Create a plain (non-unique) index ``ix_stock_daily_canonical_id`` so
+           historical alias rows sharing one canonical_id + date can coexist (AC 9).
+
+        The ``(code, date)`` unique constraint ``uix_code_date`` is untouched —
+        read paths keep using the ``code`` column (AC 4).
+        """
+
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(StockDaily.__tablename__):
+            return
+
+        try:
+            existing = {
+                column["name"]
+                for column in inspector.get_columns(StockDaily.__tablename__)
+            }
+        except Exception as exc:
+            logger.error(
+                "[StockDaily] failed to inspect canonical_id column; "
+                "canonical_id migration cannot continue safely: %s",
+                exc,
+            )
+            raise
+
+        if "canonical_id" not in existing:
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {StockDaily.__tablename__} "
+                        "ADD COLUMN canonical_id VARCHAR(32)"
+                    )
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, "canonical_id"):
+                    raise
+
+        self._backfill_stock_daily_canonical_id()
+        self._ensure_stock_daily_canonical_id_index()
+
+    def _ensure_stock_daily_canonical_id_index(self) -> None:
+        """Create the plain ``ix_stock_daily_canonical_id`` index (idempotent)."""
+
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                f"CREATE INDEX IF NOT EXISTS ix_stock_daily_canonical_id "
+                f"ON {StockDaily.__tablename__} (canonical_id)"
+            )
+
+        try:
+            actual_indexes = {
+                index["name"]: index["column_names"]
+                for index in inspect(self._engine).get_indexes(
+                    StockDaily.__tablename__
+                )
+            }
+        except Exception as exc:
+            logger.error(
+                "[StockDaily] failed to inspect canonical_id index; "
+                "canonical_id migration cannot verify index safely: %s",
+                exc,
+            )
+            raise
+        if actual_indexes.get("ix_stock_daily_canonical_id") != ["canonical_id"]:
+            raise RuntimeError(
+                "canonical_id index verification failed: "
+                f"index=ix_stock_daily_canonical_id "
+                f"expected=['canonical_id'] "
+                f"actual={actual_indexes.get('ix_stock_daily_canonical_id')}"
+            )
+
+    def _derive_canonical_id(self, code: str) -> Optional[str]:
+        """Derive a Phase 1 ``canonical_id`` for ``code``, index-aware.
+
+        Closes review blocker ``OR-COR-4f9ffc38``: when a bare code hits the
+        index registry (``parse_analysis_target(code).matched_index is not
+        None``) we unify to the index's ``canonical_id`` so the same
+        underlying index doesn't split across buckets — e.g. bare ``000300``
+        resolves to ``sh000300`` (the CSI-300 index canonical_id) instead of
+        ``sz000300`` (the stock-path canonical_id the classifier would
+        synthesise for a 6-digit ``0``-prefixed code). When no index is
+        matched, the parser's stock/explicit-index ``canonical_id`` is
+        returned unchanged.
+
+        Lazy-imports ``parse_analysis_target`` inside the method (the parser
+        module transitively touches the storage layer) and degrades to
+        ``None`` on import failure or empty canonical_id so callers can
+        persist NULL (D1) without raising.
+        """
+        try:
+            from src.services.stock_list_parser import parse_analysis_target
+        except Exception as exc:
+            logger.warning(
+                "_derive_canonical_id: cannot import parse_analysis_target "
+                "for code=%r: %s — returning None",
+                code, exc,
+            )
+            return None
+        target = parse_analysis_target(code)
+        if target.matched_index is not None:
+            return target.matched_index.canonical_id or None
+        return target.canonical_id or None
+
+    def _backfill_stock_daily_canonical_id(self) -> None:
+        """Backfill ``canonical_id`` for existing rows using the Phase 1 parser.
+
+        Idempotent: only rows with ``canonical_id IS NULL`` are considered, and
+        each UPDATE is guarded by the same null condition. Backfilled in
+        id-ordered batches of 5000 so large legacy tables stay within SQLite's
+        per-statement limits.
+
+        The batch scan advances a monotonic ``id`` cursor (not "re-select NULL
+        rows") so a row whose derivation fails can never trap this loop: it is
+        skipped past in this run and naturally retried on next startup while
+        its ``canonical_id`` is still NULL.
+
+        Derivation is index-aware via :meth:`_derive_canonical_id` so a bare
+        index code (e.g. ``000300``) backfills to the index canonical_id
+        (``sh000300``) rather than the stock-path canonical_id (``sz000300``).
+        """
+
+        _BATCH_SIZE = 5000
+        total_backfilled = 0
+        total_skipped = 0
+        last_id = 0
+
+        while True:
+            with self._engine.begin() as connection:
+                rows = connection.execute(
+                    text(
+                        f"SELECT id, code FROM {StockDaily.__tablename__} "
+                        "WHERE canonical_id IS NULL AND id > :last_id "
+                        f"ORDER BY id LIMIT {_BATCH_SIZE}"
+                    ),
+                    {"last_id": last_id},
+                ).fetchall()
+
+            if not rows:
+                break
+
+            with self._engine.begin() as connection:
+                for row_id, code in rows:
+                    # Always advance the cursor — even when this row's
+                    # derivation fails below — so the batch scan terminates.
+                    last_id = row_id
+                    derived = None
+                    try:
+                        derived = self._derive_canonical_id(code)
+                    except Exception as exc:
+                        # D1 decision: parser failure degrades to NULL rather
+                        # than crashing the whole migration. The row keeps
+                        # ``canonical_id IS NULL`` and will be retried on the
+                        # next startup; we don't raise and don't re-loop here.
+                        logger.warning(
+                            "[StockDaily] canonical_id derivation failed for "
+                            "code=%r (id=%s): %s — leaving NULL",
+                            code, row_id, exc,
+                        )
+                        total_skipped += 1
+                        continue
+
+                    if not derived:
+                        # Parser returned an empty canonical_id (None / '')
+                        # without raising — nothing meaningful to write. Skip
+                        # so the row is not falsely counted as backfilled and
+                        # no empty string is persisted as a stable key.
+                        total_skipped += 1
+                        continue
+
+                    result = connection.execute(
+                        text(
+                            f"UPDATE {StockDaily.__tablename__} "
+                            "SET canonical_id = :canonical_id "
+                            "WHERE id = :row_id AND canonical_id IS NULL"
+                        ),
+                        {"canonical_id": derived, "row_id": row_id},
+                    )
+                    if result.rowcount == 1:
+                        total_backfilled += 1
+                    elif result.rowcount == 0:
+                        # Lost the race with a concurrent writer — safe to skip,
+                        # the row is now non-null.
+                        total_skipped += 1
+                    else:
+                        raise RuntimeError(
+                            "canonical_id backfill updated an unexpected number "
+                            f"of rows for id={row_id}: {result.rowcount}"
+                        )
+
+        logger.info(
+            "[StockDaily] canonical_id backfill stats: backfilled_count=%s "
+            "skipped_count=%s",
+            total_backfilled,
+            total_skipped,
         )
 
     def _ensure_intelligence_items_unique_index(self) -> None:
@@ -2931,7 +3156,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         self, 
         df: pd.DataFrame, 
         code: str,
-        data_source: str = "Unknown"
+        data_source: str = "Unknown",
+        canonical_id: Optional[str] = None,
     ) -> int:
         """
         保存日线数据到数据库
@@ -2940,11 +3166,17 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         - 按 `(code, date)` 做批量 UPSERT，已存在记录会覆盖更新
         - 同一批次内若存在重复日期，以最后一条记录为准
         - SQLite 分支按 chunk 写入以避免绑定参数上限
+        - ``canonical_id``（Expand-Contract PR2）：显式传入则双写；
+          未传（``None``）时用 ``_derive_canonical_id(code)`` 延迟推导
+          （index-aware：裸指数码命中注册表时统一到指数 canonical_id），
+          推导失败写 NULL 降级（D1）。
         
         Args:
             df: 包含日线数据的 DataFrame
             code: 股票代码
             data_source: 数据来源名称
+            canonical_id: Phase 1 前缀格式稳定键（如 ``sh000300``）；为 ``None``
+                时自动推导。
             
         Returns:
             本次实际新增的记录数（不含更新）
@@ -2952,6 +3184,23 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         if df is None or df.empty:
             logger.warning(f"保存数据为空，跳过 {code}")
             return 0
+
+        # D1: canonical_id=None → derive via the Phase 1 parser; on failure
+        # degrade to NULL (do NOT raise — read path still uses ``code``).
+        # Empty string is treated like None (never persisted as a key).
+        # Derivation is index-aware (OR-COR-4f9ffc38): a bare index code
+        # (e.g. ``000300``) resolves to the index canonical_id (``sh000300``)
+        # rather than the stock-path canonical_id (``sz000300``).
+        if not canonical_id:
+            try:
+                canonical_id = self._derive_canonical_id(code)
+            except Exception as exc:
+                logger.warning(
+                    "save_daily_data: canonical_id derivation failed for "
+                    "code=%r: %s — writing NULL",
+                    code, exc,
+                )
+                canonical_id = None
 
         now = datetime.now()
         records_by_date: Dict[date, Dict[str, Any]] = {}
@@ -2972,6 +3221,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 'ma20': self._normalize_sql_value(row.get('ma20')),
                 'volume_ratio': self._normalize_sql_value(row.get('volume_ratio')),
                 'data_source': data_source,
+                'canonical_id': canonical_id,
                 'created_at': now,
                 'updated_at': now,
             }
@@ -2985,7 +3235,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         def _write(session: Session) -> int:
             if self._is_sqlite_engine:
                 # SQLite has a per-statement bind-parameter limit (commonly 999).
-                # Each record has ~15 columns, so chunk upserts to stay within bounds.
+                # Each record has ~17 columns, so chunk upserts to stay within bounds.
                 _SQLITE_CHUNK = 50
                 # `_run_write_transaction()` opens SQLite writes with
                 # `BEGIN IMMEDIATE`, so existence checks and upsert execute
@@ -3029,6 +3279,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                                 'ma20': excluded.ma20,
                                 'volume_ratio': excluded.volume_ratio,
                                 'data_source': excluded.data_source,
+                                # D1 degrade: never overwrite a previously
+                                # backfilled non-NULL canonical_id with NULL.
+                                'canonical_id': func.coalesce(
+                                    excluded.canonical_id,
+                                    StockDaily.canonical_id,
+                                ),
                                 'updated_at': excluded.updated_at,
                             },
                         )
@@ -3065,6 +3321,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     existing.ma20 = record['ma20']
                     existing.volume_ratio = record['volume_ratio']
                     existing.data_source = record['data_source']
+                    if record['canonical_id'] is not None:
+                        existing.canonical_id = record['canonical_id']
                     existing.updated_at = record['updated_at']
                 return new_count
 

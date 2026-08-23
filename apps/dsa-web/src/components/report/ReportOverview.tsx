@@ -304,6 +304,14 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
               <p className="mt-2 max-w-[62ch] whitespace-pre-wrap text-left text-[15px] leading-7 text-foreground">
                 {summary.analysisSummary || text.noAnalysisSummary}
               </p>
+              {details?.emptyNewsDisclosure ? (
+                <p
+                  role="note"
+                  className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-left text-sm leading-6 text-foreground"
+                >
+                  {details.emptyNewsDisclosure}
+                </p>
+              ) : null}
             </div>
           </Card>
 

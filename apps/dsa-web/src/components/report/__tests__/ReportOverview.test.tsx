@@ -288,6 +288,21 @@ describe('ReportOverview', () => {
     expect(screen.queryByText('板块联动')).not.toBeInTheDocument();
   });
 
+  it('renders the persisted empty-news disclosure beside the core conclusion', () => {
+    render(
+      <ReportOverview
+        meta={baseMeta}
+        summary={baseSummary}
+        details={{
+          emptyNewsDisclosure: '⚠️ 未配置搜索渠道，本次分析未纳入新闻面证据。',
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('note')).toHaveTextContent('未配置搜索渠道');
+    expect(screen.getByRole('note')).toHaveTextContent('未纳入新闻面证据');
+  });
+
   it('fails open on malformed ranking payloads', () => {
     render(
       <ReportOverview
