@@ -69,44 +69,123 @@ def _run_scheduled_analysis_process(
         try:
             os.setsid()
         except OSError:
-            pass
+            # Being a session leader already is equivalent to success. Any
+            # other failure would make process-tree cleanup unsafe, so fail
+            # before analysis can create descendants.
+            if os.getsid(0) != os.getpid():
+                raise
     service = RuntimeSchedulerService(schedule_args_overrides=schedule_args_overrides)
     success = service._run_analysis_locked(stock_codes)
     result_queue.put({"success": success, "error": service._last_error})
 
 
+def _posix_descendant_process_ids(root_pid: int) -> Set[int]:
+    """Return a best-effort snapshot of descendants before the root exits."""
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+
+    children_by_parent: Dict[int, List[int]] = {}
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            pid, parent_pid = (int(value) for value in parts)
+        except ValueError:
+            continue
+        children_by_parent.setdefault(parent_pid, []).append(pid)
+
+    descendants: Set[int] = set()
+    pending = list(children_by_parent.get(root_pid, []))
+    while pending:
+        pid = pending.pop()
+        if pid in descendants:
+            continue
+        descendants.add(pid)
+        pending.extend(children_by_parent.get(pid, []))
+    return descendants
+
+
 def _terminate_analysis_process_tree(process: Any) -> None:
     """Stop an analysis worker and any descendants it created."""
-    if not process.is_alive():
-        return
+    root_alive = process.is_alive()
+    process_id = process.pid
+
+    posix_process_groups: Set[int] = set()
+    if os.name == "posix" and process_id:
+        posix_process_groups.add(process_id)
+        current_process_group = os.getpgrp()
+        if root_alive:
+            for descendant_pid in _posix_descendant_process_ids(process_id):
+                try:
+                    descendant_group = os.getpgid(descendant_pid)
+                except ProcessLookupError:
+                    continue
+                if descendant_group != current_process_group:
+                    posix_process_groups.add(descendant_group)
 
     try:
-        if os.name == "posix" and process.pid:
-            os.killpg(process.pid, signal.SIGTERM)
-        elif os.name == "nt" and process.pid:
+        if os.name == "posix" and process_id:
+            for process_group in posix_process_groups:
+                try:
+                    os.killpg(process_group, signal.SIGTERM)
+                except ProcessLookupError:
+                    continue
+            # The spawned worker calls setsid(), but stop/timeout can win the
+            # race before that happens. In that window killpg(worker_pid, ...)
+            # has no target, so also terminate the multiprocessing handle.
+            if process.is_alive():
+                process.terminate()
+        elif os.name == "nt" and process_id:
             subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                ["taskkill", "/PID", str(process_id), "/T", "/F"],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
             )
-        else:
+        elif root_alive:
             process.terminate()
     except (OSError, subprocess.SubprocessError):
-        process.terminate()
+        if root_alive:
+            process.terminate()
 
-    process.join(10)
-    if not process.is_alive():
+    process.join(2)
+    if os.name == "posix" and process_id:
+        remaining_process_groups: Set[int] = set()
+        for process_group in posix_process_groups:
+            try:
+                os.killpg(process_group, 0)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                pass
+            remaining_process_groups.add(process_group)
+        if not remaining_process_groups:
+            return
+    elif not process.is_alive():
         return
 
     try:
-        if os.name == "posix" and process.pid:
-            os.killpg(process.pid, signal.SIGKILL)
+        if os.name == "posix" and process_id:
+            for process_group in remaining_process_groups:
+                try:
+                    os.killpg(process_group, signal.SIGKILL)
+                except ProcessLookupError:
+                    continue
         else:
             process.kill()
     except (OSError, AttributeError):
-        process.terminate()
+        if process.is_alive():
+            process.terminate()
     process.join(10)
 
 
@@ -309,7 +388,7 @@ class RuntimeSchedulerService:
                     return
                 process.start()
                 self._analysis_process = process
-            self._last_run_at = datetime.now().isoformat()
+                self._last_run_at = datetime.now().isoformat()
 
             result = None
             deadline = time.monotonic() + timeout
@@ -329,29 +408,45 @@ class RuntimeSchedulerService:
                     timeout,
                 )
                 _terminate_analysis_process_tree(process)
-                self._last_error = f"runtime scheduled analysis timed out after {timeout}s"
+                with self._analysis_process_lock:
+                    if generation != self._analysis_generation:
+                        return
+                    self._last_error = f"runtime scheduled analysis timed out after {timeout}s"
                 return
 
             if result is None:
-                self._last_error = (
-                    "runtime scheduled analysis worker exited without a result "
-                    f"(exit code {process.exitcode})"
-                )
+                exit_code = process.exitcode
+                _terminate_analysis_process_tree(process)
+                with self._analysis_process_lock:
+                    if generation != self._analysis_generation:
+                        return
+                    self._last_error = (
+                        "runtime scheduled analysis worker exited without a result "
+                        f"(exit code {exit_code})"
+                    )
                 return
 
             process.join(2)
             if process.is_alive():
                 _terminate_analysis_process_tree(process)
-                self._last_error = "runtime scheduled analysis worker did not exit"
+                with self._analysis_process_lock:
+                    if generation != self._analysis_generation:
+                        return
+                    self._last_error = "runtime scheduled analysis worker did not exit"
                 return
 
-            if result.get("success"):
-                self._last_success_at = datetime.now().isoformat()
-                self._last_error = None
-            else:
-                self._last_error = result.get("error") or "runtime scheduled analysis failed"
+            with self._analysis_process_lock:
+                if generation != self._analysis_generation:
+                    return
+                if result.get("success"):
+                    self._last_success_at = datetime.now().isoformat()
+                    self._last_error = None
+                else:
+                    self._last_error = result.get("error") or "runtime scheduled analysis failed"
         except Exception as exc:  # noqa: BLE001 - watchdog failures must release the scheduler.
-            self._last_error = str(exc)
+            with self._analysis_process_lock:
+                if generation == self._analysis_generation:
+                    self._last_error = str(exc)
             logger.exception("Runtime scheduler watchdog failed: %s", exc)
         finally:
             self._run_lock.release()
