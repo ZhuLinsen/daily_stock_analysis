@@ -879,5 +879,28 @@ class TestDingTalkWebhookFieldsRegistered(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+
+class TestFutuFieldsRegistered(unittest.TestCase):
+    def test_futu_fields_are_explicitly_registered(self):
+        for key in (
+            "FUTU_OPEND_HOST",
+            "FUTU_OPEND_PORT",
+            "FUTU_HK_REALTIME_SOURCE_PRIORITY",
+        ):
+            field = get_field_definition(key)
+            self.assertEqual(field["category"], "data_source")
+            self.assertNotEqual(field["display_order"], 9000)
+
+    def test_futu_port_has_bounds(self):
+        field = get_field_definition("FUTU_OPEND_PORT")
+        self.assertEqual(field["data_type"], "integer")
+        self.assertEqual(field["validation"], {"min": 1, "max": 65535})
+
+    def test_schema_response_includes_futu_fields(self):
+        keys = {
+            field["key"]
+            for category in build_schema_response()["categories"]
+            for field in category["fields"]
+        }
+        self.assertTrue({"FUTU_OPEND_HOST", "FUTU_OPEND_PORT", "FUTU_HK_REALTIME_SOURCE_PRIORITY"} <= keys)

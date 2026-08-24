@@ -626,6 +626,7 @@ class DataFetcherManager:
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
         "LongbridgeFetcher": {"hk", "us"},
+        "FutuFetcher": {"hk"},
         "FinnhubFetcher": {"us"},
         "AlphaVantageFetcher": {"us"},
     }
@@ -1279,6 +1280,14 @@ class DataFetcherManager:
             except Exception as exc:
                 logger.debug("[TickFlowFetcher] 关闭管理器资源失败: %s", exc)
 
+        for fetcher in self._get_fetchers_snapshot():
+            close = getattr(fetcher, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:
+                    logger.debug("[%s] close failed: %s", fetcher.name, exc)
+
     def __del__(self) -> None:
         try:
             self.close()
@@ -1525,6 +1534,7 @@ class DataFetcherManager:
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
         from .longbridge_fetcher import LongbridgeFetcher
+        from .futu_fetcher import FutuFetcher
         config = get_config()
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
@@ -1559,6 +1569,11 @@ class DataFetcherManager:
             optional_fetchers.append(LongbridgeFetcher())  # 长桥（美股/港股兜底，懒加载）
         else:
             logger.debug("[数据源初始化] 跳过未配置的 LongbridgeFetcher")
+
+        if FutuFetcher.has_configured_endpoint():
+            optional_fetchers.append(FutuFetcher())  # 富途（港股，依赖 OpenD）
+        else:
+            logger.debug("[数据源初始化] 跳过未配置的 FutuFetcher")
 
         finnhub_api_key = (getattr(config, "finnhub_api_key", None) or "").strip()
         if finnhub_api_key:
@@ -2051,6 +2066,7 @@ class DataFetcherManager:
             return "akshare_hk"
         mapping = {
             "LongbridgeFetcher": "longbridge",
+            "FutuFetcher": "futu",
             "YfinanceFetcher": "yfinance",
             "AkshareFetcher": "akshare",
             "FinnhubFetcher": "finnhub",
@@ -2163,12 +2179,43 @@ class DataFetcherManager:
                 primary_kw: dict = {}
                 secondary_kw: dict = {}
             else:
-                primary_src = "LongbridgeFetcher" if prefer_lb else "AkshareFetcher"
-                secondary_src = "AkshareFetcher" if prefer_lb else "LongbridgeFetcher"
-                market_label = "港股"
-                primary_kw = {"source": "hk"} if primary_src == "AkshareFetcher" else {}
-                secondary_kw = {"source": "hk"} if secondary_src == "AkshareFetcher" else {}
-
+                hk_priority = [
+                    source.strip().lower()
+                    for source in getattr(
+                        config,
+                        "futu_hk_realtime_source_priority",
+                        "futu,longbridge,akshare,yfinance",
+                    ).split(",")
+                    if source.strip()
+                ]
+                source_map = {
+                    "futu": ("FutuFetcher", {}),
+                    "longbridge": ("LongbridgeFetcher", {}),
+                    "akshare": ("AkshareFetcher", {"source": "hk"}),
+                    "yfinance": ("YfinanceFetcher", {}),
+                }
+                primary_quote = None
+                primary_token = None
+                for source in hk_priority:
+                    mapped = source_map.get(source)
+                    if mapped is None:
+                        logger.warning("[实时行情] 忽略未知港股数据源: %s", source)
+                        continue
+                    fetcher_name, fetcher_kw = mapped
+                    quote = self._try_fetcher_quote(stock_code, fetcher_name, **fetcher_kw)
+                    if quote is not None:
+                        primary_quote = quote
+                        primary_token = self._realtime_fetcher_token(fetcher_name, **fetcher_kw)
+                        logger.info("[实时行情] 港股 %s 成功获取 (来源: %s)", stock_code, fetcher_name)
+                        break
+                if primary_quote is not None:
+                    return self._enrich_realtime_quote(
+                        primary_quote,
+                        realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
+                    )
+                if log_final_failure:
+                    logger.info("[实时行情] 港股 %s 无可用数据源", stock_code)
+                return None
             primary_token = self._realtime_fetcher_token(primary_src, **primary_kw)
             primary_quote = self._try_fetcher_quote(stock_code, primary_src, **primary_kw)
             fallback_from = primary_token if primary_quote is None else None
@@ -2177,7 +2224,6 @@ class DataFetcherManager:
             primary_quote = self._supplement_quote(
                 stock_code, primary_quote, secondary_src, **secondary_kw,
             )
-            # 美股个股（非指数）尝试从 Finnhub/AlphaVantage 补充缺失字段
             if is_us and not is_us_index and primary_quote is not None:
                 for extra_src in ["FinnhubFetcher", "AlphaVantageFetcher"]:
                     primary_quote = self._supplement_quote(
