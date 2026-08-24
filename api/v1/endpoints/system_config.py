@@ -63,7 +63,7 @@ def get_scheduler_status(
 @router.post(
     "/scheduler/run-now",
     summary="Run scheduled analysis now",
-    description="Trigger one scheduled analysis run in the current process.",
+    description="Trigger one isolated analysis run through the current runtime scheduler service.",
 )
 def run_scheduler_now(
     scheduler: RuntimeSchedulerService = Depends(get_runtime_scheduler_service),

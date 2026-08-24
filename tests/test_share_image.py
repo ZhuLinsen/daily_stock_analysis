@@ -1967,3 +1967,60 @@ def test_desktop_backend_build_scripts_bundle_share_image_assets():
     for relative_path in ("scripts/build-backend.ps1", "scripts/build-backend-macos.sh"):
         content = (root / relative_path).read_text(encoding="utf-8")
         assert "src/assets/share_image" in content
+
+
+def test_share_image_declares_supported_cjk_fonts_and_docker_installs_them():
+    html = build_share_image_html(
+        "# 贵州茅台 600519 分析报告\n\n## 核心判断\n\n- 趋势偏多\n",
+        generated_on=date(2026, 8, 24),
+    )
+
+    assert 'html[lang="zh-CN"] body' in html
+    assert '"Noto Sans CJK SC"' in html
+    assert 'html[lang="ko"] body' in html
+    assert '"Noto Sans CJK KR"' in html
+
+    dockerfile = (
+        Path(__file__).resolve().parents[1] / "docker" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "fonts-noto-cjk \\" in dockerfile
+
+
+def test_japanese_stock_share_image_uses_english_report_cjk_fallback():
+    html = build_share_image_html(
+        "# トヨタ自動車 7203.T Analysis Report\n\n## Core Conclusion\n\n- Bullish trend.\n",
+        generated_on=date(2026, 8, 24),
+        structured_payload={
+            "code": "7203.T",
+            "name": "トヨタ自動車",
+            "report_language": "en",
+        },
+    )
+
+    assert 'class="poster stock"' in html
+    assert '<html lang="en">' in html
+    assert '"Segoe UI", "Noto Sans CJK SC", "Noto Sans CJK KR"' in html
+    assert '"Noto Sans CJK SC"' in html
+    assert "トヨタ自動車" in html
+
+
+def test_japanese_market_share_image_uses_korean_report_font_contract():
+    html = build_share_image_html(
+        "# 日股市场复盘\n\n## 主要指数\n\n- 日経平均株価上涨。\n",
+        generated_on=date(2026, 8, 24),
+        structured_payload={
+            "kind": "market_review",
+            "region": "jp",
+            "report_language": "ko",
+            "title": "일본 시장 리뷰",
+            "indices": [
+                {"name": "日経平均株価", "current": 42123.45, "change_pct": 0.8},
+            ],
+        },
+    )
+
+    assert 'class="poster market"' in html
+    assert '<html lang="ko">' in html
+    assert 'html[lang="ko"] body' in html
+    assert '"Noto Sans CJK KR"' in html
+    assert "日経平均株価" in html

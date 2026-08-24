@@ -418,8 +418,8 @@ daily_stock_analysis/
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填 `http://` 或 `https://` 开头的完整地址 | `http://api.tushare.pro` | 可选 |
 | `TICKFLOW_API_KEY` | TickFlow API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | - | 可选 |
-| `TICKFLOW_PRIORITY` | TickFlow 日 K 数据源优先级；数字越小越早尝试，默认 `2`；未配置 API Key 时不启用；不影响实时行情，实时行情顺序由 `REALTIME_SOURCE_PRIORITY` 控制。 | `2` | 可选 |
-| `TENCENT_PRIORITY` | 腾讯直连 A 股日 K 数据源优先级；数字越小越早尝试，默认 `5`，作为 Efinance、AkShare、Tushare、TickFlow、PyTDX、Baostock 和 YFinance 之后的最终兜底；不影响实时行情。 | `5` | 可选 |
+| `TICKFLOW_PRIORITY` | TickFlow 普通 A 股日 K 数据源优先级；数字越小越早尝试，默认 `2`；未配置 API Key 时不启用；已登记指数使用独立固定链，不读取本变量；不影响实时行情。 | `2` | 可选 |
+| `TENCENT_PRIORITY` | 腾讯直连普通 A 股日 K 数据源优先级；数字越小越早尝试，默认 `5`，作为通用链路最终兜底；已登记指数使用独立固定链，不读取本变量；不影响实时行情。 | `5` | 可选 |
 | `TICKFLOW_KLINE_ADJUST` | TickFlow 日 K 复权模式：`none`、`forward`、`backward`、`forward_additive`、`backward_additive`。 | `none` | 可选 |
 | `TICKFLOW_BATCH_DAILY_ENABLED` | 是否启用 TickFlow 批量日 K 预取；权限不足会短期缓存失败状态，并继续走常规回退。 | `true` | 可选 |
 | `TICKFLOW_BATCH_SIZE` | TickFlow 日 K 与实时行情批量请求的单批最大标的数。 | `100` | 可选 |
@@ -448,7 +448,9 @@ daily_stock_analysis/
 > - 日股/韩股：当前仅走 Yfinance 基础路径获取日线与实时行情；`institution`、`capital_flow`、`dragon_tiger`、`boards` 等依赖 A 股专属源/离岸完整版的能力会降级为 `not_supported`（详见 [市场支持与边界](market-support.md)）；
 > - 台股：在美股/港股 offshore 基础路径之外，`institution` 区块额外展示三大法人原始买卖超净额（TWSE T86 / TPEx，默认开启、fail-open，取不到数据时维持 `not_supported`）；`capital_flow`、`dragon_tiger`、`boards` 仍为 `not_supported`；
 > - 任何异常走 fail-open，仅记录错误，不影响技术面/新闻/筹码主链路。
-> - 配置 `TICKFLOW_API_KEY` 后，TickFlow 会作为可选 A 股日 K 数据源和大盘复盘增强源实例化；`TICKFLOW_PRIORITY` 只影响日 K/通用数据源回退链。实时行情优先级由 `REALTIME_SOURCE_PRIORITY` 单独控制，只有显式包含 `tickflow` 时才会使用 TickFlow 实时行情。`REALTIME_SOURCE_PRIORITY` 中排在 `tickflow` 前面的数据源会先被尝试。
+> - 配置 `TICKFLOW_API_KEY` 后，TickFlow 会作为可选 A 股日 K 数据源和大盘复盘增强源实例化；`TICKFLOW_PRIORITY` 只影响普通 A 股日 K/通用数据源回退链。实时行情优先级由 `REALTIME_SOURCE_PRIORITY` 单独控制，只有显式包含 `tickflow` 时才会使用 TickFlow 实时行情。`REALTIME_SOURCE_PRIORITY` 中排在 `tickflow` 前面的数据源会先被尝试。
+> - 当前 `IndexRegistry` 已登记的 5 个沪深指数为 `sh000016`（上证50）、`sh000688`（科创50）、`sz399001`（深证成指）、`sz399006`（创业板指）和 `sh000300`（沪深300）。使用显式市场输入（也接受 `000016.SH` 等交易所后缀形式）时，它们不参与通用 priority 排序，固定按 Tencent → AkShare → TickFlow → YFinance 降级；未配置或不可用的来源会跳过。裸 `000016` 等代码仍按股票处理，不触发指数链。该固定链不读取 `EFINANCE_PRIORITY`、`AKSHARE_PRIORITY`、`TUSHARE_PRIORITY`、`TICKFLOW_PRIORITY`、`PYTDX_PRIORITY`、`BAOSTOCK_PRIORITY`、`YFINANCE_PRIORITY` 或 `TENCENT_PRIORITY`，不影响普通股票和实时行情的既有顺序。
+> - 已登记指数名称优先来自本地注册表；只有注册名称无效时才按 Tencent → AkShare → TickFlow 查询，名称链不使用 YFinance。指数日线四源全部失败时返回空结果并记录汇总告警；普通股票仍保持既有的 `DataFetchError` 最终失败契约。
 > - TickFlow 日 K 默认 `TICKFLOW_KLINE_ADJUST=none`；日线 `volume` 从手统一转为股，`amount` 保持元口径。
 > - TickFlow 日 K 区间请求会显式传入 `start_time` / `end_time` / `count`；官方 quickstart 明确说明时间范围查询仍受 `count` 限制。若返回非空但行数打满 `count` 且首个返回交易日晚于请求起始交易日，系统会判定为疑似截断，不写入缓存并让 manager 继续回退。
 > - 批量分析时，`prefetch_daily_klines()` 会在逐股 `get_daily_data()` 之前预热进程内缓存，不改变对外调用路径。
@@ -490,6 +492,7 @@ daily_stock_analysis/
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
 | `SCHEDULE_TIMES` | 多个定时执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` | 空 |
+| `DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS` | Web/API runtime scheduler 单次分析硬超时（秒，最小 60 秒）；超时后终止独立分析进程，不阻塞后续任务 | `2700` |
 | `LOG_DIR` | 日志目录 | `./logs` |
 | `SAVE_CONTEXT_SNAPSHOT` | 保存分析历史 `context_snapshot`；设为 `false` 时新历史不保存 enhanced_context、market_phase_summary、AnalysisContextPack overview 或诊断快照，但不关闭当次 Prompt 低敏摘要 | `true` |
 
@@ -808,6 +811,7 @@ python main.py --schedule --no-run-immediately
 | `SCHEDULE_ENABLED` | 是否启用定时任务 | `false` | `true` |
 | `SCHEDULE_TIME` | 每日执行时间 (HH:MM) | `18:00` | `09:30` |
 | `SCHEDULE_TIMES` | 多个每日执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` | 空 | `09:20,12:30,15:10,18:00` |
+| `DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS` | Web/API runtime scheduler 单次分析硬超时（秒，最小 60 秒） | `2700` | `3600` |
 | `SCHEDULE_RUN_IMMEDIATELY` | 定时模式启动时是否立即运行一次；未显式设置时沿用 `RUN_IMMEDIATELY` 的运行时覆盖语义 | `true` | `false` |
 | `RUN_IMMEDIATELY` | 非定时模式启动时是否立即运行一次；同时作为未显式设置 `SCHEDULE_RUN_IMMEDIATELY` 时的 legacy 回退 | `true` | `false` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：非交易日跳过执行；设为 `false` 可强制执行 | `true` | `false` |
@@ -1265,7 +1269,7 @@ PUSHOVER_API_TOKEN=your_api_token
 1. **imgkit**：已包含在 `requirements.txt`，执行 `pip install -r requirements.txt` 时会自动安装
 2. **wkhtmltopdf**（默认引擎）：系统级依赖，需手动安装：
    - **macOS**：`brew install wkhtmltopdf`
-   - **Debian/Ubuntu**：`apt install wkhtmltopdf`
+   - **Debian/Ubuntu**：`apt install wkhtmltopdf fonts-noto-cjk`（用于正确渲染项目支持的中文和韩文报告）
 3. **markdown-to-file**（可选，emoji 支持更好）：`npm i -g markdown-to-file`，并设置 `MD2IMG_ENGINE=markdown-to-file`
 4. **Playwright**（可选，适合 Web 服务）：在 `apps/dsa-web` 执行 `npm ci` 和 `npx playwright install chromium`，并设置 `MD2IMG_ENGINE=playwright`
 
