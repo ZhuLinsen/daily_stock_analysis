@@ -1644,6 +1644,9 @@ class DataFetcherManager:
         raw_stock_code = (stock_code or "").strip()
         target = parse_analysis_target(raw_stock_code)
         self._warn_bare_index_conflict(target)
+        if target.asset_type == ParseStatus.UNSUPPORTED:
+            reason = target.unsupported_reason or "unsupported analysis target"
+            raise DataFetchError(f"{raw_stock_code}: {reason}")
         if target.asset_type == ParseStatus.INDEX:
             return self._get_cn_index_daily_data(
                 target,
@@ -2632,6 +2635,13 @@ class DataFetcherManager:
         raw_stock_code = (stock_code or "").strip()
         target = parse_analysis_target(raw_stock_code)
         self._warn_bare_index_conflict(target)
+        if target.asset_type == ParseStatus.UNSUPPORTED:
+            logger.warning(
+                "[股票名称] 跳过不支持的输入 %s: %s",
+                raw_stock_code,
+                target.unsupported_reason or "unsupported analysis target",
+            )
+            return ""
         if target.asset_type == ParseStatus.INDEX:
             return self._get_cn_index_name(target)
 
@@ -2768,6 +2778,13 @@ class DataFetcherManager:
         normalized_codes: List[str] = []
         for code in stock_codes:
             target = parse_analysis_target(code)
+            if target.asset_type == ParseStatus.UNSUPPORTED:
+                logger.warning(
+                    "[股票名称] 预取跳过不支持的输入 %s: %s",
+                    code,
+                    target.unsupported_reason or "unsupported analysis target",
+                )
+                continue
             normalized_codes.append(
                 target.canonical_id
                 if target.asset_type == ParseStatus.INDEX

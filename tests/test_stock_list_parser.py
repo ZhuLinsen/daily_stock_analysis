@@ -975,6 +975,52 @@ class TestStory14AliasMatrix:
         assert "CSI" in target.unsupported_reason
 
     @pytest.mark.parametrize(
+        "code",
+        [
+            "csi930956",
+            "CSI930956",
+            "930956.CSI",
+            "csi000300",
+            "CSI000300",
+            "csi93095",
+            "csi9309557",
+            "93095.CSI",
+            "9309557.CSI",
+        ],
+    )
+    def test_unregistered_explicit_csi_prefix_and_suffix_is_unsupported(
+        self, code: str
+    ) -> None:
+        """PR #2267 review fix: an unknown explicit ``csi`` prefix (or an
+        unregistered ``.CSI`` suffix) must surface as ``unsupported`` — never a
+        US ticker and never a guessed SH/SZ index. Only a manifest-owned
+        identity may route/persist as an index."""
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.UNSUPPORTED
+        assert target.exchange == "UNKNOWN"
+        assert target.canonical_id == code
+        assert target.unsupported_reason is not None
+        assert "CSI" in target.unsupported_reason
+
+    def test_csi_prefix_is_not_overequated_to_csi_suffix_alias(self) -> None:
+        """PR #2267 review fix: ``000300.CSI`` is the registered alias of
+        ``sh000300``, but the bare ``csi000300`` prefix is NOT — it must stay
+        unsupported rather than being promoted to the same-code index."""
+        target = parse_analysis_target("000300.CSI")
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.canonical_id == "sh000300"
+        assert target.exchange == "SH"
+
+        unregistered = parse_analysis_target("csi000300")
+        assert unregistered.asset_type == ParseStatus.UNSUPPORTED
+        assert unregistered.exchange == "UNKNOWN"
+
+    def test_us_ticker_starting_with_csi_remains_stock(self) -> None:
+        target = parse_analysis_target("CSIQ")
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.canonical_id == "CSIQ"
+
+    @pytest.mark.parametrize(
         "code,expected_canonical",
         [
             ("000001", "sz000001"),

@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from src.data import stock_index_loader
 
 
@@ -557,6 +559,59 @@ class TestStockIndexLoader(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             bundled_path = Path(temp_dir) / "stocks.index.json"
             payload = self._index_payload(["sh000300"]) + [["too-short"]]
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_non_integer_popularity(self):
+        """PR #2267 review fix: only a plain non-negative integer popularity is
+        valid at the runtime candidate boundary; fractional/boolean/negative/
+        string popularities reject the candidate."""
+        for bad_popularity in (1.5, True, -1, 1.0, "100"):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                bundled_path = Path(temp_dir) / "stocks.index.json"
+                payload = self._index_payload(["sh000300"])
+                payload[0][9] = bad_popularity
+                bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                     patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                    rows = stock_index_loader._load_active_index_rows()
+                self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_accepts_integer_popularity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual({r[0] for r in rows}, {"sh000300"})
+
+    def test_validate_index_rows_semantics_rejects_cross_entry_duplicate_alias(self):
+        """PR #2267 review fix: two index rows whose aliases normalize to the
+        same identity key (e.g. ``csi930955`` and ``CSI930955`` as aliases of
+        different canonicals) must reject the candidate — no silent overwrite."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh000300", "sz399001"])
+            payload[0][5] = ["csi930955"]
+            payload[1][5] = ["CSI930955"]
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_duplicate_aliases_in_one_row(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh000300"])
+            payload[0][5] = ["000300.CSI", "０００３００．ＣＳＩ"]
             bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
                  patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):

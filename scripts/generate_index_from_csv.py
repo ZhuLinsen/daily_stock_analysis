@@ -642,6 +642,13 @@ def load_index_registry_seed(seed_path: Optional[Path] = None) -> List[Dict[str,
         raise FileNotFoundError(f"index registry seed not found: {path}")
 
     rows: List[Dict[str, Any]] = []
+    # Normalized identity keys must not map to more than one canonical within
+    # the seed. A NFKC/casefold-equivalent duplicate alias owned by two entries
+    # (e.g. ``csi930955`` and ``CSI930955`` split across rows) would otherwise
+    # silently overwrite one identity, so it is rejected at the build-time
+    # boundary instead of at runtime. A key that equals its own row's canonical
+    # (e.g. alias ``000300.SH`` on row ``sh000300``) is legitimate and skipped.
+    seen_identity_keys: Dict[str, str] = {}
     with open(path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -650,29 +657,75 @@ def load_index_registry_seed(seed_path: Optional[Path] = None) -> List[Dict[str,
             name = (row.get("name_zh") or "").strip()
             if not canonical or not display or not name:
                 raise ValueError(f"index registry seed row missing required field: {row}")
+
+            aliases = parse_aliases(row)
+            _validate_unique_index_aliases(aliases, canonical)
+            popularity_raw = (row.get("popularity") or "100").strip() or "100"
+            try:
+                popularity = int(popularity_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"index registry seed popularity must be a plain integer, "
+                    f"got {popularity_raw!r} for canonical {canonical!r}"
+                ) from exc
+            if popularity < 0:
+                raise ValueError(
+                    f"index registry seed popularity must be non-negative: "
+                    f"{popularity!r} for canonical {canonical!r}"
+                )
+
+            # Reject a normalized identity key that maps to a different canonical.
+            for key in [canonical, display] + aliases:
+                norm_key = _normalize_index_key(key)
+                if not norm_key:
+                    continue
+                existing = seen_identity_keys.get(norm_key)
+                if existing is not None and existing != canonical:
+                    raise ValueError(
+                        f"seed identity key {key!r} normalizes to {norm_key!r} "
+                        f"already owned by canonical {existing!r}"
+                    )
+                seen_identity_keys[norm_key] = canonical
+
             rows.append({
                 "canonical_code": canonical,
                 "display_code": display,
                 "name_zh": name,
-                "aliases": parse_aliases(row),
+                "aliases": aliases,
                 "name_source": (row.get("name_source") or "").strip(),
-                "popularity": int((row.get("popularity") or "100").strip() or "100"),
+                "popularity": popularity,
             })
     return rows
 
 
 def _normalize_index_key(value: str) -> str:
-    """Normalize explicit prefix/suffix forms to one resolver identity key."""
+    """Normalize resolver keys while keeping CSI suffix aliases distinct."""
     normalized = unicodedata.normalize(
         "NFKC", str(value or "")
     ).strip().casefold()
-    prefix_match = re.fullmatch(r"(sh|sz|csi)(\d{6})", normalized)
+    prefix_match = re.fullmatch(r"(sh|sz)(\d{6})", normalized)
     if prefix_match:
         return f"{prefix_match.group(1)}{prefix_match.group(2)}"
-    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz|csi)", normalized)
+    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz)", normalized)
     if suffix_match:
         return f"{suffix_match.group(2)}{suffix_match.group(1)}"
     return normalized
+
+
+def _validate_unique_index_aliases(aliases: Any, canonical: str) -> None:
+    """Reject duplicate aliases after NFKC/case-insensitive normalization."""
+    if not isinstance(aliases, list):
+        raise ValueError(f"index aliases must be a list: {canonical!r}")
+    seen: set[str] = set()
+    for alias in aliases:
+        if not isinstance(alias, str):
+            raise ValueError(f"index alias must be a string: {canonical!r}")
+        normalized = _normalize_index_key(alias)
+        if normalized in seen:
+            raise ValueError(
+                f"duplicate index alias after normalization for {canonical!r}: {alias!r}"
+            )
+        seen.add(normalized)
 
 
 def build_index_entries_from_seed(seed_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -685,6 +738,16 @@ def build_index_entries_from_seed(seed_rows: List[Dict[str, Any]]) -> List[Dict[
     entries: List[Dict[str, Any]] = []
     for row in seed_rows:
         canonical = row["canonical_code"]
+        _validate_unique_index_aliases(row.get("aliases"), canonical)
+        popularity = row.get("popularity", 100)
+        if (
+            isinstance(popularity, bool)
+            or not isinstance(popularity, int)
+            or popularity < 0
+        ):
+            raise ValueError(
+                f"index popularity must be a non-negative integer: {canonical!r}"
+            )
         display = (row.get("display_code") or "").strip() or canonical
         pinyin_full, pinyin_abbr = generate_pinyin(row["name_zh"])
         entries.append({
@@ -697,7 +760,7 @@ def build_index_entries_from_seed(seed_rows: List[Dict[str, Any]]) -> List[Dict[
             "market": "CN",
             "assetType": "index",
             "active": True,
-            "popularity": row["popularity"],
+            "popularity": popularity,
         })
     return entries
 
@@ -786,12 +849,17 @@ def validate_index_registry(
             raise ValueError(f"index pinyin fields must be non-empty: {canonical!r}")
         if not isinstance(aliases, list):
             raise ValueError(f"index aliases must be a list: {canonical!r}")
+        _validate_unique_index_aliases(aliases, canonical)
+        # Popularity must be a plain non-negative integer. Fractional
+        # (``1.5``), boolean (``True``) and negative values are rejected
+        # without truncation — only an integer value like ``100`` is valid.
         if (
             isinstance(popularity, bool)
-            or not isinstance(popularity, (int, float))
+            or not isinstance(popularity, int)
             or not math.isfinite(float(popularity))
+            or popularity < 0
         ):
-            raise ValueError(f"index popularity must be a finite number: {canonical!r}")
+            raise ValueError(f"index popularity must be a non-negative integer: {canonical!r}")
 
         if namespace not in {"sh", "sz", "csi"}:
             raise ValueError(f"index namespace has no provider mapping: {namespace!r}")

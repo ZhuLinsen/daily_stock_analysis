@@ -33,6 +33,7 @@ from generate_index_from_csv import (
     build_index_entries_from_seed,
     validate_index_registry,
     run_index_only,
+    _normalize_index_key,
 )
 
 
@@ -892,12 +893,88 @@ class TestIndexRegistrySeed:
         assert by_canonical["sz399001"] == "sz399001"
 
     def test_validate_index_registry_rejects_non_finite_popularity(self):
-        """Gap 5: a non-finite popularity (e.g. NaN) is rejected via
-        ``math.isfinite``."""
+        """Gap 5: a non-finite popularity (e.g. NaN) is rejected — it is not a
+        plain integer (NaN is a float), so it fails the integer check."""
         rows = load_index_registry_seed()
         entries = build_index_entries_from_seed(rows)
         entries[0]["popularity"] = float("nan")
-        with pytest.raises(ValueError, match="finite number"):
+        with pytest.raises(ValueError, match="non-negative integer"):
+            validate_index_registry(entries)
+
+    @pytest.mark.parametrize(
+        "bad_popularity",
+        [1.5, True, -1, -100, 1.0, "100"],
+    )
+    def test_validate_index_registry_rejects_non_integer_popularity(
+        self, bad_popularity
+    ):
+        """PR #2267 review fix: only a plain non-negative integer popularity is
+        valid. Fractional (``1.5``), boolean (``True``), negative and
+        string-valued popularities are rejected without truncation."""
+        rows = load_index_registry_seed()
+        entries = build_index_entries_from_seed(rows)
+        entries[0]["popularity"] = bad_popularity
+        with pytest.raises(ValueError, match="non-negative integer"):
+            validate_index_registry(entries)
+
+    def test_validate_index_registry_accepts_integer_popularity(self):
+        rows = load_index_registry_seed()
+        entries = build_index_entries_from_seed(rows)
+        entries[0]["popularity"] = 100
+        validate_index_registry(entries)  # should not raise
+
+    def test_seed_rejects_fractional_popularity(self, tmp_path):
+        seed = tmp_path / "index_registry.csv"
+        seed.write_text(
+            "canonical_code,display_code,name_zh,aliases,name_source,popularity\n"
+            "sh000300,sh000300,沪深300,,腾讯,1.5\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="plain integer"):
+            load_index_registry_seed(seed)
+
+    def test_seed_rejects_duplicate_normalized_identity_key(self, tmp_path):
+        seed = tmp_path / "index_registry.csv"
+        seed.write_text(
+            "canonical_code,display_code,name_zh,aliases,name_source,popularity\n"
+            "csi930955,930955.CSI,红利低波100,,东财,100\n"
+            "sh000300,sh000300,沪深300,csi930955,腾讯,100\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="already owned by canonical"):
+            load_index_registry_seed(seed)
+
+    def test_csi_prefix_and_suffix_keep_distinct_resolver_keys(self):
+        assert _normalize_index_key("csi000300") == "csi000300"
+        assert _normalize_index_key("000300.CSI") == "000300.csi"
+
+    def test_seed_rejects_duplicate_aliases_within_one_row(self, tmp_path):
+        seed = tmp_path / "index_registry.csv"
+        seed.write_text(
+            "canonical_code,display_code,name_zh,aliases,name_source,popularity\n"
+            "sh000300,sh000300,沪深300,000300.CSI|０００３００．ＣＳＩ,腾讯,100\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="duplicate index alias"):
+            load_index_registry_seed(seed)
+
+    def test_build_rejects_duplicate_aliases_when_seed_loader_is_bypassed(self):
+        rows = load_index_registry_seed()
+        rows[0]["aliases"] = ["000001.SH", "０００００１．ＳＨ"]
+        with pytest.raises(ValueError, match="duplicate index alias"):
+            build_index_entries_from_seed(rows)
+
+    def test_build_rejects_fractional_popularity_when_seed_loader_is_bypassed(self):
+        rows = load_index_registry_seed()
+        rows[0]["popularity"] = 1.5
+        with pytest.raises(ValueError, match="non-negative integer"):
+            build_index_entries_from_seed(rows)
+
+    def test_validate_rejects_duplicate_aliases_within_one_entry(self):
+        rows = load_index_registry_seed()
+        entries = build_index_entries_from_seed(rows)
+        entries[0]["aliases"] = ["000001.SH", "０００００１．ＳＨ"]
+        with pytest.raises(ValueError, match="duplicate index alias"):
             validate_index_registry(entries)
 
     def test_full_path_merge_canonical_sorts_index_rows(self, tmp_path, monkeypatch):

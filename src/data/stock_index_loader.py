@@ -27,14 +27,21 @@ _EXPLICIT_INDEX_ALIAS_RE = re.compile(
 
 
 def _normalize_index_identity_key(value: object) -> str:
-    """Normalize explicit prefix/suffix forms to one index identity key."""
+    """Normalize an identity key to one resolver identity form.
+
+    ``sh``/``sz`` prefix and ``{code}.SH`` / ``{code}.SZ`` suffix collapse to
+    the canonical lowercase-prefixed key. CSI is deliberately **not**
+    collapsed: ``csi{code}`` (prefix) and ``{code}.CSI`` (suffix) are kept
+    distinct so an unregistered ``csi`` prefix never conflates with a
+    registered ``{code}.CSI`` alias — mirroring ``stock_list_parser``.
+    """
     normalized = unicodedata.normalize(
         "NFKC", str(value or "")
     ).strip().casefold()
-    prefix_match = re.fullmatch(r"(sh|sz|csi)(\d{6})", normalized)
+    prefix_match = re.fullmatch(r"(sh|sz)(\d{6})", normalized)
     if prefix_match:
         return f"{prefix_match.group(1)}{prefix_match.group(2)}"
-    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz|csi)", normalized)
+    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz)", normalized)
     if suffix_match:
         return f"{suffix_match.group(2)}{suffix_match.group(1)}"
     return normalized
@@ -586,18 +593,25 @@ def _validate_index_rows_semantics(rows: list, non_index_rows: list | None = Non
             raise ValueError(f"index aliases must be a list: {canonical!r}")
         if (
             isinstance(popularity, bool)
-            or not isinstance(popularity, (int, float))
+            or not isinstance(popularity, int)
             or not math.isfinite(float(popularity))
+            or popularity < 0
         ):
-            raise ValueError(f"index popularity must be a finite number: {canonical!r}")
+            raise ValueError(f"index popularity must be a non-negative integer: {canonical!r}")
 
         norm_canonical = _normalize_index_identity_key(canonical)
         if norm_canonical in canonical_map:
             raise ValueError(f"duplicate index canonical: {canonical!r}")
         canonical_map[norm_canonical] = canonical
 
+        seen_aliases: set[str] = set()
         for alias in aliases:
             norm_alias = _normalize_index_identity_key(alias)
+            if norm_alias in seen_aliases:
+                raise ValueError(
+                    f"duplicate index alias after normalization for {canonical!r}: {alias!r}"
+                )
+            seen_aliases.add(norm_alias)
             if norm_alias.isdigit():
                 raise ValueError(f"bare numeric display/alias rejected for index: {alias!r}")
             if not _EXPLICIT_INDEX_ALIAS_RE.fullmatch(norm_alias):

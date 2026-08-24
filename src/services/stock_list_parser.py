@@ -53,17 +53,35 @@ _STOCK_LIST_SEPARATOR_RE = re.compile(r"[\s,;\uFF0C\u3001\uFF1B]+")
 _EXPLICIT_INDEX_ALIAS_RE = re.compile(
     r"^(?:(?:sh|sz|csi)\d{6}|\d{6}\.(?:sh|sz|csi))$"
 )
+# An unregistered numeric CSI form must surface as ``unsupported`` rather than
+# degrade into a US ticker. Registered six-digit forms resolve before this
+# guard; malformed lengths are rejected here without blocking tickers such as
+# ``CSIQ``.
+_EXPLICIT_CSI_FORM_RE = re.compile(r"^(?:csi\d+|\d+\.csi)$")
 
 
 def _normalize_index_key(value: str) -> str:
-    """Normalize explicit prefix/suffix forms to one resolver identity key."""
+    """Normalize an identity key to one resolver identity form.
+
+    ``sh``/``sz`` prefix and ``{code}.SH`` / ``{code}.SZ`` suffix are
+    interchangeable exchange identities, so they collapse to the canonical
+    lowercase-prefixed key (``sh000300`` == ``000300.SH``).
+
+    CSI is deliberately **not** collapsed: ``csi{code}`` (prefix) and
+    ``{code}.CSI`` (suffix) are kept distinct. The ``csi`` prefix is a canonical
+    identity that only resolves when a manifest row owns that exact ``csi{code}``
+    key, while a ``{code}.CSI`` suffix is an *explicit alias* that belongs to the
+    entry that registered it (e.g. ``000300.CSI`` is an alias of ``sh000300``).
+    Keeping them separate prevents ``csi000300`` (unregistered) from being
+    conflated with the registered ``000300.CSI`` alias of ``sh000300``.
+    """
     normalized = unicodedata.normalize(
         "NFKC", str(value or "")
     ).strip().casefold()
-    prefix_match = re.fullmatch(r"(sh|sz|csi)(\d{6})", normalized)
+    prefix_match = re.fullmatch(r"(sh|sz)(\d{6})", normalized)
     if prefix_match:
         return f"{prefix_match.group(1)}{prefix_match.group(2)}"
-    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz|csi)", normalized)
+    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz)", normalized)
     if suffix_match:
         return f"{suffix_match.group(2)}{suffix_match.group(1)}"
     return normalized
@@ -634,7 +652,13 @@ def parse_analysis_target(
             matched_index=explicit_entry,
         )
 
-    if raw.upper().endswith(".CSI"):
+    # Story 1.4 review fix: an explicit CSI form that is NOT owned by the
+    # registry must surface as ``unsupported`` — never a US ticker and never a
+    # guessed SH/SZ index. This covers both the ``.CSI`` suffix (already handled
+    # by the prior check) and the ``csi`` prefix form (``csi930956`` /
+    # ``CSI930956``), which the generic normalizer would otherwise mis-route
+    # into the US-ticker branch.
+    if _EXPLICIT_CSI_FORM_RE.match(unicodedata.normalize("NFKC", raw).strip().casefold()):
         return AnalysisTarget(
             raw_input=raw_input,
             asset_type=ParseStatus.UNSUPPORTED,

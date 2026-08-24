@@ -1843,6 +1843,21 @@ class TestStorage(unittest.TestCase):
         finally:
             DatabaseManager.reset_instance()
 
+    def test_derive_canonical_id_rejects_unregistered_csi(self):
+        """PR #2267 review fix: an unsupported identity (unregistered
+        ``csi`` prefix or ``.CSI`` suffix) must NOT enter a persistent
+        canonical bucket — ``_derive_canonical_id`` returns None so the
+        caller persists NULL instead of the raw token."""
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        try:
+            self.assertIsNone(db._derive_canonical_id("csi930956"))
+            self.assertIsNone(db._derive_canonical_id("CSI930956"))
+            self.assertIsNone(db._derive_canonical_id("930956.CSI"))
+            self.assertIsNone(db._derive_canonical_id("csi000300"))
+        finally:
+            DatabaseManager.reset_instance()
+
     def test_canonical_id_repair_fixes_bare_misbucketed_rows(self):
         """CAP-6: rows whose bare code has an erroneous index canonical are
         repaired to the parser stock canonical; explicit index rows and

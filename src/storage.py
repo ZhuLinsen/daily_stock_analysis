@@ -1718,7 +1718,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         persist NULL (D1) without raising.
         """
         try:
-            from src.services.stock_list_parser import parse_analysis_target
+            from src.services.stock_list_parser import (
+                ParseStatus,
+                parse_analysis_target,
+            )
         except Exception as exc:
             logger.warning(
                 "_derive_canonical_id: cannot import parse_analysis_target "
@@ -1727,6 +1730,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
             return None
         target = parse_analysis_target(code)
+        if target.asset_type == ParseStatus.UNSUPPORTED:
+            # An unsupported identity (e.g. an unregistered ``csi930956`` /
+            # ``930956.CSI``) must not enter a persistent canonical bucket.
+            # Return None so the caller persists NULL instead.
+            return None
         return target.canonical_id or None
 
     def _backfill_stock_daily_canonical_id(self) -> None:

@@ -5,7 +5,12 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from data_provider.base import BaseFetcher, DataFetcherManager, STANDARD_COLUMNS
+from data_provider.base import (
+    BaseFetcher,
+    DataFetchError,
+    DataFetcherManager,
+    STANDARD_COLUMNS,
+)
 from src.services.stock_list_parser import (
     AnalysisTarget,
     IndexEntry,
@@ -76,6 +81,41 @@ def _manager_without_fetchers() -> DataFetcherManager:
     manager._fetchers = []
     manager._ensure_concurrency_guards()
     return manager
+
+
+@pytest.mark.parametrize(
+    "stock_code",
+    ["csi930956", "CSI930956", "930956.CSI", "csi93095", "93095.CSI"],
+)
+def test_unregistered_csi_daily_is_rejected_before_provider_calls(stock_code) -> None:
+    fetcher = _FakeFetcher("YfinanceFetcher", priority=1, daily_result=_daily_frame())
+    manager = DataFetcherManager(fetchers=[fetcher])
+
+    with pytest.raises(DataFetchError, match="unregistered CSI index"):
+        manager.get_daily_data(stock_code)
+
+    assert fetcher.daily_calls == []
+
+
+@pytest.mark.parametrize(
+    "stock_code",
+    ["csi930956", "CSI930956", "930956.CSI", "csi93095", "93095.CSI"],
+)
+def test_unregistered_csi_name_is_rejected_before_provider_calls(stock_code) -> None:
+    fetcher = _FakeFetcher("YfinanceFetcher", priority=1, name_result="wrong")
+    manager = DataFetcherManager(fetchers=[fetcher])
+
+    assert manager.get_stock_name(stock_code) == ""
+    assert fetcher.name_calls == []
+
+
+def test_prefetch_stock_names_skips_unregistered_csi() -> None:
+    fetcher = _FakeFetcher("YfinanceFetcher", priority=1, name_result="wrong")
+    manager = DataFetcherManager(fetchers=[fetcher])
+
+    manager.prefetch_stock_names(["csi930956", "930956.CSI"])
+
+    assert fetcher.name_calls == []
 
 
 @pytest.fixture(autouse=True)
