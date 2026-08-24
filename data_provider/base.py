@@ -3323,27 +3323,79 @@ class DataFetcherManager:
             )
             return payload or {}, err, ms, "fundamental_bundle_yfinance"
 
+        def _field_gaps(payload: Dict[str, Any]) -> List[str]:
+            """List core growth/earnings fields that are missing or value-less.
+
+            A field is a gap when it has no usable value, so the yfinance
+            bundle should be consulted to fill it regardless of block-level
+            truthiness.
+            """
+            gaps: List[str] = []
+            growth = payload.get("growth")
+            if isinstance(growth, dict):
+                for field in ("revenue_yoy", "net_profit_yoy", "gross_margin"):
+                    if not self._has_meaningful_payload(growth.get(field)):
+                        gaps.append(f"growth.{field}")
+            earnings = payload.get("earnings")
+            report = earnings.get("financial_report") if isinstance(earnings, dict) else None
+            if isinstance(report, dict):
+                for field in ("revenue", "net_profit_parent", "basic_eps", "gross_profit"):
+                    if not self._has_meaningful_payload(report.get(field)):
+                        gaps.append(f"earnings.financial_report.{field}")
+            return gaps
+
         def _merge_bundles(
             futu_payload: Dict[str, Any],
             yfinance_payload: Dict[str, Any],
             futu_ms: int,
             yfinance_ms: int,
         ) -> Tuple[Dict[str, Any], Optional[str], int, str]:
-            """Fill Futu blocks missing in the yfinance bundle (Futu wins when both exist)."""
+            """Field-level merge: keep Futu values, fill gaps from yfinance."""
             merged: Dict[str, Any] = dict(futu_payload)
-            for key in ("growth", "earnings", "institution", "capital_flow", "belong_boards"):
-                source_has = (
-                    DataFetcherManager._earnings_block_has_values(yfinance_payload.get(key))
-                    if key == "earnings"
-                    else self._has_meaningful_payload(yfinance_payload.get(key))
-                )
-                merged_has = (
-                    DataFetcherManager._earnings_block_has_values(merged.get(key))
-                    if key == "earnings"
-                    else self._has_meaningful_payload(merged.get(key))
-                )
-                if not merged_has and source_has:
+
+            # growth: field-level fill.
+            futu_growth = futu_payload.get("growth")
+            yf_growth = yfinance_payload.get("growth")
+            if isinstance(yf_growth, dict):
+                growth = dict(futu_growth) if isinstance(futu_growth, dict) else {}
+                for field, value in yf_growth.items():
+                    if not self._has_meaningful_payload(growth.get(field)):
+                        growth[field] = value
+                if any(self._has_meaningful_payload(v) for v in growth.values()):
+                    merged["growth"] = growth
+
+            # earnings: financial_report field-level fill, dividend block-level.
+            futu_earnings = futu_payload.get("earnings")
+            yf_earnings = yfinance_payload.get("earnings")
+            if isinstance(yf_earnings, dict):
+                earnings = dict(futu_earnings) if isinstance(futu_earnings, dict) else {}
+                futu_report = earnings.get("financial_report")
+                yf_report = yf_earnings.get("financial_report")
+                if isinstance(yf_report, dict):
+                    report = dict(futu_report) if isinstance(futu_report, dict) else {}
+                    for field, value in yf_report.items():
+                        if not self._has_meaningful_payload(report.get(field)):
+                            report[field] = value
+                    if any(self._has_meaningful_payload(v) for v in report.values()):
+                        earnings["financial_report"] = report
+                if not DataFetcherManager._earnings_block_has_values(
+                    earnings.get("dividend")
+                ) and self._has_meaningful_payload(yf_earnings.get("dividend")):
+                    earnings["dividend"] = yf_earnings.get("dividend")
+                if any(
+                    DataFetcherManager._earnings_block_has_values(earnings.get(key))
+                    or self._has_meaningful_payload(earnings.get(key))
+                    for key in ("financial_report", "financial_reports", "dividend", "indicators")
+                ):
+                    merged["earnings"] = earnings
+
+            # Other blocks stay block-level (Futu wins, yfinance fills absent blocks).
+            for key in ("institution", "capital_flow", "belong_boards"):
+                if not self._has_meaningful_payload(merged.get(key)) and self._has_meaningful_payload(
+                    yfinance_payload.get(key)
+                ):
                     merged[key] = yfinance_payload.get(key)
+
             merged["source_chain"] = list(
                 futu_payload.get("source_chain", [])
             ) + list(yfinance_payload.get("source_chain", []))
@@ -3389,14 +3441,12 @@ class DataFetcherManager:
             )
             if has_content:
                 # Futu partial success: keep the blocks it returned but do not
-                # silently drop growth/earnings that yfinance could still provide.
-                # Use a field-level check (not dict truthiness): a truthy dict of
-                # all-None / metadata-only values is not usable growth/earnings.
-                missing_core = not self._has_meaningful_payload(
-                    futu_payload.get("growth")
-                ) or not self._earnings_block_has_values(futu_payload.get("earnings"))
+                # silently drop any core growth/earnings field that yfinance
+                # could still provide. Decide by field gaps (not block-level
+                # truthiness) so partial Futu results are supplemented.
+                gaps = _field_gaps(futu_payload)
                 remaining_timeout = max(bundle_timeout - futu_ms / 1000.0, 0.0)
-                if missing_core and remaining_timeout > 0:
+                if gaps and remaining_timeout > 0:
                     yfinance_payload, yfinance_err, yfinance_ms = self._run_with_retry(
                         lambda: self._yfinance_fundamental_adapter.get_fundamental_bundle(stock_code),
                         remaining_timeout,

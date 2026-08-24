@@ -146,11 +146,18 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
         mock_get_config.return_value = SimpleNamespace()
         futu_bundle = {
             "status": "partial",
-            "growth": {"revenue_yoy": 10.0},
-            "earnings": {"financial_report": {"net_profit_parent": 200.0}},
+            "growth": {"revenue_yoy": 10.0, "net_profit_yoy": 12.0, "gross_margin": 40.0},
+            "earnings": {
+                "financial_report": {
+                    "revenue": 1.0e10,
+                    "net_profit_parent": 200.0,
+                    "basic_eps": 1.2,
+                    "gross_profit": 4.0e9,
+                }
+            },
             "institution": {"company_profile": {"公司名称": "测试公司"}},
             "capital_flow": {"latest": {"main_in_flow": 10.0}},
-            "belong_boards": [{"plate_code": "HK.TEST", "plate_name": "测试行业", "plate_type": "INDUSTRY"}],
+            "belong_boards": [{"name": "测试行业", "code": "HK.TEST", "type": "INDUSTRY"}],
             "source_chain": [{"provider": "futu.financials", "result": "ok", "duration_ms": 1}],
             "errors": [],
         }
@@ -162,6 +169,7 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(provider, "fundamental_bundle_futu")
         self.assertIs(payload, futu_bundle)
+        # All core growth/earnings fields present -> no field gaps -> no yfinance call.
         self.assertEqual(manager._yfinance_fundamental_adapter.get_fundamental_bundle.call_count, 0)
 
     @patch("data_provider.futu_fetcher.FutuFetcher.has_configured_endpoint", return_value=False)
@@ -329,4 +337,57 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
         self.assertEqual(payload["earnings"]["financial_report"]["net_profit_parent"], 2.95e10)
         self.assertEqual(payload["institution"]["company_profile"]["公司名称"], "测试公司")
         providers = [s.get("provider") for s in payload["source_chain"]]
+        self.assertIn("yfinance.info", providers)
+
+    @patch("data_provider.futu_fetcher.FutuFetcher.has_configured_endpoint", return_value=True)
+    @patch("data_provider.futu_fundamental_adapter.FutuFundamentalAdapter")
+    @patch("src.config.get_config")
+    def test_fetch_offshore_bundle_fills_partial_futu_fields_from_yfinance(
+        self, mock_get_config, mock_adapter, mock_has_ep
+    ):
+        """Partial Futu hits (some core fields present) must not drop the rest."""
+        from types import SimpleNamespace
+
+        mock_get_config.return_value = SimpleNamespace()
+        # Futu matched only some aliases: growth has revenue_yoy but net_profit_yoy
+        # / gross_margin are None; earnings only has basic_eps.
+        mock_adapter.return_value.get_fundamental_bundle.return_value = {
+            "status": "partial",
+            "growth": {"revenue_yoy": 10.0, "net_profit_yoy": None, "gross_margin": 40.0},
+            "earnings": {"financial_report": {"basic_eps": 0.2}},
+            "institution": {"company_profile": {"公司名称": "测试公司"}},
+            "capital_flow": {},
+            "belong_boards": [],
+            "source_chain": [{"provider": "futu.financials", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+        manager = self._make_manager()
+        manager._yfinance_fundamental_adapter.get_fundamental_bundle.return_value = {
+            "status": "ok",
+            "growth": {"revenue_yoy": 16.5, "net_profit_yoy": 19.3, "gross_margin": 47.8},
+            "earnings": {
+                "financial_report": {
+                    "revenue": 1.11e11,
+                    "net_profit_parent": 2.95e10,
+                    "basic_eps": 1.9,
+                }
+            },
+            "belong_boards": [],
+            "source_chain": [{"provider": "yfinance.info", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+
+        payload, err, ms, provider = manager._fetch_offshore_fundamental_bundle("HK00700", "hk", 10.0)
+
+        self.assertEqual(provider, "fundamental_bundle_futu")
+        self.assertEqual(manager._yfinance_fundamental_adapter.get_fundamental_bundle.call_count, 1)
+        # Futu-present fields stay; missing fields filled from yfinance.
+        self.assertEqual(payload["growth"]["revenue_yoy"], 10.0)
+        self.assertEqual(payload["growth"]["net_profit_yoy"], 19.3)
+        self.assertEqual(payload["growth"]["gross_margin"], 40.0)
+        self.assertEqual(payload["earnings"]["financial_report"]["basic_eps"], 0.2)
+        self.assertEqual(payload["earnings"]["financial_report"]["revenue"], 1.11e11)
+        self.assertEqual(payload["earnings"]["financial_report"]["net_profit_parent"], 2.95e10)
+        providers = [s.get("provider") for s in payload["source_chain"]]
+        self.assertIn("futu.financials", providers)
         self.assertIn("yfinance.info", providers)
