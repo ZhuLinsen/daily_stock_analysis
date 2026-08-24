@@ -182,9 +182,16 @@ class FutuFundamentalAdapter:
             }
             if ttm_cash is not None:
                 # Yield needs a price; try a lightweight snapshot if available.
+                # FutuFetcher.get_realtime_quote returns a UnifiedRealtimeQuote
+                # dataclass (not a dict), so read `price` via getattr to cover
+                # both shapes.
                 quote, quote_err = self._ok_payload(self._fetcher.get_realtime_quote(code))
-                if not quote_err and isinstance(quote, dict):
-                    latest_price = self._number(quote.get("price") or quote.get("last_price"))
+                if not quote_err and quote is not None:
+                    latest_price = self._number(
+                        getattr(quote, "price", None)
+                        or (quote.get("price") if isinstance(quote, dict) else None)
+                        or (quote.get("last_price") if isinstance(quote, dict) else None)
+                    )
                     if latest_price not in (None, 0):
                         dividend_payload["ttm_dividend_yield_pct"] = round(
                             float(ttm_cash) / float(latest_price) * 100.0, 4

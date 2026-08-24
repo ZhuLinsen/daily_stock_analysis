@@ -506,3 +506,34 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
         self.assertEqual(dividend["ttm_cash_dividend_per_share"], 2.35)
         self.assertEqual(dividend["ttm_dividend_yield_pct"], round(2.35 / 50.0 * 100.0, 4))
         self.assertNotIn("ex_date", dividend["events"][0])
+
+    def test_dividends_compute_yield_from_unified_quote_object(self):
+        """Yield must be computed when get_realtime_quote returns a UnifiedRealtimeQuote dataclass."""
+        from unittest.mock import Mock
+
+        from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
+
+        fetcher = Mock()
+        fetcher.get_financials_statements.return_value = {"report_list": []}
+        fetcher.get_stock_basicinfo.return_value = {
+            "static_info": {"lot_size": 200, "suspension": False},
+            "company_profile": {"公司名称": "测试公司"},
+        }
+        fetcher.get_corporate_actions_dividends.return_value = {
+            "dividend_list": [
+                {"ex_date": "2026-06-30", "dividend_per_share": 1.25, "currency": "HKD"},
+            ]
+        }
+        fetcher.get_corporate_actions_stock_splits.return_value = {"split_list": []}
+        fetcher.get_capital_flow.return_value = None
+        fetcher.get_owner_plate.return_value = None
+        # Real FutuFetcher shape: UnifiedRealtimeQuote, not dict.
+        fetcher.get_realtime_quote.return_value = UnifiedRealtimeQuote(
+            code="HK00700", name="Tencent", price=50.0, source=RealtimeSource.FUTU
+        )
+
+        bundle = FutuFundamentalAdapter(fetcher).get_fundamental_bundle("HK00700")
+
+        dividend = bundle["earnings"]["dividend"]
+        self.assertEqual(dividend["ttm_cash_dividend_per_share"], 1.25)
+        self.assertEqual(dividend["ttm_dividend_yield_pct"], round(1.25 / 50.0 * 100.0, 4))
