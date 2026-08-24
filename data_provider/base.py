@@ -886,6 +886,13 @@ class DataFetcherManager:
         if entry is None:
             return ""
         exchange = entry.exchange.upper()
+        if exchange == "CSI":
+            # CSI indices are only supported by AkShare (``csi{code}``); the
+            # other providers in the fixed daily chain return an empty symbol
+            # so the caller records an ``unsupported`` provider-run and skips.
+            if fetcher_name == "AkshareFetcher":
+                return f"csi{entry.bare_code}"
+            return ""
         if exchange not in {"SH", "SZ"}:
             return ""
         if fetcher_name in {"TencentFetcher", "AkshareFetcher"}:

@@ -39,8 +39,14 @@ export async function loadStockIndex(): Promise<IndexLoadResult> {
       ? unpackTuples(data as StockIndexTuple[])
       : data as StockIndexItem[];
 
+    // Story 1.4 Web compatibility gate: the shared payload may now carry
+    // ``assetType=index`` rows, but the current autocomplete/popular/group
+    // consumers must not see them. Filter index rows out before constructing
+    // the successful result so stock/ETF behaviour is unchanged.
+    const visibleItems = items.filter(item => item.assetType !== 'index');
+
     return {
-      data: items,
+      data: visibleItems,
       loaded: true,
       fallback: false,
     };
