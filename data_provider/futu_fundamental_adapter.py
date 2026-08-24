@@ -173,7 +173,23 @@ class FutuFundamentalAdapter:
         if error:
             result["errors"].append(f"owner_plate:{error}")
         elif isinstance(payload, pd.DataFrame) and not payload.empty:
-            result["belong_boards"] = payload[["plate_code", "plate_name", "plate_type"]].to_dict(orient="records")
+            # OpenD returns plate_code / plate_name / plate_type; DSA's downstream
+            # consumers (notification, board-detail extraction, market structure)
+            # only understand the name/type/code contract, so normalize here.
+            boards = []
+            for _, row in payload.iterrows():
+                name = self._text(row.get("plate_name"))
+                if not name:
+                    continue
+                item: Dict[str, Any] = {"name": name}
+                code_raw = self._text(row.get("plate_code"))
+                if code_raw:
+                    item["code"] = code_raw
+                type_raw = self._text(row.get("plate_type"))
+                if type_raw:
+                    item["type"] = type_raw
+                boards.append(item)
+            result["belong_boards"] = boards
             result["source_chain"].extend(self._source("owner_plate"))
 
     def get_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:

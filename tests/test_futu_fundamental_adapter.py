@@ -52,7 +52,9 @@ class TestFutuFundamentalAdapter(unittest.TestCase):
         self.assertEqual(bundle["earnings"]["financial_report"]["net_profit_parent"], 200.0)
         self.assertEqual(bundle["institution"]["company_profile"]["公司名称"], "测试公司")
         self.assertEqual(bundle["capital_flow"]["latest"]["main_in_flow"], 10.0)
-        self.assertEqual(bundle["belong_boards"][0]["plate_name"], "测试行业")
+        self.assertEqual(bundle["belong_boards"][0]["name"], "测试行业")
+        self.assertEqual(bundle["belong_boards"][0]["code"], "HK.TEST")
+        self.assertEqual(bundle["belong_boards"][0]["type"], "INDUSTRY")
         self.assertEqual(bundle["institution"]["static_info"]["lot_size"], 200)
         self.assertFalse(bundle["institution"]["static_info"]["suspension"])
         self.assertEqual(bundle["institution"]["company_profile"]["公司名称"], "测试公司")
@@ -201,3 +203,39 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
 
         self.assertEqual(provider, "fundamental_bundle_yfinance")
         self.assertEqual(payload["growth"]["revenue_yoy"], 5.0)
+
+    def test_futu_boards_normalize_to_name_code_type_contract(self):
+        """Futu OpenD plate_* fields must map to DSA's name/type/code contract."""
+        from unittest.mock import Mock
+
+        import pandas as pd
+
+        fetcher = Mock()
+        fetcher.get_owner_plate.return_value = pd.DataFrame(
+            [{"plate_code": "HK.TEST", "plate_name": "测试行业", "plate_type": "INDUSTRY"}]
+        )
+        bundle = FutuFundamentalAdapter(fetcher).get_fundamental_bundle("HK01810")
+
+        boards = bundle["belong_boards"]
+        self.assertEqual(len(boards), 1)
+        self.assertEqual(boards[0]["name"], "测试行业")
+        self.assertEqual(boards[0]["code"], "HK.TEST")
+        self.assertEqual(boards[0]["type"], "INDUSTRY")
+        self.assertNotIn("plate_name", boards[0])
+        self.assertNotIn("plate_code", boards[0])
+        self.assertNotIn("plate_type", boards[0])
+
+    def test_futu_boards_survive_extract_board_detail_fields(self):
+        """HK Futu belong_boards must be consumable by the board-detail helper."""
+        from src.utils.data_processing import extract_board_detail_fields
+
+        snapshot = {
+            "fundamental_context": {
+                "market": "hk",
+                "belong_boards": [{"name": "测试行业", "code": "HK.TEST", "type": "INDUSTRY"}],
+            },
+        }
+        extracted = extract_board_detail_fields(snapshot)
+        self.assertEqual(extracted["belong_boards"][0]["name"], "测试行业")
+        self.assertEqual(extracted["belong_boards"][0]["code"], "HK.TEST")
+        self.assertEqual(extracted["belong_boards"][0]["type"], "INDUSTRY")
