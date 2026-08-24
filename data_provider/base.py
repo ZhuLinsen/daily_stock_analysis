@@ -2198,6 +2198,7 @@ class DataFetcherManager:
                 primary_quote = None
                 primary_token = None
                 primary_src_index = -1
+                fallback_from = None
                 for index, source in enumerate(hk_priority):
                     mapped = source_map.get(source)
                     if mapped is None:
@@ -2211,6 +2212,9 @@ class DataFetcherManager:
                         primary_src_index = index
                         logger.info("[实时行情] 港股 %s 成功获取 (来源: %s)", stock_code, fetcher_name)
                         break
+                    # 该源失败：记住它的 token，供后续成功源作为 fallback_from 使用。
+                    if fallback_from is None:
+                        fallback_from = self._realtime_fetcher_token(fetcher_name, **fetcher_kw)
                 if primary_quote is not None:
                     # 用后续数据源补充缺失字段（volume_ratio / turnover_rate / 估值 / 市值），
                     # 保持与美股路径一致的 _supplement_quote 补字段能力。
@@ -2224,6 +2228,7 @@ class DataFetcherManager:
                         self._supplement_quote(stock_code, primary_quote, fetcher_name, **fetcher_kw)
                     return self._enrich_realtime_quote(
                         primary_quote,
+                        fallback_from=fallback_from,
                         realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
                     )
                 if log_final_failure:

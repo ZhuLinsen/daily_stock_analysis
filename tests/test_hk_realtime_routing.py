@@ -86,7 +86,9 @@ class TestHKRealtimeRouting(unittest.TestCase):
 
         self.assertIs(quote, akshare_quote)
         self.assertEqual(len(futu.calls), 1)
-        self.assertEqual(akshare.calls, [(("HK01810",), {"source": "hk"})])
+        self.assertEqual(akshare.calls, [((("HK01810",), {"source": "hk"}))])
+        # 首选源 Futu 失败、次源 AkShare 接管时，应保留 fallback_from 元数据。
+        self.assertEqual(getattr(quote, "fallback_from", None), "futu")
 
     @patch("src.config.get_config")
     def test_manager_supplements_partial_futu_quote_from_akshare(self, mock_get_config):

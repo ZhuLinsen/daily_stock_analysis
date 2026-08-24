@@ -8,6 +8,7 @@ intentionally not imported or exposed here.
 import logging
 import os
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import pandas as pd
@@ -16,6 +17,28 @@ from .base import BaseFetcher, STANDARD_COLUMNS
 from .realtime_types import RealtimeSource, UnifiedRealtimeQuote, safe_float
 
 logger = logging.getLogger(__name__)
+
+# Futu get_market_snapshot returns update_time as a naive "yyyy-MM-dd HH:mm:ss"
+# string; per the official docs HK and A-share quotes use Beijing time (UTC+8).
+# DSA's _parse_realtime_timestamp treats naive values as UTC, so we attach the
+# market-local offset here to keep provider_timestamp / stale_seconds correct.
+_HK_UPDATE_TIME_OFFSET = timezone(timedelta(hours=8))
+
+
+def _hk_provider_timestamp(value: Any) -> Optional[str]:
+    """Normalize Futu snapshot update_time to an offset-aware ISO string."""
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_HK_UPDATE_TIME_OFFSET)
+    return parsed.isoformat()
 
 
 def _hk_symbol(stock_code: str) -> Optional[str]:
@@ -283,7 +306,7 @@ class FutuFetcher(BaseFetcher):
                 pb_ratio=safe_float(q.get("pb_ratio")),
                 total_mv=safe_float(q.get("total_market_val")),
                 circ_mv=safe_float(q.get("circular_market_val")),
-                provider_timestamp=str(q.get("update_time") or "") or None,
+                provider_timestamp=_hk_provider_timestamp(q.get("update_time")),
             )
         except Exception as exc:
             logger.warning("[Futu] realtime quote failed(%s): %s", symbol, exc)
