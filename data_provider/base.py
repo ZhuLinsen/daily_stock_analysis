@@ -3184,6 +3184,31 @@ class DataFetcherManager:
         return True
 
     @staticmethod
+    def _earnings_block_has_values(payload: Any) -> bool:
+        """Field-level check for the earnings block.
+
+        A truthy dict with only metadata (report_date/period/currency) is a
+        shell, not usable earnings. Require a core numeric field (revenue /
+        net_profit_parent / basic_eps / gross_profit) or a populated dividend
+        section before treating the block as usable.
+        """
+        if not isinstance(payload, dict):
+            return DataFetcherManager._has_meaningful_payload(payload)
+        report = payload.get("financial_report")
+        if isinstance(report, dict):
+            for key in ("revenue", "net_profit_parent", "basic_eps", "gross_profit"):
+                if DataFetcherManager._has_meaningful_payload(report.get(key)):
+                    return True
+        dividend = payload.get("dividend")
+        if DataFetcherManager._has_meaningful_payload(dividend):
+            return True
+        # Fall back to the generic check for other earnings sub-blocks.
+        for key in ("financial_reports", "indicators"):
+            if key in payload and DataFetcherManager._has_meaningful_payload(payload.get(key)):
+                return True
+        return False
+
+    @staticmethod
     def _infer_block_status(payload: Any, fallback_status: str) -> str:
         if DataFetcherManager._has_meaningful_payload(payload):
             return "ok"
@@ -3307,7 +3332,17 @@ class DataFetcherManager:
             """Fill Futu blocks missing in the yfinance bundle (Futu wins when both exist)."""
             merged: Dict[str, Any] = dict(futu_payload)
             for key in ("growth", "earnings", "institution", "capital_flow", "belong_boards"):
-                if not merged.get(key) and yfinance_payload.get(key):
+                source_has = (
+                    DataFetcherManager._earnings_block_has_values(yfinance_payload.get(key))
+                    if key == "earnings"
+                    else self._has_meaningful_payload(yfinance_payload.get(key))
+                )
+                merged_has = (
+                    DataFetcherManager._earnings_block_has_values(merged.get(key))
+                    if key == "earnings"
+                    else self._has_meaningful_payload(merged.get(key))
+                )
+                if not merged_has and source_has:
                     merged[key] = yfinance_payload.get(key)
             merged["source_chain"] = list(
                 futu_payload.get("source_chain", [])
@@ -3355,7 +3390,11 @@ class DataFetcherManager:
             if has_content:
                 # Futu partial success: keep the blocks it returned but do not
                 # silently drop growth/earnings that yfinance could still provide.
-                missing_core = not futu_payload.get("growth") or not futu_payload.get("earnings")
+                # Use a field-level check (not dict truthiness): a truthy dict of
+                # all-None / metadata-only values is not usable growth/earnings.
+                missing_core = not self._has_meaningful_payload(
+                    futu_payload.get("growth")
+                ) or not self._earnings_block_has_values(futu_payload.get("earnings"))
                 remaining_timeout = max(bundle_timeout - futu_ms / 1000.0, 0.0)
                 if missing_core and remaining_timeout > 0:
                     yfinance_payload, yfinance_err, yfinance_ms = self._run_with_retry(

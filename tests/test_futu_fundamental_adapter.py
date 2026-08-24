@@ -284,3 +284,49 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
         providers = [s.get("provider") for s in payload["source_chain"]]
         self.assertIn("futu.financials", providers)
         self.assertIn("yfinance.info", providers)
+
+    @patch("data_provider.futu_fetcher.FutuFetcher.has_configured_endpoint", return_value=True)
+    @patch("data_provider.futu_fundamental_adapter.FutuFundamentalAdapter")
+    @patch("src.config.get_config")
+    def test_fetch_offshore_bundle_merges_yfinance_when_futu_growth_is_all_none(
+        self, mock_get_config, mock_adapter, mock_has_ep
+    ):
+        """Truthy but value-less growth/earnings (all-None) must still pull yfinance."""
+        from types import SimpleNamespace
+
+        mock_get_config.return_value = SimpleNamespace()
+        # Futu _financials() writes the fixed key set even when every value is
+        # None or display_name did not match the adapter aliases.
+        mock_adapter.return_value.get_fundamental_bundle.return_value = {
+            "status": "partial",
+            "growth": {"revenue_yoy": None, "net_profit_yoy": None, "gross_margin": None},
+            "earnings": {
+                "financial_report": {"report_date": None, "period": "FY2025", "currency": None},
+                "dividend": {},
+            },
+            "institution": {"company_profile": {"公司名称": "测试公司"}},
+            "capital_flow": {"latest": {"main_in_flow": 10.0}},
+            "belong_boards": [{"name": "测试行业", "code": "HK.TEST", "type": "INDUSTRY"}],
+            "source_chain": [{"provider": "futu.financials", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+        manager = self._make_manager()
+        manager._yfinance_fundamental_adapter.get_fundamental_bundle.return_value = {
+            "status": "ok",
+            "growth": {"revenue_yoy": 16.5, "net_profit_yoy": 19.3},
+            "earnings": {"financial_report": {"net_profit_parent": 2.95e10}},
+            "belong_boards": [],
+            "source_chain": [{"provider": "yfinance.info", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+
+        payload, err, ms, provider = manager._fetch_offshore_fundamental_bundle("HK00700", "hk", 10.0)
+
+        self.assertEqual(provider, "fundamental_bundle_futu")
+        # All-None Futu growth replaced by meaningful yfinance values.
+        self.assertEqual(payload["growth"]["revenue_yoy"], 16.5)
+        self.assertEqual(payload["growth"]["net_profit_yoy"], 19.3)
+        self.assertEqual(payload["earnings"]["financial_report"]["net_profit_parent"], 2.95e10)
+        self.assertEqual(payload["institution"]["company_profile"]["公司名称"], "测试公司")
+        providers = [s.get("provider") for s in payload["source_chain"]]
+        self.assertIn("yfinance.info", providers)
