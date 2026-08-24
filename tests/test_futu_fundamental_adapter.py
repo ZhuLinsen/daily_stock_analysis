@@ -239,3 +239,48 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
         self.assertEqual(extracted["belong_boards"][0]["name"], "测试行业")
         self.assertEqual(extracted["belong_boards"][0]["code"], "HK.TEST")
         self.assertEqual(extracted["belong_boards"][0]["type"], "INDUSTRY")
+
+    @patch("data_provider.futu_fetcher.FutuFetcher.has_configured_endpoint", return_value=True)
+    @patch("data_provider.futu_fundamental_adapter.FutuFundamentalAdapter")
+    @patch("src.config.get_config")
+    def test_fetch_offshore_bundle_merges_yfinance_when_futu_missing_growth_earnings(
+        self, mock_get_config, mock_adapter, mock_has_ep
+    ):
+        """Futu partial success must not drop growth/earnings that yfinance still provides."""
+        from types import SimpleNamespace
+
+        mock_get_config.return_value = SimpleNamespace()
+        # Futu only has static info / capital flow / boards; statements failed.
+        mock_adapter.return_value.get_fundamental_bundle.return_value = {
+            "status": "partial",
+            "growth": {},
+            "earnings": {},
+            "institution": {"company_profile": {"公司名称": "测试公司"}},
+            "capital_flow": {"latest": {"main_in_flow": 10.0}},
+            "belong_boards": [{"name": "测试行业", "code": "HK.TEST", "type": "INDUSTRY"}],
+            "source_chain": [{"provider": "futu.financials", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+        manager = self._make_manager()
+        manager._yfinance_fundamental_adapter.get_fundamental_bundle.return_value = {
+            "status": "ok",
+            "growth": {"revenue_yoy": 16.5, "net_profit_yoy": 19.3},
+            "earnings": {"financial_report": {"net_profit_parent": 2.95e10}},
+            "belong_boards": [],
+            "source_chain": [{"provider": "yfinance.info", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+
+        payload, err, ms, provider = manager._fetch_offshore_fundamental_bundle("HK00700", "hk", 10.0)
+
+        self.assertEqual(provider, "fundamental_bundle_futu")
+        # yfinance growth/earnings merged in; Futu blocks kept.
+        self.assertEqual(payload["growth"]["revenue_yoy"], 16.5)
+        self.assertEqual(payload["growth"]["net_profit_yoy"], 19.3)
+        self.assertEqual(payload["earnings"]["financial_report"]["net_profit_parent"], 2.95e10)
+        self.assertEqual(payload["institution"]["company_profile"]["公司名称"], "测试公司")
+        self.assertEqual(payload["belong_boards"][0]["name"], "测试行业")
+        self.assertEqual(payload["status"], "partial")
+        providers = [s.get("provider") for s in payload["source_chain"]]
+        self.assertIn("futu.financials", providers)
+        self.assertIn("yfinance.info", providers)

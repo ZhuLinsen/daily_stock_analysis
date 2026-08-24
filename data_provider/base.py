@@ -3280,9 +3280,11 @@ class DataFetcherManager:
 
         For HK with a configured Futu OpenD endpoint, try the Futu fundamental
         adapter first (company profile, statements, dividends/splits, capital
-        flow, boards); if it yields no usable content, fall back to yfinance so
-        the existing HK/US payload shape is preserved. Returns
-        (payload, error, duration_ms, provider_name).
+        flow, boards). When Futu succeeds only partially (e.g. statements
+        failed but static info worked), fetch the yfinance bundle as well and
+        merge the missing blocks so existing HK growth/earnings capability is
+        never silently downgraded. Returns (payload, error, duration_ms,
+        provider_name).
         """
         from src.config import get_config
 
@@ -3295,6 +3297,30 @@ class DataFetcherManager:
                 "fundamental_bundle_yfinance",
             )
             return payload or {}, err, ms, "fundamental_bundle_yfinance"
+
+        def _merge_bundles(
+            futu_payload: Dict[str, Any],
+            yfinance_payload: Dict[str, Any],
+            futu_ms: int,
+            yfinance_ms: int,
+        ) -> Tuple[Dict[str, Any], Optional[str], int, str]:
+            """Fill Futu blocks missing in the yfinance bundle (Futu wins when both exist)."""
+            merged: Dict[str, Any] = dict(futu_payload)
+            for key in ("growth", "earnings", "institution", "capital_flow", "belong_boards"):
+                if not merged.get(key) and yfinance_payload.get(key):
+                    merged[key] = yfinance_payload.get(key)
+            merged["source_chain"] = list(
+                futu_payload.get("source_chain", [])
+            ) + list(yfinance_payload.get("source_chain", []))
+            merged["errors"] = list(futu_payload.get("errors", [])) + list(
+                yfinance_payload.get("errors", [])
+            )
+            has_content = any(
+                merged.get(key)
+                for key in ("growth", "earnings", "institution", "capital_flow", "belong_boards")
+            )
+            merged["status"] = "partial" if has_content else "not_supported"
+            return merged, None, futu_ms + yfinance_ms, "fundamental_bundle_futu"
 
         try:
             from data_provider.futu_fetcher import FutuFetcher
@@ -3327,6 +3353,23 @@ class DataFetcherManager:
                 for key in ("growth", "earnings", "institution", "capital_flow", "belong_boards")
             )
             if has_content:
+                # Futu partial success: keep the blocks it returned but do not
+                # silently drop growth/earnings that yfinance could still provide.
+                missing_core = not futu_payload.get("growth") or not futu_payload.get("earnings")
+                remaining_timeout = max(bundle_timeout - futu_ms / 1000.0, 0.0)
+                if missing_core and remaining_timeout > 0:
+                    yfinance_payload, yfinance_err, yfinance_ms = self._run_with_retry(
+                        lambda: self._yfinance_fundamental_adapter.get_fundamental_bundle(stock_code),
+                        remaining_timeout,
+                        "fundamental_bundle_yfinance",
+                    )
+                    if yfinance_err is None and isinstance(yfinance_payload, dict):
+                        return _merge_bundles(futu_payload, yfinance_payload, futu_ms, yfinance_ms)
+                    logger.warning(
+                        "[futu-fundamental] %s yfinance supplement failed (%s); keeping partial Futu bundle",
+                        stock_code,
+                        yfinance_err,
+                    )
                 return futu_payload, None, futu_ms, "fundamental_bundle_futu"
             logger.info(
                 "[futu-fundamental] %s bundle empty (status=%s), falling back to yfinance",
