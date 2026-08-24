@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
@@ -103,3 +103,101 @@ class TestFutuFundamentalAdapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFutuFundamentalIntegration(unittest.TestCase):
+    """Ensure get_fundamental_context() hits the Futu bundle for HK when configured."""
+
+    def _make_manager(self):
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        if "litellm" not in sys.modules:
+            sys.modules["litellm"] = MagicMock()
+        if "json_repair" not in sys.modules:
+            sys.modules["json_repair"] = MagicMock()
+
+        from data_provider.base import DataFetcherManager
+
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        manager._futu_fundamental_fetcher = None
+        manager._yfinance_fundamental_adapter = Mock()
+        manager._yfinance_fundamental_adapter.get_fundamental_bundle.return_value = {
+            "status": "not_supported", "growth": {}, "earnings": {},
+            "belong_boards": [], "source_chain": [], "errors": [],
+        }
+        manager._fundamental_adapter = Mock()
+        manager._fundamental_cache = {}
+        manager._fundamental_cache_lock = __import__("threading").RLock()
+        manager._fundamental_timeout_worker_limit = 8
+        manager._fundamental_timeout_slots = __import__("threading").BoundedSemaphore(8)
+        manager._run_with_retry = Mock(side_effect=lambda task, timeout, name: (task(), None, 10))
+        return manager
+
+    @patch("data_provider.futu_fetcher.FutuFetcher.has_configured_endpoint", return_value=True)
+    @patch("data_provider.futu_fundamental_adapter.FutuFundamentalAdapter")
+    @patch("src.config.get_config")
+    def test_fetch_offshore_bundle_prefers_futu_for_hk(self, mock_get_config, mock_adapter, mock_has_ep):
+        from types import SimpleNamespace
+
+        mock_get_config.return_value = SimpleNamespace()
+        futu_bundle = {
+            "status": "partial",
+            "growth": {"revenue_yoy": 10.0},
+            "earnings": {"financial_report": {"net_profit_parent": 200.0}},
+            "institution": {"company_profile": {"公司名称": "测试公司"}},
+            "capital_flow": {"latest": {"main_in_flow": 10.0}},
+            "belong_boards": [{"plate_code": "HK.TEST", "plate_name": "测试行业", "plate_type": "INDUSTRY"}],
+            "source_chain": [{"provider": "futu.financials", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+        mock_adapter.return_value.get_fundamental_bundle.return_value = futu_bundle
+        manager = self._make_manager()
+
+        payload, err, ms, provider = manager._fetch_offshore_fundamental_bundle("HK00700", "hk", 10.0)
+
+        self.assertIsNone(err)
+        self.assertEqual(provider, "fundamental_bundle_futu")
+        self.assertIs(payload, futu_bundle)
+        self.assertEqual(manager._yfinance_fundamental_adapter.get_fundamental_bundle.call_count, 0)
+
+    @patch("data_provider.futu_fetcher.FutuFetcher.has_configured_endpoint", return_value=False)
+    @patch("src.config.get_config")
+    def test_fetch_offshore_bundle_uses_yfinance_without_futu(self, mock_get_config, mock_has_ep):
+        from types import SimpleNamespace
+
+        mock_get_config.return_value = SimpleNamespace()
+        manager = self._make_manager()
+        manager._yfinance_fundamental_adapter.get_fundamental_bundle.return_value = {
+            "status": "not_supported", "growth": {}, "earnings": {},
+            "belong_boards": [], "source_chain": [], "errors": [],
+        }
+
+        payload, err, ms, provider = manager._fetch_offshore_fundamental_bundle("HK00700", "hk", 10.0)
+
+        self.assertEqual(provider, "fundamental_bundle_yfinance")
+        self.assertEqual(manager._yfinance_fundamental_adapter.get_fundamental_bundle.call_count, 1)
+
+    @patch("data_provider.futu_fetcher.FutuFetcher.has_configured_endpoint", return_value=True)
+    @patch("data_provider.futu_fundamental_adapter.FutuFundamentalAdapter")
+    @patch("src.config.get_config")
+    def test_fetch_offshore_bundle_falls_back_to_yfinance_when_futu_empty(self, mock_get_config, mock_adapter, mock_has_ep):
+        from types import SimpleNamespace
+
+        mock_get_config.return_value = SimpleNamespace()
+        mock_adapter.return_value.get_fundamental_bundle.return_value = {
+            "status": "not_supported", "growth": {}, "earnings": {},
+            "institution": {}, "capital_flow": {}, "belong_boards": [],
+            "source_chain": [], "errors": [],
+        }
+        manager = self._make_manager()
+        manager._yfinance_fundamental_adapter.get_fundamental_bundle.return_value = {
+            "status": "ok", "growth": {"revenue_yoy": 5.0}, "earnings": {},
+            "belong_boards": [], "source_chain": [], "errors": [],
+        }
+
+        payload, err, ms, provider = manager._fetch_offshore_fundamental_bundle("HK00700", "hk", 10.0)
+
+        self.assertEqual(provider, "fundamental_bundle_yfinance")
+        self.assertEqual(payload["growth"]["revenue_yoy"], 5.0)

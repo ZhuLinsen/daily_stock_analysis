@@ -672,6 +672,7 @@ class DataFetcherManager:
             self._init_default_fetchers()
         self._fundamental_adapter = AkshareFundamentalAdapter()
         self._yfinance_fundamental_adapter = YfinanceFundamentalAdapter()
+        self._futu_fundamental_fetcher = None
         self._tickflow_fetcher = None
         self._tickflow_api_key: Optional[str] = None
         self._tickflow_lock = RLock()
@@ -2196,7 +2197,8 @@ class DataFetcherManager:
                 }
                 primary_quote = None
                 primary_token = None
-                for source in hk_priority:
+                primary_src_index = -1
+                for index, source in enumerate(hk_priority):
                     mapped = source_map.get(source)
                     if mapped is None:
                         logger.warning("[实时行情] 忽略未知港股数据源: %s", source)
@@ -2206,9 +2208,20 @@ class DataFetcherManager:
                     if quote is not None:
                         primary_quote = quote
                         primary_token = self._realtime_fetcher_token(fetcher_name, **fetcher_kw)
+                        primary_src_index = index
                         logger.info("[实时行情] 港股 %s 成功获取 (来源: %s)", stock_code, fetcher_name)
                         break
                 if primary_quote is not None:
+                    # 用后续数据源补充缺失字段（volume_ratio / turnover_rate / 估值 / 市值），
+                    # 保持与美股路径一致的 _supplement_quote 补字段能力。
+                    for source in hk_priority[primary_src_index + 1:]:
+                        mapped = source_map.get(source)
+                        if mapped is None:
+                            continue
+                        if not self._quote_needs_supplement(primary_quote):
+                            break
+                        fetcher_name, fetcher_kw = mapped
+                        self._supplement_quote(stock_code, primary_quote, fetcher_name, **fetcher_kw)
                     return self._enrich_realtime_quote(
                         primary_quote,
                         realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
@@ -3252,6 +3265,71 @@ class DataFetcherManager:
             **blocks,
         }
 
+    def _fetch_offshore_fundamental_bundle(
+        self,
+        stock_code: str,
+        market: str,
+        bundle_timeout: float,
+    ) -> Tuple[Dict[str, Any], Optional[str], int, str]:
+        """Fetch the fundamental bundle for offshore markets.
+
+        For HK with a configured Futu OpenD endpoint, try the Futu fundamental
+        adapter first (company profile, statements, dividends/splits, capital
+        flow, boards); if it yields no usable content, fall back to yfinance so
+        the existing HK/US payload shape is preserved. Returns
+        (payload, error, duration_ms, provider_name).
+        """
+        from src.config import get_config
+
+        config = get_config()
+
+        def _use_yfinance() -> Tuple[Dict[str, Any], Optional[str], int, str]:
+            payload, err, ms = self._run_with_retry(
+                lambda: self._yfinance_fundamental_adapter.get_fundamental_bundle(stock_code),
+                bundle_timeout,
+                "fundamental_bundle_yfinance",
+            )
+            return payload or {}, err, ms, "fundamental_bundle_yfinance"
+
+        try:
+            from data_provider.futu_fetcher import FutuFetcher
+            from data_provider.futu_fundamental_adapter import FutuFundamentalAdapter
+        except Exception as exc:  # noqa: BLE001 - fail open to yfinance
+            logger.warning("[futu-fundamental] import failed, using yfinance: %s", exc)
+            return _use_yfinance()
+
+        if market != "hk" or not FutuFetcher.has_configured_endpoint():
+            return _use_yfinance()
+
+        futu_fetcher = getattr(self, "_futu_fundamental_fetcher", None)
+        if futu_fetcher is None:
+            try:
+                futu_fetcher = FutuFetcher()
+                self._futu_fundamental_fetcher = futu_fetcher
+            except Exception as exc:  # noqa: BLE001 - fail open to yfinance
+                logger.warning("[futu-fundamental] fetcher init failed, using yfinance: %s", exc)
+                return _use_yfinance()
+
+        adapter = FutuFundamentalAdapter(futu_fetcher)
+        futu_payload, futu_err, futu_ms = self._run_with_retry(
+            lambda: adapter.get_fundamental_bundle(stock_code),
+            bundle_timeout,
+            "fundamental_bundle_futu",
+        )
+        if futu_err is None and isinstance(futu_payload, dict):
+            has_content = any(
+                futu_payload.get(key)
+                for key in ("growth", "earnings", "institution", "capital_flow", "belong_boards")
+            )
+            if has_content:
+                return futu_payload, None, futu_ms, "fundamental_bundle_futu"
+            logger.info(
+                "[futu-fundamental] %s bundle empty (status=%s), falling back to yfinance",
+                stock_code,
+                futu_payload.get("status"),
+            )
+        return _use_yfinance()
+
     def _build_offshore_fundamental_context(
         self,
         stock_code: str,
@@ -3344,22 +3422,26 @@ class DataFetcherManager:
             [valuation_err] if valuation_err else [],
         )
 
-        # Fundamental bundle via yfinance.
+        # Fundamental bundle via Futu (HK only, when OpenD is configured), then
+        # fall back to yfinance for the same payload shape.
         bundle_timeout = min(fetch_timeout, max(stage_timeout - (time.time() - start_ts), 0.0))
         if bundle_timeout <= 0:
             bundle_payload, bundle_err, bundle_ms = {}, "fundamental stage timeout", 0
+            bundle_provider = "fundamental_bundle_yfinance"
         else:
-            bundle_payload, bundle_err, bundle_ms = self._run_with_retry(
-                lambda: self._yfinance_fundamental_adapter.get_fundamental_bundle(stock_code),
-                bundle_timeout,
-                "fundamental_bundle_yfinance",
+            bundle_payload, bundle_err, bundle_ms, bundle_provider = (
+                self._fetch_offshore_fundamental_bundle(
+                    stock_code,
+                    market,
+                    bundle_timeout,
+                )
             )
         if not isinstance(bundle_payload, dict):
             bundle_payload = {}
 
         bundle_chain = self._normalize_source_chain(
             bundle_payload.get("source_chain", []),
-            "fundamental_bundle_yfinance",
+            bundle_provider,
             str(bundle_payload.get("status", "not_supported")),
             bundle_ms,
         )
@@ -3387,9 +3469,47 @@ class DataFetcherManager:
             list(adapter_errors),
         )
 
-        # capital_flow / dragon_tiger / boards: no offshore data feed today -> not_supported.
-        for block in ("capital_flow", "dragon_tiger", "boards"):
-            result_ctx[block] = self._build_fundamental_block(
+        # capital_flow / dragon_tiger / boards: Futu fills capital_flow and
+        # belong_boards for HK; everything else keeps not_supported (fail-open).
+        futu_capital_flow = (
+            bundle_payload.get("capital_flow")
+            if isinstance(bundle_payload.get("capital_flow"), dict) and bundle_payload.get("capital_flow")
+            else {}
+        )
+        if futu_capital_flow:
+            result_ctx["capital_flow"] = self._build_fundamental_block(
+                "ok" if futu_capital_flow.get("latest") or futu_capital_flow.get("rows") else "partial",
+                futu_capital_flow,
+                bundle_chain,
+                [],
+            )
+        else:
+            result_ctx["capital_flow"] = self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["not supported for this source"],
+            )
+        result_ctx["dragon_tiger"] = self._build_fundamental_block(
+            "not_supported",
+            {},
+            [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+            ["not supported for offshore market"],
+        )
+        futu_boards = (
+            bundle_payload.get("belong_boards")
+            if isinstance(bundle_payload.get("belong_boards"), list) and bundle_payload.get("belong_boards")
+            else []
+        )
+        if futu_boards:
+            result_ctx["boards"] = self._build_fundamental_block(
+                "ok",
+                {"boards": futu_boards},
+                bundle_chain,
+                [],
+            )
+        else:
+            result_ctx["boards"] = self._build_fundamental_block(
                 "not_supported",
                 {},
                 [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
@@ -3465,27 +3585,34 @@ class DataFetcherManager:
                 ["not supported for offshore market"],
             )
 
-        result_ctx["belong_boards"] = belong_boards
+        result_ctx["belong_boards"] = belong_boards or futu_boards
 
+        capital_flow_status = result_ctx["capital_flow"].get("status", "not_supported")
+        boards_status = result_ctx["boards"].get("status", "not_supported")
         block_statuses = {
             "valuation": result_ctx["valuation"].get("status", "not_supported"),
             "growth": growth_status,
             "earnings": earnings_status,
             "institution": institution_status,
-            "capital_flow": "not_supported",
+            "capital_flow": capital_flow_status,
             "dragon_tiger": "not_supported",
-            "boards": "not_supported",
+            "boards": boards_status,
         }
         result_ctx["coverage"] = block_statuses
         for block in ("valuation", "growth", "earnings", "institution", "capital_flow", "dragon_tiger", "boards"):
             result_ctx["errors"].extend(result_ctx[block].get("errors", []))
             result_ctx["source_chain"].extend(result_ctx[block].get("source_chain", []))
 
-        active_statuses = {"valuation": valuation_status, "growth": growth_status, "earnings": earnings_status}
+        active_statuses = {
+            "valuation": valuation_status,
+            "growth": growth_status,
+            "earnings": earnings_status,
+            "capital_flow": capital_flow_status,
+            "boards": boards_status,
+        }
         # tw institution (when present) counts toward the OVERALL status so a report that
         # only has 三大法人 data still surfaces fundamentals (consumers key off the top-level
-        # status). missing_fields stays the original three blocks, so offshore markets
-        # without institution data are byte-identical (institution is not_supported there).
+        # status). Futu capital_flow / boards count the same way when they are available.
         status_values = list(active_statuses.values())
         if institution_status == "ok":
             status_values.append("ok")

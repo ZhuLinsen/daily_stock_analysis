@@ -87,3 +87,56 @@ class TestHKRealtimeRouting(unittest.TestCase):
         self.assertIs(quote, akshare_quote)
         self.assertEqual(len(futu.calls), 1)
         self.assertEqual(akshare.calls, [(("HK01810",), {"source": "hk"})])
+
+    @patch("src.config.get_config")
+    def test_manager_supplements_partial_futu_quote_from_akshare(self, mock_get_config):
+        """A partial first-source quote should be supplemented by later sources."""
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="tencent,akshare_sina,efinance,akshare_em,tushare",
+            futu_hk_realtime_source_priority="futu,akshare,yfinance",
+            realtime_cache_ttl=None,
+        )
+        futu_quote = MagicMock()
+        futu_quote.has_basic_data.return_value = True
+        for field in DataFetcherManager._SUPPLEMENT_FIELDS:
+            setattr(futu_quote, field, None)
+        futu = _DummyFetcher("FutuFetcher", 0, result=futu_quote)
+
+        akshare_quote = MagicMock()
+        akshare_quote.has_basic_data.return_value = True
+        for field in DataFetcherManager._SUPPLEMENT_FIELDS:
+            setattr(akshare_quote, field, 1.86)
+        akshare = _DummyFetcher("AkshareFetcher", 1, result=akshare_quote)
+
+        manager = DataFetcherManager(fetchers=[futu, akshare])
+        quote = manager.get_realtime_quote("HK00700")
+
+        self.assertIs(quote, futu_quote)
+        for field in DataFetcherManager._SUPPLEMENT_FIELDS:
+            self.assertEqual(getattr(quote, field), 1.86, field)
+        self.assertEqual(len(futu.calls), 1)
+        self.assertEqual(akshare.calls, [(("HK00700",), {"source": "hk"})])
+
+    @patch("src.config.get_config")
+    def test_manager_does_not_supplement_when_primary_is_complete(self, mock_get_config):
+        """A complete first-source quote should not trigger extra source calls."""
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="tencent,akshare_sina,efinance,akshare_em,tushare",
+            futu_hk_realtime_source_priority="futu,akshare,yfinance",
+            realtime_cache_ttl=None,
+        )
+        futu_quote = MagicMock()
+        futu_quote.has_basic_data.return_value = True
+        for field in DataFetcherManager._SUPPLEMENT_FIELDS:
+            setattr(futu_quote, field, 1.0)
+        futu = _DummyFetcher("FutuFetcher", 0, result=futu_quote)
+        akshare = _DummyFetcher("AkshareFetcher", 1, result=None)
+
+        manager = DataFetcherManager(fetchers=[futu, akshare])
+        quote = manager.get_realtime_quote("HK00700")
+
+        self.assertIs(quote, futu_quote)
+        self.assertEqual(len(futu.calls), 1)
+        self.assertEqual(akshare.calls, [])
