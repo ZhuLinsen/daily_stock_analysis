@@ -153,7 +153,14 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
                     "net_profit_parent": 200.0,
                     "basic_eps": 1.2,
                     "gross_profit": 4.0e9,
-                }
+                },
+                "dividend": {
+                    "events": [{"event_date": "2026-01-15", "ex_dividend_date": "2026-01-15", "cash_dividend_per_share": 3.5}],
+                    "ttm_event_count": 2,
+                    "ttm_cash_dividend_per_share": 7.0,
+                    "ttm_dividend_yield_pct": 3.2,
+                    "source": "futu",
+                },
             },
             "institution": {"company_profile": {"公司名称": "测试公司"}},
             "capital_flow": {"latest": {"main_in_flow": 10.0}},
@@ -391,3 +398,111 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
         providers = [s.get("provider") for s in payload["source_chain"]]
         self.assertIn("futu.financials", providers)
         self.assertIn("yfinance.info", providers)
+
+    @patch("data_provider.futu_fetcher.FutuFetcher.has_configured_endpoint", return_value=True)
+    @patch("data_provider.futu_fundamental_adapter.FutuFundamentalAdapter")
+    @patch("src.config.get_config")
+    def test_fetch_offshore_bundle_pulls_yfinance_when_futu_dividend_empty(
+        self, mock_get_config, mock_adapter, mock_has_ep
+    ):
+        """Complete Futu growth/financial_report but empty dividend must still pull yfinance."""
+        from types import SimpleNamespace
+
+        mock_get_config.return_value = SimpleNamespace()
+        mock_adapter.return_value.get_fundamental_bundle.return_value = {
+            "status": "partial",
+            "growth": {"revenue_yoy": 10.0, "net_profit_yoy": 12.0, "gross_margin": 40.0},
+            "earnings": {
+                "financial_report": {
+                    "revenue": 1.0e10,
+                    "net_profit_parent": 200.0,
+                    "basic_eps": 1.2,
+                    "gross_profit": 4.0e9,
+                },
+                "dividend": {"events": [], "source": "futu"},
+            },
+            "institution": {"company_profile": {"公司名称": "测试公司"}},
+            "capital_flow": {"latest": {"main_in_flow": 10.0}},
+            "belong_boards": [],
+            "source_chain": [{"provider": "futu.financials", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+        manager = self._make_manager()
+        manager._yfinance_fundamental_adapter.get_fundamental_bundle.return_value = {
+            "status": "ok",
+            "growth": {"revenue_yoy": 16.5},
+            "earnings": {
+                "financial_report": {"revenue": 1.11e11},
+                "dividend": {
+                    "events": [{"event_date": "2026-01-15", "ex_dividend_date": "2026-01-15", "cash_dividend_per_share": 3.5}],
+                    "ttm_event_count": 2,
+                    "ttm_cash_dividend_per_share": 7.0,
+                    "ttm_dividend_yield_pct": 3.2,
+                },
+            },
+            "belong_boards": [],
+            "source_chain": [{"provider": "yfinance.info", "result": "ok", "duration_ms": 1}],
+            "errors": [],
+        }
+
+        payload, err, ms, provider = manager._fetch_offshore_fundamental_bundle("HK00700", "hk", 10.0)
+
+        self.assertEqual(provider, "fundamental_bundle_futu")
+        self.assertEqual(manager._yfinance_fundamental_adapter.get_fundamental_bundle.call_count, 1)
+        # Futu growth/earnings kept, dividend contract filled from yfinance.
+        self.assertEqual(payload["growth"]["revenue_yoy"], 10.0)
+        self.assertEqual(payload["earnings"]["financial_report"]["net_profit_parent"], 200.0)
+        self.assertEqual(payload["earnings"]["dividend"]["ttm_cash_dividend_per_share"], 7.0)
+        self.assertEqual(payload["earnings"]["dividend"]["ttm_dividend_yield_pct"], 3.2)
+        self.assertEqual(payload["earnings"]["dividend"]["events"][0]["cash_dividend_per_share"], 3.5)
+        providers = [s.get("provider") for s in payload["source_chain"]]
+        self.assertIn("yfinance.info", providers)
+
+    def test_dividends_normalize_opend_fields_to_repo_contract(self):
+        """OpenD raw dividend fields (ex_date/record_date/statement) must map to the repo contract."""
+        from unittest.mock import Mock
+
+        fetcher = Mock()
+        fetcher.get_financials_statements.return_value = {"report_list": []}
+        fetcher.get_stock_basicinfo.return_value = {
+            "static_info": {"lot_size": 200, "suspension": False},
+            "company_profile": {"公司名称": "测试公司"},
+        }
+        fetcher.get_corporate_actions_dividends.return_value = {
+            "dividend_list": [
+                {
+                    "ex_date": "2026-06-30",
+                    "record_date": "2026-07-02",
+                    "statement": "FY2025",
+                    "dividend_per_share": 1.25,
+                    "currency": "HKD",
+                    "description": "Final dividend",
+                },
+                {
+                    "ex_date": "2026-01-15",
+                    "record_date": "2026-01-16",
+                    "statement": "FY2024",
+                    "dividend_per_share": 1.1,
+                    "currency": "HKD",
+                },
+            ]
+        }
+        fetcher.get_corporate_actions_stock_splits.return_value = {"split_list": []}
+        fetcher.get_capital_flow.return_value = None
+        fetcher.get_owner_plate.return_value = None
+        fetcher.get_realtime_quote.return_value = {"price": 50.0}
+
+        bundle = FutuFundamentalAdapter(fetcher).get_fundamental_bundle("HK00700")
+
+        dividend = bundle["earnings"]["dividend"]
+        self.assertEqual(dividend["source"], "futu")
+        self.assertEqual(dividend["events"][0]["event_date"], "2026-06-30")
+        self.assertEqual(dividend["events"][0]["ex_dividend_date"], "2026-06-30")
+        self.assertEqual(dividend["events"][0]["record_date"], "2026-07-02")
+        self.assertEqual(dividend["events"][0]["cash_dividend_per_share"], 1.25)
+        self.assertEqual(dividend["events"][0]["statement"], "FY2025")
+        # TTM cash = 1.25 + 1.1, yield = ttm / price.
+        self.assertEqual(dividend["ttm_event_count"], 2)
+        self.assertEqual(dividend["ttm_cash_dividend_per_share"], 2.35)
+        self.assertEqual(dividend["ttm_dividend_yield_pct"], round(2.35 / 50.0 * 100.0, 4))
+        self.assertNotIn("ex_date", dividend["events"][0])

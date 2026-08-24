@@ -3184,6 +3184,34 @@ class DataFetcherManager:
         return True
 
     @staticmethod
+    def _dividend_contract_has_values(payload: Any) -> bool:
+        """Check whether the dividend block satisfies the repo contract.
+
+        Downstream consumers read ttm_cash_dividend_per_share /
+        ttm_dividend_yield_pct and events[].cash_dividend_per_share /
+        ex_dividend_date / event_date. Raw provider events that only carry
+        provider-native keys (statement/ex_date/record_date) do not satisfy
+        the contract, so they must be treated as missing.
+        """
+        if not isinstance(payload, dict):
+            return DataFetcherManager._has_meaningful_payload(payload)
+        for key in ("ttm_cash_dividend_per_share", "ttm_dividend_yield_pct"):
+            if DataFetcherManager._has_meaningful_payload(payload.get(key)):
+                return True
+        events = payload.get("events")
+        if isinstance(events, list):
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                if DataFetcherManager._has_meaningful_payload(
+                    event.get("cash_dividend_per_share")
+                ) or DataFetcherManager._has_meaningful_payload(
+                    event.get("ex_dividend_date") or event.get("event_date")
+                ):
+                    return True
+        return False
+
+    @staticmethod
     def _earnings_block_has_values(payload: Any) -> bool:
         """Field-level check for the earnings block.
 
@@ -3342,6 +3370,14 @@ class DataFetcherManager:
                 for field in ("revenue", "net_profit_parent", "basic_eps", "gross_profit"):
                     if not self._has_meaningful_payload(report.get(field)):
                         gaps.append(f"earnings.financial_report.{field}")
+            # Dividend: the repo contract consumes ttm_* fields and/or
+            # events[].cash_dividend_per_share / ex_dividend_date. Raw OpenD
+            # events (statement/ex_date/record_date) without normalization do
+            # not satisfy it, so treat the block as a gap unless the contract
+            # fields carry usable values.
+            dividend = earnings.get("dividend") if isinstance(earnings, dict) else None
+            if not DataFetcherManager._dividend_contract_has_values(dividend):
+                gaps.append("earnings.dividend")
             return gaps
 
         def _merge_bundles(
@@ -3378,9 +3414,11 @@ class DataFetcherManager:
                             report[field] = value
                     if any(self._has_meaningful_payload(v) for v in report.values()):
                         earnings["financial_report"] = report
-                if not DataFetcherManager._earnings_block_has_values(
+                if not DataFetcherManager._dividend_contract_has_values(
                     earnings.get("dividend")
-                ) and self._has_meaningful_payload(yf_earnings.get("dividend")):
+                ) and DataFetcherManager._dividend_contract_has_values(
+                    yf_earnings.get("dividend")
+                ):
                     earnings["dividend"] = yf_earnings.get("dividend")
                 if any(
                     DataFetcherManager._earnings_block_has_values(earnings.get(key))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -139,8 +140,56 @@ class FutuFundamentalAdapter:
         if error:
             result["errors"].append(f"dividends:{error}")
         elif isinstance(payload, dict):
-            events = payload.get("dividend_list") or []
-            result["earnings"]["dividend"] = {"events": events, "source": "futu"}
+            raw_events = payload.get("dividend_list") or []
+            events: List[Dict[str, Any]] = []
+            ttm_events: List[Dict[str, Any]] = []
+            ttm_cutoff = (datetime.now(timezone.utc) - timedelta(days=365)).date().isoformat()
+            for raw in raw_events:
+                if not isinstance(raw, dict):
+                    continue
+                ex_date = self._text(raw.get("ex_date") or raw.get("ex_dividend_date"))
+                per_share = self._number(raw.get("dividend_per_share"))
+                if not ex_date and not per_share:
+                    continue
+                # Normalize OpenD fields to the repo-wide dividend contract
+                # consumed by notification / data_processing / market structure.
+                event: Dict[str, Any] = {
+                    "event_date": ex_date or self._text(raw.get("record_date")),
+                    "ex_dividend_date": ex_date,
+                    "record_date": self._text(raw.get("record_date")),
+                    "announcement_date": self._text(raw.get("announcement_date")),
+                    "cash_dividend_per_share": per_share,
+                    "currency": self._text(raw.get("currency")),
+                    "statement": self._text(raw.get("statement")),
+                    "description": self._text(raw.get("description")),
+                }
+                if not any(v for v in (event["event_date"], event["cash_dividend_per_share"])):
+                    continue
+                events.append(event)
+                if event["event_date"] and event["event_date"] >= ttm_cutoff:
+                    ttm_events.append(event)
+            events.sort(key=lambda item: item.get("event_date") or "", reverse=True)
+            ttm_cash = (
+                sum(float(item["cash_dividend_per_share"]) for item in ttm_events if item.get("cash_dividend_per_share") is not None)
+                if ttm_events
+                else None
+            )
+            dividend_payload: Dict[str, Any] = {
+                "events": events[:5],
+                "ttm_event_count": len(ttm_events),
+                "ttm_cash_dividend_per_share": round(ttm_cash, 6) if ttm_cash is not None else None,
+                "source": "futu",
+            }
+            if ttm_cash is not None:
+                # Yield needs a price; try a lightweight snapshot if available.
+                quote, quote_err = self._ok_payload(self._fetcher.get_realtime_quote(code))
+                if not quote_err and isinstance(quote, dict):
+                    latest_price = self._number(quote.get("price") or quote.get("last_price"))
+                    if latest_price not in (None, 0):
+                        dividend_payload["ttm_dividend_yield_pct"] = round(
+                            float(ttm_cash) / float(latest_price) * 100.0, 4
+                        )
+            result["earnings"]["dividend"] = dividend_payload
             result["source_chain"].extend(self._source("dividends"))
 
         payload, error = self._ok_payload(self._fetcher.get_corporate_actions_stock_splits(code, num=50))
