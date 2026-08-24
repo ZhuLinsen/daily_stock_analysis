@@ -680,6 +680,64 @@ class TestStockIndexLoader(unittest.TestCase):
             # Malformed bundled is skipped; valid remote superset is loaded.
             self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016", "csi930955"})
 
+    def test_load_active_index_rows_legacy_static_subset_cannot_bypass_bundled_baseline(self):
+        """Review remediation: when the remote cache is missing/invalid, a newer
+        legacy ``static`` candidate that is a SUBSET of the bundled baseline must
+        NOT be selected — the bundled baseline wins so no active index is lost."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_cache = Path(temp_dir) / "cache" / "stocks.index.json"
+            bundled_path = Path(temp_dir) / "apps" / "stocks.index.json"
+            legacy_static = Path(temp_dir) / "static" / "stocks.index.json"
+            for p in (remote_cache, bundled_path, legacy_static):
+                p.parent.mkdir(parents=True, exist_ok=True)
+            # Remote cache is invalid (not JSON).
+            remote_cache.write_text("not-json", encoding="utf-8")
+            # Bundled baseline carries sh000300 + sh000016.
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            # Legacy static is NEWER than bundled but only carries sh000300.
+            legacy_static.write_text(
+                json.dumps(self._index_payload(["sh000300"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.utime(remote_cache, (3_000, 3_000))
+            os.utime(legacy_static, (2_000, 2_000))
+            os.utime(bundled_path, (1_000, 1_000))
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=remote_cache), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(remote_cache, bundled_path, legacy_static)):
+                rows = stock_index_loader._load_active_index_rows()
+            # Bundled baseline wins (both canonicals preserved).
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016"})
+
+    def test_load_active_index_rows_legacy_static_superset_still_wins(self):
+        """A legacy ``static`` candidate that is a legal SUPERSET of the bundled
+        baseline is still accepted (future supersets are allowed)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_cache = Path(temp_dir) / "cache" / "stocks.index.json"
+            bundled_path = Path(temp_dir) / "apps" / "stocks.index.json"
+            legacy_static = Path(temp_dir) / "static" / "stocks.index.json"
+            for p in (remote_cache, bundled_path, legacy_static):
+                p.parent.mkdir(parents=True, exist_ok=True)
+            remote_cache.write_text("not-json", encoding="utf-8")
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            # Legacy static is a superset (adds csi930955).
+            legacy_static.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016", "csi930955"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.utime(remote_cache, (3_000, 3_000))
+            os.utime(legacy_static, (2_000, 2_000))
+            os.utime(bundled_path, (1_000, 1_000))
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=remote_cache), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(remote_cache, bundled_path, legacy_static)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016", "csi930955"})
+
 
 if __name__ == "__main__":
     unittest.main()

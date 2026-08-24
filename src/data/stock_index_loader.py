@@ -406,10 +406,15 @@ def _load_active_index_rows() -> list:
 
     Returns raw compressed tuples (no parser type dependency) so the loader
     stays free of a circular import with ``stock_list_parser``. Each candidate
-    must pass base + semantic validation before its index rows are used; a
-    remote candidate that is a legal superset of the bundled baseline is
-    preferred, while a remote that drops any bundled active index canonical is
-    skipped (WARNING) in favour of the bundled candidate.
+    must pass base + semantic validation before its index rows are used.
+
+    Non-regression guard: when the bundled candidate is a valid baseline, every
+    OTHER candidate — the remote cache AND the legacy ``static`` fallback — must
+    be a legal superset of the bundled active-index canonical set to be selected.
+    A candidate that drops any bundled active index canonical is skipped
+    (WARNING) in favour of the bundled candidate, so a stale or partial
+    non-bundled file can never bypass the bundled baseline when the remote cache
+    is missing/invalid.
     """
     global _ACTIVE_INDEX_ROWS_CACHE
 
@@ -462,12 +467,20 @@ def _load_active_index_rows() -> list:
                 _validate_index_rows_semantics(
                     rows, _extract_active_non_index_rows(raw_items)
                 )
-                if _same_path(index_path, remote_path) and bundled_canonicals:
-                    remote_canonicals = {str(r[0]) for r in rows}
-                    missing = bundled_canonicals - remote_canonicals
+                # Non-regression guard: when the bundled candidate is a valid
+                # baseline, every OTHER candidate (remote cache or legacy
+                # ``static`` fallback) must be a legal superset of the bundled
+                # active-index canonical set. A candidate that drops any
+                # bundled baseline canonical is skipped (WARNING) so a stale
+                # or partial legacy-static file can never bypass the bundled
+                # baseline when the remote cache is missing/invalid.
+                if bundled_canonicals and bundled_path is not None and not _same_path(index_path, bundled_path):
+                    candidate_canonicals = {str(r[0]) for r in rows}
+                    missing = bundled_canonicals - candidate_canonicals
                     if missing:
                         logger.warning(
-                            "[股票索引] remote 指数候选缺少 bundled baseline canonical: %s — 回退 bundled",
+                            "[股票索引] 指数候选 %s 缺少 bundled baseline canonical: %s — 回退 bundled",
+                            index_path,
                             sorted(missing),
                         )
                         continue
