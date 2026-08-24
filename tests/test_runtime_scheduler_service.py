@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -18,11 +22,14 @@ from fastapi.testclient import TestClient
 
 from src.services.runtime_scheduler import (
     CLI_SCHEDULER_OWNER_ENV,
+    DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS,
     RUNTIME_SCHEDULER_ARGS_ENV,
     RUNTIME_SCHEDULER_FORCE_ENABLED_ENV,
     RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV,
     RUNTIME_SCHEDULER_SUPPRESS_START_ENV,
+    RUNTIME_SCHEDULER_TIMEOUT_ENV,
     RuntimeSchedulerService,
+    _run_scheduled_analysis_process,
 )
 
 
@@ -86,7 +93,89 @@ class _SynchronousThread(_NoopThread):
             self.target()
 
 
+_BLOCKING_THREAD_RELEASE = threading.Event()
+
+
+def _blocking_thread_runner(config, args, stock_codes):
+    _BLOCKING_THREAD_RELEASE.wait(timeout=5)
+    return True
+
+
+def _blocking_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    time.sleep(10)
+
+
+def _successful_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    result_queue.put({"success": True, "error": None})
+
+
+def _large_failure_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    result_queue.put({"success": False, "error": "x" * (1024 * 1024)})
+
+
+def _exit_with_live_descendant_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    os.setsid()
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pid_file = Path(os.environ["DSA_TEST_DESCENDANT_PID_FILE"])
+    pid_file.write_text(f"{os.getpid()} {child.pid}", encoding="utf-8")
+
+
+def _block_with_isolated_descendant_spawn_runner(result_queue, stock_codes, schedule_args_overrides):
+    os.setsid()
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pid_file = Path(os.environ["DSA_TEST_DESCENDANT_PID_FILE"])
+    pid_file.write_text(f"{os.getpid()} {child.pid}", encoding="utf-8")
+    time.sleep(30)
+
+
 class RuntimeSchedulerServiceTestCase(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX session-isolation regression")
+    def test_worker_fails_before_analysis_when_posix_session_isolation_fails(self) -> None:
+        with patch(
+            "src.services.runtime_scheduler.os.setsid",
+            side_effect=OSError("not permitted"),
+        ), patch(
+            "src.services.runtime_scheduler.os.getsid",
+            return_value=101,
+        ), patch(
+            "src.services.runtime_scheduler.os.getpid",
+            return_value=202,
+        ):
+            with self.assertRaisesRegex(OSError, "not permitted"):
+                _run_scheduled_analysis_process(MagicMock(), None, {})
+
+    def test_analysis_timeout_reads_current_environment_with_safe_bounds(self) -> None:
+        service = RuntimeSchedulerService()
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                service._analysis_timeout_seconds(),
+                DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS,
+            )
+
+        for value, expected in (
+            ("0", 60),
+            ("59", 60),
+            ("60", 60),
+            ("600", 600),
+            ("invalid", DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS),
+        ):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {RUNTIME_SCHEDULER_TIMEOUT_ENV: value},
+                clear=True,
+            ):
+                self.assertEqual(service._analysis_timeout_seconds(), expected)
+
     def test_run_analysis_args_include_workers(self) -> None:
         config = SimpleNamespace(
             schedule_enabled=True,
@@ -194,31 +283,251 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
             schedule_time="18:00",
             schedule_times=["18:00"],
         )
-        seen_stock_codes = []
-
-        def runner(config_arg, args, stock_codes):
-            seen_stock_codes.append(stock_codes)
-            return True
-
-        service = RuntimeSchedulerService(
-            config_provider=lambda: config,
-            task_runner=runner,
-        )
-        service._reload_config = lambda: config
-
-        with patch(
-            "src.services.runtime_scheduler.threading.Thread",
-            _SynchronousThread,
-        ):
-            result = service.run_now()
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _successful_spawn_runner
+        result = service.run_now()
 
         self.assertTrue(result["accepted"])
-        self.assertEqual(seen_stock_codes, [None])
+        deadline = time.monotonic() + 4
+        while service.status()["last_success_at"] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
         status = service.status()
         self.assertFalse(status["running"])
         self.assertIsNotNone(status["last_run_at"])
         self.assertIsNotNone(status["last_success_at"])
         self.assertIsNone(status["last_error"])
+
+    def test_blocked_scheduled_analysis_times_out_and_allows_next_run(self) -> None:
+        fake_schedule = _FakeScheduleModule()
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(
+            config_provider=lambda: config,
+            task_runner=_blocking_thread_runner,
+        )
+        service._reload_config = lambda: config
+        service._analysis_process_target = _blocking_spawn_runner
+        service._analysis_timeout_seconds = lambda: 1
+
+        with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.reconcile_from_config()
+
+        callback_returned = threading.Event()
+        trigger = threading.Thread(
+            target=lambda: (fake_schedule.run_pending(), callback_returned.set()),
+            daemon=True,
+        )
+        _BLOCKING_THREAD_RELEASE.clear()
+        trigger.start()
+        try:
+            self.assertTrue(
+                callback_returned.wait(timeout=0.5),
+                "the scheduler callback remained blocked by analysis",
+            )
+
+            deadline = time.monotonic() + 4
+            while service.status()["last_error"] is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+            status = service.status()
+            self.assertFalse(status["running"])
+            self.assertIn("timed out after 1s", status["last_error"])
+
+            service._analysis_process_target = _successful_spawn_runner
+            self.assertTrue(service.run_now()["accepted"])
+
+            deadline = time.monotonic() + 4
+            while service.status()["last_success_at"] is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+            status = service.status()
+            self.assertFalse(status["running"])
+            self.assertIsNotNone(status["last_success_at"])
+            self.assertIsNone(status["last_error"])
+        finally:
+            _BLOCKING_THREAD_RELEASE.set()
+            trigger.join(timeout=5)
+
+    def test_stop_terminates_active_analysis_worker(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _blocking_spawn_runner
+
+        self.assertTrue(service.run_now()["accepted"])
+        deadline = time.monotonic() + 5
+        while service.status()["last_run_at"] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNotNone(service.status()["last_run_at"])
+
+        service.stop()
+
+        deadline = time.monotonic() + 5
+        while service.status()["running"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(service.status()["running"])
+
+    def test_stop_does_not_record_expected_worker_termination_as_error(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _blocking_spawn_runner
+
+        self.assertTrue(service.run_now()["accepted"])
+        deadline = time.monotonic() + 5
+        while service.status()["last_run_at"] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNotNone(service.status()["last_run_at"])
+
+        service.stop()
+
+        deadline = time.monotonic() + 5
+        while service.status()["running"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        status = service.status()
+        self.assertFalse(status["running"])
+        self.assertIsNone(status["last_error"])
+
+    def test_stale_scheduled_callback_cannot_start_after_stop(self) -> None:
+        fake_schedule = _FakeScheduleModule()
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+
+        with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.start()
+
+        callback = fake_schedule.get_jobs()[0].job_func
+        service.stop()
+
+        with patch(
+            "src.services.runtime_scheduler.multiprocessing.get_context"
+        ) as get_context:
+            self.assertFalse(callback())
+
+        get_context.assert_not_called()
+        self.assertFalse(service.status()["running"])
+
+    def test_watchdog_reads_large_worker_result_before_joining(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _large_failure_spawn_runner
+        service._analysis_timeout_seconds = lambda: 2
+
+        self.assertTrue(service.run_now()["accepted"])
+        deadline = time.monotonic() + 5
+        while service.status()["last_error"] is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+        self.assertTrue(service.status()["last_error"].startswith("x"))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group regression")
+    def test_worker_exit_without_result_terminates_remaining_process_group(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _exit_with_live_descendant_spawn_runner
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pid_file = Path(temp_dir) / "descendant.pid"
+            process_group_id = None
+            child_pid = None
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"DSA_TEST_DESCENDANT_PID_FILE": str(pid_file)},
+                ):
+                    self.assertTrue(service.run_now()["accepted"])
+                    deadline = time.monotonic() + 5
+                    while not pid_file.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(pid_file.exists())
+                    process_group_id, child_pid = [
+                        int(value) for value in pid_file.read_text(encoding="utf-8").split()
+                    ]
+
+                    while service.status()["running"] and time.monotonic() < deadline:
+                        time.sleep(0.05)
+
+                self.assertFalse(service.status()["running"])
+                self.assertIn("exited without a result", service.status()["last_error"])
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+            finally:
+                if process_group_id is not None:
+                    try:
+                        os.killpg(process_group_id, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process-tree regression")
+    def test_stop_terminates_descendant_in_a_nested_process_group(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._analysis_process_target = _block_with_isolated_descendant_spawn_runner
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pid_file = Path(temp_dir) / "descendant.pid"
+            process_group_id = None
+            child_pid = None
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"DSA_TEST_DESCENDANT_PID_FILE": str(pid_file)},
+                ):
+                    self.assertTrue(service.run_now()["accepted"])
+                    deadline = time.monotonic() + 5
+                    while not pid_file.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(pid_file.exists())
+                    process_group_id, child_pid = [
+                        int(value) for value in pid_file.read_text(encoding="utf-8").split()
+                    ]
+
+                    service.stop()
+                    while service.status()["running"] and time.monotonic() < deadline:
+                        time.sleep(0.05)
+
+                self.assertFalse(service.status()["running"])
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+            finally:
+                for group_id in (child_pid, process_group_id):
+                    if group_id is None:
+                        continue
+                    try:
+                        os.killpg(group_id, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_run_now_uses_shared_lock_across_service_instances(self) -> None:
         config = SimpleNamespace(
@@ -279,7 +588,11 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         )
         service._reload_config = lambda: config
 
-        with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
+        with patch.object(
+            service,
+            "_start_analysis_watchdog",
+            side_effect=lambda stock_codes=None, **kwargs: calls.append("run") or True,
+        ), patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
             "src.services.runtime_scheduler.threading.Thread",
             _NoopThread,
         ):
@@ -315,7 +628,11 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         )
         service._reload_config = lambda: config
 
-        with patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
+        with patch.object(
+            service,
+            "_start_analysis_watchdog",
+            side_effect=lambda stock_codes=None, **kwargs: calls.append("run") or True,
+        ), patch.dict(sys.modules, {"schedule": fake_schedule}), patch(
             "src.services.runtime_scheduler.threading.Thread",
             _NoopThread,
         ):
