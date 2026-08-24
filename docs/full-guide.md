@@ -1269,7 +1269,7 @@ PUSHOVER_API_TOKEN=your_api_token
 1. **imgkit**：已包含在 `requirements.txt`，执行 `pip install -r requirements.txt` 时会自动安装
 2. **wkhtmltopdf**（默认引擎）：系统级依赖，需手动安装：
    - **macOS**：`brew install wkhtmltopdf`
-   - **Debian/Ubuntu**：`apt install wkhtmltopdf`
+   - **Debian/Ubuntu**：`apt install wkhtmltopdf fonts-noto-cjk`（用于正确渲染项目支持的中文和韩文报告）
 3. **markdown-to-file**（可选，emoji 支持更好）：`npm i -g markdown-to-file`，并设置 `MD2IMG_ENGINE=markdown-to-file`
 4. **Playwright**（可选，适合 Web 服务）：在 `apps/dsa-web` 执行 `npm ci` 和 `npx playwright install chromium`，并设置 `MD2IMG_ENGINE=playwright`
 

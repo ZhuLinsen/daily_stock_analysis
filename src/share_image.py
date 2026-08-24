@@ -365,6 +365,12 @@ def _poster_text(language: str, key: str) -> str:
     return _POSTER_TEXT.get(language, _POSTER_TEXT["zh"]).get(key, _POSTER_TEXT["zh"].get(key, key))
 
 
+def _poster_html_language(language: str) -> str:
+    """Map the supported report language, not the market region, to HTML lang."""
+
+    return {"zh": "zh-CN", "en": "en", "ko": "ko"}.get(language, "zh-CN")
+
+
 def _poster_label(language: str, label: str) -> str:
     translated = _POSTER_LABELS.get(language, {}).get(label)
     if translated:
@@ -2111,7 +2117,7 @@ def build_share_image_html(
     poster_branding = branding or ShareImageBranding()
 
     return f"""<!DOCTYPE html>
-<html lang="{'en' if language == 'en' else 'ko' if language == 'ko' else 'zh-CN'}">
+<html lang="{_poster_html_language(language)}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=1080, initial-scale=1">
@@ -2119,7 +2125,9 @@ def build_share_image_html(
   <style>
     * {{ box-sizing: border-box; }}
     html, body {{ margin: 0; width: 1080px; background: #eef4fd; }}
-    body {{ color: #081b40; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; font-size: 22px; line-height: 1.5; -webkit-font-smoothing: antialiased; }}
+    body {{ color: #081b40; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Noto Sans CJK SC", "Noto Sans CJK KR", Arial, sans-serif; font-size: 22px; line-height: 1.5; -webkit-font-smoothing: antialiased; }}
+    html[lang="zh-CN"] body {{ font-family: "Noto Sans CJK SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }}
+    html[lang="ko"] body {{ font-family: "Noto Sans CJK KR", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }}
     .poster {{ width: 1080px; padding: 38px 34px 24px; border: 1px solid #aebdd4; border-radius: 28px; background: radial-gradient(circle at 92% 6%, rgba(48,123,255,.15), transparent 260px), linear-gradient(180deg,#fff 0%,#fbfdff 78%,#eef5ff 100%); }}
     .poster-header {{ display: table; width: 100%; margin-bottom: 28px; }}
     .brand, .meta {{ display: table-cell; vertical-align: middle; }}
