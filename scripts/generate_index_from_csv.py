@@ -658,6 +658,12 @@ def load_index_registry_seed(seed_path: Optional[Path] = None) -> List[Dict[str,
             if not canonical or not display or not name:
                 raise ValueError(f"index registry seed row missing required field: {row}")
 
+            raw_aliases = [
+                alias.strip()
+                for alias in str(row.get("aliases") or "").split("|")
+                if alias.strip()
+            ]
+            _validate_unique_index_aliases(raw_aliases, canonical)
             aliases = parse_aliases(row)
             _validate_unique_index_aliases(aliases, canonical)
             popularity_raw = (row.get("popularity") or "100").strip() or "100"
