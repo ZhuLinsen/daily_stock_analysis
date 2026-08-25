@@ -3195,6 +3195,13 @@ class DataFetcherManager:
         """
         if not isinstance(payload, dict):
             return DataFetcherManager._has_meaningful_payload(payload)
+        # The repo contract consumes ttm_cash_dividend_per_share and
+        # ttm_dividend_yield_pct as a pair. A block with TTM cash but no
+        # yield (e.g. the extra realtime price snapshot failed or returned
+        # no price) is still missing a consumed field, so it must count as
+        # a gap and be supplemented instead of being treated as complete.
+        if DataFetcherManager._has_meaningful_payload(payload.get("ttm_cash_dividend_per_share")):
+            return DataFetcherManager._has_meaningful_payload(payload.get("ttm_dividend_yield_pct"))
         for key in ("ttm_cash_dividend_per_share", "ttm_dividend_yield_pct"):
             if DataFetcherManager._has_meaningful_payload(payload.get(key)):
                 return True
