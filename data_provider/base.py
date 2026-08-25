@@ -2199,12 +2199,28 @@ class DataFetcherManager:
                 primary_token = None
                 primary_src_index = -1
                 fallback_from = None
+                # Futu only participates when an OpenD endpoint is configured.
+                # Skipping an unconfigured source here (instead of letting
+                # _try_fetcher_quote fail on it) avoids recording a never-enabled
+                # source as the failed primary, which would wrongly mark a
+                # successful quote from the next enabled source as fallback.
+                futu_enabled = False
+                try:
+                    from data_provider.futu_fetcher import FutuFetcher
+                    futu_enabled = FutuFetcher.has_configured_endpoint()
+                except Exception:  # noqa: BLE001 - fail closed: treat futu as disabled
+                    futu_enabled = False
                 for index, source in enumerate(hk_priority):
                     mapped = source_map.get(source)
                     if mapped is None:
                         logger.warning("[实时行情] 忽略未知港股数据源: %s", source)
                         continue
                     fetcher_name, fetcher_kw = mapped
+                    if fetcher_name == "FutuFetcher" and not futu_enabled:
+                        logger.info(
+                            "[实时行情] 港股 %s 未配置 FUTU_OPEND_HOST，跳过 futu 源", stock_code
+                        )
+                        continue
                     quote = self._try_fetcher_quote(stock_code, fetcher_name, **fetcher_kw)
                     if quote is not None:
                         primary_quote = quote
