@@ -2070,4 +2070,81 @@ describe('StockScreeningPage', () => {
     expect(screen.getByLabelText('自定义策略 ID')).toHaveValue('capital_heat');
     expect(screen.getByText(/自定义策略 \(capital_heat\) · A 股/)).toBeInTheDocument();
   });
+  it('persists the selected history run so a refresh restores that run instead of the stale task', async () => {
+    // 回归 OR-COR-4d1a7e90：手动打开历史记录后必须同步持久化恢复指针，
+    // 刷新后应恢复用户刚选中的历史 run，而不是停留在更早的 task。
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    window.sessionStorage.setItem('dsa.screening.activeScreenTask.v1', JSON.stringify({
+      taskId: 'task-a',
+      strategy: 'dual_low',
+      market: 'cn',
+      maxResults: 3,
+    }));
+    getHistory.mockResolvedValue({
+      enabled: true,
+      runs: [
+        {
+          runId: 'run-b',
+          strategy: 'capital_heat',
+          market: 'cn',
+          candidateCount: 1,
+          createdAt: '2026-08-05T10:00:00Z',
+        },
+      ],
+      runCount: 1,
+    });
+    getRun.mockResolvedValue({
+      runId: 'run-b',
+      strategy: 'capital_heat',
+      market: 'cn',
+      candidateCount: 1,
+      enabled: true,
+      result: {
+        enabled: true,
+        candidates: [
+          {
+            rank: 1,
+            code: '600519',
+            name: '贵州茅台',
+            score: 90,
+            reason: '热度',
+            raw: {},
+          },
+        ],
+        candidateCount: 1,
+        snapshotCount: 50,
+        afterFilterCount: 10,
+        llmRanked: true,
+      },
+    });
+    getScreenTask.mockResolvedValue({
+      taskId: 'task-a',
+      traceId: 'task-a',
+      status: 'processing',
+      progress: 10,
+      message: '正在执行 Screening 选股',
+      result: null,
+    });
+    const first = render(<StockScreeningPage />);
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    // 手动选中历史记录 run-b（策略 capital_heat）
+    fireEvent.click(await screen.findByText('capital_heat'));
+    expect(await screen.findByText(/自定义策略 \(capital_heat\) · A 股/)).toBeInTheDocument();
+    // 持久化指针已切换到刚选中的历史 run
+    const stored = JSON.parse(
+      window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1') || '{}',
+    );
+    expect(stored.runId).toBe('run-b');
+    expect(stored.taskId).toBe('run-b');
+    // 刷新（重新挂载）后按新指针恢复 run-b，而不是旧 task-a
+    first.unmount();
+    render(<StockScreeningPage />);
+    await waitFor(() => expect(getRun).toHaveBeenLastCalledWith('run-b'));
+    expect(await screen.findByText(/自定义策略 \(capital_heat\) · A 股/)).toBeInTheDocument();
+    // 正常恢复成功时不应对占位 taskId 触发轮询回退
+    expect(getScreenTask).not.toHaveBeenCalledWith('run-b');
+  });
 });

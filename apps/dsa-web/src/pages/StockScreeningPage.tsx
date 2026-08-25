@@ -933,6 +933,17 @@ const StockScreeningPage: React.FC = () => {
       if (detail?.result) {
         applyScreenResult(detail.result);
         historyContextStrategyRef.current = true;
+        // 同步持久化恢复指针：刷新后应恢复用户刚选中的历史 run，
+        // 而不是停留在更早的 task/run。历史详情不携带 taskId，以 runId
+        // 作为占位——正常路径刷新走 getRun(runId) 恢复、不会触发轮询；
+        // 若该 run 恢复失败，占位轮询会命中不可恢复错误并清理过期指针。
+        persistScreenTask({
+          taskId: runId,
+          runId,
+          market: detail.market || market,
+          strategy: detail.strategy || strategy,
+          maxResults,
+        });
         // 同步历史 run 的策略与市场上下文，确保结果区文案和后续深度分析
         // 使用该历史 run 对应的 strategy/market，而不是当前表单的选择
         if (detail.strategy) {
@@ -957,7 +968,7 @@ const StockScreeningPage: React.FC = () => {
         setLoading(false);
       }
     }
-  }, [applyScreenResult]);
+  }, [applyScreenResult, market, maxResults, strategy]);
 
   const clearScreeningResults = () => {
     setCandidates([]);
