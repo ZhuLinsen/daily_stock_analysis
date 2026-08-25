@@ -18,6 +18,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -83,6 +84,22 @@ def _contains_cjk(text: str) -> bool:
     return any("\u3400" <= ch <= "\u9fff" for ch in text)
 
 
+def _normalize_stock_name(name: str) -> str:
+    """股票名称的统一归一：NFKC 宽度归一（全角字母/数字 → 半角）+ 去除全部
+    空白。
+
+    分词管道对用户输入做同样的 NFKC（web_intent_tokenizer._preprocess_text
+    的工作副本），库内名称若保留源数据拼写（AkShare 的 "京东方Ａ" 全角Ａ、
+    "五 粮 液" 内嵌空格），窗口/片段与归一后的输入永远不相等——不仅全名
+    精确匹配落空，还会被更短的库内名误切出错误实体（"京东方Ａ" 落空后
+    2 字窗口命中 "京东"）。输入侧与库侧必须同源同变换：本地映射初值、
+    AkShare 构建与合并、磁盘缓存加载三个入库口，与全部查询口共用本函数
+    （磁盘缓存里的历史未归一数据同样在此归一）。展示名随之统一为归一拼写
+    （与 token 层"单一代码身份"原则一致）。
+    """
+    return "".join(unicodedata.normalize("NFKC", name).split())
+
+
 def _is_code_like(s: str) -> bool:
     """共享的“形似代码”检查的向后兼容包装。"""
     return is_code_like(s)
@@ -121,7 +138,7 @@ def _build_local_name_indexes(code_to_name: Dict[str, str]) -> Tuple[Dict[str, s
     for code, name in code_to_name.items():
         if not name or not code:
             continue
-        normalized_name = name.strip()
+        normalized_name = _normalize_stock_name(name)
         if not normalized_name:
             continue
         name_to_codes.setdefault(normalized_name, set()).add(code)
@@ -184,7 +201,7 @@ def _build_name_map_from_df(df) -> Dict[str, str]:
             base, suffix = code_str.rsplit(".", 1)
             if suffix.upper() in ("SH", "SZ", "SS") and base.isdigit():
                 code_str = base
-        code_to_name[code_str] = str(name).strip()
+        code_to_name[code_str] = _normalize_stock_name(str(name))
     return _build_reverse_map_no_duplicates(code_to_name)
 
 
@@ -199,7 +216,12 @@ def _try_load_disk_cache_locked() -> None:
         ts = payload.get("ts")
         raw_map = payload.get("map")
         if isinstance(ts, (int, float)) and isinstance(raw_map, dict):
-            name_map = {str(k): str(v) for k, v in raw_map.items() if k and v}
+            # 历史落盘可能含未归一名称（全角拼写/内嵌空格）：加载即归一
+            name_map = {
+                _normalize_stock_name(str(k)): str(v)
+                for k, v in raw_map.items()
+                if k and v
+            }
             if name_map:
                 _akshare_cache = (float(ts), name_map)
                 logger.info(
@@ -371,7 +393,11 @@ class Stock:
 # =========================================================================
 
 
-stockDB: Dict[str, str] = dict(STOCK_NAME_MAP)
+stockDB: Dict[str, str] = {
+    # 初值即归一（与输入侧 NFKC 同变换）：源数据的全角拼写/内嵌空白
+    # 不带入库内视图
+    code: _normalize_stock_name(name) for code, name in STOCK_NAME_MAP.items()
+}
 
 # 已存在代码被 AkShare 更新为当前官方名称时，旧名称作为别名保留，
 # 避免证券改名后旧名称彻底不可解析。
@@ -401,15 +427,21 @@ def extend_AkShare() -> bool:
         if _akshare_merged is akshare_map:
             return False
         changed = False
-        # akshare_map 是 name->code 反向映射，stockDB 是 code->name
+        # akshare_map 是 name->code 反向映射，stockDB 是 code->name；名称
+        # 统一归一（NFKC 宽度 + 去内嵌空白）后比较/写入，避免与归一后的
+        # 输入/本地拼写形成假性改名（制造无谓别名）——磁盘缓存里的历史
+        # 未归一数据同样在此归一
         for name, code in akshare_map.items():
+            compact = _normalize_stock_name(name)
+            if not compact:
+                continue
             if code not in stockDB:
-                stockDB[code] = name
+                stockDB[code] = compact
                 changed = True
-            elif stockDB[code] != name:
+            elif stockDB[code] != compact:
                 # 证券改名：保留旧名称作为别名，再更新为 AkShare 当前官方名称。
                 stockAliases.setdefault(code, set()).add(stockDB[code])
-                stockDB[code] = name
+                stockDB[code] = compact
                 changed = True
         _akshare_merged = akshare_map
         if changed:
@@ -607,7 +639,9 @@ def resolver_name_to_code_list(name: str) -> List[Stock]:
     """
     if not name or not isinstance(name, str):
         return []
-    s = name.strip()
+    # 查询输入与入库同源归一：源形态（全角拼写/内嵌空格，如自 AkShare 数据
+    # 复制的 "京东方Ａ"/"五 粮 液"）与常规拼写同样可解析
+    s = _normalize_stock_name(name)
     # 单字符不可能是股票名（最短 2 字），短路避免全名表扫描
     if len(s) < 2:
         return []
@@ -694,7 +728,7 @@ def is_known_stock_name(name: str) -> bool:
     """
     if not isinstance(name, str):
         return False
-    s = name.strip()
+    s = _normalize_stock_name(name)
     if not s:
         return False
     return s in _database_names(stockDB)
@@ -720,7 +754,7 @@ def resolve_name_to_code(name: str) -> Optional[str]:
     """
     if not name or not isinstance(name, str):
         return None
-    s = name.strip()
+    s = _normalize_stock_name(name)
     if not s:
         return None
 

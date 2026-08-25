@@ -39,8 +39,11 @@ def clean_db(request):
     fake_map = getattr(request, "param", None)
     with patch.object(ntc, "_get_akshare_name_to_code", return_value=fake_map):
         yield
+    # 恢复用归一后的本地映射（与模块初值同构，见 _normalize_stock_name）
     ntc.stockDB.clear()
-    ntc.stockDB.update(STOCK_NAME_MAP)
+    ntc.stockDB.update(
+        {c: ntc._normalize_stock_name(n) for c, n in STOCK_NAME_MAP.items()}
+    )
     ntc._names_cache[:] = [None, None, None]
     ntc._pinyin_cache[:] = [None, None]
     ntc._akshare_merged = None
@@ -311,6 +314,28 @@ class TestResolverNameToCodeList:
             Stock("09988", "阿里巴巴", "hk"),
         ]
 
+class TestCompactLookupInputs:
+    """查询侧同源压平：带内嵌空格的"源形态"输入（如自 AkShare 数据复制的
+    "五 粮 液"）与常规无空格拼写同样可解析——入库压平后查询入口若只做
+    首尾 strip，源形态输入会在精确/子串/模糊全部层级落空。"""
+
+    @pytest.mark.parametrize("clean_db", [{"五 粮 液": "000858"}], indirect=True)
+    def test_spaced_input_resolves_via_list(self, clean_db):
+        ntc.extend_AkShare()
+        assert resolver_name_to_code_list("五 粮 液") == [
+            Stock("000858", "五粮液", "a")
+        ]
+
+    @pytest.mark.parametrize("clean_db", [{"五 粮 液": "000858"}], indirect=True)
+    def test_spaced_input_is_known_name(self, clean_db):
+        ntc.extend_AkShare()
+        assert ntc.is_known_stock_name("五 粮 液") is True
+
+    def test_spaced_input_resolves_legacy(self):
+        # 本地映射已有无空格拼写：legacy 入口对带空格输入同样命中
+        assert resolve_name_to_code("五 粮 液") == "000858"
+
+
 # ---------------------------------------------------------------------------
 # US_stock_code_match
 # ---------------------------------------------------------------------------
@@ -363,6 +388,104 @@ class TestExtendAkShare:
         assert resolver_name_to_code_list("新名称") == [Stock("600000", "新名称", "a")]
         # 旧名称作为别名仍然可解析，且展示当前官方名称
         assert resolver_name_to_code_list("旧名称") == [Stock("600000", "新名称", "a")]
+
+
+class TestCompactStockNameMerge:
+    """AkShare 名称内嵌空白压平：stockDB 只存无空格拼写。
+
+    带空格名称（"五 粮 液"）与本地无空格拼写（"五粮液"）语义相同：
+    压平后比较相等 → 不触发假性改名/别名；全名精确匹配对常规输入可见。
+    """
+
+    @pytest.mark.parametrize("clean_db", [{"五 粮 液": "600000"}], indirect=True)
+    def test_spaced_akshare_name_compacted(self, clean_db):
+        # 600000 不在本地映射：新条目以压平拼写写入（000858 本地已有、
+        # 压平后相等属"无变更"路径，见下一条用例）
+        assert ntc.extend_AkShare() is True
+        assert ntc.stockDB["600000"] == "五粮液"
+
+    @pytest.mark.parametrize("clean_db", [{"五 粮 液": "000858"}], indirect=True)
+    def test_spaced_name_vs_local_no_spurious_alias(self, clean_db):
+        # 本地已有无空格拼写：压平后相等，不得制造假性别名/假性改名
+        ntc.stockDB.clear()
+        ntc.stockDB.update({"000858": "五粮液"})
+        ntc._names_cache[:] = [None, None, None]
+        ntc._akshare_merged = None
+        ntc.stockAliases.clear()
+        assert ntc.extend_AkShare() is False
+        assert ntc.stockDB["000858"] == "五粮液"
+        assert "000858" not in ntc.stockAliases
+
+    @pytest.mark.parametrize("clean_db", [{"五 粮 液": "000858"}], indirect=True)
+    def test_spaced_name_exact_match_after_merge(self, clean_db):
+        # 压平后的规范名对常规无空格输入整名可见（含 Step 3 精确匹配口径）
+        ntc.extend_AkShare()
+        assert ntc.is_known_stock_name("五粮液") is True
+        assert resolver_name_to_code_list("五粮液") == [Stock("000858", "五粮液", "a")]
+
+    @pytest.mark.parametrize(
+        "clean_db", [{"   ": "600000", "万  科Ａ": "000002"}], indirect=True
+    )
+    def test_whitespace_only_name_skipped(self, clean_db):
+        # 压平后为空的名称条目跳过，不写入空串；"万  科Ａ" 归一后为
+        # "万科A"（NFKC 宽度归一 + 去空白）
+        assert ntc.extend_AkShare() is True
+        assert ntc.stockDB["000002"] == "万科A"
+        assert "600000" not in ntc.stockDB or ntc.stockDB["600000"] != ""
+
+
+class TestStockNameWidthNormalization:
+    """库名宽度归一（_normalize_stock_name = NFKC + 去空白）：源数据的
+    全角拼写（AkShare "京东方Ａ"、磁盘缓存历史数据）与 NFKC 归一后的
+    用户输入（"京东方A"）必须同源同变换——否则全名精确匹配落空，且会被
+    更短的库内名误切（"京东"）。"""
+
+    @pytest.mark.parametrize("clean_db", [{"京东方Ａ": "000725"}], indirect=True)
+    def test_akshare_fullwidth_name_normalized_on_merge(self, clean_db):
+        # 合并入口归一：全角Ａ名称以半角拼写写入 stockDB
+        assert ntc.extend_AkShare() is True
+        assert ntc.stockDB["000725"] == "京东方A"
+
+    @pytest.mark.parametrize("clean_db", [{"京东方Ａ": "000725"}], indirect=True)
+    def test_fullwidth_and_halfwidth_queries_both_resolve(self, clean_db):
+        ntc.extend_AkShare()
+        # 查询入口同源归一：全角/半角输入皆可解析，展示名统一为归一拼写
+        assert ntc.resolver_name_to_code_list("京东方A") == [
+            Stock("000725", "京东方A", "a")
+        ]
+        assert ntc.resolver_name_to_code_list("京东方Ａ") == [
+            Stock("000725", "京东方A", "a")
+        ]
+        assert ntc.is_known_stock_name("京东方Ａ") is True
+
+    @pytest.mark.parametrize("clean_db", [{"京东方A": "000725"}], indirect=True)
+    def test_legacy_fullwidth_input_resolves(self, clean_db):
+        # legacy 入口查询归一（生产缓存侧名称经 _build_name_map_from_df
+        # 已归一，mock 按生产形态给出半角键）
+        assert ntc.resolve_name_to_code("京东方Ａ") == "000725"
+
+    def test_local_name_indexes_normalized(self):
+        # 构建器内部归一：全角拼写输入的索引键为半角
+        unique, ambiguous = ntc._build_local_name_indexes({"000725": "京东方Ａ"})
+        assert unique == {"京东方A": "000725"}
+        assert ambiguous == set()
+
+    @pytest.mark.usefixtures("real_akshare_path")
+    def test_disk_cache_names_normalized_on_load(self):
+        # 磁盘缓存里的历史未归一名称：加载即归一（零网络，落盘时间戳新鲜）
+        import json
+        import time as time_mod
+
+        ntc._akshare_disk_checked = False
+        ntc._AKSHARE_DISK_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ntc._AKSHARE_DISK_CACHE_PATH.write_text(
+            json.dumps(
+                {"ts": time_mod.time(), "map": {"京东方Ａ": "000725"}},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        assert ntc._get_akshare_name_to_code() == {"京东方A": "000725"}
 
 # ---------------------------------------------------------------------------
 # AkShare 单飞并发：真实 _get_akshare_name_to_code + _fetch_akshare_df 假拉取
@@ -422,7 +545,9 @@ def real_akshare_path(monkeypatch, tmp_path):
     ntc._akshare_cache, ntc._akshare_failure_cache, ntc._akshare_merged = saved[:3]
     ntc._akshare_inflight, ntc._akshare_disk_checked = saved[3:]
     ntc.stockDB.clear()
-    ntc.stockDB.update(STOCK_NAME_MAP)
+    ntc.stockDB.update(
+        {c: ntc._normalize_stock_name(n) for c, n in STOCK_NAME_MAP.items()}
+    )
     ntc._names_cache[:] = [None, None, None]
     ntc._pinyin_cache[:] = [None, None]
     ntc.stockAliases.clear()
