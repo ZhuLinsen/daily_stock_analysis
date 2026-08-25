@@ -339,7 +339,7 @@ class TestStockIndexLoader(unittest.TestCase):
                 self.assertIsNone(stock_index_loader.resolve_index_stock_code("6505.TWO"))
 
     # ------------------------------------------------------------------
-    # Story 1.4 — active index row loader (CAP-2 / CAP-5)
+    # Active index row loader
     # ------------------------------------------------------------------
 
     def _index_payload(self, canonicals):

@@ -622,7 +622,7 @@ def compress_index(index: List[Dict[str, Any]]) -> List[List]:
 
 
 # ---------------------------------------------------------------------------
-# Index registry seed (Story 1.4) — build-time manifest merge.
+# Index registry seed — build-time manifest merge.
 # ---------------------------------------------------------------------------
 _INDEX_REGISTRY_SEED_PATH = Path(__file__).parent / "stock_index_seeds" / "index_registry.csv"
 _INDEX_NAMESPACE_RE = re.compile(r"^(sh|sz|csi)\d{6}$")

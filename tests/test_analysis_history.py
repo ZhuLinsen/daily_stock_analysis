@@ -53,7 +53,7 @@ import src.auth as auth
 
 
 class TestHistoryCsiCandidateConvergence(unittest.TestCase):
-    """Story 1.4 review remediation: registered CSI explicit identities must
+    """PR #2267 review remediation: registered CSI explicit identities must
     converge in history filter candidates so a record saved under any
     equivalent form is reachable from every equivalent query input."""
 

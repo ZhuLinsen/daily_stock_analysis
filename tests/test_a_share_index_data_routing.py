@@ -605,7 +605,7 @@ def test_index_and_same_bare_stock_names_use_isolated_cache_keys() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Story 1.4 — CSI provider symbol routing (CAP-4).
+# CSI provider symbol routing.
 # ---------------------------------------------------------------------------
 def test_csi_provider_symbols_follow_manifest_matrix() -> None:
     csi_target = parse_analysis_target("csi930955")

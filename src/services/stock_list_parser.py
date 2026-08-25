@@ -621,9 +621,9 @@ def parse_analysis_target(
     if registry is None:
         registry = default_index_registry()
 
-    # Story 1.4: resolve explicit index keys (canonical/display/alias) BEFORE
-    # generic stock normalization, so ``csi930955`` / ``930955.CSI`` and other
-    # explicit index forms resolve to ``index`` without touching
+    # Resolve explicit index keys (canonical/display/alias) BEFORE generic
+    # stock normalization, so ``csi930955`` / ``930955.CSI`` and other explicit
+    # index forms resolve to ``index`` without touching
     # ``normalize_stock_code()``. An unregistered ``.CSI`` input is surfaced as
     # ``unsupported`` (never a US ticker or a guessed SH/SZ index).
     explicit_entry = registry.find_by_explicit_key(raw)
@@ -652,12 +652,11 @@ def parse_analysis_target(
             matched_index=explicit_entry,
         )
 
-    # Story 1.4 review fix: an explicit CSI form that is NOT owned by the
-    # registry must surface as ``unsupported`` — never a US ticker and never a
-    # guessed SH/SZ index. This covers both the ``.CSI`` suffix (already handled
-    # by the prior check) and the ``csi`` prefix form (``csi930956`` /
-    # ``CSI930956``), which the generic normalizer would otherwise mis-route
-    # into the US-ticker branch.
+    # PR #2267 review fix: an explicit CSI form not owned by the registry must
+    # surface as ``unsupported`` — never a US ticker or a guessed SH/SZ index. This
+    # covers both the ``.CSI`` suffix (already handled by the prior check) and
+    # the ``csi`` prefix form (``csi930956`` / ``CSI930956``), which the generic
+    # normalizer would otherwise mis-route into the US-ticker branch.
     if _EXPLICIT_CSI_FORM_RE.match(unicodedata.normalize("NFKC", raw).strip().casefold()):
         return AnalysisTarget(
             raw_input=raw_input,
@@ -1064,9 +1063,9 @@ def parse_analysis_target(
     if prefix is None and bare:
         candidate = registry.find_by_bare_code(bare)
         if candidate is None:
-            # Story 1.4: also surface conflicts via the bare-conflict map so a
-            # bare code that is the numeric base of an explicit index alias
-            # (e.g. ``930955`` for ``csi930955``) is advertised as ambiguous.
+            # Also surface conflicts via the bare-conflict map so a bare code
+            # that is the numeric base of an explicit index alias (e.g.
+            # ``930955`` for ``csi930955``) is advertised as ambiguous.
             candidate = registry.find_by_bare_conflict(bare)
         if candidate is not None:
             matched_index = candidate

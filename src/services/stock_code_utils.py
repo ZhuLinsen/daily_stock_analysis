@@ -489,12 +489,12 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
     if not text:
         return ""
 
-    # Story 1.4 review remediation: converge a registered CSI explicit
-    # identity (``csi930955`` / ``930955.CSI`` / ``CSI930955``) to the parser
-    # canonical ``csi930955`` so the resolver, task dedupe key and history
-    # candidates do not split the same index into distinct keys. The parser
-    # canonical is returned verbatim (lowercase ``csi{code}``) rather than
-    # re-uppercased by ``canonical_stock_code`` below.
+    # PR #2267 review remediation: converge registered CSI aliases
+    # (``csi930955`` / ``930955.CSI`` / ``CSI930955``) to the parser canonical so
+    # the resolver, task dedupe key and history candidates do not split the
+    # same index into distinct keys. The parser canonical is returned verbatim
+    # (lowercase ``csi{code}``) rather than re-uppercased by
+    # ``canonical_stock_code`` below.
     normalized_csi = unicodedata.normalize("NFKC", text).strip().casefold()
     if re.fullmatch(r"csi\d{6}", normalized_csi) or re.fullmatch(r"\d{6}\.csi", normalized_csi):
         converged = _converge_registered_csi_identity(text)
@@ -516,14 +516,14 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
 def _converge_registered_csi_identity(raw: str) -> Optional[str]:
     """Converge a registered CSI explicit identity to its parser canonical.
 
-    Story 1.4 review remediation: the resolver, task dedupe key and history
+    PR #2267 review remediation: the resolver, task dedupe key and history
     candidate builders must treat ``csi930955`` / ``930955.CSI`` /
-    ``CSI930955`` as the same registered CSI index identity, so they do not
-    split into distinct task keys or history candidates. Returns the parser
-    canonical (lowercase ``csi{code}``) when the input is a registered CSI
-    explicit identity, or ``None`` when it is not (so callers keep their
-    existing degradation semantics for unregistered ``csi930956`` /
-    ``930956.CSI``).
+    ``CSI930955`` as the same registered CSI
+    index identity, so they do not split into distinct task keys or history
+    candidates. Returns the parser canonical (lowercase ``csi{code}``) when the
+    input is a registered CSI explicit identity, or ``None`` when it is not
+    (so callers keep their existing degradation semantics for unregistered
+    ``csi930956`` / ``930956.CSI``).
     """
     text = (raw or "").strip()
     if not text:

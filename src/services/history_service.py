@@ -126,11 +126,11 @@ class HistoryService:
                 _converge_registered_csi_identity,
             )
 
-            # Story 1.4 review remediation: converge a registered CSI explicit
-            # identity (``csi930955`` / ``930955.CSI`` / ``CSI930955``) so a
-            # record persisted under any equivalent form is reachable from every
-            # equivalent query input. This is a *persisted-read* filter path, so
-            # the candidate set must include:
+            # PR #2267 review remediation: converge registered CSI aliases
+            # (``csi930955`` / ``930955.CSI`` / ``CSI930955``) so a record persisted under any
+            # equivalent form is reachable from every equivalent query input.
+            # This is a *persisted-read* filter path, so the candidate set must
+            # include:
             #   1. the parser canonical (``csi930955`` — current storage form),
             #   2. the old resolver's uppercase canonical (``CSI930955`` — how
             #      pre-fix records were saved), and

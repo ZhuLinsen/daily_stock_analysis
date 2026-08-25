@@ -363,7 +363,7 @@ class TestResolveIndexStockCodeForAnalysis:
             assert resolve_index_stock_code_for_analysis("AAPL") == "AAPL"
 
     # ------------------------------------------------------------------
-    # Story 1.4 review remediation — registered CSI explicit identity
+    # PR #2267 review remediation — registered CSI explicit identity
     # convergence (resolver / task dedupe key / history candidates).
     # ------------------------------------------------------------------
 

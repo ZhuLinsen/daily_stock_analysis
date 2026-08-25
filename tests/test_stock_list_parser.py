@@ -476,8 +476,8 @@ class TestMaintainerSpecSamples:
         assert target.canonical_id == "sh000300"
 
     def test_sz399300_resolves_to_index(self) -> None:
-        """``sz399300`` is now a registered cross-market alias of ``sh000300``
-        (沪深300) per the Story 1.4 manifest, so it resolves to the index.
+        """``sz399300`` is a registered cross-market alias of ``sh000300``
+        (沪深300) per the manifest, so it resolves to the index.
         """
         target = parse_analysis_target("sz399300")
         assert target.asset_type == ParseStatus.INDEX
@@ -934,10 +934,10 @@ class TestExplicitExchangeSuffixRejections:
 
 
 # ---------------------------------------------------------------------------
-# Story 1.4 — index registry & CSI provider symbol governance (CAP-3).
+# Index registry & CSI provider symbol governance.
 # ---------------------------------------------------------------------------
-class TestStory14AliasMatrix:
-    """CAP-3: canonical/display/alias converge; CSI explicit; bare stays stock."""
+class TestIndexAliasMatrix:
+    """Canonical/display/alias converge; CSI explicit; bare stays stock."""
 
     @pytest.mark.parametrize(
         "code,expected_canonical,expected_exchange",

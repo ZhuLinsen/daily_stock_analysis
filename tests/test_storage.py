@@ -1362,8 +1362,8 @@ class TestStorage(unittest.TestCase):
             Config.reset_instance()
             self._cleanup_temp_dir(db_dir)
 
-    def test_canonical_id_backfill_bare_index_code_stays_stock(self):
-        """Story 1.4: ``_derive_canonical_id`` no longer reads
+    def test_canonical_id_backfill_bare_code_colliding_with_index_stays_stock(self):
+        """``_derive_canonical_id`` no longer reads
         ``matched_index.canonical_id``. A bare ``000300`` (which collides with
         the CSI-300 index) now derives to the stock-path canonical_id
         ``sz000300`` — the parser contract says bare codes are always stock.
@@ -1713,8 +1713,8 @@ class TestStorage(unittest.TestCase):
             DatabaseManager.reset_instance()
             self._cleanup_temp_dir(db_dir)
 
-    def test_save_daily_data_derives_stock_canonical_id_for_bare_index_code(self):
-        """Story 1.4: ``save_daily_data(df, code="000300")`` with no explicit
+    def test_save_daily_data_derives_stock_canonical_id_for_bare_index_collision(self):
+        """``save_daily_data(df, code="000300")`` with no explicit
         canonical_id writes ``sz000300`` (stock-path canonical_id), NOT
         ``sh000300`` (the index canonical_id). Bare codes are always stock."""
         DatabaseManager.reset_instance()
@@ -1745,7 +1745,7 @@ class TestStorage(unittest.TestCase):
             self._cleanup_temp_dir(db_dir)
 
     def test_save_daily_data_explicit_index_forms_derive_index_canonical_id(self):
-        """Story 1.4: explicit index forms (``sh000300`` / ``000300.SH``)
+        """Explicit index forms (``sh000300`` / ``000300.SH``)
         derive to the index canonical_id ``sh000300``, while the bare code
         ``000300`` derives to the stock-path ``sz000300``. Explicit index and
         bare stock are intentionally different buckets."""
@@ -1827,11 +1827,11 @@ class TestStorage(unittest.TestCase):
             Config.reset_instance()
 
     # ------------------------------------------------------------------
-    # Story 1.4 — canonical_id repair (CAP-6)
+    # canonical_id repair
     # ------------------------------------------------------------------
 
     def test_derive_canonical_id_bare_conflict_stays_stock(self):
-        """Story 1.4: ``_derive_canonical_id`` returns the parser stock
+        """``_derive_canonical_id`` returns the parser stock
         canonical for bare conflict codes, never the index canonical."""
         DatabaseManager.reset_instance()
         db = DatabaseManager(db_url="sqlite:///:memory:")
@@ -1859,7 +1859,7 @@ class TestStorage(unittest.TestCase):
             DatabaseManager.reset_instance()
 
     def test_canonical_id_repair_fixes_bare_misbucketed_rows(self):
-        """CAP-6: rows whose bare code has an erroneous index canonical are
+        """Rows whose bare code has an erroneous index canonical are
         repaired to the parser stock canonical; explicit index rows and
         correct stock rows are untouched."""
         DatabaseManager.reset_instance()
@@ -1912,7 +1912,7 @@ class TestStorage(unittest.TestCase):
             self._cleanup_temp_dir(db_dir)
 
     def test_canonical_id_repair_is_idempotent(self):
-        """CAP-6: running the repair a second time repairs 0 rows."""
+        """Running the repair a second time repairs 0 rows."""
         DatabaseManager.reset_instance()
         db_dir, db_path = self._make_temp_db_path()
 
@@ -1943,7 +1943,7 @@ class TestStorage(unittest.TestCase):
             self._cleanup_temp_dir(db_dir)
 
     def test_canonical_id_repair_skips_when_registry_empty(self):
-        """CAP-6: when the index registry is empty the repair is a no-op and
+        """When the index registry is empty the repair is a no-op and
         logs a WARNING; no rows are modified."""
         DatabaseManager.reset_instance()
         db_dir, db_path = self._make_temp_db_path()
@@ -1977,7 +1977,7 @@ class TestStorage(unittest.TestCase):
             self._cleanup_temp_dir(db_dir)
 
     def test_canonical_id_repair_handles_concurrent_rewrite_safely(self):
-        """CAP-6: a conditional UPDATE that loses the race (row already
+        """A conditional UPDATE that loses the race (row already
         rewritten) is skipped, not double-counted."""
         DatabaseManager.reset_instance()
         db_dir, db_path = self._make_temp_db_path()

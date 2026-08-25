@@ -1623,10 +1623,14 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
            SQLite can't add NOT NULL/UNIQUE columns via ALTER).
          5. Backfill existing rows with ``_derive_canonical_id(code)`` in
             id-batched chunks (5000/batch), using ``WHERE canonical_id IS NULL``
-            so re-runs are safe. ``_derive_canonical_id`` is index-aware: a
-            bare registered index code (e.g. ``000300``) resolves to the index
-            canonical_id (``sh000300``) rather than the stock-path key
-            (``sz000300``), preventing same-index split across buckets.
+            so re-runs are safe. ``_derive_canonical_id`` mirrors the parser
+            contract: a bare code always derives the stock-path
+            canonical_id (e.g. ``000300`` -> ``sz000300``), while only explicit
+            index forms (``sh000300`` / ``930955.CSI``) derive an index
+            canonical_id. Historical bare rows whose current canonical_id was
+            mis-written as an index identity (e.g. ``sh000300``) are not fixed
+            here — the idempotent ``_backfill_canonical_ids()`` repair corrects
+            that bucket in a separate pass.
             Function-level lazy import keeps the storage layer free of a
             circular import on ``src.services.stock_list_parser``.
         6. Create a plain (non-unique) index ``ix_stock_daily_canonical_id`` so
@@ -1704,8 +1708,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     def _derive_canonical_id(self, code: str) -> Optional[str]:
         """Derive a Phase 1 ``canonical_id`` for ``code``.
 
-        Story 1.4: this method returns ``parse_analysis_target(code).canonical_id``
-        (or ``None``) and never reads ``matched_index.canonical_id`` to override
+        This method returns ``parse_analysis_target(code).canonical_id`` (or
+        ``None``) and never reads ``matched_index.canonical_id`` to override
         the result. Bare codes always resolve to the stock-path canonical_id
         (e.g. bare ``000300`` -> ``sz000300``), while explicit index forms
         (``sh000300`` / ``930955.CSI``) resolve to their index canonical_id.
@@ -1750,11 +1754,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         skipped past in this run and naturally retried on next startup while
         its ``canonical_id`` is still NULL.
 
-        Derivation is index-aware via :meth:`_derive_canonical_id` so a bare
-        index code (e.g. ``000300``) backfills to the stock-path canonical_id
-        (``sz000300``) per the Story 1.4 parser contract (bare = stock); only
-        explicit index forms (``sh000300`` / ``930955.CSI``) derive to an index
-        canonical_id.
+        Derivation follows the parser contract: a bare code that collides with
+        an index identity (e.g. ``000300``) backfills to the stock-path
+        canonical_id (``sz000300``); only explicit index forms
+        (``sh000300`` / ``930955.CSI``) derive to an index canonical_id.
         """
 
         _BATCH_SIZE = 5000
@@ -1835,7 +1838,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     def _backfill_canonical_ids(self) -> None:
         """Idempotent, batched repair of historical bare-code canonical_id buckets.
 
-        Story 1.4: the old ``_derive_canonical_id`` incorrectly preferred
+        The previous ``_derive_canonical_id`` behavior preferred
         ``matched_index.canonical_id``, so a bare six-digit code that collided
         with an index identity (e.g. ``000001`` / ``000016`` / ``000688`` /
         ``930955``) was written with the *index* canonical_id (``sh000001`` /
@@ -3304,8 +3307,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         - SQLite 分支按 chunk 写入以避免绑定参数上限
         - ``canonical_id``（Expand-Contract PR2）：显式传入则双写；
           未传（``None``）时用 ``_derive_canonical_id(code)`` 延迟推导
-          （index-aware：裸指数码命中注册表时统一到指数 canonical_id），
-          推导失败写 NULL 降级（D1）。
+          （裸码恒为 stock canonical，如 ``000300`` -> ``sz000300``；
+          仅显式指数形式如 ``sh000300`` / ``930955.CSI`` 推导为指数
+          canonical_id；历史被错误写成指数桶的裸码行由
+          ``_backfill_canonical_ids()`` 幂等修复），推导失败写 NULL 降级（D1）。
         
         Args:
             df: 包含日线数据的 DataFrame
@@ -3324,9 +3329,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         # D1: canonical_id=None → derive via the Phase 1 parser; on failure
         # degrade to NULL (do NOT raise — read path still uses ``code``).
         # Empty string is treated like None (never persisted as a key).
-        # Derivation is index-aware (OR-COR-4f9ffc38): a bare index code
-        # (e.g. ``000300``) resolves to the index canonical_id (``sh000300``)
-        # rather than the stock-path canonical_id (``sz000300``).
+        # Parser contract (OR-COR-4f9ffc38): a bare code always derives the
+        # stock canonical_id (e.g. ``000300`` -> ``sz000300``); only explicit
+        # index forms (``sh000300`` / ``930955.CSI``) derive an index canonical_id.
+        # Historical bare rows mis-written as an index identity are repaired
+        # separately by the idempotent ``_backfill_canonical_ids()``.
         if not canonical_id:
             try:
                 canonical_id = self._derive_canonical_id(code)

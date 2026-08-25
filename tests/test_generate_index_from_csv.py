@@ -662,10 +662,10 @@ class TestPinyin:
 
 
 # ---------------------------------------------------------------------------
-# Story 1.4 — index registry seed generation (CAP-1)
+# Index registry seed generation
 # ---------------------------------------------------------------------------
 class TestIndexRegistrySeed:
-    """CAP-1: seed generates exactly 31 index rows; index-only merge is stable."""
+    """Seed generates exactly 31 index rows; index-only merge is stable."""
 
     def test_seed_loads_31_rows(self):
         rows = load_index_registry_seed()
@@ -784,7 +784,7 @@ class TestIndexRegistrySeed:
         assert output.read_bytes() == before
 
     def test_full_path_merge_includes_31_index_rows(self, tmp_path, monkeypatch):
-        """CAP-1: the full rebuild path (``main()``) merges the same 31 index
+        """The full rebuild path (``main()``) merges the same 31 index
         rows before compression, so a full stock-index rebuild never erases the
         index registry entries."""
         import generate_index_from_csv as gen
