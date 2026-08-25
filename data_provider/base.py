@@ -1281,6 +1281,20 @@ class DataFetcherManager:
             except Exception as exc:
                 logger.debug("[TickFlowFetcher] 关闭管理器资源失败: %s", exc)
 
+        # The HK Futu fundamental path lazily creates and caches its own
+        # FutuFetcher (an OpenQuoteContext-backed connection) on
+        # _futu_fundamental_fetcher; release it here so explicit close /
+        # reload paths do not leak the OpenD connection.
+        futu_fundamental_fetcher = getattr(self, "_futu_fundamental_fetcher", None)
+        if futu_fundamental_fetcher is not None:
+            self._futu_fundamental_fetcher = None
+            close_futu = getattr(futu_fundamental_fetcher, "close", None)
+            if callable(close_futu):
+                try:
+                    close_futu()
+                except Exception as exc:
+                    logger.debug("[FutuFetcher] 关闭管理器资源失败: %s", exc)
+
         for fetcher in self._get_fetchers_snapshot():
             close = getattr(fetcher, "close", None)
             if callable(close):

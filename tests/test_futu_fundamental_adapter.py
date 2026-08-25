@@ -652,3 +652,22 @@ class TestFutuFundamentalIntegration(unittest.TestCase):
         self.assertEqual(payload["earnings"]["dividend"]["ttm_dividend_yield_pct"], 3.2)
         providers = [s.get("provider") for s in payload["source_chain"]]
         self.assertIn("yfinance.info", providers)
+
+    def test_close_releases_futu_fundamental_fetcher(self):
+        """DataFetcherManager.close() must close the cached HK Futu fundamental fetcher.
+
+        The HK Futu fundamental path lazily caches its own FutuFetcher (an
+        OpenQuoteContext-backed connection) on _futu_fundamental_fetcher.
+        Explicit close / reload paths must release it, otherwise the OpenD
+        connection stays open after manager cleanup.
+        """
+        from unittest.mock import Mock
+
+        manager = self._make_manager()
+        futu_fetcher = Mock()
+        manager._futu_fundamental_fetcher = futu_fetcher
+
+        manager.close()
+
+        futu_fetcher.close.assert_called_once_with()
+        self.assertIsNone(manager._futu_fundamental_fetcher)
