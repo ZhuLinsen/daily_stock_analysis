@@ -863,6 +863,10 @@ const StockScreeningPage: React.FC = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [restoreResolved, setRestoreResolved] = useState(() => !restoredTask?.runId);
+  // 标记当前 strategy 是否来自历史 run（刷新自动恢复或手动历史选择）的上下文同步。
+  // 为 true 时 loadStrategies 跳过“不在列表则回退第一项”的归一化，
+  // 防止迟到的 /strategies 响应把历史上下文改写回默认策略。
+  const historyContextStrategyRef = useRef(false);
   const [loadingStrategies, setLoadingStrategies] = useState(false);
   const [error, setError] = useState('');
   const [strategyLoadError, setStrategyLoadError] = useState('');
@@ -928,6 +932,7 @@ const StockScreeningPage: React.FC = () => {
       }
       if (detail?.result) {
         applyScreenResult(detail.result);
+        historyContextStrategyRef.current = true;
         // 同步历史 run 的策略与市场上下文，确保结果区文案和后续深度分析
         // 使用该历史 run 对应的 strategy/market，而不是当前表单的选择
         if (detail.strategy) {
@@ -1033,7 +1038,9 @@ const StockScreeningPage: React.FC = () => {
       const result = await screeningApi.getStrategies();
       const loadedStrategies = result.strategies || [];
       setStrategies(loadedStrategies);
-      if (loadedStrategies.length > 0) {
+      // 历史 run 的自定义/下线策略不在当前列表属预期行为，不做“回退第一项”的归一化，
+      // 否则迟到的策略列表会把刚恢复好的上下文改写回默认策略。
+      if (loadedStrategies.length > 0 && !historyContextStrategyRef.current) {
         setStrategy((currentStrategy) =>
           loadedStrategies.some((item) => item.id === currentStrategy) ? currentStrategy : loadedStrategies[0].id,
         );
@@ -1209,6 +1216,7 @@ const StockScreeningPage: React.FC = () => {
         }
         if (detail?.result) {
           applyScreenResult(detail.result);
+          historyContextStrategyRef.current = true;
           // 同步恢复该历史 run 的策略与市场上下文，避免结果区展示和
           // 深度分析沿用当前表单策略（与 handleHistoryRunSelect 一致）
           if (detail.strategy) {
@@ -1231,8 +1239,13 @@ const StockScreeningPage: React.FC = () => {
         }
       })
       .finally(() => {
+        // 无论结果是否过期都要解除自动恢复门闩，否则新任务的轮询会被阻塞到旧请求超时。
         if (active) {
           setRestoreResolved(true);
+        }
+        // 过期的自动恢复不得触碰共享 loading：用户手动选择的历史详情请求可能仍在飞行，
+        // 提前清掉会重新放开“运行选股”入口，随后迟到的历史响应会覆盖新任务状态。
+        if (active && historyRunRequestIdRef.current === restoreRequestBase) {
           setLoading(false);
         }
       });
@@ -1386,6 +1399,11 @@ const StockScreeningPage: React.FC = () => {
   };
 
   const handleSubmit = async () => {
+    // 新任务提交即代表用户放弃当前历史/恢复上下文：
+    // 递增请求代号作废飞行中的历史详情与自动恢复响应；
+    // 解除自动恢复门闩，保证刚提交的任务轮询立即可启动。
+    historyRunRequestIdRef.current += 1;
+    setRestoreResolved(true);
     setLoading(true);
     setError('');
     setScreenMeta(null);

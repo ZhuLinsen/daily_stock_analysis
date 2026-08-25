@@ -1822,4 +1822,252 @@ describe('StockScreeningPage', () => {
     expect(screen.getByText('数据补充提示')).toBeInTheDocument();
     expect(screen.getByText('stock_news_unavailable')).toBeInTheDocument();
   });
+  it('keeps the shared loading held when a stale auto-restore finishes while a manual history request is in flight', async () => {
+    // 回归 OR-COR-9b1f8c4e：过期的自动恢复请求不得在 finally 中无条件清掉共享 loading，
+    // 否则手动历史详情仍在飞行时“运行选股”会被提前放开。
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    window.sessionStorage.setItem('dsa.screening.activeScreenTask.v1', JSON.stringify({
+      taskId: 'task-a',
+      runId: 'run-a',
+      strategy: 'capital_heat',
+      market: 'cn',
+      maxResults: 3,
+    }));
+    let resolveRunA: (value: unknown) => void = () => {};
+    let resolveRunB: (value: unknown) => void = () => {};
+    getRun.mockImplementation((runId: string) => {
+      if (runId === 'run-a') {
+        return new Promise((resolve) => {
+          resolveRunA = resolve;
+        });
+      }
+      if (runId === 'run-b') {
+        return new Promise((resolve) => {
+          resolveRunB = resolve;
+        });
+      }
+      return Promise.reject(new Error('run not found'));
+    });
+    getHistory.mockResolvedValue({
+      enabled: true,
+      runs: [
+        {
+          runId: 'run-b',
+          strategy: 'dual_low',
+          market: 'cn',
+          candidateCount: 1,
+          createdAt: '2026-08-05T10:00:00Z',
+        },
+      ],
+      runCount: 1,
+    });
+    render(<StockScreeningPage />);
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    // 自动恢复 run-a 仍在飞行时，用户点开历史里的 run-b
+    fireEvent.click(await screen.findByRole('button', { name: /Dual Low/ }));
+    // 先让过期的自动恢复 run-a 结束（其响应已被 request-id 判定为过期）
+    resolveRunA({
+      runId: 'run-a',
+      strategy: 'capital_heat',
+      market: 'cn',
+      candidateCount: 1,
+      enabled: true,
+      result: {
+        enabled: true,
+        candidates: [
+          {
+            rank: 1,
+            code: '600519',
+            name: '贵州茅台',
+            score: 90,
+            reason: '热度',
+            raw: {},
+          },
+        ],
+        candidateCount: 1,
+        snapshotCount: 50,
+        afterFilterCount: 10,
+        llmRanked: true,
+      },
+    });
+    await act(async () => {});
+    // 过期 finally 不清共享 loading：表单仍处于禁用态（按钮在 loading 时渲染为 spinner，
+    // 故用市场下拉框断言），页面也未切到任何历史结果
+    expect(screen.getByLabelText('市场')).toBeDisabled();
+    expect(screen.queryByText(/Dual Low · A 股/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/自定义策略 \(capital_heat\)/)).not.toBeInTheDocument();
+    // 随后 run-b 正常返回：结果恢复，loading 由本次请求自己收口
+    resolveRunB({
+      runId: 'run-b',
+      strategy: 'dual_low',
+      market: 'cn',
+      candidateCount: 1,
+      enabled: true,
+      result: {
+        enabled: true,
+        candidates: [
+          {
+            rank: 1,
+            code: '600000',
+            name: '浦发银行',
+            score: 88,
+            reason: '低估值',
+            raw: {},
+          },
+        ],
+        candidateCount: 1,
+        snapshotCount: 50,
+        afterFilterCount: 10,
+        llmRanked: true,
+      },
+    });
+    expect(await screen.findByText(/Dual Low · A 股/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('市场')).toBeEnabled());
+  });
+  it('polls a newly submitted task immediately while a stale auto-restore request is still pending', async () => {
+    // 回归 OR-COR-2c71d8af：handleSubmit 必须解除自动恢复门闩并作废飞行中的恢复请求，
+    // 否则新任务的轮询会被阻塞到旧请求超时，页面假死在提交进度。
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    window.sessionStorage.setItem('dsa.screening.activeScreenTask.v1', JSON.stringify({
+      taskId: 'task-a',
+      runId: 'run-a',
+      strategy: 'capital_heat',
+      market: 'cn',
+      maxResults: 3,
+    }));
+    // 自动恢复 run-a 永远挂起（模拟卡死的旧请求）
+    getRun.mockImplementation((runId: string) => {
+      if (runId === 'run-a') {
+        return new Promise(() => {});
+      }
+      return Promise.resolve({
+        runId: 'run-b',
+        strategy: 'dual_low',
+        market: 'cn',
+        candidateCount: 1,
+        enabled: true,
+        result: {
+          enabled: true,
+          candidates: [
+            {
+              rank: 1,
+              code: '600000',
+              name: '历史候选',
+              score: 80,
+              reason: '历史',
+              raw: {},
+            },
+          ],
+          candidateCount: 1,
+          snapshotCount: 50,
+          afterFilterCount: 10,
+          llmRanked: true,
+        },
+      });
+    });
+    getHistory.mockResolvedValue({
+      enabled: true,
+      runs: [
+        {
+          runId: 'run-b',
+          strategy: 'dual_low',
+          market: 'cn',
+          candidateCount: 1,
+          createdAt: '2026-08-05T10:00:00Z',
+        },
+      ],
+      runCount: 1,
+    });
+    screenStocks.mockResolvedValue({
+      enabled: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '000001',
+          name: '新任务候选',
+          score: 88,
+          reason: '新任务',
+          raw: {},
+        },
+      ],
+      candidateCount: 1,
+    });
+    render(<StockScreeningPage />);
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    // 自动恢复挂起时，用户先打开历史 run-b（正常返回并由该请求自身收口 loading）
+    fireEvent.click(await screen.findByRole('button', { name: /Dual Low/ }));
+    expect(await screen.findByText(/Dual Low · A 股/)).toBeInTheDocument();
+    // 随即发起新任务：轮询必须立即启动，不被仍挂起的自动恢复门闩阻塞
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+    await waitFor(() => expect(getScreenTask).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/新任务候选/)).toBeInTheDocument();
+  });
+  it('does not rewrite a restored custom strategy when the strategy list arrives late', async () => {
+    // 回归：迟到的 /strategies 响应不得把历史/恢复上下文中的自定义策略改写回默认策略。
+    let resolveStrategies: (value: unknown) => void = () => {};
+    getStrategies.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveStrategies = resolve;
+      }),
+    );
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+    });
+    window.sessionStorage.setItem('dsa.screening.activeScreenTask.v1', JSON.stringify({
+      taskId: 'task-a',
+      runId: 'run-a',
+      strategy: 'capital_heat',
+      market: 'cn',
+      maxResults: 3,
+    }));
+    getRun.mockResolvedValue({
+      runId: 'run-a',
+      strategy: 'capital_heat',
+      market: 'cn',
+      candidateCount: 1,
+      enabled: true,
+      result: {
+        enabled: true,
+        candidates: [
+          {
+            rank: 1,
+            code: '600519',
+            name: '贵州茅台',
+            score: 90,
+            reason: '热度',
+            raw: {},
+          },
+        ],
+        candidateCount: 1,
+        snapshotCount: 50,
+        afterFilterCount: 10,
+        llmRanked: true,
+      },
+    });
+    getHistory.mockResolvedValue({ enabled: true, runs: [], runCount: 0 });
+    render(<StockScreeningPage />);
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    // 自动恢复先应用历史上下文（此时策略列表请求仍挂起）
+    expect(await screen.findByText(/自定义策略 \(capital_heat\) · A 股/)).toBeInTheDocument();
+    // 迟到的策略列表不包含该历史策略
+    resolveStrategies({
+      enabled: true,
+      strategies: [
+        { id: 'dual_low', name: '双低', description: 'desc', category: '价值' },
+      ],
+      strategyCount: 1,
+    });
+    await act(async () => {});
+    // 归一化被跳过：表单下拉切到自定义项、输入框保留原始 ID、结果区标题不变
+    expect(screen.getByLabelText('策略')).toHaveValue('__custom_strategy__');
+    expect(screen.getByLabelText('自定义策略 ID')).toHaveValue('capital_heat');
+    expect(screen.getByText(/自定义策略 \(capital_heat\) · A 股/)).toBeInTheDocument();
+  });
 });
