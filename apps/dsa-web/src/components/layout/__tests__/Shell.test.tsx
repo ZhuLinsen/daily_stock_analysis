@@ -70,6 +70,20 @@ describe('Shell', () => {
     expect(await screen.findByRole('menu', { name: '主题模式' })).toBeInTheDocument();
   });
 
+  it('hides the desktop update entry outside Electron runtime', () => {
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ThemeProvider>
+          <Shell>
+            <div>page content</div>
+          </Shell>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByRole('button', { name: '桌面端更新' })).not.toBeInTheDocument();
+  });
+
   it('shows a confirmation dialog before logout', async () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>

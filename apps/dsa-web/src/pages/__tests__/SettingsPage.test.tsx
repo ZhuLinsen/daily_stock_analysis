@@ -76,10 +76,14 @@ const {
 
 const mockedAnchorClick = vi.fn();
 
-vi.mock('../../hooks', () => ({
-  useAuth: () => useAuthMock(),
-  useSystemConfig: () => useSystemConfigMock(),
-}));
+vi.mock('../../hooks', async () => {
+  const actual = await vi.importActual<typeof import('../../hooks')>('../../hooks');
+  return {
+    ...actual,
+    useAuth: () => useAuthMock(),
+    useSystemConfig: () => useSystemConfigMock(),
+  };
+});
 
 vi.mock('../../api/systemConfig', () => ({
   systemConfigApi: {
