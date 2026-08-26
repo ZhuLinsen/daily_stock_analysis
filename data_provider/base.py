@@ -622,6 +622,8 @@ class DataFetcherManager:
         "AkshareFetcher": {"cn", "hk"},
         "TushareFetcher": {"cn", "hk"},
         "TickFlowFetcher": {"cn"},
+        # 妙想为垂直补充数据源（资金流/筹码分布），不提供日线行情
+        "MiaoxiangFetcher": set(),
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
@@ -1822,6 +1824,22 @@ class DataFetcherManager:
             )
         else:
             logger.debug("[data source init] skip TickFlowFetcher because TICKFLOW_API_KEY is not configured")
+
+        mx_apikey = getattr(config, "mx_apikey", None)
+        if not isinstance(mx_apikey, str):
+            mx_apikey = ""
+        mx_apikey = mx_apikey.strip()
+        if mx_apikey:
+            from .miaoxiang_fetcher import MiaoxiangFetcher
+
+            optional_fetchers.append(
+                MiaoxiangFetcher(
+                    api_key=mx_apikey,
+                    priority=getattr(config, "mx_priority", 6),
+                )
+            )
+        else:
+            logger.debug("[data source init] skip MiaoxiangFetcher because MX_APIKEY is not configured")
 
         if LongbridgeFetcher.has_configured_credentials(config):
             optional_fetchers.append(LongbridgeFetcher())  # 长桥（美股/港股兜底，懒加载）
@@ -4497,6 +4515,54 @@ class DataFetcherManager:
             self._prune_fundamental_cache(cache_ttl, cache_max_entries)
         return result_ctx
 
+    def _supplement_capital_flow_from_fetchers(
+        self,
+        stock_code: str,
+        payload: Dict[str, Any],
+        budget_seconds: float,
+    ) -> None:
+        """主链路未取到个股资金流时，尝试实现了 get_capital_flow 的补充数据源（如妙想）。
+
+        每次补充调用都通过 _run_with_timeout 受剩余阶段预算硬约束，
+        不突破 FUNDAMENTAL_*_TIMEOUT_SECONDS 的 fail-open 语义；
+        就地更新 payload 的 stock_flow / source_chain / errors。
+        """
+        stock_flow = payload.get("stock_flow") or {}
+        if isinstance(stock_flow, dict) and any(v is not None for v in stock_flow.values()):
+            return
+        remaining = max(0.0, float(budget_seconds))
+        for fetcher in self._get_fetchers_snapshot():
+            getter = getattr(fetcher, "get_capital_flow", None)
+            if not callable(getter):
+                continue
+            if remaining <= 0:
+                if isinstance(payload.get("errors"), list):
+                    payload["errors"].append("capital_flow supplement budget exhausted")
+                break
+            supplemental, sup_err, sup_cost_ms = self._run_with_timeout(
+                lambda f=getter: f(stock_code),
+                remaining,
+                "capital_flow_supplement",
+            )
+            remaining = max(0.0, remaining - sup_cost_ms / 1000.0)
+            if isinstance(supplemental, dict) and supplemental.get("stock_flow"):
+                payload["stock_flow"] = supplemental["stock_flow"]
+                if supplemental.get("source_chain"):
+                    payload.setdefault("source_chain", []).extend(supplemental["source_chain"])
+                if supplemental.get("errors"):
+                    payload.setdefault("errors", []).extend(supplemental["errors"])
+                logger.info(
+                    "[资金流] %s 使用 %s 补充个股资金流 (%dms)",
+                    stock_code,
+                    fetcher.name,
+                    sup_cost_ms,
+                )
+                break
+            if sup_err:
+                if isinstance(payload.get("errors"), list):
+                    payload["errors"].append(f"{fetcher.name}: {sup_err}")
+                logger.warning("[资金流] %s 获取 %s 失败: %s", fetcher.name, stock_code, sup_err)
+
     def get_capital_flow_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
         """资金流向块（fail-open）。"""
         from src.config import get_config
@@ -4519,18 +4585,32 @@ class DataFetcherManager:
                 [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
                 ["fundamental stage timeout"],
             )
+        # 主适配器（akshare/东财）在存在补充数据源时只分配部分预算；东财被限流时重试会耗尽
+        # 全部预算，预留余量给实现了 get_capital_flow 的补充数据源（如妙想）。
+        # 无补充数据源时保持原有全额预算，不影响未配置 MX_APIKEY 的部署。
+        has_capital_flow_supplement = any(
+            callable(getattr(f, "get_capital_flow", None))
+            for f in self._get_fetchers_snapshot()
+        )
+        adapter_budget = timeout * 0.6 if (timeout > 0 and has_capital_flow_supplement) else timeout
         payload, err, cost_ms = self._run_with_retry(
             lambda: self._fundamental_adapter.get_capital_flow(stock_code),
-            timeout,
+            adapter_budget,
             "capital_flow",
         )
-        if not isinstance(payload, dict):
-            return self._build_fundamental_block(
-                "failed",
-                {},
-                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": cost_ms}],
-                [err or "capital_flow failed"],
-            )
+        adapter_failed = not isinstance(payload, dict)
+        if adapter_failed:
+            payload = {
+                "status": "failed",
+                "stock_flow": {},
+                "sector_rankings": {"top": [], "bottom": []},
+                "source_chain": [],
+                "errors": [err or "capital_flow failed"],
+            }
+
+        # 主链路（akshare/东财）未取到个股资金流时，用剩余预算尝试补充数据源（如妙想）
+        remaining_budget = max(0.0, timeout - cost_ms / 1000.0)
+        self._supplement_capital_flow_from_fetchers(stock_code, payload, remaining_budget)
 
         stock_flow = payload.get("stock_flow") or {}
         sector_rankings = payload.get("sector_rankings") or {}
@@ -4538,6 +4618,14 @@ class DataFetcherManager:
         if isinstance(stock_flow, dict):
             has_stock_flow = any(v is not None for v in stock_flow.values())
         has_sector_rankings = bool(sector_rankings.get("top")) or bool(sector_rankings.get("bottom"))
+        if adapter_failed and not has_stock_flow and not has_sector_rankings:
+            # 主适配器失败且无补充数据源可用：保持原 failed 语义
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": cost_ms}],
+                list(payload.get("errors", [])),
+            )
         adapter_status = str(payload.get("status", "not_supported"))
         if has_stock_flow or has_sector_rankings:
             capital_flow_status = "ok"
