@@ -20,6 +20,7 @@ _ENV_BEFORE_MAIN_IMPORT = dict(os.environ)
 import main
 from src.brokers.futu.portfolio import FutuPortfolioError
 from src.config import Config
+from src.services.stock_list_parser import parse_analysis_target
 
 _MAIN_IMPORT_ENV_ADDITIONS = frozenset(set(os.environ) - set(_ENV_BEFORE_MAIN_IMPORT))
 _MAIN_IMPORT_ENV_OVERRIDES = {
@@ -424,7 +425,38 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         run_full_analysis.assert_called_once()
         _, _, stock_codes = run_full_analysis.call_args.args
+        analysis_targets = run_full_analysis.call_args.kwargs.get("analysis_targets")
         self.assertEqual(stock_codes, ["005930.KS"])
+        self.assertEqual(len(analysis_targets), 1)
+        self.assertEqual(analysis_targets[0].asset_type, "stock")
+
+    def test_standalone_run_builds_structured_index_targets(self) -> None:
+        args = self._make_args(
+            stocks="sh000016,000300.CSI,930955.CSI,000016"
+        )
+        config = self._make_config(run_immediately=True)
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        _, _, stock_codes = run_full_analysis.call_args.args
+        analysis_targets = run_full_analysis.call_args.kwargs["analysis_targets"]
+        self.assertEqual(
+            stock_codes,
+            ["sh000016", "sh000300", "csi930955", "000016"],
+        )
+        self.assertEqual(
+            [target.asset_type for target in analysis_targets],
+            ["index", "index", "index", "stock"],
+        )
+        self.assertEqual(
+            [target.canonical_id for target in analysis_targets],
+            ["sh000016", "sh000300", "csi930955", "sz000016"],
+        )
 
     def test_standalone_run_returns_nonzero_when_startup_analysis_reports_failure(self) -> None:
         args = self._make_args()
@@ -438,7 +470,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             exit_code = main.main()
 
         self.assertEqual(exit_code, 1)
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_called_once_with(config, args, None, None)
 
     def test_standalone_futu_portfolio_failure_returns_nonzero(self) -> None:
         args = self._make_args(portfolio="futu")
@@ -740,7 +772,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         start_bots.assert_not_called()
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_called_once_with(config, args, None, None)
         run_full_analysis.assert_not_called()
         error_log.assert_called_once()
 
@@ -866,7 +898,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(run_with_lock.call_count, 1)
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_called_once_with(config, args, None, None)
         run_full_analysis.assert_not_called()
         start_bots.assert_called_once_with(config)
 
@@ -898,7 +930,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             exit_code = main.main()
 
         self.assertEqual(exit_code, 0)
-        run_with_lock.assert_called_once_with(config, args, None)
+        run_with_lock.assert_called_once_with(config, args, None, None)
         start_bots.assert_called_once_with(config)
         exception_log.assert_any_call(
             "Futu 持仓导入失败，Web/API 服务继续运行: %s",
@@ -1202,7 +1234,13 @@ class MainScheduleModeTestCase(unittest.TestCase):
             exit_code = main.main()
 
         self.assertEqual(exit_code, 0)
-        run_full_analysis.assert_called_once_with(config, args, ["600519", "000001"])
+        run_full_analysis.assert_called_once()
+        _, _, stock_codes = run_full_analysis.call_args.args
+        analysis_targets = run_full_analysis.call_args.kwargs.get("analysis_targets")
+        self.assertEqual(stock_codes, ["600519", "000001"])
+        self.assertEqual(len(analysis_targets), 2)
+        self.assertEqual(analysis_targets[0].asset_type, "stock")
+        self.assertEqual(analysis_targets[1].asset_type, "stock")
 
     def test_run_full_analysis_skips_market_review_when_shared_lock_is_held(self) -> None:
         from src.core.market_review_lock import (
@@ -1956,6 +1994,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             send_notification=True,
             merge_notification=True,
             current_time=unittest.mock.ANY,
+            analysis_targets=None,
         )
         notifier_message = pipeline.notifier.send.call_args.args[0]
         self.assertIn("## 完整大盘复盘", notifier_message)
@@ -2064,6 +2103,43 @@ class MainScheduleModeTestCase(unittest.TestCase):
         call_args = run_with_lock.call_args
         self.assertIs(call_args.args[1], run_market_review)
         self.assertEqual(call_args.kwargs["trigger_source"], "schedule")
+
+    def test_run_full_analysis_keeps_targets_aligned_after_trading_day_filter(self) -> None:
+        args = self._make_args(dry_run=True, no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = []
+        targets = [
+            parse_analysis_target("sh000016"),
+            parse_analysis_target("AAPL"),
+        ]
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch.object(
+                 main,
+                 "_compute_trading_day_filter",
+                 return_value=(["AAPL"], "us", False),
+             ), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch("src.core.market_review.run_market_review"):
+            main.run_full_analysis(
+                config,
+                args,
+                ["sh000016", "AAPL"],
+                analysis_targets=targets,
+            )
+
+        run_kwargs = pipeline.run.call_args.kwargs
+        self.assertEqual(run_kwargs["stock_codes"], ["AAPL"])
+        self.assertEqual(run_kwargs["analysis_targets"], [targets[1]])
 
     def test_market_review_mode_uses_shared_runtime_assembly(self) -> None:
         args = self._make_args(market_review=True)

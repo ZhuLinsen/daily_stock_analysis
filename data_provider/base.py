@@ -637,6 +637,12 @@ class DataFetcherManager:
         "TickFlowFetcher",
         "YfinanceFetcher",
     )
+    _CN_INDEX_REALTIME_SOURCE_ORDER = (
+        ("AkshareFetcher", "tencent"),
+        ("AkshareFetcher", "sina"),
+        ("EfinanceFetcher", "index"),
+        ("TickFlowFetcher", "tickflow"),
+    )
     _CN_INDEX_NAME_SOURCE_ORDER = (
         "TencentFetcher",
         "AkshareFetcher",
@@ -1138,6 +1144,236 @@ class DataFetcherManager:
             "; ".join(errors) or "暂无可用数据源",
         )
         return pd.DataFrame(columns=STANDARD_COLUMNS), ""
+
+    def _get_cn_index_realtime_quote(
+        self,
+        target: AnalysisTarget,
+        *,
+        log_final_failure: bool = True,
+    ):
+        """Fetch a realtime quote for a registered CN index via a fixed chain.
+
+        Chain (Story 1.5):
+        1. Tencent via AkshareFetcher (``sh000016``/``sz399001`` prefixed symbol)
+        2. Sina via AkshareFetcher (same prefixed symbol)
+        3. Eastmoney single-stock secid via EfinanceFetcher (SH/SZ/CSI)
+        4. TickFlow (``000016.SH`` symbol; SH/SZ only)
+
+        The explicit index identity is preserved end-to-end: provider symbols
+        are derived from the registry entry, never from ``normalize_stock_code``,
+        so ``sh000016`` can never degrade into the stock ``000016`` path.
+        """
+        fetchers_by_name = {
+            fetcher.name: fetcher for fetcher in self._get_fetchers_snapshot()
+        }
+        errors: List[str] = []
+        request_start = time.time()
+        source_order = self._CN_INDEX_REALTIME_SOURCE_ORDER
+
+        for index, (source_name, source_kind) in enumerate(source_order):
+            fallback_to = (
+                source_order[index + 1][0] if index + 1 < len(source_order) else None
+            )
+            fetcher = fetchers_by_name.get(source_name)
+            provider_symbol = self._cn_index_realtime_provider_symbol(
+                target, source_name, source_kind
+            )
+
+            if not provider_symbol:
+                reason = (
+                    "unsupported index provider symbol: "
+                    f"{target.canonical_id} -> {source_name}"
+                )
+                record_provider_run(
+                    data_type="realtime_quote",
+                    provider=source_name,
+                    operation="get_realtime_quote",
+                    success=False,
+                    latency_ms=0,
+                    error_type="unsupported",
+                    error_message=reason,
+                    fallback_to=fallback_to,
+                    record_count=0,
+                )
+                logger.warning(
+                    "[指数实时行情不支持 %d/%d] [%s] %s: %s",
+                    index + 1,
+                    len(source_order),
+                    source_name,
+                    target.canonical_id,
+                    reason,
+                )
+                errors.append(f"[{source_name}] {reason}")
+                continue
+
+            if fetcher is None or not self._is_fetcher_available(
+                fetcher, capability="realtime_quote"
+            ):
+                reason = "数据源未配置或暂不可用"
+                record_provider_run(
+                    data_type="realtime_quote",
+                    provider=source_name,
+                    operation="get_realtime_quote",
+                    success=False,
+                    latency_ms=0,
+                    error_type="unavailable",
+                    error_message=reason,
+                    fallback_to=fallback_to,
+                    record_count=0,
+                )
+                logger.warning(
+                    "[指数实时行情失败 %d/%d] [%s] %s: %s",
+                    index + 1,
+                    len(source_order),
+                    source_name,
+                    target.canonical_id,
+                    reason,
+                )
+                errors.append(f"[{source_name}] {reason}")
+                continue
+
+            attempt_start = time.time()
+            try:
+                logger.info(
+                    "[指数实时行情尝试 %d/%d] [%s] %s -> %s",
+                    index + 1,
+                    len(source_order),
+                    source_name,
+                    target.canonical_id,
+                    provider_symbol,
+                )
+                record_provider_run_started(
+                    data_type="realtime_quote",
+                    provider=source_name,
+                    operation="get_realtime_quote",
+                )
+                if source_kind == "index":
+                    quote = self._call_fetcher_method(
+                        fetcher,
+                        "get_index_realtime_quote",
+                        target.canonical_id,
+                    )
+                elif source_kind == "tickflow":
+                    quote = self._call_fetcher_method(
+                        fetcher,
+                        "get_realtime_quote",
+                        provider_symbol,
+                    )
+                else:
+                    quote = self._call_fetcher_method(
+                        fetcher,
+                        "get_realtime_quote",
+                        provider_symbol,
+                        source=source_kind,
+                    )
+                duration_ms = int((time.time() - attempt_start) * 1000)
+                if quote is not None and quote.has_basic_data():
+                    record_provider_run(
+                        data_type="realtime_quote",
+                        provider=source_name,
+                        operation="get_realtime_quote",
+                        success=True,
+                        latency_ms=duration_ms,
+                        record_count=1,
+                    )
+                    logger.info(
+                        "[指数实时行情完成] %s 使用 [%s] 获取成功: elapsed=%.2fs",
+                        target.canonical_id,
+                        source_name,
+                        time.time() - request_start,
+                    )
+                    from src.config import get_config as _get_config_safe
+
+                    return self._enrich_realtime_quote(
+                        quote,
+                        realtime_cache_ttl=getattr(
+                            _get_config_safe(), "realtime_cache_ttl", None
+                        ),
+                    )
+
+                reason = "empty or incomplete quote"
+                record_provider_run(
+                    data_type="realtime_quote",
+                    provider=source_name,
+                    operation="get_realtime_quote",
+                    success=False,
+                    latency_ms=duration_ms,
+                    error_type="empty",
+                    error_message=reason,
+                    fallback_to=fallback_to,
+                    record_count=0,
+                )
+                logger.warning(
+                    "[指数实时行情失败 %d/%d] [%s] %s: %s",
+                    index + 1,
+                    len(source_order),
+                    source_name,
+                    target.canonical_id,
+                    reason,
+                )
+                errors.append(f"[{source_name}] {reason}")
+            except Exception as exc:
+                error_type, error_reason = summarize_exception(exc)
+                duration_ms = int((time.time() - attempt_start) * 1000)
+                record_provider_run(
+                    data_type="realtime_quote",
+                    provider=source_name,
+                    operation="get_realtime_quote",
+                    success=False,
+                    latency_ms=duration_ms,
+                    error_type=error_type,
+                    error_message=error_reason,
+                    fallback_to=fallback_to,
+                    record_count=0,
+                )
+                logger.warning(
+                    "[指数实时行情失败 %d/%d] [%s] %s: error_type=%s, reason=%s",
+                    index + 1,
+                    len(source_order),
+                    source_name,
+                    target.canonical_id,
+                    error_type,
+                    error_reason,
+                )
+                errors.append(f"[{source_name}] ({error_type}) {error_reason}")
+
+        if log_final_failure:
+            logger.warning(
+                "[指数实时行情终止] %s 所有指数实时行情数据源均失败: elapsed=%.2fs; %s",
+                target.canonical_id,
+                time.time() - request_start,
+                "; ".join(errors) or "暂无可用数据源",
+            )
+        return None
+
+    @classmethod
+    def _cn_index_realtime_provider_symbol(
+        cls,
+        target: AnalysisTarget,
+        fetcher_name: str,
+        source_kind: str,
+    ) -> str:
+        """Derive the provider symbol for the CN index realtime chain."""
+        entry = target.matched_index
+        if entry is None:
+            return ""
+        exchange = entry.exchange.upper()
+        if exchange == "CSI":
+            # CSI indices are only supported by the Eastmoney single-stock
+            # secid endpoint (EfinanceFetcher); other providers return an
+            # empty symbol so the caller records ``unsupported`` and skips.
+            if fetcher_name == "EfinanceFetcher" and source_kind == "index":
+                return target.canonical_id
+            return ""
+        if exchange not in {"SH", "SZ"}:
+            return ""
+        if fetcher_name == "AkshareFetcher" and source_kind in ("tencent", "sina"):
+            return f"{exchange.lower()}{entry.bare_code}"
+        if fetcher_name == "EfinanceFetcher" and source_kind == "index":
+            return target.canonical_id
+        if fetcher_name == "TickFlowFetcher" and source_kind == "tickflow":
+            return f"{entry.bare_code}.{exchange}"
+        return ""
 
     def _get_cn_index_name(self, target: AnalysisTarget) -> str:
         cache_key = target.canonical_id
@@ -1929,8 +2165,17 @@ class DataFetcherManager:
         Returns:
             预取的股票数量（0 表示跳过预取）
         """
-        # Normalize all codes
-        stock_codes = [normalize_stock_code(c) for c in stock_codes]
+        # Normalize all codes, preserving explicit index identities
+        # (``sh000016`` / ``csi930955``) so the prefetch never degrades an
+        # index into the colliding stock bucket (Story 1.5).
+        normalized_codes: List[str] = []
+        for code in stock_codes:
+            target = parse_analysis_target(code)
+            if target.asset_type == ParseStatus.INDEX:
+                normalized_codes.append(target.canonical_id)
+            else:
+                normalized_codes.append(normalize_stock_code(code))
+        stock_codes = normalized_codes
 
         from src.config import get_config
 
@@ -2168,6 +2413,17 @@ class DataFetcherManager:
         if not config.enable_realtime_quote:
             logger.debug(f"[实时行情] 功能已禁用，跳过 {stock_code}")
             return None
+
+        # ----------------------------------------------------------
+        # 已登记 A 股指数 — 固定实时行情链（Story 1.5）
+        #   显式指数身份在 normalize 前解析，避免 sh000016 被剥成
+        #   股票 000016 后误取同名股票行情。
+        # ----------------------------------------------------------
+        index_target = parse_analysis_target(raw_stock_code)
+        if index_target.asset_type == ParseStatus.INDEX:
+            return self._get_cn_index_realtime_quote(
+                index_target, log_final_failure=log_final_failure
+            )
 
         # ----------------------------------------------------------
         # 美股 (指数 + 个股) / 港股 — 专用双源路由
@@ -3904,6 +4160,12 @@ class DataFetcherManager:
             "errors": [reason],
             **blocks,
         }
+
+    def build_not_supported_fundamental_context(
+        self, stock_code: str, reason: str
+    ) -> Dict[str, Any]:
+        """Build a consistent not-supported payload without calling providers."""
+        return self._build_market_not_supported(_market_tag(stock_code), reason)
 
     def get_fundamental_context(
         self,

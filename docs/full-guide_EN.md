@@ -657,6 +657,25 @@ python main.py --debug                # Debug mode (verbose logging)
 python main.py --workers 5            # Specify concurrency
 ```
 
+### One-shot index analysis (Phase 1)
+
+The one-shot `--stocks` entry supports full analysis of registered SH, SZ, and CSI indices. Index targets are specified explicitly with an `sh`/`sz` prefix (e.g. `sh000016`) or a `.CSI` alias (e.g. `000300.CSI`, `930955.CSI`); a bare six-digit code (e.g. `000016`) is always treated as a stock.
+
+```bash
+# Analyze three indices in one batch: SSE 50, CSI 300, CSI Dividend Low Vol 100
+python main.py --stocks sh000016,000300.CSI,930955.CSI
+# Mix indices and stocks in one batch (000016 retains stock identity)
+python main.py --stocks sh000016,000016
+# Fetch index data only, no AI analysis
+python main.py --stocks sh000016 --dry-run
+```
+
+Index targets are handled with `market=cn` throughout the Pipeline for market phase, daily-bar target date, resume/checkpoint date, history window, and `DecisionSignal`. Stock-only modules (chip distribution, fundamentals, board membership, capital flow, LHB, corporate events) are centrally skipped. An unregistered `.CSI` input (e.g. `930956.CSI`) is rejected before any market-data provider request without affecting other targets in the batch. Search and reports use the registry Chinese index name and never carry machine codes.
+
+Index realtime quotes use a dedicated fixed chain: Tencent → Sina → Eastmoney single-stock endpoint → TickFlow. SH/SZ indices are requested with explicit symbols (`sh000016`/`sz399001`); CSI indices are served only by the Eastmoney single-stock endpoint (`2.{code}` secid). The explicit index identity is preserved end-to-end and never degrades into the colliding stock quote.
+
+> **Phase 2 boundary**: default `STOCK_LIST`, `--schedule`, Web/API autocomplete and analysis entrypoints, Bot, and the GitHub Actions daily workflow do not yet expose index entrypoints; this capability is available only through the one-shot `--stocks` entry.
+
 ### Use real Futu holdings as the analysis list
 
 Standard source installs (`pip install -r requirements.txt`), official Docker images, and Windows/macOS Desktop backends already include the pinned `futu-api==10.8.6808`. Install it manually from the [Futu OpenAPI SDK guide](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) only when using a reduced custom Python environment. After starting and signing in to Futu OpenD, run:
