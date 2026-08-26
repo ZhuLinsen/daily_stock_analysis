@@ -53,6 +53,11 @@ _PREVIEW_LIMIT = 800
 _FINAL_MESSAGE_OMITTED_PREVIEW = "<final-message omitted from stdout preview>"
 _STDOUT_PREVIEW_OMITTED = "<stdout preview omitted because output-last-message was too large>"
 _PROCESS_POLL_INTERVAL_SECONDS = 0.05
+_INTERRUPTION_SIGNAL_NUMBERS = frozenset(
+    int(getattr(signal, name))
+    for name in ("SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM", "SIGKILL")
+    if getattr(signal, name, None) is not None
+)
 _URL_PATTERN = re.compile(r"https?://[^\s,;)\]}]+", re.IGNORECASE)
 _ANSI_ESCAPE_PATTERN = re.compile(
     r"""
@@ -636,6 +641,41 @@ def _popen_session_kwargs() -> Dict[str, Any]:
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         return {"creationflags": creationflags} if creationflags else {}
     return {"start_new_session": True}
+
+
+def _interrupted_exit_details(returncode: int) -> Optional[Dict[str, Any]]:
+    """Describe a local CLI process stopped by a common termination signal.
+
+    POSIX subprocesses expose direct signal termination as a negative return
+    code. Node-based CLIs commonly convert the same signals to ``128 + N``
+    before exiting, so cover both forms. This is intentionally evaluated
+    before stderr keyword heuristics: an interrupted process can print words
+    such as ``permission`` while shutting down without having requested an
+    interactive approval.
+    """
+
+    if returncode < 0:
+        signal_number = -returncode
+        reason = "process_terminated_by_signal"
+    elif returncode >= 128 and returncode - 128 in _INTERRUPTION_SIGNAL_NUMBERS:
+        signal_number = returncode - 128
+        reason = "process_interrupted_by_signal_exit_code"
+    else:
+        return None
+
+    if signal_number not in _INTERRUPTION_SIGNAL_NUMBERS:
+        return None
+
+    try:
+        signal_name = signal.Signals(signal_number).name
+    except (TypeError, ValueError):
+        signal_name = f"SIG{signal_number}"
+
+    return {
+        "reason": reason,
+        "termination_signal": signal_name,
+        "termination_signal_number": signal_number,
+    }
 
 
 def _redact_assignment_value(match: re.Match[str]) -> str:
@@ -2702,7 +2742,11 @@ class LocalCliGenerationBackend(GenerationBackend):
         combined = f"{stdout}\n{stderr}".lower()
         code = GenerationErrorCode.NON_ZERO_EXIT
         reason = "non_zero_exit"
-        if _is_cli_contract_unsupported(combined):
+        interrupted_details = _interrupted_exit_details(returncode)
+        if interrupted_details is not None:
+            code = GenerationErrorCode.EXECUTION_INTERRUPTED
+            reason = str(interrupted_details["reason"])
+        elif _is_cli_contract_unsupported(combined):
             code = GenerationErrorCode.CAPABILITY_UNSUPPORTED
             reason = "cli_contract_unsupported"
         elif (
@@ -2724,8 +2768,15 @@ class LocalCliGenerationBackend(GenerationBackend):
             code,
             stage="execution",
             retryable=False,
-            fallbackable=True,
-            details={**diagnostics, "reason": reason, "returncode": returncode},
+            # Do not start another model/backend after a user, supervisor, or
+            # service shutdown has already ended the original CLI process.
+            fallbackable=interrupted_details is None,
+            details={
+                **diagnostics,
+                "reason": reason,
+                "returncode": returncode,
+                **(interrupted_details or {}),
+            },
         )
 
     def _output_file_error(

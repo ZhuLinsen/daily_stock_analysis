@@ -104,7 +104,7 @@ export function parseFollowUpRecordId(recordId: string | null): number | undefin
 
 export function buildFollowUpPrompt(stockCode: string, stockName: string | null): string {
   const displayName = stockName ? `${stockName}(${stockCode})` : stockCode;
-  return `请深入分析 ${displayName}`;
+  return `${displayName}를 더 깊이 분석해 줘`;
 }
 
 export function buildChatFollowUpContext(

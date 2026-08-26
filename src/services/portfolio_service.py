@@ -486,7 +486,7 @@ class PortfolioService:
             account_rows = self.repo.list_accounts(include_inactive=False)
 
         accounts_payload: List[Dict[str, Any]] = []
-        aggregate_currency = "CNY"
+        aggregate_currency = "KRW"
         aggregate = {
             "total_cash": 0.0,
             "total_market_value": 0.0,
@@ -1742,6 +1742,8 @@ class PortfolioService:
 
     @staticmethod
     def _default_currency_for_market(market: str) -> str:
+        if market == "kr":
+            return "KRW"
         if market == "hk":
             return "HKD"
         if market == "us":

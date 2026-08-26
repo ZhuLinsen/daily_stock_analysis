@@ -1039,6 +1039,16 @@ class Config:
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
 
+    # Optional loopback-only Tracker research sidecar.  The bearer token stays
+    # private to DSA/Tracker server processes and is never sent to the browser.
+    tracker_research_api_url: str = "http://127.0.0.1:47832"
+    tracker_research_api_token: Optional[str] = None
+    tracker_research_api_timeout_s: float = 8.0
+    # When a KRX bundle is absent, DSA may ask the sidecar to refresh its
+    # isolated cache before analysis.  This never grants the LLM write access.
+    tracker_research_preflight_enabled: bool = True
+    tracker_research_refresh_wait_s: float = 8.0
+
     # === 通知配置（可同时配置多个，全部推送）===
     
     # 企业微信 Webhook
@@ -2019,6 +2029,29 @@ class Config:
                 minimum=1,
             ),
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            tracker_research_api_url=(
+                (os.getenv('TRACKER_RESEARCH_API_URL') or '').strip().rstrip('/')
+                or 'http://127.0.0.1:47832'
+            ),
+            tracker_research_api_token=os.getenv('TRACKER_RESEARCH_API_TOKEN') or None,
+            tracker_research_api_timeout_s=parse_env_float(
+                os.getenv('TRACKER_RESEARCH_API_TIMEOUT_S'),
+                8.0,
+                field_name='TRACKER_RESEARCH_API_TIMEOUT_S',
+                minimum=1.0,
+                maximum=30.0,
+            ),
+            tracker_research_preflight_enabled=parse_env_bool(
+                os.getenv('TRACKER_RESEARCH_PREFLIGHT_ENABLED'),
+                default=True,
+            ),
+            tracker_research_refresh_wait_s=parse_env_float(
+                os.getenv('TRACKER_RESEARCH_REFRESH_WAIT_S'),
+                8.0,
+                field_name='TRACKER_RESEARCH_REFRESH_WAIT_S',
+                minimum=0.0,
+                maximum=30.0,
+            ),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
@@ -2996,6 +3029,19 @@ class Config:
             or self.has_searxng_enabled()
         )
 
+    def has_tracker_research_capability_enabled(self) -> bool:
+        """Whether the private loopback Tracker research boundary is usable."""
+        from src.services.tracker_research_client import tracker_research_is_configured
+
+        return tracker_research_is_configured(self)
+
+    def has_news_evidence_capability_enabled(self) -> bool:
+        """Whether either open-web search or Tracker news evidence is available."""
+        return (
+            self.has_search_capability_enabled()
+            or self.has_tracker_research_capability_enabled()
+        )
+
     def is_agent_available(self) -> bool:
         """Check whether agent capabilities are usable.
 
@@ -3419,10 +3465,13 @@ class Config:
             ))
 
         # --- Search engine (informational only) ---
-        if not self.has_search_capability_enabled():
+        if not self.has_news_evidence_capability_enabled():
             issues.append(ConfigIssue(
                 severity="info",
-                message="未配置搜索引擎能力 (Bocha/MiniMax/Tavily/Brave/SerpAPI/SearXNG)，新闻搜索功能将不可用",
+                message=(
+                    "未配置新闻证据渠道（Bocha/MiniMax/Tavily/Brave/SerpAPI/SearXNG 或 Tracker 研究侧车），"
+                    "新闻搜索功能将不可用"
+                ),
                 field="BOCHA_API_KEYS",
             ))
 

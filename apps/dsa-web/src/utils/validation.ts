@@ -4,7 +4,7 @@ interface ValidationResult {
   normalized: string;
 }
 
-const SUPPORTED_QUERY_CHARACTERS = /^[A-Z0-9.\u3400-\u9FFF\s]+$/;
+const SUPPORTED_QUERY_CHARACTERS = /^[A-Z0-9.\u3400-\u9FFF\uAC00-\uD7A3\s]+$/;
 
 const STOCK_CODE_PATTERNS = [
   /^\d{6}$/, // A-share 6-digit code
@@ -33,14 +33,14 @@ export const validateStockCode = (value: string): ValidationResult => {
   const normalized = value.trim().toUpperCase();
 
   if (!normalized) {
-    return { valid: false, message: '请输入股票代码', normalized };
+    return { valid: false, message: '종목 코드를 입력하세요.', normalized };
   }
 
   const valid = looksLikeStockCode(normalized);
 
   return {
     valid,
-    message: valid ? undefined : '股票代码格式不正确',
+    message: valid ? undefined : '종목 코드 형식이 올바르지 않습니다.',
     normalized,
   };
 };

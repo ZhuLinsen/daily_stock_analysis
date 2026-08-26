@@ -178,6 +178,24 @@ describe('systemConfigApi', () => {
     expect(result.checks[0].nextStep).toBe('打开系统设置');
   });
 
+  it('requests setup-status copy in the active UI language', async () => {
+    get.mockResolvedValueOnce({
+      data: {
+        is_complete: true,
+        ready_for_smoke: true,
+        required_missing_keys: [],
+        next_step_key: null,
+        checks: [],
+      },
+    });
+
+    await systemConfigApi.getSetupStatus('ko');
+
+    expect(get).toHaveBeenCalledWith('/api/v1/system/config/setup/status', {
+      params: { language: 'ko' },
+    });
+  });
+
   it('loads generation backend status with camelCase fields', async () => {
     get.mockResolvedValueOnce({
       data: {

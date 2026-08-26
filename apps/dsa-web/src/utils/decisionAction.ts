@@ -14,14 +14,14 @@ export type DecisionActionLabelTextKey =
 export type DecisionActionLabelTranslator = (key: DecisionActionLabelTextKey) => string;
 
 export const DEFAULT_DECISION_ACTION_LABELS: DecisionActionLabelMap = {
-  buy: '买入',
-  add: '加仓',
-  hold: '持有',
-  reduce: '减仓',
-  sell: '卖出',
-  watch: '观望',
-  avoid: '回避',
-  alert: '预警',
+  buy: '매수',
+  add: '추가 매수',
+  hold: '보유',
+  reduce: '비중 축소',
+  sell: '매도',
+  watch: '관망',
+  avoid: '회피',
+  alert: '주의',
 };
 
 const resolveActionLabels = (labels?: Partial<DecisionActionLabelMap>): DecisionActionLabelMap => ({
@@ -221,7 +221,7 @@ export const getDecisionActionLabel = (
   action?: DecisionAction | null,
   actionLabel?: string | null,
   legacyAdvice?: string | null,
-  emptyLabel: string | null = '建议',
+  emptyLabel: string | null = '제안',
   labels?: Partial<DecisionActionLabelMap>,
 ): string | null => {
   const actionLabels = resolveActionLabels(labels);
@@ -241,9 +241,9 @@ export const getDecisionActionTone = (
   const label = actionLabel?.trim() || '';
   if (label) {
     const lowerLabel = normalizeEnglishAdvice(label);
-    if (label.includes('买') || label.includes('加仓') || label.includes('持有')) return 'success';
-    if (label.includes('卖') || label.includes('减仓') || label.includes('清仓')) return 'danger';
-    if (label.includes('观望') || label.includes('等待') || label.includes('回避') || label.includes('预警')) {
+    if (label.includes('买') || label.includes('加仓') || label.includes('持有') || label.includes('매수') || label.includes('보유')) return 'success';
+    if (label.includes('卖') || label.includes('减仓') || label.includes('清仓') || label.includes('매도') || label.includes('축소')) return 'danger';
+    if (label.includes('观望') || label.includes('等待') || label.includes('回避') || label.includes('预警') || label.includes('관망') || label.includes('회피') || label.includes('주의')) {
       return 'warning';
     }
     if (matchesEnglishTerm(lowerLabel, ['buy', 'add', 'hold'])) return 'success';

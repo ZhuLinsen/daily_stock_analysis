@@ -11,6 +11,8 @@ export type ApiErrorCategory =
   | 'upstream_llm_400'
   | 'upstream_timeout'
   | 'upstream_network'
+  | 'execution_interrupted'
+  | 'approval_required'
   | 'local_connection_failed'
   | 'http_error'
   | 'unknown';
@@ -298,16 +300,36 @@ export function parseApiError(error: unknown): ParsedApiError {
   const causeMessage = getCauseMessage(error);
   const code = getErrorCode(error);
   const rawMessage = pickString(payloadText, response?.statusText, errorMessage, causeMessage, code)
-    ?? '请求未成功完成，请稍后重试。';
+    ?? '요청을 완료하지 못했습니다. 잠시 후 다시 시도하세요.';
   const matchText = buildMatchText([rawMessage, errorMessage, causeMessage, code, errorCode, response?.statusText]);
 
   if (includesAny(matchText, ['agent mode is not enabled', 'agent_mode'])) {
     return createParsedApiError({
-      title: 'Agent 模式未开启',
-      message: '当前功能依赖 Agent 模式，请先开启后再重试。',
+      title: '에이전트 모드가 꺼져 있습니다',
+      message: '이 기능은 에이전트 모드가 필요합니다. 설정에서 켠 뒤 다시 시도하세요.',
       rawMessage,
       status,
       category: 'agent_disabled',
+    });
+  }
+
+  if (includesAny(matchText, ['execution_interrupted', 'process_terminated_by_signal'])) {
+    return createParsedApiError({
+      title: '분석 실행이 중단되었습니다',
+      message: 'Codex CLI 실행 프로세스가 종료되었습니다. 서버가 재시작되었거나 실행이 중단되었을 수 있으므로 분석을 다시 실행하세요.',
+      rawMessage,
+      status,
+      category: 'execution_interrupted',
+    });
+  }
+
+  if (includesAny(matchText, ['approval_required', 'approval required'])) {
+    return createParsedApiError({
+      title: 'Codex CLI 승인이 필요합니다',
+      message: '자동 분석은 승인 없이 읽기 전용으로 실행하도록 설정되어 있습니다. Codex CLI 버전, 로그인 상태, 사용자·프로젝트 실행 규칙을 확인한 뒤 다시 시도하세요.',
+      rawMessage,
+      status,
+      category: 'approval_required',
     });
   }
 
@@ -315,8 +337,8 @@ export function parseApiError(error: unknown): ParsedApiError {
   const hasMissingParamText = includesAny(matchText, ['必须提供 stock_code 或 stock_codes', 'missing', 'required']);
   if (hasStockCodeField && hasMissingParamText) {
     return createParsedApiError({
-      title: '请求缺少必要参数',
-      message: '请先补充股票代码或必要输入后再试。',
+      title: '필수 입력이 없습니다',
+      message: '종목 코드 또는 필요한 입력을 채운 뒤 다시 시도하세요.',
       rawMessage,
       status,
       category: 'missing_params',
@@ -325,8 +347,8 @@ export function parseApiError(error: unknown): ParsedApiError {
 
   if (errorCode === 'portfolio_oversell' || includesAny(matchText, ['oversell detected'])) {
     return createParsedApiError({
-      title: '卖出数量超过可用持仓',
-      message: '卖出数量超过当前可用持仓，请删除或修正对应卖出流水后重试。',
+      title: '매도 수량이 보유 수량을 초과했습니다',
+      message: '현재 보유 수량보다 많이 매도하려고 했습니다. 해당 매도 내역을 수정하거나 삭제한 뒤 다시 시도하세요.',
       rawMessage,
       status,
       category: 'portfolio_oversell',
@@ -335,8 +357,8 @@ export function parseApiError(error: unknown): ParsedApiError {
 
   if (errorCode === 'portfolio_busy' || includesAny(matchText, ['portfolio ledger is busy'])) {
     return createParsedApiError({
-      title: '持仓账本正忙',
-      message: '持仓账本正在处理另一笔变更，请稍后重试。',
+      title: '포트폴리오 원장이 사용 중입니다',
+      message: '다른 변경을 처리하고 있습니다. 잠시 후 다시 시도하세요.',
       rawMessage,
       status,
       category: 'portfolio_busy',
@@ -345,8 +367,8 @@ export function parseApiError(error: unknown): ParsedApiError {
 
   if (errorCode === 'screening_unavailable' || includesAny(matchText, ['内建选股引擎初始化失败', '选股功能初始化失败'])) {
     return createParsedApiError({
-      title: '选股功能未就绪',
-      message: '选股功能暂不可用，请检查策略配置、数据依赖和服务日志。',
+      title: '종목 스크리닝을 사용할 수 없습니다',
+      message: '현재 종목 스크리닝을 사용할 수 없습니다. 전략 설정, 데이터 의존성, 서비스 로그를 확인하세요.',
       rawMessage,
       status,
       category: 'http_error',
@@ -355,8 +377,8 @@ export function parseApiError(error: unknown): ParsedApiError {
 
   if (errorCode === 'screening_screen_task_not_found') {
     return createParsedApiError({
-      title: '选股任务不可恢复',
-      message: '服务端没有找到这次选股任务，可能后端已重启或任务记录已清理，请重新运行选股。',
+      title: '스크리닝 작업을 복구할 수 없습니다',
+      message: '서버에서 해당 스크리닝 작업을 찾지 못했습니다. 백엔드가 재시작되었거나 작업 기록이 정리되었을 수 있으므로 다시 실행하세요.',
       rawMessage,
       status,
       category: 'http_error',
@@ -365,8 +387,8 @@ export function parseApiError(error: unknown): ParsedApiError {
 
   if (errorCode === 'screening_screen_failed') {
     return createParsedApiError({
-      title: '选股失败',
-      message: '选股访问行情、快照或模型服务失败，请稍后重试，或检查网络与代理设置。',
+      title: '종목 스크리닝에 실패했습니다',
+      message: '시세·스냅샷·모델 서비스에 접근하지 못했습니다. 잠시 후 다시 시도하거나 네트워크와 프록시 설정을 확인하세요.',
       rawMessage,
       status,
       category: 'upstream_network',
@@ -383,8 +405,8 @@ export function parseApiError(error: unknown): ParsedApiError {
   ]);
   if (noConfiguredLlm) {
     return createParsedApiError({
-      title: '系统没有配置可用的 LLM 模型',
-      message: '请先在系统设置中配置主模型、可用渠道或相关 API Key 后再重试。',
+      title: '사용 가능한 LLM 모델이 설정되지 않았습니다',
+      message: '시스템 설정에서 기본 모델, 사용할 채널 또는 API 키를 설정한 뒤 다시 시도하세요.',
       rawMessage,
       status,
       category: 'llm_not_configured',
@@ -399,8 +421,8 @@ export function parseApiError(error: unknown): ParsedApiError {
     'reasoning',
   ])) {
     return createParsedApiError({
-      title: '当前模型不兼容工具调用',
-      message: '当前模型不适合 Agent / 工具调用场景，请更换支持工具调用的模型后重试。',
+      title: '현재 모델은 도구 호출을 지원하지 않습니다',
+      message: '이 모델은 에이전트·도구 호출에 적합하지 않습니다. 도구 호출을 지원하는 모델로 바꾼 뒤 다시 시도하세요.',
       rawMessage,
       status,
       category: 'model_tool_incompatible',
@@ -415,8 +437,8 @@ export function parseApiError(error: unknown): ParsedApiError {
     'invalid function call',
   ])) {
     return createParsedApiError({
-      title: '上游模型返回的数据结构不完整',
-      message: '上游模型返回的工具调用结构不符合要求，请更换模型或关闭相关推理模式后重试。',
+      title: '상위 모델의 도구 호출 응답이 올바르지 않습니다',
+      message: '상위 모델이 요구 형식과 다른 도구 호출 응답을 반환했습니다. 모델을 바꾸거나 관련 추론 모드를 끈 뒤 다시 시도하세요.',
       rawMessage,
       status,
       category: 'invalid_tool_call',
@@ -425,8 +447,8 @@ export function parseApiError(error: unknown): ParsedApiError {
 
   if (includesAny(matchText, ['timeout', 'timed out', 'read timeout', 'connect timeout']) || code === 'ECONNABORTED') {
     return createParsedApiError({
-      title: '连接上游服务超时',
-      message: '服务端访问外部依赖时超时，请稍后重试，或检查当前网络与代理设置。',
+      title: '외부 서비스 연결 시간이 초과되었습니다',
+      message: '서버의 외부 의존성 접근 시간이 초과되었습니다. 잠시 후 다시 시도하거나 네트워크와 프록시 설정을 확인하세요.',
       rawMessage,
       status,
       category: 'upstream_timeout',
@@ -448,8 +470,8 @@ export function parseApiError(error: unknown): ParsedApiError {
     ])
   ) {
     return createParsedApiError({
-      title: '服务端无法访问外部依赖',
-      message: '页面已连接到本地服务，但本地服务访问外部模型或数据接口失败，请检查代理、DNS 或出网配置。',
+      title: '서버가 외부 서비스에 접근하지 못했습니다',
+      message: '페이지는 로컬 서비스에 연결됐지만, 서버가 외부 모델 또는 데이터 API에 접근하지 못했습니다. 프록시, DNS, 외부 통신 설정을 확인하세요.',
       rawMessage,
       status,
       category: 'upstream_network',
@@ -464,8 +486,8 @@ export function parseApiError(error: unknown): ParsedApiError {
   ]);
   if (status === 400 && hasLlmProviderHint) {
     return createParsedApiError({
-      title: '上游模型接口拒绝了当前请求',
-      message: '本地服务正常，但上游模型接口拒绝了请求，请检查模型名称、参数格式或工具调用兼容性。',
+      title: '상위 모델 API가 요청을 거부했습니다',
+      message: '로컬 서비스는 정상이나 상위 모델 API가 요청을 거부했습니다. 모델 이름, 매개변수 형식, 도구 호출 호환성을 확인하세요.',
       rawMessage,
       status,
       category: 'upstream_llm_400',
@@ -479,8 +501,8 @@ export function parseApiError(error: unknown): ParsedApiError {
   );
   if (localConnectionFailed) {
     return createParsedApiError({
-      title: '无法连接到本地服务',
-      message: '浏览器当前无法连接到本地 Web 服务，请检查服务是否启动、监听地址是否正确、端口是否开放。',
+      title: '로컬 서비스에 연결할 수 없습니다',
+      message: '브라우저가 로컬 웹 서비스에 연결하지 못했습니다. 서비스 실행 여부, 바인딩 주소, 포트 개방 상태를 확인하세요.',
       rawMessage,
       status,
       category: 'local_connection_failed',
@@ -489,8 +511,8 @@ export function parseApiError(error: unknown): ParsedApiError {
 
   if (payloadText || status) {
     return createParsedApiError({
-      title: '请求失败',
-      message: payloadText ?? `请求未成功完成（HTTP ${status}）。`,
+      title: '요청에 실패했습니다',
+      message: `서버 요청을 완료하지 못했습니다(HTTP ${status}).`,
       rawMessage,
       status,
       category: 'http_error',
@@ -498,15 +520,15 @@ export function parseApiError(error: unknown): ParsedApiError {
   }
 
   return createParsedApiError({
-    title: '请求失败',
-    message: rawMessage,
+    title: '요청에 실패했습니다',
+    message: '요청을 완료하지 못했습니다. 잠시 후 다시 시도하세요.',
     rawMessage,
     status,
     category: 'unknown',
   });
 }
 
-export function toApiErrorMessage(error: unknown, fallback = '请求未成功完成，请稍后重试。'): string {
+export function toApiErrorMessage(error: unknown, fallback = '요청을 완료하지 못했습니다. 잠시 후 다시 시도하세요.'): string {
   const parsed = getParsedApiError(error);
   const message = formatParsedApiError(parsed);
   return message.trim() || fallback;

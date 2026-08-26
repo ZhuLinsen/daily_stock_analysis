@@ -127,6 +127,7 @@ def _context_payload(context: ToolAccessContext) -> dict:
         "session_id": context.session_id,
         "timeout_seconds": context.timeout_seconds,
         "deadline": context.deadline,
+        "execution_boundary": context.execution_boundary,
         "max_result_bytes": context.max_result_bytes,
         "redact_result": context.redact_result,
         "audit_context": context.audit_context,
@@ -146,6 +147,9 @@ def _context_from_payload(payload: dict) -> ToolAccessContext:
             },
             mode=str(stock_payload.get("mode") or "maintain"),
         )
+    execution_boundary = str(payload.get("execution_boundary") or "in_process")
+    if execution_boundary not in {"in_process", "process_isolated"}:
+        execution_boundary = "in_process"
     return ToolAccessContext(
         stock_scope=stock_scope,
         market=payload.get("market"),
@@ -156,6 +160,7 @@ def _context_from_payload(payload: dict) -> ToolAccessContext:
         timeout_seconds=payload.get("timeout_seconds"),
         deadline=payload.get("deadline"),
         cancel_event=None,
+        execution_boundary=execution_boundary,
         max_result_bytes=payload.get("max_result_bytes"),
         redact_result=bool(payload.get("redact_result")),
         audit_context=payload.get("audit_context") or {},

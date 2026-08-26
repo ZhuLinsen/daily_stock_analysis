@@ -27,7 +27,9 @@ import {
 import { isNearBottom } from '../utils/chatScroll';
 import { getReportText } from '../utils/reportLanguage';
 import { extractStockCodesFromMessage } from '../utils/chatStockCode';
+import { localizeAgentProgressMessage, localizeAgentToolName } from '../utils/agentProgressText';
 import { findMatchingStockCode, includesStockCode, normalizeStockCode } from '../utils/stockCode';
+import { localizeStrategySkill, localizeStrategySkillDescription } from '../utils/strategySkill';
 import { useStockIndex } from '../hooks/useStockIndex';
 import type { StockIndexItem } from '../types/stockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
@@ -40,21 +42,21 @@ const QUICK_QUESTIONS: Array<{
   skill: string;
   stockContext?: ActiveStockContext;
 }> = [
-  { label: '用缠论分析茅台', skill: 'chan_theory', stockContext: { stock_code: '600519', stock_name: '贵州茅台' } },
-  { label: '波浪理论看宁德时代', skill: 'wave_theory', stockContext: { stock_code: '300750', stock_name: '宁德时代' } },
-  { label: '分析比亚迪趋势', skill: 'bull_trend', stockContext: { stock_code: '002594', stock_name: '比亚迪' } },
-  { label: '用箱体震荡分析 A 股中芯国际 688981', skill: 'box_oscillation', stockContext: { stock_code: '688981', stock_name: '中芯国际' } },
-  { label: '分析腾讯 hk00700', skill: 'bull_trend', stockContext: { stock_code: 'HK00700', stock_name: '腾讯控股' } },
-  { label: '用情绪周期分析东方财富', skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
+  { label: '삼성전자 추세 분석', skill: 'bull_trend', stockContext: { stock_code: '005930.KS', stock_name: '삼성전자' } },
+  { label: 'SK하이닉스를 파동 이론으로 분석', skill: 'wave_theory', stockContext: { stock_code: '000660.KS', stock_name: 'SK하이닉스' } },
+  { label: '카카오의 기술적 흐름 분석', skill: 'chan_theory', stockContext: { stock_code: '035720.KQ', stock_name: '카카오' } },
+  { label: '에코프로비엠 박스권 분석', skill: 'box_oscillation', stockContext: { stock_code: '247540.KQ', stock_name: '에코프로비엠' } },
+  { label: '삼성바이오로직스 추세 분석', skill: 'bull_trend', stockContext: { stock_code: '207940.KS', stock_name: '삼성바이오로직스' } },
+  { label: '삼성전자와 SK하이닉스 비교', skill: 'emotion_cycle', stockContext: { stock_code: '005930.KS', stock_name: '삼성전자' } },
 ];
 
 const MAX_SELECTED_SKILLS = 3;
 const CONTEXT_COMPRESSION_CONFIG_KEY = 'AGENT_CONTEXT_COMPRESSION_ENABLED';
-const STRONG_COMPARE_STOCK_MESSAGE_RE = /比较|对比|\bvs\b|和[^，。,.!?！？]{0,40}比/i;
-const WEAK_COMPARE_STOCK_MESSAGE_RE = /差异(?!化)|区别|不同|相比|对照|比一比/;
-const CHOICE_COMPARE_STOCK_MESSAGE_RE = /哪个|哪只|哪一个|谁更|更值得|更适合|怎么选|选哪|二选一/;
-const LINKED_COMPARE_STOCK_MESSAGE_RE = /(?:和|与|跟|同)[^，。,.!?！？]{0,40}(?:差异(?!化)|区别|不同|相比|对照|比一比)/;
-const SWITCH_STOCK_MESSAGE_RE = /换成|改看|分析|看看|研究|诊断/;
+const STRONG_COMPARE_STOCK_MESSAGE_RE = /비교|대조|\bvs\b|와[^，。,.!?！？]{0,40}비교|比较|对比|和[^，。,.!?！？]{0,40}比/i;
+const WEAK_COMPARE_STOCK_MESSAGE_RE = /차이|다른 점|어느 쪽|비교|差异(?!化)|区别|不同|相比|对照|比一比/;
+const CHOICE_COMPARE_STOCK_MESSAGE_RE = /어느|어떤 종목|더 나은|더 적합|무엇을 선택|비교|哪个|哪只|哪一个|谁更|更值得|更适合|怎么选|选哪|二选一/;
+const LINKED_COMPARE_STOCK_MESSAGE_RE = /(?:와|과|및|和|与|跟|同)[^，。,.!?！？]{0,40}(?:비교|차이|다른 점|差异(?!化)|区别|不同|相比|对照|比一比)/;
+const SWITCH_STOCK_MESSAGE_RE = /종목 변경|다른 종목|분석|살펴봐|연구|진단|换成|改看|看看|研究/;
 
 type ActiveStockResolution = {
   context: ActiveStockContext;
@@ -93,7 +95,12 @@ const getMessageSkillNames = (msg: Message): string[] => {
   return [];
 };
 
-const getMessageSkillLabel = (msg: Message): string => getMessageSkillNames(msg).join('、');
+const getMessageSkillLabel = (msg: Message, language: 'zh' | 'en' | 'ko'): string => (
+  getMessageSkillNames(msg)
+    .map((name) => localizeStrategySkill(name, language))
+    .filter(Boolean)
+    .join(' · ')
+);
 
 const isStageDoneSuccessful = (status?: string): boolean => {
   if (!status) return true;
@@ -101,16 +108,16 @@ const isStageDoneSuccessful = (status?: string): boolean => {
   return ['completed', 'success', 'succeeded', 'done'].includes(normalized);
 };
 
-const getStageDoneLabel = (step: ProgressStep): string => {
+const getStageDoneLabel = (step: ProgressStep, language: 'zh' | 'en' | 'ko'): string => {
   const stage = step.stage || 'stage';
-  if (step.message) return step.message;
-  if (isStageDoneSuccessful(step.status)) return `${stage} completed`;
-  return `${stage} ${step.status || 'finished'}`;
+  if (step.message) return localizeAgentProgressMessage(step.message, language);
+  if (isStageDoneSuccessful(step.status)) return `${stage} 완료`;
+  return `${stage} ${step.status || '종료'}`;
 };
 
-const getPipelineBudgetSkippedLabel = (step: ProgressStep): string => {
-  if (step.message) return step.message;
-  return `${step.stage || 'pipeline'} skipped: insufficient budget`;
+const getPipelineBudgetSkippedLabel = (step: ProgressStep, language: 'zh' | 'en' | 'ko'): string => {
+  if (step.message) return localizeAgentProgressMessage(step.message, language);
+  return `${step.stage || '파이프라인'} 건너뜀: 예산 부족`;
 };
 
 const isCompareStockMessage = (
@@ -200,7 +207,7 @@ const restoreActiveStockContextFromMessages = (messages: Message[]): ActiveStock
 };
 
 const ChatPage: React.FC = () => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [input, setInput] = useState('');
@@ -248,8 +255,7 @@ const ChatPage: React.FC = () => {
   const pendingScrollBehaviorRef = useRef<ScrollBehavior>('auto');
   const agentStatusRequestIdRef = useRef(0);
 
-  // Get localized text (default to Chinese)
-  const text = getReportText('zh');
+  const text = getReportText(language);
 
   // Cleanup timers on unmount
   useEffect(() => {
@@ -268,8 +274,8 @@ const ChatPage: React.FC = () => {
 
   // Set page title
   useEffect(() => {
-    document.title = '问股 - DSA';
-  }, []);
+    document.title = `${t('layout.route.chat.title')} - DSA`;
+  }, [t]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -309,18 +315,18 @@ const ChatPage: React.FC = () => {
           const codes = await systemConfigApi.removeFromWatchlist(existingStockCode);
           if (isMountedRef.current) {
             setWatchlistCodes(codes);
-            setWatchlistMessage(`已从自选中移除 ${stockCode}`);
+            setWatchlistMessage(`${stockCode}을(를) 관심종목에서 제거했습니다.`);
           }
         } else {
           const codes = await systemConfigApi.addToWatchlist(stockCode);
           if (isMountedRef.current) {
             setWatchlistCodes(codes);
-            setWatchlistMessage(`已加入自选 ${stockCode}`);
+            setWatchlistMessage(`${stockCode}을(를) 관심종목에 추가했습니다.`);
           }
         }
       } catch {
         if (isMountedRef.current) {
-          setWatchlistMessage('操作失败，请重试');
+          setWatchlistMessage('처리하지 못했습니다. 다시 시도하세요.');
         }
       } finally {
         if (isMountedRef.current) {
@@ -495,7 +501,7 @@ const ChatPage: React.FC = () => {
         }
         const parsed = getParsedApiError(error);
         setContextCompressionLoaded(false);
-        setContextCompressionError(parsed.message || '无法读取上下文压缩配置');
+        setContextCompressionError(parsed.message || '컨텍스트 압축 설정을 읽지 못했습니다.');
         console.error('Failed to load context compression setting:', error);
       });
 
@@ -531,7 +537,7 @@ const ChatPage: React.FC = () => {
       } catch (error) {
         const parsed = getParsedApiError(error);
         setContextCompressionEnabled(previousEnabled);
-        setContextCompressionError(parsed.message || '上下文压缩设置保存失败');
+        setContextCompressionError(parsed.message || '컨텍스트 압축 설정 저장에 실패했습니다.');
       } finally {
         setContextCompressionSaving(false);
       }
@@ -568,8 +574,11 @@ const ChatPage: React.FC = () => {
     : null;
 
   const getSkillNames = useCallback(
-    (skillIds: string[]) => skillIds.map((id) => skills.find((s) => s.id === id)?.name || id),
-    [skills],
+    (skillIds: string[]) => skillIds.map((id) => localizeStrategySkill(
+      id,
+      language,
+    )),
+    [language],
   );
 
   const normalizeSelectedSkillIds = useCallback((skillIds: string[]) => {
@@ -687,7 +696,7 @@ const ChatPage: React.FC = () => {
       const usedSkillIds = normalizeSelectedSkillIds(
         requestedSkillIds ?? selectedSkillIds,
       );
-      const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['通用'];
+      const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['일반'];
       const codexStockContext = agentStatus?.backend === 'codex_app_server'
         ? overrideStockContext
         : undefined;
@@ -725,7 +734,7 @@ const ChatPage: React.FC = () => {
       };
       await startStream(payload, {
         skillNames: usedSkillNames,
-        skillName: usedSkillNames.join('、'),
+        skillName: usedSkillNames.join(' · '),
         onAccepted: () => {
           followUpHydrationTokenRef.current += 1;
           followUpContextRef.current = null;
@@ -739,7 +748,7 @@ const ChatPage: React.FC = () => {
           requestScrollToBottom('smooth');
         },
       });
-    },
+  },
     [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, stockIndex],
   );
 
@@ -797,8 +806,8 @@ const ChatPage: React.FC = () => {
   };
 
   const downloadMessageAsMarkdown = useCallback((msg: Message) => {
-    const skillLabel = getMessageSkillLabel(msg);
-    const heading = msg.role === 'user' ? '# 用户消息' : `# AI 回复${skillLabel ? ` · ${skillLabel}` : ''}`;
+    const skillLabel = getMessageSkillLabel(msg, language);
+    const heading = msg.role === 'user' ? '# 사용자 메시지' : `# AI 응답${skillLabel ? ` · ${skillLabel}` : ''}`;
     const content = [heading, '', msg.content].join('\n');
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -809,27 +818,27 @@ const ChatPage: React.FC = () => {
     anchor.click();
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
-  }, []);
+  }, [language]);
 
   const getCurrentStage = (steps: ProgressStep[]): string => {
-    if (steps.length === 0) return '正在连接...';
+    if (steps.length === 0) return '연결 중...';
     const last = steps[steps.length - 1];
-    if (last.type === 'thinking') return last.message || 'AI 正在思考...';
+    if (last.type === 'thinking') return localizeAgentProgressMessage(last.message, language) || 'AI가 분석 중입니다...';
     if (last.type === 'tool_start')
-      return `${last.display_name || last.tool}...`;
+      return `${localizeAgentToolName(last.tool, last.display_name, language)}...`;
     if (last.type === 'tool_done')
-      return `${last.display_name || last.tool} 完成`;
+      return `${localizeAgentToolName(last.tool, last.display_name, language)} 완료`;
     if (last.type === 'stage_start')
-      return last.message || `Starting ${last.stage || 'stage'}...`;
+      return localizeAgentProgressMessage(last.message, language) || `${last.stage || '단계'} 시작 중...`;
     if (last.type === 'stage_done')
-      return getStageDoneLabel(last);
+      return getStageDoneLabel(last, language);
     if (last.type === 'pipeline_timeout')
-      return last.message || `${last.stage || 'pipeline'} timed out`;
+      return localizeAgentProgressMessage(last.message, language) || `${last.stage || '파이프라인'} 시간 초과`;
     if (last.type === 'pipeline_budget_skipped')
-      return getPipelineBudgetSkippedLabel(last);
+      return getPipelineBudgetSkippedLabel(last, language);
     if (last.type === 'generating')
-      return last.message || '正在生成最终分析...';
-    return '处理中...';
+      return localizeAgentProgressMessage(last.message, language) || '최종 분석 생성 중...';
+    return '처리 중...';
   };
 
   const renderThinkingBlock = (msg: Message) => {
@@ -840,7 +849,7 @@ const ChatPage: React.FC = () => {
       (sum, s) => sum + (s.duration || 0),
       0,
     );
-    const summary = `${toolSteps.length} 个工具调用 · ${totalDuration.toFixed(1)}s`;
+    const summary = `도구 호출 ${toolSteps.length}회 · ${totalDuration.toFixed(1)}초`;
 
     return (
       <button
@@ -861,7 +870,7 @@ const ChatPage: React.FC = () => {
           />
         </svg>
         <span className="flex items-center gap-1.5">
-          <span className="opacity-60">思考过程</span>
+          <span className="opacity-60">분석 과정</span>
           <span className="text-muted-text/50">·</span>
           <span className="opacity-50">{summary}</span>
         </span>
@@ -876,36 +885,36 @@ const ChatPage: React.FC = () => {
         let iconClass = 'chat-progress-dot-muted';
         let text = '';
         if (step.type === 'thinking') {
-          text = step.message || `第 ${step.step} 步：思考`;
+          text = localizeAgentProgressMessage(step.message, language) || `${step.step}단계: 분석 중`;
           statusClass = 'chat-progress-item-thinking';
           iconClass = 'chat-progress-dot-thinking';
         } else if (step.type === 'tool_start') {
-          text = `${step.display_name || step.tool}...`;
+          text = `${localizeAgentToolName(step.tool, step.display_name, language)}...`;
           statusClass = 'chat-progress-item-tool';
           iconClass = 'chat-progress-dot-tool';
         } else if (step.type === 'tool_done') {
-          text = `${step.display_name || step.tool} (${step.duration}s)`;
+          text = `${localizeAgentToolName(step.tool, step.display_name, language)} (${step.duration}s)`;
           statusClass = step.success ? 'chat-progress-item-success' : 'chat-progress-item-danger';
           iconClass = step.success ? 'chat-progress-dot-success' : 'chat-progress-dot-danger';
         } else if (step.type === 'stage_start') {
-          text = step.message || `Starting ${step.stage || 'stage'}...`;
+          text = localizeAgentProgressMessage(step.message, language) || `${step.stage || '단계'} 시작 중...`;
           statusClass = 'chat-progress-item-thinking';
           iconClass = 'chat-progress-dot-thinking';
         } else if (step.type === 'stage_done') {
           const isSuccess = isStageDoneSuccessful(step.status);
-          text = getStageDoneLabel(step);
+          text = getStageDoneLabel(step, language);
           statusClass = isSuccess ? 'chat-progress-item-success' : 'chat-progress-item-danger';
           iconClass = isSuccess ? 'chat-progress-dot-success' : 'chat-progress-dot-danger';
         } else if (step.type === 'pipeline_timeout') {
-          text = step.message || `${step.stage || 'pipeline'} timed out`;
+          text = localizeAgentProgressMessage(step.message, language) || `${step.stage || '파이프라인'} 시간 초과`;
           statusClass = 'chat-progress-item-danger';
           iconClass = 'chat-progress-dot-danger';
         } else if (step.type === 'pipeline_budget_skipped') {
-          text = getPipelineBudgetSkippedLabel(step);
+          text = getPipelineBudgetSkippedLabel(step, language);
           statusClass = 'chat-progress-item-muted';
           iconClass = 'chat-progress-dot-muted';
         } else if (step.type === 'generating') {
-          text = step.message || '生成分析';
+          text = localizeAgentProgressMessage(step.message, language) || '분석 생성';
           statusClass = 'chat-progress-item-generating';
           iconClass = 'chat-progress-dot-generating';
         } else {
@@ -931,12 +940,12 @@ const ChatPage: React.FC = () => {
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          历史对话
+          대화 이력
         </h2>
         <button
           onClick={handleStartNewChat}
           className="rounded-lg p-1.5 text-muted-text transition-all hover:bg-white/10 hover:text-foreground"
-          aria-label="开启新对话"
+          aria-label="새 대화 시작"
         >
           <svg
             className="w-4 h-4"
@@ -958,14 +967,14 @@ const ChatPage: React.FC = () => {
           <DashboardStateBlock
             loading
             compact
-            title="加载对话中..."
+            title="대화 불러오는 중..."
             className="rounded-2xl border border-dashed border-border/50 bg-surface/30"
           />
         ) : sessions.length === 0 ? (
           <DashboardStateBlock
             compact
-            title="暂无历史对话"
-            description="开始提问后，这里会保留会话记录。"
+            title="대화 이력 없음"
+            description="질문을 시작하면 이곳에 대화 기록이 남습니다."
             className="rounded-2xl border border-dashed border-border/50 bg-surface/30"
           />
         ) : (
@@ -976,7 +985,7 @@ const ChatPage: React.FC = () => {
                   type="button"
                   onClick={() => handleSwitchSession(s.session_id)}
                   className={`session-item ${s.session_id === sessionId ? 'active' : ''}`}
-                  aria-label={`切换到对话 ${s.title}`}
+                  aria-label={`${s.title} 대화로 전환`}
                   aria-current={s.session_id === sessionId ? 'page' : undefined}
                 >
                   <div className="indicator" />
@@ -984,13 +993,13 @@ const ChatPage: React.FC = () => {
                     <span className="title">{s.title}</span>
                     <div className="mt-0.5 flex items-center gap-2">
                       <span className="meta">
-                        {s.message_count} 条对话
+                        메시지 {s.message_count}개
                       </span>
                       {s.last_active && (
                         <>
                           <span className="separator" />
                           <span className="meta">
-                            {new Date(s.last_active).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
+                            {new Date(s.last_active).toLocaleDateString(language === 'en' ? 'en-US' : language === 'zh' ? 'zh-CN' : 'ko-KR', { month: 'short', day: 'numeric' })}
                           </span>
                         </>
                       )}
@@ -1003,7 +1012,7 @@ const ChatPage: React.FC = () => {
                   onClick={() => {
                     setDeleteConfirmId(s.session_id);
                   }}
-                  aria-label={`删除对话 ${s.title}`}
+                  aria-label={`${s.title} 대화 삭제`}
                 >
                   <svg
                     className="w-3.5 h-3.5"
@@ -1028,8 +1037,8 @@ const ChatPage: React.FC = () => {
   );
 
   const selectedSkillSummary = selectedSkillIds.length > 0
-    ? getSkillNames(selectedSkillIds).join('、')
-    : '通用分析';
+    ? getSkillNames(selectedSkillIds).join(' · ')
+    : '일반 분석';
 
   return (
     <div
@@ -1060,10 +1069,10 @@ const ChatPage: React.FC = () => {
       {/* Delete confirmation dialog */}
       <ConfirmDialog
         isOpen={Boolean(deleteConfirmId)}
-        title="删除对话"
-        message="删除后，该对话将不可恢复，确认删除吗？"
-        confirmText="删除"
-        cancelText="取消"
+        title="대화 삭제"
+        message="삭제한 대화는 복구할 수 없습니다. 계속할까요?"
+        confirmText="삭제"
+        cancelText="취소"
         isDanger
         onConfirm={confirmDelete}
         onCancel={() => setDeleteConfirmId(null)}
@@ -1077,7 +1086,7 @@ const ChatPage: React.FC = () => {
               <button
                 onClick={() => setSidebarOpen(true)}
                 className="md:hidden p-1.5 -ml-1 rounded-lg hover:bg-hover transition-colors text-secondary-text hover:text-foreground"
-                aria-label="历史对话"
+                aria-label="대화 이력"
               >
                 <svg
                   className="w-5 h-5"
@@ -1106,7 +1115,7 @@ const ChatPage: React.FC = () => {
                   d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
                 />
               </svg>
-              问股
+              AI 종목 질의
               {agentStatus ? (
                 <Badge
                   variant={agentStatus.backend === 'codex_app_server' ? 'warning' : 'history'}
@@ -1118,13 +1127,13 @@ const ChatPage: React.FC = () => {
             </h1>
             {messages.length > 0 && (
               <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-2">
-                <Tooltip content="导出会话为 Markdown 文件">
+                <Tooltip content="대화를 Markdown 파일로 내보내기">
                   <span className="inline-flex">
                     <Button
                       variant="action-primary"
                       size="sm"
                       onClick={() => downloadSession(messages)}
-                      aria-label="导出会话为 Markdown 文件"
+                      aria-label="대화를 Markdown 파일로 내보내기"
                     >
                       <svg
                         className="w-4 h-4"
@@ -1139,11 +1148,11 @@ const ChatPage: React.FC = () => {
                           d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
                         />
                       </svg>
-                      导出会话
+                      대화 내보내기
                     </Button>
                   </span>
                 </Tooltip>
-                <Tooltip content="发送到已配置的通知机器人/邮箱">
+                <Tooltip content="설정된 알림 봇 또는 이메일로 전송">
                   <span className="inline-flex">
                     <Button
                       variant="action-primary"
@@ -1156,18 +1165,18 @@ const ChatPage: React.FC = () => {
                         try {
                           const content = formatSessionAsMarkdown(messages);
                           await agentApi.sendChat(content);
-                          showSendFeedback({ type: 'success', message: '已发送到通知渠道' }, 3000);
+                          showSendFeedback({ type: 'success', message: '알림 채널로 전송했습니다.' }, 3000);
                         } catch (err) {
                           const parsed = getParsedApiError(err);
                           showSendFeedback({
                             type: 'error',
-                            message: parsed.message || '发送失败',
+                            message: parsed.message || '전송에 실패했습니다.',
                           }, 5000);
                         } finally {
                           setSending(false);
                         }
                       }}
-                      aria-label="发送到已配置的通知机器人/邮箱"
+                      aria-label="설정된 알림 봇 또는 이메일로 전송"
                     >
                       {sending ? (
                         <svg
@@ -1204,7 +1213,7 @@ const ChatPage: React.FC = () => {
                           />
                         </svg>
                       )}
-                      发送
+                      전송
                     </Button>
                   </span>
                 </Tooltip>
@@ -1234,7 +1243,7 @@ const ChatPage: React.FC = () => {
           {sendToast ? (
             <InlineAlert
               variant={sendToast.type === 'success' ? 'success' : 'danger'}
-              title={sendToast.type === 'success' ? '发送成功' : '发送失败'}
+              title={sendToast.type === 'success' ? '전송 완료' : '전송 실패'}
               message={sendToast.message}
               className="max-w-md rounded-xl px-3 py-2 text-xs shadow-none"
             />
@@ -1253,7 +1262,7 @@ const ChatPage: React.FC = () => {
             {messages.length === 0 && !loading ? (
               <div className="flex h-full items-center justify-center">
                 <EmptyState
-                  title="开始问股"
+                  title="AI 종목 질의 시작"
                   description={t(
                     agentStatus?.backend === 'codex_app_server'
                       ? 'chat.emptyDescriptionCodex'
@@ -1293,7 +1302,7 @@ const ChatPage: React.FC = () => {
               </div>
             ) : (
               messages.map((msg) => {
-                const skillLabel = getMessageSkillLabel(msg);
+                const skillLabel = getMessageSkillLabel(msg, language);
                 return (
                 <div
                   key={msg.id}
@@ -1315,7 +1324,7 @@ const ChatPage: React.FC = () => {
                   >
                     {msg.role === 'assistant' && (skillLabel || msg.backend) && (
                       <div className="mb-2 flex flex-wrap gap-2">
-                        {skillLabel ? <Badge variant="info" className="chat-skill-badge shadow-none" aria-label={`技能 ${skillLabel}`}>
+                        {skillLabel ? <Badge variant="info" className="chat-skill-badge shadow-none" aria-label={`스킬 ${skillLabel}`}>
                           <svg
                             className="w-3 h-3"
                             fill="none"
@@ -1358,9 +1367,9 @@ const ChatPage: React.FC = () => {
                             type="button"
                             onClick={() => downloadMessageAsMarkdown(msg)}
                             className="chat-copy-btn"
-                            aria-label="导出此条消息为 Markdown"
+                            aria-label="이 메시지를 Markdown으로 내보내기"
                           >
-                            导出
+                            내보내기
                           </button>
                         </div>
                         <div className="chat-prose pr-20 sm:pr-24">
@@ -1418,7 +1427,7 @@ const ChatPage: React.FC = () => {
                   requestScrollToBottom('smooth');
                   scrollToBottom('smooth');
                 }}
-                aria-label="查看最新消息"
+                aria-label="최신 메시지 보기"
               >
                 <svg
                   className="h-3.5 w-3.5"
@@ -1433,7 +1442,7 @@ const ChatPage: React.FC = () => {
                     d="M19 14l-7 7m0 0l-7-7m7 7V3"
                   />
                 </svg>
-                有新消息
+                새 메시지 있음
               </button>
             </div>
           )}
@@ -1493,8 +1502,8 @@ const ChatPage: React.FC = () => {
               {isFollowUpContextLoading ? (
                 <InlineAlert
                   variant="info"
-                  title="追问上下文加载中"
-                  message="正在加载历史分析上下文；现在可直接发送追问。"
+                  title="후속 질문 컨텍스트 불러오는 중"
+                  message="이전 분석 컨텍스트를 불러오고 있습니다. 지금 바로 후속 질문을 보낼 수 있습니다."
                   className="rounded-xl px-3 py-2 text-xs shadow-none"
                 />
               ) : null}
@@ -1514,21 +1523,21 @@ const ChatPage: React.FC = () => {
                     onChange={(event) => void updateContextCompressionEnabled(event.target.checked)}
                     className="chat-skill-checkbox"
                   />
-                  <span className="font-medium">上下文压缩</span>
-                  <span className="text-xs text-muted-text">节省长会话 token</span>
+                  <span className="font-medium">컨텍스트 압축</span>
+                  <span className="text-xs text-muted-text">긴 대화의 토큰 사용량 절감</span>
                 </label>
                 <span className="text-xs text-muted-text">
                   {contextCompressionSaving
-                    ? '保存中...'
+                    ? '저장 중...'
                     : contextCompressionEnabled
-                      ? '已启用'
-                      : '未启用'}
+                      ? '사용 중'
+                      : '사용 안 함'}
                 </span>
               </div>
               {contextCompressionError ? (
                 <InlineAlert
                   variant="danger"
-                  title="上下文压缩设置未保存"
+                  title="컨텍스트 압축 설정이 저장되지 않았습니다"
                   message={contextCompressionError}
                   className="rounded-xl px-3 py-2 text-xs shadow-none"
                 />
@@ -1538,14 +1547,14 @@ const ChatPage: React.FC = () => {
                   <button
                     type="button"
                     className="home-surface-button flex h-10 w-full items-center justify-between gap-3 rounded-xl px-3 text-left text-sm text-foreground md:hidden"
-                    aria-label={mobileSkillPickerOpen ? '收起策略选择' : '展开策略选择'}
+                    aria-label={mobileSkillPickerOpen ? '전략 선택 접기' : '전략 선택 펼치기'}
                     aria-expanded={mobileSkillPickerOpen}
                     aria-controls="chat-skill-picker-panel"
                     onClick={() => setMobileSkillPickerOpen((open) => !open)}
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <SlidersHorizontal className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
-                      <span className="flex-shrink-0 font-medium">策略</span>
+                      <span className="flex-shrink-0 font-medium">전략</span>
                       <span className="truncate text-xs text-muted-text">{selectedSkillSummary}</span>
                     </span>
                     <ChevronDown
@@ -1565,7 +1574,7 @@ const ChatPage: React.FC = () => {
                     )}
                   >
                     <span className="text-xs text-muted-text font-medium uppercase tracking-wider flex-shrink-0 mt-1">
-                      策略
+                      전략
                     </span>
                     <label className="flex items-center gap-1.5 text-sm cursor-pointer group mt-0.5">
                       <input
@@ -1579,7 +1588,7 @@ const ChatPage: React.FC = () => {
                       <span
                         className={`transition-colors text-sm ${selectedSkillIds.length === 0 ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
                       >
-                        通用分析
+                        일반 분석
                       </span>
                     </label>
                     {skills.map((s) => {
@@ -1604,12 +1613,12 @@ const ChatPage: React.FC = () => {
                           <span
                             className={`transition-colors text-sm ${checked ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
                           >
-                            {s.name}
+                            {localizeStrategySkill(s.id || s.name, language)}
                           </span>
                           {showSkillDesc === s.id && s.description && (
                             <div className="skill-desc-tooltip">
-                              <p className="skill-title">{s.name}</p>
-                              <p>{s.description}</p>
+                              <p className="skill-title">{localizeStrategySkill(s.id || s.name, language)}</p>
+                              <p>{localizeStrategySkillDescription(s.id || s.name, s.description, language)}</p>
                             </div>
                           )}
                         </label>
@@ -1629,7 +1638,7 @@ const ChatPage: React.FC = () => {
                   onClick={() => void handleToggleWatchlist(activeStockCode)}
                   className="text-[11px]"
                 >
-                  {stockInWatchlist(activeStockCode) ? '从自选删除' : '加入自选'}
+                  {stockInWatchlist(activeStockCode) ? '관심종목에서 제거' : '관심종목에 추가'}
                 </Button>
                 {watchlistMessage && (
                   <span className="text-[11px] text-secondary-text animate-in fade-in">{watchlistMessage}</span>
@@ -1642,7 +1651,7 @@ const ChatPage: React.FC = () => {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="例如：分析 600519 / 茅台现在适合买入吗？ (Enter 发送, Shift+Enter 换行)"
+                  placeholder="예: 삼성전자 분석 / 지금 매수해도 될까요? (Enter 전송, Shift+Enter 줄바꿈)"
                   disabled={loading || !agentAvailable}
                   rows={1}
                   className="input-surface input-focus-glow flex-1 min-h-[44px] max-h-[200px] rounded-xl border bg-transparent px-4 py-2.5 text-sm transition-all focus:outline-none resize-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -1670,7 +1679,7 @@ const ChatPage: React.FC = () => {
                     isLoading={loading}
                     className="btn-primary flex-shrink-0"
                   >
-                    发送
+                    전송
                   </Button>
                 )}
               </div>

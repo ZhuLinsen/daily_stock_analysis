@@ -139,6 +139,49 @@ def test_controlled_execution_rejects_tool_without_cancellation_contract() -> No
     assert called is False
 
 
+def test_process_isolated_execution_allows_only_explicitly_approved_tool() -> None:
+    calls = []
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="process_safe",
+            description="Process-isolation-safe read-only tool.",
+            parameters=[],
+            handler=lambda: calls.append("process_safe") or {"ok": True},
+            policy=ToolPolicy.declared(read_only=True, process_isolation_safe=True),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="not_approved",
+            description="Not approved for controlled execution.",
+            parameters=[],
+            handler=lambda: calls.append("not_approved") or {"ok": True},
+            policy=ToolPolicy.declared(read_only=True),
+        )
+    )
+    surface = ToolSurface(registry)
+    context = ToolAccessContext(
+        cancel_event=threading.Event(),
+        execution_boundary="process_isolated",
+    )
+
+    result = surface.execute_tool("process_safe", {}, context)
+    rejected = surface.execute_tool("not_approved", {}, context)
+
+    assert result["ok"] is True
+    assert rejected["error"]["code"] == "cancellation_unsupported"
+    assert calls == ["process_safe"]
+    assert [
+        item["name"]
+        for item in surface.list_tools(
+            "public",
+            cancellation_safe_only=True,
+            process_isolated=True,
+        )
+    ] == ["process_safe"]
+
+
 def test_cancellation_safe_handler_exits_before_controlled_call_returns() -> None:
     entered = threading.Event()
     cancel_event = threading.Event()

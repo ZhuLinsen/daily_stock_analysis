@@ -8,7 +8,8 @@ empty-news disclosure 必须反映「本次分析真正用到的新闻证据」�
 或 Agent 没拿到新闻却因补查有结果而被错误地不提示。
 
 用法：pipeline 在 `executor.run()` 前后开启并读取作用域；搜索工具在返回结果时
-记录本次真正交给 Agent 的条数。工具在 ThreadPoolExecutor 中执行，
+记录本次真正交给 Agent 的条数。对于已预注入 Agent 上下文的 Tracker 缓存新闻，
+pipeline 也会在运行前以稳定快照键登记一次。工具在 ThreadPoolExecutor 中执行，
 `src/agent/runner.py` 通过 `contextvars.copy_context()` 提交任务，因此 ContextVar
 中的**可变**累加器在工作线程与父线程之间是同一个对象，工具线程里的累加对
 pipeline 可见。请勿把它换成保存不可变值的 ContextVar，那样父线程读不到。
@@ -30,16 +31,30 @@ class NewsEvidenceAccumulator:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._total = 0
+        self._recorded_source_keys: set[str] = set()
 
-    def record(self, count: int) -> None:
-        """记录一次搜索工具真实返回的条数；零命中也必须记录（记 0）。"""
+    def record(self, count: int, *, source_key: Optional[str] = None) -> None:
+        """记录一次实际交给 Agent 的新闻证据；零命中也必须记录。
+
+        ``source_key`` is optional because legacy search providers do not expose
+        stable snapshot identities.  Tracker does, so its preloaded context and
+        a later read-only tool call can share a key without double-counting the
+        same cached headlines.
+        """
         try:
             value = int(count)
         except (TypeError, ValueError):
             value = 0
         if value < 0:
             value = 0
+        normalized_key = str(source_key or "").strip()
+        if len(normalized_key) > 512:
+            normalized_key = ""
         with self._lock:
+            if normalized_key:
+                if normalized_key in self._recorded_source_keys:
+                    return
+                self._recorded_source_keys.add(normalized_key)
             self._total += value
 
     @property
@@ -86,7 +101,7 @@ def reset_news_evidence_scope(token: Optional[Token]) -> None:
         logger.warning("news evidence scope reset failed: %s", exc)
 
 
-def record_news_evidence(count: int) -> None:
+def record_news_evidence(count: int, *, source_key: Optional[str] = None) -> None:
     """供 Agent 搜索工具调用。
 
     没有活动作用域时静默忽略：非 Agent 路径自己直接维护计数，工具也可能在
@@ -96,4 +111,4 @@ def record_news_evidence(count: int) -> None:
     accumulator = _CURRENT_ACCUMULATOR.get()
     if accumulator is None:
         return
-    accumulator.record(count)
+    accumulator.record(count, source_key=source_key)

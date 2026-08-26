@@ -59,6 +59,7 @@ const OUTCOME_VARIANTS: Record<DecisionSignalOutcomeValue, BadgeVariant> = {
 };
 
 const LOCALE_BY_LANGUAGE: Record<UiLanguage, string> = {
+  ko: 'ko-KR',
   zh: 'zh-CN',
   en: 'en-US',
 };

@@ -40,6 +40,7 @@ const STATUS_LABEL_KEYS: Record<DecisionSignalStatus, UiTextKey> = {
 };
 
 const LOCALE_BY_LANGUAGE: Record<UiLanguage, string> = {
+  ko: 'ko-KR',
   zh: 'zh-CN',
   en: 'en-US',
 };

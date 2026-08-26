@@ -32,7 +32,7 @@ const NEWS_SOURCE_TEXT = {
 /**
  * 资讯区组件 - 终端风格
  */
-export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, language = 'zh' }) => {
+export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, language = 'ko' }) => {
   const reportLanguage = normalizeReportLanguage(language);
   const text = getReportText(reportLanguage);
   const sourceText = NEWS_SOURCE_TEXT[reportLanguage];

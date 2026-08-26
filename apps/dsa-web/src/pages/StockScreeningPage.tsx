@@ -1251,6 +1251,32 @@ const StockScreeningPage: React.FC = () => {
     }
   };
 
+  // The bundled screener currently has CN/US data adapters only. Do not expose
+  // a China-market workflow in a Korean-market deployment as if it screened KRX.
+  if (!isScreeningEnabled || market !== 'kr') {
+    return (
+      <AppPage className="max-w-3xl space-y-6 pb-12 pt-6">
+        <div className="flex items-center gap-3">
+          <span className="grid h-10 w-10 place-items-center rounded-full border-2 border-cyan text-cyan shadow-[0_0_24px_hsl(var(--primary)/0.18)]">
+            <SlidersHorizontal className="h-5 w-5" />
+          </span>
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">한국 주식 스크리닝</h1>
+            <p className="mt-1 text-sm text-secondary-text">KOSPI · KOSDAQ</p>
+          </div>
+        </div>
+        <InlineAlert
+          variant="info"
+          title="KRX 스크리닝 준비 중"
+          message="내장 스크리닝 엔진은 아직 KOSPI·KOSDAQ 전시장 데이터 어댑터를 지원하지 않습니다. 중국 시장용 화면을 잘못 사용하지 않도록 이 배포에서는 비활성화했습니다. 관심종목에 .KS 또는 .KQ 코드를 추가한 뒤 개별 분석과 시장 복기를 사용하세요."
+          action={(
+            <Button size="sm" onClick={() => navigate('/')}>관심종목으로 이동</Button>
+          )}
+        />
+      </AppPage>
+    );
+  }
+
   return (
     <AppPage className="max-w-6xl space-y-6 pb-12 pt-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

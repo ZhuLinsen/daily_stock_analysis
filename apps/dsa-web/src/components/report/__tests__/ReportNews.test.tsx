@@ -26,7 +26,7 @@ describe('ReportNews', () => {
       ],
     });
 
-    const { container } = render(<ReportNews recordId={1} />);
+    const { container } = render(<ReportNews recordId={1} language="zh" />);
 
     expect(await screen.findByText('茅台发布最新经营数据')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '跳转' })).toHaveAttribute('href', 'https://example.com/news');
@@ -48,7 +48,7 @@ describe('ReportNews', () => {
       items: [],
     });
 
-    render(<ReportNews recordId={1} />);
+    render(<ReportNews recordId={1} language="zh" />);
 
     expect(await screen.findByText('暂无相关资讯')).toBeInTheDocument();
     expect(screen.getByText('可稍后刷新以获取最新资讯。')).toBeInTheDocument();
@@ -81,7 +81,7 @@ describe('ReportNews', () => {
         ],
       });
 
-    render(<ReportNews recordId={1} />);
+    render(<ReportNews recordId={1} language="zh" />);
 
     expect(await screen.findByRole('alert')).toBeInTheDocument();
 

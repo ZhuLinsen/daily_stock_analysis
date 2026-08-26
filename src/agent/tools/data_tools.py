@@ -24,12 +24,14 @@ _MARKET_DATA_STOCK_POLICY = ToolPolicy.declared(
     side_effects=["network_read"],
     permissions=["market_data:read"],
     scope_dimensions=["stock"],
+    process_isolation_safe=True,
 )
 _MARKET_DATA_CACHE_POLICY = ToolPolicy.declared(
     read_only=True,
     side_effects=["network_read", "db_read", "db_write_cache"],
     permissions=["market_data:read"],
     scope_dimensions=["stock"],
+    process_isolation_safe=True,
 )
 _ANALYSIS_CONTEXT_POLICY = ToolPolicy.declared(
     read_only=True,

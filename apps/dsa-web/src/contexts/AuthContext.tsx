@@ -28,8 +28,8 @@ function extractLoginError(err: unknown): ParsedApiError {
   const parsed = getParsedApiError(err);
   if (parsed.status === 429) {
     return createParsedApiError({
-      title: '登录尝试过于频繁',
-      message: '尝试次数过多，请稍后再试。',
+      title: '로그인 시도가 너무 많습니다',
+      message: '잠시 후 다시 시도하세요.',
       rawMessage: parsed.rawMessage,
       status: parsed.status,
       category: parsed.category,

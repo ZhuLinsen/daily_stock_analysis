@@ -76,10 +76,10 @@ export function useWatchlist(): UseWatchlistReturn {
       const result = await systemConfigApi.addToWatchlist(stockCode);
       if (mountedRef.current) {
         setCodes(result);
-        showMessage(`已加入自选 ${stockCode}`);
+        showMessage(`관심종목에 추가했습니다: ${stockCode}`);
       }
     } catch {
-      if (mountedRef.current) showMessage('操作失败');
+      if (mountedRef.current) showMessage('작업에 실패했습니다.');
     } finally {
       if (mountedRef.current) setIsActioning(false);
     }
@@ -92,10 +92,10 @@ export function useWatchlist(): UseWatchlistReturn {
       const result = await systemConfigApi.removeFromWatchlist(stockCode);
       if (mountedRef.current) {
         setCodes(result);
-        showMessage(`已从自选移除 ${stockCode}`);
+        showMessage(`관심종목에서 제거했습니다: ${stockCode}`);
       }
     } catch {
-      if (mountedRef.current) showMessage('操作失败');
+      if (mountedRef.current) showMessage('작업에 실패했습니다.');
     } finally {
       if (mountedRef.current) setIsActioning(false);
     }

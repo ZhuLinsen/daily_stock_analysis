@@ -361,6 +361,7 @@ def _build_tool_registry(category_timeout_map):
     from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
     from src.agent.tools.market_tools import ALL_MARKET_TOOLS
     from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
+    from src.agent.tools.tracker_research_tools import ALL_TRACKER_RESEARCH_TOOLS
 
     registry = ToolRegistry(category_timeout_map=category_timeout_map or None)
     for tool_fn in (
@@ -369,6 +370,7 @@ def _build_tool_registry(category_timeout_map):
         + ALL_SEARCH_TOOLS
         + ALL_MARKET_TOOLS
         + ALL_BACKTEST_TOOLS
+        + ALL_TRACKER_RESEARCH_TOOLS
     ):
         registry.register(tool_fn)
     return registry

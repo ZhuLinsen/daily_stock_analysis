@@ -131,7 +131,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const [targetScope, setTargetScope] = useState<AlertTargetScope>('single_symbol');
   const [target, setTarget] = useState('');
   const [portfolioTarget, setPortfolioTarget] = useState('all');
-  const [marketRegion, setMarketRegion] = useState<MarketRegion>('cn');
+  const [marketRegion, setMarketRegion] = useState<MarketRegion>('kr');
   const [accounts, setAccounts] = useState<PortfolioAccountItem[]>([]);
   const [accountsError, setAccountsError] = useState<string | null>(null);
   const [alertType, setAlertType] = useState<AlertType>('price_cross');
@@ -363,7 +363,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     setTargetScope(nextScope);
     setAlertType(nextType);
     setPortfolioTarget('all');
-    setMarketRegion('cn');
+    setMarketRegion('kr');
     resetParameters(nextType);
     setFormError(null);
   };
@@ -374,7 +374,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     if (targetScope === 'single_symbol') {
       const targetValidation = validateStockCode(target);
       if (!targetValidation.valid) {
-        setFormError(language === 'en' ? text.invalidStockCode : (targetValidation.message ?? text.invalidStockCode));
+        setFormError(language === 'zh' ? (targetValidation.message ?? text.invalidStockCode) : text.invalidStockCode);
         return;
       }
       resolvedTarget = targetValidation.normalized;
@@ -403,7 +403,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     setName('');
     setTarget('');
     setPortfolioTarget('all');
-    setMarketRegion('cn');
+    setMarketRegion('kr');
     setPrice('');
     setChangePct('');
     setMultiplier('');

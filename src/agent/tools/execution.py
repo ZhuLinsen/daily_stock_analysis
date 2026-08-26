@@ -101,6 +101,10 @@ class ToolAccessContext:
     timeout_seconds: Optional[float] = None
     deadline: Optional[float] = None
     cancel_event: Optional[threading.Event] = None
+    # ``process_isolated`` is set only by the Codex dynamic-tool worker.  That
+    # worker owns a dedicated process group and can synchronously reap it on a
+    # deadline or cancellation; normal ToolSurface users stay ``in_process``.
+    execution_boundary: str = "in_process"
     max_result_bytes: Optional[int] = None
     redact_result: bool = False
     audit_context: Dict[str, Any] = field(default_factory=dict)

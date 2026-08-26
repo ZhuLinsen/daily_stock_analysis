@@ -605,6 +605,19 @@ class AgentNewsEvidenceTestCase(unittest.TestCase):
         """渠道可用但 Agent 一次都没搜：仍是「没拿到新闻」，不能谎称未配置渠道。"""
         self.assertEqual(0, self.accumulator.resolve(search_available=True))
 
+    def test_same_tracker_snapshot_is_not_counted_twice_when_preloaded_and_read_by_tool(self):
+        """预注入的 Tracker 新闻与后续只读工具命中同一快照时只能计一次。"""
+        self.news_evidence.record_news_evidence(
+            3,
+            source_key="tracker_news:005930:KOSPI:2026-08-26T00:00:00.000Z:FRESH",
+        )
+        self.news_evidence.record_news_evidence(
+            3,
+            source_key="tracker_news:005930:KOSPI:2026-08-26T00:00:00.000Z:FRESH",
+        )
+
+        self.assertEqual(3, self.accumulator.resolve(search_available=True))
+
     def test_tool_threads_accumulate_into_the_parent_scope(self):
         """工具在线程池中执行，累加必须对 pipeline 可见。
 

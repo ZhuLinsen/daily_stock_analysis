@@ -44,6 +44,11 @@ class ToolPolicy:
     policy_status: str = "unknown"
     scope_dimensions: List[str] = field(default_factory=list)
     cancellation_safe: bool = False
+    # Some read-only tools do not offer in-handler cooperative cancellation,
+    # but are safe when the caller owns them in a separately killable process
+    # group.  This is deliberately distinct from ``cancellation_safe`` so an
+    # in-process runtime cannot accidentally opt into the weaker contract.
+    process_isolation_safe: bool = False
     timeout_seconds: Optional[float] = None
 
     @classmethod
@@ -59,6 +64,7 @@ class ToolPolicy:
         permissions: Optional[List[str]] = None,
         scope_dimensions: Optional[List[str]] = None,
         cancellation_safe: bool = False,
+        process_isolation_safe: bool = False,
         timeout_seconds: Optional[float] = None,
     ) -> "ToolPolicy":
         return cls(
@@ -68,6 +74,7 @@ class ToolPolicy:
             policy_status="declared",
             scope_dimensions=list(scope_dimensions or []),
             cancellation_safe=bool(cancellation_safe),
+            process_isolation_safe=bool(process_isolation_safe),
             timeout_seconds=timeout_seconds,
         )
 
@@ -78,6 +85,7 @@ class ToolPolicy:
             "permissions": list(self.permissions),
             "policy_status": self.policy_status,
             "cancellation_safe": self.cancellation_safe,
+            "process_isolation_safe": self.process_isolation_safe,
         }
 
 

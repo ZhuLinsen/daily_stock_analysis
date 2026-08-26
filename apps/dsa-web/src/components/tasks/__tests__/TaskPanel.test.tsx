@@ -9,7 +9,7 @@ const baseTask: TaskInfo = {
   stockName: '贵州茅台',
   status: 'processing',
   progress: 40,
-  message: '正在抓取最新行情',
+  message: '正在分析中...',
   reportType: 'detailed',
   createdAt: '2026-03-21T08:00:00Z',
 };
@@ -35,8 +35,8 @@ describe('TaskPanel', () => {
       />,
     );
 
-    expect(screen.getByLabelText('请求阶段: 盘中')).toBeInTheDocument();
-    expect(screen.getByLabelText('请求阶段: 自动阶段')).toBeInTheDocument();
+    expect(screen.getByLabelText('요청 단계: 장중')).toBeInTheDocument();
+    expect(screen.getByLabelText('요청 단계: 자동 단계')).toBeInTheDocument();
   });
 
   it('renders active tasks with preserved dashboard panel styling', () => {
@@ -59,13 +59,14 @@ describe('TaskPanel', () => {
       />,
     );
 
-    expect(screen.getByText('分析任务')).toBeInTheDocument();
-    expect(screen.getByText('1 进行中')).toBeInTheDocument();
-    expect(screen.getByText('1 等待中')).toBeInTheDocument();
+    expect(screen.getByText('분석 작업')).toBeInTheDocument();
+    expect(screen.getByText('1 처리 중')).toBeInTheDocument();
+    expect(screen.getByText('1 보류 중')).toBeInTheDocument();
     expect(screen.getByText('贵州茅台')).toBeInTheDocument();
     expect(screen.getByText('AAPL')).toBeInTheDocument();
-    expect(screen.getByLabelText('任务状态：分析中')).toBeInTheDocument();
-    expect(screen.getByText('运行诊断')).toBeInTheDocument();
+    expect(screen.getByText('분석 중...')).toBeInTheDocument();
+    expect(screen.getByLabelText('작업 상태: 처리')).toBeInTheDocument();
+    expect(screen.getByText('진단')).toBeInTheDocument();
     expect(screen.getAllByText('trace-task-1')).toHaveLength(2);
     expect(screen.queryByText(/请求阶段:/)).not.toBeInTheDocument();
     expect(container.querySelector('.home-panel-card')).toBeTruthy();
@@ -92,21 +93,21 @@ describe('TaskPanel', () => {
       />,
     );
 
-    const collapseButton = screen.getByRole('button', { name: '折叠任务面板' });
+    const collapseButton = screen.getByRole('button', { name: '작업 패널 축소' });
     expect(collapseButton).toHaveAttribute('aria-expanded', 'true');
 
     fireEvent.click(collapseButton);
 
-    const expandButton = screen.getByRole('button', { name: '展开任务面板' });
+    const expandButton = screen.getByRole('button', { name: '작업 패널 확장' });
     expect(expandButton).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('1 进行中');
-    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('1 等待中');
-    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('平均进度 40%');
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('1 처리 중');
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('1 보류 중');
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('평균 40%');
     expect(screen.queryByTestId('task-panel-item')).not.toBeInTheDocument();
 
     fireEvent.click(expandButton);
 
-    expect(screen.getByRole('button', { name: '折叠任务面板' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: '작업 패널 축소' })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getAllByTestId('task-panel-item')).toHaveLength(2);
   });
 
@@ -137,9 +138,9 @@ describe('TaskPanel', () => {
 
     const diagnosticsSummary = screen.getByTestId('task-panel-diagnostics-summary');
     expect(diagnosticsSummary).toHaveClass('grid-cols-[auto_minmax(0,1fr)_auto]');
-    expect(screen.getByText('运行诊断')).toHaveClass('whitespace-nowrap');
+    expect(screen.getByText('진단')).toHaveClass('whitespace-nowrap');
     expect(screen.getByText('c5b9665a64...')).toHaveClass('truncate');
-    expect(screen.getByRole('button', { name: '查看 长飞光纤 运行流' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '长飞光纤 실행 흐름 보기' })).toBeInTheDocument();
   });
 
   it('opens the run-flow view from an active task icon button', () => {
@@ -151,7 +152,7 @@ describe('TaskPanel', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 运行流' }));
+    fireEvent.click(screen.getByRole('button', { name: '贵州茅台 실행 흐름 보기' }));
 
     expect(onOpenRunFlow).toHaveBeenCalledWith(baseTask);
   });
@@ -170,8 +171,8 @@ describe('TaskPanel', () => {
     );
 
     expect(screen.getByText('贵州茅台')).toBeInTheDocument();
-    expect(screen.getByLabelText('任务状态：请求取消')).toBeInTheDocument();
-    expect(screen.queryByText('失败')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('작업 상태: 취소를 요청했습니다.')).toBeInTheDocument();
+    expect(screen.queryByText('실패')).not.toBeInTheDocument();
   });
 
   it('does not keep cancelled terminal tasks in the active task panel', () => {

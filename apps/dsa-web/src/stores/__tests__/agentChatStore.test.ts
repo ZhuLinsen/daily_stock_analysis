@@ -362,7 +362,7 @@ describe('agentChatStore.startStream', () => {
     const state = useAgentChatStore.getState();
     expect(state.messages).toHaveLength(1);
     expect(state.chatError).toMatchObject({
-      title: '请求未被接受',
+      title: '요청이 접수되지 않았습니다',
       rawMessage: 'Agent stream emitted accepted more than once.',
     });
   });
@@ -384,7 +384,7 @@ describe('agentChatStore.startStream', () => {
     expect(state.messages).toEqual([]);
     expect(state.sessions).toEqual([]);
     expect(state.chatError).toMatchObject({
-      title: '请求未被接受',
+      title: '요청이 접수되지 않았습니다',
       rawMessage: 'Agent stream emitted done before accepted.',
     });
   });
@@ -434,7 +434,7 @@ describe('agentChatStore.startStream', () => {
       skills: ['bull_trend', 'ma_golden_cross'],
       skill: 'bull_trend',
       skillNames: ['趋势分析', '均线金叉'],
-      skillName: '趋势分析、均线金叉',
+      skillName: '趋势分析 · 均线金叉',
     });
     expect(state.messages[1]).toMatchObject({
       role: 'assistant',
@@ -442,7 +442,7 @@ describe('agentChatStore.startStream', () => {
       skills: ['bull_trend', 'ma_golden_cross'],
       skill: 'bull_trend',
       skillNames: ['趋势分析', '均线金叉'],
-      skillName: '趋势分析、均线金叉',
+      skillName: '趋势分析 · 均线金叉',
     });
   });
 
@@ -463,8 +463,8 @@ describe('agentChatStore.startStream', () => {
     const state = useAgentChatStore.getState();
     expect(state.messages).toHaveLength(1);
     expect(state.chatError).toMatchObject({
-      title: '回复未完整返回',
-      message: 'Agent 流式响应在完成前中断，请重试。',
+      title: '응답이 완전히 수신되지 않았습니다',
+      message: '에이전트의 스트리밍 응답이 완료 전에 중단되었습니다. 다시 시도하세요.',
       category: 'upstream_network',
     });
   });
@@ -484,7 +484,7 @@ describe('agentChatStore.startStream', () => {
     });
 
     expect(useAgentChatStore.getState().chatError).toMatchObject({
-      title: '系统没有配置可用的 LLM 模型',
+      title: '사용 가능한 LLM 모델이 설정되지 않았습니다',
       category: 'llm_not_configured',
       rawMessage: 'Agent LLM: no effective primary model configured',
     });
@@ -505,7 +505,7 @@ describe('agentChatStore.startStream', () => {
     });
 
     expect(useAgentChatStore.getState().chatError).toMatchObject({
-      title: '连接上游服务超时',
+      title: '외부 서비스 연결 시간이 초과되었습니다',
       category: 'upstream_timeout',
       rawMessage: 'connect timeout while calling upstream provider',
     });
@@ -526,8 +526,9 @@ describe('agentChatStore.startStream', () => {
     });
 
     const error = useAgentChatStore.getState().chatError;
-    expect(error?.message).toContain('Codex Agent');
-    expect(error?.message).toContain('Agent 设置');
+    expect(error?.title).toBe('Codex CLI 에이전트를 사용할 수 없습니다');
+    expect(error?.message).toContain('Codex CLI 에이전트');
+    expect(error?.message).toContain('에이전트 설정');
     expect(error?.message).not.toContain('API Key');
   });
 });

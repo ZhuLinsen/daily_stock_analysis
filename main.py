@@ -1194,6 +1194,12 @@ def start_api_server(host: str, port: int, config: Config) -> None:
 
     probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
     try:
+        # A recently closed browser connection can leave the service port in
+        # TIME_WAIT.  Uvicorn itself enables address reuse, so mirror that on
+        # this preflight probe; otherwise a healthy PM2 restart is rejected
+        # before Uvicorn has a chance to bind.  An active listener still makes
+        # the bind fail as intended.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind((host, port))
     except OSError as exc:
         raise RuntimeError(f"FastAPI port is not available: {host}:{port}") from exc

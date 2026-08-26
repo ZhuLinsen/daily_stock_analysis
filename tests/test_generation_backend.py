@@ -88,6 +88,7 @@ def test_generation_error_codes_include_phase2_values() -> None:
         "unsupported_tool_calling",
         "interactive_prompt_required",
         "approval_required",
+        "execution_interrupted",
         "login_required",
         "capability_unsupported",
         "unsafe_config",

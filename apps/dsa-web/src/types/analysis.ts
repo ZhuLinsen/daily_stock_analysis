@@ -610,7 +610,7 @@ export interface ApiError {
 // ============ Helper Functions ============
 
 /** Get sentiment label by score */
-export const getSentimentLabel = (score: number, language: ReportLanguage = 'zh'): SentimentLabel => {
+export const getSentimentLabel = (score: number, language: ReportLanguage = 'ko'): SentimentLabel => {
   if (language === 'en') {
     if (score <= 20) return 'Very Bearish';
     if (score <= 40) return 'Bearish';

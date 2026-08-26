@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -173,11 +174,15 @@ def get_system_config(
     description="Read a side-effect-free setup readiness summary from saved and runtime configuration.",
 )
 def get_setup_status(
+    language: Optional[str] = Query(
+        None,
+        description="UI language for setup-status text (zh, en, or ko). Defaults to zh for API compatibility.",
+    ),
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> SetupStatusResponse:
     """Return first-run setup status without writing config or reloading runtime state."""
     try:
-        payload = service.get_setup_status()
+        payload = service.get_setup_status(language=language if isinstance(language, str) else None)
         return SetupStatusResponse.model_validate(payload)
     except Exception as exc:
         logger.error("Failed to load setup status: %s", exc, exc_info=True)

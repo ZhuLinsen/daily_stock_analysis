@@ -24,6 +24,7 @@ _BACKTEST_READ_POLICY = ToolPolicy.declared(
     side_effects=["db_read"],
     permissions=["backtest:read"],
     scope_dimensions=["stock"],
+    process_isolation_safe=True,
 )
 _BACKTEST_GLOBAL_READ_POLICY = ToolPolicy.declared(
     read_only=True,

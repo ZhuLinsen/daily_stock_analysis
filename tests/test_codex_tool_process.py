@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import sqlite3
@@ -191,6 +192,30 @@ def test_three_production_tools_execute_through_spawned_worker(
     assert len(records) == 3
     assert all(record["alive_after"] is False for record in records)
     assert all(record["pid_alive_after"] is False for record in records)
+
+
+def test_process_isolated_production_evidence_tool_executes_through_worker() -> None:
+    """A process-isolation contract must survive the parent/child context hop."""
+    runner = CodexToolProcessRunner()
+    try:
+        result = runner.execute(
+            "get_tracker_research_bundle",
+            {"stock_code": "AAPL"},
+            ToolAccessContext(
+                stock_scope=StockScope(expected_stock_code="AAPL", allowed_stock_codes={"AAPL"}),
+                backend="codex_app_server",
+                deadline=time.monotonic() + 30,
+                execution_boundary="process_isolated",
+                max_result_bytes=1024 * 1024,
+                redact_result=True,
+            ),
+        )
+    finally:
+        runner.close()
+
+    assert result["ok"] is True
+    assert json.loads(result["result_text"])["status"] == "not_applicable"
+    assert runner.snapshot()[-1]["pid_alive_after"] is False
 
 
 def test_running_sqlite_query_is_cancelled_and_reaped_three_times(tmp_path: Path) -> None:

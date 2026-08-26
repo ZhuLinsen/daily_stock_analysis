@@ -1,9 +1,11 @@
 import type { UiLanguage } from '../i18n/uiText';
 
-export const UI_LANGUAGE_STORAGE_KEY = 'dsa.uiLanguage';
+// Bump the key when changing the product default so existing Chinese/English
+// sessions do not silently override the Korean-first deployment preference.
+export const UI_LANGUAGE_STORAGE_KEY = 'dsa.uiLanguage.v2';
 
 export function normalizeUiLanguage(value?: string | null): UiLanguage | null {
-  if (value === 'zh' || value === 'en') {
+  if (value === 'ko' || value === 'zh' || value === 'en') {
     return value;
   }
   return null;
@@ -45,30 +47,12 @@ export function persistUiLanguage(storage: Storage | null, language: UiLanguage)
   }
 }
 
-function getBrowserUiLanguage(navigatorLike?: Pick<Navigator, 'language' | 'languages'> | null): UiLanguage {
-  const languageCandidates = [
-    ...(Array.isArray(navigatorLike?.languages) ? navigatorLike?.languages ?? [] : []),
-    navigatorLike?.language,
-  ].filter((language): language is string => Boolean(language));
-
-  for (const candidate of languageCandidates) {
-    const normalized = candidate.toLowerCase();
-    if (normalized.startsWith('zh')) {
-      return 'zh';
-    }
-    if (normalized.startsWith('en')) {
-      return 'en';
-    }
-  }
-
-  return 'zh';
-}
-
 export function resolveInitialUiLanguage({
   storage,
-  navigatorLike,
 }: {
   storage?: Storage | null;
+  // Kept for call-site compatibility. Korean is the product default even
+  // when a visitor's browser is configured in another language.
   navigatorLike?: Pick<Navigator, 'language' | 'languages'> | null;
 } = {}): UiLanguage {
   const stored = getStoredUiLanguage(storage);
@@ -76,16 +60,15 @@ export function resolveInitialUiLanguage({
     return stored;
   }
 
-  return getBrowserUiLanguage(navigatorLike);
+  return 'ko';
 }
 
 export function getRuntimeInitialLanguage(): UiLanguage {
   if (typeof window === 'undefined') {
-    return 'zh';
+    return 'ko';
   }
 
   return resolveInitialUiLanguage({
     storage: getUiLanguageStorage(),
-    navigatorLike: window.navigator,
   });
 }

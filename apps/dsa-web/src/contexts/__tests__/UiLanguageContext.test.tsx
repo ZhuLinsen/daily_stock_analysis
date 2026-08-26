@@ -46,24 +46,24 @@ describe('UiLanguageContext', () => {
     })).toBe('en');
   });
 
-  it('falls back from invalid storage to the first supported browser language and then zh', () => {
+  it('falls back from invalid storage to the Korean product default', () => {
     expect(resolveInitialUiLanguage({
       storage: createStorage('fr'),
       navigatorLike: { language: 'en-US', languages: ['en-US'] },
-    })).toBe('en');
+    })).toBe('ko');
 
     expect(resolveInitialUiLanguage({
       storage: createStorage('fr'),
       navigatorLike: { language: 'zh-CN', languages: ['zh-CN', 'en-US'] },
-    })).toBe('zh');
+    })).toBe('ko');
 
     expect(resolveInitialUiLanguage({
       storage: createStorage(null),
       navigatorLike: { language: 'tr-TR', languages: ['tr-TR'] },
-    })).toBe('zh');
+    })).toBe('ko');
   });
 
-  it('falls back to browser language if storage getItem throws', () => {
+  it('falls back to Korean if storage getItem throws', () => {
     const throwingStorage = createStorage('en');
     throwingStorage.getItem = () => {
       throw new Error('Storage getItem disabled');
@@ -72,7 +72,7 @@ describe('UiLanguageContext', () => {
     expect(resolveInitialUiLanguage({
       storage: throwingStorage,
       navigatorLike: { language: 'en-US', languages: ['en-US'] },
-    })).toBe('en');
+    })).toBe('ko');
   });
 
   it('persists language preference via storage in a safe, non-throwing path', () => {
@@ -94,7 +94,7 @@ describe('UiLanguageContext', () => {
     });
 
     try {
-      expect(getRuntimeInitialLanguage()).toBe('en');
+      expect(getRuntimeInitialLanguage()).toBe('ko');
     } finally {
       if (originalDescriptor) {
         Object.defineProperty(window, 'localStorage', originalDescriptor);
@@ -112,12 +112,12 @@ describe('UiLanguageContext', () => {
     );
 
     const toggle = screen.getByRole('button', { name: '切换界面语言' });
-    expect(screen.getByText('界面语言')).toBeInTheDocument();
+    expect(screen.getByText('中文')).toBeInTheDocument();
 
     fireEvent.click(toggle);
 
-    expect(localStorage.getItem(UI_LANGUAGE_STORAGE_KEY)).toBe('en');
-    expect(screen.getByRole('button', { name: 'Switch UI language' })).toBeInTheDocument();
-    expect(screen.getByText('English')).toBeInTheDocument();
+    expect(localStorage.getItem(UI_LANGUAGE_STORAGE_KEY)).toBe('ko');
+    expect(screen.getByRole('button', { name: '화면 언어 변경' })).toBeInTheDocument();
+    expect(screen.getByText('한국어')).toBeInTheDocument();
   });
 });

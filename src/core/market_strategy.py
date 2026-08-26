@@ -36,6 +36,15 @@ class MarketStrategyBlueprint:
             dims.append(f"- {dim.name}: {dim.objective}\n{checkpoints}")
         dimensions_text = "\n".join(dims)
 
+        if self.region == "kr":
+            return (
+                f"## 전략 프레임워크: {self.title}\n"
+                f"{self.positioning}\n\n"
+                f"### 전략 원칙\n{principles_text}\n\n"
+                f"### 분석 축\n{dimensions_text}\n\n"
+                f"### 실행 기준\n{action_text}"
+            )
+
         return (
             f"## Strategy Blueprint: {self.title}\n"
             f"{self.positioning}\n\n"
@@ -47,7 +56,10 @@ class MarketStrategyBlueprint:
     def to_markdown_block(self) -> str:
         """Render blueprint as markdown section for template fallback report."""
         dims = "\n".join([f"- **{dim.name}**: {dim.objective}" for dim in self.dimensions])
-        section_title = "### VI. Strategy Framework" if self.region == "us" else "### 六、策略框架"
+        if self.region == "kr":
+            section_title = "### 6. 전략 프레임워크"
+        else:
+            section_title = "### VI. Strategy Framework" if self.region == "us" else "### 六、策略框架"
         return f"{section_title}\n{dims}\n"
 
 
@@ -198,34 +210,34 @@ JP_BLUEPRINT = MarketStrategyBlueprint(
 
 KR_BLUEPRINT = MarketStrategyBlueprint(
     region="kr",
-    title="韩国市场三段式复盘策略",
-    positioning="聚焦 KOSPI、KOSDAQ、半导体权重与全球科技风险偏好，形成次日交易计划。",
+    title="한국 증시 3단계 시장 복기 전략",
+    positioning="KOSPI·KOSDAQ, 반도체 대형주, 글로벌 기술주 위험선호를 중심으로 다음 거래일 계획을 수립합니다.",
     principles=[
-        "先看 KOSPI/KOSDAQ 是否同向，再看三星电子、SK 海力士等权重线索。",
-        "区分指数 beta、半导体周期和成长股风险偏好的贡献。",
-        "只基于可得指数、新闻和价格行为判断，不臆造市场广度或板块统计。",
+        "KOSPI와 KOSDAQ의 동행 여부를 먼저 확인하고 삼성전자·SK하이닉스 등 대형주의 신호를 봅니다.",
+        "지수 베타, 반도체 사이클, 성장주 위험선호의 기여도를 구분합니다.",
+        "제공된 지수·뉴스·가격 행동만으로 판단하며, 시장 폭이나 업종 통계를 임의로 만들지 않습니다.",
     ],
     dimensions=[
         StrategyDimension(
-            name="趋势结构",
-            objective="判断韩国市场处于上攻、震荡还是防守阶段。",
-            checkpoints=["KOSPI/KOSDAQ 是否同向", "权重股是否支撑指数", "关键支撑阻力是否被突破"],
+            name="추세 구조",
+            objective="한국 시장이 상승, 횡보, 방어 중 어느 국면인지 판단합니다.",
+            checkpoints=["KOSPI/KOSDAQ의 방향 일치 여부", "대형주가 지수를 지지하는지", "핵심 지지·저항선 돌파 여부"],
         ),
         StrategyDimension(
-            name="科技周期",
-            objective="识别半导体、AI 硬件和全球科技股对韩国市场的映射。",
-            checkpoints=["存储/半导体链新闻催化", "美股科技方向联动", "外资风险偏好变化"],
+            name="기술 사이클",
+            objective="반도체, AI 하드웨어, 글로벌 기술주가 한국 시장에 미치는 영향을 파악합니다.",
+            checkpoints=["메모리·반도체 공급망 뉴스 촉매", "미국 기술주와의 연동", "외국인 위험선호 변화"],
         ),
         StrategyDimension(
-            name="主题线索",
-            objective="提炼可延续主线与需要规避的拥挤方向。",
-            checkpoints=["电池/汽车/互联网是否轮动", "KOSDAQ 成长股风险偏好", "新闻催化是否支撑价格行为"],
+            name="주도 테마",
+            objective="지속 가능한 주도주와 피해야 할 과열 구간을 추립니다.",
+            checkpoints=["2차전지·자동차·인터넷 업종 순환", "KOSDAQ 성장주 위험선호", "뉴스 촉매가 가격 행동을 뒷받침하는지"],
         ),
     ],
     action_framework=[
-        "进攻：KOSPI/KOSDAQ 共振上行 + 科技权重确认 + 外部风险偏好改善。",
-        "均衡：指数或权重股分化，控制仓位并等待确认。",
-        "防守：科技权重转弱或外部风险升温，优先控制回撤。",
+        "공격: KOSPI/KOSDAQ 동반 상승, 기술 대형주 확인, 대외 위험선호 개선.",
+        "균형: 지수 또는 대형주가 엇갈리면 비중을 관리하며 확인을 기다림.",
+        "방어: 기술 대형주 약세 또는 대외 위험 확대 시 낙폭 관리 우선.",
     ],
 )
 

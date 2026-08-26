@@ -1187,6 +1187,68 @@ raise SystemExit(2)
     assert exc_info.value.details["returncode"] == 2
 
 
+def test_non_zero_exit_maps_approval_required_without_process_interruption(tmp_path: Path) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+print('approval required for this operation', file=sys.stderr)
+raise SystemExit(2)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.APPROVAL_REQUIRED
+    assert exc_info.value.details["reason"] == "approval_required"
+    assert exc_info.value.fallbackable is True
+
+
+def test_signal_terminated_process_precedes_approval_keyword_classification(tmp_path: Path) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import os
+import signal
+import sys
+print('permission check was in progress', file=sys.stderr)
+os.kill(os.getpid(), signal.SIGTERM)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    error = exc_info.value
+    assert error.error_code is GenerationErrorCode.EXECUTION_INTERRUPTED
+    assert error.details["reason"] == "process_terminated_by_signal"
+    assert error.details["termination_signal"] == "SIGTERM"
+    assert error.details["termination_signal_number"] == 15
+    assert error.fallbackable is False
+
+
+def test_signal_style_exit_code_maps_execution_interrupted(tmp_path: Path) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+print('approval policy was never reached', file=sys.stderr)
+raise SystemExit(130)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    error = exc_info.value
+    assert error.error_code is GenerationErrorCode.EXECUTION_INTERRUPTED
+    assert error.details["reason"] == "process_interrupted_by_signal_exit_code"
+    assert error.details["termination_signal"] == "SIGINT"
+    assert error.details["returncode"] == 130
+    assert error.fallbackable is False
+
+
 def test_non_zero_exit_maps_cli_contract_unsupported(tmp_path: Path) -> None:
     preset = LocalCliPreset(
         "codex_cli",

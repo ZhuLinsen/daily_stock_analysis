@@ -25,6 +25,7 @@ from src.agent.codex_app_server_transport import (
     resolve_command,
 )
 from src.agent.factory import get_tool_registry
+from src.agent.executor import _build_language_section
 from src.agent.llm_adapter import LLMResponse
 from src.agent.runner import run_agent_loop
 from src.agent.stock_scope import StockScope
@@ -280,6 +281,7 @@ def test_codex_backend_uses_tool_surface_and_ephemeral_transport(monkeypatch) ->
     assert result.total_steps == 1
     assert result.tool_calls_log[0]["tool"] == "echo"
     assert _FakeTransport.last.kwargs["tool_surface"] is surface
+    assert _FakeTransport.last.kwargs["tool_context"].execution_boundary == "process_isolated"
     assert _FakeTransport.last.kwargs["max_tool_calls"] == 3
     assert _FakeTransport.last.injected == (
         "thread-1",
@@ -292,7 +294,36 @@ def test_codex_backend_uses_tool_surface_and_ephemeral_transport(monkeypatch) ->
     ]
 
 
-def test_production_codex_preparation_matches_the_three_phase6_tools(monkeypatch) -> None:
+def test_codex_backend_emits_korean_progress_when_report_language_is_korean(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "src.agent.codex_agent_backend.build_hardened_command",
+        lambda **kwargs: ["codex", "app-server", "--stdio"],
+    )
+    events = []
+    backend = CodexAgentBackend(
+        _codex_surface(),
+        SimpleNamespace(agent_orchestrator_timeout_s=30, report_language="ko"),
+        _FakeTransport,
+    )
+
+    result = backend.run(_request(progress_callback=events.append))
+
+    assert result.success is True
+    assert [event["message"] for event in events if event["type"] != "tool_done"] == [
+        "Codex에 연결하는 중…",
+        "분석을 준비하는 중…",
+        "분석 결과를 정리하는 중…",
+    ]
+
+
+def test_codex_chat_prompt_language_section_is_korean() -> None:
+    section = _build_language_section("ko", chat_mode=True)
+
+    assert "항상 자연스러운 한국어로 답변하세요." in section
+    assert "默认使用中文" not in section
+
+
+def test_production_codex_preparation_exposes_on_demand_evidence_tools(monkeypatch) -> None:
     monkeypatch.setattr(
         "src.agent.codex_agent_backend.build_hardened_command",
         lambda **kwargs: ["codex", "app-server", "--stdio"],
@@ -330,6 +361,13 @@ def test_production_codex_preparation_matches_the_three_phase6_tools(monkeypatch
     assert result.success is True
     assert _FakeTransport.last.thread_kwargs["tool_names"] == [
         "get_analysis_context",
+        "get_realtime_quote",
+        "get_daily_history",
+        "analyze_trend",
+        "get_stock_info",
+        "search_stock_news",
+        "get_tracker_research_bundle",
+        "get_stock_backtest_summary",
         "get_skill_backtest_summary",
         "get_strategy_backtest_summary",
     ]
@@ -337,23 +375,14 @@ def test_production_codex_preparation_matches_the_three_phase6_tools(monkeypatch
     for tool_name in _FakeTransport.last.thread_kwargs["tool_names"]:
         assert tool_name in instructions
     for unavailable_tool in (
-        "get_realtime_quote",
-        "get_daily_history",
-        "analyze_trend",
         "get_chip_distribution",
-        "search_stock_news",
+        "get_portfolio_snapshot",
+        "get_capital_flow",
+        "search_comprehensive_intel",
     ):
         assert unavailable_tool not in instructions
-    for unavailable_capability in (
-        "实时行情",
-        "K线",
-        "技术指标",
-        "筹码",
-        "新闻",
-        "热点",
-        "持仓",
-    ):
-        assert unavailable_capability not in instructions
+    assert "Never respond only that saved analysis data is absent" in instructions
+    assert "不得进入 Codex Prompt" not in instructions
 
 
 def test_litellm_preparation_keeps_the_existing_chat_workflow() -> None:

@@ -1,6 +1,7 @@
 import apiClient from './index';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from './error';
 import { toCamelCase } from './utils';
+import type { UiLanguage } from '../i18n/uiText';
 import type {
   AgentBackendStatusPreviewRequest,
   AgentBackendStatusResponse,
@@ -38,7 +39,7 @@ export class SystemConfigValidationError extends Error {
     this.name = 'SystemConfigValidationError';
     this.issues = issues;
     this.parsedError = parsedError ?? createParsedApiError({
-      title: '配置校验失败',
+      title: '설정 검증에 실패했습니다',
       message,
       rawMessage: message,
       status: 400,
@@ -56,7 +57,7 @@ export class SystemConfigConflictError extends Error {
     this.name = 'SystemConfigConflictError';
     this.currentConfigVersion = currentConfigVersion;
     this.parsedError = parsedError ?? createParsedApiError({
-      title: '配置版本冲突',
+      title: '설정 버전이 충돌했습니다',
       message,
       rawMessage: message,
       status: 409,
@@ -120,8 +121,8 @@ function toSnakeNotificationTestPayload(payload: TestNotificationChannelRequest)
       value: item.value,
     })),
     mask_token: payload.maskToken ?? '******',
-    title: payload.title ?? 'DSA 通知测试',
-    content: payload.content ?? '这是一条来自 DSA Web 设置页的通知测试消息。',
+    title: payload.title ?? 'DSA 알림 테스트',
+    content: payload.content ?? 'DSA 웹 설정 페이지에서 보낸 테스트 알림입니다.',
     timeout_seconds: payload.timeoutSeconds ?? 20,
   };
 }
@@ -199,8 +200,12 @@ export const systemConfigApi = {
     return toCamelCase<SystemConfigSchemaResponse>(response.data);
   },
 
-  async getSetupStatus(): Promise<SetupStatusResponse> {
-    const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/setup/status');
+  async getSetupStatus(language?: UiLanguage): Promise<SetupStatusResponse> {
+    const response = language
+      ? await apiClient.get<Record<string, unknown>>('/api/v1/system/config/setup/status', {
+        params: { language },
+      })
+      : await apiClient.get<Record<string, unknown>>('/api/v1/system/config/setup/status');
     return toCamelCase<SetupStatusResponse>(response.data);
   },
 
@@ -318,7 +323,7 @@ export const systemConfigApi = {
         if (status === 400) {
           const validationError = toCamelCase<SystemConfigValidationErrorResponse>(payloadData ?? {});
           throw new SystemConfigValidationError(
-            parsed.message || validationError.message || '配置校验失败',
+            parsed.message || validationError.message || '설정 검증에 실패했습니다',
             validationError.issues || [],
             parsed,
           );
@@ -327,7 +332,7 @@ export const systemConfigApi = {
         if (status === 409) {
           const conflict = toCamelCase<SystemConfigConflictResponse>(payloadData ?? {});
           throw new SystemConfigConflictError(
-            parsed.message || conflict.message || '配置版本冲突',
+            parsed.message || conflict.message || '설정 버전이 충돌했습니다',
             conflict.currentConfigVersion,
             parsed,
           );

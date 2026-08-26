@@ -27,4 +27,8 @@ describe('stock code validation', () => {
       expect(result.valid).toBe(false);
     }
   );
+
+  test('allows Korean stock names to reach the resolver', () => {
+    expect(isObviouslyInvalidStockQuery('삼성전자')).toBe(false);
+  });
 });

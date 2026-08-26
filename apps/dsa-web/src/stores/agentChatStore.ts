@@ -74,7 +74,7 @@ type StreamFailureEvent = {
 
 function streamFailureFallback(event: StreamFailureEvent, defaultMessage: string): string {
   return event.backend === 'codex_app_server'
-    ? 'Codex Agent 暂时无法完成本次问股，请查看 Agent 设置中的运行状态。'
+    ? 'Codex CLI 에이전트가 현재 종목 질의를 완료하지 못했습니다. 에이전트 설정에서 실행 상태를 확인하세요.'
     : defaultMessage;
 }
 
@@ -99,14 +99,23 @@ function getStreamFailureError(
   event: StreamFailureEvent,
   fallbackMessage: string,
 ): ParsedApiError {
-  return getParsedApiError(
-    getFirstMeaningfulStreamError(
-      event.error,
-      event.message,
-      event.content,
-      fallbackMessage,
-    ),
+  const upstreamError = getFirstMeaningfulStreamError(
+    event.error,
+    event.message,
+    event.content,
   );
+  if (upstreamError !== undefined) {
+    return getParsedApiError(upstreamError);
+  }
+
+  return createParsedApiError({
+    title: event.backend === 'codex_app_server'
+      ? 'Codex CLI 에이전트를 사용할 수 없습니다'
+      : 'AI 종목 질의를 완료하지 못했습니다',
+    message: fallbackMessage,
+    rawMessage: 'Agent stream ended without an error message.',
+    category: 'unknown',
+  });
 }
 
 interface AgentChatState {
@@ -331,8 +340,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     };
     const skillNames = meta?.skillNames?.length
       ? meta.skillNames
-      : [meta?.skillName ?? '通用'];
-    const skillName = skillNames.join('、');
+      : [meta?.skillName ?? '일반'];
+    const skillName = skillNames.join(' · ');
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -364,8 +373,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       let acceptedEvent: StreamAcceptedEvent | null = null;
       const currentProgressSteps: ProgressStep[] = [];
       const protocolError = (message: string) => createParsedApiError({
-        title: '请求未被接受',
-        message: 'Agent 没有确认接收本次问题，请保留当前内容后重试。',
+        title: '요청이 접수되지 않았습니다',
+        message: '에이전트가 이 질문의 수신을 확인하지 못했습니다. 현재 내용을 유지한 뒤 다시 시도하세요.',
         rawMessage: message,
         category: 'upstream_network',
       });
@@ -421,9 +430,13 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             return;
           }
           if (doneEvent.success === false) {
+            const failureEvent = {
+              ...doneEvent,
+              backend: doneEvent.backend || acceptedEvent.backend,
+            };
             throw getStreamFailureError(
-              doneEvent,
-              streamFailureFallback(doneEvent, '大模型调用出错，请检查 API Key 配置'),
+              failureEvent,
+              streamFailureFallback(failureEvent, 'AI 모델 호출에 실패했습니다. API 키 설정을 확인하세요.'),
             );
           }
           finalContent = doneEvent.content ?? '';
@@ -432,10 +445,13 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
 
         if (event.type === 'error') {
           set({ stopError: false });
-          const failureEvent = event as unknown as StreamFailureEvent;
+          const failureEvent = {
+            ...(event as unknown as StreamFailureEvent),
+            backend: event.backend || acceptedEvent.backend,
+          };
           throw getStreamFailureError(
             failureEvent,
-            streamFailureFallback(failureEvent, '分析出错'),
+            streamFailureFallback(failureEvent, '분석 중 오류가 발생했습니다.'),
           );
         }
 
@@ -477,8 +493,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
 
       if (!receivedDoneEvent && !ac.signal.aborted) {
         throw createParsedApiError({
-          title: '回复未完整返回',
-          message: 'Agent 流式响应在完成前中断，请重试。',
+          title: '응답이 완전히 수신되지 않았습니다',
+          message: '에이전트의 스트리밍 응답이 완료 전에 중단되었습니다. 다시 시도하세요.',
           rawMessage: 'Agent stream ended before a done event was received.',
           category: 'upstream_network',
         });
@@ -494,7 +510,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             {
               id: (Date.now() + 1).toString(),
               role: 'assistant',
-              content: finalContent || '（无内容）',
+              content: finalContent || '(내용 없음)',
               skills: payload.skills,
               skill: payload.skills?.[0],
               skillNames,

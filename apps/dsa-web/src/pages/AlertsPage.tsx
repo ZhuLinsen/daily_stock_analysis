@@ -22,6 +22,8 @@ import type {
   AlertType,
 } from '../types/alerts';
 import { formatDateTime } from '../utils/format';
+import { useUiLanguage } from '../contexts/UiLanguageContext';
+import type { UiLanguage } from '../i18n/uiText';
 
 const PAGE_SIZE = 20;
 
@@ -40,22 +42,92 @@ function testVariant(result: AlertRuleTestResponse): 'success' | 'warning' | 'da
   return result.triggered ? 'success' : 'warning';
 }
 
-function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode {
+const TEXT: Record<UiLanguage, {
+  documentTitle: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+  createSuccess: string;
+  createdRule: (name: string) => string;
+  close: string;
+  testResult: string;
+  testStatus: string;
+  testTriggered: string;
+  testObserved: string;
+  yes: string;
+  no: string;
+  evaluated: string;
+  triggered: string;
+  degraded: string;
+  skipped: string;
+  notificationTitle: string;
+  notificationSubtitle: string;
+  loadingNotifications: string;
+  emptyNotifications: string;
+  emptyNotificationsDescription: string;
+  notificationHeaders: string[];
+  channels: Record<string, string>;
+  notificationStatus: Record<string, string>;
+  statusLabels: Record<string, string>;
+}> = {
+  ko: {
+    documentTitle: '알림 센터 - DSA', eyebrow: 'ALERT CENTER', title: '알림 센터',
+    description: '이벤트 알림, 일봉 기술 지표, 관심종목, 보유 종목·계좌 연동 및 시장 신호 규칙을 관리하고, 일회성 테스트와 백그라운드 평가 이력을 확인합니다.',
+    createSuccess: '생성 완료', createdRule: (name) => `알림 규칙 「${name}」을(를) 만들었습니다.`, close: '닫기',
+    testResult: '테스트 결과', testStatus: '상태', testTriggered: '트리거', testObserved: '관측값',
+    yes: '예', no: '아니요', evaluated: '평가', triggered: '트리거', degraded: '강등', skipped: '건너뜀',
+    notificationTitle: '알림 전송 이력', notificationSubtitle: '알림 결과', loadingNotifications: '알림 전송 이력 불러오는 중',
+    emptyNotifications: '알림 전송 이력 없음', emptyNotificationsDescription: '표시할 알림 전송 상세가 없습니다. 알림이 트리거되면 설정된 채널로 계속 전송됩니다.',
+    notificationHeaders: ['채널', '상태', '오류 코드', '소요 시간', '시각', '진단'],
+    channels: { __cooldown__: '업무 쿨다운', __cooldown_read_failed__: '쿨다운 읽기 실패', __noise_suppressed__: '알림 노이즈 억제', __no_channel__: '사용 가능한 채널 없음', __dispatch__: '알림 디스패치', __context__: '세션 채널' },
+    notificationStatus: { success: '성공', cooldown_active: '쿨다운으로 억제됨', cooldown_read_failed: '쿨다운 읽기 실패', noise_suppressed: '노이즈 억제됨', no_channel: '채널 없음', failed: '실패' },
+    statusLabels: { evaluation_error: '평가 오류', triggered: '트리거됨', skipped: '건너뜀', degraded: '강등', failed: '실패' },
+  },
+  en: {
+    documentTitle: 'Alert Center - DSA', eyebrow: 'ALERT CENTER', title: 'Alert Center',
+    description: 'Manage event alerts, daily technical indicators, watchlist and portfolio/account rules, run one-off tests, and review background evaluation history.',
+    createSuccess: 'Created', createdRule: (name) => `Created alert rule “${name}”.`, close: 'Close',
+    testResult: 'Test result', testStatus: 'Status', testTriggered: 'Triggered', testObserved: 'Observed value',
+    yes: 'Yes', no: 'No', evaluated: 'Evaluated', triggered: 'Triggered', degraded: 'Degraded', skipped: 'Skipped',
+    notificationTitle: 'Notification attempts', notificationSubtitle: 'Notification results', loadingNotifications: 'Loading notification attempts',
+    emptyNotifications: 'No notification attempts', emptyNotificationsDescription: 'There are no notification attempt details to show. Triggered alerts will still use configured channels.',
+    notificationHeaders: ['Channel', 'Status', 'Error code', 'Duration', 'Time', 'Diagnostics'],
+    channels: { __cooldown__: 'Business cooldown', __cooldown_read_failed__: 'Cooldown read failed', __noise_suppressed__: 'Notification noise suppressed', __no_channel__: 'No available channel', __dispatch__: 'Notification dispatch', __context__: 'Session channel' },
+    notificationStatus: { success: 'Success', cooldown_active: 'Suppressed by cooldown', cooldown_read_failed: 'Cooldown read failed', noise_suppressed: 'Noise suppressed', no_channel: 'No channel', failed: 'Failed' },
+    statusLabels: { evaluation_error: 'Evaluation error', triggered: 'Triggered', skipped: 'Skipped', degraded: 'Degraded', failed: 'Failed' },
+  },
+  zh: {
+    documentTitle: '告警中心 - DSA', eyebrow: 'Alert Center', title: '告警中心',
+    description: '管理事件告警、日线技术指标、自选股、持仓/账户联动和大盘红绿灯规则，执行一次性测试，并查看后台评估任务记录的触发历史。',
+    createSuccess: '创建成功', createdRule: (name) => `已创建告警规则「${name}」`, close: '关闭',
+    testResult: '测试结果', testStatus: '状态', testTriggered: '触发', testObserved: '观察值',
+    yes: '是', no: '否', evaluated: '评估', triggered: '触发', degraded: '降级', skipped: '跳过',
+    notificationTitle: '通知尝试记录', notificationSubtitle: '通知结果', loadingNotifications: '正在加载通知尝试记录',
+    emptyNotifications: '暂无通知尝试记录', emptyNotificationsDescription: '当前没有可展示的通知尝试明细；告警触发仍会按已配置通知渠道发送。',
+    notificationHeaders: ['渠道', '状态', '错误码', '耗时', '时间', '诊断'],
+    channels: { __cooldown__: '业务冷却', __cooldown_read_failed__: '冷却读取失败', __noise_suppressed__: '通知降噪', __no_channel__: '无可用渠道', __dispatch__: '通知调度', __context__: '会话渠道' },
+    notificationStatus: { success: '成功', cooldown_active: '冷却抑制', cooldown_read_failed: '冷却读取失败', noise_suppressed: '降噪抑制', no_channel: '无渠道', failed: '失败' },
+    statusLabels: { evaluation_error: '评估错误', triggered: '已触发', skipped: '已跳过', degraded: '降级', failed: '失败' },
+  },
+};
+
+function renderTestResultMessage(result: AlertRuleTestResponse, language: UiLanguage): React.ReactNode {
+  const text = TEXT[language];
   const targetResults = result.targetResults ?? [];
   return (
     <div className="space-y-2">
       <div>
         {result.message}
-        {' · 状态：'}
-        {result.status}
-        {' · 触发：'}
-        {result.triggered ? '是' : '否'}
-        {' · 观察值：'}
+        {` · ${text.testStatus}: `}
+        {text.statusLabels[result.status] ?? result.status}
+        {` · ${text.testTriggered}: `}
+        {result.triggered ? text.yes : text.no}
+        {` · ${text.testObserved}: `}
         {result.observedValue == null ? '--' : String(result.observedValue)}
       </div>
       {result.evaluatedCount != null && result.evaluatedCount > 1 ? (
         <div className="text-xs">
-          评估 {result.evaluatedCount} · 触发 {result.triggeredCount ?? 0} · 降级 {result.degradedCount ?? 0} · 跳过 {result.skippedCount ?? 0}
+          {text.evaluated} {result.evaluatedCount} · {text.triggered} {result.triggeredCount ?? 0} · {text.degraded} {result.degradedCount ?? 0} · {text.skipped} {result.skippedCount ?? 0}
         </div>
       ) : null}
       {targetResults.length > 1 ? (
@@ -64,8 +136,8 @@ function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode
             <div key={`${item.target}-${item.status}`} className="flex flex-wrap justify-between gap-2">
               <span>{item.displayTarget ?? item.target}</span>
               <span>
-                {item.status}
-                {item.recordStatus ? ` / ${item.recordStatus}` : ''}
+                {text.statusLabels[item.status] ?? item.status}
+                {item.recordStatus ? ` / ${text.statusLabels[item.recordStatus] ?? item.recordStatus}` : ''}
               </span>
             </div>
           ))}
@@ -75,32 +147,26 @@ function renderTestResultMessage(result: AlertRuleTestResponse): React.ReactNode
   );
 }
 
-const notificationChannelLabel: Record<string, string> = {
-  __cooldown__: '业务冷却',
-  __cooldown_read_failed__: '冷却读取失败',
-  __noise_suppressed__: '通知降噪',
-  __no_channel__: '无可用渠道',
-  __dispatch__: '通知调度',
-  __context__: '会话渠道',
-};
-
-function formatNotificationChannel(channel: string): string {
-  return notificationChannelLabel[channel] ?? channel;
+function formatNotificationChannel(channel: string, language: UiLanguage): string {
+  return TEXT[language].channels[channel] ?? channel;
 }
 
-function formatNotificationStatus(notification: AlertNotificationItem): string {
-  if (notification.success) return '成功';
-  if (notification.errorCode === 'cooldown_active') return '冷却抑制';
-  if (notification.errorCode === 'cooldown_read_failed') return '冷却读取失败';
-  if (notification.errorCode === 'noise_suppressed') return '降噪抑制';
-  if (notification.errorCode === 'no_channel') return '无渠道';
-  return '失败';
+function formatNotificationStatus(notification: AlertNotificationItem, language: UiLanguage): string {
+  const labels = TEXT[language].notificationStatus;
+  if (notification.success) return labels.success;
+  if (notification.errorCode === 'cooldown_active') return labels.cooldown_active;
+  if (notification.errorCode === 'cooldown_read_failed') return labels.cooldown_read_failed;
+  if (notification.errorCode === 'noise_suppressed') return labels.noise_suppressed;
+  if (notification.errorCode === 'no_channel') return labels.no_channel;
+  return labels.failed;
 }
 
 const AlertsPage: React.FC = () => {
+  const { language } = useUiLanguage();
+  const text = TEXT[language];
   useEffect(() => {
-    document.title = '告警中心 - DSA';
-  }, []);
+    document.title = text.documentTitle;
+  }, [text.documentTitle]);
 
   const [rules, setRules] = useState<AlertRuleItem[]>([]);
   const [rulesTotal, setRulesTotal] = useState(0);
@@ -206,7 +272,7 @@ const AlertsPage: React.FC = () => {
     setCreateSuccess(null);
     try {
       const created = await alertsApi.createRule(payload);
-      setCreateSuccess(`已创建告警规则「${created.name}」`);
+      setCreateSuccess(text.createdRule(created.name));
       await loadRules(1);
       return true;
     } catch (error) {
@@ -261,20 +327,20 @@ const AlertsPage: React.FC = () => {
   return (
     <AppPage className="space-y-5">
       <PageHeader
-        eyebrow="Alert Center"
-        title="告警中心"
-        description="管理事件告警、日线技术指标、自选股、持仓/账户联动和大盘红绿灯规则，执行一次性测试，并查看后台评估任务记录的触发历史。"
+        eyebrow={text.eyebrow}
+        title={text.title}
+        description={text.description}
       />
 
       {createError ? <ApiErrorAlert error={createError} onDismiss={() => setCreateError(null)} /> : null}
       {createSuccess ? (
         <InlineAlert
-          title="创建成功"
+          title={text.createSuccess}
           message={createSuccess}
           variant="success"
           action={(
             <button type="button" className="text-sm underline" onClick={() => setCreateSuccess(null)}>
-              关闭
+              {text.close}
             </button>
           )}
         />
@@ -309,9 +375,9 @@ const AlertsPage: React.FC = () => {
           />
           {testResult ? (
             <InlineAlert
-              title="测试结果"
+              title={text.testResult}
               variant={testVariant(testResult)}
-              message={renderTestResultMessage(testResult)}
+              message={renderTestResultMessage(testResult, language)}
             />
           ) : null}
         </div>
@@ -321,13 +387,13 @@ const AlertsPage: React.FC = () => {
       <AlertTriggerHistory triggers={triggers} isLoading={triggersLoading} />
 
       {notificationsError ? <ApiErrorAlert error={notificationsError} onDismiss={() => setNotificationsError(null)} /> : null}
-      <Card title="通知尝试记录" subtitle="通知结果" variant="bordered" padding="md">
-        {notificationsLoading ? <Loading label="正在加载通知尝试记录" /> : null}
+      <Card title={text.notificationTitle} subtitle={text.notificationSubtitle} variant="bordered" padding="md">
+        {notificationsLoading ? <Loading label={text.loadingNotifications} /> : null}
         {!notificationsLoading && notifications.length === 0 ? (
           <EmptyState
             icon={<BellRing className="h-6 w-6" />}
-            title="暂无通知尝试记录"
-            description="当前没有可展示的通知尝试明细；告警触发仍会按已配置通知渠道发送。"
+            title={text.emptyNotifications}
+            description={text.emptyNotificationsDescription}
           />
         ) : null}
         {!notificationsLoading && notifications.length > 0 ? (
@@ -335,22 +401,17 @@ const AlertsPage: React.FC = () => {
             <table className="w-full min-w-[680px] text-left text-sm">
               <thead className="border-b border-border/60 text-xs uppercase text-muted-text">
                 <tr>
-                  <th className="px-3 py-2 font-medium">渠道</th>
-                  <th className="px-3 py-2 font-medium">状态</th>
-                  <th className="px-3 py-2 font-medium">错误码</th>
-                  <th className="px-3 py-2 font-medium">耗时</th>
-                  <th className="px-3 py-2 font-medium">时间</th>
-                  <th className="px-3 py-2 font-medium">诊断</th>
+                  {text.notificationHeaders.map((header) => <th className="px-3 py-2 font-medium" key={header}>{header}</th>)}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/40">
                 {notifications.map((notification) => (
                   <tr key={notification.id}>
-                    <td className="px-3 py-3">{formatNotificationChannel(notification.channel)}</td>
-                    <td className="px-3 py-3">{formatNotificationStatus(notification)}</td>
+                    <td className="px-3 py-3">{formatNotificationChannel(notification.channel, language)}</td>
+                    <td className="px-3 py-3">{formatNotificationStatus(notification, language)}</td>
                     <td className="px-3 py-3">{notification.errorCode ?? '--'}</td>
                     <td className="px-3 py-3">{notification.latencyMs == null ? '--' : `${notification.latencyMs}ms`}</td>
-                    <td className="px-3 py-3">{formatDateTime(notification.createdAt)}</td>
+                    <td className="px-3 py-3">{formatDateTime(notification.createdAt, language)}</td>
                     <td className="px-3 py-3">{notification.diagnostics ?? '--'}</td>
                   </tr>
                 ))}

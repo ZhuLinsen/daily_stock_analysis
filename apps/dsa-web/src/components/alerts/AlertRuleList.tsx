@@ -210,12 +210,12 @@ export const AlertRuleList: React.FC<AlertRuleListProps> = ({
                   </td>
                   <td className="px-3 py-3 text-xs text-secondary-text">
                     <div>{isCoolingDown(rule) ? text.coolingDown : text.notCoolingDown}</div>
-                    <div className="mt-1">{formatDateTime(rule.cooldownUntil)}</div>
+                    <div className="mt-1">{formatDateTime(rule.cooldownUntil, language)}</div>
                     {hasChildTargetCooldown(rule) ? (
                       <div className="mt-1 text-muted-text">{text.childTargetCooldown}</div>
                     ) : null}
                   </td>
-                  <td className="px-3 py-3 text-xs text-secondary-text">{formatDateTime(rule.updatedAt ?? rule.createdAt)}</td>
+                  <td className="px-3 py-3 text-xs text-secondary-text">{formatDateTime(rule.updatedAt ?? rule.createdAt, language)}</td>
                   <td className="px-3 py-3">
                     <div className="flex justify-end gap-2">
                       <Button

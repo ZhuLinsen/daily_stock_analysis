@@ -5,6 +5,7 @@ import { Badge, Button, Card, StatusDot, Tooltip } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import type { TaskInfo } from '../../types/analysis';
 import { getRequestedPhaseLabel } from '../../utils/marketPhase';
+import { localizeTaskProgressMessage } from '../../utils/taskProgressText';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 /**
@@ -97,7 +98,7 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onOpenRunFlow }) => {
 
       {task.message ? (
         <p className="min-w-0 truncate text-xs text-secondary-text">
-          {task.message}
+          {localizeTaskProgressMessage(task.message, language)}
         </p>
       ) : null}
 

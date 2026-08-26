@@ -104,9 +104,9 @@ const TEXT = {
     copy: '진단 정보 복사',
     copied: '복사됨',
     scope: '수집 / LLM / 저장 / 알림 경로',
-    trace: 'Trace',
-    task: 'Task',
-    query: 'Query',
+    trace: '추적 ID',
+    task: '작업',
+    query: '질의',
     trigger: '트리거',
     overall: {
       normal: '정상',
@@ -165,12 +165,12 @@ const getOrderedComponents = (
 export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
   recordId,
   summary,
-  language = 'zh',
+  language = 'ko',
   onOpenRunFlow,
 }) => {
   const reportLanguage = normalizeReportLanguage(language);
   const text = TEXT[reportLanguage];
-  const runFlowText = UI_TEXT[reportLanguage === 'ko' ? 'en' : reportLanguage];
+  const runFlowText = UI_TEXT[reportLanguage];
   const [fetchState, setFetchState] = useState<{
     recordId?: number;
     summary: RunDiagnosticSummary | null;

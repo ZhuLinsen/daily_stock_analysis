@@ -26,6 +26,7 @@ class GenerationErrorCode(str, Enum):
     UNSUPPORTED_TOOL_CALLING = "unsupported_tool_calling"
     INTERACTIVE_PROMPT_REQUIRED = "interactive_prompt_required"
     APPROVAL_REQUIRED = "approval_required"
+    EXECUTION_INTERRUPTED = "execution_interrupted"
     LOGIN_REQUIRED = "login_required"
     CAPABILITY_UNSUPPORTED = "capability_unsupported"
     UNSAFE_CONFIG = "unsafe_config"

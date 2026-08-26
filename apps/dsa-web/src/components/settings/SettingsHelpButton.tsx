@@ -111,7 +111,9 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
   const showFieldKey = help?.showFieldKey ?? true;
   const helpButtonLabel = language === 'en'
     ? `View ${title} configuration help`
-    : `查看 ${title} 配置说明`;
+    : language === 'ko'
+      ? `${title} 설정 도움말 보기`
+      : `查看 ${title} 配置说明`;
 
   useEffect(() => {
     if (!open) {

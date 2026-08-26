@@ -521,7 +521,7 @@ describe('stockPoolStore', () => {
     await useStockPoolStore.getState().submitAnalysis();
 
     const state = useStockPoolStore.getState();
-    expect(state.inputError).toBe('请输入有效的股票代码或股票名称');
+    expect(state.inputError).toBe('유효한 종목 코드 또는 종목명을 입력하세요.');
     expect(state.isAnalyzing).toBe(false);
     expect(analysisApi.analyzeAsync).not.toHaveBeenCalled();
   });

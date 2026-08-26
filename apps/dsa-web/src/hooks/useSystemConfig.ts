@@ -301,13 +301,13 @@ export function useSystemConfig() {
     const resolvedChangedItems = explicitItems.length > 0 ? explicitItems : getChangedItems();
 
     if (!explicitItems.length && !hasDirty) {
-      setToast({ type: 'success', message: '当前没有可保存的修改。' });
-      return { success: true, message: '当前没有可保存的修改' };
+      setToast({ type: 'success', message: '저장할 변경 사항이 없습니다.' });
+      return { success: true, message: '저장할 변경 사항이 없습니다' };
     }
 
     if (!resolvedChangedItems.length) {
-      setToast({ type: 'success', message: '当前没有可保存的修改。' });
-      return { success: true, message: '当前没有可保存的修改' };
+      setToast({ type: 'success', message: '저장할 변경 사항이 없습니다.' });
+      return { success: true, message: '저장할 변경 사항이 없습니다' };
     }
 
     setIsSaving(true);
@@ -320,15 +320,15 @@ export function useSystemConfig() {
 
       if (!validateResult.valid) {
         setSaveError(createParsedApiError({
-          title: '配置校验未通过',
-          message: '请先修正表单错误后再保存。',
-          rawMessage: '配置校验未通过，请先修正表单错误。',
+          title: '설정 검증을 통과하지 못했습니다',
+          message: '입력 오류를 수정한 뒤 다시 저장하세요.',
+          rawMessage: '설정 검증을 통과하지 못했습니다. 입력 오류를 수정하세요.',
           category: 'http_error',
         }));
         setRetryAction('save');
         return {
           success: false,
-          message: '配置校验未通过',
+          message: '설정 검증을 통과하지 못했습니다',
           issues: validateResult.issues,
         };
       }
@@ -345,9 +345,9 @@ export function useSystemConfig() {
       applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
 
       const warningText = updateResult.warnings?.length
-        ? `；警告：${updateResult.warnings.join('；')}`
+        ? ' · 일부 경고가 있습니다.'
         : '';
-      setToast({ type: 'success', message: `配置已更新${warningText}` });
+      setToast({ type: 'success', message: `설정을 저장했습니다${warningText}` });
       return { success: true };
     } catch (error: unknown) {
       if (error instanceof SystemConfigValidationError) {
@@ -355,8 +355,8 @@ export function useSystemConfig() {
         setSaveError(error.parsedError);
       } else if (error instanceof SystemConfigConflictError) {
         setSaveError(createParsedApiError({
-          title: '配置版本冲突',
-          message: `${error.message}，请先重新加载配置。`,
+          title: '설정 버전이 충돌했습니다',
+          message: `${error.message}. 먼저 설정을 다시 불러오세요.`,
           rawMessage: error.parsedError.rawMessage,
           status: error.parsedError.status,
           category: error.parsedError.category,
@@ -367,7 +367,7 @@ export function useSystemConfig() {
 
       setToast({ type: 'error', error: getParsedApiError(error) });
       setRetryAction('save');
-      return { success: false, message: '保存失败' };
+      return { success: false, message: '저장에 실패했습니다' };
     } finally {
       setIsSaving(false);
     }

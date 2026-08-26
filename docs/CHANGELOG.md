@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 本地 Codex/CLI 进程被 SIGINT、SIGTERM 等常见终止信号中断时，优先记录为 `execution_interrupted` 并保留信号诊断；不再因 stderr 中的 `approval`/`permission` 关键词误报 `approval_required`，也不会在服务停止后自动切换 fallback。WebUI 以韩文说明中断或真正的审批需求。
+- [改进] KOSPI/KOSDAQ 분석은 Tracker 뉴스 리서치 캐시가 비어 있을 때 DSA 백엔드가 제한된 refresh를 요청해 일반 Codex 보고서와 Agent 모두에 실제 뉴스 근거를 주입한다. Agent 도구는 계속 읽기 전용이며, 캐시 대기·실패는 “뉴스 채널 미설정”으로 오인하지 않는다.
+- [修复] WebUI 작업 패널이 비동기 분석 큐의 진행 문구를 인터페이스 언어로 변환한다. `正在分析中...`을 포함해 대기열·데이터 수집·LLM 생성·검증·저장 상태와 새 중국어 상태의 안전한 대체 문구가 한국어 화면에 노출되지 않도록 했다.
+- [修复] 首次设置状态接口现可按 WebUI 语言返回 LLM、Agent、关注列表、通知和本地存储的标题、说明与下一步提示；韩文界面不再直接显示中文状态文案。
+- [改进] Codex 기반 종목 질의가 저장된 분석 컨텍스트가 없을 때 멈추지 않고, 별도 취소 가능 읽기 전용 프로세스에서 실시간 시세·일봉·기술 분석·기본 정보·뉴스·개별 회고 근거를 수집하도록 확장했다. KOSPI/KOSDAQ 종목은 선택적으로 Tracker의 저장된 리서치 번들을 읽기 전용 보완 근거로 사용하며, Tracker 새로고침·운영 데이터 쓰기·주문 경로는 노출하지 않는다.
+- [신규] 한국 시장 기본 배포를 추가했다. WebUI 기본 언어와 보고서 템플릿을 한국어로 확장하고, KOSPI(`.KS`)·KOSDAQ(`.KQ`) 종목, KRW 표기, `MARKET_REVIEW_REGION=kr` 및 Codex CLI 보고서/에이전트 설정을 문서화했다. 한국 시장에서 지원하지 않는 전 종목 스크리닝은 KRX 전용 데이터 어댑터가 준비될 때까지 명시적으로 비활성화한다.
+- [수정] AI 종목 질의, 관심종목·분석 이력, 신호 타임라인, 실행 흐름, 설정 점검과 API 오류의 한국어 문구를 재검수해 중국어·영어 원문 및 기계 번역 표현이 노출되지 않도록 정리했다.
 - [改进] PR CI 增加文档路径检测：仅修改普通文档、非治理 Markdown 或 LICENSE 时跳过后端测试分片、Docker、Web 与桌面打包，保留轻量治理和门禁汇总；契约文档、静态 API 规格与测试 fixture 仍执行后端回归。
 - [修复] Linux/Docker 分享图补齐 Noto CJK 字体与中韩文字体栈，避免 PNG 只显示数字和英文、中文或韩文内容消失。
 - [新功能] Web Chat 意图识别层新增分词模块：`web_intent_tokenizer` 六步管道（多股票全名实体扫描 → 标点/空白切分 → 代码形提取 → 市场关键词 → 无歧义关键词 → 残存 gap 多策略 DFS 匹配）把用户消息切分为携带语义标签的 Token 序列；配套 `web_intent_types` 数据字典（Token 结构、Market 枚举、21 个语义 tag、clean/extend 双词池与正则机器）。核心原则"宁可不做，不可做错"：Step 1~5 只做精确匹配，Step 6 要求整段 TAG 全覆盖（交叉验证）才产出，未覆盖片段保持空 tag 交下游 LLM 兜底；代码形 token 辨认为 `stock_code`（附 code/name/market 三元组）/ `wrong_{market}_code` / `unknown_{market}_code` 三态，token 层代码拼写统一 canonical 归一（a=6 位裸数字、hk=HK+5 位、us=大写 ticker）。意图枚举与意图识别结果随后续 `web_intent_resolver` PR 引入。新增 183 个分词单元测试。

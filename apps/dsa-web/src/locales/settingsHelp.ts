@@ -2484,7 +2484,86 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
 };
 
+/**
+ * Korean defaults deliberately do not fall back to the Chinese help catalogue.
+ * The field title/description itself is localized by systemConfigI18n; entries
+ * below retain the extra operational context for settings that are commonly
+ * changed in a Korean-market deployment.
+ */
+const settingsHelpKoKR: SettingsHelpMap = {
+  'settings.base.STOCK_LIST': {
+    title: '분석 종목 목록',
+    summary: '수동 분석, 예약 작업, 알림 보고서에서 사용할 종목 코드를 설정합니다.',
+    usage: '여러 종목은 쉼표로 구분합니다. 한국 종목은 예를 들어 005930.KS(코스피), 035720.KQ(코스닥) 형식을 사용하세요.',
+    valueNotes: [
+      '예약 작업은 실행할 때마다 저장된 STOCK_LIST를 다시 읽습니다.',
+      '명령행의 --stocks 값은 해당 수동 실행에만 적용되며, 이후 예약 작업의 목록을 바꾸지 않습니다.',
+    ],
+    impact: ['개별 종목 분석, 시장 복기 속 종목 범위, 알림 내용 및 분석 이력에 영향을 줍니다.'],
+    notes: ['저장하면 쉼표로 정규화되어 이후 작업부터 적용됩니다.'],
+  },
+  'settings.ai_model.GENERATION_BACKEND': {
+    title: '분석 생성 방식',
+    showFieldKey: false,
+    summary: '개별 종목 분석, 시장 복기 및 일반 텍스트 응답을 생성하는 방식을 선택합니다.',
+    usage: '이 배포에서는 Codex CLI를 기본 생성 방식으로 사용합니다. 로컬 Codex CLI가 설치되어 있고 로그인되어 있어야 합니다.',
+    valueNotes: [
+      'Codex CLI는 로컬 명령행에서 실행되지만, 모델 서비스가 분석 요청과 초안을 처리할 수 있습니다.',
+      'Docker·서버·CI 환경은 개발 PC의 Codex 로그인 상태를 자동으로 공유하지 않습니다.',
+    ],
+    impact: ['일반 분석과 시장 복기의 생성 경로에 영향을 주며, 에이전트 도구 실행 규칙은 변경하지 않습니다.'],
+    notes: ['문제가 생기면 기본 모델 설정으로 되돌리거나 Codex CLI의 로그인·실행 상태를 확인하세요.'],
+  },
+  'settings.ai_model.GENERATION_FALLBACK_BACKEND': {
+    title: '보조 생성 방식',
+    showFieldKey: false,
+    summary: '기본 생성 방식이 실패했을 때의 처리 경로를 정합니다.',
+    usage: 'Codex CLI를 기본으로 사용하는 경우, 오류를 즉시 표시하거나 기본 모델 설정을 한 번 더 시도하도록 설정할 수 있습니다.',
+    notes: ['이 설정은 채널별 보조 모델 순서와는 별개입니다.'],
+  },
+  'settings.ai_model.REPORT_LANGUAGE': {
+    title: '리포트 언어',
+    summary: '생성되는 종목 분석과 시장 복기의 기본 출력 언어를 지정합니다.',
+    usage: '한국어 리포트를 생성하려면 ko를 사용합니다.',
+    impact: ['새로 생성되는 분석 보고서의 제목, 서술 및 투자 판단 문구에 적용됩니다.'],
+  },
+  'settings.agent.AGENT_BACKEND': {
+    title: 'AI 에이전트 백엔드',
+    showFieldKey: false,
+    summary: '질문형 AI 에이전트의 실행 백엔드를 선택합니다.',
+    usage: 'Codex CLI 기반 에이전트는 codex_app_server를 사용합니다. Codex CLI가 설치·로그인되어 있어야 합니다.',
+    valueNotes: ['이 설정은 보고서 생성 방식(GENERATION_BACKEND)과 별도로 에이전트 실행을 제어합니다.'],
+    impact: ['채팅형 에이전트의 도구 호출, 실행 상태 및 응답 생성에 영향을 줍니다.'],
+  },
+  'settings.system.market_review': {
+    title: '시장 복기',
+    summary: '시장 복기 기능의 활성화 여부, 대상 시장 및 표시 색상을 설정합니다.',
+    usage: '한국 시장만 복기하려면 MARKET_REVIEW_REGION에 kr을 입력하세요. kr은 코스피와 코스닥을 포함합니다.',
+    valueNotes: [
+      'MARKET_REVIEW_REGION에는 kr 또는 쉼표로 구분한 시장 코드(예: kr,us)를 입력할 수 있습니다.',
+      'DAILY_MARKET_CONTEXT_ENABLED를 켜면 일일 시장 요약이 종목 분석 프롬프트에도 반영됩니다.',
+    ],
+    impact: ['분석 보고서의 시장 개요와 종목 분석에 주입되는 시장 맥락에 영향을 줍니다.'],
+  },
+};
+
+function buildKoreanFallbackHelp(fallbackDescription?: string): SettingsHelpContent {
+  const hasKoreanDescription = Boolean(fallbackDescription && /[가-힣]/.test(fallbackDescription));
+  return {
+    // An empty title lets the dialog use the already-localized field title.
+    title: '',
+    summary: hasKoreanDescription
+      ? fallbackDescription
+      : '이 설정 항목의 동작과 기본값을 조정합니다.',
+    usage: '값을 변경한 뒤 저장하면 이후 실행부터 적용됩니다.',
+    notes: ['환경과 연동되는 설정은 저장 후 상태 패널에서 정상 적용 여부를 확인하세요.'],
+  };
+}
+
 function getPreferredHelpMap(locale?: string | null): SettingsHelpMap {
+  if (locale?.toLowerCase().startsWith('ko')) {
+    return settingsHelpKoKR;
+  }
   if (locale?.toLowerCase().startsWith('en')) {
     return settingsHelpEnUS;
   }
@@ -2500,9 +2579,15 @@ export function getSettingsHelpContent(
     return null;
   }
 
-  const localized = getPreferredHelpMap(locale)[helpKey] ?? settingsHelpZhCN[helpKey];
+  const isKorean = locale?.toLowerCase().startsWith('ko');
+  const localized = getPreferredHelpMap(locale)[helpKey]
+    ?? (isKorean ? null : settingsHelpZhCN[helpKey]);
   if (localized) {
     return localized;
+  }
+
+  if (isKorean) {
+    return buildKoreanFallbackHelp(fallbackDescription);
   }
 
   if (fallbackDescription) {

@@ -33,7 +33,8 @@ class TestMarketAnalyzerStrategyPrompt(unittest.TestCase):
     """Validate strategy section is injected into prompt/report."""
 
     def test_cn_prompt_contains_strategy_plan_section(self):
-        analyzer = MarketAnalyzer(region="cn")
+        with patch("src.market_analyzer.get_config", return_value=SimpleNamespace(report_language="zh")):
+            analyzer = MarketAnalyzer(region="cn")
         prompt = analyzer._build_review_prompt(MarketOverview(date="2026-02-24"), [])
 
         self.assertIn("明日交易计划", prompt)
@@ -105,6 +106,32 @@ class TestMarketAnalyzerStrategyPrompt(unittest.TestCase):
             self.assertNotIn("### 四、资金与情绪", prompt)
             self.assertNotIn("解读成交额、涨跌停结构、市场宽度", prompt)
             self.assertNotIn("A/H/美股市场分析师", prompt)
+
+    def test_kr_prompt_uses_a_korean_shell_and_krw_labels(self):
+        with patch(
+            "src.market_analyzer.get_config",
+            return_value=SimpleNamespace(report_language="ko"),
+        ):
+            analyzer = MarketAnalyzer(region="kr")
+
+        prompt = analyzer._build_review_prompt(
+            MarketOverview(date="2026-02-24"),
+            [],
+        )
+
+        self.assertIn("전문적인 한국 주식시장 분석가", prompt)
+        self.assertIn("## 데이터 범위", prompt)
+        self.assertIn("### 3. 뉴스 촉매", prompt)
+        self.assertIn("한국 증시 3단계 시장 복기 전략", prompt)
+        self.assertNotIn("韩国市场", prompt)
+        self.assertNotIn("Korea Market Recap", prompt)
+        self.assertNotIn("CNY", prompt)
+
+    def test_kr_strategy_blueprint_uses_korean_headings(self):
+        blueprint = get_market_strategy_blueprint("kr")
+
+        self.assertIn("## 전략 프레임워크", blueprint.to_prompt_block())
+        self.assertIn("### 6. 전략 프레임워크", blueprint.to_markdown_block())
 
     def test_cn_prompt_uses_english_shell_when_report_language_is_en(self):
         with patch("src.market_analyzer.get_config", return_value=SimpleNamespace(report_language="en")):

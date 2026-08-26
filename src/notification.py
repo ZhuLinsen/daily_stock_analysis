@@ -2155,6 +2155,7 @@ class NotificationService(
         "USD": "美元",
         "HKD": "港元",
         "CNY": "元",
+        "KRW": "원",
         "RMB": "元",
         "CNH": "元",
         "TWD": "新台币",  # 台股 (TWSE/TPEx) 以新台币计价，避免与 A 股「元」(人民币) 混淆
@@ -2164,7 +2165,7 @@ class NotificationService(
     def _format_amount_cn(cls, value: Any, currency: Optional[str] = None) -> str:
         """Format absolute amounts in 亿/万 + currency suffix; returns N/A on non-numeric.
 
-        ``currency`` accepts ``USD``/``HKD``/``CNY``; unknown values fall back to 元.
+        ``currency`` accepts ``USD``/``HKD``/``CNY``/``KRW``; unknown values fall back to 元.
         """
         try:
             amount = float(value)
@@ -2174,7 +2175,15 @@ class NotificationService(
             return "N/A"
         sign = "-" if amount < 0 else ""
         abs_amount = abs(amount)
-        suffix = cls._CURRENCY_SUFFIX.get((currency or "").upper(), "元")
+        currency_code = (currency or "").upper()
+        if currency_code == "KRW":
+            if abs_amount >= 1e8:
+                return f"{sign}{abs_amount / 1e8:.2f}억 원"
+            if abs_amount >= 1e4:
+                return f"{sign}{abs_amount / 1e4:.2f}만 원"
+            return f"{sign}{abs_amount:,.0f}원"
+
+        suffix = cls._CURRENCY_SUFFIX.get(currency_code, "元")
         if abs_amount >= 1e8:
             return f"{sign}{abs_amount / 1e8:.2f} 亿{suffix}"
         if abs_amount >= 1e4:

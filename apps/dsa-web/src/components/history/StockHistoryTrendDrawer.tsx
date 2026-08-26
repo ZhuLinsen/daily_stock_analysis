@@ -50,8 +50,8 @@ const formatChangePct = (value?: number): string => {
   return `${sign}${value.toFixed(2)}%`;
 };
 
-const formatHistoryTime = (value?: string | null): string => {
-  const formatted = formatDateTime(value);
+const formatHistoryTime = (value: string | null | undefined, language: Parameters<typeof formatDateTime>[1]): string => {
+  const formatted = formatDateTime(value, language);
   return formatted.length > 11 ? formatted.slice(5) : formatted;
 };
 
@@ -92,6 +92,7 @@ const summarizeView = (
   report: AnalysisReport,
   t: (key: UiTextKey, params?: Record<string, string | number>) => string,
   actionLabels: DecisionActionLabelMap,
+  language: Parameters<typeof formatDateTime>[1],
   currentId?: number,
 ) => {
   const scores = items
@@ -121,7 +122,7 @@ const summarizeView = (
           trendPrediction: report.summary.trendPrediction,
         }, actionLabels),
     averageScore,
-    latestTime: formatDateTime(items[0]?.createdAt || report.meta.createdAt),
+    latestTime: formatDateTime(items[0]?.createdAt || report.meta.createdAt, language),
     modelSummary: modelEntries
       .map(([model, count]) => `${model} ${t('stockTrend.modelCountSuffix', { count })}`)
       .join(' / ') || t('stockTrend.neverRecorded'),
@@ -186,13 +187,13 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
   onSelectRecord,
   onRetry,
 }) => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const currentRecordId = report.meta.id;
   const [selectedRecordId, setSelectedRecordId] = useState(currentRecordId);
   const actionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
   const summary = useMemo(
-    () => summarizeView(items, report, t, actionLabels, currentRecordId),
-    [actionLabels, currentRecordId, items, report, t],
+    () => summarizeView(items, report, t, actionLabels, language, currentRecordId),
+    [actionLabels, currentRecordId, items, language, report, t],
   );
 
   useEffect(() => {
@@ -333,7 +334,7 @@ export const StockHistoryTrendDrawer: React.FC<StockHistoryTrendDrawerProps> = (
                         onClick={() => setSelectedRecordId(item.id)}
                       >
                         <td className="whitespace-nowrap px-3 py-3 font-mono text-sm text-secondary-text">
-                          {formatHistoryTime(item.createdAt)}
+                          {formatHistoryTime(item.createdAt, language)}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3">
                           <Badge

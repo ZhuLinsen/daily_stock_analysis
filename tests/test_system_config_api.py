@@ -213,6 +213,27 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(check_map["llm_primary"]["status"], "configured")
         self.assertEqual(check_map["llm_agent"]["status"], "inherited")
 
+    def test_get_setup_status_accepts_ui_language(self) -> None:
+        self.env_path.write_text(
+            "\n".join(
+                [
+                    "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+                    "GEMINI_API_KEY=secret-key-value",
+                    "STOCK_LIST=005930.KS",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            payload = system_config.get_setup_status(language="ko", service=self.service).model_dump()
+
+        check_map = {check["key"]: check for check in payload["checks"]}
+        self.assertEqual(check_map["llm_primary"]["title"], "LLM 주 채널")
+        self.assertEqual(check_map["stock_list"]["title"], "관심 종목")
+        self.assertEqual(check_map["stock_list"]["message"], "종목 1개가 구성되었습니다.")
+
     def test_get_generation_backend_status_uses_saved_config_only(self) -> None:
         self._rewrite_env(
             "GENERATION_BACKEND=litellm",

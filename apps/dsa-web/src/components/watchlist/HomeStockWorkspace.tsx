@@ -117,7 +117,7 @@ const WatchlistRowItem: React.FC<{
   disabled: boolean;
   selected: boolean;
 }> = ({ row, onRemove, onOpenDetail, disabled, selected }) => {
-  const { t } = useUiLanguage();
+  const { language, t } = useUiLanguage();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
   const isLatestDetailLoading = Boolean(row.isTodayStatusLoading);
   const isLatestDetailUnavailable = !isLatestDetailLoading && Boolean(row.isTodayStatusUnknown);
@@ -171,7 +171,7 @@ const WatchlistRowItem: React.FC<{
             {item?.lastAnalysisTime ? (
               <>
                 <span className="h-1 w-1 rounded-full bg-subtle-hover" />
-                <span className="text-[11px] text-muted-text">{formatDateTime(item.lastAnalysisTime)}</span>
+                <span className="text-[11px] text-muted-text">{formatDateTime(item.lastAnalysisTime, language)}</span>
               </>
             ) : null}
           </div>

@@ -564,7 +564,7 @@ function formatSchedulerTimestamp(value: string | null | undefined, language: Ui
     return value;
   }
 
-  return new Intl.DateTimeFormat(language === 'en' ? 'en-US' : 'zh-CN', {
+  return new Intl.DateTimeFormat(language === 'ko' ? 'ko-KR' : language === 'en' ? 'en-US' : 'zh-CN', {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -953,7 +953,7 @@ const SettingsPage: React.FC = () => {
     setSetupStatusError(null);
     setIsRefreshingSetupStatus(true);
     try {
-      const status = await systemConfigApi.getSetupStatus();
+      const status = await systemConfigApi.getSetupStatus(uiLanguage);
       if (setupStatusRequestIdRef.current !== requestId) {
         return;
       }
@@ -968,7 +968,7 @@ const SettingsPage: React.FC = () => {
         setIsRefreshingSetupStatus(false);
       }
     }
-  }, []);
+  }, [uiLanguage]);
 
   useEffect(() => {
     void load();
@@ -1397,7 +1397,9 @@ const SettingsPage: React.FC = () => {
   const settingsPanelDiagnosticHint = isDesktopRuntime
     ? uiLanguage === 'en'
       ? <>Check and provide the desktop log <code>desktop.log</code>, plus the release version, Windows version, and trigger path.</>
-      : <>请查看并提供桌面端日志 <code>desktop.log</code>，同时补充 release 版本、Windows 版本和触发入口。</>
+      : uiLanguage === 'ko'
+        ? <>데스크톱 로그 <code>desktop.log</code>와 릴리스 버전, Windows 버전, 재현 경로를 함께 확인해 제공하세요.</>
+        : <>请查看并提供桌面端日志 <code>desktop.log</code>，同时补充 release 版本、Windows 版本和触发入口。</>
     : t('settings.diagnosticHintWeb');
   const activeCategoryTitle = getCategoryTitle(activeCategory as SystemConfigCategory, t('settings.activePanelTitle'), uiLanguage);
   const activeCategoryDescription = getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage);

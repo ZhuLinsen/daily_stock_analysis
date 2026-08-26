@@ -37,8 +37,9 @@ import type {
   TaskInfo,
 } from '../types/analysis';
 import type { RunFlowSnapshotSource } from '../types/runFlow';
-import { getTodayInShanghai } from '../utils/format';
+import { getTodayInSeoul } from '../utils/format';
 import { normalizeStockCode } from '../utils/stockCode';
+import { localizeStrategySkill, localizeStrategySkillDescription } from '../utils/strategySkill';
 
 type MarketReviewNotice = {
   variant: 'success' | 'warning' | 'danger';
@@ -414,7 +415,7 @@ const HomePage: React.FC = () => {
 
   useEffect(() => {
     let active = true;
-    systemConfigApi.getSetupStatus()
+    systemConfigApi.getSetupStatus(uiLanguage)
       .then((status) => {
         if (active) {
           setSetupStatus(status);
@@ -429,7 +430,7 @@ const HomePage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [uiLanguage]);
 
   useEffect(() => {
     let active = true;
@@ -498,11 +499,15 @@ const HomePage: React.FC = () => {
       { id: '', name: t('home.defaultStrategyName'), description: t('home.defaultStrategyDescription') },
       ...analysisSkills.map((skill) => ({
         id: skill.id,
-        name: skill.name,
-        description: skill.description,
+        name: localizeStrategySkill(skill.id || skill.name, uiLanguage),
+        description: localizeStrategySkillDescription(
+          skill.id || skill.name,
+          skill.description,
+          uiLanguage,
+        ),
       })),
     ],
-    [analysisSkills, t],
+    [analysisSkills, t, uiLanguage],
   );
   const closeStrategyMenu = useCallback((restoreFocus = false) => {
     setStrategyMenuOpen(false);
@@ -1059,7 +1064,7 @@ const HomePage: React.FC = () => {
     }
   }, [marketReviewRegionOverride, notify, pollMarketReviewStatus, scrollMarketReviewFeedbackIntoView, t]);
 
-  const todayDateKey = getTodayInShanghai();
+  const todayDateKey = getTodayInSeoul();
   useEffect(() => {
     if (sidebarWorkspaceTab !== 'today') {
       return undefined;
@@ -1468,7 +1473,11 @@ const HomePage: React.FC = () => {
                     className="home-surface-button flex h-10 max-w-[8.5rem] items-center gap-1.5 rounded-xl px-3 text-xs text-foreground disabled:cursor-not-allowed disabled:opacity-60 sm:max-w-[11rem]"
                   >
                     <SlidersHorizontal className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
-                    <span className="truncate">{selectedStrategy?.name || t('home.strategy')}</span>
+                    <span className="truncate">
+                      {selectedStrategy
+                        ? localizeStrategySkill(selectedStrategy.id || selectedStrategy.name, uiLanguage)
+                        : t('home.strategy')}
+                    </span>
                   </button>
                   {strategyMenuOpen ? (
                     <div

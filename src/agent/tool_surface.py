@@ -54,12 +54,28 @@ class ToolSurface:
         """Return an empty Phase 6a surface for protocol-only preflight work."""
         return cls(ToolRegistry())
 
-    def list_tools(self, format: str = "public", *, cancellation_safe_only: bool = False) -> list[dict]:
-        """List tools in a stable schema format."""
+    def list_tools(
+        self,
+        format: str = "public",
+        *,
+        cancellation_safe_only: bool = False,
+        process_isolated: bool = False,
+    ) -> list[dict]:
+        """List tools in a stable schema format.
+
+        ``process_isolated`` expands the cancellation-safe filter only for
+        tools that explicitly declare a process-isolation contract.  It never
+        changes the default in-process surface.
+        """
         normalized = (format or "public").strip().lower()
         tools = self._registry.list_tools()
         if cancellation_safe_only:
-            tools = [tool_def for tool_def in tools if tool_def.policy.cancellation_safe]
+            tools = [
+                tool_def
+                for tool_def in tools
+                if tool_def.policy.cancellation_safe
+                or (process_isolated and tool_def.policy.process_isolation_safe)
+            ]
         if normalized == "openai":
             return [tool_def.to_openai_tool() for tool_def in tools]
         if normalized == "public":
@@ -174,7 +190,12 @@ class ToolSurface:
         ):
             ctx = replace(ctx, deadline=time.monotonic() + float(timeout))
         controlled_execution = ctx.cancel_event is not None or ctx.deadline is not None
-        if controlled_execution and not tool_def.policy.cancellation_safe:
+        process_isolated = ctx.execution_boundary == "process_isolated"
+        cancellation_supported = (
+            tool_def.policy.cancellation_safe
+            or (process_isolated and tool_def.policy.process_isolation_safe)
+        )
+        if controlled_execution and not cancellation_supported:
             return self._error_result(
                 tool_name=tool_name,
                 code="cancellation_unsupported",

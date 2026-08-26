@@ -9,11 +9,16 @@ type UiLanguageContextValue = {
   t: (key: UiTextKey, params?: UiTextParams) => string;
 };
 
-const fallbackContext: UiLanguageContextValue = {
-  language: 'zh',
-  setLanguage: () => undefined,
-  t: (key, params) => formatUiText(UI_TEXT.zh[key], params),
-};
+function getFallbackContext(): UiLanguageContextValue {
+  // Components are normally rendered under UiLanguageProvider. Keep isolated
+  // consumers aligned with the current persisted preference as well.
+  const language = getRuntimeInitialLanguage();
+  return {
+    language,
+    setLanguage: () => undefined,
+    t: (key, params) => formatUiText(UI_TEXT[language][key], params),
+  };
+}
 
 const UiLanguageContext = createContext<UiLanguageContextValue | null>(null);
 
@@ -27,7 +32,11 @@ export const UiLanguageProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   useEffect(() => {
     if (typeof document !== 'undefined') {
-      document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
+      document.documentElement.lang = {
+        ko: 'ko-KR',
+        en: 'en',
+        zh: 'zh-CN',
+      }[language];
     }
   }, [language]);
 
@@ -46,5 +55,5 @@ export const UiLanguageProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
 // eslint-disable-next-line react-refresh/only-export-components -- useUiLanguage is a hook, co-located for context access
 export function useUiLanguage(): UiLanguageContextValue {
-  return useContext(UiLanguageContext) ?? fallbackContext;
+  return useContext(UiLanguageContext) ?? getFallbackContext();
 }

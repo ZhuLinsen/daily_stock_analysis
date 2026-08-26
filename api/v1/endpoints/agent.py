@@ -17,28 +17,89 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from api.deps import get_agent_chat_session_service
 from api.v1.schemas.system_config import AgentBackendStatusResponse
 from src.config import get_config
+from src.report_language import (
+    localize_strategy_skill,
+    localize_strategy_skill_description,
+    normalize_report_language,
+)
 from src.services.agent_chat_session_service import AgentChatSessionService
 from src.services.agent_model_service import list_agent_model_deployments
 
-# Tool name -> Chinese display name mapping
-TOOL_DISPLAY_NAMES: Dict[str, str] = {
-    "get_realtime_quote":         "获取实时行情",
-    "get_daily_history":          "获取历史K线",
-    "get_chip_distribution":      "分析筹码分布",
-    "get_analysis_context":       "获取分析上下文",
-    "get_stock_info":             "获取股票基本面",
-    "search_stock_news":          "搜索股票新闻",
-    "search_comprehensive_intel": "搜索综合情报",
-    "analyze_trend":              "分析技术趋势",
-    "calculate_ma":               "计算均线系统",
-    "get_volume_analysis":        "分析量能变化",
-    "analyze_pattern":            "识别K线形态",
-    "get_market_indices":         "获取市场指数",
-    "get_sector_rankings":        "分析行业板块",
-    "get_skill_backtest_summary": "获取技能回测概览",
-    "get_strategy_backtest_summary": "获取策略回测概览",
-    "get_stock_backtest_summary": "获取个股回测数据",
+# Tool name -> localized display name mapping for stream progress.
+TOOL_DISPLAY_NAMES: Dict[str, Dict[str, str]] = {
+    "get_realtime_quote": {
+        "zh": "获取实时行情", "en": "Fetching real-time quote", "ko": "실시간 시세 조회",
+    },
+    "get_daily_history": {
+        "zh": "获取历史K线", "en": "Fetching price history", "ko": "일별 가격 이력 조회",
+    },
+    "get_chip_distribution": {
+        "zh": "分析筹码分布", "en": "Analyzing volume profile", "ko": "매물대 분포 분석",
+    },
+    "get_analysis_context": {
+        "zh": "获取分析上下文", "en": "Fetching analysis context", "ko": "분석 컨텍스트 조회",
+    },
+    "get_stock_info": {
+        "zh": "获取股票基本面", "en": "Fetching stock fundamentals", "ko": "종목 기본정보 조회",
+    },
+    "search_stock_news": {
+        "zh": "搜索股票新闻", "en": "Searching stock news", "ko": "종목 뉴스 검색",
+    },
+    "search_comprehensive_intel": {
+        "zh": "搜索综合情报", "en": "Searching market intelligence", "ko": "종합 정보 검색",
+    },
+    "analyze_trend": {
+        "zh": "分析技术趋势", "en": "Analyzing technical trend", "ko": "기술적 추세 분석",
+    },
+    "calculate_ma": {
+        "zh": "计算均线系统", "en": "Calculating moving averages", "ko": "이동평균선 계산",
+    },
+    "get_volume_analysis": {
+        "zh": "分析量能变化", "en": "Analyzing volume changes", "ko": "거래량 변화 분석",
+    },
+    "analyze_pattern": {
+        "zh": "识别K线形态", "en": "Identifying candle patterns", "ko": "캔들 패턴 식별",
+    },
+    "get_market_indices": {
+        "zh": "获取市场指数", "en": "Fetching market indices", "ko": "시장 지수 조회",
+    },
+    "get_sector_rankings": {
+        "zh": "分析行业板块", "en": "Analyzing sector rankings", "ko": "업종 순위 분석",
+    },
+    "get_skill_backtest_summary": {
+        "zh": "获取技能回测概览", "en": "Fetching skill backtest summary", "ko": "전략 백테스트 요약 조회",
+    },
+    "get_strategy_backtest_summary": {
+        "zh": "获取策略回测概览", "en": "Fetching strategy backtest summary", "ko": "전략 백테스트 요약 조회",
+    },
+    "get_stock_backtest_summary": {
+        "zh": "获取个股回测数据", "en": "Fetching stock backtest data", "ko": "종목 백테스트 데이터 조회",
+    },
+    "get_tracker_research_bundle": {
+        "zh": "获取 Tracker 研究证据", "en": "Fetching Tracker research evidence", "ko": "Tracker 리서치 근거 조회",
+    },
 }
+
+_AGENT_EVENT_MESSAGE_TRANSLATIONS: Dict[str, Dict[str, str]] = {
+    "codex_connecting": {"zh": "正在连接 Codex…", "en": "Connecting to Codex…", "ko": "Codex에 연결하는 중…"},
+    "preparing": {"zh": "正在准备分析…", "en": "Preparing analysis…", "ko": "분석을 준비하는 중…"},
+    "organizing": {"zh": "正在整理分析结果…", "en": "Organizing analysis results…", "ko": "분석 결과를 정리하는 중…"},
+    "request_failed": {"zh": "智能问股请求未被接受", "en": "The AI stock query was not accepted", "ko": "AI 종목 질의 요청이 접수되지 않았습니다."},
+    "chat_failed": {"zh": "智能问股失败", "en": "The AI stock query failed", "ko": "AI 종목 질의에 실패했습니다."},
+    "timeout": {"zh": "分析超时", "en": "Analysis timed out", "ko": "분석 시간이 초과되었습니다."},
+}
+
+
+def _localized_agent_event_message(key: str, language: Optional[str]) -> str:
+    normalized = normalize_report_language(language)
+    return _AGENT_EVENT_MESSAGE_TRANSLATIONS[key][normalized]
+
+
+def _tool_display_name(tool: str, language: Optional[str]) -> str:
+    localized = TOOL_DISPLAY_NAMES.get(tool)
+    if localized is None:
+        return tool
+    return localized[normalize_report_language(language)]
 
 logger = logging.getLogger(__name__)
 
@@ -167,8 +228,17 @@ def _build_skills_response(config) -> SkillsResponse:
             skill.name,
         ),
     )
+    language = getattr(config, "report_language", "zh")
     skills = [
-        SkillInfo(id=skill.name, name=skill.display_name, description=skill.description)
+        SkillInfo(
+            id=skill.name,
+            name=localize_strategy_skill(skill.display_name or skill.name, language),
+            description=localize_strategy_skill_description(
+                skill.name,
+                skill.description,
+                language,
+            ),
+        )
         for skill in available_skills
     ]
     return SkillsResponse(
@@ -528,7 +598,7 @@ async def agent_chat_stream(
         # Enrich tool events with display names
         if event.get("type") in ("tool_start", "tool_done"):
             tool = event.get("tool", "")
-            event["display_name"] = TOOL_DISPLAY_NAMES.get(tool, tool)
+            event["display_name"] = _tool_display_name(tool, config.report_language)
         asyncio.run_coroutine_threadsafe(queue.put(event), loop)
 
     def run_sync(executor, turn):
@@ -560,7 +630,11 @@ async def agent_chat_stream(
             logger.error("Agent stream error: %s", exc)
             event = {
                 "type": "error",
-                "message": "Agent Chat failed" if backend_id == "codex_app_server" else str(exc),
+                "message": (
+                    _localized_agent_event_message("chat_failed", config.report_language)
+                    if backend_id == "codex_app_server"
+                    else str(exc)
+                ),
                 "error_code": getattr(exc, "code", "unknown_backend_error"),
                 "backend": backend_id,
                 "request_id": request_id,
@@ -585,7 +659,10 @@ async def agent_chat_stream(
                 logger.error("Agent request preparation failed: %s", exc, exc_info=True)
                 event = {
                     "type": "error",
-                    "message": "Agent request was not accepted",
+                    "message": _localized_agent_event_message(
+                        "request_failed",
+                        config.report_language,
+                    ),
                     "error_code": "request_not_accepted",
                     "backend": backend_id,
                     "request_id": request_id,
@@ -614,7 +691,13 @@ async def agent_chat_stream(
                     else:
                         event = await asyncio.wait_for(queue.get(), timeout=300.0)
                 except asyncio.TimeoutError:
-                    event = {"type": "error", "message": "分析超时"}
+                    event = {
+                        "type": "error",
+                        "message": _localized_agent_event_message(
+                            "timeout",
+                            config.report_language,
+                        ),
+                    }
                     yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                     break
                 yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"

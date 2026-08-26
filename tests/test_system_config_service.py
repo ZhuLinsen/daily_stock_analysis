@@ -1040,6 +1040,43 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(checks["stock_list"]["status"], "configured")
         self.assertEqual(checks["notification"]["status"], "optional")
 
+    def test_get_setup_status_reports_configured_tracker_research_without_exposing_token(self) -> None:
+        tracker_token = "a" * 32
+        self._rewrite_env(
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
+            "STOCK_LIST=005930.KS",
+            "TRACKER_RESEARCH_API_URL=http://127.0.0.1:47832",
+            f"TRACKER_RESEARCH_API_TOKEN={tracker_token}",
+            "TRACKER_RESEARCH_PREFLIGHT_ENABLED=true",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            status = self.service.get_setup_status(language="ko")
+
+        check = {item["key"]: item for item in status["checks"]}["tracker_research"]
+        self.assertEqual(check["status"], "configured")
+        self.assertEqual(check["title"], "Tracker 리서치 사이드카")
+        self.assertIn("격리 캐시", check["message"])
+        self.assertNotIn(tracker_token, str(check))
+
+    def test_get_setup_status_uses_the_safe_default_tracker_research_url(self) -> None:
+        tracker_token = "b" * 32
+        self._rewrite_env(
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
+            "STOCK_LIST=005930.KS",
+            f"TRACKER_RESEARCH_API_TOKEN={tracker_token}",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            status = self.service.get_setup_status(language="ko")
+
+        check = {item["key"]: item for item in status["checks"]}["tracker_research"]
+        self.assertEqual(check["status"], "configured")
+        self.assertIn("Tracker", check["title"])
+        self.assertNotIn(tracker_token, str(check))
+
     def test_generation_backend_status_preview_uses_draft_backend(self) -> None:
         self._rewrite_env(
             "GENERATION_BACKEND=litellm",
@@ -1269,6 +1306,33 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertIn("Codex CLI", checks["llm_primary"]["message"])
         self.assertNotIn("llm_primary", status["required_missing_keys"])
         self.assertIn("llm_agent", status["required_missing_keys"])
+
+    def test_get_setup_status_localizes_codex_setup_copy_to_korean(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_FALLBACK_BACKEND=",
+            "STOCK_LIST=005930.KS,035420.KS,000660.KS,247540.KQ",
+        )
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+            status = self.service.get_setup_status(language="ko")
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertEqual(checks["llm_primary"]["title"], "LLM 주 채널")
+        self.assertEqual(
+            checks["llm_primary"]["message"],
+            "Codex CLI 로컬 생성 백엔드가 활성화되어 있습니다(실험적/제한적).",
+        )
+        self.assertEqual(checks["llm_agent"]["title"], "Agent 채널")
+        self.assertIn("LiteLLM 모델 구성", checks["llm_agent"]["message"])
+        self.assertIn("AGENT_GENERATION_BACKEND", checks["llm_agent"]["next_step"])
+        self.assertEqual(checks["stock_list"]["message"], "종목 4개가 구성되었습니다.")
+        self.assertEqual(checks["notification"]["title"], "알림 채널")
+        self.assertEqual(
+            checks["storage"]["message"],
+            "데이터베이스 경로를 사용할 수 있습니다: data/stock_analysis.db",
+        )
 
     def test_get_setup_status_allows_local_cli_primary_smoke_without_agent_model(self) -> None:
         self._rewrite_env(

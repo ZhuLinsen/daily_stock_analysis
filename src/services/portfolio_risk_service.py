@@ -288,11 +288,11 @@ class PortfolioRiskService:
                 if not symbol:
                     continue
                 market_value = float(pos.get("market_value_base") or 0.0)
-                valuation_currency = str(pos.get("valuation_currency") or account.get("base_currency") or "CNY")
+                valuation_currency = str(pos.get("valuation_currency") or account.get("base_currency") or "KRW")
                 converted, _, _ = self.portfolio_service.convert_amount(
                     amount=market_value,
                     from_currency=valuation_currency,
-                    to_currency="CNY",
+                    to_currency="KRW",
                     as_of_date=as_of_date,
                 )
                 exposure_by_symbol[symbol] = exposure_by_symbol.get(symbol, 0.0) + converted
@@ -344,11 +344,11 @@ class PortfolioRiskService:
                     continue
 
                 market_value = float(pos.get("market_value_base") or 0.0)
-                valuation_currency = str(pos.get("valuation_currency") or account.get("base_currency") or "CNY")
+                valuation_currency = str(pos.get("valuation_currency") or account.get("base_currency") or "KRW")
                 converted, _, _ = self.portfolio_service.convert_amount(
                     amount=market_value,
                     from_currency=valuation_currency,
-                    to_currency="CNY",
+                    to_currency="KRW",
                     as_of_date=as_of_date,
                 )
 
@@ -493,8 +493,8 @@ class PortfolioRiskService:
             key = row.snapshot_date.isoformat()
             converted, stale, _ = self.portfolio_service.convert_amount(
                 amount=float(row.total_equity or 0.0),
-                from_currency=str(row.base_currency or "CNY"),
-                to_currency="CNY",
+                from_currency=str(row.base_currency or "KRW"),
+                to_currency="KRW",
                 as_of_date=row.snapshot_date,
             )
             grouped[key] = grouped.get(key, 0.0) + converted

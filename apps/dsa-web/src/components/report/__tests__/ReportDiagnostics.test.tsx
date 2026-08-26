@@ -55,7 +55,7 @@ describe('ReportDiagnostics', () => {
   it('loads historical diagnostics in a collapsed panel and copies sanitized text', async () => {
     vi.mocked(historyApi.getDiagnostics).mockResolvedValue(diagnosticSummary);
 
-    render(<ReportDiagnostics recordId={1} />);
+    render(<ReportDiagnostics recordId={1} language="zh" />);
 
     expect(historyApi.getDiagnostics).toHaveBeenCalledWith(1);
     expect(await screen.findByText('运行状态')).toBeInTheDocument();
@@ -92,7 +92,7 @@ describe('ReportDiagnostics', () => {
     const onOpenRunFlow = vi.fn();
     vi.mocked(historyApi.getDiagnostics).mockResolvedValue(diagnosticSummary);
 
-    render(<ReportDiagnostics recordId={1} onOpenRunFlow={onOpenRunFlow} />);
+    render(<ReportDiagnostics recordId={1} onOpenRunFlow={onOpenRunFlow} language="zh" />);
 
     fireEvent.click(await screen.findByText('运行状态'));
     fireEvent.click(screen.getByRole('button', { name: '查看历史记录 1 运行流' }));
@@ -105,7 +105,7 @@ describe('ReportDiagnostics', () => {
 
     render(
       <StrictMode>
-        <ReportDiagnostics recordId={1} />
+        <ReportDiagnostics recordId={1} language="zh" />
       </StrictMode>,
     );
 

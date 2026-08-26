@@ -40,7 +40,8 @@ export const StockBarItemComponent: React.FC<StockBarItemProps> = ({
   const phaseLabel = getMarketPhaseSummaryLabel(item.marketPhaseSummary, language)
     ?.replace('市场阶段: ', '')
     .replace('市场阶段：', '')
-    .replace('Market phase: ', '');
+    .replace('Market phase: ', '')
+    .replace('시장 단계: ', '');
 
   return (
     <button
@@ -127,7 +128,7 @@ export const StockBarItemComponent: React.FC<StockBarItemProps> = ({
               <>
                 <span className="w-1 h-1 rounded-full bg-subtle-hover" />
                 <span className="text-[11px] text-muted-text">
-                  {formatDateTime(item.lastAnalysisTime)}
+                  {formatDateTime(item.lastAnalysisTime, language)}
                 </span>
               </>
             )}

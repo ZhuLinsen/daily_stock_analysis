@@ -276,6 +276,51 @@ class AgentModelsEndpointTestCase(unittest.TestCase):
 
 
 class AgentSkillsEndpointTestCase(unittest.TestCase):
+    def test_skills_endpoint_localizes_builtin_skills_for_korean(self) -> None:
+        config = _build_config(report_language="ko")
+        skill_manager = SimpleNamespace(
+            list_skills=lambda: [
+                SimpleNamespace(
+                    name="bull_trend",
+                    display_name="默认多头趋势",
+                    description="默认个股分析优先策略，识别多头排列、趋势延续与回踩低吸机会。",
+                    user_invocable=True,
+                    default_priority=20,
+                    default_active=True,
+                ),
+                SimpleNamespace(
+                    name="one_yang_three_yin",
+                    display_name="一阳夹三阴",
+                    description="检测一阳夹三阴K线整理形态，趋势延续入场信号。",
+                    user_invocable=True,
+                    default_priority=40,
+                    default_active=False,
+                ),
+            ]
+        )
+
+        with patch("api.v1.endpoints.agent.get_config", return_value=config), patch(
+            "src.agent.factory.get_skill_manager",
+            return_value=skill_manager,
+        ):
+            payload = asyncio.run(agent.get_skills()).model_dump()
+
+        self.assertEqual(
+            payload["skills"],
+            [
+                {
+                    "id": "bull_trend",
+                    "name": "기본 상승 추세",
+                    "description": "기본 종목 분석 전략으로 정배열, 추세 지속, 눌림목 진입 기회를 식별합니다.",
+                },
+                {
+                    "id": "one_yang_three_yin",
+                    "name": "일양협삼음",
+                    "description": "일양협삼음 캔들 정리 패턴을 분석하는 추세 지속형 진입 신호입니다.",
+                },
+            ],
+        )
+
     def test_skills_endpoint_returns_skill_metadata_shape(self) -> None:
         config = _build_config()
         skill_manager = SimpleNamespace(

@@ -12,6 +12,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse, urlunparse
 
@@ -88,6 +89,8 @@ from src.notification_sender.ntfy_sender import resolve_ntfy_endpoint
 from src.services.stock_list_parser import split_stock_list
 from src.services.generation_backend_status_service import GenerationBackendStatusService
 from src.services.agent_backend_status_service import AgentBackendStatusService
+from src.services.tracker_research_client import resolve_tracker_research_settings
+from src.setup_status_i18n import localize_setup_checks
 
 logger = logging.getLogger(__name__)
 
@@ -598,7 +601,7 @@ class SystemConfigService:
                 ],
             )
 
-    def get_setup_status(self) -> Dict[str, Any]:
+    def get_setup_status(self, language: Optional[str] = None) -> Dict[str, Any]:
         """Return read-only first-run setup status without mutating runtime state."""
         effective_map = self._build_setup_effective_config_map()
         llm_check = self._build_setup_primary_llm_check(effective_map)
@@ -606,6 +609,7 @@ class SystemConfigService:
         checks = [
             llm_check,
             agent_check,
+            self._build_setup_tracker_research_check(effective_map),
             self._build_setup_stock_list_check(effective_map),
             self._build_setup_notification_check(effective_map),
             self._build_setup_storage_check(effective_map),
@@ -622,12 +626,13 @@ class SystemConfigService:
             if check["key"] in {"llm_primary", "stock_list"}
             and check["status"] == "needs_action"
         ]
+        localized_checks = localize_setup_checks(checks, language)
         return {
             "is_complete": not required_missing,
             "ready_for_smoke": not smoke_blocking_missing,
             "required_missing_keys": required_missing,
             "next_step_key": required_missing[0] if required_missing else None,
-            "checks": checks,
+            "checks": localized_checks,
         }
 
     def get_generation_backend_status(self) -> Dict[str, Any]:
@@ -3251,6 +3256,11 @@ class SystemConfigService:
             "OPENAI_BASE_URL",
             "OLLAMA_API_BASE",
             "FEISHU_STREAM_ENABLED",
+            "TRACKER_RESEARCH_API_URL",
+            "TRACKER_RESEARCH_API_TOKEN",
+            "TRACKER_RESEARCH_API_TIMEOUT_S",
+            "TRACKER_RESEARCH_PREFLIGHT_ENABLED",
+            "TRACKER_RESEARCH_REFRESH_WAIT_S",
         }:
             return True
         prefixes = (
@@ -3783,6 +3793,65 @@ class SystemConfigService:
             "needs_action",
             f"Agent 主模型 {agent_model} 缺少可用渠道或匹配的 API Key。",
             "请调整 AGENT_LITELLM_MODEL 或补齐对应渠道配置。",
+        )
+
+    def _build_setup_tracker_research_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        """Expose configuration-only Tracker status without probing or leaking its token."""
+        settings, reason = resolve_tracker_research_settings(
+            SimpleNamespace(
+                # Config treats an omitted or blank URL as the safe loopback
+                # default.  Mirror that here so the setup card describes the
+                # running configuration rather than incorrectly flagging a
+                # token-only default setup as invalid.
+                tracker_research_api_url=(
+                    effective_map.get("TRACKER_RESEARCH_API_URL", "").strip()
+                    or "http://127.0.0.1:47832"
+                ),
+                tracker_research_api_token=effective_map.get("TRACKER_RESEARCH_API_TOKEN", ""),
+                tracker_research_api_timeout_s=effective_map.get(
+                    "TRACKER_RESEARCH_API_TIMEOUT_S", "8"
+                ),
+                tracker_research_preflight_enabled=parse_env_bool(
+                    effective_map.get("TRACKER_RESEARCH_PREFLIGHT_ENABLED"),
+                    default=True,
+                ),
+                tracker_research_refresh_wait_s=effective_map.get(
+                    "TRACKER_RESEARCH_REFRESH_WAIT_S", "8"
+                ),
+            )
+        )
+        if settings is not None:
+            message = (
+                "已配置 Tracker 韩国股票研究侧车；KOSPI/KOSDAQ 新闻会在分析前按需刷新到隔离缓存。"
+                if settings.preflight_enabled
+                else "已配置 Tracker 韩国股票研究侧车；仅使用已缓存的 KOSPI/KOSDAQ 研究数据。"
+            )
+            return self._setup_check(
+                "tracker_research",
+                "Tracker 研究侧车",
+                "system",
+                False,
+                "configured",
+                message,
+            )
+        if reason == "tracker_research_configuration_invalid":
+            return self._setup_check(
+                "tracker_research",
+                "Tracker 研究侧车",
+                "system",
+                False,
+                "needs_action",
+                "Tracker 研究侧车配置无效。",
+                "请确认 URL 仅指向本机回环地址，且令牌为 32 至 512 个安全字符。",
+            )
+        return self._setup_check(
+            "tracker_research",
+            "Tracker 研究侧车",
+            "system",
+            False,
+            "optional",
+            "Tracker 韩国股票研究侧车为可选项；未配置时仍可使用其他新闻搜索渠道。",
+            "如需韩国股票新闻依据，请在 DSA 与 Tracker 的私有 .env 中配置相同的侧车令牌。",
         )
 
     def _build_setup_stock_list_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:

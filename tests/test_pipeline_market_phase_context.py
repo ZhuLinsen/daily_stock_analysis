@@ -383,6 +383,41 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         self.assertIsInstance(result.dashboard["phase_decision"]["watch_conditions"], list)
         self.assertIn("daily_bars: missing", result.dashboard["phase_decision"]["data_limitations"])
 
+    def test_legacy_pipeline_injects_tracker_news_and_avoids_missing_channel_disclosure(self):
+        """Regular Codex reports must consume Tracker evidence without SearchService keys."""
+        pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
+        phase_context = SimpleNamespace(to_dict=MagicMock(return_value=_phase_payload()))
+
+        from src.services.tracker_research_client import TrackerNewsEvidence
+
+        evidence = TrackerNewsEvidence(
+            symbol="005930",
+            market="KOSPI",
+            status="FRESH",
+            captured_at="2026-08-26T00:00:00.000Z",
+            provider_identity="NAVER_SEARCH",
+            headlines=({"title": "Tracker 실제 뉴스", "description": "뉴스 근거"},),
+        )
+        pipeline._prepare_tracker_news_evidence = MagicMock(
+            return_value=("## Tracker 뉴스 근거\n- Tracker 실제 뉴스", evidence, True)
+        )
+
+        with patch("src.core.pipeline.build_market_phase_context", return_value=phase_context):
+            result = pipeline.analyze_stock(
+                "005930.KS",
+                ReportType.SIMPLE,
+                "q-legacy-tracker-news",
+                current_time=datetime(2026, 3, 27, 10, 0),
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.news_result_count, 1)
+        self.assertTrue(result.news_evidence_present)
+        self.assertIn(
+            "Tracker 실제 뉴스",
+            pipeline.analyzer.analyze.call_args.kwargs["news_context"],
+        )
+
     def test_pipeline_passes_configured_analysis_phase_to_market_context(self):
         pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
         pipeline.analysis_phase = "postmarket"
@@ -557,6 +592,64 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
             "items",
             str(save_kwargs["context_snapshot"]["analysis_context_pack_overview"]),
         )
+
+    def test_agent_preloaded_tracker_news_counts_as_consumed_evidence_without_open_web_search(self):
+        """Tracker context is actual Agent input, not a post-hoc news probe."""
+        pipeline = _make_pipeline(agent_mode=True, save_context_snapshot=True)
+        pipeline._ensure_agent_history = MagicMock()
+
+        from src.agent.executor import AgentResult
+        from src.services.tracker_research_client import TrackerNewsEvidence
+
+        executor = MagicMock()
+        executor.run.return_value = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "삼성전자",
+                "sentiment_score": 66,
+                "trend_prediction": "횡보",
+                "operation_advice": "보유",
+                "decision_type": "hold",
+            },
+            provider="test",
+        )
+        evidence = TrackerNewsEvidence(
+            symbol="005930",
+            market="KOSPI",
+            status="FRESH",
+            captured_at="2026-08-26T00:00:00.000Z",
+            provider_identity="NAVER_SEARCH",
+            headlines=(
+                {
+                    "title": "실제 Tracker 뉴스 근거",
+                    "description": "사전 수집된 뉴스 요약",
+                },
+            ),
+        )
+        tracker_context = "## Tracker 뉴스 근거\n- 실제 Tracker 뉴스 근거"
+
+        with patch("src.agent.factory.build_agent_executor", return_value=executor):
+            result = pipeline._analyze_with_agent(
+                code="005930.KS",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-tracker-news",
+                stock_name="삼성전자",
+                realtime_quote=None,
+                chip_data=None,
+                fundamental_context={"market": "kr"},
+                trend_result=None,
+                market_phase_context=_phase_payload(),
+                tracker_news_context=tracker_context,
+                tracker_news_evidence=evidence,
+                tracker_news_channel_available=True,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.news_result_count, 1)
+        self.assertTrue(result.news_evidence_present)
+        run_context = executor.run.call_args.kwargs["context"]
+        self.assertIn("실제 Tracker 뉴스 근거", run_context["news_context"])
 
     def test_agent_pack_summary_uses_db_daily_context_after_history_prefetch(self):
         pipeline = _make_pipeline(agent_mode=True, save_context_snapshot=True)

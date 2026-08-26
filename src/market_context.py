@@ -57,26 +57,32 @@ _MARKET_ROLES = {
     "cn": {
         "zh": " A 股",
         "en": "China A-shares",
+        "ko": "중국 A주",
     },
     "hk": {
         "zh": "港股",
         "en": "Hong Kong stock",
+        "ko": "홍콩 주식",
     },
     "us": {
         "zh": "美股",
         "en": "US stock",
+        "ko": "미국 주식",
     },
     "jp": {
         "zh": "日股",
         "en": "Japan stock",
+        "ko": "일본 주식",
     },
     "kr": {
         "zh": "韩股",
         "en": "Korea stock",
+        "ko": "한국 주식",
     },
     "tw": {
         "zh": "台股",
         "en": "Taiwan stock",
+        "ko": "대만 주식",
     },
 }
 
@@ -90,6 +96,10 @@ _MARKET_GUIDELINES = {
             "- This analysis covers a **China A-share** (listed on Shanghai/Shenzhen exchanges).\n"
             "- Consider A-share-specific rules: daily price limits (±10%/±20%/±30%), T+1 settlement, and PRC policy factors."
         ),
+        "ko": (
+            "- 이번 분석 대상은 **중국 A주**(상하이·선전 거래소 상장 종목)입니다.\n"
+            "- A주 고유의 일일 가격제한(±10%/±20%/±30%), T+1 결제, 중국 정책 요인을 고려하세요."
+        ),
     },
     "hk": {
         "zh": (
@@ -99,6 +109,10 @@ _MARKET_GUIDELINES = {
         "en": (
             "- This analysis covers a **Hong Kong stock** (listed on HKEX).\n"
             "- HK stocks have no daily price limits, allow T+0 trading. Consider HKD FX, Southbound/Northbound flows, and HKEX-specific rules."
+        ),
+        "ko": (
+            "- 이번 분석 대상은 **홍콩 주식**(HKEX 상장 종목)입니다.\n"
+            "- 홍콩 주식은 일일 가격제한이 없고 T+0 거래가 가능합니다. HKD 환율, 남·북향 자금 흐름, HKEX 고유 규정을 고려하세요."
         ),
     },
     "us": {
@@ -110,6 +124,10 @@ _MARKET_GUIDELINES = {
             "- This analysis covers a **US stock** (listed on NYSE/NASDAQ).\n"
             "- US stocks have no daily price limits (but have circuit breakers), allow T+0 and pre/after-market trading. Consider USD FX, Fed policy, and SEC regulations."
         ),
+        "ko": (
+            "- 이번 분석 대상은 **미국 주식**(NYSE/NASDAQ 상장 종목)입니다.\n"
+            "- 미국 주식은 가격제한은 없지만 서킷브레이커가 있으며 T+0·장전·시간외 거래가 가능합니다. USD 환율, 연준 정책, SEC 규정을 고려하세요."
+        ),
     },
     "jp": {
         "zh": (
@@ -120,6 +138,10 @@ _MARKET_GUIDELINES = {
             "- This analysis covers a **Japan stock** (Yahoo Finance suffix such as `.T`).\n"
             "- Use Japan-market context: JPY FX, BOJ policy, corporate governance, and sector cycles; do not apply China A-share concepts such as daily price-limit boards, Northbound flows, Dragon Tiger lists, or margin-financing narratives."
         ),
+        "ko": (
+            "- 이번 분석 대상은 **일본 주식**(Yahoo Finance 접미사 예: `.T`)입니다.\n"
+            "- JPY 환율, 일본은행 정책, 기업지배구조, 업종 사이클을 반영하세요. 중국 A주의 가격제한, 북향자금, 용호방, 신용거래 같은 개념은 적용하지 마세요."
+        ),
     },
     "kr": {
         "zh": (
@@ -129,6 +151,10 @@ _MARKET_GUIDELINES = {
         "en": (
             "- This analysis covers a **Korea stock** (KOSPI/KOSDAQ suffix `.KS` / `.KQ`).\n"
             "- Use Korea-market context: KRW FX, Bank of Korea policy, semiconductor/internet cycles, and local trading rules; do not apply China A-share concepts such as daily price-limit boards, Northbound flows, Dragon Tiger lists, or margin-financing narratives."
+        ),
+        "ko": (
+            "- 이번 분석 대상은 **한국 주식**(KOSPI/KOSDAQ, 접미사 `.KS` / `.KQ`)입니다.\n"
+            "- KRW 환율, 한국은행 정책, 반도체·인터넷 업종 사이클, 국내 거래 규정을 반영하세요. 중국 A주의 가격제한, 북향자금, 용호방, 신용거래 같은 개념은 적용하지 마세요."
         ),
     },
     "tw": {
@@ -145,6 +171,10 @@ _MARKET_GUIDELINES = {
             "investment-trust / dealer), margin trading and day trading, and the TWSE/TPEx ±10% daily "
             "price limit; do not apply China A-share-specific concepts such as Northbound flows or Dragon Tiger lists."
         ),
+        "ko": (
+            "- 이번 분석 대상은 **대만 주식**(TWSE 상장 `.TW` 또는 TPEx/OTC `.TWO`)입니다.\n"
+            "- TWD 환율, 대만 중앙은행 정책, 반도체·전자 위탁생산 공급망, 외국인·투신·딜러의 3대 기관 흐름, 신용·당일매매, TWSE/TPEx ±10% 가격제한을 고려하세요. 중국 A주 전용 북향자금·용호방 개념은 적용하지 마세요."
+        ),
     },
 }
 
@@ -154,13 +184,13 @@ def get_market_role(stock_code: Optional[str], lang: str = "zh") -> str:
 
     Args:
         stock_code: The stock code being analyzed.
-        lang: 'zh' or 'en'.
+        lang: 'zh', 'en', or 'ko'.
 
     Returns:
         Role string like 'A 股投资分析' or 'US stock investment analysis'.
     """
     market = detect_market(stock_code)
-    lang_key = "en" if lang in ("en", "ko") else "zh"
+    lang_key = lang if lang in ("zh", "en", "ko") else "zh"
     return _MARKET_ROLES.get(market, _MARKET_ROLES["cn"])[lang_key]
 
 
@@ -169,11 +199,11 @@ def get_market_guidelines(stock_code: Optional[str], lang: str = "zh") -> str:
 
     Args:
         stock_code: The stock code being analyzed.
-        lang: 'zh' or 'en'.
+        lang: 'zh', 'en', or 'ko'.
 
     Returns:
         Multi-line string with market-specific guidelines.
     """
     market = detect_market(stock_code)
-    lang_key = "en" if lang in ("en", "ko") else "zh"
+    lang_key = lang if lang in ("zh", "en", "ko") else "zh"
     return _MARKET_GUIDELINES.get(market, _MARKET_GUIDELINES["cn"])[lang_key]

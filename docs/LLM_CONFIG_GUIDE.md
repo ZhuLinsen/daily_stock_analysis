@@ -47,6 +47,7 @@ AGENT_GENERATION_BACKEND=auto
 - `GENERATION_FALLBACK_BACKEND` 未配置时默认 `litellm`；本地 `.env` 显式空值 `GENERATION_FALLBACK_BACKEND=` 表示禁用 backend-level fallback；primary 与 fallback 相同时解析为 no-op。仓库自带 GitHub Actions workflow 未配置该变量时会显式导出 `litellm`，如果要在 Actions 中禁用 backend fallback，请把 fallback 设为 primary backend，例如 `GENERATION_BACKEND=codex_cli` + `GENERATION_FALLBACK_BACKEND=codex_cli`。
 - `GENERATION_BACKEND=codex_cli|claude_code_cli` 且没有 Gemini/OpenAI/Anthropic/DeepSeek API Key 时，普通分析和大盘复盘仍会尝试本地 CLI backend；如果对应 executable 不存在，会返回结构化 `command_not_found`，不会报“API Key 未配置”。
 - 当前 `codex_cli` preset 使用 `codex --ask-for-approval never exec --sandbox read-only --output-last-message <temp-file> -`：普通分析是无人值守生成任务，固定 `never` 可避免非交互运行停在人工批准请求，同时仍由 `read-only` 保持只读边界。DSA 从临时文件读取最终响应；Codex CLI 同时打印到 stdout 的重复内容会从诊断预览和输出大小统计中剔除，不参与主分析 JSON 解析。官方依据见 [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) 与 [Codex CLI command line options](https://developers.openai.com/codex/cli/reference)。本仓库当前真实验证 `codex-cli 0.144.3`，不声明更宽最低版本；如果 CLI 版本不支持 preset 参数，DSA 会返回结构化 `capability_unsupported` / `cli_contract_unsupported` 诊断，并在配置 backend fallback 时回退到 `litellm`。
+- 本地 CLI 因常见终止信号退出（包括通常的 `128 + signal` 退出码）时，DSA 会在检查 stdout/stderr 关键字前返回 `execution_interrupted`。因此服务重启或进程取消期间即使输出包含 `approval`、`permission`，也不会误报为 `approval_required`。中断执行不会自动切换到 fallback backend；请在服务稳定后重新发起分析。可用时诊断会保留终止信号名称和编号。
 - 当前 `claude_code_cli` preset 使用 `claude --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --no-session-persistence --output-format json -p <static instruction>`，完整 DSA prompt 通过 stdin 传入。DSA 只从 Claude JSON envelope 的 `result/success` 最终字段提取文本；如果后续启用 `--json-schema`，schema mode 必须提取 `structured_output`，并且仍会继续经过 DSA 现有 JSON validator、minimal parser contract、`_parse_response()`、integrity retry、placeholder fill 和 usage telemetry。参数依据见 [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)；本 PR smoke 验证版本为 `claude 2.1.177 (Claude Code)`，不声明更宽最低版本。
 - 当前 `opencode_cli` preset 使用 `opencode --pure run --format json [--model <OPENCODE_CLI_MODEL>] <static instruction> --file <temp prompt file>`；只有显式配置 `OPENCODE_CLI_MODEL` 时才追加 `--model`，完整 DSA prompt 写入权限受控的临时文件，不进入 argv。DSA 只解析 OpenCode JSON event 输出中无工具事件的 `text` 内容，并要求正常 `step_finish`；出现 `tool_use`、`error`、`question`、`permission` 等事件会结构化失败。参数依据见 [OpenCode CLI reference](https://opencode.ai/docs/cli)，项目配置合并语义见 [OpenCode config reference](https://opencode.ai/docs/config)；本 PR smoke 验证版本为 `opencode 1.17.11`，不声明更宽最低版本。
 - 本地 CLI backend 不支持 streaming。请求 stream 时会自动降级为 non-stream，不会因此返回 `capability_unsupported`。
@@ -75,7 +76,7 @@ Web 启用步骤：打开「设置 → Agent 设置 → 问股生成方式」，
 
 - Codex 必须安装并登录在**运行 DSA 后端的设备**上；DSA 不读取或保存 Codex 凭据，App Server 进程使用 Codex 自身登录态。Docker、远程服务器和 Desktop 的 PATH / 登录态彼此独立。在 Desktop 中从 Finder/Dock 启动时，后端只继承 Desktop 构造的真实 PATH；若状态提示找不到 Codex，请将 Codex CLI 安装到后端 PATH 可见位置并完全重启 DSA，不要只在另一个终端窗口验证。
 - Phase 6 的 Codex App Server Agent 当前支持 macOS、Linux，以及 DSA 后端完整运行于 WSL 的环境；原生 Windows 后端会在状态检查和 transport 启动前明确拒绝。此限制不影响 Phase 2 `GENERATION_BACKEND=codex_cli` 已有的 Windows 生成能力。
-- Codex 当前只开放已保存分析上下文、全局回测汇总和策略回测汇总的只读查询。本期只验证并承诺这三个工具的独立进程、停止、超时和回收闭环；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具未纳入本期验证，因此不会出现在 Codex 的工具列表中。需要这些能力时，请在 Web 中选择「默认模型」。明确股票代码或 Web 已选择的唯一股票只会为已开放的历史分析上下文工具建立股票范围；遇到同名歧义时不会猜测。
+- Codex 问股会在独立、可终止的只读工具进程中使用已保存上下文、实时行情、日线、技术指标重算、可用基本面、个股回测汇总和新闻证据。询问当前买卖判断时，保存上下文仅作参考：缺失、过期或不足时必须继续获取实时行情、日线和技术分析，不能只回复“没有保存数据”。对 `.KS` / `.KQ` 股票，如配置了本机 Tracker 研究侧车，普通 Codex 报告和问股都会读取其受限的行情、DART、资金流、KRX 状态、公告和新闻摘要；缓存缺失时只有 DSA 后端会在有限时间内请求侧车刷新其隔离缓存，Codex 工具仍只能读取，且不会写入 Tracker 业务库。持仓、交易执行和市场全量扫描工具仍不会暴露给 Codex。股票范围仍严格限定为用户明确选择的代码；遇到同名歧义时不会猜测。
 - 该能力不是离线模型。股票代码、问题、新闻、持仓上下文和脱敏后的工具结果可能由 Codex 自身配置的服务处理。
 - 当前只支持 single-agent Chat；不支持 Codex Multi Agent 或 Codex Deep Research。现有 LiteLLM Multi Agent 与 Deep Research 不受影响。
 - 每次 Chat 都创建新的 ephemeral App Server thread；DSA 继续保存原有可见会话历史，并在下一轮注入，但不会注入 LiteLLM provider trace。Web 客户端不会收到 chain-of-thought、原始 JSON-RPC、stderr 或完整工具参数/结果；Codex 只接收完成该轮分析所需的脱敏工具结果。
@@ -173,7 +174,7 @@ LITELLM_MODEL=ollama/qwen3:8b
 
 ### 首次启动配置状态
 
-后端提供只读状态接口 `GET /api/v1/system/config/setup/status`，用于判断首次启动闭环中最基础的几类配置是否已经就绪：LLM 主渠道、Agent 渠道、自选股、通知渠道和本地存储。这个接口只读取已保存的 `.env` 与当前进程环境变量，不会重载运行时配置、写入 `.env`、测试真实模型或创建数据库文件；前端向导和后续 smoke run 可以基于该接口逐步接入。
+后端提供只读状态接口 `GET /api/v1/system/config/setup/status`，用于判断首次启动闭环中最基础的几类配置是否已经就绪：LLM 主渠道、Agent 渠道、自选股、通知渠道和本地存储。可选查询参数 `language=zh|en|ko` 用于返回对应界面语言的标题、状态说明和下一步提示；未传时为兼容现有 API 默认返回中文。这个接口只读取已保存的 `.env` 与当前进程环境变量，不会重载运行时配置、写入 `.env`、测试真实模型或创建数据库文件；前端向导和后续 smoke run 可以基于该接口逐步接入。
 
 ### Web 渠道编辑器的兼容性 / 迁移 / 回退规则
 

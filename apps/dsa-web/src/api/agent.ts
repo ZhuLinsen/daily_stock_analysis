@@ -108,7 +108,7 @@ export const agentApi = {
     }>('/api/v1/agent/chat/send', { content });
     const data = response.data;
     if (data.success === false) {
-      throw new Error(data.message || '发送失败');
+      throw new Error('메시지 전송에 실패했습니다. 잠시 후 다시 시도하세요.');
     }
     return { success: true };
   },

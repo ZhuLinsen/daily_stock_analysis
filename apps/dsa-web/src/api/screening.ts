@@ -457,7 +457,7 @@ export const screeningApi = {
     try {
       const status = await screeningApi.getStatus();
       if (!status.available) {
-        throw new Error('选股功能不可用。请检查策略配置、数据依赖和服务日志。');
+        throw new Error('종목 스크리닝을 사용할 수 없습니다. 전략 설정, 데이터 의존성, 서비스 로그를 확인하세요.');
       }
     } catch (error) {
       try {

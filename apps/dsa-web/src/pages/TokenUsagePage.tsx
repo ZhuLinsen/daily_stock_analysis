@@ -24,7 +24,7 @@ const CALL_TYPE_LABEL_KEYS: Record<string, UiTextKey> = {
 };
 
 function getLocale(language: UiLanguage): string {
-  return language === 'en' ? 'en-US' : 'zh-CN';
+  return language === 'ko' ? 'ko-KR' : language === 'en' ? 'en-US' : 'zh-CN';
 }
 
 function formatNumber(value: number | null | undefined, language: UiLanguage): string {

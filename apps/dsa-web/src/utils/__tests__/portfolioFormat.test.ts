@@ -14,8 +14,8 @@ import type { PortfolioPositionItem } from '../../types/portfolio';
 
 const pricedPosition: PortfolioPositionItem = {
   symbol: 'HK00700',
-  market: 'hk',
-  currency: 'HKD',
+  market: 'kr',
+  currency: 'KRW',
   quantity: 100,
   avgCost: 300,
   totalCost: 30000,
@@ -23,7 +23,7 @@ const pricedPosition: PortfolioPositionItem = {
   marketValueBase: 32112.345,
   unrealizedPnlBase: 2112.345,
   unrealizedPnlPct: 7.04,
-  valuationCurrency: 'CNY',
+  valuationCurrency: 'KRW',
   priceSource: 'realtime_quote',
   priceProvider: 'longbridge',
   priceAvailable: true,
@@ -39,18 +39,18 @@ describe('portfolioFormat', () => {
 
   it('formats position price fields based on price availability', () => {
     expect(formatPositionPrice(pricedPosition)).toBe('321.1234');
-    expect(formatPositionMoney(123, pricedPosition)).toBe('CNY 123.00');
-    expect(getPositionPriceLabel(pricedPosition)).toBe('实时价 · longbridge');
+    expect(formatPositionMoney(123, pricedPosition)).toBe('KRW 123');
+    expect(getPositionPriceLabel(pricedPosition)).toBe('실시간 시세 · longbridge');
 
     const missingPosition = { ...pricedPosition, priceAvailable: false, priceSource: 'missing' };
     expect(formatPositionPrice(missingPosition)).toBe('--');
     expect(formatPositionMoney(123, missingPosition)).toBe('--');
-    expect(getPositionPriceLabel(missingPosition)).toBe('缺价');
+    expect(getPositionPriceLabel(missingPosition)).toBe('시세 없음');
   });
 
   it('formats broker labels and CSV result variants', () => {
-    expect(formatBrokerLabel('huatai')).toBe('huatai（华泰）');
-    expect(formatBrokerLabel('custom', ' 自定义 ')).toBe('custom（自定义）');
+    expect(formatBrokerLabel('huatai')).toBe('huatai(화타이증권)');
+    expect(formatBrokerLabel('custom', ' 사용자 증권사 ')).toBe('custom(사용자 증권사)');
     expect(getCsvParseVariant({ broker: 'huatai', recordCount: 1, skippedCount: 1, errorCount: 0, records: [], errors: [] })).toBe('warning');
     expect(getCsvCommitVariant({ accountId: 1, recordCount: 1, insertedCount: 1, duplicateCount: 0, failedCount: 0, dryRun: false, errors: [] }, false)).toBe('success');
   });
