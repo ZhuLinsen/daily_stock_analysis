@@ -6,21 +6,33 @@ import {
   getDesktopRuntimeApi,
   type DesktopUpdateState,
 } from '../desktop/runtime';
-import { getDesktopUpdateNotice, normalizeDesktopUpdateState } from '../desktop/updateState';
+import {
+  beginDesktopUpdateCheck,
+  endDesktopUpdateCheck,
+  getSharedDesktopUpdateState,
+  isDesktopUpdateCheckInFlight,
+  setSharedDesktopUpdateState,
+  subscribeSharedDesktopUpdateState,
+} from '../desktop/updateStore';
+import { getDesktopUpdateNotice, isBusyDesktopUpdateStatus, normalizeDesktopUpdateState } from '../desktop/updateState';
 
 export function useDesktopUpdate() {
   const { t } = useUiLanguage();
-  const [state, setState] = useState<DesktopUpdateState | null>(null);
-  const [isChecking, setIsChecking] = useState(false);
+  const [state, setState] = useState<DesktopUpdateState | null>(() => getSharedDesktopUpdateState());
   const runtime = getDesktopRuntimeApi();
   const isDesktopRuntime = Boolean(runtime);
   const canCheckDesktopUpdate = canUseDesktopUpdateApi(runtime);
   const desktopAppVersion = getDesktopAppVersion();
+  const isBusy = isBusyDesktopUpdateStatus(state?.status);
+  const isChecking = state?.status === 'checking';
+
+  useEffect(() => subscribeSharedDesktopUpdateState(() => {
+    setState(getSharedDesktopUpdateState());
+  }), []);
 
   useEffect(() => {
     if (!canCheckDesktopUpdate) {
-      setState(null);
-      setIsChecking(false);
+      setSharedDesktopUpdateState(null);
       return undefined;
     }
 
@@ -29,14 +41,23 @@ export function useDesktopUpdate() {
     const syncDesktopUpdateState = async () => {
       try {
         const nextState = await runtime?.getUpdateState?.();
-        if (active) {
-          setState(normalizeDesktopUpdateState(nextState));
+        if (!active) {
+          return;
         }
+        const incoming = normalizeDesktopUpdateState(nextState);
+        const current = getSharedDesktopUpdateState();
+        if (
+          (isDesktopUpdateCheckInFlight() || isBusyDesktopUpdateStatus(current?.status))
+          && !isBusyDesktopUpdateStatus(incoming?.status)
+        ) {
+          return;
+        }
+        setSharedDesktopUpdateState(incoming);
       } catch (error: unknown) {
         if (!active) {
           return;
         }
-        setState({
+        setSharedDesktopUpdateState({
           status: 'error',
           message: error instanceof Error ? error.message : t('settings.desktopUpdateErrorMessage'),
         });
@@ -49,8 +70,7 @@ export function useDesktopUpdate() {
       if (!active) {
         return;
       }
-      setState(normalizeDesktopUpdateState(nextState));
-      setIsChecking(false);
+      setSharedDesktopUpdateState(normalizeDesktopUpdateState(nextState));
     });
 
     return () => {
@@ -66,23 +86,27 @@ export function useDesktopUpdate() {
       return;
     }
 
-    setIsChecking(true);
-    setState((current) => ({
-      ...(current || {}),
+    const currentState = getSharedDesktopUpdateState();
+    if (isBusyDesktopUpdateStatus(currentState?.status) || !beginDesktopUpdateCheck()) {
+      return;
+    }
+
+    setSharedDesktopUpdateState({
+      ...(currentState || {}),
       status: 'checking',
       message: t('settings.desktopUpdateCheckingMessage'),
-    }));
+    });
 
     try {
       const nextState = await runtime.checkForUpdates();
-      setState(normalizeDesktopUpdateState(nextState));
+      setSharedDesktopUpdateState(normalizeDesktopUpdateState(nextState));
     } catch (error: unknown) {
-      setState({
+      setSharedDesktopUpdateState({
         status: 'error',
         message: error instanceof Error ? error.message : t('settings.desktopUpdateErrorMessage'),
       });
     } finally {
-      setIsChecking(false);
+      endDesktopUpdateCheck();
     }
   }, [runtime, t]);
 
@@ -96,27 +120,27 @@ export function useDesktopUpdate() {
 
   const installDownloadedUpdate = useCallback(async () => {
     if (!runtime?.installDownloadedUpdate) {
-      setState((current) => ({
-        ...(current || {}),
+      setSharedDesktopUpdateState({
+        ...(getSharedDesktopUpdateState() || {}),
         status: 'error',
         message: t('settings.desktopManualUnsupported'),
-      }));
+      });
       return;
     }
 
     try {
-      setState((current) => ({
-        ...(current || {}),
+      setSharedDesktopUpdateState({
+        ...(getSharedDesktopUpdateState() || {}),
         status: 'installing',
         message: t('settings.desktopUpdateInstallingMessage'),
-      }));
+      });
       await runtime.installDownloadedUpdate();
     } catch (error: unknown) {
-      setState((current) => ({
-        ...(current || {}),
+      setSharedDesktopUpdateState({
+        ...(getSharedDesktopUpdateState() || {}),
         status: 'error',
         message: error instanceof Error ? error.message : t('settings.desktopManualUnsupported'),
-      }));
+      });
     }
   }, [runtime, t]);
 
@@ -127,6 +151,7 @@ export function useDesktopUpdate() {
     canCheckDesktopUpdate,
     desktopAppVersion,
     state,
+    isBusy,
     isChecking,
     notice,
     checkForUpdates,

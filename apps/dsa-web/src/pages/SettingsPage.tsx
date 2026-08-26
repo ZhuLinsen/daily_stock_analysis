@@ -704,6 +704,7 @@ const SettingsPage: React.FC = () => {
     isDesktopRuntime,
     canCheckDesktopUpdate,
     desktopAppVersion,
+    isBusy: isDesktopUpdateBusy,
     isChecking: isCheckingDesktopUpdate,
     notice: desktopUpdateNotice,
     checkForUpdates: handleDesktopUpdateCheck,
@@ -1412,7 +1413,7 @@ const SettingsPage: React.FC = () => {
                         type="button"
                         variant="settings-secondary"
                         onClick={() => void handleDesktopUpdateCheck()}
-                        disabled={isCheckingDesktopUpdate}
+                        disabled={isDesktopUpdateBusy}
                         isLoading={isCheckingDesktopUpdate}
                         loadingText={t('settings.checkingDesktopUpdate')}
                       >

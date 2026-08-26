@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
-import { getDesktopUpdateBadgeTone, isBusyDesktopUpdateStatus } from '../../desktop/updateState';
+import { getDesktopUpdateBadgeTone } from '../../desktop/updateState';
 import { useDesktopUpdate } from '../../hooks/useDesktopUpdate';
 import { cn } from '../../utils/cn';
 import { Button } from '../common/Button';
@@ -16,6 +16,7 @@ export const DesktopUpdateIndicator: React.FC = () => {
     canCheckDesktopUpdate,
     desktopAppVersion,
     state,
+    isBusy,
     isChecking,
     notice,
     checkForUpdates,
@@ -25,7 +26,7 @@ export const DesktopUpdateIndicator: React.FC = () => {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const status = state?.status;
-  const busy = isChecking || isBusyDesktopUpdateStatus(status);
+  const busy = isBusy;
   const badgeTone = getDesktopUpdateBadgeTone(status);
   const currentVersion = state?.currentVersion || desktopAppVersion;
   const latestVersion = state?.latestVersion || state?.tagName;

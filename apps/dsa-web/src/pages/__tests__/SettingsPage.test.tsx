@@ -1,9 +1,11 @@
 import type React from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
 import type { SetupStatusResponse } from '../../types/systemConfig';
+import { DesktopUpdateIndicator } from '../../components/layout/DesktopUpdateIndicator';
+import { resetSharedDesktopUpdateState } from '../../desktop/updateStore';
 import SettingsPage from '../SettingsPage';
 
 const {
@@ -514,6 +516,33 @@ function renderSettingsPage(route = '/settings') {
   );
 }
 
+function renderDesktopUpdateEntries(route = '/settings') {
+  return render(
+    <MemoryRouter initialEntries={[route]}>
+      <>
+        <DesktopUpdateIndicator />
+        <SettingsPage />
+      </>
+    </MemoryRouter>,
+  );
+}
+
+function hangDesktopUpdateCheck() {
+  let resolveCheck: ((value: unknown) => void) | undefined;
+  desktopCheckForUpdates.mockImplementation(
+    () => new Promise((resolve) => {
+      resolveCheck = resolve;
+    }),
+  );
+  return {
+    async finish(value: unknown) {
+      await act(async () => {
+        resolveCheck?.(value);
+      });
+    },
+  };
+}
+
 describe('SettingsPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -626,6 +655,11 @@ describe('SettingsPage', () => {
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(mockedAnchorClick);
+    resetSharedDesktopUpdateState();
+  });
+
+  afterEach(() => {
+    resetSharedDesktopUpdateState();
   });
 
   it('renders category navigation and auth settings modules', async () => {
@@ -2666,5 +2700,107 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '重启安装' }));
 
     await waitFor(() => expect(desktopInstallDownloadedUpdate).toHaveBeenCalledTimes(1));
+  });
+
+  it('disables the settings check button while the header entry is already checking', async () => {
+    const pendingCheck = hangDesktopUpdateCheck();
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    renderDesktopUpdateEntries();
+
+    fireEvent.click(await screen.findByRole('button', { name: '桌面端更新' }));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: '桌面端更新' })).getByRole('button', { name: '检查更新' }),
+    );
+
+    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+
+    const settingsCard = await waitFor(() => {
+      const card = document.querySelector('#desktop-version-info');
+      expect(card).not.toBeNull();
+      expect(within(card as HTMLElement).getByRole('button', { name: '检查中...' })).toBeDisabled();
+      return card as HTMLElement;
+    });
+    const settingsButton = within(settingsCard).getByRole('button', { name: '检查中...' });
+
+    fireEvent.click(settingsButton);
+    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
+
+    await pendingCheck.finish({
+      status: 'up-to-date',
+      currentVersion: '3.12.0',
+      latestVersion: '3.12.0',
+      message: '当前桌面端已是最新版本。',
+    });
+  });
+
+  it('does not start a second check from the header while settings is already checking', async () => {
+    const pendingCheck = hangDesktopUpdateCheck();
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    renderDesktopUpdateEntries();
+
+    const settingsCard = await waitFor(() => {
+      const card = document.querySelector('#desktop-version-info');
+      expect(card).not.toBeNull();
+      return card as HTMLElement;
+    });
+    fireEvent.click(within(settingsCard).getByRole('button', { name: '检查更新' }));
+
+    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+    expect(within(settingsCard).getByRole('button', { name: '检查中...' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '桌面端更新' }));
+    expect(screen.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
+    fireEvent.click(within(settingsCard).getByRole('button', { name: '检查中...' }));
+    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
+
+    await pendingCheck.finish({
+      status: 'up-to-date',
+      currentVersion: '3.12.0',
+      latestVersion: '3.12.0',
+      message: '当前桌面端已是最新版本。',
+    });
+  });
+
+  it('keeps both entries busy when a late settings mount receives a stale idle snapshot', async () => {
+    const pendingCheck = hangDesktopUpdateCheck();
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    const view = render(
+      <MemoryRouter initialEntries={['/settings']}>
+        <DesktopUpdateIndicator />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '桌面端更新' }));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: '桌面端更新' })).getByRole('button', { name: '检查更新' }),
+    );
+    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+
+    view.rerender(
+      <MemoryRouter initialEntries={['/settings']}>
+        <>
+          <DesktopUpdateIndicator />
+          <SettingsPage />
+        </>
+      </MemoryRouter>,
+    );
+
+    const settingsCard = await waitFor(() => {
+      const card = document.querySelector('#desktop-version-info');
+      expect(card).not.toBeNull();
+      return card as HTMLElement;
+    });
+    expect(within(settingsCard).getByRole('button', { name: '检查中...' })).toBeDisabled();
+    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
+
+    await pendingCheck.finish({
+      status: 'up-to-date',
+      currentVersion: '3.12.0',
+      latestVersion: '3.12.0',
+      message: '当前桌面端已是最新版本。',
+    });
   });
 });

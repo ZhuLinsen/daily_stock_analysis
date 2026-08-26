@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetSharedDesktopUpdateState } from '../../../desktop/updateStore';
 import { DesktopUpdateIndicator } from '../DesktopUpdateIndicator';
 
 const {
@@ -57,10 +58,12 @@ describe('DesktopUpdateIndicator', () => {
     desktopOpenReleasePage.mockResolvedValue(true);
     desktopOnUpdateStateChange.mockImplementation(() => () => undefined);
     delete (window as { dsaDesktop?: unknown }).dsaDesktop;
+    resetSharedDesktopUpdateState();
   });
 
   afterEach(() => {
     delete (window as { dsaDesktop?: unknown }).dsaDesktop;
+    resetSharedDesktopUpdateState();
   });
 
   it('does not render in ordinary browser WebUI', () => {
