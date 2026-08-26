@@ -59,7 +59,8 @@ export const DesktopUpdateIndicator: React.FC = () => {
     return null;
   }
 
-  const tooltip = notice?.title
+  const tooltip = notice?.message
+    || notice?.title
     || t('layout.desktopUpdateIdleHint', { version: currentVersion || t('settings.desktopLatest') });
   const canOpenRelease = Boolean(state?.releaseUrl) && (status === 'update-available' || status === 'error');
   const canInstall = status === 'update-downloaded';

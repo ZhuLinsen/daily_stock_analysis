@@ -1,5 +1,6 @@
 import type React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
 import type { SetupStatusResponse } from '../../types/systemConfig';
@@ -505,6 +506,14 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+function renderSettingsPage(route = '/settings') {
+  return render(
+    <MemoryRouter initialEntries={[route]}>
+      <SettingsPage />
+    </MemoryRouter>,
+  );
+}
+
 describe('SettingsPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -620,7 +629,7 @@ describe('SettingsPage', () => {
   });
 
   it('renders category navigation and auth settings modules', async () => {
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '系统设置' })).toBeInTheDocument();
     expect(screen.getByText('认证与登录保护')).toBeInTheDocument();
@@ -631,7 +640,7 @@ describe('SettingsPage', () => {
   it('renders first-run setup checks and routes setup actions', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByTestId('first-run-setup-card')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
@@ -647,11 +656,30 @@ describe('SettingsPage', () => {
     expect(setActiveCategory).toHaveBeenNthCalledWith(3, 'notification');
   });
 
+  it('applies category from the search string and scrolls to desktop version info', async () => {
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    (window as { dsaDesktop?: unknown }).dsaDesktop = {
+      version: '3.12.0',
+      getUpdateState: desktopGetUpdateState,
+      checkForUpdates: desktopCheckForUpdates,
+      installDownloadedUpdate: desktopInstallDownloadedUpdate,
+      openReleasePage: desktopOpenReleasePage,
+      onUpdateStateChange: desktopOnUpdateStateChange,
+    };
+
+    renderSettingsPage('/settings?category=system#desktop-version-info');
+
+    await waitFor(() => expect(setActiveCategory).toHaveBeenCalledWith('system'));
+    expect(await screen.findByText('桌面端更新')).toBeInTheDocument();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+  });
+
   it('keeps first-run setup summary neutral while setup status is loading', async () => {
     getSetupStatus.mockImplementation(() => new Promise(() => undefined));
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('正在检查首次启动配置')).toBeInTheDocument();
     expect(screen.getByText('正在读取配置状态，完成后会显示缺失项和试跑入口。')).toBeInTheDocument();
@@ -664,7 +692,7 @@ describe('SettingsPage', () => {
     getSetupStatus.mockRejectedValue(new Error('setup status unavailable'));
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('暂无法判断配置状态')).toBeInTheDocument();
     expect(screen.getByText('配置状态读取失败。可先检查或修改设置项，稍后刷新检查结果。')).toBeInTheDocument();
@@ -734,7 +762,7 @@ describe('SettingsPage', () => {
       .mockImplementationOnce(() => latestRefresh.promise);
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('初始状态')).toBeInTheDocument();
 
@@ -764,7 +792,7 @@ describe('SettingsPage', () => {
   it('runs a brief setup smoke analysis with the first watchlist stock', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     await screen.findByText('基础配置已满足最小可用分析');
     fireEvent.click(screen.getByRole('button', { name: '简短试跑' }));
@@ -818,7 +846,7 @@ describe('SettingsPage', () => {
       ],
     });
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     await screen.findByText('还缺少 1 项：Agent 渠道');
     expect(screen.getByRole('button', { name: '简短试跑' })).toBeEnabled();
@@ -855,7 +883,7 @@ describe('SettingsPage', () => {
     });
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('还有基础配置需要处理')).toBeInTheDocument();
     expect(screen.getByText('还缺少 1 项：模型渠道')).toBeInTheDocument();
@@ -869,7 +897,7 @@ describe('SettingsPage', () => {
   });
 
   it('renders web build info in system settings', async () => {
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
     expect(screen.getByText('3.11.0')).toBeInTheDocument();
@@ -880,7 +908,7 @@ describe('SettingsPage', () => {
   it('renders desktop app version in system settings during desktop runtime', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
     expect(screen.getByText('桌面端版本')).toBeInTheDocument();
@@ -890,7 +918,7 @@ describe('SettingsPage', () => {
   it('keeps version grid at three columns when desktop runtime has no usable version', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '   ' };
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const section = (await screen.findByRole('heading', { name: '版本信息' })).closest('section');
     const versionGrid = section?.querySelector('div.grid.grid-cols-1.gap-3');
@@ -903,7 +931,7 @@ describe('SettingsPage', () => {
   it('ignores non-string desktop runtime version values without breaking render', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: 3120 };
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const section = (await screen.findByRole('heading', { name: '版本信息' })).closest('section');
     const versionGrid = section?.querySelector('div.grid.grid-cols-1.gap-3');
@@ -925,7 +953,7 @@ describe('SettingsPage', () => {
     });
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     await waitFor(() => {
       expect(desktopGetUpdateState).toHaveBeenCalledTimes(1);
@@ -960,7 +988,7 @@ describe('SettingsPage', () => {
       isFallbackVersion: true,
     });
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
     expect(screen.getByText(/当前构建未提供发布版本/)).toBeInTheDocument();
@@ -971,7 +999,7 @@ describe('SettingsPage', () => {
   it('resets local drafts from the page header button', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     // Clear the initial load call from useEffect
     vi.clearAllMocks();
@@ -1047,7 +1075,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByText('AGENT_ORCHESTRATOR_TIMEOUT_S')).toBeInTheDocument();
     expect(screen.getByText('AGENT_DEEP_RESEARCH_BUDGET')).toBeInTheDocument();
@@ -1078,7 +1106,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByTestId('settings-field-AGENT_BACKEND')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-field-AGENT_GENERATION_BACKEND')).not.toBeInTheDocument();
@@ -1169,7 +1197,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByText('AGENT_CONTEXT_COMPRESSION_PROFILE')).toBeInTheDocument();
     expect(screen.getByText('成本优先')).toBeInTheDocument();
@@ -1188,7 +1216,7 @@ describe('SettingsPage', () => {
 
     useSystemConfigMock.mockReturnValue(dirtyState);
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     // Clear initial useEffect load call
     vi.clearAllMocks();
@@ -1206,7 +1234,7 @@ describe('SettingsPage', () => {
   it('refreshes server state after intelligent import merges stock list', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'merge stock list' }));
 
@@ -1217,7 +1245,7 @@ describe('SettingsPage', () => {
   it('refreshes server state after llm channel editor saves', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'save llm channels' }));
 
@@ -1238,7 +1266,7 @@ describe('SettingsPage', () => {
       ],
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'emit llm draft' }));
 
@@ -1259,7 +1287,7 @@ describe('SettingsPage', () => {
   it('clears llm channel draft items after llm channel editor saves', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'emit llm draft' }));
     expect(await screen.findByTestId('generation-backend-status-items')).toHaveTextContent('LLM_CHANNELS=draft,backup');
@@ -1305,7 +1333,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    const { container } = render(<SettingsPage />);
+    const { container } = renderSettingsPage();
 
     const promptCacheSummary = screen.getByText('Provider Prompt Cache 高级设置').closest('summary');
     const promptCacheDetails = promptCacheSummary?.closest('details');
@@ -1348,7 +1376,7 @@ describe('SettingsPage', () => {
       getChangedItems: () => [{ key: 'SCREENING_ENABLED', value: 'false' }],
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
 
@@ -1368,7 +1396,7 @@ describe('SettingsPage', () => {
       getChangedItems: () => [{ key: 'SCREENING_ENABLED', value: 'true' }],
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
 
@@ -1386,7 +1414,7 @@ describe('SettingsPage', () => {
       getChangedItems: () => [{ key: 'LLM_CHANNELS', value: 'primary,backup' }],
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
 
@@ -1425,7 +1453,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: '开启选股' }));
 
@@ -1464,7 +1492,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByRole('button', { name: '开启选股' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '查看配置项' })).not.toBeInTheDocument();
@@ -1503,7 +1531,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    const { rerender } = render(<SettingsPage />);
+    const { rerender } = renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '选股' })).toBeInTheDocument();
@@ -1515,7 +1543,11 @@ describe('SettingsPage', () => {
         base: baseItems,
       },
     }));
-    rerender(<SettingsPage />);
+    rerender(
+      <MemoryRouter initialEntries={['/settings']}>
+        <SettingsPage />
+      </MemoryRouter>,
+    );
 
     expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '选股' })).not.toBeInTheDocument();
@@ -1527,7 +1559,11 @@ describe('SettingsPage', () => {
         base: baseItems,
       },
     }));
-    rerender(<SettingsPage />);
+    rerender(
+      <MemoryRouter initialEntries={['/settings']}>
+        <SettingsPage />
+      </MemoryRouter>,
+    );
 
     expect(screen.queryByRole('heading', { name: '选股' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
@@ -1635,7 +1671,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByTestId('scheduler-settings-card')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-field-SCHEDULE_ENABLED')).not.toBeInTheDocument();
@@ -1703,7 +1739,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(await screen.findByTestId('scheduler-run-now-button'));
 
@@ -1768,7 +1804,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByTestId('scheduler-last-success')).toHaveTextContent('-');
     expect(screen.getByTestId('scheduler-last-error')).toHaveTextContent('analysis failed');
@@ -1831,7 +1867,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
     expect(enabledCheckbox).toBeChecked();
@@ -1889,7 +1925,7 @@ describe('SettingsPage', () => {
         ],
       },
     }));
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
     expect(enabledCheckbox).toBeChecked();
@@ -1965,7 +2001,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const saveButton = screen.getByRole('button', { name: /保存配置/ });
     expect(saveButton).toBeDisabled();
@@ -2043,7 +2079,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const saveButton = screen.getByRole('button', { name: /保存配置/ });
     expect(saveButton).toBeDisabled();
@@ -2131,7 +2167,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('未启用')).toBeInTheDocument();
 
@@ -2172,7 +2208,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: '开启选股' }));
 
@@ -2299,7 +2335,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const llmEditorItems = await screen.findByTestId('llm-channel-editor-items');
     expect(llmEditorItems).toHaveTextContent('LLM_CHANNELS');
@@ -2318,7 +2354,7 @@ describe('SettingsPage', () => {
   it('renders notification test panel before notification fields', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'notification' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByText('通知测试面板:WECHAT_WEBHOOK_URL')).toBeInTheDocument();
     expect(screen.getByText('WECHAT_WEBHOOK_URL')).toBeInTheDocument();
@@ -2329,7 +2365,7 @@ describe('SettingsPage', () => {
   it('uses browser and backend logs in settings panel diagnostic hints outside desktop runtime', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'notification' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getAllByText(/浏览器开发者工具控制台与后端日志/)).toHaveLength(2);
     expect(screen.queryByText('desktop.log')).not.toBeInTheDocument();
@@ -2339,14 +2375,14 @@ describe('SettingsPage', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'notification' }));
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getAllByText('desktop.log')).toHaveLength(2);
     expect(screen.queryByText(/浏览器开发者工具控制台与后端日志/)).not.toBeInTheDocument();
   });
 
   it('renders env backup actions outside desktop runtime', () => {
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByRole('heading', { name: '配置备份' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出 .env' })).toBeInTheDocument();
@@ -2361,7 +2397,7 @@ describe('SettingsPage', () => {
       refreshStatus,
     });
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByText(/当前 Web 端未开启管理员鉴权/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出 .env' })).toBeDisabled();
@@ -2384,7 +2420,7 @@ describe('SettingsPage', () => {
       refreshStatus,
     });
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.queryByText(/当前 Web 端未开启管理员鉴权/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出 .env' })).not.toBeDisabled();
@@ -2394,7 +2430,7 @@ describe('SettingsPage', () => {
   it('exports saved env from config backup actions', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     vi.clearAllMocks();
 
@@ -2409,7 +2445,7 @@ describe('SettingsPage', () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     vi.clearAllMocks();
 
@@ -2422,7 +2458,7 @@ describe('SettingsPage', () => {
   it('reloads config after successful env import', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
 
-    const { container } = render(<SettingsPage />);
+    const { container } = renderSettingsPage();
 
     vi.clearAllMocks();
 
@@ -2516,7 +2552,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    const { container } = render(<SettingsPage />);
+    const { container } = renderSettingsPage();
 
     await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('未启用')).toBeInTheDocument();
@@ -2542,7 +2578,7 @@ describe('SettingsPage', () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
     load.mockResolvedValue(false);
 
-    const { container } = render(<SettingsPage />);
+    const { container } = renderSettingsPage();
 
     vi.clearAllMocks();
     load.mockResolvedValue(false);
@@ -2573,7 +2609,7 @@ describe('SettingsPage', () => {
     });
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText(/发现新版本:当前 3\.12\.0，最新 3\.13\.0/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '前往下载' })).toBeInTheDocument();
@@ -2582,7 +2618,7 @@ describe('SettingsPage', () => {
   it('checks desktop updates on demand and renders the latest-version state', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(await screen.findByRole('button', { name: '检查更新' }));
 
@@ -2600,7 +2636,7 @@ describe('SettingsPage', () => {
     });
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(await screen.findByRole('button', { name: '前往下载' }));
 
@@ -2623,7 +2659,7 @@ describe('SettingsPage', () => {
     });
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('更新已下载:新版本 3.13.0 已下载，可重启应用完成安装。')).toBeInTheDocument();
 

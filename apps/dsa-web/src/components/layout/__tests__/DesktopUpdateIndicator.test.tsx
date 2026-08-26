@@ -39,6 +39,11 @@ function renderIndicator() {
 
 describe('DesktopUpdateIndicator', () => {
   beforeEach(() => {
+    desktopGetUpdateState.mockReset();
+    desktopCheckForUpdates.mockReset();
+    desktopInstallDownloadedUpdate.mockReset();
+    desktopOpenReleasePage.mockReset();
+    desktopOnUpdateStateChange.mockReset();
     desktopGetUpdateState.mockResolvedValue({
       status: 'idle',
       currentVersion: '3.30.0',
@@ -134,5 +139,20 @@ describe('DesktopUpdateIndicator', () => {
     expect(desktopCheckForUpdates).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: '重新检查' }));
     await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+  });
+
+  it('surfaces download percent in the entry tooltip', async () => {
+    desktopGetUpdateState.mockResolvedValue({
+      status: 'downloading',
+      currentVersion: '3.30.0',
+      latestVersion: '3.31.0',
+      downloadPercent: 42,
+    });
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+    renderIndicator();
+
+    const entry = await screen.findByRole('button', { name: '桌面端更新' });
+    expect(entry).toHaveAttribute('title', expect.stringContaining('42%'));
+    expect(desktopCheckForUpdates).not.toHaveBeenCalled();
   });
 });

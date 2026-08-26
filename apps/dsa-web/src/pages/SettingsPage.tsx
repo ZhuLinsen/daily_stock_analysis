@@ -1,6 +1,7 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
 import { useAuth, useDesktopUpdate, useSystemConfig } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
@@ -677,6 +678,7 @@ const SchedulerSettingsCard: React.FC<SchedulerSettingsCardProps> = ({
 
 const SettingsPage: React.FC = () => {
   const { authEnabled, passwordChangeable } = useAuth();
+  const location = useLocation();
   const { language: uiLanguage, t } = useUiLanguage();
   const [envBackupActionError, setEnvBackupActionError] = useState<ParsedApiError | null>(null);
   const [envBackupActionSuccess, setEnvBackupActionSuccess] = useState<string>('');
@@ -800,11 +802,20 @@ const SettingsPage: React.FC = () => {
   }, [load]);
 
   useEffect(() => {
-    const requestedCategory = new URLSearchParams(window.location.search).get('category');
+    const requestedCategory = new URLSearchParams(location.search).get('category');
     if (requestedCategory && categories.some((category) => category.category === requestedCategory)) {
       setActiveCategory(requestedCategory);
     }
-  }, [categories, setActiveCategory]);
+  }, [categories, location.search, setActiveCategory]);
+
+  useEffect(() => {
+    if (isLoading || activeCategory !== 'system' || location.hash !== '#desktop-version-info') {
+      return;
+    }
+
+    const node = document.getElementById('desktop-version-info');
+    node?.scrollIntoView({ block: 'start' });
+  }, [activeCategory, isLoading, location.hash]);
 
   useEffect(() => {
     void refreshSetupStatus();
