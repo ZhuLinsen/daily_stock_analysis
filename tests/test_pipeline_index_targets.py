@@ -65,13 +65,18 @@ def _analysis_result(
     return result
 
 
-def _render_daily_report(result: AnalysisResult) -> str:
+def _render_aggregate_report(
+    result: AnalysisResult,
+    report_type: ReportType = ReportType.SIMPLE,
+) -> str:
     with patch(
         "src.notification.get_config",
-        return_value=Config(stock_list=[]),
+        return_value=Config(stock_list=[], report_renderer_enabled=False),
     ):
         service = NotificationService()
-        return service.generate_daily_report([result], report_date="2026-08-26")
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = service
+        return pipeline._generate_aggregate_report([result], report_type)
 
 
 def _analysis_pipeline(
@@ -441,9 +446,12 @@ class PipelineDailySourceAttributionTestCase(unittest.TestCase):
         history_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
         self.assertIs(history_result, result)
         self.assertEqual(history_result.data_sources, result.data_sources)
+        # V8 — persisted history uses canonical code plus registry Chinese name.
+        self.assertEqual(history_result.code, "sh000016")
+        self.assertEqual(history_result.name, "上证50")
         self.assertIn(
             "*📋 数据来源：analysis:litellm,daily:TencentFetcher*",
-            _render_daily_report(result),
+            _render_aggregate_report(result),
         )
 
     @patch("src.agent.factory.build_agent_executor")
@@ -491,9 +499,12 @@ class PipelineDailySourceAttributionTestCase(unittest.TestCase):
         history_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
         self.assertIs(history_result, result)
         self.assertEqual(history_result.data_sources, result.data_sources)
+        # V8 — persisted history uses canonical code plus registry Chinese name.
+        self.assertEqual(history_result.code, "csi930955")
+        self.assertEqual(history_result.name, "红利低波100")
         self.assertIn(
             "*📋 数据来源：agent:openai,daily:AkshareFetcher*",
-            _render_daily_report(result),
+            _render_aggregate_report(result, ReportType.BRIEF),
         )
 
     def test_v10_daily_source_deduplicates_complete_tokens_only(self) -> None:

@@ -421,6 +421,21 @@ class NotificationService(
 
         return empty_news_disclosure(result, language)
 
+    @staticmethod
+    def _append_data_sources_line(
+        lines: List[str],
+        result: AnalysisResult,
+        labels: Dict[str, str],
+    ) -> bool:
+        data_sources = getattr(result, "data_sources", None)
+        if not isinstance(data_sources, str):
+            return False
+        data_sources = data_sources.strip()
+        if not data_sources:
+            return False
+        lines.append(f"*📋 {labels['data_sources_label']}：{data_sources}*")
+        return True
+
     def generate_aggregate_report(
         self,
         results: List[AnalysisResult],
@@ -1071,8 +1086,7 @@ class NotificationService(
                 # 数据来源说明
                 if hasattr(result, 'search_performed') and result.search_performed:
                     report_lines.append("*🔍 已执行联网搜索*")
-                if hasattr(result, 'data_sources') and result.data_sources:
-                    report_lines.append(f"*📋 数据来源：{result.data_sources}*")
+                self._append_data_sources_line(report_lines, result, labels)
 
                 # 错误信息（如果有）
                 if not result.success and result.error_message:
@@ -1322,6 +1336,7 @@ class NotificationService(
                     news_disclosure = self._empty_news_disclosure(r, report_language)
                     if news_disclosure:
                         report_lines.append(news_disclosure)
+                    self._append_data_sources_line(report_lines, r, labels)
             report_lines.extend([
                 "",
                 "---",
@@ -1586,6 +1601,9 @@ class NotificationService(
                         if result.news_summary:
                             report_lines.append(f"{result.news_summary}")
                         report_lines.append("")
+
+                if self._append_data_sources_line(report_lines, result, labels):
+                    report_lines.append("")
 
                 report_lines.extend([
                     "---",
@@ -1929,6 +1947,8 @@ class NotificationService(
             news_disclosure = self._empty_news_disclosure(r, report_language)
             if news_disclosure:
                 lines.append(news_disclosure)
+            if self._append_data_sources_line(lines, r, labels):
+                lines.append("")
         lines.append("")
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         models = self._collect_models_used(results)
