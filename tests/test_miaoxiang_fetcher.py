@@ -333,3 +333,35 @@ class TestSupplementMarketDetection:
         manager = self._bare_manager([_FutuLike()])
         manager._supplement_capital_flow_from_fetchers("001205", payload, budget_seconds=5.0)
         assert _FutuLike.calls == 0  # 未声明 cn 能力,循环不调用
+
+
+class TestFlowWindowCompletenessContract:
+    """5日/10日窗口字段必须具备完整交易日数据才输出(评审 blocker OR-COR-mx-partial-window-sums-mislabelled)。"""
+
+    @staticmethod
+    def _fetcher_with_rows(monkeypatch, rows):
+        series = {
+            "table": {
+                "headName": [f"2026-08-{20 - i:02d}(日)" for i in range(len(rows))],
+                "f1": [f"{v}万" for v in rows],
+            },
+            "nameMap": {"f1": "主力净流入资金"},
+            "entityName": "测试",
+        }
+        return _fetcher_with_response(monkeypatch, _make_response([series]))
+
+    def test_two_rows_emit_no_window_fields(self, monkeypatch):
+        flow = self._fetcher_with_rows(monkeypatch, [100, 200]).get_capital_flow("001205")
+        assert flow["stock_flow"]["main_net_inflow"] == pytest.approx(1_000_000.0)
+        assert flow["stock_flow"]["inflow_5d"] is None
+        assert flow["stock_flow"]["inflow_10d"] is None
+
+    def test_five_rows_emit_only_5d(self, monkeypatch):
+        flow = self._fetcher_with_rows(monkeypatch, [100, 100, 100, 100, 100]).get_capital_flow("001205")
+        assert flow["stock_flow"]["inflow_5d"] == pytest.approx(5_000_000.0)
+        assert flow["stock_flow"]["inflow_10d"] is None
+
+    def test_ten_rows_emit_both_windows(self, monkeypatch):
+        flow = self._fetcher_with_rows(monkeypatch, [100] * 10).get_capital_flow("001205")
+        assert flow["stock_flow"]["inflow_5d"] == pytest.approx(5_000_000.0)
+        assert flow["stock_flow"]["inflow_10d"] == pytest.approx(10_000_000.0)

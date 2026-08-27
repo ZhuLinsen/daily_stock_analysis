@@ -348,8 +348,10 @@ class MiaoxiangFetcher(BaseFetcher):
         # headName 通常按日期倒序（最新在前），这里显式按日期排序保证聚合正确
         series.sort(key=lambda item: item[0], reverse=True)
         latest = series[0][1]
-        inflow_5d = sum(v for _, v in series[:5]) if len(series) >= 2 else None
-        inflow_10d = sum(v for _, v in series[:10]) if len(series) >= 6 else None
+        # 窗口字段必须拿到完整交易日数据才输出,避免把部分历史合计
+        # 误标为 5日/10日净流入(稀疏历史的次新股会注入错误中期信号)
+        inflow_5d = sum(v for _, v in series[:5]) if len(series) >= 5 else None
+        inflow_10d = sum(v for _, v in series[:10]) if len(series) >= 10 else None
 
         result["stock_flow"] = {
             "main_net_inflow": latest,
