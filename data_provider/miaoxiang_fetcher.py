@@ -92,6 +92,9 @@ class MiaoxiangFetcher(BaseFetcher):
     """妙想金融数据源（资金流 / 筹码分布补充源）"""
 
     name = "MiaoxiangFetcher"
+    # 声明该补充源可服务的资金流市场；探测与预算分配据此判断,
+    # 避免把仅支持其他市场的同名方法实现(如 FutuFetcher 仅港股)误判为本市场补充源
+    capital_flow_markets = {"cn"}
 
     def __init__(
         self,

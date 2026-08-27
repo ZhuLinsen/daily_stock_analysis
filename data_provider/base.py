@@ -4530,15 +4530,20 @@ class DataFetcherManager:
         stock_flow = payload.get("stock_flow") or {}
         if isinstance(stock_flow, dict) and any(v is not None for v in stock_flow.values()):
             return
+        # 仅尝试声明了本市场资金流能力的补充源,与预算探测口径一致
+        market = _market_tag(stock_code)
+        eligible_fetchers = [
+            f for f in self._get_fetchers_snapshot()
+            if callable(getattr(f, "get_capital_flow", None))
+            and market in (getattr(f, "capital_flow_markets", None) or set())
+        ]
         remaining = max(0.0, float(budget_seconds))
-        for fetcher in self._get_fetchers_snapshot():
-            getter = getattr(fetcher, "get_capital_flow", None)
-            if not callable(getter):
-                continue
+        for fetcher in eligible_fetchers:
             if remaining <= 0:
                 if isinstance(payload.get("errors"), list):
                     payload["errors"].append("capital_flow supplement budget exhausted")
                 break
+            getter = fetcher.get_capital_flow
             supplemental, sup_err, sup_cost_ms = self._run_with_timeout(
                 lambda f=getter: f(stock_code),
                 remaining,
@@ -4588,10 +4593,13 @@ class DataFetcherManager:
         # 主适配器（akshare/东财）在存在补充数据源时只分配部分预算；东财被限流时重试会耗尽
         # 全部预算，预留余量给实现了 get_capital_flow 的补充数据源（如妙想）。
         # 无补充数据源时保持原有全额预算，不影响未配置 MX_APIKEY 的部署。
-        has_capital_flow_supplement = any(
-            callable(getattr(f, "get_capital_flow", None))
-            for f in self._get_fetchers_snapshot()
-        )
+        market = _market_tag(stock_code)
+        cn_capital_flow_supplement_fetchers = [
+            f for f in self._get_fetchers_snapshot()
+            if callable(getattr(f, "get_capital_flow", None))
+            and market in (getattr(f, "capital_flow_markets", None) or set())
+        ]
+        has_capital_flow_supplement = bool(cn_capital_flow_supplement_fetchers)
         adapter_budget = timeout * 0.6 if (timeout > 0 and has_capital_flow_supplement) else timeout
         payload, err, cost_ms = self._run_with_retry(
             lambda: self._fundamental_adapter.get_capital_flow(stock_code),

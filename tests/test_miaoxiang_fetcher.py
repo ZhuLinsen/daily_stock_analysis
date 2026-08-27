@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from data_provider.base import DataFetchError
+from data_provider.base import DataFetchError, DataFetcherManager
 from data_provider.miaoxiang_fetcher import (
     MiaoxiangFetcher,
     _parse_money_yuan,
@@ -164,6 +164,7 @@ class TestCapitalFlowBudgetContract:
         class _SlowSupplementFetcher:
             name = "SlowSupplementFetcher"
             priority = 90
+            capital_flow_markets = {"cn"}
             calls = 0
 
             def get_capital_flow(self, stock_code):
@@ -263,3 +264,72 @@ class TestPayloadContract:
         flow = fetcher.get_capital_flow("001205")
         assert flow["status"] == "not_supported"
         assert flow["stock_flow"] == {}
+
+
+class TestSupplementMarketDetection:
+    """补充源探测必须按市场能力收窄:仅 Futu OpenD(港股)时不得削减 A 股主预算(评审 blocker)。"""
+
+    @staticmethod
+    def _bare_manager(fetchers):
+        import threading
+
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        manager._fetchers = list(fetchers)
+        manager._fetchers_lock = threading.RLock()
+        manager._fetchers_by_name = {f.name: f for f in fetchers}
+        manager._fetcher_call_locks = {}
+        manager._fetcher_call_locks_lock = manager._fetchers_lock
+        manager._stock_name_cache = {}
+        manager._stock_name_cache_lock = manager._fetchers_lock
+        manager._priority_override_names = set()
+        manager._fundamental_timeout_worker_limit = 8
+        manager._fundamental_timeout_slots = threading.BoundedSemaphore(8)
+        return manager
+
+    @staticmethod
+    def _captured_budgets(manager, budgets):
+        def fake_run_with_retry(task, timeout_seconds, task_name):
+            budgets.append((task_name, float(timeout_seconds)))
+            return {"stock_flow": {}, "sector_rankings": {"top": [], "bottom": []},
+                    "source_chain": [], "errors": [], "status": "not_supported"}, None, int(timeout_seconds * 1000)
+
+        manager._run_with_retry = fake_run_with_retry
+        return manager
+
+    def test_futu_only_does_not_cut_cn_adapter_budget(self):
+        class _FutuLike:
+            name = "FutuFetcher"
+            priority = 10
+
+            def get_capital_flow(self, stock_code):
+                return None  # 港股专用,A 股立即空返回
+
+        budgets = []
+        manager = self._captured_budgets(self._bare_manager([_FutuLike()]), budgets)
+        manager.get_capital_flow_context("001205", budget_seconds=10.0)
+        assert budgets and budgets[0] == ("capital_flow", 10.0)  # 全额预算,不被缩到 6
+
+    def test_miaoxiang_present_cuts_adapter_budget(self):
+        fetcher = MiaoxiangFetcher(api_key="test-key")
+        budgets = []
+        manager = self._captured_budgets(self._bare_manager([fetcher]), budgets)
+        # 让补充调用立即失败,聚焦预算断言
+        manager._run_with_timeout = lambda task, t, name: (None, f"{name} timeout", int(t * 1000))
+        manager.get_capital_flow_context("001205", budget_seconds=10.0)
+        assert budgets and budgets[0] == ("capital_flow", 6.0)  # 60% 留余量
+
+    def test_supplement_loop_skips_non_market_fetchers(self):
+        class _FutuLike:
+            name = "FutuFetcher"
+            priority = 10
+            calls = 0
+
+            def get_capital_flow(self, stock_code):
+                _FutuLike.calls += 1
+                return None
+
+        payload = {"stock_flow": {}, "sector_rankings": {"top": [], "bottom": []},
+                   "source_chain": [], "errors": []}
+        manager = self._bare_manager([_FutuLike()])
+        manager._supplement_capital_flow_from_fetchers("001205", payload, budget_seconds=5.0)
+        assert _FutuLike.calls == 0  # 未声明 cn 能力,循环不调用
