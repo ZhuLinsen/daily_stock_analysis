@@ -732,6 +732,8 @@ python main.py --stocks sh000016 --dry-run
 
 指数目标在 Pipeline 内以 `market=cn` 统一处理市场阶段、日线目标日期、断点续传日期、历史窗口与 `DecisionSignal`；筹码分布、基本面、板块归属、资金流、龙虎榜与公司事件等个股专属模块会被集中跳过。未登记的 `.CSI` 输入（如 `930956.CSI`）会在任何行情数据 provider 请求前明确拒绝，且不影响同批其他目标。搜索与报告使用注册表中文指数名称，不携带机器码。
 
+指数与 A 股共享交易日语义：启用交易日检查时，已登记指数（`sh`/`sz` 前缀或 `.CSI` alias）按 `market=cn` 参与 A 股休市过滤，A 股休市日指数会被跳过；市场仍无法识别的非指数 code 保持既有 fail-open 行为。`--force-run` 可强制在非交易日执行。
+
 指数实时行情使用独立固定链：腾讯 → 新浪 → 东财单股接口 → TickFlow；SH/SZ 指数按 `sh000016`/`sz399001` 显式符号请求，CSI 指数仅由东财单股接口提供（`2.{code}` secid）。显式指数身份全程保留，不会退化为同码股票行情。
 
 > **Phase 2 边界**：默认 `STOCK_LIST`、`--schedule`、Web/API 自动补全与分析入口、Bot 与 GitHub Actions 每日工作流暂不开放指数入口；本能力仅通过一次性 `--stocks` 提供。

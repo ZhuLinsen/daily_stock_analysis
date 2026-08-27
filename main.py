@@ -477,6 +477,15 @@ def _compute_trading_day_filter(
     filtered_codes = []
     for code in stock_codes:
         mkt = get_market_for_stock(code)
+        if mkt is None:
+            # 指数 code（如 sh000016/csi930955/930955.CSI）的 get_market_for_stock
+            # 返回 None，若直接 fail-open 保留，A 股休市日指数不会被过滤，破坏
+            # per-stock 交易日契约。对市场未知的 code 用 parse_analysis_target
+            # 判型，已登记指数按 market=cn 参与 CN 交易日过滤；仍未知的非指数
+            # code 继续 fail-open 保留。
+            target = parse_analysis_target(code)
+            if target.asset_type == ParseStatus.INDEX:
+                mkt = "cn"
         if mkt in open_markets or mkt is None:
             filtered_codes.append(code)
 
@@ -1494,6 +1503,10 @@ def main() -> int:
     stock_codes = None
     analysis_targets = None
     if args.stocks:
+        # 在解析 --stocks 前先 best-effort 刷新股票索引注册表，保证首次运行能吃到
+        # 刷新后的 alias/身份；失败/超时/禁用不阻断分析。仅 --stocks 入口需要，
+        # 其他模式由 run_full_analysis 内的既有刷新覆盖。
+        _refresh_stock_index_cache_for_analysis(config)
         tokens = [c for c in split_stock_list(args.stocks) if (c or "").strip()]
         targets = [parse_analysis_target(t) for t in tokens]
         # 指数目标使用 parser canonical；非指数目标沿用既有

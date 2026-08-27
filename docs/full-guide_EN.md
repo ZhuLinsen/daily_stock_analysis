@@ -672,6 +672,8 @@ python main.py --stocks sh000016 --dry-run
 
 Index targets are handled with `market=cn` throughout the Pipeline for market phase, daily-bar target date, resume/checkpoint date, history window, and `DecisionSignal`. Stock-only modules (chip distribution, fundamentals, board membership, capital flow, LHB, corporate events) are centrally skipped. An unregistered `.CSI` input (e.g. `930956.CSI`) is rejected before any market-data provider request without affecting other targets in the batch. Search and reports use the registry Chinese index name and never carry machine codes.
 
+Indices share the A-share trading-day semantics: when the trading-day check is enabled, registered indices (`sh`/`sz` prefix or `.CSI` alias) participate in CN holiday filtering as `market=cn`, so indices are skipped on A-share holidays; a market-unknown non-index code keeps the existing fail-open behavior. `--force-run` forces execution on non-trading days.
+
 Index realtime quotes use a dedicated fixed chain: Tencent → Sina → Eastmoney single-stock endpoint → TickFlow. SH/SZ indices are requested with explicit symbols (`sh000016`/`sz399001`); CSI indices are served only by the Eastmoney single-stock endpoint (`2.{code}` secid). The explicit index identity is preserved end-to-end and never degrades into the colliding stock quote.
 
 > **Phase 2 boundary**: default `STOCK_LIST`, `--schedule`, Web/API autocomplete and analysis entrypoints, Bot, and the GitHub Actions daily workflow do not yet expose index entrypoints; this capability is available only through the one-shot `--stocks` entry.
