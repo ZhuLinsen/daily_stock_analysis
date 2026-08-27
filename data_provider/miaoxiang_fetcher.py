@@ -28,7 +28,7 @@ from .base import (
     BaseFetcher,
     DataFetchError,
     _is_etf_code,
-    _market_tag,
+    _is_non_cn_request,
     normalize_stock_code,
 )
 from .realtime_types import ChipDistribution
@@ -82,17 +82,6 @@ def _parse_ratio(text: Any) -> Optional[float]:
         # 兜底：个别查询可能返回 83.24 但不带 % 号
         val = val / 100.0
     return val
-
-
-_US_SUFFIXES = (".US", ".N", ".O")  # 美股常用交易所后缀（_market_tag 目前不识别 .US）
-
-
-def _is_non_cn_symbol(stock_code: str) -> bool:
-    """组合市场门禁：仓库权威 _market_tag + 美股后缀兜底。"""
-    normalized = (stock_code or "").strip().upper()
-    if normalized.endswith(_US_SUFFIXES):
-        return True
-    return _market_tag(normalized) != "cn"
 
 
 class MiaoxiangFetcher(BaseFetcher):
@@ -257,7 +246,7 @@ class MiaoxiangFetcher(BaseFetcher):
             ChipDistribution（source=miaoxiang），失败抛 DataFetchError。
         """
         stock_code = normalize_stock_code(stock_code)
-        if _is_non_cn_symbol(stock_code) or _is_etf_code(stock_code):
+        if _is_non_cn_request(stock_code) or _is_etf_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 非A股个股，无筹码分布数据")
             return None
 
@@ -322,7 +311,7 @@ class MiaoxiangFetcher(BaseFetcher):
             "errors": [],
         }
         stock_code = normalize_stock_code(stock_code)
-        if _is_non_cn_symbol(stock_code) or _is_etf_code(stock_code):
+        if _is_non_cn_request(stock_code) or _is_etf_code(stock_code):
             return result
 
         try:

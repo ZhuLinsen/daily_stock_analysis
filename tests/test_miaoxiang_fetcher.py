@@ -453,3 +453,34 @@ class TestManagerLevelMarketGate:
         # 即使外层误判市场,补充循环也不得为美股后缀代码调用妙想
         manager._supplement_capital_flow_from_fetchers("AAPL.US", payload, budget_seconds=5.0)
         assert payload["stock_flow"] == {}
+
+
+class TestUnifiedBudgetProbeGate:
+    """外层预算探测必须与补充循环同口径:.US 请求不得被切走预算(评审 blocker OR-COR-mx-us-suffix-budget-probe-misclassified)。"""
+
+    def test_us_suffix_keeps_full_adapter_budget(self):
+        budgets = []
+        manager = TestSupplementMarketDetection._bare_manager([MiaoxiangFetcher(api_key="test-key")])
+
+        def fake_run_with_retry(task, timeout_seconds, task_name):
+            budgets.append((task_name, float(timeout_seconds)))
+            return {"stock_flow": {}, "sector_rankings": {"top": [], "bottom": []},
+                    "source_chain": [], "errors": [], "status": "not_supported"}, None, int(timeout_seconds * 1000)
+
+        manager._run_with_retry = fake_run_with_retry
+        manager.get_capital_flow_context("AAPL.US", budget_seconds=10.0)
+        assert budgets and budgets[0] == ("capital_flow", 10.0)  # 全额,不再被缩到 6.0
+
+    def test_cn_code_with_mx_still_gets_budget_split(self):
+        budgets = []
+        manager = TestSupplementMarketDetection._bare_manager([MiaoxiangFetcher(api_key="test-key")])
+
+        def fake_run_with_retry(task, timeout_seconds, task_name):
+            budgets.append((task_name, float(timeout_seconds)))
+            return {"stock_flow": {}, "sector_rankings": {"top": [], "bottom": []},
+                    "source_chain": [], "errors": [], "status": "not_supported"}, None, int(timeout_seconds * 1000)
+
+        manager._run_with_retry = fake_run_with_retry
+        manager._run_with_timeout = lambda task, t, name: (None, f"{name} timeout", int(t * 1000))
+        manager.get_capital_flow_context("001205", budget_seconds=10.0)
+        assert budgets and budgets[0] == ("capital_flow", 6.0)

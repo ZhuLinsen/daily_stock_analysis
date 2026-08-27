@@ -255,6 +255,21 @@ def _market_tag(code: str) -> str:
     return "cn"
 
 
+_US_EXCHANGE_SUFFIXES = (".US", ".N", ".O")  # _market_tag 目前不识别的美股交易所后缀
+
+
+def _is_non_cn_request(stock_code: str) -> bool:
+    """补充源预算/资格统一市场判定：_market_tag + 美股后缀兜底。
+
+    外层预算探测与补充循环必须使用同一口径，避免"预算被切走但补充
+    又被跳过"的不一致（_market_tag 不识别仓库支持的 .US 形态）。
+    """
+    normalized = (stock_code or "").strip().upper()
+    if normalized.endswith(_US_EXCHANGE_SUFFIXES):
+        return True
+    return _market_tag(normalized) != "cn"
+
+
 def is_bse_code(code: str) -> bool:
     """
     Check if the code is a Beijing Stock Exchange (BSE) A-share code.
@@ -4530,15 +4545,11 @@ class DataFetcherManager:
         stock_flow = payload.get("stock_flow") or {}
         if isinstance(stock_flow, dict) and any(v is not None for v in stock_flow.values()):
             return
-        # 仅尝试声明了本市场资金流能力的补充源,与预算探测口径一致。
-        # _market_tag 目前不识别 .US 等美股后缀,这里显式兜底,避免美股代码进入 cn 补充源
-        normalized_upper = (stock_code or "").strip().upper()
-        non_cn_request = normalized_upper.endswith((".US", ".N", ".O")) or _market_tag(stock_code) != "cn"
-        market = "cn" if not non_cn_request else _market_tag(stock_code)
-        eligible_fetchers = [] if non_cn_request else [
+        # 仅尝试声明了本市场资金流能力的补充源;与外层预算探测共用同一市场口径
+        eligible_fetchers = [] if _is_non_cn_request(stock_code) else [
             f for f in self._get_fetchers_snapshot()
             if callable(getattr(f, "get_capital_flow", None))
-            and market in (getattr(f, "capital_flow_markets", None) or set())
+            and "cn" in (getattr(f, "capital_flow_markets", None) or set())
         ]
         remaining = max(0.0, float(budget_seconds))
         for fetcher in eligible_fetchers:
@@ -4596,11 +4607,11 @@ class DataFetcherManager:
         # 主适配器（akshare/东财）在存在补充数据源时只分配部分预算；东财被限流时重试会耗尽
         # 全部预算，预留余量给实现了 get_capital_flow 的补充数据源（如妙想）。
         # 无补充数据源时保持原有全额预算，不影响未配置 MX_APIKEY 的部署。
-        market = _market_tag(stock_code)
-        cn_capital_flow_supplement_fetchers = [
+        non_cn_request = _is_non_cn_request(stock_code)
+        cn_capital_flow_supplement_fetchers = [] if non_cn_request else [
             f for f in self._get_fetchers_snapshot()
             if callable(getattr(f, "get_capital_flow", None))
-            and market in (getattr(f, "capital_flow_markets", None) or set())
+            and "cn" in (getattr(f, "capital_flow_markets", None) or set())
         ]
         has_capital_flow_supplement = bool(cn_capital_flow_supplement_fetchers)
         adapter_budget = timeout * 0.6 if (timeout > 0 and has_capital_flow_supplement) else timeout
