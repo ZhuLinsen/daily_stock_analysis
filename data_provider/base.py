@@ -4530,9 +4530,12 @@ class DataFetcherManager:
         stock_flow = payload.get("stock_flow") or {}
         if isinstance(stock_flow, dict) and any(v is not None for v in stock_flow.values()):
             return
-        # 仅尝试声明了本市场资金流能力的补充源,与预算探测口径一致
-        market = _market_tag(stock_code)
-        eligible_fetchers = [
+        # 仅尝试声明了本市场资金流能力的补充源,与预算探测口径一致。
+        # _market_tag 目前不识别 .US 等美股后缀,这里显式兜底,避免美股代码进入 cn 补充源
+        normalized_upper = (stock_code or "").strip().upper()
+        non_cn_request = normalized_upper.endswith((".US", ".N", ".O")) or _market_tag(stock_code) != "cn"
+        market = "cn" if not non_cn_request else _market_tag(stock_code)
+        eligible_fetchers = [] if non_cn_request else [
             f for f in self._get_fetchers_snapshot()
             if callable(getattr(f, "get_capital_flow", None))
             and market in (getattr(f, "capital_flow_markets", None) or set())

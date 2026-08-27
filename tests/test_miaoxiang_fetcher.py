@@ -365,3 +365,91 @@ class TestFlowWindowCompletenessContract:
         flow = self._fetcher_with_rows(monkeypatch, [100] * 10).get_capital_flow("001205")
         assert flow["stock_flow"]["inflow_5d"] == pytest.approx(5_000_000.0)
         assert flow["stock_flow"]["inflow_10d"] == pytest.approx(10_000_000.0)
+
+
+class TestMarketGatingContract:
+    """市场门禁必须使用仓库权威判定:所有非 A 股形态都不得触发妙想请求(评审 blocker OR-COR-mx-bare-hk-short-code-misrouted 及同类)。"""
+
+    NON_CN_CODES = [
+        "1810",            # 4位裸港股短码(stock_list_parser 归类为 HK)
+        "0001",            # 4位裸港股短码
+        "00700",           # 5位裸港股
+        "00700.HK",        # 后缀形式
+        "HK00700",         # 前缀形式
+        "AAPL",            # 美股裸码
+        "BRK.B",           # 美股带点
+        "AAPL.US",         # 美股后缀
+        "6758.T",          # 日股
+    ]
+
+    ETF_CODES = ["510300", "159915"]
+
+    def test_chip_skips_all_non_cn_without_http(self, monkeypatch):
+        calls = []
+        import data_provider.miaoxiang_fetcher as mx_mod
+
+        def spy_post(*a, **k):
+            calls.append(a)
+            raise AssertionError("非 A 股代码不得发起妙想请求")
+
+        monkeypatch.setattr(mx_mod.requests, "post", spy_post)
+        fetcher = mx_mod.MiaoxiangFetcher(api_key="test-key")
+        for code in self.NON_CN_CODES + self.ETF_CODES:
+            assert fetcher.get_chip_distribution(code) is None, code
+        assert calls == []
+
+    def test_capital_flow_skips_all_non_cn_without_http(self, monkeypatch):
+        import data_provider.miaoxiang_fetcher as mx_mod
+
+        monkeypatch.setattr(
+            mx_mod.requests, "post",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("非 A 股代码不得发起妙想请求")),
+        )
+        fetcher = mx_mod.MiaoxiangFetcher(api_key="test-key")
+        for code in self.NON_CN_CODES + self.ETF_CODES:
+            flow = fetcher.get_capital_flow(code)
+            assert flow["status"] == "not_supported" and flow["stock_flow"] == {}, code
+
+
+class TestManagerLevelMarketGate:
+    """manager 级:非 A 股(含 .US 后缀)不得进入 cn 补充循环(评审建议的 manager 级回归)。"""
+
+    def test_bare_hk_short_code_returns_none_at_manager_level(self, monkeypatch):
+        import threading
+
+        import data_provider.miaoxiang_fetcher as mx_mod
+
+        monkeypatch.setattr(
+            mx_mod.requests, "post",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("港股短码不得触发妙想请求")),
+        )
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        manager._fetchers = [mx_mod.MiaoxiangFetcher(api_key="test-key")]
+        manager._fetchers_lock = threading.RLock()
+        manager._fetchers_by_name = {"MiaoxiangFetcher": manager._fetchers[0]}
+        manager._fetcher_call_locks = {}
+        manager._fetcher_call_locks_lock = manager._fetchers_lock
+        manager._stock_name_cache = {}
+        manager._stock_name_cache_lock = manager._fetchers_lock
+        manager._priority_override_names = set()
+        # 港股短码走 manager 筹码链路:妙想被跳过,最终所有源失败返回 None
+        assert manager.get_chip_distribution("1810") is None
+
+    def test_us_suffix_never_enters_cn_supplement(self):
+        import threading
+
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        manager._fetchers = [MiaoxiangFetcher(api_key="test-key")]
+        manager._fetchers_lock = threading.RLock()
+        manager._fetchers_by_name = {"MiaoxiangFetcher": manager._fetchers[0]}
+        manager._fetcher_call_locks = {}
+        manager._fetcher_call_locks_lock = manager._fetchers_lock
+        manager._stock_name_cache = {}
+        manager._stock_name_cache_lock = manager._fetchers_lock
+        manager._priority_override_names = set()
+
+        payload = {"stock_flow": {}, "sector_rankings": {"top": [], "bottom": []},
+                   "source_chain": [], "errors": []}
+        # 即使外层误判市场,补充循环也不得为美股后缀代码调用妙想
+        manager._supplement_capital_flow_from_fetchers("AAPL.US", payload, budget_seconds=5.0)
+        assert payload["stock_flow"] == {}

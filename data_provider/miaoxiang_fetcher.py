@@ -24,7 +24,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import requests
 
-from .base import BaseFetcher, DataFetchError, normalize_stock_code
+from .base import (
+    BaseFetcher,
+    DataFetchError,
+    _is_etf_code,
+    _market_tag,
+    normalize_stock_code,
+)
 from .realtime_types import ChipDistribution
 
 logger = logging.getLogger(__name__)
@@ -38,17 +44,7 @@ MX_CACHE_TTL_SECONDS = 300.0
 MX_MIN_REQUEST_INTERVAL_SECONDS = 0.3
 
 
-def _is_hk_code(stock_code: str) -> bool:
-    return bool(re.match(r"^(hk|HK)?\d{5}$", stock_code.strip())) or stock_code.strip().lower().startswith("hk")
 
-
-def _is_us_code(stock_code: str) -> bool:
-    return bool(re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", stock_code.strip()))
-
-
-def _is_etf_code(stock_code: str) -> bool:
-    # 与 akshare_fetcher 语义一致：常见 ETF/指数代码段
-    return bool(re.match(r"^(sh|sz|bj)?(51|56|58|15|16|13|159|510|511|512|513|515|516|517|518|588)\d{3,4}$", stock_code.strip().lower()))
 
 
 def _parse_number(text: Any) -> Optional[float]:
@@ -86,6 +82,17 @@ def _parse_ratio(text: Any) -> Optional[float]:
         # 兜底：个别查询可能返回 83.24 但不带 % 号
         val = val / 100.0
     return val
+
+
+_US_SUFFIXES = (".US", ".N", ".O")  # 美股常用交易所后缀（_market_tag 目前不识别 .US）
+
+
+def _is_non_cn_symbol(stock_code: str) -> bool:
+    """组合市场门禁：仓库权威 _market_tag + 美股后缀兜底。"""
+    normalized = (stock_code or "").strip().upper()
+    if normalized.endswith(_US_SUFFIXES):
+        return True
+    return _market_tag(normalized) != "cn"
 
 
 class MiaoxiangFetcher(BaseFetcher):
@@ -250,7 +257,7 @@ class MiaoxiangFetcher(BaseFetcher):
             ChipDistribution（source=miaoxiang），失败抛 DataFetchError。
         """
         stock_code = normalize_stock_code(stock_code)
-        if _is_us_code(stock_code) or _is_hk_code(stock_code) or _is_etf_code(stock_code):
+        if _is_non_cn_symbol(stock_code) or _is_etf_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 非A股个股，无筹码分布数据")
             return None
 
@@ -315,7 +322,7 @@ class MiaoxiangFetcher(BaseFetcher):
             "errors": [],
         }
         stock_code = normalize_stock_code(stock_code)
-        if _is_us_code(stock_code) or _is_hk_code(stock_code) or _is_etf_code(stock_code):
+        if _is_non_cn_symbol(stock_code) or _is_etf_code(stock_code):
             return result
 
         try:
