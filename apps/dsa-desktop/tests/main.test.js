@@ -5,6 +5,7 @@ const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const POSIX_PATH_DELIMITER = ':';
 
@@ -27,6 +28,7 @@ function loadMainModule(t, options = {}) {
   };
   const fakeShell = {
     openExternal: async () => true,
+    ...(options.shell || {}),
   };
   const fakeIpcMain = {
     handle: (channel, handler) => {
@@ -43,6 +45,7 @@ function loadMainModule(t, options = {}) {
         on: () => undefined,
         send: () => undefined,
         setWindowOpenHandler: () => undefined,
+        getURL: () => 'file:///tmp/dsa-desktop-loading.html',
       },
       loadFile: async () => undefined,
       loadURL: async () => undefined,
@@ -102,6 +105,15 @@ function loadMainModule(t, options = {}) {
   const mainModule = require('../main.js');
   mainModule.__getIpcMainHandler = (channel) => ipcMainHandlers.get(channel);
   return mainModule;
+}
+
+function createDesktopIpcEvent(sender, url) {
+  return {
+    sender,
+    senderFrame: {
+      url,
+    },
+  };
 }
 
 test('parseSemver accepts stable and prerelease tags', (t) => {
@@ -177,6 +189,77 @@ test('buildDesktopShareImageUrl restricts rendering to the configured backend re
   assert.throws(
     () => mainModule.buildDesktopShareImageUrl('http://127.0.0.1:8123/', 0),
     /Invalid share image record ID/
+  );
+});
+
+test('isTrustedDesktopContentUrl only trusts the loading page and configured backend origin', (t) => {
+  const mainModule = loadMainModule(t);
+  const loadingPagePath = mainModule.getDesktopLoadingPagePath();
+  const loadingPageUrl = pathToFileURL(loadingPagePath).toString();
+
+  assert.equal(
+    mainModule.isTrustedDesktopContentUrl(loadingPageUrl, {
+      backendOrigin: 'http://127.0.0.1:8123',
+      loadingPagePath,
+    }),
+    true
+  );
+  assert.equal(
+    mainModule.isTrustedDesktopContentUrl('http://127.0.0.1:8123/settings?tab=updates', {
+      backendOrigin: 'http://127.0.0.1:8123',
+      loadingPagePath,
+    }),
+    true
+  );
+  assert.equal(
+    mainModule.isTrustedDesktopContentUrl('https://127.0.0.1:8123/settings', {
+      backendOrigin: 'http://127.0.0.1:8123',
+      loadingPagePath,
+    }),
+    false
+  );
+  assert.equal(
+    mainModule.isTrustedDesktopContentUrl('http://example.com:8123/', {
+      backendOrigin: 'http://127.0.0.1:8123',
+      loadingPagePath,
+    }),
+    false
+  );
+  assert.equal(
+    mainModule.isTrustedDesktopContentUrl('file:///tmp/other.html', {
+      backendOrigin: 'http://127.0.0.1:8123',
+      loadingPagePath,
+    }),
+    false
+  );
+});
+
+test('sanitizeExternalOpenUrl only allows normalized http and https destinations outside the app origin', (t) => {
+  const mainModule = loadMainModule(t);
+
+  assert.equal(
+    mainModule.sanitizeExternalOpenUrl(' https://example.com/docs?q=1#intro ', {
+      blockedOrigins: ['http://127.0.0.1:8123'],
+    }),
+    'https://example.com/docs?q=1#intro'
+  );
+  assert.equal(
+    mainModule.sanitizeExternalOpenUrl('http://127.0.0.1:8123/help', {
+      blockedOrigins: ['http://127.0.0.1:8123'],
+    }),
+    ''
+  );
+  assert.equal(
+    mainModule.sanitizeExternalOpenUrl('javascript:alert(1)', {
+      blockedOrigins: ['http://127.0.0.1:8123'],
+    }),
+    ''
+  );
+  assert.equal(
+    mainModule.sanitizeExternalOpenUrl('https://user:pass@example.com/private', {
+      blockedOrigins: ['http://127.0.0.1:8123'],
+    }),
+    ''
   );
 });
 
@@ -840,20 +923,24 @@ test('auto download prompt falls back to error when install path fails', async (
   fs.writeFileSync(envFile, 'RUN_MODE=desktop\n');
   fs.writeFileSync(uninstallPath, '');
 
+  const loadingPageUrl = pathToFileURL(mainModule.getDesktopLoadingPagePath()).toString();
+  const desktopWebContents = {
+    send: () => undefined,
+    getURL: () => loadingPageUrl,
+  };
   mainModule.__setMainWindowForTest({
     isDestroyed: () => false,
-    webContents: {
-      send: () => undefined,
-    },
+    webContents: desktopWebContents,
   });
+  const desktopEvent = createDesktopIpcEvent(desktopWebContents, loadingPageUrl);
 
-  await mainModule.__getIpcMainHandler('desktop:check-for-updates')();
-  let state = await mainModule.__getIpcMainHandler('desktop:get-update-state')();
+  await mainModule.__getIpcMainHandler('desktop:check-for-updates')(desktopEvent);
+  let state = await mainModule.__getIpcMainHandler('desktop:get-update-state')(desktopEvent);
   for (let idx = 0; idx < 12 && state.status !== mainModule.UPDATE_STATUS.ERROR; idx += 1) {
     await new Promise((resolve) => {
       setTimeout(resolve, 30);
     });
-    state = await mainModule.__getIpcMainHandler('desktop:get-update-state')();
+    state = await mainModule.__getIpcMainHandler('desktop:get-update-state')(desktopEvent);
   }
 
   assert.equal(state.status, mainModule.UPDATE_STATUS.ERROR);
@@ -923,14 +1010,18 @@ test('auto update backup copies Screening hotspot detail directories recursively
   fs.writeFileSync(uninstallPath, '');
   fs.writeFileSync(detailFile, '{"topic":"AI算力"}\n', 'utf-8');
 
+  const loadingPageUrl = pathToFileURL(mainModule.getDesktopLoadingPagePath()).toString();
+  const desktopWebContents = {
+    send: () => undefined,
+    getURL: () => loadingPageUrl,
+  };
   mainModule.__setMainWindowForTest({
     isDestroyed: () => false,
-    webContents: {
-      send: () => undefined,
-    },
+    webContents: desktopWebContents,
   });
+  const desktopEvent = createDesktopIpcEvent(desktopWebContents, loadingPageUrl);
 
-  await mainModule.__getIpcMainHandler('desktop:check-for-updates')();
+  await mainModule.__getIpcMainHandler('desktop:check-for-updates')(desktopEvent);
   for (let idx = 0; idx < 12 && !quitAndInstallArgs; idx += 1) {
     await new Promise((resolve) => {
       setTimeout(resolve, 30);
@@ -974,11 +1065,10 @@ test('desktop update backup and restore preserve generation and Agent backend en
   const backupRoot = path.join(userDataDir, '.dsa-desktop-update-backup');
   const envPath = path.join(appDir, '.env');
   const envContent = [
-    'GENERATION_BACKEND=codex_cli',
-    'GENERATION_FALLBACK_BACKEND=litellm',
-    'CODEX_CLI_PRESET=codex',
-    'AGENT_BACKEND=codex_app_server',
-    'AGENT_GENERATION_BACKEND=codex_cli',
+    'GENERATION_BACKEND=litellm',
+    'AGENT_BACKEND=auto',
+    'AGENT_ARCH=single',
+    'LITELLM_MODEL=openai/gpt-4o-mini',
     '',
   ].join('\n');
   let currentVersion = '3.12.0';
@@ -1002,7 +1092,7 @@ test('desktop update backup and restore preserve generation and Agent backend en
     },
   });
 
-  assert.equal(mainModule.readEnvFileValue(envPath, 'AGENT_BACKEND'), 'codex_app_server');
+  assert.equal(mainModule.readEnvFileValue(envPath, 'AGENT_BACKEND'), 'auto');
 
   t.after(() => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1344,17 +1434,20 @@ test('createWindow startup path does not throw ReferenceError after restore resu
   const resourcesPath = path.join(tempRoot, 'resources');
   const backupRoot = path.join(userDataDir, '.dsa-desktop-update-backup');
   const manifestPath = path.join(backupRoot, 'runtime-state.json');
+  const createdWindows = [];
 
   function fakeBrowserWindow() {
-    return {
+    const webContents = {
+      on: () => undefined,
+      setWindowOpenHandler: () => undefined,
+      send: () => undefined,
+      getURL: () => loadedUrls[loadedUrls.length - 1] || pathToFileURL(path.join(__dirname, '..', 'renderer', 'loading.html')).toString(),
+    };
+    const windowInstance = {
       isDestroyed: () => false,
       setBackgroundColor: () => undefined,
       once: () => undefined,
-      webContents: {
-        on: () => undefined,
-        setWindowOpenHandler: () => undefined,
-        send: () => undefined,
-      },
+      webContents,
       loadFile: async (file) => {
         loadedFiles.push(file);
         return undefined;
@@ -1364,6 +1457,8 @@ test('createWindow startup path does not throw ReferenceError after restore resu
         return undefined;
       },
     };
+    createdWindows.push(windowInstance);
+    return windowInstance;
   }
 
   const fakeBackendProcess = new EventEmitter();
@@ -1484,7 +1579,9 @@ test('createWindow startup path does not throw ReferenceError after restore resu
   assert.equal(updateCheckRequested, true);
   assert.equal(startupError, undefined);
   assert.equal(fs.existsSync(backupRoot), false);
-  const updateState = await mainModule.__getIpcMainHandler('desktop:get-update-state')();
+  const updateState = await mainModule.__getIpcMainHandler('desktop:get-update-state')(
+    createDesktopIpcEvent(createdWindows[0].webContents, loadedUrls[0])
+  );
   assert.notEqual(updateState.status, mainModule.UPDATE_STATUS.ERROR);
   assert.equal(updateState.updateMode, mainModule.UPDATE_MODE.AUTO);
 
@@ -1539,6 +1636,276 @@ test('manual desktop update check rejects overlapping in-flight requests', async
   assert.equal(started, 1);
   assert.equal(firstState.status, mainModule.UPDATE_STATUS.UPDATE_AVAILABLE);
   assert.equal(firstState.latestVersion, '3.13.0');
+});
+
+test('desktop IPC handlers require the trusted desktop window and origin', async (t) => {
+  const mainModule = loadMainModule(t);
+  const trustedWebContents = {
+    send: () => undefined,
+    getURL: () => 'http://127.0.0.1:8123/settings',
+  };
+  mainModule.__setMainWindowForTest({
+    isDestroyed: () => false,
+    webContents: trustedWebContents,
+  });
+  mainModule.__setDesktopBackendOriginForTest('http://127.0.0.1:8123');
+
+  const initialState = await mainModule.__getIpcMainHandler('desktop:get-update-state')(
+    createDesktopIpcEvent(trustedWebContents, 'http://127.0.0.1:8123/settings')
+  );
+  assert.equal(initialState.status, mainModule.UPDATE_STATUS.IDLE);
+  assert.equal(initialState.updateMode, mainModule.UPDATE_MODE.MANUAL);
+  await assert.rejects(
+    async () => mainModule.__getIpcMainHandler('desktop:get-update-state')(
+      createDesktopIpcEvent(trustedWebContents, 'https://example.com/phishing')
+    ),
+    /trusted desktop page/
+  );
+  await assert.rejects(
+    async () => mainModule.__getIpcMainHandler('desktop:render-share-image')(
+      createDesktopIpcEvent(trustedWebContents, 'https://example.com/phishing'),
+      17
+    ),
+    /trusted desktop page/
+  );
+  await assert.rejects(
+    async () => mainModule.__getIpcMainHandler('desktop:get-update-state')(
+      createDesktopIpcEvent(
+        {
+          getURL: () => 'http://127.0.0.1:8123/settings',
+        },
+        'http://127.0.0.1:8123/settings'
+      )
+    ),
+    /trusted desktop page/
+  );
+});
+
+test('createWindow blocks arbitrary navigation and only externalizes safe http/https links', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-nav-'));
+  const appDir = path.join(tempRoot, 'app');
+  const userDataDir = path.join(tempRoot, 'userData');
+  const exePath = path.join(appDir, 'Daily Stock Analysis.exe');
+  const uninstallPath = path.join(appDir, 'Uninstall Daily Stock Analysis.exe');
+  const resourcesPath = path.join(tempRoot, 'resources');
+  const originalResourcesPathDescriptor = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+  const loadedUrls = [];
+  const openedExternalUrls = [];
+  const createdWindows = [];
+  let startupError;
+
+  function fakeBrowserWindow() {
+    const listeners = new Map();
+    let windowOpenHandler = () => ({ action: 'deny' });
+    const webContents = {
+      on: (event, listener) => {
+        listeners.set(event, listener);
+      },
+      send: () => undefined,
+      setWindowOpenHandler: (handler) => {
+        windowOpenHandler = handler;
+      },
+      getURL: () => loadedUrls[loadedUrls.length - 1] || pathToFileURL(path.join(__dirname, '..', 'renderer', 'loading.html')).toString(),
+    };
+    const windowInstance = {
+      isDestroyed: () => false,
+      setBackgroundColor: () => undefined,
+      once: () => undefined,
+      webContents,
+      loadFile: async () => undefined,
+      loadURL: async (url) => {
+        loadedUrls.push(url);
+      },
+      __getListener: (event) => listeners.get(event),
+      __openWindow: (details) => windowOpenHandler(details),
+    };
+    createdWindows.push(windowInstance);
+    return windowInstance;
+  }
+  fakeBrowserWindow.getAllWindows = () => [];
+
+  const fakeBackendProcess = new EventEmitter();
+  fakeBackendProcess.pid = 4321;
+  fakeBackendProcess.exitCode = null;
+  fakeBackendProcess.signalCode = null;
+  fakeBackendProcess.stdout = new EventEmitter();
+  fakeBackendProcess.stderr = new EventEmitter();
+
+  const fakeWhenReady = () => ({
+    then: (handler) =>
+      Promise.resolve()
+        .then(() => handler())
+        .catch((error) => {
+          startupError = error;
+        }),
+  });
+
+  const fakeNet = {
+    createServer: () => {
+      const server = new EventEmitter();
+      server.once = (event, handler) => {
+        server.on(event, handler);
+        return server;
+      };
+      server.listen = () => {
+        process.nextTick(() => {
+          server.emit('listening');
+        });
+        return server;
+      };
+      server.close = (callback) => {
+        if (callback) {
+          process.nextTick(callback);
+        }
+      };
+      return server;
+    },
+  };
+
+  const fakeHttp = {
+    get: (_url, onResponse) => {
+      const request = new EventEmitter();
+      const response = new EventEmitter();
+      request.setTimeout = () => undefined;
+      request.destroy = () => undefined;
+      response.statusCode = 200;
+      response.resume = () => undefined;
+      process.nextTick(() => {
+        onResponse(response);
+      });
+      return request;
+    },
+  };
+
+  if (originalResourcesPathDescriptor) {
+    Object.defineProperty(process, 'resourcesPath', {
+      ...originalResourcesPathDescriptor,
+      value: resourcesPath,
+    });
+  } else {
+    process.resourcesPath = resourcesPath;
+  }
+
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(path.join(resourcesPath, 'backend', 'stock_analysis'), { recursive: true });
+  fs.writeFileSync(exePath, '');
+  fs.writeFileSync(uninstallPath, '');
+  fs.writeFileSync(path.join(resourcesPath, 'backend', 'stock_analysis', 'stock_analysis.exe'), '');
+
+  loadMainModule(t, {
+    platform: 'win32',
+    browserWindow: fakeBrowserWindow,
+    http: fakeHttp,
+    net: fakeNet,
+    shell: {
+      openExternal: async (url) => {
+        openedExternalUrls.push(url);
+        return true;
+      },
+    },
+    childProcess: {
+      spawn: () => fakeBackendProcess,
+    },
+    app: {
+      isPackaged: true,
+      getVersion: () => '3.12.0',
+      getPath: (name) => {
+        if (name === 'exe') {
+          return exePath;
+        }
+        return userDataDir;
+      },
+      whenReady: fakeWhenReady,
+      on: () => undefined,
+      quit: () => undefined,
+    },
+    electronUpdater: {
+      autoDownload: true,
+      autoInstallOnAppQuit: false,
+      on: () => undefined,
+      checkForUpdates: async () => undefined,
+    },
+  });
+
+  await new Promise((resolve) => {
+    setTimeout(resolve, 80);
+  });
+
+  assert.equal(startupError, undefined);
+  assert.equal(createdWindows.length, 1);
+  assert.equal(loadedUrls.length >= 1, true);
+
+  const mainWindow = createdWindows[0];
+  const backendOrigin = new URL(loadedUrls[0]).origin;
+  const willNavigate = mainWindow.__getListener('will-navigate');
+  assert.equal(typeof willNavigate, 'function');
+
+  let preventedTrustedNavigation = false;
+  willNavigate(
+    {
+      preventDefault: () => {
+        preventedTrustedNavigation = true;
+      },
+    },
+    `${backendOrigin}/portfolio`
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(preventedTrustedNavigation, false);
+  assert.deepEqual(openedExternalUrls, []);
+
+  let preventedExternalNavigation = false;
+  willNavigate(
+    {
+      preventDefault: () => {
+        preventedExternalNavigation = true;
+      },
+    },
+    ' https://example.com/docs?q=1#intro '
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(preventedExternalNavigation, true);
+  assert.deepEqual(openedExternalUrls, ['https://example.com/docs?q=1#intro']);
+
+  let preventedFileNavigation = false;
+  willNavigate(
+    {
+      preventDefault: () => {
+        preventedFileNavigation = true;
+      },
+    },
+    'file:///tmp/escape.html'
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(preventedFileNavigation, true);
+  assert.deepEqual(openedExternalUrls, ['https://example.com/docs?q=1#intro']);
+
+  assert.deepEqual(mainWindow.__openWindow({ url: `${backendOrigin}/reports/24` }), { action: 'deny' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(openedExternalUrls, ['https://example.com/docs?q=1#intro']);
+
+  assert.deepEqual(mainWindow.__openWindow({ url: 'https://example.com/report/24' }), { action: 'deny' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(openedExternalUrls, [
+    'https://example.com/docs?q=1#intro',
+    'https://example.com/report/24',
+  ]);
+
+  assert.deepEqual(mainWindow.__openWindow({ url: 'javascript:alert(1)' }), { action: 'deny' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(openedExternalUrls, [
+    'https://example.com/docs?q=1#intro',
+    'https://example.com/report/24',
+  ]);
+
+  t.after(() => {
+    if (originalResourcesPathDescriptor) {
+      Object.defineProperty(process, 'resourcesPath', originalResourcesPathDescriptor);
+    } else {
+      delete process.resourcesPath;
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
 });
 
 test('stopBackend waits for backend process exit', async (t) => {

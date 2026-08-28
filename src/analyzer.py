@@ -53,10 +53,8 @@ from src.llm.hermes import (
 from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
-    LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
     resolve_generation_backend_id,
-    resolve_generation_fallback_backend_id,
 )
 from src.llm.backend_factory import create_generation_backend
 from src.llm.generation_backend import (
@@ -72,7 +70,6 @@ from src.llm.usage import (
     normalize_litellm_usage,
     should_persist_usage_telemetry,
 )
-from src.llm.local_cli_backend import redact_diagnostic_text
 from src.llm.provider_cache import (
     apply_prompt_cache_hints,
     build_provider_cache_route_context,
@@ -2309,18 +2306,7 @@ class GeminiAnalyzer:
         self._litellm_available = False
         self._init_litellm()
         if not self._litellm_available:
-            try:
-                backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
-            except GenerationError:
-                backend_id = ""
-            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                logger.info(
-                    "Analyzer generation backend: %s configured; LiteLLM API keys are not "
-                    "required for stock analysis generation",
-                    backend_id,
-                )
-            else:
-                logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
+            logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
 
     def _get_runtime_config(self) -> Config:
         """Return the runtime config, honoring injected overrides for tests/pipeline."""
@@ -2475,18 +2461,7 @@ class GeminiAnalyzer:
             return
         litellm_model = config.litellm_model
         if not litellm_model:
-            backend_id = ""
-            try:
-                backend_id = resolve_generation_backend_id(config)
-            except GenerationError:
-                pass
-            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                logger.info(
-                    "Analyzer LiteLLM: LITELLM_MODEL not configured; using %s generation backend",
-                    backend_id,
-                )
-            else:
-                logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
+            logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
             return
 
         self._litellm_available = True
@@ -2581,33 +2556,21 @@ class GeminiAnalyzer:
         """Check whether the configured generation backend is available."""
         backend_error = self.get_generation_backend_config_error()
         if backend_error is not None:
-            return self._can_use_generation_fallback(backend_error)
-        backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
-        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-            return True
+            return False
         return self._litellm_runtime_available()
 
     def _litellm_runtime_available(self) -> bool:
         return self._router is not None or self._litellm_available
 
-    def _can_use_generation_fallback(self, backend_error: GenerationError) -> bool:
-        if not backend_error.fallbackable:
-            return False
-        try:
-            _backend_id, fallback_backend_id = self._resolve_generation_backend_config()
-        except GenerationError:
-            return False
-        return (
-            fallback_backend_id == LITELLM_BACKEND_ID
-            and self._litellm_runtime_available()
-        )
-
     def _resolve_generation_backend_config(self) -> Tuple[str, Optional[str]]:
-        """Resolve and validate generation backend ids."""
+        """Resolve and validate generation backend ids.
+
+        Backend-level fallback was removed together with the local CLI
+        backends; the second tuple element is always None for compatibility.
+        """
         config = self._get_runtime_config()
         backend_id = resolve_generation_backend_id(config)
-        fallback_backend_id = resolve_generation_fallback_backend_id(config)
-        return backend_id, fallback_backend_id
+        return backend_id, None
 
     def get_generation_backend_config_error(self) -> Optional[GenerationError]:
         """Return a structured backend config error, if the backend cannot run."""
@@ -2621,11 +2584,7 @@ class GeminiAnalyzer:
                 mixed_error = self._get_mixed_hermes_route_error(config, model)
                 if mixed_error is not None:
                     return mixed_error
-            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                backend = self._get_generation_backend(backend_id)
-                get_config_error = getattr(backend, "get_config_error", None)
-                if callable(get_config_error):
-                    return get_config_error()
+            del backend_id
         except GenerationError as exc:
             return exc
         return None
@@ -2759,8 +2718,7 @@ class GeminiAnalyzer:
     ) -> str:
         runtime_config = config or self._get_runtime_config()
         redactions = self._litellm_redaction_values_for_model(runtime_config, model)
-        sanitized = sanitize_hermes_error_text(exc, redaction_values=redactions)
-        return redact_diagnostic_text(sanitized, limit=500)
+        return sanitize_hermes_error_text(exc, redaction_values=redactions)
 
     def _dispatch_litellm_completion(
         self,
@@ -3188,103 +3146,18 @@ class GeminiAnalyzer:
     ) -> Union[Tuple[str, str, Dict[str, Any]], GenerationResult]:
         """Compatibility wrapper around the configured generation backend."""
         preflight_error = self.get_generation_backend_config_error()
-        if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
+        if preflight_error is not None:
             raise preflight_error
-        backend_id, fallback_backend_id = self._resolve_generation_backend_config()
-        try:
-            result = self._get_generation_backend(backend_id).generate(
-                prompt,
-                generation_config,
-                system_prompt=system_prompt,
-                stream=stream,
-                stream_progress_callback=stream_progress_callback,
-                response_validator=response_validator,
-                audit_context=audit_context,
-            )
-        except GenerationError as exc:
-            if not exc.fallbackable or not fallback_backend_id:
-                raise
-            try:
-                fallback_backend = self._get_generation_backend(fallback_backend_id)
-            except GenerationError as fallback_exc:
-                raise GenerationError(
-                    error_code=fallback_exc.error_code,
-                    stage="fallback",
-                    retryable=False,
-                    fallbackable=False,
-                    backend=fallback_backend_id,
-                    provider=fallback_exc.provider,
-                    details={
-                        "primary_error": {
-                            "error_code": exc.error_code.value,
-                            "backend": exc.backend,
-                            "provider": exc.provider,
-                            "stage": exc.stage,
-                            "details": exc.details,
-                        },
-                        "fallback_error": fallback_exc.details,
-                    },
-                ) from fallback_exc
-            try:
-                result = fallback_backend.generate(
-                    prompt,
-                    generation_config,
-                    system_prompt=system_prompt,
-                    stream=stream,
-                    stream_progress_callback=stream_progress_callback,
-                    response_validator=response_validator,
-                    audit_context=audit_context,
-                )
-            except _AllModelsFailedError:
-                raise
-            except GenerationError as fallback_exc:
-                fallback_identity = self._promote_error_identity(fallback_exc.details)
-                raise GenerationError(
-                    error_code=fallback_exc.error_code,
-                    stage="fallback",
-                    retryable=False,
-                    fallbackable=False,
-                    backend=fallback_backend_id,
-                    provider=fallback_exc.provider,
-                    details={
-                        "reason": "fallback_backend_failed",
-                        **fallback_identity,
-                        "primary_error": {
-                            "error_code": exc.error_code.value,
-                            "backend": exc.backend,
-                            "provider": exc.provider,
-                            "stage": exc.stage,
-                            "details": exc.details,
-                        },
-                        "fallback_error": {
-                            "error_code": fallback_exc.error_code.value,
-                            "backend": fallback_exc.backend,
-                            "provider": fallback_exc.provider,
-                            "stage": fallback_exc.stage,
-                            "details": fallback_exc.details,
-                        },
-                    },
-                ) from fallback_exc
-            except Exception as fallback_exc:
-                raise GenerationError(
-                    error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
-                    stage="fallback",
-                    retryable=False,
-                    fallbackable=False,
-                    backend=fallback_backend_id,
-                    provider=fallback_backend_id,
-                    details={
-                        "reason": "fallback_backend_failed",
-                        "primary_error": {
-                            "error_code": exc.error_code.value,
-                            "backend": exc.backend,
-                            "provider": exc.provider,
-                            "stage": exc.stage,
-                            "details": exc.details,
-                        },
-                        "fallback_error": str(fallback_exc),
-                    },
-                ) from fallback_exc
+        backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+        result = self._get_generation_backend(backend_id).generate(
+            prompt,
+            generation_config,
+            system_prompt=system_prompt,
+            stream=stream,
+            stream_progress_callback=stream_progress_callback,
+            response_validator=response_validator,
+            audit_context=audit_context,
+        )
         if return_generation_result:
             return result
         return result.text, result.model, result.usage
@@ -3730,7 +3603,7 @@ class GeminiAnalyzer:
                 name = STOCK_NAME_MAP.get(code, f'股票{code}')
 
         backend_error = self.get_generation_backend_config_error()
-        if backend_error is not None and not self._can_use_generation_fallback(backend_error):
+        if backend_error is not None:
             details = backend_error.details or {}
             field = str(details.get("field") or "GENERATION_BACKEND")
             requested_backend = str(details.get("requested_backend") or backend_error.backend)
@@ -3844,22 +3717,14 @@ class GeminiAnalyzer:
             config = self._get_runtime_config()
             backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
             model_name = config.litellm_model or "unknown"
-            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                model_name = backend_id
-                legacy_audit_context["transport"] = backend_id
             logger.info(f"========== AI 分析 {name}({code}) ==========")
             logger.info(f"[LLM配置] 模型: {model_name}")
             logger.info(f"[LLM配置] Prompt 长度: {len(prompt)} 字符")
             logger.info(f"[LLM配置] 是否包含新闻: {'是' if news_context else '否'}")
 
-            # 本地 CLI backend 是进程执行能力，不记录完整 prompt。
-            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                prompt_preview = redact_diagnostic_text(prompt, limit=500)
-            else:
-                prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
+            prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
             logger.info(f"[LLM Prompt 预览]\n{prompt_preview}")
-            if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
+            logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
 
             # 设置生成配置
             generation_config = {
@@ -3905,15 +3770,11 @@ class GeminiAnalyzer:
                 logger.info(
                     f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
                 )
-                if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                    response_preview = redact_diagnostic_text(response_text, limit=300)
-                else:
-                    response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
+                response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
                 logger.info(f"[LLM返回 预览]\n{response_preview}")
-                if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                    logger.debug(
-                        f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
-                    )
+                logger.debug(
+                    f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
+                )
                 # Keep parser/retry progress monotonic so task progress/message never "goes backward".
                 parse_progress = min(99, 93 + retry_count * 2)
                 _emit_progress(parse_progress, f"{name}：LLM 返回完成，正在解析 JSON")

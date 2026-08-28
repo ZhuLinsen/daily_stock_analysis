@@ -18,6 +18,7 @@ interface ShareImageButtonProps {
   recordId?: number;
   reportTitle: string;
   reportLanguage?: ReportLanguage;
+  iconOnly?: boolean;
   className?: string;
 }
 
@@ -39,6 +40,7 @@ export const ShareImageButton: React.FC<ShareImageButtonProps> = ({
   recordId,
   reportTitle,
   reportLanguage = 'zh',
+  iconOnly = false,
   className = '',
 }) => {
   const desktopRuntime = typeof window !== 'undefined' ? (window as DesktopWindow).dsaDesktop : undefined;
@@ -173,6 +175,7 @@ export const ShareImageButton: React.FC<ShareImageButtonProps> = ({
       : state === 'error'
         ? text.shareImageFailed
         : text.generateShareImage;
+  const iconClassName = iconOnly ? 'h-4 w-4' : 'h-5 w-5';
 
   return (
     <Tooltip content={tooltipText}>
@@ -181,14 +184,14 @@ export const ShareImageButton: React.FC<ShareImageButtonProps> = ({
           type="button"
           onClick={() => void handleShare()}
           disabled={state === 'loading'}
-          className={`home-surface-button flex h-10 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium text-secondary-text hover:text-foreground disabled:opacity-50 ${className}`}
+          className={`home-surface-button flex shrink-0 items-center justify-center whitespace-nowrap font-medium text-secondary-text hover:text-foreground disabled:opacity-50 ${iconOnly ? 'h-8 w-8 rounded-md p-0' : 'h-10 gap-2 rounded-lg px-3 text-sm'} ${className}`}
           aria-label={tooltipText}
         >
-          {state === 'loading' ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" /> : null}
-          {state === 'success' ? <Check className="h-5 w-5 text-success" aria-hidden="true" /> : null}
-          {state === 'error' ? <TriangleAlert className="h-5 w-5 text-danger" aria-hidden="true" /> : null}
-          {state === 'idle' || state === 'ready' ? <Share2 className="h-5 w-5" aria-hidden="true" /> : null}
-          <span>{tooltipText}</span>
+          {state === 'loading' ? <Loader2 className={`${iconClassName} animate-spin`} aria-hidden="true" /> : null}
+          {state === 'success' ? <Check className={`${iconClassName} text-success`} aria-hidden="true" /> : null}
+          {state === 'error' ? <TriangleAlert className={`${iconClassName} text-danger`} aria-hidden="true" /> : null}
+          {state === 'idle' || state === 'ready' ? <Share2 className={iconClassName} aria-hidden="true" /> : null}
+          <span className={iconOnly ? 'sr-only' : undefined}>{tooltipText}</span>
         </button>
       </span>
     </Tooltip>

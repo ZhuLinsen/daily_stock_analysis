@@ -127,6 +127,22 @@ describe('MarketReviewReportView', () => {
     expect(screen.queryByText('暂无摘要')).not.toBeInTheDocument();
   });
 
+  it('keeps the overview grid equal-width and groups report sections on one surface', () => {
+    render(
+      <MarketReviewReportView
+        report={englishMarketReviewReport}
+        content={'# Market Review\n\n## Overview\n\nQuiet session.\n\n## Risks\n\nWatch liquidity.'}
+        reportLanguage="en"
+      />,
+    );
+
+    expect(screen.getByTestId('market-review-insights')).toHaveClass('xl:grid-cols-4');
+    expect(screen.getByTestId('market-review-insights')).not.toHaveClass('xl:grid-cols-5');
+    const report = screen.getByTestId('market-review-report');
+    expect(report.closest('.home-panel-card')).not.toBeNull();
+    expect(report.querySelector('.home-panel-card')).toBeNull();
+  });
+
   it('renders structured data for every market in a combined market review payload', () => {
     render(
       <MarketReviewReportView
@@ -184,7 +200,7 @@ describe('MarketReviewReportView', () => {
     expect(screen.queryByText('Index')).not.toBeInTheDocument();
   });
 
-  it('shows "No data" when breadth is not available for a market review payload', () => {
+  it('does not show an empty breadth warning when index or sector data is available', () => {
     render(
       <MarketReviewReportView
         payload={noBreadthMarketReviewPayload}
@@ -194,13 +210,34 @@ describe('MarketReviewReportView', () => {
     );
 
     expect(screen.getByText('Structured Market Data')).toBeInTheDocument();
-    expect(screen.getByText('No data')).toBeInTheDocument();
+    expect(screen.queryByText('No data')).not.toBeInTheDocument();
     expect(screen.getByText('S&P 500')).toBeInTheDocument();
     expect(screen.getAllByText('Industry Sectors').length).toBeGreaterThan(0);
     expect(screen.getByText('Technology')).toBeInTheDocument();
     expect(screen.getByText('Energy')).toBeInTheDocument();
     expect(screen.queryByText('Advancers')).not.toBeInTheDocument();
     expect(screen.queryByText('Decliners')).not.toBeInTheDocument();
+  });
+
+  it('removes market-review markdown metadata from summary cards', () => {
+    const report: AnalysisReport = {
+      ...englishMarketReviewReport,
+      summary: {
+        ...englishMarketReviewReport.summary,
+        analysisSummary: '[dsa-market-region]: # (cn) # Market Review ## 2026-08-13 Market Review > Liquidity improved.',
+      },
+    };
+
+    render(
+      <MarketReviewReportView
+        report={report}
+        content="# Market Review"
+        reportLanguage="en"
+      />,
+    );
+
+    expect(screen.getByText('Liquidity improved.')).toBeInTheDocument();
+    expect(screen.queryByText(/dsa-market-region/i)).not.toBeInTheDocument();
   });
 
   it('formats structured market numbers to two decimal places', () => {

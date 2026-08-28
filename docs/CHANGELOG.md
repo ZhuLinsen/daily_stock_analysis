@@ -66,6 +66,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 桌面端将 `builder-util-runtime` 升级至 9.7.0，修复 CVE-2026-54673 涉及的 HTTP 重定向凭据头信息泄露风险。
 - [文档] 增加 xAI Grok 的 LiteLLM 配置示例、Grok Bot 集成指南和异步分析 Skill，明确分析模型与 AI teammate 两类接入边界。
 - [测试] 固定 yfinance 股息 TTM 与单股报告文件名的时间夹具，消除跨日期和合并后时间基准冲突造成的 CI 波动。
+- [改进] AI 设置与 Agent 设置收敛为 Provider API（LiteLLM）唯一集成方式：移除本地 CLI 生成后端（codex_cli/claude_code_cli/opencode_cli）与 Codex App Server 问股后端，旧取值在校验与状态接口返回结构化错误并提示改回 litellm。
+- [改进] 移除本地 CLI 生成相关配置项（GENERATION_FALLBACK_BACKEND、GENERATION_BACKEND_TIMEOUT_SECONDS、GENERATION_BACKEND_MAX_OUTPUT_BYTES、GENERATION_BACKEND_MAX_CONCURRENCY、LOCAL_CLI_BACKEND_MAX_CONCURRENCY、OPENCODE_CLI_MODEL、AGENT_GENERATION_BACKEND），并同步 .env.example、配置注册表、每日分析 workflow 与相关文档。
+- [改进] 问股 Chat 移除 Codex 专属交互（实验徽章、能力受限提示、服务端停止按钮与股票名索引解析），停止统一走本地中断；AGENT_ARCH=multi 与 litellm 组合恢复为有效配置。
+- [修复] 修复保存已移除生成后端 id 时状态接口因 GenerationCapabilities 缺少必填参数崩溃的问题，改为返回结构化 failed 状态（backend_not_configured）。
+- [修复] 生成后端冒烟测试的输出上限从 128 提升到 1024 tokens，修复推理型模型（如 GLM-5.3-Flash）因内部推理 token 挤占输出导致冒烟测试间歇性误报失败的问题。
+- [新功能] 新增虚拟交易员（本地模拟盘）：100 万虚拟资金按 A/港/美 40%/30%/30% 初始建仓并预留备用金，每日收盘后按均值回归策略自动买卖（真实收盘价模拟成交），每笔交易记录预测并在 T+N 对照真实走势复盘命中率；Web 新增「虚拟交易」页面展示持仓、净值曲线、流水与预测统计，支持 Windows 开机自启（`main.py --virtual-trader` + 任务计划脚本）。
+- [改进] AIHubMix 注册与引流链接统一使用 inferera.com，改善中国大陆网络直连体验。
+- [新功能] 新增交易日记/复盘：记录真实成交、对齐 AI 信号计算纪律分、FIFO 已实现盈亏与情绪复盘（`/api/v1/trade-journals`）。
+- [新功能] 新增市场温度计（恐惧贪婪指数）：多维度宽度/涨跌停/新高新低/北向/两融/换手合成 0-100 温度并持久化历史（`/api/v1/market-temperature`）。
+- [新功能] 新增大师视角多空辩论：巴菲特/索罗斯/利弗莫尔/彼得林奇/欧奈尔/缠论六位大师各自立场+论据，聚合成多空分歧度（`/api/v1/master-debate`）。
+- [改进] 市场温度计支持从实时数据源抓取 A 股全市场涨跌家数/涨跌停/指数涨跌自动计算并落库（`POST /api/v1/market-temperature/compute`），Web 页面新增“实时计算（全市场）”入口。
+- [改进] 市场温度本地自选股兜底计算改为每只股票各取最新一条日线并在结果中标注样本提示，且计算结果统一落库（`from-database` 由 GET 改为 POST）。
+- [修复] 市场温度 `latest` 在无快照时返回 200 + `null`，替代原先的 404，消除前端控制台报错。
+- [新功能] 新增大盘仪表盘 `POST /api/v1/market-temperature/dashboard`：一次聚合市场温度、主要指数、涨跌结构、热门板块/概念、板块主力资金流排行与候选观察池（热门板块领涨股，过滤 ST/退市），市场温度页同步展示。
+- [改进] 数据源新增行业板块成份股接口（东财优先、新浪兜底），用于从热门板块推导候选观察池。
+- [改进] 决策信号页空状态支持一键引导：自动读取自选股并发起异步个股分析，轮询进度并在完成后自动刷新信号列表，消除"首次进入无数据可看"的断崖体验。
+- [改进] 决策信号按股票筛选为空时，空状态直接提供"分析该股票并生成信号"入口（不再只引导分析整个自选股），分析完成后自动刷新该股信号。
+- [修复] 大师辩论 LLM 调用失败时不再返回 500：异常与空响应统一转为 400 并附可操作提示（提示检查/更换模型渠道），同时增加一次自动重试以对抗偶发空响应。
+- [修复] 大师辩论对长 prompt 不稳定的模型渠道增加上下文降级：带分析上下文失败时自动改用无上下文重试；前端辩论请求超时由 30 秒放宽到 300 秒以覆盖多次 LLM 调用。
+- [改进] 大师辩论历史记录支持点击打开：完整回放共识/分歧度/多空论点/六位大师立场（分歧度未持久化时按多数占比重算），并标识当前查看的是历史记录。
 
 ## [3.30.0] - 2026-08-09
 

@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 from api.v1.endpoints import agent
 from src.config import Config
-from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
 from src.services.agent_model_service import list_agent_model_deployments
 
 
@@ -51,22 +50,6 @@ class AgentModelsApiTestCase(unittest.TestCase):
         self.assertEqual(deployments[0]["source"], "litellm_config")
         self.assertTrue(deployments[0]["is_primary"])
         self.assertFalse("api_key" in str(deployments))
-
-    def test_models_endpoint_does_not_expose_local_cli_as_litellm_deployment(self) -> None:
-        for backend in sorted(GENERATION_ONLY_BACKEND_IDS):
-            with self.subTest(backend=backend):
-                config = _build_config(
-                    agent_generation_backend=backend,
-                    llm_models_source="litellm_config",
-                    llm_model_list=[
-                        {
-                            "model_name": "gemini-primary",
-                            "litellm_params": {"model": "gemini/gemini-2.5-flash", "api_key": "secret-1"},
-                        },
-                    ],
-                )
-
-                self.assertEqual(list_agent_model_deployments(config), [])
 
     def test_models_endpoint_returns_channel_deployments_with_api_base(self) -> None:
         config = _build_config(

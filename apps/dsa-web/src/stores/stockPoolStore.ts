@@ -3,7 +3,7 @@ import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
-import type { AnalysisReport, HistoryItem, HistoryListResponse, ReportLanguage, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
+import type { AnalysisReport, HistoryItem, HistoryListResponse, ReportLanguage, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskAccepted, TaskInfo } from '../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
 import { normalizeStockCode } from '../utils/stockCode';
 import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } from '../utils/validation';
@@ -112,7 +112,7 @@ export interface StockPoolState {
   toggleMarketReviewHistorySelection: (recordId: number) => void;
   toggleSelectAllVisibleMarketReviewHistory: () => void;
   deleteSelectedMarketReviewHistory: () => Promise<void>;
-  submitAnalysis: (options?: SubmitAnalysisOptions) => Promise<void>;
+  submitAnalysis: (options?: SubmitAnalysisOptions) => Promise<TaskAccepted | undefined>;
   setNotify: (notify: boolean) => void;
   syncTaskCreated: (task: TaskInfo) => void;
   syncTaskUpdated: (task: TaskInfo) => void;
@@ -907,7 +907,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
     const requestId = ++analyzeRequestSeq;
     try {
-      await analysisApi.analyzeAsync({
+      const response = await analysisApi.analyzeAsync({
         stockCode: normalizedStockCode,
         reportType: 'detailed',
         stockName,
@@ -921,6 +921,31 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
       if (requestId !== analyzeRequestSeq) {
         return;
+      }
+
+      if ('taskId' in response) {
+        const acceptedTask: TaskAccepted = response;
+        get().syncTaskCreated({
+          taskId: acceptedTask.taskId,
+          traceId: acceptedTask.traceId,
+          stockCode: normalizedStockCode,
+          stockName,
+          status: acceptedTask.status,
+          progress: 0,
+          message: acceptedTask.message,
+          reportType: 'detailed',
+          createdAt: new Date().toISOString(),
+          originalQuery: originalQuery || stockCodeInput,
+          selectionSource,
+          analysisPhase: acceptedTask.analysisPhase,
+          skills,
+        });
+
+        set({
+          query: '',
+          selectionSource: 'manual',
+        });
+        return acceptedTask;
       }
 
       set({

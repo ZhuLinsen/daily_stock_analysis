@@ -1299,6 +1299,298 @@ class SkillOpinionOutcomeRecord(Base):
     )
 
 
+class TradeJournalEntry(Base):
+    """个人交易日记条目：记录真实成交，用于复盘与纪律评估。"""
+
+    __tablename__ = 'trade_journal_entries'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(32), nullable=False, index=True)
+    name = Column(String(64))
+    market = Column(String(16), nullable=False, index=True)
+    side = Column(String(8), nullable=False, index=True)  # buy / sell
+    quantity = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    fee = Column(Float, nullable=False, default=0.0)
+    tax = Column(Float, nullable=False, default=0.0)
+    currency = Column(String(8), nullable=False, default='CNY')
+    trade_date = Column(Date, nullable=False, index=True)
+    thesis = Column(Text)
+    strategy = Column(String(64), index=True)
+    emotion = Column(String(16), index=True)
+    plan_followed = Column(Boolean)  # None 表示未声明
+    linked_signal_id = Column(Integer, index=True)
+    tags = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "side IN ('buy', 'sell')",
+            name='ck_trade_journal_side',
+        ),
+        CheckConstraint(
+            "emotion IS NULL OR emotion IN "
+            "('excited', 'calm', 'fearful', 'fomo', 'neutral', 'regretful')",
+            name='ck_trade_journal_emotion',
+        ),
+        CheckConstraint(
+            'quantity > 0',
+            name='ck_trade_journal_quantity_positive',
+        ),
+        CheckConstraint(
+            'price >= 0',
+            name='ck_trade_journal_price_nonnegative',
+        ),
+        Index('ix_trade_journal_market_code_date', 'market', 'code', 'trade_date'),
+    )
+
+
+class MarketTemperatureSnapshot(Base):
+    """市场温度计快照：0=极度恐惧，100=极度贪婪。"""
+
+    __tablename__ = 'market_temperature_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market = Column(String(16), nullable=False, index=True)
+    trade_date = Column(String(16), nullable=False, index=True)
+    score = Column(Integer, nullable=False)
+    label = Column(String(32), nullable=False)
+    dimensions_json = Column(Text)
+    reasons_json = Column(Text)
+    guidance = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'market',
+            'trade_date',
+            name='uix_market_temperature_market_date',
+        ),
+        CheckConstraint(
+            'score >= 0 AND score <= 100',
+            name='ck_market_temperature_score_range',
+        ),
+        Index('ix_market_temperature_market_date', 'market', 'trade_date'),
+    )
+
+
+class MasterDebateRecord(Base):
+    """大师视角多空辩论记录。"""
+
+    __tablename__ = 'master_debate_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(32), nullable=False, index=True)
+    name = Column(String(64))
+    market = Column(String(16), nullable=False, index=True)
+    consensus = Column(String(16), nullable=False)  # bull / bear / neutral
+    divergence = Column(Integer, nullable=False)
+    bull_count = Column(Integer, nullable=False, default=0)
+    bear_count = Column(Integer, nullable=False, default=0)
+    neutral_count = Column(Integer, nullable=False, default=0)
+    personas_json = Column(Text)
+    summary = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "consensus IN ('bull', 'bear', 'neutral')",
+            name='ck_master_debate_consensus',
+        ),
+        CheckConstraint(
+            'divergence >= 0 AND divergence <= 100',
+            name='ck_master_debate_divergence_range',
+        ),
+        Index('ix_master_debate_code_created', 'code', 'created_at'),
+    )
+
+
+class VirtualTraderAccount(Base):
+    """虚拟交易员账户：三币种现金分账，净值按配置汇率折算 CNY。"""
+
+    __tablename__ = 'virtual_trader_accounts'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), nullable=False, default='default')
+    initial_cash_cny = Column(Float, nullable=False)
+    cash_cny = Column(Float, nullable=False, default=0.0)
+    cash_hkd = Column(Float, nullable=False, default=0.0)
+    cash_usd = Column(Float, nullable=False, default=0.0)
+    status = Column(String(16), nullable=False, default='active', index=True)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('name', name='uix_virtual_trader_account_name'),
+        CheckConstraint("status IN ('active', 'reset')", name='ck_virtual_trader_account_status'),
+    )
+
+
+class VirtualTraderPosition(Base):
+    """虚拟交易员持仓：一条记录一只股票的当前开仓状态。"""
+
+    __tablename__ = 'virtual_trader_positions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(
+        Integer,
+        ForeignKey('virtual_trader_accounts.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    stock_code = Column(String(32), nullable=False, index=True)
+    name = Column(String(64))
+    market = Column(String(16), nullable=False, index=True)
+    currency = Column(String(8), nullable=False, default='CNY')
+    quantity = Column(Float, nullable=False, default=0.0)
+    avg_cost = Column(Float, nullable=False, default=0.0)
+    status = Column(String(16), nullable=False, default='open', index=True)
+    realized_pnl = Column(Float, nullable=False, default=0.0)
+    opened_at = Column(Date, index=True)
+    closed_at = Column(Date)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('open', 'closed')", name='ck_virtual_trader_position_status'),
+        CheckConstraint('quantity >= 0', name='ck_virtual_trader_position_quantity_nonnegative'),
+        UniqueConstraint('account_id', 'stock_code', 'status', name='uix_virtual_trader_position_key'),
+        Index('ix_virtual_trader_position_market', 'account_id', 'market', 'status'),
+    )
+
+
+class VirtualTraderTrade(Base):
+    """虚拟交易员成交流水：每笔虚拟成交含策略信号快照。"""
+
+    __tablename__ = 'virtual_trader_trades'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(
+        Integer,
+        ForeignKey('virtual_trader_accounts.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    position_id = Column(Integer, index=True)
+    stock_code = Column(String(32), nullable=False, index=True)
+    market = Column(String(16), nullable=False, index=True)
+    side = Column(String(8), nullable=False, index=True)  # buy / sell
+    quantity = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)
+    fee = Column(Float, nullable=False, default=0.0)
+    currency = Column(String(8), nullable=False, default='CNY')
+    reason = Column(Text)
+    signal_snapshot_json = Column(Text)
+    trade_date = Column(Date, nullable=False, index=True)
+    traded_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    __table_args__ = (
+        CheckConstraint("side IN ('buy', 'sell')", name='ck_virtual_trader_trade_side'),
+        CheckConstraint('quantity > 0', name='ck_virtual_trader_trade_quantity_positive'),
+        CheckConstraint('price > 0', name='ck_virtual_trader_trade_price_positive'),
+        Index('ix_virtual_trader_trade_account_date', 'account_id', 'trade_date'),
+    )
+
+
+class VirtualTraderPrediction(Base):
+    """虚拟交易员预测记录：T+N 对照真实走势复盘 hit/miss。"""
+
+    __tablename__ = 'virtual_trader_predictions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(
+        Integer,
+        ForeignKey('virtual_trader_accounts.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    trade_id = Column(Integer, ForeignKey('virtual_trader_trades.id'), nullable=False, index=True)
+    stock_code = Column(String(32), nullable=False, index=True)
+    market = Column(String(16), nullable=False, index=True)
+    direction = Column(String(8), nullable=False)  # up / down
+    anchor_date = Column(Date, nullable=False, index=True)
+    horizon_days = Column(Integer, nullable=False, default=10)
+    target_price = Column(Float, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    rationale = Column(Text)
+    status = Column(String(16), nullable=False, default='pending', index=True)
+    outcome = Column(String(16), index=True)
+    actual_return_pct = Column(Float)
+    window_high = Column(Float)
+    window_low = Column(Float)
+    evaluated_at = Column(DateTime)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        CheckConstraint("direction IN ('up', 'down')", name='ck_virtual_trader_prediction_direction'),
+        CheckConstraint(
+            "status IN ('pending', 'evaluated', 'unable')",
+            name='ck_virtual_trader_prediction_status',
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('hit', 'miss', 'unable')",
+            name='ck_virtual_trader_prediction_outcome',
+        ),
+        CheckConstraint(
+            "(status = 'pending' AND outcome IS NULL AND actual_return_pct IS NULL) "
+            "OR (status IN ('evaluated', 'unable') AND outcome IS NOT NULL)",
+            name='ck_virtual_trader_prediction_state_fields',
+        ),
+        CheckConstraint('horizon_days > 0', name='ck_virtual_trader_prediction_horizon_positive'),
+        Index('ix_virtual_trader_prediction_pending', 'status', 'anchor_date'),
+    )
+
+
+class VirtualTraderSnapshot(Base):
+    """虚拟交易员每日净值快照：净值曲线与绩效统计数据源。"""
+
+    __tablename__ = 'virtual_trader_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(
+        Integer,
+        ForeignKey('virtual_trader_accounts.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    trade_date = Column(Date, nullable=False, index=True)
+    cash_json = Column(Text)              # {"cny":..,"hkd":..,"usd":..}
+    positions_value_json = Column(Text)   # {"600519": {...}, ...}
+    total_value_cny = Column(Float, nullable=False)
+    daily_return_pct = Column(Float)
+    positions_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('account_id', 'trade_date', name='uix_virtual_trader_snapshot_date'),
+    )
+
+
+class VirtualTraderRun(Base):
+    """虚拟交易员每日运行日志：每市场每日一条，用于幂等与排障。"""
+
+    __tablename__ = 'virtual_trader_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_date = Column(Date, nullable=False, index=True)
+    market = Column(String(16), nullable=False, index=True)
+    status = Column(String(16), nullable=False, default='running', index=True)
+    decisions_json = Column(Text)
+    error = Column(Text)
+    started_at = Column(DateTime, default=utc_naive_now)
+    finished_at = Column(DateTime)
+
+    __table_args__ = (
+        UniqueConstraint('run_date', 'market', name='uix_virtual_trader_run_market_date'),
+        CheckConstraint(
+            "status IN ('running', 'success', 'skipped', 'failed')",
+            name='ck_virtual_trader_run_status',
+        ),
+    )
+
+
 class _DatabaseManagerMeta(type):
     """Serialize DatabaseManager construction across __new__ and __init__."""
 

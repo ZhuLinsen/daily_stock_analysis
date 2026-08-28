@@ -26,12 +26,10 @@ from src.config import (
     resolve_llm_channel_protocol,
 )
 from src.llm.backend_registry import (
-    LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
     SUPPORTED_GENERATION_BACKENDS,
     normalize_backend_id,
     resolve_generation_backend_id,
-    resolve_generation_fallback_backend_id,
 )
 from src.llm.generation_backend import GenerationCapabilities, GenerationError, GenerationErrorCode
 from src.llm.hermes import (
@@ -40,20 +38,6 @@ from src.llm.hermes import (
     HERMES_DEFAULT_PROTOCOL,
     is_reserved_hermes_name,
     parse_hermes_channel,
-)
-from src.llm.local_cli_backend import (
-    DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
-    DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
-    DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
-    DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
-    MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
-    MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
-    MAX_LOCAL_CLI_OUTPUT_BYTES,
-    MAX_LOCAL_CLI_TIMEOUT_SECONDS,
-    LocalCliGenerationBackend,
-    effective_local_cli_concurrency,
-    redact_diagnostic_text,
-    resolve_local_cli_preset,
 )
 
 HealthStatus = str
@@ -74,34 +58,12 @@ class _NumericConfigSpec:
     maximum: int
 
 
-_GENERATION_BACKEND_MAX_CONCURRENCY_SPEC = _NumericConfigSpec(
-    "GENERATION_BACKEND_MAX_CONCURRENCY",
-    DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
+_SMOKE_TIMEOUT_SPEC = _NumericConfigSpec(
+    "timeout_seconds",
+    300,
     1,
-    MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
+    3600,
 )
-_LOCAL_CLI_NUMERIC_SPECS = (
-    _NumericConfigSpec(
-        "GENERATION_BACKEND_TIMEOUT_SECONDS",
-        DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
-        1,
-        MAX_LOCAL_CLI_TIMEOUT_SECONDS,
-    ),
-    _NumericConfigSpec(
-        "GENERATION_BACKEND_MAX_OUTPUT_BYTES",
-        DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
-        1,
-        MAX_LOCAL_CLI_OUTPUT_BYTES,
-    ),
-    _GENERATION_BACKEND_MAX_CONCURRENCY_SPEC,
-    _NumericConfigSpec(
-        "LOCAL_CLI_BACKEND_MAX_CONCURRENCY",
-        DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
-        1,
-        MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
-    ),
-)
-_LITELLM_NUMERIC_SPECS = (_GENERATION_BACKEND_MAX_CONCURRENCY_SPEC,)
 
 
 def _as_error_code(value: Any) -> Optional[str]:
@@ -156,12 +118,7 @@ def _validate_int_config_value(*, backend_id: str, value: Any, spec: _NumericCon
 
 
 def _parse_smoke_timeout(value: Optional[float], *, backend_id: str) -> int:
-    spec = _NumericConfigSpec(
-        "timeout_seconds",
-        DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
-        1,
-        MAX_LOCAL_CLI_TIMEOUT_SECONDS,
-    )
+    spec = _SMOKE_TIMEOUT_SPEC
     if value is None:
         return spec.default
     if isinstance(value, float) and not value.is_integer():
@@ -212,49 +169,20 @@ class GenerationBackendStatusService:
                 "backends": [primary],
             }
 
-        fallback_error: Optional[GenerationError] = None
-        try:
-            fallback_id = resolve_generation_fallback_backend_id(config)
-        except GenerationError as exc:
-            fallback_id = str(
-                exc.details.get("requested_backend")
-                or exc.backend
-                or getattr(config, "generation_fallback_backend", "")
-                or "unknown"
-            )
-            fallback_error = exc
-
+        # Backend-level fallback was removed with the local CLI backends;
+        # provider-API model fallback inside LiteLLM is unaffected.
         primary = self._build_status(
             backend_id=primary_id,
             is_primary=True,
-            fallback_target=fallback_id,
+            fallback_target=None,
             health_status="not_tested",
         )
-        if fallback_error is not None:
-            fallback = self._status_for_error(
-                backend_id=fallback_id,
-                is_primary=False,
-                fallback_target=None,
-                error=fallback_error,
-            )
-        elif fallback_id:
-            fallback = self._build_status(
-                backend_id=fallback_id,
-                is_primary=False,
-                fallback_target=None,
-                health_status="not_tested",
-            )
-        else:
-            fallback = None
-        backends = [primary]
-        if fallback is not None:
-            backends.append(fallback)
         return {
             "primary_backend_id": primary_id,
-            "fallback_backend_id": fallback_id,
+            "fallback_backend_id": None,
             "primary": primary,
-            "fallback": fallback,
-            "backends": backends,
+            "fallback": None,
+            "backends": [primary],
         }
 
     def smoke_test(
@@ -321,7 +249,7 @@ class GenerationBackendStatusService:
             return {
                 "success": False,
                 "mode": normalized_mode,
-                "message": redact_diagnostic_text(str(exc) or error.message, limit=500),
+                "message": str(exc) or error.message,
                 "status": status,
             }
 
@@ -389,7 +317,10 @@ class GenerationBackendStatusService:
         result = analyzer._get_generation_backend(request.backend_id).generate(
             prompt,
             {
-                "max_tokens": 128,
+                # Reasoning models spend completion tokens on internal thinking
+                # before the visible answer; a tight cap truncates the payload
+                # and makes the strict smoke validator misreport failures.
+                "max_tokens": 1024,
                 "temperature": 0,
                 "timeout": request.timeout_seconds,
             },
@@ -456,7 +387,7 @@ class GenerationBackendStatusService:
         if health_status == "not_tested" and cheap_error is not None:
             current_health = "failed"
         capabilities = self._capabilities_for_backend(backend_id)
-        backend_type = "local_cli" if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS else "litellm"
+        backend_type = "litellm"
         return {
             "backend_id": backend_id,
             "backend_type": backend_type,
@@ -469,7 +400,7 @@ class GenerationBackendStatusService:
             "supports_vision": capabilities.supports_vision,
             "is_primary": is_primary,
             "fallback_target": fallback_target,
-            "max_concurrency": self._max_concurrency_for_backend(backend_id, config),
+            "max_concurrency": 1,
             "usage_available": backend_id == LITELLM_BACKEND_ID,
             "last_error_code": _as_error_code(status_error.error_code) if status_error else None,
             "last_error_message": status_error.message if status_error else None,
@@ -492,24 +423,20 @@ class GenerationBackendStatusService:
         )
 
     def _cheap_check_error(self, backend_id: str, config: Any) -> Optional[GenerationError]:
-        numeric_error = self._numeric_config_error_for_backend(backend_id)
-        if numeric_error is not None:
-            return numeric_error
-        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-            preset = resolve_local_cli_preset(backend_id)
-            return LocalCliGenerationBackend(config, preset_id=backend_id, preset=preset).get_config_error()
+        del config
         if backend_id == LITELLM_BACKEND_ID:
             validation_error = self._validation_issue_error(backend_id)
             if validation_error is not None:
                 return validation_error
-            route_error = self._litellm_route_error(config)
+            route_error = self._litellm_route_error(self._build_backend_config())
             if route_error is not None:
                 return route_error
-            model = str(getattr(config, "litellm_model", "") or "").strip()
-            model_list = getattr(config, "llm_model_list", []) or []
+            cfg = self._build_backend_config()
+            model = str(getattr(cfg, "litellm_model", "") or "").strip()
+            model_list = getattr(cfg, "llm_model_list", []) or []
             has_model_list = bool(model_list)
             has_keys = any(
-                getattr(config, attr, None)
+                getattr(cfg, attr, None)
                 for attr in ("gemini_api_keys", "anthropic_api_keys", "openai_api_keys", "deepseek_api_keys")
             )
             if model or has_model_list or has_keys:
@@ -618,18 +545,6 @@ class GenerationBackendStatusService:
             },
         )
 
-    def _numeric_config_error_for_backend(self, backend_id: str) -> Optional[GenerationError]:
-        specs = _LOCAL_CLI_NUMERIC_SPECS if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS else _LITELLM_NUMERIC_SPECS
-        for spec in specs:
-            error = _validate_int_config_value(
-                backend_id=backend_id,
-                value=self._effective_map.get(spec.key),
-                spec=spec,
-            )
-            if error is not None:
-                return error
-        return None
-
     def _validation_issue_error(self, backend_id: str) -> Optional[GenerationError]:
         if backend_id != LITELLM_BACKEND_ID:
             return None
@@ -655,8 +570,16 @@ class GenerationBackendStatusService:
 
     @staticmethod
     def _capabilities_for_backend(backend_id: str) -> GenerationCapabilities:
-        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-            return LocalCliGenerationBackend.capabilities
+        if backend_id != LITELLM_BACKEND_ID:
+            # Removed legacy ids keep a structured failed status with no capabilities.
+            return GenerationCapabilities(
+                supports_json=False,
+                supports_tools=False,
+                supports_stream=False,
+                supports_vision=False,
+                supports_health_check=False,
+                supports_smoke_test=False,
+            )
         return GenerationCapabilities(
             supports_json=True,
             supports_tools=True,
@@ -664,15 +587,6 @@ class GenerationBackendStatusService:
             supports_vision=False,
             supports_health_check=False,
             supports_smoke_test=True,
-        )
-
-    @staticmethod
-    def _max_concurrency_for_backend(backend_id: str, config: Any) -> int:
-        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
-            return effective_local_cli_concurrency(config)
-        return _parse_int_config_value(
-            getattr(config, "generation_backend_max_concurrency", None),
-            _GENERATION_BACKEND_MAX_CONCURRENCY_SPEC,
         )
 
     def _build_backend_config(self) -> SimpleNamespace:
@@ -693,32 +607,9 @@ class GenerationBackendStatusService:
                 self._effective_map.get("GENERATION_BACKEND"),
                 default=LITELLM_BACKEND_ID,
             ),
-            generation_fallback_backend=self._fallback_from_map(),
-            generation_backend_timeout_seconds=_parse_int_config_value(
-                self._effective_map.get("GENERATION_BACKEND_TIMEOUT_SECONDS"),
-                _LOCAL_CLI_NUMERIC_SPECS[0],
-            ),
-            generation_backend_max_output_bytes=_parse_int_config_value(
-                self._effective_map.get("GENERATION_BACKEND_MAX_OUTPUT_BYTES"),
-                _LOCAL_CLI_NUMERIC_SPECS[1],
-            ),
-            generation_backend_max_concurrency=_parse_int_config_value(
-                self._effective_map.get("GENERATION_BACKEND_MAX_CONCURRENCY"),
-                _GENERATION_BACKEND_MAX_CONCURRENCY_SPEC,
-            ),
-            local_cli_backend_max_concurrency=_parse_int_config_value(
-                self._effective_map.get("LOCAL_CLI_BACKEND_MAX_CONCURRENCY"),
-                _LOCAL_CLI_NUMERIC_SPECS[3],
-            ),
-            opencode_cli_model=(self._effective_map.get("OPENCODE_CLI_MODEL") or "").strip(),
             litellm_model=litellm_model,
             llm_model_list=model_list,
         )
-
-    def _fallback_from_map(self) -> str:
-        if "GENERATION_FALLBACK_BACKEND" not in self._effective_map:
-            return LITELLM_BACKEND_ID
-        return (self._effective_map.get("GENERATION_FALLBACK_BACKEND") or "").strip().lower()
 
     def build_effective_config(
         self,
@@ -726,17 +617,12 @@ class GenerationBackendStatusService:
         backend_id: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
     ) -> Config:
+        del timeout_seconds
         config = self._build_backend_config()
         primary = backend_id or config.generation_backend
         openai_keys = self._openai_keys_from_map(self._effective_map)
         return Config(
             generation_backend=primary,
-            generation_fallback_backend="",
-            generation_backend_timeout_seconds=timeout_seconds or config.generation_backend_timeout_seconds,
-            generation_backend_max_output_bytes=config.generation_backend_max_output_bytes,
-            generation_backend_max_concurrency=config.generation_backend_max_concurrency,
-            local_cli_backend_max_concurrency=config.local_cli_backend_max_concurrency,
-            opencode_cli_model=config.opencode_cli_model,
             litellm_model=config.litellm_model,
             litellm_fallback_models=self._split_csv(self._effective_map.get("LITELLM_FALLBACK_MODELS") or ""),
             llm_model_list=config.llm_model_list,

@@ -45,6 +45,21 @@ describe('ShareImageButton', () => {
     expect(screen.getByRole('button', { name: '已生成' })).toBeInTheDocument();
   });
 
+  it('keeps the icon-only variant compact and accessible', () => {
+    render(
+      <ShareImageButton
+        recordId={17}
+        reportTitle="A股市场复盘"
+        reportLanguage="zh"
+        iconOnly
+      />,
+    );
+
+    const button = screen.getByRole('button', { name: '分享' });
+    expect(button).toHaveClass('h-8', 'w-8', 'p-0');
+    expect(screen.getByText('分享')).toHaveClass('sr-only');
+  });
+
   it('prepares the PNG on the first click and invokes native sharing synchronously on the second click', async () => {
     const nativeShare = vi.fn().mockResolvedValue(undefined);
     let resolveImage: ((blob: Blob) => void) | undefined;

@@ -1,15 +1,18 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, BarChart3, RefreshCw, Search, ShieldCheck } from 'lucide-react';
+import { Activity, BarChart3, RefreshCw, Search, ShieldCheck, Zap } from 'lucide-react';
+import { analysisApi } from '../api/analysis';
 import {
   decisionSignalsApi,
   getDecisionSignalReassessBlockedError,
 } from '../api/decisionSignals';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
+import { systemConfigApi } from '../api/systemConfig';
 import {
   ApiErrorAlert,
   AppPage,
+  Button,
   Card,
   ConfirmDialog,
   Drawer,
@@ -55,6 +58,7 @@ import {
 import { getDecisionProfile } from '../utils/decisionSignalProfile';
 import { parseDecisionSignalDate } from '../utils/decisionSignalTime';
 import { areStockCodesEquivalent } from '../utils/stockCode';
+import { searchStocks } from '../utils/searchStocks';
 
 const PAGE_SIZE = 20;
 const TIMELINE_PAGE_SIZE = 100;
@@ -401,6 +405,11 @@ const DecisionSignalsPage: React.FC = () => {
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [outcomeStats, setOutcomeStats] = useState<DecisionSignalOutcomeStatsResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
+  const [bootRunning, setBootRunning] = useState(false);
+  const [bootDone, setBootDone] = useState(0);
+  const [bootFailed, setBootFailed] = useState(0);
+  const [bootTotal, setBootTotal] = useState(0);
+  const [bootNote, setBootNote] = useState<{ key: UiTextKey; params?: Record<string, string | number> } | null>(null);
   const [statsError, setStatsError] = useState<ParsedApiError | null>(null);
   const [stockDraft, setStockDraft] = useState('');
   const [activeStockContext, setActiveStockContext] = useState<StockContext | null>(null);
@@ -519,9 +528,102 @@ const DecisionSignalsPage: React.FC = () => {
     }
   }, [appliedFilters]);
 
+  const runAnalysesAndTrack = async (codes: string[]) => {
+    setBootNote(null);
+    setBootDone(0);
+    setBootFailed(0);
+    setBootTotal(0);
+    try {
+      const response = await analysisApi.analyzeAsync({
+        stockCodes: codes,
+        reportType: 'detailed',
+      });
+      const taskIds: string[] = [];
+      if ('accepted' in response && Array.isArray(response.accepted)) {
+        taskIds.push(...response.accepted.map((item) => item.taskId));
+      } else if ('taskId' in response) {
+        taskIds.push(response.taskId);
+      }
+      if ('duplicates' in response && Array.isArray(response.duplicates)) {
+        // 正在执行中的任务同样纳入进度跟踪
+        taskIds.push(...response.duplicates.map((item) => item.existingTaskId));
+      }
+      if (taskIds.length === 0) {
+        setBootNote({ key: 'decisionSignals.bootstrapNoTasks' });
+        return;
+      }
+      setBootTotal(taskIds.length);
+
+      const deadline = Date.now() + 15 * 60 * 1000;
+      const finished = new Set<string>();
+      let done = 0;
+      let failed = 0;
+      while (finished.size < taskIds.length && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        for (const taskId of taskIds) {
+          if (finished.has(taskId)) continue;
+          try {
+            const status = await analysisApi.getStatus(taskId);
+            if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
+              finished.add(taskId);
+              if (status.status === 'completed') done += 1;
+              else failed += 1;
+              setBootDone(done);
+              setBootFailed(failed);
+            }
+          } catch {
+            // 单次状态查询失败不中断轮询
+          }
+        }
+      }
+      await loadSignals();
+      if (done === 0 && failed > 0) {
+        setBootNote({ key: 'decisionSignals.bootstrapFailedAll', params: { failed } });
+      } else if (failed > 0) {
+        setBootNote({ key: 'decisionSignals.bootstrapPartial', params: { done, failed } });
+      } else {
+        setBootNote({ key: 'decisionSignals.bootstrapDone', params: { done } });
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error ?? '');
+      setBootNote({ key: 'decisionSignals.bootstrapError', params: { message } });
+    }
+  };
+
+  const handleBootstrapAnalyze = async () => {
+    if (bootRunning) return;
+    setBootRunning(true);
+    try {
+      const codes = await systemConfigApi.getWatchlist();
+      if (codes.length === 0) {
+        setBootNote({ key: 'decisionSignals.bootstrapNoWatchlist' });
+        return;
+      }
+      await runAnalysesAndTrack(codes);
+    } finally {
+      setBootRunning(false);
+    }
+  };
+
+  const handleBootstrapStockAnalyze = async (code: string) => {
+    if (bootRunning) return;
+    setBootRunning(true);
+    try {
+      await runAnalysesAndTrack([code]);
+    } finally {
+      setBootRunning(false);
+    }
+  };
+
   const loadSignals = useCallback(async () => {
     await loadSignalsForPage(page);
   }, [loadSignalsForPage, page]);
+
+  // 空状态时的引导目标：优先当前筛选的股票，其次“当前股票”上下文
+  const emptyStockCode =
+    appliedFilters.stockCode.trim() ||
+    activeStockContext?.code.trim() ||
+    '';
 
   const loadOutcomeStats = useCallback(async () => {
     const requestId = statsRequestIdRef.current + 1;
@@ -876,12 +978,24 @@ const DecisionSignalsPage: React.FC = () => {
   }, [applyStockContext]);
 
   const handleStockFormSubmit = useCallback((code: string) => {
-    if (draftMatchesStockContext(code, activeStockContext)) {
+    const value = code.trim();
+    if (!value) return;
+    if (draftMatchesStockContext(value, activeStockContext)) {
       applyStockContext(activeStockContext);
       return;
     }
-    handleStockSubmit(code);
-  }, [activeStockContext, applyStockContext, handleStockSubmit]);
+    const exactMatch = searchStocks(value, stockIndex, { limit: 1 })[0];
+    if (exactMatch && exactMatch.score >= 96 && exactMatch.matchField !== 'code') {
+      applyStockContext({
+        code: exactMatch.displayCode,
+        displayCode: exactMatch.displayCode,
+        name: exactMatch.nameZh,
+        market: normalizeDecisionSignalMarket(exactMatch.market),
+      });
+      return;
+    }
+    handleStockSubmit(value);
+  }, [activeStockContext, applyStockContext, handleStockSubmit, stockIndex]);
 
   const handleClearStockContext = useCallback(() => {
     setStockDraft('');
@@ -1177,6 +1291,18 @@ const DecisionSignalsPage: React.FC = () => {
       activeStockContext.market,
     ].filter(Boolean).join(' / ')
     : null;
+  const stockContextLoading = latestLoading || timelineLoading;
+  const stockSubmitLoading = latestLoading && draftMatchesStockContext(stockDraft, activeStockContext);
+  const stockContextStatus = activeStockContext && latestSearched && timelineSearched
+    ? stockContextLoading
+      ? t('decisionSignals.stockContextQuerying', { stock: activeStockContext.displayCode ?? activeStockContext.code })
+      : !latestError && !timelineError
+        ? t('decisionSignals.stockContextComplete', {
+          latest: latestItems.length,
+          timeline: timelineItems.length,
+        })
+        : null
+    : null;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -1222,10 +1348,14 @@ const DecisionSignalsPage: React.FC = () => {
             <button
               type="submit"
               className="btn-primary inline-flex h-11 items-center justify-center gap-2"
-              disabled={!stockDraft.trim()}
+              disabled={!stockDraft.trim() || stockSubmitLoading}
             >
-              <Search className="h-4 w-4" />
-              {t('decisionSignals.stockContextApply')}
+              {stockSubmitLoading
+                ? <RefreshCw className="h-4 w-4 animate-spin" />
+                : <Search className="h-4 w-4" />}
+              {t(stockSubmitLoading
+                ? 'decisionSignals.stockContextApplying'
+                : 'decisionSignals.stockContextApply')}
             </button>
             <button
               type="button"
@@ -1244,6 +1374,12 @@ const DecisionSignalsPage: React.FC = () => {
           ) : (
             <p className="mt-3 text-sm text-secondary-text">{t('decisionSignals.stockContextEmpty')}</p>
           )}
+
+          {stockContextStatus ? (
+            <p role="status" aria-live="polite" className="mt-1 text-xs text-muted-text">
+              {stockContextStatus}
+            </p>
+          ) : null}
 
           {historyCandidatesLoaded && stockCandidates.length > 0 ? (
             <div className="mt-4">
@@ -1540,6 +1676,47 @@ const DecisionSignalsPage: React.FC = () => {
             title={t('decisionSignals.emptyTitle')}
             description={t('decisionSignals.emptyDescription')}
             icon={<Activity className="h-7 w-7" />}
+            action={
+              <div className="flex flex-col items-center gap-3">
+                {emptyStockCode ? (
+                  <Button
+                    variant="primary"
+                    onClick={() => void handleBootstrapStockAnalyze(emptyStockCode)}
+                    isLoading={bootRunning}
+                    disabled={loading}
+                  >
+                    {bootRunning ? null : <Zap className="h-4 w-4" />}
+                    {t('decisionSignals.bootstrapStockAction', {
+                      stock: activeStockContext?.name?.trim() || emptyStockCode,
+                    })}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="primary"
+                    onClick={() => void handleBootstrapAnalyze()}
+                    isLoading={bootRunning}
+                    disabled={loading}
+                  >
+                    {bootRunning ? null : <Zap className="h-4 w-4" />}
+                    {t('decisionSignals.bootstrapAction')}
+                  </Button>
+                )}
+                {bootRunning ? (
+                  <p className="text-sm text-secondary-text">
+                    {t('decisionSignals.bootstrapProgress', {
+                      done: bootDone,
+                      total: bootTotal > 0 ? bootTotal : 1,
+                    })}
+                    {bootFailed > 0
+                      ? ' · ' + t('decisionSignals.bootstrapFailedCount', { failed: bootFailed })
+                      : ''}
+                  </p>
+                ) : null}
+                {bootNote ? (
+                  <p className="max-w-md text-sm text-secondary-text">{t(bootNote.key, bootNote.params)}</p>
+                ) : null}
+              </div>
+            }
           />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">

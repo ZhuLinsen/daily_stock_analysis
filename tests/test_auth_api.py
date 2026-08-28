@@ -25,12 +25,17 @@ from api.middlewares.auth import AuthMiddleware
 from api.v1.endpoints import auth as auth_endpoint
 from src.config import Config
 
+DEFAULT_PASSWORD = "passwd67890"
+UPDATED_PASSWORD = "newpass67890"
+
 
 def _reset_auth_globals() -> None:
     auth._auth_enabled = None
     auth._session_secret = None
     auth._password_hash_salt = None
     auth._password_hash_stored = None
+    auth._password_hash_iterations = None
+    auth._password_hash_needs_upgrade = False
     auth._rate_limit = {}
 
 
@@ -68,12 +73,12 @@ class AuthApiTestCase(unittest.TestCase):
         return (values.get("ADMIN_AUTH_ENABLED") or "").strip().lower() in ("true", "1", "yes")
 
     @staticmethod
-    def _build_request(cookies=None):
+    def _build_request(cookies=None, client_host="127.0.0.1", headers=None):
         return SimpleNamespace(
-            headers={},
+            headers=headers or {},
             url=SimpleNamespace(scheme="http"),
             cookies=cookies or {},
-            client=SimpleNamespace(host="127.0.0.1"),
+            client=SimpleNamespace(host=client_host),
         )
 
     def test_auth_status_when_password_not_set(self) -> None:
@@ -107,7 +112,7 @@ class AuthApiTestCase(unittest.TestCase):
         first_response = asyncio.run(
             auth_endpoint.auth_login(
                 self._build_request(),
-                auth_endpoint.LoginRequest(password="mypass456", passwordConfirm="mypass456"),
+                auth_endpoint.LoginRequest(password="mypass4567", passwordConfirm="mypass4567"),
             )
         )
         self.assertEqual(first_response.status_code, 200)
@@ -115,7 +120,7 @@ class AuthApiTestCase(unittest.TestCase):
         response = asyncio.run(
             auth_endpoint.auth_login(
                 self._build_request(),
-                auth_endpoint.LoginRequest(password="mypass456"),
+                auth_endpoint.LoginRequest(password="mypass4567"),
             )
         )
         self.assertEqual(response.status_code, 200)
@@ -125,7 +130,7 @@ class AuthApiTestCase(unittest.TestCase):
         first_response = asyncio.run(
             auth_endpoint.auth_login(
                 self._build_request(),
-                auth_endpoint.LoginRequest(password="correct", passwordConfirm="correct"),
+                auth_endpoint.LoginRequest(password="correctpass", passwordConfirm="correctpass"),
             )
         )
         self.assertEqual(first_response.status_code, 200)
@@ -147,7 +152,7 @@ class AuthApiTestCase(unittest.TestCase):
         login_response = asyncio.run(
             auth_endpoint.auth_login(
                 self._build_request(),
-                auth_endpoint.LoginRequest(password="passwd6", passwordConfirm="passwd6"),
+                auth_endpoint.LoginRequest(password=DEFAULT_PASSWORD, passwordConfirm=DEFAULT_PASSWORD),
             )
         )
         self.assertEqual(login_response.status_code, 200)
@@ -171,7 +176,7 @@ class AuthApiTestCase(unittest.TestCase):
         first_response = asyncio.run(
             auth_endpoint.auth_login(
                 self._build_request(),
-                auth_endpoint.LoginRequest(password="oldpass6", passwordConfirm="oldpass6"),
+                auth_endpoint.LoginRequest(password="oldpass6789", passwordConfirm="oldpass6789"),
             )
         )
         self.assertEqual(first_response.status_code, 200)
@@ -179,9 +184,9 @@ class AuthApiTestCase(unittest.TestCase):
         response = asyncio.run(
             auth_endpoint.auth_change_password(
                 auth_endpoint.ChangePasswordRequest(
-                    currentPassword="oldpass6",
-                    newPassword="newpass6",
-                    newPasswordConfirm="newpass6",
+                    currentPassword="oldpass6789",
+                    newPassword=UPDATED_PASSWORD,
+                    newPasswordConfirm=UPDATED_PASSWORD,
                 )
             )
         )
@@ -191,7 +196,7 @@ class AuthApiTestCase(unittest.TestCase):
         first_response = asyncio.run(
             auth_endpoint.auth_login(
                 self._build_request(),
-                auth_endpoint.LoginRequest(password="actual6", passwordConfirm="actual6"),
+                auth_endpoint.LoginRequest(password="actualpass6", passwordConfirm="actualpass6"),
             )
         )
         self.assertEqual(first_response.status_code, 200)
@@ -342,6 +347,82 @@ class AuthApiTestCase(unittest.TestCase):
         self.assertIn("dsa_session=", response.headers["set-cookie"])
         self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
 
+    def test_auth_settings_remote_bootstrap_is_blocked_when_auth_is_disabled(self) -> None:
+        self.env_path.write_text(
+            "STOCK_LIST=600519\nGEMINI_API_KEY=test\nADMIN_AUTH_ENABLED=false\n",
+            encoding="utf-8",
+        )
+        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
+            auth.refresh_auth_state()
+
+            response = asyncio.run(
+                auth_endpoint.auth_update_settings(
+                    self._build_request(client_host="203.0.113.10"),
+                    auth_endpoint.AuthSettingsRequest(
+                        authEnabled=True,
+                        password="initpass123",
+                        passwordConfirm="initpass123",
+                    ),
+                )
+            )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn(b'"error":"loopback_required"', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=false", self.env_path.read_text(encoding="utf-8"))
+        self.assertFalse(auth.has_stored_password())
+
+    def test_auth_settings_compose_loopback_bind_allows_private_bridge_bootstrap(self) -> None:
+        self.env_path.write_text(
+            "STOCK_LIST=600519\nGEMINI_API_KEY=test\nADMIN_AUTH_ENABLED=false\n",
+            encoding="utf-8",
+        )
+        with (
+            patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env),
+            patch.dict(os.environ, {auth.DOCKER_PUBLISHED_HOST_BIND_IP_ENV: "127.0.0.1"}, clear=False),
+        ):
+            auth.refresh_auth_state()
+
+            response = asyncio.run(
+                auth_endpoint.auth_update_settings(
+                    self._build_request(client_host="172.18.0.1"),
+                    auth_endpoint.AuthSettingsRequest(
+                        authEnabled=True,
+                        password="initpass123",
+                        passwordConfirm="initpass123",
+                    ),
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'"authEnabled":true', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+
+    def test_auth_settings_compose_public_bind_still_blocks_private_bridge_bootstrap(self) -> None:
+        self.env_path.write_text(
+            "STOCK_LIST=600519\nGEMINI_API_KEY=test\nADMIN_AUTH_ENABLED=false\n",
+            encoding="utf-8",
+        )
+        with (
+            patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env),
+            patch.dict(os.environ, {auth.DOCKER_PUBLISHED_HOST_BIND_IP_ENV: "0.0.0.0"}, clear=False),
+        ):
+            auth.refresh_auth_state()
+
+            response = asyncio.run(
+                auth_endpoint.auth_update_settings(
+                    self._build_request(client_host="172.18.0.1"),
+                    auth_endpoint.AuthSettingsRequest(
+                        authEnabled=True,
+                        password="initpass123",
+                        passwordConfirm="initpass123",
+                    ),
+                )
+            )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn(b'"error":"loopback_required"', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=false", self.env_path.read_text(encoding="utf-8"))
+
     def test_auth_settings_enable_requires_password_when_missing(self) -> None:
         self.env_path.write_text(
             "STOCK_LIST=600519\nGEMINI_API_KEY=test\nADMIN_AUTH_ENABLED=false\n",
@@ -359,6 +440,30 @@ class AuthApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn(b'"error":"password_required"', response.body)
+
+    def test_login_first_time_short_password_is_rejected(self) -> None:
+        response = asyncio.run(
+            auth_endpoint.auth_login(
+                self._build_request(),
+                auth_endpoint.LoginRequest(password="123456789", passwordConfirm="123456789"),
+            )
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b'"error":"invalid_password"', response.body)
+        self.assertFalse(auth.has_stored_password())
+
+    def test_login_first_time_remote_bootstrap_is_blocked(self) -> None:
+        response = asyncio.run(
+            auth_endpoint.auth_login(
+                self._build_request(client_host="203.0.113.10"),
+                auth_endpoint.LoginRequest(password="newpass123", passwordConfirm="newpass123"),
+            )
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn(b'"error":"loopback_required"', response.body)
+        self.assertFalse(auth.has_stored_password())
 
     def test_auth_settings_rechecks_password_before_initial_write(self) -> None:
         self.env_path.write_text(
@@ -392,11 +497,11 @@ class AuthApiTestCase(unittest.TestCase):
 
     def test_auth_settings_disable_clears_cookie_and_hides_password_state(self) -> None:
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
             response = asyncio.run(
                 auth_endpoint.auth_update_settings(
                     self._build_request(),
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword=DEFAULT_PASSWORD),
                 )
             )
 
@@ -414,7 +519,7 @@ class AuthApiTestCase(unittest.TestCase):
 
     def test_auth_settings_disable_requires_current_password_when_auth_enabled(self) -> None:
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
             response = asyncio.run(
                 auth_endpoint.auth_update_settings(
                     self._build_request(),
@@ -428,12 +533,12 @@ class AuthApiTestCase(unittest.TestCase):
 
     def test_auth_settings_toggle_fails_when_secret_rotation_fails(self) -> None:
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
             with patch.object(auth_endpoint, "rotate_session_secret", return_value=False):
                 response = asyncio.run(
                     auth_endpoint.auth_update_settings(
                         self._build_request(),
-                        auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
+                        auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword=DEFAULT_PASSWORD),
                     )
                 )
 
@@ -443,11 +548,11 @@ class AuthApiTestCase(unittest.TestCase):
 
     def test_auth_settings_enable_with_existing_password_reuses_stored_password(self) -> None:
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
             disable_response = asyncio.run(
                 auth_endpoint.auth_update_settings(
                     self._build_request(),
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword=DEFAULT_PASSWORD),
                 )
             )
         self.assertEqual(disable_response.status_code, 200)
@@ -456,7 +561,7 @@ class AuthApiTestCase(unittest.TestCase):
             enable_response = asyncio.run(
                 auth_endpoint.auth_update_settings(
                     self._build_request(),
-                    auth_endpoint.AuthSettingsRequest(authEnabled=True, currentPassword="passwd6"),
+                    auth_endpoint.AuthSettingsRequest(authEnabled=True, currentPassword=DEFAULT_PASSWORD),
                 )
             )
 
@@ -468,11 +573,11 @@ class AuthApiTestCase(unittest.TestCase):
 
     def test_auth_settings_enable_with_existing_password_requires_current_password(self) -> None:
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
             disable_response = asyncio.run(
                 auth_endpoint.auth_update_settings(
                     self._build_request(),
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword=DEFAULT_PASSWORD),
                 )
             )
         self.assertEqual(disable_response.status_code, 200)
@@ -491,11 +596,11 @@ class AuthApiTestCase(unittest.TestCase):
 
     def test_auth_settings_enable_with_existing_password_rejects_wrong_current_password(self) -> None:
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
             disable_response = asyncio.run(
                 auth_endpoint.auth_update_settings(
                     self._build_request(),
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword=DEFAULT_PASSWORD),
                 )
             )
         self.assertEqual(disable_response.status_code, 200)
@@ -537,11 +642,11 @@ class AuthApiTestCase(unittest.TestCase):
 
     def test_auth_settings_rejects_overwriting_existing_password(self) -> None:
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
             disable_response = asyncio.run(
                 auth_endpoint.auth_update_settings(
                     self._build_request(),
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword=DEFAULT_PASSWORD),
                 )
             )
             self.assertEqual(disable_response.status_code, 200)
@@ -572,7 +677,7 @@ class AuthApiTestCase(unittest.TestCase):
         )
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
             # 1. Setup an existing password, auth is currently disabled
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
             
             # 2. Simulate the race condition:
             # The middleware let the request through because auth was supposedly False.
@@ -606,7 +711,7 @@ class AuthApiTestCase(unittest.TestCase):
         )
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
             auth.refresh_auth_state()
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
 
     def test_disable_auth_repeated_wrong_password_triggers_rate_limit_429(self):
         """Repeated invalid currentPassword attempts on the disable path must trigger 429.
@@ -699,7 +804,7 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
 
         _reset_auth_globals()
         auth.refresh_auth_state()
-        auth.set_initial_password("passwd6")
+        auth.set_initial_password(DEFAULT_PASSWORD)
 
         # Minimal create_app: static_dir pointed at the temp data dir so the
         # frontend-asset consistency check has nothing to scan.
@@ -727,7 +832,7 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
         Config.reset_instance()
         auth.refresh_auth_state()
         if not auth.has_stored_password():
-            auth.set_initial_password("passwd6")
+            auth.set_initial_password(DEFAULT_PASSWORD)
 
     def _login_for_session(self) -> None:
         """Authenticate via the real /api/v1/auth/login endpoint.
@@ -738,7 +843,7 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
         """
         login_resp = self.client.post(
             "/api/v1/auth/login",
-            json={"password": "passwd6"},
+            json={"password": DEFAULT_PASSWORD},
         )
         self.assertEqual(login_resp.status_code, 200, login_resp.text)
 
@@ -786,7 +891,7 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
 
         resp = self.client.post(
             "/api/v1/auth/settings",
-            json={"authEnabled": False, "currentPassword": "passwd6"},
+            json={"authEnabled": False, "currentPassword": DEFAULT_PASSWORD},
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
@@ -826,6 +931,31 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
         #    authenticated jar state has actually been cleared, not just
         #    overwritten with a new value.
         self.assertNotIn("dsa_session", self.client.cookies)
+
+    def test_login_with_legacy_hash_migrates_to_versioned_hash(self) -> None:
+        salt = auth.secrets.token_bytes(32)
+        derived = auth.hashlib.pbkdf2_hmac(
+            "sha256",
+            DEFAULT_PASSWORD.encode("utf-8"),
+            salt=salt,
+            iterations=auth.LEGACY_PBKDF2_ITERATIONS,
+        )
+        legacy_content = (
+            f"{auth.base64.standard_b64encode(salt).decode('ascii')}:"
+            f"{auth.base64.standard_b64encode(derived).decode('ascii')}"
+        )
+        auth._get_credential_path().write_text(legacy_content, encoding="utf-8")
+        auth.refresh_auth_state()
+
+        response = self.client.post(
+            "/api/v1/auth/login",
+            json={"password": DEFAULT_PASSWORD},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        stored = auth._get_credential_path().read_text(encoding="utf-8")
+        self.assertTrue(stored.startswith(f"{auth.PASSWORD_HASH_VERSION}${auth.PASSWORD_HASH_SCHEME}$"))
+        self.assertEqual(auth._password_hash_iterations, auth.PBKDF2_ITERATIONS)
 
 
 if __name__ == "__main__":

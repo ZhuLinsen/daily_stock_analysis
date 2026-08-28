@@ -437,7 +437,14 @@ const BacktestPage: React.FC = () => {
   return (
     <div className="min-h-full flex flex-col rounded-[1.5rem] bg-transparent">
       {/* Header */}
-      <header className="flex-shrink-0 border-b border-white/5 px-3 py-3 sm:px-4">
+      <header className="flex-shrink-0 border-b border-border/60 px-3 py-4 sm:px-4">
+        <div className="mb-4 flex flex-wrap items-end gap-x-4 gap-y-1">
+          <div>
+            <p className="label-uppercase text-accent">Research lab</p>
+            <h1 className="mt-1 text-xl font-semibold tracking-tight text-foreground">{text.title}</h1>
+          </div>
+          <p className="pb-0.5 text-sm text-secondary-text">{text.description}</p>
+        </div>
         <div className="flex max-w-5xl flex-wrap items-center gap-2">
           <div className="relative min-w-0 flex-[1_1_220px]">
             <input

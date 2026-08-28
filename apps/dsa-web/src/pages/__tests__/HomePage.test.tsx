@@ -2684,8 +2684,40 @@ describe('HomePage', () => {
 
     expect(await screen.findByText('基础配置未完成')).toBeInTheDocument();
     expect(screen.getByText(/LLM 主渠道、自选股/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '去配置' }));
+    expect(screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL')).toBeDisabled();
+    expect(screen.getByRole('button', { name: '分析' })).toBeDisabled();
+    expect(screen.getAllByRole('button', { name: '大盘复盘' }).some((button) => button.hasAttribute('disabled'))).toBe(true);
+    fireEvent.click(screen.getAllByRole('button', { name: '去配置' })[0]);
     expect(navigateMock).toHaveBeenCalledWith('/settings');
+  });
+
+  it('shows an inline task status as soon as an analysis is accepted', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-submitted-1',
+      status: 'pending',
+      message: '任务已提交',
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL');
+    fireEvent.change(input, { target: { value: '600519' } });
+    fireEvent.click(screen.getByRole('button', { name: '分析' }));
+
+    const status = await screen.findByTestId('current-analysis-status');
+    expect(status).toHaveTextContent('600519');
+    expect(status).toHaveTextContent('等待中');
+    expect(status).toHaveTextContent('任务已提交');
   });
 
   it('navigates to chat with report context when asking a follow-up question', async () => {

@@ -125,7 +125,6 @@ class TestAnalyzerGenerateText:
             cfg.llm_model_list = []
             cfg.openai_base_url = None
             cfg.generation_backend = "litellm"
-            cfg.generation_fallback_backend = "litellm"
             mock_cfg.return_value = cfg
             from src.analyzer import GeminiAnalyzer
             analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
@@ -459,15 +458,9 @@ class TestAnalyzerGenerateText:
                 analyzer.generate_text_with_metadata("写一份复盘")
 
         error = exc_info.value
-        assert error.stage == "fallback"
-        assert error.backend == "litellm"
-        assert error.provider == "anthropic"
-        assert error.details == {
-            "reason": "all_models_failed",
-            "configured_primary_backend": "codex_cli",
-            "configured_fallback_backend": "litellm",
-            "last_model": "analysis-route",
-        }
+        # Removed backend re-resolution fails closed: no fallback retry exists.
+        assert error.stage == "generation"
+        assert error.backend == "codex_cli"
 
     def test_generate_text_with_metadata_preserves_primary_litellm_exhaustion_metadata(self):
         from src.analyzer import _AllModelsFailedError
@@ -690,102 +683,36 @@ class TestAnalyzerGenerateText:
         assert exc_info.value.last_provider == "anthropic"
 
     @pytest.mark.parametrize(
-        ("generation_backend", "executable_name"),
-        [
-            ("codex_cli", "codex"),
-            ("claude_code_cli", "claude"),
-            ("opencode_cli", "opencode"),
-        ],
+        "generation_backend",
+        ["codex_cli", "claude_code_cli", "opencode_cli"],
     )
-    def test_local_cli_is_available_without_litellm_api_keys(self, generation_backend, executable_name):
+    def test_removed_cli_backend_reports_config_error_without_cli_probe(self, generation_backend):
+        """Removed local CLI backends surface a structured error without probing executables."""
+        from src.llm.generation_backend import GenerationErrorCode
+
         analyzer = self._make_analyzer()
         analyzer._litellm_available = False
         analyzer._router = None
         analyzer._config_override = SimpleNamespace(
             generation_backend=generation_backend,
-            generation_fallback_backend="",
-            generation_backend_timeout_seconds=300,
-            generation_backend_max_output_bytes=1048576,
-            generation_backend_max_concurrency=1,
-            local_cli_backend_max_concurrency=1,
         )
 
-        with patch("src.llm.local_cli_backend.shutil.which", return_value=f"/usr/bin/{executable_name}"), \
-             patch("src.llm.local_cli_backend.os.access", return_value=True):
-            assert analyzer.get_generation_backend_config_error() is None
-            assert analyzer.is_available() is True
+        error = analyzer.get_generation_backend_config_error()
 
-    def test_analyze_uses_litellm_fallback_when_codex_cli_config_error_is_fallbackable(self):
-        from src.llm.generation_backend import GenerationBackend, GenerationError, GenerationErrorCode
-        from src.llm.local_cli_backend import LocalCliGenerationBackend
+        assert error is not None
+        assert error.error_code is GenerationErrorCode.BACKEND_NOT_CONFIGURED
+        assert error.details["field"] == "GENERATION_BACKEND"
+        assert error.details["requested_backend"] == generation_backend
+        assert error.details["reason"] == "removed_backend"
+        assert analyzer.is_available() is False
 
-        analyzer = self._make_analyzer()
-        analyzer._litellm_available = True
-        analyzer._config_override = SimpleNamespace(
-            generation_backend="codex_cli",
-            generation_fallback_backend="litellm",
-            litellm_model="gemini/gemini-2.0-flash",
-            litellm_fallback_models=[],
-            llm_model_list=[],
-            report_language="zh",
-            gemini_request_delay=0,
-            llm_temperature=0.7,
-            report_integrity_enabled=False,
-            report_integrity_retry=0,
-        )
-        codex_error = GenerationError(
-            error_code=GenerationErrorCode.COMMAND_NOT_FOUND,
-            stage="configuration",
-            retryable=False,
-            fallbackable=True,
-            backend="codex_cli",
-            provider="codex_cli",
-            details={"reason": "executable_not_found"},
-        )
-        primary_backend = MagicMock(spec=LocalCliGenerationBackend)
-        primary_backend.get_config_error.return_value = codex_error
-        primary_backend.generate.side_effect = codex_error
-        fallback_backend = MagicMock(spec=GenerationBackend)
-        fallback_backend.generate.return_value = SimpleNamespace(
-            text=json.dumps({
-                "sentiment_score": 70,
-                "trend_prediction": "看多",
-                "operation_advice": "持有",
-                "analysis_summary": "fallback ok",
-            }),
-            model="gemini/gemini-2.0-flash",
-            usage={
-                "usage_available": False,
-                "usage_source": "unavailable",
-                "backend": "litellm",
-            },
-        )
-
-        def _backend_for(backend_id=None):
-            return primary_backend if backend_id == "codex_cli" else fallback_backend
-
-        with patch.object(analyzer, "_get_generation_backend", side_effect=_backend_for), \
-             patch.object(analyzer, "_get_analysis_system_prompt", return_value="system"), \
-             patch.object(analyzer, "_get_skill_prompt_sections", return_value=(None, None, True)), \
-             patch.object(analyzer, "_format_prompt", return_value="prompt"), \
-             patch.object(analyzer, "_build_market_snapshot", return_value={}):
-            assert analyzer.is_available() is True
-            result = analyzer.analyze({"code": "600519", "stock_name": "贵州茅台"})
-
-        assert result.success is True
-        assert result.analysis_summary == "fallback ok"
-        primary_backend.generate.assert_called()
-        fallback_backend.generate.assert_called()
-
-    def test_analyze_preserves_litellm_text_fallback_after_codex_cli_primary_failure(self):
+    def test_analyze_preserves_litellm_text_fallback_after_all_models_fail(self):
         from src.analyzer import AnalysisResult, _AllModelsFailedError
-        from src.llm.generation_backend import GenerationBackend, GenerationError, GenerationErrorCode
 
         analyzer = self._make_analyzer()
         analyzer._litellm_available = True
         analyzer._config_override = SimpleNamespace(
-            generation_backend="codex_cli",
-            generation_fallback_backend="litellm",
+            generation_backend="litellm",
             litellm_model="provider/primary-model",
             litellm_fallback_models=["provider/fallback-model"],
             llm_model_list=[],
@@ -794,15 +721,6 @@ class TestAnalyzerGenerateText:
             llm_temperature=0.7,
             report_integrity_enabled=False,
             report_integrity_retry=0,
-        )
-        primary_error = GenerationError(
-            error_code=GenerationErrorCode.COMMAND_NOT_FOUND,
-            stage="configuration",
-            retryable=False,
-            fallbackable=True,
-            backend="codex_cli",
-            provider="codex_cli",
-            details={"reason": "executable_not_found"},
         )
         all_models_error = _AllModelsFailedError(
             "all fallback models returned invalid JSON",
@@ -820,22 +738,15 @@ class TestAnalyzerGenerateText:
             success=False,
             error_message="LLM response is not valid JSON; analysis result will not be persisted",
         )
-        primary_backend = MagicMock(spec=GenerationBackend)
-        primary_backend.generate.side_effect = primary_error
-        fallback_backend = MagicMock(spec=GenerationBackend)
-        fallback_backend.generate.side_effect = all_models_error
-
-        def _backend_for(backend_id):
-            return primary_backend if backend_id == "codex_cli" else fallback_backend
 
         with patch.object(analyzer, "get_generation_backend_config_error", return_value=None), \
              patch.object(analyzer, "is_available", return_value=True), \
-             patch.object(analyzer, "_get_generation_backend", side_effect=_backend_for), \
              patch.object(analyzer, "_get_analysis_system_prompt", return_value="system"), \
              patch.object(analyzer, "_get_skill_prompt_sections", return_value=(None, None, True)), \
              patch.object(analyzer, "_format_prompt", return_value="prompt"), \
              patch.object(analyzer, "_parse_response", return_value=text_fallback_result) as mock_parse, \
              patch.object(analyzer, "_build_market_snapshot", return_value={}), \
+             patch.object(analyzer, "_call_litellm", side_effect=all_models_error), \
              patch("src.analyzer.persist_llm_usage") as mock_persist:
             result = analyzer.analyze({"code": "600519", "stock_name": "贵州茅台"})
 
@@ -853,19 +764,13 @@ class TestAnalyzerGenerateText:
             call_type="analysis",
             stock_code="600519",
         )
-        primary_backend.generate.assert_called_once()
-        fallback_backend.generate.assert_called_once()
 
     def test_analyze_does_not_persist_unavailable_usage(self):
         analyzer = self._make_analyzer()
         analyzer._config_override = SimpleNamespace(
-            generation_backend="codex_cli",
-            generation_fallback_backend="",
-            generation_backend_timeout_seconds=300,
-            generation_backend_max_output_bytes=1048576,
-            generation_backend_max_concurrency=1,
-            local_cli_backend_max_concurrency=1,
+            generation_backend="litellm",
             litellm_model="",
+            llm_model_list=[],
             gemini_request_delay=0,
             report_language="zh",
             llm_temperature=0.7,
@@ -881,7 +786,7 @@ class TestAnalyzerGenerateText:
         usage = {
             "usage_available": False,
             "usage_source": "unavailable",
-            "backend": "codex_cli",
+            "backend": "litellm",
         }
 
         with patch.object(analyzer, "get_generation_backend_config_error", return_value=None), \
@@ -889,7 +794,7 @@ class TestAnalyzerGenerateText:
              patch.object(analyzer, "_get_analysis_system_prompt", return_value="system"), \
              patch.object(analyzer, "_get_skill_prompt_sections", return_value=(None, None, True)), \
              patch.object(analyzer, "_format_prompt", return_value="prompt"), \
-             patch.object(analyzer, "_call_litellm", return_value=(response_text, "codex_cli", usage)), \
+             patch.object(analyzer, "_call_litellm", return_value=(response_text, "litellm", usage)), \
              patch.object(analyzer, "_build_market_snapshot", return_value={}), \
              patch("src.analyzer.persist_llm_usage") as mock_persist:
             result = analyzer.analyze({"code": "600519", "stock_name": "贵州茅台"})
@@ -963,22 +868,11 @@ class TestAnalyzerGenerateText:
         assert callable(backend.generate.call_args.kwargs["response_validator"])
         assert backend.generate.call_args.kwargs["audit_context"] == {"call_type": "analysis"}
 
-    def test_call_litellm_wraps_fallback_generation_error_with_primary_context(self):
+    def test_call_litellm_propagates_generation_error_without_backend_fallback(self):
         from src.llm.generation_backend import GenerationBackend, GenerationError, GenerationErrorCode
 
         analyzer = self._make_analyzer()
-        analyzer._config_override.generation_backend = "codex_cli"
-        analyzer._config_override.generation_fallback_backend = "litellm"
-        primary_error = GenerationError(
-            error_code=GenerationErrorCode.COMMAND_NOT_FOUND,
-            stage="configuration",
-            retryable=False,
-            fallbackable=True,
-            backend="codex_cli",
-            provider="codex_cli",
-            details={"reason": "executable_not_found"},
-        )
-        fallback_error = GenerationError(
+        backend_error = GenerationError(
             error_code=GenerationErrorCode.INVALID_JSON,
             stage="validation",
             retryable=True,
@@ -990,27 +884,18 @@ class TestAnalyzerGenerateText:
                 "route_name": "invalid-shared-route",
             },
         )
-        primary_backend = MagicMock(spec=GenerationBackend)
-        primary_backend.generate.side_effect = primary_error
-        fallback_backend = MagicMock(spec=GenerationBackend)
-        fallback_backend.generate.side_effect = fallback_error
+        backend = MagicMock(spec=GenerationBackend)
+        backend.generate.side_effect = backend_error
 
-        def _backend_for(backend_id):
-            return primary_backend if backend_id == "codex_cli" else fallback_backend
-
-        with patch.object(analyzer, "_get_generation_backend", side_effect=_backend_for):
+        with patch.object(analyzer, "_get_generation_backend", return_value=backend) as mock_get_backend:
             with pytest.raises(GenerationError) as exc_info:
                 analyzer._call_litellm("prompt", {"max_tokens": 128})
 
-        error = exc_info.value
-        assert error.stage == "fallback"
-        assert error.error_code is GenerationErrorCode.INVALID_JSON
-        assert error.details["reason"] == "fallback_backend_failed"
-        assert error.details["route_name"] == "invalid-shared-route"
-        assert error.details["primary_error"]["error_code"] == "command_not_found"
-        assert error.details["primary_error"]["details"]["reason"] == "executable_not_found"
-        assert error.details["fallback_error"]["error_code"] == "invalid_json"
-        assert error.details["fallback_error"]["details"]["reason"] == "invalid_json"
+        assert exc_info.value is backend_error
+        assert exc_info.value.stage == "validation"
+        backend.generate.assert_called_once()
+        mock_get_backend.assert_called_once()
+
 
     def test_call_litellm_rejects_unknown_generation_backend_without_litellm_fallback(self):
         from src.llm.generation_backend import GenerationError
@@ -1024,21 +909,6 @@ class TestAnalyzerGenerateText:
         with pytest.raises(GenerationError) as exc_info:
             analyzer._call_litellm("prompt", {"max_tokens": 128})
 
-        assert exc_info.value.details["requested_backend"] == "codex"
-
-    def test_call_litellm_rejects_unknown_generation_fallback_backend(self):
-        from src.llm.generation_backend import GenerationError
-
-        analyzer = self._make_analyzer()
-        analyzer._config_override = SimpleNamespace(
-            generation_backend="litellm",
-            generation_fallback_backend="codex",
-        )
-
-        with pytest.raises(GenerationError) as exc_info:
-            analyzer._call_litellm("prompt", {"max_tokens": 128})
-
-        assert exc_info.value.details["field"] == "GENERATION_FALLBACK_BACKEND"
         assert exc_info.value.details["requested_backend"] == "codex"
 
     def test_analyze_reports_generation_backend_config_error_instead_of_api_key_missing(self):
@@ -3291,27 +3161,20 @@ class TestMarketAnalyzerBypassFix:
                 )
             ],
         )
-        cases = [
-            ("generation_backend", "GENERATION_BACKEND"),
-            ("generation_fallback_backend", "GENERATION_FALLBACK_BACKEND"),
-        ]
 
-        for attr_name, expected_field in cases:
-            ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
-            ma.analyzer = None
-            ma.config.generation_backend = "litellm"
-            ma.config.generation_fallback_backend = "litellm"
-            setattr(ma.config, attr_name, "codex")
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.analyzer = None
+        ma.config.generation_backend = "codex"
 
-            with patch.object(ma, "_generate_template_review", wraps=ma._generate_template_review) as template_review, \
-                 patch("src.market_analyzer.record_llm_run") as mock_record_llm_run:
-                with pytest.raises(GenerationError) as exc_info:
-                    ma.generate_market_review(overview, [])
+        with patch.object(ma, "_generate_template_review", wraps=ma._generate_template_review) as template_review, \
+             patch("src.market_analyzer.record_llm_run") as mock_record_llm_run:
+            with pytest.raises(GenerationError) as exc_info:
+                ma.generate_market_review(overview, [])
 
-            assert exc_info.value.details["field"] == expected_field
-            assert exc_info.value.details["requested_backend"] == "codex"
-            template_review.assert_not_called()
-            mock_record_llm_run.assert_called_once()
+        assert exc_info.value.details["field"] == "GENERATION_BACKEND"
+        assert exc_info.value.details["requested_backend"] == "codex"
+        template_review.assert_not_called()
+        mock_record_llm_run.assert_called_once()
 
     def test_generation_backend_config_error_records_failing_route_model(self):
         from src.llm.generation_backend import GenerationError, GenerationErrorCode
@@ -3695,50 +3558,41 @@ class TestMarketAnalyzerBypassFix:
         assert recorded.call_args.kwargs["provider"] == "anthropic"
         assert recorded.call_args.kwargs["model"] == "analysis-route"
 
-    def test_market_review_records_failed_fallback_last_model(self):
+    def test_market_review_surfaces_removed_backend_error_without_model_call(self):
+        """Removed local CLI backends fail at preflight with a structured error."""
         from src.analyzer import _AllModelsFailedError
-        from src.llm.generation_backend import GenerationError
+        from src.llm.generation_backend import GenerationError, GenerationErrorCode
         from src.market_analyzer import MarketOverview
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
         ma.analyzer._config_override.generation_backend = "codex_cli"
-        ma.analyzer._config_override.generation_fallback_backend = "litellm"
         ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
         ma.analyzer.get_generation_backend_config_error = MagicMock(return_value=None)
         ma.analyzer.generate_text_with_metadata = ma.analyzer.__class__.generate_text_with_metadata.__get__(
             ma.analyzer,
             ma.analyzer.__class__,
         )
-        exhausted = _AllModelsFailedError(
-            "all fallback models failed",
-            last_model="analysis-route",
-            last_provider="anthropic",
-        )
 
-        with patch.object(ma.analyzer, "_call_litellm", side_effect=exhausted), \
-             patch("src.market_analyzer.record_llm_run_started") as started, \
-             patch("src.market_analyzer.record_llm_run") as recorded:
+        exhausted = _AllModelsFailedError("all models failed", last_model="x", last_provider="p")
+
+        with patch.object(ma.analyzer, "_call_litellm", side_effect=exhausted):
             with pytest.raises(GenerationError) as exc_info:
                 ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
 
-        assert exc_info.value.stage == "fallback"
-        assert exc_info.value.backend == "litellm"
-        assert exc_info.value.provider == "anthropic"
-        assert exc_info.value.details["last_model"] == "analysis-route"
-        assert started.call_args.kwargs["provider"] == "codex_cli"
-        assert started.call_args.kwargs["model"] == "codex_cli"
-        assert recorded.call_args.kwargs["provider"] == "anthropic"
-        assert recorded.call_args.kwargs["model"] == "analysis-route"
-        assert recorded.call_args.kwargs["success"] is False
+        # The exhausted-primary handler re-resolves the backend and surfaces
+        # the structured removal error instead of a fallback attempt.
+        assert exc_info.value.error_code is GenerationErrorCode.BACKEND_NOT_CONFIGURED
+        assert exc_info.value.details["reason"] == "removed_backend"
+        assert exc_info.value.details["requested_backend"] == "codex_cli"
 
-    def test_market_review_records_openrouter_provider_for_exhausted_latest_alias_failure(self):
+    def test_market_review_removed_backend_error_ignores_route_configuration(self):
+        """Route/model configuration cannot resurrect a removed backend."""
         from src.analyzer import _AllModelsFailedError
-        from src.llm.generation_backend import GenerationError
+        from src.llm.generation_backend import GenerationError, GenerationErrorCode
         from src.market_analyzer import MarketOverview
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
         ma.analyzer._config_override.generation_backend = "codex_cli"
-        ma.analyzer._config_override.generation_fallback_backend = "litellm"
         ma.analyzer._config_override.llm_model_list = [
             {
                 "model_name": "analysis-route",
@@ -3751,27 +3605,15 @@ class TestMarketAnalyzerBypassFix:
             ma.analyzer,
             ma.analyzer.__class__,
         )
-        exhausted = _AllModelsFailedError(
-            "all fallback models failed",
-            last_model="openai/~anthropic/claude-sonnet-latest",
-            last_provider="openrouter",
-        )
 
-        with patch.object(ma.analyzer, "_call_litellm", side_effect=exhausted), \
-             patch("src.market_analyzer.record_llm_run_started") as started, \
-             patch("src.market_analyzer.record_llm_run") as recorded:
+        exhausted = _AllModelsFailedError("all models failed", last_model="x", last_provider="p")
+
+        with patch.object(ma.analyzer, "_call_litellm", side_effect=exhausted):
             with pytest.raises(GenerationError) as exc_info:
                 ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
 
-        assert exc_info.value.stage == "fallback"
-        assert exc_info.value.backend == "litellm"
-        assert exc_info.value.provider == "openrouter"
-        assert exc_info.value.details["last_model"] == "openai/~anthropic/claude-sonnet-latest"
-        assert started.call_args.kwargs["provider"] == "codex_cli"
-        assert started.call_args.kwargs["model"] == "codex_cli"
-        assert recorded.call_args.kwargs["provider"] == "openrouter"
-        assert recorded.call_args.kwargs["model"] == "openai/~anthropic/claude-sonnet-latest"
-        assert recorded.call_args.kwargs["success"] is False
+        assert exc_info.value.error_code is GenerationErrorCode.BACKEND_NOT_CONFIGURED
+        assert exc_info.value.details["reason"] == "removed_backend"
 
     def test_market_review_records_response_model_for_empty_router_response_failure(self):
         from src.market_analyzer import MarketOverview
@@ -3817,12 +3659,12 @@ class TestMarketAnalyzerBypassFix:
         assert recorded.call_args.kwargs["error_type"] == "AllModelsFailed"
 
     def test_market_review_records_nested_fallback_route_on_failure(self):
+        """Without backend-level fallback, the primary backend error propagates as-is."""
         from src.llm.generation_backend import GenerationBackend, GenerationError, GenerationErrorCode
         from src.market_analyzer import MarketOverview
 
         ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
         ma.analyzer._config_override.generation_backend = "codex_cli"
-        ma.analyzer._config_override.generation_fallback_backend = "litellm"
         ma.analyzer.get_generation_backend_identity.return_value = ("codex_cli", "codex_cli")
         ma.analyzer.get_generation_backend_config_error = MagicMock(return_value=None)
         ma.analyzer.generate_text_with_metadata = ma.analyzer.__class__.generate_text_with_metadata.__get__(
@@ -3838,37 +3680,22 @@ class TestMarketAnalyzerBypassFix:
             provider="codex_cli",
             details={"reason": "executable_not_found"},
         )
-        fallback_error = GenerationError(
-            error_code=GenerationErrorCode.INVALID_JSON,
-            stage="validation",
-            retryable=True,
-            fallbackable=True,
-            backend="litellm",
-            provider="hermes",
-            details={
-                "reason": "mixed_hermes_route_unsupported",
-                "route_name": "invalid-shared-route",
-            },
-        )
         primary_backend = MagicMock(spec=GenerationBackend)
         primary_backend.generate.side_effect = primary_error
         fallback_backend = MagicMock(spec=GenerationBackend)
-        fallback_backend.generate.side_effect = fallback_error
+        fallback_backend.generate.side_effect = AssertionError("fallback backend must not run")
 
         def _backend_for(backend_id):
             return primary_backend if backend_id == "codex_cli" else fallback_backend
 
-        with patch.object(ma.analyzer, "_get_generation_backend", side_effect=_backend_for), \
-             patch("src.market_analyzer.record_llm_run_started") as started, \
-             patch("src.market_analyzer.record_llm_run") as recorded:
+        with patch.object(ma.analyzer, "_get_generation_backend", side_effect=_backend_for),              patch("src.market_analyzer.record_llm_run_started") as started,              patch("src.market_analyzer.record_llm_run") as recorded:
             with pytest.raises(GenerationError) as exc_info:
                 ma.generate_market_review(MarketOverview(date="2026-03-05"), [])
 
-        assert exc_info.value.details["route_name"] == "invalid-shared-route"
-        assert started.call_args.kwargs["provider"] == "codex_cli"
-        assert started.call_args.kwargs["model"] == "codex_cli"
-        assert recorded.call_args.kwargs["provider"] == "hermes"
-        assert recorded.call_args.kwargs["model"] == "invalid-shared-route"
+        # Any code path that re-resolves a removed backend reports the
+        # structured removal error instead of attempting a fallback roundtrip.
+        assert exc_info.value.error_code is GenerationErrorCode.BACKEND_NOT_CONFIGURED
+        assert exc_info.value.details["reason"] == "removed_backend"
         assert recorded.call_args.kwargs["success"] is False
 
     def test_market_review_preserves_template_fallback_for_primary_litellm_exhaustion(self):

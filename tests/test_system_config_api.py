@@ -86,9 +86,16 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.temp_dir.cleanup()
 
     @staticmethod
-    def _build_request(cookies: dict[str, str] | None = None) -> SimpleNamespace:
+    def _build_request(
+        cookies: dict[str, str] | None = None,
+        *,
+        client_host: str = "127.0.0.1",
+        headers: dict[str, str] | None = None,
+    ) -> SimpleNamespace:
         return SimpleNamespace(
-            cookies=cookies if cookies is not None else {system_config.COOKIE_NAME: "valid-session-token"}
+            cookies=cookies if cookies is not None else {system_config.COOKIE_NAME: "valid-session-token"},
+            headers=headers or {},
+            client=SimpleNamespace(host=client_host),
         )
 
     def _rewrite_env(self, *lines: str) -> None:
@@ -147,35 +154,27 @@ class SystemConfigApiTestCase(unittest.TestCase):
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
         item_map = {item["key"]: item for item in payload["items"]}
 
-        self.assertEqual(
-            item_map["GENERATION_BACKEND_TIMEOUT_SECONDS"]["schema"]["validation"],
-            {"min": 1, "max": 3600},
-        )
-        self.assertEqual(
-            item_map["GENERATION_BACKEND_MAX_OUTPUT_BYTES"]["schema"]["validation"],
-            {"min": 1, "max": 33554432},
-        )
-        self.assertEqual(
-            item_map["GENERATION_BACKEND_MAX_CONCURRENCY"]["schema"]["validation"],
-            {"min": 1, "max": 16},
-        )
-        self.assertEqual(
-            item_map["LOCAL_CLI_BACKEND_MAX_CONCURRENCY"]["schema"]["validation"],
-            {"min": 1, "max": 4},
-        )
-        agent_schema = item_map["AGENT_GENERATION_BACKEND"]["schema"]
+        for removed_key in (
+            "GENERATION_FALLBACK_BACKEND",
+            "GENERATION_BACKEND_TIMEOUT_SECONDS",
+            "GENERATION_BACKEND_MAX_OUTPUT_BYTES",
+            "GENERATION_BACKEND_MAX_CONCURRENCY",
+            "LOCAL_CLI_BACKEND_MAX_CONCURRENCY",
+            "AGENT_GENERATION_BACKEND",
+        ):
+            self.assertNotIn(removed_key, item_map)
+
+        agent_schema = item_map["AGENT_BACKEND"]["schema"]
         self.assertEqual(agent_schema["validation"]["enum"], ["auto", "litellm"])
-        self.assertNotIn("codex_cli", {option["value"] for option in agent_schema["options"]})
-        self.assertNotIn("claude_code_cli", {option["value"] for option in agent_schema["options"]})
-        self.assertNotIn("opencode_cli", {option["value"] for option in agent_schema["options"]})
-        backend_schema = item_map["AGENT_BACKEND"]["schema"]
-        self.assertEqual(
-            backend_schema["validation"]["enum"],
-            ["auto", "litellm", "codex_app_server"],
-        )
+        self.assertNotIn("codex_app_server", {option["value"] for option in agent_schema["options"]})
+        arch_schema = item_map["AGENT_ARCH"]["schema"]
+        self.assertEqual([option["value"] for option in arch_schema["options"]], ["single", "multi"])
+
         generation_schema = item_map["GENERATION_BACKEND"]["schema"]
-        self.assertIn("claude_code_cli", generation_schema["validation"]["enum"])
-        self.assertIn("opencode_cli", generation_schema["validation"]["enum"])
+        self.assertEqual(generation_schema["validation"]["enum"], ["litellm"])
+        self.assertNotIn("codex_cli", generation_schema["validation"]["enum"])
+        self.assertNotIn("claude_code_cli", generation_schema["validation"]["enum"])
+        self.assertNotIn("opencode_cli", generation_schema["validation"]["enum"])
 
     def test_get_config_schema_includes_notification_noise_fields(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
@@ -233,52 +232,55 @@ class SystemConfigApiTestCase(unittest.TestCase):
             "GEMINI_API_KEY=secret-key-value",
         )
 
-        with patch("src.llm.local_cli_backend.shutil.which", return_value=None):
-            payload = system_config.preview_generation_backend_status(
-                request=GenerationBackendStatusPreviewRequest(
-                    items=[
-                        {"key": "GENERATION_BACKEND", "value": "codex_cli"},
-                        {"key": "GENERATION_FALLBACK_BACKEND", "value": ""},
-                    ],
-                    mask_token="******",
-                ),
-                service=self.service,
-            ).model_dump()
+        payload = system_config.preview_generation_backend_status(
+            request=GenerationBackendStatusPreviewRequest(
+                items=[
+                    {"key": "GENERATION_BACKEND", "value": "litellm"},
+                    {"key": "LITELLM_MODEL", "value": ""},
+                    {"key": "GEMINI_API_KEY", "value": ""},
+                ],
+                mask_token="******",
+            ),
+            service=self.service,
+        ).model_dump()
 
-        self.assertEqual(payload["primary_backend_id"], "codex_cli")
+        self.assertEqual(payload["primary_backend_id"], "litellm")
         self.assertFalse(payload["primary"]["available"])
-        self.assertEqual(payload["primary"]["last_error_code"], "command_not_found")
+        self.assertEqual(payload["primary"]["last_error_code"], "backend_not_configured")
+        self.assertIsNone(payload["fallback_backend_id"])
 
         saved_payload = system_config.get_generation_backend_status(service=self.service).model_dump()
         self.assertEqual(saved_payload["primary_backend_id"], "litellm")
+        self.assertTrue(saved_payload["primary"]["available"])
 
     def test_generation_backend_smoke_test_returns_structured_failure(self) -> None:
         self._rewrite_env(
             "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
         )
 
-        with patch("src.llm.local_cli_backend.shutil.which", return_value=None):
-            payload = system_config.test_generation_backend(
-                request=TestGenerationBackendRequest(backend_id="codex_cli"),
-                service=self.service,
-            ).model_dump()
+        payload = system_config.test_generation_backend(
+            request=TestGenerationBackendRequest(backend_id="codex_cli"),
+            service=self.service,
+        ).model_dump()
 
         self.assertFalse(payload["success"])
         self.assertEqual(payload["mode"], "json")
         self.assertEqual(payload["status"]["backend_id"], "codex_cli")
-        self.assertEqual(payload["status"]["last_error_code"], "command_not_found")
+        self.assertEqual(payload["status"]["backend_type"], "litellm")
+        self.assertFalse(payload["status"]["available"])
+        self.assertEqual(payload["status"]["last_error_code"], "backend_not_configured")
 
     def test_preview_generation_backend_status_returns_validation_error_for_bad_draft(self) -> None:
         self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
+            "GENERATION_BACKEND=litellm",
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
         )
 
         with self.assertRaises(HTTPException) as ctx:
             system_config.preview_generation_backend_status(
                 request=GenerationBackendStatusPreviewRequest(
-                    items=[{"key": "GENERATION_BACKEND_TIMEOUT_SECONDS", "value": "not-int"}],
+                    items=[{"key": "GENERATION_BACKEND", "value": "codex_cli"}],
                     mask_token="******",
                 ),
                 service=self.service,
@@ -286,77 +288,47 @@ class SystemConfigApiTestCase(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail["error"], "validation_failed")
-        self.assertEqual(ctx.exception.detail["issues"][0]["key"], "GENERATION_BACKEND_TIMEOUT_SECONDS")
+        self.assertEqual(ctx.exception.detail["issues"][0]["key"], "GENERATION_BACKEND")
+        self.assertEqual(ctx.exception.detail["issues"][0]["code"], "invalid_enum")
 
     def test_preview_agent_backend_status_uses_draft_without_persisting(self) -> None:
         before = self.env_path.read_text(encoding="utf-8")
         before_version = self.manager.get_config_version()
 
-        def fake_run(command, **kwargs):
-            if command[-1] == "--version":
-                return SimpleNamespace(returncode=0, stdout="codex-cli test\n")
-            if "generate-json-schema" in command:
-                schema_dir = Path(command[command.index("--out") + 1])
-                (schema_dir / "v2").mkdir(parents=True, exist_ok=True)
-                (schema_dir / "v2" / "ThreadStartParams.json").write_text(
-                    '{"properties":{"dynamicTools":{},"runtimeWorkspaceRoots":{}}}',
-                    encoding="utf-8",
-                )
-                (schema_dir / "v2" / "ThreadStartResponse.json").write_text(
-                    '{"properties":{"activePermissionProfile":{},"runtimeWorkspaceRoots":{}}}',
-                    encoding="utf-8",
-                )
-                (schema_dir / "ClientRequest.json").write_text(
-                    '["thread/inject_items","turn/start","turn/interrupt","config/read","mcpServerStatus/list"]',
-                    encoding="utf-8",
-                )
-                (schema_dir / "ServerRequest.json").write_text(
-                    '{"const":"item/tool/call"}',
-                    encoding="utf-8",
-                )
-                (schema_dir / "ServerNotification.json").write_text(
-                    '["item/completed","turn/completed"]',
-                    encoding="utf-8",
-                )
-            return SimpleNamespace(returncode=0, stdout="")
-
-        with (
-            patch(
-                "src.services.agent_backend_status_service.resolve_command",
-                return_value=["/test/codex"],
-            ),
-            patch("src.services.agent_backend_status_service._run_codex_probe", side_effect=fake_run),
-        ):
-            payload = system_config.preview_agent_backend_status(
-                request=AgentBackendStatusPreviewRequest(
-                    items=[
-                        {"key": "AGENT_BACKEND", "value": "codex_app_server"},
-                        {"key": "AGENT_ARCH", "value": "single"},
-                    ]
-                ),
-                service=self.service,
-            ).model_dump()
-
-        self.assertEqual(payload["backend"], "codex_app_server")
-        self.assertTrue(payload["available"])
-        self.assertEqual(payload["version"], "codex-cli test")
-        self.assertEqual(self.env_path.read_text(encoding="utf-8"), before)
-        self.assertEqual(self.manager.get_config_version(), before_version)
-
-    def test_preview_agent_backend_status_returns_flat_unavailable_for_codex_multi_draft(self) -> None:
         payload = system_config.preview_agent_backend_status(
             request=AgentBackendStatusPreviewRequest(
                 items=[
-                    {"key": "AGENT_BACKEND", "value": "codex_app_server"},
-                    {"key": "AGENT_ARCH", "value": "multi"},
+                    {"key": "AGENT_BACKEND", "value": "litellm"},
+                    {"key": "AGENT_ARCH", "value": "single"},
                 ]
             ),
             service=self.service,
         ).model_dump()
 
-        self.assertEqual(payload["backend"], "codex_app_server")
-        self.assertFalse(payload["available"])
-        self.assertEqual(payload["error_code"], "unsupported_agent_arch")
+        self.assertEqual(payload["backend"], "litellm")
+        self.assertTrue(payload["available"])
+        self.assertFalse(payload["experimental"])
+        self.assertIsNone(payload["version"])
+        self.assertIsNone(payload["error_code"])
+        self.assertEqual(self.env_path.read_text(encoding="utf-8"), before)
+        self.assertEqual(self.manager.get_config_version(), before_version)
+
+    def test_preview_agent_backend_status_returns_capability_unsupported_for_removed_codex_backend(self) -> None:
+        for arch in ("single", "multi"):
+            with self.subTest(arch=arch):
+                payload = system_config.preview_agent_backend_status(
+                    request=AgentBackendStatusPreviewRequest(
+                        items=[
+                            {"key": "AGENT_BACKEND", "value": "codex_app_server"},
+                            {"key": "AGENT_ARCH", "value": arch},
+                        ]
+                    ),
+                    service=self.service,
+                ).model_dump()
+
+                self.assertEqual(payload["backend"], "codex_app_server")
+                self.assertFalse(payload["available"])
+                self.assertEqual(payload["error_code"], "capability_unsupported")
 
     def test_put_config_updates_secret_and_plain_field(self) -> None:
         current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
@@ -370,6 +342,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     {"key": "STOCK_LIST", "value": "600519,300750"},
                 ],
             ),
+            request_obj=self._build_request(),
             service=self.service,
         ).model_dump()
 
@@ -399,6 +372,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     },
                 ],
             ),
+            request_obj=self._build_request(),
             service=self.service,
         ).model_dump()
 
@@ -423,6 +397,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     config_version="stale-version",
                     items=[{"key": "STOCK_LIST", "value": "600519"}],
                 ),
+                request_obj=self._build_request(),
                 service=self.service,
             )
 
@@ -453,6 +428,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                 reload_now=False,
                 items=[{"key": "STOCK_LIST", "value": "600519,300750"}],
             ),
+            request_obj=self._build_request(),
             service=self.service,
         ).model_dump()
 
@@ -473,6 +449,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     {"key": "SCHEDULE_RUN_IMMEDIATELY", "value": "true"},
                 ],
             ),
+            request_obj=self._build_request(),
             service=self.service,
         ).model_dump()
 
@@ -504,6 +481,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     {"key": "SCHEDULE_TIME", "value": "09:30"},
                 ],
             ),
+            request_obj=self._build_request(),
             service=self.service,
         ).model_dump()
 
@@ -565,12 +543,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
             request_obj=self._build_request(),
             request=ImportSystemConfigRequest(
                 config_version=current["config_version"],
-                content=(
-                    "GENERATION_BACKEND=codex_cli\n"
-                    "GENERATION_FALLBACK_BACKEND=\n"
-                    "GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576\n"
-                    "AGENT_GENERATION_BACKEND=auto\n"
-                ),
+                content="GENERATION_BACKEND=litellm\nAGENT_BACKEND=auto\n",
                 reload_now=False,
             ),
             service=self.service,
@@ -581,10 +554,37 @@ class SystemConfigApiTestCase(unittest.TestCase):
         ).model_dump()
 
         self.assertTrue(payload["success"])
-        self.assertIn("GENERATION_BACKEND=codex_cli\n", export_payload["content"])
-        self.assertIn("GENERATION_FALLBACK_BACKEND=\n", export_payload["content"])
-        self.assertIn("GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576\n", export_payload["content"])
-        self.assertIn("AGENT_GENERATION_BACKEND=auto\n", export_payload["content"])
+        self.assertIn("GENERATION_BACKEND=litellm\n", export_payload["content"])
+        self.assertIn("AGENT_BACKEND=auto\n", export_payload["content"])
+
+    def test_import_system_config_rejects_removed_backend_values(self) -> None:
+        for content, rejected_key in (
+            ("GENERATION_BACKEND=codex_cli\n", "GENERATION_BACKEND"),
+            ("AGENT_BACKEND=codex_app_server\n", "AGENT_BACKEND"),
+        ):
+            with self.subTest(rejected_key=rejected_key):
+                current = system_config.get_system_config(
+                    include_schema=False,
+                    service=self.service,
+                ).model_dump()
+
+                with self.assertRaises(HTTPException) as ctx:
+                    system_config.import_system_config(
+                        request_obj=self._build_request(),
+                        request=ImportSystemConfigRequest(
+                            config_version=current["config_version"],
+                            content=content,
+                            reload_now=False,
+                        ),
+                        service=self.service,
+                    )
+
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail["error"], "validation_failed")
+                issue = ctx.exception.detail["issues"][0]
+                self.assertEqual(issue["key"], rejected_key)
+                self.assertEqual(issue["code"], "invalid_enum")
+                self.assertEqual(issue["severity"], "error")
 
     def test_import_system_config_returns_conflict_when_version_is_stale(self) -> None:
         with self.assertRaises(HTTPException) as context:
@@ -859,6 +859,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     models=["gpt-4o-mini"],
                     capability_checks=["json", "stream"],
                 ),
+                request_obj=self._build_request(),
                 service=self.service,
             ).model_dump()
 
@@ -870,6 +871,47 @@ class SystemConfigApiTestCase(unittest.TestCase):
         mock_test.assert_called_once()
         self.assertEqual(mock_test.call_args.kwargs["capability_checks"], ["json", "stream"])
         self.assertEqual(mock_test.call_args.kwargs["api_surface"], "responses")
+        self.assertTrue(mock_test.call_args.kwargs["allow_private_targets"])
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_endpoint_blocks_loopback_base_url_for_public_client(self, mock_completion) -> None:
+        payload = system_config.test_llm_channel(
+            request=TestLLMChannelRequest(
+                name="lab",
+                protocol="",
+                base_url="http://localhost:11434/v1",
+                api_key="",
+                models=["ollama/llama3"],
+            ),
+            request_obj=self._build_request(cookies={}, client_host="198.51.100.7"),
+            service=self.service,
+        ).model_dump()
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "invalid_config")
+        self.assertEqual(payload["details"]["reason"], "ssrf_blocked")
+        mock_completion.assert_not_called()
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_endpoint_allows_loopback_base_url_for_admin_session(self, mock_completion) -> None:
+        mock_completion.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))]
+        )
+
+        payload = system_config.test_llm_channel(
+            request=TestLLMChannelRequest(
+                name="lab",
+                protocol="",
+                base_url="http://localhost:11434/v1",
+                api_key="",
+                models=["ollama/llama3"],
+            ),
+            request_obj=self._build_request(client_host="198.51.100.7"),
+            service=self.service,
+        ).model_dump()
+
+        self.assertTrue(payload["success"])
+        mock_completion.assert_called_once()
 
     def test_test_notification_channel_endpoint_returns_service_payload(self) -> None:
         with patch.object(
@@ -905,6 +947,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     content="hello",
                     timeout_seconds=5,
                 ),
+                request_obj=self._build_request(),
                 service=self.service,
             ).model_dump()
 
@@ -914,6 +957,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
         mock_test.assert_called_once()
         self.assertEqual(mock_test.call_args.kwargs["channel"], "wechat")
         self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
+        self.assertTrue(mock_test.call_args.kwargs["allow_private_targets"])
 
     def test_test_notification_channel_schema_accepts_registered_channels(self) -> None:
         dingtalk_request = TestNotificationChannelRequest(
@@ -991,6 +1035,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
                     api_key="sk-test",
                 ),
+                request_obj=self._build_request(),
                 service=self.service,
             ).model_dump()
 
@@ -998,6 +1043,27 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(payload["models"], ["qwen-plus", "qwen-turbo"])
         self.assertEqual(payload["stage"], "model_discovery")
         mock_discover.assert_called_once()
+        self.assertTrue(mock_discover.call_args.kwargs["allow_private_targets"])
+
+    def test_update_system_config_endpoint_rejects_private_custom_webhook_for_public_client(self) -> None:
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+
+        with self.assertRaises(HTTPException) as ctx:
+            system_config.update_system_config(
+                request=UpdateSystemConfigRequest(
+                    config_version=current["config_version"],
+                    reload_now=False,
+                    items=[{"key": "CUSTOM_WEBHOOK_URLS", "value": "http://127.0.0.1:8080/hook"}],
+                ),
+                request_obj=self._build_request(cookies={}, client_host="198.51.100.7"),
+                service=self.service,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail["error"], "validation_failed")
+        self.assertTrue(
+            any(issue["code"] == "ssrf_blocked" for issue in ctx.exception.detail["issues"])
+        )
 
 
 if __name__ == "__main__":

@@ -103,6 +103,7 @@ describe('BacktestPage', () => {
   it('renders shared surface inputs and prediction tracking outputs', async () => {
     render(<BacktestPage />);
 
+    expect(screen.getByRole('heading', { level: 1, name: '策略回测' })).toBeInTheDocument();
     const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
     const windowInput = screen.getByPlaceholderText('10');
 

@@ -55,6 +55,20 @@ describe('MarketReviewRegionSelector', () => {
     expect(onChange).toHaveBeenLastCalledWith(undefined);
   });
 
+  it('renders the menu as an opaque, explicitly anchored popover', () => {
+    render(
+      <UiLanguageProvider>
+        <MarketReviewRegionSelector onChange={vi.fn()} />
+      </UiLanguageProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '选择大盘复盘市场' }));
+    const dialog = screen.getByRole('dialog', { name: '选择大盘复盘市场' });
+
+    expect(dialog).toHaveClass('top-full', 'right-0', 'bg-popover');
+    expect(dialog).not.toHaveClass('bg-surface/95', 'backdrop-blur-xl', 'shadow-2xl');
+  });
+
   it('keeps at least one market selected in override mode', () => {
     const onChange = vi.fn();
     render(

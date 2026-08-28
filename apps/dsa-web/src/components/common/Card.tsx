@@ -27,9 +27,9 @@ export const Card: React.FC<CardProps> = ({
 }) => {
   const paddingStyles = {
     none: '',
-    sm: 'p-4',
-    md: 'p-5',
-    lg: 'p-6',
+    sm: 'p-3',
+    md: 'p-4',
+    lg: 'p-5',
   };
 
   const variantStyles = {
@@ -47,7 +47,7 @@ export const Card: React.FC<CardProps> = ({
           {(title || subtitle) && (
             <div className="mb-3">
               {subtitle ? <span className="label-uppercase">{subtitle}</span> : null}
-              {title ? <h3 className="mt-1 text-lg font-semibold text-foreground">{title}</h3> : null}
+              {title ? <h3 className="mt-1 text-base font-semibold text-foreground">{title}</h3> : null}
             </div>
           )}
           {children}
@@ -59,12 +59,12 @@ export const Card: React.FC<CardProps> = ({
   return (
     <div
       style={style}
-      className={cn('rounded-2xl', variantStyles[variant], hoverStyles, paddingStyles[padding], className)}
+      className={cn('rounded-xl', variantStyles[variant], hoverStyles, paddingStyles[padding], className)}
     >
       {(title || subtitle) && (
         <div className="mb-3">
           {subtitle ? <span className="label-uppercase">{subtitle}</span> : null}
-          {title ? <h3 className="mt-1 text-lg font-semibold text-foreground">{title}</h3> : null}
+          {title ? <h3 className="mt-1 text-base font-semibold text-foreground">{title}</h3> : null}
         </div>
       )}
       {children}

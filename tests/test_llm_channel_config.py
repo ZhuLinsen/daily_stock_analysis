@@ -3,6 +3,7 @@
 
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
@@ -20,7 +21,8 @@ from src.config import (
     get_fixed_litellm_temperature,
     normalize_litellm_temperature,
 )
-from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
+from src.llm.backend_registry import REMOVED_GENERATION_BACKEND_IDS, resolve_agent_generation_backend_id
+from src.llm.generation_backend import GenerationError
 from src.llm.hermes import open_hermes_no_proxy_client, parse_hermes_channel, route_has_hermes
 from src.llm.generation_params import (
     apply_litellm_generation_params,
@@ -731,12 +733,12 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
-    def test_agent_generation_backend_local_cli_is_unavailable_even_with_safe_route(
+    def test_agent_generation_backend_removed_value_raises_even_with_safe_route(
         self,
         _mock_parse_yaml,
         _mock_setup_env,
     ) -> None:
-        for backend in sorted(GENERATION_ONLY_BACKEND_IDS):
+        for backend in sorted(REMOVED_GENERATION_BACKEND_IDS):
             with self.subTest(backend=backend):
                 env = {
                     "AGENT_MODE": "true",
@@ -751,7 +753,25 @@ class LLMChannelConfigTestCase(unittest.TestCase):
                 with patch.dict(os.environ, env, clear=True):
                     config = Config._load_from_env()
 
-                self.assertFalse(config.is_agent_available())
+                # Config no longer parses AGENT_GENERATION_BACKEND, so a stale
+                # removed value cannot poison the loaded runtime config.
+                self.assertFalse(hasattr(config, "agent_generation_backend"))
+                self.assertEqual(resolve_agent_generation_backend_id(config), "litellm")
+                self.assertEqual(config.llm_models_source, "llm_channels")
+                self.assertEqual(config.llm_model_list[0]["model_name"], "openai/gpt-4o-mini")
+
+                # The resolver still fails closed when a config object carries a
+                # removed agent generation backend, even with a safe route.
+                stale = SimpleNamespace(
+                    agent_generation_backend=backend,
+                    litellm_model=config.litellm_model,
+                    llm_model_list=config.llm_model_list,
+                )
+                with self.assertRaises(GenerationError) as ctx:
+                    resolve_agent_generation_backend_id(stale)
+
+                self.assertEqual(ctx.exception.details.get("field"), "AGENT_GENERATION_BACKEND")
+                self.assertEqual(ctx.exception.details.get("reason"), "removed_backend")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -1074,8 +1094,11 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertEqual(config.generation_backend, "litellm")
-        self.assertEqual(config.generation_fallback_backend, "litellm")
-        self.assertEqual(config.agent_generation_backend, "auto")
+        self.assertEqual(config.agent_backend, "auto")
+        # Backend-level fallback and agent generation backend selection were
+        # removed; their env values must not re-enter Config.
+        self.assertFalse(hasattr(config, "generation_fallback_backend"))
+        self.assertFalse(hasattr(config, "agent_generation_backend"))
         self.assertEqual(config.llm_models_source, "llm_channels")
         self.assertEqual(config.llm_channels[0]["models"], ["openai/gpt-4o-mini"])
         self.assertEqual(config.llm_model_list[0]["model_name"], "openai/gpt-4o-mini")

@@ -28,7 +28,7 @@ export const InlineAlert: React.FC<InlineAlertProps> = ({
   return (
     <div
       role="alert"
-      className={cn('max-w-full overflow-hidden rounded-2xl border px-4 py-3 shadow-soft-card', variantStyles[variant], className)}
+      className={cn('max-w-full overflow-hidden rounded-xl border px-4 py-3 shadow-none', variantStyles[variant], className)}
     >
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">

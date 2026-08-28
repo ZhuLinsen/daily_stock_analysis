@@ -60,16 +60,7 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
           isViewing ? 'home-history-item-selected' : ''
         }`}
       >
-        <div className="relative z-10 flex items-center gap-2.5">
-          {sentimentColor && (
-            <div
-              className="w-1 h-8 rounded-full flex-shrink-0"
-              style={{
-                backgroundColor: sentimentColor,
-                boxShadow: `0 0 10px ${sentimentColor}40`,
-              }}
-            />
-          )}
+        <div className="relative z-10 flex items-center gap-2">
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">

@@ -37,12 +37,13 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   }, [mobileOpen]);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex items-start justify-between px-3">
+    <div className="app-shell min-h-screen bg-background text-foreground">
+      <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex items-start justify-between px-3 lg:hidden">
         <button
           type="button"
           onClick={() => setMobileOpen(true)}
-          className="pointer-events-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/70 bg-card/85 text-secondary-text shadow-soft-card backdrop-blur-md transition-colors hover:bg-hover hover:text-foreground lg:hidden"
+          className="tech-icon-button pointer-events-auto inline-flex h-10 w-10 items-center justify-center"
+
           aria-label={t('layout.openNav')}
         >
           <Menu className="h-5 w-5" />
@@ -56,19 +57,19 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
         </div>
       </div>
 
-      <div className="mx-auto flex min-h-screen w-full max-w-[1680px] px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1920px] gap-2.5 px-2 py-2 sm:px-3 sm:py-3 lg:gap-3">
         <aside
           className={cn(
-            'sticky top-3 z-40 hidden shrink-0 overflow-visible rounded-[1.5rem] border border-[var(--shell-sidebar-border)] bg-card/72 p-2.5 shadow-soft-card backdrop-blur-sm transition-[width] duration-200 lg:flex',
-            'max-h-[calc(100vh-1.5rem)] self-start sm:top-4 sm:max-h-[calc(100vh-2rem)]',
-            collapsed ? 'w-[64px]' : 'w-[136px]'
+            'app-sidebar sticky top-2 z-40 hidden shrink-0 overflow-hidden rounded-xl border border-[var(--shell-sidebar-border)] bg-card p-2 transition-[width] duration-200 lg:flex',
+            'max-h-[calc(100vh-1rem)] self-start sm:top-3 sm:max-h-[calc(100vh-1.5rem)]',
+            collapsed ? 'w-16' : 'w-40'
           )}
           aria-label={t('layout.desktopSidebar')}
         >
-          <SidebarNav collapsed={collapsed} variant="rail" onNavigate={() => setMobileOpen(false)} />
+          <SidebarNav collapsed={collapsed} variant={collapsed ? 'rail' : 'default'} onNavigate={() => setMobileOpen(false)} />
         </aside>
 
-        <main className="min-h-0 min-w-0 flex-1 pt-14 lg:pl-3 lg:pt-0 touch-pan-y">
+        <main className="min-h-0 min-w-0 flex-1 pt-14 lg:pt-0 touch-pan-y">
           {children ?? <Outlet />}
         </main>
       </div>

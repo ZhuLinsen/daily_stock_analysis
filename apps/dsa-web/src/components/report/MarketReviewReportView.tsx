@@ -360,6 +360,34 @@ const formatRankingChange = (value: unknown): string => {
   return `${sign}${numeric.toFixed(2)}%`;
 };
 
+const cleanInsightValue = (value: string | undefined, fallback: string): string => {
+  if (!value?.trim()) {
+    return fallback;
+  }
+
+  const withoutMetadata = value
+    .replace(/\[dsa-market-region\]:\s*#?\s*\([^)]+\)\s*/gi, '')
+    .replace(/#+\s*(?:🎯\s*)?(?:大盘复盘|market review)/gi, '')
+    .replace(/#+\s*\d{4}-\d{2}-\d{2}\s*(?:大盘复盘|market review)\s*📊?\s*>?/giu, '')
+    .trim();
+
+  const cleaned = markdownToPlainText(withoutMetadata)
+    .replace(/^\s*[>›-]\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleaned || ['查看复盘', '大盘复盘', 'market review', 'view review'].includes(cleaned.toLowerCase())) {
+    return fallback;
+  }
+  return cleaned;
+};
+
+const marketChangeClassName = (value: unknown): string => {
+  const numeric = coerceFiniteNumber(value);
+  if (numeric === null || numeric === 0) return 'text-secondary-text';
+  return numeric > 0 ? 'text-danger' : 'text-success';
+};
+
 export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
   report,
   recordId,
@@ -385,7 +413,9 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
   const error = loadError && loadError.recordId === recordId ? loadError.message : null;
   const hasStructuredContent = Boolean(marketReviewPayload?.sections?.length || marketReviewPayload?.markets);
   const isLoading = Boolean(recordId && !providedContent && !hasStructuredContent && loadedMarkdown?.recordId !== recordId && !error);
-  const displayTitle = marketReviewPayload?.rootTitle || marketReviewPayload?.title || meta?.stockName || 'Market Review';
+  const displayTitle = (marketReviewPayload?.rootTitle || marketReviewPayload?.title || meta?.stockName || 'Market Review')
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .trim();
   const structuredContent = useMemo(
     () => stripTopHeading(content, displayTitle),
     [content, displayTitle],
@@ -403,6 +433,9 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
   );
   const showStructuredMarketTitles = Boolean(marketReviewPayload?.markets);
   const canOpenRunFlow = recordId !== undefined && onOpenRunFlow;
+  const sentimentProgress = typeof summary?.sentimentScore === 'number'
+    ? Math.min(100, Math.max(0, summary.sentimentScore))
+    : null;
 
   useEffect(() => {
     if (!recordId || providedContent || hasStructuredContent) {
@@ -450,7 +483,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
     {
       icon: FileText,
       label: marketReviewText.reviewSummary,
-      value: summary?.analysisSummary || marketReviewText.noReviewSummary,
+      value: cleanInsightValue(summary?.analysisSummary, marketReviewText.noReviewSummary),
     },
     {
       icon: Gauge,
@@ -462,25 +495,25 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
     {
       icon: Layers,
       label: marketReviewText.rotationAndFunds,
-      value: summary?.operationAdvice || marketReviewText.noRotationView,
+      value: cleanInsightValue(summary?.operationAdvice, marketReviewText.noRotationView),
     },
     {
       icon: ShieldAlert,
       label: marketReviewText.riskAndWatch,
-      value: summary?.trendPrediction || marketReviewText.noRiskWatch,
+      value: cleanInsightValue(summary?.trendPrediction, marketReviewText.noRiskWatch),
     },
   ], [marketReviewText, summary, text.marketSentiment]);
 
   return (
-    <div className={`animate-fade-in space-y-4 pb-8 ${className}`}>
-      <Card variant="gradient" padding="md" className="home-report-hero text-left">
-        <div className="flex items-start justify-between gap-3">
+    <div className={`animate-fade-in space-y-3 pb-5 ${className}`}>
+      <Card variant="bordered" padding="none" className="home-report-hero px-4 py-4 text-left">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <div className="mb-2 inline-flex items-center gap-2 text-xs font-semibold text-secondary-text">
-              <BarChart3 className="h-4 w-4" aria-hidden="true" />
+            <div className="mb-1.5 inline-flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.16em] text-muted-text">
+              <BarChart3 className="h-3.5 w-3.5" aria-hidden="true" />
               <span>MARKET REVIEW</span>
             </div>
-            <h2 className="text-[26px] font-bold leading-tight text-foreground sm:text-[30px]">
+            <h2 className="text-xl font-semibold leading-tight tracking-[-0.02em] text-foreground">
               {displayTitle}
             </h2>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-text">
@@ -491,11 +524,12 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex w-full items-center gap-1 overflow-x-auto sm:w-auto sm:shrink-0 sm:overflow-visible">
             <ShareImageButton
               recordId={recordId}
               reportTitle={displayTitle}
               reportLanguage={reportLanguage}
+              iconOnly
             />
             {canOpenRunFlow ? (
               <Tooltip content={runFlowText['runFlow.open']}>
@@ -503,10 +537,10 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                   <button
                     type="button"
                     onClick={() => onOpenRunFlow(recordId)}
-                    className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground"
+                    className="home-surface-button flex h-8 w-8 items-center justify-center rounded-md text-secondary-text hover:text-foreground"
                     aria-label={formatUiText(runFlowText['runFlow.openHistoryAria'], { recordId })}
                   >
-                    <Workflow className="h-5 w-5" aria-hidden="true" />
+                      <Workflow className="h-4 w-4" aria-hidden="true" />
                   </button>
                 </span>
               </Tooltip>
@@ -517,7 +551,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                   type="button"
                   onClick={() => void handleCopy('markdown')}
                   disabled={isLoading || !content || copiedType !== null}
-                  className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
+                  className="home-surface-button flex h-8 w-8 items-center justify-center rounded-md text-secondary-text hover:text-foreground disabled:opacity-50"
                   aria-label={text.copyMarkdownSource}
                 >
                   {copiedType === 'markdown' ? (
@@ -525,7 +559,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
                   ) : (
-                    <Clipboard className="h-5 w-5" aria-hidden="true" />
+                    <Clipboard className="h-4 w-4" aria-hidden="true" />
                   )}
                 </button>
               </span>
@@ -536,7 +570,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                   type="button"
                   onClick={() => void handleCopy('text')}
                   disabled={isLoading || !content || copiedType !== null}
-                  className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
+                  className="home-surface-button flex h-8 w-8 items-center justify-center rounded-md text-secondary-text hover:text-foreground disabled:opacity-50"
                   aria-label={text.copyPlainText}
                 >
                   {copiedType === 'text' ? (
@@ -544,7 +578,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
                   ) : (
-                    <FileText className="h-5 w-5" aria-hidden="true" />
+                    <FileText className="h-4 w-4" aria-hidden="true" />
                   )}
                 </button>
               </span>
@@ -554,86 +588,100 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
       </Card>
 
       {summary ? (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {insightCards.map(({ icon: Icon, label, value }) => (
-            <Card key={label} variant="bordered" padding="sm" className="home-panel-card text-left">
-              <div className="flex items-start gap-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                </div>
+        <Card variant="bordered" padding="none" className="home-panel-card overflow-hidden text-left">
+          <div data-testid="market-review-insights" className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4">
+          {insightCards.map(({ icon: Icon, label, value }, index) => (
+            <div
+              key={label}
+              className={`home-insight-card p-3 ${
+                index === 0
+                  ? 'home-insight-card-primary border-b border-subtle md:border-r xl:border-b-0'
+                  : index === 1
+                    ? 'border-b border-subtle xl:border-b-0 xl:border-r'
+                    : index === 2
+                      ? 'border-b border-subtle md:border-b-0 md:border-r'
+                      : ''
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
                 <div className="min-w-0">
                   <p className="label-uppercase">{label}</p>
-                  <p className="mt-2 line-clamp-4 text-sm leading-6 text-foreground">{value}</p>
+                  <p className={`mt-1 text-xs leading-5 text-foreground ${index === 0 ? 'line-clamp-2' : 'line-clamp-2'}`}>{value}</p>
+                  {index === 1 && sentimentProgress !== null ? (
+                    <div className="mt-2 h-1 overflow-hidden rounded-full bg-foreground/8" aria-hidden="true">
+                      <div className="h-full rounded-full bg-primary" style={{ width: `${sentimentProgress}%` }} />
+                    </div>
+                  ) : null}
                 </div>
               </div>
-            </Card>
+            </div>
           ))}
-        </div>
+          </div>
+        </Card>
       ) : null}
 
       {structuredMarketData.length > 0 ? (
-        <Card variant="bordered" padding="md" className="home-panel-card text-left">
-          <div className="mb-3 flex items-center gap-2">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <BarChart3 className="h-4 w-4" aria-hidden="true" />
-            </span>
-            <h3 className="text-base font-semibold text-foreground">{marketReviewText.structuredMarketData}</h3>
+        <Card variant="bordered" padding="sm" className="home-panel-card text-left">
+          <div className="mb-2 flex items-center gap-1.5">
+            <BarChart3 className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+            <h3 className="text-[13px] font-semibold text-foreground">{marketReviewText.structuredMarketData}</h3>
           </div>
-          <div className="space-y-5">
+          <div className="space-y-3">
             {structuredMarketData.map((marketData) => (
-              <div key={marketData.id} className="space-y-3">
+              <div key={marketData.id} className="space-y-2">
                 {showStructuredMarketTitles ? (
                   <h4 className="text-sm font-semibold text-foreground">{marketData.title}</h4>
                 ) : null}
                 {marketData.breadth ? (
-                  <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
-                    <div className="rounded-lg border border-subtle p-3">
+                  <div className="grid grid-cols-2 gap-1.5 text-xs md:grid-cols-4">
+                    <div className="rounded-md border border-subtle p-2">
                       <p className="label-uppercase">{marketReviewText.advancers}</p>
                       <p className="mt-1 font-semibold text-foreground">
                         {formatMarketCount(marketData.breadth.upCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-md border border-subtle p-2">
                       <p className="label-uppercase">{marketReviewText.decliners}</p>
                       <p className="mt-1 font-semibold text-foreground">
                         {formatMarketCount(marketData.breadth.downCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-md border border-subtle p-2">
                       <p className="label-uppercase">{marketReviewText.limitUpDown}</p>
                       <p className="mt-1 font-semibold text-foreground">
                         {formatMarketCount(marketData.breadth.limitUpCount)} /{' '}
                         {formatMarketCount(marketData.breadth.limitDownCount)}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-subtle p-3">
+                    <div className="rounded-md border border-subtle p-2">
                       <p className="label-uppercase">{marketReviewText.turnover}</p>
                       <p className="mt-1 font-semibold text-foreground">
                         {formatMarketAmount(marketData.breadth.totalAmount, marketData.breadth.turnoverUnit)}
                       </p>
                     </div>
                   </div>
-                ) : (
+                ) : marketData.indices.length === 0 && !hasRankingRows(marketData.sectors) && !hasRankingRows(marketData.concepts) ? (
                   <p className="text-sm text-secondary-text">{marketReviewText.noBreadthData}</p>
-                )}
+                ) : null}
                 {marketData.indices.length > 0 ? (
                   <div className="overflow-x-auto">
-                    <table className="min-w-full text-sm">
-                      <thead className="text-left text-xs uppercase text-muted-text">
+                    <table className="min-w-full table-fixed text-xs">
+                      <thead className="text-left text-[10px] uppercase tracking-wide text-muted-text">
                         <tr>
-                          <th className="px-2 py-2">{marketReviewText.index}</th>
-                          <th className="px-2 py-2">{marketReviewText.last}</th>
-                          <th className="px-2 py-2">{marketReviewText.change}</th>
-                          <th className="px-2 py-2">{marketReviewText.highLow}</th>
+                          <th className="px-2 py-1.5">{marketReviewText.index}</th>
+                          <th className="px-2 py-1.5">{marketReviewText.last}</th>
+                          <th className="px-2 py-1.5">{marketReviewText.change}</th>
+                          <th className="px-2 py-1.5">{marketReviewText.highLow}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-subtle">
                         {marketData.indices.map((index) => (
                           <tr key={index.code || index.name}>
-                            <td className="px-2 py-2 font-medium text-foreground">{index.name}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketNumber(index.current)}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
+                            <td className="px-2 py-1.5 font-medium text-foreground">{index.name}</td>
+                            <td className="px-2 py-1.5 text-secondary-text">{formatMarketNumber(index.current)}</td>
+                            <td className={`px-2 py-1.5 font-medium ${marketChangeClassName(index.changePct)}`}>{formatMarketPercent(index.changePct)}</td>
+                            <td className="px-2 py-1.5 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -663,7 +711,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                       return null;
                     }
                     return (
-                      <div key={`${key}-${side}`} className="rounded-lg border border-subtle p-3">
+                      <div key={`${key}-${side}`} className="rounded-md border border-subtle p-2.5">
                         <div className="mb-2 flex items-center justify-between gap-2">
                           <p className="label-uppercase">{title}</p>
                           <span className="text-xs text-secondary-text">
@@ -672,7 +720,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                         </div>
                         <div className="space-y-1.5">
                           {rows.slice(0, 5).map((item, index) => (
-                            <div key={`${item.name}-${index}`} className="flex items-center justify-between gap-3 text-sm">
+                            <div key={`${item.name}-${index}`} className="flex items-center justify-between gap-3 text-xs">
                               <span className="min-w-0 truncate text-foreground">{item.name}</span>
                               <span className="shrink-0 font-mono text-secondary-text">
                                 {formatRankingChange(item.changePct)}
@@ -725,22 +773,22 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
           </div>
         </Card>
       ) : (
-        <div data-testid="market-review-report" className="space-y-4">
-          {sections.map(({ id, title, content: sectionContent, icon: Icon }) => (
-            <Card key={id} variant="bordered" padding="md" className="home-panel-card text-left">
-              <div className="mb-3 flex items-center gap-2">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                </span>
-                <h3 className="text-base font-semibold text-foreground">{title}</h3>
+        <Card variant="bordered" padding="none" className="home-panel-card text-left">
+          <div data-testid="market-review-report">
+          {sections.map(({ id, title, content: sectionContent, icon: Icon }, index) => (
+            <section key={id} className={`px-3 py-3 ${index > 0 ? 'border-t border-subtle' : ''}`}>
+              <div className="mb-2 flex items-center gap-1.5">
+                <Icon className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+                <h3 className="text-[13px] font-semibold text-foreground">{title}</h3>
               </div>
               <ReportMarkdownBody
                 content={sectionContent}
                 className="market-review-markdown"
               />
-            </Card>
+            </section>
           ))}
-        </div>
+          </div>
+        </Card>
       )}
     </div>
   );

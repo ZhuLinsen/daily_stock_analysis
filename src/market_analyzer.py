@@ -26,12 +26,7 @@ from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.core.market_profile import get_profile, MarketProfile
 from src.core.market_strategy import get_market_strategy_blueprint
-from src.llm.backend_registry import (
-    LOCAL_CLI_GENERATION_BACKEND_IDS,
-    LITELLM_BACKEND_ID,
-    resolve_generation_backend_id,
-    resolve_generation_fallback_backend_id,
-)
+from src.llm.backend_registry import LITELLM_BACKEND_ID, resolve_generation_backend_id
 from src.llm.generation_backend import GenerationError, GenerationResult
 from src.schemas.market_light import MARKET_LIGHT_REGIONS, MarketLightSnapshot
 from src.services.run_diagnostics import record_llm_run, record_llm_run_started
@@ -907,7 +902,6 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if self.analyzer is None:
             try:
                 resolve_generation_backend_id(self.config)
-                resolve_generation_fallback_backend_id(self.config)
             except GenerationError as exc:
                 return exc
             return None
@@ -922,10 +916,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _get_configured_generation_backend_identity(self) -> tuple[str, str]:
         """Best-effort backend identity for legacy analyzers without metadata APIs."""
-        backend_id = str(getattr(self.config, "generation_backend", "") or "").strip().lower()
-        if not backend_id:
-            backend_id = LITELLM_BACKEND_ID
-        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+        backend_id = str(getattr(self.config, "generation_backend", "") or "").strip().lower() or LITELLM_BACKEND_ID
+        if backend_id != LITELLM_BACKEND_ID:
+            # Removed local CLI backends keep their configured id as identity;
+            # runtime resolution reports the structured removal error instead.
             return backend_id, backend_id
         return backend_id, str(getattr(self.config, "litellm_model", "") or "")
 

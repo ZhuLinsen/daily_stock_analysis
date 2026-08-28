@@ -166,21 +166,13 @@ vi.mock('../../components/settings', () => ({
   ),
   AgentBackendStatusPanel: ({
     items,
-    selectedBackend,
-    agentArch,
-    onUseSingleAgent,
   }: {
     items: Array<{ key: string; value: string }>;
-    selectedBackend: string;
-    agentArch: string;
-    onUseSingleAgent: () => void;
   }) => (
     <div data-testid="agent-backend-status-panel-mock">
       <span data-testid="agent-backend-status-items">
         {items.map((item) => `${item.key}=${item.value}`).join('|')}
       </span>
-      <span>{selectedBackend}:{agentArch}</span>
-      <button type="button" onClick={onUseSingleAgent}>切换为单 Agent</button>
     </div>
   ),
   NotificationTestPanel: ({ items }: { items: Array<{ key: string; value: string }> }) => (
@@ -1117,25 +1109,23 @@ describe('SettingsPage', () => {
     expect(settingsPanelErrorBoundary).toHaveBeenCalledWith('Agent 设置');
   });
 
-  it('integrates one Agent backend selector and keeps Codex limits editable as unsaved draft actions', () => {
+  it('integrates one Agent backend selector and keeps multi-arch editable as unsaved draft', () => {
     const configState = buildSystemConfigState();
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
       activeCategory: 'agent',
       hasDirty: true,
       dirtyCount: 2,
       getChangedItems: () => [
-        { key: 'AGENT_BACKEND', value: 'codex_app_server' },
+        { key: 'AGENT_BACKEND', value: 'litellm' },
         { key: 'AGENT_ARCH', value: 'multi' },
       ],
       itemsByCategory: {
         ...configState.itemsByCategory,
         agent: [
-          buildAgentItem('AGENT_BACKEND', 'codex_app_server', 1, 'select'),
-          buildAgentItem('AGENT_GENERATION_BACKEND', 'auto', 2, 'select'),
+          buildAgentItem('AGENT_BACKEND', 'litellm', 1, 'select'),
           buildAgentItem('AGENT_LITELLM_MODEL', 'openai/gpt-4o-mini', 3),
           buildAgentItem('AGENT_MAX_STEPS', '10', 4, 'number'),
           buildAgentItem('AGENT_ARCH', 'multi', 5, 'select'),
-          buildAgentItem('AGENT_ORCHESTRATOR_TIMEOUT_S', '600', 6, 'number'),
         ],
       },
     }));
@@ -1143,19 +1133,11 @@ describe('SettingsPage', () => {
     renderSettingsPage();
 
     expect(screen.getByTestId('settings-field-AGENT_BACKEND')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-field-AGENT_GENERATION_BACKEND')).not.toBeInTheDocument();
     expect(screen.getByTestId('settings-field-AGENT_MAX_STEPS')).toHaveAttribute('data-disabled', 'false');
-    expect(screen.getByTestId('settings-field-AGENT_ARCH')).toHaveAttribute(
-      'data-issues',
-      'unsupported_agent_arch',
-    );
+    expect(screen.getByTestId('settings-field-AGENT_ARCH')).toHaveAttribute('data-issues', '');
     expect(screen.getByTestId('agent-backend-status-items')).toHaveTextContent(
-      'AGENT_BACKEND=codex_app_server|AGENT_ARCH=multi',
+      'AGENT_BACKEND=litellm|AGENT_ARCH=multi',
     );
-
-    fireEvent.click(screen.getByRole('button', { name: '切换为单 Agent' }));
-    expect(setDraftValue).toHaveBeenCalledWith('AGENT_ARCH', 'single');
-    expect(save).not.toHaveBeenCalled();
   });
 
   it('renders context compression profile labels and blank preset guidance in agent settings', () => {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 
@@ -34,7 +35,7 @@ from api.v1.schemas.system_config import (
     ValidateSystemConfigRequest,
     ValidateSystemConfigResponse,
 )
-from src.auth import COOKIE_NAME, is_auth_enabled, refresh_auth_state, verify_session
+from src.auth import COOKIE_NAME, get_client_ip, is_auth_enabled, refresh_auth_state, verify_session
 from src.services.system_config_service import (
     ConfigConflictError,
     ConfigImportError,
@@ -125,6 +126,22 @@ def _raise_env_backup_access_error(exc: EnvBackupAccessDenied) -> None:
             "message": exc.message,
         },
     )
+
+
+def _allow_private_outbound_targets(request: Request) -> bool:
+    """Allow private outbound targets only for trusted local/admin callers."""
+    if os.getenv("DSA_DESKTOP_MODE") == "true":
+        return True
+
+    refresh_auth_state()
+    cookie_val = request.cookies.get(COOKIE_NAME)
+    if is_auth_enabled() and cookie_val and verify_session(cookie_val):
+        return True
+
+    try:
+        return ipaddress.ip_address(get_client_ip(request)).is_loopback
+    except ValueError:
+        return False
 
 
 @router.get(
@@ -375,6 +392,7 @@ def preview_agent_backend_status(
 )
 def update_system_config(
     request: UpdateSystemConfigRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> UpdateSystemConfigResponse:
     """Validate and persist system configuration updates."""
@@ -384,6 +402,7 @@ def update_system_config(
             items=[item.model_dump() for item in request.items],
             mask_token=request.mask_token,
             reload_now=request.reload_now,
+            allow_private_targets=_allow_private_outbound_targets(request_obj),
         )
         return UpdateSystemConfigResponse.model_validate(payload)
     except ConfigValidationError as exc:
@@ -546,11 +565,15 @@ def import_system_config(
 )
 def validate_system_config(
     request: ValidateSystemConfigRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> ValidateSystemConfigResponse:
     """Run pre-save validation only."""
     try:
-        payload = service.validate(items=[item.model_dump() for item in request.items])
+        payload = service.validate(
+            items=[item.model_dump() for item in request.items],
+            allow_private_targets=_allow_private_outbound_targets(request_obj),
+        )
         return ValidateSystemConfigResponse.model_validate(payload)
     except Exception as exc:
         logger.error("Failed to validate system configuration: %s", exc, exc_info=True)
@@ -575,6 +598,7 @@ def validate_system_config(
 )
 def test_llm_channel(
     request: TestLLMChannelRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> TestLLMChannelResponse:
     """Validate and test one channel definition without writing `.env`."""
@@ -590,6 +614,7 @@ def test_llm_channel(
             timeout_seconds=request.timeout_seconds,
             capability_checks=request.capability_checks,
             use_saved_secret=request.use_saved_secret,
+            allow_private_targets=_allow_private_outbound_targets(request_obj),
         )
         return TestLLMChannelResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:
@@ -623,6 +648,7 @@ def test_llm_channel(
 )
 def test_notification_channel(
     request: TestNotificationChannelRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> TestNotificationChannelResponse:
     """Validate and test one notification channel without writing `.env`."""
@@ -634,6 +660,7 @@ def test_notification_channel(
             title=request.title,
             content=request.content,
             timeout_seconds=request.timeout_seconds,
+            allow_private_targets=_allow_private_outbound_targets(request_obj),
         )
         return TestNotificationChannelResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:
@@ -667,6 +694,7 @@ def test_notification_channel(
 )
 def discover_llm_channel_models(
     request: DiscoverLLMChannelModelsRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> DiscoverLLMChannelModelsResponse:
     """Discover models for one channel definition without writing `.env`."""
@@ -679,6 +707,7 @@ def discover_llm_channel_models(
             models=request.models,
             timeout_seconds=request.timeout_seconds,
             use_saved_secret=request.use_saved_secret,
+            allow_private_targets=_allow_private_outbound_targets(request_obj),
         )
         return DiscoverLLMChannelModelsResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:

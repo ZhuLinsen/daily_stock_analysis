@@ -630,21 +630,12 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
 
         config = get_config()
 
-    from src.agent.agent_backend import (
-        AgentBackendConfigError,
-        LiteLLMAgentBackend,
-        resolve_agent_backend_id,
-    )
+    from src.agent.agent_backend import LiteLLMAgentBackend, resolve_agent_backend_id
     from src.agent.chat_executor import AgentChatExecutor
 
     backend_id = resolve_agent_backend_id(config)
     arch = str(getattr(config, "agent_arch", "single") or "single").strip().lower()
-    if backend_id == "codex_app_server" and arch != "single":
-        raise AgentBackendConfigError(
-            "unsupported_agent_arch",
-            "Codex Agent currently supports single-agent Chat only",
-        )
-    if backend_id == "litellm" and arch == "multi":
+    if arch == "multi":
         return build_agent_executor(config, skills=skills)
 
     # Pass ``config`` explicitly so a reloaded ``Config`` instance observes
@@ -652,17 +643,10 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
     # same rationale).
     registry = get_tool_registry(config)
     prompt_state = resolve_skill_prompt_state(config, skills=skills)
-    if backend_id == "litellm":
-        from src.agent.llm_adapter import LLMToolAdapter
+    from src.agent.llm_adapter import LLMToolAdapter
 
-        context_llm_adapter = LLMToolAdapter(config)
-        backend = LiteLLMAgentBackend(registry, context_llm_adapter)
-    else:
-        from src.agent.codex_agent_backend import CodexAgentBackend
-        from src.agent.tool_surface import ToolSurface
-
-        context_llm_adapter = None
-        backend = CodexAgentBackend(ToolSurface(registry), config)
+    context_llm_adapter = LLMToolAdapter(config)
+    backend = LiteLLMAgentBackend(registry, context_llm_adapter)
 
     return AgentChatExecutor(
         backend=backend,

@@ -120,8 +120,9 @@ def test_daily_analysis_maps_prompt_cache_config() -> None:
 def test_daily_analysis_maps_generation_backend_runtime_config() -> None:
     env = _load_daily_analysis_env()
 
+    # Provider API (LiteLLM) is the only generation backend; the removed
+    # local-CLI runtime keys must not reappear in the workflow env mapping.
     for key in (
-        "GENERATION_BACKEND",
         "GENERATION_FALLBACK_BACKEND",
         "GENERATION_BACKEND_TIMEOUT_SECONDS",
         "GENERATION_BACKEND_MAX_OUTPUT_BYTES",
@@ -129,19 +130,10 @@ def test_daily_analysis_maps_generation_backend_runtime_config() -> None:
         "LOCAL_CLI_BACKEND_MAX_CONCURRENCY",
         "AGENT_GENERATION_BACKEND",
     ):
-        assert key in env
-        assert f"vars.{key}" in env[key]
-        assert f"secrets.{key}" in env[key]
+        assert key not in env
 
-
-def test_daily_analysis_generation_fallback_defaults_to_litellm() -> None:
-    env = _load_daily_analysis_env()
-    expression = env["GENERATION_FALLBACK_BACKEND"]
-
-    assert expression == (
-        "${{ vars.GENERATION_FALLBACK_BACKEND || "
-        "secrets.GENERATION_FALLBACK_BACKEND || 'litellm' }}"
-    )
+    assert "vars.GENERATION_BACKEND" in env["GENERATION_BACKEND"]
+    assert "secrets.GENERATION_BACKEND" in env["GENERATION_BACKEND"]
 
 
 def test_env_example_includes_provider_template_channel_examples() -> None:

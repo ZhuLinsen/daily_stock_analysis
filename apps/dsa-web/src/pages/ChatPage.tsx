@@ -28,8 +28,6 @@ import { isNearBottom } from '../utils/chatScroll';
 import { getReportText } from '../utils/reportLanguage';
 import { extractStockCodesFromMessage } from '../utils/chatStockCode';
 import { findMatchingStockCode, includesStockCode, normalizeStockCode } from '../utils/stockCode';
-import { useStockIndex } from '../hooks/useStockIndex';
-import type { StockIndexItem } from '../types/stockIndex';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 
 // Quick question examples shown on empty state
@@ -38,14 +36,13 @@ type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>
 const QUICK_QUESTIONS: Array<{
   label: string;
   skill: string;
-  stockContext?: ActiveStockContext;
 }> = [
-  { label: '用缠论分析茅台', skill: 'chan_theory', stockContext: { stock_code: '600519', stock_name: '贵州茅台' } },
-  { label: '波浪理论看宁德时代', skill: 'wave_theory', stockContext: { stock_code: '300750', stock_name: '宁德时代' } },
-  { label: '分析比亚迪趋势', skill: 'bull_trend', stockContext: { stock_code: '002594', stock_name: '比亚迪' } },
-  { label: '用箱体震荡分析 A 股中芯国际 688981', skill: 'box_oscillation', stockContext: { stock_code: '688981', stock_name: '中芯国际' } },
-  { label: '分析腾讯 hk00700', skill: 'bull_trend', stockContext: { stock_code: 'HK00700', stock_name: '腾讯控股' } },
-  { label: '用情绪周期分析东方财富', skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
+  { label: '用缠论分析茅台', skill: 'chan_theory' },
+  { label: '波浪理论看宁德时代', skill: 'wave_theory' },
+  { label: '分析比亚迪趋势', skill: 'bull_trend' },
+  { label: '用箱体震荡分析 A 股中芯国际 688981', skill: 'box_oscillation' },
+  { label: '分析腾讯 hk00700', skill: 'bull_trend' },
+  { label: '用情绪周期分析东方财富', skill: 'emotion_cycle' },
 ];
 
 const MAX_SELECTED_SKILLS = 3;
@@ -59,30 +56,6 @@ const SWITCH_STOCK_MESSAGE_RE = /换成|改看|分析|看看|研究|诊断/;
 type ActiveStockResolution = {
   context: ActiveStockContext;
   useForCurrentSend: boolean;
-};
-
-const resolveUniqueStockNameContext = (
-  message: string,
-  index: StockIndexItem[],
-): ActiveStockContext | null => {
-  const normalizedMessage = message.trim().toLocaleLowerCase();
-  if (!normalizedMessage) return null;
-
-  const matches = new Map<string, ActiveStockContext>();
-  for (const item of index) {
-    if (!item.active) continue;
-    const terms = [item.nameZh, item.nameEn, ...(item.aliases || [])]
-      .map((term) => term?.trim())
-      .filter((term): term is string => Boolean(term))
-      .filter((term) => /[\u3400-\u9fff]/.test(term) ? term.length >= 2 : term.length >= 3);
-    if (!terms.some((term) => normalizedMessage.includes(term.toLocaleLowerCase()))) {
-      continue;
-    }
-    const stockCode = normalizeStockCode(item.canonicalCode);
-    matches.set(stockCode, { stock_code: stockCode, stock_name: item.nameZh || null });
-  }
-
-  return matches.size === 1 ? [...matches.values()][0] : null;
 };
 
 const getMessageSkillNames = (msg: Message): string[] => {
@@ -233,9 +206,6 @@ const ChatPage: React.FC = () => {
   const [agentStatus, setAgentStatus] = useState<AgentStatusResponse | null>(null);
   const [agentStatusError, setAgentStatusError] = useState<string | null>(null);
   const [agentStatusChecking, setAgentStatusChecking] = useState(true);
-  const { index: stockIndex } = useStockIndex(
-    agentStatus?.backend === 'codex_app_server',
-  );
   const watchlistMessageTimerRef = useRef<number | null>(null);
   const copyResetTimerRef = useRef<Partial<Record<string, number>>>({});
   const messagesViewportRef = useRef<HTMLDivElement>(null);
@@ -348,14 +318,11 @@ const ChatPage: React.FC = () => {
     sessions,
     sessionsLoading,
     chatError,
-    stopping,
     terminalStatus,
-    stopError,
     setSelectedSkillIds,
     loadSessions,
     loadInitialSession,
     switchSession,
-    stopStream,
     startStream,
     clearCompletionBadge,
   } = useAgentChatStore();
@@ -553,11 +520,9 @@ const ChatPage: React.FC = () => {
   const agentAvailable = Boolean(agentStatus?.available) && !agentStatusChecking;
   const agentUnavailableMessage = agentStatus?.errorCode === 'agent_mode_disabled'
     ? t('chat.agentModeDisabled')
-    : agentStatus?.errorCode === 'platform_unsupported'
-      ? t('chat.agentPlatformUnsupported')
-      : agentStatus?.backend === 'codex_app_server'
-        ? t('chat.codexUnavailableMessage')
-        : t('chat.defaultUnavailableMessage');
+    : agentStatus?.errorCode === 'capability_unsupported'
+      ? t('chat.agentUnsupportedBackend')
+      : t('chat.defaultUnavailableMessage');
   const agentUnavailableError = agentConfirmedUnavailable
     ? createParsedApiError({
         title: t('chat.agentBackendUnavailableTitle'),
@@ -676,7 +641,6 @@ const ChatPage: React.FC = () => {
     async (
       overrideMessage?: string,
       overrideSkillIds?: string[],
-      overrideStockContext?: ActiveStockContext,
     ) => {
       const msgText = (overrideMessage ?? input).trim();
       if (!msgText || loading || !agentAvailable || !agentStatus) return;
@@ -688,28 +652,13 @@ const ChatPage: React.FC = () => {
         requestedSkillIds ?? selectedSkillIds,
       );
       const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['通用'];
-      const codexStockContext = agentStatus?.backend === 'codex_app_server'
-        ? overrideStockContext
-        : undefined;
 
-      let nextActiveStockContext = codexStockContext ?? activeStockContext;
-      let useActiveContextForThisSend = Boolean(codexStockContext);
-      const stockResolution = codexStockContext
-        ? null
-        : resolveActiveStockContextFromMessage(msgText, activeStockContext);
+      let nextActiveStockContext = activeStockContext;
+      let useActiveContextForThisSend = false;
+      const stockResolution = resolveActiveStockContextFromMessage(msgText, activeStockContext);
       if (stockResolution) {
         nextActiveStockContext = stockResolution.context;
         useActiveContextForThisSend = stockResolution.useForCurrentSend;
-      } else if (
-        agentStatus?.backend === 'codex_app_server'
-        && !codexStockContext
-        && (!nextActiveStockContext || SWITCH_STOCK_MESSAGE_RE.test(msgText))
-      ) {
-        const nameContext = resolveUniqueStockNameContext(msgText, stockIndex);
-        if (nameContext) {
-          nextActiveStockContext = nameContext;
-          useActiveContextForThisSend = true;
-        }
       }
       const contextForSend = useActiveContextForThisSend
         ? nextActiveStockContext
@@ -740,7 +689,7 @@ const ChatPage: React.FC = () => {
         },
       });
     },
-    [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, stockIndex],
+    [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -752,7 +701,7 @@ const ChatPage: React.FC = () => {
 
   const handleQuickQuestion = (q: (typeof QUICK_QUESTIONS)[0]) => {
     setSelectedSkillIds([q.skill]);
-    handleSend(q.label, [q.skill], q.stockContext);
+    handleSend(q.label, [q.skill]);
   };
 
   const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
@@ -1109,10 +1058,10 @@ const ChatPage: React.FC = () => {
               问股
               {agentStatus ? (
                 <Badge
-                  variant={agentStatus.backend === 'codex_app_server' ? 'warning' : 'history'}
+                  variant="history"
                   size="sm"
                 >
-                  {t(agentStatus.backend === 'codex_app_server' ? 'chat.codexBackendBadge' : 'chat.defaultBackendBadge')}
+                  {t('chat.defaultBackendBadge')}
                 </Badge>
               ) : null}
             </h1>
@@ -1212,25 +1161,8 @@ const ChatPage: React.FC = () => {
             )}
           </div>
           <p className="text-secondary-text text-sm">
-            {t(agentStatus?.backend === 'codex_app_server' ? 'chat.introCodex' : 'chat.introDefault')}
+            {t('chat.introDefault')}
           </p>
-          {agentStatus?.backend === 'codex_app_server' ? (
-            <InlineAlert
-              variant="warning"
-              title={t('chat.codexLimitedTitle')}
-              message={t('chat.codexLimitedMessage')}
-              action={(
-                <Button
-                  variant="action-primary"
-                  size="sm"
-                  onClick={() => navigate('/settings?category=agent')}
-                >
-                  {t('chat.codexChangeBackend')}
-                </Button>
-              )}
-              className="rounded-xl px-3 py-2 text-xs shadow-none"
-            />
-          ) : null}
           {sendToast ? (
             <InlineAlert
               variant={sendToast.type === 'success' ? 'success' : 'danger'}
@@ -1254,11 +1186,7 @@ const ChatPage: React.FC = () => {
               <div className="flex h-full items-center justify-center">
                 <EmptyState
                   title="开始问股"
-                  description={t(
-                    agentStatus?.backend === 'codex_app_server'
-                      ? 'chat.emptyDescriptionCodex'
-                      : 'chat.emptyDescriptionDefault',
-                  )}
+                  description={t('chat.emptyDescriptionDefault')}
                   className="max-w-2xl border-dashed bg-card/55"
                   icon={(
                     <svg
@@ -1332,8 +1260,8 @@ const ChatPage: React.FC = () => {
                           {skillLabel}
                         </Badge> : null}
                         {msg.backend ? (
-                          <Badge variant={msg.backend === 'codex_app_server' ? 'warning' : 'history'} size="sm">
-                            {t(msg.backend === 'codex_app_server' ? 'chat.codexBackendBadge' : 'chat.defaultBackendBadge')}
+                          <Badge variant="history" size="sm">
+                            {t('chat.defaultBackendBadge')}
                           </Badge>
                         ) : null}
                       </div>
@@ -1450,11 +1378,6 @@ const ChatPage: React.FC = () => {
               {terminalStatus === 'timeout' ? (
                 <div role="status" className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm">
                   {t('chat.analysisTimedOut')}
-                </div>
-              ) : null}
-              {stopError ? (
-                <div role="alert" className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm">
-                  {t('chat.stopRequestFailed')}
                 </div>
               ) : null}
               {agentUnavailableError ? (
@@ -1653,26 +1576,15 @@ const ChatPage: React.FC = () => {
                     t.style.height = `${Math.min(t.scrollHeight, 200)}px`;
                   }}
                 />
-                {loading && agentStatus?.backend === 'codex_app_server' ? (
-                  <Button
-                    variant="danger-subtle"
-                    onClick={stopStream}
-                    disabled={stopping}
-                    className="flex-shrink-0"
-                  >
-                    {stopping ? t('chat.stoppingAnalysis') : t('chat.stopAnalysis')}
-                  </Button>
-                ) : (
-                  <Button
-                    variant="primary"
-                    onClick={() => handleSend()}
-                    disabled={!input.trim() || loading || !agentAvailable}
-                    isLoading={loading}
-                    className="btn-primary flex-shrink-0"
-                  >
-                    发送
-                  </Button>
-                )}
+                <Button
+                  variant="primary"
+                  onClick={() => handleSend()}
+                  disabled={!input.trim() || loading || !agentAvailable}
+                  isLoading={loading}
+                  className="btn-primary flex-shrink-0"
+                >
+                  发送
+                </Button>
               </div>
             </div>
           </div>

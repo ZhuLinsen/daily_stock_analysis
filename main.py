@@ -413,6 +413,13 @@ def parse_arguments() -> argparse.Namespace:
         help='不保存分析上下文快照'
     )
 
+    # === Virtual trader ===
+    parser.add_argument(
+        '--virtual-trader',
+        action='store_true',
+        help='启动虚拟交易员常驻进程：每日收盘后按均值回归策略模拟买卖并复盘预测'
+    )
+
     # === Backtest ===
     parser.add_argument(
         '--backtest',
@@ -1400,6 +1407,66 @@ def _build_schedule_times_provider(default_schedule_time: str):
     return _provider
 
 
+def _run_virtual_trader_tick(config) -> dict:
+    """执行一轮虚拟交易员扫描（三市场各自幂等）。"""
+    from src.services.virtual_trader.runner import VirtualTraderRunner
+
+    runner = VirtualTraderRunner(config=config)
+    results = runner.run_all_markets()
+    summary = {"ran": 0, "skipped": 0, "failed": 0}
+    for item in results:
+        status = item.get("status")
+        if status == "success":
+            summary["ran"] += 1
+            logger.info(
+                "[VirtualTrader] %s %s 完成：净值 %s CNY，成交 %d 笔",
+                item.get("market"),
+                item.get("trade_date"),
+                item.get("total_value_cny"),
+                len(item.get("trades") or []),
+            )
+        elif status == "failed":
+            summary["failed"] += 1
+            logger.warning("[VirtualTrader] %s 失败: %s", item.get("market"), item.get("error"))
+        else:
+            summary["skipped"] += 1
+    return summary
+
+
+def _build_virtual_trader_background_task():
+    """构造调度器可挂载的虚拟交易员后台任务。"""
+
+    def virtual_trader_task():
+        _run_virtual_trader_tick(_reload_runtime_config())
+
+    return virtual_trader_task
+
+
+def _run_virtual_trader_mode(args) -> int:
+    """虚拟交易员常驻模式：周期 tick，收盘后自动执行，不跑全量分析。"""
+    import threading
+
+    logger.info("模式: 虚拟交易员常驻进程")
+    logger.info("每 30 分钟检查一次各市场是否收盘待执行；按 Ctrl+C 退出")
+
+    def _tick_loop():
+        while True:
+            try:
+                _run_virtual_trader_tick(_reload_runtime_config())
+            except Exception as exc:
+                logger.exception("虚拟交易员 tick 异常: %s", exc)
+            time.sleep(30 * 60)
+
+    thread = threading.Thread(target=_tick_loop, name="virtual-trader", daemon=True)
+    thread.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("用户中断，虚拟交易员进程退出")
+    return 0
+
+
 def main() -> int:
     """
     主入口函数
@@ -1575,6 +1642,10 @@ def main() -> int:
             )
             return 0
 
+        # 模式0: 虚拟交易员常驻进程
+        if getattr(args, 'virtual_trader', False):
+            return _run_virtual_trader_mode(args)
+
         # 模式1: 仅大盘复盘
         if args.market_review:
             from src.core.market_review import run_market_review
@@ -1668,6 +1739,14 @@ def main() -> int:
                     "interval_seconds": interval_minutes * 60,
                     "run_immediately": True,
                     "name": "agent_event_monitor",
+                })
+
+            if getattr(config, 'virtual_trader_enabled', False):
+                background_tasks.append({
+                    "task": _build_virtual_trader_background_task(),
+                    "interval_seconds": 30 * 60,
+                    "run_immediately": True,
+                    "name": "virtual_trader",
                 })
 
             schedule_kwargs = {

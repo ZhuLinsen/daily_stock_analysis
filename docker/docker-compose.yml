@@ -37,6 +37,9 @@ x-common: &common
 
     # Web/API service bind address (must be 0.0.0.0 inside container)
     - WEBUI_HOST=0.0.0.0
+    # 把宿主机发布绑定地址显式注入容器，供认证模块判断
+    # “宿主 127.0.0.1 -> 容器桥接 172.x” 是否仍属于本机首次设密流量。
+    - DSA_DOCKER_PUBLISHED_HOST_BIND_IP=${HOST_BIND_IP:-127.0.0.1}
     # API_PORT 从 .env 文件读取，无需在此硬编码
 
     # 代理设置（如果需要）
@@ -67,6 +70,10 @@ services:
     <<: *common
     container_name: stock-server
     command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "${API_PORT:-8000}"]
+    # 默认仅发布到宿主机回环地址；如需显式外网暴露，请设置 HOST_BIND_IP=0.0.0.0
+    # 并同时启用 ADMIN_AUTH_ENABLED=true，避免公开未认证的管理接口。
+    # DSA_DOCKER_PUBLISHED_HOST_BIND_IP 由上方 common environment 注入容器内，
+    # 仅当它是回环地址时，Docker 桥接进来的 172.x 首次设密流量才会被视为本机请求。
     # 若使用 network_mode: host，则以下 ports 映射无效，端口由 command 中的 --port 指定
     ports:
-      - "${API_PORT:-8000}:${API_PORT:-8000}"
+      - "${HOST_BIND_IP:-127.0.0.1}:${API_PORT:-8000}:${API_PORT:-8000}"

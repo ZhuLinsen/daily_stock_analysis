@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import src.auth as auth
@@ -19,6 +20,8 @@ def _reset_auth_globals() -> None:
     auth._session_secret = None
     auth._password_hash_salt = None
     auth._password_hash_stored = None
+    auth._password_hash_iterations = None
+    auth._password_hash_needs_upgrade = False
     auth._rate_limit = {}
 
 
@@ -34,9 +37,10 @@ class AuthValidationTestCase(unittest.TestCase):
 
     def test_validate_password_too_short(self) -> None:
         self.assertIsNotNone(auth._validate_password("12345"))
+        self.assertIsNotNone(auth._validate_password("123456789"))
 
     def test_validate_password_valid(self) -> None:
-        self.assertIsNone(auth._validate_password("123456"))
+        self.assertIsNone(auth._validate_password("1234567890"))
         self.assertIsNone(auth._validate_password("password123"))
 
 
@@ -52,7 +56,7 @@ class AuthPasswordHashTestCase(unittest.TestCase):
         derived = hashlib.pbkdf2_hmac(
             "sha256", pwd.encode("utf-8"), salt=salt, iterations=auth.PBKDF2_ITERATIONS
         )
-        self.assertTrue(auth._verify_password_hash(pwd, salt, derived))
+        self.assertTrue(auth._verify_password_hash(pwd, salt, derived, auth.PBKDF2_ITERATIONS))
 
     def test_verify_password_hash_wrong_password(self) -> None:
         salt = secrets.token_bytes(32)
@@ -60,7 +64,7 @@ class AuthPasswordHashTestCase(unittest.TestCase):
         derived = hashlib.pbkdf2_hmac(
             "sha256", pwd.encode("utf-8"), salt=salt, iterations=auth.PBKDF2_ITERATIONS
         )
-        self.assertFalse(auth._verify_password_hash("wrong", salt, derived))
+        self.assertFalse(auth._verify_password_hash("wrong", salt, derived, auth.PBKDF2_ITERATIONS))
 
     def test_verify_password_hash_constant_time(self) -> None:
         """Verify compare_digest is used (constant-time)."""
@@ -68,7 +72,12 @@ class AuthPasswordHashTestCase(unittest.TestCase):
         derived = hashlib.pbkdf2_hmac(
             "sha256", b"x", salt=salt, iterations=auth.PBKDF2_ITERATIONS
         )
-        self.assertFalse(auth._verify_password_hash("y", salt, derived))
+        self.assertFalse(auth._verify_password_hash("y", salt, derived, auth.PBKDF2_ITERATIONS))
+
+    def test_parse_versioned_password_hash(self) -> None:
+        salt, stored_hash, serialized = auth._build_password_hash("password123")
+        parsed = auth._parse_password_hash(serialized)
+        self.assertEqual(parsed, (salt, stored_hash, auth.PBKDF2_ITERATIONS, False))
 
 
 class AuthSessionTestCase(unittest.TestCase):
@@ -183,6 +192,64 @@ class AuthRateLimitTestCase(unittest.TestCase):
         self.assertTrue(auth.check_rate_limit(ip))
 
 
+class AuthLoopbackRequestTestCase(unittest.TestCase):
+    """Test loopback detection used by auth bootstrap endpoints."""
+
+    def test_is_loopback_ip_accepts_local_ipv4_ipv6_and_localhost(self) -> None:
+        self.assertTrue(auth.is_loopback_ip("127.0.0.1"))
+        self.assertTrue(auth.is_loopback_ip("::1"))
+        self.assertTrue(auth.is_loopback_ip("localhost"))
+
+    def test_is_loopback_ip_rejects_non_local_and_invalid_hosts(self) -> None:
+        self.assertFalse(auth.is_loopback_ip("192.168.1.20"))
+        self.assertFalse(auth.is_loopback_ip("example.invalid"))
+        self.assertFalse(auth.is_loopback_ip(""))
+
+    def test_is_loopback_request_uses_effective_client_ip(self) -> None:
+        request = SimpleNamespace(
+            headers={"X-Forwarded-For": "198.51.100.8, 127.0.0.1"},
+            client=SimpleNamespace(host="10.0.0.5"),
+        )
+        with patch.dict(os.environ, {"TRUST_X_FORWARDED_FOR": "true"}, clear=False):
+            self.assertTrue(auth.is_loopback_request(request))
+
+    def test_is_loopback_request_allows_private_bridge_when_compose_host_bind_is_loopback(self) -> None:
+        request = SimpleNamespace(
+            headers={},
+            client=SimpleNamespace(host="172.18.0.1"),
+        )
+        with patch.dict(
+            os.environ,
+            {auth.DOCKER_PUBLISHED_HOST_BIND_IP_ENV: "127.0.0.1"},
+            clear=False,
+        ):
+            self.assertTrue(auth.is_loopback_request(request))
+
+    def test_is_loopback_request_rejects_private_bridge_when_compose_host_bind_is_public(self) -> None:
+        request = SimpleNamespace(
+            headers={},
+            client=SimpleNamespace(host="172.18.0.1"),
+        )
+        with patch.dict(
+            os.environ,
+            {auth.DOCKER_PUBLISHED_HOST_BIND_IP_ENV: "0.0.0.0"},
+            clear=False,
+        ):
+            self.assertFalse(auth.is_loopback_request(request))
+
+    def test_is_loopback_request_rejects_public_client_even_with_loopback_compose_bind(self) -> None:
+        request = SimpleNamespace(
+            headers={},
+            client=SimpleNamespace(host="8.8.8.8"),
+        )
+        with patch.dict(
+            os.environ,
+            {auth.DOCKER_PUBLISHED_HOST_BIND_IP_ENV: "127.0.0.1"},
+            clear=False,
+        ):
+            self.assertFalse(auth.is_loopback_request(request))
+
+
 class AuthSetPasswordTestCase(unittest.TestCase):
     """Test set_initial_password, change_password, overwrite_password."""
 
@@ -203,8 +270,12 @@ class AuthSetPasswordTestCase(unittest.TestCase):
             err = auth.set_initial_password("password123")
             self.assertIsNone(err)
             self.assertIsNotNone(auth._password_hash_stored)
+            self.assertEqual(auth._password_hash_iterations, auth.PBKDF2_ITERATIONS)
+            self.assertFalse(auth._password_hash_needs_upgrade)
             self.assertTrue(auth.is_password_set())
             self.assertTrue(auth.verify_password("password123"))
+            stored = auth._get_credential_path().read_text(encoding="utf-8")
+            self.assertTrue(stored.startswith(f"{auth.PASSWORD_HASH_VERSION}${auth.PASSWORD_HASH_SCHEME}$"))
 
         self._run_with_patch(run)
 
@@ -254,7 +325,7 @@ class AuthSetPasswordTestCase(unittest.TestCase):
     def test_set_initial_password_invalid(self) -> None:
         def run():
             self.assertIsNotNone(auth.set_initial_password(""))
-            self.assertIsNotNone(auth.set_initial_password("12345"))
+            self.assertIsNotNone(auth.set_initial_password("123456789"))
 
         self._run_with_patch(run)
 
@@ -279,11 +350,37 @@ class AuthSetPasswordTestCase(unittest.TestCase):
 
     def test_overwrite_password_cli_style(self) -> None:
         def run():
-            auth.set_initial_password("original")
-            err = auth.overwrite_password("resetpass")
+            auth.set_initial_password("original123")
+            err = auth.overwrite_password("resetpass123")
             self.assertIsNone(err)
-            self.assertFalse(auth.verify_password("original"))
-            self.assertTrue(auth.verify_password("resetpass"))
+            self.assertFalse(auth.verify_password("original123"))
+            self.assertTrue(auth.verify_password("resetpass123"))
+
+        self._run_with_patch(run)
+
+    def test_verify_stored_password_migrates_legacy_hash_after_success(self) -> None:
+        def run():
+            legacy_password = "legacypass123"
+            salt = secrets.token_bytes(32)
+            derived = hashlib.pbkdf2_hmac(
+                "sha256",
+                legacy_password.encode("utf-8"),
+                salt=salt,
+                iterations=auth.LEGACY_PBKDF2_ITERATIONS,
+            )
+            legacy_content = (
+                f"{auth.base64.standard_b64encode(salt).decode('ascii')}:"
+                f"{auth.base64.standard_b64encode(derived).decode('ascii')}"
+            )
+            auth._get_credential_path().write_text(legacy_content, encoding="utf-8")
+
+            self.assertTrue(auth.verify_stored_password(legacy_password))
+            self.assertEqual(auth._password_hash_iterations, auth.PBKDF2_ITERATIONS)
+            self.assertFalse(auth._password_hash_needs_upgrade)
+
+            stored = auth._get_credential_path().read_text(encoding="utf-8")
+            self.assertTrue(stored.startswith(f"{auth.PASSWORD_HASH_VERSION}${auth.PASSWORD_HASH_SCHEME}$"))
+            self.assertTrue(auth.verify_stored_password(legacy_password))
 
         self._run_with_patch(run)
 

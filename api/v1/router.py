@@ -22,9 +22,14 @@ from api.v1.endpoints import (
     health,
     history,
     intelligence,
+    market_status,
+    market_temperature,
+    master_debate,
     portfolio,
     stocks,
     system_config,
+    virtual_trader,
+    trade_journals,
     usage,
 )
 
@@ -108,6 +113,36 @@ router.include_router(
     intelligence.router,
     prefix="/intelligence",
     tags=["Intelligence"]
+)
+
+router.include_router(
+    market_status.router,
+    prefix="/market",
+    tags=["MarketStatus"]
+)
+
+router.include_router(
+    market_temperature.router,
+    prefix="/market-temperature",
+    tags=["MarketTemperature"]
+)
+
+router.include_router(
+    trade_journals.router,
+    prefix="/trade-journals",
+    tags=["TradeJournal"]
+)
+
+router.include_router(
+    virtual_trader.router,
+    prefix="/virtual-trader",
+    tags=["VirtualTrader"]
+)
+
+router.include_router(
+    master_debate.router,
+    prefix="/master-debate",
+    tags=["MasterDebate"]
 )
 
 router.include_router(

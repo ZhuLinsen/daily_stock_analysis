@@ -36,8 +36,6 @@ from src.agent.provider_trace import (
 )
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
-    AUTO_AGENT_BACKEND_ID,
-    GENERATION_ONLY_BACKEND_IDS,
     LITELLM_BACKEND_ID,
     resolve_agent_generation_backend_id,
 )
@@ -424,34 +422,6 @@ class LLMToolAdapter:
             logger.error("Agent LLM unavailable: %s", self._route_resolution.reason)
             return
         if not litellm_model:
-            generation_backend = str(
-                getattr(config, "generation_backend", LITELLM_BACKEND_ID) or LITELLM_BACKEND_ID
-            ).strip().lower()
-            agent_backend = str(
-                getattr(config, "agent_generation_backend", AUTO_AGENT_BACKEND_ID)
-                or AUTO_AGENT_BACKEND_ID
-            ).strip().lower()
-            if generation_backend in GENERATION_ONLY_BACKEND_IDS and agent_backend == AUTO_AGENT_BACKEND_ID:
-                self._backend_error = GenerationError(
-                    error_code=GenerationErrorCode.UNSUPPORTED_TOOL_CALLING,
-                    stage="generation",
-                    retryable=False,
-                    fallbackable=False,
-                    backend=generation_backend,
-                    provider=generation_backend,
-                    details={
-                        "field": "AGENT_GENERATION_BACKEND",
-                        "requested_backend": AUTO_AGENT_BACKEND_ID,
-                        "generation_backend": generation_backend,
-                        "supported_tool_backend": LITELLM_BACKEND_ID,
-                        "reason": "litellm_agent_backend_unavailable",
-                    },
-                )
-                logger.error(
-                    "Agent auto backend cannot inherit %s because it does not support tool calling",
-                    generation_backend,
-                )
-                return
             logger.warning("Agent LLM: no effective primary model configured")
             return
 

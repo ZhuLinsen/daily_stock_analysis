@@ -24,9 +24,18 @@ from src.formatters import (
 logger = logging.getLogger(__name__)
 
 
+def _get_outbound_guard():
+    from src.services.system_config_service import (
+        OutboundTargetGuard,
+        OutboundTargetGuardError,
+    )
+
+    return OutboundTargetGuard, OutboundTargetGuardError
+
+
 class CustomWebhookSender:
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, *, allow_private_targets: bool = True):
         """
         初始化自定义 Webhook 配置
 
@@ -37,6 +46,36 @@ class CustomWebhookSender:
         self._custom_webhook_bearer_token = getattr(config, 'custom_webhook_bearer_token', None)
         self._custom_webhook_body_template = getattr(config, 'custom_webhook_body_template', None)
         self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
+        self._allow_private_targets = allow_private_targets
+
+    def _perform_post_request(
+        self,
+        url: str,
+        *,
+        timeout: float,
+        headers: dict,
+        data: Optional[dict] = None,
+        body: Optional[bytes] = None,
+        files: Optional[dict] = None,
+    ) -> requests.Response:
+        outbound_guard, _ = _get_outbound_guard()
+        outbound_guard.validate_url_target(
+            url,
+            allow_private_targets=self._allow_private_targets,
+        )
+        return outbound_guard.run_with_guarded_dns(
+            url,
+            allow_private_targets=self._allow_private_targets,
+            fn=lambda: requests.post(
+                url,
+                data=body if body is not None else data,
+                files=files,
+                headers=headers,
+                timeout=timeout,
+                verify=self._webhook_verify_ssl,
+                allow_redirects=False,
+            ),
+        )
  
     def send_to_custom(self, content: str) -> bool:
         """
@@ -122,11 +161,17 @@ class CustomWebhookSender:
                         headers["Authorization"] = (
                             f"Bearer {self._custom_webhook_bearer_token}"
                         )
-                    response = requests.post(
-                        url, data=data, files=files, headers=headers, timeout=30,
-                        verify=self._webhook_verify_ssl
+                    response = self._perform_post_request(
+                        url,
+                        data=data,
+                        files=files,
+                        headers=headers,
+                        timeout=30,
                     )
-                    if response.status_code in (200, 204):
+                    outbound_guard, _ = _get_outbound_guard()
+                    if outbound_guard.is_redirect_response(response.status_code):
+                        logger.error("自定义 Webhook %d（Discord 图片）推送失败: redirect not allowed", i + 1)
+                    elif response.status_code in (200, 204):
                         logger.info("自定义 Webhook %d（Discord 图片）推送成功", i + 1)
                         success_count += 1
                     else:
@@ -159,7 +204,16 @@ class CustomWebhookSender:
         if self._custom_webhook_bearer_token:
             headers['Authorization'] = f'Bearer {self._custom_webhook_bearer_token}'
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        response = requests.post(url, data=body, headers=headers, timeout=timeout, verify=self._webhook_verify_ssl)
+        response = self._perform_post_request(
+            url,
+            body=body,
+            headers=headers,
+            timeout=timeout,
+        )
+        outbound_guard, _ = _get_outbound_guard()
+        if outbound_guard.is_redirect_response(response.status_code):
+            logger.error("自定义 Webhook 推送失败: redirect not allowed")
+            return False
         if response.status_code == 200:
             return True
         logger.error(f"自定义 Webhook 推送失败: HTTP {response.status_code}")
@@ -212,12 +266,11 @@ class CustomWebhookSender:
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         started_at = time.perf_counter()
         try:
-            response = requests.post(
+            response = self._perform_post_request(
                 url,
-                data=body,
+                body=body,
                 headers=headers,
                 timeout=timeout_seconds,
-                verify=self._webhook_verify_ssl,
             )
         except Exception as exc:
             error_code, retryable = self._classify_custom_webhook_exception(exc)
@@ -234,6 +287,19 @@ class CustomWebhookSender:
             }
 
         latency_ms = int((time.perf_counter() - started_at) * 1000)
+        outbound_guard, _ = _get_outbound_guard()
+        if outbound_guard.is_redirect_response(response.status_code):
+            return {
+                "channel": "custom",
+                "success": False,
+                "message": f"自定义 Webhook {index + 1} 测试失败: redirect not allowed",
+                "target": url,
+                "error_code": "redirect_blocked",
+                "stage": "notification_send",
+                "retryable": False,
+                "latency_ms": latency_ms,
+                "http_status": response.status_code,
+            }
         if response.status_code == 200:
             return {
                 "channel": "custom",
@@ -262,6 +328,9 @@ class CustomWebhookSender:
 
     @staticmethod
     def _classify_custom_webhook_exception(exc: Exception) -> Tuple[str, bool]:
+        _, outbound_guard_error = _get_outbound_guard()
+        if isinstance(exc, outbound_guard_error):
+            return "ssrf_blocked", False
         if isinstance(exc, requests.exceptions.Timeout):
             return "timeout", True
         if isinstance(exc, requests.exceptions.ConnectionError):

@@ -552,6 +552,16 @@ describe('stockPoolStore', () => {
       selectionSource: 'autocomplete',
       notify: true,
     }));
+    expect(state.activeTasks).toEqual([
+      expect.objectContaining({
+        taskId: 'task-hk-1',
+        stockCode: '00700.HK',
+        stockName: '腾讯控股',
+        status: 'pending',
+        progress: 0,
+        reportType: 'detailed',
+      }),
+    ]);
   });
 
   it('merges newly discovered history items during silent refresh', async () => {

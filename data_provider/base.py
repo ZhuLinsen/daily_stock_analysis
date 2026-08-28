@@ -4443,6 +4443,29 @@ class DataFetcherManager:
         logger.warning(f"[板块排行] 所有数据源均失败，最终错误: {last_error}")
         return [], []
 
+    def get_sector_constituents(self, sector_name: str, top_n: int = 5) -> List[Dict]:
+        """获取行业板块成份股涨幅前 N（自动切换数据源，失败返回空列表）。"""
+        last_error = ""
+        for fetcher in self._fetchers:
+            if not hasattr(fetcher, 'get_sector_constituents'):
+                continue
+            start = time.time()
+            try:
+                data = fetcher.get_sector_constituents(sector_name, top_n)
+                duration_ms = int((time.time() - start) * 1000)
+                if data:
+                    logger.info(
+                        f"[{fetcher.name}] 获取板块成份股成功 sector={sector_name} count={len(data)} cost={duration_ms}ms"
+                    )
+                    return data
+                last_error = f"{fetcher.name}返回空结果"
+            except Exception as e:
+                error_type, error_reason = summarize_exception(e)
+                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
+                logger.warning(f"[{fetcher.name}] 获取板块成份股失败: {error_reason}")
+        logger.warning(f"[板块成份股] 所有数据源均失败 sector={sector_name} 最终错误: {last_error}")
+        return []
+
     @staticmethod
     def _copy_ranking_rows(rows: List[Dict]) -> List[Dict]:
         return [dict(row) if isinstance(row, dict) else row for row in rows or []]

@@ -53,6 +53,13 @@ class _FakeCalendar:
             raise ValueError("no previous session")
         return pd.Timestamp(self._sessions[index - 1])
 
+    def next_session(self, session: pd.Timestamp) -> pd.Timestamp:
+        session_date = session.date()
+        index = self._sessions.index(session_date)
+        if index >= len(self._sessions) - 1:
+            raise ValueError("no next session")
+        return pd.Timestamp(self._sessions[index + 1])
+
     def session_open(self, session: pd.Timestamp) -> pd.Timestamp:
         local_open = datetime.combine(
             session.date(),
@@ -312,6 +319,61 @@ class EffectiveTradingDateTestCase(unittest.TestCase):
             result = trading_calendar.get_effective_trading_date("hk", current_time=current_time)
 
         self.assertEqual(result, date(2026, 3, 28))
+
+
+class NextSessionOpenTestCase(unittest.TestCase):
+    def test_postmarket_uses_next_exchange_session(self):
+        fake_calendar = _FakeCalendar(
+            sessions=[date(2026, 3, 27), date(2026, 3, 30)],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+            open_time=time(9, 30),
+        )
+
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(fake_calendar),
+            create=True,
+        ):
+            result = trading_calendar.get_next_session_open(
+                "cn",
+                current_time=datetime(2026, 3, 27, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            )
+
+        self.assertEqual(
+            result,
+            datetime(2026, 3, 30, 9, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+
+    def test_premarket_uses_current_session_open(self):
+        fake_calendar = _FakeCalendar(
+            sessions=[date(2026, 3, 27), date(2026, 3, 30)],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+            open_time=time(9, 30),
+        )
+
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(fake_calendar),
+            create=True,
+        ):
+            result = trading_calendar.get_next_session_open(
+                "cn",
+                current_time=datetime(2026, 3, 27, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            )
+
+        self.assertEqual(
+            result,
+            datetime(2026, 3, 27, 9, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+
+    def test_unknown_market_or_unavailable_calendar_returns_none(self):
+        self.assertIsNone(trading_calendar.get_next_session_open("unknown"))
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", False):
+            self.assertIsNone(trading_calendar.get_next_session_open("cn"))
 
 
 class InferMarketPhaseTestCase(unittest.TestCase):

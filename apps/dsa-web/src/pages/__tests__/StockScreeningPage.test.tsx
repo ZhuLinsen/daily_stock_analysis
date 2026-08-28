@@ -158,6 +158,13 @@ describe('StockScreeningPage', () => {
     expect(screen.queryByText('选股结果')).not.toBeInTheDocument();
   });
 
+  it('sets a meaningful browser title', () => {
+    getScreeningStatus.mockResolvedValueOnce({ enabled: false, available: false });
+    render(<StockScreeningPage />);
+
+    expect(document.title).toBe('选股 - DSA');
+  });
+
   it('re-syncs enabled state when Screening availability check fails after config is enabled', async () => {
     getScreeningStatus
       .mockResolvedValueOnce({

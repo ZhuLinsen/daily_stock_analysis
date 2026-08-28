@@ -248,6 +248,40 @@ def get_effective_trading_date(
         return fallback_date
 
 
+def get_next_session_open(
+    market: Optional[str], current_time: Optional[datetime] = None
+) -> Optional[datetime]:
+    """Return the next regular-session open in the market timezone.
+
+    The current session open is returned while the market is still pre-open.
+    After that open has passed, the next exchange-calendar session is used.
+    Unknown markets and unavailable calendars fail closed with ``None``.
+    """
+    if market not in MARKET_EXCHANGE or market not in MARKET_TIMEZONE or not _XCALS_AVAILABLE:
+        return None
+
+    market_now = get_market_now(market, current_time=current_time)
+    tz_name = MARKET_TIMEZONE[market]
+
+    try:
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        local_date = market_now.date()
+
+        if cal.is_session(local_date):
+            session = cal.date_to_session(local_date, direction="previous")
+            session_open = _as_market_datetime(cal.session_open(session), tz_name)
+            if session_open is not None and market_now < session_open:
+                return session_open
+            session = cal.next_session(session)
+        else:
+            session = cal.date_to_session(local_date, direction="next")
+
+        return _as_market_datetime(cal.session_open(session), tz_name)
+    except Exception as e:
+        logger.warning("trading_calendar.get_next_session_open fail-closed: %s", e)
+        return None
+
+
 def resolve_historical_daily_bar_date(
     market: Optional[str],
     target_date: date,

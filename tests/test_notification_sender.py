@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import socket
 import sys
 import unittest
 from email.header import decode_header, make_header
@@ -1400,6 +1401,60 @@ class TestCustomWebhookSender(unittest.TestCase):
         self.assertTrue(attempts[1]["success"])
         self.assertEqual(attempts[0]["http_status"], 500)
         self.assertEqual(mock_post.call_args_list[0].kwargs["timeout"], 7)
+
+    @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_send_blocks_untrusted_loopback_custom_webhook(self, mock_post):
+        cfg = _config(custom_webhook_urls=["http://127.0.0.1:8080/hook"])
+        sender = CustomWebhookSender(cfg, allow_private_targets=False)
+
+        result = sender.send_to_custom("hello")
+
+        self.assertFalse(result)
+        mock_post.assert_not_called()
+
+    @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_custom_webhooks_rejects_redirect_response(self, mock_post):
+        mock_post.return_value = _response(302)
+        cfg = _config(custom_webhook_urls=["https://example.com/hook"])
+        sender = CustomWebhookSender(cfg)
+
+        attempts = sender.test_custom_webhooks("hello", timeout_seconds=7)
+
+        self.assertEqual(len(attempts), 1)
+        self.assertFalse(attempts[0]["success"])
+        self.assertEqual(attempts[0]["error_code"], "redirect_blocked")
+        self.assertFalse(attempts[0]["retryable"])
+        self.assertEqual(mock_post.call_args.kwargs["allow_redirects"], False)
+
+    @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_custom_webhooks_rejects_dns_rebinding(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(custom_webhook_urls=["https://rebind.example/hook"])
+        sender = CustomWebhookSender(cfg, allow_private_targets=False)
+        public_addrinfos = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ]
+        loopback_addrinfos = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
+        ]
+        call_count = {"value": 0}
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            call_count["value"] += 1
+            return public_addrinfos if call_count["value"] == 1 else loopback_addrinfos
+
+        def fake_post(url, **kwargs):
+            socket.getaddrinfo("rebind.example", 443, type=socket.SOCK_STREAM)
+            return _response(200)
+
+        mock_post.side_effect = fake_post
+
+        with mock.patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            attempts = sender.test_custom_webhooks("hello", timeout_seconds=7)
+
+        self.assertEqual(len(attempts), 1)
+        self.assertFalse(attempts[0]["success"])
+        self.assertEqual(attempts[0]["error_code"], "ssrf_blocked")
 
     def test_bark_payload_shape_is_stable(self):
         sender = CustomWebhookSender(_config())

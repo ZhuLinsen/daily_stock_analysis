@@ -100,19 +100,19 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
   const sentimentConfig = {
     greed: {
       color: '#00d4ff',       // Cyan
-      glowFilter: 'rgba(0, 212, 255, 0.66)',
+      glowFilter: 'rgba(0, 212, 255, 0.4)',
       lightColor: '#22d3ee',  // Lighter cyan
       lightEndColor: '#0891b2', // Darker cyan
     },
     neutral: {
       color: '#a855f7',       // Purple
-      glowFilter: 'rgba(168, 85, 247, 0.66)',
+      glowFilter: 'rgba(168, 85, 247, 0.4)',
       lightColor: '#c084fc',  // Lighter purple
       lightEndColor: '#9333ea', // Darker purple
     },
     fear: {
       color: '#ff4466',       // Red
-      glowFilter: 'rgba(255, 68, 102, 0.66)',
+      glowFilter: 'rgba(255, 68, 102, 0.4)',
       lightColor: '#fb7185',  // Lighter rose
       lightEndColor: '#e11d48', // Darker rose
     },
@@ -130,18 +130,18 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
   const uniqueId = `${sentimentKey}-${score}-${animatedScore.toFixed(0)}`;
   const gaugeTheme: GaugeVisualStyle = isDark
     ? {
-        svgFilter: `drop-shadow(0 0 12px ${colors.glowFilter})`,
+        svgFilter: `drop-shadow(0 0 8px ${colors.glowFilter})`,
         glowBlur: 4,
-        glowOpacity: 0.3,
+        glowOpacity: 0.22,
         glowStrokeExtra: gap,
-        valueTextShadow: `0 0 30px ${colors.glowFilter}`,
+        valueTextShadow: `0 0 18px ${colors.glowFilter}`,
       }
     : {
-        svgFilter: `drop-shadow(0 0 8px ${colors.glowFilter.replace('0.66', '0.28')})`,
+        svgFilter: `drop-shadow(0 0 6px ${colors.glowFilter.replace('0.4', '0.22')})`,
         glowBlur: 3.4,
         glowOpacity: 0.26,
         glowStrokeExtra: Math.max(3, gap * 0.55),
-        valueTextShadow: `0 0 16px ${colors.glowFilter.replace('0.66', '0.22')}`,
+        valueTextShadow: `0 0 12px ${colors.glowFilter.replace('0.4', '0.18')}`,
       };
 
   return (

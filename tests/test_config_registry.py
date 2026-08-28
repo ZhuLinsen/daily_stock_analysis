@@ -204,34 +204,22 @@ class TestAIHubMixReferralMetadata(unittest.TestCase):
 
 
 class TestGenerationBackendFieldsRegistered(unittest.TestCase):
-    def test_analysis_backend_fields_are_ai_model_selects(self):
-        expected = {
-            "GENERATION_BACKEND": "settings.ai_model.GENERATION_BACKEND",
-            "GENERATION_FALLBACK_BACKEND": "settings.ai_model.GENERATION_FALLBACK_BACKEND",
-        }
-        for key, help_key in expected.items():
-            field = get_field_definition(key)
-            self.assertEqual(field["category"], "ai_model")
-            self.assertEqual(field["ui_control"], "select")
-            self.assertEqual(field["default_value"], "litellm")
-            if key == "GENERATION_BACKEND":
-                self.assertEqual(
-                    field["validation"],
-                    {"enum": ["litellm", "codex_cli", "claude_code_cli", "opencode_cli"]},
-                )
-                self.assertIn({"label": "Default model settings", "value": "litellm"}, field["options"])
-                self.assertIn({"label": "Codex CLI (experimental)", "value": "codex_cli"}, field["options"])
-                self.assertIn({"label": "Claude Code CLI (experimental)", "value": "claude_code_cli"}, field["options"])
-                self.assertIn({"label": "OpenCode CLI (experimental)", "value": "opencode_cli"}, field["options"])
-            else:
-                self.assertEqual(field["validation"], {"enum": ["", "litellm"]})
-                self.assertIn({"label": "Disabled", "value": ""}, field["options"])
-                self.assertIn({"label": "Default model settings", "value": "litellm"}, field["options"])
-            self.assertEqual(field["help_key"], help_key)
-            self.assertNotEqual(field["display_order"], 9000)
+    def test_analysis_backend_field_is_ai_model_select(self):
+        field = get_field_definition("GENERATION_BACKEND")
 
-    def test_agent_generation_backend_field_is_agent_select(self):
-        field = get_field_definition("AGENT_GENERATION_BACKEND")
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "select")
+        self.assertEqual(field["default_value"], "litellm")
+        self.assertEqual(field["validation"], {"enum": ["litellm"]})
+        self.assertEqual(
+            field["options"],
+            [{"label": "Default model settings", "value": "litellm"}],
+        )
+        self.assertEqual(field["help_key"], "settings.ai_model.GENERATION_BACKEND")
+        self.assertNotEqual(field["display_order"], 9000)
+
+    def test_agent_backend_field_is_agent_select(self):
+        field = get_field_definition("AGENT_BACKEND")
 
         self.assertEqual(field["category"], "agent")
         self.assertEqual(field["ui_control"], "select")
@@ -240,23 +228,12 @@ class TestGenerationBackendFieldsRegistered(unittest.TestCase):
         self.assertEqual(
             field["options"],
             [
-                {"label": "Auto", "value": "auto"},
+                {"label": "Auto (recommended)", "value": "auto"},
                 {"label": "Default model settings", "value": "litellm"},
             ],
         )
-        self.assertEqual(field["help_key"], "settings.agent.AGENT_GENERATION_BACKEND")
+        self.assertEqual(field["help_key"], "settings.agent.AGENT_BACKEND")
         self.assertNotEqual(field["display_order"], 9000)
-
-    def test_generation_backend_numeric_fields_have_upper_bounds(self):
-        expected = {
-            "GENERATION_BACKEND_TIMEOUT_SECONDS": {"min": 1, "max": 3600},
-            "GENERATION_BACKEND_MAX_OUTPUT_BYTES": {"min": 1, "max": 33554432},
-            "GENERATION_BACKEND_MAX_CONCURRENCY": {"min": 1, "max": 16},
-            "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": {"min": 1, "max": 4},
-        }
-
-        for key, validation in expected.items():
-            self.assertEqual(get_field_definition(key)["validation"], validation)
 
     def test_schema_response_groups_generation_backend_fields(self):
         schema = build_schema_response()
@@ -269,12 +246,18 @@ class TestGenerationBackendFieldsRegistered(unittest.TestCase):
         }
 
         self.assertIn("GENERATION_BACKEND", categories["ai_model"])
-        self.assertIn("GENERATION_FALLBACK_BACKEND", categories["ai_model"])
-        self.assertIn("GENERATION_BACKEND_TIMEOUT_SECONDS", categories["ai_model"])
-        self.assertIn("GENERATION_BACKEND_MAX_OUTPUT_BYTES", categories["ai_model"])
-        self.assertIn("GENERATION_BACKEND_MAX_CONCURRENCY", categories["ai_model"])
-        self.assertIn("LOCAL_CLI_BACKEND_MAX_CONCURRENCY", categories["ai_model"])
-        self.assertIn("AGENT_GENERATION_BACKEND", categories["agent"])
+        for removed_key in (
+            "GENERATION_FALLBACK_BACKEND",
+            "GENERATION_BACKEND_TIMEOUT_SECONDS",
+            "GENERATION_BACKEND_MAX_OUTPUT_BYTES",
+            "GENERATION_BACKEND_MAX_CONCURRENCY",
+            "LOCAL_CLI_BACKEND_MAX_CONCURRENCY",
+        ):
+            self.assertNotIn(removed_key, categories["ai_model"])
+
+        self.assertIn("AGENT_BACKEND", categories["agent"])
+        self.assertIn("AGENT_ARCH", categories["agent"])
+        self.assertNotIn("AGENT_GENERATION_BACKEND", categories["agent"])
 
 
 class TestScheduleTimesFieldRegistered(unittest.TestCase):
@@ -359,12 +342,11 @@ class TestSettingsHelpMetadata(unittest.TestCase):
     _HELP_KEYS = (
         "STOCK_LIST",
         "GENERATION_BACKEND",
-        "GENERATION_FALLBACK_BACKEND",
         "LITELLM_MODEL",
         "LLM_CHANNELS",
         "FEISHU_WEBHOOK_URL",
         "WEBUI_HOST",
-        "AGENT_GENERATION_BACKEND",
+        "AGENT_BACKEND",
         "AGENT_LITELLM_MODEL",
         "LITELLM_FALLBACK_MODELS",
         "TUSHARE_TOKEN",

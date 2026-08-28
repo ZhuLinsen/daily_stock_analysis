@@ -6,6 +6,7 @@ const net = require('net');
 const http = require('http');
 const https = require('https');
 const { TextDecoder } = require('util');
+const { fileURLToPath } = require('url');
 
 let mainWindow = null;
 let backendProcess = null;
@@ -1344,6 +1345,132 @@ function buildMainPageUrl(port, timestamp = Date.now(), host = DESKTOP_BACKEND_D
   return url.toString();
 }
 
+function getDesktopLoadingPagePath() {
+  return path.join(__dirname, 'renderer', 'loading.html');
+}
+
+function normalizeDesktopOrigin(candidateOrigin = '') {
+  if (typeof candidateOrigin !== 'string' || !candidateOrigin.trim()) {
+    return '';
+  }
+
+  try {
+    return new URL(candidateOrigin.trim()).origin;
+  } catch (_error) {
+    return '';
+  }
+}
+
+function isTrustedDesktopLoadingPageUrl(candidateUrl, loadingPagePath = getDesktopLoadingPagePath()) {
+  if (typeof candidateUrl !== 'string' || !candidateUrl.trim()) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(candidateUrl.trim());
+    if (parsed.protocol !== 'file:') {
+      return false;
+    }
+    return path.resolve(fileURLToPath(parsed)) === path.resolve(loadingPagePath);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isTrustedDesktopContentUrl(
+  candidateUrl,
+  {
+    backendOrigin = desktopBackendOrigin,
+    loadingPagePath = getDesktopLoadingPagePath(),
+  } = {}
+) {
+  if (isTrustedDesktopLoadingPageUrl(candidateUrl, loadingPagePath)) {
+    return true;
+  }
+
+  const expectedBackendOrigin = normalizeDesktopOrigin(backendOrigin);
+  if (!expectedBackendOrigin || typeof candidateUrl !== 'string' || !candidateUrl.trim()) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(candidateUrl.trim());
+    return parsed.protocol === 'http:' && parsed.origin === expectedBackendOrigin;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function sanitizeExternalOpenUrl(candidateUrl, { blockedOrigins = [desktopBackendOrigin] } = {}) {
+  if (typeof candidateUrl !== 'string' || !candidateUrl.trim()) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(candidateUrl.trim());
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username || parsed.password) {
+      return '';
+    }
+    const normalizedBlockedOrigins = new Set(
+      blockedOrigins
+        .map((origin) => normalizeDesktopOrigin(origin))
+        .filter(Boolean)
+    );
+    if (normalizedBlockedOrigins.has(parsed.origin)) {
+      return '';
+    }
+    return parsed.toString();
+  } catch (_error) {
+    return '';
+  }
+}
+
+async function openTrustedExternalUrl(candidateUrl, options = {}) {
+  const normalizedUrl = sanitizeExternalOpenUrl(candidateUrl, options);
+  if (!normalizedUrl) {
+    return false;
+  }
+  await shell.openExternal(normalizedUrl);
+  return true;
+}
+
+function resolveDesktopIpcEventUrl(event) {
+  if (typeof event?.senderFrame?.url === 'string' && event.senderFrame.url) {
+    return event.senderFrame.url;
+  }
+  if (typeof event?.sender?.getURL === 'function') {
+    return event.sender.getURL();
+  }
+  return '';
+}
+
+function isTrustedDesktopIpcEvent(
+  event,
+  {
+    expectedWebContents = mainWindow?.webContents || null,
+    backendOrigin = desktopBackendOrigin,
+    loadingPagePath = getDesktopLoadingPagePath(),
+  } = {}
+) {
+  if (!event || !expectedWebContents || event.sender !== expectedWebContents) {
+    return false;
+  }
+
+  return isTrustedDesktopContentUrl(resolveDesktopIpcEventUrl(event), {
+    backendOrigin,
+    loadingPagePath,
+  });
+}
+
+function assertTrustedDesktopIpcEvent(
+  event,
+  errorMessage = 'Desktop IPC request did not originate from a trusted desktop page'
+) {
+  if (!mainWindow || mainWindow.isDestroyed() || !isTrustedDesktopIpcEvent(event)) {
+    throw new Error(errorMessage);
+  }
+}
+
 function buildDesktopShareImageUrl(pageUrl, recordId, expectedBackendOrigin = '') {
   if (!Number.isSafeInteger(recordId) || recordId <= 0) {
     throw new Error('Invalid share image record ID');
@@ -1860,17 +1987,25 @@ async function performDesktopUpdateCheck({ manual = false, notify = false } = {}
   }
 }
 
-ipcMain.handle('desktop:get-update-state', () => desktopUpdateState);
-ipcMain.handle('desktop:check-for-updates', () => performDesktopUpdateCheck({ manual: true }));
-ipcMain.handle('desktop:install-downloaded-update', () => installDownloadedUpdate());
-ipcMain.handle('desktop:open-release-page', async (_event, releaseUrl) => {
+ipcMain.handle('desktop:get-update-state', (event) => {
+  assertTrustedDesktopIpcEvent(event);
+  return desktopUpdateState;
+});
+ipcMain.handle('desktop:check-for-updates', (event) => {
+  assertTrustedDesktopIpcEvent(event);
+  return performDesktopUpdateCheck({ manual: true });
+});
+ipcMain.handle('desktop:install-downloaded-update', (event) => {
+  assertTrustedDesktopIpcEvent(event);
+  return installDownloadedUpdate();
+});
+ipcMain.handle('desktop:open-release-page', async (event, releaseUrl) => {
+  assertTrustedDesktopIpcEvent(event);
   await shell.openExternal(sanitizeReleaseUrl(releaseUrl));
   return true;
 });
 ipcMain.handle('desktop:render-share-image', async (event, recordId) => {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-    throw new Error('Share image request did not originate from the desktop window');
-  }
+  assertTrustedDesktopIpcEvent(event, 'Share image request did not originate from a trusted desktop page');
   try {
     return await renderDesktopShareImage(recordId, { backendOrigin: desktopBackendOrigin });
   } catch (error) {
@@ -1929,7 +2064,7 @@ async function createWindow() {
   });
   logStartup('BrowserWindow created');
 
-  const loadingPath = path.join(__dirname, 'renderer', 'loading.html');
+  const loadingPath = getDesktopLoadingPagePath();
   const loadingPageStartedAt = Date.now();
   await mainWindow.loadFile(loadingPath);
   logStartup(`Loading page rendered in ${Date.now() - loadingPageStartedAt}ms`);
@@ -1965,8 +2100,15 @@ async function createWindow() {
   );
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    void openTrustedExternalUrl(url, { blockedOrigins: [desktopBackendOrigin] });
     return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (isTrustedDesktopContentUrl(navigationUrl, { loadingPagePath: loadingPath })) {
+      return;
+    }
+    event.preventDefault();
+    void openTrustedExternalUrl(navigationUrl, { blockedOrigins: [desktopBackendOrigin] });
   });
 
   const appDir = resolveAppDir();
@@ -2121,8 +2263,12 @@ module.exports = {
   findAvailablePort,
   buildMainPageUrl,
   buildDesktopShareImageUrl,
+  getDesktopLoadingPagePath,
+  isTrustedDesktopContentUrl,
+  isTrustedDesktopIpcEvent,
   migrateMacPackagedRuntimeState,
   normalizeVersionString,
+  openTrustedExternalUrl,
   parseSemver,
   readEnvFileValue,
   resolveAppDir,
@@ -2130,6 +2276,7 @@ module.exports = {
   resolveDesktopConnectHost,
   renderDesktopShareImage,
   restorePackagedRuntimeStateFromBackup,
+  sanitizeExternalOpenUrl,
   sanitizeReleaseUrl,
   startBackend,
   stopBackend,
@@ -2137,6 +2284,9 @@ module.exports = {
     return backendProcess;
   },
   __setBackendProcessForTest,
+  __setDesktopBackendOriginForTest(origin = '') {
+    desktopBackendOrigin = origin;
+  },
   __setMainWindowForTest(mainWindowRef = null) {
     mainWindow = mainWindowRef;
   },

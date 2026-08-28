@@ -47,12 +47,6 @@ const LLM_CHANNEL_EDITOR_RUNTIME_KEYS = new Set([
 ]);
 const GENERATION_BACKEND_STATUS_KEYS = new Set([
   'GENERATION_BACKEND',
-  'GENERATION_FALLBACK_BACKEND',
-  'GENERATION_BACKEND_TIMEOUT_SECONDS',
-  'GENERATION_BACKEND_MAX_OUTPUT_BYTES',
-  'GENERATION_BACKEND_MAX_CONCURRENCY',
-  'LOCAL_CLI_BACKEND_MAX_CONCURRENCY',
-  'OPENCODE_CLI_MODEL',
   'LITELLM_CONFIG',
   'LITELLM_MODEL',
   'LITELLM_FALLBACK_MODELS',
@@ -85,11 +79,9 @@ const GENERATION_BACKEND_STATUS_KEYS = new Set([
 const LLM_CHANNEL_STATUS_KEY_PATTERN = /^LLM_[A-Z0-9_]+_(PROTOCOL|API_SURFACE|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
 const AGENT_BACKEND_STATUS_KEYS = new Set([
   'AGENT_BACKEND',
-  'AGENT_GENERATION_BACKEND',
   'AGENT_LITELLM_MODEL',
   'AGENT_MODE',
   'AGENT_ARCH',
-  'AGENT_ORCHESTRATOR_TIMEOUT_S',
 ]);
 
 function isLlmChannelEditorDraftKey(key: string): boolean {
@@ -900,7 +892,6 @@ const SettingsPage: React.FC = () => {
   const BASE_HIDDEN_KEYS = new Set([
     'SCREENING_ENABLED',
   ]);
-  const AGENT_HIDDEN_KEYS = new Set(['AGENT_GENERATION_BACKEND']);
   const activeItems =
     activeCategory === 'base'
       ? rawActiveItems.filter((item) => !BASE_HIDDEN_KEYS.has(item.key))
@@ -916,8 +907,6 @@ const SettingsPage: React.FC = () => {
       })
       : activeCategory === 'system'
         ? rawActiveItems.filter((item) => !SYSTEM_HIDDEN_KEYS.has(item.key))
-      : activeCategory === 'agent'
-        ? rawActiveItems.filter((item) => !AGENT_HIDDEN_KEYS.has(item.key))
       : rawActiveItems;
   const promptCacheAdvancedItems = activeCategory === 'ai_model'
     ? activeItems.filter(isPromptCacheAdvancedSetting)
@@ -1134,17 +1123,6 @@ const SettingsPage: React.FC = () => {
     : t('settings.diagnosticHintWeb');
   const activeCategoryTitle = getCategoryTitle(activeCategory as SystemConfigCategory, t('settings.activePanelTitle'), uiLanguage);
   const activeCategoryDescription = getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage);
-  const selectedAgentBackend = (rawActiveItemMap.get('AGENT_BACKEND') || 'auto').trim().toLowerCase();
-  const selectedAgentArch = (rawActiveItemMap.get('AGENT_ARCH') || 'single').trim().toLowerCase();
-  const hasCodexArchitectureConflict = selectedAgentBackend === 'codex_app_server' && selectedAgentArch !== 'single';
-  const codexArchitectureIssue: ConfigValidationIssue = {
-    key: 'AGENT_ARCH',
-    code: 'unsupported_agent_arch',
-    message: t('settings.agentBackendSingleOnly'),
-    severity: 'error',
-    expected: 'single',
-    actual: selectedAgentArch,
-  };
   const activeConfigPanel = hasActiveConfigItems ? (
     <SettingsSectionCard
       title={activeCategoryTitle}
@@ -1153,9 +1131,7 @@ const SettingsPage: React.FC = () => {
       {visibleActiveItems.length ? (
         <div className="divide-y divide-[var(--settings-border-soft)] overflow-hidden rounded-lg border border-[var(--settings-border)] bg-[var(--settings-surface)]">
           {visibleActiveItems.map((item) => {
-            const fieldIssues = item.key === 'AGENT_ARCH' && hasCodexArchitectureConflict
-              ? [...(issueByKey[item.key] || []), codexArchitectureIssue]
-              : issueByKey[item.key] || [];
+            const fieldIssues = issueByKey[item.key] || [];
             return (
               <SettingsField
                 key={item.key}
@@ -1583,10 +1559,7 @@ const SettingsPage: React.FC = () => {
                   <AgentBackendStatusPanel
                     items={agentBackendDraftItems}
                     maskToken={maskToken}
-                    selectedBackend={selectedAgentBackend}
-                    agentArch={selectedAgentArch}
                     disabled={isSaving || isLoading}
-                    onUseSingleAgent={() => setDraftValue('AGENT_ARCH', 'single')}
                     onEnableAgentMode={() => setDraftValue('AGENT_MODE', 'true')}
                   />
                 </SettingsSectionCard>

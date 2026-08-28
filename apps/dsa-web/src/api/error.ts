@@ -433,6 +433,22 @@ export function parseApiError(error: unknown): ParsedApiError {
     });
   }
 
+  const hasTlsTransportFailure = includesAny(matchText, [
+    'unexpected_eof_while_reading',
+    'eof occurred in violation of protocol',
+    'ssl connection could not be established',
+    'tls handshake',
+  ]);
+  if (hasTlsTransportFailure && includesAny(matchText, ['deepseek', 'deepseekexception'])) {
+    return createParsedApiError({
+      title: '无法连接 DeepSeek',
+      message: '本地服务连接 DeepSeek 时被网络或代理中断，请检查代理规则后重试。',
+      rawMessage,
+      status,
+      category: 'upstream_network',
+    });
+  }
+
   if (
     status === 502
     || status === 503

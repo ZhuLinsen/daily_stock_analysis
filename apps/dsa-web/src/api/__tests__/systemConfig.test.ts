@@ -181,16 +181,16 @@ describe('systemConfigApi', () => {
   it('loads generation backend status with camelCase fields', async () => {
     get.mockResolvedValueOnce({
       data: {
-        primary_backend_id: 'codex_cli',
+        primary_backend_id: 'litellm',
         fallback_backend_id: null,
         primary: {
-          backend_id: 'codex_cli',
-          backend_type: 'local_cli',
-          provider_id: 'codex_cli',
+          backend_id: 'litellm',
+          backend_type: 'litellm',
+          provider_id: 'litellm',
           available: true,
           health_status: 'passed',
           supports_json: true,
-          supports_tools: false,
+          supports_tools: true,
           supports_stream: true,
           supports_vision: false,
           is_primary: true,
@@ -208,8 +208,8 @@ describe('systemConfigApi', () => {
     const result = await systemConfigApi.getGenerationBackendStatus();
 
     expect(get).toHaveBeenCalledWith('/api/v1/system/config/generation-backends/status');
-    expect(result.primaryBackendId).toBe('codex_cli');
-    expect(result.primary.supportsTools).toBe(false);
+    expect(result.primaryBackendId).toBe('litellm');
+    expect(result.primary.supportsTools).toBe(true);
     expect(result.primary.healthStatus).toBe('passed');
   });
 
@@ -220,11 +220,11 @@ describe('systemConfigApi', () => {
         fallback_backend_id: null,
         primary: {
           backend_id: 'opencode_cli',
-          backend_type: 'local_cli',
+          backend_type: 'litellm',
           provider_id: 'opencode_cli',
           available: false,
           health_status: 'failed',
-          supports_json: true,
+          supports_json: false,
           supports_tools: false,
           supports_stream: false,
           supports_vision: false,
@@ -232,7 +232,7 @@ describe('systemConfigApi', () => {
           fallback_target: null,
           max_concurrency: 1,
           usage_available: false,
-          last_error_code: 'command_not_found',
+          last_error_code: 'backend_not_configured',
           last_error_message: 'Executable not found',
         },
         fallback: null,
@@ -258,7 +258,7 @@ describe('systemConfigApi', () => {
         mask_token: '******',
       },
     );
-    expect(result.primary.lastErrorCode).toBe('command_not_found');
+    expect(result.primary.lastErrorCode).toBe('backend_not_configured');
   });
 
   it('runs generation backend smoke tests with snake_case fields', async () => {
@@ -312,10 +312,10 @@ describe('systemConfigApi', () => {
   it('loads the flat Agent backend compatibility status', async () => {
     get.mockResolvedValueOnce({
       data: {
-        backend: 'codex_app_server',
+        backend: 'litellm',
         available: true,
-        experimental: true,
-        version: 'codex-cli test',
+        experimental: false,
+        version: null,
         error_code: null,
         message: null,
       },
@@ -325,10 +325,10 @@ describe('systemConfigApi', () => {
 
     expect(get).toHaveBeenCalledWith('/api/v1/system/config/agent-backends/status');
     expect(result).toEqual({
-      backend: 'codex_app_server',
+      backend: 'litellm',
       available: true,
-      experimental: true,
-      version: 'codex-cli test',
+      experimental: false,
+      version: null,
       errorCode: null,
       message: null,
     });
@@ -339,10 +339,10 @@ describe('systemConfigApi', () => {
       data: {
         backend: 'codex_app_server',
         available: false,
-        experimental: true,
+        experimental: false,
         version: null,
-        error_code: 'unsupported_agent_arch',
-        message: 'single only',
+        error_code: 'capability_unsupported',
+        message: 'Unsupported AGENT_BACKEND: codex_app_server',
       },
     });
 
@@ -361,7 +361,7 @@ describe('systemConfigApi', () => {
       ],
       mask_token: '***',
     });
-    expect(result.errorCode).toBe('unsupported_agent_arch');
-    expect(result.message).toBe('single only');
+    expect(result.errorCode).toBe('capability_unsupported');
+    expect(result.message).toBe('Unsupported AGENT_BACKEND: codex_app_server');
   });
 });

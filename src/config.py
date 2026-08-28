@@ -39,24 +39,10 @@ from src.notification_contracts import (
 )
 from src.services.stock_list_parser import split_stock_list
 from src.llm.backend_registry import (
-    AUTO_AGENT_BACKEND_ID,
-    GENERATION_ONLY_BACKEND_IDS,
-    LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
-    OPENCODE_CLI_BACKEND_ID,
-    SUPPORTED_AGENT_GENERATION_BACKENDS,
+    REMOVED_GENERATION_BACKEND_IDS,
     SUPPORTED_AGENT_UI_BACKENDS,
     SUPPORTED_GENERATION_BACKENDS,
-)
-from src.llm.local_cli_backend import (
-    DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
-    DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
-    DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
-    DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
-    MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
-    MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
-    MAX_LOCAL_CLI_OUTPUT_BYTES,
-    MAX_LOCAL_CLI_TIMEOUT_SECONDS,
 )
 from src.llm import generation_params as llm_generation_params
 from src.llm.hermes import (
@@ -121,7 +107,7 @@ _FALLBACK_LITELLM_MODEL_PROVIDERS = _MANAGED_LITELLM_KEY_PROVIDERS | set(SUPPORT
 }
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
 PROMPT_CACHE_DIAGNOSTICS_LEVELS = {"off", "basic", "debug"}
-SUPPORTED_AGENT_BACKENDS = {"auto", "litellm", "codex_app_server"}
+SUPPORTED_AGENT_BACKENDS = {"auto", "litellm"}
 TICKFLOW_KLINE_ADJUST_VALUES = {"none", "forward", "backward", "forward_additive", "backward_additive"}
 # Fallback defaults used when ANSPIRE_API_KEYS is reused as legacy OpenAI-compatible source.
 # These are compatibility examples; actual availability should be validated by Anspire console/model entitlement.
@@ -899,13 +885,11 @@ class Config:
     screening_enabled: bool = False
 
     # === AI 分析配置 ===
+    # Provider API (LiteLLM) is the only generation backend; legacy local CLI
+    # backend fields were removed. generation_backend remains readable for
+    # diagnostics so stale .env values surface a structured error instead of
+    # being silently ignored.
     generation_backend: str = LITELLM_BACKEND_ID
-    generation_fallback_backend: str = LITELLM_BACKEND_ID
-    generation_backend_timeout_seconds: int = DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS
-    generation_backend_max_output_bytes: int = DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES
-    generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
-    local_cli_backend_max_concurrency: int = DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY
-    opencode_cli_model: str = ""
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
@@ -1000,7 +984,6 @@ class Config:
 
     # === Agent 模式配置 ===
     agent_backend: str = "auto"
-    agent_generation_backend: str = AUTO_AGENT_BACKEND_ID
     agent_litellm_model: str = ""  # Optional Agent-only primary model; empty inherits LITELLM_MODEL
     agent_mode: bool = False
     _agent_mode_explicit: bool = False  # True when AGENT_MODE was explicitly set in env
@@ -1208,6 +1191,17 @@ class Config:
     market_review_color_scheme: str = "green_up"
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
+
+    # === 虚拟交易员配置 ===
+    # 默认关闭；启用后每日收盘后按均值回归策略模拟买卖并记录预测复盘
+    virtual_trader_enabled: bool = False
+    virtual_trader_initial_cash_cny: float = 1_000_000.0   # 初始总资金（CNY）
+    virtual_trader_cash_reserve_pct: float = 30.0          # 初始备用金比例（%）
+    virtual_trader_universe: str = ""                      # 额外候选池（逗号分隔，默认=自选股+内置组合）
+    virtual_trader_max_position_pct: float = 15.0          # 单票市值占总资产上限（%）
+    virtual_trader_stop_loss_pct: float = 8.0              # 止损阈值（%）
+    virtual_trader_fx_usd_cny: float = 7.2                 # 美元折算汇率（净值展示用）
+    virtual_trader_fx_hkd_cny: float = 0.92                # 港币折算汇率（净值展示用）
 
     # === 实时行情增强数据配置 ===
     # 实时行情开关（关闭后使用历史收盘价进行分析）
@@ -1621,44 +1615,12 @@ class Config:
             os.getenv('GENERATION_BACKEND', LITELLM_BACKEND_ID).strip().lower()
             or LITELLM_BACKEND_ID
         )
-        _generation_fallback_raw = os.getenv('GENERATION_FALLBACK_BACKEND')
-        if _generation_fallback_raw is None:
-            generation_fallback_backend = LITELLM_BACKEND_ID
-        else:
-            generation_fallback_backend = _generation_fallback_raw.strip().lower()
-        agent_generation_backend = (
-            os.getenv('AGENT_GENERATION_BACKEND', AUTO_AGENT_BACKEND_ID).strip().lower()
-            or AUTO_AGENT_BACKEND_ID
-        )
-        generation_backend_timeout_seconds = parse_env_int(
-            os.getenv('GENERATION_BACKEND_TIMEOUT_SECONDS'),
-            DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
-            field_name='GENERATION_BACKEND_TIMEOUT_SECONDS',
-            minimum=1,
-            maximum=MAX_LOCAL_CLI_TIMEOUT_SECONDS,
-        )
-        generation_backend_max_output_bytes = parse_env_int(
-            os.getenv('GENERATION_BACKEND_MAX_OUTPUT_BYTES'),
-            DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
-            field_name='GENERATION_BACKEND_MAX_OUTPUT_BYTES',
-            minimum=1,
-            maximum=MAX_LOCAL_CLI_OUTPUT_BYTES,
-        )
-        generation_backend_max_concurrency = parse_env_int(
-            os.getenv('GENERATION_BACKEND_MAX_CONCURRENCY'),
-            DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
-            field_name='GENERATION_BACKEND_MAX_CONCURRENCY',
-            minimum=1,
-            maximum=MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
-        )
-        local_cli_backend_max_concurrency = parse_env_int(
-            os.getenv('LOCAL_CLI_BACKEND_MAX_CONCURRENCY'),
-            DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
-            field_name='LOCAL_CLI_BACKEND_MAX_CONCURRENCY',
-            minimum=1,
-            maximum=MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
-        )
-        opencode_cli_model = (os.getenv('OPENCODE_CLI_MODEL', '') or '').strip()
+        if generation_backend in REMOVED_GENERATION_BACKEND_IDS:
+            logger.warning(
+                "GENERATION_BACKEND=%s 属于已移除的本地 CLI 生成后端；"
+                "系统仅保留 Provider API (LiteLLM) 接入，请改用 API Key / LLM_CHANNELS 配置。",
+                generation_backend,
+            )
 
         agent_litellm_model = normalize_agent_litellm_model(
             os.getenv('AGENT_LITELLM_MODEL', ''),
@@ -1811,12 +1773,6 @@ class Config:
                 default=True,
             ),
             generation_backend=generation_backend,
-            generation_fallback_backend=generation_fallback_backend,
-            generation_backend_timeout_seconds=generation_backend_timeout_seconds,
-            generation_backend_max_output_bytes=generation_backend_max_output_bytes,
-            generation_backend_max_concurrency=generation_backend_max_concurrency,
-            local_cli_backend_max_concurrency=local_cli_backend_max_concurrency,
-            opencode_cli_model=opencode_cli_model,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
@@ -1914,7 +1870,6 @@ class Config:
             newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
             bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
             agent_backend=(os.getenv('AGENT_BACKEND', 'auto') or 'auto').strip().lower(),
-            agent_generation_backend=agent_generation_backend,
             agent_litellm_model=agent_litellm_model,
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
             _agent_mode_explicit=os.getenv('AGENT_MODE') is not None,
@@ -2180,6 +2135,34 @@ class Config:
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
+            virtual_trader_enabled=parse_env_bool(
+                os.getenv('VIRTUAL_TRADER_ENABLED'), default=False
+            ),
+            virtual_trader_initial_cash_cny=parse_env_float(
+                os.getenv('VIRTUAL_TRADER_INITIAL_CASH_CNY'), default=1_000_000.0,
+                field_name='VIRTUAL_TRADER_INITIAL_CASH_CNY', minimum=1000.0,
+            ),
+            virtual_trader_cash_reserve_pct=parse_env_float(
+                os.getenv('VIRTUAL_TRADER_CASH_RESERVE_PCT'), default=30.0,
+                field_name='VIRTUAL_TRADER_CASH_RESERVE_PCT', minimum=0.0, maximum=90.0,
+            ),
+            virtual_trader_universe=(os.getenv('VIRTUAL_TRADER_UNIVERSE') or '').strip(),
+            virtual_trader_max_position_pct=parse_env_float(
+                os.getenv('VIRTUAL_TRADER_MAX_POSITION_PCT'), default=15.0,
+                field_name='VIRTUAL_TRADER_MAX_POSITION_PCT', minimum=1.0, maximum=100.0,
+            ),
+            virtual_trader_stop_loss_pct=parse_env_float(
+                os.getenv('VIRTUAL_TRADER_STOP_LOSS_PCT'), default=8.0,
+                field_name='VIRTUAL_TRADER_STOP_LOSS_PCT', minimum=1.0,
+            ),
+            virtual_trader_fx_usd_cny=parse_env_float(
+                os.getenv('VIRTUAL_TRADER_FX_USD_CNY'), default=7.2,
+                field_name='VIRTUAL_TRADER_FX_USD_CNY', minimum=0.01,
+            ),
+            virtual_trader_fx_hkd_cny=parse_env_float(
+                os.getenv('VIRTUAL_TRADER_FX_HKD_CNY'), default=0.92,
+                field_name='VIRTUAL_TRADER_FX_HKD_CNY', minimum=0.01,
+            ),
             market_review_region=cls._parse_market_review_region(
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
             ),
@@ -3015,11 +2998,8 @@ class Config:
         still requires a non-Hermes Agent route. Hermes-only deployments cannot
         satisfy Agent tool roundtrip support; mixed routes are usable only via
         their non-Hermes deployments. ``AGENT_MODE=false`` remains an explicit
-        kill-switch. Explicit local CLI Agent backends are unavailable because
-        they are text generation backends, not Agent tool-calling runtimes.
+        kill-switch.
         """
-        if (self.agent_generation_backend or AUTO_AGENT_BACKEND_ID).strip().lower() in GENERATION_ONLY_BACKEND_IDS:
-            return False
         # Phase 3 no longer lets AGENT_MODE=true bypass tool-route safety.
         if self._agent_mode_explicit:
             if not self.agent_mode:
@@ -3128,67 +3108,34 @@ class Config:
 
         # --- Generation backend selection ---
         generation_backend = (self.generation_backend or LITELLM_BACKEND_ID).strip().lower()
-        generation_fallback_backend = str(self.generation_fallback_backend or "").strip().lower()
-        agent_generation_backend = (
-            self.agent_generation_backend or AUTO_AGENT_BACKEND_ID
-        ).strip().lower()
         agent_backend = (self.agent_backend or "auto").strip().lower()
         if generation_backend not in SUPPORTED_GENERATION_BACKENDS:
+            removed_hint = ""
+            if generation_backend in REMOVED_GENERATION_BACKEND_IDS:
+                removed_hint = "该本地 CLI 生成后端已移除，请改用 Provider API（API Key / LLM_CHANNELS）接入。"
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "GENERATION_BACKEND 当前支持 "
-                    f"{'、'.join(sorted(SUPPORTED_GENERATION_BACKENDS))}。"
-                    f"已配置的值为：{generation_backend}。"
+                    f"GENERATION_BACKEND 当前仅支持 litellm（Provider API）。"
+                    f"已配置的值为：{generation_backend}。{removed_hint}"
                 ),
                 field="GENERATION_BACKEND",
-            ))
-        if generation_fallback_backend and generation_fallback_backend == generation_backend:
-            generation_fallback_backend = ""
-        if generation_fallback_backend and generation_fallback_backend != LITELLM_BACKEND_ID:
-            issues.append(ConfigIssue(
-                severity="error",
-                message=(
-                    "GENERATION_FALLBACK_BACKEND 当前支持 litellm、与 primary 相同的 no-op 值，或空字符串。"
-                    f"已配置的值为：{generation_fallback_backend}。"
-                ),
-                field="GENERATION_FALLBACK_BACKEND",
-            ))
-        if agent_generation_backend not in SUPPORTED_AGENT_GENERATION_BACKENDS:
-            agent_ui_backends = "、".join(sorted(SUPPORTED_AGENT_UI_BACKENDS))
-            local_toolless_backends = "、".join(sorted(GENERATION_ONLY_BACKEND_IDS))
-            issues.append(ConfigIssue(
-                severity="error",
-                message=(
-                    f"AGENT_GENERATION_BACKEND 当前支持 {agent_ui_backends}；"
-                    f"local CLI backend（{local_toolless_backends}）仅作为显式 unsupported diagnostic 保留，"
-                    "不支持 Agent 工具调用。"
-                    f"已配置的值为：{agent_generation_backend}。"
-                ),
-                field="AGENT_GENERATION_BACKEND",
             ))
         if agent_backend not in SUPPORTED_AGENT_BACKENDS:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "AGENT_BACKEND 当前支持 auto、litellm、codex_app_server。"
+                    "AGENT_BACKEND 当前支持 auto、litellm。"
                     f"已配置的值为：{agent_backend}。"
                 ),
                 field="AGENT_BACKEND",
                 code="capability_unsupported",
             ))
-        if agent_backend == "codex_app_server" and self.agent_arch != "single":
-            issues.append(ConfigIssue(
-                severity="error",
-                message="Codex 本地 Agent 当前只支持单 Agent 问股，请将 AGENT_ARCH 设为 single。",
-                field="AGENT_ARCH",
-                code="unsupported_agent_arch",
-            ))
         litellm_model_lower = (self.litellm_model or "").strip().lower()
         local_model_prefix = next(
             (
                 backend_id
-                for backend_id in GENERATION_ONLY_BACKEND_IDS
+                for backend_id in sorted(REMOVED_GENERATION_BACKEND_IDS)
                 if litellm_model_lower.startswith(f"{backend_id}/")
             ),
             "",
@@ -3197,30 +3144,11 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    f"{local_model_prefix} 是 GENERATION_BACKEND，不是 LiteLLM provider。"
+                    f"{local_model_prefix} 是已移除的本地 CLI 生成后端，不是 LiteLLM provider。"
                     f"请不要使用 LITELLM_MODEL={local_model_prefix}/...。"
                 ),
                 field="LITELLM_MODEL",
             ))
-        if generation_backend == OPENCODE_CLI_BACKEND_ID:
-            opencode_model = (self.opencode_cli_model or "").strip()
-            unsafe_model = bool(opencode_model) and (
-                any(ch.isspace() for ch in opencode_model)
-                or any(
-                    marker in opencode_model
-                    for marker in ("|", ">", "<", ";", "`", "&&", "||", "$")
-                )
-            )
-            if unsafe_model:
-                issues.append(ConfigIssue(
-                    severity="error",
-                    message=(
-                        "OPENCODE_CLI_MODEL 是可选的 OpenCode 模型覆盖值。"
-                        "配置时会作为单个 --model 参数传给 OpenCode，不能包含空白或 shell 元字符；"
-                        "不配置时 DSA 将使用 OpenCode 自身默认模型。"
-                    ),
-                    field="OPENCODE_CLI_MODEL",
-                ))
 
         # --- LLM availability ---
         for raw_issue in self.llm_channel_config_issues or []:
@@ -3235,8 +3163,7 @@ class Config:
         # Other LiteLLM-native providers (for example cohere/*) run through the
         # direct litellm env path and therefore do not populate llm_model_list.
         has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
-        local_generation_backend = generation_backend in LOCAL_CLI_GENERATION_BACKEND_IDS
-        if not local_generation_backend and not self.llm_model_list and not has_direct_env_model:
+        if not self.llm_model_list and not has_direct_env_model:
             if self.litellm_config_path:
                 issues.append(ConfigIssue(
                     severity="error",
@@ -3267,7 +3194,7 @@ class Config:
                     ),
                     field="LITELLM_CONFIG",
                 ))
-        elif not local_generation_backend and not self.litellm_model:
+        elif not self.litellm_model:
             issues.append(ConfigIssue(
                 severity="info",
                 message=(

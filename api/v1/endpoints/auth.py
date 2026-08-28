@@ -21,6 +21,7 @@ from src.auth import (
     get_client_ip,
     has_stored_password,
     is_auth_enabled,
+    is_loopback_request,
     is_password_changeable,
     is_password_set,
     record_login_failure,
@@ -182,6 +183,23 @@ def _get_auth_status_dict(request: Request | None = None) -> dict:
     }
 
 
+def _reject_non_loopback_bootstrap(request: Request, message: str) -> JSONResponse | None:
+    """Restrict unauthenticated bootstrap actions to loopback clients."""
+    if is_loopback_request(request):
+        return None
+
+    request_path = getattr(getattr(request, "url", None), "path", "<unknown>")
+    logger.warning(
+        "Blocked non-loopback auth bootstrap request for %s from %s",
+        request_path,
+        get_client_ip(request),
+    )
+    return JSONResponse(
+        status_code=403,
+        content={"error": "loopback_required", "message": message},
+    )
+
+
 @router.get(
     "/status",
     summary="Get auth status",
@@ -209,6 +227,14 @@ async def auth_update_settings(request: Request, body: AuthSettingsRequest):
     """Manage auth enablement from the settings page."""
     target_enabled = body.auth_enabled
     current_enabled = is_auth_enabled()
+    if not current_enabled:
+        loopback_error = _reject_non_loopback_bootstrap(
+            request,
+            "认证未启用时，仅允许本机回环地址修改认证设置",
+        )
+        if loopback_error is not None:
+            return loopback_error
+
     stored_password_exists = has_stored_password()
 
     password = (body.password or "").strip()
@@ -392,6 +418,12 @@ async def auth_login(request: Request, body: LoginRequest):
     password_set = is_password_set()
 
     if not password_set:
+        loopback_error = _reject_non_loopback_bootstrap(
+            request,
+            "首次设置管理员密码仅允许本机回环地址访问",
+        )
+        if loopback_error is not None:
+            return loopback_error
         # First-time setup: require passwordConfirm
         confirm = (body.password_confirm or "").strip()
         if password != confirm:

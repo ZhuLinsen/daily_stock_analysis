@@ -161,14 +161,15 @@ export const StockBar: React.FC<StockBarProps> = ({
               const isChecked = selectedCodes.has(code);
 
               return (
-                <div key={`${code}-${item.id}`} className="flex items-start gap-2 group">
+                <div key={`${code}-${item.id}`} className="group relative">
                   {onDeleteStock && (
-                    <div className="pt-5">
+                    <div className="absolute left-2 top-1/2 z-20 -translate-y-1/2">
                       <input
                         type="checkbox"
                         checked={isChecked}
                         onChange={() => toggleCode(code)}
                         disabled={isDeleting}
+                        aria-label={`${item.stockName || code}: ${t('common.selectAllCurrent')}`}
                         className="h-3.5 w-3.5 cursor-pointer rounded border-subtle-hover bg-transparent accent-primary focus:ring-primary/30 disabled:opacity-50"
                       />
                     </div>
@@ -180,6 +181,7 @@ export const StockBar: React.FC<StockBarProps> = ({
                     onDelete={onDeleteStock}
                     isDeleting={isDeleting}
                     isMarketReview={isMarket}
+                    showSelection={Boolean(onDeleteStock)}
                   />
                 </div>
               );

@@ -4,15 +4,17 @@
 from __future__ import annotations
 
 import io
+import ipaddress
 import logging
 import json
 import os
 import re
-import shutil
+import socket
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, TypeVar
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -66,15 +68,11 @@ from src.core.config_registry import (
 )
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
-    AUTO_AGENT_BACKEND_ID,
-    CODEX_CLI_BACKEND_ID,
-    GENERATION_ONLY_BACKEND_IDS,
-    LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
     normalize_backend_id,
 )
 from src.llm.generation_params import apply_litellm_generation_params
-from src.llm.local_cli_backend import resolve_local_cli_preset
+from src.llm.response_content import strip_leading_think_wrapper
 from src.llm.response_content import strip_leading_think_wrapper
 from src.notification_contracts import (
     FEISHU_APP_BOT_ENV_GROUP,
@@ -90,6 +88,7 @@ from src.services.generation_backend_status_service import GenerationBackendStat
 from src.services.agent_backend_status_service import AgentBackendStatusService
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class ConfigValidationError(Exception):
@@ -127,17 +126,225 @@ class _LLMDiagnostic:
     details: Dict[str, Any] = field(default_factory=dict)
 
 
+class OutboundTargetGuardError(ValueError):
+    """Raised when an outbound request target fails SSRF hardening checks."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class OutboundTargetGuard:
+    """Validate outbound HTTP targets before request-time resolution."""
+
+    _ALWAYS_BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal"})
+    _ALWAYS_BLOCKED_IPS = frozenset({"100.100.100.200", "169.254.169.254"})
+    _PRIVATE_HOSTNAMES = frozenset({"localhost", "localhost.localdomain"})
+    _REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+    _DNS_GUARD_LOCK = threading.Lock()
+
+    @staticmethod
+    def normalize_hostname(hostname: Any) -> str:
+        if isinstance(hostname, bytes):
+            hostname = hostname.decode("ascii", errors="ignore")
+        candidate = str(hostname or "").strip().lower().rstrip(".")
+        if not candidate:
+            return ""
+        try:
+            return candidate.encode("idna").decode("ascii")
+        except UnicodeError:
+            return candidate
+
+    @staticmethod
+    def _canonical_ipv4_numeric_host(host: str) -> Optional[str]:
+        candidate = (host or "").lower()
+        if not candidate or ":" in candidate:
+            return None
+        try:
+            return socket.inet_ntoa(socket.inet_aton(candidate))
+        except (OSError, ValueError):
+            return None
+
+    @classmethod
+    def _is_noncanonical_ipv4_numeric_host(cls, host: str) -> bool:
+        canonical = cls._canonical_ipv4_numeric_host(host)
+        return canonical is not None and host.lower() != canonical
+
+    @staticmethod
+    def _iter_ip_candidates(address: ipaddress._BaseAddress) -> List[ipaddress._BaseAddress]:
+        candidates = [address]
+        mapped = getattr(address, "ipv4_mapped", None)
+        if mapped is not None:
+            candidates.append(mapped)
+        return candidates
+
+    @classmethod
+    def _ensure_ip_allowed(
+        cls,
+        address: ipaddress._BaseAddress,
+        *,
+        allow_private_targets: bool,
+    ) -> None:
+        for candidate in cls._iter_ip_candidates(address):
+            if (
+                str(candidate) in cls._ALWAYS_BLOCKED_IPS
+                or candidate.is_unspecified
+                or candidate.is_link_local
+                or candidate.is_reserved
+                or candidate.is_multicast
+            ):
+                raise OutboundTargetGuardError(
+                    "ssrf_blocked",
+                    "Target URL points to a restricted address",
+                )
+            if not allow_private_targets and (
+                not candidate.is_global
+                or candidate.is_private
+                or candidate.is_loopback
+            ):
+                raise OutboundTargetGuardError(
+                    "ssrf_blocked",
+                    "Target URL must not resolve to a private or local network address",
+                )
+
+    @classmethod
+    def _validate_addrinfos(
+        cls,
+        addr_infos: Any,
+        *,
+        allow_private_targets: bool,
+    ) -> None:
+        saw_ip = False
+        for info in addr_infos or []:
+            try:
+                address = ipaddress.ip_address(info[4][0])
+            except (IndexError, TypeError, ValueError):
+                continue
+            saw_ip = True
+            cls._ensure_ip_allowed(address, allow_private_targets=allow_private_targets)
+        if not saw_ip:
+            raise OutboundTargetGuardError(
+                "dns_resolution_failed",
+                "Target URL host DNS resolution failed",
+            )
+
+    @classmethod
+    def validate_url_target(
+        cls,
+        raw_url: str,
+        *,
+        allow_private_targets: bool,
+        allowed_schemes: Tuple[str, ...] = ("http", "https"),
+    ) -> None:
+        try:
+            parsed = urlparse(raw_url)
+            host = parsed.hostname or ""
+            port = parsed.port
+        except ValueError as exc:
+            raise OutboundTargetGuardError(
+                "invalid_url",
+                "Target URL must be a valid absolute http(s) URL",
+            ) from exc
+
+        if parsed.scheme not in allowed_schemes or not parsed.netloc or not host:
+            raise OutboundTargetGuardError(
+                "invalid_url",
+                "Target URL must be a valid absolute http(s) URL",
+            )
+        if cls._is_noncanonical_ipv4_numeric_host(host):
+            raise OutboundTargetGuardError(
+                "ssrf_blocked",
+                "Target URL must not use a non-canonical numeric host",
+            )
+
+        normalized_host = cls.normalize_hostname(host)
+        if not normalized_host:
+            raise OutboundTargetGuardError(
+                "invalid_url",
+                "Target URL host is invalid",
+            )
+        if normalized_host in cls._ALWAYS_BLOCKED_HOSTNAMES:
+            raise OutboundTargetGuardError(
+                "ssrf_blocked",
+                "Target URL points to a restricted address",
+            )
+        if not allow_private_targets and (
+            normalized_host in cls._PRIVATE_HOSTNAMES
+            or normalized_host.endswith(".local")
+        ):
+            raise OutboundTargetGuardError(
+                "ssrf_blocked",
+                "Target URL must not resolve to a private or local network address",
+            )
+
+        try:
+            numeric_host = ipaddress.ip_address(normalized_host)
+        except ValueError:
+            numeric_host = None
+
+        if numeric_host is not None:
+            cls._ensure_ip_allowed(
+                numeric_host,
+                allow_private_targets=allow_private_targets,
+            )
+            return
+        if allow_private_targets:
+            return
+
+        try:
+            addr_infos = socket.getaddrinfo(normalized_host, port, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise OutboundTargetGuardError(
+                "dns_resolution_failed",
+                "Target URL host DNS resolution failed",
+            ) from exc
+        cls._validate_addrinfos(
+            addr_infos,
+            allow_private_targets=allow_private_targets,
+        )
+
+    @classmethod
+    def is_redirect_response(cls, status_code: Any) -> bool:
+        try:
+            return int(status_code) in cls._REDIRECT_STATUS_CODES
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def run_with_guarded_dns(
+        cls,
+        raw_url: str,
+        *,
+        allow_private_targets: bool,
+        fn: Callable[[], _T],
+    ) -> _T:
+        cls.validate_url_target(raw_url, allow_private_targets=allow_private_targets)
+        target_hostname = cls.normalize_hostname(urlparse(raw_url).hostname)
+        original_getaddrinfo = socket.getaddrinfo
+
+        def guarded_getaddrinfo(host: Any, port: Any, *args: Any, **kwargs: Any) -> Any:
+            addrinfos = original_getaddrinfo(host, port, *args, **kwargs)
+            if cls.normalize_hostname(host) == target_hostname:
+                cls._validate_addrinfos(
+                    addrinfos,
+                    allow_private_targets=allow_private_targets,
+                )
+            return addrinfos
+
+        with cls._DNS_GUARD_LOCK:
+            socket.getaddrinfo = guarded_getaddrinfo
+            try:
+                return fn()
+            finally:
+                socket.getaddrinfo = original_getaddrinfo
+
+
 class SystemConfigService:
     """Service layer for reading, validating, and updating runtime configuration."""
 
     _GENERATION_BACKEND_STATUS_EXACT_KEYS = {
         "GENERATION_BACKEND",
-        "GENERATION_FALLBACK_BACKEND",
-        "GENERATION_BACKEND_TIMEOUT_SECONDS",
-        "GENERATION_BACKEND_MAX_OUTPUT_BYTES",
-        "GENERATION_BACKEND_MAX_CONCURRENCY",
-        "LOCAL_CLI_BACKEND_MAX_CONCURRENCY",
-        "OPENCODE_CLI_MODEL",
         "LITELLM_CONFIG",
         "LITELLM_MODEL",
         "LITELLM_FALLBACK_MODELS",
@@ -172,11 +379,9 @@ class SystemConfigService:
     )
     _AGENT_BACKEND_STATUS_EXACT_KEYS = {
         "AGENT_BACKEND",
-        "AGENT_GENERATION_BACKEND",
         "AGENT_LITELLM_MODEL",
         "AGENT_MODE",
         "AGENT_ARCH",
-        "AGENT_ORCHESTRATOR_TIMEOUT_S",
     }
 
     _LLM_CAPABILITY_ORDER: Tuple[str, ...] = ("json", "tools", "stream", "vision")
@@ -510,9 +715,18 @@ class SystemConfigService:
             "updated_at": self._manager.get_updated_at(),
         }
 
-    def validate(self, items: Sequence[Dict[str, str]], mask_token: str = "******") -> Dict[str, Any]:
+    def validate(
+        self,
+        items: Sequence[Dict[str, str]],
+        mask_token: str = "******",
+        allow_private_targets: bool = True,
+    ) -> Dict[str, Any]:
         """Validate submitted items without writing to `.env`."""
-        issues = self._collect_issues(items=items, mask_token=mask_token)
+        issues = self._collect_issues(
+            items=items,
+            mask_token=mask_token,
+            allow_private_targets=allow_private_targets,
+        )
         valid = not any(issue["severity"] == "error" for issue in issues)
         return {
             "valid": valid,
@@ -528,6 +742,7 @@ class SystemConfigService:
         title: str = "DSA 通知测试",
         content: str = "这是一条来自 DSA Web 设置页的通知测试消息。",
         timeout_seconds: float = 20.0,
+        allow_private_targets: bool = True,
     ) -> Dict[str, Any]:
         """Send one real notification test without persisting submitted values."""
         normalized_channel = (channel or "").strip().lower()
@@ -552,6 +767,7 @@ class SystemConfigService:
         invalid_message = self._get_invalid_notification_test_config_message(
             normalized_channel,
             effective_map,
+            allow_private_targets=allow_private_targets,
         )
         if invalid_message:
             return self._build_notification_test_result(
@@ -573,6 +789,7 @@ class SystemConfigService:
                 title=title.strip(),
                 content=content.strip(),
                 timeout_seconds=float(timeout_seconds),
+                allow_private_targets=allow_private_targets,
             )
         except Exception as exc:
             logger.warning("Notification channel test failed for %s: %s", normalized_channel, exc)
@@ -947,6 +1164,7 @@ class SystemConfigService:
         models: Sequence[str] = (),
         timeout_seconds: float = 20.0,
         use_saved_secret: bool = False,
+        allow_private_targets: bool = True,
     ) -> Dict[str, Any]:
         """Discover available models from an OpenAI-compatible `/models` endpoint."""
         channel_name = name.strip() or "channel"
@@ -1001,6 +1219,7 @@ class SystemConfigService:
             model_values=existing_models,
             field_prefix="discover_channel",
             require_base_url=True,
+            allow_private_targets=allow_private_targets,
         )
         if not resolved_protocol and existing_models:
             resolved_protocol = resolve_llm_channel_protocol(
@@ -1055,7 +1274,28 @@ class SystemConfigService:
             request_headers["Authorization"] = f"Bearer {selected_api_key}"
 
         try:
-            models_url = self._build_llm_models_url(base_url)
+            models_url = self._build_llm_models_url(
+                base_url,
+                allow_private_targets=allow_private_targets,
+            )
+        except OutboundTargetGuardError as exc:
+            return self._build_llm_channel_result(
+                success=False,
+                message="LLM channel configuration is invalid",
+                error=str(exc),
+                stage="model_discovery",
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": "discover_channel_BASE_URL",
+                    "issue_code": exc.code,
+                    "reason": exc.code,
+                },
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=None,
+                redaction_values=redaction_values,
+            )
         except ValueError as exc:
             return self._build_llm_channel_result(
                 success=False,
@@ -1081,29 +1321,46 @@ class SystemConfigService:
                 session = requests.Session()
                 session.trust_env = False
                 try:
-                    response = session.get(
+                    response = OutboundTargetGuard.run_with_guarded_dns(
                         models_url,
-                        headers=request_headers,
-                        timeout=max(5.0, float(timeout_seconds)),
-                        allow_redirects=False,
+                        allow_private_targets=allow_private_targets,
+                        fn=lambda: session.get(
+                            models_url,
+                            headers=request_headers,
+                            timeout=max(5.0, float(timeout_seconds)),
+                            allow_redirects=False,
+                        ),
                     )
                 finally:
                     session.close()
             else:
-                response = requests.get(
+                response = OutboundTargetGuard.run_with_guarded_dns(
                     models_url,
-                    headers=request_headers,
-                    timeout=max(5.0, float(timeout_seconds)),
-                    allow_redirects=False,
+                    allow_private_targets=allow_private_targets,
+                    fn=lambda: requests.get(
+                        models_url,
+                        headers=request_headers,
+                        timeout=max(5.0, float(timeout_seconds)),
+                        allow_redirects=False,
+                    ),
                 )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-        except requests.RequestException as exc:
+        except (requests.RequestException, OutboundTargetGuardError) as exc:
             logger.warning(
                 "LLM channel model discovery failed for %s: %s",
                 channel_name,
                 self._sanitize_llm_error_text(exc, redaction_values=redaction_values),
             )
-            diagnostic = self._classify_llm_exception(exc)
+            if isinstance(exc, OutboundTargetGuardError):
+                diagnostic = _LLMDiagnostic(
+                    error_code="invalid_config",
+                    retryable=False,
+                    message="LLM channel configuration is invalid",
+                    reason=exc.code,
+                    details={"endpoint": models_url},
+                )
+            else:
+                diagnostic = self._classify_llm_exception(exc)
             return self._build_llm_channel_result(
                 success=False,
                 message=diagnostic.message,
@@ -1216,6 +1473,7 @@ class SystemConfigService:
         timeout_seconds: float = 20.0,
         capability_checks: Sequence[str] = (),
         use_saved_secret: bool = False,
+        allow_private_targets: bool = True,
     ) -> Dict[str, Any]:
         """Run a minimal completion call against one channel definition."""
         requested_capabilities = self._normalize_llm_capability_checks(capability_checks)
@@ -1289,6 +1547,7 @@ class SystemConfigService:
             enabled=enabled,
             field_prefix="test_channel",
             require_complete=True,
+            allow_private_targets=allow_private_targets,
         )
         errors = [issue for issue in validation_issues if issue["severity"] == "error"]
         if errors:
@@ -1380,12 +1639,21 @@ class SystemConfigService:
                         log_label="[Hermes channel test]",
                     )
             else:
-                response = call_litellm_with_param_recovery(
-                    lambda kwargs: litellm.completion(**kwargs),
-                    model=wire_model,
-                    call_kwargs=call_kwargs,
-                    logger=logger,
-                    log_label="[LLM channel test]",
+                response_factory = lambda: call_litellm_with_param_recovery(
+                        lambda kwargs: litellm.completion(**kwargs),
+                        model=wire_model,
+                        call_kwargs=call_kwargs,
+                        logger=logger,
+                        log_label="[LLM channel test]",
+                    )
+                response = (
+                    OutboundTargetGuard.run_with_guarded_dns(
+                        base_url.strip(),
+                        allow_private_targets=allow_private_targets,
+                        fn=response_factory,
+                    )
+                    if base_url.strip()
+                    else response_factory()
                 )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             content, parse_error_code, parse_error, parse_reason = self._extract_llm_completion_content(response)
@@ -1435,6 +1703,7 @@ class SystemConfigService:
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
                     capability_checks=requested_capabilities,
+                    allow_private_targets=allow_private_targets,
                 )
             return self._build_llm_channel_result(
                 success=True,
@@ -1457,7 +1726,15 @@ class SystemConfigService:
                 channel_name,
                 self._sanitize_llm_error_text(exc, redaction_values=redaction_values),
             )
-            diagnostic = self._classify_llm_exception(exc)
+            if isinstance(exc, OutboundTargetGuardError):
+                diagnostic = _LLMDiagnostic(
+                    error_code="invalid_config",
+                    retryable=False,
+                    message="LLM channel configuration is invalid",
+                    reason=exc.code,
+                )
+            else:
+                diagnostic = self._classify_llm_exception(exc)
             return self._build_llm_channel_result(
                 success=False,
                 message=diagnostic.message,
@@ -1608,6 +1885,7 @@ class SystemConfigService:
         base_url: str,
         timeout_seconds: float,
         capability_checks: Sequence[str],
+        allow_private_targets: bool,
     ) -> Dict[str, Dict[str, Any]]:
         results: Dict[str, Dict[str, Any]] = {}
         for capability in capability_checks:
@@ -1618,6 +1896,7 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    allow_private_targets=allow_private_targets,
                 )
             elif capability == "tools":
                 results[capability] = cls._run_tools_capability_check(
@@ -1626,6 +1905,7 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    allow_private_targets=allow_private_targets,
                 )
             elif capability == "stream":
                 results[capability] = cls._run_stream_capability_check(
@@ -1634,6 +1914,7 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    allow_private_targets=allow_private_targets,
                 )
             elif capability == "vision":
                 results[capability] = cls._run_vision_capability_check(
@@ -1642,8 +1923,24 @@ class SystemConfigService:
                     selected_api_key=selected_api_key,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                    allow_private_targets=allow_private_targets,
                 )
         return results
+
+    @staticmethod
+    def _call_with_outbound_guard(
+        *,
+        base_url: str,
+        allow_private_targets: bool,
+        fn: Callable[[], _T],
+    ) -> _T:
+        if not (base_url or "").strip():
+            return fn()
+        return OutboundTargetGuard.run_with_guarded_dns(
+            base_url.strip(),
+            allow_private_targets=allow_private_targets,
+            fn=fn,
+        )
 
     @classmethod
     def _run_json_capability_check(
@@ -1654,18 +1951,23 @@ class SystemConfigService:
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        allow_private_targets: bool,
     ) -> Dict[str, Any]:
         try:
             started_at = time.perf_counter()
-            response = litellm_module.completion(
-                **cls._build_llm_capability_completion_kwargs(
-                    resolved_model=resolved_model,
-                    selected_api_key=selected_api_key,
-                    base_url=base_url,
-                    timeout_seconds=timeout_seconds,
-                    messages=[{"role": "user", "content": 'Return exactly this JSON object: {"status":"ok"}'}],
-                    max_tokens=64,
-                    extra={"response_format": {"type": "json_object"}},
+            response = cls._call_with_outbound_guard(
+                base_url=base_url,
+                allow_private_targets=allow_private_targets,
+                fn=lambda: litellm_module.completion(
+                    **cls._build_llm_capability_completion_kwargs(
+                        resolved_model=resolved_model,
+                        selected_api_key=selected_api_key,
+                        base_url=base_url,
+                        timeout_seconds=timeout_seconds,
+                        messages=[{"role": "user", "content": 'Return exactly this JSON object: {"status":"ok"}'}],
+                        max_tokens=64,
+                        extra={"response_format": {"type": "json_object"}},
+                    )
                 )
             )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1722,6 +2024,7 @@ class SystemConfigService:
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        allow_private_targets: bool,
     ) -> Dict[str, Any]:
         tools = [
             {
@@ -1739,18 +2042,22 @@ class SystemConfigService:
         ]
         try:
             started_at = time.perf_counter()
-            response = litellm_module.completion(
-                **cls._build_llm_capability_completion_kwargs(
-                    resolved_model=resolved_model,
-                    selected_api_key=selected_api_key,
-                    base_url=base_url,
-                    timeout_seconds=timeout_seconds,
-                    messages=[{"role": "user", "content": "Call the dsa_probe_echo tool with text set to ok."}],
-                    max_tokens=64,
-                    extra={
-                        "tools": tools,
-                        "tool_choice": {"type": "function", "function": {"name": "dsa_probe_echo"}},
-                    },
+            response = cls._call_with_outbound_guard(
+                base_url=base_url,
+                allow_private_targets=allow_private_targets,
+                fn=lambda: litellm_module.completion(
+                    **cls._build_llm_capability_completion_kwargs(
+                        resolved_model=resolved_model,
+                        selected_api_key=selected_api_key,
+                        base_url=base_url,
+                        timeout_seconds=timeout_seconds,
+                        messages=[{"role": "user", "content": "Call the dsa_probe_echo tool with text set to ok."}],
+                        max_tokens=64,
+                        extra={
+                            "tools": tools,
+                            "tool_choice": {"type": "function", "function": {"name": "dsa_probe_echo"}},
+                        },
+                    )
                 )
             )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1785,19 +2092,24 @@ class SystemConfigService:
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        allow_private_targets: bool,
     ) -> Dict[str, Any]:
         stream = None
         started_at = time.perf_counter()
         try:
-            stream = litellm_module.completion(
-                **cls._build_llm_capability_completion_kwargs(
-                    resolved_model=resolved_model,
-                    selected_api_key=selected_api_key,
-                    base_url=base_url,
-                    timeout_seconds=timeout_seconds,
-                    messages=[{"role": "user", "content": "Reply with OK"}],
-                    max_tokens=32,
-                    extra={"stream": True},
+            stream = cls._call_with_outbound_guard(
+                base_url=base_url,
+                allow_private_targets=allow_private_targets,
+                fn=lambda: litellm_module.completion(
+                    **cls._build_llm_capability_completion_kwargs(
+                        resolved_model=resolved_model,
+                        selected_api_key=selected_api_key,
+                        base_url=base_url,
+                        timeout_seconds=timeout_seconds,
+                        messages=[{"role": "user", "content": "Reply with OK"}],
+                        max_tokens=32,
+                        extra={"stream": True},
+                    )
                 )
             )
             for index, chunk in enumerate(stream):
@@ -1843,25 +2155,30 @@ class SystemConfigService:
         selected_api_key: str,
         base_url: str,
         timeout_seconds: float,
+        allow_private_targets: bool,
     ) -> Dict[str, Any]:
         try:
             started_at = time.perf_counter()
-            response = litellm_module.completion(
-                **cls._build_llm_capability_completion_kwargs(
-                    resolved_model=resolved_model,
-                    selected_api_key=selected_api_key,
-                    base_url=base_url,
-                    timeout_seconds=timeout_seconds,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "Reply with OK if this image is visible."},
-                                {"type": "image_url", "image_url": {"url": cls._LLM_CAPABILITY_PROBE_IMAGE}},
-                            ],
-                        }
-                    ],
-                    max_tokens=32,
+            response = cls._call_with_outbound_guard(
+                base_url=base_url,
+                allow_private_targets=allow_private_targets,
+                fn=lambda: litellm_module.completion(
+                    **cls._build_llm_capability_completion_kwargs(
+                        resolved_model=resolved_model,
+                        selected_api_key=selected_api_key,
+                        base_url=base_url,
+                        timeout_seconds=timeout_seconds,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Reply with OK if this image is visible."},
+                                    {"type": "image_url", "image_url": {"url": cls._LLM_CAPABILITY_PROBE_IMAGE}},
+                                ],
+                            }
+                        ],
+                        max_tokens=32,
+                    )
                 )
             )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
@@ -2044,13 +2361,18 @@ class SystemConfigService:
         items: Sequence[Dict[str, str]],
         mask_token: str = "******",
         reload_now: bool = True,
+        allow_private_targets: bool = True,
     ) -> Dict[str, Any]:
         """Validate and persist updates into `.env`, then reload runtime config."""
         current_version = self._manager.get_config_version()
         if current_version != config_version:
             raise ConfigConflictError(current_version=current_version)
 
-        issues = self._collect_issues(items=items, mask_token=mask_token)
+        issues = self._collect_issues(
+            items=items,
+            mask_token=mask_token,
+            allow_private_targets=allow_private_targets,
+        )
         errors = [issue for issue in issues if issue["severity"] == "error"]
         if errors:
             raise ConfigValidationError(issues=errors)
@@ -2370,7 +2692,12 @@ class SystemConfigService:
 
         return updates
 
-    def _collect_issues(self, items: Sequence[Dict[str, str]], mask_token: str) -> List[Dict[str, Any]]:
+    def _collect_issues(
+        self,
+        items: Sequence[Dict[str, str]],
+        mask_token: str,
+        allow_private_targets: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Collect field-level and cross-field validation issues."""
         saved_config_map = self._manager.read_config_map()
         display_config_map = self._build_display_config_map(saved_config_map)
@@ -2393,9 +2720,22 @@ class SystemConfigService:
 
             updated_map[key] = value
             effective_map[key] = value
-            issues.extend(self._validate_value(key=key, value=value, field_schema=field_schema))
+            issues.extend(
+                self._validate_value(
+                    key=key,
+                    value=value,
+                    field_schema=field_schema,
+                    allow_private_targets=allow_private_targets,
+                )
+            )
 
-        issues.extend(self._validate_cross_field(effective_map=effective_map, updated_keys=set(updated_map.keys())))
+        issues.extend(
+            self._validate_cross_field(
+                effective_map=effective_map,
+                updated_keys=set(updated_map.keys()),
+                allow_private_targets=allow_private_targets,
+            )
+        )
         return issues
 
     @classmethod
@@ -2467,16 +2807,7 @@ class SystemConfigService:
             effective_map.get("GENERATION_BACKEND"),
             default=LITELLM_BACKEND_ID,
         )
-        fallback_backend = (
-            LITELLM_BACKEND_ID
-            if "GENERATION_FALLBACK_BACKEND" not in effective_map
-            else (effective_map.get("GENERATION_FALLBACK_BACKEND") or "").strip().lower()
-        )
-        litellm_selected = (
-            primary_backend == LITELLM_BACKEND_ID
-            or (fallback_backend == LITELLM_BACKEND_ID and primary_backend != LITELLM_BACKEND_ID)
-        )
-        if not litellm_selected:
+        if primary_backend != LITELLM_BACKEND_ID:
             return []
         if SystemConfigService._uses_litellm_yaml(effective_map):
             return []
@@ -2539,7 +2870,12 @@ class SystemConfigService:
         return self._collect_generation_backend_issues(items=items, mask_token="******")
 
     @staticmethod
-    def _validate_value(key: str, value: str, field_schema: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _validate_value(
+        key: str,
+        value: str,
+        field_schema: Dict[str, Any],
+        allow_private_targets: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Validate a single field value against schema metadata."""
         issues: List[Dict[str, Any]] = []
         data_type = field_schema.get("data_type", "string")
@@ -2741,6 +3077,84 @@ class SystemConfigService:
                         "actual": ", ".join(invalid_values[:3]),
                     }
                 )
+            elif not allow_private_targets:
+                restricted_values: List[str] = []
+                for item in values:
+                    if not item:
+                        continue
+                    try:
+                        OutboundTargetGuard.validate_url_target(
+                            item,
+                            allow_private_targets=False,
+                            allowed_schemes=allowed_schemes,
+                        )
+                    except OutboundTargetGuardError:
+                        restricted_values.append(item)
+                if restricted_values:
+                    issues.append(
+                        {
+                            "key": key,
+                            "code": "ssrf_blocked",
+                            "message": (
+                                "Value must not target private, loopback, or otherwise restricted network addresses "
+                                "for untrusted requests"
+                            ),
+                            "severity": "error",
+                            "expected": "publicly reachable URL(s)",
+                            "actual": ", ".join(restricted_values[:3]),
+                        }
+                    )
+
+        if (
+            key.endswith("_URL")
+            or key.endswith("_URLS")
+            or key == "CUSTOM_WEBHOOK_URLS"
+        ) and validation.get("item_type") != "url":
+            delimiter = validation.get("delimiter", ",")
+            values = [item.strip() for item in value.split(delimiter)] if validation.get("multi_value") else [value.strip()]
+            allowed_schemes = tuple(validation.get("allowed_schemes", ["http", "https"]))
+            invalid_values = [
+                item for item in values
+                if item and not SystemConfigService._is_valid_url(item, allowed_schemes=allowed_schemes)
+            ]
+            if invalid_values:
+                issues.append(
+                    {
+                        "key": key,
+                        "code": "invalid_url",
+                        "message": "Value must contain valid URLs with scheme and host",
+                        "severity": "error",
+                        "expected": ",".join(allowed_schemes) + " URL(s)",
+                        "actual": ", ".join(invalid_values[:3]),
+                    }
+                )
+            elif not allow_private_targets:
+                restricted_values: List[str] = []
+                for item in values:
+                    if not item:
+                        continue
+                    try:
+                        OutboundTargetGuard.validate_url_target(
+                            item,
+                            allow_private_targets=False,
+                            allowed_schemes=allowed_schemes,
+                        )
+                    except OutboundTargetGuardError:
+                        restricted_values.append(item)
+                if restricted_values:
+                    issues.append(
+                        {
+                            "key": key,
+                            "code": "ssrf_blocked",
+                            "message": (
+                                "Value must not target private, loopback, or otherwise restricted network addresses "
+                                "for untrusted requests"
+                            ),
+                            "severity": "error",
+                            "expected": "publicly reachable URL(s)",
+                            "actual": ", ".join(restricted_values[:3]),
+                        }
+                    )
 
         if key == "NTFY_URL" and value.strip():
             allowed_schemes = tuple(validation.get("allowed_schemes", ["http", "https"]))
@@ -2952,7 +3366,26 @@ class SystemConfigService:
     def _get_invalid_notification_test_config_message(
         channel: str,
         effective_map: Dict[str, str],
+        *,
+        allow_private_targets: bool,
     ) -> Optional[str]:
+        for key in SystemConfigService._NOTIFICATION_TEST_TARGET_KEYS.get(channel, ()):
+            if not (key.endswith("_URL") or key.endswith("_URLS")):
+                continue
+            raw_value = (effective_map.get(key) or "").strip()
+            if not raw_value:
+                continue
+            values = SystemConfigService._split_csv(raw_value) if key.endswith("_URLS") else [raw_value]
+            for candidate in values:
+                if not candidate:
+                    continue
+                try:
+                    OutboundTargetGuard.validate_url_target(
+                        candidate,
+                        allow_private_targets=allow_private_targets,
+                    )
+                except OutboundTargetGuardError as exc:
+                    return f"{key} {exc.message}。"
         if channel == "ntfy":
             ntfy_url = (effective_map.get("NTFY_URL") or "").strip()
             if not ntfy_url:
@@ -3006,6 +3439,7 @@ class SystemConfigService:
         title: str,
         content: str,
         timeout_seconds: float,
+        allow_private_targets: bool,
     ) -> Dict[str, Any]:
         from src.notification_sender import (
             AstrbotSender,
@@ -3029,7 +3463,10 @@ class SystemConfigService:
         titled_content = self._build_notification_test_content(title, content)
 
         if channel == "custom":
-            attempts = CustomWebhookSender(config).test_custom_webhooks(
+            attempts = CustomWebhookSender(
+                config,
+                allow_private_targets=allow_private_targets,
+            ).test_custom_webhooks(
                 titled_content,
                 timeout_seconds=timeout_seconds,
             )
@@ -3343,12 +3780,8 @@ class SystemConfigService:
         effective_map.update(
             {
                 "AGENT_BACKEND": runtime_config.agent_backend,
-                "AGENT_GENERATION_BACKEND": runtime_config.agent_generation_backend,
                 "AGENT_LITELLM_MODEL": runtime_config.agent_litellm_model,
                 "AGENT_ARCH": runtime_config.agent_arch,
-                "AGENT_ORCHESTRATOR_TIMEOUT_S": str(
-                    runtime_config.agent_orchestrator_timeout_s
-                ),
             }
         )
         if runtime_config._agent_mode_explicit:
@@ -3572,41 +4005,6 @@ class SystemConfigService:
         return "", "尚未检测到主模型配置"
 
     def _build_setup_primary_llm_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
-        generation_backend = normalize_backend_id(
-            effective_map.get("GENERATION_BACKEND"),
-            default=LITELLM_BACKEND_ID,
-        )
-        if generation_backend in LOCAL_CLI_GENERATION_BACKEND_IDS:
-            preset = resolve_local_cli_preset(generation_backend)
-            if shutil.which(preset.executable):
-                return self._setup_check(
-                    "llm_primary",
-                    "LLM 主渠道",
-                    "ai_model",
-                    True,
-                    "configured",
-                    f"已启用 {preset.display_name} 本地生成 Backend（experimental/limited）。",
-                )
-            return self._setup_check(
-                "llm_primary",
-                "LLM 主渠道",
-                "ai_model",
-                True,
-                "needs_action",
-                (
-                    "已选择 codex_cli，但 DSA 后端进程当前 PATH 中找不到 codex 可执行文件。"
-                    if generation_backend == CODEX_CLI_BACKEND_ID
-                    else f"已选择 {generation_backend}，但未找到 {preset.executable} 可执行文件。"
-                ),
-                (
-                    "请确认 Codex CLI 已安装到后端 PATH 可见目录；桌面端请完全退出并重开。"
-                    "打开 Codex CLI 交互窗口不会改变已运行后端的 PATH；若找到后仍失败，再检查 Codex CLI 登录态，"
-                    "或将 GENERATION_BACKEND 设回 litellm。"
-                    if generation_backend == CODEX_CLI_BACKEND_ID
-                    else "请先安装并登录对应 CLI，或将 GENERATION_BACKEND 设回 litellm。"
-                ),
-            )
-
         model, source = self._resolve_setup_primary_model(effective_map)
         if model:
             source_label = {
@@ -3638,71 +4036,10 @@ class SystemConfigService:
         effective_map: Dict[str, str],
         primary_check: Dict[str, Any],
     ) -> Dict[str, Any]:
-        generation_backend = normalize_backend_id(
-            effective_map.get("GENERATION_BACKEND"),
-            default=LITELLM_BACKEND_ID,
-        )
-        agent_backend = normalize_backend_id(
-            effective_map.get("AGENT_GENERATION_BACKEND"),
-            default=AUTO_AGENT_BACKEND_ID,
-        )
-        if agent_backend in GENERATION_ONLY_BACKEND_IDS:
-            return self._setup_check(
-                "llm_agent",
-                "Agent 渠道",
-                "agent",
-                True,
-                "needs_action",
-                f"Agent 工具调用暂不支持 {agent_backend} text-only backend。",
-                "请将 AGENT_GENERATION_BACKEND 设为 auto 或 litellm，并配置 LiteLLM 工具调用渠道。",
-            )
-
         agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
         hermes_routes = set(self._collect_hermes_channel_models_from_map(effective_map))
         non_hermes_routes = set(self._collect_non_hermes_channel_models_from_map(effective_map))
         if not agent_model_raw:
-            if generation_backend in LOCAL_CLI_GENERATION_BACKEND_IDS:
-                litellm_model, _source = self._resolve_setup_primary_model(effective_map)
-                if litellm_model:
-                    if litellm_model in hermes_routes and litellm_model not in non_hermes_routes:
-                        return self._setup_check(
-                            "llm_agent",
-                            "Agent 渠道",
-                            "agent",
-                            True,
-                            "needs_action",
-                            "普通分析使用 Codex CLI；但当前 LiteLLM Agent 路径继承的是 Hermes-only 模型，"
-                            "Hermes Phase 3 不支持 Agent 工具调用。",
-                            "如需使用 Ask-Stock Agent，请配置非 Hermes 的 AGENT_LITELLM_MODEL，"
-                            "或配置包含非 Hermes deployment 的 mixed Agent route。",
-                        )
-                    return self._setup_check(
-                        "llm_agent",
-                        "Agent 渠道",
-                        "agent",
-                        True,
-                        "configured",
-                        f"普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: {litellm_model}",
-                    )
-                if agent_backend == LITELLM_BACKEND_ID:
-                    return self._setup_check(
-                        "llm_agent",
-                        "Agent 渠道",
-                        "agent",
-                        True,
-                        "needs_action",
-                        "AGENT_GENERATION_BACKEND 已选择 litellm，但未检测到可用 LiteLLM 模型配置。",
-                        "如需使用 Ask-Stock Agent，请配置 AGENT_LITELLM_MODEL、LITELLM_MODEL、LLM_CHANNELS 或 LITELLM_CONFIG。",
-                    )
-                return self._setup_check(
-                    "llm_agent",
-                    "Agent 渠道",
-                    "agent",
-                    True,
-                    "needs_action",
-                    "Agent 工具调用需要 LiteLLM 模型配置；local CLI 主生成方式不会被自动继承。",
-                    "如需使用 Ask-Stock Agent，请配置 LiteLLM 模型，或将 AGENT_GENERATION_BACKEND 固定为 litellm 后补齐模型配置。",
-                )
             if primary_check["status"] == "configured":
                 primary_model, _source = self._resolve_setup_primary_model(effective_map)
                 if primary_model in hermes_routes and primary_model not in non_hermes_routes:
@@ -3749,10 +4086,6 @@ class SystemConfigService:
                 "请选择非 Hermes Agent 模型，或配置 mixed route 中的非 Hermes deployment。",
             )
         configured_agent_message = f"已配置 Agent 主模型: {agent_model}"
-        if generation_backend == CODEX_CLI_BACKEND_ID:
-            configured_agent_message = (
-                f"普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: {agent_model}"
-            )
         if _uses_direct_env_provider(agent_model):
             return self._setup_check(
                 "llm_agent",
@@ -3909,56 +4242,26 @@ class SystemConfigService:
         )
 
     @staticmethod
-    def _is_safe_base_url(value: str) -> bool:
-        """Block link-local and cloud metadata addresses to prevent SSRF.
-
-        Allows localhost / private-LAN addresses (e.g. Ollama on 192.168.x.x)
-        but blocks 169.254.x.x (AWS/Azure/GCP/Alibaba instance-metadata service)
-        and other known metadata hostnames.
-        """
-        import ipaddress
-
+    def _is_safe_base_url(value: str, *, allow_private_targets: bool = True) -> bool:
+        """Return True when the URL target passes the outbound SSRF guard."""
         try:
-            parsed = urlparse(value)
-            raw_host = parsed.hostname or ""
-        except ValueError:
+            OutboundTargetGuard.validate_url_target(
+                value,
+                allow_private_targets=allow_private_targets,
+            )
+        except OutboundTargetGuardError:
             return False
-        if not raw_host:
-            return True
-        host = SystemConfigService._normalize_hostname_for_security(raw_host)
-        if not host:
-            return False
-        # Known cloud metadata hostnames
-        _BLOCKED_HOSTS = frozenset({
-            "169.254.169.254",
-            "metadata.google.internal",
-            "100.100.100.200",
-        })
-        if host in _BLOCKED_HOSTS:
-            return False
-        if SystemConfigService._is_noncanonical_ipv4_numeric_host(host):
-            return False
-        # Numeric IPs: block link-local range (169.254.0.0/16), including IPv4-mapped IPv6.
-        try:
-            addr = ipaddress.ip_address(host)
-            candidate_addrs = [addr]
-            mapped_addr = getattr(addr, "ipv4_mapped", None)
-            if mapped_addr is not None:
-                candidate_addrs.append(mapped_addr)
-            for candidate_addr in candidate_addrs:
-                if str(candidate_addr) in _BLOCKED_HOSTS or candidate_addr.is_link_local:
-                    return False
-        except ValueError:
-            pass  # hostname, not an IP — already checked against blocklist above
         return True
 
     @staticmethod
-    def _build_llm_models_url(base_url: str) -> str:
+    def _build_llm_models_url(base_url: str, *, allow_private_targets: bool = True) -> str:
         """Convert a channel base URL into a `/models` endpoint."""
         if not SystemConfigService._is_valid_llm_base_url(base_url):
             raise ValueError("LLM channel base URL must be a valid absolute URL")
-        if not SystemConfigService._is_safe_base_url(base_url):
-            raise ValueError("LLM channel base URL points to a restricted address")
+        OutboundTargetGuard.validate_url_target(
+            base_url,
+            allow_private_targets=allow_private_targets,
+        )
 
         parsed = urlparse(base_url)
         normalized = (parsed.path or "").rstrip("/")
@@ -3973,8 +4276,10 @@ class SystemConfigService:
         models_url = urlunparse(parsed._replace(path=models_path, params="", query="", fragment=""))
         if not SystemConfigService._is_valid_llm_base_url(models_url):
             raise ValueError("LLM channel models URL must be a valid absolute URL")
-        if not SystemConfigService._is_safe_base_url(models_url):
-            raise ValueError("LLM channel models URL points to a restricted address")
+        OutboundTargetGuard.validate_url_target(
+            models_url,
+            allow_private_targets=allow_private_targets,
+        )
         return models_url
 
     @staticmethod
@@ -4477,44 +4782,13 @@ class SystemConfigService:
         return models
 
     @staticmethod
-    def _validate_cross_field(effective_map: Dict[str, str], updated_keys: Set[str]) -> List[Dict[str, Any]]:
+    def _validate_cross_field(
+        effective_map: Dict[str, str],
+        updated_keys: Set[str],
+        allow_private_targets: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Validate dependencies across multiple keys."""
         issues: List[Dict[str, Any]] = []
-
-        agent_backend = (effective_map.get("AGENT_BACKEND") or "auto").strip().lower()
-        agent_arch = (effective_map.get("AGENT_ARCH") or "single").strip().lower()
-        if agent_backend == "codex_app_server" and agent_arch != "single" and (
-            {"AGENT_BACKEND", "AGENT_ARCH"} & updated_keys
-        ):
-            issues.append(
-                {
-                    "key": "AGENT_ARCH",
-                    "code": "unsupported_agent_arch",
-                    "message": "Codex 本地 Agent 当前只支持单 Agent 问股，请切换为 single。",
-                    "severity": "error",
-                    "expected": "single",
-                    "actual": agent_arch,
-                }
-            )
-
-        timeout_raw = (effective_map.get("AGENT_ORCHESTRATOR_TIMEOUT_S") or "600").strip()
-        try:
-            agent_timeout = int(timeout_raw)
-        except ValueError:
-            agent_timeout = None
-        if agent_backend == "codex_app_server" and agent_timeout is not None and agent_timeout <= 0 and (
-            {"AGENT_BACKEND", "AGENT_ORCHESTRATOR_TIMEOUT_S"} & updated_keys
-        ):
-            issues.append(
-                {
-                    "key": "AGENT_ORCHESTRATOR_TIMEOUT_S",
-                    "code": "codex_timeout_required",
-                    "message": "Codex 本地 Agent 必须设置大于 0 的整体时限，确保每次问股都会结束。",
-                    "severity": "error",
-                    "expected": ">0 when AGENT_BACKEND=codex_app_server",
-                    "actual": timeout_raw,
-                }
-            )
 
         token_value = (effective_map.get("TELEGRAM_BOT_TOKEN") or "").strip()
         chat_id_value = (effective_map.get("TELEGRAM_CHAT_ID") or "").strip()
@@ -4593,6 +4867,7 @@ class SystemConfigService:
             SystemConfigService._validate_llm_channel_map(
                 effective_map=effective_map,
                 updated_keys=updated_keys,
+                allow_private_targets=allow_private_targets,
             )
         )
         issues.extend(SystemConfigService._validate_llm_runtime_selection(effective_map=effective_map))
@@ -4615,7 +4890,11 @@ class SystemConfigService:
         return issues
 
     @staticmethod
-    def _validate_llm_channel_map(effective_map: Dict[str, str], updated_keys: Set[str]) -> List[Dict[str, Any]]:
+    def _validate_llm_channel_map(
+        effective_map: Dict[str, str],
+        updated_keys: Set[str],
+        allow_private_targets: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Validate channel-style LLM configuration stored in `.env`."""
         issues: List[Dict[str, Any]] = []
         if SystemConfigService._uses_litellm_yaml(effective_map):
@@ -4759,6 +5038,7 @@ class SystemConfigService:
                 enabled=enabled,
                 field_prefix=prefix,
                 require_complete=enabled,
+                allow_private_targets=allow_private_targets,
             )
             issues.extend(channel_issues)
             if not any(issue.get("severity") == "error" for issue in channel_issues):
@@ -5360,6 +5640,7 @@ class SystemConfigService:
         enabled: bool,
         field_prefix: str,
         require_complete: bool,
+        allow_private_targets: bool = True,
     ) -> List[Dict[str, Any]]:
         """Validate one normalized LLM channel definition."""
         if not require_complete:
@@ -5373,6 +5654,7 @@ class SystemConfigService:
             model_values=model_values,
             field_prefix=field_prefix,
             require_base_url=False,
+            allow_private_targets=allow_private_targets,
         )
         models_key = f"{field_prefix}_MODELS" if field_prefix != "test_channel" else "models"
         api_surface_key = (
@@ -5483,6 +5765,7 @@ class SystemConfigService:
         model_values: Sequence[str] = (),
         field_prefix: str,
         require_base_url: bool,
+        allow_private_targets: bool = True,
     ) -> Tuple[List[Dict[str, Any]], str]:
         """Validate connection-level fields shared by test and discovery flows."""
         issues: List[Dict[str, Any]] = []
@@ -5528,12 +5811,18 @@ class SystemConfigService:
                     "actual": base_url_value,
                 }
             )
-        elif base_url_value and not SystemConfigService._is_safe_base_url(base_url_value):
+        elif base_url_value and not SystemConfigService._is_safe_base_url(
+            base_url_value,
+            allow_private_targets=allow_private_targets,
+        ):
             issues.append(
                 {
                     "key": base_url_key,
                     "code": "ssrf_blocked",
-                    "message": "LLM channel base URL points to a restricted address (cloud metadata services are not allowed)",
+                    "message": (
+                        "LLM channel base URL points to a restricted address "
+                        "for the current request context"
+                    ),
                     "severity": "error",
                     "expected": "publicly reachable or local LLM endpoint",
                     "actual": base_url_value,

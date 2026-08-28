@@ -105,7 +105,7 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
         aria-label={t('home.marketRegionSelector')}
         onClick={() => setOpen((current) => !current)}
         className={cn(
-          'flex h-10 w-full min-w-0 items-center gap-2 rounded-xl border border-subtle bg-surface/60 px-3 text-left text-xs text-secondary-text transition-colors',
+          'flex h-10 w-full min-w-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-3 text-left text-[13px] text-secondary-text transition-colors',
           'hover:border-subtle-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:outline-none sm:w-auto sm:max-w-64',
           'disabled:cursor-not-allowed disabled:opacity-50',
         )}
@@ -129,7 +129,7 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
               close(true);
             }
           }}
-          className="absolute right-0 z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-subtle bg-surface/95 p-2 shadow-2xl shadow-black/25 backdrop-blur-xl"
+          className="absolute right-0 top-full z-[80] mt-2 max-h-[min(30rem,calc(100vh-6rem))] w-[min(22rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-border bg-popover p-2 shadow-soft-card-strong"
         >
           <div className="border-b border-subtle px-2.5 py-2">
             <p className="text-sm font-semibold text-foreground">{t('home.marketRegionTitle')}</p>

@@ -501,7 +501,32 @@ class RuntimeSchedulerService:
     def _current_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         if self._background_tasks_provider is not None:
             return self._background_tasks_provider(config)
-        return self._current_agent_event_monitor_background_tasks(config)
+        tasks = list(self._current_agent_event_monitor_background_tasks(config))
+        tasks.extend(self._current_virtual_trader_background_tasks(config))
+        return tasks
+
+    def _current_virtual_trader_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        name = "virtual_trader"
+        if not getattr(config, "virtual_trader_enabled", False):
+            self._background_task_cache.pop(name, None)
+            self._background_task_registered_names.discard(name)
+            return []
+        if name not in self._background_task_cache:
+            from main import _build_virtual_trader_background_task
+
+            self._background_task_cache[name] = {
+                "task": _build_virtual_trader_background_task(),
+                "interval_seconds": 30 * 60,
+                "run_immediately": True,
+                "name": name,
+            }
+        entry = dict(self._background_task_cache[name])
+        entry["run_immediately"] = (
+            bool(entry.get("run_immediately", False))
+            and name not in self._background_task_registered_names
+        )
+        self._background_task_registered_names.add(name)
+        return [entry]
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         name = "agent_event_monitor"

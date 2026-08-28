@@ -11,7 +11,7 @@ ensure_litellm_stub()
 
 from src.core.market_review_runtime import build_market_review_runtime, has_configured_llm_runtime
 from src.llm.generation_backend import GenerationError, GenerationErrorCode
-from src.llm.backend_registry import LOCAL_CLI_GENERATION_BACKEND_IDS
+from src.llm.backend_registry import REMOVED_GENERATION_BACKEND_IDS
 
 
 class _FakeAnalyzer:
@@ -174,35 +174,23 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
         self.assertEqual(analyzer.available_calls, 0)
         search_cls.assert_not_called()
 
-    def test_build_market_review_runtime_preserves_local_cli_backend_error_without_api_keys(self) -> None:
-        for backend_id in sorted(LOCAL_CLI_GENERATION_BACKEND_IDS):
+    def test_build_market_review_runtime_rejects_removed_backend_without_api_keys(self) -> None:
+        for backend_id in sorted(REMOVED_GENERATION_BACKEND_IDS):
             with self.subTest(backend_id=backend_id):
                 config = self._base_config()
                 config.generation_backend = backend_id
                 config.generation_fallback_backend = ""
-                backend_error = GenerationError(
-                    error_code=GenerationErrorCode.COMMAND_NOT_FOUND,
-                    stage="configuration",
-                    retryable=False,
-                    fallbackable=True,
-                    backend=backend_id,
-                    provider=backend_id,
-                    details={"reason": "executable_not_found"},
-                )
                 notifier = MagicMock()
-                analyzer = _FakeAnalyzer(backend_error=backend_error, available=False)
 
-                with patch("src.analyzer.GeminiAnalyzer", return_value=analyzer), \
+                with patch("src.analyzer.GeminiAnalyzer") as analyzer_cls, \
                      patch("src.notification.NotificationService", return_value=notifier), \
-                     patch("src.search_service.SearchService") as search_cls:
+                     patch("src.search_service.SearchService"):
                     runtime_notifier, runtime_analyzer, runtime_search = build_market_review_runtime(config)
 
                 self.assertIs(runtime_notifier, notifier)
-                self.assertIs(runtime_analyzer, analyzer)
+                self.assertIsNone(runtime_analyzer)
                 self.assertIsNone(runtime_search)
-                self.assertEqual(analyzer.backend_error_calls, 1)
-                self.assertEqual(analyzer.available_calls, 0)
-                search_cls.assert_not_called()
+                analyzer_cls.assert_not_called()
 
     def test_build_market_review_runtime_drops_unavailable_analyzer_without_backend_error(self) -> None:
         config = self._base_config()
@@ -226,14 +214,14 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
         config = self._base_config()
         self.assertFalse(has_configured_llm_runtime(config))
 
-    def test_has_configured_llm_runtime_treats_local_cli_as_runtime_without_api_keys(self) -> None:
-        for backend_id in sorted(LOCAL_CLI_GENERATION_BACKEND_IDS):
+    def test_has_configured_llm_runtime_rejects_removed_backend_without_api_keys(self) -> None:
+        for backend_id in sorted(REMOVED_GENERATION_BACKEND_IDS):
             with self.subTest(backend_id=backend_id):
                 config = self._base_config()
                 config.generation_backend = backend_id
                 config.generation_fallback_backend = ""
 
-                self.assertTrue(has_configured_llm_runtime(config))
+                self.assertFalse(has_configured_llm_runtime(config))
 
     def test_has_configured_llm_runtime_supports_legacy_fields(self) -> None:
         base = self._base_config()

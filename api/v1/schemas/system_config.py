@@ -133,7 +133,7 @@ class GenerationBackendStatus(BaseModel):
     """
 
     backend_id: str
-    backend_type: Literal["litellm", "local_cli"]
+    backend_type: Literal["litellm"]
     provider_id: str
     available: bool
     health_status: GenerationBackendHealthStatus = "not_tested"

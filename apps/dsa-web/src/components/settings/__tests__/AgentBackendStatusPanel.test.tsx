@@ -16,15 +16,6 @@ vi.mock('../../../api/systemConfig', () => ({
   },
 }));
 
-const codexStatus: AgentBackendStatusResponse = {
-  backend: 'codex_app_server',
-  available: true,
-  experimental: true,
-  version: 'codex-cli test',
-  errorCode: null,
-  message: null,
-};
-
 const litellmStatus: AgentBackendStatusResponse = {
   backend: 'litellm',
   available: true,
@@ -32,6 +23,15 @@ const litellmStatus: AgentBackendStatusResponse = {
   version: null,
   errorCode: null,
   message: null,
+};
+
+const unsupportedStatus: AgentBackendStatusResponse = {
+  backend: 'codex_app_server',
+  available: false,
+  experimental: false,
+  version: null,
+  errorCode: 'capability_unsupported',
+  message: 'Unsupported AGENT_BACKEND: codex_app_server',
 };
 
 function deferred<T>() {
@@ -46,9 +46,6 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof AgentBackend
   const props: React.ComponentProps<typeof AgentBackendStatusPanel> = {
     items: [],
     maskToken: '******',
-    selectedBackend: 'auto',
-    agentArch: 'single',
-    onUseSingleAgent: vi.fn(),
     onEnableAgentMode: vi.fn(),
     ...overrides,
   };
@@ -58,7 +55,7 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof AgentBackend
 describe('AgentBackendStatusPanel', () => {
   beforeEach(() => {
     getStatus.mockReset().mockResolvedValue(litellmStatus);
-    previewStatus.mockReset().mockResolvedValue(codexStatus);
+    previewStatus.mockReset().mockResolvedValue(litellmStatus);
   });
 
   it('checks saved compatibility without offering a model smoke test', async () => {
@@ -74,18 +71,29 @@ describe('AgentBackendStatusPanel', () => {
 
   it('previews unsaved Agent settings through the same compatibility contract', async () => {
     renderPanel({
-      items: [{ key: 'AGENT_BACKEND', value: 'codex_app_server' }],
-      selectedBackend: 'codex_app_server',
+      items: [{ key: 'AGENT_BACKEND', value: 'litellm' }],
     });
 
     await waitFor(() => expect(previewStatus).toHaveBeenCalledWith({
-      items: [{ key: 'AGENT_BACKEND', value: 'codex_app_server' }],
+      items: [{ key: 'AGENT_BACKEND', value: 'litellm' }],
       maskToken: '******',
     }));
     expect(getStatus).not.toHaveBeenCalled();
-    expect(await screen.findByText('Codex Agent')).toBeInTheDocument();
-    expect(screen.getByText('实验功能')).toBeInTheDocument();
+    expect(await screen.findByText('默认模型')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /真实测试/ })).not.toBeInTheDocument();
+  });
+
+  it('explains a removed backend id from the draft preview', async () => {
+    previewStatus.mockResolvedValueOnce(unsupportedStatus);
+    renderPanel({
+      items: [{ key: 'AGENT_BACKEND', value: 'codex_app_server' }],
+    });
+
+    await waitFor(() => expect(previewStatus).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('需要处理')).toBeInTheDocument();
+    expect(screen.getByText(/仅保留默认模型/)).toBeInTheDocument();
+    expect(screen.getByText(/错误代码: capability_unsupported/)).toBeInTheDocument();
+    expect(screen.queryByText('Unsupported AGENT_BACKEND: codex_app_server')).not.toBeInTheDocument();
   });
 
   it('ignores a stale draft preview response', async () => {
@@ -94,7 +102,6 @@ describe('AgentBackendStatusPanel', () => {
     previewStatus.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const { rerender, props } = renderPanel({
       items: [{ key: 'AGENT_BACKEND', value: 'codex_app_server' }],
-      selectedBackend: 'codex_app_server',
     });
     await waitFor(() => expect(previewStatus).toHaveBeenCalledTimes(1));
 
@@ -102,7 +109,6 @@ describe('AgentBackendStatusPanel', () => {
       <AgentBackendStatusPanel
         {...props}
         items={[{ key: 'AGENT_BACKEND', value: 'litellm' }]}
-        selectedBackend="litellm"
       />,
     );
     await waitFor(() => expect(previewStatus).toHaveBeenCalledTimes(2));
@@ -113,29 +119,10 @@ describe('AgentBackendStatusPanel', () => {
     expect(await screen.findByText('默认模型')).toBeInTheDocument();
 
     await act(async () => {
-      first.resolve(codexStatus);
+      first.resolve(unsupportedStatus);
       await first.promise;
     });
-    expect(screen.queryByText('Codex Agent')).not.toBeInTheDocument();
-  });
-
-  it('shows the Codex multi-agent conflict without making a status request', async () => {
-    const onUseSingleAgent = vi.fn();
-    renderPanel({
-      items: [
-        { key: 'AGENT_BACKEND', value: 'codex_app_server' },
-        { key: 'AGENT_ARCH', value: 'multi' },
-      ],
-      selectedBackend: 'codex_app_server',
-      agentArch: 'multi',
-      onUseSingleAgent,
-    });
-
-    expect(screen.getByRole('button', { name: '刷新状态' })).toBeDisabled();
-    expect(getStatus).not.toHaveBeenCalled();
-    expect(previewStatus).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '切换为单 Agent' }));
-    expect(onUseSingleAgent).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('需要处理')).not.toBeInTheDocument();
   });
 
   it('explains disabled Agent mode and only updates the draft on action', async () => {

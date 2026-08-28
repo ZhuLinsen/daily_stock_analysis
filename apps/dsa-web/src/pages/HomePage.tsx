@@ -7,13 +7,14 @@ import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import { historyApi } from '../api/history';
 import { agentApi, type SkillInfo } from '../api/agent';
 import { systemConfigApi } from '../api/systemConfig';
-import { ApiErrorAlert, Button, Drawer, EmptyState, InlineAlert } from '../components/common';
+import { ApiErrorAlert, Button, Drawer, EmptyState, InlineAlert, StatusDot } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { StockHistoryTrendDrawer } from '../components/history';
 import { ReportMarkdownDrawer } from '../components/report/ReportMarkdownDrawer';
 import { MarketReviewReportView } from '../components/report/MarketReviewReportView';
 import { MarketReviewRegionSelector } from '../components/market-review/MarketReviewRegionSelector';
+import { CurrentMarketStatusBar } from '../components/market-status/CurrentMarketStatusBar';
 import { ReportSummary } from '../components/report/ReportSummary';
 import { RunFlowPanel } from '../components/run-flow';
 import { TaskPanel } from '../components/tasks';
@@ -258,6 +259,7 @@ const HomePage: React.FC = () => {
   const [analysisSkills, setAnalysisSkills] = useState<SkillInfo[]>([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState('');
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
+  const [recentSubmissionTaskId, setRecentSubmissionTaskId] = useState<string | null>(null);
   const [runFlowDrawer, setRunFlowDrawer] = useState<RunFlowDrawerState>({ open: false });
   const [duplicateBannerVisible, setDuplicateBannerVisible] = useState(false);
   const [sidebarWorkspaceTab, setSidebarWorkspaceTab] = useState<HomeWorkspaceTab>('history');
@@ -589,6 +591,7 @@ const HomePage: React.FC = () => {
     }
   }, [closeStrategyMenu, focusStrategyItem, strategyOptions.length]);
   const setupNeedsAction = setupStatus ? !setupStatus.isComplete : false;
+  const isSetupBlockingAnalysis = setupStatus !== null && !setupStatus.readyForSmoke;
   const setupMissingLabels = useMemo(() => {
     if (!setupStatus) {
       return '';
@@ -831,15 +834,22 @@ const HomePage: React.FC = () => {
       selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
       analysisSkills?: string[],
     ) => {
+      if (isSetupBlockingAnalysis) {
+        return;
+      }
       void submitAnalysis({
         stockCode,
         stockName,
         originalQuery: query,
         selectionSource: selectionSource ?? 'manual',
         skills: analysisSkills ?? selectedAnalysisSkills,
+      }).then((acceptedTask) => {
+        if (acceptedTask) {
+          setRecentSubmissionTaskId(acceptedTask.taskId);
+        }
       });
     },
-    [query, selectedAnalysisSkills, submitAnalysis],
+    [isSetupBlockingAnalysis, query, selectedAnalysisSkills, submitAnalysis],
   );
 
   useEffect(() => {
@@ -868,7 +878,7 @@ const HomePage: React.FC = () => {
   }, [navigate, selectedReport]);
 
   const handleReanalyze = useCallback(() => {
-    if (!selectedReport || selectedReport.meta.reportType === 'market_review') {
+    if (isSetupBlockingAnalysis || !selectedReport || selectedReport.meta.reportType === 'market_review') {
       return;
     }
 
@@ -880,7 +890,7 @@ const HomePage: React.FC = () => {
       forceRefresh: true,
       skills: selectedAnalysisSkills,
     });
-  }, [selectedAnalysisSkills, selectedReport, submitAnalysis]);
+  }, [isSetupBlockingAnalysis, selectedAnalysisSkills, selectedReport, submitAnalysis]);
 
   const openTaskRunFlow = useCallback((task: TaskInfo) => {
     const stock = task.stockName || task.stockCode || task.taskId;
@@ -890,6 +900,11 @@ const HomePage: React.FC = () => {
       title: t('runFlow.taskDrawerTitle', { stock }),
     });
   }, [t]);
+
+  const recentSubmissionTask = useMemo(
+    () => activeTasks.find((task) => task.taskId === recentSubmissionTaskId) ?? null,
+    [activeTasks, recentSubmissionTaskId],
+  );
 
   const openHistoryRunFlow = useCallback((recordId: number) => {
     const meta = selectedReport?.meta.id === recordId ? selectedReport.meta : null;
@@ -1026,6 +1041,9 @@ const HomePage: React.FC = () => {
   );
 
   const handleTriggerMarketReview = useCallback(async () => {
+    if (isSetupBlockingAnalysis) {
+      return;
+    }
     setIsSubmittingMarketReview(true);
     setMarketReviewNotice(null);
     setMarketReviewError(null);
@@ -1057,7 +1075,7 @@ const HomePage: React.FC = () => {
     } finally {
       setIsSubmittingMarketReview(false);
     }
-  }, [marketReviewRegionOverride, notify, pollMarketReviewStatus, scrollMarketReviewFeedbackIntoView, t]);
+  }, [isSetupBlockingAnalysis, marketReviewRegionOverride, notify, pollMarketReviewStatus, scrollMarketReviewFeedbackIntoView, t]);
 
   const todayDateKey = getTodayInShanghai();
   useEffect(() => {
@@ -1213,6 +1231,14 @@ const HomePage: React.FC = () => {
   }, [todayDateKey, todayHistoryItems]);
 
   const handleAnalyzeWatchlist = useCallback(async (mode: WatchlistAnalyzeMode) => {
+    if (isSetupBlockingAnalysis) {
+      setBatchAnalyzeStatus({
+        variant: 'warning',
+        message: t('home.setupMissingGeneric'),
+      });
+      return;
+    }
+
     if (mode === 'pending' && watchlistTodayStatusBlocked) {
       setBatchAnalyzeStatus({
         variant: 'warning',
@@ -1320,6 +1346,7 @@ const HomePage: React.FC = () => {
       setIsBatchAnalyzingWatchlist(false);
     }
   }, [
+    isSetupBlockingAnalysis,
     notify,
     pendingWatchlistCodes,
     refreshActiveTasks,
@@ -1376,6 +1403,7 @@ const HomePage: React.FC = () => {
           onRemoveFromWatchlist={watchlistState.removeFromWatchlist}
           onRefreshWatchlist={handleRefreshWatchlist}
           onAnalyzeWatchlist={handleAnalyzeWatchlist}
+          analysisDisabled={isSetupBlockingAnalysis}
           isBatchAnalyzing={isBatchAnalyzingWatchlist}
           batchStatus={batchAnalyzeStatus}
           todayItems={todayAnalysisItems}
@@ -1403,6 +1431,7 @@ const HomePage: React.FC = () => {
       handleTaskPanelCollapsedChange,
       isBatchAnalyzingWatchlist,
       isDeletingStock,
+      isSetupBlockingAnalysis,
       isLoadingStockBar,
       isLoadingTodayAnalysisItems,
       isTaskPanelCollapsed,
@@ -1426,15 +1455,15 @@ const HomePage: React.FC = () => {
   return (
     <div
       data-testid="home-dashboard"
-      className="flex h-[calc(100vh-5rem)] w-full flex-col overflow-hidden md:flex-row sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]"
+      className="home-dashboard-shell flex h-[calc(100vh-5rem)] w-full flex-col overflow-hidden md:flex-row sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]"
     >
-      <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full lg:max-w-6xl mx-auto w-full">
-        <header className="relative z-30 flex min-w-0 flex-shrink-0 items-center overflow-visible px-3 py-3 md:px-4 md:py-4">
-          <div className="flex min-w-0 flex-1 flex-col gap-2.5 md:flex-row md:items-center">
-            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col lg:max-w-[1480px]">
+        <header className="home-command-center relative z-30 mx-2 mt-2 flex min-w-0 flex-shrink-0 items-center overflow-visible rounded-xl p-2 md:mx-0 md:mt-0 md:p-2.5">
+          <div className="flex min-w-0 flex-1 flex-col gap-2 md:flex-row md:items-center">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <button
                 onClick={() => setSidebarOpen(true)}
-                className="md:hidden -ml-1 flex-shrink-0 rounded-lg p-1.5 text-secondary-text transition-colors hover:bg-hover hover:text-foreground"
+                className="-ml-1 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg text-secondary-text transition-colors hover:bg-hover hover:text-foreground md:hidden"
                 aria-label={t('home.historyButton')}
               >
                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1449,7 +1478,7 @@ const HomePage: React.FC = () => {
                     handleSubmitAnalysis(stockCode, stockName, selectionSource);
                   }}
                   placeholder={t('home.placeholder')}
-                  disabled={isAnalyzing}
+                  disabled={isAnalyzing || isSetupBlockingAnalysis}
                   className={inputError ? 'border-danger/50' : undefined}
                 />
               </div>
@@ -1464,8 +1493,8 @@ const HomePage: React.FC = () => {
                     aria-controls={strategyMenuOpen ? 'strategy-menu' : undefined}
                     onClick={() => setStrategyMenuOpen((open) => !open)}
                     onKeyDown={handleStrategyButtonKeyDown}
-                    disabled={isAnalyzing}
-                    className="home-surface-button flex h-10 max-w-[8.5rem] items-center gap-1.5 rounded-xl px-3 text-xs text-foreground disabled:cursor-not-allowed disabled:opacity-60 sm:max-w-[11rem]"
+                    disabled={isAnalyzing || isSetupBlockingAnalysis}
+                    className="home-surface-button flex h-10 max-w-[8.5rem] items-center gap-1.5 rounded-lg px-3 text-[13px] text-secondary-text disabled:cursor-not-allowed disabled:opacity-60 sm:max-w-[11rem]"
                   >
                     <SlidersHorizontal className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
                     <span className="truncate">{selectedStrategy?.name || t('home.strategy')}</span>
@@ -1506,13 +1535,16 @@ const HomePage: React.FC = () => {
                 </div>
               ) : null}
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <MarketReviewRegionSelector
                 value={marketReviewRegionOverride}
-                disabled={isSubmittingMarketReview}
+                disabled={isSubmittingMarketReview || isSetupBlockingAnalysis}
                 onChange={setMarketReviewRegionOverride}
               />
-              <label className="flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-subtle bg-surface/60 px-3 text-xs text-secondary-text select-none transition-colors hover:border-subtle-hover hover:text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50">
+              <label
+                className="flex h-10 w-9 flex-shrink-0 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-transparent text-xs text-muted-text select-none transition-colors hover:bg-hover hover:text-foreground has-disabled:cursor-not-allowed has-disabled:opacity-50"
+                title={t('home.notify')}
+              >
                 <input
                   type="checkbox"
                   checked={notify}
@@ -1520,16 +1552,17 @@ const HomePage: React.FC = () => {
                   onChange={(e) => setNotify(e.target.checked)}
                   className="h-3.5 w-3.5 rounded border-border accent-primary"
                 />
-                {t('home.notify')}
+                <span className="sr-only">{t('home.notify')}</span>
               </label>
               <Button
                 type="button"
                 variant="secondary"
                 size="md"
+                disabled={isSubmittingMarketReview || isSetupBlockingAnalysis}
                 isLoading={isSubmittingMarketReview}
                 loadingText={t('home.submitMarketReview')}
                 onClick={() => void handleTriggerMarketReview()}
-                className="h-10 flex-1 whitespace-nowrap md:flex-none"
+                className="h-10 flex-1 whitespace-nowrap rounded-lg px-3 text-[13px] shadow-none md:flex-none"
               >
                 <BarChart3 className="h-4 w-4" aria-hidden="true" />
                 {t('home.marketReview')}
@@ -1537,8 +1570,8 @@ const HomePage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => handleSubmitAnalysis()}
-                disabled={!query || isAnalyzing}
-                className="btn-primary flex h-10 flex-1 items-center justify-center gap-1.5 whitespace-nowrap md:flex-none"
+                disabled={!query || isAnalyzing || isSetupBlockingAnalysis}
+                className="btn-primary flex h-10 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-4 text-[13px] md:flex-none"
               >
                 {isAnalyzing ? (
                   <>
@@ -1556,14 +1589,16 @@ const HomePage: React.FC = () => {
           </div>
         </header>
 
+        <CurrentMarketStatusBar />
+
         {inputError || (duplicateError && duplicateBannerVisible) ? (
-          <div className="px-3 pb-2 md:px-4">
+          <div className="px-3 pt-2 md:px-4">
             {inputError ? (
               <InlineAlert
                 variant="danger"
                 title={t('home.inputInvalid')}
                 message={inputError}
-                className="rounded-xl px-3 py-2 text-xs shadow-none"
+                className="rounded-md px-3 py-2 text-xs shadow-none"
               />
             ) : null}
             {!inputError && duplicateError && duplicateBannerVisible ? (
@@ -1581,14 +1616,14 @@ const HomePage: React.FC = () => {
                     <X className="h-4 w-4" aria-hidden="true" />
                   </button>
                 )}
-                className="rounded-xl px-3 py-2 text-xs shadow-none"
+                className="rounded-md px-3 py-2 text-xs shadow-none"
               />
             ) : null}
           </div>
         ) : null}
 
         {setupNeedsAction ? (
-          <div className="px-3 pb-2 md:px-4">
+          <div className="px-3 pt-2 md:px-4">
             <InlineAlert
               variant="warning"
               title={t('home.setupIncomplete')}
@@ -1607,13 +1642,47 @@ const HomePage: React.FC = () => {
                   {t('home.goSettings')}
                 </Button>
               )}
-              className="rounded-xl px-3 py-2 text-xs shadow-none"
+              className="home-setup-notice rounded-md px-3 py-2 text-xs shadow-none"
             />
           </div>
         ) : null}
 
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-          <div className="hidden min-h-0 w-64 shrink-0 flex-col overflow-hidden pl-4 pb-4 md:flex lg:w-72">
+        {recentSubmissionTask ? (
+          <div className="px-3 pt-2 md:px-4" data-testid="current-analysis-status">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-primary/25 bg-primary/8 px-3 py-2 text-xs">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <StatusDot
+                  tone={recentSubmissionTask.status === 'processing' ? 'info' : 'neutral'}
+                  pulse={recentSubmissionTask.status === 'processing'}
+                  className="h-2 w-2 shrink-0"
+                />
+                <span className="truncate font-medium text-foreground">
+                  {recentSubmissionTask.stockName || recentSubmissionTask.stockCode}
+                </span>
+                <span className="shrink-0 text-secondary-text">
+                  {recentSubmissionTask.status === 'processing'
+                    ? t('taskPanel.processing')
+                    : t('taskPanel.pending')}
+                </span>
+                <span className="min-w-0 truncate text-muted-text">
+                  {recentSubmissionTask.message || recentSubmissionTask.stockCode}
+                </span>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 shrink-0 px-2 text-xs"
+                onClick={() => openTaskRunFlow(recentSubmissionTask)}
+              >
+                {t('runFlow.open')}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="flex min-h-0 flex-1 gap-3 overflow-hidden pt-3">
+          <div className="hidden min-h-0 w-56 shrink-0 flex-col overflow-hidden pb-3 md:flex lg:w-60">
             {sidebarContent}
           </div>
 
@@ -1621,7 +1690,7 @@ const HomePage: React.FC = () => {
             <div className="fixed inset-0 z-40 md:hidden" onClick={() => setSidebarOpen(false)}>
               <div className="page-drawer-overlay absolute inset-0" />
               <div
-                className="dashboard-card absolute bottom-0 left-0 top-0 flex w-72 flex-col overflow-hidden !rounded-none !rounded-r-xl p-3 shadow-2xl"
+                className="dashboard-card !absolute bottom-0 left-0 top-0 flex w-72 flex-col overflow-hidden !rounded-none !rounded-r-xl p-3 shadow-2xl"
                 onClick={(event) => event.stopPropagation()}
               >
                 {sidebarContent}
@@ -1632,7 +1701,7 @@ const HomePage: React.FC = () => {
           <section
             ref={dashboardScrollRef}
             data-testid="home-dashboard-scroll"
-            className="flex-1 min-w-0 min-h-0 overflow-x-auto overflow-y-auto px-3 pb-4 md:px-6 touch-pan-y"
+            className="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto px-3 pb-4 touch-pan-y md:px-0 md:pr-1"
           >
             {marketReviewNotice ? (
               <div className="mb-3">
@@ -1676,8 +1745,8 @@ const HomePage: React.FC = () => {
                 <DashboardStateBlock title={t('home.loadingReport')} loading />
               </div>
             ) : !marketReviewReport && selectedReport ? (
-              <div className={isHistoryTrendOpen ? 'max-w-6xl space-y-4 pb-8' : 'max-w-4xl space-y-4 pb-8'}>
-                <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className={isHistoryTrendOpen ? 'max-w-6xl space-y-2 pb-5' : 'max-w-5xl space-y-2 pb-5'}>
+                <div className="home-report-actions home-report-toolbar glass-card flex min-h-[3.25rem] items-center gap-1 overflow-x-auto px-2.5 py-2 [&>button]:shrink-0 [&>button]:whitespace-nowrap sm:flex-wrap sm:justify-end sm:overflow-visible">
                   {!isMarketReviewHistoryReport ? (
                     <>
                       <Button
@@ -1720,7 +1789,7 @@ const HomePage: React.FC = () => {
                     variant="home-action-ai"
                     size="sm"
                     disabled={selectedReport.meta.id === undefined || isHistoryTrendUnavailable}
-                    className={isHistoryTrendOpen ? 'border-primary/70 bg-primary/15 text-primary shadow-glow-cyan' : undefined}
+                    className={isHistoryTrendOpen ? 'border-primary/70 bg-primary/15 text-primary' : undefined}
                     onClick={() => {
                       if (isHistoryTrendOpen) {
                         closeHistoryTrend();
@@ -1776,11 +1845,16 @@ const HomePage: React.FC = () => {
                 )}
               </div>
             ) : !marketReviewReport ? (
-              <div className="flex h-full items-center justify-center">
+              <div className="flex h-full items-center justify-center py-6">
                 <EmptyState
                   title={t('home.startAnalysisTitle')}
                   description={t('home.startAnalysisDescription')}
-                  className="max-w-xl border-dashed"
+                  className="home-empty-state w-full max-w-2xl border-solid"
+                  action={setupNeedsAction ? (
+                    <Button type="button" variant="secondary" size="sm" onClick={() => navigate('/settings')}>
+                      {t('home.goSettings')}
+                    </Button>
+                  ) : undefined}
                   icon={(
                     <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />

@@ -166,9 +166,9 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertEqual(config.generation_backend, "litellm")
-        self.assertEqual(config.generation_fallback_backend, "litellm")
         self.assertEqual(config.agent_backend, "auto")
-        self.assertEqual(config.agent_generation_backend, "auto")
+        self.assertFalse(hasattr(config, "generation_fallback_backend"))
+        self.assertFalse(hasattr(config, "agent_generation_backend"))
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -189,9 +189,12 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
-    def test_generation_backend_env_accepts_phase2_values(
+    def test_removed_generation_backend_env_is_kept_for_diagnostics(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
+        """Stale local CLI backend envs stay visible on Config for diagnostics
+        instead of being silently dropped, while the removed numeric/agent
+        override envs no longer exist as Config fields at all."""
         with patch.dict(
             os.environ,
             {
@@ -209,35 +212,26 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertEqual(config.generation_backend, "codex_cli")
-        self.assertEqual(config.generation_fallback_backend, "")
-        self.assertEqual(config.generation_backend_timeout_seconds, 300)
-        self.assertEqual(config.generation_backend_max_output_bytes, 1048576)
-        self.assertEqual(config.generation_backend_max_concurrency, 2)
-        self.assertEqual(config.local_cli_backend_max_concurrency, 1)
-        self.assertEqual(config.agent_generation_backend, "codex_cli")
-
-    @patch("src.config.setup_env")
-    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
-    def test_generation_backend_env_clamps_phase2_numeric_maxima(
-        self, _mock_parse_litellm_yaml, _mock_setup_env
-    ):
-        with patch.dict(
-            os.environ,
-            {
-                "STOCK_LIST": "600519",
-                "GENERATION_BACKEND_TIMEOUT_SECONDS": "999999",
-                "GENERATION_BACKEND_MAX_OUTPUT_BYTES": "999999999",
-                "GENERATION_BACKEND_MAX_CONCURRENCY": "999",
-                "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": "999",
-            },
-            clear=True,
+        for removed_field in (
+            "generation_fallback_backend",
+            "generation_backend_timeout_seconds",
+            "generation_backend_max_output_bytes",
+            "generation_backend_max_concurrency",
+            "local_cli_backend_max_concurrency",
+            "agent_generation_backend",
         ):
-            config = Config._load_from_env()
+            self.assertFalse(hasattr(config, removed_field), removed_field)
 
-        self.assertEqual(config.generation_backend_timeout_seconds, 3600)
-        self.assertEqual(config.generation_backend_max_output_bytes, 33554432)
-        self.assertEqual(config.generation_backend_max_concurrency, 16)
-        self.assertEqual(config.local_cli_backend_max_concurrency, 4)
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(
+                issue.severity == "error"
+                and issue.field == "GENERATION_BACKEND"
+                and "litellm" in issue.message
+                for issue in issues
+            ),
+            issues,
+        )
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

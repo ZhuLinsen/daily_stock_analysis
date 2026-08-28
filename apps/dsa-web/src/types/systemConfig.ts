@@ -108,7 +108,7 @@ export type GenerationBackendSmokeMode = 'text' | 'json';
 
 export interface GenerationBackendStatus {
   backendId: string;
-  backendType: 'litellm' | 'local_cli';
+  backendType: 'litellm';
   providerId: string;
   available: boolean;
   healthStatus: GenerationBackendHealthStatus;
@@ -164,7 +164,7 @@ export interface TestGenerationBackendResponse {
 }
 
 export interface AgentBackendStatusResponse {
-  backend: 'litellm' | 'codex_app_server' | string;
+  backend: 'litellm' | 'auto' | string;
   available: boolean;
   experimental: boolean;
   version?: string | null;

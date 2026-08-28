@@ -184,7 +184,10 @@ def test_macos_signature_audit_normalizes_invalid_signatures(tmp_path: Path) -> 
         env=os.environ.copy(),
         check=False,
         capture_output=True,
-        text=True,
+        # On Windows the bash wrapper may be WSL bash, whose startup warnings
+        # are UTF-16LE; never let stream decoding crash the assertions.
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert result.returncode == 0, result.stderr
@@ -216,7 +219,10 @@ def test_macos_signature_audit_rejects_invalid_signatures(tmp_path: Path) -> Non
         env=os.environ.copy(),
         check=False,
         capture_output=True,
-        text=True,
+        # On Windows the bash wrapper may be WSL bash, whose startup warnings
+        # are UTF-16LE; never let stream decoding crash the assertions.
+        encoding="utf-8",
+        errors="replace",
     )
 
     assert result.returncode != 0

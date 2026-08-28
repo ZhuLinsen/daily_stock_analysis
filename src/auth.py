@@ -12,6 +12,7 @@ import base64
 import getpass
 import hashlib
 import hmac
+import ipaddress
 import logging
 import os
 import secrets
@@ -25,17 +26,23 @@ from dotenv import dotenv_values
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "dsa_session"
-PBKDF2_ITERATIONS = 100_000
+LEGACY_PBKDF2_ITERATIONS = 100_000
+PBKDF2_ITERATIONS = 600_000
+PASSWORD_HASH_VERSION = "v2"
+PASSWORD_HASH_SCHEME = "pbkdf2_sha256"
 RATE_LIMIT_WINDOW_SEC = 300
 RATE_LIMIT_MAX_FAILURES = 5
 SESSION_MAX_AGE_HOURS_DEFAULT = 24
-MIN_PASSWORD_LEN = 6
+MIN_PASSWORD_LEN = 10
+DOCKER_PUBLISHED_HOST_BIND_IP_ENV = "DSA_DOCKER_PUBLISHED_HOST_BIND_IP"
 
 # Lazy-loaded state
 _auth_enabled: Optional[bool] = None
 _session_secret: Optional[bytes] = None
 _password_hash_salt: Optional[bytes] = None
 _password_hash_stored: Optional[bytes] = None
+_password_hash_iterations: Optional[int] = None
+_password_hash_needs_upgrade: bool = False
 _rate_limit: dict[str, Tuple[int, float]] = {}
 _rate_limit_lock = None
 
@@ -134,11 +141,58 @@ def _load_session_secret() -> Optional[bytes]:
         return None
 
 
-def _parse_password_hash(value: str) -> Optional[Tuple[bytes, bytes]]:
-    """Parse salt_b64:hash_b64. Returns (salt, hash) or None."""
-    if not value or ":" not in value:
+def _derive_password_hash(password: str, salt: bytes, iterations: int) -> bytes:
+    """Derive a PBKDF2-SHA256 hash for the submitted password."""
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt=salt,
+        iterations=iterations,
+    )
+
+
+def _serialize_password_hash(salt: bytes, stored_hash: bytes, iterations: int = PBKDF2_ITERATIONS) -> str:
+    """Serialize a versioned password hash record."""
+    salt_b64 = base64.standard_b64encode(salt).decode("ascii")
+    hash_b64 = base64.standard_b64encode(stored_hash).decode("ascii")
+    return f"{PASSWORD_HASH_VERSION}${PASSWORD_HASH_SCHEME}${iterations}${salt_b64}${hash_b64}"
+
+
+def _build_password_hash(password: str, iterations: int = PBKDF2_ITERATIONS) -> Tuple[bytes, bytes, str]:
+    """Create salt, digest, and serialized content for a password."""
+    salt = secrets.token_bytes(32)
+    derived = _derive_password_hash(password, salt=salt, iterations=iterations)
+    return salt, derived, _serialize_password_hash(salt, derived, iterations=iterations)
+
+
+def _parse_password_hash(value: str) -> Optional[Tuple[bytes, bytes, int, bool]]:
+    """Parse password hash content. Returns (salt, hash, iterations, needs_upgrade)."""
+    if not value:
         return None
-    parts = value.strip().split(":", 1)
+    raw = value.strip()
+    if not raw:
+        return None
+
+    if raw.startswith(f"{PASSWORD_HASH_VERSION}$"):
+        parts = raw.split("$")
+        if len(parts) != 5:
+            return None
+        _, scheme, iterations_text, salt_b64, hash_b64 = parts
+        if scheme != PASSWORD_HASH_SCHEME:
+            return None
+        try:
+            iterations = int(iterations_text)
+            salt = base64.standard_b64decode(salt_b64)
+            stored_hash = base64.standard_b64decode(hash_b64)
+        except (ValueError, TypeError):
+            return None
+        if iterations <= 0 or not salt or not stored_hash:
+            return None
+        return salt, stored_hash, iterations, iterations < PBKDF2_ITERATIONS
+
+    if ":" not in raw:
+        return None
+    parts = raw.split(":", 1)
     if len(parts) != 2:
         return None
     try:
@@ -146,31 +200,28 @@ def _parse_password_hash(value: str) -> Optional[Tuple[bytes, bytes]]:
         salt = base64.standard_b64decode(salt_b64)
         stored_hash = base64.standard_b64decode(hash_b64)
         if salt and stored_hash:
-            return (salt, stored_hash)
+            return (salt, stored_hash, LEGACY_PBKDF2_ITERATIONS, True)
     except (ValueError, TypeError):
         pass
     return None
 
 
-def _verify_password_hash(submitted: str, salt: bytes, stored_hash: bytes) -> bool:
+def _verify_password_hash(submitted: str, salt: bytes, stored_hash: bytes, iterations: int) -> bool:
     """Verify submitted password against stored pbkdf2 hash."""
-    computed = hashlib.pbkdf2_hmac(
-        "sha256",
-        submitted.encode("utf-8"),
-        salt=salt,
-        iterations=PBKDF2_ITERATIONS,
-    )
+    computed = _derive_password_hash(submitted, salt=salt, iterations=iterations)
     return hmac.compare_digest(computed, stored_hash)
 
 
 def _load_credential_from_file() -> bool:
     """Load credential from file into module globals. Returns True if loaded."""
-    global _password_hash_salt, _password_hash_stored
+    global _password_hash_salt, _password_hash_stored, _password_hash_iterations, _password_hash_needs_upgrade
 
     path = _get_credential_path()
     if not path.exists():
         _password_hash_salt = None
         _password_hash_stored = None
+        _password_hash_iterations = None
+        _password_hash_needs_upgrade = False
         return False
 
     try:
@@ -178,8 +229,12 @@ def _load_credential_from_file() -> bool:
         parsed = _parse_password_hash(raw)
         if parsed is None:
             logger.warning("Invalid .admin_password_hash format, ignoring")
+            _password_hash_salt = None
+            _password_hash_stored = None
+            _password_hash_iterations = None
+            _password_hash_needs_upgrade = False
             return False
-        _password_hash_salt, _password_hash_stored = parsed
+        _password_hash_salt, _password_hash_stored, _password_hash_iterations, _password_hash_needs_upgrade = parsed
         return True
     except OSError as e:
         logger.error("Failed to read credential file: %s", e)
@@ -188,9 +243,11 @@ def _load_credential_from_file() -> bool:
 
 def refresh_auth_state() -> None:
     """Reload auth-related state from disk and env."""
-    global _auth_enabled, _session_secret
+    global _auth_enabled, _session_secret, _password_hash_iterations, _password_hash_needs_upgrade
     _auth_enabled = None
     _session_secret = None
+    _password_hash_iterations = None
+    _password_hash_needs_upgrade = False
     _load_credential_from_file()
 
 
@@ -208,11 +265,45 @@ def has_stored_password() -> bool:
     return _load_credential_from_file()
 
 
+def _write_credential_content(content: str) -> Optional[str]:
+    """Atomically write the credential file and refresh in-memory state."""
+    data_dir = _get_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    cred_path = _get_credential_path()
+    try:
+        tmp_path = cred_path.with_suffix(".tmp")
+        tmp_path.write_text(content)
+        tmp_path.chmod(0o600)
+        tmp_path.replace(cred_path)
+        _load_credential_from_file()
+        return None
+    except OSError as e:
+        logger.error("Failed to write credential file: %s", e)
+        return "密码保存失败"
+
+
+def _store_password_hash(password: str, iterations: int = PBKDF2_ITERATIONS) -> Optional[str]:
+    """Create and persist a credential hash for the given password."""
+    _, _, content = _build_password_hash(password, iterations=iterations)
+    return _write_credential_content(content)
+
+
 def verify_stored_password(password: str) -> bool:
     """Verify password against stored credential even when auth is disabled."""
     if not has_stored_password():
         return False
-    return _verify_password_hash(password, _password_hash_salt, _password_hash_stored)
+    if not _verify_password_hash(
+        password,
+        _password_hash_salt,
+        _password_hash_stored,
+        _password_hash_iterations or LEGACY_PBKDF2_ITERATIONS,
+    ):
+        return False
+    if _password_hash_needs_upgrade:
+        err = _store_password_hash(password)
+        if err:
+            logger.warning("Failed to upgrade admin password hash after successful login")
+    return True
 
 
 def is_password_set() -> bool:
@@ -251,32 +342,7 @@ def set_initial_password(password: str) -> Optional[str]:
     err = _validate_password(password)
     if err:
         return err
-
-    data_dir = _get_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    cred_path = _get_credential_path()
-
-    salt = secrets.token_bytes(32)
-    derived = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt=salt,
-        iterations=PBKDF2_ITERATIONS,
-    )
-    salt_b64 = base64.standard_b64encode(salt).decode("ascii")
-    hash_b64 = base64.standard_b64encode(derived).decode("ascii")
-    content = f"{salt_b64}:{hash_b64}"
-
-    try:
-        tmp_path = cred_path.with_suffix(".tmp")
-        tmp_path.write_text(content)
-        tmp_path.chmod(0o600)
-        tmp_path.replace(cred_path)
-        _load_credential_from_file()
-        return None
-    except OSError as e:
-        logger.error("Failed to write credential file: %s", e)
-        return "密码保存失败"
+    return _store_password_hash(password)
 
 
 def verify_password(password: str) -> bool:
@@ -297,36 +363,13 @@ def change_password(current: str, new: str) -> Optional[str]:
 
     if not current or not current.strip():
         return "请输入当前密码"
-    if not _verify_password_hash(current, _password_hash_salt, _password_hash_stored):
+    if not verify_stored_password(current):
         return "当前密码错误"
 
     err = _validate_password(new)
     if err:
         return err
-
-    cred_path = _get_credential_path()
-    salt = secrets.token_bytes(32)
-    derived = hashlib.pbkdf2_hmac(
-        "sha256",
-        new.encode("utf-8"),
-        salt=salt,
-        iterations=PBKDF2_ITERATIONS,
-    )
-    salt_b64 = base64.standard_b64encode(salt).decode("ascii")
-    hash_b64 = base64.standard_b64encode(derived).decode("ascii")
-    content = f"{salt_b64}:{hash_b64}"
-
-    try:
-        tmp_path = cred_path.with_suffix(".tmp")
-        tmp_path.write_text(content)
-        tmp_path.chmod(0o600)
-        tmp_path.replace(cred_path)
-        # Reload into memory so subsequent verify_password uses new hash
-        _load_credential_from_file()
-        return None
-    except OSError as e:
-        logger.error("Failed to write credential file: %s", e)
-        return "密码保存失败"
+    return _store_password_hash(new)
 
 
 def create_session() -> str:
@@ -384,6 +427,51 @@ def get_client_ip(request) -> str:
     return "127.0.0.1"
 
 
+def is_loopback_ip(value: str) -> bool:
+    """Return True when ``value`` identifies a loopback host."""
+    host = (value or "").strip()
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if getattr(address, "ipv4_mapped", None):
+        address = address.ipv4_mapped
+    return address.is_loopback
+
+
+def _is_private_or_loopback_ip(value: str) -> bool:
+    """Return True for local/private container-bridge source addresses."""
+    host = (value or "").strip()
+    if not host:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if getattr(address, "ipv4_mapped", None):
+        address = address.ipv4_mapped
+    return address.is_loopback or address.is_private
+
+
+def _is_compose_loopback_forwarded_request(request) -> bool:
+    """Allow Docker bridge requests only when Compose published the host port to loopback."""
+    published_bind_ip = os.getenv(DOCKER_PUBLISHED_HOST_BIND_IP_ENV, "")
+    if not is_loopback_ip(published_bind_ip):
+        return False
+    if not request.client:
+        return False
+    return _is_private_or_loopback_ip(request.client.host or "")
+
+
+def is_loopback_request(request) -> bool:
+    """Return True for direct loopback or Docker bridge traffic published only on host loopback."""
+    return is_loopback_ip(get_client_ip(request)) or _is_compose_loopback_forwarded_request(request)
+
+
 def check_rate_limit(ip: str) -> bool:
     """Return True if under limit, False if rate limited."""
     lock = _get_lock()
@@ -431,32 +519,7 @@ def overwrite_password(new_password: str) -> Optional[str]:
     err = _validate_password(new_password)
     if err:
         return err
-
-    data_dir = _get_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    cred_path = _get_credential_path()
-
-    salt = secrets.token_bytes(32)
-    derived = hashlib.pbkdf2_hmac(
-        "sha256",
-        new_password.encode("utf-8"),
-        salt=salt,
-        iterations=PBKDF2_ITERATIONS,
-    )
-    salt_b64 = base64.standard_b64encode(salt).decode("ascii")
-    hash_b64 = base64.standard_b64encode(derived).decode("ascii")
-    content = f"{salt_b64}:{hash_b64}"
-
-    try:
-        tmp_path = cred_path.with_suffix(".tmp")
-        tmp_path.write_text(content)
-        tmp_path.chmod(0o600)
-        tmp_path.replace(cred_path)
-        _load_credential_from_file()
-        return None
-    except OSError as e:
-        logger.error("Failed to write credential file: %s", e)
-        return "密码保存失败"
+    return _store_password_hash(new_password)
 
 
 def reset_password_cli() -> int:

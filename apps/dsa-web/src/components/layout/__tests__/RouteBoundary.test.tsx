@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { RouteOutletBoundary } from '../RouteBoundary';
 import { Shell } from '../Shell';
+import { attemptRouteChunkRecovery } from '../routeChunkRecovery';
 
 vi.mock('../../../contexts/AuthContext', () => ({
   useAuth: () => ({
@@ -24,6 +25,31 @@ vi.mock('../../../stores/agentChatStore', () => {
 });
 
 describe('RouteOutletBoundary', () => {
+  it('reloads once for a stale lazy-route chunk and suppresses a reload loop', () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    const reload = vi.fn();
+    const error = new TypeError(
+      'Failed to fetch dynamically imported module: http://127.0.0.1:8000/assets/ChatPage-old.js',
+    );
+
+    expect(attemptRouteChunkRecovery(error, { storage, reload })).toBe(true);
+    expect(attemptRouteChunkRecovery(error, { storage, reload })).toBe(false);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reload for ordinary render errors', () => {
+    const reload = vi.fn();
+    expect(attemptRouteChunkRecovery(new Error('render failed'), {
+      storage: { getItem: () => null, setItem: vi.fn() },
+      reload,
+    })).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it('catches rejected lazy route imports inside the shell and resets on navigation', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const BrokenLazyRoute = lazy(() => (

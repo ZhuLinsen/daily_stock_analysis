@@ -89,7 +89,6 @@ class AgentChatExecutor:
             skill_instructions=self.skill_instructions,
             default_skill_policy=self.default_skill_policy,
             use_legacy_default_prompt=self.use_legacy_default_prompt,
-            use_codex_prompt=self.backend.backend_id == "codex_app_server",
             include_provider_trace=not self.backend.runtime_owns_loop,
             strict_initial_stock_scope=self.backend.runtime_owns_loop,
         )

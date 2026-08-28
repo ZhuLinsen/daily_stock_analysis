@@ -589,23 +589,22 @@ describe('SettingsField', () => {
     expect(dialog).not.toHaveTextContent('GENERATION_BACKEND');
     expect(dialog).not.toHaveTextContent('配置样例');
     expect(dialog).not.toHaveTextContent('Phase 1');
-    expect(dialog).toHaveTextContent('本机已安装并登录对应 CLI');
+    expect(dialog).toHaveTextContent('本地 CLI 生成方式已移除');
     expect(dialog).toHaveTextContent('默认模型配置会继续使用现有 API Key');
     expect(dialog).not.toHaveTextContent('高级说明');
-    expect(dialog).not.toHaveTextContent('LiteLLM');
   });
 
   it('describes agent auto generation without exposing implementation labels as the primary UI copy', () => {
     render(
       <SettingsField
         item={{
-          key: 'AGENT_GENERATION_BACKEND',
+          key: 'AGENT_BACKEND',
           value: 'auto',
           rawValueExists: true,
           isMasked: false,
           schema: {
-            key: 'AGENT_GENERATION_BACKEND',
-            title: 'Agent Generation Backend',
+            key: 'AGENT_BACKEND',
+            title: 'Agent Backend',
             category: 'agent',
             dataType: 'string',
             uiControl: 'select',
@@ -618,7 +617,7 @@ describe('SettingsField', () => {
             ],
             validation: { enum: ['auto', 'litellm'] },
             displayOrder: 1,
-            helpKey: 'settings.agent.AGENT_GENERATION_BACKEND',
+            helpKey: 'settings.agent.AGENT_BACKEND',
             examples: [],
             warningCodes: [],
           },
@@ -631,11 +630,10 @@ describe('SettingsField', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看 问股生成方式 配置说明' }));
 
     const dialog = screen.getByRole('dialog', { name: '问股生成方式' });
-    expect(dialog).toHaveTextContent('系统会选择当前可用的方式');
-    expect(dialog).toHaveTextContent('如果不确定，选择“自动”即可');
-    expect(dialog).toHaveTextContent('这项设置只影响问股助手');
+    expect(dialog).toHaveTextContent('自动（推荐）');
+    expect(dialog).toHaveTextContent('唯一的集成路径');
+    expect(dialog).toHaveTextContent('只影响问股 Chat');
     expect(dialog).not.toHaveTextContent('高级说明');
-    expect(dialog).not.toHaveTextContent('LiteLLM');
     expect(dialog).not.toHaveTextContent('优先选择当前可用');
   });
 

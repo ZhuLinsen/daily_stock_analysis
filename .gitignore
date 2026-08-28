@@ -89,3 +89,8 @@ static/
 /apps/dsa-desktop/node_modules/
 /node_modules/
 docs/specs/
+
+# AI agent tool runtime state
+.omx/
+.playwright-mcp/
+.zcode/

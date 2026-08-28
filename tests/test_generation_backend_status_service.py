@@ -20,7 +20,7 @@ class _FailingBackend:
             stage="smoke_validation",
             retryable=False,
             fallbackable=False,
-            backend="codex_cli",
+            backend="litellm",
             details={"reason": "invalid_json"},
         )
 
@@ -61,46 +61,30 @@ class _CapturingAnalyzer:
 def _litellm_effective_map(api_key: str = "sk-secret-value") -> dict:
     return {
         "GENERATION_BACKEND": "litellm",
-        "GENERATION_FALLBACK_BACKEND": "",
         "LITELLM_MODEL": "openai/gpt-5.5",
         "OPENAI_API_KEY": api_key,
     }
 
 
-def test_local_cli_missing_executable_reports_current_config_error() -> None:
+def test_removed_local_cli_backend_reports_structured_failed_status() -> None:
     service = GenerationBackendStatusService(
         effective_map={
             "GENERATION_BACKEND": "codex_cli",
-            "GENERATION_FALLBACK_BACKEND": "",
-        }
-    )
-
-    with patch("src.llm.local_cli_backend.shutil.which", return_value=None):
-        payload = service.get_status()
-
-    primary = payload["primary"]
-    assert primary["backend_id"] == "codex_cli"
-    assert primary["available"] is False
-    assert primary["health_status"] == "failed"
-    assert primary["last_error_code"] == "command_not_found"
-    assert primary["supports_tools"] is False
-
-
-def test_local_cli_invalid_numeric_config_reports_unsafe_config() -> None:
-    service = GenerationBackendStatusService(
-        effective_map={
-            "GENERATION_BACKEND": "codex_cli",
-            "GENERATION_FALLBACK_BACKEND": "",
-            "GENERATION_BACKEND_TIMEOUT_SECONDS": "not-int",
         }
     )
 
     payload = service.get_status()
 
+    assert payload["primary_backend_id"] == "codex_cli"
+    assert payload["fallback_backend_id"] is None
+    assert payload["fallback"] is None
+    assert len(payload["backends"]) == 1
     primary = payload["primary"]
+    assert primary["backend_id"] == "codex_cli"
     assert primary["available"] is False
     assert primary["health_status"] == "failed"
-    assert primary["last_error_code"] == "unsafe_config"
+    assert primary["last_error_code"] == "backend_not_configured"
+    assert primary["supports_tools"] is False
 
 
 def test_litellm_ignores_local_cli_only_numeric_config() -> None:
@@ -121,44 +105,47 @@ def test_litellm_ignores_local_cli_only_numeric_config() -> None:
     assert payload["primary"]["last_error_code"] is None
 
 
-def test_local_cli_smoke_failure_keeps_available_true_when_cheap_check_passes() -> None:
+def test_smoke_failure_keeps_available_true_when_cheap_check_passes() -> None:
     service = GenerationBackendStatusService(
-        effective_map={
-            "GENERATION_BACKEND": "codex_cli",
-            "GENERATION_FALLBACK_BACKEND": "",
-        },
+        effective_map=_litellm_effective_map(),
         analyzer_factory=lambda config: _FakeAnalyzer(config),
     )
 
-    with patch("src.llm.local_cli_backend.shutil.which", return_value="/usr/bin/codex"), \
-         patch("src.llm.local_cli_backend.os.access", return_value=True):
-        payload = service.smoke_test(backend_id="codex_cli", mode="json")
+    payload = service.smoke_test(backend_id="litellm", mode="json")
 
     status = payload["status"]
     assert payload["success"] is False
+    assert status["backend_id"] == "litellm"
     assert status["available"] is True
     assert status["health_status"] == "failed"
     assert status["last_error_code"] == "invalid_json"
-    assert status["supports_tools"] is False
+    assert status["supports_tools"] is True
 
 
-def test_smoke_timeout_overrides_config_timeout_for_local_cli() -> None:
-    _CapturingAnalyzer.configs = []
+def test_smoke_on_removed_backend_returns_structured_failure_without_smoke_call() -> None:
+    analyzer_calls = []
+
+    def _analyzer(config):
+        analyzer_calls.append(config)
+        raise AssertionError("analyzer must not be constructed for removed backends")
+
     service = GenerationBackendStatusService(
         effective_map={
             "GENERATION_BACKEND": "codex_cli",
-            "GENERATION_FALLBACK_BACKEND": "",
-            "GENERATION_BACKEND_TIMEOUT_SECONDS": "300",
         },
-        analyzer_factory=lambda config: _CapturingAnalyzer(config),
+        analyzer_factory=_analyzer,
     )
 
-    with patch("src.llm.local_cli_backend.shutil.which", return_value="/usr/bin/codex"), \
-         patch("src.llm.local_cli_backend.os.access", return_value=True):
-        payload = service.smoke_test(backend_id="codex_cli", mode="json", timeout_seconds=1)
+    payload = service.smoke_test(backend_id="codex_cli", mode="json")
 
-    assert payload["success"] is True
-    assert _CapturingAnalyzer.configs[-1].generation_backend_timeout_seconds == 1
+    assert payload["success"] is False
+    assert payload["mode"] == "json"
+    assert analyzer_calls == []
+    status = payload["status"]
+    assert status["backend_id"] == "codex_cli"
+    assert status["available"] is False
+    assert status["health_status"] == "failed"
+    assert status["last_error_code"] == "backend_not_configured"
 
 
 def test_litellm_smoke_timeout_reaches_final_completion_dispatch() -> None:
@@ -215,38 +202,40 @@ def test_litellm_smoke_redacts_provider_error_from_response_and_logs(caplog) -> 
 def test_generation_fallback_self_is_noop_not_recursive() -> None:
     service = GenerationBackendStatusService(
         effective_map={
-            "GENERATION_BACKEND": "codex_cli",
-            "GENERATION_FALLBACK_BACKEND": "codex_cli",
+            "GENERATION_BACKEND": "litellm",
+            "GENERATION_FALLBACK_BACKEND": "litellm",
+            "LITELLM_MODEL": "openai/gpt-5.5",
+            "OPENAI_API_KEY": "sk-secret-value",
         }
     )
 
-    with patch("src.llm.local_cli_backend.shutil.which", return_value="/usr/bin/codex"), \
-         patch("src.llm.local_cli_backend.os.access", return_value=True):
-        payload = service.get_status()
+    payload = service.get_status()
 
-    assert payload["primary_backend_id"] == "codex_cli"
+    assert payload["primary_backend_id"] == "litellm"
     assert payload["fallback_backend_id"] is None
     assert payload["fallback"] is None
     assert len(payload["backends"]) == 1
+    assert payload["primary"]["available"] is True
+    assert payload["primary"]["health_status"] == "not_tested"
 
 
 def test_invalid_fallback_does_not_fail_primary() -> None:
     service = GenerationBackendStatusService(
         effective_map={
-            "GENERATION_BACKEND": "codex_cli",
+            "GENERATION_BACKEND": "litellm",
             "GENERATION_FALLBACK_BACKEND": "bad_backend",
+            "LITELLM_MODEL": "openai/gpt-5.5",
+            "OPENAI_API_KEY": "sk-secret-value",
         }
     )
 
-    with patch("src.llm.local_cli_backend.shutil.which", return_value="/usr/bin/codex"), \
-         patch("src.llm.local_cli_backend.os.access", return_value=True):
-        payload = service.get_status()
+    payload = service.get_status()
 
     assert payload["primary"]["available"] is True
     assert payload["primary"]["health_status"] == "not_tested"
-    assert payload["fallback"]["backend_id"] == "bad_backend"
-    assert payload["fallback"]["available"] is False
-    assert payload["fallback"]["health_status"] == "failed"
+    assert payload["fallback_backend_id"] is None
+    assert payload["fallback"] is None
+    assert len(payload["backends"]) == 1
 
 
 def test_litellm_without_model_source_is_not_available() -> None:
@@ -535,10 +524,12 @@ def test_public_effective_config_builder_preserves_smoke_overrides() -> None:
     )
 
     config = service.build_effective_config(
-        backend_id="codex_cli",
+        backend_id="litellm",
         timeout_seconds=17,
     )
 
-    assert config.generation_backend == "codex_cli"
-    assert config.generation_backend_timeout_seconds == 17
+    assert config.generation_backend == "litellm"
     assert config.litellm_model == "openai/gpt-4o-mini"
+    # The legacy per-backend timeout/limit overrides were removed with the
+    # local CLI backends; the parameter stays accepted but never lands on Config.
+    assert not hasattr(config, "generation_backend_timeout_seconds")

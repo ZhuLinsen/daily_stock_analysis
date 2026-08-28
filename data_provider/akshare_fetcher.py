@@ -2239,6 +2239,97 @@ class AkshareFetcher(BaseFetcher):
             logger.warning(f"[Akshare] 获取概念排行失败: {e}")
             return None
 
+    def get_sector_constituents(self, sector_name: str, top_n: int = 5) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取行业板块成份股（按当日涨跌幅取前 N）
+
+        数据源优先级：
+        1. 东财接口 ak.stock_board_industry_cons_em(symbol=板块名称)
+           （连续失败时按熔断窗口跳过，避免部分网络环境下长时间挂起）
+        2. 新浪接口 ak.stock_sector_spot 映射板块名称 -> label，再 ak.stock_sector_detail(sector=label)
+        """
+        import time as _time
+
+        import akshare as ak
+
+        def _safe_float(value: Any) -> Optional[float]:
+            try:
+                if value is None or value == "":
+                    return None
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        # 优先东财接口（按板块名称）；近期失败过则直接走新浪
+        if _time.time() >= getattr(self, '_sector_cons_em_block_until', 0.0):
+            try:
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
+
+                logger.info(f"[API调用] ak.stock_board_industry_cons_em(symbol={sector_name}) 获取板块成份股...")
+                df = ak.stock_board_industry_cons_em(symbol=sector_name)
+                if df is not None and not df.empty and '涨跌幅' in df.columns:
+                    df = df.copy()
+                    df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
+                    df = df.dropna(subset=['涨跌幅'])
+                    top = df.nlargest(top_n, '涨跌幅')
+                    return [
+                        {
+                            'code': str(row.get('代码', '')),
+                            'name': str(row.get('名称', '')),
+                            'change_pct': float(row['涨跌幅']),
+                            'price': _safe_float(row.get('最新价')),
+                        }
+                        for _, row in top.iterrows()
+                    ]
+            except Exception as e:
+                # 熔断 10 分钟：东财不可达时不再反复等待超长重试
+                self._sector_cons_em_block_until = _time.time() + 600.0
+                logger.warning(f"[Akshare] 东财接口获取板块成份股失败（10 分钟内直接走新浪）: {e}")
+
+        # 新浪接口（板块名称 -> label -> 成份股）；板块列表短缓存避免逐板块重复拉取
+        try:
+            label = None
+            cached = getattr(self, '_sector_label_map_cache', None)
+            if cached is not None and _time.time() < cached[0]:
+                label = cached[1].get(sector_name)
+            else:
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
+
+                logger.info("[API调用] ak.stock_sector_spot(indicator='行业') 获取板块列表(新浪)...")
+                spot_df = ak.stock_sector_spot(indicator='行业')
+                if spot_df is not None and not spot_df.empty and '板块' in spot_df.columns and 'label' in spot_df.columns:
+                    label_map = dict(zip(spot_df['板块'].astype(str), spot_df['label'].astype(str)))
+                    self._sector_label_map_cache = (_time.time() + 300.0, label_map)
+                    label = label_map.get(sector_name)
+
+            if not label:
+                logger.warning(f"[Akshare] 新浪板块列表中未找到板块: {sector_name}")
+                return None
+
+            self._enforce_rate_limit()
+            logger.info(f"[API调用] ak.stock_sector_detail(sector={label}) 获取板块成份股(新浪)...")
+            detail_df = ak.stock_sector_detail(sector=label)
+            if detail_df is None or detail_df.empty or 'changepercent' not in detail_df.columns:
+                return None
+            detail_df = detail_df.copy()
+            detail_df['changepercent'] = pd.to_numeric(detail_df['changepercent'], errors='coerce')
+            detail_df = detail_df.dropna(subset=['changepercent'])
+            top = detail_df.nlargest(top_n, 'changepercent')
+            return [
+                {
+                    'code': str(row.get('code', '')),
+                    'name': str(row.get('name', '')),
+                    'change_pct': float(row['changepercent']),
+                    'price': _safe_float(row.get('trade')),
+                }
+                for _, row in top.iterrows()
+            ]
+        except Exception as e:
+            logger.error(f"[Akshare] 新浪接口获取板块成份股也失败: {e}")
+            return None
+
     def get_hot_stocks(self, n: int = 10) -> Optional[List[Dict[str, Any]]]:
         """获取人气股榜，按免配置热榜数据源降级。"""
         import akshare as ak

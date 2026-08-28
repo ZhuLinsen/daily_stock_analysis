@@ -5,7 +5,9 @@ import {
   decisionSignalsApi,
   getDecisionSignalReassessBlockedError,
 } from '../../api/decisionSignals';
+import { analysisApi } from '../../api/analysis';
 import { historyApi } from '../../api/history';
+import { systemConfigApi } from '../../api/systemConfig';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import type { StockBarResponse } from '../../types/analysis';
 import type {
@@ -44,6 +46,19 @@ vi.mock('../../api/decisionSignals', () => ({
 vi.mock('../../api/history', () => ({
   historyApi: {
     getStockBarList: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/analysis', () => ({
+  analysisApi: {
+    analyzeAsync: vi.fn(),
+    getStatus: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/systemConfig', () => ({
+  systemConfigApi: {
+    getWatchlist: vi.fn(),
   },
 }));
 
@@ -1120,6 +1135,31 @@ describe('DecisionSignalsPage', () => {
     });
   });
 
+  it('shows progress and completion feedback while viewing a stock', async () => {
+    const latestRequest = deferredPromise<DecisionSignalListResponse>();
+    const timelineRequest = deferredPromise<DecisionSignalListResponse>();
+    vi.mocked(decisionSignalsApi.getLatest).mockReturnValueOnce(latestRequest.promise);
+    vi.mocked(decisionSignalsApi.list).mockImplementation(async (params) => (
+      params?.stockCode ? timelineRequest.promise : listResponse()
+    ));
+    renderPage();
+
+    submitCurrentStock('600487');
+
+    const loadingButton = await screen.findByRole('button', { name: '正在查询' });
+    expect(loadingButton).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('正在查询 600487 的最新信号和时间线');
+
+    await act(async () => {
+      latestRequest.resolve(listResponse([]));
+      timelineRequest.resolve(listResponse([]));
+      await Promise.all([latestRequest.promise, timelineRequest.promise]);
+    });
+
+    expect(await screen.findByRole('button', { name: '查看股票' })).toBeEnabled();
+    expect(screen.getByRole('status')).toHaveTextContent('查询完成：最新信号 0 条，时间线 0 条');
+  });
+
   it('does not pass market for a history candidate when market cannot be inferred', async () => {
     vi.mocked(historyApi.getStockBarList).mockResolvedValueOnce({
       total: 1,
@@ -1894,4 +1934,70 @@ describe('DecisionSignalsPage', () => {
       expect(decisionSignalsApi.updateStatus).toHaveBeenCalledWith(7, { status });
     });
   });
+
+  it('offers per-stock analysis when the filtered stock has no signals', async () => {
+    vi.mocked(decisionSignalsApi.list).mockResolvedValue(listResponse([]));
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      accepted: [{ taskId: 'task-87', stockCode: '600487', status: 'pending' as const }],
+      duplicates: [],
+      message: 'ok',
+    });
+    vi.mocked(analysisApi.getStatus).mockResolvedValue({
+      taskId: 'task-87',
+      status: 'completed' as const,
+      progress: 100,
+    });
+
+    renderPage();
+    await screen.findByRole('heading', { name: 'AI 建议' });
+    submitCurrentStock('600487');
+
+    const button = await screen.findByRole('button', { name: '分析 600487，生成它的决策信号' });
+    fireEvent.click(button);
+
+    // 等待完成提示，确保轮询链在本用例内收尾，不泄漏到后续用例
+    await waitFor(
+      () => {
+        expect(screen.getByText('分析完成（1 只），决策信号已生成并展示如下。')).toBeInTheDocument();
+      },
+      { timeout: 12000 },
+    );
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ stockCodes: ['600487'], reportType: 'detailed' }),
+    );
+    expect(systemConfigApi.getWatchlist).not.toHaveBeenCalled();
+  }, 20000);
+
+  it('bootstraps signals from the watchlist when the list is empty', async () => {
+    vi.mocked(decisionSignalsApi.list).mockResolvedValue(listResponse([]));
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['600519']);
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      accepted: [{ taskId: 'task-1', stockCode: '600519', status: 'pending' as const }],
+      duplicates: [],
+      message: 'ok',
+    });
+    vi.mocked(analysisApi.getStatus).mockResolvedValue({
+      taskId: 'task-1',
+      status: 'completed' as const,
+      progress: 100,
+    });
+
+    renderPage();
+
+    const button = await screen.findByRole('button', { name: '一键分析自选股，生成决策信号' });
+    fireEvent.click(button);
+
+    // 轮询间隔 4s：等待一次 tick 后任务完成、列表刷新并展示结果提示
+    await waitFor(
+      () => {
+        expect(screen.getByText('分析完成（1 只），决策信号已生成并展示如下。')).toBeInTheDocument();
+      },
+      { timeout: 12000 },
+    );
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ stockCodes: ['600519'], reportType: 'detailed' }),
+    );
+    expect(analysisApi.getStatus).toHaveBeenCalledWith('task-1');
+    expect(decisionSignalsApi.list).toHaveBeenCalledTimes(2); // 初次 + 完成后自动刷新
+  }, 20000);
 });

@@ -100,7 +100,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
       >
         <TriggerIcon className={iconClassName ?? cn('shrink-0', isRailVariant ? 'h-[18px] w-[18px]' : isNavVariant ? 'h-5 w-5' : 'h-4 w-4')} />
         {isRailVariant ? (
-          <span className={labelClassName}>{t('theme.theme')}</span>
+          collapsed ? null : <span className={labelClassName}>{t('theme.theme')}</span>
         ) : isNavVariant ? (
           collapsed ? null : <span className="truncate text-[1.02rem] font-medium">{t('theme.theme')}</span>
         ) : (

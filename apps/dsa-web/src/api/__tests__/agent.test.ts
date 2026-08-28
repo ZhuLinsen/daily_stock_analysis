@@ -19,12 +19,12 @@ describe('agentApi', () => {
   it('uses the shared camelCase Agent backend status contract', async () => {
     get.mockResolvedValueOnce({
       data: {
-        backend: 'codex_app_server',
+        backend: 'litellm',
         available: false,
-        experimental: true,
-        version: '0.144.3',
-        error_code: 'login_required',
-        message: 'Codex login is required',
+        experimental: false,
+        version: null,
+        error_code: 'capability_unsupported',
+        message: 'no_agent_primary',
       },
     });
 
@@ -32,12 +32,12 @@ describe('agentApi', () => {
 
     expect(get).toHaveBeenCalledWith('/api/v1/agent/status');
     expect(result).toEqual({
-      backend: 'codex_app_server',
+      backend: 'litellm',
       available: false,
-      experimental: true,
-      version: '0.144.3',
-      errorCode: 'login_required',
-      message: 'Codex login is required',
+      experimental: false,
+      version: null,
+      errorCode: 'capability_unsupported',
+      message: 'no_agent_primary',
     });
   });
 

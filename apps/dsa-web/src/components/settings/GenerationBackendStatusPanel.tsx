@@ -57,9 +57,7 @@ const BackendStatusRow: React.FC<{ title: string; status: GenerationBackendStatu
             </Badge>
           </div>
           <p className="mt-2 text-xs leading-5 text-muted-text">
-            {status.backendType === 'local_cli'
-              ? t('settings.generationBackendLocalCliDescription')
-              : t('settings.generationBackendLiteLLMDescription')}
+            {t('settings.generationBackendLiteLLMDescription')}
           </p>
           {status.lastErrorMessage ? (
             <p className="mt-2 text-xs leading-5 text-warning">

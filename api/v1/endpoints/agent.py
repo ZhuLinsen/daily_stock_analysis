@@ -44,8 +44,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_ACTIVE_CODEX_STREAMS: Dict[str, threading.Event] = {}
-_ACTIVE_CODEX_STREAMS_LOCK = threading.Lock()
+# Active SSE request cancellation registry (provider API backend only).
+_ACTIVE_CHAT_STREAMS: Dict[str, threading.Event] = {}
+_ACTIVE_CHAT_STREAMS_LOCK = threading.Lock()
 
 class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -122,10 +123,8 @@ async def get_agent_models():
     from src.agent.agent_backend import AgentBackendConfigError, resolve_agent_backend_id
 
     try:
-        selected_backend = resolve_agent_backend_id(config)
+        resolve_agent_backend_id(config)
     except AgentBackendConfigError:
-        return AgentModelsResponse(models=[])
-    if selected_backend == "codex_app_server":
         return AgentModelsResponse(models=[])
     return AgentModelsResponse(
         models=[AgentModelDeployment(**item) for item in list_agent_model_deployments(config)]
@@ -201,22 +200,9 @@ async def agent_chat(
 ):
     """
     Chat with the AI Agent without progress events.
-
-    Codex Agent callers must use ``/chat/stream``, which provides progress
-    events and request cancellation. The default LiteLLM Agent keeps this
-    endpoint's existing behavior.
     """
     config = get_config()
-    backend_id = _select_agent_chat_backend(config)
-    if backend_id == "codex_app_server":
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "capability_unsupported",
-                "message": "Codex Agent requires the Chat interface with progress and stop support",
-            },
-        )
-    
+
     session_id = request.session_id or str(uuid.uuid4())
     
     try:
@@ -510,21 +496,18 @@ async def agent_chat_stream(
     selected_skill_ids = skill_selection.selected_skill_ids_update
     stream_ctx = _build_agent_chat_context(request, config, skills)
 
-    if backend_id == "codex_app_server":
-        with _ACTIVE_CODEX_STREAMS_LOCK:
-            if request_id in _ACTIVE_CODEX_STREAMS:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "request_conflict",
-                        "message": "This Agent request is already running",
-                    },
-                )
-            _ACTIVE_CODEX_STREAMS[request_id] = cancel_event
+    with _ACTIVE_CHAT_STREAMS_LOCK:
+        if request_id in _ACTIVE_CHAT_STREAMS:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "request_conflict",
+                    "message": "This Agent request is already running",
+                },
+            )
+        _ACTIVE_CHAT_STREAMS[request_id] = cancel_event
 
     def progress_callback(event: dict):
-        if backend_id == "codex_app_server" and cancel_event.is_set():
-            return
         # Enrich tool events with display names
         if event.get("type") in ("tool_start", "tool_done"):
             tool = event.get("tool", "")
@@ -533,14 +516,9 @@ async def agent_chat_stream(
 
     def run_sync(executor, turn):
         try:
-            execute_kwargs = {
-                "progress_callback": progress_callback,
-            }
-            if backend_id == "codex_app_server":
-                execute_kwargs["cancel_event"] = cancel_event
             result = executor.execute_turn(
                 turn,
-                **execute_kwargs,
+                progress_callback=progress_callback,
             )
             event = {
                 "type": "done",
@@ -560,7 +538,7 @@ async def agent_chat_stream(
             logger.error("Agent stream error: %s", exc)
             event = {
                 "type": "error",
-                "message": "Agent Chat failed" if backend_id == "codex_app_server" else str(exc),
+                "message": str(exc),
                 "error_code": getattr(exc, "code", "unknown_backend_error"),
                 "backend": backend_id,
                 "request_id": request_id,
@@ -606,13 +584,7 @@ async def agent_chat_stream(
             fut = loop.run_in_executor(None, run_sync, executor, turn)
             while True:
                 try:
-                    if backend_id == "codex_app_server":
-                        # Codex owns one authoritative backend deadline.  A
-                        # second API timeout would race it and could emit a
-                        # terminal event before process cleanup finishes.
-                        event = await queue.get()
-                    else:
-                        event = await asyncio.wait_for(queue.get(), timeout=300.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=300.0)
                 except asyncio.TimeoutError:
                     event = {"type": "error", "message": "分析超时"}
                     yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
@@ -621,20 +593,8 @@ async def agent_chat_stream(
                 if event.get("type") in ("done", "error"):
                     break
         finally:
-            if backend_id == "codex_app_server" and (fut is None or not fut.done()):
-                cancel_event.set()
             try:
-                if backend_id == "codex_app_server" and fut is not None:
-                    while not fut.done():
-                        try:
-                            await asyncio.shield(fut)
-                        except asyncio.CancelledError:
-                            # Client disconnect cancellation must not abandon the
-                            # owned Codex/tool worker before it actually exits.
-                            cancel_event.set()
-                    if not fut.cancelled():
-                        fut.result()
-                elif fut is not None:
+                if fut is not None:
                     await asyncio.wait_for(fut, timeout=5.0)
             except asyncio.CancelledError:
                 pass
@@ -644,10 +604,9 @@ async def agent_chat_stream(
             except Exception as exc:
                 logger.warning("agent executor cleanup error (ignored): %s", exc, exc_info=True)
             finally:
-                if backend_id == "codex_app_server":
-                    with _ACTIVE_CODEX_STREAMS_LOCK:
-                        if _ACTIVE_CODEX_STREAMS.get(request_id) is cancel_event:
-                            _ACTIVE_CODEX_STREAMS.pop(request_id, None)
+                with _ACTIVE_CHAT_STREAMS_LOCK:
+                    if _ACTIVE_CHAT_STREAMS.get(request_id) is cancel_event:
+                        _ACTIVE_CHAT_STREAMS.pop(request_id, None)
 
     return StreamingResponse(
         event_generator(),
@@ -662,9 +621,9 @@ async def agent_chat_stream(
 
 @router.post("/chat/stream/{request_id}/cancel")
 async def cancel_agent_chat_stream(request_id: str):
-    """Signal cancellation while the original Codex SSE remains open."""
-    with _ACTIVE_CODEX_STREAMS_LOCK:
-        cancel_event = _ACTIVE_CODEX_STREAMS.get(request_id)
+    """Signal cancellation while the original SSE stream remains open."""
+    with _ACTIVE_CHAT_STREAMS_LOCK:
+        cancel_event = _ACTIVE_CHAT_STREAMS.get(request_id)
     if cancel_event is None:
         raise HTTPException(
             status_code=404,

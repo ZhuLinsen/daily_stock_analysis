@@ -3,6 +3,7 @@ import { Component, Suspense } from 'react';
 import type { ErrorInfo } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { attemptRouteChunkRecovery } from './routeChunkRecovery';
 
 type PageLoadingFallbackProps = {
   fullPage?: boolean;
@@ -46,6 +47,7 @@ class RouteErrorBoundary extends Component<RouteErrorBoundaryProps, RouteErrorBo
   }
 
   override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    if (attemptRouteChunkRecovery(error)) return;
     console.error('Route page failed to render or load', error, errorInfo);
   }
 

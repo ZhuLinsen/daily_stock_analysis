@@ -5,6 +5,7 @@ import os
 import json
 import logging
 import tempfile
+import socket
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,7 +21,7 @@ ensure_litellm_stub()
 
 from src.config import ANSPIRE_LLM_MODEL_DEFAULT, Config
 from src.core.config_manager import ConfigManager
-from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
+from src.llm.backend_registry import REMOVED_GENERATION_BACKEND_IDS
 from src.services.system_config_service import ConfigConflictError, ConfigImportError, ConfigValidationError, SystemConfigService
 
 
@@ -73,65 +74,24 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
         self.assertTrue(items["GEMINI_API_KEY"]["raw_value_exists"])
 
-    def _assert_agent_backend_status_matches_runtime(
-        self,
-        *,
-        saved_backend: str,
-        runtime_backend: str,
-    ) -> None:
-        from src.agent.agent_backend import resolve_agent_backend_id
+    def test_agent_backend_status_rejects_removed_backend_from_saved_or_runtime_env(self) -> None:
         from src.services.agent_backend_status_service import AgentBackendStatusService
 
         self._rewrite_env(
             "GEMINI_API_KEY=secret-key-value",
-            f"AGENT_BACKEND={saved_backend}",
+            "AGENT_BACKEND=codex_app_server",
             "AGENT_ARCH=single",
         )
-        codex_status = {
-            "backend": "codex_app_server",
-            "available": True,
-            "experimental": True,
-            "version": "codex-cli test",
-            "error_code": None,
-            "message": None,
-        }
-        with (
-            patch.dict(os.environ, {"AGENT_BACKEND": runtime_backend}),
-            patch.object(
-                AgentBackendStatusService,
-                "_codex_cheap_status",
-                return_value=codex_status,
-            ),
-        ):
+        with patch.dict(os.environ, {"AGENT_BACKEND": "codex_app_server"}):
             Config.reset_instance()
             runtime_config = Config.get_instance()
-            with patch.dict(os.environ, {"AGENT_BACKEND": saved_backend}):
-                settings_status = self.service.get_agent_backend_status()
-                chat_status = AgentBackendStatusService(config=runtime_config).get_status()
-                selected_backend = resolve_agent_backend_id(runtime_config)
-                preview_baseline = self.service.preview_agent_backend_status(items=[])
-                preview_draft = self.service.preview_agent_backend_status(
-                    items=[{"key": "AGENT_BACKEND", "value": saved_backend}],
-                )
+            settings_status = self.service.get_agent_backend_status()
+            chat_status = AgentBackendStatusService(config=runtime_config).get_status()
 
-        self.assertEqual(settings_status["backend"], runtime_backend)
-        self.assertEqual(chat_status["backend"], runtime_backend)
-        self.assertEqual(selected_backend, runtime_backend)
-        self.assertEqual(preview_baseline["backend"], runtime_backend)
-        self.assertEqual(preview_draft["backend"], saved_backend)
-        self.assertIs(Config.get_instance(), runtime_config)
-
-    def test_agent_backend_status_prefers_runtime_litellm_over_saved_codex(self) -> None:
-        self._assert_agent_backend_status_matches_runtime(
-            saved_backend="codex_app_server",
-            runtime_backend="litellm",
-        )
-
-    def test_agent_backend_status_prefers_runtime_codex_over_saved_litellm(self) -> None:
-        self._assert_agent_backend_status_matches_runtime(
-            saved_backend="litellm",
-            runtime_backend="codex_app_server",
-        )
+        self.assertEqual(settings_status["backend"], "codex_app_server")
+        self.assertFalse(settings_status["available"])
+        self.assertEqual(settings_status["error_code"], "capability_unsupported")
+        self.assertEqual(chat_status, settings_status)
 
     def test_agent_backend_empty_preview_uses_runtime_generation_route(self) -> None:
         from src.services.agent_backend_status_service import AgentBackendStatusService
@@ -724,8 +684,8 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(public_instances["schema"]["default_value"], "false")
         self.assertIn("Default: false", public_instances["schema"]["description"])
 
-    def test_get_config_preserves_manual_agent_codex_cli_value_without_schema_option(self) -> None:
-        for backend in sorted(GENERATION_ONLY_BACKEND_IDS):
+    def test_get_config_hides_removed_agent_backend_keys_from_schema(self) -> None:
+        for backend in sorted(REMOVED_GENERATION_BACKEND_IDS):
             with self.subTest(backend=backend):
                 self._rewrite_env(
                     "STOCK_LIST=600519,000001",
@@ -734,13 +694,9 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
                 payload = self.service.get_config(include_schema=True)
                 items = {item["key"]: item for item in payload["items"]}
-                agent_item = items["AGENT_GENERATION_BACKEND"]
 
-                self.assertEqual(agent_item["value"], backend)
-                self.assertNotIn(
-                    backend,
-                    {option["value"] for option in agent_item["schema"]["options"]},
-                )
+                self.assertNotIn("AGENT_GENERATION_BACKEND", items)
+                self.assertNotIn("GENERATION_FALLBACK_BACKEND", items)
 
     def test_get_config_preserves_explicit_empty_switch_value(self) -> None:
         self._rewrite_env(
@@ -1040,26 +996,28 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(checks["stock_list"]["status"], "configured")
         self.assertEqual(checks["notification"]["status"], "optional")
 
-    def test_generation_backend_status_preview_uses_draft_backend(self) -> None:
+    def test_generation_backend_status_preview_rejects_removed_draft_backend(self) -> None:
         self._rewrite_env(
             "GENERATION_BACKEND=litellm",
             "LITELLM_MODEL=gemini/gemini-3-flash-preview",
             "GEMINI_API_KEY=secret-key-value",
         )
 
-        with patch("src.llm.local_cli_backend.shutil.which", return_value=None):
-            payload = self.service.preview_generation_backend_status(
+        with self.assertRaises(ConfigValidationError) as ctx:
+            self.service.preview_generation_backend_status(
                 items=[
                     {"key": "GENERATION_BACKEND", "value": "codex_cli"},
-                    {"key": "GENERATION_FALLBACK_BACKEND", "value": ""},
                 ],
                 mask_token="******",
             )
 
-        self.assertEqual(payload["primary_backend_id"], "codex_cli")
-        self.assertFalse(payload["primary"]["available"])
-        self.assertEqual(payload["primary"]["health_status"], "failed")
-        self.assertEqual(payload["primary"]["last_error_code"], "command_not_found")
+        issue = next(
+            issue
+            for issue in ctx.exception.issues
+            if issue["key"] == "GENERATION_BACKEND"
+        )
+        self.assertEqual(issue["code"], "invalid_enum")
+        self.assertEqual(issue["severity"], "error")
 
     def test_generation_backend_status_preserves_masked_saved_secret(self) -> None:
         self._rewrite_env(
@@ -1076,11 +1034,9 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["primary_backend_id"], "litellm")
         self.assertTrue(payload["primary"]["available"])
 
-    def test_generation_backend_status_saved_invalid_numeric_returns_failed_status(self) -> None:
+    def test_generation_backend_status_saved_removed_backend_returns_failed_status(self) -> None:
         self._rewrite_env(
             "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
-            "GENERATION_BACKEND_TIMEOUT_SECONDS=not-int",
         )
 
         payload = self.service.get_generation_backend_status()
@@ -1088,22 +1044,8 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["primary_backend_id"], "codex_cli")
         self.assertFalse(payload["primary"]["available"])
         self.assertEqual(payload["primary"]["health_status"], "failed")
-        self.assertEqual(payload["primary"]["last_error_code"], "unsafe_config")
-
-    def test_generation_backend_preview_invalid_numeric_returns_validation_error(self) -> None:
-        self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
-        )
-
-        with self.assertRaises(ConfigValidationError) as ctx:
-            self.service.preview_generation_backend_status(
-                items=[{"key": "GENERATION_BACKEND_TIMEOUT_SECONDS", "value": "not-int"}],
-                mask_token="******",
-            )
-
-        self.assertEqual(ctx.exception.issues[0]["key"], "GENERATION_BACKEND_TIMEOUT_SECONDS")
-        self.assertEqual(ctx.exception.issues[0]["severity"], "error")
+        self.assertEqual(payload["primary"]["last_error_code"], "backend_not_configured")
+        self.assertIsNone(payload["fallback_backend_id"])
 
     def test_generation_backend_status_saved_litellm_invalid_channel_returns_failed_status(self) -> None:
         self._rewrite_env(
@@ -1203,23 +1145,19 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(payload["primary"]["available"])
         self.assertIsNone(payload["primary"]["last_error_code"])
 
-    def test_generation_backend_preview_local_cli_ignores_inactive_litellm_model_error(self) -> None:
+    def test_generation_backend_preview_rejects_removed_backend_despite_inactive_litellm_model(self) -> None:
         self._rewrite_env(
             "GENERATION_BACKEND=litellm",
             "LITELLM_MODEL=gemini/gemini-3-flash-preview",
         )
 
-        with patch("src.llm.local_cli_backend.shutil.which", return_value=None):
-            payload = self.service.preview_generation_backend_status(
+        with self.assertRaises(ConfigValidationError):
+            self.service.preview_generation_backend_status(
                 items=[
                     {"key": "GENERATION_BACKEND", "value": "codex_cli"},
-                    {"key": "GENERATION_FALLBACK_BACKEND", "value": ""},
                 ],
                 mask_token="******",
             )
-
-        self.assertEqual(payload["primary_backend_id"], "codex_cli")
-        self.assertEqual(payload["primary"]["last_error_code"], "command_not_found")
 
     def test_generation_backend_preview_ignores_unrelated_draft_errors(self) -> None:
         self._rewrite_env(
@@ -1236,119 +1174,39 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["primary_backend_id"], "litellm")
         self.assertTrue(payload["primary"]["available"])
 
-    def test_generation_backend_status_fallback_error_does_not_fail_primary(self) -> None:
+    def test_generation_backend_status_removed_backend_has_no_fallback(self) -> None:
         self._rewrite_env(
             "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=bad_backend",
         )
 
-        with patch("src.llm.local_cli_backend.shutil.which", return_value="/usr/bin/codex"), \
-             patch("src.llm.local_cli_backend.os.access", return_value=True):
-            payload = self.service.get_generation_backend_status()
+        payload = self.service.get_generation_backend_status()
 
-        self.assertTrue(payload["primary"]["available"])
-        self.assertEqual(payload["fallback"]["backend_id"], "bad_backend")
-        self.assertFalse(payload["fallback"]["available"])
+        self.assertFalse(payload["primary"]["available"])
+        self.assertIsNone(payload["fallback"])
+        self.assertIsNone(payload["fallback_backend_id"])
 
-    def test_get_setup_status_treats_codex_cli_as_primary_runtime_without_api_keys(self) -> None:
+    def test_get_setup_status_removed_backend_without_model_blocks_smoke(self) -> None:
+        for backend in ("codex_cli", "claude_code_cli", "opencode_cli"):
+            with self.subTest(backend=backend):
+                self._rewrite_env(
+                    f"GENERATION_BACKEND={backend}",
+                    "STOCK_LIST=600519",
+                )
+
+                with patch.dict(os.environ, {}, clear=True):
+                    status = self.service.get_setup_status()
+
+                checks = {check["key"]: check for check in status["checks"]}
+                self.assertFalse(status["is_complete"])
+                self.assertFalse(status["ready_for_smoke"])
+                self.assertEqual(checks["llm_primary"]["status"], "needs_action")
+                self.assertEqual(checks["llm_agent"]["status"], "needs_action")
+                self.assertIn("llm_primary", status["required_missing_keys"])
+                self.assertIn("llm_agent", status["required_missing_keys"])
+
+    def test_get_setup_status_hermes_only_agent_inheritance_needs_action(self) -> None:
         self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
-            "STOCK_LIST=600519",
-        )
-
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
-            status = self.service.get_setup_status()
-
-        checks = {check["key"]: check for check in status["checks"]}
-        self.assertFalse(status["is_complete"])
-        self.assertTrue(status["ready_for_smoke"])
-        self.assertEqual(checks["llm_primary"]["status"], "configured")
-        self.assertEqual(checks["llm_agent"]["status"], "needs_action")
-        self.assertIn("Codex CLI", checks["llm_primary"]["message"])
-        self.assertNotIn("llm_primary", status["required_missing_keys"])
-        self.assertIn("llm_agent", status["required_missing_keys"])
-
-    def test_get_setup_status_allows_local_cli_primary_smoke_without_agent_model(self) -> None:
-        self._rewrite_env(
-            "GENERATION_BACKEND=claude_code_cli",
-            "GENERATION_FALLBACK_BACKEND=",
-            "STOCK_LIST=AAPL",
-        )
-
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/claude"):
-            status = self.service.get_setup_status()
-
-        checks = {check["key"]: check for check in status["checks"]}
-        self.assertFalse(status["is_complete"])
-        self.assertTrue(status["ready_for_smoke"])
-        self.assertEqual(checks["llm_primary"]["status"], "configured")
-        self.assertEqual(checks["stock_list"]["status"], "configured")
-        self.assertEqual(checks["llm_agent"]["status"], "needs_action")
-        self.assertIn("local CLI 主生成方式不会被自动继承", checks["llm_agent"]["message"])
-        self.assertEqual(status["required_missing_keys"], ["llm_agent"])
-
-    def test_get_setup_status_codex_cli_missing_reports_backend_path(self) -> None:
-        self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
-            "STOCK_LIST=600519",
-        )
-
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value=None):
-            status = self.service.get_setup_status()
-
-        checks = {check["key"]: check for check in status["checks"]}
-        self.assertEqual(checks["llm_primary"]["status"], "needs_action")
-        self.assertIn("后端进程当前 PATH", checks["llm_primary"]["message"])
-        self.assertIn("Codex CLI 交互窗口", checks["llm_primary"]["next_step"])
-        self.assertNotIn("请先安装并登录", checks["llm_primary"]["next_step"])
-
-    def test_get_setup_status_codex_primary_agent_model_explains_litellm_split(self) -> None:
-        self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
-            "AGENT_LITELLM_MODEL=openai/gpt-5.5",
-            "OPENAI_API_KEY=secret-key-value",
-            "STOCK_LIST=600519",
-        )
-
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
-            status = self.service.get_setup_status()
-
-        checks = {check["key"]: check for check in status["checks"]}
-        self.assertEqual(checks["llm_agent"]["status"], "configured")
-        self.assertIn("普通分析使用 Codex CLI", checks["llm_agent"]["message"])
-        self.assertIn("Agent 工具调用仍使用 LiteLLM 主模型", checks["llm_agent"]["message"])
-
-    def test_get_setup_status_codex_primary_agent_inherited_model_explains_litellm_split(self) -> None:
-        self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
-            "LITELLM_MODEL=openai/gpt-5.5",
-            "OPENAI_API_KEY=secret-key-value",
-            "STOCK_LIST=600519",
-        )
-
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
-            status = self.service.get_setup_status()
-
-        checks = {check["key"]: check for check in status["checks"]}
-        self.assertEqual(checks["llm_agent"]["status"], "configured")
-        self.assertIn(
-            "普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: openai/gpt-5.5",
-            checks["llm_agent"]["message"],
-        )
-
-    def test_get_setup_status_codex_primary_hermes_only_agent_inheritance_needs_action(self) -> None:
-        self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "GENERATION_FALLBACK_BACKEND=",
+            "GENERATION_BACKEND=litellm",
             "LLM_CHANNELS=hermes",
             "LLM_HERMES_PROTOCOL=openai",
             "LLM_HERMES_BASE_URL=http://127.0.0.1:8765/v1",
@@ -1358,8 +1216,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "STOCK_LIST=600519",
         )
 
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+        with patch.dict(os.environ, {}, clear=True):
             status = self.service.get_setup_status()
 
         checks = {check["key"]: check for check in status["checks"]}
@@ -1367,72 +1224,19 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(checks["llm_agent"]["status"], "needs_action")
         self.assertIn("Hermes", checks["llm_agent"]["message"])
         self.assertIn("llm_agent", status["required_missing_keys"])
-        self.assertNotIn(
-            "Agent 工具调用仍使用 LiteLLM 主模型",
-            checks["llm_agent"]["message"],
-        )
 
-    def test_get_setup_status_rejects_agent_codex_cli_tool_backend(self) -> None:
+    def test_get_setup_status_agent_without_model_reports_missing_model(self) -> None:
         self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "AGENT_GENERATION_BACKEND=codex_cli",
+            "GENERATION_BACKEND=litellm",
             "STOCK_LIST=600519",
         )
 
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+        with patch.dict(os.environ, {}, clear=True):
             status = self.service.get_setup_status()
 
         checks = {check["key"]: check for check in status["checks"]}
         self.assertEqual(checks["llm_agent"]["status"], "needs_action")
-        self.assertIn("暂不支持 codex_cli", checks["llm_agent"]["message"])
-
-    def test_get_setup_status_rejects_agent_claude_and_opencode_tool_backends(self) -> None:
-        for backend in ("claude_code_cli", "opencode_cli"):
-            with self.subTest(backend=backend):
-                self._rewrite_env(
-                    "GENERATION_BACKEND=litellm",
-                    f"AGENT_GENERATION_BACKEND={backend}",
-                    "STOCK_LIST=600519",
-                )
-
-                with patch.dict(os.environ, {}, clear=True):
-                    status = self.service.get_setup_status()
-
-                checks = {check["key"]: check for check in status["checks"]}
-                self.assertEqual(checks["llm_agent"]["status"], "needs_action")
-                self.assertIn(f"暂不支持 {backend}", checks["llm_agent"]["message"])
-
-    def test_get_setup_status_accepts_opencode_without_model_override(self) -> None:
-        self._rewrite_env(
-            "GENERATION_BACKEND=opencode_cli",
-            "GENERATION_FALLBACK_BACKEND=",
-            "STOCK_LIST=600519",
-        )
-
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/opencode"):
-            status = self.service.get_setup_status()
-
-        checks = {check["key"]: check for check in status["checks"]}
-        self.assertEqual(checks["llm_primary"]["status"], "configured")
-        self.assertIn("OpenCode CLI", checks["llm_primary"]["message"])
-
-    def test_get_setup_status_agent_litellm_without_model_reports_missing_model(self) -> None:
-        self._rewrite_env(
-            "GENERATION_BACKEND=codex_cli",
-            "AGENT_GENERATION_BACKEND=litellm",
-            "STOCK_LIST=600519",
-        )
-
-        with patch.dict(os.environ, {}, clear=True), \
-             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
-            status = self.service.get_setup_status()
-
-        checks = {check["key"]: check for check in status["checks"]}
-        self.assertEqual(checks["llm_agent"]["status"], "needs_action")
-        self.assertIn("未检测到可用 LiteLLM 模型配置", checks["llm_agent"]["message"])
-        self.assertNotIn("需要 LiteLLM backend", checks["llm_agent"]["message"])
+        self.assertIn("Agent 未配置独立模型，且 LLM 主渠道尚不可用", checks["llm_agent"]["message"])
 
     def test_get_setup_status_accepts_anspire_one_key_llm(self) -> None:
         self._rewrite_env(
@@ -2522,7 +2326,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_enum" for issue in validation["issues"]))
 
-    def test_validate_rejects_codex_backend_with_multi_agent_architecture(self) -> None:
+    def test_validate_rejects_removed_agent_backend_regardless_of_arch(self) -> None:
         validation = self.service.validate(
             items=[
                 {"key": "AGENT_BACKEND", "value": "codex_app_server"},
@@ -2534,47 +2338,21 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         issue = next(
             issue
             for issue in validation["issues"]
-            if issue["code"] == "unsupported_agent_arch"
+            if issue["key"] == "AGENT_BACKEND"
         )
-        self.assertEqual(issue["key"], "AGENT_ARCH")
-        self.assertEqual(issue["expected"], "single")
+        self.assertEqual(issue["code"], "invalid_enum")
 
-    def test_validate_rejects_disabled_timeout_for_codex_only(self) -> None:
-        codex = self.service.validate(
-            items=[
-                {"key": "AGENT_BACKEND", "value": "codex_app_server"},
-                {"key": "AGENT_ORCHESTRATOR_TIMEOUT_S", "value": "0"},
-            ]
-        )
-        litellm = self.service.validate(
-            items=[
-                {"key": "AGENT_BACKEND", "value": "litellm"},
-                {"key": "AGENT_ORCHESTRATOR_TIMEOUT_S", "value": "0"},
-            ]
-        )
-
-        self.assertFalse(codex["valid"])
-        self.assertTrue(
-            any(issue["code"] == "codex_timeout_required" for issue in codex["issues"])
-        )
-        self.assertTrue(litellm["valid"])
-
-    def test_validate_reports_generation_backend_numeric_maximum(self) -> None:
+    def test_validate_accepts_multi_arch_with_litellm_backend_and_disabled_timeout(self) -> None:
         validation = self.service.validate(
             items=[
-                {"key": "GENERATION_BACKEND_TIMEOUT_SECONDS", "value": "3601"},
-                {"key": "GENERATION_BACKEND_MAX_OUTPUT_BYTES", "value": "33554433"},
-                {"key": "GENERATION_BACKEND_MAX_CONCURRENCY", "value": "17"},
-                {"key": "LOCAL_CLI_BACKEND_MAX_CONCURRENCY", "value": "5"},
+                {"key": "AGENT_BACKEND", "value": "litellm"},
+                {"key": "AGENT_ARCH", "value": "multi"},
+                {"key": "AGENT_ORCHESTRATOR_TIMEOUT_S", "value": "0"},
             ]
         )
 
-        self.assertFalse(validation["valid"])
-        issues = {issue["key"]: issue for issue in validation["issues"]}
-        self.assertEqual(issues["GENERATION_BACKEND_TIMEOUT_SECONDS"]["expected"], "<=3600")
-        self.assertEqual(issues["GENERATION_BACKEND_MAX_OUTPUT_BYTES"]["expected"], "<=33554432")
-        self.assertEqual(issues["GENERATION_BACKEND_MAX_CONCURRENCY"]["expected"], "<=16")
-        self.assertEqual(issues["LOCAL_CLI_BACKEND_MAX_CONCURRENCY"]["expected"], "<=4")
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["issues"], [])
 
     def test_validate_accepts_report_language_english(self) -> None:
         validation = self.service.validate(items=[{"key": "REPORT_LANGUAGE", "value": "en"}])
@@ -4611,6 +4389,73 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             ]
         )
         self.assertFalse(any(issue["code"] == "ssrf_blocked" for issue in validation["issues"]))
+
+    def test_validate_rejects_private_custom_webhook_for_untrusted_requests(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "CUSTOM_WEBHOOK_URLS", "value": "http://127.0.0.1:8080/hook"},
+            ],
+            allow_private_targets=False,
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "ssrf_blocked" for issue in validation["issues"]))
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_rejects_loopback_target_for_untrusted_requests(self, mock_completion) -> None:
+        payload = self.service.test_llm_channel(
+            name="lab",
+            protocol="",
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            models=["ollama/llama3"],
+            allow_private_targets=False,
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "invalid_config")
+        self.assertEqual(payload["details"]["reason"], "ssrf_blocked")
+        mock_completion.assert_not_called()
+
+    @patch("src.services.system_config_service.requests.get")
+    def test_discover_llm_channel_models_rejects_dns_rebinding_to_loopback(
+        self,
+        mock_get,
+    ) -> None:
+        mock_response = Mock(ok=True, status_code=200)
+        mock_response.json.return_value = {"data": [{"id": "qwen-plus"}]}
+
+        public_addrinfos = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ]
+        loopback_addrinfos = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))
+        ]
+        call_count = {"value": 0}
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            call_count["value"] += 1
+            return public_addrinfos if call_count["value"] == 1 else loopback_addrinfos
+
+        def fake_get(url, **kwargs):
+            socket.getaddrinfo("rebind.example", 443, type=socket.SOCK_STREAM)
+            return mock_response
+
+        mock_get.side_effect = fake_get
+
+        with patch("socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            payload = self.service.discover_llm_channel_models(
+                name="rebind",
+                protocol="openai",
+                base_url="https://rebind.example/v1",
+                api_key="sk-test-value",
+                allow_private_targets=False,
+            )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "invalid_config")
+        self.assertEqual(payload["details"]["reason"], "ssrf_blocked")
+        mock_get.assert_not_called()
 
 
 if __name__ == "__main__":
