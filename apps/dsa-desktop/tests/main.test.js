@@ -1498,6 +1498,49 @@ test('createWindow startup path does not throw ReferenceError after restore resu
   });
 });
 
+test('manual desktop update check rejects overlapping in-flight requests', async (t) => {
+  const mainModule = loadMainModule(t);
+  let releaseCheck;
+  const pendingCheck = new Promise((resolve) => {
+    releaseCheck = resolve;
+  });
+  let started = 0;
+
+  mainModule.__setDesktopUpdateCheckerForTest(async ({ currentVersion }) => {
+    started += 1;
+    await pendingCheck;
+    return {
+      status: mainModule.UPDATE_STATUS.UPDATE_AVAILABLE,
+      currentVersion,
+      latestVersion: '3.13.0',
+      releaseUrl: 'https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0',
+    };
+  });
+
+  t.after(() => {
+    mainModule.__setDesktopUpdateCheckerForTest(null);
+  });
+
+  const checkHandler = mainModule.__getIpcMainHandler('desktop:check-for-updates');
+  const firstCheck = checkHandler();
+  const secondState = await checkHandler();
+
+  assert.equal(started, 1);
+  assert.equal(secondState.status, mainModule.UPDATE_STATUS.CHECKING);
+
+  releaseCheck({
+    status: mainModule.UPDATE_STATUS.UPDATE_AVAILABLE,
+    currentVersion: '3.12.0',
+    latestVersion: '3.13.0',
+    releaseUrl: 'https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0',
+  });
+
+  const firstState = await firstCheck;
+  assert.equal(started, 1);
+  assert.equal(firstState.status, mainModule.UPDATE_STATUS.UPDATE_AVAILABLE);
+  assert.equal(firstState.latestVersion, '3.13.0');
+});
+
 test('stopBackend waits for backend process exit', async (t) => {
   const mainModule = loadMainModule(t, { platform: 'linux' });
   const killSignals = [];

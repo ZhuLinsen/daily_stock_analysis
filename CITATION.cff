@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use DSA in research, please cite the paper below."
+title: "Daily Stock Analysis (DSA)"
+type: software
+authors:
+  - family-names: "Zhu"
+    given-names: "Linsen"
+repository-code: "https://github.com/ZhuLinsen/daily_stock_analysis"
+url: "https://github.com/ZhuLinsen/daily_stock_analysis"
+license: MIT
+preferred-citation:
+  type: article
+  authors:
+    - family-names: "Zhu"
+      given-names: "Linsen"
+    - family-names: "Shi"
+      given-names: "Yi"
+  title: "DSA: Evidence-Aware LLM-Agent Orchestration for Multi-Market Stock Research"
+  journal: "arXiv"
+  year: 2026
+  url: "https://arxiv.org/abs/2608.26990"
