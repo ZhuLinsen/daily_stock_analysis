@@ -4038,7 +4038,13 @@ class SearchService:
             # 如果提供了关键词，直接使用关键词作为查询
             query = " ".join(focus_keywords)
         elif prefer_chinese:
-            query = f"{stock_name} {stock_code} 股票 最新消息"
+            # 指数 target 的 stock_code 可能为空（Agent 工具 _resolve_search_subject
+            # 有意只传显示名），空 code 直接省略，避免拼出 "上证50  股票" 双空格。
+            query = (
+                f"{stock_name} {stock_code} 股票 最新消息"
+                if stock_code
+                else f"{stock_name} 股票 最新消息"
+            )
         elif is_foreign:
             # 港股/美股使用英文搜索关键词；优先使用英文公司名（issue #2026）
             if english_aliases and short_name and short_name != effective_name:
@@ -4051,13 +4057,13 @@ class SearchService:
             # 默认主查询：股票名称 + 核心关键词
             query = f"{stock_name} {stock_code} 股票 最新消息"
 
+        subject_label = f"{stock_name}({stock_code})" if stock_code else stock_name
         logger.info(
             (
-                "搜索股票新闻: %s(%s), query='%s', 时间范围: 近%s天 "
+                "搜索股票新闻: %s, query='%s', 时间范围: 近%s天 "
                 "(profile=%s, NEWS_MAX_AGE_DAYS=%s, prefer_chinese=%s), 目标条数=%s, provider请求条数=%s"
             ),
-            stock_name,
-            stock_code,
+            subject_label,
             query,
             search_days,
             self.news_strategy_profile,
