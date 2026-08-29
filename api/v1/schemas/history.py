@@ -149,6 +149,10 @@ class ReportMeta(BaseModel):
         None,
         description="本次分析市场阶段低敏摘要",
     )
+    asset_type: Optional[Literal["stock", "index"]] = Field(
+        None,
+        description="后端权威资产类型（stock/index）；指数报告用于隐藏 stock-only 自选操作。market review 与旧客户端可缺省。",
+    )
 
 
 class ReportSummary(BaseModel):

@@ -381,7 +381,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
 
         {/* 右侧：情绪指标 / 自选操作 */}
         <div className="flex flex-col space-y-4">
-          {watchlist && meta.reportType !== 'market_review' && (
+          {watchlist && meta.reportType !== 'market_review' && meta.assetType !== 'index' && (
             <Card variant="bordered" padding="sm" className="home-panel-card">
               <div className="text-center space-y-3">
                 <span className="label-uppercase">{t('report.watchlist')}</span>

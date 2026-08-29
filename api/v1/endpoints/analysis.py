@@ -86,6 +86,7 @@ from src.services.task_queue import (
     DuplicateTaskError,
     TaskStatus as TaskStatusEnum,
 )
+from src.services.analysis_service import asset_type_from_canonical_code
 from src.services.run_diagnostics import build_run_diagnostic_summary
 from src.services.run_flow import build_task_run_flow_snapshot
 from src.services.empty_news import empty_news_disclosure_from_stored
@@ -352,6 +353,15 @@ def trigger_analysis(
     if not stock_codes:
         raise api_error(400, "validation_error", "必须提供 stock_code 或 stock_codes 参数")
 
+    # Limit the number of non-blank raw tokens BEFORE resolution. Rejected and
+    # duplicate tokens must also count toward the cap, otherwise a request that
+    # mixes one valid token with many rejected/duplicate tokens could bypass the
+    # DoS limit via the post-dedup check below.
+    MAX_BATCH_SIZE = 50
+    non_empty_raw_tokens = [c for c in stock_codes if str(c or "").strip()]
+    if len(non_empty_raw_tokens) > MAX_BATCH_SIZE:
+        raise api_error(400, "validation_error", f"单次分析请求最多支持 {MAX_BATCH_SIZE} 只股票")
+
     # Normalize and de-duplicate inputs while preserving compatibility.
     # Code-like tokens go through parse_analysis_target (the single asset-type
     # authority) so registered indices keep their structured target; non-code
@@ -384,11 +394,6 @@ def trigger_analysis(
             unique_targets.append(target)
 
     stock_codes = unique_codes
-
-    # Limit the number of stocks in a single request to prevent DoS
-    MAX_BATCH_SIZE = 50
-    if len(stock_codes) > MAX_BATCH_SIZE:
-        raise api_error(400, "validation_error", f"单次分析请求最多支持 {MAX_BATCH_SIZE} 只股票")
 
     if not stock_codes:
         if not rejected_entries:
@@ -442,7 +447,10 @@ def _handle_async_analysis_batch(
     # Preserve metadata for single-stock requests. For batch requests,
     # only carry through metadata that semantically applies to the whole
     # batch, such as import/image source tracking.
-    is_single = len(stock_codes) == 1
+    # A single "accepted" code alongside any rejected entries is a batch:
+    # rejected entries mean the server has not fully disposed of a single-stock
+    # request, so single-stock metadata/409/single-202 semantics must not apply.
+    is_single = len(stock_codes) == 1 and not rejected_entries
     preserve_batch_metadata = request.selection_source in {"import", "image"}
 
     stock_name = request.stock_name if is_single else None
@@ -502,7 +510,7 @@ def _handle_async_analysis_batch(
     ]
     
     # 单只股票且被拒绝：保持 409 兼容性
-    if len(stock_codes) == 1 and duplicates:
+    if is_single and duplicates:
         dup = duplicates[0]
         error_response = DuplicateTaskErrorResponse(
             error="duplicate_task",
@@ -516,7 +524,7 @@ def _handle_async_analysis_batch(
         )
     
     # 单只股票成功（且无 rejected）：保持原有响应格式兼容性
-    if len(stock_codes) == 1 and accepted and not rejected:
+    if is_single and accepted and not rejected:
         task_accepted = TaskAccepted(
             task_id=accepted[0].task_id,
             trace_id=accepted[0].trace_id,
@@ -1330,6 +1338,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     current_price=current_price,
                     change_pct=change_pct,
                     market_phase_summary=market_phase_summary,
+                    asset_type=asset_type_from_canonical_code(record.code),
                 ),
                 summary=ReportSummary(
                     sentiment_score=record.sentiment_score,
@@ -1492,6 +1501,7 @@ def _build_analysis_report(
         change_pct=change_pct,
         model_used=normalize_model_used(meta_data.get("model_used")),
         market_phase_summary=market_phase_summary,
+        asset_type=asset_type_from_canonical_code(raw_stock_code),
     )
 
     def _looks_like_raw_result_payload(candidate: Any) -> bool:

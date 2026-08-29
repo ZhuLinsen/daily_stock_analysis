@@ -90,6 +90,24 @@ const resolveUniqueStockNameContext = (
   return matches.size === 1 ? [...matches.values()][0] : null;
 };
 
+/**
+ * Determine whether an active stock code is a *registered* index canonical.
+ *
+ * Only an exact ``assetType === 'index' && canonicalCode === code`` match
+ * counts as an index; bare same-digit stock codes (e.g. ``000016``) must never
+ * be treated as the ``sh000016`` index via normalize/display fuzzy matching.
+ * The stock-only watchlist action is hidden for index canonicals.
+ */
+const isRegisteredIndexCanonicalCode = (
+  code: string | null,
+  index: StockIndexItem[],
+): boolean => {
+  if (!code) return false;
+  return index.some(
+    (item) => item.assetType === 'index' && item.canonicalCode === code,
+  );
+};
+
 const getMessageSkillNames = (msg: Message): string[] => {
   if (msg.skillNames?.length) return msg.skillNames;
   if (msg.skillName) return [msg.skillName];
@@ -1624,7 +1642,7 @@ const ChatPage: React.FC = () => {
                 </div>
               )}
 
-            {activeStockCode && (
+            {activeStockCode && !isRegisteredIndexCanonicalCode(activeStockCode, stockIndex) && (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-text font-mono">{activeStockCode}</span>
                 <Button

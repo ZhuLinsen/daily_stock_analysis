@@ -569,6 +569,57 @@ describe('ChatPage', () => {
     expect(sentPayload?.context?.stock_name).toBe('红利低波100');
   });
 
+  it('hides the watchlist action for a registered index canonical in Codex mode', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    mockStartStream.mockImplementation(async (_payload, meta) => {
+      meta?.onAccepted?.({
+        type: 'accepted',
+        backend: 'codex_app_server',
+        request_id: 'request-index',
+        session_id: 'session-1',
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析上证50' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    // sh000016 is a registered index canonical → stock-only watchlist hidden.
+    expect(screen.queryByText('加入自选')).not.toBeInTheDocument();
+    expect(screen.queryByText('从自选删除')).not.toBeInTheDocument();
+  });
+
+  it('keeps the watchlist action for a bare stock code that shares digits with an index', async () => {
+    mockGetWatchlist.mockResolvedValue([]);
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析 000001' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    // 000001 (平安银行) is a stock; only the sh000001 index canonical hides the
+    // action, so the bare same-digit stock keeps its watchlist button.
+    expect(await screen.findByText('加入自选')).toBeInTheDocument();
+  });
+
   it('renders the new Codex status copy in English when the UI language is English', async () => {
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
     mockGetStatus.mockResolvedValueOnce({

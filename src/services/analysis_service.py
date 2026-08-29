@@ -36,6 +36,32 @@ from src.services.empty_news import empty_news_disclosure
 logger = logging.getLogger(__name__)
 
 
+def asset_type_from_canonical_code(code: Any) -> Optional[str]:
+    """Derive the authoritative ``asset_type`` for a canonical stock/index code.
+
+    Uses :func:`parse_analysis_target` — the single asset-type authority — on
+    the *canonical* code, never the display code, so ``sh000016`` (index) and
+    bare ``000016`` (stock) are distinguished by the parser rather than by
+    display normalization. Returns ``None`` for market review / empty /
+    unsupported codes, so legacy clients and market reviews simply omit the
+    optional field.
+    """
+    text = str(code or "").strip()
+    if not text:
+        return None
+    if text.upper() == "MARKET":
+        return None
+
+    from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+    target = parse_analysis_target(text)
+    if target.asset_type == ParseStatus.INDEX:
+        return "index"
+    if target.asset_type == ParseStatus.STOCK:
+        return "stock"
+    return None
+
+
 class AnalysisService:
     """
     分析服务
@@ -223,6 +249,7 @@ class AnalysisService:
                 "change_pct": result.change_pct,
                 "model_used": getattr(result, "model_used", None),
                 "market_phase_summary": market_phase_summary,
+                "asset_type": asset_type_from_canonical_code(result.code),
             },
             "summary": {
                 "analysis_summary": result.analysis_summary,

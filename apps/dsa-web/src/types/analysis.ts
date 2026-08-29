@@ -84,6 +84,7 @@ export interface ReportMeta {
   changePct?: number;
   modelUsed?: string;  // 历史元数据快照，仅用于展示，不用于运行时模型选择
   marketPhaseSummary?: MarketPhaseSummary | null;
+  assetType?: 'stock' | 'index';  // 后端权威资产类型；index 用于隐藏 stock-only 自选操作
 }
 
 /** Sentiment label */

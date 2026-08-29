@@ -49,7 +49,7 @@ from src.enums import ReportType
 from src.config import Config
 from src.services.analysis_service import AnalysisService
 from src.services.image_stock_extractor import _call_litellm_vision
-from src.services.task_queue import AnalysisTaskQueue, TaskInfo as QueueTaskInfo, TaskStatus
+from src.services.task_queue import AnalysisTaskQueue, DuplicateTaskError, TaskInfo as QueueTaskInfo, TaskStatus
 
 
 def tearDownModule() -> None:
@@ -3224,6 +3224,174 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(targets[0].asset_type, "index")
         self.assertEqual(targets[0].canonical_id, "sh000016")
         self.assertIsNone(targets[1])
+
+    def test_trigger_analysis_raw_token_limit_counts_rejected_and_duplicate_tokens(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        # 51 non-blank raw tokens: 1 valid + 50 unregistered CSI (rejected).
+        # The pre-resolution limit must reject, otherwise the post-dedup check
+        # (which only sees the single accepted code) would let the request through.
+        codes = ["600519"] + [f"{i:06d}.CSI" for i in range(100000, 100050)]
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            with self.assertRaises(Exception) as ctx:
+                trigger_analysis(
+                    request=SimpleNamespace(
+                        stock_code=None,
+                        stock_codes=codes,
+                        stock_name=None,
+                        original_query=None,
+                        selection_source="manual",
+                        report_type="detailed",
+                        force_refresh=False,
+                        async_mode=True,
+                        notify=True,
+                        analysis_phase="auto",
+                    ),
+                    config=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("最多支持 50", ctx.exception.detail["message"])
+        queue.submit_tasks_batch.assert_not_called()
+
+    def test_trigger_analysis_exactly_fifty_raw_tokens_is_accepted(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        codes = [f"{i:06d}" for i in range(100000, 100050)]
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch("api.v1.endpoints.analysis.resolve_name_to_code", return_value=None):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code=None,
+                    stock_codes=codes,
+                    stock_name=None,
+                    original_query=None,
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(len(queue.submit_tasks_batch.call_args.kwargs["stock_codes"]), 50)
+
+    def test_trigger_analysis_duplicate_plus_rejected_is_batch_not_legacy_409(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        # One accepted code that is already analyzing (duplicate) plus one
+        # rejected code must be a batch: is_single=false, so no legacy 409 and
+        # no single-stock 202. Both the duplicate and the rejected survive in
+        # the batch payload.
+        dup = DuplicateTaskError("600519", "existing-1")
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [dup])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code=None,
+                    stock_codes=["600519", "930956.CSI"],
+                    stock_name=None,
+                    original_query=None,
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = json.loads(response.body)
+        self.assertEqual(len(payload["accepted"]), 0)
+        self.assertEqual(len(payload["duplicates"]), 1)
+        self.assertEqual(payload["duplicates"][0]["stock_code"], "600519")
+        self.assertEqual(len(payload["rejected"]), 1)
+        self.assertEqual(payload["rejected"][0]["stock_code"], "930956.CSI")
+
+    def test_trigger_analysis_valid_plus_rejected_metadata_is_batch(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        accepted_task = SimpleNamespace(
+            task_id="task-600519",
+            trace_id="trace-600519",
+            stock_code="600519",
+            analysis_phase="auto",
+        )
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([accepted_task], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code=None,
+                    stock_codes=["600519", "930956.CSI"],
+                    stock_name="贵州茅台",
+                    original_query="贵州茅台,930956.CSI",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = json.loads(response.body)
+        # Batch payload (not single-stock TaskAccepted), with rejected present.
+        self.assertIn("accepted", payload)
+        self.assertEqual(len(payload["rejected"]), 1)
+        # Single-stock metadata must NOT leak into the batch: stock_name is None.
+        self.assertIsNone(queue.submit_tasks_batch.call_args.kwargs["stock_name"])
+        self.assertIsNone(queue.submit_tasks_batch.call_args.kwargs["original_query"])
+
+    def test_trigger_analysis_single_duplicate_still_returns_409(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        dup = DuplicateTaskError("600519", "existing-1")
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [dup])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="600519",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query=None,
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 409)
+        payload = json.loads(response.body)
+        self.assertEqual(payload["error"], "duplicate_task")
+        self.assertEqual(payload["stock_code"], "600519")
 
     def test_trigger_analysis_unregistered_csi_single_returns_400(self) -> None:
         if trigger_analysis is None:

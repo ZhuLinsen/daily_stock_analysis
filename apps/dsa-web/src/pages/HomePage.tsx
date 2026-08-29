@@ -180,14 +180,15 @@ function writeTaskPanelCollapsedPreference(collapsed: boolean): void {
   }
 }
 
-function countBatchAccepted(result: AnalyzeAsyncResponse): { accepted: number; duplicates: number } {
+function countBatchAccepted(result: AnalyzeAsyncResponse): { accepted: number; duplicates: number; rejected: number } {
   if ('accepted' in result) {
     return {
       accepted: result.accepted.length,
       duplicates: result.duplicates.length,
+      rejected: result.rejected?.length ?? 0,
     };
   }
-  return { accepted: 1, duplicates: 0 };
+  return { accepted: 1, duplicates: 0, rejected: 0 };
 }
 
 function toStockBarItemFromHistoryItem(item: HistoryItem): StockBarItem {
@@ -1244,6 +1245,8 @@ const HomePage: React.FC = () => {
     setBatchAnalyzeStatus(null);
     let acceptedCount = 0;
     let duplicateCount = 0;
+    let rejectedCount = 0;
+    let rejectedReasons: string[] = [];
     let confirmedCodeCount = 0;
     let submissionError: ParsedApiError | null = null;
     try {
@@ -1258,7 +1261,17 @@ const HomePage: React.FC = () => {
           const counts = countBatchAccepted(result);
           acceptedCount += counts.accepted;
           duplicateCount += counts.duplicates;
-          const confirmedInChunk = counts.accepted + counts.duplicates;
+          rejectedCount += counts.rejected;
+          if (counts.rejected > 0 && 'rejected' in result && result.rejected) {
+            rejectedReasons = rejectedReasons.concat(
+              result.rejected.map((entry) => `${entry.stockCode}: ${entry.message}`),
+            );
+          }
+          // accepted + duplicates + rejected is the server's full disposition of
+          // this chunk. Rejected entries are an explicit server response (not a
+          // short/partial response), so they count toward "confirmed" and must
+          // not be mistaken for an incomplete response that halts later chunks.
+          const confirmedInChunk = counts.accepted + counts.duplicates + counts.rejected;
           confirmedCodeCount += Math.min(confirmedInChunk, chunk.length);
           if (confirmedInChunk !== chunk.length) {
             submissionError = getParsedApiError(new Error(t('watchlist.batchIncompleteResponse', {
@@ -1284,12 +1297,16 @@ const HomePage: React.FC = () => {
       setSidebarWorkspaceTab('watchlist');
 
       if (submissionError) {
-        if (acceptedCount > 0 || duplicateCount > 0) {
+        if (acceptedCount > 0 || duplicateCount > 0 || rejectedCount > 0) {
+          const partialKey = rejectedCount > 0
+            ? 'watchlist.batchPartiallySubmittedWithRejected'
+            : 'watchlist.batchPartiallySubmitted';
           setBatchAnalyzeStatus({
             variant: 'warning',
-            message: t('watchlist.batchPartiallySubmitted', {
+            message: t(partialKey, {
               accepted: acceptedCount,
               duplicates: duplicateCount,
+              rejected: rejectedCount,
               unconfirmed: targetCodes.length - confirmedCodeCount,
               error: submissionError.message || t('watchlist.batchFailed'),
             }),
@@ -1300,6 +1317,19 @@ const HomePage: React.FC = () => {
             message: submissionError.message || t('watchlist.batchFailed'),
           });
         }
+        return;
+      }
+
+      if (rejectedCount > 0) {
+        setBatchAnalyzeStatus({
+          variant: 'warning',
+          message: t('watchlist.batchSubmittedWithRejected', {
+            accepted: acceptedCount,
+            duplicates: duplicateCount,
+            rejected: rejectedCount,
+            reason: rejectedReasons[0] ?? t('watchlist.batchFailed'),
+          }),
+        });
         return;
       }
 

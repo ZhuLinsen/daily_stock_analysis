@@ -2124,6 +2124,53 @@ describe('HomePage', () => {
     expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(1);
   });
 
+  it('continues to the next chunk when a full chunk is accepted+duplicate+rejected', async () => {
+    configureWatchlistBatch(51);
+    vi.mocked(analysisApi.analyzeAsync)
+      .mockImplementationOnce(async ({ stockCodes = [] }) => ({
+        accepted: stockCodes.slice(0, 40).map((stockCode, index) => ({
+          taskId: `task-${stockCode}-${index}`,
+          stockCode,
+          status: 'pending' as const,
+        })),
+        duplicates: stockCodes.slice(40, 45).map((stockCode, index) => ({
+          stockCode,
+          existingTaskId: `existing-${index}`,
+          message: 'already running',
+        })),
+        rejected: stockCodes.slice(45).map((stockCode) => ({
+          stockCode,
+          message: 'unregistered CSI index',
+        })),
+        message: 'accepted',
+      }))
+      .mockImplementationOnce(async ({ stockCodes = [] }) => ({
+        accepted: stockCodes.map((stockCode, index) => ({
+          taskId: `task-${stockCode}-${index}`,
+          stockCode,
+          status: 'pending' as const,
+        })),
+        duplicates: [],
+        message: 'accepted',
+      }));
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+    const taskRefreshCallsBeforeSubmit = vi.mocked(analysisApi.getTasks).mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: '分析全部' }));
+
+    // 40 accepted + 5 duplicates + 5 rejected = 50 = full chunk, so the next
+    // chunk is submitted (2 analyzeAsync calls), not reported as incomplete.
+    expect(await screen.findByText(/已提交 41 个任务，5 个正在运行，5 个被拒绝/)).toBeInTheDocument();
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analysisApi.getTasks).mock.calls.length).toBeGreaterThan(taskRefreshCallsBeforeSubmit);
+  });
+
   it('removes the MARKET stock bar item after deleting market review history', async () => {
     let isMarketReviewDeleted = false;
     vi.mocked(historyApi.getStockBarList).mockResolvedValue({

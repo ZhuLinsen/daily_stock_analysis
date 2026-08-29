@@ -323,4 +323,57 @@ describe('ReportOverview', () => {
     expect(screen.getByText('领跌')).toBeInTheDocument();
     expect(screen.getByText('-2.50%')).toBeInTheDocument();
   });
+
+  it('hides the stock-only watchlist card for index reports', () => {
+    render(
+      <ReportOverview
+        meta={{ ...baseMeta, stockCode: 'sh000016', assetType: 'index' }}
+        summary={baseSummary}
+        watchlist={{
+          isInWatchlist: () => false,
+          onToggle: () => {},
+          isActioning: false,
+          actionMessage: null,
+        }}
+      />,
+    );
+
+    expect(screen.queryByText('自选')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /自选/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps the stock-only watchlist card for stock reports', () => {
+    render(
+      <ReportOverview
+        meta={{ ...baseMeta, stockCode: '600519', assetType: 'stock' }}
+        summary={baseSummary}
+        watchlist={{
+          isInWatchlist: () => false,
+          onToggle: () => {},
+          isActioning: false,
+          actionMessage: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('自选')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '加入自选' })).toBeInTheDocument();
+  });
+
+  it('keeps the stock-only watchlist card when assetType is absent (legacy)', () => {
+    render(
+      <ReportOverview
+        meta={{ ...baseMeta, stockCode: '600519' }}
+        summary={baseSummary}
+        watchlist={{
+          isInWatchlist: () => false,
+          onToggle: () => {},
+          isActioning: false,
+          actionMessage: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('自选')).toBeInTheDocument();
+  });
 });

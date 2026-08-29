@@ -44,6 +44,7 @@ from src.report_language import (
     normalize_report_language,
 )
 from src.services.history_service import HistoryService, MarkdownReportGenerationError
+from src.services.analysis_service import asset_type_from_canonical_code
 from src.schemas.decision_action import build_action_fields
 from src.utils.data_processing import (
     normalize_model_used,
@@ -589,6 +590,9 @@ def get_history_detail(
             change_pct=change_pct,
             model_used=normalize_model_used(result.get("model_used")),
             market_phase_summary=market_phase_summary,
+            asset_type=asset_type_from_canonical_code(
+                result.get("storage_stock_code") or result.get("stock_code")
+            ),
         )
         
         summary = ReportSummary(

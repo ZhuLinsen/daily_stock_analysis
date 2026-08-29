@@ -1188,6 +1188,67 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(report.meta.current_price, 200.0)
         self.assertEqual(report.meta.change_pct, 1.23)
 
+    def test_history_detail_reports_index_asset_type_from_canonical_code(self) -> None:
+        """Index reports must expose meta.asset_type='index' so the Web can hide
+        the stock-only watchlist action, and bare same-digit stock codes must
+        remain 'stock' (never index via display normalization)."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        def save_record(code: str, query_id: str) -> int:
+            result = self._build_result()
+            result.code = code
+            saved = self.db.save_analysis_history(
+                result=result,
+                query_id=query_id,
+                report_type="simple",
+                news_content="新闻摘要",
+                context_snapshot=None,
+                save_snapshot=False,
+            )
+            self.assertGreater(saved, 0)
+            with self.db.get_session() as session:
+                row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+                self.assertIsNotNone(row)
+                return row.id
+
+        index_id = save_record("sh000016", "query_asset_type_index")
+        stock_id = save_record("000016", "query_asset_type_stock")
+        stock_id2 = save_record("600519", "query_asset_type_stock2")
+
+        index_report = get_history_detail(str(index_id), db_manager=self.db)
+        self.assertEqual(index_report.meta.asset_type, "index")
+
+        stock_report = get_history_detail(str(stock_id), db_manager=self.db)
+        self.assertEqual(stock_report.meta.asset_type, "stock")
+
+        stock_report2 = get_history_detail(str(stock_id2), db_manager=self.db)
+        self.assertEqual(stock_report2.meta.asset_type, "stock")
+
+    def test_history_detail_omits_asset_type_for_market_review(self) -> None:
+        """Market review records must omit the optional asset_type field."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.code = "MARKET"
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_asset_type_market_review",
+            report_type="market_review",
+            news_content="大盘复盘",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_asset_type_market_review").first()
+            self.assertIsNotNone(row)
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertIsNone(report.meta.asset_type)
+
     @patch("src.auth.is_auth_enabled", return_value=False)
     def test_history_detail_ignores_non_dict_realtime_quote_raw(self, mock_auth) -> None:
         """GET /api/v1/history/{id} should tolerate truthy non-dict realtime_quote_raw."""
