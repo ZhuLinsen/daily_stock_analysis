@@ -458,7 +458,7 @@ class TestManagerLevelMarketGate:
 class TestUnifiedBudgetProbeGate:
     """外层预算探测必须与补充循环同口径:.US 请求不得被切走预算(评审 blocker OR-COR-mx-us-suffix-budget-probe-misclassified)。"""
 
-    def test_us_suffix_keeps_full_adapter_budget(self):
+    def test_us_suffix_short_circuits_to_not_supported(self):
         budgets = []
         manager = TestSupplementMarketDetection._bare_manager([MiaoxiangFetcher(api_key="test-key")])
 
@@ -468,8 +468,10 @@ class TestUnifiedBudgetProbeGate:
                     "source_chain": [], "errors": [], "status": "not_supported"}, None, int(timeout_seconds * 1000)
 
         manager._run_with_retry = fake_run_with_retry
-        manager.get_capital_flow_context("AAPL.US", budget_seconds=10.0)
-        assert budgets and budgets[0] == ("capital_flow", 10.0)  # 全额,不再被缩到 6.0
+        block = manager.get_capital_flow_context("AAPL.US", budget_seconds=10.0)
+        # .US 美股后缀:首层门禁直接 not_supported,不进入 CN 适配器,也不分配预算
+        assert budgets == []
+        assert block.get("status") == "not_supported"
 
     def test_cn_code_with_mx_still_gets_budget_split(self):
         budgets = []

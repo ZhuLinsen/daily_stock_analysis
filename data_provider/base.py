@@ -4589,7 +4589,8 @@ class DataFetcherManager:
         config = get_config()
         stock_code = normalize_stock_code(stock_code)
         timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
-        if _market_tag(stock_code) != "cn" or _is_etf_code(stock_code):
+        # 与预算探测/补充循环同口径(_market_tag 不识别 .US/.N/.O 后缀)
+        if _is_non_cn_request(stock_code) or _is_etf_code(stock_code):
             return self._build_fundamental_block(
                 "not_supported",
                 {},
