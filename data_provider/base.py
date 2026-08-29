@@ -1726,6 +1726,10 @@ class DataFetcherManager:
                 source_order = ["LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher"]
             else:
                 source_order = ["FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "LongbridgeFetcher"]
+            # 消费各数据源当前优先级(含 *_PRIORITY 环境变量):默认优先级与内置链路一致,
+            # 单项调整(如 YFINANCE_PRIORITY=0)即时生效;指数/Longbridge preferred 的锚定首选不被普通优先级覆盖
+            pin_first = bool(is_us_index or prefer_lb)
+            source_order = self._order_us_sources_by_priority(source_order, pin_first=pin_first)
             market_label = "美股指数" if is_us_index else "美股"
 
             for order_index, src_name in enumerate(source_order):
@@ -2498,6 +2502,23 @@ class DataFetcherManager:
                     setattr(primary, f, val)
                     filled.append(f)
         return filled
+
+    def _order_us_sources_by_priority(self, source_order: List[str], *, pin_first: bool) -> List[str]:
+        """按各数据源当前优先级重排美股日线路由(消费既有 *_PRIORITY 配置)。
+
+        稳定排序:各源默认优先级(Finnhub=2/AlphaVantage=3/Yfinance=4/Longbridge=5)
+        与内置链路一致,默认行为不变;单项 *_PRIORITY 调整即时生效。
+        pin_first=True 时保持链路首位(指数固定 Yfinance、Longbridge preferred),
+        其余成员按优先级排序。
+        """
+        self._ensure_concurrency_guards()
+        if not source_order:
+            return source_order
+        priority_by_name = {f.name: f.priority for f in self._get_fetchers_snapshot()}
+        if pin_first:
+            pinned, rest = source_order[0], source_order[1:]
+            return [pinned] + sorted(rest, key=lambda name: priority_by_name.get(name, 10 ** 9))
+        return sorted(source_order, key=lambda name: priority_by_name.get(name, 10 ** 9))
 
     def _longbridge_preferred(self, capability: str = "realtime_quote") -> bool:
         """Return True when Longbridge keys are configured and available.
