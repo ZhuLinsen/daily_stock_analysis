@@ -48,8 +48,12 @@ const {
   mockStockIndex: [
     { canonicalCode: '600519.SH', displayCode: '600519', nameZh: '贵州茅台', aliases: ['茅台'], market: 'CN', assetType: 'stock', active: true },
     { canonicalCode: '300750.SZ', displayCode: '300750', nameZh: '宁德时代', aliases: [], market: 'CN', assetType: 'stock', active: true },
+    { canonicalCode: '000001.SZ', displayCode: '000001', nameZh: '平安银行', aliases: [], market: 'CN', assetType: 'stock', active: true },
     { canonicalCode: 'BABA', displayCode: 'BABA', nameZh: '阿里巴巴', aliases: [], market: 'US', assetType: 'stock', active: true },
     { canonicalCode: '09988.HK', displayCode: '09988', nameZh: '阿里巴巴', aliases: [], market: 'HK', assetType: 'stock', active: true },
+    { canonicalCode: 'sh000001', displayCode: 'sh000001', nameZh: '上证指数', aliases: [], market: 'CN', assetType: 'index', active: true },
+    { canonicalCode: 'sh000016', displayCode: 'sh000016', nameZh: '上证50', aliases: ['000016.SH'], market: 'CN', assetType: 'index', active: true },
+    { canonicalCode: 'csi930955', displayCode: '930955.CSI', nameZh: '红利低波100', aliases: ['930955.CSI'], market: 'CN', assetType: 'index', active: true },
   ],
 }));
 
@@ -505,6 +509,64 @@ describe('ChatPage', () => {
     await act(async () => {
       await stream.promise;
     });
+  });
+
+  it('resolves a registered index name to its canonical code without stripping the prefix', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    let sentPayload: { context?: { stock_code: string; stock_name: string | null } } | undefined;
+    mockStartStream.mockImplementation(async (payload) => {
+      sentPayload = payload as typeof sentPayload;
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析上证指数' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    // sh000001 (上证指数) must be preserved verbatim — normalizeStockCode would
+    // strip it to 000001 and collide with 平安银行 (000001.SZ).
+    expect(sentPayload?.context?.stock_code).toBe('sh000001');
+    expect(sentPayload?.context?.stock_name).toBe('上证指数');
+  });
+
+  it('resolves a registered CSI index display alias to its canonical code', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    let sentPayload: { context?: { stock_code: string; stock_name: string | null } } | undefined;
+    mockStartStream.mockImplementation(async (payload) => {
+      sentPayload = payload as typeof sentPayload;
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析红利低波100' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    expect(sentPayload?.context?.stock_code).toBe('csi930955');
+    expect(sentPayload?.context?.stock_name).toBe('红利低波100');
   });
 
   it('renders the new Codex status copy in English when the UI language is English', async () => {

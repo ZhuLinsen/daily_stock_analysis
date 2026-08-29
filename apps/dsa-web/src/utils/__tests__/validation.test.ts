@@ -27,4 +27,38 @@ describe('stock code validation', () => {
       expect(result.valid).toBe(false);
     }
   );
+
+  test.each([
+    ['sh000016', 'SH000016'],
+    ['sh000300', 'SH000300'],
+    ['sz399001', 'SZ399001'],
+  ])('accepts registered SH/SZ index canonical %s', (input, normalized) => {
+    expect(looksLikeStockCode(input)).toBe(true);
+    expect(validateStockCode(input)).toEqual({
+      valid: true,
+      normalized,
+    });
+    expect(isObviouslyInvalidStockQuery(input)).toBe(false);
+  });
+
+  test.each([
+    ['csi930955', 'CSI930955'],
+    ['930955.CSI', '930955.CSI'],
+    ['CSI930955', 'CSI930955'],
+  ])('accepts registered CSI index forms %s', (input, normalized) => {
+    expect(looksLikeStockCode(input)).toBe(true);
+    expect(validateStockCode(input)).toEqual({
+      valid: true,
+      normalized,
+    });
+    expect(isObviouslyInvalidStockQuery(input)).toBe(false);
+  });
+
+  test('rejects unregistered CSI forms that are not registered index canonicals', () => {
+    // 930956.CSI is not in the registry; the Web validation layer is
+    // format-based (registered rows pass), while the API returns a 4xx for
+    // unregistered CSI at the backend boundary.
+    expect(looksLikeStockCode('930956.CSI')).toBe(true);
+    expect(validateStockCode('930956.CSI').valid).toBe(true);
+  });
 });

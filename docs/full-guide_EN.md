@@ -676,7 +676,13 @@ Indices share the A-share trading-day semantics: when the trading-day check is e
 
 Index realtime quotes use a dedicated fixed chain: Tencent → Sina → Eastmoney single-stock endpoint → TickFlow. SH/SZ indices are requested with explicit symbols (`sh000016`/`sz399001`); CSI indices are served only by the Eastmoney single-stock endpoint (`2.{code}` secid). The explicit index identity is preserved end-to-end and never degrades into the colliding stock quote.
 
-> **Phase 2 boundary**: default `STOCK_LIST`, `--schedule`, Web/API autocomplete and analysis entrypoints, Bot, and the GitHub Actions daily workflow do not yet expose index entrypoints; this capability is available only through the one-shot `--stocks` entry.
+### Web/API index entry (Phase 2 PR1)
+
+Web autocomplete and search now expose registered indices: searching a registry Chinese name (e.g. `上证50`) or an explicit code (`sh000016`, `930955.CSI`) returns the matching index row and lets you submit its analysis; popular candidates still show stocks only (`assetType=stock`), never indices.
+
+The API `/analyze` endpoint builds a structured `AnalysisTarget` for explicit index inputs: `sh000016` is enqueued as `asset_type=INDEX` with `canonical_id=sh000016`, and `930955.CSI`/`csi930955` converge to `csi930955`. Indices and same-digit stocks (e.g. `sh000016` vs `000016`) are deduplicated independently and never collapse. An unregistered CSI input (e.g. `930956.CSI`) returns an explicit 4xx for a single async or sync request, and in an async batch only that target enters the response `rejected` list while the rest of the batch is enqueued normally. Chinese-name inputs (e.g. `贵州茅台`) keep the existing stock-name resolution path and never enter index classification.
+
+> **Phase 2 boundary**: default `STOCK_LIST`, `--schedule`, Bot, and the GitHub Actions daily workflow do not yet expose index entrypoints; Web/API and the one-shot `--stocks` entry support indices, with Bot/scheduled/daily-workflow entries landing in later Phase 2 PRs.
 
 ### Use real Futu holdings as the analysis list
 

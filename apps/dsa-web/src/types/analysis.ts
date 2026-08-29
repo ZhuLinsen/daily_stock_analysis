@@ -447,9 +447,15 @@ export interface BatchDuplicateTaskItem {
   message: string;
 }
 
+export interface BatchRejectedTaskItem {
+  stockCode: string;
+  message: string;
+}
+
 export interface BatchTaskAcceptedResponse {
   accepted: BatchTaskAcceptedItem[];
   duplicates: BatchDuplicateTaskItem[];
+  rejected?: BatchRejectedTaskItem[];
   message: string;
 }
 

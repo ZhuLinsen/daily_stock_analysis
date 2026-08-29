@@ -39,11 +39,10 @@ export async function loadStockIndex(): Promise<IndexLoadResult> {
       ? unpackTuples(data as StockIndexTuple[])
       : data as StockIndexItem[];
 
-    // The shared payload may now carry ``assetType=index`` rows, but the
-    // current autocomplete/popular/group consumers must not see them. Filter
-    // index rows out before constructing the successful result so stock/ETF
-    // behaviour is unchanged.
-    const visibleItems = items.filter(item => item.assetType !== 'index');
+    // Registered index rows flow to autocomplete/search/group consumers. The
+    // per-consumer gates (popular keeps stock-only) are enforced by each
+    // consumer, not by a global filter here.
+    const visibleItems = items;
 
     return {
       data: visibleItems,

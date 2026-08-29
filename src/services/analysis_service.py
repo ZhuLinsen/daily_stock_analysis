@@ -62,6 +62,7 @@ class AnalysisService:
         query_source: str = "api",
         portfolio_context: Optional[Dict[str, Any]] = None,
         report_language: Optional[str] = None,
+        analysis_target: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析
@@ -73,6 +74,8 @@ class AnalysisService:
             query_id: 查询 ID（可选）
             send_notification: 是否发送通知（API 触发默认发送）
             analysis_phase: 请求的分析阶段覆盖（auto/premarket/intraday/postmarket）
+            analysis_target: 可选的结构化分析目标（指数目标贯穿到 pipeline，
+                否则指数会退化为股票语义）
             
         Returns:
             分析结果字典，包含:
@@ -128,6 +131,7 @@ class AnalysisService:
                 skip_analysis=False,
                 single_stock_notify=send_notification,
                 report_type=rt,
+                analysis_target=analysis_target,
             )
             
             if result is None:

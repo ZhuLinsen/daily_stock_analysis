@@ -3119,6 +3119,292 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             notify=True,
         )
 
+    def test_trigger_analysis_async_index_submits_structured_target(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        task = SimpleNamespace(
+            task_id="task-index-1",
+            trace_id="trace-index-1",
+            stock_code="sh000016",
+            analysis_phase="auto",
+        )
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([task], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="sh000016",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query="sh000016",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        call_kwargs = queue.submit_tasks_batch.call_args.kwargs
+        self.assertEqual(call_kwargs["stock_codes"], ["sh000016"])
+        targets = call_kwargs["analysis_targets"]
+        self.assertEqual(len(targets), 1)
+        self.assertIsNotNone(targets[0])
+        self.assertEqual(targets[0].asset_type, "index")
+        self.assertEqual(targets[0].canonical_id, "sh000016")
+
+    def test_trigger_analysis_async_csi_alias_converges_to_canonical(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        task = SimpleNamespace(
+            task_id="task-csi-1",
+            trace_id="trace-csi-1",
+            stock_code="csi930955",
+            analysis_phase="auto",
+        )
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([task], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="930955.CSI",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query="930955.CSI",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        call_kwargs = queue.submit_tasks_batch.call_args.kwargs
+        self.assertEqual(call_kwargs["stock_codes"], ["csi930955"])
+        self.assertEqual(call_kwargs["analysis_targets"][0].canonical_id, "csi930955")
+
+    def test_trigger_analysis_batch_index_and_same_digit_stock_do_not_collapse(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code=None,
+                    stock_codes=["sh000016", "000016"],
+                    stock_name=None,
+                    original_query=None,
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        call_kwargs = queue.submit_tasks_batch.call_args.kwargs
+        self.assertEqual(call_kwargs["stock_codes"], ["sh000016", "000016"])
+        targets = call_kwargs["analysis_targets"]
+        self.assertEqual(targets[0].asset_type, "index")
+        self.assertEqual(targets[0].canonical_id, "sh000016")
+        self.assertIsNone(targets[1])
+
+    def test_trigger_analysis_unregistered_csi_single_returns_400(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            with self.assertRaises(Exception) as ctx:
+                trigger_analysis(
+                    request=SimpleNamespace(
+                        stock_code="930956.CSI",
+                        stock_codes=None,
+                        stock_name=None,
+                        original_query="930956.CSI",
+                        selection_source="manual",
+                        report_type="detailed",
+                        force_refresh=False,
+                        async_mode=True,
+                        notify=True,
+                        analysis_phase="auto",
+                    ),
+                    config=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("unregistered CSI index", ctx.exception.detail["message"])
+        queue.submit_tasks_batch.assert_not_called()
+
+    def test_trigger_analysis_unregistered_csi_sync_single_returns_400(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        with self.assertRaises(Exception) as ctx:
+            trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="csi930956",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query="csi930956",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=False,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("unregistered CSI index", ctx.exception.detail["message"])
+
+    def test_trigger_analysis_batch_rejects_unregistered_csi_in_rejected_field(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        accepted_task = SimpleNamespace(
+            task_id="task-600519",
+            trace_id="trace-600519",
+            stock_code="600519",
+            analysis_phase="auto",
+        )
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([accepted_task], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code=None,
+                    stock_codes=["600519", "930956.CSI"],
+                    stock_name=None,
+                    original_query=None,
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        body = response.body if hasattr(response, "body") else None
+        if body is not None:
+            import json as _json
+
+            payload = _json.loads(body)
+        else:
+            payload = response.model_dump()
+        self.assertEqual(payload["accepted"][0]["stock_code"], "600519")
+        self.assertEqual(len(payload["rejected"]), 1)
+        self.assertEqual(payload["rejected"][0]["stock_code"], "930956.CSI")
+        self.assertIn("unregistered CSI index", payload["rejected"][0]["message"])
+        # The valid stock still reaches the queue.
+        self.assertEqual(queue.submit_tasks_batch.call_args.kwargs["stock_codes"], ["600519"])
+
+    def test_trigger_analysis_name_input_stays_on_name_resolution(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        with patch("api.v1.endpoints.analysis.resolve_name_to_code", return_value="600519") as resolve_mock, \
+             patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="贵州茅台",
+                    stock_codes=None,
+                    stock_name="贵州茅台",
+                    original_query="贵州茅台",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        resolve_mock.assert_called_once_with("贵州茅台")
+        call_kwargs = queue.submit_tasks_batch.call_args.kwargs
+        self.assertEqual(call_kwargs["stock_codes"], ["600519"])
+        self.assertNotIn("analysis_targets", call_kwargs)
+
+    def test_trigger_analysis_sync_all_rejected_returns_400(self) -> None:
+        """Sync mode with only unregistered targets must 400, not IndexError."""
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        with self.assertRaises(Exception) as ctx:
+            trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code=None,
+                    stock_codes=["930956.CSI", "csi930956"],
+                    stock_name=None,
+                    original_query=None,
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=False,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("unregistered CSI index", ctx.exception.detail["message"])
+
+    def test_trigger_analysis_async_all_rejected_returns_400(self) -> None:
+        """Async batch with only unregistered targets must 400, not 202+empty."""
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            with self.assertRaises(Exception) as ctx:
+                trigger_analysis(
+                    request=SimpleNamespace(
+                        stock_code=None,
+                        stock_codes=["930956.CSI", "csi930957"],
+                        stock_name=None,
+                        original_query=None,
+                        selection_source="manual",
+                        report_type="detailed",
+                        force_refresh=False,
+                        async_mode=True,
+                        notify=True,
+                        analysis_phase="auto",
+                    ),
+                    config=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("unregistered CSI index", ctx.exception.detail["message"])
+        queue.submit_tasks_batch.assert_not_called()
+
     def test_trigger_analysis_accepts_camel_case_report_language_alias(self) -> None:
         if trigger_analysis is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -3852,6 +4138,168 @@ class BatchTaskQueueContractTestCase(unittest.TestCase):
         self.assertEqual(updated.progress, 62)
         self.assertEqual(updated.message, "LLM 正在生成分析结果")
         self.assertEqual(events, [("task_progress", updated.to_dict())])
+
+    def _executor_stub_queue(self) -> AnalysisTaskQueue:
+        queue = AnalysisTaskQueue(max_workers=1)
+        queue._executor = type("ExecutorStub", (), {"submit": lambda self, *args, **kwargs: Future()})()
+        return queue
+
+    def test_index_and_same_digit_stock_do_not_collapse_in_task_queue(self) -> None:
+        from src.services.stock_list_parser import parse_analysis_target
+
+        index_target = parse_analysis_target("sh000016")
+        self.assertEqual(index_target.asset_type, "index")
+        queue = self._executor_stub_queue()
+
+        accepted, duplicates = queue.submit_tasks_batch(
+            ["sh000016", "000016"],
+            analysis_targets=[index_target, None],
+            report_type="detailed",
+        )
+
+        self.assertEqual(duplicates, [])
+        self.assertEqual(len(accepted), 2)
+        codes = sorted(task.stock_code for task in accepted)
+        self.assertEqual(codes, ["000016", "sh000016"])
+        # The index task keeps a canonical-id dedupe key; the stock keeps its
+        # code-based key, so neither collapses with the other.
+        index_task = next(task for task in accepted if task.stock_code == "sh000016")
+        stock_task = next(task for task in accepted if task.stock_code == "000016")
+        self.assertEqual(index_task.dedupe_key, "sh000016")
+        self.assertNotEqual(stock_task.dedupe_key, "sh000016")
+        self.assertIs(index_task.analysis_target, index_target)
+
+    def test_csi_aliases_converge_to_single_task_queue_key(self) -> None:
+        from src.services.stock_list_parser import parse_analysis_target
+
+        a = parse_analysis_target("930955.CSI")
+        b = parse_analysis_target("csi930955")
+        self.assertEqual(a.asset_type, "index")
+        self.assertEqual(b.asset_type, "index")
+        self.assertEqual(a.canonical_id, "csi930955")
+        self.assertEqual(b.canonical_id, "csi930955")
+
+        queue = self._executor_stub_queue()
+        accepted, duplicates = queue.submit_tasks_batch(
+            ["930955.CSI", "csi930955"],
+            analysis_targets=[a, b],
+            report_type="detailed",
+        )
+
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(len(duplicates), 1)
+        self.assertEqual(accepted[0].stock_code, "csi930955")
+        self.assertEqual(accepted[0].dedupe_key, "csi930955")
+
+    def test_mixed_quad_batch_produces_four_independent_tasks(self) -> None:
+        from src.services.stock_list_parser import parse_analysis_target
+
+        index_sh = parse_analysis_target("sh000016")
+        stock_bare = parse_analysis_target("000016")
+        stock_600 = parse_analysis_target("600519")
+        index_csi = parse_analysis_target("930955.CSI")
+        for target in (index_sh, index_csi):
+            self.assertEqual(target.asset_type, "index")
+        for target in (stock_bare, stock_600):
+            self.assertEqual(target.asset_type, "stock")
+
+        queue = self._executor_stub_queue()
+        accepted, duplicates = queue.submit_tasks_batch(
+            ["sh000016", "000016", "600519", "930955.CSI"],
+            analysis_targets=[index_sh, stock_bare, stock_600, index_csi],
+            report_type="detailed",
+        )
+
+        self.assertEqual(duplicates, [])
+        self.assertEqual(len(accepted), 4)
+        # Index targets keep their parser canonical id (lowercase), so CSI alias
+        # input is submitted under its canonical identity.
+        self.assertEqual(
+            sorted(task.stock_code for task in accepted),
+            ["000016", "600519", "csi930955", "sh000016"],
+        )
+        # INDEX keys are canonical ids; STOCK keys stay code-based and distinct.
+        keys = {task.stock_code: task.dedupe_key for task in accepted}
+        self.assertEqual(keys["sh000016"], "sh000016")
+        self.assertEqual(keys["csi930955"], "csi930955")
+        self.assertNotEqual(keys["000016"], "sh000016")
+        self.assertNotEqual(keys["600519"], "csi930955")
+
+    def test_stock_dedup_semantics_unchanged_with_analysis_targets_none(self) -> None:
+        queue = self._executor_stub_queue()
+        accepted, duplicates = queue.submit_tasks_batch(["600519"], report_type="detailed")
+
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(duplicates, [])
+        self.assertTrue(queue.is_analyzing("600519.SH"))
+        self.assertEqual(queue.get_analyzing_task_id("600519.SH"), accepted[0].task_id)
+        self.assertIsNone(accepted[0].analysis_target)
+        self.assertIsNotNone(accepted[0].dedupe_key)
+
+    def test_worker_removes_index_task_by_stored_dedupe_key(self) -> None:
+        from src.services.stock_list_parser import parse_analysis_target
+
+        index_target = parse_analysis_target("sh000016")
+        queue = self._executor_stub_queue()
+        accepted, _ = queue.submit_tasks_batch(
+            ["sh000016"],
+            analysis_targets=[index_target],
+            report_type="detailed",
+        )
+        task = accepted[0]
+
+        service_instance = MagicMock()
+        service_instance.analyze_stock.return_value = {"stock_code": "sh000016", "stock_name": "上证50"}
+        with patch("src.services.analysis_service.AnalysisService", return_value=service_instance):
+            result = queue._execute_task(
+                task.task_id,
+                task.stock_code,
+                task.report_type,
+                False,
+                True,
+                None,
+                None,
+                index_target,
+            )
+
+        self.assertIsNotNone(result)
+        # The canonical-id key must be removed on completion, leaving no residue.
+        self.assertNotIn("sh000016", queue._analyzing_stocks)
+        self.assertIs(
+            service_instance.analyze_stock.call_args.kwargs["analysis_target"],
+            index_target,
+        )
+
+    def test_worker_failure_removes_index_task_by_stored_dedupe_key(self) -> None:
+        from src.services.stock_list_parser import parse_analysis_target
+
+        index_target = parse_analysis_target("sh000016")
+        queue = self._executor_stub_queue()
+        accepted, _ = queue.submit_tasks_batch(
+            ["sh000016"],
+            analysis_targets=[index_target],
+            report_type="detailed",
+        )
+        task = accepted[0]
+        self.assertIn("sh000016", queue._analyzing_stocks)
+
+        service_instance = MagicMock()
+        service_instance.analyze_stock.side_effect = RuntimeError("boom")
+        with patch("src.services.analysis_service.AnalysisService", return_value=service_instance):
+            queue._execute_task(
+                task.task_id,
+                task.stock_code,
+                task.report_type,
+                False,
+                True,
+                None,
+                None,
+                index_target,
+            )
+
+        # The failure branch must clear the stored canonical-id key so the index
+        # does not linger in the analyzing set (a residue would force 409 forever).
+        self.assertNotIn("sh000016", queue._analyzing_stocks)
 
 
 class ImageStockExtractorContractTestCase(unittest.TestCase):

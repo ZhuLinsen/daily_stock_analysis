@@ -78,7 +78,12 @@ const resolveUniqueStockNameContext = (
     if (!terms.some((term) => normalizedMessage.includes(term.toLocaleLowerCase()))) {
       continue;
     }
-    const stockCode = normalizeStockCode(item.canonicalCode);
+    // Index canonical codes (sh000001 / csi930955) must be preserved verbatim —
+    // normalizeStockCode would strip the exchange prefix and collide with a
+    // same-digit stock (sh000001 → 000001 vs 平安银行 000001).
+    const stockCode = item.assetType === 'index'
+      ? item.canonicalCode
+      : normalizeStockCode(item.canonicalCode);
     matches.set(stockCode, { stock_code: stockCode, stock_name: item.nameZh || null });
   }
 

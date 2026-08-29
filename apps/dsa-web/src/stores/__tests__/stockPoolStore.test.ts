@@ -554,6 +554,62 @@ describe('stockPoolStore', () => {
     }));
   });
 
+  it('accepts a registered SH index canonical from autocomplete without local validation errors', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-index-1',
+      stockCode: 'sh000016',
+      status: 'pending',
+      message: 'accepted',
+    } as never);
+
+    await useStockPoolStore.getState().submitAnalysis({
+      stockCode: 'sh000016',
+      stockName: '上证50',
+      originalQuery: 'sh000016',
+      selectionSource: 'autocomplete',
+    });
+
+    const state = useStockPoolStore.getState();
+    expect(state.inputError).toBeUndefined();
+    expect(state.isAnalyzing).toBe(false);
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: 'SH000016',
+      reportType: 'detailed',
+      stockName: '上证50',
+      originalQuery: 'sh000016',
+      selectionSource: 'autocomplete',
+      notify: true,
+    }));
+  });
+
+  it('accepts a registered CSI index canonical from autocomplete', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-csi-1',
+      stockCode: 'csi930955',
+      status: 'pending',
+      message: 'accepted',
+    } as never);
+
+    await useStockPoolStore.getState().submitAnalysis({
+      stockCode: 'csi930955',
+      stockName: '红利低波100',
+      originalQuery: 'csi930955',
+      selectionSource: 'autocomplete',
+    });
+
+    const state = useStockPoolStore.getState();
+    expect(state.inputError).toBeUndefined();
+    expect(state.isAnalyzing).toBe(false);
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: 'CSI930955',
+      reportType: 'detailed',
+      stockName: '红利低波100',
+      originalQuery: 'csi930955',
+      selectionSource: 'autocomplete',
+      notify: true,
+    }));
+  });
+
   it('merges newly discovered history items during silent refresh', async () => {
     useStockPoolStore.setState({
       historyItems: [historyItem],

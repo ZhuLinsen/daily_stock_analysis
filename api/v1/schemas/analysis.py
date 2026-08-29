@@ -259,11 +259,29 @@ class BatchDuplicateTaskItem(BaseModel):
     })
 
 
+class RejectedTaskItem(BaseModel):
+    """批量异步任务中被明确拒绝的单个目标项（如未登记 CSI 指数）。"""
+
+    stock_code: str = Field(..., description="被拒绝的目标代码")
+    message: str = Field(..., description="拒绝原因")
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "stock_code": "930956.CSI",
+            "message": "unregistered CSI index: '930956.CSI' is not in the index registry",
+        }
+    })
+
+
 class BatchTaskAcceptedResponse(BaseModel):
     """批量异步任务接受响应。"""
 
     accepted: List[BatchTaskAcceptedItem] = Field(default_factory=list, description="成功提交的任务列表")
     duplicates: List[BatchDuplicateTaskItem] = Field(default_factory=list, description="重复而跳过的任务列表")
+    rejected: Optional[List[RejectedTaskItem]] = Field(
+        None,
+        description="批量中被明确拒绝的目标列表（如未登记 CSI 指数），仅在异步批量请求中返回",
+    )
     message: str = Field(..., description="汇总信息")
 
     model_config = ConfigDict(json_schema_extra={

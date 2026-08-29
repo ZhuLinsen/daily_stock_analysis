@@ -188,7 +188,7 @@ describe('stockIndexLoader', () => {
       expect(fetchCallArgs).toContain('?_t=');
     });
 
-    test('filters out assetType=index rows from the returned data', async () => {
+    test('keeps assetType=index rows in the returned data', async () => {
       const withIndex = [
         ...mockIndexData,
         {
@@ -214,13 +214,16 @@ describe('stockIndexLoader', () => {
 
       expect(result.loaded).toBe(true);
       expect(result.fallback).toBe(false);
-      // Index rows are hidden from the current consumers.
-      expect(result.data.some(item => item.assetType === 'index')).toBe(false);
+      // Registered index rows flow to autocomplete/search/group consumers.
+      expect(result.data.some(item => item.assetType === 'index')).toBe(true);
+      const indexRow = result.data.find(item => item.assetType === 'index');
+      expect(indexRow?.canonicalCode).toBe('sh000300');
+      expect(indexRow?.nameZh).toBe('沪深300');
       // Stock rows are preserved.
-      expect(result.data).toHaveLength(mockIndexData.length);
+      expect(result.data).toHaveLength(mockIndexData.length + 1);
     });
 
-    test('filters index rows from compressed tuple payload', async () => {
+    test('keeps index rows from compressed tuple payload', async () => {
       const compressedWithIndex = [
         ['600519.SH', '600519', '贵州茅台', 'guizhoumaotai', 'gzmt', ['茅台'], 'CN', 'stock', true, 100],
         ['sh000300', 'sh000300', '沪深300', 'hushen300', 'hs300', ['000300.SH'], 'CN', 'index', true, 100],
@@ -234,8 +237,10 @@ describe('stockIndexLoader', () => {
       const result = await loadStockIndex();
 
       expect(result.loaded).toBe(true);
-      expect(result.data).toHaveLength(1);
+      expect(result.data).toHaveLength(2);
       expect(result.data[0].canonicalCode).toBe('600519.SH');
+      expect(result.data[1].canonicalCode).toBe('sh000300');
+      expect(result.data[1].nameZh).toBe('沪深300');
     });
   });
 

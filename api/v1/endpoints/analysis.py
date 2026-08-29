@@ -21,6 +21,7 @@ import copy
 import json
 import logging
 import re
+import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,7 @@ from api.v1.schemas.analysis import (
     BatchTaskAcceptedResponse,
     BatchTaskAcceptedItem,
     BatchDuplicateTaskItem,
+    RejectedTaskItem,
     TaskStatus,
     TaskInfo,
     TaskListResponse,
@@ -75,6 +77,7 @@ from src.market_phase_summary import (
     rebuild_market_phase_summary_for_stock_code,
 )
 from src.services.stock_code_utils import is_code_like, resolve_index_stock_code_for_analysis
+from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.schemas.decision_action import build_action_fields
 from src.services.name_to_code_resolver import resolve_name_to_code
@@ -226,32 +229,68 @@ def _is_obviously_invalid_analysis_input(text: str) -> bool:
     return has_letters and has_digits
 
 
-def _resolve_and_normalize_input(raw_value: str) -> str:
+def _resolve_analysis_input(raw_value: str):
     """
-    Resolve and normalize a stock input for analysis requests.
+    Resolve one analysis request input into ``(code, analysis_target)``.
 
-    Code-like values keep the existing canonical path.
-    Non-code inputs must resolve to a known stock code. Obvious garbage
-    input is rejected before expensive resolver and task-queue work.
+    Code-like tokens go through :func:`parse_analysis_target` (the single
+    asset-type authority): registered indices keep their structured
+    ``AnalysisTarget`` (canonical id + index semantics), unsupported targets
+    (e.g. unregistered ``930956.CSI``) are surfaced with their reason so the
+    caller can reject them explicitly, and stock tokens keep the legacy
+    resolution path. Non-code names (e.g. ``贵州茅台``) keep
+    :func:`resolve_name_to_code` and never enter index classification.
     """
     text = (raw_value or "").strip()
     if not text:
-        return ""
+        return None
+
+    # CSI explicit forms (``csi930955`` / ``930955.CSI`` / ``CSI930955``) are
+    # explicit code forms but ``is_code_like`` does not recognise the ``.CSI``
+    # suffix; route them through parse_analysis_target so registered CSI
+    # converges to its canonical index identity and unregistered CSI surfaces
+    # as an explicit unsupported error (never a name-resolution fallback).
+    normalized_csi = unicodedata.normalize("NFKC", text).strip().casefold()
+    if re.fullmatch(r"(?:csi\d{6}|\d{6}\.csi)", normalized_csi):
+        target = parse_analysis_target(text)
+        if target.asset_type == ParseStatus.INDEX:
+            return (target.canonical_id, target)
+        return (text, target)
+
+    # SH/SZ prefixed six-digit forms (``sh000016`` / ``SH000016``) are explicit
+    # index/stock code shapes, but ``is_code_like`` rejects them when the bare
+    # digits do not match the exchange's *stock* digit rules (``000016`` is an
+    # SH index yet classifies as an SZ stock digit shape). Route them through
+    # parse_analysis_target so registered SH/SZ indices keep their structured
+    # target; unknown prefixed forms degrade to the stock path as usual.
+    normalized_sh_sz = re.fullmatch(r"(sh|sz)(\d{6})", normalized_csi)
+    if normalized_sh_sz is not None:
+        target = parse_analysis_target(text)
+        if target.asset_type == ParseStatus.INDEX:
+            return (target.canonical_id, target)
+        return (resolve_index_stock_code_for_analysis(text), None)
 
     if is_code_like(text):
-        return resolve_index_stock_code_for_analysis(text)
+        target = parse_analysis_target(text)
+        if target.asset_type == ParseStatus.INDEX:
+            return (target.canonical_id, target)
+        if target.asset_type == ParseStatus.UNSUPPORTED:
+            return (text, target)
+        # Stock target: keep the existing canonical resolution path and do not
+        # carry a stock target downstream (stock semantics must not change).
+        return (resolve_index_stock_code_for_analysis(text), None)
 
     if text.isdigit() and len(text) == 4:
         resolved_index_code = resolve_index_stock_code_for_analysis(text)
         if resolved_index_code != canonical_stock_code(text):
-            return resolved_index_code
+            return (resolved_index_code, None)
 
     if _is_obviously_invalid_analysis_input(text):
         raise _invalid_analysis_input_error()
 
     resolved = resolve_name_to_code(text)
     if resolved:
-        return canonical_stock_code(resolved)
+        return (canonical_stock_code(resolved), None)
 
     raise _invalid_analysis_input_error()
 
@@ -314,19 +353,36 @@ def trigger_analysis(
         raise api_error(400, "validation_error", "必须提供 stock_code 或 stock_codes 参数")
 
     # Normalize and de-duplicate inputs while preserving compatibility.
-    resolved = [_resolve_and_normalize_input(c) for c in stock_codes]
-    
+    # Code-like tokens go through parse_analysis_target (the single asset-type
+    # authority) so registered indices keep their structured target; non-code
+    # names keep the legacy stock-name resolution path.
+    resolved_entries = [_resolve_analysis_input(c) for c in stock_codes]
+
     seen = set()
     unique_codes = []
-    for code in resolved:
+    unique_targets = []
+    rejected_entries = []
+    for entry in resolved_entries:
+        if entry is None:
+            continue
+        code, target = entry
         if not code:
             continue
-        # Use normalize_stock_code to ensure '600519' and '600519.SH' are merged
-        norm = normalize_stock_code(code)
+        if target is not None and target.asset_type == ParseStatus.UNSUPPORTED:
+            rejected_entries.append((code, target))
+            continue
+        # 去重键按 asset_type 分支：INDEX 用 canonical_id（指数与同码股票不折叠、
+        # CSI alias 收敛），STOCK 保持 normalize_stock_code 既有语义
+        # （'600519' 与 '600519.SH' 合并）。
+        if target is not None and target.asset_type == ParseStatus.INDEX:
+            norm = target.canonical_id
+        else:
+            norm = normalize_stock_code(code)
         if norm not in seen:
             seen.add(norm)
             unique_codes.append(code)
-    
+            unique_targets.append(target)
+
     stock_codes = unique_codes
 
     # Limit the number of stocks in a single request to prevent DoS
@@ -335,7 +391,13 @@ def trigger_analysis(
         raise api_error(400, "validation_error", f"单次分析请求最多支持 {MAX_BATCH_SIZE} 只股票")
 
     if not stock_codes:
-        raise api_error(400, "validation_error", "股票代码不能为空或仅包含空白字符")
+        if not rejected_entries:
+            raise api_error(400, "validation_error", "股票代码不能为空或仅包含空白字符")
+        # 全部目标都被拒绝（单请求或批量全拒）：无任务被接受时返回 202 会误导
+        # 客户端，一律明确 400；部分被拒则走下方 rejected 语义。
+        code, target = rejected_entries[0]
+        reason = target.unsupported_reason or f"不支持的目标: {code}"
+        raise api_error(400, "validation_error", reason)
 
     # Sync mode only supports single-stock analysis.
     if not request.async_mode:
@@ -345,18 +407,35 @@ def trigger_analysis(
                 "validation_error",
                 "同步模式仅支持单只股票分析，请使用 async_mode=true 进行批量分析",
             )
-        return _handle_sync_analysis(stock_codes[0], request)
+        if rejected_entries:
+            # 同步模式不支持 rejected 语义：只要存在被拒绝目标（含全部被拒绝）
+            # 就以第一个未登记目标的明确校验错误返回 4xx。
+            code, target = rejected_entries[0]
+            reason = target.unsupported_reason or f"不支持的目标: {code}"
+            raise api_error(400, "validation_error", reason)
+        return _handle_sync_analysis(stock_codes[0], request, analysis_target=unique_targets[0] if unique_targets else None)
 
     # Async mode submits one task per stock.
-    return _handle_async_analysis_batch(stock_codes, request)
+    return _handle_async_analysis_batch(stock_codes, request, analysis_targets=unique_targets, rejected_entries=rejected_entries)
 
 
 def _handle_async_analysis_batch(
     stock_codes: list,
-    request: AnalyzeRequest
+    request: AnalyzeRequest,
+    analysis_targets: Optional[list] = None,
+    rejected_entries: Optional[list] = None,
 ) -> JSONResponse:
     """
     Handle asynchronous analysis requests, including batch submission.
+
+    Args:
+        stock_codes: canonical codes to submit
+        request: the analysis request
+        analysis_targets: optional per-code structured targets (index targets
+            flow through to the pipeline)
+        rejected_entries: optional list of ``(code, target)`` pairs that were
+            explicitly rejected (e.g. unregistered CSI); returned in the
+            ``rejected`` field for batch requests only.
     """
     task_queue = get_task_queue()
     
@@ -388,6 +467,10 @@ def _handle_async_analysis_batch(
         submit_kwargs["report_language"] = report_language
     if skills is not None:
         submit_kwargs["skills"] = skills
+    # 仅当存在非 None 的结构化 target（如指数）时才传递，保持纯股票请求
+    # 的既有 kwargs 契约不变。
+    if analysis_targets is not None and any(t is not None for t in analysis_targets):
+        submit_kwargs["analysis_targets"] = analysis_targets
 
     accepted_tasks, duplicate_errors = task_queue.submit_tasks_batch(**submit_kwargs)
 
@@ -410,6 +493,13 @@ def _handle_async_analysis_batch(
         )
         for dup in duplicate_errors
     ]
+    rejected = [
+        RejectedTaskItem(
+            stock_code=code,
+            message=(target.unsupported_reason or f"不支持的目标: {code}"),
+        )
+        for code, target in (rejected_entries or [])
+    ]
     
     # 单只股票且被拒绝：保持 409 兼容性
     if len(stock_codes) == 1 and duplicates:
@@ -425,8 +515,8 @@ def _handle_async_analysis_batch(
             content=error_response.model_dump()
         )
     
-    # 单只股票成功：保持原有响应格式兼容性
-    if len(stock_codes) == 1 and accepted:
+    # 单只股票成功（且无 rejected）：保持原有响应格式兼容性
+    if len(stock_codes) == 1 and accepted and not rejected:
         task_accepted = TaskAccepted(
             task_id=accepted[0].task_id,
             trace_id=accepted[0].trace_id,
@@ -439,11 +529,17 @@ def _handle_async_analysis_batch(
             content=task_accepted.model_dump()
         )
     
-    # 批量：返回汇总结果
+    # 批量：返回汇总结果（rejected 仅 async 批量返回）
+    rejected_count = len(rejected)
+    if rejected_count:
+        message = f"已提交 {len(accepted)} 个任务，{len(duplicates)} 个重复跳过，{rejected_count} 个被拒绝"
+    else:
+        message = f"已提交 {len(accepted)} 个任务，{len(duplicates)} 个重复跳过"
     batch_response = BatchTaskAcceptedResponse(
         accepted=accepted,
         duplicates=duplicates,
-        message=f"已提交 {len(accepted)} 个任务，{len(duplicates)} 个重复跳过",
+        rejected=rejected if rejected else None,
+        message=message,
     )
     return JSONResponse(
         status_code=202,
@@ -453,7 +549,8 @@ def _handle_async_analysis_batch(
 
 def _handle_sync_analysis(
     stock_code: str,
-    request: AnalyzeRequest
+    request: AnalyzeRequest,
+    analysis_target: Optional[Any] = None,
 ) -> AnalysisResultResponse:
     """
     处理同步分析请求
@@ -476,6 +573,7 @@ def _handle_sync_analysis(
             skills=getattr(request, "skills", None),
             analysis_phase=request.analysis_phase,
             report_language=getattr(request, "report_language", None),
+            analysis_target=analysis_target,
         )
 
         if result is None:
