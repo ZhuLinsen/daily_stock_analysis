@@ -26,6 +26,16 @@ def test_env_example_defaults_public_searxng_instances_off() -> None:
     assert "SEARXNG_PUBLIC_INSTANCES_ENABLED=true" not in env_example
 
 
+def test_searxng_timeout_env_contract() -> None:
+    from src.config import parse_env_int
+
+    env_example = (ROOT_DIR / ".env.example").read_text(encoding="utf-8")
+    assert "SEARXNG_TIMEOUT_SECONDS=10" in env_example
+    assert parse_env_int(None, 10, field_name="SEARXNG_TIMEOUT_SECONDS", minimum=1) == 10
+    assert parse_env_int("25", 10, field_name="SEARXNG_TIMEOUT_SECONDS", minimum=1) == 25
+    assert parse_env_int("0", 10, field_name="SEARXNG_TIMEOUT_SECONDS", minimum=1) == 1
+
+
 def test_daily_analysis_workflow_matches_documented_searxng_variable_mapping() -> None:
     workflow = (
         ROOT_DIR / ".github" / "workflows" / "00-daily-analysis.yml"
