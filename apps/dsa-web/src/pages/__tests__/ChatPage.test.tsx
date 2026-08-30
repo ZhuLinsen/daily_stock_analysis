@@ -6,6 +6,7 @@ import { createParsedApiError } from '../../api/error';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { historyApi } from '../../api/history';
 import type { Message, ProgressStep } from '../../stores/agentChatStore';
+import type { StockIndexItem } from '../../types/stockIndex';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import ChatPage from '../ChatPage';
 import { extractStockCodeFromMessage, extractStockCodesFromMessage } from '../../utils/chatStockCode';
@@ -33,19 +34,9 @@ const {
   mockDownloadSession,
   mockFormatSessionAsMarkdown,
   mockStockIndex,
-} = vi.hoisted(() => ({
-  mockGetSkills: vi.fn(),
-  mockGetStatus: vi.fn(),
-  mockDeleteChatSession: vi.fn(),
-  mockSendChat: vi.fn(),
-  mockGetSystemConfig: vi.fn(),
-  mockUpdateSystemConfig: vi.fn(),
-  mockGetWatchlist: vi.fn(),
-  mockAddToWatchlist: vi.fn(),
-  mockRemoveFromWatchlist: vi.fn(),
-  mockDownloadSession: vi.fn(),
-  mockFormatSessionAsMarkdown: vi.fn(),
-  mockStockIndex: [
+  mockStockIndexState,
+} = vi.hoisted(() => {
+  const mockStockIndex = [
     { canonicalCode: '600519.SH', displayCode: '600519', nameZh: '贵州茅台', aliases: ['茅台'], market: 'CN', assetType: 'stock', active: true },
     { canonicalCode: '300750.SZ', displayCode: '300750', nameZh: '宁德时代', aliases: [], market: 'CN', assetType: 'stock', active: true },
     { canonicalCode: '000001.SZ', displayCode: '000001', nameZh: '平安银行', aliases: [], market: 'CN', assetType: 'stock', active: true },
@@ -53,9 +44,33 @@ const {
     { canonicalCode: '09988.HK', displayCode: '09988', nameZh: '阿里巴巴', aliases: [], market: 'HK', assetType: 'stock', active: true },
     { canonicalCode: 'sh000001', displayCode: 'sh000001', nameZh: '上证指数', aliases: [], market: 'CN', assetType: 'index', active: true },
     { canonicalCode: 'sh000016', displayCode: 'sh000016', nameZh: '上证50', aliases: ['000016.SH'], market: 'CN', assetType: 'index', active: true },
+    { canonicalCode: 'sz399001', displayCode: 'sz399001', nameZh: '深证成指', aliases: ['399001.SZ'], market: 'CN', assetType: 'index', active: true },
     { canonicalCode: 'csi930955', displayCode: '930955.CSI', nameZh: '红利低波100', aliases: ['930955.CSI'], market: 'CN', assetType: 'index', active: true },
-  ],
-}));
+  ];
+  return {
+    mockGetSkills: vi.fn(),
+    mockGetStatus: vi.fn(),
+    mockDeleteChatSession: vi.fn(),
+    mockSendChat: vi.fn(),
+    mockGetSystemConfig: vi.fn(),
+    mockUpdateSystemConfig: vi.fn(),
+    mockGetWatchlist: vi.fn(),
+    mockAddToWatchlist: vi.fn(),
+    mockRemoveFromWatchlist: vi.fn(),
+    mockDownloadSession: vi.fn(),
+    mockFormatSessionAsMarkdown: vi.fn(),
+    mockStockIndex,
+    // Mutable registry-load state so tests can reproduce the real async window
+    // in which Codex status is confirmed but stocks.index.json is still loading.
+    mockStockIndexState: {
+      index: mockStockIndex,
+      loading: false,
+      error: null as Error | null,
+      fallback: false,
+      loaded: true,
+    },
+  };
+});
 
 const mockLoadSessions = vi.fn();
 const mockLoadInitialSession = vi.fn();
@@ -125,11 +140,11 @@ vi.mock('../../api/history', () => ({
 
 vi.mock('../../hooks/useStockIndex', () => ({
   useStockIndex: () => ({
-    index: mockStockIndex,
-    loading: false,
-    error: null,
-    fallback: false,
-    loaded: true,
+    index: mockStockIndexState.index,
+    loading: mockStockIndexState.loading,
+    error: mockStockIndexState.error,
+    fallback: mockStockIndexState.fallback,
+    loaded: mockStockIndexState.loaded,
   }),
 }));
 
@@ -261,6 +276,11 @@ beforeEach(() => {
   });
   mockDownloadSession.mockImplementation(() => {});
   mockFormatSessionAsMarkdown.mockReturnValue('# exported session');
+  mockStockIndexState.index = mockStockIndex;
+  mockStockIndexState.loading = false;
+  mockStockIndexState.error = null;
+  mockStockIndexState.fallback = false;
+  mockStockIndexState.loaded = true;
 });
 
 describe('ChatPage', () => {
@@ -449,7 +469,11 @@ describe('ChatPage', () => {
     expect(input).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '前往 Agent 设置' }));
     expect(await screen.findByText('Agent settings destination')).toBeInTheDocument();
-    expect(router.state.location.search).toBe('?category=agent');
+    // React Router v7 applies navigations asynchronously; waitFor keeps the
+    // assertion in an act-wrapped retry loop instead of reading a stale router state.
+    await waitFor(() => {
+      expect(router.state.location.search).toBe('?category=agent');
+    });
   });
 
   it('keeps sending disabled when backend status cannot be established', async () => {
@@ -618,6 +642,152 @@ describe('ChatPage', () => {
     // 000001 (平安银行) is a stock; only the sh000001 index canonical hides the
     // action, so the bare same-digit stock keeps its watchlist button.
     expect(await screen.findByText('加入自选')).toBeInTheDocument();
+  });
+
+  const CODEX_STATUS = {
+    backend: 'codex_app_server',
+    available: true,
+    experimental: true,
+    errorCode: null,
+    message: null,
+  };
+  const acceptedEvent = (requestId: string) => ({
+    type: 'accepted' as const,
+    backend: 'codex_app_server' as const,
+    request_id: requestId,
+    session_id: 'session-1' as const,
+  });
+
+  it.each([
+    ['sh000016', 'sh000016'],
+    ['000016.SH', 'sh000016'],
+    ['930955.CSI', 'csi930955'],
+    ['csi930955', 'csi930955'],
+    ['sz399001', 'sz399001'],
+  ] as const)('sends an explicit index code %s as its registry canonical', async (inputCode, expectedCanonical) => {
+    mockGetStatus.mockResolvedValueOnce(CODEX_STATUS);
+    let sentPayload: { context?: { stock_code: string; stock_name: string | null } } | undefined;
+    mockStartStream.mockImplementation(async (payload) => {
+      sentPayload = payload as typeof sentPayload;
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: `分析 ${inputCode}` } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    // The registry canonical must survive extraction end-to-end — never be
+    // stripped to a bare same-code stock, and the inner bare digits of a dotted
+    // alias must not leak as a second code.
+    expect(sentPayload?.context?.stock_code).toBe(expectedCanonical);
+    expect(sentPayload?.context?.stock_name).toBeNull();
+  });
+
+  it('switches from an explicit index canonical to the bare same-code stock', async () => {
+    mockGetStatus.mockResolvedValueOnce(CODEX_STATUS);
+    mockStartStream.mockImplementation(async (_payload, meta) => {
+      meta?.onAccepted?.(acceptedEvent('request-index'));
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析 sh000016' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(input, { target: { value: '换成 000016 看看' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(2));
+
+    // The explicit switch must send the BARE stock context — the index name or
+    // self-selected state must not be reused across identities.
+    expect(mockStartStream.mock.calls[1][0].context).toEqual({
+      stock_code: '000016',
+      stock_name: null,
+    });
+  });
+
+  it('keeps the active index context untouched for compare messages mixing same-code identities', async () => {
+    mockGetStatus.mockResolvedValueOnce(CODEX_STATUS);
+    mockStartStream.mockImplementation(async (_payload, meta) => {
+      meta?.onAccepted?.(acceptedEvent('request-index'));
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析 sh000016' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(input, { target: { value: '比较 sh000016 和 000016 的差异' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(2));
+
+    expect(mockStartStream.mock.calls[1][0].context).toEqual({
+      stock_code: 'sh000016',
+      stock_name: null,
+    });
+  });
+
+  it('hides the stock-only watchlist action after an explicit index code is sent', async () => {
+    mockGetStatus.mockResolvedValueOnce(CODEX_STATUS);
+    mockStartStream.mockImplementation(async (_payload, meta) => {
+      meta?.onAccepted?.(acceptedEvent('request-index'));
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析 930955.CSI' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByText('加入自选')).not.toBeInTheDocument();
+    expect(screen.queryByText('从自选删除')).not.toBeInTheDocument();
+  });
+
+  it('keeps the stock guard for sh600519 / SZ000001 even when the registry is loaded', async () => {
+    mockGetStatus.mockResolvedValueOnce(CODEX_STATUS);
+    let sentPayload: { context?: { stock_code: string; stock_name: string | null } } | undefined;
+    mockStartStream.mockImplementation(async (payload) => {
+      sentPayload = payload as typeof sentPayload;
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析 sh600519' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    // sh600519 is not a registered index alias → the stock guard keeps the
+    // bare 600519 identity even with the registry loaded.
+    expect(sentPayload?.context?.stock_code).toBe('600519');
+    expect(sentPayload?.context?.stock_name).toBeNull();
   });
 
   it('renders the new Codex status copy in English when the UI language is English', async () => {
@@ -2157,7 +2327,9 @@ describe('ChatPage', () => {
     expect(await screen.findByDisplayValue('请深入分析 贵州茅台(600519)')).toBeInTheDocument();
     expect(screen.getByText('正在加载历史分析上下文；现在可直接发送追问。')).toBeInTheDocument();
 
-    await router.navigate('/chat?stock=AAPL&name=Apple&recordId=2');
+    await act(async () => {
+      await router.navigate('/chat?stock=AAPL&name=Apple&recordId=2');
+    });
 
     expect(await screen.findByDisplayValue('请深入分析 Apple(AAPL)')).toBeInTheDocument();
 
@@ -2225,6 +2397,171 @@ describe('ChatPage', () => {
             }),
           }),
         }),
+        expect.objectContaining({
+          skillName: '趋势分析',
+        }),
+      );
+    });
+  });
+
+  it.each([
+    ['sh000016', 'sh000016'],
+    ['csi930955', 'csi930955'],
+    ['000016.SH', 'sh000016'],
+  ] as const)('restores the %s follow-up URL to the registry canonical and hides the stock-only watchlist action', async (stockParam, expectedCanonical) => {
+    render(
+      <MemoryRouter initialEntries={[`/chat?stock=${stockParam}`]}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const expectedPrompt = `请深入分析 ${expectedCanonical}`;
+    expect(await screen.findByDisplayValue(expectedPrompt)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          message: expectedPrompt,
+          context: {
+            stock_code: expectedCanonical,
+            stock_name: null,
+          },
+        }),
+        expect.any(Object),
+      );
+    });
+
+    // The index canonical hides the stock-only watchlist action immediately.
+    expect(screen.queryByText('加入自选')).not.toBeInTheDocument();
+    expect(screen.queryByText('从自选删除')).not.toBeInTheDocument();
+  });
+
+  type RegistrySettleRow = [
+    string,
+    { index: typeof mockStockIndexState.index; error: Error | null; fallback: boolean },
+    string,
+  ];
+
+  it.each<RegistrySettleRow>([
+    [
+      'success settle with index data',
+      { index: mockStockIndex, error: null, fallback: false },
+      '请深入分析 sh000016',
+    ],
+    [
+      'explicit load failure fail-open',
+      { index: [], error: new Error('registry unavailable'), fallback: true },
+      '请深入分析 SH000016',
+    ],
+    [
+      'successful-empty registry fail-open',
+      { index: [], error: null, fallback: false },
+      '请深入分析 SH000016',
+    ],
+  ])(
+    'releases the deferred Codex index follow-up only after the registry settles: %s',
+    async (_scenario, finalRegistry, expectedPrompt) => {
+      mockGetStatus.mockResolvedValueOnce(CODEX_STATUS);
+
+      // Phase 1 — Codex confirmed, registry stuck on the stale pre-start frame
+      // (loading=false / loaded=true in the real hook): deferred, URL kept.
+      mockStockIndexState.index = [];
+      mockStockIndexState.loading = false;
+      mockStockIndexState.error = null;
+      mockStockIndexState.fallback = false;
+      mockStockIndexState.loaded = true;
+
+      const { rerender } = render(
+        <MemoryRouter initialEntries={['/chat?stock=sh000016']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => {
+        expect(screen.queryByDisplayValue(/请深入分析 (SH000016|sh000016)/)).not.toBeInTheDocument();
+      });
+
+      // Phase 2 — loading begins: still deferred.
+      mockStockIndexState.loading = true;
+      rerender(
+        <MemoryRouter initialEntries={['/chat?stock=sh000016']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+      await waitFor(() => {
+        expect(screen.queryByDisplayValue(/请深入分析 (SH000016|sh000016)/)).not.toBeInTheDocument();
+      });
+
+      // Phase 3 — settled (loading=false → loaded=true regardless of outcome):
+      // success consumes the registry canonical end-to-end; explicit failure and
+      // a successful-but-empty registry fail open to the stock path.
+      mockStockIndexState.index = finalRegistry.index;
+      mockStockIndexState.loading = false;
+      mockStockIndexState.error = finalRegistry.error;
+      mockStockIndexState.fallback = finalRegistry.fallback;
+      mockStockIndexState.loaded = true;
+      rerender(
+        <MemoryRouter initialEntries={['/chat?stock=sh000016']}>
+          <ChatPage />
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByDisplayValue(expectedPrompt)).toBeInTheDocument();
+    },
+  );
+
+  it('restores the active Codex index canonical from a loaded session message and hides the stock-only watchlist action', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    // Registry already settled with index data before the session loads — the
+    // approved message-restore path must resolve the explicit SH index
+    // canonical so the follow-up context and watchlist gating stay consistent.
+    mockStockIndexState.index = mockStockIndex;
+    mockStockIndexState.loading = false;
+    mockStockIndexState.error = null;
+    mockStockIndexState.fallback = false;
+    mockStockIndexState.loaded = true;
+    mockStoreState.messages = [
+      { id: 'm-1', role: 'user', content: '分析 sh000016' },
+      { id: 'm-2', role: 'assistant', content: '上证50 分析结果', skillName: '指数分析' },
+    ];
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('chat-workspace')).toBeInTheDocument();
+
+    // Restored canonical keeps the lowercase index identity → the stock-only
+    // watchlist button is hidden, exactly like a direct index follow-up.
+    expect(screen.queryByText('加入自选')).not.toBeInTheDocument();
+    expect(screen.queryByText('从自选删除')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '继续看上证50的支撑位' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          message: '继续看上证50的支撑位',
+          context: {
+            stock_code: 'sh000016',
+            stock_name: null,
+          },
+        }),
+        // The send meta uses the session's default skill, not the historical
+        // assistant message's skill label.
         expect.objectContaining({
           skillName: '趋势分析',
         }),
@@ -2374,6 +2711,75 @@ describe('extractStockCodeFromMessage', () => {
     expect(extractStockCodesFromMessage('如果不考虑 TTM 和 PE')).toEqual([]);
     expect(extractStockCodesFromMessage('MACD AAPL 和 RSI')).toEqual(['AAPL']);
     expect(extractStockCodesFromMessage('KDJ AAPL 怎么看')).toEqual(['AAPL']);
+  });
+});
+
+describe('extractStockCodesFromMessage with index registry', () => {
+  // The hoisted mock widens market/assetType to plain strings; the extraction
+  // parameter is StockIndexItem[], so a structural cast keeps the registry rows.
+  const registeredIndex = mockStockIndex as unknown as StockIndexItem[];
+
+  it('resolves explicit SH-prefixed index tokens to the registry canonical only', () => {
+    expect(extractStockCodesFromMessage('分析 sh000016', registeredIndex)).toEqual(['sh000016']);
+    expect(extractStockCodesFromMessage('分析 SH000016', registeredIndex)).toEqual(['sh000016']);
+  });
+
+  it('resolves dotted SH index aliases without leaking the inner bare digits', () => {
+    expect(extractStockCodesFromMessage('分析 000016.SH', registeredIndex)).toEqual(['sh000016']);
+    expect(extractStockCodesFromMessage('分析 000016.sh', registeredIndex)).toEqual(['sh000016']);
+  });
+
+  it('resolves CSI display and prefix forms to the single csi canonical', () => {
+    expect(extractStockCodesFromMessage('分析 930955.CSI', registeredIndex)).toEqual(['csi930955']);
+    expect(extractStockCodesFromMessage('分析 CSI930955', registeredIndex)).toEqual(['csi930955']);
+    expect(extractStockCodesFromMessage('分析 csi930955', registeredIndex)).toEqual(['csi930955']);
+  });
+
+  it('resolves a registered SZ index code via its registry canonical', () => {
+    expect(extractStockCodesFromMessage('分析 sz399001', registeredIndex)).toEqual(['sz399001']);
+  });
+
+  it('keeps the bare same-code stock distinct from a registered index', () => {
+    expect(extractStockCodesFromMessage('分析 000016', registeredIndex)).toEqual(['000016']);
+    expect(extractStockCodesFromMessage('SH000016 和 000016', registeredIndex)).toEqual(['sh000016', '000016']);
+    expect(extractStockCodesFromMessage('000016 和 sh000016', registeredIndex)).toEqual(['000016', 'sh000016']);
+  });
+
+  it('keeps stock semantics for unregistered explicit forms when the registry is loaded', () => {
+    expect(extractStockCodesFromMessage('分析 sh600519', registeredIndex)).toEqual(['600519']);
+    expect(extractStockCodesFromMessage('分析 SZ000001', registeredIndex)).toEqual(['000001']);
+  });
+
+  it('fails open to the stock path when no registry is passed', () => {
+    expect(extractStockCodesFromMessage('分析 sh000016')).toEqual(['000016']);
+  });
+
+  it('keeps the legacy no-registry baseline for dotted index forms without leaking the suffix token', () => {
+    // Without a registry, `930955.CSI` must behave EXACTLY as before this
+    // change: the dotted form is NOT a registered index hit, so only the bare
+    // digits surface (the `.CSI` suffix never leaks as a separate token).
+    expect(extractStockCodesFromMessage('分析 930955.CSI')).toEqual(['930955']);
+  });
+
+  it('keeps the legacy baseline for csi-prefixed forms without a registry (no output)', () => {
+    expect(extractStockCodesFromMessage('CSI930955')).toEqual([]);
+    expect(extractStockCodesFromMessage('csi930955')).toEqual([]);
+  });
+
+  it('keeps SH/SZ stock alias normalization unchanged when the registry miss falls through', () => {
+    expect(extractStockCodesFromMessage('分析 000016.SH')).toEqual(['000016']);
+    expect(extractStockCodesFromMessage('分析 SH600519')).toEqual(['600519']);
+  });
+
+  it('does NOT surface the whole dotted form for an UNREGISTERED index even when the registry is loaded', () => {
+    // The shared mock registry DOES contain the `930955.CSI` alias (csi930955),
+    // so build a registry WITHOUT it to exercise the genuinely unregistered
+    // case: it must fall through to the legacy bare-digit behavior, not emit
+    // the whole token nor suppress the legacy patterns.
+    const registryWithoutCsi = mockStockIndex.filter(
+      (item) => item.canonicalCode !== 'csi930955',
+    ) as StockIndexItem[];
+    expect(extractStockCodesFromMessage('分析 930955.CSI', registryWithoutCsi)).toEqual(['930955']);
   });
 });
 
