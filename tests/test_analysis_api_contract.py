@@ -4129,44 +4129,50 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(response.tasks[0].skills, ["growth_quality"])
 
     def test_task_list_exposes_parser_asset_type(self) -> None:
+        """Valid asset_type literals pass through verbatim on the task list."""
         if get_task_list is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
-        task = SimpleNamespace(
-            task_id="task-list-asset-type",
-            trace_id="trace-list-asset-type",
-            stock_code="sh000016",
-            stock_name="上证50",
-            status=TaskStatus.PROCESSING,
-            progress=42,
-            message="running",
-            report_type="detailed",
-            created_at=datetime(2026, 4, 10, 12, 0, 0),
-            started_at=datetime(2026, 4, 10, 12, 0, 1),
-            completed_at=None,
-            error=None,
-            original_query="sh000016",
-            selection_source="manual",
-            analysis_phase="intraday",
-            skills=None,
-            region=None,
-            asset_type="index",
-        )
-        queue = MagicMock()
-        queue.list_all_tasks.return_value = [task]
-        queue.get_task_stats.return_value = {
-            "total": 1,
-            "pending": 0,
-            "processing": 1,
-            "completed": 0,
-            "failed": 0,
-        }
+        for expected_asset_type, stock_code, stock_name in (
+            ("index", "sh000016", "上证50"),
+            ("stock", "600519", "贵州茅台"),
+        ):
+            with self.subTest(asset_type=expected_asset_type):
+                task = SimpleNamespace(
+                    task_id="task-list-asset-type",
+                    trace_id="trace-list-asset-type",
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    status=TaskStatus.PROCESSING,
+                    progress=42,
+                    message="running",
+                    report_type="detailed",
+                    created_at=datetime(2026, 4, 10, 12, 0, 0),
+                    started_at=datetime(2026, 4, 10, 12, 0, 1),
+                    completed_at=None,
+                    error=None,
+                    original_query=stock_code,
+                    selection_source="manual",
+                    analysis_phase="intraday",
+                    skills=None,
+                    region=None,
+                    asset_type=expected_asset_type,
+                )
+                queue = MagicMock()
+                queue.list_all_tasks.return_value = [task]
+                queue.get_task_stats.return_value = {
+                    "total": 1,
+                    "pending": 0,
+                    "processing": 1,
+                    "completed": 0,
+                    "failed": 0,
+                }
 
-        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
-            response = get_task_list(status=None, limit=20)
+                with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+                    response = get_task_list(status=None, limit=20)
 
-        self.assertEqual(response.tasks[0].stock_code, "sh000016")
-        self.assertEqual(response.tasks[0].asset_type, "index")
+                self.assertEqual(response.tasks[0].stock_code, stock_code)
+                self.assertEqual(response.tasks[0].asset_type, expected_asset_type)
 
     def test_task_list_omits_asset_type_for_legacy_tasks(self) -> None:
         if get_task_list is None:
@@ -4235,27 +4241,116 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertNotIn("asset_type", plain_payload)
 
     def test_batch_accepted_item_exposes_parser_asset_type(self) -> None:
+        """Valid asset_type literals pass through verbatim on batch accepted items."""
         if trigger_analysis is None:
             self.skipTest("fastapi is not installed in this test environment")
 
-        task = SimpleNamespace(
-            task_id="task-batch-asset-type",
-            trace_id="trace-batch-asset-type",
-            stock_code="sh000016",
-            stock_name="上证50",
-            analysis_phase="auto",
-            asset_type="index",
-        )
+        for expected_asset_type, stock_code, stock_name, second_code in (
+            ("index", "sh000016", "上证50", "000016"),
+            ("stock", "600519", "贵州茅台", "000001"),
+        ):
+            request_codes = [stock_code, second_code]
+            with self.subTest(asset_type=expected_asset_type):
+                task = SimpleNamespace(
+                    task_id="task-batch-asset-type",
+                    trace_id="trace-batch-asset-type",
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    analysis_phase="auto",
+                    asset_type=expected_asset_type,
+                )
+                queue = MagicMock()
+                queue.submit_tasks_batch.return_value = ([task], [])
+
+                with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+                    response = trigger_analysis(
+                        request=SimpleNamespace(
+                            stock_code=None,
+                            stock_codes=request_codes,
+                            stock_name=None,
+                            original_query=",".join(request_codes),
+                            selection_source="manual",
+                            report_type="detailed",
+                            force_refresh=False,
+                            async_mode=True,
+                            notify=True,
+                            analysis_phase="auto",
+                        ),
+                        config=SimpleNamespace(),
+                    )
+
+                self.assertEqual(response.status_code, 202)
+                payload = json.loads(response.body)
+                accepted = payload["accepted"]
+                self.assertEqual(len(accepted), 1)
+                self.assertEqual(accepted[0]["stock_code"], stock_code)
+                self.assertEqual(accepted[0]["asset_type"], expected_asset_type)
+
+    def _legacy_task_mock(
+        self,
+        *,
+        task_id: str,
+        asset_type: str | None = None,
+        with_task_list_fields: bool = False,
+    ) -> MagicMock:
+        """Build a legacy MagicMock proxy task; ``asset_type`` stays implicit
+        unless explicitly requested so ``getattr`` yields a MagicMock child."""
+        kwargs: dict = {
+            "task_id": task_id,
+            "trace_id": f"trace-{task_id}",
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "analysis_phase": "auto",
+        }
+        if with_task_list_fields:
+            kwargs.update(
+                status=TaskStatus.PENDING,
+                progress=0,
+                message="waiting",
+                report_type="detailed",
+                created_at=datetime(2026, 4, 10, 12, 0, 0),
+                started_at=None,
+                completed_at=None,
+                error=None,
+                original_query=None,
+                selection_source=None,
+                skills=None,
+                region=None,
+            )
+        if asset_type is not None:
+            kwargs["asset_type"] = asset_type
+        return MagicMock(**kwargs)
+
+    def _task_list_asset_type_value(self, task) -> object:
+        """Run get_task_list against a mocked queue and return the asset_type."""
+        queue = MagicMock()
+        queue.list_all_tasks.return_value = [task]
+        queue.get_task_stats.return_value = {
+            "total": 1,
+            "pending": 1,
+            "processing": 0,
+            "completed": 0,
+            "failed": 0,
+        }
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = get_task_list(status=None, limit=20)
+        # 走真实 JSON 序列化再读取，证明 GET /tasks 响应层面降级为 null，
+        # 而非仅依赖 Pydantic 对象属性。
+        payload = json.loads(response.model_dump_json())
+        return payload["tasks"][0]["asset_type"]
+
+    def _batch_accepted_asset_type_value(self, task) -> object:
+        """Run trigger_analysis in batch mode against a mocked queue and return
+        the first accepted item's asset_type."""
         queue = MagicMock()
         queue.submit_tasks_batch.return_value = ([task], [])
-
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
                 request=SimpleNamespace(
                     stock_code=None,
-                    stock_codes=["sh000016", "000016"],
+                    stock_codes=["600519", "000001"],
                     stock_name=None,
-                    original_query="sh000016,000016",
+                    original_query="600519,000001",
                     selection_source="manual",
                     report_type="detailed",
                     force_refresh=False,
@@ -4265,13 +4360,83 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 ),
                 config=SimpleNamespace(),
             )
-
         self.assertEqual(response.status_code, 202)
         payload = json.loads(response.body)
         accepted = payload["accepted"]
         self.assertEqual(len(accepted), 1)
-        self.assertEqual(accepted[0]["stock_code"], "sh000016")
-        self.assertEqual(accepted[0]["asset_type"], "index")
+        return accepted[0]["asset_type"]
+
+    def test_asset_type_degrades_magicmock_proxy_without_warning(self) -> None:
+        """Legacy MagicMock proxy (implicit asset_type) degrades to None on both
+        response entries and never emits a warning."""
+        if get_task_list is None or trigger_analysis is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        with self.subTest(entry="task_list"):
+            with self.assertNoLogs("api.v1.endpoints.analysis", level="WARNING"):
+                value = self._task_list_asset_type_value(
+                    self._legacy_task_mock(
+                        task_id="task-list-magic-asset-type",
+                        with_task_list_fields=True,
+                    )
+                )
+            self.assertIsNone(value)
+
+        with self.subTest(entry="batch_accepted"):
+            with self.assertNoLogs("api.v1.endpoints.analysis", level="WARNING"):
+                value = self._batch_accepted_asset_type_value(
+                    self._legacy_task_mock(task_id="task-batch-magic-asset-type")
+                )
+            self.assertIsNone(value)
+
+    def test_asset_type_degrades_out_of_domain_string_with_warning(self) -> None:
+        """A real string outside the literal domain (including blank and
+        whitespace-only forms) degrades to None on both response entries and
+        logs a warning carrying the task id and value on every entry."""
+        if get_task_list is None or trigger_analysis is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        invalid_values = ("etf", "   ")
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                with self.subTest(entry="task_list"):
+                    with self.assertLogs("api.v1.endpoints.analysis", level="WARNING") as logs:
+                        value = self._task_list_asset_type_value(
+                            self._legacy_task_mock(
+                                task_id="task-list-out-of-domain-asset-type",
+                                asset_type=invalid_value,
+                                with_task_list_fields=True,
+                            )
+                        )
+                    self.assertIsNone(value)
+                    self.assertTrue(
+                        any(
+                            "task_id=task-list-out-of-domain-asset-type" in line
+                            and f"asset_type={invalid_value!r}" in line
+                            for line in logs.output
+                        ),
+                        "expected warning carrying task id and "
+                        f"{invalid_value!r} value, got: {logs.output}",
+                    )
+
+                with self.subTest(entry="batch_accepted"):
+                    with self.assertLogs("api.v1.endpoints.analysis", level="WARNING") as logs:
+                        value = self._batch_accepted_asset_type_value(
+                            self._legacy_task_mock(
+                                task_id="task-batch-out-of-domain-asset-type",
+                                asset_type=invalid_value,
+                            )
+                        )
+                    self.assertIsNone(value)
+                    self.assertTrue(
+                        any(
+                            "task_id=task-batch-out-of-domain-asset-type" in line
+                            and f"asset_type={invalid_value!r}" in line
+                            for line in logs.output
+                        ),
+                        "expected warning carrying task id and "
+                        f"{invalid_value!r} value, got: {logs.output}",
+                    )
 
 
 class BatchTaskQueueContractTestCase(unittest.TestCase):

@@ -117,6 +117,32 @@ def _get_task_trace_id(task: Any) -> Optional[str]:
     return None
 
 
+def _task_asset_type(task: Any) -> Optional[str]:
+    """Return the task's optional asset type only when it is a real literal.
+
+    The Pydantic literal domain (``stock``/``index``) is the only allowed set:
+    real in-domain strings pass through verbatim. Legacy mock/proxy tasks whose
+    ``getattr`` yields a ``MagicMock`` child, and missing values, degrade to
+    ``None`` so schema defaults keep legacy responses unchanged. Genuine
+    out-of-domain strings are logged and degraded instead of widening the enum
+    or silently masking drift.
+    """
+    raw = getattr(task, "asset_type", None)
+    if not isinstance(raw, str):
+        return None
+    if raw in {"stock", "index"}:
+        return raw
+    # 任何真实字符串只要不精确等于字面量域（含空串、纯空白、大小写或带
+    # 空格形态）都必须记录 warning 后降级，避免静默掩盖漂移；仅非字符串
+    # 代理（如 MagicMock 子对象）保持静默 None。
+    logger.warning(
+        "task asset_type 超出字面量域，降级为 None: task_id=%s asset_type=%r",
+        getattr(task, "task_id", None),
+        raw,
+    )
+    return None
+
+
 def _market_review_lock_path(config: Config) -> Path:
     return market_review_lock_path(config)
 
@@ -490,7 +516,7 @@ def _handle_async_analysis_batch(
             status="pending",
             message=f"分析任务已加入队列: {task.stock_code}",
             analysis_phase=task.analysis_phase,
-            asset_type=getattr(task, "asset_type", None),
+            asset_type=_task_asset_type(task),
         )
         for task in accepted_tasks
     ]
@@ -754,7 +780,7 @@ def get_task_list(
             analysis_phase=t.analysis_phase,
             skills=getattr(t, "skills", None),
             region=t.region,
-            asset_type=getattr(t, "asset_type", None),
+            asset_type=_task_asset_type(t),
         )
         for t in all_tasks
     ]
