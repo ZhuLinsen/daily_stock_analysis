@@ -42,10 +42,11 @@ const {
     { canonicalCode: '000001.SZ', displayCode: '000001', nameZh: '平安银行', aliases: [], market: 'CN', assetType: 'stock', active: true },
     { canonicalCode: 'BABA', displayCode: 'BABA', nameZh: '阿里巴巴', aliases: [], market: 'US', assetType: 'stock', active: true },
     { canonicalCode: '09988.HK', displayCode: '09988', nameZh: '阿里巴巴', aliases: [], market: 'HK', assetType: 'stock', active: true },
-    { canonicalCode: 'sh000001', displayCode: 'sh000001', nameZh: '上证指数', aliases: [], market: 'CN', assetType: 'index', active: true },
+    { canonicalCode: 'sh000001', displayCode: 'sh000001', nameZh: '上证指数', aliases: ['000001.SH'], market: 'CN', assetType: 'index', active: true },
     { canonicalCode: 'sh000016', displayCode: 'sh000016', nameZh: '上证50', aliases: ['000016.SH'], market: 'CN', assetType: 'index', active: true },
     { canonicalCode: 'sz399001', displayCode: 'sz399001', nameZh: '深证成指', aliases: ['399001.SZ'], market: 'CN', assetType: 'index', active: true },
-    { canonicalCode: 'csi930955', displayCode: '930955.CSI', nameZh: '红利低波100', aliases: ['930955.CSI'], market: 'CN', assetType: 'index', active: true },
+    { canonicalCode: 'sh000300', displayCode: 'sh000300', nameZh: '沪深300', aliases: ['sz399300', '399300.SZ', '000300.SH', '000300.CSI'], market: 'CN', assetType: 'index', active: true },
+    { canonicalCode: 'csi930955', displayCode: '930955.CSI', nameZh: '红利低波100', aliases: [], market: 'CN', assetType: 'index', active: true },
   ];
   return {
     mockGetSkills: vi.fn(),
@@ -60,8 +61,7 @@ const {
     mockDownloadSession: vi.fn(),
     mockFormatSessionAsMarkdown: vi.fn(),
     mockStockIndex,
-    // Mutable registry-load state so tests can reproduce the real async window
-    // in which Codex status is confirmed but stocks.index.json is still loading.
+    // Mutable registry-load state for the async window shared by every backend.
     mockStockIndexState: {
       index: mockStockIndex,
       loading: false,
@@ -687,6 +687,103 @@ describe('ChatPage', () => {
     // alias must not leak as a second code.
     expect(sentPayload?.context?.stock_code).toBe(expectedCanonical);
     expect(sentPayload?.context?.stock_name).toBeNull();
+  });
+
+  it.each([
+    ['sh000016', 'sh000016'],
+    ['000016.SH', 'sh000016'],
+    ['000016.sh', 'sh000016'],
+    ['CSI930955', 'csi930955'],
+    ['930955.CSI', 'csi930955'],
+    ['csi930955', 'csi930955'],
+    ['sz399001', 'sz399001'],
+    ['sz399300', 'sh000300'],
+    ['399300.SZ', 'sh000300'],
+    ['000300.SH', 'sh000300'],
+  ] as const)('sends %s as %s under the default LiteLLM backend', async (inputCode, expectedCanonical) => {
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: `分析 ${inputCode}` } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          context: { stock_code: expectedCanonical, stock_name: null },
+        }),
+        expect.any(Object),
+      );
+    });
+  });
+
+  it('blocks every chat send entry point while the index registry is loading', async () => {
+    mockStockIndexState.index = [];
+    mockStockIndexState.loading = true;
+    mockStockIndexState.loaded = false;
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析 sh000016' } });
+    const sendButton = screen.getByRole('button', { name: '处理中...' });
+    const quickQuestion = screen.getByRole('button', { name: '分析比亚迪趋势' });
+
+    expect(sendButton).toBeDisabled();
+    expect(quickQuestion).toBeDisabled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(sendButton);
+    fireEvent.click(quickQuestion);
+    expect(mockStartStream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['success', mockStockIndex, null, false, 'sh000016'],
+    ['failure', [], new Error('registry unavailable'), true, '000016'],
+    ['empty', [], null, false, '000016'],
+  ] as const)('releases direct sends after registry %s settle', async (_scenario, index, error, fallback, expectedCode) => {
+    mockStockIndexState.index = [];
+    mockStockIndexState.loading = true;
+    mockStockIndexState.loaded = false;
+
+    const { rerender } = render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析 sh000016' } });
+
+    mockStockIndexState.index = [...index];
+    mockStockIndexState.loading = false;
+    mockStockIndexState.error = error;
+    mockStockIndexState.fallback = fallback;
+    mockStockIndexState.loaded = true;
+    rerender(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const sendButton = screen.getByRole('button', { name: '发送' });
+    await waitFor(() => expect(sendButton).toBeEnabled());
+    fireEvent.click(sendButton);
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          context: { stock_code: expectedCode, stock_name: null },
+        }),
+        expect.any(Object),
+      );
+    });
   });
 
   it('switches from an explicit index canonical to the bare same-code stock', async () => {
@@ -2438,6 +2535,30 @@ describe('ChatPage', () => {
     expect(screen.queryByText('从自选删除')).not.toBeInTheDocument();
   });
 
+  it('defers a default-backend index follow-up until the registry settles', async () => {
+    mockStockIndexState.index = [];
+    mockStockIndexState.loading = true;
+    mockStockIndexState.loaded = false;
+
+    const { rerender } = render(
+      <MemoryRouter initialEntries={['/chat?stock=sh000016']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByDisplayValue(/请深入分析/)).not.toBeInTheDocument();
+
+    mockStockIndexState.index = mockStockIndex;
+    mockStockIndexState.loading = false;
+    mockStockIndexState.loaded = true;
+    rerender(
+      <MemoryRouter initialEntries={['/chat?stock=sh000016']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByDisplayValue('请深入分析 sh000016')).toBeInTheDocument();
+  });
+
   type RegistrySettleRow = [
     string,
     { index: typeof mockStockIndexState.index; error: Error | null; fallback: boolean },
@@ -2461,17 +2582,13 @@ describe('ChatPage', () => {
       '请深入分析 SH000016',
     ],
   ])(
-    'releases the deferred Codex index follow-up only after the registry settles: %s',
+    'releases the default-backend index follow-up after the shared registry settles: %s',
     async (_scenario, finalRegistry, expectedPrompt) => {
-      mockGetStatus.mockResolvedValueOnce(CODEX_STATUS);
-
-      // Phase 1 — Codex confirmed, registry stuck on the stale pre-start frame
-      // (loading=false / loaded=true in the real hook): deferred, URL kept.
       mockStockIndexState.index = [];
-      mockStockIndexState.loading = false;
+      mockStockIndexState.loading = true;
       mockStockIndexState.error = null;
       mockStockIndexState.fallback = false;
-      mockStockIndexState.loaded = true;
+      mockStockIndexState.loaded = false;
 
       const { rerender } = render(
         <MemoryRouter initialEntries={['/chat?stock=sh000016']}>
@@ -2483,20 +2600,8 @@ describe('ChatPage', () => {
         expect(screen.queryByDisplayValue(/请深入分析 (SH000016|sh000016)/)).not.toBeInTheDocument();
       });
 
-      // Phase 2 — loading begins: still deferred.
-      mockStockIndexState.loading = true;
-      rerender(
-        <MemoryRouter initialEntries={['/chat?stock=sh000016']}>
-          <ChatPage />
-        </MemoryRouter>,
-      );
-      await waitFor(() => {
-        expect(screen.queryByDisplayValue(/请深入分析 (SH000016|sh000016)/)).not.toBeInTheDocument();
-      });
-
-      // Phase 3 — settled (loading=false → loaded=true regardless of outcome):
-      // success consumes the registry canonical end-to-end; explicit failure and
-      // a successful-but-empty registry fail open to the stock path.
+      // Settle regardless of outcome: success consumes the registry canonical;
+      // failure and an empty registry fail open to the stock path.
       mockStockIndexState.index = finalRegistry.index;
       mockStockIndexState.loading = false;
       mockStockIndexState.error = finalRegistry.error;
@@ -2565,6 +2670,44 @@ describe('ChatPage', () => {
         expect.objectContaining({
           skillName: '趋势分析',
         }),
+      );
+    });
+  });
+
+  it('defers default-backend history restoration until the registry settles', async () => {
+    mockStockIndexState.index = [];
+    mockStockIndexState.loading = true;
+    mockStockIndexState.loaded = false;
+    mockStoreState.messages = [
+      { id: 'm-1', role: 'user', content: '分析 sh000016' },
+      { id: 'm-2', role: 'assistant', content: '上证50 分析结果', skillName: '指数分析' },
+    ];
+
+    const { rerender } = render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole('button', { name: '处理中...' })).toBeDisabled();
+
+    mockStockIndexState.index = mockStockIndex;
+    mockStockIndexState.loading = false;
+    mockStockIndexState.loaded = true;
+    rerender(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = screen.getByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '继续看支撑位' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          context: { stock_code: 'sh000016', stock_name: null },
+        }),
+        expect.any(Object),
       );
     });
   });

@@ -275,20 +275,8 @@ const ChatPage: React.FC = () => {
   const [agentStatus, setAgentStatus] = useState<AgentStatusResponse | null>(null);
   const [agentStatusError, setAgentStatusError] = useState<string | null>(null);
   const [agentStatusChecking, setAgentStatusChecking] = useState(true);
-  // Local activation state for the Codex follow-up gate: records that we have
-  // OBSERVED the frame where the backend first flips to Codex. State (not a
-  // ref) so the flip frame's block schedules a re-render and the gate can
-  // release on the next frame once the registry shows settle evidence. The
-  // shared useStockIndex hook is NOT modified.
-  const [codexRegistryActivationSeen, setCodexRegistryActivationSeen] = useState(false);
-  const {
-    index: stockIndex,
-    loading: stockIndexLoading,
-    error: stockIndexError,
-    fallback: stockIndexFallback,
-  } = useStockIndex(
-    agentStatus?.backend === 'codex_app_server',
-  );
+  // All Chat backends need the registry before resolving stock identity.
+  const { index: stockIndex, loading: stockIndexLoading } = useStockIndex();
 
   const watchlistMessageTimerRef = useRef<number | null>(null);
   const copyResetTimerRef = useRef<Partial<Record<string, number>>>({});
@@ -298,11 +286,6 @@ const ChatPage: React.FC = () => {
   const sendToastTimerRef = useRef<number | null>(null);
   const followUpHydrationTokenRef = useRef(0);
   const followUpContextRef = useRef<ChatFollowUpContext | null>(null);
-  // Marks that we have observed at least one loading frame of the Codex
-  // registry (stockIndexLoading turned true). Together with the settle evidence
-  // below, this distinguishes a "started but stuck on the stale pre-load
-  // frame" state from a load that FINISHED on an empty registry (fail-open).
-  const codexRegistryLoadingSeenRef = useRef(false);
   const shouldStickToBottomRef = useRef(true);
   const pendingScrollBehaviorRef = useRef<ScrollBehavior>('auto');
   const agentStatusRequestIdRef = useRef(0);
@@ -424,13 +407,16 @@ const ChatPage: React.FC = () => {
     if (activeStockContext || messages.length === 0) {
       return;
     }
+    if (stockIndexLoading) {
+      return;
+    }
     const restoredContext = restoreActiveStockContextFromMessages(messages, stockIndex);
     if (!restoredContext) {
       return;
     }
     setActiveStockContext(restoredContext);
     setActiveStockCode(restoredContext.stock_code);
-  }, [activeStockContext, messages, sessionId, stockIndex]);
+  }, [activeStockContext, messages, sessionId, stockIndex, stockIndexLoading]);
 
   const syncScrollState = useCallback(() => {
     const viewport = messagesViewportRef.current;
@@ -705,30 +691,11 @@ const ChatPage: React.FC = () => {
       return;
     }
 
-    // Codex follow-up gate: the real hook is stale on the first enable frame
-    // (loading=false/loaded=true there), so a local activation state blocks it;
-    // loading blocks until a cycle is observed; release needs index data,
-    // explicit failure/fallback, or a completed loading cycle (empty-success
-    // fail-open included).
-    if (agentStatus?.backend === 'codex_app_server' && !codexRegistryActivationSeen) {
-      setCodexRegistryActivationSeen(true);
-      return;
-    }
     if (stockIndexLoading) {
-      codexRegistryLoadingSeenRef.current = true;
       return;
     }
     if (agentStatusChecking) {
       return;
-    }
-    if (agentStatus?.backend === 'codex_app_server') {
-      const settledByEvidence = stockIndex.length > 0
-        || Boolean(stockIndexError)
-        || stockIndexFallback;
-      const settledByCycle = codexRegistryLoadingSeenRef.current && !stockIndexLoading;
-      if (!settledByEvidence && !settledByCycle) {
-        return;
-      }
     }
 
     // Registry canonical first for explicit index follow-ups (sh000016 /
@@ -774,7 +741,7 @@ const ChatPage: React.FC = () => {
       }
     });
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams, stockIndex, stockIndexLoading, stockIndexError, stockIndexFallback, codexRegistryActivationSeen, agentStatus, agentStatusChecking]);
+  }, [searchParams, setSearchParams, stockIndex, stockIndexLoading, agentStatusChecking]);
 
   const handleSend = useCallback(
     async (
@@ -783,7 +750,7 @@ const ChatPage: React.FC = () => {
       overrideStockContext?: ActiveStockContext,
     ) => {
       const msgText = (overrideMessage ?? input).trim();
-      if (!msgText || loading || !agentAvailable || !agentStatus) return;
+      if (!msgText || loading || stockIndexLoading || !agentAvailable || !agentStatus) return;
       if (overrideMessage !== undefined) {
         setInput(msgText);
       }
@@ -844,7 +811,7 @@ const ChatPage: React.FC = () => {
         },
       });
     },
-    [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, stockIndex],
+    [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, stockIndex, stockIndexLoading],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1385,7 +1352,7 @@ const ChatPage: React.FC = () => {
                         <button
                           key={i}
                           onClick={() => handleQuickQuestion(q)}
-                          disabled={!agentAvailable}
+                          disabled={!agentAvailable || stockIndexLoading}
                           className="quick-question-btn disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {q.label}
@@ -1770,8 +1737,8 @@ const ChatPage: React.FC = () => {
                   <Button
                     variant="primary"
                     onClick={() => handleSend()}
-                    disabled={!input.trim() || loading || !agentAvailable}
-                    isLoading={loading}
+                    disabled={!input.trim() || loading || stockIndexLoading || !agentAvailable}
+                    isLoading={loading || stockIndexLoading}
                     className="btn-primary flex-shrink-0"
                   >
                     发送

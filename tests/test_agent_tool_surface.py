@@ -7,6 +7,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from src.agent.stock_scope import StockScope
 from src.agent.tool_surface import ToolSurface
@@ -413,6 +414,154 @@ def test_declared_stock_scope_requires_explicit_stock_context_before_handler() -
     assert result["error"]["code"] == "stock_scope_violation"
     assert result["error"]["details"]["reason"] == "stock_scope_required"
     assert calls == []
+
+
+def _register_quote_tool(registry: ToolRegistry) -> None:
+    registry.register(
+        ToolDefinition(
+            name="quote",
+            description="Quote",
+            parameters=[ToolParameter(name="stock_code", type="string", description="Stock")],
+            handler=lambda stock_code: {"code": stock_code},
+            policy=ToolPolicy.declared(
+                read_only=True,
+                permissions=["market_data:read"],
+                scope_dimensions=["stock"],
+            ),
+        )
+    )
+
+
+def test_index_canonical_passes_and_bare_same_code_rejected_with_default_registry() -> None:
+    # Real ToolSurface WITHOUT any index-registry injection: the guard resolves
+    # the default bundled registry once, so an explicit index scope
+    # (`sh000016`) admits its canonical/dotted alias forms but rejects the bare
+    # same-code stock (`000016`) with the existing `stock_scope_violation`.
+    tool_registry = ToolRegistry()
+    _register_quote_tool(tool_registry)
+    surface = ToolSurface(tool_registry)
+    scope = StockScope(expected_stock_code="sh000016", allowed_stock_codes={"sh000016"})
+
+    for alias in ("sh000016", "000016.SH", "SH000016"):
+        ok = surface.execute_tool(
+            "quote",
+            {"stock_code": alias},
+            ToolAccessContext(stock_scope=scope),
+        )
+        assert ok["ok"] is True, alias
+        assert ok["result"] == {"code": alias}
+
+    rejected = surface.execute_tool(
+        "quote",
+        {"stock_code": "000016"},
+        ToolAccessContext(stock_scope=scope),
+    )
+    assert rejected["ok"] is False
+    assert rejected["error"]["code"] == "stock_scope_violation"
+    assert rejected["error"]["details"]["requested_stock_code"] == "000016"
+
+
+def test_tool_cache_key_isolates_index_canonical_from_bare_same_code() -> None:
+    from src.agent.tools.execution import _build_tool_cache_key
+
+    index_key = _build_tool_cache_key("quote", {"stock_code": "sh000016"})
+    alias_key = _build_tool_cache_key("quote", {"stock_code": "000016.SH"})
+    bare_key = _build_tool_cache_key("quote", {"stock_code": "000016"})
+
+    assert index_key is not None
+    assert index_key == alias_key
+    assert index_key != bare_key
+    # No stock_code in the arguments -> legacy key, no registry resolution.
+    assert _build_tool_cache_key("quote", {"limit": 5}) == "quote:{\"limit\": 5}"
+
+
+def test_normalize_tool_stock_code_registry_seam() -> None:
+    from src.agent.tools.execution import _normalize_tool_stock_code
+    from src.services.stock_list_parser import IndexEntry, IndexRegistry
+
+    registry = IndexRegistry(
+        [
+            IndexEntry(
+                bare_code="000016",
+                exchange="SH",
+                canonical_id="sh000016",
+                display_name="上证50",
+                aliases=("000016.SH",),
+            )
+        ]
+    )
+    assert _normalize_tool_stock_code("000016.SH", registry) == "sh000016"
+    assert _normalize_tool_stock_code("sh000016", registry) == "sh000016"
+    assert _normalize_tool_stock_code("SH000016", registry) == "sh000016"
+    # Explicit index token with an EMPTY registry falls open to stock semantics.
+    assert _normalize_tool_stock_code("sh000016", IndexRegistry([])) == "000016"
+    # Direct call without a registry keeps the legacy stock identity byte-for-byte.
+    assert _normalize_tool_stock_code("000016.SH") == "000016"
+
+
+def test_guard_tool_stock_scope_registry_injection_seam() -> None:
+    from src.agent.tools.execution import _guard_tool_stock_scope
+    from src.services.stock_list_parser import IndexEntry, IndexRegistry
+
+    index_registry = IndexRegistry(
+        [
+            IndexEntry(
+                bare_code="000016",
+                exchange="SH",
+                canonical_id="sh000016",
+                display_name="上证50",
+                aliases=("000016.SH",),
+            )
+        ]
+    )
+    tool_registry = ToolRegistry()
+    _register_quote_tool(tool_registry)
+    scope = StockScope(expected_stock_code="sh000016", allowed_stock_codes={"sh000016"})
+
+    assert (
+        _guard_tool_stock_scope(
+            tool_registry,
+            "quote",
+            {"stock_code": "sh000016"},
+            scope,
+            index_registry=index_registry,
+        )
+        is None
+    )
+    violation = _guard_tool_stock_scope(
+        tool_registry,
+        "quote",
+        {"stock_code": "000016"},
+        scope,
+        index_registry=index_registry,
+    )
+    assert violation is not None
+    assert violation["error"] == "stock_scope_violation"
+    assert violation["requested_stock_code"] == "000016"
+
+
+def test_tool_guard_and_cache_registry_failure_use_legacy_stock_semantics() -> None:
+    from src.agent.tools.execution import _build_tool_cache_key
+
+    tool_registry = ToolRegistry()
+    _register_quote_tool(tool_registry)
+    surface = ToolSurface(tool_registry)
+    scope = StockScope(expected_stock_code="sh000016", allowed_stock_codes={"sh000016"})
+
+    with patch(
+        "src.services.stock_list_parser.default_index_registry",
+        side_effect=RuntimeError("registry unavailable"),
+    ):
+        result = surface.execute_tool(
+            "quote",
+            {"stock_code": "000016.SH"},
+            ToolAccessContext(stock_scope=scope),
+        )
+        alias_key = _build_tool_cache_key("quote", {"stock_code": "000016.SH"})
+        bare_key = _build_tool_cache_key("quote", {"stock_code": "000016"})
+
+    assert result["ok"] is True
+    assert alias_key == bare_key
 
 
 def test_handler_error_is_structured_without_traceback() -> None:

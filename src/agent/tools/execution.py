@@ -169,45 +169,75 @@ def serialize_tool_result(result: Any) -> str:
     return str(result)
 
 
-def _normalize_tool_stock_code(value: Any) -> Any:
-    """Canonicalize stock code arguments so equivalent HK variants share one cache key."""
+def _normalize_tool_stock_code(value: Any, registry: Optional[Any] = None) -> Any:
+    """Canonicalize a stock argument for tool scope and cache keys.
+
+    An injected registry preserves exact parser INDEX canonicals. Direct calls
+    without one retain the legacy stock/HK normalization path.
+    """
     if not isinstance(value, str):
         return value
 
-    text = value.strip().upper()
+    text = value.strip()
     if not text:
         return text
 
-    if text.endswith(".HK"):
-        base = text[:-3]
+    if registry is not None:
+        try:
+            from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+            target = parse_analysis_target(text, registry)
+            if target.asset_type == ParseStatus.INDEX and target.canonical_id:
+                return target.canonical_id
+        except Exception:
+            # Registry malformed/unavailable — fall through to the stock path.
+            pass
+
+    upper = text.upper()
+    if upper.endswith(".HK"):
+        base = upper[:-3]
         if base.isdigit() and 1 <= len(base) <= 5:
             return f"HK{base.zfill(5)}"
 
-    if text.startswith("HK"):
-        base = text[2:]
+    if upper.startswith("HK"):
+        base = upper[2:]
         if base.isdigit() and 1 <= len(base) <= 5:
             return f"HK{base.zfill(5)}"
 
-    if text.isdigit() and len(text) == 5:
-        return f"HK{text}"
+    if upper.isdigit() and len(upper) == 5:
+        return f"HK{upper}"
 
     try:
         from data_provider.base import canonical_stock_code, normalize_stock_code
 
-        return canonical_stock_code(normalize_stock_code(text))
+        return canonical_stock_code(normalize_stock_code(upper))
     except Exception:
-        return text
+        return upper
+
+
+def _default_index_registry_or_none() -> Optional[Any]:
+    """Return the default IndexRegistry, failing open to stock semantics."""
+    try:
+        from src.services.stock_list_parser import default_index_registry
+
+        return default_index_registry()
+    except Exception:
+        return None
 
 
 def _build_tool_cache_key(tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
-    """Build a stable cache key for tool calls with normalized stock-code arguments."""
+    """Build a stable cache key without folding index and bare-stock identities."""
     if not isinstance(arguments, dict):
         return None
+
+    registry = None
+    if "stock_code" in arguments:
+        registry = _default_index_registry_or_none()
 
     normalized_args: Dict[str, Any] = {}
     for key, value in arguments.items():
         if key == "stock_code":
-            normalized_args[key] = _normalize_tool_stock_code(value)
+            normalized_args[key] = _normalize_tool_stock_code(value, registry)
         else:
             normalized_args[key] = value
 
@@ -234,13 +264,13 @@ def _is_stock_scoped_tool(tool_registry: ToolRegistry, tool_name: str) -> bool:
     return any(param.name == "stock_code" for param in tool_def.parameters)
 
 
-def _normalize_guard_stock_code(value: Any) -> str:
+def _normalize_guard_stock_code(value: Any, registry: Optional[Any] = None) -> str:
     if value is None:
         return ""
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     raw = value if isinstance(value, str) else str(value)
-    normalized = _normalize_tool_stock_code(raw)
+    normalized = _normalize_tool_stock_code(raw, registry)
     return normalized if isinstance(normalized, str) else str(normalized)
 
 
@@ -253,7 +283,9 @@ def _guard_tool_stock_scope(
     tool_name: str,
     arguments: Dict[str, Any],
     stock_scope: Any,
+    index_registry: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
+    """Enforce one tool stock argument against the active canonical scope."""
     if stock_scope is None or not isinstance(arguments, dict):
         return None
     if not _is_stock_scoped_tool(tool_registry, tool_name):
@@ -261,12 +293,17 @@ def _guard_tool_stock_scope(
     if "stock_code" not in arguments:
         return None
 
-    requested = _normalize_guard_stock_code(arguments.get("stock_code"))
-    expected = _normalize_guard_stock_code(getattr(stock_scope, "expected_stock_code", ""))
+    if index_registry is None:
+        index_registry = _default_index_registry_or_none()
+
+    requested = _normalize_guard_stock_code(arguments.get("stock_code"), index_registry)
+    expected = _normalize_guard_stock_code(
+        getattr(stock_scope, "expected_stock_code", ""), index_registry
+    )
     allowed = {
         normalized
         for code in _iter_allowed_stock_codes(stock_scope)
-        for normalized in [_normalize_guard_stock_code(code)]
+        for normalized in [_normalize_guard_stock_code(code, index_registry)]
         if normalized
     }
     if requested and (requested == expected or requested in allowed):
