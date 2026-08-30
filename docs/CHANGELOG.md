@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [新功能] `STOCK_LIST` 支持印度股票（NSE `.NS` / BSE `.BO` 后缀，经 yfinance 兜底数据源），market 检测、交易日历（`XNSE`、`Asia/Kolkata`）、LLM 分析语境（中英）、决策信号持久化（`VALID_MARKETS`）与自定义情报源 scope（`_ALLOWED_MARKETS`）同步支持；印度代码为字母数字组合（如 `RELIANCE.NS`），不支持裸代码解析，必须显式带 `.NS`/`.BO` 后缀。
+- [改进] 决策仪表盘日报（`generate_dashboard_report`，含 Telegram 推送）在 `STOCK_LIST` 覆盖多个市场时按市场分组展示（如「美股」「印度股票」独立小节），组内仍按评分排序；仅单一市场时不显示分节标题，行为与既有报告保持一致。分节标题按 `zh`/`en`/`ko` 本地化，市场顺序固定为 `cn,hk,us,jp,kr,tw,in`。
 - [修复] 大盘复盘历史列表与详情统一展示持久化短摘要；旧记录缺少摘要时从完整 Markdown 生成无内部标记的纯文本节选。
 - [修复] 大盘复盘按实际执行的生成后端和模型记录诊断，避免 Codex CLI 或 fallback 被误显示为配置模型。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->

@@ -832,6 +832,32 @@ def get_report_labels(language: Optional[str]) -> Dict[str, str]:
     return _REPORT_LABELS[normalized]
 
 
+# Canonical rendering order for market-grouped report sections. Markets not
+# in this list (should not happen given detect_market's fallback to "cn")
+# are appended after, in first-seen order.
+MARKET_SECTION_ORDER = ("cn", "hk", "us", "jp", "kr", "tw", "in")
+
+_MARKET_SECTION_TITLES: Dict[str, Dict[str, str]] = {
+    "cn": {"zh": "A 股", "en": "China A-Shares", "ko": "A주"},
+    "hk": {"zh": "港股", "en": "Hong Kong Stocks", "ko": "홍콩 주식"},
+    "us": {"zh": "美股", "en": "US Stocks", "ko": "미국 주식"},
+    "jp": {"zh": "日股", "en": "Japan Stocks", "ko": "일본 주식"},
+    "kr": {"zh": "韩股", "en": "Korea Stocks", "ko": "한국 주식"},
+    "tw": {"zh": "台股", "en": "Taiwan Stocks", "ko": "대만 주식"},
+    "in": {"zh": "印度股票", "en": "India Stocks", "ko": "인도 주식"},
+}
+
+
+def get_market_section_title(market: Optional[str], language: Optional[str]) -> str:
+    """Return a localized market-section heading for grouped reports."""
+    normalized_language = normalize_report_language(language)
+    market_key = (market or "").strip().lower()
+    titles = _MARKET_SECTION_TITLES.get(market_key)
+    if titles is None:
+        return market_key.upper() if market_key else get_unknown_text(normalized_language)
+    return titles[normalized_language]
+
+
 def get_placeholder_text(language: Optional[str]) -> str:
     """Return placeholder text for missing localized content."""
     return _PLACEHOLDER_BY_LANGUAGE[normalize_report_language(language)]

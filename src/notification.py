@@ -25,6 +25,7 @@ from enum import Enum
 
 from src.config import Config, get_config
 from src.enums import ReportType
+from src.market_context import detect_market
 from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
 from src.notification_routing import (
     get_notification_route_config,
@@ -38,7 +39,9 @@ from src.notification_noise import (
     release_notification_noise,
 )
 from src.report_language import (
+    MARKET_SECTION_ORDER,
     get_localized_stock_name,
+    get_market_section_title,
     get_report_labels,
     get_signal_level,
     get_chip_unavailable_reason,
@@ -1210,6 +1213,25 @@ class NotificationService(
         hold_count = len(buckets) - buy_count - sell_count
         return buy_count, sell_count, hold_count
 
+    @staticmethod
+    def _group_results_by_market(
+        results: List[AnalysisResult],
+    ) -> List[Tuple[str, List[AnalysisResult]]]:
+        """Group results by market, preserving each group's relative order.
+
+        Group order follows MARKET_SECTION_ORDER; any market not in that
+        list (should not happen, detect_market falls back to "cn") is
+        appended after, in first-seen order.
+        """
+        buckets: Dict[str, List[AnalysisResult]] = {}
+        for result in results:
+            market = detect_market(getattr(result, "code", None))
+            buckets.setdefault(market, []).append(result)
+
+        ordered_markets = [m for m in MARKET_SECTION_ORDER if m in buckets]
+        ordered_markets.extend(m for m in buckets if m not in ordered_markets)
+        return [(market, buckets[market]) for market in ordered_markets]
+
     def _get_signal_level(self, result: AnalysisResult) -> tuple:
         """Get display text and signal metadata from the resolved action."""
         report_language = self._get_report_language(result)
@@ -1290,8 +1312,14 @@ class NotificationService(
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
 
-        # 按评分排序（高分在前）
+        # 按评分排序（高分在前），再按市场分组（Issue: multi-market section headers）
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+        market_groups = self._group_results_by_market(sorted_results)
+        show_market_sections = len(market_groups) > 1
+        sorted_results = [r for _market, group in market_groups for r in group]
+        market_section_starts = {
+            id(group[0]): market for market, group in market_groups if group
+        }
 
         buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
 
@@ -1310,6 +1338,11 @@ class NotificationService(
                 "",
             ])
             for r in sorted_results:
+                if show_market_sections and id(r) in market_section_starts:
+                    report_lines.extend([
+                        f"### {get_market_section_title(market_section_starts[id(r)], report_language)}",
+                        "",
+                    ])
                 signal_text, signal_emoji, _ = self._get_signal_level(r)
                 display_name = self._get_display_name(r, report_language)
                 report_lines.append(
@@ -1331,6 +1364,11 @@ class NotificationService(
         # 逐个股票的决策仪表盘（Issue #262: summary_only 时跳过详情）
         if not self._report_summary_only:
             for result in sorted_results:
+                if show_market_sections and id(result) in market_section_starts:
+                    report_lines.extend([
+                        f"## {get_market_section_title(market_section_starts[id(result)], report_language)}",
+                        "",
+                    ])
                 signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
                 dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
 
