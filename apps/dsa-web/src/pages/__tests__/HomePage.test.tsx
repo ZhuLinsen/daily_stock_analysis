@@ -2851,6 +2851,85 @@ describe('HomePage', () => {
     expect(screen.getByText('正在抓取最新行情')).toBeInTheDocument();
   });
 
+  it('excludes watchlist rows with active tasks from pending batch submissions', async () => {
+    const activeTask = {
+      taskId: 'task-600519',
+      stockCode: '600519',
+      stockName: '贵州茅台',
+      status: 'processing' as const,
+      progress: 45,
+      message: '正在抓取最新行情',
+      reportType: 'detailed' as const,
+      createdAt: '2026-03-18T08:00:00Z',
+    };
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['600519', 'AAPL']);
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+      total: 2,
+      items: [
+        {
+          id: 11,
+          stockCode: '600519',
+          stockName: '贵州茅台',
+          reportType: 'detailed',
+          sentimentScore: 72,
+          operationAdvice: '观察',
+          analysisCount: 1,
+          lastAnalysisTime: '2026-01-01T09:00:00+08:00',
+        },
+        {
+          id: 12,
+          stockCode: 'AAPL',
+          stockName: 'Apple',
+          reportType: 'detailed',
+          sentimentScore: 68,
+          operationAdvice: '中性',
+          analysisCount: 1,
+          lastAnalysisTime: '2026-01-01T09:20:00+08:00',
+        },
+      ],
+    });
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.getTasks).mockResolvedValue({
+      total: 1,
+      pending: 0,
+      processing: 1,
+      tasks: [activeTask],
+    });
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-aapl',
+      status: 'pending',
+    });
+
+    useStockPoolStore.setState({
+      activeTasks: [activeTask],
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+
+    const analyzePendingButton = screen.getByRole('button', { name: '仅未分析' });
+    expect(analyzePendingButton).toBeEnabled();
+    fireEvent.click(analyzePendingButton);
+
+    await waitFor(() => {
+      expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+        stockCodes: ['AAPL'],
+      }));
+    });
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0].stockCodes).not.toContain('600519');
+  });
+
   it('triggers reanalyze for the current report even if the search input has other text', async () => {
     vi.mocked(historyApi.getList).mockResolvedValue({
       total: 1,

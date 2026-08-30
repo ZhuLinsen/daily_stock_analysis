@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import {
   ArrowDownWideNarrow,
   CalendarDays,
@@ -24,6 +24,7 @@ import { areStockCodesEquivalent } from '../../utils/stockCode';
 import { truncateStockName } from '../../utils/stockName';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey, UiTextParams } from '../../i18n/uiText';
+import { isWatchlistRowPendingAnalysis } from './watchlistRowState';
 
 export type HomeWorkspaceTab = 'watchlist' | 'today' | 'history';
 export type WatchlistAnalyzeMode = 'all' | 'pending';
@@ -40,6 +41,30 @@ export interface HomeWatchlistRow {
 interface BatchStatus {
   variant: 'success' | 'warning' | 'danger';
   message: string;
+}
+
+type WatchlistSignalTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
+
+interface WatchlistSignal {
+  label: string;
+  value: string;
+  tone: WatchlistSignalTone;
+  pulse?: boolean;
+}
+
+interface WatchlistRowSignals {
+  change: WatchlistSignal;
+  state: WatchlistSignal;
+  nextAction: WatchlistSignal;
+}
+
+function buildSignalDescription(
+  signals: WatchlistSignal[],
+  t: (key: UiTextKey, params?: UiTextParams) => string,
+) {
+  return signals
+    .map((signal) => t('watchlist.signalSummaryItem', { label: signal.label, value: signal.value }))
+    .join(t('watchlist.signalSummarySeparator'));
 }
 
 interface HomeStockWorkspaceProps {
@@ -77,6 +102,72 @@ function getTaskStatusLabel(task: TaskInfo | undefined, t: (key: UiTextKey, para
   return task.status;
 }
 
+function buildWatchlistRowSignals({
+  row,
+  canOpenDetail,
+  isLatestDetailLoading,
+  isLatestDetailUnavailable,
+  taskLabel,
+  t,
+}: {
+  row: HomeWatchlistRow;
+  canOpenDetail: boolean;
+  isLatestDetailLoading: boolean;
+  isLatestDetailUnavailable: boolean;
+  taskLabel: string;
+  t: (key: UiTextKey, params?: UiTextParams) => string;
+}): WatchlistRowSignals {
+  let change: Omit<WatchlistSignal, 'label'>;
+  let state: Omit<WatchlistSignal, 'label'>;
+  let nextAction: Omit<WatchlistSignal, 'label'>;
+
+  if (isLatestDetailLoading) {
+    change = { value: t('watchlist.changeLoading'), tone: 'info', pulse: true };
+    state = { value: t('watchlist.stateLoading'), tone: 'info', pulse: true };
+    nextAction = { value: t('watchlist.nextWaitStatus'), tone: 'info', pulse: true };
+  } else if (isLatestDetailUnavailable) {
+    change = { value: t('watchlist.changeUnknown'), tone: 'warning' };
+    state = { value: t('watchlist.stateUnknown'), tone: 'warning' };
+    nextAction = { value: t('watchlist.nextRefresh'), tone: 'warning' };
+  } else {
+    if (row.analyzedToday) {
+      change = { value: t('watchlist.changeAnalyzedToday'), tone: 'success' };
+      state = { value: t('watchlist.stateAnalyzed'), tone: 'success' };
+      nextAction = {
+        value: canOpenDetail ? t('watchlist.nextOpenLatest') : t('watchlist.nextRefresh'),
+        tone: canOpenDetail ? 'success' : 'warning',
+      };
+    } else if (row.latestItem) {
+      change = { value: t('watchlist.changeHasLatest'), tone: 'info' };
+      state = { value: t('watchlist.statePending'), tone: 'warning' };
+      nextAction = { value: t('watchlist.nextAnalyze'), tone: 'warning' };
+    } else {
+      change = { value: t('watchlist.changeNoReport'), tone: 'neutral' };
+      state = { value: t('watchlist.statePending'), tone: 'warning' };
+      nextAction = { value: t('watchlist.nextAnalyze'), tone: 'warning' };
+    }
+  }
+
+  if (row.activeTask) {
+    state = {
+      value: t('watchlist.stateTask', { status: taskLabel }),
+      tone: row.activeTask.status === 'processing' ? 'info' : 'neutral',
+      pulse: row.activeTask.status === 'processing',
+    };
+    nextAction = {
+      value: t('watchlist.nextWaitTask'),
+      tone: row.activeTask.status === 'processing' ? 'info' : 'neutral',
+      pulse: row.activeTask.status === 'processing',
+    };
+  }
+
+  return {
+    change: { label: t('watchlist.change'), ...change },
+    state: { label: t('watchlist.state'), ...state },
+    nextAction: { label: t('watchlist.nextAction'), ...nextAction },
+  };
+}
+
 const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
   const { t } = useUiLanguage();
   const score = typeof item?.sentimentScore === 'number' ? item.sentimentScore : null;
@@ -110,6 +201,18 @@ const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
   );
 };
 
+const WatchlistSignalCell: React.FC<{ signal: WatchlistSignal }> = ({ signal }) => (
+  <span className="min-w-0 rounded-lg border border-subtle bg-base/35 px-2 py-1.5">
+    <span className="block text-[10px] font-medium text-muted-text">
+      {signal.label}
+    </span>
+    <span className="mt-1 flex min-w-0 items-start gap-1.5 text-[11px] font-medium text-secondary-text">
+      <StatusDot tone={signal.tone} pulse={signal.pulse} className="h-1.5 w-1.5" />
+      <span className="min-w-0 whitespace-normal break-words leading-snug">{signal.value}</span>
+    </span>
+  </span>
+);
+
 const WatchlistRowItem: React.FC<{
   row: HomeWatchlistRow;
   onRemove: (code: string) => Promise<void>;
@@ -118,12 +221,22 @@ const WatchlistRowItem: React.FC<{
   selected: boolean;
 }> = ({ row, onRemove, onOpenDetail, disabled, selected }) => {
   const { t } = useUiLanguage();
+  const signalDescriptionId = useId();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
   const isLatestDetailLoading = Boolean(row.isTodayStatusLoading);
   const isLatestDetailUnavailable = !isLatestDetailLoading && Boolean(row.isTodayStatusUnknown);
   const item = isLatestDetailLoading || isLatestDetailUnavailable ? undefined : row.latestItem;
   const stockName = row.latestItem?.stockName || row.code;
   const canOpenDetail = typeof item?.id === 'number';
+  const signals = buildWatchlistRowSignals({
+    row,
+    canOpenDetail,
+    isLatestDetailLoading,
+    isLatestDetailUnavailable,
+    taskLabel,
+    t,
+  });
+  const signalDescription = buildSignalDescription([signals.change, signals.state, signals.nextAction], t);
 
   const handleOpenDetail = () => {
     onOpenDetail(row);
@@ -148,9 +261,13 @@ const WatchlistRowItem: React.FC<{
             : isLatestDetailUnavailable
               ? t('watchlist.latestDetailUnavailableAria', { code: row.code })
             : t('watchlist.noLatestDetailAria', { code: row.code })}
+        aria-describedby={signalDescriptionId}
         className="grid min-w-0 cursor-pointer gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/30"
         onClick={handleOpenDetail}
       >
+        <span id={signalDescriptionId} className="sr-only">
+          {signalDescription}
+        </span>
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-semibold text-foreground">
@@ -183,8 +300,13 @@ const WatchlistRowItem: React.FC<{
                   ? t('watchlist.latestDetailLoadingCta')
                   : isLatestDetailUnavailable
                     ? t('watchlist.latestDetailUnavailableCta')
-                    : t('watchlist.noLatestDetailCta')}
+                  : t('watchlist.noLatestDetailCta')}
             </span>
+          </div>
+          <div className="mt-2 grid min-w-0 grid-cols-1 gap-1.5">
+            <WatchlistSignalCell signal={signals.change} />
+            <WatchlistSignalCell signal={signals.state} />
+            <WatchlistSignalCell signal={signals.nextAction} />
           </div>
           {row.activeTask ? (
             <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-text">
@@ -267,9 +389,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   const { t } = useUiLanguage();
   const [draftCode, setDraftCode] = useState('');
   const [workspaceNoticeCode, setWorkspaceNoticeCode] = useState<string | null>(null);
-  const pendingWatchlistCount = watchlistRows
-    .filter((row) => !row.analyzedToday && !row.isTodayStatusLoading && !row.isTodayStatusUnknown)
-    .length;
+  const pendingWatchlistCount = watchlistRows.filter(isWatchlistRowPendingAnalysis).length;
   const isTodayStatusUnavailable = watchlistRows.some((row) => row.isTodayStatusLoading || row.isTodayStatusUnknown);
   const topTodayItem = todayItems[0];
   const tabs: Array<{ key: HomeWorkspaceTab; label: string }> = [
