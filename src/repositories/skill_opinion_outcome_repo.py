@@ -44,6 +44,7 @@ class SkillOpinionPerformanceBucket:
     hit: int
     miss: int
     avg_directional_return_pct: Optional[float]
+    unable_reason_counts: Dict[str, int]
 
 
 class SkillOpinionOutcomeRepository:
@@ -262,6 +263,41 @@ class SkillOpinionOutcomeRepository:
                 )
             ).all()
 
+            unable_reason_rows = session.execute(
+                select(
+                    SkillOpinionSampleRecord.skill_id,
+                    SkillOpinionOutcomeRecord.horizon,
+                    SkillOpinionOutcomeRecord.engine_version,
+                    SkillOpinionOutcomeRecord.unable_reason,
+                    func.count(SkillOpinionOutcomeRecord.id),
+                )
+                .join(
+                    SkillOpinionSampleRecord,
+                    SkillOpinionSampleRecord.id
+                    == SkillOpinionOutcomeRecord.skill_opinion_sample_id,
+                )
+                .where(
+                    and_(
+                        *conditions,
+                        SkillOpinionOutcomeRecord.eval_status == "unable",
+                    )
+                )
+                .group_by(
+                    SkillOpinionSampleRecord.skill_id,
+                    SkillOpinionOutcomeRecord.horizon,
+                    SkillOpinionOutcomeRecord.engine_version,
+                    SkillOpinionOutcomeRecord.unable_reason,
+                )
+            ).all()
+
+        unable_reason_counts: Dict[Tuple[str, str, str], Dict[str, int]] = {}
+        for row in unable_reason_rows:
+            bucket_key = (str(row[0]), str(row[1]), str(row[2]))
+            reason = str(row[3] or "").strip()
+            unable_reason_counts.setdefault(bucket_key, {})[reason] = int(
+                row[4] or 0
+            )
+
         return [
             SkillOpinionPerformanceBucket(
                 skill_id=str(row[0]),
@@ -276,6 +312,12 @@ class SkillOpinionOutcomeRepository:
                 miss=int(row[9] or 0),
                 avg_directional_return_pct=(
                     float(row[10]) if row[10] is not None else None
+                ),
+                unable_reason_counts=dict(
+                    unable_reason_counts.get(
+                        (str(row[0]), str(row[1]), str(row[2])),
+                        {},
+                    )
                 ),
             )
             for row in rows

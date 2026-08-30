@@ -163,21 +163,48 @@ class SkillOpinionWeightService:
             bucket.get("observational")
         )
         unable = SkillOpinionWeightService._count(bucket.get("unable"))
-        if None in (evaluated, hit, miss, observational, unable):
+        skill_attributable_unable = SkillOpinionWeightService._count(
+            bucket.get("skill_attributable_unable")
+        )
+        external_unable = SkillOpinionWeightService._count(
+            bucket.get("external_unable")
+        )
+        unclassified_unable = SkillOpinionWeightService._count(
+            bucket.get("unclassified_unable")
+        )
+        if None in (
+            evaluated,
+            hit,
+            miss,
+            observational,
+            unable,
+            skill_attributable_unable,
+            external_unable,
+            unclassified_unable,
+        ):
             return None
         if evaluated < MIN_SKILL_OUTCOME_SAMPLE_SIZE:
             return None
         if hit + miss != evaluated:
+            return None
+        if (
+            skill_attributable_unable
+            + external_unable
+            + unclassified_unable
+            != unable
+        ):
             return None
 
         posterior_hit_rate = (
             hit + _BETA_PRIOR_HITS
         ) / (evaluated + _BETA_PRIOR_SIZE)
         direction_score = 2.0 * posterior_hit_rate - 1.0
-        terminal_count = evaluated + observational + unable
+        terminal_count = (
+            evaluated + observational + skill_attributable_unable
+        )
         if terminal_count <= 0:
             return None
-        unable_rate = unable / terminal_count
+        unable_rate = skill_attributable_unable / terminal_count
         bucket_score = min(
             1.0,
             max(
