@@ -445,7 +445,7 @@ def resolve_daily_stock_identity(
         candidates = [raw_code, normalized_code, refill_code]
         if suffix_base_lookup_allowed(normalized_code):
             candidates.append(normalized_code.rsplit(".", 1)[0])
-    if market not in {"jp", "kr", "tw"}:
+    if market not in {"jp", "kr", "tw", "in"}:
         for candidate in list(candidates):
             candidates.extend(
                 _build_market_code_variants(
