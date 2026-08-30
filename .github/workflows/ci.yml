@@ -13,9 +13,9 @@ jobs:
     name: 🔎 Change Detection
     runs-on: ubuntu-latest
     outputs:
-      backend: ${{ steps.backend-filter.outputs.backend_non_web == 'true' || steps.filter.outputs.backend_web_contract == 'true' }}
+      backend: ${{ steps.backend-filter.outputs.backend_non_web == 'true' || steps.filter.outputs.backend_contract_assets == 'true' || steps.filter.outputs.backend_web_contract == 'true' }}
       docker: ${{ steps.filter.outputs.docker }}
-      frontend: ${{ steps.filter.outputs.frontend }}
+      frontend: ${{ steps.frontend-filter.outputs.frontend_code }}
       futu_packaging: ${{ steps.filter.outputs.futu_packaging }}
     steps:
       - name: 📥 Checkout
@@ -24,39 +24,23 @@ jobs:
         id: filter
         uses: dorny/paths-filter@v3
         with:
+          predicate-quantifier: every
           filters: |
+            backend_contract_assets:
+              # These docs and fixtures are executable contracts consumed by
+              # offline backend tests, so Markdown/docs-only changes still run them.
+              - '{THIRD_PARTY_NOTICES.md,docs/CHANGELOG.md,docs/INDEX.md,docs/INDEX_EN.md,docs/DEPLOY.md,docs/DEPLOY_EN.md,docs/alerts.md,docs/analysis-context-pack.md,docs/decision-signals.md,docs/full-guide.md,docs/full-guide_EN.md,docs/notifications.md,docs/architecture/**,docs/docker/zeabur-deployment.md,tests/fixtures/**}'
             backend_web_contract:
               # Public assets are shared runtime inputs: Python loaders and
               # packaged deployments may consume them outside the Web app.
-              - 'apps/dsa-web/public/**'
-              - 'apps/dsa-web/src/components/settings/llmProviderTemplates.ts'
-              - 'apps/dsa-web/src/locales/settingsHelp.ts'
+              - '{apps/dsa-web/public/**,apps/dsa-web/src/components/settings/llmProviderTemplates.ts,apps/dsa-web/src/locales/settingsHelp.ts}'
+              - '!**/*.md'
             docker:
-              - '*.py'
-              - 'api/**'
-              - 'bot/**'
-              - 'data_provider/**'
-              - 'src/**'
-              - 'strategies/**'
-              - 'apps/dsa-web/**'
-              - 'docker/**'
-              - 'requirements.txt'
-              - '.dockerignore'
-              - '.github/workflows/ci.yml'
-            frontend:
-              - 'apps/dsa-web/**'
+              - '{*.py,api/**,bot/**,data_provider/**,src/**,strategies/**,apps/dsa-web/**,docker/**,requirements.txt,.dockerignore,.github/workflows/ci.yml}'
+              - '!**/*.md'
             futu_packaging:
-              - 'requirements.txt'
-              - 'main.py'
-              - 'src/brokers/futu/**'
-              - 'scripts/build-backend.ps1'
-              - 'scripts/build-backend-macos.sh'
-              - 'scripts/macos-signature-audit.sh'
-              - 'scripts/build-all.ps1'
-              - 'scripts/build-all-macos.sh'
-              - 'apps/dsa-desktop/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/desktop-release.yml'
+              - '{requirements.txt,main.py,src/brokers/futu/**,scripts/build-backend.ps1,scripts/build-backend-macos.sh,scripts/macos-signature-audit.sh,scripts/build-all.ps1,scripts/build-all-macos.sh,apps/dsa-desktop/**,.github/workflows/ci.yml,.github/workflows/desktop-release.yml}'
+              - '!**/*.md'
       - name: 🧭 Filter backend-safe frontend paths
         id: backend-filter
         uses: dorny/paths-filter@v3
@@ -66,6 +50,18 @@ jobs:
             backend_non_web:
               - '**'
               - '!apps/dsa-web/**'
+              - '!docs/**'
+              - '!**/*.md'
+              - '!LICENSE'
+      - name: 🧭 Filter frontend code paths
+        id: frontend-filter
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            frontend_code:
+              - 'apps/dsa-web/**'
+              - '!**/*.md'
 
   ai-governance:
     name: ai-governance

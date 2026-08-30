@@ -138,16 +138,19 @@ class TestContract2BareCodeDefaultsToStock:
         assert target.matched_index.display_name == "沪深300"
 
     def test_bare_000001_is_stock(self) -> None:
-        """Conflict code: ``000001`` is平安银行 (SZ stock) AND the深证成指
-        isn't this — actually 000001.SZ is the stock, the index is sz399001.
-        So bare 000001 → stock, no registry hit.
+        """Conflict code: ``000001`` is平安银行 (SZ stock) AND the上证指数
+        (``sh000001``) is now in the registry. Per contract #2 bare codes
+        always resolve to stock; the index conflict is surfaced via
+        ``matched_index`` without flipping asset_type.
         """
         target = parse_analysis_target("000001")
         assert target.asset_type == ParseStatus.STOCK
         assert target.exchange == "SZ"
-        assert target.matched_index is None
         # canonical_id is round-trippable: sh/sz prefix synthesised from 0/2/3.
         assert target.canonical_id == "sz000001"
+        # The registry now carries sh000001 (上证指数) whose alias base is 000001.
+        assert target.matched_index is not None
+        assert target.matched_index.canonical_id == "sh000001"
 
     def test_bare_600519_is_sh_stock(self) -> None:
         target = parse_analysis_target("600519")
@@ -369,14 +372,18 @@ class TestEdgeCases:
 # Default registry — public API surface.
 # ---------------------------------------------------------------------------
 class TestDefaultIndexRegistry:
-    def test_default_registry_has_five_entries(self) -> None:
+    def test_default_registry_has_31_entries(self) -> None:
         registry = default_index_registry()
-        assert len(registry) == 5
+        assert len(registry) == 31
 
     def test_default_registry_canonical_ids(self) -> None:
         registry = default_index_registry()
         ids = {entry.canonical_id for entry in registry}
-        assert ids == {"sh000300", "sh000016", "sh000688", "sz399001", "sz399006"}
+        assert len(ids) == 31
+        # The 5 original hard-coded indices are preserved.
+        assert {"sh000300", "sh000016", "sh000688", "sz399001", "sz399006"} <= ids
+        # CSI entries are present.
+        assert {"csi930955", "csi932365"} <= ids
 
     def test_default_registry_find_by_prefixed_code(self) -> None:
         registry = default_index_registry()
@@ -390,6 +397,49 @@ class TestDefaultIndexRegistry:
         # elevate to index status — they degrade to stock (contract #3).
         assert registry.find_by_prefixed_code("hk", "000300") is None
         assert registry.find_by_prefixed_code("us", "000300") is None
+
+    def test_default_registry_find_by_explicit_key_csi(self) -> None:
+        registry = default_index_registry()
+        entry = registry.find_by_explicit_key("csi930955")
+        assert entry is not None
+        assert entry.canonical_id == "csi930955"
+        assert entry.exchange == "CSI"
+        # display form also resolves
+        entry2 = registry.find_by_explicit_key("930955.CSI")
+        assert entry2 is not None
+        assert entry2.canonical_id == "csi930955"
+
+    def test_default_registry_find_by_bare_conflict(self) -> None:
+        registry = default_index_registry()
+        # 930955 is the bare base of the csi930955 alias.
+        entry = registry.find_by_bare_conflict("930955")
+        assert entry is not None
+        assert entry.canonical_id == "csi930955"
+
+    def test_display_name_is_not_an_identity_alias(self) -> None:
+        """Gap 2: a Chinese display name (e.g. ``沪深300``) must never resolve
+        as an index identity — text names are not identity aliases."""
+        registry = default_index_registry()
+        assert registry.find_by_explicit_key("沪深300") is None
+        assert registry.find_by_explicit_key("上证50") is None
+        # The canonical/display/alias code forms still resolve.
+        assert registry.find_by_explicit_key("sh000300") is not None
+        assert registry.find_by_explicit_key("000300.SH") is not None
+        # Parsing the Chinese name must not elevate to index.
+        target = parse_analysis_target("沪深300")
+        assert target.asset_type != ParseStatus.INDEX
+
+    def test_custom_registry_rejects_text_identity_alias(self) -> None:
+        with pytest.raises(ValueError, match="explicit code form"):
+            IndexRegistry((
+                IndexEntry(
+                    bare_code="000300",
+                    exchange="SH",
+                    canonical_id="sh000300",
+                    display_name="沪深300",
+                    aliases=("CSI300",),
+                ),
+            ))
 
 
 # ---------------------------------------------------------------------------
@@ -425,15 +475,14 @@ class TestMaintainerSpecSamples:
         assert target.asset_type == ParseStatus.INDEX
         assert target.canonical_id == "sh000300"
 
-    def test_sz399300_falls_back_to_stock(self) -> None:
-        """sz399300 is NOT in the canonical 5-index white-list (we only carry
-        sz399001 + sz399006 for the SZ side). Per contract #3 it degrades to
-        stock. This sample guards against accidental future registry expand
-        that would silently flip behaviour.
+    def test_sz399300_resolves_to_index(self) -> None:
+        """``sz399300`` is a registered cross-market alias of ``sh000300``
+        (沪深300) per the manifest, so it resolves to the index.
         """
         target = parse_analysis_target("sz399300")
-        assert target.asset_type == ParseStatus.STOCK
-        assert target.exchange == "SZ"
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.canonical_id == "sh000300"
+        assert target.exchange == "SH"
 
     def test_sh600519(self) -> None:
         target = parse_analysis_target("sh600519")
@@ -882,3 +931,131 @@ class TestExplicitExchangeSuffixRejections:
         assert target.canonical_id == code
         assert target.unsupported_reason is not None
         assert expected_exchange in target.unsupported_reason
+
+
+# ---------------------------------------------------------------------------
+# Index registry & CSI provider symbol governance.
+# ---------------------------------------------------------------------------
+class TestIndexAliasMatrix:
+    """Canonical/display/alias converge; CSI explicit; bare stays stock."""
+
+    @pytest.mark.parametrize(
+        "code,expected_canonical,expected_exchange",
+        [
+            ("sh000300", "sh000300", "SH"),
+            ("000300.SH", "sh000300", "SH"),
+            ("sz399300", "sh000300", "SH"),
+            ("399300.SZ", "sh000300", "SH"),
+            ("000300.CSI", "sh000300", "SH"),
+        ],
+    )
+    def test_sh000300_alias_forms_resolve_to_index(
+        self, code: str, expected_canonical: str, expected_exchange: str
+    ) -> None:
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.canonical_id == expected_canonical
+        assert target.exchange == expected_exchange
+
+    @pytest.mark.parametrize(
+        "code",
+        ["csi930955", "930955.CSI", "CSI930955", "  csi930955  "],
+    )
+    def test_csi930955_forms_resolve_to_index(self, code: str) -> None:
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.canonical_id == "csi930955"
+        assert target.exchange == "CSI"
+
+    def test_unknown_csi_is_unsupported_not_us_stock(self) -> None:
+        target = parse_analysis_target("930956.CSI")
+        assert target.asset_type == ParseStatus.UNSUPPORTED
+        assert target.exchange == "UNKNOWN"
+        assert target.unsupported_reason is not None
+        assert "CSI" in target.unsupported_reason
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "csi930956",
+            "CSI930956",
+            "930956.CSI",
+            "csi000300",
+            "CSI000300",
+            "csi93095",
+            "csi9309557",
+            "93095.CSI",
+            "9309557.CSI",
+        ],
+    )
+    def test_unregistered_explicit_csi_prefix_and_suffix_is_unsupported(
+        self, code: str
+    ) -> None:
+        """PR #2267 review fix: an unknown explicit ``csi`` prefix (or an
+        unregistered ``.CSI`` suffix) must surface as ``unsupported`` — never a
+        US ticker and never a guessed SH/SZ index. Only a manifest-owned
+        identity may route/persist as an index."""
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.UNSUPPORTED
+        assert target.exchange == "UNKNOWN"
+        assert target.canonical_id == code
+        assert target.unsupported_reason is not None
+        assert "CSI" in target.unsupported_reason
+
+    def test_csi_prefix_is_not_overequated_to_csi_suffix_alias(self) -> None:
+        """PR #2267 review fix: ``000300.CSI`` is the registered alias of
+        ``sh000300``, but the bare ``csi000300`` prefix is NOT — it must stay
+        unsupported rather than being promoted to the same-code index."""
+        target = parse_analysis_target("000300.CSI")
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.canonical_id == "sh000300"
+        assert target.exchange == "SH"
+
+        unregistered = parse_analysis_target("csi000300")
+        assert unregistered.asset_type == ParseStatus.UNSUPPORTED
+        assert unregistered.exchange == "UNKNOWN"
+
+    def test_us_ticker_starting_with_csi_remains_stock(self) -> None:
+        target = parse_analysis_target("CSIQ")
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.canonical_id == "CSIQ"
+
+    @pytest.mark.parametrize(
+        "code,expected_canonical",
+        [
+            ("000001", "sz000001"),
+            ("000016", "sz000016"),
+            ("000688", "sz000688"),
+            ("000300", "sz000300"),
+            ("399300", "sz399300"),
+            ("930955", "bj930955"),
+        ],
+    )
+    def test_bare_conflict_codes_stay_stock_with_matched_index(
+        self, code: str, expected_canonical: str
+    ) -> None:
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.canonical_id == expected_canonical
+        assert target.matched_index is not None
+
+    def test_unregistered_sh_sz_prefixed_stock_keeps_stock_path(self) -> None:
+        target = parse_analysis_target("sh600519")
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.canonical_id == "sh600519"
+        target2 = parse_analysis_target("sz000001")
+        assert target2.asset_type == ParseStatus.STOCK
+        assert target2.canonical_id == "sz000001"
+
+    def test_old_text_aliases_do_not_resolve_to_index(self) -> None:
+        # CSI300 / HS300 / SSE50 / STAR50 are not in the manifest aliases.
+        for code in ("CSI300", "HS300", "SSE50", "STAR50", "SZSE", "ChiNext"):
+            target = parse_analysis_target(code)
+            assert target.asset_type != ParseStatus.INDEX
+
+    def test_nfkc_and_case_normalization_do_not_create_second_identity(self) -> None:
+        a = parse_analysis_target("csi930955")
+        b = parse_analysis_target("ＣＳＩ９３０９５５")  # full-width
+        assert a.asset_type == ParseStatus.INDEX
+        assert b.asset_type == ParseStatus.INDEX
+        assert a.canonical_id == b.canonical_id

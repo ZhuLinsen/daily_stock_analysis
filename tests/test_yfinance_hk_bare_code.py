@@ -6,6 +6,9 @@ must route to ``.HK`` rather than fall through to the ``.SZ`` default,
 otherwise Yahoo Finance returns 404 and the daily-data chain breaks.
 """
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 from data_provider.yfinance_fetcher import YfinanceFetcher
 
 
@@ -21,6 +24,28 @@ class TestHKPrefixStillRoutesToHK:
     def test_hk_prefix_short(self) -> None:
         # 1-3 digit HK prefix (e.g. hk0001 -> 0001.HK)
         assert YfinanceFetcher()._convert_stock_code("hk0001") == "0001.HK"
+
+    @patch("yfinance.Ticker")
+    def test_hk_code_executes_realtime_route(self, ticker_factory: MagicMock) -> None:
+        ticker = ticker_factory.return_value
+        ticker.fast_info = SimpleNamespace(
+            lastPrice=401.2,
+            previousClose=398.0,
+            open=399.0,
+            dayHigh=403.0,
+            dayLow=397.0,
+            lastVolume=12_345,
+            marketCap=3_800_000_000_000,
+        )
+        ticker.info = {"shortName": "Tencent", "currency": "HKD"}
+
+        quote = YfinanceFetcher().get_realtime_quote("HK00700")
+
+        ticker_factory.assert_called_once_with("0700.HK")
+        assert quote is not None
+        assert quote.code == "0700.HK"
+        assert quote.market == "hk"
+        assert quote.currency == "HKD"
 
 
 class TestBareHKCodeRoutesToHK:

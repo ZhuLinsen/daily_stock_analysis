@@ -642,6 +642,20 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
 
         self.assertEqual(calls, ["run"])
 
+    def test_background_task_active_requires_live_registered_scheduler(self) -> None:
+        service = RuntimeSchedulerService()
+        service._enabled = True
+        service._scheduler = SimpleNamespace(
+            _background_tasks=[{"name": "agent_event_monitor"}],
+        )
+        service._thread = SimpleNamespace(is_alive=lambda: True)
+
+        self.assertTrue(service.is_background_task_active("agent_event_monitor"))
+        self.assertFalse(service.is_background_task_active("missing"))
+
+        service._thread = SimpleNamespace(is_alive=lambda: False)
+        self.assertFalse(service.is_background_task_active("agent_event_monitor"))
+
     def test_start_registers_event_monitor_background_task(self) -> None:
         class _FakeScheduler:
             def __init__(self, **kwargs):

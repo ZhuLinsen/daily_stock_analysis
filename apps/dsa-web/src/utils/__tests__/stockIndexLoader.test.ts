@@ -187,6 +187,56 @@ describe('stockIndexLoader', () => {
       const fetchCallArgs = mockFetch.mock.calls[0][0];
       expect(fetchCallArgs).toContain('?_t=');
     });
+
+    test('filters out assetType=index rows from the returned data', async () => {
+      const withIndex = [
+        ...mockIndexData,
+        {
+          canonicalCode: 'sh000300',
+          displayCode: 'sh000300',
+          nameZh: '沪深300',
+          pinyinFull: 'hushen300',
+          pinyinAbbr: 'hs300',
+          aliases: ['000300.SH'],
+          market: 'CN',
+          assetType: 'index',
+          active: true,
+          popularity: 100,
+        },
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => withIndex,
+      } as unknown as Response);
+
+      const result = await loadStockIndex();
+
+      expect(result.loaded).toBe(true);
+      expect(result.fallback).toBe(false);
+      // Index rows are hidden from the current consumers.
+      expect(result.data.some(item => item.assetType === 'index')).toBe(false);
+      // Stock rows are preserved.
+      expect(result.data).toHaveLength(mockIndexData.length);
+    });
+
+    test('filters index rows from compressed tuple payload', async () => {
+      const compressedWithIndex = [
+        ['600519.SH', '600519', '贵州茅台', 'guizhoumaotai', 'gzmt', ['茅台'], 'CN', 'stock', true, 100],
+        ['sh000300', 'sh000300', '沪深300', 'hushen300', 'hs300', ['000300.SH'], 'CN', 'index', true, 100],
+      ];
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => compressedWithIndex,
+      } as unknown as Response);
+
+      const result = await loadStockIndex();
+
+      expect(result.loaded).toBe(true);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0].canonicalCode).toBe('600519.SH');
+    });
   });
 
   describe('compressIndex - Compress index', () => {

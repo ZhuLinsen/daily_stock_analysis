@@ -5,7 +5,12 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from data_provider.base import BaseFetcher, DataFetcherManager, STANDARD_COLUMNS
+from data_provider.base import (
+    BaseFetcher,
+    DataFetchError,
+    DataFetcherManager,
+    STANDARD_COLUMNS,
+)
 from src.services.stock_list_parser import (
     AnalysisTarget,
     IndexEntry,
@@ -76,6 +81,41 @@ def _manager_without_fetchers() -> DataFetcherManager:
     manager._fetchers = []
     manager._ensure_concurrency_guards()
     return manager
+
+
+@pytest.mark.parametrize(
+    "stock_code",
+    ["csi930956", "CSI930956", "930956.CSI", "csi93095", "93095.CSI"],
+)
+def test_unregistered_csi_daily_is_rejected_before_provider_calls(stock_code) -> None:
+    fetcher = _FakeFetcher("YfinanceFetcher", priority=1, daily_result=_daily_frame())
+    manager = DataFetcherManager(fetchers=[fetcher])
+
+    with pytest.raises(DataFetchError, match="unregistered CSI index"):
+        manager.get_daily_data(stock_code)
+
+    assert fetcher.daily_calls == []
+
+
+@pytest.mark.parametrize(
+    "stock_code",
+    ["csi930956", "CSI930956", "930956.CSI", "csi93095", "93095.CSI"],
+)
+def test_unregistered_csi_name_is_rejected_before_provider_calls(stock_code) -> None:
+    fetcher = _FakeFetcher("YfinanceFetcher", priority=1, name_result="wrong")
+    manager = DataFetcherManager(fetchers=[fetcher])
+
+    assert manager.get_stock_name(stock_code) == ""
+    assert fetcher.name_calls == []
+
+
+def test_prefetch_stock_names_skips_unregistered_csi() -> None:
+    fetcher = _FakeFetcher("YfinanceFetcher", priority=1, name_result="wrong")
+    manager = DataFetcherManager(fetchers=[fetcher])
+
+    manager.prefetch_stock_names(["csi930956", "930956.CSI"])
+
+    assert fetcher.name_calls == []
 
 
 @pytest.fixture(autouse=True)
@@ -470,7 +510,6 @@ def test_index_name_static_fallback_uses_only_canonical_key() -> None:
                 "000016.SH",
                 "000016.SS",
                 "000016.SZ",
-                "SSE50",
             ],
         ),
         ("sz399001", ["sz399001", "399001", "399001.SZ"]),
@@ -563,3 +602,83 @@ def test_index_and_same_bare_stock_names_use_isolated_cache_keys() -> None:
         "000016": "深康佳A",
         "sh000016": "上证50",
     }
+
+
+# ---------------------------------------------------------------------------
+# CSI provider symbol routing.
+# ---------------------------------------------------------------------------
+def test_csi_provider_symbols_follow_manifest_matrix() -> None:
+    csi_target = parse_analysis_target("csi930955")
+    assert csi_target.asset_type == ParseStatus.INDEX
+    assert csi_target.exchange == "CSI"
+
+    # AkShare is the only supported CSI daily provider.
+    assert DataFetcherManager._cn_index_provider_symbol(
+        csi_target, "AkshareFetcher"
+    ) == "csi930955"
+    # Tencent / TickFlow / Yahoo are unsupported for CSI.
+    assert DataFetcherManager._cn_index_provider_symbol(
+        csi_target, "TencentFetcher"
+    ) == ""
+    assert DataFetcherManager._cn_index_provider_symbol(
+        csi_target, "TickFlowFetcher"
+    ) == ""
+    assert DataFetcherManager._cn_index_provider_symbol(
+        csi_target, "YfinanceFetcher"
+    ) == ""
+
+
+def test_csi_daily_route_skips_unsupported_providers_without_health_failure() -> None:
+    tencent = _FakeFetcher("TencentFetcher", priority=0, daily_result=_daily_frame())
+    akshare = _FakeFetcher("AkshareFetcher", priority=1, daily_result=_daily_frame())
+    tickflow = _FakeFetcher("TickFlowFetcher", priority=2, daily_result=_daily_frame())
+    yfinance = _FakeFetcher("YfinanceFetcher", priority=3, daily_result=_daily_frame())
+    manager = DataFetcherManager(fetchers=[tencent, akshare, tickflow, yfinance])
+
+    with patch("data_provider.base.record_provider_run") as record_run, patch.object(
+        DataFetcherManager, "_record_daily_source_failure"
+    ) as record_health_failure:
+        df, source = manager.get_daily_data("csi930955")
+
+    # AkShare succeeds with the csi symbol.
+    assert not df.empty
+    assert source == "AkshareFetcher"
+    assert tencent.daily_calls == []
+    assert akshare.daily_calls == ["csi930955"]
+    assert tickflow.daily_calls == []
+    assert yfinance.daily_calls == []
+    # Unsupported providers recorded as unsupported, no health failure.
+    # AkShare's successful call short-circuits the loop, so only Tencent
+    # (unsupported) and AkShare (success) are recorded.
+    assert [item.kwargs.get("error_type") for item in record_run.call_args_list] == [
+        "unsupported",
+        None,
+    ]
+    record_health_failure.assert_not_called()
+
+
+def test_csi_daily_route_returns_empty_when_akshare_fails() -> None:
+    tencent = _FakeFetcher("TencentFetcher", priority=0, daily_result=_daily_frame())
+    akshare = _FakeFetcher(
+        "AkshareFetcher", priority=1, daily_result=RuntimeError("akshare failed")
+    )
+    tickflow = _FakeFetcher("TickFlowFetcher", priority=2, daily_result=_daily_frame())
+    yfinance = _FakeFetcher("YfinanceFetcher", priority=3, daily_result=_daily_frame())
+    manager = DataFetcherManager(fetchers=[tencent, akshare, tickflow, yfinance])
+
+    with patch("data_provider.base.record_provider_run") as record_run:
+        df, source = manager.get_daily_data("csi930955")
+
+    assert df.empty
+    assert source == ""
+    assert tencent.daily_calls == []
+    assert akshare.daily_calls == ["csi930955"]
+    assert tickflow.daily_calls == []
+    assert yfinance.daily_calls == []
+    # Tencent/TickFlow/Yahoo are unsupported (no network), AkShare failed.
+    assert [item.kwargs["error_type"] for item in record_run.call_args_list] == [
+        "unsupported",
+        "RuntimeError",
+        "unsupported",
+        "unsupported",
+    ]

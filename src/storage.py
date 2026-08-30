@@ -1623,10 +1623,14 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
            SQLite can't add NOT NULL/UNIQUE columns via ALTER).
          5. Backfill existing rows with ``_derive_canonical_id(code)`` in
             id-batched chunks (5000/batch), using ``WHERE canonical_id IS NULL``
-            so re-runs are safe. ``_derive_canonical_id`` is index-aware: a
-            bare registered index code (e.g. ``000300``) resolves to the index
-            canonical_id (``sh000300``) rather than the stock-path key
-            (``sz000300``), preventing same-index split across buckets.
+            so re-runs are safe. ``_derive_canonical_id`` mirrors the parser
+            contract: a bare code always derives the stock-path
+            canonical_id (e.g. ``000300`` -> ``sz000300``), while only explicit
+            index forms (``sh000300`` / ``930955.CSI``) derive an index
+            canonical_id. Historical bare rows whose current canonical_id was
+            mis-written as an index identity (e.g. ``sh000300``) are not fixed
+            here — the idempotent ``_backfill_canonical_ids()`` repair corrects
+            that bucket in a separate pass.
             Function-level lazy import keeps the storage layer free of a
             circular import on ``src.services.stock_list_parser``.
         6. Create a plain (non-unique) index ``ix_stock_daily_canonical_id`` so
@@ -1667,6 +1671,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     raise
 
         self._backfill_stock_daily_canonical_id()
+        self._backfill_canonical_ids()
         self._ensure_stock_daily_canonical_id_index()
 
     def _ensure_stock_daily_canonical_id_index(self) -> None:
@@ -1701,17 +1706,15 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
 
     def _derive_canonical_id(self, code: str) -> Optional[str]:
-        """Derive a Phase 1 ``canonical_id`` for ``code``, index-aware.
+        """Derive a Phase 1 ``canonical_id`` for ``code``.
 
-        Closes review blocker ``OR-COR-4f9ffc38``: when a bare code hits the
-        index registry (``parse_analysis_target(code).matched_index is not
-        None``) we unify to the index's ``canonical_id`` so the same
-        underlying index doesn't split across buckets — e.g. bare ``000300``
-        resolves to ``sh000300`` (the CSI-300 index canonical_id) instead of
-        ``sz000300`` (the stock-path canonical_id the classifier would
-        synthesise for a 6-digit ``0``-prefixed code). When no index is
-        matched, the parser's stock/explicit-index ``canonical_id`` is
-        returned unchanged.
+        This method returns ``parse_analysis_target(code).canonical_id`` (or
+        ``None``) and never reads ``matched_index.canonical_id`` to override
+        the result. Bare codes always resolve to the stock-path canonical_id
+        (e.g. bare ``000300`` -> ``sz000300``), while explicit index forms
+        (``sh000300`` / ``930955.CSI``) resolve to their index canonical_id.
+        This keeps the storage derivation consistent with the parser contract
+        (bare = stock, explicit index = index).
 
         Lazy-imports ``parse_analysis_target`` inside the method (the parser
         module transitively touches the storage layer) and degrades to
@@ -1719,7 +1722,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         persist NULL (D1) without raising.
         """
         try:
-            from src.services.stock_list_parser import parse_analysis_target
+            from src.services.stock_list_parser import (
+                ParseStatus,
+                parse_analysis_target,
+            )
         except Exception as exc:
             logger.warning(
                 "_derive_canonical_id: cannot import parse_analysis_target "
@@ -1728,8 +1734,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
             return None
         target = parse_analysis_target(code)
-        if target.matched_index is not None:
-            return target.matched_index.canonical_id or None
+        if target.asset_type == ParseStatus.UNSUPPORTED:
+            # An unsupported identity (e.g. an unregistered ``csi930956`` /
+            # ``930956.CSI``) must not enter a persistent canonical bucket.
+            # Return None so the caller persists NULL instead.
+            return None
         return target.canonical_id or None
 
     def _backfill_stock_daily_canonical_id(self) -> None:
@@ -1745,9 +1754,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         skipped past in this run and naturally retried on next startup while
         its ``canonical_id`` is still NULL.
 
-        Derivation is index-aware via :meth:`_derive_canonical_id` so a bare
-        index code (e.g. ``000300``) backfills to the index canonical_id
-        (``sh000300``) rather than the stock-path canonical_id (``sz000300``).
+        Derivation follows the parser contract: a bare code that collides with
+        an index identity (e.g. ``000300``) backfills to the stock-path
+        canonical_id (``sz000300``); only explicit index forms
+        (``sh000300`` / ``930955.CSI``) derive to an index canonical_id.
         """
 
         _BATCH_SIZE = 5000
@@ -1822,6 +1832,135 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             "[StockDaily] canonical_id backfill stats: backfilled_count=%s "
             "skipped_count=%s",
             total_backfilled,
+            total_skipped,
+        )
+
+    def _backfill_canonical_ids(self) -> None:
+        """Idempotent, batched repair of historical bare-code canonical_id buckets.
+
+        The previous ``_derive_canonical_id`` behavior preferred
+        ``matched_index.canonical_id``, so a bare six-digit code that collided
+        with an index identity (e.g. ``000001`` / ``000016`` / ``000688`` /
+        ``930955``) was written with the *index* canonical_id (``sh000001`` /
+        ``csi930955``) instead of the stock-path canonical_id (``sz000001`` /
+        ``bj930955``). This method repairs those rows.
+
+        Only rows matching ALL of the following are touched:
+          * ``code`` is a bare 6-digit numeric string (no explicit prefix/suffix)
+          * current ``canonical_id`` is non-NULL and hits an active index identity
+          * the parser's stock canonical_id differs from the current value
+
+        Explicit ``sh``/``sz``/``csi`` prefix and ``.SH``/``.SZ``/``.CSI``
+        suffix rows are never modified. The repair uses a monotonic ``id``
+        cursor and a conditional UPDATE (guarded by the current value) so it is
+        idempotent and safe under concurrent writers. When the registry is
+        empty the repair is a no-op and logs a WARNING.
+        """
+        if not self._is_sqlite_engine:
+            return
+        if not inspect(self._engine).has_table(StockDaily.__tablename__):
+            return
+
+        try:
+            from src.services.stock_list_parser import parse_analysis_target
+            from src.data.stock_index_loader import _load_active_index_rows
+        except Exception as exc:
+            logger.warning(
+                "[StockDaily] canonical_id repair cannot import parser/loader: %s — skipping",
+                exc,
+            )
+            return
+
+        active_rows = _load_active_index_rows()
+        if not active_rows:
+            logger.warning("[StockDaily] canonical_id repair skipped: index registry is empty")
+            return
+
+        # Build the set of active index canonical_ids to detect mis-bucketed rows.
+        active_index_canonicals = {
+            str(row[0]).strip() for row in active_rows if row and str(row[0]).strip()
+        }
+        if not active_index_canonicals:
+            logger.warning("[StockDaily] canonical_id repair skipped: no active index canonicals")
+            return
+
+        _BATCH_SIZE = 5000
+        total_repaired = 0
+        total_skipped = 0
+        last_id = 0
+
+        # Only rows whose current canonical_id hits an active index identity are
+        # candidates for repair. Push this filter into the SQL so repeated
+        # startup repairs do not scan the full table.
+        canonical_placeholders = ", ".join(f":c{i}" for i in range(len(active_index_canonicals)))
+        canonical_params = {f"c{i}": c for i, c in enumerate(sorted(active_index_canonicals))}
+
+        while True:
+            with self._engine.begin() as connection:
+                rows = connection.execute(
+                    text(
+                        f"SELECT id, code, canonical_id FROM {StockDaily.__tablename__} "
+                        "WHERE id > :last_id "
+                        f"AND canonical_id IN ({canonical_placeholders}) "
+                        "AND length(code) = 6 "
+                        "AND code NOT GLOB '*[^0-9]*' "
+                        f"ORDER BY id LIMIT {_BATCH_SIZE}"
+                    ),
+                    {"last_id": last_id, **canonical_params},
+                ).fetchall()
+
+            if not rows:
+                break
+
+            with self._engine.begin() as connection:
+                for row_id, code, current_canonical in rows:
+                    last_id = row_id
+                    code_str = str(code or "").strip()
+                    current = str(current_canonical or "").strip()
+
+                    # Only bare 6-digit numeric codes are candidates for repair.
+                    if not (code_str.isdigit() and len(code_str) == 6):
+                        total_skipped += 1
+                        continue
+
+                    try:
+                        target = parse_analysis_target(code_str)
+                    except Exception as exc:
+                        logger.warning(
+                            "[StockDaily] canonical_id repair derivation failed for "
+                            "code=%r (id=%s): %s — skipping",
+                            code_str, row_id, exc,
+                        )
+                        total_skipped += 1
+                        continue
+
+                    derived = target.canonical_id or None
+                    if not derived or derived == current:
+                        total_skipped += 1
+                        continue
+
+                    result = connection.execute(
+                        text(
+                            f"UPDATE {StockDaily.__tablename__} "
+                            "SET canonical_id = :derived "
+                            "WHERE id = :row_id AND canonical_id = :current"
+                        ),
+                        {"derived": derived, "row_id": row_id, "current": current},
+                    )
+                    if result.rowcount == 1:
+                        total_repaired += 1
+                    elif result.rowcount == 0:
+                        # Lost the race with a concurrent writer — safe to skip.
+                        total_skipped += 1
+                    else:
+                        raise RuntimeError(
+                            "canonical_id repair updated an unexpected number "
+                            f"of rows for id={row_id}: {result.rowcount}"
+                        )
+
+        logger.info(
+            "[StockDaily] canonical_id repair stats: repaired_count=%s skipped_count=%s",
+            total_repaired,
             total_skipped,
         )
 
@@ -3168,8 +3307,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         - SQLite 分支按 chunk 写入以避免绑定参数上限
         - ``canonical_id``（Expand-Contract PR2）：显式传入则双写；
           未传（``None``）时用 ``_derive_canonical_id(code)`` 延迟推导
-          （index-aware：裸指数码命中注册表时统一到指数 canonical_id），
-          推导失败写 NULL 降级（D1）。
+          （裸码恒为 stock canonical，如 ``000300`` -> ``sz000300``；
+          仅显式指数形式如 ``sh000300`` / ``930955.CSI`` 推导为指数
+          canonical_id；历史被错误写成指数桶的裸码行由
+          ``_backfill_canonical_ids()`` 幂等修复），推导失败写 NULL 降级（D1）。
         
         Args:
             df: 包含日线数据的 DataFrame
@@ -3188,9 +3329,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         # D1: canonical_id=None → derive via the Phase 1 parser; on failure
         # degrade to NULL (do NOT raise — read path still uses ``code``).
         # Empty string is treated like None (never persisted as a key).
-        # Derivation is index-aware (OR-COR-4f9ffc38): a bare index code
-        # (e.g. ``000300``) resolves to the index canonical_id (``sh000300``)
-        # rather than the stock-path canonical_id (``sz000300``).
+        # Parser contract (OR-COR-4f9ffc38): a bare code always derives the
+        # stock canonical_id (e.g. ``000300`` -> ``sz000300``); only explicit
+        # index forms (``sh000300`` / ``930955.CSI``) derive an index canonical_id.
+        # Historical bare rows mis-written as an index identity are repaired
+        # separately by the idempotent ``_backfill_canonical_ids()``.
         if not canonical_id:
             try:
                 canonical_id = self._derive_canonical_id(code)

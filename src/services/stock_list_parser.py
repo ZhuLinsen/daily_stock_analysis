@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -49,6 +50,41 @@ __all__ = [
 
 
 _STOCK_LIST_SEPARATOR_RE = re.compile(r"[\s,;\uFF0C\u3001\uFF1B]+")
+_EXPLICIT_INDEX_ALIAS_RE = re.compile(
+    r"^(?:(?:sh|sz|csi)\d{6}|\d{6}\.(?:sh|sz|csi))$"
+)
+# An unregistered numeric CSI form must surface as ``unsupported`` rather than
+# degrade into a US ticker. Registered six-digit forms resolve before this
+# guard; malformed lengths are rejected here without blocking tickers such as
+# ``CSIQ``.
+_EXPLICIT_CSI_FORM_RE = re.compile(r"^(?:csi\d+|\d+\.csi)$")
+
+
+def _normalize_index_key(value: str) -> str:
+    """Normalize an identity key to one resolver identity form.
+
+    ``sh``/``sz`` prefix and ``{code}.SH`` / ``{code}.SZ`` suffix are
+    interchangeable exchange identities, so they collapse to the canonical
+    lowercase-prefixed key (``sh000300`` == ``000300.SH``).
+
+    CSI is deliberately **not** collapsed: ``csi{code}`` (prefix) and
+    ``{code}.CSI`` (suffix) are kept distinct. The ``csi`` prefix is a canonical
+    identity that only resolves when a manifest row owns that exact ``csi{code}``
+    key, while a ``{code}.CSI`` suffix is an *explicit alias* that belongs to the
+    entry that registered it (e.g. ``000300.CSI`` is an alias of ``sh000300``).
+    Keeping them separate prevents ``csi000300`` (unregistered) from being
+    conflated with the registered ``000300.CSI`` alias of ``sh000300``.
+    """
+    normalized = unicodedata.normalize(
+        "NFKC", str(value or "")
+    ).strip().casefold()
+    prefix_match = re.fullmatch(r"(sh|sz)(\d{6})", normalized)
+    if prefix_match:
+        return f"{prefix_match.group(1)}{prefix_match.group(2)}"
+    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz)", normalized)
+    if suffix_match:
+        return f"{suffix_match.group(2)}{suffix_match.group(1)}"
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +244,7 @@ class IndexEntry:
     """A single known index in :class:`IndexRegistry`."""
 
     bare_code: str
-    exchange: str  # 'SH' or 'SZ'
+    exchange: str  # 'SH' / 'SZ' / 'CSI'
     canonical_id: str
     display_name: str
     aliases: Tuple[str, ...] = ()
@@ -240,20 +276,64 @@ class AnalysisTarget:
 class IndexRegistry:
     """Authoritative source for ``asset_type=index`` resolution.
 
-    The registry is populated with a small built-in white-list of canonical
-    A-share indices (CSI 300 / SSE 50 / STAR 50 / SZSE Component / ChiNext)
-    that already exist as hard-coded white-lists across
-    ``data_provider/*_fetcher.py``. PR1 deliberately keeps the registry
-    in-memory and immutable — later phases of issue #2063 will load the
-    ``asset_type=index`` rows from ``apps/dsa-web/public/stocks.index.json``
-    once that file carries index rows; the parser contract won't change.
+    The registry is populated from the validated ``assetType=index`` rows of
+    ``apps/dsa-web/public/stocks.index.json`` (via :func:`default_index_registry`).
+    It builds three lookup maps at construction time:
+
+    * canonical map — ``canonical_id -> entry``
+    * resolver-key map — every normalized canonical/display/alias key -> entry
+    * bare-conflict map — the 6-digit numeric base of explicit aliases -> entry
+
+    Construction rejects duplicate or ambiguous keys (identity/alias/stock-index
+    conflicts) by raising ``ValueError`` so a malformed candidate is never
+    silently loaded.
     """
 
     def __init__(self, entries: Iterable[IndexEntry] = ()):
         self._entries: List[IndexEntry] = list(entries)
-        self._by_canonical: Dict[str, IndexEntry] = {
-            e.canonical_id: e for e in self._entries
-        }
+        self._by_canonical: Dict[str, IndexEntry] = {}
+        self._by_resolver_key: Dict[str, IndexEntry] = {}
+        self._by_bare_conflict: Dict[str, IndexEntry] = {}
+
+        for entry in self._entries:
+            norm_canonical = _normalize_index_key(entry.canonical_id)
+            if norm_canonical in self._by_canonical:
+                raise ValueError(
+                    f"duplicate index canonical: {entry.canonical_id!r}"
+                )
+            self._by_canonical[norm_canonical] = entry
+
+            for alias in entry.aliases:
+                norm_alias = _normalize_index_key(alias)
+                if norm_alias.isdigit():
+                    raise ValueError(
+                        f"bare numeric display/alias rejected for index: {alias!r}"
+                    )
+                if not _EXPLICIT_INDEX_ALIAS_RE.fullmatch(norm_alias):
+                    raise ValueError(
+                        f"index aliases must use an explicit code form: {alias!r}"
+                    )
+
+            for key in [entry.canonical_id] + list(entry.aliases):
+                norm_key = _normalize_index_key(key)
+                if not norm_key:
+                    continue
+                if norm_key.isdigit():
+                    raise ValueError(
+                        f"bare numeric display/alias rejected for index: {key!r}"
+                    )
+                existing = self._by_resolver_key.get(norm_key)
+                if existing is not None and existing is not entry:
+                    raise ValueError(
+                        f"index resolver key {key!r} maps to multiple canonicals "
+                        f"({existing.canonical_id} vs {entry.canonical_id})"
+                    )
+                self._by_resolver_key[norm_key] = entry
+
+            for alias in entry.aliases:
+                base = "".join(ch for ch in alias if ch.isdigit())
+                if base and base.isdigit() and len(base) == 6:
+                    self._by_bare_conflict.setdefault(base, entry)
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -275,11 +355,16 @@ class IndexRegistry:
         if exchange is None:
             return None
         canonical = f"{prefix}{bare_code}"
-        entry = self._by_canonical.get(canonical)
+        entry = self._by_canonical.get(_normalize_index_key(canonical))
         if entry is not None:
             return entry
         # Alias fallback — e.g. user typed ``sz399300`` but registry lists it
-        # under ``sh000300`` via an alias. Walk the registry once.
+        # under ``sh000300`` via an alias. Check the resolver map for the
+        # prefixed form first (``sz399300`` is an explicit alias), then walk
+        # the registry once for bare-code matches.
+        entry = self._by_resolver_key.get(_normalize_index_key(canonical))
+        if entry is not None:
+            return entry
         for entry in self._entries:
             if entry.exchange == exchange and entry.matches_code(bare_code):
                 return entry
@@ -298,64 +383,86 @@ class IndexRegistry:
                 return entry
         return None
 
+    def find_by_explicit_key(self, key: str) -> Optional[IndexEntry]:
+        """Look up an index by an explicit canonical/display/alias key.
+
+        Used by :func:`parse_analysis_target` to resolve ``csi930955`` /
+        ``930955.CSI`` and other explicit index forms before generic stock
+        normalization runs.
+        """
+        return self._by_resolver_key.get(_normalize_index_key(key))
+
+    def find_by_bare_conflict(self, bare_code: str) -> Optional[IndexEntry]:
+        """Return the index whose explicit alias base equals ``bare_code``."""
+        return self._by_bare_conflict.get(_normalize_index_key(bare_code))
+
 
 # ---------------------------------------------------------------------------
-# Default index registry — the built-in white-list.
+# Default index registry — built from the validated JSON index rows.
 # ---------------------------------------------------------------------------
-# Five canonical A-share indices, mirroring the hard-coded lists already
-# present in ``data_provider/{efinance,akshare,yfinance,tickflow}_fetcher.py``.
-# Keeping this list in one place + giving it a public ``IndexRegistry`` type
-# is the whole point of PR1; later phases may move the data into
-# ``apps/dsa-web/public/stocks.index.json`` and load it, but the parser
-# contract stays stable.
-_DEFAULT_INDEX_ENTRIES: Tuple[IndexEntry, ...] = (
-    IndexEntry(
-        bare_code="000300",
-        exchange="SH",
-        canonical_id="sh000300",
-        display_name="沪深300",
-        aliases=("000300.SH", "CSI300", "HS300"),
-    ),
-    IndexEntry(
-        bare_code="000016",
-        exchange="SH",
-        canonical_id="sh000016",
-        display_name="上证50",
-        aliases=("000016.SH", "SSE50"),
-    ),
-    IndexEntry(
-        bare_code="000688",
-        exchange="SH",
-        canonical_id="sh000688",
-        display_name="科创50",
-        aliases=("000688.SH", "STAR50"),
-    ),
-    IndexEntry(
-        bare_code="399001",
-        exchange="SZ",
-        canonical_id="sz399001",
-        display_name="深证成指",
-        aliases=("399001.SZ", "SZSE"),
-    ),
-    IndexEntry(
-        bare_code="399006",
-        exchange="SZ",
-        canonical_id="sz399006",
-        display_name="创业板指",
-        aliases=("399006.SZ", "ChiNext"),
-    ),
-)
+# The unique runtime identity source is the ``active=true`` / ``assetType=index``
+# rows of the candidate ``stocks.index.json``. The old hard-coded
+# ``_DEFAULT_INDEX_ENTRIES`` white-list is removed; no second runtime white-list
+# is kept. When all candidates fail, the registry is empty and every prefixed
+# input degrades to the stock path (fail-open).
+
+
+def _index_entry_from_row(row) -> Optional[IndexEntry]:
+    """Convert one validated active index tuple into an :class:`IndexEntry`."""
+    if not isinstance(row, list) or len(row) < 10:
+        return None
+    canonical = str(row[0] or "").strip()
+    display = str(row[1] or "").strip()
+    name = str(row[2] or "").strip()
+    aliases = row[5] if isinstance(row[5], list) else []
+    if not canonical or not name:
+        return None
+    namespace = canonical[:3] if canonical.startswith("csi") else canonical[:2]
+    if namespace == "csi":
+        exchange = "CSI"
+        bare_code = canonical[3:]
+    elif namespace in {"sh", "sz"}:
+        exchange = _EXCHANGE_PREFIX_TO_CODE.get(namespace, "UNKNOWN")
+        bare_code = canonical[2:]
+    else:
+        return None
+    aliases = [str(a) for a in (row[5] if isinstance(row[5], list) else []) if str(a).strip()]
+    # The display code (e.g. ``930955.CSI``) is a resolver key even when it is
+    # not an explicit alias; add it so ``find_by_explicit_key`` and the
+    # bare-conflict map can resolve it. SH/SZ display equals canonical so it is
+    # already covered.
+    display = str(row[1] or "").strip()
+    if display and display != canonical and display not in aliases:
+        aliases.append(display)
+    return IndexEntry(
+        bare_code=bare_code,
+        exchange=exchange,
+        canonical_id=canonical,
+        display_name=name,
+        aliases=tuple(aliases),
+    )
 
 
 def default_index_registry() -> IndexRegistry:
-    """Return the built-in :class:`IndexRegistry` shipped with PR1.
+    """Return the :class:`IndexRegistry` built from the validated JSON index rows.
 
-    ``IndexRegistry`` is intentionally cheap to construct (5 small dataclass
-    entries); callers may rebuild it on every call rather than caching it
-    globally. Once the JSON registry carries ``asset_type=index`` rows this
-    factory should load from disk and stay backward-compatible.
+    Loads the active ``assetType=index`` rows via the stock-index loader's
+    cached active-index-row loader, converts each to a lightweight
+    :class:`IndexEntry`, and constructs a fresh :class:`IndexRegistry`. The
+    registry is intentionally cheap to construct; callers may rebuild it on
+    every call rather than caching it globally. When the loader returns no
+    rows (all candidates failed), the registry is empty and every prefixed
+    input degrades to the stock path.
     """
-    return IndexRegistry(_DEFAULT_INDEX_ENTRIES)
+    from src.data.stock_index_loader import _load_active_index_rows
+
+    rows = _load_active_index_rows()
+    entries = []
+    for row in rows:
+        entry = _index_entry_from_row(row)
+        if entry is not None:
+            entries.append(entry)
+    return IndexRegistry(entries)
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +620,56 @@ def parse_analysis_target(
     # a blank white-list — review blocker ``OR-COR-403bd018``.
     if registry is None:
         registry = default_index_registry()
+
+    # Resolve explicit index keys (canonical/display/alias) BEFORE generic
+    # stock normalization, so ``csi930955`` / ``930955.CSI`` and other explicit
+    # index forms resolve to ``index`` without touching
+    # ``normalize_stock_code()``. An unregistered ``.CSI`` input is surfaced as
+    # ``unsupported`` (never a US ticker or a guessed SH/SZ index).
+    explicit_entry = registry.find_by_explicit_key(raw)
+    if explicit_entry is not None:
+        canonical, display, exchange = _canonicalize_for_index(explicit_entry, raw)
+        # Preserve the prefix/bare split for explicit sh/sz prefixed forms so
+        # the existing ``normalized_prefix``/``normalized_code`` contract stays
+        # intact (review blocker OR-COR-d24a4e9a family). CSI forms carry no
+        # sh/sz prefix.
+        norm_prefix = None
+        norm_code = raw
+        lower = raw.lower()
+        for p in ("sh", "sz"):
+            if lower.startswith(p) and len(raw) > len(p):
+                norm_prefix = p
+                norm_code = raw[len(p):]
+                break
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.INDEX,
+            canonical_id=canonical,
+            display_code=display,
+            exchange=exchange,
+            normalized_prefix=norm_prefix,
+            normalized_code=norm_code,
+            matched_index=explicit_entry,
+        )
+
+    # PR #2267 review fix: an explicit CSI form not owned by the registry must
+    # surface as ``unsupported`` — never a US ticker or a guessed SH/SZ index. This
+    # covers both the ``.CSI`` suffix (already handled by the prior check) and
+    # the ``csi`` prefix form (``csi930956`` / ``CSI930956``), which the generic
+    # normalizer would otherwise mis-route into the US-ticker branch.
+    if _EXPLICIT_CSI_FORM_RE.match(unicodedata.normalize("NFKC", raw).strip().casefold()):
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.UNSUPPORTED,
+            canonical_id=raw,
+            display_code=raw,
+            exchange="UNKNOWN",
+            unsupported_reason=(
+                f"unregistered CSI index: {raw!r} is not in the index registry"
+            ),
+            normalized_prefix=None,
+            normalized_code=raw,
+        )
 
     # Reuse the repository's existing normalization contract
     # (``src.services.stock_code_utils._normalize_code_and_exchange``) so
@@ -905,6 +1062,11 @@ def parse_analysis_target(
     matched_index = None
     if prefix is None and bare:
         candidate = registry.find_by_bare_code(bare)
+        if candidate is None:
+            # Also surface conflicts via the bare-conflict map so a bare code
+            # that is the numeric base of an explicit index alias (e.g.
+            # ``930955`` for ``csi930955``) is advertised as ambiguous.
+            candidate = registry.find_by_bare_conflict(bare)
         if candidate is not None:
             matched_index = candidate
 

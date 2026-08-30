@@ -39,6 +39,22 @@ class _DummyBoardFetcher:
 
 
 class TestFundamentalContext(unittest.TestCase):
+    def test_not_supported_builder_uses_existing_fundamental_schema(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+
+        context = manager.build_not_supported_fundamental_context(
+            "sh000016", "index target: fundamental modules skipped"
+        )
+
+        self.assertEqual(context["status"], "not_supported")
+        self.assertTrue(context["coverage"])
+        self.assertTrue(
+            all(status == "not_supported" for status in context["coverage"].values())
+        )
+        self.assertEqual(
+            context["errors"], ["index target: fundamental modules skipped"]
+        )
+
     def test_offshore_market_returns_not_supported_when_adapter_empty(self) -> None:
         """When yfinance adapter has no data, offshore (US/HK) status is not_supported.
 
@@ -138,13 +154,15 @@ class TestFundamentalContext(unittest.TestCase):
                 ):
             ctx = manager.get_fundamental_context("AAPL")
         self.assertEqual(ctx["market"], "us")
-        # Offshore status only considers valuation/growth/earnings (capital_flow
-        # etc. are intentionally not_supported); "ok" when all three populate.
+        # Offshore status considers valuation/growth/earnings plus any populated
+        # capital_flow / boards blocks; "ok" when the populated blocks are ok.
         self.assertEqual(ctx["status"], "ok")
         self.assertEqual(ctx["coverage"].get("growth"), "ok")
         self.assertEqual(ctx["coverage"].get("earnings"), "ok")
         self.assertEqual(ctx["coverage"].get("capital_flow"), "not_supported")
-        self.assertEqual(ctx["coverage"].get("boards"), "not_supported")
+        # belong_boards from the bundle surface the boards block (was hard-coded
+        # not_supported before the Futu integration made it data-driven).
+        self.assertEqual(ctx["coverage"].get("boards"), "ok")
         growth_data = ctx["growth"].get("data") or {}
         self.assertEqual(growth_data.get("revenue_yoy"), 16.5)
         self.assertEqual(growth_data.get("roe"), 141.4)

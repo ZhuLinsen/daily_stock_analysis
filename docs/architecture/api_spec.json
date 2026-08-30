@@ -2672,6 +2672,70 @@
           }
         ]
       }
+    },
+    "/api/v1/data/overview": {
+      "get": {
+        "tags": [
+          "Data"
+        ],
+        "summary": "Get data capability overview",
+        "description": "Return provider capabilities, dataset quality, and source priority without exposing secrets.",
+        "operationId": "get_data_overview_api_v1_data_overview_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataCapabilityOverviewResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/capabilities": {
+      "get": {
+        "tags": [
+          "Data"
+        ],
+        "summary": "Get data provider capabilities",
+        "description": "Alias of /data/overview for clients that only need capability metadata.",
+        "operationId": "get_data_capabilities_api_v1_data_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataCapabilityOverviewResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3355,12 +3419,569 @@
                 "description": "市场结构上下文（题材主线与个股市场位置信息，JSON）"
               }
             }
+          },
+          "structured_report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchArtifact"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "结构化研究产物，供看板、个股研究页、监控和 Copilot 复用"
           }
         },
         "required": [
           "meta",
           "summary"
         ]
+      },
+      "ResearchArtifact": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "research-artifact-v1",
+            "title": "Schema Version",
+            "default": "research-artifact-v1"
+          },
+          "artifact_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Artifact Id"
+          },
+          "source_report_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Report Id"
+          },
+          "source_query_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Query Id"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/ResearchSubject"
+          },
+          "thesis": {
+            "$ref": "#/components/schemas/ResearchThesis"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchEvidenceItem"
+            },
+            "type": "array",
+            "title": "Evidence"
+          },
+          "invalidation_conditions": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchInvalidationCondition"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Invalidation Conditions"
+          },
+          "next_actions": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchNextAction"
+            },
+            "type": "array",
+            "title": "Next Actions"
+          },
+          "data_quality": {
+            "$ref": "#/components/schemas/ResearchDataQuality"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "subject",
+          "thesis",
+          "invalidation_conditions"
+        ],
+        "title": "ResearchArtifact",
+        "description": "Structured report artifact for dashboard, stock detail, monitor and copilot reuse."
+      },
+      "ResearchDataQuality": {
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": [
+              "good",
+              "usable",
+              "limited",
+              "poor",
+              "unknown"
+            ],
+            "title": "Level",
+            "default": "unknown"
+          },
+          "overall_score": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Score"
+          },
+          "source_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Source Count",
+            "default": 0
+          },
+          "stale_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Stale Count",
+            "default": 0
+          },
+          "missing_blocks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Blocks"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Limitations"
+          }
+        },
+        "type": "object",
+        "title": "ResearchDataQuality",
+        "description": "Low-sensitive quality summary for the artifact inputs."
+      },
+      "ResearchEvidenceItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Id"
+          },
+          "source_type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Source Type"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Title"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "freshness": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "stale",
+              "unknown"
+            ],
+            "title": "Freshness",
+            "default": "unknown"
+          },
+          "quality_level": {
+            "type": "string",
+            "enum": [
+              "good",
+              "usable",
+              "limited",
+              "poor",
+              "unknown"
+            ],
+            "title": "Quality Level",
+            "default": "unknown"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source_type",
+          "title"
+        ],
+        "title": "ResearchEvidenceItem",
+        "description": "One evidence item with freshness and quality status."
+      },
+      "ResearchInvalidationCondition": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Id"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "price",
+              "volume",
+              "evidence",
+              "market",
+              "time",
+              "data_quality",
+              "manual"
+            ],
+            "title": "Category"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Description"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "watch",
+              "warning",
+              "critical"
+            ],
+            "title": "Severity",
+            "default": "warning"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric"
+          },
+          "threshold": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "category",
+          "description"
+        ],
+        "title": "ResearchInvalidationCondition",
+        "description": "Condition that should invalidate or force reassessment of the thesis."
+      },
+      "ResearchNextAction": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Action"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Label"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action",
+          "label"
+        ],
+        "title": "ResearchNextAction",
+        "description": "Suggested next action for a human or workflow."
+      },
+      "ResearchSubject": {
+        "properties": {
+          "stock_code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Stock Code"
+          },
+          "stock_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Name"
+          },
+          "market": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market"
+          },
+          "entity_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Ref",
+            "description": "Optional EntityLink ref when available"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stock_code"
+        ],
+        "title": "ResearchSubject",
+        "description": "The entity being researched."
+      },
+      "ResearchThesis": {
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "bullish",
+              "bearish",
+              "neutral",
+              "unknown"
+            ],
+            "title": "Direction",
+            "default": "unknown"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "description": "Concise thesis statement",
+            "default": ""
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score",
+            "description": "Original sentiment score when available"
+          },
+          "horizon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Horizon"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "buy",
+                  "add",
+                  "hold",
+                  "reduce",
+                  "sell",
+                  "watch",
+                  "avoid",
+                  "alert"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "action_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Label"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "risks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Risks"
+          }
+        },
+        "type": "object",
+        "title": "ResearchThesis",
+        "description": "Structured investment thesis extracted from a report."
       },
       "StockQuote": {
         "type": "object",
@@ -7438,6 +8059,309 @@
           "metadata"
         ],
         "title": "DecisionSignalPreview"
+      },
+      "DataCapabilityOverviewResponse": {
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "title": "As Of"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/DataProviderCapability"
+            },
+            "type": "array",
+            "title": "Providers"
+          },
+          "datasets": {
+            "items": {
+              "$ref": "#/components/schemas/DataDatasetQuality"
+            },
+            "type": "array",
+            "title": "Datasets"
+          },
+          "priorities": {
+            "items": {
+              "$ref": "#/components/schemas/DataPriorityView"
+            },
+            "type": "array",
+            "title": "Priorities"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "as_of"
+        ],
+        "title": "DataCapabilityOverviewResponse",
+        "description": "Read-only data capability and dataset quality overview."
+      },
+      "DataDatasetQuality": {
+        "properties": {
+          "dataset": {
+            "type": "string",
+            "title": "Dataset",
+            "description": "Stable dataset identifier"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded",
+              "partial",
+              "unconfigured",
+              "unavailable",
+              "unknown",
+              "stale"
+            ],
+            "title": "Status",
+            "description": "Current quality status"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source",
+            "description": "Selected source token when known"
+          },
+          "stale": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale",
+            "description": "Whether the data is known stale"
+          },
+          "last_success": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success",
+            "description": "Last successful load timestamp"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error",
+            "description": "Last non-sensitive error summary"
+          },
+          "fallback_from": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fallback From",
+            "description": "Earlier priority sources skipped before selected source"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage",
+            "description": "Optional dataset coverage summary"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "description": "Stable warning codes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dataset",
+          "status"
+        ],
+        "title": "DataDatasetQuality",
+        "description": "Dataset-level quality view consumed by dashboards and data center."
+      },
+      "DataPriorityView": {
+        "properties": {
+          "scenario": {
+            "type": "string",
+            "title": "Scenario",
+            "description": "Stable scenario identifier"
+          },
+          "providers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Providers",
+            "description": "Configured provider/source tokens"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Where this priority list comes from",
+            "default": ""
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "description": "Stable warning codes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario"
+        ],
+        "title": "DataPriorityView",
+        "description": "Configured provider order for one usage scenario."
+      },
+      "DataProviderCapability": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Stable provider token"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Human-readable provider name",
+            "default": ""
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "Whether the provider is enabled for runtime routing"
+          },
+          "configured": {
+            "type": "boolean",
+            "title": "Configured",
+            "description": "Whether required configuration is present"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "unconfigured",
+              "unavailable",
+              "unknown"
+            ],
+            "title": "Status",
+            "description": "Configuration/runtime availability summary"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority",
+            "description": "Runtime fetcher priority when available"
+          },
+          "markets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Markets",
+            "description": "Supported markets"
+          },
+          "datasets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Datasets",
+            "description": "Supported dataset identifiers"
+          },
+          "dataset_markets": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Dataset Markets",
+            "description": "Exact supported markets for each dataset; consumers must not infer a markets × datasets cross-product"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "description": "Stable warning codes"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error",
+            "description": "Last known non-sensitive error summary"
+          },
+          "cooldown": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cooldown",
+            "description": "Whether the provider is currently in cooldown"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "enabled",
+          "configured",
+          "status"
+        ],
+        "title": "DataProviderCapability",
+        "description": "Visible capability metadata for one data provider."
       }
     },
     "securitySchemes": {

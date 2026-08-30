@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from src.data import stock_index_loader
 
 
@@ -335,6 +337,406 @@ class TestStockIndexLoader(unittest.TestCase):
                 self.assertIsNone(stock_index_loader.resolve_index_stock_code("2330"))
                 self.assertIsNone(stock_index_loader.resolve_index_stock_code("2330.TW"))
                 self.assertIsNone(stock_index_loader.resolve_index_stock_code("6505.TWO"))
+
+    # ------------------------------------------------------------------
+    # Active index row loader
+    # ------------------------------------------------------------------
+
+    def _index_payload(self, canonicals):
+        rows = []
+        for c in canonicals:
+            display = f"{c[3:]}.CSI" if c.startswith("csi") else c
+            rows.append([c, display, f"指数{c}", "zhishu", "zs", [], "CN", "index", True, 100])
+        return rows
+
+    def _pad_payload(self, rows, size=100):
+        """Pad a payload with stock rows so it passes the remote min_items check."""
+        padded = list(rows)
+        while len(padded) < size:
+            i = len(padded)
+            padded.append([f"{i:06d}.SZ", f"{i:06d}", f"股票{i}", "gupiao", "gp", [], "CN", "stock", True, 100])
+        return padded
+
+    def test_load_active_index_rows_returns_index_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            bundled_path.write_text(
+                json.dumps(
+                    self._index_payload(["sh000300", "csi930955"])
+                    + [["000001.SZ", "000001", "平安银行", "payh", "payh", [], "CN", "stock", True, 100]],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "csi930955"})
+
+    def test_load_active_index_rows_remote_superset_wins(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_cache = Path(temp_dir) / "cache" / "stocks.index.json"
+            bundled_path = Path(temp_dir) / "apps" / "stocks.index.json"
+            remote_cache.parent.mkdir(parents=True, exist_ok=True)
+            remote_cache.write_text(
+                json.dumps(self._pad_payload(self._index_payload(["sh000300", "sh000016", "csi930955"])), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            bundled_path.parent.mkdir(parents=True, exist_ok=True)
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.utime(remote_cache, (2_000, 2_000))
+            os.utime(bundled_path, (1_000, 1_000))
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=remote_cache), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(remote_cache, bundled_path)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016", "csi930955"})
+
+    def test_load_active_index_rows_remote_subset_falls_back_to_bundled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_cache = Path(temp_dir) / "cache" / "stocks.index.json"
+            bundled_path = Path(temp_dir) / "apps" / "stocks.index.json"
+            remote_cache.parent.mkdir(parents=True, exist_ok=True)
+            # Remote drops sh000016 (a bundled baseline canonical).
+            remote_cache.write_text(
+                json.dumps(self._pad_payload(self._index_payload(["sh000300"])), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            bundled_path.parent.mkdir(parents=True, exist_ok=True)
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.utime(remote_cache, (2_000, 2_000))
+            os.utime(bundled_path, (1_000, 1_000))
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=remote_cache), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(remote_cache, bundled_path)):
+                rows = stock_index_loader._load_active_index_rows()
+            # Falls back to bundled (which has both).
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016"})
+
+    def test_load_active_index_rows_all_failed_returns_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_path = Path(temp_dir) / "missing.json"
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=missing_path), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(missing_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_load_active_index_rows_rejects_semantic_conflict(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            # Two index rows share the same canonical — semantic conflict.
+            bundled_path.write_text(
+                json.dumps(
+                    self._index_payload(["sh000300"]) + self._index_payload(["sh000300"]),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            # Semantic conflict rejects the candidate → empty registry.
+            self.assertEqual(rows, [])
+
+    def test_clear_stock_index_cache_clears_active_index_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                first = stock_index_loader._load_active_index_rows()
+                stock_index_loader.clear_stock_index_cache()
+                second = stock_index_loader._load_active_index_rows()
+            self.assertEqual(first, second)
+
+    def test_validate_index_rows_semantics_rejects_malformed_csi_display(self):
+        """Gap 1: a CSI row whose display is not ``{code}.CSI`` is rejected."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            # csi930955 with a wrong display (not ``930955.CSI``).
+            bundled_path.write_text(
+                json.dumps(
+                    [["csi930955", "930955", "红利低波100", "honglidibo100", "hldb100", [], "CN", "index", True, 100]],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            # Malformed CSI display rejects the candidate → empty registry.
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_stock_key_collision(self):
+        """Gap 3: an index canonical/display/alias that collides with an active
+        stock/ETF key after normalization is rejected."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            # A stock row whose canonical ``sh000300`` collides with the index
+            # canonical ``sh000300`` in the same candidate.
+            bundled_path.write_text(
+                json.dumps(
+                    self._index_payload(["sh000300"])
+                    + [["sh000300", "sh000300", "冲突股票", "ctgp", "ctgp", [], "CN", "stock", True, 100]],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            # The candidate is rejected because both identities claim one key.
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_csi_canonical_stock_collision(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            bundled_path.write_text(
+                json.dumps(
+                    self._index_payload(["csi930955"])
+                    + [["csi930955", "930955", "冲突股票", "ctgp", "ctgp", [], "CN", "stock", True, 100]],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_text_alias(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh000300"])
+            payload[0][5] = ["CSI300"]
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_blank_pinyin(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh000300"])
+            payload[0][3] = ""
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_non_string_pinyin(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh000300"])
+            payload[0][3] = ["hushen300"]
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_equivalent_suffix_stock_collision(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh600519"])
+            payload += [["600519.SH", "600519", "贵州茅台", "gzmt", "gzmt", [], "CN", "stock", True, 100]]
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_load_active_index_rows_rejects_mixed_valid_and_short_local_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh000300"]) + [["too-short"]]
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_non_integer_popularity(self):
+        """PR #2267 review fix: only a plain non-negative integer popularity is
+        valid at the runtime candidate boundary; fractional/boolean/negative/
+        string popularities reject the candidate."""
+        for bad_popularity in (1.5, True, -1, 1.0, "100"):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                bundled_path = Path(temp_dir) / "stocks.index.json"
+                payload = self._index_payload(["sh000300"])
+                payload[0][9] = bad_popularity
+                bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                     patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                    rows = stock_index_loader._load_active_index_rows()
+                self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_accepts_integer_popularity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual({r[0] for r in rows}, {"sh000300"})
+
+    def test_validate_index_rows_semantics_rejects_cross_entry_duplicate_alias(self):
+        """PR #2267 review fix: two index rows whose aliases normalize to the
+        same identity key (e.g. ``csi930955`` and ``CSI930955`` as aliases of
+        different canonicals) must reject the candidate — no silent overwrite."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh000300", "sz399001"])
+            payload[0][5] = ["csi930955"]
+            payload[1][5] = ["CSI930955"]
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_validate_index_rows_semantics_rejects_duplicate_aliases_in_one_row(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            payload = self._index_payload(["sh000300"])
+            payload[0][5] = ["000300.CSI", "０００３００．ＣＳＩ"]
+            bundled_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual(rows, [])
+
+    def test_load_active_index_rows_bundled_baseline_ignores_newer_legacy_static(self):
+        """Gap 4: the bundled baseline comes from the declared bundled candidate
+        (``apps/dsa-web/public``), not the first non-remote candidate ordered by
+        mtime. A newer legacy ``static`` candidate must not become the baseline."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_cache = Path(temp_dir) / "cache" / "stocks.index.json"
+            bundled_path = Path(temp_dir) / "apps" / "stocks.index.json"
+            legacy_static = Path(temp_dir) / "static" / "stocks.index.json"
+            for p in (remote_cache, bundled_path, legacy_static):
+                p.parent.mkdir(parents=True, exist_ok=True)
+            # Remote is a superset of the bundled baseline.
+            remote_cache.write_text(
+                json.dumps(self._pad_payload(self._index_payload(["sh000300", "sh000016", "csi930955"])), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            # Legacy static is NEWER than bundled but only carries sh000300.
+            legacy_static.write_text(
+                json.dumps(self._index_payload(["sh000300"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.utime(remote_cache, (3_000, 3_000))
+            os.utime(legacy_static, (2_000, 2_000))
+            os.utime(bundled_path, (1_000, 1_000))
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=remote_cache), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(remote_cache, bundled_path, legacy_static)):
+                rows = stock_index_loader._load_active_index_rows()
+            # Remote superset of the bundled baseline wins.
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016", "csi930955"})
+
+    def test_load_active_index_rows_malformed_bundled_falls_back_to_valid_remote(self):
+        """Gap 4: a malformed bundled candidate (fails semantic validation) must
+        not become the baseline; a valid remote superset is then accepted."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_cache = Path(temp_dir) / "cache" / "stocks.index.json"
+            bundled_path = Path(temp_dir) / "apps" / "stocks.index.json"
+            remote_cache.parent.mkdir(parents=True, exist_ok=True)
+            bundled_path.parent.mkdir(parents=True, exist_ok=True)
+            # Remote is a valid superset.
+            remote_cache.write_text(
+                json.dumps(self._pad_payload(self._index_payload(["sh000300", "sh000016", "csi930955"])), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            # Bundled has a malformed CSI display (not ``{code}.CSI``).
+            bundled_path.write_text(
+                json.dumps(
+                    [["csi930955", "930955", "红利低波100", "honglidibo100", "hldb100", [], "CN", "index", True, 100]],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            os.utime(remote_cache, (2_000, 2_000))
+            os.utime(bundled_path, (1_000, 1_000))
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=remote_cache), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(remote_cache, bundled_path)):
+                rows = stock_index_loader._load_active_index_rows()
+            # Malformed bundled is skipped; valid remote superset is loaded.
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016", "csi930955"})
+
+    def test_load_active_index_rows_legacy_static_subset_cannot_bypass_bundled_baseline(self):
+        """Review remediation: when the remote cache is missing/invalid, a newer
+        legacy ``static`` candidate that is a SUBSET of the bundled baseline must
+        NOT be selected — the bundled baseline wins so no active index is lost."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_cache = Path(temp_dir) / "cache" / "stocks.index.json"
+            bundled_path = Path(temp_dir) / "apps" / "stocks.index.json"
+            legacy_static = Path(temp_dir) / "static" / "stocks.index.json"
+            for p in (remote_cache, bundled_path, legacy_static):
+                p.parent.mkdir(parents=True, exist_ok=True)
+            # Remote cache is invalid (not JSON).
+            remote_cache.write_text("not-json", encoding="utf-8")
+            # Bundled baseline carries sh000300 + sh000016.
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            # Legacy static is NEWER than bundled but only carries sh000300.
+            legacy_static.write_text(
+                json.dumps(self._index_payload(["sh000300"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.utime(remote_cache, (3_000, 3_000))
+            os.utime(legacy_static, (2_000, 2_000))
+            os.utime(bundled_path, (1_000, 1_000))
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=remote_cache), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(remote_cache, bundled_path, legacy_static)):
+                rows = stock_index_loader._load_active_index_rows()
+            # Bundled baseline wins (both canonicals preserved).
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016"})
+
+    def test_load_active_index_rows_legacy_static_superset_still_wins(self):
+        """A legacy ``static`` candidate that is a legal SUPERSET of the bundled
+        baseline is still accepted (future supersets are allowed)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_cache = Path(temp_dir) / "cache" / "stocks.index.json"
+            bundled_path = Path(temp_dir) / "apps" / "stocks.index.json"
+            legacy_static = Path(temp_dir) / "static" / "stocks.index.json"
+            for p in (remote_cache, bundled_path, legacy_static):
+                p.parent.mkdir(parents=True, exist_ok=True)
+            remote_cache.write_text("not-json", encoding="utf-8")
+            bundled_path.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            # Legacy static is a superset (adds csi930955).
+            legacy_static.write_text(
+                json.dumps(self._index_payload(["sh000300", "sh000016", "csi930955"]), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.utime(remote_cache, (3_000, 3_000))
+            os.utime(legacy_static, (2_000, 2_000))
+            os.utime(bundled_path, (1_000, 1_000))
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=remote_cache), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(remote_cache, bundled_path, legacy_static)):
+                rows = stock_index_loader._load_active_index_rows()
+            self.assertEqual({r[0] for r in rows}, {"sh000300", "sh000016", "csi930955"})
 
 
 if __name__ == "__main__":

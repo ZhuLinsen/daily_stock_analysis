@@ -11,7 +11,8 @@
 - A 股个股与选股：优先配置 `TUSHARE_TOKEN`，并保留 AkShare / Efinance / Tencent / TickFlow / Baostock / YFinance 兜底；普通个股日线按 priority 配置排序。
 - 已登记 A 股指数：固定按 Tencent → AkShare → TickFlow → YFinance 降级，不读取普通日 K 的 `*_PRIORITY` 配置。
 - A 股大盘复盘：配置 `TICKFLOW_API_KEY` 后，复盘聚合所需的指数和市场宽度会优先尝试 TickFlow，失败后回退现有免费源；这与单标的指数日线的 Tencent-first 固定链是不同入口。
-- 港股 / 美股：配置 `LONGBRIDGE_*` 后优先使用 Longbridge，YFinance、Finnhub、AlphaVantage 继续兜底。
+- 港股：配置 `FUTU_OPEND_HOST` 后，Futu 可作为港股实时与基本面主源；`FUTU_HK_REALTIME_SOURCE_PRIORITY` 控制港股实时行情顺序，Longbridge、AkShare、YFinance 保留为 fallback。
+- 美股：配置 `LONGBRIDGE_*` 后可优先使用 Longbridge，YFinance 保留实时主链 fallback；Finnhub、AlphaVantage 只在已有主源报价后补充字段或参与日线链，不能在 Longbridge/YFinance 全部失败时独立返回实时报价。
 - 热点题材：选股的热点实现参考 AlphaSift，默认走 EastMoney provider，并使用本地 last-good cache 降低实时接口失败影响。
 
 ## 已接入数据源矩阵
@@ -25,7 +26,21 @@
 | 选股快照 | Tushare、Sina、Efinance、AkShare EM、EastMoney Datacenter | 有 `TUSHARE_TOKEN` 时自动把 `tushare` 放入快照优先级；否则使用免费源链路 | 选股引擎维护 source health；状态接口透出 snapshot/daily health |
 | 选股日线补特征 | `DataFetcherManager` | 选股引擎优先复用现有日线与缓存链路 | 现有链路失败后才回到引擎自身的日线源 |
 | 选股热点题材 | EastMoney provider、参考 AlphaSift 的 hotspot 实现、last-good cache | 未指定 provider 时默认使用 EastMoney provider | 实时失败时回退热点缓存；无缓存时返回稳定空态和可读错误 |
-| 港股 / 美股 | Longbridge、YFinance、AkShare、Tushare、Finnhub、AlphaVantage、Stooq | 配置 Longbridge 凭证后参与港美股日线/实时兜底；YFinance 保持基础兜底 | Longbridge 冷却或失败时回退 YFinance / 其他可用源 |
+| 港股 | Futu、Longbridge、YFinance、AkShare、Tushare | 配置 `FUTU_OPEND_HOST` 后 Futu 作为实时与基本面主源，按 `FUTU_HK_REALTIME_SOURCE_PRIORITY` 顺序尝试 | Futu 失败时回退 Longbridge / AkShare / YFinance；Longbridge 冷却或失败时继续回退 YFinance / 其他可用源 |
+| 美股 | Longbridge、YFinance、AkShare、Tushare、Finnhub、AlphaVantage、Stooq | 配置 Longbridge 凭证后参与美股日线/实时主链；YFinance 保持实时基础 fallback；Finnhub/AlphaVantage 可补充已有报价字段并参与日线链 | Longbridge 冷却或失败时实时主链回退 YFinance；两者都失败时不把补充源伪装成可独立返回报价的 fallback |
+
+## 统一数据能力只读契约
+
+Web/API 提供 `GET /api/v1/data/overview` 和等价别名 `GET /api/v1/data/capabilities`，用于把数据源能力、数据集质量和场景优先级以同一个只读结构暴露给首页看板、数据中心、个股详情、自选和选股页面。
+
+首版契约只读取配置和 `DataFetcherManager` 的 fetcher 快照，不触发外部行情请求，也不返回任何原始密钥。响应分三层：
+
+- `providers`：每个 provider 的 `enabled`、`configured`、`status`、`markets`、`datasets`、精确的 `dataset_markets` 和非敏感 warning。`markets` 与 `datasets` 只是聚合索引，不能推断为笛卡尔积；例如 YFinance 可参与 A 股行情，但 A 股基本面固定走 AkShare，因此 `dataset_markets.financial.snapshot` 不包含 `cn`。Finnhub/AlphaVantage 的美股报价 handler 当前只在 Longbridge/YFinance 已返回主报价后补字段，因此不声明 `quote.realtime` 独立路由能力。
+- `datasets`：`quote.realtime`、`kline.daily`、`index.daily`、`market.overview`、`financial.snapshot`、`news.events`、`strategy.screening`、`alert.monitor`、`portfolio.account` 的 `status/source/fallback_from/stale/warnings`；其中 `quote.realtime`、`kline.daily`、`market.overview` 和 `financial.snapshot` 都聚合市场级 coverage，避免把单市场健康度误报成全局可用。A 股实时额外拆分 `cn` 股票优先级、`cn.index.exchange` 固定指数链和 `cn.index.csi` Efinance-only 链；美股实时拆分 `us` 个股动态优先级与 `us.index` 固定 YFinance-only 链。AkShare Tencent/Sina/EM、AkShare HK 双子源、Efinance 股票/指数子源级熔断及日线 breaker 会先于 provider-wide unknown 判定，使 overview 与运行时跳过行为一致。YFinance 的港股实时声明对应其实际 `.HK` 执行路径；未配置 OpenD 时 HK priority 与运行时一致地跳过 Futu；美股个股实时也按当前请求可用性跳过处于连接冷却的 Longbridge，使 YFinance 成为实际主源而不是伪 fallback。PyTDX 不声明未接入统一 route 的实时能力，YFinance 指数日线只声明实际可执行的 CN/US route。任何按运行时顺序尝试的数据集在首个优先源尚未探测且没有更具体的 open breaker 证据时保持 `unknown`，不会越过它宣称后续源已被选中。`alert.monitor` 只有在开关启用且当前 API 进程的 scheduler 已实际注册并运行 `agent_event_monitor` 时才为 `ok`；开关关闭返回 `agent_event_monitor_disabled`，scheduler 未运行则返回 `agent_event_monitor_not_running`。
+- `priorities`：`cn.realtime`、`hk.realtime`、`us.realtime`、`daily.generic`、`cn.index.daily`、`market.overview`、`screening.snapshot`、`news.events` 的当前 source order；`daily.generic` 与运行时一样先排除当前请求不可用或处于连接冷却的 fetcher，不把已跳过的数据源记录成 fallback。
+- `index.daily` 额外区分 `cn.exchange`、`cn.csi` 与 `us` coverage：沪深交易所指数使用 Tencent、AkShare、TickFlow、YFinance 固定多源链，CSI 指数按运行时契约只认 AkShare，美股指数只声明当前能够接收指数 symbol 的 YFinance；Finnhub 当前 fetcher 会拒绝指数 symbol，因此不作为伪 fallback。Tushare 不声明指数日线能力。CN/HK realtime 都只接受对应运行时实际有 handler 的 source token，Tushare realtime 能力仅声明 A 股。
+
+其中 `unknown` 表示尚未执行运行态探测，`unconfigured` 表示缺少必要配置，`degraded` 表示前置优先源不可用但后续源仍可消费。选股 source health 在冷启动、成功数和失败数都为 0 时保持 `unknown`，不会把尚未调用的数据源提前标成 `ok`。后续 Data Center 可以在同一结构上追加 last_success、coverage、cooldown 和运行历史，不需要各页面各自维护数据质量口径。
 
 ## 总体链路图
 
@@ -43,7 +58,7 @@ flowchart TD
     C -->|缺失或过期| DM{市场}
     DM -->|A 股个股/未登记标的| CN[按 priority 动态排序: Efinance/AkShare/Tushare/TickFlow/Pytdx/Baostock/YFinance/Tencent]
     DM -->|已登记沪深指数| CNI[Tencent -> AkShare -> TickFlow -> YFinance]
-    DM -->|港股| HK[Longbridge if configured -> AkShare/Tushare -> YFinance]
+    DM -->|港股| HK[Futu if configured -> Longbridge/AkShare/YFinance fallback]
     DM -->|美股| US[Longbridge/YFinance -> Finnhub/AlphaVantage -> Stooq]
 
     R --> RP[REALTIME_SOURCE_PRIORITY]

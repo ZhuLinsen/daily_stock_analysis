@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../theme/ThemeProvider';
 import { Shell } from '../Shell';
 
@@ -35,6 +35,9 @@ beforeAll(() => {
 });
 
 describe('Shell', () => {
+  afterEach(() => {
+    delete (window as { dsaDesktop?: unknown }).dsaDesktop;
+  });
   it.skip('renders navigation, theme toggle and completion badge', () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>
@@ -68,6 +71,42 @@ describe('Shell', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '切换主题' })[0]);
 
     expect(await screen.findByRole('menu', { name: '主题模式' })).toBeInTheDocument();
+  });
+
+  it('hides the desktop update entry outside Electron runtime', () => {
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ThemeProvider>
+          <Shell>
+            <div>page content</div>
+          </Shell>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByRole('button', { name: '桌面端更新' })).not.toBeInTheDocument();
+  });
+
+  it('shows the desktop update entry in Electron runtime', async () => {
+    (window as { dsaDesktop?: unknown }).dsaDesktop = {
+      version: '3.30.0',
+      getUpdateState: vi.fn().mockResolvedValue({ status: 'idle', currentVersion: '3.30.0' }),
+      checkForUpdates: vi.fn(),
+      openReleasePage: vi.fn(),
+      onUpdateStateChange: vi.fn(() => () => undefined),
+    };
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ThemeProvider>
+          <Shell>
+            <div>page content</div>
+          </Shell>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole('button', { name: '桌面端更新' })).toBeInTheDocument();
   });
 
   it('shows a confirmation dialog before logout', async () => {

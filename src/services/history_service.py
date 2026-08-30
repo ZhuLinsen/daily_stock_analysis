@@ -122,6 +122,39 @@ class HistoryService:
                 is_bse_code,
                 normalize_stock_code,
             )
+            from src.services.stock_code_utils import (
+                _converge_registered_csi_identity,
+            )
+
+            # PR #2267 review remediation: converge registered CSI aliases
+            # (``csi930955`` / ``930955.CSI`` / ``CSI930955``) so a record persisted under any
+            # equivalent form is reachable from every equivalent query input.
+            # This is a *persisted-read* filter path, so the candidate set must
+            # include:
+            #   1. the parser canonical (``csi930955`` — current storage form),
+            #   2. the old resolver's uppercase canonical (``CSI930955`` — how
+            #      pre-fix records were saved), and
+            #   3. the IndexEntry's explicit aliases (``930955.CSI``).
+            converged_csi = _converge_registered_csi_identity(raw_code)
+            if converged_csi is not None:
+                from src.data.stock_index_loader import _load_active_index_rows
+                active_rows = _load_active_index_rows()
+                alias_keys: List[str] = []
+                display_keys: List[str] = []
+                for row in active_rows:
+                    if row and str(row[0] or "").strip() == converged_csi:
+                        display_keys = [str(row[1] or "").strip()]
+                        alias_keys = [
+                            str(a) for a in (row[5] if isinstance(row[5], list) else [])
+                            if str(a).strip()
+                        ]
+                        break
+                canonical_upper = canonical_stock_code(converged_csi) or converged_csi.upper()
+                add_keys = [converged_csi, canonical_upper] + display_keys + alias_keys
+                for key in add_keys:
+                    if key and key not in candidates:
+                        candidates.append(key)
+                return candidates
 
             raw_canonical = canonical_stock_code(raw_code)
             normalized = canonical_stock_code(normalize_stock_code(raw_canonical))

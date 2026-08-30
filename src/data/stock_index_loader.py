@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
+import unicodedata
 from pathlib import Path
 from threading import RLock
 from typing import Dict, Iterable, Optional
@@ -18,9 +21,34 @@ from src.services.stock_index_remote_service import (
 logger = logging.getLogger(__name__)
 
 _STOCK_INDEX_FILENAME = "stocks.index.json"
+_EXPLICIT_INDEX_ALIAS_RE = re.compile(
+    r"^(?:(?:sh|sz|csi)\d{6}|\d{6}\.(?:sh|sz|csi))$"
+)
+
+
+def _normalize_index_identity_key(value: object) -> str:
+    """Normalize an identity key to one resolver identity form.
+
+    ``sh``/``sz`` prefix and ``{code}.SH`` / ``{code}.SZ`` suffix collapse to
+    the canonical lowercase-prefixed key. CSI is deliberately **not**
+    collapsed: ``csi{code}`` (prefix) and ``{code}.CSI`` (suffix) are kept
+    distinct so an unregistered ``csi`` prefix never conflates with a
+    registered ``{code}.CSI`` alias — mirroring ``stock_list_parser``.
+    """
+    normalized = unicodedata.normalize(
+        "NFKC", str(value or "")
+    ).strip().casefold()
+    prefix_match = re.fullmatch(r"(sh|sz)(\d{6})", normalized)
+    if prefix_match:
+        return f"{prefix_match.group(1)}{prefix_match.group(2)}"
+    suffix_match = re.fullmatch(r"(\d{6})\.(sh|sz)", normalized)
+    if suffix_match:
+        return f"{suffix_match.group(2)}{suffix_match.group(1)}"
+    return normalized
 _STOCK_INDEX_CACHE: Dict[str, str] | None = None
 _STOCK_CODE_LOOKUP_CACHE: Dict[str, str] | None = None
 _STOCK_CODE_CANDIDATES_CACHE: Dict[str, tuple[str, ...]] | None = None
+_ACTIVE_INDEX_ROWS_CACHE: list | None = None
 _REMOTE_INDEX_VALIDITY_CACHE: tuple[Path, float, int, bool] | None = None
 _STOCK_INDEX_CACHE_LOCK = RLock()
 
@@ -373,14 +401,266 @@ def get_stock_code_index_map() -> Dict[str, str]:
         return _STOCK_CODE_LOOKUP_CACHE
 
 
+def _load_active_index_rows() -> list:
+    """Load and cache the active ``assetType=index`` rows from the best candidate.
+
+    Returns raw compressed tuples (no parser type dependency) so the loader
+    stays free of a circular import with ``stock_list_parser``. Each candidate
+    must pass base + semantic validation before its index rows are used.
+
+    Non-regression guard: when the bundled candidate is a valid baseline, every
+    OTHER candidate — the remote cache AND the legacy ``static`` fallback — must
+    be a legal superset of the bundled active-index canonical set to be selected.
+    A candidate that drops any bundled active index canonical is skipped
+    (WARNING) in favour of the bundled candidate, so a stale or partial
+    non-bundled file can never bypass the bundled baseline when the remote cache
+    is missing/invalid.
+    """
+    global _ACTIVE_INDEX_ROWS_CACHE
+
+    if _ACTIVE_INDEX_ROWS_CACHE is not None:
+        return _ACTIVE_INDEX_ROWS_CACHE
+
+    with _STOCK_INDEX_CACHE_LOCK:
+        if _ACTIVE_INDEX_ROWS_CACHE is not None:
+            return _ACTIVE_INDEX_ROWS_CACHE
+
+        remote_path = get_remote_stock_index_cache_path()
+        candidate_paths = get_stock_index_candidate_paths()
+        candidates = _get_fresh_stock_index_candidates(candidate_paths, remote_path)
+
+        # First pass: find the bundled candidate's active index canonical set
+        # as the non-regression baseline. The bundled candidate is the
+        # ``apps/dsa-web/public/stocks.index.json`` path (identified from the
+        # declared candidate order, not the first non-remote candidate ordered
+        # by mtime), and its index rows must pass semantic validation before
+        # they become the baseline.
+        bundled_path = _get_bundled_stock_index_path(candidate_paths, remote_path)
+        bundled_rows: list | None = None
+        bundled_canonicals: set[str] | None = None
+        if bundled_path is not None:
+            try:
+                raw_items = _load_stock_index_payload(bundled_path)
+                validate_stock_index_payload(raw_items, min_items=0)
+                rows = _extract_active_index_rows(raw_items)
+                if rows:
+                    _validate_index_rows_semantics(
+                        rows, _extract_active_non_index_rows(raw_items)
+                    )
+                    bundled_rows = rows
+                    bundled_canonicals = {str(r[0]) for r in rows}
+            except (OSError, TypeError, ValueError) as exc:
+                logger.debug("[股票索引] 解析 bundled 指数行失败 %s: %s", bundled_path, exc)
+
+        # Second pass: pick the best candidate (remote preferred when it is a
+        # legal superset of the bundled baseline).
+        for index_path in candidates:
+            try:
+                raw_items = _load_stock_index_payload(index_path)
+                if _same_path(index_path, remote_path):
+                    validate_stock_index_payload(raw_items)
+                else:
+                    validate_stock_index_payload(raw_items, min_items=0)
+                rows = _extract_active_index_rows(raw_items)
+                if not rows:
+                    continue
+                _validate_index_rows_semantics(
+                    rows, _extract_active_non_index_rows(raw_items)
+                )
+                # Non-regression guard: when the bundled candidate is a valid
+                # baseline, every OTHER candidate (remote cache or legacy
+                # ``static`` fallback) must be a legal superset of the bundled
+                # active-index canonical set. A candidate that drops any
+                # bundled baseline canonical is skipped (WARNING) so a stale
+                # or partial legacy-static file can never bypass the bundled
+                # baseline when the remote cache is missing/invalid.
+                if bundled_canonicals and bundled_path is not None and not _same_path(index_path, bundled_path):
+                    candidate_canonicals = {str(r[0]) for r in rows}
+                    missing = bundled_canonicals - candidate_canonicals
+                    if missing:
+                        logger.warning(
+                            "[股票索引] 指数候选 %s 缺少 bundled baseline canonical: %s — 回退 bundled",
+                            index_path,
+                            sorted(missing),
+                        )
+                        continue
+                _ACTIVE_INDEX_ROWS_CACHE = rows
+                return rows
+            except (OSError, TypeError, ValueError) as exc:
+                logger.debug("[股票索引] 解析指数行失败 %s: %s", index_path, exc)
+
+        # All candidates failed or were skipped — empty registry + WARNING.
+        logger.warning("[股票索引] 所有指数候选均失败，指数注册表为空")
+        _ACTIVE_INDEX_ROWS_CACHE = []
+        return _ACTIVE_INDEX_ROWS_CACHE
+
+
+def _get_bundled_stock_index_path(
+    candidate_paths: Iterable[Path],
+    remote_path: Path,
+) -> Path | None:
+    """Return the bundled ``apps/dsa-web/public/stocks.index.json`` path.
+
+    The bundled candidate is the deterministic non-remote baseline for the
+    remote non-regression check, independent of mtime ordering. It is the
+    declared ``apps/dsa-web/public`` candidate (the non-remote, non-legacy
+    ``static`` candidate in the declared candidate order), not the remote cache
+    and not the legacy ``static`` fallback.
+    """
+    for candidate in candidate_paths:
+        if _same_path(candidate, remote_path):
+            continue
+        if candidate.as_posix().endswith("static/stocks.index.json"):
+            continue
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _extract_active_index_rows(raw_items: list) -> list:
+    """Return the active ``assetType=index`` rows from a raw payload."""
+    rows = []
+    for item in raw_items:
+        if not isinstance(item, list) or len(item) < 10:
+            continue
+        if item[7] != "index":
+            continue
+        if item[8] is not True:
+            continue
+        rows.append(item)
+    return rows
+
+
+def _extract_active_non_index_rows(raw_items: list) -> list:
+    """Return the active stock/ETF rows from a raw payload (for collision checks)."""
+    rows = []
+    for item in raw_items:
+        if not isinstance(item, list) or len(item) < 10:
+            continue
+        if str(item[7] or "").strip() == "index":
+            continue
+        if item[8] is not True:
+            continue
+        rows.append(item)
+    return rows
+
+
+def _validate_index_rows_semantics(rows: list, non_index_rows: list | None = None) -> None:
+    """Semantic validation for active index rows (implementation-contracts §Semantic Validation).
+
+    Raises ``ValueError`` on any identity/alias/stock-index conflict so a
+    malformed candidate is rejected rather than silently loaded. ``non_index_rows``
+    carries the active stock/ETF rows from the same payload so an index
+    canonical/display/alias that collides with a stock/ETF identity after
+    normalization is rejected.
+    """
+    canonical_map: dict[str, str] = {}
+    resolver_map: dict[str, str] = {}
+
+    # Active stock/ETF identity keys an index explicit key must never collide with.
+    stock_keys: dict[str, str] = {}
+    for row in non_index_rows or []:
+        stock_canonical = str(row[0] or "").strip()
+        for key in [row[0], row[1]] + list(row[5] if isinstance(row[5], list) else []):
+            norm_key = _normalize_index_identity_key(key)
+            if norm_key:
+                stock_keys.setdefault(norm_key, stock_canonical)
+
+    for row in rows:
+        canonical = str(row[0] or "").strip()
+        display = str(row[1] or "").strip()
+        name = str(row[2] or "").strip()
+        pinyin_full = row[3]
+        pinyin_abbr = row[4]
+        market = str(row[6] or "").strip()
+        asset_type = str(row[7] or "").strip()
+        active = row[8]
+        popularity = row[9]
+        aliases = row[5]
+
+        if not re.fullmatch(r"(sh|sz|csi)\d{6}", canonical):
+            raise ValueError(f"index canonical must match ^(sh|sz|csi)\\d{{6}}$: {canonical!r}")
+        namespace = canonical[:3] if canonical.startswith("csi") else canonical[:2]
+        if namespace in {"sh", "sz"}:
+            if display != canonical:
+                raise ValueError(f"SH/SZ index display must equal canonical: {canonical!r}")
+        elif namespace == "csi":
+            if display != f"{canonical[3:]}.CSI":
+                raise ValueError(f"CSI index display must be {canonical[3:]}.CSI: {display!r}")
+        if market != "CN":
+            raise ValueError(f"index market must be CN: {canonical!r}")
+        if asset_type != "index":
+            raise ValueError(f"index asset_type must be index: {canonical!r}")
+        if active is not True:
+            raise ValueError(f"index active must be True: {canonical!r}")
+        if not name:
+            raise ValueError(f"index name must be non-empty: {canonical!r}")
+        if (
+            not isinstance(pinyin_full, str)
+            or not pinyin_full.strip()
+            or not isinstance(pinyin_abbr, str)
+            or not pinyin_abbr.strip()
+        ):
+            raise ValueError(f"index pinyin fields must be non-empty: {canonical!r}")
+        if not isinstance(aliases, list):
+            raise ValueError(f"index aliases must be a list: {canonical!r}")
+        if (
+            isinstance(popularity, bool)
+            or not isinstance(popularity, int)
+            or not math.isfinite(float(popularity))
+            or popularity < 0
+        ):
+            raise ValueError(f"index popularity must be a non-negative integer: {canonical!r}")
+
+        norm_canonical = _normalize_index_identity_key(canonical)
+        if norm_canonical in canonical_map:
+            raise ValueError(f"duplicate index canonical: {canonical!r}")
+        canonical_map[norm_canonical] = canonical
+
+        seen_aliases: set[str] = set()
+        for alias in aliases:
+            norm_alias = _normalize_index_identity_key(alias)
+            if norm_alias in seen_aliases:
+                raise ValueError(
+                    f"duplicate index alias after normalization for {canonical!r}: {alias!r}"
+                )
+            seen_aliases.add(norm_alias)
+            if norm_alias.isdigit():
+                raise ValueError(f"bare numeric display/alias rejected for index: {alias!r}")
+            if not _EXPLICIT_INDEX_ALIAS_RE.fullmatch(norm_alias):
+                raise ValueError(
+                    f"index aliases must use an explicit code form: {alias!r}"
+                )
+
+        for key in [canonical, display] + aliases:
+            norm_key = _normalize_index_identity_key(key)
+            if not norm_key:
+                continue
+            if norm_key.isdigit():
+                raise ValueError(f"bare numeric display/alias rejected for index: {key!r}")
+            if norm_key in resolver_map and resolver_map[norm_key] != canonical:
+                raise ValueError(
+                    f"index resolver key {key!r} maps to multiple canonicals "
+                    f"({resolver_map[norm_key]} vs {canonical})"
+                )
+            if norm_key in stock_keys:
+                raise ValueError(
+                    f"index resolver key {key!r} collides with active stock/ETF "
+                    f"identity {stock_keys[norm_key]!r}"
+                )
+            resolver_map[norm_key] = canonical
+
+
 def clear_stock_index_cache() -> None:
     """Clear the in-process stock index lookup cache."""
     global _REMOTE_INDEX_VALIDITY_CACHE
     global _STOCK_CODE_CANDIDATES_CACHE, _STOCK_CODE_LOOKUP_CACHE, _STOCK_INDEX_CACHE
+    global _ACTIVE_INDEX_ROWS_CACHE
     with _STOCK_INDEX_CACHE_LOCK:
         _STOCK_INDEX_CACHE = None
         _STOCK_CODE_LOOKUP_CACHE = None
         _STOCK_CODE_CANDIDATES_CACHE = None
+        _ACTIVE_INDEX_ROWS_CACHE = None
         _REMOTE_INDEX_VALIDITY_CACHE = None
 
 

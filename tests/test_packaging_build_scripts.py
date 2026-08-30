@@ -115,7 +115,7 @@ def test_macos_unsigned_packaging_contract_is_explicit() -> None:
     assert "code has no resources but signature indicates they must be present" in (
         desktop_script
     )
-    assert "- 'scripts/macos-signature-audit.sh'" in workflow
+    assert "scripts/macos-signature-audit.sh" in workflow
     assert "run: bash scripts/build-backend-macos.sh" in workflow
     assert "run: bash scripts/build-desktop-macos.sh" in workflow
 

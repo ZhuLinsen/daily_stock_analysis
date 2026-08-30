@@ -52,6 +52,35 @@ from src.services.history_service import HistoryService
 import src.auth as auth
 
 
+class TestHistoryCsiCandidateConvergence(unittest.TestCase):
+    """PR #2267 review remediation: registered CSI explicit identities must
+    converge in history filter candidates so a record saved under any
+    equivalent form is reachable from every equivalent query input."""
+
+    def test_registered_csi_forms_include_canonical_uppercase_and_aliases(self):
+        """A registered CSI identity is a *persisted-read* filter path: the
+        candidate set must include the parser canonical (``csi930955``), the
+        old resolver's uppercase canonical (``CSI930955`` — how pre-fix records
+        were saved) and the IndexEntry's explicit aliases (``930955.CSI``) so a
+        record stored under any of them is hit by any equivalent input."""
+        for code in ("csi930955", "930955.CSI", "CSI930955", "  csi930955  "):
+            candidates = HistoryService._history_code_filter_candidates(code)
+            self.assertEqual(
+                set(candidates),
+                {"csi930955", "CSI930955", "930955.CSI"},
+            )
+            self.assertEqual(len(candidates), len(set(candidates)))
+
+    def test_bare_csi_base_remains_stock_candidates(self):
+        candidates = HistoryService._history_code_filter_candidates("930955")
+        self.assertIn("930955", candidates)
+        self.assertNotIn("csi930955", candidates)
+
+    def test_unregistered_csi_form_is_not_converged(self):
+        candidates = HistoryService._history_code_filter_candidates("csi930956")
+        self.assertNotIn("csi930956", candidates)
+
+
 def _analysis_context_pack_overview() -> dict:
     return {
         "pack_version": "1.0",

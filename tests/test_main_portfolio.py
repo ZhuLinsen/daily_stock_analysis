@@ -474,8 +474,13 @@ class MainPortfolioTest(unittest.TestCase):
             "src.feishu_doc.FeishuDocManager",
         ) as feishu_manager:
             feishu_manager.return_value.is_configured.return_value = False
-            first_result = main.run_full_analysis(config, args, ["600519"])
-            second_result = main.run_full_analysis(config, args, ["600519"])
+            cli_target = MagicMock()
+            first_result = main.run_full_analysis(
+                config, args, ["600519"], analysis_targets=[cli_target]
+            )
+            second_result = main.run_full_analysis(
+                config, args, ["600519"], analysis_targets=[cli_target]
+            )
 
         self.assertTrue(first_result)
         self.assertTrue(second_result)
@@ -491,6 +496,7 @@ class MainPortfolioTest(unittest.TestCase):
         self.assertEqual(pipeline.run.call_count, 2)
         for invocation in pipeline.run.call_args_list:
             self.assertEqual(invocation.kwargs["stock_codes"], ["AAPL", "HK00700"])
+            self.assertIsNone(invocation.kwargs["analysis_targets"])
 
     def test_run_full_analysis_skips_empty_futu_portfolio_without_fallback(self):
         args = SimpleNamespace(

@@ -361,3 +361,36 @@ class TestResolveIndexStockCodeForAnalysis:
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value=None):
             assert resolve_index_stock_code_for_analysis("005930") == "005930"
             assert resolve_index_stock_code_for_analysis("AAPL") == "AAPL"
+
+    # ------------------------------------------------------------------
+    # PR #2267 review remediation — registered CSI explicit identity
+    # convergence (resolver / task dedupe key / history candidates).
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "code",
+        ["csi930955", "930955.CSI", "CSI930955", "  csi930955  ", "930955.csi"],
+    )
+    def test_registered_csi_forms_converge_to_parser_canonical(self, code):
+        """All registered CSI explicit forms resolve to the parser canonical
+        ``csi930955`` so the resolver and task dedupe key do not split the same
+        index into distinct keys."""
+        assert resolve_index_stock_code_for_analysis(code) == "csi930955"
+
+    @pytest.mark.parametrize(
+        "code,expected",
+        [
+            ("csi930956", "CSI930956"),
+            ("930956.CSI", "930956.CSI"),
+            ("CSI930956", "CSI930956"),
+        ],
+    )
+    def test_unregistered_csi_forms_keep_existing_behavior(self, code, expected):
+        """An unregistered CSI form is NOT converged; it keeps its existing
+        canonicalized (uppercased) degradation so it never becomes a guessed
+        index identity."""
+        assert resolve_index_stock_code_for_analysis(code) == expected
+
+    def test_bare_csi_base_remains_stock(self):
+        """A bare numeric base of a CSI index stays a stock (no convergence)."""
+        assert resolve_index_stock_code_for_analysis("930955") == "930955"

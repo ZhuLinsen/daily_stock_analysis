@@ -61,6 +61,25 @@ P6_SIGNAL_LINKED_SCHEMAS = (
     "PortfolioDecisionSignalRiskItem",
     "PortfolioRiskResponse",
 )
+DATA_CAPABILITY_PATHS = (
+    "/api/v1/data/overview",
+    "/api/v1/data/capabilities",
+)
+DATA_CAPABILITY_SCHEMAS = (
+    "DataCapabilityOverviewResponse",
+    "DataDatasetQuality",
+    "DataPriorityView",
+    "DataProviderCapability",
+)
+RESEARCH_ARTIFACT_SCHEMAS = (
+    "ResearchArtifact",
+    "ResearchDataQuality",
+    "ResearchEvidenceItem",
+    "ResearchInvalidationCondition",
+    "ResearchNextAction",
+    "ResearchSubject",
+    "ResearchThesis",
+)
 
 
 def _collect_component_schema_refs(node: Any) -> set[str]:
@@ -231,6 +250,19 @@ def test_decision_signal_static_api_spec_matches_runtime_paths() -> None:
         assert static_spec["paths"][path] == runtime_spec["paths"][path]
     for schema_name in P6_SIGNAL_LINKED_SCHEMAS:
         assert static_spec["components"]["schemas"][schema_name] == runtime_spec["components"]["schemas"][schema_name]
+    for path in DATA_CAPABILITY_PATHS:
+        assert static_spec["paths"][path] == runtime_spec["paths"][path]
+    for schema_name in DATA_CAPABILITY_SCHEMAS:
+        assert static_spec["components"]["schemas"][schema_name] == runtime_spec["components"]["schemas"][schema_name]
+    for schema_name in RESEARCH_ARTIFACT_SCHEMAS:
+        assert (
+            static_spec["components"]["schemas"][schema_name]
+            == runtime_spec["components"]["schemas"][schema_name]
+        )
+    assert (
+        static_spec["components"]["schemas"]["AnalysisReport"]["properties"]["structured_report"]
+        == runtime_spec["components"]["schemas"]["AnalysisReport"]["properties"]["structured_report"]
+    )
     schema_refs = _collect_component_schema_refs(static_spec)
     missing_schema_refs = sorted(schema_refs - set(static_spec["components"]["schemas"]))
     assert missing_schema_refs == []

@@ -87,6 +87,35 @@ class TestTaskService(unittest.TestCase):
         self.assertIn("args", captured)
         self.assertEqual(captured["args"][1], "005930.KS")
 
+    def test_submit_analysis_passes_parser_canonical_to_executor(self):
+        """Real task-layer regression: TaskService must hand the executor the
+        parser canonical ``csi930955`` (not the raw alias ``930955.CSI`` or the
+        old uppercase ``CSI930955``) so the analysis pipeline receives one
+        consistent identity for the same registered CSI index."""
+        service = TaskService()
+        service._tasks = {}
+        service._tasks_lock = threading.Lock()
+        captured = {}
+
+        executor = MagicMock()
+
+        def capture_submit(*args, **kwargs):
+            captured["args"] = args
+            return "future"
+
+        executor.submit.side_effect = capture_submit
+        service._executor = executor
+
+        # Use the real resolver (not a mock): ``930955.CSI`` is a registered CSI
+        # explicit identity and must converge to the parser canonical
+        # ``csi930955``, which is what gets handed to the executor.
+        result = service.submit_analysis("930955.CSI", report_type="simple", query_source="cli")
+
+        self.assertEqual(result["code"], "csi930955")
+        self.assertIn("args", captured)
+        # executor.submit(self._run_analysis, code, task_id, ...) — code is arg[1]
+        self.assertEqual(captured["args"][1], "csi930955")
+
 
 if __name__ == "__main__":
     import unittest

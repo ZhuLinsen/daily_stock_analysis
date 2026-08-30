@@ -74,7 +74,12 @@ from src.config import get_config, Config
 from src.logging_config import setup_logging
 from src.brokers.futu.portfolio import FutuPortfolioError
 from data_provider.base import canonical_stock_code
-from src.services.stock_list_parser import split_stock_list
+from src.services.stock_list_parser import (
+    AnalysisTarget,
+    ParseStatus,
+    parse_analysis_target,
+    split_stock_list,
+)
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 
@@ -280,6 +285,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --debug            # 调试模式
   python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
+  python main.py --stocks sh000016,000300.CSI,930955.CSI  # 指定分析已登记指数（sh/sz 前缀或 .CSI alias）
   python main.py --portfolio futu   # 使用 Futu 真实正股持仓（覆盖 --stocks）
   python main.py --no-notify        # 不发送推送通知
   python main.py --check-notify     # 检查通知配置，不发送通知
@@ -304,7 +310,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--stocks',
         type=str,
-        help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
+        help='指定要分析的股票代码，逗号分隔（覆盖配置文件）；支持已登记指数：sh/sz 前缀（如 sh000016）或 .CSI alias（如 000300.CSI、930955.CSI）'
     )
 
     parser.add_argument(
@@ -471,6 +477,15 @@ def _compute_trading_day_filter(
     filtered_codes = []
     for code in stock_codes:
         mkt = get_market_for_stock(code)
+        if mkt is None:
+            # 指数 code（如 sh000016/csi930955/930955.CSI）的 get_market_for_stock
+            # 返回 None，若直接 fail-open 保留，A 股休市日指数不会被过滤，破坏
+            # per-stock 交易日契约。对市场未知的 code 用 parse_analysis_target
+            # 判型，已登记指数按 market=cn 参与 CN 交易日过滤；仍未知的非指数
+            # code 继续 fail-open 保留。
+            target = parse_analysis_target(code)
+            if target.asset_type == ParseStatus.INDEX:
+                mkt = "cn"
         if mkt in open_markets or mkt is None:
             filtered_codes.append(code)
 
@@ -722,12 +737,15 @@ def run_full_analysis(
     stock_codes: Optional[List[str]] = None,
     *,
     raise_errors: bool = False,
+    analysis_targets: Optional[List[AnalysisTarget]] = None,
 ) -> bool:
     """
     执行完整的分析流程（个股 + 大盘复盘）
 
     这是定时任务调用的主函数。Futu 持仓解析失败始终传播给调用方；
     ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
+    ``analysis_targets`` 与 ``stock_codes`` 对齐，携带结构化分析目标
+    （指数目标用于推导 market=cn 与能力矩阵）。
     """
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
@@ -762,6 +780,7 @@ def run_full_analysis(
         _refresh_stock_index_cache_for_analysis(config)
         if portfolio_stock_codes is not None:
             stock_codes = portfolio_stock_codes
+            analysis_targets = None
 
         # Issue #529: Hot-reload STOCK_LIST from .env on each scheduled run
         if stock_codes is None and portfolio_stock_codes is None:
@@ -802,6 +821,18 @@ def run_full_analysis(
         if set(filtered_codes) != set(effective_codes):
             skipped = set(effective_codes) - set(filtered_codes)
             logger.info("今日休市股票已跳过: %s", skipped)
+        if analysis_targets is not None:
+            if len(analysis_targets) != len(effective_codes):
+                raise ValueError("analysis_targets must align with stock_codes")
+            remaining_pairs = list(zip(effective_codes, analysis_targets))
+            filtered_targets = []
+            for filtered_code in filtered_codes:
+                for index, (code, target) in enumerate(remaining_pairs):
+                    if code == filtered_code:
+                        filtered_targets.append(target)
+                        remaining_pairs.pop(index)
+                        break
+            analysis_targets = filtered_targets
         stock_codes = filtered_codes
         skip_futu_stock_analysis = (
             portfolio_stock_codes is not None and not stock_codes
@@ -909,6 +940,7 @@ def run_full_analysis(
                 send_notification=not args.no_notify,
                 merge_notification=merge_notification,
                 current_time=analysis_reference_time,
+                analysis_targets=analysis_targets,
             )
 
         if should_use_daily_market_context and not market_context_summary:
@@ -1152,6 +1184,7 @@ def _run_analysis_with_runtime_scheduler_lock(
     config: Config,
     args: argparse.Namespace,
     stock_codes: Optional[List[str]] = None,
+    analysis_targets: Optional[List[AnalysisTarget]] = None,
 ) -> bool:
     from src.services.runtime_scheduler import run_with_global_analysis_lock
 
@@ -1162,7 +1195,15 @@ def _run_analysis_with_runtime_scheduler_lock(
         locked_args: argparse.Namespace,
         locked_stock_codes: Optional[List[str]] = None,
     ) -> bool:
-        result = run_full_analysis(locked_config, locked_args, locked_stock_codes)
+        if analysis_targets is None:
+            result = run_full_analysis(locked_config, locked_args, locked_stock_codes)
+        else:
+            result = run_full_analysis(
+                locked_config,
+                locked_args,
+                locked_stock_codes,
+                analysis_targets=analysis_targets,
+            )
         task_result["ok"] = bool(result)
         return task_result["ok"]
 
@@ -1456,13 +1497,27 @@ def main() -> int:
         return 0 if result.ok else 1
 
     # 解析股票列表（统一为大写 Issue #355）
+    # Story 1.5: 一次性 --stocks 入口使用 parse_analysis_target 构造结构化
+    # AnalysisTarget 列表，指数目标（sh/sz/csi 前缀与 .CSI alias）在入口即保留
+    # 身份语义；unsupported 目标在 Pipeline 内于 provider 调用前拒绝。
     stock_codes = None
+    analysis_targets = None
     if args.stocks:
+        # 在解析 --stocks 前先 best-effort 刷新股票索引注册表，保证首次运行能吃到
+        # 刷新后的 alias/身份；失败/超时/禁用不阻断分析。仅 --stocks 入口需要，
+        # 其他模式由 run_full_analysis 内的既有刷新覆盖。
+        _refresh_stock_index_cache_for_analysis(config)
+        tokens = [c for c in split_stock_list(args.stocks) if (c or "").strip()]
+        targets = [parse_analysis_target(t) for t in tokens]
+        # 指数目标使用 parser canonical；非指数目标沿用既有
+        # resolve_index_stock_code_for_analysis 语义（保留 JP/KR 等解析行为）。
         stock_codes = [
-            resolve_index_stock_code_for_analysis(c)
-            for c in split_stock_list(args.stocks)
-            if (c or "").strip()
+            t.canonical_id
+            if t.asset_type == ParseStatus.INDEX
+            else resolve_index_stock_code_for_analysis(raw)
+            for t, raw in zip(targets, tokens)
         ]
+        analysis_targets = targets
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
         if getattr(args, "portfolio", None):
             logger.info("同时指定了 --portfolio；实际分析时 portfolio 将覆盖 --stocks")
@@ -1686,7 +1741,9 @@ def main() -> int:
         # 模式3: 正常单次运行
         if config.run_immediately:
             try:
-                analysis_ok = _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
+                analysis_ok = _run_analysis_with_runtime_scheduler_lock(
+                    config, args, stock_codes, analysis_targets
+                )
             except FutuPortfolioError as exc:
                 if not start_serve:
                     raise

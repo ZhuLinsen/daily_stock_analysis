@@ -1197,6 +1197,39 @@ class TestStorage(unittest.TestCase):
             )
 
     @staticmethod
+    def _create_legacy_stock_daily_with_canonical_id(db_path: str) -> None:
+        """``stock_daily`` schema WITH a ``canonical_id`` column (for repair tests)."""
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """CREATE TABLE stock_daily (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code VARCHAR(10) NOT NULL,
+                date DATE NOT NULL,
+                open FLOAT,
+                high FLOAT,
+                low FLOAT,
+                close FLOAT,
+                volume FLOAT,
+                amount FLOAT,
+                pct_chg FLOAT,
+                ma5 FLOAT,
+                ma10 FLOAT,
+                ma20 FLOAT,
+                volume_ratio FLOAT,
+                data_source VARCHAR(50),
+                created_at DATETIME,
+                updated_at DATETIME,
+                canonical_id VARCHAR(32)
+            )"""
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX uix_code_date ON stock_daily (code, date)"
+            )
+            conn.execute(
+                "CREATE INDEX ix_code_date ON stock_daily (code, date)"
+            )
+
+    @staticmethod
     def _make_temp_db_path() -> tuple:
         """Return (db_dir, db_path); Windows-safe cleanup via shutil.rmtree."""
         db_dir = tempfile.mkdtemp(prefix="dsa_canonical_id_")
@@ -1329,14 +1362,13 @@ class TestStorage(unittest.TestCase):
             Config.reset_instance()
             self._cleanup_temp_dir(db_dir)
 
-    def test_canonical_id_backfill_bare_index_unifies_to_index_canonical_id(self):
-        """Index-aware backfill (OR-COR-4f9ffc38): bare ``000300`` hits the
-        index registry (``matched_index`` is non-None) and backfills to the
-        index canonical_id ``sh000300`` — NOT ``sz000300`` (the stock-path
-        canonical_id the classifier would synthesise for a 6-digit
-        ``0``-prefixed code). Without this unification the same CSI-300 index
-        would split across two canonical_id buckets depending on whether the
-        caller passed a bare code or an explicit ``sh000300`` prefix."""
+    def test_canonical_id_backfill_bare_code_colliding_with_index_stays_stock(self):
+        """``_derive_canonical_id`` no longer reads
+        ``matched_index.canonical_id``. A bare ``000300`` (which collides with
+        the CSI-300 index) now derives to the stock-path canonical_id
+        ``sz000300`` — the parser contract says bare codes are always stock.
+        The index conflict is surfaced via ``matched_index`` only, never used
+        to override the canonical_id."""
         DatabaseManager.reset_instance()
         db_dir, db_path = self._make_temp_db_path()
 
@@ -1355,10 +1387,8 @@ class TestStorage(unittest.TestCase):
                     "SELECT canonical_id FROM stock_daily WHERE code='000300'"
                 ).fetchone()[0]
 
-            # Bare index code unifies to the index canonical_id via
-            # ``matched_index.canonical_id`` so bare ``000300`` and explicit
-            # ``sh000300`` land in the same bucket.
-            self.assertEqual(canonical_id, "sh000300")
+            # Bare code resolves to the stock-path canonical_id.
+            self.assertEqual(canonical_id, "sz000300")
         finally:
             DatabaseManager.reset_instance()
             Config.reset_instance()
@@ -1683,11 +1713,10 @@ class TestStorage(unittest.TestCase):
             DatabaseManager.reset_instance()
             self._cleanup_temp_dir(db_dir)
 
-    def test_save_daily_data_derives_index_aware_canonical_id_for_bare_index_code(self):
-        """OR-COR-4f9ffc38: ``save_daily_data(df, code="000300")`` with no
-        explicit canonical_id writes ``sh000300`` (index canonical_id), not
-        ``sz000300`` (stock-path canonical_id the classifier would synthesise
-        for a 6-digit ``0``-prefixed code)."""
+    def test_save_daily_data_derives_stock_canonical_id_for_bare_index_collision(self):
+        """``save_daily_data(df, code="000300")`` with no explicit
+        canonical_id writes ``sz000300`` (stock-path canonical_id), NOT
+        ``sh000300`` (the index canonical_id). Bare codes are always stock."""
         DatabaseManager.reset_instance()
         db_dir, db_path = self._make_temp_db_path()
         db = DatabaseManager(db_url=f"sqlite:///{db_path}")
@@ -1710,16 +1739,16 @@ class TestStorage(unittest.TestCase):
                         and_(StockDaily.code == "000300", StockDaily.date == date(2026, 4, 5))
                     )
                 ).scalar_one()
-            self.assertEqual(row.canonical_id, "sh000300")
+            self.assertEqual(row.canonical_id, "sz000300")
         finally:
             DatabaseManager.reset_instance()
             self._cleanup_temp_dir(db_dir)
 
-    def test_save_daily_data_converges_alias_and_prefix_to_same_canonical_id(self):
-        """OR-COR-4f9ffc38: bare ``000300``, ``sh000300`` and ``000300.SH``
-        all converge to the same canonical_id ``sh000300`` when written via
-        ``save_daily_data`` (no explicit canonical_id), so the same underlying
-        index is never split across buckets by input form."""
+    def test_save_daily_data_explicit_index_forms_derive_index_canonical_id(self):
+        """Explicit index forms (``sh000300`` / ``000300.SH``)
+        derive to the index canonical_id ``sh000300``, while the bare code
+        ``000300`` derives to the stock-path ``sz000300``. Explicit index and
+        bare stock are intentionally different buckets."""
         DatabaseManager.reset_instance()
         db_dir, db_path = self._make_temp_db_path()
         db = DatabaseManager(db_url=f"sqlite:///{db_path}")
@@ -1747,7 +1776,7 @@ class TestStorage(unittest.TestCase):
             self.assertEqual(
                 {row.code: row.canonical_id for row in rows},
                 {
-                    "000300": "sh000300",
+                    "000300": "sz000300",
                     "sh000300": "sh000300",
                     "000300.SH": "sh000300",
                 },
@@ -1796,6 +1825,242 @@ class TestStorage(unittest.TestCase):
         finally:
             DatabaseManager.reset_instance()
             Config.reset_instance()
+
+    # ------------------------------------------------------------------
+    # canonical_id repair
+    # ------------------------------------------------------------------
+
+    def test_derive_canonical_id_bare_conflict_stays_stock(self):
+        """``_derive_canonical_id`` returns the parser stock
+        canonical for bare conflict codes, never the index canonical."""
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        try:
+            self.assertEqual(db._derive_canonical_id("000016"), "sz000016")
+            self.assertEqual(db._derive_canonical_id("930955"), "bj930955")
+            self.assertEqual(db._derive_canonical_id("sh000016"), "sh000016")
+            self.assertEqual(db._derive_canonical_id("930955.CSI"), "csi930955")
+        finally:
+            DatabaseManager.reset_instance()
+
+    def test_derive_canonical_id_rejects_unregistered_csi(self):
+        """PR #2267 review fix: an unsupported identity (unregistered
+        ``csi`` prefix or ``.CSI`` suffix) must NOT enter a persistent
+        canonical bucket — ``_derive_canonical_id`` returns None so the
+        caller persists NULL instead of the raw token."""
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        try:
+            self.assertIsNone(db._derive_canonical_id("csi930956"))
+            self.assertIsNone(db._derive_canonical_id("CSI930956"))
+            self.assertIsNone(db._derive_canonical_id("930956.CSI"))
+            self.assertIsNone(db._derive_canonical_id("csi000300"))
+        finally:
+            DatabaseManager.reset_instance()
+
+    def test_canonical_id_repair_fixes_bare_misbucketed_rows(self):
+        """Rows whose bare code has an erroneous index canonical are
+        repaired to the parser stock canonical; explicit index rows and
+        correct stock rows are untouched."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_with_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.executemany(
+                    """INSERT INTO stock_daily (code, date, close, canonical_id)
+                    VALUES (?, ?, ?, ?)""",
+                    [
+                        # Mis-bucketed bare codes (old index-aware derivation).
+                        ("000001", "2026-01-01", 1.0, "sh000001"),
+                        ("000016", "2026-01-02", 2.0, "sh000016"),
+                        ("000688", "2026-01-03", 3.0, "sh000688"),
+                        ("930955", "2026-01-04", 4.0, "csi930955"),
+                        # Explicit index rows — must NOT be modified.
+                        ("sh000016", "2026-01-05", 5.0, "sh000016"),
+                        ("930955.CSI", "2026-01-06", 6.0, "csi930955"),
+                        # Correct stock row — must NOT be modified.
+                        ("600519", "2026-01-07", 7.0, "sh600519"),
+                        # Unrelated row — must NOT be modified.
+                        ("AAPL", "2026-01-08", 8.0, "AAPL"),
+                    ],
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                rows = dict(
+                    conn.execute(
+                        "SELECT code, canonical_id FROM stock_daily ORDER BY id"
+                    ).fetchall()
+                )
+
+            self.assertEqual(rows["000001"], "sz000001")
+            self.assertEqual(rows["000016"], "sz000016")
+            self.assertEqual(rows["000688"], "sz000688")
+            self.assertEqual(rows["930955"], "bj930955")
+            # Explicit index rows preserved.
+            self.assertEqual(rows["sh000016"], "sh000016")
+            self.assertEqual(rows["930955.CSI"], "csi930955")
+            # Correct stock + unrelated rows preserved.
+            self.assertEqual(rows["600519"], "sh600519")
+            self.assertEqual(rows["AAPL"], "AAPL")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_repair_is_idempotent(self):
+        """Running the repair a second time repairs 0 rows."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_with_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO stock_daily (code, date, close, canonical_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("000016", "2026-01-01", 2.0, "sh000016"),
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+            with sqlite3.connect(db_path) as conn:
+                first = conn.execute(
+                    "SELECT canonical_id FROM stock_daily WHERE code='000016'"
+                ).fetchone()[0]
+            self.assertEqual(first, "sz000016")
+
+            DatabaseManager.reset_instance()
+            with self.assertLogs("src.storage", level="INFO") as logs:
+                DatabaseManager(db_url=f"sqlite:///{db_path}")
+            log_text = "\n".join(logs.output)
+            self.assertIn("repaired_count=0", log_text)
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_repair_skips_when_registry_empty(self):
+        """When the index registry is empty the repair is a no-op and
+        logs a WARNING; no rows are modified."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_with_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO stock_daily (code, date, close, canonical_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("000016", "2026-01-01", 2.0, "sh000016"),
+                )
+
+            with patch(
+                "src.data.stock_index_loader._load_active_index_rows",
+                return_value=[],
+            ), self.assertLogs("src.storage", level="WARNING") as logs:
+                DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                canonical_id = conn.execute(
+                    "SELECT canonical_id FROM stock_daily WHERE code='000016'"
+                ).fetchone()[0]
+            self.assertEqual(canonical_id, "sh000016")
+            self.assertTrue(
+                any("registry is empty" in record.getMessage() for record in logs.records)
+            )
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_repair_handles_concurrent_rewrite_safely(self):
+        """A conditional UPDATE that loses the race (row already
+        rewritten) is skipped, not double-counted."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_with_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO stock_daily (code, date, close, canonical_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("000016", "2026-01-01", 2.0, "sh000016"),
+                )
+
+            real_parse = stock_list_parser_module.parse_analysis_target
+
+            def racing_parse(code):
+                # Simulate a concurrent writer that already fixed the row.
+                if code == "000016":
+                    with sqlite3.connect(db_path) as conn:
+                        conn.execute(
+                            "UPDATE stock_daily SET canonical_id='sz000016' "
+                            "WHERE code='000016'"
+                        )
+                        conn.commit()
+                return real_parse(code)
+
+            with patch(
+                "src.services.stock_list_parser.parse_analysis_target",
+                side_effect=racing_parse,
+            ):
+                DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                canonical_id = conn.execute(
+                    "SELECT canonical_id FROM stock_daily WHERE code='000016'"
+                ).fetchone()[0]
+            self.assertEqual(canonical_id, "sz000016")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
+
+    def test_canonical_id_repair_queries_only_relevant_rows(self):
+        """Gap 6: the repair SQL filters to rows whose canonical_id is in the
+        active index set, so rows with unrelated canonical_ids are never
+        scanned/derived."""
+        DatabaseManager.reset_instance()
+        db_dir, db_path = self._make_temp_db_path()
+
+        try:
+            self._create_legacy_stock_daily_with_canonical_id(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.executemany(
+                    """INSERT INTO stock_daily (code, date, close, canonical_id)
+                    VALUES (?, ?, ?, ?)""",
+                    [
+                        # Mis-bucketed bare code — must be repaired.
+                        ("000016", "2026-01-01", 2.0, "sh000016"),
+                        # Unrelated canonical — must NOT be touched.
+                        ("600519", "2026-01-02", 7.0, "sh600519"),
+                        ("AAPL", "2026-01-03", 8.0, "AAPL"),
+                        # Explicit index row — must NOT be touched.
+                        ("sh000016", "2026-01-04", 5.0, "sh000016"),
+                    ],
+                )
+
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                rows = dict(
+                    conn.execute(
+                        "SELECT code, canonical_id FROM stock_daily ORDER BY id"
+                    ).fetchall()
+                )
+            # Only the mis-bucketed bare code is repaired.
+            self.assertEqual(rows["000016"], "sz000016")
+            self.assertEqual(rows["600519"], "sh600519")
+            self.assertEqual(rows["AAPL"], "AAPL")
+            self.assertEqual(rows["sh000016"], "sh000016")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            self._cleanup_temp_dir(db_dir)
 
 if __name__ == '__main__':
     unittest.main()

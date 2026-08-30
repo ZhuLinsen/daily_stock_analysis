@@ -6,6 +6,7 @@ Shared stock code utilities.
 from __future__ import annotations
 
 import re
+import unicodedata
 from importlib import import_module
 from dataclasses import dataclass
 from typing import List, Optional
@@ -488,6 +489,20 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
     if not text:
         return ""
 
+    # PR #2267 review remediation: converge registered CSI aliases
+    # (``csi930955`` / ``930955.CSI`` / ``CSI930955``) to the parser canonical so
+    # the resolver, task dedupe key and history candidates do not split the
+    # same index into distinct keys. The parser canonical is returned verbatim
+    # (lowercase ``csi{code}``) rather than re-uppercased by
+    # ``canonical_stock_code`` below.
+    normalized_csi = unicodedata.normalize("NFKC", text).strip().casefold()
+    if re.fullmatch(r"csi\d{6}", normalized_csi) or re.fullmatch(r"\d{6}\.csi", normalized_csi):
+        converged = _converge_registered_csi_identity(text)
+        # Return the parser canonical verbatim (lowercase ``csi{code}``) for
+        # every registered CSI form, including the already-canonical input.
+        if converged is not None:
+            return converged
+
     if is_code_like(text) or (text.isdigit() and len(text) == 4):
         from src.data.stock_index_loader import resolve_index_stock_code
 
@@ -496,3 +511,35 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
             return canonical_stock_code(resolved)
 
     return canonical_stock_code(text)
+
+
+def _converge_registered_csi_identity(raw: str) -> Optional[str]:
+    """Converge a registered CSI explicit identity to its parser canonical.
+
+    PR #2267 review remediation: the resolver, task dedupe key and history
+    candidate builders must treat ``csi930955`` / ``930955.CSI`` /
+    ``CSI930955`` as the same registered CSI
+    index identity, so they do not split into distinct task keys or history
+    candidates. Returns the parser canonical (lowercase ``csi{code}``) when the
+    input is a registered CSI explicit identity, or ``None`` when it is not
+    (so callers keep their existing degradation semantics for unregistered
+    ``csi930956`` / ``930956.CSI``).
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+
+    normalized = unicodedata.normalize("NFKC", text).strip().casefold()
+    is_csi_form = bool(
+        re.fullmatch(r"csi\d{6}", normalized)
+        or re.fullmatch(r"\d{6}\.csi", normalized)
+    )
+    if not is_csi_form:
+        return None
+
+    from src.services.stock_list_parser import parse_analysis_target
+
+    target = parse_analysis_target(text)
+    if target.asset_type == "index" and target.canonical_id:
+        return target.canonical_id
+    return None
