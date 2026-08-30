@@ -136,3 +136,32 @@ Portfolio 允许 JP/KR 账户、交易和持仓快照进入现有链路，但会
 - Web UI 可视证据口径：Market Light 告警目标范围切到“大盘市场”时，市场区域下拉只显示 A 股、港股、美股，不显示日股/韩股；设置页 `MARKET_REVIEW_REGION` 渲染为可输入逗号分隔值的文本框。当前仓库不保存一次性截图证据，可替代证据为 `apps/dsa-web/src/components/alerts/__tests__/AlertRuleForm.test.tsx`、`apps/dsa-web/src/components/settings/__tests__/SettingsField.test.tsx` 和 `apps/dsa-web/tests/system_config_i18n.test.ts` 的断言。
 
 回滚方式：移除 Portfolio snapshot 的 `data_quality` / `limitations` 扩展，恢复告警前端/后端对市场枚举的旧边界说明；如需整体回滚，移除 `jp/kr` 市场识别、交易日历注册、YFinance 路由扩展、Web/API 类型放行、`scripts/stock_index_seeds/` 日韩种子索引，并删除本文档中的能力声明。
+
+## 印度个股支持（suffix-only MVP）
+
+当前阶段支持手动输入印度股票的 Yahoo Finance 后缀代码，进入既有个股分析、历史保存、报告渲染、DecisionSignal、Portfolio 和 Intelligence 链路。NSE（印度国家证券交易所）使用 `.NS` 后缀，BSE（孟买证券交易所）使用 `.BO` 后缀，二者折叠为同一 `in` 市场标签。
+
+支持格式：
+
+- NSE：`RELIANCE.NS`、`TCS.NS`
+- BSE：`HDFCBANK.BO`
+- 印度代码 base 为字母数字组合（如 `RELIANCE`、`M&M`），与日/韩/台固定位数纯数字代码不同，识别规则单独校验 base 合法字符集（大写字母、数字、`&`、`-`，1-20 位）。
+
+约束与边界：
+
+- **严格 suffix-only**：裸 `RELIANCE` 等不带后缀的代码不会进入印度语义（`detect_market` / `get_market_for_stock` 仅在显式 `.NS`/`.BO` 后缀时返回 `in`），且不支持裸代码索引回填（`suffix_base_lookup_allowed` 对 `in` 恒为 `False`）。当前未内置印度股票索引/种子解析，Web 自动补全不承诺印度股票池；请手动输入完整 suffix 代码。
+- 印度日线和基础实时/近实时行情只走 `YfinanceFetcher`，不尝试 AkShare、Tushare、Efinance、Pytdx、Baostock 等 A 股专属数据源。
+- 基本面复用既有 offshore yfinance 轻量路径；A 股专属资金流、龙虎榜、板块等能力按 `not_supported` 降级。
+- 报告 Prompt 已增加印度市场语义（印度卢比、RBI、SEBI、FII/DII 资金流、circuit filter 涨跌停机制），避免套用 A 股北向资金、龙虎榜等概念。
+- 交易日历注册 `in: XNSE / Asia/Kolkata`。若本地 `exchange-calendars` 版本缺少 `XNSE` 日历，沿用既有 fail-open/fail-closed 语义（`get_open_markets_today()` 在 `exchange-calendars` 不可用时按 fail-open 把 `in` 计入当日开市集合）。
+- `VALID_MARKETS`（Portfolio / DecisionSignal 持久化）与 `_ALLOWED_MARKETS`（Intelligence 自定义情报源 scope）已放行 `in`。
+
+不承诺项：
+
+- 不承诺实时行情；Yahoo Finance 数据可能延迟或字段缺失。
+- 不承诺完整基本面、行业/板块、市场宽度、涨跌家数。
+- 不提供印度主要指数（Nifty 50 / Sensex）大盘复盘；`MARKET_REVIEW_REGION` 仍只接受既有市场子集，未纳入 `in`。
+- 印度股票索引/种子和 Web 自动补全未接入；Market Light 大盘红绿灯告警仍为 `cn/hk/us`，未含 `in`。
+- 不补齐 Portfolio 的 INR 汇率、成本、市值完整口径；印度 Portfolio 仅放开市场类型校验，避免前后端拒绝，不代表估值口径完整。
+
+回滚方式：移除 `in` 市场识别（`src/services/market_symbol_utils.py`）、交易日历注册（`src/core/trading_calendar.py`）、YFinance 路由扩展（`data_provider/base.py`、`data_provider/yfinance_fetcher.py`）、`VALID_MARKETS`/`_ALLOWED_MARKETS` 放行，并删除本文档中的能力声明。
