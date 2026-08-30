@@ -79,6 +79,7 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "USE_PROXY",
     "PROXY_HOST",
     "PROXY_PORT",
+    "SEARXNG_TIMEOUT_SECONDS",
 }
 
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
@@ -1182,20 +1183,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 53,
-    },
-    "SEARXNG_TIMEOUT_SECONDS": {
-        "title": "SearXNG Timeout (Seconds)",
-        "description": "Timeout for each self-hosted SearXNG request. Public instances keep their fixed timeout.",
-        "category": "data_source",
-        "data_type": "integer",
-        "ui_control": "number",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "10",
-        "options": [],
-        "validation": {"min": 1},
-        "display_order": 54,
     },
     "ENABLE_REALTIME_QUOTE": {
         "title": "Enable Realtime Quote",
