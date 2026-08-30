@@ -337,10 +337,12 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search (structured results) | Optional |
 | `SOCIAL_SENTIMENT_API_KEY` | Stock Sentiment API Key (Reddit / X / Polymarket, US stocks optional) | Optional |
 | `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API endpoint (default `https://api.adanos.org`) | Optional |
+| `XQUIK_API_KEY` | [Xquik](https://docs.xquik.com) X/Twitter API key for standalone per-ticker search, or gap filling after a successful aggregate X response | Optional |
+| `XQUIK_API_URL` | Xquik API endpoint (default `https://xquik.com/api/v1`) | Optional |
 | `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty, `searx.space` discovery is used only if public instances are explicitly enabled | Optional |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `false`). Public instances are commonly rate-limited or do not return JSON, so enabling this can add 30-60s per run and still yield no news | Optional |
 
-> Behavior note: Search and social sentiment are optional enhancement services. If either service fails to initialize, the system logs a warning and degrades gracefully by skipping that stage without blocking the core analysis flow.
+> Behavior note: Search and social sentiment are optional enhancements. Failures skip that stage without blocking the core analysis. With only `XQUIK_API_KEY`, Xquik supplies per-ticker X context. When Stock Sentiment API is also configured, Xquik fills a ticker gap only after a successful aggregate X response. An aggregate X failure does not trigger Xquik. Each ticker fetches at most 5 recent public posts. The prompt marks their text as untrusted evidence.
 
 ### Futu Portfolio Import Configuration
 

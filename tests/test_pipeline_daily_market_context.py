@@ -35,6 +35,8 @@ def _pipeline_config(*, daily_market_context_enabled: bool) -> SimpleNamespace:
         enable_chip_distribution=False,
         social_sentiment_api_key="",
         social_sentiment_api_url="https://example.invalid/social",
+        xquik_api_key="",
+        xquik_api_url="https://example.invalid/xquik",
         daily_market_context_enabled=daily_market_context_enabled,
     )
 

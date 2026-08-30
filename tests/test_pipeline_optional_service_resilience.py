@@ -26,6 +26,8 @@ def _make_config() -> SimpleNamespace:
         enable_chip_distribution=False,
         social_sentiment_api_key="",
         social_sentiment_api_url="https://example.invalid/social",
+        xquik_api_key="",
+        xquik_api_url="https://example.invalid/xquik",
     )
 
 
@@ -76,6 +78,26 @@ def test_social_sentiment_init_failure_logs_traceback(caplog):
     ]
     assert len(init_failure_records) == 1
     assert init_failure_records[0].exc_info is not None
+
+
+def test_social_sentiment_init_receives_xquik_config():
+    config = _make_config()
+    config.xquik_api_key = "xq_test"
+    config.xquik_api_url = "https://xquik.example/api/v1"
+    service = MagicMock()
+    service.is_available = True
+
+    with patch("src.core.pipeline.SearchService", return_value=MagicMock(is_available=False)), \
+         patch("src.core.pipeline.SocialSentimentService", return_value=service) as service_class:
+        pipeline = _build_pipeline(config)
+
+    assert pipeline.social_sentiment_service is service
+    service_class.assert_called_once_with(
+        api_key="",
+        api_url="https://example.invalid/social",
+        xquik_api_key="xq_test",
+        xquik_api_url="https://xquik.example/api/v1",
+    )
 
 
 def test_emit_progress_logs_context_when_callback_fails(caplog):

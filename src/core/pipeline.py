@@ -340,9 +340,11 @@ class StockAnalysisPipeline:
             self.social_sentiment_service = SocialSentimentService(
                 api_key=self.config.social_sentiment_api_key,
                 api_url=self.config.social_sentiment_api_url,
+                xquik_api_key=self.config.xquik_api_key,
+                xquik_api_url=self.config.xquik_api_url,
             )
             if self.social_sentiment_service.is_available:
-                logger.info("Social sentiment service enabled (Reddit/X/Polymarket, US stocks only)")
+                logger.info("Social intelligence service enabled (US stocks only)")
         except Exception as exc:
             logger.warning(
                 "社交舆情服务初始化失败，将跳过舆情分析: %s",

@@ -17,6 +17,31 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_xquik_social_context_env_is_optional_and_configurable(
+        self, _mock_parse_stock_email_groups, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "XQUIK_API_KEY": "xq_test",
+                "XQUIK_API_URL": "https://xquik.example/api/v1/",
+            },
+            clear=True,
+        ):
+            configured = Config._load_from_env()
+
+        self.assertEqual(configured.xquik_api_key, "xq_test")
+        self.assertEqual(configured.xquik_api_url, "https://xquik.example/api/v1")
+
+        with patch.dict(os.environ, {}, clear=True):
+            disabled = Config._load_from_env()
+
+        self.assertIsNone(disabled.xquik_api_key)
+        self.assertEqual(disabled.xquik_api_url, "https://xquik.com/api/v1")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
     def test_share_image_social_branding_is_optional_and_configurable(
         self, _mock_parse_stock_email_groups, _mock_parse_litellm_yaml, _mock_setup_env
     ):
