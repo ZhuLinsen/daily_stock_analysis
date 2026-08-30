@@ -116,8 +116,15 @@ def _normalize_history_days(days: Any) -> Tuple[int, Dict[str, Any]]:
 def _history_code_candidates(stock_code: str) -> Tuple[List[str], str]:
     """Return cache lookup candidates plus canonical write code."""
     from data_provider.base import canonical_stock_code, normalize_stock_code
+    from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 
     raw_code = str(stock_code or "").strip()
+    target = parse_analysis_target(raw_code)
+    if target.asset_type == ParseStatus.INDEX:
+        # Explicit index identities keep their canonical bucket (``sh000016``
+        # / ``csi930955``) so index bars never land in the colliding stock
+        # bucket (Story 1.5).
+        return [target.canonical_id], target.canonical_id
     normalized_code = canonical_stock_code(normalize_stock_code(raw_code))
     candidates: List[str] = []
     for candidate in (canonical_stock_code(raw_code), normalized_code):

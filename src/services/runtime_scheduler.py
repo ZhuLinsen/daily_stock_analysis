@@ -644,6 +644,23 @@ class RuntimeSchedulerService:
             }
         return {"accepted": True, "running": True}
 
+    def is_background_task_active(self, name: str) -> bool:
+        """Return whether a named task is registered on the live scheduler."""
+        with self._lock:
+            scheduler = self._scheduler
+            thread = self._thread
+            if (
+                not self._enabled
+                or scheduler is None
+                or thread is None
+                or not thread.is_alive()
+            ):
+                return False
+            return any(
+                str(entry.get("name") or "") == name
+                for entry in getattr(scheduler, "_background_tasks", [])
+            )
+
     def status(self) -> Dict[str, Any]:
         scheduler = self._scheduler
         jobs = scheduler.schedule.get_jobs() if scheduler is not None else []

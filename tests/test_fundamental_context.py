@@ -39,6 +39,22 @@ class _DummyBoardFetcher:
 
 
 class TestFundamentalContext(unittest.TestCase):
+    def test_not_supported_builder_uses_existing_fundamental_schema(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+
+        context = manager.build_not_supported_fundamental_context(
+            "sh000016", "index target: fundamental modules skipped"
+        )
+
+        self.assertEqual(context["status"], "not_supported")
+        self.assertTrue(context["coverage"])
+        self.assertTrue(
+            all(status == "not_supported" for status in context["coverage"].values())
+        )
+        self.assertEqual(
+            context["errors"], ["index target: fundamental modules skipped"]
+        )
+
     def test_offshore_market_returns_not_supported_when_adapter_empty(self) -> None:
         """When yfinance adapter has no data, offshore (US/HK) status is not_supported.
 

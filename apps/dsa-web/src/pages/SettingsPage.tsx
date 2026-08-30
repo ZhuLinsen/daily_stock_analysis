@@ -1,7 +1,8 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import { useAuth, useSystemConfig } from '../hooks';
+import { useLocation } from 'react-router-dom';
+import { useAuth, useDesktopUpdate, useSystemConfig } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { analysisApi } from '../api/analysis';
@@ -36,57 +37,6 @@ import type {
   SystemConfigUpdateItem,
 } from '../types/systemConfig';
 import type { UiLanguage, UiTextKey } from '../i18n/uiText';
-
-type DesktopWindow = Window & {
-  dsaDesktop?: {
-    version?: unknown;
-    getUpdateState?: () => Promise<RawDesktopUpdateState>;
-    checkForUpdates?: () => Promise<RawDesktopUpdateState>;
-    installDownloadedUpdate?: () => Promise<boolean>;
-    openReleasePage?: (releaseUrl?: string) => Promise<boolean>;
-    onUpdateStateChange?: (listener: (state: RawDesktopUpdateState) => void) => (() => void) | void;
-  };
-};
-
-type DesktopUpdateState = {
-  status?: string;
-  updateMode?: string;
-  currentVersion?: string;
-  latestVersion?: string;
-  releaseUrl?: string;
-  checkedAt?: string;
-  publishedAt?: string;
-  message?: string;
-  releaseName?: string;
-  tagName?: string;
-  downloadPercent?: number | null;
-  downloadedBytes?: number | null;
-  totalBytes?: number | null;
-};
-
-type RawDesktopUpdateState = {
-  status?: unknown;
-  updateMode?: unknown;
-  currentVersion?: unknown;
-  latestVersion?: unknown;
-  releaseUrl?: unknown;
-  checkedAt?: unknown;
-  publishedAt?: unknown;
-  message?: unknown;
-  releaseName?: unknown;
-  tagName?: unknown;
-  downloadPercent?: unknown;
-  downloadedBytes?: unknown;
-  totalBytes?: unknown;
-};
-
-type DesktopUpdateNotice = {
-  title: string;
-  message: string;
-  variant: 'error' | 'success' | 'warning';
-  actionLabel?: string;
-  actionKind?: 'release' | 'install';
-};
 
 const LLM_CHANNEL_EDITOR_RUNTIME_KEYS = new Set([
   'LITELLM_MODEL',
@@ -184,132 +134,6 @@ const PROMPT_CACHE_ADVANCED_SETTING_KEYS = new Set([
 
 function isPromptCacheAdvancedSetting(item: { key: string }) {
   return PROMPT_CACHE_ADVANCED_SETTING_KEYS.has(item.key);
-}
-
-function trimDesktopRuntimeString(value: unknown) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeDesktopRuntimeNumber(value: unknown) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-  const numberValue = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(numberValue) ? numberValue : null;
-}
-
-function getDesktopRuntimeApi() {
-  if (typeof window === 'undefined') {
-    return undefined;
-  }
-
-  return (window as DesktopWindow).dsaDesktop;
-}
-
-function getDesktopAppVersion() {
-  return trimDesktopRuntimeString(getDesktopRuntimeApi()?.version);
-}
-
-function normalizeDesktopUpdateState(state: RawDesktopUpdateState | null | undefined) {
-  if (!state || typeof state !== 'object') {
-    return null;
-  }
-
-  return {
-    status: trimDesktopRuntimeString(state.status) || 'idle',
-    updateMode: trimDesktopRuntimeString(state.updateMode) || 'manual',
-    currentVersion: trimDesktopRuntimeString(state.currentVersion),
-    latestVersion: trimDesktopRuntimeString(state.latestVersion),
-    releaseUrl: trimDesktopRuntimeString(state.releaseUrl),
-    checkedAt: trimDesktopRuntimeString(state.checkedAt),
-    publishedAt: trimDesktopRuntimeString(state.publishedAt),
-    message: trimDesktopRuntimeString(state.message),
-    releaseName: trimDesktopRuntimeString(state.releaseName),
-    tagName: trimDesktopRuntimeString(state.tagName),
-    downloadPercent: normalizeDesktopRuntimeNumber(state.downloadPercent),
-    downloadedBytes: normalizeDesktopRuntimeNumber(state.downloadedBytes),
-    totalBytes: normalizeDesktopRuntimeNumber(state.totalBytes),
-  };
-}
-
-function getDesktopUpdateNotice(
-  state: DesktopUpdateState | null,
-  t: (key: UiTextKey, params?: Record<string, string | number>) => string,
-): DesktopUpdateNotice | null {
-  if (!state) {
-    return null;
-  }
-
-  if (state.status === 'update-available') {
-    const latestLabel = state.latestVersion || state.tagName || t('settings.desktopLatest');
-    const currentLabel = state.currentVersion || getDesktopAppVersion() || WEB_BUILD_INFO.version;
-    return {
-      title: t('settings.desktopUpdateAvailable'),
-      message: t('settings.desktopUpdateMessage', {
-        current: currentLabel,
-        latest: latestLabel,
-        message: state.message || t('settings.desktopUpdateReleaseMessage'),
-      }),
-      variant: 'warning' as const,
-      actionLabel: state.updateMode === 'auto' ? undefined : t('settings.desktopDownload'),
-      actionKind: state.updateMode === 'auto' ? undefined : 'release',
-    };
-  }
-
-  if (state.status === 'downloading') {
-    const percentText = typeof state.downloadPercent === 'number' ? `（${state.downloadPercent}%）` : '';
-    return {
-      title: t('settings.desktopDownloading'),
-      message: state.message || t('settings.desktopUpdateDownloadingMessage', { percent: percentText }),
-      variant: 'warning' as const,
-    };
-  }
-
-  if (state.status === 'update-downloaded') {
-    return {
-      title: t('settings.desktopDownloaded'),
-      message: state.message || t('settings.desktopUpdateDownloadedMessage'),
-      variant: 'success' as const,
-      actionLabel: t('settings.desktopInstall'),
-      actionKind: 'install',
-    };
-  }
-
-  if (state.status === 'installing') {
-    return {
-      title: t('settings.desktopInstalling'),
-      message: state.message || t('settings.desktopUpdateInstallingMessage'),
-      variant: 'warning' as const,
-    };
-  }
-
-  if (state.status === 'up-to-date') {
-    return {
-      title: t('settings.desktopUpToDate'),
-      message: state.message || t('settings.desktopUpToDateMessage'),
-      variant: 'success' as const,
-    };
-  }
-
-  if (state.status === 'checking') {
-    return {
-      title: t('settings.desktopChecking'),
-      message: state.message || t('settings.desktopUpdateCheckingMessage'),
-      variant: 'warning' as const,
-    };
-  }
-
-  if (state.status === 'error') {
-    return {
-      title: t('settings.desktopCheckError'),
-      message: state.message || t('settings.desktopUpdateErrorMessage'),
-      variant: 'error' as const,
-      actionLabel: state.updateMode === 'auto' && state.releaseUrl ? t('settings.desktopDownload') : undefined,
-      actionKind: state.updateMode === 'auto' && state.releaseUrl ? 'release' : undefined,
-    };
-  }
-
-  return null;
 }
 
 function formatEnvBackupFilename(isDesktopRuntime: boolean) {
@@ -854,6 +678,7 @@ const SchedulerSettingsCard: React.FC<SchedulerSettingsCardProps> = ({
 
 const SettingsPage: React.FC = () => {
   const { authEnabled, passwordChangeable } = useAuth();
+  const location = useLocation();
   const { language: uiLanguage, t } = useUiLanguage();
   const [envBackupActionError, setEnvBackupActionError] = useState<ParsedApiError | null>(null);
   const [envBackupActionSuccess, setEnvBackupActionSuccess] = useState<string>('');
@@ -863,8 +688,6 @@ const SettingsPage: React.FC = () => {
   const [isImportingEnv, setIsImportingEnv] = useState(false);
   const [isUpdatingScreening, setIsUpdatingScreening] = useState(false);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
-  const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
-  const [isCheckingDesktopUpdate, setIsCheckingDesktopUpdate] = useState(false);
   const [schedulerStatusRefreshToken, setSchedulerStatusRefreshToken] = useState(0);
   const [schedulerRuntimeEnabled, setSchedulerRuntimeEnabled] = useState<boolean | null>(null);
   const [schedulerOverrideFromUi, setSchedulerOverrideFromUi] = useState<boolean | null>(null);
@@ -877,12 +700,17 @@ const SettingsPage: React.FC = () => {
   const [llmChannelDraftItems, setLlmChannelDraftItems] = useState<SystemConfigUpdateItem[]>([]);
   const envBackupImportRef = useRef<HTMLInputElement | null>(null);
   const setupStatusRequestIdRef = useRef(0);
-  const desktopRuntimeApi = getDesktopRuntimeApi();
-  const isDesktopRuntime = Boolean(desktopRuntimeApi);
-  const canCheckDesktopUpdate = Boolean(
-    desktopRuntimeApi?.getUpdateState && desktopRuntimeApi?.checkForUpdates && desktopRuntimeApi?.openReleasePage
-  );
-  const desktopAppVersion = getDesktopAppVersion();
+  const {
+    isDesktopRuntime,
+    canCheckDesktopUpdate,
+    desktopAppVersion,
+    isBusy: isDesktopUpdateBusy,
+    isChecking: isCheckingDesktopUpdate,
+    notice: desktopUpdateNotice,
+    checkForUpdates: handleDesktopUpdateCheck,
+    openReleasePage: openDesktopReleasePage,
+    installDownloadedUpdate: installDesktopUpdate,
+  } = useDesktopUpdate();
   const shouldShowDesktopVersionCard = Boolean(desktopAppVersion);
 
   // Set page title
@@ -975,11 +803,20 @@ const SettingsPage: React.FC = () => {
   }, [load]);
 
   useEffect(() => {
-    const requestedCategory = new URLSearchParams(window.location.search).get('category');
+    const requestedCategory = new URLSearchParams(location.search).get('category');
     if (requestedCategory && categories.some((category) => category.category === requestedCategory)) {
       setActiveCategory(requestedCategory);
     }
-  }, [categories, setActiveCategory]);
+  }, [categories, location.search, setActiveCategory]);
+
+  useEffect(() => {
+    if (isLoading || activeCategory !== 'system' || location.hash !== '#desktop-version-info') {
+      return;
+    }
+
+    const node = document.getElementById('desktop-version-info');
+    node?.scrollIntoView({ block: 'start' });
+  }, [activeCategory, isLoading, location.hash]);
 
   useEffect(() => {
     void refreshSetupStatus();
@@ -998,50 +835,6 @@ const SettingsPage: React.FC = () => {
       window.clearTimeout(timer);
     };
   }, [clearToast, toast]);
-
-  useEffect(() => {
-    if (!canCheckDesktopUpdate) {
-      setDesktopUpdateState(null);
-      setIsCheckingDesktopUpdate(false);
-      return;
-    }
-
-    let active = true;
-
-    const syncDesktopUpdateState = async () => {
-      try {
-        const state = await desktopRuntimeApi?.getUpdateState?.();
-        if (active) {
-          setDesktopUpdateState(normalizeDesktopUpdateState(state));
-        }
-      } catch (error: unknown) {
-        if (!active) {
-          return;
-        }
-        setDesktopUpdateState({
-          status: 'error',
-          message: error instanceof Error ? error.message : t('settings.desktopUpdateErrorMessage'),
-        });
-      }
-    };
-
-    void syncDesktopUpdateState();
-
-    const unsubscribe = desktopRuntimeApi?.onUpdateStateChange?.((state) => {
-      if (!active) {
-        return;
-      }
-      setDesktopUpdateState(normalizeDesktopUpdateState(state));
-      setIsCheckingDesktopUpdate(false);
-    });
-
-    return () => {
-      active = false;
-      if (typeof unsubscribe === 'function') {
-        unsubscribe();
-      }
-    };
-  }, [canCheckDesktopUpdate, desktopRuntimeApi, t]);
 
   const rawActiveItems = itemsByCategory[activeCategory] || [];
   const rawActiveItemMap = new Map(rawActiveItems.map((item) => [item.key, String(item.value ?? '')]));
@@ -1210,31 +1003,6 @@ const SettingsPage: React.FC = () => {
     }
   };
 
-  const handleDesktopUpdateCheck = async () => {
-    if (!desktopRuntimeApi?.checkForUpdates) {
-      return;
-    }
-
-    setIsCheckingDesktopUpdate(true);
-    setDesktopUpdateState((current) => ({
-      ...(current || {}),
-      status: 'checking',
-      message: t('settings.desktopUpdateCheckingMessage'),
-    }));
-
-    try {
-      const state = await desktopRuntimeApi.checkForUpdates();
-      setDesktopUpdateState(normalizeDesktopUpdateState(state));
-    } catch (error: unknown) {
-      setDesktopUpdateState({
-        status: 'error',
-        message: error instanceof Error ? error.message : t('settings.desktopUpdateErrorMessage'),
-      });
-    } finally {
-      setIsCheckingDesktopUpdate(false);
-    }
-  };
-
   const updateScreeningEnabled = async (nextEnabled: boolean) => {
     setScreeningActionError(null);
     setScreeningActionSuccess('');
@@ -1309,40 +1077,6 @@ const SettingsPage: React.FC = () => {
     }
   };
 
-  const openDesktopReleasePage = async () => {
-    if (!desktopRuntimeApi?.openReleasePage) {
-      return;
-    }
-
-    await desktopRuntimeApi.openReleasePage(desktopUpdateState?.releaseUrl);
-  };
-
-  const installDesktopUpdate = async () => {
-    if (!desktopRuntimeApi?.installDownloadedUpdate) {
-      setDesktopUpdateState((current) => ({
-        ...(current || {}),
-        status: 'error',
-        message: t('settings.desktopManualUnsupported'),
-      }));
-      return;
-    }
-
-    try {
-      setDesktopUpdateState((current) => ({
-        ...(current || {}),
-        status: 'installing',
-        message: t('settings.desktopUpdateInstallingMessage'),
-      }));
-      await desktopRuntimeApi.installDownloadedUpdate();
-    } catch (error: unknown) {
-      setDesktopUpdateState((current) => ({
-        ...(current || {}),
-        status: 'error',
-        message: error instanceof Error ? error.message : t('settings.desktopManualUnsupported'),
-      }));
-    }
-  };
-
   const handleRunSetupSmoke = async () => {
     setSetupSmokeError(null);
     setSetupSmokeSuccess('');
@@ -1391,7 +1125,6 @@ const SettingsPage: React.FC = () => {
     }
   };
 
-  const desktopUpdateNotice = getDesktopUpdateNotice(desktopUpdateState, t);
   const shouldGuardActiveConfigPanel = activeCategory === 'notification' || activeCategory === 'agent';
   const activeConfigPanelErrorTitle = activeCategory === 'agent' ? t('settings.agentSettings') : t('settings.notificationSettings');
   const settingsPanelDiagnosticHint = isDesktopRuntime
@@ -1621,6 +1354,7 @@ const SettingsPage: React.FC = () => {
               />
             ) : null}
             {activeCategory === 'system' ? (
+              <div id="desktop-version-info">
               <SettingsSectionCard
                 title={t('settings.versionInfo')}
                 description={t('settings.versionInfoDescription')}
@@ -1679,7 +1413,7 @@ const SettingsPage: React.FC = () => {
                         type="button"
                         variant="settings-secondary"
                         onClick={() => void handleDesktopUpdateCheck()}
-                        disabled={isCheckingDesktopUpdate}
+                        disabled={isDesktopUpdateBusy}
                         isLoading={isCheckingDesktopUpdate}
                         loadingText={t('settings.checkingDesktopUpdate')}
                       >
@@ -1713,6 +1447,7 @@ const SettingsPage: React.FC = () => {
                   </p>
                 ) : null}
               </SettingsSectionCard>
+              </div>
             ) : null}
             {activeCategory === 'system' ? (
               <SettingsSectionCard

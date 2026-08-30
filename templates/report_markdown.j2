@@ -13,6 +13,9 @@
 {% if summary_only and e.empty_news_disclosure %}
 {{ e.empty_news_disclosure }}
 {% endif %}
+{% if summary_only and e.result.data_sources and e.result.data_sources|trim %}
+*📋 {{ labels.data_sources_label }}：{{ e.result.data_sources|trim }}*
+{% endif %}
 {% endfor %}
 
 ---
@@ -238,6 +241,10 @@
 {% for h in hist %}
 | {{ h.created_at[:16] if h.created_at else 'N/A' }} | {{ h.sentiment_score or 'N/A' }} | {{ h.action_label or localize_action_label(h.action, report_language) or localize_operation_advice(h.operation_advice or 'N/A', report_language) }} | {{ localize_trend_prediction(h.trend_prediction or 'N/A', report_language) }} |
 {% endfor %}
+{% endif %}
+
+{% if result.data_sources and result.data_sources|trim %}
+*📋 {{ labels.data_sources_label }}：{{ result.data_sources|trim }}*
 {% endif %}
 
 ---
