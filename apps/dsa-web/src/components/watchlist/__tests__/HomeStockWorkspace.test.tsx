@@ -9,11 +9,13 @@ function renderWorkspace({
   watchlistRows,
   selectedRecordId,
   selectedStockCode,
+  selectedAssetType,
   activeTab = 'watchlist',
 }: {
   watchlistRows: HomeWatchlistRow[];
   selectedRecordId?: number;
   selectedStockCode?: string;
+  selectedAssetType?: 'stock' | 'index' | null;
   activeTab?: HomeWorkspaceTab;
 }) {
   const onHistoryItemClick = vi.fn();
@@ -42,6 +44,7 @@ function renderWorkspace({
         historyItems={[]}
         isLoadingHistory={false}
         selectedStockCode={selectedStockCode}
+        selectedAssetType={selectedAssetType ?? null}
         selectedRecordId={selectedRecordId}
         onHistoryItemClick={onHistoryItemClick}
       />
@@ -323,5 +326,160 @@ describe('HomeStockWorkspace', () => {
     });
 
     expect(screen.getByRole('button', { name: '打开 HK700 最新分析详情' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps a same-code stock row selected without selecting the index row', () => {
+    renderWorkspace({
+      watchlistRows: [
+        {
+          code: 'sh000016',
+          assetType: 'index',
+          analyzedToday: true,
+          latestItem: {
+            id: 31,
+            stockCode: 'sh000016',
+            stockName: '上证50',
+            sentimentScore: 66,
+            operationAdvice: '观望',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'index',
+          },
+        },
+        {
+          code: '000016',
+          assetType: 'stock',
+          analyzedToday: true,
+          latestItem: {
+            id: 32,
+            stockCode: '000016',
+            stockName: '深康佳A',
+            sentimentScore: 71,
+            operationAdvice: '买入',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'stock',
+          },
+        },
+      ],
+      selectedStockCode: '000016',
+      selectedAssetType: 'stock',
+      selectedRecordId: 32,
+    });
+
+    const stockRowButton = screen.getByTestId('watchlist-row-000016').querySelector('button[aria-pressed]');
+    const indexRowButton = screen.getByTestId('watchlist-row-sh000016').querySelector('button[aria-pressed]');
+    expect(stockRowButton).toHaveAttribute('aria-pressed', 'true');
+    expect(indexRowButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('selects the index row when the index report is active', () => {
+    renderWorkspace({
+      watchlistRows: [
+        {
+          code: 'sh000016',
+          assetType: 'index',
+          analyzedToday: true,
+          latestItem: {
+            id: 41,
+            stockCode: 'SH000016',
+            stockName: '上证50',
+            sentimentScore: 66,
+            operationAdvice: '观望',
+            analysisCount: 2,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'index',
+          },
+        },
+        {
+          code: '000016',
+          assetType: 'stock',
+          analyzedToday: true,
+          latestItem: {
+            id: 42,
+            stockCode: '000016',
+            stockName: '深康佳A',
+            sentimentScore: 71,
+            operationAdvice: '买入',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'stock',
+          },
+        },
+      ],
+      selectedStockCode: 'sh000016',
+      selectedAssetType: 'index',
+      selectedRecordId: 41,
+    });
+
+    const indexRowButton = screen.getByTestId('watchlist-row-sh000016').querySelector('button[aria-pressed]');
+    const stockRowButton = screen.getByTestId('watchlist-row-000016').querySelector('button[aria-pressed]');
+    expect(indexRowButton).toHaveAttribute('aria-pressed', 'true');
+    expect(stockRowButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('selects an alias-form index row via its registry identity even without a latest detail (PR #2312)', () => {
+    renderWorkspace({
+      watchlistRows: [
+        {
+          code: '000016.SH',
+          assetType: 'index',
+          identityKey: 'sh000016',
+          analyzedToday: true,
+        },
+        {
+          code: '000016',
+          assetType: 'stock',
+          analyzedToday: true,
+        },
+      ],
+      selectedStockCode: 'sh000016',
+      selectedAssetType: 'index',
+    });
+
+    // No `selectedRecordId` and no latest detail on either row, so selection
+    // must come from the identity comparison: the canonical report pairs with
+    // the alias row through `identityKey` (HomePage's registry resolution) and
+    // never with the bare `000016` stock row.
+    const aliasRowButton = screen.getByTestId('watchlist-row-000016.SH').querySelector('button[aria-pressed]');
+    const stockRowButton = screen.getByTestId('watchlist-row-000016').querySelector('button[aria-pressed]');
+    expect(aliasRowButton).toHaveAttribute('aria-pressed', 'true');
+    expect(stockRowButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps the no-detail notice on the triggering index row instead of reusing the same-code stock row detail (PR #2312)', async () => {
+    const { onHistoryItemClick } = renderWorkspace({
+      watchlistRows: [
+        {
+          code: '000016',
+          assetType: 'stock',
+          analyzedToday: true,
+          latestItem: {
+            id: 99,
+            stockCode: '000016',
+            stockName: '深康佳A',
+            sentimentScore: 70,
+            operationAdvice: '买入',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'stock',
+          },
+        },
+        {
+          code: '000016.SH',
+          assetType: 'index',
+          analyzedToday: false,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByTestId('watchlist-row-000016.SH').querySelector('button[aria-pressed]') as HTMLButtonElement);
+
+    // The index row has no detail yet. The notice carries the triggering row's
+    // own code+assetType (000016.SH / index); without that, the shared stock
+    // normalization would fold 000016.SH to 000016 and the notice would be
+    // swallowed by the stock row (which HAS a detail).
+    expect(await screen.findByRole('alert')).toHaveTextContent('暂无分析详情，可先分析。');
+    expect(onHistoryItemClick).not.toHaveBeenCalled();
   });
 });

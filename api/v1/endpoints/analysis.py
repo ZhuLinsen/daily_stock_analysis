@@ -490,6 +490,7 @@ def _handle_async_analysis_batch(
             status="pending",
             message=f"分析任务已加入队列: {task.stock_code}",
             analysis_phase=task.analysis_phase,
+            asset_type=getattr(task, "asset_type", None),
         )
         for task in accepted_tasks
     ]
@@ -753,6 +754,7 @@ def get_task_list(
             analysis_phase=t.analysis_phase,
             skills=getattr(t, "skills", None),
             region=t.region,
+            asset_type=getattr(t, "asset_type", None),
         )
         for t in all_tasks
     ]

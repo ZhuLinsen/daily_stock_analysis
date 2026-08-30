@@ -744,6 +744,17 @@ API `/analyze` 对显式指数输入构造结构化 `AnalysisTarget`：`sh000016
 
 > **Phase 2 边界**：默认 `STOCK_LIST`、`--schedule`、Bot 与 GitHub Actions 每日工作流暂不开放指数入口；Web/API 与一次性 `--stocks` 已支持指数，Bot/定时/每日工作流入口留待 Phase 2 后续 PR。
 
+### 指数与个股 Dashboard canonical 隔离（PR #2312）
+
+已登记指数以 lowercase canonical（`sh000016`/`sz399001`/`csi930955`）写入历史存储；历史筛选、按代码删除、计数与个股栏（stock-bar）聚合统一使用 parser 判型，指数记录与同码裸股票（如 `000016`）严格隔离，互不折叠：
+
+- **历史候选**：指数查询（`sh000016`、`SH000016`、`000016.SH`、`sz399001`、`csi930955`、`930955.CSI` 等显式形式）会命中 lowercase canonical、uppercase legacy canonical 与显式 alias 的既有记录，但**不会**命中裸同码股票记录；裸码查询（`000016`/`930955`）也不会命中指数记录。股票 alias、港股与海外市场的既有等价匹配保持不变。
+- **删除与计数**：`DELETE /api/v1/history/by-code/{code}` 与历史总数对指数 canonical 收敛全部显式形态；无记录时仍返回 `deleted=0`，不引入破坏性 404。
+- **个股栏**：同一指数的 `sh000016`/`SH000016`/`000016.SH` 旧记录在 `/history/stocks` 合并为一行并计数全部显式形态，且与裸 `000016` 股票行并列存在、互不合并。stock-bar 判型来自持久化 `record.code`，不从 display code 反推。
+- **API `stock_code` 输出 canonical**：历史列表、历史详情与 stock-bar 对已登记指数（含旧 uppercase/显式 alias 持久化记录，例如 `SZ399300`、`000300.CSI`）一律输出 parser canonical（`sh000300`/`csi930955`），前端不再需要从别名猜 canonical。
+- **任务 / SSE / API 元数据**：任务列表与 SSE 事件对已提交的 `analysis_target` 暴露可选 `asset_type`（`stock`/`index`），不重新猜测；历史列表项与 stock-bar 项也追加可选 `asset_type`。不认识该字段的旧客户端直接忽略，字段可选追加不破坏既有契约。
+- **Web Dashboard 身份键**：任务/报告/历史的 `assetType` 优先，且被后端保证为 parser canonical 的代码只做**大小写折叠**（`SH000016`→`sh000016`），**禁止**再用前缀/后缀正则猜 canonical（否则 `000300.CSI` 会被误猜成 `csi000300`、`sz399300` 被误当成独立 canonical，违反注册表唯一判型真源）；仅 watchlist 原始字符串缺少类型时，才使用已加载 `stocks.index.json` 中 `assetType=index` 行的 canonical/display/显式 alias **精确命中**（不做先 normalize 再匹配、不用前缀正则猜测；加载期间禁用批量分析，加载失败或请求超过 10 秒时按既有股票语义 fail-open）。行选中、active task 与完成自动选中均按资产类型分桶，指数行与同码股票行状态独立，完成后自动选中正确的 canonical 指数报告。
+
 ### Futu 真实持仓作为分析列表
 
 标准源码安装（`pip install -r requirements.txt`）、官方 Docker 镜像和 Windows/macOS Desktop backend 已默认包含锁定的 `futu-api==10.8.6808`。仅在使用裁剪过的自定义 Python 环境时，才需要按 [Futu OpenAPI SDK 安装说明](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) 手动补装。启动并登录 Futu OpenD 后运行：

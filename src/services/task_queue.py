@@ -69,6 +69,27 @@ def _dedupe_task_key(
     return _dedupe_stock_code_key(stock_code)
 
 
+def asset_type_from_analysis_target(analysis_target: Optional[Any]) -> Optional[str]:
+    """Derive the optional ``asset_type`` from a submitted analysis target.
+
+    Uses the parser target only (never re-guesses from the code). Registered
+    index targets (``ParseStatus.INDEX``) yield ``"index"``, explicit stock
+    targets yield ``"stock"``, and targets that were not carried downstream
+    (plain stock submissions, market review) yield ``None`` so the field is
+    simply omitted from task payloads — keeping legacy clients compatible.
+    """
+    from src.services.stock_list_parser import ParseStatus
+
+    if analysis_target is None:
+        return None
+    asset_type = getattr(analysis_target, "asset_type", None)
+    if asset_type == ParseStatus.INDEX:
+        return "index"
+    if asset_type == ParseStatus.STOCK:
+        return "stock"
+    return None
+
+
 class TaskStatus(str, Enum):
     """Task status enumeration"""
     PENDING = "pending"        # Waiting for execution
@@ -112,6 +133,9 @@ class TaskInfo:
     # 避免 key 生成/移除不一致导致 _analyzing_stocks 残留。
     dedupe_key: Optional[str] = None
     analysis_target: Optional[Any] = None
+    # parser 来源的可选资产类型（``index``/``stock``/``None``）；SSE 与任务列表
+    # 从这里透传，不得在消费端重新猜测。
+    asset_type: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
@@ -135,6 +159,8 @@ class TaskInfo:
         }
         if self.region is not None:
             payload["region"] = self.region
+        if self.asset_type is not None:
+            payload["asset_type"] = self.asset_type
         return payload
     
     def copy(self) -> 'TaskInfo':
@@ -164,6 +190,7 @@ class TaskInfo:
             flow_events=copy.deepcopy(self.flow_events),
             dedupe_key=self.dedupe_key,
             analysis_target=self.analysis_target,
+            asset_type=self.asset_type,
         )
 
 
@@ -490,6 +517,7 @@ class AnalysisTaskQueue:
                     report_language=report_language,
                     dedupe_key=dedupe_key,
                     analysis_target=analysis_target,
+                    asset_type=asset_type_from_analysis_target(analysis_target),
                 )
                 self._tasks[task_id] = task_info
                 self._analyzing_stocks[dedupe_key] = task_id

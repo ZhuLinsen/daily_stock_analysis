@@ -231,6 +231,10 @@ class BatchTaskAcceptedItem(BaseModel):
     )
     message: Optional[str] = Field(None, description="提示信息")
     analysis_phase: AnalysisPhase = Field("auto", description="请求的分析阶段")
+    asset_type: Optional[Literal["stock", "index"]] = Field(
+        None,
+        description="parser 来源的可选资产类型（stock/index）；由已提交的 analysis_target 透传，旧客户端可缺省",
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
@@ -402,6 +406,10 @@ class TaskInfo(BaseModel):
     region: Optional[str] = Field(
         None,
         description="大盘复盘任务实际执行的 canonical 市场范围",
+    )
+    asset_type: Optional[Literal["stock", "index"]] = Field(
+        None,
+        description="parser 来源的可选资产类型（stock/index）；由已提交的 analysis_target 透传，旧客户端可缺省",
     )
     
     model_config = ConfigDict(json_schema_extra={

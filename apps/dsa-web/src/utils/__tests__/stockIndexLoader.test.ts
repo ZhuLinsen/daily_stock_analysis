@@ -132,6 +132,36 @@ describe('stockIndexLoader', () => {
       expect(result.error).toBeInstanceOf(Error);
     });
 
+    test('aborts a stalled index request and returns fallback mode', async () => {
+      vi.useFakeTimers();
+      let capturedSignal: AbortSignal | undefined;
+      try {
+        mockFetch.mockImplementationOnce((_input, init) => {
+          capturedSignal = init?.signal ?? undefined;
+          if (!capturedSignal) {
+            return Promise.reject(new Error('missing AbortSignal'));
+          }
+          return new Promise((_resolve, reject) => {
+            capturedSignal?.addEventListener('abort', () => reject(new Error('request aborted')));
+          });
+        });
+
+        const resultPromise = loadStockIndex();
+
+        expect(capturedSignal).toBeInstanceOf(AbortSignal);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const result = await resultPromise;
+
+        expect(capturedSignal?.aborted).toBe(true);
+        expect(result.loaded).toBe(false);
+        expect(result.fallback).toBe(true);
+        expect(result.data).toEqual([]);
+        expect(result.error).toBeInstanceOf(Error);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     test('returns fallback mode on HTTP error', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,

@@ -122,36 +122,50 @@ class HistoryService:
                 is_bse_code,
                 normalize_stock_code,
             )
-            from src.services.stock_code_utils import (
-                _converge_registered_csi_identity,
-            )
+            from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 
-            # PR #2267 review remediation: converge registered CSI aliases
-            # (``csi930955`` / ``930955.CSI`` / ``CSI930955``) so a record persisted under any
-            # equivalent form is reachable from every equivalent query input.
-            # This is a *persisted-read* filter path, so the candidate set must
-            # include:
-            #   1. the parser canonical (``csi930955`` — current storage form),
-            #   2. the old resolver's uppercase canonical (``CSI930955`` — how
-            #      pre-fix records were saved), and
-            #   3. the IndexEntry's explicit aliases (``930955.CSI``).
-            converged_csi = _converge_registered_csi_identity(raw_code)
-            if converged_csi is not None:
-                from src.data.stock_index_loader import _load_active_index_rows
-                active_rows = _load_active_index_rows()
-                alias_keys: List[str] = []
-                display_keys: List[str] = []
-                for row in active_rows:
-                    if row and str(row[0] or "").strip() == converged_csi:
-                        display_keys = [str(row[1] or "").strip()]
-                        alias_keys = [
-                            str(a) for a in (row[5] if isinstance(row[5], list) else [])
-                            if str(a).strip()
-                        ]
-                        break
-                canonical_upper = canonical_stock_code(converged_csi) or converged_csi.upper()
-                add_keys = [converged_csi, canonical_upper] + display_keys + alias_keys
-                for key in add_keys:
+            # PR #2312: parser-aware index branch. ``parse_analysis_target``
+            # (with the index registry) is the single asset-type authority. When
+            # the query token is a registered INDEX, the persisted-read candidate
+            # set must be exactly:
+            #   1. the lowercase parser canonical (``sh000016`` / ``csi930955`` —
+            #      the current storage form),
+            #   2. the legacy uppercase canonical (``SH000016`` / ``CSI930955`` —
+            #      how pre-fix records were saved), and
+            #   3. every explicit alias/display form (``000016.SH`` /
+            #      ``930955.CSI`` — ``IndexEntry.aliases``).
+            # The bare same-code stock (``000016`` / ``930955``) is deliberately
+            # excluded so an index record is never reachable through a stock
+            # query and vice versa. This unifies the previous CSI-only convergence
+            # (PR #2267) with the SH/SZ index identity so all three namespaces
+            # share one branch.
+            target = parse_analysis_target(raw_code)
+            if target.asset_type == ParseStatus.INDEX:
+                index_keys = [target.canonical_id]
+                legacy_upper = (
+                    canonical_stock_code(target.canonical_id)
+                    or target.canonical_id.upper()
+                )
+                if legacy_upper and legacy_upper not in index_keys:
+                    index_keys.append(legacy_upper)
+                entry = target.matched_index
+                if entry is not None:
+                    for alias in entry.aliases:
+                        alias = str(alias or "").strip()
+                        if not alias:
+                            continue
+                        if alias not in index_keys:
+                            index_keys.append(alias)
+                        # sqlite ``IN`` comparison is case-sensitive: a legacy
+                        # record may have been persisted under the uppercase
+                        # alias form (``SZ399300`` for registry alias
+                        # ``sz399300``), so the persisted-read candidate set must
+                        # carry both the raw alias and its uppercase form. The
+                        # bare same-code stock (``000300``) is still never added.
+                        alias_upper = alias.upper()
+                        if alias_upper and alias_upper not in index_keys:
+                            index_keys.append(alias_upper)
+                for key in index_keys:
                     if key and key not in candidates:
                         candidates.append(key)
                 return candidates
@@ -341,6 +355,21 @@ class HistoryService:
         code = str(raw_code or "").strip()
         if not code:
             return code
+        from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+        try:
+            target = parse_analysis_target(code)
+        except Exception:
+            return resolve_index_stock_code(code) or code
+        if target.asset_type == ParseStatus.INDEX:
+            # PR #2312: registered index records always surface the parser
+            # canonical (lowercase ``sh000300`` / ``csi930955``), even when the
+            # persisted row was saved under a legacy uppercase canonical or an
+            # explicit alias (``SH000016`` / ``000016.SH`` / ``sz399300`` /
+            # ``000300.CSI``). Web identity keys therefore only need a simple
+            # case fold for API/task/report codes — they must never guess a
+            # canonical from prefixes/suffixes.
+            return target.canonical_id
         return resolve_index_stock_code(code) or code
 
     def _display_market_phase_summary(self, stock_code: str, context_snapshot: Any) -> Any:
@@ -401,8 +430,22 @@ class HistoryService:
             "model_used": normalize_model_used(model_used),
             "created_at": self._serialize_created_at(record.created_at),
             "market_phase_summary": market_phase_summary,
+            "asset_type": self._asset_type_for_record(record),
             **market_fields,
         }
+
+    @staticmethod
+    def _asset_type_for_record(record) -> Optional[str]:
+        """Return the parser-derived optional ``asset_type`` for a history row.
+
+        Uses the *persisted* ``record.code`` (never the display code) via
+        :func:`asset_type_from_canonical_code`, so ``sh000016`` is ``index``,
+        bare ``000016`` is ``stock`` and market review rows (``MARKET``) omit
+        the field. Optional by contract: legacy clients simply ignore it.
+        """
+        from src.services.analysis_service import asset_type_from_canonical_code
+
+        return asset_type_from_canonical_code(getattr(record, "code", None))
 
     def _resolve_record(
         self,

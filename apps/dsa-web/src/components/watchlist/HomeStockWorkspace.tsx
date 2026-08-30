@@ -20,7 +20,7 @@ import type { StockBarItem, TaskInfo } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { formatDateTime } from '../../utils/format';
-import { areStockCodesEquivalent } from '../../utils/stockCode';
+import { areAssetAwareCodesEquivalent, toAssetAwareCodeKey, type AssetAwareAssetType } from '../../utils/stockCode';
 import { truncateStockName } from '../../utils/stockName';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey, UiTextParams } from '../../i18n/uiText';
@@ -30,6 +30,15 @@ export type WatchlistAnalyzeMode = 'all' | 'pending';
 
 export interface HomeWatchlistRow {
   code: string;
+  assetType?: AssetAwareAssetType;
+  /**
+   * Asset-aware identity key already resolved by HomePage from the stock index
+   * registry (canonical for registered indices, e.g. `sh000016` for a raw
+   * watchlist string `000016.SH`). Row-selection compares against this key
+   * FIRST instead of re-parsing the raw alias, so a canonical selected report
+   * always selects its own alias-form row and never a same-code stock row.
+   */
+  identityKey?: string;
   latestItem?: StockBarItem;
   analyzedToday: boolean;
   isTodayStatusLoading?: boolean;
@@ -62,6 +71,7 @@ interface HomeStockWorkspaceProps {
   historyItems: StockBarItem[];
   isLoadingHistory: boolean;
   selectedStockCode?: string;
+  selectedAssetType?: AssetAwareAssetType | null;
   selectedRecordId?: number;
   onHistoryItemClick: (recordId: number) => void;
   onDeleteStock?: (stockCode: string) => Promise<void> | void;
@@ -75,6 +85,21 @@ function getTaskStatusLabel(task: TaskInfo | undefined, t: (key: UiTextKey, para
   if (task.status === 'pending') return t('taskPanel.pending');
   if (task.status === 'cancel_requested') return t('taskPanel.cancelRequested');
   return task.status;
+}
+
+function rowHasSelectedIdentity(
+  row: HomeWatchlistRow,
+  selectedStockCode: string | null | undefined,
+  selectedAssetType: AssetAwareAssetType | null | undefined,
+): boolean {
+  // The registry-derived canonical identity (HomePage) wins: an alias-form raw
+  // watchlist code (e.g. `000016.SH`) whose identityKey is `sh000016` must
+  // match the canonical selected report without re-parsing the raw alias, and
+  // must never fold with the bare `000016` stock row.
+  if (row.identityKey) {
+    return toAssetAwareCodeKey(selectedStockCode, selectedAssetType) === row.identityKey;
+  }
+  return areAssetAwareCodesEquivalent(selectedStockCode, selectedAssetType, row.code, row.assetType);
 }
 
 const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
@@ -258,6 +283,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   historyItems,
   isLoadingHistory,
   selectedStockCode,
+  selectedAssetType,
   selectedRecordId,
   onHistoryItemClick,
   onDeleteStock,
@@ -266,7 +292,12 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
 }) => {
   const { t } = useUiLanguage();
   const [draftCode, setDraftCode] = useState('');
-  const [workspaceNoticeCode, setWorkspaceNoticeCode] = useState<string | null>(null);
+  // PR #2312: the notice carries the *triggering row's own* identity
+  // (code + assetType). Reusing the candidate row's assetType for the notice
+  // code would let an index row and a same-code stock row cross-match (e.g.
+  // notice code ``000016.SH`` classified with the stock row's asset type folds
+  // to stock ``000016`` and attaches to the wrong row).
+  const [workspaceNotice, setWorkspaceNotice] = useState<{ code: string; assetType: AssetAwareAssetType } | null>(null);
   const pendingWatchlistCount = watchlistRows
     .filter((row) => !row.analyzedToday && !row.isTodayStatusLoading && !row.isTodayStatusUnknown)
     .length;
@@ -286,8 +317,10 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   }, [batchStatus]);
 
   const visibleWorkspaceNotice = useMemo(() => {
-    if (!workspaceNoticeCode) return null;
-    const row = watchlistRows.find((item) => areStockCodesEquivalent(item.code, workspaceNoticeCode));
+    if (!workspaceNotice) return null;
+    const row = watchlistRows.find(
+      (item) => areAssetAwareCodesEquivalent(item.code, item.assetType, workspaceNotice.code, workspaceNotice.assetType),
+    );
     if (!row) return null;
     if (row.isTodayStatusLoading) {
       return { message: t('watchlist.latestDetailLoading') };
@@ -297,28 +330,28 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
     }
     if (row.latestItem) return null;
     return { message: t('watchlist.noLatestDetail') };
-  }, [t, watchlistRows, workspaceNoticeCode]);
+  }, [t, watchlistRows, workspaceNotice]);
 
   const handleAddSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     const code = draftCode.trim();
     if (!code) return;
-    setWorkspaceNoticeCode(null);
+    setWorkspaceNotice(null);
     void onAddToWatchlist(code).then(() => setDraftCode(''));
   };
 
   const handleWatchlistRowOpen = (row: HomeWatchlistRow) => {
     if (row.isTodayStatusLoading || row.isTodayStatusUnknown) {
-      setWorkspaceNoticeCode(row.code);
+      setWorkspaceNotice({ code: row.code, assetType: row.assetType ?? 'stock' });
       return;
     }
     const recordId = row.latestItem?.id;
     if (typeof recordId === 'number') {
-      setWorkspaceNoticeCode(null);
+      setWorkspaceNotice(null);
       onHistoryItemClick(recordId);
       return;
     }
-    setWorkspaceNoticeCode(row.code);
+    setWorkspaceNotice({ code: row.code, assetType: row.assetType ?? 'stock' });
   };
 
   const renderTabs = (
@@ -334,7 +367,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               selected ? 'bg-primary/15 text-primary shadow-inner' : 'text-secondary-text hover:bg-hover hover:text-foreground'
             }`}
             onClick={() => {
-              setWorkspaceNoticeCode(null);
+              setWorkspaceNotice(null);
               onTabChange(tab.key);
             }}
           >
@@ -391,7 +424,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                     className="h-7 w-7 px-0"
                     disabled={watchlistLoading}
                     onClick={() => {
-                      setWorkspaceNoticeCode(null);
+                      setWorkspaceNotice(null);
                       void onRefreshWatchlist();
                     }}
                     aria-label={t('watchlist.refreshAria')}
@@ -415,7 +448,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 size="sm"
                 variant="home-action-ai"
                 className="h-8 flex-1 whitespace-nowrap px-2 text-xs sm:flex-none"
-                disabled={watchlistRows.length === 0 || isBatchAnalyzing}
+                disabled={watchlistLoading || watchlistRows.length === 0 || isBatchAnalyzing}
                 isLoading={isBatchAnalyzing}
                 loadingText={t('watchlist.submitting')}
                 onClick={() => void onAnalyzeWatchlist('all')}
@@ -428,7 +461,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 size="sm"
                 variant="home-action-report"
                 className="h-8 flex-1 whitespace-nowrap px-2 text-xs sm:flex-none"
-                disabled={pendingWatchlistCount === 0 || isTodayStatusUnavailable || isBatchAnalyzing}
+                disabled={watchlistLoading || pendingWatchlistCount === 0 || isTodayStatusUnavailable || isBatchAnalyzing}
                 onClick={() => void onAnalyzeWatchlist('pending')}
               >
                 <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
@@ -520,7 +553,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                   key={row.code}
                   row={row}
                   onRemove={async (code) => {
-                    setWorkspaceNoticeCode(null);
+                    setWorkspaceNotice(null);
                     await onRemoveFromWatchlist(code);
                   }}
                   onOpenDetail={handleWatchlistRowOpen}
@@ -530,8 +563,8 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                     || (
                       Boolean(selectedStockCode)
                       && (
-                        areStockCodesEquivalent(selectedStockCode ?? '', row.code)
-                        || areStockCodesEquivalent(selectedStockCode ?? '', row.latestItem?.stockCode ?? '')
+                        rowHasSelectedIdentity(row, selectedStockCode, selectedAssetType)
+                        || areAssetAwareCodesEquivalent(selectedStockCode ?? '', selectedAssetType, row.latestItem?.stockCode ?? '', row.latestItem?.assetType)
                       )
                     )
                   }

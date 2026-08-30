@@ -4128,6 +4128,151 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(response.tasks[0].analysis_phase, "postmarket")
         self.assertEqual(response.tasks[0].skills, ["growth_quality"])
 
+    def test_task_list_exposes_parser_asset_type(self) -> None:
+        if get_task_list is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        task = SimpleNamespace(
+            task_id="task-list-asset-type",
+            trace_id="trace-list-asset-type",
+            stock_code="sh000016",
+            stock_name="上证50",
+            status=TaskStatus.PROCESSING,
+            progress=42,
+            message="running",
+            report_type="detailed",
+            created_at=datetime(2026, 4, 10, 12, 0, 0),
+            started_at=datetime(2026, 4, 10, 12, 0, 1),
+            completed_at=None,
+            error=None,
+            original_query="sh000016",
+            selection_source="manual",
+            analysis_phase="intraday",
+            skills=None,
+            region=None,
+            asset_type="index",
+        )
+        queue = MagicMock()
+        queue.list_all_tasks.return_value = [task]
+        queue.get_task_stats.return_value = {
+            "total": 1,
+            "pending": 0,
+            "processing": 1,
+            "completed": 0,
+            "failed": 0,
+        }
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = get_task_list(status=None, limit=20)
+
+        self.assertEqual(response.tasks[0].stock_code, "sh000016")
+        self.assertEqual(response.tasks[0].asset_type, "index")
+
+    def test_task_list_omits_asset_type_for_legacy_tasks(self) -> None:
+        if get_task_list is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        task = SimpleNamespace(
+            task_id="task-list-legacy",
+            trace_id="trace-list-legacy",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=TaskStatus.PENDING,
+            progress=0,
+            message="waiting",
+            report_type="detailed",
+            created_at=datetime(2026, 4, 10, 12, 0, 0),
+            started_at=None,
+            completed_at=None,
+            error=None,
+            original_query=None,
+            selection_source=None,
+            analysis_phase="auto",
+            skills=None,
+            region=None,
+        )
+        queue = MagicMock()
+        queue.list_all_tasks.return_value = [task]
+        queue.get_task_stats.return_value = {
+            "total": 1,
+            "pending": 1,
+            "processing": 0,
+            "completed": 0,
+            "failed": 0,
+        }
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = get_task_list(status=None, limit=20)
+
+        self.assertIsNone(response.tasks[0].asset_type)
+
+    def test_task_info_to_dict_exposes_parser_asset_type(self) -> None:
+        from src.services.stock_list_parser import parse_analysis_target
+
+        queue = AnalysisTaskQueue(max_workers=1)
+        queue._executor = type("ExecutorStub", (), {"submit": lambda self, *args, **kwargs: Future()})()
+
+        index_target = parse_analysis_target("sh000016")
+
+        index_tasks, _ = queue.submit_tasks_batch(
+            ["sh000016"],
+            analysis_targets=[index_target],
+            report_type="detailed",
+        )
+        plain_tasks, _ = queue.submit_tasks_batch(
+            ["000016"],
+            report_type="detailed",
+        )
+
+        # Index targets are carried on TaskInfo, so the SSE/task payload exposes
+        # the parser asset type. Stock targets are intentionally NOT carried
+        # downstream (PR #2303 contract: stock semantics unchanged), so the
+        # optional field is simply omitted there.
+        index_payload = index_tasks[0].to_dict()
+        plain_payload = plain_tasks[0].to_dict()
+
+        self.assertEqual(index_payload["asset_type"], "index")
+        self.assertNotIn("asset_type", plain_payload)
+
+    def test_batch_accepted_item_exposes_parser_asset_type(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        task = SimpleNamespace(
+            task_id="task-batch-asset-type",
+            trace_id="trace-batch-asset-type",
+            stock_code="sh000016",
+            stock_name="上证50",
+            analysis_phase="auto",
+            asset_type="index",
+        )
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([task], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code=None,
+                    stock_codes=["sh000016", "000016"],
+                    stock_name=None,
+                    original_query="sh000016,000016",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = json.loads(response.body)
+        accepted = payload["accepted"]
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["stock_code"], "sh000016")
+        self.assertEqual(accepted[0]["asset_type"], "index")
+
 
 class BatchTaskQueueContractTestCase(unittest.TestCase):
     def setUp(self) -> None:
@@ -4336,6 +4481,34 @@ class BatchTaskQueueContractTestCase(unittest.TestCase):
         self.assertEqual(index_task.dedupe_key, "sh000016")
         self.assertNotEqual(stock_task.dedupe_key, "sh000016")
         self.assertIs(index_task.analysis_target, index_target)
+
+    def test_alias_index_input_submits_canonical_task_info(self) -> None:
+        """``000300.CSI`` (a registered alias of ``sh000300``) must submit a
+        task whose stock_code / to_dict().stock_code / dedupe_key are all the
+        parser canonical ``sh000300`` with asset_type ``index`` — locking the
+        REST/SSE premise that consumers only ever receive canonical index
+        codes (the frontend only case-folds them)."""
+        from src.services.stock_list_parser import parse_analysis_target
+
+        target = parse_analysis_target("000300.CSI")
+        self.assertEqual(target.asset_type, "index")
+        self.assertEqual(target.canonical_id, "sh000300")
+
+        queue = self._executor_stub_queue()
+        accepted, duplicates = queue.submit_tasks_batch(
+            ["000300.CSI"],
+            analysis_targets=[target],
+            report_type="detailed",
+        )
+
+        self.assertEqual(duplicates, [])
+        self.assertEqual(len(accepted), 1)
+        task = accepted[0]
+        self.assertEqual(task.stock_code, "sh000300")
+        self.assertEqual(task.to_dict()["stock_code"], "sh000300")
+        self.assertEqual(task.to_dict()["asset_type"], "index")
+        self.assertEqual(task.dedupe_key, "sh000300")
+        self.assertIs(task.analysis_target, target)
 
     def test_csi_aliases_converge_to_single_task_queue_key(self) -> None:
         from src.services.stock_list_parser import parse_analysis_target

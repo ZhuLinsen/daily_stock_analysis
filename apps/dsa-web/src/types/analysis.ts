@@ -440,6 +440,7 @@ export interface BatchTaskAcceptedItem {
   status: 'pending' | 'processing';
   message?: string;
   analysisPhase?: AnalysisPhase;
+  assetType?: 'stock' | 'index';
 }
 
 export interface BatchDuplicateTaskItem {
@@ -501,6 +502,7 @@ export interface TaskInfo {
   analysisPhase?: AnalysisPhase;
   skills?: string[];
   region?: string;
+  assetType?: 'stock' | 'index';
 }
 
 /** Task list response */
@@ -541,6 +543,7 @@ export interface HistoryItem {
   turnoverRate?: number;
   modelUsed?: string;  // 历史元数据快照，仅用于列表展示，不影响运行时调用与路由
   marketPhaseSummary?: MarketPhaseSummary | null;
+  assetType?: 'stock' | 'index';
   createdAt: string;
 }
 
@@ -602,6 +605,7 @@ export interface StockBarItem {
   lastAnalysisTime?: string;
   modelUsed?: string;
   marketPhaseSummary?: MarketPhaseSummary | null;
+  assetType?: 'stock' | 'index';
 }
 
 export interface StockBarResponse {

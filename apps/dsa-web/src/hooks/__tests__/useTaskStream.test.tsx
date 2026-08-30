@@ -95,8 +95,9 @@ describe('useTaskStream', () => {
         data: JSON.stringify({
           task_id: 'task-1',
           trace_id: 'trace-task-1',
-          stock_code: '600519',
-          stock_name: '贵州茅台',
+          stock_code: 'sh000016',
+          stock_name: '上证50',
+          asset_type: 'index',
           status: 'processing',
           progress: 72,
           message: 'LLM 正在生成分析结果',
@@ -129,8 +130,8 @@ describe('useTaskStream', () => {
     expect(onTaskProgress).toHaveBeenCalledWith({
       taskId: 'task-1',
       traceId: 'trace-task-1',
-      stockCode: '600519',
-      stockName: '贵州茅台',
+      stockCode: 'sh000016',
+      stockName: '上证50',
       status: 'processing',
       progress: 72,
       message: 'LLM 正在生成分析结果',
@@ -144,6 +145,7 @@ describe('useTaskStream', () => {
       analysisPhase: 'intraday',
       skills: ['growth_quality'],
       region: 'jp,kr',
+      assetType: 'index',
     });
     expect(onTaskFlowEvent).toHaveBeenCalledWith(
       expect.objectContaining({ taskId: 'task-1' }),
