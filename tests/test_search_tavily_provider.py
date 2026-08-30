@@ -76,7 +76,7 @@ class TestTavilySearchProvider(unittest.TestCase):
         self.assertEqual(_FakeTavilyClient.search_calls[0]["topic"], "news")
         self.assertEqual(_FakeTavilyClient.search_calls[0]["days"], 3)
         self.assertEqual(_FakeTavilyClient.search_calls[0]["max_results"], 5)
-        self.assertEqual(_FakeTavilyClient.search_calls[0]["search_depth"], "advanced")
+        self.assertEqual(_FakeTavilyClient.search_calls[0]["search_depth"], "basic")
         self.assertEqual(len(resp.results), 1)
         self.assertEqual(resp.results[0].published_date, published_text)
         self.assertEqual(resp.results[0].url, "https://example.com/alibaba-earnings")
