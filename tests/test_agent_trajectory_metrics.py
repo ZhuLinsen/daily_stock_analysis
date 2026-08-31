@@ -428,6 +428,28 @@ class TestGoldenSamplesFile:
         assert any("allowed_max_steps must be an integer" in i for i in issues)
         assert any("allow_optional_tools must be a boolean" in i for i in issues)
 
+    def test_non_iterable_expected_tools_with_known_names_does_not_crash(self):
+        sample = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600519",
+            expected_tools=1,
+        )
+        issues = validate_golden_sample(sample, {"get_realtime_quote"})
+        assert any("expected_tools must be a list" in i for i in issues)
+
+    def test_registry_membership_with_one_shot_generator(self):
+        # The helper accepts any Iterable[str]; a one-shot generator must be
+        # materialized internally so membership checks never consume it.
+        sample = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600519",
+            expected_tools=["b", "a"],
+        )
+        known = (name for name in ["a", "b"])
+        assert validate_golden_sample(sample, known) == []
+
 
 class TestLoadGoldenSamplesErrors:
     @staticmethod
@@ -516,6 +538,19 @@ class TestLoadGoldenSamplesErrors:
         path = self._write_sample(tmp_path, [sample])
         with pytest.raises(ValueError, match="expected_tools must be a list"):
             load_golden_samples(path=path)
+
+    def test_non_list_expected_tools_with_known_names_raises_valueerror(self, tmp_path):
+        # Regression for OR-COR-4e0e3cf1: the registry membership check must
+        # not iterate a rejected non-list value and leak a TypeError.
+        sample = {
+            "id": "x",
+            "task_description": "t",
+            "stock_code": "600519",
+            "expected_tools": 1,
+        }
+        path = self._write_sample(tmp_path, [sample])
+        with pytest.raises(ValueError, match="expected_tools must be a list"):
+            load_golden_samples(path=path, known_tool_names={"get_realtime_quote"})
 
     def test_non_bool_allow_optional_tools_raises(self, tmp_path):
         sample = {

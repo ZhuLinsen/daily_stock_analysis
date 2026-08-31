@@ -273,7 +273,6 @@ def load_golden_samples(
     if not isinstance(data, list):
         raise ValueError(f"golden samples file must contain a JSON list, got {type(data).__name__}")
 
-    known = set(known_tool_names) if known_tool_names is not None else None
     golden_fields = {f.name for f in fields(GoldenSample)}
     samples: List[GoldenSample] = []
     seen_ids: set = set()
@@ -287,7 +286,7 @@ def load_golden_samples(
         if sample.id in seen_ids:
             raise ValueError(f"duplicate sample id: {sample.id}")
         seen_ids.add(sample.id)
-        issues = validate_golden_sample(sample, known)
+        issues = validate_golden_sample(sample, known_tool_names)
         if issues:
             raise ValueError(f"sample '{sample.id}': " + "; ".join(issues))
         samples.append(sample)
@@ -302,7 +301,9 @@ def validate_golden_sample(
 
     When ``known_tool_names`` is provided, ``expected_tools`` must be a subset
     of it; the caller supplies the authoritative registry names (this module
-    deliberately does not import ``src/``).
+    deliberately does not import ``src/``).  Any ``Iterable[str]`` is accepted
+    — including one-shot generators — and materialized once internally, so
+    membership checks never consume the caller's iterable.
 
     Field *types* are part of the structural contract — hand-edited golden
     JSON must fail with a clear message instead of crashing or silently
@@ -311,6 +312,7 @@ def validate_golden_sample(
     boolean.
     """
     issues: List[str] = []
+    known = set(known_tool_names) if known_tool_names is not None else None
     if not isinstance(sample.id, str) or not sample.id.strip():
         issues.append("id must be a non-empty string")
     if not isinstance(sample.task_description, str) or not sample.task_description.strip():
@@ -323,8 +325,10 @@ def validate_golden_sample(
         issues.append("expected_tools must be a non-empty list")
     elif any(not isinstance(t, str) or not t.strip() for t in sample.expected_tools):
         issues.append("expected_tools must contain only non-empty strings")
-    if known_tool_names is not None:
-        unknown = [t for t in sample.expected_tools if isinstance(t, str) and t.strip() and t not in known_tool_names]
+    elif known is not None:
+        # Only reachable when expected_tools is a non-empty list of non-empty
+        # strings, so malformed values can never crash the membership check.
+        unknown = [t for t in sample.expected_tools if t not in known]
         if unknown:
             issues.append(f"unknown expected_tools: {', '.join(unknown)}")
     if not isinstance(sample.skills, list):
