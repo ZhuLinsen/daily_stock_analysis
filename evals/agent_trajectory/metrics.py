@@ -18,6 +18,13 @@ JSON file from disk.  This keeps the metrics layer deterministic, unit-testable
 without an API key, and free of ``src/`` imports — it can score trajectories
 from any source.
 
+Both entry paths enforce the same golden-sample structure contract:
+``validate_golden_sample`` (the loader path) rejects malformed samples
+outright, while ``compute_trajectory_metrics`` (the direct-construction path)
+reports malformed fields as violations and excludes the invalid parts from
+scoring — a caller who builds a ``GoldenSample`` by hand must never get a
+silently relaxed result (see the compute docstring for the exact mapping).
+
 Idempotency key contract
 ------------------------
 Two log entries are considered "the same call" when their ``tool`` names are
@@ -508,6 +515,17 @@ def compute_trajectory_metrics(
     ``src.agent.tools.execution._normalize_tool_stock_code``); the default is
     the module's runtime-equivalent mirror :func:`_canonicalize_stock_code`,
     which keeps the metrics layer free of runtime imports.
+
+    Direct construction of a hand-edited ``GoldenSample`` is held to the same
+    structure contract as :func:`validate_golden_sample` on the loader path:
+    malformed parts are reported as violations and excluded from scoring
+    instead of silently reshaping the result.  Malformed ``expected_tools`` /
+    ``expected_outcomes`` elements are dropped with an explicit violation,
+    and a pinned ``expected_guarded_stock`` is only honoured for the coherent
+    pairing the validator requires (``guarded_retry`` declared, and a stock
+    different from ``golden.stock_code`` after canonicalization) — an
+    unpaired pin is reported and disabled rather than silently erasing
+    wrong-stock reporting.
     """
     used_tools: List[str] = []
     key_counts: Dict[tuple, int] = {}
@@ -530,16 +548,29 @@ def compute_trajectory_metrics(
     golden_stock_valid = isinstance(golden.stock_code, str) and bool(golden.stock_code.strip())
     stock_code = _apply_stock_normalizer(normalizer, golden.stock_code) if golden_stock_valid else ""
     guarded_stock = golden.expected_guarded_stock
-    guarded_stock_valid = isinstance(guarded_stock, str) and bool(guarded_stock.strip())
-    guarded_stock = _apply_stock_normalizer(normalizer, guarded_stock) if guarded_stock_valid else guarded_stock
+    guarded_stock_nonempty = isinstance(guarded_stock, str) and bool(guarded_stock.strip())
+    # A pinned stock only takes effect for the coherent pairing
+    # validate_golden_sample() enforces: expected_guarded_stock must be
+    # declared together with guarded_retry in expected_outcomes.  An
+    # unpaired pin is malformed — it is reported below and must not reshape
+    # scoring (no wrong-stock exemption, no pinned seeding).
+    guarded_stock_valid = guarded_stock_nonempty and (
+        isinstance(golden.expected_outcomes, list) and "guarded_retry" in golden.expected_outcomes
+    )
+    guarded_stock = _apply_stock_normalizer(normalizer, guarded_stock) if guarded_stock_nonempty else guarded_stock
     # Extract the expected tool list before scanning entries so per-entry
-    # wrong-stock reporting can consult it during the loop.
+    # wrong-stock reporting can consult it during the loop.  Malformed
+    # elements are not silently dropped: they are reported as a violation
+    # below (mirroring validate_golden_sample, which rejects them at load
+    # time) and only the valid names take part in scoring.
     if isinstance(golden.expected_tools, list):
+        expected_tools_malformed = [t for t in golden.expected_tools if not isinstance(t, str) or not t]
         expected = [t for t in golden.expected_tools if isinstance(t, str) and t]
     else:
         # Defend against hand-edited samples passing a bare string:
         # validation rejects it at load time, but scoring must not misparse
         # it into per-character tool names either.
+        expected_tools_malformed = []
         expected = []
     # A hand-edited sample may repeat a tool name; normalize to first
     # occurrences before scoring so the hit rate cannot be inflated
@@ -660,6 +691,8 @@ def compute_trajectory_metrics(
 
     if expected_dupes:
         violations.append("expected_tools contains duplicate names")
+    if expected_tools_malformed:
+        violations.append("expected_tools must contain only non-empty strings")
     if normalizer_invalid:
         violations.append("stock_code_normalizer is not callable")
     if not stock_code:
@@ -697,6 +730,12 @@ def compute_trajectory_metrics(
         violations.append("expected_outcomes must be a list of outcome tags")
         outcomes: List[str] = []
     else:
+        malformed_outcomes = [t for t in golden.expected_outcomes if not isinstance(t, str) or not t]
+        # Malformed outcome elements are reported (same wording as
+        # validate_golden_sample) instead of silently dropping the
+        # requirement they tried to declare.
+        if malformed_outcomes:
+            violations.append("expected_outcomes must contain only non-empty strings")
         outcomes = [t for t in golden.expected_outcomes if isinstance(t, str) and t]
         if len(set(outcomes)) != len(outcomes):
             violations.append("expected_outcomes contains duplicate tags")
@@ -705,9 +744,19 @@ def compute_trajectory_metrics(
         if unknown:
             violations.append(f"unknown expected outcome tags: {', '.join(unknown)}")
     # A pinned but malformed guarded stock must not silently disable the
-    # stock binding for guarded_retry.
-    if golden.expected_guarded_stock is not None and not guarded_stock_valid:
+    # stock binding for guarded_retry — nor silently keep it: mirror the
+    # structure contract validate_golden_sample() enforces at load time, so
+    # the direct-construction path reports the same violations instead of
+    # drifting from the loader semantics.
+    if golden.expected_guarded_stock is not None and not guarded_stock_nonempty:
         violations.append("expected_guarded_stock must be a non-empty string")
+    elif guarded_stock_nonempty and guarded_stock == stock_code:
+        violations.append(
+            "expected_guarded_stock must name a different stock than stock_code "
+            "after canonicalization (it names the out-of-scope call)"
+        )
+    elif guarded_stock_nonempty and not guarded_stock_valid:
+        violations.append("expected_guarded_stock requires guarded_retry in expected_outcomes")
     # Codex App Server entries carry no guarded / cached metadata (the
     # backend records only step / tool / arguments_summary / success /
     # duration), so guard-dependent outcome tags can never be observed from a

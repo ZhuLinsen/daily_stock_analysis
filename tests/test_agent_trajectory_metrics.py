@@ -211,6 +211,83 @@ class TestComputeMetricsHitRate:
 
 
 # ---------------------------------------------------------------------------
+# 2b. Direct-construction path: same structure contract as the loader
+# ---------------------------------------------------------------------------
+class TestDirectConstructionContract:
+    def test_malformed_expected_tools_elements_are_reported(self):
+        # Review counter-example: ['get_realtime_quote', ''] must not
+        # silently collapse into a one-tool golden — the malformed element
+        # is reported, only valid names take part in scoring.
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"})]
+        for malformed in (["get_realtime_quote", ""], ["get_realtime_quote", 1]):
+            m = compute_trajectory_metrics(log, _golden(expected_tools=malformed))
+            assert m.expected_hit_rate == 1.0
+            assert "expected_tools must contain only non-empty strings" in m.violations
+
+    def test_malformed_expected_outcomes_elements_are_reported(self):
+        # Review counter-example: expected_outcomes=[1, ''] must not
+        # silently drop the requirement — the malformed elements are
+        # reported instead of vanishing from the required set.
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"})]
+        for malformed in ([1, ""], [1], [""]):
+            m = compute_trajectory_metrics(log, _golden(expected_outcomes=malformed))
+            assert "expected_outcomes must contain only non-empty strings" in m.violations
+            assert "expected outcomes not observed" not in " ".join(m.violations)
+
+    def test_unpaired_guarded_stock_reported_and_exemption_disabled(self):
+        # Review counter-example: expected_guarded_stock without guarded_retry
+        # is a malformed sample; it must be reported and must not erase the
+        # wrong-stock violation for the blocked out-of-scope probe.
+        golden = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600036",
+            expected_tools=["get_stock_info"],
+            skills=[],
+            expected_outcomes=[],
+            expected_guarded_stock="600519",
+        )
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=2,
+                success=False,
+                guarded=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, golden)
+        assert m.expected_hit_rate == 1.0
+        assert "expected_guarded_stock requires guarded_retry in expected_outcomes" in m.violations
+        assert any("different stock than 600036: get_stock_info" in v for v in m.violations)
+
+    def test_same_stock_pinned_guard_reported_in_direct_score(self):
+        # A pinned stock that canonicalizes back to golden.stock_code is a
+        # dead configuration the validator rejects; the direct-score path
+        # reports it too (canonicalized comparison, so 'SH600036' counts).
+        golden = _golden(
+            stock_code="600036",
+            expected_tools=["get_stock_info"],
+            expected_outcomes=["guarded_retry"],
+            expected_guarded_stock="SH600036",
+        )
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=2,
+                success=False,
+                guarded=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, golden)
+        assert any("expected_guarded_stock must name a different stock than stock_code" in v for v in m.violations)
+        assert any("different stock than 600036: get_stock_info" in v for v in m.violations)
+
+
+# ---------------------------------------------------------------------------
 # 3. Retries, caching, failure counting
 # ---------------------------------------------------------------------------
 class TestRetryAndCaching:
