@@ -25,6 +25,7 @@
     "expected_tools": ["get_stock_info", "get_daily_history"],
     "allowed_max_steps": 10,
     "allow_optional_tools": true,
-    "expected_outcomes": ["guarded_retry"]
+    "expected_outcomes": ["guarded_retry"],
+    "expected_guarded_stock": "600519"
   }
 ]

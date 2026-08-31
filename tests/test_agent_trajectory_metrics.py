@@ -265,6 +265,7 @@ class TestExpectedOutcomes:
             allowed_max_steps=10,
             allow_optional_tools=True,
             expected_outcomes=["guarded_retry"],
+            expected_guarded_stock="600519",
         )
         values.update(overrides)
         return GoldenSample(**values)
@@ -321,6 +322,32 @@ class TestExpectedOutcomes:
             ),
         ]
         m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_guarded_retry_of_a_different_stock_does_not_satisfy(self):
+        # Review counter-example: two guarded calls for 000001 form a
+        # repeated key, which the bound outcome used to accept even though
+        # the task requires attempting the pinned out-of-scope stock 600519.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "000001"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "000001"},
+                step=4,
+                success=False,
+                guarded=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert m.expected_hit_rate == 1.0
         assert "expected outcomes not observed: guarded_retry" in m.violations
 
     def test_unrelated_retry_does_not_satisfy_guarded_retry(self):
@@ -437,6 +464,53 @@ class TestStockCodeScoping:
         m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
         assert m.expected_hit_rate == 0.0
         assert m.missing_expected == ["get_realtime_quote"]
+
+    def test_stock_code_field_matched_exactly_not_substring(self):
+        # Review counter-example: {"stock_code": "1600519"} contains the
+        # golden code as a substring but must not satisfy the 600519 golden.
+        m = compute_trajectory_metrics(
+            [
+                _entry(
+                    tool="get_realtime_quote",
+                    arguments={"stock_code": "1600519"},
+                    step=1,
+                )
+            ],
+            _golden(expected_tools=["get_realtime_quote"]),
+        )
+        assert m.expected_hit_rate == 0.0
+        assert m.missing_expected == ["get_realtime_quote"]
+        assert any("different stock than 600519: get_realtime_quote" in v for v in m.violations)
+
+    def test_integer_stock_code_argument_counts_after_normalization(self):
+        m = compute_trajectory_metrics(
+            [_entry(tool="get_realtime_quote", arguments={"stock_code": 600519}, step=1)],
+            _golden(expected_tools=["get_realtime_quote"]),
+        )
+        assert m.expected_hit_rate == 1.0
+        assert m.missing_expected == []
+
+    def test_each_wrong_stock_call_of_an_expected_tool_is_reported(self):
+        # Review counter-example: the correct call used to set
+        # stock_hit[tool], which legitimized every other call of the same
+        # tool — the mismatching call must now surface in a violation.
+        log = [
+            _entry(tool="get_realtime_quote", arguments={"stock_code": "600519"}, step=1),
+            _entry(tool="get_realtime_quote", arguments={"stock_code": "000001"}, step=2),
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.expected_hit_rate == 1.0
+        assert any("different stock than 600519: get_realtime_quote" in v for v in m.violations)
+
+    def test_arguments_without_stock_field_keep_name_only_tolerance(self):
+        # No stock evidence at all: the entry still counts (documented
+        # tolerance) and never produces a wrong-stock violation.
+        m = compute_trajectory_metrics(
+            [_entry(tool="get_realtime_quote", arguments={"days": 60}, step=1)],
+            _golden(expected_tools=["get_realtime_quote"]),
+        )
+        assert m.expected_hit_rate == 1.0
+        assert m.violations == []
 
     def test_requested_stock_code_guard_metadata_counts(self):
         entry = {
@@ -729,6 +803,30 @@ class TestGoldenSamplesFile:
     def test_guarded_retry_sample_declares_bound_guard_retry_outcome(self):
         sample = next(s for s in load_golden_samples() if s.id == "600036_guarded_retry")
         assert sample.expected_outcomes == ["guarded_retry"]
+        assert sample.expected_guarded_stock == "600519"
+
+    def test_expected_guarded_stock_validation(self):
+        base = dict(
+            id="x",
+            task_description="t",
+            stock_code="600036",
+            expected_tools=["get_stock_info"],
+            expected_outcomes=["guarded_retry"],
+        )
+        mistyped = GoldenSample(**base, expected_guarded_stock=600519)
+        assert any("expected_guarded_stock must be a non-empty string" in i for i in validate_golden_sample(mistyped))
+        same_stock = GoldenSample(**base, expected_guarded_stock="600036")
+        assert any("must differ from stock_code" in i for i in validate_golden_sample(same_stock))
+        no_outcome = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600036",
+            expected_tools=["get_stock_info"],
+            expected_guarded_stock="600519",
+        )
+        assert any("requires guarded_retry in expected_outcomes" in i for i in validate_golden_sample(no_outcome))
+        pinned = GoldenSample(**base, expected_guarded_stock="600519")
+        assert validate_golden_sample(pinned) == []
 
     def test_unknown_expected_outcome_fails_validation(self):
         sample = GoldenSample(

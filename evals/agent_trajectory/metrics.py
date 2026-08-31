@@ -63,16 +63,23 @@ Metric semantics
   per the contract above, and ``guarded_retry`` when a (tool, args-key) pair
   with a guarded occurrence is *followed by* a later occurrence of the same
   pair — the guarded call itself was retried, so a guard from one call plus a
-  retry of an unrelated call does not satisfy it.  A required outcome that is
-  not observed is reported as a violation, so a golden sample that declares
-  guard / cache / retry expectations cannot be passed by a trajectory that
-  skips the behaviour it describes.
+  retry of an unrelated call does not satisfy it.  When the sample sets
+  ``expected_guarded_stock``, the guarded occurrence of ``guarded_retry``
+  must additionally target that stock (the task's required out-of-scope
+  call), so two guarded retries of any other stock do not satisfy it.  A
+  required outcome that is not observed is reported as a violation, so a
+  golden sample that declares guard / cache / retry expectations cannot be
+  passed by a trajectory that skips the behaviour it describes.
 * ``expected_hit_rate`` is stock-scoped: an expected tool counts as hit only
-  when at least one of its calls references ``golden.stock_code`` (in the
-  serialized arguments, in the guard metadata ``requested_stock_code``, or in
-  the Codex ``arguments_summary`` preview — best-effort).  Entries with no
-  stock evidence at all keep the name-only tolerance, and calls of expected
-  tools for other stocks are reported as a violation.
+  when at least one of its calls references ``golden.stock_code`` — matched
+  exactly against the dedicated ``stock_code`` argument field of runner
+  entries (normalized string comparison, never a substring scan, so e.g.
+  ``"1600519"`` cannot satisfy ``600519``), the guard metadata
+  ``requested_stock_code``, or the Codex ``arguments_summary`` preview
+  (substring match, best-effort).  Entries with no stock evidence at all keep
+  the name-only tolerance, and *every* call of an expected tool whose stock
+  resolves to a different code is reported in a violation — one matching call
+  does not legitimize cross-stock calls of the same tool.
 * ``max_steps_touched``: the log does not carry ``max_steps`` itself, so this
   is the conservative heuristic ``max(step) >= golden.allowed_max_steps`` —
   a proxy for "the run reached the step budget", not proof of the loop
@@ -106,6 +113,9 @@ class GoldenSample:
     ``expected_outcomes`` are required trajectory features from the vocabulary
     ``guarded`` / ``cached`` / ``retry`` / ``guarded_retry`` (see the module
     docstring); every declared outcome must be observable in the log.
+    ``expected_guarded_stock`` optionally pins the stock the guard must
+    intercept (the task's out-of-scope call): when set, ``guarded_retry`` is
+    only observed for guarded calls targeting that stock.
     """
 
     id: str
@@ -116,6 +126,7 @@ class GoldenSample:
     allowed_max_steps: int = 10
     allow_optional_tools: bool = True
     expected_outcomes: List[str] = field(default_factory=list)
+    expected_guarded_stock: Optional[str] = None
 
 
 @dataclass
@@ -168,26 +179,62 @@ def _coerce_step(value: Any) -> int:
     return step if step > 0 else 0
 
 
+def _normalized_stock(value: Any) -> str:
+    """Normalize a resolvable stock value (str / int) for exact comparison."""
+    return str(value).strip()
+
+
 def _entry_matches_stock(entry: Dict[str, Any], stock_code: str) -> bool:
     """Best-effort check that a log entry's call targeted ``stock_code``.
 
     Guard metadata (``requested_stock_code``) is authoritative; runner
-    entries are matched by scanning the stable argument serialization for the
-    code (param names are tool-specific); Codex App Server entries carry only
-    the redacted ``arguments_summary`` preview (substring match).  Entries
-    with no stock evidence at all keep the name-only tolerance so malformed
-    or minimal entries still count as before.
+    entries are matched exactly against their dedicated ``stock_code``
+    argument field (every stock tool in the repository takes it) — the value
+    is normalized and compared for equality, never scanned as a substring, so
+    ``"1600519"`` cannot satisfy a ``600519`` golden.  Codex App Server
+    entries carry only the redacted ``arguments_summary`` preview, which has
+    no structured field and is matched by substring.  Entries with no stock
+    evidence at all (or unresolvable values) keep the name-only tolerance so
+    malformed or minimal entries still count as before.
     """
     requested = entry.get("requested_stock_code")
     if requested:
-        return requested == stock_code
+        if not isinstance(requested, (str, int)) or isinstance(requested, bool):
+            return True
+        return _normalized_stock(requested) == stock_code
     args = entry.get("arguments")
     if isinstance(args, dict):
-        return stock_code in _args_key(args)
+        value = args.get("stock_code")
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return True
+        return _normalized_stock(value) == stock_code
     summary = entry.get("arguments_summary")
     if isinstance(summary, str) and summary:
         return stock_code in summary
     return True
+
+
+def _entry_mismatches_stock(entry: Dict[str, Any], stock_code: str) -> bool:
+    """True when the entry's stock resolves to a *different* code.
+
+    Only evidence that resolves to a concrete code can mismatch: guard
+    metadata, or the ``stock_code`` argument field of runner entries.
+    Unresolvable evidence (Codex summary previews, malformed values) is
+    treated as "no evidence" — it can neither match nor mismatch, so it never
+    produces a wrong-stock violation on its own.
+    """
+    requested = entry.get("requested_stock_code")
+    if requested:
+        if not isinstance(requested, (str, int)) or isinstance(requested, bool):
+            return False
+        return _normalized_stock(requested) != stock_code
+    args = entry.get("arguments")
+    if isinstance(args, dict):
+        value = args.get("stock_code")
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return False
+        return _normalized_stock(value) != stock_code
+    return False
 
 
 def compute_trajectory_metrics(
@@ -210,8 +257,27 @@ def compute_trajectory_metrics(
     key_retries: Dict[tuple, int] = {}
     key_guarded_at: Dict[tuple, int] = {}
     stock_hit: Dict[str, bool] = {}
+    wrong_stock_calls: List[str] = []
     codex_shaped = False
     stock_code = golden.stock_code if isinstance(golden.stock_code, str) and golden.stock_code.strip() else ""
+    guarded_stock = golden.expected_guarded_stock
+    guarded_stock_valid = isinstance(guarded_stock, str) and bool(guarded_stock.strip())
+    # Extract the expected tool list before scanning entries so per-entry
+    # wrong-stock reporting can consult it during the loop.
+    if isinstance(golden.expected_tools, list):
+        expected = [t for t in golden.expected_tools if isinstance(t, str) and t]
+    else:
+        # Defend against hand-edited samples passing a bare string:
+        # validation rejects it at load time, but scoring must not misparse
+        # it into per-character tool names either.
+        expected = []
+    # A hand-edited sample may repeat a tool name; normalize to first
+    # occurrences before scoring so the hit rate cannot be inflated
+    # (["quote", "quote"] with one quote call must read 1/2, not 2/3).
+    expected_dupes = len(set(expected)) != len(expected)
+    if expected_dupes:
+        expected = list(dict.fromkeys(expected))
+    expected_set = set(expected)
     failed_calls = 0
     cached_calls = 0
     guarded_calls = 0
@@ -228,6 +294,12 @@ def compute_trajectory_metrics(
             used_tools.append(tool)
         if stock_code and tool and tool not in stock_hit and _entry_matches_stock(entry, stock_code):
             stock_hit[tool] = True
+        # Every call of an expected tool whose stock resolves to a different
+        # code is reported — a matching call elsewhere must not legitimize
+        # cross-stock usage of the same tool (stock_hit only tracks whether
+        # the tool ever matched, not whether every call did).
+        if stock_code and tool in expected_set and _entry_mismatches_stock(entry, stock_code):
+            wrong_stock_calls.append(tool)
         step = _coerce_step(entry.get("step"))
         if step and step not in seen_steps:
             seen_steps.add(step)
@@ -250,8 +322,11 @@ def compute_trajectory_metrics(
         # Record the occurrence index of the (first) guarded call so the
         # "guarded_retry" outcome can require a *later* occurrence of the
         # same key instead of matching any guard and any retry anywhere.
+        # When the sample pins the guarded stock, only guarded calls
+        # targeting that stock can seed the outcome.
         if entry.get("guarded") and key not in key_guarded_at:
-            key_guarded_at[key] = key_counts[key]
+            if not guarded_stock_valid or _entry_matches_stock(entry, guarded_stock):
+                key_guarded_at[key] = key_counts[key]
         # An occurrence is a retry only when the same call already failed
         # before it (see module docstring for the precise contract).
         if key_failed_seen.get(key):
@@ -288,19 +363,8 @@ def compute_trajectory_metrics(
         distinct_steps = max(distinct_steps, total)
         max_step = max(max_step, total)
 
-    if isinstance(golden.expected_tools, list):
-        expected = [t for t in golden.expected_tools if isinstance(t, str) and t]
-    else:
-        # Defend against hand-edited samples passing a bare string:
-        # validation rejects it at load time, but scoring must not misparse
-        # it into per-character tool names either.
-        expected = []
-    # A hand-edited sample may repeat a tool name; normalize to first
-    # occurrences before scoring so the hit rate cannot be inflated
-    # (["quote", "quote"] with one quote call must read 1/2, not 2/3).
-    if len(set(expected)) != len(expected):
+    if expected_dupes:
         violations.append("expected_tools contains duplicate names")
-        expected = list(dict.fromkeys(expected))
     if not stock_code:
         violations.append("golden.stock_code is not a non-empty string")
     # Stock-scoped hit semantics: an expected tool only counts when one of
@@ -309,12 +373,10 @@ def compute_trajectory_metrics(
     missing_expected = (
         [t for t in expected if t not in stock_hit] if stock_code else [t for t in expected if t not in used_tools]
     )
-    if stock_code:
-        wrong_stock = [t for t in expected if t in used_tools and t not in stock_hit]
-        if wrong_stock:
-            violations.append(
-                f"expected tools called for a different stock than " f"{golden.stock_code}: {', '.join(wrong_stock)}"
-            )
+    if stock_code and wrong_stock_calls:
+        violations.append(
+            f"expected tools called for a different stock than " f"{golden.stock_code}: {', '.join(wrong_stock_calls)}"
+        )
     expected_hit_rate = (len(expected) - len(missing_expected)) / len(expected) if expected else 0.0
     optional_tools_used = [t for t in used_tools if t not in expected]
 
@@ -345,6 +407,10 @@ def compute_trajectory_metrics(
         unknown = [t for t in outcomes if t not in EXPECTED_OUTCOME_TAGS]
         if unknown:
             violations.append(f"unknown expected outcome tags: {', '.join(unknown)}")
+    # A pinned but malformed guarded stock must not silently disable the
+    # stock binding for guarded_retry.
+    if golden.expected_guarded_stock is not None and not guarded_stock_valid:
+        violations.append("expected_guarded_stock must be a non-empty string")
     observed = []
     if guarded_calls:
         observed.append("guarded")
@@ -465,7 +531,9 @@ def validate_golden_sample(
     ``allow_optional_tools`` a boolean.  ``expected_tools`` and
     ``expected_outcomes`` must be duplicate-free, and outcome tags must come
     from the fixed vocabulary ``guarded`` / ``cached`` / ``retry`` /
-    ``guarded_retry``.
+    ``guarded_retry``.  ``expected_guarded_stock``, when set, must be a
+    non-empty string that differs from ``stock_code`` (it names the
+    out-of-scope call) and pairs with a declared ``guarded_retry`` outcome.
     """
     issues: List[str] = []
     known = set(known_tool_names) if known_tool_names is not None else None
@@ -509,4 +577,11 @@ def validate_golden_sample(
         unknown = [t for t in sample.expected_outcomes if t not in EXPECTED_OUTCOME_TAGS]
         if unknown:
             issues.append(f"unknown expected_outcomes: {', '.join(unknown)}")
+    if sample.expected_guarded_stock is not None:
+        if not isinstance(sample.expected_guarded_stock, str) or not sample.expected_guarded_stock.strip():
+            issues.append("expected_guarded_stock must be a non-empty string")
+        elif sample.expected_guarded_stock.strip() == sample.stock_code:
+            issues.append("expected_guarded_stock must differ from stock_code (it names the out-of-scope call)")
+        elif not isinstance(sample.expected_outcomes, list) or "guarded_retry" not in sample.expected_outcomes:
+            issues.append("expected_guarded_stock requires guarded_retry in expected_outcomes")
     return issues
