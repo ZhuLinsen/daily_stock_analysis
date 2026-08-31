@@ -92,7 +92,12 @@ Metric semantics
   Every occurrence of the pair must remain blocked
   (``cached`` / ``guarded`` / failed): a clean success at *any* point — before
   or after the first guarded occurrence — is an escape (the scope guard was
-  bypassed, or the call provably gets through it) and does not satisfy it.  A
+  bypassed, or the call provably gets through it) and does not satisfy it.
+  ``success`` is authoritative over the markers: the runner never emits a
+  successful guarded / cached entry (guard interception and cache reuse both
+  record ``success=False``), so a synthetic entry combining ``success=True``
+  with either marker counts as an escape and not as an observed guard or
+  cache event.  A
   required outcome that is not observed is reported as a violation, so a
   golden sample that declares guard / cache / retry expectations cannot be
   passed by a trajectory that skips the behaviour it describes.  Codex-shaped
@@ -487,15 +492,18 @@ def _entry_mismatches_stock(
     return False
 
 
-def _entry_stayed_blocked(entry: Dict[str, Any], success: bool) -> bool:
+def _entry_stayed_blocked(success: bool) -> bool:
     """True when the call did not execute cleanly (guarded / cached / failed).
 
-    A blocked call proves nothing about whether the scope guard can be
-    bypassed, while a clean success of an out-of-scope call does — the same
-    predicate drives the ``guarded_retry`` escape tracking and the
-    wrong-stock exemption for pinned out-of-scope probes.
+    ``success`` is authoritative: the runner never emits a successful
+    guarded / cached entry (guard interception and cache reuse both record
+    ``success=False``), so a synthetic entry that combines ``success=True``
+    with either marker describes a call that *did* execute cleanly — per the
+    module contract, a clean success at any point is an escape, never a
+    blocked probe.  The same predicate drives the ``guarded_retry`` escape
+    tracking and the wrong-stock exemption for pinned out-of-scope probes.
     """
-    return bool(entry.get("cached") or entry.get("guarded") or not success)
+    return not success
 
 
 def compute_trajectory_metrics(
@@ -619,7 +627,7 @@ def compute_trajectory_metrics(
         pinned_probe_blocked = (
             guarded_stock_valid
             and _entry_matches_stock(entry, guarded_stock, normalizer, require_evidence=True)
-            and _entry_stayed_blocked(entry, success)
+            and _entry_stayed_blocked(success)
         )
         if (
             stock_code
@@ -635,9 +643,12 @@ def compute_trajectory_metrics(
             max_step = max(max_step, step)
         if not success:
             failed_calls += 1
-        if entry.get("cached"):
+        # success is authoritative for the guarded / cached markers too: a
+        # successful entry with either marker did not stay blocked, so it
+        # must not count as an observed guard interception or cache reuse.
+        if entry.get("cached") and not success:
             cached_calls += 1
-        if entry.get("guarded"):
+        if entry.get("guarded") and not success:
             guarded_calls += 1
         if not isinstance(entry.get("arguments"), dict) and entry.get("arguments_summary"):
             codex_shaped = True
@@ -652,7 +663,7 @@ def compute_trajectory_metrics(
         # the golden contract requires every out-of-scope call to stay
         # blocked at all times, and a pre-guard success proves the call can
         # get through the guard.
-        if not _entry_stayed_blocked(entry, success):
+        if not _entry_stayed_blocked(success):
             key_guarded_escaped.add(key)
         # Record the occurrence index of the (first) guarded call so the
         # "guarded_retry" outcome can require a *later* occurrence of the
@@ -661,7 +672,7 @@ def compute_trajectory_metrics(
         # carrying actual stock evidence for that stock can seed the
         # outcome — a blocked call that never identifies a stock cannot
         # prove the pinned out-of-scope probe (no name-only tolerance here).
-        if entry.get("guarded") and key not in key_guarded_at:
+        if entry.get("guarded") and not success and key not in key_guarded_at:
             if not guarded_stock_valid or _entry_matches_stock(entry, guarded_stock, normalizer, require_evidence=True):
                 key_guarded_at[key] = key_counts[key]
         # An occurrence is a retry only when the same call already failed

@@ -1089,6 +1089,55 @@ class TestExpectedOutcomes:
         assert "expected_outcomes must not contain duplicate tags" in m.violations
         assert "expected outcomes not observed" not in m.violations
 
+    def test_successful_guarded_entry_escapes_and_reports_wrong_stock(self):
+        # Review counter-example (success is authoritative): a success=True
+        # entry carrying guarded=True did NOT stay blocked — it must keep its
+        # wrong-stock violation on the pinned stock and must not satisfy
+        # guarded_retry, even when the same-args retry is a blocked cache hit.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=3, guarded=True),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=4, success=False, cached=True),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected tools called for a different stock than 600036: get_stock_info" in m.violations
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_successful_cached_retry_is_an_escape(self):
+        # A cache-hit retry marked success=True executed cleanly, so the pair
+        # escaped: guarded_retry must not be observed.
+        log = [
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=1,
+                success=False,
+                guarded=True,
+            ),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=2, cached=True),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_successful_guarded_entry_does_not_count_as_interception(self):
+        # success is authoritative for the observed-outcome counters too: a
+        # successful guarded entry neither counts as a guard interception nor
+        # observes the guarded outcome.
+        golden = _golden(expected_outcomes=["guarded"])
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"}, guarded=True)]
+        m = compute_trajectory_metrics(log, golden)
+        assert "expected outcomes not observed: guarded" in m.violations
+
+    def test_successful_cached_entry_does_not_count_as_cache_reuse(self):
+        # Same authority for the cached marker: a successful cached entry
+        # neither counts as cache reuse nor observes the cached outcome.
+        golden = _golden(expected_outcomes=["cached"])
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"}, cached=True)]
+        m = compute_trajectory_metrics(log, golden)
+        assert m.cached_calls == 0
+        assert "expected outcomes not observed: cached" in m.violations
+
 
 # ---------------------------------------------------------------------------
 # 2b. Stock-scoped hit semantics (golden.stock_code)
