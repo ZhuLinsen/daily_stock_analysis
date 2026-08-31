@@ -70,9 +70,10 @@ Metric semantics
   retry of an unrelated call does not satisfy it.  When the sample sets
   ``expected_guarded_stock``, the guarded occurrence of ``guarded_retry``
   must additionally target that stock (the task's required out-of-scope
-  call), and every *later* occurrence of the pair must remain blocked
-  (``cached`` / ``guarded`` / failed): a clean success after the guard is an
-  escape — the scope guard was bypassed — and does not satisfy it.  A
+  call), and every occurrence of the pair must remain blocked
+  (``cached`` / ``guarded`` / failed): a clean success at *any* point — before
+  or after the first guarded occurrence — is an escape (the scope guard was
+  bypassed, or the call provably gets through it) and does not satisfy it.  A
   required outcome that is not observed is reported as a violation, so a
   golden sample that declares guard / cache / retry expectations cannot be
   passed by a trajectory that skips the behaviour it describes.
@@ -81,7 +82,9 @@ Metric semantics
   exactly against the dedicated ``stock_code`` argument field of runner
   entries (never a substring scan, so e.g. ``"1600519"`` cannot satisfy
   ``600519``), the guard metadata ``requested_stock_code``, or the Codex
-  ``arguments_summary`` preview (substring match, best-effort).  Both sides
+  ``arguments_summary`` preview (structured ``stock_code`` recovered from a
+  well-formed preview is compared exactly; otherwise a substring scan,
+  best-effort).  Both sides
   of each comparison are canonicalized first with the runtime-equivalent
   stock-code normalization (see below), so production-accepted forms such as
   ``SH600519`` / ``600519.SH`` / ``SZ.000001`` / ``hk700`` resolve to the
@@ -307,8 +310,11 @@ def _entry_matches_stock(
     is canonicalized and compared for equality, never scanned as a substring,
     so ``"1600519"`` cannot satisfy a ``600519`` golden while
     ``"SH600519"`` can.  Codex App Server entries carry only the redacted
-    ``arguments_summary`` preview, which has no structured field and is
-    matched by substring.  Entries with no stock evidence at all (or
+    ``arguments_summary`` preview: when that preview parses back to a JSON
+    object with a ``stock_code`` field, the recovered value is canonicalized
+    and compared exactly like a runner argument (so ``hk700`` matches an
+    ``HK00700`` golden); otherwise the preview is scanned by substring as a
+    best-effort fallback.  Entries with no stock evidence at all (or
     unresolvable values) keep the name-only tolerance so malformed or minimal
     entries still count as before.
     """
@@ -325,8 +331,38 @@ def _entry_matches_stock(
         return _apply_stock_normalizer(normalizer, value) == stock_code
     summary = entry.get("arguments_summary")
     if isinstance(summary, str) and summary:
-        return stock_code in summary
+        value = _summary_stock_code(summary)
+        if value is _SUMMARY_NO_EVIDENCE:
+            return stock_code in summary
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return True
+        return _apply_stock_normalizer(normalizer, value) == stock_code
     return True
+
+
+# Sentinel distinguishing "the summary holds no structured stock_code" from a
+# legitimate ``None`` value.
+_SUMMARY_NO_EVIDENCE = object()
+
+
+def _summary_stock_code(summary: str) -> Any:
+    """Recover the structured ``stock_code`` value from a Codex ``arguments_summary``.
+
+    ``src/agent/codex_agent_backend`` stores
+    ``redact_diagnostic_value(record.arguments)`` — the JSON-serialized
+    arguments dict — so a well-formed (untruncated, unredacted) preview
+    parses back to the original payload.  Returns ``_SUMMARY_NO_EVIDENCE``
+    when the preview is not a JSON object with a ``stock_code`` key
+    (truncated / redacted / non-object previews), leaving callers to their
+    documented no-evidence tolerance or substring fallback.
+    """
+    try:
+        parsed = json.loads(summary)
+    except (TypeError, ValueError):
+        return _SUMMARY_NO_EVIDENCE
+    if isinstance(parsed, dict) and "stock_code" in parsed:
+        return parsed["stock_code"]
+    return _SUMMARY_NO_EVIDENCE
 
 
 def _entry_mismatches_stock(
@@ -337,10 +373,12 @@ def _entry_mismatches_stock(
     """True when the entry's stock resolves to a *different* code.
 
     Only evidence that resolves to a concrete code can mismatch: guard
-    metadata, or the ``stock_code`` argument field of runner entries.
-    Unresolvable evidence (Codex summary previews, malformed values) is
-    treated as "no evidence" — it can neither match nor mismatch, so it never
-    produces a wrong-stock violation on its own.
+    metadata, the ``stock_code`` argument field of runner entries, or a
+    ``stock_code`` value recovered from a well-formed Codex
+    ``arguments_summary``.  Unresolvable evidence (truncated / redacted
+    previews, malformed values) is treated as "no evidence" — it can neither
+    match nor mismatch, so it never produces a wrong-stock violation on its
+    own.
     """
     requested = entry.get("requested_stock_code")
     if requested:
@@ -350,6 +388,14 @@ def _entry_mismatches_stock(
     args = entry.get("arguments")
     if isinstance(args, dict):
         value = args.get("stock_code")
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return False
+        return _apply_stock_normalizer(normalizer, value) != stock_code
+    summary = entry.get("arguments_summary")
+    if isinstance(summary, str) and summary:
+        value = _summary_stock_code(summary)
+        if value is _SUMMARY_NO_EVIDENCE:
+            return False
         if not isinstance(value, (str, int)) or isinstance(value, bool):
             return False
         return _apply_stock_normalizer(normalizer, value) != stock_code
@@ -457,10 +503,13 @@ def compute_trajectory_metrics(
         if key_counts.get(key, 0):
             redundant_calls += 1
         key_counts[key] = key_counts.get(key, 0) + 1
-        # Every occurrence after a guarded call must remain blocked (cached
-        # / guarded / failed): a clean success escapes the scope guard and
-        # disqualifies the key from the "guarded_retry" outcome.
-        if key in key_guarded_at and not (entry.get("cached") or entry.get("guarded") or not success):
+        # A clean success bypasses the stock-scope guard: the call escaped.
+        # The key is disqualified from the "guarded_retry" outcome whether
+        # the success happened before or after the first guarded occurrence —
+        # the golden contract requires every out-of-scope call to stay
+        # blocked at all times, and a pre-guard success proves the call can
+        # get through the guard.
+        if not (entry.get("cached") or entry.get("guarded") or not success):
             key_guarded_escaped.add(key)
         # Record the occurrence index of the (first) guarded call so the
         # "guarded_retry" outcome can require a *later* occurrence of the

@@ -490,6 +490,71 @@ class TestExpectedOutcomes:
         assert m.retries == 0
         assert m.redundant_calls == 0
 
+    def test_clean_success_before_guard_still_escapes(self):
+        # Review counter-example: the out-of-scope key succeeded before ever
+        # being guarded — the call provably gets through the scope guard, so
+        # a later guarded occurrence plus a blocked repeat must not satisfy
+        # the golden contract.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=3,
+                success=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=5,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+        assert m.retries == 1
+        assert m.cached_calls == 1
+
+    def test_success_on_a_different_key_does_not_escape(self):
+        # Escape tracking is per (tool, args-key): a clean success of an
+        # unrelated out-of-scope key leaves the pinned 600519 guard/retry
+        # sequence intact.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "000001"},
+                step=3,
+                success=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=5,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed" not in m.violations
+
     def test_injected_normalizer_drives_call_identity(self):
         # Call identity follows the injected normalizer, not the mirror: a
         # constant normalizer merges every stock code into one identity.
@@ -704,6 +769,55 @@ class TestStockCodeScoping:
         m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
         assert m.expected_hit_rate == 0.0
         assert m.missing_expected == ["get_realtime_quote"]
+
+    def test_codex_summary_alias_resolves_to_canonical_golden(self):
+        # Review counter-example: the backend keeps the original spelling in
+        # arguments_summary, so the structured value must be recovered and
+        # canonicalized — hk700 matches an HK00700 golden, aapl matches AAPL.
+        for summary_code, golden_code in (("hk700", "HK00700"), ("aapl", "AAPL")):
+            log = [
+                {
+                    "step": 1,
+                    "tool": "get_realtime_quote",
+                    "arguments_summary": json.dumps({"stock_code": summary_code}),
+                    "success": True,
+                },
+            ]
+            m = compute_trajectory_metrics(log, _golden(stock_code=golden_code, expected_tools=["get_realtime_quote"]))
+            assert m.expected_hit_rate == 1.0, (summary_code, golden_code)
+            assert m.missing_expected == []
+
+    def test_codex_summary_structured_different_stock_reports_wrong_stock(self):
+        # A well-formed summary recovers to concrete evidence, so it must be
+        # treated like a runner argument: a different code is a wrong-stock
+        # call, not silent tolerance.
+        log = [
+            {
+                "step": 1,
+                "tool": "get_realtime_quote",
+                "arguments_summary": json.dumps({"stock_code": "000001"}),
+                "success": True,
+            },
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.expected_hit_rate == 0.0
+        assert any("different stock than 600519: get_realtime_quote" in v for v in m.violations)
+
+    def test_unparsable_summary_falls_back_to_substring_no_evidence(self):
+        # Truncated previews cannot recover a structured value: they fall
+        # back to the substring scan for matching and stay "no evidence" for
+        # wrong-stock reporting.
+        log = [
+            {
+                "step": 1,
+                "tool": "get_realtime_quote",
+                "arguments_summary": '{"stock_code": "6005...<truncated 12 chars>',
+                "success": True,
+            },
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.expected_hit_rate == 0.0
+        assert not any("different stock" in v for v in m.violations)
 
     def test_stock_code_field_matched_exactly_not_substring(self):
         # Review counter-example: {"stock_code": "1600519"} contains the
