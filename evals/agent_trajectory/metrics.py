@@ -32,8 +32,14 @@ before serialization so runtime-equivalent alias forms share one identity,
 while non-string values (JSON numbers) stay raw; all other arguments stay
 raw.
 
-Codex App Server entries carry only ``arguments_summary`` — the redacted and
-truncated preview produced by ``redact_diagnostic_value`` — so their identity
+Codex App Server entries carry only ``arguments_summary`` — the preview
+produced by ``redact_diagnostic_value`` (the JSON serialization of the
+arguments dict, possibly redacted / truncated).  A well-formed preview is
+parsed back to the original arguments dict *before* keying, so the recovered
+payload goes through the same ``_args_key`` canonicalization as a runner
+payload: alias spellings of ``stock_code`` and argument insertion order do
+not split call identity.  Previews that no longer parse to an object
+(truncated / redacted) fall back to keying by the raw preview string, which
 is best-effort: distinct calls whose summaries collide after redaction or
 truncation may be over-counted as redundant.  A stable argument fingerprint
 requires a producer-side change in ``src/agent/codex_agent_backend.py``, which
@@ -76,7 +82,13 @@ Metric semantics
   bypassed, or the call provably gets through it) and does not satisfy it.  A
   required outcome that is not observed is reported as a violation, so a
   golden sample that declares guard / cache / retry expectations cannot be
-  passed by a trajectory that skips the behaviour it describes.
+  passed by a trajectory that skips the behaviour it describes.  Codex-shaped
+  logs cannot observe guard-dependent tags (``guarded`` / ``cached`` /
+  ``guarded_retry``) because the producer drops that metadata; declaring them
+  for such a log is reported as an explicit unsupported violation instead of
+  a false "not observed" regression.  ``retry`` stays scoreable for Codex
+  logs — it derives from (tool, args-key) repeats, which their entries do
+  carry.
 * ``expected_hit_rate`` is stock-scoped: an expected tool counts as hit only
   when at least one of its calls references ``golden.stock_code`` — matched
   exactly against the dedicated ``stock_code`` argument field of runner
@@ -92,7 +104,12 @@ Metric semantics
   wrong-stock.  Entries with no stock evidence at all keep the name-only
   tolerance, and *every* call of an expected tool whose stock resolves to a
   different code is reported in a violation — one matching call does not
-  legitimize cross-stock calls of the same tool.
+  legitimize cross-stock calls of the same tool.  The one exception is the
+  sample's own pinned out-of-scope stock (``expected_guarded_stock``): a call
+  that targets it and stays blocked (``guarded`` / ``cached`` / failed) is
+  the deliberate probe the task itself requires, so it is exempt from
+  wrong-stock reporting; a clean success on the pinned stock is still
+  reported (and escapes ``guarded_retry``).
 * Stock-code canonicalization: :func:`_canonicalize_stock_code` mirrors the
   runtime normalization chain
   (``src/agent/tools/execution._normalize_tool_stock_code`` delegating to
@@ -128,6 +145,13 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 #: module docstring.
 EXPECTED_OUTCOME_TAGS = ("guarded", "cached", "retry", "guarded_retry")
 
+#: Outcome tags that depend on per-entry guard / cache metadata.  The Codex
+#: App Server backend drops that metadata (it records only step / tool /
+#: arguments_summary / success / duration), so Codex-shaped logs can never
+#: observe these tags and such declarations are marked unsupported instead of
+#: failing as "not observed" (see the module docstring).
+GUARD_DEPENDENT_OUTCOME_TAGS = ("guarded", "cached", "guarded_retry")
+
 
 @dataclass
 class GoldenSample:
@@ -140,7 +164,9 @@ class GoldenSample:
     docstring); every declared outcome must be observable in the log.
     ``expected_guarded_stock`` optionally pins the stock the guard must
     intercept (the task's out-of-scope call): when set, ``guarded_retry`` is
-    only observed for guarded calls targeting that stock.
+    only observed for guarded calls targeting that stock, and blocked calls
+    (guarded / cached / failed) targeting it are exempt from wrong-stock
+    reporting — the sample itself requires the probe.
     """
 
     id: str
@@ -204,16 +230,25 @@ def _args_key(arguments: Any, normalizer: Optional[Callable[[Any], str]] = None)
 def _entry_arguments(entry: Dict[str, Any]) -> Any:
     """Extract the idempotent argument payload from a log entry.
 
-    Runner entries carry ``arguments`` (a dict); Codex App Server entries carry
-    ``arguments_summary`` (a string) instead.  Falling back to ``{}`` for
-    non-dict ``arguments`` would merge every summary-only entry into one key,
-    so the summary is wrapped to keep call identity distinct.
+    Runner entries carry ``arguments`` (a dict).  Codex App Server entries
+    carry ``arguments_summary`` — the JSON serialization of the arguments
+    dict (possibly redacted / truncated) — so a well-formed preview is parsed
+    back to the original dict and keyed through ``_args_key`` exactly like a
+    runner payload (``stock_code`` canonicalization, sorted keys, argument
+    insertion order must not split call identity).  Previews that do not
+    parse back to a dict fall back to a raw-preview wrapper so distinct
+    calls whose summaries collide after truncation keep distinct identities
+    (documented best-effort; falling back to ``{}`` would merge every
+    summary-only entry into one key).
     """
     arguments = entry.get("arguments")
     if isinstance(arguments, dict):
         return arguments
     summary = entry.get("arguments_summary")
-    if summary:
+    if isinstance(summary, str) and summary:
+        recovered = _summary_dict(summary)
+        if recovered is not None:
+            return recovered
         return {"arguments_summary": summary}
     return arguments
 
@@ -345,22 +380,35 @@ def _entry_matches_stock(
 _SUMMARY_NO_EVIDENCE = object()
 
 
-def _summary_stock_code(summary: str) -> Any:
-    """Recover the structured ``stock_code`` value from a Codex ``arguments_summary``.
+def _summary_dict(summary: str) -> Optional[Dict[str, Any]]:
+    """Parse a Codex ``arguments_summary`` back to the arguments dict.
 
     ``src/agent/codex_agent_backend`` stores
-    ``redact_diagnostic_value(record.arguments)`` — the JSON-serialized
-    arguments dict — so a well-formed (untruncated, unredacted) preview
-    parses back to the original payload.  Returns ``_SUMMARY_NO_EVIDENCE``
-    when the preview is not a JSON object with a ``stock_code`` key
-    (truncated / redacted / non-object previews), leaving callers to their
-    documented no-evidence tolerance or substring fallback.
+    ``redact_diagnostic_value(record.arguments)`` — the JSON serialization of
+    the arguments dict — so a well-formed (untruncated, unredacted) preview
+    recovers the original payload.  Returns ``None`` when the preview is not
+    intact JSON of an object (truncated / redacted / non-object previews);
+    callers then fall back to their documented best-effort handling.
     """
     try:
         parsed = json.loads(summary)
     except (TypeError, ValueError):
-        return _SUMMARY_NO_EVIDENCE
-    if isinstance(parsed, dict) and "stock_code" in parsed:
+        return None
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
+def _summary_stock_code(summary: str) -> Any:
+    """Recover the structured ``stock_code`` value from a Codex ``arguments_summary``.
+
+    Returns ``_SUMMARY_NO_EVIDENCE`` when the preview does not parse back to
+    a JSON object with a ``stock_code`` key (truncated / redacted /
+    non-object previews), leaving callers to their documented no-evidence
+    tolerance or substring fallback.
+    """
+    parsed = _summary_dict(summary)
+    if parsed is not None and "stock_code" in parsed:
         return parsed["stock_code"]
     return _SUMMARY_NO_EVIDENCE
 
@@ -400,6 +448,17 @@ def _entry_mismatches_stock(
             return False
         return _apply_stock_normalizer(normalizer, value) != stock_code
     return False
+
+
+def _entry_stayed_blocked(entry: Dict[str, Any], success: bool) -> bool:
+    """True when the call did not execute cleanly (guarded / cached / failed).
+
+    A blocked call proves nothing about whether the scope guard can be
+    bypassed, while a clean success of an out-of-scope call does — the same
+    predicate drives the ``guarded_retry`` escape tracking and the
+    wrong-stock exemption for pinned out-of-scope probes.
+    """
+    return bool(entry.get("cached") or entry.get("guarded") or not success)
 
 
 def compute_trajectory_metrics(
@@ -474,6 +533,7 @@ def compute_trajectory_metrics(
         if not isinstance(entry, dict):
             continue
         tool = entry.get("tool") or ""
+        success = bool(entry.get("success", True))
         if tool and tool not in used_tools:
             used_tools.append(tool)
         if stock_code and tool and tool not in stock_hit and _entry_matches_stock(entry, stock_code, normalizer):
@@ -481,15 +541,29 @@ def compute_trajectory_metrics(
         # Every call of an expected tool whose stock resolves to a different
         # code is reported — a matching call elsewhere must not legitimize
         # cross-stock usage of the same tool (stock_hit only tracks whether
-        # the tool ever matched, not whether every call did).
-        if stock_code and tool in expected_set and _entry_mismatches_stock(entry, stock_code, normalizer):
+        # the tool ever matched, not whether every call did).  The one
+        # exception is the sample's pinned out-of-scope stock: a blocked
+        # probe of it (guarded / cached / failed) is exactly what the golden
+        # requires, so it is not a wrong-stock violation — but a clean
+        # success on the pinned stock is still reported (and escapes
+        # guarded_retry).
+        pinned_probe_blocked = (
+            guarded_stock_valid
+            and _entry_matches_stock(entry, guarded_stock, normalizer)
+            and _entry_stayed_blocked(entry, success)
+        )
+        if (
+            stock_code
+            and tool in expected_set
+            and not pinned_probe_blocked
+            and _entry_mismatches_stock(entry, stock_code, normalizer)
+        ):
             wrong_stock_calls.append(tool)
         step = _coerce_step(entry.get("step"))
         if step and step not in seen_steps:
             seen_steps.add(step)
             distinct_steps += 1
             max_step = max(max_step, step)
-        success = bool(entry.get("success", True))
         if not success:
             failed_calls += 1
         if entry.get("cached"):
@@ -509,7 +583,7 @@ def compute_trajectory_metrics(
         # the golden contract requires every out-of-scope call to stay
         # blocked at all times, and a pre-guard success proves the call can
         # get through the guard.
-        if not (entry.get("cached") or entry.get("guarded") or not success):
+        if not _entry_stayed_blocked(entry, success):
             key_guarded_escaped.add(key)
         # Record the occurrence index of the (first) guarded call so the
         # "guarded_retry" outcome can require a *later* occurrence of the
@@ -605,6 +679,19 @@ def compute_trajectory_metrics(
     # stock binding for guarded_retry.
     if golden.expected_guarded_stock is not None and not guarded_stock_valid:
         violations.append("expected_guarded_stock must be a non-empty string")
+    # Codex App Server entries carry no guarded / cached metadata (the
+    # backend records only step / tool / arguments_summary / success /
+    # duration), so guard-dependent outcome tags can never be observed from a
+    # Codex-shaped log; mark them unsupported instead of emitting a false
+    # "expected outcomes not observed" regression.  ``retry`` stays
+    # scoreable: it derives from (tool, args-key) repeats, which Codex
+    # entries do carry.
+    unsupported_outcomes = [t for t in outcomes if t in GUARD_DEPENDENT_OUTCOME_TAGS] if codex_shaped else []
+    if unsupported_outcomes:
+        violations.append(
+            "expected outcomes unsupported for Codex App Server logs "
+            "(backend drops guarded/cached metadata): " + ", ".join(unsupported_outcomes)
+        )
     observed = []
     if guarded_calls:
         observed.append("guarded")
@@ -614,7 +701,9 @@ def compute_trajectory_metrics(
         observed.append("retry")
     if any(idx < key_counts.get(k, 0) and k not in key_guarded_escaped for k, idx in key_guarded_at.items()):
         observed.append("guarded_retry")
-    missing_outcomes = [t for t in outcomes if t in EXPECTED_OUTCOME_TAGS and t not in observed]
+    missing_outcomes = [
+        t for t in outcomes if t in EXPECTED_OUTCOME_TAGS and t not in observed and t not in unsupported_outcomes
+    ]
     if missing_outcomes:
         violations.append(f"expected outcomes not observed: {', '.join(missing_outcomes)}")
 

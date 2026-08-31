@@ -38,6 +38,18 @@ def _entry(tool="get_realtime_quote", arguments=None, step=1, success=True, **ex
     return entry
 
 
+def _codex_entry(tool="get_realtime_quote", summary="600519", step=1, success=True, **extra):
+    """Build a Codex App Server-shaped entry (``arguments_summary`` only)."""
+    entry = {
+        "step": step,
+        "tool": tool,
+        "arguments_summary": summary,
+        "success": success,
+    }
+    entry.update(extra)
+    return entry
+
+
 def _golden(**overrides):
     values = dict(
         id="600519_technical",
@@ -555,6 +567,116 @@ class TestExpectedOutcomes:
         m = compute_trajectory_metrics(log, self._guarded_sample())
         assert "expected outcomes not observed" not in m.violations
 
+    def test_expected_tool_blocked_probe_of_pinned_stock_is_exempt(self):
+        # Review counter-example: the sample pins only the out-of-scope
+        # stock, not a tool — the deliberate 600519 probe may use any
+        # expected tool, and while it stays blocked (guarded / cached) it
+        # must not surface as a wrong-stock violation.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert m.expected_hit_rate == 1.0
+        assert m.retries == 1
+        assert m.cached_calls == 1
+        assert not any("different stock" in v for v in m.violations)
+        assert m.violations == []
+
+    def test_alias_pinned_stock_probe_is_exempt(self):
+        # The exemption compares canonicalized identities like every other
+        # stock comparison: an SH600519 probe of the 600519-pinned sample is
+        # the required out-of-scope call, not a wrong-stock call.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "SH600519"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert m.expected_hit_rate == 1.0
+        assert not any("different stock" in v for v in m.violations)
+        assert m.violations == []
+
+    def test_clean_success_on_pinned_stock_is_still_wrong_stock(self):
+        # The exemption covers blocked probes only: an expected-tool call
+        # that cleanly succeeds on the pinned stock is still a wrong-stock
+        # call, and with no guarded occurrence at all the sample's
+        # guarded_retry stays unobserved.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=3,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert m.expected_hit_rate == 1.0
+        assert any("different stock than 600036: get_stock_info" in v for v in m.violations)
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_blocked_probe_of_another_stock_is_still_wrong_stock(self):
+        # Only the pinned stock is exempt: an expected-tool probe of a third
+        # stock stays a wrong-stock call even while guarded.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "000001"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert any("different stock than 600036: get_stock_info" in v for v in m.violations)
+
+    def test_without_pinned_stock_blocked_probes_stay_wrong_stock(self):
+        # No expected_guarded_stock means no exemption: a blocked call to
+        # another stock is wrong-stock exactly like before.
+        log = [
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "000001"},
+                step=1,
+                success=False,
+                guarded=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.expected_hit_rate == 0.0
+        assert any("different stock than 600519: get_realtime_quote" in v for v in m.violations)
+
     def test_injected_normalizer_drives_call_identity(self):
         # Call identity follows the injected normalizer, not the mirror: a
         # constant normalizer merges every stock code into one identity.
@@ -921,6 +1043,115 @@ class TestStockCodeScoping:
 
 
 # ---------------------------------------------------------------------------
+# 2d. Codex arguments_summary call identity (recovered structured payloads)
+# ---------------------------------------------------------------------------
+class TestCodexSummaryIdentity:
+    def test_alias_summaries_share_one_call_identity(self):
+        # Review counter-example: a failed call summarized with the alias
+        # hk700 followed by the same call summarized as HK00700 is one
+        # (tool, args-key) — the recovered dict goes through the same
+        # stock_code canonicalization as a runner payload.
+        log = [
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "hk700"}),
+                step=1,
+                success=False,
+            ),
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "HK00700"}),
+                step=2,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.retries == 1
+        assert m.redundant_calls == 1
+
+    def test_key_order_summaries_share_one_call_identity(self):
+        # Review counter-example: the recovered dict is serialized with
+        # sort_keys=True, so argument insertion order must not split call
+        # identity.
+        log = [
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "600519", "days": 30}),
+                step=1,
+                success=False,
+            ),
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"days": 30, "stock_code": "600519"}),
+                step=2,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.retries == 1
+        assert m.redundant_calls == 1
+
+    def test_number_and_string_summaries_do_not_merge_identity(self):
+        # The recovered payload preserves the JSON number type exactly like
+        # the runtime cache key: 600519 and "600519" stay two identities.
+        log = [
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": 600519}),
+                step=1,
+                success=False,
+            ),
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "600519"}),
+                step=2,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.retries == 0
+        assert m.redundant_calls == 0
+
+    def test_other_summary_arguments_stay_raw_in_the_identity(self):
+        # Only the string stock_code field is canonicalized — a different
+        # period still splits the identity even for alias spellings.
+        log = [
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "SH600519", "period": "daily"}),
+                step=1,
+                success=False,
+            ),
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "600519", "period": "weekly"}),
+                step=2,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.retries == 0
+        assert m.redundant_calls == 0
+
+    def test_truncated_previews_keep_the_raw_preview_identity(self):
+        # A preview that no longer parses to an object falls back to the
+        # raw-preview wrapper, so it never merges with an intact summary of
+        # the same call (documented best-effort limit).
+        log = [
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary='{"stock_code": "6005...<truncated 12 chars>',
+                step=1,
+                success=False,
+            ),
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "600519"}),
+                step=2,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.retries == 0
+        assert m.redundant_calls == 0
+
+
+# ---------------------------------------------------------------------------
 # 2c. Stock-code canonicalization (runtime-equivalent mirror)
 # ---------------------------------------------------------------------------
 class TestStockCanonicalization:
@@ -1105,6 +1336,69 @@ class TestCodexStepMetrics:
         m = compute_trajectory_metrics([{"step": 3, "tool": "get_realtime_quote"}], _golden())
         assert m.distinct_steps == 1
         assert not any("unsupported for Codex" in v for v in m.violations)
+
+
+# ---------------------------------------------------------------------------
+# 4d. Codex outcome support (guard-dependent tags are unobservable)
+# ---------------------------------------------------------------------------
+class TestCodexOutcomeSupport:
+    def test_guard_dependent_outcomes_marked_unsupported_for_codex_logs(self):
+        # The Codex backend drops guarded/cached metadata, so a Codex-shaped
+        # log can never observe guard-dependent tags; declaring them must
+        # surface an explicit unsupported violation instead of a false
+        # "expected outcomes not observed" regression.
+        for tag in ("guarded", "cached", "guarded_retry"):
+            log = [_codex_entry(tool="get_realtime_quote", step=1)]
+            m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"], expected_outcomes=[tag]))
+            assert not any("not observed" in v for v in m.violations), tag
+            assert any("unsupported for Codex App Server logs" in v and tag in v for v in m.violations), tag
+
+    def test_retry_stays_scoreable_for_codex_logs(self):
+        # retry derives from (tool, args-key) repeats, which Codex entries
+        # do carry: a failed call retried as the same recovered payload must
+        # still satisfy the sample.
+        log = [
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "600519"}),
+                step=1,
+                success=False,
+            ),
+            _codex_entry(
+                tool="get_realtime_quote",
+                summary=json.dumps({"stock_code": "600519"}),
+                step=2,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"], expected_outcomes=["retry"]))
+        assert m.retries == 1
+        assert "expected outcomes not observed" not in m.violations
+        assert not any("expected outcomes unsupported" in v for v in m.violations)
+
+    def test_missing_retry_still_reported_for_codex_logs(self):
+        # An observable outcome that is genuinely absent stays a real
+        # regression for Codex logs too.
+        log = [_codex_entry(tool="get_realtime_quote", step=1)]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"], expected_outcomes=["retry"]))
+        assert "expected outcomes not observed: retry" in m.violations
+
+    def test_runner_logs_keep_guard_outcome_scoring(self):
+        # Runner-shaped logs carry the metadata, so guard-dependent tags are
+        # scored normally and never marked unsupported.
+        log = [
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=1,
+                success=False,
+                guarded=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(
+            log, _golden(expected_tools=["get_realtime_quote"], expected_outcomes=["guarded"])
+        )
+        assert "expected outcomes not observed" not in m.violations
+        assert not any("expected outcomes unsupported" in v for v in m.violations)
 
 
 # ---------------------------------------------------------------------------
