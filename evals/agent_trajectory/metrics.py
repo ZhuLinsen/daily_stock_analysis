@@ -520,12 +520,15 @@ def compute_trajectory_metrics(
     structure contract as :func:`validate_golden_sample` on the loader path:
     malformed parts are reported as violations and excluded from scoring
     instead of silently reshaping the result.  Malformed ``expected_tools`` /
-    ``expected_outcomes`` elements are dropped with an explicit violation,
-    and a pinned ``expected_guarded_stock`` is only honoured for the coherent
-    pairing the validator requires (``guarded_retry`` declared, and a stock
-    different from ``golden.stock_code`` after canonicalization) — an
-    unpaired pin is reported and disabled rather than silently erasing
-    wrong-stock reporting.
+    ``expected_outcomes`` elements — non-strings, empty strings and
+    whitespace-only strings, the validator's exact predicate — are dropped
+    with an explicit violation, a non-positive ``allowed_max_steps`` is
+    reported with the validator's wording (and the budget assertion stays
+    disabled), and a pinned ``expected_guarded_stock`` is only honoured for
+    the coherent pairing the validator requires (``guarded_retry`` declared,
+    and a stock different from ``golden.stock_code`` after
+    canonicalization) — an unpaired pin is reported and disabled rather than
+    silently erasing wrong-stock reporting.
     """
     used_tools: List[str] = []
     key_counts: Dict[tuple, int] = {}
@@ -564,8 +567,10 @@ def compute_trajectory_metrics(
     # below (mirroring validate_golden_sample, which rejects them at load
     # time) and only the valid names take part in scoring.
     if isinstance(golden.expected_tools, list):
-        expected_tools_malformed = [t for t in golden.expected_tools if not isinstance(t, str) or not t]
-        expected = [t for t in golden.expected_tools if isinstance(t, str) and t]
+        # Same element predicate as validate_golden_sample(): whitespace-only
+        # strings count as malformed too, not just falsy ones.
+        expected_tools_malformed = [t for t in golden.expected_tools if not isinstance(t, str) or not t.strip()]
+        expected = [t for t in golden.expected_tools if isinstance(t, str) and t.strip()]
     else:
         # Defend against hand-edited samples passing a bare string:
         # validation rejects it at load time, but scoring must not misparse
@@ -718,7 +723,7 @@ def compute_trajectory_metrics(
     # permissive, and a non-integer step limit must not crash the comparison.
     optional_allowed = golden.allow_optional_tools
     if not isinstance(optional_allowed, bool):
-        violations.append("allow_optional_tools is not a boolean")
+        violations.append("allow_optional_tools must be a boolean")
         optional_allowed = False
     if optional_tools_used and not optional_allowed:
         violations.append(f"optional tools used but not allowed: {', '.join(optional_tools_used)}")
@@ -730,13 +735,16 @@ def compute_trajectory_metrics(
         violations.append("expected_outcomes must be a list of outcome tags")
         outcomes: List[str] = []
     else:
-        malformed_outcomes = [t for t in golden.expected_outcomes if not isinstance(t, str) or not t]
+        # Same element predicate as validate_golden_sample(): whitespace-only
+        # strings are malformed too, so they never fall through to the
+        # unknown-tag check or the required-outcome set.
+        malformed_outcomes = [t for t in golden.expected_outcomes if not isinstance(t, str) or not t.strip()]
         # Malformed outcome elements are reported (same wording as
         # validate_golden_sample) instead of silently dropping the
         # requirement they tried to declare.
         if malformed_outcomes:
             violations.append("expected_outcomes must contain only non-empty strings")
-        outcomes = [t for t in golden.expected_outcomes if isinstance(t, str) and t]
+        outcomes = [t for t in golden.expected_outcomes if isinstance(t, str) and t.strip()]
         if len(set(outcomes)) != len(outcomes):
             violations.append("expected_outcomes contains duplicate tags")
             outcomes = list(dict.fromkeys(outcomes))
@@ -788,6 +796,11 @@ def compute_trajectory_metrics(
     limit = golden.allowed_max_steps
     if isinstance(limit, bool) or not isinstance(limit, int):
         violations.append("allowed_max_steps is not an integer")
+        limit = 0
+    elif limit < 1:
+        # Validator wording for the same field: a non-positive limit must
+        # not silently disable the budget assertion on the direct-score path.
+        violations.append("allowed_max_steps must be >= 1")
         limit = 0
     max_steps_touched = bool(max_step and limit > 0 and max_step >= limit)
     if max_steps_touched:

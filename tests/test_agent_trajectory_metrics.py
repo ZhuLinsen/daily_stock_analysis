@@ -190,7 +190,7 @@ class TestComputeMetricsHitRate:
             log,
             _golden(expected_tools=["get_realtime_quote"], allow_optional_tools="false"),
         )
-        assert "allow_optional_tools is not a boolean" in m.violations
+        assert "allow_optional_tools must be a boolean" in m.violations
         assert "optional tools used but not allowed: search_stock_news" in m.violations
 
     def test_duplicate_expected_tools_scored_as_unique_names(self):
@@ -217,12 +217,23 @@ class TestDirectConstructionContract:
     def test_malformed_expected_tools_elements_are_reported(self):
         # Review counter-example: ['get_realtime_quote', ''] must not
         # silently collapse into a one-tool golden — the malformed element
-        # is reported, only valid names take part in scoring.
+        # is reported, only valid names take part in scoring.  Whitespace-
+        # only elements follow the validator's predicate (t.strip()).
         log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"})]
         for malformed in (["get_realtime_quote", ""], ["get_realtime_quote", 1]):
             m = compute_trajectory_metrics(log, _golden(expected_tools=malformed))
             assert m.expected_hit_rate == 1.0
             assert "expected_tools must contain only non-empty strings" in m.violations
+
+    def test_whitespace_only_expected_tool_does_not_pollute_scoring(self):
+        # Review counter-example: '   ' must not enter the hit-rate
+        # denominator nor show up as a missing tool — it is malformed.
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"})]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote", "   "]))
+        assert m.expected_total == 1
+        assert m.expected_hit_rate == 1.0
+        assert m.missing_expected == []
+        assert "expected_tools must contain only non-empty strings" in m.violations
 
     def test_malformed_expected_outcomes_elements_are_reported(self):
         # Review counter-example: expected_outcomes=[1, ''] must not
@@ -233,6 +244,59 @@ class TestDirectConstructionContract:
             m = compute_trajectory_metrics(log, _golden(expected_outcomes=malformed))
             assert "expected_outcomes must contain only non-empty strings" in m.violations
             assert "expected outcomes not observed" not in " ".join(m.violations)
+
+    def test_whitespace_only_outcome_gets_structural_violation(self):
+        # Review counter-example: '   ' must be reported as a malformed
+        # element, not misrouted into the unknown-tag violation type.
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"})]
+        m = compute_trajectory_metrics(log, _golden(expected_outcomes=["   "]))
+        assert "expected_outcomes must contain only non-empty strings" in m.violations
+        assert not any("unknown expected outcome tags" in v for v in m.violations)
+
+    def test_non_positive_allowed_max_steps_reported_in_direct_score(self):
+        # Review counter-example: allowed_max_steps=0 / -3 must report the
+        # validator's wording instead of silently disabling the budget
+        # assertion, no matter how many steps the trajectory takes.
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"}, step=s) for s in range(1, 100)]
+        for limit in (0, -3):
+            m = compute_trajectory_metrics(log, _golden(allowed_max_steps=limit))
+            assert "allowed_max_steps must be >= 1" in m.violations
+            assert m.max_steps_touched is False
+
+    def test_direct_score_mirrors_validator_structure_contract(self):
+        # The owner-requested parity: for each malformed golden shape the
+        # validator rejects, the direct-score path must surface the same
+        # issue wording in its violations.
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"})]
+        cases = [
+            (dict(expected_tools=["get_realtime_quote", "   "]), "expected_tools must contain only non-empty strings"),
+            (dict(expected_tools=["get_realtime_quote", ""]), "expected_tools must contain only non-empty strings"),
+            (dict(expected_outcomes=["   "]), "expected_outcomes must contain only non-empty strings"),
+            (dict(expected_outcomes=[1, ""]), "expected_outcomes must contain only non-empty strings"),
+            (dict(expected_outcomes="guarded"), "expected_outcomes must be a list of outcome tags"),
+            (dict(allowed_max_steps=0), "allowed_max_steps must be >= 1"),
+            (dict(allowed_max_steps=-3), "allowed_max_steps must be >= 1"),
+            (dict(allow_optional_tools="false"), "allow_optional_tools must be a boolean"),
+            (
+                dict(expected_guarded_stock="600036"),
+                "expected_guarded_stock requires guarded_retry in expected_outcomes",
+            ),
+            (
+                dict(
+                    stock_code="600036",
+                    expected_tools=["get_stock_info"],
+                    expected_outcomes=["guarded_retry"],
+                    expected_guarded_stock="SH600036",
+                ),
+                "expected_guarded_stock must name a different stock than stock_code after canonicalization (it names the out-of-scope call)",
+            ),
+        ]
+        for overrides, issue in cases:
+            golden = _golden(**overrides)
+            validator_issues = validate_golden_sample(golden)
+            assert any(issue in i for i in validator_issues), (issue, overrides, validator_issues)
+            m = compute_trajectory_metrics(log, golden)
+            assert any(issue in v for v in m.violations), (issue, overrides, m.violations)
 
     def test_unpaired_guarded_stock_reported_and_exemption_disabled(self):
         # Review counter-example: expected_guarded_stock without guarded_retry
