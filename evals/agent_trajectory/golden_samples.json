@@ -19,7 +19,7 @@
   },
   {
     "id": "600036_guarded_retry",
-    "task_description": "在单一股票 scope（expected=600036）下分析招商银行，并故意要求顺带分析 600519：越界的工具调用应被 stock_scope guard 拦截（guarded=true 且计为失败），后续同参数重试应命中非可重试缓存（cached=true）或再次失败。",
+    "task_description": "在单一股票 scope（expected=600036）下分析招商银行，并故意要求顺带分析 600519：越界的工具调用应被 stock_scope guard 拦截（guarded=true 且计为失败），后续同参数重试应命中非可重试缓存（cached=true）或再次失败；任何后续同参数调用都不得越过 guard 直接成功。",
     "stock_code": "600036",
     "skills": [],
     "expected_tools": ["get_stock_info", "get_daily_history"],

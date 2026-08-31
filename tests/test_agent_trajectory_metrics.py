@@ -350,6 +350,85 @@ class TestExpectedOutcomes:
         assert m.expected_hit_rate == 1.0
         assert "expected outcomes not observed: guarded_retry" in m.violations
 
+    def test_clean_success_after_guard_is_an_escape(self):
+        # Review counter-example: the guarded call is retried and the retry
+        # succeeds without cache — the guard was bypassed, so guarded_retry
+        # must not be observed.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert m.expected_hit_rate == 1.0
+        assert m.retries == 1
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_blocked_retry_variants_stay_satisfied(self):
+        # The retry may fail again or hit the non-retriable cache — both are
+        # blocked outcomes and satisfy the sample.
+        for extra in ({"success": False}, {"cached": True, "success": False}):
+            log = [
+                _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+                _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+                _entry(
+                    tool="get_realtime_quote",
+                    arguments={"stock_code": "600519"},
+                    step=3,
+                    success=False,
+                    guarded=True,
+                ),
+                _entry(
+                    tool="get_realtime_quote",
+                    arguments={"stock_code": "600519"},
+                    step=4,
+                    **extra,
+                ),
+            ]
+            m = compute_trajectory_metrics(log, self._guarded_sample())
+            assert "expected outcomes not observed" not in m.violations, extra
+
+    def test_escape_after_a_blocked_retry_still_violates(self):
+        # guard -> blocked retry -> clean success: the guard boundary was
+        # breached eventually, so the outcome must not be observed.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=False,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=5,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
     def test_unrelated_retry_does_not_satisfy_guarded_retry(self):
         # Review counter-example: a guard on the out-of-scope quote plus a
         # retry of an unrelated news call must not satisfy the bound outcome.
@@ -490,6 +569,39 @@ class TestStockCodeScoping:
         assert m.expected_hit_rate == 1.0
         assert m.missing_expected == []
 
+    def test_equivalent_stock_code_forms_count_as_hit(self):
+        # Review counter-example (inverse): production accepts SH600519 /
+        # 600519.SH / lowercase etc. as the same stock, so the metrics layer
+        # must too — via runtime-equivalent canonicalization, not raw
+        # equality.
+        for form in ("SH600519", "sh600519", "600519.SH", "SS600519", "SH.600519", " 600519 "):
+            m = compute_trajectory_metrics(
+                [_entry(tool="get_realtime_quote", arguments={"stock_code": form}, step=1)],
+                _golden(expected_tools=["get_realtime_quote"]),
+            )
+            assert m.expected_hit_rate == 1.0, form
+            assert m.violations == [], form
+
+    def test_hk_variant_forms_share_one_identity(self):
+        golden = _golden(stock_code="HK00700", expected_tools=["get_realtime_quote"])
+        for form in ("HK00700", "hk700", "700.HK", "00700"):
+            m = compute_trajectory_metrics(
+                [_entry(tool="get_realtime_quote", arguments={"stock_code": form}, step=1)],
+                golden,
+            )
+            assert m.expected_hit_rate == 1.0, form
+            assert m.violations == [], form
+
+    def test_sz_prefix_and_suffix_forms_match_their_golden(self):
+        golden = _golden(stock_code="000001", expected_tools=["get_realtime_quote"])
+        for form in ("SZ000001", "000001.SZ", "SZ.000001", "sz000001"):
+            m = compute_trajectory_metrics(
+                [_entry(tool="get_realtime_quote", arguments={"stock_code": form}, step=1)],
+                golden,
+            )
+            assert m.expected_hit_rate == 1.0, form
+            assert m.violations == [], form
+
     def test_each_wrong_stock_call_of_an_expected_tool_is_reported(self):
         # Review counter-example: the correct call used to set
         # stock_hit[tool], which legitimized every other call of the same
@@ -531,6 +643,70 @@ class TestStockCodeScoping:
         )
         assert "golden.stock_code is not a non-empty string" in m.violations
         assert m.expected_hit_rate == 1.0
+
+
+# ---------------------------------------------------------------------------
+# 2c. Stock-code canonicalization (runtime-equivalent mirror)
+# ---------------------------------------------------------------------------
+class TestStockCanonicalization:
+    def test_mirror_matches_production_normalization(self):
+        # The mirror must track the runtime chain exactly; if production
+        # changes and this parity test fails, update the mirror.
+        from src.agent.tools.execution import _normalize_tool_stock_code
+
+        from evals.agent_trajectory.metrics import _canonicalize_stock_code
+
+        forms = [
+            "600519",
+            "sh600519",
+            "SH600519",
+            "SH.600519",
+            "600519.SH",
+            "600519.SS",
+            "SS600519",
+            "SZ000001",
+            "sz000001",
+            "000001.SZ",
+            "SZ.000001",
+            "BJ920748",
+            "920748.BJ",
+            "HK00700",
+            "hk700",
+            "700.HK",
+            "1810.HK",
+            "00700",
+            "7203.T",
+            "005930.KS",
+            "035720.KQ",
+            "2330.TW",
+            "6505.TWO",
+            "AAPL",
+            "aapl",
+            " 600519 ",
+            "1600519",
+            "000001",
+            "HK.700",
+            "600519.SH ",
+        ]
+        for form in forms:
+            assert _canonicalize_stock_code(form) == _normalize_tool_stock_code(form), form
+
+    def test_injected_normalizer_overrides_the_mirror(self):
+        golden = _golden(expected_tools=["get_realtime_quote"])
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "SH600519"}, step=1)]
+        # A strict identity normalizer must see SH600519 as a different
+        # stock, while the default mirror resolves it to 600519.
+        strict = compute_trajectory_metrics(log, golden, stock_code_normalizer=lambda v: str(v))
+        assert strict.expected_hit_rate == 0.0
+        assert strict.missing_expected == ["get_realtime_quote"]
+        default = compute_trajectory_metrics(log, golden)
+        assert default.expected_hit_rate == 1.0
+        assert default.violations == []
+
+    def test_non_callable_normalizer_surfaces_violation(self):
+        m = compute_trajectory_metrics([_entry()], _golden(), stock_code_normalizer="nope")
+        assert "stock_code_normalizer is not callable" in m.violations
+        assert m.expected_hit_rate == pytest.approx(1 / 3)
 
 
 # ---------------------------------------------------------------------------

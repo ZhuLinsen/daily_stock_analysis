@@ -66,20 +66,37 @@ Metric semantics
   retry of an unrelated call does not satisfy it.  When the sample sets
   ``expected_guarded_stock``, the guarded occurrence of ``guarded_retry``
   must additionally target that stock (the task's required out-of-scope
-  call), so two guarded retries of any other stock do not satisfy it.  A
+  call), and every *later* occurrence of the pair must remain blocked
+  (``cached`` / ``guarded`` / failed): a clean success after the guard is an
+  escape — the scope guard was bypassed — and does not satisfy it.  A
   required outcome that is not observed is reported as a violation, so a
   golden sample that declares guard / cache / retry expectations cannot be
   passed by a trajectory that skips the behaviour it describes.
 * ``expected_hit_rate`` is stock-scoped: an expected tool counts as hit only
   when at least one of its calls references ``golden.stock_code`` — matched
   exactly against the dedicated ``stock_code`` argument field of runner
-  entries (normalized string comparison, never a substring scan, so e.g.
-  ``"1600519"`` cannot satisfy ``600519``), the guard metadata
-  ``requested_stock_code``, or the Codex ``arguments_summary`` preview
-  (substring match, best-effort).  Entries with no stock evidence at all keep
-  the name-only tolerance, and *every* call of an expected tool whose stock
-  resolves to a different code is reported in a violation — one matching call
-  does not legitimize cross-stock calls of the same tool.
+  entries (never a substring scan, so e.g. ``"1600519"`` cannot satisfy
+  ``600519``), the guard metadata ``requested_stock_code``, or the Codex
+  ``arguments_summary`` preview (substring match, best-effort).  Both sides
+  of each comparison are canonicalized first with the runtime-equivalent
+  stock-code normalization (see below), so production-accepted forms such as
+  ``SH600519`` / ``600519.SH`` / ``SZ.000001`` / ``hk700`` resolve to the
+  same identity as their clean code instead of being mis-scored as
+  wrong-stock.  Entries with no stock evidence at all keep the name-only
+  tolerance, and *every* call of an expected tool whose stock resolves to a
+  different code is reported in a violation — one matching call does not
+  legitimize cross-stock calls of the same tool.
+* Stock-code canonicalization: :func:`_canonicalize_stock_code` mirrors the
+  runtime normalization chain
+  (``src/agent/tools/execution._normalize_tool_stock_code`` delegating to
+  ``data_provider.base.normalize_stock_code`` /
+  ``canonical_stock_code``): whitespace / case folding, exchange
+  prefix/suffix stripping (SH / SZ / SS / BJ), HK variants folded to
+  ``HK00xxx``, Yahoo JP / KR / TW suffix forms preserved.  The metrics layer
+  stays free of runtime imports; the test suite keeps a parity test against
+  the production function so the mirror cannot silently drift, and live-run
+  callers can inject the production normalizer via
+  ``stock_code_normalizer``.
 * ``max_steps_touched``: the log does not carry ``max_steps`` itself, so this
   is the conservative heuristic ``max(step) >= golden.allowed_max_steps`` —
   a proxy for "the run reached the step budget", not proof of the loop
@@ -94,13 +111,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 #: Machine-readable trajectory features a golden sample may require of a log
 #: (``guarded`` = a guarded call, ``cached`` = a cached call, ``retry`` = at
-#: least one retry, ``guarded_retry`` = a guarded call followed by a later
-#: occurrence of the same (tool, args-key) pair).  See the "Metric semantics"
-#: section of the module docstring.
+#: least one retry, ``guarded_retry`` = a guarded call followed by later
+#: occurrences of the same (tool, args-key) pair that all remain blocked —
+#: cached / guarded / failed).  See the "Metric semantics" section of the
+#: module docstring.
 EXPECTED_OUTCOME_TAGS = ("guarded", "cached", "retry", "guarded_retry")
 
 
@@ -179,42 +197,116 @@ def _coerce_step(value: Any) -> int:
     return step if step > 0 else 0
 
 
-def _normalized_stock(value: Any) -> str:
-    """Normalize a resolvable stock value (str / int) for exact comparison."""
-    return str(value).strip()
+def _canonicalize_stock_code(value: Any) -> str:
+    """Canonicalize a stock code the way the runtime does before comparing.
+
+    Mirrors ``src/agent/tools/execution._normalize_tool_stock_code`` (the
+    guard path) and its delegate
+    ``data_provider.base.normalize_stock_code``: trims whitespace, folds
+    case, strips exchange prefixes/suffixes (``SH600519`` / ``600519.SH`` /
+    ``SZ.000001`` / ``BJ920748`` ...), folds HK variants to ``HK00xxx``, and
+    preserves Yahoo JP/KR/TW suffix forms (``7203.T`` / ``005930.KS`` /
+    ``2330.TW``).  The mirror keeps this module free of runtime imports;
+    ``tests/test_agent_trajectory_metrics.py`` asserts parity with the
+    production function, and live-run callers can inject the production
+    normalizer instead (see :func:`compute_trajectory_metrics`).
+    """
+    if not isinstance(value, str):
+        return str(value)
+    text = value.strip().upper()
+    if not text:
+        return text
+    if text.endswith(".HK"):
+        base = text[:-3]
+        if base.isdigit() and 1 <= len(base) <= 5:
+            return "HK" + base.zfill(5)
+    if text.startswith("HK"):
+        base = text[2:]
+        if base.isdigit() and 1 <= len(base) <= 5:
+            return "HK" + base.zfill(5)
+    if text.isdigit() and len(text) == 5:
+        return "HK" + text
+    code = value.strip()
+    upper = code.upper()
+    if upper.startswith(("SH", "SZ", "SS")) and not upper.startswith(("SH.", "SZ.", "SS.")):
+        candidate = code[2:]
+        if candidate.isdigit() and len(candidate) in (5, 6):
+            return candidate
+    if upper.startswith(("SH.", "SZ.", "SS.")):
+        candidate = code[3:]
+        if candidate.isdigit() and len(candidate) in (5, 6):
+            return candidate
+    if upper.startswith("BJ") and not upper.startswith("BJ."):
+        candidate = code[2:]
+        if candidate.isdigit() and len(candidate) == 6:
+            return candidate
+    if upper.startswith("BJ."):
+        candidate = code[3:]
+        if candidate.isdigit() and len(candidate) == 6:
+            return candidate
+    if "." in code:
+        base, suffix = code.rsplit(".", 1)
+        if suffix.upper() == "T" and base.isdigit() and len(base) in (4, 5):
+            return base + ".T"
+        if suffix.upper() in ("KS", "KQ") and base.isdigit() and len(base) == 6:
+            return base + "." + suffix.upper()
+        if suffix.upper() in ("TW", "TWO") and base.isdigit() and 4 <= len(base) <= 6:
+            return base + "." + suffix.upper()
+        if suffix.upper() == "HK" and base.isdigit() and 1 <= len(base) <= 5:
+            return "HK" + base.zfill(5)
+        if base.upper() in ("SH", "SS", "SZ", "BJ") and suffix.isdigit():
+            return suffix
+        if suffix.upper() in ("SH", "SZ", "SS", "BJ") and base.isdigit():
+            return base
+    return text
 
 
-def _entry_matches_stock(entry: Dict[str, Any], stock_code: str) -> bool:
+def _apply_stock_normalizer(normalizer: Callable[[Any], str], value: Any) -> str:
+    """Apply a stock normalizer defensively (non-str results fall back to the mirror)."""
+    result = normalizer(value)
+    return result if isinstance(result, str) else _canonicalize_stock_code(value)
+
+
+def _entry_matches_stock(
+    entry: Dict[str, Any],
+    stock_code: str,
+    normalizer: Callable[[Any], str],
+) -> bool:
     """Best-effort check that a log entry's call targeted ``stock_code``.
 
     Guard metadata (``requested_stock_code``) is authoritative; runner
     entries are matched exactly against their dedicated ``stock_code``
     argument field (every stock tool in the repository takes it) — the value
-    is normalized and compared for equality, never scanned as a substring, so
-    ``"1600519"`` cannot satisfy a ``600519`` golden.  Codex App Server
-    entries carry only the redacted ``arguments_summary`` preview, which has
-    no structured field and is matched by substring.  Entries with no stock
-    evidence at all (or unresolvable values) keep the name-only tolerance so
-    malformed or minimal entries still count as before.
+    is canonicalized and compared for equality, never scanned as a substring,
+    so ``"1600519"`` cannot satisfy a ``600519`` golden while
+    ``"SH600519"`` can.  Codex App Server entries carry only the redacted
+    ``arguments_summary`` preview, which has no structured field and is
+    matched by substring.  Entries with no stock evidence at all (or
+    unresolvable values) keep the name-only tolerance so malformed or minimal
+    entries still count as before.
     """
     requested = entry.get("requested_stock_code")
     if requested:
         if not isinstance(requested, (str, int)) or isinstance(requested, bool):
             return True
-        return _normalized_stock(requested) == stock_code
+        return _apply_stock_normalizer(normalizer, requested) == stock_code
     args = entry.get("arguments")
     if isinstance(args, dict):
         value = args.get("stock_code")
         if not isinstance(value, (str, int)) or isinstance(value, bool):
             return True
-        return _normalized_stock(value) == stock_code
+        return _apply_stock_normalizer(normalizer, value) == stock_code
     summary = entry.get("arguments_summary")
     if isinstance(summary, str) and summary:
         return stock_code in summary
     return True
 
 
-def _entry_mismatches_stock(entry: Dict[str, Any], stock_code: str) -> bool:
+def _entry_mismatches_stock(
+    entry: Dict[str, Any],
+    stock_code: str,
+    normalizer: Callable[[Any], str],
+) -> bool:
     """True when the entry's stock resolves to a *different* code.
 
     Only evidence that resolves to a concrete code can mismatch: guard
@@ -227,13 +319,13 @@ def _entry_mismatches_stock(entry: Dict[str, Any], stock_code: str) -> bool:
     if requested:
         if not isinstance(requested, (str, int)) or isinstance(requested, bool):
             return False
-        return _normalized_stock(requested) != stock_code
+        return _apply_stock_normalizer(normalizer, requested) != stock_code
     args = entry.get("arguments")
     if isinstance(args, dict):
         value = args.get("stock_code")
         if not isinstance(value, (str, int)) or isinstance(value, bool):
             return False
-        return _normalized_stock(value) != stock_code
+        return _apply_stock_normalizer(normalizer, value) != stock_code
     return False
 
 
@@ -241,6 +333,7 @@ def compute_trajectory_metrics(
     log: List[Dict[str, Any]],
     golden: GoldenSample,
     total_steps: Optional[int] = None,
+    stock_code_normalizer: Optional[Callable[[Any], str]] = None,
 ) -> TrajectoryMetrics:
     """Compute all trajectory metrics from a ``tool_calls_log`` and a golden sample.
 
@@ -250,18 +343,36 @@ def compute_trajectory_metrics(
     than the log-derived step count it is used for ``distinct_steps`` and the
     ``max_steps_touched`` heuristic; otherwise the log alone decides, and the
     default ``None`` keeps the log-only behaviour.
+
+    ``stock_code_normalizer`` optionally injects the runtime stock-code
+    canonicalization for live runs (e.g.
+    ``src.agent.tools.execution._normalize_tool_stock_code``); the default is
+    the module's runtime-equivalent mirror :func:`_canonicalize_stock_code`,
+    which keeps the metrics layer free of runtime imports.
     """
     used_tools: List[str] = []
     key_counts: Dict[tuple, int] = {}
     key_failed_seen: Dict[tuple, bool] = {}
     key_retries: Dict[tuple, int] = {}
     key_guarded_at: Dict[tuple, int] = {}
+    key_guarded_escaped: set = set()
     stock_hit: Dict[str, bool] = {}
     wrong_stock_calls: List[str] = []
     codex_shaped = False
-    stock_code = golden.stock_code if isinstance(golden.stock_code, str) and golden.stock_code.strip() else ""
+    if stock_code_normalizer is None:
+        normalizer = _canonicalize_stock_code
+        normalizer_invalid = False
+    elif callable(stock_code_normalizer):
+        normalizer = stock_code_normalizer
+        normalizer_invalid = False
+    else:
+        normalizer = _canonicalize_stock_code
+        normalizer_invalid = True
+    golden_stock_valid = isinstance(golden.stock_code, str) and bool(golden.stock_code.strip())
+    stock_code = _apply_stock_normalizer(normalizer, golden.stock_code) if golden_stock_valid else ""
     guarded_stock = golden.expected_guarded_stock
     guarded_stock_valid = isinstance(guarded_stock, str) and bool(guarded_stock.strip())
+    guarded_stock = _apply_stock_normalizer(normalizer, guarded_stock) if guarded_stock_valid else guarded_stock
     # Extract the expected tool list before scanning entries so per-entry
     # wrong-stock reporting can consult it during the loop.
     if isinstance(golden.expected_tools, list):
@@ -292,13 +403,13 @@ def compute_trajectory_metrics(
         tool = entry.get("tool") or ""
         if tool and tool not in used_tools:
             used_tools.append(tool)
-        if stock_code and tool and tool not in stock_hit and _entry_matches_stock(entry, stock_code):
+        if stock_code and tool and tool not in stock_hit and _entry_matches_stock(entry, stock_code, normalizer):
             stock_hit[tool] = True
         # Every call of an expected tool whose stock resolves to a different
         # code is reported — a matching call elsewhere must not legitimize
         # cross-stock usage of the same tool (stock_hit only tracks whether
         # the tool ever matched, not whether every call did).
-        if stock_code and tool in expected_set and _entry_mismatches_stock(entry, stock_code):
+        if stock_code and tool in expected_set and _entry_mismatches_stock(entry, stock_code, normalizer):
             wrong_stock_calls.append(tool)
         step = _coerce_step(entry.get("step"))
         if step and step not in seen_steps:
@@ -319,13 +430,18 @@ def compute_trajectory_metrics(
         if key_counts.get(key, 0):
             redundant_calls += 1
         key_counts[key] = key_counts.get(key, 0) + 1
+        # Every occurrence after a guarded call must remain blocked (cached
+        # / guarded / failed): a clean success escapes the scope guard and
+        # disqualifies the key from the "guarded_retry" outcome.
+        if key in key_guarded_at and not (entry.get("cached") or entry.get("guarded") or not success):
+            key_guarded_escaped.add(key)
         # Record the occurrence index of the (first) guarded call so the
         # "guarded_retry" outcome can require a *later* occurrence of the
         # same key instead of matching any guard and any retry anywhere.
         # When the sample pins the guarded stock, only guarded calls
         # targeting that stock can seed the outcome.
         if entry.get("guarded") and key not in key_guarded_at:
-            if not guarded_stock_valid or _entry_matches_stock(entry, guarded_stock):
+            if not guarded_stock_valid or _entry_matches_stock(entry, guarded_stock, normalizer):
                 key_guarded_at[key] = key_counts[key]
         # An occurrence is a retry only when the same call already failed
         # before it (see module docstring for the precise contract).
@@ -365,6 +481,8 @@ def compute_trajectory_metrics(
 
     if expected_dupes:
         violations.append("expected_tools contains duplicate names")
+    if normalizer_invalid:
+        violations.append("stock_code_normalizer is not callable")
     if not stock_code:
         violations.append("golden.stock_code is not a non-empty string")
     # Stock-scoped hit semantics: an expected tool only counts when one of
@@ -418,7 +536,7 @@ def compute_trajectory_metrics(
         observed.append("cached")
     if retries:
         observed.append("retry")
-    if any(idx < key_counts.get(k, 0) for k, idx in key_guarded_at.items()):
+    if any(idx < key_counts.get(k, 0) and k not in key_guarded_escaped for k, idx in key_guarded_at.items()):
         observed.append("guarded_retry")
     missing_outcomes = [t for t in outcomes if t in EXPECTED_OUTCOME_TAGS and t not in observed]
     if missing_outcomes:
