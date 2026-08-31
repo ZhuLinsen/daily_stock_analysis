@@ -486,3 +486,24 @@ class TestUnifiedBudgetProbeGate:
         manager._run_with_timeout = lambda task, t, name: (None, f"{name} timeout", int(t * 1000))
         manager.get_capital_flow_context("001205", budget_seconds=10.0)
         assert budgets and budgets[0] == ("capital_flow", 6.0)
+
+
+class TestConfigSchemaContract:
+    """system-config schema 回归:MX 设置项的字段类型与敏感属性(评审建议)。"""
+
+    def test_mx_apikey_is_sensitive_password_field(self):
+        from src.core.config_registry import get_field_definition
+
+        field = get_field_definition("MX_APIKEY")
+        assert field.get("data_type") == "string"
+        assert field.get("ui_control") == "password"
+        assert field.get("is_sensitive") is True
+        assert field.get("category") == "data_source"
+
+    def test_mx_priority_is_integer_field(self):
+        from src.core.config_registry import get_field_definition
+
+        field = get_field_definition("MX_PRIORITY")
+        assert field.get("data_type") == "integer"
+        assert field.get("is_sensitive") is False
+        assert field.get("validation", {}).get("min") == 0
