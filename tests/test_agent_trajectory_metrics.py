@@ -173,13 +173,13 @@ class TestComputeMetricsHitRate:
     def test_empty_expected_tools_yields_zero_hit_and_violation(self):
         m = compute_trajectory_metrics([_entry()], _golden(expected_tools=[]))
         assert m.expected_hit_rate == 0.0
-        assert "golden sample has no expected_tools" in m.violations
+        assert "expected_tools must be a non-empty list" in m.violations
 
     def test_string_expected_tools_scored_as_empty_not_as_characters(self):
         m = compute_trajectory_metrics([_entry()], _golden(expected_tools="get_realtime_quote"))
         assert m.expected_hit_rate == 0.0
         assert m.expected_total == 0
-        assert "golden sample has no expected_tools" in m.violations
+        assert "expected_tools must be a list of tool names" in m.violations
 
     def test_non_bool_allow_optional_tools_scores_strictly(self):
         log = [
@@ -207,7 +207,7 @@ class TestComputeMetricsHitRate:
         assert m.expected_total == 2
         assert m.expected_hit_rate == pytest.approx(0.5)
         assert m.missing_expected == ["get_daily_history"]
-        assert "expected_tools contains duplicate names" in m.violations
+        assert "expected_tools must not contain duplicate names" in m.violations
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +251,7 @@ class TestDirectConstructionContract:
         log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"})]
         m = compute_trajectory_metrics(log, _golden(expected_outcomes=["   "]))
         assert "expected_outcomes must contain only non-empty strings" in m.violations
-        assert not any("unknown expected outcome tags" in v for v in m.violations)
+        assert not any("unknown expected_outcomes" in v for v in m.violations)
 
     def test_non_positive_allowed_max_steps_reported_in_direct_score(self):
         # Review counter-example: allowed_max_steps=0 / -3 must report the
@@ -277,6 +277,10 @@ class TestDirectConstructionContract:
             (dict(allowed_max_steps=0), "allowed_max_steps must be >= 1"),
             (dict(allowed_max_steps=-3), "allowed_max_steps must be >= 1"),
             (dict(allow_optional_tools="false"), "allow_optional_tools must be a boolean"),
+            (dict(id=[]), "id must be a non-empty string"),
+            (dict(task_description=None), "task_description must be a non-empty string"),
+            (dict(skills="trading"), "skills must be a list of strings"),
+            (dict(skills=["", "trading"]), "skills must contain only non-empty strings"),
             (
                 dict(expected_guarded_stock="600036"),
                 "expected_guarded_stock requires guarded_retry in expected_outcomes",
@@ -297,6 +301,31 @@ class TestDirectConstructionContract:
             assert any(issue in i for i in validator_issues), (issue, overrides, validator_issues)
             m = compute_trajectory_metrics(log, golden)
             assert any(issue in v for v in m.violations), (issue, overrides, m.violations)
+
+    def test_every_validator_issue_surfaces_in_direct_score(self):
+        # Structural lock: the direct-score path surfaces the validator's
+        # COMPLETE issue list verbatim (this is how id / task_description /
+        # skills and any future validator check apply to direct scoring
+        # automatically).  A thoroughly malformed sample must yield every
+        # validator issue in compute violations, with no duplicates from the
+        # inline scoring checks.
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": "600519"})]
+        golden = GoldenSample(
+            id=[],
+            task_description=None,
+            stock_code=None,
+            expected_tools=["", "   "],
+            skills=["", "trading"],
+            allowed_max_steps=0,
+            allow_optional_tools="false",
+            expected_outcomes=[1],
+        )
+        validator_issues = validate_golden_sample(golden)
+        assert validator_issues, "the sample is thoroughly malformed"
+        m = compute_trajectory_metrics(log, golden)
+        for issue in validator_issues:
+            assert any(issue in v for v in m.violations), (issue, m.violations)
+            assert m.violations.count(issue) == 1, (issue, m.violations)
 
     def test_unpaired_guarded_stock_reported_and_exemption_disabled(self):
         # Review counter-example: expected_guarded_stock without guarded_retry
@@ -1042,7 +1071,7 @@ class TestExpectedOutcomes:
             self._faithful_log(),
             self._guarded_sample(expected_outcomes=["guarded", "warp"]),
         )
-        assert "unknown expected outcome tags: warp" in m.violations
+        assert "unknown expected_outcomes: warp" in m.violations
         assert not any("not observed" in v for v in m.violations)
 
     def test_non_list_expected_outcomes_surfaces_violation(self):
@@ -1057,7 +1086,7 @@ class TestExpectedOutcomes:
             self._faithful_log(),
             self._guarded_sample(expected_outcomes=["guarded_retry", "guarded_retry"]),
         )
-        assert "expected_outcomes contains duplicate tags" in m.violations
+        assert "expected_outcomes must not contain duplicate tags" in m.violations
         assert "expected outcomes not observed" not in m.violations
 
 
@@ -1314,7 +1343,7 @@ class TestStockCodeScoping:
             [_entry(tool="get_realtime_quote")],
             _golden(expected_tools=["get_realtime_quote"], stock_code=None),
         )
-        assert "golden.stock_code is not a non-empty string" in m.violations
+        assert "stock_code must be a non-empty string" in m.violations
         assert m.expected_hit_rate == 1.0
 
 
@@ -1540,7 +1569,7 @@ class TestMaxStepsTouched:
         log = [_entry(step=i) for i in range(1, 6)]
         m = compute_trajectory_metrics(log, _golden(allowed_max_steps="5"))
         assert m.max_steps_touched is False
-        assert "allowed_max_steps is not an integer" in m.violations
+        assert "allowed_max_steps must be an integer" in m.violations
 
 
 # ---------------------------------------------------------------------------

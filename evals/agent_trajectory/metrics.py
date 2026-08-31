@@ -21,9 +21,12 @@ from any source.
 Both entry paths enforce the same golden-sample structure contract:
 ``validate_golden_sample`` (the loader path) rejects malformed samples
 outright, while ``compute_trajectory_metrics`` (the direct-construction path)
-reports malformed fields as violations and excludes the invalid parts from
-scoring — a caller who builds a ``GoldenSample`` by hand must never get a
-silently relaxed result (see the compute docstring for the exact mapping).
+excludes the invalid parts from scoring, reports its own scoring-level
+violations with the validator's wording, and finally appends *every* issue
+``validate_golden_sample`` reports, verbatim and deduplicated — a caller who
+builds a ``GoldenSample`` by hand can never get a silently relaxed result,
+and a new validator check applies to direct scoring automatically (see the
+compute docstring for the exact mapping).
 
 Idempotency key contract
 ------------------------
@@ -518,8 +521,11 @@ def compute_trajectory_metrics(
 
     Direct construction of a hand-edited ``GoldenSample`` is held to the same
     structure contract as :func:`validate_golden_sample` on the loader path:
-    malformed parts are reported as violations and excluded from scoring
-    instead of silently reshaping the result.  Malformed ``expected_tools`` /
+    malformed parts are excluded from scoring instead of silently reshaping
+    the result, scoring-level violations are reported with the validator's
+    wording, and every issue the validator reports — ``id`` /
+    ``task_description`` / ``skills`` included — is appended verbatim
+    (deduplicated) before returning.  Malformed ``expected_tools`` /
     ``expected_outcomes`` elements — non-strings, empty strings and
     whitespace-only strings, the validator's exact predicate — are dropped
     with an explicit violation, a non-positive ``allowed_max_steps`` is
@@ -695,13 +701,13 @@ def compute_trajectory_metrics(
         max_step = max(max_step, total)
 
     if expected_dupes:
-        violations.append("expected_tools contains duplicate names")
+        violations.append("expected_tools must not contain duplicate names")
     if expected_tools_malformed:
         violations.append("expected_tools must contain only non-empty strings")
     if normalizer_invalid:
         violations.append("stock_code_normalizer is not callable")
     if not stock_code:
-        violations.append("golden.stock_code is not a non-empty string")
+        violations.append("stock_code must be a non-empty string")
     # Stock-scoped hit semantics: an expected tool only counts when one of
     # its calls actually referenced the golden stock (see module docstring);
     # without a valid golden stock the scoring falls back to name-only.
@@ -715,8 +721,10 @@ def compute_trajectory_metrics(
     expected_hit_rate = (len(expected) - len(missing_expected)) / len(expected) if expected else 0.0
     optional_tools_used = [t for t in used_tools if t not in expected]
 
-    if not expected:
-        violations.append("golden sample has no expected_tools")
+    if not isinstance(golden.expected_tools, list):
+        violations.append("expected_tools must be a list of tool names")
+    elif not golden.expected_tools:
+        violations.append("expected_tools must be a non-empty list")
 
     # Malformed golden samples must not crash scoring nor flip semantics:
     # a truthy string like "false" must not silently turn a strict sample
@@ -746,11 +754,11 @@ def compute_trajectory_metrics(
             violations.append("expected_outcomes must contain only non-empty strings")
         outcomes = [t for t in golden.expected_outcomes if isinstance(t, str) and t.strip()]
         if len(set(outcomes)) != len(outcomes):
-            violations.append("expected_outcomes contains duplicate tags")
+            violations.append("expected_outcomes must not contain duplicate tags")
             outcomes = list(dict.fromkeys(outcomes))
         unknown = [t for t in outcomes if t not in EXPECTED_OUTCOME_TAGS]
         if unknown:
-            violations.append(f"unknown expected outcome tags: {', '.join(unknown)}")
+            violations.append(f"unknown expected_outcomes: {', '.join(unknown)}")
     # A pinned but malformed guarded stock must not silently disable the
     # stock binding for guarded_retry — nor silently keep it: mirror the
     # structure contract validate_golden_sample() enforces at load time, so
@@ -795,7 +803,7 @@ def compute_trajectory_metrics(
 
     limit = golden.allowed_max_steps
     if isinstance(limit, bool) or not isinstance(limit, int):
-        violations.append("allowed_max_steps is not an integer")
+        violations.append("allowed_max_steps must be an integer")
         limit = 0
     elif limit < 1:
         # Validator wording for the same field: a non-positive limit must
@@ -805,6 +813,17 @@ def compute_trajectory_metrics(
     max_steps_touched = bool(max_step and limit > 0 and max_step >= limit)
     if max_steps_touched:
         violations.append(f"trajectory reached allowed_max_steps ({golden.allowed_max_steps})")
+
+    # The direct-score path surfaces the validator's complete structure
+    # contract, not only the checks scoring itself depends on: every issue
+    # validate_golden_sample() reports is appended verbatim (deduplicated
+    # against the inline violations above), so a hand-built malformed golden
+    # can never score as valid — and a new validator check applies to direct
+    # scoring automatically.  The two entry paths stay aligned by
+    # construction instead of by convention.
+    for issue in validate_golden_sample(golden):
+        if issue not in violations:
+            violations.append(issue)
 
     return TrajectoryMetrics(
         expected_hit_rate=expected_hit_rate,
