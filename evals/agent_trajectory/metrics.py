@@ -10,10 +10,13 @@ This module computes quality metrics for an agent execution trajectory from its
   Codex App Server backend emits ``arguments_summary`` instead of
   ``arguments``).
 
-All functions in this module are pure: they consume plain data (a log list and
-a ``GoldenSample``) and never touch the filesystem, network, or LLM.  This keeps
-the metrics layer deterministic, unit-testable without an API key, and free of
-``src/`` imports — it can score trajectories from any source.
+The scoring functions in this module are pure: ``compute_trajectory_metrics``,
+``format_text_report`` and ``validate_golden_sample`` consume plain data (a log
+list and a ``GoldenSample``) and never touch the filesystem, network, or LLM.
+The one exception is the loader ``load_golden_samples``, which reads the golden
+JSON file from disk.  This keeps the metrics layer deterministic, unit-testable
+without an API key, and free of ``src/`` imports — it can score trajectories
+from any source.
 
 Idempotency key contract
 ------------------------
@@ -24,6 +27,13 @@ unhashable values (dict / list), so the key is built with
 not a hash.  Do not replace this with ``tuple(arguments)`` or ``repr()``:
 insertion order or collection type would then change call identity and corrupt
 redundancy / retry counts.
+
+Codex App Server entries carry only ``arguments_summary`` — the redacted and
+truncated preview produced by ``redact_diagnostic_value`` — so their identity
+is best-effort: distinct calls whose summaries collide after redaction or
+truncation may be over-counted as redundant.  A stable argument fingerprint
+requires a producer-side change in ``src/agent/codex_agent_backend.py``, which
+is out of scope for this metrics layer.
 
 Metric semantics
 ----------------
@@ -273,6 +283,9 @@ def load_golden_samples(
     if not isinstance(data, list):
         raise ValueError(f"golden samples file must contain a JSON list, got {type(data).__name__}")
 
+    # Materialize once before the loop: a one-shot generator must survive the
+    # validation of every sample, not just the first.
+    known = set(known_tool_names) if known_tool_names is not None else None
     golden_fields = {f.name for f in fields(GoldenSample)}
     samples: List[GoldenSample] = []
     seen_ids: set = set()
@@ -283,12 +296,15 @@ def load_golden_samples(
             sample = GoldenSample(**{k: v for k, v in item.items() if k in golden_fields})
         except TypeError as exc:
             raise ValueError(f"sample #{index} has invalid fields: {exc}") from exc
+        # Structural validation runs before duplicate detection so that a
+        # mistyped (possibly unhashable) id is rejected as a ValueError here
+        # instead of crashing the membership check below.
+        issues = validate_golden_sample(sample, known)
+        if issues:
+            raise ValueError(f"sample '{sample.id}': " + "; ".join(issues))
         if sample.id in seen_ids:
             raise ValueError(f"duplicate sample id: {sample.id}")
         seen_ids.add(sample.id)
-        issues = validate_golden_sample(sample, known_tool_names)
-        if issues:
-            raise ValueError(f"sample '{sample.id}': " + "; ".join(issues))
         samples.append(sample)
     return samples
 

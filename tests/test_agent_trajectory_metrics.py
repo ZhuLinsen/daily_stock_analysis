@@ -450,6 +450,12 @@ class TestGoldenSamplesFile:
         known = (name for name in ["a", "b"])
         assert validate_golden_sample(sample, known) == []
 
+    def test_loader_materializes_registry_once_for_multiple_samples(self):
+        # A one-shot generator must survive loading the whole checked-in file:
+        # the first sample must not exhaust it for the remaining samples.
+        samples = load_golden_samples(known_tool_names=(name for name in _repo_tool_names()))
+        assert len(samples) == 3
+
 
 class TestLoadGoldenSamplesErrors:
     @staticmethod
@@ -551,6 +557,20 @@ class TestLoadGoldenSamplesErrors:
         path = self._write_sample(tmp_path, [sample])
         with pytest.raises(ValueError, match="expected_tools must be a list"):
             load_golden_samples(path=path, known_tool_names={"get_realtime_quote"})
+
+    def test_unhashable_id_raises_valueerror(self, tmp_path):
+        # Structural validation must run before duplicate detection: an
+        # unhashable id would otherwise crash the seen_ids membership check
+        # with a TypeError instead of the documented ValueError.
+        sample = {
+            "id": ["x"],
+            "task_description": "t",
+            "stock_code": "600519",
+            "expected_tools": ["get_realtime_quote"],
+        }
+        path = self._write_sample(tmp_path, [sample])
+        with pytest.raises(ValueError, match="id must be a non-empty string"):
+            load_golden_samples(path=path)
 
     def test_non_bool_allow_optional_tools_raises(self, tmp_path):
         sample = {
