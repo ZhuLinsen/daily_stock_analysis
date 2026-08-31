@@ -89,6 +89,19 @@ class TestArgsKey:
     def test_non_dict_arguments_serialized(self):
         assert _args_key(["600519"]) == '["600519"]'
 
+    def test_stock_code_aliases_share_a_key(self):
+        # Mirroring _build_tool_cache_key: the stock_code field is
+        # canonicalized before serialization, so runtime-equivalent alias
+        # forms share one call identity.
+        assert _args_key({"stock_code": "SH600519"}) == _args_key({"stock_code": "600519"})
+        assert _args_key({"stock_code": "600519.SH"}) == _args_key({"stock_code": "sh600519"})
+        assert _args_key({"stock_code": "HK00700"}) == _args_key({"stock_code": "700.HK"})
+
+    def test_other_arguments_stay_raw_in_the_key(self):
+        assert _args_key({"stock_code": "SH600519", "period": "daily"}) != _args_key(
+            {"stock_code": "600519", "period": "weekly"}
+        )
+
 
 # ---------------------------------------------------------------------------
 # 2. Hit rate / expected & optional tools
@@ -349,6 +362,99 @@ class TestExpectedOutcomes:
         m = compute_trajectory_metrics(log, self._guarded_sample())
         assert m.expected_hit_rate == 1.0
         assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_alias_guard_and_retry_share_one_call_identity(self):
+        # Review counter-example: the runtime cache key normalizes the
+        # stock_code argument, so a guarded SH600519 call retried as 600519
+        # is the same (tool, args-key) pair and must count as a retry —
+        # previously the raw-argument key split it into two fresh calls and
+        # reported guarded_retry as missing.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "SH600519"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed" not in m.violations
+        assert m.retries == 1
+        assert m.redundant_calls == 1
+
+    def test_alias_retry_counts_toward_retry_and_redundancy(self):
+        # A failed 600519.SH call retried as 600519 is one identity: the
+        # second occurrence is both redundant and a retry.
+        log = [
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519.SH"},
+                step=1,
+                success=False,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=2,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden())
+        assert m.retries == 1
+        assert m.redundant_calls == 1
+
+    def test_identity_normalization_only_touches_the_stock_code_field(self):
+        # Mirroring _build_tool_cache_key: other arguments stay raw, so a
+        # different period still splits the identity even when the stock
+        # codes are aliases of each other.
+        log = [
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "SH600519", "period": "daily"},
+                step=1,
+                success=False,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519", "period": "weekly"},
+                step=2,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden())
+        assert m.retries == 0
+        assert m.redundant_calls == 0
+
+    def test_injected_normalizer_drives_call_identity(self):
+        # Call identity follows the injected normalizer, not the mirror: a
+        # constant normalizer merges every stock code into one identity.
+        log = [
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=1,
+                success=False,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "000001"},
+                step=2,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden(), stock_code_normalizer=lambda v: "SAME")
+        assert m.retries == 1
+        assert m.redundant_calls == 1
 
     def test_clean_success_after_guard_is_an_escape(self):
         # Review counter-example: the guarded call is retried and the retry
@@ -992,7 +1098,14 @@ class TestGoldenSamplesFile:
         mistyped = GoldenSample(**base, expected_guarded_stock=600519)
         assert any("expected_guarded_stock must be a non-empty string" in i for i in validate_golden_sample(mistyped))
         same_stock = GoldenSample(**base, expected_guarded_stock="600036")
-        assert any("must differ from stock_code" in i for i in validate_golden_sample(same_stock))
+        assert any("must name a different stock than stock_code" in i for i in validate_golden_sample(same_stock))
+        # Review counter-example: canonicalization must catch alias spellings
+        # of the in-scope stock, not just identical strings.
+        for alias in ("SH600036", "600036.SH", "SS600036", " 600036 "):
+            alias_sample = GoldenSample(**base, expected_guarded_stock=alias)
+            assert any(
+                "must name a different stock than stock_code" in i for i in validate_golden_sample(alias_sample)
+            ), alias
         no_outcome = GoldenSample(
             id="x",
             task_description="t",
@@ -1003,6 +1116,10 @@ class TestGoldenSamplesFile:
         assert any("requires guarded_retry in expected_outcomes" in i for i in validate_golden_sample(no_outcome))
         pinned = GoldenSample(**base, expected_guarded_stock="600519")
         assert validate_golden_sample(pinned) == []
+        # A guarded stock that canonicalizes to a different code stays valid,
+        # alias spelling or not.
+        alias_other = GoldenSample(**base, expected_guarded_stock="SH600519")
+        assert validate_golden_sample(alias_other) == []
 
     def test_unknown_expected_outcome_fails_validation(self):
         sample = GoldenSample(

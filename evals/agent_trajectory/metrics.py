@@ -26,7 +26,10 @@ unhashable values (dict / list), so the key is built with
 ``json.dumps(arguments, sort_keys=True, default=str)`` — a *stable string*,
 not a hash.  Do not replace this with ``tuple(arguments)`` or ``repr()``:
 insertion order or collection type would then change call identity and corrupt
-redundancy / retry counts.
+redundancy / retry counts.  Mirroring the production
+``_build_tool_cache_key``, the ``stock_code`` field is canonicalized before
+serialization so runtime-equivalent alias forms share one identity; all other
+arguments stay raw.
 
 Codex App Server entries carry only ``arguments_summary`` — the redacted and
 truncated preview produced by ``redact_diagnostic_value`` — so their identity
@@ -164,10 +167,25 @@ class TrajectoryMetrics:
     violations: List[str]
 
 
-def _args_key(arguments: Any) -> str:
-    """Return a stable idempotency key for tool-call arguments (see module docstring)."""
+def _args_key(arguments: Any, normalizer: Optional[Callable[[Any], str]] = None) -> str:
+    """Return a stable idempotency key for tool-call arguments (see module docstring).
+
+    Mirrors ``src/agent/tools/execution._build_tool_cache_key``: when the
+    payload is a dict, its ``stock_code`` field is canonicalized before
+    serialization so runtime-equivalent alias forms (``SH600519`` /
+    ``600519.SH`` / ``600519``) share one call identity; every other
+    argument stays raw, exactly like the production cache key.  Non-dict
+    payloads (Codex ``arguments_summary`` wrappers, bare fallbacks) are
+    serialized as-is.
+    """
     if arguments is None:
         arguments = {}
+    if normalizer is None:
+        normalizer = _canonicalize_stock_code
+    if isinstance(arguments, dict) and "stock_code" in arguments:
+        normalized = dict(arguments)
+        normalized["stock_code"] = _apply_stock_normalizer(normalizer, arguments["stock_code"])
+        arguments = normalized
     return json.dumps(arguments, sort_keys=True, default=str)
 
 
@@ -426,7 +444,7 @@ def compute_trajectory_metrics(
         if not isinstance(entry.get("arguments"), dict) and entry.get("arguments_summary"):
             codex_shaped = True
 
-        key = (tool, _args_key(_entry_arguments(entry)))
+        key = (tool, _args_key(_entry_arguments(entry), normalizer))
         if key_counts.get(key, 0):
             redundant_calls += 1
         key_counts[key] = key_counts.get(key, 0) + 1
@@ -698,8 +716,11 @@ def validate_golden_sample(
     if sample.expected_guarded_stock is not None:
         if not isinstance(sample.expected_guarded_stock, str) or not sample.expected_guarded_stock.strip():
             issues.append("expected_guarded_stock must be a non-empty string")
-        elif sample.expected_guarded_stock.strip() == sample.stock_code:
-            issues.append("expected_guarded_stock must differ from stock_code (it names the out-of-scope call)")
+        elif _canonicalize_stock_code(sample.expected_guarded_stock) == _canonicalize_stock_code(sample.stock_code):
+            issues.append(
+                "expected_guarded_stock must name a different stock than stock_code "
+                "after canonicalization (it names the out-of-scope call)"
+            )
         elif not isinstance(sample.expected_outcomes, list) or "guarded_retry" not in sample.expected_outcomes:
             issues.append("expected_guarded_stock requires guarded_retry in expected_outcomes")
     return issues
