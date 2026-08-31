@@ -76,7 +76,10 @@ Metric semantics
   retry of an unrelated call does not satisfy it.  When the sample sets
   ``expected_guarded_stock``, the guarded occurrence of ``guarded_retry``
   must additionally target that stock (the task's required out-of-scope
-  call), and every occurrence of the pair must remain blocked
+  call) with *actual stock evidence* — the name-only tolerance does not
+  apply to the pinned check, so a blocked call that never identifies a
+  stock (empty or missing arguments payload) cannot prove the pinned probe.
+  Every occurrence of the pair must remain blocked
   (``cached`` / ``guarded`` / failed): a clean success at *any* point — before
   or after the first guarded occurrence — is an escape (the scope guard was
   bypassed, or the call provably gets through it) and does not satisfy it.  A
@@ -109,7 +112,8 @@ Metric semantics
   violation — one matching call does not legitimize cross-stock calls of the
   same tool.  The one exception is the
   sample's own pinned out-of-scope stock (``expected_guarded_stock``): a call
-  that targets it and stays blocked (``guarded`` / ``cached`` / failed) is
+  that targets it (with actual stock evidence, the same strict match as the
+  outcome seeding) and stays blocked (``guarded`` / ``cached`` / failed) is
   the deliberate probe the task itself requires, so it is exempt from
   wrong-stock reporting; a clean success on the pinned stock is still
   reported (and escapes ``guarded_retry``).
@@ -339,6 +343,7 @@ def _entry_matches_stock(
     entry: Dict[str, Any],
     stock_code: str,
     normalizer: Callable[[Any], str],
+    require_evidence: bool = False,
 ) -> bool:
     """Best-effort check that a log entry's call targeted ``stock_code``.
 
@@ -357,6 +362,11 @@ def _entry_matches_stock(
     explicitly present but invalid value (null / boolean / non-scalar) is a
     non-match — it provably does not target the golden stock and must not
     earn hit credit (see the module docstring).
+
+    ``require_evidence`` tightens the check for stock-pinned assertions
+    (``expected_guarded_stock``): entries with no stock evidence at all are
+    non-matches instead of name-only hits — a blocked call that never
+    identifies a stock cannot prove the pinned out-of-scope probe.
     """
     if "requested_stock_code" in entry:
         requested = entry["requested_stock_code"]
@@ -370,8 +380,9 @@ def _entry_matches_stock(
     if isinstance(args, dict):
         if "stock_code" not in args:
             # No stock evidence in the payload: documented name-only
-            # tolerance (the entry still counts, like a minimal entry).
-            return True
+            # tolerance for ordinary hit scoring (the entry still counts,
+            # like a minimal entry) — but never for stock-pinned assertions.
+            return not require_evidence
         value = args["stock_code"]
         # Explicitly present but invalid (null / boolean / non-scalar):
         # not evidence for the golden stock, so not a hit either.
@@ -388,7 +399,7 @@ def _entry_matches_stock(
         if not isinstance(value, (str, int)) or isinstance(value, bool):
             return False
         return _apply_stock_normalizer(normalizer, value) == stock_code
-    return True
+    return not require_evidence
 
 
 # Sentinel distinguishing "the summary holds no structured stock_code" from a
@@ -565,7 +576,7 @@ def compute_trajectory_metrics(
         # guarded_retry).
         pinned_probe_blocked = (
             guarded_stock_valid
-            and _entry_matches_stock(entry, guarded_stock, normalizer)
+            and _entry_matches_stock(entry, guarded_stock, normalizer, require_evidence=True)
             and _entry_stayed_blocked(entry, success)
         )
         if (
@@ -605,9 +616,11 @@ def compute_trajectory_metrics(
         # "guarded_retry" outcome can require a *later* occurrence of the
         # same key instead of matching any guard and any retry anywhere.
         # When the sample pins the guarded stock, only guarded calls
-        # targeting that stock can seed the outcome.
+        # carrying actual stock evidence for that stock can seed the
+        # outcome — a blocked call that never identifies a stock cannot
+        # prove the pinned out-of-scope probe (no name-only tolerance here).
         if entry.get("guarded") and key not in key_guarded_at:
-            if not guarded_stock_valid or _entry_matches_stock(entry, guarded_stock, normalizer):
+            if not guarded_stock_valid or _entry_matches_stock(entry, guarded_stock, normalizer, require_evidence=True):
                 key_guarded_at[key] = key_counts[key]
         # An occurrence is a retry only when the same call already failed
         # before it (see module docstring for the precise contract).

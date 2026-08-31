@@ -704,6 +704,68 @@ class TestExpectedOutcomes:
         m = compute_trajectory_metrics(log, self._guarded_sample())
         assert "expected outcomes not observed: guarded_retry" in m.violations
 
+    def test_guarded_probe_without_stock_evidence_does_not_satisfy(self):
+        # Review counter-example: a blocked call with no stock evidence at
+        # all (arguments={}) cannot prove the pinned 600519 probe, so the
+        # name-only tolerance must not seed a stock-pinned guarded_retry.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={},
+                step=4,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert m.expected_hit_rate == 1.0
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_guarded_probe_without_any_arguments_does_not_satisfy(self):
+        # Minimal entries with no arguments payload at all must not seed the
+        # pinned outcome through the trailing name-only tolerance either.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            {"step": 3, "tool": "get_realtime_quote", "success": False, "guarded": True},
+            {"step": 4, "tool": "get_realtime_quote", "success": False, "cached": True},
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_guarded_probe_without_stock_field_does_not_satisfy(self):
+        # A structured payload without a stock_code field ({"days": 30})
+        # carries no stock evidence either and must not satisfy the pin.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"days": 30},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"days": 30},
+                step=4,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
     def test_injected_normalizer_drives_call_identity(self):
         # Call identity follows the injected normalizer, not the mirror: a
         # constant normalizer merges every stock code into one identity.
