@@ -1,0 +1,116 @@
+name: US Claude Stock Analysis
+
+on:
+  schedule:
+    # 22:30 UTC = 01:30 Africa/Nairobi on the following calendar day.
+    # Runs after the regular US market close with time for closing data to settle.
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - market-only
+          - stocks-only
+      force_run:
+        description: 'Skip trading-day checks'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: us-claude-stock-analysis
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create output directories
+        run: mkdir -p data logs reports
+
+      - name: Run Claude-first US stock analysis
+        env:
+          # Claude / LiteLLM
+          GENERATION_BACKEND: litellm
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || 'anthropic/claude-sonnet-4-6' }}
+          LLM_TEMPERATURE: ${{ vars.LLM_TEMPERATURE || '0.4' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEYS: ${{ secrets.ANTHROPIC_API_KEYS }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-sonnet-4-6' }}
+
+          # Watchlist and report defaults
+          STOCK_LIST: ${{ vars.STOCK_LIST || 'AAPL,MSFT,NVDA,GOOGL,AMZN,META,SPY,QQQ' }}
+          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || 'us' }}
+          MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || 'true' }}
+          REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || 'en' }}
+          REPORT_TYPE: ${{ vars.REPORT_TYPE || 'simple' }}
+          REPORT_SHOW_LLM_MODEL: ${{ vars.REPORT_SHOW_LLM_MODEL || 'true' }}
+          SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || 'false' }}
+          TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || 'true' }}
+          MAX_WORKERS: ${{ vars.MAX_WORKERS || '1' }}
+          LOG_LEVEL: INFO
+
+          # Search/news providers (optional but recommended)
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+
+          # Optional email reporting
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
+          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || 'Daily Stock Analysis' }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEYS:-}" ]; then
+            echo "::error::ANTHROPIC_API_KEY or ANTHROPIC_API_KEYS is required."
+            exit 1
+          fi
+
+          MODE="${{ github.event.inputs.mode || 'full' }}"
+          FORCE_RUN_ARG=""
+          if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
+            FORCE_RUN_ARG="--force-run"
+          fi
+
+          echo "Claude model: $LITELLM_MODEL"
+          echo "Market region: $MARKET_REVIEW_REGION"
+          echo "Watchlist: $STOCK_LIST"
+
+          if [ "$MODE" = "market-only" ]; then
+            python main.py --market-review $FORCE_RUN_ARG
+          elif [ "$MODE" = "stocks-only" ]; then
+            python main.py --no-market-review $FORCE_RUN_ARG
+          else
+            python main.py $FORCE_RUN_ARG
+          fi
+
+      - name: Upload reports and logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: us-claude-analysis-${{ github.run_number }}
+          path: |
+            reports/
+            logs/
+          retention-days: 30
