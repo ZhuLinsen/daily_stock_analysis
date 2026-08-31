@@ -149,6 +149,18 @@ class TestComputeMetricsHitRate:
         assert m.expected_total == 0
         assert "golden sample has no expected_tools" in m.violations
 
+    def test_non_bool_allow_optional_tools_scores_strictly(self):
+        log = [
+            _entry(tool="get_realtime_quote", step=1),
+            _entry(tool="search_stock_news", step=2),
+        ]
+        m = compute_trajectory_metrics(
+            log,
+            _golden(expected_tools=["get_realtime_quote"], allow_optional_tools="false"),
+        )
+        assert "allow_optional_tools is not a boolean" in m.violations
+        assert "optional tools used but not allowed: search_stock_news" in m.violations
+
 
 # ---------------------------------------------------------------------------
 # 3. Retries, caching, failure counting
@@ -240,6 +252,12 @@ class TestMaxStepsTouched:
     def test_empty_log_not_touched(self):
         m = compute_trajectory_metrics([], _golden(allowed_max_steps=5))
         assert m.max_steps_touched is False
+
+    def test_non_integer_limit_surfaces_violation_without_crash(self):
+        log = [_entry(step=i) for i in range(1, 6)]
+        m = compute_trajectory_metrics(log, _golden(allowed_max_steps="5"))
+        assert m.max_steps_touched is False
+        assert "allowed_max_steps is not an integer" in m.violations
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +398,36 @@ class TestGoldenSamplesFile:
         issues = validate_golden_sample(sample)
         assert any("must be a list" in i for i in issues)
 
+    def test_non_bool_allow_optional_tools_fails_validation(self):
+        sample = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600519",
+            expected_tools=["get_realtime_quote"],
+            allow_optional_tools="false",
+        )
+        issues = validate_golden_sample(sample)
+        assert any("allow_optional_tools must be a boolean" in i for i in issues)
+
+    def test_mistyped_fields_fail_validation_not_crash(self):
+        # Same defect class as the string expected_tools bug: hand-edited JSON
+        # with mistyped fields must be rejected cleanly, never crash or pass.
+        bad = GoldenSample(
+            id=5,
+            task_description=None,
+            stock_code="600519",
+            expected_tools=["get_realtime_quote"],
+            skills="trading",
+            allowed_max_steps="5",
+            allow_optional_tools=1,
+        )
+        issues = validate_golden_sample(bad)
+        assert any("id must be a non-empty string" in i for i in issues)
+        assert any("task_description must be a non-empty string" in i for i in issues)
+        assert any("skills must be a list" in i for i in issues)
+        assert any("allowed_max_steps must be an integer" in i for i in issues)
+        assert any("allow_optional_tools must be a boolean" in i for i in issues)
+
 
 class TestLoadGoldenSamplesErrors:
     @staticmethod
@@ -467,4 +515,16 @@ class TestLoadGoldenSamplesErrors:
         }
         path = self._write_sample(tmp_path, [sample])
         with pytest.raises(ValueError, match="expected_tools must be a list"):
+            load_golden_samples(path=path)
+
+    def test_non_bool_allow_optional_tools_raises(self, tmp_path):
+        sample = {
+            "id": "x",
+            "task_description": "t",
+            "stock_code": "600519",
+            "expected_tools": ["get_realtime_quote"],
+            "allow_optional_tools": "false",
+        }
+        path = self._write_sample(tmp_path, [sample])
+        with pytest.raises(ValueError, match="allow_optional_tools must be a boolean"):
             load_golden_samples(path=path)

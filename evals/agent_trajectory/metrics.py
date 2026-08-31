@@ -196,13 +196,26 @@ def compute_trajectory_metrics(
     missing_expected = [t for t in expected if t not in used_tools]
     expected_hit_rate = (len(expected) - len(missing_expected)) / len(expected) if expected else 0.0
     optional_tools_used = [t for t in used_tools if t not in expected]
-    max_steps_touched = bool(max_step and max_step >= golden.allowed_max_steps)
 
     violations: List[str] = []
     if not expected:
         violations.append("golden sample has no expected_tools")
-    if optional_tools_used and not golden.allow_optional_tools:
+
+    # Malformed golden samples must not crash scoring nor flip semantics:
+    # a truthy string like "false" must not silently turn a strict sample
+    # permissive, and a non-integer step limit must not crash the comparison.
+    optional_allowed = golden.allow_optional_tools
+    if not isinstance(optional_allowed, bool):
+        violations.append("allow_optional_tools is not a boolean")
+        optional_allowed = False
+    if optional_tools_used and not optional_allowed:
         violations.append(f"optional tools used but not allowed: {', '.join(optional_tools_used)}")
+
+    limit = golden.allowed_max_steps
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        violations.append("allowed_max_steps is not an integer")
+        limit = 0
+    max_steps_touched = bool(max_step and limit > 0 and max_step >= limit)
     if max_steps_touched:
         violations.append(f"trajectory reached allowed_max_steps ({golden.allowed_max_steps})")
 
@@ -290,13 +303,19 @@ def validate_golden_sample(
     When ``known_tool_names`` is provided, ``expected_tools`` must be a subset
     of it; the caller supplies the authoritative registry names (this module
     deliberately does not import ``src/``).
+
+    Field *types* are part of the structural contract — hand-edited golden
+    JSON must fail with a clear message instead of crashing or silently
+    passing: text fields must be strings, ``expected_tools``/``skills`` must
+    be lists, ``allowed_max_steps`` an integer and ``allow_optional_tools`` a
+    boolean.
     """
     issues: List[str] = []
-    if not sample.id or not sample.id.strip():
+    if not isinstance(sample.id, str) or not sample.id.strip():
         issues.append("id must be a non-empty string")
-    if not sample.task_description or not sample.task_description.strip():
+    if not isinstance(sample.task_description, str) or not sample.task_description.strip():
         issues.append("task_description must be a non-empty string")
-    if not sample.stock_code or not sample.stock_code.strip():
+    if not isinstance(sample.stock_code, str) or not sample.stock_code.strip():
         issues.append("stock_code must be a non-empty string")
     if not isinstance(sample.expected_tools, list):
         issues.append("expected_tools must be a list of tool names")
@@ -308,8 +327,14 @@ def validate_golden_sample(
         unknown = [t for t in sample.expected_tools if isinstance(t, str) and t.strip() and t not in known_tool_names]
         if unknown:
             issues.append(f"unknown expected_tools: {', '.join(unknown)}")
-    if sample.allowed_max_steps < 1:
-        issues.append("allowed_max_steps must be >= 1")
-    if any(not isinstance(s, str) or not s.strip() for s in sample.skills):
+    if not isinstance(sample.skills, list):
+        issues.append("skills must be a list of strings")
+    elif any(not isinstance(s, str) or not s.strip() for s in sample.skills):
         issues.append("skills must contain only non-empty strings")
+    if isinstance(sample.allowed_max_steps, bool) or not isinstance(sample.allowed_max_steps, int):
+        issues.append("allowed_max_steps must be an integer")
+    elif sample.allowed_max_steps < 1:
+        issues.append("allowed_max_steps must be >= 1")
+    if not isinstance(sample.allow_optional_tools, bool):
+        issues.append("allow_optional_tools must be a boolean")
     return issues
