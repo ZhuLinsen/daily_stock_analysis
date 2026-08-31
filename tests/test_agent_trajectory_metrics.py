@@ -143,6 +143,12 @@ class TestComputeMetricsHitRate:
         assert m.expected_hit_rate == 0.0
         assert "golden sample has no expected_tools" in m.violations
 
+    def test_string_expected_tools_scored_as_empty_not_as_characters(self):
+        m = compute_trajectory_metrics([_entry()], _golden(expected_tools="get_realtime_quote"))
+        assert m.expected_hit_rate == 0.0
+        assert m.expected_total == 0
+        assert "golden sample has no expected_tools" in m.violations
+
 
 # ---------------------------------------------------------------------------
 # 3. Retries, caching, failure counting
@@ -185,6 +191,19 @@ class TestRetryAndCaching:
         assert m.redundant_calls == 2
         assert m.failed_calls == 2
 
+    def test_recovery_clears_failure_state(self):
+        # fail -> success -> success: only the recovery attempt is a retry;
+        # the repeat after success counts as redundant only.
+        log = [
+            _entry(step=1, success=False),
+            _entry(step=2, success=True),
+            _entry(step=3, success=True),
+        ]
+        m = compute_trajectory_metrics(log, _golden())
+        assert m.retries == 1
+        assert m.redundant_calls == 2
+        assert m.failed_calls == 1
+
     def test_cached_entry_counted(self):
         m = compute_trajectory_metrics([_entry(cached=True, success=False)], _golden())
         assert m.cached_calls == 1
@@ -221,6 +240,37 @@ class TestMaxStepsTouched:
     def test_empty_log_not_touched(self):
         m = compute_trajectory_metrics([], _golden(allowed_max_steps=5))
         assert m.max_steps_touched is False
+
+
+# ---------------------------------------------------------------------------
+# 4b. total_steps input (final answer round)
+# ---------------------------------------------------------------------------
+class TestTotalStepsInput:
+    def test_total_steps_extends_step_metrics_beyond_log(self):
+        log = [_entry(step=1), _entry(step=2)]
+        m = compute_trajectory_metrics(log, _golden(allowed_max_steps=5), total_steps=4)
+        assert m.distinct_steps == 4
+        assert m.max_steps_touched is False
+
+    def test_total_steps_can_touch_the_limit(self):
+        log = [_entry(step=1), _entry(step=2)]
+        m = compute_trajectory_metrics(log, _golden(allowed_max_steps=3), total_steps=3)
+        assert m.max_steps_touched is True
+        assert m.distinct_steps == 3
+
+    def test_log_wins_when_it_reaches_further(self):
+        log = [_entry(step=i) for i in range(1, 5)]
+        m = compute_trajectory_metrics(log, _golden(allowed_max_steps=5), total_steps=2)
+        assert m.distinct_steps == 4
+        assert m.max_steps_touched is False
+
+    def test_none_keeps_log_only_behaviour(self):
+        m = compute_trajectory_metrics([_entry(step=1)], _golden())
+        assert m.distinct_steps == 1
+
+    def test_non_numeric_total_steps_ignored(self):
+        m = compute_trajectory_metrics([_entry(step=1)], _golden(), total_steps="not-a-number")
+        assert m.distinct_steps == 1
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +370,16 @@ class TestGoldenSamplesFile:
             assert sample.stock_code.strip()
             assert sample.allowed_max_steps >= 1
 
+    def test_string_expected_tools_fails_validation(self):
+        sample = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600519",
+            expected_tools="get_realtime_quote",
+        )
+        issues = validate_golden_sample(sample)
+        assert any("must be a list" in i for i in issues)
+
 
 class TestLoadGoldenSamplesErrors:
     @staticmethod
@@ -396,4 +456,15 @@ class TestLoadGoldenSamplesErrors:
         }
         path = self._write_sample(tmp_path, [sample])
         with pytest.raises(ValueError, match="allowed_max_steps must be >= 1"):
+            load_golden_samples(path=path)
+
+    def test_string_expected_tools_raises(self, tmp_path):
+        sample = {
+            "id": "x",
+            "task_description": "t",
+            "stock_code": "600519",
+            "expected_tools": "get_realtime_quote",
+        }
+        path = self._write_sample(tmp_path, [sample])
+        with pytest.raises(ValueError, match="expected_tools must be a list"):
             load_golden_samples(path=path)

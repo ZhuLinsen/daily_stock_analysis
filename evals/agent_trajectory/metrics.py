@@ -31,13 +31,18 @@ Metric semantics
   first — regardless of success.
 * ``retries``: occurrences that follow a *failed* occurrence of the same pair
   (i.e. "tried again after a failure").  ``retries`` is a subset of
-  ``redundant_calls``; repeats after success count as redundant but not retry.
+  ``redundant_calls``; repeats after success count as redundant but not retry,
+  and a success clears the pair's failure state — so ``fail -> success ->
+  success`` counts exactly one retry, not two.
 * ``cached_calls``: entries with ``cached=True`` (runner semantics: reuse of a
   non-retriable failure result).
 * ``max_steps_touched``: the log does not carry ``max_steps`` itself, so this
   is the conservative heuristic ``max(step) >= golden.allowed_max_steps`` —
   a proxy for "the run reached the step budget", not proof of the loop
-  exhausting it.
+  exhausting it.  When ``total_steps`` is supplied (see
+  :func:`compute_trajectory_metrics`), the larger of ``total_steps`` and the
+  log-derived step is compared instead — the final answer round consumes a
+  step but produces no tool call, so the log alone understates consumption.
 """
 
 from __future__ import annotations
@@ -115,8 +120,20 @@ def _coerce_step(value: Any) -> int:
     return step if step > 0 else 0
 
 
-def compute_trajectory_metrics(log: List[Dict[str, Any]], golden: GoldenSample) -> TrajectoryMetrics:
-    """Compute all trajectory metrics from a ``tool_calls_log`` and a golden sample."""
+def compute_trajectory_metrics(
+    log: List[Dict[str, Any]],
+    golden: GoldenSample,
+    total_steps: Optional[int] = None,
+) -> TrajectoryMetrics:
+    """Compute all trajectory metrics from a ``tool_calls_log`` and a golden sample.
+
+    ``total_steps`` optionally carries the number of loop rounds the run
+    actually consumed (``RunLoopResult.total_steps``), which includes the
+    final plain-answer round that produces no tool call.  When it is larger
+    than the log-derived step count it is used for ``distinct_steps`` and the
+    ``max_steps_touched`` heuristic; otherwise the log alone decides, and the
+    default ``None`` keeps the log-only behaviour.
+    """
     used_tools: List[str] = []
     key_counts: Dict[tuple, int] = {}
     key_failed_seen: Dict[tuple, bool] = {}
@@ -153,10 +170,29 @@ def compute_trajectory_metrics(log: List[Dict[str, Any]], golden: GoldenSample) 
         # before it (see module docstring for the precise contract).
         if key_failed_seen.get(key):
             key_retries[key] = key_retries.get(key, 0) + 1
-        if not success:
-            key_failed_seen[key] = True
+        # A success clears the failure state: repeats after a recovery count
+        # as redundant only, not as further retries.
+        key_failed_seen[key] = not success
 
-    expected = [t for t in (golden.expected_tools or []) if isinstance(t, str) and t]
+    # The final answer round consumes a step but produces no tool call, so
+    # when the caller supplies the run's real total it may exceed the log.
+    total = 0
+    if total_steps is not None:
+        try:
+            total = int(total_steps)
+        except (TypeError, ValueError):
+            total = 0
+        total = total if total > 0 else 0
+    distinct_steps = max(distinct_steps, total)
+    max_step = max(max_step, total)
+
+    if isinstance(golden.expected_tools, list):
+        expected = [t for t in golden.expected_tools if isinstance(t, str) and t]
+    else:
+        # Defend against hand-edited samples passing a bare string:
+        # validation rejects it at load time, but scoring must not misparse
+        # it into per-character tool names either.
+        expected = []
     missing_expected = [t for t in expected if t not in used_tools]
     expected_hit_rate = (len(expected) - len(missing_expected)) / len(expected) if expected else 0.0
     optional_tools_used = [t for t in used_tools if t not in expected]
@@ -262,7 +298,9 @@ def validate_golden_sample(
         issues.append("task_description must be a non-empty string")
     if not sample.stock_code or not sample.stock_code.strip():
         issues.append("stock_code must be a non-empty string")
-    if not sample.expected_tools:
+    if not isinstance(sample.expected_tools, list):
+        issues.append("expected_tools must be a list of tool names")
+    elif not sample.expected_tools:
         issues.append("expected_tools must be a non-empty list")
     elif any(not isinstance(t, str) or not t.strip() for t in sample.expected_tools):
         issues.append("expected_tools must contain only non-empty strings")
