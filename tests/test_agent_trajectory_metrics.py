@@ -677,6 +677,33 @@ class TestExpectedOutcomes:
         assert m.expected_hit_rate == 0.0
         assert any("different stock than 600519: get_realtime_quote" in v for v in m.violations)
 
+    def test_malformed_guarded_probe_does_not_satisfy_guarded_retry(self):
+        # Review counter-example: a guarded call whose stock evidence is
+        # explicitly malformed (stock_code=None, empty requested_stock_code)
+        # never proves the required 600519 probe, so it must not seed the
+        # pinned guard outcome — not even when a cached repeat follows.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": None},
+                step=3,
+                success=False,
+                guarded=True,
+                requested_stock_code="",
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": None},
+                step=4,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
     def test_injected_normalizer_drives_call_identity(self):
         # Call identity follows the injected normalizer, not the mirror: a
         # constant normalizer merges every stock code into one identity.
@@ -1032,6 +1059,52 @@ class TestStockCodeScoping:
         }
         m = compute_trajectory_metrics([entry], _golden(expected_tools=["get_realtime_quote"]))
         assert m.expected_hit_rate == 1.0
+
+    def test_explicit_malformed_stock_evidence_does_not_hit(self):
+        # Review counter-example: an explicitly present but invalid
+        # stock_code (null / boolean / non-scalar) proves nothing about the
+        # call's target, so it must not earn name-only hit credit — the
+        # tolerance is reserved for entries with no stock evidence at all.
+        for bad in (None, False, [], {}):
+            m = compute_trajectory_metrics(
+                [_entry(tool="get_realtime_quote", arguments={"stock_code": bad}, step=1)],
+                _golden(expected_tools=["get_realtime_quote"]),
+            )
+            assert m.expected_hit_rate == 0.0, bad
+            assert m.missing_expected == ["get_realtime_quote"], bad
+            assert not any("different stock" in v for v in m.violations), bad
+
+    def test_malformed_requested_stock_code_does_not_hit(self):
+        # Guard metadata is authoritative: a present but invalid (or empty)
+        # requested_stock_code is a non-match, not name-only tolerance.
+        for bad in (None, "", [], True):
+            entry = {
+                "step": 1,
+                "tool": "get_realtime_quote",
+                "success": False,
+                "guarded": True,
+                "requested_stock_code": bad,
+            }
+            m = compute_trajectory_metrics([entry], _golden(expected_tools=["get_realtime_quote"]))
+            assert m.expected_hit_rate == 0.0, bad
+            assert m.missing_expected == ["get_realtime_quote"], bad
+
+    def test_codex_summary_malformed_stock_evidence_does_not_hit(self):
+        # A well-formed summary whose stock_code recovers to JSON null /
+        # false / an array is explicit invalid evidence: a non-match, not
+        # name-only tolerance.
+        for bad in (None, False, []):
+            log = [
+                _codex_entry(
+                    tool="get_realtime_quote",
+                    summary=json.dumps({"stock_code": bad}),
+                    step=1,
+                ),
+            ]
+            m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+            assert m.expected_hit_rate == 0.0, bad
+            assert m.missing_expected == ["get_realtime_quote"], bad
+            assert not any("different stock" in v for v in m.violations), bad
 
     def test_invalid_golden_stock_code_falls_back_to_name_only(self):
         m = compute_trajectory_metrics(

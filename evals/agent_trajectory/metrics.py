@@ -102,9 +102,12 @@ Metric semantics
   ``SH600519`` / ``600519.SH`` / ``SZ.000001`` / ``hk700`` resolve to the
   same identity as their clean code instead of being mis-scored as
   wrong-stock.  Entries with no stock evidence at all keep the name-only
-  tolerance, and *every* call of an expected tool whose stock resolves to a
-  different code is reported in a violation — one matching call does not
-  legitimize cross-stock calls of the same tool.  The one exception is the
+  tolerance — reserved for entries with no stock evidence at all; an
+  explicitly present but invalid value (null / boolean / non-scalar, empty
+  guard metadata) is a non-match and earns no hit credit.  *Every* call of
+  an expected tool whose stock resolves to a different code is reported in a
+  violation — one matching call does not legitimize cross-stock calls of the
+  same tool.  The one exception is the
   sample's own pinned out-of-scope stock (``expected_guarded_stock``): a call
   that targets it and stays blocked (``guarded`` / ``cached`` / failed) is
   the deliberate probe the task itself requires, so it is exempt from
@@ -349,28 +352,41 @@ def _entry_matches_stock(
     object with a ``stock_code`` field, the recovered value is canonicalized
     and compared exactly like a runner argument (so ``hk700`` matches an
     ``HK00700`` golden); otherwise the preview is scanned by substring as a
-    best-effort fallback.  Entries with no stock evidence at all (or
-    unresolvable values) keep the name-only tolerance so malformed or minimal
-    entries still count as before.
+    best-effort fallback.  Entries with no stock evidence at all keep the
+    name-only tolerance so minimal entries still count as before; an
+    explicitly present but invalid value (null / boolean / non-scalar) is a
+    non-match — it provably does not target the golden stock and must not
+    earn hit credit (see the module docstring).
     """
-    requested = entry.get("requested_stock_code")
-    if requested:
+    if "requested_stock_code" in entry:
+        requested = entry["requested_stock_code"]
+        # An explicitly present but invalid guard record is a non-match:
+        # it carries no usable target and must not fall through to the
+        # name-only tolerance (an empty string compares non-equal below).
         if not isinstance(requested, (str, int)) or isinstance(requested, bool):
-            return True
+            return False
         return _apply_stock_normalizer(normalizer, requested) == stock_code
     args = entry.get("arguments")
     if isinstance(args, dict):
-        value = args.get("stock_code")
-        if not isinstance(value, (str, int)) or isinstance(value, bool):
+        if "stock_code" not in args:
+            # No stock evidence in the payload: documented name-only
+            # tolerance (the entry still counts, like a minimal entry).
             return True
+        value = args["stock_code"]
+        # Explicitly present but invalid (null / boolean / non-scalar):
+        # not evidence for the golden stock, so not a hit either.
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return False
         return _apply_stock_normalizer(normalizer, value) == stock_code
     summary = entry.get("arguments_summary")
     if isinstance(summary, str) and summary:
         value = _summary_stock_code(summary)
         if value is _SUMMARY_NO_EVIDENCE:
             return stock_code in summary
+        # Recovered but invalid (JSON null / false / array): a non-match,
+        # never name-only tolerance.
         if not isinstance(value, (str, int)) or isinstance(value, bool):
-            return True
+            return False
         return _apply_stock_normalizer(normalizer, value) == stock_code
     return True
 
