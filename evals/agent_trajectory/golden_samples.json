@@ -1,0 +1,29 @@
+[
+  {
+    "id": "600519_technical",
+    "task_description": "分析贵州茅台（600519）近期技术面走势：先取实时行情与日线历史，再做趋势分析并给出结论。允许使用期望集合之外的工具（如新闻检索）作为补充。",
+    "stock_code": "600519",
+    "skills": [],
+    "expected_tools": ["get_realtime_quote", "get_daily_history", "analyze_trend"],
+    "allowed_max_steps": 8,
+    "allow_optional_tools": true
+  },
+  {
+    "id": "000001_core_data_strict",
+    "task_description": "获取平安银行（000001）的基础行情与日线历史数据。严格模式：只允许核心数据工具，任何期望集合之外的工具调用都记为违规。",
+    "stock_code": "000001",
+    "skills": [],
+    "expected_tools": ["get_realtime_quote", "get_daily_history"],
+    "allowed_max_steps": 6,
+    "allow_optional_tools": false
+  },
+  {
+    "id": "600036_guarded_retry",
+    "task_description": "在单一股票 scope（expected=600036）下分析招商银行，并故意要求顺带分析 600519：越界的工具调用应被 stock_scope guard 拦截（guarded=true 且计为失败），后续同参数重试应命中非可重试缓存（cached=true）或再次失败。",
+    "stock_code": "600036",
+    "skills": [],
+    "expected_tools": ["get_stock_info", "get_daily_history"],
+    "allowed_max_steps": 10,
+    "allow_optional_tools": true
+  }
+]
