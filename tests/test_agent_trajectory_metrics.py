@@ -47,6 +47,7 @@ def _golden(**overrides):
         skills=[],
         allowed_max_steps=8,
         allow_optional_tools=True,
+        expected_outcomes=[],
     )
     values.update(overrides)
     return GoldenSample(**values)
@@ -161,6 +162,22 @@ class TestComputeMetricsHitRate:
         assert "allow_optional_tools is not a boolean" in m.violations
         assert "optional tools used but not allowed: search_stock_news" in m.violations
 
+    def test_duplicate_expected_tools_scored_as_unique_names(self):
+        # Regression: ["quote", "quote", "history"] with a single quote call
+        # must read 1/2, not 2/3.
+        golden = _golden(
+            expected_tools=[
+                "get_realtime_quote",
+                "get_realtime_quote",
+                "get_daily_history",
+            ],
+        )
+        m = compute_trajectory_metrics([_entry(tool="get_realtime_quote")], golden)
+        assert m.expected_total == 2
+        assert m.expected_hit_rate == pytest.approx(0.5)
+        assert m.missing_expected == ["get_daily_history"]
+        assert "expected_tools contains duplicate names" in m.violations
+
 
 # ---------------------------------------------------------------------------
 # 3. Retries, caching, failure counting
@@ -231,6 +248,104 @@ class TestRetryAndCaching:
         )
         m = compute_trajectory_metrics([entry], _golden())
         assert m.failed_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# 3b. Expected outcomes (guarded / cached / retry contract)
+# ---------------------------------------------------------------------------
+class TestExpectedOutcomes:
+    @staticmethod
+    def _guarded_sample(**overrides):
+        values = dict(
+            id="600036_guarded_retry",
+            task_description="guard / cached retry boundary",
+            stock_code="600036",
+            expected_tools=["get_stock_info", "get_daily_history"],
+            skills=[],
+            allowed_max_steps=10,
+            allow_optional_tools=True,
+            expected_outcomes=["guarded", "retry"],
+        )
+        values.update(overrides)
+        return GoldenSample(**values)
+
+    @staticmethod
+    def _faithful_log():
+        """In-scope calls succeed; the out-of-scope call is guarded and its
+        same-args retry hits the non-retriable cache."""
+        return [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=False,
+                cached=True,
+            ),
+        ]
+
+    def test_faithful_guard_retry_log_satisfies_outcomes(self):
+        m = compute_trajectory_metrics(self._faithful_log(), self._guarded_sample())
+        assert "expected outcomes not observed" not in m.violations
+        assert m.retries == 1
+        assert m.cached_calls == 1
+        assert m.failed_calls == 2
+
+    def test_skipping_the_out_of_scope_call_violates_the_contract(self):
+        # Review counter-example: hitting every expected tool without ever
+        # attempting the out-of-scope call must not score clean.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert m.expected_hit_rate == 1.0
+        assert "expected outcomes not observed: guarded, retry" in m.violations
+
+    def test_guarded_without_retry_reports_missing_retry(self):
+        log = [
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=1,
+                success=False,
+                guarded=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: retry" in m.violations
+        assert not any("guarded" in v for v in m.violations)
+
+    def test_unknown_outcome_tag_flagged_once(self):
+        m = compute_trajectory_metrics(
+            self._faithful_log(),
+            self._guarded_sample(expected_outcomes=["guarded", "warp"]),
+        )
+        assert "unknown expected outcome tags: warp" in m.violations
+        assert not any("not observed" in v for v in m.violations)
+
+    def test_non_list_expected_outcomes_surfaces_violation(self):
+        m = compute_trajectory_metrics(
+            self._faithful_log(),
+            self._guarded_sample(expected_outcomes="guarded"),
+        )
+        assert "expected_outcomes must be a list of outcome tags" in m.violations
+
+    def test_duplicate_outcome_tags_normalized_with_violation(self):
+        m = compute_trajectory_metrics(
+            self._faithful_log(),
+            self._guarded_sample(expected_outcomes=["guarded", "guarded"]),
+        )
+        assert "expected_outcomes contains duplicate tags" in m.violations
+        assert "expected outcomes not observed" not in m.violations
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +565,49 @@ class TestGoldenSamplesFile:
         known = (name for name in ["a", "b"])
         assert validate_golden_sample(sample, known) == []
 
+    def test_duplicate_expected_tools_fail_validation(self):
+        sample = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600519",
+            expected_tools=["get_realtime_quote", "get_realtime_quote"],
+        )
+        issues = validate_golden_sample(sample)
+        assert any("must not contain duplicate names" in i for i in issues)
+
+    def test_guarded_retry_sample_declares_guard_and_retry_outcomes(self):
+        sample = next(s for s in load_golden_samples() if s.id == "600036_guarded_retry")
+        assert sample.expected_outcomes == ["guarded", "retry"]
+
+    def test_unknown_expected_outcome_fails_validation(self):
+        sample = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600519",
+            expected_tools=["get_realtime_quote"],
+            expected_outcomes=["warp"],
+        )
+        issues = validate_golden_sample(sample)
+        assert any("unknown expected_outcomes: warp" in i for i in issues)
+
+    def test_duplicate_or_mistyped_expected_outcomes_fail_validation(self):
+        dup = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600519",
+            expected_tools=["get_realtime_quote"],
+            expected_outcomes=["guarded", "guarded"],
+        )
+        assert any("must not contain duplicate tags" in i for i in validate_golden_sample(dup))
+        mistyped = GoldenSample(
+            id="x",
+            task_description="t",
+            stock_code="600519",
+            expected_tools=["get_realtime_quote"],
+            expected_outcomes="guarded",
+        )
+        assert any("must be a list of outcome tags" in i for i in validate_golden_sample(mistyped))
+
     def test_loader_materializes_registry_once_for_multiple_samples(self):
         # A one-shot generator must survive loading the whole checked-in file:
         # the first sample must not exhaust it for the remaining samples.
@@ -582,4 +740,27 @@ class TestLoadGoldenSamplesErrors:
         }
         path = self._write_sample(tmp_path, [sample])
         with pytest.raises(ValueError, match="allow_optional_tools must be a boolean"):
+            load_golden_samples(path=path)
+
+    def test_duplicate_expected_tools_raise(self, tmp_path):
+        sample = {
+            "id": "x",
+            "task_description": "t",
+            "stock_code": "600519",
+            "expected_tools": ["get_realtime_quote", "get_realtime_quote"],
+        }
+        path = self._write_sample(tmp_path, [sample])
+        with pytest.raises(ValueError, match="expected_tools must not contain duplicate names"):
+            load_golden_samples(path=path)
+
+    def test_unknown_expected_outcome_raises(self, tmp_path):
+        sample = {
+            "id": "x",
+            "task_description": "t",
+            "stock_code": "600519",
+            "expected_tools": ["get_realtime_quote"],
+            "expected_outcomes": ["warp"],
+        }
+        path = self._write_sample(tmp_path, [sample])
+        with pytest.raises(ValueError, match="unknown expected_outcomes: warp"):
             load_golden_samples(path=path)

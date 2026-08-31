@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 阻止任意更新的非 bundled 指数候选（含 legacy `static` 子集）在 remote 缺失/损坏时以 active-index 子集覆盖 bundled baseline：所有非 bundled 候选必须为 bundled active-index canonical 集合的合法超集，否则回退 bundled 并记录 WARNING。
 - [新功能] 桌面端全局右上角增加更新入口，与设置页共用更新状态；普通浏览器 WebUI 不展示，且不会在挂载时重复触发后台检查。
 - [修复] 桌面端右上角更新入口与设置页共用检查中状态，避免一侧检查时另一侧仍可重复触发 GitHub Releases 检查；主进程手动检查路径同步增加 in-flight 防重。
-- [新功能] 新增 agent trajectory 评估管线（`evals/agent_trajectory`）：纯函数指标模块消费 `tool_calls_log` 计算工具命中率、冗余与缓存调用、失败重试与步数效率（含 `golden_samples.json` 3 个样例与单元测试）；不修改 `src/` 执行语义、不接入 CI 阻断门、不新增运行时配置。
+- [新功能] 新增 agent trajectory 评估管线（`evals/agent_trajectory`）：纯函数指标模块消费 `tool_calls_log` 计算工具命中率、冗余与缓存调用、失败重试与步数效率（含 `golden_samples.json` 3 个样例、`expected_outcomes` 轨迹特征断言与单元测试）；不修改 `src/` 执行语义、不接入 CI 阻断门、不新增运行时配置。
 
 ## [3.31.0] - 2026-08-23
 
