@@ -102,6 +102,12 @@ class TestArgsKey:
             {"stock_code": "600519", "period": "weekly"}
         )
 
+    def test_numeric_stock_code_stays_distinct_from_string(self):
+        # The production normalizer returns non-string values unchanged, so a
+        # JSON number and a string must remain two different call identities.
+        assert _args_key({"stock_code": 600519}) != _args_key({"stock_code": "600519"})
+        assert _args_key({"stock_code": 600519}) == json.dumps({"stock_code": 600519}, sort_keys=True)
+
 
 # ---------------------------------------------------------------------------
 # 2. Hit rate / expected & optional tools
@@ -432,6 +438,55 @@ class TestExpectedOutcomes:
             ),
         ]
         m = compute_trajectory_metrics(log, _golden())
+        assert m.retries == 0
+        assert m.redundant_calls == 0
+
+    def test_number_and_string_stock_codes_do_not_merge_identity(self):
+        # The runtime cache key preserves the JSON number type, so a failed
+        # number call followed by a string call is not "the same call" — no
+        # retry, no redundancy.
+        log = [
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": 600519},
+                step=1,
+                success=False,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=2,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, _golden())
+        assert m.retries == 0
+        assert m.redundant_calls == 0
+
+    def test_number_then_string_guard_retry_stays_distinct(self):
+        # A guarded number call followed by a cached string call is not the
+        # same (tool, args-key) in the runtime cache, so guarded_retry must
+        # not be observed from that pair.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": 600519},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=4,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "expected outcomes not observed: guarded_retry" in m.violations
         assert m.retries == 0
         assert m.redundant_calls == 0
 
@@ -808,6 +863,31 @@ class TestStockCanonicalization:
         default = compute_trajectory_metrics(log, golden)
         assert default.expected_hit_rate == 1.0
         assert default.violations == []
+
+    def test_identity_key_matches_production_cache_key_payload(self):
+        # The identity payload must mirror src/agent/tools/execution.
+        # _build_tool_cache_key byte for byte — alias folding for strings,
+        # type preservation for JSON numbers.
+        from src.agent.tools.execution import _build_tool_cache_key
+
+        from evals.agent_trajectory.metrics import _args_key
+
+        forms = [
+            600519,
+            "600519",
+            "SH600519",
+            "600519.SH",
+            "sh600519",
+            "HK00700",
+            "700.HK",
+            "00700",
+            "SZ000001",
+            " 600519 ",
+        ]
+        for form in forms:
+            production = _build_tool_cache_key("get_realtime_quote", {"stock_code": form})
+            mirrored = "get_realtime_quote:" + _args_key({"stock_code": form})
+            assert mirrored == production, form
 
     def test_non_callable_normalizer_surfaces_violation(self):
         m = compute_trajectory_metrics([_entry()], _golden(), stock_code_normalizer="nope")

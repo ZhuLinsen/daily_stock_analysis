@@ -27,9 +27,10 @@ unhashable values (dict / list), so the key is built with
 not a hash.  Do not replace this with ``tuple(arguments)`` or ``repr()``:
 insertion order or collection type would then change call identity and corrupt
 redundancy / retry counts.  Mirroring the production
-``_build_tool_cache_key``, the ``stock_code`` field is canonicalized before
-serialization so runtime-equivalent alias forms share one identity; all other
-arguments stay raw.
+``_build_tool_cache_key``, a *string* ``stock_code`` field is canonicalized
+before serialization so runtime-equivalent alias forms share one identity,
+while non-string values (JSON numbers) stay raw; all other arguments stay
+raw.
 
 Codex App Server entries carry only ``arguments_summary`` — the redacted and
 truncated preview produced by ``redact_diagnostic_value`` — so their identity
@@ -171,22 +172,30 @@ def _args_key(arguments: Any, normalizer: Optional[Callable[[Any], str]] = None)
     """Return a stable idempotency key for tool-call arguments (see module docstring).
 
     Mirrors ``src/agent/tools/execution._build_tool_cache_key``: when the
-    payload is a dict, its ``stock_code`` field is canonicalized before
-    serialization so runtime-equivalent alias forms (``SH600519`` /
+    payload is a dict, a *string* ``stock_code`` field is canonicalized
+    before serialization so runtime-equivalent alias forms (``SH600519`` /
     ``600519.SH`` / ``600519``) share one call identity; every other
-    argument stays raw, exactly like the production cache key.  Non-dict
+    argument stays raw, exactly like the production cache key.  Non-string
+    ``stock_code`` values (JSON numbers from ``json.loads``) are preserved
+    as-is because the production normalizer returns them unchanged, so
+    ``600519`` and ``"600519"`` remain distinct identities.  Non-dict
     payloads (Codex ``arguments_summary`` wrappers, bare fallbacks) are
     serialized as-is.
     """
     if arguments is None:
         arguments = {}
-    if normalizer is None:
-        normalizer = _canonicalize_stock_code
     if isinstance(arguments, dict) and "stock_code" in arguments:
-        normalized = dict(arguments)
-        normalized["stock_code"] = _apply_stock_normalizer(normalizer, arguments["stock_code"])
-        arguments = normalized
-    return json.dumps(arguments, sort_keys=True, default=str)
+        value = arguments["stock_code"]
+        # Only strings pass through the canonicalizer, mirroring the
+        # type-preserving production ``_normalize_tool_stock_code``; the
+        # runtime cache key keeps ``600519`` and ``"600519"`` apart.
+        if isinstance(value, str):
+            if normalizer is None:
+                normalizer = _canonicalize_stock_code
+            normalized = dict(arguments)
+            normalized["stock_code"] = _apply_stock_normalizer(normalizer, value)
+            arguments = normalized
+    return json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _entry_arguments(entry: Dict[str, Any]) -> Any:
