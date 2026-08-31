@@ -35,6 +35,15 @@ truncation may be over-counted as redundant.  A stable argument fingerprint
 requires a producer-side change in ``src/agent/codex_agent_backend.py``, which
 is out of scope for this metrics layer.
 
+Codex App Server entries also record ``step=1`` for every tool call in a turn
+and ``total_steps=1`` on success — the real budget there is the tool-call
+count (``max_tool_calls=request.max_steps``).  Step-derived metrics
+(``distinct_steps`` / ``max_steps_touched``) are therefore suppressed with an
+explicit violation for Codex-shaped logs instead of reporting a misleading
+one-step result.  A comparable step budget requires a producer-side field in
+``src/agent/codex_agent_backend.py``, which is out of scope for this metrics
+layer.
+
 Metric semantics
 ----------------
 * ``redundant_calls``: every occurrence of a (tool, args-key) pair beyond its
@@ -47,13 +56,23 @@ Metric semantics
 * ``cached_calls``: entries with ``cached=True`` (runner semantics: reuse of a
   non-retriable failure result).
 * ``expected_outcomes``: machine-readable trajectory features a golden sample
-  may require, from the fixed vocabulary ``guarded`` / ``cached`` / ``retry``.
-  ``guarded`` is observed when any entry carries ``guarded=True`` (the stock-
-  scope guard interception), ``cached`` when any entry carries ``cached=True``
-  and ``retry`` when at least one retry is counted per the contract above.  A
-  required outcome that is not observed is reported as a violation, so a
-  golden sample that declares guard / cache / retry expectations cannot be
-  passed by a trajectory that skips the behaviour it describes.
+  may require, from the fixed vocabulary ``guarded`` / ``cached`` / ``retry`` /
+  ``guarded_retry``.  ``guarded`` is observed when any entry carries
+  ``guarded=True`` (the stock-scope guard interception), ``cached`` when any
+  entry carries ``cached=True``, ``retry`` when at least one retry is counted
+  per the contract above, and ``guarded_retry`` when a (tool, args-key) pair
+  with a guarded occurrence is *followed by* a later occurrence of the same
+  pair — the guarded call itself was retried, so a guard from one call plus a
+  retry of an unrelated call does not satisfy it.  A required outcome that is
+  not observed is reported as a violation, so a golden sample that declares
+  guard / cache / retry expectations cannot be passed by a trajectory that
+  skips the behaviour it describes.
+* ``expected_hit_rate`` is stock-scoped: an expected tool counts as hit only
+  when at least one of its calls references ``golden.stock_code`` (in the
+  serialized arguments, in the guard metadata ``requested_stock_code``, or in
+  the Codex ``arguments_summary`` preview — best-effort).  Entries with no
+  stock evidence at all keep the name-only tolerance, and calls of expected
+  tools for other stocks are reported as a violation.
 * ``max_steps_touched``: the log does not carry ``max_steps`` itself, so this
   is the conservative heuristic ``max(step) >= golden.allowed_max_steps`` —
   a proxy for "the run reached the step budget", not proof of the loop
@@ -72,8 +91,10 @@ from typing import Any, Dict, Iterable, List, Optional
 
 #: Machine-readable trajectory features a golden sample may require of a log
 #: (``guarded`` = a guarded call, ``cached`` = a cached call, ``retry`` = at
-#: least one retry).  See the "Metric semantics" section of the module docstring.
-EXPECTED_OUTCOME_TAGS = ("guarded", "cached", "retry")
+#: least one retry, ``guarded_retry`` = a guarded call followed by a later
+#: occurrence of the same (tool, args-key) pair).  See the "Metric semantics"
+#: section of the module docstring.
+EXPECTED_OUTCOME_TAGS = ("guarded", "cached", "retry", "guarded_retry")
 
 
 @dataclass
@@ -83,8 +104,8 @@ class GoldenSample:
     ``expected_tools`` are the tool names the agent should call; tools outside
     this set are tolerated only when ``allow_optional_tools`` is true.
     ``expected_outcomes`` are required trajectory features from the vocabulary
-    ``guarded`` / ``cached`` / ``retry`` (see the module docstring); every
-    declared outcome must be observable in the log.
+    ``guarded`` / ``cached`` / ``retry`` / ``guarded_retry`` (see the module
+    docstring); every declared outcome must be observable in the log.
     """
 
     id: str
@@ -147,6 +168,28 @@ def _coerce_step(value: Any) -> int:
     return step if step > 0 else 0
 
 
+def _entry_matches_stock(entry: Dict[str, Any], stock_code: str) -> bool:
+    """Best-effort check that a log entry's call targeted ``stock_code``.
+
+    Guard metadata (``requested_stock_code``) is authoritative; runner
+    entries are matched by scanning the stable argument serialization for the
+    code (param names are tool-specific); Codex App Server entries carry only
+    the redacted ``arguments_summary`` preview (substring match).  Entries
+    with no stock evidence at all keep the name-only tolerance so malformed
+    or minimal entries still count as before.
+    """
+    requested = entry.get("requested_stock_code")
+    if requested:
+        return requested == stock_code
+    args = entry.get("arguments")
+    if isinstance(args, dict):
+        return stock_code in _args_key(args)
+    summary = entry.get("arguments_summary")
+    if isinstance(summary, str) and summary:
+        return stock_code in summary
+    return True
+
+
 def compute_trajectory_metrics(
     log: List[Dict[str, Any]],
     golden: GoldenSample,
@@ -165,6 +208,10 @@ def compute_trajectory_metrics(
     key_counts: Dict[tuple, int] = {}
     key_failed_seen: Dict[tuple, bool] = {}
     key_retries: Dict[tuple, int] = {}
+    key_guarded_at: Dict[tuple, int] = {}
+    stock_hit: Dict[str, bool] = {}
+    codex_shaped = False
+    stock_code = golden.stock_code if isinstance(golden.stock_code, str) and golden.stock_code.strip() else ""
     failed_calls = 0
     cached_calls = 0
     guarded_calls = 0
@@ -179,6 +226,8 @@ def compute_trajectory_metrics(
         tool = entry.get("tool") or ""
         if tool and tool not in used_tools:
             used_tools.append(tool)
+        if stock_code and tool and tool not in stock_hit and _entry_matches_stock(entry, stock_code):
+            stock_hit[tool] = True
         step = _coerce_step(entry.get("step"))
         if step and step not in seen_steps:
             seen_steps.add(step)
@@ -191,11 +240,18 @@ def compute_trajectory_metrics(
             cached_calls += 1
         if entry.get("guarded"):
             guarded_calls += 1
+        if not isinstance(entry.get("arguments"), dict) and entry.get("arguments_summary"):
+            codex_shaped = True
 
         key = (tool, _args_key(_entry_arguments(entry)))
         if key_counts.get(key, 0):
             redundant_calls += 1
         key_counts[key] = key_counts.get(key, 0) + 1
+        # Record the occurrence index of the (first) guarded call so the
+        # "guarded_retry" outcome can require a *later* occurrence of the
+        # same key instead of matching any guard and any retry anywhere.
+        if entry.get("guarded") and key not in key_guarded_at:
+            key_guarded_at[key] = key_counts[key]
         # An occurrence is a retry only when the same call already failed
         # before it (see module docstring for the precise contract).
         if key_failed_seen.get(key):
@@ -204,20 +260,33 @@ def compute_trajectory_metrics(
         # as redundant only, not as further retries.
         key_failed_seen[key] = not success
 
-    # The final answer round consumes a step but produces no tool call, so
-    # when the caller supplies the run's real total it may exceed the log.
-    total = 0
-    if total_steps is not None:
-        try:
-            total = int(total_steps)
-        except (TypeError, ValueError):
-            total = 0
-        total = total if total > 0 else 0
-    distinct_steps = max(distinct_steps, total)
-    max_step = max(max_step, total)
-
     retries = sum(key_retries.values())
     violations: List[str] = []
+
+    if codex_shaped:
+        # Codex App Server backend records step=1 for every tool call in a
+        # turn and total_steps=1 on success, so step-derived metrics would
+        # silently read as a normal one-step run; suppress them instead.
+        violations.append(
+            "step metrics are unsupported for Codex App Server logs (backend "
+            "records step=1 per turn and total_steps=1 on success): "
+            "distinct_steps / max_steps_touched suppressed"
+        )
+        distinct_steps = 0
+        max_step = 0
+    else:
+        # The final answer round consumes a step but produces no tool call,
+        # so when the caller supplies the run's real total it may exceed the
+        # log.
+        total = 0
+        if total_steps is not None:
+            try:
+                total = int(total_steps)
+            except (TypeError, ValueError):
+                total = 0
+            total = total if total > 0 else 0
+        distinct_steps = max(distinct_steps, total)
+        max_step = max(max_step, total)
 
     if isinstance(golden.expected_tools, list):
         expected = [t for t in golden.expected_tools if isinstance(t, str) and t]
@@ -232,7 +301,20 @@ def compute_trajectory_metrics(
     if len(set(expected)) != len(expected):
         violations.append("expected_tools contains duplicate names")
         expected = list(dict.fromkeys(expected))
-    missing_expected = [t for t in expected if t not in used_tools]
+    if not stock_code:
+        violations.append("golden.stock_code is not a non-empty string")
+    # Stock-scoped hit semantics: an expected tool only counts when one of
+    # its calls actually referenced the golden stock (see module docstring);
+    # without a valid golden stock the scoring falls back to name-only.
+    missing_expected = (
+        [t for t in expected if t not in stock_hit] if stock_code else [t for t in expected if t not in used_tools]
+    )
+    if stock_code:
+        wrong_stock = [t for t in expected if t in used_tools and t not in stock_hit]
+        if wrong_stock:
+            violations.append(
+                f"expected tools called for a different stock than " f"{golden.stock_code}: {', '.join(wrong_stock)}"
+            )
     expected_hit_rate = (len(expected) - len(missing_expected)) / len(expected) if expected else 0.0
     optional_tools_used = [t for t in used_tools if t not in expected]
 
@@ -270,6 +352,8 @@ def compute_trajectory_metrics(
         observed.append("cached")
     if retries:
         observed.append("retry")
+    if any(idx < key_counts.get(k, 0) for k, idx in key_guarded_at.items()):
+        observed.append("guarded_retry")
     missing_outcomes = [t for t in outcomes if t in EXPECTED_OUTCOME_TAGS and t not in observed]
     if missing_outcomes:
         violations.append(f"expected outcomes not observed: {', '.join(missing_outcomes)}")
@@ -380,7 +464,8 @@ def validate_golden_sample(
     ``expected_outcomes`` must be lists, ``allowed_max_steps`` an integer and
     ``allow_optional_tools`` a boolean.  ``expected_tools`` and
     ``expected_outcomes`` must be duplicate-free, and outcome tags must come
-    from the fixed vocabulary ``guarded`` / ``cached`` / ``retry``.
+    from the fixed vocabulary ``guarded`` / ``cached`` / ``retry`` /
+    ``guarded_retry``.
     """
     issues: List[str] = []
     known = set(known_tool_names) if known_tool_names is not None else None

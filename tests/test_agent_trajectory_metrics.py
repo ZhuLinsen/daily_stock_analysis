@@ -264,7 +264,7 @@ class TestExpectedOutcomes:
             skills=[],
             allowed_max_steps=10,
             allow_optional_tools=True,
-            expected_outcomes=["guarded", "retry"],
+            expected_outcomes=["guarded_retry"],
         )
         values.update(overrides)
         return GoldenSample(**values)
@@ -308,9 +308,9 @@ class TestExpectedOutcomes:
         ]
         m = compute_trajectory_metrics(log, self._guarded_sample())
         assert m.expected_hit_rate == 1.0
-        assert "expected outcomes not observed: guarded, retry" in m.violations
+        assert "expected outcomes not observed: guarded_retry" in m.violations
 
-    def test_guarded_without_retry_reports_missing_retry(self):
+    def test_guarded_without_follow_up_reports_missing_guarded_retry(self):
         log = [
             _entry(
                 tool="get_realtime_quote",
@@ -321,8 +321,37 @@ class TestExpectedOutcomes:
             ),
         ]
         m = compute_trajectory_metrics(log, self._guarded_sample())
-        assert "expected outcomes not observed: retry" in m.violations
-        assert not any("guarded" in v for v in m.violations)
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_unrelated_retry_does_not_satisfy_guarded_retry(self):
+        # Review counter-example: a guard on the out-of-scope quote plus a
+        # retry of an unrelated news call must not satisfy the bound outcome.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600519"},
+                step=3,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="search_stock_news",
+                arguments={"query": "招商银行"},
+                step=4,
+                success=False,
+            ),
+            _entry(
+                tool="search_stock_news",
+                arguments={"query": "招商银行"},
+                step=5,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert m.retries == 1
+        assert "expected outcomes not observed: guarded_retry" in m.violations
 
     def test_unknown_outcome_tag_flagged_once(self):
         m = compute_trajectory_metrics(
@@ -342,10 +371,92 @@ class TestExpectedOutcomes:
     def test_duplicate_outcome_tags_normalized_with_violation(self):
         m = compute_trajectory_metrics(
             self._faithful_log(),
-            self._guarded_sample(expected_outcomes=["guarded", "guarded"]),
+            self._guarded_sample(expected_outcomes=["guarded_retry", "guarded_retry"]),
         )
         assert "expected_outcomes contains duplicate tags" in m.violations
         assert "expected outcomes not observed" not in m.violations
+
+
+# ---------------------------------------------------------------------------
+# 2b. Stock-scoped hit semantics (golden.stock_code)
+# ---------------------------------------------------------------------------
+class TestStockCodeScoping:
+    @staticmethod
+    def _wrong_stock_log():
+        return [
+            _entry(tool="get_realtime_quote", arguments={"stock_code": "000001"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "000001"}, step=2),
+            _entry(tool="analyze_trend", arguments={"stock_code": "000001"}, step=3),
+        ]
+
+    def test_expected_tools_called_for_wrong_stock_score_zero(self):
+        # Review counter-example: tool names all correct but every call
+        # targets 000001, so the 600519_technical sample must not score a
+        # full hit.
+        m = compute_trajectory_metrics(self._wrong_stock_log(), _golden())
+        assert m.expected_hit_rate == 0.0
+        assert m.missing_expected == [
+            "get_realtime_quote",
+            "get_daily_history",
+            "analyze_trend",
+        ]
+        assert any("called for a different stock than 600519" in v for v in m.violations)
+
+    def test_mixed_stock_calls_score_partial(self):
+        log = [
+            _entry(tool="get_realtime_quote", arguments={"stock_code": "600519"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "000001"}, step=2),
+            _entry(tool="analyze_trend", arguments={"stock_code": "600519"}, step=3),
+        ]
+        m = compute_trajectory_metrics(log, _golden())
+        assert m.expected_hit_rate == pytest.approx(2 / 3)
+        assert m.missing_expected == ["get_daily_history"]
+        assert any("different stock than 600519: get_daily_history" in v for v in m.violations)
+
+    def test_codex_summary_matching_the_stock_counts(self):
+        log = [
+            {
+                "step": 1,
+                "tool": "get_realtime_quote",
+                "arguments_summary": "600519",
+                "success": True,
+            },
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.expected_hit_rate == 1.0
+
+    def test_codex_summary_without_the_stock_does_not_count(self):
+        log = [
+            {
+                "step": 1,
+                "tool": "get_realtime_quote",
+                "arguments_summary": "000001",
+                "success": True,
+            },
+        ]
+        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+        assert m.expected_hit_rate == 0.0
+        assert m.missing_expected == ["get_realtime_quote"]
+
+    def test_requested_stock_code_guard_metadata_counts(self):
+        entry = {
+            "step": 1,
+            "tool": "get_realtime_quote",
+            "success": False,
+            "guarded": True,
+            "requested_stock_code": "600519",
+            "expected_stock_code": "600519",
+        }
+        m = compute_trajectory_metrics([entry], _golden(expected_tools=["get_realtime_quote"]))
+        assert m.expected_hit_rate == 1.0
+
+    def test_invalid_golden_stock_code_falls_back_to_name_only(self):
+        m = compute_trajectory_metrics(
+            [_entry(tool="get_realtime_quote")],
+            _golden(expected_tools=["get_realtime_quote"], stock_code=None),
+        )
+        assert "golden.stock_code is not a non-empty string" in m.violations
+        assert m.expected_hit_rate == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +515,46 @@ class TestTotalStepsInput:
     def test_non_numeric_total_steps_ignored(self):
         m = compute_trajectory_metrics([_entry(step=1)], _golden(), total_steps="not-a-number")
         assert m.distinct_steps == 1
+
+
+# ---------------------------------------------------------------------------
+# 4c. Codex App Server step accounting
+# ---------------------------------------------------------------------------
+class TestCodexStepMetrics:
+    @staticmethod
+    def _codex_entries(n):
+        return [
+            {"step": 1, "tool": "get_realtime_quote", "arguments_summary": "600519", "success": True} for _ in range(n)
+        ]
+
+    def test_codex_shaped_log_suppresses_step_metrics(self):
+        # The Codex backend records step=1 for every call in a turn and
+        # total_steps=1 on success; feeding 8 such entries must not silently
+        # read as a normal one-step run below the budget.
+        m = compute_trajectory_metrics(
+            self._codex_entries(8),
+            _golden(expected_tools=["get_realtime_quote"], allowed_max_steps=8),
+            total_steps=1,
+        )
+        assert m.distinct_steps == 0
+        assert m.max_steps_touched is False
+        assert any("step metrics are unsupported for Codex App Server logs" in v for v in m.violations)
+
+    def test_runner_shaped_log_keeps_step_metrics(self):
+        log = [_entry(step=i) for i in range(1, 9)]
+        m = compute_trajectory_metrics(
+            log,
+            _golden(expected_tools=["get_realtime_quote"], allowed_max_steps=8),
+        )
+        assert m.distinct_steps == 8
+        assert m.max_steps_touched is True
+        assert not any("unsupported for Codex" in v for v in m.violations)
+
+    def test_entries_without_any_arguments_are_not_codex_shaped(self):
+        # Missing-argument tolerance must not trip the Codex detection.
+        m = compute_trajectory_metrics([{"step": 3, "tool": "get_realtime_quote"}], _golden())
+        assert m.distinct_steps == 1
+        assert not any("unsupported for Codex" in v for v in m.violations)
 
 
 # ---------------------------------------------------------------------------
@@ -575,9 +726,9 @@ class TestGoldenSamplesFile:
         issues = validate_golden_sample(sample)
         assert any("must not contain duplicate names" in i for i in issues)
 
-    def test_guarded_retry_sample_declares_guard_and_retry_outcomes(self):
+    def test_guarded_retry_sample_declares_bound_guard_retry_outcome(self):
         sample = next(s for s in load_golden_samples() if s.id == "600036_guarded_retry")
-        assert sample.expected_outcomes == ["guarded", "retry"]
+        assert sample.expected_outcomes == ["guarded_retry"]
 
     def test_unknown_expected_outcome_fails_validation(self):
         sample = GoldenSample(
