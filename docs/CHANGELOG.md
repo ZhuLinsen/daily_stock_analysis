@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] Bot `/analyze` 支持已登记指数入口：显式代码（`sh000016`）、CSI alias（`930955.CSI` 收敛为 `csi930955`）与注册中文名（`上证50`）均可提交，指数以结构化 `AnalysisTarget` 经 `TaskService` 贯穿到 Pipeline `process_single_stock`（`sh000016` 不再被改写为 `SH000016`）；注册名称查询独立于 parser identity alias（中文名不进入 `find_by_explicit_key`/`parse_analysis_target`），同名歧义返回明确错误并要求显式代码，未登记 CSI 与未知名称返回明确错误且不提交任务；个股代码（A/HK/US）保持既有 legacy code 路径不变，股票名称输入（如 `贵州茅台`）由本次 Bot 入口新暴露——复用既有名称解析器（`resolve_name_to_code`）解析后提交 legacy code，不携带结构化 target。
 - [修复] 将 litellm 依赖窗口上界收敛到 `<1.99.0`：1.99.0 起把 `prompt_cache_key` 透传给 OpenAI provider，破坏 provider 缓存测试对不透传行为的既有断言（CI backend-tests 3/3 与 backend-gate 失败）；保留历史最低版本与 `!=1.82.7`/`!=1.82.8` 事故排除，同时同步更新各 LLM 兼容文档中写死的依赖约束表述，避免文档与 requirements.txt 漂移
 
 - [新功能] 新增 `SEARXNG_TIMEOUT_SECONDS` 配置自建 SearXNG 单次搜索超时（默认 10 秒），已接线全部 SearchService 构造入口（含题材搜索子进程重建）与默认 GitHub Actions 工作流

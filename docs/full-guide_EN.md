@@ -683,7 +683,9 @@ Web autocomplete and search now expose registered indices: searching a registry 
 
 The API `/analyze` endpoint builds a structured `AnalysisTarget` for explicit index inputs: `sh000016` is enqueued as `asset_type=INDEX` with `canonical_id=sh000016`, and `930955.CSI`/`csi930955` converge to `csi930955`. Indices and same-digit stocks (e.g. `sh000016` vs `000016`) are deduplicated independently and never collapse. An unregistered CSI input (e.g. `930956.CSI`) returns an explicit 4xx for a single async or sync request, and in an async batch only that target enters the response `rejected` list while the rest of the batch is enqueued normally. Chinese-name inputs (e.g. `贵州茅台`) keep the existing stock-name resolution path and never enter index classification.
 
-> **Phase 2 boundary**: default `STOCK_LIST`, `--schedule`, Bot, and the GitHub Actions daily workflow do not yet expose index entrypoints; Web/API and the one-shot `--stocks` entry support indices, with Bot/scheduled/daily-workflow entries landing in later Phase 2 PRs.
+Bot `/analyze` now accepts registered-index explicit codes (`sh000016`), CSI aliases (`930955.CSI`), and registered Chinese names (`上证50`). The registry canonical and structured `AnalysisTarget` flow into the same Pipeline used by CLI/API; unregistered CSI forms, unknown names, and ambiguous registered names return an explicit error without submitting a task. Existing A/HK/US codes and stock names keep the legacy-code path.
+
+> **Phase 2 boundary**: default `STOCK_LIST`, `--schedule`, Bot `/ask`, Bot `/batch`, and the GitHub Actions daily workflow still do not expose index entrypoints. Web/API, Bot `/analyze`, and the one-shot `--stocks` entry support indices; the remaining scheduled/daily-workflow entry lands in a later PR.
 
 ### Index vs stock Dashboard canonical isolation (PR #2312)
 

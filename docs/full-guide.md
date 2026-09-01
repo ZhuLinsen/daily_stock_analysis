@@ -744,7 +744,9 @@ Web 自动补全与搜索已放行已登记指数：搜索注册中文名（如 
 
 API `/analyze` 对显式指数输入构造结构化 `AnalysisTarget`：`sh000016` 以 `asset_type=INDEX` 且 `canonical_id=sh000016` 入队，`930955.CSI`/`csi930955` 收敛为 `csi930955`。指数与同码个股（如 `sh000016` 与 `000016`）独立去重调度、互不折叠；未登记的 CSI 输入（如 `930956.CSI`）在异步单股或同步模式返回明确的 4xx，在异步批量中仅该目标进入响应 `rejected` 列表、同批其他目标正常入队。中文名称输入（如 `贵州茅台`）仍走既有股票名解析，不进入指数判型。
 
-> **Phase 2 边界**：默认 `STOCK_LIST`、`--schedule`、Bot 与 GitHub Actions 每日工作流暂不开放指数入口；Web/API 与一次性 `--stocks` 已支持指数，Bot/定时/每日工作流入口留待 Phase 2 后续 PR。
+Bot `/analyze` 已支持已登记指数的显式代码（`sh000016`）、CSI alias（`930955.CSI`）和注册中文名（`上证50`）。指数以 registry canonical 和结构化 `AnalysisTarget` 进入与 CLI/API 相同的 Pipeline；未登记 CSI、未知名称或歧义注册名称会明确报错且不提交任务。普通 A/HK/US 代码与股票名称继续沿用 legacy code 路径。
+
+> **Phase 2 边界**：默认 `STOCK_LIST`、`--schedule`、Bot `/ask`、Bot `/batch` 与 GitHub Actions 每日工作流仍未开放指数入口；Web/API、Bot `/analyze` 与一次性 `--stocks` 已支持指数，其余定时/每日工作流入口留待后续 PR。
 
 ### 指数与个股 Dashboard canonical 隔离（PR #2312）
 

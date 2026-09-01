@@ -52,7 +52,7 @@ bot/
 ├── commands/               # 命令处理器
 │   ├── __init__.py
 │   ├── base.py             # 命令抽象基类
-│   ├── analyze.py          # /analyze 股票分析
+│   ├── analyze.py          # /analyze 股票/指数分析
 │   ├── market.py           # /market 大盘复盘
 │   ├── help.py             # /help 帮助信息
 │   └── status.py           # /status 系统状态
@@ -185,7 +185,7 @@ class CommandDispatcher:
 
 |------|------|------|------|
 
-| /analyze | /a, 分析 | 分析指定股票 | `/analyze 600519` |
+| /analyze | /a, 分析 | 分析指定股票或已登记指数 | `/analyze 600519`、`/analyze sh000016`、`/analyze 上证50` |
 
 | /market | /m, 大盘 | 大盘复盘 | `/market` |
 
@@ -194,6 +194,13 @@ class CommandDispatcher:
 | /help | /h, 帮助 | 显示帮助信息 | `/help` |
 
 | /status | /s, 状态 | 系统状态 | `/status` |
+
+### `/analyze` 支持边界
+
+- 股票：A 股 6 位数字（`600519`）、港股 `HK+5 位数字`（`hk00700`）、美股 1-5 个字母（`AAPL`、`usfd`→`USFD`）。股票名称（`贵州茅台`）由本次 Bot 入口新暴露：复用既有名称解析器（`resolve_name_to_code`）解析后提交 legacy code，不携带结构化 target。
+- 已登记指数：显式代码（`sh000016`）、CSI alias（`930955.CSI` 收敛为 `csi930955`）、注册中文名（`上证50`）均可提交；指数以结构化 `AnalysisTarget` 贯穿到分析 Pipeline，`sh000016` 不会被改写为 `SH000016`。
+- 未登记 CSI（如 `930956.CSI`）、旧闸门拒绝的代码形态（如 `12345`、裸 `00700`、`600519.SH`、未登记 `sh999999`）或无法识别的名称：返回明确错误，不提交任务。
+- 注册表内存在等价名称歧义时：要求改用显式代码，不猜测、不进入股票名称兜底。
 
 ## 五、`/status` 与模型配置诊断说明
 
