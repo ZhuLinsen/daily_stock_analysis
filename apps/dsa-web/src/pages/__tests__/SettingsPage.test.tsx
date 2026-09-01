@@ -1,12 +1,43 @@
 import type React from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import type React from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
 import type { SetupStatusResponse } from '../../types/systemConfig';
 import { DesktopUpdateIndicator } from '../../components/layout/DesktopUpdateIndicator';
 import { resetSharedDesktopUpdateState } from '../../desktop/updateStore';
 import SettingsPage from '../SettingsPage';
+
+function renderSettingsPage(initialEntries: string[] = ['/settings']) {
+  const router = createMemoryRouter(
+    [
+      { path: '/settings', element: <SettingsPage /> },
+      // The in-app "leaving /settings" target — kept minimal so the data
+      // router has somewhere to navigate to on `proceed()` without mounting
+      // the heavy lazy ChatPage. Marked with a testid so in-app navigation
+      // tests can assert the destination actually rendered.
+      { path: '/chat', element: <div data-testid="chat-page-stub" /> },
+      // Stub for non-existent path so unknown-destination navigations don't
+      // throw.
+      { path: '*', element: <div data-testid="not-found-stub" /> },
+    ],
+    { initialEntries },
+  );
+  const utils = render(<RouterProvider router={router} />);
+  // Trigger an in-router state refresh so memoised route element re-renders
+  // after the mocked hook return value changes between iterations (the data
+  // router keeps the <SettingsPage /> element reference stable across
+  // rerenders, so React.memo would otherwise bail and the new mock return
+  // value would not be re-read).
+  const rerenderSettingsPage = () => {
+    act(() => {
+      router.revalidate();
+    });
+  };
+  return { ...utils, router, rerender: rerenderSettingsPage, rerenderSettingsPage };
+}
 
 const {
   analyzeAsync,
@@ -508,12 +539,6 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderSettingsPage(route = '/settings') {
-  return render(
-    <MemoryRouter initialEntries={[route]}>
-      <SettingsPage />
-    </MemoryRouter>,
-  );
 }
 
 function renderDesktopUpdateEntries(route = '/settings') {
@@ -1565,8 +1590,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    const { rerender } = renderSettingsPage();
-
+    const { rerenderSettingsPage } = renderSettingsPage();
     expect(await screen.findByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '选股' })).toBeInTheDocument();
 
@@ -1577,12 +1601,7 @@ describe('SettingsPage', () => {
         base: baseItems,
       },
     }));
-    rerender(
-      <MemoryRouter initialEntries={['/settings']}>
-        <SettingsPage />
-      </MemoryRouter>,
-    );
-
+    rerenderSettingsPage();
     expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '选股' })).not.toBeInTheDocument();
 
@@ -1593,12 +1612,7 @@ describe('SettingsPage', () => {
         base: baseItems,
       },
     }));
-    rerender(
-      <MemoryRouter initialEntries={['/settings']}>
-        <SettingsPage />
-      </MemoryRouter>,
-    );
-
+    rerenderSettingsPage();
     expect(screen.queryByRole('heading', { name: '选股' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
   });
@@ -2735,7 +2749,7 @@ describe('SettingsPage', () => {
     it('registers a beforeunload listener when there are unsaved drafts', async () => {
       useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
-      render(<SettingsPage />);
+      renderSettingsPage();
       // Wait for the initial load effect (which also re-renders with the
       // mocked system-config state) to settle — the guard effect runs as a
       // layout commit after the first paint with effectiveHasDirty === true.
@@ -2747,7 +2761,7 @@ describe('SettingsPage', () => {
     it('does not register a beforeunload listener when no drafts are dirty', async () => {
       useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
 
-      render(<SettingsPage />);
+      renderSettingsPage();
 
       // Give any pending effects (load() promise, async setState) time to settle
       // before we assert no listener was attached.
@@ -2758,7 +2772,7 @@ describe('SettingsPage', () => {
     it('guards the navigation by setting returnValue on the synthetic event', async () => {
       useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
 
-      render(<SettingsPage />);
+      renderSettingsPage();
       await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
 
       const event = new Event('beforeunload') as BeforeUnloadEvent;
@@ -2781,20 +2795,164 @@ describe('SettingsPage', () => {
     it('re-attaches a fresh listener when the dirty state flips back and forth', async () => {
       // Start dirty → listener attached.
       useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
-      const { rerender } = render(<SettingsPage />);
+      const { rerenderSettingsPage } = renderSettingsPage();
       await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
       const firstHandler = beforeUnloadListeners[0]!;
 
       // Clear dirty → listener removed on next render.
       useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
-      rerender(<SettingsPage />);
+      rerenderSettingsPage();
       await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
 
       // Dirty again → new listener attached, distinct from the original reference.
       useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
-      rerender(<SettingsPage />);
+      rerenderSettingsPage();
       await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
       expect(beforeUnloadListeners[0]).not.toBe(firstHandler);
+    });
+
+    // ───────────────────────────────────────────────────────────────────────
+    // In-app route guards (issue #1948 — ZhuLinsen reviewer contract points
+    // 3–6). `beforeunload` only fires on reload / tab close / external nav;
+    // these tests exercise the `useBlocker`-backed `ConfirmDialog` flow that
+    // covers SPA-internal navigation (sidebar `NavLink`, `navigate()`,
+    // browser back/forward).
+    // ───────────────────────────────────────────────────────────────────────
+
+    it('prompts on in-app navigation away from /settings when dirty, and stays when cancelled', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+
+      const { router } = renderSettingsPage();
+      // Wait for the useBlocker effect to attach (it depends on
+      // effectiveHasDirty, which is derived from the mocked hook return value
+      // after the initial load effect runs).
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      expect(router.state.location.pathname).toBe('/settings');
+
+      // Trigger an in-app navigation to /chat — the blocker should intercept
+      // and keep us on /settings, surfacing the confirm dialog instead.
+      act(() => {
+        void router.navigate('/chat');
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).toBeInTheDocument();
+      });
+      // Blocker cancelled the navigation: still on /settings, and the stub
+      // chat page has NOT mounted.
+      expect(router.state.location.pathname).toBe('/settings');
+      expect(screen.queryByTestId('chat-page-stub')).not.toBeInTheDocument();
+    });
+
+    it('discards the draft and proceeds to the target route on confirm', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      resetDraft.mockClear();
+
+      const { router } = renderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+
+      act(() => {
+        void router.navigate('/chat');
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: '放弃并离开' })).toBeInTheDocument();
+      });
+
+      // Confirm → resetDraft flips dirty to false, then proceed() replays the
+      // pending navigation to /chat.
+      fireEvent.click(screen.getByRole('button', { name: '放弃并离开' }));
+
+      await waitFor(() => {
+        expect(resetDraft).toHaveBeenCalledTimes(1);
+      });
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/chat');
+      });
+      expect(screen.getByTestId('chat-page-stub')).toBeInTheDocument();
+    });
+
+    it('does not prompt on in-app navigation when there are no dirty drafts', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+
+      const { router } = renderSettingsPage();
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      expect(beforeUnloadListeners.length).toBe(0);
+
+      act(() => {
+        void router.navigate('/chat');
+      });
+
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/chat');
+      });
+      // No dialog ever shown.
+      expect(screen.queryByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).not.toBeInTheDocument();
+    });
+
+    it('prompts when the user triggers browser-style back navigation away from /settings', async () => {
+      // Back navigation is approximated with `router.navigate(-1)` from a
+      // history that contains a non-/settings entry — this is the closest
+      // jsdom-equivalent to a real `popstate` for the data router.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+
+      const { router } = renderSettingsPage(['/chat', '/settings']);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      expect(router.state.location.pathname).toBe('/settings');
+
+      act(() => {
+        void router.navigate(-1);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).toBeInTheDocument();
+      });
+      // Cancelled: still on /settings, history entry not popped.
+      expect(router.state.location.pathname).toBe('/settings');
+    });
+
+    it('clears the in-app guard once dirty drops to zero (after reset button)', async () => {
+      // Start dirty → both beforeunload listener and useBlocker active.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
+      const { router, rerenderSettingsPage } = renderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+
+      // Simulate "Reset" button success — dirty clears, listener should be
+      // torn down and a subsequent in-app navigation should NOT prompt.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+      rerenderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+
+      act(() => {
+        void router.navigate('/chat');
+      });
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/chat');
+      });
+      expect(screen.queryByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).not.toBeInTheDocument();
+    });
+
+    it('clears the in-app guard once dirty drops to zero (after save success)', async () => {
+      // Same shape as the reset-button variant, but the contract point 5 also
+      // explicitly calls out "保存成功后必须立即解除两类 guard". Save success
+      // is the same observable from the hook's perspective: hasDirty flips
+      // false. We model that here by switching the mock return value.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      const { router, rerenderSettingsPage } = renderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+
+      // Save success — dirty clears.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+      rerenderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+
+      act(() => {
+        void router.navigate('/chat');
+      });
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/chat');
+      });
+      expect(screen.queryByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).not.toBeInTheDocument();
     });
   });
 });
