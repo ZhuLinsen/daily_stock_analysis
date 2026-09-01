@@ -1061,6 +1061,32 @@ const SettingsPage: React.FC = () => {
   const effectiveHasDirty = hasDirty || hasRuntimeSchedulerMismatchInDraft;
   const effectiveDirtyCount = dirtyCount + (hasRuntimeSchedulerMismatchInDraft ? 1 : 0);
 
+  // Issue #1948 acceptance point 4: when there are unsaved local edits on
+  // the settings page, prompt the user before leaving the page. We register
+  // a `beforeunload` handler that triggers the browser's native "Leave site?"
+  // confirmation on refresh, tab close, external navigation, and same-tab
+  // navigation to a non-React route. This is the lightest implementation
+  // that meets the acceptance criterion without bringing a custom
+  // ConfirmDialog / Router blocker into the page (which would require
+  // wrapping every settings-page test in a Router context).
+  useEffect(() => {
+    if (!effectiveHasDirty) {
+      return;
+    }
+    const handler = (event: BeforeUnloadEvent) => {
+      // Modern Chromium (post-2026) ignores the custom message string and
+      // only triggers a confirmation if `event.returnValue` is set to a
+      // non-empty value. We keep a real string for older browsers / Firefox.
+      event.returnValue = t('settings.unsavedChangesMessage');
+      return event.returnValue;
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => {
+      window.removeEventListener('beforeunload', handler);
+    };
+  }, [effectiveHasDirty, t]);
+
+
   const handleSchedulerRuntimeStateChange = useCallback(({ runtimeEnabled, overrideEnabled }: {
     runtimeEnabled: boolean | null;
     overrideEnabled: boolean | null;

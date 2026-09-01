@@ -2627,4 +2627,100 @@ describe('SettingsPage', () => {
 
     await waitFor(() => expect(desktopInstallDownloadedUpdate).toHaveBeenCalledTimes(1));
   });
+
+  describe('unsaved changes navigation guard (issue #1948 point 4)', () => {
+    let beforeUnloadListeners: Array<(event: BeforeUnloadEvent) => void>;
+
+    beforeEach(() => {
+      // jsdom does not natively dispatch `beforeunload` events on `reload` /
+      // close — we approximate the behaviour by tracking whether the page
+      // attached a listener and what it does when invoked with a synthetic
+      // BeforeUnloadEvent.
+      beforeUnloadListeners = [];
+      vi.spyOn(window, 'addEventListener').mockImplementation((type, listener) => {
+        if (type === 'beforeunload' && typeof listener === 'function') {
+          beforeUnloadListeners.push(listener as (event: BeforeUnloadEvent) => void);
+        }
+        return undefined;
+      });
+      vi.spyOn(window, 'removeEventListener').mockImplementation((type, listener) => {
+        if (type !== 'beforeunload' || typeof listener !== 'function') {
+          return;
+        }
+        const idx = beforeUnloadListeners.indexOf(listener as (event: BeforeUnloadEvent) => void);
+        if (idx >= 0) {
+          beforeUnloadListeners.splice(idx, 1);
+        }
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('registers a beforeunload listener when there are unsaved drafts', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
+
+      render(<SettingsPage />);
+      // Wait for the initial load effect (which also re-renders with the
+      // mocked system-config state) to settle — the guard effect runs as a
+      // layout commit after the first paint with effectiveHasDirty === true.
+      await waitFor(() => {
+        expect(beforeUnloadListeners.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+
+    it('does not register a beforeunload listener when no drafts are dirty', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+
+      render(<SettingsPage />);
+
+      // Give any pending effects (load() promise, async setState) time to settle
+      // before we assert no listener was attached.
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      expect(beforeUnloadListeners.length).toBe(0);
+    });
+
+    it('guards the navigation by setting returnValue on the synthetic event', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+
+      render(<SettingsPage />);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+
+      const event = new Event('beforeunload') as BeforeUnloadEvent;
+      // jsdom does not implement `returnValue` on Event, so we attach a plain
+      // property to mirror the DOM semantics in tests.
+      Object.defineProperty(event, 'returnValue', {
+        configurable: true,
+        writable: true,
+        value: '',
+      });
+      const handler = beforeUnloadListeners[0]!;
+      const result = handler(event);
+
+      expect(event.returnValue).not.toBe('');
+      // The handler also returns the message so older browsers (Firefox) can
+      // surface it natively.
+      expect(result).toBe(event.returnValue);
+    });
+
+    it('re-attaches a fresh listener when the dirty state flips back and forth', async () => {
+      // Start dirty → listener attached.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      const { rerender } = render(<SettingsPage />);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      const firstHandler = beforeUnloadListeners[0]!;
+
+      // Clear dirty → listener removed on next render.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+      rerender(<SettingsPage />);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+
+      // Dirty again → new listener attached, distinct from the original reference.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      rerender(<SettingsPage />);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      expect(beforeUnloadListeners[0]).not.toBe(firstHandler);
+    });
+  });
 });
