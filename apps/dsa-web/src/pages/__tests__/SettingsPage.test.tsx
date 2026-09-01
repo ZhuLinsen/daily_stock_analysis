@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
+import { resetSharedDesktopUpdateState } from '../../desktop/updateStore';
 import type { SetupStatusResponse } from '../../types/systemConfig';
 import SettingsPage from '../SettingsPage';
 
@@ -536,22 +537,6 @@ function createDeferred<T>() {
 }
 
 
-function hangDesktopUpdateCheck() {
-  let resolveCheck: ((value: unknown) => void) | undefined;
-  desktopCheckForUpdates.mockImplementation(
-    () => new Promise((resolve) => {
-      resolveCheck = resolve;
-    }),
-  );
-  return {
-    async finish(value: unknown) {
-      await act(async () => {
-        resolveCheck?.(value);
-      });
-    },
-  };
-}
-
 describe('SettingsPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -711,7 +696,7 @@ describe('SettingsPage', () => {
       onUpdateStateChange: desktopOnUpdateStateChange,
     };
 
-    renderSettingsPage('/settings?category=system#desktop-version-info');
+    renderSettingsPage(['/settings?category=system#desktop-version-info']);
 
     await waitFor(() => expect(setActiveCategory).toHaveBeenCalledWith('system'));
     expect(await screen.findByText('桌面端更新')).toBeInTheDocument();
