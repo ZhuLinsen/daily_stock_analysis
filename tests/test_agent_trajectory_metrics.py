@@ -1155,6 +1155,23 @@ class TestExpectedOutcomes:
         assert "optional tools escaped the guarded stock 600519: get_realtime_quote" in m.violations
         assert "expected outcomes not observed: guarded_retry" in m.violations
 
+    def test_integral_float_clean_success_on_guarded_stock_reports_escape(self):
+        # Review counter-example: get_realtime_quote(stock_code=600519.0,
+        # success=True) is a clean success on the pinned stock even though
+        # the argument is a JSON float — the escape and the guarded_retry
+        # break must both be reported, not silently missed as invalid
+        # evidence.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=3, success=False, guarded=True),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=4, success=False, cached=True),
+            _entry(tool="get_realtime_quote", arguments={"stock_code": 600519.0}, step=5),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "optional tools escaped the guarded stock 600519: get_realtime_quote" in m.violations
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
     def test_blocked_optional_probe_on_guarded_stock_stays_clean(self):
         # The deliberate-probe exemption spans tools: a blocked optional
         # probe of the pinned stock is as legitimate as an expected one and
@@ -1219,6 +1236,46 @@ class TestStockCodeScoping:
         assert m.expected_hit_rate == pytest.approx(2 / 3)
         assert m.missing_expected == ["get_daily_history"]
         assert any("different stock than 600519: get_daily_history" in v for v in m.violations)
+
+    def test_integral_float_stock_argument_counts_as_hit(self):
+        # Review counter-example: the runner records arguments verbatim, so a
+        # JSON-parsed code can arrive as 600519.0; the guard chain coerces
+        # integral floats to int before normalization
+        # (_normalize_guard_stock_code), so the metrics layer must read it
+        # as 600519 instead of rejecting the evidence.
+        golden = _golden(expected_tools=["get_realtime_quote"])
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": 600519.0}, step=1)]
+        m = compute_trajectory_metrics(log, golden)
+        assert m.expected_hit_rate == 1.0
+        assert m.missing_expected == []
+        assert m.violations == []
+
+    def test_integral_float_wrong_stock_is_reported(self):
+        # The coercion must reach the mismatch side too: 600000.0 reads as
+        # 600000, a different code, so analyze_trend scores no hit and
+        # reports a wrong-stock violation even though its argument is a
+        # float.
+        log = [
+            _entry(tool="get_realtime_quote", arguments={"stock_code": 600519.0}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600519"}, step=2),
+            _entry(tool="analyze_trend", arguments={"stock_code": 600000.0}, step=3),
+        ]
+        m = compute_trajectory_metrics(log, _golden())
+        assert m.expected_hit_rate == pytest.approx(2 / 3)
+        assert m.missing_expected == ["analyze_trend"]
+        assert any("different stock than 600519: analyze_trend" in v for v in m.violations)
+
+    def test_non_integral_float_stock_is_a_distinct_code(self):
+        # Guard-chain parity for the non-integral branch: the guard compares
+        # str(600519.5) = "600519.5", which never canonicalizes to 600519 —
+        # it is evidence of a different code, so no hit and a wrong-stock
+        # violation.
+        golden = _golden(expected_tools=["get_realtime_quote"])
+        log = [_entry(tool="get_realtime_quote", arguments={"stock_code": 600519.5}, step=1)]
+        m = compute_trajectory_metrics(log, golden)
+        assert m.expected_hit_rate == 0.0
+        assert m.missing_expected == ["get_realtime_quote"]
+        assert any("different stock than 600519: get_realtime_quote" in v for v in m.violations)
 
     def test_codex_summary_matching_the_stock_counts(self):
         log = [
@@ -1595,6 +1652,21 @@ class TestStockCanonicalization:
         ]
         for form in forms:
             assert _canonicalize_stock_code(form) == _normalize_tool_stock_code(form), form
+
+    def test_float_evidence_matches_production_guard_coercion(self):
+        # Guard-chain parity for float-shaped stock evidence: the coercion
+        # step plus the mirror must agree with
+        # execution._normalize_guard_stock_code on both branches (integral
+        # float -> int, any other float -> str), so a value the runtime
+        # guard reads as a code scores identically here.
+        from src.agent.tools.execution import _normalize_guard_stock_code
+
+        from evals.agent_trajectory.metrics import _canonicalize_stock_code, _coerce_guard_float
+
+        for value in [600519.0, 600036.0, 600519.5, 600036.5]:
+            coerced = _coerce_guard_float(value)
+            assert _canonicalize_stock_code(coerced) == _normalize_guard_stock_code(coerced), value
+            assert _normalize_guard_stock_code(value) == _normalize_guard_stock_code(coerced), value
 
     def test_injected_normalizer_overrides_the_mirror(self):
         golden = _golden(expected_tools=["get_realtime_quote"])

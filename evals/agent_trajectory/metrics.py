@@ -122,7 +122,13 @@ Metric semantics
   wrong-stock.  Entries with no stock evidence at all keep the name-only
   tolerance — reserved for entries with no stock evidence at all; an
   explicitly present but invalid value (null / boolean / non-scalar, empty
-  guard metadata) is a non-match and earns no hit credit.  *Every* call of
+  guard metadata) is a non-match and earns no hit credit.  Float-shaped
+  evidence follows the guard chain's coercion instead: an integral float
+  (``600519.0``) is converted to ``int`` before comparison exactly like
+  ``execution._normalize_guard_stock_code`` — the runner records arguments
+  verbatim, so a JSON-parsed code can legitimately arrive in float shape —
+  and any other float is compared as its ``str`` form (``600519.5``), which
+  never canonicalizes to an integer-formed code.  *Every* call of
   an expected tool whose stock resolves to a different code is reported in a
   violation — one matching call does not legitimize cross-stock calls of the
   same tool.  The one exception is the
@@ -356,6 +362,20 @@ def _apply_stock_normalizer(normalizer: Callable[[Any], str], value: Any) -> str
     return result if isinstance(result, str) else _canonicalize_stock_code(value)
 
 
+def _coerce_guard_float(value: Any) -> Any:
+    """Coerce float stock evidence exactly like the runtime guard chain.
+
+    ``execution._normalize_guard_stock_code`` converts an integral float
+    (``600519.0``) to ``int`` before normalization, so the guard compares it
+    as ``600519``; any other float falls back to its ``str`` form
+    (``600519.5``), which never canonicalizes to an integer-formed code.
+    Non-float values pass through untouched.
+    """
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else str(value)
+    return value
+
+
 def _entry_matches_stock(
     entry: Dict[str, Any],
     stock_code: str,
@@ -378,7 +398,13 @@ def _entry_matches_stock(
     name-only tolerance so minimal entries still count as before; an
     explicitly present but invalid value (null / boolean / non-scalar) is a
     non-match — it provably does not target the golden stock and must not
-    earn hit credit (see the module docstring).
+    earn hit credit (see the module docstring).  Float evidence is coerced
+    exactly like the runtime guard chain
+    (``execution._normalize_guard_stock_code``): an integral float
+    (``600519.0``) becomes ``int`` — the runner records arguments verbatim,
+    so JSON-parsed codes arrive in float shape — while any other float is
+    compared as its ``str`` form (``600519.5``), which never canonicalizes
+    to an integer-formed code.
 
     ``require_evidence`` tightens the check for stock-pinned assertions
     (``expected_guarded_stock``): entries with no stock evidence at all are
@@ -386,7 +412,7 @@ def _entry_matches_stock(
     identifies a stock cannot prove the pinned out-of-scope probe.
     """
     if "requested_stock_code" in entry:
-        requested = entry["requested_stock_code"]
+        requested = _coerce_guard_float(entry["requested_stock_code"])
         # An explicitly present but invalid guard record is a non-match:
         # it carries no usable target and must not fall through to the
         # name-only tolerance (an empty string compares non-equal below).
@@ -400,7 +426,7 @@ def _entry_matches_stock(
             # tolerance for ordinary hit scoring (the entry still counts,
             # like a minimal entry) — but never for stock-pinned assertions.
             return not require_evidence
-        value = args["stock_code"]
+        value = _coerce_guard_float(args["stock_code"])
         # Explicitly present but invalid (null / boolean / non-scalar):
         # not evidence for the golden stock, so not a hit either.
         if not isinstance(value, (str, int)) or isinstance(value, bool):
@@ -408,7 +434,7 @@ def _entry_matches_stock(
         return _apply_stock_normalizer(normalizer, value) == stock_code
     summary = entry.get("arguments_summary")
     if isinstance(summary, str) and summary:
-        value = _summary_stock_code(summary)
+        value = _coerce_guard_float(_summary_stock_code(summary))
         if value is _SUMMARY_NO_EVIDENCE:
             return stock_code in summary
         # Recovered but invalid (JSON null / false / array): a non-match,
@@ -470,22 +496,25 @@ def _entry_mismatches_stock(
     ``arguments_summary``.  Unresolvable evidence (truncated / redacted
     previews, malformed values) is treated as "no evidence" — it can neither
     match nor mismatch, so it never produces a wrong-stock violation on its
-    own.
+    own.  Float evidence follows the guard chain's coercion (integral ->
+    ``int``, otherwise ``str``), so ``600519.0`` reads as ``600519`` and
+    ``600519.5`` as the distinct literal code.
     """
     requested = entry.get("requested_stock_code")
     if requested:
+        requested = _coerce_guard_float(requested)
         if not isinstance(requested, (str, int)) or isinstance(requested, bool):
             return False
         return _apply_stock_normalizer(normalizer, requested) != stock_code
     args = entry.get("arguments")
     if isinstance(args, dict):
-        value = args.get("stock_code")
+        value = _coerce_guard_float(args.get("stock_code"))
         if not isinstance(value, (str, int)) or isinstance(value, bool):
             return False
         return _apply_stock_normalizer(normalizer, value) != stock_code
     summary = entry.get("arguments_summary")
     if isinstance(summary, str) and summary:
-        value = _summary_stock_code(summary)
+        value = _coerce_guard_float(_summary_stock_code(summary))
         if value is _SUMMARY_NO_EVIDENCE:
             return False
         if not isinstance(value, (str, int)) or isinstance(value, bool):
