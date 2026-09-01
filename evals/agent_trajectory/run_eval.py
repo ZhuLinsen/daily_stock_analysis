@@ -10,7 +10,15 @@ optional structured JSON report.
 
 The eval is a *reporter*, not a gate: metric violations lower the report,
 they never fail the process.  Exit codes: 0 = ran (violations included),
-1 = load / build / run failure, 2 = usage error.
+1 = load (golden / tool registry) / build / run failure, 2 = usage error.
+
+The entry supports the single-agent runner only.  When ``AGENT_ARCH=multi``
+the factory returns the orchestrator whose trajectories use per-stage local
+step numbers, which breaks the single-runner metric contract, so the entry
+rejects that arch up front with exit code 1.  Golden samples are validated
+against the real tool registry before running, so misspelled or stale
+``expected_tools`` fail as invalid samples instead of scoring as low hit
+rate.
 
 Usage:
     python evals/agent_trajectory/run_eval.py --sample 600519_technical
@@ -58,8 +66,52 @@ def _write_json(path: Optional[Path], payload: Any) -> None:
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+_KNOWN_TOOL_NAMES: Optional[set] = None
+
+
+def _check_agent_arch() -> None:
+    """Reject multi-agent arch up front (mirrors the factory's own decision).
+
+    ``src.agent.factory.build_agent_executor`` returns the orchestrator when
+    ``config.agent_arch == "multi"``; its trajectories concatenate per-stage
+    logs with local step numbering and set ``total_steps`` to the stage count,
+    which the single-runner metric contract cannot interpret.  Fail fast
+    instead of scoring a distorted trajectory.
+    """
+    from src.config import get_config
+
+    arch = getattr(get_config(), "agent_arch", "single")
+    if arch == "multi":
+        raise RuntimeError(
+            "AGENT_ARCH=multi is not supported by this minimal eval: "
+            "orchestrator trajectories use per-stage local step numbers, "
+            "which break the single-runner metric contract"
+        )
+
+
+def _known_tool_names():
+    """Authoritative tool names from the real registry modules (lazy, cached).
+
+    The metrics layer deliberately does not import ``src/``; the entry point
+    supplies these names so ``load_golden_samples`` rejects misspelled or
+    stale ``expected_tools`` instead of scoring them as low hit rate.
+    """
+    global _KNOWN_TOOL_NAMES
+    if _KNOWN_TOOL_NAMES is None:
+        from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
+        from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
+        from src.agent.tools.data_tools import ALL_DATA_TOOLS
+        from src.agent.tools.market_tools import ALL_MARKET_TOOLS
+        from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
+
+        all_tools = ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS + ALL_BACKTEST_TOOLS
+        _KNOWN_TOOL_NAMES = {tool_def.name for tool_def in all_tools}
+    return _KNOWN_TOOL_NAMES
+
+
 def _build_executor():
     """Build the real agent executor (lazy import so tests can monkeypatch this)."""
+    _check_agent_arch()
     from src.agent.factory import build_agent_executor
 
     return build_agent_executor()
@@ -115,7 +167,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        samples = load_golden_samples(path=args.golden_path)
+        known = _known_tool_names()
+    except Exception as exc:
+        print(f"error: failed to load tool registry for golden validation: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        samples = load_golden_samples(path=args.golden_path, known_tool_names=known)
     except (OSError, ValueError) as exc:
         print(f"error: failed to load golden samples: {exc}", file=sys.stderr)
         return 1

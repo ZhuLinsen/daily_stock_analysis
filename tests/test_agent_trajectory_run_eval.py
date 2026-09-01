@@ -5,6 +5,9 @@ All tests are offline: ``run_eval._build_executor`` is monkeypatched with a
 duck-typed stub, and the three checked-in fixtures provide real-shaped
 ``tool_calls_log`` payloads covering the positive path, the negative path
 (missing expected tool + cached failure + max_steps) and the retry path.
+The two runtime-seam guards (multi-arch rejection and golden validation
+against the real tool registry) are exercised via monkeypatched config /
+registry access plus one lazy real-registry check.
 """
 
 import json
@@ -198,7 +201,60 @@ class TestRunFailure:
 
 
 # ---------------------------------------------------------------------------
-# 4. CLI (main): exit codes, selection, JSON output
+# 4. runtime-seam guards: multi-arch rejection + golden registry validation
+# ---------------------------------------------------------------------------
+class TestArchGuard:
+    def test_multi_arch_raises(self, monkeypatch):
+        import src.config
+
+        monkeypatch.setattr(src.config, "get_config", lambda: SimpleNamespace(agent_arch="multi"))
+        with pytest.raises(RuntimeError, match="multi"):
+            run_eval._check_agent_arch()
+
+    def test_single_arch_passes(self, monkeypatch):
+        import src.config
+
+        monkeypatch.setattr(src.config, "get_config", lambda: SimpleNamespace(agent_arch="single"))
+        run_eval._check_agent_arch()  # no raise
+
+
+class TestGoldenRegistryValidation:
+    def test_unknown_expected_tools_exit_one(self, tmp_path, monkeypatch, capsys):
+        # A misspelled expected tool must fail as an invalid sample, not score low.
+        custom = [
+            {
+                "id": "typo_sample",
+                "task_description": "t",
+                "stock_code": "",
+                "expected_tools": ["get_daily_histroy"],
+                "allowed_max_steps": 10,
+                "allow_optional_tools": True,
+            }
+        ]
+        golden_path = tmp_path / "golden.json"
+        golden_path.write_text(json.dumps(custom, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(run_eval, "_known_tool_names", lambda: {"get_realtime_quote"})
+        assert run_eval.main(["--sample", "typo_sample", "--golden-path", str(golden_path)]) == 1
+        err = capsys.readouterr().err
+        assert "unknown expected_tools" in err
+        assert "get_daily_histroy" in err
+
+    def test_checked_in_goldens_pass_real_registry(self):
+        known = run_eval._known_tool_names()
+        assert len(known) > 5  # sanity: the real registry is non-trivial
+        load_golden_samples(known_tool_names=known)  # must not raise
+
+    def test_registry_load_failure_exit_one(self, monkeypatch, capsys):
+        def _boom():
+            raise ImportError("no tool modules")
+
+        monkeypatch.setattr(run_eval, "_known_tool_names", _boom)
+        assert run_eval.main(["--sample", "600519_technical"]) == 1
+        assert "failed to load tool registry" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# 5. CLI (main): exit codes, selection, JSON output
 # ---------------------------------------------------------------------------
 class TestMainCli:
     @pytest.fixture(autouse=True)
@@ -236,6 +292,14 @@ class TestMainCli:
         monkeypatch.setattr(run_eval, "_build_executor", _boom)
         assert run_eval.main(["--sample", "600519_technical"]) == 1
         assert "failed to build agent executor" in capsys.readouterr().err
+
+    def test_multi_arch_build_rejection_exit_one(self, monkeypatch, capsys):
+        def _boom():
+            raise RuntimeError("AGENT_ARCH=multi is not supported by this minimal eval")
+
+        monkeypatch.setattr(run_eval, "_build_executor", _boom)
+        assert run_eval.main(["--sample", "600519_technical"]) == 1
+        assert "multi" in capsys.readouterr().err
 
     def test_run_failure_exit_one(self, monkeypatch, capsys):
         class _Exploding:
@@ -310,7 +374,7 @@ class TestMainCli:
 
 
 # ---------------------------------------------------------------------------
-# 5. Checked-in fixtures end to end (the owner-requested real-entry coverage)
+# 6. Checked-in fixtures end to end (the owner-requested real-entry coverage)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "fixture_name,golden_id,expected",
