@@ -89,6 +89,13 @@ Metric semantics
   call) with *actual stock evidence* — the name-only tolerance does not
   apply to the pinned check, so a blocked call that never identifies a
   stock (empty or missing arguments payload) cannot prove the pinned probe.
+  A pin that fails the structural contract (unpaired, or naming the golden
+  stock itself after canonicalization) is reported as a violation and
+  disabled — no wrong-stock exemption, no escape tracking, no pin-name
+  seeding.  ``guarded_retry`` then binds to the out-of-scope requirement it
+  declares: a guarded call carrying evidence for a stock other than the
+  golden's seeds the pair, so an in-scope blocked retry never satisfies it
+  and a genuine out-of-scope probe still does.
   Every occurrence of the pair must remain blocked
   (``cached`` / ``guarded`` / failed): a clean success at *any* point — before
   or after the first guarded occurrence — is an escape (the scope guard was
@@ -197,7 +204,11 @@ class GoldenSample:
     intercept (the task's out-of-scope call): when set, ``guarded_retry`` is
     only observed for guarded calls targeting that stock, and blocked calls
     (guarded / cached / failed) targeting it are exempt from wrong-stock
-    reporting — the sample itself requires the probe.
+    reporting — the sample itself requires the probe.  A pin rejected by the
+    structural contract (unpaired, or the golden stock itself after
+    canonicalization) is reported as a violation and disabled; see
+    :func:`compute_trajectory_metrics` for the degraded ``guarded_retry``
+    requirement.
     """
 
     id: str
@@ -582,8 +593,12 @@ def compute_trajectory_metrics(
     disabled), and a pinned ``expected_guarded_stock`` is only honoured for
     the coherent pairing the validator requires (``guarded_retry`` declared,
     and a stock different from ``golden.stock_code`` after
-    canonicalization) — an unpaired pin is reported and disabled rather than
-    silently erasing wrong-stock reporting.
+    canonicalization) — an unpaired or same-stock pin is reported and
+    disabled: no wrong-stock exemption, no escape tracking, no pin-name
+    seeding.  A same-stock pin still keeps ``guarded_retry`` bound to the
+    out-of-scope probe it declares: with the pin disabled, a guarded call
+    carrying actual evidence for a *different* stock seeds the pair, and an
+    in-scope blocked retry can never pass as the required probe.
     """
     used_tools: List[str] = []
     key_counts: Dict[tuple, int] = {}
@@ -609,15 +624,17 @@ def compute_trajectory_metrics(
     stock_code = _apply_stock_normalizer(normalizer, golden.stock_code) if golden_stock_valid else ""
     guarded_stock = golden.expected_guarded_stock
     guarded_stock_nonempty = isinstance(guarded_stock, str) and bool(guarded_stock.strip())
+    guarded_stock = _apply_stock_normalizer(normalizer, guarded_stock) if guarded_stock_nonempty else guarded_stock
     # A pinned stock only takes effect for the coherent pairing
     # validate_golden_sample() enforces: expected_guarded_stock must be
-    # declared together with guarded_retry in expected_outcomes.  An
-    # unpaired pin is malformed — it is reported below and must not reshape
-    # scoring (no wrong-stock exemption, no pinned seeding).
-    guarded_stock_valid = guarded_stock_nonempty and (
-        isinstance(golden.expected_outcomes, list) and "guarded_retry" in golden.expected_outcomes
-    )
-    guarded_stock = _apply_stock_normalizer(normalizer, guarded_stock) if guarded_stock_nonempty else guarded_stock
+    # declared together with guarded_retry in expected_outcomes, and it
+    # must name a stock different from golden.stock_code after
+    # canonicalization.  An unpaired or same-stock pin is malformed — it is
+    # reported below and must not reshape scoring (no wrong-stock
+    # exemption, no escape tracking, no pin-name seeding; the degraded
+    # guarded_retry requirement is handled at the seeding site below).
+    guarded_retry_declared = isinstance(golden.expected_outcomes, list) and "guarded_retry" in golden.expected_outcomes
+    guarded_stock_valid = guarded_stock_nonempty and guarded_retry_declared and guarded_stock != stock_code
     # Extract the expected tool list before scanning entries so per-entry
     # wrong-stock reporting can consult it during the loop.  Malformed
     # elements are not silently dropped: they are reported as a violation
@@ -730,7 +747,26 @@ def compute_trajectory_metrics(
         # outcome — a blocked call that never identifies a stock cannot
         # prove the pinned out-of-scope probe (no name-only tolerance here).
         if entry.get("guarded") and not success and key not in key_guarded_at:
-            if not guarded_stock_valid or _entry_matches_stock(entry, guarded_stock, normalizer, require_evidence=True):
+            if not guarded_stock_nonempty:
+                # No pin declared: the legacy pin-less requirement — any
+                # guarded occurrence seeds the pair.
+                key_guarded_at[key] = key_counts[key]
+            elif guarded_stock_valid and _entry_matches_stock(entry, guarded_stock, normalizer, require_evidence=True):
+                # Coherent pin: only a probe carrying actual evidence for
+                # the pinned stock proves the required out-of-scope call.
+                key_guarded_at[key] = key_counts[key]
+            elif (
+                not guarded_stock_valid
+                and guarded_retry_declared
+                and stock_code
+                and _entry_mismatches_stock(entry, stock_code, normalizer)
+            ):
+                # Malformed pin (same stock after canonicalization): the pin
+                # is disabled, but the declared guarded_retry still binds to
+                # the out-of-scope probe it declares — the pin merely names
+                # it.  A guarded call carrying evidence for a *different*
+                # stock seeds the pair; an in-scope call never does, so an
+                # in-scope blocked retry cannot pass as the required probe.
                 key_guarded_at[key] = key_counts[key]
         # An occurrence is a retry only when the same call already failed
         # before it (see module docstring for the precise contract).

@@ -379,6 +379,118 @@ class TestDirectConstructionContract:
         assert any("expected_guarded_stock must name a different stock than stock_code" in v for v in m.violations)
         assert any("different stock than 600036: get_stock_info" in v for v in m.violations)
 
+    def test_same_stock_pin_does_not_score_in_scope_retry_as_probe(self):
+        # A pin that canonicalizes back to golden.stock_code is a dead
+        # configuration: the direct-score path reports it AND disables the
+        # pin, so an in-scope blocked guard-retry must not pass as the
+        # required out-of-scope probe — guarded_retry reads not observed
+        # next to the structural violation.
+        golden = _golden(
+            stock_code="600036",
+            expected_tools=["get_stock_info"],
+            expected_outcomes=["guarded_retry"],
+            expected_guarded_stock="SH600036",
+        )
+        log = [
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600036"},
+                step=1,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600036"},
+                step=2,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, golden)
+        assert any("expected_guarded_stock must name a different stock than stock_code" in v for v in m.violations)
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_same_stock_pin_disabled_tracks_no_escape_for_optional_tool_success(self):
+        # A disabled pin must not reshape scoring: an optional tool reaching
+        # the (invalid) pinned stock cleanly is not a guard bypass, because
+        # the pin names the in-scope stock, not an out-of-scope one.
+        golden = _golden(
+            stock_code="600036",
+            expected_tools=["get_stock_info"],
+            expected_outcomes=["guarded_retry"],
+            expected_guarded_stock="SH600036",
+        )
+        log = [
+            _entry(
+                tool="get_realtime_quote",
+                arguments={"stock_code": "600036"},
+                step=1,
+                success=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, golden)
+        assert not any("escaped the guarded stock" in v for v in m.violations)
+
+    def test_same_stock_pin_keeps_out_of_scope_probe_satisfying_guarded_retry(self):
+        # The pin names the out-of-scope call; a broken (same-stock) pin is
+        # disabled, but the declared guarded_retry still binds to the
+        # out-of-scope requirement — a genuine 600519 blocked guard-retry
+        # satisfies it (no misleading "not observed"), while the structural
+        # violation for the broken pin is still reported.
+        golden = _golden(
+            stock_code="600036",
+            expected_tools=["get_stock_info"],
+            expected_outcomes=["guarded_retry"],
+            expected_guarded_stock="SH600036",
+        )
+        log = [
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=1,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600519"},
+                step=2,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, golden)
+        assert any("expected_guarded_stock must name a different stock than stock_code" in v for v in m.violations)
+        assert not any("expected outcomes not observed" in v for v in m.violations)
+
+    def test_unpinned_guarded_retry_legacy_seeding_unchanged(self):
+        # No pin declared: the legacy pin-less guarded_retry still seeds
+        # from any guarded occurrence, in-scope included.
+        golden = _golden(
+            stock_code="600036",
+            expected_tools=["get_stock_info"],
+            expected_outcomes=["guarded_retry"],
+        )
+        log = [
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600036"},
+                step=1,
+                success=False,
+                guarded=True,
+            ),
+            _entry(
+                tool="get_stock_info",
+                arguments={"stock_code": "600036"},
+                step=2,
+                success=False,
+                cached=True,
+            ),
+        ]
+        m = compute_trajectory_metrics(log, golden)
+        assert m.violations == []
+
 
 # ---------------------------------------------------------------------------
 # 3. Retries, caching, failure counting
