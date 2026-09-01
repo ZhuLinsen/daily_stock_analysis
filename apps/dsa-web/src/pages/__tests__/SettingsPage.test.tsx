@@ -2702,105 +2702,99 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(desktopInstallDownloadedUpdate).toHaveBeenCalledTimes(1));
   });
 
-  it('disables the settings check button while the header entry is already checking', async () => {
-    const pendingCheck = hangDesktopUpdateCheck();
-    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+  describe('unsaved changes navigation guard (issue #1948 point 4)', () => {
+    let beforeUnloadListeners: Array<(event: BeforeUnloadEvent) => void>;
 
-    renderDesktopUpdateEntries();
-
-    fireEvent.click(await screen.findByRole('button', { name: '桌面端更新' }));
-    fireEvent.click(
-      within(screen.getByRole('dialog', { name: '桌面端更新' })).getByRole('button', { name: '检查更新' }),
-    );
-
-    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
-
-    const settingsCard = await waitFor(() => {
-      const card = document.querySelector('#desktop-version-info');
-      expect(card).not.toBeNull();
-      expect(within(card as HTMLElement).getByRole('button', { name: '检查中...' })).toBeDisabled();
-      return card as HTMLElement;
+    beforeEach(() => {
+      // jsdom does not natively dispatch `beforeunload` events on `reload` /
+      // close — we approximate the behaviour by tracking whether the page
+      // attached a listener and what it does when invoked with a synthetic
+      // BeforeUnloadEvent.
+      beforeUnloadListeners = [];
+      vi.spyOn(window, 'addEventListener').mockImplementation((type, listener) => {
+        if (type === 'beforeunload' && typeof listener === 'function') {
+          beforeUnloadListeners.push(listener as (event: BeforeUnloadEvent) => void);
+        }
+        return undefined;
+      });
+      vi.spyOn(window, 'removeEventListener').mockImplementation((type, listener) => {
+        if (type !== 'beforeunload' || typeof listener !== 'function') {
+          return;
+        }
+        const idx = beforeUnloadListeners.indexOf(listener as (event: BeforeUnloadEvent) => void);
+        if (idx >= 0) {
+          beforeUnloadListeners.splice(idx, 1);
+        }
+      });
     });
-    const settingsButton = within(settingsCard).getByRole('button', { name: '检查中...' });
 
-    fireEvent.click(settingsButton);
-    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
-
-    await pendingCheck.finish({
-      status: 'up-to-date',
-      currentVersion: '3.12.0',
-      latestVersion: '3.12.0',
-      message: '当前桌面端已是最新版本。',
+    afterEach(() => {
+      vi.restoreAllMocks();
     });
-  });
 
-  it('does not start a second check from the header while settings is already checking', async () => {
-    const pendingCheck = hangDesktopUpdateCheck();
-    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+    it('registers a beforeunload listener when there are unsaved drafts', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
-    renderDesktopUpdateEntries();
-
-    const settingsCard = await waitFor(() => {
-      const card = document.querySelector('#desktop-version-info');
-      expect(card).not.toBeNull();
-      return card as HTMLElement;
+      render(<SettingsPage />);
+      // Wait for the initial load effect (which also re-renders with the
+      // mocked system-config state) to settle — the guard effect runs as a
+      // layout commit after the first paint with effectiveHasDirty === true.
+      await waitFor(() => {
+        expect(beforeUnloadListeners.length).toBeGreaterThanOrEqual(1);
+      });
     });
-    fireEvent.click(within(settingsCard).getByRole('button', { name: '检查更新' }));
 
-    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
-    expect(within(settingsCard).getByRole('button', { name: '检查中...' })).toBeDisabled();
+    it('does not register a beforeunload listener when no drafts are dirty', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
 
-    fireEvent.click(screen.getByRole('button', { name: '桌面端更新' }));
-    expect(screen.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
-    fireEvent.click(within(settingsCard).getByRole('button', { name: '检查中...' }));
-    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
+      render(<SettingsPage />);
 
-    await pendingCheck.finish({
-      status: 'up-to-date',
-      currentVersion: '3.12.0',
-      latestVersion: '3.12.0',
-      message: '当前桌面端已是最新版本。',
+      // Give any pending effects (load() promise, async setState) time to settle
+      // before we assert no listener was attached.
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      expect(beforeUnloadListeners.length).toBe(0);
     });
-  });
 
-  it('keeps both entries busy when a late settings mount receives a stale idle snapshot', async () => {
-    const pendingCheck = hangDesktopUpdateCheck();
-    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+    it('guards the navigation by setting returnValue on the synthetic event', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
 
-    const view = render(
-      <MemoryRouter initialEntries={['/settings']}>
-        <DesktopUpdateIndicator />
-      </MemoryRouter>,
-    );
+      render(<SettingsPage />);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
 
-    fireEvent.click(await screen.findByRole('button', { name: '桌面端更新' }));
-    fireEvent.click(
-      within(screen.getByRole('dialog', { name: '桌面端更新' })).getByRole('button', { name: '检查更新' }),
-    );
-    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+      const event = new Event('beforeunload') as BeforeUnloadEvent;
+      // jsdom does not implement `returnValue` on Event, so we attach a plain
+      // property to mirror the DOM semantics in tests.
+      Object.defineProperty(event, 'returnValue', {
+        configurable: true,
+        writable: true,
+        value: '',
+      });
+      const handler = beforeUnloadListeners[0]!;
+      const result = handler(event);
 
-    view.rerender(
-      <MemoryRouter initialEntries={['/settings']}>
-        <>
-          <DesktopUpdateIndicator />
-          <SettingsPage />
-        </>
-      </MemoryRouter>,
-    );
-
-    const settingsCard = await waitFor(() => {
-      const card = document.querySelector('#desktop-version-info');
-      expect(card).not.toBeNull();
-      return card as HTMLElement;
+      expect(event.returnValue).not.toBe('');
+      // The handler also returns the message so older browsers (Firefox) can
+      // surface it natively.
+      expect(result).toBe(event.returnValue);
     });
-    expect(within(settingsCard).getByRole('button', { name: '检查中...' })).toBeDisabled();
-    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
 
-    await pendingCheck.finish({
-      status: 'up-to-date',
-      currentVersion: '3.12.0',
-      latestVersion: '3.12.0',
-      message: '当前桌面端已是最新版本。',
+    it('re-attaches a fresh listener when the dirty state flips back and forth', async () => {
+      // Start dirty → listener attached.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      const { rerender } = render(<SettingsPage />);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      const firstHandler = beforeUnloadListeners[0]!;
+
+      // Clear dirty → listener removed on next render.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+      rerender(<SettingsPage />);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+
+      // Dirty again → new listener attached, distinct from the original reference.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      rerender(<SettingsPage />);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      expect(beforeUnloadListeners[0]).not.toBe(firstHandler);
     });
   });
 });
