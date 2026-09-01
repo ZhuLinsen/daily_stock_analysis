@@ -1,13 +1,9 @@
 import type React from 'react';
-import type React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
 import type { SetupStatusResponse } from '../../types/systemConfig';
-import { DesktopUpdateIndicator } from '../../components/layout/DesktopUpdateIndicator';
-import { resetSharedDesktopUpdateState } from '../../desktop/updateStore';
 import SettingsPage from '../SettingsPage';
 
 function renderSettingsPage(initialEntries: string[] = ['/settings']) {
@@ -539,17 +535,6 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
-
-function renderDesktopUpdateEntries(route = '/settings') {
-  return render(
-    <MemoryRouter initialEntries={[route]}>
-      <>
-        <DesktopUpdateIndicator />
-        <SettingsPage />
-      </>
-    </MemoryRouter>,
-  );
-}
 
 function hangDesktopUpdateCheck() {
   let resolveCheck: ((value: unknown) => void) | undefined;
