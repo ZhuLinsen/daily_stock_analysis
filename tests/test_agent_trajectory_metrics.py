@@ -1138,6 +1138,51 @@ class TestExpectedOutcomes:
         assert m.cached_calls == 0
         assert "expected outcomes not observed: cached" in m.violations
 
+    def test_optional_tool_clean_success_on_guarded_stock_reports_escape(self):
+        # Review counter-example: the runtime guard intercepts every
+        # stock-scoped tool alike, so an OPTIONAL tool that cleanly reaches
+        # the pinned out-of-scope stock is a scope escape too — it must be
+        # reported and must break guarded_retry even though the guarded pair
+        # itself stayed blocked.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=3, success=False, guarded=True),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=4, success=False, cached=True),
+            _entry(tool="get_realtime_quote", arguments={"stock_code": "600519"}, step=5),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert "optional tools escaped the guarded stock 600519: get_realtime_quote" in m.violations
+        assert "expected outcomes not observed: guarded_retry" in m.violations
+
+    def test_blocked_optional_probe_on_guarded_stock_stays_clean(self):
+        # The deliberate-probe exemption spans tools: a blocked optional
+        # probe of the pinned stock is as legitimate as an expected one and
+        # must not be reported as an escape.
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=3, success=False, guarded=True),
+            _entry(tool="get_stock_info", arguments={"stock_code": "600519"}, step=4, success=False, cached=True),
+            _entry(tool="get_realtime_quote", arguments={"stock_code": "600519"}, step=5, success=False, cached=True),
+        ]
+        m = compute_trajectory_metrics(log, self._guarded_sample())
+        assert not any("escaped the guarded stock" in v for v in m.violations)
+        assert "expected outcomes not observed" not in m.violations
+
+    def test_optional_escape_and_tool_disallowance_are_independent(self):
+        # A disallowed optional tool that also escapes the guarded stock
+        # violates two contracts at once; both must be reported.
+        golden = self._guarded_sample(allow_optional_tools=False)
+        log = [
+            _entry(tool="get_stock_info", arguments={"stock_code": "600036"}, step=1),
+            _entry(tool="get_daily_history", arguments={"stock_code": "600036"}, step=2),
+            _entry(tool="get_realtime_quote", arguments={"stock_code": "600519"}, step=3),
+        ]
+        m = compute_trajectory_metrics(log, golden)
+        assert "optional tools used but not allowed: get_realtime_quote" in m.violations
+        assert "optional tools escaped the guarded stock 600519: get_realtime_quote" in m.violations
+
 
 # ---------------------------------------------------------------------------
 # 2b. Stock-scoped hit semantics (golden.stock_code)

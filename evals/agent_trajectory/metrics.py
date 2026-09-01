@@ -130,8 +130,10 @@ Metric semantics
   that targets it (with actual stock evidence, the same strict match as the
   outcome seeding) and stays blocked (``guarded`` / ``cached`` / failed) is
   the deliberate probe the task itself requires, so it is exempt from
-  wrong-stock reporting; a clean success on the pinned stock is still
-  reported (and escapes ``guarded_retry``).
+  wrong-stock reporting; a clean success on the pinned stock — by *any*
+  tool, expected or optional (the runtime guard intercepts every
+  stock-scoped tool alike) — is still reported (and escapes
+  ``guarded_retry``).
 * Stock-code canonicalization: :func:`_canonicalize_stock_code` mirrors the
   runtime normalization chain
   (``src/agent/tools/execution._normalize_tool_stock_code`` delegating to
@@ -552,6 +554,8 @@ def compute_trajectory_metrics(
     key_guarded_escaped: set = set()
     stock_hit: Dict[str, bool] = {}
     wrong_stock_calls: List[str] = []
+    optional_stock_escapes: List[str] = []
+    pinned_stock_escaped = False
     codex_shaped = False
     if stock_code_normalizer is None:
         normalizer = _canonicalize_stock_code
@@ -636,6 +640,20 @@ def compute_trajectory_metrics(
             and _entry_mismatches_stock(entry, stock_code, normalizer)
         ):
             wrong_stock_calls.append(tool)
+        # A clean success on the pinned out-of-scope stock is an escape no
+        # matter which tool made the call: the runtime guard intercepts
+        # every stock-scoped tool alike, so an optional tool reaching the
+        # guarded stock cleanly proves the scope guard was bypassed just as
+        # much as an expected one does.
+        if (
+            guarded_stock_valid
+            and tool
+            and _entry_matches_stock(entry, guarded_stock, normalizer, require_evidence=True)
+            and not _entry_stayed_blocked(success)
+        ):
+            pinned_stock_escaped = True
+            if tool not in expected_set:
+                optional_stock_escapes.append(tool)
         step = _coerce_step(entry.get("step"))
         if step and step not in seen_steps:
             seen_steps.add(step)
@@ -729,6 +747,11 @@ def compute_trajectory_metrics(
         violations.append(
             f"expected tools called for a different stock than " f"{golden.stock_code}: {', '.join(wrong_stock_calls)}"
         )
+    if optional_stock_escapes:
+        violations.append(
+            f"optional tools escaped the guarded stock {golden.expected_guarded_stock}: "
+            f"{', '.join(optional_stock_escapes)}"
+        )
     expected_hit_rate = (len(expected) - len(missing_expected)) / len(expected) if expected else 0.0
     optional_tools_used = [t for t in used_tools if t not in expected]
 
@@ -804,7 +827,12 @@ def compute_trajectory_metrics(
         observed.append("cached")
     if retries:
         observed.append("retry")
-    if any(idx < key_counts.get(k, 0) and k not in key_guarded_escaped for k, idx in key_guarded_at.items()):
+    # A clean success on the pinned out-of-scope stock — by any tool,
+    # expected or optional — proves the scope guard was bypassed, so it
+    # escapes guarded_retry even when the guarded pair itself stayed blocked.
+    if not pinned_stock_escaped and any(
+        idx < key_counts.get(k, 0) and k not in key_guarded_escaped for k, idx in key_guarded_at.items()
+    ):
         observed.append("guarded_retry")
     missing_outcomes = [
         t for t in outcomes if t in EXPECTED_OUTCOME_TAGS and t not in observed and t not in unsupported_outcomes
