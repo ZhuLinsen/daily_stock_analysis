@@ -39,6 +39,11 @@ def _fixture(name):
     return payload["tool_calls_log"], payload["total_steps"]
 
 
+def _result_executor(result):
+    """Duck-typed executor whose run always returns a fixed result object."""
+    return SimpleNamespace(run=lambda task, context=None: result)
+
+
 def _goldens():
     return {sample.id: sample for sample in load_golden_samples()}
 
@@ -157,6 +162,42 @@ class TestRunSampleRetry:
 
 
 # ---------------------------------------------------------------------------
+# 3.5 run failure: results carrying an explicit success=False
+# ---------------------------------------------------------------------------
+class TestRunFailure:
+    def test_unsuccessful_result_raises_before_scoring(self, capsys):
+        # Owner repro: a real AgentResult with success=False must not be scored.
+        executor = _result_executor(SimpleNamespace(success=False, error="boom", tool_calls_log=[], total_steps=0))
+        with pytest.raises(RuntimeError, match="boom"):
+            run_eval.run_sample(executor, _goldens()["600519_technical"])
+        assert "Agent Trajectory 评估报告" not in capsys.readouterr().out
+
+    def test_unsuccessful_result_without_error_raises(self):
+        executor = _result_executor(SimpleNamespace(success=False, tool_calls_log=[], total_steps=0))
+        with pytest.raises(RuntimeError, match="success=false"):
+            run_eval.run_sample(executor, _goldens()["600519_technical"])
+
+    def test_explicit_success_true_scores_normally(self):
+        log, total_steps = _fixture("positive_600519_technical")
+        result = SimpleNamespace(success=True, tool_calls_log=list(log), total_steps=total_steps)
+        m = run_eval.run_sample(_result_executor(result), _goldens()["600519_technical"])
+        assert m.expected_hit_rate == 1.0
+
+    def test_missing_success_field_is_tolerated(self):
+        # Duck-typed stubs without a success attribute keep the old behaviour.
+        log, total_steps = _fixture("positive_600519_technical")
+        result = SimpleNamespace(tool_calls_log=list(log), total_steps=total_steps)
+        m = run_eval.run_sample(_result_executor(result), _goldens()["600519_technical"])
+        assert m.expected_hit_rate == 1.0
+
+    def test_success_none_is_tolerated(self):
+        log, total_steps = _fixture("positive_600519_technical")
+        result = SimpleNamespace(success=None, tool_calls_log=list(log), total_steps=total_steps)
+        m = run_eval.run_sample(_result_executor(result), _goldens()["600519_technical"])
+        assert m.expected_hit_rate == 1.0
+
+
+# ---------------------------------------------------------------------------
 # 4. CLI (main): exit codes, selection, JSON output
 # ---------------------------------------------------------------------------
 class TestMainCli:
@@ -204,6 +245,21 @@ class TestMainCli:
         monkeypatch.setattr(run_eval, "_build_executor", lambda: _Exploding())
         assert run_eval.main(["--sample", "600519_technical"]) == 1
         assert "sample '600519_technical' failed" in capsys.readouterr().err
+
+    def test_unsuccessful_result_exit_one(self, monkeypatch, capsys):
+        # Owner repro: a result object with success=False is a run failure.
+        result = SimpleNamespace(success=False, error="boom", tool_calls_log=[], total_steps=0)
+        monkeypatch.setattr(run_eval, "_build_executor", lambda: _result_executor(result))
+        assert run_eval.main(["--sample", "600519_technical"]) == 1
+        err = capsys.readouterr().err
+        assert "sample '600519_technical' failed" in err
+        assert "boom" in err
+
+    def test_all_returns_one_when_a_sample_result_is_unsuccessful(self, monkeypatch, capsys):
+        result = SimpleNamespace(success=False, tool_calls_log=[], total_steps=0)
+        monkeypatch.setattr(run_eval, "_build_executor", lambda: _result_executor(result))
+        assert run_eval.main(["--all"]) == 1
+        assert "failed" in capsys.readouterr().err
 
     def test_violations_still_exit_zero(self, monkeypatch, capsys):
         log, total_steps = _fixture("negative_600519_technical")

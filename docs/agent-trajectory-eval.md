@@ -5,7 +5,7 @@
 `evals/agent_trajectory/` 提供一套**离线可运行的最小轨迹评估管线**:用真实 `tool_calls_log + AgentResult` 跑一个 golden 样例,输出结构化 JSON 报告与简短可读文本摘要。评估结果是 **reporter 而非 gate** —— 指标违规只反映在报告里,不会让进程失败,也不进入 CI 门禁。
 
 - 指标层(`metrics.py`)是纯函数:只消费轨迹日志与 golden 样例,不 import `src/`,不触网、不调 LLM,可离线单测。
-- 入口(`run_eval.py`)通过 `build_agent_executor()` 构建真实执行器,与 `src/agent/pipeline.py` 使用同一个执行捕获钩子,消费真实产物。
+- 入口(`run_eval.py`)通过 `build_agent_executor()` 构建真实执行器,与 `src/core/pipeline.py` 使用同一个执行捕获钩子,消费真实产物。
 - 本次冻结**最小指标契约**,股票 guard、Codex `arguments_summary` 等扩展语义明确留给后续 PR(见文末「不在范围」)。
 
 ## 快速开始
@@ -26,7 +26,7 @@ python evals/agent_trajectory/run_eval.py --all --json-out eval_report.json
 | `--golden-path PATH` | 自定义 golden JSON 路径(默认模块旁 `golden_samples.json`) |
 | `--json-out PATH` | 写结构化 JSON 报告(`--all` 时为键控对象) |
 
-退出码:`0` 运行成功(含违规);`1` golden 加载 / 样例选择 / 执行器构建 / 运行失败;`2` 用法错误。
+退出码:`0` 运行成功(含违规);`1` golden 加载 / 样例选择 / 执行器构建 / 运行失败(含执行器返回 `success=false`,如 provider 未配置、LLM 错误、超时、max_steps 耗尽、dashboard 解析失败);`2` 用法错误。
 
 ## 冻结的最小指标契约
 

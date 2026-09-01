@@ -4,7 +4,7 @@
 
 Consumes a real ``tool_calls_log + AgentResult`` produced by
 ``src.agent.factory.build_agent_executor`` (the same capture hook the
-analysis pipeline uses in ``src/agent/pipeline.py``), scores it with the
+analysis pipeline uses in ``src/core/pipeline.py``), scores it with the
 pure metrics layer and emits a short human-readable text summary plus an
 optional structured JSON report.
 
@@ -72,13 +72,20 @@ def run_sample(executor, sample: GoldenSample, *, json_out: Optional[Path] = Non
     ``result`` carries ``tool_calls_log`` (and optionally ``total_steps``) —
     the same shape as ``src.agent.executor.AgentResult``.  The production
     executor is built lazily by :func:`_build_executor`; tests may pass a
-    stub.  The text summary is always printed to stdout; ``json_out``
-    additionally writes the structured report for this sample.
+    stub.  A result carrying an explicit ``success=False`` is a run failure
+    (the executor reported a provider / timeout / budget error) and raises
+    ``RuntimeError`` before any scoring; duck-typed results without a
+    ``success`` attribute are treated as successful.  The text summary is
+    always printed to stdout; ``json_out`` additionally writes the
+    structured report for this sample.
     """
     context: Optional[Dict[str, Any]] = None
     if sample.stock_code:
         context = {"stock_code": sample.stock_code}
     result = executor.run(sample.task_description, context=context)
+    if getattr(result, "success", None) is False:
+        error = getattr(result, "error", None)
+        raise RuntimeError(f"agent run failed (success=false): {error or 'no error detail'}")
     log = getattr(result, "tool_calls_log", None) or []
     total_steps = getattr(result, "total_steps", None)
     metrics = compute_trajectory_metrics(log, sample, total_steps=total_steps)
