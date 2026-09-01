@@ -112,9 +112,10 @@ Metric semantics
   exactly against the dedicated ``stock_code`` argument field of runner
   entries (never a substring scan, so e.g. ``"1600519"`` cannot satisfy
   ``600519``), the guard metadata ``requested_stock_code``, or the Codex
-  ``arguments_summary`` preview (structured ``stock_code`` recovered from a
-  well-formed preview is compared exactly; otherwise a substring scan,
-  best-effort).  Both sides
+  ``arguments_summary`` preview (only the structured ``stock_code``
+  recovered from a well-formed preview is compared exactly; a truncated /
+  unparseable preview carries unreadable evidence and is a non-match — no
+  substring scan, no name-only tolerance).  Both sides
   of each comparison are canonicalized first with the runtime-equivalent
   stock-code normalization (see below), so production-accepted forms such as
   ``SH600519`` / ``600519.SH`` / ``SZ.000001`` / ``hk700`` resolve to the
@@ -393,8 +394,11 @@ def _entry_matches_stock(
     ``arguments_summary`` preview: when that preview parses back to a JSON
     object with a ``stock_code`` field, the recovered value is canonicalized
     and compared exactly like a runner argument (so ``hk700`` matches an
-    ``HK00700`` golden); otherwise the preview is scanned by substring as a
-    best-effort fallback.  Entries with no stock evidence at all keep the
+    ``HK00700`` golden); a truncated / unparseable preview carries
+    unreadable evidence and is a non-match — never a substring scan (a
+    truncated ``1600519`` would contain ``600519``), never name-only
+    tolerance, because the call's stock cannot be verified.  Entries with
+    no stock evidence at all keep the
     name-only tolerance so minimal entries still count as before; an
     explicitly present but invalid value (null / boolean / non-scalar) is a
     non-match — it provably does not target the golden stock and must not
@@ -436,7 +440,12 @@ def _entry_matches_stock(
     if isinstance(summary, str) and summary:
         value = _coerce_guard_float(_summary_stock_code(summary))
         if value is _SUMMARY_NO_EVIDENCE:
-            return stock_code in summary
+            # A truncated / redacted preview carries unreadable evidence:
+            # never grant stock credit by raw substring (a truncated
+            # 1600519 would contain 600519), and never fall back to
+            # name-only tolerance — the call's stock cannot be verified,
+            # so it cannot score the stock-scoped hit.
+            return False
         # Recovered but invalid (JSON null / false / array): a non-match,
         # never name-only tolerance.
         if not isinstance(value, (str, int)) or isinstance(value, bool):
@@ -474,8 +483,9 @@ def _summary_stock_code(summary: str) -> Any:
 
     Returns ``_SUMMARY_NO_EVIDENCE`` when the preview does not parse back to
     a JSON object with a ``stock_code`` key (truncated / redacted /
-    non-object previews), leaving callers to their documented no-evidence
-    tolerance or substring fallback.
+    non-object previews) — callers treat such an entry as carrying
+    unreadable evidence: a non-match for stock scoring, never a substring
+    scan.
     """
     parsed = _summary_dict(summary)
     if parsed is not None and "stock_code" in parsed:

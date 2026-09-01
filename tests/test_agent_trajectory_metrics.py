@@ -1278,11 +1278,13 @@ class TestStockCodeScoping:
         assert any("different stock than 600519: get_realtime_quote" in v for v in m.violations)
 
     def test_codex_summary_matching_the_stock_counts(self):
+        # Only the structured value recovered from a well-formed preview
+        # earns the hit — raw preview text never gets substring credit.
         log = [
             {
                 "step": 1,
                 "tool": "get_realtime_quote",
-                "arguments_summary": "600519",
+                "arguments_summary": json.dumps({"stock_code": "600519"}),
                 "success": True,
             },
         ]
@@ -1335,21 +1337,45 @@ class TestStockCodeScoping:
         assert m.expected_hit_rate == 0.0
         assert any("different stock than 600519: get_realtime_quote" in v for v in m.violations)
 
-    def test_unparsable_summary_falls_back_to_substring_no_evidence(self):
-        # Truncated previews cannot recover a structured value: they fall
-        # back to the substring scan for matching and stay "no evidence" for
-        # wrong-stock reporting.
-        log = [
-            {
-                "step": 1,
-                "tool": "get_realtime_quote",
-                "arguments_summary": '{"stock_code": "6005...<truncated 12 chars>',
-                "success": True,
-            },
-        ]
-        m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
-        assert m.expected_hit_rate == 0.0
-        assert not any("different stock" in v for v in m.violations)
+    def test_truncated_summary_never_grants_substring_hit(self):
+        # Review counter-example: a truncated preview cannot be parsed back
+        # to structured evidence, and its raw text must never grant stock
+        # credit — a truncated {"stock_code": "1600519", ...} contains
+        # 600519 as a substring, and 600519 sitting in another field while
+        # stock_code names a different stock is no evidence for the golden.
+        for summary in (
+            '{"stock_code": "1600519", "padding": "...<truncated>',
+            '{"stock_code": "000001", "note": "600519 ref...<truncated>',
+        ):
+            log = [
+                {
+                    "step": 1,
+                    "tool": "get_realtime_quote",
+                    "arguments_summary": summary,
+                    "success": True,
+                },
+            ]
+            m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+            assert m.expected_hit_rate == 0.0, summary
+            assert m.missing_expected == ["get_realtime_quote"], summary
+            assert not any("different stock" in v for v in m.violations), summary
+
+    def test_raw_summary_text_never_grants_substring_hit(self):
+        # A preview that is not intact JSON of an object (raw text such as
+        # "600519", or a JSON scalar / array) carries unreadable evidence:
+        # no substring credit, no hit.
+        for summary in ("600519", json.dumps("600519"), json.dumps(["600519"])):
+            log = [
+                {
+                    "step": 1,
+                    "tool": "get_realtime_quote",
+                    "arguments_summary": summary,
+                    "success": True,
+                },
+            ]
+            m = compute_trajectory_metrics(log, _golden(expected_tools=["get_realtime_quote"]))
+            assert m.expected_hit_rate == 0.0, summary
+            assert m.missing_expected == ["get_realtime_quote"], summary
 
     def test_stock_code_field_matched_exactly_not_substring(self):
         # Review counter-example: {"stock_code": "1600519"} contains the
