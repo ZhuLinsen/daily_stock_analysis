@@ -539,7 +539,6 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
-}
 
 function renderDesktopUpdateEntries(route = '/settings') {
   return render(
