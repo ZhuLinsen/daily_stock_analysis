@@ -18,7 +18,6 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -166,6 +165,16 @@ class TestTerminateProcessTree(unittest.TestCase):
         mock_killpg.side_effect = ProcessLookupError()
         proc = type("Proc", (), {"pid": 4242})()
         self.assertIsNone(smoke._terminate_process_tree(proc, "posix"))
+
+    @patch.object(os, "killpg", None, create=True)
+    def test_posix_without_killpg_never_claims_confirmed_tree_cleanup(self):
+        """Without a process-group primitive, a direct kill only proves the
+        worker itself was killed, not its descendants: the function must
+        return an unconfirmed-tree-cleanup error instead of None."""
+        proc = type("Proc", (), {"pid": 4242, "kill": lambda self: None})()
+        error = smoke._terminate_process_tree(proc, "posix")
+        self.assertIsNotNone(error)
+        self.assertIn("tree cleanup is unconfirmed", error or "")
 
 
 def _raise_oserror():
@@ -409,9 +418,16 @@ class TestParentSpawn(unittest.TestCase):
             def __init__(self, args, **kwargs):
                 self.args = args
                 self.kwargs = kwargs
+                self._interrupted = False
+
+            def poll(self):
+                return None
 
             def wait(self, timeout=None):
-                raise KeyboardInterrupt()
+                if not self._interrupted:
+                    self._interrupted = True
+                    raise KeyboardInterrupt()
+                return 0
 
             def kill(self):
                 pass
@@ -426,6 +442,171 @@ class TestParentSpawn(unittest.TestCase):
                 smoke._run_parent("SH.000016", timeout=60)
         self.assertEqual(len(killed), 1)
         self.assertEqual(killed[0][1], "nt" if os.name == "nt" else "posix")
+
+    def test_run_parent_keyboard_interrupt_cleanup_failure_emits_failed_and_exits_1(self):
+        """When tree cleanup fails on Ctrl-C, the parent must NOT silently
+        swallow the failure: it emits a structured failed event with the
+        cleanup error and returns 1 instead of re-raising the interrupt."""
+        import io
+        from contextlib import redirect_stdout
+
+        class _InterruptingProc:
+            def __init__(self, args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self._interrupted = False
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                if not self._interrupted:
+                    self._interrupted = True
+                    raise KeyboardInterrupt()
+                return 0
+
+            def kill(self):
+                pass
+
+        buf = io.StringIO()
+        killed = []
+        with patch.object(
+            subprocess, "Popen", side_effect=_InterruptingProc
+        ), patch.object(
+            smoke,
+            "_terminate_process_tree",
+            side_effect=lambda p, n: killed.append((p, n)) or "taskkill exited 128",
+        ), redirect_stdout(buf):
+            result = smoke._run_parent("SH.000016", timeout=60)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(len(killed), 1)
+        self.assertEqual(killed[0][1], "nt" if os.name == "nt" else "posix")
+        event_line = next(
+            line for line in buf.getvalue().splitlines()
+            if line.startswith("E2E_EVENT ")
+        )
+        payload = json.loads(event_line[len("E2E_EVENT "):])
+        self.assertEqual(payload["phase"], "failed")
+        self.assertEqual(payload["target"], "SH.000016")
+        self.assertIn("interrupt cleanup failed", payload["error"])
+        self.assertIn("taskkill exited 128", payload["error"])
+
+    def test_run_parent_keyboard_interrupt_post_cleanup_kill_failure_emits_failed(self):
+        """A post-cleanup ``proc.kill()`` failure on the Ctrl-C path must
+        merge into the cleanup error and emit a structured failed event
+        (return 1), never escape as an uncaught exception."""
+        import io
+        from contextlib import redirect_stdout
+
+        class _StuckInterruptingProc:
+            def __init__(self, args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self._interrupted = False
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                if not self._interrupted:
+                    self._interrupted = True
+                    raise KeyboardInterrupt()
+                raise subprocess.TimeoutExpired("worker", timeout or 1)
+
+            def kill(self):
+                raise OSError("post-cleanup kill exploded")
+
+        buf = io.StringIO()
+        with patch.object(
+            subprocess, "Popen", side_effect=_StuckInterruptingProc
+        ), patch.object(
+            smoke, "_terminate_process_tree", return_value=None
+        ), redirect_stdout(buf):
+            result = smoke._run_parent("SH.000016", timeout=60)
+
+        self.assertEqual(result, 1)
+        event_line = next(
+            line for line in buf.getvalue().splitlines()
+            if line.startswith("E2E_EVENT ")
+        )
+        payload = json.loads(event_line[len("E2E_EVENT "):])
+        self.assertEqual(payload["phase"], "failed")
+        self.assertEqual(payload["target"], "SH.000016")
+        self.assertIn("interrupt cleanup failed", payload["error"])
+        self.assertIn("post-cleanup kill failed", payload["error"])
+
+    def test_run_parent_keyboard_interrupt_cleanup_confirmed_via_kill_reraises(self):
+        """When tree cleanup succeeds but the post-cleanup wait times out and
+        the follow-up kill succeeds, cleanup is still confirmed: the parent
+        re-raises the interrupt instead of emitting a failed event."""
+        import io
+        from contextlib import redirect_stdout
+
+        class _KillableInterruptingProc:
+            def __init__(self, args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self._interrupted = False
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                if not self._interrupted:
+                    self._interrupted = True
+                    raise KeyboardInterrupt()
+                raise subprocess.TimeoutExpired("worker", timeout or 1)
+
+            def kill(self):
+                pass
+
+        buf = io.StringIO()
+        with patch.object(
+            subprocess, "Popen", side_effect=_KillableInterruptingProc
+        ), patch.object(
+            smoke, "_terminate_process_tree", return_value=None
+        ), redirect_stdout(buf):
+            with self.assertRaises(KeyboardInterrupt):
+                smoke._run_parent("SH.000016", timeout=60)
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_run_parent_keyboard_interrupt_skips_cleanup_when_worker_exited(self):
+        """A Ctrl-C arriving after the worker already exited must NOT run
+        tree cleanup (which would misreport a spurious failure on Windows
+        taskkill against a dead PID): the interrupt is propagated directly."""
+        import io
+        from contextlib import redirect_stdout
+
+        class _ExitedInterruptingProc:
+            def __init__(self, args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self._interrupted = False
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                if not self._interrupted:
+                    self._interrupted = True
+                    raise KeyboardInterrupt()
+                return 0
+
+            def kill(self):
+                pass
+
+        buf = io.StringIO()
+        with patch.object(
+            subprocess, "Popen", side_effect=_ExitedInterruptingProc
+        ), patch.object(
+            smoke, "_terminate_process_tree", side_effect=AssertionError(
+                "cleanup must not run when the worker already exited"
+            )
+        ), redirect_stdout(buf):
+            with self.assertRaises(KeyboardInterrupt):
+                smoke._run_parent("SH.000016", timeout=60)
+        self.assertEqual(buf.getvalue(), "")
 
     def test_run_parent_preserves_known_exit_codes(self):
         for code in (0, 1, 124):
@@ -470,8 +651,6 @@ class TestWorkerCodeMismatch(unittest.TestCase):
     the successful response text."""
 
     def _run_worker_with_response(self, response):
-        from bot.models import BotResponse
-
         class _FakeDispatcher:
             def __init__(self, *args, **kwargs):
                 pass

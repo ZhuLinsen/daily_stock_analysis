@@ -33,6 +33,10 @@ transport（不修 transport，不 mock 在线依赖，不 dry-run）。
 
 超时清理: Windows 使用 ``taskkill /T /F`` 结束整个进程树；POSIX 向进程组
 发送 SIGKILL。超时只清理进程树，不回滚 DB / 报告 / 通知等既有副作用。
+
+Ctrl-C 中止: 父进程在轮询窗口收到 Ctrl-C 时同样先清理进程树——清理成功
+透传中断，清理失败输出含清理错误的 ``failed`` 事件并退出 1，绝不静默
+吞掉清理失败。
 """
 
 from __future__ import annotations
@@ -139,7 +143,13 @@ def _terminate_process_tree(proc, platform_name: str) -> Optional[str]:
         if killpg is not None:
             killpg(proc.pid, kill_signal)
         else:
+            # 无进程组原语：直接 kill 只能证明 worker 本身被杀，不能证明
+            # 后代已清理，不得返回 None 声称树清理已确认。
             proc.kill()
+            return (
+                "process-group kill unavailable; direct worker kill "
+                "succeeded but tree cleanup is unconfirmed"
+            )
         return None
     except ProcessLookupError:
         # The process group is already gone — confirmed success.
@@ -161,6 +171,38 @@ def _terminate_process_tree(proc, platform_name: str) -> Optional[str]:
                 f"process-group kill failed: {exc}; "
                 f"direct worker kill also failed: {kill_exc}"
             )
+
+
+def _cleanup_process_tree(proc, platform_name: str) -> Optional[str]:
+    """Terminate the worker tree and wait for the worker to exit.
+
+    Returns ``None`` only when tree cleanup is confirmed; any terminate /
+    post-cleanup wait / kill failure is merged into the returned error
+    string so callers never silently claim a confirmed cleanup.
+    """
+    cleanup_error = _terminate_process_tree(proc, platform_name)
+    # Post-cleanup handling must never escape as an uncaught exception:
+    # merge any failure into ``cleanup_error``.
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception as exc:
+            post_error = f"post-cleanup kill failed: {exc}"
+            cleanup_error = (
+                f"{cleanup_error}; {post_error}"
+                if cleanup_error is not None
+                else post_error
+            )
+    except Exception as exc:
+        post_error = f"post-cleanup wait failed: {exc}"
+        cleanup_error = (
+            f"{cleanup_error}; {post_error}"
+            if cleanup_error is not None
+            else post_error
+        )
+    return cleanup_error
 
 
 def _assert_complete_result(result: dict, expected_code: str, expected_name: str):
@@ -339,10 +381,13 @@ def _run_worker_inner(target: str, expected_code: str) -> int:
 # ---------------------------------------------------------------------------
 def _run_parent(target: str, timeout: int) -> int:
     """Parent entrypoint: spawn the worker (inheriting the console), enforce
-    the deadline, clean up the process tree on timeout and map to exit codes
-    0 / 1 / 124. Authoritative target validation runs before the subprocess
-    spawn, so an unsupported target never reaches ``Popen``; a non-positive
-    timeout is rejected the same way."""
+    the deadline, clean up the process tree on timeout and on Ctrl-C, and
+    map to exit codes 0 / 1 / 124. Authoritative target validation runs
+    before the subprocess spawn, so an unsupported target never reaches
+    ``Popen``; a non-positive timeout is rejected the same way. On Ctrl-C
+    the parent cleans up the worker tree first: a confirmed cleanup
+    propagates the interrupt, a failed cleanup emits a structured ``failed``
+    event and returns 1."""
     _resolve_expected(target)  # raises ValueError for unsupported targets
     if timeout <= 0:
         raise ValueError(f"timeout must be positive, got {timeout}")
@@ -369,16 +414,22 @@ def _run_parent(target: str, timeout: int) -> int:
         except subprocess.TimeoutExpired:
             exit_code = None
         except KeyboardInterrupt:
-            # 用户主动中止：清理 worker 进程树后透传中断，避免留下孤儿
-            # 进程继续跑完真实数据源/LLM/报告/通知链路。
-            _terminate_process_tree(proc, "nt" if os.name == "nt" else "posix")
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            # 用户主动中止：清理 worker 进程树。清理失败不得静默吞掉——
+            # 与 timeout 分支一致，输出结构化 failed 事件并返回 1，避免
+            # 用户误以为进程树已清理而 worker 后代仍在跑真实副作用。
+            if proc.poll() is not None:
+                # worker 已自行退出：无需清理，直接透传中断。
+                raise
+            cleanup_error = _cleanup_process_tree(
+                proc, "nt" if os.name == "nt" else "posix"
+            )
+            if cleanup_error is not None:
+                _emit_event(
+                    "failed",
+                    target,
+                    error=f"interrupt cleanup failed: {cleanup_error}",
+                )
+                return 1
             raise
         if exit_code is not None:
             # 文档化运行时契约只暴露 0 / 1 / 124：worker 的任意其他退出码
@@ -387,30 +438,9 @@ def _run_parent(target: str, timeout: int) -> int:
                 return exit_code
             return 1
         if time.monotonic() >= deadline:
-            cleanup_error = _terminate_process_tree(
+            cleanup_error = _cleanup_process_tree(
                 proc, "nt" if os.name == "nt" else "posix"
             )
-            # Post-cleanup handling must never escape as an uncaught
-            # exception: merge any failure into ``cleanup_error``.
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                try:
-                    proc.kill()
-                except Exception as exc:
-                    post_error = f"post-cleanup kill failed: {exc}"
-                    cleanup_error = (
-                        f"{cleanup_error}; {post_error}"
-                        if cleanup_error is not None
-                        else post_error
-                    )
-            except Exception as exc:
-                post_error = f"post-cleanup wait failed: {exc}"
-                cleanup_error = (
-                    f"{cleanup_error}; {post_error}"
-                    if cleanup_error is not None
-                    else post_error
-                )
             if cleanup_error is not None:
                 # 清理失败不得静默声称成功：输出结构化 failed 事件并返回 1。
                 _emit_event(
