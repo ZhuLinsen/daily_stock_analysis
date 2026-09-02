@@ -368,6 +368,18 @@ def _run_parent(target: str, timeout: int) -> int:
             exit_code = proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
             exit_code = None
+        except KeyboardInterrupt:
+            # 用户主动中止：清理 worker 进程树后透传中断，避免留下孤儿
+            # 进程继续跑完真实数据源/LLM/报告/通知链路。
+            _terminate_process_tree(proc, "nt" if os.name == "nt" else "posix")
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            raise
         if exit_code is not None:
             # 文档化运行时契约只暴露 0 / 1 / 124：worker 的任意其他退出码
             # 归一化为 1，避免泄漏任意崩溃码。

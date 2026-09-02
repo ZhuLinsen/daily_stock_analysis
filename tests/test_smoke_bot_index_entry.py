@@ -400,6 +400,33 @@ class TestParentSpawn(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(mock_popen.call_count, 1)
 
+    def test_run_parent_keyboard_interrupt_cleans_tree_then_reraises(self):
+        """A Ctrl-C in the parent poll window must clean up the worker
+        process tree before propagating the interrupt, so no orphan keeps
+        running the real data/LLM/report/notification chain."""
+
+        class _InterruptingProc:
+            def __init__(self, args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+
+            def wait(self, timeout=None):
+                raise KeyboardInterrupt()
+
+            def kill(self):
+                pass
+
+        killed = []
+        with patch.object(
+            subprocess, "Popen", side_effect=_InterruptingProc
+        ), patch.object(
+            smoke, "_terminate_process_tree", side_effect=lambda p, n: killed.append((p, n))
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                smoke._run_parent("SH.000016", timeout=60)
+        self.assertEqual(len(killed), 1)
+        self.assertEqual(killed[0][1], "nt" if os.name == "nt" else "posix")
+
     def test_run_parent_preserves_known_exit_codes(self):
         for code in (0, 1, 124):
             result, _ = self._patch_popen("SH.000016", exit_code=code)
