@@ -25,13 +25,21 @@ from src.services.stock_list_parser import ParseStatus
 
 
 class _StubTaskService:
-    """Records the last ``submit_analysis`` call; never touches the network."""
+    """Records the last ``submit_analysis`` call; never touches the network.
 
-    def __init__(self):
+    Supports two canned outcomes (success by default, or failure) so tests
+    can assert both the success ``extra`` contract and the no-identity error
+    contract without touching the network or the real pipeline.
+    """
+
+    def __init__(self, fail: bool = False):
         self.calls = []
+        self._fail = fail
 
     def submit_analysis(self, **kwargs):
         self.calls.append(kwargs)
+        if self._fail:
+            return {"success": False, "task_id": "", "error": "boom"}
         return {
             "success": True,
             "task_id": "task-1234567890abcdef",
@@ -276,6 +284,43 @@ class TestAnalyzeCommandDispatcherGate(unittest.TestCase):
         call = stub.calls[0]
         self.assertEqual(call["code"], "sh000016")
         self.assertEqual(call["report_type"].value, "full")
+
+    def test_success_text_is_unchanged_and_carries_task_identity_extra(self):
+        """On a successful submission the user-visible text must stay exactly
+        as before, while ``extra`` carries the internal task identity
+        (``task_id`` + ``stock_code``) for transport-independent consumers."""
+        response, stub = self._dispatch("/analyze sh000016")
+        expected_text = (
+            "✅ **分析任务已提交**\n\n"
+            "• 标的: `sh000016`\n"
+            "• 报告类型: 精简报告\n"
+            "• 任务 ID: `task-1234567890abcde...`\n\n"
+            "分析完成后将自动推送结果。"
+        )
+        self.assertEqual(response.text, expected_text)
+        self.assertEqual(response.extra, {
+            "task_id": "task-1234567890abcdef",
+            "stock_code": "sh000016",
+        })
+
+    def test_success_extra_uses_normalized_code(self):
+        """``extra.stock_code`` carries the normalized code the task was
+        submitted under (the registry canonical for an index alias)."""
+        response, stub = self._dispatch("/analyze 930955.CSI")
+        self.assertIn("分析任务已提交", response.text)
+        self.assertEqual(response.extra["task_id"], "task-1234567890abcdef")
+        self.assertEqual(response.extra["stock_code"], "csi930955")
+
+    def test_error_response_has_no_task_identity_extra(self):
+        """On a submission failure there is no task identity: no task was
+        created, so ``extra`` must stay empty."""
+        dispatcher = CommandDispatcher()
+        dispatcher.register(AnalyzeCommand())
+        stub = _StubTaskService(fail=True)
+        with patch("src.services.task_service.get_task_service", return_value=stub):
+            response = dispatcher.dispatch(_make_message("/analyze sh000016"))
+        self.assertIn("提交分析任务失败", response.text)
+        self.assertEqual(response.extra, {})
 
 
 class TestAnalyzeCommandAmbiguousName(unittest.TestCase):

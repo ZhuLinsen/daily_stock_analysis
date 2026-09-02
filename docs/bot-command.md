@@ -202,6 +202,24 @@ class CommandDispatcher:
 - 未登记 CSI（如 `930956.CSI`）、旧闸门拒绝的代码形态（如 `12345`、裸 `00700`、`600519.SH`、未登记 `sh999999`）或无法识别的名称：返回明确错误，不提交任务。
 - 注册表内存在等价名称歧义时：要求改用显式代码，不猜测、不进入股票名称兜底。
 
+### Bot 指数入口在线 E2E smoke（`scripts/smoke_bot_index_entry.py`）
+
+用于从真实 `CommandDispatcher.dispatch_async -> AnalyzeCommand -> TaskService -> StockAnalysisPipeline` 在线贯穿单标的分析，覆盖 `SH.000016` / `上证50` / `930955.CSI` 三条矩阵场景，不经过任何 webhook transport（不 mock 在线依赖、不 dry-run）。
+
+运行（单 target 参数，`--timeout` 默认 900 秒）：
+
+```powershell
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "SH.000016"
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "上证50"
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "930955.CSI"
+```
+
+进程职责：worker 独立子进程提交并轮询（同进程 `TaskService`），输出单行 `E2E_EVENT {json}` 事件（`phase=submitted|completed|failed|timeout`，含 `target`，按阶段附加 `task_id`/`stock_code`/`result`/`error`）；父进程只负责 deadline、进程树清理和退出码（0=成功 / 1=失败 / 124=超时）。
+
+失败语义：任务失败、completed 但结果不完整（canonical code 或注册名称与矩阵期望不符，或 `analysis_summary`/`operation_advice`/`trend_prediction` 任一为空或仅空白）即输出 `failed` 事件并不为零退出；超时清理进程树（Windows `taskkill /T /F`，POSIX 杀进程组），清理成功输出 `timeout` 事件并退出 124，清理失败则输出含清理错误的 `failed` 事件并退出 1，不回滚 DB / 报告 / 通知等既有副作用。worker 的期望 code/name 来自脚本内置的矩阵权威映射（`SH.000016`/`上证50` → `sh000016`/`上证50`，`930955.CSI` → `csi930955`/`红利低波100`），不信任响应或任务结果自报身份：提交响应的 `stock_code` 与期望不符时输出含期望值与实际值的显式 mismatch 错误（failed 事件同时携带结构化 `stock_code` 实际值）；矩阵之外的 target 与非正 `--timeout` 在提交与子进程 spawn 之前即被拒绝（参数/输入错误，退出码 2）。worker 意外异常（dispatch/轮询/事件序列化）输出 `failed` 事件并退出 1（异常证据保留在 stderr），`KeyboardInterrupt` 不按普通失败处理；父进程将 worker 的任意其他退出码归一化为 1，运行时契约只暴露 0 / 1 / 124。父进程以内部 `--worker` flag 显式拉起子进程，不依赖环境变量。
+
+前置条件：需要网络与数据源/AI 凭据配置齐全（在线链路）。本脚本不属于离线 gate，不进入 CI。
+
 ## 五、`/status` 与模型配置诊断说明
 
 ### 可配置层级与可用性判断依据

@@ -101,13 +101,20 @@ class AnalyzeCommand(BotCommand):
 
             if result.get("success"):
                 task_id = result.get("task_id", "")
-                return BotResponse.markdown_response(
+                # ``extra`` 仅供内部任务 identity 透传（transport-independent
+                # 消费者，如 E2E smoke），文本保持既有契约不变，平台适配器可忽略。
+                response = BotResponse.markdown_response(
                     f"✅ **分析任务已提交**\n\n"
                     f"• 标的: `{code}`\n"
                     f"• 报告类型: {ReportType.from_str(report_type).display_name}\n"
                     f"• 任务 ID: `{task_id[:20]}...`\n\n"
                     f"分析完成后将自动推送结果。"
                 )
+                response.extra = {
+                    "task_id": task_id,
+                    "stock_code": code,
+                }
+                return response
             error = result.get("error", "未知错误")
             return BotResponse.error_response(f"提交分析任务失败: {error}")
 
