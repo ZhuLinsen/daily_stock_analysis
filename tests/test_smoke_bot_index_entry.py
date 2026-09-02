@@ -71,18 +71,21 @@ class TestSpawnKwargs(unittest.TestCase):
         self.assertEqual(kwargs, {"start_new_session": True})
 
     def test_windows_spawn_kwargs_use_new_process_group(self):
-        kwargs = smoke._spawn_kwargs("nt")
-        self.assertEqual(
-            kwargs,
-            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP},
-        )
+        with patch.object(
+            smoke.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, create=True
+        ):
+            kwargs = smoke._spawn_kwargs("nt")
+        self.assertEqual(kwargs, {"creationflags": 0x00000200})
 
     def test_spawn_kwargs_never_use_pipe(self):
-        for platform in ("posix", "nt"):
-            kwargs = smoke._spawn_kwargs(platform)
-            self.assertNotIn("stdout", kwargs)
-            self.assertNotIn("stderr", kwargs)
-            self.assertNotIn("stdin", kwargs)
+        with patch.object(
+            smoke.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, create=True
+        ):
+            for platform in ("posix", "nt"):
+                kwargs = smoke._spawn_kwargs(platform)
+                self.assertNotIn("stdout", kwargs)
+                self.assertNotIn("stderr", kwargs)
+                self.assertNotIn("stdin", kwargs)
 
 
 class TestTerminateProcessTree(unittest.TestCase):

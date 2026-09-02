@@ -91,7 +91,8 @@ def _spawn_kwargs(platform_name: str) -> dict:
     the child into its own session / new process group so the parent can
     kill the whole tree on timeout."""
     if platform_name == "nt":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": creationflags} if creationflags else {}
     return {"start_new_session": True}
 
 
