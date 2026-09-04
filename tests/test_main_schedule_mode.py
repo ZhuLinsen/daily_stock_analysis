@@ -61,6 +61,14 @@ class MainScheduleModeTestCase(unittest.TestCase):
         os.chdir(self.temp_dir.name)
         self.env_patch = patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=False)
         self.env_patch.start()
+        # CI runner 自动注入 GITHUB_ACTIONS=true，会让无显式环境的 main.main()
+        # 测试误入 Actions STOCK_LIST 分类分支（其 _DummyConfig 不含
+        # stock_list 属性）。类级默认关闭，Actions 入口相关测试在用例内
+        # 显式 patch 为 true 覆盖。
+        self.actions_env_patch = patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}, clear=False
+        )
+        self.actions_env_patch.start()
         Config.reset_instance()
         root_logger = logging.getLogger()
         self._original_root_handlers = list(root_logger.handlers)
@@ -80,6 +88,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         os.chdir(self.original_cwd)
         Config.reset_instance()
         self.env_patch.stop()
+        self.actions_env_patch.stop()
         for key in _MAIN_IMPORT_ENV_ADDITIONS:
             os.environ.pop(key, None)
         for key, value in _MAIN_IMPORT_ENV_OVERRIDES.items():
