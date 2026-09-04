@@ -274,27 +274,39 @@ class BaseAgent(ABC):
             return ""
 
         entries = self.memory.get_stock_history(ctx.stock_code, limit=3)
-        if not entries:
+        review = self.memory.get_decision_signal_review(ctx.stock_code)
+        if not entries and review is None:
             return ""
 
-        lines = ["[Memory: recent analysis history]"]
-        for entry in entries:
-            parts = [
-                entry.date or "unknown_date",
-                f"signal={entry.signal or 'unknown'}",
-                f"sentiment={entry.sentiment_score}",
+        sections: List[str] = []
+        if entries:
+            lines = ["[Memory: recent analysis history]"]
+            for entry in entries:
+                parts = [
+                    entry.date or "unknown_date",
+                    f"signal={entry.signal or 'unknown'}",
+                    f"sentiment={entry.sentiment_score}",
+                ]
+                if entry.price_at_analysis:
+                    parts.append(f"price={entry.price_at_analysis}")
+                if entry.outcome_5d is not None:
+                    parts.append(f"outcome_5d={entry.outcome_5d}")
+                if entry.outcome_20d is not None:
+                    parts.append(f"outcome_20d={entry.outcome_20d}")
+                if entry.was_correct is not None:
+                    parts.append(f"was_correct={entry.was_correct}")
+                lines.append("- " + ", ".join(parts))
+            lines.append("Use this memory as context only; do not copy it verbatim into the final answer.")
+            sections.append("\n".join(lines))
+        if review is not None:
+            review_lines = [
+                "[Memory: decision-signal review]",
+                "- " + review.to_prompt_line(),
+                "This review is observation-only context; do not treat historical "
+                "hit rate as a buy/sell strength signal.",
             ]
-            if entry.price_at_analysis:
-                parts.append(f"price={entry.price_at_analysis}")
-            if entry.outcome_5d is not None:
-                parts.append(f"outcome_5d={entry.outcome_5d}")
-            if entry.outcome_20d is not None:
-                parts.append(f"outcome_20d={entry.outcome_20d}")
-            if entry.was_correct is not None:
-                parts.append(f"was_correct={entry.was_correct}")
-            lines.append("- " + ", ".join(parts))
-        lines.append("Use this memory as context only; do not copy it verbatim into the final answer.")
-        return "\n".join(lines)
+            sections.append("\n".join(review_lines))
+        return "\n\n".join(sections)
 
     def _apply_memory_calibration(self, ctx: AgentContext, opinion: AgentOpinion, result: StageResult) -> None:
         """Adjust confidence using historical calibration when enabled."""

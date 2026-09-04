@@ -2824,6 +2824,7 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
         )
         memory = MagicMock(enabled=True)
         memory.get_stock_history.return_value = [entry]
+        memory.get_decision_signal_review.return_value = None
         agent = self._make_agent(memory)
 
         ctx = AgentContext(query="test", stock_code="600519")
@@ -2858,6 +2859,7 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
     def test_memory_calibration_updates_confidence(self):
         memory = MagicMock(enabled=True)
         memory.get_stock_history.return_value = []
+        memory.get_decision_signal_review.return_value = None
         memory.get_calibration.return_value = SimpleNamespace(
             calibrated=True,
             calibration_factor=0.5,
@@ -2899,6 +2901,7 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
 
         memory = MagicMock(enabled=True)
         memory.get_stock_history.return_value = []
+        memory.get_decision_signal_review.return_value = None
         memory.get_calibration.return_value = SimpleNamespace(
             calibrated=True,
             calibration_factor=0.5,
