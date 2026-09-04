@@ -132,11 +132,12 @@ def _add_feedback(
     *,
     signal_id: int,
     reason_code: str,
+    feedback_value: str = "not_useful",
 ) -> None:
     with db.session_scope() as session:
         session.add(DecisionSignalFeedbackRecord(
             signal_id=signal_id,
-            feedback_value="not_useful",
+            feedback_value=feedback_value,
             reason_code=reason_code,
             source="api",
         ))
@@ -384,3 +385,63 @@ def test_review_endpoint_observe_and_invalid_params(client_and_db) -> None:
         params={"horizon": "swing"},
     )
     assert bad_horizon_resp.status_code == 400, bad_horizon_resp.text
+
+
+def test_get_stock_review_alias_inputs_resolve_to_canonical_storage(isolated_db) -> None:
+    _seed_completed_outcomes(isolated_db, outcomes=("hit",) * 12, code="HK00700")
+    service = DecisionSignalOutcomeService(db_manager=isolated_db)
+
+    for alias in ("HK00700", "00700", "00700.HK", "hk00700"):
+        review = service.get_stock_review(alias)
+        assert review["sample_size"] == 12, alias
+        assert review["completed"] == 12, alias
+        assert review["hit_rate_pct"] == 100.0, alias
+        assert review["confidence_adjustment"] == "upgrade", alias
+    assert service.get_stock_review("00700.HK")["stock_code"] == "HK00700"
+
+
+def test_get_stock_review_alias_cn_suffix_and_lowercase_us(isolated_db) -> None:
+    _seed_completed_outcomes(isolated_db, outcomes=("hit",) * 12, code="600519")
+    _seed_completed_outcomes(isolated_db, outcomes=("miss",) * 12, code="AAPL")
+    service = DecisionSignalOutcomeService(db_manager=isolated_db)
+
+    cn_review = service.get_stock_review("600519.SH")
+    assert cn_review["stock_code"] == "600519"
+    assert cn_review["sample_size"] == 12
+    assert cn_review["hit_rate_pct"] == 100.0
+
+    us_review = service.get_stock_review("aapl")
+    assert us_review["stock_code"] == "AAPL"
+    assert us_review["sample_size"] == 12
+    assert us_review["hit_rate_pct"] == 0.0
+    assert us_review["confidence_adjustment"] == "downgrade"
+
+
+def test_get_stock_review_useful_feedback_not_counted_as_miss_reason(isolated_db) -> None:
+    missed_ids = _seed_completed_outcomes(isolated_db, outcomes=("hit",) * 8 + ("miss",) * 4)
+    _add_feedback(
+        isolated_db, signal_id=missed_ids[0], reason_code="matched_plan", feedback_value="useful",
+    )
+    _add_feedback(
+        isolated_db, signal_id=missed_ids[1], reason_code="stale_news", feedback_value="not_useful",
+    )
+    service = DecisionSignalOutcomeService(db_manager=isolated_db)
+
+    review = service.get_stock_review("600519")
+
+    assert review["common_miss_reasons"] == ["stale_news"]
+
+
+def test_review_endpoint_hk_alias_returns_canonical_review(client_and_db) -> None:
+    client, db = client_and_db
+    _seed_completed_outcomes(db, outcomes=("hit",) * 12, code="HK00700")
+
+    resp = client.get("/api/v1/decision-signals/stocks/00700/review")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["stock_code"] == "HK00700"
+    assert data["sample_size"] == 12
+    assert data["completed"] == 12
+    assert data["hit_rate_pct"] == 100.0
+    assert data["confidence_adjustment"] == "upgrade"

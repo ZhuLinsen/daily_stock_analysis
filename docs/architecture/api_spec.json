@@ -2100,6 +2100,101 @@
         }
       }
     },
+    "/api/v1/decision-signals/stocks/{stock_code}/review": {
+      "get": {
+        "tags": [
+          "DecisionSignals"
+        ],
+        "summary": "查询单票决策信号复盘摘要",
+        "description": "聚合指定股票在当前 engine_version 下的 signal-level outcome/feedback，返回只读低敏 ReviewMemory 摘要；样本不足、unable 率高或数据质量弱时 confidence_adjustment 固定为 observe，仅供观察，不构成交易信号。",
+        "operationId": "getDecisionSignalStockReview",
+        "security": [
+          {
+            "AdminSessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "stock_code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stock Code"
+            }
+          },
+          {
+            "name": "horizon",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Horizon",
+              "description": "Optional outcome horizon filter: 1d/3d/5d/10d"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSignalReviewMemory"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或管理员会话无效（ADMIN_AUTH_ENABLED=true 时）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "查询参数非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "路径或查询参数校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/decision-signals/{signal_id}/outcomes": {
       "get": {
         "tags": [
@@ -9068,6 +9163,85 @@
           "status"
         ],
         "title": "StockProfileQuoteBlock"
+      },
+      "DecisionSignalReviewMemory": {
+        "description": "Read-only, low-sensitivity review summary of DecisionSignal outcomes for one stock.\n\nAggregated server-side from signal-level outcomes/feedback.  Raw evidence,\nprompt text, diagnostics, and holdings are intentionally excluded; the\npayload is observational context only and must not be used as a trading\nsignal.",
+        "properties": {
+          "stock_code": {
+            "title": "Stock Code",
+            "type": "string"
+          },
+          "scope": {
+            "const": "stock",
+            "default": "stock",
+            "title": "Scope",
+            "type": "string"
+          },
+          "sample_size": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Sample Size",
+            "type": "integer"
+          },
+          "completed": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Completed",
+            "type": "integer"
+          },
+          "hit_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hit Rate Pct"
+          },
+          "avg_return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Avg Return Pct"
+          },
+          "common_miss_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Common Miss Reasons",
+            "type": "array"
+          },
+          "confidence_adjustment": {
+            "default": "observe",
+            "enum": [
+              "upgrade",
+              "downgrade",
+              "neutral",
+              "observe"
+            ],
+            "title": "Confidence Adjustment",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "title": "Notes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stock_code"
+        ],
+        "title": "DecisionSignalReviewMemory",
+        "type": "object"
       }
     },
     "securitySchemes": {

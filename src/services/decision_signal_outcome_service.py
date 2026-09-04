@@ -382,10 +382,17 @@ class DecisionSignalOutcomeService:
         insufficient completed samples, a high unable rate, or dominantly weak
         data quality.  The review is observational context only and must not be
         used as a buy/sell strength signal.
+
+        The stock filter reuses ``DecisionSignalService._stock_filter_codes`` so
+        alias inputs (``00700`` / ``00700.HK`` / ``HK00700``, ``600519.SH``,
+        lowercase US tickers) resolve to the same stored canonical identity as
+        every other decision-signal entry point.
         """
         code = str(stock_code or "").strip()
         if not code:
             raise ValueError("stock_code must not be empty")
+        filter_codes = DecisionSignalService._stock_filter_codes(code) or [code]
+        canonical_code = filter_codes[0]
         horizon_norm = self._normalize_optional_enum(
             horizon, frozenset(SUPPORTED_OUTCOME_HORIZONS), "horizon"
         )
@@ -394,10 +401,18 @@ class DecisionSignalOutcomeService:
             engine_version=DECISION_SIGNAL_OUTCOME_ENGINE_VERSION,
             horizons=horizons_norm,
             statuses=list(DEFAULT_STATS_STATUSES),
-            stock_codes=[code],
+            stock_codes=filter_codes,
         )
         rows = [stats_row.outcome for stats_row in stats_rows]
         aggregate = self._aggregate(rows)
+        if stats_rows:
+            # Echo the stored identity of the aggregated data, so alias inputs
+            # (e.g. "00700") report the same canonical code as every other
+            # decision-signal endpoint (e.g. "HK00700").
+            canonical_code = next(
+                (row.stock_code for row in stats_rows if row.stock_code),
+                canonical_code,
+            )
 
         sample_size = int(aggregate["total"])
         completed = int(aggregate["completed"])
@@ -434,7 +449,7 @@ class DecisionSignalOutcomeService:
             )
 
         return {
-            "stock_code": code,
+            "stock_code": canonical_code,
             "scope": "stock",
             "sample_size": sample_size,
             "completed": completed,

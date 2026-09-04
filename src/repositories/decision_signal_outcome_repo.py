@@ -24,6 +24,7 @@ class OutcomeStatsRow:
     outcome: DecisionSignalOutcomeRecord
     decision_profile: Optional[str]
     metadata_json: Optional[str]
+    stock_code: Optional[str] = None
 
 
 class DecisionSignalOutcomeRepository:
@@ -196,6 +197,7 @@ class DecisionSignalOutcomeRepository:
                     DecisionSignalOutcomeRecord,
                     DecisionSignalRecord.decision_profile,
                     DecisionSignalRecord.metadata_json,
+                    DecisionSignalRecord.stock_code,
                 )
                 .join(DecisionSignalRecord, DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id)
                 .where(and_(*conditions))
@@ -205,8 +207,9 @@ class DecisionSignalOutcomeRepository:
                     outcome=outcome,
                     decision_profile=decision_profile,
                     metadata_json=metadata_json,
+                    stock_code=stock_code,
                 )
-                for outcome, decision_profile, metadata_json in rows
+                for outcome, decision_profile, metadata_json, stock_code in rows
             ]
 
     def get_feedback(self, *, signal_id: int) -> Optional[DecisionSignalFeedbackRecord]:
@@ -218,10 +221,12 @@ class DecisionSignalOutcomeRepository:
             ).scalar_one_or_none()
 
     def list_feedback_reason_codes(self, *, signal_ids: List[int]) -> List[str]:
-        """Return non-empty feedback reason codes for the given signals.
+        """Return non-empty ``not_useful`` feedback reason codes for the given signals.
 
         Used by review aggregation to surface common miss reasons without
-        exposing raw feedback notes (low-sensitivity contract).
+        exposing raw feedback notes (low-sensitivity contract).  Only negative
+        feedback is eligible: ``useful`` reason codes describe why a signal
+        worked, not why it missed, and must not pollute miss-reason stats.
         """
         if not signal_ids:
             return []
@@ -230,6 +235,7 @@ class DecisionSignalOutcomeRepository:
                 select(DecisionSignalFeedbackRecord.reason_code)
                 .where(
                     DecisionSignalFeedbackRecord.signal_id.in_(signal_ids),
+                    DecisionSignalFeedbackRecord.feedback_value == "not_useful",
                     DecisionSignalFeedbackRecord.reason_code.isnot(None),
                 )
             ).scalars().all()
