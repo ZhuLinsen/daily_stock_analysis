@@ -372,18 +372,20 @@ class TestEdgeCases:
 # Default registry — public API surface.
 # ---------------------------------------------------------------------------
 class TestDefaultIndexRegistry:
-    def test_default_registry_has_31_entries(self) -> None:
+    def test_default_registry_has_33_entries(self) -> None:
         registry = default_index_registry()
-        assert len(registry) == 31
+        assert len(registry) == 33
 
     def test_default_registry_canonical_ids(self) -> None:
         registry = default_index_registry()
         ids = {entry.canonical_id for entry in registry}
-        assert len(ids) == 31
+        assert len(ids) == 33
         # The 5 original hard-coded indices are preserved.
         assert {"sh000300", "sh000016", "sh000688", "sz399001", "sz399006"} <= ids
         # CSI entries are present.
         assert {"csi930955", "csi932365"} <= ids
+        # Newly added user-facing indices (Issue #2303).
+        assert {"sz399365", "csi930606"} <= ids
 
     def test_default_registry_find_by_prefixed_code(self) -> None:
         registry = default_index_registry()

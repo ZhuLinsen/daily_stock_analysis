@@ -665,16 +665,16 @@ class TestPinyin:
 # Index registry seed generation
 # ---------------------------------------------------------------------------
 class TestIndexRegistrySeed:
-    """Seed generates exactly 31 index rows; index-only merge is stable."""
+    """Seed generates exactly 33 index rows; index-only merge is stable."""
 
-    def test_seed_loads_31_rows(self):
+    def test_seed_loads_33_rows(self):
         rows = load_index_registry_seed()
-        assert len(rows) == 31
+        assert len(rows) == 33
 
     def test_seed_entries_build_valid_index_tuples(self):
         rows = load_index_registry_seed()
         entries = build_index_entries_from_seed(rows)
-        assert len(entries) == 31
+        assert len(entries) == 33
         for entry in entries:
             assert entry["market"] == "CN"
             assert entry["assetType"] == "index"
@@ -687,10 +687,12 @@ class TestIndexRegistrySeed:
     def test_seed_canonical_set_matches_manifest(self):
         rows = load_index_registry_seed()
         canonicals = {row["canonical_code"] for row in rows}
-        assert len(canonicals) == 31
+        assert len(canonicals) == 33
         # Spot-check the 5 original + CSI entries.
         assert {"sh000300", "sh000016", "sh000688", "sz399001", "sz399006"} <= canonicals
         assert {"csi930955", "csi932365", "csi931052"} <= canonicals
+        # Newly added user-facing indices (Issue #2303).
+        assert {"sz399365", "csi930606"} <= canonicals
 
     def test_seed_csi_display_is_code_dot_csi(self):
         rows = load_index_registry_seed()
@@ -732,7 +734,7 @@ class TestIndexRegistrySeed:
         with pytest.raises(ValueError, match="canonical must match"):
             validate_index_registry(entries)
 
-    def test_index_only_preserves_non_index_rows_and_appends_31(self, tmp_path):
+    def test_index_only_preserves_non_index_rows_and_appends_33(self, tmp_path):
         output = tmp_path / "stocks.index.json"
         output.write_text(
             json.dumps(
@@ -749,8 +751,8 @@ class TestIndexRegistrySeed:
         index_rows = [x for x in merged if len(x) > 7 and x[7] == "index"]
         # Non-index rows preserved in order.
         assert [x[0] for x in non_index] == ["000001.SZ", "600519.SH"]
-        # Exactly 31 index rows appended.
-        assert len(index_rows) == 31
+        # Exactly 33 index rows appended.
+        assert len(index_rows) == 33
         # Index rows sorted by canonical.
         canonicals = [x[0] for x in index_rows]
         assert canonicals == sorted(canonicals)
@@ -783,8 +785,8 @@ class TestIndexRegistrySeed:
         run_index_only(output, test=True)
         assert output.read_bytes() == before
 
-    def test_full_path_merge_includes_31_index_rows(self, tmp_path, monkeypatch):
-        """The full rebuild path (``main()``) merges the same 31 index
+    def test_full_path_merge_includes_33_index_rows(self, tmp_path, monkeypatch):
+        """The full rebuild path (``main()``) merges the same 33 index
         rows before compression, so a full stock-index rebuild never erases the
         index registry entries."""
         import generate_index_from_csv as gen
@@ -810,7 +812,7 @@ class TestIndexRegistrySeed:
         index.extend(index_entries)
         compressed = compress_index(index)
         index_rows = [item for item in compressed if len(item) > 7 and item[7] == "index"]
-        assert len(index_rows) == 31
+        assert len(index_rows) == 33
         # Stock rows are preserved alongside the index rows.
         stock_rows = [item for item in compressed if len(item) > 7 and item[7] == "stock"]
         assert len(stock_rows) == 2
