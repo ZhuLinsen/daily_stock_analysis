@@ -528,6 +528,113 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(calls[1][2][0].asset_type, ParseStatus.INDEX)
         self.assertEqual(calls[1][2][0].canonical_id, "csi930955")
 
+    def test_standalone_run_rejects_unsupported_stocks_token(self) -> None:
+        """`--stocks` 携带未登记 `.CSI` 目标时在入口明确报错并返回非零，
+        不再静默走股票路径或发起 provider 调用。"""
+        args = self._make_args(stocks="600519,930956.CSI")
+        config = self._make_config(run_immediately=True)
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        run_full_analysis.assert_not_called()
+
+    def test_standalone_run_actions_stock_list_builds_index_targets(self) -> None:
+        """`GITHUB_ACTIONS=true` 且无 `--stocks` 时，`main.main()` 把默认
+        `STOCK_LIST` 的显式指数 token 分类为 INDEX target、个股 token 保持
+        legacy 语义（与一次性 `--stocks` 构造等价）。"""
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["sh000016", "600519", "930955.CSI"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        run_full_analysis.assert_called_once()
+        stock_codes = run_full_analysis.call_args.args[2]
+        analysis_targets = run_full_analysis.call_args.kwargs["analysis_targets"]
+        self.assertEqual(stock_codes, ["sh000016", "600519", "csi930955"])
+        self.assertEqual(
+            [t.asset_type for t in analysis_targets],
+            ["index", "stock", "index"],
+        )
+        self.assertEqual(
+            [t.canonical_id for t in analysis_targets],
+            ["sh000016", "sh600519", "csi930955"],
+        )
+
+    def test_standalone_run_local_default_does_not_build_targets(self) -> None:
+        """非 Actions 环境的无参数默认路径不构造结构化 targets（本地/
+        `--schedule` 热刷新语义保持不变）。"""
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["600519"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": ""}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        run_full_analysis.assert_called_once()
+        self.assertIsNone(run_full_analysis.call_args.args[2])
+        self.assertIsNone(run_full_analysis.call_args.kwargs.get("analysis_targets"))
+
+    def test_standalone_run_actions_stock_list_rejects_unsupported(self) -> None:
+        """Actions STOCK_LIST 携带未登记 `.CSI` token 时与 `--stocks` 同样
+        在入口明确拒绝并返回非零，不会静默丢弃该 token 后继续运行。"""
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["sh000016", "930956.CSI"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        run_full_analysis.assert_not_called()
+
+    def test_standalone_run_actions_market_only_skips_token_classification(self) -> None:
+        """Actions 的 market-only 模式（`--market-review`）不经个股列表分析，
+        STOCK_LIST 分类入口必须整体跳过（含 unsupported 拒绝），保持既有
+        大盘复盘行为。"""
+        args = self._make_args(market_review=True)
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["930956.CSI"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main.run_full_analysis") as run_full_analysis, \
+             patch("main._run_market_review_with_shared_lock") as run_review:
+            run_review.return_value = object()
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        refresh.assert_not_called()
+        run_full_analysis.assert_not_called()
+        run_review.assert_called_once()
+
     def test_standalone_run_returns_nonzero_when_startup_analysis_reports_failure(self) -> None:
         args = self._make_args()
         config = self._make_config(run_immediately=True)

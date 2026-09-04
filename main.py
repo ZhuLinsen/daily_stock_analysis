@@ -500,6 +500,46 @@ def _compute_trading_day_filter(
     return (filtered_codes, effective_region, should_skip_all)
 
 
+def _classify_stock_list_tokens(
+    tokens: List[str],
+    *,
+    entry_label: str,
+) -> Optional[Tuple[List[str], List[AnalysisTarget]]]:
+    """Classify stock-list tokens into aligned ``(stock_codes, analysis_targets)``.
+
+    Shared by the one-shot ``--stocks`` entry and the GitHub Actions
+    ``STOCK_LIST`` entry: explicit index tokens resolve through
+    ``parse_analysis_target`` and keep their index canonical, while every
+    other token keeps the legacy ``resolve_index_stock_code_for_analysis``
+    path. ``unsupported`` tokens (e.g. an unregistered ``.CSI``) reject the
+    whole run up-front with an explicit error — provider calls are never
+    reached for any token in the batch. Returns ``None`` after logging the
+    rejection, so callers exit without running analysis.
+    """
+    targets = [parse_analysis_target(t) for t in tokens]
+    unsupported = [
+        (token, target.unsupported_reason or "unsupported target")
+        for token, target in zip(tokens, targets)
+        if target.asset_type == ParseStatus.UNSUPPORTED
+    ]
+    if unsupported:
+        token, reason = unsupported[0]
+        logger.error(
+            "%s 包含不支持的目标 %r：%s；本轮不执行任何分析。",
+            entry_label,
+            token,
+            reason,
+        )
+        return None
+    stock_codes = [
+        t.canonical_id
+        if t.asset_type == ParseStatus.INDEX
+        else resolve_index_stock_code_for_analysis(raw)
+        for t, raw in zip(targets, tokens)
+    ]
+    return stock_codes, targets
+
+
 def _run_market_review_with_shared_lock(
     config: Config,
     run_market_review_func: Callable[..., Any],
@@ -1499,7 +1539,7 @@ def main() -> int:
     # 解析股票列表（统一为大写 Issue #355）
     # Story 1.5: 一次性 --stocks 入口使用 parse_analysis_target 构造结构化
     # AnalysisTarget 列表，指数目标（sh/sz/csi 前缀与 .CSI alias）在入口即保留
-    # 身份语义；unsupported 目标在 Pipeline 内于 provider 调用前拒绝。
+    # 身份语义；unsupported 目标（如未登记 .CSI）在入口明确拒绝，不进入 provider。
     stock_codes = None
     analysis_targets = None
     if args.stocks:
@@ -1508,19 +1548,39 @@ def main() -> int:
         # 其他模式由 run_full_analysis 内的既有刷新覆盖。
         _refresh_stock_index_cache_for_analysis(config)
         tokens = [c for c in split_stock_list(args.stocks) if (c or "").strip()]
-        targets = [parse_analysis_target(t) for t in tokens]
-        # 指数目标使用 parser canonical；非指数目标沿用既有
-        # resolve_index_stock_code_for_analysis 语义（保留 JP/KR 等解析行为）。
-        stock_codes = [
-            t.canonical_id
-            if t.asset_type == ParseStatus.INDEX
-            else resolve_index_stock_code_for_analysis(raw)
-            for t, raw in zip(targets, tokens)
-        ]
-        analysis_targets = targets
+        resolved = _classify_stock_list_tokens(tokens, entry_label="--stocks")
+        if resolved is None:
+            return 1
+        stock_codes, analysis_targets = resolved
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
         if getattr(args, "portfolio", None):
             logger.info("同时指定了 --portfolio；实际分析时 portfolio 将覆盖 --stocks")
+    elif (
+        os.getenv("GITHUB_ACTIONS") == "true"
+        and getattr(args, "portfolio", None) is None
+        and not getattr(args, "market_review", False)
+        and not (getattr(args, "schedule", False) or getattr(config, "schedule_enabled", False))
+    ):
+        # 每日工作流（GITHUB_ACTIONS=true）无参数运行 `python main.py`（full 或
+        # stocks-only 模式）：把 STOCK_LIST token 分类为与一次性 --stocks 等价的
+        # 结构化 target，显式指数 token 进入指数路径、个股 token 保持既有路径。
+        # market-only、--schedule 与本地默认路径不在本入口构造 target。
+        raw_value = config.stock_list or []
+        raw_tokens = (
+            split_stock_list(raw_value)
+            if isinstance(raw_value, str)
+            else [str(c).strip() for c in raw_value if str(c or "").strip()]
+        )
+        raw_tokens = [c for c in raw_tokens if (c or "").strip()]
+        if raw_tokens:
+            _refresh_stock_index_cache_for_analysis(config)
+            resolved = _classify_stock_list_tokens(
+                raw_tokens, entry_label="GitHub Actions STOCK_LIST"
+            )
+            if resolved is None:
+                return 1
+            stock_codes, analysis_targets = resolved
+            logger.info(f"GitHub Actions 默认 STOCK_LIST: {stock_codes}")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
     if args.webui:

@@ -732,7 +732,7 @@ python main.py --stocks sh000016,000016
 python main.py --stocks sh000016 --dry-run
 ```
 
-指数目标在 Pipeline 内以 `market=cn` 统一处理市场阶段、日线目标日期、断点续传日期、历史窗口与 `DecisionSignal`；筹码分布、基本面、板块归属、资金流、龙虎榜与公司事件等个股专属模块会被集中跳过。未登记的 `.CSI` 输入（如 `930956.CSI`）会在任何行情数据 provider 请求前明确拒绝，且不影响同批其他目标。搜索与报告使用注册表中文指数名称，不携带机器码。
+指数目标在 Pipeline 内以 `market=cn` 统一处理市场阶段、日线目标日期、断点续传日期、历史窗口与 `DecisionSignal`；筹码分布、基本面、板块归属、资金流、龙虎榜与公司事件等个股专属模块会被集中跳过。未登记的 `.CSI` 输入（如 `930956.CSI`）会在任何行情数据 provider 请求前明确拒绝：CLI `--stocks` 与 Actions 每日工作流对含未登记目标的整批拒绝本轮运行（不执行同批任何目标），Web/API 则为异步批量中仅该目标进入 `rejected`、同步/单股返回 4xx。搜索与报告使用注册表中文指数名称，不携带机器码。
 
 指数与 A 股共享交易日语义：启用交易日检查时，已登记指数（`sh`/`sz` 前缀或 `.CSI` alias）按 `market=cn` 参与 A 股休市过滤，A 股休市日指数会被跳过；市场仍无法识别的非指数 code 保持既有 fail-open 行为。`--force-run` 可强制在非交易日执行。
 
@@ -746,7 +746,11 @@ API `/analyze` 对显式指数输入构造结构化 `AnalysisTarget`：`sh000016
 
 Bot `/analyze` 已支持已登记指数的显式代码（`sh000016`）、CSI alias（`930955.CSI`）和注册中文名（`上证50`）。指数以 registry canonical 和结构化 `AnalysisTarget` 进入与 CLI/API 相同的 Pipeline；未登记 CSI、未知名称或歧义注册名称会明确报错且不提交任务。普通 A/HK/US 代码与股票名称继续沿用 legacy code 路径。
 
-> **Phase 2 边界**：默认 `STOCK_LIST`、`--schedule`、Bot `/ask`、Bot `/batch` 与 GitHub Actions 每日工作流仍未开放指数入口；Web/API、Bot `/analyze` 与一次性 `--stocks` 已支持指数，其余定时/每日工作流入口留待后续 PR。
+### 指数 GitHub Actions 入口（Phase 2 PR3）
+
+GitHub Actions 每日工作流（`.github/workflows/00-daily-analysis.yml`）把 `STOCK_LIST` 配置中的显式指数 token 与个股同批分析：`GITHUB_ACTIONS=true` 环境下 `python main.py` 无参数运行时（`full` 与 `stocks-only` 模式；`market-only` 不经个股列表，不参与此分类），`STOCK_LIST` 会按与 `--stocks` 相同的判型规则分类为结构化 target，显式指数 token（如 `sh000016`、`930955.CSI`）进入指数路径、个股 token 保持既有路径，不新增第二条 Pipeline 或能力矩阵；含未登记 `.CSI` 目标时整批拒绝本轮运行。本地与定时热刷新（`--schedule`）路径不参与此分类，默认 `STOCK_LIST` 的其它运行环境语义不变。
+
+> **Phase 2 边界**：`--schedule`、Bot `/ask`、Bot `/batch` 仍未开放指数入口；Web/API、Bot `/analyze`、一次性 `--stocks` 与 GitHub Actions 每日工作流已支持指数。
 
 ### 指数与个股 Dashboard canonical 隔离（PR #2312）
 

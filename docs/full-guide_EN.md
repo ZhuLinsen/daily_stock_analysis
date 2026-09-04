@@ -671,7 +671,7 @@ python main.py --stocks sh000016,000016
 python main.py --stocks sh000016 --dry-run
 ```
 
-Index targets are handled with `market=cn` throughout the Pipeline for market phase, daily-bar target date, resume/checkpoint date, history window, and `DecisionSignal`. Stock-only modules (chip distribution, fundamentals, board membership, capital flow, LHB, corporate events) are centrally skipped. An unregistered `.CSI` input (e.g. `930956.CSI`) is rejected before any market-data provider request without affecting other targets in the batch. Search and reports use the registry Chinese index name and never carry machine codes.
+Index targets are handled with `market=cn` throughout the Pipeline for market phase, daily-bar target date, resume/checkpoint date, history window, and `DecisionSignal`. Stock-only modules (chip distribution, fundamentals, board membership, capital flow, LHB, corporate events) are centrally skipped. An unregistered `.CSI` input (e.g. `930956.CSI`) is rejected before any market-data provider request: the CLI `--stocks` entry and the Actions daily workflow reject the whole batch for the run (no target in the batch runs), while Web/API rejects only that target in an async batch (it enters `rejected`) or returns 4xx for a sync/single request. Search and reports use the registry Chinese index name and never carry machine codes.
 
 Indices share the A-share trading-day semantics: when the trading-day check is enabled, registered indices (`sh`/`sz` prefix or `.CSI` alias) participate in CN holiday filtering as `market=cn`, so indices are skipped on A-share holidays; a market-unknown non-index code keeps the existing fail-open behavior. `--force-run` forces execution on non-trading days.
 
@@ -685,7 +685,11 @@ The API `/analyze` endpoint builds a structured `AnalysisTarget` for explicit in
 
 Bot `/analyze` now accepts registered-index explicit codes (`sh000016`), CSI aliases (`930955.CSI`), and registered Chinese names (`上证50`). The registry canonical and structured `AnalysisTarget` flow into the same Pipeline used by CLI/API; unregistered CSI forms, unknown names, and ambiguous registered names return an explicit error without submitting a task. Existing A/HK/US codes and stock names keep the legacy-code path.
 
-> **Phase 2 boundary**: default `STOCK_LIST`, `--schedule`, Bot `/ask`, Bot `/batch`, and the GitHub Actions daily workflow still do not expose index entrypoints. Web/API, Bot `/analyze`, and the one-shot `--stocks` entry support indices; the remaining scheduled/daily-workflow entry lands in a later PR.
+### GitHub Actions index entry (Phase 2 PR3)
+
+The GitHub Actions daily workflow (`.github/workflows/00-daily-analysis.yml`) analyzes explicit index tokens from the `STOCK_LIST` config in the same batch as stocks: when `GITHUB_ACTIONS=true`, a no-arg `python main.py` run (the `full` and `stocks-only` modes; `market-only` does not analyze the stock list and is exempt from this classification) classifies `STOCK_LIST` with the same typing rules as `--stocks`, so explicit index tokens (e.g. `sh000016`, `930955.CSI`) take the index path while stock tokens keep the existing path — no second Pipeline or capability matrix is introduced; a batch containing an unregistered `.CSI` target is rejected as a whole. Local and scheduled hot-reload (`--schedule`) paths do not participate in this classification; the default `STOCK_LIST` semantics in other runtime environments are unchanged.
+
+> **Phase 2 boundary**: `--schedule`, Bot `/ask`, and Bot `/batch` still do not expose index entrypoints. Web/API, Bot `/analyze`, the one-shot `--stocks` entry, and the GitHub Actions daily workflow support indices.
 
 ### Index vs stock Dashboard canonical isolation (PR #2312)
 
