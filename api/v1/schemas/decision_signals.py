@@ -22,6 +22,8 @@ DecisionSignalOutcomeStatus = Literal["completed", "unable"]
 DecisionSignalOutcomeValue = Literal["hit", "miss", "neutral"]
 DecisionSignalFeedbackValue = Literal["useful", "not_useful"]
 DecisionSignalFeedbackSource = Literal["web", "api"]
+DecisionSignalReviewScope = Literal["stock"]
+DecisionSignalConfidenceAdjustment = Literal["upgrade", "downgrade", "neutral", "observe"]
 
 
 class DecisionSignalCreateRequest(BaseModel):
@@ -231,6 +233,26 @@ class DecisionSignalOutcomeStatsResponse(BaseModel):
     unable_reasons: Dict[str, int] = Field(default_factory=dict)
     breakdowns: Dict[str, List[DecisionSignalOutcomeStatsBucket]] = Field(default_factory=dict)
     profile_calibration: DecisionSignalProfileCalibration
+
+
+class DecisionSignalReviewMemory(BaseModel):
+    """Read-only, low-sensitivity review summary of DecisionSignal outcomes for one stock.
+
+    Aggregated server-side from signal-level outcomes/feedback.  Raw evidence,
+    prompt text, diagnostics, and holdings are intentionally excluded; the
+    payload is observational context only and must not be used as a trading
+    signal.
+    """
+
+    stock_code: str
+    scope: DecisionSignalReviewScope = "stock"
+    sample_size: int = Field(0, ge=0)
+    completed: int = Field(0, ge=0)
+    hit_rate_pct: Optional[float] = None
+    avg_return_pct: Optional[float] = None
+    common_miss_reasons: List[str] = Field(default_factory=list)
+    confidence_adjustment: DecisionSignalConfidenceAdjustment = "observe"
+    notes: str = ""
 
 
 class DecisionSignalFeedbackRequest(BaseModel):

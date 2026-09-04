@@ -59,6 +59,12 @@ RETRYABLE_UNABLE_REASONS = frozenset({
 })
 BATCH_CANDIDATE_SCAN_PAGE_SIZE = 500
 MIN_PROFILE_CALIBRATION_SAMPLE_SIZE = 30
+MIN_REVIEW_SAMPLE_SIZE = 10
+REVIEW_UPGRADE_HIT_RATE_PCT = 60.0
+REVIEW_DOWNGRADE_HIT_RATE_PCT = 40.0
+REVIEW_MAX_UNABLE_RATE_PCT = 50.0
+REVIEW_WEAK_DATA_QUALITY_LEVELS = frozenset({"low", "poor"})
+REVIEW_COMMON_MISS_REASONS_LIMIT = 3
 PROFILE_SOURCES = frozenset({
     "auto_default",
     "backfill_defaulted",
@@ -361,6 +367,117 @@ class DecisionSignalOutcomeService:
             "breakdowns": breakdowns,
             "profile_calibration": self._profile_calibration(stats_rows),
         }
+
+    def get_stock_review(
+        self,
+        stock_code: str,
+        *,
+        horizon: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate a read-only, low-sensitivity review of signal outcomes for one stock.
+
+        The payload follows the ReviewMemory contract: objective aggregates are
+        always returned as-is, while ``confidence_adjustment`` stays ``observe``
+        (with an explanatory caution note) whenever the evidence base is weak —
+        insufficient completed samples, a high unable rate, or dominantly weak
+        data quality.  The review is observational context only and must not be
+        used as a buy/sell strength signal.
+        """
+        code = str(stock_code or "").strip()
+        if not code:
+            raise ValueError("stock_code must not be empty")
+        horizon_norm = self._normalize_optional_enum(
+            horizon, frozenset(SUPPORTED_OUTCOME_HORIZONS), "horizon"
+        )
+        horizons_norm = [horizon_norm] if horizon_norm else sorted(SUPPORTED_OUTCOME_HORIZONS)
+        stats_rows = self.repo.list_stats_rows(
+            engine_version=DECISION_SIGNAL_OUTCOME_ENGINE_VERSION,
+            horizons=horizons_norm,
+            statuses=list(DEFAULT_STATS_STATUSES),
+            stock_codes=[code],
+        )
+        rows = [stats_row.outcome for stats_row in stats_rows]
+        aggregate = self._aggregate(rows)
+
+        sample_size = int(aggregate["total"])
+        completed = int(aggregate["completed"])
+        unable = int(aggregate["unable"])
+        unable_rate_pct = round(unable / sample_size * 100, 2) if sample_size else 0.0
+        dominant_quality = self._dominant_data_quality_level(rows)
+
+        adjustment = "observe"
+        if sample_size == 0:
+            notes = "no decision-signal outcome data for this stock yet"
+        elif completed < MIN_REVIEW_SAMPLE_SIZE:
+            notes = (
+                f"insufficient sample: {completed} completed outcomes "
+                f"(< {MIN_REVIEW_SAMPLE_SIZE}); observation only"
+            )
+        elif unable_rate_pct > REVIEW_MAX_UNABLE_RATE_PCT:
+            notes = (
+                f"high unable rate: {unable_rate_pct}% of outcomes could not be "
+                "evaluated; observation only"
+            )
+        elif dominant_quality in REVIEW_WEAK_DATA_QUALITY_LEVELS:
+            notes = f"weak data quality (dominant level: {dominant_quality}); observation only"
+        else:
+            hit_rate_pct = aggregate["hit_rate_pct"]
+            if hit_rate_pct is not None and hit_rate_pct >= REVIEW_UPGRADE_HIT_RATE_PCT:
+                adjustment = "upgrade"
+            elif hit_rate_pct is not None and hit_rate_pct <= REVIEW_DOWNGRADE_HIT_RATE_PCT:
+                adjustment = "downgrade"
+            else:
+                adjustment = "neutral"
+            notes = (
+                f"{completed} completed outcomes, hit_rate={hit_rate_pct}%; "
+                "observation only, not a trading signal"
+            )
+
+        return {
+            "stock_code": code,
+            "scope": "stock",
+            "sample_size": sample_size,
+            "completed": completed,
+            "hit_rate_pct": aggregate["hit_rate_pct"],
+            "avg_return_pct": aggregate["avg_stock_return_pct"],
+            "common_miss_reasons": self._common_miss_reasons(rows, aggregate),
+            "confidence_adjustment": adjustment,
+            "notes": notes,
+        }
+
+    @staticmethod
+    def _dominant_data_quality_level(rows: List[DecisionSignalOutcomeRecord]) -> str:
+        """Return the most frequent data-quality level across outcome rows."""
+        if not rows:
+            return "unknown"
+        counts = Counter(str(getattr(row, "data_quality_level", None) or "unknown") for row in rows)
+        return counts.most_common(1)[0][0]
+
+    def _common_miss_reasons(
+        self,
+        rows: List[DecisionSignalOutcomeRecord],
+        aggregate: Dict[str, Any],
+    ) -> List[str]:
+        """Surface common miss reasons under the low-sensitivity contract.
+
+        Prefers feedback ``reason_code`` values recorded on missed signals;
+        falls back to the top ``unable_reason`` labels when no feedback exists.
+        Raw feedback notes are never included.
+        """
+        missed_signal_ids = [
+            int(row.signal_id)
+            for row in rows
+            if row.eval_status == "completed" and row.outcome == "miss"
+        ]
+        reason_codes = self.repo.list_feedback_reason_codes(signal_ids=missed_signal_ids)
+        if reason_codes:
+            return [code for code, _ in Counter(reason_codes).most_common(REVIEW_COMMON_MISS_REASONS_LIMIT)]
+        unable_reasons = aggregate.get("unable_reasons") or {}
+        return [
+            reason
+            for reason, _ in sorted(unable_reasons.items(), key=lambda item: (-int(item[1]), str(item[0])))
+            [:REVIEW_COMMON_MISS_REASONS_LIMIT]
+        ]
 
     def get_feedback(self, signal_id: int) -> Dict[str, Any]:
         signal = self._require_existing_signal(signal_id)

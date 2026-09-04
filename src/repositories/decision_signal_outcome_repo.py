@@ -181,12 +181,15 @@ class DecisionSignalOutcomeRepository:
         engine_version: str,
         horizons: Optional[List[str]] = None,
         statuses: Optional[List[str]] = None,
+        stock_codes: Optional[List[str]] = None,
     ) -> List[OutcomeStatsRow]:
         conditions = [DecisionSignalOutcomeRecord.engine_version == engine_version]
         if horizons:
             conditions.append(DecisionSignalOutcomeRecord.horizon.in_(horizons))
         if statuses:
             conditions.append(DecisionSignalRecord.status.in_(statuses))
+        if stock_codes:
+            conditions.append(DecisionSignalRecord.stock_code.in_(stock_codes))
         with self.db.get_session() as session:
             rows = session.execute(
                 select(
@@ -213,6 +216,24 @@ class DecisionSignalOutcomeRepository:
                 .where(DecisionSignalFeedbackRecord.signal_id == signal_id)
                 .limit(1)
             ).scalar_one_or_none()
+
+    def list_feedback_reason_codes(self, *, signal_ids: List[int]) -> List[str]:
+        """Return non-empty feedback reason codes for the given signals.
+
+        Used by review aggregation to surface common miss reasons without
+        exposing raw feedback notes (low-sensitivity contract).
+        """
+        if not signal_ids:
+            return []
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(DecisionSignalFeedbackRecord.reason_code)
+                .where(
+                    DecisionSignalFeedbackRecord.signal_id.in_(signal_ids),
+                    DecisionSignalFeedbackRecord.reason_code.isnot(None),
+                )
+            ).scalars().all()
+            return [str(code) for code in rows if code]
 
     def upsert_feedback(self, fields: Dict[str, Any]) -> DecisionSignalFeedbackRecord:
         now = utc_naive_now()
