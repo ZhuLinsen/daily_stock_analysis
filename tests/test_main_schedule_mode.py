@@ -626,7 +626,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main.setup_logging"), \
              patch("main._refresh_stock_index_cache_for_analysis") as refresh, \
              patch("main.run_full_analysis") as run_full_analysis, \
-             patch("main._run_market_review_with_shared_lock") as run_review:
+             patch("main._run_market_review_with_shared_lock") as run_review, \
+             patch("src.core.trading_calendar.get_open_markets_today", return_value={"cn"}), \
+             patch("src.core.trading_calendar.compute_effective_region", return_value="cn"):
             run_review.return_value = object()
             exit_code = main.main()
 
