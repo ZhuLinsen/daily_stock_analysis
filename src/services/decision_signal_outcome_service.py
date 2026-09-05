@@ -8,6 +8,7 @@ from datetime import date, datetime
 import json
 import logging
 import math
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from src.core.backtest_engine import BacktestEngine, EvaluationConfig
@@ -65,6 +66,8 @@ REVIEW_DOWNGRADE_HIT_RATE_PCT = 40.0
 REVIEW_MAX_UNABLE_RATE_PCT = 50.0
 REVIEW_WEAK_DATA_QUALITY_LEVELS = frozenset({"low", "poor"})
 REVIEW_COMMON_MISS_REASONS_LIMIT = 3
+REVIEW_REASON_LABEL_PATTERN = re.compile(r"[a-z0-9][a-z0-9_\-]{0,31}")
+REVIEW_OTHER_REASON_LABEL = "other"
 PROFILE_SOURCES = frozenset({
     "auto_default",
     "backfill_defaulted",
@@ -486,13 +489,29 @@ class DecisionSignalOutcomeService:
         ]
         reason_codes = self.repo.list_feedback_reason_codes(signal_ids=missed_signal_ids)
         if reason_codes:
-            return [code for code, _ in Counter(reason_codes).most_common(REVIEW_COMMON_MISS_REASONS_LIMIT)]
+            labels = [self._normalize_reason_label(code) for code in reason_codes]
+            return [code for code, _ in Counter(labels).most_common(REVIEW_COMMON_MISS_REASONS_LIMIT)]
         unable_reasons = aggregate.get("unable_reasons") or {}
         return [
-            reason
+            self._normalize_reason_label(reason)
             for reason, _ in sorted(unable_reasons.items(), key=lambda item: (-int(item[1]), str(item[0])))
             [:REVIEW_COMMON_MISS_REASONS_LIMIT]
         ]
+
+    @staticmethod
+    def _normalize_reason_label(value: Any) -> str:
+        """Constrain a free-text reason code to the low-sensitivity label set.
+
+        Feedback ``reason_code`` is free text, and ReviewMemory payloads are
+        consumed by agent prompts (``[Memory: decision-signal review]``), so
+        anything that is not a simple slug-shaped label (``stale_news``,
+        ``missing_end_close``…) is bucketed as ``other`` instead of being
+        passed through verbatim into the prompt surface.
+        """
+        text = str(value or "").strip()
+        if REVIEW_REASON_LABEL_PATTERN.fullmatch(text):
+            return text
+        return REVIEW_OTHER_REASON_LABEL
 
     def get_feedback(self, signal_id: int) -> Dict[str, Any]:
         signal = self._require_existing_signal(signal_id)

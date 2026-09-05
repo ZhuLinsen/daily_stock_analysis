@@ -2136,9 +2136,10 @@
                   "type": "null"
                 }
               ],
-              "title": "Horizon",
-              "description": "Optional outcome horizon filter: 1d/3d/5d/10d"
-            }
+              "description": "Optional outcome horizon filter: 1d/3d/5d/10d",
+              "title": "Horizon"
+            },
+            "description": "Optional outcome horizon filter: 1d/3d/5d/10d"
           }
         ],
         "responses": {
@@ -2177,7 +2178,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -9165,29 +9166,28 @@
         "title": "StockProfileQuoteBlock"
       },
       "DecisionSignalReviewMemory": {
-        "description": "Read-only, low-sensitivity review summary of DecisionSignal outcomes for one stock.\n\nAggregated server-side from signal-level outcomes/feedback.  Raw evidence,\nprompt text, diagnostics, and holdings are intentionally excluded; the\npayload is observational context only and must not be used as a trading\nsignal.",
         "properties": {
           "stock_code": {
-            "title": "Stock Code",
-            "type": "string"
+            "type": "string",
+            "title": "Stock Code"
           },
           "scope": {
+            "type": "string",
             "const": "stock",
-            "default": "stock",
             "title": "Scope",
-            "type": "string"
+            "default": "stock"
           },
           "sample_size": {
-            "default": 0,
-            "minimum": 0,
+            "type": "integer",
+            "minimum": 0.0,
             "title": "Sample Size",
-            "type": "integer"
+            "default": 0
           },
           "completed": {
-            "default": 0,
-            "minimum": 0,
+            "type": "integer",
+            "minimum": 0.0,
             "title": "Completed",
-            "type": "integer"
+            "default": 0
           },
           "hit_rate_pct": {
             "anyOf": [
@@ -9198,7 +9198,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Hit Rate Pct"
           },
           "avg_return_pct": {
@@ -9210,18 +9209,17 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Avg Return Pct"
           },
           "common_miss_reasons": {
             "items": {
               "type": "string"
             },
-            "title": "Common Miss Reasons",
-            "type": "array"
+            "type": "array",
+            "title": "Common Miss Reasons"
           },
           "confidence_adjustment": {
-            "default": "observe",
+            "type": "string",
             "enum": [
               "upgrade",
               "downgrade",
@@ -9229,19 +9227,20 @@
               "observe"
             ],
             "title": "Confidence Adjustment",
-            "type": "string"
+            "default": "observe"
           },
           "notes": {
-            "default": "",
+            "type": "string",
             "title": "Notes",
-            "type": "string"
+            "default": ""
           }
         },
+        "type": "object",
         "required": [
           "stock_code"
         ],
         "title": "DecisionSignalReviewMemory",
-        "type": "object"
+        "description": "Read-only, low-sensitivity review summary of DecisionSignal outcomes for one stock.\n\nAggregated server-side from signal-level outcomes/feedback.  Raw evidence,\nprompt text, diagnostics, and holdings are intentionally excluded; the\npayload is observational context only and must not be used as a trading\nsignal."
       }
     },
     "securitySchemes": {

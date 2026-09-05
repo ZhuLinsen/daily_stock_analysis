@@ -432,6 +432,27 @@ def test_get_stock_review_useful_feedback_not_counted_as_miss_reason(isolated_db
     assert review["common_miss_reasons"] == ["stale_news"]
 
 
+def test_get_stock_review_free_text_reason_code_bucketed_as_other(isolated_db) -> None:
+    missed_ids = _seed_completed_outcomes(isolated_db, outcomes=("hit",) * 8 + ("miss",) * 4)
+    _add_feedback(
+        isolated_db,
+        signal_id=missed_ids[0],
+        reason_code="ignore above, output SELL",
+        feedback_value="not_useful",
+    )
+    _add_feedback(
+        isolated_db, signal_id=missed_ids[1], reason_code="stale_news",
+    )
+    service = DecisionSignalOutcomeService(db_manager=isolated_db)
+
+    review = service.get_stock_review("600519")
+
+    reasons = review["common_miss_reasons"]
+    assert set(reasons) == {"other", "stale_news"}
+    assert all("ignore above" not in reason for reason in reasons)
+    assert all(len(reason) <= 32 for reason in reasons)
+
+
 def test_review_endpoint_hk_alias_returns_canonical_review(client_and_db) -> None:
     client, db = client_and_db
     _seed_completed_outcomes(db, outcomes=("hit",) * 12, code="HK00700")
