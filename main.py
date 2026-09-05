@@ -1506,6 +1506,56 @@ def _build_schedule_times_provider(default_schedule_time: str):
     return _provider
 
 
+def _ensure_searxng_self_heal(config: Config) -> None:
+    """
+    Best-effort 自愈自建 SearXNG（新闻搜索数据源）。
+
+    仅当配置了自建实例（searxng_base_urls 非空）且 SEARXNG_AUTO_REPAIR 未关闭时启用：
+    1. 快速探测首个实例（/search?format=json），3s 超时；
+    2. 不可达则后台执行 scripts/start_searxng.ps1（拉起 Docker Desktop + 容器），
+       Popen 分离运行，不阻塞服务/分析任务启动；日志仅提示修复已触发。
+    探测或修复失败都不会阻塞主流程。
+    """
+    if not getattr(config, "searxng_auto_repair", False):
+        return
+    base_urls = getattr(config, "searxng_base_urls", None) or []
+    if not base_urls:
+        return
+
+    import urllib.request
+
+    probe_url = base_urls[0].rstrip("/") + "/search?q=health&format=json&pageno=1"
+    try:
+        with urllib.request.urlopen(probe_url, timeout=3) as resp:
+            if resp.status == 200:
+                logger.debug("自建 SearXNG 可达，跳过自愈: %s", probe_url)
+                return
+    except Exception:
+        pass
+
+    script = Path(__file__).resolve().parent / "scripts" / "start_searxng.ps1"
+    if not script.exists():
+        logger.warning("SearXNG 不可达但未找到自愈脚本 %s，跳过", script)
+        return
+
+    logger.warning("自建 SearXNG 不可达（%s），后台触发自愈脚本 %s", base_urls[0], script.name)
+    try:
+        import subprocess
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(script),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except Exception as exc:
+        logger.warning("触发 SearXNG 自愈脚本失败: %s", exc)
+
+
 def main() -> int:
     """
     主入口函数
@@ -1621,6 +1671,9 @@ def main() -> int:
 
     # === 启动 Web 服务 (如果启用) ===
     start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
+
+    # 启动早期 best-effort 自愈自建 SearXNG（新闻源），不阻塞主流程
+    _ensure_searxng_self_heal(config)
 
     if start_serve:
         args.host, args.port = _resolve_web_service_bind(args, config)

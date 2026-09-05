@@ -984,6 +984,7 @@ class Config:
     searxng_base_urls: List[str] = field(default_factory=list)  # SearXNG instance URLs (self-hosted, no quota)
     searxng_public_instances_enabled: bool = False  # Opt in to public discovery when base URLs are absent
     searxng_timeout_seconds: int = 10  # 自建 SearXNG 单次搜索超时（秒）
+    searxng_auto_repair: bool = True  # 启动时探测自建 SearXNG，不可达则后台执行 scripts/start_searxng.ps1 自愈
 
     # === Social Sentiment (US stocks only, api.adanos.org) ===
     social_sentiment_api_key: Optional[str] = None
@@ -1883,6 +1884,9 @@ class Config:
             searxng_public_instances_enabled=searxng_public_instances_enabled,
             searxng_timeout_seconds=parse_env_int(
                 os.getenv('SEARXNG_TIMEOUT_SECONDS'), 10, field_name='SEARXNG_TIMEOUT_SECONDS', minimum=1
+            ),
+            searxng_auto_repair=parse_env_bool(
+                os.getenv('SEARXNG_AUTO_REPAIR'), default=True
             ),
             social_sentiment_api_key=os.getenv('SOCIAL_SENTIMENT_API_KEY') or None,
             social_sentiment_api_url=os.getenv('SOCIAL_SENTIMENT_API_URL', 'https://api.adanos.org').rstrip('/'),

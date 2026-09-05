@@ -15,7 +15,7 @@ if "newspaper" not in sys.modules:
     mock_np.Config = MagicMock()
     sys.modules["newspaper"] = mock_np
 
-from src.search_service import SearchService, SearXNGSearchProvider
+from src.search_service import SearchService, SearchResult, SearchResponse, SearXNGSearchProvider
 
 
 class TestSearXNGSearchProvider(unittest.TestCase):
@@ -447,6 +447,70 @@ class TestSearXNGSearchProvider(unittest.TestCase):
         self.assertFalse(service.is_available)
         self.assertFalse(any(provider.name == "SearXNG" for provider in service._providers))
         self.assertFalse(service._constructor_kwargs["searxng_public_instances_enabled"])
+
+
+class TestNewsFreshnessUnknownDatetime(unittest.TestCase):
+    """_filter_news_response 对"无日期"结果的放行语义：仅 SearXNG 路径放行，
+    其他 provider 丢弃；且放行不得放松对过期结果的丢弃。"""
+
+    def _service(self) -> SearchService:
+        # 裸实例：仅访问类属性与纯方法，避免构造 SearchService 的副作用
+        return SearchService.__new__(SearchService)
+
+    def _result(self, title: str, published_date=None) -> SearchResult:
+        return SearchResult(
+            title=title,
+            snippet="snippet",
+            url=f"https://example.org/{title}",
+            source="baidu",
+            published_date=published_date,
+        )
+
+    def _run(self, keep_unknown: bool, results):
+        svc = self._service()
+        resp = SearchResponse(
+            query="q",
+            results=results,
+            provider="SearXNG" if keep_unknown else "Tavily",
+            success=True,
+        )
+        filtered = svc._filter_news_response(
+            resp,
+            search_days=3,
+            max_results=10,
+            log_scope="unit:test",
+            keep_unknown=keep_unknown,
+        )
+        return [r.title for r in filtered.results]
+
+    def test_keep_unknown_retains_date_unknown_and_fresh(self):
+        titles = self._run(
+            keep_unknown=True,
+            results=[self._result("no-date"), self._result("fresh", "2026-08-31")],
+        )
+        self.assertEqual(sorted(titles), ["fresh", "no-date"])
+
+    def test_without_keep_unknown_drops_date_unknown(self):
+        titles = self._run(
+            keep_unknown=False,
+            results=[self._result("no-date"), self._result("fresh", "2026-08-31")],
+        )
+        self.assertEqual(titles, ["fresh"])
+
+    def test_keep_unknown_still_drops_expired(self):
+        # 放行"无日期"不得放松时效：明确过期（早于窗口）的结果必须丢弃
+        titles = self._run(
+            keep_unknown=True,
+            results=[self._result("stale-news", "2026-01-01")],
+        )
+        self.assertEqual(titles, [])
+
+    def test_searxng_helper_only_applies_to_searxng_provider(self):
+        svc = self._service()
+        self.assertTrue(
+            svc._searxng_keeps_unknown_datetime(SearXNGSearchProvider(base_urls=["https://sx.local"]))
+        )
+        self.assertFalse(svc._searxng_keeps_unknown_datetime(None))
 
 
 if __name__ == "__main__":

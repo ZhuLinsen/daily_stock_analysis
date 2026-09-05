@@ -18,6 +18,7 @@ from api.v1.schemas.backtest import (
     PerformanceMetrics,
 )
 from api.v1.schemas.common import ErrorResponse
+from src.config import get_config
 from src.services.backtest_service import BacktestService
 from src.storage import DatabaseManager
 
@@ -140,13 +141,42 @@ def get_backtest_results(
         )
 
 
+def _empty_performance_metrics(eval_window_days: Optional[int], engine_version: str) -> PerformanceMetrics:
+    """Return an empty PerformanceMetrics object for when no backtest data exists."""
+    return PerformanceMetrics(
+        scope="overall",
+        code=None,
+        eval_window_days=eval_window_days or 10,
+        engine_version=engine_version,
+        computed_at=None,
+        total_evaluations=0,
+        completed_count=0,
+        insufficient_count=0,
+        long_count=0,
+        cash_count=0,
+        win_count=0,
+        loss_count=0,
+        neutral_count=0,
+        direction_accuracy_pct=None,
+        win_rate_pct=None,
+        neutral_rate_pct=None,
+        avg_stock_return_pct=None,
+        avg_simulated_return_pct=None,
+        stop_loss_trigger_rate=None,
+        take_profit_trigger_rate=None,
+        ambiguous_rate=None,
+        avg_days_to_first_hit=None,
+        advice_breakdown={},
+        diagnostics={},
+    )
+
+
 @router.get(
     "/performance",
     response_model=PerformanceMetrics,
     responses={
         200: {"description": "整体回测表现"},
         400: {"description": "请求参数错误", "model": ErrorResponse},
-        404: {"description": "无回测汇总", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取整体回测表现",
@@ -160,6 +190,8 @@ def get_overall_performance(
 ) -> PerformanceMetrics:
     try:
         _validate_analysis_date_range(analysis_date_from, analysis_date_to)
+        config = get_config()
+        engine_version = str(getattr(config, "backtest_engine_version", "v1"))
         service = BacktestService(db_manager)
         summary = service.get_summary(
             scope="overall",
@@ -170,10 +202,7 @@ def get_overall_performance(
             analysis_phase=analysis_phase,
         )
         if summary is None:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": "未找到整体回测汇总"},
-            )
+            return _empty_performance_metrics(eval_window_days, engine_version)
         return PerformanceMetrics(**summary)
     except ValueError as exc:
         raise HTTPException(
@@ -196,7 +225,6 @@ def get_overall_performance(
     responses={
         200: {"description": "单股回测表现"},
         400: {"description": "请求参数错误", "model": ErrorResponse},
-        404: {"description": "无回测汇总", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取单股回测表现",
@@ -211,6 +239,8 @@ def get_stock_performance(
 ) -> PerformanceMetrics:
     try:
         _validate_analysis_date_range(analysis_date_from, analysis_date_to)
+        config = get_config()
+        engine_version = str(getattr(config, "backtest_engine_version", "v1"))
         service = BacktestService(db_manager)
         summary = service.get_summary(
             scope="stock",
@@ -221,10 +251,10 @@ def get_stock_performance(
             analysis_phase=analysis_phase,
         )
         if summary is None:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"未找到 {code} 的回测汇总"},
-            )
+            empty = _empty_performance_metrics(eval_window_days, engine_version)
+            empty.scope = "stock"
+            empty.code = code.upper()
+            return empty
         return PerformanceMetrics(**summary)
     except ValueError as exc:
         raise HTTPException(

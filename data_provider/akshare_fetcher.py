@@ -24,6 +24,7 @@ AkshareFetcher - 主数据源 (Priority 1)
 """
 
 import logging
+import math
 import multiprocessing
 import os
 import random
@@ -1825,6 +1826,9 @@ class AkshareFetcher(BaseFetcher):
         
         注意：ETF/指数没有筹码分布数据，会直接返回 None
         
+        降级策略：东方财富 push2his 接口不可达（RemoteDisconnected/限流）时，
+        使用 Baostock 日K（含换手率）+ 本地 CYQ 三角分布估算法复算，保证筹码数据可用。
+        
         Args:
             stock_code: 股票代码
             
@@ -1892,6 +1896,120 @@ class AkshareFetcher(BaseFetcher):
             
         except Exception as e:
             logger.error(f"[API错误] 获取 {stock_code} 筹码分布失败: {e}")
+            # 降级：东财接口不可用时，用 Baostock 日K + 本地 CYQ 算法复算
+            # （push2his 端点存在地区/限流封禁，表现为 RemoteDisconnected）
+            logger.warning(f"[筹码分布] {stock_code} 降级为本地 CYQ 复算（Baostock 日K + 换手率）")
+            return self._estimate_chip_distribution(stock_code)
+
+    def _estimate_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
+        """
+        本地筹码分布估算：Baostock 日K（含换手率）+ CYQ 三角分布算法。
+        
+        算法与 akshare stock_cyq_em 的 CYQCalculator（JS）一致：
+        以最近 120 个交易日为窗口，按每日换手率衰减历史筹码，
+        使用开高低收均价在价格轴上做三角分布叠加。
+        
+        仅在东方财富 push2his 接口不可达时作为降级路径使用。
+        """
+        bars = self._fetch_baostock_klines_with_turnover(stock_code)
+        if not bars or len(bars) < 60:
+            logger.warning(f"[筹码复算] {stock_code} 本地 K 线不足（{0 if not bars else len(bars)}根），无法估算")
+            return None
+
+        result = _compute_cyq_metrics(bars)
+        if result is None:
+            logger.warning(f"[筹码复算] {stock_code} CYQ 计算失败")
+            return None
+
+        profit_ratio, avg_cost, lo90, hi90, con90, lo70, hi70, con70, calc_date = result
+        chip = ChipDistribution(
+            code=stock_code,
+            date=calc_date,
+            profit_ratio=profit_ratio,
+            avg_cost=avg_cost,
+            cost_90_low=lo90,
+            cost_90_high=hi90,
+            concentration_90=con90,
+            cost_70_low=lo70,
+            cost_70_high=hi70,
+            concentration_70=con70,
+        )
+        logger.info(
+            f"[筹码分布] {stock_code} 本地复算 日期={chip.date}: 获利比例={chip.profit_ratio:.1%}, "
+            f"平均成本={chip.avg_cost}, 90%集中度={chip.concentration_90:.2%}, "
+            f"70%集中度={chip.concentration_70:.2%}"
+        )
+        return chip
+
+    def _fetch_baostock_klines_with_turnover(self, stock_code: str, days: int = 260):
+        """
+        从 Baostock 获取含换手率的日K（不复权）。
+        返回按日期升序的 dict 列表: date/open/high/low/close/turn。
+        """
+        try:
+            import baostock as bs
+
+            raw = normalize_stock_code(stock_code)
+            # Baostock 不支持北交所，与 BaostockFetcher 保持一致
+            if is_bse_code(raw):
+                logger.debug(f"[筹码复算] {stock_code} 是北交所，Baostock 不支持")
+                return None
+            if raw.startswith(("600", "601", "603", "605", "688")):
+                bs_code = f"sh.{raw}"
+            elif raw.startswith(("000", "001", "002", "003", "300", "301")):
+                bs_code = f"sz.{raw}"
+            else:
+                logger.debug(f"[筹码复算] {stock_code} 无法映射 Baostock 市场代码")
+                return None
+
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now().replace(year=datetime.now().year - 1)).strftime("%Y-%m-%d")
+
+            lg = bs.login()
+            if lg.error_code != "0":
+                logger.warning(f"[筹码复算] Baostock 登录失败: {lg.error_msg}")
+                return None
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,open,high,low,close,turn",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag="3",  # 不复权，与东财 stock_cyq_em 默认一致
+                )
+                if rs.error_code != "0":
+                    logger.warning(f"[筹码复算] Baostock 查询失败: {rs.error_msg}")
+                    return None
+                bars = []
+                while rs.error_code == "0" and rs.next():
+                    row = rs.get_row_data()
+                    try:
+                        bars.append(
+                            {
+                                "date": row[0],
+                                "open": float(row[1]),
+                                "high": float(row[2]),
+                                "low": float(row[3]),
+                                "close": float(row[4]),
+                                "turn": float(row[5]) if row[5] else 0.0,
+                            }
+                        )
+                    except (ValueError, TypeError, IndexError):
+                        continue
+            finally:
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
+
+            # 只保留最近 days 根
+            return bars[-days:] or None
+        except ImportError:
+            logger.warning("[筹码复算] baostock 未安装，无法本地复算")
+            return None
+        except Exception as e:
+            logger.warning(f"[筹码复算] {stock_code} Baostock 获取失败: {e}")
             return None
     
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:
@@ -2572,3 +2690,111 @@ if __name__ == "__main__":
             print("未获取到行业板块排名数据")
     except Exception as e:
         print(f"[行业板块排名] 获取失败: {e}")
+
+
+# ==== 本地筹码估算（CYQ 三角分布）====
+
+
+def _compute_cyq_metrics(bars: List[Dict[str, Any]]):
+    """
+    用 CYQ 三角分布算法估算筹码指标（移植自 akshare stock_cyq_em 的 CYQCalculator JS）。
+
+    参数 bars: 按日期升序的日K列表（至少 60 根），每项含
+        open/high/low/close/turn（换手率，百分数，如 0.186 表示 0.186%）。
+
+    返回 (profit_ratio, avg_cost, c90_low, c90_high, c90_con, c70_low, c70_high, c70_con, date)；
+    计算失败返回 None。
+    """
+    factor = 150          # 价格轴粒度（与东财 CYQ 一致）
+    window = 120          # 筹码计算窗口（交易日）
+    # 过滤含空字段的 K 线，避免后续 max/min/均价计算崩溃
+    data = [
+        b
+        for b in bars[-window:]
+        if isinstance(b.get("open"), (int, float))
+        and isinstance(b.get("high"), (int, float))
+        and isinstance(b.get("low"), (int, float))
+        and isinstance(b.get("close"), (int, float))
+    ]
+    if len(data) < 2:
+        return None
+    data = data[-window:]
+
+    maxprice = max(b["high"] for b in data)
+    minprice = min(b["low"] for b in data)
+    # 全程同价（一字板）：accuracy 退化为 0.01，与东财 CYQCalculator 行为一致
+    accuracy = max(0.01, (maxprice - minprice) / (factor - 1))
+
+    xdata = [0.0] * factor  # 各价格格的筹码堆叠量
+    for b in data:
+        open_, close, high, low = b["open"], b["close"], b["high"], b["low"]
+        avg = (open_ + close + high + low) / 4.0
+        # 换手率是百分数（0.186 表示 0.186%）；东财同款处理 hsl/100
+        turnover_rate = min(1.0, (b.get("turn") or 0.0) / 100.0)
+
+        H = math.floor((high - minprice) / accuracy)
+        L = math.ceil((low - minprice) / accuracy)
+        g_x = (factor - 1) if high == low else 2.0 / (high - low)
+        g_idx = int(math.floor((avg - minprice) / accuracy))
+        g_idx = max(0, min(factor - 1, g_idx))
+
+        # 衰减历史筹码
+        decay = 1.0 - turnover_rate
+        for n in range(factor):
+            xdata[n] *= decay
+
+        if high == low:
+            # 一字板：矩形面积是三角形的 2 倍
+            xdata[g_idx] += g_x * turnover_rate / 2.0
+            continue
+        for j in range(max(0, L), min(factor - 1, H) + 1):
+            cur = minprice + accuracy * j
+            if cur <= avg:
+                if abs(avg - low) < 1e-8:
+                    xdata[j] += g_x * turnover_rate
+                else:
+                    xdata[j] += (cur - low) / (avg - low) * g_x * turnover_rate
+            else:
+                if abs(high - avg) < 1e-8:
+                    xdata[j] += g_x * turnover_rate
+                else:
+                    xdata[j] += (high - cur) / (high - avg) * g_x * turnover_rate
+
+    total = sum(xdata)
+    if total <= 0:
+        return None
+
+    def get_cost(chip):
+        """返回累积筹码首次超过 chip 时的价格。"""
+        s = 0.0
+        for i in range(factor):
+            s += xdata[i]
+            if s > chip:
+                return minprice + i * accuracy
+        return minprice + (factor - 1) * accuracy
+
+    def benefit(price):
+        below = 0.0
+        for i in range(factor):
+            if price >= minprice + accuracy * i:
+                below += xdata[i]
+        return below / total
+
+    def pct(p):
+        ps = [(1 - p) / 2.0, (1 + p) / 2.0]
+        lo = get_cost(total * ps[0])
+        hi = get_cost(total * ps[1])
+        con = 0.0 if (lo + hi) == 0 else (hi - lo) / (lo + hi)
+        return lo, hi, con
+
+    lo90, hi90, con90 = pct(0.9)
+    lo70, hi70, con70 = pct(0.7)
+    profit_ratio = benefit(data[-1]["close"])
+
+    return (
+        profit_ratio,
+        get_cost(total * 0.5),
+        lo90, hi90, con90,
+        lo70, hi70, con70,
+        str(data[-1].get("date", "")),
+    )

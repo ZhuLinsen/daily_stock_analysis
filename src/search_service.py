@@ -3672,6 +3672,15 @@ class SearchService:
 
         return None
 
+    @staticmethod
+    def _searxng_keeps_unknown_datetime(provider) -> bool:
+        """
+        SearXNG 自建实例的 baidu/sogou/bing 结果普遍缺失 publishedDate，
+        严格时效过滤会把可用新闻全部丢弃导致新闻面为空。仅对 SearXNG 放行
+        无日期结果（仍受引擎 time_range 约束），其余 provider 保持严格时效。
+        """
+        return isinstance(provider, SearXNGSearchProvider)
+
     def _filter_news_response(
         self,
         response: SearchResponse,
@@ -3912,6 +3921,7 @@ class SearchService:
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{topic_text}:{provider.name}:topic_news",
+                    keep_unknown=self._searxng_keeps_unknown_datetime(provider),
                 )
                 if filtered.success and filtered.results:
                     prioritized, _preferred_count = self._prioritize_news_language(
@@ -4156,6 +4166,7 @@ class SearchService:
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{stock_code}:{provider.name}:stock_news",
+                    keep_unknown=self._searxng_keeps_unknown_datetime(provider),
                 )
                 had_provider_success = had_provider_success or bool(response.success)
 
@@ -4572,6 +4583,7 @@ class SearchService:
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
+                    keep_unknown=self._searxng_keeps_unknown_datetime(provider),
                 )
             elif dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS:
                 filtered_response = self._filter_news_response(

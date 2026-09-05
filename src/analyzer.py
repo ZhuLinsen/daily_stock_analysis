@@ -108,6 +108,15 @@ from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
 
+# 推理模型在长 prompt 下思考+输出可能超过 litellm provider 默认连接超时，
+# 连接被断开表现为空响应/截断；未显式配置 timeout 时使用该宽松默认值。
+_DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 300
+
+# 推理模型（如 deepseek-v4-flash）会把大量 token 预算消耗在"思考"阶段：
+# 8192 上限时 content 可能在思考完成后就耗尽预算，被 finish_reason=length
+# 截断且 content 为空，表现为 LLM returned empty response。给足预算供输出。
+_DEFAULT_LLM_MAX_TOKENS = 16384
+
 
 def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
     """Pick a deterministic fallback string for the report language (zh/en/ko)."""
@@ -3324,10 +3333,12 @@ class GeminiAnalyzer:
         max_tokens = (
             generation_config.get('max_output_tokens')
             or generation_config.get('max_tokens')
-            or 8192
+            or _DEFAULT_LLM_MAX_TOKENS
         )
         requested_temperature = generation_config.get('temperature', 0.7)
-        requested_timeout = generation_config.get("timeout")
+        # 未显式指定 timeout 时给一个宽松默认值（推理模型长 prompt 下思考+输出可能
+        # 超过 litellm provider 默认超时，连接被断开导致空响应/截断）
+        requested_timeout = generation_config.get("timeout") or _DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -3389,8 +3400,6 @@ class GeminiAnalyzer:
                     ],
                     "max_tokens": max_tokens,
                 }
-                if requested_timeout not in (None, ""):
-                    call_kwargs["timeout"] = requested_timeout
                 if extra:
                     call_kwargs["extra_body"] = extra
                 uses_router = (
@@ -3864,7 +3873,8 @@ class GeminiAnalyzer:
             # 设置生成配置
             generation_config = {
                 "temperature": config.llm_temperature,
-                "max_output_tokens": 8192,
+                # 推理模型思考会消耗大量 token 预算，给足输出空间（见 _DEFAULT_LLM_MAX_TOKENS）
+                "max_output_tokens": _DEFAULT_LLM_MAX_TOKENS,
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
