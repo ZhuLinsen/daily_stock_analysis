@@ -1403,6 +1403,31 @@ def _resolve_scheduled_stock_codes(stock_codes: Optional[List[str]]) -> Optional
     return None
 
 
+def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
+    """Whether the active mode consumes a stock list at all.
+
+    Modes that do not analyze the watchlist must not parse/classify
+    ``--stocks``/``STOCK_LIST`` tokens nor refresh the stock-index registry
+    before the mode dispatch, otherwise an unsupported index token would
+    wrongly block a run that never consumes it. Covered modes:
+    ``--backtest``, ``--market-review``, ``--serve-only``/``--webui-only``,
+    ``--portfolio`` (any value) and ``--schedule``/``config.schedule_enabled``.
+    ``--serve`` (not serve-only) and plain one-shot runs still consume the
+    stock list and stay outside the guard. The webui-only flag is read
+    directly here because the webui -> serve mapping happens only later in
+    ``main()``.
+    """
+    return bool(
+        getattr(args, "backtest", False)
+        or getattr(args, "market_review", False)
+        or getattr(args, "serve_only", False)
+        or getattr(args, "webui_only", False)
+        or bool(getattr(args, "portfolio", None))
+        or getattr(args, "schedule", False)
+        or getattr(config, "schedule_enabled", False)
+    )
+
+
 def _reload_runtime_config() -> Config:
     """Reload config from the latest persisted `.env` values for scheduled runs."""
     _reload_env_file_values_preserving_overrides()
@@ -1540,9 +1565,14 @@ def main() -> int:
     # Story 1.5: 一次性 --stocks 入口使用 parse_analysis_target 构造结构化
     # AnalysisTarget 列表，指数目标（sh/sz/csi 前缀与 .CSI alias）在入口即保留
     # 身份语义；unsupported 目标（如未登记 .CSI）在入口明确拒绝，不进入 provider。
+    # 不消费个股列表的模式（回测/大盘复盘/仅服务/portfolio/定时）整体跳过
+    # 分类与索引刷新（_skips_stock_entry），避免无关坏 token 拦截模式主体。
+    _skip_stock_entry = _skips_stock_entry(args, config)
+    if args.stocks and getattr(args, "portfolio", None):
+        logger.info("同时指定了 --portfolio；实际分析时 portfolio 将覆盖 --stocks")
     stock_codes = None
     analysis_targets = None
-    if args.stocks:
+    if args.stocks and not _skip_stock_entry:
         # 在解析 --stocks 前先 best-effort 刷新股票索引注册表，保证首次运行能吃到
         # 刷新后的 alias/身份；失败/超时/禁用不阻断分析。仅 --stocks 入口需要，
         # 其他模式由 run_full_analysis 内的既有刷新覆盖。
@@ -1553,18 +1583,15 @@ def main() -> int:
             return 1
         stock_codes, analysis_targets = resolved
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
-        if getattr(args, "portfolio", None):
-            logger.info("同时指定了 --portfolio；实际分析时 portfolio 将覆盖 --stocks")
     elif (
         os.getenv("GITHUB_ACTIONS") == "true"
-        and getattr(args, "portfolio", None) is None
-        and not getattr(args, "market_review", False)
-        and not (getattr(args, "schedule", False) or getattr(config, "schedule_enabled", False))
+        and not _skip_stock_entry
     ):
         # 每日工作流（GITHUB_ACTIONS=true）无参数运行 `python main.py`（full 或
         # stocks-only 模式）：把 STOCK_LIST token 分类为与一次性 --stocks 等价的
         # 结构化 target，显式指数 token 进入指数路径、个股 token 保持既有路径。
-        # market-only、--schedule 与本地默认路径不在本入口构造 target。
+        # 不消费个股列表的模式由 _skips_stock_entry 整体跳过（不刷新不分类），
+        # 本地默认路径不在本入口构造 target。
         raw_value = config.stock_list or []
         raw_tokens = (
             split_stock_list(raw_value)
@@ -1728,6 +1755,9 @@ def main() -> int:
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
             if start_serve:
+                # 模式2 + Web 服务：此路径来自 --schedule/--webui/--serve 与
+                # config.schedule_enabled 的组合（均已入 guard），由 API runtime
+                # scheduler 接管；--serve-only 已在上面 serve_only 分支返回。
                 logger.info("模式: Web/API runtime scheduler")
                 logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
                 logger.info("Web/API runtime scheduler 已接管定时任务，保存设置会作用于当前进程")
@@ -1752,7 +1782,7 @@ def main() -> int:
             logger.info(f"启动时立即执行: {should_run_immediately}")
 
             from src.scheduler import run_with_schedule
-            scheduled_stock_codes = _resolve_scheduled_stock_codes(stock_codes)
+            scheduled_stock_codes = _resolve_scheduled_stock_codes(args.stocks or None)
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
             schedule_times_provider = _build_schedule_times_provider(config.schedule_time)
 
