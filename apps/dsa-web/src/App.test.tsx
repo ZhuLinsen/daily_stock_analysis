@@ -64,6 +64,10 @@ vi.mock('./pages/SettingsPage', () => ({
   default: () => <div data-testid="settings-page">Settings</div>,
 }));
 
+vi.mock('./pages/DataCenterPage', () => ({
+  default: () => <div data-testid="data-center-page">Data center</div>,
+}));
+
 vi.mock('./pages/NotFoundPage', () => ({
   default: () => <div data-testid="not-found-page">Not Found</div>,
 }));
@@ -150,6 +154,15 @@ describe('App routing behavior', () => {
     expect(await screen.findByTestId('decision-signals-page')).toBeInTheDocument();
     expect(setCurrentRoute).toHaveBeenCalledWith('/decision-signals');
     expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it('routes /data to the data capability page after auth is ready', async () => {
+    window.history.pushState({}, '', '/data');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('data-center-page')).toBeInTheDocument();
+    expect(setCurrentRoute).toHaveBeenCalledWith('/data');
   });
 
   it('redirects authenticated login visits back to the home page', async () => {
