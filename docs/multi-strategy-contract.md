@@ -24,9 +24,9 @@ Outcome 核心阶段（#2116）基于已合并的 #2073，只提供 Outcome eval
 
 ### Skill Opinion Outcome 表现统计
 
-Outcome 统计是只读数据面，按 `skill_id + horizon + engine_version` 独立分 bucket。任何 bucket 都不能借用同 skill 的其他 horizon、其他 skill、其他 engine version 或全局样本解锁指标。当前固定门槛为 `evaluated >= 30`；只有 individual skill opinion 自身 signal 产生的 `hit` / `miss` 计入 evaluated，`pending`、`observational` 和 `unable` 只保留计数，不计入样本充足度。
+Outcome 统计是只读数据面，按 `skill_id + horizon + engine_version` 独立分 bucket。任何 bucket 都不能借用同 skill 的其他 horizon、其他 skill、其他 engine version 或全局样本解锁指标。当前固定门槛为 `evaluated >= 30`；只有 individual skill opinion 自身 signal 产生的 `hit` / `miss` 计入 evaluated，`pending`、`observational` 和 `unable` 只保留计数，不计入样本充足度。终态 `unable` 继续保留总数，并按稳定 reason 映射派生 `skill_attributable_unable`、`external_unable` 和 `unclassified_unable`；未知 reason 必须进入 `unclassified`，不得默认归因于 Skill。
 
-样本不足时，bucket 的 `sample_status` 为 `observational`，计数继续返回，但 `hit_rate_pct`、`miss_rate_pct`、`avg_directional_return_pct` 和 `unable_rate_pct` 全部为 `null`，不得输出排名或推导权重。样本充足时，hit/miss rate 以 `hit + miss` 为分母，平均方向收益只使用 evaluated rows；unable rate 以终态记录 `evaluated + observational + unable` 为分母，临时 `pending` 不得稀释永久失败比例。
+样本不足时，bucket 的 `sample_status` 为 `observational`，计数继续返回，但 `hit_rate_pct`、`miss_rate_pct`、`avg_directional_return_pct`、`unable_rate_pct` 和 `skill_attributable_unable_rate_pct` 全部为 `null`，不得输出排名或推导权重。样本充足时，hit/miss rate 以 `hit + miss` 为分母，平均方向收益只使用 evaluated rows；原有 unable rate 仍以终态记录 `evaluated + observational + unable` 为分母，作为数据质量/可评估性指标，临时 `pending` 不得稀释永久失败比例。预测权重只消费明确归因于 Skill 的 unable；外部上下文、契约异常和未知 reason 均不参与惩罚。
 
 只读统计阶段（PR #2119）本身不修改 `BacktestService.get_skill_summary()`、`AgentMemory` 或 `SkillAggregator`，也不新增 API、Pipeline 自动触发和 Web 展示；本页后文的 Phase 4 在该统计契约之上独立接入保守运行时权重。当前组合实现仍只读消费已经持久化的 Outcome，不负责自动触发 evaluator。
 
@@ -391,14 +391,16 @@ individual Skill Outcome 调整运行时相对权重。权重统计继续严格�
 n = hit + miss
 posterior_hit_rate = (hit + 15) / (n + 30)
 direction_score = 2 * posterior_hit_rate - 1
-unable_rate = unable / (evaluated + observational + unable)
-bucket_score = clamp(direction_score - 0.25 * unable_rate, -1, 1)
+attributable_unable_rate =
+    skill_attributable_unable
+    / (evaluated + observational + skill_attributable_unable)
+bucket_score = clamp(direction_score - 0.25 * attributable_unable_rate, -1, 1)
 evidence_strength = n / (n + 30)
 ```
 
-`pending` 不进入 unable rate 分母，`observational` / `unable` 不能补足
-evaluated 门槛。当前 opinion 没有可信 horizon，因此只对已经各自满足门槛的
-bucket 做证据强度加权模型平均：
+当前 `skill-opinion-outcome-v1` 的正常生产链没有可归因于预测能力的终态 unable reason：股票身份、分析日期、市场快照、effective date 与交易日历失败都归为 `external_unable`；`invalid_signal`、`unsupported_horizon` 以及未知 reason 归为 `unclassified_unable`。当前 sample 链已在持久化前排除非法 signal，因此这类契约异常不能反向惩罚 Skill。只有未来明确加入归因白名单的 reason 才能进入 `skill_attributable_unable`；新增 reason 默认 fail-neutral。
+
+`pending` 不进入任一 unable rate 分母，`observational` / `unable` 不能补足 evaluated 门槛。当前 opinion 没有可信 horizon，因此只对已经各自满足门槛的 bucket 做证据强度加权模型平均：
 
 ```text
 combined_score =

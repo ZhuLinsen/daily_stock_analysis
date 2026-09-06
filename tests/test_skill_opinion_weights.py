@@ -55,8 +55,17 @@ def _bucket(
     miss=12,
     observational=0,
     unable=0,
+    skill_attributable_unable=0,
+    external_unable=None,
+    unclassified_unable=0,
     sample_sufficient=True,
 ):
+    if external_unable is None:
+        external_unable = (
+            unable
+            - skill_attributable_unable
+            - unclassified_unable
+        )
     return {
         "skill_id": skill_id,
         "horizon": horizon,
@@ -66,6 +75,9 @@ def _bucket(
         "evaluated": evaluated,
         "observational": observational,
         "unable": unable,
+        "skill_attributable_unable": skill_attributable_unable,
+        "external_unable": external_unable,
+        "unclassified_unable": unclassified_unable,
         "hit": hit,
         "miss": miss,
         "sample_sufficient": sample_sufficient,
@@ -145,6 +157,45 @@ def _add_real_hits(
                     outcome="hit",
                     direction_correct=True,
                     directional_return_pct=1.0,
+                )
+            )
+
+
+def _add_real_external_unable(
+    db: DatabaseManager,
+    *,
+    skill_id: str,
+    count: int,
+) -> None:
+    with db.session_scope() as session:
+        for index in range(count):
+            history = AnalysisHistory(
+                query_id=f"weight-unable-{skill_id}-{index}",
+                code="600519",
+                report_type="simple",
+                operation_advice="buy",
+            )
+            session.add(history)
+            session.flush()
+            sample = SkillOpinionSampleRecord(
+                analysis_history_id=history.id,
+                stock_code="600519",
+                skill_id=skill_id,
+                signal="buy",
+                confidence=1.0,
+                sample_schema_version="skill-opinion-sample-v1",
+            )
+            session.add(sample)
+            session.flush()
+            session.add(
+                SkillOpinionOutcomeRecord(
+                    skill_opinion_sample_id=sample.id,
+                    horizon="1d",
+                    engine_version=(
+                        SKILL_OPINION_OUTCOME_ENGINE_VERSION
+                    ),
+                    eval_status="unable",
+                    unable_reason="invalid_market_phase_context",
                 )
             )
 
@@ -242,7 +293,7 @@ def test_sufficient_horizons_use_evidence_weighted_model_average():
     assert weights["alpha"] == pytest.approx(1.2 ** combined_score)
 
 
-def test_terminal_unable_rate_conservatively_reduces_factor():
+def test_external_unable_does_not_reduce_prediction_factor():
     service = _service(
         _bucket(
             evaluated=30,
@@ -254,7 +305,24 @@ def test_terminal_unable_rate_conservatively_reduces_factor():
 
     weights = service.compute_weights(["alpha"])
 
-    # direction=0.5, terminal unable rate=30/(30+30)=0.5,
+    assert weights["alpha"] == pytest.approx(1.2 ** 0.5)
+
+
+def test_skill_attributable_unable_conservatively_reduces_factor():
+    service = _service(
+        _bucket(
+            evaluated=30,
+            hit=30,
+            miss=0,
+            unable=30,
+            skill_attributable_unable=30,
+            external_unable=0,
+        ),
+    )
+
+    weights = service.compute_weights(["alpha"])
+
+    # direction=0.5, attributable unable rate=30/(30+30)=0.5,
     # bucket score=0.5-0.25*0.5=0.375.
     assert weights["alpha"] == pytest.approx(1.2 ** 0.375)
     assert 1.0 < weights["alpha"] < 1.2 ** 0.5
@@ -267,6 +335,8 @@ def test_extreme_negative_evidence_stays_at_multiplicative_lower_bound():
             hit=0,
             miss=300,
             unable=300,
+            skill_attributable_unable=300,
+            external_unable=0,
         ),
     )
 
@@ -282,6 +352,20 @@ def test_extreme_negative_evidence_stays_at_multiplicative_lower_bound():
         _bucket(evaluated=30, hit=31, miss=-1),
         _bucket(evaluated=30, hit=20, miss=10, unable=-1),
         _bucket(evaluated=30, hit=20, miss=9),
+        _bucket(
+            evaluated=30,
+            hit=20,
+            miss=10,
+            unable=1,
+            external_unable=0,
+        ),
+        _bucket(
+            evaluated=30,
+            hit=20,
+            miss=10,
+            unable=1,
+            unclassified_unable=-1,
+        ),
     ],
 )
 def test_malformed_bucket_fails_neutral(bucket):
@@ -316,6 +400,11 @@ def test_real_outcomes_flow_through_statistics_into_aggregator(
     isolated_db,
 ):
     _add_real_hits(isolated_db, skill_id="alpha", count=30)
+    _add_real_external_unable(
+        isolated_db,
+        skill_id="alpha",
+        count=30,
+    )
     weight_service = SkillOpinionWeightService(
         performance_service=SkillOpinionPerformanceService(
             db_manager=isolated_db

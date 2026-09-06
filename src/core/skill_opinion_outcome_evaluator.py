@@ -20,6 +20,38 @@ SUPPORTED_SKILL_OUTCOME_HORIZONS = {
 
 _BULLISH_SIGNALS = frozenset({"strong_buy", "buy"})
 
+SKILL_UNABLE_ATTRIBUTION_SKILL = "skill_attributable"
+SKILL_UNABLE_ATTRIBUTION_EXTERNAL = "external"
+SKILL_UNABLE_ATTRIBUTION_UNCLASSIFIED = "unclassified"
+
+# The current sample contract persists only valid, canonical Skill opinions, so
+# v1 has no normally reachable terminal reason that represents prediction
+# quality.  Keep this explicit allowlist empty until the evaluator gains such a
+# reason; newly introduced reasons must never become weight penalties by
+# default.
+SKILL_ATTRIBUTABLE_UNABLE_REASONS = frozenset()
+EXTERNAL_SKILL_UNABLE_REASONS = frozenset(
+    {
+        "invalid_stock_code",
+        "missing_analysis_date",
+        "invalid_market_phase_context",
+        "invalid_effective_daily_bar_date",
+        "future_effective_daily_bar_date",
+        "unresolvable_expected_start_date",
+    }
+)
+
+
+def classify_skill_opinion_unable_reason(reason: Any) -> str:
+    """Classify a terminal unable reason without defaulting to Skill blame."""
+
+    normalized = str(reason or "").strip()
+    if normalized in SKILL_ATTRIBUTABLE_UNABLE_REASONS:
+        return SKILL_UNABLE_ATTRIBUTION_SKILL
+    if normalized in EXTERNAL_SKILL_UNABLE_REASONS:
+        return SKILL_UNABLE_ATTRIBUTION_EXTERNAL
+    return SKILL_UNABLE_ATTRIBUTION_UNCLASSIFIED
+
 
 @dataclass(frozen=True)
 class SkillOpinionOutcomeEvaluation:

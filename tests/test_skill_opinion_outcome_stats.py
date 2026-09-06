@@ -55,6 +55,7 @@ def _add_outcome(
     eval_status: str,
     outcome: str | None = None,
     directional_return_pct: float | None = None,
+    unable_reason: str = "invalid_metadata",
 ) -> None:
     with db.session_scope() as session:
         history = AnalysisHistory(
@@ -89,7 +90,7 @@ def _add_outcome(
                 ),
                 directional_return_pct=directional_return_pct,
                 unable_reason=(
-                    "invalid_metadata" if eval_status == "unable" else None
+                    unable_reason if eval_status == "unable" else None
                 ),
             )
         )
@@ -130,6 +131,7 @@ def test_repository_aggregates_raw_bucket_counts(isolated_db) -> None:
     assert bucket.hit == 1
     assert bucket.miss == 1
     assert bucket.avg_directional_return_pct == pytest.approx(1.5)
+    assert bucket.unable_reason_counts == {"invalid_metadata": 1}
 
 
 def test_service_keeps_insufficient_bucket_observational(isolated_db) -> None:
@@ -161,6 +163,9 @@ def test_service_keeps_insufficient_bucket_observational(isolated_db) -> None:
     assert bucket["evaluated"] == 2
     assert bucket["observational"] == 1
     assert bucket["unable"] == 1
+    assert bucket["skill_attributable_unable"] == 0
+    assert bucket["external_unable"] == 0
+    assert bucket["unclassified_unable"] == 1
     assert bucket["pending"] == 1
     assert bucket["hit"] == 1
     assert bucket["miss"] == 1
@@ -170,6 +175,7 @@ def test_service_keeps_insufficient_bucket_observational(isolated_db) -> None:
     assert bucket["miss_rate_pct"] is None
     assert bucket["avg_directional_return_pct"] is None
     assert bucket["unable_rate_pct"] is None
+    assert bucket["skill_attributable_unable_rate_pct"] is None
 
 
 def test_service_unlocks_metrics_at_exact_sample_threshold(isolated_db) -> None:
@@ -204,6 +210,43 @@ def test_service_unlocks_metrics_at_exact_sample_threshold(isolated_db) -> None:
     assert bucket["miss_rate_pct"] == 40.0
     assert bucket["avg_directional_return_pct"] == 0.8
     assert bucket["unable_rate_pct"] == 6.06
+    assert bucket["skill_attributable_unable"] == 0
+    assert bucket["external_unable"] == 0
+    assert bucket["unclassified_unable"] == 2
+    assert bucket["skill_attributable_unable_rate_pct"] == 0.0
+
+
+def test_service_separates_external_and_unclassified_unable(
+    isolated_db,
+) -> None:
+    for _ in range(30):
+        _add_outcome(
+            isolated_db,
+            eval_status="evaluated",
+            outcome="hit",
+            directional_return_pct=1.0,
+        )
+    _add_outcome(
+        isolated_db,
+        eval_status="unable",
+        unable_reason="invalid_market_phase_context",
+    )
+    _add_outcome(
+        isolated_db,
+        eval_status="unable",
+        unable_reason="future_reason",
+    )
+
+    bucket = SkillOpinionPerformanceService(
+        db_manager=isolated_db
+    ).get_stats()["buckets"][0]
+
+    assert bucket["unable"] == 2
+    assert bucket["skill_attributable_unable"] == 0
+    assert bucket["external_unable"] == 1
+    assert bucket["unclassified_unable"] == 1
+    assert bucket["unable_rate_pct"] == 6.25
+    assert bucket["skill_attributable_unable_rate_pct"] == 0.0
 
 
 def test_non_evaluated_rows_do_not_unlock_metrics(isolated_db) -> None:

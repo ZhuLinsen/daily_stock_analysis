@@ -13,7 +13,13 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 
 from src.config import Config
-from src.core.skill_opinion_outcome_evaluator import SkillOpinionOutcomeEvaluator
+from src.core.skill_opinion_outcome_evaluator import (
+    SKILL_ATTRIBUTABLE_UNABLE_REASONS,
+    SKILL_UNABLE_ATTRIBUTION_EXTERNAL,
+    SKILL_UNABLE_ATTRIBUTION_UNCLASSIFIED,
+    SkillOpinionOutcomeEvaluator,
+    classify_skill_opinion_unable_reason,
+)
 from src.repositories.skill_opinion_outcome_repo import SkillOpinionOutcomeRepository
 from src.services.skill_opinion_outcome_service import (
     SKILL_OPINION_OUTCOME_ENGINE_VERSION,
@@ -49,6 +55,39 @@ def isolated_db(tmp_path):
 
 def _bar(day: date, close: float):
     return SimpleNamespace(date=day, close=close)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "invalid_stock_code",
+        "missing_analysis_date",
+        "invalid_market_phase_context",
+        "invalid_effective_daily_bar_date",
+        "future_effective_daily_bar_date",
+        "unresolvable_expected_start_date",
+    ],
+)
+def test_current_context_unable_reasons_are_external(reason) -> None:
+    assert (
+        classify_skill_opinion_unable_reason(reason)
+        == SKILL_UNABLE_ATTRIBUTION_EXTERNAL
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["invalid_signal", "unsupported_horizon", "future_reason", None, ""],
+)
+def test_contract_and_unknown_unable_reasons_are_unclassified(reason) -> None:
+    assert (
+        classify_skill_opinion_unable_reason(reason)
+        == SKILL_UNABLE_ATTRIBUTION_UNCLASSIFIED
+    )
+
+
+def test_current_engine_has_no_skill_attributable_unable_reason() -> None:
+    assert SKILL_ATTRIBUTABLE_UNABLE_REASONS == frozenset()
 
 
 def _add_sample(

@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from src.core.skill_opinion_outcome_evaluator import (
     SUPPORTED_SKILL_OUTCOME_HORIZONS,
+    SKILL_UNABLE_ATTRIBUTION_EXTERNAL,
+    SKILL_UNABLE_ATTRIBUTION_SKILL,
+    classify_skill_opinion_unable_reason,
 )
 from src.repositories.skill_opinion_outcome_repo import (
     SkillOpinionOutcomeRepository,
@@ -95,6 +98,16 @@ class SkillOpinionPerformanceService:
         terminal_denominator = (
             bucket.evaluated + bucket.observational + bucket.unable
         )
+        (
+            skill_attributable_unable,
+            external_unable,
+            unclassified_unable,
+        ) = SkillOpinionPerformanceService._classify_unable_counts(bucket)
+        attributable_terminal_denominator = (
+            bucket.evaluated
+            + bucket.observational
+            + skill_attributable_unable
+        )
         return {
             "skill_id": bucket.skill_id,
             "horizon": bucket.horizon,
@@ -104,6 +117,9 @@ class SkillOpinionPerformanceService:
             "evaluated": bucket.evaluated,
             "observational": bucket.observational,
             "unable": bucket.unable,
+            "skill_attributable_unable": skill_attributable_unable,
+            "external_unable": external_unable,
+            "unclassified_unable": unclassified_unable,
             "hit": bucket.hit,
             "miss": bucket.miss,
             "sample_sufficient": sample_sufficient,
@@ -131,7 +147,34 @@ class SkillOpinionPerformanceService:
                 if sample_sufficient and terminal_denominator
                 else None
             ),
+            "skill_attributable_unable_rate_pct": (
+                round(
+                    skill_attributable_unable
+                    / attributable_terminal_denominator
+                    * 100,
+                    2,
+                )
+                if sample_sufficient and attributable_terminal_denominator
+                else None
+            ),
         }
+
+    @staticmethod
+    def _classify_unable_counts(
+        bucket: SkillOpinionPerformanceBucket,
+    ) -> tuple[int, int, int]:
+        skill_attributable = 0
+        external = 0
+        unclassified = 0
+        for reason, count in bucket.unable_reason_counts.items():
+            attribution = classify_skill_opinion_unable_reason(reason)
+            if attribution == SKILL_UNABLE_ATTRIBUTION_SKILL:
+                skill_attributable += count
+            elif attribution == SKILL_UNABLE_ATTRIBUTION_EXTERNAL:
+                external += count
+            else:
+                unclassified += count
+        return skill_attributable, external, unclassified
 
     @staticmethod
     def _required_text(value: Any, field_name: str) -> str:
