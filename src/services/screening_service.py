@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -57,6 +57,7 @@ DSA_SCREENING_HOTSPOT_HISTORY_PATH = DSA_SCREENING_DATA_DIR / "hotspot.history.j
 DSA_SCREENING_MIN_HOTSPOT_CACHE_COUNT = 3
 DSA_SCREENING_HOTSPOT_DETAIL_CACHE_TTL_SECONDS = 30 * 60
 DSA_SCREENING_HOTSPOT_EVENT_SUMMARY_MAX_CHARS = 90
+DSA_SCREENING_WHY_NOW_MAX_AGE_DAYS = 30
 DSA_SCREENING_HOTSPOT_PREFETCH_DETAIL_COUNT = 8
 DSA_SCREENING_HOTSPOT_CALL_TIMEOUT_SECONDS = 8
 DSA_SCREENING_HOTSPOT_SEARCH_TIMEOUT_SECONDS = 12
@@ -1253,7 +1254,14 @@ class ScreeningService:
             raw_data = {"candidates": raw_data}
         raw_data = _remove_non_finite_json_values(raw_data)
 
-        candidates = _normalize_candidates(raw_data)
+        strategy_factor_weights = _strategy_factor_weights(
+            strategy,
+            effective_weights=raw_data.get("effective_factor_weights"),
+        )
+        candidates = _normalize_candidates(
+            raw_data,
+            factor_weights=strategy_factor_weights,
+        )
         selected = candidates[:max_results]
         _emit_screening_progress(
             progress_callback,
@@ -1261,6 +1269,13 @@ class ScreeningService:
             "正在补充入选股票的新闻与事件",
         )
         selected, dsa_enrichment = _enrich_candidates_with_dsa(selected)
+        selected = [
+            _attach_candidate_explanations(
+                candidate,
+                factor_weights=strategy_factor_weights,
+            )
+            for candidate in selected
+        ]
         warnings = _collect_screening_warning_messages(raw_data)
         response = {
             "enabled": True,
@@ -3723,7 +3738,11 @@ def _ensure_supported_market(market: str) -> None:
         )
 
 
-def _normalize_candidates(raw: Any) -> List[Dict[str, Any]]:
+def _normalize_candidates(
+    raw: Any,
+    *,
+    factor_weights: Optional[Dict[str, float]] = None,
+) -> List[Dict[str, Any]]:
     data = _to_plain(raw)
     items = data
     if isinstance(data, dict):
@@ -3733,10 +3752,18 @@ def _normalize_candidates(raw: Any) -> List[Dict[str, Any]]:
                 break
     if not isinstance(items, list):
         return []
-    return [_normalize_candidate(item, index + 1) for index, item in enumerate(items)]
+    return [
+        _normalize_candidate(item, index + 1, factor_weights=factor_weights)
+        for index, item in enumerate(items)
+    ]
 
 
-def _normalize_candidate(raw: Any, rank: int) -> Dict[str, Any]:
+def _normalize_candidate(
+    raw: Any,
+    rank: int,
+    *,
+    factor_weights: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
     item = _remove_non_finite_json_values(_to_plain(raw))
     if not isinstance(item, dict):
         item = {"code": str(item)}
@@ -3749,13 +3776,28 @@ def _normalize_candidate(raw: Any, rank: int) -> Dict[str, Any]:
         or source.get("dsa_analysis_summary")
         or _extract_dsa_analysis_summary_from_context(dsa_context)
     )
+    explicit_reason = (
+        item.get("reason")
+        or source.get("reason")
+        or source.get("ranking_reason")
+        or item.get("summary")
+    )
+    fallback_reason, fallback_reason_source, fallback_reason_quality = _build_candidate_reason(
+        source,
+        factor_weights=factor_weights,
+    )
+    reason = explicit_reason or fallback_reason
     return {
         "rank": item.get("rank") or source.get("rank") or rank,
         "code": item.get("code") or source.get("code") or item.get("symbol") or source.get("symbol") or item.get("stock_code") or source.get("stock_code") or "",
         "name": item.get("name") or source.get("name") or item.get("stock_name") or source.get("stock_name") or "",
         "score": _first_present(item, source, "score", "final_score"),
         "screen_score": _first_present(item, source, "screen_score"),
-        "reason": item.get("reason") or source.get("reason") or source.get("ranking_reason") or source.get("risk_summary") or item.get("summary") or _build_candidate_reason(source),
+        "reason": reason,
+        "reason_source": "" if explicit_reason else fallback_reason_source,
+        "reason_quality": "" if explicit_reason else fallback_reason_quality,
+        "ranking_reason": item.get("ranking_reason") or source.get("ranking_reason") or "",
+        "risk_summary": item.get("risk_summary") or source.get("risk_summary") or "",
         "risk_level": item.get("risk_level") or source.get("risk_level") or "",
         "risk_flags": item.get("risk_flags") or source.get("risk_flags") or [],
         "llm_score": _first_present(item, source, "llm_score"),
@@ -3782,6 +3824,289 @@ def _normalize_candidate(raw: Any, rank: int) -> Dict[str, Any]:
         "post_analysis_tags": item.get("post_analysis_tags") or source.get("post_analysis_tags") or [],
         "raw": source,
     }
+
+
+def _strategy_factor_weights(
+    strategy_name: str,
+    *,
+    effective_weights: Any = None,
+) -> Dict[str, float]:
+    effective = _valid_positive_factor_weights(effective_weights)
+    if effective:
+        return effective
+    strategies = _to_plain(load_screening_strategies())
+    if not isinstance(strategies, list):
+        return {}
+    for strategy in strategies:
+        if not isinstance(strategy, dict):
+            continue
+        name = str(
+            strategy.get("id")
+            or strategy.get("strategy")
+            or strategy.get("strategy_id")
+            or strategy.get("name")
+            or ""
+        )
+        if name == strategy_name:
+            return _valid_positive_factor_weights(
+                strategy.get("factor_weights") or strategy.get("factorWeights")
+            )
+    return {}
+
+
+def _valid_positive_factor_weights(value: Any) -> Dict[str, float]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(factor): float(weight)
+        for factor, weight in value.items()
+        if isinstance(weight, (int, float))
+        and math.isfinite(float(weight))
+        and float(weight) > 0
+    }
+
+
+def _attach_candidate_explanations(
+    candidate: Dict[str, Any],
+    *,
+    factor_weights: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """Attach deterministic, provenance-aware candidate explanations."""
+    normalized = dict(candidate)
+    why_selected: List[Dict[str, Any]] = []
+    why_now: List[Dict[str, Any]] = []
+
+    reason = str(candidate.get("reason") or "").strip()
+    if reason:
+        ranking_reason = str(candidate.get("ranking_reason") or "").strip()
+        llm_thesis = str(candidate.get("llm_thesis") or "").strip()
+        risk_summary = str(candidate.get("risk_summary") or "").strip()
+        reason_is_llm = (
+            reason == ranking_reason
+            or (bool(llm_thesis) and reason == llm_thesis)
+            or (bool(risk_summary) and reason == risk_summary)
+        )
+        provenance_source = str(candidate.get("reason_source") or "").strip()
+        provenance_quality = str(candidate.get("reason_quality") or "").strip()
+        why_selected.append(
+            _explanation_item(
+                "selection_reason",
+                reason,
+                source=provenance_source or ("llm" if reason_is_llm else "screening"),
+                quality=provenance_quality or ("inferred" if reason_is_llm else "observed"),
+            )
+        )
+
+    factors = candidate.get("factor_scores")
+    if isinstance(factors, dict):
+        top_factors = sorted(
+            (
+                (str(key), float(value), float((factor_weights or {}).get(str(key), 0)))
+                for key, value in factors.items()
+                if isinstance(value, (int, float)) and math.isfinite(float(value))
+                and isinstance((factor_weights or {}).get(str(key)), (int, float))
+                and math.isfinite(float((factor_weights or {}).get(str(key), 0)))
+                and float((factor_weights or {}).get(str(key), 0)) > 0
+            ),
+            key=lambda factor: factor[1] * factor[2],
+            reverse=True,
+        )[:3]
+        if top_factors:
+            text = "、".join(f"{key} {value:.1f}" for key, value, _weight in top_factors)
+            why_selected.append(
+                _explanation_item("top_factors", f"核心因子：{text}", source="screening", quality="observed")
+            )
+
+    summaries = candidate.get("post_analysis_summaries")
+    if isinstance(summaries, dict):
+        existing_texts = {
+            str(item.get("text") or "").strip()
+            for item in why_selected
+            if str(item.get("text") or "").strip()
+        }
+        for analyzer, value in summaries.items():
+            summary = str(value or "").strip()
+            if not summary or summary in existing_texts:
+                continue
+            analyzer_name = str(analyzer).strip() or "unknown"
+            why_selected.append(
+                _explanation_item(
+                    "post_analysis_summary",
+                    summary,
+                    source=f"post_analyzer:{analyzer_name}",
+                    quality=_post_analysis_summary_quality(candidate, analyzer_name),
+                )
+            )
+            existing_texts.add(summary)
+
+    if not any(item.get("quality") == "observed" for item in why_selected):
+        why_selected.append(
+            _explanation_item(
+                "selection_outcome",
+                "已进入当前选股候选结果",
+                source="screening",
+                quality="observed",
+            )
+        )
+
+    news_items = candidate.get("dsa_news")
+    if isinstance(news_items, list):
+        news = next(
+            (
+                item
+                for item in news_items
+                if isinstance(item, dict)
+                and str(item.get("source") or "").strip()
+                and _is_recent_explanation_item(item)
+                and str(item.get("title") or item.get("snippet") or "").strip()
+            ),
+            None,
+        )
+        if news:
+            why_now.append(
+                _explanation_item(
+                    "news",
+                    f"消息：{str(news.get('title') or news.get('snippet')).strip()}",
+                    source=str(news.get("source")).strip(),
+                    quality="observed",
+                )
+            )
+
+    event_items = candidate.get("dsa_events")
+    if isinstance(event_items, list):
+        event = next(
+            (
+                item
+                for item in event_items
+                if isinstance(item, dict)
+                and str(item.get("source") or "").strip()
+                and _is_recent_explanation_item(item)
+                and str(item.get("title") or item.get("snippet") or "").strip()
+            ),
+            None,
+        )
+        if event:
+            why_now.append(
+                _explanation_item(
+                    "event",
+                    f"事件：{str(event.get('title') or event.get('snippet')).strip()}",
+                    source=str(event.get("source")).strip(),
+                    quality="observed",
+                )
+            )
+
+    context = candidate.get("dsa_context")
+    quote = context.get("quote") if isinstance(context, dict) and isinstance(context.get("quote"), dict) else {}
+    quote_is_current = _quote_is_current_explanation_evidence(quote)
+    if quote_is_current and "change_pct" in quote and quote.get("change_pct") is not None:
+        change_pct = _safe_float(quote.get("change_pct"))
+        if change_pct is not None:
+            why_now.append(
+                _explanation_item(
+                    "quote_change_pct",
+                    f"涨跌幅：{change_pct:+.2f}%",
+                    source="realtime_quote",
+                    quality="observed",
+                    value=change_pct,
+                )
+            )
+    if quote_is_current and "amount" in quote and quote.get("amount") is not None:
+        amount = _safe_float(quote.get("amount"))
+        if amount is not None:
+            why_now.append(
+                _explanation_item(
+                    "quote_amount",
+                    f"成交额：{amount:.2f}",
+                    source="realtime_quote",
+                    quality="observed",
+                    value=amount,
+                )
+            )
+
+    catalysts = candidate.get("llm_catalysts")
+    if isinstance(catalysts, list):
+        catalyst_text = [str(value).strip() for value in catalysts[:2] if str(value).strip()]
+        if catalyst_text:
+            why_now.append(
+                _explanation_item(
+                    "llm_catalyst",
+                    f"模型催化判断：{'、'.join(catalyst_text)}",
+                    source="llm",
+                    quality="inferred",
+                )
+            )
+
+    if not why_now:
+        why_now.append(
+            _explanation_item(
+                "awaiting_evidence",
+                "暂无带来源的价格、消息或事件证据",
+                source="screening",
+                quality="unknown",
+            )
+        )
+
+    normalized["why_selected"] = why_selected
+    normalized["why_now"] = why_now
+    normalized["explanation_quality"] = {
+        "why_selected": _explanation_quality(why_selected),
+        "why_now": _explanation_quality(why_now),
+    }
+    return normalized
+
+
+def _is_recent_explanation_item(item: Dict[str, Any]) -> bool:
+    from src.search_service import SearchService
+
+    published = SearchService._normalize_news_publish_date(item.get("published_date"))
+    if published is None:
+        return False
+    age_days = (datetime.now().astimezone().date() - published).days
+    return -1 <= age_days <= DSA_SCREENING_WHY_NOW_MAX_AGE_DAYS
+
+
+def _quote_is_current_explanation_evidence(quote: Dict[str, Any]) -> bool:
+    if not quote:
+        return False
+    if any(quote.get(key) is True for key in ("is_stale", "price_stale", "quote_stale")):
+        return False
+    if quote.get("available") is False:
+        return False
+    quality = str(
+        quote.get("data_quality")
+        or quote.get("quality_status")
+        or quote.get("quality")
+        or ""
+    ).strip().lower()
+    return quality not in {"unavailable", "partial", "stale", "missing", "fetch_failed"}
+
+
+def _explanation_item(
+    code: str,
+    text: str,
+    *,
+    source: str,
+    quality: str,
+    value: Optional[float] = None,
+) -> Dict[str, Any]:
+    item: Dict[str, Any] = {
+        "code": code,
+        "text": text,
+        "source": source,
+        "quality": quality,
+    }
+    if value is not None:
+        item["value"] = value
+    return item
+
+
+def _explanation_quality(items: List[Dict[str, Any]]) -> str:
+    qualities = {str(item.get("quality") or "unknown") for item in items}
+    if qualities == {"observed"}:
+        return "ok"
+    if "observed" in qualities or "inferred" in qualities:
+        return "partial"
+    return "unknown"
 
 
 def _extract_dsa_news_from_context(context: Any) -> List[Dict[str, Any]]:
@@ -3844,29 +4169,57 @@ def _first_present(primary: Dict[str, Any], source: Dict[str, Any], *keys: str) 
     return None
 
 
-def _build_candidate_reason(item: Dict[str, Any]) -> str:
+def _build_candidate_reason(
+    item: Dict[str, Any],
+    *,
+    factor_weights: Optional[Dict[str, float]] = None,
+) -> Tuple[str, str, str]:
     summaries = item.get("post_analysis_summaries")
     if isinstance(summaries, dict):
-        summary = next((str(value) for value in summaries.values() if value), "")
-        if summary:
-            return summary
+        for analyzer, value in summaries.items():
+            if value:
+                analyzer_name = str(analyzer).strip() or "unknown"
+                return (
+                    str(value),
+                    f"post_analyzer:{analyzer_name}",
+                    _post_analysis_summary_quality(item, analyzer_name),
+                )
 
     factors = item.get("factor_scores")
     parts: List[str] = []
-    if isinstance(factors, dict) and factors:
+    if isinstance(factors, dict) and factors and factor_weights:
         top_factors = sorted(
-            ((key, value) for key, value in factors.items() if isinstance(value, (int, float))),
-            key=lambda pair: pair[1],
+            (
+                (str(key), float(value), float(factor_weights.get(str(key), 0)))
+                for key, value in factors.items()
+                if isinstance(value, (int, float))
+                and math.isfinite(float(value))
+                and isinstance(factor_weights.get(str(key)), (int, float))
+                and math.isfinite(float(factor_weights.get(str(key), 0)))
+                and float(factor_weights.get(str(key), 0)) > 0
+            ),
+            key=lambda factor: factor[1] * factor[2],
             reverse=True,
         )[:3]
         if top_factors:
-            factor_text = "、".join(f"{key} {value:.1f}" for key, value in top_factors)
+            factor_text = "、".join(
+                f"{key} {value:.1f}" for key, value, _weight in top_factors
+            )
             parts.append(f"主要因子：{factor_text}")
-    if item.get("industry"):
-        parts.append(f"行业：{item['industry']}")
-    if item.get("risk_level"):
-        parts.append(f"风险等级：{item['risk_level']}")
-    return "；".join(parts)
+    reason = "；".join(parts)
+    return (reason, "screening", "observed") if reason else ("", "", "")
+
+
+def _post_analysis_summary_quality(item: Dict[str, Any], analyzer: str) -> str:
+    analyzer_name = analyzer.strip().lower()
+    scorecard_uses_llm = analyzer_name == "scorecard" and (
+        item.get("llm_confidence") is not None
+        or bool(item.get("llm_catalysts"))
+        or bool(item.get("llm_risks"))
+    )
+    if analyzer_name == "scorecard" and not scorecard_uses_llm:
+        return "observed"
+    return "inferred"
 
 
 def _to_plain(value: Any) -> Any:

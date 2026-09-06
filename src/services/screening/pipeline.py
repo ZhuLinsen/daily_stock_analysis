@@ -36,7 +36,11 @@ from src.services.screening.normalize import (
 from src.services.screening.post_analysis import normalize_post_analyzers, run_post_analyzers
 from src.services.screening.ranker import rank_candidates_with_metadata
 from src.services.screening.risk import apply_portfolio_overlay, apply_risk_overlay
-from src.services.screening.scorer import compute_screen_scores, factor_score_columns
+from src.services.screening.scorer import (
+    compute_screen_scores,
+    factor_score_columns,
+    normalized_factor_weights,
+)
 from src.services.screening.selection_variant import apply_seeded_selection_variant
 from src.services.screening.snapshot import fetch_snapshot_with_fallback
 from src.services.screening.strategy import load_all_strategies
@@ -528,6 +532,7 @@ def screen(
         market=market,
         strategy_version=strat.version,
         strategy_category=strat.category,
+        effective_factor_weights=normalized_factor_weights(screening),
         snapshot_count=snapshot_count,
         after_filter_count=after_filter_count,
         picks=picks,
