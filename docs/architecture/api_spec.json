@@ -2100,6 +2100,102 @@
         }
       }
     },
+    "/api/v1/decision-signals/stocks/{stock_code}/review": {
+      "get": {
+        "tags": [
+          "DecisionSignals"
+        ],
+        "summary": "查询单票决策信号复盘摘要",
+        "description": "聚合指定股票在当前 engine_version 下的 signal-level outcome/feedback，返回只读低敏 ReviewMemory 摘要；样本不足、unable 率高或数据质量弱时 confidence_adjustment 固定为 observe，仅供观察，不构成交易信号。",
+        "operationId": "getDecisionSignalStockReview",
+        "security": [
+          {
+            "AdminSessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "stock_code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stock Code"
+            }
+          },
+          {
+            "name": "horizon",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional outcome horizon filter: 1d/3d/5d/10d",
+              "title": "Horizon"
+            },
+            "description": "Optional outcome horizon filter: 1d/3d/5d/10d"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSignalReviewMemory"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或管理员会话无效（ADMIN_AUTH_ENABLED=true 时）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "查询参数非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "路径或查询参数校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/decision-signals/{signal_id}/outcomes": {
       "get": {
         "tags": [
@@ -9068,6 +9164,83 @@
           "status"
         ],
         "title": "StockProfileQuoteBlock"
+      },
+      "DecisionSignalReviewMemory": {
+        "properties": {
+          "stock_code": {
+            "type": "string",
+            "title": "Stock Code"
+          },
+          "scope": {
+            "type": "string",
+            "const": "stock",
+            "title": "Scope",
+            "default": "stock"
+          },
+          "sample_size": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Sample Size",
+            "default": 0
+          },
+          "completed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Completed",
+            "default": 0
+          },
+          "hit_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hit Rate Pct"
+          },
+          "avg_return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Return Pct"
+          },
+          "common_miss_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Common Miss Reasons"
+          },
+          "confidence_adjustment": {
+            "type": "string",
+            "enum": [
+              "upgrade",
+              "downgrade",
+              "neutral",
+              "observe"
+            ],
+            "title": "Confidence Adjustment",
+            "default": "observe"
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "stock_code"
+        ],
+        "title": "DecisionSignalReviewMemory",
+        "description": "Read-only, low-sensitivity review summary of DecisionSignal outcomes for one stock.\n\nAggregated server-side from signal-level outcomes/feedback.  Raw evidence,\nprompt text, diagnostics, and holdings are intentionally excluded; the\npayload is observational context only and must not be used as a trading\nsignal."
       }
     },
     "securitySchemes": {
