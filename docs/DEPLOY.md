@@ -213,7 +213,7 @@ journalctl -u stock-analyzer -f
 | 配置项 | 说明 | 获取方式 |
 |--------|------|----------|
 | `ANSPIRE_API_KEYS` / `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | AI 模型至少配置一个；推荐优先 Anspire 或 AIHubMix | 对应服务商控制台 |
-| `STOCK_LIST` | 自选股列表 | 逗号分隔的股票代码 |
+| `STOCK_LIST` | 自选股列表 | 逗号分隔的股票代码；已登记指数显式形态（如 `sh000016`、`930606.CSI`、`sz399365`）经一次性 `--stocks` 或 GitHub Actions 入口支持（本地 `.env`/Docker 无参数默认运行保持股票语义，指数需配 `--stocks`），规则见 [指数自选股配置](full-guide.md#指数自选股配置) |
 | 通知渠道 | 至少配置一个，如企业微信、飞书、Telegram 或邮件 | 对应通知平台 |
 
 ### 可选配置项

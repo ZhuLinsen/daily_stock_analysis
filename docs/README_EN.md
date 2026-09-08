@@ -109,7 +109,7 @@ More channels, signatures, email groups, and Markdown-to-image settings are in [
 
 | Secret Name | Description | Required |
 |-------------|-------------|:--------:|
-| `STOCK_LIST` | Watchlist codes, such as `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW` | ✅ |
+| `STOCK_LIST` | Watchlist codes, such as `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW`; registered-index explicit codes (e.g. `sh000016`, `930606.CSI`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry — see [Index watchlist configuration](full-guide_EN.md#index-watchlist-configuration) | ✅ |
 
 **News sources (recommended)**
 

@@ -61,6 +61,14 @@ class MainScheduleModeTestCase(unittest.TestCase):
         os.chdir(self.temp_dir.name)
         self.env_patch = patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=False)
         self.env_patch.start()
+        # CI runner 自动注入 GITHUB_ACTIONS=true，会让无显式环境的 main.main()
+        # 测试误入 Actions STOCK_LIST 分类分支（其 _DummyConfig 不含
+        # stock_list 属性）。类级默认关闭，Actions 入口相关测试在用例内
+        # 显式 patch 为 true 覆盖。
+        self.actions_env_patch = patch.dict(
+            os.environ, {"GITHUB_ACTIONS": "false"}, clear=False
+        )
+        self.actions_env_patch.start()
         Config.reset_instance()
         root_logger = logging.getLogger()
         self._original_root_handlers = list(root_logger.handlers)
@@ -80,6 +88,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         os.chdir(self.original_cwd)
         Config.reset_instance()
         self.env_patch.stop()
+        self.actions_env_patch.stop()
         for key in _MAIN_IMPORT_ENV_ADDITIONS:
             os.environ.pop(key, None)
         for key, value in _MAIN_IMPORT_ENV_OVERRIDES.items():
@@ -129,6 +138,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             "agent_event_alert_rules_json": "",
             "agent_event_monitor_interval_minutes": 5,
             "daily_market_context_enabled": True,
+            "market_review_enabled": False,
         }
         defaults.update(overrides)
         return _DummyConfig(**defaults)
@@ -527,6 +537,363 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(calls[1][1], ["csi930955"])
         self.assertEqual(calls[1][2][0].asset_type, ParseStatus.INDEX)
         self.assertEqual(calls[1][2][0].canonical_id, "csi930955")
+
+    def test_standalone_run_rejects_unsupported_stocks_token(self) -> None:
+        """`--stocks` 携带未登记 `.CSI` 目标时在入口明确报错并返回非零，
+        不再静默走股票路径或发起 provider 调用。"""
+        args = self._make_args(stocks="600519,930956.CSI")
+        config = self._make_config(run_immediately=True)
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        run_full_analysis.assert_not_called()
+
+    def test_standalone_run_actions_stock_list_builds_index_targets(self) -> None:
+        """`GITHUB_ACTIONS=true` 且无 `--stocks` 时，`main.main()` 把默认
+        `STOCK_LIST` 的显式指数 token 分类为 INDEX target、个股 token 保持
+        legacy 语义（与一次性 `--stocks` 构造等价）。"""
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["sh000016", "600519", "930955.CSI"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        run_full_analysis.assert_called_once()
+        stock_codes = run_full_analysis.call_args.args[2]
+        analysis_targets = run_full_analysis.call_args.kwargs["analysis_targets"]
+        self.assertEqual(stock_codes, ["sh000016", "600519", "csi930955"])
+        self.assertEqual(
+            [t.asset_type for t in analysis_targets],
+            ["index", "stock", "index"],
+        )
+        self.assertEqual(
+            [t.canonical_id for t in analysis_targets],
+            ["sh000016", "sh600519", "csi930955"],
+        )
+
+    def test_standalone_run_local_default_does_not_build_targets(self) -> None:
+        """非 Actions 环境的无参数默认路径不构造结构化 targets（本地/
+        `--schedule` 热刷新语义保持不变）。"""
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["600519"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": ""}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        run_full_analysis.assert_called_once()
+        self.assertIsNone(run_full_analysis.call_args.args[2])
+        self.assertIsNone(run_full_analysis.call_args.kwargs.get("analysis_targets"))
+
+    def test_actions_backtest_with_bad_stock_list_reaches_backtest_service(self) -> None:
+        """Review 反例：`GITHUB_ACTIONS=true` + `--backtest` 时不消费个股列表，
+        含未登记 `.CSI` 的 STOCK_LIST 不得整批拒绝，必须进入回测分支。"""
+        args = self._make_args(backtest=True)
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["930956.CSI"]
+        stats = {
+            "processed": 1,
+            "saved": 1,
+            "completed": 1,
+            "insufficient": 0,
+            "errors": 0,
+        }
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main._classify_stock_list_tokens") as classify, \
+             patch(
+                 "src.services.backtest_service.BacktestService",
+             ) as backtest_class, \
+             patch("main.logger.error") as error_log:
+            backtest_service = backtest_class.return_value
+            backtest_service.run_backtest.return_value = stats
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        refresh.assert_not_called()
+        classify.assert_not_called()
+        error_log.assert_not_called()
+        backtest_class.assert_called_once_with()
+        backtest_service.run_backtest.assert_called_once_with(
+            code=None,
+            force=False,
+            eval_window_days=None,
+        )
+
+    def test_actions_backtest_stock_list_classification_skipped_when_no_backtest(self) -> None:
+        """对照组：`GITHUB_ACTIONS=true` 无模式参数的坏 STOCK_LIST 仍整批拒绝
+        （分类契约未回归）。"""
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["930956.CSI"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis, \
+             patch("main.logger.error") as error_log:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        run_full_analysis.assert_not_called()
+        error_log.assert_any_call(
+            "%s 包含不支持的目标 %r：%s；本轮不执行任何分析。",
+            "GitHub Actions STOCK_LIST",
+            "930956.CSI",
+            unittest.mock.ANY,
+        )
+
+    def test_portfolio_futu_with_bad_stocks_token_reaches_run_full_analysis(self) -> None:
+        """Review 反例：`--portfolio futu --stocks 930956.CSI` 同框时分类整体跳过，
+        坏 token 不拦截；run_full_analysis 内 portfolio 覆盖 `--stocks`。"""
+        args = self._make_args(portfolio="futu", stocks="930956.CSI")
+        config = self._make_config(run_immediately=True)
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main._classify_stock_list_tokens") as classify, \
+             patch(
+                 "src.brokers.futu.portfolio.load_futu_stock_codes",
+                 return_value=["AAPL"],
+             ), \
+             patch(
+                 "main._compute_trading_day_filter",
+                 return_value=(["AAPL"], "us", False),
+             ), \
+             patch("main._run_analysis_with_runtime_scheduler_lock") as run_with_lock:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        refresh.assert_not_called()
+        classify.assert_not_called()
+        run_with_lock.assert_called_once_with(config, args, None, None)
+
+    def test_portfolio_futu_with_bad_stocks_token_runs_portfolio_codes(self) -> None:
+        """对照组：`--portfolio futu --stocks 600519` 时 run_full_analysis 内
+        portfolio 覆盖 `--stocks`，覆盖语义不回归。走真实运行时锁路径
+        （threading.Lock，无进程/磁盘副作用），验证 loader 被调用且进入
+        run_full_analysis 的代码为 portfolio 持仓。"""
+        args = self._make_args(portfolio="futu", stocks="600519")
+        config = self._make_config(run_immediately=True)
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch(
+                 "src.brokers.futu.portfolio.load_futu_stock_codes",
+                 return_value=["AAPL", "HK00700"],
+             ) as loader, \
+             patch(
+                 "main._compute_trading_day_filter",
+                 return_value=(["AAPL", "HK00700"], "us,hk", False),
+             ), \
+             patch("src.core.pipeline.StockAnalysisPipeline"):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        loader.assert_called_once_with()
+
+    def test_actions_portfolio_futu_with_bad_stock_list_reaches_run_full_analysis(self) -> None:
+        """Review 反例补格：`GITHUB_ACTIONS=true` + `--portfolio futu` 时 Actions
+        分支的 STOCK_LIST 分类同样整体跳过，坏 watchlist 不拦截 portfolio 覆盖。"""
+        args = self._make_args(portfolio="futu")
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["930956.CSI"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main._classify_stock_list_tokens") as classify, \
+             patch(
+                 "src.brokers.futu.portfolio.load_futu_stock_codes",
+                 return_value=["AAPL"],
+             ), \
+             patch(
+                 "main._compute_trading_day_filter",
+                 return_value=(["AAPL"], "us", False),
+             ), \
+             patch("main._run_analysis_with_runtime_scheduler_lock") as run_with_lock:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        refresh.assert_not_called()
+        classify.assert_not_called()
+        run_with_lock.assert_called_once_with(config, args, None, None)
+
+    def test_portfolio_futu_with_bad_stocks_token_runs_pipeline_with_portfolio_codes(self) -> None:
+        """断言到达真实风险层：portfolio 覆盖后 pipeline.run 收到的 stock_codes
+        来自 Futu loader，与 `--stocks` 无关。"""
+        args = self._make_args(portfolio="futu", stocks="930956.CSI")
+        config = self._make_config(run_immediately=True)
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch(
+                 "src.brokers.futu.portfolio.load_futu_stock_codes",
+                 return_value=["AAPL", "HK00700"],
+             ), \
+             patch(
+                 "main._compute_trading_day_filter",
+                 return_value=(["AAPL", "HK00700"], "us,hk", False),
+             ), \
+             patch("src.core.pipeline.StockAnalysisPipeline") as pipeline_class:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        pipeline_run_kwargs = pipeline_class.return_value.run.call_args.kwargs
+        self.assertEqual(pipeline_run_kwargs["stock_codes"], ["AAPL", "HK00700"])
+        self.assertIsNone(pipeline_run_kwargs["analysis_targets"])
+
+    def test_schedule_mode_with_bad_stocks_token_reaches_scheduler(self) -> None:
+        """Review 反例：`--schedule --stocks 930956.CSI` 不因坏 token 分类退出，
+        进入 scheduler，且保留既有"忽略启动快照"警告。"""
+        args = self._make_args(schedule=True, stocks="930956.CSI")
+        config = self._make_config(schedule_enabled=False)
+        scheduled_call = {}
+
+        def fake_run_with_schedule(
+            task,
+            schedule_time,
+            run_immediately,
+            background_tasks=None,
+            schedule_time_provider=None,
+        ):
+            scheduled_call["schedule_time"] = schedule_time
+            scheduled_call["run_immediately"] = run_immediately
+            scheduled_call["background_tasks"] = background_tasks or []
+            scheduled_call["resolved_schedule_time"] = (
+                schedule_time_provider() if schedule_time_provider is not None else None
+            )
+            task()
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main._reload_runtime_config", return_value=config), \
+             patch("main._build_schedule_time_provider", return_value=lambda: "18:00"), \
+             patch("main.setup_logging"), \
+             patch("main.run_full_analysis") as run_full_analysis, \
+             patch("main.logger.warning") as warning_log, \
+             patch("main._refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main._classify_stock_list_tokens") as classify, \
+             patch("src.scheduler.run_with_schedule", side_effect=fake_run_with_schedule):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        refresh.assert_not_called()
+        classify.assert_not_called()
+        self.assertEqual(
+            scheduled_call,
+            {
+                "schedule_time": "18:00",
+                "run_immediately": True,
+                "background_tasks": [],
+                "resolved_schedule_time": "18:00",
+            },
+        )
+        run_full_analysis.assert_called_once_with(config, args, None)
+        warning_log.assert_any_call(
+            "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新读取最新的 STOCK_LIST。"
+        )
+
+    def test_serve_only_with_bad_stocks_token_enters_service_loop(self) -> None:
+        """Review 反例：`--serve-only --stocks 930956.CSI` 不因坏 token 分类退出，
+        进入仅服务模式循环（time.sleep 以 KeyboardInterrupt 收尾）。"""
+        args = self._make_args(serve_only=True, stocks="930956.CSI")
+        config = self._make_config(webui_enabled=False)
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main.start_api_server"), \
+             patch("main.start_bot_stream_clients"), \
+             patch("main._refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main._classify_stock_list_tokens") as classify, \
+             patch("main.time.sleep", side_effect=KeyboardInterrupt):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        refresh.assert_not_called()
+        classify.assert_not_called()
+
+    def test_standalone_run_actions_stock_list_rejects_unsupported(self) -> None:
+        """Actions STOCK_LIST 携带未登记 `.CSI` token 时与 `--stocks` 同样
+        在入口明确拒绝并返回非零，不会静默丢弃该 token 后继续运行。"""
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["sh000016", "930956.CSI"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main.run_full_analysis") as run_full_analysis:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        run_full_analysis.assert_not_called()
+
+    def test_standalone_run_actions_market_only_skips_token_classification(self) -> None:
+        """Actions 的 market-only 模式（`--market-review`）不经个股列表分析，
+        STOCK_LIST 分类入口必须整体跳过（含 unsupported 拒绝），保持既有
+        大盘复盘行为。"""
+        args = self._make_args(market_review=True)
+        config = self._make_config(run_immediately=True)
+        config.stock_list = ["930956.CSI"]
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main.run_full_analysis") as run_full_analysis, \
+             patch("main._run_market_review_with_shared_lock") as run_review, \
+             patch("src.core.trading_calendar.get_open_markets_today", return_value={"cn"}), \
+             patch("src.core.trading_calendar.compute_effective_region", return_value="cn"):
+            run_review.return_value = object()
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        refresh.assert_not_called()
+        run_full_analysis.assert_not_called()
+        run_review.assert_called_once()
 
     def test_standalone_run_returns_nonzero_when_startup_analysis_reports_failure(self) -> None:
         args = self._make_args()

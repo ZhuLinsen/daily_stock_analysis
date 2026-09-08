@@ -372,18 +372,20 @@ class TestEdgeCases:
 # Default registry — public API surface.
 # ---------------------------------------------------------------------------
 class TestDefaultIndexRegistry:
-    def test_default_registry_has_31_entries(self) -> None:
+    def test_default_registry_has_33_entries(self) -> None:
         registry = default_index_registry()
-        assert len(registry) == 31
+        assert len(registry) == 33
 
     def test_default_registry_canonical_ids(self) -> None:
         registry = default_index_registry()
         ids = {entry.canonical_id for entry in registry}
-        assert len(ids) == 31
+        assert len(ids) == 33
         # The 5 original hard-coded indices are preserved.
         assert {"sh000300", "sh000016", "sh000688", "sz399001", "sz399006"} <= ids
         # CSI entries are present.
         assert {"csi930955", "csi932365"} <= ids
+        # Newly added user-facing indices (Issue #2303).
+        assert {"sz399365", "csi930606"} <= ids
 
     def test_default_registry_find_by_prefixed_code(self) -> None:
         registry = default_index_registry()
@@ -429,6 +431,60 @@ class TestDefaultIndexRegistry:
         target = parse_analysis_target("沪深300")
         assert target.asset_type != ParseStatus.INDEX
 
+    def test_find_by_display_name_resolves_registered_name(self) -> None:
+        """PR2: exact registered display names resolve through the dedicated
+        name lookup — independent of ``find_by_explicit_key``."""
+        registry = default_index_registry()
+        entry = registry.find_by_display_name("上证50")
+        assert entry is not None
+        assert entry.canonical_id == "sh000016"
+        entry2 = registry.find_by_display_name("沪深300")
+        assert entry2 is not None
+        assert entry2.canonical_id == "sh000300"
+
+    def test_find_by_display_name_is_nfkc_trim_casefold_exact(self) -> None:
+        """PR2: name lookup normalizes NFKC + trim + casefold before the exact
+        match, but never falls back to fuzzy matching."""
+        registry = default_index_registry()
+        # Full-width / whitespace variants of a registered name still match.
+        assert registry.find_by_display_name("　上证50　") is not None
+        assert registry.find_by_display_name("上证５０") is not None
+        # Unknown names return None (no fuzzy fallback).
+        assert registry.find_by_display_name("不存在标的") is None
+        assert registry.find_by_display_name("上证5") is None
+
+    def test_find_by_display_name_does_not_leak_into_identity_alias(self) -> None:
+        """PR2: a display-name hit must not make the name resolvable as an
+        identity alias — the parser contract stays untouched."""
+        registry = default_index_registry()
+        assert registry.find_by_display_name("上证50") is not None
+        assert registry.find_by_explicit_key("上证50") is None
+        target = parse_analysis_target("上证50")
+        assert target.asset_type != ParseStatus.INDEX
+
+    def test_ambiguous_display_name_is_reported(self) -> None:
+        """PR2: two entries with NFKC/casefold-equivalent display names make
+        the name lookup ambiguous — no guessing, no single winner."""
+        registry = IndexRegistry((
+            IndexEntry(
+                bare_code="000300",
+                exchange="SH",
+                canonical_id="sh000300",
+                display_name="沪深300",
+            ),
+            IndexEntry(
+                bare_code="000999",
+                exchange="SH",
+                canonical_id="sh000999",
+                display_name="沪深300",
+            ),
+        ))
+        assert registry.is_ambiguous_display_name("沪深300") is True
+        assert registry.find_by_display_name("沪深300") is None
+        # Explicit identity still resolves deterministically.
+        assert registry.find_by_explicit_key("sh000300") is not None
+        assert registry.find_by_explicit_key("sh000999") is not None
+
     def test_custom_registry_rejects_text_identity_alias(self) -> None:
         with pytest.raises(ValueError, match="explicit code form"):
             IndexRegistry((
@@ -440,6 +496,40 @@ class TestDefaultIndexRegistry:
                     aliases=("CSI300",),
                 ),
             ))
+
+    def test_code_shaped_display_names_stay_distinct_under_exact_name_lookup(
+        self,
+    ) -> None:
+        """PR2 review fix: display-name equality is exactly NFKC + trim +
+        casefold. Code-shaped names (``000016.SH`` vs ``sh000016``) that
+        identity normalization would falsely collapse (``_normalize_index_key``
+        treats them as the same resolver key ``sh000016``) must stay distinct
+        for the name lookup, so each exact query resolves its own entry and
+        neither is reported ambiguous."""
+        registry = IndexRegistry((
+            IndexEntry(
+                bare_code="000016",
+                exchange="SH",
+                canonical_id="sh000016",
+                display_name="000016.SH",
+            ),
+            IndexEntry(
+                bare_code="000999",
+                exchange="SH",
+                canonical_id="sh000999",
+                display_name="sh000016",
+            ),
+        ))
+        # Identity normalization collapses both names to ``sh000016``, but the
+        # name lookup must NOT reuse it — each display name resolves exactly.
+        entry = registry.find_by_display_name("000016.SH")
+        assert entry is not None
+        assert entry.display_name == "000016.SH"
+        entry = registry.find_by_display_name("sh000016")
+        assert entry is not None
+        assert entry.display_name == "sh000016"
+        assert registry.is_ambiguous_display_name("000016.SH") is False
+        assert registry.is_ambiguous_display_name("sh000016") is False
 
 
 # ---------------------------------------------------------------------------

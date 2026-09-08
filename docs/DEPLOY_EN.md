@@ -201,7 +201,7 @@ journalctl -u stock-analyzer -f
 | Config Item | Description | How to Get |
 |--------|------|----------|
 | `ANSPIRE_API_KEYS` / `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Configure at least one AI model key; Anspire or AIHubMix is recommended first | Provider console |
-| `STOCK_LIST` | Watchlist | Comma-separated stock codes |
+| `STOCK_LIST` | Watchlist | Comma-separated stock codes; registered-index explicit forms (e.g. `sh000016`, `930606.CSI`, `sz399365`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry (local `.env`/Docker no-arg default runs keep stock semantics; use `--stocks` there for indices) — see [Index watchlist configuration](full-guide_EN.md#index-watchlist-configuration) |
 | Notification channel | Configure at least one, such as WeChat Work, Feishu, Telegram, or email | Notification provider |
 
 ### Optional Configuration

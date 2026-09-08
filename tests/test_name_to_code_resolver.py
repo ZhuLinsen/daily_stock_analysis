@@ -642,16 +642,20 @@ class TestAkShareSingleFlightConcurrency:
             t2, r2 = _run_resolver_in_thread("浦发银行")
             # 拉取持续挂起时，所有冷启动等待者（含触发拉取的那一个）都必须
             # 在超时上界内自行返回，而非无限等待
+            t1.join(timeout=10)
             t2.join(timeout=10)
+            # 必须在放行抓取前确认两个等待者均已降级；仅等待 t2 不能
+            # 保证 t1 已返回，否则 finally 放行后 t1 可能拿到成功结果。
+            assert not t1.is_alive() and not t2.is_alive()
+            assert r1.get("value") == []
+            assert r2.get("value") == []
         finally:
             fake.release_fetch.set()
             t1.join(timeout=10)
             if t2 is not None:
                 t2.join(timeout=10)
         assert not t1.is_alive() and not t2.is_alive()
-        # 超时退化为本地库解析；后台拉取不受等待者超时影响，仍单次完成
-        assert r1.get("value") == []
-        assert r2.get("value") == []
+        # 后台拉取不受等待者超时影响，仍单次完成
         assert fake.calls == 1
         assert _wait_until(
             lambda: ntc._akshare_cache is not None

@@ -452,7 +452,7 @@ daily_stock_analysis/
 > - 台股：在美股/港股 offshore 基础路径之外，`institution` 区块额外展示三大法人原始买卖超净额（TWSE T86 / TPEx，默认开启、fail-open，取不到数据时维持 `not_supported`）；`capital_flow`、`dragon_tiger`、`boards` 仍为 `not_supported`；
 > - 任何异常走 fail-open，仅记录错误，不影响技术面/新闻/筹码主链路。
 > - 配置 `TICKFLOW_API_KEY` 后，TickFlow 会作为可选 A 股日 K 数据源和大盘复盘增强源实例化；`TICKFLOW_PRIORITY` 只影响普通 A 股日 K/通用数据源回退链。实时行情优先级由 `REALTIME_SOURCE_PRIORITY` 单独控制，只有显式包含 `tickflow` 时才会使用 TickFlow 实时行情。`REALTIME_SOURCE_PRIORITY` 中排在 `tickflow` 前面的数据源会先被尝试。
-> - 当前 `IndexRegistry` 已登记的 5 个沪深指数为 `sh000016`（上证50）、`sh000688`（科创50）、`sz399001`（深证成指）、`sz399006`（创业板指）和 `sh000300`（沪深300）。使用显式市场输入（也接受 `000016.SH` 等交易所后缀形式）时，它们不参与通用 priority 排序，固定按 Tencent → AkShare → TickFlow → YFinance 降级；未配置或不可用的来源会跳过。裸 `000016` 等代码仍按股票处理，不触发指数链。该固定链不读取 `EFINANCE_PRIORITY`、`AKSHARE_PRIORITY`、`TUSHARE_PRIORITY`、`TICKFLOW_PRIORITY`、`PYTDX_PRIORITY`、`BAOSTOCK_PRIORITY`、`YFINANCE_PRIORITY` 或 `TENCENT_PRIORITY`，不影响普通股票和实时行情的既有顺序。
+> - 当前 `IndexRegistry` 已登记的全部沪深指数（`sh`/`sz`/`csi` 前缀，具体清单以 [指数自选股配置](#指数自选股配置) 的注册表说明与 `scripts/stock_index_seeds/index_registry.csv` 为准）在使用显式市场输入（也接受 `000016.SH` 等交易所后缀形式）时，不参与通用 priority 排序，固定按 Tencent → AkShare → TickFlow → YFinance 降级；未配置或不可用的来源会跳过。裸 `000016` 等代码仍按股票处理，不触发指数链。该固定链不读取 `EFINANCE_PRIORITY`、`AKSHARE_PRIORITY`、`TUSHARE_PRIORITY`、`TICKFLOW_PRIORITY`、`PYTDX_PRIORITY`、`BAOSTOCK_PRIORITY`、`YFINANCE_PRIORITY` 或 `TENCENT_PRIORITY`，不影响普通股票和实时行情的既有顺序。
 > - 已登记指数名称优先来自本地注册表；只有注册名称无效时才按 Tencent → AkShare → TickFlow 查询，名称链不使用 YFinance。指数日线四源全部失败时返回空结果并记录汇总告警；普通股票仍保持既有的 `DataFetchError` 最终失败契约。
 > - TickFlow 日 K 默认 `TICKFLOW_KLINE_ADJUST=none`；日线 `volume` 从手统一转为股，`amount` 保持元口径。
 > - TickFlow 日 K 区间请求会显式传入 `start_time` / `end_time` / `count`；官方 quickstart 明确说明时间范围查询仍受 `count` 限制。若返回非空但行数打满 `count` 且首个返回交易日晚于请求起始交易日，系统会判定为疑似截断，不写入缓存并让 manager 继续回退。
@@ -732,7 +732,7 @@ python main.py --stocks sh000016,000016
 python main.py --stocks sh000016 --dry-run
 ```
 
-指数目标在 Pipeline 内以 `market=cn` 统一处理市场阶段、日线目标日期、断点续传日期、历史窗口与 `DecisionSignal`；筹码分布、基本面、板块归属、资金流、龙虎榜与公司事件等个股专属模块会被集中跳过。未登记的 `.CSI` 输入（如 `930956.CSI`）会在任何行情数据 provider 请求前明确拒绝，且不影响同批其他目标。搜索与报告使用注册表中文指数名称，不携带机器码。
+指数目标在 Pipeline 内以 `market=cn` 统一处理市场阶段、日线目标日期、断点续传日期、历史窗口与 `DecisionSignal`；筹码分布、基本面、板块归属、资金流、龙虎榜与公司事件等个股专属模块会被集中跳过。未登记的 `.CSI` 输入（如 `930956.CSI`）会在任何行情数据 provider 请求前明确拒绝：CLI `--stocks` 与 Actions 每日工作流对含未登记目标的整批拒绝本轮运行（不执行同批任何目标），Web/API 则为异步批量中仅该目标进入 `rejected`、同步/单股返回 4xx。搜索与报告使用注册表中文指数名称，不携带机器码。
 
 指数与 A 股共享交易日语义：启用交易日检查时，已登记指数（`sh`/`sz` 前缀或 `.CSI` alias）按 `market=cn` 参与 A 股休市过滤，A 股休市日指数会被跳过；市场仍无法识别的非指数 code 保持既有 fail-open 行为。`--force-run` 可强制在非交易日执行。
 
@@ -744,11 +744,48 @@ Web 自动补全与搜索已放行已登记指数：搜索注册中文名（如 
 
 API `/analyze` 对显式指数输入构造结构化 `AnalysisTarget`：`sh000016` 以 `asset_type=INDEX` 且 `canonical_id=sh000016` 入队，`930955.CSI`/`csi930955` 收敛为 `csi930955`。指数与同码个股（如 `sh000016` 与 `000016`）独立去重调度、互不折叠；未登记的 CSI 输入（如 `930956.CSI`）在异步单股或同步模式返回明确的 4xx，在异步批量中仅该目标进入响应 `rejected` 列表、同批其他目标正常入队。中文名称输入（如 `贵州茅台`）仍走既有股票名解析，不进入指数判型。
 
-> **Phase 2 边界**：默认 `STOCK_LIST`、`--schedule`、Bot 与 GitHub Actions 每日工作流暂不开放指数入口；Web/API 与一次性 `--stocks` 已支持指数，Bot/定时/每日工作流入口留待 Phase 2 后续 PR。
+Bot `/analyze` 已支持已登记指数的显式代码（`sh000016`）、CSI alias（`930955.CSI`）和注册中文名（`上证50`）。指数以 registry canonical 和结构化 `AnalysisTarget` 进入与 CLI/API 相同的 Pipeline；未登记 CSI、未知名称或歧义注册名称会明确报错且不提交任务。普通 A/HK/US 代码与股票名称继续沿用 legacy code 路径。
+
+### 指数 GitHub Actions 入口（Phase 2 PR3）
+
+GitHub Actions 每日工作流（`.github/workflows/00-daily-analysis.yml`）把 `STOCK_LIST` 配置中的显式指数 token 与个股同批分析：`GITHUB_ACTIONS=true` 环境下 `python main.py` 无参数运行时（`full` 与 `stocks-only` 模式；`market-only` 不经个股列表，不参与此分类），`STOCK_LIST` 会按与 `--stocks` 相同的判型规则分类为结构化 target，显式指数 token（如 `sh000016`、`930955.CSI`）进入指数路径、个股 token 保持既有路径，不新增第二条 Pipeline 或能力矩阵；含未登记 `.CSI` 目标时整批拒绝本轮运行。本地无参数默认路径（`.env`/Docker 的 `STOCK_LIST`）与 `--schedule`/`config.schedule_enabled` 定时模式不参与此分类：本地 `--stocks` 参与分类，但本地无参默认路径与定时模式不经 `--stocks` 构造 targets，`STOCK_LIST` 的其它运行环境语义不变。
+
+> **Phase 2 边界**：`--schedule`、Bot `/ask`、Bot `/batch` 仍未开放指数入口；Web/API、Bot `/analyze`、一次性 `--stocks` 与 GitHub Actions 每日工作流已支持指数。
+
+### 指数自选股配置
+
+`STOCK_LIST` 支持在两类入口按下列规则混入指数目标：一次性 `--stocks` 与 GitHub Actions 每日工作流（`GITHUB_ACTIONS=true` 无参数运行的 full/stocks-only 模式）。本地 `.env` 或 Docker 无参数默认运行不参与指数分类，`STOCK_LIST` 保持既有股票语义；本地 `.env`/Docker 若想分析指数，请显式加 `--stocks`（一次性运行）或改用 GitHub Actions 入口。分类判断先于股票解析：命中已登记指数的显式形态时按 `market=cn` 的指数 Pipeline 执行；未命中则继续走股票路径（`.CSI` 前缀除外，见下文拒绝规则）。判断发生在**归一化之前**，因此必须写显式代码形态，不要依赖裸码“自动识别”。
+
+**可用的已登记指数代码形态：**
+
+| 指数家族 | canonical（注册身份） | display / 等价显式写法 | 示例 |
+|----------|----------------------|------------------------|------|
+| 上海（上证/中证系列 SH 挂牌） | `sh` + 6 位 | `{code}.SH`（另有跨家族 alias 如 `sz399300` → `sh000300`） | `sh000016`、`000016.SH`（上证50） |
+| 深圳（深证/国证系列） | `sz` + 6 位 | `{code}.SZ` | `sz399006`、`399006.SZ`（创业板指）；`sz399365`、`399365.SZ`（国证粮食） |
+| 中证（CSI 代码段） | `csi` + 6 位 | `{code}.CSI` | `csi930606`、`930606.CSI`（中证钢铁）；`csi930955`、`930955.CSI`（红利低波100） |
+| 美股指数 | 不进 CN 注册表 | 直接裸码 | `NDX`（纳斯达克100）、`SPX`、`DJI` |
+
+> 完整清单以 `scripts/stock_index_seeds/index_registry.csv` 为准，构建产物 `apps/dsa-web/public/stocks.index.json` 由它生成（`python scripts/generate_index_from_csv.py --index-only`）。SH/SZ 家族的等价后缀与 canonical 等价；`csi` 家族的 canonical 是 `csi930606`，等价显式写法是 `930606.CSI`（两者都收敛到同一指数）。
+
+**规则与正误示例：**
+
+- **必须写已登记代码的显式形态**（前缀或交易所后缀），不能写未登记代码段（会整批拒绝或按股票处理）。大小写不敏感：`930955.csi`、`CSI930955` 与 `930955.CSI` 等价；同一指数的 canonical 与显式 alias/display 等价（`csi930606` 与 `930606.CSI`、`sz399365` 与 `399365.SZ` 等价）。写错交易所后缀（如 `399365.SH`）会直接报 unsupported（该后缀不接受该代码基码），而裸 6 位码才落回股票路径。
+- **未登记 `.CSI` 目标整批拒绝（仅限 `--stocks` 与 GitHub Actions 入口）**：含未登记 `.CSI`（如 `930956.CSI`、`930606.CSI` 以外的 CSI 段）的 `--stocks` 或 GitHub Actions 每日工作流的 `STOCK_LIST` 会整批拒绝本轮运行，任何一个目标都不执行；本地 `.env`/Docker 无参数默认路径不参与指数分类，不存在此整批拒绝。Web/API 异步批量只拒绝该目标、同步/单股返回 4xx（见下方 Web/API 指数入口小节的 rejected 列表语义）。写错交易所后缀（如 `399365.SH`）同样直接报 unsupported。
+- **裸码不自动提升为指数**：裸 `399365` / `930606` / `000016` 等 6 位代码一律按股票路径处理（契约保持“裸码默认股票”），只记录歧义提示。注意：SZ 家族指数（如 `sz399365`）的股票 canonical 与指数 canonical 同为 `sz{code}` 前缀形态，同码裸股与指数共用同一落库键域，混合自选时请留意下方 canonical 隔离小节的折叠语义。
+- **NDX 等美股指数直接写裸码就是正确写法**：它们走 `us_index_mapping` 的专用美股指数路由，**不要**套用 CN 前缀/后缀（如 `NDX.US`、`usNDX`），加了反而可能落入股票路径。
+- **ETF（如 159934 黄金 ETF、XOP）不进指数注册表**：ETF 语义走股票路径，与同数字开头的指数无关；直接写裸码即可，不需要也不支持指数前缀。
+
+**配置示例（`STOCK_LIST`，逗号分隔）：**
+
+```text
+600519,sh000016,930606.CSI,sz399365,159934,NDX
+```
+
+上面混排了个股（600519 贵州茅台）、上证指数（sh000016）、CSI 指数（930606.CSI）、SZ 指数（sz399365）、A 股 ETF（159934，走股票路径）与美股指数（NDX，走美股指数路由）。批量含未登记 `.CSI` 时整批不运行，因此**推荐对每个指数先核对注册表再配置**。
 
 ### 指数与个股 Dashboard canonical 隔离（PR #2312）
 
-已登记指数以 lowercase canonical（`sh000016`/`sz399001`/`csi930955`）写入历史存储；历史筛选、按代码删除、计数与个股栏（stock-bar）聚合统一使用 parser 判型，指数记录与同码裸股票（如 `000016`）严格隔离，互不折叠：
+已登记指数以 lowercase canonical（`sh000016`/`sz399001`/`csi930955`）写入历史存储；历史筛选、按代码删除、计数与个股栏（stock-bar）聚合统一使用 parser 判型，指数记录与同码裸股票（如 `000016`）严格隔离，互不折叠。例外：SZ 家族指数（如 `sz399365`）的裸股票 canonical 与指数 canonical 同为 `sz{code}` 前缀形态（裸 `399365` 按股票解析时 canonical 即 `sz399365`），二者天然共键；该家族的同码裸股与指数记录不在上述隔离范围，混合自选时按同一键折叠。
 
 - **历史候选**：指数查询（`sh000016`、`SH000016`、`000016.SH`、`sz399001`、`csi930955`、`930955.CSI` 等显式形式）会命中 lowercase canonical、uppercase legacy canonical 与显式 alias 的既有记录，但**不会**命中裸同码股票记录；裸码查询（`000016`/`930955`）也不会命中指数记录。股票 alias、港股与海外市场的既有等价匹配保持不变。
 - **删除与计数**：`DELETE /api/v1/history/by-code/{code}` 与历史总数对指数 canonical 收敛全部显式形态；无记录时仍返回 `deleted=0`，不引入破坏性 404。

@@ -1,0 +1,41 @@
+{
+  "total_steps": 5,
+  "tool_calls_log": [
+    {
+      "step": 1,
+      "tool": "get_realtime_quote",
+      "arguments": {"stock_code": "000001"},
+      "success": true,
+      "duration": 0.5,
+      "result_length": 100,
+      "cached": false
+    },
+    {
+      "step": 2,
+      "tool": "get_daily_history",
+      "arguments": {"stock_code": "000001", "days": 60},
+      "success": false,
+      "duration": 1.2,
+      "result_length": 0,
+      "cached": false
+    },
+    {
+      "step": 3,
+      "tool": "get_daily_history",
+      "arguments": {"stock_code": "000001", "days": 60},
+      "success": true,
+      "duration": 1.3,
+      "result_length": 250,
+      "cached": false
+    },
+    {
+      "step": 4,
+      "tool": "get_daily_history",
+      "arguments": {"stock_code": "000001", "days": 60},
+      "success": true,
+      "duration": 0.4,
+      "result_length": 250,
+      "cached": false
+    }
+  ]
+}

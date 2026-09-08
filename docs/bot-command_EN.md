@@ -57,7 +57,7 @@ bot/
 ├── commands/               # Command handlers
 │   ├── __init__.py
 │   ├── base.py             # Abstract base class for commands
-│   ├── analyze.py          # /analyze — stock analysis
+│   ├── analyze.py          # /analyze — stock/index analysis
 │   ├── ask.py              # /ask — single-turn question
 │   ├── batch.py            # /batch — batch watchlist analysis
 │   ├── chat.py             # /chat — multi-turn strategy chat
@@ -152,7 +152,7 @@ class BotCommand(ABC):
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `/analyze` | Analyze a specific stock | `/analyze AAPL` or `/analyze 600519` |
+| `/analyze` | Analyze a specific stock or a registered index | `/analyze AAPL`, `/analyze 600519`, `/analyze sh000016`, `/analyze 上证50` |
 | `/ask` | Single-turn question about a stock or the market | `/ask what is RSI for AAPL` |
 | `/batch` | Batch-analyze your configured watchlist | `/batch` |
 | `/chat` | Multi-turn strategy chat (maintains conversation context) | `/chat` |
@@ -161,6 +161,26 @@ class BotCommand(ABC):
 | `/status` | Show system status | `/status` |
 
 > **Stock code formats:** A-shares use 6-digit codes (e.g. `600519`); HK stocks prefix `hk` (e.g. `hk00700`); US stocks use ticker symbols (e.g. `AAPL`, `TSLA`).
+
+> **Registered index inputs:** explicit codes (`sh000016`), CSI aliases (`930955.CSI` converges to `csi930955`) and registered Chinese names (`上证50`) are all accepted. Index inputs are submitted as a structured `AnalysisTarget` that flows through to the analysis pipeline, so `sh000016` is never rewritten to `SH000016`. Unregistered CSI forms (e.g. `930956.CSI`), code shapes the legacy gate rejected (`12345`, bare `00700`, `600519.SH`, unregistered `sh999999`) and unrecognized names return an explicit error without submitting a task; ambiguous registered names require an explicit code instead of guessing. Stock inputs (A-share 6-digit, `HK`+5-digit, US 1-5 letters, e.g. `usfd`→`USFD`) keep the legacy code path. Stock-name inputs (e.g. `贵州茅台`) are newly exposed by this Bot entry: they reuse the existing name resolver (`resolve_name_to_code`) and then submit the legacy code without a structured target.
+
+### Bot index entry online E2E smoke (`scripts/smoke_bot_index_entry.py`)
+
+Walks the real `CommandDispatcher.dispatch_async -> AnalyzeCommand -> TaskService -> StockAnalysisPipeline` online for a single target, covering the `SH.000016` / `上证50` / `930955.CSI` matrix scenarios without any webhook transport (no mocked online dependencies, no dry-run).
+
+Run with a single target argument (`--timeout` defaults to 900 seconds):
+
+```powershell
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "SH.000016"
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "上证50"
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "930955.CSI"
+```
+
+Process responsibilities: a worker subprocess submits and polls the in-process `TaskService` and prints single-line `E2E_EVENT {json}` events (`phase=submitted|completed|failed|timeout`, with `target`, plus `task_id`/`stock_code`/`result`/`error` per phase); the parent only enforces the deadline, cleans up the process tree and maps exit codes (0=success / 1=failure / 124=timeout).
+
+Failure semantics: a failed task or a completed-but-incomplete result (canonical code or registered name not matching the matrix expectation, or any of `analysis_summary`/`operation_advice`/`trend_prediction` empty or whitespace-only) emits a `failed` event and exits non-zero; on timeout the process tree is killed (Windows `taskkill /T /F`, POSIX process group) — a successful cleanup emits a `timeout` event and exits 124, a failed cleanup emits a `failed` event carrying the cleanup error and exits 1 — never rolling back DB / reports / notifications side effects. On a user Ctrl-C the parent also cleans up the process tree first: a successful cleanup propagates the interrupt, a failed cleanup emits a `failed` event carrying the cleanup error and exits 1 — a cleanup failure is never silently swallowed. The worker's expected code/name come from the script's built-in authoritative matrix map (`SH.000016`/`上证50` → `sh000016`/`上证50`, `930955.CSI` → `csi930955`/`红利低波100`) — never from the response or the result's self-reported identity: a submission whose `extra.stock_code` does not match the expectation fails with an explicit mismatch error carrying the expected and actual values (the failed event also carries the structured actual `stock_code`), and targets outside the matrix as well as non-positive `--timeout` are rejected before any submission or subprocess spawn (argument/input error, exit code 2). Unexpected worker exceptions (dispatch / poll / event serialization) emit a `failed` event and exit 1 with the exception evidence kept on stderr; `KeyboardInterrupt` is not treated as an ordinary failure; the parent normalizes any other worker exit code to 1 so the runtime contract only exposes 0 / 1 / 124. The parent spawns the worker with an internal `--worker` flag, not via environment variables.
+
+Prerequisites: network plus configured data-source and AI credentials (online chain). This script is not part of the offline gate and does not run in CI.
 
 ---
 

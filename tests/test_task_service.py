@@ -43,6 +43,19 @@ class _FakePipeline:
         return _make_failed_result(kwargs["code"])
 
 
+class _CapturingPipeline:
+    """Records the final ``process_single_stock`` kwargs for target assertions."""
+
+    calls = []  # class-level so tests can assert via the fake module attribute
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def process_single_stock(self, *args, **kwargs):
+        type(self).calls.append(kwargs)
+        return _make_failed_result(kwargs["code"])
+
+
 class TestTaskService(unittest.TestCase):
     def test_run_analysis_marks_failed_for_unsuccessful_result(self):
         service = TaskService()
@@ -115,6 +128,94 @@ class TestTaskService(unittest.TestCase):
         self.assertIn("args", captured)
         # executor.submit(self._run_analysis, code, task_id, ...) — code is arg[1]
         self.assertEqual(captured["args"][1], "csi930955")
+
+    def test_submit_analysis_with_index_target_skips_resolver_and_keeps_canonical(self):
+        """PR2: when an INDEX ``AnalysisTarget`` is supplied, ``submit_analysis``
+        must use ``target.canonical_id`` verbatim and skip the stock-code
+        resolver — otherwise ``sh000016`` would be rewritten to ``SH000016``."""
+        from src.services.stock_list_parser import AnalysisTarget, ParseStatus
+
+        service = TaskService()
+        service._tasks = {}
+        service._tasks_lock = threading.Lock()
+        captured = {}
+
+        executor = MagicMock()
+
+        def capture_submit(*args, **kwargs):
+            captured["args"] = args
+            return "future"
+
+        executor.submit.side_effect = capture_submit
+        service._executor = executor
+
+        target = AnalysisTarget(
+            raw_input="sh000016",
+            asset_type=ParseStatus.INDEX,
+            canonical_id="sh000016",
+            display_code="上证50",
+            exchange="SH",
+        )
+
+        with patch("src.services.task_service.resolve_index_stock_code_for_analysis") as mock_resolve:
+            result = service.submit_analysis(
+                "sh000016", report_type="simple", query_source="cli",
+                analysis_target=target,
+            )
+
+        mock_resolve.assert_not_called()
+        self.assertEqual(result["code"], "sh000016")
+        self.assertIn("args", captured)
+        # executor.submit(self._run_analysis, code, task_id, ...) — code is arg[1]
+        self.assertEqual(captured["args"][1], "sh000016")
+        # analysis_target is the last positional arg handed to _run_analysis
+        self.assertIs(captured["args"][-1], target)
+
+    def test_submit_analysis_rejects_non_index_target(self):
+        from src.services.stock_list_parser import parse_analysis_target
+
+        service = TaskService()
+        service._executor = MagicMock()
+        target = parse_analysis_target("600519")
+
+        with self.assertRaisesRegex(ValueError, "must be an INDEX target"):
+            service.submit_analysis("600519", analysis_target=target)
+        service._executor.submit.assert_not_called()
+
+    def test_run_analysis_passes_index_target_to_pipeline(self):
+        """PR2: the background task must forward the same ``analysis_target``
+        to ``process_single_stock`` so the pipeline receives canonical code and
+        the structured INDEX target together."""
+        from src.services.stock_list_parser import AnalysisTarget, ParseStatus
+
+        service = TaskService()
+        service._tasks = {}
+        service._tasks_lock = threading.Lock()
+
+        fake_main = ModuleType("main")
+        fake_main.StockAnalysisPipeline = _CapturingPipeline
+
+        target = AnalysisTarget(
+            raw_input="930955.CSI",
+            asset_type=ParseStatus.INDEX,
+            canonical_id="csi930955",
+            display_code="红利低波100",
+            exchange="CSI",
+        )
+
+        _CapturingPipeline.calls = []
+        with patch.dict("sys.modules", {"main": fake_main}), patch(
+            "src.config.get_config", return_value=SimpleNamespace()
+        ):
+            result = service._run_analysis(
+                code="csi930955", task_id="task-index-1", analysis_target=target
+            )
+
+        self.assertFalse(result["success"])  # _CapturingPipeline returns failure
+        self.assertEqual(len(_CapturingPipeline.calls), 1)
+        call = _CapturingPipeline.calls[0]
+        self.assertEqual(call["code"], "csi930955")
+        self.assertIs(call["analysis_target"], target)
 
 
 if __name__ == "__main__":
