@@ -39,6 +39,11 @@ class TestParseImportFromBytesCsv:
         result = parse_import_from_bytes(data, "a.csv")
         assert result[0] == ("600519", "贵州茅台", "medium")
 
+    def test_parses_utf8_bom_csv_header(self):
+        data = "\ufeffcode,name\n600519,".encode("utf-8")
+        result = parse_import_from_bytes(data, "a.csv")
+        assert result == [("600519", None, "medium")]
+
     def test_parses_csv_no_header(self):
         # Use 300750 instead of 00700 to avoid pandas stripping leading zeros
         data = "600519,贵州茅台\n300750,宁德时代".encode("utf-8")
