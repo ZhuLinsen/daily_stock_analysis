@@ -3119,6 +3119,35 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "DSA_TIMEOUT_PARTIAL_NOTIFY": {
+        "title": "Timeout Partial Notification",
+        "description": (
+            "After a Web/API runtime scheduler hard timeout, send a partial "
+            "notification for analyses already saved to history."
+        ),
+        "category": "system",
+        "data_type": "boolean",
+        "ui_control": "toggle",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 13,
+        "help_key": "settings.system.schedule",
+        "examples": [
+            "DSA_TIMEOUT_PARTIAL_NOTIFY=true",
+            "DSA_TIMEOUT_PARTIAL_NOTIFY=false",
+        ],
+        "docs": [
+            {
+                "label": "Full guide: configuration",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#其他配置",
+            },
+        ],
+        "warning_codes": [],
+    },
     "HTTP_PROXY": {
         "title": "HTTP Proxy",
         "description": "Optional HTTP proxy endpoint.",
