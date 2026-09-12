@@ -366,7 +366,16 @@ class RuntimeSchedulerService:
         run_started_at: datetime,
         stock_codes: Optional[List[str]],
     ) -> str:
-        """Collect partial DB results and build a structured timeout error."""
+        """Collect partial DB results and build a structured timeout error.
+
+        Notify-channel failures are fail-open and do not change this string.
+        Collect/import failures are also fail-open: this may return a
+        ``completed=0`` structured message (indistinguishable from no saved
+        rows) or, if the helper itself raises, the baseline timeout fallback.
+        ``status().last_error`` therefore cannot be used as a collect-failure
+        signal; grep ``Failed to collect completed analyses after timeout``
+        or ``Timeout partial delivery failed open``.
+        """
         fallback = f"runtime scheduled analysis timed out after {timeout_seconds}s"
         try:
             from src.services.analysis_timeout_partial import handle_runtime_analysis_timeout
@@ -421,6 +430,9 @@ class RuntimeSchedulerService:
           pointer assignment is atomic, so callers observe either the baseline
           or the fully replaced string—never a torn mix. They may briefly see
           the baseline until this thread finishes.
+        - Notify-channel exceptions stay inside this thread and cannot
+          re-acquire ``_run_lock``. Collect/import fail-open is only visible
+          in warning logs, not as a distinct ``last_error`` code.
         """
         generation = context.get("generation")
 

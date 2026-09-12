@@ -896,6 +896,8 @@ python main.py --schedule --no-run-immediately
 | `RUN_IMMEDIATELY` | 非定时模式启动时是否立即运行一次；同时作为未显式设置 `SCHEDULE_RUN_IMMEDIATELY` 时的 legacy 回退 | `true` | `false` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：非交易日跳过执行；设为 `false` 可强制执行 | `true` | `false` |
 
+> 超时部分完成排障：通知渠道异常只记 warning（`Partial timeout notification failed`）并跳过推送，**不抛出、不占用** `status().running`（notify 在分析锁释放后的后台线程）。扫库 / `src.storage` 导入失败同样 fail-open：API 上可能仍是 baseline `timed out after Ns`，或被 enrich 成 `completed=0`（与「确实没有落库」无法区分）。运维请搜 `Failed to collect completed analyses after timeout`、`Timeout partial delivery failed open`、`Partial timeout notification failed`。合入后首次发布请关注通知量，避免默认开启造成骚扰；可设 `DSA_TIMEOUT_PARTIAL_NOTIFY=false` 关闭推送。
+
 例如在 Docker 中配置：
 
 ```bash

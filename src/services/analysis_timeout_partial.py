@@ -97,7 +97,10 @@ def collect_completed_analyses_since(
 
     Only codes in ``expected_codes`` are considered when that list is non-empty.
     When the same code has multiple rows in the window, keep the latest.
-    Fail-open: DB errors return an empty list after logging.
+    Fail-open: DB/import errors return an empty list after logging a warning.
+    Callers cannot tell "no rows yet" from "collect failed"; operators must
+    grep ``Failed to collect completed analyses after timeout``. ``status()``
+    may then show ``completed=0`` or keep the baseline timeout ``last_error``.
     """
     try:
         rows = _query_history_rows_since(
@@ -141,7 +144,13 @@ def _query_history_rows_since(
 
 
 def _resolve_storage_module() -> Any:
-    """Load ``src.storage``, cleaning up broken partial imports on failure."""
+    """Load ``src.storage``, cleaning up broken partial imports on failure.
+
+    On import failure, drop ``src.storage`` / ``src.storage.*`` from
+    ``sys.modules`` and raise. The timeout collect path fail-opens to an
+    empty list; this is not surfaced on ``status().last_error`` beyond a
+    possible ``completed=0`` enrich. Watch the warning log, not the API.
+    """
     import importlib
     import sys
 
@@ -248,6 +257,13 @@ def send_partial_timeout_notification(
     """Send ``report`` via NotificationService unless ``no_notify`` is set.
 
     Returns True when a send was attempted and succeeded.
+
+    Channel/import exceptions are swallowed: this function logs a warning
+    (``Partial timeout notification failed``) and returns False. It does not
+    re-raise, so it cannot keep ``RuntimeSchedulerService`` ``_run_lock``
+    held or flip ``status().running`` — notify runs on a daemon thread after
+    that lock is already released. Structured ``last_error`` is still returned
+    by ``handle_runtime_analysis_timeout`` with ``notify_skipped_reason=send_failed``.
     """
     if no_notify:
         return False

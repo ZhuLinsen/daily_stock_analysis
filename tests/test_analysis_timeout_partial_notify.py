@@ -190,6 +190,47 @@ class TimeoutPartialHelpersTests(unittest.TestCase):
             )
         )
 
+    def test_send_swallows_channel_exception_and_returns_false(self) -> None:
+        notification_mod = MagicMock()
+        notification_mod.NotificationService.return_value.send.side_effect = RuntimeError(
+            "webhook 500"
+        )
+        with patch.dict("sys.modules", {"src.notification": notification_mod}):
+            self.assertFalse(
+                send_partial_timeout_notification(
+                    "hello",
+                    completed_codes=["600519"],
+                    no_notify=False,
+                )
+            )
+        notification_mod.NotificationService.return_value.send.assert_called_once()
+
+    @patch("src.services.analysis_timeout_partial.collect_completed_analyses_since")
+    def test_handle_keeps_error_message_when_channel_raises(
+        self,
+        collect_mock: MagicMock,
+    ) -> None:
+        collect_mock.return_value = [
+            CompletedAnalysisSummary(code="600519", name="贵州茅台"),
+        ]
+        notification_mod = MagicMock()
+        notification_mod.NotificationService.return_value.send.side_effect = RuntimeError(
+            "channel down"
+        )
+
+        with patch.dict("sys.modules", {"src.notification": notification_mod}):
+            outcome = handle_runtime_analysis_timeout(
+                timeout_seconds=60,
+                run_started_at=datetime(2026, 1, 1, 12, 0, 0),
+                stock_codes=["600519", "300750"],
+                no_notify=False,
+            )
+
+        self.assertFalse(outcome.notified)
+        self.assertEqual(outcome.notify_skipped_reason, "send_failed")
+        self.assertIn("completed=1", outcome.error_message)
+        self.assertIn("pending=1", outcome.error_message)
+
     @patch("src.services.analysis_timeout_partial.send_partial_timeout_notification")
     @patch("src.services.analysis_timeout_partial.collect_completed_analyses_since")
     def test_handle_runtime_analysis_timeout_notifies_when_completed(
