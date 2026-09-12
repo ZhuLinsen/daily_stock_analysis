@@ -408,6 +408,19 @@ class RuntimeSchedulerService:
 
         Runs in a daemon thread so DB/import work cannot delay the next run or
         keep the watchdog finally block occupied.
+
+        Consistency with ``status()``:
+        - The watchdog first writes a baseline ``timed out after Ns`` string
+          under ``_analysis_process_lock``, then releases ``_run_lock``.
+        - This thread later replaces ``_last_error`` with the structured
+          completed/pending message, still under ``_analysis_process_lock``.
+        - The replace is skipped if ``generation`` no longer matches (a newer
+          run started) or if ``_last_error`` no longer contains
+          ``timed out after`` (another outcome already replaced it).
+        - ``status()`` reads ``_last_error`` without that lock. CPython
+          pointer assignment is atomic, so callers observe either the baseline
+          or the fully replaced string—never a torn mix. They may briefly see
+          the baseline until this thread finishes.
         """
         generation = context.get("generation")
 
@@ -771,6 +784,8 @@ class RuntimeSchedulerService:
             "next_run_at": next_run,
             "last_run_at": self._last_run_at,
             "last_success_at": self._last_success_at,
+            # Unlocked read: may briefly show the baseline timeout string
+            # until _apply_timeout_partial_outcome finishes. See that method.
             "last_error": self._last_error,
             "last_skipped_at": self._last_skipped_at,
             "last_skip_reason": self._last_skip_reason,

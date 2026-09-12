@@ -3127,7 +3127,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ),
         "category": "system",
         "data_type": "boolean",
-        "ui_control": "toggle",
+        "ui_control": "switch",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,

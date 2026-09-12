@@ -106,10 +106,66 @@ class TimeoutPartialHelpersTests(unittest.TestCase):
         self.assertEqual(rows[0].name, "new")
         self.assertEqual(rows[0].history_id, 2)
 
+    def test_timeout_partial_notify_registry_uses_switch_ui_control(self) -> None:
+        from api.v1.schemas.system_config import SystemConfigFieldSchema
+        from src.core.config_registry import get_field_definition
+
+        field = get_field_definition("DSA_TIMEOUT_PARTIAL_NOTIFY")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["default_value"], "true")
+        SystemConfigFieldSchema.model_validate(field)
+
     def test_collect_completed_analyses_since_fail_open(self) -> None:
         with patch(
             "src.services.analysis_timeout_partial._query_history_rows_since",
             side_effect=RuntimeError("db down"),
+        ):
+            rows = collect_completed_analyses_since(
+                run_started_at=datetime.now(),
+                expected_codes=["600519"],
+            )
+        self.assertEqual(rows, [])
+
+    def test_resolve_storage_module_cleans_partial_import_on_failure(self) -> None:
+        import sys
+
+        from src.services.analysis_timeout_partial import _resolve_storage_module
+
+        original = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == "src.storage" or name.startswith("src.storage.")
+        }
+        for name in list(original):
+            sys.modules.pop(name, None)
+
+        def _boom(name: str, *args, **kwargs):
+            if name == "src.storage":
+                sys.modules["src.storage"] = object()
+                sys.modules["src.storage.models"] = object()
+                raise ImportError("broken storage")
+            raise AssertionError(f"unexpected import: {name}")
+
+        try:
+            with patch("importlib.import_module", side_effect=_boom):
+                with self.assertRaises(RuntimeError) as ctx:
+                    _resolve_storage_module()
+            self.assertIn("storage unavailable", str(ctx.exception))
+            self.assertNotIn("src.storage", sys.modules)
+            self.assertFalse(
+                any(name.startswith("src.storage.") for name in sys.modules)
+            )
+        finally:
+            for name in list(sys.modules):
+                if name == "src.storage" or name.startswith("src.storage."):
+                    sys.modules.pop(name, None)
+            sys.modules.update(original)
+
+    def test_collect_fail_open_when_storage_import_fails(self) -> None:
+        with patch(
+            "src.services.analysis_timeout_partial._resolve_storage_module",
+            side_effect=RuntimeError("storage unavailable for timeout partial collect"),
         ):
             rows = collect_completed_analyses_since(
                 run_started_at=datetime.now(),
