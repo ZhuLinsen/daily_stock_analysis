@@ -50,6 +50,7 @@ from src.llm.provider_cache import (
     normalize_prompt_cache_diagnostics_level,
     resolve_provider_cache_caps,
 )
+from src.telemetry import observation, update_observation
 
 logger = logging.getLogger(__name__)
 
@@ -633,6 +634,7 @@ class LLMToolAdapter:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=remaining_timeout,
+                    fallback_index=idx,
                 )
             except Exception as e:
                 if isinstance(e, _resolve_litellm_exception("RateLimitError")):
@@ -684,8 +686,49 @@ class LLMToolAdapter:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
+        fallback_index: int = 0,
     ) -> LLMResponse:
         """Call a specific litellm model with OpenAI-format messages and tools."""
+        with observation(
+            "agent.llm.generation",
+            as_type="generation",
+            model=model,
+            metadata={
+                "model": model,
+                "provider": self._get_model_provider(model),
+                "backend": "litellm",
+                "fallback_index": fallback_index,
+                "retry_count": fallback_index,
+            },
+        ) as telemetry_generation:
+            try:
+                return self._call_litellm_model_observed(
+                    messages,
+                    tools,
+                    model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    telemetry_generation=telemetry_generation,
+                    fallback_index=fallback_index,
+                )
+            except Exception as exc:
+                update_observation(telemetry_generation, error=exc)
+                raise
+
+    def _call_litellm_model_observed(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[dict],
+        model: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+        telemetry_generation: Any = None,
+        fallback_index: int = 0,
+    ) -> LLMResponse:
+        """Implementation split out so telemetry never receives prompt/response bodies."""
         openai_messages = self._convert_messages(messages, target_model=model)
 
         # Use short model name (without provider prefix) for thinking model lookup
@@ -781,12 +824,33 @@ class LLMToolAdapter:
                 logger=logger,
             )
 
-        return self._parse_litellm_response(
+        parsed = self._parse_litellm_response(
             response,
             model,
             openai_messages,
             model_list=recovery_model_list,
         )
+        response_cost = None
+        if telemetry_generation is not None:
+            try:
+                response_cost = litellm.completion_cost(completion_response=response)
+            except Exception:
+                pass
+        cache_observation = parsed.usage.get("cache_observation") if isinstance(parsed.usage, dict) else None
+        update_observation(
+            telemetry_generation,
+            metadata={
+                "status": "success",
+                "model": parsed.model,
+                "provider": parsed.provider,
+                "fallback_index": fallback_index,
+                "retry_count": fallback_index,
+                "cache_hit": cache_observation in {"partial_hit", "full_hit", "read_and_write"},
+            },
+            usage=parsed.usage,
+            cost=response_cost,
+        )
+        return parsed
 
     def _get_temperature(self) -> float:
         """Return the raw configured temperature before per-model normalization."""

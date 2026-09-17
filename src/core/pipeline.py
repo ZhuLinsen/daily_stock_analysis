@@ -89,6 +89,7 @@ from src.services.decision_signal_extractor import (
 from src.services.decision_signal_summary import summarize_decision_signal
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+from src.telemetry import observe
 from src.core.trading_calendar import (
     build_market_phase_context,
     get_effective_trading_date,
@@ -2989,6 +2990,7 @@ class StockAnalysisPipeline:
 
         return context
     
+    @observe("pipeline.stock_analysis", as_type="chain")
     def process_single_stock(
         self,
         code: str,

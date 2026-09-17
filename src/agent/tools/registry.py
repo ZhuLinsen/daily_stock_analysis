@@ -14,6 +14,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from src.telemetry import observation, update_observation
+
 logger = logging.getLogger(__name__)
 
 SUPPORTED_TOOL_SURFACE_SCOPE_DIMENSIONS = frozenset({"stock"})
@@ -289,7 +291,18 @@ class ToolRegistry:
         if tool_def is None:
             raise KeyError(f"Tool '{name}' not found in registry. Available: {self.list_names()}")
 
-        return tool_def.handler(**kwargs)
+        with observation(
+            f"tool.{tool_def.name}",
+            as_type="tool",
+            metadata={"tool_name": tool_def.name, "category": tool_def.category},
+        ) as current:
+            try:
+                result = tool_def.handler(**kwargs)
+            except Exception as exc:
+                update_observation(current, error=exc)
+                raise
+            update_observation(current, metadata={"status": "success"})
+            return result
 
 
 # ============================================================

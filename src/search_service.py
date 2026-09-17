@@ -43,6 +43,7 @@ from src.data.stock_mapping import (
     foreign_stock_english_aliases,
 )
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
+from src.telemetry import observation, observe, update_observation
 
 logger = logging.getLogger(__name__)
 
@@ -3659,6 +3660,7 @@ class SearchService:
             record_count=record_count,
         )
 
+    @observe("search.stock_news", as_type="retriever")
     def search_stock_news(
         self,
         stock_code: str,
@@ -3813,7 +3815,20 @@ class SearchService:
                         provider=provider.name,
                         operation="search_stock_news",
                     )
-                    response = provider.search(query, provider_max_results, days=search_days, **search_kwargs)
+                    with observation(
+                        "search.provider_attempt",
+                        as_type="retriever",
+                        metadata={"provider": provider.name, "fallback_index": self._providers.index(provider)},
+                    ) as provider_observation:
+                        response = provider.search(query, provider_max_results, days=search_days, **search_kwargs)
+                        update_observation(
+                            provider_observation,
+                            metadata={
+                                "provider": provider.name,
+                                "status": "success" if response.success else "error",
+                                "fallback_index": self._providers.index(provider),
+                            },
+                        )
                 except Exception as exc:
                     self._record_news_search_run(
                         provider=provider.name,
@@ -4029,6 +4044,7 @@ class SearchService:
             error_message="事件搜索失败"
         )
     
+    @observe("rag.comprehensive_intel", as_type="retriever")
     def search_comprehensive_intel(
         self,
         stock_code: str,
@@ -4371,6 +4387,7 @@ class SearchService:
         
         return results
 
+    @observe("search.provider_fallback", as_type="retriever", metadata={"status": "fallback"})
     def search_stock_price_fallback(
         self,
         stock_code: str,

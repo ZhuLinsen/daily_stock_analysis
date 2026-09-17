@@ -16,6 +16,7 @@ import uuid
 from typing import Optional, Dict, Any, Callable, List
 
 from src.repositories.analysis_repo import AnalysisRepository
+from src.telemetry import observe
 from src.report_language import (
     get_sentiment_label,
     get_localized_stock_name,
@@ -47,6 +48,7 @@ class AnalysisService:
         self.repo = AnalysisRepository()
         self.last_error: Optional[str] = None
     
+    @observe("api.analysis.task", as_type="chain")
     def analyze_stock(
         self,
         stock_code: str,
