@@ -261,6 +261,60 @@ def _extract_latest_row(df: pd.DataFrame, stock_code: str) -> Optional[pd.Series
     return df.iloc[0]
 
 
+def _latest_report_period(today=None) -> str:
+    """Return the most recently ended A-share report period as YYYYMMDD.
+
+    Report periods: 0331 (Q1), 0630 (H1), 0930 (Q3), 1231 (annual).
+    Uses the most recent period whose disclosure window has started.
+    """
+    import datetime as _dt
+
+    today = today or _dt.date.today()
+    y = today.year
+    candidates = [
+        _dt.date(y, 12, 31),
+        _dt.date(y, 9, 30),
+        _dt.date(y, 6, 30),
+        _dt.date(y, 3, 31),
+        _dt.date(y - 1, 12, 31),
+    ]
+    for period_end in candidates:
+        # Disclosure windows start roughly one month after period end;
+        # treat a period as live once we are past period end.
+        if today > period_end:
+            return period_end.strftime("%Y%m%d")
+    return _dt.date(y - 1, 12, 31).strftime("%Y%m%d")
+
+
+def _em_market_symbol(stock_code: str) -> str:
+    """Convert a bare 6-digit A-share code to the eastmoney sh/sz prefix form."""
+    code = str(stock_code).strip()
+    if code[:2] in ("sh", "sz"):
+        return code
+    return ("sh" if code.startswith("6") else "sz") + code
+
+
+def _values_from_abstract(df: pd.DataFrame) -> Dict[str, Optional[Any]]:
+    """Extract key figures from stock_financial_abstract wide table.
+
+    The table is shaped as 选项|指标|<period cols...> with one row per metric;
+    values for the latest period live in the first digit-named column.
+    """
+    if df is None or df.empty:
+        return {}
+    period_cols = [c for c in df.columns if str(c).isdigit()]
+    if not period_cols:
+        return {}
+    latest_col = period_cols[0]
+    out: Dict[str, Optional[Any]] = {}
+    for _, row in df.iterrows():
+        metric = _safe_str(row.get("指标"))
+        if metric:
+            out[metric] = row.get(latest_col)
+    out["_period"] = latest_col
+    return out
+
+
 class AkshareFundamentalAdapter:
     """AkShare adapter for fundamentals, capital flow and dragon-tiger signals."""
 
@@ -305,11 +359,12 @@ class AkshareFundamentalAdapter:
         # Financial indicators
         fin_df, fin_source, fin_errors = self._call_df_candidates([
             ("stock_financial_abstract", {"symbol": stock_code}),
-            ("stock_financial_analysis_indicator", {"symbol": stock_code}),
-            ("stock_financial_analysis_indicator", {}),
         ])
         result["errors"].extend(fin_errors)
-        if fin_df is not None:
+        abstract_vals = _values_from_abstract(fin_df) if fin_df is not None else {}
+        # Legacy long-table fallback: stock_financial_analysis_indicator shape with one
+        # row per period and keyword-searchable columns.
+        if not abstract_vals and fin_df is not None:
             row = _extract_latest_row(fin_df, stock_code)
             if row is not None:
                 revenue_yoy = _safe_float(_pick_by_keywords(row, ["营业收入同比", "营收同比", "收入同比", "同比增长"]))
@@ -337,14 +392,46 @@ class AkshareFundamentalAdapter:
                 }
                 if any(v is not None for v in financial_report_payload.values()):
                     result["earnings"]["financial_report"] = financial_report_payload
-                result["source_chain"].append(f"growth:{fin_source}")
+                if fin_source:
+                    result["source_chain"].append(f"growth:{fin_source}")
+        if abstract_vals:
+            _v = abstract_vals
+
+            def _ab(*names):
+                for n in names:
+                    if n in _v:
+                        return _v[n]
+                return None
+
+            revenue_yoy = _safe_float(_ab("营业总收入增长率", "营业收入同比增长率", "营业总收入同比增长率"))
+            profit_yoy = _safe_float(_ab("归属母公司净利润增长率", "归母净利润同比增长率"))
+            roe = _safe_float(_ab("净资产收益率(ROE)", "净资产收益率"))
+            gross_margin = _safe_float(_ab("毛利率"))
+            report_date = _normalize_report_date(_v.get("_period"))
+            revenue = _safe_float(_ab("营业总收入", "营业收入"))
+            net_profit_parent = _safe_float(_ab("归母净利润"))
+            operating_cash_flow = _safe_float(_ab("经营现金流量净额", "经营活动产生的现金流量净额"))
+            result["growth"] = {
+                "revenue_yoy": revenue_yoy,
+                "net_profit_yoy": profit_yoy,
+                "roe": roe,
+                "gross_margin": gross_margin,
+            }
+            financial_report_payload = {
+                "report_date": report_date,
+                "revenue": revenue,
+                "net_profit_parent": net_profit_parent,
+                "operating_cash_flow": operating_cash_flow,
+                "roe": roe,
+            }
+            if any(v is not None for v in financial_report_payload.values()):
+                result["earnings"]["financial_report"] = financial_report_payload
+            result["source_chain"].append(f"growth:{fin_source}")
 
         # Earnings forecast
         forecast_df, forecast_source, forecast_errors = self._call_df_candidates([
-            ("stock_yjyg_em", {"symbol": stock_code}),
-            ("stock_yjyg_em", {}),
-            ("stock_yjbb_em", {"symbol": stock_code}),
-            ("stock_yjbb_em", {}),
+            ("stock_yjyg_em", {"date": _latest_report_period()}),
+            ("stock_yjbb_em", {"date": _latest_report_period()}),
         ])
         result["errors"].extend(forecast_errors)
         if forecast_df is not None:
@@ -357,8 +444,7 @@ class AkshareFundamentalAdapter:
 
         # Earnings quick report
         quick_df, quick_source, quick_errors = self._call_df_candidates([
-            ("stock_yjkb_em", {"symbol": stock_code}),
-            ("stock_yjkb_em", {}),
+            ("stock_yjkb_em", {"date": _latest_report_period()}),
         ])
         result["errors"].extend(quick_errors)
         if quick_df is not None:
@@ -384,8 +470,8 @@ class AkshareFundamentalAdapter:
 
         # Institution / top shareholders
         inst_df, inst_source, inst_errors = self._call_df_candidates([
-            ("stock_institute_hold", {}),
-            ("stock_institute_recommend", {}),
+            ("stock_institute_hold", {"symbol": stock_code}),
+            ("stock_institute_recommend", {"symbol": stock_code}),
         ])
         result["errors"].extend(inst_errors)
         if inst_df is not None:
@@ -396,10 +482,8 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"institution:{inst_source}")
 
         top10_df, top10_source, top10_errors = self._call_df_candidates([
-            ("stock_gdfx_top_10_em", {"symbol": stock_code}),
-            ("stock_gdfx_top_10_em", {}),
+            ("stock_gdfx_top_10_em", {"symbol": _em_market_symbol(stock_code), "date": _latest_report_period()}),
             ("stock_zh_a_gdhs_detail_em", {"symbol": stock_code}),
-            ("stock_zh_a_gdhs_detail_em", {}),
         ])
         result["errors"].extend(top10_errors)
         if top10_df is not None:
