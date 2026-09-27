@@ -6,7 +6,7 @@
 完全一致（无 ``cross_validation`` 字段）—— 保证不影响现有功能。
 
 职责（高内聚）：
-- 构建/缓存 :class:`CrossSourceValidator`（MX 主源 + iFinD 验证源）。
+- 构建/缓存 :class:`CrossSourceValidator`（MX 主源 + iFinD/Choice MCP/fuyao 验证源）。
 - 对一组锚点逐个验证，压缩为 LLM 友好的 ``cross_validation`` 块。
 
 data_tools 各 handler 只需一行调用，不感知验证细节（低耦合）。
@@ -38,7 +38,7 @@ def reset_validator() -> None:
 
 
 def _build_sources(config: Any) -> List[SourceAdapter]:
-    """构建数据源列表：MX 主源 + iFinD 验证源 + Choice MCP 验证源（按需启用）。"""
+    """构建数据源列表：MX 主源 + iFinD/Choice MCP/fuyao 验证源（按需启用）。"""
     from data_provider.mx_data_adapter import MXSource
 
     sources: List[SourceAdapter] = [
@@ -67,6 +67,18 @@ def _build_sources(config: Any) -> List[SourceAdapter]:
             timeout_seconds=float(getattr(config, "mx_mcp_timeout_seconds", 30.0)),
         )
         sources.append(MxMcpSource(fetcher=fetcher))
+    # 第四验证源：同花顺 fuyao (aicubes REST)，opt-in，默认关 → 零回归
+    if getattr(config, "enable_fuyao", False) and getattr(
+        config, "fuyao_api_key", None
+    ):
+        from data_provider.fuyao_adapter import FuyaoFetcher, FuyaoSource
+
+        fetcher = FuyaoFetcher(
+            endpoint=getattr(config, "fuyao_endpoint", None),
+            api_key=getattr(config, "fuyao_api_key", None),
+            timeout_seconds=float(getattr(config, "fuyao_timeout_seconds", 30.0)),
+        )
+        sources.append(FuyaoSource(fetcher=fetcher))
     return sources
 
 

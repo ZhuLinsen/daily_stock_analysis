@@ -164,6 +164,71 @@ class TestGetValidatorConfigGate(unittest.TestCase):
         self.assertEqual(names[0], "mx")
         self.assertEqual(len(sources), 2)
 
+    def test_build_sources_with_fuyao_disabled_without_key(self):
+        """fuyao 装配 opt-in：开关 false 或缺 key 均不挂入（默认零回归）。"""
+        class _Cfg:
+            ifind_mcp_endpoint = None
+            ifind_mcp_token = None
+            ifind_mcp_timeout_seconds = 8.0
+            enable_mx_mcp = False
+            mx_mcp_api_key = None
+            enable_fuyao = False
+            fuyao_api_key = "redacted"
+            fuyao_endpoint = "https://fuyao.example"
+            fuyao_timeout_seconds = 30.0
+        names = [s.name for s in h._build_sources(_Cfg())]
+        self.assertNotIn("fuyao", names)
+
+    def test_build_sources_with_fuyao_enabled_no_key(self):
+        """fuyao enable=true 但 key 为空：不挂入（避免明面开启实际不可用）。"""
+        class _Cfg:
+            ifind_mcp_endpoint = None
+            ifind_mcp_token = None
+            ifind_mcp_timeout_seconds = 8.0
+            enable_mx_mcp = False
+            mx_mcp_api_key = None
+            enable_fuyao = True
+            fuyao_api_key = None
+            fuyao_endpoint = "https://fuyao.example"
+            fuyao_timeout_seconds = 30.0
+        names = [s.name for s in h._build_sources(_Cfg())]
+        self.assertNotIn("fuyao", names)
+
+    def test_build_sources_with_fuyao_enabled(self):
+        """fuyao 装配：开关 true 且 key 存在时挂入第 4 源，name 标识明确。"""
+        class _Cfg:
+            ifind_mcp_endpoint = None
+            ifind_mcp_token = None
+            ifind_mcp_timeout_seconds = 8.0
+            enable_mx_mcp = False
+            mx_mcp_api_key = None
+            enable_fuyao = True
+            fuyao_api_key = "redacted"
+            fuyao_endpoint = "https://fuyao.example"
+            fuyao_timeout_seconds = 30.0
+        sources = h._build_sources(_Cfg())
+        names = [s.name for s in sources]
+        self.assertIn("fuyao", names)
+        self.assertEqual(names[0], "mx")
+        self.assertEqual(len(sources), 2)
+
+    def test_build_sources_with_fuyao_and_choice_mcp(self):
+        """fuyao 与 Choice MCP 同时开启：四源装配顺序为 mx / mx_mcp / fuyao。"""
+        class _Cfg:
+            ifind_mcp_endpoint = None
+            ifind_mcp_token = None
+            ifind_mcp_timeout_seconds = 8.0
+            enable_mx_mcp = True
+            mx_mcp_api_key = "redacted"
+            mx_mcp_endpoint = "https://mx.example"
+            mx_mcp_timeout_seconds = 30.0
+            enable_fuyao = True
+            fuyao_api_key = "redacted"
+            fuyao_endpoint = "https://fuyao.example"
+            fuyao_timeout_seconds = 30.0
+        names = [s.name for s in h._build_sources(_Cfg())]
+        self.assertEqual(names, ["mx", "mx_mcp", "fuyao"])
+
 
 if __name__ == "__main__":
     unittest.main()
