@@ -758,6 +758,12 @@ class Config:
     mx_mcp_api_key: Optional[str] = None  # MX_MCP_API_KEY（运行时注入，禁止入库）
     mx_mcp_timeout_seconds: float = 30.0  # MX_MCP_TIMEOUT_SECONDS
 
+    # 同花顺 fuyao (aicubes) 验证源（opt-in 默认关）
+    enable_fuyao: bool = False  # ENABLE_FUYAO（总开关，默认关）
+    fuyao_endpoint: Optional[str] = None  # FUYAO_ENDPOINT（默认官方 REST 端点）
+    fuyao_api_key: Optional[str] = None  # FUYAO_API_KEY（运行时注入，禁止入库）
+    fuyao_timeout_seconds: float = 30.0  # FUYAO_TIMEOUT_SECONDS
+
     # === AlphaSift optional stock screening integration ===
     alphasift_enabled: bool = False
     alphasift_install_spec: str = DEFAULT_ALPHASIFT_INSTALL_SPEC
@@ -1729,6 +1735,24 @@ class Config:
                 os.getenv("MX_MCP_TIMEOUT_SECONDS"),
                 default=30.0,
                 field_name="MX_MCP_TIMEOUT_SECONDS",
+                minimum=1.0,
+                maximum=300.0,
+            ),
+            enable_fuyao=parse_env_bool(
+                os.getenv("ENABLE_FUYAO"), default=False
+            ),
+            # 区分 None（未设置 → 默认）与 ""（显式空串 → 透传，由 FuyaoFetcher 判定 available=False）。
+            # 与 FuyaoFetcher.__init__ 的 None/"" 契约对齐，避免「空串回落默认」的隐式耦合。
+            fuyao_endpoint=(
+                os.getenv("FUYAO_ENDPOINT")
+                if os.getenv("FUYAO_ENDPOINT") is not None
+                else "https://fuyao.aicubes.cn"
+            ),
+            fuyao_api_key=os.getenv("FUYAO_API_KEY"),
+            fuyao_timeout_seconds=parse_env_float(
+                os.getenv("FUYAO_TIMEOUT_SECONDS"),
+                default=30.0,
+                field_name="FUYAO_TIMEOUT_SECONDS",
                 minimum=1.0,
                 maximum=300.0,
             ),
