@@ -17,6 +17,7 @@ import pandas as pd
 from data_provider.yfinance_fundamental_adapter import (
     YfinanceFundamentalAdapter,
     _convert_to_yf_symbol,
+    _yoy_from_row,
 )
 
 
@@ -88,7 +89,7 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
             "trailingAnnualDividendRate": 1.04,
             "dividendYield": 0.36,
         }
-        # Need at least 5 columns to trigger statement-derived YoY.
+        # Statement-derived YoY needs the same quarter one year earlier (2025-03-31 here).
         income_df_with_yoy = pd.DataFrame(
             {
                 pd.Timestamp("2026-03-31"): {"Total Revenue": 1.11e11, "Net Income": 2.95e10},
@@ -119,7 +120,8 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
 
         self.assertEqual(bundle["status"], "partial")
         growth = bundle["growth"]
-        # Statement-derived YoY uses iloc[4] (2025-03-31). (1.11e11 - 9.52e10) / 9.52e10 ≈ 16.6%
+        # Statement-derived YoY uses the same quarter a year earlier (2025-03-31).
+        # (1.11e11 - 9.52e10) / 9.52e10 ≈ 16.6%
         self.assertAlmostEqual(growth["revenue_yoy"], 16.5966, places=2)
         self.assertAlmostEqual(growth["roe"], 141.47, places=1)
         self.assertAlmostEqual(growth["gross_margin"], 47.9, places=1)
@@ -313,6 +315,52 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
         self.assertEqual(bundle["status"], "not_supported")
         self.assertEqual(bundle.get("growth"), {})
         self.assertEqual(bundle.get("belong_boards"), [])
+
+
+class YoyFromRowTest(unittest.TestCase):
+    """_yoy_from_row must compare with the same quarter one year earlier, found by date."""
+
+    def test_matches_prior_year_quarter_by_date(self) -> None:
+        row = pd.Series(
+            [120.0, 110.0, 105.0, 102.0, 100.0],
+            index=pd.to_datetime(["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30"]),
+        )
+        self.assertEqual(_yoy_from_row(row), 20.0)
+
+    def test_missing_quarter_does_not_shift_the_base(self) -> None:
+        # 2025-09-30 missing: iloc[4] would be 2025-03-31 (80.0) instead of 2025-06-30 (100.0).
+        row = pd.Series(
+            [95.0, 90.0, 110.0, 100.0, 80.0],
+            index=pd.to_datetime(["2026-06-30", "2026-03-31", "2025-12-31", "2025-06-30", "2025-03-31"]),
+        )
+        self.assertEqual(_yoy_from_row(row), -5.0)
+
+    def test_no_prior_year_quarter_returns_none(self) -> None:
+        row = pd.Series(
+            [120.0, 110.0, 105.0, 102.0],
+            index=pd.to_datetime(["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"]),
+        )
+        self.assertIsNone(_yoy_from_row(row))
+
+    def test_bundle_growth_uses_prior_year_quarter_when_a_quarter_is_missing(self) -> None:
+        info = {"financialCurrency": "USD", "currency": "USD", "revenueGrowth": 0.5, "earningsGrowth": 0.5}
+        # 2025-09-30 missing; the positional iloc[4] would pick 2025-03-31.
+        income_df = pd.DataFrame(
+            {
+                pd.Timestamp("2026-06-30"): {"Total Revenue": 95.0, "Net Income": 19.0},
+                pd.Timestamp("2026-03-31"): {"Total Revenue": 90.0, "Net Income": 18.0},
+                pd.Timestamp("2025-12-31"): {"Total Revenue": 110.0, "Net Income": 22.0},
+                pd.Timestamp("2025-06-30"): {"Total Revenue": 100.0, "Net Income": 20.0},
+                pd.Timestamp("2025-03-31"): {"Total Revenue": 80.0, "Net Income": 16.0},
+            }
+        )
+        ticker = _build_mock_ticker(info, income_df)
+        with patch("yfinance.Ticker", return_value=ticker):
+            bundle = YfinanceFundamentalAdapter().get_fundamental_bundle("AAPL")
+
+        growth = bundle["growth"]
+        self.assertEqual(growth["revenue_yoy"], -5.0)
+        self.assertEqual(growth["net_profit_yoy"], -5.0)
 
 
 if __name__ == "__main__":
