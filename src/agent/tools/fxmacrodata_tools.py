@@ -1,10 +1,13 @@
 """Public macroeconomic tools consumed by the stock analysis agent."""
 
 from copy import deepcopy
+import logging
 import os
 
 from fxmacrodata_public import FXMacroDataClient, list_operations
 from src.agent.tools.registry import ToolDefinition, ToolParameter, ToolPolicy
+
+logger = logging.getLogger(__name__)
 
 
 class FXMacroDataTool(ToolDefinition):
@@ -54,7 +57,13 @@ def build_fxmacrodata_tools(client: FXMacroDataClient | None = None) -> list[FXM
                         "error": "FXMacroData could not complete this request."}
             finally:
                 if client is None and provider is not None:
-                    provider.close()
+                    try:
+                        provider.close()
+                    except Exception:
+                        # A close failure must not replace the handler result;
+                        # the exception text is not logged for the same reason
+                        # as above.
+                        logger.debug("[fxmacrodata_tools] %s: client close failed", operation_name)
 
         return handler
 

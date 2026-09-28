@@ -75,6 +75,24 @@ def test_owned_client_is_closed_after_execute_failure(monkeypatch):
     assert closed == [True]
 
 
+def test_close_failure_keeps_unavailable_result(monkeypatch):
+    class CloseFailingClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def execute(self, *args):
+            raise RuntimeError("transport detail must not appear")
+
+        def close(self):
+            raise RuntimeError("close detail must not appear")
+
+    monkeypatch.setattr(fxmacrodata_tools, "FXMacroDataClient", CloseFailingClient)
+    response = build_fxmacrodata_tools()[0].handler()
+    assert response["status"] == "unavailable"
+    assert response["records"] == []
+    assert "detail must not appear" not in json.dumps(response)
+
+
 def test_factory_registers_tools_for_report_and_chat():
     # Execute the exact factory registration function without importing unrelated
     # data providers, whose startup requires the application's full dependencies.
