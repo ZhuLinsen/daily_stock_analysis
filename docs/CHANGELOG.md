@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Cursor skill: trading-strategy-research** — systematic quant strategy research workflow (market scan → ideation → backtest → ranking → deployment risks) under `.cursor/skills/trading-strategy-research/`
+
 ## [3.4.10] - 2026-03-07
 
 ### Fixed
