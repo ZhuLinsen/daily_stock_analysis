@@ -24,6 +24,7 @@ class OutcomeStatsRow:
     outcome: DecisionSignalOutcomeRecord
     decision_profile: Optional[str]
     metadata_json: Optional[str]
+    stock_code: Optional[str] = None
 
 
 class DecisionSignalOutcomeRepository:
@@ -181,18 +182,22 @@ class DecisionSignalOutcomeRepository:
         engine_version: str,
         horizons: Optional[List[str]] = None,
         statuses: Optional[List[str]] = None,
+        stock_codes: Optional[List[str]] = None,
     ) -> List[OutcomeStatsRow]:
         conditions = [DecisionSignalOutcomeRecord.engine_version == engine_version]
         if horizons:
             conditions.append(DecisionSignalOutcomeRecord.horizon.in_(horizons))
         if statuses:
             conditions.append(DecisionSignalRecord.status.in_(statuses))
+        if stock_codes:
+            conditions.append(DecisionSignalRecord.stock_code.in_(stock_codes))
         with self.db.get_session() as session:
             rows = session.execute(
                 select(
                     DecisionSignalOutcomeRecord,
                     DecisionSignalRecord.decision_profile,
                     DecisionSignalRecord.metadata_json,
+                    DecisionSignalRecord.stock_code,
                 )
                 .join(DecisionSignalRecord, DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id)
                 .where(and_(*conditions))
@@ -202,8 +207,9 @@ class DecisionSignalOutcomeRepository:
                     outcome=outcome,
                     decision_profile=decision_profile,
                     metadata_json=metadata_json,
+                    stock_code=stock_code,
                 )
-                for outcome, decision_profile, metadata_json in rows
+                for outcome, decision_profile, metadata_json, stock_code in rows
             ]
 
     def get_feedback(self, *, signal_id: int) -> Optional[DecisionSignalFeedbackRecord]:
@@ -213,6 +219,27 @@ class DecisionSignalOutcomeRepository:
                 .where(DecisionSignalFeedbackRecord.signal_id == signal_id)
                 .limit(1)
             ).scalar_one_or_none()
+
+    def list_feedback_reason_codes(self, *, signal_ids: List[int]) -> List[str]:
+        """Return non-empty ``not_useful`` feedback reason codes for the given signals.
+
+        Used by review aggregation to surface common miss reasons without
+        exposing raw feedback notes (low-sensitivity contract).  Only negative
+        feedback is eligible: ``useful`` reason codes describe why a signal
+        worked, not why it missed, and must not pollute miss-reason stats.
+        """
+        if not signal_ids:
+            return []
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(DecisionSignalFeedbackRecord.reason_code)
+                .where(
+                    DecisionSignalFeedbackRecord.signal_id.in_(signal_ids),
+                    DecisionSignalFeedbackRecord.feedback_value == "not_useful",
+                    DecisionSignalFeedbackRecord.reason_code.isnot(None),
+                )
+            ).scalars().all()
+            return [str(code) for code in rows if code]
 
     def upsert_feedback(self, fields: Dict[str, Any]) -> DecisionSignalFeedbackRecord:
         now = utc_naive_now()

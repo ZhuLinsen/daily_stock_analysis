@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """Validation tests for backend packaging scripts."""
 
+import ast
 import json
 import os
 import runpy
 import shlex
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +73,71 @@ def test_macos_backend_build_script_collects_builtin_screening_engine() -> None:
     assert "packaged_screening_strategy_count" in script
     assert "DSA_PACKAGED_IMPORT_PROBE" in main_py
     assert "importlib.import_module(_packaged_import_probe)" in main_py
+
+
+@pytest.mark.parametrize("filename", ["build-backend.ps1", "build-backend-macos.sh"])
+def test_backend_build_collects_and_probes_miniracer(filename: str) -> None:
+    script = _read_text(REPO_ROOT / "scripts" / filename)
+    assert "--collect-all" in script
+    assert "py_mini_racer" in script
+    assert "MiniRacer().eval('1 + 1')" in script
+    # The frozen executable must probe the runtime, not the source interpreter.
+    if filename.endswith(".ps1"):
+        assert "'orjson', 'py_mini_racer'" in script
+        assert "-WindowStyle Hidden" in script
+    else:
+        assert "futu orjson py_mini_racer; do" in script
+
+
+def _run_packaged_probe(monkeypatch, module) -> None:
+    """Execute the actual early-exit block without importing the business stack."""
+    import importlib
+
+    tree = ast.parse(_read_text(REPO_ROOT / "main.py"))
+    probe = next(
+        node for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "_packaged_import_probe"
+    )
+    monkeypatch.setattr(importlib, "import_module", lambda name: module)
+    exec(
+        compile(ast.Module(body=[probe], type_ignores=[]), "main.py", "exec"),
+        {"_packaged_import_probe": "py_mini_racer"},
+    )
+
+
+@pytest.mark.parametrize("has_close", [True, False])
+def test_packaged_miniracer_probe_executes_javascript(monkeypatch, has_close) -> None:
+    calls = []
+    engine = SimpleNamespace(eval=lambda code: calls.append(code) or 2)
+    if has_close:
+        engine.close = lambda: calls.append("close")
+    with pytest.raises(SystemExit) as exc:
+        _run_packaged_probe(monkeypatch, SimpleNamespace(MiniRacer=lambda: engine))
+    assert exc.value.code == 0
+    assert calls == (["1 + 1", "close"] if has_close else ["1 + 1"])
+
+
+def test_packaged_miniracer_probe_rejects_importable_wrapper_without_runtime(
+    monkeypatch, capsys,
+) -> None:
+    def missing_runtime():
+        raise RuntimeError("Native library or dependency not available")
+
+    with pytest.raises(SystemExit) as exc:
+        _run_packaged_probe(monkeypatch, SimpleNamespace(MiniRacer=missing_runtime))
+    assert exc.value.code == 1
+    assert "Native library or dependency not available" in capsys.readouterr().err
+
+
+def test_packaged_miniracer_probe_rejects_wrong_result_and_closes(monkeypatch) -> None:
+    closed = []
+    engine = SimpleNamespace(eval=lambda code: None, close=lambda: closed.append(True))
+    with pytest.raises(SystemExit) as exc:
+        _run_packaged_probe(monkeypatch, SimpleNamespace(MiniRacer=lambda: engine))
+    assert exc.value.code == 1
+    assert closed == [True]
 
 
 def test_pyinstaller_runtime_hook_disables_incompatible_nltk_guard(

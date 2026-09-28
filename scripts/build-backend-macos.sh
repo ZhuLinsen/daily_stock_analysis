@@ -53,6 +53,9 @@ log "Checking Futu SDK availability..."
 log "Checking orjson availability..."
 "${PYTHON_BIN}" -c "import orjson"
 
+log "Checking MiniRacer JavaScript runtime..."
+"${PYTHON_BIN}" -c "from py_mini_racer import MiniRacer; assert MiniRacer().eval('1 + 1') == 2"
+
 if [[ -d "${ROOT_DIR}/dist/backend" ]]; then
   rm -rf "${ROOT_DIR}/dist/backend"
 fi
@@ -120,6 +123,7 @@ pushd "${ROOT_DIR}" >/dev/null
 cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --runtime-hook "${SCRIPT_DIR}/pyinstaller_runtime_compat.py" --add-data "static:static" --add-data "strategies:strategies" --add-data "src/assets/share_image:src/assets/share_image" --collect-data litellm --collect-data tiktoken --collect-data akshare)
 cmd+=("--collect-all" "src.services.screening")
 cmd+=("--collect-all" "futu")
+cmd+=("--collect-all" "py_mini_racer")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
 echo "Running: ${cmd[*]}"
@@ -147,7 +151,7 @@ if ! "${packaged_entry}" --help >/tmp/dsa-packaged-help.log 2>&1; then
   exit 1
 fi
 
-for module in src.services.screening.pipeline futu orjson; do
+for module in src.services.screening.pipeline futu orjson py_mini_racer; do
   if DSA_PACKAGED_IMPORT_PROBE="${module}" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
     cat /tmp/dsa-packaged-import.log
   else

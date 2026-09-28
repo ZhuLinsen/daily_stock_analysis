@@ -66,6 +66,11 @@ if (-not (Test-PythonCode -Python $pythonBin -Code "import orjson")) {
   throw 'orjson is not importable after installing requirements.'
 }
 
+Write-Host 'Checking MiniRacer JavaScript runtime...'
+if (-not (Test-PythonCode -Python $pythonBin -Code "from py_mini_racer import MiniRacer; assert MiniRacer().eval('1 + 1') == 2")) {
+  throw 'MiniRacer cannot execute JavaScript in the build environment.'
+}
+
 if (Test-Path 'dist\backend') {
   Remove-Item -Recurse -Force 'dist\backend'
 }
@@ -139,6 +144,7 @@ $pyInstallerArgs = @(
   '--collect-data', 'litellm',
   '--collect-data', 'tiktoken',
   '--collect-data', 'akshare',
+  '--collect-all', 'py_mini_racer',
   '--collect-all', 'src.services.screening',
   '--collect-all', 'futu'
 )
@@ -164,9 +170,9 @@ if (-not (Test-Path $packagedEntry)) {
 }
 $previousProbe = $env:DSA_PACKAGED_IMPORT_PROBE
 try {
-  foreach ($module in @('src.services.screening.pipeline', 'futu', 'orjson')) {
+  foreach ($module in @('src.services.screening.pipeline', 'futu', 'orjson', 'py_mini_racer')) {
     $env:DSA_PACKAGED_IMPORT_PROBE = $module
-    $probeProcess = Start-Process -FilePath $packagedEntry -Wait -PassThru
+    $probeProcess = Start-Process -FilePath $packagedEntry -Wait -PassThru -WindowStyle Hidden
     if ($probeProcess.ExitCode -ne 0) {
       throw "Packaged backend cannot import $module; probe exited with code $($probeProcess.ExitCode)."
     }

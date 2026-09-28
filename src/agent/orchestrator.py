@@ -79,6 +79,51 @@ VALID_MODES = ("quick", "standard", "full", "specialist")
 NON_CRITICAL_BASE_STAGES = frozenset({"intel", "risk"})
 
 
+def _stage_trajectory_snapshot(result: StageResult) -> Dict[str, Any]:
+    """Return the small JSON-safe stage trace exposed to the eval boundary.
+
+    ``StageResult.meta`` also contains runtime-only values such as raw model
+    text.  Keep this boundary deliberately whitelisted so the evaluator sees
+    execution facts without receiving prompts, messages, or arbitrary metadata.
+    """
+    status = getattr(result.status, "value", result.status)
+    failure_reason = result.failure_reason
+    if failure_reason is None and result.status == StageStatus.FAILED:
+        failure_reason = StageFailureReason.STAGE_FAILURE
+    failure_reason = getattr(failure_reason, "value", failure_reason)
+    raw_steps = result.total_steps
+    try:
+        total_steps = max(0, int(raw_steps or 0))
+    except (TypeError, ValueError):
+        total_steps = 0
+    raw_log = result.meta.get("tool_calls_log") or []
+    tool_calls_log = [dict(entry) if isinstance(entry, dict) else entry for entry in raw_log]
+    return {
+        "stage_name": str(result.stage_name or ""),
+        "status": str(status),
+        "total_steps": total_steps,
+        "tool_calls_log": tool_calls_log,
+        "failure_reason": str(failure_reason) if failure_reason is not None else None,
+        "duration_s": result.duration_s,
+        "tokens_used": result.tokens_used,
+        "tool_calls_count": result.tool_calls_count,
+    }
+
+
+def _skipped_stage_trajectory(stage_name: str, reason: StageFailureReason) -> Dict[str, Any]:
+    """Represent a stage that was not started at a pipeline boundary."""
+    return {
+        "stage_name": str(stage_name or ""),
+        "status": StageStatus.SKIPPED.value,
+        "total_steps": 0,
+        "tool_calls_log": [],
+        "failure_reason": reason.value,
+        "duration_s": 0.0,
+        "tokens_used": 0,
+        "tool_calls_count": 0,
+    }
+
+
 @dataclass
 class OrchestratorResult:
     """Unified result from a multi-agent pipeline run."""
@@ -94,6 +139,7 @@ class OrchestratorResult:
     error: Optional[str] = None
     stats: Optional[AgentRunStats] = None
     runtime_facts: Optional[AgentRuntimeFacts] = None
+    stage_trajectories: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -182,6 +228,7 @@ class AgentOrchestrator:
         timeout_s: int,
         ctx: Optional[AgentContext] = None,
         parse_dashboard: bool = True,
+        stage_trajectories: Optional[List[Dict[str, Any]]] = None,
     ) -> OrchestratorResult:
         """Build a standard timeout result payload."""
         stats.total_duration_s = round(elapsed_s, 2)
@@ -211,6 +258,7 @@ class AgentOrchestrator:
             total_steps=stats.total_stages,
             total_tokens=stats.total_tokens,
             tool_calls_log=all_tool_calls,
+            stage_trajectories=list(stage_trajectories or []),
             provider=provider,
             model=model,
             runtime_facts=build_agent_runtime_facts(ctx) if ctx is not None else None,
@@ -228,6 +276,7 @@ class AgentOrchestrator:
         min_stage_budget_s: int,
         ctx: Optional[AgentContext] = None,
         parse_dashboard: bool = True,
+        stage_trajectories: Optional[List[Dict[str, Any]]] = None,
     ) -> OrchestratorResult:
         """Build a result for budget-insufficient stage skip (non-timeout semantics)."""
         stats.total_duration_s = round(elapsed_s, 2)
@@ -256,6 +305,7 @@ class AgentOrchestrator:
             total_steps=stats.total_stages,
             total_tokens=stats.total_tokens,
             tool_calls_log=all_tool_calls,
+            stage_trajectories=list(stage_trajectories or []),
             provider=stats.models_used[0] if stats.models_used else "",
             model=", ".join(stats.models_used),
             runtime_facts=build_agent_runtime_facts(ctx) if ctx is not None else None,
@@ -370,6 +420,7 @@ class AgentOrchestrator:
             provider=orch_result.provider,
             model=orch_result.model,
             error=orch_result.error,
+            stage_trajectories=orch_result.stage_trajectories,
             runtime_facts=orch_result.runtime_facts,
         )
 
@@ -469,6 +520,7 @@ class AgentOrchestrator:
             provider=orch_result.provider,
             model=orch_result.model,
             error=orch_result.error,
+            stage_trajectories=orch_result.stage_trajectories,
             runtime_facts=orch_result.runtime_facts,
         )
 
@@ -485,6 +537,7 @@ class AgentOrchestrator:
         """Run the agent pipeline according to ``self.mode``."""
         stats = AgentRunStats()
         all_tool_calls: List[Dict[str, Any]] = []
+        stage_trajectories: List[Dict[str, Any]] = []
         models_used: List[str] = []
         t0 = time.time()
         timeout_s = self._get_timeout_seconds()
@@ -535,6 +588,9 @@ class AgentOrchestrator:
                     ))
                 if ctx is not None:
                     self._apply_partition_fallback(ctx)
+                stage_trajectories.append(
+                    _skipped_stage_trajectory(agent.agent_name, StageFailureReason.TIMEOUT)
+                )
                 return self._build_timeout_result(
                     stats,
                     all_tool_calls,
@@ -543,6 +599,7 @@ class AgentOrchestrator:
                     timeout_s,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
+                    stage_trajectories=stage_trajectories,
                 )
 
             if budget_guard_triggered:
@@ -574,6 +631,9 @@ class AgentOrchestrator:
                     ))
                 if ctx is not None:
                     self._apply_partition_fallback(ctx)
+                stage_trajectories.append(
+                    _skipped_stage_trajectory(agent.agent_name, StageFailureReason.BUDGET_SKIP)
+                )
                 return self._build_budget_skip_result(
                     stats,
                     all_tool_calls,
@@ -585,6 +645,7 @@ class AgentOrchestrator:
                     stage_min_budget_s,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
+                    stage_trajectories=stage_trajectories,
                 )
 
             if (
@@ -604,6 +665,7 @@ class AgentOrchestrator:
                     )
                     for stage_result in batch.stage_results:
                         stats.record_stage(stage_result)
+                        stage_trajectories.append(_stage_trajectory_snapshot(stage_result))
                         all_tool_calls.extend(
                             tc for tc in (stage_result.meta.get("tool_calls_log") or [])
                         )
@@ -651,6 +713,7 @@ class AgentOrchestrator:
                 timeout_seconds=remaining_timeout_s,
             )
             stats.record_stage(result)
+            stage_trajectories.append(_stage_trajectory_snapshot(result))
             all_tool_calls.extend(
                 tc for tc in (result.meta.get("tool_calls_log") or [])
             )
@@ -681,8 +744,10 @@ class AgentOrchestrator:
                         success=False,
                         error=f"Stage '{agent.agent_name}' failed: {result.error}",
                         stats=stats,
+                        total_steps=stats.total_stages,
                         total_tokens=stats.total_tokens,
                         tool_calls_log=all_tool_calls,
+                        stage_trajectories=stage_trajectories,
                         runtime_facts=build_agent_runtime_facts(ctx),
                     )
                 else:
@@ -723,6 +788,7 @@ class AgentOrchestrator:
                     timeout_s,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
+                    stage_trajectories=stage_trajectories,
                 )
 
             index += 1
@@ -749,6 +815,7 @@ class AgentOrchestrator:
                 model=model_str,
                 error="Failed to parse dashboard JSON from agent response",
                 stats=stats,
+                stage_trajectories=stage_trajectories,
                 runtime_facts=build_agent_runtime_facts(ctx),
             )
 
@@ -762,6 +829,7 @@ class AgentOrchestrator:
             provider=provider,
             model=model_str,
             stats=stats,
+            stage_trajectories=stage_trajectories,
             runtime_facts=build_agent_runtime_facts(ctx),
         )
 

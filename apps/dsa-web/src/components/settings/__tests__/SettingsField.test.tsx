@@ -68,7 +68,7 @@ describe('SettingsField', () => {
     );
 
     expect(screen.getByLabelText('TickFlow 日 K 优先级')).toBeInTheDocument();
-    expect(screen.getByText(/控制 TickFlow 在 A 股日 K 数据源回退链中的尝试顺序/)).toBeInTheDocument();
+    expect(screen.getByText(/控制 TickFlow 在普通 A 股日 K 回退链中的尝试顺序/)).toBeInTheDocument();
     expect(screen.queryByText(/Priority for TickFlow daily K-line fetcher/)).not.toBeInTheDocument();
   });
   it('uses schema key for TickFlow localization when the runtime item key differs', () => {

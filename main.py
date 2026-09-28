@@ -51,10 +51,21 @@ if _packaged_import_probe:
     import sys
 
     try:
-        importlib.import_module(_packaged_import_probe)
+        probe_module = importlib.import_module(_packaged_import_probe)
+        if _packaged_import_probe == "py_mini_racer":
+            # Importing the Python wrapper does not load V8 or its data files.
+            # Exercise the installed runtime to detect missing/mismatched assets.
+            engine = probe_module.MiniRacer()
+            try:
+                if engine.eval("1 + 1") != 2:
+                    raise RuntimeError("MiniRacer JavaScript evaluation failed")
+            finally:
+                close = getattr(engine, "close", None)
+                if callable(close):
+                    close()
     except Exception as exc:
         print(
-            f"ERROR: packaged import failed for {_packaged_import_probe}: {exc}",
+            f"ERROR: packaged runtime probe failed for {_packaged_import_probe}: {exc}",
             file=sys.stderr,
         )
         sys.exit(1)

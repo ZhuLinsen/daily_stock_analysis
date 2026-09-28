@@ -228,11 +228,30 @@ def _format_tencent_date(date_text: str) -> Optional[str]:
         return None
 
 
-def _lots_to_shares(volume: Any) -> Any:
+def _is_star_market(symbol: str) -> bool:
+    """Return True for STAR Market codes (688xxx, and 689xxx CDRs).
+
+    Accepts Tencent symbols (``sh688111``), bare codes (``688111``) and
+    suffixed codes (``688111.SH``).
+    """
+    code = (symbol or "").strip().lower()
+    if code[:2] in ("sh", "sz", "bj"):
+        code = code[2:]
+    return code.startswith(("688", "689"))
+
+
+def _lots_to_shares(volume: Any, symbol: str = "") -> Any:
+    """Convert Tencent daily K-line volume to shares.
+
+    Tencent reports volume in lots (手, 100 shares) for most A-shares, but in
+    shares (股) for STAR Market stocks (688/689). Multiplying STAR Market volume
+    by 100 inflates it 100x (Refs #2350).
+    """
     try:
-        return float(volume) * 100
+        value = float(volume)
     except (TypeError, ValueError):
         return volume
+    return value if _is_star_market(symbol) else value * 100
 
 
 def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[str, Any]]:
@@ -253,7 +272,7 @@ def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[st
                 "close": row[2],
                 "high": row[3],
                 "low": row[4],
-                "volume": _lots_to_shares(row[5]),
+                "volume": _lots_to_shares(row[5], symbol),
                 "amount": amount,
             }
         )

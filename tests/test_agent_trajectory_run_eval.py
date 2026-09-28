@@ -5,14 +5,16 @@ All tests are offline: ``run_eval._build_executor`` is monkeypatched with a
 duck-typed stub, and the three checked-in fixtures provide real-shaped
 ``tool_calls_log`` payloads covering the positive path, the negative path
 (missing expected tool + cached failure + max_steps) and the retry path.
-The two runtime-seam guards (multi-arch rejection and golden validation
+The two runtime-seam guards (multi-arch acceptance and golden validation
 against the real tool registry) are exercised via monkeypatched config /
 registry access plus one lazy real-registry check.
 """
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,7 +24,7 @@ from evals.agent_trajectory.metrics import GoldenSample, load_golden_samples
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "agent_trajectory"
 
 
-def _stub_executor(log, total_steps=None):
+def _stub_executor(log, total_steps=None, stage_trajectories=None):
     """Duck-typed executor recording its run calls (no src/ import)."""
 
     class _Stub:
@@ -31,7 +33,11 @@ def _stub_executor(log, total_steps=None):
 
         def run(self, task, context=None):
             self.calls.append((task, context))
-            return SimpleNamespace(tool_calls_log=list(log), total_steps=total_steps)
+            return SimpleNamespace(
+                tool_calls_log=list(log),
+                total_steps=total_steps,
+                stage_trajectories=list(stage_trajectories or []),
+            )
 
     return _Stub()
 
@@ -168,8 +174,8 @@ class TestRunSampleRetry:
 # 3.5 run failure: results carrying an explicit success=False
 # ---------------------------------------------------------------------------
 class TestRunFailure:
-    def test_unsuccessful_result_raises_before_scoring(self, capsys):
-        # Owner repro: a real AgentResult with success=False must not be scored.
+    def test_unsuccessful_single_agent_result_raises_without_report(self, capsys):
+        # Single-agent failure behavior stays unchanged when no stage trace exists.
         executor = _result_executor(SimpleNamespace(success=False, error="boom", tool_calls_log=[], total_steps=0))
         with pytest.raises(RuntimeError, match="boom"):
             run_eval.run_sample(executor, _goldens()["600519_technical"])
@@ -199,17 +205,160 @@ class TestRunFailure:
         m = run_eval.run_sample(_result_executor(result), _goldens()["600519_technical"])
         assert m.expected_hit_rate == 1.0
 
+    def test_failed_multi_agent_result_writes_stage_report_before_raising(self, tmp_path, capsys):
+        stage_log = [{"step": 1, "tool": "get_realtime_quote", "success": False}]
+        result = SimpleNamespace(
+            success=False,
+            error="Stage 'technical' failed: provider timeout",
+            tool_calls_log=stage_log,
+            total_steps=1,
+            stage_trajectories=[
+                {
+                    "stage_name": "technical",
+                    "status": "failed",
+                    "failure_reason": "timeout",
+                    "total_steps": 3,
+                    "tool_calls_log": stage_log,
+                }
+            ],
+        )
+        sample = GoldenSample(
+            id="failed_multi",
+            task_description="multi-agent failure",
+            expected_tools=["get_realtime_quote"],
+            expected_stages=["technical", "decision"],
+        )
+        out = tmp_path / "failed-multi.json"
+
+        with pytest.raises(RuntimeError, match="provider timeout"):
+            run_eval.run_sample(_result_executor(result), sample, json_out=out)
+
+        report = json.loads(out.read_text(encoding="utf-8"))
+        stage_metrics = report["stage_metrics"]
+        assert report["run_status"] == "failed"
+        assert stage_metrics["failed_stages"] == 1
+        assert stage_metrics["missing_expected_stages"] == ["decision"]
+        assert stage_metrics["cumulative_steps"] == 3
+        assert stage_metrics["stage_metrics"][0]["failure_reason"] == "timeout"
+        output = capsys.readouterr().out
+        assert "阶段 technical: 状态=failed" in output
+        assert "局部步数=3" in output
+        assert "缺失期望阶段: decision" in output
+        assert "失败原因=timeout" in output
+
+    def test_orchestrator_critical_failure_reaches_stage_report(self, tmp_path, capsys):
+        try:
+            import litellm  # noqa: F401
+        except ModuleNotFoundError:
+            sys.modules["litellm"] = MagicMock()
+
+        from src.agent.orchestrator import AgentOrchestrator
+        from src.agent.protocols import StageFailureReason, StageResult, StageStatus
+
+        tool_log = [{"step": 1, "tool": "get_realtime_quote", "success": False}]
+        technical = MagicMock(agent_name="technical")
+        technical.run.return_value = StageResult(
+            stage_name="technical",
+            status=StageStatus.FAILED,
+            failure_reason=StageFailureReason.TIMEOUT,
+            total_steps=3,
+            meta={"tool_calls_log": tool_log},
+        )
+        orchestrator = AgentOrchestrator(tool_registry=MagicMock(), llm_adapter=MagicMock())
+        sample = GoldenSample(
+            id="orchestrator_failure",
+            task_description="critical stage failure",
+            expected_tools=["get_realtime_quote"],
+            expected_stages=["technical", "decision"],
+        )
+        report_path = tmp_path / "orchestrator-failure.json"
+
+        with patch.object(orchestrator, "_build_agent_chain", return_value=[technical]):
+            result = orchestrator.run(sample.task_description)
+
+        assert result.success is False
+        assert result.stage_trajectories[0]["status"] == "failed"
+        assert result.stage_trajectories[0]["failure_reason"] == "timeout"
+        with pytest.raises(RuntimeError, match="Stage 'technical' failed"):
+            run_eval.run_sample(_result_executor(result), sample, json_out=report_path)
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["run_status"] == "failed"
+        assert report["stage_metrics"]["failed_stages"] == 1
+        assert report["stage_metrics"]["missing_expected_stages"] == ["decision"]
+        assert report["stage_metrics"]["cumulative_steps"] == 3
+        output = capsys.readouterr().out
+        assert "阶段 technical: 状态=failed" in output
+        assert "失败原因=timeout" in output
+
+    def test_orchestrator_stage_loop_totals_drive_global_budget_metrics(self, tmp_path, capsys):
+        try:
+            import litellm  # noqa: F401
+        except ModuleNotFoundError:
+            sys.modules["litellm"] = MagicMock()
+
+        from src.agent.orchestrator import AgentOrchestrator
+        from src.agent.protocols import StageResult, StageStatus
+
+        quote_log = [{"step": 1, "tool": "quote", "success": True}]
+        news_log = [{"step": 1, "tool": "news", "success": True}]
+        technical = MagicMock(agent_name="technical")
+        technical.run.return_value = StageResult(
+            stage_name="technical",
+            status=StageStatus.COMPLETED,
+            total_steps=3,
+            meta={"tool_calls_log": quote_log},
+        )
+        intel = MagicMock(agent_name="intel")
+        intel.run.return_value = StageResult(
+            stage_name="intel",
+            status=StageStatus.COMPLETED,
+            total_steps=3,
+            meta={"tool_calls_log": news_log},
+        )
+        orchestrator = AgentOrchestrator(tool_registry=MagicMock(), llm_adapter=MagicMock())
+        with (
+            patch.object(orchestrator, "_build_agent_chain", return_value=[technical, intel]),
+            patch.object(
+                orchestrator,
+                "_resolve_final_output",
+                return_value=({"ok": True}, "final report"),
+            ),
+        ):
+            result = orchestrator.run("analyze one stock")
+
+        # Keep the runtime's established stage-count contract; the evaluator
+        # must derive loop totals from the explicit stage snapshots instead.
+        assert result.total_steps == 2
+        assert [item["total_steps"] for item in result.stage_trajectories] == [3, 3]
+        sample = GoldenSample(
+            id="multi_aggregate_steps",
+            task_description="analyze one stock",
+            expected_tools=["quote", "news"],
+            allowed_max_steps=5,
+            expected_stages=["technical", "intel"],
+        )
+        report_path = tmp_path / "aggregate-steps.json"
+
+        run_eval.run_sample(_result_executor(result), sample, json_out=report_path)
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["stage_metrics"]["cumulative_steps"] == 6
+        assert report["metrics"]["distinct_steps"] == 6
+        assert report["metrics"]["max_steps_touched"] is True
+        assert report["violations"] == ["trajectory reached allowed_max_steps (5)"]
+        assert "消耗步数: 6 (触碰 max_steps: 是)" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # 4. runtime-seam guards: multi-arch rejection + golden registry validation
 # ---------------------------------------------------------------------------
 class TestArchGuard:
-    def test_multi_arch_raises(self, monkeypatch):
+    def test_multi_arch_is_allowed(self, monkeypatch):
         import src.config
 
         monkeypatch.setattr(src.config, "get_config", lambda: SimpleNamespace(agent_arch="multi"))
-        with pytest.raises(RuntimeError, match="multi"):
-            run_eval._check_agent_arch()
+        assert run_eval._check_agent_arch() == "multi"
 
     def test_single_arch_passes(self, monkeypatch):
         import src.config
@@ -293,13 +442,173 @@ class TestMainCli:
         assert run_eval.main(["--sample", "600519_technical"]) == 1
         assert "failed to build agent executor" in capsys.readouterr().err
 
-    def test_multi_arch_build_rejection_exit_one(self, monkeypatch, capsys):
-        def _boom():
-            raise RuntimeError("AGENT_ARCH=multi is not supported by this minimal eval")
+    def test_multi_arch_result_emits_stage_report(self, tmp_path, capsys):
+        log, total_steps = _fixture("positive_600519_technical")
+        result = SimpleNamespace(
+            success=True,
+            tool_calls_log=list(log),
+            total_steps=total_steps,
+            stage_trajectories=[
+                {
+                    "stage_name": "technical",
+                    "status": "completed",
+                    "total_steps": 2,
+                    "tool_calls_log": list(log),
+                },
+                {
+                    "stage_name": "decision",
+                    "status": "skipped",
+                    "total_steps": 0,
+                    "tool_calls_log": [],
+                    "failure_reason": "budget_skip",
+                },
+            ],
+        )
+        out = tmp_path / "multi.json"
+        run_eval.run_sample(
+            _result_executor(result),
+            GoldenSample(
+                id="multi",
+                task_description="multi task",
+                expected_tools=["get_realtime_quote", "get_daily_history", "analyze_trend"],
+                expected_stages=["technical", "decision"],
+            ),
+            json_out=out,
+        )
 
-        monkeypatch.setattr(run_eval, "_build_executor", _boom)
-        assert run_eval.main(["--sample", "600519_technical"]) == 1
-        assert "multi" in capsys.readouterr().err
+        report = json.loads(out.read_text(encoding="utf-8"))
+        assert report["stage_metrics"]["expected_stage_hit_rate"] == 1.0
+        assert report["stage_metrics"]["skipped_stages"] == 1
+        assert "Multi-Agent 阶段轨迹" in capsys.readouterr().out
+
+    def test_multi_agent_tool_metrics_are_local_while_golden_scoring_is_global(self, tmp_path, capsys):
+        quote_failed = {
+            "step": 1,
+            "tool": "quote",
+            "arguments": {"symbol": "600519"},
+            "success": False,
+            "cached": False,
+        }
+        quote_retry = {
+            "step": 2,
+            "tool": "quote",
+            "arguments": {"symbol": "600519"},
+            "success": True,
+            "cached": False,
+        }
+        news_call = {
+            "step": 1,
+            "tool": "news",
+            "arguments": {"symbol": "600519"},
+            "success": True,
+            "cached": True,
+        }
+        result = SimpleNamespace(
+            success=True,
+            tool_calls_log=[quote_failed, quote_retry, news_call],
+            total_steps=6,
+            stage_trajectories=[
+                {
+                    "stage_name": "technical",
+                    "status": "completed",
+                    "total_steps": 3,
+                    "tool_calls_log": [quote_failed, quote_retry],
+                },
+                {
+                    "stage_name": "intel",
+                    "status": "completed",
+                    "total_steps": 3,
+                    "tool_calls_log": [news_call],
+                },
+            ],
+        )
+        sample = GoldenSample(
+            id="multi_stage_tool_expectations",
+            task_description="Use quote in technical and news in intel",
+            expected_tools=["quote", "news"],
+            allowed_max_steps=3,
+            allow_optional_tools=False,
+            expected_stages=["technical", "intel"],
+        )
+        out = tmp_path / "multi-stage-tools.json"
+
+        run_eval.run_sample(_result_executor(result), sample, json_out=out)
+
+        report = json.loads(out.read_text(encoding="utf-8"))
+        assert report["metrics"]["expected_hit_rate"] == 1.0
+        assert report["metrics"]["missing_expected"] == []
+        assert report["metrics"]["optional_tools_used"] == []
+        assert report["metrics"]["max_steps_touched"] is True
+        assert report["violations"] == ["trajectory reached allowed_max_steps (3)"]
+
+        stages = report["stage_metrics"]["stage_metrics"]
+        technical_tools = stages[0]["tool_metrics"]
+        intel_tools = stages[1]["tool_metrics"]
+        assert technical_tools == {
+            "tool_calls": 2,
+            "tools_used": ["quote"],
+            "redundant_calls": 1,
+            "cached_calls": 0,
+            "failed_calls": 1,
+            "retries": 1,
+        }
+        assert intel_tools == {
+            "tool_calls": 1,
+            "tools_used": ["news"],
+            "redundant_calls": 0,
+            "cached_calls": 1,
+            "failed_calls": 0,
+            "retries": 0,
+        }
+        assert report["stage_metrics"]["violations"] == []
+        output = capsys.readouterr().out
+        assert "工具调用=2 | 工具失败=1 | 重试=1" in output
+        assert "工具调用=1 | 工具失败=0 | 重试=0" in output
+
+    def test_failed_multi_agent_cli_writes_json_and_returns_one(self, tmp_path, monkeypatch, capsys):
+        golden_path = tmp_path / "golden.json"
+        golden_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "failed_multi",
+                        "task_description": "multi-agent failure",
+                        "stock_code": "",
+                        "expected_tools": ["get_realtime_quote"],
+                        "expected_stages": ["technical", "decision"],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stage_log = [{"step": 1, "tool": "get_realtime_quote", "success": False}]
+        failed_result = SimpleNamespace(
+            success=False,
+            error="technical provider timeout",
+            tool_calls_log=stage_log,
+            total_steps=1,
+            stage_trajectories=[
+                {
+                    "stage_name": "technical",
+                    "status": "failed",
+                    "failure_reason": "timeout",
+                    "total_steps": 2,
+                    "tool_calls_log": stage_log,
+                }
+            ],
+        )
+        out = tmp_path / "cli-report.json"
+        monkeypatch.setattr(run_eval, "_known_tool_names", lambda: {"get_realtime_quote"})
+        monkeypatch.setattr(run_eval, "_build_executor", lambda: _result_executor(failed_result))
+
+        assert run_eval.main(
+            ["--sample", "failed_multi", "--golden-path", str(golden_path), "--json-out", str(out)]
+        ) == 1
+
+        report = json.loads(out.read_text(encoding="utf-8"))
+        assert report["run_status"] == "failed"
+        assert report["stage_metrics"]["missing_expected_stages"] == ["decision"]
+        assert "状态=failed" in capsys.readouterr().out
 
     def test_run_failure_exit_one(self, monkeypatch, capsys):
         class _Exploding:

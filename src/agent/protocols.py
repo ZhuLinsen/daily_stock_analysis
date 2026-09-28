@@ -310,6 +310,11 @@ class StageResult:
     tokens_used: int = 0
     tool_calls_count: int = 0
     meta: Dict[str, Any] = field(default_factory=dict)
+    # Number of local agent-loop rounds consumed by this stage.  This is kept
+    # separate from the orchestrator's stage count so trajectory evaluators
+    # can normalize repeated local step numbers without changing runtime
+    # semantics.
+    total_steps: int = 0
 
     @property
     def success(self) -> bool:

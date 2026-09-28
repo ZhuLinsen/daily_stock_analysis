@@ -611,6 +611,7 @@ def test_runner_failure_sources_propagate_through_base_agent():
 
         assert stage_result.status == StageStatus.FAILED
         assert stage_result.failure_reason == expected_reason
+        assert stage_result.total_steps == loop_result.total_steps
 
     with patch("src.agent.agents.base_agent.run_agent_loop", side_effect=RuntimeError("opaque")):
         stage_result = agent.run(AgentContext())

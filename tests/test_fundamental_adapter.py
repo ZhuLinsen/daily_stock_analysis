@@ -91,8 +91,8 @@ class TestFundamentalAdapter(unittest.TestCase):
                 "净利润同比": [9.5],
             }
         )
-        forecast_df = pd.DataFrame({"股票代码": ["600519"], "预告": ["预增"]})
-        quick_df = pd.DataFrame({"股票代码": ["600519"], "快报": ["快报摘要"]})
+        forecast_df = pd.DataFrame({"股票代码": ["600519"], "业绩变动": ["预增"]})
+        quick_df = pd.DataFrame({"股票代码": ["600519"], "净利润-净利润": [300.0]})
         dividend_df = pd.DataFrame(
             {
                 "股票代码": ["600519", "600519", "600519", "600519"],

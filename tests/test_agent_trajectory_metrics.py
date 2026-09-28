@@ -14,8 +14,10 @@ import pytest
 
 from evals.agent_trajectory.metrics import (
     GoldenSample,
+    StageTrajectoryMetrics,
     TrajectoryMetrics,
     _args_key,
+    compute_stage_trajectory_metrics,
     compute_trajectory_metrics,
     format_text_report,
     load_golden_samples,
@@ -427,6 +429,81 @@ class TestFormatTextReport:
     def test_violations_rendered(self):
         text = format_text_report(_metrics(violations=["trajectory reached allowed_max_steps (5)"]))
         assert "违规项: trajectory reached allowed_max_steps (5)" in text
+
+
+class TestStageTrajectoryMetrics:
+    def test_local_steps_are_normalized_in_stable_order(self):
+        golden = _golden(expected_stages=["technical", "intel", "decision"])
+        metrics = compute_stage_trajectory_metrics(
+            [
+                {
+                    "stage_name": "technical",
+                    "status": "completed",
+                    "total_steps": 2,
+                    "tool_calls_log": [_entry(step=1)],
+                },
+                {
+                    "stage_name": "intel",
+                    "status": "failed",
+                    "failure_reason": "stage_failure",
+                    "total_steps": 1,
+                    "tool_calls_log": [],
+                },
+                {
+                    "stage_name": "decision",
+                    "status": "skipped",
+                    "failure_reason": "budget_skip",
+                    "total_steps": 0,
+                    "tool_calls_log": [],
+                },
+            ],
+            golden,
+        )
+
+        assert isinstance(metrics, StageTrajectoryMetrics)
+        assert metrics.expected_stage_hit_rate == 1.0
+        assert metrics.observed_stages == ["technical", "intel", "decision"]
+        assert metrics.completed_stages == 1
+        assert metrics.failed_stages == 1
+        assert metrics.skipped_stages == 1
+        assert metrics.cumulative_steps == 3
+        assert [item["local_steps"] for item in metrics.stage_metrics] == [2, 1, 0]
+        assert metrics.stage_metrics[0]["cumulative_end_step"] == 2
+        assert metrics.stage_metrics[1]["cumulative_start_step"] == 3
+
+    def test_missing_and_extra_stages_are_reported(self):
+        golden = _golden(expected_stages=["technical", "decision"])
+        metrics = compute_stage_trajectory_metrics(
+            [
+                {
+                    "stage_name": "technical",
+                    "status": "completed",
+                    "total_steps": 1,
+                    "tool_calls_log": [],
+                },
+                {
+                    "stage_name": "risk",
+                    "status": "completed",
+                    "total_steps": 1,
+                    "tool_calls_log": [],
+                },
+            ],
+            golden,
+        )
+
+        assert metrics.missing_expected_stages == ["decision"]
+        assert metrics.unexpected_stages == ["risk"]
+        assert any("missing expected stages" in item for item in metrics.violations)
+        assert any("unexpected stages" in item for item in metrics.violations)
+
+    def test_malformed_snapshot_is_reported_without_raising(self):
+        metrics = compute_stage_trajectory_metrics(
+            [{"stage_name": "technical", "status": "unknown", "total_steps": -1, "tool_calls_log": {}}],
+            _golden(expected_stages=["technical"]),
+        )
+
+        assert metrics.stage_metrics[0]["local_steps"] == 0
+        assert len(metrics.violations) >= 3
 
     def test_deterministic(self):
         m = _metrics(redundant_calls=2, retries=1, max_steps_touched=True)

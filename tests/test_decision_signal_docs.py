@@ -33,6 +33,7 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
         "/api/v1/decision-signals/outcomes/run",
         "/api/v1/decision-signals/outcomes/stats",
         "/api/v1/decision-signals/{signal_id}/feedback",
+        "/api/v1/decision-signals/stocks/{stock_code}/review",
     ):
         assert path in topic
         assert path in api_spec["paths"]
@@ -47,6 +48,7 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
         "DecisionSignalProfileCalibrationBreakdowns",
         "DecisionSignalProfileCalibrationBucket",
         "DecisionSignalFeedbackRequest",
+        "DecisionSignalReviewMemory",
         "PortfolioDecisionSignalRiskBlock",
     ):
         assert schema_name in api_spec["components"]["schemas"]

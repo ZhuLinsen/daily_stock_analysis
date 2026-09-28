@@ -24,6 +24,7 @@ from api.v1.schemas.decision_signals import (
     DecisionSignalReassessRequest,
     DecisionSignalReassessErrorResponse,
     DecisionSignalReassessResponse,
+    DecisionSignalReviewMemory,
     DecisionSignalStatusUpdateRequest,
 )
 from src.auth import COOKIE_NAME
@@ -321,6 +322,36 @@ def get_outcome_stats(
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Get decision signal outcome stats failed", exc)
+
+
+@router.get(
+    "/stocks/{stock_code}/review",
+    response_model=DecisionSignalReviewMemory,
+    responses={
+        **AUTH_RESPONSE,
+        400: {"model": ErrorResponse, "description": "查询参数非法"},
+        422: {"model": ErrorResponse, "description": "路径或查询参数校验失败"},
+        500: {"model": ErrorResponse, "description": "查询失败"},
+    },
+    summary="查询单票决策信号复盘摘要",
+    description=(
+        "聚合指定股票在当前 engine_version 下的 signal-level outcome/feedback，"
+        "返回只读低敏 ReviewMemory 摘要；样本不足、unable 率高或数据质量弱时 "
+        "confidence_adjustment 固定为 observe，仅供观察，不构成交易信号。"
+    ),
+    operation_id="getDecisionSignalStockReview",
+)
+def get_stock_review(
+    stock_code: str,
+    horizon: Optional[str] = Query(None, description="Optional outcome horizon filter: 1d/3d/5d/10d"),
+) -> DecisionSignalReviewMemory:
+    service = DecisionSignalOutcomeService()
+    try:
+        return DecisionSignalReviewMemory(**service.get_stock_review(stock_code, horizon=horizon))
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Get decision signal stock review failed", exc)
 
 
 @router.post(

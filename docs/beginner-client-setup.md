@@ -8,7 +8,7 @@
 
 1. Windows 或 macOS 电脑。
 2. 一个模型服务密钥（Key），推荐从下面任选一个：
-   - [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC)：支持全球主流模型，一个 Key 可同时用于模型和新闻搜索，第一次配置最省事。
+   - [Anspire Open](https://open.anspire.cn/dsa?share_code=QFBC0FYC)：支持全球主流模型，一个 Key 可同时用于模型和新闻搜索，第一次配置最省事。
    - [AIHubMix](https://inferera.com/?aff=CfMq)：支持全球主流模型，适合想在一个平台切换多种模型的用户。
 3. 想分析的股票代码，例如 `600519,hk00700,AAPL`。
 
@@ -51,7 +51,7 @@ macOS 用户升级前建议先在客户端设置里导出一次配置备份。
 
 ### 方案 A：Anspire Open
 
-1. 打开 [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC)，注册 / 登录后创建 API Key。
+1. 打开 [Anspire Open](https://open.anspire.cn/dsa?share_code=QFBC0FYC)，注册 / 登录后创建 API Key。
 2. 回到客户端，在快速添加渠道里选择 `Anspire Open`。
 3. 粘贴 API Key。
 4. 模型名选择控制台里已开通的模型；不确定就先选控制台推荐或轻量模型。

@@ -42,6 +42,7 @@ from src.agent.skills.synthesis import (
     strategy_opinion_from_agent_opinion,
     StrategySynthesizer,
 )
+from src.agent.skills.scheduler import SkillBatchResult
 from src.agent.skills.aggregator import SkillAggregator
 from src.agent.stock_scope import StockScope, resolve_stock_scope
 from src.config import AGENT_MAX_STEPS_DEFAULT, Config
@@ -1211,10 +1212,21 @@ class TestOrchestratorExecution(unittest.TestCase):
         )
 
     @staticmethod
-    def _stage_result(name, status=StageStatus.COMPLETED, error=None, raw_text="ok"):
+    def _stage_result(
+        name,
+        status=StageStatus.COMPLETED,
+        error=None,
+        raw_text="ok",
+        total_steps=0,
+        tool_calls_log=None,
+        failure_reason=None,
+    ):
         result = StageResult(stage_name=name, status=status, error=error)
+        result.total_steps = total_steps
+        result.failure_reason = failure_reason
         result.meta["raw_text"] = raw_text
         result.meta["models_used"] = ["test/model"]
+        result.meta["tool_calls_log"] = list(tool_calls_log or [])
         return result
 
     @staticmethod
@@ -1329,6 +1341,64 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("technical", result.error)
         self.assertEqual(result.total_tokens, 0)
+
+    def test_execute_pipeline_collects_whitelisted_stage_trajectories(self):
+        orch = self._make_orchestrator()
+        technical = MagicMock(agent_name="technical")
+        technical.run.return_value = self._stage_result(
+            "technical",
+            total_steps=2,
+            tool_calls_log=[{"step": 1, "tool": "quote", "success": True}],
+        )
+        decision = MagicMock(agent_name="decision")
+        decision.run.return_value = self._stage_result(
+            "decision",
+            total_steps=1,
+            tool_calls_log=[{"step": 1, "tool": "trend", "success": True}],
+        )
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, decision]):
+            result = orch._execute_pipeline(AgentContext(query="test"), parse_dashboard=False)
+
+        assert [item["stage_name"] for item in result.stage_trajectories] == ["technical", "decision"]
+        assert [item["total_steps"] for item in result.stage_trajectories] == [2, 1]
+        assert result.stage_trajectories[0]["tool_calls_log"][0]["tool"] == "quote"
+        assert "raw_text" not in result.stage_trajectories[0]
+
+    def test_specialist_stage_trajectories_keep_scheduler_order(self):
+        orch = self._make_orchestrator()
+        orch.mode = "specialist"
+        technical = MagicMock(agent_name="technical")
+        technical.run.return_value = self._stage_result("technical", total_steps=1)
+        decision = MagicMock(agent_name="decision")
+        decision.run.return_value = self._stage_result("decision", total_steps=1)
+        first = self._stage_result("strategy_bull", total_steps=2)
+        second = self._stage_result("strategy_volume", total_steps=3)
+        batch = SkillBatchResult(stage_results=[first, second], opinions=[])
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, decision]):
+            with patch.object(orch, "_build_specialist_agents", return_value=[MagicMock(), MagicMock()]):
+                with patch.object(orch, "_run_specialist_agent_batch", return_value=batch):
+                    result = orch._execute_pipeline(AgentContext(query="test"), parse_dashboard=False)
+
+        assert [item["stage_name"] for item in result.stage_trajectories] == [
+            "technical", "strategy_bull", "strategy_volume", "decision"
+        ]
+
+    def test_budget_boundary_adds_explicit_skipped_snapshot(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=20))
+        technical = MagicMock(agent_name="technical")
+        technical.run.return_value = self._stage_result("technical", total_steps=1)
+        intel = MagicMock(agent_name="intel")
+        times = iter([0.0, 0.2, 0.3, 14.6, 14.7])
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, intel]):
+            with patch("src.agent.orchestrator.time.time", side_effect=lambda: next(times, 100.0)):
+                result = orch._execute_pipeline(AgentContext(query="test"))
+
+        assert result.stage_trajectories[-1]["stage_name"] == "intel"
+        assert result.stage_trajectories[-1]["status"] == "skipped"
+        assert result.stage_trajectories[-1]["failure_reason"] == "budget_skip"
 
     def test_execute_pipeline_degrades_on_intel_failure(self):
         orch = self._make_orchestrator()
@@ -1978,13 +2048,21 @@ class TestOrchestratorExecution(unittest.TestCase):
         from src.agent.orchestrator import OrchestratorResult
 
         orch = self._make_orchestrator()
-        fake_result = OrchestratorResult(success=True, content="done", total_steps=2, total_tokens=11, model="x")
+        fake_result = OrchestratorResult(
+            success=True,
+            content="done",
+            total_steps=2,
+            total_tokens=11,
+            model="x",
+            stage_trajectories=[{"stage_name": "technical", "status": "completed"}],
+        )
         with patch.object(orch, "_execute_pipeline", return_value=fake_result):
             result = orch.run("Analyze 600519")
 
         self.assertTrue(result.success)
         self.assertEqual(result.content, "done")
         self.assertEqual(result.total_steps, 2)
+        self.assertEqual(result.stage_trajectories[0]["stage_name"], "technical")
 
     def test_chat_loads_prior_history_into_context(self):
         from src.agent.orchestrator import OrchestratorResult
@@ -2824,6 +2902,7 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
         )
         memory = MagicMock(enabled=True)
         memory.get_stock_history.return_value = [entry]
+        memory.get_decision_signal_review.return_value = None
         agent = self._make_agent(memory)
 
         ctx = AgentContext(query="test", stock_code="600519")
@@ -2858,6 +2937,7 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
     def test_memory_calibration_updates_confidence(self):
         memory = MagicMock(enabled=True)
         memory.get_stock_history.return_value = []
+        memory.get_decision_signal_review.return_value = None
         memory.get_calibration.return_value = SimpleNamespace(
             calibrated=True,
             calibration_factor=0.5,
@@ -2899,6 +2979,7 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
 
         memory = MagicMock(enabled=True)
         memory.get_stock_history.return_value = []
+        memory.get_decision_signal_review.return_value = None
         memory.get_calibration.return_value = SimpleNamespace(
             calibrated=True,
             calibration_factor=0.5,

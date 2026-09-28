@@ -59,6 +59,9 @@ class AgentResult:
     backend: str = ""
     error_code: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
+    # Optional whitelisted snapshots for multi-agent trajectory evaluation.
+    # Single-agent callers continue to receive the historical empty list.
+    stage_trajectories: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ============================================================

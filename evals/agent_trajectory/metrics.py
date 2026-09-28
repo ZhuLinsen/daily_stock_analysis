@@ -69,7 +69,7 @@ semantics are out of scope here and belong in follow-up PRs (see
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -91,6 +91,9 @@ class GoldenSample:
     stock_code: str = ""
     allowed_max_steps: int = 10
     allow_optional_tools: bool = True
+    # Optional expectation for the multi-agent stage-aware reporter.  An
+    # empty list keeps existing single-agent samples and their reports intact.
+    expected_stages: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -108,6 +111,37 @@ class TrajectoryMetrics:
     distinct_steps: int
     max_steps_touched: bool
     violations: List[str]
+
+
+@dataclass
+class StageTrajectoryMetrics:
+    """Metrics for a whitelisted multi-agent stage trajectory."""
+
+    expected_stage_hit_rate: Optional[float]
+    expected_total: int
+    missing_expected_stages: List[str]
+    unexpected_stages: List[str]
+    observed_stages: List[str]
+    completed_stages: int
+    failed_stages: int
+    skipped_stages: int
+    cumulative_steps: int
+    stage_metrics: List[Dict[str, Any]]
+    violations: List[str]
+
+
+@dataclass
+class _ToolLogMetrics:
+    """Counts derived only from one tool log, without golden expectations."""
+
+    tool_calls: int
+    used_tools: List[str]
+    redundant_calls: int
+    cached_calls: int
+    failed_calls: int
+    retries: int
+    distinct_steps: int
+    max_step: int
 
 
 def _args_key(arguments: Any) -> str:
@@ -140,6 +174,65 @@ def _coerce_step(value: Any) -> int:
     return step if step > 0 else 0
 
 
+def _compute_tool_log_metrics(
+    log: List[Dict[str, Any]],
+    total_steps: Optional[int] = None,
+) -> _ToolLogMetrics:
+    """Count call-local facts without applying sample-level expectations."""
+    used_tools: List[str] = []
+    key_counts: Dict[tuple, int] = {}
+    key_failed_seen: Dict[tuple, bool] = {}
+    key_retries: Dict[tuple, int] = {}
+    failed_calls = cached_calls = redundant_calls = tool_calls = 0
+    distinct_steps = max_step = 0
+    seen_steps: set = set()
+
+    for entry in log:
+        if not isinstance(entry, dict):
+            continue
+        tool_calls += 1
+        tool = entry.get("tool") or ""
+        if tool and tool not in used_tools:
+            used_tools.append(tool)
+        success = bool(entry.get("success", True))
+        step = _coerce_step(entry.get("step"))
+        if step and step not in seen_steps:
+            seen_steps.add(step)
+            distinct_steps += 1
+            max_step = max(max_step, step)
+        if not success:
+            failed_calls += 1
+        if entry.get("cached"):
+            cached_calls += 1
+
+        key = (tool, _args_key(_entry_arguments(entry)))
+        if key_counts.get(key, 0):
+            redundant_calls += 1
+        key_counts[key] = key_counts.get(key, 0) + 1
+        if key_failed_seen.get(key):
+            key_retries[key] = key_retries.get(key, 0) + 1
+        key_failed_seen[key] = not success
+
+    total = 0
+    if total_steps is not None:
+        try:
+            total = int(total_steps)
+        except (TypeError, ValueError):
+            total = 0
+        total = total if total > 0 else 0
+
+    return _ToolLogMetrics(
+        tool_calls=tool_calls,
+        used_tools=used_tools,
+        redundant_calls=redundant_calls,
+        cached_calls=cached_calls,
+        failed_calls=failed_calls,
+        retries=sum(key_retries.values()),
+        distinct_steps=max(distinct_steps, total),
+        max_step=max(max_step, total),
+    )
+
+
 def compute_trajectory_metrics(
     log: List[Dict[str, Any]],
     golden: GoldenSample,
@@ -165,10 +258,8 @@ def compute_trajectory_metrics(
     non-positive ``allowed_max_steps`` is reported with the validator's
     wording (and the budget assertion stays disabled).
     """
-    used_tools: List[str] = []
-    key_counts: Dict[tuple, int] = {}
-    key_failed_seen: Dict[tuple, bool] = {}
-    key_retries: Dict[tuple, int] = {}
+    log_metrics = _compute_tool_log_metrics(log, total_steps=total_steps)
+    used_tools = log_metrics.used_tools
     # Extract the expected tool list before scanning entries.  Malformed
     # elements are not silently dropped: they are reported as a violation
     # below (mirroring validate_golden_sample, which rejects them at load
@@ -190,43 +281,12 @@ def compute_trajectory_metrics(
     expected_dupes = len(set(expected)) != len(expected)
     if expected_dupes:
         expected = list(dict.fromkeys(expected))
-    failed_calls = 0
-    cached_calls = 0
-    redundant_calls = 0
-    distinct_steps = 0
-    max_step = 0
-    seen_steps: set = set()
-
-    for entry in log:
-        if not isinstance(entry, dict):
-            continue
-        tool = entry.get("tool") or ""
-        success = bool(entry.get("success", True))
-        if tool and tool not in used_tools:
-            used_tools.append(tool)
-        step = _coerce_step(entry.get("step"))
-        if step and step not in seen_steps:
-            seen_steps.add(step)
-            distinct_steps += 1
-            max_step = max(max_step, step)
-        if not success:
-            failed_calls += 1
-        if entry.get("cached"):
-            cached_calls += 1
-
-        key = (tool, _args_key(_entry_arguments(entry)))
-        if key_counts.get(key, 0):
-            redundant_calls += 1
-        key_counts[key] = key_counts.get(key, 0) + 1
-        # An occurrence is a retry only when the same call already failed
-        # before it (see module docstring for the precise contract).
-        if key_failed_seen.get(key):
-            key_retries[key] = key_retries.get(key, 0) + 1
-        # A success clears the failure state: repeats after a recovery count
-        # as redundant only, not as further retries.
-        key_failed_seen[key] = not success
-
-    retries = sum(key_retries.values())
+    failed_calls = log_metrics.failed_calls
+    cached_calls = log_metrics.cached_calls
+    redundant_calls = log_metrics.redundant_calls
+    retries = log_metrics.retries
+    distinct_steps = log_metrics.distinct_steps
+    max_step = log_metrics.max_step
     violations: List[str] = []
 
     if expected_dupes:
@@ -251,18 +311,6 @@ def compute_trajectory_metrics(
         optional_allowed = False
     if optional_tools_used and not optional_allowed:
         violations.append(f"optional tools used but not allowed: {', '.join(optional_tools_used)}")
-
-    # The final answer round consumes a step but produces no tool call, so
-    # when the caller supplies the run's real total it may exceed the log.
-    total = 0
-    if total_steps is not None:
-        try:
-            total = int(total_steps)
-        except (TypeError, ValueError):
-            total = 0
-        total = total if total > 0 else 0
-    distinct_steps = max(distinct_steps, total)
-    max_step = max(max_step, total)
 
     limit = golden.allowed_max_steps
     if isinstance(limit, bool) or not isinstance(limit, int):
@@ -323,6 +371,175 @@ def format_text_report(m: TrajectoryMetrics) -> str:
         f"- 消耗步数: {m.distinct_steps} (触碰 max_steps: {max_steps_label})\n"
         f"- 违规项: {violations}\n"
     )
+
+
+def compute_stage_trajectory_metrics(
+    trajectories: List[Dict[str, Any]],
+    golden: GoldenSample,
+) -> StageTrajectoryMetrics:
+    """Normalize stage-local steps and score a multi-agent trajectory.
+
+    The runtime deliberately supplies one snapshot per observed stage.  This
+    function keeps that list order (the specialist scheduler already restores
+    selected-agent order after concurrent execution), and only derives
+    cumulative steps from each stage's local ``total_steps``.  Missing
+    expected stages therefore remain missing instead of being inferred from
+    tool-log gaps.
+    """
+    violations: List[str] = []
+    if not isinstance(trajectories, list):
+        violations.append("stage_trajectories must be a list")
+        trajectories = []
+
+    expected_raw = getattr(golden, "expected_stages", [])
+    if isinstance(expected_raw, list):
+        expected = [name for name in expected_raw if isinstance(name, str) and name.strip()]
+        if len(expected) != len(expected_raw):
+            violations.append("expected_stages must contain only non-empty strings")
+        if len(set(expected)) != len(expected):
+            violations.append("expected_stages must not contain duplicate names")
+        expected = list(dict.fromkeys(expected))
+    else:
+        expected = []
+        violations.append("expected_stages must be a list of stage names")
+
+    observed: List[str] = []
+    observed_set = set()
+    completed = failed = skipped = 0
+    cumulative_steps = 0
+    stage_metrics: List[Dict[str, Any]] = []
+    valid_statuses = {"pending", "running", "completed", "failed", "skipped"}
+
+    for index, snapshot in enumerate(trajectories):
+        if not isinstance(snapshot, dict):
+            violations.append(f"stage snapshot #{index} must be an object")
+            continue
+
+        stage_name = snapshot.get("stage_name", "")
+        if not isinstance(stage_name, str) or not stage_name.strip():
+            violations.append(f"stage snapshot #{index} stage_name must be a non-empty string")
+            stage_name = str(stage_name or "")
+        else:
+            stage_name = stage_name.strip()
+            if stage_name in observed_set:
+                violations.append(f"duplicate stage snapshot: {stage_name}")
+            else:
+                observed.append(stage_name)
+                observed_set.add(stage_name)
+
+        status = snapshot.get("status", "")
+        status = getattr(status, "value", status)
+        if not isinstance(status, str) or status not in valid_statuses:
+            violations.append(f"stage snapshot #{index} has invalid status")
+            status = str(status or "")
+
+        raw_steps = snapshot.get("total_steps", 0)
+        if isinstance(raw_steps, bool) or not isinstance(raw_steps, int) or raw_steps < 0:
+            violations.append(f"stage snapshot #{index} total_steps must be a non-negative integer")
+            raw_steps = 0
+        local_steps = max(raw_steps, 0)
+
+        raw_log = snapshot.get("tool_calls_log", [])
+        if not isinstance(raw_log, list):
+            violations.append(f"stage snapshot #{index} tool_calls_log must be a list")
+            raw_log = []
+        log_steps = max(
+            (_coerce_step(entry.get("step")) for entry in raw_log if isinstance(entry, dict)),
+            default=0,
+        )
+        local_steps = max(local_steps, log_steps)
+
+        failure_reason = snapshot.get("failure_reason")
+        failure_reason = getattr(failure_reason, "value", failure_reason)
+        if status == "completed":
+            completed += 1
+        elif status == "failed":
+            failed += 1
+        elif status == "skipped":
+            skipped += 1
+
+        cumulative_start = cumulative_steps + 1 if local_steps else None
+        cumulative_steps += local_steps
+        tool_metrics = _compute_tool_log_metrics(raw_log, total_steps=local_steps)
+        stage_metrics.append(
+            {
+                "stage_name": stage_name,
+                "status": status,
+                "failure_reason": failure_reason,
+                "local_steps": local_steps,
+                "cumulative_start_step": cumulative_start,
+                "cumulative_end_step": cumulative_steps,
+                "tool_metrics": {
+                    "tool_calls": tool_metrics.tool_calls,
+                    "tools_used": tool_metrics.used_tools,
+                    "redundant_calls": tool_metrics.redundant_calls,
+                    "cached_calls": tool_metrics.cached_calls,
+                    "failed_calls": tool_metrics.failed_calls,
+                    "retries": tool_metrics.retries,
+                },
+            }
+        )
+
+    missing = [name for name in expected if name not in observed_set]
+    unexpected = [name for name in observed if expected and name not in expected]
+    expected_stage_hit_rate = (
+        (len(expected) - len(missing)) / len(expected) if expected else None
+    )
+    if expected and missing:
+        violations.append(f"missing expected stages: {', '.join(missing)}")
+    if unexpected:
+        violations.append(f"unexpected stages: {', '.join(unexpected)}")
+
+    return StageTrajectoryMetrics(
+        expected_stage_hit_rate=expected_stage_hit_rate,
+        expected_total=len(expected),
+        missing_expected_stages=missing,
+        unexpected_stages=unexpected,
+        observed_stages=observed,
+        completed_stages=completed,
+        failed_stages=failed,
+        skipped_stages=skipped,
+        cumulative_steps=cumulative_steps,
+        stage_metrics=stage_metrics,
+        violations=violations,
+    )
+
+
+def format_stage_text_report(m: StageTrajectoryMetrics) -> str:
+    """Render the stage portion of a multi-agent trajectory report."""
+    if m.expected_total:
+        hit = f"{m.expected_stage_hit_rate * 100:.1f}%"
+        expected = f"{m.expected_total - len(m.missing_expected_stages)}/{m.expected_total} ({hit})"
+    else:
+        expected = "未配置期望阶段"
+    missing = ", ".join(m.missing_expected_stages) if m.missing_expected_stages else "无"
+    violations = "; ".join(m.violations) if m.violations else "无"
+    lines = [
+        "--------------------------------------------",
+        "Multi-Agent 阶段轨迹",
+        "--------------------------------------------",
+        f"- 期望阶段命中: {expected}",
+        f"- 观测阶段: {', '.join(m.observed_stages) if m.observed_stages else '无'}",
+        f"- 缺失期望阶段: {missing}",
+        f"- 阶段状态: 已完成 {m.completed_stages} | 失败 {m.failed_stages} | 跳过 {m.skipped_stages}",
+        f"- 累计步数: {m.cumulative_steps}",
+        f"- 阶段违规项: {violations}",
+    ]
+    for stage in m.stage_metrics:
+        start = stage.get("cumulative_start_step")
+        end = stage.get("cumulative_end_step", 0)
+        cumulative = f"{start}-{end}" if start is not None else "无"
+        reason = stage.get("failure_reason") or "无"
+        tool_metrics = stage.get("tool_metrics") or {}
+        lines.append(
+            f"- 阶段 {stage.get('stage_name') or '(未命名)'}: "
+            f"状态={stage.get('status') or 'unknown'} | "
+            f"局部步数={stage.get('local_steps', 0)} | 累计步数={cumulative} | "
+            f"失败原因={reason} | 工具调用={tool_metrics.get('tool_calls', 0)} | "
+            f"工具失败={tool_metrics.get('failed_calls', 0)} | "
+            f"重试={tool_metrics.get('retries', 0)}"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def load_golden_samples(
@@ -418,4 +635,10 @@ def validate_golden_sample(
         issues.append("allowed_max_steps must be >= 1")
     if not isinstance(sample.allow_optional_tools, bool):
         issues.append("allow_optional_tools must be a boolean")
+    if not isinstance(sample.expected_stages, list):
+        issues.append("expected_stages must be a list of stage names")
+    elif any(not isinstance(name, str) or not name.strip() for name in sample.expected_stages):
+        issues.append("expected_stages must contain only non-empty strings")
+    elif len(set(sample.expected_stages)) != len(sample.expected_stages):
+        issues.append("expected_stages must not contain duplicate names")
     return issues
