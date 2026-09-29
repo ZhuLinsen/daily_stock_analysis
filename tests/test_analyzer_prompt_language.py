@@ -122,6 +122,29 @@ class EnglishStockPromptTemplateTestCase(unittest.TestCase):
         self.assertEqual(_cjk_chars(en_prompt), "")
         self.assertIn(CORE_TRADING_SKILL_POLICY_ZH, zh_prompt)
 
+    def test_english_skill_prompt_keeps_builtin_skill_text_as_runtime_data(self) -> None:
+        """Language boundary: English mode translates the analyzer template, not skill content.
+
+        Built-in (and custom) skill instructions are loaded from YAML and rendered by
+        ``SkillManager``; they are injected verbatim in their authored language. Everything
+        outside that injected block must be English.
+        """
+        from src.agent.skills.base import SkillManager
+
+        manager = SkillManager()
+        self.assertGreater(manager.load_builtin_skills(), 0)
+        manager.activate(["chan_theory", "volume_breakout"])
+        skill_instructions = manager.get_skill_instructions()
+        # The built-in skill YAML is authored in Chinese; this is what makes the boundary visible.
+        self.assertNotEqual(_cjk_chars(skill_instructions), "")
+
+        analyzer = _make_analyzer(legacy=False, skill_instructions=skill_instructions)
+        prompt = analyzer._get_analysis_system_prompt("en", stock_code="600519")
+
+        self.assertIn(f"## Active Trading Skills\n\n{skill_instructions}\n", prompt)
+        self.assertEqual(_cjk_chars(prompt.replace(skill_instructions, "")), "")
+        self.assertIn("## Output Language (highest priority)", prompt)
+
     def test_english_user_prompt_has_no_chinese_template_text(self) -> None:
         fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short")
         for legacy in (True, False):
