@@ -1,0 +1,75 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
+# 缩量回踩选股策略
+name: shrink_pullback
+display_name: 缩量回踩
+description: 上升趋势中缩量回踩均线支撑，趋势延续的入场机会
+version: "1.1"
+category: trend
+tags: [trend, pullback, daily_k]
+analysis_skills: [shrink_pullback]
+style:
+  risk_profile: balanced
+  holding_period: swing
+  execution_style: pullback_continuation
+  market_regime: [risk_on, trend]
+  capital_profile: medium_liquidity
+  ui_badge: 回踩
+
+screening:
+  enabled: true
+  market_scope: [cn]
+  hard_filters:
+    exclude_st: true
+    amount_min: 80000000
+    turnover_rate_min: 1.0
+    require_ma_bullish: true
+    require_price_above_ma20: true
+    signal_score_min: 65
+    volume_ratio_20d_max: 1.5
+    pullback_to_ma20_pct_min: -2.0
+    pullback_to_ma20_pct_max: 8.0
+    volatility_20d_pct_max: 45.0
+    max_drawdown_20d_pct_min: -12.0
+    atr_20_pct_max: 6.5
+  tech_weight: 0.5
+  factor_weights:
+    momentum: 0.32
+    stability: 0.22
+    activity: 0.18
+    liquidity: 0.15
+    value: 0.08
+    reversal: 0.05
+  scoring_profile:
+    momentum_60d_overheat_pct: 35.0
+    momentum_chase_start_pct: 5.0
+    momentum_chase_penalty_slope: 14.0
+    activity_ideal_volume_ratio: 1.0
+    activity_ideal_turnover_rate: 2.5
+    activity_high_volume_ratio: 4.5
+    stability_hot_change_pct: 5.5
+    stability_high_volatility_pct: 40.0
+    stability_max_drawdown_floor_pct: -10.0
+    stability_high_atr_pct: 5.5
+  risk_profile:
+    chase_change_pct: 6.5
+    abnormal_volume_ratio: 4.5
+    high_turnover_rate: 12.0
+    weak_signal_score: 60.0
+  portfolio_profile:
+    max_same_bucket: 1
+    concentration_penalty: 4.0
+    buckets:
+      金融: [券商, 银行, 保险]
+      AI算力: [AI算力, 算力, 数据中心, 服务器, 光模块]
+      新能源: [新能源, 光伏, 锂电, 电池, 储能]
+      机器人: [机器人, 减速器, 执行器, 伺服]
+  scorecard_profile:
+    capital_confirmed_bonus: 1.4
+    volume_spike_ratio: 4.5
+  ranking_hints: |
+    在满足缩量回踩特征的候选中，优先关注：
+    1. 回调幅度适中、趋势结构未破坏
+    2. 缩量明显，洗盘而非出货
+    3. 近期无重大利空
+  max_output: 5

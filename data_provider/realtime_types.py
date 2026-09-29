@@ -16,6 +16,7 @@
 
 import logging
 import time
+from threading import RLock
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Union
 from enum import Enum
@@ -97,8 +98,12 @@ class RealtimeSource(Enum):
     AKSHARE_SINA = "akshare_sina"   # 新浪财经
     AKSHARE_QQ = "akshare_qq"       # 腾讯财经
     TUSHARE = "tushare"             # Tushare Pro
+    TICKFLOW = "tickflow"           # TickFlow
     TENCENT = "tencent"             # 腾讯直连
     SINA = "sina"                   # 新浪直连
+    STOOQ = "stooq"                 # Stooq 美股兜底
+    LONGBRIDGE = "longbridge"       # 长桥（美股/港股兜底）
+    FUTU = "futu"                   # 富途 OpenD（港股）
     FALLBACK = "fallback"           # 降级兜底
 
 
@@ -115,6 +120,17 @@ class UnifiedRealtimeQuote:
     code: str
     name: str = ""
     source: RealtimeSource = RealtimeSource.FALLBACK
+
+    # === 数据质量元数据（由 DataFetcherManager 统一补齐）===
+    fetched_at: Optional[str] = None             # 本系统获取时间（ISO 8601 datetime）
+    provider_timestamp: Optional[str] = None     # Provider 真实行情时间（ISO 8601 datetime）
+    is_stale: Optional[bool] = None              # provider_timestamp 超过最小 TTL 阈值时为 True
+    stale_seconds: Optional[int] = None          # provider_timestamp 距 fetched_at 的秒数
+    fallback_from: Optional[str] = None          # 整源 fallback 的失败首选源 token
+    market: Optional[str] = None                 # 市场标签（cn/hk/us/jp/kr/tw）
+    currency: Optional[str] = None               # 报价币种（JPY/KRW/TWD/USD/HKD/CNY 等）
+    data_quality: Optional[str] = None           # ok/partial/unavailable
+    missing_fields: Optional[list[str]] = None   # provider 缺失的关键字段
     
     # === 核心价格数据（几乎所有源都有）===
     price: Optional[float] = None           # 最新价
@@ -122,7 +138,7 @@ class UnifiedRealtimeQuote:
     change_amount: Optional[float] = None   # 涨跌额
     
     # === 量价指标（部分源可能缺失）===
-    volume: Optional[int] = None            # 成交量（手）
+    volume: Optional[int] = None            # 成交量（股，与历史日线口径一致）
     amount: Optional[float] = None          # 成交额（元）
     volume_ratio: Optional[float] = None    # 量比
     turnover_rate: Optional[float] = None   # 换手率(%)
@@ -154,6 +170,8 @@ class UnifiedRealtimeQuote:
         }
         # 只添加非 None 的字段
         optional_fields = [
+            'fetched_at', 'provider_timestamp', 'is_stale', 'stale_seconds',
+            'fallback_from', 'market', 'currency', 'data_quality', 'missing_fields',
             'price', 'change_pct', 'change_amount', 'volume', 'amount',
             'volume_ratio', 'turnover_rate', 'amplitude',
             'open_price', 'high', 'low', 'pre_close',
@@ -227,15 +245,17 @@ class ChipDistribution:
         
         # 获利比例分析
         if self.profit_ratio >= 0.9:
-            status_parts.append("获利盘极高(>90%)")
+            status_parts.append("获利盘极高(获利盘>90%)")
         elif self.profit_ratio >= 0.7:
-            status_parts.append("获利盘较高(70-90%)")
+            status_parts.append("获利盘较高(获利盘70-90%)")
         elif self.profit_ratio >= 0.5:
-            status_parts.append("获利盘中等(50-70%)")
+            status_parts.append("获利盘中等(获利盘50-70%)")
         elif self.profit_ratio >= 0.3:
-            status_parts.append("套牢盘较多(>30%)")
+            status_parts.append("套牢盘中等(套牢盘50-70%)")
+        elif self.profit_ratio >= 0.1:
+            status_parts.append("套牢盘较高(套牢盘70-90%)")
         else:
-            status_parts.append("套牢盘极重(>70%)")
+            status_parts.append("套牢盘极高(套牢盘>90%)")
         
         # 筹码集中度分析 (90%集中度 < 10% 表示集中)
         if self.concentration_90 < 0.08:
@@ -295,9 +315,10 @@ class CircuitBreaker:
         
         # 各数据源状态 {source_name: {state, failures, last_failure_time, half_open_calls}}
         self._states: Dict[str, Dict[str, Any]] = {}
+        self._lock = RLock()
     
-    def _get_state(self, source: str) -> Dict[str, Any]:
-        """获取或初始化数据源状态"""
+    def _get_state_locked(self, source: str) -> Dict[str, Any]:
+        """获取或初始化数据源状态（调用方需持有锁）。"""
         if source not in self._states:
             self._states[source] = {
                 'state': self.CLOSED,
@@ -314,79 +335,108 @@ class CircuitBreaker:
         返回 True 表示可以尝试请求
         返回 False 表示应跳过该数据源
         """
-        state = self._get_state(source)
-        current_time = time.time()
-        
-        if state['state'] == self.CLOSED:
-            return True
-        
-        if state['state'] == self.OPEN:
-            # 检查冷却时间
-            time_since_failure = current_time - state['last_failure_time']
-            if time_since_failure >= self.cooldown_seconds:
-                # 冷却完成，进入半开状态
-                state['state'] = self.HALF_OPEN
-                state['half_open_calls'] = 0
-                logger.info(f"[熔断器] {source} 冷却完成，进入半开状态")
+        with self._lock:
+            state = self._get_state_locked(source)
+            current_time = time.time()
+
+            if state['state'] == self.CLOSED:
                 return True
-            else:
-                remaining = self.cooldown_seconds - time_since_failure
-                logger.debug(f"[熔断器] {source} 处于熔断状态，剩余冷却时间: {remaining:.0f}s")
+
+            if state['state'] == self.OPEN:
+                # 检查冷却时间
+                time_since_failure = current_time - state['last_failure_time']
+                if time_since_failure >= self.cooldown_seconds:
+                    # 冷却完成，进入半开状态（不预占名额，由 HALF_OPEN 分支统一管理）
+                    state['state'] = self.HALF_OPEN
+                    state['half_open_calls'] = 0
+                    state['last_failure_time'] = current_time
+                    logger.info(f"[熔断器] {source} 冷却完成，进入半开状态")
+                    # Fall through to HALF_OPEN check below
+                else:
+                    remaining = self.cooldown_seconds - time_since_failure
+                    logger.debug(f"[熔断器] {source} 处于熔断状态，剩余冷却时间: {remaining:.0f}s")
+                    return False
+
+            if state['state'] == self.HALF_OPEN:
+                if state['half_open_calls'] < self.half_open_max_calls:
+                    state['half_open_calls'] += 1
+                    return True
+                # 所有探测名额已用完；若冷却时间再次到期仍未收到
+                # record_success/record_failure 回调，重置名额允许重新探测，
+                # 避免永久卡在 HALF_OPEN。
+                time_since_failure = current_time - state['last_failure_time']
+                if time_since_failure >= self.cooldown_seconds:
+                    state['half_open_calls'] = 1
+                    state['last_failure_time'] = current_time
+                    logger.info(f"[熔断器] {source} 半开状态探测超时，重新探测")
+                    return True
                 return False
-        
-        if state['state'] == self.HALF_OPEN:
-            # 半开状态下限制请求次数
-            if state['half_open_calls'] < self.half_open_max_calls:
-                return True
-            return False
-        
-        return True
+
+            return True
     
+    def record_inconclusive(self, source: str) -> None:
+        """记录不确定的探测结果（如返回 None）。
+
+        仅影响 HALF_OPEN 状态：将其转回 OPEN 以便冷却后重新探测。
+        CLOSED 状态下为空操作，不影响失败计数。
+        """
+        with self._lock:
+            state = self._get_state_locked(source)
+            if state['state'] == self.HALF_OPEN:
+                state['state'] = self.OPEN
+                state['half_open_calls'] = 0
+                state['last_failure_time'] = time.time()
+                logger.info(f"[熔断器] {source} 半开探测结果不确定，重新进入冷却")
+
     def record_success(self, source: str) -> None:
         """记录成功请求"""
-        state = self._get_state(source)
-        
-        if state['state'] == self.HALF_OPEN:
-            # 半开状态下成功，完全恢复
-            logger.info(f"[熔断器] {source} 半开状态请求成功，恢复正常")
-        
-        # 重置状态
-        state['state'] = self.CLOSED
-        state['failures'] = 0
-        state['half_open_calls'] = 0
+        with self._lock:
+            state = self._get_state_locked(source)
+
+            if state['state'] == self.HALF_OPEN:
+                # 半开状态下成功，完全恢复
+                logger.info(f"[熔断器] {source} 半开状态请求成功，恢复正常")
+
+            # 重置状态
+            state['state'] = self.CLOSED
+            state['failures'] = 0
+            state['half_open_calls'] = 0
     
     def record_failure(self, source: str, error: Optional[str] = None) -> None:
         """记录失败请求"""
-        state = self._get_state(source)
-        current_time = time.time()
-        
-        state['failures'] += 1
-        state['last_failure_time'] = current_time
-        
-        if state['state'] == self.HALF_OPEN:
-            # 半开状态下失败，继续熔断
-            state['state'] = self.OPEN
-            state['half_open_calls'] = 0
-            logger.warning(f"[熔断器] {source} 半开状态请求失败，继续熔断 {self.cooldown_seconds}s")
-        elif state['failures'] >= self.failure_threshold:
-            # 达到阈值，进入熔断
-            state['state'] = self.OPEN
-            logger.warning(f"[熔断器] {source} 连续失败 {state['failures']} 次，进入熔断状态 "
-                          f"(冷却 {self.cooldown_seconds}s)")
-            if error:
-                logger.warning(f"[熔断器] 最后错误: {error}")
+        with self._lock:
+            state = self._get_state_locked(source)
+            current_time = time.time()
+
+            state['failures'] += 1
+            state['last_failure_time'] = current_time
+
+            if state['state'] == self.HALF_OPEN:
+                # 半开状态下失败，继续熔断
+                state['state'] = self.OPEN
+                state['half_open_calls'] = 0
+                logger.warning(f"[熔断器] {source} 半开状态请求失败，继续熔断 {self.cooldown_seconds}s")
+            elif state['failures'] >= self.failure_threshold:
+                # 达到阈值，进入熔断
+                state['state'] = self.OPEN
+                logger.warning(f"[熔断器] {source} 连续失败 {state['failures']} 次，进入熔断状态 "
+                              f"(冷却 {self.cooldown_seconds}s)")
+                if error:
+                    logger.warning(f"[熔断器] 最后错误: {error}")
     
     def get_status(self) -> Dict[str, str]:
         """获取所有数据源状态"""
-        return {source: info['state'] for source, info in self._states.items()}
+        with self._lock:
+            return {source: info['state'] for source, info in self._states.items()}
     
     def reset(self, source: Optional[str] = None) -> None:
         """重置熔断器状态"""
-        if source:
-            if source in self._states:
-                del self._states[source]
-        else:
-            self._states.clear()
+        with self._lock:
+            if source:
+                if source in self._states:
+                    del self._states[source]
+            else:
+                self._states.clear()
 
 
 # 全局熔断器实例（实时行情专用）

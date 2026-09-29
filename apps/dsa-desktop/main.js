@@ -1,17 +1,405 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const net = require('net');
 const http = require('http');
+const https = require('https');
+const { TextDecoder } = require('util');
 
 let mainWindow = null;
 let backendProcess = null;
 let logFilePath = null;
 let backendStartError = null;
+let desktopUpdateState = null;
+let lastNotifiedUpdateVersion = '';
+let lastPromptedInstallVersion = '';
+let electronAutoUpdater = undefined;
+let electronAutoUpdaterConfigured = false;
+let electronUpdateCheckInFlight = false;
+let desktopUpdateCheckInFlight = false;
+let desktopBackendOrigin = '';
+
+function resolveWindowBackgroundColor() {
+  return nativeTheme.shouldUseDarkColors ? '#08080c' : '#f4f7fb';
+}
 
 const isWindows = process.platform === 'win32';
+const isMac = process.platform === 'darwin';
 const appRootDev = path.resolve(__dirname, '..', '..');
+const GITHUB_OWNER = 'ZhuLinsen';
+const GITHUB_REPO = 'daily_stock_analysis';
+const RELEASES_PAGE_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
+const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
+const DESKTOP_UPDATE_BACKUP_DIR = '.dsa-desktop-update-backup';
+const DESKTOP_UPDATE_BACKUP_MANIFEST_FILE = 'runtime-state.json';
+const DESKTOP_BACKEND_DEFAULT_HOST = '127.0.0.1';
+const DESKTOP_SHARE_IMAGE_WIDTH = 1080;
+const DESKTOP_SHARE_IMAGE_INITIAL_HEIGHT = 720;
+const DESKTOP_SHARE_IMAGE_MAX_HEIGHT = 20000;
+const PUBLIC_BIND_HOSTS = Object.freeze(new Set(['0.0.0.0', '::', '[::]', '*']));
+const MAC_DESKTOP_CLI_PATH_ENTRIES = Object.freeze([
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/opt/homebrew/sbin',
+  '/usr/local/sbin',
+]);
+const MAC_DESKTOP_SYSTEM_PATH_ENTRIES = Object.freeze([
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin',
+]);
+const DESKTOP_BACKEND_PATH_DELIMITER = isWindows ? ';' : ':';
+const DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES = Object.freeze([
+  '.env',
+  path.join('data', 'stock_analysis.db'),
+  path.join('data', 'stock_analysis.db-wal'),
+  path.join('data', 'stock_analysis.db-shm'),
+  path.join('data', 'screening', 'hotspots.json'),
+  path.join('data', 'screening', 'hotspot.history.jsonl'),
+  path.join('data', 'screening', 'hotspot_details'),
+  path.join('data', 'screening', 'snapshot.last_good.json'),
+  path.join('data', 'screening', 'daily_history'),
+  path.join('data', 'screening', 'industry_provider_cache'),
+  path.join('logs', 'desktop.log'),
+]);
+
+const UPDATE_STATUS = Object.freeze({
+  IDLE: 'idle',
+  CHECKING: 'checking',
+  UP_TO_DATE: 'up-to-date',
+  UPDATE_AVAILABLE: 'update-available',
+  DOWNLOADING: 'downloading',
+  UPDATE_DOWNLOADED: 'update-downloaded',
+  INSTALLING: 'installing',
+  ERROR: 'error',
+});
+
+const UPDATE_MODE = Object.freeze({
+  AUTO: 'auto',
+  MANUAL: 'manual',
+});
+
+function normalizeVersionString(version) {
+  return String(version || '')
+    .trim()
+    .replace(/^v/i, '')
+    .replace(/\+.*$/, '');
+}
+
+function parseSemver(version) {
+  const normalized = normalizeVersionString(version);
+  const match = normalized.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+    patch: Number.parseInt(match[3], 10),
+    prerelease: match[4] ? match[4].split('.') : [],
+  };
+}
+
+function comparePrereleaseIdentifiers(left, right) {
+  const leftIsNumeric = /^\d+$/.test(left);
+  const rightIsNumeric = /^\d+$/.test(right);
+
+  if (leftIsNumeric && rightIsNumeric) {
+    const leftNumber = Number.parseInt(left, 10);
+    const rightNumber = Number.parseInt(right, 10);
+    if (leftNumber === rightNumber) {
+      return 0;
+    }
+    return leftNumber > rightNumber ? 1 : -1;
+  }
+
+  if (leftIsNumeric !== rightIsNumeric) {
+    return leftIsNumeric ? -1 : 1;
+  }
+
+  if (left === right) {
+    return 0;
+  }
+  return left > right ? 1 : -1;
+}
+
+function compareVersions(leftVersion, rightVersion) {
+  const left = parseSemver(leftVersion);
+  const right = parseSemver(rightVersion);
+  if (!left || !right) {
+    return null;
+  }
+
+  for (const key of ['major', 'minor', 'patch']) {
+    if (left[key] !== right[key]) {
+      return left[key] > right[key] ? 1 : -1;
+    }
+  }
+
+  if (!left.prerelease.length && !right.prerelease.length) {
+    return 0;
+  }
+  if (!left.prerelease.length) {
+    return 1;
+  }
+  if (!right.prerelease.length) {
+    return -1;
+  }
+
+  const length = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = left.prerelease[index];
+    const rightPart = right.prerelease[index];
+    if (leftPart === undefined) {
+      return -1;
+    }
+    if (rightPart === undefined) {
+      return 1;
+    }
+
+    const compared = comparePrereleaseIdentifiers(leftPart, rightPart);
+    if (compared !== 0) {
+      return compared;
+    }
+  }
+
+  return 0;
+}
+
+function normalizeFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+  const numberValue = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+function normalizeDownloadPercent(value) {
+  const percent = normalizeFiniteNumber(value);
+  if (percent === null) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, Math.round(percent * 10) / 10));
+}
+
+function buildUpdateState(state = {}) {
+  return {
+    status: state.status || UPDATE_STATUS.IDLE,
+    updateMode: state.updateMode === UPDATE_MODE.AUTO ? UPDATE_MODE.AUTO : UPDATE_MODE.MANUAL,
+    currentVersion: normalizeVersionString(state.currentVersion),
+    latestVersion: normalizeVersionString(state.latestVersion),
+    releaseUrl:
+      typeof state.releaseUrl === 'string' && state.releaseUrl.trim()
+        ? state.releaseUrl.trim()
+        : RELEASES_PAGE_URL,
+    checkedAt: typeof state.checkedAt === 'string' ? state.checkedAt : '',
+    publishedAt: typeof state.publishedAt === 'string' ? state.publishedAt : '',
+    message: typeof state.message === 'string' ? state.message : '',
+    releaseName: typeof state.releaseName === 'string' ? state.releaseName : '',
+    tagName: typeof state.tagName === 'string' ? state.tagName : '',
+    downloadPercent: normalizeDownloadPercent(state.downloadPercent),
+    downloadedBytes: normalizeFiniteNumber(state.downloadedBytes),
+    totalBytes: normalizeFiniteNumber(state.totalBytes),
+  };
+}
+
+function extractReleaseMetadata(release) {
+  if (!release || typeof release !== 'object') {
+    return null;
+  }
+
+  const tagName = typeof release.tag_name === 'string' ? release.tag_name.trim() : '';
+  const version = normalizeVersionString(tagName);
+  if (!parseSemver(version)) {
+    return null;
+  }
+
+  return {
+    tagName,
+    version,
+    releaseName: typeof release.name === 'string' ? release.name.trim() : '',
+    releaseUrl:
+      typeof release.html_url === 'string' && release.html_url.trim()
+        ? release.html_url.trim()
+        : RELEASES_PAGE_URL,
+    publishedAt: typeof release.published_at === 'string' ? release.published_at : '',
+  };
+}
+
+function evaluateReleaseUpdate({ currentVersion, release, checkedAt = new Date().toISOString() }) {
+  const normalizedCurrentVersion = normalizeVersionString(currentVersion);
+  if (!parseSemver(normalizedCurrentVersion)) {
+    return buildUpdateState({
+      status: UPDATE_STATUS.ERROR,
+      currentVersion: normalizedCurrentVersion,
+      checkedAt,
+      message: '当前桌面端版本不是有效的语义化版本，无法检查更新。',
+    });
+  }
+
+  const releaseMetadata = extractReleaseMetadata(release);
+  if (!releaseMetadata) {
+    return buildUpdateState({
+      status: UPDATE_STATUS.ERROR,
+      currentVersion: normalizedCurrentVersion,
+      checkedAt,
+      message: 'GitHub Release 未返回可识别的语义化版本标签。',
+    });
+  }
+
+  const compared = compareVersions(normalizedCurrentVersion, releaseMetadata.version);
+  if (compared === null) {
+    return buildUpdateState({
+      status: UPDATE_STATUS.ERROR,
+      currentVersion: normalizedCurrentVersion,
+      latestVersion: releaseMetadata.version,
+      releaseUrl: releaseMetadata.releaseUrl,
+      checkedAt,
+      releaseName: releaseMetadata.releaseName,
+      tagName: releaseMetadata.tagName,
+      message: '版本比较失败，无法判断是否存在可用更新。',
+    });
+  }
+
+  if (compared < 0) {
+    return buildUpdateState({
+      status: UPDATE_STATUS.UPDATE_AVAILABLE,
+      currentVersion: normalizedCurrentVersion,
+      latestVersion: releaseMetadata.version,
+      releaseUrl: releaseMetadata.releaseUrl,
+      checkedAt,
+      publishedAt: releaseMetadata.publishedAt,
+      releaseName: releaseMetadata.releaseName,
+      tagName: releaseMetadata.tagName,
+      message: `发现新版本 ${releaseMetadata.version}，可前往 GitHub Releases 下载更新。`,
+    });
+  }
+
+  return buildUpdateState({
+    status: UPDATE_STATUS.UP_TO_DATE,
+    currentVersion: normalizedCurrentVersion,
+    latestVersion: releaseMetadata.version,
+    releaseUrl: releaseMetadata.releaseUrl,
+    checkedAt,
+    publishedAt: releaseMetadata.publishedAt,
+    releaseName: releaseMetadata.releaseName,
+    tagName: releaseMetadata.tagName,
+    message: '当前桌面端已是最新版本。',
+  });
+}
+
+function fetchLatestReleaseJson({
+  requestUrl = LATEST_RELEASE_API_URL,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  request = https.request,
+} = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let response = null;
+
+    const cleanupResponseListeners = () => {
+      if (!response) {
+        return;
+      }
+      response.removeAllListeners('data');
+      response.removeAllListeners('end');
+      response.removeAllListeners('error');
+      response.removeAllListeners('aborted');
+      response.removeAllListeners('close');
+    };
+
+    const finishWithError = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanupResponseListeners();
+      if (!req.destroyed) {
+        req.destroy();
+      }
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    const finishWithResult = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanupResponseListeners();
+      resolve(value);
+    };
+
+    const req = request(
+      requestUrl,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'daily-stock-analysis-desktop',
+        },
+      },
+      (incomingResponse) => {
+        response = incomingResponse;
+        const chunks = [];
+
+        response.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        });
+
+        response.on('end', () => {
+          if (settled) {
+            return;
+          }
+          const body = Buffer.concat(chunks).toString('utf-8');
+          if (response.statusCode !== 200) {
+            finishWithError(new Error(`GitHub API responded with status ${response.statusCode || 'unknown'}`));
+            return;
+          }
+
+          try {
+            finishWithResult(JSON.parse(body));
+          } catch (_error) {
+            finishWithError(new Error('Failed to parse GitHub release response.'));
+          }
+        });
+
+        response.on('error', (error) => {
+          finishWithError(error);
+        });
+        response.on('aborted', () => {
+          finishWithError(new Error('GitHub API response was aborted.'));
+        });
+        response.on('close', () => {
+          if (!response.complete) {
+            finishWithError(new Error('GitHub API response closed before completion.'));
+          }
+        });
+      }
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`GitHub API timeout after ${timeoutMs}ms`));
+    });
+    req.on('error', finishWithError);
+    req.end();
+  });
+}
+
+async function checkForDesktopUpdates({
+  currentVersion,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  fetchLatestRelease = fetchLatestReleaseJson,
+} = {}) {
+  const release = await fetchLatestRelease({ timeoutMs });
+  return evaluateReleaseUpdate({ currentVersion, release });
+}
+
+desktopUpdateState = buildUpdateState();
+let desktopUpdateChecker = checkForDesktopUpdates;
 
 function resolveEnvExamplePath() {
   if (app.isPackaged) {
@@ -20,12 +408,252 @@ function resolveEnvExamplePath() {
   return path.join(appRootDev, '.env.example');
 }
 
+function resolvePackagedExeDir() {
+  return path.dirname(app.getPath('exe'));
+}
+
 function resolveAppDir() {
-  if (app.isPackaged) {
-    // exe 所在目录
-    return path.dirname(app.getPath('exe'));
+  if (app.isPackaged && !isMac) {
+    return resolvePackagedExeDir();
   }
   return app.getPath('userData');
+}
+
+function resolveUpdateBackupRoot() {
+  return path.join(app.getPath('userData'), DESKTOP_UPDATE_BACKUP_DIR);
+}
+
+function resolveUpdateBackupManifestPath() {
+  return path.join(resolveUpdateBackupRoot(), DESKTOP_UPDATE_BACKUP_MANIFEST_FILE);
+}
+
+function resolveRuntimeFileEntries(baseDir = resolveAppDir()) {
+  return DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES.map((relativePath) => ({
+    relativePath,
+    absolutePath: path.join(baseDir, relativePath),
+    backupPath: path.join(resolveUpdateBackupRoot(), relativePath),
+  }));
+}
+
+function readUpdateBackupManifest() {
+  const manifestPath = resolveUpdateBackupManifestPath();
+  if (!fs.existsSync(manifestPath)) {
+    return null;
+  }
+
+  try {
+    const manifestText = fs.readFileSync(manifestPath, 'utf-8');
+    const manifest = JSON.parse(manifestText);
+    if (!manifest || typeof manifest !== 'object') {
+      return null;
+    }
+    return manifest;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function writeUpdateBackupManifest(manifest) {
+  ensureDirectory(resolveUpdateBackupRoot());
+  fs.writeFileSync(resolveUpdateBackupManifestPath(), JSON.stringify(manifest, null, 2), 'utf-8');
+}
+
+function cleanupUpdateBackupRoot() {
+  try {
+    fs.rmSync(resolveUpdateBackupRoot(), { recursive: true, force: true });
+  } catch (_error) {
+  }
+}
+
+function normalizeBackupFileList(manifest) {
+  if (manifest && Array.isArray(manifest.files) && manifest.files.length) {
+    return manifest.files.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim());
+  }
+  return DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES.slice();
+}
+
+function copyRuntimeStatePathSync(source, target) {
+  const stats = fs.statSync(source);
+  if (stats.isDirectory()) {
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.mkdirSync(target, { recursive: true });
+    fs.readdirSync(source, { withFileTypes: true }).forEach((entry) => {
+      copyRuntimeStatePathSync(path.join(source, entry.name), path.join(target, entry.name));
+    });
+    return;
+  }
+
+  if (!stats.isFile()) {
+    throw new Error(`unsupported runtime state path type: ${source}`);
+  }
+
+  ensureDirectory(path.dirname(target));
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.copyFileSync(source, target);
+}
+
+function backupPackagedRuntimeState() {
+  if (!isWindowsNsisInstalledApp()) {
+    return;
+  }
+
+  const runtimeEntries = resolveRuntimeFileEntries();
+  const backedUpFiles = [];
+
+  cleanupUpdateBackupRoot();
+  ensureDirectory(resolveUpdateBackupRoot());
+
+  runtimeEntries.forEach(({ relativePath, absolutePath, backupPath }) => {
+    if (!fs.existsSync(absolutePath)) {
+      return;
+    }
+    copyRuntimeStatePathSync(absolutePath, backupPath);
+    backedUpFiles.push(relativePath);
+  });
+
+  if (!backedUpFiles.length) {
+    return;
+  }
+
+  writeUpdateBackupManifest({
+    backedAt: new Date().toISOString(),
+    appVersion: resolveDesktopVersion(),
+    files: backedUpFiles,
+  });
+}
+
+function restorePackagedRuntimeStateFromBackup() {
+  const result = {
+    backupRoot: null,
+    restored: [],
+    failed: [],
+    skipped: [],
+  };
+
+  if (!isWindowsNsisInstalledApp()) {
+    return result;
+  }
+
+  const manifest = readUpdateBackupManifest();
+  if (!manifest) {
+    return result;
+  }
+
+  const backupRoot = resolveUpdateBackupRoot();
+  result.backupRoot = backupRoot;
+  const backupAppVersion = normalizeVersionString(manifest.appVersion);
+  const currentAppVersion = normalizeVersionString(resolveDesktopVersion());
+  const versionComparison = backupAppVersion && currentAppVersion
+    ? compareVersions(backupAppVersion, currentAppVersion)
+    : null;
+  const isSameAppVersion = Boolean(
+    backupAppVersion &&
+    currentAppVersion &&
+    (versionComparison === 0 || (versionComparison === null && backupAppVersion === currentAppVersion))
+  );
+  if (isSameAppVersion) {
+    const reason = `stale backup target ${backupAppVersion} was discarded because current version did not change`;
+    result.skipped.push(reason);
+    cleanupUpdateBackupRoot();
+    logLine(`[update] discarded runtime restore backup because app version did not change after update attempt: ${currentAppVersion}`);
+    return result;
+  }
+
+  const appDir = resolveAppDir();
+  const runtimeEntries = resolveRuntimeFileEntries(appDir);
+  const relativeFiles = normalizeBackupFileList(manifest);
+  const failedRelativeFiles = [];
+
+  try {
+    relativeFiles.forEach((relativePath) => {
+      try {
+        const entry = runtimeEntries.find((candidate) => candidate.relativePath === relativePath);
+        const source = path.join(backupRoot, relativePath);
+        const target = entry ? entry.absolutePath : path.join(appDir, relativePath);
+        if (!fs.existsSync(source)) {
+          return;
+        }
+        copyRuntimeStatePathSync(source, target);
+        result.restored.push(relativePath);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failedRelativeFiles.push(relativePath);
+        result.failed.push(`${relativePath} (${message})`);
+      }
+    });
+  } finally {
+    if (!result.failed.length) {
+      cleanupUpdateBackupRoot();
+    } else {
+      try {
+        writeUpdateBackupManifest({
+          ...manifest,
+          files: failedRelativeFiles,
+          lastRestoreFailedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        logLine(`[update] failed to rewrite pending restore manifest: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  if (result.restored.length) {
+    console.log(`[update] restored runtime files from backup: ${result.restored.join(', ')}`);
+  }
+  if (result.failed.length) {
+    logLine(`[update] skipped runtime restore files after copy failure: ${result.failed.join(', ')}`);
+  }
+  if (result.skipped.length) {
+    logLine(`[update] skipped runtime restore: ${result.skipped.join(', ')}`);
+  }
+
+  return result;
+}
+
+function migrateMacPackagedRuntimeState() {
+  const result = {
+    sourceDir: null,
+    targetDir: null,
+    migrated: [],
+    skipped: [],
+    failed: [],
+  };
+
+  if (!app.isPackaged || !isMac) {
+    return result;
+  }
+
+  const sourceDir = resolvePackagedExeDir();
+  const targetDir = resolveAppDir();
+  result.sourceDir = sourceDir;
+  result.targetDir = targetDir;
+
+  if (sourceDir === targetDir || !fs.existsSync(sourceDir)) {
+    return result;
+  }
+
+  DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES.forEach((relativePath) => {
+    const source = path.join(sourceDir, relativePath);
+    const target = path.join(targetDir, relativePath);
+
+    if (!fs.existsSync(source)) {
+      return;
+    }
+    if (fs.existsSync(target)) {
+      result.skipped.push(relativePath);
+      return;
+    }
+
+    try {
+      copyRuntimeStatePathSync(source, target);
+      result.migrated.push(relativePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result.failed.push(`${relativePath} (${message})`);
+    }
+  });
+
+  return result;
 }
 
 function resolveBackendPath() {
@@ -46,15 +674,254 @@ function resolveBackendPath() {
   return null;
 }
 
+function extendMacDesktopBackendPath(rawPath) {
+  if (!isMac) {
+    return rawPath;
+  }
+
+  const seen = new Set();
+  const entries = String(rawPath || '')
+    .split(DESKTOP_BACKEND_PATH_DELIMITER)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .filter((entry) => {
+      if (seen.has(entry)) {
+        return false;
+      }
+      seen.add(entry);
+      return true;
+    });
+
+  [...MAC_DESKTOP_CLI_PATH_ENTRIES, ...MAC_DESKTOP_SYSTEM_PATH_ENTRIES].forEach((entry) => {
+    if (!seen.has(entry)) {
+      entries.push(entry);
+      seen.add(entry);
+    }
+  });
+
+  return entries.join(DESKTOP_BACKEND_PATH_DELIMITER);
+}
+
+function normalizeBackendHost(value, fallback = '') {
+  const normalized = String(value || '').trim();
+  return normalized || fallback;
+}
+
+function normalizeBackendBindHost(value, fallback = DESKTOP_BACKEND_DEFAULT_HOST) {
+  const host = normalizeBackendHost(value, fallback);
+  const lowerHost = host.toLowerCase();
+  if (lowerHost === '*') {
+    return '0.0.0.0';
+  }
+  if (lowerHost === '[::]') {
+    return '::';
+  }
+  return host;
+}
+
+function hasOwnValue(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+function parseQuotedEnvValue(value, quote) {
+  let result = '';
+  for (let index = 1; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === quote) {
+      if (quote === '"') {
+        return result.replace(/\\([nrt"\\$])/g, (_match, escaped) => {
+          if (escaped === 'n') {
+            return '\n';
+          }
+          if (escaped === 'r') {
+            return '\r';
+          }
+          if (escaped === 't') {
+            return '\t';
+          }
+          return escaped;
+        });
+      }
+      return result.replace(/\\'/g, "'").replace(/\\\\/g, '\\');
+    }
+    result += char;
+  }
+
+  return value.trim();
+}
+
+function parseEnvScalarValue(rawValue) {
+  const value = String(rawValue || '').trimStart();
+  if (!value) {
+    return '';
+  }
+
+  const quote = value[0];
+  if (quote === '"' || quote === "'") {
+    return parseQuotedEnvValue(value, quote);
+  }
+
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === '#' && (index === 0 || /\s/.test(value[index - 1]))) {
+      return value.slice(0, index).trim();
+    }
+  }
+
+  return value.trim();
+}
+
+function expandEnvReferences(value, values = {}, sourceEnv = process.env) {
+  return String(value || '').replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}/g,
+    (_match, name, defaultValue) => {
+      if (hasOwnValue(sourceEnv, name)) {
+        return String(sourceEnv[name]);
+      }
+      if (hasOwnValue(values, name)) {
+        return String(values[name]);
+      }
+      return defaultValue === undefined ? '' : defaultValue;
+    }
+  );
+}
+
+function readEnvFileValues(envFile, sourceEnv = process.env) {
+  if (!envFile || !fs.existsSync(envFile)) {
+    return {};
+  }
+
+  let content = '';
+  try {
+    content = fs.readFileSync(envFile, 'utf-8');
+  } catch (_error) {
+    return {};
+  }
+
+  const values = {};
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(/^\uFEFF?\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) {
+      continue;
+    }
+    values[match[1]] = expandEnvReferences(
+      parseEnvScalarValue(match[2]),
+      values,
+      sourceEnv
+    );
+  }
+
+  return values;
+}
+
+function readEnvFileValue(envFile, key, sourceEnv = process.env) {
+  const values = readEnvFileValues(envFile, sourceEnv);
+  return hasOwnValue(values, key) ? values[key] : null;
+}
+
+function resolveBackendBindHost({
+  envFile,
+  sourceEnv = process.env,
+  fallback = DESKTOP_BACKEND_DEFAULT_HOST,
+} = {}) {
+  const sourceHost = normalizeBackendHost(sourceEnv.WEBUI_HOST);
+  if (sourceHost) {
+    return normalizeBackendBindHost(sourceHost, fallback);
+  }
+
+  const envFileHost = normalizeBackendHost(readEnvFileValue(envFile, 'WEBUI_HOST', sourceEnv));
+  return normalizeBackendBindHost(envFileHost || fallback, fallback);
+}
+
+function resolveDesktopConnectHost(bindHost) {
+  const host = normalizeBackendBindHost(bindHost, DESKTOP_BACKEND_DEFAULT_HOST);
+  if (PUBLIC_BIND_HOSTS.has(host.toLowerCase())) {
+    return DESKTOP_BACKEND_DEFAULT_HOST;
+  }
+  return host;
+}
+
+function formatUrlHost(host) {
+  const normalized = normalizeBackendHost(host, DESKTOP_BACKEND_DEFAULT_HOST);
+  if (normalized.startsWith('[') && normalized.endsWith(']')) {
+    return normalized;
+  }
+  return normalized.includes(':') ? `[${normalized}]` : normalized;
+}
+
+function buildBackendUrl(host, port, pathname = '/') {
+  const url = new URL(`http://${formatUrlHost(host)}:${port}/`);
+  url.pathname = pathname;
+  return url.toString();
+}
+
+function buildBackendArgs({ host, port }) {
+  return [
+    '--serve-only',
+    '--host',
+    normalizeBackendBindHost(host, DESKTOP_BACKEND_DEFAULT_HOST),
+    '--port',
+    String(port),
+  ];
+}
+
+function buildBackendEnvironment({
+  envFile,
+  dbPath,
+  logDir,
+  port = null,
+  host = null,
+  sourceEnv = process.env,
+}) {
+  const selectedPort = Number(port);
+  const selectedHost = normalizeBackendBindHost(
+    normalizeBackendHost(host) || resolveBackendBindHost({ envFile, sourceEnv }),
+    DESKTOP_BACKEND_DEFAULT_HOST
+  );
+  const env = {
+    ...sourceEnv,
+    DSA_DESKTOP_MODE: 'true',
+    ENV_FILE: envFile,
+    DATABASE_PATH: dbPath,
+    LOG_DIR: logDir,
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8',
+    WEBUI_HOST: selectedHost,
+    WEBUI_ENABLED: 'false',
+    BOT_ENABLED: 'false',
+    DINGTALK_STREAM_ENABLED: 'false',
+    FEISHU_STREAM_ENABLED: 'false',
+  };
+
+  if (Number.isInteger(selectedPort) && selectedPort >= 1 && selectedPort <= 65535) {
+    env.WEBUI_PORT = String(selectedPort);
+  }
+
+  if (isMac) {
+    env.PATH = extendMacDesktopBackendPath(sourceEnv.PATH);
+  }
+
+  return env;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function ensureDirectory(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
 function initLogging() {
-  const appDir = app.isPackaged ? path.dirname(app.getPath('exe')) : app.getPath('userData');
+  const appDir = resolveAppDir();
   logFilePath = path.join(appDir, 'logs', 'desktop.log');
   
   // 确保日志目录存在
   const logDir = path.dirname(logFilePath);
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
+  ensureDirectory(logDir);
   
   logLine('Desktop app starting');
 }
@@ -70,6 +937,27 @@ function logLine(message) {
     console.error(error);
   }
   console.log(line.trim());
+}
+
+function decodeBackendOutput(data, decoder) {
+  if (typeof data === 'string') {
+    return data.trim();
+  }
+  if (!Buffer.isBuffer(data)) {
+    return String(data).trim();
+  }
+
+  let decoded = decoder.decode(data, { stream: true });
+
+  // Windows 控制台 / 子进程有时仍会吐出本地代码页字节，优先在明显乱码时回退到 GBK。
+  if (isWindows && decoded.includes('\uFFFD')) {
+    try {
+      decoded = new TextDecoder('gbk', { fatal: false }).decode(data, { stream: true });
+    } catch (_error) {
+    }
+  }
+
+  return decoded.trim();
 }
 
 function formatCommand(command, args = []) {
@@ -99,7 +987,8 @@ function ensureEnvFile(envPath) {
   fs.writeFileSync(envPath, '# Configure your API keys and stock list here.\n', 'utf-8');
 }
 
-function findAvailablePort(startPort = 8000, endPort = 8100) {
+function findAvailablePort(startPort = 8000, endPort = 8100, host = DESKTOP_BACKEND_DEFAULT_HOST) {
+  const bindHost = normalizeBackendBindHost(host, DESKTOP_BACKEND_DEFAULT_HOST);
   return new Promise((resolve, reject) => {
     const tryPort = (port) => {
       if (port > endPort) {
@@ -114,7 +1003,7 @@ function findAvailablePort(startPort = 8000, endPort = 8100) {
       server.once('listening', () => {
         server.close(() => resolve(port));
       });
-      server.listen(port, '127.0.0.1');
+      server.listen(port, bindHost);
     };
 
     tryPort(startPort);
@@ -279,26 +1168,18 @@ function waitForHealth(
   });
 }
 
-function startBackend({ port, envFile, dbPath, logDir }) {
+function startBackend({ port, envFile, dbPath, logDir, host = null }) {
   const backendPath = resolveBackendPath();
   backendStartError = null;
   const launchStartedAt = Date.now();
+  const bindHost = normalizeBackendBindHost(
+    normalizeBackendHost(host) || resolveBackendBindHost({ envFile }),
+    DESKTOP_BACKEND_DEFAULT_HOST
+  );
 
-  const env = {
-    ...process.env,
-    DSA_DESKTOP_MODE: 'true',
-    ENV_FILE: envFile,
-    DATABASE_PATH: dbPath,
-    LOG_DIR: logDir,
-    PYTHONUTF8: '1',
-    SCHEDULE_ENABLED: 'false',
-    WEBUI_ENABLED: 'false',
-    BOT_ENABLED: 'false',
-    DINGTALK_STREAM_ENABLED: 'false',
-    FEISHU_STREAM_ENABLED: 'false',
-  };
+  const env = buildBackendEnvironment({ envFile, dbPath, logDir, port, host: bindHost });
 
-  const args = ['--serve-only', '--host', '127.0.0.1', '--port', String(port)];
+  const args = buildBackendArgs({ host: bindHost, port });
   let launchMode = '';
   let launchCommand = '';
   let launchCwd = '';
@@ -319,10 +1200,11 @@ function startBackend({ port, envFile, dbPath, logDir }) {
   } else {
     const pythonPath = resolvePythonPath();
     const scriptPath = path.join(appRootDev, 'main.py');
+    const pythonArgs = ['-X', 'utf8', scriptPath, ...args];
     launchMode = 'development';
-    launchCommand = formatCommand(pythonPath, [scriptPath, ...args]);
+    launchCommand = formatCommand(pythonPath, pythonArgs);
     launchCwd = appRootDev;
-    backendProcess = spawn(pythonPath, [scriptPath, ...args], {
+    backendProcess = spawn(pythonPath, pythonArgs, {
       env,
       cwd: launchCwd,
       stdio: 'pipe',
@@ -333,6 +1215,8 @@ function startBackend({ port, envFile, dbPath, logDir }) {
   if (backendProcess) {
     let firstStdoutLogged = false;
     let firstStderrLogged = false;
+    const stdoutDecoder = new TextDecoder('utf-8', { fatal: false });
+    const stderrDecoder = new TextDecoder('utf-8', { fatal: false });
 
     backendProcess.once('spawn', () => {
       logLine(`[backend] spawned pid=${backendProcess.pid} in ${Date.now() - launchStartedAt}ms`);
@@ -346,14 +1230,14 @@ function startBackend({ port, envFile, dbPath, logDir }) {
         firstStdoutLogged = true;
         logLine(`[backend] first stdout after ${Date.now() - launchStartedAt}ms`);
       }
-      logLine(`[backend] ${String(data).trim()}`);
+      logLine(`[backend] ${decodeBackendOutput(data, stdoutDecoder)}`);
     });
     backendProcess.stderr.on('data', (data) => {
       if (!firstStderrLogged) {
         firstStderrLogged = true;
         logLine(`[backend] first stderr after ${Date.now() - launchStartedAt}ms`);
       }
-      logLine(`[backend] ${String(data).trim()}`);
+      logLine(`[backend] ${decodeBackendOutput(data, stderrDecoder)}`);
     });
     backendProcess.on('exit', (code, signal) => {
       logLine(`[backend] exited with code ${code}, signal ${signal || 'none'}`);
@@ -367,26 +1251,662 @@ function startBackend({ port, envFile, dbPath, logDir }) {
   };
 }
 
-function stopBackend() {
-  if (!backendProcess || backendProcess.killed) {
-    return;
+function waitForBackendExit(processRef, timeoutMs = 5000) {
+  if (!processRef || processRef.exitCode !== null || processRef.signalCode) {
+    return Promise.resolve(true);
   }
 
-  if (isWindows) {
-    spawn('taskkill', ['/PID', String(backendProcess.pid), '/T', '/F']);
-    return;
-  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    let onExit = null;
 
-  backendProcess.kill('SIGTERM');
-  setTimeout(() => {
-    if (!backendProcess.killed) {
-      backendProcess.kill('SIGKILL');
-    }
-  }, 3000);
+    const done = (exited) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (onExit) {
+        processRef.removeListener('exit', onExit);
+      }
+      resolve(exited || processRef.exitCode !== null || Boolean(processRef.signalCode));
+    };
+
+    onExit = () => done(true);
+
+    timer = setTimeout(() => {
+      done(false);
+    }, timeoutMs);
+
+    processRef.once('exit', onExit);
+  });
 }
 
+function __setBackendProcessForTest(processRef = null) {
+  backendProcess = processRef;
+}
+
+function clearBackendProcessIfCurrent(processRef) {
+  if (backendProcess === processRef) {
+    backendProcess = null;
+  }
+}
+
+function stopBackend() {
+  if (!backendProcess) {
+    return Promise.resolve();
+  }
+  const processToStop = backendProcess;
+  if (processToStop.exitCode !== null || processToStop.signalCode) {
+    clearBackendProcessIfCurrent(processToStop);
+    return Promise.resolve();
+  }
+
+  const waitAndClear = () => waitForBackendExit(processToStop, 10000)
+    .then((exited) => {
+      if (!exited) {
+        return;
+      }
+      clearBackendProcessIfCurrent(processToStop);
+    });
+
+  if (isWindows) {
+    spawn('taskkill', ['/PID', String(processToStop.pid), '/T', '/F'], { windowsHide: true }).on('error', () => {
+    });
+    return waitAndClear();
+  }
+
+  if (!processToStop.killed) {
+    processToStop.kill('SIGTERM');
+  }
+  setTimeout(() => {
+    if (processToStop.killed || processToStop.exitCode !== null || processToStop.signalCode) {
+      return;
+    }
+    try {
+      processToStop.kill('SIGKILL');
+    } catch (_error) {
+    }
+  }, 3000);
+
+  return waitAndClear();
+}
+
+function resolveDesktopVersion() {
+  return String(app.getVersion() || '').trim();
+}
+
+function buildMainPageUrl(port, timestamp = Date.now(), host = DESKTOP_BACKEND_DEFAULT_HOST) {
+  const url = new URL(buildBackendUrl(host, port, '/'));
+  url.searchParams.set('desktop_version', resolveDesktopVersion() || 'unknown');
+  url.searchParams.set('cache_bust', String(timestamp));
+  return url.toString();
+}
+
+function buildDesktopShareImageUrl(pageUrl, recordId, expectedBackendOrigin = '') {
+  if (!Number.isSafeInteger(recordId) || recordId <= 0) {
+    throw new Error('Invalid share image record ID');
+  }
+
+  let page;
+  try {
+    page = new URL(pageUrl);
+  } catch (_error) {
+    throw new Error('Desktop backend URL is unavailable');
+  }
+
+  let expectedOrigin = page.origin;
+  if (expectedBackendOrigin) {
+    try {
+      expectedOrigin = new URL(expectedBackendOrigin).origin;
+    } catch (_error) {
+      throw new Error('Desktop backend origin is invalid');
+    }
+  }
+  if (page.protocol !== 'http:' || !page.port || page.origin !== expectedOrigin) {
+    throw new Error('Desktop share images require the configured backend origin');
+  }
+
+  return new URL(
+    `/api/v1/history/${recordId}/share-image-html`,
+    page.origin
+  ).toString();
+}
+
+async function renderDesktopShareImage(
+  recordId,
+  {
+    sourceWindow = mainWindow,
+    BrowserWindowClass = BrowserWindow,
+    backendOrigin = '',
+  } = {}
+) {
+  if (!sourceWindow || sourceWindow.isDestroyed() || !sourceWindow.webContents) {
+    throw new Error('Desktop window is unavailable');
+  }
+
+  const targetUrl = buildDesktopShareImageUrl(
+    sourceWindow.webContents.getURL(),
+    recordId,
+    backendOrigin
+  );
+  let renderWindow = null;
+  try {
+    renderWindow = new BrowserWindowClass({
+      show: false,
+      width: DESKTOP_SHARE_IMAGE_WIDTH,
+      height: DESKTOP_SHARE_IMAGE_INITIAL_HEIGHT,
+      ...(isMac ? { enableLargerThanScreen: true } : {}),
+      useContentSize: true,
+      backgroundColor: '#eef4fd',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
+    });
+    renderWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    renderWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+      if (navigationUrl !== targetUrl) {
+        event.preventDefault();
+      }
+    });
+
+    await renderWindow.loadURL(targetUrl);
+    const pageMetrics = await renderWindow.webContents.executeJavaScript(`({
+      contentType: document.contentType,
+      width: Math.ceil(Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)),
+      height: Math.ceil(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight))
+    })`);
+    if (!pageMetrics || pageMetrics.contentType !== 'text/html') {
+      throw new Error('Desktop share image source did not return HTML');
+    }
+    if (
+      !Number.isFinite(pageMetrics.width)
+      || pageMetrics.width !== DESKTOP_SHARE_IMAGE_WIDTH
+      || !Number.isFinite(pageMetrics.height)
+      || pageMetrics.height < 1
+      || pageMetrics.height > DESKTOP_SHARE_IMAGE_MAX_HEIGHT
+    ) {
+      throw new Error(`Desktop share image has invalid dimensions: ${pageMetrics.width}x${pageMetrics.height}`);
+    }
+
+    renderWindow.setContentSize(DESKTOP_SHARE_IMAGE_WIDTH, pageMetrics.height);
+    await renderWindow.webContents.executeJavaScript(
+      'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+    );
+    const image = await renderWindow.webContents.capturePage({
+      x: 0,
+      y: 0,
+      width: DESKTOP_SHARE_IMAGE_WIDTH,
+      height: pageMetrics.height,
+    });
+    if (!image || image.isEmpty()) {
+      throw new Error('Desktop share image capture returned an empty image');
+    }
+
+    const png = image.toPNG();
+    return png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength);
+  } finally {
+    if (renderWindow && !renderWindow.isDestroyed()) {
+      renderWindow.destroy();
+    }
+  }
+}
+
+function isWindowsNsisInstalledApp() {
+  if (!isWindows || !app.isPackaged) {
+    return false;
+  }
+
+  const appDir = path.dirname(app.getPath('exe'));
+  return fs.existsSync(path.join(appDir, 'Uninstall Daily Stock Analysis.exe'));
+}
+
+function getElectronAutoUpdater() {
+  if (electronAutoUpdater !== undefined) {
+    return electronAutoUpdater;
+  }
+
+  if (!isWindowsNsisInstalledApp()) {
+    electronAutoUpdater = null;
+    return electronAutoUpdater;
+  }
+
+  try {
+    electronAutoUpdater = require('electron-updater').autoUpdater;
+  } catch (error) {
+    electronAutoUpdater = null;
+    logLine(`[update] electron-updater unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return electronAutoUpdater;
+}
+
+function canUseElectronAutoUpdater() {
+  return Boolean(getElectronAutoUpdater());
+}
+
+function resolveReleasePageUrlForVersion(version) {
+  const normalizedVersion = normalizeVersionString(version);
+  if (!normalizedVersion) {
+    return RELEASES_PAGE_URL;
+  }
+  return `${RELEASES_PAGE_URL}/tag/v${normalizedVersion}`;
+}
+
+function resolveUpdaterLatestVersion(updateInfo = {}) {
+  return normalizeVersionString(updateInfo.version || updateInfo.tag || updateInfo.releaseName);
+}
+
+function buildElectronUpdaterState(status, updateInfo = {}, extraState = {}) {
+  const latestVersion = normalizeVersionString(extraState.latestVersion || resolveUpdaterLatestVersion(updateInfo));
+  return buildUpdateState({
+    status,
+    updateMode: UPDATE_MODE.AUTO,
+    currentVersion: resolveDesktopVersion(),
+    latestVersion,
+    releaseUrl: resolveReleasePageUrlForVersion(latestVersion),
+    publishedAt: typeof updateInfo.releaseDate === 'string' ? updateInfo.releaseDate : '',
+    releaseName: typeof updateInfo.releaseName === 'string' ? updateInfo.releaseName : '',
+    tagName: latestVersion ? `v${latestVersion}` : '',
+    ...extraState,
+  });
+}
+
+function sanitizeReleaseUrl(candidateUrl) {
+  if (typeof candidateUrl !== 'string' || !candidateUrl.trim()) {
+    return RELEASES_PAGE_URL;
+  }
+
+  try {
+    const parsed = new URL(candidateUrl.trim());
+    const allowedReleasePathPrefix = `/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
+    const isGithubHost = parsed.origin === 'https://github.com';
+    const isRepositoryReleasePath =
+      parsed.pathname === allowedReleasePathPrefix ||
+      parsed.pathname.startsWith(`${allowedReleasePathPrefix}/`);
+    return isGithubHost && isRepositoryReleasePath ? parsed.toString() : RELEASES_PAGE_URL;
+  } catch (_error) {
+    return RELEASES_PAGE_URL;
+  }
+}
+
+function broadcastDesktopUpdateState() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send('desktop:update-state', desktopUpdateState);
+}
+
+function setDesktopUpdateState(nextState) {
+  desktopUpdateState = buildUpdateState({
+    currentVersion: resolveDesktopVersion(),
+    ...nextState,
+  });
+  broadcastDesktopUpdateState();
+  return desktopUpdateState;
+}
+
+async function maybePromptDesktopUpdate(state) {
+  if (!state || state.status !== UPDATE_STATUS.UPDATE_AVAILABLE) {
+    return;
+  }
+  if (state.updateMode === UPDATE_MODE.AUTO) {
+    return;
+  }
+  if (!state.latestVersion || state.latestVersion === lastNotifiedUpdateVersion) {
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  lastNotifiedUpdateVersion = state.latestVersion;
+  const currentVersion = state.currentVersion || resolveDesktopVersion() || '当前版本';
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    buttons: ['稍后', '前往下载'],
+    defaultId: 1,
+    cancelId: 0,
+    title: '发现新版本',
+    message: `检测到桌面端新版本 ${state.latestVersion}`,
+    detail: `当前版本 ${currentVersion}。新版本将跳转到 GitHub Releases 下载页，不会静默下载或自动安装。`,
+    noLink: true,
+  });
+
+  if (result.response === 1) {
+    await shell.openExternal(sanitizeReleaseUrl(state.releaseUrl));
+  }
+}
+
+async function installDownloadedUpdate() {
+  const updater = getElectronAutoUpdater();
+  if (!updater) {
+    throw new Error('当前运行模式不支持自动安装更新。');
+  }
+  if (desktopUpdateState?.status !== UPDATE_STATUS.UPDATE_DOWNLOADED) {
+    throw new Error('更新尚未下载完成，无法自动安装。');
+  }
+
+  setDesktopUpdateState({
+    status: UPDATE_STATUS.INSTALLING,
+    updateMode: UPDATE_MODE.AUTO,
+    latestVersion: desktopUpdateState?.latestVersion || '',
+    releaseUrl: desktopUpdateState?.releaseUrl || RELEASES_PAGE_URL,
+    message: '正在重启并安装更新...',
+  });
+  let backupRoot = null;
+  try {
+    logLine('[update] stop backend and backup runtime data before install');
+    await stopBackend();
+    backupRoot = resolveUpdateBackupRoot();
+    cleanupUpdateBackupRoot();
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        backupPackagedRuntimeState();
+        break;
+      } catch (error) {
+        if (attempt === 3) {
+          setDesktopUpdateState({
+            status: UPDATE_STATUS.ERROR,
+            updateMode: UPDATE_MODE.AUTO,
+            currentVersion: resolveDesktopVersion(),
+            latestVersion: desktopUpdateState?.latestVersion || '',
+            releaseUrl: desktopUpdateState?.releaseUrl || RELEASES_PAGE_URL,
+            checkedAt: new Date().toISOString(),
+            message: `更新安装准备失败：${error instanceof Error ? error.message : String(error)}`,
+          });
+          throw error;
+        }
+
+        await sleep(300 * attempt);
+      }
+    }
+
+    logLine('[update] silent quit and install requested');
+    updater.quitAndInstall(true, true);
+    return true;
+  } catch (error) {
+    if (backupRoot) {
+      cleanupUpdateBackupRoot();
+    }
+    logLine(`[update] install downloaded update failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
+}
+
+async function maybePromptInstallDownloadedUpdate(state) {
+  if (!state || state.status !== UPDATE_STATUS.UPDATE_DOWNLOADED || state.updateMode !== UPDATE_MODE.AUTO) {
+    return;
+  }
+  if (!state.latestVersion || state.latestVersion === lastPromptedInstallVersion) {
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  lastPromptedInstallVersion = state.latestVersion;
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    buttons: ['稍后', '立即重启安装'],
+    defaultId: 1,
+    cancelId: 0,
+    title: '更新已下载',
+    message: `桌面端新版本 ${state.latestVersion} 已下载`,
+    detail: '重启应用后会自动完成安装。未保存的设置草稿请先保存。',
+    noLink: true,
+  });
+
+  if (result.response === 1) {
+    try {
+      await installDownloadedUpdate();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logLine(`[update] auto install prompt failed: ${message}`);
+      setDesktopUpdateState({
+        status: UPDATE_STATUS.ERROR,
+        updateMode: UPDATE_MODE.AUTO,
+        currentVersion: resolveDesktopVersion(),
+        latestVersion: state.latestVersion || desktopUpdateState?.latestVersion || '',
+        releaseUrl: state.releaseUrl || desktopUpdateState?.releaseUrl || RELEASES_PAGE_URL,
+        checkedAt: new Date().toISOString(),
+        message: `更新安装失败：${message}。可先保存草稿并前往下载页，或稍后重试。`,
+      });
+    }
+  }
+}
+
+function configureElectronAutoUpdater() {
+  const updater = getElectronAutoUpdater();
+  if (!updater || electronAutoUpdaterConfigured) {
+    return updater;
+  }
+
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = false;
+  if (isWindows && app.isPackaged) {
+    const installDirectory = path.dirname(app.getPath('exe'));
+    if (installDirectory) {
+      updater.installDirectory = installDirectory;
+      logLine(`[update] auto updater install directory set to ${updater.installDirectory}`);
+    }
+  }
+
+  updater.on('checking-for-update', () => {
+    setDesktopUpdateState({
+      status: UPDATE_STATUS.CHECKING,
+      updateMode: UPDATE_MODE.AUTO,
+      currentVersion: resolveDesktopVersion(),
+      message: '正在检查桌面端更新...',
+    });
+  });
+
+  updater.on('update-available', (info = {}) => {
+    const latestVersion = resolveUpdaterLatestVersion(info) || '最新版本';
+    const nextState = buildElectronUpdaterState(UPDATE_STATUS.UPDATE_AVAILABLE, info, {
+      message: `发现新版本 ${latestVersion}，正在后台下载更新...`,
+    });
+    setDesktopUpdateState(nextState);
+    logLine(`[update] auto update available latest=${nextState.latestVersion || 'unknown'}`);
+  });
+
+  updater.on('update-not-available', (info = {}) => {
+    const nextState = buildElectronUpdaterState(UPDATE_STATUS.UP_TO_DATE, info, {
+      message: '当前桌面端已是最新版本。',
+    });
+    setDesktopUpdateState(nextState);
+    logLine(`[update] auto update not available current=${nextState.currentVersion || 'unknown'}`);
+  });
+
+  updater.on('download-progress', (progress = {}) => {
+    const percent = normalizeDownloadPercent(progress.percent);
+    const nextState = setDesktopUpdateState({
+      status: UPDATE_STATUS.DOWNLOADING,
+      updateMode: UPDATE_MODE.AUTO,
+      latestVersion: desktopUpdateState?.latestVersion || '',
+      releaseUrl: desktopUpdateState?.releaseUrl || RELEASES_PAGE_URL,
+      downloadPercent: percent,
+      downloadedBytes: progress.transferred,
+      totalBytes: progress.total,
+      message:
+        percent === null
+          ? '正在下载桌面端更新...'
+          : `正在下载桌面端更新（${percent.toFixed(percent % 1 === 0 ? 0 : 1)}%）...`,
+    });
+    logLine(`[update] download progress percent=${nextState.downloadPercent ?? 'unknown'}`);
+  });
+
+  updater.on('update-downloaded', (info = {}) => {
+    const latestVersion = resolveUpdaterLatestVersion(info) || desktopUpdateState?.latestVersion || '';
+    const nextState = buildElectronUpdaterState(UPDATE_STATUS.UPDATE_DOWNLOADED, info, {
+      latestVersion,
+      downloadPercent: 100,
+      message: latestVersion
+        ? `新版本 ${latestVersion} 已下载，可重启应用完成安装。`
+        : '新版本已下载，可重启应用完成安装。',
+    });
+    setDesktopUpdateState(nextState);
+    logLine(`[update] downloaded latest=${nextState.latestVersion || 'unknown'}`);
+    void maybePromptInstallDownloadedUpdate(nextState);
+  });
+
+  updater.on('error', (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logLine(`[update] auto updater failed: ${message}`);
+    setDesktopUpdateState({
+      status: UPDATE_STATUS.ERROR,
+      updateMode: UPDATE_MODE.AUTO,
+      currentVersion: resolveDesktopVersion(),
+      latestVersion: desktopUpdateState?.latestVersion || '',
+      releaseUrl: desktopUpdateState?.releaseUrl || RELEASES_PAGE_URL,
+      checkedAt: new Date().toISOString(),
+      message: `自动更新失败：${message}`,
+    });
+  });
+
+  electronAutoUpdaterConfigured = true;
+  return updater;
+}
+
+async function performElectronUpdaterCheck({ manual = false } = {}) {
+  const updater = configureElectronAutoUpdater();
+  if (!updater) {
+    throw new Error('当前平台不支持自动安装更新。');
+  }
+  if (electronUpdateCheckInFlight) {
+    return desktopUpdateState;
+  }
+
+  electronUpdateCheckInFlight = true;
+  setDesktopUpdateState({
+    status: UPDATE_STATUS.CHECKING,
+    updateMode: UPDATE_MODE.AUTO,
+    currentVersion: resolveDesktopVersion(),
+    message: manual ? '正在检查桌面端更新...' : '正在后台检查桌面端更新...',
+  });
+
+  try {
+    await updater.checkForUpdates();
+    return desktopUpdateState;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logLine(`[update] auto updater check failed: ${message}`);
+    const nextState = setDesktopUpdateState({
+      status: manual ? UPDATE_STATUS.ERROR : UPDATE_STATUS.IDLE,
+      updateMode: UPDATE_MODE.AUTO,
+      currentVersion: resolveDesktopVersion(),
+      checkedAt: new Date().toISOString(),
+      message: manual ? `检查更新失败：${message}` : '',
+    });
+    return nextState;
+  } finally {
+    electronUpdateCheckInFlight = false;
+  }
+}
+
+async function performDesktopUpdateCheck({ manual = false, notify = false } = {}) {
+  if (canUseElectronAutoUpdater()) {
+    return performElectronUpdaterCheck({ manual, notify });
+  }
+
+  if (desktopUpdateCheckInFlight) {
+    return desktopUpdateState;
+  }
+
+  desktopUpdateCheckInFlight = true;
+  const currentVersion = resolveDesktopVersion();
+  setDesktopUpdateState({
+    status: UPDATE_STATUS.CHECKING,
+    currentVersion,
+    message: manual ? '正在检查桌面端更新...' : '正在后台检查桌面端更新...',
+  });
+
+  try {
+    const nextState = await desktopUpdateChecker({ currentVersion });
+    const resolvedState = setDesktopUpdateState(nextState);
+    logLine(
+      `[update] status=${resolvedState.status} current=${resolvedState.currentVersion || 'unknown'} latest=${resolvedState.latestVersion || 'unknown'}`
+    );
+    if (notify) {
+      await maybePromptDesktopUpdate(resolvedState);
+    }
+    return resolvedState;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logLine(`[update] check failed: ${message}`);
+
+    if (manual) {
+      return setDesktopUpdateState({
+        status: UPDATE_STATUS.ERROR,
+        currentVersion,
+        checkedAt: new Date().toISOString(),
+        message: `检查更新失败：${message}`,
+      });
+    }
+
+    return setDesktopUpdateState({
+      status: UPDATE_STATUS.IDLE,
+      currentVersion,
+      checkedAt: new Date().toISOString(),
+      message: '',
+    });
+  } finally {
+    desktopUpdateCheckInFlight = false;
+  }
+}
+
+ipcMain.handle('desktop:get-update-state', () => desktopUpdateState);
+ipcMain.handle('desktop:check-for-updates', () => performDesktopUpdateCheck({ manual: true }));
+ipcMain.handle('desktop:install-downloaded-update', () => installDownloadedUpdate());
+ipcMain.handle('desktop:open-release-page', async (_event, releaseUrl) => {
+  await shell.openExternal(sanitizeReleaseUrl(releaseUrl));
+  return true;
+});
+ipcMain.handle('desktop:render-share-image', async (event, recordId) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    throw new Error('Share image request did not originate from the desktop window');
+  }
+  try {
+    return await renderDesktopShareImage(recordId, { backendOrigin: desktopBackendOrigin });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logLine(`[share-image] desktop render failed for record=${recordId}: ${message}`);
+    throw error;
+  }
+});
+
 async function createWindow() {
+  desktopBackendOrigin = '';
+  const restoreResult = isWindowsNsisInstalledApp() ? restorePackagedRuntimeStateFromBackup() : null;
+  const macMigrationResult = migrateMacPackagedRuntimeState();
   initLogging();
+  if (macMigrationResult.migrated.length) {
+    logLine(`[migration] migrated macOS runtime files from ${macMigrationResult.sourceDir} to ${macMigrationResult.targetDir}: ${macMigrationResult.migrated.join(', ')}`);
+  }
+  if (macMigrationResult.skipped.length) {
+    logLine(`[migration] skipped existing macOS runtime files: ${macMigrationResult.skipped.join(', ')}`);
+  }
+  if (macMigrationResult.failed.length) {
+    logLine(`[migration] failed to migrate macOS runtime files: ${macMigrationResult.failed.join(', ')}`);
+  }
+  const restoreFailed = Boolean(restoreResult && restoreResult.failed.length);
+  const restoreIssueDetails = restoreResult
+    ? restoreResult.failed.join('；')
+    : '';
+  const restoreErrorMessage = restoreFailed
+    ? `上次更新安装未完成或恢复运行时文件失败，已保留备份目录 ${restoreResult.backupRoot}，请确认后手动恢复并重启应用。明细：${restoreIssueDetails}`
+    : '';
+  setDesktopUpdateState({
+    status: restoreFailed ? UPDATE_STATUS.ERROR : UPDATE_STATUS.IDLE,
+    currentVersion: resolveDesktopVersion(),
+    updateMode: restoreFailed ? UPDATE_MODE.MANUAL : UPDATE_MODE.AUTO,
+    message: restoreErrorMessage,
+  });
   const startupStartedAt = Date.now();
   const logStartup = (message) => {
     logLine(`[startup +${Date.now() - startupStartedAt}ms] ${message}`);
@@ -399,11 +1919,12 @@ async function createWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: '#0f172a',
+    backgroundColor: resolveWindowBackgroundColor(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      additionalArguments: [`--dsa-desktop-version=${app.getVersion()}`],
     },
   });
   logStartup('BrowserWindow created');
@@ -412,6 +1933,17 @@ async function createWindow() {
   const loadingPageStartedAt = Date.now();
   await mainWindow.loadFile(loadingPath);
   logStartup(`Loading page rendered in ${Date.now() - loadingPageStartedAt}ms`);
+
+  const applyThemeBackground = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    mainWindow.setBackgroundColor(resolveWindowBackgroundColor());
+  };
+  nativeTheme.on('updated', applyThemeBackground);
+  mainWindow.once('closed', () => {
+    nativeTheme.removeListener('updated', applyThemeBackground);
+  });
 
   const webViewStartedAt = Date.now();
   mainWindow.webContents.on('did-start-loading', () => {
@@ -442,16 +1974,21 @@ async function createWindow() {
   ensureEnvFile(envPath);
   logStartup(`Env file ready: ${envPath}`);
 
+  const backendBindHost = resolveBackendBindHost({ envFile: envPath });
+  const backendConnectHost = resolveDesktopConnectHost(backendBindHost);
+  logStartup(`Backend bind host=${backendBindHost}; desktop connect host=${backendConnectHost}`);
+
   const portFindStartedAt = Date.now();
-  const port = await findAvailablePort(8000, 8100);
+  const port = await findAvailablePort(8000, 8100, backendBindHost);
   logStartup(`Using port ${port} (selected in ${Date.now() - portFindStartedAt}ms)`);
+  desktopBackendOrigin = new URL(buildBackendUrl(backendConnectHost, port)).origin;
   logStartup(`App directory=${appDir}`);
 
   const dbPath = path.join(appDir, 'data', 'stock_analysis.db');
   const logDir = path.join(appDir, 'logs');
 
   try {
-    const launchInfo = startBackend({ port, envFile: envPath, dbPath, logDir });
+    const launchInfo = startBackend({ port, envFile: envPath, dbPath, logDir, host: backendBindHost });
     logStartup(`Backend launch mode=${launchInfo.mode}`);
     logStartup(`Backend launch command=${launchInfo.command}`);
     logStartup(`Backend launch cwd=${launchInfo.cwd}`);
@@ -463,7 +2000,7 @@ async function createWindow() {
     return;
   }
 
-  const healthUrl = `http://127.0.0.1:${port}/api/health`;
+  const healthUrl = buildBackendUrl(backendConnectHost, port, '/api/health');
   let lastHealthProgressLogAt = 0;
   const healthProgressLogIntervalMs = 2000;
 
@@ -528,9 +2065,13 @@ async function createWindow() {
     );
     logStartup(`Backend ready in ${healthInfo.elapsedMs}ms (${healthInfo.attempts} probes)`);
     const mainPageStartedAt = Date.now();
-    await mainWindow.loadURL(`http://127.0.0.1:${port}/`);
-    logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms`);
+    const mainPageUrl = buildMainPageUrl(port, Date.now(), backendConnectHost);
+    await mainWindow.loadURL(mainPageUrl);
+    logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms url=${mainPageUrl}`);
     logStartup(`Main UI loaded in ${Date.now() - startupStartedAt}ms`);
+    if (!restoreFailed) {
+      void performDesktopUpdateCheck({ notify: true });
+    }
   } catch (error) {
     logStartup(`Startup failed while waiting for health: ${String(error)}`);
     const errorUrl = `file://${loadingPath}?error=${encodeURIComponent(String(error))}`;
@@ -547,12 +2088,60 @@ app.on('activate', () => {
 });
 
 app.on('window-all-closed', () => {
-  stopBackend();
+  void stopBackend();
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
 app.on('before-quit', () => {
-  stopBackend();
+  void stopBackend();
 });
+
+module.exports = {
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  GITHUB_OWNER,
+  GITHUB_REPO,
+  LATEST_RELEASE_API_URL,
+  RELEASES_PAGE_URL,
+  DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES,
+  UPDATE_MODE,
+  UPDATE_STATUS,
+  buildUpdateState,
+  backupPackagedRuntimeState,
+  buildBackendArgs,
+  checkForDesktopUpdates,
+  compareVersions,
+  evaluateReleaseUpdate,
+  buildBackendUrl,
+  buildBackendEnvironment,
+  extendMacDesktopBackendPath,
+  extractReleaseMetadata,
+  fetchLatestReleaseJson,
+  findAvailablePort,
+  buildMainPageUrl,
+  buildDesktopShareImageUrl,
+  migrateMacPackagedRuntimeState,
+  normalizeVersionString,
+  parseSemver,
+  readEnvFileValue,
+  resolveAppDir,
+  resolveBackendBindHost,
+  resolveDesktopConnectHost,
+  renderDesktopShareImage,
+  restorePackagedRuntimeStateFromBackup,
+  sanitizeReleaseUrl,
+  startBackend,
+  stopBackend,
+  __getBackendProcessForTest() {
+    return backendProcess;
+  },
+  __setBackendProcessForTest,
+  __setMainWindowForTest(mainWindowRef = null) {
+    mainWindow = mainWindowRef;
+  },
+  __setDesktopUpdateCheckerForTest(checker) {
+    desktopUpdateChecker = typeof checker === 'function' ? checker : checkForDesktopUpdates;
+  },
+  waitForBackendExit,
+};

@@ -1,0 +1,73 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
+# 资金热度策略
+name: capital_heat
+display_name: 资金热度
+description: 资金活跃、量价同步但未极端过热的短线候选
+version: "1.1"
+category: momentum
+tags: [momentum, capital_flow, short_term]
+analysis_skills: [hot_theme, emotion_cycle]
+style:
+  risk_profile: aggressive
+  holding_period: short_term
+  execution_style: momentum
+  market_regime: [risk_on, high_liquidity]
+  capital_profile: high_liquidity
+  ui_badge: 资金
+
+screening:
+  enabled: true
+  market_scope: [cn]
+  hard_filters:
+    exclude_st: true
+    amount_min: 300000000
+    turnover_rate_min: 2.0
+    volume_ratio_min: 1.5
+    change_pct_min: 1.0
+    change_pct_max: 9.5
+    price_min: 3
+    price_max: 220
+  tech_weight: 0.65
+  factor_weights:
+    momentum: 0.32
+    activity: 0.28
+    liquidity: 0.16
+    theme_heat: 0.10
+    stability: 0.10
+    reversal: 0.04
+  scoring_profile:
+    momentum_chase_start_pct: 6.5
+    momentum_chase_penalty_slope: 12.0
+    activity_ideal_volume_ratio: 2.8
+    activity_high_volume_ratio: 7.0
+    activity_ideal_turnover_rate: 6.0
+    activity_high_turnover_rate: 18.0
+    stability_hot_change_pct: 8.5
+    theme_heat_overheat_score: 92.0
+    theme_heat_overheat_penalty_slope: 0.35
+  risk_profile:
+    chase_change_pct: 9.3
+    abnormal_volume_ratio: 8.0
+    high_turnover_rate: 22.0
+    weak_signal_score: 40.0
+  portfolio_profile:
+    max_same_bucket: 1
+    concentration_penalty: 5.0
+    buckets:
+      金融: [券商, 银行, 保险]
+      AI算力: [AI算力, 算力, 数据中心, 服务器, 光模块]
+      新能源: [新能源, 光伏, 锂电, 电池, 储能]
+      周期: [钢铁, 煤炭, 有色, 化工]
+      机器人: [机器人, 减速器, 执行器, 伺服]
+  scorecard_profile:
+    capital_confirmed_bonus: 2.4
+    volume_spike_ratio: 8.0
+    hot_money_activity_min: 95.0
+    hot_money_penalty: 1.5
+  ranking_hints: |
+    优先关注：
+    1. 资金热度和价格表现同步，而不是单纯尾盘异动
+    2. 涨幅尚未透支，量比和换手率处在可持续区间
+    3. 板块或主题有扩散迹象，避免孤立脉冲
+  max_output: 5

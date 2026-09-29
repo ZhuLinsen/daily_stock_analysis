@@ -10,6 +10,9 @@ required_tools:
   - get_daily_history
   - analyze_trend
   - get_realtime_quote
+aliases: [放量突破, 突破]
+default_priority: 30
+market_regimes: [trending_up]
 
 instructions: |
   **放量突破（Volume Breakout Strategy）**

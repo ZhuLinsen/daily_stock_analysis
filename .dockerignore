@@ -3,11 +3,19 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # 忽略虚拟环境
 venv/
 .venv/
 env/
+.env
+.env.*
+!.env.example
 .env.local
 
 # 忽略 IDE
@@ -16,15 +24,30 @@ env/
 *.swp
 *.swo
 
-# 忽略数据文件（可选，如果想持久化就注释掉）
-# data/
-# logs/
-# reports/
+# 忽略本地仓库、CI 元数据和运行产物
+.git/
+.github/
+.claude/reviews/
+data/
+logs/
+reports/
+*.log
 
-# 忽略测试文件
+# 忽略测试和文档
+tests/
 test_*.py
 *_test.py
-
-# 忽略文档
+docs/
 *.md
 !README.md
+
+# 忽略不参与 Docker 镜像构建的前端/桌面端产物
+apps/dsa-desktop/
+node_modules/
+dist/
+build/
+coverage/
+apps/dsa-web/node_modules/
+apps/dsa-web/dist/
+apps/dsa-web/build/
+apps/dsa-web/coverage/

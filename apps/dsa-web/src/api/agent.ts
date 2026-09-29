@@ -1,5 +1,19 @@
 import apiClient from './index';
+import { API_BASE_URL } from '../utils/constants';
 import { createApiError, isApiRequestError, parseApiError } from './error';
+import { toCamelCase } from './utils';
+import type { AgentBackendStatusResponse } from '../types/systemConfig';
+
+export interface ChatStreamOptions {
+  signal?: AbortSignal;
+}
+
+export function isAbortError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'name' in error
+    && error.name === 'AbortError';
+}
 
 export interface ChatRequest {
   message: string;
@@ -8,7 +22,13 @@ export interface ChatRequest {
 
 export interface ChatStreamRequest extends ChatRequest {
   session_id?: string;
+  request_id?: string;
   context?: unknown;
+}
+
+export interface CancelChatStreamResponse {
+  accepted: boolean;
+  request_id: string;
 }
 
 export interface ChatResponse {
@@ -18,14 +38,17 @@ export interface ChatResponse {
   error?: string;
 }
 
-export interface StrategyInfo {
+export type AgentStatusResponse = AgentBackendStatusResponse;
+
+export interface SkillInfo {
   id: string;
   name: string;
   description: string;
 }
 
-export interface StrategiesResponse {
-  strategies: StrategyInfo[];
+export interface SkillsResponse {
+  skills: SkillInfo[];
+  default_skill_id: string;
 }
 
 export interface ChatSessionItem {
@@ -43,6 +66,14 @@ export interface ChatSessionMessage {
   created_at: string | null;
 }
 
+export interface ChatSessionDetail {
+  session_id: string;
+  messages: ChatSessionMessage[];
+  session_state: {
+    selected_skill_ids: string[] | null;
+  };
+}
+
 export const agentApi = {
   async chat(payload: ChatRequest): Promise<ChatResponse> {
     const response = await apiClient.post<ChatResponse>('/api/v1/agent/chat', payload, {
@@ -50,27 +81,50 @@ export const agentApi = {
     });
     return response.data;
   },
-  async getStrategies(): Promise<StrategiesResponse> {
-    const response = await apiClient.get<StrategiesResponse>('/api/v1/agent/strategies');
+  async getSkills(): Promise<SkillsResponse> {
+    const response = await apiClient.get<SkillsResponse>('/api/v1/agent/skills');
     return response.data;
+  },
+  async getStatus(): Promise<AgentStatusResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/agent/status');
+    return toCamelCase<AgentStatusResponse>(response.data);
   },
   async getChatSessions(limit = 50): Promise<ChatSessionItem[]> {
     const response = await apiClient.get<{ sessions: ChatSessionItem[] }>('/api/v1/agent/chat/sessions', { params: { limit } });
     return response.data.sessions;
   },
-  async getChatSessionMessages(sessionId: string): Promise<ChatSessionMessage[]> {
-    const response = await apiClient.get<{ messages: ChatSessionMessage[] }>(`/api/v1/agent/chat/sessions/${sessionId}`);
-    return response.data.messages;
+  async getChatSessionMessages(sessionId: string): Promise<ChatSessionDetail> {
+    const response = await apiClient.get<ChatSessionDetail>(`/api/v1/agent/chat/sessions/${sessionId}`);
+    return response.data;
   },
   async deleteChatSession(sessionId: string): Promise<void> {
     await apiClient.delete(`/api/v1/agent/chat/sessions/${sessionId}`);
   },
-  async chatStream(payload: ChatStreamRequest): Promise<Response> {
+  async sendChat(content: string): Promise<{ success: boolean }> {
+    const response = await apiClient.post<{
+      success: boolean;
+      error?: string;
+      message?: string;
+    }>('/api/v1/agent/chat/send', { content });
+    const data = response.data;
+    if (data.success === false) {
+      throw new Error(data.message || '发送失败');
+    }
+    return { success: true };
+  },
+  async chatStream(
+    payload: ChatStreamRequest,
+    options?: ChatStreamOptions,
+  ): Promise<Response> {
+    const base = API_BASE_URL || '';
+    const url = `${base}/api/v1/agent/chat/stream`;
     try {
-      const response = await fetch('/api/v1/agent/chat/stream', {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        credentials: 'include',
+        signal: options?.signal,
       });
 
       if (response.ok) {
@@ -103,9 +157,18 @@ export const agentApi = {
       if (isApiRequestError(error)) {
         throw error;
       }
+      if (isAbortError(error)) {
+        throw error;
+      }
 
       const parsed = parseApiError(error);
       throw createApiError(parsed, { cause: error });
     }
+  },
+  async cancelChatStream(requestId: string): Promise<CancelChatStreamResponse> {
+    const response = await apiClient.post<CancelChatStreamResponse>(
+      `/api/v1/agent/chat/stream/${encodeURIComponent(requestId)}/cancel`,
+    );
+    return response.data;
   },
 };

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { systemConfigApi, SystemConfigConflictError, SystemConfigValidationError } from '../api/systemConfig';
 import type {
@@ -7,6 +7,7 @@ import type {
   SystemConfigItem,
   SystemConfigUpdateItem,
 } from '../types/systemConfig';
+import { serializeStockListValue } from '../utils/stockList';
 
 type ToastState = {
   type: 'success';
@@ -52,6 +53,10 @@ function isMultiValueSchema(schema: SystemConfigItem['schema'] | undefined): boo
 }
 
 function normalizeFieldValue(value: string, schema: SystemConfigItem['schema'] | undefined): string {
+  if ((schema?.key ?? '').toUpperCase() === 'STOCK_LIST') {
+    return serializeStockListValue(value);
+  }
+
   if (!isMultiValueSchema(schema)) {
     return value;
   }
@@ -68,6 +73,7 @@ export function useSystemConfig() {
   const [configVersion, setConfigVersion] = useState<string>('');
   const [maskToken, setMaskToken] = useState<string>('******');
   const [serverItems, setServerItems] = useState<SystemConfigItem[]>([]);
+  const [llmModelProviders, setLlmModelProviders] = useState<string[]>([]);
 
   // UI state
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
@@ -81,6 +87,7 @@ export function useSystemConfig() {
   const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
   const [saveError, setSaveError] = useState<ParsedApiError | null>(null);
   const [retryAction, setRetryAction] = useState<RetryAction>(null);
+  const serverItemByKeyRef = useRef<Record<string, SystemConfigItem>>({});
 
   const mergedItems = useMemo(() => {
     return sortItemsByOrder(
@@ -96,6 +103,7 @@ export function useSystemConfig() {
     for (const item of serverItems) {
       map[item.key] = item;
     }
+    serverItemByKeyRef.current = map;
     return map;
   }, [serverItems]);
 
@@ -166,17 +174,41 @@ export function useSystemConfig() {
   }, [validationIssues]);
 
   const applyServerPayload = useCallback(
-    (items: SystemConfigItem[], version: string, token: string) => {
+    (
+      items: SystemConfigItem[],
+      version: string,
+      token: string,
+      options?: { preserveDirty?: boolean; committedKeys?: string[] },
+    ) => {
       const sorted = sortItemsByOrder(items);
+      const previousServerMap = serverItemByKeyRef.current;
+      const committedKeys = new Set(options?.committedKeys ?? []);
+      const preserveDirty = options?.preserveDirty ?? false;
+
       setServerItems(sorted);
       setConfigVersion(version);
       setMaskToken(token || '******');
 
-      const draft: Record<string, string> = {};
-      for (const item of sorted) {
-        draft[item.key] = item.value;
-      }
-      setDraftValues(draft);
+      setDraftValues((prevDraft) => {
+        const nextDraft: Record<string, string> = {};
+        for (const item of sorted) {
+          if (committedKeys.has(item.key)) {
+            nextDraft[item.key] = item.value;
+            continue;
+          }
+
+          if (preserveDirty) {
+            const previousServerValue = previousServerMap[item.key]?.value;
+            const hasDraft = prevDraft[item.key] !== undefined;
+            const wasDirty = hasDraft && prevDraft[item.key] !== previousServerValue;
+            nextDraft[item.key] = wasDirty ? prevDraft[item.key] : item.value;
+            continue;
+          }
+
+          nextDraft[item.key] = item.value;
+        }
+        return nextDraft;
+      });
 
       const defaultCategory = sorted[0]?.schema?.category || 'base';
       setActiveCategory((current) => {
@@ -188,18 +220,21 @@ export function useSystemConfig() {
     [],
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     setIsLoading(true);
     setLoadError(null);
     setRetryAction(null);
 
     try {
       const config = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(config.llmModelProviders || []);
       applyServerPayload(config.items, config.configVersion, config.maskToken);
       setToast(null);
+      return true;
     } catch (error: unknown) {
       setLoadError(getParsedApiError(error));
       setRetryAction('load');
+      return false;
     } finally {
       setIsLoading(false);
     }
@@ -214,6 +249,28 @@ export function useSystemConfig() {
     setValidationIssues([]);
     setSaveError(null);
   }, [serverItems]);
+
+  const applyPartialUpdate = useCallback((updatedItems: Array<{ key: string; value: string }>) => {
+    setDraftValues((prevDraft) => {
+      const nextDraft = { ...prevDraft };
+      for (const item of updatedItems) {
+        nextDraft[item.key] = item.value;
+      }
+      return nextDraft;
+    });
+  }, []);
+
+  const refreshAfterExternalSave = useCallback(
+    async (committedKeys: string[]) => {
+      const config = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(config.llmModelProviders || []);
+      applyServerPayload(config.items, config.configVersion, config.maskToken, {
+        preserveDirty: true,
+        committedKeys,
+      });
+    },
+    [applyServerPayload],
+  );
 
   const setDraftValue = useCallback((key: string, value: string) => {
     setDraftValues((previous) => ({
@@ -239,8 +296,16 @@ export function useSystemConfig() {
       });
   }, [dirtyKeys, draftValues, serverItemByKey]);
 
-  const save = useCallback(async (): Promise<SaveResult> => {
-    if (!hasDirty) {
+  const save = useCallback(async (changedItems?: SystemConfigUpdateItem[]): Promise<SaveResult> => {
+    const explicitItems = changedItems ?? [];
+    const resolvedChangedItems = explicitItems.length > 0 ? explicitItems : getChangedItems();
+
+    if (!explicitItems.length && !hasDirty) {
+      setToast({ type: 'success', message: '当前没有可保存的修改。' });
+      return { success: true, message: '当前没有可保存的修改' };
+    }
+
+    if (!resolvedChangedItems.length) {
       setToast({ type: 'success', message: '当前没有可保存的修改。' });
       return { success: true, message: '当前没有可保存的修改' };
     }
@@ -249,10 +314,8 @@ export function useSystemConfig() {
     setSaveError(null);
     setRetryAction(null);
 
-    const changedItems = getChangedItems();
-
     try {
-      const validateResult = await systemConfigApi.validate({ items: changedItems });
+      const validateResult = await systemConfigApi.validate({ items: resolvedChangedItems });
       setValidationIssues(validateResult.issues || []);
 
       if (!validateResult.valid) {
@@ -274,10 +337,11 @@ export function useSystemConfig() {
         configVersion,
         maskToken,
         reloadNow: true,
-        items: changedItems,
+        items: resolvedChangedItems,
       });
 
       const refreshed = await systemConfigApi.getConfig(true);
+      setLlmModelProviders(refreshed.llmModelProviders || []);
       applyServerPayload(refreshed.items, refreshed.configVersion, refreshed.maskToken);
 
       const warningText = updateResult.warnings?.length
@@ -334,6 +398,7 @@ export function useSystemConfig() {
     configVersion,
     maskToken,
     serverItems,
+    llmModelProviders,
     categories,
     itemsByCategory,
     issueByKey,
@@ -359,5 +424,8 @@ export function useSystemConfig() {
     save,
     resetDraft,
     setDraftValue,
+    getChangedItems,
+    applyPartialUpdate,
+    refreshAfterExternalSave,
   };
 }

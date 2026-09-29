@@ -98,6 +98,16 @@ class TestNormalizeStockCode(unittest.TestCase):
         self.assertEqual(normalize_stock_code("BJ920748"), "920748")
         self.assertEqual(normalize_stock_code("bj920748"), "920748")
 
+    def test_hk_suffix_normalized_to_canonical_prefix(self):
+        """港股 .HK 后缀格式应归一为 HK+5 位数字。"""
+        self.assertEqual(normalize_stock_code("1810.HK"), "HK01810")
+        self.assertEqual(normalize_stock_code("0700.hk"), "HK00700")
+
+    def test_hk_prefix_is_zero_padded(self):
+        """HK 前缀的短数字格式应补足到 5 位，便于后续缓存与去重。"""
+        self.assertEqual(normalize_stock_code("hk1810"), "HK01810")
+        self.assertEqual(normalize_stock_code("HK700"), "HK00700")
+
 
 @unittest.skipIf(not _TUSHARE_IMPORTS_OK, f"tushare fetcher imports failed: {_TUSHARE_IMPORT_ERROR}")
 class TestTushareConvertStockCode(unittest.TestCase):
@@ -109,6 +119,12 @@ class TestTushareConvertStockCode(unittest.TestCase):
         self.assertEqual(fetcher._convert_stock_code("920748"), "920748.BJ")
         self.assertEqual(fetcher._convert_stock_code("838163"), "838163.BJ")
         self.assertEqual(fetcher._convert_stock_code("430047"), "430047.BJ")
+
+    def test_bse_explicit_exchange_hint_is_preserved(self):
+        """BSE prefix/suffix forms should keep the BJ Tushare ts_code."""
+        fetcher = TushareFetcher()
+        self.assertEqual(fetcher._convert_stock_code("920493.BJ"), "920493.BJ")
+        self.assertEqual(fetcher._convert_stock_code("BJ920493"), "920493.BJ")
 
 
 @unittest.skipIf(not _AKSHARE_IMPORTS_OK, f"akshare fetcher imports failed: {_AKSHARE_IMPORT_ERROR}")

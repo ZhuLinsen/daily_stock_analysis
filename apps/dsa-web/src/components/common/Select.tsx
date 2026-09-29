@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { useId } from 'react';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { cn } from '../../utils/cn';
 
 interface SelectOption {
   value: string;
@@ -6,6 +8,7 @@ interface SelectOption {
 }
 
 interface SelectProps {
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   options: SelectOption[];
@@ -13,60 +16,62 @@ interface SelectProps {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  searchable?: boolean;
+  searchPlaceholder?: string;
+  emptyText?: string;
 }
 
 /**
- * 下拉选择器组件
- * 科技感样式
+ * Select component with terminal-inspired styling.
  */
 export const Select: React.FC<SelectProps> = ({
+  id,
   value,
   onChange,
   options,
   label,
-  placeholder = '请选择',
+  placeholder,
   disabled = false,
   className = '',
 }) => {
+  const { t } = useUiLanguage();
+  const selectId = useId();
+  const resolvedId = id ?? selectId;
+  const hasEmptyOption = options.some((option) => option.value === '');
+  const resolvedPlaceholder = placeholder ?? t('common.selectPlaceholder');
+
   return (
-    <div className={`flex flex-col ${className}`}>
-      {label && (
-        <label className="mb-2 text-sm font-medium text-gray-300">
-          {label}
-        </label>
-      )}
+    <div className={cn('flex flex-col', className)}>
+      {label ? <label htmlFor={resolvedId} className="mb-2 text-sm font-medium text-foreground">{label}</label> : null}
       <div className="relative">
         <select
+          id={resolvedId}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
-          className={`
-            w-full appearance-none px-4 py-2.5 pr-10 rounded-lg
-            bg-slate-800/50 border border-cyan-500/20
-            text-gray-200 placeholder-gray-500
-            focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/40
-            hover:border-cyan-500/30
-            disabled:opacity-50 disabled:cursor-not-allowed
-            transition-all duration-200
-            cursor-pointer
-          `}
+          className={cn(
+            'input-surface input-focus-glow h-11 w-full appearance-none rounded-xl border bg-transparent px-4 py-2.5 pr-10 text-sm text-foreground',
+            '[color-scheme:light] dark:[color-scheme:dark]',
+            'transition-all duration-200 focus:outline-none',
+            disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+          )}
         >
-          {placeholder && (
+          {resolvedPlaceholder && !hasEmptyOption && (
             <option value="" disabled>
-              {placeholder}
+              {resolvedPlaceholder}
             </option>
           )}
           {options.map((option) => (
-            <option key={option.value} value={option.value} className="bg-slate-800">
+            <option key={option.value} value={option.value} className="bg-elevated text-foreground">
               {option.label}
             </option>
           ))}
         </select>
 
-        {/* 下拉箭头 */}
+        {/* Dropdown arrow */}
         <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
           <svg
-            className="w-4 h-4 text-cyan-400"
+            className="h-4 w-4 text-secondary-text"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"

@@ -10,13 +10,20 @@ Covers:
 """
 
 import json
+import importlib
+import types
 import unittest
 import sys
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
+
+from tests.litellm_stub import ensure_litellm_stub
+
+ensure_litellm_stub()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -37,17 +44,20 @@ class TestAgentConfig(unittest.TestCase):
     @patch('src.config.load_dotenv')
     def test_default_agent_config(self, _mock_dotenv):
         """Agent mode should be disabled by default."""
-        from src.config import Config
+        from src.config import AGENT_MAX_STEPS_DEFAULT, Config
         Config._instance = None
         config = Config._load_from_env()
+        self.assertEqual(config.agent_litellm_model, "")
         self.assertFalse(config.agent_mode)
-        self.assertEqual(config.agent_max_steps, 10)
+        self.assertEqual(config.agent_max_steps, AGENT_MAX_STEPS_DEFAULT)
         self.assertEqual(config.agent_skills, [])
+        self.assertEqual(config.agent_skill_concurrency, 3)
 
     @patch.dict(os.environ, {
         'AGENT_MODE': 'true',
         'AGENT_MAX_STEPS': '15',
         'AGENT_SKILLS': 'dragon_head,shrink_pullback,volume_breakout',
+        'AGENT_SKILL_CONCURRENCY': '4',
     }, clear=True)
     def test_agent_config_from_env(self):
         """Agent config should be loaded from environment."""
@@ -57,6 +67,15 @@ class TestAgentConfig(unittest.TestCase):
         self.assertTrue(config.agent_mode)
         self.assertEqual(config.agent_max_steps, 15)
         self.assertEqual(config.agent_skills, ['dragon_head', 'shrink_pullback', 'volume_breakout'])
+        self.assertEqual(config.agent_skill_concurrency, 4)
+
+    @patch.dict(os.environ, {'AGENT_SKILL_CONCURRENCY': '9'}, clear=True)
+    def test_agent_skill_concurrency_is_clamped(self):
+        """Agent skill concurrency should stay within the supported 1-4 range."""
+        from src.config import Config
+        Config._instance = None
+        config = Config._load_from_env()
+        self.assertEqual(config.agent_skill_concurrency, 4)
 
     @patch.dict(os.environ, {'AGENT_MODE': 'false'}, clear=True)
     def test_agent_mode_disabled(self):
@@ -82,6 +101,464 @@ class TestAgentConfig(unittest.TestCase):
         config = Config._load_from_env()
         self.assertEqual(config.agent_skills, ['dragon_head', 'shrink_pullback'])
 
+    @patch.dict(os.environ, {'AGENT_LITELLM_MODEL': 'gpt-4o-mini'}, clear=True)
+    def test_agent_is_available_when_agent_primary_model_is_configured(self):
+        """Agent availability auto-detection should use effective Agent primary model."""
+        from src.config import Config
+        Config._instance = None
+        config = Config._load_from_env()
+        self.assertEqual(config.agent_litellm_model, 'openai/gpt-4o-mini')
+        self.assertTrue(config.is_agent_available())
+
+    def test_agent_models_to_try_inherit_legacy_provider_models(self):
+        """Legacy provider key/model envs should still produce a non-empty Agent model try list."""
+        from src.config import Config, get_effective_agent_models_to_try
+
+        test_cases = [
+            (
+                {
+                    "GEMINI_API_KEY": "gemini-test-key",
+                    "GEMINI_MODEL": "gemini-2.5-flash",
+                    "AGENT_LITELLM_MODEL": "",
+                },
+                ["gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview"],
+            ),
+            (
+                {
+                    "OPENAI_API_KEY": "sk-test-value",
+                    "OPENAI_MODEL": "gpt-4o-mini",
+                    "AGENT_LITELLM_MODEL": "",
+                },
+                ["openai/gpt-4o-mini"],
+            ),
+            (
+                {
+                    "ANTHROPIC_API_KEY": "anthropic-test-key",
+                    "ANTHROPIC_MODEL": "claude-3-5-sonnet-20241022",
+                    "AGENT_LITELLM_MODEL": "",
+                },
+                ["anthropic/claude-3-5-sonnet-20241022"],
+            ),
+        ]
+
+        with patch("src.config.setup_env"), patch.object(Config, "_parse_litellm_yaml", return_value=[]):
+            for env, expected_models in test_cases:
+                with self.subTest(expected_models=expected_models), patch.dict(os.environ, env, clear=True):
+                    Config._instance = None
+                    config = Config._load_from_env()
+                    self.assertEqual(get_effective_agent_models_to_try(config), expected_models)
+
+        Config._instance = None
+
+    def test_build_agent_executor_does_not_mutate_llm_route_config(self) -> None:
+        """Agent factory should not rewrite model/base_url/runtime routing fields."""
+        provided_config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=["bull_trend"],
+            agent_max_steps="10",
+            agent_orchestrator_timeout_s="120",
+            litellm_model="openai/gpt-5",
+            agent_litellm_model="anthropic/claude-3-7-sonnet-20250219",
+            openai_base_url="https://api.openai.com/v1",
+        )
+        captured: Dict[str, Any] = {}
+
+        def _mock_llm_adapter(cfg):
+            captured["cfg"] = cfg
+            return MagicMock()
+
+        fake_llm_module = types.ModuleType("src.agent.llm_adapter")
+        fake_llm_module.LLMToolAdapter = _mock_llm_adapter
+
+        fake_executor_module = types.ModuleType("src.agent.executor")
+        fake_executor_cls = MagicMock(return_value=MagicMock())
+        fake_executor_module.AgentExecutor = fake_executor_cls
+
+        skill_manager = MagicMock()
+        skill_manager.list_skills.return_value = [
+            SimpleNamespace(
+                name="bull_trend",
+                display_name="bull_trend",
+                description="bull_trend desc",
+                instructions="测试指令",
+                default_active=True,
+                default_router=True,
+                default_priority=100,
+                user_invocable=True,
+                source="builtin",
+            )
+        ]
+        skill_manager.get_skill_instructions.return_value = "测试指令"
+
+        with patch.dict(sys.modules, {
+            "litellm": MagicMock(),
+            "src.agent.llm_adapter": fake_llm_module,
+            "src.agent.executor": fake_executor_module,
+        }):
+            factory_module = importlib.import_module("src.agent.factory")
+            with patch.object(factory_module, "get_skill_manager", return_value=skill_manager), \
+                 patch.object(factory_module, "get_tool_registry", return_value=MagicMock()):
+                factory_module.build_agent_executor(provided_config)
+
+        adapter_cfg = captured.get("cfg")
+        self.assertIs(adapter_cfg, provided_config)
+        self.assertEqual(provided_config.agent_max_steps, "10")
+        self.assertEqual(provided_config.agent_orchestrator_timeout_s, "120")
+        self.assertEqual(provided_config.litellm_model, "openai/gpt-5")
+        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-3-7-sonnet-20250219")
+        self.assertEqual(provided_config.openai_base_url, "https://api.openai.com/v1")
+        fake_executor_cls.assert_called_once()
+        kwargs = fake_executor_cls.call_args.kwargs
+        self.assertEqual(kwargs["max_steps"], 10)
+        self.assertEqual(kwargs["timeout_seconds"], 120)
+
+    def test_build_agent_executor_multi_arch_does_not_mutate_llm_route_config(self) -> None:
+        """Multi-arch path should keep provider/base_url/runtime fields unchanged."""
+        provided_config = SimpleNamespace(
+            agent_arch="multi",
+            agent_skills=["bull_trend"],
+            agent_max_steps="10",
+            agent_orchestrator_timeout_s="120",
+            litellm_model="openai/gpt-5",
+            agent_litellm_model="anthropic/claude-3-7-sonnet-20250219",
+            openai_base_url="https://api.openai.com/v1",
+            agent_orchestrator_mode="standard",
+        )
+        captured: Dict[str, Any] = {}
+
+        def _mock_llm_adapter(cfg):
+            captured["cfg"] = cfg
+            return MagicMock()
+
+        fake_llm_module = types.ModuleType("src.agent.llm_adapter")
+        fake_llm_module.LLMToolAdapter = _mock_llm_adapter
+
+        fake_orchestrator_module = types.ModuleType("src.agent.orchestrator")
+        fake_orchestrator_cls = MagicMock(return_value=MagicMock())
+        fake_orchestrator_module.AgentOrchestrator = fake_orchestrator_cls
+
+        skill_manager = MagicMock()
+        skill_manager.list_skills.return_value = [
+            SimpleNamespace(
+                name="bull_trend",
+                display_name="bull_trend",
+                description="bull_trend desc",
+                instructions="测试指令",
+                default_active=True,
+                default_router=True,
+                default_priority=100,
+                user_invocable=True,
+                source="builtin",
+            )
+        ]
+        skill_manager.get_skill_instructions.return_value = "测试指令"
+
+        with patch.dict(sys.modules, {
+            "litellm": MagicMock(),
+            "src.agent.llm_adapter": fake_llm_module,
+            "src.agent.orchestrator": fake_orchestrator_module,
+            "src.agent.executor": MagicMock(),
+        }):
+            factory_module = importlib.import_module("src.agent.factory")
+            with patch.object(factory_module, "get_skill_manager", return_value=skill_manager), \
+                 patch.object(factory_module, "get_tool_registry", return_value=MagicMock()):
+                factory_module.build_agent_executor(provided_config)
+
+        adapter_cfg = captured.get("cfg")
+        self.assertIs(adapter_cfg, provided_config)
+        self.assertEqual(provided_config.agent_max_steps, "10")
+        self.assertEqual(provided_config.agent_orchestrator_timeout_s, "120")
+        self.assertEqual(provided_config.litellm_model, "openai/gpt-5")
+        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-3-7-sonnet-20250219")
+        self.assertEqual(provided_config.openai_base_url, "https://api.openai.com/v1")
+        fake_orchestrator_cls.assert_called_once()
+        kwargs = fake_orchestrator_cls.call_args.kwargs
+        self.assertEqual(kwargs["max_steps"], 10)
+        self.assertIs(kwargs["config"], provided_config)
+
+    def test_invalid_numeric_config_values_fallback_to_defaults_with_warning(self) -> None:
+        """Invalid agent_max_steps / agent_orchestrator_timeout_s should fallback and emit warning."""
+        provided_config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=["bull_trend"],
+            agent_max_steps="invalid-steps",
+            agent_orchestrator_timeout_s="invalid-timeout",
+            litellm_model="openai/gpt-5",
+            agent_litellm_model="anthropic/claude-3-7-sonnet-20250219",
+            openai_base_url="https://api.openai.com/v1",
+        )
+        captured: Dict[str, Any] = {}
+
+        def _mock_llm_adapter(cfg):
+            captured["cfg"] = cfg
+            return MagicMock()
+
+        fake_llm_module = types.ModuleType("src.agent.llm_adapter")
+        fake_llm_module.LLMToolAdapter = _mock_llm_adapter
+
+        fake_executor_module = types.ModuleType("src.agent.executor")
+        fake_executor_cls = MagicMock(return_value=MagicMock())
+        fake_executor_module.AgentExecutor = fake_executor_cls
+
+        skill_manager = MagicMock()
+        skill_manager.list_skills.return_value = [
+            SimpleNamespace(
+                name="bull_trend",
+                display_name="bull_trend",
+                description="bull_trend desc",
+                instructions="测试指令",
+                default_active=True,
+                default_router=True,
+                default_priority=100,
+                user_invocable=True,
+                source="builtin",
+            )
+        ]
+        skill_manager.get_skill_instructions.return_value = "测试指令"
+
+        with self.assertLogs("src.agent.factory", level="WARNING") as logs:
+            with patch.dict(sys.modules, {
+                "litellm": MagicMock(),
+                "src.agent.llm_adapter": fake_llm_module,
+                "src.agent.executor": fake_executor_module,
+            }):
+                factory_module = importlib.import_module("src.agent.factory")
+                with patch.object(factory_module, "get_skill_manager", return_value=skill_manager), \
+                     patch.object(factory_module, "get_tool_registry", return_value=MagicMock()):
+                    factory_module.build_agent_executor(provided_config)
+
+        adapter_cfg = captured.get("cfg")
+        self.assertIs(adapter_cfg, provided_config)
+        self.assertEqual(provided_config.litellm_model, "openai/gpt-5")
+        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-3-7-sonnet-20250219")
+        self.assertEqual(provided_config.openai_base_url, "https://api.openai.com/v1")
+
+        log_output = "\n".join(logs.output)
+        self.assertIn("[AgentFactory] Invalid value for agent_max_steps", log_output)
+        self.assertIn("[AgentFactory] Invalid value for agent_orchestrator_timeout_s", log_output)
+
+        kwargs = fake_executor_cls.call_args.kwargs
+        from src.config import AGENT_MAX_STEPS_DEFAULT
+        self.assertEqual(kwargs["max_steps"], AGENT_MAX_STEPS_DEFAULT)
+        self.assertEqual(kwargs["timeout_seconds"], 0)
+
+
+class TestAgentFactorySkillBaseline(unittest.TestCase):
+    """Ensure explicit skill selection does not silently re-apply the default bull-trend baseline."""
+
+    @staticmethod
+    def _make_skill(
+        name: str,
+        *,
+        default_active: bool = False,
+        default_priority: int = 100,
+        source: str = "builtin",
+    ):
+        return SimpleNamespace(
+            name=name,
+            display_name=name,
+            description=f"{name} desc",
+            instructions=f"{name} instructions",
+            default_active=default_active,
+            default_router=default_active,
+            default_priority=default_priority,
+            user_invocable=True,
+            source=source,
+        )
+
+    def _run_factory_case(self, config, *, request_skills, skill_catalog, instructions):
+        skill_manager = MagicMock()
+        skill_manager.list_skills.return_value = skill_catalog
+        skill_manager.get_skill_instructions.return_value = instructions
+
+        fake_llm_module = types.ModuleType("src.agent.llm_adapter")
+        fake_llm_module.LLMToolAdapter = MagicMock(return_value=MagicMock())
+        fake_executor_module = types.ModuleType("src.agent.executor")
+        fake_executor_cls = MagicMock(return_value=MagicMock())
+        fake_executor_module.AgentExecutor = fake_executor_cls
+
+        with patch.dict(sys.modules, {
+            "litellm": MagicMock(),
+            "src.agent.llm_adapter": fake_llm_module,
+            "src.agent.executor": fake_executor_module,
+        }):
+            factory_module = importlib.import_module("src.agent.factory")
+
+            with patch.object(factory_module, "get_skill_manager", return_value=skill_manager), \
+                 patch.object(factory_module, "get_tool_registry", return_value=MagicMock()):
+                factory_module.build_agent_executor(config, skills=request_skills)
+
+        return fake_executor_cls.call_args.kwargs, skill_manager
+
+    def test_explicit_request_disables_default_skill_policy(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=["chan_theory"],
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("chan_theory", default_priority=20),
+            ],
+            instructions="chan_theory instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["chan_theory"])
+
+    def test_configured_skills_disable_default_skill_policy(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=["wave_theory"],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("wave_theory", default_priority=20),
+            ],
+            instructions="wave_theory instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["wave_theory"])
+
+    def test_implicit_default_run_keeps_default_skill_policy(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[self._make_skill("bull_trend", default_active=True, default_priority=10)],
+            instructions="bull_trend instructions",
+        )
+
+        self.assertIn("严进策略", kwargs["default_skill_policy"])
+        self.assertTrue(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
+    def test_explicit_empty_request_falls_back_to_primary_default_skill(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=[],
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("chan_theory", default_priority=20),
+            ],
+            instructions="bull_trend instructions",
+        )
+
+        self.assertIn("严进策略", kwargs["default_skill_policy"])
+        self.assertTrue(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
+    def test_explicit_primary_default_skill_uses_skill_aware_prompt_mode(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=["bull_trend"],
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("chan_theory", default_priority=20),
+            ],
+            instructions="bull_trend instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
+    def test_invalid_configured_skills_fall_back_to_primary_default_skill(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=["missing_skill"],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("chan_theory", default_priority=20),
+            ],
+            instructions="bull_trend instructions",
+        )
+
+        self.assertIn("严进策略", kwargs["default_skill_policy"])
+        self.assertTrue(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
+    def test_custom_default_skill_does_not_use_legacy_bull_prompt(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[
+                self._make_skill("custom_default", default_active=True, default_priority=10),
+                self._make_skill("bull_trend", default_priority=20),
+            ],
+            instructions="custom_default instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["custom_default"])
+
+    def test_custom_bull_trend_override_does_not_use_legacy_prompt(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[
+                self._make_skill(
+                    "bull_trend",
+                    default_active=True,
+                    default_priority=10,
+                    source="/tmp/custom-skills/bull_trend.yaml",
+                ),
+            ],
+            instructions="custom bull_trend instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
 
 # ============================================================
 # AgentResult to AnalysisResult conversion
@@ -104,11 +581,14 @@ class TestAgentResultConversion(unittest.TestCase):
             mock_cfg.max_workers = 2
             mock_cfg.agent_mode = True
             mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_orchestrator_timeout_s = 0
             mock_cfg.agent_skills = []
             mock_cfg.bocha_api_keys = []
             mock_cfg.tavily_api_keys = []
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -178,6 +658,47 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertIn("agent:gemini", result.data_sources)
         self.assertIsNotNone(result.dashboard)
 
+    def test_convert_preserves_top_level_phase_decision_with_nested_dashboard(self):
+        """Agent top-level phase_decision should survive nested dashboard unwrapping."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        dashboard = {
+            "stock_name": "贵州茅台",
+            "sentiment_score": 80,
+            "trend_prediction": "看多",
+            "operation_advice": "持有",
+            "decision_type": "hold",
+            "confidence_level": "中",
+            "phase_decision": {
+                "phase_context": {"phase": "intraday", "market": "cn"},
+                "action_window": "盘中跟踪",
+                "immediate_action": "等待确认",
+                "watch_conditions": ["放量突破"],
+                "next_check_time": "14:30",
+                "confidence_reason": "等待确认",
+                "data_limitations": [],
+            },
+            "dashboard": {"core_conclusion": {"one_sentence": "看好"}},
+            "analysis_summary": "Testing",
+        }
+
+        agent_result = AgentResult(
+            success=True,
+            content=json.dumps(dashboard),
+            dashboard=dashboard,
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-phase"
+        )
+
+        self.assertEqual(result.dashboard["phase_decision"]["phase_context"]["phase"], "intraday")
+        self.assertEqual(result.dashboard["phase_decision"]["watch_conditions"], ["放量突破"])
+
     def test_convert_failed_dashboard(self):
         """Failed AgentResult should produce a minimal AnalysisResult."""
         pipeline = self._make_pipeline()
@@ -201,6 +722,747 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertEqual(result.sentiment_score, 50)
         self.assertEqual(result.operation_advice, "观望")
         self.assertIn("Max steps exceeded", result.error_message)
+
+    def test_convert_agent_dashboard_preserves_explicit_action(self):
+        """Explicit Agent action is display taxonomy; decision_type remains the legacy bridge."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 52,
+                "trend_prediction": "震荡",
+                "operation_advice": "持有观察",
+                "decision_type": "hold",
+                "action": "watch",
+                "analysis_summary": "等待确认",
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-action"
+        )
+        raw_result = result.to_dict()
+
+        self.assertEqual(result.operation_advice, "持有观察")
+        self.assertEqual(result.decision_type, "hold")
+        self.assertEqual(result.action, "watch")
+        self.assertEqual(result.action_label, "观望")
+        self.assertEqual(raw_result["action"], "watch")
+        self.assertEqual(raw_result["action_label"], "观望")
+
+    def test_final_action_refresh_preserves_explicit_action_when_advice_is_unchanged(self):
+        """Pre-save refresh must not overwrite an explicit Agent action without a final advice rewrite."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 52,
+                "trend_prediction": "震荡",
+                "operation_advice": "持有观察",
+                "decision_type": "hold",
+                "action": "watch",
+                "analysis_summary": "等待确认",
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-action-preserve"
+        )
+        previous_operation_advice = result.operation_advice
+
+        pipeline._refresh_decision_action_for_final_result(
+            result,
+            report_type=ReportType.SIMPLE.value,
+            previous_operation_advice=previous_operation_advice,
+        )
+        raw_result = result.to_dict()
+
+        self.assertEqual(result.operation_advice, "持有观察")
+        self.assertEqual(result.action, "watch")
+        self.assertEqual(result.action_label, "观望")
+        self.assertEqual(raw_result["action"], "watch")
+        self.assertEqual(raw_result["action_label"], "观望")
+
+    def test_final_action_refresh_ignores_stale_pre_guardrail_action(self):
+        """Post-processing can rewrite advice; refreshed action must follow the final advice."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 68,
+                "trend_prediction": "震荡",
+                "operation_advice": "买入",
+                "decision_type": "buy",
+                "action": "buy",
+                "analysis_summary": "等待确认",
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-action-refresh"
+        )
+        previous_operation_advice = result.operation_advice
+        result.operation_advice = "持有观察"
+        result.decision_type = "hold"
+
+        pipeline._refresh_decision_action_for_final_result(
+            result,
+            report_type=ReportType.SIMPLE.value,
+            previous_operation_advice=previous_operation_advice,
+        )
+
+        self.assertEqual(result.action, "hold")
+        self.assertEqual(result.action_label, "持有")
+
+    def test_final_action_refresh_keeps_ambiguous_action_fail_closed(self):
+        """Pipeline refresh must not invent an action outside the shared resolver."""
+        pipeline = self._make_pipeline()
+
+        from src.analyzer import AnalysisResult
+        from src.enums import ReportType
+        from src.services.decision_signal_extractor import (
+            build_decision_signal_payload_from_report,
+        )
+
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=82,
+            trend_prediction="看多",
+            operation_advice="买盘增强，继续观察",
+            decision_type="buy",
+            action=None,
+        )
+
+        direct_payload = build_decision_signal_payload_from_report(
+            result,
+            trace_id="q-ambiguous-direct",
+            query_source="test",
+            report_type="simple",
+            profile_source="auto_default",
+        )
+        pipeline._refresh_decision_action_for_final_result(
+            result,
+            report_type=ReportType.SIMPLE.value,
+            previous_operation_advice=result.operation_advice,
+        )
+        refreshed_payload = build_decision_signal_payload_from_report(
+            result,
+            trace_id="q-ambiguous-refreshed",
+            query_source="test",
+            report_type="simple",
+            profile_source="auto_default",
+        )
+
+        self.assertIsNone(result.action)
+        self.assertIsNone(result.action_label)
+        self.assertIsNone(direct_payload)
+        self.assertIsNone(refreshed_payload)
+
+    def test_convert_invalid_dashboard_preserves_local_trend_result(self):
+        """Invalid Agent dashboard should not erase already-computed trend data."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="LLM returned text but no dashboard JSON",
+            dashboard=None,
+            provider="ollama",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=64,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-trend-fallback",
+            trend_result=trend_result,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 64)
+        self.assertEqual(result.trend_prediction, "多头排列")
+        self.assertEqual(result.operation_advice, "买入")
+        self.assertEqual(result.decision_type, "buy")
+        self.assertIn("trend:fallback", result.data_sources)
+
+    def test_convert_empty_dashboard_backfills_local_trend_dashboard(self):
+        """Empty Agent dashboard should still produce an integrity-ready local fallback dashboard."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.analyzer import check_content_integrity
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={},
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=68,
+            support_levels=[112.3],
+            risk_factors=["跌破 MA20 需止损"],
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-empty-dashboard",
+            trend_result=trend_result,
+        )
+
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok, missing)
+        self.assertEqual(result.sentiment_score, 68)
+        self.assertEqual(result.analysis_summary, "趋势结论：多头排列；操作建议：买入。")
+        self.assertEqual(result.dashboard["sentiment_score"], 68)
+        self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], result.analysis_summary)
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["跌破 MA20 需止损"])
+        self.assertEqual(result.dashboard["battle_plan"]["sniper_points"]["stop_loss"], 112.3)
+
+    def test_convert_dict_operation_advice_missing_decision_type_preserves_buy_signal(self):
+        """When operation_advice is dict without decision_type, preserve dict-derived buy/sell hint."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": {
+                    "has_position": "买入",
+                    "no_position": "观望",
+                },
+                "trend_prediction": "看多",
+                "sentiment_score": 74,
+            },
+            provider="ollama",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-dict-advice",
+        )
+
+        self.assertEqual(result.operation_advice, "买入")
+        self.assertEqual(result.decision_type, "buy")
+
+    def test_convert_missing_decision_type_preserves_conditional_hold_advice(self):
+        """Condition-hold wording should remain hold when decision_type is not provided."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": "不跌破支撑位继续持有",
+                "sentiment_score": 72,
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.STRONG_BUY,
+            signal_score=78,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-conditional-hold-advice",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.operation_advice, "不跌破支撑位继续持有")
+        self.assertEqual(result.decision_type, "hold")
+
+    def test_convert_empty_top_level_advice_uses_nested_dashboard_advice(self):
+        """Empty top-level advice dict should not block nested dashboard fallback."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": {},
+                "dashboard": {
+                    "operation_advice": "减仓",
+                    "trend_prediction": "看空",
+                    "sentiment_score": 42,
+                },
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-nested-advice",
+        )
+
+        self.assertEqual(result.operation_advice, "减仓")
+        self.assertEqual(result.decision_type, "sell")
+        self.assertEqual(result.dashboard["operation_advice"], "减仓")
+
+    def test_convert_placeholder_top_level_advice_uses_nested_dashboard_advice(self):
+        """Placeholder advice dict should not block nested dashboard fallback."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": {
+                    "has_position": "待补充",
+                    "no_position": "TBD",
+                },
+                "dashboard": {
+                    "operation_advice": "减仓",
+                    "trend_prediction": "看空",
+                    "sentiment_score": 42,
+                },
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-placeholder-advice",
+        )
+
+        self.assertEqual(result.operation_advice, "减仓")
+        self.assertEqual(result.decision_type, "sell")
+        self.assertEqual(result.dashboard["operation_advice"], "减仓")
+
+    def test_convert_malformed_top_level_summary_uses_nested_dashboard_summary(self):
+        """Malformed top-level analysis_summary should not block nested dashboard fallback."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "analysis_summary": [],
+                "dashboard": {
+                    "analysis_summary": "AI 已给出的摘要",
+                    "trend_prediction": "看多",
+                    "operation_advice": "持有",
+                    "sentiment_score": 73,
+                },
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-nested-summary",
+        )
+
+        self.assertEqual(result.analysis_summary, "AI 已给出的摘要")
+        self.assertEqual(result.dashboard["analysis_summary"], "AI 已给出的摘要")
+
+    def test_convert_non_string_summary_falls_back_to_nested_or_local_summary(self):
+        """Non-string analysis_summary should trigger fallback to nested summary or local fallback."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        for raw_summary in (0, False):
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "analysis_summary": raw_summary,
+                    "trend_prediction": "看多",
+                    "dashboard": {
+                        "analysis_summary": "AI 已给出的摘要",
+                    },
+                    "operation_advice": "持有",
+                    "sentiment_score": 73,
+                },
+                provider="gemini",
+            )
+
+            result = pipeline._agent_result_to_analysis_result(
+                agent_result,
+                "600519",
+                "贵州茅台",
+                ReportType.SIMPLE,
+                f"q-summary-non-string-{raw_summary}",
+            )
+
+            self.assertEqual(result.analysis_summary, "AI 已给出的摘要")
+            self.assertEqual(result.dashboard["analysis_summary"], "AI 已给出的摘要")
+
+    def test_convert_malformed_scalar_fields_fallback_to_trend_result(self):
+        """Malformed non-scalar scalar fields should not be treated as valid values."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": {"value": ""},
+                "trend_prediction": [],
+                "operation_advice": [],
+                "decision_type": {},
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=66,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-malformed-scalars",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.sentiment_score, 66)
+        self.assertEqual(result.trend_prediction, "多头排列")
+        self.assertEqual(result.operation_advice, "买入")
+        self.assertEqual(result.decision_type, "buy")
+        self.assertEqual(result.dashboard["sentiment_score"], 66)
+        self.assertEqual(result.dashboard["trend_prediction"], "多头排列")
+        self.assertEqual(result.dashboard["operation_advice"], "买入")
+    def test_convert_empty_dashboard_backfills_localized_trend_fallback_for_en(self):
+        """English reports should keep trend/advice fallback values localized."""
+        pipeline = self._make_pipeline()
+        pipeline.config.report_language = "en"
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={},
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=70,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-en-fallback",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.report_language, "en")
+        self.assertEqual(result.trend_prediction, "Bullish")
+        self.assertEqual(result.operation_advice, "Buy")
+        self.assertEqual(
+            result.analysis_summary,
+            "Trend view: Bullish; action advice: Buy.",
+        )
+        self.assertEqual(result.dashboard["trend_prediction"], "Bullish")
+        self.assertEqual(result.dashboard["operation_advice"], "Buy")
+        self.assertEqual(
+            result.dashboard["core_conclusion"]["one_sentence"],
+            "Trend view: Bullish; action advice: Buy.",
+        )
+
+    def test_convert_non_dict_advice_conflict_keeps_advice_decision(self):
+        """Conflict between trend fallback and explicit non-dict advice should keep advice decision."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 65,
+                "trend_prediction": "看空",
+                "operation_advice": "减仓",
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=70,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-advice-vs-trend",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.operation_advice, "减仓")
+        self.assertEqual(result.decision_type, "sell")
+
+    def test_convert_partial_dashboard_uses_trend_fallback_for_missing_scalars(self):
+        """Partial Agent dashboards should keep AI fields while filling missing scalars locally."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "贵州茅台",
+                "dashboard": {
+                    "core_conclusion": {"one_sentence": "AI 已给出的核心结论"},
+                    "intelligence": {"risk_alerts": ["AI 风险"]},
+                    "battle_plan": {"sniper_points": {"take_profit": "120元"}},
+                },
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=66,
+            support_levels=[108.5],
+            risk_factors=["跌破 MA20"],
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-partial-dashboard",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.sentiment_score, 66)
+        self.assertEqual(result.trend_prediction, "多头排列")
+        self.assertEqual(result.operation_advice, "买入")
+        self.assertEqual(result.decision_type, "buy")
+        self.assertEqual(result.dashboard["sentiment_score"], 66)
+        self.assertEqual(result.dashboard["operation_advice"], "买入")
+        self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], "AI 已给出的核心结论")
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["AI 风险"])
+        self.assertEqual(result.dashboard["battle_plan"]["sniper_points"]["stop_loss"], 108.5)
+        self.assertIn("trend:fallback", result.data_sources)
+
+    def test_convert_risk_alerts_string_placeholder_uses_local_risk_factors(self):
+        """String-like placeholder risk alerts should be replaced with local trend risk factors."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.analyzer import check_content_integrity
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "dashboard": {
+                    "core_conclusion": {"one_sentence": "AI 已给出的核心结论"},
+                    "intelligence": {"risk_alerts": "待补充"},
+                },
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=66,
+            support_levels=[108.5],
+            risk_factors=["涨幅过快", "回撤放大"],
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-risk-alerts-string-placeholder",
+            trend_result=trend_result,
+        )
+
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok, missing)
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["涨幅过快", "回撤放大"])
+
+    def test_convert_placeholder_dashboard_is_completed_from_local_context(self):
+        """Placeholder dashboard blocks should be completed without falling back to neutral defaults."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.analyzer import check_content_integrity
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "贵州茅台",
+                "dashboard": {
+                    "core_conclusion": {"one_sentence": "待补充"},
+                    "intelligence": {},
+                    "battle_plan": {"sniper_points": {"stop_loss": ""}},
+                },
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=62,
+            risk_factors=["趋势跌破支撑需减仓"],
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-placeholder-dashboard",
+            trend_result=trend_result,
+        )
+
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok, missing)
+        self.assertEqual(result.sentiment_score, 62)
+        self.assertEqual(result.dashboard["sentiment_score"], 62)
+        self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], result.analysis_summary)
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["趋势跌破支撑需减仓"])
+        self.assertEqual(result.dashboard["battle_plan"]["sniper_points"]["stop_loss"], "待补充")
+
+    def test_convert_invalid_dashboard_normalizes_strong_trend_decision_type(self):
+        """Fallback preserves strong advice text while keeping stable decision_type values."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        cases = [
+            (BuySignal.STRONG_BUY, "buy", "强烈买入"),
+            (BuySignal.STRONG_SELL, "sell", "强烈卖出"),
+        ]
+
+        for buy_signal, expected_decision, expected_advice in cases:
+            with self.subTest(buy_signal=buy_signal):
+                agent_result = AgentResult(
+                    success=True,
+                    content="LLM returned text but no dashboard JSON",
+                    dashboard=None,
+                    provider="ollama",
+                )
+                trend_result = TrendAnalysisResult(
+                    code="600519",
+                    trend_status=TrendStatus.BULL,
+                    buy_signal=buy_signal,
+                    signal_score=80,
+                )
+
+                result = pipeline._agent_result_to_analysis_result(
+                    agent_result,
+                    "600519",
+                    "贵州茅台",
+                    ReportType.SIMPLE,
+                    "q-trend-fallback",
+                    trend_result=trend_result,
+                )
+
+                self.assertEqual(result.operation_advice, expected_advice)
+                self.assertEqual(result.decision_type, expected_decision)
 
     def test_convert_uses_dashboard_stock_name_when_input_is_placeholder(self):
         """When input name is placeholder-like, prefer dashboard stock_name."""
@@ -309,6 +1571,8 @@ class TestPipelineRouting(unittest.TestCase):
             mock_cfg.tavily_api_keys = []
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -325,12 +1589,14 @@ class TestPipelineRouting(unittest.TestCase):
 
             pipeline.analyze_stock("600519", ReportType.SIMPLE, "q1")
 
-            pipeline._analyze_with_agent.assert_called_once_with(
-                "600519", ReportType.SIMPLE, "q1",
-                pipeline.fetcher_manager.get_realtime_quote.return_value.name,
-                pipeline.fetcher_manager.get_realtime_quote.return_value,
-                pipeline.fetcher_manager.get_chip_distribution.return_value
-            )
+            pipeline._analyze_with_agent.assert_called_once()
+            call_args = pipeline._analyze_with_agent.call_args
+            # Positional args: code, report_type, query_id, stock_name, realtime_quote, chip_data, fundamental_context, trend_result
+            self.assertEqual(call_args[0][0], "600519")
+            self.assertEqual(call_args[0][1], ReportType.SIMPLE)
+            self.assertEqual(call_args[0][2], "q1")
+            # trend_result (8th arg) should be present (may be a TrendAnalysisResult or None)
+            self.assertEqual(len(call_args[0]), 8)
 
     def test_legacy_mode_does_not_call_agent(self):
         """When agent_mode=False, analyze_stock should NOT call _analyze_with_agent."""
@@ -344,12 +1610,15 @@ class TestPipelineRouting(unittest.TestCase):
             mock_cfg = MagicMock()
             mock_cfg.max_workers = 2
             mock_cfg.agent_mode = False
+            mock_cfg.is_agent_available.return_value = False
             mock_cfg.agent_max_steps = 10
             mock_cfg.agent_skills = []
             mock_cfg.bocha_api_keys = []
             mock_cfg.tavily_api_keys = []
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -377,12 +1646,52 @@ class TestPipelineRouting(unittest.TestCase):
             # Instead, verify analyzer.analyze was called (legacy path)
             pipeline.analyzer.analyze.assert_called_once()
 
+    def test_request_skills_auto_enable_agent_mode(self):
+        """Request-specific skills should route the stock analysis through Agent mode."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'):
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = False
+            mock_cfg.agent_max_steps = 5
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_config.return_value = mock_cfg
+
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+            pipeline = StockAnalysisPipeline(
+                config=mock_cfg,
+                analysis_skills=["growth_quality"],
+            )
+            pipeline._analyze_with_agent = MagicMock(return_value=None)
+
+            pipeline.analyze_stock("600519", ReportType.SIMPLE, "q1")
+
+            pipeline._analyze_with_agent.assert_called_once()
+            self.assertEqual(pipeline.analysis_skills, ["growth_quality"])
+
 
 class TestAnalyzeWithAgentStockName(unittest.TestCase):
     """Test stock-name handling in _analyze_with_agent."""
 
-    def test_analyze_with_agent_uses_resolved_name_for_news_persistence(self):
-        """Should use resolved stock name from dashboard for search and DB persistence."""
+    def test_analyze_with_agent_keeps_high_score_hold_action_consistent_across_outputs(self):
+        """A high-score hold may align to buy, and every public output must use that action."""
         with patch('src.core.pipeline.get_config') as mock_config, \
              patch('src.core.pipeline.get_db'), \
              patch('src.core.pipeline.DataFetcherManager'), \
@@ -400,6 +1709,223 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.tavily_api_keys = []
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_config.return_value = mock_cfg
+
+            from src.agent.executor import AgentResult
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline.db.save_analysis_history.return_value = 2044
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "stock_name": "贵州茅台",
+                    "sentiment_score": 80,
+                    "trend_prediction": "看多",
+                    "operation_advice": "持有",
+                    "decision_type": "hold",
+                    "analysis_summary": "高分但模型建议持有。",
+                },
+                provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="buy",
+                            confidence=0.8,
+                        ),
+                    ),
+                ),
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-review-hold-to-buy",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(result.action, "buy")
+            self.assertEqual(result.action_label, "买入")
+
+            explanation = result.dashboard["agent_disagreement_explanation"]
+            self.assertNotIn("final_signal", explanation)
+            self.assertEqual(explanation["pipeline_start_action"], "buy")
+            self.assertEqual(explanation["final_adjustments"], [])
+            self.assertEqual(explanation["final_action"], "buy")
+
+            saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
+            self.assertIs(saved_result, result)
+            self.assertEqual(saved_result.action, "buy")
+            self.assertEqual(
+                saved_result.dashboard["agent_disagreement_explanation"]["final_action"],
+                "buy",
+            )
+
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertIs(signal_result, result)
+            signal_payload = build_decision_signal_payload_from_report(
+                signal_result,
+                source_report_id=2044,
+                trace_id="q-review-hold-to-buy",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNotNone(signal_payload)
+            self.assertEqual(signal_payload["action"], "buy")
+            self.assertEqual(signal_payload["metadata"]["decision_type"], "hold")
+
+    def test_analyze_with_agent_keeps_ambiguous_action_fail_closed_across_outputs(self):
+        """Ambiguous advice must not gain an action through Pipeline ordering."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_config.return_value = mock_cfg
+
+            from src.agent.executor import AgentResult
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline.db.save_analysis_history.return_value = 2044
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "stock_name": "贵州茅台",
+                    "sentiment_score": 82,
+                    "trend_prediction": "看多",
+                    "operation_advice": "买盘增强，继续观察",
+                    "decision_type": "buy",
+                    "analysis_summary": "方向偏多，但操作建议仍需观察。",
+                },
+                provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="buy",
+                            confidence=0.8,
+                        ),
+                    ),
+                ),
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-review-ambiguous-action",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.decision_type, "buy")
+            self.assertIsNone(result.action)
+            self.assertIsNone(result.action_label)
+            self.assertNotIn("agent_disagreement_explanation", result.dashboard)
+
+            saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
+            self.assertIs(saved_result, result)
+            self.assertIsNone(saved_result.action)
+            self.assertNotIn("agent_disagreement_explanation", saved_result.dashboard)
+
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertIs(signal_result, result)
+            signal_payload = build_decision_signal_payload_from_report(
+                signal_result,
+                source_report_id=2044,
+                trace_id="q-review-ambiguous-action",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNone(signal_payload)
+
+    def test_analyze_with_agent_uses_resolved_name_for_news_persistence(self):
+        """Should use resolved stock name from dashboard for search and DB persistence."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor, \
+             patch('src.agent.executor.AgentExecutor.run') as mock_agent_run:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -427,6 +1953,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_executor = MagicMock()
             mock_executor.run.return_value = agent_result
             mock_build_executor.return_value = mock_executor
+            mock_agent_run.return_value = agent_result
 
             news_response = MagicMock()
             news_response.success = True
@@ -454,6 +1981,577 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             pipeline.db.save_news_intel.assert_called_once()
             saved_kwargs = pipeline.db.save_news_intel.call_args.kwargs
             self.assertEqual(saved_kwargs["name"], "科创芯片ETF")
+
+    def test_analyze_with_agent_keeps_dashboard_top_level_fields_after_stability(self):
+        """Decision stability downgrade in agent flow should sync dashboard and top-level decision fields."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_cfg.agent_orchestrator_timeout_s = 600
+            mock_config.return_value = mock_cfg
+
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.agent.executor import AgentResult
+            from src.agent.risk_override import RiskOverrideApplication
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
+            from src.enums import ReportType
+            from src.stock_analyzer import TrendAnalysisResult, TrendStatus, BuySignal
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "sentiment_score": 30,
+                    "trend_prediction": "震荡",
+                    "operation_advice": "卖出",
+                    "decision_type": "sell",
+                    "analysis_summary": "原始建议",
+                    "dashboard": {
+                        "core_conclusion": {"one_sentence": "初始结论"},
+                    },
+                },
+                provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="sell",
+                            confidence=0.8,
+                        ),
+                    ),
+                    risk_override_application=RiskOverrideApplication(
+                        evidence_present=False,
+                        override_enabled=True,
+                        trigger="none",
+                        applied=False,
+                        reason="no_risk_evidence",
+                        post_risk_signal="sell",
+                    ),
+                ),
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+            pipeline.db.save_analysis_history.return_value = 1
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
+
+            trend_result = TrendAnalysisResult(
+                code="002812",
+                trend_status=TrendStatus.BULL,
+                buy_signal=BuySignal.SELL,
+                signal_score=30,
+                support_levels=[30.0],
+                resistance_levels=[34.0],
+            )
+            fundamental_context = {
+                "capital_flow": {
+                    "status": "ok",
+                    "data": {
+                        "stock_flow": {
+                            "main_net_inflow": 800_000,
+                        }
+                    },
+                }
+            }
+
+            result = pipeline._analyze_with_agent(
+                code="002812",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-stability",
+                stock_name="恩捷股份",
+                realtime_quote={"price": 30.4, "change_pct": -2.1},
+                chip_data=None,
+                fundamental_context=fundamental_context,
+                trend_result=trend_result,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(result.operation_advice, "洗盘观察")
+            self.assertEqual(result.dashboard.get("decision_type"), "hold")
+            self.assertEqual(result.dashboard.get("operation_advice"), "洗盘观察")
+            self.assertEqual(result.dashboard.get("sentiment_score"), result.sentiment_score)
+            explanation = result.dashboard["agent_disagreement_explanation"]
+            self.assertEqual(explanation["risk_control"]["post_risk_signal"], "sell")
+            self.assertNotIn("final_signal", explanation)
+            self.assertEqual(explanation["final_action"], result.action)
+            self.assertEqual(
+                explanation["final_adjustments"],
+                [
+                    {
+                        "source": "structure_and_fundamentals",
+                        "from_action": "sell",
+                        "to_action": result.action,
+                    }
+                ],
+            )
+            saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
+            self.assertIs(saved_result, result)
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertIs(signal_result, result)
+            self.assertEqual(signal_result.action, explanation["final_action"])
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+            signal_payload = build_decision_signal_payload_from_report(
+                result,
+                source_report_id=1,
+                trace_id="q-agent-stability",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNotNone(signal_payload)
+            self.assertEqual(signal_payload["action"], explanation["final_action"])
+            self.assertEqual(signal_payload["action"], result.action)
+
+    def test_analyze_with_agent_phase_integrity_fills_missing_phase_decision(self):
+        """Agent weak integrity should enforce phase_decision when phase context exists."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_cfg.report_integrity_enabled = True
+            mock_cfg.agent_orchestrator_timeout_s = 600
+            mock_config.return_value = mock_cfg
+
+            from src.agent.executor import AgentResult
+            from src.analyzer import check_content_integrity
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline._ensure_agent_history = MagicMock()
+            pipeline._build_analysis_context_pack_outputs = MagicMock(
+                return_value=(
+                    "",
+                    {
+                        "blocks": [],
+                        "data_quality": {"limitations": []},
+                    },
+                )
+            )
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "sentiment_score": 62,
+                    "trend_prediction": "震荡",
+                    "operation_advice": "减仓",
+                    "decision_type": "sell",
+                    "confidence_level": "中",
+                    "analysis_summary": "盘中风险偏高",
+                    "dashboard": {
+                        "core_conclusion": {"one_sentence": "盘中风险偏高"},
+                        "intelligence": {"risk_alerts": []},
+                    },
+                },
+                provider="gemini",
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            phase_context = {
+                "phase": "intraday",
+                "market": "cn",
+                "market_local_time": "2026-06-02T10:30:00+08:00",
+            }
+            phase_summary = {
+                **phase_context,
+                "is_trading_day": True,
+                "is_market_open_now": True,
+                "is_partial_bar": True,
+                "warnings": [],
+            }
+
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-phase-integrity",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+                market_phase_context=phase_context,
+                market_phase_summary=phase_summary,
+            )
+
+            self.assertIsNotNone(result)
+            ok, missing = check_content_integrity(result, require_phase_decision=True)
+            self.assertTrue(ok, missing)
+            phase_decision = result.dashboard["phase_decision"]
+            self.assertEqual(phase_decision["phase_context"]["phase"], "intraday")
+            self.assertEqual(phase_decision["action_window"], "模型未提供阶段化行动窗口")
+            self.assertEqual(phase_decision["immediate_action"], "模型未提供阶段化即时动作")
+            self.assertEqual(phase_decision["watch_conditions"], [])
+            self.assertEqual(phase_decision["next_check_time"], "模型未提供下一次检查点")
+            self.assertEqual(phase_decision["confidence_reason"], "模型未提供阶段化置信度理由")
+
+    def test_analyze_with_agent_explains_daily_market_softening_before_risk(self):
+        """A partial result produced before risk must retain its Pipeline start signal."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.core.pipeline.stabilize_decision_with_structure'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "en"
+            mock_cfg.report_integrity_enabled = False
+            mock_config.return_value = mock_cfg
+
+            from datetime import date
+
+            from src.agent.executor import AgentResult
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+            from src.services.daily_market_context import DailyMarketContext
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline.db.save_analysis_history.return_value = 1
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "sentiment_score": 82,
+                    "trend_prediction": "bullish",
+                    "operation_advice": "Buy now.",
+                    "decision_type": "buy",
+                    "confidence_level": "high",
+                    "analysis_summary": "Strong stock signal.",
+                    "dashboard": {
+                        "core_conclusion": {
+                            "one_sentence": "Buy now and add aggressively.",
+                            "position_advice": {
+                                "no_position": "Buy now.",
+                                "has_position": "Add position.",
+                            },
+                        },
+                        "battle_plan": {
+                            "position_strategy": {
+                                "suggested_position": "Full position",
+                                "entry_plan": "Buy the breakout",
+                                "risk_control": "Add on pullback",
+                            }
+                        },
+                    },
+                },
+                provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="buy",
+                            confidence=0.82,
+                        ),
+                    ),
+                    risk_override_application=None,
+                ),
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            result = pipeline._analyze_with_agent(
+                code="AAPL",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-daily-final",
+                stock_name="Apple",
+                realtime_quote=None,
+                chip_data=None,
+                daily_market_context=DailyMarketContext(
+                    region="us",
+                    trade_date=date(2026, 7, 19),
+                    summary="High risk and risk-off; remain conservative.",
+                    risk_tags=["high_risk", "conservative"],
+                    source="test",
+                ),
+            )
+
+            self.assertIsNotNone(result)
+            explanation = result.dashboard["agent_disagreement_explanation"]
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(explanation["risk_control"]["reason"], "not_evaluated")
+            self.assertEqual(explanation["risk_control"]["post_risk_signal"], "buy")
+            self.assertNotIn("final_signal", explanation)
+            self.assertEqual(explanation["final_action"], result.action)
+            self.assertEqual(
+                explanation["final_adjustments"],
+                [
+                    {
+                        "source": "daily_market_context",
+                        "from_action": "buy",
+                        "to_action": result.action,
+                    }
+                ],
+            )
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertEqual(signal_result.action, explanation["final_action"])
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+            signal_payload = build_decision_signal_payload_from_report(
+                result,
+                source_report_id=1,
+                trace_id="q-agent-daily-final",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNotNone(signal_payload)
+            self.assertEqual(signal_payload["action"], explanation["final_action"])
+            self.assertEqual(signal_payload["action"], result.action)
+
+    def test_analyze_with_agent_preserves_chip_structure_when_prefetch_missing(self):
+        """Agent tool chip metrics should not be cleared when prefetch chip_data is unavailable."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_cfg.report_integrity_enabled = False
+            mock_cfg.agent_orchestrator_timeout_s = 600
+            mock_config.return_value = mock_cfg
+
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.agent.executor import AgentResult
+            from src.enums import ReportType
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "sentiment_score": 70,
+                    "trend_prediction": "震荡",
+                    "operation_advice": "持有",
+                    "decision_type": "hold",
+                    "dashboard": {
+                        "data_perspective": {
+                            "chip_structure": {
+                                "profit_ratio": "52.0%",
+                                "avg_cost": 1850.0,
+                                "concentration": "0.00%",
+                                "chip_health": "健康",
+                            }
+                        }
+                    },
+                },
+                provider="gemini",
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-chip",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+            )
+
+            self.assertIsNotNone(result)
+            dp = result.dashboard["data_perspective"]
+            self.assertEqual(dp["chip_structure"]["concentration"], "0.00%")
+            self.assertNotIn("chip_unavailable_reason", dp)
+
+    def test_analyze_with_agent_history_context_includes_diagnostic_snapshot(self):
+        """Agent 分析入库存档时应保留 diagnostics 快照，避免历史诊断返回 unknown。"""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.core.pipeline.fill_price_position_if_needed'), \
+             patch('src.core.pipeline.stabilize_decision_with_structure'), \
+             patch('src.core.pipeline.current_diagnostic_snapshot') as mock_diagnostic_snapshot:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.anspire_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = True
+            mock_cfg.report_language = "zh"
+            mock_cfg.report_integrity_enabled = False
+            mock_config.return_value = mock_cfg
+
+            from src.agent.runtime_facts import AgentRuntimeFacts, SkillOpinionFact
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline._ensure_agent_history = MagicMock()
+            pipeline._agent_result_to_analysis_result = MagicMock(
+                return_value=SimpleNamespace(
+                    success=True,
+                    code="588200",
+                    name="科创芯片ETF",
+                    model_used="agent-model",
+                    sentiment_score=70,
+                    operation_advice="持有",
+                    trend_prediction="震荡",
+                    analysis_summary="测试摘要",
+                )
+            )
+
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = SimpleNamespace(
+                success=True,
+                provider="agent-provider",
+                runtime_facts=AgentRuntimeFacts(
+                    skill_opinions=(
+                        SkillOpinionFact(
+                            skill_id="alpha",
+                            signal="buy",
+                            confidence=0.7,
+                        ),
+                    ),
+                ),
+                dashboard={"stock_name": "科创芯片ETF"},
+            )
+            with patch('src.agent.factory.build_agent_executor', return_value=mock_executor):
+                mock_diagnostic_snapshot.return_value = {"trace_id": "trace-1391", "query_id": "q-1391"}
+                pipeline.db.save_analysis_history = MagicMock(return_value=1)
+                pipeline._persist_skill_opinion_samples_after_history_save = MagicMock()
+
+                result = pipeline._analyze_with_agent(
+                    code="588200",
+                    report_type=ReportType.SIMPLE,
+                    query_id="q-1391",
+                    stock_name="科创芯片ETF",
+                    realtime_quote=None,
+                    chip_data=None,
+                )
+
+            self.assertIsNotNone(result)
+            call_kwargs = pipeline.db.save_analysis_history.call_args.kwargs
+            history_context = call_kwargs["context_snapshot"]
+            self.assertIn("diagnostics", history_context)
+            self.assertEqual(history_context["diagnostics"]["trace_id"], "trace-1391")
+            self.assertEqual(history_context["stock_name"], "科创芯片ETF")
+            pipeline._persist_skill_opinion_samples_after_history_save.assert_called_once()
+            sample_kwargs = (
+                pipeline._persist_skill_opinion_samples_after_history_save.call_args.kwargs
+            )
+            self.assertIs(
+                sample_kwargs["runtime_facts"],
+                mock_executor.run.return_value.runtime_facts,
+            )
+            self.assertEqual(sample_kwargs["analysis_history_id"], 1)
+            self.assertEqual(sample_kwargs["stock_code"], "588200")
+            self.assertEqual(
+                sample_kwargs["analysis_context_pack_overview"]["data_quality"]["level"],
+                "poor",
+            )
 
 
 # ============================================================
@@ -548,6 +2646,603 @@ class TestAgentConstructionChain(unittest.TestCase):
         self.assertIsNotNone(executor.tool_registry)
         self.assertIsNotNone(executor.llm_adapter)
 
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_call_completion_uses_effective_agent_models_order(self, _mock_router):
+        """call_completion should use Agent effective model chain in order."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = "gemini/gemini-2.5-flash"
+        mock_cfg.litellm_fallback_models = ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        calls = []
+
+        def fake_call(_messages, _tools, model, **_kwargs):
+            calls.append(model)
+            if model == "openai/gpt-4o-mini":
+                raise RuntimeError("primary failed")
+            return MagicMock(content="ok")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(calls, ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"])
+        self.assertEqual(result.content, "ok")
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_normalizes_kimi_k26_temperature(self, _mock_router):
+        """Agent direct LiteLLM calls should not send unsupported temperatures to Kimi K2.6."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="openai/kimi-k2.6",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.2,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+        adapter._router = None
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="agent ok",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+
+        with patch("src.agent.llm_adapter.litellm.completion", return_value=response) as mock_completion:
+            result = adapter._call_litellm_model(
+                [{"role": "user", "content": "hi"}],
+                [],
+                "openai/kimi-k2.6",
+                temperature=0.2,
+            )
+
+        self.assertEqual(result.content, "agent ok")
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 1.0)
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_normalizes_kimi_k26_temperature_for_yaml_alias(self, _mock_router):
+        """Agent direct LiteLLM calls should normalize through routed YAML aliases."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="kimi_router",
+            litellm_fallback_models=[],
+            llm_model_list=[
+                {
+                    "model_name": "kimi_router",
+                    "litellm_params": {"model": "openai/kimi-k2.6"},
+                }
+            ],
+            llm_temperature=0.2,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+        adapter._router = None
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="agent ok",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+
+        with patch("src.agent.llm_adapter.litellm.completion", return_value=response) as mock_completion:
+            result = adapter._call_litellm_model(
+                [{"role": "user", "content": "hi"}],
+                [],
+                "kimi_router",
+                temperature=0.2,
+            )
+
+        self.assertEqual(result.content, "agent ok")
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 1.0)
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_normalizes_kimi_k26_temperature_for_non_thinking_yaml_alias(self, _mock_router):
+        """Agent direct LiteLLM calls should honor non-thinking Kimi YAML overrides."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="kimi_router",
+            litellm_fallback_models=[],
+            llm_model_list=[
+                {
+                    "model_name": "kimi_router",
+                    "litellm_params": {
+                        "model": "openai/kimi-k2.6",
+                        "extra_body": {"thinking": {"type": "disabled"}},
+                    },
+                }
+            ],
+            llm_temperature=0.2,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+        adapter._router = None
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="agent ok",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+
+        with patch("src.agent.llm_adapter.litellm.completion", return_value=response) as mock_completion:
+            result = adapter._call_litellm_model(
+                [{"role": "user", "content": "hi"}],
+                [],
+                "kimi_router",
+                temperature=0.2,
+            )
+
+        self.assertEqual(result.content, "agent ok")
+        self.assertEqual(mock_completion.call_args.kwargs["temperature"], 0.6)
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_omits_temperature_for_gpt5_family(self, _mock_router):
+        """Agent direct LiteLLM calls should omit temperature for strict default-temperature models."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="openai/gpt5.5-ferr",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.2,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+        adapter._router = None
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="agent ok",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+
+        with patch("src.agent.llm_adapter.litellm.completion", return_value=response) as mock_completion:
+            result = adapter._call_litellm_model(
+                [{"role": "user", "content": "hi"}],
+                [],
+                "openai/gpt5.5-ferr",
+                temperature=0.2,
+            )
+
+        self.assertEqual(result.content, "agent ok")
+        self.assertNotIn("temperature", mock_completion.call_args.kwargs)
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_recovers_from_unsupported_temperature(self, _mock_router):
+        """Agent direct LiteLLM calls should retry once with a request-scoped parameter repair."""
+        from src.llm.generation_params import clear_litellm_generation_param_recovery_cache
+
+        clear_litellm_generation_param_recovery_cache()
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="openai/custom-temp-locked-agent",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.2,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+        adapter._router = None
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="agent ok",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+
+        with patch("src.agent.llm_adapter.litellm.completion") as mock_completion:
+            mock_completion.side_effect = [
+                RuntimeError("Unsupported parameter: temperature is not supported"),
+                response,
+            ]
+            result = adapter._call_litellm_model(
+                [{"role": "user", "content": "hi"}],
+                [],
+                "openai/custom-temp-locked-agent",
+                temperature=0.2,
+            )
+
+        self.assertEqual(result.content, "agent ok")
+        self.assertEqual(mock_completion.call_args_list[0].kwargs["temperature"], 0.2)
+        self.assertNotIn("temperature", mock_completion.call_args_list[1].kwargs)
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_legacy_router_recovery_cache_is_scoped_to_endpoint(self, mock_router):
+        """Legacy multi-key Router recoveries should not leak across base URLs."""
+        from src.llm.generation_params import clear_litellm_generation_param_recovery_cache
+
+        clear_litellm_generation_param_recovery_cache()
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="agent ok",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+        strict_router = MagicMock()
+        flex_router = MagicMock()
+        strict_router.completion.side_effect = [
+            RuntimeError("Unsupported parameter: temperature is not supported"),
+            response,
+        ]
+        flex_router.completion.return_value = response
+        mock_router.side_effect = [strict_router, flex_router]
+
+        strict_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="openai/shared-model",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.2,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=["sk-strict-key-1", "sk-strict-key-2"],
+            deepseek_api_keys=[],
+            openai_base_url="https://strict.example/v1",
+        )
+        flex_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="openai/shared-model",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.2,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=["sk-flex-key-1", "sk-flex-key-2"],
+            deepseek_api_keys=[],
+            openai_base_url="https://flex.example/v1",
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+
+        strict_adapter = LLMToolAdapter(config=strict_cfg)
+        strict_result = strict_adapter._call_litellm_model(
+            [{"role": "user", "content": "hi"}],
+            [],
+            "openai/shared-model",
+            temperature=0.2,
+        )
+        flex_adapter = LLMToolAdapter(config=flex_cfg)
+        flex_result = flex_adapter._call_litellm_model(
+            [{"role": "user", "content": "hi"}],
+            [],
+            "openai/shared-model",
+            temperature=0.2,
+        )
+
+        self.assertEqual(strict_result.content, "agent ok")
+        self.assertEqual(flex_result.content, "agent ok")
+        self.assertEqual(strict_router.completion.call_args_list[0].kwargs["temperature"], 0.2)
+        self.assertNotIn("temperature", strict_router.completion.call_args_list[1].kwargs)
+        self.assertEqual(flex_router.completion.call_args.kwargs["temperature"], 0.2)
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_fallback_does_not_leak_kimi_fixed_temperature(self, _mock_router):
+        """Non-Kimi fallbacks should keep the requested temperature after a Kimi failure."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="openai/kimi-k2.6",
+            litellm_fallback_models=["openai/gpt-4o-mini"],
+            llm_model_list=[],
+            llm_temperature=0.2,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="fallback ok",
+                        tool_calls=[],
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+        temperatures = []
+
+        def fake_completion(**kwargs):
+            temperatures.append((kwargs["model"], kwargs["temperature"]))
+            if kwargs["model"] == "openai/kimi-k2.6":
+                raise RuntimeError("primary failed")
+            return response
+
+        with patch("src.agent.llm_adapter.litellm.completion", side_effect=fake_completion):
+            result = adapter.call_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                temperature=0.2,
+            )
+
+        self.assertEqual(result.content, "fallback ok")
+        self.assertEqual(
+            temperatures,
+            [("openai/kimi-k2.6", 1.0), ("openai/gpt-4o-mini", 0.2)],
+        )
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_recomputes_timeout_for_each_fallback_attempt(self, _mock_router):
+        """Each fallback model attempt should receive only the remaining timeout budget."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        timeouts = []
+
+        def fake_call(_messages, _tools, model, **kwargs):
+            timeouts.append((model, kwargs.get("timeout")))
+            if model == "openai/gpt-4o-mini":
+                raise RuntimeError("primary failed")
+            return MagicMock(content="ok")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        with patch("src.agent.llm_adapter.time.time", side_effect=[0.0, 0.0, 7.0, 7.0]):
+            result = adapter.call_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                timeout=10.0,
+            )
+
+        self.assertEqual(result.content, "ok")
+        self.assertEqual(timeouts[0], ("openai/gpt-4o-mini", 10.0))
+        self.assertEqual(timeouts[1], ("anthropic/claude-3-5-sonnet-20241022", 3.0))
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_rate_limit_backoff_is_bounded_by_remaining_timeout(self, _mock_router):
+        """Rate-limit backoff should sleep, but never longer than the remaining timeout budget."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["openai/gpt-4.1-mini"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        class FakeRateLimitError(Exception):
+            pass
+
+        timeouts = []
+        sleep_calls = []
+        clock = {"value": 0.0}
+
+        def fake_time():
+            return clock["value"]
+
+        def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            clock["value"] += seconds
+
+        def fake_call(_messages, _tools, model, **kwargs):
+            timeouts.append((model, kwargs.get("timeout")))
+            if model == "openai/gpt-4o-mini":
+                clock["value"] += 8.0
+                raise FakeRateLimitError("rate limited")
+            return MagicMock(content="ok")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        with patch("src.agent.llm_adapter.litellm.RateLimitError", FakeRateLimitError), \
+             patch("src.agent.llm_adapter.logger.warning"), \
+             patch("src.agent.llm_adapter.time.time", side_effect=fake_time), \
+             patch("src.agent.llm_adapter.time.sleep", side_effect=fake_sleep) as mock_sleep:
+            result = adapter.call_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                timeout=10.0,
+            )
+
+        self.assertEqual(result.content, "ok")
+        self.assertEqual(timeouts[0], ("openai/gpt-4o-mini", 10.0))
+        self.assertEqual(timeouts[1][0], "openai/gpt-4.1-mini")
+        expected_backoff = min(2.0, 8.0 * 0.1 + 0.5)
+        expected_next_timeout = 10.0 - (8.0 + expected_backoff)
+        self.assertAlmostEqual(timeouts[1][1], expected_next_timeout)
+        mock_sleep.assert_called_once()
+        self.assertAlmostEqual(mock_sleep.call_args.args[0], expected_backoff)
+        self.assertAlmostEqual(sleep_calls[0], expected_backoff)
+        self.assertAlmostEqual(clock["value"], 8.0 + expected_backoff)
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_context_window_error_skips_sleep(self, _mock_router):
+        """Context-window errors should continue fallback immediately without backoff."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        class FakeContextWindowExceededError(Exception):
+            pass
+
+        def fake_call(_messages, _tools, model, **_kwargs):
+            if model == "openai/gpt-4o-mini":
+                raise FakeContextWindowExceededError("window exceeded")
+            return MagicMock(content="ok")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        with patch(
+            "src.agent.llm_adapter.litellm.ContextWindowExceededError",
+            FakeContextWindowExceededError,
+        ), patch("src.agent.llm_adapter.time.sleep") as mock_sleep:
+            result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(result.content, "ok")
+        mock_sleep.assert_not_called()
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_reports_rate_limit_suffix_when_any_fallback_hit_limit(self, _mock_router):
+        """Final error should note earlier rate limiting even if the last error differs."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        class FakeRateLimitError(Exception):
+            pass
+
+        class FakeContextWindowExceededError(Exception):
+            pass
+
+        def fake_call(_messages, _tools, model, **_kwargs):
+            if model == "openai/gpt-4o-mini":
+                raise FakeRateLimitError("rate limited")
+            raise FakeContextWindowExceededError("window exceeded")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        with patch("src.agent.llm_adapter.litellm.RateLimitError", FakeRateLimitError), \
+             patch(
+                 "src.agent.llm_adapter.litellm.ContextWindowExceededError",
+                 FakeContextWindowExceededError,
+             ), \
+             patch("src.agent.llm_adapter.time.sleep") as mock_sleep:
+            result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(result.provider, "error")
+        self.assertIn("All LLM models failed (rate-limit encountered during fallback).", result.content)
+        self.assertIn("window exceeded", result.content)
+        mock_sleep.assert_not_called()
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_reports_missing_configuration_without_generic_none_error(self, _mock_router):
+        """Missing Agent model config should return a stable, actionable error message."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.7,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(result.provider, "error")
+        self.assertEqual(
+            result.content,
+            "No LLM configured. Please set LITELLM_MODEL, LLM_CHANNELS, or provider API keys before using Agent.",
+        )
+
 
 # ============================================================
 # _safe_int tests
@@ -574,6 +3269,8 @@ class TestSafeInt(unittest.TestCase):
             mock_cfg.tavily_api_keys = []
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -681,20 +3378,21 @@ class TestSkillActivation(unittest.TestCase):
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0].name, "dragon_head")
 
-    def test_empty_config_activates_all_in_pipeline(self):
-        """Empty agent_skills config should activate ALL strategies loaded from YAML."""
+    def test_empty_config_uses_primary_default_skill(self):
+        """Empty agent_skills config should activate the primary default skill only."""
         from src.agent.skills.base import SkillManager
+        from src.agent.skills.defaults import get_default_active_skill_ids
 
         skill_manager = SkillManager()
-        expected = _builtin_strategy_names()
         count = skill_manager.load_builtin_strategies()
-        self.assertEqual(count, len(expected), "Should load all built-in strategies from YAML")
+        self.assertEqual(count, len(_builtin_strategy_names()), "Should load all built-in strategies from YAML")
 
-        # Simulate pipeline logic: empty config -> activate all
-        skill_manager.activate(["all"])
+        default_ids = get_default_active_skill_ids(skill_manager.list_skills())
+        self.assertEqual(default_ids, ["bull_trend"])
+        skill_manager.activate(default_ids)
 
         active = skill_manager.list_active_skills()
-        self.assertEqual(len(active), len(expected))
+        self.assertEqual([skill.name for skill in active], ["bull_trend"])
 
     def test_sentiment_score_parsed_from_dashboard(self):
         """Verify _agent_result_to_analysis_result handles non-numeric sentiment_score."""
@@ -714,6 +3412,8 @@ class TestSkillActivation(unittest.TestCase):
             mock_cfg.tavily_api_keys = []
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True

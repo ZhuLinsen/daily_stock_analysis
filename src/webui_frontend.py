@@ -8,6 +8,8 @@ Set WEBUI_AUTO_BUILD=false to disable auto build and only verify artifacts.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -31,6 +33,9 @@ _BUILD_INPUT_FILES = (
     "index.html",
 )
 _BUILD_INPUT_DIRS = ("src", "public")
+_BUILD_METADATA_FILE = "build-info.json"
+_DEPENDENCY_INPUT_FILES = ("package.json", "package-lock.json")
+_DEPENDENCY_FINGERPRINT_FILE = ".dsa-dependency-fingerprint"
 
 
 def _is_truthy_env(var_name: str, default: str = "true") -> bool:
@@ -81,12 +86,60 @@ def _resolve_artifact_index(frontend_dir: Path) -> Path:
     return max(fallback_candidates, key=_safe_mtime)
 
 
+def _calculate_dependency_fingerprint(frontend_dir: Path) -> str | None:
+    digest = hashlib.sha256()
+    found_input = False
+    try:
+        for filename in _DEPENDENCY_INPUT_FILES:
+            input_path = frontend_dir / filename
+            if not input_path.is_file():
+                continue
+            found_input = True
+            digest.update(filename.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(input_path.read_bytes())
+            digest.update(b"\0")
+    except OSError as exc:
+        logger.warning("读取 WebUI 依赖输入失败，将回退到文件时间检查: %s", exc)
+        return None
+    return digest.hexdigest() if found_input else None
+
+
+def _read_installed_dependency_fingerprint(frontend_dir: Path) -> str | None:
+    marker_path = frontend_dir / "node_modules" / _DEPENDENCY_FINGERPRINT_FILE
+    try:
+        fingerprint = marker_path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return fingerprint or None
+
+
+def _write_installed_dependency_fingerprint(frontend_dir: Path) -> None:
+    fingerprint = _calculate_dependency_fingerprint(frontend_dir)
+    if fingerprint is None:
+        return
+
+    marker_path = frontend_dir / "node_modules" / _DEPENDENCY_FINGERPRINT_FILE
+    try:
+        marker_path.write_text(f"{fingerprint}\n", encoding="ascii")
+    except OSError as exc:
+        logger.warning("无法记录 WebUI 依赖摘要，下次构建将重新安装依赖: %s", exc)
+
+
 def _needs_dependency_install(frontend_dir: Path, package_json: Path, lock_file: Path, force_build: bool) -> bool:
     node_modules_dir = frontend_dir / "node_modules"
+    if force_build or not node_modules_dir.exists():
+        return True
+
+    dependency_fingerprint = _calculate_dependency_fingerprint(frontend_dir)
+    if dependency_fingerprint is not None:
+        installed_fingerprint = _read_installed_dependency_fingerprint(frontend_dir)
+        return dependency_fingerprint != installed_fingerprint
+
     install_marker = node_modules_dir / ".package-lock.json"
     deps_marker_mtime = _safe_mtime(install_marker) if install_marker.exists() else _safe_mtime(node_modules_dir)
     deps_input_mtime = _max_mtime((package_json, lock_file))
-    return force_build or (not node_modules_dir.exists()) or (deps_marker_mtime < deps_input_mtime)
+    return deps_marker_mtime < deps_input_mtime
 
 
 def _collect_build_inputs_latest_mtime(frontend_dir: Path) -> float:
@@ -96,11 +149,69 @@ def _collect_build_inputs_latest_mtime(frontend_dir: Path) -> float:
     return latest
 
 
+def _collect_build_input_files(frontend_dir: Path) -> list[Path]:
+    input_files = [
+        frontend_dir / filename
+        for filename in _BUILD_INPUT_FILES
+        if (frontend_dir / filename).is_file()
+    ]
+    for dirname in _BUILD_INPUT_DIRS:
+        root = frontend_dir / dirname
+        if root.exists():
+            input_files.extend(path for path in root.rglob("*") if path.is_file())
+    return sorted(input_files, key=lambda path: path.relative_to(frontend_dir).as_posix())
+
+
+def _calculate_source_fingerprint(frontend_dir: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        input_files = _collect_build_input_files(frontend_dir)
+        if not input_files:
+            return None
+        for input_path in input_files:
+            relative_path = input_path.relative_to(frontend_dir).as_posix()
+            digest.update(relative_path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(input_path.read_bytes())
+            digest.update(b"\0")
+    except OSError as exc:
+        logger.warning("读取 WebUI 构建输入失败，将回退到文件时间检查: %s", exc)
+        return None
+    return digest.hexdigest()
+
+
+def _read_artifact_source_fingerprint(artifact_index: Path) -> str | None:
+    metadata_path = artifact_index.parent / _BUILD_METADATA_FILE
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return None
+
+    fingerprint = payload.get("sourceFingerprint") if isinstance(payload, dict) else None
+    return fingerprint.strip() if isinstance(fingerprint, str) and fingerprint.strip() else None
+
+
 def _needs_frontend_build(frontend_dir: Path, force_build: bool) -> tuple[bool, Path]:
     artifact_index = _resolve_artifact_index(frontend_dir)
+    if force_build or not artifact_index.exists():
+        return True, artifact_index
+
+    # Prebuilt Docker/desktop artifacts do not include the frontend source tree.
+    # In that runtime layout there is nothing local to compare, so reuse the
+    # artifact and trust the build-time validation.
+    if not (frontend_dir / "package.json").exists():
+        return False, artifact_index
+
+    source_fingerprint = _calculate_source_fingerprint(frontend_dir)
+    artifact_fingerprint = _read_artifact_source_fingerprint(artifact_index)
+    if source_fingerprint is not None:
+        # Old builds have no metadata and are rebuilt once. Unlike mtime, the
+        # fingerprint remains correct when rsync preserves historical timestamps.
+        return source_fingerprint != artifact_fingerprint, artifact_index
+
     inputs_latest_mtime = _collect_build_inputs_latest_mtime(frontend_dir)
     artifact_mtime = _safe_mtime(artifact_index)
-    needs_build = force_build or (not artifact_index.exists()) or (artifact_mtime < inputs_latest_mtime)
+    needs_build = artifact_mtime < inputs_latest_mtime
     return needs_build, artifact_index
 
 
@@ -122,7 +233,48 @@ def _run_frontend_commands(commands: Sequence[Sequence[str]], frontend_dir: Path
 
 
 def _manual_build_command(frontend_dir: Path) -> str:
-    return f'cd "{frontend_dir}" && npm install && npm run build'
+    lock_file = frontend_dir / "package-lock.json"
+    install_cmd = "npm ci" if lock_file.exists() else "npm install"
+    return f'cd "{frontend_dir}" && {install_cmd} && npm run build'
+
+
+def _has_static_assets(static_dir: Path) -> bool:
+    """检查 static/assets/ 是否存在且包含 CSS/JS 文件。
+
+    index.html 存在但 assets/ 为空或缺失时，浏览器无法加载样式与脚本，
+    会导致页面元素异常放大、布局错乱（纯裸 HTML 渲染）。
+    """
+    assets_dir = static_dir / "assets"
+    if not assets_dir.is_dir():
+        return False
+    try:
+        return any(
+            f.suffix in (".js", ".css") and f.is_file()
+            for f in assets_dir.iterdir()
+        )
+    except OSError:
+        return False
+
+
+def _warn_if_assets_missing(artifact_index: Path, frontend_dir: Path) -> None:
+    """当 index.html 存在但 assets/ 缺失时，发出页面显示异常警告。"""
+    static_dir = artifact_index.parent
+    assets_dir = static_dir / "assets"
+    if not _has_static_assets(static_dir):
+        logger.warning(
+            "检测到 %s 但 %s 目录不存在或无 CSS/JS 文件，"
+            "WebUI 将因缺少样式与脚本而显示异常（元素过大、布局错乱）",
+            artifact_index,
+            assets_dir,
+        )
+        logger.warning(
+            "请重新构建前端以修复此问题: %s",
+            _manual_build_command(frontend_dir),
+        )
+        logger.warning(
+            "Docker 用户请执行: docker-compose -f ./docker/docker-compose.yml build --no-cache"
+        )
+
 
 def prepare_webui_frontend_assets() -> bool:
     """
@@ -143,12 +295,25 @@ def prepare_webui_frontend_assets() -> bool:
     if not auto_build_enabled:
         if artifact_index.exists():
             logger.info("WEBUI_AUTO_BUILD=false，检测到前端静态产物: %s", artifact_index)
+            _warn_if_assets_missing(artifact_index, frontend_dir)
+            needs_build, _ = _needs_frontend_build(frontend_dir=frontend_dir, force_build=False)
+            if needs_build:
+                logger.warning("检测到 WebUI 源码与现有静态产物不一致，但自动构建已关闭")
+                logger.warning("请重新构建前端: %s", _manual_build_command(frontend_dir))
             return True
         logger.warning("未检测到 WebUI 前端静态产物: %s", artifact_index)
         logger.warning("当前配置 WEBUI_AUTO_BUILD=false，不会在后端启动时自动编译前端")
         logger.warning("请先手动构建前端: %s", _manual_build_command(frontend_dir))
         logger.warning("如需启动时自动构建，可设置 WEBUI_AUTO_BUILD=true")
         return False
+
+    force_build = _is_truthy_env("WEBUI_FORCE_BUILD", "false")
+    needs_build, artifact_index = _needs_frontend_build(frontend_dir=frontend_dir, force_build=force_build)
+
+    if not needs_build:
+        logger.info("检测到可直接复用的前端静态产物，跳过运行时自动构建: %s", artifact_index)
+        _warn_if_assets_missing(artifact_index, frontend_dir)
+        return True
 
     package_json = frontend_dir / "package.json"
     if not package_json.exists():
@@ -162,8 +327,6 @@ def prepare_webui_frontend_assets() -> bool:
         logger.warning("请先手动构建前端静态资源: %s", _manual_build_command(frontend_dir))
         return False
 
-    force_build = _is_truthy_env("WEBUI_FORCE_BUILD", "false")
-
     lock_file = frontend_dir / "package-lock.json"
     needs_install = _needs_dependency_install(
         frontend_dir=frontend_dir,
@@ -172,15 +335,10 @@ def prepare_webui_frontend_assets() -> bool:
         force_build=force_build,
     )
 
-    needs_build, artifact_index = _needs_frontend_build(frontend_dir=frontend_dir, force_build=force_build)
-
-    if not needs_install and not needs_build:
-        logger.info("前端静态资源已是最新，跳过 npm install/build")
-        return True
-
     commands = []
     if needs_install:
-        commands.append([npm_path, "install"])
+        lock_exists = (frontend_dir / "package-lock.json").exists()
+        commands.append([npm_path, "ci" if lock_exists else "install"])
     if needs_build:
         commands.append([npm_path, "run", "build"])
 
@@ -190,4 +348,7 @@ def prepare_webui_frontend_assets() -> bool:
         needs_build,
         artifact_index,
     )
-    return _run_frontend_commands(commands=commands, frontend_dir=frontend_dir)
+    succeeded = _run_frontend_commands(commands=commands, frontend_dir=frontend_dir)
+    if succeeded and needs_install:
+        _write_installed_dependency_fingerprint(frontend_dir)
+    return succeeded

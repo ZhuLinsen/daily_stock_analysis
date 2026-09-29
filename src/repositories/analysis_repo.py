@@ -97,7 +97,7 @@ class AnalysisRepository:
             context_snapshot: 上下文快照
             
         Returns:
-            保存的记录数
+            新保存的 AnalysisHistory.id；保存失败返回 0。
         """
         try:
             return self.db.save_analysis_history(

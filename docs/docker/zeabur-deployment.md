@@ -65,6 +65,16 @@ FastAPI 会自动托管 `static/` 目录下的前端资源。前端打包输出�
 Dockerfile 已采用多阶段构建，前端会在镜像构建时自动打包。
 如需覆盖默认静态资源，可在宿主机手动构建并挂载到容器内 `/app/static`。
 
+### 2.5 资源配置建议
+
+Zeabur 服务建议从 `1G` 内存起步；`512M` 仅适合轻量 Web/API、单股、低并发场景，并建议设置 `MAX_WORKERS=1`。
+
+- 最低可尝试：`512M`，不要同时运行多个重型任务。
+- 推荐：`1G`，适合单服务常规分析。
+- 高负载：`2G+`，适合同时运行 Web/API 与定时分析、多股票、大盘复盘、新闻扩展、图片报告或选股。
+
+如果只能使用 `512M`，请避免同时部署等价于 `server + analyzer` 的多服务组合，并关闭非必要的大盘复盘、新闻扩展和图片报告能力。
+
 ## 3. 配置启动命令
 
 ### 3.1 支持的启动模式
@@ -144,10 +154,17 @@ Dockerfile 已采用多阶段构建，前端会在镜像构建时自动打包。
 
 | 变量名 | 说明 |
 |--------|------|
+| `ANSPIRE_API_KEYS` | Anspire Open API 密钥（大模型与搜索共用，推荐） |
+| `AIHUBMIX_KEY` | AIHubMix API 密钥（一 Key 多模型，推荐） |
 | `GEMINI_API_KEY` | Gemini API 密钥 |
-| `BOCHA_API_KEYS` | Bocha API 密钥（用逗号分隔） |
+| `OPENAI_API_KEY` | OpenAI 兼容 API 密钥 |
+| `SERPAPI_API_KEYS` | SerpAPI 密钥（推荐） |
 | `TAVILY_API_KEYS` | Tavily API 密钥（用逗号分隔） |
-| `SERPAPI_KEYS` | SerpAPI 密钥（用逗号分隔） |
+| `BOCHA_API_KEYS` | Bocha API 密钥（用逗号分隔） |
+| `BRAVE_API_KEYS` | Brave Search API 密钥（用逗号分隔） |
+| `MINIMAX_API_KEYS` | MiniMax API 密钥（用逗号分隔） |
+| `SEARXNG_BASE_URLS` | SearXNG 实例地址（逗号分隔，无配额兜底，需在 settings.yml 启用 format: json）；留空时仅在显式启用公共实例发现后使用 `searx.space` |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`） |
 
 ### 5.4 配置方法
 
@@ -324,6 +341,7 @@ zeabur exec <服务名> python -c "import requests; print(requests.get('https://
 4. **定期备份数据**：定期下载 `/app/data` 目录的内容进行备份
 5. **使用合适的启动模式**：根据需求选择合适的启动命令
 6. **监控服务状态**：定期检查服务状态和日志
+7. **按负载配置内存**：完整分析推荐 `1G` 起步；`512M` 低配环境设置 `MAX_WORKERS=1`，高负载场景使用 `2G+`
 
 ## 14. 联系方式
 

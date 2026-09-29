@@ -8,6 +8,11 @@ core_rules: [1, 2, 3]
 required_tools:
   - get_daily_history
   - analyze_trend
+aliases: [趋势, 趋势分析, 多头趋势]
+default_active: true
+default_router: true
+default_priority: 10
+market_regimes: [trending_up]
 
 instructions: |
   **默认多头趋势（Default Bull Trend Strategy）**

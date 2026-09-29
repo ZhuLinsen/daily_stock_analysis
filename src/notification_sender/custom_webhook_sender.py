@@ -7,10 +7,18 @@
 """
 import logging
 import json
+import time
+from string import Template
+from typing import Any, Dict, List, Optional, Tuple
+
 import requests
 
 from src.config import Config
-from src.formatters import chunk_content_by_max_bytes, slice_at_max_bytes
+from src.formatters import (
+    chunk_content_by_max_bytes,
+    slice_at_max_bytes,
+    strip_hidden_markdown_metadata,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +35,7 @@ class CustomWebhookSender:
         """
         self._custom_webhook_urls = getattr(config, 'custom_webhook_urls', []) or []
         self._custom_webhook_bearer_token = getattr(config, 'custom_webhook_bearer_token', None)
+        self._custom_webhook_body_template = getattr(config, 'custom_webhook_body_template', None)
         self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
  
     def send_to_custom(self, content: str) -> bool:
@@ -64,7 +73,17 @@ class CustomWebhookSender:
                 
                 # 钉钉机器人对 body 有字节上限（约 20000 bytes），超长需要分批发送
                 if self._is_dingtalk_webhook(url):
-                    if self._send_dingtalk_chunked(url, content, max_bytes=20000):
+                    templated_payload = self._build_custom_webhook_template_payload(content)
+                    if templated_payload is not None:
+                        if self._post_custom_webhook(url, templated_payload, timeout=30):
+                            logger.info(f"自定义 Webhook {i+1}（钉钉模板）推送成功")
+                            success_count += 1
+                        elif self._send_dingtalk_chunked(url, content, max_bytes=20000):
+                            logger.info(f"自定义 Webhook {i+1}（钉钉模板失败，回退分批）推送成功")
+                            success_count += 1
+                        else:
+                            logger.error(f"自定义 Webhook {i+1}（钉钉模板）推送失败")
+                    elif self._send_dingtalk_chunked(url, content, max_bytes=20000):
                         logger.info(f"自定义 Webhook {i+1}（钉钉）推送成功")
                         success_count += 1
                     else:
@@ -146,6 +165,110 @@ class CustomWebhookSender:
         logger.error(f"自定义 Webhook 推送失败: HTTP {response.status_code}")
         logger.debug(f"响应内容: {response.text[:200]}")
         return False
+
+    def test_custom_webhooks(self, content: str, *, timeout_seconds: float = 20.0) -> List[Dict[str, Any]]:
+        """Send a test message to each custom webhook and return raw per-URL attempts."""
+        attempts: List[Dict[str, Any]] = []
+        for index, url in enumerate(self._custom_webhook_urls):
+            try:
+                payload = self._build_custom_webhook_payload(url, content)
+                attempts.append(
+                    self._post_custom_webhook_attempt(
+                        url=url,
+                        payload=payload,
+                        timeout_seconds=timeout_seconds,
+                        index=index,
+                    )
+                )
+            except Exception as exc:
+                attempts.append({
+                    "channel": "custom",
+                    "success": False,
+                    "message": f"自定义 Webhook {index + 1} 测试异常: {exc}",
+                    "target": url,
+                    "error_code": self._classify_custom_webhook_exception(exc)[0],
+                    "stage": "notification_send",
+                    "retryable": self._classify_custom_webhook_exception(exc)[1],
+                    "latency_ms": None,
+                    "http_status": None,
+                })
+        return attempts
+
+    def _post_custom_webhook_attempt(
+        self,
+        *,
+        url: str,
+        payload: dict,
+        timeout_seconds: float,
+        index: int,
+    ) -> Dict[str, Any]:
+        headers = {
+            'Content-Type': 'application/json; charset=utf-8',
+            'User-Agent': 'StockAnalysis/1.0',
+        }
+        if self._custom_webhook_bearer_token:
+            headers['Authorization'] = f'Bearer {self._custom_webhook_bearer_token}'
+
+        body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        started_at = time.perf_counter()
+        try:
+            response = requests.post(
+                url,
+                data=body,
+                headers=headers,
+                timeout=timeout_seconds,
+                verify=self._webhook_verify_ssl,
+            )
+        except Exception as exc:
+            error_code, retryable = self._classify_custom_webhook_exception(exc)
+            return {
+                "channel": "custom",
+                "success": False,
+                "message": f"自定义 Webhook {index + 1} 测试失败: {exc}",
+                "target": url,
+                "error_code": error_code,
+                "stage": "notification_send",
+                "retryable": retryable,
+                "latency_ms": int((time.perf_counter() - started_at) * 1000),
+                "http_status": None,
+            }
+
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        if response.status_code == 200:
+            return {
+                "channel": "custom",
+                "success": True,
+                "message": f"自定义 Webhook {index + 1} 测试发送成功",
+                "target": url,
+                "error_code": None,
+                "stage": "notification_send",
+                "retryable": False,
+                "latency_ms": latency_ms,
+                "http_status": response.status_code,
+            }
+
+        retryable = response.status_code == 429 or response.status_code >= 500
+        return {
+            "channel": "custom",
+            "success": False,
+            "message": f"自定义 Webhook {index + 1} 测试失败: HTTP {response.status_code}",
+            "target": url,
+            "error_code": "http_error",
+            "stage": "notification_send",
+            "retryable": retryable,
+            "latency_ms": latency_ms,
+            "http_status": response.status_code,
+        }
+
+    @staticmethod
+    def _classify_custom_webhook_exception(exc: Exception) -> Tuple[str, bool]:
+        if isinstance(exc, requests.exceptions.Timeout):
+            return "timeout", True
+        if isinstance(exc, requests.exceptions.ConnectionError):
+            return "network_error", True
+        if isinstance(exc, requests.exceptions.RequestException):
+            return "network_error", True
+        return "unexpected_error", False
     
     def _build_custom_webhook_payload(self, url: str, content: str) -> dict:
         """
@@ -153,6 +276,11 @@ class CustomWebhookSender:
         
         自动识别常见服务并使用对应格式
         """
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        templated_payload = self._build_custom_webhook_template_payload(sanitized_content)
+        if templated_payload is not None:
+            return templated_payload
+
         url_lower = url.lower()
         
         # 钉钉机器人
@@ -161,14 +289,18 @@ class CustomWebhookSender:
                 "msgtype": "markdown",
                 "markdown": {
                     "title": "股票分析报告",
-                    "text": content
+                    "text": sanitized_content
                 }
             }
         
         # Discord Webhook
         if 'discord.com/api/webhooks' in url_lower or 'discordapp.com/api/webhooks' in url_lower:
             # Discord 限制 2000 字符
-            truncated = content[:1900] + "..." if len(content) > 1900 else content
+            truncated = (
+                sanitized_content[:1900] + "..."
+                if len(sanitized_content) > 1900
+                else sanitized_content
+            )
             return {
                 "content": truncated
             }
@@ -176,7 +308,7 @@ class CustomWebhookSender:
         # Slack Incoming Webhook
         if 'hooks.slack.com' in url_lower:
             return {
-                "text": content,
+                "text": sanitized_content,
                 "mrkdwn": True
             }
         
@@ -184,20 +316,51 @@ class CustomWebhookSender:
         if 'api.day.app' in url_lower:
             return {
                 "title": "股票分析报告",
-                "body": content[:4000],  # Bark 限制
+                "body": sanitized_content[:4000],  # Bark 限制
                 "group": "stock"
             }
         
         # 通用格式（兼容大多数服务）
         return {
-            "text": content,
-            "content": content,
-            "message": content,
-            "body": content
+            "text": sanitized_content,
+            "content": sanitized_content,
+            "message": sanitized_content,
+            "body": sanitized_content
         }
+
+    def _build_custom_webhook_template_payload(self, content: str) -> Optional[dict]:
+        """Build payload from CUSTOM_WEBHOOK_BODY_TEMPLATE when configured."""
+        content = strip_hidden_markdown_metadata(content).strip()
+        template = (self._custom_webhook_body_template or "").strip()
+        if not template:
+            return None
+
+        title = "股票分析报告"
+        variables = {
+            "title": title,
+            "title_json": json.dumps(title, ensure_ascii=False),
+            "content": content,
+            "content_json": json.dumps(content, ensure_ascii=False),
+        }
+        rendered = Template(template).safe_substitute(variables)
+        try:
+            payload: Any = json.loads(rendered)
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "CUSTOM_WEBHOOK_BODY_TEMPLATE 不是有效 JSON，已回退为默认 Webhook payload: %s",
+                exc,
+            )
+            return None
+        if not isinstance(payload, dict):
+            logger.error(
+                "CUSTOM_WEBHOOK_BODY_TEMPLATE 必须渲染为 JSON object，已回退为默认 Webhook payload"
+            )
+            return None
+        return payload
     
     def _send_dingtalk_chunked(self, url: str, content: str, max_bytes: int = 20000) -> bool:
         import time as _time
+        content = strip_hidden_markdown_metadata(content).strip()
 
         # 为 payload 开销预留空间，避免 body 超限
         budget = max(1000, max_bytes - 1500)

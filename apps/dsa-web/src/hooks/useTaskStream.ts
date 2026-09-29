@@ -1,86 +1,278 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, type MutableRefObject } from 'react';
 import { analysisApi } from '../api/analysis';
+import { toCamelCase } from '../api/utils';
 import type { TaskInfo } from '../types/analysis';
+import type { RunFlowEvent } from '../types/runFlow';
 
 /**
- * SSE 事件类型
+ * SSE event types.
  */
 export type SSEEventType =
   | 'connected'
   | 'task_created'
   | 'task_started'
+  | 'task_progress'
   | 'task_completed'
   | 'task_failed'
   | 'heartbeat';
 
 /**
- * SSE 事件数据
+ * SSE event payload.
  */
 export interface SSEEvent {
   type: SSEEventType;
   task?: TaskInfo;
+  flowEvent?: RunFlowEvent;
   timestamp?: string;
 }
 
 /**
- * SSE Hook 配置
+ * SSE hook options.
  */
 export interface UseTaskStreamOptions {
-  /** 任务创建回调 */
+  /** Task created callback */
   onTaskCreated?: (task: TaskInfo) => void;
-  /** 任务开始回调 */
+  /** Task started callback */
   onTaskStarted?: (task: TaskInfo) => void;
-  /** 任务完成回调 */
+  /** Task completed callback */
   onTaskCompleted?: (task: TaskInfo) => void;
-  /** 任务失败回调 */
+  /** Task progress callback */
+  onTaskProgress?: (task: TaskInfo) => void;
+  /** Task failed callback */
   onTaskFailed?: (task: TaskInfo) => void;
-  /** 连接成功回调 */
+  /** Incremental run-flow event callback carried by task_progress */
+  onTaskFlowEvent?: (task: TaskInfo, event: RunFlowEvent) => void;
+  /** Connected callback */
   onConnected?: () => void;
-  /** 连接错误回调 */
+  /** Connection error callback */
   onError?: (error: Event) => void;
-  /** 是否自动重连 */
+  /** Whether to reconnect automatically */
   autoReconnect?: boolean;
-  /** 重连延迟(ms) */
+  /** Reconnect delay in milliseconds */
   reconnectDelay?: number;
-  /** 是否启用 */
+  /** Whether the hook is enabled */
   enabled?: boolean;
 }
 
 /**
- * SSE Hook 返回值
+ * SSE hook result.
  */
 export interface UseTaskStreamResult {
-  /** 是否已连接 */
+  /** Whether the stream is connected */
   isConnected: boolean;
-  /** 手动重连 */
+  /** Reconnect manually */
   reconnect: () => void;
-  /** 手动断开 */
+  /** Disconnect manually */
   disconnect: () => void;
 }
 
+type TaskStreamCallbacks = Pick<
+  UseTaskStreamOptions,
+  | 'onTaskCreated'
+  | 'onTaskStarted'
+  | 'onTaskCompleted'
+  | 'onTaskProgress'
+  | 'onTaskFailed'
+  | 'onTaskFlowEvent'
+  | 'onConnected'
+  | 'onError'
+>;
+
+type ParsedTaskStreamPayload = {
+  task: TaskInfo;
+  flowEvent?: RunFlowEvent;
+};
+
+type TaskStreamSubscriber = {
+  callbacksRef: MutableRefObject<TaskStreamCallbacks>;
+  setIsConnected: (value: boolean) => void;
+  autoReconnect: boolean;
+  reconnectDelay: number;
+};
+
+let sharedEventSource: EventSource | null = null;
+let sharedReconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+let sharedConnected = false;
+let nextSubscriberId = 1;
+const subscribers = new Map<number, TaskStreamSubscriber>();
+
+// Convert snake_case payloads into camelCase TaskInfo objects.
+const toTaskInfo = (data: Record<string, unknown>): TaskInfo => {
+  const task: TaskInfo = {
+    taskId: data.task_id as string,
+    stockCode: data.stock_code as string,
+    stockName: data.stock_name as string | undefined,
+    status: data.status as TaskInfo['status'],
+    progress: data.progress as number,
+    message: data.message as string | undefined,
+    reportType: data.report_type as string,
+    createdAt: data.created_at as string,
+    startedAt: data.started_at as string | undefined,
+    completedAt: data.completed_at as string | undefined,
+    error: data.error as string | undefined,
+    originalQuery: data.original_query as string | undefined,
+    selectionSource: data.selection_source as string | undefined,
+    analysisPhase: data.analysis_phase as TaskInfo['analysisPhase'],
+    skills: Array.isArray(data.skills) ? data.skills.map(String) : undefined,
+    assetType: data.asset_type as TaskInfo['assetType'] | undefined,
+  };
+
+  if (typeof data.trace_id === 'string' && data.trace_id.trim()) {
+    task.traceId = data.trace_id;
+  }
+  if (typeof data.region === 'string' && data.region.trim()) {
+    task.region = data.region;
+  }
+
+  return task;
+};
+
+const parseEventData = (eventData: string): ParsedTaskStreamPayload | null => {
+  try {
+    const data = JSON.parse(eventData);
+    const task = toTaskInfo(data);
+    const flowEvent = data.flow_event
+      ? toCamelCase<RunFlowEvent>(data.flow_event)
+      : undefined;
+    return { task, flowEvent };
+  } catch (e) {
+    console.error('Failed to parse SSE event data:', e);
+    return null;
+  }
+};
+
+const notifyConnectionState = (connected: boolean) => {
+  sharedConnected = connected;
+  subscribers.forEach((subscriber) => subscriber.setIsConnected(connected));
+};
+
+const forEachSubscriber = (notify: (callbacks: TaskStreamCallbacks) => void) => {
+  subscribers.forEach((subscriber) => notify(subscriber.callbacksRef.current));
+};
+
+const clearSharedReconnect = () => {
+  if (sharedReconnectTimeout) {
+    clearTimeout(sharedReconnectTimeout);
+    sharedReconnectTimeout = null;
+  }
+};
+
+const closeSharedConnection = () => {
+  clearSharedReconnect();
+  if (sharedEventSource) {
+    sharedEventSource.close();
+    sharedEventSource = null;
+  }
+  notifyConnectionState(false);
+};
+
+const scheduleSharedReconnect = () => {
+  if (sharedReconnectTimeout || subscribers.size === 0) {
+    return;
+  }
+  const reconnectDelays = Array.from(subscribers.values())
+    .filter((subscriber) => subscriber.autoReconnect)
+    .map((subscriber) => subscriber.reconnectDelay);
+  if (reconnectDelays.length === 0) {
+    return;
+  }
+  const reconnectDelay = Math.min(...reconnectDelays);
+  sharedReconnectTimeout = setTimeout(() => {
+    sharedReconnectTimeout = null;
+    connectSharedStream();
+  }, reconnectDelay);
+};
+
+function connectSharedStream() {
+  if (sharedEventSource || subscribers.size === 0) {
+    return;
+  }
+
+  if (typeof window.EventSource !== 'function') {
+    notifyConnectionState(false);
+    return;
+  }
+
+  const url = analysisApi.getTaskStreamUrl();
+  const eventSource = new window.EventSource(url, { withCredentials: true });
+  sharedEventSource = eventSource;
+
+  eventSource.addEventListener('connected', () => {
+    notifyConnectionState(true);
+    forEachSubscriber((callbacks) => callbacks.onConnected?.());
+  });
+
+  eventSource.addEventListener('task_created', (e) => {
+    const payload = parseEventData((e as MessageEvent<string>).data);
+    if (payload) {
+      forEachSubscriber((callbacks) => callbacks.onTaskCreated?.(payload.task));
+    }
+  });
+
+  eventSource.addEventListener('task_started', (e) => {
+    const payload = parseEventData((e as MessageEvent<string>).data);
+    if (payload) {
+      forEachSubscriber((callbacks) => callbacks.onTaskStarted?.(payload.task));
+    }
+  });
+
+  eventSource.addEventListener('task_progress', (e) => {
+    const payload = parseEventData((e as MessageEvent<string>).data);
+    if (payload) {
+      forEachSubscriber((callbacks) => {
+        callbacks.onTaskProgress?.(payload.task);
+        if (payload.flowEvent) {
+          callbacks.onTaskFlowEvent?.(payload.task, payload.flowEvent);
+        }
+      });
+    }
+  });
+
+  eventSource.addEventListener('task_completed', (e) => {
+    const payload = parseEventData((e as MessageEvent<string>).data);
+    if (payload) {
+      forEachSubscriber((callbacks) => callbacks.onTaskCompleted?.(payload.task));
+    }
+  });
+
+  eventSource.addEventListener('task_failed', (e) => {
+    const payload = parseEventData((e as MessageEvent<string>).data);
+    if (payload) {
+      forEachSubscriber((callbacks) => callbacks.onTaskFailed?.(payload.task));
+    }
+  });
+
+  eventSource.addEventListener('heartbeat', () => {
+    // Optional place to record the latest heartbeat timestamp.
+  });
+
+  eventSource.onerror = (error) => {
+    notifyConnectionState(false);
+    forEachSubscriber((callbacks) => callbacks.onError?.(error));
+    if (sharedEventSource === eventSource) {
+      eventSource.close();
+      sharedEventSource = null;
+    }
+    scheduleSharedReconnect();
+  };
+}
+
+const reconnectSharedStream = () => {
+  closeSharedConnection();
+  connectSharedStream();
+};
+
 /**
- * 任务流 SSE Hook
- * 用于接收实时任务状态更新
- *
- * @example
- * ```tsx
- * const { isConnected } = useTaskStream({
- *   onTaskCompleted: (task) => {
- *     console.log('Task completed:', task);
- *     refreshHistory();
- *   },
- *   onTaskFailed: (task) => {
- *     showError(task.error);
- *   },
- * });
- * ```
+ * Task-stream SSE hook for realtime task status updates.
  */
 export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStreamResult {
   const {
     onTaskCreated,
     onTaskStarted,
     onTaskCompleted,
+    onTaskProgress,
     onTaskFailed,
+    onTaskFlowEvent,
     onConnected,
     onError,
     autoReconnect = true,
@@ -88,161 +280,93 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     enabled = true,
   } = options;
 
-  const eventSourceRef = useRef<EventSource | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const connectRef = useRef<() => void>(() => {});
+  const subscriberIdRef = useRef<number | null>(null);
+  const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 使用 ref 存储回调，避免 SSE 连接因回调变化而频繁重连
-  const callbacksRef = useRef({
+  // Store callbacks in a ref to avoid reconnecting on every render.
+  const callbacksRef = useRef<TaskStreamCallbacks>({
     onTaskCreated,
     onTaskStarted,
     onTaskCompleted,
+    onTaskProgress,
     onTaskFailed,
+    onTaskFlowEvent,
     onConnected,
     onError,
   });
 
-  // 每次渲染时更新回调 ref（确保事件处理使用最新回调）
+  // Keep the latest callbacks available to the active SSE handlers.
   useEffect(() => {
     callbacksRef.current = {
       onTaskCreated,
       onTaskStarted,
       onTaskCompleted,
+      onTaskProgress,
       onTaskFailed,
+      onTaskFlowEvent,
       onConnected,
       onError,
     };
   });
 
-  // 将 snake_case 转换为 camelCase
-  const toCamelCase = (data: Record<string, unknown>): TaskInfo => {
-    return {
-      taskId: data.task_id as string,
-      stockCode: data.stock_code as string,
-      stockName: data.stock_name as string | undefined,
-      status: data.status as TaskInfo['status'],
-      progress: data.progress as number,
-      message: data.message as string | undefined,
-      reportType: data.report_type as string,
-      createdAt: data.created_at as string,
-      startedAt: data.started_at as string | undefined,
-      completedAt: data.completed_at as string | undefined,
-      error: data.error as string | undefined,
-    };
-  };
-
-  // 解析 SSE 数据
-  const parseEventData = useCallback((eventData: string): TaskInfo | null => {
-    try {
-      const data = JSON.parse(eventData);
-      return toCamelCase(data);
-    } catch (e) {
-      console.error('Failed to parse SSE event data:', e);
-      return null;
-    }
-  }, []);
-
-  // 创建 EventSource 连接
-  const connect = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    const url = analysisApi.getTaskStreamUrl();
-    const eventSource = new EventSource(url, { withCredentials: true });
-    eventSourceRef.current = eventSource;
-
-    // 连接成功
-    eventSource.addEventListener('connected', () => {
-      setIsConnected(true);
-      callbacksRef.current.onConnected?.();
-    });
-
-    // 任务创建
-    eventSource.addEventListener('task_created', (e) => {
-      const task = parseEventData(e.data);
-      if (task) callbacksRef.current.onTaskCreated?.(task);
-    });
-
-    // 任务开始
-    eventSource.addEventListener('task_started', (e) => {
-      const task = parseEventData(e.data);
-      if (task) callbacksRef.current.onTaskStarted?.(task);
-    });
-
-    // 任务完成
-    eventSource.addEventListener('task_completed', (e) => {
-      const task = parseEventData(e.data);
-      if (task) callbacksRef.current.onTaskCompleted?.(task);
-    });
-
-    // 任务失败
-    eventSource.addEventListener('task_failed', (e) => {
-      const task = parseEventData(e.data);
-      if (task) callbacksRef.current.onTaskFailed?.(task);
-    });
-
-    // 心跳 - 仅用于保持连接
-    eventSource.addEventListener('heartbeat', () => {
-      // 可选：更新最后心跳时间
-    });
-
-    // 错误处理
-    eventSource.onerror = (error) => {
-      setIsConnected(false);
-      callbacksRef.current.onError?.(error);
-
-      // 自动重连（通过 ref 避免闭包引用未声明的 connect）
-      if (autoReconnect && enabled) {
-        eventSource.close();
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connectRef.current();
-        }, reconnectDelay);
-      }
-    };
-  }, [
-    autoReconnect,
-    reconnectDelay,
-    enabled,
-    parseEventData,
-  ]);
-
-  useEffect(() => {
-    connectRef.current = connect;
-  }, [connect]);
-
-  // 断开连接（setState 延后执行，避免 effect 内同步 setState 触发级联渲染）
+  // Disconnect and defer the state update to avoid nested renders.
   const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
+    if (connectTimerRef.current) {
+      window.clearTimeout(connectTimerRef.current);
+      connectTimerRef.current = null;
     }
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
+    if (subscriberIdRef.current !== null) {
+      subscribers.delete(subscriberIdRef.current);
+      subscriberIdRef.current = null;
+    }
+    if (subscribers.size === 0) {
+      closeSharedConnection();
     }
     queueMicrotask(() => setIsConnected(false));
   }, []);
 
-  // 重连
+  // Reconnect
   const reconnect = useCallback(() => {
-    disconnect();
-    connect();
-  }, [disconnect, connect]);
+    if (subscriberIdRef.current === null) {
+      const subscriberId = nextSubscriberId++;
+      subscriberIdRef.current = subscriberId;
+      subscribers.set(subscriberId, {
+        callbacksRef,
+        setIsConnected,
+        autoReconnect,
+        reconnectDelay,
+      });
+    }
+    reconnectSharedStream();
+  }, [autoReconnect, reconnectDelay]);
 
-  // 启用/禁用时连接/断开
+  // Connect or disconnect when the hook is enabled or disabled.
   useEffect(() => {
     if (enabled) {
-      connect();
-    } else {
-      disconnect();
+      const subscriberId = nextSubscriberId++;
+      subscriberIdRef.current = subscriberId;
+      subscribers.set(subscriberId, {
+        callbacksRef,
+        setIsConnected,
+        autoReconnect,
+        reconnectDelay,
+      });
+      setIsConnected(sharedConnected);
+      connectTimerRef.current = window.setTimeout(() => {
+        connectTimerRef.current = null;
+        connectSharedStream();
+      }, 0);
+      return () => {
+        disconnect();
+      };
     }
 
+    disconnect();
     return () => {
       disconnect();
     };
-  }, [enabled, connect, disconnect]);
+  }, [autoReconnect, disconnect, enabled, reconnectDelay]);
 
   return {
     isConnected,

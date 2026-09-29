@@ -23,6 +23,8 @@ from typing import Optional, Dict, Any, List, Union
 from src.enums import ReportType
 from src.storage import get_db
 from bot.models import BotMessage
+from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
+from src.services.stock_list_parser import AnalysisTarget, ParseStatus
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,8 @@ class TaskService:
         report_type: Union[ReportType, str] = ReportType.SIMPLE,
         source_message: Optional[BotMessage] = None,
         save_context_snapshot: Optional[bool] = None,
-        query_source: str = "bot"
+        query_source: str = "bot",
+        analysis_target: Optional[AnalysisTarget] = None
     ) -> Dict[str, Any]:
         """
         提交异步分析任务
@@ -82,6 +85,9 @@ class TaskService:
             source_message: 来源消息（用于回复）
             save_context_snapshot: 是否保存上下文快照
             query_source: 任务来源标识（bot/api/cli/system）
+            analysis_target: 可选结构化分析目标（INDEX 时原样使用
+                ``target.canonical_id`` 并跳过股票代码规范化，防止
+                ``sh000016`` 被改写为 ``SH000016``）
 
         Returns:
             任务信息字典
@@ -90,25 +96,43 @@ class TaskService:
         if isinstance(report_type, str):
             report_type = ReportType.from_str(report_type)
 
-        task_id = f"{code}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        if (
+            analysis_target is not None
+            and analysis_target.asset_type != ParseStatus.INDEX
+        ):
+            raise ValueError("analysis_target must be an INDEX target")
+        if analysis_target is not None:
+            # INDEX target 携带时原样使用 canonical_id，不再走股票代码
+            # 规范化路径（避免 ``sh000016`` 被改写为 ``SH000016``）。
+            normalized_code = analysis_target.canonical_id
+        else:
+            normalized_code = resolve_index_stock_code_for_analysis(code)
+        if not normalized_code:
+            raise ValueError("股票代码不能为空或仅包含空白字符")
+
+        task_id = f"{normalized_code}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
         # 提交到线程池
         self.executor.submit(
             self._run_analysis,
-            code,
+            normalized_code,
             task_id,
             report_type,
             source_message,
             save_context_snapshot,
-            query_source
+            query_source,
+            analysis_target
         )
 
-        logger.info(f"[TaskService] 已提交股票 {code} 的分析任务, task_id={task_id}, report_type={report_type.value}")
+        logger.info(
+            f"[TaskService] 已提交股票 {normalized_code} 的分析任务, "
+            f"task_id={task_id}, report_type={report_type.value}"
+        )
 
         return {
             "success": True,
             "message": "分析任务已提交，将异步执行并推送通知",
-            "code": code,
+            "code": normalized_code,
             "task_id": task_id,
             "report_type": report_type.value
         }
@@ -145,7 +169,8 @@ class TaskService:
         report_type: ReportType = ReportType.SIMPLE,
         source_message: Optional[BotMessage] = None,
         save_context_snapshot: Optional[bool] = None,
-        query_source: str = "bot"
+        query_source: str = "bot",
+        analysis_target: Optional[AnalysisTarget] = None
     ) -> Dict[str, Any]:
         """
         执行单只股票分析
@@ -183,14 +208,17 @@ class TaskService:
             )
 
             # 执行单只股票分析（启用单股推送）
-            result = pipeline.process_single_stock(
-                code=code,
-                skip_analysis=False,
-                single_stock_notify=True,
-                report_type=report_type
-            )
+            process_kwargs = {
+                "code": code,
+                "skip_analysis": False,
+                "single_stock_notify": True,
+                "report_type": report_type,
+            }
+            if analysis_target is not None:
+                process_kwargs["analysis_target"] = analysis_target
+            result = pipeline.process_single_stock(**process_kwargs)
 
-            if result:
+            if result and result.success:
                 result_data = {
                     "code": result.code,
                     "name": result.name,
@@ -210,15 +238,18 @@ class TaskService:
                 logger.info(f"[TaskService] 股票 {code} 分析完成: {result.operation_advice}")
                 return {"success": True, "task_id": task_id, "result": result_data}
             else:
+                fail_message = "分析返回空结果"
+                if result is not None:
+                    fail_message = result.error_message or fail_message
                 with self._tasks_lock:
                     self._tasks[task_id].update({
                         "status": "failed",
                         "end_time": datetime.now().isoformat(),
-                        "error": "分析返回空结果"
+                        "error": fail_message
                     })
 
-                logger.warning(f"[TaskService] 股票 {code} 分析失败: 返回空结果")
-                return {"success": False, "task_id": task_id, "error": "分析返回空结果"}
+                logger.warning(f"[TaskService] 股票 {code} 分析失败: {fail_message}")
+                return {"success": False, "task_id": task_id, "error": fail_message}
 
         except Exception as e:
             error_msg = str(e)

@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from datetime import date
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -24,12 +25,29 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+BacktestAnalysisPhaseQuery = Literal["premarket", "intraday", "postmarket", "unknown"]
+
+
+def _validate_analysis_date_range(
+    analysis_date_from: Optional[date],
+    analysis_date_to: Optional[date],
+) -> None:
+    if analysis_date_from and analysis_date_to and analysis_date_from > analysis_date_to:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_params",
+                "message": "analysis_date_from cannot be after analysis_date_to",
+            },
+        )
+
 
 @router.post(
     "/run",
     response_model=BacktestRunResponse,
     responses={
         200: {"description": "回测执行完成"},
+        400: {"description": "请求参数错误", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="触发回测",
@@ -40,15 +58,25 @@ def run_backtest(
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> BacktestRunResponse:
     try:
+        _validate_analysis_date_range(request.analysis_date_from, request.analysis_date_to)
         service = BacktestService(db_manager)
         stats = service.run_backtest(
             code=request.code,
             force=request.force,
             eval_window_days=request.eval_window_days,
             min_age_days=request.min_age_days,
+            analysis_date_from=request.analysis_date_from,
+            analysis_date_to=request.analysis_date_to,
             limit=request.limit,
         )
         return BacktestRunResponse(**stats)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"回测执行失败: {exc}", exc_info=True)
         raise HTTPException(
@@ -62,6 +90,7 @@ def run_backtest(
     response_model=BacktestResultsResponse,
     responses={
         200: {"description": "回测结果列表"},
+        400: {"description": "请求参数错误", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取回测结果",
@@ -70,13 +99,25 @@ def run_backtest(
 def get_backtest_results(
     code: Optional[str] = Query(None, description="股票代码筛选"),
     eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口过滤"),
+    analysis_date_from: Optional[date] = Query(None, description="分析日期起始（含）"),
+    analysis_date_to: Optional[date] = Query(None, description="分析日期结束（含）"),
+    analysis_phase: Optional[BacktestAnalysisPhaseQuery] = Query(None, description="分析阶段过滤：premarket/intraday/postmarket/unknown"),
     page: int = Query(1, ge=1, description="页码"),
     limit: int = Query(20, ge=1, le=200, description="每页数量"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> BacktestResultsResponse:
     try:
+        _validate_analysis_date_range(analysis_date_from, analysis_date_to)
         service = BacktestService(db_manager)
-        data = service.get_recent_evaluations(code=code, eval_window_days=eval_window_days, limit=limit, page=page)
+        data = service.get_recent_evaluations(
+            code=code,
+            eval_window_days=eval_window_days,
+            limit=limit,
+            page=page,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+            analysis_phase=analysis_phase,
+        )
         items = [BacktestResultItem(**item) for item in data.get("items", [])]
         return BacktestResultsResponse(
             total=int(data.get("total", 0)),
@@ -84,6 +125,13 @@ def get_backtest_results(
             limit=limit,
             items=items,
         )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"查询回测结果失败: {exc}", exc_info=True)
         raise HTTPException(
@@ -97,6 +145,7 @@ def get_backtest_results(
     response_model=PerformanceMetrics,
     responses={
         200: {"description": "整体回测表现"},
+        400: {"description": "请求参数错误", "model": ErrorResponse},
         404: {"description": "无回测汇总", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
@@ -104,17 +153,33 @@ def get_backtest_results(
 )
 def get_overall_performance(
     eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口过滤"),
+    analysis_date_from: Optional[date] = Query(None, description="分析日期起始（含）"),
+    analysis_date_to: Optional[date] = Query(None, description="分析日期结束（含）"),
+    analysis_phase: Optional[BacktestAnalysisPhaseQuery] = Query(None, description="分析阶段过滤：premarket/intraday/postmarket/unknown"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> PerformanceMetrics:
     try:
+        _validate_analysis_date_range(analysis_date_from, analysis_date_to)
         service = BacktestService(db_manager)
-        summary = service.get_summary(scope="overall", code=None, eval_window_days=eval_window_days)
+        summary = service.get_summary(
+            scope="overall",
+            code=None,
+            eval_window_days=eval_window_days,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+            analysis_phase=analysis_phase,
+        )
         if summary is None:
             raise HTTPException(
                 status_code=404,
                 detail={"error": "not_found", "message": "未找到整体回测汇总"},
             )
         return PerformanceMetrics(**summary)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -130,6 +195,7 @@ def get_overall_performance(
     response_model=PerformanceMetrics,
     responses={
         200: {"description": "单股回测表现"},
+        400: {"description": "请求参数错误", "model": ErrorResponse},
         404: {"description": "无回测汇总", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
@@ -138,17 +204,33 @@ def get_overall_performance(
 def get_stock_performance(
     code: str,
     eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口过滤"),
+    analysis_date_from: Optional[date] = Query(None, description="分析日期起始（含）"),
+    analysis_date_to: Optional[date] = Query(None, description="分析日期结束（含）"),
+    analysis_phase: Optional[BacktestAnalysisPhaseQuery] = Query(None, description="分析阶段过滤：premarket/intraday/postmarket/unknown"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> PerformanceMetrics:
     try:
+        _validate_analysis_date_range(analysis_date_from, analysis_date_to)
         service = BacktestService(db_manager)
-        summary = service.get_summary(scope="stock", code=code, eval_window_days=eval_window_days)
+        summary = service.get_summary(
+            scope="stock",
+            code=code,
+            eval_window_days=eval_window_days,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+            analysis_phase=analysis_phase,
+        )
         if summary is None:
             raise HTTPException(
                 status_code=404,
                 detail={"error": "not_found", "message": f"未找到 {code} 的回测汇总"},
             )
         return PerformanceMetrics(**summary)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -157,4 +239,3 @@ def get_stock_performance(
             status_code=500,
             detail={"error": "internal_error", "message": f"查询单股表现失败: {str(exc)}"},
         )
-

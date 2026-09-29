@@ -76,12 +76,15 @@ docs: 更新 README 部署说明
 
 提交 PR 后，CI 会自动运行以下检查：
 
+仅修改普通 `docs/**`、非治理类 Markdown 或 `LICENSE` 时，CI 保留轻量的变更检测、治理校验和门禁汇总，但跳过 3 个后端测试 shard、Docker、Web 与桌面打包。被离线测试直接读取的契约文档、静态 API 规格与 Markdown fixture 仍会触发后端测试。`AGENTS.md`、`.github/instructions/**`、`.claude/skills/**` 等治理资产仍会由 `ai-governance` 校验；配置、依赖、工作流等会影响运行的文本文件仍执行对应完整检查。
+
 | 检查项 | 说明 | 必须通过 |
 |--------|------|:--------:|
 | backend-gate | `scripts/ci_gate.sh`（py_compile + flake8 严重错误 + 本地核心脚本 + offline pytest） | ✅ |
 | docker-build | Docker 镜像构建与关键模块导入 smoke | ✅ |
 | web-gate | 前端变更时执行 `npm run lint` + `npm run build` | ✅（触发时） |
-| network-smoke | 定时/手动执行 `pytest -m network` + `test.sh quick`（非阻断） | ❌（观测项） |
+| pr-review | 暂停 PR 自动触发，仅保留维护者通过 `workflow_dispatch` 按 PR 编号手动运行；通过 GitHub API 读取 PR 元数据和 diff，不检出或执行 fork PR 代码 | ❌（辅助项） |
+| network-smoke | 定时/手动执行 `pytest -m network` + `scripts/test.sh quick`（非阻断） | ❌（观测项） |
 
 **本地运行检查：**
 
@@ -100,7 +103,7 @@ npm run build
 
 ## 📋 优先贡献方向
 
-查看 [Roadmap](README.md#-roadmap) 了解当前需要的功能：
+查看 [README](../README.md) 了解项目当前的核心能力与主要入口：
 
 - 🔔 新通知渠道（钉钉、飞书、Telegram）
 - 🤖 新 AI 模型支持（GPT-4、Claude）

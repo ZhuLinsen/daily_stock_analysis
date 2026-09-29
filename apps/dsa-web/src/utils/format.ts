@@ -1,4 +1,4 @@
-export const formatDateTime = (value?: string): string => {
+export const formatDateTime = (value?: string | null): string => {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -44,8 +44,7 @@ export const getRecentStartDate = (days: number): string => {
 
 /**
  * Returns today's date as YYYY-MM-DD in Asia/Shanghai timezone.
- * Use this instead of browser-local date to stay consistent with the backend,
- * which stores and filters timestamps in server local time (Asia/Shanghai).
+ * Use this instead of the browser-local date for market-day UI semantics.
  */
 export const getTodayInShanghai = (): string =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
@@ -54,5 +53,8 @@ export const formatReportType = (value?: string): string => {
   if (!value) return '—';
   if (value === 'simple') return '普通';
   if (value === 'detailed') return '标准';
+  if (value === 'full') return '完整';
+  if (value === 'brief') return '简版';
+  if (value === 'market_review') return '大盘';
   return value;
 };

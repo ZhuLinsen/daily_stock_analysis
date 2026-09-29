@@ -12,76 +12,1603 @@ A股自选股智能分析系统 - AI分析层
 
 import json
 import logging
+import math
+import re
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable, Union
 
 import litellm
 from json_repair import repair_json
 from litellm import Router
 
-from src.agent.llm_adapter import get_thinking_extra_body
-from src.config import Config, get_config, get_api_keys_for_model, extra_litellm_params
+from src.agent.llm_adapter import (
+    get_thinking_extra_body,
+    resolve_fallback_litellm_wire_models,
+    register_fallback_model_pricing,
+)
+from src.agent.provider_trace import resolved_model_provider_identity
+from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_ZH
+from src.config import (
+    Config,
+    extra_litellm_params,
+    get_api_keys_for_model,
+    get_config,
+    get_configured_llm_models,
+    get_explicit_llm_channel_model_provider,
+    resolve_news_window_days,
+)
+from src.llm.hermes import (
+    HERMES_CHANNEL_NAME,
+    build_hermes_redaction_values,
+    canonicalize_hermes_model_ref,
+    filter_non_hermes_deployments,
+    hermes_blocked_route_candidates,
+    is_masked_secret_placeholder,
+    open_hermes_no_proxy_client,
+    route_deployment_origins,
+    route_has_hermes,
+    sanitize_hermes_error_text,
+)
+from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.errors import call_litellm_with_param_recovery
+from src.llm.backend_registry import (
+    LOCAL_CLI_GENERATION_BACKEND_IDS,
+    LITELLM_BACKEND_ID,
+    resolve_generation_backend_id,
+    resolve_generation_fallback_backend_id,
+)
+from src.llm.backend_factory import create_generation_backend
+from src.llm.generation_backend import (
+    GenerationBackend,
+    GenerationError,
+    GenerationErrorCode,
+    GenerationResult,
+)
+from src.llm.usage import (
+    attach_legacy_message_stability_audit,
+    attach_message_hmacs,
+    extract_usage_payload,
+    normalize_litellm_usage,
+    should_persist_usage_telemetry,
+)
+from src.llm.local_cli_backend import redact_diagnostic_text
+from src.llm.provider_cache import (
+    apply_prompt_cache_hints,
+    build_provider_cache_route_context,
+    filter_prompt_cache_telemetry,
+)
+from src.llm.response_content import strip_leading_think_wrapper
+from src.storage import persist_llm_usage
+from src.data.stock_mapping import STOCK_NAME_MAP
+from src.report_language import (
+    get_signal_level,
+    get_no_data_text,
+    get_placeholder_text,
+    get_unknown_text,
+    get_chip_unavailable_text,
+    infer_decision_type_from_advice,
+    is_chip_placeholder_value,
+    localize_chip_health,
+    localize_confidence_level,
+    localize_operation_advice,
+    localize_trend_prediction,
+    normalize_report_language,
+)
+from src.schemas.decision_action import build_action_fields
+from src.schemas.decision_scale import (
+    CANONICAL_DECISION_SCALE_PROMPT_ZH,
+    score_band_metadata,
+)
+from src.schemas.report_schema import AnalysisReportSchema
+from src.market_context import detect_market, get_market_role, get_market_guidelines
+from src.services.daily_market_context import format_daily_market_context_prompt_section
+from src.market_phase_prompt import format_market_phase_prompt_section
+from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
 
 
-# 股票名称映射（常见股票）
-STOCK_NAME_MAP = {
-    # === A股 ===
-    '600519': '贵州茅台',
-    '000001': '平安银行',
-    '300750': '宁德时代',
-    '002594': '比亚迪',
-    '600036': '招商银行',
-    '601318': '中国平安',
-    '000858': '五粮液',
-    '600276': '恒瑞医药',
-    '601012': '隆基绿能',
-    '002475': '立讯精密',
-    '300059': '东方财富',
-    '002415': '海康威视',
-    '600900': '长江电力',
-    '601166': '兴业银行',
-    '600028': '中国石化',
+def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
+    """Pick a deterministic fallback string for the report language (zh/en/ko)."""
+    normalized = normalize_report_language(language)
+    if normalized == "en":
+        return en
+    if normalized == "ko":
+        return ko
+    return zh
 
-    # === 美股 ===
-    'AAPL': '苹果',
-    'TSLA': '特斯拉',
-    'MSFT': '微软',
-    'GOOGL': '谷歌A',
-    'GOOG': '谷歌C',
-    'AMZN': '亚马逊',
-    'NVDA': '英伟达',
-    'META': 'Meta',
-    'AMD': 'AMD',
-    'INTC': '英特尔',
-    'BABA': '阿里巴巴',
-    'PDD': '拼多多',
-    'JD': '京东',
-    'BIDU': '百度',
-    'NIO': '蔚来',
-    'XPEV': '小鹏汽车',
-    'LI': '理想汽车',
-    'COIN': 'Coinbase',
-    'MSTR': 'MicroStrategy',
 
-    # === 港股 (5位数字) ===
-    '00700': '腾讯控股',
-    '03690': '美团',
-    '01810': '小米集团',
-    '09988': '阿里巴巴',
-    '09618': '京东集团',
-    '09888': '百度集团',
-    '01024': '快手',
-    '00981': '中芯国际',
-    '02015': '理想汽车',
-    '09868': '小鹏汽车',
-    '00005': '汇丰控股',
-    '01299': '友邦保险',
-    '00941': '中国移动',
-    '00883': '中国海洋石油',
+def _normalize_risk_warning_values(value: Any) -> List[str]:
+    """Normalize arbitrary risk_warning values into a flat list of text alerts."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple, set)):
+        normalized: List[str] = []
+        for item in value:
+            normalized.extend(_normalize_risk_warning_values(item))
+        return normalized
+    if isinstance(value, dict):
+        if not value:
+            return []
+        try:
+            dumped = json.dumps(value, ensure_ascii=False)
+            text = dumped.strip()
+        except (TypeError, ValueError):
+            text = str(value).strip()
+        return [text] if text else []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _today_has_realtime_overlay(today: Any) -> bool:
+    if not isinstance(today, dict):
+        return False
+    data_source = today.get("data_source") or today.get("dataSource")
+    if isinstance(data_source, str) and data_source.startswith("realtime:"):
+        return True
+    if today.get("is_partial_bar") is True or today.get("isPartialBar") is True:
+        return True
+    if today.get("is_estimated") is True or today.get("isEstimated") is True:
+        return True
+    return bool(today.get("estimated_fields") or today.get("estimatedFields"))
+
+
+def _today_looks_complete_daily_bar(
+    context: Dict[str, Any],
+    phase_context: Dict[str, Any],
+) -> bool:
+    today = context.get("today")
+    if (
+        not isinstance(today, dict)
+        or today.get("close") in (None, "")
+        or _today_has_realtime_overlay(today)
+    ):
+        return False
+
+    effective_date = phase_context.get("effective_daily_bar_date")
+    today_date = today.get("date") or today.get("trade_date") or context.get("date")
+    if effective_date and today_date and str(today_date) != str(effective_date):
+        return False
+    return True
+
+
+def _phase_aware_quote_labels(context: Dict[str, Any]) -> Tuple[str, str]:
+    """Choose Chinese quote-table labels that do not conflict with phase context."""
+    phase_context = context.get("market_phase_context")
+    if not isinstance(phase_context, dict):
+        return "今日行情", "收盘价"
+
+    phase = str(phase_context.get("phase") or "").strip()
+    if phase in {"premarket", "non_trading"}:
+        today = context.get("today")
+        if _today_looks_complete_daily_bar(context, phase_context):
+            return "上一完整交易日行情", "上一完整交易日收盘价"
+        if _today_has_realtime_overlay(today):
+            return "最新行情", "实时估算价"
+        if isinstance(today, dict) and today.get("close") not in (None, ""):
+            return "最新行情", "最新价"
+        return "今日行情", "收盘价"
+
+    if (
+        phase in {"intraday", "lunch_break", "closing_auction"}
+        and phase_context.get("is_partial_bar") is True
+    ):
+        return "最新行情", "盘中估算价"
+
+    return "今日行情", "收盘价"
+
+
+def _should_hide_regular_session_ohlc(context: Dict[str, Any]) -> bool:
+    phase_context = context.get("market_phase_context")
+    if not isinstance(phase_context, dict):
+        return False
+
+    phase = str(phase_context.get("phase") or "").strip()
+    return phase in {"premarket", "non_trading"} and not _today_looks_complete_daily_bar(
+        context,
+        phase_context,
+    )
+
+
+def _legacy_market_group(stock_code: Any) -> str:
+    code = str(stock_code or "").strip()
+    if not code or code.lower() == "unknown":
+        return "unknown"
+    market = detect_market(code)
+    return market if market in {"cn", "hk", "us"} else "unknown"
+
+
+def _legacy_audit_marker_specs(
+    context: Dict[str, Any],
+    *,
+    code: str,
+    stock_name: str,
+    report_language: str,
+    news_context: Optional[str],
+    analysis_context_pack_summary: Optional[str],
+) -> List[Dict[str, Any]]:
+    markers: List[Dict[str, Any]] = []
+
+    def add(marker_name: str, value: Any) -> None:
+        if value is None:
+            return
+        text = str(value).strip()
+        if not text:
+            return
+        markers.append(
+            {
+                "marker_name": marker_name,
+                "message_role": "user",
+                "text": text,
+            }
+        )
+
+    add("stock_code", code)
+    add("stock_name", stock_name)
+    add("analysis_date", context.get("date"))
+    add("market_phase", "## Market Phase Context" if report_language in ("en", "ko") else "## 市场阶段上下文")
+    add("daily_market_context", "## Daily Market Context" if report_language in ("en", "ko") else "## 大盘环境摘要")
+    add("market_structure_context", "## Market Structure Context" if report_language in ("en", "ko") else "## 市场结构上下文")
+    add("analysis_context_pack", analysis_context_pack_summary)
+    add("quote", "## 📈 技术面数据")
+    add("news_context", "## 📰 舆情情报" if news_context else None)
+    return markers
+
+
+class _LiteLLMStreamError(RuntimeError):
+    """Internal error wrapper that records whether any text was streamed."""
+
+    def __init__(self, message: str, *, partial_received: bool = False):
+        super().__init__(message)
+        self.partial_received = partial_received
+
+
+class _AllModelsFailedError(Exception):
+    """Raised when every model in the fallback chain fails.
+
+    This includes both LLM call errors and JSON parse errors (when a
+    ``response_validator`` is provided to :meth:`GeminiAnalyzer._call_litellm`).
+
+    The ``last_response_text`` attribute holds the raw text from the last model
+    that *did* return a response (but whose JSON could not be validated), so
+    callers can still attempt a best-effort text fallback.
+
+    ``last_model``, ``last_provider`` and ``last_usage`` record the resolved
+    route identity and token usage from the last attempt so callers can persist
+    diagnostics even on fallback.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        last_response_text: Optional[str] = None,
+        last_model: Optional[str] = None,
+        last_provider: Optional[str] = None,
+        last_usage: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.last_response_text = last_response_text
+        self.last_model = last_model
+        self.last_provider = last_provider
+        self.last_usage = last_usage or {}
+
+
+from src.utils.data_processing import normalize_report_signal_attribution
+
+
+def check_content_integrity(
+    result: "AnalysisResult",
+    *,
+    require_phase_decision: bool = False,
+) -> Tuple[bool, List[str]]:
+    """
+    Check mandatory fields for report content integrity.
+    Returns (pass, missing_fields). Module-level for use by pipeline (agent weak mode).
+
+    Note:
+    - Required fields: missing → pass=False, added to missing_fields
+    - Optional fields (e.g., signal_attribution): missing → pass=True and are not added to missing_fields
+    """
+    missing: List[str] = []
+
+    def _is_blank_text(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return True
+
+    def _is_invalid_risk_alerts(value: Any) -> bool:
+        return not isinstance(value, list)
+
+    def _is_invalid_stop_loss(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, (list, tuple, dict)):
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return False
+
+    if result.sentiment_score is None:
+        missing.append("sentiment_score")
+    advice = result.operation_advice
+    if not advice or not isinstance(advice, str) or _is_blank_text(advice):
+        missing.append("operation_advice")
+    summary = result.analysis_summary
+    if not summary or not isinstance(summary, str) or _is_blank_text(summary):
+        missing.append("analysis_summary")
+    dash = result.dashboard if isinstance(result.dashboard, dict) else {}
+    core = dash.get("core_conclusion")
+    core = core if isinstance(core, dict) else {}
+    if _is_blank_text(core.get("one_sentence")):
+        missing.append("dashboard.core_conclusion.one_sentence")
+    intel = dash.get("intelligence")
+    intel = intel if isinstance(intel, dict) else None
+    if intel is None or _is_invalid_risk_alerts(intel.get("risk_alerts")):
+        missing.append("dashboard.intelligence.risk_alerts")
+    if result.decision_type in ("buy", "hold"):
+        battle = dash.get("battle_plan")
+        battle = battle if isinstance(battle, dict) else {}
+        sp = battle.get("sniper_points")
+        sp = sp if isinstance(sp, dict) else {}
+        stop_loss = sp.get("stop_loss")
+        if _is_invalid_stop_loss(stop_loss):
+            missing.append("dashboard.battle_plan.sniper_points.stop_loss")
+    if require_phase_decision:
+        phase_decision = dash.get("phase_decision")
+        phase_decision = phase_decision if isinstance(phase_decision, dict) else {}
+        if not isinstance(phase_decision.get("phase_context"), dict):
+            missing.append("dashboard.phase_decision.phase_context")
+        if _is_blank_text(phase_decision.get("action_window")):
+            missing.append("dashboard.phase_decision.action_window")
+        if _is_blank_text(phase_decision.get("immediate_action")):
+            missing.append("dashboard.phase_decision.immediate_action")
+        if not isinstance(phase_decision.get("watch_conditions"), list):
+            missing.append("dashboard.phase_decision.watch_conditions")
+        if _is_blank_text(phase_decision.get("next_check_time")):
+            missing.append("dashboard.phase_decision.next_check_time")
+        if _is_blank_text(phase_decision.get("confidence_reason")):
+            missing.append("dashboard.phase_decision.confidence_reason")
+        if not isinstance(phase_decision.get("data_limitations"), list):
+            missing.append("dashboard.phase_decision.data_limitations")
+    return len(missing) == 0, missing
+
+
+def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) -> None:
+    """Fill missing mandatory fields with placeholders (in-place). Module-level for pipeline."""
+
+    def _is_blank_text(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return True
+
+    def _is_invalid_risk_alerts(value: Any) -> bool:
+        return not isinstance(value, list)
+
+    def _is_invalid_stop_loss(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, (list, tuple, dict)):
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return False
+
+    report_language = normalize_report_language(getattr(result, "report_language", "zh"))
+    placeholder = get_placeholder_text(report_language)
+    phase_decision_placeholders = {
+        "dashboard.phase_decision.action_window": _localized_text(
+            report_language,
+            en="Model did not provide a phase action window",
+            zh="模型未提供阶段化行动窗口",
+            ko="모델이 단계별 행동 구간을 제공하지 않았습니다",
+        ),
+        "dashboard.phase_decision.immediate_action": _localized_text(
+            report_language,
+            en="Model did not provide a phase-aware immediate action",
+            zh="模型未提供阶段化即时动作",
+            ko="모델이 단계 인식 즉시 동작을 제공하지 않았습니다",
+        ),
+        "dashboard.phase_decision.next_check_time": _localized_text(
+            report_language,
+            en="Model did not provide a next check point",
+            zh="模型未提供下一次检查点",
+            ko="모델이 다음 점검 시점을 제공하지 않았습니다",
+        ),
+        "dashboard.phase_decision.confidence_reason": _localized_text(
+            report_language,
+            en="Model did not provide a phase confidence rationale",
+            zh="模型未提供阶段化置信度理由",
+            ko="모델이 단계별 신뢰도 근거를 제공하지 않았습니다",
+        ),
+    }
+    for field in missing_fields:
+        if field == "sentiment_score":
+            result.sentiment_score = 50
+        elif field == "operation_advice":
+            if _is_blank_text(result.operation_advice):
+                result.operation_advice = placeholder
+        elif field == "analysis_summary":
+            if _is_blank_text(result.analysis_summary):
+                result.analysis_summary = placeholder
+        elif field == "dashboard.core_conclusion.one_sentence":
+            if not result.dashboard:
+                result.dashboard = {}
+            core = result.dashboard.get("core_conclusion")
+            if not isinstance(core, dict):
+                core = {}
+                result.dashboard["core_conclusion"] = core
+            fallback_sentence = (
+                result.analysis_summary
+                or result.operation_advice
+                or placeholder
+            )
+            if _is_blank_text(core.get("one_sentence")):
+                result.dashboard["core_conclusion"]["one_sentence"] = fallback_sentence
+        elif field == "dashboard.intelligence.risk_alerts":
+            if not result.dashboard:
+                result.dashboard = {}
+            intelligence = result.dashboard.get("intelligence")
+            if not isinstance(intelligence, dict):
+                intelligence = {}
+                result.dashboard["intelligence"] = intelligence
+            if _is_invalid_risk_alerts(intelligence.get("risk_alerts")):
+                risk_warning_values = _normalize_risk_warning_values(result.risk_warning)
+                intelligence["risk_alerts"] = risk_warning_values
+        elif field == "dashboard.battle_plan.sniper_points.stop_loss":
+            if not result.dashboard:
+                result.dashboard = {}
+            battle_plan = result.dashboard.get("battle_plan")
+            if not isinstance(battle_plan, dict):
+                battle_plan = {}
+                result.dashboard["battle_plan"] = battle_plan
+            sniper_points = battle_plan.get("sniper_points")
+            if not isinstance(sniper_points, dict):
+                sniper_points = {}
+                battle_plan["sniper_points"] = sniper_points
+            if _is_invalid_stop_loss(sniper_points.get("stop_loss")):
+                sniper_points["stop_loss"] = placeholder
+        elif field.startswith("dashboard.phase_decision."):
+            if not result.dashboard:
+                result.dashboard = {}
+            phase_decision = result.dashboard.get("phase_decision")
+            if not isinstance(phase_decision, dict):
+                phase_decision = {}
+                result.dashboard["phase_decision"] = phase_decision
+            if field == "dashboard.phase_decision.phase_context":
+                if not isinstance(phase_decision.get("phase_context"), dict):
+                    phase_decision["phase_context"] = {}
+            elif field == "dashboard.phase_decision.watch_conditions":
+                if not isinstance(phase_decision.get("watch_conditions"), list):
+                    phase_decision["watch_conditions"] = []
+            elif field == "dashboard.phase_decision.data_limitations":
+                if not isinstance(phase_decision.get("data_limitations"), list):
+                    phase_decision["data_limitations"] = []
+            elif field in phase_decision_placeholders:
+                if _is_blank_text(phase_decision.get(field.rsplit(".", 1)[-1])):
+                    phase_decision[field.rsplit(".", 1)[-1]] = phase_decision_placeholders[field]
+
+
+# ---------- chip_structure fallback (Issue #589) ----------
+
+_CHIP_KEYS: tuple = ("profit_ratio", "avg_cost", "concentration", "chip_health")
+
+
+def _is_value_placeholder(v: Any) -> bool:
+    """True if value is empty or placeholder (N/A, 数据缺失, etc.)."""
+    return is_chip_placeholder_value(v)
+
+
+_RISK_WARNING_PLACEHOLDER_TEXTS = {
+    "",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "unknown",
+    "tbd",
+    "暂无",
+    "待补充",
+    "数据缺失",
+    "未知",
+    "无",
 }
+
+_STRUCTURAL_RISK_PHRASE_HINTS = (
+    "重大利空",
+    "重大风险",
+    "关键风险",
+    "减持",
+    "高位减持",
+    "退市",
+    "退市风险",
+    "停牌",
+    "重大问询",
+    "处罚",
+    "限售",
+    "违规",
+    "违规风险",
+    "诉讼",
+    "问询",
+    "监管",
+    "财务",
+    "审计",
+    "爆雷",
+    "暴雷",
+    "违约",
+    "违约风险",
+    "流动性危机",
+    "债务",
+    "清算",
+    "破产",
+    "重大变脸",
+    "major risk",
+    "material adverse",
+    "suspension",
+    "delisting",
+    "regulatory",
+    "downgrade",
+    "liquidity",
+    "default",
+)
+
+_CAPITAL_FLOW_UNAVAILABLE_STATUS = {
+    "not_supported",
+    "not supported",
+    "unsupported",
+    "unavailable",
+    "not_available",
+    "not available",
+    "none",
+    "na",
+    "n/a",
+    "null",
+    "missing",
+}
+
+
+def _is_meaningful_text(value: Any) -> bool:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return False
+    lowered = text.strip().lower()
+    return lowered not in _RISK_WARNING_PLACEHOLDER_TEXTS
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    """Safely convert to float; return default on failure. Private helper for chip fill."""
+    if v is None:
+        return default
+    if isinstance(v, (int, float)):
+        try:
+            return default if math.isnan(float(v)) else float(v)
+        except (ValueError, TypeError):
+            return default
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_chip_metric(v: Any) -> Optional[float]:
+    """Convert chip metrics while preserving the distinction between missing and zero."""
+    if v is None:
+        return None
+    try:
+        numeric = float(v)
+    except (TypeError, ValueError):
+        try:
+            numeric = float(str(v).strip())
+        except (TypeError, ValueError):
+            return None
+    return None if math.isnan(numeric) else numeric
+
+
+_BULLISH_TREND_HINTS: Tuple[str, ...] = (
+    "多头排列",
+    "持续上涨",
+    "趋势向上",
+    "上升趋势",
+    "向上发散",
+    "bullish",
+    "uptrend",
+)
+_WEAK_BULLISH_TREND_HINTS: Tuple[str, ...] = ("弱势多头",)
+_BEARISH_TREND_HINTS: Tuple[str, ...] = (
+    "空头排列",
+    "持续下跌",
+    "趋势向下",
+    "下降趋势",
+    "向下发散",
+    "bearish",
+    "downtrend",
+)
+_WEAK_BEARISH_TREND_HINTS: Tuple[str, ...] = ("弱势空头",)
+_NEGATION_TOKENS: Tuple[str, ...] = (
+    "不是",
+    "并非",
+    "并未",
+    "没有",
+    "尚不",
+    "尚未",
+    "未",
+    "无",
+    "不属",
+    "非",
+    "not ",
+    "no ",
+)
+_NEGATION_BREAK_CHARS: Tuple[str, ...] = (",", ".", ";", ":", "!", "?", "，", "。", "；", "：", "！", "？", "\n")
+_NEGATION_LOOKBACK_CHARS = 16
+_NEGATION_MAX_GAP_CHARS = 8
+_NEGATION_SCOPE_BREAK_TOKENS: Tuple[str, ...] = (
+    "而是",
+    "但是",
+    "但",
+    "反而",
+    "反倒",
+    "转为",
+    "转成",
+    "改为",
+    "改成",
+    " but ",
+    " instead ",
+    " rather ",
+)
+_SINGLE_CHAR_NEGATION_GAP_PREFIXES: Tuple[str, ...] = (
+    "形成",
+    "出现",
+    "进入",
+    "转为",
+    "转成",
+    "构成",
+    "呈现",
+    "显示",
+    "属于",
+    "是",
+    "有",
+    "能",
+    "见",
+    "站",
+    "守",
+    "破",
+)
+
+
+def _normalize_prompt_reason_items(items: Any) -> List[str]:
+    """Normalize prompt reason/risk items into a clean string list."""
+    if not isinstance(items, list):
+        return []
+    normalized: List[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _contains_trend_hint(text: str, hints: Tuple[str, ...]) -> bool:
+    """Return True when text contains a non-negated strong trend hint."""
+    lowered = text.strip().lower()
+
+    def _has_negation_scope_break(gap: str) -> bool:
+        normalized_gap = gap.lower()
+        for token in _NEGATION_SCOPE_BREAK_TOKENS:
+            token_index = normalized_gap.find(token)
+            if token_index > 0:
+                return True
+        return False
+
+    def _is_valid_negation_gap(token: str, gap: str) -> bool:
+        if not gap:
+            return True
+        if token not in {"未", "无", "非"}:
+            return True
+        return any(gap.startswith(prefix) for prefix in _SINGLE_CHAR_NEGATION_GAP_PREFIXES)
+
+    def _is_negated_match(index: int) -> bool:
+        prefix = lowered[max(0, index - _NEGATION_LOOKBACK_CHARS):index]
+        for token in _NEGATION_TOKENS:
+            token_index = prefix.rfind(token)
+            if token_index < 0:
+                continue
+            gap = prefix[token_index + len(token):]
+            if any(char in gap for char in _NEGATION_BREAK_CHARS):
+                continue
+            stripped_gap = gap.strip()
+            if len(stripped_gap) > _NEGATION_MAX_GAP_CHARS:
+                continue
+            if _has_negation_scope_break(stripped_gap):
+                continue
+            if not _is_valid_negation_gap(token, stripped_gap):
+                continue
+            return True
+        return False
+
+    for hint in hints:
+        keyword = hint.lower()
+        start = 0
+        while True:
+            index = lowered.find(keyword, start)
+            if index < 0:
+                break
+            if not _is_negated_match(index):
+                return True
+            start = index + len(keyword)
+    return False
+
+
+def _infer_trend_direction(trend: Dict[str, Any]) -> str:
+    """Infer the final trend direction from trend_status and ma_alignment."""
+    combined = " ".join(
+        str(trend.get(key, "")).strip()
+        for key in ("trend_status", "ma_alignment")
+        if str(trend.get(key, "")).strip()
+    )
+    if not combined:
+        return "neutral"
+    lowered = combined.lower()
+    normalized = lowered.replace(" ", "")
+    has_bullish = (
+        _contains_trend_hint(combined, _BULLISH_TREND_HINTS + _WEAK_BULLISH_TREND_HINTS)
+        or "ma5>ma10>ma20" in normalized
+        or (
+            "ma5>ma10" in normalized
+            and any(pattern in normalized for pattern in ("ma10≤ma20", "ma10<=ma20"))
+        )
+    )
+    has_bearish = (
+        _contains_trend_hint(combined, _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS)
+        or "ma5<ma10<ma20" in normalized
+        or (
+            "ma5<ma10" in normalized
+            and any(pattern in normalized for pattern in ("ma10≥ma20", "ma10>=ma20"))
+        )
+    )
+    if has_bullish and not has_bearish:
+        return "bullish"
+    if has_bearish and not has_bullish:
+        return "bearish"
+    return "neutral"
+
+
+def _filter_conflicting_trend_items(items: List[str], conflict_hints: Tuple[str, ...]) -> List[str]:
+    """Drop reasons that directly conflict with the final trend direction."""
+    return [item for item in items if not _contains_trend_hint(item, conflict_hints)]
+
+
+def _sanitize_trend_analysis_for_prompt(
+    trend: Any,
+    *,
+    volume_change_ratio: Any = None,
+) -> Dict[str, Any]:
+    """Clean prompt-only trend hints on a derived copy without touching runtime/provider config."""
+    trend_dict = dict(trend) if isinstance(trend, dict) else {}
+    signal_reasons = _normalize_prompt_reason_items(trend_dict.get("signal_reasons"))
+    risk_factors = _normalize_prompt_reason_items(trend_dict.get("risk_factors"))
+    prompt_notes: List[str] = []
+    trend_direction = _infer_trend_direction(trend_dict)
+
+    if trend_direction == "bearish":
+        filtered_signal_reasons = _filter_conflicting_trend_items(
+            signal_reasons,
+            _BULLISH_TREND_HINTS + _WEAK_BULLISH_TREND_HINTS,
+        )
+        if len(filtered_signal_reasons) != len(signal_reasons):
+            prompt_notes.append("当前技术结构偏空，已剔除与空头主判断直接冲突的看多结构理由。")
+        signal_reasons = filtered_signal_reasons
+        prompt_notes.append(
+            "若新闻、业绩或政策催化偏多，只能表述为“事件先行、技术待确认”或“基本面偏多，但技术面尚未确认”，严禁写成确定性买点。"
+        )
+    elif trend_direction == "bullish":
+        filtered_signal_reasons = _filter_conflicting_trend_items(
+            signal_reasons,
+            _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS,
+        )
+        if len(filtered_signal_reasons) != len(signal_reasons):
+            prompt_notes.append("当前技术结构偏多，已剔除与多头主判断直接冲突的空头结构理由。")
+        signal_reasons = filtered_signal_reasons
+        filtered_risk_factors = _filter_conflicting_trend_items(
+            risk_factors,
+            _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS,
+        )
+        if len(filtered_risk_factors) != len(risk_factors):
+            prompt_notes.append("当前技术结构偏多，已剔除与多头主判断直接冲突的空头结构风险表述。")
+        risk_factors = filtered_risk_factors
+
+    parsed_volume_change = _safe_float(volume_change_ratio, default=math.nan)
+    if math.isfinite(parsed_volume_change) and parsed_volume_change > 10:
+        prompt_notes.append(
+            f"成交量较昨日变化约 {parsed_volume_change:.2f} 倍，可能存在异常数据或一次性冲量；量能信号必须降权解读，不能机械视为强确认。"
+        )
+
+    trend_dict["signal_reasons"] = signal_reasons
+    trend_dict["risk_factors"] = risk_factors
+    trend_dict["prompt_consistency_notes"] = prompt_notes
+    trend_dict["prompt_trend_direction"] = trend_direction
+    return trend_dict
+
+
+def _derive_chip_health(profit_ratio: float, concentration_90: float, language: str = "zh") -> str:
+    """Derive chip_health from profit_ratio and concentration_90."""
+    if profit_ratio >= 0.9:
+        return localize_chip_health("警惕", language)  # 获利盘极高
+    if concentration_90 >= 0.25:
+        return localize_chip_health("警惕", language)  # 筹码分散
+    if concentration_90 < 0.15 and 0.3 <= profit_ratio < 0.9:
+        return localize_chip_health("健康", language)  # 集中且获利比例适中
+    return localize_chip_health("一般", language)
+
+
+def _build_chip_structure_from_data(chip_data: Any, language: str = "zh") -> Dict[str, Any]:
+    """Build chip_structure dict from ChipDistribution or dict."""
+    if hasattr(chip_data, "profit_ratio"):
+        pr = _safe_float(chip_data.profit_ratio)
+        ac = chip_data.avg_cost
+        c90 = _safe_float(chip_data.concentration_90)
+    else:
+        d = chip_data if isinstance(chip_data, dict) else {}
+        pr = _safe_float(d.get("profit_ratio"))
+        ac = d.get("avg_cost")
+        c90 = _safe_float(d.get("concentration_90"))
+    chip_health = _derive_chip_health(pr, c90, language=language)
+    return {
+        "profit_ratio": f"{pr:.1%}",
+        "avg_cost": ac if (ac is not None and _safe_float(ac) != 0.0) else "N/A",
+        "concentration": f"{c90:.2%}",
+        "chip_health": chip_health,
+    }
+
+
+def _has_meaningful_chip_data(chip_data: Any) -> bool:
+    """Return True when chip data has the core metrics required for reporting."""
+    if not chip_data:
+        return False
+    if hasattr(chip_data, "avg_cost"):
+        avg_cost = _coerce_chip_metric(getattr(chip_data, "avg_cost", None))
+        concentration_90 = _coerce_chip_metric(getattr(chip_data, "concentration_90", None))
+        concentration_70 = _coerce_chip_metric(getattr(chip_data, "concentration_70", None))
+    else:
+        d = chip_data if isinstance(chip_data, dict) else {}
+        avg_cost = _coerce_chip_metric(d.get("avg_cost"))
+        concentration_90_value = d.get("concentration_90")
+        if concentration_90_value is None:
+            concentration_90_value = d.get("concentration")
+        concentration_90 = _coerce_chip_metric(concentration_90_value)
+        concentration_70 = _coerce_chip_metric(d.get("concentration_70"))
+    return (
+        avg_cost is not None
+        and avg_cost > 0
+        and (
+            (concentration_90 is not None and concentration_90 >= 0)
+            or (concentration_70 is not None and concentration_70 >= 0)
+        )
+    )
+
+
+def _mark_chip_structure_unavailable(result: "AnalysisResult", language: str) -> None:
+    if not result or not isinstance(result.dashboard, dict):
+        return
+    data_perspective = result.dashboard.get("data_perspective")
+    if not isinstance(data_perspective, dict):
+        return
+    data_perspective["chip_structure"] = {}
+    data_perspective["chip_unavailable_reason"] = get_chip_unavailable_text(language)
+
+
+def normalize_chip_structure_availability(result: "AnalysisResult", chip_data: Any) -> None:
+    """Fill valid chip metrics or collapse placeholder-only chip fields to one fallback line."""
+    if not result:
+        return
+    language = getattr(result, "report_language", "zh")
+    if _has_meaningful_chip_data(chip_data):
+        fill_chip_structure_if_needed(result, chip_data)
+        return
+    _mark_chip_structure_unavailable(result, language)
+
+
+def fill_chip_structure_if_needed(result: "AnalysisResult", chip_data: Any) -> None:
+    """When chip_data exists, fill chip_structure placeholder fields from chip_data (in-place)."""
+    if not result or not _has_meaningful_chip_data(chip_data):
+        return
+    try:
+        if not result.dashboard:
+            result.dashboard = {}
+        dash = result.dashboard
+        # Use `or {}` rather than setdefault so that an explicit `null` from LLM is also replaced
+        dp = dash.get("data_perspective") or {}
+        dash["data_perspective"] = dp
+        cs = dp.get("chip_structure") or {}
+        filled = _build_chip_structure_from_data(
+            chip_data,
+            language=getattr(result, "report_language", "zh"),
+        )
+        # Start from a copy of cs to preserve any extra keys the LLM may have added
+        merged = dict(cs)
+        for k in _CHIP_KEYS:
+            if _is_value_placeholder(merged.get(k)):
+                merged[k] = filled[k]
+        if merged != cs:
+            dp["chip_structure"] = merged
+            logger.info("[chip_structure] Filled placeholder chip fields from data source (Issue #589)")
+    except Exception as e:
+        logger.warning("[chip_structure] Fill failed, skipping: %s", e)
+
+
+_PRICE_POS_KEYS = ("ma5", "ma10", "ma20", "bias_ma5", "bias_status", "current_price", "support_level", "resistance_level")
+
+
+def fill_price_position_if_needed(
+    result: "AnalysisResult",
+    trend_result: Any = None,
+    realtime_quote: Any = None,
+) -> None:
+    """Fill missing price_position fields from trend_result / realtime data (in-place)."""
+    if not result:
+        return
+    try:
+        if not result.dashboard:
+            result.dashboard = {}
+        dash = result.dashboard
+        dp = dash.get("data_perspective") or {}
+        dash["data_perspective"] = dp
+        pp = dp.get("price_position") or {}
+
+        computed: Dict[str, Any] = {}
+        if trend_result:
+            tr = trend_result if isinstance(trend_result, dict) else (
+                trend_result.__dict__ if hasattr(trend_result, "__dict__") else {}
+            )
+            computed["ma5"] = tr.get("ma5")
+            computed["ma10"] = tr.get("ma10")
+            computed["ma20"] = tr.get("ma20")
+            computed["bias_ma5"] = tr.get("bias_ma5")
+            computed["current_price"] = tr.get("current_price")
+            support_levels = tr.get("support_levels") or []
+            resistance_levels = tr.get("resistance_levels") or []
+            if support_levels:
+                computed["support_level"] = support_levels[0]
+            if resistance_levels:
+                computed["resistance_level"] = resistance_levels[0]
+        if realtime_quote:
+            rq = realtime_quote if isinstance(realtime_quote, dict) else (
+                realtime_quote.to_dict() if hasattr(realtime_quote, "to_dict") else {}
+            )
+            if _is_value_placeholder(computed.get("current_price")):
+                computed["current_price"] = rq.get("price")
+
+        filled = False
+        for k in _PRICE_POS_KEYS:
+            if _is_value_placeholder(pp.get(k)) and not _is_value_placeholder(computed.get(k)):
+                pp[k] = computed[k]
+                filled = True
+        if filled:
+            dp["price_position"] = pp
+            logger.info("[price_position] Filled placeholder fields from computed data")
+    except Exception as e:
+        logger.warning("[price_position] Fill failed, skipping: %s", e)
+
+
+def stabilize_decision_with_structure(
+    result: "AnalysisResult",
+    trend_result: Any = None,
+    fundamental_context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Calibrate aggressive buy/sell advice with price levels and capital flow.
+
+    The LLM can overreact to one-day price movement.  This guard keeps the
+    public `decision_type` enum stable while allowing richer neutral wording
+    such as 震荡/洗盘观察 when support, resistance, and fund flow do not confirm
+    an immediate buy/sell action.
+    """
+    if not result:
+        return
+
+    try:
+        language = normalize_report_language(getattr(result, "report_language", "zh"))
+        dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+        data_perspective = dashboard.get("data_perspective") if isinstance(dashboard, dict) else {}
+        if not isinstance(data_perspective, dict):
+            data_perspective = {}
+        price_position = data_perspective.get("price_position")
+        if not isinstance(price_position, dict):
+            price_position = {}
+
+        trend_dict = _as_dict_for_decision_guard(trend_result)
+        current_price = _first_numeric_value(
+            getattr(result, "current_price", None),
+            price_position.get("current_price"),
+            trend_dict.get("current_price"),
+        )
+        support = _first_numeric_value(
+            price_position.get("support_level"),
+            _first_list_value(trend_dict.get("support_levels")),
+        )
+        resistance = _first_numeric_value(
+            price_position.get("resistance_level"),
+            _first_list_value(trend_dict.get("resistance_levels")),
+        )
+        decision_type = infer_decision_type_from_advice(
+            getattr(result, "decision_type", ""),
+            default=getattr(result, "decision_type", "hold") or "hold",
+        )
+        decision_type = decision_type if decision_type in {"buy", "hold", "sell"} else "hold"
+        advice_decision_type = infer_decision_type_from_advice(
+            getattr(result, "operation_advice", ""),
+            default="",
+        )
+
+        flow_bias, flow_reason = _capital_flow_bias_with_status(fundamental_context)
+        if flow_bias == "unavailable":
+            if isinstance(fundamental_context, dict) and "capital_flow" in fundamental_context:
+                if decision_type == "buy" or advice_decision_type == "buy":
+                    _downgrade_buy_without_capital_flow(
+                        result,
+                        language,
+                        current_price=current_price,
+                        support=support,
+                        resistance=resistance,
+                        flow_status=flow_reason,
+                    )
+                else:
+                    _set_decision_stability_unavailable(
+                        result,
+                        language,
+                        current_price=current_price,
+                        support=support,
+                        resistance=resistance,
+                        flow_status=flow_reason,
+                    )
+            return
+
+        if current_price is None:
+            return
+
+        broke_support = support is not None and current_price < support * 0.985
+        near_support = support is not None and not broke_support and current_price <= support * 1.03
+        breakout = resistance is not None and current_price > resistance * 1.01
+        near_resistance = (
+            resistance is not None
+            and not breakout
+            and current_price >= resistance * 0.97
+        )
+        mid_range = (
+            support is not None
+            and resistance is not None
+            and support * 1.03 < current_price < resistance * 0.97
+        )
+
+        has_significant_risk = _has_structural_risk_alert(result)
+
+        if decision_type == "buy":
+            if near_resistance and flow_bias != "inflow":
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="range",
+                    reason_key="buy_near_resistance",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+            elif flow_bias == "outflow" and not breakout:
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="range",
+                    reason_key="buy_with_outflow",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+            elif mid_range and flow_bias == "neutral":
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="range",
+                    reason_key="hold_mid_range",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+        elif decision_type == "sell":
+            if near_support and (flow_bias != "outflow") and not has_significant_risk:
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="shakeout",
+                    reason_key="sell_near_support",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+            elif flow_bias == "inflow" and not broke_support and not has_significant_risk:
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="hold",
+                    reason_key="sell_with_inflow",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+        elif decision_type == "hold":
+            change_pct = _first_numeric_value(getattr(result, "change_pct", None))
+            if change_pct is not None and change_pct < 0 and near_support and flow_bias != "outflow":
+                _set_structural_hold_wording(
+                    result,
+                    language,
+                    advice_key="shakeout",
+                    reason_key="hold_shakeout",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+            elif mid_range and flow_bias == "neutral":
+                _set_structural_hold_wording(
+                    result,
+                    language,
+                    advice_key="range",
+                    reason_key="hold_mid_range",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+        _sync_stability_dashboard_fields(result)
+    except Exception as exc:
+        logger.warning("[decision_stability] skipped: %s", exc)
+
+
+def _has_structural_risk_alert(result: "AnalysisResult") -> bool:
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+
+    risk_text = getattr(result, "risk_warning", "")
+    if _is_significant_structural_risk(risk_text):
+        return True
+
+    intelligence = dashboard.get("intelligence") if isinstance(dashboard, dict) else None
+    if isinstance(intelligence, dict):
+        risk_alerts = intelligence.get("risk_alerts")
+        if isinstance(risk_alerts, str):
+            if _is_significant_structural_risk(risk_alerts):
+                return True
+        elif isinstance(risk_alerts, (list, tuple, set)):
+            if any(_is_significant_structural_risk(item) for item in risk_alerts):
+                return True
+
+    core_conclusion = dashboard.get("core_conclusion") if isinstance(dashboard, dict) else None
+    if isinstance(core_conclusion, dict):
+        signal_type = str(core_conclusion.get("signal_type", "")).strip()
+        if _is_significant_structural_risk(signal_type):
+            return True
+    return False
+
+
+def _is_significant_structural_risk(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not _is_meaningful_text(text):
+        return False
+
+    normalized = text.lower()
+    if any(keyword in normalized for keyword in _STRUCTURAL_RISK_PHRASE_HINTS):
+        return True
+
+    return "重大" in text and "风险" in normalized
+
+
+def _sync_stability_dashboard_fields(result: "AnalysisResult") -> None:
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    dashboard["sentiment_score"] = getattr(result, "sentiment_score", None)
+    dashboard["operation_advice"] = getattr(result, "operation_advice", None)
+    dashboard["decision_type"] = getattr(result, "decision_type", None)
+
+
+def _as_dict_for_decision_guard(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "to_dict"):
+        try:
+            converted = value.to_dict()
+            return converted if isinstance(converted, dict) else {}
+        except Exception:
+            return {}
+    if hasattr(value, "__dict__"):
+        return dict(value.__dict__)
+    return {}
+
+
+def _first_list_value(value: Any) -> Any:
+    if isinstance(value, (list, tuple)) and value:
+        return value[0]
+    return value
+
+
+def _coerce_numeric_value(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if math.isfinite(float(value)):
+            return float(value)
+        return None
+    text = str(value).replace(",", "").replace("，", "").strip()
+    if not text or text.upper() in {"N/A", "NA", "NONE", "NULL"}:
+        return None
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _first_numeric_value(*values: Any) -> Optional[float]:
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            nested = _first_numeric_value(*value)
+            if nested is not None:
+                return nested
+            continue
+        numeric = _coerce_numeric_value(value)
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def _capital_flow_bias(fundamental_context: Optional[Dict[str, Any]]) -> str:
+    return _capital_flow_bias_with_status(fundamental_context)[0]
+
+
+def _capital_flow_bias_with_status(
+    fundamental_context: Optional[Dict[str, Any]],
+) -> tuple[str, str]:
+    if not isinstance(fundamental_context, dict):
+        return "unavailable", "invalid_context"
+    block = fundamental_context.get("capital_flow")
+    if not isinstance(block, dict):
+        return "unavailable", "capital_flow_block_missing"
+    status = str(block.get("status") or "").strip().lower()
+    normalized_status = status.replace("-", " ").replace("_", " ").strip()
+    if normalized_status in _CAPITAL_FLOW_UNAVAILABLE_STATUS or "not supported" in normalized_status:
+        return "unavailable", status or "not_supported"
+    data = block.get("data") if isinstance(block.get("data"), dict) else block
+    stock_flow = data.get("stock_flow") if isinstance(data, dict) else None
+    if not isinstance(stock_flow, dict) or not stock_flow:
+        return "unavailable", "empty_stock_flow"
+
+    def _flow_direction(value: Optional[float]) -> Optional[str]:
+        if value is None or value == 0:
+            return None
+        return "inflow" if value > 0 else "outflow"
+
+    numeric_values = [
+        _coerce_numeric_value(stock_flow.get("main_net_inflow")),
+        _coerce_numeric_value(stock_flow.get("inflow_5d")),
+        _coerce_numeric_value(stock_flow.get("inflow_10d")),
+    ]
+    if all(value is None for value in numeric_values):
+        return "unavailable", "missing_or_na_flow_fields"
+
+    ordered_signals = [
+        _flow_direction(value) for value in numeric_values
+    ]
+    directions = {signal for signal in ordered_signals if signal is not None}
+    if not directions or len(directions) > 1:
+        return "neutral", "conflict_or_missing"
+    for signal in ordered_signals:
+        if signal is not None:
+            return signal, "ok"
+    return "neutral", "neutral"
+
+
+def _capital_flow_status_for_stability(reason: str, language: str) -> str:
+    normalized = str(reason or "").strip().lower()
+    if "not_supported" in normalized or "unsupported" in normalized or "not available" in normalized:
+        return "市场资金流服务暂不支持" if language == "zh" else "Capital flow source unsupported"
+    if "empty_stock_flow" in normalized or "missing" in normalized:
+        return "资金流数据缺失" if language == "zh" else "capital flow data unavailable"
+    return "资金流数据不可用" if language == "zh" else "capital flow unavailable"
+
+
+def _set_decision_stability_unavailable(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    current_price: Optional[float],
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_status: str,
+) -> None:
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    dashboard["decision_stability"] = {
+        "applied": False,
+        "reason": "资金流不可用，未使用资金流校准" if language == "zh" else "Capital flow unavailable; stability calibration not applied",
+        "capital_flow_status": _capital_flow_status_for_stability(flow_status, language),
+        "current_price": current_price,
+        "support": support,
+        "resistance": resistance,
+        "capital_flow_bias": "unavailable",
+    }
+    _sync_stability_dashboard_fields(result)
+
+
+def _record_decision_score_calibration(
+    result: "AnalysisResult",
+    *,
+    raw_score: int,
+    adjusted_score: int,
+    final_action: str,
+    guardrail_reason: Optional[str],
+) -> None:
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    calibration = score_band_metadata(raw_score)
+    calibration.update(
+        {
+            "raw_score": raw_score,
+            "adjusted_score": adjusted_score,
+            "final_action": final_action,
+        }
+    )
+    if guardrail_reason:
+        calibration["guardrail_reason"] = guardrail_reason
+    dashboard["decision_score_calibration"] = calibration
+
+
+def _bound_hold_watch_sentiment_score(
+    result: "AnalysisResult",
+    *,
+    reason: Optional[str] = None,
+    final_action: str = "watch",
+) -> None:
+    try:
+        score = int(getattr(result, "sentiment_score", 50))
+    except (TypeError, ValueError):
+        score = 50
+    adjusted_score = min(59, max(45, score))
+    result.sentiment_score = adjusted_score
+    _record_decision_score_calibration(
+        result,
+        raw_score=score,
+        adjusted_score=adjusted_score,
+        final_action=final_action,
+        guardrail_reason=reason,
+    )
+
+
+def _apply_hold_watch_dashboard(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    advice: str,
+    reason: str,
+    current_price: Optional[float],
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_bias: str,
+    no_position: str,
+    has_position: str,
+    capital_flow_status: Optional[str] = None,
+) -> None:
+    result.operation_advice = advice
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    core = dashboard.get("core_conclusion")
+    if not isinstance(core, dict):
+        core = {}
+        dashboard["core_conclusion"] = core
+    core["signal_type"] = "🟡持有观望" if language == "zh" else "🟡 Hold / Watch"
+    core["one_sentence"] = f"{advice}：{reason}" if language == "zh" else f"{advice}: {reason}"
+
+    position_advice = core.get("position_advice")
+    if not isinstance(position_advice, dict):
+        position_advice = {}
+        core["position_advice"] = position_advice
+    position_advice["no_position"] = no_position
+    position_advice["has_position"] = has_position
+
+    stability = {
+        "applied": True,
+        "reason": reason,
+        "current_price": current_price,
+        "support": support,
+        "resistance": resistance,
+        "capital_flow_bias": flow_bias,
+    }
+    if capital_flow_status is not None:
+        stability["capital_flow_status"] = capital_flow_status
+    score_calibration = dashboard.get("decision_score_calibration")
+    if isinstance(score_calibration, dict):
+        stability["raw_score"] = score_calibration.get("raw_score")
+        stability["adjusted_score"] = score_calibration.get("adjusted_score")
+        stability["final_action"] = score_calibration.get("final_action")
+    dashboard["decision_stability"] = stability
+
+    if reason and reason not in str(result.risk_warning or ""):
+        sep = "；" if language == "zh" else "; "
+        result.risk_warning = f"{result.risk_warning}{sep}{reason}" if result.risk_warning else reason
+    result.buy_reason = reason or result.buy_reason
+
+
+def _downgrade_buy_without_capital_flow(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    current_price: Optional[float],
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_status: str,
+) -> None:
+    status_text = _capital_flow_status_for_stability(flow_status, language)
+    if language == "zh":
+        advice = "持有观察"
+        reason = f"{status_text}，买入结论缺少资金面确认，先按观察处理。"
+        no_position = "空仓先不追买，等待资金流恢复、支撑确认或有效突破后再行动。"
+        has_position = "持仓以关键支撑为风控线，资金流恢复前控制仓位。"
+        confidence = "低"
+    else:
+        advice = "Hold and watch"
+        reason = f"{status_text}; the buy call lacks capital-flow confirmation, so treat it as watch-only."
+        no_position = "Do not chase; wait for capital-flow recovery, support confirmation, or a valid breakout."
+        has_position = "Use key support as the risk line and keep position size controlled until capital flow recovers."
+        confidence = "Low"
+
+    result.decision_type = "hold"
+    result.confidence_level = confidence
+    _bound_hold_watch_sentiment_score(result, reason=reason, final_action="hold")
+    _apply_hold_watch_dashboard(
+        result,
+        language,
+        advice=advice,
+        reason=reason,
+        current_price=current_price,
+        support=support,
+        resistance=resistance,
+        flow_bias="unavailable",
+        no_position=no_position,
+        has_position=has_position,
+        capital_flow_status=status_text,
+    )
+    _sync_stability_dashboard_fields(result)
+    logger.info("[decision_stability] Downgraded buy because capital flow is unavailable: %s", flow_status)
+
+
+def _downgrade_to_structural_hold(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    advice_key: str,
+    reason_key: str,
+    current_price: float,
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_bias: str,
+) -> None:
+    result.decision_type = "hold"
+    _set_structural_hold_wording(
+        result,
+        language,
+        advice_key=advice_key,
+        reason_key=reason_key,
+        current_price=current_price,
+        support=support,
+        resistance=resistance,
+        flow_bias=flow_bias,
+        calibrate_score=True,
+    )
+
+
+def _set_structural_hold_wording(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    advice_key: str,
+    reason_key: str,
+    current_price: float,
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_bias: str,
+    calibrate_score: bool = False,
+) -> None:
+    advice_map = {
+        "zh": {
+            "range": "震荡观望",
+            "shakeout": "洗盘观察",
+            "hold": "持有观察",
+        },
+        "en": {
+            "range": "Range-bound watch",
+            "shakeout": "Shakeout watch",
+            "hold": "Hold and watch",
+        },
+        "ko": {
+            "range": "박스권 관망",
+            "shakeout": "흔들기 관찰",
+            "hold": "보유 관찰",
+        },
+    }
+    advice_default = {"zh": "持有观察", "en": "Hold and watch", "ko": "보유 관찰"}.get(language, "Hold and watch")
+    advice = advice_map.get(language, advice_map["en"]).get(advice_key, advice_default)
+    reason_templates = {
+        "zh": {
+            "buy_near_resistance": "价格接近压力位且主力资金未确认流入，不宜仅因短线反弹追买。",
+            "buy_with_outflow": "主力资金流出与买入结论冲突，买点需等待支撑确认或资金回流。",
+            "sell_near_support": "价格贴近支撑且未见资金持续流出，不宜仅因单日下跌直接卖出。",
+            "sell_with_inflow": "主力资金流入与卖出结论冲突，先按持有观察处理并跟踪支撑失效。",
+            "hold_shakeout": "价格回落至支撑附近但资金未确认流出，更适合按洗盘观察处理。",
+            "hold_mid_range": "价格处于支撑与压力之间且资金流不明确，维持震荡观望更可操作。",
+        },
+        "en": {
+            "buy_near_resistance": "Price is near resistance without confirmed main-force inflow, so chasing the rebound is not actionable.",
+            "buy_with_outflow": "Main-force outflow conflicts with a buy call; wait for support confirmation or capital inflow.",
+            "sell_near_support": "Price is near support without sustained outflow, so a one-day drop is not enough to sell.",
+            "sell_with_inflow": "Main-force inflow conflicts with a sell call; hold and watch for support failure.",
+            "hold_shakeout": "Price pulled back near support without confirmed outflow, which is better treated as a shakeout watch.",
+            "hold_mid_range": "Price is between support and resistance with neutral fund flow, so range-bound watch is more actionable.",
+        },
+        "ko": {
+            "buy_near_resistance": "가격이 저항선에 근접했고 주력 자금 유입이 확인되지 않아 단기 반등만 보고 추격 매수하기 어렵습니다.",
+            "buy_with_outflow": "주력 자금 유출이 매수 결론과 상충하므로 지지 확인이나 자금 재유입을 기다려야 합니다.",
+            "sell_near_support": "가격이 지지선에 근접했고 지속적 유출이 없어 하루 하락만으로 매도하기 어렵습니다.",
+            "sell_with_inflow": "주력 자금 유입이 매도 결론과 상충하므로 우선 보유 관찰하며 지지 이탈을 추적합니다.",
+            "hold_shakeout": "가격이 지지선 부근까지 눌렸지만 유출이 확인되지 않아 흔들기 관찰로 처리하는 것이 적절합니다.",
+            "hold_mid_range": "가격이 지지선과 저항선 사이이고 자금 흐름이 불명확해 박스권 관망이 더 실행 가능합니다.",
+        },
+    }
+    reason = reason_templates.get(language, reason_templates["en"]).get(reason_key, "")
+    if calibrate_score:
+        final_action = "watch" if advice_key in {"range", "shakeout"} else "hold"
+        _bound_hold_watch_sentiment_score(result, reason=reason, final_action=final_action)
+    result.operation_advice = advice
+    if advice_key == "range":
+        if language == "zh" and "震荡" not in str(result.trend_prediction):
+            result.trend_prediction = "震荡"
+        elif language == "en":
+            result.trend_prediction = "Sideways"
+        elif language == "ko":
+            result.trend_prediction = "횡보"
+
+    if language == "zh":
+        no_position = "空仓先不追涨杀跌，等待支撑确认、放量突破或资金回流后再行动。"
+        has_position = "持仓以关键支撑为风控线，未跌破前以观察和分批控仓为主。"
+    elif language == "ko":
+        no_position = "현금 보유 시 추격·투매를 삼가고 지지 확인·대량 돌파·자금 재유입 후 행동하세요."
+        has_position = "보유 시 핵심 지지선을 리스크 관리선으로 삼고, 이탈 전까지 관찰과 분할 관리 위주로 대응하세요."
+    else:
+        no_position = "Do not chase or panic; wait for support confirmation, breakout, or renewed inflow."
+        has_position = "Use key support as the risk line and manage position size unless support fails."
+    _apply_hold_watch_dashboard(
+        result,
+        language,
+        advice=advice,
+        reason=reason,
+        current_price=current_price,
+        support=support,
+        resistance=resistance,
+        flow_bias=flow_bias,
+        no_position=no_position,
+        has_position=has_position,
+    )
+    logger.info("[decision_stability] Applied structural hold calibration: %s", reason_key)
 
 
 def get_stock_name_multi_source(
@@ -160,6 +1687,9 @@ class AnalysisResult:
     operation_advice: str  # 操作建议：买入/加仓/持有/减仓/卖出/观望
     decision_type: str = "hold"  # 决策类型：buy/hold/sell（用于统计）
     confidence_level: str = "中"  # 置信度：高/中/低
+    report_language: str = "zh"  # 报告输出语言：zh/en
+    action: Optional[str] = None  # 建议动作 taxonomy：buy/add/hold/reduce/sell/watch/avoid/alert
+    action_label: Optional[str] = None  # 本地化建议动作标签
 
     # ========== 决策仪表盘 (新增) ==========
     dashboard: Optional[Dict[str, Any]] = None  # 完整的决策仪表盘数据
@@ -195,6 +1725,18 @@ class AnalysisResult:
     market_snapshot: Optional[Dict[str, Any]] = None  # 当日行情快照（展示用）
     raw_response: Optional[str] = None  # 原始响应（调试用）
     search_performed: bool = False  # 是否执行了联网搜索
+    # 新闻检索实际命中的条数。None 表示未执行检索（如未配置搜索渠道），
+    # 0 表示执行了检索但一条也没拿到；报告会针对两种原因使用不同披露文案。
+    news_result_count: Optional[int] = None
+    # 旧历史记录未持久化 news_result_count，重建时必须与明确的 None 区分，
+    # 否则会把未知旧数据误报成「未配置搜索渠道」。实时分析默认值始终可信。
+    news_result_count_known: bool = True
+    # 本次分析实际收到的消息面证据（news_context）是否非空。
+    # news_result_count 只是「实时搜索命中了几条」，而披露断言的是「结论有没有用到
+    # 新闻面证据」——两者是不同命题：news_context 还可能来自社交情绪或本地已落库的
+    # 资讯池，这些同样进入模型输入却不产生搜索命中。只看计数会把这类分析误报成
+    # 「未纳入新闻面证据」。
+    news_evidence_present: bool = False
     data_sources: str = ""  # 数据来源说明
     success: bool = True
     error_message: Optional[str] = None
@@ -206,6 +1748,13 @@ class AnalysisResult:
     # ========== 模型标记（Issue #528）==========
     model_used: Optional[str] = None  # 分析使用的 LLM 模型（完整名，如 gemini/gemini-2.0-flash）
 
+    # ========== 历史对比（Report Engine P0）==========
+    query_id: Optional[str] = None  # 本次分析 query_id，用于历史对比时排除本次记录
+
+    # ========== 基本面上下文（仅运行时，用于通知拼装；不持久化到 to_dict）==========
+    fundamental_context: Optional[Dict[str, Any]] = None
+    market_structure_context: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -216,6 +1765,9 @@ class AnalysisResult:
             'operation_advice': self.operation_advice,
             'decision_type': self.decision_type,
             'confidence_level': self.confidence_level,
+            'report_language': self.report_language,
+            'action': self.action,
+            'action_label': self.action_label,
             'dashboard': self.dashboard,  # 决策仪表盘数据
             'trend_analysis': self.trend_analysis,
             'short_term_outlook': self.short_term_outlook,
@@ -236,11 +1788,15 @@ class AnalysisResult:
             'buy_reason': self.buy_reason,
             'market_snapshot': self.market_snapshot,
             'search_performed': self.search_performed,
+            'news_result_count': self.news_result_count,
+            'news_result_count_known': self.news_result_count_known,
+            'news_evidence_present': self.news_evidence_present,
             'success': self.success,
             'error_message': self.error_message,
             'current_price': self.current_price,
             'change_pct': self.change_pct,
             'model_used': self.model_used,
+            'market_structure_context': self.market_structure_context,
         }
 
     def get_core_conclusion(self) -> str:
@@ -278,44 +1834,52 @@ class AnalysisResult:
 
     def get_emoji(self) -> str:
         """根据操作建议返回对应 emoji"""
-        emoji_map = {
-            '买入': '🟢',
-            '加仓': '🟢',
-            '强烈买入': '💚',
-            '持有': '🟡',
-            '观望': '⚪',
-            '减仓': '🟠',
-            '卖出': '🔴',
-            '强烈卖出': '❌',
-        }
-        advice = self.operation_advice or ''
-        # Direct match first
-        if advice in emoji_map:
-            return emoji_map[advice]
-        # Handle compound advice like "卖出/观望" — use the first part
-        for part in advice.replace('/', '|').split('|'):
-            part = part.strip()
-            if part in emoji_map:
-                return emoji_map[part]
-        # Score-based fallback
-        score = self.sentiment_score
-        if score >= 80:
-            return '💚'
-        elif score >= 65:
-            return '🟢'
-        elif score >= 55:
-            return '🟡'
-        elif score >= 45:
-            return '⚪'
-        elif score >= 35:
-            return '🟠'
-        else:
-            return '🔴'
+        _, emoji, _ = get_signal_level(
+            self.operation_advice,
+            self.sentiment_score,
+            self.report_language,
+        )
+        return emoji
 
     def get_confidence_stars(self) -> str:
         """返回置信度星级"""
-        star_map = {'高': '⭐⭐⭐', '中': '⭐⭐', '低': '⭐'}
-        return star_map.get(self.confidence_level, '⭐⭐')
+        star_map = {
+            "高": "⭐⭐⭐",
+            "high": "⭐⭐⭐",
+            "中": "⭐⭐",
+            "medium": "⭐⭐",
+            "低": "⭐",
+            "low": "⭐",
+        }
+        return star_map.get(str(self.confidence_level or "").strip().lower(), "⭐⭐")
+
+
+def populate_decision_action_fields(
+    result: AnalysisResult,
+    *,
+    explicit_action: Any = None,
+    report_type: Any = None,
+    use_existing_action: bool = True,
+    align_with_score: bool = True,
+) -> AnalysisResult:
+    """Populate optional decision action fields without changing legacy advice."""
+
+    action_source = explicit_action
+    if action_source is None and use_existing_action:
+        action_source = getattr(result, "action", None)
+
+    fields = build_action_fields(
+        operation_advice=getattr(result, "operation_advice", None),
+        explicit_action=action_source,
+        report_type=report_type,
+        report_language=getattr(result, "report_language", "zh"),
+        sentiment_score=getattr(result, "sentiment_score", None),
+        guardrail_reason=getattr(result, "guardrail_reason", None),
+        align_with_score=align_with_score,
+    )
+    result.action = fields["action"]
+    result.action_label = fields["action_label"]
+    return result
 
 
 class GeminiAnalyzer:
@@ -339,48 +1903,13 @@ class GeminiAnalyzer:
     # 核心模块：核心结论 + 数据透视 + 舆情情报 + 作战计划
     # ========================================
 
-    SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析师，负责生成专业的【决策仪表盘】分析报告。
+    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
-## 核心交易理念（必须严格遵守）
+{guidelines_placeholder}
 
-### 1. 严进策略（不追高）
-- **绝对不追高**：当股价偏离 MA5 超过 5% 时，坚决不买入
-- **乖离率公式**：(现价 - MA5) / MA5 × 100%
-- 乖离率 < 2%：最佳买点区间
-- 乖离率 2-5%：可小仓介入
-- 乖离率 > 5%：严禁追高！直接判定为"观望"
+""" + CORE_TRADING_SKILL_POLICY_ZH + """
 
-### 2. 趋势交易（顺势而为）
-- **多头排列必须条件**：MA5 > MA10 > MA20
-- 只做多头排列的股票，空头排列坚决不碰
-- 均线发散上行优于均线粘合
-- 趋势强度判断：看均线间距是否在扩大
-
-### 3. 效率优先（筹码结构）
-- 关注筹码集中度：90%集中度 < 15% 表示筹码集中
-- 获利比例分析：70-90% 获利盘时需警惕获利回吐
-- 平均成本与现价关系：现价高于平均成本 5-15% 为健康
-
-### 4. 买点偏好（回踩支撑）
-- **最佳买点**：缩量回踩 MA5 获得支撑
-- **次优买点**：回踩 MA10 获得支撑
-- **观望情况**：跌破 MA20 时观望
-
-### 5. 风险排查重点
-- 减持公告（股东、高管减持）
-- 业绩预亏/大幅下滑
-- 监管处罚/立案调查
-- 行业政策利空
-- 大额解禁
-
-### 6. 估值关注（PE/PB）
-- 分析时请关注市盈率（PE）是否合理
-- PE 明显偏高时（如远超行业平均或历史均值），需在风险点中说明
-- 高成长股可适当容忍较高 PE，但需有业绩支撑
-
-### 7. 强势趋势股放宽
-- 强势趋势股（多头排列且趋势强度高、量能配合）可适当放宽乖离率要求
-- 此类股票可轻仓追踪，但仍需设置止损，不盲目追高
+""" + CANONICAL_DECISION_SCALE_PROMPT_ZH + """
 
 ## 输出格式：决策仪表盘 JSON
 
@@ -393,6 +1922,8 @@ class GeminiAnalyzer:
     "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
     "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
     "decision_type": "buy/hold/sell",
+    "action": "buy/add/hold/reduce/sell/watch/avoid/alert",
+    "guardrail_reason": "当分数区间与最终 action 不一致时填写降级/升级原因，否则留空",
     "confidence_level": "高/中/低",
 
     "dashboard": {
@@ -464,6 +1995,25 @@ class GeminiAnalyzer:
                 "✅/⚠️/❌ 检查项5：筹码健康",
                 "✅/⚠️/❌ 检查项6：PE估值合理"
             ]
+        },
+
+        "phase_decision": {
+            "phase_context": {"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
+        },
+
+        "signal_attribution": {
+            "technical_indicators": 技术指标贡献度(0-100),
+            "news_sentiment": 新闻舆情贡献度(0-100),
+            "fundamentals": 基本面贡献度(0-100),
+            "market_conditions": 市场环境贡献度(0-100),
+            "strongest_bullish_signal": "最强看多信号名称",
+            "strongest_bearish_signal": "最强看空信号名称"
         }
     },
 
@@ -511,11 +2061,15 @@ class GeminiAnalyzer:
 - ⚠️ 均线缠绕趋势不明
 - ⚠️ 有风险事件
 
-### 卖出/减仓（0-39分）：
-- ❌ 空头排列
-- ❌ 跌破MA20
-- ❌ 放量下跌
-- ❌ 重大利空
+### 减仓（20-39分）：
+- ⚠️ 趋势走弱或跌破关键均线
+- ⚠️ 资金/量能转弱，风险明显高于收益
+- ⚠️ 以降低仓位和保护收益为主
+
+### 卖出（0-19分）：
+- ❌ 空头排列或趋势显著恶化
+- ❌ 跌破关键支撑/止损位
+- ❌ 放量下跌或重大利空
 
 ## 决策仪表盘核心原则
 
@@ -523,19 +2077,348 @@ class GeminiAnalyzer:
 2. **分持仓建议**：空仓者和持仓者给不同建议
 3. **精确狙击点**：必须给出具体价格，不说模糊的话
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
-5. **风险优先级**：舆情中的风险点要醒目标出"""
+5. **风险优先级**：舆情中的风险点要醒目标出
 
-    def __init__(self, api_key: Optional[str] = None):
+## 可操作性与稳定性约束
+
+- 不得仅因为单日涨跌或评分跨线就在“买入/卖出”之间剧烈切换。
+- 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
+- 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
+- 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
+- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
+
+    SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
+
+{guidelines_placeholder}
+
+{default_skill_policy_section}
+{skills_section}
+
+""" + CANONICAL_DECISION_SCALE_PROMPT_ZH + """
+
+## 输出格式：决策仪表盘 JSON
+
+请严格按照以下 JSON 格式输出，这是一个完整的【决策仪表盘】：
+
+```json
+{
+    "stock_name": "股票中文名称",
+    "sentiment_score": 0-100整数,
+    "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
+    "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
+    "decision_type": "buy/hold/sell",
+    "action": "buy/add/hold/reduce/sell/watch/avoid/alert",
+    "guardrail_reason": "当分数区间与最终 action 不一致时填写降级/升级原因，否则留空",
+    "confidence_level": "高/中/低",
+
+    "dashboard": {
+        "core_conclusion": {
+            "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
+            "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
+            "time_sensitivity": "立即行动/今日内/本周内/不急",
+            "position_advice": {
+                "no_position": "空仓者建议：具体操作指引",
+                "has_position": "持仓者建议：具体操作指引"
+            }
+        },
+
+        "data_perspective": {
+            "trend_status": {
+                "ma_alignment": "均线排列状态描述",
+                "is_bullish": true/false,
+                "trend_score": 0-100
+            },
+            "price_position": {
+                "current_price": 当前价格数值,
+                "ma5": MA5数值,
+                "ma10": MA10数值,
+                "ma20": MA20数值,
+                "bias_ma5": 乖离率百分比数值,
+                "bias_status": "安全/警戒/危险",
+                "support_level": 支撑位价格,
+                "resistance_level": 压力位价格
+            },
+            "volume_analysis": {
+                "volume_ratio": 量比数值,
+                "volume_status": "放量/缩量/平量",
+                "turnover_rate": 换手率百分比,
+                "volume_meaning": "量能含义解读（如：缩量回调表示抛压减轻）"
+            },
+            "chip_structure": {
+                "profit_ratio": 获利比例,
+                "avg_cost": 平均成本,
+                "concentration": 筹码集中度,
+                "chip_health": "健康/一般/警惕"
+            }
+        },
+
+        "intelligence": {
+            "latest_news": "【最新消息】近期重要新闻摘要",
+            "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
+            "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
+            "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
+            "sentiment_summary": "舆情情绪一句话总结"
+        },
+
+        "battle_plan": {
+            "sniper_points": {
+                "ideal_buy": "理想入场位：XX元（满足主要技能触发条件）",
+                "secondary_buy": "次优入场位：XX元（更保守或确认后执行）",
+                "stop_loss": "止损位：XX元（失效条件或X%风险）",
+                "take_profit": "目标位：XX元（按阻力位/风险回报比制定）"
+            },
+            "position_strategy": {
+                "suggested_position": "建议仓位：X成",
+                "entry_plan": "分批建仓策略描述",
+                "risk_control": "风控策略描述"
+            },
+            "action_checklist": [
+                "✅/⚠️/❌ 检查项1：当前结构是否满足激活技能条件",
+                "✅/⚠️/❌ 检查项2：入场位置与风险回报是否合理",
+                "✅/⚠️/❌ 检查项3：量价/波动/筹码是否支持判断",
+                "✅/⚠️/❌ 检查项4：无重大利空",
+                "✅/⚠️/❌ 检查项5：仓位与止损计划明确",
+                "✅/⚠️/❌ 检查项6：估值/业绩/催化与结论匹配"
+            ]
+        },
+
+        "phase_decision": {
+            "phase_context": {"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
+        },
+
+        "signal_attribution": {
+            "technical_indicators": 技术指标贡献度(0-100),
+            "news_sentiment": 新闻舆情贡献度(0-100),
+            "fundamentals": 基本面贡献度(0-100),
+            "market_conditions": 市场环境贡献度(0-100),
+            "strongest_bullish_signal": "最强看多信号名称",
+            "strongest_bearish_signal": "最强看空信号名称"
+        }
+    },
+
+    "analysis_summary": "100字综合分析摘要",
+    "key_points": "3-5个核心看点，逗号分隔",
+    "risk_warning": "风险提示",
+    "buy_reason": "操作理由，引用激活技能或风险框架",
+
+    "trend_analysis": "走势形态分析",
+    "short_term_outlook": "短期1-3日展望",
+    "medium_term_outlook": "中期1-2周展望",
+    "technical_analysis": "技术面综合分析",
+    "ma_analysis": "均线系统分析",
+    "volume_analysis": "量能分析",
+    "pattern_analysis": "K线形态分析",
+    "fundamental_analysis": "基本面分析",
+    "sector_position": "板块行业分析",
+    "company_highlights": "公司亮点/风险",
+    "news_summary": "新闻摘要",
+    "market_sentiment": "市场情绪",
+    "hot_topics": "相关热点",
+
+    "search_performed": true/false,
+    "data_sources": "数据来源说明"
+}
+```
+
+## 评分标准
+
+### 强烈买入（80-100分）：
+- ✅ 多个激活技能同时支持积极结论
+- ✅ 上行空间、触发条件与风险回报清晰
+- ✅ 关键风险已排查，仓位与止损计划明确
+- ✅ 重要数据和情报结论彼此一致
+
+### 买入（60-79分）：
+- ✅ 主信号偏积极，但仍有少量待确认项
+- ✅ 允许存在可控风险或次优入场点
+- ✅ 需要在报告中明确补充观察条件
+
+### 观望（40-59分）：
+- ⚠️ 信号分歧较大，或缺乏足够确认
+- ⚠️ 风险与机会大致均衡
+- ⚠️ 更适合等待触发条件或回避不确定性
+
+### 减仓（20-39分）：
+- ⚠️ 主要结论转弱，风险明显高于收益
+- ⚠️ 触发了部分失效条件，现有仓位需要降低暴露
+- ⚠️ 更适合保护收益而不是进攻
+
+### 卖出（0-19分）：
+- ❌ 触发了止损/失效条件或重大利空
+- ❌ 趋势或风险显著恶化
+- ❌ 现有仓位应优先退出
+
+## 决策仪表盘核心原则
+
+1. **核心结论先行**：一句话说清该买该卖
+2. **分持仓建议**：空仓者和持仓者给不同建议
+3. **精确狙击点**：必须给出具体价格，不说模糊的话
+4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
+5. **风险优先级**：舆情中的风险点要醒目标出
+
+## 可操作性与稳定性约束
+
+- 不得仅因为单日涨跌或评分跨线就在“买入/卖出”之间剧烈切换。
+- 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
+- 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
+- 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
+- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
+
+    TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
+
+- 回答必须基于用户提供的数据与上下文
+- 若信息不足，要明确指出不确定性
+- 不要编造价格、财报或新闻事实
+"""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        *,
+        config: Optional[Config] = None,
+        skills: Optional[List[str]] = None,
+        skill_instructions: Optional[str] = None,
+        default_skill_policy: Optional[str] = None,
+        use_legacy_default_prompt: Optional[bool] = None,
+    ):
         """Initialize LLM Analyzer via LiteLLM.
 
         Args:
             api_key: Ignored (kept for backward compatibility). Keys are loaded from config.
         """
+        self._config_override = config
+        self._requested_skills = list(skills) if skills is not None else None
+        self._skill_instructions_override = skill_instructions
+        self._default_skill_policy_override = default_skill_policy
+        self._use_legacy_default_prompt_override = use_legacy_default_prompt
+        self._resolved_prompt_state: Optional[Dict[str, Any]] = None
         self._router = None
+        self._legacy_router_model_list: List[Dict[str, Any]] = []
         self._litellm_available = False
         self._init_litellm()
         if not self._litellm_available:
-            logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
+            try:
+                backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+            except GenerationError:
+                backend_id = ""
+            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                logger.info(
+                    "Analyzer generation backend: %s configured; LiteLLM API keys are not "
+                    "required for stock analysis generation",
+                    backend_id,
+                )
+            else:
+                logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
+
+    def _get_runtime_config(self) -> Config:
+        """Return the runtime config, honoring injected overrides for tests/pipeline."""
+        return getattr(self, "_config_override", None) or get_config()
+
+    def _get_skill_prompt_sections(self) -> tuple[str, str, bool]:
+        """Resolve skill instructions + default baseline + prompt mode."""
+        skill_instructions = getattr(self, "_skill_instructions_override", None)
+        default_skill_policy = getattr(self, "_default_skill_policy_override", None)
+        use_legacy_default_prompt = getattr(self, "_use_legacy_default_prompt_override", None)
+
+        if skill_instructions is not None and default_skill_policy is not None:
+            return (
+                skill_instructions,
+                default_skill_policy,
+                bool(use_legacy_default_prompt) if use_legacy_default_prompt is not None else False,
+            )
+
+        resolved_state = getattr(self, "_resolved_prompt_state", None)
+        if resolved_state is None:
+            from src.agent.factory import resolve_skill_prompt_state
+
+            prompt_state = resolve_skill_prompt_state(
+                self._get_runtime_config(),
+                skills=getattr(self, "_requested_skills", None),
+            )
+            resolved_state = {
+                "skill_instructions": prompt_state.skill_instructions,
+                "default_skill_policy": prompt_state.default_skill_policy,
+                "use_legacy_default_prompt": bool(getattr(prompt_state, "use_legacy_default_prompt", False)),
+            }
+            self._resolved_prompt_state = resolved_state
+
+        return (
+            skill_instructions if skill_instructions is not None else resolved_state.get("skill_instructions", ""),
+            default_skill_policy if default_skill_policy is not None else resolved_state.get("default_skill_policy", ""),
+            (
+                use_legacy_default_prompt
+                if use_legacy_default_prompt is not None
+                else bool(resolved_state.get("use_legacy_default_prompt", False))
+            ),
+        )
+
+    def _get_analysis_system_prompt(self, report_language: str, stock_code: str = "") -> str:
+        """Build the analyzer system prompt with output-language guidance."""
+        lang = normalize_report_language(report_language)
+        market_role = get_market_role(stock_code, lang)
+        market_guidelines = get_market_guidelines(stock_code, lang)
+        skill_instructions, default_skill_policy, use_legacy_default_prompt = self._get_skill_prompt_sections()
+        if use_legacy_default_prompt:
+            base_prompt = self.LEGACY_DEFAULT_SYSTEM_PROMPT.replace(
+                "{market_placeholder}", market_role
+            ).replace(
+                "{guidelines_placeholder}", market_guidelines
+            )
+        else:
+            skills_section = ""
+            if skill_instructions:
+                skills_section = f"## 激活的交易技能\n\n{skill_instructions}\n"
+            default_skill_policy_section = ""
+            if default_skill_policy:
+                default_skill_policy_section = f"{default_skill_policy}\n"
+            base_prompt = (
+                self.SYSTEM_PROMPT.replace("{market_placeholder}", market_role)
+                .replace("{guidelines_placeholder}", market_guidelines)
+                .replace("{default_skill_policy_section}", default_skill_policy_section)
+                .replace("{skills_section}", skills_section)
+            )
+        if lang == "en":
+            return base_prompt + """
+
+## Output Language (highest priority)
+
+- Keep all JSON keys unchanged.
+- `decision_type` must remain `buy|hold|sell`.
+- All human-readable JSON values must be written in English.
+- Use the common English company name when you are confident; otherwise keep the original listed company name instead of inventing one.
+- This includes `stock_name`, `trend_prediction`, `operation_advice`, `confidence_level`, nested dashboard text, checklist items, and all narrative summaries.
+"""
+        if lang == "ko":
+            return base_prompt + """
+
+## Output Language (highest priority)
+
+- Keep all JSON keys unchanged.
+- `decision_type` must remain `buy|hold|sell`.
+- All human-readable JSON values must be written in Korean (한국어).
+- Use the common Korean or original listed company name when confident; do not invent one.
+- This includes `stock_name`, `trend_prediction`, `operation_advice`, `confidence_level`, nested dashboard text, checklist items, and all narrative summaries.
+"""
+        return base_prompt + """
+
+## 输出语言（最高优先级）
+
+- 所有 JSON 键名保持不变。
+- `decision_type` 必须保持为 `buy|hold|sell`。
+- 所有面向用户的人类可读文本值必须使用中文。
+"""
 
     def _has_channel_config(self, config: Config) -> bool:
         """Check if multi-channel config (channels / YAML / legacy model_list) is active."""
@@ -543,12 +2426,67 @@ class GeminiAnalyzer:
             e.get('model_name', '').startswith('__legacy_') for e in config.llm_model_list
         )
 
+    @staticmethod
+    def _legacy_router_provider_alias(model: str) -> str:
+        provider = model.split("/", 1)[0] if "/" in model else "openai"
+        return f"__legacy_{provider}__"
+
+    @staticmethod
+    def _build_legacy_router_model_list_from_config(
+        model: str,
+        model_list: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Build legacy-router candidates from configured legacy llm_model_list entries."""
+        if not model:
+            return []
+        target_model = model
+        target_legacy_alias = GeminiAnalyzer._legacy_router_provider_alias(model)
+        legacy_entries: List[Dict[str, Any]] = []
+        for entry in model_list or []:
+            if not isinstance(entry, dict):
+                continue
+            model_name = str(entry.get("model_name") or "").strip()
+            if model_name != target_legacy_alias:
+                continue
+
+            params = entry.get("litellm_params")
+            if not isinstance(params, dict):
+                continue
+
+            api_key = str(params.get("api_key") or "").strip()
+            if not api_key or len(api_key) < 8:
+                continue
+
+            deployed_params = dict(params)
+            deployed_params["model"] = target_model
+            deployed_params["api_key"] = api_key
+            legacy_entries.append({
+                "model_name": target_model,
+                "litellm_params": deployed_params,
+            })
+
+        return legacy_entries
+
     def _init_litellm(self) -> None:
         """Initialize litellm Router from channels / YAML / legacy keys."""
-        config = get_config()
+        config = self._get_runtime_config()
+        if self._get_hermes_config_error(config) is not None:
+            logger.error("Analyzer LLM: Hermes channel configuration blocks legacy fallback")
+            return
         litellm_model = config.litellm_model
         if not litellm_model:
-            logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
+            backend_id = ""
+            try:
+                backend_id = resolve_generation_backend_id(config)
+            except GenerationError:
+                pass
+            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                logger.info(
+                    "Analyzer LiteLLM: LITELLM_MODEL not configured; using %s generation backend",
+                    backend_id,
+                )
+            else:
+                logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
             return
 
         self._litellm_available = True
@@ -556,27 +2494,48 @@ class GeminiAnalyzer:
         # --- Channel / YAML path: build Router from pre-built model_list ---
         if self._has_channel_config(config):
             model_list = config.llm_model_list
-            self._router = Router(
-                model_list=model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
-            unique_models = list(dict.fromkeys(
-                e['litellm_params']['model'] for e in model_list
-            ))
-            logger.info(
-                f"Analyzer LLM: Router initialized from channels/YAML — "
-                f"{len(model_list)} deployment(s), models: {unique_models}"
-            )
-            return
+            if self._get_mixed_hermes_route_error(config, litellm_model) is not None:
+                self._litellm_available = False
+                logger.error("Analyzer LLM: mixed Hermes/non-Hermes route requires deployment-level no-proxy support")
+                return
+            router_model_list = model_list
+            if route_has_hermes(model_list, litellm_model):
+                # Hermes-only routes are dispatched directly with a request-scoped
+                # no-proxy OpenAI client. Keeping them out of Router prevents the
+                # default proxy-aware transport from seeing the Hermes bearer key.
+                router_model_list = filter_non_hermes_deployments(model_list)
+                if not router_model_list:
+                    self._litellm_available = True
+                    logger.info("Analyzer LLM: Hermes-only route will use direct no-proxy completion")
+                    return
+            try:
+                self._router = Router(
+                    model_list=router_model_list,
+                    routing_strategy="simple-shuffle",
+                    num_retries=2,
+                )
+            except TypeError:
+                logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
+                self._router = None
+            else:
+                unique_models = list(dict.fromkeys(
+                    e['litellm_params']['model'] for e in model_list
+                ))
+                logger.info(
+                    f"Analyzer LLM: Router initialized from channels/YAML — "
+                    f"{len(router_model_list)} deployment(s), models: {unique_models}"
+                )
+                return
 
         # --- Legacy path: build Router for multi-key, or use single key ---
         keys = get_api_keys_for_model(litellm_model, config)
-
-        if len(keys) > 1:
-            # Build legacy Router for primary model multi-key load-balancing
+        legacy_model_list = self._build_legacy_router_model_list_from_config(
+            litellm_model,
+            config.llm_model_list,
+        )
+        if len(legacy_model_list) <= 1 and keys:
             extra_params = extra_litellm_params(litellm_model, config)
-            legacy_model_list = [
+            configured_model_list = [
                 {
                     "model_name": litellm_model,
                     "litellm_params": {
@@ -587,16 +2546,30 @@ class GeminiAnalyzer:
                 }
                 for k in keys
             ]
-            self._router = Router(
-                model_list=legacy_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
-            logger.info(
-                f"Analyzer LLM: Legacy Router initialized with {len(keys)} keys "
-                f"for {litellm_model}"
-            )
-        elif keys:
+            if not legacy_model_list:
+                legacy_model_list = configured_model_list
+            elif len(legacy_model_list) < len(configured_model_list):
+                legacy_model_list = configured_model_list
+
+        if len(legacy_model_list) > 1:
+            self._legacy_router_model_list = legacy_model_list
+            try:
+                self._router = Router(
+                    model_list=legacy_model_list,
+                    routing_strategy="simple-shuffle",
+                    num_retries=2,
+                )
+            except TypeError:
+                logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")
+                self._router = None
+            else:
+                logger.info(
+                    f"Analyzer LLM: Legacy Router initialized with {len(legacy_model_list)} keys "
+                    f"for {litellm_model}"
+                )
+                return
+
+        if keys:
             logger.info(f"Analyzer LLM: litellm initialized (model={litellm_model})")
         else:
             logger.info(
@@ -605,10 +2578,728 @@ class GeminiAnalyzer:
             )
 
     def is_available(self) -> bool:
-        """Check if LiteLLM is properly configured with at least one API key."""
+        """Check whether the configured generation backend is available."""
+        backend_error = self.get_generation_backend_config_error()
+        if backend_error is not None:
+            return self._can_use_generation_fallback(backend_error)
+        backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+            return True
+        return self._litellm_runtime_available()
+
+    def _litellm_runtime_available(self) -> bool:
         return self._router is not None or self._litellm_available
 
-    def _call_litellm(self, prompt: str, generation_config: dict) -> Tuple[str, str]:
+    def _can_use_generation_fallback(self, backend_error: GenerationError) -> bool:
+        if not backend_error.fallbackable:
+            return False
+        try:
+            _backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+        except GenerationError:
+            return False
+        return (
+            fallback_backend_id == LITELLM_BACKEND_ID
+            and self._litellm_runtime_available()
+        )
+
+    def _resolve_generation_backend_config(self) -> Tuple[str, Optional[str]]:
+        """Resolve and validate generation backend ids."""
+        config = self._get_runtime_config()
+        backend_id = resolve_generation_backend_id(config)
+        fallback_backend_id = resolve_generation_fallback_backend_id(config)
+        return backend_id, fallback_backend_id
+
+    def get_generation_backend_config_error(self) -> Optional[GenerationError]:
+        """Return a structured backend config error, if the backend cannot run."""
+        try:
+            backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+            config = self._get_runtime_config()
+            hermes_error = self._get_hermes_config_error(config)
+            if hermes_error is not None:
+                return hermes_error
+            for model in [getattr(config, "litellm_model", "")] + list(getattr(config, "litellm_fallback_models", []) or []):
+                mixed_error = self._get_mixed_hermes_route_error(config, model)
+                if mixed_error is not None:
+                    return mixed_error
+            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                backend = self._get_generation_backend(backend_id)
+                get_config_error = getattr(backend, "get_config_error", None)
+                if callable(get_config_error):
+                    return get_config_error()
+        except GenerationError as exc:
+            return exc
+        return None
+
+    def _get_hermes_config_error(self, config: Config) -> Optional[GenerationError]:
+        issues = list(getattr(config, "llm_channel_config_issues", []) or [])
+        if not getattr(config, "llm_blocks_legacy_fallback", False) or not issues:
+            return None
+        blocked_routes = set(getattr(config, "llm_blocked_hermes_routes", []) or [])
+        selected_models = [
+            ("LITELLM_MODEL", getattr(config, "litellm_model", "") or ""),
+            *[
+                ("LITELLM_FALLBACK_MODELS", fallback_model)
+                for fallback_model in list(getattr(config, "litellm_fallback_models", []) or [])
+            ],
+        ]
+        selected_blocked_route = ""
+        selected_field = ""
+        for field_name, model in selected_models:
+            raw_model = str(model or "").strip()
+            if not raw_model:
+                continue
+            candidates = hermes_blocked_route_candidates(raw_model)
+            candidates.add(raw_model)
+            try:
+                candidates.add(canonicalize_hermes_model_ref(raw_model).route_model)
+            except (TypeError, ValueError) as exc:
+                logger.debug("Failed to canonicalize selected Hermes route candidate %r: %s", raw_model, exc)
+            matched = candidates & blocked_routes
+            if matched:
+                selected_blocked_route = sorted(matched)[0]
+                selected_field = field_name
+                break
+        if blocked_routes and not selected_blocked_route and getattr(config, "llm_model_list", None):
+            return None
+        first = issues[0]
+        code = (
+            "explicit_hermes_route_invalid"
+            if selected_blocked_route
+            else first.get("code", "invalid_hermes_channel")
+        )
+        return GenerationError(
+            error_code=GenerationErrorCode.UNSAFE_CONFIG,
+            stage="configuration",
+            retryable=False,
+            fallbackable=False,
+            backend=LITELLM_BACKEND_ID,
+            provider=HERMES_CHANNEL_NAME,
+            details={
+                "field": selected_field or first.get("field", "LLM_HERMES_API_KEY"),
+                "code": code,
+                "reason": code,
+                "message": first.get("message", "Hermes channel configuration is invalid"),
+                "issues": issues,
+                "route_name": selected_blocked_route or None,
+            },
+        )
+
+    def _get_mixed_hermes_route_error(self, config: Config, model: str) -> Optional[GenerationError]:
+        if not model:
+            return None
+        origins = route_deployment_origins(getattr(config, "llm_model_list", []) or [], model)
+        if not origins.is_mixed:
+            return None
+        return GenerationError(
+            error_code=GenerationErrorCode.UNSAFE_CONFIG,
+            stage="configuration",
+            retryable=False,
+            fallbackable=False,
+            backend=LITELLM_BACKEND_ID,
+            provider=HERMES_CHANNEL_NAME,
+            details={
+                "field": "LLM_CHANNELS",
+                "code": "mixed_hermes_route_unsupported",
+                "reason": "router_deployment_no_proxy_unavailable",
+                "route_name": model,
+            },
+        )
+
+    def _hermes_redaction_values_for_model(self, config: Config, model: str = "") -> set[str]:
+        redactions: set[str] = set()
+        deployments = list(getattr(config, "llm_model_list", []) or [])
+        selected_deployments = deployments
+        if model:
+            origins = route_deployment_origins(deployments, model)
+            selected_deployments = list(origins.hermes_deployments or [])
+            if not selected_deployments and not origins.has_hermes:
+                return redactions
+        for deployment in selected_deployments:
+            if not isinstance(deployment, dict):
+                continue
+            if not route_has_hermes([deployment], str(deployment.get("model_name") or "")):
+                continue
+            params = deployment.get("litellm_params") or {}
+            if isinstance(params, dict):
+                redactions.update(build_hermes_redaction_values(params.get("api_key")))
+        return redactions
+
+    def _sanitize_hermes_exception_text(
+        self,
+        exc: Any,
+        *,
+        config: Optional[Config] = None,
+        model: str = "",
+    ) -> str:
+        runtime_config = config or self._get_runtime_config()
+        redactions = self._hermes_redaction_values_for_model(runtime_config, model)
+        if not redactions:
+            return str(exc)
+        return sanitize_hermes_error_text(exc, redaction_values=redactions)
+
+    def _litellm_redaction_values_for_model(self, config: Config, model: str = "") -> set[str]:
+        redactions = self._hermes_redaction_values_for_model(config, model)
+        try:
+            redactions.update(build_hermes_redaction_values(*get_api_keys_for_model(model, config)))
+        except Exception:
+            pass
+        origins = route_deployment_origins(getattr(config, "llm_model_list", []) or [], model)
+        for deployment in (*origins.hermes_deployments, *origins.non_hermes_deployments):
+            params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+            if isinstance(params, dict):
+                redactions.update(build_hermes_redaction_values(params.get("api_key")))
+        return redactions
+
+    def _sanitize_litellm_exception_text(
+        self,
+        exc: Any,
+        *,
+        config: Optional[Config] = None,
+        model: str = "",
+    ) -> str:
+        runtime_config = config or self._get_runtime_config()
+        redactions = self._litellm_redaction_values_for_model(runtime_config, model)
+        sanitized = sanitize_hermes_error_text(exc, redaction_values=redactions)
+        return redact_diagnostic_text(sanitized, limit=500)
+
+    def _dispatch_litellm_completion(
+        self,
+        model: str,
+        call_kwargs: Dict[str, Any],
+        *,
+        config: Config,
+        use_channel_router: bool,
+        router_model_names: set[str],
+    ) -> Any:
+        """Dispatch a LiteLLM completion through router or direct fallback."""
+        origins = route_deployment_origins(config.llm_model_list, model)
+        if origins.is_mixed:
+            raise RuntimeError("Hermes/non-Hermes mixed generation route is not supported without deployment-level no-proxy client support")
+        if origins.is_hermes_only:
+            deployment = origins.hermes_deployments[0]
+            params = dict(deployment.get("litellm_params") or {})
+            api_key = str(params.get("api_key") or "").strip()
+            base_url = str(params.get("api_base") or "").strip()
+            if is_masked_secret_placeholder(api_key):
+                raise RuntimeError("Hermes API key is a masked placeholder and cannot be used for generation")
+            timeout = float(call_kwargs.get("timeout") or 30.0)
+            hermes_kwargs = dict(call_kwargs)
+            hermes_kwargs["model"] = str(params.get("model") or model)
+            hermes_kwargs["stream"] = False
+            hermes_kwargs.pop("api_key", None)
+            hermes_kwargs.pop("api_base", None)
+            with open_hermes_no_proxy_client(api_key=api_key, base_url=base_url, timeout=timeout) as client:
+                hermes_kwargs["client"] = client
+                return litellm.completion(**hermes_kwargs)
+
+        wire_models = resolve_fallback_litellm_wire_models(model, config.llm_model_list)
+        register_fallback_model_pricing(wire_models)
+        effective_kwargs = dict(call_kwargs)
+        if use_channel_router and self._router and model in router_model_names:
+            return self._router.completion(**effective_kwargs)
+        if self._router and model == config.litellm_model and not use_channel_router:
+            return self._router.completion(**effective_kwargs)
+
+        keys = get_api_keys_for_model(model, config)
+        if keys:
+            effective_kwargs["api_key"] = keys[0]
+        effective_kwargs.update(extra_litellm_params(model, config))
+        return litellm.completion(**effective_kwargs)
+
+    def _normalize_usage(
+        self,
+        usage_obj: Any,
+        *,
+        model: str = "",
+        provider: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Normalize usage objects from LiteLLM responses/chunks."""
+        if not usage_obj:
+            usage = attach_message_hmacs({}, messages) if messages is not None else {}
+            return filter_prompt_cache_telemetry(usage, self._get_runtime_config())
+        usage = normalize_litellm_usage(usage_obj, model=model, provider=provider)
+        if messages is not None:
+            usage = attach_message_hmacs(usage, messages)
+        return filter_prompt_cache_telemetry(usage, self._get_runtime_config())
+
+    @staticmethod
+    def _get_response_field(obj: Any, key: str) -> Any:
+        """Read a field from dict-like or object-like LiteLLM payloads."""
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    @staticmethod
+    def _resolve_configured_response_provider(
+        configured_model: str,
+        response_model: str,
+        model_list: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Match the actual response model against all deployments of one alias."""
+        normalized_configured_model = str(configured_model or "").strip()
+        normalized_response_model = str(response_model or "").strip().lower()
+        if not normalized_configured_model or not normalized_response_model or not model_list:
+            return ""
+
+        for entry in model_list:
+            params = entry.get("litellm_params", {}) or {}
+            model_name = str(entry.get("model_name") or "").strip()
+            if not model_name:
+                model_name = str(params.get("model") or "").strip()
+            if model_name != normalized_configured_model:
+                continue
+
+            deployment_model = str(params.get("model") or "").strip()
+            if deployment_model.lower() != normalized_response_model:
+                continue
+
+            normalized_deployment_model = deployment_model.lower()
+            if normalized_deployment_model.startswith("openai/~") or "openrouter" in normalized_deployment_model:
+                return "openrouter"
+
+            _resolved_model, resolved_provider = resolved_model_provider_identity(
+                deployment_model,
+            )
+            if resolved_provider:
+                return resolved_provider
+        return ""
+
+    def _resolve_response_model_provider(
+        self,
+        response: Any,
+        *,
+        fallback_provider: Optional[str] = None,
+        configured_model: str = "",
+        model_list: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[str, str]:
+        """Return the actual response model/provider when LiteLLM exposes them."""
+        configured_provider = str(fallback_provider or "").strip()
+        normalized_configured_model = str(configured_model or "").strip()
+        if normalized_configured_model:
+            resolved_configured_model, _ = resolved_model_provider_identity(
+                normalized_configured_model,
+                model_list,
+            )
+            configured_route = str(resolved_configured_model or normalized_configured_model).strip().lower()
+            if configured_route.startswith("openai/~") or "openrouter" in configured_route:
+                configured_provider = "openrouter"
+        response_model = str(self._get_response_field(response, "model") or "").strip()
+        if response_model:
+            if "/" not in response_model:
+                return response_model, configured_provider
+            matched_provider = self._resolve_configured_response_provider(
+                normalized_configured_model,
+                response_model,
+                model_list,
+            )
+            if matched_provider:
+                return response_model, matched_provider
+            if configured_provider == "openrouter":
+                return response_model, configured_provider
+            response_provider = get_explicit_llm_channel_model_provider(response_model)
+            if response_provider:
+                return response_model, response_provider
+            return response_model, configured_provider
+        return "", configured_provider
+
+    @staticmethod
+    def _promote_error_identity(details: Any) -> Dict[str, str]:
+        """Lift route/model diagnostics from nested GenerationError details."""
+        if not isinstance(details, dict):
+            return {}
+        promoted: Dict[str, str] = {}
+        for key in ("last_model", "route_name", "last_provider"):
+            candidate = str(details.get(key) or "").strip()
+            if candidate:
+                promoted[key] = candidate
+        return promoted
+
+    def _resolve_router_failure_identity(
+        self,
+        exc: Any,
+        *,
+        route_name: str,
+        recovery_model_list: List[Dict[str, Any]],
+    ) -> Tuple[str, str]:
+        """Resolve the final Router deployment identity from a transport exception."""
+        normalized_route_name = str(route_name or "").strip()
+        origins = route_deployment_origins(recovery_model_list, normalized_route_name)
+        deployment_count = len(origins.hermes_deployments) + len(origins.non_hermes_deployments)
+        candidate_models: List[str] = []
+        candidate_provider = ""
+        seen_payloads: set[int] = set()
+
+        def _remember_model(value: Any) -> None:
+            normalized = str(value or "").strip()
+            if not normalized:
+                return
+            if deployment_count > 1 and normalized == normalized_route_name:
+                return
+            if normalized not in candidate_models:
+                candidate_models.append(normalized)
+
+        def _remember_provider(value: Any) -> None:
+            nonlocal candidate_provider
+            normalized = str(value or "").strip()
+            if normalized and not candidate_provider:
+                candidate_provider = normalized
+
+        def _walk(payload: Any) -> None:
+            if payload is None:
+                return
+            payload_id = id(payload)
+            if payload_id in seen_payloads:
+                return
+            seen_payloads.add(payload_id)
+
+            if isinstance(payload, dict):
+                params = payload.get("litellm_params")
+                if isinstance(params, dict):
+                    _remember_model(params.get("model"))
+                    _remember_provider(
+                        params.get("custom_llm_provider") or params.get("provider")
+                    )
+                for key in (
+                    "litellm_model",
+                    "response_model",
+                    "deployment_model",
+                    "model",
+                    "model_name",
+                ):
+                    _remember_model(payload.get(key))
+                _remember_provider(
+                    payload.get("llm_provider")
+                    or payload.get("litellm_provider")
+                    or payload.get("custom_llm_provider")
+                    or payload.get("provider")
+                )
+                for key in ("response", "error", "details", "metadata", "body"):
+                    _walk(payload.get(key))
+                return
+
+            for key in ("response", "error", "details", "metadata", "body"):
+                nested = getattr(payload, key, None)
+                if nested is not payload:
+                    _walk(nested)
+            _remember_provider(
+                getattr(payload, "llm_provider", None)
+                or getattr(payload, "litellm_provider", None)
+                or getattr(payload, "custom_llm_provider", None)
+                or getattr(payload, "provider", None)
+            )
+            for key in (
+                "litellm_model",
+                "response_model",
+                "deployment_model",
+                "model",
+                "model_name",
+            ):
+                _remember_model(getattr(payload, key, None))
+
+        _walk(exc)
+        for candidate_model in candidate_models:
+            resolved_model, resolved_provider = resolved_model_provider_identity(
+                candidate_model,
+                recovery_model_list,
+            )
+            normalized_route = str(resolved_model or candidate_model).strip().lower()
+            explicit_provider = get_explicit_llm_channel_model_provider(candidate_model)
+            route_text = f"{candidate_provider} {normalized_route}".strip().lower()
+            if normalized_route.startswith("openai/~") or "openrouter" in route_text:
+                return resolved_model or candidate_model, "openrouter"
+            if candidate_provider and not explicit_provider:
+                return resolved_model or candidate_model, candidate_provider
+            if resolved_provider:
+                return resolved_model or candidate_model, resolved_provider
+        return "", candidate_provider
+
+    def _extract_text_blocks(self, blocks: Any, *, strip: bool = True) -> str:
+        """Extract final-answer text from OpenAI-compatible content blocks.
+
+        Some reasoning models (including MiniMax) expose thinking and final
+        answer blocks in the same list.  Thinking blocks can also carry a
+        ``text`` field, so concatenating every block corrupts structured output
+        by prefixing the JSON answer with chain-of-thought text.
+        """
+        if not blocks:
+            return ""
+
+        parts: List[str] = []
+        for block in blocks:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+
+            block_type = ""
+            text = None
+            if isinstance(block, dict):
+                block_type = str(block.get("type") or "").strip().lower()
+                text = block.get("text")
+                if text is None:
+                    text = block.get("content")
+            else:
+                block_type = str(getattr(block, "type", "") or "").strip().lower()
+                text = getattr(block, "text", None)
+                if text is None:
+                    text = getattr(block, "content", None)
+
+            # Keep untyped legacy blocks for compatibility, but typed blocks
+            # must explicitly represent final output text.
+            if block_type and block_type not in {"text", "output_text"}:
+                continue
+            if isinstance(text, str) and text:
+                parts.append(text)
+
+        result = "".join(parts)
+        return result.strip() if strip else result
+
+    def _extract_completion_text(self, response: Any) -> str:
+        """Extract text from non-stream LiteLLM completion responses."""
+        choices = self._get_response_field(response, "choices")
+        if not choices:
+            return ""
+
+        choice = choices[0]
+        message = self._get_response_field(choice, "message")
+
+        content_blocks = self._get_response_field(choice, "content_blocks")
+        if content_blocks is None and message is not None:
+            content_blocks = self._get_response_field(message, "content_blocks")
+        block_text = self._extract_text_blocks(content_blocks)
+        if block_text:
+            return strip_leading_think_wrapper(block_text)
+
+        content = None
+        if message is not None:
+            content = self._get_response_field(message, "content")
+        if content is None:
+            content = self._get_response_field(choice, "content")
+
+        if isinstance(content, list):
+            return strip_leading_think_wrapper(self._extract_text_blocks(content))
+        if isinstance(content, str):
+            return strip_leading_think_wrapper(content)
+        return str(content).strip() if content is not None else ""
+
+    def _extract_stream_text(self, chunk: Any) -> str:
+        """Extract provider-agnostic text delta from a LiteLLM streaming chunk."""
+        choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+        if not choices:
+            return ""
+
+        choice = choices[0]
+        delta = choice.get("delta") if isinstance(choice, dict) else getattr(choice, "delta", None)
+        message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+
+        content: Any = None
+        if isinstance(delta, dict):
+            content = delta.get("content")
+        elif isinstance(delta, str):
+            content = delta
+        elif delta is not None:
+            content = getattr(delta, "content", None)
+
+        if content is None:
+            if isinstance(message, dict):
+                content = message.get("content")
+            elif message is not None:
+                content = getattr(message, "content", None)
+
+        if isinstance(content, list):
+            return self._extract_text_blocks(content, strip=False)
+
+        return content if isinstance(content, str) else ""
+
+    def _consume_litellm_stream(
+        self,
+        stream_response: Any,
+        *,
+        model: str,
+        usage_model: Optional[str] = None,
+        provider: Optional[str] = None,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Consume a LiteLLM stream into a single text payload."""
+        chunks: List[str] = []
+        usage: Dict[str, Any] = {}
+        chars_received = 0
+        next_emit_at = 1
+
+        try:
+            for chunk in stream_response:
+                chunk_usage = extract_usage_payload(chunk)
+                normalized_usage = self._normalize_usage(
+                    chunk_usage,
+                    model=usage_model or model,
+                    provider=provider,
+                )
+                if normalized_usage:
+                    usage = normalized_usage
+
+                delta_text = self._extract_stream_text(chunk)
+                if not delta_text:
+                    continue
+
+                chunks.append(delta_text)
+                chars_received += len(delta_text)
+                if progress_callback and chars_received >= next_emit_at:
+                    progress_callback(chars_received)
+                    next_emit_at = chars_received + 160
+        except Exception as exc:
+            raise _LiteLLMStreamError(
+                f"{model} stream interrupted: {exc}",
+                partial_received=chars_received > 0,
+            ) from exc
+
+        response_text = strip_leading_think_wrapper("".join(chunks))
+        if not response_text:
+            raise _LiteLLMStreamError(
+                f"{model} stream returned empty response",
+                partial_received=False,
+            )
+
+        if progress_callback and chars_received > 0:
+            progress_callback(chars_received)
+
+        return response_text, usage
+
+    def _get_generation_backend(self, backend_id: Optional[str] = None) -> GenerationBackend:
+        """Return the configured generation backend."""
+        config = self._get_runtime_config()
+        resolved_backend_id = backend_id or self._resolve_generation_backend_config()[0]
+        return create_generation_backend(
+            resolved_backend_id,
+            config=config,
+            litellm_completion_callable=self._call_litellm_impl,
+        )
+
+    def _call_litellm(
+        self,
+        prompt: str,
+        generation_config: dict,
+        *,
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
+        response_validator: Optional[Callable[[str], None]] = None,
+        audit_context: Optional[Dict[str, Any]] = None,
+        return_generation_result: bool = False,
+    ) -> Union[Tuple[str, str, Dict[str, Any]], GenerationResult]:
+        """Compatibility wrapper around the configured generation backend."""
+        preflight_error = self.get_generation_backend_config_error()
+        if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
+            raise preflight_error
+        backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+        try:
+            result = self._get_generation_backend(backend_id).generate(
+                prompt,
+                generation_config,
+                system_prompt=system_prompt,
+                stream=stream,
+                stream_progress_callback=stream_progress_callback,
+                response_validator=response_validator,
+                audit_context=audit_context,
+            )
+        except GenerationError as exc:
+            if not exc.fallbackable or not fallback_backend_id:
+                raise
+            try:
+                fallback_backend = self._get_generation_backend(fallback_backend_id)
+            except GenerationError as fallback_exc:
+                raise GenerationError(
+                    error_code=fallback_exc.error_code,
+                    stage="fallback",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=fallback_backend_id,
+                    provider=fallback_exc.provider,
+                    details={
+                        "primary_error": {
+                            "error_code": exc.error_code.value,
+                            "backend": exc.backend,
+                            "provider": exc.provider,
+                            "stage": exc.stage,
+                            "details": exc.details,
+                        },
+                        "fallback_error": fallback_exc.details,
+                    },
+                ) from fallback_exc
+            try:
+                result = fallback_backend.generate(
+                    prompt,
+                    generation_config,
+                    system_prompt=system_prompt,
+                    stream=stream,
+                    stream_progress_callback=stream_progress_callback,
+                    response_validator=response_validator,
+                    audit_context=audit_context,
+                )
+            except _AllModelsFailedError:
+                raise
+            except GenerationError as fallback_exc:
+                fallback_identity = self._promote_error_identity(fallback_exc.details)
+                raise GenerationError(
+                    error_code=fallback_exc.error_code,
+                    stage="fallback",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=fallback_backend_id,
+                    provider=fallback_exc.provider,
+                    details={
+                        "reason": "fallback_backend_failed",
+                        **fallback_identity,
+                        "primary_error": {
+                            "error_code": exc.error_code.value,
+                            "backend": exc.backend,
+                            "provider": exc.provider,
+                            "stage": exc.stage,
+                            "details": exc.details,
+                        },
+                        "fallback_error": {
+                            "error_code": fallback_exc.error_code.value,
+                            "backend": fallback_exc.backend,
+                            "provider": fallback_exc.provider,
+                            "stage": fallback_exc.stage,
+                            "details": fallback_exc.details,
+                        },
+                    },
+                ) from fallback_exc
+            except Exception as fallback_exc:
+                raise GenerationError(
+                    error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                    stage="fallback",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=fallback_backend_id,
+                    provider=fallback_backend_id,
+                    details={
+                        "reason": "fallback_backend_failed",
+                        "primary_error": {
+                            "error_code": exc.error_code.value,
+                            "backend": exc.backend,
+                            "provider": exc.provider,
+                            "stage": exc.stage,
+                            "details": exc.details,
+                        },
+                        "fallback_error": str(fallback_exc),
+                    },
+                ) from fallback_exc
+        if return_generation_result:
+            return result
+        return result.text, result.model, result.usage
+
+    def _call_litellm_impl(
+        self,
+        prompt: str,
+        generation_config: dict,
+        *,
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
+        response_validator: Optional[Callable[[str], None]] = None,
+        audit_context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str, Dict[str, Any]]:
         """Call LLM via litellm with fallback across configured models.
 
         When channels/YAML are configured, every model goes through the Router
@@ -619,17 +3310,24 @@ class GeminiAnalyzer:
         Args:
             prompt: User prompt text.
             generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
+            response_validator: Optional callable that accepts the raw response text and raises
+                an exception if the response is unacceptable (e.g. not valid JSON).  When it
+                raises, the current model is treated as failed and the next fallback model is
+                tried.  If all models fail validation, :class:`_AllModelsFailedError` is raised
+                with ``last_response_text`` set to the last raw response received.
 
         Returns:
-            Tuple of (response text, model_used). On success model_used is the full model name.
+            Tuple of (response text, model_used, usage). On success model_used is the full model
+            name and usage is a dict with prompt_tokens, completion_tokens, total_tokens.
         """
-        config = get_config()
+        config = self._get_runtime_config()
         max_tokens = (
             generation_config.get('max_output_tokens')
             or generation_config.get('max_tokens')
             or 8192
         )
-        temperature = generation_config.get('temperature', 0.7)
+        requested_temperature = generation_config.get('temperature', 0.7)
+        requested_timeout = generation_config.get("timeout")
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -637,46 +3335,236 @@ class GeminiAnalyzer:
         use_channel_router = self._has_channel_config(config)
 
         last_error = None
+        last_response_text: Optional[str] = None
+        last_model: Optional[str] = None
+        last_provider: Optional[str] = None
+        last_usage: Dict[str, Any] = {}
+        effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
+        router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
+            last_model = model
+            origins = route_deployment_origins(config.llm_model_list, model)
+            model_stream = bool(stream and not origins.has_hermes)
+            recovery_model_list = config.llm_model_list
+            legacy_router_model_list = getattr(self, "_legacy_router_model_list", None) or []
+            if legacy_router_model_list and model == config.litellm_model and not use_channel_router:
+                recovery_model_list = legacy_router_model_list
+            usage_model, usage_provider = resolved_model_provider_identity(model, recovery_model_list)
+            if usage_provider:
+                last_provider = usage_provider
+
             try:
+                def _attach_usage_audit(
+                    usage: Dict[str, Any],
+                    messages: List[Dict[str, Any]],
+                ) -> Dict[str, Any]:
+                    if audit_context is None:
+                        return filter_prompt_cache_telemetry(
+                            attach_message_hmacs(usage, messages),
+                            config,
+                        )
+                    effective_audit_context = dict(audit_context)
+                    effective_audit_context["provider"] = (
+                        usage.get("provider") or usage_provider
+                    )
+                    effective_audit_context["transport"] = (
+                        effective_audit_context.get("transport") or "litellm"
+                    )
+                    return filter_prompt_cache_telemetry(
+                        attach_legacy_message_stability_audit(
+                            usage,
+                            messages,
+                            effective_audit_context,
+                        ),
+                        config,
+                    )
+
                 model_short = model.split("/")[-1] if "/" in model else model
+                extra = get_thinking_extra_body(model_short)
                 call_kwargs: Dict[str, Any] = {
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "system", "content": effective_system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": temperature,
                     "max_tokens": max_tokens,
                 }
-                extra = get_thinking_extra_body(model_short)
+                if requested_timeout not in (None, ""):
+                    call_kwargs["timeout"] = requested_timeout
                 if extra:
                     call_kwargs["extra_body"] = extra
-
-                if use_channel_router and self._router:
-                    # Channel / YAML path: Router manages key + base_url per model
-                    response = self._router.completion(**call_kwargs)
-                elif self._router and model == config.litellm_model:
-                    # Legacy path: Router only for primary model multi-key
-                    response = self._router.completion(**call_kwargs)
-                else:
-                    # Legacy path: direct call for fallback models
-                    keys = get_api_keys_for_model(model, config)
+                uses_router = (
+                    (use_channel_router and self._router and model in router_model_names)
+                    or (self._router and model == config.litellm_model and not use_channel_router)
+                )
+                if not uses_router:
+                    try:
+                        keys = get_api_keys_for_model(model, config)
+                    except AttributeError:
+                        keys = []
                     if keys:
                         call_kwargs["api_key"] = keys[0]
-                    call_kwargs.update(extra_litellm_params(model, config))
-                    response = litellm.completion(**call_kwargs)
+                    try:
+                        call_kwargs.update(extra_litellm_params(model, config))
+                    except AttributeError:
+                        pass
+                call_kwargs = apply_litellm_generation_params(
+                    call_kwargs,
+                    model,
+                    requested_temperature,
+                    model_list=recovery_model_list,
+                )
+                route_context = build_provider_cache_route_context(
+                    model=model,
+                    provider=usage_provider,
+                    call_kwargs=call_kwargs,
+                    model_list=recovery_model_list,
+                    call_type="analysis",
+                )
+                hint_result = apply_prompt_cache_hints(call_kwargs, route_context, config)
+                call_kwargs = hint_result.call_kwargs
+                if requested_timeout not in (None, ""):
+                    call_kwargs["timeout"] = requested_timeout
+                if hint_result.diagnostics:
+                    logger.debug("[PromptCache] %s", hint_result.diagnostics)
 
-                if response and response.choices and response.choices[0].message.content:
-                    return (response.choices[0].message.content, model)
+                _stream_text: Optional[str] = None
+                _stream_usage: Dict[str, Any] = {}
+
+                if model_stream:
+                    try:
+                        stream_response = call_litellm_with_param_recovery(
+                            lambda kwargs: self._dispatch_litellm_completion(
+                                model,
+                                kwargs,
+                                config=config,
+                                use_channel_router=use_channel_router,
+                                router_model_names=router_model_names,
+                            ),
+                            model=model,
+                            call_kwargs={**call_kwargs, "stream": True},
+                            model_list=recovery_model_list,
+                            cache_recovery=False,
+                            logger=logger,
+                        )
+                        _stream_text, _stream_usage = self._consume_litellm_stream(
+                            stream_response,
+                            model=model,
+                            usage_model=usage_model,
+                            provider=usage_provider,
+                            progress_callback=stream_progress_callback,
+                        )
+                    except _LiteLLMStreamError as exc:
+                        safe_error = self._sanitize_litellm_exception_text(exc, config=config, model=model)
+                        if exc.partial_received:
+                            logger.warning(
+                                "[LiteLLM] %s stream failed after partial output, retrying non-stream for same model: %s",
+                                model,
+                                safe_error,
+                            )
+                        else:
+                            logger.warning(
+                                "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
+                                model,
+                                safe_error,
+                            )
+                        last_error = RuntimeError(f"{type(exc).__name__}: {safe_error}")
+                    except Exception as exc:
+                        safe_error = self._sanitize_litellm_exception_text(exc, config=config, model=model)
+                        logger.warning(
+                            "[LiteLLM] %s stream request failed before first chunk, falling back to non-stream: %s",
+                            model,
+                            safe_error,
+                        )
+
+                if _stream_text is not None:
+                    last_response_text = _stream_text
+                    last_model = model
+                    if usage_provider:
+                        _stream_usage["provider"] = usage_provider
+                    _stream_usage = _attach_usage_audit(_stream_usage, call_kwargs["messages"])
+                    if usage_provider:
+                        _stream_usage.setdefault("provider", usage_provider)
+                    last_usage = _stream_usage
+                    if response_validator is not None:
+                        response_validator(_stream_text)
+                    return _stream_text, model, _stream_usage
+
+                response = call_litellm_with_param_recovery(
+                    lambda kwargs: self._dispatch_litellm_completion(
+                        model,
+                        kwargs,
+                        config=config,
+                        use_channel_router=use_channel_router,
+                        router_model_names=router_model_names,
+                    ),
+                    model=model,
+                    call_kwargs=call_kwargs,
+                    model_list=recovery_model_list,
+                    logger=logger,
+                )
+
+                response_model, response_provider = self._resolve_response_model_provider(
+                    response,
+                    fallback_provider=usage_provider,
+                    configured_model=model,
+                    model_list=recovery_model_list,
+                )
+                actual_model = response_model or model
+                if response_model:
+                    last_model = actual_model
+                if response_provider:
+                    last_provider = response_provider
+                content = self._extract_completion_text(response)
+                if content:
+                    usage_messages = None if audit_context is not None else call_kwargs["messages"]
+                    usage = self._normalize_usage(
+                        extract_usage_payload(response),
+                        model=response_model or usage_model or model,
+                        provider=response_provider or usage_provider,
+                        messages=usage_messages,
+                    )
+                    if response_provider or usage_provider:
+                        usage["provider"] = response_provider or usage_provider
+                    if audit_context is not None:
+                        usage = _attach_usage_audit(usage, call_kwargs["messages"])
+                    if response_model:
+                        usage.setdefault("response_model", response_model)
+                    if response_provider or usage_provider:
+                        usage.setdefault("provider", response_provider or usage_provider)
+                    last_response_text = content
+                    last_model = actual_model
+                    if response_provider:
+                        last_provider = response_provider
+                    last_usage = usage
+                    if response_validator is not None:
+                        response_validator(content)
+                    return (content, actual_model, usage)
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
-                logger.warning(f"[LiteLLM] {model} failed: {e}")
-                last_error = e
+                if uses_router:
+                    router_model, router_provider = self._resolve_router_failure_identity(
+                        e,
+                        route_name=model,
+                        recovery_model_list=recovery_model_list,
+                    )
+                    if router_model:
+                        last_model = router_model
+                    if router_provider:
+                        last_provider = router_provider
+                safe_error = self._sanitize_litellm_exception_text(e, config=config, model=model)
+                logger.warning("[LiteLLM] %s failed: %s", model, safe_error)
+                last_error = RuntimeError(f"{type(e).__name__}: {safe_error}")
                 continue
 
-        raise Exception(f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}")
+        raise _AllModelsFailedError(
+            f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}",
+            last_response_text=last_response_text,
+            last_model=last_model,
+            last_provider=last_provider,
+            last_usage=last_usage,
+        )
 
     def generate_text(
         self,
@@ -703,15 +3591,96 @@ class GeminiAnalyzer:
                 prompt,
                 generation_config={"max_tokens": max_tokens, "temperature": temperature},
             )
-            return result[0] if isinstance(result, tuple) else result
+            if isinstance(result, tuple):
+                text, model_used, usage = result
+                if should_persist_usage_telemetry(usage):
+                    persist_llm_usage(usage, model_used, call_type="market_review")
+                return text
+            return result
+        except GenerationError:
+            raise
         except Exception as exc:
             logger.error("[generate_text] LLM call failed: %s", exc)
             return None
 
+    def get_generation_backend_identity(self) -> Tuple[str, str]:
+        """Return the configured primary backend identity for live diagnostics."""
+        backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+        if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+            return backend_id, backend_id
+        config = self._get_runtime_config()
+        return backend_id, str(getattr(config, "litellm_model", "") or "")
+
+    def generate_text_with_metadata(
+        self,
+        prompt: str,
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+    ) -> Optional[GenerationResult]:
+        """Generate text and return the actual backend/model used for diagnostics."""
+        try:
+            result = self._call_litellm(
+                prompt,
+                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                return_generation_result=True,
+            )
+            if not isinstance(result, GenerationResult):
+                raise TypeError("generation backend returned an invalid result")
+            if should_persist_usage_telemetry(result.usage):
+                persist_llm_usage(result.usage, result.model, call_type="market_review")
+            return result
+        except GenerationError:
+            raise
+        except _AllModelsFailedError as exc:
+            backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+            if not fallback_backend_id and backend_id == LITELLM_BACKEND_ID:
+                logger.warning(
+                    "[generate_text_with_metadata] Primary LiteLLM exhausted all configured models; "
+                    "returning empty GenerationResult so caller fallback can continue"
+                )
+                usage = dict(exc.last_usage or {})
+                if exc.last_provider:
+                    usage.setdefault("provider", exc.last_provider)
+                return GenerationResult(
+                    text="",
+                    model=exc.last_model or str(getattr(self._get_runtime_config(), "litellm_model", "") or ""),
+                    provider=exc.last_provider or backend_id,
+                    backend=backend_id,
+                    usage=usage,
+                    diagnostics={
+                        "reason": "all_models_failed",
+                        "configured_primary_backend": backend_id,
+                        "configured_fallback_backend": fallback_backend_id,
+                        "last_model": exc.last_model,
+                        "template_fallback": True,
+                    },
+                )
+            failed_backend = fallback_backend_id or backend_id
+            raise GenerationError(
+                error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                stage="fallback" if fallback_backend_id else "generation",
+                retryable=False,
+                fallbackable=False,
+                backend=failed_backend,
+                provider=exc.last_provider or failed_backend,
+                details={
+                    "reason": "all_models_failed",
+                    "configured_primary_backend": backend_id,
+                    "configured_fallback_backend": fallback_backend_id,
+                    "last_model": exc.last_model,
+                },
+            ) from exc
+        except Exception as exc:
+            logger.error("[generate_text_with_metadata] LLM call failed: %s", exc)
+            raise
+
     def analyze(
         self, 
         context: Dict[str, Any],
-        news_context: Optional[str] = None
+        news_context: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
+        analysis_context_pack_summary: Optional[str] = None,
     ) -> AnalysisResult:
         """
         分析单只股票
@@ -725,17 +3694,29 @@ class GeminiAnalyzer:
         Args:
             context: 从 storage.get_analysis_context() 获取的上下文数据
             news_context: 预先搜索的新闻内容（可选）
-            
+
         Returns:
             AnalysisResult 对象
         """
+        def _emit_progress(progress: int, message: str) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(progress, message)
+            except Exception as exc:
+                logger.debug("[analyzer] progress callback skipped: %s", exc)
+
         code = context.get('code', 'Unknown')
-        config = get_config()
+        config = self._get_runtime_config()
+        report_language = normalize_report_language(getattr(config, "report_language", "zh"))
+        system_prompt = self._get_analysis_system_prompt(report_language, stock_code=code)
+        skill_instructions, default_skill_policy, use_legacy_default_prompt = self._get_skill_prompt_sections()
         
         # 请求前增加延时（防止连续请求触发限流）
         request_delay = config.gemini_request_delay
         if request_delay > 0:
             logger.debug(f"[LLM] 请求前等待 {request_delay:.1f} 秒...")
+            _emit_progress(65, f"{code}：LLM 请求前等待 {request_delay:.1f} 秒")
             time.sleep(request_delay)
         
         # 优先从上下文获取股票名称（由 main.py 传入）
@@ -747,92 +3728,283 @@ class GeminiAnalyzer:
             else:
                 # 最后从映射表获取
                 name = STOCK_NAME_MAP.get(code, f'股票{code}')
-        
+
+        backend_error = self.get_generation_backend_config_error()
+        if backend_error is not None and not self._can_use_generation_fallback(backend_error):
+            details = backend_error.details or {}
+            field = str(details.get("field") or "GENERATION_BACKEND")
+            requested_backend = str(details.get("requested_backend") or backend_error.backend)
+            reason = str(details.get("reason") or backend_error.error_code.value)
+            if report_language == "en":
+                summary = (
+                    "AI analysis is unavailable because the generation backend "
+                    f"cannot start: {backend_error.error_code.value}."
+                )
+                risk_warning = (
+                    f"Check {field}={requested_backend} ({reason}) or set a valid "
+                    "backend/fallback before retrying."
+                )
+            elif report_language == "ko":
+                summary = (
+                    "생성 백엔드를 시작할 수 없어 AI 분석을 사용할 수 없습니다: "
+                    f"{backend_error.error_code.value}."
+                )
+                risk_warning = (
+                    f"{field}={requested_backend} ({reason})를 확인하거나 유효한 "
+                    "백엔드/폴백을 설정한 뒤 다시 시도하세요."
+                )
+            else:
+                summary = (
+                    "AI 分析功能不可用：生成后端无法启动，"
+                    f"{backend_error.error_code.value}。"
+                )
+                risk_warning = (
+                    f"请检查 {field}={requested_backend}（{reason}），"
+                    "或配置有效后端/回退后重试。"
+                )
+            return AnalysisResult(
+                code=code,
+                name=name,
+                sentiment_score=50,
+                trend_prediction=localize_trend_prediction('震荡', report_language),
+                operation_advice=localize_operation_advice('持有', report_language),
+                confidence_level=localize_confidence_level('低', report_language),
+                analysis_summary=summary,
+                risk_warning=risk_warning,
+                success=False,
+                error_message=(
+                    f"{backend_error.error_code.value}: {field}={requested_backend}"
+                ),
+                model_used=None,
+                report_language=report_language,
+            )
+
         # 如果模型不可用，返回默认结果
         if not self.is_available():
             return AnalysisResult(
                 code=code,
                 name=name,
                 sentiment_score=50,
-                trend_prediction='震荡',
-                operation_advice='持有',
-                confidence_level='低',
-                analysis_summary='AI 分析功能未启用（未配置 API Key）',
-                risk_warning='请配置 LLM API Key（GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY）后重试',
+                trend_prediction=localize_trend_prediction('震荡', report_language),
+                operation_advice=localize_operation_advice('持有', report_language),
+                confidence_level=localize_confidence_level('低', report_language),
+                analysis_summary=_localized_text(
+                    report_language,
+                    en='AI analysis is unavailable because no API key is configured.',
+                    zh='AI 分析功能未启用（未配置 API Key）',
+                    ko='API 키가 설정되지 않아 AI 분석을 사용할 수 없습니다.',
+                ),
+                risk_warning=_localized_text(
+                    report_language,
+                    en='Configure an LLM API key (GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY) and retry.',
+                    zh='请配置 LLM API Key（GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY）后重试',
+                    ko='LLM API 키(GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY)를 설정한 뒤 다시 시도하세요.',
+                ),
                 success=False,
-                error_message='LLM API Key 未配置',
+                error_message=_localized_text(
+                    report_language,
+                    en='LLM API key is not configured',
+                    zh='LLM API Key 未配置',
+                    ko='LLM API 키가 설정되지 않았습니다',
+                ),
                 model_used=None,
+                report_language=report_language,
             )
         
         try:
             # 格式化输入（包含技术面数据和新闻）
-            prompt = self._format_prompt(context, name, news_context)
+            prompt = self._format_prompt(
+                context,
+                name,
+                news_context,
+                report_language=report_language,
+                analysis_context_pack_summary=analysis_context_pack_summary,
+            )
+            legacy_audit_context = {
+                "language": report_language,
+                "market_group": _legacy_market_group(code),
+                "analysis_mode": "stock_analysis",
+                "legacy_prompt_mode": "legacy_default" if use_legacy_default_prompt else "skill_aware",
+                "skill_config": {
+                    "skill_instructions": skill_instructions,
+                    "default_skill_policy": default_skill_policy,
+                    "use_legacy_default_prompt": use_legacy_default_prompt,
+                },
+                "transport": "litellm",
+                "dynamic_markers": _legacy_audit_marker_specs(
+                    context,
+                    code=code,
+                    stock_name=name,
+                    report_language=report_language,
+                    news_context=news_context,
+                    analysis_context_pack_summary=analysis_context_pack_summary,
+                ),
+            }
             
-            config = get_config()
+            config = self._get_runtime_config()
+            backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
             model_name = config.litellm_model or "unknown"
+            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                model_name = backend_id
+                legacy_audit_context["transport"] = backend_id
             logger.info(f"========== AI 分析 {name}({code}) ==========")
             logger.info(f"[LLM配置] 模型: {model_name}")
             logger.info(f"[LLM配置] Prompt 长度: {len(prompt)} 字符")
             logger.info(f"[LLM配置] 是否包含新闻: {'是' if news_context else '否'}")
 
-            # 记录完整 prompt 到日志（INFO级别记录摘要，DEBUG记录完整）
-            prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
+            # 本地 CLI backend 是进程执行能力，不记录完整 prompt。
+            if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                prompt_preview = redact_diagnostic_text(prompt, limit=500)
+            else:
+                prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
             logger.info(f"[LLM Prompt 预览]\n{prompt_preview}")
-            logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
+            if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
 
             # 设置生成配置
             generation_config = {
-                "temperature": config.gemini_temperature,
+                "temperature": config.llm_temperature,
                 "max_output_tokens": 8192,
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
+            _emit_progress(68, f"{name}：LLM 已接收请求，等待响应")
 
-            # 使用 litellm 调用
-            start_time = time.time()
-            response_text, model_used = self._call_litellm(prompt, generation_config)
-            elapsed = time.time() - start_time
+            # 使用 litellm 调用（支持完整性校验重试）
+            current_prompt = prompt
+            retry_count = 0
+            max_retries = config.report_integrity_retry if config.report_integrity_enabled else 0
 
-            # 记录响应信息
-            logger.info(f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
-            
-            # 记录响应预览（INFO级别）和完整响应（DEBUG级别）
-            response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
-            logger.info(f"[LLM返回 预览]\n{response_preview}")
-            logger.debug(f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ===")
-            
-            # 解析响应
-            result = self._parse_response(response_text, code, name)
-            result.raw_response = response_text
-            result.search_performed = bool(news_context)
-            result.market_snapshot = self._build_market_snapshot(context)
-            result.model_used = model_used
+            while True:
+                start_time = time.time()
+                try:
+                    response_text, model_used, llm_usage = self._call_litellm(
+                        current_prompt,
+                        generation_config,
+                        system_prompt=system_prompt,
+                        stream=True,
+                        stream_progress_callback=stream_progress_callback,
+                        response_validator=self._validate_json_response,
+                        audit_context=legacy_audit_context,
+                    )
+                except _AllModelsFailedError as exc:
+                    if exc.last_response_text is not None:
+                        logger.warning(
+                            "[LLM JSON] %s(%s): all models returned invalid JSON, using text fallback",
+                            name,
+                            code,
+                        )
+                        response_text = exc.last_response_text
+                        model_used = exc.last_model
+                        llm_usage = exc.last_usage
+                    else:
+                        raise
+                elapsed = time.time() - start_time
+
+                # 记录响应信息
+                logger.info(
+                    f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
+                )
+                if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                    response_preview = redact_diagnostic_text(response_text, limit=300)
+                else:
+                    response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
+                logger.info(f"[LLM返回 预览]\n{response_preview}")
+                if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
+                    logger.debug(
+                        f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
+                    )
+                # Keep parser/retry progress monotonic so task progress/message never "goes backward".
+                parse_progress = min(99, 93 + retry_count * 2)
+                _emit_progress(parse_progress, f"{name}：LLM 返回完成，正在解析 JSON")
+
+                # 解析响应
+                result = self._parse_response(response_text, code, name)
+                result.raw_response = response_text
+                result.search_performed = bool(news_context)
+                result.market_snapshot = self._build_market_snapshot(context)
+                result.model_used = model_used
+                result.report_language = report_language
+                normalize_chip_structure_availability(result, context.get("chip"))
+
+                # 内容完整性校验（可选）
+                if not config.report_integrity_enabled:
+                    break
+                require_phase_decision = isinstance(context.get("market_phase_context"), dict)
+                pass_integrity, missing_fields = self._check_content_integrity(
+                    result,
+                    require_phase_decision=require_phase_decision,
+                )
+                if pass_integrity:
+                    break
+                if retry_count < max_retries:
+                    current_prompt = self._build_integrity_retry_prompt(
+                        prompt,
+                        response_text,
+                        missing_fields,
+                        report_language=report_language,
+                    )
+                    retry_count += 1
+                    logger.info(
+                        "[LLM完整性] 必填字段缺失 %s，第 %d 次补全重试",
+                        missing_fields,
+                        retry_count,
+                    )
+                    retry_progress = min(99, 92 + retry_count * 2)
+                    _emit_progress(
+                        retry_progress,
+                        f"{name}：报告字段不完整，正在补全重试（{retry_count}/{max_retries}）",
+                    )
+                else:
+                    self._apply_placeholder_fill(result, missing_fields)
+                    logger.warning(
+                        "[LLM完整性] 必填字段缺失 %s，已占位补全，不阻塞流程",
+                        missing_fields,
+                    )
+                    break
+
+            if should_persist_usage_telemetry(llm_usage):
+                persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
-            
+
             return result
             
         except Exception as e:
-            logger.error(f"AI 分析 {name}({code}) 失败: {e}")
+            safe_error = self._sanitize_hermes_exception_text(e)
+            logger.error("AI 分析 %s(%s) 失败: %s", name, code, safe_error)
             return AnalysisResult(
                 code=code,
                 name=name,
                 sentiment_score=50,
-                trend_prediction='震荡',
-                operation_advice='持有',
-                confidence_level='低',
-                analysis_summary=f'分析过程出错: {str(e)[:100]}',
-                risk_warning='分析失败，请稍后重试或手动分析',
+                trend_prediction=localize_trend_prediction('震荡', report_language),
+                operation_advice=localize_operation_advice('持有', report_language),
+                confidence_level=localize_confidence_level('低', report_language),
+                analysis_summary=_localized_text(
+                    report_language,
+                    en=f'Analysis failed: {safe_error[:100]}',
+                    zh=f'分析过程出错: {safe_error[:100]}',
+                    ko=f'분석 중 오류가 발생했습니다: {safe_error[:100]}',
+                ),
+                risk_warning=_localized_text(
+                    report_language,
+                    en='Analysis failed. Please retry later or review manually.',
+                    zh='分析失败，请稍后重试或手动分析',
+                    ko='분석에 실패했습니다. 잠시 후 다시 시도하거나 수동으로 검토하세요.',
+                ),
                 success=False,
-                error_message=str(e),
+                error_message=safe_error,
                 model_used=None,
+                report_language=report_language,
             )
     
     def _format_prompt(
         self, 
         context: Dict[str, Any], 
         name: str,
-        news_context: Optional[str] = None
+        news_context: Optional[str] = None,
+        report_language: str = "zh",
+        analysis_context_pack_summary: Optional[str] = None,
     ) -> str:
         """
         格式化分析提示词（决策仪表盘 v2.0）
@@ -845,6 +4017,8 @@ class GeminiAnalyzer:
             news_context: 预先搜索的新闻内容
         """
         code = context.get('code', 'Unknown')
+        report_language = normalize_report_language(report_language)
+        _, _, use_legacy_default_prompt = self._get_skill_prompt_sections()
         
         # 优先使用上下文中的股票名称（从 realtime_quote 获取）
         stock_name = context.get('stock_name', name)
@@ -852,6 +4026,33 @@ class GeminiAnalyzer:
             stock_name = STOCK_NAME_MAP.get(code, f'股票{code}')
             
         today = context.get('today', {})
+        unknown_text = get_unknown_text(report_language)
+        no_data_text = get_no_data_text(report_language)
+        quote_section_title, close_price_label = _phase_aware_quote_labels(context)
+        hide_regular_session_ohlc = _should_hide_regular_session_ohlc(context)
+        realtime_overlay_quote = hide_regular_session_ohlc and _today_has_realtime_overlay(today)
+        pct_chg_label = "实时涨跌幅" if realtime_overlay_quote else "涨跌幅"
+        volume_label = "实时成交量" if realtime_overlay_quote else "成交量"
+        amount_label = "实时成交额" if realtime_overlay_quote else "成交额"
+        quote_rows = [
+            f"| {close_price_label} | {today.get('close', 'N/A')} 元 |",
+        ]
+        if not hide_regular_session_ohlc:
+            quote_rows.extend(
+                [
+                    f"| 开盘价 | {today.get('open', 'N/A')} 元 |",
+                    f"| 最高价 | {today.get('high', 'N/A')} 元 |",
+                    f"| 最低价 | {today.get('low', 'N/A')} 元 |",
+                ]
+            )
+        quote_rows.extend(
+            [
+                f"| {pct_chg_label} | {today.get('pct_chg', 'N/A')}% |",
+                f"| {volume_label} | {self._format_volume(today.get('volume'))} |",
+                f"| {amount_label} | {self._format_amount(today.get('amount'))} |",
+            ]
+        )
+        quote_rows_text = "\n".join(quote_rows)
         
         # ========== 构建决策仪表盘格式的输入 ==========
         prompt = f"""# 决策仪表盘分析请求
@@ -861,22 +4062,36 @@ class GeminiAnalyzer:
 |------|------|
 | 股票代码 | **{code}** |
 | 股票名称 | **{stock_name}** |
-| 分析日期 | {context.get('date', '未知')} |
+| 分析日期 | {context.get('date', unknown_text)} |
 
 ---
+"""
+        prompt += format_market_phase_prompt_section(
+            context.get("market_phase_context"),
+            report_language=report_language,
+        )
+        daily_market_context_section = format_daily_market_context_prompt_section(
+            context.get("daily_market_context"),
+            report_language=report_language,
+        )
+        if daily_market_context_section:
+            prompt += daily_market_context_section
+        market_structure_section = format_market_structure_prompt_section(
+            context.get("market_structure_context"),
+            report_language=report_language,
+        )
+        if market_structure_section:
+            prompt += market_structure_section
+        if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+            prompt += analysis_context_pack_summary
+        prompt += f"""
 
 ## 📈 技术面数据
 
-### 今日行情
+### {quote_section_title}
 | 指标 | 数值 |
 |------|------|
-| 收盘价 | {today.get('close', 'N/A')} 元 |
-| 开盘价 | {today.get('open', 'N/A')} 元 |
-| 最高价 | {today.get('high', 'N/A')} 元 |
-| 最低价 | {today.get('low', 'N/A')} 元 |
-| 涨跌幅 | {today.get('pct_chg', 'N/A')}% |
-| 成交量 | {self._format_volume(today.get('volume'))} |
-| 成交额 | {self._format_amount(today.get('amount'))} |
+{quote_rows_text}
 
 ### 均线系统（关键判断指标）
 | 均线 | 数值 | 说明 |
@@ -884,7 +4099,7 @@ class GeminiAnalyzer:
 | MA5 | {today.get('ma5', 'N/A')} | 短期趋势线 |
 | MA10 | {today.get('ma10', 'N/A')} | 中短期趋势线 |
 | MA20 | {today.get('ma20', 'N/A')} | 中期趋势线 |
-| 均线形态 | {context.get('ma_status', '未知')} | 多头/空头/缠绕 |
+| 均线形态 | {context.get('ma_status', unknown_text)} | 多头/空头/缠绕 |
 """
         
         # 添加实时行情数据（量比、换手率等）
@@ -903,7 +4118,139 @@ class GeminiAnalyzer:
 | 流通市值 | {self._format_amount(rt.get('circ_mv'))} | |
 | 60日涨跌幅 | {rt.get('change_60d', 'N/A')}% | 中期表现 |
 """
-        
+
+        # 添加财报与分红（价值投资口径）
+        fundamental_context = context.get("fundamental_context") if isinstance(context, dict) else None
+        earnings_block = (
+            fundamental_context.get("earnings", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        earnings_data = (
+            earnings_block.get("data", {})
+            if isinstance(earnings_block, dict)
+            else {}
+        )
+        financial_report = (
+            earnings_data.get("financial_report", {})
+            if isinstance(earnings_data, dict)
+            else {}
+        )
+        dividend_metrics = (
+            earnings_data.get("dividend", {})
+            if isinstance(earnings_data, dict)
+            else {}
+        )
+        if isinstance(financial_report, dict) or isinstance(dividend_metrics, dict):
+            financial_report = financial_report if isinstance(financial_report, dict) else {}
+            dividend_metrics = dividend_metrics if isinstance(dividend_metrics, dict) else {}
+            ttm_yield = dividend_metrics.get("ttm_dividend_yield_pct", "N/A")
+            ttm_cash = dividend_metrics.get("ttm_cash_dividend_per_share", "N/A")
+            ttm_count = dividend_metrics.get("ttm_event_count", "N/A")
+            report_date = financial_report.get("report_date", "N/A")
+            prompt += f"""
+### 财报与分红（价值投资口径）
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| 最近报告期 | {report_date} | 来自结构化财报字段 |
+| 营业收入 | {financial_report.get('revenue', 'N/A')} | |
+| 归母净利润 | {financial_report.get('net_profit_parent', 'N/A')} | |
+| 经营现金流 | {financial_report.get('operating_cash_flow', 'N/A')} | |
+| ROE | {financial_report.get('roe', 'N/A')} | |
+| 近12个月每股现金分红 | {ttm_cash} | 仅现金分红、税前口径 |
+| TTM 股息率 | {ttm_yield} | 公式：近12个月每股现金分红 / 当前价格 × 100% |
+| TTM 分红事件数 | {ttm_count} | |
+
+> 若上述字段为 N/A 或缺失，请明确写“数据缺失，无法判断”，禁止编造。
+"""
+
+        capital_flow_block = (
+            fundamental_context.get("capital_flow", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        capital_flow_data = (
+            capital_flow_block.get("data", {})
+            if isinstance(capital_flow_block, dict)
+            else {}
+        )
+        stock_flow = (
+            capital_flow_data.get("stock_flow", {})
+            if isinstance(capital_flow_data, dict)
+            else {}
+        )
+        sector_flow = (
+            capital_flow_data.get("sector_rankings", {})
+            if isinstance(capital_flow_data, dict)
+            else {}
+        )
+        has_capital_flow = (
+            isinstance(stock_flow, dict)
+            and any(v is not None for v in stock_flow.values())
+        ) or (
+            isinstance(sector_flow, dict)
+            and (sector_flow.get("top") or sector_flow.get("bottom"))
+        )
+        if has_capital_flow:
+            top_sectors = sector_flow.get("top", []) if isinstance(sector_flow, dict) else []
+            bottom_sectors = sector_flow.get("bottom", []) if isinstance(sector_flow, dict) else []
+            top_sector_text = "、".join(
+                str(item.get("name", "")).strip()
+                for item in top_sectors[:3]
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ) or "N/A"
+            bottom_sector_text = "、".join(
+                str(item.get("name", "")).strip()
+                for item in bottom_sectors[:3]
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ) or "N/A"
+            prompt += f"""
+### 主力资金流向（操作建议过滤器）
+| 指标 | 数值 | 决策含义 |
+|------|------|----------|
+| 主力净流入 | {stock_flow.get('main_net_inflow', 'N/A')} | 正值偏支持，负值偏压制 |
+| 5日净流入 | {stock_flow.get('inflow_5d', 'N/A')} | 用于判断资金持续性 |
+| 10日净流入 | {stock_flow.get('inflow_10d', 'N/A')} | 用于判断资金持续性 |
+| 资金流入靠前板块 | {top_sector_text} | 板块资金共振参考 |
+| 资金流出靠前板块 | {bottom_sector_text} | 板块风险参考 |
+
+> 资金流向只能作为价格位置的过滤器：接近压力且主力流出时不得追买；接近支撑且未放量跌破时，优先判断为持有观察、震荡或洗盘观察。
+"""
+
+        # 添加三大法人动向（台股筹码过滤器）— tw-only；仅当 institution 区块 status='ok'
+        # 且有净额时注入，其他市场 status='not_supported' 会跳过，严格 additive。
+        institution_block = (
+            fundamental_context.get("institution", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        institution_data = (
+            institution_block.get("data", {})
+            if isinstance(institution_block, dict)
+            else {}
+        )
+        if (
+            isinstance(institution_block, dict)
+            and institution_block.get("status") == "ok"
+            and isinstance(institution_data, dict)
+            and all(
+                institution_data.get(key) is not None
+                for key in ("foreign_net", "trust_net", "dealer_net", "total_net")
+            )
+        ):
+            prompt += f"""
+### 三大法人动向（台股筹码过滤器，净买卖超，单位:股）
+| 法人 | 净买卖超 | 决策含义 |
+|------|------|----------|
+| 外资 | {institution_data.get('foreign_net', 'N/A')} | 正值=净买超偏支持，负值=净卖超偏压制 |
+| 投信 | {institution_data.get('trust_net', 'N/A')} | 投信持续买超常伴随中线做多 |
+| 自营商 | {institution_data.get('dealer_net', 'N/A')} | 短线避险/自营方向参考 |
+| 三大法人合计 | {institution_data.get('total_net', 'N/A')} | 台股最受关注的筹码信号 |
+| 资料日期 | {institution_data.get('date', 'N/A')} | 来源 {institution_data.get('source', 'N/A')} |
+
+> 三大法人是台股的筹码过滤器（相当于 A 股主力资金/龙虎榜的角色，但口径不同、不可混用）：外资与投信同向净买支持价格、同向净卖压制价格。请据此判断台股筹码结构，不要在有本数据时写“筹码结构：数据缺失”。
+"""
+
         # 添加筹码分布数据
         if 'chip' in context:
             chip = context['chip']
@@ -916,24 +4263,42 @@ class GeminiAnalyzer:
 | 平均成本 | {chip.get('avg_cost', 'N/A')} 元 | 现价应高于5-15% |
 | 90%筹码集中度 | {chip.get('concentration_90', 0):.2%} | <15%为集中 |
 | 70%筹码集中度 | {chip.get('concentration_70', 0):.2%} | |
-| 筹码状态 | {chip.get('chip_status', '未知')} | |
+| 筹码状态 | {chip.get('chip_status', unknown_text)} | |
+"""
+        else:
+            chip_unavailable_text = get_chip_unavailable_text(report_language)
+            chip_instruction = (
+                "Do not fabricate profit ratio, average cost, or concentration. Mention chip data "
+                "unavailability only once in the report; do not repeat per-field no-data text in `chip_structure`."
+                if report_language in ("en", "ko")
+                else "请勿编造获利比例、平均成本或集中度；报告中只说明一次筹码数据不可用，不要把“数据缺失，无法判断”逐字段重复写入 `chip_structure`。"
+            )
+            prompt += f"""
+### 筹码分布数据（效率指标）
+> {chip_unavailable_text}
+> {chip_instruction}
 """
         
-        # 添加趋势分析结果（基于交易理念的预判）
+        # 添加趋势分析结果（仅隐式内建 bull_trend 默认回退保留旧口径）
         if 'trend_analysis' in context:
-            trend = context['trend_analysis']
-            bias_warning = "🚨 超过5%，严禁追高！" if trend.get('bias_ma5', 0) > 5 else "✅ 安全范围"
-            prompt += f"""
+            trend = _sanitize_trend_analysis_for_prompt(
+                context['trend_analysis'],
+                volume_change_ratio=context.get('volume_change_ratio'),
+            )
+            consistency_notes = trend.get('prompt_consistency_notes', [])
+            if use_legacy_default_prompt:
+                bias_warning = "🚨 超过5%，严禁追高！" if trend.get('bias_ma5', 0) > 5 else "✅ 安全范围"
+                prompt += f"""
 ### 趋势分析预判（基于交易理念）
 | 指标 | 数值 | 判定 |
 |------|------|------|
-| 趋势状态 | {trend.get('trend_status', '未知')} | |
-| 均线排列 | {trend.get('ma_alignment', '未知')} | MA5>MA10>MA20为多头 |
+| 趋势状态 | {trend.get('trend_status', unknown_text)} | |
+| 均线排列 | {trend.get('ma_alignment', unknown_text)} | MA5>MA10>MA20为多头 |
 | 趋势强度 | {trend.get('trend_strength', 0)}/100 | |
 | **乖离率(MA5)** | **{trend.get('bias_ma5', 0):+.2f}%** | {bias_warning} |
 | 乖离率(MA10) | {trend.get('bias_ma10', 0):+.2f}% | |
-| 量能状态 | {trend.get('volume_status', '未知')} | {trend.get('volume_trend', '')} |
-| 系统信号 | {trend.get('buy_signal', '未知')} | |
+| 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
+| 系统信号 | {trend.get('buy_signal', unknown_text)} | |
 | 系统评分 | {trend.get('signal_score', 0)}/100 | |
 
 #### 系统分析理由
@@ -942,6 +4307,44 @@ class GeminiAnalyzer:
 
 **风险因素**：
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
+"""
+                if consistency_notes:
+                    prompt += f"""
+
+**一致性约束**：
+{chr(10).join('- ' + note for note in consistency_notes)}
+"""
+            else:
+                bias_warning = (
+                    "🚨 偏离较大，需谨慎评估追高风险"
+                    if trend.get('bias_ma5', 0) > 5
+                    else "✅ 位置相对可控"
+                )
+                prompt += f"""
+### 技术与结构分析（供激活技能判断参考）
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| 趋势状态 | {trend.get('trend_status', unknown_text)} | |
+| 均线排列 | {trend.get('ma_alignment', unknown_text)} | 结合激活技能判断结构强弱 |
+| 趋势强度 | {trend.get('trend_strength', 0)}/100 | |
+| **价格位置(MA5)** | **{trend.get('bias_ma5', 0):+.2f}%** | {bias_warning} |
+| 价格位置(MA10) | {trend.get('bias_ma10', 0):+.2f}% | |
+| 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
+| 系统信号 | {trend.get('buy_signal', unknown_text)} | |
+| 系统评分 | {trend.get('signal_score', 0)}/100 | |
+
+#### 系统分析理由
+**支持因素**：
+{chr(10).join('- ' + r for r in trend.get('signal_reasons', ['无'])) if trend.get('signal_reasons') else '- 无'}
+
+**风险因素**：
+{chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
+"""
+                if consistency_notes:
+                    prompt += f"""
+
+**一致性约束**：
+{chr(10).join('- ' + note for note in consistency_notes)}
 """
         
         # 添加昨日对比数据
@@ -952,8 +4355,29 @@ class GeminiAnalyzer:
 - 成交量较昨日变化：{volume_change}倍
 - 价格较昨日变化：{context.get('price_change_ratio', 'N/A')}%
 """
+            parsed_volume_change = _safe_float(volume_change, default=math.nan)
+            if math.isfinite(parsed_volume_change) and parsed_volume_change > 10:
+                prompt += """
+- ⚠️ 量能异常提示：成交量较昨日放大超过10倍，可能受异常数据或一次性冲量影响，必须降权解读，不能机械视为强确认信号
+"""
         
         # 添加新闻搜索结果（重点区域）
+        news_window_days: Optional[int] = None
+        context_window = context.get("news_window_days")
+        try:
+            if context_window is not None:
+                parsed_window = int(context_window)
+                if parsed_window > 0:
+                    news_window_days = parsed_window
+        except (TypeError, ValueError):
+            news_window_days = None
+
+        if news_window_days is None:
+            prompt_config = self._get_runtime_config()
+            news_window_days = resolve_news_window_days(
+                news_max_age_days=getattr(prompt_config, "news_max_age_days", 3),
+                news_strategy_profile=getattr(prompt_config, "news_strategy_profile", "short"),
+            )
         prompt += """
 ---
 
@@ -961,10 +4385,14 @@ class GeminiAnalyzer:
 """
         if news_context:
             prompt += f"""
-以下是 **{stock_name}({code})** 近7日的新闻搜索结果，请重点提取：
+以下是 **{stock_name}({code})** 近{news_window_days}日的新闻搜索结果，请重点提取：
 1. 🚨 **风险警报**：减持、处罚、利空
 2. 🎯 **利好催化**：业绩、合同、政策
 3. 📊 **业绩预期**：年报预告、业绩快报
+4. 🕒 **时间规则（强制）**：
+   - 输出到 `risk_alerts` / `positive_catalysts` / `latest_news` 的每一条都必须带具体日期（YYYY-MM-DD）
+   - 超出近{news_window_days}日窗口的新闻一律忽略
+   - 时间未知、无法确定发布日期的新闻一律忽略
 
 ```
 {news_context}
@@ -1005,6 +4433,9 @@ class GeminiAnalyzer:
 ### ⚠️ 重要：输出正确的股票名称格式
 正确的股票名称格式为“股票名称（股票代码）”，例如“贵州茅台（600519）”。
 如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
+"""
+        if use_legacy_default_prompt:
+            prompt += f"""
 
 ### 重点关注（必须明确回答）：
 1. ❓ 是否满足 MA5>MA10>MA20 多头排列？
@@ -1012,6 +4443,18 @@ class GeminiAnalyzer:
 3. ❓ 量能是否配合（缩量回调/放量突破）？
 4. ❓ 筹码结构是否健康？
 5. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
+"""
+        else:
+            prompt += f"""
+
+### 重点关注（必须明确回答）：
+1. ❓ 当前结构是否满足激活技能的关键触发条件？
+2. ❓ 当前入场位置与风险回报是否合理？若偏离过大，请明确说明等待条件
+3. ❓ 量能、波动与筹码结构是否支持当前结论？
+4. ❓ 消息面有无重大利空或与技能结论冲突的信息？
+5. ❓ 若结论成立，具体触发条件、止损位、观察点分别是什么？
+"""
+        prompt += f"""
 
 ### 决策仪表盘要求：
 - **股票名称**：必须输出正确的中文全称（如"贵州茅台"而非"股票600519"）
@@ -1019,8 +4462,42 @@ class GeminiAnalyzer:
 - **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
 - **具体狙击点位**：买入价、止损价、目标价（精确到分）
 - **检查清单**：每项用 ✅/⚠️/❌ 标记
-
+- **消息面时间合规**：`latest_news`、`risk_alerts`、`positive_catalysts` 不得包含超出近{news_window_days}日或时间未知的信息
+- **技术面一致性**：严禁把“空头排列”和“多头排列”等互斥结论同时当作有效依据；若基本面/事件面与技术面冲突，必须明确写“事件先行、技术待确认”或“基本面偏多，但技术面尚未确认”
+ 
 请输出完整的 JSON 格式决策仪表盘。"""
+
+        if report_language == "en":
+            prompt += """
+
+### Output language requirements (highest priority)
+- Keep every JSON key exactly as defined above; do not translate keys.
+- `decision_type` must remain `buy`, `hold`, or `sell`.
+- All human-readable JSON values must be in English.
+- This includes `stock_name`, `trend_prediction`, `operation_advice`, `confidence_level`, all nested dashboard text, checklist items, and every summary field.
+- Use the common English company name when you are confident. If not, keep the listed company name rather than inventing one.
+- When data is missing, explain it in English instead of Chinese.
+"""
+        elif report_language == "ko":
+            prompt += """
+
+### Output language requirements (highest priority)
+- Keep every JSON key exactly as defined above; do not translate keys.
+- `decision_type` must remain `buy`, `hold`, or `sell`.
+- All human-readable JSON values must be in Korean (한국어).
+- This includes `stock_name`, `trend_prediction`, `operation_advice`, `confidence_level`, all nested dashboard text, checklist items, and every summary field.
+- Use the common Korean or original listed company name when you are confident. If not, keep the listed company name rather than inventing one.
+- When data is missing, explain it in Korean instead of Chinese.
+"""
+        else:
+            prompt += f"""
+
+### 输出语言要求（最高优先级）
+- 所有 JSON 键名必须保持不变，不要翻译键名。
+- `decision_type` 必须保持为 `buy`、`hold`、`sell`。
+- 所有面向用户的人类可读文本值必须使用中文。
+- 当数据缺失时，请使用中文直接说明“{no_data_text}，无法判断”。
+"""
         
         return prompt
     
@@ -1112,6 +4589,235 @@ class GeminiAnalyzer:
 
         return snapshot
 
+    def _check_content_integrity(
+        self,
+        result: AnalysisResult,
+        *,
+        require_phase_decision: bool = False,
+    ) -> Tuple[bool, List[str]]:
+        """Delegate to module-level check_content_integrity."""
+        return check_content_integrity(result, require_phase_decision=require_phase_decision)
+
+    def _build_integrity_complement_prompt(self, missing_fields: List[str], report_language: str = "zh") -> str:
+        """Build complement instruction for missing mandatory fields."""
+        report_language = normalize_report_language(report_language)
+        if report_language in ("en", "ko"):
+            lines = ["### Completion requirements: fill the missing mandatory fields below and output the full JSON again:"]
+            for f in missing_fields:
+                if f == "sentiment_score":
+                    lines.append("- sentiment_score: integer score from 0 to 100")
+                elif f == "operation_advice":
+                    lines.append("- operation_advice: localized action advice")
+                elif f == "analysis_summary":
+                    lines.append("- analysis_summary: concise analysis summary")
+                elif f == "dashboard.core_conclusion.one_sentence":
+                    lines.append("- dashboard.core_conclusion.one_sentence: one-line decision")
+                elif f == "dashboard.intelligence.risk_alerts":
+                    lines.append("- dashboard.intelligence.risk_alerts: risk alert list (can be empty)")
+                elif f == "dashboard.battle_plan.sniper_points.stop_loss":
+                    lines.append("- dashboard.battle_plan.sniper_points.stop_loss: stop-loss level")
+                elif f == "dashboard.phase_decision.phase_context":
+                    lines.append("- dashboard.phase_decision.phase_context: public market phase summary subset")
+                elif f == "dashboard.phase_decision.action_window":
+                    lines.append("- dashboard.phase_decision.action_window: phase-aware action window")
+                elif f == "dashboard.phase_decision.immediate_action":
+                    lines.append("- dashboard.phase_decision.immediate_action: act now / wait / watch / no intraday action")
+                elif f == "dashboard.phase_decision.watch_conditions":
+                    lines.append("- dashboard.phase_decision.watch_conditions: list of watch conditions")
+                elif f == "dashboard.phase_decision.next_check_time":
+                    lines.append("- dashboard.phase_decision.next_check_time: next check point or market-local time")
+                elif f == "dashboard.phase_decision.confidence_reason":
+                    lines.append("- dashboard.phase_decision.confidence_reason: confidence rationale and data limits")
+                elif f == "dashboard.phase_decision.data_limitations":
+                    lines.append("- dashboard.phase_decision.data_limitations: list of phase/data quality limitations")
+            return "\n".join(lines)
+
+        lines = ["### 补全要求：请在上方分析基础上补充以下必填内容，并输出完整 JSON："]
+        for f in missing_fields:
+            if f == "sentiment_score":
+                lines.append("- sentiment_score: 0-100 综合评分")
+            elif f == "operation_advice":
+                lines.append("- operation_advice: 买入/加仓/持有/减仓/卖出/观望")
+            elif f == "analysis_summary":
+                lines.append("- analysis_summary: 综合分析摘要")
+            elif f == "dashboard.core_conclusion.one_sentence":
+                lines.append("- dashboard.core_conclusion.one_sentence: 一句话决策")
+            elif f == "dashboard.intelligence.risk_alerts":
+                lines.append("- dashboard.intelligence.risk_alerts: 风险警报列表（可为空数组）")
+            elif f == "dashboard.battle_plan.sniper_points.stop_loss":
+                lines.append("- dashboard.battle_plan.sniper_points.stop_loss: 止损价")
+            elif f == "dashboard.phase_decision.phase_context":
+                lines.append("- dashboard.phase_decision.phase_context: 公开低敏市场阶段摘要子集")
+            elif f == "dashboard.phase_decision.action_window":
+                lines.append("- dashboard.phase_decision.action_window: 阶段化行动窗口")
+            elif f == "dashboard.phase_decision.immediate_action":
+                lines.append("- dashboard.phase_decision.immediate_action: 立即行动/等待确认/观察/无盘中动作")
+            elif f == "dashboard.phase_decision.watch_conditions":
+                lines.append("- dashboard.phase_decision.watch_conditions: 观察条件数组")
+            elif f == "dashboard.phase_decision.next_check_time":
+                lines.append("- dashboard.phase_decision.next_check_time: 下一次检查点或市场本地时间")
+            elif f == "dashboard.phase_decision.confidence_reason":
+                lines.append("- dashboard.phase_decision.confidence_reason: 置信度理由与数据限制")
+            elif f == "dashboard.phase_decision.data_limitations":
+                lines.append("- dashboard.phase_decision.data_limitations: 阶段/数据质量限制数组")
+        return "\n".join(lines)
+
+    def _build_integrity_retry_prompt(
+        self,
+        base_prompt: str,
+        previous_response: str,
+        missing_fields: List[str],
+        report_language: str = "zh",
+    ) -> str:
+        """Build retry prompt using the previous response as the complement baseline."""
+        complement = self._build_integrity_complement_prompt(missing_fields, report_language=report_language)
+        previous_output = previous_response.strip()
+        if normalize_report_language(report_language) in ("en", "ko"):
+            prefix = "### The previous output is below. Complete the missing fields based on that output and return the full JSON again. Do not omit existing fields:"
+        else:
+            prefix = "### 上一次输出如下，请在该输出基础上补齐缺失字段，并重新输出完整 JSON。不要省略已有字段："
+        return "\n\n".join([
+            base_prompt,
+            prefix,
+            previous_output,
+            complement,
+        ])
+
+    def _apply_placeholder_fill(self, result: AnalysisResult, missing_fields: List[str]) -> None:
+        """Delegate to module-level apply_placeholder_fill."""
+        apply_placeholder_fill(result, missing_fields)
+
+    def _extract_analysis_json_object(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
+        """Extract the single allowed JSON object from an LLM response."""
+
+        text = response_text or ""
+        stripped = text.strip()
+        if not stripped:
+            raise ValueError("empty_response")
+
+        fence_pattern = re.compile(
+            r"```[ \t]*(?P<lang>[A-Za-z0-9_-]*)[ \t]*\n?(?P<body>.*?)```",
+            flags=re.DOTALL,
+        )
+        fenced_matches = list(fence_pattern.finditer(text))
+        if len(fenced_matches) > 1:
+            raise ValueError("ambiguous_json")
+        if len(fenced_matches) == 1:
+            match = fenced_matches[0]
+            outside = (text[:match.start()] + text[match.end():]).strip()
+            if outside:
+                raise ValueError("ambiguous_json")
+            fence_lang = (match.group("lang") or "").strip().lower()
+            if fence_lang not in {"", "json"}:
+                raise ValueError("ambiguous_json")
+            json_str = match.group("body").strip()
+            data = self._load_analysis_json_candidate(json_str)
+            return json_str, data
+        if "```" in text:
+            raise ValueError("ambiguous_json")
+
+        try:
+            data = self._load_analysis_json_candidate(stripped)
+        except json.JSONDecodeError as exc:
+            if self._contains_embedded_json_object(text):
+                raise ValueError("ambiguous_json") from exc
+            raise
+        return stripped, data
+
+    def _load_analysis_json_candidate(self, json_str: str) -> Dict[str, Any]:
+        """Parse one already-selected JSON candidate, repairing common LLM JSON drift."""
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            stripped = (json_str or "").strip()
+            try:
+                _obj, end = json.JSONDecoder().raw_decode(stripped)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if stripped[end:].strip():
+                    raise
+            if not (stripped.startswith("{") and stripped.endswith("}")):
+                raise
+            repaired = self._fix_json_string(stripped)
+            data = json.loads(repaired)
+        if not isinstance(data, dict):
+            raise TypeError("json_root_not_object")
+        return data
+
+    @staticmethod
+    def _contains_embedded_json_object(text: str) -> bool:
+        decoder = json.JSONDecoder()
+        count = 0
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                _obj, end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            count += 1
+            before = text[:index].strip()
+            after = text[index + end:].strip()
+            if count > 1 or before or after:
+                return True
+        return False
+
+    def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
+        try:
+            AnalysisReportSchema.model_validate(data)
+        except Exception as exc:
+            logger.warning(
+                "AnalysisReportSchema validation failed; continuing with raw parser contract: %s",
+                str(exc)[:200],
+            )
+        minimal_keys = {
+            "sentiment_score",
+            "trend_prediction",
+            "operation_advice",
+            "analysis_summary",
+            "dashboard",
+        }
+        if not any(key in data for key in minimal_keys):
+            raise self._generation_validation_error(
+                GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+                reason="minimal_contract_failed",
+                message="analysis JSON does not contain any minimal parser field",
+            )
+        if "sentiment_score" in data:
+            try:
+                int(data.get("sentiment_score", 50))
+            except (TypeError, ValueError) as exc:
+                raise self._generation_validation_error(
+                    GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+                    reason="parser_contract_failed",
+                    message="sentiment_score must be integer-compatible",
+                ) from exc
+
+    def _generation_validation_error(
+        self,
+        error_code: GenerationErrorCode,
+        *,
+        reason: str,
+        message: str,
+    ) -> GenerationError:
+        try:
+            backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+        except GenerationError:
+            backend_id = "generation_backend"
+        return GenerationError(
+            error_code=error_code,
+            stage="validation",
+            retryable=True,
+            fallbackable=True,
+            backend=backend_id,
+            provider=backend_id,
+            details={
+                "reason": reason,
+                "message": message,
+            },
+        )
+
     def _parse_response(
         self, 
         response_text: str, 
@@ -1125,90 +4831,96 @@ class GeminiAnalyzer:
         如果解析失败，尝试智能提取或返回默认结果
         """
         try:
-            # 清理响应文本：移除 markdown 代码块标记
-            cleaned_text = response_text
-            if '```json' in cleaned_text:
-                cleaned_text = cleaned_text.replace('```json', '').replace('```', '')
-            elif '```' in cleaned_text:
-                cleaned_text = cleaned_text.replace('```', '')
-            
-            # 尝试找到 JSON 内容
-            json_start = cleaned_text.find('{')
-            json_end = cleaned_text.rfind('}') + 1
-            
-            if json_start >= 0 and json_end > json_start:
-                json_str = cleaned_text[json_start:json_end]
-                
-                # 尝试修复常见的 JSON 问题
-                json_str = self._fix_json_string(json_str)
-                
-                data = json.loads(json_str)
-                
-                # 提取 dashboard 数据
-                dashboard = data.get('dashboard', None)
-
-                # 优先使用 AI 返回的股票名称（如果原名称无效或包含代码）
-                ai_stock_name = data.get('stock_name')
-                if ai_stock_name and (name.startswith('股票') or name == code or 'Unknown' in name):
-                    name = ai_stock_name
-
-                # 解析所有字段，使用默认值防止缺失
-                # 解析 decision_type，如果没有则根据 operation_advice 推断
-                decision_type = data.get('decision_type', '')
-                if not decision_type:
-                    op = data.get('operation_advice', '持有')
-                    if op in ['买入', '加仓', '强烈买入']:
-                        decision_type = 'buy'
-                    elif op in ['卖出', '减仓', '强烈卖出']:
-                        decision_type = 'sell'
-                    else:
-                        decision_type = 'hold'
-                
-                return AnalysisResult(
-                    code=code,
-                    name=name,
-                    # 核心指标
-                    sentiment_score=int(data.get('sentiment_score', 50)),
-                    trend_prediction=data.get('trend_prediction', '震荡'),
-                    operation_advice=data.get('operation_advice', '持有'),
-                    decision_type=decision_type,
-                    confidence_level=data.get('confidence_level', '中'),
-                    # 决策仪表盘
-                    dashboard=dashboard,
-                    # 走势分析
-                    trend_analysis=data.get('trend_analysis', ''),
-                    short_term_outlook=data.get('short_term_outlook', ''),
-                    medium_term_outlook=data.get('medium_term_outlook', ''),
-                    # 技术面
-                    technical_analysis=data.get('technical_analysis', ''),
-                    ma_analysis=data.get('ma_analysis', ''),
-                    volume_analysis=data.get('volume_analysis', ''),
-                    pattern_analysis=data.get('pattern_analysis', ''),
-                    # 基本面
-                    fundamental_analysis=data.get('fundamental_analysis', ''),
-                    sector_position=data.get('sector_position', ''),
-                    company_highlights=data.get('company_highlights', ''),
-                    # 情绪面/消息面
-                    news_summary=data.get('news_summary', ''),
-                    market_sentiment=data.get('market_sentiment', ''),
-                    hot_topics=data.get('hot_topics', ''),
-                    # 综合
-                    analysis_summary=data.get('analysis_summary', '分析完成'),
-                    key_points=data.get('key_points', ''),
-                    risk_warning=data.get('risk_warning', ''),
-                    buy_reason=data.get('buy_reason', ''),
-                    # 元数据
-                    search_performed=data.get('search_performed', False),
-                    data_sources=data.get('data_sources', '技术面数据'),
-                    success=True,
-                )
-            else:
-                # 没有找到 JSON，尝试从纯文本中提取信息
-                logger.warning(f"无法从响应中提取 JSON，使用原始文本分析")
+            report_language = normalize_report_language(
+                getattr(self._get_runtime_config(), "report_language", "zh")
+            )
+            try:
+                _json_str, data = self._extract_analysis_json_object(response_text)
+                self._validate_analysis_minimal_contract(data)
+            except Exception as exc:
+                logger.warning("无法从响应中提取唯一有效 JSON，标记为解析失败: %s", exc)
                 return self._parse_text_response(response_text, code, name)
+
+            # 提取 dashboard 数据
+            dashboard = data.get('dashboard', None)
+            guardrail_reason = data.get("guardrail_reason") or data.get("downgrade_reason")
+            if guardrail_reason and isinstance(dashboard, dict):
+                score_calibration = dashboard.get("decision_score_calibration")
+                if not isinstance(score_calibration, dict):
+                    score_calibration = {}
+                    dashboard["decision_score_calibration"] = score_calibration
+                score_calibration.setdefault("guardrail_reason", str(guardrail_reason).strip())
+            # 归一化 signal_attribution（LLM 可能返回字符串/负数/总和≠100）
+            normalize_report_signal_attribution(dashboard)
+
+            # 优先使用 AI 返回的股票名称（如果原名称无效或包含代码）
+            ai_stock_name = data.get('stock_name')
+            if ai_stock_name and (name.startswith('股票') or name == code or 'Unknown' in name):
+                name = ai_stock_name
+
+            # 解析所有字段，使用默认值防止缺失
+            # 解析 decision_type，如果没有则根据 operation_advice 推断
+            decision_type = data.get('decision_type', '')
+            if not decision_type:
+                op = data.get('operation_advice', localize_operation_advice('持有', report_language))
+                decision_type = infer_decision_type_from_advice(op, default='hold')
+
+            explicit_action = data.get("action")
+            if explicit_action is None and isinstance(dashboard, dict):
+                explicit_action = dashboard.get("action")
+
+            result = AnalysisResult(
+                code=code,
+                name=name,
+                # 核心指标
+                sentiment_score=int(data.get('sentiment_score', 50)),
+                trend_prediction=data.get('trend_prediction', localize_trend_prediction('震荡', report_language)),
+                operation_advice=data.get('operation_advice', localize_operation_advice('持有', report_language)),
+                decision_type=decision_type,
+                confidence_level=localize_confidence_level(
+                    data.get('confidence_level', localize_confidence_level('中', report_language)),
+                    report_language,
+                ),
+                report_language=report_language,
+                # 决策仪表盘
+                dashboard=dashboard,
+                # 走势分析
+                trend_analysis=data.get('trend_analysis', ''),
+                short_term_outlook=data.get('short_term_outlook', ''),
+                medium_term_outlook=data.get('medium_term_outlook', ''),
+                # 技术面
+                technical_analysis=data.get('technical_analysis', ''),
+                ma_analysis=data.get('ma_analysis', ''),
+                volume_analysis=data.get('volume_analysis', ''),
+                pattern_analysis=data.get('pattern_analysis', ''),
+                # 基本面
+                fundamental_analysis=data.get('fundamental_analysis', ''),
+                sector_position=data.get('sector_position', ''),
+                company_highlights=data.get('company_highlights', ''),
+                # 情绪面/消息面
+                news_summary=data.get('news_summary', ''),
+                market_sentiment=data.get('market_sentiment', ''),
+                hot_topics=data.get('hot_topics', ''),
+                # 综合
+                analysis_summary=data.get('analysis_summary', _localized_text(
+                    report_language, en='Analysis completed', zh='分析完成', ko='분석 완료')),
+                key_points=data.get('key_points', ''),
+                risk_warning=data.get('risk_warning', ''),
+                buy_reason=data.get('buy_reason', ''),
+                # 元数据
+                search_performed=data.get('search_performed', False),
+                data_sources=data.get('data_sources', _localized_text(
+                    report_language, en='Technical data', zh='技术面数据', ko='기술적 데이터')),
+                success=True,
+            )
+            return populate_decision_action_fields(
+                result,
+                explicit_action=explicit_action,
+                align_with_score=False,
+            )
                 
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON 解析失败: {e}，尝试从文本提取")
+            logger.warning(f"JSON 解析失败: {e}，标记为解析失败")
             return self._parse_text_response(response_text, code, name)
     
     def _fix_json_string(self, json_str: str) -> str:
@@ -1230,6 +4942,46 @@ class GeminiAnalyzer:
         json_str = repair_json(json_str)
         
         return json_str
+
+    def _validate_json_response(self, text: str) -> None:
+        """Validate that *text* contains one parser-compatible JSON object.
+
+        Used as the ``response_validator`` argument to :meth:`_call_litellm` so
+        that a JSON-less or unparseable reply from the primary model is treated
+        as a model failure and triggers fallback to the next configured model.
+
+        Raises:
+            GenerationError: if the response has no unique parser-compatible
+                JSON object, the selected JSON candidate cannot be parsed, or
+                the parsed object cannot satisfy the minimal parser contract.
+        """
+        try:
+            _json_str, data = self._extract_analysis_json_object(text)
+        except ValueError as exc:
+            reason = str(exc) or "invalid_json"
+            if reason == "ambiguous_json":
+                message = "JSON source is ambiguous"
+            else:
+                message = "No unique JSON object found in LLM response"
+            raise self._generation_validation_error(
+                GenerationErrorCode.INVALID_JSON,
+                reason=reason,
+                message=message,
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise self._generation_validation_error(
+                GenerationErrorCode.INVALID_JSON,
+                reason="invalid_json",
+                message=str(exc)[:200],
+            ) from exc
+        except Exception as exc:
+            raise self._generation_validation_error(
+                GenerationErrorCode.INVALID_JSON,
+                reason="invalid_json",
+                message=str(exc)[:200],
+            ) from exc
+
+        self._validate_analysis_minimal_contract(data)
     
     def _parse_text_response(
         self, 
@@ -1238,10 +4990,13 @@ class GeminiAnalyzer:
         name: str
     ) -> AnalysisResult:
         """从纯文本响应中尽可能提取分析信息"""
+        report_language = normalize_report_language(
+            getattr(self._get_runtime_config(), "report_language", "zh")
+        )
         # 尝试识别关键词来判断情绪
         sentiment_score = 50
-        trend = '震荡'
-        advice = '持有'
+        trend = localize_trend_prediction('震荡', report_language)
+        advice = localize_operation_advice('持有', report_language)
         
         text_lower = response_text.lower()
         
@@ -1254,34 +5009,48 @@ class GeminiAnalyzer:
         
         if positive_count > negative_count + 1:
             sentiment_score = 65
-            trend = '看多'
-            advice = '买入'
+            trend = localize_trend_prediction('看多', report_language)
+            advice = localize_operation_advice('买入', report_language)
             decision_type = 'buy'
         elif negative_count > positive_count + 1:
             sentiment_score = 35
-            trend = '看空'
-            advice = '卖出'
+            trend = localize_trend_prediction('看空', report_language)
+            advice = localize_operation_advice('卖出', report_language)
             decision_type = 'sell'
         else:
             decision_type = 'hold'
         
         # 截取前500字符作为摘要
-        summary = response_text[:500] if response_text else '无分析结果'
+        summary = response_text[:500] if response_text else _localized_text(
+            report_language, en='No analysis result', zh='无分析结果', ko='분석 결과 없음')
         
-        return AnalysisResult(
+        result = AnalysisResult(
             code=code,
             name=name,
             sentiment_score=sentiment_score,
             trend_prediction=trend,
             operation_advice=advice,
             decision_type=decision_type,
-            confidence_level='低',
+            confidence_level=localize_confidence_level('低', report_language),
             analysis_summary=summary,
-            key_points='JSON解析失败，仅供参考',
-            risk_warning='分析结果可能不准确，建议结合其他信息判断',
+            key_points=_localized_text(
+                report_language,
+                en='JSON parsing failed; treat this as best-effort output.',
+                zh='JSON解析失败，仅供参考',
+                ko='JSON 파싱에 실패했습니다. 참고용으로만 사용하세요.',
+            ),
+            risk_warning=_localized_text(
+                report_language,
+                en='The result may be inaccurate. Cross-check with other information.',
+                zh='分析结果可能不准确，建议结合其他信息判断',
+                ko='결과가 부정확할 수 있습니다. 다른 정보와 교차 확인하세요.',
+            ),
             raw_response=response_text,
-            success=True,
+            success=False,
+            error_message='LLM response is not valid JSON; analysis result will not be persisted',
+            report_language=report_language,
         )
+        return populate_decision_action_fields(result, align_with_score=False)
     
     def batch_analyze(
         self, 

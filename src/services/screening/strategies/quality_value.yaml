@@ -1,0 +1,73 @@
+# Derived from AlphaSift revision 9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf.
+# Licensed under Apache-2.0 and modified for daily_stock_analysis.
+# 稳健价值策略
+name: quality_value
+display_name: 稳健价值
+description: 估值合理、流动性充足、波动不过热，并要求有温和活跃度确认的稳健候选
+version: "1.1"
+category: value
+tags: [value, quality, stability, dynamic_signal]
+style:
+  risk_profile: defensive
+  holding_period: watchlist
+  execution_style: quality_value
+  market_regime: [risk_off, range_bound]
+  capital_profile: medium_liquidity
+  ui_badge: 稳健
+
+screening:
+  enabled: true
+  market_scope: [cn]
+  hard_filters:
+    exclude_st: true
+    amount_min: 80000000
+    pe_ttm_min: 0
+    pe_ttm_max: 25
+    pb_min: 0
+    pb_max: 4.0
+    market_cap_min: 10000000000
+    market_cap_max: 800000000000
+    change_pct_min: -3.5
+    change_pct_max: 5.0
+    price_min: 3
+    price_max: 180
+  tech_weight: 0.15
+  factor_weights:
+    value: 0.32
+    stability: 0.24
+    liquidity: 0.18
+    momentum: 0.08
+    activity: 0.08
+    reversal: 0.04
+    size: 0.06
+  scoring_profile:
+    momentum_chase_start_pct: 3.0
+    momentum_chase_penalty_slope: 16.0
+    activity_ideal_volume_ratio: 1.4
+    activity_ideal_turnover_rate: 2.5
+    stability_hot_change_pct: 4.5
+    stability_high_turnover_rate: 8.0
+    stability_high_volume_ratio: 4.0
+  risk_profile:
+    chase_change_pct: 5.5
+    abnormal_volume_ratio: 4.5
+    high_turnover_rate: 10.0
+    low_llm_confidence: 0.45
+  portfolio_profile:
+    max_same_bucket: 1
+    concentration_penalty: 4.5
+    buckets:
+      金融: [券商, 银行, 保险]
+      消费: [白酒, 食品, 家电, 零售, 消费]
+      公用事业: [电力, 燃气, 水务, 公用事业]
+  scorecard_profile:
+    value_quality_value_min: 72.0
+    value_quality_stability_min: 68.0
+    value_quality_bonus: 2.8
+    volume_spike_ratio: 4.0
+  ranking_hints: |
+    优先关注：
+    1. 估值合理且不是依赖单日情绪推动的标的
+    2. 成交额足够、涨跌幅不过热，适合后续深度分析
+    3. 兼顾行业地位、现金流质量、分红或经营稳定性线索
+  max_output: 5

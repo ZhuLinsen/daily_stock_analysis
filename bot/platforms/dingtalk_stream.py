@@ -20,7 +20,7 @@ https://github.com/open-dingtalk/dingtalk-stream-sdk-python
 """
 
 import logging
-import asyncio
+import inspect
 import threading
 from datetime import datetime
 from typing import Optional, Callable, Any
@@ -44,12 +44,12 @@ from bot.models import BotMessage, BotResponse, ChatType
 class DingtalkStreamHandler:
     """
     钉钉 Stream 模式消息处理器
-    
+
     将 Stream SDK 的回调转换为统一的 BotMessage 格式，
     并调用命令分发器处理。
     """
 
-    def __init__(self, on_message: Callable[[BotMessage], BotResponse]):
+    def __init__(self, on_message: Callable[[BotMessage], Any]):
         """
         Args:
             on_message: 消息处理回调函数，接收 BotMessage 返回 BotResponse
@@ -98,6 +98,8 @@ class DingtalkStreamHandler:
                         self._parent._log_incoming_message(bot_message)
                         # 调用消息处理回调
                         response = self._parent._on_message(bot_message)
+                        if inspect.isawaitable(response):
+                            response = await response
 
                         # 发送回复
                         if response and response.text:
@@ -126,7 +128,7 @@ class DingtalkStreamHandler:
     def _parse_stream_message(self, incoming: Any, raw_data: dict) -> Optional[BotMessage]:
         """
         解析 Stream 消息为统一格式
-        
+
         Args:
             incoming: ChatbotMessage 对象
             raw_data: 原始回调数据
@@ -190,13 +192,13 @@ class DingtalkStreamHandler:
 class DingtalkStreamClient:
     """
     钉钉 Stream 模式客户端
-    
+
     封装 dingtalk-stream SDK，提供简单的启动接口。
-    
+
     使用方式：
         client = DingtalkStreamClient()
         client.start()  # 阻塞运行
-        
+
         # 或者在后台运行
         client.start_background()
     """
@@ -232,20 +234,20 @@ class DingtalkStreamClient:
         self._background_thread: Optional[threading.Thread] = None
         self._running = False
 
-    def _create_message_handler(self) -> Callable[[BotMessage], BotResponse]:
+    def _create_message_handler(self) -> Callable[[BotMessage], Any]:
         """创建消息处理函数"""
 
-        def handle_message(message: BotMessage) -> BotResponse:
+        async def handle_message(message: BotMessage) -> BotResponse:
             from bot.dispatcher import get_dispatcher
             dispatcher = get_dispatcher()
-            return dispatcher.dispatch(message)
+            return await dispatcher.dispatch_async(message)
 
         return handle_message
 
     def start(self) -> None:
         """
         启动 Stream 客户端（阻塞）
-        
+
         此方法会阻塞当前线程，直到客户端停止。
         """
         logger.info("[DingTalk Stream] 正在启动...")
@@ -275,7 +277,7 @@ class DingtalkStreamClient:
     def start_background(self) -> None:
         """
         在后台线程启动 Stream 客户端（非阻塞）
-        
+
         适用于与其他服务（如 WebUI）同时运行的场景。
         """
         if self._background_thread and self._background_thread.is_alive():
@@ -293,6 +295,8 @@ class DingtalkStreamClient:
 
     def _run_in_background(self) -> None:
         """后台运行（处理异常和重连）"""
+        import time
+
         while self._running:
             try:
                 self.start()
@@ -300,7 +304,6 @@ class DingtalkStreamClient:
                 logger.error(f"[DingTalk Stream] 运行异常: {e}")
                 if self._running:
                     logger.info("[DingTalk Stream] 5 秒后重连...")
-                    import time
                     time.sleep(5)
 
     def stop(self) -> None:
@@ -335,7 +338,7 @@ def get_dingtalk_stream_client() -> Optional[DingtalkStreamClient]:
 def start_dingtalk_stream_background() -> bool:
     """
     在后台启动钉钉 Stream 客户端
-    
+
     Returns:
         是否成功启动
     """

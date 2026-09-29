@@ -9,10 +9,12 @@ import logging
 import json
 import hmac
 import hashlib
+from typing import Optional
+
 import requests
 
 from src.config import Config
-from src.formatters import markdown_to_html_document
+from src.formatters import markdown_to_html_document, strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -39,7 +41,7 @@ class AstrbotSender:
         url_ok = bool(self._astrbot_config['astrbot_url'])
         return url_ok
 
-    def send_to_astrbot(self, content: str) -> bool:
+    def send_to_astrbot(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         推送消息到 AstrBot（通过适配器支持）
 
@@ -50,13 +52,13 @@ class AstrbotSender:
             是否发送成功
         """
         if self._astrbot_config['astrbot_url']:
-            return self._send_astrbot(content)
+            return self._send_astrbot(content, timeout_seconds=timeout_seconds)
 
         logger.warning("AstrBot 配置不完整，跳过推送")
         return False
 
 
-    def _send_astrbot(self, content: str) -> bool:
+    def _send_astrbot(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         import time
         """
         使用 Bot API 发送消息到 AstrBot
@@ -68,7 +70,8 @@ class AstrbotSender:
             是否发送成功
         """
 
-        html_content = markdown_to_html_document(content)
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        html_content = markdown_to_html_document(sanitized_content)
 
         try:
             payload = {
@@ -88,7 +91,7 @@ class AstrbotSender:
                 ).hexdigest()
             url = self._astrbot_config['astrbot_url']
             response = requests.post(
-                url, json=payload, timeout=10,
+                url, json=payload, timeout=timeout_seconds or 10,
                 headers={
                     "Content-Type": "application/json",
                     "X-Signature": signature,

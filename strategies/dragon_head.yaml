@@ -10,6 +10,9 @@ required_tools:
   - get_realtime_quote
   - get_sector_rankings
   - search_stock_news
+aliases: [龙头, 龙头战法]
+default_priority: 90
+market_regimes: [sector_hot]
 
 instructions: |
   **龙头策略（Dragon Head Strategy）**

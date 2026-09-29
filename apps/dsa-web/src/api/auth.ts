@@ -5,11 +5,37 @@ export type AuthStatusResponse = {
   loggedIn: boolean;
   passwordSet?: boolean;
   passwordChangeable?: boolean;
+  setupState: 'enabled' | 'password_retained' | 'no_password';
 };
 
 export const authApi = {
   async getStatus(): Promise<AuthStatusResponse> {
     const { data } = await apiClient.get<AuthStatusResponse>('/api/v1/auth/status');
+    return data;
+  },
+
+  async updateSettings(
+    authEnabled: boolean,
+    password?: string,
+    passwordConfirm?: string,
+    currentPassword?: string
+  ): Promise<AuthStatusResponse> {
+    const body: {
+      authEnabled: boolean;
+      password?: string;
+      passwordConfirm?: string;
+      currentPassword?: string;
+    } = { authEnabled };
+    if (password !== undefined) {
+      body.password = password;
+    }
+    if (passwordConfirm !== undefined) {
+      body.passwordConfirm = passwordConfirm;
+    }
+    if (currentPassword !== undefined) {
+      body.currentPassword = currentPassword;
+    }
+    const { data } = await apiClient.post<AuthStatusResponse>('/api/v1/auth/settings', body);
     return data;
   },
 

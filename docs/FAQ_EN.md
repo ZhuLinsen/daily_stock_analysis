@@ -86,18 +86,29 @@ This document compiles common issues encountered by users and their solutions.
    - `GEMINI_MODEL`
    - `REPORT_TYPE`
 
+> Compatibility note: the daily analysis workflow also binds the `STOCK_LIST` environment, so a `STOCK_LIST` value mistakenly added under that Environment's variables can still be read. Repository variables remain the recommended location. Unless you want the daily job to wait for manual approval, do not add required reviewers, wait timers, or deployment branch restrictions to this Environment.
+
 ---
 
 ### Q6: Configuration not taking effect after modifying .env file?
 
 **Solution**:
 1. Ensure `.env` file is in project root directory
-2. **Docker deployment**: Restart container after modification
+2. **Docker deployment / WebUI Settings**:
+   - `--env-file .env` / Compose `env_file` only injects the host `.env` as startup environment variables; it does not create or write back to `/app/.env` inside the container
+   - When the active `.env` file does not contain a key, the WebUI Settings page falls back to showing the same key from startup-injected environment variables; the raw `.env` export still contains only the active config file content
+   - WebUI saves `STOCK_LIST`, `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, `SCHEDULE_TIMES`, `SCHEDULE_RUN_IMMEDIATELY`, and `RUN_IMMEDIATELY` back into the container's `.env`
+   - Saving from WebUI triggers a config reload for the current process, and runtime reads continue from the latest persisted `.env`; for example, scheduled runs keep hot-reading the saved `STOCK_LIST`
+   - If you pass the same keys as startup env vars (`--env-file .env`, `docker run -e ...`, or Compose `environment:`), those startup values can still win on later restarts; update or remove the same-name overrides if you want the WebUI-saved `.env` values to take over
+   - To persist WebUI-saved config, point `ENV_FILE` at a writable data-volume file such as `/app/data/runtime.env`; do not bind-mount the host `.env` as a single file over `/app/.env`
+   - Saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES` starts, stops, or rebuilds the runtime scheduler in long-running WebUI/API/Desktop processes; restarting a `--serve-only` or Desktop process restores enabled daily jobs without immediately running an analysis at startup
+   - `SCHEDULE_RUN_IMMEDIATELY` and `RUN_IMMEDIATELY` remain startup/one-shot settings; saving them does not immediately trigger an analysis run
+3. **Manual `.env` edits in Docker**: Restart the container after changes
    ```bash
    docker-compose down && docker-compose up -d
    ```
-3. **GitHub Actions**: `.env` file doesn't work, must configure in Secrets/Variables
-4. Check if there are multiple `.env` files (e.g., `.env.local`) causing override
+4. **GitHub Actions**: `.env` file doesn't work, must configure in Secrets/Variables
+5. Check if there are multiple `.env` files (e.g., `.env.local`) causing override
 
 ---
 
@@ -116,6 +127,28 @@ PROXY_PORT=10809
 
 ---
 
+### LLM Configuration
+
+> Full details: [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md).
+
+**Q: Configured both GEMINI_API_KEY and LLM_CHANNELS, why does it only use channels?**
+
+The system uses exactly one mode by priority: advanced YAML routing (`LITELLM_CONFIG`) > `LLM_CHANNELS` > legacy keys. However, YAML routing only takes effect when the file can be parsed successfully and yields a non-empty `model_list`; if the YAML path is invalid or the content is empty, the system automatically falls back to `LLM_CHANNELS` or legacy keys. Once a tier is active, lower-priority tiers are not used.
+
+**Q: check_env says no usable AI model is configured, what should I do?**
+
+Start with one provider and its API key. If you want to pin a primary model, add `LITELLM_MODEL=provider/model`. If you need multi-model switching, configure `LLM_CHANNELS` or advanced YAML routing. Run `python scripts/check_env.py --config` to validate config and `python scripts/check_env.py --llm` to actually call the API.
+
+**Q: How to use multiple models at once (e.g. AIHubmix + DeepSeek + Gemini)?**
+
+Use channel mode: set `LLM_CHANNELS=aihubmix,deepseek,gemini` and configure each channel's `LLM_{NAME}_BASE_URL`, `LLM_{NAME}_API_KEY`, `LLM_{NAME}_MODELS`. You can also configure this visually in Web Settings → AI Model → AI Model Access.
+
+**Q: The ask-stock / Agent page says no usable LLM is configured, but I only use legacy `GEMINI_*` / `OPENAI_*` / `ANTHROPIC_*` settings. What should I check?**
+
+First confirm whether `LITELLM_CONFIG` or `LLM_CHANNELS` is active, because either of those tiers overrides legacy keys. If neither tier is active and `AGENT_LITELLM_MODEL` is empty, the ask-stock Agent still inherits legacy provider models automatically: `GEMINI_MODEL`, `OPENAI_MODEL`, and `ANTHROPIC_MODEL` are mapped to LiteLLM provider-prefixed model names for the corresponding runtime. This fix does not silently migrate or clear old settings; it only returns the real backend reason to the frontend so you can see whether the issue is a missing key, a missing model name, or an upper-tier config taking precedence. Full compatibility details are documented in the [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) under “Ask-Stock Agent / LiteLLM compatibility notes”.
+
+---
+
 ## Push Notification Related
 
 ### Q8: Bot push failed, showing message too long?
@@ -131,8 +164,21 @@ PROXY_PORT=10809
 1. **Auto-chunking**: Latest version implements automatic long message splitting
 2. **Single stock push mode**: Set `SINGLE_STOCK_NOTIFY=true`, push immediately after each stock analysis
 3. **Brief report**: Set `REPORT_TYPE=simple` for simplified format
+4. **Local file fallback**: Even with no notification channel configured, `SINGLE_STOCK_NOTIFY=true` still saves each stock report to `reports/report_YYYYMMDD_<stock_code>.md`
 
 ---
+
+### Q8.1: Analysis finished, but no report file was created under `reports/`?
+
+**Common causes**:
+1. `STOCK_LIST` is empty and market review was not enabled for this run
+2. The stock list is non-empty, but every stock analysis failed so no successful result was produced
+3. Stock results were produced, but writing to `reports/` failed (for example due to permissions or mount issues)
+
+**Current behavior**:
+1. CLI-triggered analysis now logs the exact failure reason for these cases
+2. Standalone non-`--serve` runs now return a non-zero exit code so workflows do not treat “no report generated” as success
+3. In single-stock push mode, local Markdown report saving still happens even when notifications are not configured
 
 ### Q9: Not receiving Telegram push messages?
 
@@ -183,15 +229,60 @@ PROXY_PORT=10809
 ```bash
 # No need to configure GEMINI_API_KEY
 OPENAI_API_KEY=sk-xxxxxxxx
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-chat
-# Thinking mode: deepseek-reasoner, deepseek-r1, qwq auto-detected; deepseek-chat enabled by model name
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-v4-flash
+# deepseek-chat / deepseek-reasoner remain compatible, but DeepSeek marks them deprecated after 2026/07/24
 ```
 
 Supported model services:
-- DeepSeek: `https://api.deepseek.com/v1`
+- DeepSeek: `https://api.deepseek.com`
 - Qwen (Tongyi Qianwen): `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Moonshot: `https://api.moonshot.cn/v1`
+
+---
+
+### Q12b: How to use Ollama local models?
+
+**Configuration**: Use `OLLAMA_API_BASE` + `LITELLM_MODEL`, or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`).
+
+**Pitfall**: Do not use `OPENAI_BASE_URL` for Ollama, or the system will concatenate URLs incorrectly (e.g. 404, `api/generate/api/show`). See [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) Example 4 and channel examples.
+
+---
+
+### Q12c: Getting `OllamaException / APIConnectionError` (All LLM models failed)?
+
+**Symptom**: Log shows `litellm.APIConnectionError: OllamaException` or `Analysis failed: All LLM models failed (tried 1 model(s))`.
+
+Work through the following 5 checkpoints in order:
+
+1. **Is the Ollama service running?**
+   ```bash
+   # Check process
+   pgrep -a ollama
+   # If no output, start it first
+   ollama serve
+   ```
+   Verify it is listening: `curl http://localhost:11434` should return `Ollama is running`.
+
+2. **Is `OLLAMA_API_BASE` set correctly?**
+   - ✅ Correct: `OLLAMA_API_BASE=http://localhost:11434`
+   - ❌ Wrong: Putting the Ollama address in `OPENAI_BASE_URL` causes the URL path to be mangled (e.g. `…/api/generate/api/show`).
+
+3. **Does the model name include the `ollama/` prefix?**
+   - ✅ Correct: `LITELLM_MODEL=ollama/qwen3:8b`
+   - ❌ Wrong: `LITELLM_MODEL=qwen3:8b` (missing prefix — litellm cannot route to Ollama)
+
+4. **Has the model been pulled locally?**
+   ```bash
+   ollama list           # list downloaded models
+   ollama pull qwen3:8b  # pull if missing
+   ```
+
+5. **Network / firewall for remote or Docker deployments**
+   - If Ollama runs on a different host, set `OLLAMA_API_BASE` to its actual IP, e.g. `http://192.168.1.100:11434`.
+   - Make sure port 11434 is open and Ollama binds the right address (`OLLAMA_HOST=0.0.0.0:11434`).
+
+> See [LLM Config Guide → Example 4 (Ollama)](LLM_CONFIG_GUIDE_EN.md#example-4-using-ollama-local-models) for a complete configuration example.
 
 ---
 
@@ -217,15 +308,57 @@ Supported model services:
 1. Ensure startup command includes `--host 0.0.0.0` (cannot be 127.0.0.1)
 2. Check port mapping is correct:
    ```yaml
-   ports:
-     - "8000:8000"
+    ports:
+      - "8000:8000"
+    ```
+
+---
+
+### Q14.1: Where is the software version stored when I install with Docker?
+
+**Short answer**: For Docker users, the authoritative version is **the image tag you actually deployed**, not a hardcoded constant in a Python source file.
+
+**Why**:
+1. Docker publishing is driven by `.github/workflows/docker-publish.yml`, which only publishes release images for Git tags matching `v*.*.*` (for example, `v3.12.0`).
+2. So the Docker image version follows the **GitHub Release / Git tag**, rather than a fixed value in `main.py`, `server.py`, or another backend module.
+3. The `version` field in `apps/dsa-web/package.json` is currently a placeholder `0.0.0`. The WebUI version/build card is useful for checking whether frontend assets were rebuilt, but it is not the Docker release version.
+4. The desktop app has its own version in `apps/dsa-desktop/package.json`, and that only applies to the Electron desktop build, not the Docker image.
+
+**How to check your current Docker version**:
+1. **Check the image tag in your deploy command or Compose file**. For example, in `ghcr.io/zhulinsen/daily_stock_analysis:v3.12.0`, the deployed version is `v3.12.0`.
+2. **If you used `latest`**, check your original `docker pull`, `docker-compose.yml`, or deployment script, then compare with [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases).
+3. **If you only want to confirm the frontend was refreshed**, open WebUI → Settings and inspect `Build ID` / `Build Time`; that confirms static asset freshness, not the Docker release version.
+
+**Recommendation**: To avoid repeated updates, prefer a pinned version tag such as `v3.12.0` instead of relying on `latest`.
+
+---
+
+## Desktop App
+
+### Q15: macOS says the desktop app is damaged or cannot be opened?
+
+**Cause**: The current macOS DMG is not signed and notarized with an Apple Developer certificate. After a browser download, macOS Gatekeeper may attach the quarantine attribute and block startup.
+
+**Solution**:
+
+1. Download only from the project's [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases), and select the package matching your Mac architecture. Do not bypass Gatekeeper for third-party copies or files from an untrusted source.
+2. Drag `Daily Stock Analysis` into Applications, then first try **System Settings → Privacy & Security → Open Anyway**.
+3. If it still does not start and you have verified that it came from the official project Release, remove quarantine only from this app and launch it:
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
+   open "/Applications/Daily Stock Analysis.app"
    ```
+
+Replace the path if the app is not in `/Applications`. Never run `xattr` against the entire `/Applications` directory. This is a temporary way to allow a trusted unsigned app; it is not a substitute for signing or notarization. See the [desktop packaging guide](desktop-package.md#macos-提示应用已损坏无法打开) for the complete troubleshooting notes.
+
+> Related Issue: [#2113](https://github.com/ZhuLinsen/daily_stock_analysis/issues/2113)
 
 ---
 
 ## Other Issues
 
-### Q15: How to run only market review, without stock analysis?
+### Q16: How to run only market review, without stock analysis?
 
 **Method**:
 ```bash
@@ -238,7 +371,7 @@ python main.py --market-only
 
 ---
 
-### Q16: Buy/Hold/Sell counts in analysis results are incorrect?
+### Q17: Buy/Hold/Sell counts in analysis results are incorrect?
 
 **Cause**: Earlier versions used regex matching for statistics, may not match actual recommendations.
 
@@ -255,4 +388,4 @@ If the above content doesn't solve your issue, welcome to:
 
 ---
 
-*Last updated: 2026-02-01*
+*Last updated: 2026-08-03*

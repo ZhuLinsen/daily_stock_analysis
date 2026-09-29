@@ -1,0 +1,506 @@
+# -*- coding: utf-8 -*-
+"""Tests for ``scripts/check_static_assets.py`` and the equivalent
+backend startup self-check in ``api.app``.
+
+Both code paths target the blank-page / "Preparing backend..." regression
+captured in GitHub issues #1064, #1065 and #1050: vite produces a fresh
+``index.html`` that references ``/assets/index-<hash>.js``, but the
+packaging step copies a stale ``static/assets`` directory, so the bundle
+referenced by ``index.html`` does not exist on disk.
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+import logging
+import mimetypes
+import os
+import sys
+from pathlib import Path
+from unittest.mock import ANY, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+check_static_assets = importlib.import_module("check_static_assets")
+
+
+def _write_index(static_dir: Path, body: str) -> None:
+    static_dir.mkdir(parents=True, exist_ok=True)
+    (static_dir / "index.html").write_text(body, encoding="utf-8")
+
+
+def _vite_index(js_name: str, css_name: str) -> str:
+    return (
+        "<!doctype html><html><head>"
+        f'<script type="module" crossorigin src="/assets/{js_name}"></script>'
+        f'<link rel="stylesheet" crossorigin href="/assets/{css_name}">'
+        "</head><body><div id=\"root\"></div></body></html>"
+    )
+
+
+def test_check_static_dir_passes_when_assets_match(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "index-abc.js").write_text("// js", encoding="utf-8")
+    (assets_dir / "index-abc.css").write_text("/* css */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    referenced, missing = check_static_assets.check_static_dir(static_dir)
+
+    assert sorted(referenced) == ["/assets/index-abc.css", "/assets/index-abc.js"]
+    assert missing == []
+
+
+def test_check_static_dir_detects_stale_bundle(tmp_path: Path) -> None:
+    """index.html references new hash but assets/ holds an old hash."""
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    # Stale on-disk bundle.
+    (assets_dir / "index-OLD.js").write_text("// old", encoding="utf-8")
+    (assets_dir / "index-OLD.css").write_text("/* old */", encoding="utf-8")
+    # Fresh index.html points to a different hash.
+    _write_index(static_dir, _vite_index("index-NEW.js", "index-NEW.css"))
+
+    referenced, missing = check_static_assets.check_static_dir(static_dir)
+
+    assert "/assets/index-NEW.js" in referenced
+    assert sorted(missing) == ["/assets/index-NEW.css", "/assets/index-NEW.js"]
+
+
+def test_check_static_dir_raises_when_index_missing(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    with pytest.raises(FileNotFoundError):
+        check_static_assets.check_static_dir(static_dir)
+
+
+def test_main_returns_nonzero_when_assets_missing(tmp_path: Path, capsys) -> None:
+    static_dir = tmp_path / "static"
+    (static_dir / "assets").mkdir(parents=True)
+    _write_index(static_dir, _vite_index("index-MISSING.js", "index-MISSING.css"))
+
+    rc = check_static_assets.main(["check_static_assets.py", str(static_dir)])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "ERROR" in captured.err
+    assert "/assets/index-MISSING.js" in captured.err
+
+
+def test_main_returns_zero_when_consistent(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    assets = static_dir / "assets"
+    assets.mkdir(parents=True)
+    (assets / "main.js").write_text("// ok", encoding="utf-8")
+    (assets / "main.css").write_text("/* ok */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("main.js", "main.css"))
+
+    rc = check_static_assets.main(["check_static_assets.py", str(static_dir)])
+    assert rc == 0
+
+
+def test_backend_startup_check_logs_when_bundle_inconsistent(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from api import app as app_module
+
+    static_dir = tmp_path / "static"
+    (static_dir / "assets").mkdir(parents=True)
+    _write_index(static_dir, _vite_index("index-NEW.js", "index-NEW.css"))
+
+    with caplog.at_level(logging.ERROR, logger="api.app"):
+        missing = app_module._check_frontend_assets_consistency(static_dir)
+
+    assert sorted(missing) == ["/assets/index-NEW.css", "/assets/index-NEW.js"]
+    assert any(
+        "Frontend bundle is inconsistent" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_backend_startup_check_silent_when_bundle_consistent(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from api import app as app_module
+
+    static_dir = tmp_path / "static"
+    assets = static_dir / "assets"
+    assets.mkdir(parents=True)
+    (assets / "index-abc.js").write_text("// js", encoding="utf-8")
+    (assets / "index-abc.css").write_text("/* css */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    with caplog.at_level(logging.ERROR, logger="api.app"):
+        missing = app_module._check_frontend_assets_consistency(static_dir)
+
+    assert missing == []
+    assert not any(
+        "Frontend bundle is inconsistent" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_missing_asset_returns_safe_404_content_types(tmp_path: Path) -> None:
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "index-abc.js").write_text("// ok", encoding="utf-8")
+    (assets_dir / "index-abc.css").write_text("/* ok */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    js_response = client.get("/assets/index-missing.js")
+    css_response = client.get("/assets/index-missing.css")
+    html_response = client.get("/assets/%3Cscript%3Ealert(1)%3C/script%3E.html")
+
+    assert js_response.status_code == 404
+    assert js_response.text == "asset not found"
+    assert js_response.headers["content-type"].startswith("text/javascript")
+
+    assert css_response.status_code == 404
+    assert css_response.text == "asset not found"
+    assert css_response.headers["content-type"].startswith("text/css")
+
+    assert html_response.status_code == 404
+    assert html_response.text == "asset not found"
+    assert html_response.headers["content-type"].startswith("text/plain")
+
+
+def test_existing_asset_is_served_from_explicit_assets_route(tmp_path: Path) -> None:
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    js_file = assets_dir / "index-abc.js"
+    css_file = assets_dir / "index-abc.css"
+    js_file.write_text("console.log('ok')", encoding="utf-8")
+    css_file.write_text("body{color:#fff}", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    js_response = client.get("/assets/index-abc.js")
+    css_response = client.get("/assets/index-abc.css")
+
+    assert js_response.status_code == 200
+    assert js_response.text == "console.log('ok')"
+    assert js_response.headers["content-type"].startswith("text/javascript")
+
+    assert css_response.status_code == 200
+    assert css_response.text == "body{color:#fff}"
+    assert css_response.headers["content-type"].startswith("text/css")
+
+
+def test_existing_js_asset_overrides_bad_system_mime_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.app import create_app
+
+    monkeypatch.setitem(mimetypes.types_map, ".js", "text/plain")
+    monkeypatch.setitem(mimetypes.common_types, ".js", "text/plain")
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    js_file = assets_dir / "index-abc.js"
+    js_file.write_text("console.log('ok')", encoding="utf-8")
+    (assets_dir / "index-abc.css").write_text("body{color:#fff}", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    js_response = client.get("/assets/index-abc.js")
+
+    assert js_response.status_code == 200
+    assert js_response.text == "console.log('ok')"
+    assert js_response.headers["content-type"].startswith("text/javascript")
+
+
+def test_existing_asset_supports_head_and_conditional_requests(tmp_path: Path) -> None:
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    js_file = assets_dir / "index-abc.js"
+    js_file.write_text("console.log('ok')", encoding="utf-8")
+    (assets_dir / "index-abc.css").write_text("body{color:#fff}", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    get_response = client.get("/assets/index-abc.js")
+    etag = get_response.headers["etag"]
+
+    head_response = client.head("/assets/index-abc.js")
+    cached_response = client.get(
+        "/assets/index-abc.js",
+        headers={"if-none-match": etag},
+    )
+
+    assert get_response.status_code == 200
+    assert head_response.status_code == 200
+    assert head_response.content == b""
+    assert head_response.headers["etag"] == etag
+    assert head_response.headers["content-type"].startswith("text/javascript")
+
+    assert cached_response.status_code == 304
+    assert cached_response.content == b""
+    assert cached_response.headers["etag"] == etag
+
+
+def test_frontend_index_responses_are_not_cacheable(tmp_path: Path) -> None:
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "index-abc.js").write_text("// ok", encoding="utf-8")
+    (assets_dir / "index-abc.css").write_text("/* ok */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    root_response = client.get("/")
+    direct_index_response = client.get("/index.html")
+    fallback_response = client.get("/analysis/history")
+
+    assert root_response.status_code == 200
+    assert direct_index_response.status_code == 200
+    assert fallback_response.status_code == 200
+    for response in (root_response, direct_index_response, fallback_response):
+        assert response.headers["cache-control"] == (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["expires"] == "0"
+
+
+def _write_stock_index(path: Path, name: str = "平安银行", size: int = 1) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            [
+                [
+                    f"{index:06d}.SZ",
+                    f"{index:06d}",
+                    name,
+                    "pinganyinhang",
+                    "payh",
+                    [],
+                    "CN",
+                    "stock",
+                    True,
+                    100,
+                ]
+                for index in range(size)
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_stock_index_route_serves_newer_remote_cache(tmp_path: Path) -> None:
+    from api import app as app_module
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    cache_path = tmp_path / "cache" / "stocks.index.json"
+    bundled_path = tmp_path / "bundled" / "stocks.index.json"
+    _write_stock_index(static_dir / "stocks.index.json", "内置静态")
+    _write_stock_index(cache_path, "远程缓存", size=100)
+    _write_stock_index(bundled_path, "源码内置")
+    os.utime(static_dir / "stocks.index.json", (1_000, 1_000))
+    os.utime(cache_path, (2_000, 2_000))
+    os.utime(bundled_path, (1_000, 1_000))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    with patch.object(app_module, "get_remote_stock_index_cache_path", return_value=cache_path), \
+         patch.object(app_module, "_bundled_stock_index_path", return_value=bundled_path), \
+         patch.object(app_module, "_schedule_stock_index_background_refresh") as schedule:
+        response = client.get("/stocks.index.json")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.json()[0][2] == "远程缓存"
+    schedule.assert_any_call(ANY, "serve-stock-index")
+
+
+def test_stock_index_route_prefers_newer_static_index_over_older_remote_cache(tmp_path: Path) -> None:
+    from api import app as app_module
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    cache_path = tmp_path / "cache" / "stocks.index.json"
+    bundled_path = tmp_path / "bundled" / "stocks.index.json"
+    _write_stock_index(static_dir / "stocks.index.json", "新内置静态")
+    _write_stock_index(cache_path, "旧远程缓存", size=100)
+    _write_stock_index(bundled_path, "源码内置")
+    os.utime(static_dir / "stocks.index.json", (2_000, 2_000))
+    os.utime(cache_path, (1_000, 1_000))
+    os.utime(bundled_path, (1_000, 1_000))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    with patch.object(app_module, "get_remote_stock_index_cache_path", return_value=cache_path), \
+         patch.object(app_module, "_bundled_stock_index_path", return_value=bundled_path), \
+         patch.object(app_module, "_schedule_stock_index_background_refresh"):
+        response = client.get("/stocks.index.json")
+
+    assert response.status_code == 200
+    assert response.json()[0][2] == "新内置静态"
+
+
+def test_stock_index_route_falls_back_to_static_index(tmp_path: Path) -> None:
+    from api import app as app_module
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    cache_path = tmp_path / "cache" / "missing.json"
+    bundled_path = tmp_path / "bundled" / "stocks.index.json"
+    _write_stock_index(static_dir / "stocks.index.json", "内置静态")
+    _write_stock_index(bundled_path, "源码内置")
+    os.utime(static_dir / "stocks.index.json", (1_000, 1_000))
+    os.utime(bundled_path, (2_000, 2_000))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    with patch.object(app_module, "get_remote_stock_index_cache_path", return_value=cache_path), \
+         patch.object(app_module, "_bundled_stock_index_path", return_value=bundled_path), \
+         patch.object(app_module, "_schedule_stock_index_background_refresh"):
+        response = client.get("/stocks.index.json")
+
+    assert response.status_code == 200
+    assert response.json()[0][2] == "内置静态"
+
+
+def test_stock_index_route_does_not_parse_bundled_candidates_on_hot_path(tmp_path: Path) -> None:
+    from api import app as app_module
+    from api.app import create_app
+    from src.data import stock_index_loader
+
+    static_dir = tmp_path / "static"
+    cache_path = tmp_path / "cache" / "missing.json"
+    bundled_path = tmp_path / "bundled" / "stocks.index.json"
+    _write_stock_index(static_dir / "stocks.index.json", "内置静态")
+    _write_stock_index(bundled_path, "源码内置")
+    os.utime(static_dir / "stocks.index.json", (2_000, 2_000))
+    os.utime(bundled_path, (1_000, 1_000))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    with patch.object(app_module, "get_remote_stock_index_cache_path", return_value=cache_path), \
+         patch.object(app_module, "_bundled_stock_index_path", return_value=bundled_path), \
+         patch.object(app_module, "_schedule_stock_index_background_refresh"), \
+         patch.object(stock_index_loader, "_load_stock_index_file", side_effect=AssertionError("unexpected parse")):
+        response = client.get("/stocks.index.json")
+
+    assert response.status_code == 200
+    assert response.json()[0][2] == "内置静态"
+
+
+def test_stock_index_route_skips_invalid_remote_cache(tmp_path: Path) -> None:
+    from api import app as app_module
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    cache_path = tmp_path / "cache" / "stocks.index.json"
+    bundled_path = tmp_path / "bundled" / "stocks.index.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text("not-json", encoding="utf-8")
+    _write_stock_index(static_dir / "stocks.index.json", "内置静态")
+    _write_stock_index(bundled_path, "源码内置")
+    os.utime(cache_path, (3_000, 3_000))
+    os.utime(static_dir / "stocks.index.json", (2_000, 2_000))
+    os.utime(bundled_path, (1_000, 1_000))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    with patch.object(app_module, "get_remote_stock_index_cache_path", return_value=cache_path), \
+         patch.object(app_module, "_bundled_stock_index_path", return_value=bundled_path), \
+         patch.object(app_module, "_schedule_stock_index_background_refresh"):
+        response = client.get("/stocks.index.json")
+
+    assert response.status_code == 200
+    assert response.json()[0][2] == "内置静态"
+
+
+def test_stock_index_route_returns_404_when_all_candidates_missing(tmp_path: Path) -> None:
+    from api import app as app_module
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    cache_path = tmp_path / "cache" / "missing.json"
+    bundled_path = tmp_path / "bundled" / "missing.json"
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    with patch.object(app_module, "get_remote_stock_index_cache_path", return_value=cache_path), \
+         patch.object(app_module, "_bundled_stock_index_path", return_value=bundled_path), \
+         patch.object(app_module, "_schedule_stock_index_background_refresh"):
+        response = client.get("/stocks.index.json")
+
+    assert response.status_code == 404
+    assert response.text == "stock index not found"
+
+
+def test_app_startup_schedules_stock_index_background_refresh(tmp_path: Path) -> None:
+    from api import app as app_module
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+
+    with patch.object(app_module, "_schedule_stock_index_background_refresh") as schedule:
+        with TestClient(create_app(static_dir=static_dir)):
+            pass
+
+    schedule.assert_called_once_with(ANY, "startup")
+
+
+@pytest.mark.parametrize(
+    "request_path",
+    [
+        "/assets/..%5C..%5Csecret.txt",
+        "/assets/C:%5Csecret.txt",
+        "/assets/%5Cwindows%5Csystem32%5Cconfig",
+        "/assets/%2e%2e/%2e%2e/secret.txt",
+        "/assets/%2500.js",
+    ],
+)
+def test_asset_traversal_attempts_are_rejected(
+    tmp_path: Path,
+    request_path: str,
+) -> None:
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "index-abc.js").write_text("// ok", encoding="utf-8")
+    (assets_dir / "index-abc.css").write_text("/* ok */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+    outside_secret = tmp_path / "secret.txt"
+    outside_secret.write_text("top secret", encoding="utf-8")
+
+    client = TestClient(create_app(static_dir=static_dir))
+    response = client.get(request_path)
+
+    assert response.status_code == 404
+    assert response.text == "not found"
+    assert "top secret" not in response.text

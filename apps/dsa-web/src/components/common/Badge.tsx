@@ -1,36 +1,37 @@
 import React from 'react';
+import { cn } from '../../utils/cn';
 
 type BadgeVariant = 'default' | 'success' | 'warning' | 'danger' | 'info' | 'history';
 
-interface BadgeProps {
+interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   children: React.ReactNode;
   variant?: BadgeVariant;
   size?: 'sm' | 'md';
   glow?: boolean;
   className?: string;
+  style?: React.CSSProperties;
 }
 
 const variantStyles: Record<BadgeVariant, string> = {
-  default: 'bg-slate-700/50 text-gray-300 border-slate-600/50',
-  success: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-  warning: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-  danger: 'bg-red-500/20 text-red-400 border-red-500/30',
-  info: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
-  history: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  default: 'border-border/55 bg-elevated/75 text-secondary-text',
+  success: 'border-success/20 bg-success/10 text-success',
+  warning: 'border-warning/20 bg-warning/10 text-warning',
+  danger: 'border-danger/20 bg-danger/10 text-danger',
+  info: 'border-cyan/30 bg-cyan/12 text-cyan',
+  history: 'border-purple/20 bg-purple/10 text-purple',
 };
 
 const glowStyles: Record<BadgeVariant, string> = {
   default: '',
-  success: 'shadow-emerald-500/20',
-  warning: 'shadow-amber-500/20',
-  danger: 'shadow-red-500/20',
-  info: 'shadow-cyan-500/20',
-  history: 'shadow-purple-500/20',
+  success: 'shadow-success/20',
+  warning: 'shadow-warning/20',
+  danger: 'shadow-danger/20',
+  info: 'shadow-cyan/20',
+  history: 'shadow-purple/20',
 };
 
 /**
- * 标签徽章组件
- * 支持多种变体和发光效果
+ * Badge component with multiple variants and optional glow styling.
  */
 export const Badge: React.FC<BadgeProps> = ({
   children,
@@ -38,19 +39,22 @@ export const Badge: React.FC<BadgeProps> = ({
   size = 'sm',
   glow = false,
   className = '',
+  style,
+  ...rest
 }) => {
   const sizeStyles = size === 'sm' ? 'px-2 py-0.5 text-xs' : 'px-3 py-1 text-sm';
 
   return (
     <span
-      className={`
-        inline-flex items-center gap-1 rounded-full font-medium
-        border backdrop-blur-sm
-        ${sizeStyles}
-        ${variantStyles[variant]}
-        ${glow ? `shadow-lg ${glowStyles[variant]}` : ''}
-        ${className}
-      `}
+      {...rest}
+      style={style}
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border font-medium backdrop-blur-sm',
+        sizeStyles,
+        variantStyles[variant],
+        glow && `shadow-lg ${glowStyles[variant]}`,
+        className,
+      )}
     >
       {children}
     </span>

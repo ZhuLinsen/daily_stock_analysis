@@ -1,0 +1,266 @@
+# -*- coding: utf-8 -*-
+"""Repository for DecisionSignal feedback and forward outcomes."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
+from sqlalchemy import and_, desc, func, select
+
+from src.storage import (
+    DatabaseManager,
+    DecisionSignalFeedbackRecord,
+    DecisionSignalOutcomeRecord,
+    DecisionSignalRecord,
+    utc_naive_now,
+)
+
+
+@dataclass(frozen=True)
+class OutcomeStatsRow:
+    """Outcome row plus the live signal fields required by profile calibration."""
+
+    outcome: DecisionSignalOutcomeRecord
+    decision_profile: Optional[str]
+    metadata_json: Optional[str]
+    stock_code: Optional[str] = None
+
+
+class DecisionSignalOutcomeRepository:
+    """DB access for signal-level outcome and feedback sidecar tables."""
+
+    def __init__(self, db_manager: Optional[DatabaseManager] = None):
+        self.db = db_manager or DatabaseManager.get_instance()
+
+    def list_candidate_signals(
+        self,
+        *,
+        signal_id: Optional[int] = None,
+        stock_codes: Optional[List[str]] = None,
+        market: Optional[str] = None,
+        action: Optional[str] = None,
+        source_type: Optional[str] = None,
+        statuses: Optional[List[str]] = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> List[DecisionSignalRecord]:
+        safe_limit = max(1, min(int(limit), 500))
+        safe_offset = max(0, int(offset))
+        conditions = []
+        if signal_id is not None:
+            conditions.append(DecisionSignalRecord.id == signal_id)
+        if stock_codes:
+            conditions.append(DecisionSignalRecord.stock_code.in_(stock_codes))
+        if market:
+            conditions.append(DecisionSignalRecord.market == market)
+        if action:
+            conditions.append(DecisionSignalRecord.action == action)
+        if source_type:
+            conditions.append(DecisionSignalRecord.source_type == source_type)
+        if statuses:
+            conditions.append(DecisionSignalRecord.status.in_(statuses))
+        where_clause = and_(*conditions) if conditions else True
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(DecisionSignalRecord)
+                .where(where_clause)
+                .order_by(desc(DecisionSignalRecord.created_at), desc(DecisionSignalRecord.id))
+                .offset(safe_offset)
+                .limit(safe_limit)
+            ).scalars().all()
+            return list(rows)
+
+    def list_outcomes_for_signals(
+        self,
+        *,
+        signal_ids: List[int],
+        engine_version: str,
+    ) -> List[DecisionSignalOutcomeRecord]:
+        if not signal_ids:
+            return []
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(DecisionSignalOutcomeRecord)
+                .where(
+                    DecisionSignalOutcomeRecord.signal_id.in_(signal_ids),
+                    DecisionSignalOutcomeRecord.engine_version == engine_version,
+                )
+            ).scalars().all()
+            return list(rows)
+
+    def get_outcome(
+        self,
+        *,
+        signal_id: int,
+        horizon: str,
+        engine_version: str,
+    ) -> Optional[DecisionSignalOutcomeRecord]:
+        with self.db.get_session() as session:
+            return session.execute(
+                select(DecisionSignalOutcomeRecord)
+                .where(
+                    DecisionSignalOutcomeRecord.signal_id == signal_id,
+                    DecisionSignalOutcomeRecord.horizon == horizon,
+                    DecisionSignalOutcomeRecord.engine_version == engine_version,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def upsert_outcome(self, fields: Dict[str, Any]) -> Tuple[DecisionSignalOutcomeRecord, bool]:
+        now = utc_naive_now()
+        with self.db.get_session() as session:
+            existing = session.execute(
+                select(DecisionSignalOutcomeRecord)
+                .where(
+                    DecisionSignalOutcomeRecord.signal_id == fields["signal_id"],
+                    DecisionSignalOutcomeRecord.horizon == fields["horizon"],
+                    DecisionSignalOutcomeRecord.engine_version == fields["engine_version"],
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if existing is None:
+                row = DecisionSignalOutcomeRecord(**fields)
+                session.add(row)
+                session.commit()
+                session.refresh(row)
+                return row, True
+
+            for key, value in fields.items():
+                if key in {"id", "created_at"}:
+                    continue
+                setattr(existing, key, value)
+            existing.updated_at = now
+            session.commit()
+            session.refresh(existing)
+            return existing, False
+
+    def list_outcomes(
+        self,
+        *,
+        signal_id: Optional[int] = None,
+        horizon: Optional[str] = None,
+        engine_version: Optional[str] = None,
+        eval_status: Optional[str] = None,
+        outcome: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Tuple[List[DecisionSignalOutcomeRecord], int]:
+        safe_page = max(1, int(page))
+        safe_page_size = max(1, min(int(page_size), 100))
+        conditions = []
+        if signal_id is not None:
+            conditions.append(DecisionSignalOutcomeRecord.signal_id == signal_id)
+        if horizon:
+            conditions.append(DecisionSignalOutcomeRecord.horizon == horizon)
+        if engine_version:
+            conditions.append(DecisionSignalOutcomeRecord.engine_version == engine_version)
+        if eval_status:
+            conditions.append(DecisionSignalOutcomeRecord.eval_status == eval_status)
+        if outcome:
+            conditions.append(DecisionSignalOutcomeRecord.outcome == outcome)
+        where_clause = and_(*conditions) if conditions else True
+        offset = (safe_page - 1) * safe_page_size
+        with self.db.get_session() as session:
+            total = session.execute(
+                select(func.count(DecisionSignalOutcomeRecord.id))
+                .select_from(DecisionSignalOutcomeRecord)
+                .where(where_clause)
+            ).scalar() or 0
+            rows = session.execute(
+                select(DecisionSignalOutcomeRecord)
+                .where(where_clause)
+                .order_by(desc(DecisionSignalOutcomeRecord.updated_at), desc(DecisionSignalOutcomeRecord.id))
+                .offset(offset)
+                .limit(safe_page_size)
+            ).scalars().all()
+            return list(rows), int(total)
+
+    def list_stats_rows(
+        self,
+        *,
+        engine_version: str,
+        horizons: Optional[List[str]] = None,
+        statuses: Optional[List[str]] = None,
+        stock_codes: Optional[List[str]] = None,
+    ) -> List[OutcomeStatsRow]:
+        conditions = [DecisionSignalOutcomeRecord.engine_version == engine_version]
+        if horizons:
+            conditions.append(DecisionSignalOutcomeRecord.horizon.in_(horizons))
+        if statuses:
+            conditions.append(DecisionSignalRecord.status.in_(statuses))
+        if stock_codes:
+            conditions.append(DecisionSignalRecord.stock_code.in_(stock_codes))
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(
+                    DecisionSignalOutcomeRecord,
+                    DecisionSignalRecord.decision_profile,
+                    DecisionSignalRecord.metadata_json,
+                    DecisionSignalRecord.stock_code,
+                )
+                .join(DecisionSignalRecord, DecisionSignalRecord.id == DecisionSignalOutcomeRecord.signal_id)
+                .where(and_(*conditions))
+            ).all()
+            return [
+                OutcomeStatsRow(
+                    outcome=outcome,
+                    decision_profile=decision_profile,
+                    metadata_json=metadata_json,
+                    stock_code=stock_code,
+                )
+                for outcome, decision_profile, metadata_json, stock_code in rows
+            ]
+
+    def get_feedback(self, *, signal_id: int) -> Optional[DecisionSignalFeedbackRecord]:
+        with self.db.get_session() as session:
+            return session.execute(
+                select(DecisionSignalFeedbackRecord)
+                .where(DecisionSignalFeedbackRecord.signal_id == signal_id)
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def list_feedback_reason_codes(self, *, signal_ids: List[int]) -> List[str]:
+        """Return non-empty ``not_useful`` feedback reason codes for the given signals.
+
+        Used by review aggregation to surface common miss reasons without
+        exposing raw feedback notes (low-sensitivity contract).  Only negative
+        feedback is eligible: ``useful`` reason codes describe why a signal
+        worked, not why it missed, and must not pollute miss-reason stats.
+        """
+        if not signal_ids:
+            return []
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(DecisionSignalFeedbackRecord.reason_code)
+                .where(
+                    DecisionSignalFeedbackRecord.signal_id.in_(signal_ids),
+                    DecisionSignalFeedbackRecord.feedback_value == "not_useful",
+                    DecisionSignalFeedbackRecord.reason_code.isnot(None),
+                )
+            ).scalars().all()
+            return [str(code) for code in rows if code]
+
+    def upsert_feedback(self, fields: Dict[str, Any]) -> DecisionSignalFeedbackRecord:
+        now = utc_naive_now()
+        with self.db.get_session() as session:
+            existing = session.execute(
+                select(DecisionSignalFeedbackRecord)
+                .where(DecisionSignalFeedbackRecord.signal_id == fields["signal_id"])
+                .limit(1)
+            ).scalar_one_or_none()
+            if existing is None:
+                row = DecisionSignalFeedbackRecord(**fields)
+                session.add(row)
+                session.commit()
+                session.refresh(row)
+                return row
+
+            for key, value in fields.items():
+                if key in {"id", "created_at"}:
+                    continue
+                setattr(existing, key, value)
+            existing.updated_at = now
+            session.commit()
+            session.refresh(existing)
+            return existing
