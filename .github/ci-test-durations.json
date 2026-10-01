@@ -204,6 +204,7 @@
     "tests/test_run_diagnostics_p2.py": 0.022,
     "tests/test_run_flow.py": 0.091,
     "tests/test_runtime_scheduler_service.py": 0.045,
+    "tests/test_schedule_startup_dedup.py": 0.73,
     "tests/test_scheduler_background.py": 0.015,
     "tests/test_screening_api.py": 9.141,
     "tests/test_screening_history.py": 0.304,

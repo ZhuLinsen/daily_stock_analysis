@@ -1201,6 +1201,9 @@ class Config:
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
+    # 定时模式启动立即执行的当日去重开关：当天已有成功全量分析记录时跳过启动补跑；
+    # 设为 false 可完全旁路该行为（回到上游"每次启动都立即执行"的现状）
+    schedule_startup_dedup: bool = True
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     daily_market_context_enabled: bool = True   # 是否将大盘环境摘要用于个股分析 Prompt 与保守护栏
@@ -1768,6 +1771,18 @@ class Config:
                 if schedule_run_immediately_env is not None
                 else legacy_run_immediately
             )
+        # Startup-immediate run daily dedup switch (schedule mode only).
+        # Unset keeps the dedup enabled; explicit "false" restores the
+        # upstream "run on every startup" behavior.
+        schedule_startup_dedup_env = cls._resolve_env_value(
+            'SCHEDULE_STARTUP_DEDUP',
+            prefer_env_file=True,
+        )
+        schedule_startup_dedup = (
+            schedule_startup_dedup_env.lower() == 'true'
+            if schedule_startup_dedup_env is not None
+            else True
+        )
         schedule_time_value = cls._resolve_env_value(
             'SCHEDULE_TIME',
             default='18:00',
@@ -2181,6 +2196,7 @@ class Config:
                 fallback_time=(schedule_time_value or '18:00').strip() or '18:00',
             ),
             schedule_run_immediately=schedule_run_immediately,
+            schedule_startup_dedup=schedule_startup_dedup,
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',

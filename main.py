@@ -84,6 +84,10 @@ from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
 from src.brokers.futu.portfolio import FutuPortfolioError
+from src.core.analysis_run_marker import (
+    record_analysis_run_marker,
+    should_skip_startup_immediate_run,
+)
 from data_provider.base import canonical_stock_code
 from src.services.stock_list_parser import (
     AnalysisTarget,
@@ -798,6 +802,11 @@ def run_full_analysis(
     ``analysis_targets`` 与 ``stock_codes`` 对齐，携带结构化分析目标
     （指数目标用于推导 market=cn 与能力矩阵）。
     """
+    # Capture the entry-level stock list for the run-marker scope: the local
+    # ``stock_codes`` variable is later replaced by the trading-day filter and
+    # Futu positions, so it must never feed the dedup decision (the marker
+    # fingerprint always comes from config.stock_list on both sides).
+    entry_stock_codes = stock_codes
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
     # existing run_full_analysis return-value semantics.
@@ -1207,11 +1216,28 @@ def run_full_analysis(
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
 
-        return _return_with_auto_backtest(
+        final_result = (
             deferred_failure_result
             if deferred_failure_result is not None
             else True
         )
+        # Startup daily dedup bookkeeping: only a genuinely successful run
+        # (including the report-save check above) records the marker; skip
+        # paths and failures must not. The scope reflects the entry-level
+        # stock list; the fingerprint is computed inside the marker module
+        # from config.stock_list on both the writer and the gate side.
+        if final_result is True and not getattr(args, "dry_run", False):
+            record_analysis_run_marker(
+                config,
+                scope="subset" if entry_stock_codes is not None else "full",
+                stock_codes=stock_codes,
+                market_review_requested=market_review_requested,
+                market_review_completed=(
+                    bool(market_report) if market_review_requested else None
+                ),
+                args=args,
+            )
+        return _return_with_auto_backtest(final_result)
 
     except Exception as e:
         if _LAST_ANALYSIS_FAILURE_REASON is None:
@@ -1797,8 +1823,36 @@ def main() -> int:
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
             schedule_times_provider = _build_schedule_times_provider(config.schedule_time)
 
+            # Startup daily dedup gate (src/core/analysis_run_marker.py):
+            # only the startup-immediate invocation consults the gate; the
+            # daily scheduled invocations never do. --force-run bypasses the
+            # gate entirely (explicit request for an immediate full run,
+            # mirroring the trading-day skip override). The flag is consumed
+            # by the first task call whatever its outcome. Fail-open by design.
+            startup_gate_active = should_run_immediately
+
             def scheduled_task():
+                nonlocal startup_gate_active
+                gated, startup_gate_active = startup_gate_active, False
                 runtime_config = _reload_runtime_config()
+                force_run = getattr(args, "force_run", False)
+                if (
+                    gated
+                    and not force_run
+                    and getattr(runtime_config, "schedule_startup_dedup", True)
+                ):
+                    decision = should_skip_startup_immediate_run(runtime_config)
+                    if decision.skip:
+                        logger.info(
+                            "启动立即执行已跳过:当日全量分析已完成(%s)",
+                            decision.reason,
+                        )
+                        return
+                    logger.info(
+                        "启动立即执行去重检查通过:%s", decision.reason
+                    )
+                elif gated and force_run:
+                    logger.info("--force-run 指定,跳过启动去重检查")
                 result = run_full_analysis(runtime_config, args, scheduled_stock_codes)
                 if result is False:
                     reason = _LAST_ANALYSIS_FAILURE_REASON or "unknown"
