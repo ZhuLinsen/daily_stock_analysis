@@ -20,6 +20,7 @@ import logging
 from typing import Optional
 
 from src.agent.agents.base_agent import BaseAgent
+from src.agent.tools.fxmacrodata_tools import fxmacrodata_tool_names
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
 
@@ -33,7 +34,16 @@ class RiskAgent(BaseAgent):
         "search_stock_news",
         "get_realtime_quote",
         "get_stock_info",
-    ]
+    ] + fxmacrodata_tool_names(
+        'data_catalogue',
+        'release_calendar',
+        'latest_announcements',
+        'indicator_history',
+        'risk_sentiment',
+        'event_predictions',
+        'mcp_release_risk_score_task',
+        'mcp_macro_news',
+    )
 
     def system_prompt(self, ctx: AgentContext) -> str:
         return """\

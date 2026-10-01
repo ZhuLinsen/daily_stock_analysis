@@ -89,7 +89,18 @@ def test_backend_build_collects_and_probes_miniracer(filename: str) -> None:
         assert "futu orjson py_mini_racer; do" in script
 
 
-def _run_packaged_probe(monkeypatch, module) -> None:
+@pytest.mark.parametrize("filename", ["build-backend.ps1", "build-backend-macos.sh"])
+def test_backend_build_collects_fxmacrodata_data_and_probes_tool_registry(filename: str) -> None:
+    script = _read_text(REPO_ROOT / "scripts" / filename)
+    if filename.endswith(".ps1"):
+        assert "'--collect-data', 'fxmacrodata_public'" in script
+        assert "'src.agent.factory'" in script
+    else:
+        assert "--collect-data fxmacrodata_public" in script
+        assert 'DSA_PACKAGED_IMPORT_PROBE="src.agent.factory"' in script
+
+
+def _run_packaged_probe(monkeypatch, module, probe_name="py_mini_racer") -> None:
     """Execute the actual early-exit block without importing the business stack."""
     import importlib
 
@@ -103,7 +114,7 @@ def _run_packaged_probe(monkeypatch, module) -> None:
     monkeypatch.setattr(importlib, "import_module", lambda name: module)
     exec(
         compile(ast.Module(body=[probe], type_ignores=[]), "main.py", "exec"),
-        {"_packaged_import_probe": "py_mini_racer"},
+        {"_packaged_import_probe": probe_name},
     )
 
 
@@ -138,6 +149,28 @@ def test_packaged_miniracer_probe_rejects_wrong_result_and_closes(monkeypatch) -
         _run_packaged_probe(monkeypatch, SimpleNamespace(MiniRacer=lambda: engine))
     assert exc.value.code == 1
     assert closed == [True]
+
+
+def _factory_module(names):
+    registry = SimpleNamespace(list_names=lambda: list(names))
+    return SimpleNamespace(get_tool_registry=lambda: registry)
+
+
+def test_packaged_tool_registry_probe_accepts_registry_with_macro_tools(monkeypatch) -> None:
+    module = _factory_module(["get_realtime_quote", "fxmacrodata_data_catalogue"])
+    with pytest.raises(SystemExit) as exc:
+        _run_packaged_probe(monkeypatch, module, probe_name="src.agent.factory")
+    assert exc.value.code == 0
+
+
+def test_packaged_tool_registry_probe_rejects_registry_without_macro_tools(
+    monkeypatch, capsys,
+) -> None:
+    module = _factory_module(["get_realtime_quote"])
+    with pytest.raises(SystemExit) as exc:
+        _run_packaged_probe(monkeypatch, module, probe_name="src.agent.factory")
+    assert exc.value.code == 1
+    assert "FXMacroData tools are missing" in capsys.readouterr().err
 
 
 def test_pyinstaller_runtime_hook_disables_incompatible_nltk_guard(

@@ -71,6 +71,9 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 
 WEB_SETTINGS_HIDDEN_FROM_UI = {
+    # Optional FXMacroData authorization is read from the process environment
+    # when a tool runs; it is not a Web settings or model-input field.
+    "FXMACRODATA_API_KEY",
     "DATABASE_PATH",
     "SQLITE_WAL_ENABLED",
     "SQLITE_BUSY_TIMEOUT_MS",

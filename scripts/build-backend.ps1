@@ -144,6 +144,7 @@ $pyInstallerArgs = @(
   '--collect-data', 'litellm',
   '--collect-data', 'tiktoken',
   '--collect-data', 'akshare',
+  '--collect-data', 'fxmacrodata_public',
   '--collect-all', 'py_mini_racer',
   '--collect-all', 'src.services.screening',
   '--collect-all', 'futu'
@@ -170,7 +171,7 @@ if (-not (Test-Path $packagedEntry)) {
 }
 $previousProbe = $env:DSA_PACKAGED_IMPORT_PROBE
 try {
-  foreach ($module in @('src.services.screening.pipeline', 'futu', 'orjson', 'py_mini_racer')) {
+  foreach ($module in @('src.services.screening.pipeline', 'futu', 'orjson', 'py_mini_racer', 'src.agent.factory')) {
     $env:DSA_PACKAGED_IMPORT_PROBE = $module
     $probeProcess = Start-Process -FilePath $packagedEntry -Wait -PassThru -WindowStyle Hidden
     if ($probeProcess.ExitCode -ne 0) {
