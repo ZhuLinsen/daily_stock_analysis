@@ -21,6 +21,7 @@ describe('llmProviderTemplates', () => {
       'volcengine',
       'siliconflow',
       'openrouter',
+      'requesty',
       'gemini',
       'anthropic',
       'openai',
@@ -81,6 +82,7 @@ describe('llmProviderTemplates', () => {
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.ollama.configHint).toContain('Ollama 服务');
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.siliconflow.configHint).toContain('API Key');
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.openrouter.configHint).toContain('API Key');
+    expect(LLM_PROVIDER_TEMPLATE_BY_ID.requesty.configHint).toContain('API Key');
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.openai.configHint).toBeUndefined();
   });
 

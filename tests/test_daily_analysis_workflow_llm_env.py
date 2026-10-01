@@ -24,6 +24,7 @@ EXPECTED_TEMPLATE_CHANNELS = {
     "volcengine",
     "siliconflow",
     "openrouter",
+    "requesty",
     "gemini",
     "anthropic",
     "openai",

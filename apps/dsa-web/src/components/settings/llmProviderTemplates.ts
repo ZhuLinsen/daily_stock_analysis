@@ -161,6 +161,18 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
+    channelId: 'requesty',
+    label: 'Requesty',
+    protocol: 'openai',
+    baseUrl: 'https://router.requesty.ai/v1',
+    placeholderModels: 'claude-sonnet-4-6,gpt-5.4',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint: '模型列表和模型可见性依赖账号权限与 API Key；EU 区域可将 Base URL 改为 https://router.eu.requesty.ai/v1。',
+    officialSources: [
+      { label: 'Requesty Models API', url: 'https://docs.requesty.ai/api-reference/endpoint/models-list' },
+    ],
+  },
+  {
     channelId: 'gemini',
     label: 'Gemini 官方',
     protocol: 'gemini',

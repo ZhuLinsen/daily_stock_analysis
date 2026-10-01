@@ -417,7 +417,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   const discoveredModels = discoveryState?.models || [];
   const manualOnlyModels = selectedModels.filter(
     (model) => !discoveredModels.some((discoveredModel) => (
-      areModelsEquivalent(model, discoveredModel, channel.protocol, modelProviderPrefixes)
+      areModelsEquivalent(model, discoveredModel, channel.protocol, modelProviderPrefixes, channel.baseUrl)
     )),
   );
   const modelCount = selectedModels.length;
@@ -714,13 +714,13 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                       <input
                         type="checkbox"
                         checked={selectedModels.some((selectedModel) => (
-                          areModelsEquivalent(selectedModel, model, channel.protocol, modelProviderPrefixes)
+                          areModelsEquivalent(selectedModel, model, channel.protocol, modelProviderPrefixes, channel.baseUrl)
                         ))}
                         disabled={busy}
                         onChange={() => onUpdate(
                           index,
                           'models',
-                          toggleModelSelection(channel.models, model, channel.protocol, modelProviderPrefixes),
+                          toggleModelSelection(channel.models, model, channel.protocol, modelProviderPrefixes, channel.baseUrl),
                         )}
                         className="settings-input-checkbox h-4 w-4 rounded border-border/70 bg-base"
                       />
@@ -920,6 +920,10 @@ function inferProtocol(protocol: string, baseUrl: string, models: string[]): Cha
     return explicit;
   }
 
+  if (isRequestyBaseUrl(baseUrl)) {
+    return 'openai';
+  }
+
   const firstPrefixedModel = models.find((model) => model.includes('/'));
   if (firstPrefixedModel) {
     return normalizeProtocol(firstPrefixedModel.split('/', 1)[0]);
@@ -981,8 +985,9 @@ function getModelComparisonKey(
   model: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): string {
-  const normalizedModel = normalizeModelForRuntime(model, protocol, modelProviderPrefixes).trim();
+  const normalizedModel = normalizeModelForRuntime(model, protocol, modelProviderPrefixes, baseUrl).trim();
   const parsed = parseModelRef(normalizedModel);
   if (!parsed.name) {
     return '';
@@ -995,9 +1000,10 @@ function areModelsEquivalent(
   b: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): boolean {
-  const left = getModelComparisonKey(a, protocol, modelProviderPrefixes);
-  const right = getModelComparisonKey(b, protocol, modelProviderPrefixes);
+  const left = getModelComparisonKey(a, protocol, modelProviderPrefixes, baseUrl);
+  const right = getModelComparisonKey(b, protocol, modelProviderPrefixes, baseUrl);
   return left !== '' && left === right;
 }
 
@@ -1006,10 +1012,11 @@ function toggleModelSelection(
   targetModel: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): string {
   const selectedModels = splitModels(models);
   const index = selectedModels.findIndex((model) => (
-    areModelsEquivalent(model, targetModel, protocol, modelProviderPrefixes)
+    areModelsEquivalent(model, targetModel, protocol, modelProviderPrefixes, baseUrl)
   ));
   if (index >= 0) {
     return selectedModels.filter((_, itemIndex) => itemIndex !== index).join(',');
@@ -1026,14 +1033,38 @@ const PROTOCOL_ALIASES: Record<string, string> = {
   openai_compat: 'openai',
 };
 
+function isRequestyBaseUrl(baseUrl: string): boolean {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return false;
+  }
+  try {
+    const hostname = new URL(trimmed).hostname.toLowerCase();
+    return hostname === 'requesty.ai' || hostname.endsWith('.requesty.ai');
+  } catch {
+    return false;
+  }
+}
+
 function normalizeModelForRuntime(
   model: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): string {
   const trimmedModel = model.trim();
   if (!trimmedModel) {
     return trimmedModel;
+  }
+
+  // Mirrors normalize_llm_channel_model: Requesty vendor IDs keep the gateway route.
+  if (
+    protocol === 'openai'
+    && trimmedModel.includes('/')
+    && trimmedModel.split('/', 1)[0].trim().toLowerCase() !== 'openai'
+    && isRequestyBaseUrl(baseUrl)
+  ) {
+    return `openai/${trimmedModel}`;
   }
 
   if (trimmedModel.includes('/')) {
@@ -1057,9 +1088,10 @@ function resolveModelPreview(
   models: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): string[] {
   return splitModels(models).map((model) => (
-    normalizeModelForRuntime(model, protocol, modelProviderPrefixes)
+    normalizeModelForRuntime(model, protocol, modelProviderPrefixes, baseUrl)
   ));
 }
 
@@ -1077,7 +1109,7 @@ function resolveChannelRouteModels(
     const models = splitModels(channel.models);
     return (models.length > 0 ? models : [HERMES_DEFAULT_MODEL]).map(canonicalizeHermesRouteModel);
   }
-  return resolveModelPreview(channel.models, channel.protocol, modelProviderPrefixes);
+  return resolveModelPreview(channel.models, channel.protocol, modelProviderPrefixes, channel.baseUrl);
 }
 
 function buildRouteProvenanceMap(

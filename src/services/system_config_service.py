@@ -42,6 +42,7 @@ from src.config import (
     parse_env_int,
     resolve_news_window_days,
     resolve_llm_channel_protocol,
+    route_discovered_llm_model,
     setup_env,
 )
 from src.llm.hermes import (
@@ -1173,7 +1174,10 @@ class SystemConfigService:
                 redaction_values=redaction_values,
             )
 
-        models = self._extract_discovered_llm_models(payload)
+        models = [
+            route_discovered_llm_model(model_id, base_url)
+            for model_id in self._extract_discovered_llm_models(payload)
+        ]
         if not models:
             return self._build_llm_channel_result(
                 success=False,

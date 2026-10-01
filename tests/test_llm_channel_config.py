@@ -1055,6 +1055,92 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.services.system_config_service.requests.get")
+    def test_requesty_discovered_models_save_and_route_through_gateway(
+        self, mock_get, _mock_parse_yaml, _mock_setup_env
+    ) -> None:
+        base_url = "https://router.requesty.ai/v1"
+        mock_response = Mock(ok=True, status_code=200)
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "openai/gpt-4o-mini"},
+                {"id": "anthropic/claude-sonnet-4-6"},
+                {"id": "vertex/claude-sonnet-4-5"},
+                {"id": "gpt-5.4-mini"},
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        payload = SystemConfigService(manager=Mock()).discover_llm_channel_models(
+            name="requesty",
+            protocol="openai",
+            base_url=base_url,
+            api_key="sk-test-value",
+        )
+
+        self.assertTrue(payload["success"])
+        expected = [
+            "openai/openai/gpt-4o-mini",
+            "openai/anthropic/claude-sonnet-4-6",
+            "openai/vertex/claude-sonnet-4-5",
+            "openai/gpt-5.4-mini",
+        ]
+        self.assertEqual(payload["models"], expected)
+
+        # The Web editor saves the selected discovery values as-is.
+        env = {
+            "LLM_CHANNELS": "requesty",
+            "LLM_REQUESTY_PROTOCOL": "openai",
+            "LLM_REQUESTY_BASE_URL": base_url,
+            "LLM_REQUESTY_API_KEY": "sk-test-value",
+            "LLM_REQUESTY_MODELS": ",".join(payload["models"]),
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_channels[0]["models"], expected)
+        self.assertEqual(
+            [entry["litellm_params"]["model"] for entry in config.llm_model_list],
+            expected,
+        )
+        self.assertEqual(
+            {entry["litellm_params"]["api_base"] for entry in config.llm_model_list},
+            {base_url},
+        )
+
+    def test_requesty_model_normalization_is_idempotent(self) -> None:
+        from src.config import normalize_llm_channel_model
+
+        cases = {
+            # Hand-typed Requesty vendor IDs keep the gateway route.
+            "anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
+            "vertex/claude-sonnet-4-5": "openai/vertex/claude-sonnet-4-5",
+            "gpt-5.4-mini": "openai/gpt-5.4-mini",
+            # Already routed values are never prefixed again.
+            "openai/openai/gpt-4o-mini": "openai/openai/gpt-4o-mini",
+            "openai/anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
+            "openai/vertex/claude-sonnet-4-5": "openai/vertex/claude-sonnet-4-5",
+        }
+        for base_url in ("https://router.requesty.ai/v1", "https://router.eu.requesty.ai/v1"):
+            for protocol in ("openai", ""):
+                for raw, expected in cases.items():
+                    with self.subTest(base_url=base_url, protocol=protocol, model=raw):
+                        once = normalize_llm_channel_model(raw, protocol, base_url)
+                        self.assertEqual(once, expected)
+                        self.assertEqual(normalize_llm_channel_model(once, protocol, base_url), expected)
+
+        # Other hosts keep the existing LiteLLM provider semantics.
+        self.assertEqual(
+            normalize_llm_channel_model("anthropic/claude-sonnet-4-6", "openai", "https://requesty.ai.example.com/v1"),
+            "anthropic/claude-sonnet-4-6",
+        )
+        self.assertEqual(
+            normalize_llm_channel_model("vertex/claude-sonnet-4-5", "openai", "https://api.example.com/v1"),
+            "vertex_ai/claude-sonnet-4-5",
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_generation_backend_envs_do_not_change_channel_routing(
         self, _mock_parse_yaml, _mock_setup_env
     ) -> None:
