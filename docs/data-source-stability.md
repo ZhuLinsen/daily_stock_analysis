@@ -253,6 +253,10 @@ AkShare `stock_financial_abstract` 返回“指标行 + 报告期列”的宽表
 
 接口形状参考 [AkShare 官方文档](https://akshare.akfamily.xyz/data/stock/stock.html)。本节为中文专题说明，没有对应英文文档。
 
+## 基本面耗时诊断
+
+基本面调用的 `duration_ms` 表示本次调用实际等待的毫秒数，使用单调时钟计时，包括成功、异常、等待超时和线程池拒绝。它不表示配置的超时预算；线程池已满时通常会快速返回。超时只停止当前等待，不证明后台请求已退出，因此不能单凭耗时是否等于预算判断请求“挂死”。本次诊断修复不改变线程槽位和取消语义。本说明没有对应英文专题文档。
+
 ## 官方资料
 
 - Tushare: https://tushare.pro/document/2

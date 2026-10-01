@@ -3352,7 +3352,7 @@ class DataFetcherManager:
         Returns:
             (result, error, duration_ms)
         """
-        start = time.time()
+        start = time.monotonic()
         timeout_value = max(0.0, timeout_seconds)
         if timeout_value <= 0:
             return None, f"{task_name} timeout", 0
@@ -3360,7 +3360,7 @@ class DataFetcherManager:
         error_holder: Dict[str, Exception] = {}
 
         if not self._fundamental_timeout_slots.acquire(blocking=False):
-            return None, f"{task_name} timeout worker pool exhausted", int(timeout_value * 1000)
+            return None, f"{task_name} timeout worker pool exhausted", int((time.monotonic() - start) * 1000)
 
         def runner() -> None:
             try:
@@ -3381,13 +3381,13 @@ class DataFetcherManager:
                 self._fundamental_timeout_slots.release()
             except ValueError:
                 pass
-            return None, str(exc), int((time.time() - start) * 1000)
+            return None, str(exc), int((time.monotonic() - start) * 1000)
         worker.join(timeout=timeout_value)
         if worker.is_alive():
-            return None, f"{task_name} timeout", int(timeout_value * 1000)
+            return None, f"{task_name} timeout", int((time.monotonic() - start) * 1000)
         if "value" in error_holder:
-            return None, str(error_holder["value"]), int((time.time() - start) * 1000)
-        return result_holder.get("value"), None, int((time.time() - start) * 1000)
+            return None, str(error_holder["value"]), int((time.monotonic() - start) * 1000)
+        return result_holder.get("value"), None, int((time.monotonic() - start) * 1000)
 
     def _run_with_retry(
         self,
