@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增单票决策信号复盘摘要：只读接口 `GET /api/v1/decision-signals/stocks/{stock_code}/review` 返回低敏 ReviewMemory 契约（样本量、命中率、常见 miss 原因、置信度调整方向），样本不足、unable 率高或数据质量弱时固定为 observe 仅观察；`AGENT_MEMORY_ENABLED=true` 时 Agent 记忆以独立 section 注入该复盘摘要，flag 关闭时行为不变（#1903）
 
 - [修复] 将 litellm 依赖窗口上界收敛到 `<1.99.0`：1.99.0 起把 `prompt_cache_key` 透传给 OpenAI provider，破坏 provider 缓存测试对不透传行为的既有断言（CI backend-tests 3/3 与 backend-gate 失败）；保留历史最低版本与 `!=1.82.7`/`!=1.82.8` 事故排除，同时同步更新各 LLM 兼容文档中写死的依赖约束表述，避免文档与 requirements.txt 漂移
+- [新功能] 新增妙想（MX_API）补充数据源 `MX_APIKEY`/`MX_PRIORITY`：东财公开接口失败或限流时兜底获取筹码分布与个股资金流，补充调用受剩余阶段预算硬约束；已接线默认 GitHub Actions 工作流与 Web 设置注册表
 
 - [新功能] 新增 `SEARXNG_TIMEOUT_SECONDS` 配置自建 SearXNG 单次搜索超时（默认 10 秒），已接线全部 SearchService 构造入口（含题材搜索子进程重建）与默认 GitHub Actions 工作流
 
