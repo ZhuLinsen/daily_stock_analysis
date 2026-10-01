@@ -151,7 +151,7 @@ if ! "${packaged_entry}" --help >/tmp/dsa-packaged-help.log 2>&1; then
   exit 1
 fi
 
-for module in src.services.screening.pipeline src.agent.factory futu orjson py_mini_racer; do
+for module in src.services.screening.pipeline futu orjson py_mini_racer; do
   if DSA_PACKAGED_IMPORT_PROBE="${module}" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
     cat /tmp/dsa-packaged-import.log
   else
@@ -160,6 +160,16 @@ for module in src.services.screening.pipeline src.agent.factory futu orjson py_m
     exit 1
   fi
 done
+
+# Building the agent tool registry reads the FXMacroData operation catalogue
+# bundled via --collect-data, so probe it in the packaged artifact as well.
+if DSA_PACKAGED_IMPORT_PROBE="src.agent.factory" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
+  cat /tmp/dsa-packaged-import.log
+else
+  echo "ERROR: packaged backend artifact cannot build the agent tool registry."
+  cat /tmp/dsa-packaged-import.log
+  exit 1
+fi
 
 log "Verifying packaged AkShare calendar data..."
 packaged_akshare_calendar="${packaged_root}/_internal/akshare/file_fold/calendar.json"

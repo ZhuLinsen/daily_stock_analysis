@@ -171,7 +171,7 @@ if (-not (Test-Path $packagedEntry)) {
 }
 $previousProbe = $env:DSA_PACKAGED_IMPORT_PROBE
 try {
-  foreach ($module in @('src.services.screening.pipeline', 'src.agent.factory', 'futu', 'orjson', 'py_mini_racer')) {
+  foreach ($module in @('src.services.screening.pipeline', 'futu', 'orjson', 'py_mini_racer', 'src.agent.factory')) {
     $env:DSA_PACKAGED_IMPORT_PROBE = $module
     $probeProcess = Start-Process -FilePath $packagedEntry -Wait -PassThru -WindowStyle Hidden
     if ($probeProcess.ExitCode -ne 0) {

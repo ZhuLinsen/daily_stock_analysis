@@ -97,7 +97,7 @@ def test_backend_build_collects_fxmacrodata_data_and_probes_tool_registry(filena
         assert "'src.agent.factory'" in script
     else:
         assert "--collect-data fxmacrodata_public" in script
-        assert "src.services.screening.pipeline src.agent.factory" in script
+        assert 'DSA_PACKAGED_IMPORT_PROBE="src.agent.factory"' in script
 
 
 def _run_packaged_probe(monkeypatch, module, probe_name="py_mini_racer") -> None:
