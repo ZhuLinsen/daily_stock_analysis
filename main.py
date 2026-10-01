@@ -63,6 +63,13 @@ if _packaged_import_probe:
                 close = getattr(engine, "close", None)
                 if callable(close):
                     close()
+        elif _packaged_import_probe == "src.agent.factory":
+            # Build the agent tool registry so tool modules that read package
+            # data at import time (e.g. the FXMacroData operation catalogue)
+            # are exercised in the frozen artifact.
+            registry = probe_module.get_tool_registry()
+            if not any(name.startswith("fxmacrodata_") for name in registry.list_names()):
+                raise RuntimeError("FXMacroData tools are missing from the agent tool registry")
     except Exception as exc:
         print(
             f"ERROR: packaged runtime probe failed for {_packaged_import_probe}: {exc}",

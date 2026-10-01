@@ -18,7 +18,7 @@ Public USD data requires no API key. Optional authorization is configured below.
 
 The optional FXMACRODATA_API_KEY environment variable uses the host process configuration. For the scheduled GitHub Actions analysis, store it as the repository secret `FXMACRODATA_API_KEY`; `00-daily-analysis.yml` maps that secret into the analysis step environment. The key never enters a tool schema, model invocation or response. The application must be in Agent mode for these report/chat tools to be used. No report layout changes are required.
 
-In multi-agent mode, the Intelligence specialist can discover and execute all 72 operations through its native tool allowlist. Risk and Portfolio specialists also receive the operations relevant to release, macro and cross-market risk. Existing specialist tool restrictions remain in force.
+In multi-agent mode, the Intelligence specialist can discover and execute all 72 operations in the pinned client v0.1.0 snapshot through its native tool allowlist. Risk and Portfolio specialists also receive the operations relevant to release, macro and cross-market risk. Existing specialist tool restrictions remain in force.
 
 Start with `data_catalogue` and parameters `{"currency":"USD"}`, then `indicator_history` with `{"currency":"USD","indicator":"policy_rate","limit":5}` or `release_calendar` with `{"currency":"USD"}`. Agent tool names have an `fxmacrodata_` prefix. The operation catalogue includes exact required parameters and supported options.
 
@@ -28,7 +28,7 @@ The `data` field preserves the original public response; `records` is an additiv
 
 ## Coverage
 
-Every documented REST operation and listed hosted MCP tool is available through the native consumer above. Access requirements depend on the operation and currency. MCP tools, non-USD data and other protected datasets may require authorization; they are not required for the public USD baseline.
+The table below is the operation catalogue bundled with the pinned `fxmacrodata-public-client` v0.1.0 (23 REST operations and 49 hosted MCP tools). Operations added to the live API after that release appear here once the pinned client is updated. Every operation in this snapshot is available through the native consumer above. Access requirements depend on the operation and currency. MCP tools, non-USD data and other protected datasets may require authorization; they are not required for the public USD baseline.
 
 | Operation | Transport | Native consumer | Status |
 | --- | --- | --- | --- |

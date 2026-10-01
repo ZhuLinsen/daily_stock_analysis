@@ -22,10 +22,27 @@ class FXMacroDataTool(ToolDefinition):
         return self._params_json_schema()
 
 
+def _available_operations() -> list:
+    """Return the pinned client's operation catalogue, or none if it cannot load.
+
+    The catalogue is read from package data at import time. A packaging fault
+    (for example a frozen build without that data) leaves the FXMacroData tools
+    unavailable instead of breaking the whole agent tool registry.
+    """
+    try:
+        return list(list_operations())
+    except Exception:
+        logger.warning("[fxmacrodata_tools] operation catalogue unavailable; FXMacroData tools disabled")
+        return []
+
+
 def fxmacrodata_tool_names(*operations: str) -> list[str]:
     """Name tools for native specialist allowlists; no arguments selects all."""
-    available = {operation.name for operation in list_operations()}
-    selected = list(operations) if operations else [operation.name for operation in list_operations()]
+    catalogue = _available_operations()
+    if not catalogue:
+        return []
+    available = {operation.name for operation in catalogue}
+    selected = list(operations) if operations else [operation.name for operation in catalogue]
     if any(operation not in available for operation in selected):
         raise ValueError("Unknown FXMacroData operation in specialist tool selection.")
     return [f"fxmacrodata_{operation}" for operation in selected]
@@ -68,7 +85,7 @@ def build_fxmacrodata_tools(client: FXMacroDataClient | None = None) -> list[FXM
         return handler
 
     result = []
-    for operation in list_operations():
+    for operation in _available_operations():
         required = operation.input_schema.get("required", [])
         parameters = [
             ToolParameter(

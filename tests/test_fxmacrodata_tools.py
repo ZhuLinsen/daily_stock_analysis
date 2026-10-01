@@ -157,3 +157,26 @@ def test_native_multi_agent_filter_keeps_specialist_macro_tools(specialist):
 def test_specialist_selection_rejects_unknown_operation():
     with pytest.raises(ValueError, match="Unknown FXMacroData operation"):
         fxmacrodata_tool_names("not_an_operation")
+
+
+def test_missing_operation_catalogue_disables_tools_without_breaking_import(monkeypatch):
+    # A frozen build without the client's package data must not break the
+    # registry: importing the module yields no FXMacroData tools.
+    import importlib
+
+    import fxmacrodata_public
+
+    def missing_catalogue():
+        raise FileNotFoundError("operations.json")
+
+    monkeypatch.setattr(fxmacrodata_public, "list_operations", missing_catalogue)
+    try:
+        module = importlib.reload(fxmacrodata_tools)
+        assert module.ALL_FXMACRODATA_TOOLS == []
+        assert module.build_fxmacrodata_tools(FixtureClient()) == []
+        assert module.fxmacrodata_tool_names() == []
+        assert module.fxmacrodata_tool_names("data_catalogue", "release_calendar") == []
+    finally:
+        monkeypatch.undo()
+        importlib.reload(fxmacrodata_tools)
+    assert fxmacrodata_tools.ALL_FXMACRODATA_TOOLS
