@@ -1494,6 +1494,37 @@ describe('PortfolioPage FX refresh', () => {
     expect(screen.getByText('暂无集中度数据')).toBeInTheDocument();
   });
 
+  it.each([
+    { summary: 80, weights: [20, 80] },
+    { summary: 80, weights: [70, 30] },
+    { summary: 70, weights: [70, 80] },
+    { summary: 120, weights: [120] },
+  ])('rejects inconsistent sector Top1 evidence: %j', async ({ summary, weights }) => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 10000, topWeightPct: 60, alert: true,
+        topPositions: [{ symbol: '600519', marketValueBase: 6000, weightPct: 60, isAlert: true }],
+      },
+      sectorConcentration: {
+        totalMarketValue: 10000, topWeightPct: summary, alert: true,
+        topSectors: weights.map((weightPct, index) => ({
+          sector: index === 0 ? '白酒' : '科技', marketValueBase: weightPct * 100,
+          weightPct, symbolCount: 1, isAlert: true,
+        })),
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 }, errors: [],
+      },
+    }));
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(sectorFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(screen.queryByText('Top1: 白酒')).not.toBeInTheDocument();
+    expect(screen.getByText('行业数据暂不可用，当前展示个股集中度')).toBeInTheDocument();
+    expect(screen.getByText('Top1: 600519')).toBeInTheDocument();
+  });
+
   it('marks stop-loss risk unavailable when any holding lacks a usable quote', async () => {
     getSnapshot.mockResolvedValueOnce(makeSnapshot({
       fxStale: false,

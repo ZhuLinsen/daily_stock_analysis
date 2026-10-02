@@ -7,7 +7,7 @@ const position = (symbol: string, market: string, currency: string, value: numbe
   priceDate: '2026-10-01', priceStale: false, priceAvailable: true,
 });
 
-for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top'] as const) {
+for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top', 'invalid-sector'] as const) {
   test(`portfolio risk dashboard: ${state}`, async ({ page }, testInfo) => {
     const positions = [position('600519', 'cn', 'CNY', 6000), position('AAPL', 'us', 'USD', 4000)];
     if (state === 'missing-price') {
@@ -25,7 +25,13 @@ for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top
         { symbol: state === 'invalid-top' ? '' : '600519', marketValueBase: 6000, weightPct: 60, isAlert: true },
         { symbol: 'AAPL', marketValueBase: 4000, weightPct: 40, isAlert: false },
       ] },
-      sectorConcentration: {},
+      sectorConcentration: state === 'invalid-sector' ? {
+        totalMarketValue: 10000, topWeightPct: 80, alert: true,
+        topSectors: [
+          { sector: '白酒', marketValueBase: 2000, weightPct: 20, symbolCount: 1, isAlert: false },
+          { sector: '科技', marketValueBase: 8000, weightPct: 80, symbolCount: 1, isAlert: true },
+        ], coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 }, errors: [],
+      } : {},
       drawdown: { seriesPoints: 10, currentDrawdownPct: 3, maxDrawdownPct: 8, fxStale: false, alert: false },
       stopLoss: { triggeredCount: 0, nearCount: 0, nearAlert: false, items: [] },
       decisionSignalRisk: { available: true, total: 0, actions: { sell: 0, reduce: 0, alert: 0 }, items: [] },
@@ -55,6 +61,11 @@ for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top
     if (state === 'invalid-top') {
       await expect(dashboard.getByText('Top1: AAPL')).toHaveCount(0);
       await expect(page.getByText('暂无集中度数据', { exact: true })).toBeVisible();
+    }
+    if (state === 'invalid-sector') {
+      await expect(dashboard.getByText('Top1: 白酒')).toHaveCount(0);
+      await expect(dashboard.getByText('Top1: 600519')).toBeVisible();
+      await expect(page.getByText('行业数据暂不可用，当前展示个股集中度', { exact: true })).toBeVisible();
     }
     if (state === 'missing-price') await expect(dashboard.getByText('暴露不可用')).toHaveCount(2);
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {

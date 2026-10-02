@@ -275,15 +275,20 @@ function getValidTopPositionRows(risk: PortfolioRiskResponse | null) {
 
 function getClassifiedSectorRows(risk: PortfolioRiskResponse | null) {
   const rows = risk?.sectorConcentration?.topSectors;
-  if (!Array.isArray(rows)) return [];
-  return rows.filter((item) => (
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  // Sector flags, Top1 and pie charts must obey the same ordering/summary
+  // contract as position concentration, without silently filtering bad rows.
+  const valid = rows.every((item, index) => (
     typeof item?.sector === 'string'
       && item.sector.trim().length > 0
       && item.sector.trim().toUpperCase() !== UNCLASSIFIED_SECTOR
       && typeof item.weightPct === 'number'
       && Number.isFinite(item.weightPct)
       && item.weightPct > 0
+      && item.weightPct <= 100
+      && (index === 0 || item.weightPct <= rows[index - 1].weightPct)
   ));
+  return valid && rows[0].weightPct === risk?.sectorConcentration?.topWeightPct ? rows : [];
 }
 
 function hasCompleteSectorCoverage(risk: PortfolioRiskResponse | null) {
