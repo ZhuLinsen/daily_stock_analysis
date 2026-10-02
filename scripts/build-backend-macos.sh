@@ -124,7 +124,9 @@ cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm -
 cmd+=("--collect-all" "src.services.screening")
 cmd+=("--collect-all" "futu")
 cmd+=("--collect-all" "py_mini_racer")
-cmd+=("${hidden_import_args[@]}" "main.py")
+cmd+=("--add-data" "src/services/screening/strategies:src/services/screening/strategies")
+cmd+=("${hidden_import_args[@]}"）
+cmd+=（"main.py")
 
 echo "Running: ${cmd[*]}"
 "${cmd[@]}"
