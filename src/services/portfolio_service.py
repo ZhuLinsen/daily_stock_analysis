@@ -544,6 +544,7 @@ class PortfolioService:
                 to_currency=aggregate_currency,
                 as_of_date=as_of_date,
             )
+            account_snapshot["public"]["total_market_value_aggregate"] = round(mv_cny, 6)
             eq_cny, stale_eq, _ = self._convert_amount(
                 amount=account_snapshot["total_equity"],
                 from_currency=account.base_currency,

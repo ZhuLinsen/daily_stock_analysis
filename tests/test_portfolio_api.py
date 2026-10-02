@@ -24,7 +24,7 @@ except ModuleNotFoundError:
 import src.auth as auth
 from api.app import create_app
 from src.config import Config
-from src.services.portfolio_service import PortfolioBusyError
+from src.services.portfolio_service import PortfolioBusyError, PortfolioService
 from src.storage import DatabaseManager
 
 
@@ -178,6 +178,43 @@ class PortfolioApiTestCase(unittest.TestCase):
         self.assertAlmostEqual(account_snapshot["total_cash"], 0.0, places=6)
         self.assertAlmostEqual(account_snapshot["total_market_value"], 11000.0, places=6)
         self.assertAlmostEqual(account_snapshot["total_equity"], 11000.0, places=6)
+
+    def test_snapshot_exposes_per_account_values_in_aggregate_currency(self) -> None:
+        cn_id = self._create_position(name="CNY Account", quantity=1)
+        us_id = self._create_position(name="USD Account", symbol="AAPL", quantity=1, market="us", currency="USD")
+        self._save_close("600519", date(2026, 1, 3), 70)
+        self._save_close("AAPL", date(2026, 1, 3), 100)
+        service = PortfolioService()
+
+        for stale in (False, True):
+            with self.subTest(fx_stale=stale):
+                service.repo.save_fx_rate(
+                    from_currency="USD", to_currency="CNY", rate_date=date(2026, 1, 3),
+                    rate=7, source="manual", is_stale=stale,
+                )
+                response = self.client.get(
+                    "/api/v1/portfolio/snapshot",
+                    params={"as_of": "2026-01-03", "include_realtime": False},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                snapshot = response.json()
+                accounts = {item["account_id"]: item for item in snapshot["accounts"]}
+                self.assertEqual(snapshot["currency"], "CNY")
+                self.assertEqual(snapshot["total_market_value"], 770)
+                self.assertEqual(snapshot["fx_stale"], stale)
+                self.assertEqual(accounts[cn_id]["total_market_value_aggregate"], 70)
+                self.assertEqual(accounts[us_id]["total_market_value_aggregate"], 700)
+                self.assertEqual(accounts[us_id]["total_market_value"], 100)
+                self.assertEqual(accounts[us_id]["positions"][0]["market_value_base"], 100)
+
+                response = self.client.get(
+                    "/api/v1/portfolio/snapshot",
+                    params={"account_id": us_id, "as_of": "2026-01-03", "include_realtime": False},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                selected = response.json()
+                self.assertEqual(selected["total_market_value"], 700)
+                self.assertEqual(selected["accounts"][0]["total_market_value_aggregate"], 700)
 
     def test_snapshot_include_realtime_false_skips_realtime_quote(self) -> None:
         today = date.today()

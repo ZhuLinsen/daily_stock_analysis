@@ -265,3 +265,15 @@ jobs:
         run: npm run lint
       - name: 🏗️ Build
         run: npm run build
+      - name: 🌐 Install fixture browser
+        run: npx playwright install --with-deps chromium
+      - name: 📸 Verify deterministic UI fixtures
+        run: npx playwright test --config playwright.fixture.config.ts
+      - name: 📎 Upload UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-ui-evidence-${{ github.event.pull_request.head.sha }}
+          path: apps/dsa-web/test-results/fixtures/
+          if-no-files-found: warn
+          retention-days: 30

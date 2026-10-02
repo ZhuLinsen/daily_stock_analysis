@@ -67,6 +67,8 @@ export interface PortfolioAccountSnapshot {
   costMethod: PortfolioCostMethod;
   totalCash: number;
   totalMarketValue: number;
+  /** Account market value converted into the parent snapshot currency. */
+  totalMarketValueAggregate?: number | null;
   totalEquity: number;
   realizedPnl: number;
   unrealizedPnl: number;
