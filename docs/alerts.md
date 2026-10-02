@@ -181,6 +181,7 @@ P3 在 WebUI 中新增 `/alerts` 告警中心入口，让用户不需要直接�
   - `price_change_percent`：`direction` 为 `up` / `down`，并填写 `change_pct`。
   - `volume_spike`：填写 `multiplier`。
 - 规则操作支持启用、停用、删除和一次性 dry-run 测试。
+- 创建、启用、停用或删除规则期间切换筛选或分页，操作完成后的列表刷新会使用当前筛选条件；创建成功仍会返回当前筛选下的第一页。
 - dry-run 测试只展示 `AlertRuleTestResponse` 已声明字段：规则 ID、状态、是否触发、观察值和消息；`threshold`、`data_source`、`data_timestamp` 等扩展诊断字段需要后端 schema 明确暴露后再展示。
 - 触发历史展示 P2 worker 已写入的 `triggered`、`skipped`、`degraded`、`failed` 记录；正常 `not_triggered` 仍不会写入历史。
 - 通知尝试区域只查询现有 `GET /api/v1/alerts/notifications`；由于 P2 运行时不写 per-channel notification attempt，当前通常显示“暂无通知尝试记录”空态，不把触发状态推断为通知投递结果。
