@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.deps import get_config_dep, get_database_manager
 from api.v1.errors import api_error
 from src.config import Config
-from src.services.screening_service import ScreeningService
+from src.services.screening.config import Config as ScreeningRuntimeConfig
+from src.services.screening.filter import check_hard_filters, validate_check_snapshot
+from src.services.screening.strategy import load_all_strategies
+from src.services.screening_service import ScreeningService, _ensure_screening_enabled
 from src.services.task_queue import TaskStatus as QueueTaskStatus
 from src.services.task_queue import get_task_queue
 from src.storage import DatabaseManager
@@ -25,6 +28,40 @@ class ScreeningScreenRequest(BaseModel):
     strategy: str = Field("dual_low", min_length=1, max_length=64)
     max_results: int = Field(20, ge=1, le=100)
     variant_seed: str = Field("", max_length=128)
+
+
+class ScreeningCheckRequest(BaseModel):
+    market: Literal["cn", "us"] = "cn"
+    strategy: str = Field("dual_low", min_length=1, max_length=64)
+    snapshot: Dict[str, Any] = Field(description="One supplied row; no live data is fetched")
+
+    @field_validator("snapshot", mode="before")
+    @classmethod
+    def validate_snapshot(cls, value: Any) -> Dict[str, Any]:
+        try:
+            return validate_check_snapshot(value)
+        except ValueError as exc:
+            raise api_error(422, "screening_invalid_snapshot", str(exc)) from exc
+
+
+class ScreeningConditionCheck(BaseModel):
+    filter: str
+    field: str
+    source_field: Optional[str]
+    threshold: Any
+    current_value: Any
+    status: Literal["pass", "fail", "missing"]
+    passed: Optional[bool]
+    missing_reason: Optional[str]
+
+
+class ScreeningCheckResponse(BaseModel):
+    strategy: str
+    strategy_version: str
+    market: Literal["cn", "us"]
+    provenance: Literal["supplied_snapshot"] = "supplied_snapshot"
+    passed: bool
+    checks: List[ScreeningConditionCheck]
 
 
 class ScreeningStrategyResponse(BaseModel):
@@ -127,6 +164,30 @@ def screening_hotspot_detail(
         provider=provider,
         refresh=refresh_value,
         include_search=include_search_value,
+    )
+
+
+@router.post("/screen/check", response_model=ScreeningCheckResponse)
+def screening_check(
+    request: ScreeningCheckRequest,
+    config: Config = Depends(get_config_dep),
+) -> ScreeningCheckResponse:
+    """Check supplied values against all strategy hard filters, without fetching."""
+    _ensure_screening_enabled(config)
+    strategies = load_all_strategies(ScreeningRuntimeConfig.from_env().strategies_dir)
+    # Lookup catalog IDs only; never interpolate caller input into a file path.
+    strategy = strategies.get(request.strategy)
+    if strategy is None:
+        raise api_error(422, "screening_invalid_strategy", "Unknown or disabled screening strategy.")
+    if request.market not in strategy.screening.market_scope:
+        raise api_error(422, "screening_invalid_market", "Strategy does not support this market.")
+    checks = check_hard_filters(request.snapshot, strategy.screening.hard_filters)
+    return ScreeningCheckResponse(
+        strategy=strategy.name,
+        strategy_version=strategy.version,
+        market=request.market,
+        passed=all(item["passed"] is True for item in checks),
+        checks=checks,
     )
 
 
