@@ -676,6 +676,7 @@ describe('PortfolioPage FX refresh', () => {
     await waitForInitialLoad();
     const dashboard = within(screen.getByText('风险与暴露看板').closest('section') as HTMLElement);
     expect(dashboard.getAllByText('暂无暴露数据')).toHaveLength(2);
+    expect(dashboard.getByText('总市值: CNY 0.00')).toBeInTheDocument();
     expect(dashboard.queryByText('暴露不可用')).not.toBeInTheDocument();
   });
 
@@ -1136,6 +1137,9 @@ describe('PortfolioPage FX refresh', () => {
     expect(priceFlag).not.toBeNull();
     expect(within(priceFlag as HTMLElement).getByText('--')).toBeInTheDocument();
     expect(within(priceFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(within(dashboard as HTMLElement).getByText('总市值: --')).toBeInTheDocument();
+    expect(within(dashboard as HTMLElement).queryByText(/总市值: CNY 0/)).not.toBeInTheDocument();
   });
 
   it('treats partial server risk blocks as unavailable instead of normal', async () => {
@@ -1461,6 +1465,33 @@ describe('PortfolioPage FX refresh', () => {
     expect(concentrationFlag).not.toBeNull();
     expect(within(concentrationFlag as HTMLElement).getByText('--')).toBeInTheDocument();
     expect(within(concentrationFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+  });
+
+  it.each([
+    [{ symbol: '', weightPct: 60 }, { symbol: 'AAPL', weightPct: 40 }],
+    [{ symbol: '600519', weightPct: 40 }, { symbol: 'AAPL', weightPct: 60 }],
+    [{ symbol: '600519', weightPct: 60 }, { symbol: '', weightPct: 40 }],
+    [{ symbol: '600519', weightPct: '60' }],
+    [{ symbol: '600519', weightPct: 60 }, { symbol: 'AAPL', weightPct: 70 }],
+  ])('rejects inconsistent concentration rows instead of relabeling Top1: %j', async (...topPositions) => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 60,
+        alert: true,
+        topPositions: topPositions as never,
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const concentrationFlag = screen.getByText('个股集中').closest('div.rounded-xl');
+    expect(within(concentrationFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(concentrationFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(screen.queryByText('Top1: AAPL')).not.toBeInTheDocument();
+    expect(screen.getByText('暂无集中度数据')).toBeInTheDocument();
   });
 
   it('marks stop-loss risk unavailable when any holding lacks a usable quote', async () => {

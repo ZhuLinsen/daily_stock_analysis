@@ -256,14 +256,21 @@ function hasCompletePositionPriceCoverage(snapshot: PortfolioSnapshotResponse | 
 }
 
 function getValidTopPositionRows(risk: PortfolioRiskResponse | null) {
-  const rows = risk?.concentration?.topPositions;
-  if (!Array.isArray(rows)) return [];
-  return rows.filter((item) => (
+  const concentration = risk?.concentration;
+  const rows = concentration?.topPositions;
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  // Keep the summary, Top1 label and chart on the same complete evidence.
+  // Filtering malformed rows could silently promote a different holding to Top1.
+  const valid = rows.every((item, index) => (
     typeof item?.symbol === 'string'
       && item.symbol.trim().length > 0
-      && Number.isFinite(Number(item.weightPct))
-      && Number(item.weightPct) > 0
+      && typeof item.weightPct === 'number'
+      && Number.isFinite(item.weightPct)
+      && item.weightPct > 0
+      && item.weightPct <= 100
+      && (index === 0 || item.weightPct <= rows[index - 1].weightPct)
   ));
+  return valid && rows[0].weightPct === concentration?.topWeightPct ? rows : [];
 }
 
 function getClassifiedSectorRows(risk: PortfolioRiskResponse | null) {
@@ -907,7 +914,7 @@ const PortfolioPage: React.FC = () => {
     rows.sort((a, b) => Number(b.marketValueBase || 0) - Number(a.marketValueBase || 0));
     return rows;
   }, [snapshot]);
-  const exposureTotal = snapshot?.totalMarketValue || 0;
+  const exposureTotal = snapshot?.totalMarketValue;
   const exposureEmptyLabel = snapshot !== null && positionRows.length === 0 && hasFreshFxEvidence(snapshot)
     ? riskDashboardText.noExposure
     : riskDashboardText.exposureUnavailable;

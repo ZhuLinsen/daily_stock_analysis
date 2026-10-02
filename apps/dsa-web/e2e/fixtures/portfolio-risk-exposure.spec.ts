@@ -1,0 +1,67 @@
+import { expect, test } from '@playwright/test';
+
+const position = (symbol: string, market: string, currency: string, value: number) => ({
+  symbol, market, currency, quantity: 10, avgCost: value / 10, totalCost: value,
+  lastPrice: value / 10, marketValueBase: value, unrealizedPnlBase: 0,
+  unrealizedPnlPct: 0, valuationCurrency: 'CNY', priceSource: 'history_close',
+  priceDate: '2026-10-01', priceStale: false, priceAvailable: true,
+});
+
+for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top'] as const) {
+  test(`portfolio risk dashboard: ${state}`, async ({ page }, testInfo) => {
+    const positions = [position('600519', 'cn', 'CNY', 6000), position('AAPL', 'us', 'USD', 4000)];
+    if (state === 'missing-price') {
+      Object.assign(positions[1], { lastPrice: 0, marketValueBase: 0, priceSource: 'missing', priceAvailable: false });
+    }
+    const snapshot = {
+      asOf: '2026-10-01', costMethod: 'fifo', currency: 'CNY', accountCount: 1,
+      totalCash: 1000, totalMarketValue: 10000, totalEquity: 11000, fxStale: false,
+      dataQuality: 'ok', limitations: [],
+      accounts: [{ accountId: 1, accountName: 'Demo', baseCurrency: 'CNY', fxStale: false, positions }],
+    };
+    const risk = {
+      asOf: snapshot.asOf, currency: 'CNY', accountId: null, costMethod: 'fifo', thresholds: {},
+      concentration: { totalMarketValue: 10000, topWeightPct: 60, alert: true, topPositions: [
+        { symbol: state === 'invalid-top' ? '' : '600519', marketValueBase: 6000, weightPct: 60, isAlert: true },
+        { symbol: 'AAPL', marketValueBase: 4000, weightPct: 40, isAlert: false },
+      ] },
+      sectorConcentration: {},
+      drawdown: { seriesPoints: 10, currentDrawdownPct: 3, maxDrawdownPct: 8, fxStale: false, alert: false },
+      stopLoss: { triggeredCount: 0, nearCount: 0, nearAlert: false, items: [] },
+      decisionSignalRisk: { available: true, total: 0, actions: { sell: 0, reduce: 0, alert: 0 }, items: [] },
+    };
+    await page.route('**/api/**', async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      let json: unknown = { items: [], total: 0, page: 1, pageSize: 20 };
+      if (path.endsWith('/auth/status')) json = { authEnabled: false, loggedIn: true, setupState: 'no_password' };
+      else if (path.endsWith('/portfolio/accounts')) json = { accounts: [{ id: 1, name: 'Demo', market: 'cn', baseCurrency: 'CNY', isActive: true }] };
+      else if (path.endsWith('/portfolio/snapshot')) {
+        if (state === 'snapshot-error') return route.fulfill({ status: 503, json: { detail: 'Snapshot unavailable' } });
+        json = snapshot;
+      } else if (path.endsWith('/portfolio/risk')) json = risk;
+      else if (path.endsWith('/portfolio/import/brokers')) json = { brokers: [] };
+      await route.fulfill({ json });
+    });
+    await page.goto('/portfolio');
+    const dashboard = page.locator('section').filter({ has: page.getByText('风险与暴露看板', { exact: true }) });
+    await expect(dashboard).toBeVisible();
+    await expect(page.getByRole('button', { name: '刷新数据', exact: true })).toBeVisible();
+    if (state === 'snapshot-error') await expect(dashboard.getByText('总市值: --')).toBeVisible();
+    if (state === 'complete') {
+      await expect(dashboard.getByText('Top1: 600519')).toBeVisible();
+      await expect(dashboard.getByText('60.00%')).toHaveCount(3);
+    }
+    if (state === 'invalid-top') {
+      await expect(dashboard.getByText('Top1: AAPL')).toHaveCount(0);
+      await expect(page.getByText('暂无集中度数据', { exact: true })).toBeVisible();
+    }
+    if (state === 'missing-price') await expect(dashboard.getByText('暴露不可用')).toHaveCount(2);
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      const screenshot = testInfo.outputPath(`portfolio-${state}-${viewport.width}.png`);
+      await dashboard.screenshot({ path: screenshot, animations: 'disabled' });
+      await testInfo.attach(`${state}-${viewport.width}`, { path: screenshot, contentType: 'image/png' });
+    }
+  });
+}
