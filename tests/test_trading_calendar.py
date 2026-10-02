@@ -195,6 +195,32 @@ class HistoricalDailyBarDateTestCase(unittest.TestCase):
                 self.assertIsNone(self._resolve(date(2024, 1, 7), phase))
 
 
+class NextTradingDateTestCase(unittest.TestCase):
+    def _next(self, calendar, check_date: date) -> Optional[date]:
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(calendar),
+            create=True,
+        ):
+            return trading_calendar.get_next_trading_date("cn", check_date)
+
+    def test_skips_holiday_to_next_session(self):
+        calendar = _FakeCalendar(
+            sessions=[date(2024, 9, 30), date(2024, 10, 8)],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+        )
+        self.assertEqual(self._next(calendar, date(2024, 9, 30)), date(2024, 10, 8))
+
+    def test_returns_none_instead_of_failing_open(self):
+        calendar = _FakeCalendar(sessions=[date(2024, 9, 30)], close_hour=15, tz_name="Asia/Shanghai")
+        self.assertIsNone(self._next(calendar, date(2024, 9, 30)))  # beyond calendar range
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", False):
+            self.assertIsNone(trading_calendar.get_next_trading_date("cn", date(2024, 9, 30)))
+        self.assertIsNone(trading_calendar.get_next_trading_date("unknown", date(2024, 9, 30)))
+
+
 class EffectiveTradingDateTestCase(unittest.TestCase):
     def test_weekend_returns_previous_session(self):
         fake_calendar = _FakeCalendar(

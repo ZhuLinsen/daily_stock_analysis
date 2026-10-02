@@ -123,6 +123,9 @@ _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
 PROMPT_CACHE_DIAGNOSTICS_LEVELS = {"off", "basic", "debug"}
 SUPPORTED_AGENT_BACKENDS = {"auto", "litellm", "codex_app_server"}
 TICKFLOW_KLINE_ADJUST_VALUES = {"none", "forward", "backward", "forward_additive", "backward_additive"}
+# 沪深300 / 中证500 / 创业板 / 红利低波 / 纳指 / 黄金；防守资产为货币 ETF
+DEFAULT_ETF_ROTATION_POOL = ("510300", "510500", "159915", "512890", "513100", "518880")
+DEFAULT_ETF_ROTATION_SAFE_ASSET = "511880"
 # Fallback defaults used when ANSPIRE_API_KEYS is reused as legacy OpenAI-compatible source.
 # These are compatibility examples; actual availability should be validated by Anspire console/model entitlement.
 ANSPIRE_LLM_BASE_URL_DEFAULT = "https://open-gateway.anspire.cn/v6"
@@ -1185,6 +1188,16 @@ class Config:
     backtest_min_age_days: int = 14
     backtest_engine_version: str = "v1"
     backtest_neutral_band_pct: float = 2.0
+
+    # === ETF 轮动配置（仅 --etf-rotation 使用）===
+    etf_rotation_pool: List[str] = field(default_factory=lambda: list(DEFAULT_ETF_ROTATION_POOL))
+    etf_rotation_safe_asset: str = DEFAULT_ETF_ROTATION_SAFE_ASSET
+    etf_rotation_lookback_days: int = 60
+    etf_rotation_rebalance: str = "weekly"
+    etf_rotation_top_n: int = 2
+    etf_rotation_switch_buffer_pct: float = 2.0
+    etf_rotation_cost_bps: float = 10.0
+    etf_rotation_backtest_years: int = 8
     
     # === 日志配置 ===
     log_dir: str = "./logs"  # 日志文件目录
@@ -2163,6 +2176,31 @@ class Config:
                 field_name='BACKTEST_NEUTRAL_BAND_PCT',
                 minimum=0.0,
             ),
+            etf_rotation_pool=cls._parse_etf_rotation_pool(os.getenv('ETF_ROTATION_POOL')),
+            etf_rotation_safe_asset=(
+                os.getenv('ETF_ROTATION_SAFE_ASSET', DEFAULT_ETF_ROTATION_SAFE_ASSET) or ''
+            ).strip(),
+            etf_rotation_lookback_days=parse_env_int(
+                os.getenv('ETF_ROTATION_LOOKBACK_DAYS'), 60,
+                field_name='ETF_ROTATION_LOOKBACK_DAYS', minimum=5, maximum=500,
+            ),
+            etf_rotation_rebalance=cls._parse_etf_rotation_rebalance(os.getenv('ETF_ROTATION_REBALANCE')),
+            etf_rotation_top_n=parse_env_int(
+                os.getenv('ETF_ROTATION_TOP_N'), 2,
+                field_name='ETF_ROTATION_TOP_N', minimum=1, maximum=10,
+            ),
+            etf_rotation_switch_buffer_pct=parse_env_float(
+                os.getenv('ETF_ROTATION_SWITCH_BUFFER_PCT'), 2.0,
+                field_name='ETF_ROTATION_SWITCH_BUFFER_PCT', minimum=0.0, maximum=50.0,
+            ),
+            etf_rotation_cost_bps=parse_env_float(
+                os.getenv('ETF_ROTATION_COST_BPS'), 10.0,
+                field_name='ETF_ROTATION_COST_BPS', minimum=0.0, maximum=500.0,
+            ),
+            etf_rotation_backtest_years=parse_env_int(
+                os.getenv('ETF_ROTATION_BACKTEST_YEARS'), 8,
+                field_name='ETF_ROTATION_BACKTEST_YEARS', minimum=1, maximum=30,
+            ),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
             max_workers=parse_env_int(os.getenv('MAX_WORKERS'), 3, field_name='MAX_WORKERS', minimum=1),
@@ -2906,6 +2944,25 @@ class Config:
             news_max_age_days=self.news_max_age_days,
             news_strategy_profile=self.news_strategy_profile,
         )
+
+    @staticmethod
+    def _parse_etf_rotation_pool(value: Optional[str]) -> List[str]:
+        if value is None or not value.strip():
+            return list(DEFAULT_ETF_ROTATION_POOL)
+        codes: List[str] = []
+        for raw in value.split(','):
+            code = raw.strip()
+            if code and code not in codes:
+                codes.append(code)
+        return codes
+
+    @staticmethod
+    def _parse_etf_rotation_rebalance(value: Optional[str]) -> str:
+        normalized = (value or 'weekly').strip().lower()
+        if normalized in ('weekly', 'monthly'):
+            return normalized
+        logger.warning("ETF_ROTATION_REBALANCE=%r is invalid; falling back to weekly", value)
+        return 'weekly'
 
     @classmethod
     def _parse_market_review_region(cls, value: str) -> str:

@@ -651,6 +651,7 @@ python scripts/check_env.py --config
 ```bash
 python main.py                        # Full analysis (stocks + market review)
 python main.py --market-review        # Market review only
+python main.py --etf-rotation         # ETF rotation signal + rule backtest (no LLM; see docs/etf-rotation.md, Chinese-only)
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
 python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)

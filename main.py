@@ -303,6 +303,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --etf-rotation     # ETF 轮动：最新信号 + 规则回测报告
         '''
     )
 
@@ -455,6 +456,13 @@ def parse_arguments() -> argparse.Namespace:
         '--backtest-force',
         action='store_true',
         help='强制回测（即使已有回测结果也重新计算）'
+    )
+
+    # === ETF Rotation ===
+    parser.add_argument(
+        '--etf-rotation',
+        action='store_true',
+        help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
     return parser.parse_args()
@@ -1725,6 +1733,18 @@ def main() -> int:
             logger.info(
                 f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
                 f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+            )
+            return 0
+
+        # 模式0.5: ETF 轮动（规则化，不调用 LLM）
+        if getattr(args, 'etf_rotation', False):
+            logger.info("模式: ETF 轮动")
+            from src.services.etf_rotation_service import run_etf_rotation
+
+            report = run_etf_rotation(config, send_notification=not args.no_notify)
+            logger.info(
+                "ETF 轮动完成: as_of=%s target=%s failed=%s",
+                f"{report.as_of:%Y-%m-%d}", report.target_weights, list(report.failed_codes),
             )
             return 0
 
