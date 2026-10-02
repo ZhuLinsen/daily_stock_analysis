@@ -96,6 +96,7 @@ class Scheduler:
         schedule_times: Optional[Sequence[str]] = None,
         schedule_times_provider: Optional[Callable[[], Union[Sequence[str], str]]] = None,
         register_signals: bool = True,
+        pass_scheduled_for: bool = False,
     ):
         """
         初始化调度器
@@ -120,6 +121,7 @@ class Scheduler:
         self._schedule_times_provider = schedule_times_provider
         self.shutdown_handler = GracefulShutdown(register_signals=register_signals)
         self._task_callback: Optional[Callable] = None
+        self._pass_scheduled_for = pass_scheduled_for
         self._daily_job: Optional[Any] = None
         self._daily_jobs: List[Any] = []
         self._background_tasks: List[Dict[str, Any]] = []
@@ -169,6 +171,12 @@ class Scheduler:
         self._daily_job = None
         self._daily_jobs = []
 
+    def _register_daily_job(self, schedule_time: str) -> Any:
+        job = self.schedule.every().day.at(schedule_time)
+        # schedule updates next_run after the callback, so preserve the original
+        # due date/time through delayed polling and asynchronous dispatch.
+        return job.do(lambda: self._safe_run_task(scheduled_for=job.next_run))
+
     def _configure_daily_task(self, schedule_time: str) -> bool:
         """(Re)register the daily job at the requested time."""
         candidate = (schedule_time or "").strip()
@@ -182,7 +190,7 @@ class Scheduler:
 
         previous_time = self.schedule_time
         self._cancel_daily_job()
-        self._daily_job = self.schedule.every().day.at(candidate).do(self._safe_run_task)
+        self._daily_job = self._register_daily_job(candidate)
         self.schedule_time = candidate
 
         if previous_time == candidate:
@@ -232,7 +240,7 @@ class Scheduler:
         previous_times = list(self.schedule_times)
         self._cancel_daily_job()
         self._daily_jobs = [
-            self.schedule.every().day.at(candidate).do(self._safe_run_task)
+            self._register_daily_job(candidate)
             for candidate in candidates
         ]
         self._daily_job = self._daily_jobs[0] if self._daily_jobs else None
@@ -280,7 +288,7 @@ class Scheduler:
         """Public wrapper for runtime scheduler reconciliation."""
         self._refresh_daily_schedule_if_needed()
 
-    def _safe_run_task(self):
+    def _safe_run_task(self, scheduled_for: Optional[datetime] = None):
         """安全执行任务（带异常捕获）"""
         if self._task_callback is None:
             return
@@ -290,7 +298,10 @@ class Scheduler:
             logger.info(f"定时任务开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info("=" * 50)
 
-            self._task_callback()
+            if self._pass_scheduled_for:
+                self._task_callback(scheduled_for=scheduled_for)
+            else:
+                self._task_callback()
 
             logger.info(f"定时任务执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -439,6 +450,7 @@ def run_with_schedule(
     schedule_time_provider: Optional[Callable[[], str]] = None,
     schedule_times: Optional[Sequence[str]] = None,
     schedule_times_provider: Optional[Callable[[], Union[Sequence[str], str]]] = None,
+    pass_scheduled_for: bool = False,
 ):
     """
     便捷函数：使用定时调度运行任务
@@ -461,6 +473,8 @@ def run_with_schedule(
         scheduler_kwargs["schedule_times"] = schedule_times
     if schedule_times_provider is not None:
         scheduler_kwargs["schedule_times_provider"] = schedule_times_provider
+    if pass_scheduled_for:
+        scheduler_kwargs["pass_scheduled_for"] = True
     scheduler = Scheduler(**scheduler_kwargs)
     for entry in background_tasks or []:
         scheduler.add_background_task(

@@ -74,9 +74,17 @@ def _run_scheduled_analysis_process(
             # before analysis can create descendants.
             if os.getsid(0) != os.getpid():
                 raise
+    schedule_args_overrides = dict(schedule_args_overrides)
+    scheduled_for = schedule_args_overrides.pop("_scheduled_for", None)
     service = RuntimeSchedulerService(schedule_args_overrides=schedule_args_overrides)
-    success = service._run_analysis_locked(stock_codes)
-    result_queue.put({"success": success, "error": service._last_error})
+    success = service._run_analysis_locked(
+        stock_codes,
+        scheduled_for=datetime.fromisoformat(scheduled_for) if scheduled_for else None,
+    )
+    result_queue.put({
+        "success": success, "error": service._last_error,
+        "skipped": service._last_skip_reason,
+    })
 
 
 def _posix_descendant_process_ids(root_pid: int) -> Set[int]:
@@ -314,7 +322,11 @@ class RuntimeSchedulerService:
         self._last_skip_reason = "analysis_already_running"
         logger.warning("Runtime scheduler skipped run: analysis already running")
 
-    def _run_analysis_locked(self, stock_codes: Optional[List[str]]) -> bool:
+    def _run_analysis_locked(
+        self, stock_codes: Optional[List[str]], *, scheduled_for: Optional[datetime] = None,
+    ) -> bool:
+        from src.services.scheduled_analysis_claim import ScheduledAnalysisSkipped
+
         try:
             config = self._reload_config()
             runner = self._task_runner
@@ -323,11 +335,19 @@ class RuntimeSchedulerService:
 
                 runner = run_scheduled_analysis
             self._last_run_at = datetime.now().isoformat()
-            result = runner(config, self._make_schedule_args(), stock_codes)
+            args = self._make_schedule_args()
+            args._scheduled_for = scheduled_for
+            result = runner(config, args, stock_codes)
             if result is False:
                 raise RuntimeError("runtime scheduled analysis reported failure")
             self._last_success_at = datetime.now().isoformat()
             self._last_error = None
+            return True
+        except ScheduledAnalysisSkipped:
+            self._last_skipped_at = datetime.now().isoformat()
+            self._last_skip_reason = "scheduled_occurrence_already_claimed"
+            self._last_error = None
+            logger.info("Runtime scheduler skipped already claimed occurrence %s", scheduled_for)
             return True
         except Exception as exc:  # noqa: BLE001 - scheduled runs must not kill API process.
             self._last_error = str(exc)
@@ -466,6 +486,7 @@ class RuntimeSchedulerService:
         *,
         lock_held: bool = False,
         generation: Optional[int] = None,
+        scheduled_for: Optional[datetime] = None,
     ) -> None:
         if not lock_held and not self._run_lock.acquire(blocking=False):
             self._record_analysis_busy_skip()
@@ -479,9 +500,12 @@ class RuntimeSchedulerService:
         try:
             context = multiprocessing.get_context("spawn")
             result_queue = context.Queue()
+            overrides = dict(self._schedule_args_overrides)
+            if scheduled_for is not None:
+                overrides["_scheduled_for"] = scheduled_for.isoformat()
             process = context.Process(
                 target=self._analysis_process_target,
-                args=(result_queue, stock_codes, dict(self._schedule_args_overrides)),
+                args=(result_queue, stock_codes, overrides),
                 name="runtime-scheduled-analysis",
             )
             timeout = self._analysis_timeout_seconds()
@@ -550,7 +574,11 @@ class RuntimeSchedulerService:
             with self._analysis_process_lock:
                 if generation != self._analysis_generation:
                     return
-                if result.get("success"):
+                if result.get("skipped"):
+                    self._last_skipped_at = datetime.now().isoformat()
+                    self._last_skip_reason = result["skipped"]
+                    self._last_error = None
+                elif result.get("success"):
                     self._last_success_at = datetime.now().isoformat()
                     self._last_error = None
                 else:
@@ -577,6 +605,7 @@ class RuntimeSchedulerService:
         stock_codes: Optional[List[str]] = None,
         *,
         generation: Optional[int] = None,
+        scheduled_for: Optional[datetime] = None,
     ) -> bool:
         with self._analysis_process_lock:
             current_generation = self._analysis_generation
@@ -591,6 +620,7 @@ class RuntimeSchedulerService:
                 stock_codes,
                 lock_held=True,
                 generation=generation,
+                scheduled_for=scheduled_for,
             ),
             daemon=True,
             name="runtime-scheduler-watchdog",
@@ -691,6 +721,7 @@ class RuntimeSchedulerService:
                 schedule_times=times,
                 schedule_times_provider=self._current_times,
                 register_signals=False,
+                pass_scheduled_for=True,
             )
             if run_immediately and self._run_immediately_in_background:
                 scheduler.set_daily_task(scheduled_analysis, run_immediately=False)

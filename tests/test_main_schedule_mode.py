@@ -422,6 +422,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            pass_scheduled_for=False,
         ):
             scheduled_call["schedule_time"] = schedule_time
             scheduled_call["run_immediately"] = run_immediately
@@ -792,6 +793,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            pass_scheduled_for=False,
         ):
             scheduled_call["schedule_time"] = schedule_time
             scheduled_call["run_immediately"] = run_immediately
@@ -987,6 +989,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            pass_scheduled_for=False,
         ):
             scheduled_call["schedule_time"] = schedule_time
             scheduled_call["resolved_schedule_time"] = (
@@ -1010,6 +1013,42 @@ class MainScheduleModeTestCase(unittest.TestCase):
         )
         run_full_analysis.assert_called_once_with(runtime_config, args, None)
 
+    def test_claimed_analysis_does_not_refresh_watchlist_again(self) -> None:
+        config = self._make_config(stock_list=["600519"], refresh_stock_list=MagicMock())
+        args = self._make_args()
+        with patch("main._refresh_stock_index_cache_for_analysis"), \
+             patch("main._compute_trading_day_filter", return_value=(["600519"], "", True)) as trading_filter:
+            self.assertTrue(main.run_full_analysis(config, args, refresh_watchlist=False))
+        config.refresh_stock_list.assert_not_called()
+        self.assertEqual(trading_filter.call_args.args[2], ["600519"])
+
+    def test_cli_and_runtime_claim_same_final_workload_and_report_duplicate_as_skip(self) -> None:
+        from src.services.runtime_scheduler import RuntimeSchedulerService
+
+        args = self._make_args(schedule=True)
+        config = self._make_config(
+            database_path=str(Path(self.temp_dir.name) / "analysis.db"),
+            stock_list=["600519"],
+        )
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main._reload_runtime_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main.run_full_analysis", return_value=True) as run_full, \
+             patch("src.scheduler.run_with_schedule") as schedule_runner:
+            self.assertEqual(main.main(), 0)
+            self.assertTrue(schedule_runner.call_args.kwargs["pass_scheduled_for"])
+            due = datetime(2026, 10, 2, 18, tzinfo=timezone.utc)
+            schedule_runner.call_args.kwargs["task"](scheduled_for=due)
+            service = RuntimeSchedulerService()
+            self.assertTrue(service._run_analysis_locked(None, scheduled_for=due))
+            self.assertEqual(service.status()["last_skip_reason"], "scheduled_occurrence_already_claimed")
+            self.assertIsNone(service.status()["last_success_at"])
+            run_full.assert_called_once()
+            self.assertFalse(run_full.call_args.kwargs["refresh_watchlist"])
+            self.assertEqual(run_full.call_args.args[0].stock_list, ["600519"])
+            self.assertEqual(run_full.call_args.args[1]._scheduled_for, due)
+
     def test_schedule_mode_raises_task_failure_when_analysis_returns_false(self) -> None:
         args = self._make_args(schedule=True)
         runtime_config = self._make_config(schedule_enabled=True, schedule_time="09:30")
@@ -1021,6 +1060,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            pass_scheduled_for=False,
         ):
             scheduled_call["task"] = task
 
@@ -1056,6 +1096,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            pass_scheduled_for=False,
         ):
             scheduled_call["schedule_time"] = schedule_time
             scheduled_call["run_immediately"] = run_immediately
@@ -1110,6 +1151,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            pass_scheduled_for=False,
         ):
             scheduled_call["background_tasks"] = background_tasks or []
 
@@ -1224,6 +1266,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             run_immediately,
             background_tasks=None,
             schedule_time_provider=None,
+            pass_scheduled_for=False,
         ):
             scheduled_call["schedule_time"] = schedule_time
             scheduled_call["run_immediately"] = run_immediately

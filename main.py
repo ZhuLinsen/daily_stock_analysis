@@ -789,6 +789,7 @@ def run_full_analysis(
     *,
     raise_errors: bool = False,
     analysis_targets: Optional[List[AnalysisTarget]] = None,
+    refresh_watchlist: bool = True,
 ) -> bool:
     """
     执行完整的分析流程（个股 + 大盘复盘）
@@ -797,6 +798,7 @@ def run_full_analysis(
     ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
     ``analysis_targets`` 与 ``stock_codes`` 对齐，携带结构化分析目标
     （指数目标用于推导 market=cn 与能力矩阵）。
+    ``refresh_watchlist=False`` 仅用于已原子认领的定时快照，避免认领后再次热更新。
     """
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
@@ -834,7 +836,7 @@ def run_full_analysis(
             analysis_targets = None
 
         # Issue #529: Hot-reload STOCK_LIST from .env on each scheduled run
-        if stock_codes is None and portfolio_stock_codes is None:
+        if stock_codes is None and portfolio_stock_codes is None and refresh_watchlist:
             config.refresh_stock_list()
 
         using_config_stock_list = stock_codes is None and portfolio_stock_codes is None
@@ -1228,7 +1230,18 @@ def run_scheduled_analysis(
     stock_codes: Optional[List[str]] = None,
 ) -> bool:
     """Run scheduled analysis with failures propagated to the scheduler."""
-    return run_full_analysis(config, args, stock_codes, raise_errors=True)
+    scheduled_for = getattr(args, "_scheduled_for", None)
+    if scheduled_for is None:
+        return run_full_analysis(config, args, stock_codes, raise_errors=True)
+
+    from src.services.scheduled_analysis_claim import run_claimed_scheduled_analysis
+
+    return run_claimed_scheduled_analysis(
+        config, args, scheduled_for,
+        lambda snapshot: run_full_analysis(
+            snapshot, args, stock_codes, raise_errors=True, refresh_watchlist=False,
+        ),
+    )
 
 
 def _run_analysis_with_runtime_scheduler_lock(
@@ -1797,9 +1810,21 @@ def main() -> int:
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
             schedule_times_provider = _build_schedule_times_provider(config.schedule_time)
 
-            def scheduled_task():
+            def scheduled_task(scheduled_for=None):
                 runtime_config = _reload_runtime_config()
-                result = run_full_analysis(runtime_config, args, scheduled_stock_codes)
+                if scheduled_for is None:
+                    result = run_full_analysis(runtime_config, args, scheduled_stock_codes)
+                else:
+                    from src.services.scheduled_analysis_claim import ScheduledAnalysisSkipped
+
+                    scheduled_args = argparse.Namespace(**vars(args))
+                    scheduled_args._scheduled_for = scheduled_for
+                    try:
+                        result = run_scheduled_analysis(runtime_config, scheduled_args, scheduled_stock_codes)
+                    except ScheduledAnalysisSkipped:
+                        logger.info("Scheduled analysis already claimed; skipping occurrence %s", scheduled_for)
+                        return
+
                 if result is False:
                     reason = _LAST_ANALYSIS_FAILURE_REASON or "unknown"
                     raise RuntimeError(
@@ -1832,6 +1857,7 @@ def main() -> int:
                 "run_immediately": should_run_immediately,
                 "background_tasks": background_tasks,
                 "schedule_time_provider": schedule_time_provider,
+                "pass_scheduled_for": True,
             }
             if hasattr(config, "schedule_times"):
                 schedule_kwargs["schedule_times"] = config.schedule_times
