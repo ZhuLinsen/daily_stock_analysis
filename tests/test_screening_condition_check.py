@@ -233,3 +233,48 @@ def test_disabled_catalog_strategy_is_rejected(client, tmp_path, monkeypatch):
     response = client.post("/api/v1/screening/screen/check", json={"strategy": "disabled", "snapshot": SNAPSHOT})
     assert response.status_code == 422
     assert response.json()["error"] == "screening_invalid_strategy"
+
+
+def test_real_app_mount_requires_auth_and_accepts_a_signed_session(tmp_path, monkeypatch):
+    from api.app import create_app
+    from src import auth
+
+    monkeypatch.setattr(auth, "_auth_enabled", True)
+    monkeypatch.setattr(auth, "_session_secret", b"s" * 32)
+    monkeypatch.setenv("STRATEGIES_DIR", str(STRATEGIES))
+    app = create_app(static_dir=tmp_path)
+    app.dependency_overrides[get_config_dep] = lambda: Config(screening_enabled=True)
+    mounted_client = FastAPITestClient(app)
+    url = "/api/v1/screening/screen/check"
+    assert url in app.openapi()["paths"]
+    response = mounted_client.post(url, json={"snapshot": SNAPSHOT})
+    assert response.status_code == 401
+    assert response.json()["error"] == "unauthorized"
+    mounted_client.cookies.set(auth.COOKIE_NAME, "invalid-session")
+    assert mounted_client.post(url, json={"snapshot": SNAPSHOT}).status_code == 401
+    mounted_client.cookies.set(auth.COOKIE_NAME, auth.create_session())
+    response = mounted_client.post(url, json={"snapshot": SNAPSHOT})
+    assert response.status_code == 200
+    assert response.json()["passed"] is True
+    assert response.json()["provenance"] == "supplied_snapshot"
+
+
+@pytest.mark.parametrize("value", [-6, -5, 0, 5, 6])
+def test_finite_negative_values_and_inclusive_boundaries_match_pipeline(value):
+    row = {"price": value}
+    filters = HardFilterConfig(exclude_st=False, price_min=-5, price_max=5)
+    checks = check_hard_filters(row, filters)
+    assert [item["passed"] for item in checks] == [value >= -5, value <= 5]
+    assert all(item["current_value"] == value for item in checks)
+    assert all(item["passed"] for item in checks) == (not apply_hard_filters(pd.DataFrame([row]), filters).empty)
+
+
+@pytest.mark.parametrize("row,filters", [
+    ({"name": None}, HardFilterConfig()),
+    ({"price": float("inf")}, HardFilterConfig(exclude_st=False, price_min=1)),
+])
+def test_unusable_data_is_conservatively_unknown_even_when_legacy_predicate_passes(row, filters):
+    assert not apply_hard_filters(pd.DataFrame([row]), filters).empty
+    checks = check_hard_filters(row, filters)
+    assert checks[0]["status"] == "missing"
+    assert checks[0]["passed"] is None

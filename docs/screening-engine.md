@@ -60,7 +60,7 @@ SCREENING_EASTMONEY_JITTER_SEC=0.3
 
 ## 单股条件检查（提供快照）
 
-`POST /api/v1/screening/screen/check` 供脚本/API 客户端解释任意一条快照为什么通过或未通过策略硬过滤。需要开启 `SCREENING_ENABLED`；策略 ID 从当前启用的策略目录查找，并校验 `market`（`cn`/`us`）是否在该策略的 `market_scope` 内。
+`POST /api/v1/screening/screen/check` 供脚本/API 客户端解释任意一条快照为什么通过或未通过策略硬过滤。需要开启 `SCREENING_ENABLED`；与已有选股接口共用管理员认证中间件，启用认证时无有效会话返回 `401`。策略 ID 从当前启用的策略目录查找，并校验 `market`（`cn`/`us`）是否在该策略的 `market_scope` 内。
 
 ```json
 {
@@ -76,7 +76,7 @@ SCREENING_EASTMONEY_JITTER_SEC=0.3
 
 - 返回 `strategy`、`strategy_version`、`market`、`provenance: "supplied_snapshot"`、整体 `passed` 和 `checks`。每项包含 `filter`、标准 `field`、实际命中的 `source_field`、`threshold`、`current_value`、`status`（`pass`/`fail`/`missing`）与 `passed`（布尔值或 `null`）；`missing_reason` 区分缺列、空值、非法数值/文本和非有限值
 - 所有启用的硬过滤条件按配置模型字段顺序独立执行，即使第一项失败也继续检查后续项。复用现有过滤谓词；数值上下界含边界，`0` 阈值仍生效，空白名单和关闭的布尔条件不返回
-- 缺列、`null`、空文本、不可解析数字和非有限数字输出 `missing`，`current_value`/`passed` 为 `null`。缺失不是通过；整体 `passed` 仅在所有条件通过时为 `true`（无启用条件时为 `true`）。尤其空名称不会因为旧过滤路径的空值处理而显示通过
+- 缺列、`null`、空文本、不可解析数字和非有限数字输出 `missing`，`current_value`/`passed` 为 `null`。缺失不是通过；整体 `passed` 仅在所有条件通过时为 `true`（无启用条件时为 `true`）。这是诊断接口对不可用数据的保守未知标记：旧管线可能允许空名称通过 ST 检查或允许正无穷通过数值下界，本接口仍返回 `missing`；不改写旧管线行为
 - 输入须为 1–64 个字段的扁平 JSON 对象；键长 1–64 字符，文本值最多 256 字符；嵌套值和超出有限浮点范围的整数返回有界 `422`。使用现有标准字段/中文别名、已归一化单位，不做币种或百分比换算；同时提供标准名和别名时，标准名优先
 - 日 K 条件直接使用提供的特征，未提供则为 `missing`，不会补算或补抓。响应没有实时、时间戳或数据源可信度声明；股票代码和市场归属由调用方负责，不能把该结果当成已验证的证券身份或实时选股结果
 - 不评分、不排名、不调用 LLM、不写运行历史、不交易。已有同步/后台选股、水瀑统计和 Web 页面保持原行为；此小接口尚未添加 Web UI
