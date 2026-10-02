@@ -3,7 +3,6 @@ import { expect, test } from '@playwright/test';
 test.use({ locale: 'zh-CN' });
 
 test('alerts disclose legacy sources with an empty database list', async ({ page }, testInfo) => {
-  test.skip(!process.env.DSA_WEB_SMOKE_PASSWORD, 'Use the existing web smoke configuration to run visual checks.');
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (!path.startsWith('/api/')) {
