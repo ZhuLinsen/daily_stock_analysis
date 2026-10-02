@@ -144,6 +144,8 @@ const PORTFOLIO_RISK_DASHBOARD_TEXT = {
     missingPrice: '缺价',
     stalePrice: '过期价',
     positions: '持仓',
+    snapshotUnavailable: '持仓快照不可用',
+    snapshotUnavailableDescription: '无法确认持仓数量或估值，请刷新重试。',
   },
   en: {
     title: 'Risk and exposure dashboard',
@@ -169,6 +171,8 @@ const PORTFOLIO_RISK_DASHBOARD_TEXT = {
     missingPrice: 'Missing price',
     stalePrice: 'Stale price',
     positions: 'Positions',
+    snapshotUnavailable: 'Portfolio snapshot unavailable',
+    snapshotUnavailableDescription: 'Holdings and valuation are unknown. Refresh to try again.',
   },
 } as const;
 
@@ -266,11 +270,11 @@ function getValidTopPositionRows(risk: PortfolioRiskResponse | null) {
       && item.symbol.trim().length > 0
       && typeof item.weightPct === 'number'
       && Number.isFinite(item.weightPct)
-      && item.weightPct > 0
+      && item.weightPct >= 0
       && item.weightPct <= 100
       && (index === 0 || item.weightPct <= rows[index - 1].weightPct)
   ));
-  return valid && rows[0].weightPct === concentration?.topWeightPct ? rows : [];
+  return valid && rows[0].weightPct > 0 && rows[0].weightPct === concentration?.topWeightPct ? rows : [];
 }
 
 function getClassifiedSectorRows(risk: PortfolioRiskResponse | null) {
@@ -284,11 +288,11 @@ function getClassifiedSectorRows(risk: PortfolioRiskResponse | null) {
       && item.sector.trim().toUpperCase() !== UNCLASSIFIED_SECTOR
       && typeof item.weightPct === 'number'
       && Number.isFinite(item.weightPct)
-      && item.weightPct > 0
+      && item.weightPct >= 0
       && item.weightPct <= 100
       && (index === 0 || item.weightPct <= rows[index - 1].weightPct)
   ));
-  return valid && rows[0].weightPct === risk?.sectorConcentration?.topWeightPct ? rows : [];
+  return valid && rows[0].weightPct > 0 && rows[0].weightPct === risk?.sectorConcentration?.topWeightPct ? rows : [];
 }
 
 function hasCompleteSectorCoverage(risk: PortfolioRiskResponse | null) {
@@ -313,7 +317,7 @@ function hasCompleteSectorCoverage(risk: PortfolioRiskResponse | null) {
       || item.sector.trim().length === 0
       || typeof item.weightPct !== 'number'
       || !Number.isFinite(item.weightPct)
-      || item.weightPct <= 0
+      || item.weightPct < 0
   ));
   return !hasUnclassifiedRows
     && !hasInvalidRows
@@ -919,6 +923,8 @@ const PortfolioPage: React.FC = () => {
     rows.sort((a, b) => Number(b.marketValueBase || 0) - Number(a.marketValueBase || 0));
     return rows;
   }, [snapshot]);
+  // A missing snapshot is unknown, not a successfully loaded empty portfolio.
+  const positionCount = snapshot === null ? '--' : positionRows.length;
   const exposureTotal = snapshot?.totalMarketValue;
   const exposureEmptyLabel = snapshot !== null && positionRows.length === 0 && hasFreshFxEvidence(snapshot)
     ? riskDashboardText.noExposure
@@ -1630,7 +1636,11 @@ const PortfolioPage: React.FC = () => {
               {fxRefreshing ? text.refreshing : text.refreshFx}
             </button>
           </div>
-          <div className="mt-2">{snapshot?.fxStale ? <Badge variant="warning">{text.stale}</Badge> : <Badge variant="success">{text.latest}</Badge>}</div>
+          <div className="mt-2">{snapshot?.fxStale === true
+            ? <Badge variant="warning">{text.stale}</Badge>
+            : snapshot?.fxStale === false
+              ? <Badge variant="success">{text.latest}</Badge>
+              : <Badge variant="default">{riskDashboardText.unavailable}</Badge>}</div>
           {fxRefreshFeedback ? (
             <InlineAlert
               variant={getFxRefreshFeedbackVariant(fxRefreshFeedback.tone)}
@@ -1650,7 +1660,7 @@ const PortfolioPage: React.FC = () => {
               <h2 className="text-sm font-semibold text-foreground">{riskDashboardText.title}</h2>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-secondary">
-              <span>{riskDashboardText.positions}: {positionRows.length}</span>
+              <span>{riskDashboardText.positions}: {positionCount}</span>
               <span>{text.totalMarketValue}: {formatMoney(exposureTotal, snapshot?.currency || 'CNY')}</span>
             </div>
           </div>
@@ -1694,7 +1704,7 @@ const PortfolioPage: React.FC = () => {
         <Card className="xl:col-span-2" padding="md">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-foreground">{text.positionsTitle}</h2>
-            <span className="text-xs text-secondary">{formatUiText(text.countItems, { count: positionRows.length })}</span>
+            <span className="text-xs text-secondary">{formatUiText(text.countItems, { count: positionCount })}</span>
           </div>
           {portfolioSignalsWarning ? (
             <InlineAlert
@@ -1704,7 +1714,13 @@ const PortfolioPage: React.FC = () => {
               className="mb-3 rounded-xl px-3 py-2 text-xs shadow-none"
             />
           ) : null}
-          {positionRows.length === 0 ? (
+          {snapshot === null ? (
+            <EmptyState
+              title={isLoading ? text.refreshing : riskDashboardText.snapshotUnavailable}
+              description={riskDashboardText.snapshotUnavailableDescription}
+              className="border-none bg-transparent px-4 py-8 shadow-none"
+            />
+          ) : positionRows.length === 0 ? (
             <EmptyState
               title={text.noPositionsTitle}
               description={text.noPositionsDescription}
@@ -1850,8 +1866,8 @@ const PortfolioPage: React.FC = () => {
         <Card padding="md">
           <h3 className="text-sm font-semibold text-foreground mb-2">{text.scope}</h3>
           <div className="text-xs text-secondary space-y-1">
-            <div>{text.accountCount}: {snapshot?.accountCount ?? 0}</div>
-            <div>{text.currency}: {snapshot?.currency || 'CNY'}</div>
+            <div>{text.accountCount}: {snapshot?.accountCount ?? '--'}</div>
+            <div>{text.currency}: {snapshot?.currency || '--'}</div>
             <div>{text.costMethodShort}: {(snapshot?.costMethod || costMethod).toUpperCase()}</div>
           </div>
         </Card>

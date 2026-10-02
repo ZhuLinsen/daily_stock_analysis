@@ -7,9 +7,14 @@ const position = (symbol: string, market: string, currency: string, value: numbe
   priceDate: '2026-10-01', priceStale: false, priceAvailable: true,
 });
 
-for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top', 'invalid-sector'] as const) {
+for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top', 'invalid-sector', 'rounded-tail', 'empty'] as const) {
   test(`portfolio risk dashboard: ${state}`, async ({ page }, testInfo) => {
     const positions = [position('600519', 'cn', 'CNY', 6000), position('AAPL', 'us', 'USD', 4000)];
+    if (state === 'rounded-tail') {
+      Object.assign(positions[0], { lastPrice: 1000000, marketValueBase: 10000000 });
+      Object.assign(positions[1], { lastPrice: 0.1, marketValueBase: 1 });
+    }
+    if (state === 'empty') positions.length = 0;
     if (state === 'missing-price') {
       Object.assign(positions[1], { lastPrice: 0, marketValueBase: 0, priceSource: 'missing', priceAvailable: false });
     }
@@ -36,6 +41,24 @@ for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top
       stopLoss: { triggeredCount: 0, nearCount: 0, nearAlert: false, items: [] },
       decisionSignalRisk: { available: true, total: 0, actions: { sell: 0, reduce: 0, alert: 0 }, items: [] },
     };
+    if (state === 'rounded-tail') {
+      snapshot.totalMarketValue = 10000001;
+      snapshot.totalEquity = 10001001;
+      risk.concentration.totalMarketValue = 10000001;
+      risk.concentration.topWeightPct = 100;
+      risk.concentration.topPositions[0] = { symbol: '600519', marketValueBase: 10000000, weightPct: 100, isAlert: true };
+      risk.concentration.topPositions[1] = { symbol: 'AAPL', marketValueBase: 1, weightPct: 0, isAlert: false };
+      risk.sectorConcentration = { totalMarketValue: 10000001, topWeightPct: 100, alert: true,
+        topSectors: [
+          { sector: '白酒', marketValueBase: 10000000, weightPct: 100, symbolCount: 1, isAlert: true },
+          { sector: '科技', marketValueBase: 1, weightPct: 0, symbolCount: 1, isAlert: false },
+        ], coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 }, errors: [],
+      };
+    }
+    if (state === 'empty') {
+      snapshot.totalMarketValue = 0; snapshot.totalEquity = 1000;
+      risk.concentration = { totalMarketValue: 0, topWeightPct: 0, alert: false, topPositions: [] };
+    }
     await page.route('**/api/**', async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (!path.startsWith('/api/')) return route.continue();
@@ -53,7 +76,27 @@ for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top
     const dashboard = page.locator('section').filter({ has: page.getByText('风险与暴露看板', { exact: true }) });
     await expect(dashboard).toBeVisible();
     await expect(page.getByRole('button', { name: '刷新数据', exact: true })).toBeVisible();
-    if (state === 'snapshot-error') await expect(dashboard.getByText('总市值: --')).toBeVisible();
+    if (state === 'snapshot-error') {
+      await expect(dashboard.getByText('总市值: --')).toBeVisible();
+      await expect(dashboard.getByText('持仓: --')).toBeVisible();
+      await expect(page.getByText('共 -- 项')).toBeVisible();
+      await expect(page.getByText('账户数: --')).toBeVisible();
+      await expect(page.getByText('最新', { exact: true })).toHaveCount(0);
+      await expect(page.getByText('持仓快照不可用', { exact: true })).toBeVisible();
+    }
+    if (state === 'empty') {
+      await expect(dashboard.getByText('总市值: CNY 0.00')).toBeVisible();
+      await expect(dashboard.getByText('持仓: 0')).toBeVisible();
+      await expect(dashboard.getByText('暂无暴露数据')).toHaveCount(2);
+      await expect(page.getByText('当前无持仓数据', { exact: true })).toBeVisible();
+    }
+    if (state === 'rounded-tail') {
+      await expect(dashboard.getByText('Top1: 600519')).toBeVisible();
+      await expect(dashboard.getByText('Top1: 白酒')).toBeVisible();
+      await expect(dashboard.getByText('100.00%')).toHaveCount(4);
+      await expect(page.locator('.recharts-pie-sector')).toHaveCount(1);
+      await expect(page.getByText('暂无集中度数据', { exact: true })).toHaveCount(0);
+    }
     if (state === 'complete') {
       await expect(dashboard.getByText('Top1: 600519')).toBeVisible();
       await expect(dashboard.getByText('60.00%')).toHaveCount(3);
@@ -74,6 +117,11 @@ for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top
       const screenshot = testInfo.outputPath(`portfolio-${state}-${viewport.width}.png`);
       await dashboard.screenshot({ path: screenshot, animations: 'disabled' });
       await testInfo.attach(`${state}-${viewport.width}`, { path: screenshot, contentType: 'image/png' });
+      if (state === 'snapshot-error' || state === 'rounded-tail') {
+        const fullPage = testInfo.outputPath(`portfolio-full-${state}-${viewport.width}.png`);
+        await page.screenshot({ path: fullPage, fullPage: true, animations: 'disabled' });
+        await testInfo.attach(`full-${state}-${viewport.width}`, { path: fullPage, contentType: 'image/png' });
+      }
     }
   });
 }
