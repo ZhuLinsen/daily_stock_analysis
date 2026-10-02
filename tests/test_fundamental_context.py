@@ -429,6 +429,45 @@ class TestFundamentalContext(unittest.TestCase):
             unblock.set()
             time.sleep(0.02)
 
+    def test_timeout_pool_rejection_records_elapsed_not_budget(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        manager._fundamental_timeout_slots = BoundedSemaphore(1)
+        manager._fundamental_timeout_slots.acquire()
+        with patch("data_provider.base.time.monotonic", side_effect=[10.0, 10.037]):
+            result, error, duration = manager._run_with_timeout(lambda: 1, 20, "busy")
+        self.assertIsNone(result)
+        self.assertIn("worker pool exhausted", error)
+        self.assertEqual(duration, 37)
+
+    def test_timeout_records_measured_wait_and_releases_slot_after_completion(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        manager._fundamental_timeout_slots = BoundedSemaphore(1)
+        unblock = Event()
+        finished = Event()
+
+        def task():
+            unblock.wait(timeout=1)
+            finished.set()
+
+        try:
+            with patch("data_provider.base.time.monotonic", side_effect=[10.0, 10.037]):
+                result, error, duration = manager._run_with_timeout(task, 0.001, "blocked")
+            self.assertIsNone(result)
+            self.assertEqual(error, "blocked timeout")
+            self.assertEqual(duration, 37)
+        finally:
+            unblock.set()
+            self.assertTrue(finished.wait(timeout=1))
+
+    def test_completed_tasks_use_monotonic_elapsed(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        for task, expected in ((lambda: 7, 7), (lambda: int("invalid"), None)):
+            with patch("data_provider.base.time.monotonic", side_effect=[10.0, 10.037]):
+                result, error, duration = manager._run_with_timeout(task, 20, "completed")
+            self.assertEqual(result, expected)
+            self.assertEqual(duration, 37)
+            self.assertEqual(error is None, expected is not None)
+
     def test_infer_block_status_treats_all_null_payload_as_non_ok(self) -> None:
         self.assertEqual(
             DataFetcherManager._infer_block_status(

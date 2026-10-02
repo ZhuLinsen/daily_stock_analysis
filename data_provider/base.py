@@ -653,6 +653,11 @@ class DataFetcherManager:
     _CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS = 30.0
     _concept_rankings_cache_lock = RLock()
     _concept_rankings_cache: Dict[int, Tuple[float, List[Dict], List[Dict]]] = {}
+    # Analysis pipelines can create fresh managers while an earlier request is
+    # still running. Quarantine only explicitly keyed provider operations, and
+    # only after timeout; healthy concurrent calls keep their existing behavior.
+    _fundamental_timeout_lock = RLock()
+    _fundamental_timed_out_workers: Dict[Tuple[str, str], int] = {}
 
     def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
         """
@@ -3345,22 +3350,34 @@ class DataFetcherManager:
         task: Callable[[], Any],
         timeout_seconds: float,
         task_name: str,
+        *,
+        quarantine_key: Optional[Tuple[str, str]] = None,
     ) -> Tuple[Optional[Any], Optional[str], int]:
         """
-        Execute a task in a short-lived thread and enforce a timeout.
+        Bound caller waiting without pretending to cancel the background task.
+
+        A provider-operation key prevents later calls from starting while an
+        earlier timed-out call is still running, even across manager instances.
+        Do not key a multi-provider fallback chain: a hung primary must not
+        quarantine its healthy alternatives.
 
         Returns:
             (result, error, duration_ms)
         """
-        start = time.time()
+        start = time.monotonic()
         timeout_value = max(0.0, timeout_seconds)
         if timeout_value <= 0:
             return None, f"{task_name} timeout", 0
         result_holder: Dict[str, Any] = {}
         error_holder: Dict[str, Exception] = {}
 
-        if not self._fundamental_timeout_slots.acquire(blocking=False):
-            return None, f"{task_name} timeout worker pool exhausted", int(timeout_value * 1000)
+        slots = self._fundamental_timeout_slots
+        state = {"completed": False, "timed_out": False}
+        with self._fundamental_timeout_lock:
+            if quarantine_key is not None and self._fundamental_timed_out_workers.get(quarantine_key, 0):
+                return None, f"{task_name} timeout: previous request still running", int((time.monotonic() - start) * 1000)
+            if not slots.acquire(blocking=False):
+                return None, f"{task_name} timeout worker pool exhausted", int((time.monotonic() - start) * 1000)
 
         def runner() -> None:
             try:
@@ -3368,32 +3385,45 @@ class DataFetcherManager:
             except Exception as exc:
                 error_holder["value"] = exc
             finally:
-                try:
-                    self._fundamental_timeout_slots.release()
-                except ValueError:
-                    pass
+                # Completion and timeout registration share a lock, so a
+                # worker finishing exactly at the deadline cannot leave a
+                # stale quarantine. Keep slots occupied until actual completion.
+                with self._fundamental_timeout_lock:
+                    state["completed"] = True
+                    if state["timed_out"] and quarantine_key is not None:
+                        pending = self._fundamental_timed_out_workers[quarantine_key] - 1
+                        if pending:
+                            self._fundamental_timed_out_workers[quarantine_key] = pending
+                        else:
+                            del self._fundamental_timed_out_workers[quarantine_key]
+                    slots.release()
 
         worker = Thread(target=runner, daemon=True, name=f"fundamental-{task_name}")
         try:
             worker.start()
         except Exception as exc:
-            try:
-                self._fundamental_timeout_slots.release()
-            except ValueError:
-                pass
-            return None, str(exc), int((time.time() - start) * 1000)
+            slots.release()
+            return None, str(exc), int((time.monotonic() - start) * 1000)
         worker.join(timeout=timeout_value)
-        if worker.is_alive():
-            return None, f"{task_name} timeout", int(timeout_value * 1000)
+        with self._fundamental_timeout_lock:
+            if not state["completed"]:
+                if quarantine_key is not None:
+                    state["timed_out"] = True
+                    self._fundamental_timed_out_workers[quarantine_key] = (
+                        self._fundamental_timed_out_workers.get(quarantine_key, 0) + 1
+                    )
+                return None, f"{task_name} timeout", int((time.monotonic() - start) * 1000)
         if "value" in error_holder:
-            return None, str(error_holder["value"]), int((time.time() - start) * 1000)
-        return result_holder.get("value"), None, int((time.time() - start) * 1000)
+            return None, str(error_holder["value"]), int((time.monotonic() - start) * 1000)
+        return result_holder.get("value"), None, int((time.monotonic() - start) * 1000)
 
     def _run_with_retry(
         self,
         task: Callable[[], Any],
         timeout_seconds: float,
         task_name: str,
+        *,
+        quarantine_key: Optional[Tuple[str, str]] = None,
     ) -> Tuple[Optional[Any], Optional[str], int]:
         """
         Execute a task with bounded budget and best-effort retries.
@@ -3410,7 +3440,9 @@ class DataFetcherManager:
         for _ in range(attempts):
             if remaining_seconds <= 0:
                 break
-            result, err, cost_ms = self._run_with_timeout(task, remaining_seconds, task_name)
+            result, err, cost_ms = self._run_with_timeout(
+                task, remaining_seconds, task_name, quarantine_key=quarantine_key,
+            )
             total_cost_ms += cost_ms
             remaining_seconds = max(0.0, remaining_seconds - cost_ms / 1000)
             if err is None:
@@ -4307,6 +4339,7 @@ class DataFetcherManager:
                 lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
                 bundle_timeout,
                 "fundamental_bundle",
+                quarantine_key=("akshare", "fundamental_bundle"),
             )
             _consume_budget(bundle_ms)
             if not isinstance(bundle_payload, dict):
@@ -4523,6 +4556,7 @@ class DataFetcherManager:
             lambda: self._fundamental_adapter.get_capital_flow(stock_code),
             timeout,
             "capital_flow",
+            quarantine_key=("akshare", "capital_flow"),
         )
         if not isinstance(payload, dict):
             return self._build_fundamental_block(
@@ -4587,6 +4621,7 @@ class DataFetcherManager:
             lambda: self._fundamental_adapter.get_dragon_tiger_flag(stock_code),
             timeout,
             "dragon_tiger",
+            quarantine_key=("akshare", "dragon_tiger"),
         )
         if not isinstance(payload, dict):
             return self._build_fundamental_block(
