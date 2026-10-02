@@ -706,3 +706,22 @@ def test_static_openapi_matches_stock_profile_runtime_contract() -> None:
     assert schema_names
     for schema_name in schema_names:
         assert static_spec["components"]["schemas"][schema_name] == runtime_spec["components"]["schemas"][schema_name]
+
+
+def test_profile_research_preserves_persisted_evidence_times() -> None:
+    service, dependencies = _service()
+    detail = _report_detail()
+    detail["context_snapshot"] = {"analysis_context_pack_overview": {
+        "subject": {"code": "AAPL", "market": "us"},
+        "blocks": [{
+            "key": "quote", "label": "Quote", "status": "available", "source": "recorded-provider",
+            "provider_timestamp": "2026-08-28T16:00:00-04:00",
+            "fetched_at": "2026-08-29T10:00:00+08:00",
+        }],
+    }}
+    dependencies["history_service"].get_history_detail_by_id.return_value = detail
+    artifact = service.get_profile("AAPL")["research"]["data"]["structured_report"]
+    evidence = artifact["evidence"][0]
+    assert evidence["as_of"] == "2026-08-28T16:00:00-04:00"
+    assert evidence["metadata"]["fetched_at"] == "2026-08-29T10:00:00+08:00"
+    assert evidence["freshness"] == "unknown"

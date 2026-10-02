@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 from api.v1.schemas.research_artifact import ResearchArtifact
@@ -103,10 +104,12 @@ def _build_evidence(details: Any, context_overview: Any) -> List[Dict[str, Any]]
             "source_type": "analysis_context",
             "title": _as_text(_value(block, "label")) or key,
             "source": _as_text(_value(block, "source")) or None,
+            "as_of": _as_timestamp(_value(block, "provider_timestamp")),
             "freshness": _freshness_from_status(status),
             "quality_level": _quality_from_status(status),
             "metadata": {
                 "status": status,
+                **_evidence_timestamps(block),
                 "warnings": _value(block, "warnings") or [],
                 "missing_reasons": _value(block, "missing_reasons") or [],
             },
@@ -293,11 +296,31 @@ def _score_to_confidence(score: Optional[int]) -> Optional[float]:
 
 
 def _freshness_from_status(status: str) -> str:
-    if status in {"available", "fallback", "partial", "estimated", "ok"}:
-        return "fresh"
+    # Availability is not a freshness assessment. In particular a recent
+    # fetch can return old observations, and different markets/data types need
+    # different age policies. Only preserve an explicit upstream stale marker.
     if status == "stale":
         return "stale"
     return "unknown"
+
+
+def _evidence_timestamps(block: Any) -> Dict[str, str]:
+    result = {}
+    for source_key, target_key in (("timestamp", "context_timestamp"), ("fetched_at", "fetched_at")):
+        value = _as_timestamp(_value(block, source_key))
+        if value:
+            result[target_key] = value
+    return result
+
+
+def _as_timestamp(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or "T" not in value:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value
 
 
 def _quality_from_status(status: str) -> str:

@@ -207,6 +207,9 @@ class AnalysisContextPackOverviewBlock(BaseModel):
         "fetch_failed",
     ] = Field(..., description="数据块质量状态")
     source: Optional[str] = Field(None, description="数据来源")
+    timestamp: Optional[str] = Field(None, description="上下文原始时间，可能为抓取时间")
+    provider_timestamp: Optional[str] = Field(None, description="来源记录的观测时间")
+    fetched_at: Optional[str] = Field(None, description="数据抓取时间，不代表观测时间")
     warnings: List[str] = Field(default_factory=list, description="数据块告警码")
     missing_reasons: List[str] = Field(default_factory=list, description="缺失原因")
 

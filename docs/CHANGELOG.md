@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 研究证据保留来源观测与抓取时间，数据可用不再自动标为 fresh；缺少明确时效判定时返回 unknown，保留上游 stale 与旧报告兼容。
+
 - [修复] 个股资金流按沪深北市场请求并取最新有效交易日的主力净流入金额；去掉默认股票和市场排名的错误降级，行业排名仅使用有限金额，行业金额全部缺失或非有限时仍保留有效个股结果。
 
 - [修复] `REPORT_LANGUAGE=en` 时个股决策仪表盘的 system/user prompt 改用完整英文模板（`ko` 复用英文骨架并保留韩文输出指令），不再在中文模板末尾追加英文约束，避免本地小模型（如 `ollama/qwen3:14b`）受主语言影响仍输出中文；JSON 键名、`decision_type`/`action` 枚举与解析契约不变，中文模板保持逐字不变（Fixes #2352）。

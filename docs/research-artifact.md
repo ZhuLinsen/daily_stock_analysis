@@ -48,6 +48,13 @@
 - `quality_level`：`good` / `usable` / `limited` / `poor` / `unknown`。
 - `source`、`as_of`、`url`、`metadata` 等低敏扩展字段。
 
+时间与新鲜度边界：
+
+- `as_of` 仅来自显式 `provider_timestamp`，保留上游时区；不会用报告创建时间或抓取时间代替行情观测时间。
+- `metadata.context_timestamp` 保留 context block 的原始时间语义，`metadata.fetched_at` 单独记录抓取时间。两者都不证明数据是最新的。
+- 上游明确 `stale` 时保留 `stale`；仅有 `available`、`fallback`、`partial`、`estimated` 或 `ok` 时，freshness 为 `unknown`，质量状态仍按原逻辑计算。没有统一 TTL，也不把股票交易日规则套用于 24/7 市场。
+- 旧报告没有时间字段时继续兼容。当前适配器不根据读取时的时钟重新判断历史证据，也不冻结完整证据快照。
+
 首版适配器会从 `analysis_context_pack_overview.blocks`、新闻摘要、财报、分红和市场结构中提取证据。
 
 ## Invalidation
@@ -72,7 +79,7 @@ structured_report?: ResearchArtifact | null
 
 旧报告可以继续不返回该字段；Web 类型和后端 schema 都按可选字段处理。
 
-本 PR 只定义 schema、类型和确定性 fallback helper，尚未把 helper 接入报告持久化或历史详情返回链路；该接线作为 #2278 的后续阶段完成。
+当前 Stock Profile API 会从历史详情动态构建该产物；报告生成时冻结并持久化完整 `structured_report` 仍是后续范围。
 
 ## 实现入口
 

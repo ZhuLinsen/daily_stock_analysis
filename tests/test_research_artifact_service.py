@@ -79,7 +79,7 @@ def test_build_research_artifact_from_report_with_evidence_and_invalidation() ->
         "context:news",
         "news:summary",
     }
-    assert artifact.evidence[0].freshness == "fresh"
+    assert artifact.evidence[0].freshness == "unknown"
     assert artifact.evidence[0].quality_level == "good"
     condition_ids = {item.id for item in artifact.invalidation_conditions}
     assert "price:stop_loss" in condition_ids
@@ -175,7 +175,57 @@ def test_market_structure_ok_is_healthy_evidence() -> None:
     }))
 
     market_evidence = next(item for item in artifact.evidence if item.id == "market:structure")
-    assert market_evidence.freshness == "fresh"
+    assert market_evidence.freshness == "unknown"
     assert market_evidence.quality_level == "good"
     assert artifact.data_quality.source_count == 1
     assert artifact.data_quality.level == "good"
+
+
+@pytest.mark.parametrize("status", ["available", "fallback", "partial", "estimated", "ok", "missing"])
+def test_availability_and_retrieval_time_do_not_claim_freshness(status: str) -> None:
+    report = {
+        "meta": {"stock_code": "AAPL", "created_at": "2026-10-02T12:00:00Z"},
+        "details": {"analysis_context_pack_overview": {"blocks": [{
+            "key": "quote", "status": status,
+            "timestamp": "2026-10-02T12:00:00Z", "fetched_at": "2026-10-02T12:00:00Z",
+        }]}},
+    }
+    evidence = build_research_artifact(report)["evidence"][0]
+    assert evidence["freshness"] == "unknown"
+    assert "as_of" not in evidence
+    assert evidence["metadata"]["fetched_at"] == "2026-10-02T12:00:00Z"
+    assert evidence["metadata"]["context_timestamp"] == "2026-10-02T12:00:00Z"
+
+
+@pytest.mark.parametrize("camel_case", [False, True])
+def test_evidence_keeps_observation_and_retrieval_times_separate(camel_case: bool) -> None:
+    block = {
+        "key": "quote", "status": "stale", "source": "recorded-provider",
+        "providerTimestamp" if camel_case else "provider_timestamp": "2026-09-01T08:00:00+08:00",
+        "fetchedAt" if camel_case else "fetched_at": "2026-10-02T12:00:00Z",
+    }
+    artifact = build_research_artifact({
+        "meta": {"stock_code": "AAPL"},
+        "details": {"analysis_context_pack_overview": {"blocks": [block]}},
+    })
+    evidence = artifact["evidence"][0]
+    assert evidence["as_of"] == "2026-09-01T08:00:00+08:00"
+    assert evidence["metadata"]["fetched_at"] == "2026-10-02T12:00:00Z"
+    assert evidence["freshness"] == "stale"
+    assert artifact["data_quality"]["stale_count"] == 1
+    assert "as_of" not in block
+
+
+def test_invalid_evidence_timestamps_are_omitted() -> None:
+    artifact = build_research_artifact({
+        "meta": {"stock_code": "AAPL"},
+        "details": {"analysis_context_pack_overview": {"blocks": [{
+            "key": "quote", "status": "available", "provider_timestamp": "not-a-time",
+            "timestamp": "2026-10-02", "fetched_at": 123,
+        }]}},
+    })
+    evidence = artifact["evidence"][0]
+    assert "as_of" not in evidence
+    assert "context_timestamp" not in evidence["metadata"]
+    assert "fetched_at" not in evidence["metadata"]
+    assert evidence["freshness"] == "unknown"

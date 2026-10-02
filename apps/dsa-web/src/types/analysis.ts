@@ -312,6 +312,10 @@ export interface AnalysisContextPackOverviewSubject {
 }
 
 export interface AnalysisContextPackOverviewBlock {
+  /** Recorded context time; may be retrieval time, not market observation time. */
+  timestamp?: string | null;
+  providerTimestamp?: string | null;
+  fetchedAt?: string | null;
   key: string;
   label: string;
   status: AnalysisContextPackBlockStatus;

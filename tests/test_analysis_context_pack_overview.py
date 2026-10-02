@@ -427,3 +427,36 @@ def test_extract_returns_none_for_malformed_persisted_overview() -> None:
             }
         }
     ) is None
+
+
+def test_public_timestamps_survive_persistence_without_exposing_raw_metadata() -> None:
+    pack = _pack()
+    block = pack.blocks["quote"]
+    block.timestamp = "2026-04-10T08:30:00Z"
+    block.metadata.update({
+        "provider_timestamp": "2026-04-09T16:00:00+08:00",
+        "fetched_at": "2026-04-10T08:30:00Z",
+        "api_key": "do-not-expose",
+    })
+    overview = render_analysis_context_pack_overview(pack)
+    restored = extract_analysis_context_pack_overview({"analysis_context_pack_overview": overview})
+    assert restored == overview
+    from api.v1.schemas.history import AnalysisContextPackOverview
+    restored = AnalysisContextPackOverview.model_validate(restored).model_dump(exclude_none=True)
+    quote = next(item for item in restored["blocks"] if item["key"] == "quote")
+    assert quote["timestamp"] == "2026-04-10T08:30:00Z"
+    assert quote["provider_timestamp"] == "2026-04-09T16:00:00+08:00"
+    assert quote["fetched_at"] == "2026-04-10T08:30:00Z"
+    assert "do-not-expose" not in json.dumps(restored)
+
+
+def test_public_timestamps_reject_invalid_values_and_do_not_infer_item_times() -> None:
+    pack = _pack()
+    pack.blocks["quote"].items["price"].timestamp = "2026-04-10T08:30:00Z"
+    overview = render_analysis_context_pack_overview(pack)
+    quote = next(item for item in overview["blocks"] if item["key"] == "quote")
+    assert "timestamp" not in quote
+    quote.update({"timestamp": "2026-04-10", "provider_timestamp": "TOKEN=secret", "fetched_at": 123})
+    restored = extract_analysis_context_pack_overview({"analysis_context_pack_overview": overview})
+    quote = next(item for item in restored["blocks"] if item["key"] == "quote")
+    assert not {"timestamp", "provider_timestamp", "fetched_at"}.intersection(quote)

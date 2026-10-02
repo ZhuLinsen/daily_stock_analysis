@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from src.analysis_context_pack_prompt import (
@@ -59,6 +60,7 @@ def render_analysis_context_pack_overview(
                         block.get("source"),
                         _first_item_field(block.get("items"), "source"),
                     ),
+                    **_public_timestamps(block),
                     "warnings": _list_strings(block.get("warnings")),
                     "missing_reasons": _item_missing_reasons(block.get("items")),
                 }
@@ -160,6 +162,7 @@ def _sanitize_persisted_overview(overview: Mapping[str, Any]) -> Optional[Dict[s
                 "label": _safe_text(block.get("label")) or key,
                 "status": status,
                 "source": _safe_text(block.get("source")) or None,
+                **_public_timestamps(block),
                 "warnings": _list_strings(block.get("warnings")),
                 "missing_reasons": _list_strings(block.get("missing_reasons"), limit=3),
             }
@@ -188,6 +191,25 @@ def _sanitize_persisted_overview(overview: Mapping[str, Any]) -> Optional[Dict[s
     if "data_quality" in overview:
         sanitized["data_quality"] = _sanitize_data_quality(overview.get("data_quality"))
     return sanitized
+
+
+def _public_timestamps(block: Mapping[str, Any]) -> Dict[str, str]:
+    """Preserve timing provenance without treating retrieval time as observation time."""
+    metadata = block.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    result: Dict[str, str] = {}
+    for key in ("timestamp", "provider_timestamp", "fetched_at"):
+        # Rendered blocks carry named times in metadata; persisted overviews
+        # already have these allowlisted fields at the top level.
+        value = block.get(key) if key in block else metadata.get(key)
+        if not isinstance(value, str) or "T" not in value:
+            continue
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        result[key] = value
+    return result
 
 
 def _sanitize_data_quality(value: Any) -> Optional[Dict[str, Any]]:
