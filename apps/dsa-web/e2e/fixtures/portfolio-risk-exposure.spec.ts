@@ -114,11 +114,20 @@ for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      if (state === 'rounded-tail') {
+        // Recharts uses a JavaScript animation, so screenshot animations:disabled
+        // does not wait for its 100% single-sector geometry to finish.
+        await expect.poll(async () => {
+          const bounds = await page.locator('.recharts-pie-sector path').boundingBox();
+          return !!bounds && bounds.width > 175 && bounds.height > 175;
+        }).toBe(true);
+      }
       const screenshot = testInfo.outputPath(`portfolio-${state}-${viewport.width}.png`);
       await dashboard.screenshot({ path: screenshot, animations: 'disabled' });
       await testInfo.attach(`${state}-${viewport.width}`, { path: screenshot, contentType: 'image/png' });
       if (state === 'snapshot-error' || state === 'rounded-tail') {
         const fullPage = testInfo.outputPath(`portfolio-full-${state}-${viewport.width}.png`);
+        await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({ path: fullPage, fullPage: true, animations: 'disabled' });
         await testInfo.attach(`full-${state}-${viewport.width}`, { path: fullPage, contentType: 'image/png' });
       }
