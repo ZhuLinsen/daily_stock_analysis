@@ -48,6 +48,7 @@ SCREENING_EASTMONEY_JITTER_SEC=0.3
 | `/api/v1/screening/strategies` | GET | 返回选股策略 |
 | `/api/v1/screening/hotspots` | GET | 读取缓存或显式刷新热点题材 |
 | `/api/v1/screening/hotspots/{topic}` | GET | 返回题材路线、成分股与核心股；`include_search=true` 时按需搜索近期消息 |
+| `/api/v1/screening/screen/check` | POST | 用调用方提供的单条快照，逐项检查策略硬过滤条件；不抓取行情 |
 | `/api/v1/screening/screen` | POST | 同步执行选股；可传匿名 `variant_seed` 在每次运行中生成有界的近分候选组合 |
 | `/api/v1/screening/screen/tasks` | POST | 提交后台选股任务；请求字段与同步接口一致 |
 | `/api/v1/screening/screen/tasks/{task_id}` | GET | 查询任务进度、错误或最终结果 |
@@ -56,6 +57,31 @@ SCREENING_EASTMONEY_JITTER_SEC=0.3
 | `/api/v1/screening/source-history` | GET | 汇总历史运行中的快照源命中、错误和降级次数 |
 
 后台任务使用 `report_type=screening_screen`，Web 会保存活动任务 ID，并在页面恢复时继续轮询。任务状态会分别提示全市场快照、候选上下文、LLM 重排、最终评分和新闻事件增强等阶段；完成后的结果同时写入 DSA 数据库，因此服务重启后仍可按 `run_id` 查询。
+
+## 单股条件检查（提供快照）
+
+`POST /api/v1/screening/screen/check` 供脚本/API 客户端解释任意一条快照为什么通过或未通过策略硬过滤。需要开启 `SCREENING_ENABLED`；与已有选股接口共用管理员认证中间件，启用认证时无有效会话返回 `401`。策略 ID 从当前启用的策略目录查找，并校验 `market`（`cn`/`us`）是否在该策略的 `market_scope` 内。
+
+```json
+{
+  "strategy": "dual_low",
+  "market": "cn",
+  "snapshot": {
+    "code": "600000", "name": "Example", "price": 10,
+    "amount": 100000000, "total_mv": 10000000000,
+    "pe_ratio": 8, "pb_ratio": 1, "change_pct": 0
+  }
+}
+```
+
+- 返回 `strategy`、`strategy_version`、`market`、`provenance: "supplied_snapshot"`、整体 `passed` 和 `checks`。每项包含 `filter`、标准 `field`、实际命中的 `source_field`、`threshold`、`current_value`、`status`（`pass`/`fail`/`missing`）与 `passed`（布尔值或 `null`）；`missing_reason` 区分缺列、空值、非法数值/文本和非有限值
+- 所有启用的硬过滤条件按配置模型字段顺序独立执行，即使第一项失败也继续检查后续项。复用现有过滤谓词；数值上下界含边界，`0` 阈值仍生效，空白名单和关闭的布尔条件不返回
+- 缺列、`null`、空文本、不可解析数字和非有限数字输出 `missing`，`current_value`/`passed` 为 `null`。缺失不是通过；整体 `passed` 仅在所有条件通过时为 `true`（无启用条件时为 `true`）。这是诊断接口对不可用数据的保守未知标记：旧管线可能允许空名称通过 ST 检查或允许正无穷通过数值下界，本接口仍返回 `missing`；不改写旧管线行为
+- 输入须为 1–64 个字段的扁平 JSON 对象；键长 1–64 字符，文本值最多 256 字符；嵌套值和超出有限浮点范围的整数返回有界 `422`。使用现有标准字段/中文别名、已归一化单位，不做币种或百分比换算；同时提供标准名和别名时，标准名优先
+- 日 K 条件直接使用提供的特征，未提供则为 `missing`，不会补算或补抓。响应没有实时、时间戳或数据源可信度声明；股票代码和市场归属由调用方负责，不能把该结果当成已验证的证券身份或实时选股结果
+- 不评分、不排名、不调用 LLM、不写运行历史、不交易。已有同步/后台选股、水瀑统计和 Web 页面保持原行为；此小接口尚未添加 Web UI
+
+该交互参考 [Koyfin Check Ticker](https://www.koyfin.com/help/release-notes/check-ticker/) 的逐条件值与通过/失败展示，仅借鉴解释方式；不接入其数据或服务。
 
 ## 核心流程
 
