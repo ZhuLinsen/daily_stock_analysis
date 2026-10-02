@@ -60,11 +60,17 @@ class AlertRuleItem(BaseModel):
     updated_at: Optional[str] = None
 
 
+class AlertRuleSources(BaseModel):
+    legacy_configured: int = Field(..., ge=0, description="Valid legacy config entries before deduplication")
+    legacy_effective: int = Field(..., ge=0, description="Legacy runtime rules after enabled DB rules take precedence")
+
+
 class AlertRuleListResponse(BaseModel):
     items: List[AlertRuleItem] = Field(default_factory=list)
     total: int
     page: int
     page_size: int
+    rule_sources: Optional[AlertRuleSources] = None
 
 
 class AlertDeleteResponse(BaseModel):

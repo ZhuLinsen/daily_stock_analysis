@@ -200,14 +200,28 @@ class AlertWorker:
 
         return stats
 
-    def _load_runtime_rules(self, config: Any) -> List[RuntimeAlertRule]:
+    def get_rule_sources(self, config: Any) -> Dict[str, int]:
+        """Reuse polling dedup with request-local expansion caching and read-only holdings."""
+        configured = len(self._load_legacy_rules(config))
+        effective = sum(
+            rule.source == "legacy_env" for rule in self._load_runtime_rules(config, read_only=True)
+        ) if configured else 0
+        return {"legacy_configured": configured, "legacy_effective": effective}
+
+    def _load_runtime_rules(self, config: Any, *, read_only: bool = False) -> List[RuntimeAlertRule]:
         runtime_rules: List[RuntimeAlertRule] = []
         seen_keys = set()
+        # Source summaries share expansions only during this load. Polling and
+        # dry runs retain their existing quote and portfolio snapshot behavior.
+        target_expansion_cache = {} if read_only else None
 
         for row in self.service.repo.list_enabled_rules(limit=ALERT_WORKER_RULE_LIMIT):
             try:
                 cooldown_policy = self.service._load_json(row.cooldown_policy, default=None)
-                for payload in self.service.build_runtime_payloads(row, config=config, include_overflow_payload=False):
+                for payload in self.service.build_runtime_payloads(
+                    row, config=config, include_overflow_payload=False, read_only=read_only,
+                    target_expansion_cache=target_expansion_cache,
+                ):
                     if len(runtime_rules) >= ALERT_WORKER_RULE_LIMIT:
                         logger.warning(
                             "[AlertWorker] Runtime rule limit reached at %s; skipping remaining expanded rules",

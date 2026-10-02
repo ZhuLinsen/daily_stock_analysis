@@ -108,6 +108,37 @@ beforeEach(() => {
 });
 
 describe('AlertsPage', () => {
+  it('discloses environment rules even when the database rule list is empty', async () => {
+    listRules.mockResolvedValue({
+      items: [], total: 0, page: 1, pageSize: 20,
+      ruleSources: { legacyConfigured: 2, legacyEffective: 1 },
+    });
+    render(<AlertsPage />);
+    expect(await screen.findByText('存在环境变量告警规则')).toBeInTheDocument();
+    expect(screen.getByText(/配置了 2 条有效规则.*去重后有 1 条/)).toBeInTheDocument();
+    expect(screen.getByText(/删除或禁用页面规则不会停用环境规则/)).toBeInTheDocument();
+  });
+
+  it('keeps the warning when enabled database rules currently cover all environment rules', async () => {
+    listRules.mockResolvedValue({
+      items: [rule], total: 1, page: 1, pageSize: 20,
+      ruleSources: { legacyConfigured: 1, legacyEffective: 0 },
+    });
+    render(<AlertsPage />);
+    expect(await screen.findByText('存在环境变量告警规则')).toBeInTheDocument();
+    expect(screen.getByText(/去重后有 0 条/)).toBeInTheDocument();
+  });
+
+  it('does not warn when no valid environment rules are configured', async () => {
+    listRules.mockResolvedValue({
+      items: [rule], total: 1, page: 1, pageSize: 20,
+      ruleSources: { legacyConfigured: 0, legacyEffective: 0 },
+    });
+    render(<AlertsPage />);
+    expect(await screen.findByText('茅台价格突破')).toBeInTheDocument();
+    expect(screen.queryByText('存在环境变量告警规则')).not.toBeInTheDocument();
+  });
+
   it('loads rules, trigger history, and notification empty state', async () => {
     render(<AlertsPage />);
 

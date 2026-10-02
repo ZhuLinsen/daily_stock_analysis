@@ -17,6 +17,7 @@ import type {
   AlertNotificationItem,
   AlertRuleCreateRequest,
   AlertRuleItem,
+  AlertRuleListResponse,
   AlertRuleTestResponse,
   AlertTriggerItem,
   AlertType,
@@ -104,6 +105,7 @@ const AlertsPage: React.FC = () => {
 
   const [rules, setRules] = useState<AlertRuleItem[]>([]);
   const [rulesTotal, setRulesTotal] = useState(0);
+  const [ruleSources, setRuleSources] = useState<AlertRuleListResponse['ruleSources']>(null);
   const [rulesPage, setRulesPage] = useState(1);
   const [enabledFilter, setEnabledFilter] = useState<AlertRuleEnabledFilter>('all');
   const [alertTypeFilter, setAlertTypeFilter] = useState<AlertTypeFilter>('all');
@@ -150,6 +152,7 @@ const AlertsPage: React.FC = () => {
       }
       setRules(response.items);
       setRulesTotal(response.total);
+      setRuleSources(response.ruleSources ?? null);
       setRulesError(null);
       setRulesLoaded(true);
       return response;
@@ -280,6 +283,13 @@ const AlertsPage: React.FC = () => {
         />
       ) : null}
       {rulesError ? <ApiErrorAlert error={rulesError} onDismiss={() => setRulesError(null)} /> : null}
+      {!rulesError && ruleSources && ruleSources.legacyConfigured > 0 ? (
+        <InlineAlert
+          title="存在环境变量告警规则"
+          variant="warning"
+          message={`环境变量配置了 ${ruleSources.legacyConfigured} 条有效规则，按当前启用的页面规则去重后有 ${ruleSources.legacyEffective} 条可供后台轮询。此数量不受页面筛选影响，也不表示后台轮询已启动。页面仅管理数据库规则；删除或禁用页面规则不会停用环境规则。若需停用，请在部署配置中修改 AGENT_EVENT_ALERT_RULES_JSON 并重新加载配置。`}
+        />
+      ) : null}
 
       <div className="grid items-stretch gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
         <AlertRuleForm onSubmit={handleCreateRule} isSubmitting={createLoading} />
