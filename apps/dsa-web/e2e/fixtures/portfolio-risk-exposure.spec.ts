@@ -32,6 +32,7 @@ for (const state of ['complete', 'missing-price', 'snapshot-error', 'invalid-top
     };
     await page.route('**/api/**', async (route) => {
       const path = new URL(route.request().url()).pathname;
+      if (!path.startsWith('/api/')) return route.continue();
       let json: unknown = { items: [], total: 0, page: 1, pageSize: 20 };
       if (path.endsWith('/auth/status')) json = { authEnabled: false, loggedIn: true, setupState: 'no_password' };
       else if (path.endsWith('/portfolio/accounts')) json = { accounts: [{ id: 1, name: 'Demo', market: 'cn', baseCurrency: 'CNY', isActive: true }] };
