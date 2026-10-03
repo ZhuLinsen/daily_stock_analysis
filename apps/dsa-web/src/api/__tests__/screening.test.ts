@@ -32,6 +32,27 @@ describe('screeningApi', () => {
     window.localStorage.setItem('dsa.screening.variantSeed.v1', 'browser-seed');
   });
 
+  it.each(['screen', 'task', 'history'])('preserves item provenance through the %s response mapping', async (entry) => {
+    const items = [
+      { code: 'llm_thesis', text: '模型论点', source: 'llm', quality: 'inferred' },
+      { code: 'post_analysis_summary', text: '同文案', source: 'post_analyzer:scorecard', quality: 'observed' },
+      { code: 'post_analysis_summary', text: '同文案', source: 'post_analyzer:external_http', quality: 'inferred' },
+    ];
+    const result = { enabled: true, candidates: [{ rank: 1, code: '600519', name: '测试', reason: '', raw: {},
+      why_selected: items, why_now: [{ code: 'quote_change_pct', text: '涨跌幅：+0.00%', source: 'realtime_quote', quality: 'observed', value: 0 }],
+      explanation_quality: { why_selected: 'partial', why_now: 'ok' },
+    }], candidate_count: 1 };
+    post.mockResolvedValueOnce({ data: result });
+    get.mockResolvedValueOnce({ data: { task_id: 'task', run_id: 'run', result } });
+    const mapped = entry === 'screen'
+      ? await screeningApi.screen({ market: 'cn', strategy: 'dual_low', maxResults: 1 })
+      : entry === 'task' ? (await screeningApi.getScreenTask('task')).result!
+        : (await screeningApi.getRun('run')).result;
+    expect(mapped.candidates[0].whySelected).toEqual(items);
+    expect(mapped.candidates[0].whyNow?.[0].value).toBe(0);
+    expect(mapped.candidates[0].explanationQuality).toEqual({ whySelected: 'partial', whyNow: 'ok' });
+  });
+
   it('enables the config and checks built-in screening availability', async () => {
     getConfig.mockResolvedValueOnce({ configVersion: 'v1', maskToken: '******' });
     updateConfig.mockResolvedValueOnce({ success: true });

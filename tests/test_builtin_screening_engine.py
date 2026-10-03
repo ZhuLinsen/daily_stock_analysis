@@ -200,6 +200,7 @@ def test_pipeline_passes_daily_history_cache_settings_to_enrichment(monkeypatch)
     assert captured["cache_ttl_seconds"] == 6 * 60 * 60
     assert captured["history_fetcher"] is history_fetcher
     assert result.daily_enriched is True
+    assert result.effective_factor_weights == {"value": 1.0}
 
 
 def test_dsa_post_analyzer_records_attempted_and_capped_statuses(monkeypatch) -> None:

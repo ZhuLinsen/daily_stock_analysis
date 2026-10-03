@@ -99,7 +99,7 @@ def compute_screen_scores(df: pd.DataFrame, config: ScreeningConfig) -> pd.DataF
     for name, series in factors.items():
         result[_FACTOR_COLUMNS[name]] = series.round(4)
 
-    weights = _normalized_factor_weights(config)
+    weights = normalized_factor_weights(config)
     result["screen_score"] = 0.0
     for factor, weight in weights.items():
         if factor in factors:
@@ -115,8 +115,8 @@ def factor_score_columns() -> dict[str, str]:
     return dict(_FACTOR_COLUMNS)
 
 
-def _normalized_factor_weights(config: ScreeningConfig) -> dict[str, float]:
-    """Use explicit factor weights, or derive a sane legacy default from tech_weight."""
+def normalized_factor_weights(config: ScreeningConfig) -> dict[str, float]:
+    """Return the exact effective weights used by the scorer."""
     raw_weights = config.factor_weights or {
         "value": (1 - config.tech_weight) * 0.50,
         "liquidity": (1 - config.tech_weight) * 0.25,
@@ -133,6 +133,11 @@ def _normalized_factor_weights(config: ScreeningConfig) -> dict[str, float]:
     if total <= 0:
         return {"value": 0.4, "liquidity": 0.2, "momentum": 0.2, "activity": 0.2}
     return {factor: weight / total for factor, weight in weights.items()}
+
+
+def _normalized_factor_weights(config: ScreeningConfig) -> dict[str, float]:
+    """Backward-compatible alias for callers that used the former private helper."""
+    return normalized_factor_weights(config)
 
 
 def _compute_factor_scores(df: pd.DataFrame, config: ScreeningConfig | None = None) -> dict[str, pd.Series]:

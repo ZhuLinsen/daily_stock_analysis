@@ -30,6 +30,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   screeningApi,
   type ScreeningCandidate,
+  type ScreeningExplanationItem,
   type ScreeningHotspotDetail,
   type ScreeningHotspot,
   type ScreeningHotspotsResponse,
@@ -200,13 +201,6 @@ const FACTOR_LABELS: Record<string, string> = {
   topic_alignment: '题材匹配',
 };
 
-const POST_TAG_LABELS: Record<string, string> = {
-  value_quality: '价值质量',
-  controlled_reversal: '受控反转',
-  momentum: '趋势动量',
-  liquidity: '流动性',
-};
-
 const HOTSPOT_QUALITY_LABELS: Record<string, string> = {
   available: '可用',
   failed: '不可用',
@@ -264,28 +258,9 @@ const getHotspotQualityLabel = (value: unknown) => {
   return HOTSPOT_QUALITY_LABELS[text.toLowerCase()] || '待确认';
 };
 
-const getLocalFactorReason = (item: ScreeningCandidate) => {
-  const factors = Object.entries(item.factorScores || {})
-    .filter(([, value]) => typeof value === 'number')
-    .sort((a, b) => Number(b[1]) - Number(a[1]))
-    .slice(0, 3)
-    .map(([key, value]) => `${FACTOR_LABELS[key] || key} ${Number(value).toFixed(0)}`);
-  const tags = (item.postAnalysisTags || [])
-    .slice(0, 2)
-    .map((tag) => POST_TAG_LABELS[tag] || tag);
-  if (factors.length > 0) {
-    return `主要优势：${factors.join('、')}${tags.length > 0 ? `；标签：${tags.join('、')}` : ''}`;
-  }
-  return '';
-};
-
 const getCandidateReason = (item: ScreeningCandidate) => {
   if (item.llmThesis || item.llmScore != null) {
     return item.reason || item.llmThesis || 'LLM 已完成相对排序。';
-  }
-  const localReason = getLocalFactorReason(item);
-  if (localReason) {
-    return localReason;
   }
   if (item.reason) {
     return item.reason;
@@ -308,6 +283,38 @@ const getFactorEntries = (item: ScreeningCandidate) =>
     .filter(([, value]) => typeof value === 'number')
     .sort((a, b) => Number(b[1]) - Number(a[1]))
     .slice(0, 6);
+
+const getSelectionExplanations = (item: ScreeningCandidate): ScreeningExplanationItem[] => {
+  if (item.whySelected?.length) return item.whySelected;
+  // Legacy runs lack provenance. Retain every stored summary as unknown rather
+  // than re-scoring historical factors or asserting it was observed.
+  const summaries = Array.from(new Set(
+    [item.reason, item.llmThesis, ...Object.values(item.postAnalysisSummaries || {})]
+      .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+      .map((value) => value.trim()),
+  ));
+  return summaries.map((summary) => ({
+    code: 'legacy_summary',
+    text: `历史摘要（来源未记录）：${summary}`,
+    source: 'legacy_result',
+    quality: 'unknown',
+  }));
+};
+
+const ExplanationItems = ({ items, emptyText }: { items?: ScreeningExplanationItem[]; emptyText: string }) => (
+  items?.length ? (
+    <ul className="mt-2 space-y-2">
+      {items.map((item, index) => (
+        <li key={`${item.code}-${item.source}-${index}`} className="rounded-lg border border-border/50 bg-background/30 p-2">
+          <p className="text-sm leading-6 text-foreground">{item.text}</p>
+          <p className="mt-1 text-xs text-secondary-text">
+            来源：{item.source || 'unknown'} · 质量：{item.quality || 'unknown'}
+          </p>
+        </li>
+      ))}
+    </ul>
+  ) : <p className="mt-1 text-sm leading-6 text-foreground">{emptyText}</p>
+);
 
 const toMessageList = (values: string[] | undefined) =>
   Array.isArray(values) ? values.map((value) => String(value).trim()).filter(Boolean) : [];
@@ -1911,6 +1918,10 @@ const StockScreeningPage: React.FC = () => {
                 {candidates.map((item) => {
                   const expanded = expandedCode === item.code;
                   const factors = getFactorEntries(item);
+                  const selectionExplanations = getSelectionExplanations(item);
+                  const selectionQuality = item.whySelected?.length
+                    ? item.explanationQuality?.whySelected || 'unknown'
+                    : 'unknown';
                   const llmInsightAvailable = hasLlmInsight(item);
                   const dsaWarnings = item.dsaContext?.warnings || [];
                   const dsaNews = item.dsaNews || [];
@@ -1946,6 +1957,22 @@ const StockScreeningPage: React.FC = () => {
                           <td colSpan={10} className="px-4 py-4">
                             <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
                               <div className="space-y-3">
+                                <div className="grid gap-3 md:grid-cols-2">
+                                  <div className="rounded-xl border border-cyan/25 bg-cyan/5 px-3 py-2.5">
+                                    <p className="text-xs font-semibold text-cyan">为什么入选</p>
+                                    <ExplanationItems items={selectionExplanations} emptyText="暂无可验证的入选解释" />
+                                    {selectionExplanations.length > 0 ? (
+                                      <p className="mt-2 text-xs text-secondary-text">综合质量：{selectionQuality}</p>
+                                    ) : null}
+                                  </div>
+                                  <div className="rounded-xl border border-orange-400/25 bg-orange-500/5 px-3 py-2.5">
+                                    <p className="text-xs font-semibold text-orange-500">为什么现在</p>
+                                    <ExplanationItems items={item.whyNow} emptyText="暂无带来源的价格、消息或事件证据" />
+                                    {item.whyNow?.length ? (
+                                      <p className="mt-2 text-xs text-secondary-text">综合质量：{item.explanationQuality?.whyNow || 'unknown'}</p>
+                                    ) : null}
+                                  </div>
+                                </div>
                                 <div>
                                   <p className="text-xs font-semibold text-secondary-text">摘要</p>
                                   <p className="mt-1 text-sm leading-6 text-foreground">{getCandidateReason(item)}</p>
@@ -1986,6 +2013,12 @@ const StockScreeningPage: React.FC = () => {
                                       : '无'}
                                   </p>
                                 </div>
+                                {item.riskSummary ? (
+                                  <div>
+                                    <p className="text-xs font-semibold text-secondary-text">风险摘要</p>
+                                    <p className="mt-1 text-sm text-foreground">{item.riskSummary}</p>
+                                  </div>
+                                ) : null}
                               </div>
                               <div className="space-y-3">
                                 <div>

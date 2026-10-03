@@ -249,7 +249,7 @@ def _run_external_http_analyzer(
         if pick is None or code in completed_codes:
             continue
         delta = _safe_float(item.get("score_delta"), 0.0)
-        summary = str(item.get("summary", "")).strip()
+        summary = str(item.get("summary") or "").strip()
         risk_flags = _safe_string_list(item.get("risk_flags"))
         tags = _safe_string_list(item.get("tags"))
         pick.final_score = round(float(pick.final_score) + delta, 4)

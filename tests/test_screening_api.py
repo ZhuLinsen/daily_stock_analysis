@@ -2668,12 +2668,13 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                             "code": "600519",
                             "name": "贵州茅台",
                             "score": 88.5,
+                            "dsa_events": [{"title": "最新事件", "source": "测试源", "published_date": datetime.now().date().isoformat()}],
                             "dsa_context": {
                                 "enriched": True,
                                 "quote": {"price": 1688.0, "change_pct": 1.2},
                                 "warnings": ["from_screening_provider"],
                             },
-                            "dsa_news": [{"title": "贵州茅台最新公告", "source": "测试源"}],
+                            "dsa_news": [{"title": "贵州茅台最新公告", "source": "测试源", "published_date": datetime.now().date().isoformat()}],
                             "dsa_analysis_summary": "DSA新闻: 贵州茅台最新公告",
                         }
                     ]
@@ -2717,13 +2718,14 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                             "code": "600519",
                             "name": "贵州茅台",
                             "score": 88.5,
+                            "dsa_events": [{"title": "最新事件", "source": "测试源", "published_date": datetime.now().date().isoformat()}],
                             "dsa_context": {
                                 "enriched": True,
                                 "quote": {"price": 1688.0, "change_pct": 1.2},
                                 "news": {
                                     "success": True,
                                     "summary": "DSA新闻：贵州茅台最新公告",
-                                    "results": [{"title": "贵州茅台最新公告", "source": "测试源"}],
+                                    "results": [{"title": "贵州茅台最新公告", "source": "测试源", "published_date": datetime.now().date().isoformat()}],
                                 },
                                 "warnings": ["from_screening_provider"],
                             },

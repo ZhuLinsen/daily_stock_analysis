@@ -222,3 +222,15 @@ def test_backend_filter_covers_mixed_changes_and_shared_web_assets() -> None:
     )
     assert outputs(["apps/dsa-web/public/stocks.index.json"])[0] is True
     assert outputs(["apps/dsa-web/public/runtime/new-asset.json"])[0] is True
+
+
+def test_browser_fixture_and_default_smoke_entrypoints_stay_separate() -> None:
+    smoke = _read("apps/dsa-web/playwright.config.ts")
+    fixture = _read("apps/dsa-web/playwright.fixture.config.ts")
+    assert "testIgnore: '**/fixtures/**'" in smoke
+    assert "testDir: './e2e/fixtures'" in fixture
+    assert "webServer:" in fixture
+    steps = _workflow(".github/workflows/ci.yml")["jobs"]["web-gate"]["steps"]
+    default = next(step for step in steps if step.get("run") == "npm run test:smoke")
+    assert default["env"]["DSA_WEB_SMOKE_PASSWORD"] == ""
+    assert any(step.get("run") == "npx playwright test --config playwright.fixture.config.ts" for step in steps)

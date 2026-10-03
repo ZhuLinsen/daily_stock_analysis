@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 默认 Web smoke 排除独立 fixture 目录，避免无密码且未启动 Web 服务时错误收集选股用例；CI 同时验收默认和 fixture 入口。
+- [测试] 强化无理由 LLM 排序回归，验证双候选实际重排（含缺省和零分、risk-only 响应）后保留本地 observed 因子、模型 inferred 标记与 partial 综合质量。
+- [修复] 选股时点证据标题为空白但摘要有效时复用近期缓存，Why Now 展示有效摘要，避免误刷新和证据丢失。
+- [测试] 补充预填过期/无日期新闻与事件的 screen 入口回归，覆盖真实搜索响应归一化、单类刷新、历史持久化及有效缓存跳过补充。
+- [修复] 无入选理由的合法 LLM 排序保留 inferred 参与标记，避免仅展示本地因子而误报全 observed；风险文本保持独立。
+- [修复] 选股预补充新闻/事件与 Why Now 共用时效及来源校验，单独刷新无效缓存，失败保持 unknown 与告警。
+- [修复] 选股后分析器完成非零调分但未提供摘要（含 null 和空白摘要）时，Why Selected 保留分析器来源、质量与调分说明，并在归一化、服务响应和历史记录中保留完成状态及分差。
+- [测试] 补充仅返回 thesis 的 LLM 排序回归，验证真实重排后模型论点与本地因子、后分析摘要共存，并完整保留在服务响应及历史记录中。
+- [测试] 补充选股后分析真实调分与重排回归，验证显式 LLM 排名理由与 scorecard、DSA、external_http 摘要来源共存，以及服务返回和历史持久化一致。
 
 - [修复] 个股资金流按沪深北市场请求并取最新有效交易日的主力净流入金额；去掉默认股票和市场排名的错误降级，行业排名仅使用有限金额，行业金额全部缺失或非有限时仍保留有效个股结果。
 
@@ -63,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [修复] 美股日线路由现按各数据源当前优先级排序，单项 `*_PRIORITY` 配置（如 `YFINANCE_PRIORITY=0`）对美股即时生效；指数固定首选与 Longbridge preferred 语义保持不变
 
+- [新功能] 选股候选新增后端生成的 Why Selected / Why Now 解释、来源与质量状态，Web 统一展示并区分真实 0 与无来源的缺失占位值；旧版历史摘要保留为来源未记录/unknown，不重新评分或回写记录；模型 reason/thesis 与不同来源同文案均保留逐条 provenance。
 - [新功能] 新增个股研究聚合 API，以统一 canonical code 返回行情、历史、研究产物、资讯、缓存持仓关系和监控规则，并对每个块独立标记 fresh/partial/unavailable。
 - [修复] 个股研究聚合拒绝交易所冲突的股票身份，在市场限定后无历史候选时保持空结果，兼容市场限定裸码与混合大小写旧数据，并从独立基本面快照补齐 ResearchArtifact 的财报与分红证据。
 
