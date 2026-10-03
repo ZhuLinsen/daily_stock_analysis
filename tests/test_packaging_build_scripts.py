@@ -291,3 +291,23 @@ def test_macos_signature_audit_rejects_invalid_signatures(tmp_path: Path) -> Non
     assert result.returncode != 0
     assert not (artifact / "broken.bin.removed").exists()
     assert "invalid signature" in result.stderr
+
+
+def test_macos_pyinstaller_command_preserves_real_bash_argv() -> None:
+    """Execute array construction: bash -n misses full-width parentheses."""
+    script = _read_text(REPO_ROOT / "scripts" / "build-backend-macos.sh")
+    construction = script[script.index("hidden_imports=("):script.index('echo "Running:')]
+    result = subprocess.run(
+        ["bash", "-c", 'set -euo pipefail\nROOT_DIR="$PWD"\n'
+         'SCRIPT_DIR="$PWD/scripts"\nPYTHON_BIN="python with spaces"\n'
+         + construction + '\nprintf "%s\\0" "${cmd[@]}"\n'],
+        cwd=REPO_ROOT, capture_output=True, check=True,
+    )
+    argv = result.stdout.decode().split("\0")[:-1]
+    assert argv[:3] == ["python with spaces", "-m", "PyInstaller"]
+    assert argv[-1] == "main.py"
+    assert argv.count("main.py") == 1
+    assert "--hidden-import=uvicorn.lifespan.on" in argv
+    assert not any("（" in arg or "）" in arg for arg in argv)
+    data_paths = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--add-data"]
+    assert "src/services/screening/strategies:src/services/screening/strategies" in data_paths
