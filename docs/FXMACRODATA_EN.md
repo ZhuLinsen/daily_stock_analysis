@@ -16,7 +16,7 @@ Public USD data requires no API key. Optional authorization is configured below.
 
 ## Use
 
-The optional FXMACRODATA_API_KEY environment variable uses the host process configuration. For the scheduled GitHub Actions analysis, store it as the repository secret `FXMACRODATA_API_KEY`; `00-daily-analysis.yml` maps that secret into the analysis step environment. The key never enters a tool schema, model invocation or response. The application must be in Agent mode for these report/chat tools to be used. No report layout changes are required.
+The optional FXMACRODATA_API_KEY environment variable uses the host process configuration. For the scheduled GitHub Actions analysis, store it as the repository secret `FXMACRODATA_API_KEY`; `00-daily-analysis.yml` maps that secret into the analysis step environment. The key never enters a tool schema, model invocation or response. The application must be in Agent mode for these report/chat tools to be used. No report layout changes are required. The Codex chat backend only exposes tools registered as cancellation-safe, and the FXMacroData tools are not, so they are currently available through the other chat backends and the report agents.
 
 In multi-agent mode, the Intelligence specialist can discover and execute all 72 operations in the pinned client v0.1.0 snapshot through its native tool allowlist. Risk and Portfolio specialists also receive the operations relevant to release, macro and cross-market risk. Existing specialist tool restrictions remain in force.
 
@@ -107,7 +107,7 @@ The table below is the operation catalogue bundled with the pinned `fxmacrodata-
 
 ## Validation
 
-Offline tests exercise every operation's native registration and record consumption plus the target-specific report, regional brief or economics route behavior.
+Offline tests cover tool registration and schema for every operation, factory registration for report and chat, the multi-agent specialist filters, and the degraded `unavailable` paths (client construction, transport and close failures, missing operation catalogue). They do not make real provider requests or exercise report routing end to end.
 
 ```sh
 python -m pytest tests/test_fxmacrodata_tools.py -o addopts= -q -n 8 --dist load
