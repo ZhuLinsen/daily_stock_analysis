@@ -9,9 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [修复] ETF 轮动按真实 A 股交易日历保留全池缺报价日期及末尾缺口，防止调仓顺延、周末信号提前和动量窗口缩短；历史日历不可用时明确停止计算。
-
-- [修复] ETF 轮动回测在行情缺口后结算完整持仓损益，缺报价日不虚构成交，防守资产缺报价时使用现金；统一参数扫描与主回测的行情处理，限定前复权来源，并跳过无关个股列表校验。
 - [修复] 选股旧版缓存无时区获取时间回退文件 mtime，避免跨时区迁移后误用过期盘中日线；yfinance 日线按美东日期将排他的 end 推进至下一自然日，避免收盘后漏取当日 K 线。逐行核验带有效收盘价的交易日期，拒绝夹杂休市日或缺失/无法解析日期的来源、DSA 和缓存行情。
 
 - [修复] 选股日线通过交易日期验证后才记录来源成功，非法行情累计失败可触发现有熔断，冷却后合法响应正常恢复。
@@ -94,7 +91,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 智能导入兼容带 UTF-8 BOM 的 CSV 与剪贴板文本，避免 `code` 表头被误当成数据并丢失有效股票代码。
 - [新功能] Agent 新增 FXMacroData 官方宏观数据工具；USD 基础数据无需密钥，`00-daily-analysis.yml` 已映射可选的 `FXMACRODATA_API_KEY` Secret；Windows/macOS 桌面构建收集客户端内置操作目录，并在冻结产物中校验 Agent 工具注册表。
 - [修复] 为 AkShare 大盘涨跌统计的东财与新浪降级调用增加可强制终止的子进程超时，避免外部接口无响应时长期占用分析线程（Fixes #2340）。
-- [新功能] 新增 `python main.py --etf-rotation` 规则化 ETF 双动量轮动：输出最新调仓信号、扣成本回测、分年度对比、参数平原检验与数据质量告警（截断历史/异常跳变/混用数据源），不调用 LLM；配置见 `ETF_ROTATION_*` 与 `docs/etf-rotation.md`。
 - [新功能] 新增 Requesty（OpenAI Compatible 聚合网关）渠道预设：Web 模板、`.env.example` 示例、`00-daily-analysis.yml` 的 `LLM_REQUESTY_*` 映射与服务商文档同步补齐；`requesty.ai` Base URL 下「获取模型」返回的 vendor/model ID 自动保留 `openai/` 网关路由，避免被误判为 LiteLLM 直连 provider。
 
 - [修复] CLI 与 Web/API 每日调度共享 SQLite 计划时刻认领，避免同一数据库上的并发或错峰定时推送重复；保留不同时间点/分析范围及手动补跑，明确失败后的至多一次派发语义（Fixes #2349）。

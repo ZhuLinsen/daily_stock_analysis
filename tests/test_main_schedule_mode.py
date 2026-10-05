@@ -605,26 +605,6 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertIsNone(run_full_analysis.call_args.args[2])
         self.assertIsNone(run_full_analysis.call_args.kwargs.get("analysis_targets"))
 
-    def test_etf_rotation_skips_unrelated_stock_lists_and_reaches_service(self) -> None:
-        for explicit_stocks in (None, "999999.CSI"):
-            with self.subTest(stocks=explicit_stocks):
-                args = self._make_args(etf_rotation=True, stocks=explicit_stocks, no_notify=True)
-                config = self._make_config(stock_list=["999999.CSI"])
-                with (
-                    patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}),
-                    patch("main.parse_arguments", return_value=args),
-                    patch("main.get_config", return_value=config),
-                    patch("main.setup_logging"),
-                    patch("main._refresh_stock_index_cache_for_analysis") as refresh,
-                    patch("main._classify_stock_list_tokens") as classify,
-                    patch("src.services.etf_rotation_service.run_etf_rotation") as run,
-                ):
-                    run.return_value = SimpleNamespace(as_of=date(2025, 6, 6), target_weights={}, failed_codes={})
-                    self.assertEqual(main.main(), 0)
-                run.assert_called_once_with(config, send_notification=False)
-                refresh.assert_not_called()
-                classify.assert_not_called()
-
     def test_actions_backtest_with_bad_stock_list_reaches_backtest_service(self) -> None:
         """Review 反例：`GITHUB_ACTIONS=true` + `--backtest` 时不消费个股列表，
         含未登记 `.CSI` 的 STOCK_LIST 不得整批拒绝，必须进入回测分支。"""

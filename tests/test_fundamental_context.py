@@ -517,9 +517,6 @@ class TestFundamentalContext(unittest.TestCase):
         }
         with patch("src.config.get_config", return_value=cfg), \
                 patch.object(manager, "get_realtime_quote", return_value=quote), \
-                patch.object(manager, "get_capital_flow_context", return_value={"status": "not_supported"}), \
-                patch.object(manager, "get_dragon_tiger_context", return_value={"status": "not_supported"}), \
-                patch.object(manager, "get_board_context", return_value={"status": "not_supported"}), \
                 patch(
                     "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_fundamental_bundle",
                     return_value=bundle,
