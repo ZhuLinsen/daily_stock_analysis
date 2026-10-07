@@ -513,9 +513,9 @@ def resolve_llm_channel_protocol(
     if explicit in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
         return explicit
 
-    # Requesty is OpenAI-compatible; its vendor/model IDs (anthropic/...,
-    # vertex/...) are not LiteLLM protocol declarations.
-    if is_requesty_gateway_base_url(base_url):
+    # Requesty and Opper are OpenAI-compatible; their vendor/model IDs
+    # (anthropic/..., vertex/...) are not LiteLLM protocol declarations.
+    if is_requesty_gateway_base_url(base_url) or is_opper_gateway_base_url(base_url):
         return "openai"
 
     for model in models or []:
@@ -563,6 +563,18 @@ def is_requesty_gateway_base_url(base_url: Optional[str]) -> bool:
     return hostname == "requesty.ai" or hostname.endswith(".requesty.ai")
 
 
+def is_opper_gateway_base_url(base_url: Optional[str]) -> bool:
+    """Return whether a Base URL points at the Opper gateway."""
+    raw_url = (base_url or "").strip()
+    if not raw_url:
+        return False
+    try:
+        hostname = (urlparse(raw_url).hostname or "").lower()
+    except ValueError:
+        return False
+    return hostname == "opper.ai" or hostname.endswith(".opper.ai")
+
+
 def route_discovered_llm_model(model_id: str, base_url: Optional[str]) -> str:
     """Return the saved channel value for an ID listed by a gateway ``/models``.
 
@@ -572,9 +584,15 @@ def route_discovered_llm_model(model_id: str, base_url: Optional[str]) -> str:
     provider names, so the saved value carries the OpenAI-compatible gateway
     route once (``openai/openai/gpt-4o-mini``); LiteLLM strips that layer and
     sends the full Requesty ID unchanged.
+
+    Opper lists the same shape: ``provider/model`` IDs that pin one route
+    (``anthropic/claude-sonnet-4-6``) and bare pool names without a slash
+    (``claude-sonnet-4-6``), so its IDs take the same gateway route.
     """
     normalized_id = (model_id or "").strip()
-    if not normalized_id or not is_requesty_gateway_base_url(base_url):
+    if not normalized_id or not (
+        is_requesty_gateway_base_url(base_url) or is_opper_gateway_base_url(base_url)
+    ):
         return normalized_id
     return f"openai/{normalized_id}"
 
@@ -590,12 +608,12 @@ def normalize_llm_channel_model(model: str, protocol: Optional[str], base_url: O
     if (
         "/" in normalized_model
         and resolved_protocol == "openai"
-        and is_requesty_gateway_base_url(base_url)
+        and (is_requesty_gateway_base_url(base_url) or is_opper_gateway_base_url(base_url))
         and normalized_model.split("/", 1)[0].lower() != "openai"
     ):
-        # Requesty vendor IDs such as anthropic/... or vertex/... must stay
-        # intact behind the OpenAI-compatible gateway route instead of being
-        # read as LiteLLM direct providers.
+        # Requesty and Opper vendor IDs such as anthropic/... or vertex/... must
+        # stay intact behind the OpenAI-compatible gateway route instead of
+        # being read as LiteLLM direct providers.
         return f"openai/{normalized_model}"
 
     if "/" in normalized_model:

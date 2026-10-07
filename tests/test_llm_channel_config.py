@@ -1141,6 +1141,87 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.services.system_config_service.requests.get")
+    def test_opper_discovered_models_save_and_route_through_gateway(
+        self, mock_get, _mock_parse_yaml, _mock_setup_env
+    ) -> None:
+        base_url = "https://api.opper.ai/v3/compat"
+        mock_response = Mock(ok=True, status_code=200)
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "anthropic/claude-sonnet-4-6"},
+                {"id": "aws/claude-sonnet-4-6-eu"},
+                {"id": "openai/gpt-5.5"},
+                {"id": "claude-sonnet-4-6"},
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        payload = SystemConfigService(manager=Mock()).discover_llm_channel_models(
+            name="opper",
+            protocol="openai",
+            base_url=base_url,
+            api_key="sk-test-value",
+        )
+
+        self.assertTrue(payload["success"])
+        expected = [
+            "openai/anthropic/claude-sonnet-4-6",
+            "openai/aws/claude-sonnet-4-6-eu",
+            "openai/openai/gpt-5.5",
+            "openai/claude-sonnet-4-6",
+        ]
+        self.assertEqual(payload["models"], expected)
+
+        # The Web editor saves the selected discovery values as-is.
+        env = {
+            "LLM_CHANNELS": "opper",
+            "LLM_OPPER_PROTOCOL": "openai",
+            "LLM_OPPER_BASE_URL": base_url,
+            "LLM_OPPER_API_KEY": "sk-test-value",
+            "LLM_OPPER_MODELS": ",".join(payload["models"]),
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_channels[0]["models"], expected)
+        self.assertEqual(
+            [entry["litellm_params"]["model"] for entry in config.llm_model_list],
+            expected,
+        )
+        self.assertEqual(
+            {entry["litellm_params"]["api_base"] for entry in config.llm_model_list},
+            {base_url},
+        )
+
+    def test_opper_model_normalization_is_idempotent(self) -> None:
+        from src.config import normalize_llm_channel_model
+
+        cases = {
+            # Hand-typed Opper provider/model IDs keep the gateway route.
+            "anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
+            "vertexai/claude-sonnet-4-6": "openai/vertexai/claude-sonnet-4-6",
+            "claude-sonnet-4-6": "openai/claude-sonnet-4-6",
+            # Already routed values are never prefixed again.
+            "openai/openai/gpt-5.5": "openai/openai/gpt-5.5",
+            "openai/anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
+        }
+        base_url = "https://api.opper.ai/v3/compat"
+        for protocol in ("openai", ""):
+            for raw, expected in cases.items():
+                with self.subTest(protocol=protocol, model=raw):
+                    once = normalize_llm_channel_model(raw, protocol, base_url)
+                    self.assertEqual(once, expected)
+                    self.assertEqual(normalize_llm_channel_model(once, protocol, base_url), expected)
+
+        # Lookalike hosts keep the existing LiteLLM provider semantics.
+        self.assertEqual(
+            normalize_llm_channel_model("anthropic/claude-sonnet-4-6", "openai", "https://opper.ai.example.com/v1"),
+            "anthropic/claude-sonnet-4-6",
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_generation_backend_envs_do_not_change_channel_routing(
         self, _mock_parse_yaml, _mock_setup_env
     ) -> None:

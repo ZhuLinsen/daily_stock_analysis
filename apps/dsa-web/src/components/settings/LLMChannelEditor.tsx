@@ -923,7 +923,7 @@ function inferProtocol(protocol: string, baseUrl: string, models: string[]): Cha
     return explicit;
   }
 
-  if (isRequestyBaseUrl(baseUrl)) {
+  if (isRequestyBaseUrl(baseUrl) || isOpperBaseUrl(baseUrl)) {
     return 'openai';
   }
 
@@ -1049,6 +1049,19 @@ function isRequestyBaseUrl(baseUrl: string): boolean {
   }
 }
 
+function isOpperBaseUrl(baseUrl: string): boolean {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return false;
+  }
+  try {
+    const hostname = new URL(trimmed).hostname.toLowerCase();
+    return hostname === 'opper.ai' || hostname.endsWith('.opper.ai');
+  } catch {
+    return false;
+  }
+}
+
 function normalizeModelForRuntime(
   model: string,
   protocol: ChannelProtocol,
@@ -1060,12 +1073,12 @@ function normalizeModelForRuntime(
     return trimmedModel;
   }
 
-  // Mirrors normalize_llm_channel_model: Requesty vendor IDs keep the gateway route.
+  // Mirrors normalize_llm_channel_model: Requesty and Opper vendor IDs keep the gateway route.
   if (
     protocol === 'openai'
     && trimmedModel.includes('/')
     && trimmedModel.split('/', 1)[0].trim().toLowerCase() !== 'openai'
-    && isRequestyBaseUrl(baseUrl)
+    && (isRequestyBaseUrl(baseUrl) || isOpperBaseUrl(baseUrl))
   ) {
     return `openai/${trimmedModel}`;
   }

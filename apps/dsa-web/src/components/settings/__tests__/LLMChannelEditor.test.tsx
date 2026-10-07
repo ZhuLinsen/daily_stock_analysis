@@ -1798,6 +1798,54 @@ describe('LLMChannelEditor', () => {
     expect(selectOptionValues('主模型')).toContain('openai/openai/gpt-4o-mini');
   });
 
+  it('keeps the Opper gateway route for discovered and hand-typed provider models', async () => {
+    discoverLLMChannelModels.mockResolvedValue({
+      success: true,
+      message: 'LLM channel model discovery succeeded',
+      error: null,
+      resolvedProtocol: 'openai',
+      models: ['openai/openai/gpt-5.5', 'openai/anthropic/claude-sonnet-4-6', 'openai/claude-sonnet-4-6'],
+      latencyMs: 80,
+    });
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'opper' },
+          { key: 'LLM_OPPER_PROTOCOL', value: 'openai' },
+          { key: 'LLM_OPPER_BASE_URL', value: 'https://api.opper.ai/v3/compat' },
+          { key: 'LLM_OPPER_ENABLED', value: 'true' },
+          { key: 'LLM_OPPER_API_KEY', value: 'sk-test' },
+          { key: 'LLM_OPPER_MODELS', value: 'anthropic/claude-sonnet-4-6' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    expect(selectOptionValues('主模型')).toContain('openai/anthropic/claude-sonnet-4-6');
+    expect(selectOptionValues('主模型')).not.toContain('anthropic/claude-sonnet-4-6');
+
+    fireEvent.click(screen.getByRole('button', { name: /Opper/i }));
+    fireEvent.click(screen.getByRole('button', { name: '获取模型' }));
+
+    const gptCheckbox = await screen.findByLabelText('openai/openai/gpt-5.5');
+    expect(gptCheckbox).not.toBeChecked();
+    // Discovered labels equal the runtime route names, so the fallback model list
+    // also renders the selected route; the discovery list comes first.
+    const [claudeCheckbox] = screen.getAllByLabelText('openai/anthropic/claude-sonnet-4-6');
+    expect(claudeCheckbox).toBeChecked();
+
+    fireEvent.click(gptCheckbox);
+    await waitFor(() => {
+      expect(screen.getByLabelText('手动模型（逗号分隔）')).toHaveValue(
+        'anthropic/claude-sonnet-4-6,openai/openai/gpt-5.5',
+      );
+    });
+    expect(selectOptionValues('主模型')).toContain('openai/openai/gpt-5.5');
+  });
+
   it('discovers models and writes selected values back to channel config', async () => {
     discoverLLMChannelModels.mockResolvedValue({
       success: true,
