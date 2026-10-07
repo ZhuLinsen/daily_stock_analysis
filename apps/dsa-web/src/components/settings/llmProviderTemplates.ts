@@ -173,6 +173,19 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
+    channelId: 'api_route',
+    label: 'API Route',
+    protocol: 'openai',
+    baseUrl: 'https://global.api-route.com/v1',
+    placeholderModels: 'gpt-6.1-sol,claude-fable-5-1,gpt-5.5',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint: '模型列表依赖 API Key 所属分组与账号权限；请获取模型并选择可用的聊天模型，使用返回的完整模型 ID。',
+    officialSources: [
+      { label: 'API Route API', url: 'https://github.com/DennyHo0917/api-route/blob/main/API.md' },
+      { label: 'API Route', url: 'https://www.api-route.com/' },
+    ],
+  },
+  {
     channelId: 'gemini',
     label: 'Gemini 官方',
     protocol: 'gemini',

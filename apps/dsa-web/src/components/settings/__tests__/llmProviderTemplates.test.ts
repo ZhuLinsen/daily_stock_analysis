@@ -22,6 +22,7 @@ describe('llmProviderTemplates', () => {
       'siliconflow',
       'openrouter',
       'requesty',
+      'api_route',
       'gemini',
       'anthropic',
       'openai',

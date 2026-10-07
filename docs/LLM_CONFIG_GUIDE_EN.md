@@ -436,9 +436,28 @@ The bundled `00-daily-analysis.yml` explicitly passes the common LLM runtime fie
 
 - Runtime selection: `GENERATION_BACKEND`, `GENERATION_FALLBACK_BACKEND`, `GENERATION_BACKEND_TIMEOUT_SECONDS`, `GENERATION_BACKEND_MAX_OUTPUT_BYTES`, `GENERATION_BACKEND_MAX_CONCURRENCY`, `LOCAL_CLI_BACKEND_MAX_CONCURRENCY`, `AGENT_GENERATION_BACKEND`, `LLM_CHANNELS`, `LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `AGENT_LITELLM_MODEL`, `VISION_MODEL`, `VISION_PROVIDER_PRIORITY`, `LLM_TEMPERATURE`, `LLM_USAGE_HMAC_SECRET`, `LLM_USAGE_HMAC_KEY_VERSION`, `LLM_PROMPT_CACHE_TELEMETRY_ENABLED`, `LLM_PROMPT_CACHE_HINTS_ENABLED`, `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL`
 - Multiple keys: `GEMINI_API_KEYS`, `ANTHROPIC_API_KEYS`, `OPENAI_API_KEYS`, `DEEPSEEK_API_KEYS` (the current workflow imports these from repository Secrets only, not from same-named Variables)
-- Common channel names: `primary`, `secondary`, `aihubmix`, `deepseek`, `dashscope`, `zhipu`, `moonshot`, `minimax`, `volcengine`, `siliconflow`, `openrouter`, `requesty`, `gemini`, `anthropic`, `openai`, `ollama`
+- Common channel names: `primary`, `secondary`, `aihubmix`, `deepseek`, `dashscope`, `zhipu`, `moonshot`, `minimax`, `volcengine`, `siliconflow`, `openrouter`, `requesty`, `api_route`, `gemini`, `anthropic`, `openai`, `ollama`
 
 For example, if you set `LLM_CHANNELS=primary,deepseek` in GitHub Actions, also configure the corresponding `LLM_PRIMARY_*` and `LLM_DEEPSEEK_*` entries. The `LLM_<NAME>_API_KEY` / `LLM_<NAME>_API_KEYS` fields are also imported from repository Secrets only right now, so storing them in Variables will not work at runtime. If you use a custom channel name such as `my_proxy`, GitHub Actions must explicitly add matching `LLM_MY_PROXY_*` mappings in the workflow `env:` block. Local `.env` and Docker runs do not have this limitation.
+
+---
+
+## API Route Channel Example
+
+Select **API Route** in the Web settings provider dropdown to use the existing model discovery and connection test. For local `.env` or Docker deployments:
+
+```env
+LLM_CHANNELS=api_route
+LLM_API_ROUTE_PROTOCOL=openai
+LLM_API_ROUTE_BASE_URL=https://global.api-route.com/v1
+LLM_API_ROUTE_API_KEY=your_api_route_key
+LLM_API_ROUTE_MODELS=gpt-6.1-sol
+LITELLM_MODEL=openai/gpt-6.1-sol
+```
+
+The model is an example. Fetch models and select available chat models for your key's group and account permissions. Channels save the exact IDs returned by `/models`, such as `gpt-6.1-sol` or `claude-fable-5-1`. LiteLLM adds the `openai/` routing prefix at runtime and sends the original ID to the gateway; do not switch Claude models to the direct Anthropic protocol. Chat Completions is the default; model names do not establish Responses, vision, or tool support.
+
+For GitHub Actions, put the key in the `LLM_API_ROUTE_API_KEY` Repository Secret (or `LLM_API_ROUTE_API_KEYS` for multiple keys). Other fields may use Variables. The bundled workflow maps `LLM_API_ROUTE_*`. API Route is a hosted service that receives analysis prompts and input data. See the [API documentation](https://github.com/DennyHo0917/api-route/blob/main/API.md).
 
 ---
 

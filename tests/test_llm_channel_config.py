@@ -1108,6 +1108,45 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             {base_url},
         )
 
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.services.system_config_service.requests.get")
+    def test_api_route_discovered_models_save_and_route_through_gateway(
+        self, mock_get, _mock_parse_yaml, _mock_setup_env
+    ) -> None:
+        base_url = "https://global.api-route.com/v1"
+        models = ["gpt-6.1-sol", "claude-fable-5-1", "gpt-5.5"]
+        response = Mock(ok=True, status_code=200)
+        response.json.return_value = {"data": [{"id": model} for model in models]}
+        mock_get.return_value = response
+
+        payload = SystemConfigService(manager=Mock()).discover_llm_channel_models(
+            name="api_route", protocol="openai", base_url=base_url, api_key="sk-test-value",
+        )
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["models"], models)
+        self.assertEqual(mock_get.call_args.args[0], f"{base_url}/models")
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Authorization"], "Bearer sk-test-value")
+
+        # The editor stores discovered IDs unchanged; the runtime supplies the
+        # LiteLLM OpenAI route even for Claude models served by this gateway.
+        env = {
+            "LLM_CHANNELS": "api_route",
+            "LLM_API_ROUTE_PROTOCOL": "openai",
+            "LLM_API_ROUTE_BASE_URL": base_url,
+            "LLM_API_ROUTE_API_KEY": "sk-test-value",
+            "LLM_API_ROUTE_MODELS": ",".join(payload["models"]),
+            "LITELLM_MODEL": "openai/gpt-6.1-sol",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        expected = [f"openai/{model}" for model in models]
+        self.assertEqual(config.llm_channels[0]["models"], expected)
+        self.assertEqual([entry["litellm_params"]["model"] for entry in config.llm_model_list], expected)
+        self.assertEqual({entry["litellm_params"]["api_base"] for entry in config.llm_model_list}, {base_url})
+        self.assertEqual(config.litellm_model, expected[0])
+
     def test_requesty_model_normalization_is_idempotent(self) -> None:
         from src.config import normalize_llm_channel_model
 
