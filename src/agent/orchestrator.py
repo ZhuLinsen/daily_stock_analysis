@@ -63,7 +63,7 @@ from src.agent.runtime_facts import (
     build_agent_runtime_facts,
 )
 from src.agent.runner import parse_dashboard_json
-from src.agent.stock_scope import resolve_stock_scope
+from src.agent.stock_scope import StockScopeResolution
 from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
 from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
@@ -71,6 +71,8 @@ from src.report_language import normalize_report_language
 
 if TYPE_CHECKING:
     from src.agent.executor import AgentResult
+    from src.services.agent_chat_session_service import AgentChatSessionService, ResolvedChatTurn
+    from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +150,8 @@ class PreparedOrchestratorChatTurn:
 
     session_id: str
     context: AgentContext
+    accepted_snapshot: Optional[Dict[str, Any]] = None
+    db_manager: Optional[DatabaseManager] = None
 
 
 class AgentOrchestrator:
@@ -431,6 +435,8 @@ class AgentOrchestrator:
         progress_callback: Optional[Callable] = None,
         context: Optional[Dict[str, Any]] = None,
         selected_skill_ids: Optional[List[str]] = None,
+        resolved_turn: Optional[ResolvedChatTurn] = None,
+        session_service: Optional[AgentChatSessionService] = None,
     ) -> "AgentResult":
         """Run the pipeline in chat mode (free-form answer, no dashboard parse).
 
@@ -443,6 +449,8 @@ class AgentOrchestrator:
             session_id=session_id,
             context=context,
             selected_skill_ids=selected_skill_ids,
+            resolved_turn=resolved_turn,
+            session_service=session_service,
         )
         return self.execute_turn(
             turn,
@@ -456,33 +464,55 @@ class AgentOrchestrator:
         session_id: str,
         context: Optional[Dict[str, Any]] = None,
         selected_skill_ids: Optional[List[str]] = None,
+        resolved_turn: Optional[ResolvedChatTurn] = None,
+        session_service: Optional[AgentChatSessionService] = None,
     ) -> PreparedOrchestratorChatTurn:
         """Prepare context and persist the user turn before SSE acceptance."""
         from src.agent.conversation import conversation_manager
 
-        scope_resolution = resolve_stock_scope(message, context)
-        ctx = self._build_context(message, scope_resolution.effective_context)
+        config = self.config or getattr(self.llm_adapter, "_config", None) or get_config()
+        if resolved_turn is not None:
+            if (session_service is None or resolved_turn.snapshot["session_id"] != session_id
+                    or resolved_turn.message != message or resolved_turn.clarification is not None):
+                raise ValueError("Resolved Chat preparation requires its session owner and a non-clarification turn")
+            scope_resolution = StockScopeResolution(resolved_turn.effective_context, resolved_turn.stock_scope)
+        else:
+            from src.services.agent_chat_session_service import AgentChatSessionService
+
+            db, snapshot = conversation_manager.prepare_turn(session_id)
+            scope_resolution, disposition = AgentChatSessionService(db).prepare_compatibility_turn(
+                config, snapshot, message, context=context,
+            )
+        ctx = self._build_context(
+            message, scope_resolution.effective_context,
+            scope_resolution=scope_resolution if scope_resolution.stock_scope is not None else None,
+        )
         ctx.session_id = session_id
         ctx.meta["response_mode"] = "chat"
         if scope_resolution.stock_scope is not None:
             ctx.meta["stock_scope"] = scope_resolution.stock_scope
 
-        conversation_manager.get_or_create(session_id)
-        config = self.config or getattr(self.llm_adapter, "_config", None) or get_config()
-        history = build_visible_chat_history(session_id, self.llm_adapter, config)
+        history_kwargs = {"db_manager": db, "source_snapshot": snapshot} if resolved_turn is None else {
+            "db_manager": session_service.db, "source_snapshot": resolved_turn.snapshot,
+        }
+        history = build_visible_chat_history(session_id, self.llm_adapter, config, **history_kwargs)
         if history:
             ctx.meta["conversation_history"] = history
 
         # Persist user turn
-        conversation_manager.add_user_message(
-            session_id,
-            message,
-            selected_skill_ids,
-        )
+        accepted = None
+        if resolved_turn is not None:
+            accepted = session_service.commit_user_turn(resolved_turn)
+        else:
+            accepted = conversation_manager.commit_user_turn(
+                db, snapshot, message, selected_skill_ids, state_disposition=disposition,
+            )
 
         return PreparedOrchestratorChatTurn(
             session_id=session_id,
             context=ctx,
+            accepted_snapshot=accepted,
+            db_manager=session_service.db if resolved_turn is not None else db,
         )
 
     def execute_turn(
@@ -502,7 +532,13 @@ class AgentOrchestrator:
         )
 
         # Persist assistant response
-        if orch_result.success:
+        if turn.accepted_snapshot is not None:
+            content = orch_result.content if orch_result.success else f"[分析失败] {orch_result.error or '未知错误'}"
+            conversation_manager.add_message(
+                turn.session_id, "assistant", content, accepted_turn=turn.accepted_snapshot,
+                db_manager=turn.db_manager,
+            )
+        elif orch_result.success:
             conversation_manager.add_message(turn.session_id, "assistant", orch_result.content)
         else:
             conversation_manager.add_message(
@@ -1212,7 +1248,10 @@ class AgentOrchestrator:
     # Helpers
     # -----------------------------------------------------------------
 
-    def _build_context(self, task: str, context: Optional[Dict[str, Any]] = None) -> AgentContext:
+    def _build_context(
+        self, task: str, context: Optional[Dict[str, Any]] = None, *,
+        scope_resolution: Optional[StockScopeResolution] = None,
+    ) -> AgentContext:
         """Seed an ``AgentContext`` from the user request."""
         ctx = AgentContext(query=task)
 
@@ -1244,7 +1283,12 @@ class AgentOrchestrator:
                     ctx.set_data(data_key, context[data_key])
 
         # Try to extract stock code from the query text
-        if not ctx.stock_code:
+        if scope_resolution is not None:
+            ctx.stock_code = scope_resolution.stock_scope.expected_stock_code
+            ctx.meta["stock_scope"] = scope_resolution.stock_scope
+            ctx.meta["stock_canonical_id"] = (context or {}).get("canonical_id")
+            ctx.meta["stock_asset_type"] = (context or {}).get("asset_type")
+        elif not ctx.stock_code:
             ctx.stock_code = _extract_stock_code(task)
 
         if "report_language" not in ctx.meta:

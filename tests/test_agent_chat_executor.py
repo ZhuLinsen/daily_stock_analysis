@@ -7,6 +7,17 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from src.storage import DatabaseManager
+
+
+@pytest.fixture(autouse=True)
+def isolated_chat_database(tmp_path):
+    DatabaseManager.reset_instance()
+    db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'chat.db'}")
+    yield db
+    DatabaseManager.reset_instance()
+
 from src.agent.agent_backend import AgentRunResult
 from src.agent.chat_executor import AgentChatExecutor
 from src.agent.executor import PreparedAgentChat
@@ -67,7 +78,7 @@ def test_runtime_owned_backend_uses_visible_history_and_forwards_cancellation() 
     )
     with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared) as prepare, \
          patch("src.agent.chat_executor.conversation_manager.get_or_create"), \
-         patch("src.agent.chat_executor.conversation_manager.add_user_message", return_value=1) as add_user_message, \
+         patch("src.agent.chat_executor.conversation_manager.commit_user_turn", return_value={"user_message_id": 1}) as add_user_message, \
          patch("src.agent.chat_executor.conversation_manager.add_message", return_value=2), \
          patch("src.agent.chat_executor.persist_provider_trace_turns") as persist_trace:
         result = _executor(backend).chat(
@@ -85,7 +96,9 @@ def test_runtime_owned_backend_uses_visible_history_and_forwards_cancellation() 
     assert backend.request.max_wall_clock_seconds == 45
     assert prepare.call_args.kwargs["include_provider_trace"] is False
     assert prepare.call_args.kwargs["strict_initial_stock_scope"] is True
-    add_user_message.assert_called_once_with("session", "question", [])
+    assert add_user_message.call_count == 1
+    assert add_user_message.call_args.args[1]["session_id"] == "session"
+    assert add_user_message.call_args.args[2:] == ("question", [])
     persist_trace.assert_not_called()
 
 
@@ -98,7 +111,7 @@ def test_dsa_owned_backend_keeps_provider_trace_roundtrip() -> None:
     )
     with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared) as prepare, \
          patch("src.agent.chat_executor.conversation_manager.get_or_create"), \
-         patch("src.agent.chat_executor.conversation_manager.add_user_message", return_value=11), \
+         patch("src.agent.chat_executor.conversation_manager.commit_user_turn", return_value={"user_message_id": 11}), \
          patch("src.agent.chat_executor.conversation_manager.add_message", return_value=12), \
          patch("src.agent.chat_executor.persist_provider_trace_turns") as persist_trace:
         result = _executor(backend).chat("question", "session")
@@ -125,7 +138,7 @@ def test_cancelled_codex_turn_is_not_persisted_as_analysis_failure() -> None:
     )
     with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared), \
          patch("src.agent.chat_executor.conversation_manager.get_or_create"), \
-         patch("src.agent.chat_executor.conversation_manager.add_user_message", return_value=1), \
+         patch("src.agent.chat_executor.conversation_manager.commit_user_turn", return_value={"user_message_id": 1}), \
          patch("src.agent.chat_executor.conversation_manager.add_message", return_value=2) as add_message:
         result = _executor(backend).chat("question", "session", cancel_event=threading.Event())
 
@@ -150,7 +163,7 @@ def test_timed_out_codex_turn_uses_codex_terminal_note() -> None:
     )
     with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared), \
          patch("src.agent.chat_executor.conversation_manager.get_or_create"), \
-         patch("src.agent.chat_executor.conversation_manager.add_user_message", return_value=1), \
+         patch("src.agent.chat_executor.conversation_manager.commit_user_turn", return_value={"user_message_id": 1}), \
          patch("src.agent.chat_executor.conversation_manager.add_message", return_value=2) as add_message:
         result = _executor(backend).chat("question", "session")
 
@@ -175,7 +188,7 @@ def test_timed_out_litellm_turn_keeps_existing_analysis_failure_note() -> None:
     )
     with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared), \
          patch("src.agent.chat_executor.conversation_manager.get_or_create"), \
-         patch("src.agent.chat_executor.conversation_manager.add_user_message", return_value=1), \
+         patch("src.agent.chat_executor.conversation_manager.commit_user_turn", return_value={"user_message_id": 1}), \
          patch("src.agent.chat_executor.conversation_manager.add_message", return_value=2) as add_message:
         result = _executor(backend).chat("question", "session")
 
@@ -200,7 +213,7 @@ def test_failed_litellm_turn_keeps_existing_analysis_failure_note() -> None:
     )
     with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared), \
          patch("src.agent.chat_executor.conversation_manager.get_or_create"), \
-         patch("src.agent.chat_executor.conversation_manager.add_user_message", return_value=1), \
+         patch("src.agent.chat_executor.conversation_manager.commit_user_turn", return_value={"user_message_id": 1}), \
          patch("src.agent.chat_executor.conversation_manager.add_message", return_value=2) as add_message:
         result = _executor(backend).chat("question", "session")
 
@@ -218,7 +231,7 @@ def test_context_preparation_failure_does_not_persist_or_start_backend() -> None
         "src.agent.chat_executor.prepare_agent_chat",
         side_effect=RuntimeError("context preparation failed"),
     ), patch("src.agent.chat_executor.conversation_manager.get_or_create"), patch(
-        "src.agent.chat_executor.conversation_manager.add_user_message"
+        "src.agent.chat_executor.conversation_manager.commit_user_turn"
     ) as add_user_message:
         try:
             _executor(backend).prepare_turn(message="question", session_id="session")
@@ -241,7 +254,7 @@ def test_user_message_persistence_failure_does_not_start_backend() -> None:
     with patch("src.agent.chat_executor.prepare_agent_chat", return_value=prepared), patch(
         "src.agent.chat_executor.conversation_manager.get_or_create"
     ), patch(
-        "src.agent.chat_executor.conversation_manager.add_user_message",
+        "src.agent.chat_executor.conversation_manager.commit_user_turn",
         side_effect=RuntimeError("database write failed"),
     ):
         try:

@@ -17,7 +17,10 @@ from sqlalchemy.sql import func
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import Config
-from src.storage import Base, CURRENT_SCHEMA_VERSION, DatabaseManager, DatabaseSchemaMigration, StockDaily
+from src.storage import (
+    Base, CHAT_STATE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION,
+    DatabaseManager, DatabaseSchemaMigration, StockDaily,
+)
 from src.services import stock_list_parser as stock_list_parser_module
 
 class TestStorage(unittest.TestCase):
@@ -173,11 +176,9 @@ class TestStorage(unittest.TestCase):
         db._ensure_schema_migration_record()
 
         with db.get_session() as session:
-            count = session.execute(
-                select(func.count()).select_from(DatabaseSchemaMigration)
-            ).scalar_one()
+            versions = session.execute(select(DatabaseSchemaMigration.version)).scalars().all()
 
-        self.assertEqual(count, 1)
+        self.assertEqual(sorted(versions), sorted([CURRENT_SCHEMA_VERSION, CHAT_STATE_SCHEMA_VERSION]))
 
         DatabaseManager.reset_instance()
 

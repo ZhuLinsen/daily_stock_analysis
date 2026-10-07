@@ -41,6 +41,10 @@ class _ToolProcessOutputTooLarge(ValueError):
     pass
 
 
+class _ToolProcessContextContractError(ValueError):
+    pass
+
+
 @dataclass
 class _OwnedToolProcess:
     process: Any
@@ -109,6 +113,11 @@ def _decode_frame(raw_frame: bytes) -> dict:
 
 def _context_payload(context: ToolAccessContext) -> dict:
     stock_scope = context.stock_scope
+    from src.agent.stock_scope import StockScope
+
+    if (not isinstance(getattr(stock_scope, "strict", False), bool)
+            or (getattr(stock_scope, "strict", False) and not isinstance(stock_scope, StockScope))):
+        raise _ToolProcessContextContractError("Strict Chat requires a complete StockScope")
     stock_payload = None
     if stock_scope is not None:
         stock_payload = {
@@ -117,9 +126,13 @@ def _context_payload(context: ToolAccessContext) -> dict:
                 str(code) for code in (getattr(stock_scope, "allowed_stock_codes", set()) or set())
             ),
             "mode": str(getattr(stock_scope, "mode", "maintain") or "maintain"),
+            "strict": getattr(stock_scope, "strict", False),
+            "identities": [dict(identity.as_payload(), **({"stock_name": identity.stock_name} if identity.stock_name else {}))
+                           for identity in getattr(stock_scope, "identities", ())],
         }
     return {
         "stock_scope": stock_payload,
+        "strict_stock_scope": getattr(stock_scope, "strict", False),
         "market": context.market,
         "time_range": context.time_range,
         "data_sources": context.data_sources,
@@ -134,18 +147,43 @@ def _context_payload(context: ToolAccessContext) -> dict:
 
 
 def _context_from_payload(payload: dict) -> ToolAccessContext:
-    from src.agent.stock_scope import StockScope
+    from src.agent.stock_scope import StockIdentity, StockScope
 
+    # DSA's internal parent/worker codec always carries this discriminator,
+    # including False for legacy calls. Missing data is not an older Codex
+    # protocol: both endpoints belong to this same DSA version.
+    strict = payload.get("strict_stock_scope")
+    if not isinstance(strict, bool):
+        raise _ToolProcessContextContractError("Tool process context lost its strict-path marker")
     stock_payload = payload.get("stock_scope")
+    if strict and not isinstance(stock_payload, dict):
+        raise _ToolProcessContextContractError("Strict tool process context lost its stock scope")
     stock_scope = None
     if isinstance(stock_payload, dict):
-        stock_scope = StockScope(
-            expected_stock_code=str(stock_payload.get("expected_stock_code") or ""),
-            allowed_stock_codes={
-                str(code) for code in (stock_payload.get("allowed_stock_codes") or [])
-            },
-            mode=str(stock_payload.get("mode") or "maintain"),
-        )
+        if stock_payload.get("strict") is not strict:
+            raise _ToolProcessContextContractError("Tool process strict-path markers disagree")
+        identities = ()
+        if strict:
+            if (not isinstance(stock_payload.get("identities"), list)
+                    or not isinstance(stock_payload.get("expected_stock_code"), str)
+                    or not isinstance(stock_payload.get("mode"), str)
+                    or not isinstance(stock_payload.get("allowed_stock_codes"), list)
+                    or any(not isinstance(code, str) for code in stock_payload["allowed_stock_codes"])):
+                raise _ToolProcessContextContractError("Strict tool process scope is incomplete")
+        try:
+            if strict:
+                identities = tuple(StockIdentity(**item) for item in stock_payload["identities"])
+            stock_scope = StockScope(
+                expected_stock_code=str(stock_payload.get("expected_stock_code") or ""),
+                allowed_stock_codes={
+                    str(code) for code in (stock_payload.get("allowed_stock_codes") or [])
+                },
+                mode=str(stock_payload.get("mode") or "maintain"),
+                strict=strict,
+                identities=identities,
+            )
+        except (TypeError, ValueError) as exc:
+            raise _ToolProcessContextContractError("Tool process scope identities are invalid") from exc
     return ToolAccessContext(
         stock_scope=stock_scope,
         market=payload.get("market"),
@@ -220,6 +258,8 @@ def _tool_process_entry(
                     "error_code": (
                         "output_too_large"
                         if isinstance(exc, _ToolProcessOutputTooLarge)
+                        else "tool_context_contract_error"
+                        if isinstance(exc, _ToolProcessContextContractError)
                         else "handler_error"
                     ),
                 },
@@ -311,6 +351,8 @@ class CodexToolProcessRunner:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+        except _ToolProcessContextContractError:
+            return _error_result(tool_name, "tool_context_contract_error", "Tool context contract is incomplete.")
         except (TypeError, ValueError):
             return _error_result(
                 tool_name,
@@ -471,6 +513,8 @@ class CodexToolProcessRunner:
             )
         if isinstance(message, dict) and message.get("type") == "worker_error":
             error_code = str(message.get("error_code") or "handler_error")
+            if error_code == "tool_context_contract_error":
+                return _error_result(tool_name, error_code, "Tool context contract is incomplete.")
             if error_code == "output_too_large":
                 return _error_result(
                     tool_name,

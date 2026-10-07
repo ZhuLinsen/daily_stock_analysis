@@ -18,12 +18,14 @@ from src.services.agent_chat_session_service import AgentChatSessionService
 from src.storage import DatabaseManager
 
 
-def setup_function() -> None:
+@pytest.fixture(autouse=True)
+def isolated_api_database(tmp_path: Path):
     DatabaseManager.reset_instance()
     Config.reset_instance()
-
-
-def teardown_function() -> None:
+    # All direct endpoint calls share this real file DB across API threads,
+    # never the configured user path or a previous test invocation's data.
+    DatabaseManager(db_url=f"sqlite:///{tmp_path / 'api.db'}")
+    yield
     DatabaseManager.reset_instance()
     Config.reset_instance()
 
@@ -61,10 +63,22 @@ def _result(*, backend: str = "litellm", success: bool = True, error_code=None):
 
 
 def _executor(result=None) -> MagicMock:
-    executor = MagicMock()
-    executor.prepare_turn.return_value = object()
-    executor.execute_turn.return_value = result or _result()
-    return executor
+    # Preserve real context/history preparation and the acceptance transaction;
+    # only the external execution endpoint is controlled here.
+    from src.agent.agent_backend import AgentRunResult
+    from src.agent.chat_executor import AgentChatExecutor
+
+    result = result or _result()
+    backend = MagicMock()
+    backend.backend_id = result.backend
+    backend.runtime_owns_loop = result.backend == "codex_app_server"
+    backend.run.return_value = AgentRunResult(
+        success=result.success, final_answer=result.content, backend=result.backend,
+        error_message=result.error, error_code=result.error_code, messages=[],
+    )
+    return MagicMock(wraps=AgentChatExecutor(
+        backend=backend, config=_litellm_config(), context_llm_adapter=None,
+    ))
 
 
 def _sse_events(text: str) -> list[dict]:
@@ -140,8 +154,7 @@ def test_chat_session_messages_api_does_not_expose_provider_trace(tmp_path: Path
 
 
 def test_agent_chat_forwards_stock_context_to_executor(tmp_path: Path) -> None:
-    executor = MagicMock()
-    executor.chat.return_value = _result()
+    executor = _executor()
 
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config(report_language="en")), \
@@ -149,24 +162,22 @@ def test_agent_chat_forwards_stock_context_to_executor(tmp_path: Path) -> None:
         response = TestClient(create_app(static_dir=tmp_path / "static")).post(
             "/api/v1/agent/chat",
             json={
-                "message": "如果不考虑 TTM 呢",
+                "message": "分析600519，如果不考虑 TTM 呢",
                 "session_id": "s1",
                 "context": {"stock_code": "600519", "stock_name": "匿名标的"},
             },
         )
 
     assert response.status_code == 200
-    kwargs = executor.chat.call_args.kwargs
-    assert kwargs["context"] == {
-        "stock_code": "600519",
-        "stock_name": "匿名标的",
-        "report_language": "en",
-    }
+    kwargs = executor.prepare_turn.call_args.kwargs
+    assert kwargs["context"]["stock_code"] == "600519"
+    assert kwargs["context"]["canonical_id"] == "sh600519"
+    assert kwargs["context"]["stock_name"] != "匿名标的"
+    assert kwargs["context"]["report_language"] == "en"
 
 
 def test_agent_chat_preserves_explicit_report_language(tmp_path: Path) -> None:
-    executor = MagicMock()
-    executor.chat.return_value = _result()
+    executor = _executor()
 
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config(report_language="en")), \
@@ -181,15 +192,14 @@ def test_agent_chat_preserves_explicit_report_language(tmp_path: Path) -> None:
         )
 
     assert response.status_code == 200
-    assert executor.chat.call_args.kwargs["context"]["report_language"] == "ko"
+    assert executor.prepare_turn.call_args.kwargs["context"]["report_language"] == "ko"
 
 
 @pytest.mark.parametrize("provided_language", [None, "", "   "])
 def test_agent_chat_treats_null_or_blank_report_language_as_missing(
     tmp_path: Path, provided_language
 ) -> None:
-    executor = MagicMock()
-    executor.chat.return_value = _result()
+    executor = _executor()
 
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config(report_language="en")), \
@@ -204,7 +214,7 @@ def test_agent_chat_treats_null_or_blank_report_language_as_missing(
         )
 
     assert response.status_code == 200
-    assert executor.chat.call_args.kwargs["context"]["report_language"] == "en"
+    assert executor.prepare_turn.call_args.kwargs["context"]["report_language"] == "en"
 
 
 @pytest.mark.parametrize("provided_language", [None, "", "   "])
@@ -276,8 +286,7 @@ def test_agent_chat_inherits_saved_skills_without_rewriting_session_state(tmp_pa
     db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'inherit.db'}")
     db.save_conversation_user_turn("saved-session", "first", ["technical"])
     config = _litellm_config()
-    executor = MagicMock()
-    executor.chat.return_value = _result()
+    executor = _executor()
 
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=config), \
@@ -297,19 +306,18 @@ def test_agent_chat_inherits_saved_skills_without_rewriting_session_state(tmp_pa
 
     assert response.status_code == 200
     build_executor.assert_called_once_with(config, ["technical"])
-    context = executor.chat.call_args.kwargs["context"]
-    assert context["stock_code"] == "600519"
+    context = executor.prepare_turn.call_args.kwargs["context"]
+    assert "stock_code" not in context  # client hint cannot establish a fact
     assert context["skills"] == ["technical"]
     assert "strategies" not in context
-    assert executor.chat.call_args.kwargs["selected_skill_ids"] is None
+    assert executor.prepare_turn.call_args.kwargs["selected_skill_ids"] is None
 
 
 def test_agent_chat_all_invalid_skills_inherit_without_clearing_state(tmp_path: Path) -> None:
     db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'all-invalid.db'}")
     db.save_conversation_user_turn("saved-session", "first", ["technical"])
     config = _litellm_config()
-    executor = MagicMock()
-    executor.chat.return_value = _result()
+    executor = _executor()
     skill_manager = MagicMock()
     skill_manager.list_skills.return_value = [SimpleNamespace(name="technical")]
 
@@ -328,8 +336,8 @@ def test_agent_chat_all_invalid_skills_inherit_without_clearing_state(tmp_path: 
 
     assert response.status_code == 200
     build_executor.assert_called_once_with(config, ["technical"])
-    assert executor.chat.call_args.kwargs["context"]["skills"] == ["technical"]
-    assert executor.chat.call_args.kwargs["selected_skill_ids"] is None
+    assert executor.prepare_turn.call_args.kwargs["context"]["skills"] == ["technical"]
+    assert executor.prepare_turn.call_args.kwargs["selected_skill_ids"] is None
     assert db.get_conversation_session_selected_skill_ids("saved-session") == [
         "technical"
     ]
@@ -442,23 +450,24 @@ def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> N
             )
             iterator = response.body_iterator
             first = json.loads((await anext(iterator)).removeprefix("data: ").strip())
-            executor.prepare_turn.assert_called_once_with(
-                message="分析 AAPL",
-                session_id="accepted-session",
-                context={"stock_code": "AAPL", "report_language": "zh"},
-                selected_skill_ids=None,
-            )
+            executor.prepare_turn.assert_called_once()
+            kwargs = executor.prepare_turn.call_args.kwargs
+            assert kwargs["message"] == "分析 AAPL" and kwargs["session_id"] == "accepted-session"
+            assert kwargs["context"]["stock_code"] == "AAPL"
+            assert kwargs["context"]["canonical_id"] == "AAPL"
+            assert kwargs["context"]["report_language"] == "zh"
+            assert kwargs["selected_skill_ids"] is None
+            assert kwargs["resolved_turn"].stock_scope.strict
+            assert len(kwargs["session_service"].db.get_conversation_messages("accepted-session")) == 1
             executor.execute_turn.assert_not_called()
             await iterator.aclose()
             return first
 
     first_event = asyncio.run(exercise())
-    assert first_event == {
-        "type": "accepted",
-        "backend": "codex_app_server",
-        "request_id": "accepted-request",
-        "session_id": "accepted-session",
-    }
+    assert first_event["type"] == "accepted" and first_event["backend"] == "codex_app_server"
+    assert first_event["request_id"] == "accepted-request" and first_event["session_id"] == "accepted-session"
+    assert first_event["session_state_version"] == 1 and first_event["session_generation"]
+    assert first_event["active_stock_context"]["canonical_id"] == "AAPL"
     executor.execute_turn.assert_not_called()
 
 
@@ -485,16 +494,17 @@ def test_stream_forwards_normalized_skill_selection_to_prepare_turn() -> None:
 
     assert [event["type"] for event in events] == ["accepted", "done"]
     build_executor.assert_called_once_with(config, ["risk"])
-    executor.prepare_turn.assert_called_once_with(
-        message="check risk",
-        session_id="risk-session",
-        context={"skills": ["risk"], "report_language": "zh"},
-        selected_skill_ids=["risk"],
-    )
+    executor.prepare_turn.assert_called_once()
+    kwargs = executor.prepare_turn.call_args.kwargs
+    assert kwargs["message"] == "check risk" and kwargs["session_id"] == "risk-session"
+    assert kwargs["context"] == {"skills": ["risk"], "report_language": "zh"}
+    assert kwargs["selected_skill_ids"] == ["risk"]
+    assert kwargs["resolved_turn"].stock_scope.strict
 
 
-def test_stream_all_invalid_skills_inherit_without_clearing_state() -> None:
-    db = DatabaseManager(db_url="sqlite:///:memory:")
+def test_stream_all_invalid_skills_inherit_without_clearing_state(tmp_path: Path) -> None:
+    # Preparation and execution use different actual API worker threads.
+    db = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'stream-inherit.db'}")
     db.save_conversation_user_turn("saved-session", "first", ["technical"])
     session_service = AgentChatSessionService(db)
     executor = _executor(_result(backend="litellm"))
@@ -526,27 +536,25 @@ def test_stream_all_invalid_skills_inherit_without_clearing_state() -> None:
     events = asyncio.run(exercise())
 
     assert [event["type"] for event in events] == ["accepted", "done"]
-    executor.prepare_turn.assert_called_once_with(
-        message="follow up",
-        session_id="saved-session",
-        context={"skills": ["technical"], "report_language": "zh"},
-        selected_skill_ids=None,
-    )
+    executor.prepare_turn.assert_called_once()
+    kwargs = executor.prepare_turn.call_args.kwargs
+    assert kwargs["message"] == "follow up" and kwargs["session_id"] == "saved-session"
+    assert kwargs["context"] == {"skills": ["technical"], "report_language": "zh"}
+    assert kwargs["selected_skill_ids"] is None
     assert db.get_conversation_session_selected_skill_ids("saved-session") == [
         "technical"
     ]
 
 
-def test_codex_stream_skill_resolution_failure_does_not_register_request() -> None:
+def test_codex_stream_skill_resolution_failure_emits_error_and_unregisters_request() -> None:
     request_id = "skill-resolution-failure"
     session_service = MagicMock(spec=AgentChatSessionService)
-    session_service.resolve_skill_selection.side_effect = RuntimeError("database read failed")
+    session_service.prepare_session_turn.side_effect = RuntimeError("database read failed")
 
     try:
-        with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
-             pytest.raises(RuntimeError, match="database read failed"):
-            asyncio.run(
-                agent_endpoint.agent_chat_stream(
+        with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()):
+            async def exercise():
+                response = await agent_endpoint.agent_chat_stream(
                     agent_endpoint.ChatRequest(
                         message="question",
                         session_id="failed-session",
@@ -554,7 +562,10 @@ def test_codex_stream_skill_resolution_failure_does_not_register_request() -> No
                     ),
                     session_service=session_service,
                 )
-            )
+                return [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in response.body_iterator]
+            events = asyncio.run(exercise())
+        assert [event["type"] for event in events] == ["error"]
+        assert events[0]["error_code"] == "request_not_accepted"
 
         with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
             assert request_id not in agent_endpoint._ACTIVE_CODEX_STREAMS
@@ -673,8 +684,8 @@ def test_litellm_stream_keeps_existing_execution_signature(tmp_path: Path) -> No
 
 
 def test_litellm_non_streaming_error_keeps_legacy_detail(tmp_path: Path) -> None:
-    executor = MagicMock()
-    executor.chat.side_effect = RuntimeError("legacy failure")
+    executor = _executor()
+    executor.execute_turn.side_effect = RuntimeError("legacy failure")
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):

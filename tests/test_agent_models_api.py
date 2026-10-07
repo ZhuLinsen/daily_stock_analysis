@@ -3,6 +3,7 @@
 
 import asyncio
 import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -363,47 +364,49 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
         self.assertNotIn("strategies", context)
 
     def test_chat_request_empty_skills_clears_context_without_triggering_activate_all(self) -> None:
-        config = SimpleNamespace(
-            is_agent_available=lambda: True,
-            report_language="zh",
-        )
-        executor = MagicMock()
-        executor.chat.return_value = SimpleNamespace(success=True, content="ok", error=None)
+        from src.agent.agent_backend import AgentRunResult, LiteLLMAgentBackend
+        from src.agent.factory import resolve_skill_prompt_state
+        from src.storage import DatabaseManager
+
+        config = _build_config(agent_backend="litellm", agent_arch="single",
+                               agent_skills=["ma_golden_cross"],
+                               agent_context_compression_enabled=False)
+        config.is_agent_available = lambda: True
+        run_requests = []
+
+        def controlled_run(_backend, run_request):
+            run_requests.append(run_request)
+            return AgentRunResult(success=True, final_answer="ok", backend="litellm", model="fixture")
+
         request = agent.ChatRequest(
             message="hello",
+            session_id="empty-skills",
             skills=[],
             context={"skills": ["old_skill"], "strategies": ["older_strategy"]},
         )
-        real_get_running_loop = asyncio.get_running_loop
+        with tempfile.TemporaryDirectory() as directory:
+            db = DatabaseManager(db_url=f"sqlite:///{directory}/chat.db")
+            try:
+                with patch("api.v1.endpoints.agent.get_config", return_value=config), patch(
+                    "api.v1.endpoints.agent._build_executor", wraps=agent._build_executor,
+                ) as mock_build_executor, patch.object(LiteLLMAgentBackend, "run", controlled_run):
+                    payload = asyncio.run(agent.agent_chat(
+                        request, session_service=agent.AgentChatSessionService(db),
+                    )).model_dump()
+                self.assertEqual(db.get_conversation_session_selected_skill_ids("empty-skills"), [])
+                self.assertEqual(len(db.get_conversation_messages("empty-skills")), 2)
+            finally:
+                db._engine.dispose()
 
-        class _ImmediateLoop:
-            def __init__(self, loop):
-                self._loop = loop
-
-            def run_in_executor(self, _executor, func):
-                future = self._loop.create_future()
-                future.set_result(func())
-                return future
-
-        with patch("api.v1.endpoints.agent.get_config", return_value=config), patch(
-            "api.v1.endpoints.agent._build_executor",
-            return_value=executor,
-        ) as mock_build_executor, patch(
-            "api.v1.endpoints.agent.asyncio.get_running_loop",
-            side_effect=lambda: _ImmediateLoop(real_get_running_loop()),
-        ):
-            payload = asyncio.run(
-                agent.agent_chat(
-                    request,
-                    session_service=agent.AgentChatSessionService(),
-                )
-            ).model_dump()
-
-        mock_build_executor.assert_called_once_with(config, None)
-        executor.chat.assert_called_once()
-        self.assertEqual(executor.chat.call_args.kwargs["context"]["skills"], [])
-        self.assertNotIn("strategies", executor.chat.call_args.kwargs["context"])
-        self.assertEqual(executor.chat.call_args.kwargs["selected_skill_ids"], [])
+        mock_build_executor.assert_called_once_with(config, [])
+        self.assertEqual(len(run_requests), 1)
+        self.assertIn(resolve_skill_prompt_state(config, skills=[]).skill_instructions,
+                      run_requests[0].system_prompt)
+        self.assertNotIn(resolve_skill_prompt_state(config, skills=["ma_golden_cross"]).skill_instructions,
+                         run_requests[0].system_prompt)
+        self.assertNotIn("old_skill", run_requests[0].system_prompt)
+        self.assertNotIn("older_strategy", run_requests[0].system_prompt)
+        self.assertEqual(payload["session_state"]["selected_skill_ids"], [])
         self.assertEqual(payload["content"], "ok")
 class AgentModelsSourceDetectionTestCase(unittest.TestCase):
     @patch("src.config.setup_env")
