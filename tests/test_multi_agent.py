@@ -2189,14 +2189,18 @@ class TestOrchestratorExecution(unittest.TestCase):
         orch = self._make_orchestrator()
         fake_result = OrchestratorResult(success=True, content="assistant reply")
 
-        with patch.object(orch, "_execute_pipeline", return_value=fake_result):
-            with patch("src.agent.conversation.conversation_manager.add_user_message") as add_user_message, \
+        with patch.object(orch, "_execute_pipeline", return_value=fake_result), \
+             patch("src.agent.orchestrator.build_visible_chat_history", return_value=[]):
+            with patch("src.agent.conversation.conversation_manager.commit_user_turn", return_value={"user_message_id": 1}) as add_user_message, \
                  patch("src.agent.conversation.conversation_manager.add_message") as add_message:
                 result = orch.chat("hello", "session-1")
 
         self.assertTrue(result.success)
-        add_user_message.assert_called_once_with("session-1", "hello", None)
-        add_message.assert_called_once_with("session-1", "assistant", "assistant reply")
+        self.assertEqual(add_user_message.call_count, 1)
+        self.assertEqual(add_user_message.call_args.args[1]["session_id"], "session-1")
+        self.assertEqual(add_user_message.call_args.args[2:], ("hello", None))
+        self.assertEqual(add_message.call_args.args, ("session-1", "assistant", "assistant reply"))
+        self.assertEqual(add_message.call_args.kwargs["accepted_turn"], {"user_message_id": 1})
 
     def test_chat_transaction_persists_user_before_multi_agent_execution(self):
         """SSE acceptance can occur after persistence but before the pipeline starts."""
@@ -2208,7 +2212,7 @@ class TestOrchestratorExecution(unittest.TestCase):
         with patch.object(orch, "_execute_pipeline", return_value=fake_result) as execute_pipeline:
             with patch("src.agent.orchestrator.build_visible_chat_history", return_value=[]):
                 with patch("src.agent.conversation.conversation_manager.get_or_create"):
-                    with patch("src.agent.conversation.conversation_manager.add_user_message") as add_user_message, \
+                    with patch("src.agent.conversation.conversation_manager.commit_user_turn", return_value={"user_message_id": 1}) as add_user_message, \
                          patch("src.agent.conversation.conversation_manager.add_message") as add_message:
                         turn = orch.prepare_turn(
                             message="hello",
@@ -2216,11 +2220,9 @@ class TestOrchestratorExecution(unittest.TestCase):
                             selected_skill_ids=["technical"],
                         )
 
-                        add_user_message.assert_called_once_with(
-                            "session-accepted",
-                            "hello",
-                            ["technical"],
-                        )
+                        self.assertEqual(add_user_message.call_count, 1)
+                        self.assertEqual(add_user_message.call_args.args[1]["session_id"], "session-accepted")
+                        self.assertEqual(add_user_message.call_args.args[2:], ("hello", ["technical"]))
                         execute_pipeline.assert_not_called()
 
                         result = orch.execute_turn(turn)
@@ -2243,13 +2245,15 @@ class TestOrchestratorExecution(unittest.TestCase):
         orch = self._make_orchestrator()
         fake_result = OrchestratorResult(success=False, error="boom")
 
-        with patch.object(orch, "_execute_pipeline", return_value=fake_result):
-            with patch("src.agent.conversation.conversation_manager.add_user_message"), \
+        with patch.object(orch, "_execute_pipeline", return_value=fake_result), \
+             patch("src.agent.orchestrator.build_visible_chat_history", return_value=[]):
+            with patch("src.agent.conversation.conversation_manager.commit_user_turn", return_value={"user_message_id": 1}), \
                  patch("src.agent.conversation.conversation_manager.add_message") as add_message:
                 result = orch.chat("hello", "session-2")
 
         self.assertFalse(result.success)
-        add_message.assert_any_call("session-2", "assistant", "[分析失败] boom")
+        self.assertEqual(add_message.call_args.args, ("session-2", "assistant", "[分析失败] boom"))
+        self.assertEqual(add_message.call_args.kwargs["accepted_turn"], {"user_message_id": 1})
 
     def test_execute_pipeline_fails_when_dashboard_parse_fails(self):
         orch = self._make_orchestrator()

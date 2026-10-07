@@ -49,6 +49,8 @@ _STOCK_INDEX_CACHE: Dict[str, str] | None = None
 _STOCK_CODE_LOOKUP_CACHE: Dict[str, str] | None = None
 _STOCK_CODE_CANDIDATES_CACHE: Dict[str, tuple[str, ...]] | None = None
 _ACTIVE_INDEX_ROWS_CACHE: list | None = None
+_CHAT_INDEX_PAYLOAD_CACHE: list | None = None
+_CHAT_STOCK_LOOKUP_CACHE: dict | None = None
 _REMOTE_INDEX_VALIDITY_CACHE: tuple[Path, float, int, bool] | None = None
 _STOCK_INDEX_CACHE_LOCK = RLock()
 
@@ -416,7 +418,7 @@ def _load_active_index_rows() -> list:
     non-bundled file can never bypass the bundled baseline when the remote cache
     is missing/invalid.
     """
-    global _ACTIVE_INDEX_ROWS_CACHE
+    global _ACTIVE_INDEX_ROWS_CACHE, _CHAT_INDEX_PAYLOAD_CACHE
 
     if _ACTIVE_INDEX_ROWS_CACHE is not None:
         return _ACTIVE_INDEX_ROWS_CACHE
@@ -454,6 +456,7 @@ def _load_active_index_rows() -> list:
 
         # Second pass: pick the best candidate (remote preferred when it is a
         # legal superset of the bundled baseline).
+        stock_only_fallback = None
         for index_path in candidates:
             try:
                 raw_items = _load_stock_index_payload(index_path)
@@ -463,6 +466,8 @@ def _load_active_index_rows() -> list:
                     validate_stock_index_payload(raw_items, min_items=0)
                 rows = _extract_active_index_rows(raw_items)
                 if not rows:
+                    if stock_only_fallback is None:
+                        stock_only_fallback = raw_items
                     continue
                 _validate_index_rows_semantics(
                     rows, _extract_active_non_index_rows(raw_items)
@@ -485,6 +490,7 @@ def _load_active_index_rows() -> list:
                         )
                         continue
                 _ACTIVE_INDEX_ROWS_CACHE = rows
+                _CHAT_INDEX_PAYLOAD_CACHE = raw_items
                 return rows
             except (OSError, TypeError, ValueError) as exc:
                 logger.debug("[股票索引] 解析指数行失败 %s: %s", index_path, exc)
@@ -492,7 +498,50 @@ def _load_active_index_rows() -> list:
         # All candidates failed or were skipped — empty registry + WARNING.
         logger.warning("[股票索引] 所有指数候选均失败，指数注册表为空")
         _ACTIVE_INDEX_ROWS_CACHE = []
+        _CHAT_INDEX_PAYLOAD_CACHE = stock_only_fallback or []
         return _ACTIVE_INDEX_ROWS_CACHE
+
+
+def get_chat_stock_lookup() -> dict:
+    """Read-only name/code lookup over the existing selected, validated payload.
+
+    Keep names and registry rows from the same chosen source. A stock-only
+    candidate can supply names if no legal index candidate exists; it cannot
+    manufacture a populated index registry or validate an explicit index token.
+    """
+    global _CHAT_STOCK_LOOKUP_CACHE
+    from src.services.stock_code_utils import is_code_like
+
+    with _STOCK_INDEX_CACHE_LOCK:
+        if _CHAT_STOCK_LOOKUP_CACHE is not None:
+            return _CHAT_STOCK_LOOKUP_CACHE
+        index_rows = _load_active_index_rows()
+        names: dict[str, set[tuple[str, str, str]]] = {}
+        codes: dict[str, set[tuple[str, str, str]]] = {}
+        for row in _CHAT_INDEX_PAYLOAD_CACHE or []:
+            if len(row) < 10 or row[8] is not True:
+                continue
+            code, name = str(row[0]).strip(), str(row[2]).strip()
+            if not is_meaningful_stock_name(name, code):
+                continue
+            identity = (code, name, "index" if row[7] == "index" else "stock")
+            aliases = [alias for alias in row[5] if isinstance(alias, str)]
+            # Search aliases are not universally name aliases. Code-shaped
+            # aliases must not introduce a second name-confirmation route.
+            for label in [name] + [alias for alias in aliases if not is_code_like(alias)
+                                    and not _EXPLICIT_INDEX_ALIAS_RE.fullmatch(alias.casefold())]:
+                key = unicodedata.normalize("NFKC", label).strip().casefold()
+                if key:
+                    names.setdefault(key, set()).add(identity)
+            for key in _build_lookup_keys(code, str(row[1])):
+                codes.setdefault(key.upper(), set()).add(identity)
+                codes.setdefault(_normalize_index_identity_key(key).upper(), set()).add(identity)
+        _CHAT_STOCK_LOOKUP_CACHE = {
+            "names": {key: tuple(sorted(values)) for key, values in names.items()},
+            "codes": {key: tuple(sorted(values)) for key, values in codes.items()},
+            "index_rows": index_rows,
+        }
+        return _CHAT_STOCK_LOOKUP_CACHE
 
 
 def _get_bundled_stock_index_path(
@@ -655,12 +704,14 @@ def clear_stock_index_cache() -> None:
     """Clear the in-process stock index lookup cache."""
     global _REMOTE_INDEX_VALIDITY_CACHE
     global _STOCK_CODE_CANDIDATES_CACHE, _STOCK_CODE_LOOKUP_CACHE, _STOCK_INDEX_CACHE
-    global _ACTIVE_INDEX_ROWS_CACHE
+    global _ACTIVE_INDEX_ROWS_CACHE, _CHAT_INDEX_PAYLOAD_CACHE, _CHAT_STOCK_LOOKUP_CACHE
     with _STOCK_INDEX_CACHE_LOCK:
         _STOCK_INDEX_CACHE = None
         _STOCK_CODE_LOOKUP_CACHE = None
         _STOCK_CODE_CANDIDATES_CACHE = None
         _ACTIVE_INDEX_ROWS_CACHE = None
+        _CHAT_INDEX_PAYLOAD_CACHE = None
+        _CHAT_STOCK_LOOKUP_CACHE = None
         _REMOTE_INDEX_VALIDITY_CACHE = None
 
 

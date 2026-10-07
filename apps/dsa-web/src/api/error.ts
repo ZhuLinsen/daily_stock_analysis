@@ -21,6 +21,7 @@ export interface ParsedApiError {
   rawMessage: string;
   status?: number;
   category: ApiErrorCategory;
+  code?: string;
 }
 
 type ResponseLike = {
@@ -43,6 +44,7 @@ type CreateParsedApiErrorOptions = {
   rawMessage?: string;
   status?: number;
   category?: ApiErrorCategory;
+  code?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -211,6 +213,7 @@ export function createParsedApiError(options: CreateParsedApiErrorOptions): Pars
     rawMessage: options.rawMessage?.trim() || options.message,
     status: options.status,
     category: options.category ?? 'unknown',
+    ...(options.code ? { code: options.code } : {}),
   };
 }
 
@@ -262,7 +265,7 @@ export function createApiError(
   apiError.name = 'ApiRequestError';
   apiError.parsedError = parsed;
   apiError.response = extra.response;
-  apiError.code = extra.code;
+  apiError.code = extra.code ?? parsed.code;
   apiError.status = parsed.status;
   apiError.category = parsed.category;
   apiError.rawMessage = parsed.rawMessage;
@@ -300,6 +303,13 @@ export function parseApiError(error: unknown): ParsedApiError {
   const rawMessage = pickString(payloadText, response?.statusText, errorMessage, causeMessage, code)
     ?? '请求未成功完成，请稍后重试。';
   const matchText = buildMatchText([rawMessage, errorMessage, causeMessage, code, errorCode, response?.statusText]);
+
+  if (errorCode === 'session_state_conflict' || code === 'session_state_conflict') {
+    return createParsedApiError({
+      title: '会话已更新', message: '请刷新会话后重试。当前输入尚未被接受，请保留问题与选择。',
+      rawMessage, status, code: 'session_state_conflict', category: 'http_error',
+    });
+  }
 
   if (includesAny(matchText, ['agent mode is not enabled', 'agent_mode'])) {
     return createParsedApiError({

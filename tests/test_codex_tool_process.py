@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import json
 import signal
 import sqlite3
 import subprocess
@@ -11,7 +12,9 @@ import sys
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool
 
@@ -30,6 +33,135 @@ def _ok_result(tool_name: str, payload: dict) -> dict:
         "audit": {},
         "diagnostics": {},
     }
+
+
+def _strict_identity_worker(tool_name: str, arguments: dict, context: ToolAccessContext) -> dict:
+    """Only the external data endpoint is synthetic; codec/guard/helpers are real."""
+    from src.agent.tool_surface import ToolSurface
+    from src.agent.tools.data_tools import _history_code_candidates
+    from src.agent.tools.execution import _build_tool_cache_key, get_tool_stock_identity, get_tool_analysis_target
+    from src.agent.tools.registry import ToolDefinition, ToolParameter, ToolPolicy, ToolRegistry
+    from src.agent.tools.search_tools import _canonical_search_code
+    from src.services.stock_list_parser import IndexRegistry, default_index_registry
+
+    if arguments.get("marker"):
+        _mark(arguments["marker"])
+
+    def read_identity(stock_code):
+        identity = get_tool_stock_identity(stock_code)
+        target = get_tool_analysis_target(stock_code)
+        return {"identity": identity.as_payload(), "strict": context.stock_scope.strict,
+                "target": {"canonical_id": target.canonical_id, "asset_type": target.asset_type},
+                "history_codes": _history_code_candidates(stock_code)[0],
+                "search_code": _canonical_search_code(stock_code),
+                "cache_key": _build_tool_cache_key(tool_name, {"stock_code": stock_code},
+                                                   stock_scope=context.stock_scope, resolved_identity=identity)}
+
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(
+        name=tool_name, description="Controlled identity probe",
+        parameters=[ToolParameter(name="stock_code", type="string", description="Stock")],
+        handler=read_identity,
+        policy=ToolPolicy.declared(read_only=True, scope_dimensions=["stock"], cancellation_safe=True,
+                                   supported_asset_types=("stock", "index")),
+    ))
+    environment = IndexRegistry([]) if arguments.get("registry_changed") else default_index_registry()
+    with patch("src.agent.tools.execution._default_index_registry_or_none", return_value=environment):
+        return ToolSurface(registry).execute_tool(tool_name, {"stock_code": arguments["stock_code"]}, context)
+
+
+@pytest.mark.parametrize("token", ["510300", "159915", "005930.KS", "sh000001", "000001"])
+def test_full_strict_chat_identity_survives_real_spawn_roundtrip(token):
+    from src.agent.stock_scope import StockIdentity
+    from src.services.stock_list_parser import default_index_registry
+
+    identity = StockIdentity.from_code(token, default_index_registry())
+    context = ToolAccessContext(stock_scope=StockScope(
+        expected_stock_code=identity.stock_code, allowed_stock_codes={identity.stock_code},
+        strict=True, identities=(identity,),
+    ), deadline=time.monotonic() + 20)
+    runner = CodexToolProcessRunner(worker=_strict_identity_worker)
+    try:
+        result = runner.execute("identity_probe", {"stock_code": token}, context)
+        assert result["ok"] is True, result
+        body = json.loads(result["result_text"])
+        assert body["identity"] == identity.as_payload()
+        assert body["target"] == {"canonical_id": identity.canonical_id, "asset_type": identity.asset_type}
+        assert body["strict"] is True
+        assert body["history_codes"] == [identity.stock_code]
+        assert body["search_code"] == identity.stock_code
+        cache_arguments = json.loads(body["cache_key"].split(":", 1)[1])
+        assert cache_arguments["_stock_identity"] == identity.as_payload()
+    finally:
+        runner.close()
+    assert all(not entry["alive_after"] and not entry["pid_alive_after"] for entry in runner.snapshot())
+
+
+@pytest.mark.parametrize("missing", ["identities", "strict", "strict_stock_scope", "stock_scope", "canonical_id", "wrong_code"])
+def test_spawn_rejects_lost_strict_identity_without_legacy_downgrade(tmp_path, monkeypatch, missing):
+    from src.agent import codex_tool_process
+    from src.agent.stock_scope import StockIdentity
+    from src.services.stock_list_parser import default_index_registry
+
+    identity = StockIdentity.from_code("sh000001", default_index_registry())
+    context = ToolAccessContext(stock_scope=StockScope(
+        expected_stock_code=identity.stock_code, allowed_stock_codes={identity.stock_code},
+        strict=True, identities=(identity,),
+    ), deadline=time.monotonic() + 20)
+    encode = codex_tool_process._context_payload
+
+    def lose_field(ctx):
+        payload = encode(ctx)
+        if missing in {"strict_stock_scope", "stock_scope"}:
+            payload.pop(missing)
+        elif missing == "canonical_id":
+            payload["stock_scope"]["identities"][0].pop(missing)
+        elif missing == "wrong_code":
+            payload["stock_scope"]["allowed_stock_codes"] = ["000001"]
+        else:
+            payload["stock_scope"].pop(missing)
+        return payload
+
+    monkeypatch.setattr(codex_tool_process, "_context_payload", lose_field)
+    marker = tmp_path / "must-not-start.marker"
+    runner = CodexToolProcessRunner(worker=_strict_identity_worker)
+    try:
+        result = runner.execute("identity_probe", {"stock_code": "sh000001", "marker": str(marker)}, context)
+        assert result["ok"] is False
+        assert result["error"]["code"] == "tool_context_contract_error"
+        assert not marker.exists()
+    finally:
+        runner.close()
+
+
+def test_spawn_guard_rejects_index_registry_change():
+    from src.agent.stock_scope import StockIdentity
+    from src.services.stock_list_parser import default_index_registry
+
+    identity = StockIdentity.from_code("sh000001", default_index_registry())
+    context = ToolAccessContext(stock_scope=StockScope(
+        expected_stock_code=identity.stock_code, allowed_stock_codes={identity.stock_code},
+        strict=True, identities=(identity,),
+    ), deadline=time.monotonic() + 20)
+    runner = CodexToolProcessRunner(worker=_strict_identity_worker)
+    try:
+        result = runner.execute("identity_probe", {"stock_code": "sh000001", "registry_changed": True}, context)
+        assert result["ok"] is False
+        assert result["error"]["code"] == "stock_identity_unavailable"
+    finally:
+        runner.close()
+
+
+def test_spawn_strict_empty_scope_does_not_enable_stock_tools():
+    runner = CodexToolProcessRunner(worker=_strict_identity_worker)
+    try:
+        result = runner.execute("identity_probe", {"stock_code": "600519"}, ToolAccessContext(
+            stock_scope=StockScope(strict=True), deadline=time.monotonic() + 20,
+        ))
+        assert result["ok"] is False
+        assert result["error"]["code"] == "stock_scope_violation"
+    finally:
+        runner.close()
 
 
 def _escaped_result_worker(tool_name: str, arguments: dict, _context: ToolAccessContext) -> dict:

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAgentChatStore } from '../agentChatStore';
+import type { ActiveStockContext, ChatSessionDetail } from '../../api/agent';
 
 vi.mock('../../api/agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/agent')>();
@@ -64,6 +65,17 @@ beforeEach(() => {
   useAgentChatStore.setState({
     messages: [],
     selectedSkillIds: null,
+    savedSkillIds: null,
+    activeStockContext: null,
+    stateContract: 'unbound',
+    sessionGeneration: null,
+    sessionStateVersion: null,
+    stateSource: null,
+    sessionEpoch: 0,
+    instanceBindingEpoch: 0,
+    detailReadSequence: 0,
+    skillDraftRevision: 0,
+    skillDraftDirty: false,
     loading: false,
     progressSteps: [],
     sessionId: 'session-test',
@@ -81,9 +93,317 @@ beforeEach(() => {
     stopError: false,
   });
   vi.clearAllMocks();
+  vi.mocked(agentApi.getChatSessions).mockResolvedValue([]);
+  vi.mocked(agentApi.getChatSessionMessages).mockImplementation(async (sessionId) => ({
+    session_id: sessionId, messages: [], session_state: { selected_skill_ids: [] },
+  }));
+});
+
+const stockA: ActiveStockContext = {
+  stock_code: '600519', stock_name: '贵州茅台', canonical_id: 'sh600519', asset_type: 'stock',
+};
+const stockB: ActiveStockContext = {
+  stock_code: 'sh000001', stock_name: '上证指数', canonical_id: 'sh000001', asset_type: 'index',
+};
+function detailState(generation: string | null, version: number, active: ActiveStockContext | null,
+  skills: string[] | null = [], sessionId = 'session-test'): ChatSessionDetail {
+  return { session_id: sessionId, messages: [], session_generation: generation,
+    session_state_version: version, active_stock_context: active,
+    session_state: { selected_skill_ids: skills } };
+}
+function acceptedState(requestId: string, generation: string, version: number,
+  active: ActiveStockContext | null, skills: string[] | null = []) {
+  return `data: ${JSON.stringify({ ...detailState(generation, version, active, skills),
+    type: 'accepted', backend: 'litellm', request_id: requestId })}\n`;
+}
+function openStream() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const response = new Response(new ReadableStream<Uint8Array>({ start(c) { controller = c; } }));
+  vi.mocked(agentApi.chatStream).mockResolvedValue(response);
+  return {
+    send: (line: string) => controller.enqueue(encoder.encode(line)),
+    finish: () => { controller.enqueue(encoder.encode('data: {"type":"done","success":true,"content":"answer"}\n'));
+      controller.close(); },
+  };
+}
+
+describe('agentChatStore authoritative session owner', () => {
+  it.each(['switch', 'new'] as const)('ignores old initialization after %s changes its route owner', async (action) => {
+    localStorage.setItem('dsa_chat_session_id', 'session-test');
+    useAgentChatStore.setState({ hasInitialLoad: false });
+    const list = createDeferred<Awaited<ReturnType<typeof agentApi.getChatSessions>>>();
+    vi.mocked(agentApi.getChatSessions).mockReturnValue(list.promise);
+    const pending = useAgentChatStore.getState().loadInitialSession();
+    if (action === 'switch') await useAgentChatStore.getState().switchSession('other-session');
+    else useAgentChatStore.getState().startNewChat();
+    const id = useAgentChatStore.getState().sessionId;
+    list.resolve([]);
+    await pending;
+    expect(useAgentChatStore.getState().sessionId).toBe(id);
+    expect(localStorage.getItem('dsa_chat_session_id')).toBe(id);
+  });
+
+  it('replaces a genuinely missing saved session with no newer request', async () => {
+    localStorage.setItem('dsa_chat_session_id', 'session-test');
+    useAgentChatStore.setState({ hasInitialLoad: false });
+    await useAgentChatStore.getState().loadInitialSession();
+    expect(useAgentChatStore.getState().sessionId).not.toBe('session-test');
+    expect(useAgentChatStore.getState().sessionGeneration).toBeNull();
+    expect(useAgentChatStore.getState().messages).toEqual([]);
+  });
+
+  it('keeps a new creation request before acceptance when the old list returns', async () => {
+    localStorage.setItem('dsa_chat_session_id', 'session-test');
+    useAgentChatStore.setState({ hasInitialLoad: false });
+    const list = createDeferred<Awaited<ReturnType<typeof agentApi.getChatSessions>>>();
+    vi.mocked(agentApi.getChatSessions).mockReturnValue(list.promise);
+    const initial = useAgentChatStore.getState().loadInitialSession();
+    const stream = openStream();
+    const pending = useAgentChatStore.getState().startStream({ message: '分析600519', request_id: 'creating' });
+    const ac = useAgentChatStore.getState().abortController!;
+    list.resolve([]);
+    await initial;
+    expect(useAgentChatStore.getState().sessionId).toBe('session-test');
+    expect(ac.signal.aborted).toBe(false);
+    stream.send(acceptedState('creating', 'new-instance', 1, stockA));
+    stream.finish();
+    await pending;
+    expect(useAgentChatStore.getState().sessionGeneration).toBe('new-instance');
+    expect(useAgentChatStore.getState().messages).toHaveLength(2);
+  });
+
+  it('keeps the newly accepted instance when an old initial list omits it', async () => {
+    localStorage.setItem('dsa_chat_session_id', 'session-test');
+    useAgentChatStore.setState({ hasInitialLoad: false });
+    const list = createDeferred<Awaited<ReturnType<typeof agentApi.getChatSessions>>>();
+    vi.mocked(agentApi.getChatSessions).mockReturnValue(list.promise);
+    const initial = useAgentChatStore.getState().loadInitialSession();
+    const stream = openStream();
+    const ready = createDeferred<void>();
+    const pending = useAgentChatStore.getState().startStream({ message: '分析600519', request_id: 'list-race' },
+      { onAccepted: () => ready.resolve() });
+    stream.send(acceptedState('list-race', 'new-instance', 1, stockA, ['ma_golden_cross']));
+    await ready.promise;
+    const owner = useAgentChatStore.getState();
+    expect(owner.sessionEpoch).toBe(0);
+    expect(owner.instanceBindingEpoch).toBe(1);
+    list.resolve([]);
+    await initial;
+    expect(useAgentChatStore.getState()).toMatchObject({
+      sessionId: 'session-test', sessionGeneration: 'new-instance', sessionStateVersion: 1,
+      activeStockContext: stockA, savedSkillIds: ['ma_golden_cross'], loading: true,
+    });
+    expect(useAgentChatStore.getState().messages).toHaveLength(1);
+    expect(owner.abortController!.signal.aborted).toBe(false);
+    expect(agentApi.cancelChatStream).not.toHaveBeenCalled();
+    stream.finish();
+    await pending;
+    expect(useAgentChatStore.getState().messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('can bind its first accepted instance after a detail confirms only an empty unbound view', async () => {
+    const stream = openStream();
+    const ready = createDeferred<void>();
+    const pending = useAgentChatStore.getState().startStream({ message: '分析600519', request_id: 'first' },
+      { onAccepted: () => ready.resolve() });
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState(null, 0, null));
+    await useAgentChatStore.getState().refreshSession();
+    stream.send(acceptedState('first', 'g', 1, stockA));
+    await ready.promise;
+    expect(useAgentChatStore.getState()).toMatchObject({ activeStockContext: stockA, sessionGeneration: 'g' });
+    stream.finish();
+    await pending;
+  });
+  it('hydrates explicit null and Skills even for an empty initial history', async () => {
+    localStorage.setItem('dsa_chat_session_id', 'session-test');
+    useAgentChatStore.setState({ hasInitialLoad: false });
+    vi.mocked(agentApi.getChatSessions).mockResolvedValue([{ session_id: 'session-test', title: '',
+      message_count: 0, created_at: null, last_active: null }]);
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState('g', 0, null, ['risk']));
+    await useAgentChatStore.getState().loadInitialSession();
+    expect(useAgentChatStore.getState()).toMatchObject({ stateContract: 'authoritative',
+      sessionGeneration: 'g', sessionStateVersion: 0, activeStockContext: null, savedSkillIds: ['risk'],
+      selectedSkillIds: ['risk'] });
+  });
+
+  it('never resurrects same-version accepted state after a valid null detail (including saved Skills)', async () => {
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState('g', 5, stockA, ['old']));
+    await useAgentChatStore.getState().refreshSession();
+    const stream = openStream();
+    const ready = createDeferred<void>();
+    const pending = useAgentChatStore.getState().startStream({ message: '风险呢', request_id: 'late' },
+      { onAccepted: () => ready.resolve() });
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState('g', 5, null, []));
+    await useAgentChatStore.getState().refreshSession();
+    stream.send(acceptedState('late', 'g', 5, stockA, ['old']));
+    await ready.promise;
+    expect(useAgentChatStore.getState()).toMatchObject({ activeStockContext: null,
+      savedSkillIds: [], sessionStateVersion: 5, stateSource: 'detail' });
+    expect(useAgentChatStore.getState().messages.map((m) => m.content)).toEqual(['风险呢']);
+    stream.finish();
+    await pending;
+  });
+
+  it.each(['g1', null, 'legacy'] as const)('ignores pre-binding detail %s after accepted binds g2 without abort/cancel', async (generation) => {
+    const detail = createDeferred<ChatSessionDetail>();
+    vi.mocked(agentApi.getChatSessionMessages).mockReturnValue(detail.promise);
+    const read = useAgentChatStore.getState().refreshSession();
+    const stream = openStream();
+    const ready = createDeferred<void>();
+    const pending = useAgentChatStore.getState().startStream({ message: '分析上证指数', request_id: 'new' },
+      { onAccepted: () => ready.resolve() });
+    stream.send(acceptedState('new', 'g2', 1, stockB, ['new']));
+    await ready.promise;
+    const ac = useAgentChatStore.getState().abortController!;
+    detail.resolve(generation === 'legacy'
+      ? { session_id: 'session-test', messages: [], session_state: { selected_skill_ids: ['old'] } }
+      : detailState(generation, 0, generation ? stockA : null, ['old']));
+    await read;
+    expect(useAgentChatStore.getState()).toMatchObject({ sessionGeneration: 'g2',
+      sessionStateVersion: 1, activeStockContext: stockB, savedSkillIds: ['new'], loading: true });
+    expect(useAgentChatStore.getState().messages.map((m) => m.content)).toEqual(['分析上证指数']);
+    expect(ac.signal.aborted).toBe(false);
+    expect(agentApi.cancelChatStream).not.toHaveBeenCalled();
+    stream.finish();
+    await pending;
+  });
+
+  it('still gives a pre-binding same-generation same-version detail precedence', async () => {
+    const detail = createDeferred<ChatSessionDetail>();
+    vi.mocked(agentApi.getChatSessionMessages).mockReturnValue(detail.promise);
+    const read = useAgentChatStore.getState().refreshSession();
+    const stream = openStream();
+    const ready = createDeferred<void>();
+    const pending = useAgentChatStore.getState().startStream({ message: '分析600519', request_id: 'same' },
+      { onAccepted: () => ready.resolve() });
+    stream.send(acceptedState('same', 'g', 1, stockA, ['old']));
+    await ready.promise;
+    detail.resolve(detailState('g', 1, null, []));
+    await read;
+    expect(useAgentChatStore.getState()).toMatchObject({ activeStockContext: null,
+      savedSkillIds: [], stateSource: 'detail', loading: true });
+    expect(useAgentChatStore.getState().abortController?.signal.aborted).toBe(false);
+    stream.finish();
+    await pending;
+  });
+
+  it('allows a bound, newly issued detail to discover a replacement instance and retire the old stream', async () => {
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState('g1', 9, stockA));
+    await useAgentChatStore.getState().refreshSession();
+    const stream = openStream();
+    const ready = createDeferred<void>();
+    const pending = useAgentChatStore.getState().startStream({ message: '风险呢', request_id: 'old' },
+      { onAccepted: () => ready.resolve() });
+    stream.send(acceptedState('old', 'g1', 10, stockA));
+    await ready.promise;
+    const ac = useAgentChatStore.getState().abortController!;
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState('g2', 0, stockB));
+    await useAgentChatStore.getState().refreshSession();
+    expect(useAgentChatStore.getState()).toMatchObject({ sessionGeneration: 'g2',
+      activeStockContext: stockB, loading: false, activeRequestId: null, messages: [] });
+    expect(ac.signal.aborted).toBe(true);
+    stream.finish();
+    await pending;
+    expect(useAgentChatStore.getState().sessionGeneration).toBe('g2');
+  });
+
+  it('uses latest issued detail and a new epoch for A→B→A rather than latest return', async () => {
+    const firstA = createDeferred<ChatSessionDetail>();
+    vi.mocked(agentApi.getChatSessionMessages).mockReturnValueOnce(firstA.promise)
+      .mockResolvedValueOnce(detailState('b', 0, null, [], 'b'))
+      .mockResolvedValueOnce(detailState('new-a', 1, stockB));
+    const first = useAgentChatStore.getState().switchSession('session-test');
+    await useAgentChatStore.getState().switchSession('b');
+    await useAgentChatStore.getState().switchSession('session-test');
+    firstA.resolve(detailState('old-a', 0, stockA));
+    await first;
+    expect(useAgentChatStore.getState().sessionGeneration).toBe('new-a');
+    const slow = createDeferred<ChatSessionDetail>();
+    vi.mocked(agentApi.getChatSessionMessages).mockReturnValueOnce(slow.promise)
+      .mockResolvedValueOnce(detailState('new-a', 1, null));
+    const olderRead = useAgentChatStore.getState().refreshSession();
+    await useAgentChatStore.getState().refreshSession();
+    slow.resolve(detailState('new-a', 1, stockB));
+    await olderRead;
+    expect(useAgentChatStore.getState().activeStockContext).toBeNull();
+  });
+
+  it('separates version-0 recovery from old API and rejects stale v0 after positive accepted', async () => {
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState('g', 0, stockA));
+    await useAgentChatStore.getState().refreshSession();
+    expect(useAgentChatStore.getState()).toMatchObject({ stateContract: 'authoritative',
+      activeStockContext: stockA, sessionStateVersion: 0 });
+    vi.mocked(agentApi.chatStream).mockResolvedValue(createStreamResponse([
+      acceptedState('r', 'g', 1, stockB), 'data: {"type":"done","success":true,"content":"ok"}',
+    ]));
+    await useAgentChatStore.getState().startStream({ message: '改看上证指数', request_id: 'r' });
+    await useAgentChatStore.getState().refreshSession();
+    expect(useAgentChatStore.getState().activeStockContext).toEqual(stockB);
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue({ session_id: 'session-test',
+      messages: [], session_state: { selected_skill_ids: [] } });
+    await useAgentChatStore.getState().refreshSession();
+    expect(useAgentChatStore.getState()).toMatchObject({ stateContract: 'legacy',
+      activeStockContext: null, sessionStateVersion: null, sessionGeneration: null });
+  });
+
+  it('retains draft selection on conflict and during a detail read without overwriting saved selection', async () => {
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState('g', 2, stockA, ['saved']));
+    await useAgentChatStore.getState().refreshSession();
+    const detail = createDeferred<ChatSessionDetail>();
+    vi.mocked(agentApi.getChatSessionMessages).mockReturnValue(detail.promise);
+    const read = useAgentChatStore.getState().refreshSession();
+    useAgentChatStore.getState().setSelectedSkillIds(['draft']);
+    detail.resolve(detailState('g', 2, stockA, ['saved-new']));
+    await read;
+    vi.mocked(agentApi.chatStream).mockResolvedValue(createStreamResponse([
+      'data: {"type":"error","error_code":"session_state_conflict","request_id":"conflict","session_id":"session-test"}',
+    ]));
+    await useAgentChatStore.getState().startStream({ message: '风险呢', skills: ['draft'], request_id: 'conflict' });
+    expect(useAgentChatStore.getState()).toMatchObject({ selectedSkillIds: ['draft'],
+      savedSkillIds: ['saved-new'], activeStockContext: stockA, sessionStateVersion: 2 });
+    expect(agentApi.chatStream).toHaveBeenCalledWith(expect.objectContaining({ session_generation: 'g' }), expect.anything());
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue(detailState('g', 3, stockB, []));
+    await useAgentChatStore.getState().refreshSession();
+    expect(useAgentChatStore.getState()).toMatchObject({ selectedSkillIds: ['draft'], savedSkillIds: [],
+      activeStockContext: stockB, sessionStateVersion: 3 });
+  });
+
+  it('reports invalid partial detail without accepting its messages or state', async () => {
+    vi.mocked(agentApi.getChatSessionMessages).mockResolvedValue({ session_id: 'session-test', messages: [],
+      active_stock_context: stockA, session_state: { selected_skill_ids: [] } });
+    await useAgentChatStore.getState().refreshSession();
+    expect(useAgentChatStore.getState()).toMatchObject({ stateContract: 'unbound',
+      activeStockContext: null, chatError: { code: 'chat_state_protocol_error' } });
+  });
 });
 
 describe('agentChatStore.startStream', () => {
+  it('preserves the current request conflict before accepted without accepting a message or selection', async () => {
+    useAgentChatStore.setState({ selectedSkillIds: ['risk'] });
+    vi.mocked(agentApi.chatStream).mockResolvedValue(createStreamResponse([
+      'data: {"type":"error","error_code":"session_state_conflict","message":"refresh and retry","request_id":"conflict-request","session_id":"session-test"}',
+    ]));
+    await useAgentChatStore.getState().startStream({ message: '风险呢', skills: [], request_id: 'conflict-request' });
+    const state = useAgentChatStore.getState();
+    expect(state.chatError).toMatchObject({ code: 'session_state_conflict' });
+    expect(state.chatError?.message).toContain('刷新');
+    expect(state.messages).toEqual([]);
+    expect(state.selectedSkillIds).toEqual(['risk']);
+    expect(state.loading).toBe(false);
+    expect(agentApi.chatStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores an unrelated pre-accepted error and still accepts the owned request', async () => {
+    vi.mocked(agentApi.chatStream).mockResolvedValue(createStreamResponse([
+      'data: {"type":"error","error_code":"session_state_conflict","message":"unrelated","request_id":"other","session_id":"session-test"}',
+      accepted('owned-request'),
+      'data: {"type":"done","success":true,"content":"owned answer"}',
+    ]));
+    await useAgentChatStore.getState().startStream({ message: '分析600519', request_id: 'owned-request' });
+    expect(useAgentChatStore.getState().chatError).toBeNull();
+    expect(useAgentChatStore.getState().messages.map((row) => row.content)).toEqual(['分析600519', 'owned answer']);
+  });
+
   it('aborts locally before the server has accepted the request', () => {
     const ac = new AbortController();
     useAgentChatStore.setState({

@@ -286,6 +286,7 @@ def persist_provider_trace_turns(
     baseline_len: int,
     user_message_id: int,
     assistant_message_id: int,
+    accepted_turn: Optional[Dict[str, Any]] = None,
     db_factory=None,
     log=None,
 ) -> None:
@@ -348,6 +349,7 @@ def persist_provider_trace_turns(
                 contains_thinking_blocks=turn.contains_thinking_blocks,
                 must_roundtrip=turn.must_roundtrip,
                 estimated_tokens=turn.estimated_tokens,
+                **({"accepted_turn": accepted_turn} if accepted_turn is not None else {}),
             )
         except Exception:
             active_logger.warning(

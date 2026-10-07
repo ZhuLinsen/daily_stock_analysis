@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
 SWITCH_CLEANUP_KEYS = {
@@ -40,53 +40,6 @@ _INDICATOR_CONTEXT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Match complete explicit SH/SZ/CSI tokens; the registry parser remains the
-# only authority that can promote a match to index identity.
-_INDEX_TOKEN_PATTERNS = (
-    (r"(?<![a-zA-Z0-9_])(?:sh|sz)\d{6}(?![a-zA-Z0-9_])", re.IGNORECASE),
-    (r"(?<![a-zA-Z0-9_])csi\d{6}(?![a-zA-Z0-9_])", re.IGNORECASE),
-    (
-        r"(?<![a-zA-Z0-9_])\d{6}\.(?:sh|sz|csi)(?![a-zA-Z0-9_])",
-        re.IGNORECASE,
-    ),
-)
-
-
-def _extract_index_canonical_tokens(
-    text: str,
-    registry: Any,
-) -> "tuple[list[tuple[int, int]], list[str]]":
-    """Return full spans and canonicals for exact registered index tokens."""
-    spans: List[tuple[int, int]] = []
-    canonicals: List[str] = []
-    for pattern, flags in _INDEX_TOKEN_PATTERNS:
-        for match in re.finditer(pattern, text, flags):
-            raw = match.group(0)
-            try:
-                from src.services.stock_list_parser import (
-                    ParseStatus,
-                    parse_analysis_target,
-                )
-
-                target = parse_analysis_target(raw, registry)
-            except Exception:
-                continue
-            if target.asset_type != ParseStatus.INDEX:
-                continue
-            if not target.canonical_id:
-                continue
-            start, end = match.span()
-            if any(s <= start and end <= e for s, e in spans):
-                continue
-            spans.append((start, end))
-            canonicals.append(target.canonical_id)
-    return spans, canonicals
-
-
-def _is_inside_index_span(start: int, end: int, spans: List[tuple[int, int]]) -> bool:
-    return any(span_start <= start and end <= span_end for span_start, span_end in spans)
-
-
 def _has_ascii_token_boundaries(text: str, start: int, end: int) -> bool:
     def _is_word_char(char: str) -> bool:
         return bool(char) and char.isascii() and (char.isalnum() or char == "_")
@@ -98,18 +51,92 @@ def _has_ascii_token_boundaries(text: str, start: int, end: int) -> bool:
 
 
 @dataclass(frozen=True)
+class StockIdentity:
+    """The minimal Chat adapter over the existing analysis-target parser."""
+
+    stock_code: str
+    canonical_id: str
+    asset_type: str
+    stock_name: Optional[str] = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.stock_code, str) or not self.stock_code.strip()
+                or not isinstance(self.canonical_id, str) or not self.canonical_id.strip()
+                or self.asset_type not in {"stock", "index"}
+                or (self.stock_name is not None and not isinstance(self.stock_name, str))):
+            raise ValueError("Chat stock identity requires code, canonical_id and asset_type")
+
+    @classmethod
+    def from_code(cls, token: str, registry: Any) -> "StockIdentity":
+        from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+        if registry is None:
+            raise ValueError("Chat stock identity registry is unavailable")
+        if not isinstance(token, str) or not token.strip():
+            raise ValueError("Chat stock token must be a nonempty string")
+        try:
+            target = parse_analysis_target(token, registry)
+        except Exception as exc:
+            raise ValueError("Chat stock identity registry could not validate the token") from exc
+        return cls.from_target(target, registry)
+
+    @classmethod
+    def from_target(cls, target: Any, registry: Any) -> "StockIdentity":
+        """Adapt a target already parsed against this call's registry snapshot."""
+        from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+        if target.asset_type not in {ParseStatus.STOCK, ParseStatus.INDEX} or not target.canonical_id:
+            raise ValueError(target.unsupported_reason or "Unsupported Chat stock code")
+        if target.asset_type == ParseStatus.INDEX:
+            code = target.canonical_id
+        elif target.exchange == "HK":
+            code = f"HK{target.normalized_code}"
+        elif target.exchange in {"SH", "SZ", "BJ"}:
+            code = target.normalized_code
+            bare = parse_analysis_target(code, registry)
+            if bare.canonical_id != target.canonical_id:
+                code = target.canonical_id
+        else:
+            code = target.canonical_id
+        return cls(stock_code=code, canonical_id=target.canonical_id, asset_type=target.asset_type,
+                   stock_name=target.matched_index.display_name if target.asset_type == ParseStatus.INDEX else None)
+
+    def as_payload(self) -> Dict[str, str]:
+        return {"stock_code": self.stock_code, "canonical_id": self.canonical_id,
+                "asset_type": self.asset_type}
+
+
+@dataclass(frozen=True)
 class StockScope:
     """Runtime stock-scope contract for one chat turn."""
 
     expected_stock_code: str = ""
     allowed_stock_codes: Set[str] = field(default_factory=set)
     mode: str = "maintain"
+    strict: bool = False
+    identities: Tuple[StockIdentity, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.strict, bool):
+            raise ValueError("Stock scope strict marker must be boolean")
+        object.__setattr__(self, "allowed_stock_codes", frozenset(self.allowed_stock_codes))
+        object.__setattr__(self, "identities", tuple(self.identities))
+        if self.identities and not self.strict:
+            raise ValueError("Typed Chat identities cannot use the legacy scope path")
+        if self.strict:
+            identity_codes = {identity.stock_code for identity in self.identities}
+            if (identity_codes != self.allowed_stock_codes
+                    or len(identity_codes) != len(self.identities)
+                    or (self.expected_stock_code and self.expected_stock_code not in identity_codes)):
+                raise ValueError("Strict Chat scope must carry every allowed identity")
 
     def as_log_payload(self) -> Dict[str, Any]:
         return {
             "expected_stock_code": self.expected_stock_code,
             "allowed_stock_codes": sorted(self.allowed_stock_codes),
             "mode": self.mode,
+            "strict": self.strict,
+            "identities": [identity.as_payload() for identity in self.identities],
         }
 
 
@@ -169,13 +196,20 @@ def extract_stock_codes(text: str, registry: Optional[Any] = None) -> List[str]:
     if not text:
         return []
 
-    candidates: List[str] = []
-    index_spans: List[tuple[int, int]] = []
     if registry is not None:
-        index_spans, canonicals = _extract_index_canonical_tokens(text, registry)
-        for canonical in canonicals:
-            if canonical not in candidates:
-                candidates.append(canonical)
+        # Preserve complete tokens BEFORE parsing, including ETFs and foreign
+        # market suffixes. Never turn 005930.KS into an A-share candidate.
+        candidates = []
+        for token in extract_stock_code_tokens(text):
+            try:
+                identity = StockIdentity.from_code(token, registry)
+            except ValueError:
+                continue
+            if identity.stock_code not in candidates:
+                candidates.append(identity.stock_code)
+        return candidates
+
+    candidates: List[str] = []
 
     for pattern, flags in (
         (r"(?<![a-zA-Z])(?:SH|SZ|BJ)\d{6}(?!\d)", re.IGNORECASE),
@@ -186,11 +220,6 @@ def extract_stock_codes(text: str, registry: Optional[Any] = None) -> List[str]:
         (r"(?<![a-zA-Z.])([A-Z]{2,5}(?:\.[A-Z]{1,2})?)(?![a-zA-Z0-9])", 0),
     ):
         for match in re.finditer(pattern, text, flags):
-            start, end = match.span()
-            if registry is not None and not _has_ascii_token_boundaries(text, start, end):
-                continue
-            if _is_inside_index_span(start, end, index_spans):
-                continue
             raw = match.group(1) if match.lastindex else match.group(0)
             _append_candidate(candidates, raw, text, registry)
 
@@ -201,14 +230,37 @@ def extract_stock_codes(text: str, registry: Optional[Any] = None) -> List[str]:
         or _CHOICE_COMPARE_PATTERN.search(text)
     ):
         for match in _LOWERCASE_TICKER_PATTERN.finditer(text):
-            start, end = match.span(1)
-            if registry is not None and not _has_ascii_token_boundaries(text, start, end):
-                continue
-            if _is_inside_index_span(start, end, index_spans):
-                continue
             _append_candidate(candidates, match.group(1), text, registry)
 
     return candidates
+
+
+def extract_stock_code_spans(text: str) -> List[tuple[int, int, str]]:
+    """Actual whole-token occurrences in the supplied text's coordinates."""
+    numeric = re.compile(
+        r"(?<![a-zA-Z0-9_.])(?:"
+        r"(?:sh|sz|bj|csi)\d{6}|hk\d{4,5}|"
+        r"\d{1,6}\.(?:SH|SZ|SS|BJ|HK|KS|KQ|TW|T|CSI)|\d{5,6}"
+        r")(?![a-zA-Z0-9_.])", re.IGNORECASE,
+    )
+    ticker = re.compile(r"(?<![a-zA-Z0-9_.])(?:us)?[A-Z]{1,5}(?:\.[A-Z]{1,2})?(?![a-zA-Z0-9_.])")
+    matches = [(match.start(), match.end(), match.group()) for match in numeric.finditer(text or "")]
+    for match in ticker.finditer(text or ""):
+        if not any(start <= match.start() and match.end() <= end for start, end, _token in matches):
+            matches.append((match.start(), match.end(), match.group()))
+    if (_SWITCH_PATTERN.search(text or "") or _STRONG_COMPARE_PATTERN.search(text or "")
+            or _WEAK_COMPARE_HINT_PATTERN.search(text or "") or _CHOICE_COMPARE_PATTERN.search(text or "")):
+        for match in _LOWERCASE_TICKER_PATTERN.finditer(text or ""):
+            if (_has_ascii_token_boundaries(text, *match.span(1))
+                    and not any(start <= match.start(1) and match.end(1) <= end for start, end, _token in matches)):
+                matches.append((match.start(1), match.end(1), match.group(1)))
+    return [(start, end, token) for start, end, token in sorted(matches)
+            if not _is_denied_candidate(token, text)]
+
+
+def extract_stock_code_tokens(text: str) -> List[str]:
+    """Compatibility list view; occurrence consumers use spans directly."""
+    return list(dict.fromkeys(token for _start, _end, token in extract_stock_code_spans(text)))
 
 
 def _is_compare_message(

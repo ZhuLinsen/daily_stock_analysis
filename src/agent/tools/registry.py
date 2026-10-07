@@ -45,6 +45,7 @@ class ToolPolicy:
     scope_dimensions: List[str] = field(default_factory=list)
     cancellation_safe: bool = False
     timeout_seconds: Optional[float] = None
+    supported_asset_types: Optional[tuple[str, ...]] = None
 
     @classmethod
     def unknown(cls) -> "ToolPolicy":
@@ -60,6 +61,7 @@ class ToolPolicy:
         scope_dimensions: Optional[List[str]] = None,
         cancellation_safe: bool = False,
         timeout_seconds: Optional[float] = None,
+        supported_asset_types: Optional[tuple[str, ...]] = None,
     ) -> "ToolPolicy":
         return cls(
             read_only=read_only,
@@ -69,6 +71,7 @@ class ToolPolicy:
             scope_dimensions=list(scope_dimensions or []),
             cancellation_safe=bool(cancellation_safe),
             timeout_seconds=timeout_seconds,
+            supported_asset_types=supported_asset_types,
         )
 
     def to_public_dict(self) -> Dict[str, Any]:
