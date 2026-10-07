@@ -468,10 +468,27 @@ model_list:
 
 - 运行时选择：`GENERATION_BACKEND`、`GENERATION_FALLBACK_BACKEND`、`GENERATION_BACKEND_TIMEOUT_SECONDS`、`GENERATION_BACKEND_MAX_OUTPUT_BYTES`、`GENERATION_BACKEND_MAX_CONCURRENCY`、`LOCAL_CLI_BACKEND_MAX_CONCURRENCY`、`AGENT_GENERATION_BACKEND`、`LLM_CHANNELS`、`LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`AGENT_LITELLM_MODEL`、`VISION_MODEL`、`VISION_PROVIDER_PRIORITY`、`LLM_TEMPERATURE`、`LLM_USAGE_HMAC_SECRET`、`LLM_USAGE_HMAC_KEY_VERSION`、`LLM_PROMPT_CACHE_TELEMETRY_ENABLED`、`LLM_PROMPT_CACHE_HINTS_ENABLED`、`LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL`
 - 多 Key：`GEMINI_API_KEYS`、`ANTHROPIC_API_KEYS`、`OPENAI_API_KEYS`、`DEEPSEEK_API_KEYS`（当前 workflow 仅从 repository secrets 导入，不会读取同名 Variables）
-- 常用渠道名：`primary`、`secondary`、`aihubmix`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`gemini`、`anthropic`、`openai`、`ollama`
+- 常用渠道名：`primary`、`secondary`、`aihubmix`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`api_route`、`gemini`、`anthropic`、`openai`、`ollama`
 
 例如在 GitHub Actions 中配置 `LLM_CHANNELS=primary,deepseek` 时，需同步配置 `LLM_PRIMARY_*` / `LLM_DEEPSEEK_*`。其中 `LLM_<NAME>_API_KEY` / `LLM_<NAME>_API_KEYS` 当前也仅从 repository secrets 导入；如果你把这些值放在 Variables，运行时不会生效。若使用自定义渠道名（如 `my_proxy`），GitHub Actions 还必须在 workflow `env:` 中显式新增对应的 `LLM_MY_PROXY_*` 映射；本地 `.env` 和 Docker 不受这个限制。
 
+
+### API Route 渠道示例
+
+Web 设置的「快速添加渠道」可选择 **API Route**，复用现有模型发现和连接测试。也可在本地 `.env` 或 Docker 环境中配置：
+
+```env
+LLM_CHANNELS=api_route
+LLM_API_ROUTE_PROTOCOL=openai
+LLM_API_ROUTE_BASE_URL=https://global.api-route.com/v1
+LLM_API_ROUTE_API_KEY=your_api_route_key
+LLM_API_ROUTE_MODELS=gpt-6.1-sol
+LITELLM_MODEL=openai/gpt-6.1-sol
+```
+
+模型仅为示例；请点击「获取模型」，按 Key 所属分组和账号权限选择可用的聊天模型。渠道保存 `/models` 返回的完整 ID（如 `gpt-6.1-sol`、`claude-fable-5-1`），运行时由 LiteLLM 添加 `openai/` 路由前缀，并将原始 ID 发给网关；不要改成 Anthropic 直连协议。默认使用 Chat Completions，不因模型名称猜测 Responses、Vision 或工具能力。
+
+GitHub Actions 使用同一配置，但 Key 必须放入 Repository Secret `LLM_API_ROUTE_API_KEY`（多 Key 用 `LLM_API_ROUTE_API_KEYS`），其余字段可放入 Variables。默认 workflow 已透传 `LLM_API_ROUTE_*`。API Route 是托管服务，分析提示词与输入数据会发送到该网关。参考 [API 文档](https://github.com/DennyHo0917/api-route/blob/main/API.md)。
 
 > **三层配置互斥准则**：YAML 优先级最高！只要配置了 YAML，**渠道模式** 和 **新手极简模式** 统统被忽略。系统优先级为：`YAML配置 > 渠道模式 > 极简单模型`。
 

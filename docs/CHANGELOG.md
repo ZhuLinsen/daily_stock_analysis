@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增 API Route 渠道预设，复用 OpenAI-compatible 模型发现和连接测试，补齐每日分析 workflow 的渠道环境变量映射及中英文配置示例。
+
 - [修复] ETF 轮动按真实 A 股交易日历保留全池缺报价日期及末尾缺口，防止调仓顺延、周末信号提前和动量窗口缩短；历史日历不可用时明确停止计算。
 
 - [修复] ETF 轮动回测在行情缺口后结算完整持仓损益，缺报价日不虚构成交，防守资产缺报价时使用现金；统一参数扫描与主回测的行情处理，限定前复权来源，并跳过无关个股列表校验。
