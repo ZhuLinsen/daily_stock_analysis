@@ -563,6 +563,18 @@ def is_requesty_gateway_base_url(base_url: Optional[str]) -> bool:
     return hostname == "requesty.ai" or hostname.endswith(".requesty.ai")
 
 
+def is_opper_gateway_base_url(base_url: Optional[str]) -> bool:
+    """Return whether a Base URL points at the Opper gateway."""
+    raw_url = (base_url or "").strip()
+    if not raw_url:
+        return False
+    try:
+        hostname = (urlparse(raw_url).hostname or "").lower()
+    except ValueError:
+        return False
+    return hostname == "opper.ai" or hostname.endswith(".opper.ai")
+
+
 def route_discovered_llm_model(model_id: str, base_url: Optional[str]) -> str:
     """Return the saved channel value for an ID listed by a gateway ``/models``.
 
@@ -572,9 +584,18 @@ def route_discovered_llm_model(model_id: str, base_url: Optional[str]) -> str:
     provider names, so the saved value carries the OpenAI-compatible gateway
     route once (``openai/openai/gpt-4o-mini``); LiteLLM strips that layer and
     sends the full Requesty ID unchanged.
+
+    Opper lists the same shape: ``provider/model`` IDs that pin one route
+    (``anthropic/claude-sonnet-4-6``) and bare pool names without a slash
+    (``claude-sonnet-4-6``), so discovered Opper IDs take the same gateway
+    route. Only discovery does this for Opper: hand-typed values on an Opper
+    Base URL keep the generic normalization, so channels configured before
+    the preset existed keep their deployment names.
     """
     normalized_id = (model_id or "").strip()
-    if not normalized_id or not is_requesty_gateway_base_url(base_url):
+    if not normalized_id or not (
+        is_requesty_gateway_base_url(base_url) or is_opper_gateway_base_url(base_url)
+    ):
         return normalized_id
     return f"openai/{normalized_id}"
 

@@ -1798,6 +1798,56 @@ describe('LLMChannelEditor', () => {
     expect(selectOptionValues('主模型')).toContain('openai/openai/gpt-4o-mini');
   });
 
+  it('keeps hand-typed Opper models as configured and adds discovered gateway routes as listed', async () => {
+    discoverLLMChannelModels.mockResolvedValue({
+      success: true,
+      message: 'LLM channel model discovery succeeded',
+      error: null,
+      resolvedProtocol: 'openai',
+      models: ['openai/openai/gpt-5.5', 'openai/anthropic/claude-sonnet-4-6', 'openai/claude-sonnet-4-6'],
+      latencyMs: 80,
+    });
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'opper' },
+          { key: 'LLM_OPPER_PROTOCOL', value: 'openai' },
+          { key: 'LLM_OPPER_BASE_URL', value: 'https://api.opper.ai/v3/compat' },
+          { key: 'LLM_OPPER_ENABLED', value: 'true' },
+          { key: 'LLM_OPPER_API_KEY', value: 'sk-test' },
+          { key: 'LLM_OPPER_MODELS', value: 'anthropic/claude-sonnet-4-6' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        modelProviderPrefixes={['anthropic', 'openai']}
+        onSaved={() => {}}
+      />
+    );
+
+    // A channel configured before the preset keeps its route name, so
+    // runtime references to it still match after the upgrade.
+    expect(selectOptionValues('主模型')).toContain('anthropic/claude-sonnet-4-6');
+    expect(selectOptionValues('主模型')).not.toContain('openai/anthropic/claude-sonnet-4-6');
+
+    fireEvent.click(screen.getByRole('button', { name: /Opper/i }));
+    fireEvent.click(screen.getByRole('button', { name: '获取模型' }));
+
+    const gptCheckbox = await screen.findByLabelText('openai/openai/gpt-5.5');
+    expect(gptCheckbox).not.toBeChecked();
+    const [claudeCheckbox] = screen.getAllByLabelText('openai/anthropic/claude-sonnet-4-6');
+    expect(claudeCheckbox).not.toBeChecked();
+
+    fireEvent.click(gptCheckbox);
+    await waitFor(() => {
+      expect(screen.getByLabelText('手动模型（逗号分隔）')).toHaveValue(
+        'anthropic/claude-sonnet-4-6,openai/openai/gpt-5.5',
+      );
+    });
+    expect(selectOptionValues('主模型')).toContain('openai/openai/gpt-5.5');
+    expect(selectOptionValues('主模型')).toContain('anthropic/claude-sonnet-4-6');
+  });
+
   it('discovers models and writes selected values back to channel config', async () => {
     discoverLLMChannelModels.mockResolvedValue({
       success: true,

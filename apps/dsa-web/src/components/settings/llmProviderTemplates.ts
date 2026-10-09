@@ -173,6 +173,18 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
+    channelId: 'opper',
+    label: 'Opper',
+    protocol: 'openai',
+    baseUrl: 'https://api.opper.ai/v3/compat',
+    placeholderModels: 'claude-sonnet-4-6,gpt-5.4-mini',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint: '模型列表和模型可见性依赖账号权限与 API Key；无斜杠的模型 ID 在多家服务商间负载均衡，provider/model ID 固定单一线路。',
+    officialSources: [
+      { label: 'Opper Models', url: 'https://opper.ai/models' },
+    ],
+  },
+  {
     channelId: 'gemini',
     label: 'Gemini 官方',
     protocol: 'gemini',
