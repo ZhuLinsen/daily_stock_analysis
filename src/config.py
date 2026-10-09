@@ -513,9 +513,9 @@ def resolve_llm_channel_protocol(
     if explicit in SUPPORTED_LLM_CHANNEL_PROTOCOLS:
         return explicit
 
-    # Requesty and Opper are OpenAI-compatible; their vendor/model IDs
-    # (anthropic/..., vertex/...) are not LiteLLM protocol declarations.
-    if is_requesty_gateway_base_url(base_url) or is_opper_gateway_base_url(base_url):
+    # Requesty is OpenAI-compatible; its vendor/model IDs (anthropic/...,
+    # vertex/...) are not LiteLLM protocol declarations.
+    if is_requesty_gateway_base_url(base_url):
         return "openai"
 
     for model in models or []:
@@ -587,7 +587,10 @@ def route_discovered_llm_model(model_id: str, base_url: Optional[str]) -> str:
 
     Opper lists the same shape: ``provider/model`` IDs that pin one route
     (``anthropic/claude-sonnet-4-6``) and bare pool names without a slash
-    (``claude-sonnet-4-6``), so its IDs take the same gateway route.
+    (``claude-sonnet-4-6``), so discovered Opper IDs take the same gateway
+    route. Only discovery does this for Opper: hand-typed values on an Opper
+    Base URL keep the generic normalization, so channels configured before
+    the preset existed keep their deployment names.
     """
     normalized_id = (model_id or "").strip()
     if not normalized_id or not (
@@ -608,12 +611,12 @@ def normalize_llm_channel_model(model: str, protocol: Optional[str], base_url: O
     if (
         "/" in normalized_model
         and resolved_protocol == "openai"
-        and (is_requesty_gateway_base_url(base_url) or is_opper_gateway_base_url(base_url))
+        and is_requesty_gateway_base_url(base_url)
         and normalized_model.split("/", 1)[0].lower() != "openai"
     ):
-        # Requesty and Opper vendor IDs such as anthropic/... or vertex/... must
-        # stay intact behind the OpenAI-compatible gateway route instead of
-        # being read as LiteLLM direct providers.
+        # Requesty vendor IDs such as anthropic/... or vertex/... must stay
+        # intact behind the OpenAI-compatible gateway route instead of being
+        # read as LiteLLM direct providers.
         return f"openai/{normalized_model}"
 
     if "/" in normalized_model:
