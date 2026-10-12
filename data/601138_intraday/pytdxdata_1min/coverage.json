@@ -1,12 +1,12 @@
 {
   "symbol": "601138",
   "requested_start": "2018-06-08",
-  "requested_end": "2026-10-09",
+  "requested_end": "2026-10-12",
   "kline": {
-    "rows": 8160,
-    "trading_days": 34,
+    "rows": 8400,
+    "trading_days": 35,
     "actual_start": "2026-08-17 09:31:00",
-    "actual_end": "2026-10-09 15:00:00"
+    "actual_end": "2026-10-12 15:00:00"
   },
   "snapshot": {
     "rows": 481440,
