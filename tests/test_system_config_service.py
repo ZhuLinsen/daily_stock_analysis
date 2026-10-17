@@ -934,6 +934,62 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             )
         )
 
+    def test_partial_updates_scope_llm_checks_but_routing_changes_still_validate(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LLM_CHANNELS=primary",
+            "LLM_PRIMARY_PROTOCOL=openai",
+            "LLM_PRIMARY_API_KEY=test-secret",
+            "LLM_PRIMARY_MODELS=gpt-test",
+            "LITELLM_MODEL=openai/gpt-test",
+            "LITELLM_FALLBACK_MODELS=openai/removed-model",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self.assertFalse(self.service.validate(items=[])["valid"])
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "LOG_LEVEL", "value": "DEBUG"}],
+                reload_now=False,
+            )
+            self.assertTrue(result["success"])
+
+            for key, value in [
+                ("LITELLM_MODEL", "openai/gpt-test"),
+                ("LITELLM_FALLBACK_MODELS", "openai/removed-model"),
+                ("AGENT_LITELLM_MODEL", "openai/gpt-test"),
+                ("VISION_MODEL", "openai/gpt-test"),
+                ("LLM_CHANNELS", "primary"),
+                ("LLM_PRIMARY_MODELS", "gpt-test,another-model"),
+                ("LLM_PRIMARY_ENABLED", "false"),
+                ("LLM_PRIMARY_API_KEY", "replacement-test-secret"),
+                ("OPENAI_API_KEY", "legacy-test-secret"),
+                ("LITELLM_CONFIG", ""),
+            ]:
+                with self.subTest(key=key):
+                    before = self.env_path.read_bytes()
+                    with self.assertRaises(ConfigValidationError) as exc:
+                        self.service.update(
+                            config_version=self.manager.get_config_version(),
+                            items=[
+                                {"key": "STOCK_LIST", "value": "AAPL"},
+                                {"key": key, "value": value},
+                            ],
+                            reload_now=False,
+                        )
+                    self.assertTrue(any(
+                        issue["key"] == "LITELLM_FALLBACK_MODELS"
+                        for issue in exc.exception.issues
+                    ))
+                    self.assertEqual(self.env_path.read_bytes(), before)
+
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "LITELLM_FALLBACK_MODELS", "value": ""}],
+                reload_now=False,
+            )
+            self.assertTrue(result["success"])
+            self.assertTrue(self.service.validate(items=[])["valid"])
+
     def test_get_config_switch_type_uses_runtime_env_display_fallback(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519",
@@ -4250,7 +4306,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
     ) -> None:
         response = self.service.update(
             config_version=self.manager.get_config_version(),
-            items=[{"key": "STOCK_LIST", "value": "600519"}],
+            items=[{"key": "LOG_LEVEL", "value": "DEBUG"}],
             reload_now=True,
         )
 

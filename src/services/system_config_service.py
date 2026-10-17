@@ -2097,10 +2097,17 @@ class SystemConfigService:
         reload_triggered = False
         if reload_now:
             try:
-                Config.reset_instance()
-                self._reload_runtime_singletons()
-                setup_env(override=True)
-                config = Config.get_instance()
+                if submitted_keys == {"STOCK_LIST"}:
+                    # Watchlist edits need no global dotenv/singleton reload: it
+                    # would also overwrite unrelated container env overrides.
+                    os.environ["STOCK_LIST"] = self._manager.read_config_map().get("STOCK_LIST", "")
+                    config = Config.get_instance()
+                    config.refresh_stock_list()
+                else:
+                    Config.reset_instance()
+                    self._reload_runtime_singletons()
+                    setup_env(override=True)
+                    config = Config.get_instance()
                 warnings.extend(config.validate())
                 reload_triggered = True
             except Exception as exc:  # pragma: no cover - defensive branch
@@ -4613,13 +4620,20 @@ class SystemConfigService:
                 }
             )
 
-        issues.extend(
-            SystemConfigService._validate_llm_channel_map(
-                effective_map=effective_map,
-                updated_keys=updated_keys,
+        # A partial update must not be blocked by existing, unrelated LLM
+        # errors. Empty input remains a full LLM check for status diagnostics.
+        if not updated_keys or any(
+            SystemConfigService._is_generation_backend_status_key(key)
+            or key in {"AGENT_LITELLM_MODEL", "VISION_MODEL"}
+            for key in updated_keys
+        ):
+            issues.extend(
+                SystemConfigService._validate_llm_channel_map(
+                    effective_map=effective_map,
+                    updated_keys=updated_keys,
+                )
             )
-        )
-        issues.extend(SystemConfigService._validate_llm_runtime_selection(effective_map=effective_map))
+            issues.extend(SystemConfigService._validate_llm_runtime_selection(effective_map=effective_map))
 
         if parse_env_bool(effective_map.get("NOTIFICATION_DAILY_DIGEST_ENABLED"), default=False):
             issues.append(

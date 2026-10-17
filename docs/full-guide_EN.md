@@ -1688,6 +1688,10 @@ A: AkShare uses scraping mechanism, may be temporarily rate-limited. System has 
 ### Q: How to add watchlist stocks?
 A: Modify the `STOCK_LIST` environment variable. English commas are recommended between codes. Chinese commas, enumeration commas, semicolons, spaces, and newlines are also recognized and are normalized to English commas after saving in Web settings or using watchlist add/remove actions.
 
+Watchlist actions and saves containing only `STOCK_LIST` refresh the stock list while preserving other runtime settings and container environment overrides. Partial configuration saves are not blocked by existing, unrelated LLM channel or model selection errors. Changes to models, channels, routing files, or related credentials still validate the full model dependencies. Existing model errors require a separate correction; a successful watchlist save does not establish that the model configuration is valid.
+
+Configuration saves preserve the existing `.env` file permissions. Newly created files default to mode `600` on POSIX systems, allowing only the current user to read and write them.
+
 ### Q: GitHub Actions not executing?
 A: Check if Actions is enabled, and if cron expression is correct (note it's UTC time).
 
