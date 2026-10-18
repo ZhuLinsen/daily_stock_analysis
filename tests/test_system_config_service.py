@@ -4313,6 +4313,25 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(response["success"])
         mock_reload_runtime_singletons.assert_called_once()
 
+    @patch.object(SystemConfigService, "_reload_runtime_singletons")
+    def test_update_with_reload_skips_singleton_reset_for_stock_list_only(
+        self,
+        mock_reload_runtime_singletons,
+    ) -> None:
+        """A STOCK_LIST-only save must not reset runtime singletons.
+
+        Resetting them would re-run setup_env(override=True) and clobber
+        container environment overrides for every other key.
+        """
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "STOCK_LIST", "value": "600519"}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        mock_reload_runtime_singletons.assert_not_called()
+
     def test_update_with_reload_applies_updated_env_file_when_process_env_is_stale(self) -> None:
         os.environ["STOCK_LIST"] = "600519,000001"
 
