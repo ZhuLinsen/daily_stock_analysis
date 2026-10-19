@@ -164,3 +164,78 @@ def test_watchlist_writes_with_existing_llm_errors_preserve_runtime_overrides(
             assert env_path.read_bytes() == before_invalid
         finally:
             Config.reset_instance()
+
+
+def test_watchlist_add_keeps_container_override_when_env_file_lacks_the_key(tmp_path):
+    """Docker env_file only populates the process environment.
+
+    refresh_stock_list() falls back to os.environ when .env has no STOCK_LIST
+    line, so the fast path must not write an empty string over it.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "LLM_CHANNELS=primary\n"
+        "LLM_PRIMARY_PROTOCOL=openai\n"
+        "LLM_PRIMARY_API_KEY=test-secret\n"
+        "LLM_PRIMARY_MODELS=gpt-test\n"
+        "LITELLM_MODEL=openai/gpt-test\n"
+        "WEBUI_HOST=127.0.0.1\n",
+        encoding="utf-8",
+    )
+    with patch.dict(os.environ, {
+        "ENV_FILE": str(env_path),
+        "STOCK_LIST": "600519",
+        "WEBUI_HOST": "0.0.0.0",
+    }, clear=True):
+        Config.reset_instance()
+        try:
+            setup_env()
+            runtime_config = Config.get_instance()
+            assert runtime_config.stock_list == ["600519"]
+            service = SystemConfigService(manager=ConfigManager(env_path=env_path))
+
+            added = add_to_watchlist(WatchlistRequest(stock_code="AAPL"), service=service)
+
+            assert added.stock_codes == ["600519", "AAPL"]
+            assert runtime_config.stock_list == ["600519", "AAPL"]
+            # The saved value is authoritative now that the file carries the key.
+            assert "STOCK_LIST" in ConfigManager(env_path=env_path).read_config_map()
+            assert os.environ["STOCK_LIST"] == "600519,AAPL"
+        finally:
+            Config.reset_instance()
+
+
+def test_watchlist_clear_takes_effect_despite_container_override(tmp_path):
+    """Clearing must win over a container override.
+
+    refresh_stock_list() falls back to os.environ only when the file value is
+    empty, so the fast path has to mirror the emptied value or the old list
+    would be resurrected.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "STOCK_LIST=600519\n"
+        "LLM_CHANNELS=primary\n"
+        "LLM_PRIMARY_PROTOCOL=openai\n"
+        "LLM_PRIMARY_API_KEY=test-secret\n"
+        "LLM_PRIMARY_MODELS=gpt-test\n"
+        "LITELLM_MODEL=openai/gpt-test\n",
+        encoding="utf-8",
+    )
+    with patch.dict(os.environ, {
+        "ENV_FILE": str(env_path),
+        "STOCK_LIST": "600519",
+    }, clear=True):
+        Config.reset_instance()
+        try:
+            setup_env()
+            runtime_config = Config.get_instance()
+            service = SystemConfigService(manager=ConfigManager(env_path=env_path))
+
+            cleared = remove_from_watchlist(WatchlistRequest(stock_code="600519"), service=service)
+
+            assert cleared.stock_codes == []
+            assert runtime_config.stock_list == []
+            assert get_watchlist(service=service).stock_codes == []
+        finally:
+            Config.reset_instance()

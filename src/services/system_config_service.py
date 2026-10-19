@@ -2100,6 +2100,10 @@ class SystemConfigService:
                 if submitted_keys == {"STOCK_LIST"}:
                     # Watchlist edits need no global dotenv/singleton reload: it
                     # would also overwrite unrelated container env overrides.
+                    # STOCK_LIST itself must still be mirrored, because
+                    # refresh_stock_list() falls back to os.environ whenever the
+                    # file value is empty -- without this a cleared watchlist
+                    # would resurrect the previous list from the environment.
                     os.environ["STOCK_LIST"] = self._manager.read_config_map().get("STOCK_LIST", "")
                     config = Config.get_instance()
                     config.refresh_stock_list()
