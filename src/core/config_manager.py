@@ -233,11 +233,11 @@ class ConfigManager:
             self._env_path.parent.mkdir(parents=True, exist_ok=True)
 
         env_existed = self._env_path.exists()
-        existing_mode = (
-            stat.S_IMODE(self._env_path.stat().st_mode)
-            if env_existed
-            else 0o600
-        )
+        existing_stat = self._env_path.stat() if env_existed else None
+        existing_mode = stat.S_IMODE(existing_stat.st_mode) if env_existed else 0o600
+        # mkstemp creates the replacement under the process's primary group, so
+        # the target's group has to be carried over explicitly.
+        existing_gid = existing_stat.st_gid if env_existed else None
         content = "\n".join(entry.render() for entry in entries)
         if content and not content.endswith("\n"):
             content += "\n"
@@ -252,6 +252,7 @@ class ConfigManager:
                 file_obj.flush()
                 os.fsync(file_obj.fileno())
             temp_path.chmod(existing_mode)
+            self._preserve_env_group(temp_path, existing_gid)
             try:
                 os.replace(temp_path, self._env_path)
             except OSError as exc:
@@ -272,6 +273,35 @@ class ConfigManager:
         finally:
             if temp_path.exists():
                 temp_path.unlink()
+
+    @staticmethod
+    def _preserve_env_group(temp_path: Path, gid: Optional[int]) -> None:
+        """Carry the target `.env` group onto the replacement file.
+
+        chmod only copies mode bits, and mkstemp creates the file under the
+        process's primary group. Without this, a `.env` shared through a
+        secondary group (owner:shared, 0640) loses that group's read access
+        after the atomic replace -- previously the umask-derived 0644 hid the
+        problem behind world-read. The in-place fallback path needs no such
+        step because it truncates the existing inode and keeps its group.
+
+        Failing to change the group is not fatal: the write still succeeds and
+        the mode is still correct, so we only warn. The operator then has to
+        add the service account to that group.
+        """
+        if gid is None:
+            return
+        try:
+            if temp_path.stat().st_gid == gid:
+                return
+            os.chown(temp_path, -1, gid)
+        except (OSError, NotImplementedError, AttributeError) as exc:
+            logger.warning(
+                "Could not preserve .env group ownership (gid=%s, %s); "
+                "consumers reading through that group may lose access. "
+                "Add the service account to that group or set a wider mode.",
+                gid, type(exc).__name__,
+            )
 
     def _rewrite_in_place(self, content: str) -> None:
         """Rewrite `.env` content in place when rename is unsupported by mount type."""
