@@ -20,8 +20,8 @@ from dotenv import dotenv_values
 _ASSIGNMENT_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 _FALLBACK_REWRITE_ERRNOS = {errno.EBUSY, errno.EXDEV}
 # Warning code returned by apply_updates when the atomic replace had to be
-# skipped so an existing shared group keeps its access to `.env`.
-ENV_GROUP_NOT_PRESERVED_WARNING = "env_group_not_preserved"
+# skipped so the original owner and group keep their access to `.env`.
+ENV_OWNERSHIP_NOT_PRESERVED_WARNING = "env_ownership_not_preserved"
 _COMPOSE_ESCAPED_ENV_VALUE_KEYS = frozenset({"CUSTOM_WEBHOOK_BODY_TEMPLATE"})
 _APPLICATION_TEMPLATE_PLACEHOLDER_PATTERN = re.compile(
     r"(?<!\$)\$(?:"
@@ -189,7 +189,7 @@ class ConfigManager:
 
         Returns the updated keys, the masked keys that were skipped, the new
         config version, and warning codes for write conditions the operator
-        should know about (see ``ENV_GROUP_NOT_PRESERVED_WARNING``).
+        should know about (see ``ENV_OWNERSHIP_NOT_PRESERVED_WARNING``).
         """
         with self._lock:
             current_values = self.read_config_map()
@@ -252,8 +252,10 @@ class ConfigManager:
         env_existed = self._env_path.exists()
         existing_stat = self._env_path.stat() if env_existed else None
         existing_mode = stat.S_IMODE(existing_stat.st_mode) if env_existed else 0o600
-        # mkstemp creates the replacement under the process's primary group, so
-        # the target's group has to be carried over explicitly.
+        # mkstemp creates the replacement under the process's own uid and
+        # primary group, so the target's owner and group have to be carried
+        # over explicitly.
+        existing_uid = existing_stat.st_uid if env_existed else None
         existing_gid = existing_stat.st_gid if env_existed else None
         content = "\n".join(entry.render() for entry in entries)
         if content and not content.endswith("\n"):
@@ -268,10 +270,12 @@ class ConfigManager:
                 file_obj.write(content)
                 file_obj.flush()
                 os.fsync(file_obj.fileno())
-            temp_path.chmod(existing_mode)
             warnings: List[str] = []
             replaced = False
-            if self._preserve_env_group(temp_path, existing_gid):
+            if self._preserve_env_ownership(temp_path, existing_uid, existing_gid):
+                # chown clears the setuid/setgid bits, so the mode is applied
+                # after the ownership has been carried over.
+                temp_path.chmod(existing_mode)
                 try:
                     os.replace(temp_path, self._env_path)
                     replaced = True
@@ -285,10 +289,10 @@ class ConfigManager:
                     )
             else:
                 # Replacing anyway would move the file onto the replacement's
-                # primary group and strip the original group's access, so keep
-                # the existing inode instead: the in-place rewrite preserves
-                # both the group and the mode.
-                warnings.append(ENV_GROUP_NOT_PRESERVED_WARNING)
+                # owner and strip the original owner's (or shared group's)
+                # access, so keep the existing inode instead: the in-place
+                # rewrite preserves the ownership and the mode.
+                warnings.append(ENV_OWNERSHIP_NOT_PRESERVED_WARNING)
             if not replaced:
                 self._rewrite_in_place(content)
                 if not env_existed:
@@ -303,33 +307,39 @@ class ConfigManager:
                 temp_path.unlink()
 
     @staticmethod
-    def _preserve_env_group(temp_path: Path, gid: Optional[int]) -> bool:
-        """Carry the target `.env` group onto the replacement file.
+    def _preserve_env_ownership(temp_path: Path, uid: Optional[int], gid: Optional[int]) -> bool:
+        """Carry the target `.env` owner and group onto the replacement file.
 
         chmod only copies mode bits, and mkstemp creates the file under the
-        process's primary group. Without this, a `.env` shared through a
-        secondary group (owner:shared, 0640) loses that group's read access
-        after the atomic replace -- previously the umask-derived 0644 hid the
-        problem behind world-read. The in-place fallback path needs no such
-        step because it truncates the existing inode and keeps its group.
+        process's own uid and primary group. Without this, an atomic replace
+        moves the `.env` onto the saving process: a `.env` shared through a
+        secondary group (owner:shared, 0640) loses that group's read access,
+        and an owner-only `.env` (0600) locks out its original owner the
+        moment a privileged process saves it -- previously the umask-derived
+        0644 hid both problems behind world-read. The in-place fallback path
+        needs no such step because it truncates the existing inode and keeps
+        its ownership.
 
-        Returns True when the replacement carries ``gid`` (or no group had to
-        be carried over). Returns False when the chown was refused; the caller
-        must then keep the original file, because replacing it would move the
-        `.env` onto the replacement's primary group.
+        Returns True when the replacement carries the target's owner and
+        group (or the file is new). Returns False when the chown was
+        refused; the caller must then keep the original file, because
+        replacing it would move the `.env` onto the replacement's owner.
         """
-        if gid is None:
+        if uid is None and gid is None:
             return True
         try:
-            if temp_path.stat().st_gid == gid:
+            temp_stat = temp_path.stat()
+            if temp_stat.st_uid == uid and temp_stat.st_gid == gid:
                 return True
-            os.chown(temp_path, -1, gid)
+            # -1 leaves that id unchanged, matching os.chown's convention.
+            os.chown(temp_path, -1 if uid is None else uid, -1 if gid is None else gid)
         except (OSError, NotImplementedError, AttributeError) as exc:
             logger.warning(
-                "Could not preserve .env group ownership (gid=%s, %s); "
-                "keeping the original file so that group keeps its access. "
-                "Add the service account to that group or set a wider mode.",
-                gid, type(exc).__name__,
+                "Could not preserve .env ownership (uid=%s, gid=%s, %s); "
+                "keeping the original file so its owner keeps access. "
+                "Run the service as the file's owner and a member of its "
+                "group to restore the atomic replace.",
+                uid, gid, type(exc).__name__,
             )
             return False
         return True
