@@ -2438,6 +2438,55 @@ class SystemConfigService:
 
     # Keys that decide whether ask-stock is served over LiteLLM at all.
     _AGENT_LLM_ROUTE_KEYS = ("AGENT_BACKEND", "AGENT_GENERATION_BACKEND")
+    # Keys that switch regular stock analysis into Agent mode. See
+    # src/core/pipeline.py, which reads config.agent_mode and config.agent_skills.
+    _AGENT_ANALYSIS_KEYS = ("AGENT_MODE", "AGENT_SKILLS")
+
+    @classmethod
+    def _update_activates_agent_path(
+        cls,
+        effective_map: Dict[str, str],
+        updated_keys: Set[str],
+    ) -> bool:
+        """Whether this update turns an Agent path on that reads the LLM graph.
+
+        There are two independent entries, and both resolve their model through
+        the LLM channel graph, so both have to be validated like any other
+        model-affecting change:
+
+        - Ask-stock over LiteLLM, decided by AGENT_BACKEND /
+          AGENT_GENERATION_BACKEND.
+        - Regular stock analysis in Agent mode, decided by AGENT_MODE or by
+          AGENT_SKILLS naming something other than "all". That path goes through
+          build_agent_executor and LLMToolAdapter directly and is not governed by
+          AGENT_BACKEND, so it needs its own check.
+
+        Without this, a save that only flips one of those keys can activate a
+        model dependency that is already broken: the save succeeds, the path
+        switches, and the analysis then fails with no error at save time.
+
+        Codex backends and a disabled Agent mode stay exempt, which is what keeps
+        an operator with a broken LLM config able to switch away from the Agent
+        -- the original reason for narrowing the check.
+        """
+        if cls._update_activates_litellm_agent(effective_map, updated_keys):
+            return True
+        if not any(key in updated_keys for key in cls._AGENT_ANALYSIS_KEYS):
+            return False
+        # Mirror the runtime parsing exactly so the gate cannot disagree with
+        # what the pipeline will actually do.
+        if "AGENT_MODE" in updated_keys:
+            if str(effective_map.get("AGENT_MODE") or "").strip().lower() == "true":
+                return True
+        if "AGENT_SKILLS" in updated_keys:
+            skills = [
+                part.strip()
+                for part in str(effective_map.get("AGENT_SKILLS") or "").split(",")
+                if part.strip()
+            ]
+            if skills and skills != ["all"]:
+                return True
+        return False
 
     @classmethod
     def _update_activates_litellm_agent(
@@ -2445,7 +2494,7 @@ class SystemConfigService:
         effective_map: Dict[str, str],
         updated_keys: Set[str],
     ) -> bool:
-        """Whether this update turns the LiteLLM Agent path on.
+        """Whether this update turns the LiteLLM ask-stock path on.
 
         Ask-stock over LiteLLM resolves its model through the LLM channel graph,
         so switching to it has to be validated like any other model-affecting
@@ -4659,7 +4708,7 @@ class SystemConfigService:
         # errors. Empty input remains a full LLM check for status diagnostics.
         if (
             not updated_keys
-            or SystemConfigService._update_activates_litellm_agent(effective_map, updated_keys)
+            or SystemConfigService._update_activates_agent_path(effective_map, updated_keys)
             or any(
                 SystemConfigService._is_generation_backend_status_key(key)
                 or key in {"AGENT_LITELLM_MODEL", "VISION_MODEL"}

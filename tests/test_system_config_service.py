@@ -1026,6 +1026,77 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                     self.assertTrue(exc.exception.issues)
                     self.assertEqual(self.env_path.read_bytes(), before)
 
+    def test_enabling_agent_analysis_validates_model_dependencies(self) -> None:
+        """Turning on Agent analysis must not bypass the model check.
+
+        Regular stock analysis switches to the Agent path on AGENT_MODE, or on
+        AGENT_SKILLS naming something other than "all", and that path builds its
+        own LLMToolAdapter instead of following AGENT_BACKEND. A save that only
+        flips one of those keys can therefore activate a model dependency that is
+        already broken, and every later analysis fails with no error at save time.
+        """
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "AGENT_MODE=false",
+            "AGENT_SKILLS=",
+            "AGENT_LITELLM_MODEL=openai/hermes-agent",
+            "LLM_CHANNELS=hermes",
+            "LLM_HERMES_PROTOCOL=openai",
+            "LLM_HERMES_API_KEY=test-secret",
+            "LLM_HERMES_MODELS=hermes-agent",
+            "LITELLM_MODEL=openai/gpt-test",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self.assertFalse(self.service.validate(items=[])["valid"])
+
+            before = self.env_path.read_bytes()
+            for key, value in [
+                ("AGENT_MODE", "true"),
+                ("AGENT_SKILLS", "bull_trend"),
+                ("AGENT_SKILLS", "bull_trend,risk_control"),
+            ]:
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ConfigValidationError) as exc:
+                        self.service.update(
+                            config_version=self.manager.get_config_version(),
+                            items=[{"key": key, "value": value}],
+                            reload_now=False,
+                        )
+                    self.assertTrue(exc.exception.issues)
+                    self.assertEqual(self.env_path.read_bytes(), before)
+
+    def test_agent_analysis_keys_that_do_not_activate_stay_exempt(self) -> None:
+        """The gate must agree with what the pipeline will actually do.
+
+        AGENT_SKILLS=all keeps the regular analysis path, an empty value means no
+        skills, and AGENT_MODE=false is an explicit opt-out -- none of them turn
+        the Agent on, so a broken LLM config must not block them.
+        """
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "AGENT_MODE=false",
+            "AGENT_SKILLS=",
+            "AGENT_LITELLM_MODEL=openai/hermes-agent",
+            "LLM_CHANNELS=hermes",
+            "LLM_HERMES_PROTOCOL=openai",
+            "LLM_HERMES_API_KEY=test-secret",
+            "LLM_HERMES_MODELS=hermes-agent",
+            "LITELLM_MODEL=openai/gpt-test",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            for key, value in [
+                ("AGENT_SKILLS", "all"),
+                ("AGENT_SKILLS", ""),
+                ("AGENT_MODE", "false"),
+            ]:
+                with self.subTest(key=key, value=value):
+                    result = self.service.update(
+                        config_version=self.manager.get_config_version(),
+                        items=[{"key": key, "value": value}],
+                        reload_now=False,
+                    )
+                    self.assertTrue(result["success"])
+
     def test_switching_agent_generation_backend_validates_when_chat_uses_litellm(self) -> None:
         """AGENT_GENERATION_BACKEND only routes through the graph when chat does.
 
