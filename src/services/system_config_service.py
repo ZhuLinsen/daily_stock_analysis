@@ -2436,6 +2436,37 @@ class SystemConfigService:
             or bool(cls._GENERATION_BACKEND_STATUS_LLM_CHANNEL_RE.fullmatch(normalized))
         )
 
+    # Keys that decide whether ask-stock is served over LiteLLM at all.
+    _AGENT_LLM_ROUTE_KEYS = ("AGENT_BACKEND", "AGENT_GENERATION_BACKEND")
+
+    @classmethod
+    def _update_activates_litellm_agent(
+        cls,
+        effective_map: Dict[str, str],
+        updated_keys: Set[str],
+    ) -> bool:
+        """Whether this update turns the LiteLLM Agent path on.
+
+        Ask-stock over LiteLLM resolves its model through the LLM channel graph,
+        so switching to it has to be validated like any other model-affecting
+        change -- otherwise a save that only flips the backend can activate a
+        model dependency that is already broken, and ask-stock stops working
+        with no error at save time.
+
+        Codex backends never read that graph, so they stay exempt. That is what
+        keeps an operator with a broken LLM config able to switch to Codex,
+        which was the original reason for narrowing the check.
+        """
+        if not any(key in updated_keys for key in cls._AGENT_LLM_ROUTE_KEYS):
+            return False
+        chat_backend = str(effective_map.get("AGENT_BACKEND") or "auto").strip().lower()
+        if chat_backend not in {"auto", "litellm"}:
+            return False
+        generation_backend = str(
+            effective_map.get("AGENT_GENERATION_BACKEND") or "auto"
+        ).strip().lower()
+        return generation_backend in {"auto", "litellm"}
+
     @classmethod
     def _filter_generation_backend_items(
         cls,
@@ -4626,10 +4657,14 @@ class SystemConfigService:
 
         # A partial update must not be blocked by existing, unrelated LLM
         # errors. Empty input remains a full LLM check for status diagnostics.
-        if not updated_keys or any(
-            SystemConfigService._is_generation_backend_status_key(key)
-            or key in {"AGENT_LITELLM_MODEL", "VISION_MODEL"}
-            for key in updated_keys
+        if (
+            not updated_keys
+            or SystemConfigService._update_activates_litellm_agent(effective_map, updated_keys)
+            or any(
+                SystemConfigService._is_generation_backend_status_key(key)
+                or key in {"AGENT_LITELLM_MODEL", "VISION_MODEL"}
+                for key in updated_keys
+            )
         ):
             issues.extend(
                 SystemConfigService._validate_llm_channel_map(

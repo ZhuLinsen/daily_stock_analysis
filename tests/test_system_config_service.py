@@ -990,6 +990,123 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertTrue(self.service.validate(items=[])["valid"])
 
+    def test_switching_agent_backend_to_litellm_validates_model_dependencies(self) -> None:
+        """Flipping only the Agent backend must not bypass the model check.
+
+        Ask-stock over LiteLLM resolves its model through the LLM channel
+        graph, so a save that only changes AGENT_BACKEND can activate a model
+        dependency that is already broken -- ask-stock then stops working with
+        no error at save time.
+        """
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "AGENT_BACKEND=codex_app_server",
+            "AGENT_LITELLM_MODEL=openai/hermes-agent",
+            "LLM_CHANNELS=hermes",
+            "LLM_HERMES_PROTOCOL=openai",
+            "LLM_HERMES_API_KEY=test-secret",
+            "LLM_HERMES_MODELS=hermes-agent",
+            "LITELLM_MODEL=openai/gpt-test",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self.assertFalse(self.service.validate(items=[])["valid"])
+
+            before = self.env_path.read_bytes()
+            for key, value in [
+                ("AGENT_BACKEND", "litellm"),
+                ("AGENT_BACKEND", "auto"),
+            ]:
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ConfigValidationError) as exc:
+                        self.service.update(
+                            config_version=self.manager.get_config_version(),
+                            items=[{"key": key, "value": value}],
+                            reload_now=False,
+                        )
+                    self.assertTrue(exc.exception.issues)
+                    self.assertEqual(self.env_path.read_bytes(), before)
+
+    def test_switching_agent_generation_backend_validates_when_chat_uses_litellm(self) -> None:
+        """AGENT_GENERATION_BACKEND only routes through the graph when chat does.
+
+        With AGENT_BACKEND on a Codex backend the chat never reads the LLM
+        channel graph, so that combination stays exempt.
+        """
+        base = (
+            "STOCK_LIST=600519",
+            "AGENT_LITELLM_MODEL=openai/hermes-agent",
+            "LLM_CHANNELS=hermes",
+            "LLM_HERMES_PROTOCOL=openai",
+            "LLM_HERMES_API_KEY=test-secret",
+            "LLM_HERMES_MODELS=hermes-agent",
+            "LITELLM_MODEL=openai/gpt-test",
+        )
+        self._rewrite_env(*base, "AGENT_BACKEND=litellm", "AGENT_GENERATION_BACKEND=codex_cli")
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            with self.assertRaises(ConfigValidationError):
+                self.service.update(
+                    config_version=self.manager.get_config_version(),
+                    items=[{"key": "AGENT_GENERATION_BACKEND", "value": "litellm"}],
+                    reload_now=False,
+                )
+
+        self._rewrite_env(*base, "AGENT_BACKEND=codex_app_server", "AGENT_GENERATION_BACKEND=codex_cli")
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "AGENT_GENERATION_BACKEND", "value": "litellm"}],
+                reload_now=False,
+            )
+
+        self.assertTrue(result["success"])
+
+    def test_switching_agent_backend_to_codex_stays_exempt(self) -> None:
+        """Codex never reads the LLM channel graph, so the exemption must hold.
+
+        This is what lets an operator with a broken LLM config switch to Codex,
+        which was the original reason for narrowing the check.
+        """
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "AGENT_BACKEND=litellm",
+            "AGENT_LITELLM_MODEL=openai/hermes-agent",
+            "LLM_CHANNELS=hermes",
+            "LLM_HERMES_PROTOCOL=openai",
+            "LLM_HERMES_API_KEY=test-secret",
+            "LLM_HERMES_MODELS=hermes-agent",
+            "LITELLM_MODEL=openai/gpt-test",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "AGENT_BACKEND", "value": "codex_app_server"}],
+                reload_now=False,
+            )
+
+        self.assertTrue(result["success"])
+
+    def test_unrelated_partial_update_still_skips_llm_checks(self) -> None:
+        """The original bug stays fixed: unrelated saves are not blocked."""
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "AGENT_BACKEND=codex_app_server",
+            "AGENT_LITELLM_MODEL=openai/hermes-agent",
+            "LLM_CHANNELS=hermes",
+            "LLM_HERMES_PROTOCOL=openai",
+            "LLM_HERMES_API_KEY=test-secret",
+            "LLM_HERMES_MODELS=hermes-agent",
+            "LITELLM_MODEL=openai/gpt-test",
+            "LITELLM_FALLBACK_MODELS=openai/removed-model",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "LOG_LEVEL", "value": "DEBUG"}],
+                reload_now=False,
+            )
+
+        self.assertTrue(result["success"])
+
     def test_get_config_switch_type_uses_runtime_env_display_fallback(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519",
