@@ -4,7 +4,8 @@
 
 Default flow:
 1. Fetch Tushare stock lists into ``data/`` with ``--a-rk`` for A-share name correction.
-2. Generate ``apps/dsa-web/public/stocks.index.json`` from CSV plus JP/KR seed rows.
+2. Generate ``apps/dsa-web/public/stocks.index.json`` from CSV plus JP/KR seed
+   rows, the HK trust/REIT supplement, and the index-registry rows.
 3. Copy the generated index to ``static/stocks.index.json`` for backend use.
 """
 

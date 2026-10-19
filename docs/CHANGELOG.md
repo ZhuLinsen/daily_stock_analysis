@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 新增 `README_DETAIL.md`，系统化说明程序架构、运行模式、数据流、配置、通知、调度与 CI/CD，并附 Mermaid 流程图。
+- [修复] 港股信托/房托/合订证券（如 `06823` 香港电讯-SS、`00823` 领展房产基金）不在 Tushare `hk_basic` 返回范围内，导致 Web 自动补全搜不到这些代码：新增 `scripts/stock_index_seeds/stock_list_hk_trust.csv`（11 只），重建与 `--index-only` 两条索引生成路径都会合并（已存在代码自动跳过），并补充 `STOCK_NAME_MAP` / `STOCK_ENGLISH_NAME_MAP` 名称映射。
+- [文档] 新增 Zeabur 部署指南 2026-10 修订版：按当前控制台入口重写 GitHub 导入流程，补充现成镜像与源码构建两条路径、`zbpack.json` / `ZBPACK_DOCKERFILE_PATH` 的 Dockerfile 路径配置、启动命令覆盖与 `ADMIN_AUTH_ENABLED` 提示；旧版 `docs/docker/zeabur-deployment.md` 标注过时并保留兼容文档契约校验。
+- [文档] 修正 Zeabur 文档中与平台/仓库现状不符的描述：「控制台自动检测 GitHub Actions 工作流构建镜像」「多服务可共享同一存储卷」；新增根目录 `zbpack.json` 供 Zeabur 定位 `docker/Dockerfile`。
+
 - [修复] ETF 轮动按真实 A 股交易日历保留全池缺报价日期及末尾缺口，防止调仓顺延、周末信号提前和动量窗口缩短；历史日历不可用时明确停止计算。
 
 - [修复] ETF 轮动回测在行情缺口后结算完整持仓损益，缺报价日不虚构成交，防守资产缺报价时使用现金；统一参数扫描与主回测的行情处理，限定前复权来源，并跳过无关个股列表校验。

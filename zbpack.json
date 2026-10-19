@@ -1,0 +1,5 @@
+{
+  "dockerfile": {
+    "path": "docker/Dockerfile"
+  }
+}

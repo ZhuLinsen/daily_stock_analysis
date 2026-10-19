@@ -1,3 +1,8 @@
+> **本文档已过时，请优先阅读修订版：[`zeabur-deployment-updated20261010.md`](zeabur-deployment-updated20261010.md)。**
+>
+> 已确认与平台/仓库现状不符的内容：当前 Zeabur 控制台没有「从 GitHub 导入」入口；Zeabur 不会读取 `.github/workflows/*` 构建镜像；Zeabur 存储卷不能跨服务共享。
+> 本文保留用于兼容既有文档契约校验（`tests/test_docker_entrypoint.py`、`tests/test_searxng_env_docs.py`），内容不再更新。
+
 # Zeabur 部署指南
 
 本指南详细介绍如何在 Zeabur 上部署 A股自选股智能分析系统，包括 WebUI 和 Discord 机器人功能。

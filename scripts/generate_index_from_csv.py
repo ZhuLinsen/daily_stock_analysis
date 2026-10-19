@@ -6,6 +6,7 @@ Generate Stock Index from CSV File
 Input:
   - Tushare format: data/stock_list_{a,hk,us}.csv
   - Seed format: scripts/stock_index_seeds/stock_list_{jp,kr}.csv
+  - HK trust/REIT supplement: scripts/stock_index_seeds/stock_list_hk_trust.csv
   - AkShare format: logs/stock_basic_*.csv
 
 Output: apps/dsa-web/public/stocks.index.json
@@ -40,6 +41,12 @@ except ImportError:
     lazy_pinyin = None
     Style = None
     PYPINYIN_AVAILABLE = False
+
+
+# Tushare stock lists live in the repo's ``data/`` directory; seed fallbacks
+# (JP/KR rows, HK trust/REIT supplement) only apply when loading from this
+# default location, so a caller-supplied directory stays a self-contained input.
+_DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 def require_pypinyin() -> bool:
@@ -100,7 +107,7 @@ def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
     """
     all_stocks = []
     seed_dir = Path(__file__).parent / 'stock_index_seeds'
-    default_data_dir = Path(__file__).parent.parent / 'data'
+    default_data_dir = _DEFAULT_DATA_DIR
     use_seed_fallback = data_dir.resolve() == default_data_dir.resolve()
 
     def _csv_path(file_name: str) -> Path:
@@ -157,6 +164,18 @@ def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
 
         except Exception as e:
             print(f"    [Error] 读取 {csv_file.name} 失败：{e}")
+
+    if use_seed_fallback:
+        # Tushare ``hk_basic`` 只返回普通股，港股信托/房托/合订证券（如 06823.HK
+        # 香港电讯-SS）不在其中，因此额外合并人工维护的 seed，避免重建索引后这些
+        # 代码无法在 Web 自动补全中搜索。与 --index-only 合并路径保持同一插入位置。
+        supplement = load_hk_trust_reit_seed()
+        merged = merge_hk_trust_reit_stocks(all_stocks, supplement)
+        print(
+            f"    ✓ 合并港股信托/房托 seed：新增 {len(merged) - len(all_stocks)} 只，"
+            f"跳过 {len(supplement) - (len(merged) - len(all_stocks))} 只已存在代码"
+        )
+        all_stocks = merged
 
     return all_stocks
 
@@ -622,6 +641,158 @@ def compress_index(index: List[Dict[str, Any]]) -> List[List]:
 
 
 # ---------------------------------------------------------------------------
+# HK trust / REIT seed — listings omitted by Tushare ``hk_basic``.
+# ---------------------------------------------------------------------------
+# ``hk_basic`` only returns ordinary shares, so HKEX trusts, REITs and stapled
+# securities (e.g. ``06823.HK`` 香港电讯-SS) never reach ``data/stock_list_hk.csv``
+# and stay unsearchable in Web autocomplete. This curated seed is merged into
+# both the full rebuild and the ``--index-only`` merge path.
+_HK_TRUST_REIT_SEED_PATH = (
+    Path(__file__).parent / "stock_index_seeds" / "stock_list_hk_trust.csv"
+)
+_HK_CANONICAL_RE = re.compile(r"^\d{5}\.HK$")
+_HK_DISPLAY_RE = re.compile(r"^\d{5}$")
+
+
+def load_hk_trust_reit_seed(seed_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load the curated HK trust/REIT/stapled-securities seed CSV.
+
+    Columns follow the JP/KR seed convention
+    (``ts_code,symbol,name,enname,aliases``) and are parsed by the shared
+    ``parse_stock_row()`` so the seed gets the same name/alias normalization as
+    the Tushare lists. Malformed rows raise instead of being skipped silently:
+    a typo here would otherwise surface only as a missing autocomplete entry.
+    """
+    path = seed_path or _HK_TRUST_REIT_SEED_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"HK trust/REIT seed not found: {path}")
+
+    rows: List[Dict[str, Any]] = []
+    seen_canonicals: set[str] = set()
+    with open(path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            parsed = parse_stock_row(row, "HK")
+            if not parsed:
+                raise ValueError(f"HK trust/REIT seed row is not parseable: {row}")
+            canonical = parsed["ts_code"]
+            if not _HK_CANONICAL_RE.fullmatch(canonical):
+                raise ValueError(
+                    f"HK trust/REIT seed canonical must match ^\\d{{5}}\\.HK$: {canonical!r}"
+                )
+            if not _HK_DISPLAY_RE.fullmatch(parsed["symbol"]):
+                raise ValueError(
+                    f"HK trust/REIT seed display code must be a 5-digit HK code: "
+                    f"{parsed['symbol']!r} for {canonical!r}"
+                )
+            normalized = canonical.casefold()
+            if normalized in seen_canonicals:
+                raise ValueError(f"duplicate HK trust/REIT seed canonical: {canonical!r}")
+            seen_canonicals.add(normalized)
+            rows.append(parsed)
+    return rows
+
+
+def validate_hk_trust_reit_entries(entries: List[List[Any]]) -> None:
+    """Validate compressed HK trust/REIT rows before they enter the payload."""
+    for item in entries:
+        if not isinstance(item, list) or len(item) < 10:
+            raise ValueError(f"HK trust/REIT entry is not a compressed tuple: {item!r}")
+        (
+            canonical,
+            display,
+            name,
+            pinyin_full,
+            pinyin_abbr,
+            aliases,
+            market,
+            asset_type,
+            active,
+            popularity,
+        ) = item[:10]
+        if not _HK_CANONICAL_RE.fullmatch(str(canonical or "")):
+            raise ValueError(
+                f"HK trust/REIT canonical must match ^\\d{{5}}\\.HK$: {canonical!r}"
+            )
+        if str(display or "") != str(canonical).split(".")[0]:
+            raise ValueError(
+                f"HK trust/REIT display must equal the canonical code body: "
+                f"{display!r} for {canonical!r}"
+            )
+        if market != "HK" or asset_type != "stock" or active is not True:
+            raise ValueError(
+                f"HK trust/REIT rows must be active HK stocks: {canonical!r}"
+            )
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (name, pinyin_full, pinyin_abbr)
+        ):
+            raise ValueError(
+                f"HK trust/REIT name and pinyin fields must be non-empty: {canonical!r}"
+            )
+        if not isinstance(aliases, list) or any(
+            not isinstance(alias, str) or not alias.strip() for alias in aliases
+        ):
+            raise ValueError(f"HK trust/REIT aliases must be a list of strings: {canonical!r}")
+        if isinstance(popularity, bool) or not isinstance(popularity, int) or popularity < 0:
+            raise ValueError(
+                f"HK trust/REIT popularity must be a non-negative integer: {canonical!r}"
+            )
+
+
+def _merge_supplement_rows(rows, supplement, *, key_of, market_of, block_market="HK"):
+    """Insert curated supplement rows after the last ``block_market`` row.
+
+    Codes already present win over the supplement, so the Tushare CSV stays the
+    source of truth if it ever starts listing these securities. Inserting inside
+    the market block (instead of appending) keeps the market-grouped layout and
+    makes a full rebuild and the ``--index-only`` merge produce the same
+    relative position.
+    """
+    existing_keys = {str(key_of(row)).strip().casefold() for row in rows}
+    fresh = [
+        row
+        for row in supplement
+        if str(key_of(row)).strip().casefold() not in existing_keys
+    ]
+    if not fresh:
+        return list(rows)
+
+    fresh.sort(key=lambda row: str(key_of(row)))
+    last_block_row = -1
+    for position, row in enumerate(rows):
+        if market_of(row) == block_market:
+            last_block_row = position
+    if last_block_row < 0:
+        return list(rows) + fresh
+    return list(rows[: last_block_row + 1]) + fresh + list(rows[last_block_row + 1 :])
+
+
+def merge_hk_trust_reit_stocks(
+    stocks: List[Dict[str, Any]], supplement: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Merge the HK seed into raw stock rows from ``load_tushare_data()``."""
+    return _merge_supplement_rows(
+        stocks,
+        supplement,
+        key_of=lambda row: row["ts_code"],
+        market_of=lambda row: row.get("market"),
+    )
+
+
+def merge_hk_trust_reit_tuples(
+    rows: List[List[Any]], supplement: List[List[Any]]
+) -> List[List[Any]]:
+    """Merge the HK seed into compressed payload tuples (``--index-only``)."""
+    return _merge_supplement_rows(
+        rows,
+        supplement,
+        key_of=lambda row: row[0],
+        market_of=lambda row: row[6],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Index registry seed — build-time manifest merge.
 # ---------------------------------------------------------------------------
 _INDEX_REGISTRY_SEED_PATH = Path(__file__).parent / "stock_index_seeds" / "index_registry.csv"
@@ -945,11 +1116,14 @@ def _atomic_write_json(output_path: Path, compressed: List[List[Any]]) -> None:
 
 
 def run_index_only(output_path: Path, *, test: bool = False) -> List[List[Any]]:
-    """Merge the approved index-registry seed into the existing compressed JSON.
+    """Merge the approved index-registry seed and the HK trust/REIT supplement
+    into the existing compressed JSON.
 
-    Preserves all non-index tuples in their original order, removes any old
-    index tuples, appends seed-generated index rows sorted by canonicalCode,
-    validates, and atomically replaces the output (unless ``test``).
+    Preserves all non-index tuples in their original order (the HK supplement
+    rows are inserted after the last HK row, skipping codes already present),
+    removes any old index tuples, appends seed-generated index rows sorted by
+    canonicalCode, validates, and atomically replaces the output (unless
+    ``test``).
     """
     seed_rows = load_index_registry_seed()
     index_entries = build_index_entries_from_seed(seed_rows)
@@ -957,6 +1131,13 @@ def run_index_only(output_path: Path, *, test: bool = False) -> List[List[Any]]:
     existing = _load_existing_payload(output_path)
     validate_stock_index_payload(existing, min_items=0)
     non_index = [item for item in existing if not (len(item) > 7 and item[7] == "index")]
+
+    # Same supplement as the full rebuild path, so both paths produce the same
+    # rows at the same relative position.
+    supplement_entries = compress_index(build_stock_index(load_hk_trust_reit_seed()))
+    validate_hk_trust_reit_entries(supplement_entries)
+    non_index = merge_hk_trust_reit_tuples(non_index, supplement_entries)
+
     # Validate the seed index rows against the existing active stock/ETF rows so
     # an index identity that collides with a stock/ETF key is rejected.
     validate_index_registry(index_entries, non_index_rows=non_index)
@@ -965,6 +1146,7 @@ def run_index_only(output_path: Path, *, test: bool = False) -> List[List[Any]]:
     index_compressed.sort(key=lambda item: str(item[0]))
 
     merged = non_index + index_compressed
+    validate_stock_index_payload(merged, min_items=0)
     if not test:
         _atomic_write_json(output_path, merged)
     return merged
@@ -982,7 +1164,7 @@ def main():
     parser.add_argument(
         '--index-only',
         action='store_true',
-        help='仅合并指数注册表 seed 到现有压缩 JSON，不重建股票索引'
+        help='仅合并指数注册表 seed 与港股信托/房托 seed 到现有压缩 JSON，不重建股票索引'
     )
     parser.add_argument(
         '--test', '-t',
@@ -1004,10 +1186,10 @@ def main():
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # --index-only: 只合并指数 seed，不重建股票索引。
+    # --index-only: 只合并 seed 行（指数注册表 + 港股信托/房托），不重建股票索引。
     if args.index_only:
-        print(f"数据源：index-only（合并指数注册表 seed）")
-        print("\n[1/3] 读取指数注册表 seed...")
+        print("数据源：index-only（合并指数注册表 seed 与港股信托/房托 seed）")
+        print("\n[1/3] 读取 seed 并合并...")
         merged = run_index_only(output_path, test=args.test)
         print(f"      合并后共 {len(merged)} 条记录")
         index_rows = [item for item in merged if len(item) > 7 and item[7] == "index"]
@@ -1030,7 +1212,7 @@ def main():
     # 加载数据
     print("\n[1/5] 读取 CSV 数据...")
     if args.source == 'tushare':
-        data_dir = Path(__file__).parent.parent / 'data'
+        data_dir = _DEFAULT_DATA_DIR
         stocks = load_tushare_data(data_dir)
     elif args.source == 'akshare':
         logs_dir = Path(__file__).parent.parent / 'logs'

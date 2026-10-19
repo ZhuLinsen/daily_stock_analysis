@@ -107,6 +107,22 @@ STOCK_NAME_MAP = {
     "01299": "友邦保险",
     "00941": "中国移动",
     "00883": "中国海洋石油",
+    # === HK trusts / REITs / stapled securities (5-digit) ===
+    # Tushare ``hk_basic`` omits these listings; names match the curated
+    # scripts/stock_index_seeds/stock_list_hk_trust.csv seed (display style
+    # drops the -SS/-R suffix like the -W/-SW entries above).
+    "06823": "香港电讯",
+    "00823": "领展房产基金",
+    "00778": "置富产业信托",
+    "00435": "阳光房地产基金",
+    "00808": "泓富产业信托",
+    "02778": "冠君产业信托",
+    "01426": "春泉产业信托",
+    "01881": "富豪产业信托",
+    "00405": "越秀房产信托基金",
+    "01503": "招商局商业房托",
+    "02191": "顺丰房托",
+    "87001": "汇贤产业信托",
 }
 
 
@@ -173,6 +189,22 @@ STOCK_ENGLISH_NAME_MAP: Dict[str, Tuple[str, ...]] = {
     "01299": ("AIA Group", "AIA"),
     "00941": ("China Mobile",),
     "00883": ("CNOOC",),
+    # === HK trusts / REITs / stapled securities (5-digit) ===
+    "06823": ("HKT Trust and HKT Limited", "HKT"),
+    "00823": ("Link Real Estate Investment Trust", "Link REIT"),
+    "00778": ("Fortune Real Estate Investment Trust", "Fortune REIT"),
+    "00435": ("Sunlight Real Estate Investment Trust", "Sunlight REIT"),
+    "00808": ("Prosperity Real Estate Investment Trust", "Prosperity REIT"),
+    "02778": ("Champion Real Estate Investment Trust", "Champion REIT"),
+    "01426": ("Spring Real Estate Investment Trust", "Spring REIT"),
+    "01881": ("Regal Real Estate Investment Trust", "Regal REIT"),
+    "00405": ("Yuexiu Real Estate Investment Trust", "Yuexiu REIT"),
+    "01503": (
+        "China Merchants Commercial Real Estate Investment Trust",
+        "China Merchants Commercial REIT",
+    ),
+    "02191": ("SF Real Estate Investment Trust", "SF REIT"),
+    "87001": ("Hui Xian Real Estate Investment Trust", "Hui Xian REIT"),
 }
 
 

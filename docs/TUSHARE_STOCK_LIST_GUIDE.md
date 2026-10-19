@@ -116,6 +116,8 @@ python3 scripts/refresh_stock_index.py
 
 生成自动补全索引依赖 `pypinyin` 写入中文股票的完整拼音和拼音首字母字段；缺少该依赖时脚本会直接失败，避免生成无法支持拼音搜索的降级索引。
 
+港股信托、房托与合订证券（如 `06823.HK` 香港电讯-SS、`00823.HK` 领展房产基金）属于 Tushare `hk_basic` 不返回的品种，无法从 `data/stock_list_hk.csv` 得到，改由人工维护的 `scripts/stock_index_seeds/stock_list_hk_trust.csv` 补充。整表重建与 `--index-only` 两条路径都会把该 seed 插到港股区块末尾，代码已存在时自动跳过，因此不会产生重复行；新增或移除这类品种直接改该 seed 文件后重新生成索引即可。
+
 如果你只想单独更新 CSV，可以先抓取数据：
 
 ```bash

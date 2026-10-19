@@ -20,7 +20,7 @@ Analyze your watchlist daily -> generate a decision dashboard -> push to Telegra
 
 [**Product Preview**](#-product-preview) · [**Key Features**](#-key-features) · [**Quick Start**](#-quick-start) · [**Sample Output**](#-sample-output) · [**Documentation Index**](./INDEX_EN.md) · [**Full Guide**](./full-guide_EN.md)
 
-English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
+English | [简体中文](../README_CH.md) | [繁體中文](README_CHT.md)
 
 </div>
 

@@ -78,6 +78,7 @@ def test_docker_memory_guides_describe_resource_profiles() -> None:
         "docs/full-guide.md",
         "docs/full-guide_EN.md",
         "docs/docker/zeabur-deployment.md",
+        "docs/docker/zeabur-deployment-updated20261010.md",
     )
 
     for doc_path in doc_paths:

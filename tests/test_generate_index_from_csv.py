@@ -33,6 +33,9 @@ from generate_index_from_csv import (
     build_index_entries_from_seed,
     validate_index_registry,
     run_index_only,
+    load_hk_trust_reit_seed,
+    validate_hk_trust_reit_entries,
+    merge_hk_trust_reit_stocks,
     _normalize_index_key,
 )
 
@@ -749,8 +752,10 @@ class TestIndexRegistrySeed:
         merged = run_index_only(output, test=True)
         non_index = [x for x in merged if not (len(x) > 7 and x[7] == "index")]
         index_rows = [x for x in merged if len(x) > 7 and x[7] == "index"]
-        # Non-index rows preserved in order.
-        assert [x[0] for x in non_index] == ["000001.SZ", "600519.SH"]
+        # Existing rows are preserved in order; the HK trust/REIT supplement has
+        # no HK row to attach to here, so it is appended sorted by canonical.
+        seed_codes = sorted(row["ts_code"] for row in load_hk_trust_reit_seed())
+        assert [x[0] for x in non_index] == ["000001.SZ", "600519.SH"] + seed_codes
         # Exactly 33 index rows appended.
         assert len(index_rows) == 33
         # Index rows sorted by canonical.
@@ -1004,3 +1009,141 @@ class TestIndexRegistrySeed:
         index_rows = [item for item in compressed if len(item) > 7 and item[7] == "index"]
         canonicals = [x[0] for x in index_rows]
         assert canonicals == sorted(canonicals)
+
+
+class TestHkTrustReitSeed:
+    """港股信托/房托 seed：Tushare ``hk_basic`` 不返回的品种也要能被自动补全搜到。"""
+
+    def test_seed_rows_are_well_formed_hk_codes(self):
+        rows = load_hk_trust_reit_seed()
+        codes = [row["ts_code"] for row in rows]
+        assert len(codes) == len(set(codes)) == 11
+        assert "06823.HK" in codes
+        for row in rows:
+            assert row["market"] == "HK"
+            body = row["ts_code"].split(".")[0]
+            assert row["ts_code"].endswith(".HK")
+            assert len(body) == 5 and body.isdigit()
+            assert row["symbol"] == body
+            assert row["name"].strip()
+            assert row["aliases"]
+
+    def test_seed_entries_cover_every_row(self):
+        rows = load_hk_trust_reit_seed()
+        entries = compress_index(build_stock_index(rows))
+        validate_hk_trust_reit_entries(entries)
+        assert {item[0] for item in entries} == {row["ts_code"] for row in rows}
+        hkt = next(item for item in entries if item[0] == "06823.HK")
+        assert hkt[2] == "香港电讯-SS"
+        # 拼音字段决定拼音搜索可用性，不能为空。
+        assert hkt[3] and hkt[4]
+
+    def test_seed_rejects_duplicate_canonical(self, tmp_path):
+        seed = tmp_path / "seed.csv"
+        seed.write_text(
+            "ts_code,symbol,name,enname,aliases\n"
+            "06823.HK,06823,香港电讯-SS,HKT Trust and HKT Limited,\n"
+            "06823.HK,06823,香港电讯-SS,HKT Trust and HKT Limited,\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="duplicate HK trust/REIT seed canonical"):
+            load_hk_trust_reit_seed(seed)
+
+    def test_seed_rejects_non_hk_code_shape(self, tmp_path):
+        seed = tmp_path / "seed.csv"
+        seed.write_text(
+            "ts_code,symbol,name,enname,aliases\n"
+            "06823,06823,香港电讯-SS,HKT Trust and HKT Limited,\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=r"canonical must match"):
+            load_hk_trust_reit_seed(seed)
+
+    def test_validate_rejects_non_hk_entry(self):
+        entries = compress_index(build_stock_index(load_hk_trust_reit_seed()))
+        broken = [list(entries[0])]
+        broken[0][6] = "US"
+        with pytest.raises(ValueError, match="active HK stocks"):
+            validate_hk_trust_reit_entries(broken)
+
+    def test_merge_inserts_after_last_hk_row_and_skips_existing_codes(self):
+        seed = load_hk_trust_reit_seed()
+        stocks = [
+            {"ts_code": "000001.SZ", "symbol": "000001", "name": "平安银行", "market": "CN", "aliases": []},
+            {"ts_code": "00700.HK", "symbol": "00700", "name": "腾讯控股", "market": "HK", "aliases": []},
+            {"ts_code": "06823.HK", "symbol": "06823", "name": "香港电讯-SS", "market": "HK", "aliases": []},
+            {"ts_code": "AAPL", "symbol": "AAPL", "name": "Apple Inc.", "market": "US", "aliases": []},
+        ]
+        merged = merge_hk_trust_reit_stocks(stocks, seed)
+        codes = [row["ts_code"] for row in merged]
+        # 06823 已存在于股票列表：seed 行被跳过，不产生重复 canonical。
+        assert codes.count("06823.HK") == 1
+        assert len(codes) == len(stocks) + len(seed) - 1
+        # 插入位置固定在港股区块末尾、美股之前；新行本身按 canonical 排序。
+        assert [row["market"] for row in merged] == ["CN"] + ["HK"] * (len(seed) + 1) + ["US"]
+        fresh = sorted(row["ts_code"] for row in seed if row["ts_code"] != "06823.HK")
+        assert codes[3 : 3 + len(fresh)] == fresh
+        assert codes[3 + len(fresh)] == "AAPL"
+
+    def test_full_rebuild_loads_seed_from_default_data_dir(self, tmp_path, monkeypatch):
+        """整表重建路径（``load_tushare_data``）同样合并 seed，并优先 CSV 行。"""
+        import generate_index_from_csv as gen
+
+        hk_csv = tmp_path / "stock_list_hk.csv"
+        with open(hk_csv, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["ts_code", "name", "enname"])
+            writer.writeheader()
+            writer.writerow({"ts_code": "00700.HK", "name": "腾讯控股", "enname": "Tencent"})
+            writer.writerow({"ts_code": "06823.HK", "name": "香港电讯-SS", "enname": "HKT Trust"})
+
+        monkeypatch.setattr(gen, "_DEFAULT_DATA_DIR", tmp_path)
+        stocks = gen.load_tushare_data(tmp_path)
+
+        codes = [stock["ts_code"] for stock in stocks]
+        # CSV 已含 06823 时 seed 行被跳过，不产生重复 canonical。
+        assert codes.count("06823.HK") == 1
+        hk_codes = [code for code in codes if code.endswith(".HK")]
+        assert hk_codes[:2] == ["00700.HK", "06823.HK"]
+        assert hk_codes[2:] == sorted(
+            row["ts_code"] for row in load_hk_trust_reit_seed() if row["ts_code"] != "06823.HK"
+        )
+
+    def test_index_only_merges_trust_rows_into_hk_block(self, tmp_path):
+        output = tmp_path / "stocks.index.json"
+        output.write_text(
+            json.dumps(
+                [
+                    ["000001.SZ", "000001", "平安银行", "pinganyinhang", "payh", [], "CN", "stock", True, 100],
+                    ["00700.HK", "00700", "腾讯控股", "tengxunkonggu", "txkg", [], "HK", "stock", True, 100],
+                    ["AAPL", "AAPL", "Apple Inc.", "apple", "apple", [], "US", "stock", True, 100],
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        merged = run_index_only(output, test=True)
+        stock_rows = [x for x in merged if len(x) > 7 and x[7] == "stock"]
+        assert stock_rows[0][0] == "000001.SZ"
+        hk_codes = [x[0] for x in stock_rows if x[6] == "HK"]
+        assert hk_codes == ["00700.HK"] + sorted(
+            row["ts_code"] for row in load_hk_trust_reit_seed()
+        )
+        # 港股区块之后仍接美股，seed 不改变其它市场顺序。
+        assert [x[6] for x in stock_rows] == ["CN"] + ["HK"] * len(hk_codes) + ["US"]
+        # 指数行数量不受 seed 影响。
+        assert len([x for x in merged if len(x) > 7 and x[7] == "index"]) == 33
+
+    def test_bundled_index_contains_hk_trust_reit_seed_rows(self):
+        """已提交的 Web 索引必须包含全部 seed 行（用户可见修复的回归护栏）。"""
+        index_path = (
+            Path(__file__).parent.parent / "apps" / "dsa-web" / "public" / "stocks.index.json"
+        )
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+        by_code = {item[0]: item for item in payload}
+        for row in load_hk_trust_reit_seed():
+            item = by_code.get(row["ts_code"])
+            assert item is not None, f"{row['ts_code']} missing from bundled index"
+            assert item[1] == row["symbol"]
+            assert item[2] == row["name"]
+            assert item[6] == "HK" and item[7] == "stock"
+            assert item[3] and item[4]

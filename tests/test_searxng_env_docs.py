@@ -107,6 +107,7 @@ def test_docs_describe_public_searxng_discovery_as_opt_in() -> None:
         ROOT_DIR / "docs" / "full-guide.md",
         ROOT_DIR / "docs" / "DEPLOY.md",
         ROOT_DIR / "docs" / "docker" / "zeabur-deployment.md",
+        ROOT_DIR / "docs" / "docker" / "zeabur-deployment-updated20261010.md",
     ]
     for path in chinese_docs:
         content = path.read_text(encoding="utf-8")
