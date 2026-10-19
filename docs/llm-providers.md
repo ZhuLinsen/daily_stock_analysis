@@ -137,8 +137,6 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 硅基流动 / SiliconFlow | `siliconflow` | `openai` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3.2,Qwen/Qwen3-235B-A22B-Thinking-2507` |
 | OpenRouter | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `~anthropic/claude-sonnet-latest,~openai/gpt-latest` |
 | Requesty | `requesty` | `openai` | `https://router.requesty.ai/v1`（EU：`https://router.eu.requesty.ai/v1`） | `claude-sonnet-4-6,gpt-5.4` |
-| Opper | `opper` | `openai` | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6,gpt-5.4-mini` |
-| API Route | `api_route` | `openai` | `https://global.api-route.com/v1` | `gpt-6.1-sol,claude-fable-5-1,gpt-5.5` |
 | Anspire Open（兼容） | `anspire` | `openai` | `https://open-gateway.anspire.cn/v6`（示例） | `Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash,MiniMax-M2.7`（示例） |
 | Ollama | `ollama` | `ollama` | `http://127.0.0.1:11434` | `llama3.2,qwen2.5` |
 
@@ -160,10 +158,8 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | SiliconFlow | [模型列表](https://docs.siliconflow.cn/quickstart/models)、[获取模型列表 API](https://docs.siliconflow.cn/cn/api-reference/models/get-model-list) | 平台模型实时更新且 `/models` 需要 API Key；模板只给常见新模型示例，保存前建议在 Web 设置页点击「获取模型」确认账号可见性。 |
 | OpenRouter | [Models API](https://openrouter.ai/docs/api/api-reference/models/get-models) | OpenRouter 支持 `~anthropic/claude-sonnet-latest`、`~openai/gpt-latest` 等 latest router alias；2026-05-03 的一次手动 live smoke 以 Claude Sonnet latest 作为默认示例通过，GPT latest 保留为可按账号权限切换的备选。 |
 | Requesty | [Models API](https://docs.requesty.ai/api-reference/endpoint/models-list)、[EU Routing](https://docs.requesty.ai/features/eu-routing) | 模板示例为无斜杠的 managed 模型 ID，运行时按 `openai/<model>` 路由；Base URL 为 `requesty.ai` 域名时，Web「获取模型」返回的 vendor/model ID 会保存为 `openai/<vendor>/<model>`（如 `openai/openai/gpt-4o-mini`、`openai/anthropic/claude-sonnet-4-6`），手动填写的 `anthropic/...`、`vertex/...` 也会自动补上 `openai/` 网关路由，完整 ID 原样发送给 Requesty；仅 `openai/` 开头的 ID 与 LiteLLM 路由前缀重名，手动填写时需写成 `openai/openai/gpt-4o-mini`。同一 API Key 可用于 EU 端点 `https://router.eu.requesty.ai/v1`。 |
-| Opper | [模型目录](https://opper.ai/models)、[Drop-in SDKs](https://docs.opper.ai/build/gateway/drop-in-sdks) | 模板示例为无斜杠的 pool 模型 ID，同一模型在多家服务商间负载均衡，运行时按 `openai/<model>` 路由；`provider/model` ID（如 `anthropic/claude-sonnet-4-6`）固定单一服务商线路。Base URL 为 `opper.ai` 域名时，Web「获取模型」返回的 provider/model ID 会保存为 `openai/<provider>/<model>`，完整 ID 原样发送给 Opper。手动填写的值按通用规则处理，与其他 OpenAI Compatible Base URL 一致，已有渠道配置与模型引用不受影响；手动填写固定线路 ID 时请写成 `openai/<provider>/<model>`（如 `openai/anthropic/claude-sonnet-4-6`、`openai/openai/gpt-5.5`）。 |
 | Anspire Open（兼容） | [Anspire Open](https://open.anspire.cn/dsa?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` 在未配置更高优先级 OpenAI-compatible 来源时可用于大模型网关与搜索；兼容示例为 `openai/Doubao-Seed-2.0-lite` + `https://open-gateway.anspire.cn/v6`，是否可用以控制台与模型权限为准。 |
 | LiteLLM | [OpenAI-Compatible Endpoints](https://docs.litellm.ai/docs/providers/openai_compatible) | OpenAI-compatible 端点需要把运行时模型写成 `openai/<model>`，Base URL 只填到服务商兼容入口，不额外拼接 `/chat/completions`。 |
-| API Route | [API 文档](https://github.com/DennyHo0917/api-route/blob/main/API.md) | `/models` 需要 Key，模型可见性依赖 Key 所属分组与账号权限；请选择聊天模型并保留完整 ID。渠道内使用 `gpt-6.1-sol` 等原始 ID，运行时为 `openai/gpt-6.1-sol`；Claude 同样走 OpenAI-compatible 网关，不切换到 Anthropic 直连。模板不声明 Vision、Responses 或工具能力。 |
 
 本页预设只保证配置形状与当前依赖的 OpenAI-compatible 路由规则一致；实际连通性仍取决于服务商账号权限、地域、额度和模型开通状态。当前 LiteLLM 版本约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`（见 `requirements.txt`），保留历史最低版本、显式排除 PyPI 事故版本，并将上界收敛到已验证的 `<1.99.0`，避免未来大版本自动进入。
 
@@ -197,7 +193,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | `LLM_USAGE_HMAC_SECRET` | Secrets | 可选；只有需要跨部署比较 usage message HMAC 时才配置同一个高熵随机密钥，例如 `openssl rand -hex 32`；不要放 Variables 或提交到版本控制。 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Variables 或 Secrets | 可选；轮换 `LLM_USAGE_HMAC_SECRET` 时同步更新版本标签，避免误比较不同密钥生成的 HMAC。 |
 
-默认 workflow 已显式映射 `modelflare`、`primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`opper`、`api_route`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
+默认 workflow 已显式映射 `modelflare`、`primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
 
 回滚 HMAC 遥测显式配置时，可移除 `LLM_USAGE_HMAC_SECRET` 并恢复或删除 `LLM_USAGE_HMAC_KEY_VERSION`；留空后系统会回到本地生成 `.llm_usage_hmac_secret` 的默认行为。
 

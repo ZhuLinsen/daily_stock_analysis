@@ -192,31 +192,6 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
-    channelId: 'opper',
-    label: 'Opper',
-    protocol: 'openai',
-    baseUrl: 'https://api.opper.ai/v3/compat',
-    placeholderModels: 'claude-sonnet-4-6,gpt-5.4-mini',
-    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
-    configHint: '模型列表和模型可见性依赖账号权限与 API Key；无斜杠的模型 ID 在多家服务商间负载均衡，provider/model ID 固定单一线路。',
-    officialSources: [
-      { label: 'Opper Models', url: 'https://opper.ai/models' },
-    ],
-  },
-  {
-    channelId: 'api_route',
-    label: 'API Route',
-    protocol: 'openai',
-    baseUrl: 'https://global.api-route.com/v1',
-    placeholderModels: 'gpt-6.1-sol,claude-fable-5-1,gpt-5.5',
-    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
-    configHint: '模型列表依赖 API Key 所属分组与账号权限；请获取模型并选择可用的聊天模型，使用返回的完整模型 ID。',
-    officialSources: [
-      { label: 'API Route API', url: 'https://github.com/DennyHo0917/api-route/blob/main/API.md' },
-      { label: 'API Route', url: 'https://www.api-route.com/' },
-    ],
-  },
-  {
     channelId: 'gemini',
     label: 'Gemini 官方',
     protocol: 'gemini',
