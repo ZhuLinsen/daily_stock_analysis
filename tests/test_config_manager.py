@@ -2,19 +2,26 @@
 """Unit tests for structured `.env` line preservation in ConfigManager."""
 
 import errno
-import grp
 import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List, Tuple
 from unittest.mock import patch
 
-from src.core.config_manager import ConfigManager
+from src.core.config_manager import ENV_GROUP_NOT_PRESERVED_WARNING, ConfigManager
+
+try:
+    import grp
+except ImportError:  # pragma: no cover - Windows and other non-POSIX platforms
+    grp = None  # type: ignore[assignment]
 
 
 def _supplementary_groups() -> set:
     """Group names this process may chown a file to."""
+    if grp is None:  # pragma: no cover - non-POSIX
+        return set()
     try:
         return {grp.getgrgid(gid).gr_name for gid in os.getgroups()}
     except (AttributeError, KeyError, OSError):  # pragma: no cover - non-POSIX
@@ -116,7 +123,7 @@ class ConfigManagerTestCase(unittest.TestCase):
                     self.assertEqual(self.env_path.read_text(encoding="utf-8"), "STOCK_LIST=000001\n")
                     self.assertEqual(list(self.env_path.parent.glob("*.tmp")), [])
 
-    @unittest.skipIf(os.name == "nt", "POSIX file permissions")
+    @unittest.skipIf(os.name == "nt" or grp is None, "POSIX file permissions")
     def test_apply_updates_preserves_existing_env_group(self) -> None:
         """The atomic replace must not drop the target's group.
 
@@ -127,13 +134,10 @@ class ConfigManagerTestCase(unittest.TestCase):
         fallback path keeps the inode and so keeps the group; both paths have to
         agree.
         """
-        try:
-            groups = sorted(
-                g.gr_name for g in grp.getgrall()
-                if self.env_path.parent.stat().st_gid != g.gr_gid
-            )
-        except (AttributeError, KeyError):  # pragma: no cover - non-POSIX
-            self.skipTest("grp module unavailable")
+        groups = sorted(
+            g.gr_name for g in grp.getgrall()
+            if self.env_path.parent.stat().st_gid != g.gr_gid
+        )
         # Pick a group the process may chown to; without one the assertion is
         # about the warning path instead, which is covered separately.
         candidate = next(
@@ -151,44 +155,106 @@ class ConfigManagerTestCase(unittest.TestCase):
         before_gid = self.env_path.stat().st_gid
         original_replace = os.replace
 
-        for use_fallback in (False, True):
+        for round_index, use_fallback in enumerate((False, True)):
             with self.subTest(fallback=use_fallback):
+                # A distinct value per round keeps the second write from being
+                # skipped as a no-op, so the fallback branch really executes.
+                value = ("000001", "600519")[round_index]
+                ino_before = self.env_path.stat().st_ino
                 with patch(
                     "src.core.config_manager.os.replace",
                     side_effect=OSError(errno.EXDEV, "cross-device") if use_fallback else original_replace,
                 ):
                     self.manager.apply_updates(
-                        updates=[("STOCK_LIST", "000001")],
+                        updates=[("STOCK_LIST", value)],
                         sensitive_keys=set(), mask_token="******",
                     )
                 after = self.env_path.stat()
                 self.assertEqual(after.st_gid, before_gid)
                 self.assertEqual(stat.S_IMODE(after.st_mode), 0o640)
-                self.assertEqual(self.env_path.read_text(encoding="utf-8"), "STOCK_LIST=000001\n")
+                self.assertEqual(self.env_path.read_text(encoding="utf-8"), f"STOCK_LIST={value}\n")
+                if use_fallback:
+                    # The in-place rewrite truncates the existing inode.
+                    self.assertEqual(after.st_ino, ino_before)
+                else:
+                    self.assertNotEqual(after.st_ino, ino_before)
+                self.assertEqual(list(self.env_path.parent.glob("*.tmp")), [])
 
     @unittest.skipIf(os.name == "nt", "POSIX file permissions")
-    def test_apply_updates_warns_when_group_cannot_be_preserved(self) -> None:
-        """A refused chown must not fail the save, but has to be reported."""
-        secondary = sorted(_supplementary_groups() - {grp.getgrgid(os.getgid()).gr_name})
-        if not secondary:
-            self.skipTest("no secondary group available")
+    def test_apply_updates_keeps_original_file_when_group_cannot_be_preserved(self) -> None:
+        """A refused group carry-over must not replace the original file.
+
+        Replacing anyway would move the `.env` onto the replacement's primary
+        group and strip the original shared group's read access, so the write
+        falls back to rewriting the existing inode, which keeps both the group
+        and the mode. The failure itself is raised deterministically by
+        stubbing ``_preserve_env_group``; the chown failure it stands for is
+        covered by the ``_preserve_env_group`` unit tests below, which need no
+        secondary group on the host.
+        """
         self.env_path.write_text("STOCK_LIST=600519\n", encoding="utf-8")
         self.env_path.chmod(0o640)
-        # Force a group mismatch so the no-op short circuit does not apply.
-        os.chown(self.env_path, -1, grp.getgrnam(secondary[0]).gr_gid)
+        before = self.env_path.stat()
+        original_replace = os.replace
 
-        with patch("src.core.config_manager.os.chown",
-                   side_effect=PermissionError("operation not permitted")), \
-             self.assertLogs("src.core.config_manager", level="WARNING") as logs:
-            self.manager.apply_updates(
+        with patch.object(ConfigManager, "_preserve_env_group", return_value=False), \
+             patch("src.core.config_manager.os.replace", side_effect=original_replace) as replace_mock:
+            updated_keys, _, _, write_warnings = self.manager.apply_updates(
                 updates=[("STOCK_LIST", "000001")],
                 sensitive_keys=set(), mask_token="******",
             )
 
-        assert any("group ownership" in message for message in logs.output)
-        # The write still succeeded and the mode is still correct.
-        self.assertEqual(stat.S_IMODE(self.env_path.stat().st_mode), 0o640)
+        self.assertEqual(updated_keys, ["STOCK_LIST"])
+        self.assertEqual(write_warnings, [ENV_GROUP_NOT_PRESERVED_WARNING])
+        replace_mock.assert_not_called()
+        after = self.env_path.stat()
+        self.assertEqual(after.st_ino, before.st_ino)
+        self.assertEqual(after.st_gid, before.st_gid)
+        self.assertEqual(stat.S_IMODE(after.st_mode), 0o640)
         self.assertEqual(self.env_path.read_text(encoding="utf-8"), "STOCK_LIST=000001\n")
+        self.assertEqual(list(self.env_path.parent.glob("*.tmp")), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX file permissions")
+    def test_preserve_env_group_chowns_replacement_to_target_gid(self) -> None:
+        """The replacement file must be chowned to the target's gid."""
+        fd, name = tempfile.mkstemp(dir=self.temp_dir.name)
+        os.close(fd)
+        temp_path = Path(name)
+        # Any gid other than the temp file's own works: os.chown is stubbed,
+        # so this does not depend on the host's group list.
+        target_gid = temp_path.stat().st_gid + 1
+        chown_calls: List[Tuple[int, int]] = []
+
+        def recording_chown(path, uid, gid) -> None:
+            chown_calls.append((uid, gid))
+
+        try:
+            with patch("src.core.config_manager.os.chown", side_effect=recording_chown):
+                preserved = ConfigManager._preserve_env_group(temp_path, target_gid)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        self.assertTrue(preserved)
+        self.assertEqual(chown_calls, [(-1, target_gid)])
+
+    @unittest.skipIf(os.name == "nt", "POSIX file permissions")
+    def test_preserve_env_group_reports_failure_when_chown_refused(self) -> None:
+        """A refused chown must return False and warn, never raise."""
+        fd, name = tempfile.mkstemp(dir=self.temp_dir.name)
+        os.close(fd)
+        temp_path = Path(name)
+        target_gid = temp_path.stat().st_gid + 1
+
+        try:
+            with patch("src.core.config_manager.os.chown",
+                       side_effect=PermissionError(errno.EPERM, "operation not permitted")), \
+                 self.assertLogs("src.core.config_manager", level="WARNING") as logs:
+                preserved = ConfigManager._preserve_env_group(temp_path, target_gid)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        self.assertFalse(preserved)
+        self.assertTrue(any("group ownership" in message for message in logs.output))
 
     @unittest.skipIf(os.name == "nt", "POSIX file permissions")
     def test_apply_updates_creates_private_env_file(self) -> None:

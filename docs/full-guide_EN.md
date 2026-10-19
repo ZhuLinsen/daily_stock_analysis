@@ -1688,7 +1688,7 @@ A: AkShare uses scraping mechanism, may be temporarily rate-limited. System has 
 ### Q: How to add watchlist stocks?
 A: Modify the `STOCK_LIST` environment variable. English commas are recommended between codes. Chinese commas, enumeration commas, semicolons, spaces, and newlines are also recognized and are normalized to English commas after saving in Web settings or using watchlist add/remove actions.
 
-Configuration saves preserve both the file mode and the group ownership of an existing `.env`. Newly created files default to mode `600` on POSIX systems, allowing only the current user to read and write them. If the original file is shared through a supplementary group (`owner:shared`, `0640`), that group can still read it after a save. When the service account is not a member of that group and the ownership cannot be carried over, the save still succeeds but logs a warning; add the service account to that group or widen the mode.
+Configuration saves preserve both the file mode and the group ownership of an existing `.env`. Newly created files default to mode `600` on POSIX systems, allowing only the current user to read and write them. If the original file is shared through a supplementary group (`owner:shared`, `0640`), that group can still read it after a save. When the service account is not a member of that group and the ownership cannot be carried over, the save still succeeds but falls back to an in-place rewrite that keeps the original file (and therefore its mode and group), and reports a warning in the save response; add the service account to that group or widen the mode to restore the atomic replace.
 
 ### Q: GitHub Actions not executing?
 A: Check if Actions is enabled, and if cron expression is correct (note it's UTC time).

@@ -19,6 +19,9 @@ from dotenv import dotenv_values
 
 _ASSIGNMENT_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 _FALLBACK_REWRITE_ERRNOS = {errno.EBUSY, errno.EXDEV}
+# Warning code returned by apply_updates when the atomic replace had to be
+# skipped so an existing shared group keeps its access to `.env`.
+ENV_GROUP_NOT_PRESERVED_WARNING = "env_group_not_preserved"
 _COMPOSE_ESCAPED_ENV_VALUE_KEYS = frozenset({"CUSTOM_WEBHOOK_BODY_TEMPLATE"})
 _APPLICATION_TEMPLATE_PLACEHOLDER_PATTERN = re.compile(
     r"(?<!\$)\$(?:"
@@ -181,8 +184,13 @@ class ConfigManager:
         updates: Iterable[Tuple[str, str]],
         sensitive_keys: Set[str],
         mask_token: str,
-    ) -> Tuple[List[str], List[str], str]:
-        """Apply updates into `.env` file using atomic replace when possible."""
+    ) -> Tuple[List[str], List[str], str, List[str]]:
+        """Apply updates into `.env` file using atomic replace when possible.
+
+        Returns the updated keys, the masked keys that were skipped, the new
+        config version, and warning codes for write conditions the operator
+        should know about (see ``ENV_GROUP_NOT_PRESERVED_WARNING``).
+        """
         with self._lock:
             current_values = self.read_config_map()
             stored_values = self._read_config_map(normalize_values=False)
@@ -211,13 +219,22 @@ class ConfigManager:
 
                 mutable_updates[key_upper] = value
 
+            write_warnings: List[str] = []
             if mutable_updates:
-                self._atomic_upsert(mutable_updates)
+                write_warnings = self._atomic_upsert(mutable_updates)
 
-            return list(mutable_updates.keys()), skipped_masked, self.get_config_version()
+            return (
+                list(mutable_updates.keys()),
+                skipped_masked,
+                self.get_config_version(),
+                write_warnings,
+            )
 
-    def _atomic_upsert(self, updates: Dict[str, str]) -> None:
-        """Write updates with atomic rename and in-place fallback for mounted files."""
+    def _atomic_upsert(self, updates: Dict[str, str]) -> List[str]:
+        """Write updates with atomic rename and in-place fallback for mounted files.
+
+        Returns warning codes for conditions the operator should know about.
+        """
         entries = self._read_entries()
         key_to_index = self._find_last_key_indexes(entries)
 
@@ -252,17 +269,27 @@ class ConfigManager:
                 file_obj.flush()
                 os.fsync(file_obj.fileno())
             temp_path.chmod(existing_mode)
-            self._preserve_env_group(temp_path, existing_gid)
-            try:
-                os.replace(temp_path, self._env_path)
-            except OSError as exc:
-                if exc.errno not in _FALLBACK_REWRITE_ERRNOS:
-                    raise
+            warnings: List[str] = []
+            replaced = False
+            if self._preserve_env_group(temp_path, existing_gid):
+                try:
+                    os.replace(temp_path, self._env_path)
+                    replaced = True
+                except OSError as exc:
+                    if exc.errno not in _FALLBACK_REWRITE_ERRNOS:
+                        raise
 
-                logger.warning(
-                    "Atomic replace for .env failed with errno=%s, falling back to in-place rewrite",
-                    exc.errno,
-                )
+                    logger.warning(
+                        "Atomic replace for .env failed with errno=%s, falling back to in-place rewrite",
+                        exc.errno,
+                    )
+            else:
+                # Replacing anyway would move the file onto the replacement's
+                # primary group and strip the original group's access, so keep
+                # the existing inode instead: the in-place rewrite preserves
+                # both the group and the mode.
+                warnings.append(ENV_GROUP_NOT_PRESERVED_WARNING)
+            if not replaced:
                 self._rewrite_in_place(content)
                 if not env_existed:
                     # open("w") created the file under the process umask, which
@@ -270,12 +297,13 @@ class ConfigManager:
                     # exists for, so the new .env would ship its secrets
                     # world-readable.
                     self._env_path.chmod(existing_mode)
+            return warnings
         finally:
             if temp_path.exists():
                 temp_path.unlink()
 
     @staticmethod
-    def _preserve_env_group(temp_path: Path, gid: Optional[int]) -> None:
+    def _preserve_env_group(temp_path: Path, gid: Optional[int]) -> bool:
         """Carry the target `.env` group onto the replacement file.
 
         chmod only copies mode bits, and mkstemp creates the file under the
@@ -285,23 +313,26 @@ class ConfigManager:
         problem behind world-read. The in-place fallback path needs no such
         step because it truncates the existing inode and keeps its group.
 
-        Failing to change the group is not fatal: the write still succeeds and
-        the mode is still correct, so we only warn. The operator then has to
-        add the service account to that group.
+        Returns True when the replacement carries ``gid`` (or no group had to
+        be carried over). Returns False when the chown was refused; the caller
+        must then keep the original file, because replacing it would move the
+        `.env` onto the replacement's primary group.
         """
         if gid is None:
-            return
+            return True
         try:
             if temp_path.stat().st_gid == gid:
-                return
+                return True
             os.chown(temp_path, -1, gid)
         except (OSError, NotImplementedError, AttributeError) as exc:
             logger.warning(
                 "Could not preserve .env group ownership (gid=%s, %s); "
-                "consumers reading through that group may lose access. "
+                "keeping the original file so that group keeps its access. "
                 "Add the service account to that group or set a wider mode.",
                 gid, type(exc).__name__,
             )
+            return False
+        return True
 
     def _rewrite_in_place(self, content: str) -> None:
         """Rewrite `.env` content in place when rename is unsupported by mount type."""
