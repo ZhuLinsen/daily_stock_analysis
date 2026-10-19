@@ -57,6 +57,35 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.manager = ConfigManager(env_path=self.env_path)
         self.service = SystemConfigService(manager=self.manager)
 
+    # The regular primary model resolves cleanly; only AGENT_LITELLM_MODEL sits
+    # on a Hermes-only route. Fixtures built from this therefore fail for exactly
+    # one reason, so an assertion about the Agent check cannot be satisfied by an
+    # unrelated primary-model error.
+    _AGENT_ONLY_BROKEN_ENV = (
+        "STOCK_LIST=600519",
+        "AGENT_LITELLM_MODEL=openai/hermes-agent",
+        "LLM_CHANNELS=primary,hermes",
+        "LLM_PRIMARY_PROTOCOL=openai",
+        "LLM_PRIMARY_API_KEY=test-secret",
+        "LLM_PRIMARY_MODELS=gpt-test",
+        "LLM_HERMES_PROTOCOL=openai",
+        "LLM_HERMES_API_KEY=test-secret",
+        "LLM_HERMES_MODELS=hermes-agent",
+        "LITELLM_MODEL=openai/gpt-test",
+    )
+    _AGENT_MODEL_ISSUE_CODE = "explicit_agent_model_no_safe_deployment"
+
+    def _env_with_broken_agent_model_only(self) -> tuple:
+        return self._AGENT_ONLY_BROKEN_ENV
+
+    def _assert_only_agent_model_issue(self, issues=None) -> None:
+        """Assert the only validation problem is the Hermes-only Agent model."""
+        if issues is None:
+            issues = self.service.validate(items=[])["issues"]
+        codes = [issue["code"] for issue in issues]
+        self.assertEqual(codes, [self._AGENT_MODEL_ISSUE_CODE])
+        self.assertEqual(issues[0]["key"], "AGENT_LITELLM_MODEL")
+
     @staticmethod
     def _mock_completion_response(content: str = "OK", tool_calls=None):
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
@@ -999,17 +1028,11 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         no error at save time.
         """
         self._rewrite_env(
-            "STOCK_LIST=600519",
+            *self._env_with_broken_agent_model_only(),
             "AGENT_BACKEND=codex_app_server",
-            "AGENT_LITELLM_MODEL=openai/hermes-agent",
-            "LLM_CHANNELS=hermes",
-            "LLM_HERMES_PROTOCOL=openai",
-            "LLM_HERMES_API_KEY=test-secret",
-            "LLM_HERMES_MODELS=hermes-agent",
-            "LITELLM_MODEL=openai/gpt-test",
         )
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
-            self.assertFalse(self.service.validate(items=[])["valid"])
+            self._assert_only_agent_model_issue()
 
             before = self.env_path.read_bytes()
             for key, value in [
@@ -1023,7 +1046,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                             items=[{"key": key, "value": value}],
                             reload_now=False,
                         )
-                    self.assertTrue(exc.exception.issues)
+                    self._assert_only_agent_model_issue(exc.exception.issues)
                     self.assertEqual(self.env_path.read_bytes(), before)
 
     def test_enabling_agent_analysis_validates_model_dependencies(self) -> None:
@@ -1036,18 +1059,12 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         already broken, and every later analysis fails with no error at save time.
         """
         self._rewrite_env(
-            "STOCK_LIST=600519",
+            *self._env_with_broken_agent_model_only(),
             "AGENT_MODE=false",
             "AGENT_SKILLS=",
-            "AGENT_LITELLM_MODEL=openai/hermes-agent",
-            "LLM_CHANNELS=hermes",
-            "LLM_HERMES_PROTOCOL=openai",
-            "LLM_HERMES_API_KEY=test-secret",
-            "LLM_HERMES_MODELS=hermes-agent",
-            "LITELLM_MODEL=openai/gpt-test",
         )
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
-            self.assertFalse(self.service.validate(items=[])["valid"])
+            self._assert_only_agent_model_issue()
 
             before = self.env_path.read_bytes()
             for key, value in [
@@ -1062,7 +1079,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                             items=[{"key": key, "value": value}],
                             reload_now=False,
                         )
-                    self.assertTrue(exc.exception.issues)
+                    self._assert_only_agent_model_issue(exc.exception.issues)
                     self.assertEqual(self.env_path.read_bytes(), before)
 
     def test_agent_analysis_keys_that_do_not_activate_stay_exempt(self) -> None:
@@ -1070,20 +1087,17 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         AGENT_SKILLS=all keeps the regular analysis path, an empty value means no
         skills, and AGENT_MODE=false is an explicit opt-out -- none of them turn
-        the Agent on, so a broken LLM config must not block them.
+        the Agent on, so a broken Agent model must not block them. The regular
+        primary model is valid here, so a successful save can only mean the Agent
+        check was skipped.
         """
         self._rewrite_env(
-            "STOCK_LIST=600519",
+            *self._env_with_broken_agent_model_only(),
             "AGENT_MODE=false",
             "AGENT_SKILLS=",
-            "AGENT_LITELLM_MODEL=openai/hermes-agent",
-            "LLM_CHANNELS=hermes",
-            "LLM_HERMES_PROTOCOL=openai",
-            "LLM_HERMES_API_KEY=test-secret",
-            "LLM_HERMES_MODELS=hermes-agent",
-            "LITELLM_MODEL=openai/gpt-test",
         )
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self._assert_only_agent_model_issue()
             for key, value in [
                 ("AGENT_SKILLS", "all"),
                 ("AGENT_SKILLS", ""),
@@ -1103,23 +1117,16 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         With AGENT_BACKEND on a Codex backend the chat never reads the LLM
         channel graph, so that combination stays exempt.
         """
-        base = (
-            "STOCK_LIST=600519",
-            "AGENT_LITELLM_MODEL=openai/hermes-agent",
-            "LLM_CHANNELS=hermes",
-            "LLM_HERMES_PROTOCOL=openai",
-            "LLM_HERMES_API_KEY=test-secret",
-            "LLM_HERMES_MODELS=hermes-agent",
-            "LITELLM_MODEL=openai/gpt-test",
-        )
+        base = self._env_with_broken_agent_model_only()
         self._rewrite_env(*base, "AGENT_BACKEND=litellm", "AGENT_GENERATION_BACKEND=codex_cli")
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
-            with self.assertRaises(ConfigValidationError):
+            with self.assertRaises(ConfigValidationError) as exc:
                 self.service.update(
                     config_version=self.manager.get_config_version(),
                     items=[{"key": "AGENT_GENERATION_BACKEND", "value": "litellm"}],
                     reload_now=False,
                 )
+            self._assert_only_agent_model_issue(exc.exception.issues)
 
         self._rewrite_env(*base, "AGENT_BACKEND=codex_app_server", "AGENT_GENERATION_BACKEND=codex_cli")
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
@@ -1134,20 +1141,17 @@ class SystemConfigServiceTestCase(unittest.TestCase):
     def test_switching_agent_backend_to_codex_stays_exempt(self) -> None:
         """Codex never reads the LLM channel graph, so the exemption must hold.
 
-        This is what lets an operator with a broken LLM config switch to Codex,
-        which was the original reason for narrowing the check.
+        This is what lets an operator with a broken Agent model switch to Codex,
+        which was the original reason for narrowing the check. The regular
+        primary model is valid, so a successful save can only mean the Agent
+        check was skipped.
         """
         self._rewrite_env(
-            "STOCK_LIST=600519",
+            *self._env_with_broken_agent_model_only(),
             "AGENT_BACKEND=litellm",
-            "AGENT_LITELLM_MODEL=openai/hermes-agent",
-            "LLM_CHANNELS=hermes",
-            "LLM_HERMES_PROTOCOL=openai",
-            "LLM_HERMES_API_KEY=test-secret",
-            "LLM_HERMES_MODELS=hermes-agent",
-            "LITELLM_MODEL=openai/gpt-test",
         )
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self._assert_only_agent_model_issue()
             result = self.service.update(
                 config_version=self.manager.get_config_version(),
                 items=[{"key": "AGENT_BACKEND", "value": "codex_app_server"}],
@@ -1157,16 +1161,14 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(result["success"])
 
     def test_unrelated_partial_update_still_skips_llm_checks(self) -> None:
-        """The original bug stays fixed: unrelated saves are not blocked."""
+        """The original bug stays fixed: unrelated saves are not blocked.
+
+        Both the Agent model and a fallback model are broken here, so a
+        successful save proves neither check ran.
+        """
         self._rewrite_env(
-            "STOCK_LIST=600519",
+            *self._env_with_broken_agent_model_only(),
             "AGENT_BACKEND=codex_app_server",
-            "AGENT_LITELLM_MODEL=openai/hermes-agent",
-            "LLM_CHANNELS=hermes",
-            "LLM_HERMES_PROTOCOL=openai",
-            "LLM_HERMES_API_KEY=test-secret",
-            "LLM_HERMES_MODELS=hermes-agent",
-            "LITELLM_MODEL=openai/gpt-test",
             "LITELLM_FALLBACK_MODELS=openai/removed-model",
         )
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
