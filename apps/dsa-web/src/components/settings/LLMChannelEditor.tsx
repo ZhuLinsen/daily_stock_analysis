@@ -12,6 +12,7 @@ import {
   MODELFLARE_APP_REGISTRATION_URL,
   MODELFLARE_DEFAULT_MODEL,
   MODEL_PLACEHOLDERS_BY_PROTOCOL,
+  filterDiscoveredTextModels,
   getProviderTemplate,
   isKnownProviderTemplate,
 } from './llmProviderTemplates';
@@ -425,7 +426,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   const runtimeCapabilityOptions = isHermesChannel(channel)
     ? RUNTIME_CAPABILITY_OPTIONS.filter((option) => option.value === 'json')
     : RUNTIME_CAPABILITY_OPTIONS;
-  const discoveredModels = discoveryState?.models || [];
+  const discoveredModels = filterDiscoveredTextModels(discoveryState?.models || []);
   const manualOnlyModels = selectedModels.filter(
     (model) => !discoveredModels.some((discoveredModel) => (
       areModelsEquivalent(model, discoveredModel, channel.protocol, modelProviderPrefixes, channel.baseUrl)
