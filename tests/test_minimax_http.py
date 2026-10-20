@@ -26,10 +26,12 @@ class MiniMaxHTTPTest(unittest.TestCase):
 
 def run_transport_contract():
     import json
+    import traceback
     from unittest.mock import patch
 
     import httpx
     import litellm
+    from openai._base_client import SyncAPIClient
     from src.agent.llm_adapter import LLMToolAdapter, register_fallback_model_pricing
     from src.config import Config
 
@@ -96,18 +98,34 @@ def run_transport_contract():
                 "usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
             })
 
+        transport_errors = []
+
+        def send_request(client, request, **_kwargs):
+            # Intercept the fully serialized request regardless of whether the
+            # current OpenAI/LiteLLM combination chooses httpx or httpx2.
+            try:
+                return handle_request(client, request)
+            except Exception:
+                transport_errors.append(traceback.format_exc())
+                raise
+
         env = {
             "LLM_CHANNELS": "minimax",
             "LLM_MINIMAX_PROTOCOL": "openai",
             "LLM_MINIMAX_BASE_URL": base_url,
             "LLM_MINIMAX_API_KEY": "test-only",
-            "LLM_MINIMAX_MODELS": model,
+            "LLM_MINIMAX_MODELS": (
+                "MiniMax-M3.1-Flash,MiniMax-M3"
+                if model == "MiniMax-M3.1-Flash" and base_url == "https://api.minimax.io/v1"
+                else model
+            ),
             "LITELLM_LOCAL_MODEL_COST_MAP": "True",
             "LITELLM_TELEMETRY": "False",
         }
         with patch.dict(os.environ, env, clear=True), patch("src.config.setup_env"), \
                 patch.object(Config, "_parse_litellm_yaml", return_value=[]), \
-                patch.object(httpx.HTTPTransport, "handle_request", handle_request):
+                patch.object(SyncAPIClient, "_send_request", send_request), \
+                patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
             config = Config._load_from_env()
             assert config.litellm_model == "openai/" + model
             adapter = LLMToolAdapter(config)
@@ -120,6 +138,7 @@ def run_transport_contract():
                 ]},
             ]
             first = adapter.call_with_tools(messages, tools, timeout=15)
+            assert not transport_errors, "\n".join(transport_errors)
             assert first.tool_calls, first.content
             assert first.reasoning_content == "fixture reasoning"
             call = first.tool_calls[0]
@@ -130,6 +149,7 @@ def run_transport_contract():
                 {"role": "tool", "tool_call_id": call.id, "content": {"price": 123}},
             ]
             second = adapter.call_with_tools(messages, tools, timeout=15)
+            assert not transport_errors, "\n".join(transport_errors)
             assert second.content == "The price is 123.", second.content
             assert len(requests) == 2
             if model == "MiniMax-M3.1-Flash" and base_url == "https://api.minimax.io/v1":
