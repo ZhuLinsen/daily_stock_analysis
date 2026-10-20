@@ -73,7 +73,8 @@ def run_transport_contract():
                         "message": {"role": "assistant", "content": "Market analysis complete."}}],
                 })
             assert body["tools"] == tools
-            assert body["tool_choice"] == "auto"
+            # LiteLLM may omit the default; both forms mean automatic tool choice.
+            assert body.get("tool_choice", "auto") == "auto"
             assert [part["image_url"]["url"] for part in body["messages"][1]["content"]
                     if part["type"] == "image_url"] == image_urls
             if len(requests) == 1:
