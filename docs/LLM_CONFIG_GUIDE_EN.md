@@ -323,7 +323,7 @@ LITELLM_MODEL=openai/hermes-agent
 
 ### MiniMax Model Naming in Channel Mode
 
-- If you access MiniMax through an OpenAI-compatible channel, enter the model as `minimax/<model-name>` in the channel model list, for example `minimax/MiniMax-M1`.
+- For the official OpenAI-compatible MiniMax channel, use `MiniMax-M3.1-Flash,MiniMax-M3`. Explicit saved provider-prefixed IDs such as `minimax/MiniMax-M3.1-Flash` remain supported.
 - The Web settings page now keeps that value unchanged in Primary, Agent Primary, Fallback, and Vision selectors instead of rewriting it to `openai/minimax/<model-name>`.
 
 ### Default-Model Ask-Stock / LiteLLM Compatibility Notes
