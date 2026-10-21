@@ -1,0 +1,17 @@
+{
+  "version": "V1.5",
+  "package_created_on": "2026-10-15",
+  "main_csv_sha256": "40dabc2de28299318d309ada441a869d0661a5be5b597e50d26ee046d4b100f3",
+  "files": {
+    "创业板指_中证红利_20100601-20261013_统一历史日线_V1.5.csv": "40dabc2de28299318d309ada441a869d0661a5be5b597e50d26ee046d4b100f3",
+    "创业板指_中证红利_全量审计报告_V1.5.md": "158c2b3b55a9ff1e351a6358f66789a8b4699c508b058a358f85171cb021feee",
+    "创业板指_中证红利_全量审计_V1.5.json": "942dd78b2a628caa2fcc7317a7ed183a833ceb93e0e17c783b8ad362dcb5edf5",
+    "创业板指_中证红利_TDX交叉核验摘要_V1.5.json": "80f6554111b45d8087da4f0aa76c687fa93c848af1d2be5a2ea0c8d146918ab6",
+    "创业板指_中证红利_统一历史数据包_使用说明_V1.5.md": "032f3acc91e30e079223e2c635526eb4ae3ac5e95799bcd109cd0a42a9bcbf6d",
+    "merge_audit_创业板指_中证红利_V1.5.py": "25923bb3021b4b48ae9b531d86bafd914ae2456df88a5dbc766f5b3737d9471d",
+    "创业板指历史日线.csv": "0ad46744e7122f1ebc88cabe65fae522c219cafb5116a0eea8257ee7162c0f35",
+    "中证红利历史日线.csv": "28e30ea2db7a3569f088b7195d94c83ee3744eb5717b2f388fa45ad388c645ea",
+    "创业板指_中证红利_20260730-20261013_完整增量日线_V1.3.csv": "be2bdd82a100fee19877c8be5d16166f4371847f9d56f7fa401b5db0bbd26fdf",
+    "20130806_创业板指_收盘价勘误_V1.2.csv": "cb5120f8a42d1f9d1def8996366a9089eed9c7a45645f2a626724a680495a841"
+  }
+}

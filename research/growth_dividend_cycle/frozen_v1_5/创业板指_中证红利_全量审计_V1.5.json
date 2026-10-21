@@ -1,0 +1,238 @@
+{
+  "version": "V1.5",
+  "audit_date": "2026-10-15",
+  "result": "核心结构、日历、数据继承与公式审计通过；全历史未逐日官方点位认证",
+  "data_type": "价格指数，不包含股息再投资",
+  "date_range": [
+    "2010-06-01",
+    "2026-10-13"
+  ],
+  "rows": 3972,
+  "old_rows": 3924,
+  "increment_rows": 48,
+  "historical_red_raw_rows": 4663,
+  "historical_red_outside_common_window": 739,
+  "unique_dates": 3972,
+  "duplicate_dates": 0,
+  "calendar": {
+    "provider": "exchange_calendars",
+    "name": "XSHG",
+    "version": "4.13.1",
+    "expected_trading_days": 3972,
+    "missing_dates": [],
+    "extra_dates": [],
+    "comparison": "exact_set_equality"
+  },
+  "mandatory_close_pair_valid": 3972,
+  "ratio_recalculated": 3972,
+  "null_mandatory_price_or_ratio": 0,
+  "field_coverage": {
+    "cyb_open": 3972,
+    "cyb_high": 48,
+    "cyb_low": 48,
+    "cyb_close": 3972,
+    "red_open": 3924,
+    "red_close": 3972,
+    "cyb_red_ratio": 3972,
+    "red_source_url": 3971
+  },
+  "ratio_extremes": {
+    "min_ratio": "0.25245050",
+    "min_date": "2012-01-19",
+    "max_ratio": "0.86465796",
+    "max_date": "2026-06-30"
+  },
+  "price_extremes": {
+    "创业板指": {
+      "min_close": "593.66",
+      "min_close_date": "2012-12-03",
+      "max_close": "4371.99",
+      "max_close_date": "2026-06-25",
+      "biggest_up": {
+        "date": "2024-10-08",
+        "pct": 17.249401174204287
+      },
+      "biggest_down": {
+        "date": "2025-04-07",
+        "pct": -12.500726251573544
+      },
+      "abs_gt_10pct_count": 4
+    },
+    "中证红利": {
+      "min_close": "2095.63",
+      "min_close_date": "2012-12-03",
+      "max_close": "6226.62",
+      "max_close_date": "2015-06-12",
+      "biggest_up": {
+        "date": "2015-07-09",
+        "pct": 6.589009671871498
+      },
+      "biggest_down": {
+        "date": "2020-02-03",
+        "pct": -8.907976767236987
+      },
+      "abs_gt_10pct_count": 0
+    }
+  },
+  "daily_close_moves_abs_gt_10pct": [
+    {
+      "symbol": "创业板指",
+      "date": "2024-09-30",
+      "pct": 15.3594
+    },
+    {
+      "symbol": "创业板指",
+      "date": "2024-10-08",
+      "pct": 17.2494
+    },
+    {
+      "symbol": "创业板指",
+      "date": "2024-10-09",
+      "pct": -10.5941
+    },
+    {
+      "symbol": "创业板指",
+      "date": "2025-04-07",
+      "pct": -12.5007
+    }
+  ],
+  "year_counts": {
+    "2010": 143,
+    "2011": 244,
+    "2012": 243,
+    "2013": 238,
+    "2014": 245,
+    "2015": 244,
+    "2016": 244,
+    "2017": 244,
+    "2018": 243,
+    "2019": 244,
+    "2020": 243,
+    "2021": 243,
+    "2022": 242,
+    "2023": 242,
+    "2024": 242,
+    "2025": 243,
+    "2026": 185
+  },
+  "seam": {
+    "first": {
+      "date": "2010-06-01",
+      "cyb_open": "986.02",
+      "cyb_high": "",
+      "cyb_low": "",
+      "cyb_close": "973.23",
+      "red_open": "2750.98",
+      "red_close": "2729.07",
+      "cyb_red_ratio": "0.35661599",
+      "source_segment": "historical_2010_2026",
+      "cyb_source_url": "https://github.com/ZF1Huang/growth_dividend_rotation_research/blob/main/data_cache/399006.csv",
+      "red_source_url": "https://github.com/ZF1Huang/growth_dividend_rotation_research/blob/main/data_cache/000922.csv",
+      "audit_note": ""
+    },
+    "historic_last": {
+      "date": "2026-07-29",
+      "cyb_open": "3333.48",
+      "cyb_high": "",
+      "cyb_low": "",
+      "cyb_close": "3378.70",
+      "red_open": "5442.35",
+      "red_close": "5519.12",
+      "cyb_red_ratio": "0.61218093",
+      "source_segment": "historical_2010_2026",
+      "cyb_source_url": "https://github.com/ZF1Huang/growth_dividend_rotation_research/blob/main/data_cache/399006.csv",
+      "red_source_url": "https://github.com/ZF1Huang/growth_dividend_rotation_research/blob/main/data_cache/000922.csv",
+      "audit_note": ""
+    },
+    "new_first": {
+      "date": "2026-07-30",
+      "cyb_open": "3331.32",
+      "cyb_high": "3353.81",
+      "cyb_low": "3158.14",
+      "cyb_close": "3244.62",
+      "red_open": "",
+      "red_close": "5579.60",
+      "cyb_red_ratio": "0.58151480",
+      "source_segment": "increment_2026_V1.3",
+      "cyb_source_url": "https://github.com/cmdSTARMO/market_repo/blob/main/market_data/创业板指-399006.csv",
+      "red_source_url": "https://www.lixinger.com/equity/index/detail/sh/000922/922/fundamental/valuation/ps-ttm",
+      "audit_note": ""
+    },
+    "last": {
+      "date": "2026-10-13",
+      "cyb_open": "2899.15",
+      "cyb_high": "2999.76",
+      "cyb_low": "2860.80",
+      "cyb_close": "2958.34",
+      "red_open": "",
+      "red_close": "5635.07",
+      "cyb_red_ratio": "0.52498727",
+      "source_segment": "increment_2026_V1.3",
+      "cyb_source_url": "https://github.com/cmdSTARMO/market_repo/blob/main/market_data/创业板指-399006.csv",
+      "red_source_url": "https://www.lixinger.com/equity/index/detail/sh/000922/922/volatility",
+      "audit_note": ""
+    }
+  },
+  "manual_fix_2013": {
+    "date": "2013-08-06",
+    "code": "399006",
+    "before": "1211.69",
+    "after": "1211.78",
+    "applied": true
+  },
+  "manual_fix_2026": {
+    "date": "2026-08-05",
+    "code": "000922",
+    "close": "5447.98",
+    "present": true
+  },
+  "patch_source_status": {
+    "source_confirmed": 47,
+    "user_Tonghuashun_confirmed": 1
+  },
+  "data_integrity": {
+    "historical_prices_unchanged_except_2013_fix": true,
+    "patch_prices_unchanged": true,
+    "historical_high_low_missing_by_source": 3924,
+    "red_open_missing_by_source": 48,
+    "no_imputation": true,
+    "disk_roundtrip_verified": true
+  },
+  "input_files_sha256": {
+    "创业板指历史日线.csv": "0ad46744e7122f1ebc88cabe65fae522c219cafb5116a0eea8257ee7162c0f35",
+    "中证红利历史日线.csv": "28e30ea2db7a3569f088b7195d94c83ee3744eb5717b2f388fa45ad388c645ea",
+    "创业板指_中证红利_20260730-20261013_完整增量日线_V1.3.csv": "be2bdd82a100fee19877c8be5d16166f4371847f9d56f7fa401b5db0bbd26fdf",
+    "20130806_创业板指_收盘价勘误_V1.2.csv": "cb5120f8a42d1f9d1def8996366a9089eed9c7a45645f2a626724a680495a841"
+  },
+  "output_filename": "创业板指_中证红利_20100601-20261013_统一历史日线_V1.5.csv",
+  "output_sha256": "40dabc2de28299318d309ada441a869d0661a5be5b597e50d26ee046d4b100f3",
+  "limitations": [
+    "未对3972个收盘点位逐一进行中证/国证官方原始响应认证",
+    "2010至2026历史源为GitHub第三方缓存，源中未保存逐日上游API身份",
+    "增量中证红利点位来自多处第三方网页+用户对单点同花顺确认",
+    "独立交易日历基于exchange_calendars XSHG，并非交易所官方签名文件",
+    "价格指数比值不包含中证红利分红再投资的收益影响",
+    "历史段只有开收盘；增量中证红利只有收盘。空的可选字段不是缺失交易日"
+  ],
+  "tdx_cross_source_check": {
+    "execution": "2026-10-15 本轮通过GitHub连接重新读取并执行逐日期比较",
+    "data_source": "https://github.com/lhw828/lday2csv",
+    "historical_base": "https://github.com/ZF1Huang/growth_dividend_rotation_research",
+    "创业板指": {
+      "overlap": 3397,
+      "exact_closes": 3357,
+      "difference_0_01": 40,
+      "difference_gt_0_01": 0,
+      "max_absolute_diff": 0.01,
+      "2013_08_06": "已采用1211.78与通达信一致"
+    },
+    "中证红利": {
+      "overlap": 102,
+      "exact_closes": 100,
+      "difference_0_01": 2,
+      "difference_gt_0_01": 0,
+      "max_absolute_diff": 0.01
+    },
+    "scope_limit": "通达信公开仓库创业板截至2024-05-28，红利仅2018-08-27至2019-01-25；不覆盖全部3972交易日"
+  }
+}
