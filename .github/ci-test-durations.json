@@ -72,8 +72,6 @@
     "tests/test_chip_structure_fallback.py": 0.036,
     "tests/test_ci_test_shard.py": 0.014,
     "tests/test_ci_workflow_contract.py": 0.02,
-    "tests/test_codex_app_server_gate_a.py": 5.443,
-    "tests/test_codex_tool_process.py": 8.316,
     "tests/test_config_env_compat.py": 0.151,
     "tests/test_config_manager.py": 0.025,
     "tests/test_config_registry.py": 0.117,

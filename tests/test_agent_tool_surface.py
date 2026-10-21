@@ -999,3 +999,32 @@ def test_stock_scope_no_longer_imports_runner_for_normalization() -> None:
     source = Path("src/agent/stock_scope.py").read_text(encoding="utf-8")
 
     assert "from src.agent.runner import _normalize_tool_stock_code" not in source
+
+
+def test_redacted_tool_result_hides_secrets_and_local_paths() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="redaction_probe",
+            description="Return a secret-shaped payload.",
+            parameters=[],
+            handler=lambda: {
+                "token": "secret-value",
+                "path": "/Users/alice/private.txt",
+                "value": "safe",
+            },
+            category="data",
+            policy=ToolPolicy.declared(read_only=True),
+        )
+    )
+    result = ToolSurface(registry).execute_tool(
+        "redaction_probe",
+        {},
+        ToolAccessContext(redact_result=True, max_result_bytes=1024),
+    )
+
+    assert result["ok"] is True
+    assert "secret-value" not in result["result_text"]
+    assert "/Users/alice" not in result["result_text"]
+    assert "[REDACTED]" in result["result_text"]
+    assert "safe" in result["result_text"]

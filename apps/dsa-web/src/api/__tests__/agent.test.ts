@@ -22,10 +22,10 @@ describe('agentApi', () => {
       data: {
         backend: 'codex_app_server',
         available: false,
-        experimental: true,
-        version: '0.144.3',
-        error_code: 'login_required',
-        message: 'Codex login is required',
+        experimental: false,
+        version: null,
+        error_code: 'backend_removed',
+        message: 'Codex App Server has been removed',
       },
     });
 
@@ -35,11 +35,25 @@ describe('agentApi', () => {
     expect(result).toEqual({
       backend: 'codex_app_server',
       available: false,
-      experimental: true,
-      version: '0.144.3',
-      errorCode: 'login_required',
-      message: 'Codex login is required',
+      experimental: false,
+      version: null,
+      errorCode: 'backend_removed',
+      message: 'Codex App Server has been removed',
     });
+  });
+
+  it('preserves the retirement code from the real HTTP 400 stream response', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      error: 'backend_removed', message: 'Codex App Server 已移除，请修正 Agent 设置',
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } }));
+    try {
+      await expect(agentApi.chatStream({message:'分析 AAPL'})).rejects.toMatchObject({
+        parsedError: { code: 'backend_removed', status: 400 },
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      fetch.mockRestore();
+    }
   });
 
   it('returns session messages together with persisted Skill state', async () => {

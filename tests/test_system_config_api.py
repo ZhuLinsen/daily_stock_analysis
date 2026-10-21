@@ -171,7 +171,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
         backend_schema = item_map["AGENT_BACKEND"]["schema"]
         self.assertEqual(
             backend_schema["validation"]["enum"],
-            ["auto", "litellm", "codex_app_server"],
+            ["auto", "litellm"],
         )
         generation_schema = item_map["GENERATION_BACKEND"]["schema"]
         self.assertIn("claude_code_cli", generation_schema["validation"]["enum"])
@@ -292,54 +292,15 @@ class SystemConfigApiTestCase(unittest.TestCase):
         before = self.env_path.read_text(encoding="utf-8")
         before_version = self.manager.get_config_version()
 
-        def fake_run(command, **kwargs):
-            if command[-1] == "--version":
-                return SimpleNamespace(returncode=0, stdout="codex-cli test\n")
-            if "generate-json-schema" in command:
-                schema_dir = Path(command[command.index("--out") + 1])
-                (schema_dir / "v2").mkdir(parents=True, exist_ok=True)
-                (schema_dir / "v2" / "ThreadStartParams.json").write_text(
-                    '{"properties":{"dynamicTools":{},"runtimeWorkspaceRoots":{}}}',
-                    encoding="utf-8",
-                )
-                (schema_dir / "v2" / "ThreadStartResponse.json").write_text(
-                    '{"properties":{"activePermissionProfile":{},"runtimeWorkspaceRoots":{}}}',
-                    encoding="utf-8",
-                )
-                (schema_dir / "ClientRequest.json").write_text(
-                    '["thread/inject_items","turn/start","turn/interrupt","config/read","mcpServerStatus/list"]',
-                    encoding="utf-8",
-                )
-                (schema_dir / "ServerRequest.json").write_text(
-                    '{"const":"item/tool/call"}',
-                    encoding="utf-8",
-                )
-                (schema_dir / "ServerNotification.json").write_text(
-                    '["item/completed","turn/completed"]',
-                    encoding="utf-8",
-                )
-            return SimpleNamespace(returncode=0, stdout="")
-
-        with (
-            patch(
-                "src.services.agent_backend_status_service.resolve_command",
-                return_value=["/test/codex"],
-            ),
-            patch("src.services.agent_backend_status_service._run_codex_probe", side_effect=fake_run),
-        ):
+        with patch("subprocess.Popen", side_effect=AssertionError("preview must not launch a process")):
             payload = system_config.preview_agent_backend_status(
-                request=AgentBackendStatusPreviewRequest(
-                    items=[
-                        {"key": "AGENT_BACKEND", "value": "codex_app_server"},
-                        {"key": "AGENT_ARCH", "value": "single"},
-                    ]
-                ),
+                request=AgentBackendStatusPreviewRequest(items=[{"key": "AGENT_BACKEND", "value": "codex_app_server"}]),
                 service=self.service,
             ).model_dump()
-
         self.assertEqual(payload["backend"], "codex_app_server")
-        self.assertTrue(payload["available"])
-        self.assertEqual(payload["version"], "codex-cli test")
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["error_code"], "backend_removed")
+        self.assertIsNone(payload["version"])
         self.assertEqual(self.env_path.read_text(encoding="utf-8"), before)
         self.assertEqual(self.manager.get_config_version(), before_version)
 
@@ -356,7 +317,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
 
         self.assertEqual(payload["backend"], "codex_app_server")
         self.assertFalse(payload["available"])
-        self.assertEqual(payload["error_code"], "unsupported_agent_arch")
+        self.assertEqual(payload["error_code"], "backend_removed")
 
     def test_put_config_updates_secret_and_plain_field(self) -> None:
         current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()

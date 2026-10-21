@@ -125,7 +125,7 @@ followed by `done` (`total_steps=0`), without analysis preparation or a model ca
 Failure, timeout, stop or disconnect after commit does not undo accepted state.
 Terminal writes verify the accepted session/message instance; a late reply cannot
 recreate a deleted session or contaminate a same-named new one. This contract
-does not enable unsupported Codex non-stream/multi combinations or change Gate 0B.
+rejects the retired `codex_app_server` value with HTTP 400 `backend_removed` before preparation/acceptance, including clarification. No `accepted` or state changes occur. The Codex-only cancel endpoint has been removed (404 in API-only mode; the existing SPA GET catch-all returns 405 for unknown POSTs when frontend assets are installed); client abort and session ownership remain. This removal does not change historical Gate 0B results.
 
 ## Web Behavior
 
