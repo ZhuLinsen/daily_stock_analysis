@@ -7,6 +7,8 @@ import hashlib
 import logging
 import os
 import re
+import stat
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +19,9 @@ from dotenv import dotenv_values
 
 _ASSIGNMENT_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 _FALLBACK_REWRITE_ERRNOS = {errno.EBUSY, errno.EXDEV}
+# Warning code returned by apply_updates when the atomic replace had to be
+# skipped so the original owner and group keep their access to `.env`.
+ENV_OWNERSHIP_NOT_PRESERVED_WARNING = "env_ownership_not_preserved"
 _COMPOSE_ESCAPED_ENV_VALUE_KEYS = frozenset({"CUSTOM_WEBHOOK_BODY_TEMPLATE"})
 _APPLICATION_TEMPLATE_PLACEHOLDER_PATTERN = re.compile(
     r"(?<!\$)\$(?:"
@@ -179,8 +184,13 @@ class ConfigManager:
         updates: Iterable[Tuple[str, str]],
         sensitive_keys: Set[str],
         mask_token: str,
-    ) -> Tuple[List[str], List[str], str]:
-        """Apply updates into `.env` file using atomic replace when possible."""
+    ) -> Tuple[List[str], List[str], str, List[str]]:
+        """Apply updates into `.env` file using atomic replace when possible.
+
+        Returns the updated keys, the masked keys that were skipped, the new
+        config version, and warning codes for write conditions the operator
+        should know about (see ``ENV_OWNERSHIP_NOT_PRESERVED_WARNING``).
+        """
         with self._lock:
             current_values = self.read_config_map()
             stored_values = self._read_config_map(normalize_values=False)
@@ -209,13 +219,22 @@ class ConfigManager:
 
                 mutable_updates[key_upper] = value
 
+            write_warnings: List[str] = []
             if mutable_updates:
-                self._atomic_upsert(mutable_updates)
+                write_warnings = self._atomic_upsert(mutable_updates)
 
-            return list(mutable_updates.keys()), skipped_masked, self.get_config_version()
+            return (
+                list(mutable_updates.keys()),
+                skipped_masked,
+                self.get_config_version(),
+                write_warnings,
+            )
 
-    def _atomic_upsert(self, updates: Dict[str, str]) -> None:
-        """Write updates with atomic rename and in-place fallback for mounted files."""
+    def _atomic_upsert(self, updates: Dict[str, str]) -> List[str]:
+        """Write updates with atomic rename and in-place fallback for mounted files.
+
+        Returns warning codes for conditions the operator should know about.
+        """
         entries = self._read_entries()
         key_to_index = self._find_last_key_indexes(entries)
 
@@ -230,30 +249,100 @@ class ConfigManager:
         if not self._env_path.parent.exists():
             self._env_path.parent.mkdir(parents=True, exist_ok=True)
 
-        temp_path = self._env_path.with_suffix(self._env_path.suffix + ".tmp")
+        env_existed = self._env_path.exists()
+        existing_stat = self._env_path.stat() if env_existed else None
+        existing_mode = stat.S_IMODE(existing_stat.st_mode) if env_existed else 0o600
+        # mkstemp creates the replacement under the process's own uid and
+        # primary group, so the target's owner and group have to be carried
+        # over explicitly.
+        existing_uid = existing_stat.st_uid if env_existed else None
+        existing_gid = existing_stat.st_gid if env_existed else None
         content = "\n".join(entry.render() for entry in entries)
         if content and not content.endswith("\n"):
             content += "\n"
 
-        with temp_path.open("w", encoding="utf-8", newline="\n") as file_obj:
-            file_obj.write(content)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-
+        temp_fd, temp_name = tempfile.mkstemp(
+            dir=self._env_path.parent, prefix=f".{self._env_path.name}.", suffix=".tmp",
+        )
+        temp_path = Path(temp_name)
         try:
-            os.replace(temp_path, self._env_path)
-        except OSError as exc:
-            if exc.errno not in _FALLBACK_REWRITE_ERRNOS:
-                raise
+            with os.fdopen(temp_fd, "w", encoding="utf-8", newline="\n") as file_obj:
+                file_obj.write(content)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            warnings: List[str] = []
+            replaced = False
+            if self._preserve_env_ownership(temp_path, existing_uid, existing_gid):
+                # chown clears the setuid/setgid bits, so the mode is applied
+                # after the ownership has been carried over.
+                temp_path.chmod(existing_mode)
+                try:
+                    os.replace(temp_path, self._env_path)
+                    replaced = True
+                except OSError as exc:
+                    if exc.errno not in _FALLBACK_REWRITE_ERRNOS:
+                        raise
 
-            logger.warning(
-                "Atomic replace for .env failed with errno=%s, falling back to in-place rewrite",
-                exc.errno,
-            )
-            self._rewrite_in_place(content)
+                    logger.warning(
+                        "Atomic replace for .env failed with errno=%s, falling back to in-place rewrite",
+                        exc.errno,
+                    )
+            else:
+                # Replacing anyway would move the file onto the replacement's
+                # owner and strip the original owner's (or shared group's)
+                # access, so keep the existing inode instead: the in-place
+                # rewrite preserves the ownership and the mode.
+                warnings.append(ENV_OWNERSHIP_NOT_PRESERVED_WARNING)
+            if not replaced:
+                self._rewrite_in_place(content)
+                if not env_existed:
+                    # open("w") created the file under the process umask, which
+                    # is typically 0644. This is the bind-mount case the fallback
+                    # exists for, so the new .env would ship its secrets
+                    # world-readable.
+                    self._env_path.chmod(existing_mode)
+            return warnings
         finally:
             if temp_path.exists():
                 temp_path.unlink()
+
+    @staticmethod
+    def _preserve_env_ownership(temp_path: Path, uid: Optional[int], gid: Optional[int]) -> bool:
+        """Carry the target `.env` owner and group onto the replacement file.
+
+        chmod only copies mode bits, and mkstemp creates the file under the
+        process's own uid and primary group. Without this, an atomic replace
+        moves the `.env` onto the saving process: a `.env` shared through a
+        secondary group (owner:shared, 0640) loses that group's read access,
+        and an owner-only `.env` (0600) locks out its original owner the
+        moment a privileged process saves it -- previously the umask-derived
+        0644 hid both problems behind world-read. The in-place fallback path
+        needs no such step because it truncates the existing inode and keeps
+        its ownership.
+
+        Returns True when the replacement carries the target's owner and
+        group (or the file is new). Returns False when the chown was
+        refused; the caller must then keep the original file, because
+        replacing it would move the `.env` onto the replacement's owner.
+        """
+        if uid is None and gid is None:
+            return True
+        try:
+            temp_stat = temp_path.stat()
+            if temp_stat.st_uid == uid and temp_stat.st_gid == gid:
+                return True
+            # -1 leaves that id unchanged, matching os.chown's convention.
+            os.chown(temp_path, -1 if uid is None else uid, -1 if gid is None else gid)
+        except (OSError, NotImplementedError, AttributeError) as exc:
+            logger.warning(
+                "Could not preserve .env ownership (uid=%s, gid=%s, %s); "
+                "keeping the original file so its owner keeps access. "
+                "Run the service as the file's owner and a member of its "
+                "group to restore the atomic replace.",
+                uid, gid, type(exc).__name__,
+            )
+            return False
+        return True
 
     def _rewrite_in_place(self, content: str) -> None:
         """Rewrite `.env` content in place when rename is unsupported by mount type."""

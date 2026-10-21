@@ -3586,6 +3586,32 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(current_map["LLM_HERMES_API_KEYS"], "")
         self.assertEqual(current_map["LLM_HERMES_EXTRA_HEADERS"], "")
 
+    def test_update_warns_when_env_ownership_cannot_be_preserved(self) -> None:
+        """A refused ownership carry-over must surface in the save response.
+
+        The write then rewrites the existing inode in place, so the original
+        owner, group and mode survive the save even though the atomic replace
+        was skipped.
+        """
+        self._rewrite_env("STOCK_LIST=600519")
+        before = self.env_path.stat()
+
+        with patch.object(ConfigManager, "_preserve_env_ownership", return_value=False):
+            response = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "STOCK_LIST", "value": "600519,000001"}],
+                reload_now=False,
+            )
+
+        self.assertTrue(response["success"])
+        joined = " | ".join(response["warnings"])
+        self.assertIn("属主", joined)
+        after = self.env_path.stat()
+        self.assertEqual(after.st_uid, before.st_uid)
+        self.assertEqual(after.st_gid, before.st_gid)
+        self.assertEqual(after.st_ino, before.st_ino)
+        self.assertEqual(self.manager.read_config_map()["STOCK_LIST"], "600519,000001")
+
     @patch("litellm.completion")
     def test_test_llm_channel_does_not_persist_normalized_kimi_temperature(self, mock_completion) -> None:
         self._rewrite_env("LLM_TEMPERATURE=0.42")

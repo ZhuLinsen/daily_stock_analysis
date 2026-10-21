@@ -62,7 +62,7 @@ from src.llm.hermes import (
     parse_hermes_channel,
     route_identity_candidates,
 )
-from src.core.config_manager import ConfigManager
+from src.core.config_manager import ENV_OWNERSHIP_NOT_PRESERVED_WARNING, ConfigManager
 from src.core.config_registry import (
     build_schema_response,
     get_category_definitions,
@@ -2087,13 +2087,18 @@ class SystemConfigService:
             if bool(field_schema.get("is_sensitive", False)):
                 sensitive_keys.add(key)
 
-        updated_keys, skipped_masked_keys, new_version = self._manager.apply_updates(
+        updated_keys, skipped_masked_keys, new_version, write_warnings = self._manager.apply_updates(
             updates=updates,
             sensitive_keys=sensitive_keys,
             mask_token=mask_token,
         )
 
         warnings: List[str] = []
+        if ENV_OWNERSHIP_NOT_PRESERVED_WARNING in write_warnings:
+            warnings.append(
+                "无法将 .env 的属主与所属组保留到新文件（当前进程无权 chown），已改用原地写入以保留原文件的访问权限；"
+                "如需恢复原子替换，请让服务账号以该文件的属主身份运行并加入相应组，或以确保有权 chown 的身份运行。"
+            )
         reload_triggered = False
         if reload_now:
             try:
