@@ -644,9 +644,11 @@ class TestMainCli:
         out = tmp_path / "all.json"
         assert run_eval.main(["--all", "--json-out", str(out)]) == 0
         report = json.loads(out.read_text(encoding="utf-8"))
-        assert set(report) == {"600519_technical", "000001_core_data_strict"}
+        assert set(report) == {"600519_technical", "000001_core_data_strict", "600519_ignore_distractor"}
         for sample_report in report.values():
-            assert set(sample_report) == {"sample_id", "task_description", "stock_code", "metrics", "violations"}
+            assert set(sample_report) == {
+                "sample_id", "task_description", "stock_code", "metrics", "violations", "stock_scope_metrics",
+            }
 
     def test_single_sample_json_out_is_not_keyed(self, tmp_path):
         out = tmp_path / "one.json"
@@ -743,3 +745,69 @@ def test_fixtures_end_to_end(fixture_name, golden_id, expected):
         assert m.violations == expected["violations"]
     else:
         assert m.violations and "trajectory reached allowed_max_steps (8)" in m.violations
+
+
+class TestStockScopeReporter:
+    @pytest.mark.parametrize('expected,requested,outside', [
+        ('600519', 'SH600519', False), ('600519', '600519.SH', False),
+        ('600519', 600519.0, False), ('600519', '000001', True),
+        ('HK00700', '0700.HK', False), ('HK00700', '00700', False),
+        ('AAPL', ' aapl ', False), ('AAPL', 'MSFT', True),
+        ('000001', 'SH000001', True), ('SH000001', '000001.SH', False),
+    ])
+    def test_runtime_policy_matches_actual_guard(self, expected, requested, outside):
+        from evals.agent_trajectory.metrics import compute_stock_scope_metrics
+        from src.agent.stock_scope import StockScope
+        from src.agent.tools.execution import _guard_tool_stock_scope
+        from src.agent.tools.registry import ToolRegistry
+        registry = ToolRegistry()
+        for definition in run_eval._tool_definitions():
+            registry.register(definition)
+        sample = GoldenSample('scope', 'task', ['get_realtime_quote'], stock_code=expected)
+        arguments = {'stock_code': requested}
+        guard = _guard_tool_stock_scope(
+            registry, 'get_realtime_quote', arguments, StockScope(expected, {expected}),
+        )
+        report = compute_stock_scope_metrics(
+            [{'tool': 'get_realtime_quote', 'arguments': arguments}], sample, run_eval._stock_scope_policy(),
+        )
+        assert bool(guard) is outside
+        assert bool(report['out_of_scope_calls']) is outside
+
+    def test_cli_reports_wrong_stock_without_changing_exit_or_name_hits(self, monkeypatch, tmp_path, capsys):
+        log = [{'step': 1, 'tool': 'get_realtime_quote', 'arguments': {'stock_code': '000001'}, 'success': True}]
+        monkeypatch.setattr(run_eval, '_build_executor', lambda: _stub_executor(log, 2))
+        out = tmp_path / 'scope.json'
+        assert run_eval.main(['--sample', '600519_ignore_distractor', '--json-out', str(out)]) == 0
+        report = json.loads(out.read_text())
+        assert report['stock_scope_metrics']['out_of_scope_calls'] == 1
+        assert report['stock_scope_metrics']['guarded_calls'] == 0
+        assert report['metrics']['expected_hit_rate'] == 0.5
+        assert report['violations'] == []
+        assert '越界请求: 1' in capsys.readouterr().out
+
+    def test_failed_multi_result_keeps_scope_evidence(self, tmp_path):
+        log = [{'step': 1, 'tool': 'get_realtime_quote', 'arguments': {'stock_code': '000001'}, 'guarded': True}]
+        result = SimpleNamespace(success=False, error='failed', tool_calls_log=log,
+                                 stage_trajectories=[{'stage_name': 'technical', 'status': 'failed',
+                                                      'total_steps': 1, 'tool_calls_log': log}])
+        out = tmp_path / 'failed.json'
+        with pytest.raises(RuntimeError, match='failed'):
+            run_eval.run_sample(_result_executor(result), _goldens()['600519_technical'], json_out=out)
+        report = json.loads(out.read_text())
+        assert report['stock_scope_metrics']['out_of_scope_calls'] == 1
+        stage = report['stage_metrics']['stage_metrics'][0]['stock_scope_metrics']
+        assert stage['out_of_scope_calls'] == stage['guarded_calls'] == 1
+
+    def test_existing_fixture_metric_values_are_unchanged(self, tmp_path):
+        from dataclasses import asdict
+        from evals.agent_trajectory.metrics import compute_trajectory_metrics
+        for fixture, sample_id in [('positive_600519_technical', '600519_technical'),
+                                   ('retry_000001_core_data_strict', '000001_core_data_strict')]:
+            log, steps = _fixture(fixture)
+            sample = _goldens()[sample_id]
+            out = tmp_path / f'{sample_id}.json'
+            run_eval.run_sample(_stub_executor(log, steps), sample, json_out=out)
+            report = json.loads(out.read_text())
+            assert report['metrics'] == asdict(compute_trajectory_metrics(log, sample, steps))
+            assert report['stock_scope_metrics']['out_of_scope_calls'] == 0

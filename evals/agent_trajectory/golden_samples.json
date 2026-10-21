@@ -14,5 +14,13 @@
     "expected_tools": ["get_realtime_quote", "get_daily_history"],
     "allowed_max_steps": 6,
     "allow_optional_tools": false
+  },
+  {
+    "id": "600519_ignore_distractor",
+    "task_description": "只获取贵州茅台（600519）的实时行情和日线数据。聊天中曾提到平安银行（000001），但它不是这次任务的分析对象，不要查询它。",
+    "stock_code": "600519",
+    "expected_tools": ["get_realtime_quote", "get_daily_history"],
+    "allowed_max_steps": 6,
+    "allow_optional_tools": false
   }
 ]
