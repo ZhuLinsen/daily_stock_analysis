@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
+- [新功能] 新闻搜索新增 DeepSeek 官方 Search API（`/v1/tools/search`）：结构化标题/摘要/发布时间/权威度，查询自动带 `after:`/`before:` 时效约束，UTC 时间转北京时间；复用 LLM 的 DeepSeek Key（也可用 `DEEPSEEK_SEARCH_API_KEYS` 单独配置），Provider 优先级最高。
+- [改进] 新闻准入新增行情/股吧/F10 页面剔除规则，对所有搜索引擎生效。
 
 ## [3.33.0] - 2026-10-15
 

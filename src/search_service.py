@@ -418,6 +418,187 @@ class BaseSearchProvider(ABC):
         return self._execute_search(query, max_results=max_results, days=days)
 
 
+class DeepSeekSearchProvider(BaseSearchProvider):
+    """DeepSeek 官方网页搜索（自研搜索引擎）。
+
+    文档：https://api-docs.deepseek.com/zh-cn/guides/search/
+    特点：结构化结果（title / summary / date / authority / rerank_score），
+    支持 ``after:`` / ``before:`` / ``site:`` / ``lang:`` 检索语法；按成功请求计费
+    （5 元 / 1000 次），与模型 token 计费相互独立。
+    """
+
+    _ENDPOINT = "https://api.deepseek.com/v1/tools/search"
+    _MAX_QUERY_LENGTH = 128  # API 限制：1~128 个 Unicode 字符
+    _TIMEOUT_SECONDS = 15
+    _LOCAL_UTC_OFFSET_HOURS = 8  # API 的 date 为 UTC，统一转成北京时间日期
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "DeepSeek")
+
+    @classmethod
+    def _build_query(cls, query: str, days: int) -> str:
+        """把「最近 N 天」转成官方搜索语法的 after/before 约束。
+
+        超出 query 长度上限时退回原始查询，由 SearchService 的日期硬过滤兜底。
+        """
+        today = datetime.now().date()
+        earliest = today - timedelta(days=max(1, int(days)) - 1)
+        suffix = f" after:{earliest.isoformat()} before:{today.isoformat()}"
+        if len(query) + len(suffix) <= cls._MAX_QUERY_LENGTH:
+            return query + suffix
+        return query
+
+    @classmethod
+    def _to_local_date(cls, value: Any) -> Optional[str]:
+        """UTC RFC3339 时间 -> 北京时间日期字符串（YYYY-MM-DD）。"""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(
+            timezone(timedelta(hours=cls._LOCAL_UTC_OFFSET_HOURS))
+        )
+        return parsed.date().isoformat()
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从 URL 提取域名作为来源（site_name 缺失时兜底）。"""
+        try:
+            parsed = urlparse(url)
+            return parsed.netloc or url
+        except Exception:
+            return url
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+    ) -> SearchResponse:
+        """调用 DeepSeek /v1/tools/search。"""
+        if not query or not query.strip():
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="搜索词为空",
+            )
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "query": self._build_query(query.strip(), days),
+            "count": max(1, min(int(max_results), 50)),
+        }
+
+        try:
+            response = _post_with_retry(
+                self._ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=self._TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.error("[DeepSeek] 搜索请求失败: %s", exc)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"DeepSeek 搜索请求失败：{exc}",
+            )
+
+        if response.status_code != 200:
+            error_message = response.text
+            try:
+                error_data = response.json()
+                if isinstance(error_data, dict):
+                    error_message = (
+                        (error_data.get("error") or {}).get("message")
+                        or error_message
+                    )
+            except Exception:
+                pass
+            status = response.status_code
+            if status == 401:
+                error_message = f"API KEY 无效：{error_message}"
+            elif status == 402:
+                error_message = f"账号余额不足：{error_message}"
+            elif status == 403:
+                error_message = f"请求被安全策略拒绝：{error_message}"
+            elif status == 429:
+                error_message = f"超过 QPS 限制：{error_message}"
+            elif status == 400:
+                error_message = f"请求参数错误：{error_message}"
+            else:
+                error_message = f"HTTP {status}: {error_message}"
+            logger.warning("[DeepSeek] 搜索失败：%s", error_message)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_message,
+            )
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"响应 JSON 解析失败：{exc}",
+            )
+
+        results: List[SearchResult] = []
+        seen_urls: set = set()
+        for item in (data.get("results") or []):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not title or not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            # summary 是给模型阅读的长摘要（600~800 字），优先于短 snippet。
+            snippet = str(item.get("summary") or item.get("snippet") or "").strip()
+            source = str(item.get("site_name") or "").strip() or self._extract_domain(url)
+            results.append(
+                SearchResult(
+                    title=title,
+                    snippet=snippet,
+                    url=url,
+                    source=source,
+                    published_date=self._to_local_date(item.get("date")),
+                )
+            )
+
+        logger.info(
+            "[DeepSeek] 搜索 '%s' 成功，返回 %s 条结果（日期已转北京时间）",
+            payload["query"],
+            len(results),
+        )
+        return SearchResponse(
+            query=query,
+            results=results,
+            provider=self.name,
+            success=True,
+        )
+
+
 class TavilySearchProvider(BaseSearchProvider):
     """
     Tavily 搜索引擎
@@ -2285,6 +2466,33 @@ class SearchService:
         _SECTOR_NEWS_CATEGORY: 1,
         _MACRO_NEWS_CATEGORY: 2,
     }
+    # 行情页 / 股吧 / F10 资料页不是新闻：对任何 provider 都在准入阶段剔除，
+    # 避免「海峡创新（300300）行情走势」这类页面挤占新闻位。
+    _QUOTE_PAGE_TITLE_TERMS = (
+        "走势图",
+        "股吧",
+        "最新价格",
+        "行情中心",
+        "行情走势",
+        "股票行情",
+        "个股资料",
+        "f10",
+        # 行情 / 数据中心 / 新闻聚合列表页（标题通常只有「名称(代码)」）
+        "quote.eastmoney.com",
+        "data.eastmoney.com/stockcalendar",
+        "data.eastmoney.com/stockcomment",
+        "vcb_allnewsstock",
+        "stcn.com/quotes",
+        "guba.eastmoney.com",
+        "xueqiu.com/s/",
+        "10jqka.com.cn/stockpage",
+    )
+
+    @classmethod
+    def _is_quote_page(cls, title: str, url: str) -> bool:
+        """True for market-data / quote / F10 pages, which are not news articles."""
+        haystack = f"{title or ''} {url or ''}".lower()
+        return any(term in haystack for term in cls._QUOTE_PAGE_TITLE_TERMS)
     _AMBIGUOUS_EN_COMPANY_NAMES = {"apple", "meta", "square", "target", "gap"}
     _AMBIGUOUS_EN_CONFIRMING_EVENT_TERMS = (
         "earnings", "revenue", "profit", "guidance", "filing", "buyback",
@@ -2409,6 +2617,7 @@ class SearchService:
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
         minimax_keys: Optional[List[str]] = None,
+        deepseek_search_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         searxng_public_instances_enabled: bool = False,
         searxng_timeout_seconds: Optional[int] = None,
@@ -2425,6 +2634,7 @@ class SearchService:
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
             minimax_keys: MiniMax API Key 列表
+            deepseek_search_keys: DeepSeek Search API Key 列表（复用 LLM key 亦可）
             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
             news_max_age_days: 新闻最大时效（天）
@@ -2437,6 +2647,7 @@ class SearchService:
             "brave_keys": list(brave_keys or []),
             "serpapi_keys": list(serpapi_keys or []),
             "minimax_keys": list(minimax_keys or []),
+            "deepseek_search_keys": list(deepseek_search_keys or []),
             "searxng_base_urls": list(searxng_base_urls or []),
             "searxng_public_instances_enabled": bool(searxng_public_instances_enabled),
             "searxng_timeout_seconds": searxng_timeout_seconds,
@@ -2504,7 +2715,16 @@ class SearchService:
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
-            
+
+        # 8. DeepSeek 官方 Search API：中文 A 股新闻质量最好，放最前面。
+        # 计费按成功请求（5 元/1000 次），不占用模型 token 额度。
+        if deepseek_search_keys:
+            self._providers.insert(0, DeepSeekSearchProvider(deepseek_search_keys))
+            logger.info(
+                "已配置 DeepSeek Search，共 %s 个 API Key",
+                len(deepseek_search_keys),
+            )
+
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
 
@@ -3438,10 +3658,17 @@ class SearchService:
         candidates: List[SearchResult] = []
         dropped_low_quality = 0
         dropped_adult_spam = 0
+        dropped_quote_page = 0
         dropped_zero_relevance = 0
 
         for item in response.results:
             is_official_source = cls._is_trusted_official_news_source(item)
+            if (
+                not is_official_source
+                and cls._is_quote_page(item.title, item.url)
+            ):
+                dropped_quote_page += 1
+                continue
             if (
                 not is_official_source
                 and cls._has_low_quality_news_page_signal(item)
@@ -3468,16 +3695,23 @@ class SearchService:
         else:
             filtered_results = candidates
 
-        if dropped_low_quality or dropped_adult_spam or dropped_zero_relevance:
+        if (
+            dropped_low_quality
+            or dropped_adult_spam
+            or dropped_quote_page
+            or dropped_zero_relevance
+        ):
             logger.info(
                 "[新闻准入] %s: provider=%s, total=%s, kept=%s, "
-                "drop_low_quality=%s, drop_adult_spam=%s, drop_zero_relevance=%s",
+                "drop_low_quality=%s, drop_adult_spam=%s, drop_quote_page=%s, "
+                "drop_zero_relevance=%s",
                 log_scope,
                 response.provider,
                 len(response.results),
                 len(filtered_results),
                 dropped_low_quality,
                 dropped_adult_spam,
+                dropped_quote_page,
                 dropped_zero_relevance,
             )
 
@@ -4922,6 +5156,7 @@ def get_search_service() -> SearchService:
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys,
                     minimax_keys=config.minimax_api_keys,
+                    deepseek_search_keys=getattr(config, "deepseek_search_api_keys", []),
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
                     searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),

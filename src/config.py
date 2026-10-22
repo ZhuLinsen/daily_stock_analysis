@@ -1048,6 +1048,9 @@ class Config:
     anthropic_api_keys: List[str] = field(default_factory=list)
     openai_api_keys: List[str] = field(default_factory=list)
     deepseek_api_keys: List[str] = field(default_factory=list)
+    # DeepSeek 官方 Search API（/v1/tools/search）复用同一组 key；
+    # 未单独配置时按 LLM 渠道的 DeepSeek key 回退。
+    deepseek_search_api_keys: List[str] = field(default_factory=list)
 
     # Legacy single-key fields (kept for backward compatibility; gemini_api_keys[0] when set)
     gemini_api_key: Optional[str] = None
@@ -1594,6 +1597,28 @@ class Config:
             if _single_deepseek:
                 deepseek_api_keys = [_single_deepseek]
 
+        # DeepSeek Search API keys: DEEPSEEK_SEARCH_API_KEYS > DEEPSEEK_SEARCH_API_KEY
+        # > DEEPSEEK_API_KEYS > LLM 渠道 key（LLM_DEEPSEEK_API_KEYS / LLM_DEEPSEEK_API_KEY）。
+        # 绝大多数场景直接复用 LLM 的 DeepSeek key，无需额外配置。
+        _deepseek_search_keys_raw = os.getenv('DEEPSEEK_SEARCH_API_KEYS', '')
+        deepseek_search_api_keys = [
+            k.strip() for k in _deepseek_search_keys_raw.split(',') if k.strip()
+        ]
+        if not deepseek_search_api_keys:
+            _single_search_deepseek = os.getenv('DEEPSEEK_SEARCH_API_KEY', '').strip()
+            if _single_search_deepseek:
+                deepseek_search_api_keys = [_single_search_deepseek]
+        if not deepseek_search_api_keys:
+            deepseek_search_api_keys = list(deepseek_api_keys)
+        if not deepseek_search_api_keys:
+            _llm_deepseek_raw = (
+                os.getenv('LLM_DEEPSEEK_API_KEYS', '')
+                or os.getenv('LLM_DEEPSEEK_API_KEY', '')
+            )
+            deepseek_search_api_keys = [
+                k.strip() for k in _llm_deepseek_raw.split(',') if k.strip()
+            ]
+
         # Anspire Open shares the same key as Anspire Search and exposes an
         # OpenAI-compatible LLM gateway.  When no other OpenAI-compatible key is
         # configured, use ANSPIRE_API_KEYS as the legacy openai-compatible
@@ -1962,6 +1987,7 @@ class Config:
             anthropic_api_keys=anthropic_api_keys,
             openai_api_keys=openai_api_keys,
             deepseek_api_keys=deepseek_api_keys,
+            deepseek_search_api_keys=deepseek_search_api_keys,
             gemini_api_key=os.getenv('GEMINI_API_KEY'),
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview'),
             gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview'),
