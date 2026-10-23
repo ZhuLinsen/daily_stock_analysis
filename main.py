@@ -1336,6 +1336,9 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     # machines. Importing first keeps the heavy work out of the probe window;
     # genuine import failures still surface immediately to the caller.
     from api.app import app as fastapi_app
+    from api.middlewares.security_guard import uvicorn_proxy_kwargs
+
+    uvicorn_kwargs.update(uvicorn_proxy_kwargs())
 
     try:
         uvicorn_config = uvicorn.Config(
