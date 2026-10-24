@@ -993,6 +993,10 @@ class Config:
     futu_hk_realtime_source_priority: str = "futu,longbridge,akshare,yfinance"
     mx_apikey: Optional[str] = None
     mx_priority: int = 6
+    # 通达信本地 vipdoc 日线源（TdxLocalFetcher）：路径缺失/未配置时不注册
+    tdx_local_path: Optional[str] = None
+    tdx_local_priority: int = 0
+    tdx_local_max_stale_days: int = 10
     finnhub_api_key: Optional[str] = None
     alphavantage_api_key: Optional[str] = None
     longbridge_app_key: Optional[str] = None
@@ -1919,6 +1923,9 @@ class Config:
             futu_hk_realtime_source_priority=os.getenv('FUTU_HK_REALTIME_SOURCE_PRIORITY', 'futu,longbridge,akshare,yfinance'),
             mx_apikey=os.getenv('MX_APIKEY') or None,
             mx_priority=parse_env_int(os.getenv('MX_PRIORITY'), 6, field_name='MX_PRIORITY', minimum=0),
+            tdx_local_path=os.getenv('TDX_LOCAL_PATH') or None,
+            tdx_local_priority=parse_env_int(os.getenv('TDX_LOCAL_PRIORITY'), 0, field_name='TDX_LOCAL_PRIORITY', minimum=0),
+            tdx_local_max_stale_days=parse_env_int(os.getenv('TDX_LOCAL_MAX_STALE_DAYS'), 10, field_name='TDX_LOCAL_MAX_STALE_DAYS', minimum=0),
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,
             alphavantage_api_key=os.getenv('ALPHAVANTAGE_API_KEY') or None,
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,

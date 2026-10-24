@@ -1259,6 +1259,35 @@ System defaults to AkShare (free), also supports other data sources:
 - Free, no configuration needed
 - Used as backup data source
 
+### TDX Local vipdoc (TDX local daily files)
+- Zero-network A-share daily data source (#2143): reads daily `.day` files already downloaded by the TDX (TongDaXin) desktop client; local data is served first when available, reducing ban risk and speeding up fetches
+- Three optional keys (`TDX_LOCAL_PATH` empty or missing directory = source fully disabled; ordering and behavior of other sources unchanged):
+
+| Config key | Description | Default |
+|------------|-------------|---------|
+| `TDX_LOCAL_PATH` | TDX install root or the `vipdoc` directory itself (auto-detected, see the layout below) | empty (disabled) |
+| `TDX_LOCAL_PRIORITY` | Provider priority, lower tries first; default `0`, same tier as efinance but ordered before it | `0` |
+| `TDX_LOCAL_MAX_STALE_DAYS` | Maximum tolerated staleness in calendar days before falling back to network sources; default `10` covers the National Day holiday, raise it for longer holidays such as Chinese New Year | `10` |
+
+- Directory layout (`TDX_LOCAL_PATH` may point at the install root or the `vipdoc` directory; the resolver descends one level automatically):
+
+```text
+<TDX install root>/
+└── vipdoc/
+    ├── sh/
+    │   └── lday/
+    │       ├── sh600519.day    # Shanghai daily
+    │       └── sh688981.day
+    └── sz/
+        └── lday/
+            └── sz000001.day    # Shenzhen daily
+```
+
+- Staleness fallback semantics: comparisons use the request window's end date (not today), so backtest-style historical windows are never penalized for "old" local data; when the latest local bar lags the window end by more than `TDX_LOCAL_MAX_STALE_DAYS` calendar days, the source returns empty and falls back to network providers automatically (a lag exactly equal to the threshold is still served locally, and the legitimate threshold 0 — zero tolerance for staleness — is honored); when the window starts earlier than the earliest local data (e.g., TDX was installed recently and local history does not cover the window), the source likewise returns empty and falls back to network providers instead of terminating the fallback with a partial history (a head-gap warning is logged)
+- Empty-result fallback does not trip the provider circuit breaker and does not affect other stocks' access to the local source
+- Known limitations: `.day` files hold **unadjusted** prices, so indicators spanning ex-dividend dates (e.g., pct_chg) are computed on raw prices and differ from adjusted providers; the amount field is stored as 32-bit float, so large turnovers (around 5 billion CNY and above) carry absolute errors of a few hundred yuan — acceptable for analysis, not for precise reconciliation; indices, minute bars, BSE, and HK/US stocks are not provided and always use the network chain
+- This source only reads local files and takes effect on machines with TDX installed and daily data downloaded; GitHub Actions runners have no local TDX install, so the source simply stays unregistered — do not configure (there is no need for) these three keys in Actions Secrets
+
 ### YFinance
 - Free, no configuration needed
 - Supports US/HK stock data

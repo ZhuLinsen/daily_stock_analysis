@@ -71,3 +71,56 @@ describe('Skill Outcome auto-weight settings help', () => {
     expect(enHelp).toContain('does not directly');
   });
 });
+
+describe('TDX local vipdoc settings help', () => {
+  it('describes the local vipdoc data source in Chinese', () => {
+    const help = getSettingsHelpContent(
+      'settings.data_source.TDX_LOCAL_PATH',
+      undefined,
+      'zh',
+    );
+    const visibleCopy = flattenHelp(help);
+
+    expect(visibleCopy).toContain('vipdoc');
+    expect(visibleCopy).toContain('回退网络数据源');
+    expect(visibleCopy).toContain('未复权');
+    expect(visibleCopy).not.toContain('必须配置到 GitHub Actions Secrets');
+
+    const priority = flattenHelp(getSettingsHelpContent(
+      'settings.data_source.TDX_LOCAL_PRIORITY',
+      undefined,
+      'zh',
+    ));
+    expect(priority).toContain('默认 0');
+    expect(getSettingsHelpContent(
+      'settings.data_source.TDX_LOCAL_MAX_STALE_DAYS',
+      undefined,
+      'zh',
+    )?.summary).toContain('过期');
+  });
+
+  it('describes the local vipdoc data source in English', () => {
+    const help = getSettingsHelpContent(
+      'settings.data_source.TDX_LOCAL_PATH',
+      undefined,
+      'en',
+    );
+    const visibleCopy = flattenHelp(help);
+
+    expect(visibleCopy).toContain('vipdoc');
+    expect(visibleCopy).toContain('fallback to network providers');
+    expect(visibleCopy).toContain('not registered');
+
+    const priority = flattenHelp(getSettingsHelpContent(
+      'settings.data_source.TDX_LOCAL_PRIORITY',
+      undefined,
+      'en',
+    ));
+    expect(priority).toContain('Default 0');
+    expect(getSettingsHelpContent(
+      'settings.data_source.TDX_LOCAL_MAX_STALE_DAYS',
+      undefined,
+      'en',
+    )?.summary).toContain('stale');
+  });
+});
