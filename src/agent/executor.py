@@ -34,6 +34,7 @@ from src.market_context import get_market_role, get_market_guidelines
 from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 from src.services.daily_market_context import format_daily_market_context_prompt_section
+from src.cross_asset_context_prompt import format_cross_asset_context_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -627,6 +628,12 @@ def prepare_agent_chat(
         )
         if daily_market_context_section:
             context_parts.append(daily_market_context_section.strip())
+        cross_asset_context_section = format_cross_asset_context_prompt_section(
+            effective_context.get("cross_asset_context"),
+            report_language=report_language,
+        )
+        if cross_asset_context_section:
+            context_parts.append(cross_asset_context_section.strip())
         market_structure_section = format_market_structure_prompt_section(
             effective_context.get("market_structure_context"),
             report_language=report_language,
@@ -918,6 +925,13 @@ class AgentExecutor:
             )
             if daily_market_context_section:
                 parts.append(daily_market_context_section)
+
+            cross_asset_context_section = format_cross_asset_context_prompt_section(
+                context.get("cross_asset_context"),
+                report_language=report_language,
+            )
+            if cross_asset_context_section:
+                parts.append(cross_asset_context_section)
 
             market_structure_section = format_market_structure_prompt_section(
                 context.get("market_structure_context"),

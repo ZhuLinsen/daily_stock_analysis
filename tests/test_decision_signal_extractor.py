@@ -690,3 +690,96 @@ def test_extract_and_persist_index_signal_with_market_override(isolated_db) -> N
     latest = service.get_latest_active(stock_code="csi930955", market="cn")
     assert latest["total"] == 1
     assert latest["items"][0]["source_report_id"] == 955
+
+
+# ---------------------------------------------------------------------------
+# Issue #1910 P4 reservation — cross-asset risk-key passthrough (T19)
+# Passthrough only: risk_appetite / risk_tags land in signal metadata verbatim.
+# No statistics, no derivation, and legacy snapshots write neither key.
+# ---------------------------------------------------------------------------
+CROSS_ASSET_SNAPSHOT = {
+    "enhanced_context": {
+        "cross_asset_context": {
+            "schema_version": "cross-asset-v1",
+            "market": "cn",
+            "risk_appetite": "risk_off",
+            "risk_tags": ["vix_high", "cn_index_down", "  ", ""],
+            "indices": {"sh000001": {"value": 3100.5}},
+        }
+    }
+}
+
+
+def test_cross_asset_risk_keys_passthrough_into_metadata() -> None:
+    payload = build_decision_signal_payload_from_report(
+        _result(),
+        context_snapshot=CROSS_ASSET_SNAPSHOT,
+        source_report_id=960,
+        trace_id="trace-cross-asset-on",
+        query_source="api",
+        report_type="full",
+        profile_source=BUILD_PROFILE_SOURCE,
+    )
+
+    metadata = payload["metadata"]
+    assert metadata["risk_appetite"] == "risk_off"
+    # tags are cleaned (stripped, empties dropped) but otherwise verbatim
+    assert metadata["risk_tags"] == ["vix_high", "cn_index_down"]
+    # passthrough only — no statistics/derived keys beside the two
+    assert "risk_appetite_score" not in metadata
+    assert "risk_appetite_votes" not in metadata
+    assert "cross_asset_impact" not in metadata
+
+
+def test_cross_asset_keys_read_from_snapshot_top_level_fallback() -> None:
+    snapshot = {
+        "cross_asset_context": {
+            "risk_appetite": "risk_on",
+            "risk_tags": ["usd_weakness"],
+        }
+    }
+
+    payload = build_decision_signal_payload_from_report(
+        _result(),
+        context_snapshot=snapshot,
+        source_report_id=961,
+        trace_id="trace-cross-asset-toplevel",
+        query_source="api",
+        report_type="full",
+        profile_source=BUILD_PROFILE_SOURCE,
+    )
+
+    assert payload["metadata"]["risk_appetite"] == "risk_on"
+    assert payload["metadata"]["risk_tags"] == ["usd_weakness"]
+
+
+def test_old_snapshot_without_cross_asset_writes_no_keys() -> None:
+    """Legacy snapshots must not grow cross-asset metadata keys."""
+    payload = build_decision_signal_payload_from_report(
+        _result(),
+        context_snapshot={"enhanced_context": {"code": "600519"}},
+        source_report_id=962,
+        trace_id="trace-cross-asset-legacy",
+        query_source="api",
+        report_type="full",
+        profile_source=BUILD_PROFILE_SOURCE,
+    )
+
+    metadata = payload["metadata"]
+    assert "risk_appetite" not in metadata
+    assert "risk_tags" not in metadata
+
+
+def test_empty_cross_asset_context_writes_no_keys() -> None:
+    payload = build_decision_signal_payload_from_report(
+        _result(),
+        context_snapshot={"enhanced_context": {"cross_asset_context": {}}},
+        source_report_id=963,
+        trace_id="trace-cross-asset-empty",
+        query_source="api",
+        report_type="full",
+        profile_source=BUILD_PROFILE_SOURCE,
+    )
+
+    assert "risk_appetite" not in payload["metadata"]
+    assert "risk_tags" not in payload["metadata"]

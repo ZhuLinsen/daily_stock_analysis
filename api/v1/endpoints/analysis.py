@@ -1015,6 +1015,39 @@ def _display_market_phase_summary(stock_code: Any, context_snapshot: Any) -> Any
     )
 
 
+def _extract_cross_asset_context_summary(context_snapshot: Any) -> Optional[str]:
+    """Return the low-sensitivity cross-asset prompt summary when stored.
+
+    Issue #1910 optional meta passthrough: only reads what the pipeline
+    explicitly recorded in the snapshot (``enhanced_context`` first, then the
+    snapshot top level for the agent path); old snapshots without the key
+    return ``None`` so legacy responses stay byte-identical.
+    """
+    snapshot = context_snapshot if isinstance(context_snapshot, dict) else None
+    if snapshot is None:
+        return None
+    enhanced_context = snapshot.get("enhanced_context")
+    for source in (enhanced_context, snapshot):
+        if isinstance(source, dict):
+            value = source.get("cross_asset_context_summary")
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
+
+
+def _attach_cross_asset_summary_to_report_meta(
+    report_payload: Any,
+    context_snapshot: Any,
+) -> None:
+    """Best-effort in-place meta passthrough (fail-open; additive field only)."""
+    summary = _extract_cross_asset_context_summary(context_snapshot)
+    if not summary or not isinstance(report_payload, dict):
+        return
+    meta = report_payload.get("meta")
+    if isinstance(meta, dict) and not meta.get("cross_asset_context_summary"):
+        meta["cross_asset_context_summary"] = summary
+
+
 def _prepare_report_for_task_enrichment(
     report_data: Dict[str, Any],
     created_at: Optional[str],
@@ -1131,6 +1164,10 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
                     fallback_raw_result_payload=raw_result_snapshot or payload,
                 )
                 payload["report"] = report.model_dump()
+                _attach_cross_asset_summary_to_report_meta(
+                    payload["report"],
+                    context_snapshot,
+                )
                 report_enriched = True
             except Exception as e:
                 logger.debug(
@@ -1384,6 +1421,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 ),
                 details=details,
             ).model_dump()
+            _attach_cross_asset_summary_to_report_meta(
+                report_dict,
+                context_snapshot,
+            )
             return TaskStatus(
                 task_id=task_id,
                 trace_id=task_id,

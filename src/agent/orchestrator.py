@@ -1269,6 +1269,11 @@ class AgentOrchestrator:
             daily_market_context = context.get("daily_market_context")
             if isinstance(daily_market_context, dict) and daily_market_context:
                 ctx.meta["daily_market_context"] = dict(daily_market_context)
+            # Issue #1910: share the low-sensitivity cross-asset safe dict so
+            # agents (e.g. risk reasoning) can consult the external environment.
+            cross_asset_context = context.get("cross_asset_context")
+            if isinstance(cross_asset_context, dict) and cross_asset_context:
+                ctx.meta["cross_asset_context"] = dict(cross_asset_context)
             market_structure_context = context.get("market_structure_context")
             if isinstance(market_structure_context, dict) and market_structure_context:
                 ctx.meta["market_structure_context"] = dict(market_structure_context)

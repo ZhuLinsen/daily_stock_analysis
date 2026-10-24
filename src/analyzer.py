@@ -104,6 +104,7 @@ from src.schemas.decision_scale import (
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import detect_market, get_market_role, get_market_guidelines
 from src.services.daily_market_context import format_daily_market_context_prompt_section
+from src.cross_asset_context_prompt import format_cross_asset_context_prompt_section
 from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 
@@ -273,6 +274,7 @@ def _legacy_audit_marker_specs(
     add("analysis_date", context.get("date"))
     add("market_phase", "## Market Phase Context" if report_language in ("en", "ko") else "## 市场阶段上下文")
     add("daily_market_context", "## Daily Market Context" if report_language in ("en", "ko") else "## 大盘环境摘要")
+    add("cross_asset_context", "## Cross-Asset Context" if report_language in ("en", "ko") else "## 外围环境与跨资产")
     add("market_structure_context", "## Market Structure Context" if report_language in ("en", "ko") else "## 市场结构上下文")
     add("analysis_context_pack", analysis_context_pack_summary)
     english = report_language in ("en", "ko")
@@ -4416,6 +4418,16 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         )
         if daily_market_context_section:
             prompt += daily_market_context_section
+        # Issue #1910: low-sensitivity cross-asset summary. Prefer the
+        # pipeline-rendered section; fall back to rendering from the safe dict.
+        cross_asset_context_section = context.get("cross_asset_context_summary")
+        if not (isinstance(cross_asset_context_section, str) and cross_asset_context_section.strip()):
+            cross_asset_context_section = format_cross_asset_context_prompt_section(
+                context.get("cross_asset_context"),
+                report_language=report_language,
+            )
+        if isinstance(cross_asset_context_section, str) and cross_asset_context_section.strip():
+            prompt += cross_asset_context_section
         market_structure_section = format_market_structure_prompt_section(
             context.get("market_structure_context"),
             report_language=report_language,

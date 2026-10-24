@@ -1320,6 +1320,12 @@ class Config:
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     daily_market_context_enabled: bool = True   # 是否将大盘环境摘要用于个股分析 Prompt 与保守护栏
+    # 跨资产外围上下文（Issue #1910）：注入低敏摘要并启用置信度校准守护
+    cross_asset_context_enabled: bool = True
+    # 跨资产上下文单次组装总预算（秒）；超时未取到的资产组记 error=timeout，不影响主分析
+    cross_asset_context_timeout_seconds: int = 8
+    # FX/商品/加密资产等收盘数据 stale 判定天数（指数/利率按交易日+1 自然日判定）
+    cross_asset_context_stale_days: int = 2
     # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(全部市场)
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
@@ -2327,6 +2333,21 @@ class Config:
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
+            cross_asset_context_enabled=os.getenv('CROSS_ASSET_CONTEXT_ENABLED', 'true').lower() == 'true',
+            cross_asset_context_timeout_seconds=parse_env_int(
+                os.getenv('CROSS_ASSET_CONTEXT_TIMEOUT_SECONDS'),
+                8,
+                field_name='CROSS_ASSET_CONTEXT_TIMEOUT_SECONDS',
+                minimum=1,
+                maximum=120,
+            ),
+            cross_asset_context_stale_days=parse_env_int(
+                os.getenv('CROSS_ASSET_CONTEXT_STALE_DAYS'),
+                2,
+                field_name='CROSS_ASSET_CONTEXT_STALE_DAYS',
+                minimum=1,
+                maximum=30,
+            ),
             market_review_region=cls._parse_market_review_region(
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
             ),

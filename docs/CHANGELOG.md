@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
 
+- [新功能] 个股分析新增跨资产上下文（cross-asset-v1）：注入“外围环境与跨资产”低敏摘要到普通分析与 Agent prompt，RiskAgent reasoning 须回答外部环境是否支持结论；risk-off 时对高置信激进买入做置信度校准（不改决策类型），支持开关 `CROSS_ASSET_CONTEXT_ENABLED` 与四级 fail-open 降级（#1910）。
+- [修复] 跨资产上下文 Prompt 渲染加固：畸形 value/change_pct（字符串/布尔/嵌套等）跳过该项不再抛 TypeError/ValueError，客户端自带的跨资产 dict 不再能打挂聊天回合；risk_tags 与资产键渲染前做 UNTRUSTED 哨兵转义，块内无有效内容时整段返回空（对齐大盘摘要渲染行为）；美元指数快照键由 "DXYDXY" 修正为 "DXY"，并发抓取的预算 deadline 改为调用栈局部变量互不覆盖（#1910）。
+- [修复] 披露：A股指数批量抓取中不可用符号（not_supported）补记 error="no_data" 自我说明，对齐 yfinance 分支的质量四元组契约；该 1 行产品修复此前随测试提交（5b291551）合入，此处显式披露（#1910）。
+
 ## [3.33.0] - 2026-10-15
 
 ### 发布亮点

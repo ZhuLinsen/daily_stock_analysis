@@ -28,6 +28,7 @@ from src.agent.protocols import (
 from src.agent.runner import RunLoopResult, run_agent_loop
 from src.agent.skills.defaults import extract_skill_id
 from src.agent.tools.registry import ToolRegistry
+from src.cross_asset_context_prompt import format_cross_asset_context_prompt_section
 from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 from src.report_language import normalize_report_language
@@ -54,6 +55,10 @@ class BaseAgent(ABC):
     agent_name: str = "base"
     tool_names: Optional[List[str]] = None  # None → all tools available
     max_steps: int = 6
+    # OR-COR-f88926c2: agents that already render the cross-asset section
+    # inside their own user message (RiskAgent) opt out of the shared
+    # BaseAgent injection to avoid duplicated content.
+    renders_cross_asset_section_in_own_message: bool = False
 
     def __init__(
         self,
@@ -218,6 +223,22 @@ class BaseAgent(ABC):
         )
         if daily_market_context_section:
             messages.append({"role": "user", "content": daily_market_context_section})
+
+        # OR-COR-f88926c2: every mode's chain (quick/standard/full/specialist)
+        # must receive the cross-asset summary — not only the full-mode
+        # RiskAgent. Rendered here from the shared safe dict so input
+        # calibration matches the output guardrail. Re-rendering through the
+        # hardened renderer (never trusting a client-supplied pre-rendered
+        # summary string) keeps everything client-derived behind the
+        # UNTRUSTED sentinels.
+        cross_asset_section = ""
+        if not self.renders_cross_asset_section_in_own_message:
+            cross_asset_section = format_cross_asset_context_prompt_section(
+                ctx.meta.get("cross_asset_context"),
+                report_language=report_language,
+            ).strip()
+        if cross_asset_section:
+            messages.append({"role": "user", "content": cross_asset_section})
 
         market_structure_section = format_market_structure_prompt_section(
             ctx.meta.get("market_structure_context"),
