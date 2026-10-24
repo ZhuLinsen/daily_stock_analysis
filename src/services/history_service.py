@@ -24,6 +24,7 @@ from src.report_language import (
     get_bias_status_emoji,
     get_localized_stock_name,
     get_report_labels,
+    get_sentiment_label,
     get_signal_level,
     get_chip_unavailable_reason,
     is_chip_structure_unavailable,
@@ -403,6 +404,154 @@ class HistoryService:
             # canonical from prefixes/suffixes.
             return target.canonical_id
         return resolve_index_stock_code(code) or code
+
+    @staticmethod
+    def _daily_group_key(raw_code: Any, display_code: str) -> str:
+        """Build the daily-history grouping key from the *persisted* code.
+
+        All asset types group by the parser canonical id so every persisted
+        code variant of one instrument converges on a single daily row:
+        ``00700`` / ``HK00700`` / ``00700.HK`` all canonicalize to
+        ``hk00700`` (issue #1661 review OR-COR-f3050c49), A-share variants
+        ``002460`` / ``002460.SZ`` to ``sz002460``, and registered indices
+        keep the PR #2312 semantics (``sh000016`` / ``csi930955``). Falls
+        back to the legacy display-based normalization only when the parser
+        fails or yields an empty canonical.
+
+        Note: this intentionally diverges from ``_stock_bar_group_key`` in
+        ``api/v1/endpoints/history.py`` (which keeps legacy display
+        normalization for stocks) — the daily per-date view must not split
+        HK variants into duplicate rows or mis-mark superseded records as
+        latest.
+        """
+        from data_provider.base import normalize_stock_code
+        from src.services.stock_list_parser import parse_analysis_target
+
+        code = str(raw_code or "").strip()
+        if code:
+            try:
+                target = parse_analysis_target(code)
+            except Exception:
+                target = None
+            if target is not None and target.canonical_id:
+                return target.canonical_id
+        return normalize_stock_code(display_code or "")
+
+    def get_daily_history(
+        self,
+        query_date: date,
+        language: str = "zh",
+        page: int = 1,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        按交易日获取每股当日最新分析结果（issue #1661）。
+
+        流程：
+        1. 存储层取当日 per-raw-code 最新全集（SQL 层不分页）；
+        2. 按 ``_daily_group_key``（parser 规范化）合并代码变体，同一规范化
+           code 取 id 最大一条（002460 与 002460.SZ 同日只出一行）；
+        3. 合并后按 (created_at desc, id desc) 排序，total = 合并后股票数，
+           内存 offset/limit 分页；
+        4. is_latest：一次无日期过滤的 per-code MAX(id) 聚合，按规范化 code
+           归组后与当页记录 id 比对（被任一写法的更新分析取代即过期）；
+        5. sentiment_label 由 get_sentiment_label(score, language) 得出。
+
+        Args:
+            query_date: 查询日期（date）
+            language: 情绪标签语言（zh/en/ko），默认 zh
+            page: 页码（从 1 开始）
+            limit: 每页数量
+
+        Returns:
+            Dict: {"total", "page", "limit", "items"}，item 为展示 dict
+        """
+        try:
+            page = max(int(page or 1), 1)
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            limit = int(limit or 20)
+        except (TypeError, ValueError):
+            limit = 20
+
+        records = self.db.get_daily_latest_per_code(query_date)
+
+        # 规范化合并：同一 group key 只保留 id 最大的一条
+        merged: Dict[str, Any] = {}
+        for record in records:
+            raw_code = str(getattr(record, "code", "") or "")
+            display_code = self._display_stock_code(raw_code)
+            group_key = self._daily_group_key(raw_code, display_code)
+            current = merged.get(group_key)
+            if current is None or int(getattr(record, "id", 0) or 0) > int(
+                getattr(current, "id", 0) or 0
+            ):
+                merged[group_key] = record
+
+        ordered = sorted(
+            merged.values(),
+            key=lambda r: (
+                getattr(r, "created_at", None) or datetime.min,
+                int(getattr(r, "id", 0) or 0),
+            ),
+            reverse=True,
+        )
+
+        total = len(ordered)
+        start = (page - 1) * limit
+        page_records = ordered[start:start + limit]
+
+        # is_latest：单次全局聚合（无日期过滤），按规范化 code 归组取全局最大 id
+        global_latest_by_group: Dict[str, int] = {}
+        if page_records:
+            for raw_code, max_id in (self.db.get_latest_analysis_ids_by_code() or {}).items():
+                normalized_raw = str(raw_code or "")
+                display = self._display_stock_code(normalized_raw)
+                group_key = self._daily_group_key(normalized_raw, display)
+                if group_key not in global_latest_by_group or int(max_id) > global_latest_by_group[group_key]:
+                    global_latest_by_group[group_key] = int(max_id)
+
+        items: List[Dict[str, Any]] = []
+        for record in page_records:
+            raw_code = str(getattr(record, "code", "") or "")
+            display_code = self._display_stock_code(raw_code)
+            group_key = self._daily_group_key(raw_code, display_code)
+            score = getattr(record, "sentiment_score", None)
+            record_id = int(getattr(record, "id", 0) or 0)
+            # 与 /stocks 路径同源的最终动作解析：优先 raw_result 结构化 action，
+            # 避免 operation_advice 旧文案把 'avoid' 覆盖显示成 '买入'。
+            raw_result = parse_json_field(getattr(record, "raw_result", None))
+            action_fields = self._decision_action_fields_for_record(record, raw_result)
+            items.append(
+                {
+                    "id": record_id,
+                    "code": display_code,
+                    "name": str(getattr(record, "name", None) or ""),
+                    "report_type": str(getattr(record, "report_type", None) or ""),
+                    "sentiment_score": score,
+                    # score 缺失（NULL）保持 label 缺失，不落回 0 分的"极度悲观"。
+                    "sentiment_label": (
+                        get_sentiment_label(int(score), language)
+                        if score is not None
+                        else None
+                    ),
+                    "operation_advice": getattr(record, "operation_advice", None),
+                    "action": action_fields["action"],
+                    "action_label": action_fields["action_label"],
+                    "trend_prediction": getattr(record, "trend_prediction", None),
+                    "is_latest": global_latest_by_group.get(group_key) == record_id,
+                    "ideal_buy": getattr(record, "ideal_buy", None),
+                    "secondary_buy": getattr(record, "secondary_buy", None),
+                    "stop_loss": getattr(record, "stop_loss", None),
+                    "take_profit": getattr(record, "take_profit", None),
+                    "created_at": self._serialize_created_at(
+                        getattr(record, "created_at", None)
+                    ) or "",
+                }
+            )
+
+        return {"total": total, "page": page, "limit": limit, "items": items}
 
     def _display_market_phase_summary(self, stock_code: str, context_snapshot: Any) -> Any:
         return rebuild_market_phase_summary_for_stock_code(
