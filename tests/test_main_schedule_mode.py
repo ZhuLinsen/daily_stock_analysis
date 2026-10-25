@@ -44,7 +44,17 @@ def _api_app_stub_modules():
     api_app_mod = types.ModuleType("api.app")
     api_app_mod.app = SimpleNamespace()
     api_pkg.app = api_app_mod
-    return {"api": api_pkg, "api.app": api_app_mod}
+    middlewares_pkg = types.ModuleType("api.middlewares")
+    guard_mod = types.ModuleType("api.middlewares.security_guard")
+    guard_mod.uvicorn_proxy_kwargs = lambda: {}
+    middlewares_pkg.security_guard = guard_mod
+    api_pkg.middlewares = middlewares_pkg
+    return {
+        "api": api_pkg,
+        "api.app": api_app_mod,
+        "api.middlewares": middlewares_pkg,
+        "api.middlewares.security_guard": guard_mod,
+    }
 
 
 class _DummyConfig(SimpleNamespace):

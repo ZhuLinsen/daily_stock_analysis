@@ -1216,16 +1216,6 @@ const SettingsPage: React.FC = () => {
   const activeCategoryTitle = getCategoryTitle(activeCategory as SystemConfigCategory, t('settings.activePanelTitle'), uiLanguage);
   const activeCategoryDescription = getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage);
   const selectedAgentBackend = (rawActiveItemMap.get('AGENT_BACKEND') || 'auto').trim().toLowerCase();
-  const selectedAgentArch = (rawActiveItemMap.get('AGENT_ARCH') || 'single').trim().toLowerCase();
-  const hasCodexArchitectureConflict = selectedAgentBackend === 'codex_app_server' && selectedAgentArch !== 'single';
-  const codexArchitectureIssue: ConfigValidationIssue = {
-    key: 'AGENT_ARCH',
-    code: 'unsupported_agent_arch',
-    message: t('settings.agentBackendSingleOnly'),
-    severity: 'error',
-    expected: 'single',
-    actual: selectedAgentArch,
-  };
   const activeConfigPanel = hasActiveConfigItems ? (
     <SettingsSectionCard
       title={activeCategoryTitle}
@@ -1234,9 +1224,7 @@ const SettingsPage: React.FC = () => {
       {visibleActiveItems.length ? (
         <div className="divide-y divide-[var(--settings-border-soft)] overflow-hidden rounded-lg border border-[var(--settings-border)] bg-[var(--settings-surface)]">
           {visibleActiveItems.map((item) => {
-            const fieldIssues = item.key === 'AGENT_ARCH' && hasCodexArchitectureConflict
-              ? [...(issueByKey[item.key] || []), codexArchitectureIssue]
-              : issueByKey[item.key] || [];
+            const fieldIssues = issueByKey[item.key] || [];
             return (
               <SettingsField
                 key={item.key}
@@ -1674,9 +1662,7 @@ const SettingsPage: React.FC = () => {
                     items={agentBackendDraftItems}
                     maskToken={maskToken}
                     selectedBackend={selectedAgentBackend}
-                    agentArch={selectedAgentArch}
                     disabled={isSaving || isLoading || isImportingEnv}
-                    onUseSingleAgent={() => setDraftValue('AGENT_ARCH', 'single')}
                     onEnableAgentMode={() => setDraftValue('AGENT_MODE', 'true')}
                   />
                 </SettingsSectionCard>

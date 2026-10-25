@@ -2465,9 +2465,9 @@ class SystemConfigService:
         model dependency that is already broken: the save succeeds, the path
         switches, and the analysis then fails with no error at save time.
 
-        Codex backends and a disabled Agent mode stay exempt, which is what keeps
-        an operator with a broken LLM config able to switch away from the Agent
-        -- the original reason for narrowing the check.
+        Updates that do not activate these paths stay exempt from LLM checks.
+        Explicit retired backend values are still rejected by field validation;
+        an existing retired value does not block an unrelated partial save.
         """
         if cls._update_activates_litellm_agent(effective_map, updated_keys):
             return True
@@ -2502,9 +2502,9 @@ class SystemConfigService:
         model dependency that is already broken, and ask-stock stops working
         with no error at save time.
 
-        Codex backends never read that graph, so they stay exempt. That is what
-        keeps an operator with a broken LLM config able to switch to Codex,
-        which was the original reason for narrowing the check.
+        An unchanged retired chat backend does not activate the LiteLLM path.
+        Attempts to explicitly save that backend are rejected independently by
+        field validation, even when this graph check is skipped.
         """
         if not any(key in updated_keys for key in cls._AGENT_LLM_ROUTE_KEYS):
             return False
@@ -2654,6 +2654,14 @@ class SystemConfigService:
         data_type = field_schema.get("data_type", "string")
         validation = field_schema.get("validation", {}) or {}
         is_required = field_schema.get("is_required", False)
+
+        if key == "AGENT_BACKEND" and value.strip().lower() == "codex_app_server":
+            from src.config import AGENT_BACKEND_REMOVED_MESSAGE
+
+            return [{
+                "key": key, "code": "backend_removed", "message": AGENT_BACKEND_REMOVED_MESSAGE,
+                "severity": "error", "expected": "auto or litellm", "actual": value,
+            }]
 
         # Empty values are valid for non-required fields (skip type validation)
         if not value.strip() and not is_required:
@@ -4595,41 +4603,6 @@ class SystemConfigService:
     def _validate_cross_field(effective_map: Dict[str, str], updated_keys: Set[str]) -> List[Dict[str, Any]]:
         """Validate dependencies across multiple keys."""
         issues: List[Dict[str, Any]] = []
-
-        agent_backend = (effective_map.get("AGENT_BACKEND") or "auto").strip().lower()
-        agent_arch = (effective_map.get("AGENT_ARCH") or "single").strip().lower()
-        if agent_backend == "codex_app_server" and agent_arch != "single" and (
-            {"AGENT_BACKEND", "AGENT_ARCH"} & updated_keys
-        ):
-            issues.append(
-                {
-                    "key": "AGENT_ARCH",
-                    "code": "unsupported_agent_arch",
-                    "message": "Codex 本地 Agent 当前只支持单 Agent 问股，请切换为 single。",
-                    "severity": "error",
-                    "expected": "single",
-                    "actual": agent_arch,
-                }
-            )
-
-        timeout_raw = (effective_map.get("AGENT_ORCHESTRATOR_TIMEOUT_S") or "600").strip()
-        try:
-            agent_timeout = int(timeout_raw)
-        except ValueError:
-            agent_timeout = None
-        if agent_backend == "codex_app_server" and agent_timeout is not None and agent_timeout <= 0 and (
-            {"AGENT_BACKEND", "AGENT_ORCHESTRATOR_TIMEOUT_S"} & updated_keys
-        ):
-            issues.append(
-                {
-                    "key": "AGENT_ORCHESTRATOR_TIMEOUT_S",
-                    "code": "codex_timeout_required",
-                    "message": "Codex 本地 Agent 必须设置大于 0 的整体时限，确保每次问股都会结束。",
-                    "severity": "error",
-                    "expected": ">0 when AGENT_BACKEND=codex_app_server",
-                    "actual": timeout_raw,
-                }
-            )
 
         token_value = (effective_map.get("TELEGRAM_BOT_TOKEN") or "").strip()
         chat_id_value = (effective_map.get("TELEGRAM_CHAT_ID") or "").strip()

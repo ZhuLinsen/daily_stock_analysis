@@ -97,6 +97,18 @@ function renderFieldControl(
   }
 
   if (controlType === 'select' && schema?.options?.length) {
+    if (item.key === 'AGENT_BACKEND' && value.trim().toLowerCase() === 'codex_app_server') {
+      return (
+        <select id={controlId} value={value} className={commonClass}
+          disabled={disabled || !schema.isEditable}
+          onChange={(event) => onChange(event.target.value)}>
+          <option value={value} disabled>{t('settings.agentBackendRemovedLabel')}</option>
+          {normalizeSelectOptions(item.key, schema.options, language).map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      );
+    }
     return (
         <Select
           id={controlId}

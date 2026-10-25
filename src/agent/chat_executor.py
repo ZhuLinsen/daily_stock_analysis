@@ -62,7 +62,6 @@ class AgentChatExecutor:
         session_id: str,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         context: Optional[Dict[str, Any]] = None,
-        cancel_event=None,
         selected_skill_ids: Optional[List[str]] = None,
         resolved_turn: Optional[ResolvedChatTurn] = None,
         session_service: Optional[AgentChatSessionService] = None,
@@ -78,7 +77,6 @@ class AgentChatExecutor:
         return self.execute_turn(
             turn,
             progress_callback=progress_callback,
-            cancel_event=cancel_event,
         )
 
     def prepare_turn(
@@ -114,9 +112,8 @@ class AgentChatExecutor:
             skill_instructions=self.skill_instructions,
             default_skill_policy=self.default_skill_policy,
             use_legacy_default_prompt=self.use_legacy_default_prompt,
-            use_codex_prompt=self.backend.backend_id == "codex_app_server",
-            include_provider_trace=not self.backend.runtime_owns_loop,
-            strict_initial_stock_scope=self.backend.runtime_owns_loop,
+            include_provider_trace=True,
+            strict_initial_stock_scope=False,
             **resolved_kwargs,
         )
         baseline_len = len(prepared.history_messages) + 2
@@ -144,7 +141,6 @@ class AgentChatExecutor:
         turn: PreparedAgentChatTurn,
         *,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-        cancel_event=None,
     ) -> AgentResult:
         """Execute a previously accepted turn and persist its terminal result."""
         backend_result = self.backend.run(
@@ -157,7 +153,6 @@ class AgentChatExecutor:
                 max_steps=self.max_steps,
                 max_wall_clock_seconds=self.timeout_seconds,
                 progress_callback=progress_callback,
-                cancel_event=cancel_event,
             )
         )
         total_tokens = 0
@@ -187,7 +182,7 @@ class AgentChatExecutor:
                 )
             else:
                 assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content)
-            if not self.backend.runtime_owns_loop and assistant_message_id is not None:
+            if assistant_message_id is not None:
                 persist_provider_trace_turns(
                     session_id=turn.session_id,
                     run_id=turn.run_id,
@@ -199,14 +194,7 @@ class AgentChatExecutor:
                        if turn.accepted_snapshot is not None else {}),
                 )
         else:
-            if not self.backend.runtime_owns_loop:
-                failure_note = f"[分析失败] {result.error or '未知错误'}"
-            elif result.error_code == "cancelled":
-                failure_note = "[已停止] 本次分析已由用户停止。"
-            elif result.error_code == "timeout":
-                failure_note = "[已超时] 本次分析已在时间限制内结束。"
-            else:
-                failure_note = f"[分析失败] {result.error or '未知错误'}"
+            failure_note = f"[分析失败] {result.error or '未知错误'}"
             if turn.accepted_snapshot is not None:
                 conversation_manager.add_message(
                     turn.session_id, "assistant", failure_note, accepted_turn=turn.accepted_snapshot,

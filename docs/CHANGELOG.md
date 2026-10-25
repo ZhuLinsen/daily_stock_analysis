@@ -9,10 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [修复] 自选及其他无关配置保存不再被已有 LLM 渠道或模型错误阻断，模型相关修改仍校验完整依赖；仅更新自选时保留运行时单例与容器环境覆盖，并补齐增删、删空和校验回归。凡本次保存会启用 Agent 路径的，同样校验完整模型依赖：切到 LiteLLM Agent 后端（`AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` 解析为 litellm）、开启 Agent 分析（`AGENT_MODE=true`）、或配置了非 `all` 的 `AGENT_SKILLS`——后两者走普通分析的 Agent 分支，自带 `LLMToolAdapter`，不受 `AGENT_BACKEND` 决定。切到 Codex 后端、`AGENT_SKILLS=all` 或空值、以及无关键保存仍不受 LLM 配置影响。
+- [修复] 自选及其他无关配置保存不再被已有 LLM 渠道或模型错误阻断，模型相关修改仍校验完整依赖；仅更新自选时保留运行时单例与容器环境覆盖，并补齐增删、删空和校验回归。凡本次保存会启用 Agent 路径的，同样校验完整模型依赖：切到 LiteLLM Agent 后端（`AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` 解析为 litellm）、开启 Agent 分析（`AGENT_MODE=true`）、或配置了非 `all` 的 `AGENT_SKILLS`——后两者走普通分析的 Agent 分支，自带 `LLMToolAdapter`，不受 `AGENT_BACKEND` 决定。仅关闭 `AGENT_MODE`、将 `AGENT_SKILLS` 设为 `all` 或空值、以及无关键保存仍不受 LLM 配置影响；显式保存或导入已退役的 `codex_app_server` 仍被拒绝。
+- [改进] 移除实验性 Codex App Server 问股后端及专属探针、取消与启动链；旧配置明确提示退役并可主动修正，保留默认 LiteLLM、会话接受事务及独立 Codex CLI 报告。
+- [修复] Agent 状态面板在缺少可用主模型时显示中英文配置指引，保留技术错误码；配置指南明确区分已移除后端与历史 Gate 记录。
+- [chore] Default new MiniMax channels to MiniMax-M3.1-Flash and MiniMax-M3, filter older text recommendations while retaining saved/custom models, and refresh fallback pricing.
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [新功能] 新增可选的 fastapi-guard 安全中间件（`GUARD_ENABLED=true`，默认关闭）：按 IP 限流、IP 白/黑名单、请求特征拦截与扫描器自动封禁，与登录失败限流叠加；客户端 IP 取值与 `TRUST_X_FORWARDED_FOR` 保持一致，启用后内置启动入口的 Uvicorn 代理头处理只信任同一组代理，默认不扫描请求体，详见 `docs/full-guide.md`。
+- [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
+
+- [新功能] 定时模式启动立即执行的当日去重（`SCHEDULE_STARTUP_DEDUP`，默认开启）：`python main.py --schedule` 在 `SCHEDULE_RUN_IMMEDIATELY=true` 触发启动补跑前检查标记文件（位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`），当天已有成功且覆盖当前应分析清单的全量分析（日期 + scope=full + 覆盖面子集判定）则跳过，否则照常补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律 fail-open 执行（绝不漏跑）；大盘复盘完成度仅记录、不参与判定（复盘补齐由每日定时任务覆盖）；设 `SCHEDULE_STARTUP_DEDUP=false` 可回到此前"每次容器重启都全量重跑"的行为；`--force-run` 可绕过启动去重检查（明确要求立即全量分析）。
+- [修复] 收紧定时模式启动去重：仅当全部应分析标的都成功时才记录当日标记（部分失败或全败、即使大盘复盘成功也不得记录，避免重启漏跑）；跳过判定改为覆盖面子集校验并升版 schema 2（v1 旧标记一律 fail-open 重跑一次以升级），`SCHEDULE_STARTUP_DEDUP` 进程环境变量与 .env 值不同时以进程为准（与 `SCHEDULE_RUN_IMMEDIATELY` 同权）。
+- [修复] 定时模式启动去重检查的预期清单改为与运行入口一致的真实目标解析链（Futu 持仓优先、其次 .env 热更新 `STOCK_LIST`、再按交易日过滤）：`--portfolio futu` 新增持仓、纯持仓部署自选为空、以及进程 env 启动后 .env 热更新三类场景不再误跳过；持仓解析失败或解析为空一律 fail-open 照常执行（绝不漏跑），非持仓空清单保持既有当日去重语义。
 
 ## [3.33.0] - 2026-10-15
 

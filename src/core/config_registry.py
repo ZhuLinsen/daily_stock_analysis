@@ -83,6 +83,9 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "PROXY_HOST",
     "PROXY_PORT",
     "SEARXNG_TIMEOUT_SECONDS",
+    # CLI-only schedule-mode behavior (python main.py --schedule); the WebUI
+    # runtime scheduler does not consult the startup dedup gate.
+    "SCHEDULE_STARTUP_DEDUP",
 }
 
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
@@ -3935,7 +3938,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_BACKEND": {
         "title": "Ask-Stock Backend",
-        "description": "Choose how the ask-stock Chat runs. Auto keeps the current default-model route and never selects experimental Codex automatically.",
+        "description": "Choose how the ask-stock Chat runs. Auto keeps the current default-model route.",
         "category": "agent",
         "data_type": "string",
         "ui_control": "select",
@@ -3946,15 +3949,13 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [
             {"label": "Auto (recommended)", "value": "auto"},
             {"label": "Default model settings", "value": "litellm"},
-            {"label": "Codex local Agent (experimental)", "value": "codex_app_server"},
         ],
-        "validation": {"enum": ["auto", "litellm", "codex_app_server"]},
+        "validation": {"enum": ["auto", "litellm"]},
         "display_order": 2,
         "help_key": "settings.agent.AGENT_BACKEND",
         "examples": [
             "AGENT_BACKEND=auto",
             "AGENT_BACKEND=litellm",
-            "AGENT_BACKEND=codex_app_server",
         ],
         "docs": [
             {
@@ -3995,7 +3996,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_MAX_STEPS": {
         "title": "Agent Max Steps",
-        "description": f"Maximum reasoning-step limit for the default-model Agent and per-turn tool-call limit for Codex. At the default ({AGENT_MAX_STEPS_DEFAULT}), each default-model sub-agent keeps its own preset. When raised above {AGENT_MAX_STEPS_DEFAULT}, all sub-agents adopt this value. When lowered below a sub-agent's preset, that sub-agent is capped at this value.",
+        "description": f"Maximum reasoning-step limit for the default-model Agent. At the default ({AGENT_MAX_STEPS_DEFAULT}), each default-model sub-agent keeps its own preset. When raised above {AGENT_MAX_STEPS_DEFAULT}, all sub-agents adopt this value. When lowered below a sub-agent's preset, that sub-agent is capped at this value.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -4160,7 +4161,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_ORCHESTRATOR_TIMEOUT_S": {
         "title": "Agent Timeout",
-        "description": "Shared timeout budget in seconds for Agent execution. Single-agent runs use it as the overall ReAct loop budget; multi-agent mode uses it as the cooperative pipeline budget. Set to 0 to disable only for the default LiteLLM path; Codex requires a positive value so every request ends within a known time.",
+        "description": "Shared timeout budget in seconds for Agent execution. Single-agent runs use it as the overall ReAct loop budget; multi-agent mode uses it as the cooperative pipeline budget. Set to 0 to disable the timeout.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",

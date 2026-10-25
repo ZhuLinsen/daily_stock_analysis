@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
-import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from src.config import AGENT_BACKEND_REMOVED_MESSAGE
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.runner import run_agent_loop
 from src.agent.stock_scope import StockScope
@@ -16,7 +16,7 @@ from src.agent.tools.registry import ToolRegistry
 
 AGENT_BACKEND_ERROR_CODES = frozenset(
     {
-        "command_not_found",
+        "backend_removed",
         "login_required",
         "capability_unsupported",
         "unsupported_agent_arch",
@@ -32,7 +32,7 @@ AGENT_BACKEND_ERROR_CODES = frozenset(
         "unknown_backend_error",
     }
 )
-AGENT_BACKEND_IDS = frozenset({"auto", "litellm", "codex_app_server"})
+AGENT_BACKEND_IDS = frozenset({"auto", "litellm"})
 
 
 class AgentBackendConfigError(ValueError):
@@ -46,6 +46,8 @@ class AgentBackendConfigError(ValueError):
 def resolve_agent_backend_id(config: Any) -> str:
     """Resolve Chat backend; ``auto`` deliberately remains LiteLLM."""
     requested = str(getattr(config, "agent_backend", "auto") or "auto").strip().lower()
+    if requested == "codex_app_server":
+        raise AgentBackendConfigError("backend_removed", AGENT_BACKEND_REMOVED_MESSAGE)
     if requested not in AGENT_BACKEND_IDS:
         raise AgentBackendConfigError(
             "capability_unsupported",
@@ -64,7 +66,6 @@ class AgentRunRequest:
     max_steps: int
     max_wall_clock_seconds: Optional[float]
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
-    cancel_event: Optional[threading.Event] = None
 
 
 @dataclass

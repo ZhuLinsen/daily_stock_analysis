@@ -104,7 +104,8 @@ _OPT_IN_THINKING_MODELS: Dict[str, dict] = {
 
 # Custom model pricing for models not in LiteLLM's built-in price list.
 # Official MiniMax pricing: https://platform.minimax.io/docs/guides/pricing-paygo
-# - MiniMax-M3: $0.6/M input tokens, $2.4/M output tokens for prompts <=512K input
+# - MiniMax-M3.1-Flash: $0.15/M input, $0.60/M output, $0.015/M cache reads.
+# - MiniMax-M3: $0.3/M input tokens, $1.2/M output tokens for prompts <=512K input
 #   tokens. Officially supports up to 1M input tokens with a separate higher
 #   price tier for the >512K bucket; we conservatively register only the
 #   <=512K bucket here because the cost tracker carries a single per-token
@@ -116,6 +117,17 @@ _OPT_IN_THINKING_MODELS: Dict[str, dict] = {
 #   accurate cost. Still listed as a Legacy Model on the official pricing
 #   page; remove only after we have user-facing migration guidance.
 _CUSTOM_MODEL_PRICING: Dict[str, dict] = {
+    "MiniMax-M3.1-Flash": {
+        "supports_function_calling": True,
+        "supports_vision": True,
+        "supports_audio_input": False,
+        "supports_audio_output": False,
+        "context_window": 1000000,
+        "max_tokens": 524288,
+        "input_cost_per_token": 0.00000015,
+        "output_cost_per_token": 0.0000006,
+        "cache_read_input_token_cost": 0.000000015,
+    },
     "MiniMax-M3": {
         "supports_function_calling": True,
         "supports_vision": True,
@@ -126,8 +138,9 @@ _CUSTOM_MODEL_PRICING: Dict[str, dict] = {
         # changes above 512K; see comment block above.
         "context_window": 512000,
         "max_tokens": 128000,
-        "input_cost_per_token": 0.0000006,   # $0.6 / 1M tokens (<=512K input bucket)
-        "output_cost_per_token": 0.0000024,   # $2.4 / 1M tokens (<=512K input bucket)
+        "input_cost_per_token": 0.0000003,   # $0.3 / 1M tokens (<=512K input bucket)
+        "output_cost_per_token": 0.0000012,   # $1.2 / 1M tokens (<=512K input bucket)
+        "cache_read_input_token_cost": 0.00000006,
     },
     "MiniMax-M2.7": {
         "supports_function_calling": True,

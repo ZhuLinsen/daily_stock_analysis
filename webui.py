@@ -43,11 +43,14 @@ def main() -> int:
         setup_env()
         setup_logging(log_prefix="web_server")
 
+        from api.middlewares.security_guard import uvicorn_proxy_kwargs
+
         uvicorn.run(
             "api.app:app",
             host=host,
             port=port,
             log_level="info",
+            **uvicorn_proxy_kwargs(),
         )
     except KeyboardInterrupt:
         pass
