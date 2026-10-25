@@ -7,6 +7,19 @@ export type LLMProviderCapability =
   | 'vision'
   | 'local-runtime';
 
+/** Filter recommendations only; saved and hand-typed model IDs stay in channel state. */
+export function filterDiscoveredTextModels(models: string[]): string[] {
+  const miniMaxId = (model: string) => model.split('/').at(-1)?.toLowerCase() || '';
+  const current = (model: string) => /^minimax-m(?:3|3\.1-flash(?::free|-free)?)$/.test(miniMaxId(model));
+  const filtered = models.filter((model) => !/^minimax-(?:m\d|(?:text|vl)-01)/.test(miniMaxId(model)) || current(model));
+  const miniMaxModels = filtered.filter(current).sort((left, right) => (
+    Number(miniMaxId(right).startsWith('minimax-m3.1-flash'))
+    - Number(miniMaxId(left).startsWith('minimax-m3.1-flash'))
+  ));
+  let index = 0;
+  return filtered.map((model) => current(model) ? miniMaxModels[index++] : model);
+}
+
 export const MODELFLARE_APP_REGISTRATION_URL =
   'https://modelflare.dev/sign-up?utm_source=daily_stock_analysis&utm_campaign=app';
 export const MODELFLARE_DEFAULT_MODEL = 'gpt-6.1-sol';
@@ -82,7 +95,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'Anspire Open',
     protocol: 'openai',
     baseUrl: 'https://open-gateway.anspire.cn/v6',
-    placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash,MiniMax-M2.7',
+    placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash',
     capabilities: ['openai-compatible'],
     configHint:
       '同一 ANSPIRE_API_KEYS 可复用到搜索与 LLM 渠道。以下模型与网关为配置示例，实际可用性请以账号权限和控制台为准；建议先点“测试连接”确认。',
@@ -137,7 +150,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'MiniMax 官方',
     protocol: 'openai',
     baseUrl: 'https://api.minimax.io/v1',
-    placeholderModels: 'MiniMax-M3,MiniMax-M2.7,MiniMax-M2.7-highspeed',
+    placeholderModels: 'MiniMax-M3.1-Flash,MiniMax-M3',
     capabilities: ['openai-compatible'],
     officialSources: [
       { label: 'MiniMax OpenAI API', url: 'https://platform.minimax.io/docs/api-reference/text-chat' },

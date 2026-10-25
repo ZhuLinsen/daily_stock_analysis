@@ -74,6 +74,7 @@ jinja2>=3.1.0               # Jinja2 template engine for report rendering
 fastapi>=0.109.0            # Modern Python Web framework
 uvicorn[standard]>=0.27.0   # ASGI server
 python-multipart>=0.0.6     # FastAPI File/Form upload support
+fastapi-guard>=8.1.1        # Optional security middleware (GUARD_ENABLED=true): rate limit, IP allowlist, request screening
 
 # Public macroeconomic tools
 # Installed from a pinned GitHub release wheel (sha256 checked); if that release URL is

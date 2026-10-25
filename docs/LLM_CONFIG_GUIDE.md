@@ -306,7 +306,7 @@ Hermes 是保留渠道名，只支持本机 loopback `/v1` OpenAI-compatible gen
 
 ### MiniMax 渠道模型填写说明
 
-- 如果你通过 OpenAI Compatible 渠道接 MiniMax，请在渠道模型里直接填写 `minimax/<模型名>`，例如 `minimax/MiniMax-M1`。
+- For the official OpenAI-compatible MiniMax channel, use `MiniMax-M3.1-Flash,MiniMax-M3`. Explicit saved provider-prefixed IDs such as `minimax/MiniMax-M3.1-Flash` remain supported.
 - Web 设置页里的主模型、Agent 主模型、Fallback、Vision 下拉会保留这个值原样展示，不会再错误改写成 `openai/minimax/<模型名>`。
 
 ### 默认模型问股 / LiteLLM 配置兼容说明

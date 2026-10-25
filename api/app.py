@@ -165,6 +165,7 @@ def _warn_if_open_cors_without_auth() -> None:
 
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
+from api.middlewares.security_guard import add_guard_middleware, is_guard_enabled
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.auth import is_auth_enabled
@@ -366,6 +367,15 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         _warn_if_open_cors_without_auth()
         allowed_origins = ["*"]
     
+    # Optional fastapi-guard (GUARD_ENABLED, default off). Starlette makes the last
+    # added middleware the outermost, so with the guard on the order is
+    # CORS > guard > auth: guard 429/403 responses carry CORS headers and the guard
+    # screens a request before the auth middleware sees it. Off keeps the old order.
+    guard_enabled = is_guard_enabled()
+    if guard_enabled:
+        add_auth_middleware(app)
+        add_guard_middleware(app)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -374,7 +384,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    add_auth_middleware(app)
+    if not guard_enabled:
+        add_auth_middleware(app)
     
     # ============================================================
     # 注册路由
