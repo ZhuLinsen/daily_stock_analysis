@@ -510,6 +510,9 @@ daily_stock_analysis/
 | `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(五市场)，us/jp/kr 适合仅关注单区域用户 | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | 大盘复盘指数涨跌颜色：`green_up`=绿涨红跌（默认），`red_up`=红涨绿跌 | `green_up` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
+| `HOT_TOP10_ENABLED` | 启用每日热榜 Top N 轻量分析（默认关闭）：每个交易日抓取市场主题热榜前 N 名，单次 LLM 生成"热榜动因/强度/介入建议/风险"概览并推送报告；随定时模式每日执行、仅 A 股交易日运行、当天只投递一次（详见 [热榜 Top N 轻量分析](#热榜-top-n-轻量分析)，Issue #1936） | `false` |
+| `HOT_TOP10_SCHEDULE_TIME` | 热榜 Top N 分析每日执行时间（HH:MM 24 小时制，仅定时模式生效；非法值回退 `15:10`） | `15:10` |
+| `HOT_TOP10_COUNT` | 热榜条数（1-30） | `10` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
 | `SCHEDULE_TIMES` | 多个定时执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` | 空 |
@@ -1430,6 +1433,22 @@ PUSHOVER_API_TOKEN=your_api_token
 ---
 
 ## 高级功能
+
+### 热榜 Top N 轻量分析
+
+每天自动抓取市场主题热榜前 N 名（默认 10，来自 DSA 行业/概念排名），用**单次 LLM 调用**生成"热榜动因 + 强度评估 + 是否值得介入 + 风险提示"的轻量概览报告并经既有通知渠道推送，替代每天手动翻同花顺热榜逐个分析（Issue #1936）。
+
+```bash
+# .env
+HOT_TOP10_ENABLED=true
+HOT_TOP10_SCHEDULE_TIME=15:10   # 每日执行时间（默认 15:10，A 股收盘后）
+HOT_TOP10_COUNT=10              # 热榜条数（1-30）
+```
+
+- **执行方式**：开启后随定时模式（`python main.py --schedule`）每日执行，仅 A 股交易日运行（复用交易日检查，`--force-run` 可越过）；当天只投递一份（标记文件 `data/hot_top10_state.json`，与 `DATABASE_PATH` 同目录），推送失败不落标记、下次触发自动重试。
+- **手动执行**：`python main.py --hot-top10` 立即生成并推送一份（手动入口不受当日去重限制）。
+- **报告边界**：这是主题级热榜**概览**（一条 LLM 摘要覆盖全部条目），不是个股深度报告；需要个股深度分析请使用既有个股分析入口。AI 摘要失败时仍会推送数据概览降级版本，任何环节失败都不影响主分析调度。
+- **报告内容**：头部带生成时间与数据来源标注；逐条输出热榜动因（新闻/资金/事件归因，推测会标注）、强度评估（强/中/弱）、介入建议（观望/轻仓介入/积极介入）与风险提示，语言跟随 `REPORT_LANGUAGE`（中/英）。
 
 ### 港股支持
 

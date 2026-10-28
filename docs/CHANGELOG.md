@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 收紧定时模式启动去重：仅当全部应分析标的都成功时才记录当日标记（部分失败或全败、即使大盘复盘成功也不得记录，避免重启漏跑）；跳过判定改为覆盖面子集校验并升版 schema 2（v1 旧标记一律 fail-open 重跑一次以升级），`SCHEDULE_STARTUP_DEDUP` 进程环境变量与 .env 值不同时以进程为准（与 `SCHEDULE_RUN_IMMEDIATELY` 同权）。
 - [修复] 定时模式启动去重检查的预期清单改为与运行入口一致的真实目标解析链（Futu 持仓优先、其次 .env 热更新 `STOCK_LIST`、再按交易日过滤）：`--portfolio futu` 新增持仓、纯持仓部署自选为空、以及进程 env 启动后 .env 热更新三类场景不再误跳过；持仓解析失败或解析为空一律 fail-open 照常执行（绝不漏跑），非持仓空清单保持既有当日去重语义。
 
+- [新功能] 新增每日热榜 Top N 轻量分析（`HOT_TOP10_ENABLED`，默认关闭，Issue #1936）：每个交易日抓取 DSA 行业/概念排名热榜前 N 名（`HOT_TOP10_COUNT`，默认 10），单次 LLM 调用生成"热榜动因/强度评估/介入建议/风险提示"的轻量概览报告并经既有报告通知渠道推送；随定时模式每日执行（`HOT_TOP10_SCHEDULE_TIME`，默认 15:10）、仅 A 股交易日运行、当天只投递一次（标记文件 `data/hot_top10_state.json`，推送失败不落标记下次重试）；`python main.py --hot-top10` 可手动立即执行（不受当日去重限制）；AI 摘要失败自动降级为数据概览推送，任何环节失败不影响主分析调度；报告为说明文档明确的主题级概览（非个股深度报告），配置见 `docs/full-guide.md`。
+
 ## [3.33.0] - 2026-10-15
 
 ### 发布亮点

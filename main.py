@@ -476,6 +476,13 @@ def parse_arguments() -> argparse.Namespace:
         help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
+    # === Hot Top10 (Issue #1936) ===
+    parser.add_argument(
+        '--hot-top10',
+        action='store_true',
+        help='抓取市场热榜 Top N 并生成轻量热点分析报告（热榜动因/强度/介入建议，配置见 HOT_TOP10_*）'
+    )
+
     return parser.parse_args()
 
 
@@ -1899,6 +1906,29 @@ def main() -> int:
             )
             return 0
 
+        # 模式0.6: 热榜 Top N 轻量分析（Issue #1936）
+        # 手动一次性入口：不受当日去重标记限制，交易日检查可用 --force-run 绕过。
+        if getattr(args, 'hot_top10', False):
+            logger.info("模式: 热榜 Top N 分析")
+            from src.services.hot_top10_service import run_hot_top10_analysis
+
+            result = run_hot_top10_analysis(
+                config,
+                send_notification=not args.no_notify,
+                respect_dedup=False,
+                force_run=getattr(args, 'force_run', False),
+            )
+            if result.report_markdown is None:
+                logger.error("热榜分析未生成报告: %s", result.reason)
+                return 1
+            logger.info(
+                "热榜分析完成: delivered=%s llm_completed=%s notification=%s",
+                result.delivered,
+                result.llm_completed,
+                result.notification_status,
+            )
+            return 0
+
         # 模式1: 仅大盘复盘
         if args.market_review:
             from src.core.market_review import run_market_review
@@ -2062,6 +2092,43 @@ def main() -> int:
                     "name": "agent_event_monitor",
                 })
 
+            # Hot Top10 daily job (Issue #1936, default OFF): an auxiliary
+            # fail-open daily schedule at HOT_TOP10_SCHEDULE_TIME. It runs on
+            # A-share trading days only and dedups via its own daily marker;
+            # any failure is logged inside the service and never breaks the
+            # main analysis schedule.
+            extra_daily_jobs: List[Dict[str, Any]] = []
+            if getattr(config, 'hot_top10_enabled', False):
+                from src.services.hot_top10_service import run_hot_top10_analysis
+
+                def hot_top10_task():
+                    runtime_cfg = _reload_runtime_config()
+                    if not getattr(runtime_cfg, 'hot_top10_enabled', False):
+                        return
+                    # Scheduled occurrences always respect the trading-day
+                    # gate and the daily dedup marker; --force-run only
+                    # applies to the one-shot CLI entry below.
+                    hot_result = run_hot_top10_analysis(
+                        runtime_cfg,
+                        send_notification=True,
+                        respect_dedup=True,
+                        force_run=False,
+                    )
+                    logger.info(
+                        "[HotTop10] 定时任务完成: delivered=%s skipped=%s reason=%s llm_completed=%s notification=%s",
+                        hot_result.delivered,
+                        hot_result.skipped,
+                        hot_result.reason,
+                        hot_result.llm_completed,
+                        hot_result.notification_status,
+                    )
+
+                extra_daily_jobs.append({
+                    "task": hot_top10_task,
+                    "schedule_time": config.hot_top10_schedule_time,
+                    "name": "hot_top10",
+                })
+
             schedule_kwargs = {
                 "task": scheduled_task,
                 "schedule_time": config.schedule_time,
@@ -2073,6 +2140,8 @@ def main() -> int:
             if hasattr(config, "schedule_times"):
                 schedule_kwargs["schedule_times"] = config.schedule_times
                 schedule_kwargs["schedule_times_provider"] = schedule_times_provider
+            if extra_daily_jobs:
+                schedule_kwargs["extra_daily_jobs"] = extra_daily_jobs
             run_with_schedule(**schedule_kwargs)
             return 0
 

@@ -38,6 +38,7 @@ from src.notification_contracts import (
     is_feishu_static_configured,
 )
 from src.services.stock_list_parser import split_stock_list
+from src.services.hot_top10_service import DEFAULT_HOT_TOP10_SCHEDULE_TIME
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
     GENERATION_ONLY_BACKEND_IDS,
@@ -1333,6 +1334,11 @@ class Config:
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
 
+    # === 热榜 Top N 轻量分析（Issue #1936，默认关闭） ===
+    hot_top10_enabled: bool = False           # 是否启用每日热榜 Top N 分析
+    hot_top10_schedule_time: str = DEFAULT_HOT_TOP10_SCHEDULE_TIME  # 每日执行时间（HH:MM）
+    hot_top10_count: int = 10                 # 热榜条数（1-30）
+
     # === 实时行情增强数据配置 ===
     # 实时行情开关（关闭后使用历史收盘价进行分析）
     enable_realtime_quote: bool = True
@@ -2359,6 +2365,14 @@ class Config:
                 os.getenv('MARKET_REVIEW_COLOR_SCHEME', 'green_up')
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
+            hot_top10_enabled=os.getenv('HOT_TOP10_ENABLED', 'false').lower() == 'true',
+            hot_top10_schedule_time=cls._normalize_hot_top10_schedule_time(
+                os.getenv('HOT_TOP10_SCHEDULE_TIME')
+            ),
+            hot_top10_count=parse_env_int(
+                os.getenv('HOT_TOP10_COUNT'), 10,
+                field_name='HOT_TOP10_COUNT', minimum=1, maximum=30,
+            ),
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=parse_env_int(os.getenv('WEBUI_PORT'), 8000, field_name='WEBUI_PORT', minimum=1, maximum=65535),
@@ -3113,6 +3127,15 @@ class Config:
             f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / hk / us / jp / kr / both；支持逗号分隔有效值）"
         )
         return 'cn'
+
+    @classmethod
+    def _normalize_hot_top10_schedule_time(cls, value: object) -> str:
+        """Normalize HOT_TOP10_SCHEDULE_TIME; invalid/empty falls back to default."""
+        times = normalize_schedule_times(
+            value if isinstance(value, str) else None,
+            fallback_time=DEFAULT_HOT_TOP10_SCHEDULE_TIME,
+        )
+        return times[0] if times else DEFAULT_HOT_TOP10_SCHEDULE_TIME
 
     @classmethod
     def _parse_market_review_color_scheme(cls, value: str) -> str:
