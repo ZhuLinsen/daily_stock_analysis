@@ -3340,6 +3340,90 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
             return list(results)
 
+    def get_daily_latest_per_code(self, query_date: date) -> List[AnalysisHistory]:
+        """
+        获取指定交易日内每只股票（raw code 维度）最新一条分析记录（issue #1661）。
+
+        复用 get_distinct_stocks_from_history 的配方：半开区间日过滤
+        [d 00:00, d+1 00:00)（服务器本地时间，与全仓既有语义一致）+
+        GROUP BY code + MAX(id) 子查询 JOIN 回查完整行；默认排除
+        code=MARKET 与 report_type=market_review；排序一律
+        (created_at desc, id desc) 双键（id desc 为同秒 tiebreaker）。
+        SQL 层不分页，返回当日 per-raw-code 最新全集。
+
+        Args:
+            query_date: 查询日期（date）
+
+        Returns:
+            当日每股最新一条 AnalysisHistory 记录列表
+        """
+        with self.get_session() as session:
+            day_start = datetime.combine(query_date, datetime.min.time())
+            day_end = datetime.combine(query_date + timedelta(days=1), datetime.min.time())
+            subq = (
+                select(
+                    AnalysisHistory.code,
+                    func.max(AnalysisHistory.id).label("max_id"),
+                )
+                .where(
+                    and_(
+                        AnalysisHistory.created_at >= day_start,
+                        AnalysisHistory.created_at < day_end,
+                        AnalysisHistory.code != "MARKET",
+                        or_(
+                            AnalysisHistory.report_type.is_(None),
+                            AnalysisHistory.report_type != "market_review",
+                        ),
+                    )
+                )
+                .group_by(AnalysisHistory.code)
+                .subquery()
+            )
+
+            results = (
+                session.execute(
+                    select(AnalysisHistory)
+                    .join(subq, AnalysisHistory.id == subq.c.max_id)
+                    .order_by(
+                        desc(AnalysisHistory.created_at),
+                        desc(AnalysisHistory.id),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return list(results)
+
+    def get_latest_analysis_ids_by_code(self) -> Dict[str, int]:
+        """
+        获取每只股票（raw code 维度）全局最新一条分析记录的主键 ID（issue #1661）。
+
+        单次聚合查询（无日期过滤），供服务层判断记录时效性（is_latest），
+        避免逐条查询的 N+1。排除 code='MARKET' 与 report_type='market_review'，
+        与当日去重谓词（get_daily_latest_per_code）保持一致。
+
+        Returns:
+            Dict: raw code -> 该 code 全局最新记录的主键 id
+        """
+        with self.get_session() as session:
+            rows = session.execute(
+                select(
+                    AnalysisHistory.code,
+                    func.max(AnalysisHistory.id).label("max_id"),
+                )
+                .where(
+                    and_(
+                        AnalysisHistory.code != "MARKET",
+                        or_(
+                            AnalysisHistory.report_type.is_(None),
+                            AnalysisHistory.report_type != "market_review",
+                        ),
+                    )
+                )
+                .group_by(AnalysisHistory.code)
+            ).all()
+            return {str(row.code): int(row.max_id) for row in rows if row.code}
+
     def get_latest_analysis_by_query_id(
         self,
         query_id: str,
