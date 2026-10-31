@@ -1191,6 +1191,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {"multi_value": True, "delimiter": ","},
         "display_order": 53,
     },
+    "OUTCRAWL_API_KEYS": {
+        "title": "Outcrawl API Keys",
+        "description": "Comma-separated Outcrawl Search API keys.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {"multi_value": True, "delimiter": ","},
+        "display_order": 53,
+    },
     "SEARXNG_BASE_URLS": {
         "title": "SearXNG Base URLs",
         "description": "Comma-separated SearXNG instance URLs (self-hosted, no quota). Enable format: json in settings.yml.",
@@ -4839,6 +4853,14 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.data_source.search_api_keys",
         "examples": [
             "MINIMAX_API_KEYS=minimax_key_1,minimax_key_2",
+        ],
+        "docs": _DOC_FULL_GUIDE_SEARCH,
+        "warning_codes": ["secret_value", "comma_separated_keys"],
+    },
+    "OUTCRAWL_API_KEYS": {
+        "help_key": "settings.data_source.search_api_keys",
+        "examples": [
+            "OUTCRAWL_API_KEYS=outcrawl_key_1,outcrawl_key_2",
         ],
         "docs": _DOC_FULL_GUIDE_SEARCH,
         "warning_codes": ["secret_value", "comma_separated_keys"],

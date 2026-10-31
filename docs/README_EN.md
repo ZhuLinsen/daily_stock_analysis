@@ -126,6 +126,7 @@ News search strongly improves sentiment, announcements, events, and catalyst qua
 | `BOCHA_API_KEYS` | [Bocha](https://open.bocha.cn/), Chinese search with AI summaries | Optional |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/), privacy-first search and US-stock news enrichment | Optional |
 | `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/), structured search results | Optional |
+| `OUTCRAWL_API_KEYS` | [Outcrawl](https://outcrawl.ai/), general web search API | Optional |
 | `SEARXNG_BASE_URLS` | Self-hosted SearXNG instances for quota-free fallback | Optional |
 
 More search providers, social sentiment, and fallback behavior are in [Search Configuration](./full-guide_EN.md#search-service-configuration).
