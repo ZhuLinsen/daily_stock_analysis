@@ -372,6 +372,52 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(captured["stock_scope"].expected_stock_code, "AAPL")
         self.assertEqual(captured["stock_scope"].allowed_stock_codes, {"AAPL"})
 
+    def test_chat_switch_clears_cross_asset_context_and_summary(self):
+        """OR-COR-c2c5d7da — switching 600519 -> AAPL must drop the cn
+        risk-off cross-asset snapshot and its rendered summary, so the next
+        stock never carries the previous market's signals."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter._config = MagicMock()
+        executor = AgentExecutor(registry, adapter, max_steps=2)
+        captured = {}
+
+        def fake_run_loop(messages, tool_decls, parse_dashboard, progress_callback=None, stock_scope=None):
+            captured["messages"] = messages
+            captured["stock_scope"] = stock_scope
+            return AgentResult(success=True, content="assistant reply")
+
+        stale_context = {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "cross_asset_context": {
+                "risk_appetite": "risk_off",
+                "market": "cn",
+                "trade_date": "2026-10-22",
+                "impact_summary": "外部环境偏 risk-off",
+                "indices": {"sh000001": {"value": 3100.5, "change_pct": -1.8}},
+            },
+            "cross_asset_context_summary": "## 外围环境与跨资产\n- 外围风险偏好：risk-off（A股）",
+        }
+
+        with patch.object(executor, "_run_loop", side_effect=fake_run_loop):
+            with patch(
+                "src.agent.executor.build_agent_chat_context_bundle",
+                return_value=SimpleNamespace(context_messages=[], diagnostics={}),
+            ):
+                with patch("src.agent.conversation.conversation_manager.get_or_create"):
+                    with patch("src.agent.conversation.conversation_manager.add_message"):
+                        executor.chat("换成 AAPL 看看，不考虑 600519", "session-1", context=stale_context)
+
+        history_context = "\n".join(
+            msg["content"] for msg in captured["messages"] if msg["role"] == "user"
+        )
+        self.assertIn("股票代码: AAPL", history_context)
+        self.assertNotIn("外围环境与跨资产", history_context)
+        self.assertNotIn("risk_off", history_context)
+        self.assertNotIn("sh000001", history_context)
+        self.assertEqual(captured["stock_scope"].expected_stock_code, "AAPL")
+
     def test_chat_does_not_trust_exchange_token_from_public_context(self):
         registry = _make_registry_with_echo()
         adapter = _make_mock_adapter()

@@ -23,6 +23,7 @@ from src.agent.agents.base_agent import BaseAgent
 from src.agent.tools.fxmacrodata_tools import fxmacrodata_tool_names
 from src.agent.protocols import AgentContext, AgentOpinion
 from src.agent.runner import try_parse_json
+from src.cross_asset_context_prompt import format_cross_asset_context_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ logger = logging.getLogger(__name__)
 class RiskAgent(BaseAgent):
     agent_name = "risk"
     max_steps = 4
+    # Issue #1910 / OR-COR-f88926c2: RiskAgent renders the cross-asset section
+    # itself inside build_user_message (next to its reasoning instructions);
+    # the BaseAgent shared injection stays off to avoid duplication.
+    renders_cross_asset_section_in_own_message = True
     tool_names = [
         "search_stock_news",
         "get_realtime_quote",
@@ -87,6 +92,15 @@ Return **only** a JSON object:
 
 Important: be thorough but factual. Only flag risks backed by evidence \
 from your search results. Do NOT invent risks.
+
+## Cross-Asset External Environment (Issue #1910)
+If a cross-asset context summary is provided among your inputs, your \
+`reasoning` MUST explicitly answer whether the external environment \
+(risk appetite, linked external assets) SUPPORTS the current risk \
+conclusion. Cross-asset signals calibrate risk appetite and confidence \
+only — they are NOT trading instructions and must NOT change the output \
+schema. When the external environment does NOT support the conclusion \
+(e.g. risk-off), state the exception rationale in `reasoning`.
 """
 
     def build_user_message(self, ctx: AgentContext) -> str:
@@ -99,6 +113,15 @@ from your search results. Do NOT invent risks.
         # Feed any existing intel data so the risk agent doesn't redo searches
         if ctx.get_data("intel_opinion"):
             parts.append(f"\n[Existing intel data]\n{json.dumps(ctx.get_data('intel_opinion'), ensure_ascii=False, default=str)}")
+
+        # Issue #1910: expose the low-sensitivity cross-asset summary so the
+        # reasoning can answer "does the external environment support this".
+        cross_asset_section = format_cross_asset_context_prompt_section(
+            ctx.meta.get("cross_asset_context"),
+            report_language=str(ctx.meta.get("report_language", "zh")),
+        )
+        if cross_asset_section:
+            parts.append(cross_asset_section.strip())
 
         return "\n".join(parts)
 
@@ -135,4 +158,3 @@ def _risk_to_signal(risk_level: str) -> str:
         "high": "strong_sell",
     }
     return mapping.get(risk_level, "hold")
-
