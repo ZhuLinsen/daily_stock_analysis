@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 大盘 Market Light 评分和中英文指数均值排除 VIX 波动率涨跌幅，保留原始行情展示；仅有 VIX 时指数维度标为不可用，告警沿用跳过语义（#2472）。
 
 - [改进] Agent 轨迹评估增加独立股票范围诊断与干扰股票样例，区分越界请求、运行时拦截和无法判定调用，支持多股对比及阶段明细，不改变原指标或退出码。
+- [新功能] 新增 Outcrawl 新闻搜索源（`OUTCRAWL_API_KEYS`，可选，支持多 Key）：位于 MiniMax 之后、SearXNG 之前；摘要开头的发布日期（如 `2 days ago`、`Oct 28, 2026`）会解析为 `published_date` 参与新闻时效过滤。
 
 ## [3.33.0] - 2026-10-15
 
