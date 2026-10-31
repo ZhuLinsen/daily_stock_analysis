@@ -191,6 +191,7 @@ def _should_omit_litellm_temperature(model: str) -> bool:
         part.startswith(("gpt-5", "gpt5"))
         or part in {"o1", "o3", "o4"}
         or part.startswith(("o1-", "o3-", "o4-"))
+        or part.startswith("claude-sonnet-5-5")
         for part in _model_parts(model)
     )
 

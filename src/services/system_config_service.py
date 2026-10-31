@@ -1755,6 +1755,10 @@ class SystemConfigService:
                 },
             }
         ]
+        extra: Dict[str, Any] = {"tools": tools}
+        # claude-sonnet-5-5 rejects a forced tool_choice with a 400 error.
+        if "claude-sonnet-5-5" not in (resolved_model or "").lower():
+            extra["tool_choice"] = {"type": "function", "function": {"name": "dsa_probe_echo"}}
         try:
             started_at = time.perf_counter()
             response = litellm_module.completion(
@@ -1765,10 +1769,7 @@ class SystemConfigService:
                     timeout_seconds=timeout_seconds,
                     messages=[{"role": "user", "content": "Call the dsa_probe_echo tool with text set to ok."}],
                     max_tokens=64,
-                    extra={
-                        "tools": tools,
-                        "tool_choice": {"type": "function", "function": {"name": "dsa_probe_echo"}},
-                    },
+                    extra=extra,
                 )
             )
             latency_ms = int((time.perf_counter() - started_at) * 1000)

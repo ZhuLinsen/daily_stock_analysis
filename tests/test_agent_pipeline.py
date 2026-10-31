@@ -134,10 +134,10 @@ class TestAgentConfig(unittest.TestCase):
             (
                 {
                     "ANTHROPIC_API_KEY": "anthropic-test-key",
-                    "ANTHROPIC_MODEL": "claude-3-5-sonnet-20241022",
+                    "ANTHROPIC_MODEL": "claude-sonnet-5-5",
                     "AGENT_LITELLM_MODEL": "",
                 },
-                ["anthropic/claude-3-5-sonnet-20241022"],
+                ["anthropic/claude-sonnet-5-5"],
             ),
         ]
 
@@ -158,7 +158,7 @@ class TestAgentConfig(unittest.TestCase):
             agent_max_steps="10",
             agent_orchestrator_timeout_s="120",
             litellm_model="openai/gpt-5",
-            agent_litellm_model="anthropic/claude-3-7-sonnet-20250219",
+            agent_litellm_model="anthropic/claude-sonnet-5-5",
             openai_base_url="https://api.openai.com/v1",
         )
         captured: Dict[str, Any] = {}
@@ -205,7 +205,7 @@ class TestAgentConfig(unittest.TestCase):
         self.assertEqual(provided_config.agent_max_steps, "10")
         self.assertEqual(provided_config.agent_orchestrator_timeout_s, "120")
         self.assertEqual(provided_config.litellm_model, "openai/gpt-5")
-        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-3-7-sonnet-20250219")
+        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-sonnet-5-5")
         self.assertEqual(provided_config.openai_base_url, "https://api.openai.com/v1")
         fake_executor_cls.assert_called_once()
         kwargs = fake_executor_cls.call_args.kwargs
@@ -220,7 +220,7 @@ class TestAgentConfig(unittest.TestCase):
             agent_max_steps="10",
             agent_orchestrator_timeout_s="120",
             litellm_model="openai/gpt-5",
-            agent_litellm_model="anthropic/claude-3-7-sonnet-20250219",
+            agent_litellm_model="anthropic/claude-sonnet-5-5",
             openai_base_url="https://api.openai.com/v1",
             agent_orchestrator_mode="standard",
         )
@@ -269,7 +269,7 @@ class TestAgentConfig(unittest.TestCase):
         self.assertEqual(provided_config.agent_max_steps, "10")
         self.assertEqual(provided_config.agent_orchestrator_timeout_s, "120")
         self.assertEqual(provided_config.litellm_model, "openai/gpt-5")
-        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-3-7-sonnet-20250219")
+        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-sonnet-5-5")
         self.assertEqual(provided_config.openai_base_url, "https://api.openai.com/v1")
         fake_orchestrator_cls.assert_called_once()
         kwargs = fake_orchestrator_cls.call_args.kwargs
@@ -284,7 +284,7 @@ class TestAgentConfig(unittest.TestCase):
             agent_max_steps="invalid-steps",
             agent_orchestrator_timeout_s="invalid-timeout",
             litellm_model="openai/gpt-5",
-            agent_litellm_model="anthropic/claude-3-7-sonnet-20250219",
+            agent_litellm_model="anthropic/claude-sonnet-5-5",
             openai_base_url="https://api.openai.com/v1",
         )
         captured: Dict[str, Any] = {}
@@ -330,7 +330,7 @@ class TestAgentConfig(unittest.TestCase):
         adapter_cfg = captured.get("cfg")
         self.assertIs(adapter_cfg, provided_config)
         self.assertEqual(provided_config.litellm_model, "openai/gpt-5")
-        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-3-7-sonnet-20250219")
+        self.assertEqual(provided_config.agent_litellm_model, "anthropic/claude-sonnet-5-5")
         self.assertEqual(provided_config.openai_base_url, "https://api.openai.com/v1")
 
         log_output = "\n".join(logs.output)
@@ -2652,7 +2652,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = "gemini/gemini-2.5-flash"
-        mock_cfg.litellm_fallback_models = ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.litellm_fallback_models = ["openai/gpt-4o-mini", "anthropic/claude-sonnet-5-5"]
         mock_cfg.llm_model_list = []
         mock_cfg.llm_temperature = 0.7
         mock_cfg.gemini_api_keys = []
@@ -2676,7 +2676,7 @@ class TestAgentConstructionChain(unittest.TestCase):
 
         result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
 
-        self.assertEqual(calls, ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"])
+        self.assertEqual(calls, ["openai/gpt-4o-mini", "anthropic/claude-sonnet-5-5"])
         self.assertEqual(result.content, "ok")
 
     @patch("src.agent.llm_adapter.Router")
@@ -3040,7 +3040,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = None
-        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-sonnet-5-5"]
         mock_cfg.llm_model_list = []
         mock_cfg.llm_temperature = 0.7
         mock_cfg.gemini_api_keys = []
@@ -3071,7 +3071,7 @@ class TestAgentConstructionChain(unittest.TestCase):
 
         self.assertEqual(result.content, "ok")
         self.assertEqual(timeouts[0], ("openai/gpt-4o-mini", 10.0))
-        self.assertEqual(timeouts[1], ("anthropic/claude-3-5-sonnet-20241022", 3.0))
+        self.assertEqual(timeouts[1], ("anthropic/claude-sonnet-5-5", 3.0))
 
     @patch("src.agent.llm_adapter.Router")
     def test_llm_adapter_rate_limit_backoff_is_bounded_by_remaining_timeout(self, _mock_router):
@@ -3141,7 +3141,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = None
-        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-sonnet-5-5"]
         mock_cfg.llm_model_list = []
         mock_cfg.llm_temperature = 0.7
         mock_cfg.gemini_api_keys = []
@@ -3178,7 +3178,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = None
-        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-sonnet-5-5"]
         mock_cfg.llm_model_list = []
         mock_cfg.llm_temperature = 0.7
         mock_cfg.gemini_api_keys = []
