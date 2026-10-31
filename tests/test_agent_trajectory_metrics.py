@@ -528,8 +528,10 @@ def _repo_tool_names():
 class TestGoldenSamplesFile:
     def test_samples_load_clean_with_registry_names(self):
         samples = load_golden_samples(known_tool_names=_repo_tool_names())
-        assert len(samples) == 2
-        assert [s.id for s in samples] == ["600519_technical", "000001_core_data_strict"]
+        assert len(samples) == 3
+        assert [s.id for s in samples] == [
+            "600519_technical", "000001_core_data_strict", "600519_ignore_distractor",
+        ]
 
     def test_each_sample_passes_structural_validation(self):
         for sample in load_golden_samples():
@@ -640,7 +642,7 @@ class TestGoldenSamplesFile:
         # A one-shot generator must survive loading the whole checked-in file:
         # the first sample must not exhaust it for the remaining samples.
         samples = load_golden_samples(known_tool_names=(name for name in _repo_tool_names()))
-        assert len(samples) == 2
+        assert len(samples) == 3
 
 
 class TestLoadGoldenSamplesErrors:
@@ -791,3 +793,100 @@ class TestLoadGoldenSamplesErrors:
         path = self._write_sample(tmp_path, [sample])
         with pytest.raises(ValueError, match="expected_tools must not contain duplicate names"):
             load_golden_samples(path=path)
+
+
+class TestStockScopeMetrics:
+    @staticmethod
+    def policy():
+        from evals.agent_trajectory.metrics import StockScopePolicy
+        return StockScopePolicy(
+            frozenset({'get_realtime_quote', 'get_daily_history'}),
+            lambda value: str(value).strip().upper() if value is not None else '',
+        )
+
+    def score(self, log, **overrides):
+        from evals.agent_trajectory.metrics import compute_stock_scope_metrics
+        return compute_stock_scope_metrics(log, _golden(**overrides), self.policy())
+
+    def test_wrong_stock_is_visible_without_runtime_guard(self):
+        log = [_entry(arguments={'stock_code': '000001'}, step=2)]
+        report = self.score(log)
+        assert report['evaluated_calls'] == report['out_of_scope_calls'] == 1
+        assert report['guarded_calls'] == report['in_scope_calls'] == 0
+        assert report['out_of_scope_details'] == [{
+            'step': 2, 'tool': 'get_realtime_quote', 'requested_stock_code': '000001',
+            'allowed_stock_codes': ['600519'], 'guarded': False,
+        }]
+        # Historical name-only hits and violations are deliberately unchanged.
+        metrics = compute_trajectory_metrics(log, _golden())
+        assert metrics.expected_hit_rate == pytest.approx(1 / 3)
+        assert metrics.violations == []
+
+    def test_failed_cached_and_guarded_attempts_all_count(self):
+        log = [_entry(arguments={'stock_code': '000001'}, success=False),
+               _entry(arguments={'stock_code': '000001'}, success=False, cached=True, guarded=True),
+               _entry(guarded=True)]
+        report = self.score(log)
+        assert report['out_of_scope_calls'] == 2
+        assert report['guarded_calls'] == 2
+        assert report['in_scope_calls'] == 1
+
+    def test_missing_payloads_are_unknown_and_market_tools_are_exempt(self):
+        report = self.score([
+            {'tool': 'get_realtime_quote', 'arguments_summary': {'stock_code': '000001'}},
+            _entry(arguments={}), _entry(arguments='not a mapping'),
+            _entry(tool='get_market_indices', arguments={'stock_code': '000001'}),
+            _entry(tool='unknown', arguments={'stock_code': '000001'}),
+        ])
+        assert report['unscorable_calls'] == 3
+        assert report['evaluated_calls'] == report['out_of_scope_calls'] == 0
+
+    def test_comparison_targets_override_default_and_deduplicate_aliases(self):
+        report = self.score(
+            [_entry(arguments={'stock_code': 'aapl'}), _entry(arguments={'stock_code': 'MSFT'})],
+            allowed_stock_codes=['AAPL', 'aapl', 'MSFT'],
+        )
+        assert report['allowed_stock_codes'] == ['AAPL', 'MSFT']
+        assert report['in_scope_calls'] == 2
+
+    def test_empty_context_is_explicitly_unconfigured(self):
+        report = self.score([_entry(guarded=True)], stock_code='')
+        assert report['enabled'] is False
+        assert report['evaluated_calls'] == report['out_of_scope_calls'] == 0
+        assert report['guarded_calls'] == 1
+
+    @pytest.mark.parametrize('value', [None, '', 0, False])
+    def test_explicit_invalid_target_is_not_a_missing_payload(self, value):
+        report = self.score([_entry(arguments={'stock_code': value})])
+        assert report['evaluated_calls'] == report['out_of_scope_calls'] == 1
+        assert report['unscorable_calls'] == 0
+
+    @pytest.mark.parametrize('codes', [[], '600519', [None], [''], [' 600519'], ['600519', '600519']])
+    def test_malformed_scope_is_rejected_by_loader_and_reported_by_direct_scoring(self, codes, tmp_path):
+        from dataclasses import asdict
+        sample = _golden(allowed_stock_codes=codes)
+        issues = validate_golden_sample(sample)
+        assert issues
+        path = tmp_path / 'golden.json'
+        path.write_text(json.dumps([asdict(sample)]))
+        with pytest.raises(ValueError, match='allowed_stock_codes'):
+            load_golden_samples(str(path))
+        assert all(issue in compute_trajectory_metrics([], sample).violations for issue in issues)
+        report = self.score([_entry()], allowed_stock_codes=codes)
+        assert report['validation_issues'] == issues
+        assert report['enabled'] is False
+
+    def test_stage_counts_keep_local_steps_and_do_not_double_count(self):
+        stages = [
+            {'stage_name': 'technical', 'status': 'completed', 'total_steps': 2,
+             'tool_calls_log': [_entry(arguments={'stock_code': '000001'})]},
+            {'stage_name': 'intel', 'status': 'failed', 'total_steps': 1,
+             'tool_calls_log': [_entry(guarded=True)]},
+        ]
+        metrics = compute_stage_trajectory_metrics(stages, _golden(), self.policy())
+        assert metrics.cumulative_steps == 3
+        first, second = [item['stock_scope_metrics'] for item in metrics.stage_metrics]
+        assert first['out_of_scope_calls'] == 1
+        assert first['out_of_scope_details'][0]['step'] == 1
+        assert second['out_of_scope_calls'] == 0
+        assert second['guarded_calls'] == 1
