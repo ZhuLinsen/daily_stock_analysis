@@ -1345,21 +1345,72 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     
     def __new__(cls, *args, **kwargs):
         """单例模式实现"""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-    
+        instance = cls._instance
+        if instance is None:
+            instance = super().__new__(cls)
+            instance._initialized = False
+            cls._instance = instance
+            return instance
+
+        if getattr(instance, '_initialized', False):
+            # 单例已初始化：仅当请求的 db_url 与当前绑定的 db_url 不同时才
+            # 切换绑定，否则维持现有实例。此前任何新的 db_url 都会被忽略，
+            # 导致测试/多库场景下实例仍指向旧库（issue #2436）。
+            requested_db_url = kwargs.get('db_url')
+            if requested_db_url is None and args:
+                requested_db_url = args[0]
+            if requested_db_url is None:
+                requested_db_url = get_config().get_db_url()
+            if requested_db_url == getattr(instance, '_db_url', None):
+                return instance
+
+            logger.info(
+                "DatabaseManager 检测到不同的 db_url，切换绑定: %r -> %r",
+                getattr(instance, '_db_url', None),
+                requested_db_url,
+            )
+            # 候选绑定模式：先在全新的实例上完整初始化目标库（校验 URL →
+            # 建引擎 → 建 Session 工厂 → 建表/迁移），全部成功后才原子发布
+            # 为类级单例并返回候选；任一步失败则丢弃候选，现有健康单例与
+            # 消费者已缓存的引用原封不动，并抛出原异常。
+            # （此前的"先破坏后建设"实现会在目标库初始化成功前置
+            # _initialized=False 并 dispose 旧引擎，失败后所有已缓存引用
+            # 永久失效——评审 OR-COR-1cde6a8d / OR-COR-4d62400a 的返工要求。）
+            candidate = super().__new__(cls)
+            candidate._initialized = False
+            candidate._initialize_database(requested_db_url, is_candidate=True)
+            # 发布：单赋值原子生效；本方法运行在 _DatabaseManagerMeta.__call__
+            # 持有的 _init_lock（RLock）内，与 get_instance()/reset_instance()
+            # 互斥，无需额外加锁。
+            # 旧实例不主动 dispose：其他消费者可能仍持有其引用并正在使用旧
+            # 引擎（dispose 会让其会话立即失效）；旧引擎已在各自初始化时注册
+            # atexit 清理钩子，进程退出时统一回收。
+            cls._instance = candidate
+            return candidate
+
+        return instance
+
     def __init__(self, db_url: Optional[str] = None):
         """
         初始化数据库管理器
-        
+
         Args:
             db_url: 数据库连接 URL（可选，默认从配置读取）
         """
         if getattr(self, '_initialized', False):
+            # 已完成初始化（含 __new__ 中刚完成候选绑定并发布的新实例）：
+            # 不重复执行初始化流程。
             return
+        self._initialize_database(db_url)
 
+    def _initialize_database(self, db_url: Optional[str], *, is_candidate: bool = False) -> None:
+        """执行完整初始化流程：建引擎、建 Session 工厂、建表与迁移。
+
+        Args:
+            db_url: 数据库连接 URL（None 时从配置读取）
+            is_candidate: True 表示这是尚未发布的候选实例——失败时仅清理
+                自身，绝不清空类级单例（是否发布由 __new__ 决定）。
+        """
         created_engine = None
 
         try:
@@ -1423,7 +1474,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 logger.warning("数据库初始化失败后的引擎清理也失败: %s", cleanup_exc)
             self._engine = None
             self._SessionLocal = None
-            self.__class__._instance = None
+            if not is_candidate:
+                # 冷启动失败：沿用既有语义清空类级单例，下次调用重新构建。
+                self.__class__._instance = None
+            # 候选实例失败：仅丢弃候选自身；类级单例与已发布的健康实例
+            # 保持原样（是否发布由 __new__ 决定）。
             raise
 
     def _ensure_schema_migration_record(
