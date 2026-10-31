@@ -305,3 +305,137 @@ describe('MarketReviewReportView', () => {
     expect(onOpenRunFlow).toHaveBeenCalledWith(7);
   });
 });
+
+describe('MarketReviewReportView enhanced structured fields (issue #1584)', () => {
+  const enhancedPayload: MarketReviewPayload = {
+    version: 1,
+    kind: 'market_review',
+    region: 'cn',
+    language: 'zh',
+    title: 'A股大盘复盘',
+    rootTitle: '大盘复盘',
+    summary: {
+      temperature: 45,
+      marketStatus: '震荡分化',
+      positionAdvice: '0-3成',
+      coreConclusion: '权重护盘、成长杀跌，风险偏好回落',
+    },
+    breadth: {
+      upCount: 1500,
+      downCount: 3600,
+      limitUpCount: 28,
+      limitDownCount: 9,
+      totalAmount: 11400,
+      turnoverUnit: '亿元',
+      divergenceDiagnosis: '指数与个股宽度背离，权重护盘特征明显',
+    },
+    indices: [{
+      code: '000001',
+      name: '上证指数',
+      current: 3372.4,
+      changePct: 0.9,
+      maStatus: { ma5: 'above', ma10: 'below', ma20: 'above' },
+      comment: '上证受MA10压制',
+    }],
+    styleRotation: { signal: '成长→防御', comment: '银行煤炭获避险资金' },
+    catalysts: [
+      { title: '降准落地', direction: 'bullish', scope: '全市场', persistence: '中期', digested: true },
+      { title: '外围大跌', direction: 'bearish', digested: false },
+      { title: '中性事件', direction: 'neutral', digested: null },
+    ],
+    nextDayPlan: {
+      watchlist: ['上证3350支撑', '成交额能否回到1.2万亿'],
+      positionAdvice: '维持0-3成，等待宽度修复',
+      invalidation: '若上证放量收复MA10则可加至4-5成',
+    },
+    crossMarketNote: '隔夜美股纳指期货走弱，明日开盘承压概率较高',
+    sections: [{ key: 'overview', title: '盘面总览', markdown: '市场震荡分化。' }],
+  };
+
+  it('renders enhanced structured fields when present', () => {
+    render(
+      <MarketReviewReportView
+        payload={enhancedPayload}
+        content="# 大盘复盘"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(screen.getByText('市场温度')).toBeInTheDocument();
+    expect(screen.getByText('45')).toBeInTheDocument();
+    expect(screen.getByText('震荡分化')).toBeInTheDocument();
+    expect(screen.getByText('0-3成')).toBeInTheDocument();
+    expect(screen.getByText('权重护盘、成长杀跌，风险偏好回落')).toBeInTheDocument();
+    expect(screen.getByText('指数与个股宽度背离，权重护盘特征明显')).toBeInTheDocument();
+    expect(screen.getByText('5↑ 10↓ 20↑')).toBeInTheDocument();
+    expect(screen.getByText('上证受MA10压制')).toBeInTheDocument();
+    expect(screen.getByText('成长→防御')).toBeInTheDocument();
+    expect(screen.getByText('银行煤炭获避险资金')).toBeInTheDocument();
+    expect(screen.getByText('降准落地')).toBeInTheDocument();
+    expect(screen.getAllByText('已消化').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('未消化').length).toBeGreaterThan(0);
+    expect(screen.getByText('上证3350支撑')).toBeInTheDocument();
+    expect(screen.getByText('维持0-3成，等待宽度修复')).toBeInTheDocument();
+    expect(screen.getByText('若上证放量收复MA10则可加至4-5成')).toBeInTheDocument();
+    expect(screen.getByText('隔夜美股纳指期货走弱，明日开盘承压概率较高')).toBeInTheDocument();
+  });
+
+  it('keeps legacy rendering untouched when enhanced fields are absent', () => {
+    render(
+      <MarketReviewReportView
+        payload={combinedMarketReviewPayload}
+        content="# 大盘复盘"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(screen.getByText('结构化大盘数据')).toBeInTheDocument();
+    expect(screen.getByText('3120')).toBeInTheDocument();
+    expect(screen.queryByText('市场温度')).not.toBeInTheDocument();
+    expect(screen.queryByText('宽度分化诊断')).not.toBeInTheDocument();
+    expect(screen.queryByText('消息催化')).not.toBeInTheDocument();
+    expect(screen.queryByText('明日计划')).not.toBeInTheDocument();
+    expect(screen.queryByText('风格轮动')).not.toBeInTheDocument();
+    expect(screen.queryByText('跨市场参考')).not.toBeInTheDocument();
+  });
+
+  it('omits the digested badge when the catalyst has no digested flag', () => {
+    const { container } = render(
+      <MarketReviewReportView
+        payload={{
+          ...enhancedPayload,
+          catalysts: [{ title: '中性事件', direction: 'neutral', digested: null }],
+        }}
+        content="# 大盘复盘"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(screen.getByText('中性事件')).toBeInTheDocument();
+    expect(screen.queryByText('已消化')).not.toBeInTheDocument();
+    expect(screen.queryByText('未消化')).not.toBeInTheDocument();
+    expect(container).toBeTruthy();
+  });
+
+  it('renders english labels for enhanced structured fields', () => {
+    render(
+      <MarketReviewReportView
+        payload={{
+          ...enhancedPayload,
+          language: 'en',
+          summary: { temperature: 45, marketStatus: 'choppy divergence' },
+        }}
+        content="# Market Review"
+        reportLanguage="en"
+      />,
+    );
+
+    expect(screen.getByText('Market Temperature')).toBeInTheDocument();
+    expect(screen.getByText('Market Status')).toBeInTheDocument();
+    expect(screen.getByText('Breadth Divergence')).toBeInTheDocument();
+    expect(screen.getByText('Style Rotation')).toBeInTheDocument();
+    expect(screen.getByText('News Catalysts')).toBeInTheDocument();
+    expect(screen.getByText('Next-Day Plan')).toBeInTheDocument();
+    expect(screen.getByText('Cross-Market Note')).toBeInTheDocument();
+  });
+});

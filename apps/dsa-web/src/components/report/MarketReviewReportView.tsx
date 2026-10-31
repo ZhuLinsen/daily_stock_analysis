@@ -5,6 +5,7 @@ import { historyApi } from '../../api/history';
 import { formatUiText, UI_TEXT } from '../../i18n/uiText';
 import type {
   AnalysisReport,
+  MarketReviewIndexMaStatus,
   MarketReviewPayload,
   MarketReviewPayloadSection,
   ReportLanguage,
@@ -48,6 +49,11 @@ type StructuredMarketData = {
   indices: NonNullable<MarketReviewPayload['indices']>;
   sectors?: MarketReviewPayload['sectors'];
   concepts?: MarketReviewPayload['concepts'];
+  summary?: MarketReviewPayload['summary'];
+  styleRotation?: MarketReviewPayload['styleRotation'];
+  catalysts?: MarketReviewPayload['catalysts'];
+  nextDayPlan?: MarketReviewPayload['nextDayPlan'];
+  crossMarketNote?: MarketReviewPayload['crossMarketNote'];
 };
 
 const isMarketReviewPayload = (value: unknown): value is MarketReviewPayload =>
@@ -173,8 +179,24 @@ const getPayloadSections = (payload?: MarketReviewPayload | null): MarketReviewS
 const hasRankingRows = (rankings?: MarketReviewPayload['sectors']): boolean =>
   Boolean(rankings?.top?.length || rankings?.bottom?.length);
 
+/** Issue #1584: optional enhanced structured fields (summary/rotation/catalysts/plan). */
+const hasEnhancedInsightData = (payload?: MarketReviewPayload | null): boolean =>
+  Boolean(
+    payload?.summary
+    || payload?.styleRotation
+    || payload?.catalysts?.length
+    || payload?.nextDayPlan
+    || payload?.crossMarketNote,
+  );
+
 const hasStructuredMarketData = (payload?: MarketReviewPayload | null): boolean =>
-  Boolean(payload?.breadth || payload?.indices?.length || hasRankingRows(payload?.sectors) || hasRankingRows(payload?.concepts));
+  Boolean(
+    payload?.breadth
+    || payload?.indices?.length
+    || hasRankingRows(payload?.sectors)
+    || hasRankingRows(payload?.concepts)
+    || hasEnhancedInsightData(payload),
+  );
 
 const getStructuredMarketData = (payload?: MarketReviewPayload | null): StructuredMarketData[] => {
   if (!payload) {
@@ -191,6 +213,11 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
         indices: marketPayload.indices || [],
         sectors: marketPayload.sectors,
         concepts: marketPayload.concepts,
+        summary: marketPayload.summary,
+        styleRotation: marketPayload.styleRotation,
+        catalysts: marketPayload.catalysts,
+        nextDayPlan: marketPayload.nextDayPlan,
+        crossMarketNote: marketPayload.crossMarketNote,
       }));
   }
 
@@ -205,6 +232,11 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
     indices: payload.indices || [],
     sectors: payload.sectors,
     concepts: payload.concepts,
+    summary: payload.summary,
+    styleRotation: payload.styleRotation,
+    catalysts: payload.catalysts,
+    nextDayPlan: payload.nextDayPlan,
+    crossMarketNote: payload.crossMarketNote,
   }];
 };
 
@@ -257,6 +289,37 @@ const formatMarketHighLow = (high: unknown, low: unknown): string => {
   return highText === '-' && lowText === '-' ? '-' : `${highText} / ${lowText}`;
 };
 
+/** Issue #1584: render ma_status as compact tokens, e.g. "5↑ 10↓ 20↑"; null when absent. */
+const MA_STATE_TOKENS: Record<string, string> = { above: '↑', below: '↓', near: '—' };
+
+const formatMaStatus = (maStatus?: MarketReviewIndexMaStatus | null): string | null => {
+  if (!maStatus || typeof maStatus !== 'object') {
+    return null;
+  }
+  const tokens = (['ma5', 'ma10', 'ma20'] as const)
+    .map((key) => {
+      const token = MA_STATE_TOKENS[maStatus[key] || ''];
+      return token ? `${key.slice(2)}${token}` : null;
+    })
+    .filter((token): token is string => Boolean(token));
+  return tokens.length > 0 ? tokens.join(' ') : null;
+};
+
+const hasAnyMaStatus = (indices: NonNullable<MarketReviewPayload['indices']>): boolean =>
+  indices.some((index) => formatMaStatus(index.maStatus) !== null);
+
+type MarketReviewCatalystItem = NonNullable<MarketReviewPayload['catalysts']>[number];
+
+const formatCatalystDirection = (
+  direction: MarketReviewCatalystItem['direction'],
+  text: { catalystDirection: Record<string, string> },
+): string | null => {
+  if (!direction || typeof direction !== 'string') {
+    return null;
+  }
+  return text.catalystDirection[direction] || null;
+};
+
 const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   reviewSummary: string;
   noReviewSummary: string;
@@ -279,6 +342,21 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   conceptBoards: string;
   leading: string;
   lagging: string;
+  /** ---- Issue #1584 optional structured fields ---- */
+  temperature: string;
+  marketStatus: string;
+  positionAdvice: string;
+  coreConclusion: string;
+  divergenceDiagnosis: string;
+  maStatusColumn: string;
+  styleRotation: string;
+  catalysts: string;
+  nextDayPlan: string;
+  invalidation: string;
+  crossMarketNote: string;
+  catalystDirection: Record<string, string>;
+  digestedLabel: string;
+  notDigestedLabel: string;
 }> = {
   zh: {
     reviewSummary: '复盘摘要',
@@ -302,6 +380,20 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: '概念板块',
     leading: '领涨',
     lagging: '领跌',
+    temperature: '市场温度',
+    marketStatus: '市场状态',
+    positionAdvice: '建议仓位',
+    coreConclusion: '核心结论',
+    divergenceDiagnosis: '宽度分化诊断',
+    maStatusColumn: '均线状态',
+    styleRotation: '风格轮动',
+    catalysts: '消息催化',
+    nextDayPlan: '明日计划',
+    invalidation: '失效条件',
+    crossMarketNote: '跨市场参考',
+    catalystDirection: { bullish: '利好', bearish: '利空', neutral: '中性' },
+    digestedLabel: '已消化',
+    notDigestedLabel: '未消化',
   },
   en: {
     reviewSummary: 'Review Summary',
@@ -325,6 +417,20 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: 'Concept Themes',
     leading: 'Leading',
     lagging: 'Lagging',
+    temperature: 'Market Temperature',
+    marketStatus: 'Market Status',
+    positionAdvice: 'Position Advice',
+    coreConclusion: 'Core Conclusion',
+    divergenceDiagnosis: 'Breadth Divergence',
+    maStatusColumn: 'MA Status',
+    styleRotation: 'Style Rotation',
+    catalysts: 'News Catalysts',
+    nextDayPlan: 'Next-Day Plan',
+    invalidation: 'Invalidation',
+    crossMarketNote: 'Cross-Market Note',
+    catalystDirection: { bullish: 'Bullish', bearish: 'Bearish', neutral: 'Neutral' },
+    digestedLabel: 'Digested',
+    notDigestedLabel: 'Not digested',
   },
   ko: {
     reviewSummary: '리뷰 요약',
@@ -348,6 +454,20 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: '테마 섹터',
     leading: '강세',
     lagging: '약세',
+    temperature: '시장 온도',
+    marketStatus: '시장 상태',
+    positionAdvice: '포지션 권고',
+    coreConclusion: '핵심 결론',
+    divergenceDiagnosis: '지수-개별주 괴리 진단',
+    maStatusColumn: '이동평균 상태',
+    styleRotation: '스타일 로테이션',
+    catalysts: '뉴스 촉매',
+    nextDayPlan: '익일 계획',
+    invalidation: '무효 조건',
+    crossMarketNote: '교차 시장 참고',
+    catalystDirection: { bullish: '강세', bearish: '약세', neutral: '중립' },
+    digestedLabel: '소화됨',
+    notDigestedLabel: '미소화',
   },
 };
 
@@ -585,6 +705,37 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                 {showStructuredMarketTitles ? (
                   <h4 className="text-sm font-semibold text-foreground">{marketData.title}</h4>
                 ) : null}
+                {(() => {
+                  // Issue #1584: optional market summary chips (all fields may be null).
+                  const summary = marketData.summary;
+                  if (!summary) {
+                    return null;
+                  }
+                  const summaryChips = [
+                    {
+                      label: marketReviewText.temperature,
+                      value: summary.temperature !== null && summary.temperature !== undefined
+                        ? String(summary.temperature)
+                        : null,
+                    },
+                    { label: marketReviewText.marketStatus, value: summary.marketStatus || null },
+                    { label: marketReviewText.positionAdvice, value: summary.positionAdvice || null },
+                    { label: marketReviewText.coreConclusion, value: summary.coreConclusion || null },
+                  ].filter((chip) => chip.value);
+                  if (summaryChips.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+                      {summaryChips.map((chip) => (
+                        <div key={chip.label} className="rounded-lg border border-subtle p-3">
+                          <p className="label-uppercase">{chip.label}</p>
+                          <p className="mt-1 break-words font-semibold text-foreground">{chip.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
                 {marketData.breadth ? (
                   <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
                     <div className="rounded-lg border border-subtle p-3">
@@ -616,30 +767,57 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                 ) : (
                   <p className="text-sm text-secondary-text">{marketReviewText.noBreadthData}</p>
                 )}
-                {marketData.indices.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full text-sm">
-                      <thead className="text-left text-xs uppercase text-muted-text">
-                        <tr>
-                          <th className="px-2 py-2">{marketReviewText.index}</th>
-                          <th className="px-2 py-2">{marketReviewText.last}</th>
-                          <th className="px-2 py-2">{marketReviewText.change}</th>
-                          <th className="px-2 py-2">{marketReviewText.highLow}</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-subtle">
-                        {marketData.indices.map((index) => (
-                          <tr key={index.code || index.name}>
-                            <td className="px-2 py-2 font-medium text-foreground">{index.name}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketNumber(index.current)}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
-                            <td className="px-2 py-2 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                {marketData.breadth?.divergenceDiagnosis ? (
+                  <p className="rounded-lg border border-subtle bg-primary/5 p-3 text-sm leading-6 text-secondary-text">
+                    <span className="font-semibold text-foreground">{marketReviewText.divergenceDiagnosis}</span>
+                    {': '}
+                    <span>{marketData.breadth.divergenceDiagnosis}</span>
+                  </p>
                 ) : null}
+                {(() => {
+                  const showMaColumn = hasAnyMaStatus(marketData.indices);
+                  if (marketData.indices.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="text-left text-xs uppercase text-muted-text">
+                          <tr>
+                            <th className="px-2 py-2">{marketReviewText.index}</th>
+                            <th className="px-2 py-2">{marketReviewText.last}</th>
+                            <th className="px-2 py-2">{marketReviewText.change}</th>
+                            <th className="px-2 py-2">{marketReviewText.highLow}</th>
+                            {showMaColumn ? (
+                              <th className="px-2 py-2">{marketReviewText.maStatusColumn}</th>
+                            ) : null}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-subtle">
+                          {marketData.indices.map((index) => {
+                            const maStatusText = formatMaStatus(index.maStatus);
+                            return (
+                              <tr key={index.code || index.name}>
+                                <td className="px-2 py-2">
+                                  <div className="font-medium text-foreground">{index.name}</div>
+                                  {index.comment ? (
+                                    <div className="mt-0.5 text-xs text-muted-text">{index.comment}</div>
+                                  ) : null}
+                                </td>
+                                <td className="px-2 py-2 text-secondary-text">{formatMarketNumber(index.current)}</td>
+                                <td className="px-2 py-2 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
+                                <td className="px-2 py-2 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
+                                {showMaColumn ? (
+                                  <td className="px-2 py-2 font-mono text-secondary-text">{maStatusText || '-'}</td>
+                                ) : null}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
                 {(() => {
                   const boardTypes = [{
                     key: 'sectors' as const,
@@ -702,6 +880,116 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                     </div>
                   );
                 })()}
+                {(() => {
+                  // Issue #1584: optional style rotation, catalysts, next-day plan and cross-market note.
+                  const rotation = marketData.styleRotation;
+                  const rotationSignal = rotation?.signal || null;
+                  const rotationComment = rotation?.comment || null;
+                  if (rotationSignal || rotationComment) {
+                    return (
+                      <div className="rounded-lg border border-subtle p-3 text-sm">
+                        <p className="label-uppercase">{marketReviewText.styleRotation}</p>
+                        <p className="mt-1 break-words text-foreground">
+                          {rotationSignal ? <span className="font-semibold">{rotationSignal}</span> : null}
+                          {rotationSignal && rotationComment ? <span className="text-muted-text"> · </span> : null}
+                          {rotationComment ? <span className="text-secondary-text">{rotationComment}</span> : null}
+                        </p>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+                {(() => {
+                  const catalysts = (marketData.catalysts || []).filter((item) => item?.title);
+                  if (catalysts.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <div className="rounded-lg border border-subtle p-3">
+                      <p className="label-uppercase">{marketReviewText.catalysts}</p>
+                      <div className="mt-2 space-y-2">
+                        {catalysts.slice(0, 8).map((catalyst, index) => {
+                          const directionText = formatCatalystDirection(catalyst.direction, marketReviewText);
+                          const directionTone = catalyst.direction === 'bullish'
+                            ? 'text-success'
+                            : catalyst.direction === 'bearish'
+                              ? 'text-danger'
+                              : 'text-secondary-text';
+                          const catalystMeta = [catalyst.scope, catalyst.persistence].filter(Boolean).join(' · ');
+                          return (
+                            <div
+                              key={`${catalyst.title}-${index}`}
+                              className="flex items-start justify-between gap-3 text-sm"
+                            >
+                              <div className="min-w-0">
+                                <span className="font-medium text-foreground">{catalyst.title}</span>
+                                {catalystMeta ? (
+                                  <span className="ml-2 text-xs text-muted-text">{catalystMeta}</span>
+                                ) : null}
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1.5 text-xs">
+                                {directionText ? (
+                                  <span className={`font-medium ${directionTone}`}>{directionText}</span>
+                                ) : null}
+                                {catalyst.digested === true ? (
+                                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-secondary-text">
+                                    {marketReviewText.digestedLabel}
+                                  </span>
+                                ) : null}
+                                {catalyst.digested === false ? (
+                                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-muted-text">
+                                    {marketReviewText.notDigestedLabel}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {(() => {
+                  const plan = marketData.nextDayPlan;
+                  if (!plan) {
+                    return null;
+                  }
+                  const watchlist = (plan.watchlist || []).filter((item) => item);
+                  const hasPlan = watchlist.length > 0 || plan.positionAdvice || plan.invalidation || plan.notes;
+                  if (!hasPlan) {
+                    return null;
+                  }
+                  return (
+                    <div className="rounded-lg border border-subtle p-3 text-sm">
+                      <p className="label-uppercase">{marketReviewText.nextDayPlan}</p>
+                      <div className="mt-2 space-y-1.5">
+                        {watchlist.map((item, index) => (
+                          <div key={`${item}-${index}`} className="flex items-start gap-2 text-secondary-text">
+                            <span className="text-primary">·</span>
+                            <span className="min-w-0 break-words">{item}</span>
+                          </div>
+                        ))}
+                        {plan.positionAdvice ? (
+                          <p className="break-words text-secondary-text">{plan.positionAdvice}</p>
+                        ) : null}
+                        {plan.invalidation ? (
+                          <p className="break-words text-xs text-muted-text">
+                            <span>{marketReviewText.invalidation}</span>
+                            <span>{': '}</span>
+                            <span>{plan.invalidation}</span>
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {marketData.crossMarketNote ? (
+                  <p className="rounded-lg border border-subtle p-3 text-sm leading-6 text-secondary-text">
+                    <span className="font-semibold text-foreground">{marketReviewText.crossMarketNote}</span>
+                    {': '}
+                    <span>{marketData.crossMarketNote}</span>
+                  </p>
+                ) : null}
               </div>
             ))}
           </div>

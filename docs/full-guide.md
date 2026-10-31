@@ -491,6 +491,20 @@ daily_stock_analysis/
 > - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` 表示新增基本面阶段的目标预算，不是严格硬 SLA；Windows、Docker 或免费数据源被限流时可继续调高到 `12-15s`。
 > - 若要硬 SLA，请在后续版本升级为子进程隔离执行并在超时后强制终止。
 
+#### 大盘复盘结构化字段（Issue #1584）
+
+大盘复盘在保持既有 Markdown 报告与历史记录兼容的前提下，新增以下可选结构化字段（旧消费者忽略未知字段；payload 缺字段时 Web/历史/推送渲染与旧版完全一致）：
+
+- `summary`：市场温度（0-100；LLM 未给出时回落到市场亮灯分）、市场状态（弱势调整/震荡分化/强势扩散/指数强但个股弱等）、建议仓位（如 0-3 成）、核心结论一句话（点明普涨/普跌/权重护盘/成长杀跌/风险偏好回落等结构）。
+- `indices[].ma_status` / `indices[].comment`：MA5/MA10/MA20 站上与否（`above`/`below`/`near`；无法判断为 null，不新增行情依赖，由 LLM 结合已提供数据判断且严禁编造）与一句话点评；美股支持权重股拉动/拖累识别，A 股支持权重护盘/成长杀跌/中小盘扩散识别。
+- `breadth.divergence_diagnosis`：结合涨跌家数、涨跌停、成交额与指数结构的宽度与分化诊断；LLM 未给出时按“指数涨跌与上涨家数占比背离”确定性兜底组装，仅在宽度数据可用时出现。
+- `style_rotation`：成长/防御/资源/消费等风格切换信号（`signal`）与说明（`comment`）。
+- `catalysts[]`：消息催化按 `direction`（bullish/bearish/neutral，中英文输入自动归一化）、`scope`（影响范围）、`persistence`（一次性/短期/中期）、`digested`（是否已被市场消化）归类；缺 `title` 的条目丢弃，最多保留 8 条。
+- `next_day_plan`：明日观察清单（`watchlist`）、仓位调整建议（`position_advice`）与触发失效条件（`invalidation`）。
+- `cross_market_note`（可选 P3）：其他市场（美/日/韩）对明日走势的综合参考文本；不引入任何外部数据源新依赖。
+
+实现方式：复盘 Prompt 要求 LLM 在报告末尾输出一个 ```json 结构化附录；后端提取并从 Markdown 中剥离后并入 payload，解析失败或字段缺失时逐字段降级为 null/省略，绝不中断复盘生成，也不新增任何环境配置键。Web「大盘复盘」视图对上述字段可选渲染（无字段时与旧版零差异）。
+
 ### 其他配置
 
 | 变量名 | 说明 | 默认值 |

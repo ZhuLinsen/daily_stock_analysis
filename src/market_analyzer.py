@@ -10,13 +10,14 @@
 3. 使用大模型生成每日大盘复盘报告
 """
 
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from inspect import getattr_static
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
 
@@ -55,6 +56,105 @@ _CHINESE_SECTION_PATTERNS = {
     "funds_sentiment": r"###\s*四、(?:资金与情绪|资金动向)",
     "news_catalysts": r"###\s*五、(?:消息催化|后市展望)",
 }
+
+# ---------------------------------------------------------------------------
+# Issue #1584: 大盘复盘结构化字段（可选增强，全部 fail-open）
+# LLM 在报告末尾输出一个 fenced JSON 附录，后端提取并剥离后并入 payload。
+# ---------------------------------------------------------------------------
+
+# 附录 JSON 命中任一已知字段才会被采纳，避免误吞正文中的普通代码块。
+_MARKET_REVIEW_STRUCTURED_KEYS = frozenset({
+    "summary",
+    "indices",
+    "breadth",
+    "style_rotation",
+    "catalysts",
+    "next_day_plan",
+    "cross_market_note",
+})
+
+_MARKET_REVIEW_FENCE_PATTERN = re.compile(
+    r"```[ \t]*(?:json)?[ \t]*\r?\n(?P<body>.*?)```",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+
+# indices[].ma_status 合法状态；其余取值一律降级为 null。
+_MARKET_REVIEW_MA_STATES = frozenset({"above", "below", "near"})
+
+# catalysts[].direction 归一化映射（中英文均接受）。
+_MARKET_REVIEW_CATALYST_DIRECTIONS = {
+    "bullish": "bullish",
+    "positive": "bullish",
+    "up": "bullish",
+    "利好": "bullish",
+    "偏多": "bullish",
+    "bearish": "bearish",
+    "negative": "bearish",
+    "down": "bearish",
+    "利空": "bearish",
+    "偏空": "bearish",
+    "neutral": "neutral",
+    "中性": "neutral",
+}
+
+_MARKET_REVIEW_DIGESTED_TRUE = {"true", "yes", "y", "1", "是", "已消化", "已兑现"}
+_MARKET_REVIEW_DIGESTED_FALSE = {"false", "no", "n", "0", "否", "未消化", "未兑现"}
+
+_MARKET_REVIEW_APPENDIX_SPEC_ZH = """【结构化数据附录（系统解析用，必须输出在报告最后）】
+在报告全部内容输出完毕后，最后追加一个 ```json 代码块（这是全文唯一允许出现的代码块），内容为如下结构的 JSON：
+- 无法判断的字段一律填 null，严禁编造（尤其是均线状态、成交额等数值）
+- 若本市场不提供某类数据（如美股无涨跌家数），相关字段填 null
+{
+  "summary": {
+    "temperature": <0-100 整数或 null，市场温度>,
+    "market_status": "<弱势调整/震荡分化/强势扩散/指数强但个股弱等> 或 null",
+    "position_advice": "<0-3成/4-5成/5-7成等> 或 null",
+    "core_conclusion": "<一句话结论，点明普涨/普跌/权重护盘/成长杀跌/风险偏好回落等结构> 或 null"
+  },
+  "indices": [
+    {"code": "<指数代码>", "ma_status": {"ma5": "above|below|near 或 null", "ma10": "同上", "ma20": "同上"}, "comment": "<一句话点评> 或 null"}
+  ],
+  "breadth": {"divergence_diagnosis": "<结合涨跌家数/涨跌停/成交额与指数结构的宽度与分化诊断> 或 null"},
+  "style_rotation": {"signal": "<如 成长→防御> 或 null", "comment": "<风格切换说明> 或 null"},
+  "catalysts": [
+    {"title": "<事件>", "direction": "bullish|bearish|neutral", "scope": "<影响范围>", "persistence": "<一次性/短期/中期>", "digested": <true/false，该消息是否已被市场消化>}
+  ],
+  "next_day_plan": {
+    "watchlist": ["<明日观察点1>", "<明日观察点2>"],
+    "position_advice": "<仓位调整建议>",
+    "invalidation": "<触发失效条件> 或 null",
+    "notes": null
+  },
+  "cross_market_note": "<其他市场（美/日/韩等）对明日走势的综合参考> 或 null"
+}"""
+
+_MARKET_REVIEW_APPENDIX_SPEC_EN = """[Structured Data Appendix (machine-readable, must be the last element of the report)]
+After the report content, append ONE ```json fenced block (the only code block allowed in the whole output) with this exact shape:
+- Use null for any field you cannot determine from the provided data. Never fabricate values (especially moving-average status).
+- If a data category is unavailable for this market (e.g. no advancers/decliners stats), fill the related fields with null.
+{
+  "summary": {
+    "temperature": <integer 0-100 or null, market temperature>,
+    "market_status": "<weak pullback / choppy divergence / broad strength / index-strong-stock-weak ...> or null",
+    "position_advice": "<e.g. 0-30% / 40-50% invested> or null",
+    "core_conclusion": "<one sentence naming the structure: broad rally / broad selloff / heavyweight support / growth selloff / risk-appetite pullback> or null"
+  },
+  "indices": [
+    {"code": "<index code>", "ma_status": {"ma5": "above|below|near or null", "ma10": "same", "ma20": "same"}, "comment": "<one-line comment> or null"}
+  ],
+  "breadth": {"divergence_diagnosis": "<breadth/divergence diagnosis from advancers, limit counts, turnover and index structure> or null"},
+  "style_rotation": {"signal": "<e.g. growth -> defensives> or null", "comment": "<style rotation note> or null"},
+  "catalysts": [
+    {"title": "<event>", "direction": "bullish|bearish|neutral", "scope": "<impact scope>", "persistence": "<one-off / short-term / mid-term>", "digested": <true/false, whether the market has already priced it in>}
+  ],
+  "next_day_plan": {
+    "watchlist": ["<watch item 1>", "<watch item 2>"],
+    "position_advice": "<position adjustment advice>",
+    "invalidation": "<invalidation trigger> or null",
+    "notes": null
+  },
+  "cross_market_note": "<cross-market reference from US/JP/KR etc.> or null"
+}"""
 
 
 @dataclass
@@ -994,8 +1094,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         news: List,
         report: str,
         market_light_snapshot: Optional[Dict[str, Any]] = None,
+        llm_structured: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Build the structured market-review contract consumed by API, Web, and notifications."""
+        """Build the structured market-review contract consumed by API, Web, and notifications.
+
+        Issue #1584: ``llm_structured`` is the (already extracted) LLM appendix; every
+        enhanced field below is optional and degrades per-field to null/omission so a
+        malformed appendix can never break report generation or old consumers.
+        """
         language = self._get_output_language()
         sections = self._split_report_sections(report)
         title = self._extract_report_title(report) or self._get_review_title(overview.date).lstrip("# ").strip()
@@ -1065,7 +1171,354 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "turnover_unit": self._get_turnover_unit_label(),
             }
 
+        self._apply_structured_market_review_fields(payload, overview, light, llm_structured)
+
         return payload
+
+    # ------------------------------------------------------------------
+    # Issue #1584: 大盘复盘结构化字段（可选增强）
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _extract_structured_market_review_appendix(
+        cls,
+        text: str,
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Split the machine-readable fenced-JSON appendix from the review markdown.
+
+        Fail-open: the original text and ``None`` are returned whenever no valid
+        appendix exists, so old-style reports stay byte-identical.
+        """
+        if not text or "```" not in text:
+            return text, None
+        try:
+            matches = list(_MARKET_REVIEW_FENCE_PATTERN.finditer(text))
+        except Exception:
+            return text, None
+        for match in reversed(matches):
+            data = cls._parse_market_review_json_candidate(match.group("body"))
+            if data is None:
+                continue
+            if not (_MARKET_REVIEW_STRUCTURED_KEYS & set(data.keys())):
+                continue
+            cleaned = text[: match.start()].rstrip()
+            # 剥离紧邻附录、因附录而遗留的分隔线（如 “---”），保持正文自然收尾。
+            cleaned = re.sub(r"\n\s*-{3,}\s*$", "", cleaned).rstrip()
+            return cleaned, data
+        return text, None
+
+    @staticmethod
+    def _parse_market_review_json_candidate(raw: Any) -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _clean_structured_text(value: Any, *, limit: int) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        return text[:limit]
+
+    def _apply_structured_market_review_fields(
+        self,
+        payload: Dict[str, Any],
+        overview: MarketOverview,
+        light: Optional[Dict[str, Any]],
+        llm_structured: Optional[Dict[str, Any]],
+    ) -> None:
+        """Merge validated structured fragments into the payload (all optional)."""
+        structured = self._normalize_structured_market_review_fields(llm_structured)
+
+        summary = structured.get("summary")
+        if summary is not None:
+            if summary.get("temperature") is None and isinstance(light, dict):
+                light_score = light.get("score")
+                if isinstance(light_score, int) and not isinstance(light_score, bool):
+                    summary["temperature"] = light_score
+            if any(summary.get(key) is not None for key in summary):
+                payload["summary"] = summary
+
+        annotations = structured.get("_index_annotations") or []
+        if annotations and isinstance(payload.get("indices"), list):
+            by_code = {
+                str(idx.get("code") or "").strip().lower(): idx
+                for idx in payload["indices"]
+                if isinstance(idx, dict)
+            }
+            by_name = {
+                str(idx.get("name") or "").strip().lower(): idx
+                for idx in payload["indices"]
+                if isinstance(idx, dict)
+            }
+            for annotation in annotations:
+                target = None
+                if annotation.get("code"):
+                    target = by_code.get(annotation["code"].strip().lower())
+                if target is None and annotation.get("name"):
+                    target = by_name.get(annotation["name"].strip().lower())
+                if target is None:
+                    continue
+                if annotation.get("ma_status"):
+                    target["ma_status"] = annotation["ma_status"]
+                if annotation.get("comment"):
+                    target["comment"] = annotation["comment"]
+
+        breadth = payload.get("breadth")
+        if isinstance(breadth, dict):
+            diagnosis = structured.get("divergence_diagnosis") or self._build_divergence_diagnosis(overview)
+            if diagnosis:
+                breadth["divergence_diagnosis"] = diagnosis
+
+        if structured.get("style_rotation"):
+            payload["style_rotation"] = structured["style_rotation"]
+        if structured.get("catalysts"):
+            payload["catalysts"] = structured["catalysts"]
+        if structured.get("next_day_plan"):
+            payload["next_day_plan"] = structured["next_day_plan"]
+        if structured.get("cross_market_note"):
+            payload["cross_market_note"] = structured["cross_market_note"]
+
+    def _normalize_structured_market_review_fields(
+        self,
+        data: Any,
+    ) -> Dict[str, Any]:
+        """Validate LLM appendix fields one by one; drop anything malformed."""
+        if not isinstance(data, dict):
+            return {}
+        normalized: Dict[str, Any] = {}
+        try:
+            summary = self._normalize_structured_summary(data.get("summary"))
+            if summary is not None:
+                normalized["summary"] = summary
+            annotations = self._normalize_structured_index_annotations(data.get("indices"))
+            if annotations:
+                normalized["_index_annotations"] = annotations
+            breadth = data.get("breadth")
+            diagnosis = (
+                self._clean_structured_text(
+                    breadth.get("divergence_diagnosis") if isinstance(breadth, dict) else None,
+                    limit=300,
+                )
+            )
+            if diagnosis:
+                normalized["divergence_diagnosis"] = diagnosis
+            style_rotation = self._normalize_style_rotation(data.get("style_rotation"))
+            if style_rotation is not None:
+                normalized["style_rotation"] = style_rotation
+            catalysts = self._normalize_catalysts(data.get("catalysts"))
+            if catalysts:
+                normalized["catalysts"] = catalysts
+            next_day_plan = self._normalize_next_day_plan(data.get("next_day_plan"))
+            if next_day_plan is not None:
+                normalized["next_day_plan"] = next_day_plan
+            cross_market_note = self._clean_structured_text(data.get("cross_market_note"), limit=400)
+            if cross_market_note:
+                normalized["cross_market_note"] = cross_market_note
+        except Exception as exc:
+            # 单字段解析异常时保留已解析部分，绝不影响复盘主流程。
+            logger.debug("[大盘] %s action=normalize_structured_fields status=degraded error=%s", self._log_context(), exc)
+        return normalized
+
+    @classmethod
+    def _normalize_structured_summary(cls, value: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(value, dict):
+            return None
+        temperature = value.get("temperature")
+        if isinstance(temperature, bool):
+            temperature = None
+        elif isinstance(temperature, (int, float, str)):
+            try:
+                temperature = int(round(float(str(temperature).strip())))
+            except (TypeError, ValueError):
+                temperature = None
+        else:
+            temperature = None
+        if temperature is not None and not 0 <= temperature <= 100:
+            temperature = None
+        summary = {
+            "temperature": temperature,
+            "market_status": cls._clean_structured_text(value.get("market_status"), limit=60),
+            "position_advice": cls._clean_structured_text(value.get("position_advice"), limit=60),
+            "core_conclusion": cls._clean_structured_text(value.get("core_conclusion"), limit=200),
+        }
+        if all(item is None for item in summary.values()):
+            return None
+        return summary
+
+    @classmethod
+    def _normalize_structured_index_annotations(cls, value: Any) -> List[Dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        annotations: List[Dict[str, Any]] = []
+        for item in value[:16]:
+            if not isinstance(item, dict):
+                continue
+            code = cls._clean_structured_text(item.get("code"), limit=32)
+            name = cls._clean_structured_text(item.get("name"), limit=60)
+            if not code and not name:
+                continue
+            ma_status: Optional[Dict[str, str]] = None
+            ma_status_raw = item.get("ma_status")
+            if isinstance(ma_status_raw, dict):
+                validated = {
+                    key: str(ma_status_raw.get(key)).strip().lower()
+                    for key in ("ma5", "ma10", "ma20")
+                    if isinstance(ma_status_raw.get(key), str)
+                    and str(ma_status_raw.get(key)).strip().lower() in _MARKET_REVIEW_MA_STATES
+                }
+                if validated:
+                    ma_status = validated
+            comment = cls._clean_structured_text(item.get("comment"), limit=160)
+            if ma_status is None and comment is None:
+                continue
+            annotations.append({"code": code, "name": name, "ma_status": ma_status, "comment": comment})
+        return annotations
+
+    @classmethod
+    def _normalize_style_rotation(cls, value: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(value, dict):
+            signal = cls._clean_structured_text(value.get("signal"), limit=60)
+            comment = cls._clean_structured_text(value.get("comment"), limit=300)
+            if signal or comment:
+                return {"signal": signal, "comment": comment}
+            return None
+        comment = cls._clean_structured_text(value, limit=300)
+        if comment:
+            return {"signal": None, "comment": comment}
+        return None
+
+    @classmethod
+    def _normalize_catalysts(cls, value: Any) -> List[Dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        catalysts: List[Dict[str, Any]] = []
+        for item in value[:8]:
+            if not isinstance(item, dict):
+                continue
+            title = cls._clean_structured_text(item.get("title"), limit=120)
+            if not title:
+                continue
+            direction_raw = cls._clean_structured_text(item.get("direction"), limit=20)
+            direction = (
+                _MARKET_REVIEW_CATALYST_DIRECTIONS.get(direction_raw.lower())
+                if direction_raw
+                else None
+            )
+            digested_raw = item.get("digested")
+            digested: Optional[bool] = None
+            if isinstance(digested_raw, bool):
+                digested = digested_raw
+            elif isinstance(digested_raw, (str, int)) and not isinstance(digested_raw, float):
+                digested_text = str(digested_raw).strip().lower()
+                if digested_text in _MARKET_REVIEW_DIGESTED_TRUE:
+                    digested = True
+                elif digested_text in _MARKET_REVIEW_DIGESTED_FALSE:
+                    digested = False
+            catalysts.append({
+                "title": title,
+                "direction": direction,
+                "scope": cls._clean_structured_text(item.get("scope"), limit=80),
+                "persistence": cls._clean_structured_text(item.get("persistence"), limit=40),
+                "digested": digested,
+            })
+        return catalysts
+
+    @classmethod
+    def _normalize_next_day_plan(cls, value: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(value, dict):
+            return None
+        watchlist: List[str] = []
+        raw_watchlist = value.get("watchlist")
+        if isinstance(raw_watchlist, list):
+            for item in raw_watchlist[:8]:
+                text = cls._clean_structured_text(item, limit=80)
+                if text:
+                    watchlist.append(text)
+        plan = {
+            "watchlist": watchlist or None,
+            "position_advice": cls._clean_structured_text(value.get("position_advice"), limit=80),
+            "invalidation": cls._clean_structured_text(value.get("invalidation"), limit=160),
+            "notes": cls._clean_structured_text(value.get("notes"), limit=300),
+        }
+        if all(item is None for item in plan.values()):
+            return None
+        return plan
+
+    def _build_divergence_diagnosis(self, overview: MarketOverview) -> Optional[str]:
+        """Deterministic breadth-vs-index divergence diagnosis (Issue #1584 fallback)."""
+        participation = (overview.up_count or 0) + (overview.down_count or 0)
+        limit_total = (overview.limit_up_count or 0) + (overview.limit_down_count or 0)
+        if participation <= 0 and limit_total <= 0 and not overview.total_amount:
+            return None
+
+        is_en = self._get_output_language() == "en"
+        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        avg_change = sum(index_changes) / len(index_changes) if index_changes else None
+        up_ratio = (overview.up_count / participation) if participation else None
+
+        parts: List[str] = []
+        if up_ratio is not None and avg_change is not None:
+            if avg_change >= 0.3 and up_ratio <= 0.45:
+                parts.append(
+                    (
+                        f"major indices averaged {avg_change:+.2f}% but only {up_ratio:.0%} of stocks "
+                        "advanced; index and stock breadth diverge, heavyweight support is evident"
+                    )
+                    if is_en
+                    else (
+                        f"主要指数平均上涨 {avg_change:+.2f}%，但上涨家数占比仅 {up_ratio:.0%}，"
+                        "指数与个股宽度背离，权重护盘特征明显"
+                    )
+                )
+            elif avg_change <= -0.3 and up_ratio >= 0.55:
+                parts.append(
+                    (
+                        f"major indices averaged {avg_change:+.2f}% yet {up_ratio:.0%} of stocks still "
+                        "advanced; stock breadth has not weakened in line with the indices"
+                    )
+                    if is_en
+                    else (
+                        f"主要指数平均下跌 {avg_change:+.2f}%，但上涨家数占比仍有 {up_ratio:.0%}，"
+                        "个股宽度未随指数同步走弱"
+                    )
+                )
+        if not parts and up_ratio is not None:
+            if up_ratio >= 0.6:
+                parts.append(
+                    f"{up_ratio:.0%} of stocks advanced, breadth is expanding"
+                    if is_en
+                    else f"上涨家数占比 {up_ratio:.0%}，市场宽度扩散"
+                )
+            elif up_ratio <= 0.4:
+                parts.append(
+                    f"only {up_ratio:.0%} of stocks advanced, breadth is shrinking"
+                    if is_en
+                    else f"上涨家数占比仅 {up_ratio:.0%}，市场宽度收缩"
+                )
+            else:
+                parts.append(
+                    f"{up_ratio:.0%} of stocks advanced, breadth matches the index move"
+                    if is_en
+                    else f"上涨家数占比 {up_ratio:.0%}，宽度与指数表现基本匹配"
+                )
+        if limit_total:
+            parts.append(
+                f"limit-up {overview.limit_up_count} / limit-down {overview.limit_down_count}"
+                if is_en
+                else f"涨停 {overview.limit_up_count} 家、跌停 {overview.limit_down_count} 家"
+            )
+        if overview.total_amount:
+            parts.append(
+                f"turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"
+                if is_en
+                else f"成交额 {overview.total_amount:.0f} {self._get_turnover_unit_label()}"
+            )
+        return "；".join(parts) if parts else None
 
     def _supports_market_light(self) -> bool:
         return self.region in MARKET_LIGHT_REGIONS
@@ -1779,14 +2232,17 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
             else "报告要像交易员盘后工作台：先给结论，再按指数、新闻催化和计划展开"
         )
 
+        # A 股场景使用中文提示语
+        appendix_spec = (
+            _MARKET_REVIEW_APPENDIX_SPEC_EN if review_language == "en" else _MARKET_REVIEW_APPENDIX_SPEC_ZH
+        )
         if review_language == "en":
             report_title = self._get_review_title(overview.date).removeprefix("## ").strip()
             return f"""You are a professional {self._get_market_scope_name('en')} analyst. Please produce a concise market recap report based on the data below.
 
 [Requirements]
-- Output pure Markdown only
-- No JSON
-- No code blocks
+- The report body must be pure Markdown only
+- No JSON and no code blocks in the body; the single exception is the structured data appendix (fenced ```json block) required at the very end
 - Use emoji sparingly in headings (at most one per heading)
 - The entire fixed shell, headings, guidance, and conclusion must be in {shell_language_label}
 {data_boundary_requirement}
@@ -1828,6 +2284,8 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 
 {output_template_sections}
 
+{appendix_spec}
+
 ---
 
 Output the report content directly, no extra commentary.
@@ -1837,9 +2295,8 @@ Output the report content directly, no extra commentary.
         return f"""你是一位专业的{self._get_market_scope_name('zh')}分析师，请根据以下数据生成一份结构化的{self._get_market_scope_name('zh')}大盘复盘报告。
 
 【重要】输出要求：
-- 必须输出纯 Markdown 文本格式
-- 禁止输出 JSON 格式
-- 禁止输出代码块
+- 正文必须输出纯 Markdown 文本格式
+- 正文禁止输出 JSON、禁止输出代码块；唯一例外是报告末尾按要求输出的【结构化数据附录】JSON 代码块
 - emoji 仅在标题处少量使用（每个标题最多1个）
 - {workflow_hint}
 - 不要重复列出已由系统注入的表格数据；正文负责解释表格背后的含义
@@ -1883,6 +2340,8 @@ Output the report content directly, no extra commentary.
 （{self._get_index_hint()}，说明谁在护盘、谁在拖累，以及关键支撑/压力）
 
 {output_template_sections}
+
+{appendix_spec}
 
 ---
 
@@ -2049,12 +2508,15 @@ Market conditions can change quickly. The data above is for reference only and d
 
         # 3. 生成复盘报告
         report = self.generate_market_review(overview, news)
+        # Issue #1584: 提取并剥离 LLM 结构化附录；失败时保持原报告不变（fail-open）。
+        report, llm_structured = self._extract_structured_market_review_appendix(report)
         snapshot = self.build_market_light_snapshot(overview) if self._supports_market_light() else None
         structured_payload = self.build_market_review_payload(
             overview,
             news,
             report,
             snapshot,
+            llm_structured=llm_structured,
         )
 
         logger.info("========== 大盘复盘分析完成 ==========")
