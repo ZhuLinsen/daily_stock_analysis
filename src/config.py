@@ -1330,6 +1330,17 @@ class Config:
     # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(全部市场)
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
+    # === 消息面汇总（issue #2184；默认关闭，盘前/周末/节假日各一份 cn 宏观摘要）===
+    # 每个自然日最多一份（SQLite claim + 通知 dedup_key 双层防重）；窗口语义 [start, end)，
+    # 按进程本地时区解释；非法窗口/条数/间隔在服务层与 _parse 辅助中 fail-open 回退默认。
+    news_digest_enabled: bool = False            # 是否启用消息面汇总（默认关闭，opt-in）
+    news_digest_premarket_window: str = "08:00-09:15"  # 交易日盘前窗口（HH:MM-HH:MM）
+    news_digest_offday_window: str = "09:00-18:00"     # 周末/节假日窗口（HH:MM-HH:MM）
+    # 关注主题：config 层只存原始 CSV；list 解析（strip/去空/最多 5 个）在服务层 parse_news_digest_topics
+    news_digest_topics: str = "宏观政策,货币宽松,证监会,外围市场,行业利好"
+    news_digest_max_news: int = 12               # 单份摘要最大条数（4..30，0/非法回退 12）
+    news_digest_interval_minutes: int = 10       # 后台轮询间隔分钟（>=1，0/非法回退 10）
+    news_digest_region: str = "cn"               # 市场区域（P0 仅支持 cn，其他值告警后按 cn）
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
 
@@ -1918,6 +1929,11 @@ class Config:
             default='',
             prefer_env_file=True,
         )
+        # 消息面汇总 topics：config 层只存原始 str；未设置才取默认，空串原样保留
+        # （空值回退默认 topics 由服务层 parse_news_digest_topics 负责，D9/MINOR-2）
+        news_digest_topics_value = os.getenv('NEWS_DIGEST_TOPICS')
+        if news_digest_topics_value is None:
+            news_digest_topics_value = '宏观政策,货币宽松,证监会,外围市场,行业利好'
 
         report_language_raw = cls._resolve_report_language_env_value(
             preexisting_report_language
@@ -2358,6 +2374,24 @@ class Config:
             market_review_color_scheme=cls._parse_market_review_color_scheme(
                 os.getenv('MARKET_REVIEW_COLOR_SCHEME', 'green_up')
             ),
+            # === 消息面汇总（issue #2184，默认关闭）===
+            news_digest_enabled=os.getenv('NEWS_DIGEST_ENABLED', 'false').lower() == 'true',
+            news_digest_premarket_window=(
+                os.getenv('NEWS_DIGEST_PREMARKET_WINDOW') or '08:00-09:15'
+            ).strip() or '08:00-09:15',
+            news_digest_offday_window=(
+                os.getenv('NEWS_DIGEST_OFFDAY_WINDOW') or '09:00-18:00'
+            ).strip() or '09:00-18:00',
+            news_digest_topics=news_digest_topics_value,
+            news_digest_max_news=cls._parse_news_digest_positive_int(
+                os.getenv('NEWS_DIGEST_MAX_NEWS'), 12,
+                field_name='NEWS_DIGEST_MAX_NEWS', minimum=4, maximum=30,
+            ),
+            news_digest_interval_minutes=cls._parse_news_digest_positive_int(
+                os.getenv('NEWS_DIGEST_INTERVAL_MINUTES'), 10,
+                field_name='NEWS_DIGEST_INTERVAL_MINUTES', minimum=1,
+            ),
+            news_digest_region=cls._parse_news_digest_region(os.getenv('NEWS_DIGEST_REGION')),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
@@ -3126,6 +3160,52 @@ class Config:
             value,
         )
         return 'green_up'
+
+    @classmethod
+    def _parse_news_digest_positive_int(
+        cls,
+        value: Optional[str],
+        default: int,
+        *,
+        field_name: str,
+        minimum: int,
+        maximum: Optional[int] = None,
+    ) -> int:
+        """消息面汇总正整数 env 解析（D9）：<=0/非数字 → 默认+warning；有效值钳 [minimum, maximum]。
+
+        未设置（None/空白）静默取默认；超出钳制范围走 parse_env_int 的告警钳制语义。
+        """
+        raw = str(value).strip() if value is not None else ''
+        if not raw:
+            return int(default)
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "%s=%r is not a valid integer; falling back to %s",
+                field_name, value, default,
+            )
+            return int(default)
+        if parsed <= 0:
+            logger.warning(
+                "%s=%r must be a positive integer; falling back to %s",
+                field_name, value, default,
+            )
+            return int(default)
+        return parse_env_int(
+            raw, default, field_name=field_name, minimum=minimum, maximum=maximum,
+        )
+
+    @classmethod
+    def _parse_news_digest_region(cls, value: Optional[str]) -> str:
+        """消息面汇总市场区域（D9）：P0 仅支持 cn；其他值告警后按 cn 处理（fail-open）。"""
+        normalized = str(value or 'cn').strip().lower() or 'cn'
+        if normalized != 'cn':
+            logger.warning(
+                "NEWS_DIGEST_REGION 暂仅支持 'cn'（收到 %r），已按 cn 处理（多市场支持见 issue out-of-scope）",
+                value,
+            )
+        return 'cn'
 
     @classmethod
     def _parse_md2img_engine(cls, value: str) -> str:

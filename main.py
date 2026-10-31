@@ -387,6 +387,12 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '--news-digest',
+        action='store_true',
+        help='仅运行一次消息面汇总（盘前/周末/节假日；force 预览，跳过窗口与每日一次限制）'
+    )
+
+    parser.add_argument(
         '--no-market-review',
         action='store_true',
         help='跳过大盘复盘分析'
@@ -1619,6 +1625,73 @@ def _reload_runtime_config() -> Config:
     return new_config
 
 
+def _append_news_digest_background_task(background_tasks, config_provider) -> None:
+    """CLI 定时模式挂载消息面汇总后台任务（issue #2184 D10(a)）。
+
+    disabled → 不挂载；构建抛异常仅告警跳过（不影响定时模式启动）。
+    """
+    try:
+        from src.services.news_digest_service import build_news_digest_background_task
+
+        entry = build_news_digest_background_task(config_provider=config_provider)
+    except Exception as exc:
+        logger.warning("消息面汇总后台任务构建失败，跳过挂载: %s", exc)
+        return
+    if entry is not None:
+        background_tasks.append(entry)
+        logger.info(
+            "消息面汇总后台任务已挂载: interval=%ss", entry.get("interval_seconds")
+        )
+
+
+def _run_news_digest_once_cli(config) -> int:
+    """``--news-digest`` 一次性入口（issue #2184 D11，含 critic MINOR-1）。
+
+    与后台 tick 共用同一依赖组装（build_news_digest_dependencies，issue #2184
+    OR-COR-000c926a）：真实抓取搜索/资讯池并调 LLM，任一构造失败按链条降级并
+    记日志，绝不裸抛。force=True 预览语义：跳过 enabled/窗口判定与"已推送即
+    跳过"短路，但同日至多推送一次的持久化 claim 保证不绕过（OR-COR-860c1e1a）
+    ——当日已推送过则只生成/打印内容，不重发。
+    无论推送结果如何，先把生成的 Markdown 摘要打印到 stdout，再输出推送状态行。
+    """
+    from datetime import datetime
+
+    from src.services.news_digest_service import (
+        build_news_digest_dependencies,
+        run_news_digest_once,
+    )
+
+    logger.info("模式: 仅消息面汇总（--news-digest）")
+    try:
+        deps = build_news_digest_dependencies(config)
+    except Exception as exc:  # 双保险：组装器契约是不抛，这里仍兜底全量降级
+        logger.warning("消息面汇总依赖组装意外失败（全量降级为空来源/模板）: %s", exc)
+        deps = {}
+    result = run_news_digest_once(
+        config,
+        now=datetime.now(),
+        search_service=deps.get("search_service"),
+        intelligence_service=deps.get("intelligence_service"),
+        notifier=deps.get("notifier"),
+        db=deps.get("db"),
+        summarizer=deps.get("summarizer"),
+        force=True,
+    )
+
+    report = ""
+    status = "unknown"
+    if isinstance(result, dict):
+        status = str(result.get("status") or "unknown")
+        report = str(result.get("report") or "")
+    if report:
+        print(report)
+    else:
+        print("（本次未生成消息面汇总内容）")
+    print(f"[news-digest] status={status}")
+    logger.info("消息面汇总推送状态: %s", result)
+    return 0 if status == "success" else 1
+
+
 def _build_schedule_time_provider(default_schedule_time: str):
     """Read the latest schedule time directly from the active config file.
 
@@ -1934,6 +2007,11 @@ def main() -> int:
             )
             return 0 if market_review_result else 1
 
+        # 模式1.5: 仅消息面汇总（CLI 一次性入口，issue #2184 D11）
+        # 无需交易日过滤：本功能的周末/节假日场景本来就要跑，--force-run 不适用。
+        if getattr(args, 'news_digest', False):
+            return _run_news_digest_once_cli(config)
+
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
             if start_serve:
@@ -2061,6 +2139,9 @@ def main() -> int:
                     "run_immediately": True,
                     "name": "agent_event_monitor",
                 })
+
+            # 消息面汇总后台任务（issue #2184 D10(a)）：disabled → 不挂载
+            _append_news_digest_background_task(background_tasks, _reload_runtime_config)
 
             schedule_kwargs = {
                 "task": scheduled_task,

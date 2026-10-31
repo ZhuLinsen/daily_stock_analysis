@@ -643,9 +643,17 @@ class RuntimeSchedulerService:
         return self._force_enabled or bool(getattr(config, "schedule_enabled", False))
 
     def _current_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        """按名合并各后台任务（issue #2184 D10）。
+
+        digest 关闭时 `_current_news_digest_background_tasks` 返回 []，合并结果与
+        既有单任务行为完全一致（守护 tests/test_runtime_scheduler_service.py:748）。
+        """
         if self._background_tasks_provider is not None:
             return self._background_tasks_provider(config)
-        return self._current_agent_event_monitor_background_tasks(config)
+        return (
+            self._current_agent_event_monitor_background_tasks(config)
+            + self._current_news_digest_background_tasks(config)
+        )
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         name = "agent_event_monitor"
@@ -670,6 +678,46 @@ class RuntimeSchedulerService:
             interval_seconds = int(cached["interval_seconds"])
         else:
             interval_seconds = _agent_event_monitor_interval_seconds(config)
+
+        run_immediately = (
+            bool(cached.get("run_immediately", False))
+            and name not in self._background_task_registered_names
+        )
+        self._background_task_registered_names.add(name)
+        return [{
+            "task": cached["task"],
+            "interval_seconds": interval_seconds,
+            "run_immediately": run_immediately,
+            "name": name,
+        }]
+
+    def _current_news_digest_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        """镜像 `_current_agent_event_monitor_background_tasks`（issue #2184 D10(b)）：
+        per-name 缓存、interval 热更新、run_immediately 仅首次注册时生效。"""
+        name = "news_digest"
+        if not getattr(config, "news_digest_enabled", False):
+            self._background_task_cache.pop(name, None)
+            self._background_task_registered_names.discard(name)
+            return []
+
+        from src.services.news_digest_service import (
+            _news_digest_interval_seconds,
+            build_news_digest_background_task,
+        )
+
+        cached = self._background_task_cache.get(name)
+        if cached is None:
+            entry = build_news_digest_background_task(self._reload_config)
+            if entry is None:
+                self._background_task_cache.pop(name, None)
+                self._background_task_registered_names.discard(name)
+                return []
+            cached = dict(entry)
+            cached["name"] = name
+            self._background_task_cache[name] = cached
+            interval_seconds = int(cached["interval_seconds"])
+        else:
+            interval_seconds = _news_digest_interval_seconds(config)
 
         run_immediately = (
             bool(cached.get("run_immediately", False))

@@ -21,6 +21,30 @@ describe('SearXNG settings help', () => {
   });
 });
 
+describe('News digest settings help', () => {
+  it('describes the opt-in daily digest windows in Chinese', () => {
+    const help = getSettingsHelpContent('settings.system.news_digest', undefined, 'zh');
+    const visibleCopy = flattenHelp(help);
+
+    expect(visibleCopy).toContain('默认关闭');
+    expect(visibleCopy).toContain('08:00-09:15');
+    expect(visibleCopy).toContain('09:00-18:00');
+    expect(visibleCopy).toContain('每日一份');
+    expect(visibleCopy).toContain('仅支持 cn');
+  });
+
+  it('describes the opt-in daily digest windows in English', () => {
+    const help = getSettingsHelpContent('settings.system.news_digest', undefined, 'en');
+    const visibleCopy = flattenHelp(help);
+
+    expect(visibleCopy).toContain('Off by default');
+    expect(visibleCopy).toContain('08:00-09:15');
+    expect(visibleCopy).toContain('09:00-18:00');
+    expect(visibleCopy).toContain('At most once per day');
+    expect(visibleCopy).toContain('cn only');
+  });
+});
+
 describe('Skill Outcome auto-weight settings help', () => {
   it('describes the attributable Outcome threshold in Chinese', () => {
     const help = getSettingsHelpContent(
