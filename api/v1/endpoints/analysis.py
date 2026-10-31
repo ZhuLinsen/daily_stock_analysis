@@ -78,7 +78,11 @@ from src.market_phase_summary import (
 )
 from src.services.stock_code_utils import is_code_like, resolve_index_stock_code_for_analysis
 from src.services.stock_list_parser import ParseStatus, parse_analysis_target
-from src.report_language import get_localized_stock_name, normalize_report_language
+from src.report_language import (
+    get_localized_stock_name,
+    normalize_report_language,
+    project_strategy_synthesis_for_details,
+)
 from src.schemas.decision_action import build_action_fields
 from src.services.name_to_code_resolver import resolve_name_to_code
 from src.services.task_queue import (
@@ -1331,6 +1335,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     news_content=getattr(record, "news_content", None),
                     empty_news_disclosure=news_disclosure,
                     raw_result=raw_result,
+                    strategy_synthesis=project_strategy_synthesis_for_details(raw_result),
                     context_snapshot=api_context_snapshot,
                     analysis_context_pack_overview=analysis_context_pack_overview,
                     financial_report=extracted_fundamental.get("financial_report"),
@@ -1640,6 +1645,7 @@ def _build_analysis_report(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
             empty_news_disclosure=news_disclosure,
             raw_result=raw_result_data,
+            strategy_synthesis=project_strategy_synthesis_for_details(raw_result_data),
             context_snapshot=api_context_snapshot,
             analysis_context_pack_overview=analysis_context_pack_overview,
             financial_report=extracted_fundamental.get("financial_report"),

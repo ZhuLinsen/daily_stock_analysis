@@ -262,6 +262,114 @@ class AnalysisContextPackOverview(BaseModel):
     metadata: AnalysisContextPackOverviewMetadata = Field(default_factory=AnalysisContextPackOverviewMetadata)
 
 
+class SignalDistributionBucket(BaseModel):
+    """多策略综合信号分布单阵营桶（issue #2071 低敏投影）"""
+
+    count: int = Field(0, description="该阵营有效观点数量（invalid 观点不计入）")
+    weight_share: Optional[float] = Field(
+        None,
+        description="该阵营有效应用权重占比（0-1，四舍五入 4 位；权重信息缺失或零分母时为 None）",
+    )
+
+
+class SignalDistribution(BaseModel):
+    """多策略综合信号分布（issue #2071 低敏投影）"""
+
+    bullish: Optional[SignalDistributionBucket] = Field(None, description="看多阵营分布")
+    neutral: Optional[SignalDistributionBucket] = Field(None, description="中性阵营分布")
+    bearish: Optional[SignalDistributionBucket] = Field(None, description="看空阵营分布")
+
+
+class StrategySynthesisSkillEntry(BaseModel):
+    """多策略综合 supporting/opposing 技能条目（issue #2071 低敏投影）"""
+
+    skill_id: Optional[str] = Field(None, description="技能 ID")
+    agent_name: Optional[str] = Field(None, description="技能展示名")
+    signal: Optional[str] = Field(None, description="该技能信号")
+    confidence: Optional[float] = Field(None, description="该技能置信度")
+    reasoning: Optional[str] = Field(None, description="该技能理由摘要")
+    score_adjustment: Optional[float] = Field(None, description="策略加减分")
+    conditions_met: Optional[List[str]] = Field(None, description="已满足条件列表")
+    invalid_signal: Optional[bool] = Field(
+        None,
+        description="该观点是否 invalid（invalid 观点不进入分布/反方）",
+    )
+
+
+class PrimaryDissent(BaseModel):
+    """多策略综合首要反方意见（issue #2071 低敏投影）
+
+    仅从 opposing 阵营选取：应用权重降序 → confidence 降序 → skill_id 升序；
+    无反方或无权重信息时为 None。
+    """
+
+    skill_id: Optional[str] = Field(None, description="首要反方技能 ID")
+    agent_name: Optional[str] = Field(None, description="首要反方技能展示名")
+    signal: Optional[str] = Field(None, description="首要反方信号")
+    confidence: Optional[float] = Field(None, description="首要反方置信度")
+    reasoning: Optional[str] = Field(None, description="首要反方理由")
+
+
+class StrategySynthesis(BaseModel):
+    """多策略综合类型化低敏投影（issue #2071）
+
+    仅当 payload 携带 ``schema_version="strategy-synthesis-v1"`` 时投影；
+    legacy/malformed 报告整体为 null。权威计算方是 StrategyEngine/SkillAggregator，
+    本模型为只读展示投影，不影响 final_signal，不做历史回填重算。
+    """
+
+    schema_version: Optional[str] = Field(
+        None,
+        description="payload 契约版本（strategy-synthesis-v1）",
+    )
+    final_signal: Optional[str] = Field(None, description="综合最终信号")
+    weighted_score: Optional[float] = Field(None, description="加权得分")
+    confidence: Optional[float] = Field(None, description="调整后置信度")
+    original_confidence: Optional[float] = Field(None, description="调整前置信度")
+    consensus_level: Optional[str] = Field(
+        None,
+        description="共识度（high/medium/low/insufficient）",
+    )
+    conflict_count: Optional[int] = Field(None, description="冲突数量")
+    conflict_severity: Optional[str] = Field(
+        None,
+        description="最高冲突等级（none/low/medium/high）",
+    )
+    summary_key: Optional[str] = Field(None, description="摘要 key")
+    summary_params: Optional[Dict[str, Any]] = Field(
+        None,
+        description="摘要插值参数（含有效/invalid 观点计数）",
+    )
+    signal_distribution: Optional[SignalDistribution] = Field(
+        None,
+        description="三阵营信号分布（仅计 valid 观点）",
+    )
+    supporting_skills: List[StrategySynthesisSkillEntry] = Field(
+        default_factory=list,
+        description="支持阵营技能列表",
+    )
+    opposing_skills: List[StrategySynthesisSkillEntry] = Field(
+        default_factory=list,
+        description="反对阵营技能列表",
+    )
+    primary_dissent: Optional[PrimaryDissent] = Field(
+        None,
+        description="首要反方意见（应用权重最高；无反方/无权重信息时为 None）",
+    )
+    conflicts: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="冲突明细列表",
+    )
+    deliberation: Optional[Dict[str, Any]] = Field(
+        None,
+        description="LLM 商议摘要（仅原始记录携带时存在）",
+    )
+    revision_projection: Optional[Dict[str, Any]] = Field(
+        None,
+        description="商议软化后的修订预览（非权威预览，不覆盖 final_signal）",
+    )
+
+
 class ReportDetails(BaseModel):
     """报告详情区"""
 
@@ -271,6 +379,11 @@ class ReportDetails(BaseModel):
         description="新闻检索未执行或零命中时的用户可见披露",
     )
     raw_result: Optional[Any] = Field(None, description="原始分析结果（JSON）")
+    strategy_synthesis: Optional[StrategySynthesis] = Field(
+        None,
+        description="多策略综合类型化低敏投影（仅 strategy-synthesis-v1 payload 投影，"
+        "legacy/malformed 报告为 null；dashboard 原文保留在 raw_result 内）",
+    )
     context_snapshot: Optional[Any] = Field(None, description="分析时上下文快照（JSON）")
     analysis_context_pack_overview: Optional[AnalysisContextPackOverview] = Field(
         None,

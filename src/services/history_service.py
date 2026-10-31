@@ -37,6 +37,7 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
     normalize_strategy_synthesis_payload,
+    project_strategy_synthesis_for_details,
     strategy_invalid_opinion_count,
 )
 from src.storage import DatabaseManager
@@ -799,6 +800,7 @@ class HistoryService:
             "news_content": market_review_content or record.news_content,
             "empty_news_disclosure": news_disclosure,
             "raw_result": raw_result,
+            "strategy_synthesis": project_strategy_synthesis_for_details(raw_result),
             "context_snapshot": context_snapshot,
             "market_phase_summary": market_phase_summary,
         }

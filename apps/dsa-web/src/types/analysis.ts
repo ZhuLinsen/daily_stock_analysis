@@ -360,11 +360,94 @@ export interface AnalysisContextPackOverview {
   metadata: AnalysisContextPackOverviewMetadata;
 }
 
+// ============ Strategy Synthesis (issue #2071) ============
+// camelCase mirror of the backend typed projection
+// (api/v1/schemas/history.py StrategySynthesis, snake_case -> camelCase via
+// toCamelCase deep conversion in src/api/utils.ts). Frontend is a read-only
+// projection: it never recomputes camps, weights or dissent.
+
+export interface StrategySynthesisDistributionBucket {
+  count: number;
+  /** Normalized camp weight share; null when no weights / zero denominator. */
+  weightShare?: number | null;
+}
+
+export interface StrategySynthesisSignalDistribution {
+  bullish?: StrategySynthesisDistributionBucket | null;
+  neutral?: StrategySynthesisDistributionBucket | null;
+  bearish?: StrategySynthesisDistributionBucket | null;
+}
+
+export interface StrategySynthesisSkillEntry {
+  skillId?: string | null;
+  agentName?: string | null;
+  signal?: string | null;
+  confidence?: number | null;
+  reasoning?: string | null;
+  scoreAdjustment?: number | null;
+  conditionsMet?: string[] | null;
+  invalidSignal?: boolean | null;
+}
+
+export interface StrategySynthesisPrimaryDissent {
+  skillId?: string | null;
+  agentName?: string | null;
+  signal?: string | null;
+  confidence?: number | null;
+  reasoning?: string | null;
+}
+
+export interface StrategySynthesisConflict {
+  conflictType?: string | null;
+  severity?: string | null;
+  descriptionKey?: string | null;
+  participants?: string[] | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+/** Preview-only deliberation revision; projectedSignal may differ from finalSignal. */
+export interface StrategySynthesisRevisionProjection {
+  status?: string | null;
+  mode?: string | null;
+  projectedSignal?: string | null;
+  projectedWeightedScore?: number | null;
+  projectedConfidence?: number | null;
+  projectedOriginalConfidence?: number | null;
+  projectedConflictCount?: number | null;
+  projectedConflictSeverity?: string | null;
+  projectedConsensusLevel?: string | null;
+  changedSkillCount?: number | null;
+  changedSkills?: string[] | null;
+  finalSignalOverridden?: boolean | null;
+}
+
+export interface StrategySynthesis {
+  schemaVersion?: string | null;
+  finalSignal?: string | null;
+  weightedScore?: number | null;
+  confidence?: number | null;
+  originalConfidence?: number | null;
+  consensusLevel?: string | null;
+  conflictCount?: number | null;
+  conflictSeverity?: string | null;
+  summaryKey?: string | null;
+  summaryParams?: Record<string, unknown> | null;
+  signalDistribution?: StrategySynthesisSignalDistribution | null;
+  supportingSkills?: StrategySynthesisSkillEntry[];
+  opposingSkills?: StrategySynthesisSkillEntry[];
+  primaryDissent?: StrategySynthesisPrimaryDissent | null;
+  conflicts?: StrategySynthesisConflict[];
+  deliberation?: Record<string, unknown> | null;
+  revisionProjection?: StrategySynthesisRevisionProjection | null;
+}
+
 /** Details section */
 export interface ReportDetails {
   newsContent?: string;
   emptyNewsDisclosure?: string;
   rawResult?: Record<string, unknown>;
+  /** Typed low-sensitivity projection; null for legacy/malformed reports. */
+  strategySynthesis?: StrategySynthesis | null;
   contextSnapshot?: Record<string, unknown> & { marketReviewPayload?: MarketReviewPayload };
   analysisContextPackOverview?: AnalysisContextPackOverview | null;
   financialReport?: Record<string, unknown>;
