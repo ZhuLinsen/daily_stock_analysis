@@ -121,7 +121,7 @@ class TestAgentConfig(unittest.TestCase):
                     "GEMINI_MODEL": "gemini-2.5-flash",
                     "AGENT_LITELLM_MODEL": "",
                 },
-                ["gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview"],
+                ["gemini/gemini-2.5-flash", "gemini/gemini-3.8-flash"],
             ),
             (
                 {
