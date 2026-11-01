@@ -481,7 +481,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertEqual(config.openai_api_keys, [])
         self.assertEqual(config.llm_channels, [])
         self.assertEqual(config.llm_models_source, "legacy_env")
-        self.assertEqual(config.litellm_model, "gemini/gemini-3.1-pro-preview")
+        self.assertEqual(config.litellm_model, "gemini/gemini-3.6-flash")
         self.assertTrue(config.llm_model_list)
         self.assertEqual(
             [issue["code"] for issue in config.llm_channel_config_issues],
@@ -510,7 +510,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertEqual(config.openai_api_keys, [])
         self.assertEqual(config.llm_channels, [])
         self.assertEqual(config.llm_models_source, "legacy_env")
-        self.assertEqual(config.litellm_model, "gemini/gemini-3.1-pro-preview")
+        self.assertEqual(config.litellm_model, "gemini/gemini-3.6-flash")
         self.assertTrue(config.llm_model_list)
         self.assertEqual(
             [issue["code"] for issue in config.llm_channel_config_issues],
@@ -1383,13 +1383,13 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = Config._load_from_env()
 
-        self.assertEqual(config.litellm_model, "gemini/gemini-3.1-pro-preview")
+        self.assertEqual(config.litellm_model, "gemini/gemini-3.6-flash")
         self.assertAlmostEqual(config.llm_temperature, 0.15)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     @patch("src.config.logger.warning")
-    def test_deepseek_key_defaults_to_legacy_chat_model_with_deprecation_warning(
+    def test_deepseek_key_defaults_to_v4_flash_without_deprecation_warning(
         self,
         mock_warning,
         _mock_parse_yaml,
@@ -1402,12 +1402,8 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = Config._load_from_env()
 
-        self.assertEqual(config.litellm_model, "deepseek/deepseek-chat")
-        mock_warning.assert_called_once_with(
-            "Deprecation warning:\n"
-            "deepseek-chat will be deprecated on 2026-07-24,\n"
-            "please migrate to deepseek-v4-flash."
-        )
+        self.assertEqual(config.litellm_model, "deepseek/deepseek-v4-flash")
+        mock_warning.assert_not_called()
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

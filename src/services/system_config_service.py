@@ -3641,13 +3641,13 @@ class SystemConfigService:
     @classmethod
     def _infer_setup_legacy_primary_model(cls, effective_map: Dict[str, str]) -> str:
         if cls._has_any_config_value(effective_map, ("GEMINI_API_KEYS", "GEMINI_API_KEY")):
-            model = (effective_map.get("GEMINI_MODEL") or "gemini-3.1-pro-preview").strip()
+            model = (effective_map.get("GEMINI_MODEL") or "gemini-3.6-flash").strip()
             return model if "/" in model else f"gemini/{model}"
         if cls._has_any_config_value(effective_map, ("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY")):
             model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6").strip()
             return model if "/" in model else f"anthropic/{model}"
         if cls._has_any_config_value(effective_map, ("DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEY")):
-            return "deepseek/deepseek-chat"
+            return "deepseek/deepseek-v4-flash"
         if cls._has_any_config_value(effective_map, ("OPENAI_API_KEYS", "OPENAI_API_KEY", "AIHUBMIX_KEY")):
             model = (effective_map.get("OPENAI_MODEL") or "gpt-5.5").strip()
             return model if "/" in model else f"openai/{model}"

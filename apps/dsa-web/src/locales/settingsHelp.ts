@@ -103,7 +103,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.ai_model.LITELLM_MODEL': {
     title: '主模型',
     summary: '指定普通分析流程默认使用的 LLM 模型。',
-    usage: '推荐使用 provider/model 格式，例如 deepseek/deepseek-v4-flash、gemini/gemini-3.1-pro-preview 或 ollama/qwen3:8b。',
+    usage: '推荐使用 provider/model 格式，例如 deepseek/deepseek-v4-flash、gemini/gemini-3.6-flash 或 ollama/qwen3:8b。',
     valueNotes: [
       '系统配置优先级为 LITELLM_CONFIG > LLM_CHANNELS > legacy provider keys。',
       '如果留空，系统会尝试根据已配置的 API Key 或渠道声明自动推断。',
@@ -1361,7 +1361,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.ai_model.LITELLM_MODEL': {
     title: 'Primary Model',
     summary: 'Selects the default LLM model for regular analysis flows.',
-    usage: 'Use provider/model format, such as deepseek/deepseek-v4-flash, gemini/gemini-3.1-pro-preview, or ollama/qwen3:8b.',
+    usage: 'Use provider/model format, such as deepseek/deepseek-v4-flash, gemini/gemini-3.6-flash, or ollama/qwen3:8b.',
     valueNotes: [
       'Runtime priority is LITELLM_CONFIG > LLM_CHANNELS > legacy provider keys.',
       'When empty, the system tries to infer a model from available API keys or channels.',

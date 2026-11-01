@@ -24,7 +24,7 @@ from src.llm.hermes import is_reserved_hermes_name
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_POST_ANALYZERS = ["scorecard"]
-DEFAULT_LLM_MODEL = "gemini/gemini-2.5-flash"
+DEFAULT_LLM_MODEL = "gemini/gemini-3.6-flash"
 DEFAULT_SNAPSHOT_SOURCE_PRIORITY = ["sina", "efinance", "akshare_em", "em_datacenter"]
 TUSHARE_FIRST_SOURCE_PRIORITY = ["tushare", "sina", "efinance", "akshare_em", "em_datacenter"]
 _ENV_FILE_CACHE: dict[Path, tuple[tuple[int, int], dict[str, str]]] = {}
@@ -496,7 +496,7 @@ def _resolve_llm_model(channels: list[dict[str, object]]) -> str:
         ollama_model = os.getenv("OLLAMA_MODEL", "").strip()
         return f"ollama/{ollama_model}" if ollama_model else DEFAULT_LLM_MODEL
     if os.getenv("DEEPSEEK_API_KEY"):
-        return "deepseek/deepseek-chat"
+        return "deepseek/deepseek-v4-flash"
     if os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEYS"):
         return _normalize_litellm_model(os.getenv("GEMINI_MODEL", DEFAULT_LLM_MODEL), "gemini")
     if os.getenv("OPENAI_API_KEY"):

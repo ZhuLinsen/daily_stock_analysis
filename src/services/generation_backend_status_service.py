@@ -805,7 +805,7 @@ class GenerationBackendStatusService:
     def _infer_legacy_litellm_model(cls, effective_map: Dict[str, str]) -> str:
         gemini_keys = cls._split_csv(effective_map.get("GEMINI_API_KEYS") or effective_map.get("GEMINI_API_KEY") or "")
         if gemini_keys:
-            model = (effective_map.get("GEMINI_MODEL") or "gemini-3.1-pro-preview").strip()
+            model = (effective_map.get("GEMINI_MODEL") or "gemini-3.6-flash").strip()
             return model if "/" in model else f"gemini/{model}"
 
         anthropic_keys = cls._split_csv(
@@ -823,7 +823,7 @@ class GenerationBackendStatusService:
             or ""
         )
         if deepseek_keys:
-            return "deepseek/deepseek-chat"
+            return "deepseek/deepseek-v4-flash"
 
         if cls._openai_keys_from_map(effective_map):
             model = (effective_map.get("OPENAI_MODEL") or "gpt-5.5").strip()

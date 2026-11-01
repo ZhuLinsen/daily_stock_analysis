@@ -302,7 +302,7 @@ def test_litellm_legacy_key_infers_runtime_model_for_smoke_config() -> None:
     payload = service.smoke_test(mode="json")
 
     assert payload["success"] is True
-    assert _CapturingAnalyzer.configs[-1].litellm_model == "gemini/gemini-3.1-pro-preview"
+    assert _CapturingAnalyzer.configs[-1].litellm_model == "gemini/gemini-3.6-flash"
 
 
 def test_litellm_validation_issues_are_not_available() -> None:

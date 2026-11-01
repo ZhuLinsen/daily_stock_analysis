@@ -2566,7 +2566,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                       label="备选模型"
                       fieldKey="LITELLM_FALLBACK_MODELS"
                       helpKey="settings.llm_channel.fallback_models"
-                      examples={['LITELLM_FALLBACK_MODELS=deepseek/deepseek-v4-pro,gemini/gemini-3-flash-preview']}
+                      examples={['LITELLM_FALLBACK_MODELS=deepseek/deepseek-v4-pro,gemini/gemini-3.8-flash']}
                       compact
                     />
                     <div className="space-y-2 rounded-xl border settings-border-strong settings-surface-overlay-soft p-3">
@@ -2594,7 +2594,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                       label="Vision 模型"
                       fieldKey="VISION_MODEL"
                       helpKey="settings.llm_channel.vision_model"
-                      examples={['VISION_MODEL=gemini/gemini-3.1-pro-preview']}
+                      examples={['VISION_MODEL=gemini/gemini-3.6-flash']}
                       compact
                     />
                     <Select

@@ -216,7 +216,7 @@ def _resolve_vision_model() -> str:
     if not model:
         # Fallback: infer from available keys
         if cfg.gemini_api_keys:
-            model_name = cfg.gemini_model or "gemini-3.1-pro-preview"
+            model_name = cfg.gemini_model or "gemini-3.6-flash"
             model = model_name if "/" in model_name else f"gemini/{model_name}"
         elif cfg.anthropic_api_keys:
             model = f"anthropic/{cfg.anthropic_model or 'claude-sonnet-4-6'}"

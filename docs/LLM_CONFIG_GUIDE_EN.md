@@ -117,8 +117,8 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # Fill in the API Key requested from the official DeepSeek platform
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*Compatibility note: with only this line, the system still defaults to `deepseek/deepseek-chat` and logs a migration warning.*
-`deepseek-chat` / `deepseek-reasoner` still work for compatibility with old configs, but DeepSeek marks them deprecated after 2026/07/24. New configs should migrate through the Web quick channel or explicitly set `LITELLM_MODEL=deepseek/deepseek-v4-flash` for `deepseek-v4-flash` / `deepseek-v4-pro`.
+*With only this line, the system defaults to `deepseek/deepseek-v4-flash`.*
+DeepSeek announced the shutdown of `deepseek-chat` / `deepseek-reasoner` on 2026/07/24; please migrate old configs. New configs should migrate through the Web quick channel or explicitly set `LITELLM_MODEL=deepseek/deepseek-v4-flash` for `deepseek-v4-flash` / `deepseek-v4-pro`.
 
 ### Example 3: Using the Free Gemini API
 ```env
