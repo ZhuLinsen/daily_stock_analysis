@@ -1892,6 +1892,13 @@ class OutcrawlSearchProvider(BaseSearchProvider):
                 )
 
             data = response.json()
+            # 部分搜索引擎拒绝时仍返回 200 与可用结果，并在 warnings 中注明（如 engines_refused）
+            warning_codes = [
+                str(w.get("code") if isinstance(w, dict) else w)
+                for w in (data.get("warnings") or [])
+            ]
+            if warning_codes:
+                logger.warning(f"[Outcrawl] 搜索返回警告: {', '.join(warning_codes)}")
             results = []
             for item in (data.get("hits") or [])[:max_results]:
                 url = item.get("url", "")
