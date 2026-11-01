@@ -71,6 +71,15 @@ if (-not (Test-PythonCode -Python $pythonBin -Code "from py_mini_racer import Mi
   throw 'MiniRacer cannot execute JavaScript in the build environment.'
 }
 
+Write-Host 'Checking AkShare calendar data...'
+if (-not (Test-PythonCode -Python $pythonBin -Code "import akshare")) {
+  throw 'AkShare is not importable after installing requirements.'
+}
+$akshareCalendarSource = (& $pythonBin -c "import akshare, pathlib; print(pathlib.Path(akshare.__file__).parent / 'file_fold' / 'calendar.json'").Trim())
+if (-not (Test-Path $akshareCalendarSource -PathType Leaf)) {
+  throw "AkShare calendar data not found at $akshareCalendarSource."
+}
+
 if (Test-Path 'dist\backend') {
   Remove-Item -Recurse -Force 'dist\backend'
 }
@@ -141,10 +150,15 @@ $pyInstallerArgs = @(
   '--add-data', 'static;static',
   '--add-data', 'strategies;strategies',
   '--add-data', 'src/assets/share_image;src/assets/share_image',
+  '--add-data', 'src/services/screening/strategies;src/services/screening/strategies',
+  '--add-data', "$akshareCalendarSource;akshare\file_fold",
   '--collect-data', 'litellm',
   '--collect-data', 'tiktoken',
   '--collect-data', 'akshare',
-  '--collect-data', 'fxmacrodata_public',
+  '--collect-all', 'fxmacrodata_public',
+  '--collect-submodules', 'fxmacrodata_public',
+  '--hidden-import', 'fxmacrodata_public',
+  '--hidden-import', 'src.agent.factory',
   '--collect-all', 'py_mini_racer',
   '--collect-all', 'src.services.screening',
   '--collect-all', 'futu'
@@ -161,6 +175,17 @@ if ($LASTEXITCODE -ne 0) {
 if (!(Test-Path 'dist\stock_analysis')) {
   throw 'PyInstaller finished but dist\stock_analysis was not generated.'
 }
+
+# Keep the calendar at the path used by the frozen AkShare package even when
+# PyInstaller's package-data collection layout changes between versions.
+$packagedBuildRoot = 'dist\stock_analysis'
+$packagedDataRoot = $packagedBuildRoot
+if (Test-Path (Join-Path $packagedBuildRoot '_internal') -PathType Container) {
+  $packagedDataRoot = Join-Path $packagedBuildRoot '_internal'
+}
+$packagedAkshareData = Join-Path $packagedDataRoot 'akshare\file_fold'
+New-Item -ItemType Directory -Path $packagedAkshareData -Force | Out-Null
+Copy-Item -Path $akshareCalendarSource -Destination (Join-Path $packagedAkshareData 'calendar.json') -Force
 
 Copy-Item -Path 'dist\stock_analysis' -Destination 'dist\backend\stock_analysis' -Recurse -Force
 

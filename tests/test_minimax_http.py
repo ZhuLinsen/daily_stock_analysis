@@ -31,7 +31,7 @@ def run_transport_contract():
 
     import httpx
     import litellm
-    from openai._base_client import SyncAPIClient
+    from openai import DefaultHttpxClient
     from src.agent.llm_adapter import LLMToolAdapter, register_fallback_model_pricing
     from src.config import Config
 
@@ -102,8 +102,8 @@ def run_transport_contract():
         transport_errors = []
 
         def send_request(client, request, **_kwargs):
-            # Intercept the fully serialized request regardless of whether the
-            # current OpenAI/LiteLLM combination chooses httpx or httpx2.
+            # Intercept the fully serialized HTTP request, without depending on
+            # private OpenAI SDK methods that differ between supported versions.
             try:
                 return handle_request(client, request)
             except Exception:
@@ -125,7 +125,8 @@ def run_transport_contract():
         }
         with patch.dict(os.environ, env, clear=True), patch("src.config.setup_env"), \
                 patch.object(Config, "_parse_litellm_yaml", return_value=[]), \
-                patch.object(SyncAPIClient, "_send_request", send_request), \
+                patch.object(httpx.Client, "send", send_request), \
+                patch.object(DefaultHttpxClient, "send", send_request), \
                 patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
             config = Config._load_from_env()
             assert config.litellm_model == "openai/" + model

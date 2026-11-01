@@ -4,7 +4,24 @@ from pathlib import Path
 
 import pytest
 
-from fxmacrodata_public import Result, list_operations
+try:
+    import fxmacrodata_public
+except (ImportError, FileNotFoundError):
+    fxmacrodata_public = None
+
+if fxmacrodata_public is None:
+    Result = None
+
+    def list_operations():
+        return []
+else:
+    Result = fxmacrodata_public.Result
+    list_operations = fxmacrodata_public.list_operations
+
+requires_fxmacrodata = pytest.mark.skipif(
+    fxmacrodata_public is None,
+    reason="fxmacrodata-public-client is not installed",
+)
 from src.agent.tools import fxmacrodata_tools
 from src.agent.tools.fxmacrodata_tools import build_fxmacrodata_tools, fxmacrodata_tool_names
 from src.agent.tools.registry import ToolRegistry
@@ -12,12 +29,18 @@ from src.agent.tools.registry import ToolRegistry
 
 class FixtureClient:
     def execute(self, operation, arguments):
-        return Result(operation, {"data": [{"val": 1.25, "announcement_datetime": 1000000000,
-                                          "source_url": "https://example.org/release"}],
-                                  "requested": arguments})
+        return Result(
+            operation,
+            {
+                "data": [{"val": 1.25, "announcement_datetime": 1000000000,
+                          "source_url": "https://example.org/release"}],
+                "requested": arguments,
+            },
+        )
 
 
 @pytest.mark.parametrize("operation", list_operations(), ids=lambda operation: operation.name)
+@requires_fxmacrodata
 def test_every_operation_is_a_native_tool(operation):
     registry = ToolRegistry()
     for definition in build_fxmacrodata_tools(FixtureClient()):
@@ -32,6 +55,7 @@ def test_every_operation_is_a_native_tool(operation):
     assert "utm_source=daily_stock_analysis" in result["provider_url"]
 
 
+@requires_fxmacrodata
 def test_transport_failures_do_not_enter_report_logs():
     class FailingClient:
         def execute(self, *args):
@@ -42,6 +66,7 @@ def test_transport_failures_do_not_enter_report_logs():
     assert "transport detail" not in json.dumps(response)
 
 
+@requires_fxmacrodata
 def test_client_construction_failures_degrade_to_unavailable(monkeypatch):
     class UnconstructableClient:
         def __init__(self, **kwargs):
@@ -54,6 +79,7 @@ def test_client_construction_failures_degrade_to_unavailable(monkeypatch):
     assert "construction detail" not in json.dumps(response)
 
 
+@requires_fxmacrodata
 def test_owned_client_is_closed_after_execute_failure(monkeypatch):
     closed = []
 
@@ -75,6 +101,7 @@ def test_owned_client_is_closed_after_execute_failure(monkeypatch):
     assert closed == [True]
 
 
+@requires_fxmacrodata
 def test_close_failure_keeps_unavailable_result(monkeypatch):
     class CloseFailingClient:
         def __init__(self, **kwargs):
@@ -93,6 +120,7 @@ def test_close_failure_keeps_unavailable_result(monkeypatch):
     assert "detail must not appear" not in json.dumps(response)
 
 
+@requires_fxmacrodata
 def test_factory_registers_tools_for_report_and_chat():
     # Execute the exact factory registration function without importing unrelated
     # data providers, whose startup requires the application's full dependencies.
@@ -117,6 +145,7 @@ def test_factory_registers_tools_for_report_and_chat():
 
 
 @pytest.mark.parametrize("specialist", ["intel", "risk", "portfolio"])
+@requires_fxmacrodata
 def test_native_multi_agent_filter_keeps_specialist_macro_tools(specialist):
     import ast
     import logging
@@ -154,11 +183,13 @@ def test_native_multi_agent_filter_keeps_specialist_macro_tools(specialist):
         assert filtered.execute(name)["records"][0]["val"] == 1.25
 
 
+@requires_fxmacrodata
 def test_specialist_selection_rejects_unknown_operation():
     with pytest.raises(ValueError, match="Unknown FXMacroData operation"):
         fxmacrodata_tool_names("not_an_operation")
 
 
+@requires_fxmacrodata
 def test_missing_operation_catalogue_disables_tools_without_breaking_import(monkeypatch):
     # A frozen build without the client's package data must not break the
     # registry: importing the module yields no FXMacroData tools.
@@ -180,3 +211,32 @@ def test_missing_operation_catalogue_disables_tools_without_breaking_import(monk
         monkeypatch.undo()
         importlib.reload(fxmacrodata_tools)
     assert fxmacrodata_tools.ALL_FXMACRODATA_TOOLS
+
+
+def test_missing_client_dependency_disables_tools_without_breaking_import():
+    if fxmacrodata_public is not None:
+        pytest.skip("fxmacrodata-public-client is installed")
+    assert fxmacrodata_tools.ALL_FXMACRODATA_TOOLS == []
+    assert build_fxmacrodata_tools() == []
+    assert fxmacrodata_tool_names() == []
+
+
+def test_missing_client_package_data_is_treated_as_optional(monkeypatch):
+    import builtins
+    import importlib
+
+    original_import = builtins.__import__
+
+    def missing_package_data(name, *args, **kwargs):
+        if name == "fxmacrodata_public":
+            raise FileNotFoundError("operations.json")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_package_data)
+    module = importlib.reload(fxmacrodata_tools)
+    try:
+        assert module.ALL_FXMACRODATA_TOOLS == []
+        assert module.build_fxmacrodata_tools() == []
+    finally:
+        monkeypatch.undo()
+        importlib.reload(fxmacrodata_tools)

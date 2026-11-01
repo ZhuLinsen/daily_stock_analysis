@@ -56,6 +56,12 @@ log "Checking orjson availability..."
 log "Checking MiniRacer JavaScript runtime..."
 "${PYTHON_BIN}" -c "from py_mini_racer import MiniRacer; assert MiniRacer().eval('1 + 1') == 2"
 
+akshare_calendar_source="$("${PYTHON_BIN}" -c "import akshare, pathlib; print(pathlib.Path(akshare.__file__).parent / 'file_fold' / 'calendar.json')")"
+if [[ ! -f "${akshare_calendar_source}" ]]; then
+  echo "ERROR: AkShare calendar data not found at ${akshare_calendar_source}."
+  exit 1
+fi
+
 if [[ -d "${ROOT_DIR}/dist/backend" ]]; then
   rm -rf "${ROOT_DIR}/dist/backend"
 fi
@@ -112,6 +118,8 @@ hidden_imports=(
   "uvicorn.protocols.websockets.auto"
   "uvicorn.lifespan"
   "uvicorn.lifespan.on"
+  "fxmacrodata_public"
+  "src.agent.factory"
 )
 
 hidden_import_args=()
@@ -120,7 +128,8 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --runtime-hook "${SCRIPT_DIR}/pyinstaller_runtime_compat.py" --add-data "static:static" --add-data "strategies:strategies" --add-data "src/assets/share_image:src/assets/share_image" --collect-data litellm --collect-data tiktoken --collect-data akshare --collect-data fxmacrodata_public)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --runtime-hook "${SCRIPT_DIR}/pyinstaller_runtime_compat.py" --add-data "static:static" --add-data "strategies:strategies" --add-data "src/assets/share_image:src/assets/share_image" --add-data "${akshare_calendar_source}:akshare/file_fold" --collect-data litellm --collect-data tiktoken --collect-data akshare --collect-all fxmacrodata_public)
+cmd+=("--collect-submodules" "fxmacrodata_public")
 cmd+=("--collect-all" "src.services.screening")
 cmd+=("--collect-all" "futu")
 cmd+=("--collect-all" "py_mini_racer")
@@ -130,6 +139,16 @@ cmd+=("${hidden_import_args[@]}" "main.py")
 echo "Running: ${cmd[*]}"
 "${cmd[@]}"
 popd >/dev/null
+
+# Keep the calendar at the path used by the frozen AkShare package even when
+# PyInstaller's package-data collection layout changes between versions.
+packaged_build_root="${ROOT_DIR}/dist/stock_analysis"
+packaged_data_root="${packaged_build_root}"
+if [[ -d "${packaged_build_root}/_internal" ]]; then
+  packaged_data_root="${packaged_build_root}/_internal"
+fi
+mkdir -p "${packaged_data_root}/akshare/file_fold"
+cp "${akshare_calendar_source}" "${packaged_data_root}/akshare/file_fold/calendar.json"
 
 cp -R "${ROOT_DIR}/dist/stock_analysis" "${ROOT_DIR}/dist/backend/stock_analysis"
 
@@ -163,7 +182,7 @@ for module in src.services.screening.pipeline futu orjson py_mini_racer; do
 done
 
 # Building the agent tool registry reads the FXMacroData operation catalogue
-# bundled via --collect-data, so probe it in the packaged artifact as well.
+# bundled via --collect-all, so probe it in the packaged artifact as well.
 if DSA_PACKAGED_IMPORT_PROBE="src.agent.factory" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
   cat /tmp/dsa-packaged-import.log
 else

@@ -22,6 +22,16 @@ from anyio._backends import _asyncio
 T = TypeVar("T")
 
 _original_call_soon_threadsafe = asyncio.BaseEventLoop.call_soon_threadsafe
+_original_run_once = asyncio.BaseEventLoop._run_once
+
+
+def _run_once_with_bounded_wait(self: asyncio.BaseEventLoop) -> None:
+    """Keep real worker completions observable if a sandbox drops selector wakeups."""
+    tick = self.call_later(0.01, lambda: None)
+    try:
+        _original_run_once(self)
+    finally:
+        tick.cancel()
 
 
 async def _shutdown_default_executor_inline(
@@ -49,11 +59,11 @@ def _call_soon_threadsafe_with_extra_wakeup(
     write_to_self = getattr(self, "_write_to_self", None)
     if callable(write_to_self):
         write_to_self()
-        threading.Timer(0.001, write_to_self).start()
     return handle
 
 
 asyncio.BaseEventLoop.call_soon_threadsafe = _call_soon_threadsafe_with_extra_wakeup
+asyncio.BaseEventLoop._run_once = _run_once_with_bounded_wait
 asyncio.BaseEventLoop.shutdown_default_executor = _shutdown_default_executor_inline
 
 

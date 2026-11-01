@@ -93,10 +93,12 @@ def test_backend_build_collects_and_probes_miniracer(filename: str) -> None:
 def test_backend_build_collects_fxmacrodata_data_and_probes_tool_registry(filename: str) -> None:
     script = _read_text(REPO_ROOT / "scripts" / filename)
     if filename.endswith(".ps1"):
-        assert "'--collect-data', 'fxmacrodata_public'" in script
+        assert "'--collect-all', 'fxmacrodata_public'" in script
+        assert "'--collect-submodules', 'fxmacrodata_public'" in script
         assert "'src.agent.factory'" in script
     else:
-        assert "--collect-data fxmacrodata_public" in script
+        assert "--collect-all fxmacrodata_public" in script
+        assert '--collect-submodules" "fxmacrodata_public"' in script
         assert 'DSA_PACKAGED_IMPORT_PROBE="src.agent.factory"' in script
 
 
@@ -333,6 +335,7 @@ def test_macos_pyinstaller_command_preserves_real_bash_argv() -> None:
     result = subprocess.run(
         ["bash", "-c", 'set -euo pipefail\nROOT_DIR="$PWD"\n'
          'SCRIPT_DIR="$PWD/scripts"\nPYTHON_BIN="python with spaces"\n'
+         'akshare_calendar_source="/path/to/calendar.json"\n'
          + construction + '\nprintf "%s\\0" "${cmd[@]}"\n'],
         cwd=REPO_ROOT, capture_output=True, check=True,
     )

@@ -726,6 +726,9 @@ def test_summary_failure_with_old_summary_returns_candidate() -> None:
     assert [msg["content"] for msg in history[1:]] == ["u2"]
 
 
-def test_token_estimator_falls_back_to_character_heuristic() -> None:
-    with patch("src.agent.chat_context.get_effective_agent_primary_model", side_effect=RuntimeError("no model")):
+def test_token_estimator_is_offline_safe_without_litellm_counter() -> None:
+    litellm_stub = MagicMock()
+    with patch.dict(sys.modules, {"litellm": litellm_stub}):
         assert estimate_text_tokens("abcdefg", _config()) == math.ceil(7 / 3)
+
+    litellm_stub.token_counter.assert_not_called()
