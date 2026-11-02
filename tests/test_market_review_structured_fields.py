@@ -296,6 +296,58 @@ class TestPayloadStructuredFields:
         assert payload["summary"]["position_advice"] is None
         assert payload["summary"]["core_conclusion"] is None
 
+    def test_overflowing_temperature_string_degrades_per_field(self):
+        """OR-COR-754e4921：temperature="1e309"（合法 JSON 字符串）触发 OverflowError 时，
+        仅温度走降级路径，兄弟结构化字段（market_status/indices/catalysts/next_day_plan）必须保留。"""
+        appendix = {
+            "summary": {
+                "temperature": "1e309",
+                "market_status": "震荡分化",
+                "position_advice": "0-3成防守",
+                "core_conclusion": "指数弱势整理，等待宽度修复",
+            },
+            "indices": [
+                {"code": "000001", "ma_status": {"ma5": "above"}, "comment": "上证站上MA5"},
+            ],
+            "catalysts": [{"title": "降准落地", "direction": "利好"}],
+            "next_day_plan": {"position_advice": "控制仓位", "invalidation": "跌破3300"},
+        }
+        ma = _make_analyzer(report_text=_appendix_report(appendix))
+        light_score = ma.build_market_light_snapshot(_cn_overview())["score"]
+
+        result = ma._run_daily_review_parts()
+        payload = result.structured_payload
+
+        # 修复前：温度 OverflowError 吞掉整包 → 全部兄弟字段丢失
+        assert payload["summary"]["market_status"] == "震荡分化"
+        assert payload["summary"]["position_advice"] == "0-3成防守"
+        assert payload["summary"]["core_conclusion"] == "指数弱势整理，等待宽度修复"
+        assert payload["summary"]["temperature"] == light_score  # 降级：亮灯分兜底
+        assert payload["indices"][0]["ma_status"] == {"ma5": "above"}
+        assert payload["indices"][0]["comment"] == "上证站上MA5"
+        assert payload["catalysts"][0]["title"] == "降准落地"
+        assert payload["catalysts"][0]["direction"] == "bullish"
+        assert payload["next_day_plan"]["position_advice"] == "控制仓位"
+        assert payload["next_day_plan"]["invalidation"] == "跌破3300"
+
+    def test_overflowing_temperature_numeric_json_bigint_degrades_per_field(self):
+        """OR-COR-754e4921 补充：数值型 JSON 大数温度同样只降级该字段，不拖垮兄弟字段。"""
+        appendix = {
+            "summary": {
+                "temperature": 10**400,
+                "market_status": "普涨回暖",
+            },
+            "catalysts": [{"title": "两会政策预期", "direction": "bullish"}],
+        }
+        ma = _make_analyzer(report_text=_appendix_report(appendix))
+        light_score = ma.build_market_light_snapshot(_cn_overview())["score"]
+
+        payload = ma._run_daily_review_parts().structured_payload
+
+        assert payload["summary"]["market_status"] == "普涨回暖"
+        assert payload["summary"]["temperature"] == light_score
+        assert payload["catalysts"][0]["title"] == "两会政策预期"
+
     def test_catalyst_direction_and_digested_localized_values_are_normalized(self):
         partial = {
             "catalysts": [

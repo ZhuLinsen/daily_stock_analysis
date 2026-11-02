@@ -1347,7 +1347,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         elif isinstance(temperature, (int, float, str)):
             try:
                 temperature = int(round(float(str(temperature).strip())))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # "1e309" 等超范围值会让 float/round 抛 OverflowError，
+                # 必须与 TypeError/ValueError 一样按该字段非法降级，
+                # 否则异常冒泡到 _normalize_structured_market_review_fields
+                # 的整包 try，吞掉 market_status/indices 等全部兄弟字段。
                 temperature = None
         else:
             temperature = None
