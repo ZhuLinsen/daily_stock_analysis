@@ -8,6 +8,7 @@ intentionally not imported or exposed here.
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -23,6 +24,13 @@ logger = logging.getLogger(__name__)
 # DSA's _parse_realtime_timestamp treats naive values as UTC, so we attach the
 # market-local offset here to keep provider_timestamp / stale_seconds correct.
 _HK_UPDATE_TIME_OFFSET = timezone(timedelta(hours=8))
+
+# futu-api's synchronous OpenQuoteContext constructor retries forever while
+# OpenD is unreachable, so connect asynchronously and wait a bounded time for
+# the protocol handshake (status READY), then skip Futu for a cooldown window.
+_CONNECT_TIMEOUT_SECONDS = 5.0
+_CONNECT_POLL_SECONDS = 0.05
+_CONNECT_RETRY_COOLDOWN_SECONDS = 300.0
 
 
 def _hk_provider_timestamp(value: Any) -> Optional[str]:
@@ -67,6 +75,7 @@ class FutuFetcher(BaseFetcher):
         self._ctx = None
         self._ctx_lock = threading.Lock()
         self._available: Optional[bool] = None
+        self._retry_after = 0.0
         config = None
         try:
             from src.config import get_config
@@ -102,24 +111,52 @@ class FutuFetcher(BaseFetcher):
             logger.warning("[Futu] futu-api 未安装")
         return self._available
 
+    def _in_connect_cooldown(self) -> bool:
+        return self._ctx is None and time.monotonic() < self._retry_after
+
     def is_available_for_request(self, capability: str = "") -> bool:
-        return self._is_available()
+        return self._is_available() and not self._in_connect_cooldown()
 
     def _get_ctx(self):
         if not self._is_available():
             return None
         if self._ctx is not None:
             return self._ctx
+        if self._in_connect_cooldown():
+            return None
         with self._ctx_lock:
-            if self._ctx is None:
-                try:
-                    from futu import OpenQuoteContext
-                    self._ctx = OpenQuoteContext(host=self._host, port=self._port)
-                    logger.info("[Futu] OpenQuoteContext 初始化成功: %s:%s", self._host, self._port)
-                except Exception as exc:
-                    self._available = False
-                    logger.warning("[Futu] OpenQuoteContext 初始化失败: %s", exc)
+            if self._ctx is None and not self._in_connect_cooldown():
+                self._ctx = self._connect()
         return self._ctx
+
+    def _connect(self):
+        """Open a quote context, or return None within a bounded time."""
+        ctx = None
+        try:
+            from futu import ContextStatus, OpenQuoteContext
+            ctx = OpenQuoteContext(host=self._host, port=self._port, is_async_connect=True)
+            deadline = time.monotonic() + _CONNECT_TIMEOUT_SECONDS
+            while ctx.status != ContextStatus.READY:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"OpenD 未在 {_CONNECT_TIMEOUT_SECONDS:g}s 内就绪 (status={ctx.status})"
+                    )
+                time.sleep(_CONNECT_POLL_SECONDS)
+            logger.info("[Futu] OpenQuoteContext 初始化成功: %s:%s", self._host, self._port)
+            return ctx
+        except Exception as exc:
+            # close() turns off the SDK's background auto-reconnect.
+            if ctx is not None:
+                self._close_ctx(ctx)
+            self._retry_after = time.monotonic() + _CONNECT_RETRY_COOLDOWN_SECONDS
+            logger.warning(
+                "[Futu] 连接 OpenD %s:%s 失败，%d 分钟内跳过 Futu 并回退其他数据源: %s",
+                self._host,
+                self._port,
+                _CONNECT_RETRY_COOLDOWN_SECONDS // 60,
+                exc,
+            )
+            return None
 
     @staticmethod
     def _close_ctx(ctx: Any) -> None:
