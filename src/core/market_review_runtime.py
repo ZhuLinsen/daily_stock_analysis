@@ -99,6 +99,7 @@ def build_market_review_runtime(
             brave_keys=getattr(config, "brave_api_keys", None),
             serpapi_keys=getattr(config, "serpapi_keys", None),
             minimax_keys=getattr(config, "minimax_api_keys", None),
+            outcrawl_keys=getattr(config, "outcrawl_api_keys", None),
             searxng_base_urls=getattr(config, "searxng_base_urls", None),
             searxng_public_instances_enabled=getattr(
                 config,

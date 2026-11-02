@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 定时模式启动去重检查的预期清单改为与运行入口一致的真实目标解析链（Futu 持仓优先、其次 .env 热更新 `STOCK_LIST`、再按交易日过滤）：`--portfolio futu` 新增持仓、纯持仓部署自选为空、以及进程 env 启动后 .env 热更新三类场景不再误跳过；持仓解析失败或解析为空一律 fail-open 照常执行（绝不漏跑），非持仓空清单保持既有当日去重语义。
 
 - [文档] 文档中心补充 `market-support.md` 入口，与 README / 完整指南的市场支持链接保持一致。
+- [新功能] 新增 Outcrawl 新闻搜索源（`OUTCRAWL_API_KEYS`，可选，支持多 Key）：位于 MiniMax 之后、SearXNG 之前；摘要开头的发布日期（如 `2 days ago`、`Oct 28, 2026`）会解析为 `published_date` 参与新闻时效过滤。
 
 ## [3.33.0] - 2026-10-15
 

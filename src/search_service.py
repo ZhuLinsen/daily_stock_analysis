@@ -1832,6 +1832,118 @@ class BraveSearchProvider(BaseSearchProvider):
         )
 
 
+class OutcrawlSearchProvider(BaseSearchProvider):
+    """
+    Outcrawl Search 搜索引擎
+
+    特点：
+    - REST API，Bearer Key 鉴权
+    - 返回标题、URL 与摘要；摘要常以 "2 days ago - " 或 "Oct 28, 2026 - " 开头，
+      此处将其拆为发布日期，供新闻时效过滤使用
+
+    文档：https://outcrawl.ai/docs/search/overview
+    """
+
+    API_ENDPOINT = "https://api.outcrawl.ai/v1/search"
+    _SNIPPET_DATE_PREFIX = re.compile(
+        r"^\s*("
+        r"\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)\s+ago"
+        r"|[A-Z][a-z]{2,8}\.?\s+\d{1,2},\s+\d{4}"
+        r")\s+[-\u2013\u2014]\s+"
+    )
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "Outcrawl")
+
+    @classmethod
+    def _split_snippet_date(cls, snippet: str) -> Tuple[Optional[str], str]:
+        """拆出摘要开头的发布日期前缀，返回 (日期文本, 去掉前缀的摘要)。"""
+        match = cls._SNIPPET_DATE_PREFIX.match(snippet or "")
+        if not match:
+            return None, snippet or ""
+        return match.group(1), snippet[match.end():]
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        """执行 Outcrawl 搜索（接口不支持时间过滤，时效由日期前缀与上层过滤保证）"""
+        try:
+            response = _post_with_retry(
+                self.API_ENDPOINT,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"query": query, "limit": min(max(max_results, 1), 20)},
+                timeout=15,
+            )
+
+            if response.status_code != 200:
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("message") or error_data.get("code") or str(error_data)
+                except ValueError:
+                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                logger.warning(f"[Outcrawl] 搜索失败: {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg,
+                )
+
+            data = response.json()
+            # 部分搜索引擎拒绝时仍返回 200 与可用结果，并在 warnings 中注明（如 engines_refused）
+            warning_codes = [
+                str(w.get("code") if isinstance(w, dict) else w)
+                for w in (data.get("warnings") or [])
+            ]
+            if warning_codes:
+                logger.warning(f"[Outcrawl] 搜索返回警告: {', '.join(warning_codes)}")
+            results = []
+            for item in (data.get("hits") or [])[:max_results]:
+                url = item.get("url", "")
+                published_date, snippet = self._split_snippet_date(item.get("snippet") or "")
+                results.append(SearchResult(
+                    title=item.get("title", ""),
+                    snippet=snippet[:500],
+                    url=url,
+                    source=self._extract_domain(url),
+                    published_date=published_date,
+                ))
+
+            logger.info(f"[Outcrawl] 搜索完成，query='{query}'，成功解析 {len(results)} 条结果")
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True,
+            )
+
+        except requests.exceptions.Timeout:
+            error_msg = "请求超时"
+        except requests.exceptions.RequestException as e:
+            error_msg = f"网络请求失败: {str(e)}"
+        except Exception as e:
+            error_msg = f"未知错误: {str(e)}"
+        logger.error(f"[Outcrawl] {error_msg}")
+        return SearchResponse(
+            query=query,
+            results=[],
+            provider=self.name,
+            success=False,
+            error_message=error_msg,
+        )
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从 URL 提取域名作为来源"""
+        try:
+            domain = urlparse(url).netloc.replace('www.', '')
+            return domain or '未知来源'
+        except Exception:
+            return '未知来源'
+
+
 class SearXNGSearchProvider(BaseSearchProvider):
     """
     SearXNG search engine (self-hosted, no quota).
@@ -2409,6 +2521,7 @@ class SearchService:
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
         minimax_keys: Optional[List[str]] = None,
+        outcrawl_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         searxng_public_instances_enabled: bool = False,
         searxng_timeout_seconds: Optional[int] = None,
@@ -2425,6 +2538,7 @@ class SearchService:
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
             minimax_keys: MiniMax API Key 列表
+            outcrawl_keys: Outcrawl API Key 列表
             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
             news_max_age_days: 新闻最大时效（天）
@@ -2437,6 +2551,7 @@ class SearchService:
             "brave_keys": list(brave_keys or []),
             "serpapi_keys": list(serpapi_keys or []),
             "minimax_keys": list(minimax_keys or []),
+            "outcrawl_keys": list(outcrawl_keys or []),
             "searxng_base_urls": list(searxng_base_urls or []),
             "searxng_public_instances_enabled": bool(searxng_public_instances_enabled),
             "searxng_timeout_seconds": searxng_timeout_seconds,
@@ -2487,7 +2602,12 @@ class SearchService:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
 
-        # 6. SearXNG（自建实例优先；未配置时可自动发现公共实例）
+        # 6. Outcrawl（通用网页搜索，摘要带发布日期前缀）
+        if outcrawl_keys:
+            self._providers.append(OutcrawlSearchProvider(outcrawl_keys))
+            logger.info(f"已配置 Outcrawl 搜索，共 {len(outcrawl_keys)} 个 API Key")
+
+        # 7. SearXNG（自建实例优先；未配置时可自动发现公共实例）
         searxng_provider = SearXNGSearchProvider(
             searxng_base_urls,
             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
@@ -2500,7 +2620,7 @@ class SearchService:
             else:
                 logger.info("已启用 SearXNG 公共实例自动发现模式")
 
-        # 7. Anspire Search（实时智能搜索优化）
+        # 8. Anspire Search（实时智能搜索优化）
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
@@ -4922,6 +5042,7 @@ def get_search_service() -> SearchService:
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys,
                     minimax_keys=config.minimax_api_keys,
+                    outcrawl_keys=config.outcrawl_api_keys,
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
                     searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
