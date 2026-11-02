@@ -55,13 +55,13 @@ export interface StreamMeta {
 
 export interface StreamAcceptedEvent extends ChatStateFields {
   type: 'accepted';
-  backend: 'litellm' | 'codex_app_server';
+  backend: 'litellm';
   request_id: string;
   session_id: string;
   session_state?: { selected_skill_ids: string[] | null };
 }
 
-type StreamTerminalStatus = 'cancelled' | 'timeout' | null;
+type StreamTerminalStatus = 'timeout' | null;
 
 type StreamFailureEvent = {
   type: string;
@@ -72,12 +72,6 @@ type StreamFailureEvent = {
   backend?: string;
   error_code?: string;
 };
-
-function streamFailureFallback(event: StreamFailureEvent, defaultMessage: string): string {
-  return event.backend === 'codex_app_server'
-    ? 'Codex Agent 暂时无法完成本次问股，请查看 Agent 设置中的运行状态。'
-    : defaultMessage;
-}
 
 function getFirstMeaningfulStreamError(...candidates: Array<unknown>): unknown {
   for (const candidate of candidates) {
@@ -139,10 +133,7 @@ interface AgentChatState {
   hasInitialLoad: boolean;
   abortController: AbortController | null;
   activeRequestId: string | null;
-  serverCancellation: boolean;
-  stopping: boolean;
   terminalStatus: StreamTerminalStatus;
-  stopError: boolean;
 }
 
 interface AgentChatActions {
@@ -170,7 +161,7 @@ const emptySessionState = {
 };
 const emptyStreamState = {
   loading: false, progressSteps: [], abortController: null, activeRequestId: null,
-  serverCancellation: false, stopping: false, terminalStatus: null, stopError: false,
+  terminalStatus: null,
 };
 
 // null rejects the response. {} keeps the newer state but can still acknowledge
@@ -234,16 +225,6 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       if (ownsRead()) set({ chatError: getParsedApiError(error) });
     }
   };
-  const deliverServerCancellation = async (requestId: string): Promise<void> => {
-    try {
-      await agentApi.cancelChatStream(requestId);
-    } catch {
-      const current = get();
-      if (current.activeRequestId === requestId && current.loading) {
-        set({ stopping: false, stopError: true });
-      }
-    }
-  };
 
   return {
   messages: [],
@@ -262,10 +243,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
   hasInitialLoad: false,
   abortController: null,
   activeRequestId: null,
-  serverCancellation: false,
-  stopping: false,
   terminalStatus: null,
-  stopError: false,
 
   setSelectedSkillIds: (skillIds) => set((s) => ({ selectedSkillIds: [...skillIds],
     skillDraftRevision: s.skillDraftRevision + 1, skillDraftDirty: true })),
@@ -335,15 +313,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
   },
 
   stopStream: async () => {
-    const state = get();
-    if (!state.loading || state.stopping) return;
-    if (!state.serverCancellation || !state.activeRequestId) {
-      state.abortController?.abort();
-      return;
-    }
-
-    set({ stopping: true, stopError: false });
-    await deliverServerCancellation(state.activeRequestId);
+    get().abortController?.abort();
   },
 
   startStream: async (payload, meta) => {
@@ -357,10 +327,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     set({
       abortController: ac,
       activeRequestId: requestId,
-      serverCancellation: false,
-      stopping: false,
       terminalStatus: null,
-      stopError: false,
     });
 
     const streamSessionId = payload.session_id || storeSessionId;
@@ -424,7 +391,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             throw protocolError('Agent stream emitted accepted more than once.');
           }
           if (
-            (event.backend !== 'litellm' && event.backend !== 'codex_app_server')
+            event.backend !== 'litellm'
             || event.request_id !== requestId
             || event.session_id !== streamSessionId
           ) {
@@ -442,7 +409,6 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           set((s) => ({
             ...statePatch,
             messages: [...s.messages, { ...userMessage, backend: acceptedEvent!.backend }],
-            serverCancellation: acceptedEvent!.backend === 'codex_app_server',
             sessions: s.sessions.some((x) => x.session_id === streamSessionId)
               ? s.sessions
               : [
@@ -460,24 +426,18 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           return;
         }
         if (event.type === 'error') {
-          set({ stopError: false });
           const failureEvent = event as unknown as StreamFailureEvent;
           throw getStreamFailureError(
             failureEvent,
-            streamFailureFallback(failureEvent, '分析出错'),
+            '分析出错',
           );
         }
         if (!acceptedEvent) {
           throw protocolError(`Agent stream emitted ${event.type || 'an unknown event'} before accepted.`);
         }
         if (event.type === 'done') {
-          set({ stopError: false });
           receivedDoneEvent = true;
           const doneEvent = event as unknown as StreamFailureEvent;
-          if (doneEvent.error_code === 'cancelled') {
-            set({ terminalStatus: 'cancelled' });
-            return;
-          }
           if (doneEvent.error_code === 'timeout') {
             set({ terminalStatus: 'timeout' });
             return;
@@ -485,7 +445,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           if (doneEvent.success === false) {
             throw getStreamFailureError(
               doneEvent,
-              streamFailureFallback(doneEvent, '大模型调用出错，请检查 API Key 配置'),
+              '大模型调用出错，请检查 API Key 配置',
             );
           }
           finalContent = doneEvent.content ?? '';
@@ -579,8 +539,6 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
           progressSteps: [],
           abortController: null,
           activeRequestId: null,
-          serverCancellation: false,
-          stopping: false,
         });
         await get().loadSessions();
       }

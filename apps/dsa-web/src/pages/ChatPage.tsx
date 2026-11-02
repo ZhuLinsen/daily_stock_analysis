@@ -229,15 +229,12 @@ const ChatPage: React.FC = () => {
     sessions,
     sessionsLoading,
     chatError,
-    stopping,
     terminalStatus,
-    stopError,
     setSelectedSkillIds,
     loadSessions,
     loadInitialSession,
     switchSession,
     refreshSession,
-    stopStream,
     startStream,
     clearCompletionBadge,
   } = useAgentChatStore();
@@ -423,13 +420,11 @@ const ChatPage: React.FC = () => {
   const skillLimitReached = selectedSkillIds.length >= MAX_SELECTED_SKILLS;
   const agentConfirmedUnavailable = Boolean(agentStatus && !agentStatus.available);
   const agentAvailable = Boolean(agentStatus?.available) && !agentStatusChecking;
-  const agentUnavailableMessage = agentStatus?.errorCode === 'agent_mode_disabled'
-    ? t('chat.agentModeDisabled')
-    : agentStatus?.errorCode === 'platform_unsupported'
-      ? t('chat.agentPlatformUnsupported')
-      : agentStatus?.backend === 'codex_app_server'
-        ? t('chat.codexUnavailableMessage')
-        : t('chat.defaultUnavailableMessage');
+  const agentUnavailableMessage = agentStatus?.errorCode === 'backend_removed'
+    ? t('settings.agentBackendRemoved')
+    : agentStatus?.errorCode === 'agent_mode_disabled'
+      ? t('chat.agentModeDisabled')
+      : t('chat.defaultUnavailableMessage');
   const agentUnavailableError = agentConfirmedUnavailable
     ? createParsedApiError({
         title: t('chat.agentBackendUnavailableTitle'),
@@ -972,10 +967,10 @@ const ChatPage: React.FC = () => {
               问股
               {agentStatus ? (
                 <Badge
-                  variant={agentStatus.backend === 'codex_app_server' ? 'warning' : 'history'}
+                  variant={agentStatus.errorCode === 'backend_removed' ? 'warning' : 'history'}
                   size="sm"
                 >
-                  {t(agentStatus.backend === 'codex_app_server' ? 'chat.codexBackendBadge' : 'chat.defaultBackendBadge')}
+                  {t(agentStatus.errorCode === 'backend_removed' ? 'settings.agentBackendRemovedLabel' : 'chat.defaultBackendBadge')}
                 </Badge>
               ) : null}
             </h1>
@@ -1075,25 +1070,8 @@ const ChatPage: React.FC = () => {
             )}
           </div>
           <p className="text-secondary-text text-sm">
-            {t(agentStatus?.backend === 'codex_app_server' ? 'chat.introCodex' : 'chat.introDefault')}
+            {t('chat.introDefault')}
           </p>
-          {agentStatus?.backend === 'codex_app_server' ? (
-            <InlineAlert
-              variant="warning"
-              title={t('chat.codexLimitedTitle')}
-              message={t('chat.codexLimitedMessage')}
-              action={(
-                <Button
-                  variant="action-primary"
-                  size="sm"
-                  onClick={() => navigate('/settings?category=agent')}
-                >
-                  {t('chat.codexChangeBackend')}
-                </Button>
-              )}
-              className="rounded-xl px-3 py-2 text-xs shadow-none"
-            />
-          ) : null}
           {sendToast ? (
             <InlineAlert
               variant={sendToast.type === 'success' ? 'success' : 'danger'}
@@ -1117,11 +1095,7 @@ const ChatPage: React.FC = () => {
               <div className="flex h-full items-center justify-center">
                 <EmptyState
                   title="开始问股"
-                  description={t(
-                    agentStatus?.backend === 'codex_app_server'
-                      ? 'chat.emptyDescriptionCodex'
-                      : 'chat.emptyDescriptionDefault',
-                  )}
+                  description={t('chat.emptyDescriptionDefault')}
                   className="max-w-2xl border-dashed bg-card/55"
                   icon={(
                     <svg
@@ -1196,7 +1170,7 @@ const ChatPage: React.FC = () => {
                         </Badge> : null}
                         {msg.backend ? (
                           <Badge variant={msg.backend === 'codex_app_server' ? 'warning' : 'history'} size="sm">
-                            {t(msg.backend === 'codex_app_server' ? 'chat.codexBackendBadge' : 'chat.defaultBackendBadge')}
+                            {t(msg.backend === 'codex_app_server' ? 'chat.historicalCodexBackendBadge' : 'chat.defaultBackendBadge')}
                           </Badge>
                         ) : null}
                       </div>
@@ -1304,25 +1278,22 @@ const ChatPage: React.FC = () => {
           {/* Input area */}
           <div className="border-t border-white/6 bg-card/88 p-4 md:p-6 relative z-20">
             <div className="space-y-3">
-              {chatError ? <ApiErrorAlert error={chatError} /> : null}
+              {chatError ? <ApiErrorAlert error={chatError.code === 'backend_removed'
+                ? { ...chatError, title: t('settings.agentBackendRemovedLabel'), message: t('settings.agentBackendRemoved') }
+                : chatError} /> : null}
+              {chatError?.code === 'backend_removed' && (
+                <Button variant="secondary" size="sm" onClick={() => navigate('/settings?category=agent')}>
+                  {t('chat.openAgentSettings')}
+                </Button>
+              )}
               {chatError?.code === 'session_state_conflict' && (
                 <Button variant="secondary" size="xsm" onClick={() => void refreshSession()}>
                   {t('chat.refreshSession')}
                 </Button>
               )}
-              {terminalStatus === 'cancelled' ? (
-                <div role="status" className="rounded-xl border border-slate-500/20 bg-slate-500/5 px-4 py-3 text-sm">
-                  {t('chat.analysisStopped')}
-                </div>
-              ) : null}
               {terminalStatus === 'timeout' ? (
                 <div role="status" className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm">
                   {t('chat.analysisTimedOut')}
-                </div>
-              ) : null}
-              {stopError ? (
-                <div role="alert" className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm">
-                  {t('chat.stopRequestFailed')}
                 </div>
               ) : null}
               {agentUnavailableError ? (
@@ -1526,16 +1497,6 @@ const ChatPage: React.FC = () => {
                     t.style.height = `${Math.min(t.scrollHeight, 200)}px`;
                   }}
                 />
-                {loading && agentStatus?.backend === 'codex_app_server' ? (
-                  <Button
-                    variant="danger-subtle"
-                    onClick={stopStream}
-                    disabled={stopping}
-                    className="flex-shrink-0"
-                  >
-                    {stopping ? t('chat.stoppingAnalysis') : t('chat.stopAnalysis')}
-                  </Button>
-                ) : (
                   <Button
                     variant="primary"
                     onClick={() => handleSend()}
@@ -1545,7 +1506,7 @@ const ChatPage: React.FC = () => {
                   >
                     发送
                   </Button>
-                )}
+
               </div>
             </div>
           </div>

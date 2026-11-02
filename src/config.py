@@ -121,7 +121,11 @@ _FALLBACK_LITELLM_MODEL_PROVIDERS = _MANAGED_LITELLM_KEY_PROVIDERS | set(SUPPORT
 }
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
 PROMPT_CACHE_DIAGNOSTICS_LEVELS = {"off", "basic", "debug"}
-SUPPORTED_AGENT_BACKENDS = {"auto", "litellm", "codex_app_server"}
+SUPPORTED_AGENT_BACKENDS = {"auto", "litellm"}
+AGENT_BACKEND_REMOVED_MESSAGE = (
+    "Codex App Server 问股后端已移除。请在 Agent 设置中主动改为默认执行方式，并配置所需模型来源。"
+    "独立 Codex CLI 普通报告不受本项移除影响。"
+)
 TICKFLOW_KLINE_ADJUST_VALUES = {"none", "forward", "backward", "forward_additive", "backward_additive"}
 # 沪深300 / 中证500 / 创业板 / 红利低波 / 纳指 / 黄金；防守资产为货币 ETF
 DEFAULT_ETF_ROTATION_POOL = ("510300", "510500", "159915", "512890", "513100", "518880")
@@ -1317,6 +1321,9 @@ class Config:
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
+    # 定时模式启动立即执行的当日去重开关：当天已有成功全量分析记录时跳过启动补跑；
+    # 设为 false 可完全旁路该行为（回到上游"每次启动都立即执行"的现状）
+    schedule_startup_dedup: bool = True
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     daily_market_context_enabled: bool = True   # 是否将大盘环境摘要用于个股分析 Prompt 与保守护栏
@@ -1433,6 +1440,11 @@ class Config:
             "SCHEDULE_TIME",
             "SCHEDULE_TIMES",
             "SCHEDULE_RUN_IMMEDIATELY",
+            # Same startup-key treatment as SCHEDULE_RUN_IMMEDIATELY: a
+            # bootstrap process env value (docker -e / compose / shell
+            # export) that differs from the persisted .env must win, while
+            # a WebUI .env edit still takes effect on reload (PR #2366).
+            "SCHEDULE_STARTUP_DEDUP",
         }
     )
     _BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
@@ -1884,6 +1896,18 @@ class Config:
                 if schedule_run_immediately_env is not None
                 else legacy_run_immediately
             )
+        # Startup-immediate run daily dedup switch (schedule mode only).
+        # Unset keeps the dedup enabled; explicit "false" restores the
+        # upstream "run on every startup" behavior.
+        schedule_startup_dedup_env = cls._resolve_env_value(
+            'SCHEDULE_STARTUP_DEDUP',
+            prefer_env_file=True,
+        )
+        schedule_startup_dedup = (
+            schedule_startup_dedup_env.lower() == 'true'
+            if schedule_startup_dedup_env is not None
+            else True
+        )
         schedule_time_value = cls._resolve_env_value(
             'SCHEDULE_TIME',
             default='18:00',
@@ -2324,6 +2348,7 @@ class Config:
                 fallback_time=(schedule_time_value or '18:00').strip() or '18:00',
             ),
             schedule_run_immediately=schedule_run_immediately,
+            schedule_startup_dedup=schedule_startup_dedup,
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             daily_market_context_enabled=os.getenv('DAILY_MARKET_CONTEXT_ENABLED', 'true').lower() == 'true',
@@ -3341,22 +3366,19 @@ class Config:
                 ),
                 field="AGENT_GENERATION_BACKEND",
             ))
-        if agent_backend not in SUPPORTED_AGENT_BACKENDS:
+        if agent_backend == "codex_app_server":
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=AGENT_BACKEND_REMOVED_MESSAGE,
+                field="AGENT_BACKEND",
+                code="backend_removed",
+            ))
+        elif agent_backend not in SUPPORTED_AGENT_BACKENDS:
             issues.append(ConfigIssue(
                 severity="error",
-                message=(
-                    "AGENT_BACKEND 当前支持 auto、litellm、codex_app_server。"
-                    f"已配置的值为：{agent_backend}。"
-                ),
+                message=f"AGENT_BACKEND 当前支持 auto、litellm。已配置的值为：{agent_backend}。",
                 field="AGENT_BACKEND",
                 code="capability_unsupported",
-            ))
-        if agent_backend == "codex_app_server" and self.agent_arch != "single":
-            issues.append(ConfigIssue(
-                severity="error",
-                message="Codex 本地 Agent 当前只支持单 Agent 问股，请将 AGENT_ARCH 设为 single。",
-                field="AGENT_ARCH",
-                code="unsupported_agent_arch",
             ))
         litellm_model_lower = (self.litellm_model or "").strip().lower()
         local_model_prefix = next(

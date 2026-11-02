@@ -57,6 +57,35 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.manager = ConfigManager(env_path=self.env_path)
         self.service = SystemConfigService(manager=self.manager)
 
+    # The regular primary model resolves cleanly; only AGENT_LITELLM_MODEL sits
+    # on a Hermes-only route. Fixtures built from this therefore fail for exactly
+    # one reason, so an assertion about the Agent check cannot be satisfied by an
+    # unrelated primary-model error.
+    _AGENT_ONLY_BROKEN_ENV = (
+        "STOCK_LIST=600519",
+        "AGENT_LITELLM_MODEL=openai/hermes-agent",
+        "LLM_CHANNELS=primary,hermes",
+        "LLM_PRIMARY_PROTOCOL=openai",
+        "LLM_PRIMARY_API_KEY=test-secret",
+        "LLM_PRIMARY_MODELS=gpt-test",
+        "LLM_HERMES_PROTOCOL=openai",
+        "LLM_HERMES_API_KEY=test-secret",
+        "LLM_HERMES_MODELS=hermes-agent",
+        "LITELLM_MODEL=openai/gpt-test",
+    )
+    _AGENT_MODEL_ISSUE_CODE = "explicit_agent_model_no_safe_deployment"
+
+    def _env_with_broken_agent_model_only(self) -> tuple:
+        return self._AGENT_ONLY_BROKEN_ENV
+
+    def _assert_only_agent_model_issue(self, issues=None) -> None:
+        """Assert the only validation problem is the Hermes-only Agent model."""
+        if issues is None:
+            issues = self.service.validate(items=[])["issues"]
+        codes = [issue["code"] for issue in issues]
+        self.assertEqual(codes, [self._AGENT_MODEL_ISSUE_CODE])
+        self.assertEqual(issues[0]["key"], "AGENT_LITELLM_MODEL")
+
     @staticmethod
     def _mock_completion_response(content: str = "OK", tool_calls=None):
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
@@ -87,28 +116,17 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             f"AGENT_BACKEND={saved_backend}",
             "AGENT_ARCH=single",
         )
-        codex_status = {
-            "backend": "codex_app_server",
-            "available": True,
-            "experimental": True,
-            "version": "codex-cli test",
-            "error_code": None,
-            "message": None,
-        }
-        with (
-            patch.dict(os.environ, {"AGENT_BACKEND": runtime_backend}),
-            patch.object(
-                AgentBackendStatusService,
-                "_codex_cheap_status",
-                return_value=codex_status,
-            ),
-        ):
+        with patch.dict(os.environ, {"AGENT_BACKEND": runtime_backend}):
             Config.reset_instance()
             runtime_config = Config.get_instance()
             with patch.dict(os.environ, {"AGENT_BACKEND": saved_backend}):
                 settings_status = self.service.get_agent_backend_status()
                 chat_status = AgentBackendStatusService(config=runtime_config).get_status()
-                selected_backend = resolve_agent_backend_id(runtime_config)
+                if runtime_backend == "codex_app_server":
+                    with self.assertRaises(ValueError):
+                        resolve_agent_backend_id(runtime_config)
+                else:
+                    self.assertEqual(resolve_agent_backend_id(runtime_config), runtime_backend)
                 preview_baseline = self.service.preview_agent_backend_status(items=[])
                 preview_draft = self.service.preview_agent_backend_status(
                     items=[{"key": "AGENT_BACKEND", "value": saved_backend}],
@@ -116,7 +134,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertEqual(settings_status["backend"], runtime_backend)
         self.assertEqual(chat_status["backend"], runtime_backend)
-        self.assertEqual(selected_backend, runtime_backend)
         self.assertEqual(preview_baseline["backend"], runtime_backend)
         self.assertEqual(preview_draft["backend"], saved_backend)
         self.assertIs(Config.get_instance(), runtime_config)
@@ -933,6 +950,236 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 for issue in validation["issues"]
             )
         )
+
+    def test_partial_updates_scope_llm_checks_but_routing_changes_still_validate(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LLM_CHANNELS=primary",
+            "LLM_PRIMARY_PROTOCOL=openai",
+            "LLM_PRIMARY_API_KEY=test-secret",
+            "LLM_PRIMARY_MODELS=gpt-test",
+            "LITELLM_MODEL=openai/gpt-test",
+            "LITELLM_FALLBACK_MODELS=openai/removed-model",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self.assertFalse(self.service.validate(items=[])["valid"])
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "LOG_LEVEL", "value": "DEBUG"}],
+                reload_now=False,
+            )
+            self.assertTrue(result["success"])
+
+            for key, value in [
+                ("LITELLM_MODEL", "openai/gpt-test"),
+                ("LITELLM_FALLBACK_MODELS", "openai/removed-model"),
+                ("AGENT_LITELLM_MODEL", "openai/gpt-test"),
+                ("VISION_MODEL", "openai/gpt-test"),
+                ("LLM_CHANNELS", "primary"),
+                ("LLM_PRIMARY_MODELS", "gpt-test,another-model"),
+                ("LLM_PRIMARY_ENABLED", "false"),
+                ("LLM_PRIMARY_API_KEY", "replacement-test-secret"),
+                ("OPENAI_API_KEY", "legacy-test-secret"),
+                ("LITELLM_CONFIG", ""),
+            ]:
+                with self.subTest(key=key):
+                    before = self.env_path.read_bytes()
+                    with self.assertRaises(ConfigValidationError) as exc:
+                        self.service.update(
+                            config_version=self.manager.get_config_version(),
+                            items=[
+                                {"key": "STOCK_LIST", "value": "AAPL"},
+                                {"key": key, "value": value},
+                            ],
+                            reload_now=False,
+                        )
+                    self.assertTrue(any(
+                        issue["key"] == "LITELLM_FALLBACK_MODELS"
+                        for issue in exc.exception.issues
+                    ))
+                    self.assertEqual(self.env_path.read_bytes(), before)
+
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "LITELLM_FALLBACK_MODELS", "value": ""}],
+                reload_now=False,
+            )
+            self.assertTrue(result["success"])
+            self.assertTrue(self.service.validate(items=[])["valid"])
+
+    def test_switching_agent_backend_to_litellm_validates_model_dependencies(self) -> None:
+        """Flipping only the Agent backend must not bypass the model check.
+
+        Ask-stock over LiteLLM resolves its model through the LLM channel
+        graph, so a save that only changes AGENT_BACKEND can activate a model
+        dependency that is already broken -- ask-stock then stops working with
+        no error at save time.
+        """
+        self._rewrite_env(
+            *self._env_with_broken_agent_model_only(),
+            "AGENT_BACKEND=codex_app_server",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self._assert_only_agent_model_issue()
+
+            before = self.env_path.read_bytes()
+            for key, value in [
+                ("AGENT_BACKEND", "litellm"),
+                ("AGENT_BACKEND", "auto"),
+            ]:
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ConfigValidationError) as exc:
+                        self.service.update(
+                            config_version=self.manager.get_config_version(),
+                            items=[{"key": key, "value": value}],
+                            reload_now=False,
+                        )
+                    self._assert_only_agent_model_issue(exc.exception.issues)
+                    self.assertEqual(self.env_path.read_bytes(), before)
+
+    def test_enabling_agent_analysis_validates_model_dependencies(self) -> None:
+        """Turning on Agent analysis must not bypass the model check.
+
+        Regular stock analysis switches to the Agent path on AGENT_MODE, or on
+        AGENT_SKILLS naming something other than "all", and that path builds its
+        own LLMToolAdapter instead of following AGENT_BACKEND. A save that only
+        flips one of those keys can therefore activate a model dependency that is
+        already broken, and every later analysis fails with no error at save time.
+        """
+        self._rewrite_env(
+            *self._env_with_broken_agent_model_only(),
+            "AGENT_MODE=false",
+            "AGENT_SKILLS=",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self._assert_only_agent_model_issue()
+
+            before = self.env_path.read_bytes()
+            for key, value in [
+                ("AGENT_MODE", "true"),
+                ("AGENT_SKILLS", "bull_trend"),
+                ("AGENT_SKILLS", "bull_trend,risk_control"),
+            ]:
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ConfigValidationError) as exc:
+                        self.service.update(
+                            config_version=self.manager.get_config_version(),
+                            items=[{"key": key, "value": value}],
+                            reload_now=False,
+                        )
+                    self._assert_only_agent_model_issue(exc.exception.issues)
+                    self.assertEqual(self.env_path.read_bytes(), before)
+
+    def test_agent_analysis_keys_that_do_not_activate_stay_exempt(self) -> None:
+        """The gate must agree with what the pipeline will actually do.
+
+        AGENT_SKILLS=all keeps the regular analysis path, an empty value means no
+        skills, and AGENT_MODE=false is an explicit opt-out -- none of them turn
+        the Agent on, so a broken Agent model must not block them. The regular
+        primary model is valid here, so a successful save can only mean the Agent
+        check was skipped.
+        """
+        self._rewrite_env(
+            *self._env_with_broken_agent_model_only(),
+            "AGENT_MODE=false",
+            "AGENT_SKILLS=",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self._assert_only_agent_model_issue()
+            for key, value in [
+                ("AGENT_SKILLS", "all"),
+                ("AGENT_SKILLS", ""),
+                ("AGENT_MODE", "false"),
+            ]:
+                with self.subTest(key=key, value=value):
+                    result = self.service.update(
+                        config_version=self.manager.get_config_version(),
+                        items=[{"key": key, "value": value}],
+                        reload_now=False,
+                    )
+                    self.assertTrue(result["success"])
+
+    def test_switching_agent_generation_backend_validates_when_chat_uses_litellm(self) -> None:
+        """AGENT_GENERATION_BACKEND only routes through the graph when chat does.
+
+        An existing retired AGENT_BACKEND remains unchanged in the second case;
+        updating generation alone does not reactivate the LiteLLM chat path.
+        """
+        base = self._env_with_broken_agent_model_only()
+        self._rewrite_env(*base, "AGENT_BACKEND=litellm", "AGENT_GENERATION_BACKEND=codex_cli")
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            with self.assertRaises(ConfigValidationError) as exc:
+                self.service.update(
+                    config_version=self.manager.get_config_version(),
+                    items=[{"key": "AGENT_GENERATION_BACKEND", "value": "litellm"}],
+                    reload_now=False,
+                )
+            self._assert_only_agent_model_issue(exc.exception.issues)
+
+        self._rewrite_env(*base, "AGENT_BACKEND=codex_app_server", "AGENT_GENERATION_BACKEND=codex_cli")
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "AGENT_GENERATION_BACKEND", "value": "litellm"}],
+                reload_now=False,
+            )
+
+        self.assertTrue(result["success"])
+
+    def test_retired_backend_still_rejected_with_unrelated_agent_model_error(self) -> None:
+        """Scoped LLM checks must not bypass retired-backend field validation."""
+        self._rewrite_env(
+            *self._env_with_broken_agent_model_only(),
+            "AGENT_BACKEND=litellm",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            self._assert_only_agent_model_issue()
+            for operation in ("save", "import"):
+                with self.subTest(operation=operation):
+                    before = self.env_path.read_bytes()
+                    version = self.manager.get_config_version()
+                    with self.assertRaises(ConfigValidationError) as exc:
+                        if operation == "save":
+                            self.service.update(
+                                config_version=version,
+                                items=[
+                                    {"key": "AGENT_BACKEND", "value": "codex_app_server"},
+                                    {"key": "LOG_LEVEL", "value": "DEBUG"},
+                                ],
+                                reload_now=False,
+                            )
+                        else:
+                            self.service.import_env(
+                                config_version=version,
+                                content="AGENT_BACKEND=codex_app_server\nLOG_LEVEL=DEBUG\n",
+                                reload_now=False,
+                            )
+                    self.assertTrue(any(
+                        issue["code"] == "backend_removed" and issue["key"] == "AGENT_BACKEND"
+                        for issue in exc.exception.issues
+                    ))
+                    self.assertEqual(self.env_path.read_bytes(), before)
+                    self.assertEqual(self.manager.get_config_version(), version)
+
+    def test_unrelated_partial_update_still_skips_llm_checks(self) -> None:
+        """The original bug stays fixed: unrelated saves are not blocked.
+
+        Both the Agent model and a fallback model are broken here, so a
+        successful save proves neither check ran.
+        """
+        self._rewrite_env(
+            *self._env_with_broken_agent_model_only(),
+            "AGENT_BACKEND=codex_app_server",
+            "LITELLM_FALLBACK_MODELS=openai/removed-model",
+        )
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            result = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "LOG_LEVEL", "value": "DEBUG"}],
+                reload_now=False,
+            )
+
+        self.assertTrue(result["success"])
 
     def test_get_config_switch_type_uses_runtime_env_display_fallback(self) -> None:
         self._rewrite_env(
@@ -2522,6 +2769,45 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_enum" for issue in validation["issues"]))
 
+    def test_retired_config_is_readable_exportable_and_unrelated_saves_work(self) -> None:
+        self._rewrite_env("AGENT_BACKEND=codex_app_server", "AGENT_ARCH=multi", "LOG_LEVEL=INFO")
+        with patch.dict(os.environ, {"AGENT_BACKEND": "codex_app_server"}):
+            payload = self.service.get_config(include_schema=True)
+            item = next(item for item in payload["items"] if item["key"] == "AGENT_BACKEND")
+            self.assertEqual(item["value"], "codex_app_server")
+            self.assertEqual(item["schema"]["validation"]["enum"], ["auto", "litellm"])
+            self.assertIn("AGENT_BACKEND=codex_app_server", self.service.export_env()["content"])
+            self.service.update(config_version=self.manager.get_config_version(),
+                                items=[{"key": "LOG_LEVEL", "value": "DEBUG"}], reload_now=False)
+        self.assertEqual(self.manager.read_config_map()["AGENT_BACKEND"], "codex_app_server")
+        self.assertEqual(self.manager.read_config_map()["LOG_LEVEL"], "DEBUG")
+
+    def test_explicit_retired_save_and_import_are_atomic_then_user_can_correct(self) -> None:
+        self._rewrite_env("AGENT_BACKEND=codex_app_server", "LOG_LEVEL=INFO")
+        for operation in ("save", "import"):
+            with self.subTest(operation=operation):
+                before = self.env_path.read_text()
+                version = self.manager.get_config_version()
+                with self.assertRaises(ConfigValidationError) as error:
+                    if operation == "save":
+                        self.service.update(config_version=version, reload_now=False, items=[
+                            {"key": "AGENT_BACKEND", "value": " CODEX_APP_SERVER "},
+                            {"key": "LOG_LEVEL", "value": "DEBUG"},
+                        ])
+                    else:
+                        self.service.import_env(config_version=version, reload_now=False,
+                                                content="AGENT_BACKEND=codex_app_server\nLOG_LEVEL=DEBUG\n")
+                self.assertTrue(any(i["code"] == "backend_removed" and i["key"] == "AGENT_BACKEND"
+                                    for i in error.exception.issues))
+                self.assertEqual(self.env_path.read_text(), before)
+                self.assertEqual(self.manager.get_config_version(), version)
+        for value in ("auto", "litellm"):
+            self.service.update(config_version=self.manager.get_config_version(), reload_now=False,
+                                items=[{"key": "AGENT_BACKEND", "value": value}])
+            self.assertEqual(self.manager.read_config_map()["AGENT_BACKEND"], value)
+            self.assertNotEqual(self.manager.get_config_version(), version)
+        self.assertEqual(self.manager.read_config_map()["LOG_LEVEL"], "INFO")
+
     def test_validate_rejects_codex_backend_with_multi_agent_architecture(self) -> None:
         validation = self.service.validate(
             items=[
@@ -2534,10 +2820,10 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         issue = next(
             issue
             for issue in validation["issues"]
-            if issue["code"] == "unsupported_agent_arch"
+            if issue["code"] == "backend_removed"
         )
-        self.assertEqual(issue["key"], "AGENT_ARCH")
-        self.assertEqual(issue["expected"], "single")
+        self.assertEqual(issue["key"], "AGENT_BACKEND")
+        self.assertEqual(issue["expected"], "auto or litellm")
 
     def test_validate_rejects_disabled_timeout_for_codex_only(self) -> None:
         codex = self.service.validate(
@@ -2555,7 +2841,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertFalse(codex["valid"])
         self.assertTrue(
-            any(issue["code"] == "codex_timeout_required" for issue in codex["issues"])
+            any(issue["code"] == "backend_removed" for issue in codex["issues"])
         )
         self.assertTrue(litellm["valid"])
 
@@ -4250,12 +4536,31 @@ class SystemConfigServiceTestCase(unittest.TestCase):
     ) -> None:
         response = self.service.update(
             config_version=self.manager.get_config_version(),
-            items=[{"key": "STOCK_LIST", "value": "600519"}],
+            items=[{"key": "LOG_LEVEL", "value": "DEBUG"}],
             reload_now=True,
         )
 
         self.assertTrue(response["success"])
         mock_reload_runtime_singletons.assert_called_once()
+
+    @patch.object(SystemConfigService, "_reload_runtime_singletons")
+    def test_update_with_reload_skips_singleton_reset_for_stock_list_only(
+        self,
+        mock_reload_runtime_singletons,
+    ) -> None:
+        """A STOCK_LIST-only save must not reset runtime singletons.
+
+        Resetting them would re-run setup_env(override=True) and clobber
+        container environment overrides for every other key.
+        """
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "STOCK_LIST", "value": "600519"}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        mock_reload_runtime_singletons.assert_not_called()
 
     def test_update_with_reload_applies_updated_env_file_when_process_env_is_stale(self) -> None:
         os.environ["STOCK_LIST"] = "600519,000001"
