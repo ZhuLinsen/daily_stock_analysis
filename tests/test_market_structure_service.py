@@ -1108,3 +1108,44 @@ def test_market_structure_service_returns_not_supported_for_non_cn() -> None:
     assert context["status"] == "not_supported"
     assert context["market_theme_context"]["status"] == "not_supported"
     assert context["stock_market_position"]["status"] == "not_supported"
+
+
+def test_market_hotspot_service_derives_trade_date_from_provider_rows() -> None:
+    """OR-COR-3e7f490e: per-row provider dates surface as payload trade_date.
+
+    Hot-top10 calls ``get_hotspots`` without pinning a trade date; when the
+    provider rows carry their own date (Tushare serves the previous trading
+    day before the 15:30 cut), the payload must expose it so reports can be
+    labeled with the real list date. An explicit caller-supplied date still
+    wins, and realtime rows without a date leave it unset.
+    """
+
+    class _DatedFetcherManager(_FakeFetcherManager):
+        def get_sector_rankings(self, n: int = 5):
+            top, bottom = super().get_sector_rankings(n)
+            return (
+                [dict(row, trade_date="20261030") for row in top],
+                [dict(row, trade_date="20261030") for row in bottom],
+            )
+
+        def get_concept_rankings(self, n: int = 5):
+            top, bottom = super().get_concept_rankings(n)
+            return (
+                [dict(row, trade_date="20261030") for row in top],
+                [dict(row, trade_date="20261030") for row in bottom],
+            )
+
+    service = MarketHotspotService(fetcher_manager=_DatedFetcherManager())
+    context = service.get_hotspots(market="cn")
+    assert context["trade_date"] == "20261030"
+    assert context["leading_industries"][0]["trade_date"] == "20261030"
+    assert context["active_themes"][0]["trade_date"] == "20261030"
+
+    # Caller-pinned dates keep winning over per-row dates.
+    pinned = service.get_hotspots(market="cn", trade_date="2026-11-02")
+    assert pinned["trade_date"] == "2026-11-02"
+
+    # Realtime providers without row dates keep the old None semantics
+    # (the payload dump excludes unset None fields).
+    realtime = MarketHotspotService(fetcher_manager=_FakeFetcherManager())
+    assert realtime.get_hotspots(market="cn").get("trade_date") is None

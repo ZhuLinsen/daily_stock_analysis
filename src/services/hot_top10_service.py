@@ -44,7 +44,9 @@ DEFAULT_HOT_TOP10_COUNT = 10
 MAX_HOT_TOP10_COUNT = 30
 DEFAULT_HOT_TOP10_SCHEDULE_TIME = "15:10"
 MARKER_FILE_NAME = "hot_top10_state.json"
-MARKER_SCHEMA_VERSION = 1
+# v2 adds ``data_date`` (the ranking date the delivered report actually
+# covers, OR-COR-3e7f490e). v1 markers fail open and re-deliver once.
+MARKER_SCHEMA_VERSION = 2
 LLM_MAX_TOKENS = 3000
 LLM_TEMPERATURE = 0.3
 
@@ -61,6 +63,9 @@ class HotTop10RunResult:
     report_markdown: Optional[str] = None
     llm_completed: bool = False
     notification_status: str = "not_attempted"
+    # The trading-day date the delivered list actually covers; ``None`` when
+    # the provider did not expose one (treated as current-day data).
+    ranking_date: Optional[str] = None
 
 
 # --------------------------------------------------------------------------
@@ -99,6 +104,18 @@ def hot_top10_already_delivered_today(config: Any) -> tuple:
         today = date.today().isoformat()
         if marker_date != today:
             return False, f"marker run_date {marker_date!r} is not today ({today})"
+        # OR-COR-3e7f490e: a delivered report only consumes the dedup slot
+        # of the data date it actually covers. A marker left by a stale
+        # (previous-trading-day) delivery must NOT block a later run, so
+        # today's fresh data can still be delivered through the regular
+        # entry once the provider serves it. A missing data_date only
+        # happens on v1 markers, which already failed open above.
+        data_date = str(payload.get("data_date") or "")
+        if data_date != today:
+            return False, (
+                f"marker data_date {data_date!r} is not today ({today}); "
+                "today's data has not been delivered yet"
+            )
         if payload.get("delivered") is not True:
             return False, "marker recorded an undelivered run, fail-open"
         return True, f"today's hot-top10 report already delivered ({marker_date})"
@@ -111,13 +128,21 @@ def record_hot_top10_marker(
     *,
     llm_completed: bool,
     notification_status: str,
+    data_date: Optional[str] = None,
 ) -> None:
-    """Persist today's delivery marker atomically; errors are swallowed."""
+    """Persist today's delivery marker atomically; errors are swallowed.
+
+    ``data_date`` records the ranking date the delivered report actually
+    covers (OR-COR-3e7f490e). It defaults to today: an unknown provider
+    date is treated as current-day data, so the daily dedup keeps working
+    exactly as before for realtime providers.
+    """
     try:
         marker_path = hot_top10_marker_path(config)
         payload = {
             "schema_version": MARKER_SCHEMA_VERSION,
             "run_date": date.today().isoformat(),
+            "data_date": data_date or date.today().isoformat(),
             "delivered": True,
             "llm_completed": bool(llm_completed),
             "notification_status": str(notification_status or "unknown"),
@@ -161,11 +186,35 @@ def is_cn_trading_day_today() -> bool:
 # --------------------------------------------------------------------------
 
 
+def _normalize_ranking_date(value: Any) -> Optional[str]:
+    """Normalize a provider ranking date to ISO ``YYYY-MM-DD``; ``None`` unknown.
+
+    Tushare board rankings carry ``YYYYMMDD`` dates; the hotspot payload uses
+    ISO. Anything unparseable counts as "date unknown" (fail-open semantics:
+    the report falls back to the current behavior of not labeling a date).
+    """
+    if isinstance(value, date):
+        return value.isoformat()
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
 def _collect_hot_list_items(
     count: int,
     hotspot_service: Any = None,
-) -> Optional[List[Dict[str, Any]]]:
-    """Fetch and normalize the theme hot list; ``None`` when data is unusable.
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Fetch and normalize the theme hot list; ``items is None`` when unusable.
+
+    Returns ``(items, ranking_date)``.
 
     Selection (OR-COR-a7e7c3a3): candidates from ALL buckets compete after
     name de-duplication — they are sorted by change_pct descending (entries
@@ -173,6 +222,11 @@ def _collect_hot_list_items(
     to ``count``. The old sequential fill stopped at ``count`` inside
     ``active_themes``/``leading_industries`` and wrongly evicted
     small-negative concepts on negative-industry days.
+
+    ``ranking_date`` (OR-COR-3e7f490e) is the payload trade date, falling
+    back to the first per-item trade date, so downstream stages can label
+    the report with the real list date even when the provider serves the
+    previous trading day's rankings.
     """
     if hotspot_service is None:
         from src.services.market_hotspot_service import MarketHotspotService
@@ -181,7 +235,7 @@ def _collect_hot_list_items(
 
     payload = hotspot_service.get_hotspots(market="cn", limit=count)
     if not isinstance(payload, dict):
-        return None
+        return None, None
 
     candidates: List[Dict[str, Any]] = []
     seen_names = set()
@@ -211,10 +265,11 @@ def _collect_hot_list_items(
                     "phase": str(entry.get("phase") or "unknown"),
                     "strength_score": entry.get("strength_score"),
                     "reason": str(entry.get("reason") or "").strip(),
+                    "trade_date": _normalize_ranking_date(entry.get("trade_date")),
                 }
             )
     if not candidates:
-        return None
+        return None, None
 
     def _change_sort_key(item: Dict[str, Any]) -> Tuple[int, float]:
         value = item.get("change_pct")
@@ -226,7 +281,14 @@ def _collect_hot_list_items(
     items = candidates[:count]
     for index, item in enumerate(items, 1):
         item["rank"] = index
-    return items
+
+    ranking_date = _normalize_ranking_date(payload.get("trade_date"))
+    if ranking_date is None:
+        for item in candidates:
+            if item.get("trade_date"):
+                ranking_date = item["trade_date"]
+                break
+    return items, ranking_date
 
 
 def _format_change_pct(value: Any, language: str) -> str:
@@ -249,14 +311,43 @@ def _build_analyzer(config: Any):
     return GeminiAnalyzer(config=config)
 
 
-def build_hot_top10_prompt(items: List[Dict[str, Any]], language: str) -> str:
-    """Assemble the single-call summary prompt (bilingual)."""
+def build_hot_top10_prompt(
+    items: List[Dict[str, Any]],
+    language: str,
+    ranking_date: Optional[str] = None,
+) -> str:
+    """Assemble the single-call summary prompt (bilingual).
+
+    ``ranking_date`` labels the trading day the list data actually covers
+    (OR-COR-3e7f490e); when it is not today the model is told explicitly so
+    it never presents previous-day rankings as today's market.
+    """
+    today = date.today().isoformat()
+    date_note_en = ""
+    date_note_zh = ""
+    if ranking_date:
+        if ranking_date != today:
+            date_note_en = (
+                f"Ranking date: {ranking_date}. NOTE: this list is data from "
+                "that trading day, NOT today's market; do not describe it as "
+                "today's action."
+            )
+            date_note_zh = (
+                f"榜单日期：{ranking_date}。注意：该榜单为上述交易日数据，"
+                "并非今日实时行情，请勿当作今日盘面描述。"
+            )
+        else:
+            date_note_en = f"Ranking date: {ranking_date} (today)."
+            date_note_zh = f"榜单日期：{ranking_date}（今日）。"
+
     if language == "en":
         lines = [
-            "You are an A-share market hotspot analyst. Below is today's market",
+            "You are an A-share market hotspot analyst. Below is the market",
             "theme hot list ranked by gain (from DSA industry/concept rankings):",
             "",
         ]
+        if date_note_en:
+            lines += [date_note_en, ""]
         for item in items:
             lines.append(
                 f"{item['rank']}. {item['name']} ({item['kind']}) "
@@ -270,7 +361,7 @@ def build_hot_top10_prompt(items: List[Dict[str, Any]], language: str) -> str:
             "(strong/medium/weak), an entry advice (wait/light position/",
             "active entry) and the key risk.",
             "Reply with STRICT JSON only (no extra text):",
-            '{"summary": "one paragraph on today\'s hotspot mainline", '
+            '{"summary": "one paragraph on the hotspot mainline of the ranking date above", '
             '"items": [{"rank": 1, "name": "...", "driver": "...", '
             '"strength": "strong|medium|weak", '
             '"advice": "wait|light position|active entry", "risk": "..."}]}',
@@ -278,10 +369,12 @@ def build_hot_top10_prompt(items: List[Dict[str, Any]], language: str) -> str:
         return "\n".join(lines)
 
     lines = [
-        "你是 A 股市场热点分析助手。以下是今日市场主题热榜"
+        "你是 A 股市场热点分析助手。以下是市场主题热榜"
         "（按涨跌幅排名，来自 DSA 行业/概念排名数据）：",
         "",
     ]
+    if date_note_zh:
+        lines += [date_note_zh, ""]
     for item in items:
         lines.append(
             f"{item['rank']}. {item['name']}（{item['kind']}）"
@@ -294,7 +387,7 @@ def build_hot_top10_prompt(items: List[Dict[str, Any]], language: str) -> str:
         "请标注“推测”）、强度评估（强/中/弱）、介入建议（观望/轻仓介入/积极介入）、"
         "风险提示。",
         "严格只输出以下 JSON，不要输出任何多余文本：",
-        '{"summary": "一段话总结今日热点主线与整体参与度", '
+        '{"summary": "一段话总结上述榜单日期的热点主线与整体参与度", '
         '"items": [{"rank": 1, "name": "主题名", "driver": "动因", '
         '"strength": "强|中|弱", "advice": "观望|轻仓介入|积极介入", '
         '"risk": "风险提示"}]}',
@@ -349,13 +442,35 @@ def render_hot_top10_report(
     summary: Optional[Dict[str, Any]],
     llm_completed: bool,
     language: str,
+    ranking_date: Optional[str] = None,
 ) -> str:
-    """Render the markdown report; degraded to data-only when LLM failed."""
+    """Render the markdown report; degraded to data-only when LLM failed.
+
+    ``ranking_date`` (OR-COR-3e7f490e) is shown in the title and header as
+    the 榜单日期 the list data actually covers. When the provider served a
+    previous trading day's rankings (default trigger 15:10 sits before the
+    15:30 data cut), the report says so explicitly instead of presenting
+    the list as today's market.
+    """
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    today = date.today().isoformat()
+    title_date = ranking_date or today
+    stale = bool(ranking_date) and ranking_date != today
     if language == "en":
-        title = f"# Market Hot Themes Top {len(items)} — {date.today().isoformat()}"
+        title = f"# Market Hot Themes Top {len(items)} — {title_date}"
+        ranking_date_note = (
+            f"Ranking date: {ranking_date}"
+            + (
+                " (NOT today; previous trading day data — today's list will be "
+                "delivered separately once the data cut is available)"
+                if stale
+                else " (today)"
+            )
+            if ranking_date
+            else "Ranking date: unknown (provider did not report one)"
+        )
         header_note = (
-            f"> Generated at: {now_text} | "
+            f"> Generated at: {now_text} | {ranking_date_note} | "
             "Data source: DSA industry/concept rankings (MarketHotspotService), "
             "a theme-level hot list. This is a light overview, NOT per-stock "
             "deep analysis; use the existing stock analysis entry points for that."
@@ -380,9 +495,20 @@ def render_hot_top10_report(
         )
         raw_note_prefix = "> AI summary could not be parsed as structured JSON; raw model output:\n\n"
     else:
-        title = f"# 市场热榜 Top {len(items)} 分析 — {date.today().isoformat()}"
+        title = f"# 市场热榜 Top {len(items)} 分析 — {title_date}"
+        if ranking_date:
+            ranking_date_note = (
+                f"榜单日期：{ranking_date}"
+                + (
+                    "（非今日：为上一交易日榜单数据，当日数据就绪后将按当日榜单另行生成）"
+                    if stale
+                    else "（今日）"
+                )
+            )
+        else:
+            ranking_date_note = "榜单日期：未知（数据源未提供日期）"
         header_note = (
-            f"> 生成时间：{now_text} ｜ "
+            f"> 生成时间：{now_text} ｜ {ranking_date_note} ｜ "
             "数据来源：DSA 行业/概念排名（MarketHotspotService），为主题级热榜。"
             "本报告为热榜轻量概览，非个股深度报告；个股深度分析请使用既有个股分析入口。"
         )
@@ -555,7 +681,7 @@ def run_hot_top10_analysis(
                 reason="non_trading_day",
             )
 
-    items = _collect_hot_list_items(count, hotspot_service=hotspot_service)
+    items, ranking_date = _collect_hot_list_items(count, hotspot_service=hotspot_service)
     if not items:
         logger.warning("[HotTop10] 热榜数据获取失败，本轮不生成报告")
         return HotTop10RunResult(
@@ -563,13 +689,19 @@ def run_hot_top10_analysis(
             skipped=True,
             reason="hotspot_data_unavailable",
         )
+    if ranking_date and ranking_date != date.today().isoformat():
+        logger.info(
+            "[HotTop10] 榜单日期为 %s（非今日）：报告将按该日期标注，"
+            "且不占用今日投递标记，当日数据就绪后可再投",
+            ranking_date,
+        )
 
     llm_completed = False
     summary: Optional[Dict[str, Any]] = None
     try:
         if analyzer is None:
             analyzer = _build_analyzer(config)
-        prompt = build_hot_top10_prompt(items, language)
+        prompt = build_hot_top10_prompt(items, language, ranking_date=ranking_date)
         llm_text = analyzer.generate_text(
             prompt,
             max_tokens=LLM_MAX_TOKENS,
@@ -587,7 +719,9 @@ def run_hot_top10_analysis(
     except Exception as exc:
         logger.warning("[HotTop10] AI 摘要生成异常，降级为数据概览: %s", exc)
 
-    report_markdown = render_hot_top10_report(items, summary, llm_completed, language)
+    report_markdown = render_hot_top10_report(
+        items, summary, llm_completed, language, ranking_date=ranking_date
+    )
     notification_status = _deliver(report_markdown, send_notification, notifier)
 
     if notification_status in {"failed", "notifier_init_failed"}:
@@ -601,6 +735,10 @@ def run_hot_top10_analysis(
             config,
             llm_completed=llm_completed,
             notification_status=notification_status,
+            # The dedup slot belongs to the data date the report covers; a
+            # stale (previous-day) delivery therefore leaves today's slot
+            # open for the fresh data (OR-COR-3e7f490e).
+            data_date=ranking_date,
         )
 
     return HotTop10RunResult(
@@ -610,4 +748,5 @@ def run_hot_top10_analysis(
         report_markdown=report_markdown,
         llm_completed=llm_completed,
         notification_status=notification_status,
+        ranking_date=ranking_date,
     )

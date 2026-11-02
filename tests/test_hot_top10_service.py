@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -422,7 +422,7 @@ class HotTop10MergedSelectionTest(unittest.TestCase):
 
     def test_negative_industries_do_not_evict_small_negative_concepts(self):
         service = _FakeHotspotService(self._review_payload())
-        items = _collect_hot_list_items(2, hotspot_service=service)
+        items, _ranking_date = _collect_hot_list_items(2, hotspot_service=service)
         self.assertIsNotNone(items)
         self.assertEqual([item["name"] for item in items], ["概念C", "概念D"])
         self.assertEqual([item["rank"] for item in items], [1, 2])
@@ -430,7 +430,7 @@ class HotTop10MergedSelectionTest(unittest.TestCase):
 
     def test_merged_candidates_sorted_by_change_pct_descending(self):
         service = _FakeHotspotService(self._review_payload())
-        items = _collect_hot_list_items(4, hotspot_service=service)
+        items, _ranking_date = _collect_hot_list_items(4, hotspot_service=service)
         self.assertIsNotNone(items)
         self.assertEqual(
             [item["name"] for item in items],
@@ -444,12 +444,119 @@ class HotTop10MergedSelectionTest(unittest.TestCase):
             {"name": "概念E", "code": "BKC3", "change_pct": None, "rank": 3}
         )
         service = _FakeHotspotService(payload)
-        items = _collect_hot_list_items(5, hotspot_service=service)
+        items, _ranking_date = _collect_hot_list_items(5, hotspot_service=service)
         self.assertIsNotNone(items)
         self.assertEqual(
             [item["name"] for item in items],
             ["概念C", "概念D", "行业A", "行业B", "概念E"],
         )
+
+
+class HotTop10RankingDateTest(unittest.TestCase):
+    """OR-COR-3e7f490e: the real ranking date must survive the whole chain.
+
+    Tushare serves the previous trading day's board rankings before the
+    daily data cut. A delivered report must be labeled with the actual
+    ranking date, and a stale (previous-day) delivery must not consume
+    today's dedup marker so the regular entry can re-deliver once today's
+    data becomes available.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value={"cn"},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+    def _run_with_payload(self, config, payload, analyzer=None, notifier=None):
+        analyzer = analyzer or _FakeAnalyzer(text=_llm_json())
+        notifier = notifier or _FakeNotifier()
+        service = _FakeHotspotService(payload)
+        with mock.patch(
+            "src.services.hot_top10_service._build_analyzer", return_value=analyzer
+        ):
+            result = run_hot_top10_analysis(
+                config, notifier=notifier, hotspot_service=service
+            )
+        return result, analyzer, notifier
+
+    def test_stale_ranking_date_labeled_and_marker_kept_open(self):
+        config = _config(self._tmp.name)
+        payload = _hotspot_payload(_theme_items(3))
+        payload["trade_date"] = self.yesterday
+
+        result, analyzer, _notifier = self._run_with_payload(config, payload)
+
+        self.assertTrue(result.delivered)
+        self.assertEqual(result.ranking_date, self.yesterday)
+        # Prompt tells the model the list is from the ranking date, not today.
+        self.assertIn("榜单日期", analyzer.calls[0])
+        self.assertIn(self.yesterday, analyzer.calls[0])
+        # Report prominently labels the actual ranking date.
+        self.assertIn("榜单日期", result.report_markdown)
+        self.assertIn(self.yesterday, result.report_markdown)
+        # Stale delivery must not consume today's dedup marker.
+        skip, reason = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)
+        # The marker still records the data date for auditability.
+        marker_payload = json.loads(
+            hot_top10_marker_path(config).read_text(encoding="utf-8")
+        )
+        self.assertEqual(marker_payload.get("data_date"), self.yesterday)
+        self.assertEqual(marker_payload.get("run_date"), date.today().isoformat())
+
+    def test_fresh_data_after_stale_delivery_still_delivers(self):
+        config = _config(self._tmp.name)
+        stale_payload = _hotspot_payload(_theme_items(3))
+        stale_payload["trade_date"] = self.yesterday
+        stale_result, _, _ = self._run_with_payload(config, stale_payload)
+        self.assertTrue(stale_result.delivered)
+
+        fresh_payload = _hotspot_payload(_theme_items(3))
+        fresh_result, _, notifier = self._run_with_payload(
+            config, fresh_payload, notifier=_FakeNotifier()
+        )
+        self.assertTrue(fresh_result.delivered)
+        self.assertEqual(len(notifier.sent), 1)
+        self.assertEqual(fresh_result.ranking_date, date.today().isoformat())
+
+        # Once today's data is delivered, the same-day dedup marker holds.
+        third_result, _, notifier2 = self._run_with_payload(
+            config, fresh_payload, notifier=_FakeNotifier()
+        )
+        self.assertTrue(third_result.skipped)
+        self.assertEqual(len(notifier2.sent), 0)
+
+    def test_collect_returns_payload_ranking_date(self):
+        payload = _hotspot_payload(_theme_items(2))
+        payload["trade_date"] = self.yesterday
+        service = _FakeHotspotService(payload)
+        items, ranking_date = _collect_hot_list_items(2, hotspot_service=service)
+        self.assertIsNotNone(items)
+        self.assertEqual(ranking_date, self.yesterday)
+
+    def test_collect_falls_back_to_item_trade_date(self):
+        payload = _hotspot_payload([])
+        payload["trade_date"] = None
+        payload["active_themes"] = [
+            {
+                "name": "主题X",
+                "code": "BKX1",
+                "change_pct": 1.5,
+                "rank": 1,
+                "source": "industry",
+                "trade_date": self.yesterday,
+            }
+        ]
+        service = _FakeHotspotService(payload)
+        items, ranking_date = _collect_hot_list_items(2, hotspot_service=service)
+        self.assertIsNotNone(items)
+        self.assertEqual(ranking_date, self.yesterday)
 
 
 class HotTop10SchedulerWiringTest(unittest.TestCase):
