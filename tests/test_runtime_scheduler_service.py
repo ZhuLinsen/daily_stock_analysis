@@ -1121,5 +1121,104 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         ])
 
 
+class HotTop10DailyJobRegistrationTest(unittest.TestCase):
+    """OR-COR-0bd16091 / OR-COR-095e5cc9: Web/API/Desktop runtime wiring.
+
+    The hot-top10 daily job used to register only in the pure CLI schedule
+    branch of ``main.py``; ``RuntimeSchedulerService.start()`` never added
+    it, so long-lived API/Web/Desktop processes never ran the analysis
+    even with HOT_TOP10_ENABLED=true. The review probe (count of auxiliary
+    daily jobs after a real start()) must now include the hot-top10 job.
+    """
+
+    @staticmethod
+    def _config(*, hot_top10_enabled: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+            hot_top10_enabled=hot_top10_enabled,
+            hot_top10_schedule_time="15:10",
+        )
+
+    def _start(self, config: SimpleNamespace) -> RuntimeSchedulerService:
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._reload_config = lambda: config
+        with patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.start()
+        self.addCleanup(service.stop)
+        return service
+
+    def test_real_start_registers_hot_top10_extra_daily_job(self) -> None:
+        service = self._start(self._config(hot_top10_enabled=True))
+
+        scheduler = service._scheduler
+        self.assertIsNotNone(scheduler)
+        extra_jobs = list(getattr(scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 1)
+        at_time = extra_jobs[0].at_time
+        self.assertEqual(f"{at_time.hour:02d}:{at_time.minute:02d}", "15:10")
+
+    def test_real_start_registers_no_hot_top10_job_when_disabled(self) -> None:
+        service = self._start(self._config(hot_top10_enabled=False))
+
+        scheduler = service._scheduler
+        self.assertIsNotNone(scheduler)
+        extra_jobs = list(getattr(scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(extra_jobs, [])
+
+    def test_registered_job_invokes_service_with_scheduler_semantics(self) -> None:
+        service = self._start(self._config(hot_top10_enabled=True))
+        scheduler = service._scheduler
+        assert scheduler is not None
+        extra_jobs = list(getattr(scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 1)
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            extra_jobs[0].job_func()
+
+        run_mock.assert_called_once()
+        runtime_config = run_mock.call_args.args[0]
+        self.assertIs(runtime_config.hot_top10_enabled, True)
+        kwargs = run_mock.call_args.kwargs
+        # Scheduled occurrences keep the trading-day gate and daily dedup.
+        self.assertTrue(kwargs["respect_dedup"])
+        self.assertFalse(kwargs["force_run"])
+        # Default runtime schedule args carry no_notify=False.
+        self.assertIs(kwargs["send_notification"], True)
+
+    def test_job_honors_no_notify_schedule_override(self) -> None:
+        config = self._config(hot_top10_enabled=True)
+        service = RuntimeSchedulerService(
+            config_provider=lambda: config,
+            schedule_args_overrides={"no_notify": True},
+        )
+        service._reload_config = lambda: config
+        with patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.start()
+        self.addCleanup(service.stop)
+
+        scheduler = service._scheduler
+        assert scheduler is not None
+        extra_jobs = list(getattr(scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 1)
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            extra_jobs[0].job_func()
+
+        run_mock.assert_called_once()
+        self.assertIs(run_mock.call_args.kwargs["send_notification"], False)
+
+
 if __name__ == "__main__":
     unittest.main()
