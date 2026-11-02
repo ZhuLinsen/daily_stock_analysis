@@ -38,7 +38,10 @@ from src.notification_contracts import (
     is_feishu_static_configured,
 )
 from src.services.stock_list_parser import split_stock_list
-from src.services.hot_top10_service import DEFAULT_HOT_TOP10_SCHEDULE_TIME
+from src.services.hot_top10_service import (
+    DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+    DEFAULT_HOT_TOP10_SCHEDULE_TIME,
+)
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
     GENERATION_ONLY_BACKEND_IDS,
@@ -1337,6 +1340,8 @@ class Config:
     # === 热榜 Top N 轻量分析（Issue #1936，默认关闭） ===
     hot_top10_enabled: bool = False           # 是否启用每日热榜 Top N 分析
     hot_top10_schedule_time: str = DEFAULT_HOT_TOP10_SCHEDULE_TIME  # 每日执行时间（HH:MM）
+    # 数据就绪补投时间（HH:MM）：15:30 榜单数据切割后的同日第二次执行机会（Issue #1936）
+    hot_top10_data_ready_schedule_time: str = DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME
     hot_top10_count: int = 10                 # 热榜条数（1-30）
 
     # === 实时行情增强数据配置 ===
@@ -2369,6 +2374,10 @@ class Config:
             hot_top10_schedule_time=cls._normalize_hot_top10_schedule_time(
                 os.getenv('HOT_TOP10_SCHEDULE_TIME')
             ),
+            hot_top10_data_ready_schedule_time=cls._normalize_hot_top10_schedule_time(
+                os.getenv('HOT_TOP10_DATA_READY_SCHEDULE_TIME'),
+                fallback=DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+            ),
             hot_top10_count=parse_env_int(
                 os.getenv('HOT_TOP10_COUNT'), 10,
                 field_name='HOT_TOP10_COUNT', minimum=1, maximum=30,
@@ -3129,13 +3138,15 @@ class Config:
         return 'cn'
 
     @classmethod
-    def _normalize_hot_top10_schedule_time(cls, value: object) -> str:
-        """Normalize HOT_TOP10_SCHEDULE_TIME; invalid/empty falls back to default."""
+    def _normalize_hot_top10_schedule_time(
+        cls, value: object, fallback: str = DEFAULT_HOT_TOP10_SCHEDULE_TIME
+    ) -> str:
+        """Normalize a HOT_TOP10_* time; invalid/empty falls back to ``fallback``."""
         times = normalize_schedule_times(
             value if isinstance(value, str) else None,
-            fallback_time=DEFAULT_HOT_TOP10_SCHEDULE_TIME,
+            fallback_time=fallback,
         )
-        return times[0] if times else DEFAULT_HOT_TOP10_SCHEDULE_TIME
+        return times[0] if times else fallback
 
     @classmethod
     def _parse_market_review_color_scheme(cls, value: str) -> str:

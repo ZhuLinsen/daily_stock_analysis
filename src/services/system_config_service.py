@@ -2141,14 +2141,17 @@ class SystemConfigService:
             "SCHEDULE_ENABLED",
             "SCHEDULE_TIME",
             "SCHEDULE_TIMES",
-            # HOT_TOP10_ENABLED / HOT_TOP10_SCHEDULE_TIME change the runtime
+            # HOT_TOP10_ENABLED / HOT_TOP10_SCHEDULE_TIME /
+            # HOT_TOP10_DATA_READY_SCHEDULE_TIME change the runtime
             # scheduler's auxiliary daily jobs (Issue #1936,
-            # OR-COR-0bd16091): saving them must rebuild the live scheduler
-            # instead of waiting for a process restart. HOT_TOP10_COUNT only
-            # changes the report size and is read per-run by the service, so
-            # it deliberately stays out of this rebuild set.
+            # OR-COR-0bd16091 / OR-COR-3e7f490e): saving them must rebuild
+            # the live scheduler instead of waiting for a process restart.
+            # HOT_TOP10_COUNT only changes the report size and is read
+            # per-run by the service, so it deliberately stays out of this
+            # rebuild set.
             "HOT_TOP10_ENABLED",
             "HOT_TOP10_SCHEDULE_TIME",
+            "HOT_TOP10_DATA_READY_SCHEDULE_TIME",
         }:
             try:
                 self._runtime_scheduler.reconcile_from_config(

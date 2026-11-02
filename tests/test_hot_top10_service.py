@@ -343,6 +343,7 @@ class HotTop10ConfigContractTest(unittest.TestCase):
         config = Config._load_from_env()
         self.assertFalse(config.hot_top10_enabled)
         self.assertEqual(config.hot_top10_schedule_time, "15:10")
+        self.assertEqual(config.hot_top10_data_ready_schedule_time, "15:35")
         self.assertEqual(config.hot_top10_count, 10)
 
     def test_config_env_overrides(self):
@@ -353,12 +354,14 @@ class HotTop10ConfigContractTest(unittest.TestCase):
             {
                 "HOT_TOP10_ENABLED": "true",
                 "HOT_TOP10_SCHEDULE_TIME": "09:40",
+                "HOT_TOP10_DATA_READY_SCHEDULE_TIME": "16:05",
                 "HOT_TOP10_COUNT": "5",
             },
         ):
             config = Config._load_from_env()
         self.assertTrue(config.hot_top10_enabled)
         self.assertEqual(config.hot_top10_schedule_time, "09:40")
+        self.assertEqual(config.hot_top10_data_ready_schedule_time, "16:05")
         self.assertEqual(config.hot_top10_count, 5)
 
     def test_invalid_schedule_time_falls_back(self):
@@ -366,10 +369,15 @@ class HotTop10ConfigContractTest(unittest.TestCase):
 
         with mock.patch.dict(
             "os.environ",
-            {"HOT_TOP10_SCHEDULE_TIME": "not-a-time", "HOT_TOP10_COUNT": "999"},
+            {
+                "HOT_TOP10_SCHEDULE_TIME": "not-a-time",
+                "HOT_TOP10_DATA_READY_SCHEDULE_TIME": "also-bad",
+                "HOT_TOP10_COUNT": "999",
+            },
         ):
             config = Config._load_from_env()
         self.assertEqual(config.hot_top10_schedule_time, "15:10")
+        self.assertEqual(config.hot_top10_data_ready_schedule_time, "15:35")
         self.assertEqual(config.hot_top10_count, 30)
 
     def test_registry_keys_are_registered_with_help_metadata(self):
@@ -378,6 +386,7 @@ class HotTop10ConfigContractTest(unittest.TestCase):
         expected = {
             "HOT_TOP10_ENABLED": ("boolean", "switch", "false"),
             "HOT_TOP10_SCHEDULE_TIME": ("string", "text", "15:10"),
+            "HOT_TOP10_DATA_READY_SCHEDULE_TIME": ("string", "text", "15:35"),
             "HOT_TOP10_COUNT": ("integer", "number", "10"),
         }
         for key, (data_type, ui_control, default_value) in expected.items():
@@ -531,6 +540,68 @@ class HotTop10RankingDateTest(unittest.TestCase):
         )
         self.assertTrue(third_result.skipped)
         self.assertEqual(len(notifier2.sent), 0)
+
+    def test_same_stale_data_date_not_delivered_twice_same_day(self):
+        """Data-ready follow-up slot: still-stale data must not re-push.
+
+        When the data-ready occurrence fires but the provider still serves
+        the previous trading day's rankings (the very list already delivered
+        by the primary slot), the run must skip instead of pushing the same
+        stale report a second time.
+        """
+        config = _config(self._tmp.name)
+        stale_payload = _hotspot_payload(_theme_items(3))
+        stale_payload["trade_date"] = self.yesterday
+        first_result, _, _ = self._run_with_payload(config, stale_payload)
+        self.assertTrue(first_result.delivered)
+
+        second_result, _, notifier = self._run_with_payload(
+            config, stale_payload, notifier=_FakeNotifier()
+        )
+        self.assertFalse(second_result.delivered)
+        self.assertTrue(second_result.skipped)
+        self.assertIn(
+            "same_data_date_delivered_today", second_result.reason
+        )
+        self.assertEqual(len(notifier.sent), 0)
+        # The marker still records the stale data date (unchanged).
+        marker_payload = json.loads(
+            hot_top10_marker_path(config).read_text(encoding="utf-8")
+        )
+        self.assertEqual(marker_payload.get("data_date"), self.yesterday)
+
+    def test_stale_redelivery_allowed_when_marker_from_earlier_day(self):
+        """The same-data-date guard is strictly SAME-DAY (review scope).
+
+        A marker left by an earlier run date must not block a delivery, so
+        the pre-existing fail-open behavior for old markers is unchanged.
+        """
+        config = _config(self._tmp.name)
+        marker_path = hot_top10_marker_path(config)
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    # Same stale data date, but recorded on an earlier run
+                    # date: the guard is same-day only and must fail open.
+                    "run_date": (date.today() - timedelta(days=1)).isoformat(),
+                    "data_date": self.yesterday,
+                    "delivered": True,
+                    "llm_completed": True,
+                    "notification_status": "sent",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        stale_payload = _hotspot_payload(_theme_items(3))
+        stale_payload["trade_date"] = self.yesterday
+        result, _, notifier = self._run_with_payload(
+            config, stale_payload, notifier=_FakeNotifier()
+        )
+        self.assertTrue(result.delivered)
+        self.assertEqual(len(notifier.sent), 1)
 
     def test_collect_returns_payload_ranking_date(self):
         payload = _hotspot_payload(_theme_items(2))

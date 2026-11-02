@@ -652,11 +652,21 @@ class RuntimeSchedulerService:
 
         Mirrors the pure-CLI schedule branch of ``main.py`` (Issue #1936,
         OR-COR-0bd16091): with HOT_TOP10_ENABLED the hot-top10 analysis gets
-        its own fail-open daily slot at HOT_TOP10_SCHEDULE_TIME. The job is
-        registered only when the feature is enabled at build time and
-        re-checks the runtime config when it fires, so a config reload that
-        disables the feature stops the very next occurrence.
+        its own fail-open daily slot at HOT_TOP10_SCHEDULE_TIME, plus a
+        data-ready follow-up slot at HOT_TOP10_DATA_READY_SCHEDULE_TIME
+        (OR-COR-3e7f490e, narrowed) that gives the previous-trading-day
+        delivery of the primary slot (which sits before the 15:30 ranking
+        data cut) a same-day second chance to deliver today's list; the
+        service's daily marker makes the follow-up idle when today's data
+        was already delivered. Jobs are registered only when the feature is
+        enabled at build time and re-check the runtime config when they
+        fire, so a config reload that disables the feature stops the very
+        next occurrence.
         """
+        from src.services.hot_top10_service import (
+            DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+        )
+
         jobs: List[Dict[str, Any]] = []
         if not getattr(config, "hot_top10_enabled", False):
             return jobs
@@ -695,6 +705,18 @@ class RuntimeSchedulerService:
                 getattr(config, "hot_top10_schedule_time", "15:10") or "15:10"
             ),
             "name": "hot_top10",
+        })
+        jobs.append({
+            "task": hot_top10_task,
+            "schedule_time": str(
+                getattr(
+                    config,
+                    "hot_top10_data_ready_schedule_time",
+                    DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+                )
+                or DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME
+            ),
+            "name": "hot_top10_data_ready",
         })
         return jobs
 

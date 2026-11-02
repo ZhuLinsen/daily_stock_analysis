@@ -43,6 +43,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOT_TOP10_COUNT = 10
 MAX_HOT_TOP10_COUNT = 30
 DEFAULT_HOT_TOP10_SCHEDULE_TIME = "15:10"
+# Data-ready follow-up slot (OR-COR-3e7f490e, narrowed): the primary slot
+# sits before the 15:30 Tushare ranking cut, so on default deployments its
+# delivery covers the previous trading day and cannot consume today's dedup
+# marker. A second daily occurrence shortly after the cut delivers today's
+# list once the provider serves it (and idles when the primary slot already
+# delivered today's data).
+DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME = "15:35"
 MARKER_FILE_NAME = "hot_top10_state.json"
 # v2 adds ``data_date`` (the ranking date the delivered report actually
 # covers, OR-COR-3e7f490e). v1 markers fail open and re-deliver once.
@@ -161,6 +168,48 @@ def record_hot_top10_marker(
         )
     except Exception as exc:
         logger.warning("[HotTop10] 写入当日投递标记失败（忽略）: %s", exc)
+
+
+def _load_delivered_marker_payload(config: Any) -> Optional[Dict[str, Any]]:
+    """Read a v2 delivered marker; ``None`` on any problem (fail-open)."""
+    try:
+        raw = hot_top10_marker_path(config).read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != MARKER_SCHEMA_VERSION:
+        return None
+    if payload.get("delivered") is not True:
+        return None
+    return payload
+
+
+def hot_top10_data_date_delivered_today(config: Any, data_date: str) -> tuple:
+    """Return ``(skip, reason)`` for a SAME-DAY re-delivery of ``data_date``.
+
+    OR-COR-3e7f490e (narrowed): the data-ready follow-up occurrence must not
+    push the same ranking date twice in one day. If today's marker already
+    records a successful delivery covering exactly ``data_date`` (whether
+    that is today's fresh data or the previous trading day's stale list),
+    the follow-up run skips. Markers from earlier run dates never block
+    (same-day semantics only); any marker problem fails open.
+    """
+    payload = _load_delivered_marker_payload(config)
+    if payload is None:
+        return False, "no usable delivered marker, fail-open"
+    marker_date = str(payload.get("run_date") or "")
+    if marker_date != date.today().isoformat():
+        return False, f"marker run_date {marker_date!r} is not today"
+    delivered_date = str(payload.get("data_date") or "")
+    if delivered_date != data_date:
+        return False, (
+            f"marker data_date {delivered_date!r} differs from {data_date!r}"
+        )
+    return True, (
+        f"data date {data_date} already delivered today ({marker_date})"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -689,6 +738,27 @@ def run_hot_top10_analysis(
             skipped=True,
             reason="hotspot_data_unavailable",
         )
+    if respect_dedup and not force_run:
+        # Same-day re-delivery guard (OR-COR-3e7f490e, narrowed): the
+        # data-ready follow-up occurrence may fire while the provider still
+        # serves the previous trading day's rankings — the very list the
+        # primary slot already delivered. Pushing it again would duplicate
+        # the stale report, so a delivery covering the exact same data date
+        # recorded today skips instead.
+        effective_data_date = ranking_date or date.today().isoformat()
+        same_date_skip, same_date_reason = hot_top10_data_date_delivered_today(
+            config, effective_data_date
+        )
+        if same_date_skip:
+            logger.info(
+                "[HotTop10] 该榜单数据日期今日已投递，跳过重复推送: %s",
+                same_date_reason,
+            )
+            return HotTop10RunResult(
+                delivered=False,
+                skipped=True,
+                reason=f"same_data_date_delivered_today: {same_date_reason}",
+            )
     if ranking_date and ranking_date != date.today().isoformat():
         logger.info(
             "[HotTop10] 榜单日期为 %s（非今日）：报告将按该日期标注，"

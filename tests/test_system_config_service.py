@@ -4717,6 +4717,24 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             clear_enabled_override=False,
         )
 
+    def test_hot_top10_data_ready_schedule_time_reconciles_runtime_scheduler(self) -> None:
+        """OR-COR-3e7f490e: the data-ready follow-up slot time rebuilds it too."""
+        scheduler = MagicMock()
+        service = SystemConfigService(manager=self.manager, runtime_scheduler=scheduler)
+
+        response = service.update(
+            config_version=self.manager.get_config_version(),
+            items=[
+                {"key": "HOT_TOP10_DATA_READY_SCHEDULE_TIME", "value": "16:05"},
+            ],
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        scheduler.reconcile_from_config.assert_called_once_with(
+            clear_enabled_override=False,
+        )
+
     def test_hot_top10_count_change_does_not_rebuild_scheduler(self) -> None:
         """HOT_TOP10_COUNT does not change scheduler wiring; no rebuild."""
         scheduler = MagicMock()

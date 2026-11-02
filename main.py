@@ -1683,21 +1683,37 @@ def _build_schedule_times_provider(default_schedule_time: str):
     return _provider
 
 
-def _build_hot_top10_daily_job(
+def _build_hot_top10_daily_jobs(
     args: argparse.Namespace,
     config: Config,
     config_provider: Optional[Callable[[], Config]] = None,
-) -> Optional[Dict[str, Any]]:
-    """Build the auxiliary daily hot-top10 job (Issue #1936, default OFF).
+) -> List[Dict[str, Any]]:
+    """Build the auxiliary daily hot-top10 jobs (Issue #1936, default OFF).
+
+    Two fail-open daily slots are registered when the feature is enabled:
+
+    - the primary ``HOT_TOP10_SCHEDULE_TIME`` occurrence (default 15:10),
+      which sits before the 15:30 ranking data cut and may therefore
+      deliver the previous trading day's list (labeled as such, without
+      consuming today's dedup marker);
+    - a data-ready follow-up at ``HOT_TOP10_DATA_READY_SCHEDULE_TIME``
+      (default 15:35, OR-COR-3e7f490e narrowed): once the provider serves
+      today's rankings it delivers today's list; when the primary slot
+      already delivered today's data (or the provider still serves the
+      same stale list) it idles via the daily marker — no duplicate push.
 
     Scheduled occurrences always respect the trading-day gate and the daily
     dedup marker; ``--force-run`` only applies to the one-shot ``--hot-top10``
     CLI entry. The push honors the same CLI notification switch as that entry
     (``--no-notify`` silences the scheduled push too, OR-COR-bfd74f82).
-    Returns ``None`` (no job) when the feature is disabled.
+    Returns ``[]`` (no jobs) when the feature is disabled.
     """
+    from src.services.hot_top10_service import (
+        DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+    )
+
     if not getattr(config, 'hot_top10_enabled', False):
-        return None
+        return []
 
     if config_provider is None:
         config_provider = _reload_runtime_config
@@ -1724,11 +1740,25 @@ def _build_hot_top10_daily_job(
             hot_result.notification_status,
         )
 
-    return {
-        "task": hot_top10_task,
-        "schedule_time": config.hot_top10_schedule_time,
-        "name": "hot_top10",
-    }
+    return [
+        {
+            "task": hot_top10_task,
+            "schedule_time": config.hot_top10_schedule_time,
+            "name": "hot_top10",
+        },
+        {
+            "task": hot_top10_task,
+            "schedule_time": (
+                getattr(
+                    config,
+                    'hot_top10_data_ready_schedule_time',
+                    DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+                )
+                or DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME
+            ),
+            "name": "hot_top10_data_ready",
+        },
+    ]
 
 
 def main() -> int:
@@ -2140,15 +2170,17 @@ def main() -> int:
                     "name": "agent_event_monitor",
                 })
 
-            # Hot Top10 daily job (Issue #1936, default OFF): an auxiliary
-            # fail-open daily schedule at HOT_TOP10_SCHEDULE_TIME. It runs on
-            # A-share trading days only and dedups via its own daily marker;
-            # any failure is logged inside the service and never breaks the
-            # main analysis schedule. The push follows the CLI --no-notify
-            # switch, same as the one-shot --hot-top10 entry.
-            hot_top10_job = _build_hot_top10_daily_job(args, config)
-            extra_daily_jobs: List[Dict[str, Any]] = (
-                [hot_top10_job] if hot_top10_job is not None else []
+            # Hot Top10 daily jobs (Issue #1936, default OFF): auxiliary
+            # fail-open daily schedules at HOT_TOP10_SCHEDULE_TIME (primary)
+            # and HOT_TOP10_DATA_READY_SCHEDULE_TIME (data-ready follow-up
+            # after the 15:30 ranking data cut). They run on A-share trading
+            # days only and dedup via the service's own daily marker, so the
+            # follow-up delivers today's list once the data is ready and
+            # idles otherwise; any failure is logged inside the service and
+            # never breaks the main analysis schedule. The push follows the
+            # CLI --no-notify switch, same as the one-shot --hot-top10 entry.
+            extra_daily_jobs: List[Dict[str, Any]] = _build_hot_top10_daily_jobs(
+                args, config
             )
 
             schedule_kwargs = {
