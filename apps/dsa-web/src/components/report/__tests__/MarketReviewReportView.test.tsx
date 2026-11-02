@@ -417,6 +417,24 @@ describe('MarketReviewReportView enhanced structured fields (issue #1584)', () =
     expect(container).toBeTruthy();
   });
 
+  it('renders next-day plan notes even when only notes are present', () => {
+    render(
+      <MarketReviewReportView
+        payload={{
+          ...enhancedPayload,
+          nextDayPlan: { notes: '关注美联储议息纪要与周五非农数据。' },
+        }}
+        content="# 大盘复盘"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(screen.getByText('明日计划')).toBeInTheDocument();
+    expect(screen.getByText('备注')).toBeInTheDocument();
+    expect(screen.getByText('关注美联储议息纪要与周五非农数据。')).toBeInTheDocument();
+    expect(screen.queryByText('失效条件')).not.toBeInTheDocument();
+  });
+
   it('renders english labels for enhanced structured fields', () => {
     render(
       <MarketReviewReportView
@@ -424,6 +442,10 @@ describe('MarketReviewReportView enhanced structured fields (issue #1584)', () =
           ...enhancedPayload,
           language: 'en',
           summary: { temperature: 45, marketStatus: 'choppy divergence' },
+          nextDayPlan: {
+            ...enhancedPayload.nextDayPlan,
+            notes: 'Watch Fed minutes and Friday payrolls.',
+          },
         }}
         content="# Market Review"
         reportLanguage="en"
@@ -436,6 +458,8 @@ describe('MarketReviewReportView enhanced structured fields (issue #1584)', () =
     expect(screen.getByText('Style Rotation')).toBeInTheDocument();
     expect(screen.getByText('News Catalysts')).toBeInTheDocument();
     expect(screen.getByText('Next-Day Plan')).toBeInTheDocument();
+    expect(screen.getByText('Notes')).toBeInTheDocument();
+    expect(screen.getByText('Watch Fed minutes and Friday payrolls.')).toBeInTheDocument();
     expect(screen.getByText('Cross-Market Note')).toBeInTheDocument();
   });
 });

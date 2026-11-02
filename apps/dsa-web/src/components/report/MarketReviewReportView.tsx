@@ -353,6 +353,7 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   catalysts: string;
   nextDayPlan: string;
   invalidation: string;
+  notes: string;
   crossMarketNote: string;
   catalystDirection: Record<string, string>;
   digestedLabel: string;
@@ -390,6 +391,7 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     catalysts: '消息催化',
     nextDayPlan: '明日计划',
     invalidation: '失效条件',
+    notes: '备注',
     crossMarketNote: '跨市场参考',
     catalystDirection: { bullish: '利好', bearish: '利空', neutral: '中性' },
     digestedLabel: '已消化',
@@ -427,6 +429,7 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     catalysts: 'News Catalysts',
     nextDayPlan: 'Next-Day Plan',
     invalidation: 'Invalidation',
+    notes: 'Notes',
     crossMarketNote: 'Cross-Market Note',
     catalystDirection: { bullish: 'Bullish', bearish: 'Bearish', neutral: 'Neutral' },
     digestedLabel: 'Digested',
@@ -464,6 +467,7 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     catalysts: '뉴스 촉매',
     nextDayPlan: '익일 계획',
     invalidation: '무효 조건',
+    notes: '메모',
     crossMarketNote: '교차 시장 참고',
     catalystDirection: { bullish: '강세', bearish: '약세', neutral: '중립' },
     digestedLabel: '소화됨',
@@ -977,6 +981,13 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                             <span>{marketReviewText.invalidation}</span>
                             <span>{': '}</span>
                             <span>{plan.invalidation}</span>
+                          </p>
+                        ) : null}
+                        {plan.notes ? (
+                          <p className="break-words text-xs text-muted-text">
+                            <span>{marketReviewText.notes}</span>
+                            <span>{': '}</span>
+                            <span>{plan.notes}</span>
                           </p>
                         ) : null}
                       </div>
