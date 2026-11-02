@@ -203,6 +203,15 @@ class SocialSentimentService:
         # 1. Reddit per-ticker report (richest data)
         reddit_data = self.fetch_reddit_report(ticker_upper)
 
+        # The current per-stock endpoint signals "no data for this ticker" with
+        # HTTP 200 and {"ticker": ..., "found": false} (official openapi.json).
+        # An empty payload must not be formatted as evidence: treat that
+        # platform as having no data so it produces no context text and the
+        # pipeline does not register it as social evidence
+        # (PR #2452 review OR-COR-369e9579).
+        if isinstance(reddit_data, dict) and reddit_data.get("found") is False:
+            reddit_data = None
+
         # 2. X trending (filter for this ticker)
         x_entry = None
         x_trending = self.fetch_x_trending()

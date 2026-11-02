@@ -251,6 +251,71 @@ class TestGetSocialContext(unittest.TestCase):
         self.assertIn("120", result)  # Polymarket trades
 
 
+class TestRedditFoundFalseContract(unittest.TestCase):
+    """The current per-stock endpoint signals "no data" with HTTP 200 and
+    ``{"ticker": ..., "found": false}`` (official openapi.json).  An empty
+    payload must not be treated as valid social evidence (PR #2452 review
+    OR-COR-369e9579): no Reddit context text, no evidence registration.
+    """
+
+    @patch("src.services.social_sentiment_service.requests.get")
+    def test_found_false_only_yields_no_context_and_no_evidence(self, mock_get):
+        from src.services.empty_news import news_evidence_present
+
+        def side_effect(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if "/reddit/stocks/v1/stock/" in url:
+                # Official empty-data contract: 200 + found=false.
+                resp.json.return_value = {"ticker": "TSLA", "found": False}
+            else:
+                resp.json.return_value = {"trending": []}
+            return resp
+
+        mock_get.side_effect = side_effect
+
+        svc = SocialSentimentService(api_key="sk_live_test")
+        result = svc.get_social_context("TSLA")
+
+        # No Reddit evidence text may be produced for an empty payload.
+        self.assertIsNone(result)
+        self.assertFalse(news_evidence_present(result))
+
+    @patch("src.services.social_sentiment_service.requests.get")
+    def test_found_false_reddit_keeps_x_contributions(self, mock_get):
+        from src.services.empty_news import news_evidence_present
+
+        def side_effect(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if "/reddit/stocks/v1/stock/" in url:
+                resp.json.return_value = {"ticker": "TSLA", "found": False}
+            elif "/x/" in url:
+                resp.json.return_value = {
+                    "trending": [
+                        {"ticker": "TSLA", "buzz_score": 65, "sentiment_score": 0.2}
+                    ]
+                }
+            else:
+                resp.json.return_value = {"trending": []}
+            return resp
+
+        mock_get.side_effect = side_effect
+
+        svc = SocialSentimentService(api_key="sk_live_test")
+        result = svc.get_social_context("TSLA")
+
+        # X data is real evidence and must survive the empty Reddit payload.
+        self.assertIsNotNone(result)
+        self.assertIn("X (Twitter) Sentiment", result)
+        self.assertIn("Buzz Score: 65", result)
+        # The Reddit section must not claim community sentiment data.
+        self.assertNotIn("Reddit Community Sentiment", result)
+        self.assertIn("Reddit: No data available", result)
+        # Evidence still registers because X contributed real data.
+        self.assertTrue(news_evidence_present(result))
+
+
 class TestZeroValueHandling(unittest.TestCase):
     """Verify that zero-valued numeric fields (e.g. neutral sentiment) are preserved."""
 
