@@ -609,6 +609,36 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertIn("#### 领跌板块 Top 5", markdown)
         self.assertIn("| 1 | 煤炭 | -1.12% |", markdown)
 
+    def test_render_market_review_payload_markdown_appends_structured_concept_fallback(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "title": "2026-06-03 大盘复盘",
+                "language": "zh",
+                "sections": [
+                    {
+                        "key": "overview",
+                        "title": "Overview",
+                        "markdown": "> 今日指数强弱分化。",
+                    }
+                ],
+                "sectors": {
+                    "top": [{"name": "AI算力", "change_pct": 3.25}],
+                    "bottom": [],
+                },
+                "concepts": {
+                    "top": [{"name": "机器人概念", "change_pct": 4.2}],
+                    "bottom": [{"name": "转基因", "change_pct": -2.05}],
+                },
+            },
+            wrapper_title="🎯 大盘复盘",
+        )
+
+        self.assertIn("#### 领涨板块 Top 5", markdown)
+        self.assertIn("#### 领涨概念 Top 5", markdown)
+        self.assertIn("| 1 | 机器人概念 | +4.20% |", markdown)
+        self.assertIn("#### 领跌概念 Top 5", markdown)
+        self.assertIn("| 1 | 转基因 | -2.05% |", markdown)
+
     def test_render_market_review_payload_markdown_keeps_injected_chinese_sector_block_once(self) -> None:
         markdown = market_review_module._render_market_review_payload_markdown(
             {

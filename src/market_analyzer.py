@@ -1201,9 +1201,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 continue
             if not (_MARKET_REVIEW_STRUCTURED_KEYS & set(data.keys())):
                 continue
-            cleaned = text[: match.start()].rstrip()
+            head = text[: match.start()].rstrip()
             # 剥离紧邻附录、因附录而遗留的分隔线（如 “---”），保持正文自然收尾。
-            cleaned = re.sub(r"\n\s*-{3,}\s*$", "", cleaned).rstrip()
+            head = re.sub(r"\n\s*-{3,}\s*$", "", head).rstrip()
+            # Issue #1584: 仅移除附录 fence 本身，保留其后文本（如数据注入追加的
+            # 兜底板块/概念表），避免剥离附录时把 fence 之后的内容一并截断。
+            tail = text[match.end():].strip()
+            cleaned = f"{head}\n\n{tail}" if tail else head
             return cleaned, data
         return text, None
 

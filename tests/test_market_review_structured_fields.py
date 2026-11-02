@@ -255,6 +255,27 @@ class TestPayloadStructuredFields:
         assert "catalysts" not in payload
         assert "ma_status" not in payload["indices"][0]
 
+    def test_injected_sector_fallback_survives_appendix_extraction(self):
+        """OR-COR-b33fa541：附录在末尾且无板块标题时，注入到 fence 之后的兜底表不得被剥离截断。"""
+        overview = _cn_overview(
+            top_sectors=[{"name": "半导体", "change_pct": 3.25}],
+            bottom_sectors=[{"name": "煤炭", "change_pct": -1.12}],
+            top_concepts=[{"name": "AI算力", "change_pct": 5.4}],
+            bottom_concepts=[{"name": "转基因", "change_pct": -2.05}],
+        )
+        ma = _make_analyzer(report_text=_appendix_report({"summary": {"temperature": 45}}))
+        ma.get_market_overview = MagicMock(return_value=overview)
+
+        result = ma._run_daily_review_parts()
+
+        # 附录 fence 已剥离，但 fence 之后注入的兜底板块/概念表必须完整保留。
+        assert "```json" not in result.report
+        assert "### 三、板块主线" in result.report
+        assert "行业板块领涨 Top 5" in result.report
+        assert "概念板块领涨 Top 5" in result.report
+        assert "AI算力" in result.report
+        assert "AI算力" in result.structured_payload["markdown_report"]
+
     def test_catalyst_direction_and_digested_localized_values_are_normalized(self):
         partial = {
             "catalysts": [
