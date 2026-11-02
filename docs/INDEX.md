@@ -14,6 +14,7 @@
 | 使用 Bot / IM 接入 | [Bot 命令与接入](bot-command.md) | [Bot 平台配置](bot/)、[Grok Bot 集成](grok-bot-integration.md) |
 | 排查运行问题 | [FAQ](FAQ.md) | [更新日志](CHANGELOG.md) |
 | 处理数据源失败或降级 | [数据源稳定性与故障处理图示](data-source-stability.md) | [FAQ](FAQ.md) |
+| 确认某个市场支持哪些数据 | [市场支持与边界](market-support.md) | [数据中心](data-center-diagnostics.md) |
 | 参与开发或提交 PR | [贡献指南](CONTRIBUTING.md) | [API 规格](architecture/api_spec.json) |
 
 ## 快速开始
@@ -26,6 +27,7 @@
 | [FAQ](FAQ.md) | 常见配置、模型、通知、部署和运行问题 |
 | [数据源稳定性与故障处理图示](data-source-stability.md) | Tushare、TickFlow、AkShare、Efinance、YFinance、Longbridge 等已接入源的使用场景、fallback 链路和推荐配置 |
 | [数据中心](data-center-diagnostics.md) | 只读 Provider 能力、数据集质量、精确市场支持与运行时优先级 |
+| [市场支持与边界](market-support.md) | A股/港股/美股/日股/韩股/台股的可用数据、suffix 规则、降级边界与不承诺项 |
 | [更新日志](CHANGELOG.md) | 版本变化、能力调整和迁移说明 |
 
 ## 配置

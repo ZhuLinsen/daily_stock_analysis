@@ -137,12 +137,12 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.ai_model.AGENT_LITELLM_MODEL': {
     title: 'Agent 主模型',
     summary: '为问股、策略 Agent 等 Agent 链路单独指定模型。',
-    usage: '使用 provider/model 格式。留空时继承普通分析主模型；裸模型名会按兼容逻辑归一到 openai/<model>。选择 Codex 本地 Agent 时保留该值，但 Codex 问股不使用它。',
+    usage: '使用 provider/model 格式。留空时继承普通分析主模型；裸模型名会按兼容逻辑归一到 openai/<model>。',
     valueNotes: [
       '适合给 Agent 使用推理能力更强或上下文更长的模型。',
       '该字段只影响 Agent 链路，不会改变普通个股分析的主模型。',
     ],
-    impact: ['影响默认模型问股、策略选择和相关工具调用；不影响 Codex 本地 Agent。'],
+    impact: ['影响默认模型问股、策略选择和相关工具调用。'],
     notes: ['请确认该模型存在于已启用渠道、YAML 路由或 legacy provider key 可达范围内。'],
   },
   'settings.ai_model.LITELLM_FALLBACK_MODELS': {
@@ -866,21 +866,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.agent.AGENT_BACKEND': {
     title: '问股生成方式',
     showFieldKey: false,
-    summary: '选择问股 Chat 使用默认模型配置，还是调用运行 DSA 设备上的 Codex。',
-    usage: '通常保持“自动（推荐）”。自动模式不会启用实验性的 Codex；只有确认运行 DSA 的设备已安装并登录 Codex 后，才选择 Codex 本地 Agent。',
-    valueNotes: [
-      '“自动（推荐）”与“默认模型配置”都继续使用现有模型和 API 配置。',
-      '“Codex 本地 Agent（实验）”目前只支持单 Agent 问股，不支持 Codex Multi Agent 或 Codex Deep Research。',
-      'Codex 本地 Agent 当前支持 macOS、Linux，以及完整运行于 WSL 的 DSA 后端；暂不支持原生 Windows 后端。',
-      '本地 Agent 不等于离线模型；股票问题和工具结果可能由 Codex 自身配置的服务处理。',
-    ],
-    impact: ['只影响问股 Chat，不改变普通报告、定时分析、现有 Multi Agent 或 Deep Research。'],
-    notes: [
-      'DSA 不读取或保存 Codex 登录凭据，Codex 进程使用自己的登录状态。',
-      '设置页状态只检查配置、Codex 命令和所需协议，不会登录、调用模型或读取股票数据；显示“可以尝试”不代表已验证可用。',
-      '保存后可直接在问股页提问；第一次问题就是第一次真实执行，若 Codex 登录或服务不可用，页面会保留问题并显示原因。',
-      '想恢复原有行为，选择“自动（推荐）”并保存。',
-    ],
+    summary: '选择问股 Chat 的默认模型执行方式。',
+    usage: '通常保持“自动（推荐）”；自动与默认模型配置都使用现有 LiteLLM 路由。',
+    valueNotes: ['Codex App Server 已移除。旧值仍显示，须主动选择合法值并保存；不会自动切换模型或账号。'],
+    impact: ['只影响问股 Chat；独立 Codex CLI 普通报告、定时分析、Multi Agent 和 Deep Research 保持原路径。'],
+    notes: ['状态与草稿预览只检查配置，不启动外部命令或调用模型。显式保存或导入退役值会被拒绝，无关设置保存不受旧值影响。'],
     examples: [],
   },
   'settings.agent.AGENT_GENERATION_BACKEND': {
@@ -902,13 +892,13 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.agent.AGENT_MAX_STEPS': {
     title: 'Agent 最大推理步数',
-    summary: '控制默认模型 Agent 的推理步数上限，以及 Codex 单次问股可调用工具的次数上限。',
-    usage: '使用默认模型时，默认值让每个子 Agent 使用各自预设步数；调高后统一提升，调低后裁剪预设步数。使用 Codex 时，这个值限制一次问股最多可以调用多少次数据工具。',
+    summary: '控制默认模型 Agent 的推理步数上限。',
+    usage: '使用默认模型时，默认值让每个子 Agent 使用各自预设步数；调高后统一提升，调低后裁剪预设步数。',
     valueNotes: [
       '步数越高，推理越深入，但耗时和 token 消耗也越大。',
       '部分复杂场景（如多策略编排）可能需要更高步数。',
     ],
-    impact: ['影响默认模型 Agent 的推理深度，或 Codex 单次问股的数据工具调用次数，以及相应耗时和 token 消耗。'],
+    impact: ['影响默认模型 Agent 的推理深度、耗时和 token 消耗。'],
     notes: ['设为 0 或极低值可能导致推理不完整。'],
   },
   'settings.agent.AGENT_SKILLS': {
@@ -1037,7 +1027,6 @@ const settingsHelpZhCN: SettingsHelpMap = {
     notes: [
       '该功能不处理 provider trace、thinking blocks、tool calls 或 tool results，也不改变同轮工具调用透传。',
       '该配置只影响问股可见历史压缩，不改变 LLM provider、模型、Base URL、保存清理或运行时优先级语义。',
-      '当前该 LLM 压缩只适用于“默认模型”问股；Codex Agent 始终使用最近 20 条用户可见对话，不会调用 Agent 主模型生成摘要。保存的压缩设置不会被清空，切回默认模型后继续生效。',
     ],
   },
   'settings.agent.event_monitor': {
@@ -1402,9 +1391,9 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.ai_model.AGENT_LITELLM_MODEL': {
     title: 'Agent Primary Model',
     summary: 'Sets a dedicated model for Agent workflows.',
-    usage: 'Use provider/model format. When empty, Agent inherits the regular primary model. The value is preserved but not used by Codex local Agent Chat.',
+    usage: 'Use provider/model format. When empty, Agent inherits the regular primary model.',
     valueNotes: ['Useful when Agent needs stronger reasoning or longer context.', 'Only affects Agent flows.'],
-    impact: ['Affects default-model Agent chat, strategy selection, and Agent tool calls; it does not affect Codex local Agent.'],
+    impact: ['Affects default-model Agent chat, strategy selection, and Agent tool calls.'],
     notes: ['Make sure the model is reachable through enabled channels, YAML routing, or legacy provider keys.'],
   },
   'settings.ai_model.LITELLM_FALLBACK_MODELS': {
@@ -2092,23 +2081,13 @@ const settingsHelpEnUS: SettingsHelpMap = {
     notes: ['Agent mode consumes more tokens and time; best for scenarios requiring deep reasoning.'],
   },
   'settings.agent.AGENT_BACKEND': {
-    title: 'Ask-Stock Method',
+    title: 'Ask-stock method',
     showFieldKey: false,
-    summary: 'Choose whether ask-stock Chat uses the default model configuration or Codex on the device running DSA.',
-    usage: 'Keep Auto (recommended) unless Codex is installed and signed in on the device running DSA. Auto never enables the experimental Codex route.',
-    valueNotes: [
-      'Auto (recommended) and Default model settings both keep the existing model and API route.',
-      'Codex local Agent (experimental) currently supports single-agent Chat only, not Codex Multi Agent or Codex Deep Research.',
-      'Codex local Agent currently supports macOS, Linux, and a DSA backend running completely inside WSL; native Windows backends are not supported yet.',
-      'A local Agent is not an offline model; stock questions and tool results may be processed by services configured in Codex.',
-    ],
-    impact: ['Only affects ask-stock Chat. Regular reports, scheduled analysis, existing Multi Agent, and Deep Research stay unchanged.'],
-    notes: [
-      'DSA does not read or store Codex credentials. The Codex process uses its own sign-in state.',
-      'Settings checks only configuration, the Codex command, and the required protocol. It does not sign in, call a model, or read stock data; “Can try” is not a verified-success claim.',
-      'After saving, ask directly in Chat. The first question is the first real execution; if sign-in or the Codex service fails, Chat preserves the question and explains what happened.',
-      'To restore the original behavior, select Auto (recommended) and save.',
-    ],
+    summary: 'Choose the default-model execution method for ask-stock Chat.',
+    usage: 'Keep Auto (recommended). Both Auto and Default model settings use the existing LiteLLM route.',
+    valueNotes: ['Codex App Server has been removed. Existing values stay visible until you choose a supported value and save; models and accounts are never switched automatically.'],
+    impact: ['Only affects ask-stock Chat. Standalone Codex CLI reports, scheduled analysis, Multi Agent, and Deep Research keep their existing paths.'],
+    notes: ['Status and draft previews inspect configuration without external commands or models. Explicitly saving or importing the retired value is rejected; unrelated settings can still be saved.'],
     examples: [],
   },
   'settings.agent.AGENT_GENERATION_BACKEND': {
@@ -2130,13 +2109,13 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.agent.AGENT_MAX_STEPS': {
     title: 'Agent Max Steps',
-    summary: 'Caps default-model Agent reasoning steps and Codex tool calls per ask-stock turn.',
-    usage: 'With the default-model Agent, the default lets each sub-agent keep its preset; raising the value lifts all sub-agents, while lowering it caps larger presets. With Codex, the value limits how many data-tool calls one ask-stock turn may make.',
+    summary: 'Caps default-model Agent reasoning steps.',
+    usage: 'With the default-model Agent, the default lets each sub-agent keep its preset; raising the value lifts all sub-agents, while lowering it caps larger presets.',
     valueNotes: [
       'Higher steps enable deeper reasoning but increase time and token cost.',
       'Complex scenarios (e.g. multi-strategy orchestration) may need higher values.',
     ],
-    impact: ['Affects default-model reasoning depth or Codex data-tool calls per turn, together with duration and token consumption.'],
+    impact: ['Affects default-model reasoning depth, duration and token consumption.'],
     notes: ['Very low values may cause incomplete reasoning.'],
   },
   'settings.agent.AGENT_SKILLS': {
@@ -2265,7 +2244,6 @@ const settingsHelpEnUS: SettingsHelpMap = {
     notes: [
       'This feature does not process provider traces, thinking blocks, tool calls, or tool results, and does not change same-turn tool passthrough.',
       'It only affects visible ask-stock history compression; it does not change LLM provider, model, Base URL, save cleanup, or runtime priority semantics.',
-      'This LLM compression currently applies only to Default model ask-stock. Codex Agent always uses the 20 most recent user-visible messages and does not call the Agent primary model for summaries. The saved setting is retained and takes effect again after switching back to Default model.',
     ],
   },
   'settings.agent.event_monitor': {

@@ -2097,10 +2097,21 @@ class SystemConfigService:
         reload_triggered = False
         if reload_now:
             try:
-                Config.reset_instance()
-                self._reload_runtime_singletons()
-                setup_env(override=True)
-                config = Config.get_instance()
+                if submitted_keys == {"STOCK_LIST"}:
+                    # Watchlist edits need no global dotenv/singleton reload: it
+                    # would also overwrite unrelated container env overrides.
+                    # STOCK_LIST itself must still be mirrored, because
+                    # refresh_stock_list() falls back to os.environ whenever the
+                    # file value is empty -- without this a cleared watchlist
+                    # would resurrect the previous list from the environment.
+                    os.environ["STOCK_LIST"] = self._manager.read_config_map().get("STOCK_LIST", "")
+                    config = Config.get_instance()
+                    config.refresh_stock_list()
+                else:
+                    Config.reset_instance()
+                    self._reload_runtime_singletons()
+                    setup_env(override=True)
+                    config = Config.get_instance()
                 warnings.extend(config.validate())
                 reload_triggered = True
             except Exception as exc:  # pragma: no cover - defensive branch
@@ -2425,6 +2436,86 @@ class SystemConfigService:
             or bool(cls._GENERATION_BACKEND_STATUS_LLM_CHANNEL_RE.fullmatch(normalized))
         )
 
+    # Keys that decide whether ask-stock is served over LiteLLM at all.
+    _AGENT_LLM_ROUTE_KEYS = ("AGENT_BACKEND", "AGENT_GENERATION_BACKEND")
+    # Keys that switch regular stock analysis into Agent mode. See
+    # src/core/pipeline.py, which reads config.agent_mode and config.agent_skills.
+    _AGENT_ANALYSIS_KEYS = ("AGENT_MODE", "AGENT_SKILLS")
+
+    @classmethod
+    def _update_activates_agent_path(
+        cls,
+        effective_map: Dict[str, str],
+        updated_keys: Set[str],
+    ) -> bool:
+        """Whether this update turns an Agent path on that reads the LLM graph.
+
+        There are two independent entries, and both resolve their model through
+        the LLM channel graph, so both have to be validated like any other
+        model-affecting change:
+
+        - Ask-stock over LiteLLM, decided by AGENT_BACKEND /
+          AGENT_GENERATION_BACKEND.
+        - Regular stock analysis in Agent mode, decided by AGENT_MODE or by
+          AGENT_SKILLS naming something other than "all". That path goes through
+          build_agent_executor and LLMToolAdapter directly and is not governed by
+          AGENT_BACKEND, so it needs its own check.
+
+        Without this, a save that only flips one of those keys can activate a
+        model dependency that is already broken: the save succeeds, the path
+        switches, and the analysis then fails with no error at save time.
+
+        Updates that do not activate these paths stay exempt from LLM checks.
+        Explicit retired backend values are still rejected by field validation;
+        an existing retired value does not block an unrelated partial save.
+        """
+        if cls._update_activates_litellm_agent(effective_map, updated_keys):
+            return True
+        if not any(key in updated_keys for key in cls._AGENT_ANALYSIS_KEYS):
+            return False
+        # Mirror the runtime parsing exactly so the gate cannot disagree with
+        # what the pipeline will actually do.
+        if "AGENT_MODE" in updated_keys:
+            if str(effective_map.get("AGENT_MODE") or "").strip().lower() == "true":
+                return True
+        if "AGENT_SKILLS" in updated_keys:
+            skills = [
+                part.strip()
+                for part in str(effective_map.get("AGENT_SKILLS") or "").split(",")
+                if part.strip()
+            ]
+            if skills and skills != ["all"]:
+                return True
+        return False
+
+    @classmethod
+    def _update_activates_litellm_agent(
+        cls,
+        effective_map: Dict[str, str],
+        updated_keys: Set[str],
+    ) -> bool:
+        """Whether this update turns the LiteLLM ask-stock path on.
+
+        Ask-stock over LiteLLM resolves its model through the LLM channel graph,
+        so switching to it has to be validated like any other model-affecting
+        change -- otherwise a save that only flips the backend can activate a
+        model dependency that is already broken, and ask-stock stops working
+        with no error at save time.
+
+        An unchanged retired chat backend does not activate the LiteLLM path.
+        Attempts to explicitly save that backend are rejected independently by
+        field validation, even when this graph check is skipped.
+        """
+        if not any(key in updated_keys for key in cls._AGENT_LLM_ROUTE_KEYS):
+            return False
+        chat_backend = str(effective_map.get("AGENT_BACKEND") or "auto").strip().lower()
+        if chat_backend not in {"auto", "litellm"}:
+            return False
+        generation_backend = str(
+            effective_map.get("AGENT_GENERATION_BACKEND") or "auto"
+        ).strip().lower()
+        return generation_backend in {"auto", "litellm"}
+
     @classmethod
     def _filter_generation_backend_items(
         cls,
@@ -2563,6 +2654,14 @@ class SystemConfigService:
         data_type = field_schema.get("data_type", "string")
         validation = field_schema.get("validation", {}) or {}
         is_required = field_schema.get("is_required", False)
+
+        if key == "AGENT_BACKEND" and value.strip().lower() == "codex_app_server":
+            from src.config import AGENT_BACKEND_REMOVED_MESSAGE
+
+            return [{
+                "key": key, "code": "backend_removed", "message": AGENT_BACKEND_REMOVED_MESSAGE,
+                "severity": "error", "expected": "auto or litellm", "actual": value,
+            }]
 
         # Empty values are valid for non-required fields (skip type validation)
         if not value.strip() and not is_required:
@@ -4505,41 +4604,6 @@ class SystemConfigService:
         """Validate dependencies across multiple keys."""
         issues: List[Dict[str, Any]] = []
 
-        agent_backend = (effective_map.get("AGENT_BACKEND") or "auto").strip().lower()
-        agent_arch = (effective_map.get("AGENT_ARCH") or "single").strip().lower()
-        if agent_backend == "codex_app_server" and agent_arch != "single" and (
-            {"AGENT_BACKEND", "AGENT_ARCH"} & updated_keys
-        ):
-            issues.append(
-                {
-                    "key": "AGENT_ARCH",
-                    "code": "unsupported_agent_arch",
-                    "message": "Codex 本地 Agent 当前只支持单 Agent 问股，请切换为 single。",
-                    "severity": "error",
-                    "expected": "single",
-                    "actual": agent_arch,
-                }
-            )
-
-        timeout_raw = (effective_map.get("AGENT_ORCHESTRATOR_TIMEOUT_S") or "600").strip()
-        try:
-            agent_timeout = int(timeout_raw)
-        except ValueError:
-            agent_timeout = None
-        if agent_backend == "codex_app_server" and agent_timeout is not None and agent_timeout <= 0 and (
-            {"AGENT_BACKEND", "AGENT_ORCHESTRATOR_TIMEOUT_S"} & updated_keys
-        ):
-            issues.append(
-                {
-                    "key": "AGENT_ORCHESTRATOR_TIMEOUT_S",
-                    "code": "codex_timeout_required",
-                    "message": "Codex 本地 Agent 必须设置大于 0 的整体时限，确保每次问股都会结束。",
-                    "severity": "error",
-                    "expected": ">0 when AGENT_BACKEND=codex_app_server",
-                    "actual": timeout_raw,
-                }
-            )
-
         token_value = (effective_map.get("TELEGRAM_BOT_TOKEN") or "").strip()
         chat_id_value = (effective_map.get("TELEGRAM_CHAT_ID") or "").strip()
         if token_value and not chat_id_value and (
@@ -4613,13 +4677,24 @@ class SystemConfigService:
                 }
             )
 
-        issues.extend(
-            SystemConfigService._validate_llm_channel_map(
-                effective_map=effective_map,
-                updated_keys=updated_keys,
+        # A partial update must not be blocked by existing, unrelated LLM
+        # errors. Empty input remains a full LLM check for status diagnostics.
+        if (
+            not updated_keys
+            or SystemConfigService._update_activates_agent_path(effective_map, updated_keys)
+            or any(
+                SystemConfigService._is_generation_backend_status_key(key)
+                or key in {"AGENT_LITELLM_MODEL", "VISION_MODEL"}
+                for key in updated_keys
             )
-        )
-        issues.extend(SystemConfigService._validate_llm_runtime_selection(effective_map=effective_map))
+        ):
+            issues.extend(
+                SystemConfigService._validate_llm_channel_map(
+                    effective_map=effective_map,
+                    updated_keys=updated_keys,
+                )
+            )
+            issues.extend(SystemConfigService._validate_llm_runtime_selection(effective_map=effective_map))
 
         if parse_env_bool(effective_map.get("NOTIFICATION_DAILY_DIGEST_ENABLED"), default=False):
             issues.append(

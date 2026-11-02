@@ -211,20 +211,15 @@ vi.mock('../../components/settings', async () => {
   AgentBackendStatusPanel: ({
     items,
     selectedBackend,
-    agentArch,
-    onUseSingleAgent,
   }: {
     items: Array<{ key: string; value: string }>;
     selectedBackend: string;
-    agentArch: string;
-    onUseSingleAgent: () => void;
   }) => (
     <div data-testid="agent-backend-status-panel-mock">
       <span data-testid="agent-backend-status-items">
         {items.map((item) => `${item.key}=${item.value}`).join('|')}
       </span>
-      <span>{selectedBackend}:{agentArch}</span>
-      <button type="button" onClick={onUseSingleAgent}>切换为单 Agent</button>
+      <span>{selectedBackend}</span>
     </div>
   ),
   NotificationTestPanel: ({ items }: { items: Array<{ key: string; value: string }> }) => (
@@ -1172,7 +1167,7 @@ describe('SettingsPage', () => {
     expect(settingsPanelErrorBoundary).toHaveBeenCalledWith('Agent 设置');
   });
 
-  it('integrates one Agent backend selector and keeps Codex limits editable as unsaved draft actions', () => {
+  it('keeps retired settings visible for correction without an architecture workaround', () => {
     const configState = buildSystemConfigState();
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
       activeCategory: 'agent',
@@ -1202,14 +1197,13 @@ describe('SettingsPage', () => {
     expect(screen.getByTestId('settings-field-AGENT_MAX_STEPS')).toHaveAttribute('data-disabled', 'false');
     expect(screen.getByTestId('settings-field-AGENT_ARCH')).toHaveAttribute(
       'data-issues',
-      'unsupported_agent_arch',
+      '',
     );
     expect(screen.getByTestId('agent-backend-status-items')).toHaveTextContent(
       'AGENT_BACKEND=codex_app_server|AGENT_ARCH=multi',
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '切换为单 Agent' }));
-    expect(setDraftValue).toHaveBeenCalledWith('AGENT_ARCH', 'single');
+    expect(screen.queryByRole('button', { name: '切换为单 Agent' })).not.toBeInTheDocument();
     expect(save).not.toHaveBeenCalled();
   });
 

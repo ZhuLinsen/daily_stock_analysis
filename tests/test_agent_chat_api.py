@@ -3,7 +3,6 @@
 
 import asyncio
 import json
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -40,7 +39,7 @@ def _litellm_config(**overrides):
     return SimpleNamespace(**values)
 
 
-def _codex_config(**overrides):
+def _retired_config(**overrides):
     values = {
         "agent_backend": "codex_app_server",
         "agent_arch": "single",
@@ -71,7 +70,7 @@ def _executor(result=None) -> MagicMock:
     result = result or _result()
     backend = MagicMock()
     backend.backend_id = result.backend
-    backend.runtime_owns_loop = result.backend == "codex_app_server"
+    backend.runtime_owns_loop = False
     backend.run.return_value = AgentRunResult(
         success=result.success, final_answer=result.content, backend=result.backend,
         error_message=result.error, error_code=result.error_code, messages=[],
@@ -359,26 +358,12 @@ def test_chat_session_messages_returns_null_when_state_is_missing(tmp_path: Path
     }
 
 
-def test_codex_agent_chat_rejects_non_streaming_entrypoint(tmp_path: Path) -> None:
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
-         patch("api.v1.endpoints.agent._build_executor") as build_executor:
-        response = TestClient(create_app(static_dir=tmp_path / "static")).post(
-            "/api/v1/agent/chat",
-            json={"message": "分析 600519"},
-        )
-
-    assert response.status_code == 400
-    assert response.json()["error"] == "capability_unsupported"
-    build_executor.assert_not_called()
-
-
 def test_agent_status_exposes_only_compatibility_fields() -> None:
     payload = {
-        "backend": "codex_app_server",
+        "backend": "litellm",
         "available": True,
-        "experimental": True,
-        "version": "codex-cli test",
+        "experimental": False,
+        "version": None,
         "error_code": None,
         "message": None,
         "stderr_preview": "must-not-leak",
@@ -388,17 +373,17 @@ def test_agent_status_exposes_only_compatibility_fields() -> None:
         response = asyncio.run(agent_endpoint.get_agent_status())
 
     assert response.model_dump() == {
-        "backend": "codex_app_server",
+        "backend": "litellm",
         "available": True,
-        "experimental": True,
-        "version": "codex-cli test",
+        "experimental": False,
+        "version": None,
         "error_code": None,
         "message": None,
     }
 
 
 def test_agent_models_is_compatible_empty_list_for_codex() -> None:
-    with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()):
+    with patch("api.v1.endpoints.agent.get_config", return_value=_retired_config()):
         response = asyncio.run(agent_endpoint.get_agent_models())
     assert response.models == []
 
@@ -432,11 +417,11 @@ def test_agent_models_does_not_hide_unexpected_backend_resolution_errors() -> No
 
 
 def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> None:
-    executor = _executor(_result(backend="codex_app_server"))
+    executor = _executor(_result(backend="litellm"))
 
     async def exercise() -> dict:
         with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
-             patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
+             patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
              patch("api.v1.endpoints.agent._get_agent_chat_status", side_effect=AssertionError("status probe repeated")), \
              patch("api.v1.endpoints.agent._build_executor", return_value=executor):
             response = await agent_endpoint.agent_chat_stream(
@@ -464,7 +449,7 @@ def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> N
             return first
 
     first_event = asyncio.run(exercise())
-    assert first_event["type"] == "accepted" and first_event["backend"] == "codex_app_server"
+    assert first_event["type"] == "accepted" and first_event["backend"] == "litellm"
     assert first_event["request_id"] == "accepted-request" and first_event["session_id"] == "accepted-session"
     assert first_event["session_state_version"] == 1 and first_event["session_generation"]
     assert first_event["active_stock_context"]["canonical_id"] == "AAPL"
@@ -546,34 +531,6 @@ def test_stream_all_invalid_skills_inherit_without_clearing_state(tmp_path: Path
     ]
 
 
-def test_codex_stream_skill_resolution_failure_emits_error_and_unregisters_request() -> None:
-    request_id = "skill-resolution-failure"
-    session_service = MagicMock(spec=AgentChatSessionService)
-    session_service.prepare_session_turn.side_effect = RuntimeError("database read failed")
-
-    try:
-        with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()):
-            async def exercise():
-                response = await agent_endpoint.agent_chat_stream(
-                    agent_endpoint.ChatRequest(
-                        message="question",
-                        session_id="failed-session",
-                        request_id=request_id,
-                    ),
-                    session_service=session_service,
-                )
-                return [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in response.body_iterator]
-            events = asyncio.run(exercise())
-        assert [event["type"] for event in events] == ["error"]
-        assert events[0]["error_code"] == "request_not_accepted"
-
-        with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
-            assert request_id not in agent_endpoint._ACTIVE_CODEX_STREAMS
-    finally:
-        with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
-            agent_endpoint._ACTIVE_CODEX_STREAMS.pop(request_id, None)
-
-
 @pytest.mark.parametrize("failure", ["context preparation failed", "database write failed"])
 def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(failure: str) -> None:
     executor = _executor()
@@ -581,7 +538,7 @@ def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(f
 
     async def exercise() -> list[dict]:
         with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
-             patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
+             patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
              patch("api.v1.endpoints.agent._build_executor", return_value=executor):
             response = await agent_endpoint.agent_chat_stream(
                 agent_endpoint.ChatRequest(message="question", session_id="failed-session"),
@@ -599,9 +556,9 @@ def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(f
 
 
 def test_server_selects_actual_backend_for_stream() -> None:
-    executor = _executor(_result(backend="codex_app_server"))
+    executor = _executor(_result(backend="litellm"))
     with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
-         patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
+         patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
         async def exercise() -> dict:
             response = await agent_endpoint.agent_chat_stream(
@@ -616,49 +573,7 @@ def test_server_selects_actual_backend_for_stream() -> None:
         first_event = asyncio.run(exercise())
 
     assert first_event["type"] == "accepted"
-    assert first_event["backend"] == "codex_app_server"
-
-
-def test_agent_chat_stream_cancels_backend_when_generator_closes() -> None:
-    executor = _executor(_result(backend="codex_app_server", success=False, error_code="cancelled"))
-
-    async def exercise() -> dict:
-        with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
-             patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
-             patch("api.v1.endpoints.agent._build_executor", return_value=executor):
-            response = await agent_endpoint.agent_chat_stream(
-                agent_endpoint.ChatRequest(message="question", session_id="cancel-session"),
-                session_service=AgentChatSessionService(),
-            )
-            iterator = response.body_iterator
-            accepted = json.loads((await anext(iterator)).removeprefix("data: ").strip())
-            await iterator.aclose()
-            return accepted
-
-    accepted = asyncio.run(exercise())
-    assert accepted["type"] == "accepted"
-    assert accepted["backend"] == "codex_app_server"
-
-
-def test_codex_stop_waits_for_cleanup_and_emits_one_terminal_event() -> None:
-    cancel_event = threading.Event()
-    with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
-        agent_endpoint._ACTIVE_CODEX_STREAMS["cancel-request"] = cancel_event
-    try:
-        assert asyncio.run(agent_endpoint.cancel_agent_chat_stream("cancel-request")) == {
-            "accepted": True,
-            "request_id": "cancel-request",
-        }
-        assert cancel_event.is_set()
-    finally:
-        with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
-            agent_endpoint._ACTIVE_CODEX_STREAMS.pop("cancel-request", None)
-
-
-def test_codex_stop_rejects_unknown_or_finished_request() -> None:
-    with pytest.raises(Exception) as exc_info:
-        asyncio.run(agent_endpoint.cancel_agent_chat_stream("missing-request"))
-    assert getattr(exc_info.value, "status_code", None) == 404
+    assert first_event["backend"] == "litellm"
 
 
 def test_litellm_stream_keeps_existing_execution_signature(tmp_path: Path) -> None:
@@ -754,3 +669,15 @@ def test_codex_chat_availability_does_not_make_research_available() -> None:
          pytest.raises(Exception) as exc_info:
         asyncio.run(agent_endpoint.agent_research(agent_endpoint.ResearchRequest(question="why")))
     assert getattr(exc_info.value, "status_code", None) == 400
+
+
+@pytest.mark.parametrize("frontend, expected_status", [(False, 404), (True, 405)])
+def test_retired_cancel_endpoint_is_not_registered(tmp_path, frontend, expected_status):
+    if frontend:
+        (tmp_path / "index.html").write_text("<html></html>")
+    app = create_app(static_dir=tmp_path)
+    assert all(getattr(route, "path", None) != "/api/v1/agent/chat/stream/{request_id}/cancel"
+               for route in app.routes)
+    # Existing SPA GET catch-all returns method-not-allowed for any unknown POST.
+    client = TestClient(app)
+    assert client.post("/api/v1/agent/chat/stream/old-request/cancel").status_code == expected_status

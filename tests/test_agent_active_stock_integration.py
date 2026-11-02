@@ -1219,18 +1219,28 @@ def test_actual_chat_api_auth_runs_before_clarification_and_identity(actual_chat
     assert snapshot["session_generation"] is None and snapshot["messages"] == []
 
 
-@pytest.mark.parametrize("stream, arch", [(False, "single"), (True, "multi")])
-def test_actual_chat_api_clarification_preserves_codex_unsupported_boundary(actual_chat_api, db, stream, arch):
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("message", ["分析sh000001", "风险呢"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_actual_chat_api_retired_backend_rejects_before_acceptance(actual_chat_api, db, stream, message, existing):
     client, requests, config = actual_chat_api
+    from src.services.agent_chat_session_service import AgentChatSessionService
+
+    service = AgentChatSessionService(db)
+    session_id = "retired-session"
+    if existing:
+        service.commit_user_turn(service.prepare_session_turn(config, session_id, "分析600519", ["ma_golden_cross"]))
+    before = db.read_chat_session_snapshot(session_id)
     config.agent_backend = "codex_app_server"
-    config.agent_arch = arch
     response = client.post("/api/v1/agent/chat" + ("/stream" if stream else ""), json={
-        "session_id": "unsupported-clarify", "message": "风险呢", "skills": [],
+        "session_id": session_id, "message": message, "skills": [],
+        **({"session_generation": before["session_generation"]} if existing else {}),
     })
     assert response.status_code == 400 and requests == []
-    assert response.json()["error"] == ("unsupported_agent_arch" if arch == "multi" else "capability_unsupported")
-    snapshot = db.read_chat_session_snapshot("unsupported-clarify")
-    assert snapshot["session_generation"] is None and snapshot["messages"] == []
+    assert response.json()["error"] == "backend_removed"
+    assert "已移除" in response.json()["message"]
+    assert "text/event-stream" not in response.headers.get("content-type", "")
+    assert db.read_chat_session_snapshot(session_id) == before
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -1265,35 +1275,6 @@ def test_actual_multi_api_general_question_keeps_null_and_real_guard_denies_gues
     assert [row["role"] for row in current["messages"]] == ["user", "assistant"]
 
 
-@pytest.mark.parametrize("error_code", [None, "backend_failure", "timeout", "cancelled"])
-def test_actual_codex_factory_api_consumes_strict_accepted_snapshot_without_real_runtime(
-    actual_chat_api, db, monkeypatch, error_code,
-):
-    from src.agent.agent_backend import AgentRunResult
-    from src.agent.codex_agent_backend import CodexAgentBackend
-
-    client, requests, config = actual_chat_api
-    config.agent_backend = "codex_app_server"
-    calls = []
-    def controlled_runtime(_self, request):
-        calls.append(request)
-        return AgentRunResult(success=error_code is None, final_answer="fixture" if error_code is None else "",
-                              backend="codex_app_server", error_code=error_code, error_message=error_code)
-    monkeypatch.setattr(CodexAgentBackend, "run", controlled_runtime)
-    response = client.post("/api/v1/agent/chat/stream", json={
-        "session_id": "codex-api-state", "message": "分析sh000001", "skills": [],
-    })
-    assert response.status_code == 200 and requests == [] and len(calls) == 1
-    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
-    assert [event["type"] for event in events] == ["accepted", "done"]
-    assert events[0]["active_stock_context"]["canonical_id"] == "sh000001"
-    assert events[0]["active_stock_context"]["asset_type"] == "index"
-    assert events[-1]["success"] is (error_code is None) and events[-1]["error_code"] == error_code
-    assert calls[0].stock_scope.strict and calls[0].stock_scope.identities[0].canonical_id == "sh000001"
-    current = db.read_chat_session_snapshot("codex-api-state")
-    assert current["session_state_version"] == 1 and current["selected_skill_ids"] == []
-    assert current["active_stock_context"]["asset_type"] == "index"
-    assert [row["role"] for row in current["messages"]] == ["user", "assistant"]
 
 
 @pytest.mark.parametrize("old_state_table", [False, True, "partial"])
