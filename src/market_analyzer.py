@@ -1239,6 +1239,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         structured = self._normalize_structured_market_review_fields(llm_structured)
 
         summary = structured.get("summary")
+        if summary is None and isinstance(llm_structured, dict) and isinstance(llm_structured.get("summary"), dict):
+            # Issue #1584: LLM 给出了 summary 但全部字段为 null/非法被归一化丢弃时，
+            # 仍按文档承诺逐字段兜底（temperature 回落到市场亮灯分），而非整体跳过。
+            summary = {
+                "temperature": None,
+                "market_status": None,
+                "position_advice": None,
+                "core_conclusion": None,
+            }
         if summary is not None:
             if summary.get("temperature") is None and isinstance(light, dict):
                 light_score = light.get("score")

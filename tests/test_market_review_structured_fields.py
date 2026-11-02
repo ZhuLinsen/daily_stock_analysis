@@ -276,6 +276,26 @@ class TestPayloadStructuredFields:
         assert "AI算力" in result.report
         assert "AI算力" in result.structured_payload["markdown_report"]
 
+    def test_all_null_summary_still_falls_back_to_light_score(self):
+        """OR-COR-29db920d：summary 全字段为 null 被归一化丢弃时，temperature 仍回落到市场亮灯分。"""
+        appendix = {
+            "summary": {
+                "temperature": None,
+                "market_status": None,
+                "position_advice": None,
+                "core_conclusion": None,
+            }
+        }
+        ma = _make_analyzer(report_text=_appendix_report(appendix))
+        light_score = ma.build_market_light_snapshot(_cn_overview())["score"]
+
+        payload = ma._run_daily_review_parts().structured_payload
+
+        assert payload["summary"]["temperature"] == light_score
+        assert payload["summary"]["market_status"] is None
+        assert payload["summary"]["position_advice"] is None
+        assert payload["summary"]["core_conclusion"] is None
+
     def test_catalyst_direction_and_digested_localized_values_are_normalized(self):
         partial = {
             "catalysts": [
