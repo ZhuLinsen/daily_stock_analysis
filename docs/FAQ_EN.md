@@ -103,6 +103,7 @@ This document compiles common issues encountered by users and their solutions.
    - To persist WebUI-saved config, point `ENV_FILE` at a writable data-volume file such as `/app/data/runtime.env`; do not bind-mount the host `.env` as a single file over `/app/.env`
    - Saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES` starts, stops, or rebuilds the runtime scheduler in long-running WebUI/API/Desktop processes; restarting a `--serve-only` or Desktop process restores enabled daily jobs without immediately running an analysis at startup
    - `SCHEDULE_RUN_IMMEDIATELY` and `RUN_IMMEDIATELY` remain startup/one-shot settings; saving them does not immediately trigger an analysis run
+   - `SCHEDULE_STARTUP_DEDUP` controls the daily dedup of the CLI scheduler startup-immediate run (the startup catch-up run is skipped when a successful full analysis is already recorded for today; see the configuration table in `docs/full-guide_EN.md`); it is likewise a startup-time setting
 3. **Manual `.env` edits in Docker**: Restart the container after changes
    ```bash
    docker-compose down && docker-compose up -d

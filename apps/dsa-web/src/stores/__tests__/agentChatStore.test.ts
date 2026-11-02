@@ -14,7 +14,6 @@ vi.mock('../../api/agent', async (importOriginal) => {
         session_state: { selected_skill_ids: [] },
       })),
       chatStream: vi.fn(),
-      cancelChatStream: vi.fn(),
     },
   };
 });
@@ -40,7 +39,7 @@ function createStreamResponse(lines: string[]) {
 function accepted(
   requestId: string,
   sessionId = 'session-test',
-  backend: 'litellm' | 'codex_app_server' = 'litellm',
+  backend: 'litellm' = 'litellm',
 ) {
   return `data: ${JSON.stringify({
     type: 'accepted',
@@ -87,10 +86,7 @@ beforeEach(() => {
     hasInitialLoad: true,
     abortController: null,
     activeRequestId: null,
-    serverCancellation: false,
-    stopping: false,
     terminalStatus: null,
-    stopError: false,
   });
   vi.clearAllMocks();
   vi.mocked(agentApi.getChatSessions).mockResolvedValue([]);
@@ -195,7 +191,6 @@ describe('agentChatStore authoritative session owner', () => {
     });
     expect(useAgentChatStore.getState().messages).toHaveLength(1);
     expect(owner.abortController!.signal.aborted).toBe(false);
-    expect(agentApi.cancelChatStream).not.toHaveBeenCalled();
     stream.finish();
     await pending;
     expect(useAgentChatStore.getState().messages.map((m) => m.role)).toEqual(['user', 'assistant']);
@@ -263,7 +258,6 @@ describe('agentChatStore authoritative session owner', () => {
       sessionStateVersion: 1, activeStockContext: stockB, savedSkillIds: ['new'], loading: true });
     expect(useAgentChatStore.getState().messages.map((m) => m.content)).toEqual(['分析上证指数']);
     expect(ac.signal.aborted).toBe(false);
-    expect(agentApi.cancelChatStream).not.toHaveBeenCalled();
     stream.finish();
     await pending;
   });
@@ -393,6 +387,17 @@ describe('agentChatStore.startStream', () => {
     expect(agentApi.chatStream).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves the HTTP 400 retirement error, messages and Skill draft without a retry', async () => {
+    useAgentChatStore.setState({ selectedSkillIds: ['risk'] });
+    vi.mocked(agentApi.chatStream).mockRejectedValue({response:{status:400,data:{
+      error:'backend_removed',message:'Codex App Server 已移除，请修正 Agent 设置',
+    }}});
+    await useAgentChatStore.getState().startStream({message:'风险呢',skills:[]});
+    expect(useAgentChatStore.getState()).toMatchObject({messages:[],selectedSkillIds:['risk'],
+      chatError:{code:'backend_removed',status:400},loading:false});
+    expect(agentApi.chatStream).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores an unrelated pre-accepted error and still accepts the owned request', async () => {
     vi.mocked(agentApi.chatStream).mockResolvedValue(createStreamResponse([
       'data: {"type":"error","error_code":"session_state_conflict","message":"unrelated","request_id":"other","session_id":"session-test"}',
@@ -410,80 +415,11 @@ describe('agentChatStore.startStream', () => {
       loading: true,
       abortController: ac,
       activeRequestId: 'request-before-accepted',
-      serverCancellation: false,
     });
 
     void useAgentChatStore.getState().stopStream();
 
     expect(ac.signal.aborted).toBe(true);
-    expect(agentApi.cancelChatStream).not.toHaveBeenCalled();
-  });
-
-  it('asks the server to stop an accepted Codex request and keeps SSE open for cleanup', async () => {
-    const ac = new AbortController();
-    const cancellation = createDeferred<{ accepted: boolean; request_id: string }>();
-    vi.mocked(agentApi.cancelChatStream).mockReturnValue(cancellation.promise);
-    useAgentChatStore.setState({
-      loading: true,
-      abortController: ac,
-      activeRequestId: 'request-accepted',
-      serverCancellation: true,
-      stopping: false,
-    });
-
-    const stopPromise = useAgentChatStore.getState().stopStream();
-
-    expect(ac.signal.aborted).toBe(false);
-    expect(useAgentChatStore.getState().stopping).toBe(true);
-    expect(agentApi.cancelChatStream).toHaveBeenCalledWith('request-accepted');
-    cancellation.resolve({ accepted: true, request_id: 'request-accepted' });
-    await stopPromise;
-
-    expect(useAgentChatStore.getState().loading).toBe(true);
-    expect(useAgentChatStore.getState().stopping).toBe(true);
-    expect(ac.signal.aborted).toBe(false);
-  });
-
-  it('derives server-side stopping from the backend in accepted', async () => {
-    let streamController!: ReadableStreamDefaultController<Uint8Array>;
-    const acceptedReceived = createDeferred<void>();
-    vi.mocked(agentApi.chatStream).mockResolvedValue(new Response(
-      new ReadableStream({
-        start(controller) {
-          streamController = controller;
-        },
-      }),
-      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
-    ));
-    vi.mocked(agentApi.cancelChatStream).mockResolvedValue({
-      accepted: true,
-      request_id: 'request-live-codex',
-    });
-
-    const streamPromise = useAgentChatStore.getState().startStream(
-      {
-        message: '分析 AAPL',
-        session_id: 'session-test',
-        request_id: 'request-live-codex',
-      },
-      { onAccepted: () => acceptedReceived.resolve() },
-    );
-    streamController.enqueue(encoder.encode(
-      `${accepted('request-live-codex', 'session-test', 'codex_app_server')}\n`,
-    ));
-    await acceptedReceived.promise;
-
-    expect(useAgentChatStore.getState().serverCancellation).toBe(true);
-    await useAgentChatStore.getState().stopStream();
-    expect(agentApi.cancelChatStream).toHaveBeenCalledWith('request-live-codex');
-    expect(useAgentChatStore.getState().abortController?.signal.aborted).toBe(false);
-
-    streamController.enqueue(encoder.encode(
-      'data: {"type":"done","success":false,"content":"","backend":"codex_app_server","error_code":"cancelled"}\n',
-    ));
-    streamController.close();
-    await streamPromise;
-    expect(useAgentChatStore.getState().terminalStatus).toBe('cancelled');
   });
 
   it('does not create a session or user message when stopped before accepted', async () => {
@@ -507,7 +443,6 @@ describe('agentChatStore.startStream', () => {
     await useAgentChatStore.getState().stopStream();
     await streamPromise;
 
-    expect(agentApi.cancelChatStream).not.toHaveBeenCalled();
     expect(useAgentChatStore.getState().messages).toEqual([]);
     expect(useAgentChatStore.getState().chatError).toBeNull();
   });
@@ -600,10 +535,10 @@ describe('agentChatStore.startStream', () => {
     const onAccepted = vi.fn();
     vi.mocked(agentApi.chatStream).mockResolvedValue(
       createStreamResponse([
-        accepted('request-success', 'session-test', 'codex_app_server'),
+        accepted('request-success', 'session-test', 'litellm'),
         'data: {"type":"thinking","step":1,"message":"分析中"}',
         'data: {"type":"tool_done","tool":"quote","display_name":"行情","success":true,"duration":0.3}',
-        'data: {"type":"done","success":true,"content":"最终分析结果","backend":"codex_app_server"}',
+        'data: {"type":"done","success":true,"content":"最终分析结果","backend":"litellm"}',
       ]),
     );
 
@@ -620,7 +555,7 @@ describe('agentChatStore.startStream', () => {
     expect(onAccepted).toHaveBeenCalledTimes(1);
     expect(onAccepted).toHaveBeenCalledWith({
       type: 'accepted',
-      backend: 'codex_app_server',
+      backend: 'litellm',
       request_id: 'request-success',
       session_id: 'session-test',
     });
@@ -629,13 +564,13 @@ describe('agentChatStore.startStream', () => {
       role: 'user',
       content: '分析茅台',
       skillName: '趋势技能',
-      backend: 'codex_app_server',
+      backend: 'litellm',
     });
     expect(state.messages[1]).toMatchObject({
       role: 'assistant',
       content: '最终分析结果',
       skillName: '趋势技能',
-      backend: 'codex_app_server',
+      backend: 'litellm',
     });
     expect(state.messages[1].thinkingSteps).toHaveLength(2);
     expect(state.chatError).toBeNull();
@@ -663,6 +598,15 @@ describe('agentChatStore.startStream', () => {
       expect.any(Object),
     );
     expect(useAgentChatStore.getState().chatError).toBeNull();
+  });
+
+  it('rejects a retired backend in live accepted without committing state', async () => {
+    vi.mocked(agentApi.chatStream).mockResolvedValue(new Response(
+      accepted('retired-request', 'session-test').replace('litellm', 'codex_app_server'),
+    ));
+    await useAgentChatStore.getState().startStream({ message: '分析 AAPL', request_id: 'retired-request' });
+    expect(useAgentChatStore.getState().messages).toEqual([]);
+    expect(useAgentChatStore.getState().chatError).not.toBeNull();
   });
 
   it('rejects a duplicate accepted event without duplicating the user turn', async () => {
@@ -707,26 +651,6 @@ describe('agentChatStore.startStream', () => {
       title: '请求未被接受',
       rawMessage: 'Agent stream emitted done before accepted.',
     });
-  });
-
-  it('treats an accepted cancelled turn as a terminal state, not an error', async () => {
-    vi.mocked(agentApi.chatStream).mockResolvedValue(
-      createStreamResponse([
-        accepted('request-cancelled', 'session-test', 'codex_app_server'),
-        'data: {"type":"done","success":false,"content":"","error":"本次 Codex Agent 问股已取消。","backend":"codex_app_server","error_code":"cancelled"}',
-      ]),
-    );
-
-    await useAgentChatStore.getState().startStream({
-      message: '分析茅台',
-      session_id: 'session-test',
-      request_id: 'request-cancelled',
-    });
-
-    const state = useAgentChatStore.getState();
-    expect(state.terminalStatus).toBe('cancelled');
-    expect(state.chatError).toBeNull();
-    expect(state.messages).toHaveLength(1);
   });
 
   it('preserves multiple selected skills on accepted user and assistant messages', async () => {
@@ -829,26 +753,6 @@ describe('agentChatStore.startStream', () => {
       category: 'upstream_timeout',
       rawMessage: 'connect timeout while calling upstream provider',
     });
-  });
-
-  it('uses a Codex-specific fallback after Codex was accepted', async () => {
-    vi.mocked(agentApi.chatStream).mockResolvedValue(
-      createStreamResponse([
-        accepted('request-codex-error', 'session-test', 'codex_app_server'),
-        'data: {"type":"error","backend":"codex_app_server","error_code":"login_required","error":"","message":""}',
-      ]),
-    );
-
-    await useAgentChatStore.getState().startStream({
-      message: '分析茅台',
-      session_id: 'session-test',
-      request_id: 'request-codex-error',
-    });
-
-    const error = useAgentChatStore.getState().chatError;
-    expect(error?.message).toContain('Codex Agent');
-    expect(error?.message).toContain('Agent 设置');
-    expect(error?.message).not.toContain('API Key');
   });
 });
 
