@@ -36,7 +36,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +165,15 @@ def _collect_hot_list_items(
     count: int,
     hotspot_service: Any = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Fetch and normalize the theme hot list; ``None`` when data is unusable."""
+    """Fetch and normalize the theme hot list; ``None`` when data is unusable.
+
+    Selection (OR-COR-a7e7c3a3): candidates from ALL buckets compete after
+    name de-duplication — they are sorted by change_pct descending (entries
+    without a number keep bucket order at the end) and only then truncated
+    to ``count``. The old sequential fill stopped at ``count`` inside
+    ``active_themes``/``leading_industries`` and wrongly evicted
+    small-negative concepts on negative-industry days.
+    """
     if hotspot_service is None:
         from src.services.market_hotspot_service import MarketHotspotService
 
@@ -175,7 +183,7 @@ def _collect_hot_list_items(
     if not isinstance(payload, dict):
         return None
 
-    items: List[Dict[str, Any]] = []
+    candidates: List[Dict[str, Any]] = []
     seen_names = set()
     buckets = [
         ("active_themes", None),
@@ -187,18 +195,17 @@ def _collect_hot_list_items(
         if not isinstance(raw_items, list):
             continue
         for entry in raw_items:
-            if not isinstance(entry, dict) or len(items) >= count:
-                break
+            if not isinstance(entry, dict):
+                continue
             name = str(entry.get("name") or "").strip()
             if not name or name in seen_names:
                 continue
             seen_names.add(name)
             kind = entry.get("source") or default_kind or "theme"
-            items.append(
+            candidates.append(
                 {
                     "name": name,
                     "code": str(entry.get("code") or "").strip(),
-                    "rank": len(items) + 1,
                     "change_pct": entry.get("change_pct"),
                     "kind": str(kind),
                     "phase": str(entry.get("phase") or "unknown"),
@@ -206,7 +213,20 @@ def _collect_hot_list_items(
                     "reason": str(entry.get("reason") or "").strip(),
                 }
             )
-    return items or None
+    if not candidates:
+        return None
+
+    def _change_sort_key(item: Dict[str, Any]) -> Tuple[int, float]:
+        value = item.get("change_pct")
+        if isinstance(value, (int, float)):
+            return (0, -float(value))
+        return (1, 0.0)
+
+    candidates.sort(key=_change_sort_key)
+    items = candidates[:count]
+    for index, item in enumerate(items, 1):
+        item["rank"] = index
+    return items
 
 
 def _format_change_pct(value: Any, language: str) -> str:

@@ -25,6 +25,7 @@ from unittest import mock
 
 from src.services.hot_top10_service import (
     HotTop10RunResult,
+    _collect_hot_list_items,
     hot_top10_already_delivered_today,
     hot_top10_marker_path,
     record_hot_top10_marker,
@@ -388,6 +389,67 @@ class HotTop10ConfigContractTest(unittest.TestCase):
             self.assertTrue(field.get("examples"), key)
             self.assertTrue(field.get("docs"), key)
             self.assertEqual(field["category"], "system", key)
+
+
+class HotTop10MergedSelectionTest(unittest.TestCase):
+    """OR-COR-a7e7c3a3: candidates from all buckets compete by change_pct.
+
+    The old collector read buckets sequentially and stopped once ``count``
+    items were gathered. Because ``active_themes`` only keeps positive
+    gainers, a day where the top industries are deeply negative used to
+    evict small-negative concepts from the list even though they ranked
+    higher by change_pct.
+    """
+
+    @staticmethod
+    def _review_payload() -> Dict[str, Any]:
+        return {
+            "status": "partial",
+            "market": "cn",
+            "trade_date": date.today().isoformat(),
+            "active_themes": [],
+            "leading_industries": [
+                {"name": "行业A", "code": "BKI1", "change_pct": -2.0, "rank": 1},
+                {"name": "行业B", "code": "BKI2", "change_pct": -3.0, "rank": 2},
+            ],
+            "leading_concepts": [
+                {"name": "概念C", "code": "BKC1", "change_pct": -0.1, "rank": 1},
+                {"name": "概念D", "code": "BKC2", "change_pct": -0.2, "rank": 2},
+            ],
+            "lagging_themes": [],
+            "data_quality": {"status": "partial", "missing_fields": [], "sources": [], "errors": []},
+        }
+
+    def test_negative_industries_do_not_evict_small_negative_concepts(self):
+        service = _FakeHotspotService(self._review_payload())
+        items = _collect_hot_list_items(2, hotspot_service=service)
+        self.assertIsNotNone(items)
+        self.assertEqual([item["name"] for item in items], ["概念C", "概念D"])
+        self.assertEqual([item["rank"] for item in items], [1, 2])
+        self.assertEqual([item["kind"] for item in items], ["concept", "concept"])
+
+    def test_merged_candidates_sorted_by_change_pct_descending(self):
+        service = _FakeHotspotService(self._review_payload())
+        items = _collect_hot_list_items(4, hotspot_service=service)
+        self.assertIsNotNone(items)
+        self.assertEqual(
+            [item["name"] for item in items],
+            ["概念C", "概念D", "行业A", "行业B"],
+        )
+        self.assertEqual([item["rank"] for item in items], [1, 2, 3, 4])
+
+    def test_items_without_change_pct_sort_after_numbered_items(self):
+        payload = self._review_payload()
+        payload["leading_concepts"].append(
+            {"name": "概念E", "code": "BKC3", "change_pct": None, "rank": 3}
+        )
+        service = _FakeHotspotService(payload)
+        items = _collect_hot_list_items(5, hotspot_service=service)
+        self.assertIsNotNone(items)
+        self.assertEqual(
+            [item["name"] for item in items],
+            ["概念C", "概念D", "行业A", "行业B", "概念E"],
+        )
 
 
 class HotTop10SchedulerWiringTest(unittest.TestCase):
