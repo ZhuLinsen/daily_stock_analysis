@@ -431,8 +431,8 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
 | `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), jp (JP stocks), kr (KR stocks), both (all five markets) | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
-| `HOT_TOP10_ENABLED` | Enable the daily hot-theme Top-N light analysis (default off): every trading day it fetches the top-N market theme hot list, uses ONE LLM call to produce a driver/strength/entry-advice/risk overview and pushes it as a report. Runs daily in schedule mode, A-share trading days only, one delivery per day (see [Hot Themes Top-N Analysis](#hot-themes-top-n-analysis), Issue #1936) | `false` |
-| `HOT_TOP10_SCHEDULE_TIME` | Daily execution time for the hot-theme Top-N analysis (HH:MM 24-hour, schedule mode only; invalid values fall back to `15:10`) | `15:10` |
+| `HOT_TOP10_ENABLED` | Enable the daily hot-theme Top-N light analysis (default off): every trading day it fetches the top-N market theme hot list, uses ONE LLM call to produce a driver/strength/entry-advice/risk overview and pushes it as a report. Runs daily via the schedulers (CLI `--schedule` and the Web/API/Desktop runtime scheduler), A-share trading days only, one delivery per data date (see [Hot Themes Top-N Analysis](#hot-themes-top-n-analysis), Issue #1936) | `false` |
+| `HOT_TOP10_SCHEDULE_TIME` | Daily execution time for the hot-theme Top-N analysis (HH:MM 24-hour, applies to CLI schedule mode and the runtime scheduler; invalid values fall back to `15:10`) | `15:10` |
 | `HOT_TOP10_COUNT` | Number of hot-list themes (1-30) | `10` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
 | `SCHEDULE_TIME` | Scheduled execution time | `18:00` |
@@ -1299,10 +1299,12 @@ HOT_TOP10_SCHEDULE_TIME=15:10   # daily execution time (default 15:10, after the
 HOT_TOP10_COUNT=10              # hot-list items (1-30)
 ```
 
-- **Execution**: once enabled it runs daily in schedule mode (`python main.py --schedule`), A-share trading days only (reuses the trading-day check; `--force-run` overrides). One delivery per day (marker file `data/hot_top10_state.json` next to `DATABASE_PATH`); a failed push leaves no marker and retries on the next trigger.
+- **Execution**: once enabled it runs daily, A-share trading days only (reuses the trading-day check; `--force-run` overrides). The auxiliary daily job registers BOTH in CLI schedule mode (`python main.py --schedule`) and in the runtime scheduler of long-running Web/API/Desktop processes; saving `HOT_TOP10_ENABLED` / `HOT_TOP10_SCHEDULE_TIME` rebuilds the runtime scheduler immediately, no process restart needed. Scheduled pushes honor the notification switches (`--no-notify` for CLI, schedule args for the runtime path).
+- **Ranking date and dedup**: before the daily data cut (e.g. Tushare before 15:30) the industry/concept rankings served are the PREVIOUS trading day's. The real ranking date travels through the chain into the prompt and the report, and the report header labels it explicitly ("Ranking date: ..." with a not-today warning when stale). Daily dedup keys on the DATA date: a previous-day delivery does not consume today's marker, so the regular entry still delivers today's list once the fresh data is available (marker file `data/hot_top10_state.json` next to `DATABASE_PATH`); a failed push leaves no marker and retries on the next trigger.
 - **Manual run**: `python main.py --hot-top10` generates and pushes a report right away (manual runs bypass the daily dedup marker).
+- **Selection**: industry, concept and active-theme candidates are merged and ranked by change percentage before the Top-N cut (items without a number sort last), so a negative-industry day no longer evicts higher-ranked small-negative concepts.
 - **Scope**: this is a theme-level hot-list OVERVIEW (one LLM summary covers all items), not per-stock deep analysis; use the existing stock analysis entry points for that. If the AI summary fails, a degraded data-only overview is still delivered, and no stage can break the main analysis schedule.
-- **Report content**: the header carries the generation time and data-source note; each item lists the driver (news/funds/event attribution, speculation marked), strength (strong/medium/weak), entry advice and risks. Language follows `REPORT_LANGUAGE` (zh/en).
+- **Report content**: the header carries the generation time, ranking date and data-source note; each item lists the driver (news/funds/event attribution, speculation marked), strength (strong/medium/weak), entry advice and risks. Language follows `REPORT_LANGUAGE` (zh/en).
 
 ### Hong Kong Stock Support
 
