@@ -11,7 +11,7 @@ exchange-calendars>=4.13.0   # Trading calendars; 4.5.x is incompatible with pan
 
 # Data source dependencies, ordered by fallback priority
 efinance>=0.5.5             # Priority 0: East Money data source https://github.com/Micro-sheep/efinance
-akshare>=1.12.0             # Priority 1: East Money crawler data source
+akshare>=1.12.0,<1.20.0     # Priority 1: East Money crawler data source; 1.20 moved file_fold to data and reworked its HTTP layer
 # Older mini-racer frozen loaders search the bundle root instead of the package directory.
 mini-racer>=0.13.2; platform_system != "Linux"  # Desktop V8 runtime; keep Linux's AkShare dependency unchanged
 tushare>=1.4.0              # Priority 2: Tushare Pro API
@@ -40,7 +40,8 @@ orjson>=3.10,<4             # LiteLLM runtime JSON dependency; explicitly bundle
 
 # AI analysis
 # Keep the historical minimum version while excluding quarantined builds and avoiding future major breaks.
-litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0   # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
+litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0; python_version >= "3.11"   # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
+litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.98.0; python_version < "3.11"    # 1.98 imports typing.NotRequired, which needs Python 3.11
 tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
 PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
