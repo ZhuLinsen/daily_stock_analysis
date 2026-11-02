@@ -35,23 +35,25 @@ class TestFetchRedditReport(unittest.TestCase):
     def test_success(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        # Payload shape of the current /reddit/stocks/v1/stock/{ticker} endpoint:
+        # flat stock object (no "report" wrapper).
         mock_resp.json.return_value = {
-            "report": {
-                "buzz_score": 85.5,
-                "sentiment_score": 0.23,
-                "total_mentions": 342,
-                "subreddit_count": 8,
-                "trend": "rising",
-            }
+            "buzz_score": 85.5,
+            "sentiment_score": 0.23,
+            "mentions": 342,
+            "trend": "rising",
         }
         mock_get.return_value = mock_resp
 
         result = self.svc.fetch_reddit_report("TSLA")
         self.assertIsNotNone(result)
-        self.assertEqual(result["report"]["buzz_score"], 85.5)
+        self.assertEqual(result["buzz_score"], 85.5)
         mock_get.assert_called_once()
         call_args = mock_get.call_args
-        self.assertIn("/reddit/stocks/v1/report/TSLA", call_args[0][0])
+        url = call_args[0][0]
+        # Regression for issue #2448: must hit the current per-stock endpoint
+        self.assertIn("/reddit/stocks/v1/stock/TSLA", url)
+        self.assertNotIn("/reddit/stocks/v1/report/", url)
 
     @patch("src.services.social_sentiment_service._get_with_retry")
     def test_http_error_returns_none(self, mock_get):
@@ -180,21 +182,22 @@ class TestGetSocialContext(unittest.TestCase):
 
     @patch("src.services.social_sentiment_service._get_with_retry")
     def test_formats_reddit_data(self, mock_get):
+        requested_urls = []
+
         def side_effect(url, **kwargs):
+            requested_urls.append(url)
             resp = MagicMock()
-            if "/report/" in url:
+            if "/reddit/" in url:
                 resp.status_code = 200
                 resp.json.return_value = {
-                    "report": {
-                        "buzz_score": 87.5,
-                        "sentiment_score": 0.23,
-                        "total_mentions": 342,
-                        "subreddit_count": 8,
-                        "trend": "rising",
-                        "top_mentions": [
-                            {"text": "TSLA looking strong", "subreddit": "wallstreetbets", "upvotes": 1234}
-                        ],
-                    }
+                    "buzz_score": 87.5,
+                    "sentiment_score": 0.23,
+                    "mentions": 342,
+                    "subreddit_count": 8,
+                    "trend": "rising",
+                    "top_mentions": [
+                        {"text": "TSLA looking strong", "subreddit": "wallstreetbets", "upvotes": 1234}
+                    ],
                 }
             else:
                 resp.status_code = 200
@@ -212,14 +215,21 @@ class TestGetSocialContext(unittest.TestCase):
         self.assertIn("87.5", result)
         self.assertIn("342", result)
         self.assertIn("TSLA looking strong", result)
+        # Regression for issue #2448: the removed report endpoint must never
+        # be requested again.
+        for url in requested_urls:
+            self.assertNotIn("/reddit/stocks/v1/report/", url)
+        self.assertTrue(
+            any("/reddit/stocks/v1/stock/TSLA" in url for url in requested_urls)
+        )
 
     @patch("src.services.social_sentiment_service._get_with_retry")
     def test_includes_all_platforms(self, mock_get):
         def side_effect(url, **kwargs):
             resp = MagicMock()
             resp.status_code = 200
-            if "/report/" in url:
-                resp.json.return_value = {"report": {"buzz_score": 80, "trend": "rising"}}
+            if "/reddit/" in url:
+                resp.json.return_value = {"buzz_score": 80, "trend": "rising"}
             elif "/x/" in url:
                 resp.json.return_value = {"trending": [{"ticker": "AAPL", "buzz_score": 65}]}
             elif "/polymarket/" in url:
@@ -271,6 +281,47 @@ class TestZeroValueHandling(unittest.TestCase):
         self.assertEqual(SocialSentimentService._coalesce(0.0, 1.0), 0.0)
         self.assertEqual(SocialSentimentService._coalesce(None, 0), 0)
         self.assertIsNone(SocialSentimentService._coalesce(None, None))
+
+
+class TestRedditStockPayloadParsing(unittest.TestCase):
+    """Formatting must accept the flat payload of the current
+    /reddit/stocks/v1/stock/{ticker} endpoint (issue #2448)."""
+
+    def test_flat_stock_payload_renders(self):
+        result = SocialSentimentService._format_social_intel(
+            "AAPL",
+            reddit_data={"buzz_score": 70, "sentiment_score": 0.4, "mentions": 55},
+            x_entry=None,
+            poly_entry=None,
+        )
+        self.assertIn("Buzz Score: 70", result)
+        self.assertIn("Sentiment Score: 0.4", result)
+        self.assertIn("Mentions: 55", result)
+
+    def test_daily_trend_list_rendered(self):
+        result = SocialSentimentService._format_social_intel(
+            "AAPL",
+            reddit_data={
+                "buzz_score": 70,
+                "daily_trend": [
+                    {"date": "2026-01-01", "mentions": 12, "avg_sentiment": 0.1}
+                ],
+            },
+            x_entry=None,
+            poly_entry=None,
+        )
+        self.assertIn("Recent Daily Activity", result)
+        self.assertIn("2026-01-01: 12 mentions", result)
+
+    def test_daily_trend_non_list_ignored(self):
+        result = SocialSentimentService._format_social_intel(
+            "AAPL",
+            reddit_data={"buzz_score": 70, "daily_trend": "rising"},
+            x_entry=None,
+            poly_entry=None,
+        )
+        self.assertNotIn("Recent Daily Activity", result)
+        self.assertIn("Buzz Score: 70", result)
 
 
 class TestFindTickerInTrending(unittest.TestCase):

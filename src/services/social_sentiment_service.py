@@ -151,7 +151,9 @@ class SocialSentimentService:
 
     def fetch_reddit_report(self, ticker: str) -> Optional[Dict]:
         """Fetch detailed Reddit report for a single ticker."""
-        url = f"{self._api_url}/reddit/stocks/v1/report/{ticker.upper()}"
+        # Adanos removed /reddit/stocks/v1/report/{ticker} (always 404);
+        # the current per-stock endpoint is /reddit/stocks/v1/stock/{ticker}.
+        url = f"{self._api_url}/reddit/stocks/v1/stock/{ticker.upper()}"
         return self._fetch_json(url)
 
     def fetch_reddit_trending(self) -> Optional[List[Dict]]:
@@ -294,9 +296,12 @@ class SocialSentimentService:
                     meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
                     lines.append(f"    {i}. \"{text}\"{meta}")
 
-            # Daily stats
-            daily = report.get("daily_stats", [])
-            if daily:
+            # Daily stats. The current /stock/{ticker} endpoint names this
+            # list "daily_trend" (older report payloads used "daily_stats");
+            # guard against non-list shapes so unexpected payloads degrade
+            # to "section omitted" instead of raising.
+            daily = report.get("daily_stats") or report.get("daily_trend") or []
+            if daily and isinstance(daily, list):
                 lines.append("  Recent Daily Activity:")
                 for d in daily[:5]:
                     day = d.get("date", "")
