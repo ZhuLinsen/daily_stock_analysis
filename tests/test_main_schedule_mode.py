@@ -2864,5 +2864,82 @@ class MainScheduleModeTestCase(unittest.TestCase):
         main._env_bootstrapped = False
 
 
+class HotTop10ScheduledNotifyTest(unittest.TestCase):
+    """OR-COR-bfd74f82: the scheduled hot-top10 job honors --no-notify.
+
+    The scheduled occurrence used to hardcode ``send_notification=True``,
+    bypassing the CLI notification switch that the manual ``--hot-top10``
+    entry already respects.
+    """
+
+    @staticmethod
+    def _job(no_notify: bool):
+        config = SimpleNamespace(
+            hot_top10_enabled=True,
+            hot_top10_schedule_time="15:10",
+        )
+        args = SimpleNamespace(no_notify=no_notify)
+        return main._build_hot_top10_daily_job(
+            args, config, config_provider=lambda: config
+        )
+
+    def test_scheduled_job_silences_notification_with_no_notify(self) -> None:
+        job = self._job(no_notify=True)
+        self.assertIsNotNone(job)
+        self.assertEqual(job["schedule_time"], "15:10")
+        self.assertEqual(job["name"], "hot_top10")
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            job["task"]()
+
+        run_mock.assert_called_once()
+        self.assertIs(run_mock.call_args.kwargs["send_notification"], False)
+        self.assertTrue(run_mock.call_args.kwargs["respect_dedup"])
+        self.assertFalse(run_mock.call_args.kwargs["force_run"])
+
+    def test_scheduled_job_sends_notification_by_default(self) -> None:
+        job = self._job(no_notify=False)
+        self.assertIsNotNone(job)
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            job["task"]()
+
+        run_mock.assert_called_once()
+        self.assertIs(run_mock.call_args.kwargs["send_notification"], True)
+
+    def test_disabled_config_registers_no_job(self) -> None:
+        config = SimpleNamespace(hot_top10_enabled=False)
+        job = main._build_hot_top10_daily_job(
+            SimpleNamespace(no_notify=False),
+            config,
+            config_provider=lambda: config,
+        )
+        self.assertIsNone(job)
+
+    def test_job_skips_when_runtime_config_disables_feature(self) -> None:
+        config = SimpleNamespace(
+            hot_top10_enabled=True,
+            hot_top10_schedule_time="15:10",
+        )
+        runtime_config = SimpleNamespace(hot_top10_enabled=False)
+        job = main._build_hot_top10_daily_job(
+            SimpleNamespace(no_notify=False),
+            config,
+            config_provider=lambda: runtime_config,
+        )
+        self.assertIsNotNone(job)
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            job["task"]()
+
+        run_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

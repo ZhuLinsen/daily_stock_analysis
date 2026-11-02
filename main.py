@@ -1683,6 +1683,54 @@ def _build_schedule_times_provider(default_schedule_time: str):
     return _provider
 
 
+def _build_hot_top10_daily_job(
+    args: argparse.Namespace,
+    config: Config,
+    config_provider: Optional[Callable[[], Config]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build the auxiliary daily hot-top10 job (Issue #1936, default OFF).
+
+    Scheduled occurrences always respect the trading-day gate and the daily
+    dedup marker; ``--force-run`` only applies to the one-shot ``--hot-top10``
+    CLI entry. The push honors the same CLI notification switch as that entry
+    (``--no-notify`` silences the scheduled push too, OR-COR-bfd74f82).
+    Returns ``None`` (no job) when the feature is disabled.
+    """
+    if not getattr(config, 'hot_top10_enabled', False):
+        return None
+
+    if config_provider is None:
+        config_provider = _reload_runtime_config
+    send_notification = not getattr(args, 'no_notify', False)
+
+    def hot_top10_task():
+        from src.services.hot_top10_service import run_hot_top10_analysis
+
+        runtime_cfg = config_provider()
+        if not getattr(runtime_cfg, 'hot_top10_enabled', False):
+            return
+        hot_result = run_hot_top10_analysis(
+            runtime_cfg,
+            send_notification=send_notification,
+            respect_dedup=True,
+            force_run=False,
+        )
+        logger.info(
+            "[HotTop10] 定时任务完成: delivered=%s skipped=%s reason=%s llm_completed=%s notification=%s",
+            hot_result.delivered,
+            hot_result.skipped,
+            hot_result.reason,
+            hot_result.llm_completed,
+            hot_result.notification_status,
+        )
+
+    return {
+        "task": hot_top10_task,
+        "schedule_time": config.hot_top10_schedule_time,
+        "name": "hot_top10",
+    }
+
+
 def main() -> int:
     """
     主入口函数
@@ -2096,38 +2144,12 @@ def main() -> int:
             # fail-open daily schedule at HOT_TOP10_SCHEDULE_TIME. It runs on
             # A-share trading days only and dedups via its own daily marker;
             # any failure is logged inside the service and never breaks the
-            # main analysis schedule.
-            extra_daily_jobs: List[Dict[str, Any]] = []
-            if getattr(config, 'hot_top10_enabled', False):
-                from src.services.hot_top10_service import run_hot_top10_analysis
-
-                def hot_top10_task():
-                    runtime_cfg = _reload_runtime_config()
-                    if not getattr(runtime_cfg, 'hot_top10_enabled', False):
-                        return
-                    # Scheduled occurrences always respect the trading-day
-                    # gate and the daily dedup marker; --force-run only
-                    # applies to the one-shot CLI entry below.
-                    hot_result = run_hot_top10_analysis(
-                        runtime_cfg,
-                        send_notification=True,
-                        respect_dedup=True,
-                        force_run=False,
-                    )
-                    logger.info(
-                        "[HotTop10] 定时任务完成: delivered=%s skipped=%s reason=%s llm_completed=%s notification=%s",
-                        hot_result.delivered,
-                        hot_result.skipped,
-                        hot_result.reason,
-                        hot_result.llm_completed,
-                        hot_result.notification_status,
-                    )
-
-                extra_daily_jobs.append({
-                    "task": hot_top10_task,
-                    "schedule_time": config.hot_top10_schedule_time,
-                    "name": "hot_top10",
-                })
+            # main analysis schedule. The push follows the CLI --no-notify
+            # switch, same as the one-shot --hot-top10 entry.
+            hot_top10_job = _build_hot_top10_daily_job(args, config)
+            extra_daily_jobs: List[Dict[str, Any]] = (
+                [hot_top10_job] if hot_top10_job is not None else []
+            )
 
             schedule_kwargs = {
                 "task": scheduled_task,
