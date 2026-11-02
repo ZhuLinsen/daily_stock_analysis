@@ -196,7 +196,11 @@ class TestGetSocialContext(unittest.TestCase):
                     "subreddit_count": 8,
                     "trend": "rising",
                     "top_mentions": [
-                        {"text": "TSLA looking strong", "subreddit": "wallstreetbets", "upvotes": 1234}
+                        {
+                            "text_snippet": "TSLA looking strong",
+                            "subreddit": "wallstreetbets",
+                            "upvotes": 1234,
+                        }
                     ],
                 }
             else:
@@ -364,12 +368,13 @@ class TestRedditStockPayloadParsing(unittest.TestCase):
         self.assertIn("Mentions: 55", result)
 
     def test_daily_trend_list_rendered(self):
+        # DailyTrendItem per the official contract carries "sentiment_score".
         result = SocialSentimentService._format_social_intel(
             "AAPL",
             reddit_data={
                 "buzz_score": 70,
                 "daily_trend": [
-                    {"date": "2026-01-01", "mentions": 12, "avg_sentiment": 0.1}
+                    {"date": "2026-01-01", "mentions": 12, "sentiment_score": 0.31}
                 ],
             },
             x_entry=None,
@@ -377,6 +382,56 @@ class TestRedditStockPayloadParsing(unittest.TestCase):
         )
         self.assertIn("Recent Daily Activity", result)
         self.assertIn("2026-01-01: 12 mentions", result)
+        self.assertIn("avg sentiment 0.31", result)
+
+    def test_daily_trend_zero_sentiment_score_rendered(self):
+        # Zero is a valid neutral value and must not degrade to "?".
+        result = SocialSentimentService._format_social_intel(
+            "AAPL",
+            reddit_data={
+                "buzz_score": 70,
+                "daily_trend": [
+                    {"date": "2026-01-01", "mentions": 12, "sentiment_score": 0}
+                ],
+            },
+            x_entry=None,
+            poly_entry=None,
+        )
+        self.assertIn("avg sentiment 0", result)
+        self.assertNotIn("avg sentiment ?", result)
+
+    def test_top_mention_text_snippet_rendered(self):
+        # TopMention per the official contract carries "text_snippet".
+        result = SocialSentimentService._format_social_intel(
+            "AAPL",
+            reddit_data={
+                "buzz_score": 70,
+                "top_mentions": [
+                    {
+                        "text_snippet": "$AAPL to the moon",
+                        "subreddit": "wallstreetbets",
+                        "sentiment_score": 0.8,
+                    }
+                ],
+            },
+            x_entry=None,
+            poly_entry=None,
+        )
+        self.assertIn("Top Mentions", result)
+        self.assertIn("$AAPL to the moon", result)
+
+    def test_top_mention_legacy_text_field_still_renders(self):
+        # Backward compatibility: older payloads used "text"/"title".
+        result = SocialSentimentService._format_social_intel(
+            "AAPL",
+            reddit_data={
+                "buzz_score": 70,
+                "top_mentions": [{"text": "legacy mention body"}],
+            },
+            x_entry=None,
+            poly_entry=None,
+        )
+        self.assertIn("legacy mention body", result)
 
     def test_daily_trend_non_list_ignored(self):
         result = SocialSentimentService._format_social_intel(

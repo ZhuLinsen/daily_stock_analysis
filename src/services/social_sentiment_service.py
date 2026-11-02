@@ -291,7 +291,9 @@ class SocialSentimentService:
             if top_mentions:
                 lines.append("  Top Mentions:")
                 for i, m in enumerate(top_mentions[:5], 1):
-                    text = (m.get("text") or m.get("title") or "")[:120]
+                    # TopMention per the official contract carries
+                    # "text_snippet"; older payloads used "text"/"title".
+                    text = (m.get("text_snippet") or m.get("text") or m.get("title") or "")[:120]
                     sub = m.get("subreddit", "")
                     score = SocialSentimentService._coalesce(m.get("sentiment_score"), m.get("sentiment"))
                     upvotes = m.get("upvotes", "")
@@ -315,7 +317,13 @@ class SocialSentimentService:
                 for d in daily[:5]:
                     day = d.get("date", "")
                     day_mentions = d.get("mentions", "?")
-                    day_sentiment = d.get("avg_sentiment", "?")
+                    # DailyTrendItem per the official contract carries
+                    # "sentiment_score" (0 is valid); older payloads used
+                    # "avg_sentiment". _coalesce keeps 0 and only falls back
+                    # to "?" when neither field is present.
+                    day_sentiment = SocialSentimentService._coalesce(
+                        d.get("sentiment_score"), d.get("avg_sentiment"), "?"
+                    )
                     lines.append(f"    {day}: {day_mentions} mentions, avg sentiment {day_sentiment}")
         else:
             lines.append("\n🔴 Reddit: No data available")
