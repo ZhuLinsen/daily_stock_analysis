@@ -272,7 +272,7 @@ const fieldDescriptionMap: Record<string, string> = {
   GEMINI_TEMPERATURE: '控制模型输出随机性，范围通常为 0.0 到 2.0。',
   OPENAI_API_KEY: '用于 OpenAI 兼容服务调用的密钥。',
   OPENAI_BASE_URL: 'OpenAI 兼容 API 地址，例如 https://api.deepseek.com/v1。',
-  OPENAI_MODEL: 'OpenAI 兼容模型名称，例如 gpt-5.4-mini、deepseek-v4-flash。',
+  OPENAI_MODEL: 'OpenAI 兼容模型名称，例如 gpt-6.1-terra、deepseek-v4-flash。',
   WECHAT_WEBHOOK_URL: '企业微信机器人 Webhook 地址。',
   FEISHU_WEBHOOK_URL: '用于群消息推送的飞书自定义机器人 Webhook。它才是通知发送入口，和 FEISHU_APP_ID / FEISHU_APP_SECRET 不是一回事。',
   FEISHU_WEBHOOK_SECRET: '飞书群机器人安全设置里的“签名校验”密钥。开启签名后必须同步填写，否则会推送失败。',

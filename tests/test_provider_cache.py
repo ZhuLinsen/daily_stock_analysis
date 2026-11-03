@@ -274,7 +274,7 @@ def test_verified_openai_prompt_cache_key_uses_hmac_without_mutating_input(monke
 
 def test_anthropic_lowering_adds_cache_control_to_system_prefix_only():
     original = {
-        "model": "anthropic/claude-sonnet-4-6",
+        "model": "anthropic/claude-sonnet-5-5",
         "messages": [
             {"role": "system", "content": "stable rules"},
             {"role": "user", "content": "dynamic quote 600519"},
@@ -285,7 +285,7 @@ def test_anthropic_lowering_adds_cache_control_to_system_prefix_only():
     with patch("src.llm.provider_cache.resolve_provider_cache_caps", return_value=caps):
         result = apply_prompt_cache_hints(
             original,
-            ProviderCacheRouteContext(model="anthropic/claude-sonnet-4-6", provider="anthropic"),
+            ProviderCacheRouteContext(model="anthropic/claude-sonnet-5-5", provider="anthropic"),
             _config(llm_prompt_cache_hints_enabled=True),
         )
 
@@ -299,7 +299,7 @@ def test_anthropic_lowering_adds_cache_control_to_system_prefix_only():
 
 def test_repeated_lowering_from_shared_input_does_not_cross_pollute_results():
     original = {
-        "model": "anthropic/claude-sonnet-4-6",
+        "model": "anthropic/claude-sonnet-5-5",
         "messages": [
             {"role": "system", "content": "stable rules"},
             {"role": "user", "content": "dynamic quote 600519"},
@@ -311,12 +311,12 @@ def test_repeated_lowering_from_shared_input_does_not_cross_pollute_results():
     with patch("src.llm.provider_cache.resolve_provider_cache_caps", return_value=caps):
         first = apply_prompt_cache_hints(
             original,
-            ProviderCacheRouteContext(model="anthropic/claude-sonnet-4-6", provider="anthropic"),
+            ProviderCacheRouteContext(model="anthropic/claude-sonnet-5-5", provider="anthropic"),
             _config(llm_prompt_cache_hints_enabled=True),
         )
         second = apply_prompt_cache_hints(
             original,
-            ProviderCacheRouteContext(model="anthropic/claude-sonnet-4-6", provider="anthropic"),
+            ProviderCacheRouteContext(model="anthropic/claude-sonnet-5-5", provider="anthropic"),
             _config(llm_prompt_cache_hints_enabled=True),
         )
 

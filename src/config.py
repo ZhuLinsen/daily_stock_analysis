@@ -628,7 +628,7 @@ def route_discovered_llm_model(model_id: str, base_url: Optional[str]) -> str:
     """Return the saved channel value for an ID listed by a gateway ``/models``.
 
     Requesty lists ``vendor/model`` IDs (``openai/gpt-4o-mini``,
-    ``anthropic/claude-sonnet-4-6``, ``vertex/claude-sonnet-4-5``) and managed
+    ``anthropic/claude-sonnet-5-5``, ``vertex/claude-sonnet-4-5``) and managed
     policy IDs without a slash. The vendor segment collides with LiteLLM
     provider names, so the saved value carries the OpenAI-compatible gateway
     route once (``openai/openai/gpt-4o-mini``); LiteLLM strips that layer and
@@ -1056,7 +1056,7 @@ class Config:
     # Legacy single-key fields (kept for backward compatibility; gemini_api_keys[0] when set)
     gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-3.6-flash"  # 主模型
-    gemini_model_fallback: str = "gemini-3.8-flash"  # 备选模型
+    gemini_model_fallback: str = "gemini-3.5-flash-lite"  # 备选模型
     gemini_temperature: float = 0.7  # 温度参数（0.0-2.0，控制输出随机性，默认0.7）
 
     # Gemini API 请求配置（防止 429 限流）
@@ -1066,14 +1066,14 @@ class Config:
 
     # Anthropic Claude API（备选，当 Gemini 不可用时使用）
     anthropic_api_key: Optional[str] = None
-    anthropic_model: str = "claude-sonnet-4-6"  # Claude model name
+    anthropic_model: str = "claude-sonnet-5-5"  # Claude model name
     anthropic_temperature: float = 0.7  # Anthropic temperature (0.0-1.0, default 0.7)
     anthropic_max_tokens: int = 8192  # Max tokens for Anthropic responses
 
     # OpenAI 兼容 API（备选，当 Gemini/Anthropic 不可用时使用）
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None  # 如: https://api.openai.com/v1
-    openai_model: str = "gpt-5.5"  # OpenAI 兼容模型名称
+    openai_model: str = "gpt-6.1-sol"  # OpenAI 兼容模型名称
     openai_vision_model: Optional[str] = None  # Deprecated: use VISION_MODEL instead
     openai_temperature: float = 0.7  # OpenAI 温度参数（0.0-2.0，默认0.7）
 
@@ -1642,7 +1642,7 @@ class Config:
         if using_anspire_llm_legacy:
             _openai_model_name = _anspire_llm_model_env or _openai_model_env or ANSPIRE_LLM_MODEL_DEFAULT
         else:
-            _openai_model_name = _openai_model_env or 'gpt-5.5'
+            _openai_model_name = _openai_model_env or 'gpt-6.1-sol'
 
         # LITELLM_FALLBACK_MODELS: comma-separated list of fallback models
         _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
@@ -1712,7 +1712,7 @@ class Config:
 
             if not litellm_model:
                 _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.6-flash').strip()
-                _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
+                _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-5-5').strip()
                 if gemini_api_keys:
                     litellm_model = f'gemini/{_gemini_model_name}'
                 elif anthropic_api_keys:
@@ -1728,7 +1728,7 @@ class Config:
 
             if not litellm_fallback_models and not litellm_fallback_models_explicit:
                 # Backward compat: use gemini_model_fallback when primary is gemini
-                _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3.8-flash').strip()
+                _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3.5-flash-lite').strip()
                 if litellm_model.startswith('gemini/') and _gemini_fallback:
                     _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
                     litellm_fallback_models = [_fb]
@@ -1975,13 +1975,13 @@ class Config:
             deepseek_api_keys=deepseek_api_keys,
             gemini_api_key=os.getenv('GEMINI_API_KEY'),
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.6-flash'),
-            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3.8-flash'),
+            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3.5-flash-lite'),
             gemini_temperature=parse_env_float(os.getenv('GEMINI_TEMPERATURE'), 0.7, field_name='GEMINI_TEMPERATURE'),
             gemini_request_delay=parse_env_float(os.getenv('GEMINI_REQUEST_DELAY'), 2.0, field_name='GEMINI_REQUEST_DELAY', minimum=0.0),
             gemini_max_retries=parse_env_int(os.getenv('GEMINI_MAX_RETRIES'), 5, field_name='GEMINI_MAX_RETRIES', minimum=0),
             gemini_retry_delay=parse_env_float(os.getenv('GEMINI_RETRY_DELAY'), 5.0, field_name='GEMINI_RETRY_DELAY', minimum=0.0),
             anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
-            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
+            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-5-5'),
             anthropic_temperature=parse_env_float(os.getenv('ANTHROPIC_TEMPERATURE'), 0.7, field_name='ANTHROPIC_TEMPERATURE'),
             anthropic_max_tokens=parse_env_int(os.getenv('ANTHROPIC_MAX_TOKENS'), 8192, field_name='ANTHROPIC_MAX_TOKENS', minimum=1),
             # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
@@ -1989,7 +1989,7 @@ class Config:
             # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
             # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no explicit
             # OPENAI_BASE_URL override is provided.
-            # Model names match upstream (e.g. gemini-3.6-flash, gpt-5.5, deepseek-v4-flash).
+            # Model names match upstream (e.g. gemini-3.6-flash, gpt-6.1-sol, deepseek-v4-flash).
             openai_api_key=openai_api_keys[0] if openai_api_keys else None,
             openai_base_url=openai_base_url,
             openai_model=_openai_model_name,
@@ -2513,7 +2513,7 @@ class Config:
             LLM_AIHUBMIX_API_SURFACE=chat_completions
             LLM_AIHUBMIX_BASE_URL=https://aihubmix.com/v1
             LLM_AIHUBMIX_API_KEY=sk-xxx           (or LLM_AIHUBMIX_API_KEYS=k1,k2)
-            LLM_AIHUBMIX_MODELS=gpt-5.5,claude-sonnet-4-6
+            LLM_AIHUBMIX_MODELS=gpt-6.1-sol,claude-sonnet-5-5
             LLM_AIHUBMIX_ENABLED=true
         """
         import logging

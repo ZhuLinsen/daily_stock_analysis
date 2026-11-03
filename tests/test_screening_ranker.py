@@ -158,7 +158,7 @@ def test_screening_ranker_rejects_invalid_responses_wire_route_before_call() -> 
             _call_llm(
                 "rank candidates",
                 api_key="test-key",
-                model="anthropic/claude-sonnet-4-6",
+                model="anthropic/claude-sonnet-5-5",
                 base_url="",
                 json_mode=False,
                 channels=[
@@ -167,7 +167,7 @@ def test_screening_ranker_rejects_invalid_responses_wire_route_before_call() -> 
                         "protocol": "openai",
                         "api_surface": "responses",
                         "api_keys": ["sk-draft"],
-                        "models": ["anthropic/claude-sonnet-4-6"],
+                        "models": ["anthropic/claude-sonnet-5-5"],
                     }
                 ],
             )

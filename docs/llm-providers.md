@@ -78,7 +78,7 @@ LLM_MY_PROXY_PROTOCOL=openai
 LLM_MY_PROXY_API_SURFACE=chat_completions
 LLM_MY_PROXY_BASE_URL=https://your-proxy.example.com/v1
 LLM_MY_PROXY_API_KEY=sk-xxx
-LLM_MY_PROXY_MODELS=gpt-5.5,claude-sonnet-4-6
+LLM_MY_PROXY_MODELS=gpt-6.1-sol,claude-sonnet-5-5
 ```
 
 OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/chat/completions`。本地 `.env`、Docker 和自托管脚本可以直接使用自定义 channel；GitHub Actions 需要 workflow 显式透传同名 `LLM_MY_PROXY_*` 变量。
@@ -106,11 +106,11 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 服务商 | 渠道名 | 协议 | Base URL | 模型示例 |
 | --- | --- | --- | --- | --- |
 | Modelflare | `modelflare` | `openai` | `https://modelflare.dev/v1` | `gpt-6.1-sol`（以账号可用模型为准） |
-| AIHubmix | `aihubmix` | `openai` | `https://aihubmix.com/v1` | `gpt-5.5,claude-sonnet-4-6,gemini-3.6-flash` |
-| OpenAI | `openai` | `openai` | `https://api.openai.com/v1` | `gpt-5.5,gpt-5.4-mini` |
+| AIHubmix | `aihubmix` | `openai` | `https://aihubmix.com/v1` | `gpt-6.1-sol,claude-sonnet-5-5,gemini-3.6-flash` |
+| OpenAI | `openai` | `openai` | `https://api.openai.com/v1` | `gpt-6.1-sol,gpt-6.1-terra` |
 | DeepSeek | `deepseek` | `deepseek` | `https://api.deepseek.com` | `deepseek-v4-flash,deepseek-v4-pro` |
-| Gemini | `gemini` | `gemini` | 留空 | `gemini-3.6-flash,gemini-3.8-flash` |
-| Anthropic Claude | `anthropic` | `anthropic` | 留空 | `claude-sonnet-4-6,claude-opus-4-7` |
+| Gemini | `gemini` | `gemini` | 留空 | `gemini-3.6-flash,gemini-3.5-flash-lite` |
+| Anthropic Claude | `anthropic` | `anthropic` | 留空 | `claude-sonnet-5-5,claude-opus-5-5` |
 | Kimi / Moonshot | `moonshot` | `openai` | `https://api.moonshot.cn/v1` | `kimi-k2.6,kimi-k2.5` |
 | 通义千问 / DashScope | `dashscope` | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.6-plus,qwen3.6-flash` |
 | 智谱 GLM | `zhipu` | `openai` | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.1,glm-4.7-flash` |
@@ -119,7 +119,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 火山方舟 / 豆包 | `volcengine` | `openai` | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-1-6-251015,doubao-seed-1-6-thinking-251015` |
 | 硅基流动 / SiliconFlow | `siliconflow` | `openai` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3.2,Qwen/Qwen3-235B-A22B-Thinking-2507` |
 | OpenRouter | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `~anthropic/claude-sonnet-latest,~openai/gpt-latest` |
-| Requesty | `requesty` | `openai` | `https://router.requesty.ai/v1`（EU：`https://router.eu.requesty.ai/v1`） | `claude-sonnet-4-6,gpt-5.4` |
+| Requesty | `requesty` | `openai` | `https://router.requesty.ai/v1`（EU：`https://router.eu.requesty.ai/v1`） | `claude-sonnet-5-5,gpt-6.1-sol` |
 | Anspire Open（兼容） | `anspire` | `openai` | `https://open-gateway.anspire.cn/v6`（示例） | `Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash`（示例） |
 | Ollama | `ollama` | `ollama` | `http://127.0.0.1:11434` | `llama3.2,qwen2.5` |
 
@@ -128,10 +128,10 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 服务商 | 官方来源 | 兼容说明 |
 | --- | --- | --- |
 | Modelflare | [快速开始](https://docs.modelflare.dev/quickstart/)、[接入端点](https://docs.modelflare.dev/guides/endpoints/)、[模型与分组](https://docs.modelflare.dev/guides/models-and-groups/) | 使用 OpenAI-compatible Base URL `https://modelflare.dev/v1` 和标准 `LLM_MODELFLARE_*` 渠道配置；本项目默认模型为 `gpt-6.1-sol`，模型列表以账号权限与控制台为准。 |
-| OpenAI | [模型列表](https://platform.openai.com/docs/models) | 官方模型页建议从 `gpt-5.5` 开始，低延迟/低成本场景使用 `gpt-5.4-mini` 或 `gpt-5.4-nano`。 |
+| OpenAI | [模型列表](https://platform.openai.com/docs/models) | 官方模型页建议从 `gpt-6.1-sol` 开始，低延迟/低成本场景使用 `gpt-6.1-terra`。 |
 | DeepSeek | [快速开始](https://api-docs.deepseek.com/) | 官方 OpenAI Base URL 为 `https://api.deepseek.com`；`deepseek-chat` / `deepseek-reasoner` 将于 2026-07-24 弃用，当前模板直接使用 `deepseek-v4-flash` / `deepseek-v4-pro`。 |
 | Gemini | [模型列表](https://ai.google.dev/gemini-api/docs/models) | Gemini 3.1 Pro / Gemini 3 Flash 仍为 preview；如需生产稳定性，可在控制台改回 2.5 稳定模型。 |
-| Anthropic Claude | [模型概览](https://docs.anthropic.com/en/docs/about-claude/models/all-models) | Claude 当前 API ID 包含 `claude-sonnet-4-6`、`claude-opus-4-7`；Sonnet 更适合作为默认性价比入口。 |
+| Anthropic Claude | [模型概览](https://docs.anthropic.com/en/docs/about-claude/models/all-models) | Claude 当前 API ID 包含 `claude-sonnet-5-5`、`claude-opus-5-5`；Sonnet 更适合作为默认性价比入口。 |
 | Kimi / Moonshot | [Kimi K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[模型列表](https://platform.kimi.com/docs/models) | 官方推荐 `kimi-k2.6`；`kimi-k2` 系列将在 2026-05-25 下线，旧 `moonshot-v1-*` 仅保留为稳定旧工作负载选择。 |
 | 通义千问 / DashScope | [文本生成](https://help.aliyun.com/zh/model-studio/text-generation-model/) | 百炼推荐 `qwen3.6-plus`，确认效果后可用 `qwen3.6-flash` 降低成本。 |
 | 智谱 GLM | [模型概览](https://docs.bigmodel.cn/cn/guide/start/model-overview)、[GLM-5.1](https://docs.bigmodel.cn/cn/guide/models/text/glm-5.1) | `glm-5.1` 是当前旗舰；`glm-4.7-flash` 作为轻量/免费模型示例。 |
@@ -140,7 +140,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 火山方舟 / 豆包 | [在线推理（常规）](https://www.volcengine.com/docs/82379/2121998)、[模型列表](https://www.volcengine.com/docs/82379/1949118) | 官方示例使用 `https://ark.cn-beijing.volces.com/api/v3` 与 `doubao-seed-1-6-251015`；如使用 Coding Plan，请改用其专用 Base URL 和模型名，不要套用本表的在线推理模板。 |
 | SiliconFlow | [模型列表](https://docs.siliconflow.cn/quickstart/models)、[获取模型列表 API](https://docs.siliconflow.cn/cn/api-reference/models/get-model-list) | 平台模型实时更新且 `/models` 需要 API Key；模板只给常见新模型示例，保存前建议在 Web 设置页点击「获取模型」确认账号可见性。 |
 | OpenRouter | [Models API](https://openrouter.ai/docs/api/api-reference/models/get-models) | OpenRouter 支持 `~anthropic/claude-sonnet-latest`、`~openai/gpt-latest` 等 latest router alias；2026-05-03 的一次手动 live smoke 以 Claude Sonnet latest 作为默认示例通过，GPT latest 保留为可按账号权限切换的备选。 |
-| Requesty | [Models API](https://docs.requesty.ai/api-reference/endpoint/models-list)、[EU Routing](https://docs.requesty.ai/features/eu-routing) | 模板示例为无斜杠的 managed 模型 ID，运行时按 `openai/<model>` 路由；Base URL 为 `requesty.ai` 域名时，Web「获取模型」返回的 vendor/model ID 会保存为 `openai/<vendor>/<model>`（如 `openai/openai/gpt-4o-mini`、`openai/anthropic/claude-sonnet-4-6`），手动填写的 `anthropic/...`、`vertex/...` 也会自动补上 `openai/` 网关路由，完整 ID 原样发送给 Requesty；仅 `openai/` 开头的 ID 与 LiteLLM 路由前缀重名，手动填写时需写成 `openai/openai/gpt-4o-mini`。同一 API Key 可用于 EU 端点 `https://router.eu.requesty.ai/v1`。 |
+| Requesty | [Models API](https://docs.requesty.ai/api-reference/endpoint/models-list)、[EU Routing](https://docs.requesty.ai/features/eu-routing) | 模板示例为无斜杠的 managed 模型 ID，运行时按 `openai/<model>` 路由；Base URL 为 `requesty.ai` 域名时，Web「获取模型」返回的 vendor/model ID 会保存为 `openai/<vendor>/<model>`（如 `openai/openai/gpt-4o-mini`、`openai/anthropic/claude-sonnet-5-5`），手动填写的 `anthropic/...`、`vertex/...` 也会自动补上 `openai/` 网关路由，完整 ID 原样发送给 Requesty；仅 `openai/` 开头的 ID 与 LiteLLM 路由前缀重名，手动填写时需写成 `openai/openai/gpt-4o-mini`。同一 API Key 可用于 EU 端点 `https://router.eu.requesty.ai/v1`。 |
 | Anspire Open（兼容） | [Anspire Open](https://open.anspire.cn/dsa?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` 在未配置更高优先级 OpenAI-compatible 来源时可用于大模型网关与搜索；兼容示例为 `openai/Doubao-Seed-2.0-lite` + `https://open-gateway.anspire.cn/v6`，是否可用以控制台与模型权限为准。 |
 | LiteLLM | [OpenAI-Compatible Endpoints](https://docs.litellm.ai/docs/providers/openai_compatible) | OpenAI-compatible 端点需要把运行时模型写成 `openai/<model>`，Base URL 只填到服务商兼容入口，不额外拼接 `/chat/completions`。 |
 
@@ -151,7 +151,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 - OpenAI-compatible provider 的 channel `protocol` 通常是 `openai`。
 - `LLM_<CHANNEL>_API_SURFACE` 默认是 `chat_completions`；Responses-only 模型显式设为 `responses`。Responses 渠道要求协议及每个模型的实际 LiteLLM provider 都是 `openai`；直连 provider 从当前安装的 LiteLLM registry 获取，并由系统配置 API 返回给 Web 编辑器作为共同真源。因此显式 `anthropic/`、`gemini/`、`xai/` 以及未来新增的冲突前缀都会在所有配置入口被一致识别，网关自有的 `deepseek-ai/...`、`Qwen/...` 等带斜杠模型 ID 则会规范化到 `openai/<model>`。同一个规范化公开 alias 不得跨渠道混用 Chat 与 Responses，避免 Router 在不同 Surface deployment 间负载均衡。运行时保留公开模型别名 `openai/<model>`，并通过 LiteLLM 的 `openai/responses/<model>` 桥接调用 `/responses`。
 - 该设计与主流项目的显式路由方式一致：[LiteLLM](https://github.com/BerriAI/litellm/blob/main/litellm/responses/main.py) 提供 Chat-to-Responses bridge，[OpenAI Agents SDK](https://openai.github.io/openai-agents-python/models/) 使用独立 Responses/Chat 模型类，[LangChain](https://docs.langchain.com/oss/python/integrations/chat/openai) 使用 `use_responses_api` 显式选择并仅在已知条件下自动路由。DSA 不在请求失败后猜测 endpoint，避免双请求、重复计费及掩盖真实服务端错误。
-- 运行时模型名通常写成 `openai/<model>`；例如自定义网关里的 `gpt-5.5` 可以作为 `openai/gpt-5.5` 被 LiteLLM 路由。
+- 运行时模型名通常写成 `openai/<model>`；例如自定义网关里的 `gpt-6.1-sol` 可以作为 `openai/gpt-6.1-sol` 被 LiteLLM 路由。
 - `Qwen/...`、`deepseek-ai/...` 这类是服务商或模型仓库组织名前缀，不等同于 LiteLLM provider prefix；不要因为它们包含斜杠就误判为 `provider/model` 路由。
 - Base URL 只填官方或网关给出的兼容入口，通常到 `/v1`、`/api/v3` 或厂商文档指定路径；不要手动追加 `/chat/completions`。
 - 如果使用 YAML 模式，按 LiteLLM `model_list` / `litellm_params` 的原生语义配置；YAML 有效时优先级高于 Channels。

@@ -168,7 +168,7 @@ def test_litellm_backend_derives_provider_from_model_when_usage_is_empty() -> No
     backend = LiteLLMGenerationBackend(
         lambda _prompt, _generation_config, **_kwargs: (
             "ok",
-            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-sonnet-5-5",
             {},
         )
     )

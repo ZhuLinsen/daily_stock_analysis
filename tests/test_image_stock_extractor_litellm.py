@@ -58,9 +58,9 @@ def _cfg(**kwargs) -> Config:
         gemini_api_keys=[],
         gemini_model="gemini-3.1-pro-preview",
         anthropic_api_keys=[],
-        anthropic_model="claude-sonnet-4-6",
+        anthropic_model="claude-sonnet-5-5",
         openai_api_keys=[],
-        openai_model="gpt-5.5",
+        openai_model="gpt-6.1-sol",
         openai_base_url=None,
         openai_vision_model=None,
         deepseek_api_keys=[],
@@ -135,7 +135,7 @@ class TestGetApiKeysForModel:
 
     def test_returns_anthropic_keys_for_anthropic_model(self):
         cfg = _cfg(anthropic_api_keys=[_ANTHROPIC_KEY], openai_api_keys=[_OPENAI_KEY])
-        keys = _get_api_keys_for_model("anthropic/claude-3-5-sonnet-20241022", cfg)
+        keys = _get_api_keys_for_model("anthropic/claude-sonnet-5-5", cfg)
         assert _ANTHROPIC_KEY in keys
 
     def test_returns_openai_keys_for_openai_model(self):

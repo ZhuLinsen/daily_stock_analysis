@@ -355,7 +355,7 @@ def review_with_openai(prompt):
     """Run review with OpenAI-compatible API as fallback."""
     api_key = os.environ.get('OPENAI_API_KEY')
     base_url = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
-    model = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
+    model = os.environ.get('OPENAI_MODEL', 'gpt-6.1-sol')
 
     if not api_key:
         print("❌ OpenAI API Key 未配置（检查 GitHub Secrets: OPENAI_API_KEY）")

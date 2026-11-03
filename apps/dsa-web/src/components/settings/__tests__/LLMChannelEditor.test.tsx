@@ -1933,7 +1933,7 @@ describe('LLMChannelEditor', () => {
       message: 'LLM channel model discovery succeeded',
       error: null,
       resolvedProtocol: 'openai',
-      models: ['openai/openai/gpt-4o-mini', 'openai/anthropic/claude-sonnet-4-6', 'openai/vertex/claude-sonnet-4-5'],
+      models: ['openai/openai/gpt-4o-mini', 'openai/anthropic/claude-sonnet-5-5', 'openai/vertex/claude-sonnet-4-5'],
       latencyMs: 80,
     });
 
@@ -1945,7 +1945,7 @@ describe('LLMChannelEditor', () => {
           { key: 'LLM_REQUESTY_BASE_URL', value: 'https://router.eu.requesty.ai/v1' },
           { key: 'LLM_REQUESTY_ENABLED', value: 'true' },
           { key: 'LLM_REQUESTY_API_KEY', value: 'sk-test' },
-          { key: 'LLM_REQUESTY_MODELS', value: 'anthropic/claude-sonnet-4-6' },
+          { key: 'LLM_REQUESTY_MODELS', value: 'anthropic/claude-sonnet-5-5' },
         ]}
         configVersion="v1"
         maskToken="******"
@@ -1953,8 +1953,8 @@ describe('LLMChannelEditor', () => {
       />
     );
 
-    expect(selectOptionValues('主模型')).toContain('openai/anthropic/claude-sonnet-4-6');
-    expect(selectOptionValues('主模型')).not.toContain('anthropic/claude-sonnet-4-6');
+    expect(selectOptionValues('主模型')).toContain('openai/anthropic/claude-sonnet-5-5');
+    expect(selectOptionValues('主模型')).not.toContain('anthropic/claude-sonnet-5-5');
 
     fireEvent.click(screen.getByRole('button', { name: /Requesty/i }));
     fireEvent.click(screen.getByRole('button', { name: '获取模型' }));
@@ -1963,13 +1963,13 @@ describe('LLMChannelEditor', () => {
     expect(gptCheckbox).not.toBeChecked();
     // Discovered labels equal the runtime route names, so the fallback model list
     // also renders the selected route; the discovery list comes first.
-    const [claudeCheckbox] = screen.getAllByLabelText('openai/anthropic/claude-sonnet-4-6');
+    const [claudeCheckbox] = screen.getAllByLabelText('openai/anthropic/claude-sonnet-5-5');
     expect(claudeCheckbox).toBeChecked();
 
     fireEvent.click(gptCheckbox);
     await waitFor(() => {
       expect(screen.getByLabelText('手动模型（逗号分隔）')).toHaveValue(
-        'anthropic/claude-sonnet-4-6,openai/openai/gpt-4o-mini',
+        'anthropic/claude-sonnet-5-5,openai/openai/gpt-4o-mini',
       );
     });
     expect(selectOptionValues('主模型')).toContain('openai/openai/gpt-4o-mini');
@@ -2117,9 +2117,9 @@ describe('LLMChannelEditor', () => {
       errorCode: 'request_blocked',
       stage: 'chat_completion',
       retryable: false,
-      details: { reason: 'provider_blocked', model: 'openai/gpt-5.5' },
+      details: { reason: 'provider_blocked', model: 'openai/gpt-6.1-sol' },
       resolvedProtocol: 'openai',
-      resolvedModel: 'openai/gpt-5.5',
+      resolvedModel: 'openai/gpt-6.1-sol',
       latencyMs: null,
     });
 
@@ -2131,7 +2131,7 @@ describe('LLMChannelEditor', () => {
           { key: 'LLM_PROXY_BASE_URL', value: 'https://gateway.example.com/v1' },
           { key: 'LLM_PROXY_ENABLED', value: 'true' },
           { key: 'LLM_PROXY_API_KEY', value: 'secret-key' },
-          { key: 'LLM_PROXY_MODELS', value: 'gpt-5.5,gpt-4o-mini' },
+          { key: 'LLM_PROXY_MODELS', value: 'gpt-6.1-sol,gpt-4o-mini' },
         ]}
         configVersion="v1"
         maskToken="******"
@@ -2143,7 +2143,7 @@ describe('LLMChannelEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
 
     expect(await screen.findByText(/聊天调用 · 请求被拦截/i)).toBeInTheDocument();
-    expect(screen.getByText(/本次测试模型：openai\/gpt-5\.5/i)).toBeInTheDocument();
+    expect(screen.getByText(/本次测试模型：openai\/gpt-6\.1-sol/i)).toBeInTheDocument();
     expect(screen.getByText(/账号风控、地域限制、模型权限/i)).toBeInTheDocument();
     expect(screen.queryByText(/Base URL、代理、TLS/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/调整模型顺序或移除不可用模型/i)).not.toBeInTheDocument();

@@ -62,7 +62,7 @@ def _litellm_effective_map(api_key: str = "sk-secret-value") -> dict:
     return {
         "GENERATION_BACKEND": "litellm",
         "GENERATION_FALLBACK_BACKEND": "",
-        "LITELLM_MODEL": "openai/gpt-5.5",
+        "LITELLM_MODEL": "openai/gpt-6.1-sol",
         "OPENAI_API_KEY": api_key,
     }
 
@@ -278,7 +278,7 @@ def test_litellm_aihubmix_key_builds_openai_legacy_route() -> None:
     service = GenerationBackendStatusService(
         effective_map={
             "GENERATION_BACKEND": "litellm",
-            "LITELLM_MODEL": "openai/gpt-5.5",
+            "LITELLM_MODEL": "openai/gpt-6.1-sol",
             "AIHUBMIX_KEY": "sk-aihubmix-secret",
         }
     )
@@ -469,7 +469,7 @@ def test_litellm_status_skips_responses_surface_for_non_openai_protocol() -> Non
             "LLM_DRAFT_PROTOCOL": "anthropic",
             "LLM_DRAFT_API_SURFACE": "responses",
             "LLM_DRAFT_API_KEY": "sk-draft",
-            "LLM_DRAFT_MODELS": "claude-sonnet-4-6",
+            "LLM_DRAFT_MODELS": "claude-sonnet-5-5",
         }
     )
 
@@ -487,7 +487,7 @@ def test_litellm_status_skips_openai_responses_channel_with_non_openai_model_pro
             "LLM_DRAFT_PROTOCOL": "openai",
             "LLM_DRAFT_API_SURFACE": "responses",
             "LLM_DRAFT_API_KEY": "sk-draft",
-            "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-4-6",
+            "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-5-5",
         }
     )
 

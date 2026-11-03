@@ -814,7 +814,7 @@ class GenerationBackendStatusService:
             or ""
         )
         if anthropic_keys:
-            model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6").strip()
+            model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-5-5").strip()
             return model if "/" in model else f"anthropic/{model}"
 
         deepseek_keys = cls._split_csv(
@@ -826,7 +826,7 @@ class GenerationBackendStatusService:
             return "deepseek/deepseek-v4-flash"
 
         if cls._openai_keys_from_map(effective_map):
-            model = (effective_map.get("OPENAI_MODEL") or "gpt-5.5").strip()
+            model = (effective_map.get("OPENAI_MODEL") or "gpt-6.1-sol").strip()
             return model if "/" in model else f"openai/{model}"
 
         return ""

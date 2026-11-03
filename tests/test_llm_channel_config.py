@@ -261,7 +261,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             "LLM_ANTHROPIC_PROTOCOL": "anthropic",
             "LLM_ANTHROPIC_API_SURFACE": "responses",
             "LLM_ANTHROPIC_API_KEY": "sk-anthropic-test-value",
-            "LLM_ANTHROPIC_MODELS": "claude-sonnet-4-6",
+            "LLM_ANTHROPIC_MODELS": "claude-sonnet-5-5",
         }
 
         with patch.dict(os.environ, env, clear=True):
@@ -286,7 +286,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             "LLM_DRAFT_PROTOCOL": "openai",
             "LLM_DRAFT_API_SURFACE": "responses",
             "LLM_DRAFT_API_KEY": "sk-draft-test-value",
-            "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-4-6",
+            "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-5-5",
         }
 
         with patch.dict(os.environ, env, clear=True):
@@ -350,7 +350,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
     def test_responses_wire_model_builder_rejects_non_openai_provider(self) -> None:
         with self.assertRaisesRegex(ValueError, "normalized openai"):
-            apply_litellm_api_surface("anthropic/claude-sonnet-4-6", "responses")
+            apply_litellm_api_surface("anthropic/claude-sonnet-5-5", "responses")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -1113,7 +1113,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertFalse(config.llm_blocks_legacy_fallback)
         self.assertEqual(config.llm_channel_config_issues, [])
         self.assertEqual(config.llm_models_source, "legacy_env")
-        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
+        self.assertEqual(config.litellm_model, "openai/gpt-6.1-sol")
         self.assertTrue(config.llm_model_list)
 
     @patch("src.config.setup_env")
@@ -1197,9 +1197,9 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         mock_response.json.return_value = {
             "data": [
                 {"id": "openai/gpt-4o-mini"},
-                {"id": "anthropic/claude-sonnet-4-6"},
+                {"id": "anthropic/claude-sonnet-5-5"},
                 {"id": "vertex/claude-sonnet-4-5"},
-                {"id": "gpt-5.4-mini"},
+                {"id": "gpt-6.1-terra"},
             ]
         }
         mock_get.return_value = mock_response
@@ -1214,9 +1214,9 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         expected = [
             "openai/openai/gpt-4o-mini",
-            "openai/anthropic/claude-sonnet-4-6",
+            "openai/anthropic/claude-sonnet-5-5",
             "openai/vertex/claude-sonnet-4-5",
-            "openai/gpt-5.4-mini",
+            "openai/gpt-6.1-terra",
         ]
         self.assertEqual(payload["models"], expected)
 
@@ -1246,12 +1246,12 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
         cases = {
             # Hand-typed Requesty vendor IDs keep the gateway route.
-            "anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
+            "anthropic/claude-sonnet-5-5": "openai/anthropic/claude-sonnet-5-5",
             "vertex/claude-sonnet-4-5": "openai/vertex/claude-sonnet-4-5",
-            "gpt-5.4-mini": "openai/gpt-5.4-mini",
+            "gpt-6.1-terra": "openai/gpt-6.1-terra",
             # Already routed values are never prefixed again.
             "openai/openai/gpt-4o-mini": "openai/openai/gpt-4o-mini",
-            "openai/anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
+            "openai/anthropic/claude-sonnet-5-5": "openai/anthropic/claude-sonnet-5-5",
             "openai/vertex/claude-sonnet-4-5": "openai/vertex/claude-sonnet-4-5",
         }
         for base_url in ("https://router.requesty.ai/v1", "https://router.eu.requesty.ai/v1"):
@@ -1264,8 +1264,8 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
         # Other hosts keep the existing LiteLLM provider semantics.
         self.assertEqual(
-            normalize_llm_channel_model("anthropic/claude-sonnet-4-6", "openai", "https://requesty.ai.example.com/v1"),
-            "anthropic/claude-sonnet-4-6",
+            normalize_llm_channel_model("anthropic/claude-sonnet-5-5", "openai", "https://requesty.ai.example.com/v1"),
+            "anthropic/claude-sonnet-5-5",
         )
         self.assertEqual(
             normalize_llm_channel_model("vertex/claude-sonnet-4-5", "openai", "https://api.example.com/v1"),
@@ -1646,7 +1646,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         model_list = [
             {
                 "model_name": "future_router",
-                "litellm_params": {"model": "openai/gpt-5.5"},
+                "litellm_params": {"model": "openai/gpt-6.1-sol"},
             }
         ]
 

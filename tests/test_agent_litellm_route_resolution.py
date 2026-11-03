@@ -176,14 +176,14 @@ def test_agent_resolver_preserves_direct_model_without_preflight_credentials() -
         _config(
             agent_litellm_model="gpt-4o-mini",
             litellm_model="gemini/gemini-2.5-flash",
-            litellm_fallback_models=["anthropic/claude-3-5-sonnet-20241022"],
+            litellm_fallback_models=["anthropic/claude-sonnet-5-5"],
         )
     )
 
     assert resolution.available
     assert resolution.models_to_try == [
         "openai/gpt-4o-mini",
-        "anthropic/claude-3-5-sonnet-20241022",
+        "anthropic/claude-sonnet-5-5",
     ]
 
 

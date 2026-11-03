@@ -35,9 +35,9 @@ model_list:
       api_key: "os.environ/AIHUBMIX_KEY"
       api_base: https://aihubmix.com/v1
 
-  - model_name: openai/claude-3-5-sonnet-20241022
+  - model_name: openai/claude-sonnet-5-5
     litellm_params:
-      model: openai/claude-3-5-sonnet-20241022
+      model: openai/claude-sonnet-5-5
       api_key: "os.environ/AIHUBMIX_KEY"
       api_base: https://aihubmix.com/v1
 
@@ -64,9 +64,9 @@ model_list:
       api_key: "os.environ/GEMINI_API_KEY_2"
 
   # --- Anthropic Claude (原生) ---
-  # - model_name: anthropic/claude-3-5-sonnet-20241022
+  # - model_name: anthropic/claude-sonnet-5-5
   #   litellm_params:
-  #     model: anthropic/claude-3-5-sonnet-20241022
+  #     model: anthropic/claude-sonnet-5-5
   #     api_key: "os.environ/ANTHROPIC_API_KEY"
 
   # --- xAI Grok (LiteLLM 直连 provider，不是托管渠道) ---

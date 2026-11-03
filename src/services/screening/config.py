@@ -500,9 +500,9 @@ def _resolve_llm_model(channels: list[dict[str, object]]) -> str:
     if os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEYS"):
         return _normalize_litellm_model(os.getenv("GEMINI_MODEL", DEFAULT_LLM_MODEL), "gemini")
     if os.getenv("OPENAI_API_KEY"):
-        return _normalize_litellm_model(os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "openai")
+        return _normalize_litellm_model(os.getenv("OPENAI_MODEL", "gpt-6.1-sol"), "openai")
     if os.getenv("AIHUBMIX_KEY"):
-        return _normalize_litellm_model(os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "openai")
+        return _normalize_litellm_model(os.getenv("OPENAI_MODEL", "gpt-6.1-sol"), "openai")
     return DEFAULT_LLM_MODEL
 
 

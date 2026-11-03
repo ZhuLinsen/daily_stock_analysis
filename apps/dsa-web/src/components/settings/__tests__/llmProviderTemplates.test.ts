@@ -143,10 +143,10 @@ describe('llmProviderTemplates', () => {
 
   it('keeps protocol-level fallback placeholders centralized', () => {
     expect(MODEL_PLACEHOLDERS_BY_PROTOCOL).toMatchObject({
-      openai: 'gpt-5.5,qwen3.6-plus',
+      openai: 'gpt-6.1-sol,qwen3.6-plus',
       deepseek: 'deepseek-v4-flash,deepseek-v4-pro',
-      gemini: 'gemini-3.6-flash,gemini-3.8-flash',
-      anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
+      gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
+      anthropic: 'claude-sonnet-5-5,claude-opus-5-5',
       vertex_ai: 'gemini-3.6-flash',
       ollama: 'llama3.2,qwen2.5',
     });

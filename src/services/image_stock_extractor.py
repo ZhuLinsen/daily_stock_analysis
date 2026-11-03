@@ -219,9 +219,9 @@ def _resolve_vision_model() -> str:
             model_name = cfg.gemini_model or "gemini-3.6-flash"
             model = model_name if "/" in model_name else f"gemini/{model_name}"
         elif cfg.anthropic_api_keys:
-            model = f"anthropic/{cfg.anthropic_model or 'claude-sonnet-4-6'}"
+            model = f"anthropic/{cfg.anthropic_model or 'claude-sonnet-5-5'}"
         elif cfg.openai_api_keys:
-            model = f"openai/{cfg.openai_model or 'gpt-5.5'}"
+            model = f"openai/{cfg.openai_model or 'gpt-6.1-sol'}"
         else:
             return ""
     return model
