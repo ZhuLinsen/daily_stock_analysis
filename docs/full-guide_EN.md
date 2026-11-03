@@ -431,6 +431,13 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
 | `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), jp (JP stocks), kr (KR stocks), both (all five markets) | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
+| `NEWS_DIGEST_ENABLED` | Master switch for the news digest: pushes one macro news digest (Markdown) before market open on trading days and during weekends/holidays, and saves it to analysis history; off by default, at most one per day once enabled (Issue #2184) | `false` |
+| `NEWS_DIGEST_PREMARKET_WINDOW` | Trading-day premarket push window, `HH:MM-HH:MM`, start-inclusive/end-exclusive, interpreted in the process-local timezone; invalid or cross-midnight values fall back to the default with a warning | `08:00-09:15` |
+| `NEWS_DIGEST_OFFDAY_WINDOW` | Weekend/holiday push window, same semantics | `09:00-18:00` |
+| `NEWS_DIGEST_TOPICS` | News digest search topics (comma-separated; at most 5, extras dropped with a warning; fully empty falls back to the default topics) | `宏观政策,货币宽松,证监会,外围市场,行业利好` |
+| `NEWS_DIGEST_MAX_NEWS` | Maximum items per digest; range 4-30, invalid values fall back to the default | `12` |
+| `NEWS_DIGEST_INTERVAL_MINUTES` | Background polling interval in minutes (minimum 1); the actual push happens at the first poll tick after the window opens | `10` |
+| `NEWS_DIGEST_REGION` | News digest region; only `cn` is supported, other values are treated as `cn` with a warning | `cn` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
 | `SCHEDULE_TIME` | Scheduled execution time | `18:00` |
 | `SCHEDULE_TIMES` | Multiple scheduled execution times, comma-separated; falls back to `SCHEDULE_TIME` when empty | empty |
@@ -1002,6 +1009,16 @@ Entrypoints and visibility:
 `analysis_phase` is the requested override value, while the final report phase remains `report.meta.market_phase_summary.phase`. Older callers that omit `analysis_phase` remain compatible. Older history rows without `market_phase_summary` or `analysis_context_pack_overview` return empty fields and still load normally. Backtest queries support `analysis_phase=premarket|intraday|postmarket|unknown` filtering, and P6 folds lunch-break and near-close phases into intraday.
 
 `SAVE_CONTEXT_SNAPSHOT=false` or CLI `--no-context-snapshot` only stops persisting the full `context_snapshot` for new history rows, so new history no longer exposes persisted phase summary / pack overview / diagnostics snapshot data. It does not disable current-run `AnalysisContextPack` construction, does not remove the low-sensitivity `analysis_context_pack_summary` from prompts, and does not change the report JSON schema. Callers that need output closer to the old post-market wording can temporarily pin `analysis_phase=postmarket`; fully removing the P0-P6 phase/pack runtime integration requires a release rollback or code rollback.
+
+### News Digest (Premarket / Weekend / Holiday, Issue #2184)
+
+Pushes one A-share macro news digest during non-trading periods (off by default; set `NEWS_DIGEST_ENABLED=true` to enable):
+
+- **Trigger**: a background task polls every `NEWS_DIGEST_INTERVAL_MINUTES` and resolves the context itself — on trading days it only fires inside the premarket window (`NEWS_DIGEST_PREMARKET_WINDOW`, default 08:00-09:15); on weekends and holidays it fires inside `NEWS_DIGEST_OFFDAY_WINDOW` (default 09:00-18:00). At most one digest per calendar day (local claim record plus a notification-level `dedup_key`, so process restarts never double-push).
+- **Both modes**: the CLI schedule mode (`--schedule`) and the Web/API runtime scheduler mount it automatically (Web mode requires scheduled tasks to be enabled). For a manual preview run `python main.py --news-digest` — the digest Markdown prints to the terminal, and the notification layer deduplicates if today's digest was already pushed.
+- **Sources**: topic search via `NEWS_DIGEST_TOPICS` (reusing the search service provider fallback chain) plus the local intelligence pool (last 48 hours), merged, deduplicated, and capped at `NEWS_DIGEST_MAX_NEWS` items; an LLM writes the summary, falling back to a template when unavailable.
+- **Fail-open semantics**: with no search capability configured and an empty intelligence pool, a template digest with a disclosure note is still produced (no error); without `exchange-calendars`, holidays are treated as trading days (affects window selection only, weekend detection unaffected); `NEWS_DIGEST_REGION` currently supports `cn` only.
+- **Records & safety**: each digest is saved to analysis history with `report_type=news_digest` (visible on the history page); news text is treated as untrusted input — entry count and per-field lengths are capped before any LLM call, and the digest never flows back into stock-analysis prompts.
 
 ---
 

@@ -1275,6 +1275,21 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响分析报告中大盘概览部分的内容和视觉呈现。'],
     notes: ['大盘分析依赖对应市场的指数数据源可用性。'],
   },
+  'settings.system.news_digest': {
+    title: '消息面汇总',
+    summary: '控制盘前/周末/节假日消息面汇总的开关、窗口、主题与推送节奏，默认关闭。',
+    usage: 'NEWS_DIGEST_ENABLED 默认 false，设为 true 后每个自然日最多推送一份 cn 宏观消息面 Markdown 摘要；交易日盘前窗口用 NEWS_DIGEST_PREMARKET_WINDOW（默认 08:00-09:15），周末/节假日窗口用 NEWS_DIGEST_OFFDAY_WINDOW（默认 09:00-18:00），窗口语义 [start, end) 按本地时区解释；NEWS_DIGEST_TOPICS 逗号分隔主题（最多 5 个）；NEWS_DIGEST_MAX_NEWS 限制单份条数（4..30）；NEWS_DIGEST_INTERVAL_MINUTES 控制后台轮询间隔（默认 10 分钟）；NEWS_DIGEST_REGION 暂仅支持 cn。',
+    valueNotes: [
+      '默认关闭：opt-in 功能，不设置即完全不影响现有行为。',
+      '每日一份：本地 claim 表 + 通知去重键双层防重，进程重启也不会重复推送。',
+      'P0 仅支持 cn（A股）市场，其他区域值会告警并按 cn 处理。',
+      '窗口非法（格式错/开始不早于结束）会回退默认窗口并记录告警。',
+      '无搜索能力或无 LLM 时自动降级为模板摘要，不会中断定时任务。',
+      'Web/API 模式需开启定时任务（SCHEDULE_ENABLED）后消息面后台任务才会运行。',
+    ],
+    impact: ['开启后新增每日一份的消息面通知与分析历史记录；默认关闭时不产生任何通知。'],
+    notes: ['实际发出时刻为窗口开启后第一个轮询 tick，粒度为 NEWS_DIGEST_INTERVAL_MINUTES。'],
+  },
 };
 
 const settingsHelpEnUS: SettingsHelpMap = {
@@ -2491,6 +2506,21 @@ const settingsHelpEnUS: SettingsHelpMap = {
     ],
     impact: ['Affects the market overview section in analysis reports.'],
     notes: ['Market review depends on the availability of index data sources for the selected markets.'],
+  },
+  'settings.system.news_digest': {
+    title: 'News Digest',
+    summary: 'Controls the pre-market/weekend/holiday news digest: on/off, windows, topics and cadence. Off by default.',
+    usage: 'NEWS_DIGEST_ENABLED is off by default; set it to true to push at most one cn macro news Markdown digest per day. Trading-day pre-market uses NEWS_DIGEST_PREMARKET_WINDOW (default 08:00-09:15) and weekends/holidays use NEWS_DIGEST_OFFDAY_WINDOW (default 09:00-18:00); window semantics are [start, end) in local time. NEWS_DIGEST_TOPICS is a comma-separated topic list (at most 5); NEWS_DIGEST_MAX_NEWS caps items per digest (4..30); NEWS_DIGEST_INTERVAL_MINUTES sets the polling interval (default 10 minutes); NEWS_DIGEST_REGION supports cn only for now.',
+    valueNotes: [
+      'Off by default: this is an opt-in feature; leaving it unset keeps existing behavior unchanged.',
+      'At most once per day: a local claim table plus a notification dedup key prevent duplicate pushes, including across process restarts.',
+      'P0 supports cn (A-shares) only; other region values are warned and handled as cn.',
+      'Invalid windows (bad format or start not before end) fall back to the default window with a warning.',
+      'Without search capability or an LLM the digest degrades to a template summary and never breaks scheduling.',
+      'In Web/API mode the digest background task only runs when scheduled mode is enabled (SCHEDULE_ENABLED).',
+    ],
+    impact: ['When enabled, adds one daily news digest notification and analysis-history record; the default (off) produces no notifications.'],
+    notes: ['The digest is emitted at the first polling tick after a window opens; granularity is NEWS_DIGEST_INTERVAL_MINUTES.'],
   },
 };
 
