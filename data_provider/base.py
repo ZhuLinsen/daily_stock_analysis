@@ -632,6 +632,8 @@ class DataFetcherManager:
     """
 
     _DAILY_MARKET_FETCHER_SUPPORT = {
+        # 通达信本地 vipdoc 日线（仅 CN；未配置 TDX_LOCAL_PATH 时不注册）
+        "TdxLocalFetcher": {"cn"},
         "EfinanceFetcher": {"cn"},
         "TencentFetcher": {"cn"},
         "AkshareFetcher": {"cn", "hk"},
@@ -1799,13 +1801,17 @@ class DataFetcherManager:
         - 如果配置了 Longbridge OAuth 或 Legacy 凭据：实例化 LongbridgeFetcher 作为美股/港股兜底
         - 未配置的可选数据源不实例化，避免在批量拉取时反复探测无效源
         - 默认优先级：
-          0. EfinanceFetcher (Priority 0) - 最高优先级
+          0. TdxLocalFetcher (Priority 0) - 通达信本地 vipdoc 文件（需 TDX_LOCAL_PATH
+             指向存在的目录，否则不注册）；同优先级时按列表序先于网络源
+          0. EfinanceFetcher (Priority 0) - 最高优先级（网络源）
           1. AkshareFetcher (Priority 1)
           2. PytdxFetcher (Priority 2) - 通达信
           3. BaostockFetcher (Priority 3)
           4. YfinanceFetcher (Priority 4)
           5. TencentFetcher (Priority 5) - A 股最终兜底
         """
+        from pathlib import Path
+
         from src.config import get_config
         from .efinance_fetcher import EfinanceFetcher
         from .tencent_fetcher import TencentFetcher
@@ -1813,6 +1819,7 @@ class DataFetcherManager:
         from .tushare_fetcher import TushareFetcher
         from .tickflow_fetcher import TickFlowFetcher
         from .pytdx_fetcher import PytdxFetcher
+        from .tdx_local_fetcher import TdxLocalFetcher
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
         from .longbridge_fetcher import LongbridgeFetcher
@@ -1826,6 +1833,19 @@ class DataFetcherManager:
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
         optional_fetchers: List[BaseFetcher] = []
+
+        # 通达信本地 vipdoc 日线源：仅当配置了 TDX_LOCAL_PATH 且目录存在时才
+        # 实例化（D4 注册门槛）。GitHub runner 等无 TDX 安装、不设 env 的环境
+        # 完全不注册，CI 数据源数量与排序零变化。
+        tdx_local_path = str(getattr(config, "tdx_local_path", None) or "").strip()
+        local_fetchers: List[BaseFetcher] = []
+        if tdx_local_path and Path(tdx_local_path).is_dir():
+            local_fetchers.append(TdxLocalFetcher())
+        else:
+            logger.debug(
+                "[data source init] skip TdxLocalFetcher because TDX_LOCAL_PATH is "
+                "not configured or the directory does not exist"
+            )
 
         tushare_token = (getattr(config, "tushare_token", None) or "").strip()
         if tushare_token:
@@ -1890,7 +1910,10 @@ class DataFetcherManager:
         # 初始化数据源列表
         self._ensure_concurrency_guards()
         with self._fetchers_lock:
+            # 本地源放在列表最前（D7）：与 Efinance 同为默认优先级 0 时，
+            # sort(key=priority) 稳定排序保持列表序 → 本地严格先于网络源。
             self._fetchers = [
+                *local_fetchers,
                 efinance,
                 akshare,
                 pytdx,
