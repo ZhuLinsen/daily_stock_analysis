@@ -15,7 +15,7 @@ import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
 from src.config import get_config
@@ -729,37 +729,46 @@ def _markdown_contains_sector_markers(text: str) -> bool:
 
 def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
     sectors = payload.get("sectors")
+    concepts = payload.get("concepts")
     if not isinstance(sectors, dict):
-        return ""
+        sectors = {}
+    if not isinstance(concepts, dict):
+        concepts = {}
     top = sectors.get("top") if isinstance(sectors.get("top"), list) else []
     bottom = sectors.get("bottom") if isinstance(sectors.get("bottom"), list) else []
-    if not top and not bottom:
+    concept_top = concepts.get("top") if isinstance(concepts.get("top"), list) else []
+    concept_bottom = concepts.get("bottom") if isinstance(concepts.get("bottom"), list) else []
+    if not top and not bottom and not concept_top and not concept_bottom:
         return ""
 
     language = normalize_report_language(payload.get("language"))
     lines = []
-    if top:
-        if language == "en":
-            lines.extend(["#### Leading Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
-        else:
-            lines.extend(["#### 领涨板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
-        for rank, sector in enumerate(top[:5], 1):
-            if not isinstance(sector, dict):
-                continue
-            name = str(sector.get("name") or "-").strip() or "-"
-            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(sector)} |")
-    if bottom:
+
+    def append_ranking_table(
+        rows: List[Dict[str, Any]],
+        heading_zh: str,
+        heading_en: str,
+        name_label: str,
+    ) -> None:
+        if not rows:
+            return
         if lines:
             lines.append("")
         if language == "en":
-            lines.extend(["#### Lagging Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
+            lines.extend([f"#### {heading_en}", "| Rank | Sector | Change |", "|------|--------|--------|"])
         else:
-            lines.extend(["#### 领跌板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
-        for rank, sector in enumerate(bottom[:5], 1):
-            if not isinstance(sector, dict):
+            lines.extend([f"#### {heading_zh}", f"| 排名 | {name_label} | 涨跌幅 |", "|------|------|--------|"])
+        for rank, item in enumerate(rows[:5], 1):
+            if not isinstance(item, dict):
                 continue
-            name = str(sector.get("name") or "-").strip() or "-"
-            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(sector)} |")
+            name = str(item.get("name") or "-").strip() or "-"
+            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(item)} |")
+
+    # Issue #1584: 补建块同时渲染行业板块与概念排行，概念不再丢失。
+    append_ranking_table(top, "领涨板块 Top 5", "Leading Sectors", "板块")
+    append_ranking_table(bottom, "领跌板块 Top 5", "Lagging Sectors", "板块")
+    append_ranking_table(concept_top, "领涨概念 Top 5", "Leading Concepts", "概念")
+    append_ranking_table(concept_bottom, "领跌概念 Top 5", "Lagging Concepts", "概念")
     return "\n".join(lines).strip()
 
 
