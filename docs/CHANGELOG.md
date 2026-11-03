@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 依赖锁定 `akshare<1.20.0`，避免上游目录与 HTTP 层重构导致 CI 与桌面打包失败；Python 3.10 新装限制 `litellm<1.98.0`，修复 `NotRequired` 导入错误
 - [修复] 自选及其他无关配置保存不再被已有 LLM 渠道或模型错误阻断，模型相关修改仍校验完整依赖；仅更新自选时保留运行时单例与容器环境覆盖，并补齐增删、删空和校验回归。凡本次保存会启用 Agent 路径的，同样校验完整模型依赖：切到 LiteLLM Agent 后端（`AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` 解析为 litellm）、开启 Agent 分析（`AGENT_MODE=true`）、或配置了非 `all` 的 `AGENT_SKILLS`——后两者走普通分析的 Agent 分支，自带 `LLMToolAdapter`，不受 `AGENT_BACKEND` 决定。仅关闭 `AGENT_MODE`、将 `AGENT_SKILLS` 设为 `all` 或空值、以及无关键保存仍不受 LLM 配置影响；显式保存或导入已退役的 `codex_app_server` 仍被拒绝。
 - [改进] 移除实验性 Codex App Server 问股后端及专属探针、取消与启动链；旧配置明确提示退役并可主动修正，保留默认 LiteLLM、会话接受事务及独立 Codex CLI 报告。
 - [修复] Agent 状态面板在缺少可用主模型时显示中英文配置指引，保留技术错误码；配置指南明确区分已移除后端与历史 Gate 记录。
@@ -25,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] 新增每日热榜 Top N 轻量分析（`HOT_TOP10_ENABLED`，默认关闭，Issue #1936）：每个交易日抓取 DSA 行业/概念排名热榜前 N 名（`HOT_TOP10_COUNT`，默认 10，行业/概念/活跃主题候选合并后按涨跌幅统一排序取前 N），单次 LLM 调用生成"热榜动因/强度评估/介入建议/风险提示"的轻量概览报告并经既有报告通知渠道推送；随定时调度每日执行（`HOT_TOP10_SCHEDULE_TIME`，默认 15:10，CLI `--schedule` 与 Web/API/桌面运行时调度器均注册该任务，保存 `HOT_TOP10_*` 调度键即时重建运行时调度器）、仅 A 股交易日运行、按数据日期去重（标记文件 `data/hot_top10_state.json`，推送失败不落标记下次重试）；榜单实际数据日期（如 Tushare 15:30 数据切割前的上一交易日）透传至提示词与报告并显著标注"榜单日期"，上一交易日投递不占用当日标记、当日数据就绪后自动再投当日榜单；定时推送遵循 `--no-notify` / 调度参数通知开关；`python main.py --hot-top10` 可手动立即执行（不受当日去重限制）；AI 摘要失败自动降级为数据概览推送，任何环节失败不影响主分析调度；报告为说明文档明确的主题级概览（非个股深度报告），配置见 `docs/full-guide.md`。
 - [文档] 文档中心补充 `market-support.md` 入口，与 README / 完整指南的市场支持链接保持一致。
+- [修复] 美股社交舆情 Reddit 个股端点切换至现行 Adanos 契约 `/reddit/stocks/v1/stock/{ticker}`（旧 `/reddit/stocks/v1/report/{ticker}` 已下线、固定 404，导致 Reddit 段落始终显示无数据）；适配官方契约 200+`found=false` 无数据语义：`get_social_context` 在证据登记前将空报告归一化为平台无数据，三源全空返回 `None` 且不再误置 `news_evidence_present`（X/Polymarket 有数据时贡献保留）；mention 正文按 `text_snippet`→`text`→`title` 回退，日线情绪 `sentiment_score` 优先且保留真实零值，旧字段 `avg_sentiment` 兼容回退（#2448）。
+- [修复] Futu OpenD 未运行或协议未就绪时，FutuFetcher 改为异步连接并最多等待 5 秒，失败后关闭连接、只记录一条警告并在 5 分钟内跳过 Futu，港股请求回退到其他数据源，不再因 SDK 同步构造无限重连而卡住整轮分析（#2447）。
 
 ## [3.33.0] - 2026-10-15
 
