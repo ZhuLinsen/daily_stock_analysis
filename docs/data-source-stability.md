@@ -19,7 +19,7 @@ AkShare 的业绩预告、快报是按 `date=YYYYMMDD` 查询的全市场表，�
 - A 股个股与选股：优先配置 `TUSHARE_TOKEN`，并保留 AkShare / Efinance / Tencent / TickFlow / Baostock / YFinance 兜底；普通个股日线按 priority 配置排序。
 - 已登记 A 股指数：固定按 Tencent → AkShare → TickFlow → YFinance 降级，不读取普通日 K 的 `*_PRIORITY` 配置。
 - A 股大盘复盘：配置 `TICKFLOW_API_KEY` 后，复盘聚合所需的指数和市场宽度会优先尝试 TickFlow，失败后回退现有免费源；这与单标的指数日线的 Tencent-first 固定链是不同入口。
-- 港股：配置 `FUTU_OPEND_HOST` 后，Futu 可作为港股实时与基本面主源；`FUTU_HK_REALTIME_SOURCE_PRIORITY` 控制港股实时行情顺序，Longbridge、AkShare、YFinance 保留为 fallback。
+- 港股：配置 `FUTU_OPEND_HOST` 后，Futu 可作为港股实时与基本面主源；`FUTU_HK_REALTIME_SOURCE_PRIORITY` 控制港股实时行情顺序，Longbridge、AkShare、YFinance 保留为 fallback；OpenD 未运行或 5 秒内未完成协议就绪时本次请求直接回退，并在 5 分钟内跳过 Futu，避免整轮分析阻塞。
 - 美股：配置 `LONGBRIDGE_*` 后可优先使用 Longbridge，YFinance 保留实时主链 fallback；Finnhub、AlphaVantage 只在已有主源报价后补充字段或参与日线链，不能在 Longbridge/YFinance 全部失败时独立返回实时报价。
 - 热点题材：选股的热点实现参考 AlphaSift，默认走 EastMoney provider，并使用本地 last-good cache 降低实时接口失败影响。
 
