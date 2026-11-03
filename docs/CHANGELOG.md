@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 大盘复盘结构化字段（Issue #1584）：复盘 Prompt 要求 LLM 在报告末尾输出 ```json 结构化附录，后端提取剥离后并入 payload，新增可选 `summary`（市场温度/状态/建议仓位/核心结论）、`indices[].ma_status`（MA5/MA10/MA20 技术状态与点评）、`breadth.divergence_diagnosis`（宽度与分化诊断，LLM 缺省时按指数-家数背离确定性兜底）、`style_rotation`（风格轮动信号）、`catalysts[]`（利好/利空、影响范围、持续性、是否已消化）、`next_day_plan`（明日观察清单/仓位建议/失效条件）及可选 `cross_market_note`（跨市场参考，P3）；解析失败或字段缺失逐字段降级为 null/省略，绝不中断复盘，旧 Markdown/历史/推送渲染零差异，不新增任何配置键；Web 大盘复盘视图对新增字段可选渲染（无字段时与旧版一致）。
 
 - [文档] 文档中心补充 `market-support.md` 入口，与 README / 完整指南的市场支持链接保持一致。
+- [修复] 美股社交舆情 Reddit 个股端点切换至现行 Adanos 契约 `/reddit/stocks/v1/stock/{ticker}`（旧 `/reddit/stocks/v1/report/{ticker}` 已下线、固定 404，导致 Reddit 段落始终显示无数据）；适配官方契约 200+`found=false` 无数据语义：`get_social_context` 在证据登记前将空报告归一化为平台无数据，三源全空返回 `None` 且不再误置 `news_evidence_present`（X/Polymarket 有数据时贡献保留）；mention 正文按 `text_snippet`→`text`→`title` 回退，日线情绪 `sentiment_score` 优先且保留真实零值，旧字段 `avg_sentiment` 兼容回退（#2448）。
+- [修复] Futu OpenD 未运行或协议未就绪时，FutuFetcher 改为异步连接并最多等待 5 秒，失败后关闭连接、只记录一条警告并在 5 分钟内跳过 Futu，港股请求回退到其他数据源，不再因 SDK 同步构造无限重连而卡住整轮分析（#2447）。
 
 ## [3.33.0] - 2026-10-15
 
