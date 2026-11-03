@@ -134,10 +134,10 @@ class TestAgentConfig(unittest.TestCase):
             (
                 {
                     "ANTHROPIC_API_KEY": "anthropic-test-key",
-                    "ANTHROPIC_MODEL": "claude-sonnet-5-5",
+                    "ANTHROPIC_MODEL": "claude-3-5-sonnet-20241022",
                     "AGENT_LITELLM_MODEL": "",
                 },
-                ["anthropic/claude-sonnet-5-5"],
+                ["anthropic/claude-3-5-sonnet-20241022"],
             ),
         ]
 
@@ -2652,7 +2652,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = "gemini/gemini-2.5-flash"
-        mock_cfg.litellm_fallback_models = ["openai/gpt-4o-mini", "anthropic/claude-sonnet-5-5"]
+        mock_cfg.litellm_fallback_models = ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"]
         mock_cfg.llm_model_list = []
         mock_cfg.llm_temperature = 0.7
         mock_cfg.gemini_api_keys = []
@@ -2676,7 +2676,7 @@ class TestAgentConstructionChain(unittest.TestCase):
 
         result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
 
-        self.assertEqual(calls, ["openai/gpt-4o-mini", "anthropic/claude-sonnet-5-5"])
+        self.assertEqual(calls, ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"])
         self.assertEqual(result.content, "ok")
 
     @patch("src.agent.llm_adapter.Router")
@@ -3040,7 +3040,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = None
-        mock_cfg.litellm_fallback_models = ["anthropic/claude-sonnet-5-5"]
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
         mock_cfg.llm_model_list = []
         mock_cfg.llm_temperature = 0.7
         mock_cfg.gemini_api_keys = []
@@ -3071,7 +3071,7 @@ class TestAgentConstructionChain(unittest.TestCase):
 
         self.assertEqual(result.content, "ok")
         self.assertEqual(timeouts[0], ("openai/gpt-4o-mini", 10.0))
-        self.assertEqual(timeouts[1], ("anthropic/claude-sonnet-5-5", 3.0))
+        self.assertEqual(timeouts[1], ("anthropic/claude-3-5-sonnet-20241022", 3.0))
 
     @patch("src.agent.llm_adapter.Router")
     def test_llm_adapter_rate_limit_backoff_is_bounded_by_remaining_timeout(self, _mock_router):
@@ -3141,7 +3141,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = None
-        mock_cfg.litellm_fallback_models = ["anthropic/claude-sonnet-5-5"]
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
         mock_cfg.llm_model_list = []
         mock_cfg.llm_temperature = 0.7
         mock_cfg.gemini_api_keys = []
@@ -3178,7 +3178,7 @@ class TestAgentConstructionChain(unittest.TestCase):
         mock_cfg = MagicMock()
         mock_cfg.agent_litellm_model = "gpt-4o-mini"
         mock_cfg.litellm_model = None
-        mock_cfg.litellm_fallback_models = ["anthropic/claude-sonnet-5-5"]
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
         mock_cfg.llm_model_list = []
         mock_cfg.llm_temperature = 0.7
         mock_cfg.gemini_api_keys = []

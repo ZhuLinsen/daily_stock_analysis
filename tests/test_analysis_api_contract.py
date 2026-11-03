@@ -631,7 +631,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             has_search_capability_enabled=lambda: False,
             gemini_api_key=None,
             openai_api_key=None,
-            litellm_model="anthropic/claude-sonnet-5-5",
+            litellm_model="anthropic/claude-sonnet-4-6",
             llm_model_list=[],
             anthropic_api_keys=["sk-ant-test-value"],
         )
@@ -4817,7 +4817,7 @@ class ImageStockExtractorContractTestCase(unittest.TestCase):
             gemini_api_keys=["sk-gemini-testkey-1234"],
             gemini_model="gemini-2.0-flash",
             anthropic_api_keys=[],
-            anthropic_model="claude-sonnet-5-5",
+            anthropic_model="claude-3-5-sonnet-20241022",
             openai_api_keys=[],
             openai_model="gpt-4o-mini",
             openai_base_url=None,

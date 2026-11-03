@@ -628,7 +628,7 @@ def route_discovered_llm_model(model_id: str, base_url: Optional[str]) -> str:
     """Return the saved channel value for an ID listed by a gateway ``/models``.
 
     Requesty lists ``vendor/model`` IDs (``openai/gpt-4o-mini``,
-    ``anthropic/claude-sonnet-5-5``, ``vertex/claude-sonnet-4-5``) and managed
+    ``anthropic/claude-sonnet-4-6``, ``vertex/claude-sonnet-4-5``) and managed
     policy IDs without a slash. The vendor segment collides with LiteLLM
     provider names, so the saved value carries the OpenAI-compatible gateway
     route once (``openai/openai/gpt-4o-mini``); LiteLLM strips that layer and
@@ -1066,7 +1066,7 @@ class Config:
 
     # Anthropic Claude API（备选，当 Gemini 不可用时使用）
     anthropic_api_key: Optional[str] = None
-    anthropic_model: str = "claude-sonnet-5-5"  # Claude model name
+    anthropic_model: str = "claude-sonnet-4-6"  # Claude model name
     anthropic_temperature: float = 0.7  # Anthropic temperature (0.0-1.0, default 0.7)
     anthropic_max_tokens: int = 8192  # Max tokens for Anthropic responses
 
@@ -1712,7 +1712,7 @@ class Config:
 
             if not litellm_model:
                 _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.6-flash').strip()
-                _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-5-5').strip()
+                _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
                 if gemini_api_keys:
                     litellm_model = f'gemini/{_gemini_model_name}'
                 elif anthropic_api_keys:
@@ -1981,7 +1981,7 @@ class Config:
             gemini_max_retries=parse_env_int(os.getenv('GEMINI_MAX_RETRIES'), 5, field_name='GEMINI_MAX_RETRIES', minimum=0),
             gemini_retry_delay=parse_env_float(os.getenv('GEMINI_RETRY_DELAY'), 5.0, field_name='GEMINI_RETRY_DELAY', minimum=0.0),
             anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
-            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-5-5'),
+            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
             anthropic_temperature=parse_env_float(os.getenv('ANTHROPIC_TEMPERATURE'), 0.7, field_name='ANTHROPIC_TEMPERATURE'),
             anthropic_max_tokens=parse_env_int(os.getenv('ANTHROPIC_MAX_TOKENS'), 8192, field_name='ANTHROPIC_MAX_TOKENS', minimum=1),
             # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
@@ -2513,7 +2513,7 @@ class Config:
             LLM_AIHUBMIX_API_SURFACE=chat_completions
             LLM_AIHUBMIX_BASE_URL=https://aihubmix.com/v1
             LLM_AIHUBMIX_API_KEY=sk-xxx           (or LLM_AIHUBMIX_API_KEYS=k1,k2)
-            LLM_AIHUBMIX_MODELS=gpt-6.1-sol,claude-sonnet-5-5
+            LLM_AIHUBMIX_MODELS=gpt-6.1-sol,claude-sonnet-4-6
             LLM_AIHUBMIX_ENABLED=true
         """
         import logging

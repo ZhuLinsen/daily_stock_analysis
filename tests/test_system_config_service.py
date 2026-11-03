@@ -2349,7 +2349,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
                 {"key": "LLM_PRIMARY_API_SURFACE", "value": "responses"},
                 {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
-                {"key": "LLM_PRIMARY_MODELS", "value": "anthropic/claude-sonnet-5-5"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "anthropic/claude-sonnet-4-6"},
             ]
         )
 
@@ -3987,7 +3987,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             api_surface="responses",
             base_url="https://api.example.com/v1",
             api_key="sk-test-value",
-            models=["anthropic/claude-sonnet-5-5"],
+            models=["anthropic/claude-sonnet-4-6"],
         )
 
         self.assertFalse(payload["success"])
@@ -4806,7 +4806,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "OPENAI_BASE_URL=https://openai.example.com/v1",
             "OPENAI_API_KEY=sk-openai",
             "OPENAI_MODEL=gpt-4.1",
-            "ANTHROPIC_MODEL=claude-sonnet-5-5",
+            "ANTHROPIC_MODEL=claude-sonnet-4-6",
         )
 
         response = self.service.update(
@@ -4832,7 +4832,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(current_map["OPENAI_BASE_URL"], "https://openai.example.com/v1")
         self.assertEqual(current_map["OPENAI_API_KEY"], "sk-openai")
         self.assertEqual(current_map["OPENAI_MODEL"], "gpt-4.1")
-        self.assertEqual(current_map["ANTHROPIC_MODEL"], "claude-sonnet-5-5")
+        self.assertEqual(current_map["ANTHROPIC_MODEL"], "claude-sonnet-4-6")
         self.assertFalse(
             any("已同步清理失效的运行时模型引用" in warning for warning in response["warnings"]),
             response["warnings"],

@@ -469,7 +469,7 @@ def test_litellm_status_skips_responses_surface_for_non_openai_protocol() -> Non
             "LLM_DRAFT_PROTOCOL": "anthropic",
             "LLM_DRAFT_API_SURFACE": "responses",
             "LLM_DRAFT_API_KEY": "sk-draft",
-            "LLM_DRAFT_MODELS": "claude-sonnet-5-5",
+            "LLM_DRAFT_MODELS": "claude-sonnet-4-6",
         }
     )
 
@@ -487,7 +487,7 @@ def test_litellm_status_skips_openai_responses_channel_with_non_openai_model_pro
             "LLM_DRAFT_PROTOCOL": "openai",
             "LLM_DRAFT_API_SURFACE": "responses",
             "LLM_DRAFT_API_KEY": "sk-draft",
-            "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-5-5",
+            "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-4-6",
         }
     )
 

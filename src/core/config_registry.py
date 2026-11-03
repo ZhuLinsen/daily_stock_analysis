@@ -304,7 +304,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "LITELLM_MODEL": {
         "title": "Primary Model",
-        "description": "Primary model in provider/model format (e.g. gemini/gemini-3.6-flash, deepseek/deepseek-v4-flash, anthropic/claude-sonnet-5-5). If empty, it is auto-inferred from available API keys or channel declarations.",
+        "description": "Primary model in provider/model format (e.g. gemini/gemini-3.6-flash, deepseek/deepseek-v4-flash, anthropic/claude-sonnet-4-6). If empty, it is auto-inferred from available API keys or channel declarations.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -377,7 +377,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "LITELLM_FALLBACK_MODELS": {
         "title": "Fallback Models",
-        "description": "Comma-separated fallback models tried when the primary model fails (e.g. anthropic/claude-sonnet-5-5,openai/gpt-6.1-terra). Useful for cross-provider redundancy.",
+        "description": "Comma-separated fallback models tried when the primary model fails (e.g. anthropic/claude-sonnet-4-6,openai/gpt-6.1-terra). Useful for cross-provider redundancy.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -1615,7 +1615,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.provider_keys",
         "examples": [
             "ANTHROPIC_API_KEY=sk-ant-xxxx",
-            "LITELLM_MODEL=anthropic/claude-sonnet-5-5",
+            "LITELLM_MODEL=anthropic/claude-sonnet-4-6",
         ],
         "docs": [
             {
@@ -1645,14 +1645,14 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "ANTHROPIC_MODEL": {
         "title": "Anthropic Model",
-        "description": "Claude 模型名称（如 claude-sonnet-5-5）。",
+        "description": "Claude 模型名称（如 claude-sonnet-4-6）。",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "claude-sonnet-5-5",
+        "default_value": "claude-sonnet-4-6",
         "options": [],
         "validation": {},
         "display_order": 36,
@@ -4739,7 +4739,7 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.provider_keys",
         "examples": [
             "ANTHROPIC_API_KEYS=sk-ant-xxxx,sk-ant-yyyy",
-            "LITELLM_MODEL=anthropic/claude-sonnet-5-5",
+            "LITELLM_MODEL=anthropic/claude-sonnet-4-6",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["secret_value", "comma_separated_keys"],
@@ -4747,8 +4747,8 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
     "ANTHROPIC_MODEL": {
         "help_key": "settings.ai_model.legacy_provider_params",
         "examples": [
-            "ANTHROPIC_MODEL=claude-sonnet-5-5",
-            "LITELLM_MODEL=anthropic/claude-sonnet-5-5",
+            "ANTHROPIC_MODEL=claude-sonnet-4-6",
+            "LITELLM_MODEL=anthropic/claude-sonnet-4-6",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["legacy_provider_setting"],

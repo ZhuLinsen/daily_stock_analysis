@@ -185,33 +185,12 @@ def _matches_model_family(model: str, family: str) -> bool:
     return any(part == family or part.startswith(f"{family}-") for part in _model_parts(model))
 
 
-# Claude models from Opus 4.7 onward (and Fable / Mythos) reject non-default
-# sampling parameters with HTTP 400; 4.6 and older still accept temperature.
-# https://platform.claude.com/docs/en/about-claude/models/overview
-_CLAUDE_VERSIONED_MODEL_RE = re.compile(
-    r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?=$|[-@.:])"
-)
-_CLAUDE_NO_SAMPLING_FAMILIES = ("claude-fable", "claude-mythos")
-
-
-def _claude_rejects_temperature(part: str) -> bool:
-    if any(family in part for family in _CLAUDE_NO_SAMPLING_FAMILIES):
-        return True
-    match = _CLAUDE_VERSIONED_MODEL_RE.search(part)
-    if not match:
-        return False
-    major = int(match.group(1))
-    minor = int(match.group(2) or 0)
-    return (major, minor) >= (4, 7)
-
-
 def _should_omit_litellm_temperature(model: str) -> bool:
     """Return whether a model family should rely on the provider default temperature."""
     return any(
         part.startswith(("gpt-5", "gpt5", "gpt-6", "gpt6"))
         or part in {"o1", "o3", "o4"}
         or part.startswith(("o1-", "o3-", "o4-"))
-        or _claude_rejects_temperature(part)
         for part in _model_parts(model)
     )
 

@@ -3644,7 +3644,7 @@ class SystemConfigService:
             model = (effective_map.get("GEMINI_MODEL") or "gemini-3.6-flash").strip()
             return model if "/" in model else f"gemini/{model}"
         if cls._has_any_config_value(effective_map, ("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY")):
-            model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-5-5").strip()
+            model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6").strip()
             return model if "/" in model else f"anthropic/{model}"
         if cls._has_any_config_value(effective_map, ("DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEY")):
             return "deepseek/deepseek-v4-flash"

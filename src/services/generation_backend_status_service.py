@@ -814,7 +814,7 @@ class GenerationBackendStatusService:
             or ""
         )
         if anthropic_keys:
-            model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-5-5").strip()
+            model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6").strip()
             return model if "/" in model else f"anthropic/{model}"
 
         deepseek_keys = cls._split_csv(

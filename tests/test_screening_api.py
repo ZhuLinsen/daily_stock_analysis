@@ -3681,7 +3681,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                 "LLM_DRAFT_PROTOCOL": "openai",
                 "LLM_DRAFT_API_SURFACE": "responses",
                 "LLM_DRAFT_API_KEY": "sk-draft",
-                "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-5-5",
+                "LLM_DRAFT_MODELS": "anthropic/claude-sonnet-4-6",
             },
             clear=True,
         ):

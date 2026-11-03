@@ -146,7 +146,7 @@ describe('llmProviderTemplates', () => {
       openai: 'gpt-6.1-sol,qwen3.6-plus',
       deepseek: 'deepseek-v4-flash,deepseek-v4-pro',
       gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
-      anthropic: 'claude-sonnet-5-5,claude-opus-5-5',
+      anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
       vertex_ai: 'gemini-3.6-flash',
       ollama: 'llama3.2,qwen2.5',
     });

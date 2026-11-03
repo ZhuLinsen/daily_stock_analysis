@@ -86,7 +86,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'AIHubmix（聚合平台）',
     protocol: 'openai',
     baseUrl: 'https://aihubmix.com/v1',
-    placeholderModels: 'gpt-6.1-sol,claude-sonnet-5-5,gemini-3.6-flash',
+    placeholderModels: 'gpt-6.1-sol,claude-sonnet-4-6,gemini-3.6-flash',
     capabilities: ['openai-compatible', 'aggregator'],
     officialSources: [{ label: 'AIHubmix', url: 'https://inferera.com/?aff=CfMq' }],
   },
@@ -197,7 +197,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'Requesty',
     protocol: 'openai',
     baseUrl: 'https://router.requesty.ai/v1',
-    placeholderModels: 'claude-sonnet-5-5,gpt-6.1-sol',
+    placeholderModels: 'claude-sonnet-4-6,gpt-6.1-sol',
     capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
     configHint: '模型列表和模型可见性依赖账号权限与 API Key；EU 区域可将 Base URL 改为 https://router.eu.requesty.ai/v1。',
     officialSources: [
@@ -218,7 +218,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'Anthropic 官方',
     protocol: 'anthropic',
     baseUrl: '',
-    placeholderModels: 'claude-sonnet-5-5,claude-opus-5-5',
+    placeholderModels: 'claude-sonnet-4-6,claude-opus-4-7',
     capabilities: ['official-api'],
     officialSources: [
       { label: 'Anthropic Models', url: 'https://docs.anthropic.com/en/docs/about-claude/models/all-models' },
@@ -273,7 +273,7 @@ export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<ChannelProtocol, string> = {
   openai: 'gpt-6.1-sol,qwen3.6-plus',
   deepseek: 'deepseek-v4-flash,deepseek-v4-pro',
   gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
-  anthropic: 'claude-sonnet-5-5,claude-opus-5-5',
+  anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
   vertex_ai: 'gemini-3.6-flash',
   ollama: 'llama3.2,qwen2.5',
 };
