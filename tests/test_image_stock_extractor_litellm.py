@@ -60,7 +60,7 @@ def _cfg(**kwargs) -> Config:
         anthropic_api_keys=[],
         anthropic_model="claude-sonnet-4-6",
         openai_api_keys=[],
-        openai_model="gpt-5.5",
+        openai_model="gpt-6.1-sol",
         openai_base_url=None,
         openai_vision_model=None,
         deepseek_api_keys=[],
