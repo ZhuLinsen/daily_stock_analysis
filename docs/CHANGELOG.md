@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 美股社交舆情 Reddit 个股端点切换至现行 Adanos 契约 `/reddit/stocks/v1/stock/{ticker}`（旧 `/reddit/stocks/v1/report/{ticker}` 已下线、固定 404，导致 Reddit 段落始终显示无数据）；适配官方契约 200+`found=false` 无数据语义：`get_social_context` 在证据登记前将空报告归一化为平台无数据，三源全空返回 `None` 且不再误置 `news_evidence_present`（X/Polymarket 有数据时贡献保留）；mention 正文按 `text_snippet`→`text`→`title` 回退，日线情绪 `sentiment_score` 优先且保留真实零值，旧字段 `avg_sentiment` 兼容回退（#2448）。
 - [修复] Futu OpenD 未运行或协议未就绪时，FutuFetcher 改为异步连接并最多等待 5 秒，失败后关闭连接、只记录一条警告并在 5 分钟内跳过 Futu，港股请求回退到其他数据源，不再因 SDK 同步构造无限重连而卡住整轮分析（#2447）。
 
+- [改进] Agent 轨迹评估增加独立股票范围诊断与干扰股票样例，区分越界请求、运行时拦截和无法判定调用，支持多股对比及阶段明细，不改变原指标或退出码。
+
 ## [3.33.0] - 2026-10-15
 
 ### 发布亮点
