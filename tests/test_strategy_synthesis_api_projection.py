@@ -412,15 +412,23 @@ class StrategySynthesisApiProjectionTestCase(unittest.TestCase):
         self.assertIsNotNone(report)
         return report.details
 
-    def _details_via_async_db_rebuild(self, raw_result: Any) -> Dict[str, Any]:
-        """Path 2: get_analysis_status DB rebuild -> report details dict."""
+    # Default stored snapshot used by the DB-rebuild path driver. Kept as a
+    # module-level constant so the no-snapshot variant below can stay distinct.
+    _ASYNC_DB_SNAPSHOT: Dict[str, Any] = {"report_language": "zh", "skills": ["bull_trend"]}
+
+    def _status_via_async_db_rebuild(
+        self,
+        raw_result: Any,
+        context_snapshot: Any = _ASYNC_DB_SNAPSHOT,
+    ):
+        """Path 2 core: get_analysis_status DB rebuild -> raw TaskStatus."""
         record = SimpleNamespace(
             id=11,
             code="600519",
             name="贵州茅台",
             report_type="detailed",
             raw_result=dict(raw_result) if isinstance(raw_result, dict) else raw_result,
-            context_snapshot={"report_language": "zh", "skills": ["bull_trend"]},
+            context_snapshot=context_snapshot,
             sentiment_score=55,
             operation_advice="持有",
             trend_prediction="震荡",
@@ -442,7 +450,20 @@ class StrategySynthesisApiProjectionTestCase(unittest.TestCase):
         ), patch(
             "src.storage.DatabaseManager.get_instance", return_value=mock_db
         ):
-            status = get_analysis_status("task-synthesis-1")
+            return get_analysis_status("task-synthesis-1")
+
+    def _details_via_async_db_rebuild(
+        self,
+        raw_result: Any,
+        context_snapshot: Any = _ASYNC_DB_SNAPSHOT,
+    ) -> Dict[str, Any]:
+        """Path 2: get_analysis_status DB rebuild -> report details dict.
+
+        ``context_snapshot`` mirrors the persisted record column: pass ``None``
+        to exercise rows saved with SAVE_CONTEXT_SNAPSHOT disabled
+        (src/storage.py keeps raw_result but stores context_snapshot=None).
+        """
+        status = self._status_via_async_db_rebuild(raw_result, context_snapshot)
         self.assertIsNotNone(status)
         self.assertIsNotNone(status.result, "async DB rebuild must produce a result")
         self.assertIsNotNone(status.result.report)
@@ -885,6 +906,56 @@ class StrategySynthesisApiProjectionTestCase(unittest.TestCase):
         self.assertEqual(dumped["final_signal"], "hold")
         self.assertEqual(dumped["confidence"], 0.6517)
         details_1.model_dump_json()
+
+    # ------------------------------------------------------------------
+    # OR-COR-0c7151dd: DB rebuild without a context snapshot
+    # ------------------------------------------------------------------
+
+    def test_8a_db_rebuild_without_context_snapshot_creates_details_for_valid_synthesis(
+        self,
+    ) -> None:
+        """A projectable v1 payload alone must trigger details creation.
+
+        OR-COR-0c7151dd: with SAVE_CONTEXT_SNAPSHOT disabled,
+        ``src/storage.py`` persists raw_result but stores
+        ``context_snapshot=None`` (a supported configuration). When no
+        fundamental/board/market-structure/news-disclosure field is present,
+        the rebuilt-details creation condition used to reject the row entirely,
+        so a valid strategy-synthesis-v1 payload never reached
+        ``project_strategy_synthesis_for_details`` and
+        ``/analysis/status/{task_id}`` returned ``details=null``.
+        """
+        if get_analysis_status is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        raw_result = _raw_result_with(_v1_synthesis_payload())
+        details = self._details_via_async_db_rebuild(raw_result, context_snapshot=None)
+        syn = details.get("strategy_synthesis")
+        self.assertIsNotNone(
+            syn,
+            "DB rebuild must create details when raw_result carries a valid "
+            "strategy-synthesis-v1 payload even with context_snapshot=None",
+        )
+        self.assertEqual(syn, _expected_projection())
+        self.assertEqual(syn.get("final_signal"), "hold")
+
+        # Degradation semantics must stay intact: a non-projectable payload
+        # with every other optional detail field missing still yields
+        # details=None (no empty details shell).
+        legacy_raw_result = _raw_result_with(
+            {**_v1_synthesis_payload(), "schema_version": "strategy-synthesis-v9"}
+        )
+        status_legacy = self._status_via_async_db_rebuild(
+            legacy_raw_result, context_snapshot=None
+        )
+        self.assertIsNotNone(status_legacy)
+        self.assertIsNotNone(status_legacy.result)
+        details_legacy = status_legacy.result.report["details"]
+        self.assertIsNone(
+            details_legacy,
+            "legacy payload + no snapshot + no other details must keep "
+            "details=None",
+        )
 
     # ------------------------------------------------------------------
     # Point 6: raw_result is preserved untouched
