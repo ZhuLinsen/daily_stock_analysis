@@ -75,6 +75,8 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     # when a tool runs; it is not a Web settings or model-input field.
     "FXMACRODATA_API_KEY",
     "DATABASE_PATH",
+    # Local licensed export path for the opt-in sentiment snapshot endpoint.
+    "CSMAR_ZIP_PATH",
     "SQLITE_WAL_ENABLED",
     "SQLITE_BUSY_TIMEOUT_MS",
     "SQLITE_WRITE_RETRY_MAX",
