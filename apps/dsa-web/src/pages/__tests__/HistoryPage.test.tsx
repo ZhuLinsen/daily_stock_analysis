@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import HistoryPage from '../HistoryPage';
-import { getSentimentLabel } from '../../types/analysis';
+import { getSentimentLabel, type DailyHistoryListResponse } from '../../types/analysis';
 import { toDateInputValue } from '../../utils/format';
 
 const { getDaily } = vi.hoisted(() => ({
@@ -147,6 +147,72 @@ describe('HistoryPage', () => {
         limit: 20,
       });
     });
+  });
+
+  it('hides stale daily results while the next date request is pending', async () => {
+    render(<HistoryPage />);
+
+    expect(await screen.findByText('贵州茅台')).toBeInTheDocument();
+
+    // 受控 deferred promise：B 日请求 pending 期间可精确断言表格归属状态
+    let resolveDateB: (response: DailyHistoryListResponse) => void = () => {};
+    getDaily.mockImplementationOnce(
+      () =>
+        new Promise<DailyHistoryListResponse>((resolve) => {
+          resolveDateB = resolve;
+        }),
+    );
+
+    fireEvent.change(screen.getByLabelText('日期'), { target: { value: '2026-05-01' } });
+
+    // pending 期间：上一日期的结果必须让位给加载提示，不得无归属标注地继续展示
+    expect(screen.queryByText('贵州茅台')).not.toBeInTheDocument();
+    expect(screen.getByText('加载历史记录中...')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveDateB({
+        total: 1,
+        page: 1,
+        limit: 20,
+        items: [{ ...latestItem, id: 3, name: '宁德时代', code: '300750' }],
+      });
+    });
+    expect(await screen.findByText('宁德时代')).toBeInTheDocument();
+    expect(screen.queryByText('贵州茅台')).not.toBeInTheDocument();
+    expect(screen.queryByText('加载历史记录中...')).not.toBeInTheDocument();
+  });
+
+  it('hides stale daily results while the next page request is pending', async () => {
+    getDaily.mockResolvedValueOnce({ total: 40, page: 1, limit: 20, items: [latestItem, expiredItem] });
+    render(<HistoryPage />);
+
+    expect(await screen.findByText('贵州茅台')).toBeInTheDocument();
+
+    let resolvePage2: (response: DailyHistoryListResponse) => void = () => {};
+    getDaily.mockImplementationOnce(
+      () =>
+        new Promise<DailyHistoryListResponse>((resolve) => {
+          resolvePage2 = resolve;
+        }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '2' }));
+
+    // pending 期间：第 1 页的结果不得顶着第 2 页的页码继续展示
+    expect(screen.queryByText('贵州茅台')).not.toBeInTheDocument();
+    expect(screen.getByText('加载历史记录中...')).toBeInTheDocument();
+
+    await act(async () => {
+      resolvePage2({
+        total: 40,
+        page: 2,
+        limit: 20,
+        items: [{ ...latestItem, id: 4, name: '比亚迪', code: '002594' }],
+      });
+    });
+    expect(await screen.findByText('比亚迪')).toBeInTheDocument();
+    expect(screen.queryByText('贵州茅台')).not.toBeInTheDocument();
+    expect(screen.queryByText('加载历史记录中...')).not.toBeInTheDocument();
   });
 
   it('renders the outdated badge for superseded records', async () => {

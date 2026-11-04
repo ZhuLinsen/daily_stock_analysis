@@ -95,8 +95,20 @@ const HistoryPage: React.FC = () => {
 
   const handleDateChange = (nextDate: string) => {
     if (!nextDate) return; // <input type="date"> 清空产生 ""，直接发请求注定 422
+    if (nextDate === date && page === 1) return; // 查询条件未变，清空后不会触发重查，避免卡死空表
+    // 查询条件变化即清空旧结果：requestId 只防旧响应覆盖，
+    // 不清空的话新请求 pending 期间会继续展示上一日期的数据（无归属标注）
     setDate(nextDate);
     setPage(1);
+    setItems([]);
+    setTotal(0);
+  };
+
+  const handlePageChange = (nextPage: number) => {
+    if (nextPage === page) return; // 点击当前页码按钮不会触发重查，不清空
+    setPage(nextPage);
+    setItems([]);
+    setTotal(0);
   };
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -191,7 +203,7 @@ const HistoryPage: React.FC = () => {
               </tbody>
             </table>
           </div>
-          <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
+          <Pagination currentPage={page} totalPages={totalPages} onPageChange={handlePageChange} />
         </Card>
       ) : null}
     </AppPage>
