@@ -23,6 +23,11 @@ SWITCH_CLEANUP_KEYS = {
     "market_structure_context",
     "analysis_context_pack_summary",
     "market_phase_context",
+    # OR-COR-c2c5d7da: the cross-asset snapshot belongs to the analyzed
+    # stock's market — switching targets must not carry cn risk-off signals
+    # (or their rendered summary) into the next stock.
+    "cross_asset_context",
+    "cross_asset_context_summary",
 }
 
 _STRONG_COMPARE_PATTERN = re.compile(r"比较|对比|vs\b|和[^，。,.!?！？]{0,40}比", re.IGNORECASE)
@@ -39,6 +44,7 @@ _INDICATOR_CONTEXT_PATTERN = re.compile(
     r"指标|均线|移动平均|排列|多头|空头|金叉|死叉|支撑|压力|MA\d|SMA|EMA",
     re.IGNORECASE,
 )
+
 
 def _has_ascii_token_boundaries(text: str, start: int, end: int) -> bool:
     def _is_word_char(char: str) -> bool:
@@ -68,7 +74,7 @@ class StockIdentity:
 
     @classmethod
     def from_code(cls, token: str, registry: Any) -> "StockIdentity":
-        from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+        from src.services.stock_list_parser import parse_analysis_target
 
         if registry is None:
             raise ValueError("Chat stock identity registry is unavailable")

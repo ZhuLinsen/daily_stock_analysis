@@ -72,6 +72,10 @@ from src.services.daily_market_context import (
     DailyMarketContextService,
     format_daily_market_context_prompt_section,
 )
+from src.services.cross_asset_context_service import get_default_cross_asset_context_service
+from src.cross_asset_context_guardrail import apply_cross_asset_context_guardrail
+from src.cross_asset_context_prompt import format_cross_asset_context_prompt_section
+from src.schemas.cross_asset_context import CrossAssetContext
 from src.services.social_sentiment_service import SocialSentimentService
 from src.services.intelligence_service import IntelligenceService
 from src.services.market_hotspot_service import MarketHotspotService
@@ -496,6 +500,11 @@ class StockAnalysisPipeline:
                 market,
                 target_date=daily_market_target_date,
             )
+            cross_asset_context = self._load_cross_asset_context(
+                market,
+                target_date=daily_market_target_date,
+                stock_code=code,
+            )
 
             self._emit_progress(18, f"{code}：正在获取行情与筹码数据")
             # 获取股票名称（先走轻量名称路径，后续若 realtime_quote 有 name 再覆盖）
@@ -673,6 +682,7 @@ class StockAnalysisPipeline:
                     market_phase_context=market_phase_context_dict,
                     market_phase_summary=market_phase_summary,
                     daily_market_context=daily_market_context,
+                    cross_asset_context=cross_asset_context,
                     portfolio_context=portfolio_context,
                     market_structure_context=market_structure_context,
                     analysis_target=analysis_target,
@@ -789,6 +799,11 @@ class StockAnalysisPipeline:
             self._attach_daily_market_context(
                 enhanced_context,
                 daily_market_context,
+                report_language=report_language,
+            )
+            self._attach_cross_asset_context(
+                enhanced_context,
+                cross_asset_context,
                 report_language=report_language,
             )
             if portfolio_context is not None:
@@ -924,6 +939,18 @@ class StockAnalysisPipeline:
                         "[daily_market_context_guardrail] Applied adjustments for %s: %s",
                         code,
                         market_context_adjustments,
+                    )
+                cross_asset_adjustments = apply_cross_asset_context_guardrail(
+                    result,
+                    cross_asset_context=enhanced_context.get("cross_asset_context"),
+                    report_language=getattr(result, "report_language", None)
+                    or getattr(self.config, "report_language", "zh"),
+                )
+                if cross_asset_adjustments:
+                    logger.info(
+                        "[cross_asset_context_guardrail] Applied adjustments for %s: %s",
+                        code,
+                        cross_asset_adjustments,
                     )
                 if isinstance(fundamental_context, dict):
                     result.fundamental_context = fundamental_context
@@ -1471,6 +1498,7 @@ class StockAnalysisPipeline:
         market_phase_context: Optional[Dict[str, Any]] = None,
         market_phase_summary: Optional[Dict[str, Any]] = None,
         daily_market_context: Optional[DailyMarketContext] = None,
+        cross_asset_context: Optional[CrossAssetContext] = None,
         portfolio_context: Optional[Dict[str, Any]] = None,
         market_structure_context: Optional[Dict[str, Any]] = None,
         analysis_target: Optional[AnalysisTarget] = None,
@@ -1519,6 +1547,11 @@ class StockAnalysisPipeline:
             self._attach_daily_market_context(
                 initial_context,
                 daily_market_context,
+                report_language=report_language,
+            )
+            self._attach_cross_asset_context(
+                initial_context,
+                cross_asset_context,
                 report_language=report_language,
             )
             
@@ -1774,6 +1807,18 @@ class StockAnalysisPipeline:
                         "[daily_market_context_guardrail] Applied agent adjustments for %s: %s",
                         code,
                         market_context_adjustments,
+                    )
+                cross_asset_adjustments = apply_cross_asset_context_guardrail(
+                    result,
+                    cross_asset_context=initial_context.get("cross_asset_context"),
+                    report_language=getattr(result, "report_language", None)
+                    or getattr(self.config, "report_language", "zh"),
+                )
+                if cross_asset_adjustments:
+                    logger.info(
+                        "[cross_asset_context_guardrail] Applied agent adjustments for %s: %s",
+                        code,
+                        cross_asset_adjustments,
                     )
                 self._refresh_decision_action_for_final_result(
                     result,
@@ -2129,6 +2174,68 @@ class StockAnalysisPipeline:
             return
         target_context["daily_market_context"] = safe_context
         target_context["daily_market_context_summary"] = prompt_section
+
+    def _load_cross_asset_context(
+        self,
+        market: str,
+        *,
+        target_date: Optional[date] = None,
+        stock_code: Optional[str] = None,
+    ) -> Optional[CrossAssetContext]:
+        """Load the low-sensitivity cross-asset context (Issue #1910).
+
+        Mirrors ``_load_daily_market_context``: strict switch short-circuit +
+        all-swallowing ``try/except`` → ``None``. When the switch is off the
+        pipeline performs zero cross-asset work: no fetching, no prompt
+        injection, no guardrail.
+
+        Note: the config gate requires the attribute to be explicitly ``True``.
+        Config objects predating the field (legacy snapshots / lightweight test
+        stubs) therefore treat cross-asset context as disabled — production
+        ``Config`` always carries the field (default ``True``).
+        """
+        if getattr(self.config, "cross_asset_context_enabled", None) is not True:
+            return None
+
+        try:
+            trade_date = target_date or date.today()
+            service = get_default_cross_asset_context_service()
+            return service.get_context(
+                market,
+                trade_date,
+                stock_code,
+                config=self.config,
+            )
+        except Exception as exc:
+            logger.warning("加载跨资产上下文失败，个股分析继续: %s", exc, exc_info=True)
+            return None
+
+    @staticmethod
+    def _attach_cross_asset_context(
+        target_context: Dict[str, Any],
+        cross_asset_context: Optional[CrossAssetContext],
+        *,
+        report_language: str,
+    ) -> None:
+        """Attach only the safe cross-asset summary to runtime analysis context.
+
+        Writes ``cross_asset_context`` (safe dict) plus
+        ``cross_asset_context_summary`` (rendered prompt section), only when
+        the rendered section is non-empty — mirroring
+        ``_attach_daily_market_context``. The raw payload never enters the
+        runtime context.
+        """
+        if cross_asset_context is None:
+            return
+        safe_context = cross_asset_context.to_safe_dict()
+        prompt_section = format_cross_asset_context_prompt_section(
+            safe_context,
+            report_language=report_language,
+        )
+        if not prompt_section:
+            return
+        target_context["cross_asset_context"] = safe_context
+        target_context["cross_asset_context_summary"] = prompt_section
 
     def _agent_result_to_analysis_result(
         self,
@@ -3192,6 +3299,12 @@ class StockAnalysisPipeline:
 
         Market phase and AnalysisContextPack summaries are prompt inputs only.
         P4 stores only the separately rendered public overview at snapshot top level.
+
+        Cross-asset keys (``cross_asset_context`` safe dict +
+        ``cross_asset_context_summary`` rendered section, Issue #1910) are
+        deliberately KEPT: both are low-sensitivity by construction
+        (whitelist safe dict / UNTRUSTED-bounded summary), and the raw payload
+        never enters the runtime context in the first place.
         """
         sanitized = dict(context)
         sanitized.pop("market_phase_context", None)

@@ -1595,6 +1595,100 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertNotIn("analysis_context_pack_overview", details["context_snapshot"])
         self.assertNotIn("market_phase_summary", details["context_snapshot"])
 
+    def test_handle_sync_analysis_passes_cross_asset_summary_into_report_meta(self) -> None:
+        """Issue #1910: sync analysis responses must carry the same
+        report.meta.cross_asset_context_summary passthrough as the /status
+        and history paths (PR #2428 review blocker OR-COR-cross-asset-sync-response).
+        """
+        if _handle_sync_analysis is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        summary_text = "## 外围环境与跨资产\n- 外围风险偏好：risk-off"
+        service_instance = MagicMock()
+        service_instance.analyze_stock.return_value = {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "report": {
+                "meta": {"stock_code": "600519", "report_language": "zh"},
+                "summary": {"analysis_summary": "summary"},
+                "strategy": {},
+                "details": {"news_summary": "news"},
+            },
+        }
+
+        with (
+            patch("uuid.uuid4", return_value=SimpleNamespace(hex="q-sync-cross-asset")),
+            patch("src.services.analysis_service.AnalysisService", return_value=service_instance),
+            patch(
+                "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                return_value=(
+                    {
+                        "enhanced_context": {
+                            "code": "600519",
+                            "cross_asset_context_summary": summary_text,
+                        },
+                    },
+                    None,
+                    None,
+                ),
+            ),
+        ):
+            result = _handle_sync_analysis(
+                "600519",
+                SimpleNamespace(
+                    report_type="detailed",
+                    force_refresh=False,
+                    notify=True,
+                    skills=None,
+                    analysis_phase="intraday",
+                ),
+            )
+
+        self.assertIsNotNone(result.report)
+        self.assertEqual(
+            result.report["meta"]["cross_asset_context_summary"],
+            summary_text,
+        )
+
+    def test_handle_sync_analysis_without_cross_asset_summary_keeps_meta_unchanged(self) -> None:
+        """Degraded/legacy snapshots add no key: sync responses stay byte-identical."""
+        if _handle_sync_analysis is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        service_instance = MagicMock()
+        service_instance.analyze_stock.return_value = {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "report": {
+                "meta": {"stock_code": "600519", "report_language": "zh"},
+                "summary": {"analysis_summary": "summary"},
+                "strategy": {},
+                "details": {"news_summary": "news"},
+            },
+        }
+
+        with (
+            patch("uuid.uuid4", return_value=SimpleNamespace(hex="q-sync-no-cross-asset")),
+            patch("src.services.analysis_service.AnalysisService", return_value=service_instance),
+            patch(
+                "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                return_value=({"enhanced_context": {"code": "600519"}}, None, None),
+            ),
+        ):
+            result = _handle_sync_analysis(
+                "600519",
+                SimpleNamespace(
+                    report_type="detailed",
+                    force_refresh=False,
+                    notify=True,
+                    skills=None,
+                    analysis_phase="intraday",
+                ),
+            )
+
+        self.assertIsNotNone(result.report)
+        self.assertNotIn("cross_asset_context_summary", result.report["meta"])
+
     def test_handle_sync_analysis_restores_market_structure_from_raw_result_snapshot(self) -> None:
         if _handle_sync_analysis is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
