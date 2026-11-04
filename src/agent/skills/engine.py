@@ -18,7 +18,7 @@ from src.agent.skills.defaults import (
     extract_skill_id,
     is_skill_agent_name,
 )
-from src.agent.skills.synthesis import StrategySynthesizer
+from src.agent.skills.synthesis import STRATEGY_SYNTHESIS_SCHEMA_VERSION, StrategySynthesizer
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +196,7 @@ class StrategyEngine:
             conflicts=aggregation.conflicts,
             insufficient_evidence=aggregation.insufficient_evidence,
             invalid_count=partition.invalid_count,
+            opinion_weights=aggregation.weights,
         )
         consensus_opinion = self._build_consensus_opinion(aggregation, synthesis)
         return StrategyResult(
@@ -268,4 +269,11 @@ class StrategyEngine:
                 "conflict_severity": "none",
                 "conflict_count": 0,
             },
+            "schema_version": STRATEGY_SYNTHESIS_SCHEMA_VERSION,
+            "signal_distribution": {
+                "bullish": {"count": 0, "weight_share": None},
+                "neutral": {"count": 0, "weight_share": None},
+                "bearish": {"count": 0, "weight_share": None},
+            },
+            "primary_dissent": None,
         }

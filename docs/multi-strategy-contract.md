@@ -378,6 +378,52 @@ Phase 3 只在 Phase 2 之上补前端（`apps/dsa-web/`、`apps/dsa-desktop/`�
 - 多语言 label 表复用 `src/report_language.py` 已有的 zh/en/ko 三语；前端只做投影，不重新定义。
 - Phase 3 不改变 Baseline 契约、不新增 payload 字段、不新增 API 端点。
 
+## Issue #2071 展示契约与类型化投影（Phase 3 交付）
+
+Phase 3 由 Issue #2071 端到端交付：后端展示契约扩展 → `report.details.strategy_synthesis` 类型化投影 → Web/Desktop 多语言展示。本节字段名、排序规则与门控判据与实现逐一对应，是实现行为的权威描述。
+
+### schema_version 与投影门控
+
+- payload 顶层新增 `schema_version`，权威常量 `src/agent/skills/synthesis.py::STRATEGY_SYNTHESIS_SCHEMA_VERSION = "strategy-synthesis-v1"`（正常路径与 `_build_no_consensus_stub` 全无效路径均输出）。
+- API 投影门控判据：`payload.get("schema_version") == "strategy-synthesis-v1"`，缺失/None/未知版本一律投影为 `null`（旧报告天然 null，不重算不回填）。
+- **镜像要求**：投影侧门控常量为 `src/report_language.py::STRATEGY_SYNTHESIS_PROJECTABLE_SCHEMA_VERSION`（本地字面量，注释指向权威常量，避免把 agent-skills 链 import 进底层模块）。版本号变更时两处必须同步，评审应检查镜像一致性。
+
+### signal_distribution 规则（后端是唯一计算方）
+
+- 阵营映射：`buy`/`strong_buy` → bullish；`hold` → neutral；`sell`/`strong_sell` → bearish。
+- `count` 只统计 valid opinions；invalid/timeout/error 不进入任何阵营（`summary_params.invalid_opinion_count` 另行披露）。
+- `weight_share` = 各阵营 valid opinions 的实际应用权重（confidence × outcome 因子）之和 ÷ 本次聚合 valid 权重总和，逐项 `round(, 4)`；有效权重非零时三阵营 share 之和 ≈ 1（±1e-3）。
+- 有效权重总和 ≤ 0（insufficient 分支）时三阵营 `weight_share` 为 `null`，`count` 照实计数，不得伪造分母。
+- 无共识 stub（全 invalid）路径：`count` 全 0、`weight_share` 全 null。
+- 兼容降级：legacy `SkillAggregator.aggregate()` 直连路径不携带权重信息，分布 `count` 正确、`weight_share` 与 `primary_dissent` 为 `null`（诚实降级，不伪造）。
+- API、Web、Desktop 与 renderer 不得自行重新计算分布、权重或少数派。
+
+### primary_dissent 规则（确定性，不调 LLM）
+
+- 只从 `opposing_skills`（opposing 阵营）中选择；无 opposing opinion 时为 `null`。
+- 排序：实际应用权重降序 → confidence 降序 → `skill_id` 升序（稳定 tie-break），取首位。
+- 元素字段：`skill_id`、`agent_name`、`signal`、`confidence`、`reasoning`（5 键）。
+- 不覆盖、不改变 `final_signal`；与 RiskAgent veto 风控边界完全独立（synthesis 不含 veto 字段）。
+
+### 类型化 API 投影（report.details.strategy_synthesis）
+
+- 投影字段（snake_case，17 键）：`schema_version`、`final_signal`、`weighted_score`、`confidence`、`original_confidence`、`consensus_level`、`conflict_count`、`conflict_severity`、`summary_key`、`summary_params`、`signal_distribution`、`supporting_skills`、`opposing_skills`、`primary_dissent`、`conflicts`，可选 `deliberation`、可选 `revision_projection`。只投影低敏展示字段。
+- 覆盖三路响应：同步分析响应、异步任务完成结果、历史报告详情（含端点内重建路径），四构造点共用同一投影 helper `src/report_language.py::project_strategy_synthesis_for_details`（normalize_strategy_synthesis_payload 扩展净化 + 门控 + 字段白名单）。
+- 兼容：旧报告缺失 → null；malformed payload（非 dict / 列表含非 dict 元素 / 嵌套字段非法）逐字段降级，绝不 500；`details.raw_result` 原样保留；不新增 API endpoint，OpenAPI paths 不变。
+- `supporting_skills` / `opposing_skills` 元素维持 8 键既有结构，不新增元素级 weight 字段。
+
+### Web/Desktop 展示边界
+
+- `StrategySynthesisCard` 插入 `ReportOverview` 与 `ReportStrategy` 之间（`ReportSummary.tsx`）；首层=final signal/consensus/conflict/阵营分布/valid-invalid 计数，展开=supporting/opposing/primary dissent/conflicts/deliberation summary/revision projection。
+- `revision_projection` 必须标注"协同推演预览，不改变系统最终建议"（非权威）；分歧等级词汇（无/轻微/中度/显著分歧）独立于 RiskAgent 风险等级词汇。
+- 多空表达不只依赖红/绿：文字 + 标签 + 图标并存；长 reasoning 默认截断可展开。
+- 前端只投影后端契约；camelCase 转换集中在 `apps/dsa-web/src/api/utils.ts`（同步/异步/历史三入口 `toCamelCase` deep）；文案复用 `reportLanguage.ts` zh/en/ko 三分支。
+- Desktop 复用 Web 构建产物（Electron 壳 `loadURL`），Web lint/build + vitest 即复用验证。
+
+### 非目标（重申，后续 Issue 推进）
+
+数值离散度 σ / `dispersion_score`、skill outcome 评价与表现统计、动态权重或自动权重校准、#2069 outcome 链路、数据库迁移或历史回填、在线 LLM deliberation 默认启用、Agent 调度重构、新增 API endpoint、Markdown/通知/普通报告布局重构——均不在本节契约内。
+
 ## Phase 4 Skill Outcome 权重反馈闭环
 
 Phase 4 在同一 `CONTRACT_VERSION = "1.0"` 内只使用真实、可归因的
@@ -517,6 +563,9 @@ Phase 1 必须提供如下 E2E 反例覆盖。E2E 定义为：从 SkillAgent 输
 | Renderer · Notification | `src/notification.py`（策略综合行渲染） |
 | Renderer · History | `src/services/history_service.py`（历史详情策略综合块） |
 | 多语言与宽松 payload 防腐 | `src/report_language.py::_REPORT_LABELS`, `normalize_strategy_synthesis_payload`, `strategy_invalid_opinion_count`, `localize_strategy_synthesis_summary`, `labels.none_label` |
+| #2071 分布/少数派计算与 schema 常量 | `src/agent/skills/synthesis.py::StrategySynthesizer.synthesize`（`STRATEGY_SYNTHESIS_SCHEMA_VERSION`）、`src/agent/skills/engine.py::process_partition`（weights 接线）、`_build_no_consensus_stub` |
+| #2071 类型化投影与门控 | `src/report_language.py::project_strategy_synthesis_for_details`（`STRATEGY_SYNTHESIS_PROJECTABLE_SCHEMA_VERSION` 镜像常量）、`api/v1/schemas/history.py::StrategySynthesis`、四构造点（`api/v1/endpoints/analysis.py` 同步/异步、`src/services/history_service.py::_record_to_detail_dict`、`api/v1/endpoints/history.py` 详情重建） |
+| #2071 Web 卡片 | `apps/dsa-web/src/components/report/StrategySynthesisCard.tsx`、`apps/dsa-web/src/utils/reportLanguage.ts`（zh/en/ko）、`apps/dsa-web/src/api/utils.ts`（camelCase 三入口） |
 | E2E 反例矩阵 | `tests/test_multi_agent.py::TestP1SemanticConvergence`, `TestStrategyEngineE2E` |
 
 ## 兼容与回滚
