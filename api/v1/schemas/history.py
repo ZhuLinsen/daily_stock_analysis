@@ -408,6 +408,73 @@ class StockBarResponse(BaseModel):
     items: List[StockBarItem] = Field(default_factory=list, description="个股列表")
 
 
+class DailyHistoryItem(BaseModel):
+    """当日每股最新分析条目（历史记录页按日期视图，issue #1661）"""
+
+    id: int = Field(..., description="该股当日最新一条分析记录的主键 ID")
+    code: str = Field(..., description="展示用股票代码（经 parser 规范化）")
+    name: str = Field("", description="股票名称")
+    report_type: str = Field("", description="报告类型")
+    sentiment_score: Optional[int] = Field(
+        None,
+        description="情绪评分（历史数据可能超出 0-100 范围，读取时不做约束）",
+    )
+    sentiment_label: Optional[str] = Field(
+        None,
+        description="本地化情绪标签（由 sentiment_score 阈值得出；score 缺失时为 null）",
+    )
+    operation_advice: Optional[str] = Field(None, description="操作建议")
+    action: Optional[DecisionAction] = Field(None, description="结构化建议动作 taxonomy")
+    action_label: Optional[str] = Field(None, description="建议动作展示标签")
+    trend_prediction: Optional[str] = Field(None, description="趋势预测")
+    is_latest: bool = Field(
+        ...,
+        description="是否为该股票（含全部代码变体）全局最新一条分析；False 表示已被更新分析取代（过期）",
+    )
+    ideal_buy: Optional[float] = Field(None, description="理想买入价")
+    secondary_buy: Optional[float] = Field(None, description="二次买入价")
+    stop_loss: Optional[float] = Field(None, description="止损价")
+    take_profit: Optional[float] = Field(None, description="止盈价")
+    created_at: str = Field("", description="创建时间（含时区偏移的 ISO 字符串）")
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "id": 1234,
+            "code": "600519",
+            "name": "贵州茅台",
+            "report_type": "detailed",
+            "sentiment_score": 75,
+            "sentiment_label": "乐观",
+            "operation_advice": "持有",
+            "trend_prediction": "看多",
+            "is_latest": True,
+            "ideal_buy": 1800.0,
+            "secondary_buy": 1750.0,
+            "stop_loss": 1700.0,
+            "take_profit": 2000.0,
+            "created_at": "2024-01-01T12:00:00+08:00"
+        }
+    })
+
+
+class DailyHistoryListResponse(BaseModel):
+    """当日历史分析列表响应（issue #1661）"""
+
+    total: int = Field(..., description="规范化合并后的股票总数")
+    page: int = Field(..., description="当前页码")
+    limit: int = Field(..., description="每页数量")
+    items: List[DailyHistoryItem] = Field(default_factory=list, description="当日每股最新分析列表")
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "total": 100,
+            "page": 1,
+            "limit": 20,
+            "items": []
+        }
+    })
+
+
 class WatchlistRequest(BaseModel):
     """自选队列操作请求"""
 

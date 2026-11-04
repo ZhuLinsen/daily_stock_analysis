@@ -594,6 +594,34 @@ export interface HistoryPagination {
   limit: number;
 }
 
+/** Daily history item: per-stock latest analysis for one trading date */
+export interface DailyHistoryItem {
+  id: number;
+  code: string;
+  name: string;
+  reportType: string;
+  sentimentScore: number | null;
+  sentimentLabel: string | null;
+  operationAdvice: string | null;
+  action?: DecisionAction | null;
+  actionLabel?: string | null;
+  trendPrediction: string | null;
+  isLatest: boolean;
+  idealBuy: number | null;
+  secondaryBuy: number | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  createdAt: string;
+}
+
+/** Daily history list response */
+export interface DailyHistoryListResponse {
+  total: number;
+  page: number;
+  limit: number;
+  items: DailyHistoryItem[];
+}
+
 // ============ Stock Bar Types ============
 
 export interface StockBarItem {

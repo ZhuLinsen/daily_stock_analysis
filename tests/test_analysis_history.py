@@ -3048,5 +3048,135 @@ class HistoryItemSchemaNegativeSentimentTest(unittest.TestCase):
         self.assertIsNone(summary.sentiment_score)
 
 
+class DailyHistoryLatestPerCodeTestCase(unittest.TestCase):
+    """issue #1661：按日期取每股当日最新分析（存储/服务层扩展）
+
+    覆盖：半开区间日过滤边界、MAX(id) 去重、(created_at desc, id desc)
+    排序稳定性、MARKET/market_review 排除、sentiment_label 语言参数。
+    """
+
+    def setUp(self) -> None:
+        auth._auth_enabled = False
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._db_path = os.path.join(self._temp_dir.name, "test_daily_latest.db")
+        self._original_env = {
+            key: os.environ.get(key)
+            for key in ("ENV_FILE", "DATABASE_PATH")
+        }
+        self._env_path = os.path.join(self._temp_dir.name, ".env")
+        with open(self._env_path, "w", encoding="utf-8") as env_file:
+            env_file.write("STOCK_LIST=600519,002460\n")
+
+        os.environ["ENV_FILE"] = self._env_path
+        os.environ["DATABASE_PATH"] = self._db_path
+
+        Config._instance = None
+        DatabaseManager.reset_instance()
+        self.db = DatabaseManager.get_instance()
+
+    def tearDown(self) -> None:
+        Config._instance = None
+        DatabaseManager.reset_instance()
+        for key, value in self._original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self._temp_dir.cleanup()
+
+    def _add_history(self, code: str, created_at: datetime, **kwargs) -> int:
+        """直接构造 AnalysisHistory 以注入指定 created_at。"""
+        record = AnalysisHistory(
+            code=code,
+            name=kwargs.get("name", "测试股"),
+            report_type=kwargs.get("report_type", "detailed"),
+            sentiment_score=kwargs.get("sentiment_score", 75),
+            operation_advice=kwargs.get("operation_advice", "持有"),
+            trend_prediction=kwargs.get("trend_prediction", "看多"),
+            created_at=created_at,
+        )
+        with self.db.get_session() as session:
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return int(record.id or 0)
+
+    def test_half_open_day_boundary(self) -> None:
+        """23:59:59 属当日；次日 00:00:00 属次日（半开区间 [d, d+1)）。"""
+        prev_id = self._add_history("600519", datetime(2026, 10, 19, 23, 59, 59))
+        in_day_id = self._add_history("600519", datetime(2026, 10, 20, 23, 59, 59))
+        next_day_id = self._add_history("600519", datetime(2026, 10, 21, 0, 0, 0))
+
+        records = self.db.get_daily_latest_per_code(datetime(2026, 10, 20).date())
+        self.assertEqual([record.id for record in records], [in_day_id])
+
+        records_prev = self.db.get_daily_latest_per_code(datetime(2026, 10, 19).date())
+        self.assertEqual([record.id for record in records_prev], [prev_id])
+
+        records_next = self.db.get_daily_latest_per_code(datetime(2026, 10, 21).date())
+        self.assertEqual([record.id for record in records_next], [next_day_id])
+
+    def test_max_id_dedup_per_code_same_day(self) -> None:
+        """同日同股多条 → 仅 GROUP BY code + MAX(id) 的那条；同秒也取 id 大者。"""
+        first_id = self._add_history("600519", datetime(2026, 10, 20, 9, 0, 0), sentiment_score=40)
+        second_id = self._add_history("600519", datetime(2026, 10, 20, 10, 0, 0), sentiment_score=80)
+
+        records = self.db.get_daily_latest_per_code(datetime(2026, 10, 20).date())
+        self.assertEqual([record.id for record in records], [second_id])
+        self.assertNotIn(first_id, [record.id for record in records])
+        self.assertEqual(records[0].sentiment_score, 80)
+
+        same_a = self._add_history("600519", datetime(2026, 10, 20, 11, 0, 0), sentiment_score=30)
+        same_b = self._add_history("600519", datetime(2026, 10, 20, 11, 0, 0), sentiment_score=90)
+
+        records = self.db.get_daily_latest_per_code(datetime(2026, 10, 20).date())
+        self.assertEqual([record.id for record in records], [same_b])
+        self.assertNotIn(same_a, [record.id for record in records])
+
+    def test_ordering_created_at_desc_then_id_desc(self) -> None:
+        """排序一律 (created_at desc, id desc) 双键，同秒不抖动。"""
+        early_id = self._add_history("600519", datetime(2026, 10, 20, 8, 0, 0))
+        late_id = self._add_history("000001", datetime(2026, 10, 20, 12, 0, 0))
+        # 三只股票同一秒：期望按 id desc 稳定输出
+        tie_first = self._add_history("300750", datetime(2026, 10, 20, 10, 0, 0))
+        tie_second = self._add_history("600030", datetime(2026, 10, 20, 10, 0, 0))
+        tie_third = self._add_history("601318", datetime(2026, 10, 20, 10, 0, 0))
+
+        records = self.db.get_daily_latest_per_code(datetime(2026, 10, 20).date())
+        self.assertEqual(
+            [record.id for record in records],
+            [late_id, tie_third, tie_second, tie_first, early_id],
+        )
+
+    def test_market_and_market_review_excluded_in_storage(self) -> None:
+        """存储层即排除 code=MARKET 与 report_type=market_review。"""
+        self._add_history("MARKET", datetime(2026, 10, 20, 9, 0, 0), report_type="market_review")
+        self._add_history("600519", datetime(2026, 10, 20, 9, 30, 0), report_type="market_review")
+        normal_id = self._add_history("600519", datetime(2026, 10, 20, 10, 0, 0))
+
+        records = self.db.get_daily_latest_per_code(datetime(2026, 10, 20).date())
+        self.assertEqual([record.id for record in records], [normal_id])
+
+    def test_service_sentiment_label_follows_language(self) -> None:
+        """get_daily_history 的 sentiment_label 随 language 参数切换（zh/en）。"""
+        self._add_history("600519", datetime(2026, 10, 20, 10, 0, 0), sentiment_score=85)
+        self._add_history("000001", datetime(2026, 10, 20, 10, 0, 0), sentiment_score=50)
+
+        result_zh = HistoryService(self.db).get_daily_history(
+            datetime(2026, 10, 20).date(), language="zh"
+        )
+        labels_zh = {item["code"]: item["sentiment_label"] for item in result_zh["items"]}
+        self.assertEqual(labels_zh["600519"], "极度乐观")
+        self.assertEqual(labels_zh["000001"], "中性")
+        self.assertEqual(result_zh["total"], 2)
+
+        result_en = HistoryService(self.db).get_daily_history(
+            datetime(2026, 10, 20).date(), language="en"
+        )
+        labels_en = {item["code"]: item["sentiment_label"] for item in result_en["items"]}
+        self.assertEqual(labels_en["600519"], "Very Bullish")
+        self.assertEqual(labels_en["000001"], "Neutral")
+
+
 if __name__ == "__main__":
     unittest.main()

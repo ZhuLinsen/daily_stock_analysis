@@ -4,6 +4,8 @@ import type {
   HistoryListResponse,
   HistoryItem,
   HistoryFilters,
+  DailyHistoryItem,
+  DailyHistoryListResponse,
   AnalysisReport,
   NewsIntelResponse,
   NewsIntelItem,
@@ -15,6 +17,15 @@ import type { RunFlowSnapshot } from '../types/runFlow';
 // ============ API 接口 ============
 
 export interface GetHistoryListParams extends HistoryFilters {
+  page?: number;
+  limit?: number;
+}
+
+export interface GetDailyHistoryParams {
+  /** 交易日，格式 YYYY-MM-DD（必填） */
+  date: string;
+  /** 界面语言，影响后端返回的 sentiment_label */
+  language?: 'zh' | 'en';
   page?: number;
   limit?: number;
 }
@@ -51,6 +62,29 @@ export const historyApi = {
       page: data.page,
       limit: data.limit,
       items: data.items.map(item => toCamelCase<HistoryItem>(item)),
+    };
+  },
+
+  /**
+   * 获取指定交易日的各股票当日最新分析结果（per-code 去重合并后分页）
+   * @param params 日期（必填）、语言与分页参数
+   */
+  getDaily: async (params: GetDailyHistoryParams): Promise<DailyHistoryListResponse> => {
+    const { date, language, page = 1, limit = 20 } = params;
+
+    const queryParams: Record<string, string | number> = { date, page, limit };
+    if (language) queryParams.language = language;
+
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/history/daily', {
+      params: queryParams,
+    });
+
+    const data = toCamelCase<{ total: number; page: number; limit: number; items: unknown[] }>(response.data);
+    return {
+      total: data.total,
+      page: data.page,
+      limit: data.limit,
+      items: data.items.map(item => toCamelCase<DailyHistoryItem>(item)),
     };
   },
 

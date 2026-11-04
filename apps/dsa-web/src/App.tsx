@@ -27,6 +27,7 @@ const ChatPage = lazy(() => import('./pages/ChatPage'));
 const PortfolioPage = lazy(() => import('./pages/PortfolioPage'));
 const DecisionSignalsPage = lazy(() => import('./pages/DecisionSignalsPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
+const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const DataCenterPage = lazy(() => import('./pages/DataCenterPage'));
@@ -95,6 +96,7 @@ const routeChildren = [
   { path: '/screening', element: <StockScreeningPage /> },
   { path: '/data', element: <DataCenterPage /> },
   { path: '/backtest', element: <BacktestPage /> },
+  { path: '/history', element: <HistoryPage /> },
   { path: '/alerts', element: <AlertsPage /> },
   { path: '/usage', element: <TokenUsagePage /> },
   { path: '/settings', element: <SettingsPage /> },
