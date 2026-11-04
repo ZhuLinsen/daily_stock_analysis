@@ -122,9 +122,38 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
         ) as rate_limit_mock:
             top, bottom = fetcher.get_sector_rankings(n=1)
 
-        self.assertEqual(top, [{"name": "AI", "change_pct": 1.8}])
-        self.assertEqual(bottom, [{"name": "消费", "change_pct": -0.6}])
+        # Rows carry the trading day the rankings actually cover
+        # (Issue #1936 / OR-COR-3e7f490e): 16:00 > 15:30, so this is
+        # today's data (20260317).
+        self.assertEqual(
+            top, [{"name": "AI", "change_pct": 1.8, "trade_date": "20260317"}]
+        )
+        self.assertEqual(
+            bottom, [{"name": "消费", "change_pct": -0.6, "trade_date": "20260317"}]
+        )
         self.assertEqual(rate_limit_mock.call_count, 2)
+
+    def test_get_sector_rankings_labels_previous_trade_date_before_cutoff(self) -> None:
+        """OR-COR-3e7f490e: before the 15:30 cut the rows keep the real date."""
+        fetcher = self._make_fetcher()
+        fetcher._api.trade_cal.return_value = pd.DataFrame(
+            {"cal_date": ["20260317", "20260316"], "is_open": [1, 1]}
+        )
+        fetcher._api.moneyflow_ind_ths.return_value = pd.DataFrame(
+            {
+                "industry": ["AI", "消费"],
+                "pct_change": [1.8, -0.6],
+            }
+        )
+
+        # 10:00 sits inside the 00:00~15:30 window: the previous trading
+        # day (20260316) is what the API will actually serve.
+        with patch.object(fetcher, "_get_china_now", return_value=datetime(2026, 3, 17, 10, 0)), patch.object(
+            fetcher, "_check_rate_limit"
+        ):
+            top, _bottom = fetcher.get_sector_rankings(n=1)
+
+        self.assertEqual(top[0]["trade_date"], "20260316")
 
     def test_get_chip_distribution_rate_limits_all_tushare_calls(self) -> None:
         fetcher = self._make_fetcher()

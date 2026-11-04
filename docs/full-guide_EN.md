@@ -431,6 +431,10 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
 | `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), jp (JP stocks), kr (KR stocks), both (all five markets) | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
+| `HOT_TOP10_ENABLED` | Enable the daily hot-theme Top-N light analysis (default off): every trading day it fetches the top-N market theme hot list, uses ONE LLM call to produce a driver/strength/entry-advice/risk overview and pushes it as a report. Runs daily via the schedulers (CLI `--schedule` and the Web/API/Desktop runtime scheduler), A-share trading days only, one delivery per data date (see [Hot Themes Top-N Analysis](#hot-themes-top-n-analysis), Issue #1936) | `false` |
+| `HOT_TOP10_SCHEDULE_TIME` | Daily execution time for the hot-theme Top-N analysis (HH:MM 24-hour, applies to CLI schedule mode and the runtime scheduler; invalid values fall back to `15:10`) | `15:10` |
+| `HOT_TOP10_DATA_READY_SCHEDULE_TIME` | Data-ready follow-up time for the hot-theme Top-N analysis (HH:MM 24-hour, default `15:35`, after the 15:30 ranking data cut): when the primary occurrence delivered the previous trading day's list, this second same-day occurrence delivers today's list once the data is ready; it idles when today's data was already delivered. Applies to CLI schedule mode and the runtime scheduler; invalid values fall back to `15:35` | `15:35` |
+| `HOT_TOP10_COUNT` | Number of hot-list themes (1-30) | `10` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
 | `SCHEDULE_TIME` | Scheduled execution time | `18:00` |
 | `SCHEDULE_TIMES` | Multiple scheduled execution times, comma-separated; falls back to `SCHEDULE_TIME` when empty | empty |
@@ -1284,6 +1288,26 @@ System defaults to AkShare (free), also supports other data sources:
 ---
 
 ## Advanced Features
+
+### Hot Themes Top-N Analysis
+
+Every trading day the system automatically fetches the top-N market theme hot list (default 10, from DSA industry/concept rankings) and uses a SINGLE LLM call to produce a light overview — hot-list driver, strength assessment, entry advice (wait / light position / active entry) and key risks — then pushes it through the existing report notification channel, replacing the manual routine of reading the THS hot list stock by stock (Issue #1936).
+
+```bash
+# .env
+HOT_TOP10_ENABLED=true
+HOT_TOP10_SCHEDULE_TIME=15:10   # daily execution time (default 15:10, after the A-share close)
+HOT_TOP10_DATA_READY_SCHEDULE_TIME=15:35   # data-ready follow-up time (default 15:35, after the 15:30 data cut)
+HOT_TOP10_COUNT=10              # hot-list items (1-30)
+```
+
+- **Execution**: once enabled it runs daily, A-share trading days only (reuses the trading-day check; `--force-run` overrides). The auxiliary daily job registers BOTH in CLI schedule mode (`python main.py --schedule`) and in the runtime scheduler of long-running Web/API/Desktop processes; saving `HOT_TOP10_ENABLED` / `HOT_TOP10_SCHEDULE_TIME` / `HOT_TOP10_DATA_READY_SCHEDULE_TIME` rebuilds the runtime scheduler immediately, no process restart needed. Scheduled pushes honor the notification switches (`--no-notify` for CLI, schedule args for the runtime path).
+- **Data-ready follow-up (same-day second execution)**: the primary time (default 15:10) sits before the 15:30 ranking data cut, so the industry/concept list is often the previous trading day's; the scheduler registers a second daily occurrence at the data-ready time (default 15:35) that delivers today's list automatically once today's data is ready. When the primary occurrence already delivered today's data, the follow-up occurrence idles via the daily marker — no duplicate push.
+- **Ranking date and dedup**: before the daily data cut (e.g. Tushare before 15:30) the industry/concept rankings served are the PREVIOUS trading day's. The real ranking date travels through the chain into the prompt and the report, and the report header labels it explicitly ("Ranking date: ..." with a not-today warning when stale). Daily dedup keys on the DATA date: a previous-day delivery does not consume today's marker, so the regular entry still delivers today's list once the fresh data is available (marker file `data/hot_top10_state.json` next to `DATABASE_PATH`); a failed push leaves no marker and retries on the next trigger. Within one day a given ranking data date is delivered at most once — if the follow-up occurrence fires while the provider still serves the same (previous-day) list, it idles instead of pushing a duplicate.
+- **Manual run**: `python main.py --hot-top10` generates and pushes a report right away (manual runs bypass the daily dedup marker).
+- **Selection**: industry, concept and active-theme candidates are merged and ranked by change percentage before the Top-N cut (items without a number sort last), so a negative-industry day no longer evicts higher-ranked small-negative concepts.
+- **Scope**: this is a theme-level hot-list OVERVIEW (one LLM summary covers all items), not per-stock deep analysis; use the existing stock analysis entry points for that. If the AI summary fails, a degraded data-only overview is still delivered, and no stage can break the main analysis schedule.
+- **Report content**: the header carries the generation time, ranking date and data-source note; each item lists the driver (news/funds/event attribution, speculation marked), strength (strong/medium/weak), entry advice and risks. Language follows `REPORT_LANGUAGE` (zh/en).
 
 ### Hong Kong Stock Support
 

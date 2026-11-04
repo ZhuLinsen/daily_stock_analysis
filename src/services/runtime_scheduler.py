@@ -647,6 +647,79 @@ class RuntimeSchedulerService:
             return self._background_tasks_provider(config)
         return self._current_agent_event_monitor_background_tasks(config)
 
+    def _current_extra_daily_jobs(self, config: Config) -> List[Dict[str, Any]]:
+        """Auxiliary daily jobs for long-lived API/Web/Desktop processes.
+
+        Mirrors the pure-CLI schedule branch of ``main.py`` (Issue #1936,
+        OR-COR-0bd16091): with HOT_TOP10_ENABLED the hot-top10 analysis gets
+        its own fail-open daily slot at HOT_TOP10_SCHEDULE_TIME, plus a
+        data-ready follow-up slot at HOT_TOP10_DATA_READY_SCHEDULE_TIME
+        (OR-COR-3e7f490e, narrowed) that gives the previous-trading-day
+        delivery of the primary slot (which sits before the 15:30 ranking
+        data cut) a same-day second chance to deliver today's list; the
+        service's daily marker makes the follow-up idle when today's data
+        was already delivered. Jobs are registered only when the feature is
+        enabled at build time and re-check the runtime config when they
+        fire, so a config reload that disables the feature stops the very
+        next occurrence.
+        """
+        from src.services.hot_top10_service import (
+            DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+        )
+
+        jobs: List[Dict[str, Any]] = []
+        if not getattr(config, "hot_top10_enabled", False):
+            return jobs
+
+        send_notification = not bool(
+            getattr(self._make_schedule_args(), "no_notify", False)
+        )
+
+        def hot_top10_task() -> None:
+            from src.services.hot_top10_service import run_hot_top10_analysis
+
+            runtime_config = self._reload_config()
+            if not getattr(runtime_config, "hot_top10_enabled", False):
+                return
+            # Scheduled occurrences always respect the trading-day gate and
+            # the daily dedup marker; --force-run stays a one-shot CLI flag.
+            result = run_hot_top10_analysis(
+                runtime_config,
+                send_notification=send_notification,
+                respect_dedup=True,
+                force_run=False,
+            )
+            logger.info(
+                "[HotTop10] runtime 定时任务完成: delivered=%s skipped=%s "
+                "reason=%s llm_completed=%s notification=%s",
+                result.delivered,
+                result.skipped,
+                result.reason,
+                result.llm_completed,
+                result.notification_status,
+            )
+
+        jobs.append({
+            "task": hot_top10_task,
+            "schedule_time": str(
+                getattr(config, "hot_top10_schedule_time", "15:10") or "15:10"
+            ),
+            "name": "hot_top10",
+        })
+        jobs.append({
+            "task": hot_top10_task,
+            "schedule_time": str(
+                getattr(
+                    config,
+                    "hot_top10_data_ready_schedule_time",
+                    DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+                )
+                or DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME
+            ),
+            "name": "hot_top10_data_ready",
+        })
+        return jobs
+
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         name = "agent_event_monitor"
         if not getattr(config, "agent_event_monitor_enabled", False):
@@ -735,6 +808,12 @@ class RuntimeSchedulerService:
                     entry["task"],
                     interval_seconds=entry["interval_seconds"],
                     run_immediately=entry.get("run_immediately", False),
+                    name=entry.get("name"),
+                )
+            for entry in self._current_extra_daily_jobs(config):
+                scheduler.add_daily_task(
+                    entry["task"],
+                    schedule_time=entry["schedule_time"],
                     name=entry.get("name"),
                 )
             if run_immediately and self._run_immediately_in_background:

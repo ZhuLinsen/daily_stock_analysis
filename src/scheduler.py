@@ -124,6 +124,7 @@ class Scheduler:
         self._pass_scheduled_for = pass_scheduled_for
         self._daily_job: Optional[Any] = None
         self._daily_jobs: List[Any] = []
+        self._extra_daily_jobs: List[Any] = []
         self._background_tasks: List[Dict[str, Any]] = []
         self._lifecycle_lock = threading.Lock()
         self._running = False
@@ -308,6 +309,46 @@ class Scheduler:
         except Exception as e:
             logger.exception(f"定时任务执行失败: {e}")
 
+    def add_daily_task(
+        self,
+        task: Callable,
+        schedule_time: str,
+        name: Optional[str] = None,
+    ) -> bool:
+        """Register an additional fail-open daily job at a specific time.
+
+        Unlike the main daily task, extra jobs are optional auxiliary
+        schedules (e.g. hot-top10 analysis): an invalid time registers
+        nothing (returns False instead of raising), and the wrapped run
+        captures every exception so one auxiliary job can never break the
+        main scheduler loop or the other jobs.
+        """
+        candidate = (schedule_time or "").strip()
+        if not self._is_valid_schedule_time(candidate):
+            logger.warning(
+                "Invalid extra daily job time %r for %r; job not registered",
+                schedule_time,
+                name or getattr(task, "__name__", "extra_daily_task"),
+            )
+            return False
+
+        job_name = name or getattr(task, "__name__", "extra_daily_task")
+
+        def _wrapped() -> None:
+            try:
+                logger.info("辅助每日任务开始执行: %s", job_name)
+                task()
+                logger.info("辅助每日任务执行完成: %s", job_name)
+            except Exception as exc:  # noqa: BLE001 - auxiliary jobs never break the loop
+                logger.exception("辅助每日任务执行失败 [%s]: %s", job_name, exc)
+
+        job = self.schedule.every().day.at(candidate).do(_wrapped)
+        self._extra_daily_jobs.append(job)
+        logger.info(
+            "已注册辅助每日任务: %s（执行时间: %s）", job_name, candidate
+        )
+        return True
+
     def add_background_task(
         self,
         task: Callable,
@@ -440,6 +481,10 @@ class Scheduler:
             self._stop_requested = True
             self._running = False
         self._cancel_daily_job()
+        for job in list(self._extra_daily_jobs):
+            if hasattr(self.schedule, "cancel_job"):
+                self.schedule.cancel_job(job)
+        self._extra_daily_jobs = []
 
 
 def run_with_schedule(
@@ -451,6 +496,7 @@ def run_with_schedule(
     schedule_times: Optional[Sequence[str]] = None,
     schedule_times_provider: Optional[Callable[[], Union[Sequence[str], str]]] = None,
     pass_scheduled_for: bool = False,
+    extra_daily_jobs: Optional[List[Dict[str, Any]]] = None,
 ):
     """
     便捷函数：使用定时调度运行任务
@@ -464,6 +510,9 @@ def run_with_schedule(
             和 `run_immediately`。`interval_seconds` 单位为秒。
         schedule_time_provider: 可选的时间提供器；调度器每轮检查前会读取，
             当返回值变化时自动重建 daily job。
+        extra_daily_jobs: 可选的辅助每日任务定义列表。每项为一个字典，
+            需包含 `task` 与 `schedule_time`，可选包含 `name`。
+            辅助任务 fail-open：时间非法只记日志，任务异常不影响主循环。
     """
     scheduler_kwargs: Dict[str, Any] = {
         "schedule_time": schedule_time,
@@ -481,6 +530,12 @@ def run_with_schedule(
             task=entry["task"],
             interval_seconds=entry["interval_seconds"],
             run_immediately=entry.get("run_immediately", False),
+            name=entry.get("name"),
+        )
+    for entry in extra_daily_jobs or []:
+        scheduler.add_daily_task(
+            task=entry["task"],
+            schedule_time=entry["schedule_time"],
             name=entry.get("name"),
         )
     scheduler.set_daily_task(task, run_immediately=run_immediately)
