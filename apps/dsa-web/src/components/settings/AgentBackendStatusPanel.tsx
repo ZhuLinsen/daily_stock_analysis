@@ -14,26 +14,24 @@ interface AgentBackendStatusPanelProps {
   items: SystemConfigUpdateItem[];
   maskToken: string;
   selectedBackend: string;
-  agentArch: string;
   disabled?: boolean;
-  onUseSingleAgent: () => void;
   onEnableAgentMode: () => void;
 }
 
 function backendLabel(backendId: string, t: ReturnType<typeof useUiLanguage>['t']): string {
   return backendId === 'codex_app_server'
-    ? t('settings.agentBackendCodexLabel')
+    ? t('settings.agentBackendRemovedLabel')
     : t('settings.agentBackendDefaultLabel');
 }
 
 function statusMessage(status: AgentBackendStatusResponse, t: ReturnType<typeof useUiLanguage>['t']): string {
   if (status.available) return t('settings.agentBackendCanTryDescription');
-  if (status.errorCode === 'command_not_found') return t('settings.agentBackendCommandNotFound');
-  if (status.errorCode === 'unsupported_agent_arch') return t('settings.agentBackendSingleOnly');
+  if (status.errorCode === 'backend_removed') return t('settings.agentBackendRemoved');
   if (status.errorCode === 'agent_mode_disabled') return t('settings.agentBackendModeDisabled');
-  if (status.errorCode === 'platform_unsupported') return t('settings.agentBackendPlatformUnsupported');
-  if (status.errorCode === 'invalid_timeout') return t('settings.agentBackendInvalidTimeout');
-  return t('settings.agentBackendUnavailableDescription');
+  if (status.errorCode === 'capability_unsupported' && status.message === 'no_agent_primary') {
+    return t('chat.defaultUnavailableMessage');
+  }
+  return status.message || t('settings.agentBackendUnavailableDescription');
 }
 
 function StatusIcon({ status }: { status: AgentBackendStatusResponse }) {
@@ -50,9 +48,7 @@ export function AgentBackendStatusPanel({
   items,
   maskToken,
   selectedBackend,
-  agentArch,
   disabled = false,
-  onUseSingleAgent,
   onEnableAgentMode,
 }: AgentBackendStatusPanelProps) {
   const { t } = useUiLanguage();
@@ -65,18 +61,12 @@ export function AgentBackendStatusPanel({
     [items],
   );
   const hasDraft = requestItems.length > 0;
-  const isCodex = selectedBackend === 'codex_app_server';
-  const hasArchitectureConflict = isCodex && agentArch !== 'single';
+  const isRemoved = selectedBackend === 'codex_app_server';
 
   const refresh = useCallback(async () => {
     const requestId = refreshRequestIdRef.current + 1;
     refreshRequestIdRef.current = requestId;
     setError(null);
-    if (hasArchitectureConflict) {
-      setStatusResponse(null);
-      setIsLoading(false);
-      return;
-    }
     setIsLoading(true);
     try {
       const next = hasDraft
@@ -95,7 +85,7 @@ export function AgentBackendStatusPanel({
         setIsLoading(false);
       }
     }
-  }, [hasArchitectureConflict, hasDraft, maskToken, requestItems]);
+  }, [hasDraft, maskToken, requestItems]);
 
   useEffect(() => {
     void refresh();
@@ -117,7 +107,7 @@ export function AgentBackendStatusPanel({
             type="button"
             variant="settings-secondary"
             size="sm"
-            disabled={disabled || isLoading || hasArchitectureConflict}
+            disabled={disabled || isLoading}
             isLoading={isLoading}
             loadingText={t('settings.agentBackendRefreshing')}
             onClick={() => void refresh()}
@@ -128,15 +118,6 @@ export function AgentBackendStatusPanel({
         </div>
       </div>
 
-      {hasArchitectureConflict ? (
-        <SettingsAlert
-          title={t('settings.agentBackendSingleOnlyTitle')}
-          message={t('settings.agentBackendSingleOnly')}
-          variant="warning"
-          actionLabel={t('settings.agentBackendUseSingle')}
-          onAction={disabled ? undefined : onUseSingleAgent}
-        />
-      ) : null}
       {statusResponse?.errorCode === 'agent_mode_disabled' ? (
         <SettingsAlert
           title={t('settings.agentBackendModeDisabledTitle')}
@@ -146,10 +127,10 @@ export function AgentBackendStatusPanel({
           onAction={disabled ? undefined : onEnableAgentMode}
         />
       ) : null}
-      {isCodex ? (
+      {isRemoved && statusResponse?.errorCode !== 'backend_removed' ? (
         <SettingsAlert
-          title={t('settings.agentBackendCodexNoticeTitle')}
-          message={t('settings.agentBackendCodexNotice')}
+          title={t('settings.agentBackendRemovedLabel')}
+          message={t('settings.agentBackendRemoved')}
           variant="warning"
         />
       ) : null}
@@ -166,9 +147,6 @@ export function AgentBackendStatusPanel({
                 ? t('settings.agentBackendCanTry')
                 : t('settings.agentBackendNeedsAction')}
             </Badge>
-            {status.experimental ? (
-              <Badge variant="warning" size="sm">{t('settings.agentBackendExperimental')}</Badge>
-            ) : null}
           </div>
           <p className="mt-2 text-xs leading-5 text-muted-text">{statusMessage(status, t)}</p>
           {(status.errorCode || status.version) ? (

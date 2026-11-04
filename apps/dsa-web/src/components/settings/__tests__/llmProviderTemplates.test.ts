@@ -4,11 +4,26 @@ import {
   LLM_PROVIDER_TEMPLATE_BY_ID,
   LLM_PROVIDER_TEMPLATES,
   MODEL_PLACEHOLDERS_BY_PROTOCOL,
+  filterDiscoveredTextModels,
   getProviderTemplate,
   isKnownProviderTemplate,
 } from '../llmProviderTemplates';
 
 describe('llmProviderTemplates', () => {
+  it('filters only MiniMax text recommendations and orders Flash before M3', () => {
+    const models = [
+      'gpt-4o', 'MiniMax-M2.7', 'MiniMax-Text-01', 'MiniMax-VL-01', 'MiniMax-M3', 'MiniMax-M3.1-Flash',
+      'minimax/minimax-m2.5', 'minimax/minimax-m3.1-flash:free',
+      'speech-2.8-hd', 'MiniMax-Hailuo-2.3', 'image-01', 'custom-model',
+    ];
+    expect(filterDiscoveredTextModels(models)).toEqual([
+      'gpt-4o', 'MiniMax-M3.1-Flash', 'minimax/minimax-m3.1-flash:free', 'MiniMax-M3',
+      'speech-2.8-hd', 'MiniMax-Hailuo-2.3', 'image-01', 'custom-model',
+    ]);
+    expect(models).toContain('MiniMax-M2.7');
+    expect(LLM_PROVIDER_TEMPLATE_BY_ID.minimax.placeholderModels).toBe('MiniMax-M3.1-Flash,MiniMax-M3');
+  });
+
   it('keeps provider template order aligned with the existing preset dropdown order', () => {
     expect(LLM_PROVIDER_TEMPLATES.map((template) => template.channelId)).toEqual([
       'modelflare',
@@ -51,7 +66,7 @@ describe('llmProviderTemplates', () => {
       label: 'Anspire Open',
       protocol: 'openai',
       baseUrl: 'https://open-gateway.anspire.cn/v6',
-      placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash,MiniMax-M2.7',
+      placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash',
     });
     expect(isKnownProviderTemplate('anspire')).toBe(true);
   });

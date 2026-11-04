@@ -91,6 +91,10 @@ from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
 from src.brokers.futu.portfolio import FutuPortfolioError
+from src.core.analysis_run_marker import (
+    record_analysis_run_marker,
+    should_skip_startup_immediate_run,
+)
 from data_provider.base import canonical_stock_code
 from src.services.stock_list_parser import (
     AnalysisTarget,
@@ -635,6 +639,70 @@ def _resolve_portfolio_stock_codes(args: argparse.Namespace) -> Optional[List[st
     return stock_codes
 
 
+def _resolve_gate_expected_stock_codes(
+    config: Config,
+    args: argparse.Namespace,
+    *,
+    stock_codes: Optional[List[str]] = None,
+) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Resolve the startup dedup gate's expected list like the run entry.
+
+    Mirrors ``run_full_analysis``' real target resolution (Futu portfolio
+    first, then the ``STOCK_LIST`` .env hot-reload, then the trading-day
+    filter) so the skip decision uses what THIS startup would actually
+    analyze instead of a possibly stale ``config.stock_list`` snapshot
+    (second-round review blockers OR-COR-e59aed48 / OR-COR-c4971c31).
+
+    The result is a snapshot taken at gate time: if the portfolio or the
+    .env watchlist changes strictly after this resolution but before the
+    run re-resolves them, the gate may miss that and a new target waits
+    for the next scheduled run. The drift direction still never skips a
+    run that would cover more than recorded (fail-open), and the residual
+    race window is a single task invocation.
+
+    Returns ``(expected_codes, fail_open_reason)``:
+
+    - Portfolio mode: the trading-day-filtered live position codes. An
+      empty filtered list (no positions / no open market) can never prove
+      coverage, so it returns a fail-open reason instead — the run itself
+      decides downstream, the gate never skips on it.
+    - Non-portfolio mode: mirrors the run's refresh condition verbatim
+      (``stock_codes is None`` on the schedule path; the refresh is
+      idempotent on the same config object the run reuses) and keeps the
+      existing semantics for an empty config watchlist (pure-review dedup).
+    - Any resolution failure fails open too: ``None`` expected codes plus a
+      reason string for the gate log. Never miss a run outranks never
+      re-run.
+    """
+    try:
+        portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
+        if portfolio_stock_codes is not None:
+            filtered_codes, _, _ = _compute_trading_day_filter(
+                config, args, portfolio_stock_codes
+            )
+            if not filtered_codes:
+                return (None, "portfolio mode resolved no tradable targets")
+            return (filtered_codes, None)
+
+        # Issue #529: keep this condition verbatim-identical to
+        # run_full_analysis — hot-reload STOCK_LIST from .env before a
+        # config-list run. The gate and the run share the same config
+        # object, so this refresh converges to what the run would do anyway.
+        if stock_codes is None:
+            config.refresh_stock_list()
+        effective_codes = (
+            stock_codes
+            if stock_codes is not None
+            else getattr(config, "stock_list", None) or []
+        )
+        filtered_codes, _, _ = _compute_trading_day_filter(
+            config, args, effective_codes
+        )
+        return (filtered_codes, None)
+    except Exception as exc:  # noqa: BLE001 - the gate must never block a run
+        return (None, f"target resolution failed: {exc}")
+
+
 def _prime_daily_market_context(
     config: Config,
     pipeline: Any,
@@ -797,6 +865,34 @@ def _run_auto_backtest(config: Config) -> None:
         logger.warning(f"自动回测失败（已忽略）: {exc}")
 
 
+def _all_stock_targets_succeeded(
+    stock_codes: Optional[List[str]],
+    results: List[Any],
+) -> bool:
+    """Return True only when every requested stock target produced a result.
+
+    ``StockAnalysisPipeline.run`` returns just the successful results, so
+    run completeness is "every requested code shows up in the results".
+    Both sides normalize to ``str(code)`` — exactly the normalization the
+    run marker's ``stock_codes`` field uses — and order/duplicates are
+    ignored. An empty target list is a vacuous success (pure-review
+    deployments keep their same-day dedup). Market-review completeness is
+    deliberately NOT part of this check: a failing review must never
+    resurrect the restart loop the dedup gate fixes (the daily run
+    backfills it).
+    """
+    try:
+        requested = {str(code) for code in (stock_codes or [])}
+        produced = {
+            str(getattr(result, "code", "")) for result in (results or [])
+        }
+        return requested.issubset(produced)
+    except Exception:  # pragma: no cover - defensive: a bookkeeping error
+        # must never break the analysis run; not recording the marker just
+        # makes the next startup re-run (fail-open).
+        return False
+
+
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
@@ -815,6 +911,11 @@ def run_full_analysis(
     （指数目标用于推导 market=cn 与能力矩阵）。
     ``refresh_watchlist=False`` 仅用于已原子认领的定时快照，避免认领后再次热更新。
     """
+    # Capture the entry-level stock list for the run-marker scope: the local
+    # ``stock_codes`` variable is later replaced by the trading-day filter and
+    # Futu positions, so it must never feed the dedup decision (the marker
+    # fingerprint always comes from config.stock_list on both sides).
+    entry_stock_codes = stock_codes
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
     # existing run_full_analysis return-value semantics.
@@ -1224,11 +1325,37 @@ def run_full_analysis(
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
 
-        return _return_with_auto_backtest(
+        final_result = (
             deferred_failure_result
             if deferred_failure_result is not None
             else True
         )
+        # Startup daily dedup bookkeeping: only a genuinely successful AND
+        # complete run records the marker — every requested stock target
+        # must have produced a result (pipeline.run returns just the
+        # successes, so partial failures shrink ``results``). Skip paths,
+        # failures and partial-failure rounds must not record, otherwise a
+        # restart would wrongly dedup away the missing stocks. The scope
+        # reflects the entry-level stock list; the covered ``stock_codes``
+        # are written verbatim (str(code), same normalization as the
+        # completeness check); the stock-list fingerprint stays an
+        # observability field computed inside the marker module.
+        if (
+            final_result is True
+            and _all_stock_targets_succeeded(stock_codes, results)
+            and not getattr(args, "dry_run", False)
+        ):
+            record_analysis_run_marker(
+                config,
+                scope="subset" if entry_stock_codes is not None else "full",
+                stock_codes=stock_codes,
+                market_review_requested=market_review_requested,
+                market_review_completed=(
+                    bool(market_report) if market_review_requested else None
+                ),
+                args=args,
+            )
+        return _return_with_auto_backtest(final_result)
 
     except Exception as e:
         if _LAST_ANALYSIS_FAILURE_REASON is None:
@@ -1336,6 +1463,9 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     # machines. Importing first keeps the heavy work out of the probe window;
     # genuine import failures still surface immediately to the caller.
     from api.app import app as fastapi_app
+    from api.middlewares.security_guard import uvicorn_proxy_kwargs
+
+    uvicorn_kwargs.update(uvicorn_proxy_kwargs())
 
     try:
         uvicorn_config = uvicorn.Config(
@@ -1838,8 +1968,61 @@ def main() -> int:
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
             schedule_times_provider = _build_schedule_times_provider(config.schedule_time)
 
+            # Startup daily dedup gate (src/core/analysis_run_marker.py):
+            # only the startup-immediate invocation consults the gate; the
+            # daily scheduled invocations never do. --force-run bypasses the
+            # gate entirely (explicit request for an immediate full run,
+            # mirroring the trading-day skip override). The flag is consumed
+            # by the first task call whatever its outcome. Fail-open by design.
+            startup_gate_active = should_run_immediately
+
             def scheduled_task(scheduled_for=None):
+                nonlocal startup_gate_active
+                gated, startup_gate_active = startup_gate_active, False
                 runtime_config = _reload_runtime_config()
+                force_run = getattr(args, "force_run", False)
+                if (
+                    gated
+                    and not force_run
+                    and getattr(runtime_config, "schedule_startup_dedup", True)
+                ):
+                    # Expected list = what THIS startup would actually
+                    # analyze, resolved through the same real target chain
+                    # as run_full_analysis (Futu portfolio first, .env
+                    # hot-reload second, trading-day filter last; schema 2
+                    # coverage gate). Only used for the skip decision; the
+                    # run below still applies its own filter. A resolution
+                    # failure or an empty portfolio resolution comes back
+                    # as a fail-open reason instead of an expected list —
+                    # the gate then never skips.
+                    expected_codes, fail_open_reason = (
+                        _resolve_gate_expected_stock_codes(
+                            runtime_config,
+                            args,
+                            stock_codes=scheduled_stock_codes,
+                        )
+                    )
+                    if fail_open_reason is not None:
+                        logger.info(
+                            "启动立即执行去重检查 fail-open(%s)，照常执行分析",
+                            fail_open_reason,
+                        )
+                    else:
+                        decision = should_skip_startup_immediate_run(
+                            runtime_config,
+                            expected_stock_codes=expected_codes,
+                        )
+                        if decision.skip:
+                            logger.info(
+                                "启动立即执行已跳过:当日全量分析已完成(%s)",
+                                decision.reason,
+                            )
+                            return
+                        logger.info(
+                            "启动立即执行去重检查通过:%s", decision.reason
+                        )
+                elif gated and force_run:
+                    logger.info("--force-run 指定,跳过启动去重检查")
                 if scheduled_for is None:
                     result = run_full_analysis(runtime_config, args, scheduled_stock_codes)
                 else:

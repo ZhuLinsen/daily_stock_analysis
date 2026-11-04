@@ -101,9 +101,7 @@ const mockStoreState = {
   ],
   sessionsLoading: false,
   chatError: null as ReturnType<typeof createParsedApiError> | null,
-  stopping: false,
-  terminalStatus: null as 'cancelled' | 'timeout' | null,
-  stopError: false,
+  terminalStatus: null as 'timeout' | null,
   loadSessions: mockLoadSessions,
   loadInitialSession: mockLoadInitialSession,
   switchSession: mockSwitchSession,
@@ -222,9 +220,7 @@ beforeEach(() => {
   mockStoreState.loading = false;
   mockStoreState.progressSteps = [];
   mockStoreState.chatError = null;
-  mockStoreState.stopping = false;
   mockStoreState.terminalStatus = null;
-  mockStoreState.stopError = false;
   mockStoreState.sessionsLoading = false;
   mockStoreState.sessionId = 'session-1';
   mockStoreState.sessions = [
@@ -291,27 +287,6 @@ beforeEach(() => {
 });
 
 describe('ChatPage', () => {
-  it('lets the user stop an active Codex analysis from the existing Chat composer', async () => {
-    mockGetStatus.mockResolvedValueOnce({
-      backend: 'codex_app_server',
-      available: true,
-      experimental: true,
-      errorCode: null,
-      message: null,
-    });
-    mockStoreState.loading = true;
-
-    render(
-      <MemoryRouter initialEntries={['/chat']}>
-        <ChatPage />
-      </MemoryRouter>
-    );
-
-    fireEvent.click(await screen.findByRole('button', { name: '停止分析' }));
-
-    expect(mockStopStream).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('button', { name: '发送' })).not.toBeInTheDocument();
-  });
 
   it('keeps the existing waiting state for LiteLLM without offering a false stop', async () => {
     mockStoreState.loading = true;
@@ -325,87 +300,6 @@ describe('ChatPage', () => {
     expect(await screen.findByRole('button', { name: '处理中...' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: '停止分析' })).not.toBeInTheDocument();
     expect(mockStopStream).not.toHaveBeenCalled();
-  });
-
-  it('labels the stop action in English when the UI language is English', async () => {
-    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
-    mockGetStatus.mockResolvedValueOnce({
-      backend: 'codex_app_server',
-      available: true,
-      experimental: true,
-      errorCode: null,
-      message: null,
-    });
-    mockStoreState.loading = true;
-
-    render(
-      <UiLanguageProvider>
-        <MemoryRouter initialEntries={['/chat']}>
-          <ChatPage />
-        </MemoryRouter>
-      </UiLanguageProvider>,
-    );
-
-    expect(await screen.findByRole('button', { name: 'Stop analysis' })).toBeInTheDocument();
-  });
-
-  it('shows a disabled stopping state until Codex confirms cleanup', async () => {
-    mockGetStatus.mockResolvedValueOnce({
-      backend: 'codex_app_server',
-      available: true,
-      experimental: true,
-      errorCode: null,
-      message: null,
-    });
-    mockStoreState.loading = true;
-    mockStoreState.stopping = true;
-
-    render(
-      <MemoryRouter initialEntries={['/chat']}>
-        <ChatPage />
-      </MemoryRouter>,
-    );
-
-    const button = await screen.findByRole('button', { name: '正在停止…' });
-    expect(button).toBeDisabled();
-  });
-
-  it('shows a plain-language terminal status after cancellation', async () => {
-    mockStoreState.terminalStatus = 'cancelled';
-
-    render(
-      <MemoryRouter initialEntries={['/chat']}>
-        <ChatPage />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByRole('status')).toHaveTextContent('本次分析已停止，后台任务也已结束。');
-  });
-
-  it('shows the current backend in the existing Chat header', async () => {
-    mockGetStatus.mockResolvedValueOnce({
-      backend: 'codex_app_server',
-      available: true,
-      experimental: true,
-      errorCode: null,
-      message: null,
-    });
-
-    render(
-      <MemoryRouter initialEntries={['/chat']}>
-        <ChatPage />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByText('Codex Agent · 实验')).toBeInTheDocument();
-    expect(screen.getByText('Codex 当前可用范围')).toBeInTheDocument();
-    expect(screen.getByText(/实时行情、新闻、市场热点/)).toBeInTheDocument();
-    expect(screen.getByText('使用已保存的分析上下文和回测汇总，向 Codex 询问个股。')).toBeInTheDocument();
-    expect(screen.getByText(/Codex 将基于已保存的分析上下文和回测汇总回答/)).toBeInTheDocument();
-    expect(screen.queryByText(/AI 将调用实时数据工具/)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '切换问股方式' })).toBeInTheDocument();
-    expect(mockGetStatus).toHaveBeenCalledTimes(1);
-    expect(screen.getByPlaceholderText(/分析 600519/)).toBeEnabled();
   });
 
   it('finishes the compatibility check when React Strict Mode remounts effects', async () => {
@@ -443,9 +337,9 @@ describe('ChatPage', () => {
     expect(screen.getByRole('button', { name: '分析比亚迪趋势' })).toBeDisabled();
     expect(screen.getByText(/不会调用模型或读取股票数据/)).toBeInTheDocument();
     status.resolve({
-      backend: 'codex_app_server',
+      backend: 'litellm',
       available: true,
-      experimental: true,
+      experimental: false,
       errorCode: null,
       message: null,
     });
@@ -459,9 +353,9 @@ describe('ChatPage', () => {
     mockGetStatus.mockResolvedValueOnce({
       backend: 'codex_app_server',
       available: false,
-      experimental: true,
-      errorCode: 'command_not_found',
-      message: 'Codex was not found',
+      experimental: false,
+      errorCode: 'backend_removed',
+      message: 'Codex App Server has been removed',
     });
     const router = createMemoryRouter(
       [
@@ -504,7 +398,7 @@ describe('ChatPage', () => {
     const stream = createDeferred<void>();
     let onAccepted: ((event: {
       type: 'accepted';
-      backend: 'litellm' | 'codex_app_server';
+      backend: 'litellm';
       request_id: string;
       session_id: string;
     }) => void) | undefined;
@@ -529,7 +423,7 @@ describe('ChatPage', () => {
     act(() => {
       onAccepted?.({
         type: 'accepted',
-        backend: 'codex_app_server',
+        backend: 'litellm',
         request_id: 'request-accepted',
         session_id: 'session-1',
       });
@@ -542,7 +436,7 @@ describe('ChatPage', () => {
     });
   });
 
-  it.each(['litellm', 'codex_app_server'] as const)(
+  it.each(['litellm'] as const)(
     'delegates code and name resolution to the server under %s, without waiting for a client registry',
     async (backend) => {
       mockGetStatus.mockResolvedValueOnce({ backend, available: true, experimental: false, errorCode: null, message: null });
@@ -598,6 +492,28 @@ describe('ChatPage', () => {
     expect(mockStartStream).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the draft after backend_removed and links to settings without resending', async () => {
+    mockStoreState.chatError = createParsedApiError({ title: 'Removed', message: 'Codex App Server 已移除',
+      code: 'backend_removed', status: 400, category: 'http_error' });
+    mockStartStream.mockImplementationOnce(async () => undefined);
+    render(<MemoryRouter initialEntries={['/chat']}><ChatPage /></MemoryRouter>);
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '风险呢' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+    expect(input).toHaveValue('风险呢');
+    expect(screen.getByRole('button', { name: '前往 Agent 设置' })).toBeInTheDocument();
+    expect(mockStartStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('can display a historical Codex backend label without enabling that backend', async () => {
+    mockStoreState.messages = [{ id: 'historical', role: 'assistant', content: '历史回答', backend: 'codex_app_server' }];
+    render(<MemoryRouter initialEntries={['/chat']}><ChatPage /></MemoryRouter>);
+    expect(await screen.findByText('Codex Agent · 历史记录')).toBeInTheDocument();
+    expect(screen.getByText('历史回答')).toBeInTheDocument();
+    expect(mockStartStream).not.toHaveBeenCalled();
+  });
+
   it('renders authoritative object and manual conflict refresh in English', async () => {
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
     mockStoreState.activeStockContext = { stock_code: '005930.KS', canonical_id: '005930.KS',
@@ -614,9 +530,9 @@ describe('ChatPage', () => {
     mockGetStatus.mockResolvedValueOnce({
       backend: 'codex_app_server',
       available: false,
-      experimental: true,
-      errorCode: 'command_not_found',
-      message: 'Codex was not found',
+      experimental: false,
+      errorCode: 'backend_removed',
+      message: 'Codex App Server has been removed',
     });
 
     render(
@@ -627,8 +543,8 @@ describe('ChatPage', () => {
       </UiLanguageProvider>,
     );
 
-    expect(await screen.findByText('Codex Agent · Experimental')).toBeInTheDocument();
-    expect(screen.getByText('This device does not currently meet the basic Codex ask-stock requirements. Open Agent settings to check installation and Single Agent mode.')).toBeInTheDocument();
+    expect(await screen.findByText('Codex App Server (removed)')).toBeInTheDocument();
+    expect(screen.getByText('The Codex App Server Chat backend has been removed. Choose Auto or Default model and save, then configure the required model source. Standalone Codex CLI reports are unaffected.')).toBeInTheDocument();
     expect(screen.queryByText(/当前不可用|前往 Agent 设置检查/)).not.toBeInTheDocument();
   });
 
@@ -1047,9 +963,9 @@ describe('ChatPage', () => {
 
   it('sends shortcut hints without treating them as confirmed state', async () => {
     mockGetStatus.mockResolvedValueOnce({
-      backend: 'codex_app_server',
+      backend: 'litellm',
       available: true,
-      experimental: true,
+      experimental: false,
       errorCode: null,
       message: null,
     });
@@ -1236,9 +1152,9 @@ describe('ChatPage', () => {
 
   it('submits the A-share SMIC quick question with an unambiguous stock context', async () => {
     mockGetStatus.mockResolvedValueOnce({
-      backend: 'codex_app_server',
+      backend: 'litellm',
       available: true,
-      experimental: true,
+      experimental: false,
       errorCode: null,
       message: null,
     });
@@ -1253,7 +1169,7 @@ describe('ChatPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByText('Codex Agent · 实验');
+    await screen.findByText('默认模型');
     fireEvent.click(await screen.findByRole('button', { name: '用箱体震荡分析 A 股中芯国际 688981' }));
 
     await waitFor(() => {
@@ -1275,7 +1191,7 @@ describe('ChatPage', () => {
   });
 
   it('does not send a client-selected identity for a name-only question', async () => {
-    mockGetStatus.mockResolvedValueOnce({ backend: 'codex_app_server', available: true, experimental: true, errorCode: null, message: null });
+    mockGetStatus.mockResolvedValueOnce({ backend: 'litellm', available: true, experimental: false, errorCode: null, message: null });
     render(<MemoryRouter initialEntries={['/chat']}><ChatPage /></MemoryRouter>);
     const input = await screen.findByPlaceholderText(/分析 600519/);
     fireEvent.change(input, { target: { value: '分析茅台' } });
@@ -1286,9 +1202,9 @@ describe('ChatPage', () => {
 
   it('does not guess when one stock name maps to multiple markets', async () => {
     mockGetStatus.mockResolvedValueOnce({
-      backend: 'codex_app_server',
+      backend: 'litellm',
       available: true,
-      experimental: true,
+      experimental: false,
       errorCode: null,
       message: null,
     });
@@ -1337,9 +1253,9 @@ describe('ChatPage', () => {
     mockGetStatus.mockResolvedValueOnce({
       backend: 'codex_app_server',
       available: false,
-      experimental: true,
-      errorCode: 'command_not_found',
-      message: 'Codex was not found',
+      experimental: false,
+      errorCode: 'backend_removed',
+      message: 'Codex App Server has been removed',
     });
     mockFormatSessionAsMarkdown.mockReturnValue('# exported markdown');
 

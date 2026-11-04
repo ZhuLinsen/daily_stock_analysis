@@ -334,6 +334,13 @@ export function parseApiError(error: unknown): ParsedApiError {
     });
   }
 
+  if (errorCode === 'backend_removed') {
+    return createParsedApiError({
+      title: '问股后端已移除', message: rawMessage,
+      rawMessage, status, code: 'backend_removed', category: 'http_error',
+    });
+  }
+
   if (errorCode === 'session_state_conflict' || code === 'session_state_conflict') {
     return createParsedApiError({
       title: '会话已更新', message: '请刷新会话后重试。当前输入尚未被接受，请保留问题与选择。',
