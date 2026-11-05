@@ -8,7 +8,7 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: write
 

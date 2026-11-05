@@ -17,7 +17,7 @@ permissions:
 jobs:
   stale:
     name: 🧹 清理过期 Issues/PRs
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     
     steps:
       - name: 🏷️ 标记并关闭过期内容
