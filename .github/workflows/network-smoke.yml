@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:

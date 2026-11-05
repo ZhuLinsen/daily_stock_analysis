@@ -22,7 +22,7 @@ jobs:
   # ==================== 安全检查（仅通过 API 读取 PR 元数据）====================
   security-check:
     name: 🔒 安全检查
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
       pull-requests: read
@@ -89,7 +89,7 @@ jobs:
   # ==================== AI 代码审查（只运行 base 分支脚本）====================
   ai-review:
     name: 🤖 AI 代码审查
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     needs: [security-check]
     if: |
       needs.security-check.outputs.safe_to_run == 'true' &&
@@ -145,7 +145,7 @@ jobs:
   # ==================== PR 标签自动分类（仅 GitHub API）====================
   labeler:
     name: 🏷️ 自动标签
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
       pull-requests: read
@@ -207,7 +207,7 @@ jobs:
   # ==================== 自动评论检查结果（仅 GitHub API）====================
   comment:
     name: 💬 审查报告
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     needs: [security-check, ai-review]
     if: always() && needs.security-check.outputs.safe_to_run == 'true'
     permissions:
