@@ -78,6 +78,10 @@ _MARKET_ROLES = {
         "zh": "台股",
         "en": "Taiwan stock",
     },
+    "ca": {
+        "zh": "加股",
+        "en": "Canada stock",
+    },
 }
 
 _MARKET_GUIDELINES = {
