@@ -131,6 +131,7 @@ def expand_symbol_targets(
     target: str,
     config: Any,
     portfolio_service: Optional[PortfolioService] = None,
+    read_only: bool = False,
 ) -> tuple[List[ExpandedSymbolTarget], int]:
     """Expand watchlist or portfolio holdings into concrete, de-duplicated symbols.
 
@@ -142,7 +143,9 @@ def expand_symbol_targets(
         symbols = _watchlist_symbols(config)
         display_prefix = "自选股"
     elif target_scope == "portfolio_holdings":
-        symbols = _portfolio_holding_symbols(target=target, portfolio_service=portfolio_service)
+        symbols = _portfolio_holding_symbols(
+            target=target, portfolio_service=portfolio_service, read_only=read_only,
+        )
         display_prefix = "持仓"
     else:
         return [], 0
@@ -348,10 +351,11 @@ def _portfolio_holding_symbols(
     *,
     target: str,
     portfolio_service: Optional[PortfolioService],
+    read_only: bool = False,
 ) -> List[str]:
     service = portfolio_service or PortfolioService()
     account_id = None if target == "all" else _positive_int_target(target)
-    snapshot = service.get_portfolio_snapshot(account_id=account_id, cost_method="fifo")
+    snapshot = service.get_portfolio_snapshot(account_id=account_id, cost_method="fifo", read_only=read_only)
     symbols: List[str] = []
     for account in snapshot.get("accounts", []) or []:
         for position in account.get("positions", []) or []:

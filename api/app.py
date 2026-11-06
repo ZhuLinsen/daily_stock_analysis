@@ -165,6 +165,7 @@ def _warn_if_open_cors_without_auth() -> None:
 
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
+from api.middlewares.security_guard import add_guard_middleware, is_guard_enabled
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.auth import is_auth_enabled
@@ -289,6 +290,11 @@ async def app_lifespan(app: FastAPI):
         runtime_scheduler=app.state.runtime_scheduler_service,
     )
     _schedule_stock_index_background_refresh(app, "startup")
+    # 名称解析器的 AkShare 缓存预热：命中磁盘缓存则零网络加载，否则发起
+    # 后台单飞拉取。把冷启动等待从首个用户请求挪到进程启动窗口。
+    from src.services.name_to_code_resolver import warmup_akshare_cache
+
+    warmup_akshare_cache()
     try:
         yield
     finally:
@@ -361,6 +367,15 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         _warn_if_open_cors_without_auth()
         allowed_origins = ["*"]
     
+    # Optional fastapi-guard (GUARD_ENABLED, default off). Starlette makes the last
+    # added middleware the outermost, so with the guard on the order is
+    # CORS > guard > auth: guard 429/403 responses carry CORS headers and the guard
+    # screens a request before the auth middleware sees it. Off keeps the old order.
+    guard_enabled = is_guard_enabled()
+    if guard_enabled:
+        add_auth_middleware(app)
+        add_guard_middleware(app)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -369,7 +384,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    add_auth_middleware(app)
+    if not guard_enabled:
+        add_auth_middleware(app)
     
     # ============================================================
     # 注册路由

@@ -412,6 +412,23 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertGreater(report["drawdown"]["max_drawdown_pct"], 10.0)
         self.assertTrue(report["drawdown"]["alert"])
 
+    def test_concentration_preserves_positive_exposure_with_rounded_zero_weight(self) -> None:
+        risk = PortfolioRiskService()
+        snapshot = {"total_market_value": 10_000_001, "accounts": [{
+            "base_currency": "CNY", "market": "cn", "positions": [
+                {"symbol": "600519", "market_value_base": 10_000_000, "valuation_currency": "CNY"},
+                {"symbol": "000001", "market_value_base": 1, "valuation_currency": "CNY"},
+            ],
+        }]}
+        concentration = risk._build_concentration(snapshot, 30, as_of_date=date(2026, 1, 1))
+        with patch.object(risk, "_resolve_primary_sector", side_effect=["白酒", "银行"]):
+            sectors = risk._build_sector_concentration(snapshot, 30, as_of_date=date(2026, 1, 1))
+        for block, rows_key in ((concentration, "top_positions"), (sectors, "top_sectors")):
+            self.assertEqual(block["top_weight_pct"], 100)
+            self.assertEqual([row["weight_pct"] for row in block[rows_key]], [100, 0])
+            self.assertEqual(block[rows_key][1]["market_value_base"], 1)
+            self.assertTrue(block["alert"])
+
     def test_concentration_uses_cny_normalized_exposure(self) -> None:
         cn_account = self.service.create_account(name="CN", broker="Demo", market="cn", base_currency="CNY")
         us_account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="USD")

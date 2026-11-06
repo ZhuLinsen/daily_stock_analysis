@@ -63,6 +63,7 @@ export interface AlertRuleItem {
 }
 
 export interface AlertRuleListResponse {
+  ruleSources?: { legacyConfigured: number; legacyEffective: number } | null;
   items: AlertRuleItem[];
   total: number;
   page: number;

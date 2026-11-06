@@ -103,8 +103,9 @@
    - WebUI 保存后会触发当前进程的配置重载；运行中的读取路径会同步使用最新写回的 `.env`，例如定时任务会继续热读取保存后的 `STOCK_LIST`
    - 如果容器启动命令里传入了这些同名环境变量（如 `--env-file .env`、`docker run -e ...` 或 Compose `environment:`），后续重启时仍可能以启动环境变量为准；要让 WebUI 保存值接管，请同步更新或移除这些同名 override
    - 如需持久化 WebUI 保存的配置，请将 `ENV_FILE` 指向 `/app/data/runtime.env` 等可写数据卷文件，不要把宿主机 `.env` 单文件挂载到 `/app/.env`
-   - `SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_TIMES` 保存后会让 WebUI/API/Desktop 长运行进程按新配置启停或重建 runtime scheduler
+   - `SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_TIMES` 保存后会让 WebUI/API/Desktop 长运行进程按新配置启停或重建 runtime scheduler；重启 `--serve-only` 或 Desktop 进程时会恢复已启用的 daily jobs，但不会在启动时立即执行分析
    - `SCHEDULE_RUN_IMMEDIATELY` 与 `RUN_IMMEDIATELY` 仍属于启动期/一次性运行配置，保存后不会立即触发一次分析
+   - `SCHEDULE_STARTUP_DEDUP` 控制纯 CLI 定时模式启动立即执行的当日去重（当天已有成功全量分析则跳过启动补跑；详见 `docs/full-guide.md` 配置表），同样属于启动期配置
 3. **Docker 手工改 `.env` 后**：修改后仍建议重启容器
    ```bash
    docker-compose down && docker-compose up -d
@@ -166,8 +167,21 @@ PROXY_PORT=10809
 1. **自动分块**：最新版本已实现长消息自动切割
 2. **单股推送模式**：设置 `SINGLE_STOCK_NOTIFY=true`，每分析完一只股票立即推送
 3. **精简报告**：设置 `REPORT_TYPE=simple` 使用精简格式
+4. **仅落盘本地报告**：即使未配置任何通知渠道，`SINGLE_STOCK_NOTIFY=true` 仍会把单股报告保存到 `reports/report_YYYYMMDD_<股票代码>.md`
 
 ---
+
+### Q8.1: 分析结束了，但 `reports/` 里没有生成报告文件？
+
+**常见原因**：
+1. `STOCK_LIST` 为空，且本轮未启用大盘复盘
+2. 股票列表非空，但个股分析全部失败，最终没有成功结果
+3. 个股结果已生成，但写入 `reports/` 时失败（如目录权限或挂载问题）
+
+**现在的行为**：
+1. CLI 启动分析会对上述场景显式记录失败原因
+2. 非 `--serve` 的独立运行模式会返回非零退出码，避免工作流把“未生成报告”误判为成功
+3. 若是单股推送模式且通知未配置，仍会继续保存本地 Markdown 报告用于排查
 
 ### Q9: Telegram 推送收不到消息？
 
@@ -271,7 +285,7 @@ OPENAI_MODEL=deepseek-v4-flash
    - 若 Ollama 和程序不在同一主机，需将 `OLLAMA_API_BASE` 改为实际 IP，如 `http://192.168.1.100:11434`。
    - 确认防火墙已放行 11434 端口，且 Ollama 启动时绑定了正确地址（`OLLAMA_HOST=0.0.0.0:11434`）。
 
-> 完整配置示例见 [LLM 配置指南 → 示例 4（Ollama）](LLM_CONFIG_GUIDE.md#example-4-ollama)。
+> 完整配置示例见 [LLM 配置指南 → 示例 4（Ollama）](LLM_CONFIG_GUIDE.md#示例-4使用-ollama-本地模型)。
 
 ---
 

@@ -19,6 +19,8 @@ from api.v1.schemas.alerts import (
     AlertTriggerListResponse,
 )
 from api.v1.schemas.common import ErrorResponse
+from src.config import get_config
+from src.services.alert_worker import AlertWorker
 from src.services.alert_service import (
     AlertNotFoundError,
     AlertService,
@@ -89,6 +91,7 @@ def list_rules(
     service = AlertService()
     try:
         return AlertRuleListResponse(
+            rule_sources=AlertWorker(service=service).get_rule_sources(get_config()),
             **service.list_rules(
                 enabled=enabled,
                 alert_type=alert_type,

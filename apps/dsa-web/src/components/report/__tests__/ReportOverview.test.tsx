@@ -288,6 +288,21 @@ describe('ReportOverview', () => {
     expect(screen.queryByText('板块联动')).not.toBeInTheDocument();
   });
 
+  it('renders the persisted empty-news disclosure beside the core conclusion', () => {
+    render(
+      <ReportOverview
+        meta={baseMeta}
+        summary={baseSummary}
+        details={{
+          emptyNewsDisclosure: '⚠️ 未配置搜索渠道，本次分析未纳入新闻面证据。',
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('note')).toHaveTextContent('未配置搜索渠道');
+    expect(screen.getByRole('note')).toHaveTextContent('未纳入新闻面证据');
+  });
+
   it('fails open on malformed ranking payloads', () => {
     render(
       <ReportOverview
@@ -307,5 +322,58 @@ describe('ReportOverview', () => {
     expect(screen.getByText('白酒')).toBeInTheDocument();
     expect(screen.getByText('领跌')).toBeInTheDocument();
     expect(screen.getByText('-2.50%')).toBeInTheDocument();
+  });
+
+  it('hides the stock-only watchlist card for index reports', () => {
+    render(
+      <ReportOverview
+        meta={{ ...baseMeta, stockCode: 'sh000016', assetType: 'index' }}
+        summary={baseSummary}
+        watchlist={{
+          isInWatchlist: () => false,
+          onToggle: () => {},
+          isActioning: false,
+          actionMessage: null,
+        }}
+      />,
+    );
+
+    expect(screen.queryByText('自选')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /自选/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps the stock-only watchlist card for stock reports', () => {
+    render(
+      <ReportOverview
+        meta={{ ...baseMeta, stockCode: '600519', assetType: 'stock' }}
+        summary={baseSummary}
+        watchlist={{
+          isInWatchlist: () => false,
+          onToggle: () => {},
+          isActioning: false,
+          actionMessage: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('自选')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '加入自选' })).toBeInTheDocument();
+  });
+
+  it('keeps the stock-only watchlist card when assetType is absent (legacy)', () => {
+    render(
+      <ReportOverview
+        meta={{ ...baseMeta, stockCode: '600519' }}
+        summary={baseSummary}
+        watchlist={{
+          isInWatchlist: () => false,
+          onToggle: () => {},
+          isActioning: false,
+          actionMessage: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('自选')).toBeInTheDocument();
   });
 });

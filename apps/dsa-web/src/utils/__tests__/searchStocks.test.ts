@@ -485,4 +485,58 @@ describe('searchStocks', () => {
       expect(results.length).toBeGreaterThan(0);
     });
   });
+
+  describe('Index row visibility', () => {
+    const indexRows: StockIndexItem[] = [
+      ...mockIndex,
+      {
+        canonicalCode: 'sh000016',
+        displayCode: 'sh000016',
+        nameZh: '上证50',
+        pinyinFull: 'shangzheng50',
+        pinyinAbbr: 'sz50',
+        aliases: ['000016.SH'],
+        market: 'CN',
+        assetType: 'index',
+        active: true,
+        popularity: 99,
+      },
+      {
+        canonicalCode: 'csi930955',
+        displayCode: '930955.CSI',
+        nameZh: '红利低波100',
+        pinyinFull: 'honglidibo100',
+        pinyinAbbr: 'hldb100',
+        aliases: ['930955.CSI'],
+        market: 'CN',
+        assetType: 'index',
+        active: true,
+        popularity: 98,
+      },
+    ];
+
+    test('search by registered index Chinese name returns the index row', () => {
+      const results = searchStocks('上证50', indexRows);
+      expect(results.some(r => r.canonicalCode === 'sh000016')).toBe(true);
+      const hit = results.find(r => r.canonicalCode === 'sh000016');
+      expect(hit?.nameZh).toBe('上证50');
+    });
+
+    test('search by registered index canonical code returns the index row', () => {
+      const results = searchStocks('sh000016', indexRows);
+      expect(results.some(r => r.canonicalCode === 'sh000016')).toBe(true);
+    });
+
+    test('search by registered CSI canonical and display alias converges to one row', () => {
+      const byCanonical = searchStocks('csi930955', indexRows);
+      const byDisplay = searchStocks('930955.CSI', indexRows);
+      expect(byCanonical.some(r => r.canonicalCode === 'csi930955')).toBe(true);
+      expect(byDisplay.some(r => r.canonicalCode === 'csi930955')).toBe(true);
+    });
+
+    test('search by registered index alias (000016.SH) returns the index row', () => {
+      const results = searchStocks('000016.SH', indexRows);
+      expect(results.some(r => r.canonicalCode === 'sh000016')).toBe(true);
+    });
+  });
 });

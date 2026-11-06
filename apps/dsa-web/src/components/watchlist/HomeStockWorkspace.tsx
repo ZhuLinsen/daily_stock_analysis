@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import {
   ArrowDownWideNarrow,
   CalendarDays,
@@ -20,16 +20,26 @@ import type { StockBarItem, TaskInfo } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
 import { formatDateTime } from '../../utils/format';
-import { areStockCodesEquivalent } from '../../utils/stockCode';
+import { areAssetAwareCodesEquivalent, toAssetAwareCodeKey, type AssetAwareAssetType } from '../../utils/stockCode';
 import { truncateStockName } from '../../utils/stockName';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiTextKey, UiTextParams } from '../../i18n/uiText';
+import { isWatchlistRowPendingAnalysis } from './watchlistRowState';
 
 export type HomeWorkspaceTab = 'watchlist' | 'today' | 'history';
 export type WatchlistAnalyzeMode = 'all' | 'pending';
 
 export interface HomeWatchlistRow {
   code: string;
+  assetType?: AssetAwareAssetType;
+  /**
+   * Asset-aware identity key already resolved by HomePage from the stock index
+   * registry (canonical for registered indices, e.g. `sh000016` for a raw
+   * watchlist string `000016.SH`). Row-selection compares against this key
+   * FIRST instead of re-parsing the raw alias, so a canonical selected report
+   * always selects its own alias-form row and never a same-code stock row.
+   */
+  identityKey?: string;
   latestItem?: StockBarItem;
   analyzedToday: boolean;
   isTodayStatusLoading?: boolean;
@@ -40,6 +50,30 @@ export interface HomeWatchlistRow {
 interface BatchStatus {
   variant: 'success' | 'warning' | 'danger';
   message: string;
+}
+
+type WatchlistSignalTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
+
+interface WatchlistSignal {
+  label: string;
+  value: string;
+  tone: WatchlistSignalTone;
+  pulse?: boolean;
+}
+
+interface WatchlistRowSignals {
+  change: WatchlistSignal;
+  state: WatchlistSignal;
+  nextAction: WatchlistSignal;
+}
+
+function buildSignalDescription(
+  signals: WatchlistSignal[],
+  t: (key: UiTextKey, params?: UiTextParams) => string,
+) {
+  return signals
+    .map((signal) => t('watchlist.signalSummaryItem', { label: signal.label, value: signal.value }))
+    .join(t('watchlist.signalSummarySeparator'));
 }
 
 interface HomeStockWorkspaceProps {
@@ -62,6 +96,7 @@ interface HomeStockWorkspaceProps {
   historyItems: StockBarItem[];
   isLoadingHistory: boolean;
   selectedStockCode?: string;
+  selectedAssetType?: AssetAwareAssetType | null;
   selectedRecordId?: number;
   onHistoryItemClick: (recordId: number) => void;
   onDeleteStock?: (stockCode: string) => Promise<void> | void;
@@ -75,6 +110,87 @@ function getTaskStatusLabel(task: TaskInfo | undefined, t: (key: UiTextKey, para
   if (task.status === 'pending') return t('taskPanel.pending');
   if (task.status === 'cancel_requested') return t('taskPanel.cancelRequested');
   return task.status;
+}
+
+function buildWatchlistRowSignals({
+  row,
+  canOpenDetail,
+  isLatestDetailLoading,
+  isLatestDetailUnavailable,
+  taskLabel,
+  t,
+}: {
+  row: HomeWatchlistRow;
+  canOpenDetail: boolean;
+  isLatestDetailLoading: boolean;
+  isLatestDetailUnavailable: boolean;
+  taskLabel: string;
+  t: (key: UiTextKey, params?: UiTextParams) => string;
+}): WatchlistRowSignals {
+  let change: Omit<WatchlistSignal, 'label'>;
+  let state: Omit<WatchlistSignal, 'label'>;
+  let nextAction: Omit<WatchlistSignal, 'label'>;
+
+  if (isLatestDetailLoading) {
+    change = { value: t('watchlist.changeLoading'), tone: 'info', pulse: true };
+    state = { value: t('watchlist.stateLoading'), tone: 'info', pulse: true };
+    nextAction = { value: t('watchlist.nextWaitStatus'), tone: 'info', pulse: true };
+  } else if (isLatestDetailUnavailable) {
+    change = { value: t('watchlist.changeUnknown'), tone: 'warning' };
+    state = { value: t('watchlist.stateUnknown'), tone: 'warning' };
+    nextAction = { value: t('watchlist.nextRefresh'), tone: 'warning' };
+  } else {
+    if (row.analyzedToday) {
+      change = { value: t('watchlist.changeAnalyzedToday'), tone: 'success' };
+      state = { value: t('watchlist.stateAnalyzed'), tone: 'success' };
+      nextAction = {
+        value: canOpenDetail ? t('watchlist.nextOpenLatest') : t('watchlist.nextRefresh'),
+        tone: canOpenDetail ? 'success' : 'warning',
+      };
+    } else if (row.latestItem) {
+      change = { value: t('watchlist.changeHasLatest'), tone: 'info' };
+      state = { value: t('watchlist.statePending'), tone: 'warning' };
+      nextAction = { value: t('watchlist.nextAnalyze'), tone: 'warning' };
+    } else {
+      change = { value: t('watchlist.changeNoReport'), tone: 'neutral' };
+      state = { value: t('watchlist.statePending'), tone: 'warning' };
+      nextAction = { value: t('watchlist.nextAnalyze'), tone: 'warning' };
+    }
+  }
+
+  if (row.activeTask) {
+    state = {
+      value: t('watchlist.stateTask', { status: taskLabel }),
+      tone: row.activeTask.status === 'processing' ? 'info' : 'neutral',
+      pulse: row.activeTask.status === 'processing',
+    };
+    nextAction = {
+      value: t('watchlist.nextWaitTask'),
+      tone: row.activeTask.status === 'processing' ? 'info' : 'neutral',
+      pulse: row.activeTask.status === 'processing',
+    };
+  }
+
+  return {
+    change: { label: t('watchlist.change'), ...change },
+    state: { label: t('watchlist.state'), ...state },
+    nextAction: { label: t('watchlist.nextAction'), ...nextAction },
+  };
+}
+
+function rowHasSelectedIdentity(
+  row: HomeWatchlistRow,
+  selectedStockCode: string | null | undefined,
+  selectedAssetType: AssetAwareAssetType | null | undefined,
+): boolean {
+  // The registry-derived canonical identity (HomePage) wins: an alias-form raw
+  // watchlist code (e.g. `000016.SH`) whose identityKey is `sh000016` must
+  // match the canonical selected report without re-parsing the raw alias, and
+  // must never fold with the bare `000016` stock row.
+  if (row.identityKey) {
+    return toAssetAwareCodeKey(selectedStockCode, selectedAssetType) === row.identityKey;
+  }
+  return areAssetAwareCodesEquivalent(selectedStockCode, selectedAssetType, row.code, row.assetType);
 }
 
 const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
@@ -110,6 +226,18 @@ const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
   );
 };
 
+const WatchlistSignalCell: React.FC<{ signal: WatchlistSignal }> = ({ signal }) => (
+  <span className="min-w-0 rounded-lg border border-subtle bg-base/35 px-2 py-1.5">
+    <span className="block text-[10px] font-medium text-muted-text">
+      {signal.label}
+    </span>
+    <span className="mt-1 flex min-w-0 items-start gap-1.5 text-[11px] font-medium text-secondary-text">
+      <StatusDot tone={signal.tone} pulse={signal.pulse} className="h-1.5 w-1.5" />
+      <span className="min-w-0 whitespace-normal break-words leading-snug">{signal.value}</span>
+    </span>
+  </span>
+);
+
 const WatchlistRowItem: React.FC<{
   row: HomeWatchlistRow;
   onRemove: (code: string) => Promise<void>;
@@ -118,12 +246,22 @@ const WatchlistRowItem: React.FC<{
   selected: boolean;
 }> = ({ row, onRemove, onOpenDetail, disabled, selected }) => {
   const { t } = useUiLanguage();
+  const signalDescriptionId = useId();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
   const isLatestDetailLoading = Boolean(row.isTodayStatusLoading);
   const isLatestDetailUnavailable = !isLatestDetailLoading && Boolean(row.isTodayStatusUnknown);
   const item = isLatestDetailLoading || isLatestDetailUnavailable ? undefined : row.latestItem;
   const stockName = row.latestItem?.stockName || row.code;
   const canOpenDetail = typeof item?.id === 'number';
+  const signals = buildWatchlistRowSignals({
+    row,
+    canOpenDetail,
+    isLatestDetailLoading,
+    isLatestDetailUnavailable,
+    taskLabel,
+    t,
+  });
+  const signalDescription = buildSignalDescription([signals.change, signals.state, signals.nextAction], t);
 
   const handleOpenDetail = () => {
     onOpenDetail(row);
@@ -148,9 +286,13 @@ const WatchlistRowItem: React.FC<{
             : isLatestDetailUnavailable
               ? t('watchlist.latestDetailUnavailableAria', { code: row.code })
             : t('watchlist.noLatestDetailAria', { code: row.code })}
+        aria-describedby={signalDescriptionId}
         className="grid min-w-0 cursor-pointer gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/30"
         onClick={handleOpenDetail}
       >
+        <span id={signalDescriptionId} className="sr-only">
+          {signalDescription}
+        </span>
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-semibold text-foreground">
@@ -183,8 +325,13 @@ const WatchlistRowItem: React.FC<{
                   ? t('watchlist.latestDetailLoadingCta')
                   : isLatestDetailUnavailable
                     ? t('watchlist.latestDetailUnavailableCta')
-                    : t('watchlist.noLatestDetailCta')}
+                  : t('watchlist.noLatestDetailCta')}
             </span>
+          </div>
+          <div className="mt-2 grid min-w-0 grid-cols-1 gap-1.5">
+            <WatchlistSignalCell signal={signals.change} />
+            <WatchlistSignalCell signal={signals.state} />
+            <WatchlistSignalCell signal={signals.nextAction} />
           </div>
           {row.activeTask ? (
             <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-text">
@@ -258,6 +405,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   historyItems,
   isLoadingHistory,
   selectedStockCode,
+  selectedAssetType,
   selectedRecordId,
   onHistoryItemClick,
   onDeleteStock,
@@ -266,10 +414,13 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
 }) => {
   const { t } = useUiLanguage();
   const [draftCode, setDraftCode] = useState('');
-  const [workspaceNoticeCode, setWorkspaceNoticeCode] = useState<string | null>(null);
-  const pendingWatchlistCount = watchlistRows
-    .filter((row) => !row.analyzedToday && !row.isTodayStatusLoading && !row.isTodayStatusUnknown)
-    .length;
+  // PR #2312: the notice carries the *triggering row's own* identity
+  // (code + assetType). Reusing the candidate row's assetType for the notice
+  // code would let an index row and a same-code stock row cross-match (e.g.
+  // notice code ``000016.SH`` classified with the stock row's asset type folds
+  // to stock ``000016`` and attaches to the wrong row).
+  const [workspaceNotice, setWorkspaceNotice] = useState<{ code: string; assetType: AssetAwareAssetType } | null>(null);
+  const pendingWatchlistCount = watchlistRows.filter(isWatchlistRowPendingAnalysis).length;
   const isTodayStatusUnavailable = watchlistRows.some((row) => row.isTodayStatusLoading || row.isTodayStatusUnknown);
   const topTodayItem = todayItems[0];
   const tabs: Array<{ key: HomeWorkspaceTab; label: string }> = [
@@ -286,8 +437,10 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   }, [batchStatus]);
 
   const visibleWorkspaceNotice = useMemo(() => {
-    if (!workspaceNoticeCode) return null;
-    const row = watchlistRows.find((item) => areStockCodesEquivalent(item.code, workspaceNoticeCode));
+    if (!workspaceNotice) return null;
+    const row = watchlistRows.find(
+      (item) => areAssetAwareCodesEquivalent(item.code, item.assetType, workspaceNotice.code, workspaceNotice.assetType),
+    );
     if (!row) return null;
     if (row.isTodayStatusLoading) {
       return { message: t('watchlist.latestDetailLoading') };
@@ -297,28 +450,28 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
     }
     if (row.latestItem) return null;
     return { message: t('watchlist.noLatestDetail') };
-  }, [t, watchlistRows, workspaceNoticeCode]);
+  }, [t, watchlistRows, workspaceNotice]);
 
   const handleAddSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     const code = draftCode.trim();
     if (!code) return;
-    setWorkspaceNoticeCode(null);
+    setWorkspaceNotice(null);
     void onAddToWatchlist(code).then(() => setDraftCode(''));
   };
 
   const handleWatchlistRowOpen = (row: HomeWatchlistRow) => {
     if (row.isTodayStatusLoading || row.isTodayStatusUnknown) {
-      setWorkspaceNoticeCode(row.code);
+      setWorkspaceNotice({ code: row.code, assetType: row.assetType ?? 'stock' });
       return;
     }
     const recordId = row.latestItem?.id;
     if (typeof recordId === 'number') {
-      setWorkspaceNoticeCode(null);
+      setWorkspaceNotice(null);
       onHistoryItemClick(recordId);
       return;
     }
-    setWorkspaceNoticeCode(row.code);
+    setWorkspaceNotice({ code: row.code, assetType: row.assetType ?? 'stock' });
   };
 
   const renderTabs = (
@@ -334,7 +487,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               selected ? 'bg-primary/15 text-primary shadow-inner' : 'text-secondary-text hover:bg-hover hover:text-foreground'
             }`}
             onClick={() => {
-              setWorkspaceNoticeCode(null);
+              setWorkspaceNotice(null);
               onTabChange(tab.key);
             }}
           >
@@ -391,7 +544,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                     className="h-7 w-7 px-0"
                     disabled={watchlistLoading}
                     onClick={() => {
-                      setWorkspaceNoticeCode(null);
+                      setWorkspaceNotice(null);
                       void onRefreshWatchlist();
                     }}
                     aria-label={t('watchlist.refreshAria')}
@@ -415,7 +568,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 size="sm"
                 variant="home-action-ai"
                 className="h-8 flex-1 whitespace-nowrap px-2 text-xs sm:flex-none"
-                disabled={watchlistRows.length === 0 || isBatchAnalyzing}
+                disabled={watchlistLoading || watchlistRows.length === 0 || isBatchAnalyzing}
                 isLoading={isBatchAnalyzing}
                 loadingText={t('watchlist.submitting')}
                 onClick={() => void onAnalyzeWatchlist('all')}
@@ -428,7 +581,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 size="sm"
                 variant="home-action-report"
                 className="h-8 flex-1 whitespace-nowrap px-2 text-xs sm:flex-none"
-                disabled={pendingWatchlistCount === 0 || isTodayStatusUnavailable || isBatchAnalyzing}
+                disabled={watchlistLoading || pendingWatchlistCount === 0 || isTodayStatusUnavailable || isBatchAnalyzing}
                 onClick={() => void onAnalyzeWatchlist('pending')}
               >
                 <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
@@ -520,7 +673,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                   key={row.code}
                   row={row}
                   onRemove={async (code) => {
-                    setWorkspaceNoticeCode(null);
+                    setWorkspaceNotice(null);
                     await onRemoveFromWatchlist(code);
                   }}
                   onOpenDetail={handleWatchlistRowOpen}
@@ -530,8 +683,8 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                     || (
                       Boolean(selectedStockCode)
                       && (
-                        areStockCodesEquivalent(selectedStockCode ?? '', row.code)
-                        || areStockCodesEquivalent(selectedStockCode ?? '', row.latestItem?.stockCode ?? '')
+                        rowHasSelectedIdentity(row, selectedStockCode, selectedAssetType)
+                        || areAssetAwareCodesEquivalent(selectedStockCode ?? '', selectedAssetType, row.latestItem?.stockCode ?? '', row.latestItem?.assetType)
                       )
                     )
                   }

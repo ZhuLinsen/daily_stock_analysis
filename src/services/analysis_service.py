@@ -31,8 +31,35 @@ from src.services.run_diagnostics import (
     get_current_diagnostic_context,
     reset_run_diagnostic_context,
 )
+from src.services.empty_news import empty_news_disclosure
 
 logger = logging.getLogger(__name__)
+
+
+def asset_type_from_canonical_code(code: Any) -> Optional[str]:
+    """Derive the authoritative ``asset_type`` for a canonical stock/index code.
+
+    Uses :func:`parse_analysis_target` — the single asset-type authority — on
+    the *canonical* code, never the display code, so ``sh000016`` (index) and
+    bare ``000016`` (stock) are distinguished by the parser rather than by
+    display normalization. Returns ``None`` for market review / empty /
+    unsupported codes, so legacy clients and market reviews simply omit the
+    optional field.
+    """
+    text = str(code or "").strip()
+    if not text:
+        return None
+    if text.upper() == "MARKET":
+        return None
+
+    from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+    target = parse_analysis_target(text)
+    if target.asset_type == ParseStatus.INDEX:
+        return "index"
+    if target.asset_type == ParseStatus.STOCK:
+        return "stock"
+    return None
 
 
 class AnalysisService:
@@ -61,6 +88,7 @@ class AnalysisService:
         query_source: str = "api",
         portfolio_context: Optional[Dict[str, Any]] = None,
         report_language: Optional[str] = None,
+        analysis_target: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析
@@ -72,6 +100,8 @@ class AnalysisService:
             query_id: 查询 ID（可选）
             send_notification: 是否发送通知（API 触发默认发送）
             analysis_phase: 请求的分析阶段覆盖（auto/premarket/intraday/postmarket）
+            analysis_target: 可选的结构化分析目标（指数目标贯穿到 pipeline，
+                否则指数会退化为股票语义）
             
         Returns:
             分析结果字典，包含:
@@ -127,6 +157,7 @@ class AnalysisService:
                 skip_analysis=False,
                 single_stock_notify=send_notification,
                 report_type=rt,
+                analysis_target=analysis_target,
             )
             
             if result is None:
@@ -218,6 +249,7 @@ class AnalysisService:
                 "change_pct": result.change_pct,
                 "model_used": getattr(result, "model_used", None),
                 "market_phase_summary": market_phase_summary,
+                "asset_type": asset_type_from_canonical_code(result.code),
             },
             "summary": {
                 "analysis_summary": result.analysis_summary,
@@ -236,6 +268,7 @@ class AnalysisService:
             },
             "details": {
                 "news_summary": result.news_summary,
+                "empty_news_disclosure": empty_news_disclosure(result, report_language),
                 "technical_analysis": result.technical_analysis,
                 "fundamental_analysis": result.fundamental_analysis,
                 "risk_warning": result.risk_warning,

@@ -204,7 +204,7 @@ function makeRisk(overrides: Record<string, unknown> = {}) {
       topWeightPct: 0,
       alert: false,
       topSectors: [],
-      coverage: {},
+      coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
       errors: [],
     },
     drawdown: {
@@ -363,6 +363,1327 @@ describe('PortfolioPage FX refresh', () => {
     expect(screen.getByRole('button', { name: '刷新汇率' })).toBeInTheDocument();
   });
 
+  it('renders portfolio risk flags and exposure dashboard from snapshot and risk data', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      fxStale: false,
+      positions: [
+        makePosition({
+          symbol: '600519',
+          market: 'cn',
+          currency: 'CNY',
+          valuationCurrency: 'CNY',
+          marketValueBase: 6000,
+        }),
+        makePosition({
+          symbol: 'HK00700',
+          market: 'hk',
+          currency: 'HKD',
+          valuationCurrency: 'CNY',
+          marketValueBase: 4000,
+          priceStale: true,
+        }),
+      ],
+    }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 60,
+        alert: true,
+        topPositions: [{ symbol: '600519', marketValueBase: 6000, weightPct: 60, isAlert: true }],
+      },
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        alert: true,
+        topSectors: [{ sector: '白酒', marketValueBase: 7000, weightPct: 70, symbolCount: 2, isAlert: true }],
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+        errors: [],
+      },
+      drawdown: {
+        seriesPoints: 10,
+        maxDrawdownPct: 18.5,
+        currentDrawdownPct: 12.5,
+        alert: true,
+        fxStale: false,
+      },
+      stopLoss: {
+        nearAlert: true,
+        triggeredCount: 1,
+        nearCount: 2,
+        items: [],
+      },
+      decisionSignalRisk: {
+        available: true,
+        total: 1,
+        actions: { sell: 0, reduce: 1, alert: 0 },
+        items: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(dashboard).not.toBeNull();
+    const dashboardScope = within(dashboard as HTMLElement);
+
+    expect(dashboardScope.getByText('风险旗标')).toBeInTheDocument();
+    expect(dashboardScope.getAllByText('需处理').length).toBeGreaterThanOrEqual(5);
+    expect(dashboardScope.getByText('个股集中')).toBeInTheDocument();
+    expect(dashboardScope.getByText('Top1: 600519')).toBeInTheDocument();
+    expect(dashboardScope.getByText('行业集中')).toBeInTheDocument();
+    expect(dashboardScope.getByText('Top1: 白酒')).toBeInTheDocument();
+    expect(dashboardScope.getByText('最大回撤: 18.50%')).toBeInTheDocument();
+    expect(dashboardScope.getByText('触发: 1 · 接近: 2')).toBeInTheDocument();
+    expect(dashboardScope.getByText('缺价: 0 · 过期价: 1')).toBeInTheDocument();
+    expect(dashboardScope.getAllByText('市场暴露').length).toBeGreaterThan(0);
+    expect(dashboardScope.getAllByText('币种暴露').length).toBeGreaterThan(0);
+    expect(dashboardScope.getByText('CN')).toBeInTheDocument();
+    expect(dashboardScope.getByText('HK')).toBeInTheDocument();
+    expect(dashboardScope.getByText('CNY')).toBeInTheDocument();
+    expect(dashboardScope.getByText('HKD')).toBeInTheDocument();
+  });
+
+  it('converts single-account foreign-currency exposure values into the snapshot currency', async () => {
+    getSnapshot.mockResolvedValueOnce({
+      asOf: '2026-03-19',
+      costMethod: 'fifo' as const,
+      currency: 'CNY',
+      accountCount: 1,
+      totalCash: 0,
+      totalMarketValue: 700,
+      totalEquity: 700,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
+      feeTotal: 0,
+      taxTotal: 0,
+      fxStale: false,
+      dataQuality: 'ok',
+      limitations: [],
+      accounts: [
+        {
+          accountId: 1,
+          accountName: 'USD Account',
+          ownerId: null,
+          broker: 'Demo',
+          market: 'us',
+          baseCurrency: 'USD',
+          asOf: '2026-03-19',
+          costMethod: 'fifo' as const,
+          totalCash: 0,
+          totalMarketValue: 100,
+          totalEquity: 100,
+          realizedPnl: 0,
+          unrealizedPnl: 0,
+          feeTotal: 0,
+          taxTotal: 0,
+          fxStale: false,
+          dataQuality: 'ok',
+          limitations: [],
+          positions: [
+            makePosition({
+              symbol: 'AAPL',
+              market: 'us',
+              currency: 'USD',
+              valuationCurrency: 'USD',
+              marketValueBase: 100,
+            }),
+          ],
+        },
+      ],
+    });
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(dashboard).not.toBeNull();
+    const dashboardScope = within(dashboard as HTMLElement);
+    expect(dashboardScope.getByText('US')).toBeInTheDocument();
+    expect(dashboardScope.getAllByText('CNY 700.00').length).toBeGreaterThan(0);
+    expect(dashboardScope.queryByText('CNY 100.00')).not.toBeInTheDocument();
+    expect(dashboardScope.getAllByText('100.00%').length).toBeGreaterThan(0);
+  });
+
+  it('converts mixed CNY and USD accounts using per-account aggregate market values', async () => {
+    getSnapshot.mockResolvedValueOnce({
+      asOf: '2026-03-19',
+      costMethod: 'fifo' as const,
+      currency: 'CNY',
+      accountCount: 2,
+      totalCash: 0,
+      totalMarketValue: 770,
+      totalEquity: 770,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
+      feeTotal: 0,
+      taxTotal: 0,
+      fxStale: false,
+      dataQuality: 'ok',
+      limitations: [],
+      accounts: [
+        {
+          accountId: 1,
+          accountName: 'CNY Account',
+          ownerId: null,
+          broker: 'Demo',
+          market: 'cn',
+          baseCurrency: 'CNY',
+          asOf: '2026-03-19',
+          costMethod: 'fifo' as const,
+          totalCash: 0,
+          totalMarketValue: 70,
+          totalEquity: 70,
+          realizedPnl: 0,
+          unrealizedPnl: 0,
+          feeTotal: 0,
+          taxTotal: 0,
+          fxStale: false,
+          dataQuality: 'ok',
+          limitations: [],
+          positions: [
+            makePosition({
+              symbol: '600519',
+              market: 'cn',
+              currency: 'CNY',
+              valuationCurrency: 'CNY',
+              marketValueBase: 70,
+            }),
+          ],
+        },
+        {
+          accountId: 2,
+          accountName: 'USD Account',
+          ownerId: null,
+          broker: 'Demo',
+          market: 'us',
+          baseCurrency: 'USD',
+          asOf: '2026-03-19',
+          costMethod: 'fifo' as const,
+          totalCash: 0,
+          totalMarketValue: 100,
+          totalMarketValueAggregate: 700,
+          totalEquity: 100,
+          realizedPnl: 0,
+          unrealizedPnl: 0,
+          feeTotal: 0,
+          taxTotal: 0,
+          fxStale: false,
+          dataQuality: 'ok',
+          limitations: [],
+          positions: [
+            makePosition({
+              symbol: 'AAPL',
+              market: 'us',
+              currency: 'USD',
+              valuationCurrency: 'USD',
+              marketValueBase: 100,
+            }),
+          ],
+        },
+      ],
+    });
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(dashboard).not.toBeNull();
+    const dashboardScope = within(dashboard as HTMLElement);
+    for (const label of ['市场暴露', '币种暴露']) {
+      const exposure = dashboardScope.getByText(label).closest('div.rounded-xl');
+      const scope = within(exposure as HTMLElement);
+      expect(scope.getByText('CNY 70.00')).toBeInTheDocument();
+      expect(scope.getByText('CNY 700.00')).toBeInTheDocument();
+      expect(scope.getByText('9.09%')).toBeInTheDocument();
+      expect(scope.getByText('90.91%')).toBeInTheDocument();
+      expect(scope.queryByText('CNY 100.00')).not.toBeInTheDocument();
+    }
+    expect(dashboardScope.queryByText('暴露不可用')).not.toBeInTheDocument();
+  });
+
+  it.each(['fresh', 'stale', 'missing', 'zero-value-account'] as const)('handles three account valuation currencies with %s conversion evidence', async (evidence) => {
+    const snapshot = makeSnapshot({ fxStale: false });
+    const specs = [
+      { currency: 'CNY', market: 'cn', symbol: '600519', raw: 70, converted: 70 },
+      { currency: 'USD', market: 'us', symbol: 'AAPL', raw: 100, converted: 700 },
+      { currency: 'HKD', market: 'hk', symbol: 'HK00700', raw: 200, converted: 180 },
+    ];
+    const accounts = specs.map((item, index) => ({
+      ...snapshot.accounts[0],
+      accountId: index + 1,
+      baseCurrency: item.currency,
+      totalMarketValue: item.raw,
+      totalMarketValueAggregate: evidence === 'missing' && index === 1 ? undefined : item.converted,
+      fxStale: evidence === 'stale' && index === 1,
+      positions: [makePosition({
+        symbol: item.symbol, market: item.market, currency: item.currency,
+        valuationCurrency: item.currency, marketValueBase: item.raw,
+      })],
+    }));
+    if (evidence === 'zero-value-account') {
+      accounts.push({
+        ...accounts[2], accountId: 4, totalMarketValue: 0, totalMarketValueAggregate: 0,
+        positions: [makePosition({
+          symbol: 'HK09988', market: 'hk', currency: 'HKD', valuationCurrency: 'HKD', marketValueBase: 0,
+        })],
+      });
+    }
+    getSnapshot.mockResolvedValueOnce({ ...snapshot, accounts, accountCount: accounts.length, totalMarketValue: 950 });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    const dashboard = within(screen.getByText('风险与暴露看板').closest('section') as HTMLElement);
+    if (evidence === 'stale' || evidence === 'missing') {
+      expect(dashboard.getAllByText('暴露不可用')).toHaveLength(2);
+      expect(dashboard.queryByText('73.68%')).not.toBeInTheDocument();
+      return;
+    }
+    for (const label of ['市场暴露', '币种暴露']) {
+      const exposure = within(dashboard.getByText(label).closest('div.rounded-xl') as HTMLElement);
+      for (const value of ['CNY 700.00', 'CNY 180.00', 'CNY 70.00', '73.68%', '18.95%', '7.37%']) {
+        expect(exposure.getByText(value)).toBeInTheDocument();
+      }
+      if (evidence === 'zero-value-account') {
+        expect(exposure.getByText('持仓 2')).toBeInTheDocument();
+      }
+    }
+  });
+
+  it.each([NaN, Infinity, -1, undefined])('does not hide invalid position valuation %s in otherwise complete exposure', async (marketValueBase) => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      fxStale: false,
+      positions: [makePosition(), makePosition({ symbol: 'AAPL', market: 'us', marketValueBase })],
+    }));
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    const dashboard = within(screen.getByText('风险与暴露看板').closest('section') as HTMLElement);
+    expect(dashboard.getAllByText('暴露不可用')).toHaveLength(2);
+  });
+
+  it('distinguishes an empty portfolio from unavailable exposure', async () => {
+    const snapshot = makeSnapshot({ fxStale: false });
+    getSnapshot.mockResolvedValueOnce({
+      ...snapshot, totalMarketValue: 0, totalEquity: 1000,
+      accounts: [{ ...snapshot.accounts[0], totalMarketValue: 0, totalEquity: 1000 }],
+    });
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    const dashboard = within(screen.getByText('风险与暴露看板').closest('section') as HTMLElement);
+    expect(dashboard.getAllByText('暂无暴露数据')).toHaveLength(2);
+    expect(dashboard.getByText('总市值: CNY 0.00')).toBeInTheDocument();
+    expect(dashboard.getByText('持仓: 0')).toBeInTheDocument();
+    expect(screen.getByText('共 0 项')).toBeInTheDocument();
+    expect(screen.getByText('当前无持仓数据')).toBeInTheDocument();
+    expect(screen.getByText('最新')).toBeInTheDocument();
+    expect(dashboard.queryByText('暴露不可用')).not.toBeInTheDocument();
+  });
+
+  it('labels unavailable exposure in English when FX evidence is stale', async () => {
+    renderEnglishPage();
+    await waitForInitialLoad();
+    const dashboard = within(screen.getByText('Risk and exposure dashboard').closest('section') as HTMLElement);
+    expect(dashboard.getAllByText('Exposure unavailable')).toHaveLength(2);
+    expect(dashboard.queryByText('No exposure data')).not.toBeInTheDocument();
+  });
+
+  it('hides exposure breakdowns when positions mix valuation currencies under one aggregate snapshot', async () => {
+    getSnapshot.mockResolvedValueOnce({
+      asOf: '2026-03-19',
+      costMethod: 'fifo' as const,
+      currency: 'CNY',
+      accountCount: 1,
+      totalCash: 0,
+      totalMarketValue: 1040,
+      totalEquity: 1040,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
+      feeTotal: 0,
+      taxTotal: 0,
+      fxStale: false,
+      dataQuality: 'ok',
+      limitations: [],
+      accounts: [
+        {
+          accountId: 1,
+          accountName: 'Mixed FX Account',
+          ownerId: null,
+          broker: 'Demo',
+          market: 'us',
+          baseCurrency: 'USD',
+          asOf: '2026-03-19',
+          costMethod: 'fifo' as const,
+          totalCash: 0,
+          totalMarketValue: 300,
+          totalEquity: 300,
+          realizedPnl: 0,
+          unrealizedPnl: 0,
+          feeTotal: 0,
+          taxTotal: 0,
+          fxStale: false,
+          dataQuality: 'ok',
+          limitations: [],
+          positions: [
+            makePosition({
+              symbol: 'AAPL',
+              market: 'us',
+              currency: 'USD',
+              valuationCurrency: 'USD',
+              marketValueBase: 100,
+            }),
+            makePosition({
+              symbol: 'HK00700',
+              market: 'hk',
+              currency: 'HKD',
+              valuationCurrency: 'HKD',
+              marketValueBase: 200,
+            }),
+          ],
+        },
+      ],
+    });
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(dashboard).not.toBeNull();
+    const dashboardScope = within(dashboard as HTMLElement);
+    expect(dashboardScope.getAllByText('暴露不可用')).toHaveLength(2);
+  });
+
+  it('renders every market exposure group instead of silently dropping the remainder', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      fxStale: false,
+      positions: [
+        makePosition({ symbol: '600519', market: 'cn', marketValueBase: 100 }),
+        makePosition({ symbol: 'HK00700', market: 'hk', marketValueBase: 100 }),
+        makePosition({ symbol: 'AAPL', market: 'us', marketValueBase: 100 }),
+        makePosition({ symbol: '7203.T', market: 'jp', marketValueBase: 100 }),
+        makePosition({ symbol: '005930.KS', market: 'kr', marketValueBase: 100 }),
+        makePosition({ symbol: '2330.TW', market: 'tw', marketValueBase: 100 }),
+      ],
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const marketExposure = screen.getByText('市场暴露').closest('div.rounded-xl');
+    expect(marketExposure).not.toBeNull();
+    const exposureScope = within(marketExposure as HTMLElement);
+    for (const market of ['CN', 'HK', 'US', 'JP', 'KR', 'TW']) {
+      expect(exposureScope.getByText(market)).toBeInTheDocument();
+    }
+  });
+
+  it('hides exposure amounts and weights when aggregate FX uses stale fallback values', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      fxStale: true,
+      positions: [
+        makePosition({
+          symbol: 'AAPL',
+          market: 'us',
+          currency: 'USD',
+          valuationCurrency: 'USD',
+          marketValueBase: 100,
+        }),
+      ],
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(dashboard).not.toBeNull();
+    const dashboardScope = within(dashboard as HTMLElement);
+    expect(dashboardScope.getAllByText('暴露不可用')).toHaveLength(2);
+    expect(dashboardScope.queryByText('CNY 100.00')).not.toBeInTheDocument();
+    expect(dashboardScope.queryByText('100.00%')).not.toBeInTheDocument();
+  });
+
+  it('marks server-derived risk flags unavailable when risk loading fails', async () => {
+    getRisk.mockRejectedValueOnce(
+      createApiError(
+        createParsedApiError({
+          title: '风险失败',
+          message: '风险接口暂不可用',
+        }),
+      ),
+    );
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    expect(await screen.findByText('风险模块降级')).toBeInTheDocument();
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(dashboard).not.toBeNull();
+    const dashboardScope = within(dashboard as HTMLElement);
+    expect(dashboardScope.getAllByText('不可用').length).toBeGreaterThanOrEqual(5);
+
+    const concentrationCard = screen.getByText('行业数据暂不可用，当前展示个股集中度').closest('div.rounded-2xl');
+    expect(concentrationCard).not.toBeNull();
+    const concentrationScope = within(concentrationCard as HTMLElement);
+    expect(concentrationScope.getByText('板块集中度告警: 不可用')).toBeInTheDocument();
+    expect(concentrationScope.getByText('Top1 权重: --')).toBeInTheDocument();
+
+    const drawdownCard = screen.getByText('回撤监控').closest('div.rounded-2xl');
+    expect(drawdownCard).not.toBeNull();
+    const drawdownScope = within(drawdownCard as HTMLElement);
+    expect(drawdownScope.getByText('最大回撤: --')).toBeInTheDocument();
+    expect(drawdownScope.getByText('当前回撤: --')).toBeInTheDocument();
+    expect(drawdownScope.getByText('告警: 不可用')).toBeInTheDocument();
+
+    const stopLossCard = screen.getByText('止损接近预警').closest('div.rounded-2xl');
+    expect(stopLossCard).not.toBeNull();
+    const stopLossScope = within(stopLossCard as HTMLElement);
+    expect(stopLossScope.getByText('触发数: --')).toBeInTheDocument();
+    expect(stopLossScope.getByText('接近数: --')).toBeInTheDocument();
+    expect(stopLossScope.getByText('告警: 不可用')).toBeInTheDocument();
+
+    const aiRiskCard = screen.getByText('AI 风险信号').closest('div.rounded-2xl');
+    expect(aiRiskCard).not.toBeNull();
+    expect(within(aiRiskCard as HTMLElement).getByText('信号风险暂不可用')).toBeInTheDocument();
+  });
+
+  it('treats empty server risk blocks as unavailable instead of normal', async () => {
+    getRisk.mockResolvedValueOnce({
+      ...makeRisk(),
+      concentration: {},
+      sectorConcentration: {},
+      drawdown: {},
+      stopLoss: {},
+      decisionSignalRisk: {} as never,
+    });
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(dashboard).not.toBeNull();
+    const dashboardScope = within(dashboard as HTMLElement);
+    expect(dashboardScope.getAllByText('不可用').length).toBeGreaterThanOrEqual(5);
+    expect(dashboardScope.getAllByText('--').length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('treats zero-point drawdown as unavailable even when numeric fields are zero', async () => {
+    getRisk.mockResolvedValueOnce(makeRisk({
+      drawdown: {
+        seriesPoints: 0,
+        maxDrawdownPct: 0,
+        currentDrawdownPct: 0,
+        alert: false,
+        fxStale: false,
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const drawdownFlag = screen.getByText('回撤').closest('div.rounded-xl');
+    expect(drawdownFlag).not.toBeNull();
+    expect(within(drawdownFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(drawdownFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+  });
+
+  it('treats one-point drawdown as unavailable because no decline can be measured', async () => {
+    getRisk.mockResolvedValueOnce(makeRisk({
+      drawdown: {
+        seriesPoints: 1,
+        maxDrawdownPct: 0,
+        currentDrawdownPct: 0,
+        alert: false,
+        fxStale: false,
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const drawdownFlag = screen.getByText('回撤').closest('div.rounded-xl');
+    expect(drawdownFlag).not.toBeNull();
+    expect(within(drawdownFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(drawdownFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+  });
+
+  it('treats stale-FX drawdown as unavailable instead of normal', async () => {
+    getRisk.mockResolvedValueOnce(makeRisk({
+      drawdown: {
+        seriesPoints: 10,
+        maxDrawdownPct: 0,
+        currentDrawdownPct: 0,
+        alert: false,
+        fxStale: true,
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const drawdownFlag = screen.getByText('回撤').closest('div.rounded-xl');
+    expect(drawdownFlag).not.toBeNull();
+    expect(within(drawdownFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(drawdownFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+  });
+
+  it('treats stale-FX concentration summaries as unavailable instead of authoritative', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 60,
+        alert: true,
+        topPositions: [{ symbol: '600519', marketValueBase: 6000, weightPct: 60, isAlert: true }],
+      },
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        alert: true,
+        topSectors: [{ sector: '白酒', marketValueBase: 7000, weightPct: 70, symbolCount: 2, isAlert: true }],
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+        errors: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    for (const label of ['个股集中', '行业集中']) {
+      const flag = screen.getByText(label).closest('div.rounded-xl');
+      expect(flag).not.toBeNull();
+      expect(within(flag as HTMLElement).getByText('--')).toBeInTheDocument();
+      expect(within(flag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    }
+    expect(screen.queryByText('Top1: 白酒')).not.toBeInTheDocument();
+    expect(screen.queryByText('60.00%')).not.toBeInTheDocument();
+  });
+
+  it.each<{
+    priceAvailable?: boolean;
+    priceSource: string;
+    lastPrice: number;
+    separateAccount?: boolean;
+  }>([
+    { priceAvailable: false, priceSource: 'missing', lastPrice: 0 },
+    { priceAvailable: undefined, priceSource: 'missing', lastPrice: 0 },
+    { priceAvailable: undefined, priceSource: 'history_close', lastPrice: 1600 },
+    { priceAvailable: false, priceSource: 'history_close', lastPrice: 1600 },
+    { priceAvailable: true, priceSource: 'missing', lastPrice: 1600 },
+    { priceAvailable: true, priceSource: 'history_close', lastPrice: 0 },
+    { priceAvailable: true, priceSource: 'history_close', lastPrice: -1 },
+    { priceAvailable: true, priceSource: 'history_close', lastPrice: NaN },
+    { priceAvailable: true, priceSource: 'history_close', lastPrice: Infinity },
+    { priceAvailable: false, priceSource: 'missing', lastPrice: 0, separateAccount: true },
+  ])('hides concentration and exposure conclusions for an unusable quote: %j', async ({ separateAccount = false, ...quote }) => {
+    const snapshot = makeSnapshot({
+      fxStale: false,
+      positions: [
+        makePosition({
+          symbol: '600519',
+          market: 'cn',
+          currency: 'CNY',
+          valuationCurrency: 'CNY',
+          marketValueBase: 6000,
+          priceAvailable: true,
+        }),
+        makePosition({
+          symbol: 'AAPL',
+          market: 'us',
+          currency: 'USD',
+          valuationCurrency: 'CNY',
+          marketValueBase: 0,
+          priceDate: null,
+          priceStale: true,
+          ...quote,
+        }),
+      ],
+    });
+    snapshot.totalMarketValue = 6000;
+    snapshot.accounts[0].totalMarketValue = 6000;
+    if (separateAccount) {
+      const unpricedPosition = snapshot.accounts[0].positions.pop()!;
+      snapshot.accounts.push({
+        ...snapshot.accounts[0],
+        accountId: 2,
+        accountName: 'Account 2',
+        totalMarketValue: 0,
+        positions: [unpricedPosition],
+      });
+      snapshot.accountCount = 2;
+    }
+    getSnapshot.mockResolvedValueOnce(snapshot);
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 6000,
+        topWeightPct: 100,
+        alert: true,
+        topPositions: [{ symbol: '600519', marketValueBase: 6000, weightPct: 100, isAlert: true }],
+      },
+      sectorConcentration: {
+        totalMarketValue: 6000,
+        topWeightPct: 100,
+        alert: true,
+        topSectors: [{ sector: '白酒', marketValueBase: 6000, weightPct: 100, symbolCount: 1, isAlert: true }],
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+        errors: [],
+      },
+      stopLoss: {
+        nearAlert: true,
+        triggeredCount: 1,
+        nearCount: 1,
+        items: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    for (const label of ['个股集中', '行业集中']) {
+      const flag = screen.getByText(label).closest('div.rounded-xl');
+      expect(flag).not.toBeNull();
+      expect(within(flag as HTMLElement).getByText('--')).toBeInTheDocument();
+      expect(within(flag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    }
+    expect(screen.getAllByText('暴露不可用')).toHaveLength(2);
+    expect(screen.queryByText('US')).not.toBeInTheDocument();
+    expect(screen.queryByText('100.00%')).not.toBeInTheDocument();
+    const concentrationCard = screen.getByText('行业数据暂不可用，当前展示个股集中度').closest('div.rounded-2xl');
+    expect(concentrationCard).not.toBeNull();
+    const concentrationScope = within(concentrationCard as HTMLElement);
+    expect(concentrationScope.getByText('暂无集中度数据')).toBeInTheDocument();
+    expect(concentrationScope.getByText('板块集中度告警: 不可用')).toBeInTheDocument();
+    expect(concentrationScope.getByText('Top1 权重: --')).toBeInTheDocument();
+    const priceFlag = screen.getByText('价格质量').closest('div.rounded-xl');
+    expect(priceFlag).not.toBeNull();
+    expect(within(priceFlag as HTMLElement).getByText('缺价: 1 · 过期价: 0')).toBeInTheDocument();
+    expect(within(priceFlag as HTMLElement).getByText('需处理')).toBeInTheDocument();
+    const stopLossFlag = screen.getByText('止损', { exact: true }).closest('div.rounded-xl');
+    expect(stopLossFlag).not.toBeNull();
+    expect(within(stopLossFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    const stopLossCard = screen.getByText('止损接近预警').closest('div.rounded-2xl');
+    expect(stopLossCard).not.toBeNull();
+    const stopLossScope = within(stopLossCard as HTMLElement);
+    expect(stopLossScope.getByText('触发数: --')).toBeInTheDocument();
+    expect(stopLossScope.getByText('接近数: --')).toBeInTheDocument();
+    expect(stopLossScope.getByText('告警: 不可用')).toBeInTheDocument();
+  });
+
+  it.each([false, true])('keeps genuine 100%% concentration available with a usable quote (stale: %s)', async (priceStale) => {
+    const snapshot = makeSnapshot({
+      fxStale: false,
+      positions: [makePosition({ priceStale })],
+    });
+    snapshot.totalMarketValue = 1600;
+    snapshot.accounts[0].totalMarketValue = 1600;
+    getSnapshot.mockResolvedValueOnce(snapshot);
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 1600,
+        topWeightPct: 100,
+        alert: true,
+        topPositions: [{ symbol: '600519', marketValueBase: 1600, weightPct: 100, isAlert: true }],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const flag = screen.getByText('个股集中').closest('div.rounded-xl');
+    expect(flag).not.toBeNull();
+    const flagScope = within(flag as HTMLElement);
+    expect(flagScope.getByText('100.00%')).toBeInTheDocument();
+    expect(flagScope.getByText('Top1: 600519')).toBeInTheDocument();
+    expect(flagScope.getByText('需处理')).toBeInTheDocument();
+    expect(screen.getByText('Top1 权重: 100.00%')).toBeInTheDocument();
+    expect(screen.queryByText('暂无集中度数据')).not.toBeInTheDocument();
+  });
+
+  it('uses nested account FX quality when the aggregate flag is incorrectly fresh', async () => {
+    const snapshot = makeSnapshot({
+      fxStale: false,
+      positions: [makePosition({ marketValueBase: 6000 })],
+    });
+    snapshot.accounts[0].fxStale = true;
+    getSnapshot.mockResolvedValueOnce(snapshot);
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 6000,
+        topWeightPct: 100,
+        alert: true,
+        topPositions: [{ symbol: '600519', marketValueBase: 6000, weightPct: 100, isAlert: true }],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const concentrationFlag = screen.getByText('个股集中').closest('div.rounded-xl');
+    expect(concentrationFlag).not.toBeNull();
+    expect(within(concentrationFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(concentrationFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(screen.getAllByText('暴露不可用')).toHaveLength(2);
+  });
+
+  it('marks price quality unavailable when the portfolio snapshot fails', async () => {
+    getSnapshot.mockRejectedValueOnce(new Error('snapshot unavailable'));
+
+    render(<PortfolioPage />);
+
+    await screen.findByText('snapshot unavailable');
+    const priceFlag = (await screen.findByText('价格质量')).closest('div.rounded-xl');
+    expect(priceFlag).not.toBeNull();
+    expect(within(priceFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(priceFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    const dashboard = screen.getByText('风险与暴露看板').closest('section');
+    expect(within(dashboard as HTMLElement).getByText('总市值: --')).toBeInTheDocument();
+    expect(within(dashboard as HTMLElement).queryByText(/总市值: CNY 0/)).not.toBeInTheDocument();
+    expect(within(dashboard as HTMLElement).getByText('持仓: --')).toBeInTheDocument();
+    expect(screen.getByText('共 -- 项')).toBeInTheDocument();
+    expect(screen.getByText('账户数: --')).toBeInTheDocument();
+    expect(screen.getByText('计价币种: --')).toBeInTheDocument();
+    expect(screen.getByText('持仓快照不可用')).toBeInTheDocument();
+    expect(screen.queryByText('当前无持仓数据')).not.toBeInTheDocument();
+    expect(screen.queryByText('最新')).not.toBeInTheDocument();
+    expect(screen.getByText('暂无集中度数据')).toBeInTheDocument();
+  });
+
+  it('treats partial server risk blocks as unavailable instead of normal', async () => {
+    getRisk.mockResolvedValueOnce({
+      ...makeRisk(),
+      concentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 60,
+        topPositions: [{ symbol: '600519', marketValueBase: 6000, weightPct: 60, isAlert: true }],
+      } as never,
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        topSectors: [{ sector: '白酒', marketValueBase: 7000, weightPct: 70, symbolCount: 2, isAlert: true }],
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+        errors: [],
+      } as never,
+      drawdown: {
+        seriesPoints: 10,
+        maxDrawdownPct: 18.5,
+        currentDrawdownPct: 12.5,
+        fxStale: false,
+      } as never,
+      stopLoss: {
+        triggeredCount: 1,
+        nearCount: 2,
+        items: [],
+      } as never,
+      decisionSignalRisk: {
+        total: 1,
+        actions: { sell: 0, reduce: 1, alert: 0 },
+        items: [],
+      } as never,
+    });
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    for (const label of ['个股集中', '行业集中', '回撤', '止损', 'AI 信号']) {
+      const card = screen.getByText(label).closest('div.rounded-xl');
+      expect(card).not.toBeNull();
+      const cardScope = within(card as HTMLElement);
+      expect(cardScope.getAllByText('不可用').length).toBeGreaterThanOrEqual(1);
+      expect(cardScope.getByText('--')).toBeInTheDocument();
+    }
+
+    const concentrationCard = screen.getByText('行业数据暂不可用，当前展示个股集中度').closest('div.rounded-2xl');
+    expect(concentrationCard).not.toBeNull();
+    const concentrationScope = within(concentrationCard as HTMLElement);
+    expect(concentrationScope.getByText('板块集中度告警: 不可用')).toBeInTheDocument();
+    expect(concentrationScope.getByText('Top1 权重: --')).toBeInTheDocument();
+    expect(concentrationScope.queryByText('600519')).not.toBeInTheDocument();
+
+    const drawdownCard = screen.getByText('回撤监控').closest('div.rounded-2xl');
+    expect(drawdownCard).not.toBeNull();
+    const drawdownScope = within(drawdownCard as HTMLElement);
+    expect(drawdownScope.getByText('最大回撤: --')).toBeInTheDocument();
+    expect(drawdownScope.getByText('当前回撤: --')).toBeInTheDocument();
+    expect(drawdownScope.getByText('告警: 不可用')).toBeInTheDocument();
+
+    const stopLossCard = screen.getByText('止损接近预警').closest('div.rounded-2xl');
+    expect(stopLossCard).not.toBeNull();
+    const stopLossScope = within(stopLossCard as HTMLElement);
+    expect(stopLossScope.getByText('触发数: --')).toBeInTheDocument();
+    expect(stopLossScope.getByText('接近数: --')).toBeInTheDocument();
+    expect(stopLossScope.getByText('告警: 不可用')).toBeInTheDocument();
+
+    const aiRiskCard = screen.getByText('AI 风险信号').closest('div.rounded-2xl');
+    expect(aiRiskCard).not.toBeNull();
+    expect(within(aiRiskCard as HTMLElement).getByText('信号风险暂不可用')).toBeInTheDocument();
+  });
+
+  it('treats an all-UNCLASSIFIED sector result as unavailable and falls back to positions', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 60,
+        alert: true,
+        topPositions: [{ symbol: 'AAPL', marketValueBase: 6000, weightPct: 60, isAlert: true }],
+      },
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 100,
+        alert: true,
+        topSectors: [{
+          sector: 'UNCLASSIFIED',
+          marketValueBase: 10000,
+          weightPct: 100,
+          symbolCount: 2,
+          isAlert: true,
+        }],
+        coverage: { classifiedCount: 0, unclassifiedCount: 2, failedCount: 0 },
+        errors: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(sectorFlag).not.toBeNull();
+    expect(within(sectorFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+
+    const concentrationCard = screen.getByText('行业数据暂不可用，当前展示个股集中度').closest('div.rounded-2xl');
+    expect(concentrationCard).not.toBeNull();
+    const concentrationScope = within(concentrationCard as HTMLElement);
+    expect(concentrationScope.getByText('板块集中度告警: 不可用')).toBeInTheDocument();
+    expect(concentrationScope.getByText('Top1 权重: 60.00%')).toBeInTheDocument();
+    expect(screen.queryByText('UNCLASSIFIED')).not.toBeInTheDocument();
+  });
+
+  it('treats partially covered sector risk as unavailable instead of presenting a subset as complete', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 60,
+        alert: true,
+        topSectors: [
+          {
+            sector: 'UNCLASSIFIED',
+            marketValueBase: 6000,
+            weightPct: 60,
+            symbolCount: 2,
+            isAlert: true,
+          },
+          {
+            sector: 'Technology',
+            marketValueBase: 4000,
+            weightPct: 40,
+            symbolCount: 1,
+            isAlert: false,
+          },
+        ],
+        coverage: { classifiedCount: 1, unclassifiedCount: 2, failedCount: 0 },
+        errors: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    expect(screen.queryByText('Top1: Technology')).not.toBeInTheDocument();
+    expect(screen.queryByText('40.00%')).not.toBeInTheDocument();
+    const concentrationCard = screen.getByText('行业数据暂不可用，当前展示个股集中度').closest('div.rounded-2xl');
+    expect(concentrationCard).not.toBeNull();
+    const concentrationScope = within(concentrationCard as HTMLElement);
+    expect(concentrationScope.getByText('板块集中度告警: 不可用')).toBeInTheDocument();
+    expect(concentrationScope.getByText('Top1 权重: --')).toBeInTheDocument();
+    expect(screen.queryByText('UNCLASSIFIED')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { classifiedCount: 0, unclassifiedCount: 0, failedCount: 0, errors: [] },
+    { classifiedCount: undefined, unclassifiedCount: 0, failedCount: 0, errors: [] },
+    { classifiedCount: 1, unclassifiedCount: 1, failedCount: 0, errors: [] },
+    { classifiedCount: 1, unclassifiedCount: 0, failedCount: 1, errors: [] },
+    { classifiedCount: 1, unclassifiedCount: 0, failedCount: 0, errors: ['classification failed'] },
+  ])('marks sector risk unavailable for incomplete classification evidence: %j', async ({ errors, ...coverage }) => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 100,
+        alert: true,
+        topSectors: [{ sector: 'Technology', marketValueBase: 10000, weightPct: 100, symbolCount: 1, isAlert: true }],
+        coverage,
+        errors,
+      },
+    }));
+
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    const flag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(within(flag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(flag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(screen.getByText('板块集中度告警: 不可用')).toBeInTheDocument();
+    expect(screen.queryByText('Top1: Technology')).not.toBeInTheDocument();
+  });
+
+  it('requires explicit sector coverage counters before declaring sector risk available', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        alert: false,
+        topSectors: [{ sector: '白酒', marketValueBase: 7000, weightPct: 70, symbolCount: 2, isAlert: false }],
+        coverage: {},
+        errors: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(sectorFlag).not.toBeNull();
+    expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(sectorFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(screen.queryByText('Top1: 白酒')).not.toBeInTheDocument();
+  });
+
+  it('requires an explicit sector error array before declaring sector risk available', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        alert: false,
+        topSectors: [{ sector: '白酒', marketValueBase: 7000, weightPct: 70, symbolCount: 2, isAlert: false }],
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+      } as never,
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(sectorFlag).not.toBeNull();
+    expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(screen.queryByText('Top1: 白酒')).not.toBeInTheDocument();
+  });
+
+  it('rejects numeric-string sector weights without crashing the page', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        alert: false,
+        topSectors: [{
+          sector: '白酒',
+          marketValueBase: 7000,
+          weightPct: '70',
+          symbolCount: 2,
+          isAlert: false,
+        } as never],
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+        errors: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(sectorFlag).not.toBeNull();
+    expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(screen.getByText('行业数据暂不可用，当前展示个股集中度')).toBeInTheDocument();
+  });
+
+  it('treats malformed sector rows as unavailable instead of crashing the page', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        alert: true,
+        topSectors: [{
+          sector: null,
+          marketValueBase: 7000,
+          weightPct: 70,
+          symbolCount: 2,
+          isAlert: true,
+        } as never],
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+        errors: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(sectorFlag).not.toBeNull();
+    expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(screen.getByText('行业数据暂不可用，当前展示个股集中度')).toBeInTheDocument();
+  });
+
+  it('treats a malformed sector row collection as unavailable', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        alert: true,
+        topSectors: { sector: 'Technology', weightPct: 70 } as never,
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+        errors: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(sectorFlag).not.toBeNull();
+    expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(screen.getByText('行业数据暂不可用，当前展示个股集中度')).toBeInTheDocument();
+  });
+
+  it('requires a valid top-position row before showing concentration status', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 60,
+        alert: true,
+        topPositions: { symbol: '600519', weightPct: 60 } as never,
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const concentrationFlag = screen.getByText('个股集中').closest('div.rounded-xl');
+    expect(concentrationFlag).not.toBeNull();
+    expect(within(concentrationFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(concentrationFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+  });
+
+  it.each([
+    [{ symbol: '', weightPct: 60 }, { symbol: 'AAPL', weightPct: 40 }],
+    [{ symbol: '600519', weightPct: 40 }, { symbol: 'AAPL', weightPct: 60 }],
+    [{ symbol: '600519', weightPct: 60 }, { symbol: '', weightPct: 40 }],
+    [{ symbol: '600519', weightPct: '60' }],
+    [{ symbol: '600519', weightPct: 60 }, { symbol: 'AAPL', weightPct: 70 }],
+  ])('rejects inconsistent concentration rows instead of relabeling Top1: %j', async (...topPositions) => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 60,
+        alert: true,
+        topPositions: topPositions as never,
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const concentrationFlag = screen.getByText('个股集中').closest('div.rounded-xl');
+    expect(within(concentrationFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(concentrationFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(screen.queryByText('Top1: AAPL')).not.toBeInTheDocument();
+    expect(screen.getByText('暂无集中度数据')).toBeInTheDocument();
+  });
+
+  it.each([
+    { summary: 80, weights: [20, 80] },
+    { summary: 80, weights: [70, 30] },
+    { summary: 70, weights: [70, 80] },
+    { summary: 120, weights: [120] },
+  ])('rejects inconsistent sector Top1 evidence: %j', async ({ summary, weights }) => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: {
+        totalMarketValue: 10000, topWeightPct: 60, alert: true,
+        topPositions: [{ symbol: '600519', marketValueBase: 6000, weightPct: 60, isAlert: true }],
+      },
+      sectorConcentration: {
+        totalMarketValue: 10000, topWeightPct: summary, alert: true,
+        topSectors: weights.map((weightPct, index) => ({
+          sector: index === 0 ? '白酒' : '科技', marketValueBase: weightPct * 100,
+          weightPct, symbolCount: 1, isAlert: true,
+        })),
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 }, errors: [],
+      },
+    }));
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(within(sectorFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(sectorFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    expect(screen.queryByText('Top1: 白酒')).not.toBeInTheDocument();
+    expect(screen.getByText('行业数据暂不可用，当前展示个股集中度')).toBeInTheDocument();
+    expect(screen.getByText('Top1: 600519')).toBeInTheDocument();
+  });
+
+  it.each(['position', 'sector'])('keeps valid %s concentration with rounded-zero tail weights', async (kind) => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false, positions: [
+      makePosition({ symbol: '600519', marketValueBase: 10000000 }),
+      makePosition({ symbol: '000001', lastPrice: 1, marketValueBase: 1 }),
+    ] }));
+    const topPositions = [
+      { symbol: '600519', marketValueBase: 10000000, weightPct: 100, isAlert: true },
+      { symbol: '000001', marketValueBase: 1, weightPct: 0, isAlert: false },
+    ];
+    getRisk.mockResolvedValueOnce(makeRisk({
+      concentration: { totalMarketValue: 10000001, topWeightPct: 100, alert: true, topPositions },
+      ...(kind === 'sector' ? { sectorConcentration: {
+        totalMarketValue: 10000001, topWeightPct: 100, alert: true,
+        topSectors: topPositions.map((row, index) => ({ ...row, sector: index ? '银行' : '白酒', symbolCount: 1 })),
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 }, errors: [],
+      } } : {}),
+    }));
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+    const flag = screen.getByText(kind === 'sector' ? '行业集中' : '个股集中').closest('div.rounded-xl');
+    expect(within(flag as HTMLElement).getByText('100.00%')).toBeInTheDocument();
+    expect(within(flag as HTMLElement).getByText('需处理')).toBeInTheDocument();
+    expect(within(flag as HTMLElement).getByText(kind === 'sector' ? 'Top1: 白酒' : 'Top1: 600519')).toBeInTheDocument();
+    expect(screen.queryByText('暂无集中度数据')).not.toBeInTheDocument();
+    expect(screen.getByText(kind === 'sector' ? '行业集中度分布' : '行业数据暂不可用，当前展示个股集中度')).toBeInTheDocument();
+  });
+
+  it('marks stop-loss risk unavailable when any holding lacks a usable quote', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      fxStale: false,
+      positions: [makePosition({
+        lastPrice: 0,
+        priceAvailable: false,
+        priceStale: true,
+      })],
+    }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      stopLoss: {
+        nearAlert: true,
+        triggeredCount: 1,
+        nearCount: 0,
+        items: [{ symbol: '600519' }],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const stopLossFlag = screen.getByText('止损').closest('div.rounded-xl');
+    expect(stopLossFlag).not.toBeNull();
+    expect(within(stopLossFlag as HTMLElement).getByText('--')).toBeInTheDocument();
+    expect(within(stopLossFlag as HTMLElement).getAllByText('不可用')).toHaveLength(2);
+    const stopLossCard = screen.getByText('止损接近预警').closest('div.rounded-2xl');
+    expect(stopLossCard).not.toBeNull();
+    expect(within(stopLossCard as HTMLElement).getByText('告警: 不可用')).toBeInTheDocument();
+  });
+
+  it('uses the validated sector block alert when a top row disagrees', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: false }));
+    getRisk.mockResolvedValueOnce(makeRisk({
+      sectorConcentration: {
+        totalMarketValue: 10000,
+        topWeightPct: 70,
+        alert: true,
+        topSectors: [{ sector: '白酒', marketValueBase: 7000, weightPct: 70, symbolCount: 2, isAlert: false }],
+        coverage: { classifiedCount: 2, unclassifiedCount: 0, failedCount: 0 },
+        errors: [],
+      },
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    const sectorFlag = screen.getByText('行业集中').closest('div.rounded-xl');
+    expect(sectorFlag).not.toBeNull();
+    expect(within(sectorFlag as HTMLElement).getByText('需处理')).toBeInTheDocument();
+    expect(within(sectorFlag as HTMLElement).getByText('70.00%')).toBeInTheDocument();
+    expect(screen.getByText('板块集中度告警: 是')).toBeInTheDocument();
+  });
+
+  it('counts missing and stale price-quality positions without double counting missing quotes', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      positions: [
+        makePosition({
+          symbol: 'HK00700',
+          market: 'hk',
+          currency: 'HKD',
+          valuationCurrency: 'CNY',
+          marketValueBase: 4200,
+          priceStale: true,
+          priceAvailable: true,
+        }),
+        makePosition({
+          symbol: 'AAPL',
+          market: 'us',
+          currency: 'USD',
+          valuationCurrency: 'CNY',
+          marketValueBase: 0,
+          lastPrice: 0,
+          priceSource: 'missing',
+          priceDate: null,
+          priceStale: true,
+          priceAvailable: false,
+        }),
+      ],
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const card = screen.getByText('价格质量').closest('div.rounded-xl');
+    expect(card).not.toBeNull();
+    const cardScope = within(card as HTMLElement);
+    expect(cardScope.getByText('2')).toBeInTheDocument();
+    expect(cardScope.getByText('缺价: 1 · 过期价: 1')).toBeInTheDocument();
+  });
+
+  it('counts a missing quote once when it is also marked stale', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      positions: [
+        makePosition({
+          symbol: 'AAPL',
+          market: 'us',
+          currency: 'USD',
+          valuationCurrency: 'USD',
+          marketValueBase: 0,
+          lastPrice: 0,
+          priceSource: 'missing',
+          priceDate: null,
+          priceStale: true,
+          priceAvailable: false,
+        }),
+      ],
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const card = screen.getByText('价格质量').closest('div.rounded-xl');
+    expect(card).not.toBeNull();
+    const cardScope = within(card as HTMLElement);
+    expect(cardScope.getByText('1')).toBeInTheDocument();
+    expect(cardScope.getByText('缺价: 1 · 过期价: 0')).toBeInTheDocument();
+  });
+
   it('shows aggregate partial valuation limitations near summary totals', async () => {
     getSnapshot.mockResolvedValueOnce(makeSnapshot({
       dataQuality: 'partial',
@@ -385,8 +1706,8 @@ describe('PortfolioPage FX refresh', () => {
 
     expect(await screen.findByText('Portfolio management')).toBeInTheDocument();
     expect(screen.getByText('Drawdown monitor')).toBeInTheDocument();
-    expect(screen.getByText(/Max drawdown:/)).toBeInTheDocument();
-    expect(screen.getByText(/Current drawdown:/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Max drawdown:/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Current drawdown:/).length).toBeGreaterThan(0);
     expect(screen.getByText('Stop-loss proximity warning')).toBeInTheDocument();
     expect(screen.getByText('Scope')).toBeInTheDocument();
     expect(screen.getByText('AI risk signals')).toBeInTheDocument();

@@ -17,6 +17,7 @@ import type {
   AlertNotificationItem,
   AlertRuleCreateRequest,
   AlertRuleItem,
+  AlertRuleListResponse,
   AlertRuleTestResponse,
   AlertTriggerItem,
   AlertType,
@@ -104,12 +105,14 @@ const AlertsPage: React.FC = () => {
 
   const [rules, setRules] = useState<AlertRuleItem[]>([]);
   const [rulesTotal, setRulesTotal] = useState(0);
+  const [ruleSources, setRuleSources] = useState<AlertRuleListResponse['ruleSources']>(null);
   const [rulesPage, setRulesPage] = useState(1);
   const [enabledFilter, setEnabledFilter] = useState<AlertRuleEnabledFilter>('all');
   const [alertTypeFilter, setAlertTypeFilter] = useState<AlertTypeFilter>('all');
   const [rulesLoading, setRulesLoading] = useState(false);
   const [rulesError, setRulesError] = useState<ParsedApiError | null>(null);
   const [rulesLoaded, setRulesLoaded] = useState(false);
+  const [rulesRefreshKey, setRulesRefreshKey] = useState(0);
 
   const [triggers, setTriggers] = useState<AlertTriggerItem[]>([]);
   const [triggersLoading, setTriggersLoading] = useState(false);
@@ -126,11 +129,11 @@ const AlertsPage: React.FC = () => {
   const [testResult, setTestResult] = useState<AlertRuleTestResponse | null>(null);
   const rulesRequestIdRef = useRef(0);
 
-  const loadRules = useCallback(async (pageOverride?: number) => {
+  const loadRules = useCallback(async () => {
     const requestId = rulesRequestIdRef.current + 1;
     rulesRequestIdRef.current = requestId;
     const isLatestRequest = () => rulesRequestIdRef.current === requestId;
-    const requestedPage = pageOverride ?? rulesPage;
+    const requestedPage = rulesPage;
     const baseQuery = {
       enabled: enabledFilterToQuery(enabledFilter),
       alertType: alertTypeFilterToQuery(alertTypeFilter),
@@ -145,11 +148,10 @@ const AlertsPage: React.FC = () => {
         setRulesPage(lastPage);
         response = await alertsApi.listRules({ ...baseQuery, page: lastPage });
         if (!isLatestRequest()) return null;
-      } else if (pageOverride !== undefined && pageOverride !== rulesPage) {
-        setRulesPage(pageOverride);
       }
       setRules(response.items);
       setRulesTotal(response.total);
+      setRuleSources(response.ruleSources ?? null);
       setRulesError(null);
       setRulesLoaded(true);
       return response;
@@ -192,7 +194,7 @@ const AlertsPage: React.FC = () => {
 
   useEffect(() => {
     void loadRules();
-  }, [loadRules]);
+  }, [loadRules, rulesRefreshKey]);
 
   useEffect(() => {
     if (!rulesLoaded) return;
@@ -207,7 +209,8 @@ const AlertsPage: React.FC = () => {
     try {
       const created = await alertsApi.createRule(payload);
       setCreateSuccess(`已创建告警规则「${created.name}」`);
-      await loadRules(1);
+      setRulesPage(1);
+      setRulesRefreshKey((value) => value + 1);
       return true;
     } catch (error) {
       setCreateError(getParsedApiError(error));
@@ -225,7 +228,7 @@ const AlertsPage: React.FC = () => {
       } else {
         await alertsApi.enableRule(rule.id);
       }
-      await loadRules();
+      setRulesRefreshKey((value) => value + 1);
     } catch (error) {
       setRulesError(getParsedApiError(error));
     } finally {
@@ -237,7 +240,7 @@ const AlertsPage: React.FC = () => {
     setBusyRule({ id: rule.id, action: 'delete' });
     try {
       await alertsApi.deleteRule(rule.id);
-      await loadRules();
+      setRulesRefreshKey((value) => value + 1);
     } catch (error) {
       setRulesError(getParsedApiError(error));
     } finally {
@@ -280,6 +283,13 @@ const AlertsPage: React.FC = () => {
         />
       ) : null}
       {rulesError ? <ApiErrorAlert error={rulesError} onDismiss={() => setRulesError(null)} /> : null}
+      {!rulesError && ruleSources && ruleSources.legacyConfigured > 0 ? (
+        <InlineAlert
+          title="存在环境变量告警规则"
+          variant="warning"
+          message={`环境变量配置了 ${ruleSources.legacyConfigured} 条有效规则，按当前启用的页面规则去重后有 ${ruleSources.legacyEffective} 条可供后台轮询。此数量不受页面筛选影响，也不表示后台轮询已启动。页面仅管理数据库规则；删除或禁用页面规则不会停用环境规则。若需停用，请在部署配置中修改 AGENT_EVENT_ALERT_RULES_JSON 并重新加载配置。`}
+        />
+      ) : null}
 
       <div className="grid items-stretch gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
         <AlertRuleForm onSubmit={handleCreateRule} isSubmitting={createLoading} />

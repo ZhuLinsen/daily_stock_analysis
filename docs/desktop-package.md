@@ -9,6 +9,7 @@
 - Windows 便携/安装模式下，用户配置文件 `.env` 和数据库放在 exe 同级目录；macOS 打包版使用 Electron 用户数据目录保存运行时配置
 - 桌面端会自动从本机 `8000-8100` 选择可用端口，并把实际选择的端口同步给内置后端；桌面端不依赖 `.env` 里的 `WEBUI_PORT` 来决定窗口连接地址，避免用户改端口后 Electron 仍等待旧端口导致启动超时
 - Desktop backend 默认随 `requirements.txt` 安装并冻结 `futu-api==10.8.6808`；Windows/macOS 构建脚本会在源码环境和 PyInstaller 产物中分别执行 `import futu`，防止发布包只安装但未携带 SDK。
+- 筹码分布依赖的 `py_mini_racer` 按构建环境实际安装版本完整收集 Python 模块、原生库和运行数据；不跨版本手工拼接 DLL、ICU 或 snapshot 文件。Windows/macOS 明确要求 `mini-racer>=0.13.2`，避免旧版冻结加载器从 bundle 根目录寻找原生库、与包目录收集布局不一致；Linux 继续沿用 AkShare 原有依赖。Windows/macOS 构建脚本会在源码环境和冻结后的后端中执行 `MiniRacer().eval('1 + 1')`，原生库缺失或版本不匹配会阻断打包。仅成功 `import py_mini_racer` 不足以验收；这一离线检查不代表在线东财接口一定可用。
 - 报告“分享”按钮使用 Electron 自带的隐藏 Chromium 窗口渲染本地后端输出的受限 HTML，并保存为 PNG；桌面安装包无需额外携带 `wkhtmltoimage`、`markdown-to-file` 或 Playwright 浏览器。
 
 ## 本地开发
@@ -232,6 +233,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 bash scripts/build-backend-macos.sh
 ```
 
+macOS 后端打包会显式加入 `src/services/screening/strategies` YAML 资源目录；PyInstaller 参数数组回归测试通过真实 Bash 验证隐藏导入与独立 `main.py` 入口。
+
 该脚本会在安装依赖后执行 `--collect-all src.services.screening`、`--collect-all futu` 和 `--collect-data akshare`。构建完成后会通过冻结可执行文件校验 `src.services.screening.pipeline`、`futu`、`orjson` 均可导入，核对选股策略数量，并确认 AkShare 的 `file_fold/calendar.json` 已进入冻结产物，避免发行包在选股、热点题材、Futu 持仓导入或日线增强路径中因缺少模块/package data 降级。选股实现参考 AlphaSift。PR 主 CI 在 `requirements.txt`、Futu broker、Desktop 打包入口或相关 workflow 变化时，会分别运行 `desktop-futu-package-windows` 与 `desktop-futu-package-macos` 阻断检查。
 
 3) 打包 Electron 桌面应用
@@ -308,9 +311,11 @@ win-unpacked/
 - 应用在主界面加载完成后会后台检查 GitHub Releases 的最新正式版，并与当前 `app.getVersion()` 做语义化版本比较
 - Windows NSIS 安装版会通过内置 GitHub 更新源自动下载新版本；下载完成后弹出一次性提醒，用户确认后静默重启并安装
 - 自动更新静默安装会复用当前安装目录；如果用户安装时选择了非默认目录或带空格目录，后续自动更新仍会覆盖同一目录
-- `系统设置 -> 版本信息` 中的“桌面端更新”区域可手动检查更新；若更新已下载，会展示“重启安装”操作
+- 桌面运行时会在全局右上角显示更新入口，可查看状态、手动检查、打开 Release 页或在更新已下载后执行“重启安装”；普通浏览器 WebUI 不显示该入口
+- `系统设置 -> 版本信息` 中的“桌面端更新”区域仍可作为详细入口和兜底；全局入口与设置页共用同一套更新状态，检查中、下载中或安装中时两侧入口都会禁用，不会重复发起手动检查
+- 主进程手动检查路径同样有 in-flight 防重，避免并发请求 GitHub Releases
 - Windows 免安装包、开发态和 macOS DMG 仍保持“提醒 + 跳转下载页”的兼容路径，不会因为网络失败而阻断桌面端启动
-- 版本检查失败、GitHub API 超时、更新元数据缺失或下载安装异常时，会记录到 `logs/desktop.log`，设置页手动检查时会展示错误状态
+- 版本检查失败、GitHub API 超时、更新元数据缺失或下载安装异常时，会记录到 `logs/desktop.log`，设置页或右上角入口手动检查时会展示错误状态
 
 ## 常见问题
 

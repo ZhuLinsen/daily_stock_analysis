@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from src.storage import get_db
+from src.storage import ChatSessionStateConflict, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +23,10 @@ class ConversationSession:
     created_at: datetime = field(default_factory=datetime.now)
     last_active: datetime = field(default_factory=datetime.now)
 
-    def add_message(self, role: str, content: str) -> int:
+    def add_message(self, role: str, content: str, *, accepted_turn=None, db_manager=None) -> Optional[int]:
         """Add a message to the session history."""
-        message_id = get_db().save_conversation_message(self.session_id, role, content)
+        db = db_manager if db_manager is not None else get_db()
+        message_id = db.save_conversation_message(self.session_id, role, content, accepted_turn=accepted_turn)
         self.last_active = datetime.now()
         return message_id
 
@@ -75,10 +76,30 @@ class ConversationManager:
 
             return self._sessions[session_id]
 
-    def add_message(self, session_id: str, role: str, content: str) -> int:
+    def add_message(self, session_id: str, role: str, content: str, *, accepted_turn=None, db_manager=None) -> Optional[int]:
         """Add a message to a session."""
         session = self.get_or_create(session_id)
-        return session.add_message(role, content)
+        return session.add_message(role, content, accepted_turn=accepted_turn, db_manager=db_manager)
+
+    def prepare_turn(self, session_id: str):
+        """Bind the database instance before history preparation/model work."""
+        self.get_or_create(session_id)
+        db = get_db()
+        generation = db.ensure_chat_session_generation(session_id)
+        snapshot = db.read_chat_session_snapshot(session_id)
+        if snapshot["session_generation"] != generation:
+            raise ChatSessionStateConflict()
+        return db, snapshot
+
+    def commit_user_turn(
+        self, db, snapshot, content: str, selected_skill_ids=None, *, state_disposition="legacy-unaware",
+    ):
+        """Save once under the prepared instance; return its actual source anchor."""
+        accepted = db.commit_legacy_chat_user_turn(
+            snapshot, content, selected_skill_ids, state_disposition=state_disposition,
+        )
+        self.get_or_create(snapshot["session_id"]).last_active = datetime.now()
+        return accepted
 
     def add_user_message(
         self,

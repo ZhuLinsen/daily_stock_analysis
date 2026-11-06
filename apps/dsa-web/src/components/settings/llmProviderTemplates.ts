@@ -7,6 +7,23 @@ export type LLMProviderCapability =
   | 'vision'
   | 'local-runtime';
 
+/** Filter recommendations only; saved and hand-typed model IDs stay in channel state. */
+export function filterDiscoveredTextModels(models: string[]): string[] {
+  const miniMaxId = (model: string) => model.split('/').at(-1)?.toLowerCase() || '';
+  const current = (model: string) => /^minimax-m(?:3|3\.1-flash(?::free|-free)?)$/.test(miniMaxId(model));
+  const filtered = models.filter((model) => !/^minimax-(?:m\d|(?:text|vl)-01)/.test(miniMaxId(model)) || current(model));
+  const miniMaxModels = filtered.filter(current).sort((left, right) => (
+    Number(miniMaxId(right).startsWith('minimax-m3.1-flash'))
+    - Number(miniMaxId(left).startsWith('minimax-m3.1-flash'))
+  ));
+  let index = 0;
+  return filtered.map((model) => current(model) ? miniMaxModels[index++] : model);
+}
+
+export const MODELFLARE_APP_REGISTRATION_URL =
+  'https://modelflare.dev/sign-up?utm_source=daily_stock_analysis&utm_campaign=app';
+export const MODELFLARE_DEFAULT_MODEL = 'gpt-6.1-sol';
+
 export interface LLMProviderTemplate {
   channelId: string;
   label: string;
@@ -50,6 +67,21 @@ export const LLM_PROVIDER_CAPABILITY_LABELS: Record<LLMProviderCapability, { lab
 
 export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
   {
+    channelId: 'modelflare',
+    label: 'Modelflare（聚合平台）',
+    protocol: 'openai',
+    baseUrl: 'https://modelflare.dev/v1',
+    placeholderModels: MODELFLARE_DEFAULT_MODEL,
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint:
+      'API Key 的路由分组需支持所选模型；模型 ID 请以控制台或获取模型的结果为准。modelflare 渠道的 Base URL 留空时使用默认 /v1 地址，可按需覆盖，不额外拼接 /chat/completions。',
+    officialSources: [
+      { label: 'Modelflare 专属注册', url: MODELFLARE_APP_REGISTRATION_URL },
+      { label: 'Modelflare Docs', url: 'https://docs.modelflare.dev/' },
+      { label: 'Modelflare Models & Pricing', url: 'https://modelflare.dev/pricing' },
+    ],
+  },
+  {
     channelId: 'aihubmix',
     label: 'AIHubmix（聚合平台）',
     protocol: 'openai',
@@ -60,15 +92,15 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
   },
   {
     channelId: 'anspire',
-    label: 'Anspire Open（一站式模型+搜索）',
+    label: 'Anspire Open',
     protocol: 'openai',
     baseUrl: 'https://open-gateway.anspire.cn/v6',
-    placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash,MiniMax-M2.7',
+    placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash',
     capabilities: ['openai-compatible'],
     configHint:
       '同一 ANSPIRE_API_KEYS 可复用到搜索与 LLM 渠道。以下模型与网关为配置示例，实际可用性请以账号权限和控制台为准；建议先点“测试连接”确认。',
     officialSources: [
-      { label: 'Anspire Open', url: 'https://open.anspire.cn/?share_code=QFBC0FYC' },
+      { label: 'Anspire Open', url: 'https://open.anspire.cn/dsa?share_code=QFBC0FYC' },
       {
         label: 'LiteLLM OpenAI-compatible',
         url: 'https://docs.litellm.ai/docs/providers/openai_compatible',
@@ -118,7 +150,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'MiniMax 官方',
     protocol: 'openai',
     baseUrl: 'https://api.minimax.io/v1',
-    placeholderModels: 'MiniMax-M3,MiniMax-M2.7,MiniMax-M2.7-highspeed',
+    placeholderModels: 'MiniMax-M3.1-Flash,MiniMax-M3',
     capabilities: ['openai-compatible'],
     officialSources: [
       { label: 'MiniMax OpenAI API', url: 'https://platform.minimax.io/docs/api-reference/text-chat' },
@@ -158,6 +190,18 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     configHint: '模型列表和模型可见性依赖账号权限与 API Key。',
     officialSources: [
       { label: 'OpenRouter Models API', url: 'https://openrouter.ai/docs/api/api-reference/models/get-models' },
+    ],
+  },
+  {
+    channelId: 'requesty',
+    label: 'Requesty',
+    protocol: 'openai',
+    baseUrl: 'https://router.requesty.ai/v1',
+    placeholderModels: 'claude-sonnet-4-6,gpt-5.4',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint: '模型列表和模型可见性依赖账号权限与 API Key；EU 区域可将 Base URL 改为 https://router.eu.requesty.ai/v1。',
+    officialSources: [
+      { label: 'Requesty Models API', url: 'https://docs.requesty.ai/api-reference/endpoint/models-list' },
     ],
   },
   {

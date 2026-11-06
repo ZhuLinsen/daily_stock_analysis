@@ -45,6 +45,7 @@ from tenacity import (
 
 from src.patches.eastmoney_patch import eastmoney_patch
 from src.config import get_config
+from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
 from .realtime_types import (
     UnifiedRealtimeQuote, ChipDistribution, RealtimeSource,
@@ -63,6 +64,7 @@ logger = logging.getLogger(__name__)
 SINA_REALTIME_ENDPOINT = "hq.sinajs.cn/list"
 TENCENT_REALTIME_ENDPOINT = "qt.gtimg.cn/q"
 _AKSHARE_HISTORY_CALL_TIMEOUT = 30.0
+_AKSHARE_MARKET_STATS_CALL_TIMEOUT = 30.0
 _AKSHARE_TIMEOUT_PROCESS_JOIN_GRACE = 1.0
 _AKSHARE_TIMEOUT_PROCESS_START_METHOD = "spawn"
 
@@ -248,8 +250,20 @@ def _is_us_code(stock_code: str) -> bool:
 
 
 def _to_sina_tx_symbol(stock_code: str) -> str:
-    """Convert 6-digit A-share code to sh/sz/bj prefixed symbol for Sina/Tencent APIs."""
-    base = (stock_code.strip().split(".")[0] if "." in stock_code else stock_code).strip()
+    """Convert 6-digit A-share code to sh/sz/bj prefixed symbol for Sina/Tencent APIs.
+
+    Explicit sh/sz/bj prefixes are preserved (``sh000016`` -> ``sh000016``) so
+    registered index codes keep their index identity instead of degrading into
+    the colliding stock symbol (Story 1.5).
+    """
+    raw = (stock_code or "").strip()
+    lower = raw.lower()
+    for prefix in ("sh", "sz", "bj"):
+        if lower.startswith(prefix) and len(raw) > len(prefix):
+            candidate = raw[len(prefix):]
+            if candidate.isdigit() and len(candidate) == 6:
+                return f"{prefix}{candidate}"
+    base = (raw.split(".")[0] if "." in raw else raw).strip()
     if is_bse_code(base):
         return f"bj{base}"
     # Shanghai: 60xxxx, 5xxxx (ETF), 90xxxx (B-shares)
@@ -415,6 +429,7 @@ class AkshareFetcher(BaseFetcher):
         self.sleep_max = sleep_max
         self._last_request_time: Optional[float] = None
         self._history_call_timeout = _AKSHARE_HISTORY_CALL_TIMEOUT
+        self._market_stats_call_timeout = _AKSHARE_MARKET_STATS_CALL_TIMEOUT
         # 东财补丁开启才执行打补丁操作
         if get_config().enable_eastmoney_patch:
             eastmoney_patch()
@@ -467,6 +482,7 @@ class AkshareFetcher(BaseFetcher):
         从 Akshare 获取原始数据
         
         根据代码类型自动选择 API：
+        - 已登记 A 股指数：使用 ak.stock_zh_index_daily_em()
         - 美股：不支持，抛出异常由 YfinanceFetcher 处理（Issue #311）
         - 港股：使用 ak.stock_hk_hist()
         - ETF 基金：使用 ak.fund_etf_hist_em()
@@ -479,6 +495,10 @@ class AkshareFetcher(BaseFetcher):
         4. 调用对应的 akshare API
         5. 处理返回数据
         """
+        target = parse_analysis_target(stock_code)
+        if target.asset_type == ParseStatus.INDEX:
+            return self._fetch_index_data(target.canonical_id, start_date, end_date)
+
         # 根据代码类型选择不同的获取方法
         if _is_us_code(stock_code):
             # 美股：akshare 的 stock_us_daily 接口复权存在已知问题（参见 Issue #311）
@@ -492,6 +512,85 @@ class AkshareFetcher(BaseFetcher):
             return self._fetch_etf_data(stock_code, start_date, end_date)
         else:
             return self._fetch_stock_data(stock_code, start_date, end_date)
+
+    def _fetch_index_data(
+        self, stock_code: str, start_date: str, end_date: str
+    ) -> pd.DataFrame:
+        """Fetch a registry-recognized A-share index from Eastmoney."""
+        import akshare as ak
+
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+        logger.info(
+            "[API调用] ak.stock_zh_index_daily_em(symbol=%s, start_date=%s, end_date=%s)",
+            stock_code,
+            start_date.replace("-", ""),
+            end_date.replace("-", ""),
+        )
+        try:
+            df = _akshare_call_with_timeout(
+                ak.stock_zh_index_daily_em,
+                timeout=self._history_call_timeout,
+                call_name="ak.stock_zh_index_daily_em",
+                symbol=stock_code,
+                start_date=start_date.replace("-", ""),
+                end_date=end_date.replace("-", ""),
+            )
+        except (ConnectionError, TimeoutError):
+            raise
+        except RateLimitError:
+            raise
+        except Exception as exc:
+            error_msg = str(exc).lower()
+            if any(
+                keyword in error_msg
+                for keyword in ("banned", "blocked", "频率", "rate", "限制")
+            ):
+                raise RateLimitError(f"Akshare 指数接口可能被限流: {exc}") from exc
+            raise DataFetchError(f"Akshare 获取指数数据失败: {exc}") from exc
+
+        if df is None:
+            return pd.DataFrame()
+        if not isinstance(df, pd.DataFrame):
+            raise DataFetchError(
+                f"Akshare 指数接口返回无效类型: {type(df).__name__}"
+            )
+        if df.empty:
+            return df.copy()
+
+        required_columns = {"date", "open", "high", "low", "close", "volume"}
+        missing_columns = sorted(required_columns - set(df.columns))
+        if missing_columns:
+            raise DataFetchError(
+                "Akshare 指数数据缺少必需列: " + ", ".join(missing_columns)
+            )
+
+        result = df.copy()
+        parsed_dates = pd.to_datetime(result["date"], errors="coerce", format="mixed")
+        if parsed_dates.isna().any():
+            invalid_dates = result.loc[parsed_dates.isna(), "date"].astype(str).tolist()
+            raise DataFetchError(
+                "Akshare 指数数据包含无法解析的 date: "
+                + ", ".join(invalid_dates[:3])
+            )
+        result["_index_sort_date"] = parsed_dates
+        result = (
+            result.sort_values("_index_sort_date", kind="stable")
+            .drop(columns="_index_sort_date")
+            .reset_index(drop=True)
+        )
+        if "pct_chg" not in result.columns:
+            close = pd.to_numeric(result["close"], errors="coerce")
+            pct_chg = close.pct_change(fill_method=None) * 100
+            pct_chg = pct_chg.replace(
+                [float("inf"), float("-inf")], float("nan")
+            )
+            if not pct_chg.empty and pd.isna(pct_chg.iloc[0]):
+                pct_chg.iloc[0] = 0.0
+            result["pct_chg"] = pct_chg
+        if "amount" not in result.columns:
+            result["amount"] = pd.NA
+        return result
     
     def _fetch_stock_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
@@ -910,7 +1009,7 @@ class AkshareFetcher(BaseFetcher):
         
         # 重命名列
         df = df.rename(columns=column_mapping)
-        
+
         # 添加股票代码列
         df['code'] = stock_code
         
@@ -920,6 +1019,56 @@ class AkshareFetcher(BaseFetcher):
         df = df[existing_cols]
         
         return df
+
+    def get_stock_name(self, stock_code: str) -> Optional[str]:
+        target = parse_analysis_target(stock_code)
+        if target.asset_type != ParseStatus.INDEX or target.matched_index is None:
+            return None
+
+        import akshare as ak
+
+        table_name = (
+            "上证系列指数"
+            if target.matched_index.exchange.upper() == "SH"
+            else "深证系列指数"
+        )
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            df = _akshare_call_with_timeout(
+                ak.stock_zh_index_spot_em,
+                timeout=self._history_call_timeout,
+                call_name="ak.stock_zh_index_spot_em",
+                symbol=table_name,
+            )
+            if df is None or df.empty or not {"代码", "名称"}.issubset(df.columns):
+                return None
+
+            bare_code = target.matched_index.bare_code
+
+            def normalize_index_code(value: Any) -> str:
+                text = str(value).strip()
+                if text.endswith(".0"):
+                    text = text[:-2]
+                return text.zfill(6) if text.isdigit() else text
+
+            matches = df[df["代码"].map(normalize_index_code) == bare_code]
+            if matches.empty:
+                return None
+            for name_value in matches["名称"]:
+                if pd.isna(name_value):
+                    continue
+                name = str(name_value).strip()
+                if name:
+                    return name
+            return None
+        except Exception:
+            logger.debug(
+                "Akshare index name lookup failed for %s",
+                target.canonical_id,
+                exc_info=True,
+            )
+            return None
     
     def get_realtime_quote(self, stock_code: str, source: str = "em") -> Optional[UnifiedRealtimeQuote]:
         """
@@ -1866,7 +2015,11 @@ class AkshareFetcher(BaseFetcher):
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot_em action=request_start"
             )
-            df = ak.stock_zh_a_spot_em()
+            df = _akshare_call_with_timeout(
+                ak.stock_zh_a_spot_em,
+                timeout=self._market_stats_call_timeout,
+                call_name="ak.stock_zh_a_spot_em",
+            )
             elapsed = time.monotonic() - started_at
             logger.info(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
@@ -1878,6 +2031,15 @@ class AkshareFetcher(BaseFetcher):
             logger.warning(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot_em action=parse status=empty"
+            )
+        except TimeoutError as e:
+            elapsed = time.monotonic() - started_at
+            logger.warning(
+                "[MarketStats] component=market_stats provider=AkshareFetcher "
+                "api=ak.stock_zh_a_spot_em action=request_timeout elapsed=%.2fs "
+                "error=%s fallback=ak.stock_zh_a_spot",
+                elapsed,
+                e,
             )
         except Exception as e:
             logger.warning(
@@ -1896,7 +2058,11 @@ class AkshareFetcher(BaseFetcher):
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot action=request_start"
             )
-            df = ak.stock_zh_a_spot()
+            df = _akshare_call_with_timeout(
+                ak.stock_zh_a_spot,
+                timeout=self._market_stats_call_timeout,
+                call_name="ak.stock_zh_a_spot",
+            )
             elapsed = time.monotonic() - started_at
             logger.info(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
@@ -1908,6 +2074,15 @@ class AkshareFetcher(BaseFetcher):
             logger.warning(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot action=parse status=empty"
+            )
+        except TimeoutError as e:
+            elapsed = time.monotonic() - started_at
+            logger.error(
+                "[MarketStats] component=market_stats provider=AkshareFetcher "
+                "api=ak.stock_zh_a_spot action=request_timeout elapsed=%.2fs "
+                "error=%s fallback=none",
+                elapsed,
+                e,
             )
         except Exception as e:
             logger.error(

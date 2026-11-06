@@ -157,6 +157,34 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         self.assertEqual(items["items"][0]["scope_type"], "market")
         self.assertTrue(items["items"][0]["url"].startswith("https://news.example.com/"))
 
+    def test_symbol_scope_filter_is_case_insensitive_for_legacy_items(self) -> None:
+        now = datetime.now()
+        saved = self.service.repo.upsert_items([
+            {
+                "source_name": "legacy-symbol-feed",
+                "source_type": "rss",
+                "title": "Mixed-case symbol item",
+                "summary": "Legacy symbol identity",
+                "url": "https://news.example.com/mixed-symbol",
+                "source": "legacy-symbol-feed",
+                "published_at": now,
+                "fetched_at": now,
+                "scope_type": "symbol",
+                "scope_value": "AaPl",
+                "market": "us",
+            }
+        ])
+
+        items = self.service.list_items(
+            scope_type="symbol",
+            scope_value="AAPL",
+            market="us",
+        )
+
+        self.assertEqual(saved, 1)
+        self.assertEqual(items["total"], 1)
+        self.assertEqual(items["items"][0]["scope_value"], "AaPl")
+
     def test_fetch_http_error_does_not_expose_source_query_secret(self) -> None:
         secret_url = "https://feeds.example.com/rss.xml?token=super-secret"
         source = self.service.create_source({

@@ -9,9 +9,15 @@
 2. 定义历史 K 线数据模型
 """
 
-from typing import Optional, List
+from typing import Dict, Literal, Optional, List
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from api.v1.schemas.history import HistoryItem
+from api.v1.schemas.intelligence import IntelligenceItem
+from api.v1.schemas.research_artifact import ResearchArtifact
+
+StockProfileStatus = Literal["fresh", "partial", "unavailable"]
 
 
 class StockQuote(BaseModel):
@@ -106,3 +112,77 @@ class StockHistoryResponse(BaseModel):
             "data": []
         }
     })
+
+
+class StockProfileQuoteBlock(BaseModel):
+    status: StockProfileStatus
+    data: Optional[StockQuote] = None
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileHistoryBlock(BaseModel):
+    status: StockProfileStatus
+    period: Literal["daily"] = "daily"
+    data: List[KLineData] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileResearchData(BaseModel):
+    latest_report: Optional[HistoryItem] = None
+    recent_reports: List[HistoryItem] = Field(default_factory=list)
+    structured_report: Optional[ResearchArtifact] = None
+
+
+class StockProfileResearchBlock(BaseModel):
+    status: StockProfileStatus
+    data: StockProfileResearchData = Field(default_factory=StockProfileResearchData)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileIntelligenceBlock(BaseModel):
+    status: StockProfileStatus
+    items: List[IntelligenceItem] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfilePortfolioRelation(BaseModel):
+    held: bool = False
+    matched_markets: List[str] = Field(default_factory=list)
+
+
+class StockProfilePortfolioBlock(BaseModel):
+    status: StockProfileStatus
+    data: StockProfilePortfolioRelation = Field(default_factory=StockProfilePortfolioRelation)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileMonitorData(BaseModel):
+    total_rule_count: int = 0
+    enabled_rule_count: int = 0
+    rule_ids: List[int] = Field(default_factory=list)
+
+
+class StockProfileMonitorBlock(BaseModel):
+    status: StockProfileStatus
+    data: StockProfileMonitorData = Field(default_factory=StockProfileMonitorData)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileEvidenceQuality(BaseModel):
+    status: StockProfileStatus
+    blocks: Dict[str, StockProfileStatus] = Field(default_factory=dict)
+    limitations: List[str] = Field(default_factory=list)
+
+
+class StockProfileResponse(BaseModel):
+    requested_code: str
+    canonical_code: str
+    market: Literal["cn", "hk", "us", "jp", "kr", "tw"]
+    as_of: str
+    quote: StockProfileQuoteBlock
+    history: StockProfileHistoryBlock
+    research: StockProfileResearchBlock
+    intelligence: StockProfileIntelligenceBlock
+    portfolio: StockProfilePortfolioBlock
+    monitors: StockProfileMonitorBlock
+    evidence_quality: StockProfileEvidenceQuality

@@ -92,17 +92,29 @@ def _latest_value(row: Optional[pd.Series]) -> Optional[float]:
 
 
 def _yoy_from_row(row: Optional[pd.Series]) -> Optional[float]:
-    """Statement-derived YoY: requires the same quarter from 4 quarters back.
+    """Statement-derived YoY: requires the same quarter one year earlier.
 
+    The prior-year quarter is matched by date (within 45 days), not by
+    position, so a quarter missing from the statement cannot shift the base.
     yfinance ``quarterly_*_stmt`` returns 4 quarters by default, so this
     typically returns None and callers fall back to ``info.revenueGrowth`` /
     ``info.earningsGrowth`` (already TTM YoY ratios). Doing QoQ via ``iloc[1]``
     is wrong for seasonal businesses — explicitly refuse it.
     """
-    if row is None or row.empty or len(row) < 5:
+    if row is None or row.empty:
         return None
-    latest = _safe_float(row.iloc[0])
-    prev_year = _safe_float(row.iloc[4])
+    try:
+        dates = pd.to_datetime(row.index)
+    except (TypeError, ValueError):
+        return None
+    series = pd.Series(row.values, index=dates).sort_index(ascending=False)
+    latest_date = series.index[0]
+    latest = _safe_float(series.iloc[0])
+    target = latest_date - pd.DateOffset(years=1)
+    candidates = [(abs((d - target).days), d) for d in series.index[1:] if abs((d - target).days) <= 45]
+    if not candidates:
+        return None
+    prev_year = _safe_float(series[min(candidates)[1]])
     if latest is None or prev_year in (None, 0):
         return None
     return round((latest - prev_year) / abs(prev_year) * 100.0, 4)
@@ -241,7 +253,7 @@ class YfinanceFundamentalAdapter:
             if margin is not None:
                 net_profit_latest = revenue_latest * margin
 
-        # Statement-derived YoY (requires 4 quarters of history) is preferred
+        # Statement-derived YoY (requires the same quarter a year earlier) is preferred
         # over .info ratios; otherwise keep the TTM growth values already set
         # from info.revenueGrowth / info.earningsGrowth above. Refuse QoQ
         # fallback — it produces misleading numbers for seasonal businesses.
@@ -268,6 +280,7 @@ class YfinanceFundamentalAdapter:
 
         # ---------------- dividend block ----------------
         events: List[Dict[str, Any]] = []
+        as_of_date = datetime.now(timezone.utc).date()
         try:
             div_series = ticker.dividends
         except Exception as exc:
@@ -281,8 +294,7 @@ class YfinanceFundamentalAdapter:
             if hasattr(div_series, "columns"):
                 div_series = div_series.iloc[:, 0]
             try:
-                # Index is timezone-aware (ex-dividend date)
-                cutoff = pd.Timestamp.now(tz=div_series.index.tz) - pd.Timedelta(days=365)
+                cutoff = pd.Timestamp(as_of_date).tz_localize(div_series.index.tz) - pd.Timedelta(days=365)
                 for ts, value in div_series.items():
                     per_share = _safe_float(value)
                     if per_share is None or per_share <= 0:
@@ -325,7 +337,7 @@ class YfinanceFundamentalAdapter:
                 "ttm_cash_dividend_per_share": round(ttm_cash, 6) if ttm_cash is not None else None,
                 "coverage": "cash_dividend_pre_tax",
                 "currency": dividend_currency,
-                "as_of": datetime.now(timezone.utc).date().isoformat(),
+                "as_of": as_of_date.isoformat(),
             }
 
             # Yield: prefer recomputing from TTM cash / latest price so the

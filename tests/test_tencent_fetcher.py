@@ -7,11 +7,17 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
+from requests import Response
 
-from data_provider.tencent_fetcher import TencentFetcher, _to_tencent_symbol
+from data_provider.tencent_fetcher import (
+    TencentFetcher,
+    _is_star_market,
+    _lots_to_shares,
+    _to_tencent_symbol,
+)
 
 
 def _read_priority_from_fresh_process(value: str | None) -> int:
@@ -107,6 +113,66 @@ def test_tencent_symbol_conversion_supports_a_share_markets() -> None:
     assert _to_tencent_symbol("600519") == "sh600519"
     assert _to_tencent_symbol("000001") == "sz000001"
     assert _to_tencent_symbol("920748") == "bj920748"
+    assert _to_tencent_symbol("sh000016") == "sh000016"
+    assert _to_tencent_symbol("000016.SH") == "sh000016"
+    assert _to_tencent_symbol("sz399001") == "sz399001"
+
+
+def test_tencent_fetcher_preserves_explicit_index_market_for_daily_request() -> None:
+    payload = {
+        "data": {
+            "sh000016": {
+                "qfqday": [
+                    ["2026-08-21", "100", "101", "102", "99", "1000", "101000"]
+                ]
+            }
+        }
+    }
+    response = MagicMock()
+    response.json.return_value = payload
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=response) as request:
+        df = TencentFetcher().get_daily_data(
+            "sh000016", start_date="2026-08-01", end_date="2026-08-21"
+        )
+
+    assert not df.empty
+    assert request.call_args.kwargs["params"]["param"].startswith("sh000016,day,")
+
+
+def test_tencent_fetcher_get_stock_name_uses_lightweight_quote_request() -> None:
+    response = MagicMock()
+    response.text = 'v_sh000016="1~上证50~000016~0";'
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=response) as request:
+        name = TencentFetcher().get_stock_name("sh000016")
+
+    assert name == "上证50"
+    assert request.call_args.args[0] == "https://qt.gtimg.cn/q=sh000016"
+    response.raise_for_status.assert_called_once_with()
+
+
+def test_tencent_fetcher_get_stock_name_rejects_mismatched_response_code() -> None:
+    response = MagicMock()
+    response.text = 'v_sh000016="1~沪深300~000300~0";'
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=response):
+        name = TencentFetcher().get_stock_name("sh000016")
+
+    assert name is None
+
+
+def test_tencent_fetcher_get_stock_name_decodes_real_gbk_response() -> None:
+    response = Response()
+    response.status_code = 200
+    response.url = "https://qt.gtimg.cn/q=sh000016"
+    response.encoding = "ISO-8859-1"
+    response._content = 'v_sh000016="1~上证50~000016~0";'.encode("gbk")
+
+    with patch("data_provider.tencent_fetcher.requests.get", return_value=response):
+        name = TencentFetcher().get_stock_name("sh000016")
+
+    assert name == "上证50"
 
 
 def test_tencent_fetcher_parses_qfq_daily_response() -> None:
@@ -379,3 +445,57 @@ def test_tencent_fetcher_rejects_capped_incomplete_history() -> None:
 
     assert ",day,2020-01-01,2026-05-10,800,qfq" in captured["params"]["param"]
     assert df.empty
+
+
+def test_star_market_detection_accepts_prefixed_bare_and_suffixed_codes() -> None:
+    for code in ("sh688111", "SH688111", "688111", "688111.SH", "sh689009", "689009.SH"):
+        assert _is_star_market(code), code
+    for code in ("sh600000", "600000", "sz000001", "sz300750", "bj920199", "000688", ""):
+        assert not _is_star_market(code), code
+
+
+def test_lots_to_shares_keeps_star_market_volume_in_shares() -> None:
+    # Tencent reports STAR Market (688/689) volume in shares already.
+    assert _lots_to_shares("4421640", "sh688111") == 4421640.0
+    assert _lots_to_shares("1000", "689009.SH") == 1000.0
+    # Other A-shares are reported in lots (100 shares).
+    assert _lots_to_shares("107450", "sh603501") == 10745000.0
+    assert _lots_to_shares("147895", "sz002230") == 14789500.0
+    assert _lots_to_shares("15073", "bj920199") == 1507300.0
+    # Legacy call without symbol keeps the lot conversion.
+    assert _lots_to_shares("12345") == 1234500.0
+
+
+def test_lots_to_shares_passes_through_invalid_volume() -> None:
+    assert _lots_to_shares(None, "sh688111") is None
+    assert _lots_to_shares("n/a", "sh600000") == "n/a"
+
+
+def test_tencent_fetcher_does_not_multiply_star_market_volume() -> None:
+    payload = {
+        "data": {
+            "sh688111": {
+                "qfqday": [
+                    ["2026-09-18", "220.00", "223.61", "225.00", "219.00", "5100511", "1139410078"],
+                    ["2026-09-21", "223.00", "223.59", "226.00", "221.00", "4421640", "989524266"],
+                ]
+            }
+        }
+    }
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return payload
+
+    fetcher = TencentFetcher()
+    with patch("data_provider.tencent_fetcher.requests.get", lambda url, **kw: FakeResponse()):
+        df = fetcher.get_daily_data("688111", start_date="2026-09-15", end_date="2026-09-22")
+
+    assert float(df.iloc[0]["volume"]) == 5100511.0
+    assert float(df.iloc[1]["volume"]) == 4421640.0
+    # volume * close / amount should be ~1 when units are consistent.
+    ratio = float(df.iloc[1]["volume"]) * float(df.iloc[1]["close"]) / float(df.iloc[1]["amount"])
+    assert 0.99 < ratio < 1.01

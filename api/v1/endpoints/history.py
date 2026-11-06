@@ -44,6 +44,7 @@ from src.report_language import (
     normalize_report_language,
 )
 from src.services.history_service import HistoryService, MarkdownReportGenerationError
+from src.services.analysis_service import asset_type_from_canonical_code
 from src.schemas.decision_action import build_action_fields
 from src.utils.data_processing import (
     normalize_model_used,
@@ -129,14 +130,30 @@ def _history_share_image_branding(config: object) -> ShareImageBranding:
     return share_image_branding_from_config(config)
 
 
-def _normalize_code_for_grouping(code: str) -> str:
-    """Normalize stock code for deduplication grouping.
+def _stock_bar_group_key(record_code: str, display_code: str) -> str:
+    """Build the stock-bar grouping key from the *persisted* code.
 
-    Delegates to data_provider.base.normalize_stock_code which handles
-    SH600519, 600519.SH, HK00700, 00700.HK, BJ920748, etc.
+    PR #2312: registered indices are typed by the persisted ``record.code``
+    (never guessed from the display code) and group by the parser canonical
+    (lowercase ``sh000016`` / ``csi930955``), so every explicit index form
+    (uppercase legacy / dotted alias) converges to one row and never folds
+    with the bare same-code stock. Stocks keep the legacy display-based
+    normalization (``SH600519``/``600519.SH`` -> ``600519``, JP/KR legacy bare
+    ``005930`` merging with ``005930.KS`` etc.), preserving existing semantics.
     """
     from data_provider.base import normalize_stock_code
-    return normalize_stock_code(code or "")
+    from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+    code = str(record_code or "").strip()
+    if not code:
+        return normalize_stock_code(display_code or "")
+    try:
+        target = parse_analysis_target(code)
+    except Exception:
+        return normalize_stock_code(display_code or "")
+    if target.asset_type == ParseStatus.INDEX:
+        return target.canonical_id
+    return normalize_stock_code(display_code or "")
 
 
 def _raw_result_value(raw_result: Any, key: str) -> Any:
@@ -274,6 +291,7 @@ def get_history_list(
                 model_used=item.get("model_used"),
                 created_at=item.get("created_at"),
                 market_phase_summary=item.get("market_phase_summary"),
+                asset_type=item.get("asset_type"),
             )
             for item in result.get("items", [])
         ]
@@ -431,7 +449,7 @@ def get_stock_bar(
         seen: dict = {}
         for record in records:
             display_code = service._display_stock_code(record.code or "")
-            norm_code = _normalize_code_for_grouping(display_code)
+            norm_code = _stock_bar_group_key(record.code or "", display_code)
             if norm_code not in seen or record.id > seen[norm_code].id:
                 seen[norm_code] = record
 
@@ -482,6 +500,7 @@ def get_stock_bar(
                         record.code,
                         getattr(record, "context_snapshot", None),
                     ),
+                    asset_type=asset_type_from_canonical_code(record.code),
                 )
             )
 
@@ -589,6 +608,9 @@ def get_history_detail(
             change_pct=change_pct,
             model_used=normalize_model_used(result.get("model_used")),
             market_phase_summary=market_phase_summary,
+            asset_type=asset_type_from_canonical_code(
+                result.get("storage_stock_code") or result.get("stock_code")
+            ),
         )
         
         summary = ReportSummary(
@@ -637,6 +659,7 @@ def get_history_detail(
 
         details = ReportDetails(
             news_content=result.get("news_content"),
+            empty_news_disclosure=result.get("empty_news_disclosure"),
             raw_result=result.get("raw_result"),
             context_snapshot=api_context_snapshot,
             analysis_context_pack_overview=analysis_context_pack_overview,

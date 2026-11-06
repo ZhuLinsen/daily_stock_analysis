@@ -206,6 +206,7 @@ class ScreenResult:
     market: str
     strategy_version: str = ""
     strategy_category: str = ""
+    effective_factor_weights: dict[str, float] = field(default_factory=dict)
     snapshot_count: int = 0
     after_filter_count: int = 0
     picks: list[Pick] = field(default_factory=list)

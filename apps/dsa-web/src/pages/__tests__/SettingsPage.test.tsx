@@ -1,11 +1,44 @@
 import type React from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider, Outlet } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
+import { resetSharedDesktopUpdateState } from '../../desktop/updateStore';
 import type { SetupStatusResponse } from '../../types/systemConfig';
 import SettingsPage from '../SettingsPage';
+import { DesktopUpdateIndicator } from '../../components/layout/DesktopUpdateIndicator';
+
+function renderSettingsPage(initialEntries: string[] = ['/settings']) {
+  const router = createMemoryRouter(
+    [
+      { path: '/settings', element: <SettingsPage /> },
+      // The in-app "leaving /settings" target — kept minimal so the data
+      // router has somewhere to navigate to on `proceed()` without mounting
+      // the heavy lazy ChatPage. Marked with a testid so in-app navigation
+      // tests can assert the destination actually rendered.
+      { path: '/chat', element: <div data-testid="chat-page-stub" /> },
+      // Stub for non-existent path so unknown-destination navigations don't
+      // throw.
+      { path: '*', element: <div data-testid="not-found-stub" /> },
+    ],
+    { initialEntries },
+  );
+  const utils = render(<RouterProvider router={router} />);
+  // Trigger an in-router state refresh so memoised route element re-renders
+  // after the mocked hook return value changes between iterations (the data
+  // router keeps the <SettingsPage /> element reference stable across
+  // rerenders, so React.memo would otherwise bail and the new mock return
+  // value would not be re-read).
+  const rerenderSettingsPage = () => {
+    act(() => {
+      router.revalidate();
+    });
+  };
+  return { ...utils, router, rerender: rerenderSettingsPage, rerenderSettingsPage };
+}
 
 const {
+  editorTestMode,
   analyzeAsync,
   exportEnv,
   getSchedulerStatus,
@@ -36,6 +69,7 @@ const {
   useSystemConfigMock,
   webBuildInfoMock,
 } = vi.hoisted(() => ({
+  editorTestMode: { real: false },
   analyzeAsync: vi.fn(),
   exportEnv: vi.fn(),
   getSchedulerStatus: vi.fn(),
@@ -76,10 +110,14 @@ const {
 
 const mockedAnchorClick = vi.fn();
 
-vi.mock('../../hooks', () => ({
-  useAuth: () => useAuthMock(),
-  useSystemConfig: () => useSystemConfigMock(),
-}));
+vi.mock('../../hooks', async () => {
+  const actual = await vi.importActual<typeof import('../../hooks')>('../../hooks');
+  return {
+    ...actual,
+    useAuth: () => useAuthMock(),
+    useSystemConfig: () => useSystemConfigMock(),
+  };
+});
 
 vi.mock('../../api/systemConfig', () => ({
   systemConfigApi: {
@@ -114,7 +152,9 @@ vi.mock('../../utils/constants', async () => {
   };
 });
 
-vi.mock('../../components/settings', () => ({
+vi.mock('../../components/settings', async () => {
+  const { LLMChannelEditor: RealLLMChannelEditor } = await vi.importActual<typeof import('../../components/settings/LLMChannelEditor')>('../../components/settings/LLMChannelEditor');
+  return ({
   AuthSettingsCard: () => <div>认证与登录保护</div>,
   ChangePasswordCard: () => <div>修改密码</div>,
   IntelligentImport: ({ onMerged }: { onMerged: (value: string) => void }) => (
@@ -126,12 +166,23 @@ vi.mock('../../components/settings', () => ({
     items,
     onSaved,
     onDraftItemsChange,
+    onDirtyChange,
+    ...rest
   }: {
     items: Array<{ key: string; value: string }>;
     onSaved: (items: Array<{ key: string; value: string }>) => void;
     onDraftItemsChange?: (items: Array<{ key: string; value: string }>) => void;
-  }) => (
+    onDirtyChange?: (dirty: boolean) => void;
+    onSavingChange?: (saving: boolean) => void;
+    configVersion: string;
+    maskToken: string;
+    draftResetToken: number;
+  }) => editorTestMode.real ? (
+    <RealLLMChannelEditor items={items} onSaved={onSaved} onDraftItemsChange={onDraftItemsChange} onDirtyChange={onDirtyChange} {...rest} />
+  ) : (
     <div>
+      <button onClick={() => onDirtyChange?.(true)}>edit incomplete llm draft</button>
+      <button onClick={() => onDirtyChange?.(false)}>restore llm draft</button>
       <div data-testid="llm-channel-editor-items">{items.map((item) => item.key).join(',')}</div>
       <button
         type="button"
@@ -160,20 +211,15 @@ vi.mock('../../components/settings', () => ({
   AgentBackendStatusPanel: ({
     items,
     selectedBackend,
-    agentArch,
-    onUseSingleAgent,
   }: {
     items: Array<{ key: string; value: string }>;
     selectedBackend: string;
-    agentArch: string;
-    onUseSingleAgent: () => void;
   }) => (
     <div data-testid="agent-backend-status-panel-mock">
       <span data-testid="agent-backend-status-items">
         {items.map((item) => `${item.key}=${item.value}`).join('|')}
       </span>
-      <span>{selectedBackend}:{agentArch}</span>
-      <button type="button" onClick={onUseSingleAgent}>切换为单 Agent</button>
+      <span>{selectedBackend}</span>
     </div>
   ),
   NotificationTestPanel: ({ items }: { items: Array<{ key: string; value: string }> }) => (
@@ -242,6 +288,7 @@ vi.mock('../../components/settings', () => ({
       data-issues={issues.map((issue) => issue.code).join(',')}
     >
       <div>{item.key}</div>
+      <textarea id={`setting-${item.key}`} readOnly />
       {item.schema?.description ? <p>{item.schema.description}</p> : null}
       {item.schema?.options?.map((option) => {
         const label = typeof option === 'string' ? option : option.label;
@@ -283,7 +330,8 @@ vi.mock('../../components/settings', () => ({
       {children}
     </section>
   ),
-}));
+});
+});
 
 function createDesktopRuntime(overrides: Record<string, unknown> = {}) {
   return {
@@ -501,8 +549,37 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+
+function renderDesktopUpdateEntries(lateMount = false) {
+  const router = createMemoryRouter([{
+    element: <><DesktopUpdateIndicator /><Outlet /></>,
+    children: [
+      { path: '/header', element: null },
+      { path: '/settings', element: <SettingsPage /> },
+    ],
+  }], { initialEntries: [lateMount ? '/header' : '/settings'] });
+  return { ...render(<RouterProvider router={router} />), router };
+}
+
+function hangDesktopUpdateCheck() {
+  let resolveCheck: ((value: unknown) => void) | undefined;
+  desktopCheckForUpdates.mockImplementation(
+    () => new Promise((resolve) => {
+      resolveCheck = resolve;
+    }),
+  );
+  return {
+    async finish(value: unknown) {
+      await act(async () => {
+        resolveCheck?.(value);
+      });
+    },
+  };
+}
+
 describe('SettingsPage', () => {
   beforeEach(() => {
+    editorTestMode.real = false;
     vi.restoreAllMocks();
     vi.clearAllMocks();
     Object.assign(webBuildInfoMock, {
@@ -613,10 +690,18 @@ describe('SettingsPage', () => {
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(mockedAnchorClick);
+    // jsdom does not implement `scrollIntoView` (scrolls would throw); stub it up front
+    // for every test, and let the scroll assertions read this shared stub.
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    resetSharedDesktopUpdateState();
+  });
+
+  afterEach(() => {
+    resetSharedDesktopUpdateState();
   });
 
   it('renders category navigation and auth settings modules', async () => {
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '系统设置' })).toBeInTheDocument();
     expect(screen.getByText('认证与登录保护')).toBeInTheDocument();
@@ -627,7 +712,7 @@ describe('SettingsPage', () => {
   it('renders first-run setup checks and routes setup actions', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByTestId('first-run-setup-card')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
@@ -643,11 +728,42 @@ describe('SettingsPage', () => {
     expect(setActiveCategory).toHaveBeenNthCalledWith(3, 'notification');
   });
 
+  it('scrolls to and focuses the stock list field when the setup guide watchlist action is used', async () => {
+    const scrollIntoView = HTMLElement.prototype.scrollIntoView;
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    renderSettingsPage();
+
+    expect(await screen.findByTestId('first-run-setup-card')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '维护自选股' }));
+
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.getElementById('setting-STOCK_LIST'));
+  });
+
+  it('applies category from the search string and scrolls to desktop version info', async () => {
+    const scrollIntoView = HTMLElement.prototype.scrollIntoView;
+    (window as { dsaDesktop?: unknown }).dsaDesktop = {
+      version: '3.12.0',
+      getUpdateState: desktopGetUpdateState,
+      checkForUpdates: desktopCheckForUpdates,
+      installDownloadedUpdate: desktopInstallDownloadedUpdate,
+      openReleasePage: desktopOpenReleasePage,
+      onUpdateStateChange: desktopOnUpdateStateChange,
+    };
+
+    renderSettingsPage(['/settings?category=system#desktop-version-info']);
+
+    await waitFor(() => expect(setActiveCategory).toHaveBeenCalledWith('system'));
+    expect(await screen.findByText('桌面端更新')).toBeInTheDocument();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+  });
+
   it('keeps first-run setup summary neutral while setup status is loading', async () => {
     getSetupStatus.mockImplementation(() => new Promise(() => undefined));
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('正在检查首次启动配置')).toBeInTheDocument();
     expect(screen.getByText('正在读取配置状态，完成后会显示缺失项和试跑入口。')).toBeInTheDocument();
@@ -660,7 +776,7 @@ describe('SettingsPage', () => {
     getSetupStatus.mockRejectedValue(new Error('setup status unavailable'));
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('暂无法判断配置状态')).toBeInTheDocument();
     expect(screen.getByText('配置状态读取失败。可先检查或修改设置项，稍后刷新检查结果。')).toBeInTheDocument();
@@ -730,7 +846,7 @@ describe('SettingsPage', () => {
       .mockImplementationOnce(() => latestRefresh.promise);
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('初始状态')).toBeInTheDocument();
 
@@ -760,7 +876,7 @@ describe('SettingsPage', () => {
   it('runs a brief setup smoke analysis with the first watchlist stock', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     await screen.findByText('基础配置已满足最小可用分析');
     fireEvent.click(screen.getByRole('button', { name: '简短试跑' }));
@@ -814,7 +930,7 @@ describe('SettingsPage', () => {
       ],
     });
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     await screen.findByText('还缺少 1 项：Agent 渠道');
     expect(screen.getByRole('button', { name: '简短试跑' })).toBeEnabled();
@@ -851,7 +967,7 @@ describe('SettingsPage', () => {
     });
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('还有基础配置需要处理')).toBeInTheDocument();
     expect(screen.getByText('还缺少 1 项：模型渠道')).toBeInTheDocument();
@@ -865,7 +981,7 @@ describe('SettingsPage', () => {
   });
 
   it('renders web build info in system settings', async () => {
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
     expect(screen.getByText('3.11.0')).toBeInTheDocument();
@@ -876,7 +992,7 @@ describe('SettingsPage', () => {
   it('renders desktop app version in system settings during desktop runtime', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
     expect(screen.getByText('桌面端版本')).toBeInTheDocument();
@@ -886,7 +1002,7 @@ describe('SettingsPage', () => {
   it('keeps version grid at three columns when desktop runtime has no usable version', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '   ' };
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const section = (await screen.findByRole('heading', { name: '版本信息' })).closest('section');
     const versionGrid = section?.querySelector('div.grid.grid-cols-1.gap-3');
@@ -899,7 +1015,7 @@ describe('SettingsPage', () => {
   it('ignores non-string desktop runtime version values without breaking render', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: 3120 };
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const section = (await screen.findByRole('heading', { name: '版本信息' })).closest('section');
     const versionGrid = section?.querySelector('div.grid.grid-cols-1.gap-3');
@@ -921,7 +1037,7 @@ describe('SettingsPage', () => {
     });
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     await waitFor(() => {
       expect(desktopGetUpdateState).toHaveBeenCalledTimes(1);
@@ -956,7 +1072,7 @@ describe('SettingsPage', () => {
       isFallbackVersion: true,
     });
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
     expect(screen.getByText(/当前构建未提供发布版本/)).toBeInTheDocument();
@@ -967,7 +1083,7 @@ describe('SettingsPage', () => {
   it('resets local drafts from the page header button', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     // Clear the initial load call from useEffect
     vi.clearAllMocks();
@@ -1043,7 +1159,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByText('AGENT_ORCHESTRATOR_TIMEOUT_S')).toBeInTheDocument();
     expect(screen.getByText('AGENT_DEEP_RESEARCH_BUDGET')).toBeInTheDocument();
@@ -1051,7 +1167,7 @@ describe('SettingsPage', () => {
     expect(settingsPanelErrorBoundary).toHaveBeenCalledWith('Agent 设置');
   });
 
-  it('integrates one Agent backend selector and keeps Codex limits editable as unsaved draft actions', () => {
+  it('keeps retired settings visible for correction without an architecture workaround', () => {
     const configState = buildSystemConfigState();
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
       activeCategory: 'agent',
@@ -1074,21 +1190,20 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByTestId('settings-field-AGENT_BACKEND')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-field-AGENT_GENERATION_BACKEND')).not.toBeInTheDocument();
     expect(screen.getByTestId('settings-field-AGENT_MAX_STEPS')).toHaveAttribute('data-disabled', 'false');
     expect(screen.getByTestId('settings-field-AGENT_ARCH')).toHaveAttribute(
       'data-issues',
-      'unsupported_agent_arch',
+      '',
     );
     expect(screen.getByTestId('agent-backend-status-items')).toHaveTextContent(
       'AGENT_BACKEND=codex_app_server|AGENT_ARCH=multi',
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '切换为单 Agent' }));
-    expect(setDraftValue).toHaveBeenCalledWith('AGENT_ARCH', 'single');
+    expect(screen.queryByRole('button', { name: '切换为单 Agent' })).not.toBeInTheDocument();
     expect(save).not.toHaveBeenCalled();
   });
 
@@ -1165,7 +1280,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByText('AGENT_CONTEXT_COMPRESSION_PROFILE')).toBeInTheDocument();
     expect(screen.getByText('成本优先')).toBeInTheDocument();
@@ -1184,7 +1299,7 @@ describe('SettingsPage', () => {
 
     useSystemConfigMock.mockReturnValue(dirtyState);
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     // Clear initial useEffect load call
     vi.clearAllMocks();
@@ -1202,7 +1317,7 @@ describe('SettingsPage', () => {
   it('refreshes server state after intelligent import merges stock list', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'merge stock list' }));
 
@@ -1213,7 +1328,7 @@ describe('SettingsPage', () => {
   it('refreshes server state after llm channel editor saves', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'save llm channels' }));
 
@@ -1234,7 +1349,7 @@ describe('SettingsPage', () => {
       ],
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'emit llm draft' }));
 
@@ -1255,7 +1370,7 @@ describe('SettingsPage', () => {
   it('clears llm channel draft items after llm channel editor saves', async () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: 'emit llm draft' }));
     expect(await screen.findByTestId('generation-backend-status-items')).toHaveTextContent('LLM_CHANNELS=draft,backup');
@@ -1301,7 +1416,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    const { container } = render(<SettingsPage />);
+    const { container } = renderSettingsPage();
 
     const promptCacheSummary = screen.getByText('Provider Prompt Cache 高级设置').closest('summary');
     const promptCacheDetails = promptCacheSummary?.closest('details');
@@ -1344,7 +1459,7 @@ describe('SettingsPage', () => {
       getChangedItems: () => [{ key: 'SCREENING_ENABLED', value: 'false' }],
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
 
@@ -1364,7 +1479,7 @@ describe('SettingsPage', () => {
       getChangedItems: () => [{ key: 'SCREENING_ENABLED', value: 'true' }],
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
 
@@ -1382,7 +1497,7 @@ describe('SettingsPage', () => {
       getChangedItems: () => [{ key: 'LLM_CHANNELS', value: 'primary,backup' }],
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
 
@@ -1421,7 +1536,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: '开启选股' }));
 
@@ -1460,7 +1575,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByRole('button', { name: '开启选股' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '查看配置项' })).not.toBeInTheDocument();
@@ -1499,8 +1614,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    const { rerender } = render(<SettingsPage />);
-
+    const { rerenderSettingsPage } = renderSettingsPage();
     expect(await screen.findByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '选股' })).toBeInTheDocument();
 
@@ -1511,8 +1625,7 @@ describe('SettingsPage', () => {
         base: baseItems,
       },
     }));
-    rerender(<SettingsPage />);
-
+    rerenderSettingsPage();
     expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '选股' })).not.toBeInTheDocument();
 
@@ -1523,8 +1636,7 @@ describe('SettingsPage', () => {
         base: baseItems,
       },
     }));
-    rerender(<SettingsPage />);
-
+    rerenderSettingsPage();
     expect(screen.queryByRole('heading', { name: '选股' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
   });
@@ -1631,7 +1743,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByTestId('scheduler-settings-card')).toBeInTheDocument();
     expect(screen.queryByTestId('settings-field-SCHEDULE_ENABLED')).not.toBeInTheDocument();
@@ -1699,7 +1811,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(await screen.findByTestId('scheduler-run-now-button'));
 
@@ -1764,7 +1876,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByTestId('scheduler-last-success')).toHaveTextContent('-');
     expect(screen.getByTestId('scheduler-last-error')).toHaveTextContent('analysis failed');
@@ -1827,7 +1939,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
     expect(enabledCheckbox).toBeChecked();
@@ -1885,7 +1997,7 @@ describe('SettingsPage', () => {
         ],
       },
     }));
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
     expect(enabledCheckbox).toBeChecked();
@@ -1961,7 +2073,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const saveButton = screen.getByRole('button', { name: /保存配置/ });
     expect(saveButton).toBeDisabled();
@@ -1976,6 +2088,97 @@ describe('SettingsPage', () => {
 
     fireEvent.click(saveButton);
     await waitFor(() => expect(save).toHaveBeenCalledWith([{ key: 'SCHEDULE_ENABLED', value: 'false' }]));
+  });
+
+  it('resets a scheduler-only override and lets navigation proceed', async () => {
+    save.mockResolvedValue({ success: true });
+    getChangedItems.mockReturnValue([]);
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValue({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      hasDirty: false,
+      dirtyCount: 0,
+      getChangedItems: () => [],
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    const { router, rerenderSettingsPage } = renderSettingsPage();
+
+    const saveButton = screen.getByRole('button', { name: /保存配置/ });
+    expect(saveButton).toBeDisabled();
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).toBeChecked();
+    fireEvent.click(enabledCheckbox);
+
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    await waitFor(() => expect(saveButton).toHaveTextContent('保存配置 (1)'));
+    const schedulerState = useSystemConfigMock.mock.results.at(-1)?.value;
+    useSystemConfigMock.mockReturnValue({ ...schedulerState, activeCategory: 'base' });
+    rerenderSettingsPage();
+    expect(screen.getByTestId('scheduler-enabled-checkbox')).not.toBeVisible();
+    useSystemConfigMock.mockReturnValue(schedulerState);
+    rerenderSettingsPage();
+    expect(screen.getByTestId('scheduler-enabled-checkbox')).not.toBeChecked();
+
+
+    act(() => { void router.navigate('/chat'); });
+    fireEvent.click(await screen.findByRole('button', { name: '取消' }));
+    fireEvent.click(screen.getByRole('button', { name: '重置' }));
+    await waitFor(() => expect(screen.getByTestId('scheduler-enabled-checkbox')).toBeChecked());
+    expect(saveButton).toBeDisabled();
+    act(() => { void router.navigate('/chat'); });
+    await waitFor(() => expect(router.state.location.pathname).toBe('/chat'));
   });
 
   it('can reconcile runtime scheduler state when runtime is disabled but saved value is enabled', async () => {
@@ -2039,7 +2242,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const saveButton = screen.getByRole('button', { name: /保存配置/ });
     expect(saveButton).toBeDisabled();
@@ -2127,7 +2330,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('未启用')).toBeInTheDocument();
 
@@ -2168,7 +2371,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(screen.getByRole('button', { name: '开启选股' }));
 
@@ -2295,7 +2498,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     const llmEditorItems = await screen.findByTestId('llm-channel-editor-items');
     expect(llmEditorItems).toHaveTextContent('LLM_CHANNELS');
@@ -2314,7 +2517,7 @@ describe('SettingsPage', () => {
   it('renders notification test panel before notification fields', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'notification' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByText('通知测试面板:WECHAT_WEBHOOK_URL')).toBeInTheDocument();
     expect(screen.getByText('WECHAT_WEBHOOK_URL')).toBeInTheDocument();
@@ -2325,7 +2528,7 @@ describe('SettingsPage', () => {
   it('uses browser and backend logs in settings panel diagnostic hints outside desktop runtime', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'notification' }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getAllByText(/浏览器开发者工具控制台与后端日志/)).toHaveLength(2);
     expect(screen.queryByText('desktop.log')).not.toBeInTheDocument();
@@ -2335,14 +2538,14 @@ describe('SettingsPage', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'notification' }));
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getAllByText('desktop.log')).toHaveLength(2);
     expect(screen.queryByText(/浏览器开发者工具控制台与后端日志/)).not.toBeInTheDocument();
   });
 
   it('renders env backup actions outside desktop runtime', () => {
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByRole('heading', { name: '配置备份' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出 .env' })).toBeInTheDocument();
@@ -2357,7 +2560,7 @@ describe('SettingsPage', () => {
       refreshStatus,
     });
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.getByText(/当前 Web 端未开启管理员鉴权/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出 .env' })).toBeDisabled();
@@ -2380,7 +2583,7 @@ describe('SettingsPage', () => {
       refreshStatus,
     });
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(screen.queryByText(/当前 Web 端未开启管理员鉴权/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出 .env' })).not.toBeDisabled();
@@ -2390,7 +2593,7 @@ describe('SettingsPage', () => {
   it('exports saved env from config backup actions', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     vi.clearAllMocks();
 
@@ -2405,7 +2608,7 @@ describe('SettingsPage', () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     vi.clearAllMocks();
 
@@ -2418,7 +2621,7 @@ describe('SettingsPage', () => {
   it('reloads config after successful env import', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
 
-    const { container } = render(<SettingsPage />);
+    const { container } = renderSettingsPage();
 
     vi.clearAllMocks();
 
@@ -2512,7 +2715,7 @@ describe('SettingsPage', () => {
       },
     }));
 
-    const { container } = render(<SettingsPage />);
+    const { container } = renderSettingsPage();
 
     await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('未启用')).toBeInTheDocument();
@@ -2538,7 +2741,7 @@ describe('SettingsPage', () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
     load.mockResolvedValue(false);
 
-    const { container } = render(<SettingsPage />);
+    const { container } = renderSettingsPage();
 
     vi.clearAllMocks();
     load.mockResolvedValue(false);
@@ -2569,7 +2772,7 @@ describe('SettingsPage', () => {
     });
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText(/发现新版本:当前 3\.12\.0，最新 3\.13\.0/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '前往下载' })).toBeInTheDocument();
@@ -2578,7 +2781,7 @@ describe('SettingsPage', () => {
   it('checks desktop updates on demand and renders the latest-version state', async () => {
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(await screen.findByRole('button', { name: '检查更新' }));
 
@@ -2596,7 +2799,7 @@ describe('SettingsPage', () => {
     });
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     fireEvent.click(await screen.findByRole('button', { name: '前往下载' }));
 
@@ -2619,12 +2822,569 @@ describe('SettingsPage', () => {
     });
     (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
-    render(<SettingsPage />);
+    renderSettingsPage();
 
     expect(await screen.findByText('更新已下载:新版本 3.13.0 已下载，可重启应用完成安装。')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '重启安装' }));
 
     await waitFor(() => expect(desktopInstallDownloadedUpdate).toHaveBeenCalledTimes(1));
+  });
+
+  it('disables the settings check button while the header entry is already checking', async () => {
+    const pendingCheck = hangDesktopUpdateCheck();
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    renderDesktopUpdateEntries();
+
+    fireEvent.click(await screen.findByRole('button', { name: '桌面端更新' }));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: '桌面端更新' })).getByRole('button', { name: '检查更新' }),
+    );
+
+    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+
+    const settingsCard = await waitFor(() => {
+      const card = document.querySelector('#desktop-version-info');
+      expect(card).not.toBeNull();
+      expect(within(card as HTMLElement).getByRole('button', { name: '检查中...' })).toBeDisabled();
+      return card as HTMLElement;
+    });
+    const settingsButton = within(settingsCard).getByRole('button', { name: '检查中...' });
+
+    fireEvent.click(settingsButton);
+    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
+
+    await pendingCheck.finish({
+      status: 'up-to-date',
+      currentVersion: '3.12.0',
+      latestVersion: '3.12.0',
+      message: '当前桌面端已是最新版本。',
+    });
+  });
+
+  it('does not start a second check from the header while settings is already checking', async () => {
+    const pendingCheck = hangDesktopUpdateCheck();
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    renderDesktopUpdateEntries();
+
+    const settingsCard = await waitFor(() => {
+      const card = document.querySelector('#desktop-version-info');
+      expect(card).not.toBeNull();
+      return card as HTMLElement;
+    });
+    fireEvent.click(within(settingsCard).getByRole('button', { name: '检查更新' }));
+
+    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+    expect(within(settingsCard).getByRole('button', { name: '检查中...' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '桌面端更新' }));
+    expect(screen.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument();
+    fireEvent.click(within(settingsCard).getByRole('button', { name: '检查中...' }));
+    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
+
+    await pendingCheck.finish({
+      status: 'up-to-date',
+      currentVersion: '3.12.0',
+      latestVersion: '3.12.0',
+      message: '当前桌面端已是最新版本。',
+    });
+  });
+
+  it('keeps both entries busy when a late settings mount receives a stale idle snapshot', async () => {
+    const pendingCheck = hangDesktopUpdateCheck();
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    const { router } = renderDesktopUpdateEntries(true);
+
+    fireEvent.click(await screen.findByRole('button', { name: '桌面端更新' }));
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: '桌面端更新' })).getByRole('button', { name: '检查更新' }),
+    );
+    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await router.navigate('/settings'); });
+
+    const settingsCard = await waitFor(() => {
+      const card = document.querySelector('#desktop-version-info');
+      expect(card).not.toBeNull();
+      return card as HTMLElement;
+    });
+    expect(within(settingsCard).getByRole('button', { name: '检查中...' })).toBeDisabled();
+    expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1);
+
+    await pendingCheck.finish({
+      status: 'up-to-date',
+      currentVersion: '3.12.0',
+      latestVersion: '3.12.0',
+      message: '当前桌面端已是最新版本。',
+    });
+  });
+  describe('unsaved changes navigation guard (issue #1948 point 4)', () => {
+    let beforeUnloadListeners: Array<(event: BeforeUnloadEvent) => void>;
+
+    beforeEach(() => {
+      // jsdom does not natively dispatch `beforeunload` events on `reload` /
+      // close — we approximate the behaviour by tracking whether the page
+      // attached a listener and what it does when invoked with a synthetic
+      // BeforeUnloadEvent.
+      beforeUnloadListeners = [];
+      vi.spyOn(window, 'addEventListener').mockImplementation((type, listener) => {
+        if (type === 'beforeunload' && typeof listener === 'function') {
+          beforeUnloadListeners.push(listener as (event: BeforeUnloadEvent) => void);
+        }
+        return undefined;
+      });
+      vi.spyOn(window, 'removeEventListener').mockImplementation((type, listener) => {
+        if (type !== 'beforeunload' || typeof listener !== 'function') {
+          return;
+        }
+        const idx = beforeUnloadListeners.indexOf(listener as (event: BeforeUnloadEvent) => void);
+        if (idx >= 0) {
+          beforeUnloadListeners.splice(idx, 1);
+        }
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('retains real LLM drafts and both guards across category changes', async () => {
+      editorTestMode.real = true;
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model', hasDirty: false }));
+      const page = renderSettingsPage();
+      fireEvent.click(await screen.findByRole('button', { name: /primary/i }));
+      fireEvent.change(await screen.findByLabelText('渠道名称'), { target: { value: 'UNSAVED_NAME' } });
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base', hasDirty: false }));
+      page.rerenderSettingsPage();
+      await waitFor(() => expect(screen.getByLabelText('渠道名称')).not.toBeVisible());
+      expect(beforeUnloadListeners.length).toBe(1);
+      act(() => { void page.router.navigate('/chat'); });
+      fireEvent.click(await screen.findByRole('button', { name: '取消' }));
+      expect(page.router.state.location.pathname).toBe('/settings');
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model', hasDirty: false }));
+      page.rerenderSettingsPage();
+      expect(await screen.findByLabelText('渠道名称')).toHaveValue('unsaved_name');
+      expect(screen.getByLabelText('渠道名称')).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: '重置' }));
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+      fireEvent.click(await screen.findByRole('button', { name: /primary/i }));
+      expect(await screen.findByLabelText('渠道名称')).toHaveValue('primary');
+    });
+
+    it('waits for a hidden real LLM save and refresh before allowing reset, import, or departure', async () => {
+      editorTestMode.real = true;
+      const pendingUpdate = createDeferred<{ warnings: string[] }>();
+      const pendingRefresh = createDeferred<void>();
+      updateSystemConfig.mockReturnValueOnce(pendingUpdate.promise);
+      refreshAfterExternalSave.mockReturnValueOnce(pendingRefresh.promise);
+      const configState = buildSystemConfigState({ activeCategory: 'ai_model' });
+      useSystemConfigMock.mockReturnValue(configState);
+      const page = renderSettingsPage();
+
+      fireEvent.click(await screen.findByRole('button', { name: /primary/i }));
+      fireEvent.change(await screen.findByLabelText('Base URL'), { target: { value: 'https://draft.example.com/v1' } });
+      fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+      await waitFor(() => expect(updateSystemConfig).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole('button', { name: '重置' })).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: '重置' }));
+      expect(resetDraft).not.toHaveBeenCalled();
+
+      useSystemConfigMock.mockReturnValue({ ...configState, activeCategory: 'system' });
+      page.rerenderSettingsPage();
+      expect(screen.getByLabelText('Base URL')).not.toBeVisible();
+      expect(screen.getByLabelText('Base URL')).toHaveValue('https://draft.example.com/v1');
+      expect(screen.getByRole('button', { name: '导入 .env' })).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: '导入 .env' }));
+      expect(screen.queryByText('导入会覆盖当前草稿')).not.toBeInTheDocument();
+      expect(importEnv).not.toHaveBeenCalled();
+
+      act(() => { void page.router.navigate('/chat'); });
+      expect(await screen.findByText('配置正在保存。已发出的保存请求不会被取消，请等待保存完成后再离开。')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '保存中...' })).toBeDisabled();
+      expect(screen.queryByRole('button', { name: '放弃并离开' })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      expect(page.router.state.location.pathname).toBe('/settings');
+
+      await act(async () => pendingUpdate.resolve({ warnings: [] }));
+      await waitFor(() => expect(refreshAfterExternalSave).toHaveBeenCalledTimes(1));
+      const savedItems = updateSystemConfig.mock.calls[0][0].items as Array<{ key: string; value: string }>;
+      useSystemConfigMock.mockReturnValue({
+        ...configState,
+        activeCategory: 'system',
+        itemsByCategory: { ...configState.itemsByCategory, ai_model: savedItems },
+      });
+      page.rerenderSettingsPage();
+      await waitFor(() => expect(screen.getByText('当前没有未保存的改动')).not.toBeVisible());
+      expect(screen.getByRole('button', { name: '重置' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '导入 .env' })).toBeDisabled();
+      expect(beforeUnloadListeners).toHaveLength(1);
+      act(() => { void page.router.navigate('/chat'); });
+      expect(await screen.findByRole('button', { name: '保存中...' })).toBeDisabled();
+
+      await act(async () => pendingRefresh.resolve());
+      expect(await screen.findByText('配置已保存，可以继续离开此页面。')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '重置' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: '导入 .env' })).toBeEnabled();
+      expect(beforeUnloadListeners).toHaveLength(0);
+      expect(screen.queryByText('当前没有未保存的改动')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '确定' }));
+      await waitFor(() => expect(page.router.state.location.pathname).toBe('/chat'));
+      expect(updateSystemConfig).toHaveBeenCalledTimes(1);
+    });
+
+    it('confirms import for a hidden invalid LLM draft and preserves it on Cancel', async () => {
+      editorTestMode.real = true;
+      const configState = buildSystemConfigState({ activeCategory: 'ai_model' });
+      useSystemConfigMock.mockReturnValue(configState);
+      const page = renderSettingsPage();
+      fireEvent.click(await screen.findByRole('button', { name: /primary/i }));
+      fireEvent.change(await screen.findByLabelText('渠道名称'), { target: { value: '' } });
+      await waitFor(() => expect(beforeUnloadListeners).toHaveLength(1));
+      expect(screen.getByTestId('generation-backend-status-items')).toBeEmptyDOMElement();
+
+      useSystemConfigMock.mockReturnValue({ ...configState, activeCategory: 'system' });
+      page.rerenderSettingsPage();
+      expect(screen.getByLabelText('渠道名称')).not.toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: '导入 .env' }));
+      expect(await screen.findByText('导入会覆盖当前草稿')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      expect(importEnv).not.toHaveBeenCalled();
+      expect(resetDraft).not.toHaveBeenCalled();
+      expect(beforeUnloadListeners).toHaveLength(1);
+
+      useSystemConfigMock.mockReturnValue(configState);
+      page.rerenderSettingsPage();
+      expect(screen.getByLabelText('渠道名称')).toBeVisible();
+      expect(screen.getByLabelText('渠道名称')).toHaveValue('');
+    });
+
+    it.each(['reloaded', 'reload-failed', 'import-failed'] as const)(
+      'handles confirmed import with hidden model and scheduler drafts: %s', async (outcome) => {
+        editorTestMode.real = true;
+        const pendingImport = createDeferred<{ updatedKeys: string[] }>();
+        importEnv.mockReturnValueOnce(pendingImport.promise);
+        getSchedulerStatus.mockResolvedValue({ enabled: true, running: false, scheduleTimes: ['18:00'] });
+        const initial = buildSystemConfigState({ activeCategory: 'ai_model' });
+        const schedulerTemplate = initial.itemsByCategory.system[0];
+        const configState = {
+          ...initial,
+          itemsByCategory: {
+            ...initial.itemsByCategory,
+            system: [...initial.itemsByCategory.system, {
+              ...schedulerTemplate, key: 'SCHEDULE_ENABLED', value: 'false',
+              schema: { ...(schedulerTemplate.schema as Record<string, unknown>), key: 'SCHEDULE_ENABLED' },
+            }],
+          },
+        };
+        useSystemConfigMock.mockReturnValue(configState);
+        const page = renderSettingsPage();
+        fireEvent.click(await screen.findByRole('button', { name: /primary/i }));
+        fireEvent.change(await screen.findByLabelText('渠道名称'), { target: { value: '' } });
+        useSystemConfigMock.mockReturnValue({ ...configState, activeCategory: 'system' });
+        page.rerenderSettingsPage();
+        await waitFor(() => expect(screen.getByTestId('scheduler-enabled-checkbox')).toBeChecked());
+        fireEvent.click(screen.getByTestId('scheduler-enabled-checkbox'));
+        await waitFor(() => expect(screen.getByTestId('scheduler-enabled-checkbox')).not.toBeChecked());
+        fireEvent.click(screen.getByRole('button', { name: '导入 .env' }));
+        expect(await screen.findByText('导入会覆盖当前草稿')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: '继续导入' }));
+        const fileInput = page.container.querySelector('input[type="file"]') as HTMLInputElement;
+        load.mockResolvedValueOnce(outcome !== 'reload-failed');
+        fireEvent.change(fileInput, {
+          target: { files: [new File(['STOCK_LIST=300750\n'], 'backup.env', { type: 'text/plain' })] },
+        });
+        await waitFor(() => expect(importEnv).toHaveBeenCalledTimes(1));
+        expect(resetDraft).not.toHaveBeenCalled();
+        expect(screen.getByLabelText('渠道名称')).toHaveValue('');
+        expect(screen.getByRole('button', { name: '重置' })).toBeDisabled();
+
+        if (outcome === 'import-failed') {
+          await act(async () => pendingImport.reject(new Error('import rejected')));
+          expect(await screen.findByText('import rejected')).toBeInTheDocument();
+          expect(resetDraft).not.toHaveBeenCalled();
+          expect(screen.getByTestId('scheduler-enabled-checkbox')).not.toBeChecked();
+          expect(beforeUnloadListeners).toHaveLength(1);
+        } else {
+          await act(async () => pendingImport.resolve({ updatedKeys: ['STOCK_LIST'] }));
+          await waitFor(() => expect(resetDraft).toHaveBeenCalledTimes(1));
+          await waitFor(() => expect(beforeUnloadListeners).toHaveLength(0));
+          expect(screen.getByTestId('scheduler-enabled-checkbox')).toBeChecked();
+          expect(screen.getByRole('button', { name: /保存配置/ })).toBeDisabled();
+          if (outcome === 'reload-failed') {
+            expect(screen.getByText('配置已导入但刷新失败')).toBeInTheDocument();
+          }
+        }
+        useSystemConfigMock.mockReturnValue(configState);
+        page.rerenderSettingsPage();
+        if (!screen.queryByLabelText('渠道名称')) {
+          fireEvent.click(await screen.findByRole('button', { name: /primary/i }));
+        }
+        expect(await screen.findByLabelText('渠道名称')).toHaveValue(outcome === 'import-failed' ? '' : 'primary');
+        if (outcome !== 'import-failed') {
+          act(() => { void page.router.navigate('/chat'); });
+          await waitFor(() => expect(page.router.state.location.pathname).toBe('/chat'));
+        }
+      },
+    );
+
+    it('guards LLM-only edits and clears local editors on the actual Reset button', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model', hasDirty: false }));
+      const { router } = renderSettingsPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'edit incomplete llm draft' }));
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      act(() => { void router.navigate('/chat'); });
+      fireEvent.click(await screen.findByRole('button', { name: '取消' }));
+      fireEvent.click(screen.getByRole('button', { name: '重置' }));
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+      expect(resetDraft).toHaveBeenCalledTimes(1);
+      act(() => { void router.navigate('/chat'); });
+      await waitFor(() => expect(router.state.location.pathname).toBe('/chat'));
+    });
+
+    it('keeps the LLM-only guard after Cancel and releases it when the editor becomes clean', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model', hasDirty: false }));
+      const { router } = renderSettingsPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'edit incomplete llm draft' }));
+      act(() => { void router.navigate('/chat'); });
+      fireEvent.click(await screen.findByRole('button', { name: '取消' }));
+      expect(beforeUnloadListeners.length).toBe(1);
+      expect(resetDraft).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'restore llm draft' }));
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+      act(() => { void router.navigate('/chat'); });
+      await waitFor(() => expect(router.state.location.pathname).toBe('/chat'));
+    });
+
+    it('discards LLM-only edits and preserves the pending destination', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model', hasDirty: false }));
+      const { router } = renderSettingsPage();
+      fireEvent.click(await screen.findByRole('button', { name: 'edit incomplete llm draft' }));
+      act(() => { void router.navigate('/chat?draft=1#target'); });
+      fireEvent.click(await screen.findByRole('button', { name: '放弃并离开' }));
+      await waitFor(() => expect(router.state.location.pathname).toBe('/chat'));
+      expect(router.state.location.search).toBe('?draft=1');
+      expect(router.state.location.hash).toBe('#target');
+      expect(resetDraft).toHaveBeenCalledTimes(1);
+      expect(beforeUnloadListeners.length).toBe(0);
+    });
+
+    it('registers a beforeunload listener when there are unsaved drafts', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
+
+      renderSettingsPage();
+      // Wait for the initial load effect (which also re-renders with the
+      // mocked system-config state) to settle — the guard effect runs as a
+      // layout commit after the first paint with effectiveHasDirty === true.
+      await waitFor(() => {
+        expect(beforeUnloadListeners.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+
+    it('does not register a beforeunload listener when no drafts are dirty', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+
+      renderSettingsPage();
+
+      // Give any pending effects (load() promise, async setState) time to settle
+      // before we assert no listener was attached.
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      expect(beforeUnloadListeners.length).toBe(0);
+    });
+
+    it('guards the navigation by setting returnValue on the synthetic event', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+
+      renderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+
+      const event = new Event('beforeunload') as BeforeUnloadEvent;
+      // jsdom does not implement `returnValue` on Event, so we attach a plain
+      // property to mirror the DOM semantics in tests.
+      Object.defineProperty(event, 'returnValue', {
+        configurable: true,
+        writable: true,
+        value: '',
+      });
+      const handler = beforeUnloadListeners[0]!;
+      const result = handler(event);
+
+      expect(event.returnValue).not.toBe('');
+      // The handler also returns the message so older browsers (Firefox) can
+      // surface it natively.
+      expect(result).toBe(event.returnValue);
+    });
+
+    it('re-attaches a fresh listener when the dirty state flips back and forth', async () => {
+      // Start dirty → listener attached.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      const { rerenderSettingsPage } = renderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      const firstHandler = beforeUnloadListeners[0]!;
+
+      // Clear dirty → listener removed on next render.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+      rerenderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+
+      // Dirty again → new listener attached, distinct from the original reference.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      rerenderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      expect(beforeUnloadListeners[0]).not.toBe(firstHandler);
+    });
+
+    // ───────────────────────────────────────────────────────────────────────
+    // In-app route guards (issue #1948 — ZhuLinsen reviewer contract points
+    // 3–6). `beforeunload` only fires on reload / tab close / external nav;
+    // these tests exercise the `useBlocker`-backed `ConfirmDialog` flow that
+    // covers SPA-internal navigation (sidebar `NavLink`, `navigate()`,
+    // browser back/forward).
+    // ───────────────────────────────────────────────────────────────────────
+
+    it('prompts on in-app navigation away from /settings when dirty, and stays when cancelled', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+
+      const { router } = renderSettingsPage();
+      // Wait for the useBlocker effect to attach (it depends on
+      // effectiveHasDirty, which is derived from the mocked hook return value
+      // after the initial load effect runs).
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      expect(router.state.location.pathname).toBe('/settings');
+
+      // Trigger an in-app navigation to /chat — the blocker should intercept
+      // and keep us on /settings, surfacing the confirm dialog instead.
+      act(() => {
+        void router.navigate('/chat');
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).toBeInTheDocument();
+      });
+      // Blocker cancelled the navigation: still on /settings, and the stub
+      // chat page has NOT mounted.
+      expect(router.state.location.pathname).toBe('/settings');
+      expect(screen.queryByTestId('chat-page-stub')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      expect(router.state.location.pathname).toBe('/settings');
+      expect(resetDraft).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: '放弃并离开' })).not.toBeInTheDocument();
+      act(() => { void router.navigate('/chat'); });
+      expect(await screen.findByRole('button', { name: '放弃并离开' })).toBeInTheDocument();
+    });
+
+    it('discards the draft and proceeds to the target route on confirm', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      resetDraft.mockClear();
+
+      const { router } = renderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+
+      act(() => {
+        void router.navigate('/chat');
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: '放弃并离开' })).toBeInTheDocument();
+      });
+
+      // Confirm → resetDraft flips dirty to false, then proceed() replays the
+      // pending navigation to /chat.
+      fireEvent.click(screen.getByRole('button', { name: '放弃并离开' }));
+
+      await waitFor(() => {
+        expect(resetDraft).toHaveBeenCalledTimes(1);
+      });
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/chat');
+      });
+      expect(screen.getByTestId('chat-page-stub')).toBeInTheDocument();
+    });
+
+    it('does not prompt on in-app navigation when there are no dirty drafts', async () => {
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+
+      const { router } = renderSettingsPage();
+      await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      expect(beforeUnloadListeners.length).toBe(0);
+
+      act(() => {
+        void router.navigate('/chat');
+      });
+
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/chat');
+      });
+      // No dialog ever shown.
+      expect(screen.queryByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).not.toBeInTheDocument();
+    });
+
+    it('prompts when the user triggers browser-style back navigation away from /settings', async () => {
+      // Back navigation is approximated with `router.navigate(-1)` from a
+      // history that contains a non-/settings entry — this is the closest
+      // jsdom-equivalent to a real `popstate` for the data router.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+
+      const { router } = renderSettingsPage(['/chat', '/settings']);
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+      expect(router.state.location.pathname).toBe('/settings');
+
+      act(() => {
+        void router.navigate(-1);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).toBeInTheDocument();
+      });
+      // Cancelled: still on /settings, history entry not popped.
+      expect(router.state.location.pathname).toBe('/settings');
+    });
+
+    it('clears the in-app guard once dirty drops to zero (after reset button)', async () => {
+      // Start dirty → both beforeunload listener and useBlocker active.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
+      const { router, rerenderSettingsPage } = renderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+
+      // Simulate "Reset" button success — dirty clears, listener should be
+      // torn down and a subsequent in-app navigation should NOT prompt.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+      rerenderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+
+      act(() => {
+        void router.navigate('/chat');
+      });
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/chat');
+      });
+      expect(screen.queryByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).not.toBeInTheDocument();
+    });
+
+    it('clears the in-app guard once dirty drops to zero (after save success)', async () => {
+      // Same shape as the reset-button variant, but the contract point 5 also
+      // explicitly calls out "保存成功后必须立即解除两类 guard". Save success
+      // is the same observable from the hook's perspective: hasDirty flips
+      // false. We model that here by switching the mock return value.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 1 }));
+      const { router, rerenderSettingsPage } = renderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(1));
+
+      // Save success — dirty clears.
+      useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: false, dirtyCount: 0 }));
+      rerenderSettingsPage();
+      await waitFor(() => expect(beforeUnloadListeners.length).toBe(0));
+
+      act(() => {
+        void router.navigate('/chat');
+      });
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe('/chat');
+      });
+      expect(screen.queryByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).not.toBeInTheDocument();
+    });
   });
 });

@@ -25,7 +25,7 @@ daily_stock_analysis/
 
 ## 📑 目录
 
-- [项目结构](#项目结构)
+- [项目结构](#-项目结构)
 - [GitHub Actions 详细配置](#github-actions-详细配置)
 - [环境变量完整列表](#环境变量完整列表)
 - [Docker 部署](#docker-部署)
@@ -57,15 +57,16 @@ daily_stock_analysis/
 
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC) API Key，一 Key 同时启用大模型和中文优化联网搜索，含本项目免费额度 | 推荐 |
+| `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API Key，自动补齐默认地址和模型 | 推荐 |
 | `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API Key，一 Key 切换使用全系模型，本项目可享 10% 优惠 | 推荐 |
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 获取免费 Key | 可选 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com`） | 可选 |
 | `OPENAI_MODEL` | 模型名称（如 `gemini-3.1-pro-preview`、`deepseek-v4-flash`、`gpt-5.5`） | 可选 |
+| `ANSPIRE_API_KEYS` | Anspire 搜索与 LLM 共用 Key 的 legacy 兼容入口；模型权限以控制台为准 | 可选 |
 
-> *注：以上模型 Key / 渠道至少配置一个；推荐优先从 Anspire 或 AIHubMix 这类一 Key 多模型服务开始。启动时配置校验会在缺少可用 AI 模型 Key 或模型渠道时给出明确错误提示。
+> *注：以上模型 Key / 渠道至少配置一个。Modelflare 只需填写 `MODELFLARE_KEY`，单渠道默认模型为 `openai/gpt-6.1-sol`（可通过 `LITELLM_MODEL` 覆盖），接入地址默认使用 `https://modelflare.dev/v1`，完整示例见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#示例modelflare)。实际模型以账号权限为准。启动时配置校验会在缺少可用 AI 模型 Key 或模型渠道时给出明确错误提示。
 
 #### 通知渠道配置（可同时配置多个，全部推送）
 
@@ -158,16 +159,18 @@ daily_stock_analysis/
 |------------|------|:----:|
 | `STOCK_LIST` | 自选股代码，如 `600519,300750,002594,7203.T,005930.KS`；推荐使用英文逗号，中文逗号、顿号、分号、空格和换行会被识别并规范为英文逗号 | ✅ |
 | `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 针对中文内容特别优化；同一 Key 可用于搜索与 Anspire 大模型网关的兜底示例（是否可用以控制台与账号权限为准） | 推荐 |
-| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
+| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis) 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 可选 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隐私优先，美股优化，多个key用逗号分隔） | 可选 |
 | `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimax.io/) Coding Plan Web Search（结构化搜索结果） | 可选 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
+| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时仅在显式启用公共实例发现后使用 `searx.space` | 可选 |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`）。公共实例普遍限流或未开启 JSON 输出，开启后每次分析可能多耗 30~60 秒且新闻面为空 | 可选 |
+| `SEARXNG_TIMEOUT_SECONDS` | 自建 SearXNG 单次搜索超时（秒，默认 `10`，最小 `1`）；实例较慢（如聚合引擎较多的 NAS 部署）时可调大，公共实例超时不受影响。GitHub Actions 需显式映射该变量 | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空（或未设置/空白）时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填写 `http://` 或 `https://` 开头的完整地址 | 可选 |
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | 可选 |
+| `MX_APIKEY` / `MX_PRIORITY` | 妙想（东方财富 MX_API）补充数据源：在东财公开接口失败/限流时兜底获取筹码分布与个股资金流。**严格 opt-in 的第三方能力**：需用户自备 Key（妙想 Skills 页面），限时免费/会员配额策略可能调整、不承诺长期免费；未配置则不启用、行为不变。`MX_PRIORITY` 默认 `6`。GitHub Actions 需在 Secrets 配置 `MX_APIKEY` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | [Longbridge OpenAPI](https://open.longbridge.com/) OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境恢复 SDK token 缓存 | 可选 |
 | `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | 可选 |
@@ -184,6 +187,10 @@ daily_stock_analysis/
 | `LONGBRIDGE_PRINT_QUOTE_PACKAGES` | 连接时是否打印行情包（未设置时默认 `false`；设为 `1`/`true`/`yes` 开启） | 可选 |
 | `ENABLE_CHIP_DISTRIBUTION` | 启用筹码分布（Actions 默认 false；需筹码数据时在 Variables 中设为 true，接口可能不稳定） | 可选 |
 
+妙想筹码/资金流在同一进程内共享网络请求准入锁：进入查询方法时若已有请求未结束，新查询直接跳过，不在此锁上排队。资金流补充的超时隔离保持到实际后台请求退出，其他数据源仍可回退；不取消已经发出的请求，也不改变管理器原有的筹码调用串行化。该补充源通过能力检查排除所有日线请求，并在选表和解析时统一支持字典/列表形式的 `nameMap`。
+
+妙想资金流仅使用明确的主力净流入金额指标；收盘价、占比及缺失金额不会作为资金流回退值。最新交易日金额缺失时保持未知，5/10 日窗口包含缺失金额时不输出合计，不使用更早日期补位。
+
 > **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY` / `TICKFLOW_*` 和上表中的 `LONGBRIDGE_*` 映射到任务环境。TickFlow 的 API Key 建议放在 **Secrets**，优先级、复权和批量开关可放在 **Variables** 或 **Secrets**。Longbridge OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
 
 > **TUSHARE_HTTP_URL 在每日 workflow 中的映射：** `00-daily-analysis.yml` 已显式映射 `TUSHARE_HTTP_URL`（采用 `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL` 优先级，与仓库现有 `TICKFLOW_PRIORITY` 等非敏感配置取值策略一致）。该地址属"接入地址"配置而非凭据，建议放 **Variables** 便于团队 review 与版本可审计。注意：真实的优先级是 `vars` 非空即胜出，**Secrets 中的同名变量无法覆盖非空 Variables**，两者中只有 vars 为空时 secrets 才被采用，请按这个真实语义做安全建模。GitHub 把 Variables 与 Secrets 设计为两套独立的写权限模型：任何对 repository Variables 有写权限的人或自动化，都可以在不读取、不修改 Secrets 的情况下，通过设置一个非空 Variable 来改写运行时端点（包括将 `TUSHARE_TOKEN` 和完整请求体指向攻击者控制的地址）；Secrets 仅保护值的机密性，并不自动提供"端点完整性"或"优先级覆盖"保障。如确需对端点施加更强的访问控制，请使用 GitHub Environment protection rules、CODEOWNERS、branch protection 或独立的部署审批流程，**不要把"只放 Secrets 而 Variables 留空"当作防改护栏**。未设置或留空时 fetcher 仍走官方 `http://api.tushare.pro` 端点，不会因为本变量缺失而报错。
@@ -197,7 +204,7 @@ daily_stock_analysis/
 
 如果你想快速开始，最少需要配置以下项：
 
-1. **AI 模型**：`ANSPIRE_API_KEYS`（一 Key 同时启用大模型和搜索）、`AIHUBMIX_KEY`（[AIHubmix](https://inferera.com/?aff=CfMq)，一 Key 多模型）、`GEMINI_API_KEY` 或 `OPENAI_API_KEY`
+1. **AI 模型**：按 [Modelflare Channels 示例](LLM_CONFIG_GUIDE.md#示例modelflare) 配置，或使用 `AIHUBMIX_KEY`（[AIHubmix](https://inferera.com/?aff=CfMq)，一 Key 多模型）、`GEMINI_API_KEY` 或 `OPENAI_API_KEY`
 2. **通知渠道**：至少配置一个，如 `WECHAT_WEBHOOK_URL` 或 `EMAIL_SENDER` + `EMAIL_PASSWORD`
 3. **股票列表**：`STOCK_LIST`（必填）
 4. **搜索 API**：`ANSPIRE_API_KEYS` 或 `SERPAPI_API_KEYS`（推荐，用于新闻与舆情搜索）
@@ -243,9 +250,13 @@ daily_stock_analysis/
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | 单次本地 CLI backend 诊断 stdout/stderr 与最终响应捕获总上限；`--output-last-message` 重复打印到 stdout 的最终响应不重复计入；范围 `1-33554432` | `1048576` | 否 |
 | `GENERATION_BACKEND_MAX_CONCURRENCY` | generation backend 全局并发上限；范围 `1-16`，不改变 LiteLLM Router / `MAX_WORKERS` 行为 | `1` | 否 |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | 本地 CLI backend 并发上限；范围 `1-4`，有效并发取它与 `GENERATION_BACKEND_MAX_CONCURRENCY` 的较小值 | `1` | 否 |
-| `AGENT_BACKEND` | 现有问股 Chat 的运行方式：`auto`（推荐，保持默认模型）、`litellm` 或 `codex_app_server`（实验，仅 single-agent Chat） | `auto` | 否 |
+| `AGENT_BACKEND` | 问股 Chat 执行方式：`auto`（推荐，保持默认 LiteLLM）或 `litellm` | `auto` | 否 |
 | `AGENT_GENERATION_BACKEND` | Agent Chat 生成后端；Web 设置页仅暴露 `auto|litellm`，手写 local CLI backend 会返回 unsupported tool-calling 诊断 | `auto` | 否 |
 | `AGENT_SKILL_CONCURRENCY` | `specialist` 模式策略专家 worker 并发上限，范围 `1-4`；最多选择 4 个策略，默认 3 个并发，第 4 个进入下一批次并共享整体超时预算 | `3` | 否 |
+| `AGENT_DATA_TOOL_TIMEOUT_S` | Agent `data` 类工具默认超时秒数；同时作为 `market` 类工具（`get_market_indices` / `get_sector_rankings` 等网络数据调用）的类别默认；`0` 表示关闭，回退到全局预算；有效超时按 first-wins 解析：显式 per-run `tool_call_timeout_seconds` > 单工具显式 `timeout_seconds` > 类别默认 > 无限制，剩余 wall-clock 预算仅作不可突破的外层 cap，`inf`/`nan`/负数降级为「无限制」；超时为 best-effort 软中断：Python 线程无法被强制停止，handler 可能在超时后继续运行，超时结果标记 `retriable: false` 并写入 `non_retriable_tool_results` 阻断重试，且为仍在后台的 handler 武装协作取消信号（`is_tool_cancellation_requested()` 与既有 `check_tool_execution()` 检查点均响应，handler 从不轮询则行为不变）以尽量减小副作用 | `0` | 否 |
+| `AGENT_SEARCH_TOOL_TIMEOUT_S` | Agent `search` 类工具默认超时秒数；`0` 表示关闭，回退到全局预算 | `0` | 否 |
+| `AGENT_ANALYSIS_TOOL_TIMEOUT_S` | Agent `analysis` 类工具默认超时秒数；`0` 表示关闭，回退到全局预算 | `0` | 否 |
+| `AGENT_ACTION_TOOL_TIMEOUT_S` | Agent `action` 类工具默认超时秒数；`0` 表示关闭，回退到全局预算 | `0` | 否 |
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
 | `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
 | `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |
@@ -254,6 +265,12 @@ daily_stock_analysis/
 | `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
 | `LITELLM_FALLBACK_MODELS` | 备选模型，逗号分隔 | - | 否 |
 | `LLM_CHANNELS` | 渠道名称列表（逗号分隔），配合 `LLM_{NAME}_*` 使用，详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) | - | 否 |
+| `MODELFLARE_KEY` | Modelflare 单 Key 接入，自动启用默认渠道；Actions 仅从 Secrets 读取 | - | 选用时 |
+| `LLM_MODELFLARE_API_KEY` | 高级渠道 Key，优先于 MODELFLARE_KEY；多 Key 可用 `LLM_MODELFLARE_API_KEYS` | - | 否 |
+| `LLM_MODELFLARE_PROTOCOL` | Modelflare 渠道协议，默认地址自动识别为 `openai` | `openai` | 否 |
+| `LLM_MODELFLARE_API_SURFACE` | Modelflare 渠道 API Surface，快速开始示例使用 `chat_completions` | `chat_completions` | 否 |
+| `LLM_MODELFLARE_BASE_URL` | Modelflare 接入地址，显式配置优先于默认值 | `https://modelflare.dev/v1` | 否 |
+| `LLM_MODELFLARE_MODELS` | 高级显式渠道模型列表；单 Modelflare 渠道可复用 LITELLM_MODEL | 单渠道自动推导 | 否 |
 | `LLM_HERMES_API_KEY` | Hermes reserved 本地 HTTP generation 的单一 API Key；只应来自 `.env`、运行时配置或 Secrets | - | Hermes 使用时必填 |
 | `LLM_HERMES_BASE_URL` | Hermes 本地 loopback `/v1` 地址；默认 `http://127.0.0.1:8642/v1`，不支持远程地址 | `http://127.0.0.1:8642/v1` | 否 |
 | `LLM_HERMES_MODELS` | Hermes 原始模型列表；Phase 3 默认 `hermes-agent`，运行时 route 为 `openai/hermes-agent`，不支持 Vision / stream / tools / Agent tools | `hermes-agent` | 否 |
@@ -263,7 +280,7 @@ daily_stock_analysis/
 | `LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL` | Prompt cache 诊断级别：`off` / `basic` / `debug`；basic/debug 仅在 debug 日志和测试可观察对象中提供脱敏诊断，不作为公开 Usage API 或普通设置页输出 | `off` | 否 |
 | `LLM_USAGE_HMAC_SECRET` | LLM 用量遥测 message HMAC 密钥；留空时自动使用数据目录中的本地密钥文件 | - | 否 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | LLM 用量遥测 HMAC 密钥版本标签，轮换密钥时同步更新 | `local-v1` | 否 |
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC) API Key，一 Key 同时启用大模型网关和搜索 | - | 可选 |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key，一 Key 同时启用大模型网关和搜索 | - | 可选 |
 | `AIHUBMIX_KEY` | [AIHubmix](https://inferera.com/?aff=CfMq) API Key，一 Key 切换使用全系模型，无需额外配置 Base URL | - | 可选 |
 | `GEMINI_API_KEY` | Google Gemini API Key | - | 可选 |
 | `GEMINI_MODEL` | 主模型名称（legacy，`LITELLM_MODEL` 优先） | `gemini-3.1-pro-preview` | 否 |
@@ -281,11 +298,11 @@ daily_stock_analysis/
 
 > 生成后端状态说明：Web 设置页的快速检查只读取已保存配置、未保存草稿，并检查本地 CLI 可执行文件是否可见，不发起真实模型请求；JSON 冒烟测试是单独的显式操作，会使用服务端固定的 JSON 提示词和 schema 发起一次真实请求。`health_status` 与 `last_error_code/message` 只表示本次状态计算或冒烟测试结果，不是历史持久健康状态。
 
-> *注：`ANSPIRE_API_KEYS`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 或 `OLLAMA_API_BASE` 至少配置一个。`ANSPIRE_API_KEYS` 与 `AIHUBMIX_KEY` 无需配置 `OPENAI_BASE_URL`，系统自动适配。
+> *注：至少配置一个可用的 `LLM_CHANNELS` / `LITELLM_CONFIG`，或 legacy provider Key / `OLLAMA_API_BASE`。Modelflare 通过 Channels 接入；已有 `ANSPIRE_API_KEYS` 与 `AIHUBMIX_KEY` 的 legacy 兼容入口仍无需配置 `OPENAI_BASE_URL`，系统自动适配。
 
 > 问股 single-agent 路径会在后台为 DeepSeek V4 thinking + tool-call 保存最近 3 条 provider trace，并按原时序回放 `reasoning_content` / tool 结果；该能力不新增配置项，不进入 Web 历史 API，Claude extended thinking 仅覆盖离线 plumbing，multi-agent trace 注入留作后续增强。
 
-> `AGENT_BACKEND=codex_app_server` 是仅作用于现有问股 Chat 的实验入口：需在运行 DSA 的设备安装并登录 Codex，Web 路径为「设置 → Agent 设置 → 问股生成方式」，选择后保持 `AGENT_ARCH=single`，并设置大于 0 的整体时限。设置页只检查配置、Codex 命令和所需协议是否允许尝试，不登录、不调用模型或读取股票数据；保存后可直接提问，第一次问题就是第一次真实执行。Codex 当前只能读取已保存的分析上下文和回测汇总；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具请改用「默认模型」。点击停止后，页面会显示“正在停止”；只有 Codex 与本轮工具任务均已退出，才显示最终“已停止”。它当前支持 macOS、Linux 和完整运行于 WSL 的 DSA 后端，暂不支持原生 Windows；Phase 2 `codex_cli` 生成能力不受影响。它不支持 Codex Multi Agent / Codex Deep Research，也不改变现有 LiteLLM Multi Agent、Deep Research、普通报告或定时任务。Codex 不是离线模型，股票问题和脱敏工具结果可能由 Codex 配置的服务处理；DSA 不读取或保存 Codex 凭据。Docker、远程服务器和 Desktop 必须分别保证其后端进程 PATH 可见 Codex。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#codex-本地-agentphase-6-实验原型)。
+> Codex App Server 问股后端已移除。`AGENT_BACKEND` 仅支持 `auto`（推荐，保持默认 LiteLLM）或 `litellm`。旧 `codex_app_server` 可加载、显示和导出，但执行请求在准备与接受提交前返回 `backend_removed`，不会自动切换模型、账号或 provider。请在「设置 → Agent 设置 → 问股生成方式」主动选择合法值并保存；已有旧值不阻止无关设置保存，显式保存或导入旧值则拒绝且不部分写入。状态与草稿预览只检查配置，不启动 Codex 命令或 schema/version 探针，也不调用模型。历史会话、股票身份、Skill、单/多 Agent 与 provider trace 保持原契约。独立 `GENERATION_BACKEND=codex_cli` 普通报告及其他 generation-only 不受此移除影响，仍需各自 CLI 及其原有依赖。
 
 ### 通知渠道配置
 
@@ -369,8 +386,9 @@ daily_stock_analysis/
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search（结构化搜索结果） | 可选 |
 | `SOCIAL_SENTIMENT_API_KEY` | Stock Sentiment API Key（Reddit / X / Polymarket，可选） | 可选 |
 | `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API 地址（默认 `https://api.adanos.org`） | 可选 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
+| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时仅在显式启用公共实例发现后使用 `searx.space` | 可选 |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`）。公共实例普遍限流或未开启 JSON 输出，开启后每次分析可能多耗 30~60 秒且新闻面为空 | 可选 |
+| `SEARXNG_TIMEOUT_SECONDS` | 自建 SearXNG 单次搜索超时（秒，默认 `10`，最小 `1`）；实例较慢（如聚合引擎较多的 NAS 部署）时可调大，公共实例超时不受影响。GitHub Actions 需显式映射该变量 | 可选 |
 | `NEWS_STRATEGY_PROFILE` | 新闻策略窗口档位：`ultra_short`(1天)/`short`(3天)/`medium`(7天)/`long`(30天)；实际窗口取与 `NEWS_MAX_AGE_DAYS` 的最小值 | 默认 `short` |
 | `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），搜索时限制结果在近期内 | 默认 `3` |
 | `BIAS_THRESHOLD` | 乖离率阈值（%），超过提示不追高；强势趋势股自动放宽到 1.5 倍 | 默认 `5.0` |
@@ -414,11 +432,12 @@ daily_stock_analysis/
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | 可选 |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP 接入地址；留空时使用官方端点 `http://api.tushare.pro`，仅在需通过公司内网代理、跨境网络或自建镜像时填 `http://` 或 `https://` 开头的完整地址 | `http://api.tushare.pro` | 可选 |
 | `TICKFLOW_API_KEY` | TickFlow API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | - | 可选 |
-| `TICKFLOW_PRIORITY` | TickFlow 日 K 数据源优先级；数字越小越早尝试，默认 `2`；未配置 API Key 时不启用；不影响实时行情，实时行情顺序由 `REALTIME_SOURCE_PRIORITY` 控制。 | `2` | 可选 |
-| `TENCENT_PRIORITY` | 腾讯直连 A 股日 K 数据源优先级；数字越小越早尝试，默认 `5`，作为 Efinance、AkShare、Tushare、TickFlow、PyTDX、Baostock 和 YFinance 之后的最终兜底；不影响实时行情。 | `5` | 可选 |
+| `TICKFLOW_PRIORITY` | TickFlow 普通 A 股日 K 数据源优先级；数字越小越早尝试，默认 `2`；未配置 API Key 时不启用；已登记指数使用独立固定链，不读取本变量；不影响实时行情。 | `2` | 可选 |
+| `TENCENT_PRIORITY` | 腾讯直连普通 A 股日 K 数据源优先级；数字越小越早尝试，默认 `5`，作为通用链路最终兜底；已登记指数使用独立固定链，不读取本变量；不影响实时行情。 | `5` | 可选 |
 | `TICKFLOW_KLINE_ADJUST` | TickFlow 日 K 复权模式：`none`、`forward`、`backward`、`forward_additive`、`backward_additive`。 | `none` | 可选 |
 | `TICKFLOW_BATCH_DAILY_ENABLED` | 是否启用 TickFlow 批量日 K 预取；权限不足会短期缓存失败状态，并继续走常规回退。 | `true` | 可选 |
 | `TICKFLOW_BATCH_SIZE` | TickFlow 日 K 与实时行情批量请求的单批最大标的数。 | `100` | 可选 |
+| `FUTU_HK_REALTIME_SOURCE_PRIORITY` | 港股实时行情独立优先级，可选 `futu`、`longbridge`、`akshare`、`yfinance`，按逗号分隔；失败自动回退。 | `futu,longbridge,akshare,yfinance` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | Longbridge OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | - | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境使用 | - | 可选 |
 | `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | - | 可选 |
@@ -444,7 +463,9 @@ daily_stock_analysis/
 > - 日股/韩股：当前仅走 Yfinance 基础路径获取日线与实时行情；`institution`、`capital_flow`、`dragon_tiger`、`boards` 等依赖 A 股专属源/离岸完整版的能力会降级为 `not_supported`（详见 [市场支持与边界](market-support.md)）；
 > - 台股：在美股/港股 offshore 基础路径之外，`institution` 区块额外展示三大法人原始买卖超净额（TWSE T86 / TPEx，默认开启、fail-open，取不到数据时维持 `not_supported`）；`capital_flow`、`dragon_tiger`、`boards` 仍为 `not_supported`；
 > - 任何异常走 fail-open，仅记录错误，不影响技术面/新闻/筹码主链路。
-> - 配置 `TICKFLOW_API_KEY` 后，TickFlow 会作为可选 A 股日 K 数据源和大盘复盘增强源实例化；`TICKFLOW_PRIORITY` 只影响日 K/通用数据源回退链。实时行情优先级由 `REALTIME_SOURCE_PRIORITY` 单独控制，只有显式包含 `tickflow` 时才会使用 TickFlow 实时行情。`REALTIME_SOURCE_PRIORITY` 中排在 `tickflow` 前面的数据源会先被尝试。
+> - 配置 `TICKFLOW_API_KEY` 后，TickFlow 会作为可选 A 股日 K 数据源和大盘复盘增强源实例化；`TICKFLOW_PRIORITY` 只影响普通 A 股日 K/通用数据源回退链。实时行情优先级由 `REALTIME_SOURCE_PRIORITY` 单独控制，只有显式包含 `tickflow` 时才会使用 TickFlow 实时行情。`REALTIME_SOURCE_PRIORITY` 中排在 `tickflow` 前面的数据源会先被尝试。
+> - 当前 `IndexRegistry` 已登记的全部沪深指数（`sh`/`sz`/`csi` 前缀，具体清单以 [指数自选股配置](#指数自选股配置) 的注册表说明与 `scripts/stock_index_seeds/index_registry.csv` 为准）在使用显式市场输入（也接受 `000016.SH` 等交易所后缀形式）时，不参与通用 priority 排序，固定按 Tencent → AkShare → TickFlow → YFinance 降级；未配置或不可用的来源会跳过。裸 `000016` 等代码仍按股票处理，不触发指数链。该固定链不读取 `EFINANCE_PRIORITY`、`AKSHARE_PRIORITY`、`TUSHARE_PRIORITY`、`TICKFLOW_PRIORITY`、`PYTDX_PRIORITY`、`BAOSTOCK_PRIORITY`、`YFINANCE_PRIORITY` 或 `TENCENT_PRIORITY`，不影响普通股票和实时行情的既有顺序。
+> - 已登记指数名称优先来自本地注册表；只有注册名称无效时才按 Tencent → AkShare → TickFlow 查询，名称链不使用 YFinance。指数日线四源全部失败时返回空结果并记录汇总告警；普通股票仍保持既有的 `DataFetchError` 最终失败契约。
 > - TickFlow 日 K 默认 `TICKFLOW_KLINE_ADJUST=none`；日线 `volume` 从手统一转为股，`amount` 保持元口径。
 > - TickFlow 日 K 区间请求会显式传入 `start_time` / `end_time` / `count`；官方 quickstart 明确说明时间范围查询仍受 `count` 限制。若返回非空但行数打满 `count` 且首个返回交易日晚于请求起始交易日，系统会判定为疑似截断，不写入缓存并让 manager 继续回退。
 > - 批量分析时，`prefetch_daily_klines()` 会在逐股 `get_daily_data()` 之前预热进程内缓存，不改变对外调用路径。
@@ -478,6 +499,12 @@ daily_stock_analysis/
 | `ADMIN_AUTH_ENABLED` | Web 登录：设为 `true` 启用密码保护；首次访问在网页设置初始密码，可在「系统设置 > 修改密码」修改；忘记密码执行 `python -m src.auth reset_password`。Web 的 `.env` 备份导入导出仅在开启该开关后可用（桌面端不受此限制）。 | `false` |
 | `TRUST_X_FORWARDED_FOR` | 单层可信反向代理部署时设为 `true`，取 `X-Forwarded-For` 最右值作为真实客户端 IP（用于登录限流等）；直连公网时保持 `false` 防伪造。多级代理/CDN 场景下限流 key 可能退化为边缘代理 IP，需额外评估 | `false` |
 | `MAX_WORKERS` | 并发线程数 | `3` |
+| `GUARD_ENABLED` | 启用可选的 [fastapi-guard](https://github.com/Guard-Core/fastapi-guard) 安全中间件：按 IP 限流、IP 白/黑名单、路径/查询参数/请求头特征拦截（除 `ssrf` 外的全部检测类别：浏览器会把页面地址作为 `Referer` 发送，而 guard-core 4.4.0 会把其中的 localhost 和局域网地址判为 ssrf）、扫描器自动封禁。与登录失败限流叠加而非替代；状态在进程内存中，无需 Redis；修改后需重启。CORS 仍由原 CORS 中间件处理（位于 guard 外层，429/403 也带 CORS 头）。需要依赖 `fastapi-guard`（已在 `requirements.txt`，未安装时启用会报错） | `false` |
+| `GUARD_RATE_LIMIT` / `GUARD_RATE_LIMIT_WINDOW` | 每个 IP 在窗口（秒）内的最大请求数，静态资源与健康检查同样计数，冷缓存加载一个 WebUI 页面约 14 至 34 个请求 | `300` / `60` |
+| `GUARD_WHITELIST` / `GUARD_BLACKLIST` | IP 白/黑名单（逗号分隔，支持 CIDR）。白名单非空时，名单外 IP 一律 403；名单内 IP 不受限流约束 | 空 |
+| `GUARD_TRUSTED_PROXIES` | 仅在 `TRUST_X_FORWARDED_FOR=true` 时生效：可信反向代理地址，默认仅本机回环。只有来自这些地址的连接才采信 `X-Forwarded-For` 最右值，其它来源伪造的该首部被忽略（登录限流的 `get_client_ip()` 同样取最右值，但不校验代理来源）；`TRUST_X_FORWARDED_FOR` 为 `false` 时一律使用 TCP 对端地址。启用 guard 后，内置启动入口（`main.py`、`server.py`、`webui.py`）让 Uvicorn 只信任同一组代理，`TRUST_X_FORWARDED_FOR=false` 时关闭 Uvicorn 的代理头处理，因此反向代理后部署请设 `TRUST_X_FORWARDED_FOR=true`；启用 guard 且 `TRUST_X_FORWARDED_FOR=false` 时 Uvicorn 的代理头处理被关闭，HTTPS 反向代理后登录 cookie 会不带 `Secure` 标志（`_cookie_params()` 读取的是 `request.url.scheme`），因此 HTTPS 代理后请设 `TRUST_X_FORWARDED_FOR=true`；自行用 `uvicorn` 命令启动时，请让 `FORWARDED_ALLOW_IPS` 与本项一致或加 `--no-proxy-headers`。Docker 中代理不在回环时请填代理地址，否则所有用户会共用同一个限流 key | `127.0.0.1,::1` |
+| `GUARD_SCAN_BODY` | 是否同时扫描请求体（默认只检查路径、查询参数和请求头） | `false` |
+| `GUARD_PASSIVE_MODE` | 仅记录日志不拦截，便于先观察 | `false` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
 | `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(五市场)，us/jp/kr 适合仅关注单区域用户 | `cn` |
@@ -486,6 +513,8 @@ daily_stock_analysis/
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
 | `SCHEDULE_TIMES` | 多个定时执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` | 空 |
+| `DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS` | Web/API runtime scheduler 单次分析硬超时（秒，最小 60 秒）；超时后终止独立分析进程，不阻塞后续任务 | `2700` |
+| `DSA_TIMEOUT_PARTIAL_NOTIFY` | **默认开启（行为变化）**：硬超时后对已落库个股发送「部分完成」通知；此前超时不推送。`false` 时仍写入结构化 `last_error`，但不推送 | `true` |
 | `LOG_DIR` | 日志目录 | `./logs` |
 | `SAVE_CONTEXT_SNAPSHOT` | 保存分析历史 `context_snapshot`；设为 `false` 时新历史不保存 enhanced_context、market_phase_summary、AnalysisContextPack overview 或诊断快照，但不关闭当次 Prompt 低敏摘要 | `true` |
 
@@ -699,6 +728,7 @@ python scripts/check_env.py --config
 python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
+python main.py --etf-rotation         # ETF 轮动信号 + 规则回测（不调用 LLM，见 docs/etf-rotation.md）
 python main.py --stocks 600519,300750 # 指定股票
 python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
@@ -708,6 +738,81 @@ python main.py --force-run            # 非交易日也强制执行（Issue #373
 python main.py --debug                # 调试模式（详细日志）
 python main.py --workers 5            # 指定并发数
 ```
+
+### 指数一次性分析（Phase 1）
+
+`--stocks` 一次性入口支持对已登记的 SH、SZ 与 CSI 指数执行完整分析。指数目标使用 `sh`/`sz` 前缀（如 `sh000016`）或 `.CSI` alias（如 `000300.CSI`、`930955.CSI`）显式指定；裸六码（如 `000016`）始终按股票处理。
+
+```bash
+# 同批分析上证50、沪深300、红利低波100 三个指数
+python main.py --stocks sh000016,000300.CSI,930955.CSI
+# 指数与普通股票同批分析（000016 按股票身份执行）
+python main.py --stocks sh000016,000016
+# 仅获取指数数据，不执行 AI 分析
+python main.py --stocks sh000016 --dry-run
+```
+
+指数目标在 Pipeline 内以 `market=cn` 统一处理市场阶段、日线目标日期、断点续传日期、历史窗口与 `DecisionSignal`；筹码分布、基本面、板块归属、资金流、龙虎榜与公司事件等个股专属模块会被集中跳过。未登记的 `.CSI` 输入（如 `930956.CSI`）会在任何行情数据 provider 请求前明确拒绝：CLI `--stocks` 与 Actions 每日工作流对含未登记目标的整批拒绝本轮运行（不执行同批任何目标），Web/API 则为异步批量中仅该目标进入 `rejected`、同步/单股返回 4xx。搜索与报告使用注册表中文指数名称，不携带机器码。
+
+指数与 A 股共享交易日语义：启用交易日检查时，已登记指数（`sh`/`sz` 前缀或 `.CSI` alias）按 `market=cn` 参与 A 股休市过滤，A 股休市日指数会被跳过；市场仍无法识别的非指数 code 保持既有 fail-open 行为。`--force-run` 可强制在非交易日执行。
+
+指数实时行情使用独立固定链：腾讯 → 新浪 → 东财单股接口 → TickFlow；SH/SZ 指数按 `sh000016`/`sz399001` 显式符号请求，CSI 指数仅由东财单股接口提供（`2.{code}` secid）。显式指数身份全程保留，不会退化为同码股票行情。
+
+### 指数 Web/API 入口（Phase 2 PR1）
+
+Web 自动补全与搜索已放行已登记指数：搜索注册中文名（如 `上证50`）或显式代码（`sh000016`、`930955.CSI`）会返回对应指数条目并可提交分析；热门候选仍仅展示股票（`assetType=stock`），不包含指数。
+
+API `/analyze` 对显式指数输入构造结构化 `AnalysisTarget`：`sh000016` 以 `asset_type=INDEX` 且 `canonical_id=sh000016` 入队，`930955.CSI`/`csi930955` 收敛为 `csi930955`。指数与同码个股（如 `sh000016` 与 `000016`）独立去重调度、互不折叠；未登记的 CSI 输入（如 `930956.CSI`）在异步单股或同步模式返回明确的 4xx，在异步批量中仅该目标进入响应 `rejected` 列表、同批其他目标正常入队。中文名称输入（如 `贵州茅台`）仍走既有股票名解析，不进入指数判型。
+
+Bot `/analyze` 已支持已登记指数的显式代码（`sh000016`）、CSI alias（`930955.CSI`）和注册中文名（`上证50`）。指数以 registry canonical 和结构化 `AnalysisTarget` 进入与 CLI/API 相同的 Pipeline；未登记 CSI、未知名称或歧义注册名称会明确报错且不提交任务。普通 A/HK/US 代码与股票名称继续沿用 legacy code 路径。
+
+### 指数 GitHub Actions 入口（Phase 2 PR3）
+
+GitHub Actions 每日工作流（`.github/workflows/00-daily-analysis.yml`）把 `STOCK_LIST` 配置中的显式指数 token 与个股同批分析：`GITHUB_ACTIONS=true` 环境下 `python main.py` 无参数运行时（`full` 与 `stocks-only` 模式；`market-only` 不经个股列表，不参与此分类），`STOCK_LIST` 会按与 `--stocks` 相同的判型规则分类为结构化 target，显式指数 token（如 `sh000016`、`930955.CSI`）进入指数路径、个股 token 保持既有路径，不新增第二条 Pipeline 或能力矩阵；含未登记 `.CSI` 目标时整批拒绝本轮运行。本地无参数默认路径（`.env`/Docker 的 `STOCK_LIST`）与 `--schedule`/`config.schedule_enabled` 定时模式不参与此分类：本地 `--stocks` 参与分类，但本地无参默认路径与定时模式不经 `--stocks` 构造 targets，`STOCK_LIST` 的其它运行环境语义不变。
+
+> **Phase 2 边界**：`--schedule`、Bot `/ask`、Bot `/batch` 仍未开放指数入口；Web/API、Bot `/analyze`、一次性 `--stocks` 与 GitHub Actions 每日工作流已支持指数。
+
+### 指数自选股配置
+
+`STOCK_LIST` 支持在两类入口按下列规则混入指数目标：一次性 `--stocks` 与 GitHub Actions 每日工作流（`GITHUB_ACTIONS=true` 无参数运行的 full/stocks-only 模式）。本地 `.env` 或 Docker 无参数默认运行不参与指数分类，`STOCK_LIST` 保持既有股票语义；本地 `.env`/Docker 若想分析指数，请显式加 `--stocks`（一次性运行）或改用 GitHub Actions 入口。分类判断先于股票解析：命中已登记指数的显式形态时按 `market=cn` 的指数 Pipeline 执行；未命中则继续走股票路径（`.CSI` 前缀除外，见下文拒绝规则）。判断发生在**归一化之前**，因此必须写显式代码形态，不要依赖裸码“自动识别”。
+
+**可用的已登记指数代码形态：**
+
+| 指数家族 | canonical（注册身份） | display / 等价显式写法 | 示例 |
+|----------|----------------------|------------------------|------|
+| 上海（上证/中证系列 SH 挂牌） | `sh` + 6 位 | `{code}.SH`（另有跨家族 alias 如 `sz399300` → `sh000300`） | `sh000016`、`000016.SH`（上证50） |
+| 深圳（深证/国证系列） | `sz` + 6 位 | `{code}.SZ` | `sz399006`、`399006.SZ`（创业板指）；`sz399365`、`399365.SZ`（国证粮食） |
+| 中证（CSI 代码段） | `csi` + 6 位 | `{code}.CSI` | `csi930606`、`930606.CSI`（中证钢铁）；`csi930955`、`930955.CSI`（红利低波100） |
+| 美股指数 | 不进 CN 注册表 | 直接裸码 | `NDX`（纳斯达克100）、`SPX`、`DJI` |
+
+> 完整清单以 `scripts/stock_index_seeds/index_registry.csv` 为准，构建产物 `apps/dsa-web/public/stocks.index.json` 由它生成（`python scripts/generate_index_from_csv.py --index-only`）。SH/SZ 家族的等价后缀与 canonical 等价；`csi` 家族的 canonical 是 `csi930606`，等价显式写法是 `930606.CSI`（两者都收敛到同一指数）。
+
+**规则与正误示例：**
+
+- **必须写已登记代码的显式形态**（前缀或交易所后缀），不能写未登记代码段（会整批拒绝或按股票处理）。大小写不敏感：`930955.csi`、`CSI930955` 与 `930955.CSI` 等价；同一指数的 canonical 与显式 alias/display 等价（`csi930606` 与 `930606.CSI`、`sz399365` 与 `399365.SZ` 等价）。写错交易所后缀（如 `399365.SH`）会直接报 unsupported（该后缀不接受该代码基码），而裸 6 位码才落回股票路径。
+- **未登记 `.CSI` 目标整批拒绝（仅限 `--stocks` 与 GitHub Actions 入口）**：含未登记 `.CSI`（如 `930956.CSI`、`930606.CSI` 以外的 CSI 段）的 `--stocks` 或 GitHub Actions 每日工作流的 `STOCK_LIST` 会整批拒绝本轮运行，任何一个目标都不执行；本地 `.env`/Docker 无参数默认路径不参与指数分类，不存在此整批拒绝。Web/API 异步批量只拒绝该目标、同步/单股返回 4xx（见下方 Web/API 指数入口小节的 rejected 列表语义）。写错交易所后缀（如 `399365.SH`）同样直接报 unsupported。
+- **裸码不自动提升为指数**：裸 `399365` / `930606` / `000016` 等 6 位代码一律按股票路径处理（契约保持“裸码默认股票”），只记录歧义提示。注意：SZ 家族指数（如 `sz399365`）的股票 canonical 与指数 canonical 同为 `sz{code}` 前缀形态，同码裸股与指数共用同一落库键域，混合自选时请留意下方 canonical 隔离小节的折叠语义。
+- **NDX 等美股指数直接写裸码就是正确写法**：它们走 `us_index_mapping` 的专用美股指数路由，**不要**套用 CN 前缀/后缀（如 `NDX.US`、`usNDX`），加了反而可能落入股票路径。
+- **ETF（如 159934 黄金 ETF、XOP）不进指数注册表**：ETF 语义走股票路径，与同数字开头的指数无关；直接写裸码即可，不需要也不支持指数前缀。
+
+**配置示例（`STOCK_LIST`，逗号分隔）：**
+
+```text
+600519,sh000016,930606.CSI,sz399365,159934,NDX
+```
+
+上面混排了个股（600519 贵州茅台）、上证指数（sh000016）、CSI 指数（930606.CSI）、SZ 指数（sz399365）、A 股 ETF（159934，走股票路径）与美股指数（NDX，走美股指数路由）。批量含未登记 `.CSI` 时整批不运行，因此**推荐对每个指数先核对注册表再配置**。
+
+### 指数与个股 Dashboard canonical 隔离（PR #2312）
+
+已登记指数以 lowercase canonical（`sh000016`/`sz399001`/`csi930955`）写入历史存储；历史筛选、按代码删除、计数与个股栏（stock-bar）聚合统一使用 parser 判型，指数记录与同码裸股票（如 `000016`）严格隔离，互不折叠。例外：SZ 家族指数（如 `sz399365`）的裸股票 canonical 与指数 canonical 同为 `sz{code}` 前缀形态（裸 `399365` 按股票解析时 canonical 即 `sz399365`），二者天然共键；该家族的同码裸股与指数记录不在上述隔离范围，混合自选时按同一键折叠。
+
+- **历史候选**：指数查询（`sh000016`、`SH000016`、`000016.SH`、`sz399001`、`csi930955`、`930955.CSI` 等显式形式）会命中 lowercase canonical、uppercase legacy canonical 与显式 alias 的既有记录，但**不会**命中裸同码股票记录；裸码查询（`000016`/`930955`）也不会命中指数记录。股票 alias、港股与海外市场的既有等价匹配保持不变。
+- **删除与计数**：`DELETE /api/v1/history/by-code/{code}` 与历史总数对指数 canonical 收敛全部显式形态；无记录时仍返回 `deleted=0`，不引入破坏性 404。
+- **个股栏**：同一指数的 `sh000016`/`SH000016`/`000016.SH` 旧记录在 `/history/stocks` 合并为一行并计数全部显式形态，且与裸 `000016` 股票行并列存在、互不合并。stock-bar 判型来自持久化 `record.code`，不从 display code 反推。
+- **API `stock_code` 输出 canonical**：历史列表、历史详情与 stock-bar 对已登记指数（含旧 uppercase/显式 alias 持久化记录，例如 `SZ399300`、`000300.CSI`）一律输出 parser canonical（`sh000300`/`csi930955`），前端不再需要从别名猜 canonical。
+- **任务 / SSE / API 元数据**：任务列表与 SSE 事件对已提交的 `analysis_target` 暴露可选 `asset_type`（`stock`/`index`），不重新猜测；历史列表项与 stock-bar 项也追加可选 `asset_type`。不认识该字段的旧客户端直接忽略，字段可选追加不破坏既有契约。
+- **Web Dashboard 身份键**：任务/报告/历史的 `assetType` 优先，且被后端保证为 parser canonical 的代码只做**大小写折叠**（`SH000016`→`sh000016`），**禁止**再用前缀/后缀正则猜 canonical（否则 `000300.CSI` 会被误猜成 `csi000300`、`sz399300` 被误当成独立 canonical，违反注册表唯一判型真源）；仅 watchlist 原始字符串缺少类型时，才使用已加载 `stocks.index.json` 中 `assetType=index` 行的 canonical/display/显式 alias **精确命中**（不做先 normalize 再匹配、不用前缀正则猜测；加载期间禁用批量分析，加载失败或请求超过 10 秒时按既有股票语义 fail-open）。行选中、active task 与完成自动选中均按资产类型分桶，指数行与同码股票行状态独立，完成后自动选中正确的 canonical 指数报告。
 
 ### Futu 真实持仓作为分析列表
 
@@ -791,7 +896,7 @@ python main.py --schedule --no-run-immediately
 
 > 说明：定时模式每次触发前都会重新读取当前保存的 `STOCK_LIST`。如果同时传入 `--stocks`，该参数不会锁定后续计划执行的股票列表；需要临时只跑指定股票时，请使用非定时的单次运行命令。
 >
-> 从 `python main.py --schedule` 或等价纯 CLI 调度模式启动后，WebUI 保存新的 `SCHEDULE_TIME` / `SCHEDULE_TIMES` 会在下一轮调度检查内自动重绑 daily jobs，无需重启进程；旧的执行时间不会继续保留。`python main.py --serve --schedule` 会由 Web/API runtime scheduler 接管定时任务，WebUI/API/Desktop 长运行进程保存 `SCHEDULE_ENABLED`、`SCHEDULE_TIME` 或 `SCHEDULE_TIMES` 后会按当前配置启停或重建 runtime scheduler。
+> 从 `python main.py --schedule` 或等价纯 CLI 调度模式启动后，WebUI 保存新的 `SCHEDULE_TIME` / `SCHEDULE_TIMES` 会在下一轮调度检查内自动重绑 daily jobs，无需重启进程；旧的执行时间不会继续保留。`python main.py --serve --schedule` 会由 Web/API runtime scheduler 接管定时任务，WebUI/API/Desktop 长运行进程保存 `SCHEDULE_ENABLED`、`SCHEDULE_TIME` 或 `SCHEDULE_TIMES` 后会按当前配置启停或重建 runtime scheduler。重启 `python main.py --serve-only` 或 Desktop 时，已启用的 daily jobs 会自动恢复，但服务启动本身不会立即执行分析。
 >
 > Web/API runtime scheduler 的立即执行入口只会在没有分析任务运行时接受请求；如果已有分析在执行，会返回忙碌状态而不是假装排队成功。
 
@@ -804,9 +909,14 @@ python main.py --schedule --no-run-immediately
 | `SCHEDULE_ENABLED` | 是否启用定时任务 | `false` | `true` |
 | `SCHEDULE_TIME` | 每日执行时间 (HH:MM) | `18:00` | `09:30` |
 | `SCHEDULE_TIMES` | 多个每日执行时间，逗号分隔；为空时使用 `SCHEDULE_TIME` | 空 | `09:20,12:30,15:10,18:00` |
+| `DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS` | Web/API runtime scheduler 单次分析硬超时（秒，最小 60 秒） | `2700` | `3600` |
+| `DSA_TIMEOUT_PARTIAL_NOTIFY` | **默认开启（行为变化）**：硬超时后是否推送已落库个股的部分完成通知；此前超时不推送 | `true` | `false` |
 | `SCHEDULE_RUN_IMMEDIATELY` | 定时模式启动时是否立即运行一次；未显式设置时沿用 `RUN_IMMEDIATELY` 的运行时覆盖语义 | `true` | `false` |
+| `SCHEDULE_STARTUP_DEDUP` | 定时模式启动立即执行的当日去重：当天已有成功且覆盖当前应分析清单的全量分析记录（日期 + scope=full + 覆盖面子集判定；标记位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`）时跳过本次启动补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律放行执行（fail-open），v1 旧标记同样放行一次以完成升级；股票清单指纹仅作观测、不参与判定；大盘复盘完成度仅记录、不参与判定 | `true` | `false` |
 | `RUN_IMMEDIATELY` | 非定时模式启动时是否立即运行一次；同时作为未显式设置 `SCHEDULE_RUN_IMMEDIATELY` 时的 legacy 回退 | `true` | `false` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：非交易日跳过执行；设为 `false` 可强制执行 | `true` | `false` |
+
+> 超时部分完成排障：通知渠道异常只记 warning（`Partial timeout notification failed`）并跳过推送，**不抛出、不占用** `status().running`（notify 在分析锁释放后的后台线程）。扫库 / `src.storage` 导入失败同样 fail-open：API 上可能仍是 baseline `timed out after Ns`，或被 enrich 成 `completed=0`（与「确实没有落库」无法区分）。运维请搜 `Failed to collect completed analyses after timeout`、`Timeout partial delivery failed open`、`Partial timeout notification failed`。合入后首次发布请关注通知量，避免默认开启造成骚扰；可设 `DSA_TIMEOUT_PARTIAL_NOTIFY=false` 关闭推送。
 
 例如在 Docker 中配置：
 
@@ -820,7 +930,7 @@ docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false ...
 > 兼容说明（Issue #1815）：`MARKET_REVIEW_REGION=cn|hk|us|jp|kr|both` 仅扩展大盘复盘输入集合；JP/KR 仅供复盘上下文消费，不会放开 Market Light 告警。
 > - `src/config.py`、`src/core/config_registry.py`、`src/services/system_config_service.py` 的改动仅是配置语义扩展，不改 `provider`/`model`/`base_url` 的运行时路由，也不触发 provider/model/base URL 迁移或清理逻辑。
 > - 本轮实际受控配置项：`MARKET_REVIEW_REGION`、`MARKET_REVIEW_COLOR_SCHEME`；`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_BASE_URL` 等旧值保持原子 upsert 语义，不会在更新其他字段时被静默清空或覆盖。
-> - 可核验证据摘要：官方 provider / Base URL / 模型命名来源沿用 [LLM 配置指南](LLM_CONFIG_GUIDE.md#常用官方文档来源用于核对预设-provider--base-url--模型命名)，当前运行时依赖窗口沿用 `requirements.txt` 中的 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`；本轮不新增配置迁移脚本或清理分支，保存/导入仍只写本次提交键。`tests/test_system_config_service.py::SystemConfigServiceTestCase::test_update_market_review_region_does_not_trigger_runtime_model_cleanup` 覆盖只保存 `MARKET_REVIEW_REGION` 时不清空或改写 `LITELLM_CONFIG`、`LLM_CHANNELS`、`LLM_OPENAI_*`、`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_*` 等旧配置。
+> - 可核验证据摘要：官方 provider / Base URL / 模型命名来源沿用 [LLM 配置指南](LLM_CONFIG_GUIDE.md#常用官方文档来源用于核对预设-provider--base-url--模型命名)，当前运行时依赖窗口沿用 `requirements.txt` 中的 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`；本轮不新增配置迁移脚本或清理分支，保存/导入仍只写本次提交键。`tests/test_system_config_service.py::SystemConfigServiceTestCase::test_update_market_review_region_does_not_trigger_runtime_model_cleanup` 覆盖只保存 `MARKET_REVIEW_REGION` 时不清空或改写 `LITELLM_CONFIG`、`LLM_CHANNELS`、`LLM_OPENAI_*`、`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_*` 等旧配置。
 > - 旧值回退策略：先恢复备份 `MARKET_REVIEW_REGION` 与配置文件即可回到旧边界，未提交的模型/路由键保留原值；必要时 `revert` PR 并按 `.env` 备份完成回退。
 > - 可回滚路径：恢复提交前 `.env` / 配置备份中的 `MARKET_REVIEW_REGION` 与相关运行时变量，或直接 revert 本 PR。
 
@@ -1261,7 +1371,7 @@ PUSHOVER_API_TOKEN=your_api_token
 1. **imgkit**：已包含在 `requirements.txt`，执行 `pip install -r requirements.txt` 时会自动安装
 2. **wkhtmltopdf**（默认引擎）：系统级依赖，需手动安装：
    - **macOS**：`brew install wkhtmltopdf`
-   - **Debian/Ubuntu**：`apt install wkhtmltopdf`
+   - **Debian/Ubuntu**：`apt install wkhtmltopdf fonts-noto-cjk`（用于正确渲染项目支持的中文和韩文报告）
 3. **markdown-to-file**（可选，emoji 支持更好）：`npm i -g markdown-to-file`，并设置 `MD2IMG_ENGINE=markdown-to-file`
 4. **Playwright**（可选，适合 Web 服务）：在 `apps/dsa-web` 执行 `npm ci` 和 `npx playwright install chromium`，并设置 `MD2IMG_ENGINE=playwright`
 
@@ -1376,7 +1486,7 @@ LITELLM_FALLBACK_MODELS=anthropic/claude-sonnet-4-6,openai/gpt-5.4-mini
 
 **依赖说明**：`requirements.txt` 中保留 `openai>=1.0.0`，因 LiteLLM 内部依赖 OpenAI SDK 作为统一接口；显式保留可确保版本兼容性，用户无需单独配置。
 
-**视觉模型（图片提取股票代码）**：详见 [LLM 配置指南 - Vision](LLM_CONFIG_GUIDE.md#41-vision-模型图片识别股票代码)。
+**视觉模型（图片提取股票代码）**：详见 [LLM 配置指南 - Vision](LLM_CONFIG_GUIDE.md#扩展功能看图模型-vision-配置)。
 
 从图片提取股票代码（如 `/api/v1/stocks/extract-from-image`）使用统一视觉模型接入，底层采用 LiteLLM Vision 与 OpenAI `image_url` 格式，支持 Gemini、Claude、OpenAI、DeepSeek 等 Vision-capable 模型。返回 `items`（code、name、confidence）及兼容的 `codes` 数组。
 
@@ -1386,6 +1496,7 @@ LITELLM_FALLBACK_MODELS=anthropic/claude-sonnet-4-6,openai/gpt-5.4-mini
 
 - **AkShare 名称解析缓存**：名称→代码解析使用 AkShare 在线 fallback 时，结果缓存 1 小时（TTL），避免频繁请求；首次调用或缓存过期后会自动刷新。
 - **CSV/Excel 列名**：支持 `code`、`股票代码`、`代码`、`name`、`股票名称`、`名称` 等（不区分大小写）；无表头时默认第 1 列为代码、第 2 列为名称。
+- **文本编码**：CSV 与剪贴板文本支持 UTF-8（含 BOM）和 GBK。
 - **常见解析失败**：文件过大（>2MB）、编码非 UTF-8/GBK、Excel 工作表为空或损坏、CSV 分隔符/列数不一致时，API 会返回具体错误提示。
 
 - **模型优先级**：`VISION_MODEL` > `LITELLM_MODEL` > 根据已有 API Key 推断（`OPENAI_VISION_MODEL` 已废弃，请改用 `VISION_MODEL`）
@@ -1557,7 +1668,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | 命令 | 说明 |
 |------|------|
 | `python main.py --serve` | 启动 API 服务 + 执行一次完整分析 |
-| `python main.py --serve-only` | 仅启动 API 服务，手动触发分析 |
+| `python main.py --serve-only` | 仅启动 API 服务；可手动触发分析，并恢复配置中已启用的定时任务，但启动时不立即分析 |
 
 ### 功能特性
 
@@ -1576,7 +1687,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 🧾 **市场复盘历史可复用** - 大盘复盘任务会持久化到分析历史，`report_type` 为 `market_review`，可直接通过历史列表/详情打开对应 Markdown 或详情页，不会重新触发分析重算
 - 🧭 **市场位置卡片** - A 股普通分析报告会展示市场题材层和个股位置层，区分大盘主线、主关联题材、题材阶段、个股位置和缺失证据
 - 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要
-- 💬 **问股追问上下文** - 从历史报告进入问股后，后续追问会持续携带当前 `stock_code/stock_name`；切回或重载已有问股会话时，会从已加载的历史用户消息恢复基础当前标的；只有用户明确切换标的时才切换上下文，含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题不会污染当前标的
+- 💬 **问股主讨论对象** - 服务端接受明确代码或索引中唯一名称后保存对象；普通追问、刷新、重开和切回会话从服务端恢复。明确切股才更新主对象，比较只扩大本轮范围，首次比较不任选一只；报告跳转只是提示，不自行建立已确认状态。模型失败或停止不撤销已接受的对象。
 - 🧠 **会话级 Skill 选择** - 问股会话会持久化当前 Skill 选择；刷新或切换会话时恢复各自选择，新会话继续使用服务器默认 Skill
 - 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
 - 🔗 **API 文档** - 访问 `/docs` 查看 Swagger UI
@@ -1650,16 +1761,16 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 > 说明：`GET /api/v1/usage/dashboard` 复用 `llm_usage` 审计表，不新增配置项或数据库迁移。接口仅返回已落库的调用次数、Prompt/Completion/Total Token 聚合、模型维度用量和最近调用记录，不推导模型上下文窗口或 provider 元数据。
 > 说明（Issue #1520）：列表中的模型名展示字段仅来源于历史快照中的 `model_used`，仅用于历史回溯展示，不影响运行时模型模型路由（`litellm_model`、`llm_model_list`）、Provider、Base URL 与配置迁移/清理语义。回退方式为回退本次提交，现网历史查询/抽屉/接口链路兼容性保持不变。
 > 说明：历史详情、同步分析响应和 completed 任务状态会在 `report.details.analysis_context_pack_overview` 返回低敏输入数据块 overview；其中同步分析响应依赖本次已持久化的 `analysis_history.context_snapshot`，`SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回 overview。`details.context_snapshot` 会剥离该顶层字段，不返回完整 `AnalysisContextPack` 或 Prompt summary。
-> 说明：`POST /api/v1/agent/chat` 与 `POST /api/v1/agent/chat/stream` 会把前端传入的 `context.stock_code` 作为问股当前标的基线，并在 `context.report_language` 缺失时使用全局 `REPORT_LANGUAGE`；调用方显式提供的 `context.report_language` 保持优先。服务端会先重新判定 stock scope。前端从历史报告进入问股后会持续发送 active stock context；切回或重载已有会话时，会根据已加载的历史用户消息恢复基础 `{stock_code, stock_name: null}`。服务端会在每轮消息中重新判定 `maintain` / `switch` / `compare`：未明确切换时，带 `stock_code` 的股票工具调用只能访问当前标的；显式切换会清理旧标的历史摘要和预取数据；含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题允许本轮明确出现的多个代码，但不改写当前标的。若模型误把 TTM、PE、MACD、KDJ 等金融缩写、移动均线语境下的 `MA` 指标词，或 SH/SZ/BJ/HK/SS 等交易所片段当成股票代码调用工具，后端会返回不可重试的 `stock_scope_violation` 工具结果，而不会执行对应股票工具。工具名只解析注册表中的精确名称；任何 provider namespace 或 suffix 都不会路由到已有工具。
+> 问股状态：`POST /api/v1/agent/chat`、`/chat/stream` 由服务端会话快照确定主对象，不把 `context.stock_code` 当作事实；报告 hint 只有完整 canonical／股票或指数类型一致才复用。detail、accepted 和 non-stream 响应提供 `active_stock_context`（code/name/canonical/type）、`session_state_version`、`session_generation`；消息、显式 Skill 与股票在同一接受事务提交，执行消费该快照而不回写股票。明确切股清除旧对象的附带数据；比较只扩大本轮明确 scope。金融缩写／交易所片段误作股票参数仍被真实 scope guard 拒绝，工具名称仍精确匹配。缺少对象的普通策略问题使用空股票 scope，歧义或无法确认的切股返回普通澄清。`context.report_language` 仍优先于全局 `REPORT_LANGUAGE`。已知 generation 可随请求发送，冲突在 SSE 返回 `session_state_conflict`、non-stream 返回 409；请刷新后手动重试，不自动重发。旧 API 新字段全缺时 Web 显示未确认，不从文本推测；部分字段缺失是协议错误。旧历史和非破坏升级／回滚见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#问股会话状态与升级)。
 
-> Skill 会话状态：上述两个 Chat 请求中的顶层 `skills` 为三态字段，也是请求 Skill 选择的唯一权威来源。省略或传 `null` 时沿用该 `session_id` 已保存的选择；会话尚无状态时使用服务器运行时默认 Skill。传 `[]` 表示清空显式选择并使用现有通用/服务器默认执行语义；传非空列表时会按现有 Skill catalog 规则清理、去重并保存。非空列表中有效项与无效项混合时保留有效项；若全部条目均无效，则不会把归一化后的空结果视为显式 `[]`，而是沿用会话状态或运行时默认且不写入空状态。用于复用分析数据的 `context` 中即使残留 `skills` 或 `strategies`，服务端也会移除这些 legacy 字段，不能覆盖顶层三态或会话状态。用户消息与本轮显式 Skill 更新在同一事务中写入，成功后流式接口才发送 `accepted`。`GET /api/v1/agent/chat/sessions/{session_id}` 会在消息之外返回 `session_state.selected_skill_ids`：没有持久化状态时为 `null`，显式清空时为 `[]`，否则为保存的 Skill 列表。Web 端使用该字段恢复持久化选择；对于 `null`，页面可以显示服务器默认 Skill，但未操作直接追问时仍省略 `skills`，不会把历史会话静默转换为显式 Skill 会话。删除会话会同时删除对应状态。
+> Skill 会话状态：顶层 `skills` 是请求选择的唯一来源。省略／`null` 沿用已保存选择，未选择时使用运行时配置默认；显式 `[]` 保存清空并使用内置默认，不启用配置中的非空 Skill。非空列表按现有 catalog 清理去重，混合条目保留有效项，全无效则继承且不写空状态。`context.skills/strategies` 被移除。接受事务同时写消息、显式 Skill 与股票，成功才发 accepted；detail 的 `session_state.selected_skill_ids` 仍分别返回未选择 `null`、清空 `[]` 或已保存列表。Web 区分保存值与待提交草稿；未操作的追问省略选择，冲突不把草稿冒充已保存。删除会话同时删除状态。
 > 说明：`POST /api/v1/backtest/run` 新增 `analysis_date_from` / `analysis_date_to`（`YYYY-MM-DD`）请求参数用于按历史分析日期筛选候选；若 `analysis_date_from > analysis_date_to`，接口返回 400 `invalid_params`。
 > 说明：回测执行成功但无新入库结果时，`BacktestRunResponse.message` 返回可读诊断说明，`diagnostics` 返回排查上下文（示例：`empty_reason`、`analysis_date_from`、`analysis_date_to`、`eval_window_days`、`min_age_days`、`limit`）。
 > 说明：`GET /api/v1/backtest/results`、`GET /api/v1/backtest/performance`、`GET /api/v1/backtest/performance/{code}` 同步支持 `analysis_date_from`、`analysis_date_to`；不传时保持历史行为。
 
 > 兼容性审计证据：
 > - 官方来源：LiteLLM OpenAI-compatible provider 文档 <https://docs.litellm.ai/docs/providers/openai_compatible>；OpenAI Chat API 文档 <https://platform.openai.com/docs/api-reference/chat/create>；DeepSeek API 文档 <https://api-docs.deepseek.com/>。
-> - 依赖版本：项目约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`（见 `requirements.txt`），以上兼容语义回归测试在该版本窗口内执行。
+> - 依赖版本：项目约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`（见 `requirements.txt`），以上兼容语义回归测试在该版本窗口内执行。
 > - 可复核测试：
 >   - `tests/test_llm_channel_config.py`（配置源优先级与 provider/base url 映射）
 >   - `tests/test_market_review_runtime.py`（`build_market_review_runtime` 复用装配路径）
@@ -1765,6 +1876,8 @@ A: AkShare 使用爬虫机制，可能被临时限流。系统已配置重试机
 
 ### Q: 如何添加自选股？
 A: 修改 `STOCK_LIST` 环境变量，多个代码推荐用英文逗号分隔。系统也会识别中文逗号、顿号、分号、空格和换行，并在 Web 设置页保存或自选增删后规范为英文逗号。
+
+自选增删及仅保存 `STOCK_LIST` 时，只热更新股票列表，保留其他运行时配置和容器环境覆盖。部分配置保存不会被已有的无关 LLM 渠道或模型选择错误阻断；修改模型、渠道、路由文件或相关凭据时仍会检查整个模型依赖关系。凡本次保存会启用 Agent 路径的也同样检查：把 `AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` 切到 LiteLLM（含 `auto`）、设 `AGENT_MODE=true`、或配置非 `all` 的 `AGENT_SKILLS`——后两者走普通分析的 Agent 分支，自带 `LLMToolAdapter`，不受 `AGENT_BACKEND` 决定。仅关闭 `AGENT_MODE`、将 `AGENT_SKILLS` 设为 `all` 或空值、以及无关键保存不受 LLM 配置影响。已有的退役 `codex_app_server` 配置可保留，不阻断无关保存；显式保存或导入该退役值仍会被拒绝。已有模型错误需要另行修正，保存自选成功不代表模型配置有效。
 
 ### Q: GitHub Actions 没有执行？
 A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是 UTC 时间）。

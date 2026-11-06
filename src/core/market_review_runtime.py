@@ -103,8 +103,9 @@ def build_market_review_runtime(
             searxng_public_instances_enabled=getattr(
                 config,
                 "searxng_public_instances_enabled",
-                True,
+                False,
             ),
+            searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
             news_max_age_days=getattr(config, "news_max_age_days", 3),
             news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
         )

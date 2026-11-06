@@ -76,6 +76,8 @@ docs: 更新 README 部署说明
 
 提交 PR 后，CI 会自动运行以下检查：
 
+仅修改普通 `docs/**`、非治理类 Markdown 或 `LICENSE` 时，CI 保留轻量的变更检测、治理校验和门禁汇总，但跳过 3 个后端测试 shard、Docker、Web 与桌面打包。被离线测试直接读取的契约文档、静态 API 规格与 Markdown fixture 仍会触发后端测试。`AGENTS.md`、`.github/instructions/**`、`.claude/skills/**` 等治理资产仍会由 `ai-governance` 校验；配置、依赖、工作流等会影响运行的文本文件仍执行对应完整检查。
+
 | 检查项 | 说明 | 必须通过 |
 |--------|------|:--------:|
 | backend-gate | `scripts/ci_gate.sh`（py_compile + flake8 严重错误 + 本地核心脚本 + offline pytest） | ✅ |

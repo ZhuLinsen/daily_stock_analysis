@@ -624,3 +624,69 @@ def test_extract_and_persist_missing_price_plan_does_not_fabricate_fields(isolat
     assert item["entry_high"] is None
     assert item["stop_loss"] is None
     assert item["target_price"] is None
+
+
+def test_build_payload_index_uses_market_override_cn() -> None:
+    """V9 — an index target whose canonical code would resolve to None market
+    (e.g. CSI) must persist with market=cn via the market_override."""
+    result = _result(code="csi930955", name="红利低波100")
+
+    payload = build_decision_signal_payload_from_report(
+        result,
+        context_snapshot=None,
+        portfolio_context=None,
+        source_report_id=955,
+        trace_id="trace-index-csi",
+        query_source="cli",
+        report_type="full",
+        profile_source=BUILD_PROFILE_SOURCE,
+        market_override="cn",
+    )
+
+    assert payload is not None
+    assert payload["stock_code"] == "csi930955"
+    assert payload["stock_name"] == "红利低波100"
+    assert payload["market"] == "cn"
+    assert payload["source_type"] == "analysis"
+    assert payload["source_report_id"] == 955
+
+
+def test_extract_and_persist_index_signal_with_market_override(isolated_db) -> None:
+    """V9 — end-to-end: an index signal persists with market=cn, source_type,
+    and source_report_id linkage (not skipped because CSI market was None)."""
+    service = DecisionSignalService(db_manager=isolated_db)
+    result = _result(code="csi930955", name="红利低波100")
+
+    created = extract_and_persist_from_analysis_result(
+        result,
+        context_snapshot={"market_phase_summary": {"phase": "intraday"}},
+        portfolio_context={"quantity": 0},
+        source_report_id=955,
+        trace_id="trace-index-csi",
+        query_source="cli",
+        report_type="full",
+        profile_source="auto_default",
+        service=service,
+        market_override="cn",
+    )
+
+    assert created is not None
+    assert created["created"] is True
+    item = created["item"]
+    assert item["stock_code"] == "csi930955"
+    assert item["market"] == "cn"
+    assert item["source_type"] == "analysis"
+    assert item["source_report_id"] == 955
+
+    listed = service.list_signals(source_report_id=955)
+    assert listed["total"] == 1
+    assert listed["items"][0]["stock_code"] == "csi930955"
+    assert listed["items"][0]["market"] == "cn"
+
+    by_alias = service.list_signals(stock_code="930955.CSI", market="cn")
+    assert by_alias["total"] == 1
+    assert by_alias["items"][0]["stock_code"] == "csi930955"
+
+    latest = service.get_latest_active(stock_code="csi930955", market="cn")
+    assert latest["total"] == 1
+    assert latest["items"][0]["source_report_id"] == 955

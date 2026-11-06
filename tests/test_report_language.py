@@ -104,9 +104,16 @@ class KoreanReportLanguageTestCase(unittest.TestCase):
     def test_korean_labels_cover_full_english_key_set(self) -> None:
         ko_labels = get_report_labels("ko")
         en_labels = get_report_labels("en")
+        zh_labels = get_report_labels("zh")
         self.assertEqual(set(ko_labels.keys()), set(en_labels.keys()))
+        self.assertEqual(set(zh_labels.keys()), set(en_labels.keys()))
         self.assertEqual(ko_labels["dashboard_title"], "결정 대시보드")
         self.assertEqual(ko_labels["risk_alerts_label"], "리스크 경보")
+
+    def test_data_sources_label_is_localized(self) -> None:
+        self.assertEqual(get_report_labels("zh")["data_sources_label"], "数据来源")
+        self.assertEqual(get_report_labels("en")["data_sources_label"], "Data Sources")
+        self.assertEqual(get_report_labels("ko")["data_sources_label"], "데이터 출처")
 
     def test_korean_sentiment_label_bands(self) -> None:
         self.assertEqual(get_sentiment_label(80, "ko"), "매우 낙관")

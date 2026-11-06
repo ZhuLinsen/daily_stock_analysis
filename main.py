@@ -51,10 +51,28 @@ if _packaged_import_probe:
     import sys
 
     try:
-        importlib.import_module(_packaged_import_probe)
+        probe_module = importlib.import_module(_packaged_import_probe)
+        if _packaged_import_probe == "py_mini_racer":
+            # Importing the Python wrapper does not load V8 or its data files.
+            # Exercise the installed runtime to detect missing/mismatched assets.
+            engine = probe_module.MiniRacer()
+            try:
+                if engine.eval("1 + 1") != 2:
+                    raise RuntimeError("MiniRacer JavaScript evaluation failed")
+            finally:
+                close = getattr(engine, "close", None)
+                if callable(close):
+                    close()
+        elif _packaged_import_probe == "src.agent.factory":
+            # Build the agent tool registry so tool modules that read package
+            # data at import time (e.g. the FXMacroData operation catalogue)
+            # are exercised in the frozen artifact.
+            registry = probe_module.get_tool_registry()
+            if not any(name.startswith("fxmacrodata_") for name in registry.list_names()):
+                raise RuntimeError("FXMacroData tools are missing from the agent tool registry")
     except Exception as exc:
         print(
-            f"ERROR: packaged import failed for {_packaged_import_probe}: {exc}",
+            f"ERROR: packaged runtime probe failed for {_packaged_import_probe}: {exc}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -73,14 +91,24 @@ from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
 from src.brokers.futu.portfolio import FutuPortfolioError
+from src.core.analysis_run_marker import (
+    record_analysis_run_marker,
+    should_skip_startup_immediate_run,
+)
 from data_provider.base import canonical_stock_code
-from src.services.stock_list_parser import split_stock_list
+from src.services.stock_list_parser import (
+    AnalysisTarget,
+    ParseStatus,
+    parse_analysis_target,
+    split_stock_list,
+)
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 
 logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
+_LAST_ANALYSIS_FAILURE_REASON: Optional[str] = None
 
 
 def _get_active_env_path() -> Path:
@@ -279,12 +307,14 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --debug            # 调试模式
   python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
+  python main.py --stocks sh000016,000300.CSI,930955.CSI  # 指定分析已登记指数（sh/sz 前缀或 .CSI alias）
   python main.py --portfolio futu   # 使用 Futu 真实正股持仓（覆盖 --stocks）
   python main.py --no-notify        # 不发送推送通知
   python main.py --check-notify     # 检查通知配置，不发送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --etf-rotation     # ETF 轮动：最新信号 + 规则回测报告
         '''
     )
 
@@ -303,7 +333,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--stocks',
         type=str,
-        help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
+        help='指定要分析的股票代码，逗号分隔（覆盖配置文件）；支持已登记指数：sh/sz 前缀（如 sh000016）或 .CSI alias（如 000300.CSI、930955.CSI）'
     )
 
     parser.add_argument(
@@ -439,6 +469,13 @@ def parse_arguments() -> argparse.Namespace:
         help='强制回测（即使已有回测结果也重新计算）'
     )
 
+    # === ETF Rotation ===
+    parser.add_argument(
+        '--etf-rotation',
+        action='store_true',
+        help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
+    )
+
     return parser.parse_args()
 
 
@@ -470,6 +507,15 @@ def _compute_trading_day_filter(
     filtered_codes = []
     for code in stock_codes:
         mkt = get_market_for_stock(code)
+        if mkt is None:
+            # 指数 code（如 sh000016/csi930955/930955.CSI）的 get_market_for_stock
+            # 返回 None，若直接 fail-open 保留，A 股休市日指数不会被过滤，破坏
+            # per-stock 交易日契约。对市场未知的 code 用 parse_analysis_target
+            # 判型，已登记指数按 market=cn 参与 CN 交易日过滤；仍未知的非指数
+            # code 继续 fail-open 保留。
+            target = parse_analysis_target(code)
+            if target.asset_type == ParseStatus.INDEX:
+                mkt = "cn"
         if mkt in open_markets or mkt is None:
             filtered_codes.append(code)
 
@@ -482,6 +528,46 @@ def _compute_trading_day_filter(
 
     should_skip_all = (not filtered_codes) and (effective_region or '') == ''
     return (filtered_codes, effective_region, should_skip_all)
+
+
+def _classify_stock_list_tokens(
+    tokens: List[str],
+    *,
+    entry_label: str,
+) -> Optional[Tuple[List[str], List[AnalysisTarget]]]:
+    """Classify stock-list tokens into aligned ``(stock_codes, analysis_targets)``.
+
+    Shared by the one-shot ``--stocks`` entry and the GitHub Actions
+    ``STOCK_LIST`` entry: explicit index tokens resolve through
+    ``parse_analysis_target`` and keep their index canonical, while every
+    other token keeps the legacy ``resolve_index_stock_code_for_analysis``
+    path. ``unsupported`` tokens (e.g. an unregistered ``.CSI``) reject the
+    whole run up-front with an explicit error — provider calls are never
+    reached for any token in the batch. Returns ``None`` after logging the
+    rejection, so callers exit without running analysis.
+    """
+    targets = [parse_analysis_target(t) for t in tokens]
+    unsupported = [
+        (token, target.unsupported_reason or "unsupported target")
+        for token, target in zip(tokens, targets)
+        if target.asset_type == ParseStatus.UNSUPPORTED
+    ]
+    if unsupported:
+        token, reason = unsupported[0]
+        logger.error(
+            "%s 包含不支持的目标 %r：%s；本轮不执行任何分析。",
+            entry_label,
+            token,
+            reason,
+        )
+        return None
+    stock_codes = [
+        t.canonical_id
+        if t.asset_type == ParseStatus.INDEX
+        else resolve_index_stock_code_for_analysis(raw)
+        for t, raw in zip(targets, tokens)
+    ]
+    return stock_codes, targets
 
 
 def _run_market_review_with_shared_lock(
@@ -551,6 +637,70 @@ def _resolve_portfolio_stock_codes(args: argparse.Namespace) -> Optional[List[st
     ]
     logger.info("portfolio=futu 已覆盖 stocks/STOCK_LIST，使用 %d 只真实正股", len(stock_codes))
     return stock_codes
+
+
+def _resolve_gate_expected_stock_codes(
+    config: Config,
+    args: argparse.Namespace,
+    *,
+    stock_codes: Optional[List[str]] = None,
+) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Resolve the startup dedup gate's expected list like the run entry.
+
+    Mirrors ``run_full_analysis``' real target resolution (Futu portfolio
+    first, then the ``STOCK_LIST`` .env hot-reload, then the trading-day
+    filter) so the skip decision uses what THIS startup would actually
+    analyze instead of a possibly stale ``config.stock_list`` snapshot
+    (second-round review blockers OR-COR-e59aed48 / OR-COR-c4971c31).
+
+    The result is a snapshot taken at gate time: if the portfolio or the
+    .env watchlist changes strictly after this resolution but before the
+    run re-resolves them, the gate may miss that and a new target waits
+    for the next scheduled run. The drift direction still never skips a
+    run that would cover more than recorded (fail-open), and the residual
+    race window is a single task invocation.
+
+    Returns ``(expected_codes, fail_open_reason)``:
+
+    - Portfolio mode: the trading-day-filtered live position codes. An
+      empty filtered list (no positions / no open market) can never prove
+      coverage, so it returns a fail-open reason instead — the run itself
+      decides downstream, the gate never skips on it.
+    - Non-portfolio mode: mirrors the run's refresh condition verbatim
+      (``stock_codes is None`` on the schedule path; the refresh is
+      idempotent on the same config object the run reuses) and keeps the
+      existing semantics for an empty config watchlist (pure-review dedup).
+    - Any resolution failure fails open too: ``None`` expected codes plus a
+      reason string for the gate log. Never miss a run outranks never
+      re-run.
+    """
+    try:
+        portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
+        if portfolio_stock_codes is not None:
+            filtered_codes, _, _ = _compute_trading_day_filter(
+                config, args, portfolio_stock_codes
+            )
+            if not filtered_codes:
+                return (None, "portfolio mode resolved no tradable targets")
+            return (filtered_codes, None)
+
+        # Issue #529: keep this condition verbatim-identical to
+        # run_full_analysis — hot-reload STOCK_LIST from .env before a
+        # config-list run. The gate and the run share the same config
+        # object, so this refresh converges to what the run would do anyway.
+        if stock_codes is None:
+            config.refresh_stock_list()
+        effective_codes = (
+            stock_codes
+            if stock_codes is not None
+            else getattr(config, "stock_list", None) or []
+        )
+        filtered_codes, _, _ = _compute_trading_day_filter(
+            config, args, effective_codes
+        )
+        return (filtered_codes, None)
+    except Exception as exc:  # noqa: BLE001 - the gate must never block a run
+        return (None, f"target resolution failed: {exc}")
 
 
 def _prime_daily_market_context(
@@ -715,19 +865,57 @@ def _run_auto_backtest(config: Config) -> None:
         logger.warning(f"自动回测失败（已忽略）: {exc}")
 
 
+def _all_stock_targets_succeeded(
+    stock_codes: Optional[List[str]],
+    results: List[Any],
+) -> bool:
+    """Return True only when every requested stock target produced a result.
+
+    ``StockAnalysisPipeline.run`` returns just the successful results, so
+    run completeness is "every requested code shows up in the results".
+    Both sides normalize to ``str(code)`` — exactly the normalization the
+    run marker's ``stock_codes`` field uses — and order/duplicates are
+    ignored. An empty target list is a vacuous success (pure-review
+    deployments keep their same-day dedup). Market-review completeness is
+    deliberately NOT part of this check: a failing review must never
+    resurrect the restart loop the dedup gate fixes (the daily run
+    backfills it).
+    """
+    try:
+        requested = {str(code) for code in (stock_codes or [])}
+        produced = {
+            str(getattr(result, "code", "")) for result in (results or [])
+        }
+        return requested.issubset(produced)
+    except Exception:  # pragma: no cover - defensive: a bookkeeping error
+        # must never break the analysis run; not recording the marker just
+        # makes the next startup re-run (fail-open).
+        return False
+
+
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
     stock_codes: Optional[List[str]] = None,
     *,
     raise_errors: bool = False,
+    analysis_targets: Optional[List[AnalysisTarget]] = None,
+    refresh_watchlist: bool = True,
 ) -> bool:
     """
     执行完整的分析流程（个股 + 大盘复盘）
 
     这是定时任务调用的主函数。Futu 持仓解析失败始终传播给调用方；
     ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
+    ``analysis_targets`` 与 ``stock_codes`` 对齐，携带结构化分析目标
+    （指数目标用于推导 market=cn 与能力矩阵）。
+    ``refresh_watchlist=False`` 仅用于已原子认领的定时快照，避免认领后再次热更新。
     """
+    # Capture the entry-level stock list for the run-marker scope: the local
+    # ``stock_codes`` variable is later replaced by the trading-day filter and
+    # Futu positions, so it must never feed the dedup decision (the marker
+    # fingerprint always comes from config.stock_list on both sides).
+    entry_stock_codes = stock_codes
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
     # existing run_full_analysis return-value semantics.
@@ -750,17 +938,40 @@ def run_full_analysis(
     from src.core.market_review import run_market_review
     from src.core.pipeline import StockAnalysisPipeline
 
+    global _LAST_ANALYSIS_FAILURE_REASON
+    _LAST_ANALYSIS_FAILURE_REASON = None
+
+    def _return_with_auto_backtest(result: bool) -> bool:
+        _run_auto_backtest(config)
+        return result
+
     try:
         _refresh_stock_index_cache_for_analysis(config)
         if portfolio_stock_codes is not None:
             stock_codes = portfolio_stock_codes
+            analysis_targets = None
 
         # Issue #529: Hot-reload STOCK_LIST from .env on each scheduled run
-        if stock_codes is None and portfolio_stock_codes is None:
+        if stock_codes is None and portfolio_stock_codes is None and refresh_watchlist:
             config.refresh_stock_list()
 
-        # Issue #373: Trading day filter (per-stock, per-market)
+        using_config_stock_list = stock_codes is None and portfolio_stock_codes is None
         effective_codes = stock_codes if stock_codes is not None else config.stock_list
+        # Fail fast on an empty persisted watchlist before trading-day filtering.
+        # Otherwise should_skip=True would mask the configuration error as success.
+        if (
+            not getattr(args, "dry_run", False)
+            and using_config_stock_list
+            and not effective_codes
+            and not market_review_requested
+        ):
+            _LAST_ANALYSIS_FAILURE_REASON = "empty_stock_list"
+            logger.error(
+                "本轮分析未生成报告：STOCK_LIST 为空，且未启用大盘复盘。"
+            )
+            return _return_with_auto_backtest(False)
+
+        # Issue #373: Trading day filter (per-stock, per-market)
         filtered_codes, effective_region, should_skip = _compute_trading_day_filter(
             config, args, effective_codes
         )
@@ -779,6 +990,18 @@ def run_full_analysis(
         if set(filtered_codes) != set(effective_codes):
             skipped = set(effective_codes) - set(filtered_codes)
             logger.info("今日休市股票已跳过: %s", skipped)
+        if analysis_targets is not None:
+            if len(analysis_targets) != len(effective_codes):
+                raise ValueError("analysis_targets must align with stock_codes")
+            remaining_pairs = list(zip(effective_codes, analysis_targets))
+            filtered_targets = []
+            for filtered_code in filtered_codes:
+                for index, (code, target) in enumerate(remaining_pairs):
+                    if code == filtered_code:
+                        filtered_targets.append(target)
+                        remaining_pairs.pop(index)
+                        break
+            analysis_targets = filtered_targets
         stock_codes = filtered_codes
         skip_futu_stock_analysis = (
             portfolio_stock_codes is not None and not stock_codes
@@ -811,6 +1034,17 @@ def run_full_analysis(
             and not args.no_market_review
             and (market_review_region or '') != ''
         )
+        if (
+            not getattr(args, "dry_run", False)
+            and not stock_codes
+            and using_config_stock_list
+            and not should_run_market_review
+        ):
+            _LAST_ANALYSIS_FAILURE_REASON = "empty_stock_list"
+            logger.error(
+                "本轮分析未生成报告：STOCK_LIST 为空，且未启用大盘复盘。"
+            )
+            return _return_with_auto_backtest(False)
         should_use_daily_market_context = (
             should_run_market_review
             and getattr(config, 'daily_market_context_enabled', True)
@@ -875,6 +1109,7 @@ def run_full_analysis(
                 send_notification=not args.no_notify,
                 merge_notification=merge_notification,
                 current_time=analysis_reference_time,
+                analysis_targets=analysis_targets,
             )
 
         if should_use_daily_market_context and not market_context_summary:
@@ -990,6 +1225,33 @@ def run_full_analysis(
             elif can_reuse_market_context:
                 market_report = market_context_full_report or market_context_summary
 
+        expected_stock_report = (
+            not getattr(args, "dry_run", False)
+            and bool(stock_codes)
+            and not skip_futu_stock_analysis
+        )
+        deferred_failure_result = None
+        if expected_stock_report and results and not getattr(
+            pipeline, "_last_local_report_path", None
+        ):
+            _LAST_ANALYSIS_FAILURE_REASON = "report_save_failed"
+            save_error = getattr(pipeline, "_last_local_report_error", None) or "unknown error"
+            logger.error(
+                "本轮分析已生成个股结果，但汇总报告保存失败，未生成本地报告文件: %s",
+                save_error,
+            )
+            deferred_failure_result = False
+        expected_market_report = (
+            not getattr(args, "dry_run", False)
+            and should_run_market_review
+        )
+        if (expected_stock_report or expected_market_report) and not results and not market_report:
+            _LAST_ANALYSIS_FAILURE_REASON = "no_report"
+            logger.error(
+                "本轮分析未生成任何报告：预期的个股分析或大盘复盘均未产出结果。"
+            )
+            return _return_with_auto_backtest(False)
+
         # Issue #190: 合并推送（个股+大盘复盘）
         if merge_notification and (results or market_report) and not args.no_notify:
             parts = []
@@ -1063,12 +1325,41 @@ def run_full_analysis(
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
 
-        # === Auto backtest ===
-        _run_auto_backtest(config)
-
-        return True
+        final_result = (
+            deferred_failure_result
+            if deferred_failure_result is not None
+            else True
+        )
+        # Startup daily dedup bookkeeping: only a genuinely successful AND
+        # complete run records the marker — every requested stock target
+        # must have produced a result (pipeline.run returns just the
+        # successes, so partial failures shrink ``results``). Skip paths,
+        # failures and partial-failure rounds must not record, otherwise a
+        # restart would wrongly dedup away the missing stocks. The scope
+        # reflects the entry-level stock list; the covered ``stock_codes``
+        # are written verbatim (str(code), same normalization as the
+        # completeness check); the stock-list fingerprint stays an
+        # observability field computed inside the marker module.
+        if (
+            final_result is True
+            and _all_stock_targets_succeeded(stock_codes, results)
+            and not getattr(args, "dry_run", False)
+        ):
+            record_analysis_run_marker(
+                config,
+                scope="subset" if entry_stock_codes is not None else "full",
+                stock_codes=stock_codes,
+                market_review_requested=market_review_requested,
+                market_review_completed=(
+                    bool(market_report) if market_review_requested else None
+                ),
+                args=args,
+            )
+        return _return_with_auto_backtest(final_result)
 
     except Exception as e:
+        if _LAST_ANALYSIS_FAILURE_REASON is None:
+            _LAST_ANALYSIS_FAILURE_REASON = "runtime_error"
         logger.exception(f"分析流程执行失败: {e}")
         if raise_errors:
             raise
@@ -1081,26 +1372,58 @@ def run_scheduled_analysis(
     stock_codes: Optional[List[str]] = None,
 ) -> bool:
     """Run scheduled analysis with failures propagated to the scheduler."""
-    return run_full_analysis(config, args, stock_codes, raise_errors=True)
+    scheduled_for = getattr(args, "_scheduled_for", None)
+    if scheduled_for is None:
+        return run_full_analysis(config, args, stock_codes, raise_errors=True)
+
+    from src.services.scheduled_analysis_claim import run_claimed_scheduled_analysis
+
+    return run_claimed_scheduled_analysis(
+        config, args, scheduled_for,
+        lambda snapshot: run_full_analysis(
+            snapshot, args, stock_codes, raise_errors=True, refresh_watchlist=False,
+        ),
+    )
 
 
 def _run_analysis_with_runtime_scheduler_lock(
     config: Config,
     args: argparse.Namespace,
     stock_codes: Optional[List[str]] = None,
-) -> None:
+    analysis_targets: Optional[List[AnalysisTarget]] = None,
+) -> bool:
     from src.services.runtime_scheduler import run_with_global_analysis_lock
+
+    task_result: Dict[str, bool] = {"ok": True}
+
+    def _locked_task_runner(
+        locked_config: Config,
+        locked_args: argparse.Namespace,
+        locked_stock_codes: Optional[List[str]] = None,
+    ) -> bool:
+        if analysis_targets is None:
+            result = run_full_analysis(locked_config, locked_args, locked_stock_codes)
+        else:
+            result = run_full_analysis(
+                locked_config,
+                locked_args,
+                locked_stock_codes,
+                analysis_targets=analysis_targets,
+            )
+        task_result["ok"] = bool(result)
+        return task_result["ok"]
 
     # Keep startup/triggered analysis in sync with API runtime scheduler and
     # run-now entrypoint. Blocking is expected here because startup paths should
     # wait for an in-flight job before returning a response.
-    run_with_global_analysis_lock(
-        task_runner=run_full_analysis,
+    lock_acquired = run_with_global_analysis_lock(
+        task_runner=_locked_task_runner,
         config=config,
         args=args,
         stock_codes=stock_codes,
         blocking=True,
     )
+    return bool(lock_acquired and task_result["ok"])
 
 
 def start_api_server(host: str, port: int, config: Config) -> None:
@@ -1140,6 +1463,9 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     # machines. Importing first keeps the heavy work out of the probe window;
     # genuine import failures still surface immediately to the caller.
     from api.app import app as fastapi_app
+    from api.middlewares.security_guard import uvicorn_proxy_kwargs
+
+    uvicorn_kwargs.update(uvicorn_proxy_kwargs())
 
     try:
         uvicorn_config = uvicorn.Config(
@@ -1246,11 +1572,51 @@ def _resolve_scheduled_stock_codes(stock_codes: Optional[List[str]]) -> Optional
     return None
 
 
+def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
+    """Whether the active mode consumes a stock list at all.
+
+    Modes that do not analyze the watchlist must not parse/classify
+    ``--stocks``/``STOCK_LIST`` tokens nor refresh the stock-index registry
+    before the mode dispatch, otherwise an unsupported index token would
+    wrongly block a run that never consumes it. Covered modes:
+    ``--backtest``, ``--market-review``, ``--etf-rotation``, ``--serve-only``/``--webui-only``,
+    ``--portfolio`` (any value) and ``--schedule``/``config.schedule_enabled``.
+    ``--serve`` (not serve-only) and plain one-shot runs still consume the
+    stock list and stay outside the guard. The webui-only flag is read
+    directly here because the webui -> serve mapping happens only later in
+    ``main()``.
+    """
+    return bool(
+        getattr(args, "backtest", False)
+        or getattr(args, "etf_rotation", False)
+        or getattr(args, "market_review", False)
+        or getattr(args, "serve_only", False)
+        or getattr(args, "webui_only", False)
+        or bool(getattr(args, "portfolio", None))
+        or getattr(args, "schedule", False)
+        or getattr(config, "schedule_enabled", False)
+    )
+
+
 def _reload_runtime_config() -> Config:
     """Reload config from the latest persisted `.env` values for scheduled runs."""
     _reload_env_file_values_preserving_overrides()
     Config.reset_instance()
-    return get_config()
+    new_config = get_config()
+
+    # Drop the module-level ToolRegistry so the next
+    # ``build_agent_executor`` / ``build_agent_chat_executor`` call rebuilds
+    # it against the freshly-loaded Config and picks up new
+    # ``AGENT_*_TOOL_TIMEOUT_S`` overrides (Issue #1890). Wrap in try/except
+    # so a future runtime reset helper cannot crash scheduled-job bootstrap.
+    try:
+        from src.agent.factory import reset_tool_registry
+
+        reset_tool_registry()
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.warning("Failed to reset tool registry during config reload: %s", exc)
+
+    return new_config
 
 
 def _build_schedule_time_provider(default_schedule_time: str):
@@ -1366,16 +1732,52 @@ def main() -> int:
         return 0 if result.ok else 1
 
     # 解析股票列表（统一为大写 Issue #355）
+    # Story 1.5: 一次性 --stocks 入口使用 parse_analysis_target 构造结构化
+    # AnalysisTarget 列表，指数目标（sh/sz/csi 前缀与 .CSI alias）在入口即保留
+    # 身份语义；unsupported 目标（如未登记 .CSI）在入口明确拒绝，不进入 provider。
+    # 不消费个股列表的模式（回测/大盘复盘/仅服务/portfolio/定时）整体跳过
+    # 分类与索引刷新（_skips_stock_entry），避免无关坏 token 拦截模式主体。
+    _skip_stock_entry = _skips_stock_entry(args, config)
+    if args.stocks and getattr(args, "portfolio", None):
+        logger.info("同时指定了 --portfolio；实际分析时 portfolio 将覆盖 --stocks")
     stock_codes = None
-    if args.stocks:
-        stock_codes = [
-            resolve_index_stock_code_for_analysis(c)
-            for c in split_stock_list(args.stocks)
-            if (c or "").strip()
-        ]
+    analysis_targets = None
+    if args.stocks and not _skip_stock_entry:
+        # 在解析 --stocks 前先 best-effort 刷新股票索引注册表，保证首次运行能吃到
+        # 刷新后的 alias/身份；失败/超时/禁用不阻断分析。仅 --stocks 入口需要，
+        # 其他模式由 run_full_analysis 内的既有刷新覆盖。
+        _refresh_stock_index_cache_for_analysis(config)
+        tokens = [c for c in split_stock_list(args.stocks) if (c or "").strip()]
+        resolved = _classify_stock_list_tokens(tokens, entry_label="--stocks")
+        if resolved is None:
+            return 1
+        stock_codes, analysis_targets = resolved
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
-        if getattr(args, "portfolio", None):
-            logger.info("同时指定了 --portfolio；实际分析时 portfolio 将覆盖 --stocks")
+    elif (
+        os.getenv("GITHUB_ACTIONS") == "true"
+        and not _skip_stock_entry
+    ):
+        # 每日工作流（GITHUB_ACTIONS=true）无参数运行 `python main.py`（full 或
+        # stocks-only 模式）：把 STOCK_LIST token 分类为与一次性 --stocks 等价的
+        # 结构化 target，显式指数 token 进入指数路径、个股 token 保持既有路径。
+        # 不消费个股列表的模式由 _skips_stock_entry 整体跳过（不刷新不分类），
+        # 本地默认路径不在本入口构造 target。
+        raw_value = config.stock_list or []
+        raw_tokens = (
+            split_stock_list(raw_value)
+            if isinstance(raw_value, str)
+            else [str(c).strip() for c in raw_value if str(c or "").strip()]
+        )
+        raw_tokens = [c for c in raw_tokens if (c or "").strip()]
+        if raw_tokens:
+            _refresh_stock_index_cache_for_analysis(config)
+            resolved = _classify_stock_list_tokens(
+                raw_tokens, entry_label="GitHub Actions STOCK_LIST"
+            )
+            if resolved is None:
+                return 1
+            stock_codes, analysis_targets = resolved
+            logger.info(f"GitHub Actions 默认 STOCK_LIST: {stock_codes}")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
     if args.webui:
@@ -1408,19 +1810,18 @@ def main() -> int:
         # This keeps Web settings, status, and run-now actions attached to the real
         # scheduler instead of a separate CLI loop.
         os.environ.pop(CLI_SCHEDULER_OWNER_ENV, None)
-        if args.serve_only:
-            os.environ[RUNTIME_SCHEDULER_SUPPRESS_START_ENV] = "true"
-        else:
-            os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
-        runtime_schedule_requested = not args.serve_only and (
-            args.schedule or config.schedule_enabled
-        )
-        if not args.serve_only and args.schedule:
+        os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
+        runtime_schedule_requested = args.schedule or config.schedule_enabled
+        if args.schedule:
             os.environ[RUNTIME_SCHEDULER_FORCE_ENABLED_ENV] = "true"
         else:
             os.environ.pop(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, None)
         if runtime_schedule_requested:
-            runtime_run_immediately = config.schedule_run_immediately
+            # ``--serve-only`` must restore persisted schedules, but it must not
+            # turn service/Desktop startup into an immediate analysis run.
+            runtime_run_immediately = (
+                False if args.serve_only else config.schedule_run_immediately
+            )
             if getattr(args, 'no_run_immediately', False):
                 runtime_run_immediately = False
             os.environ[RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV] = (
@@ -1486,6 +1887,18 @@ def main() -> int:
             )
             return 0
 
+        # 模式0.5: ETF 轮动（规则化，不调用 LLM）
+        if getattr(args, 'etf_rotation', False):
+            logger.info("模式: ETF 轮动")
+            from src.services.etf_rotation_service import run_etf_rotation
+
+            report = run_etf_rotation(config, send_notification=not args.no_notify)
+            logger.info(
+                "ETF 轮动完成: as_of=%s target=%s failed=%s",
+                f"{report.as_of:%Y-%m-%d}", report.target_weights, list(report.failed_codes),
+            )
+            return 0
+
         # 模式1: 仅大盘复盘
         if args.market_review:
             from src.core.market_review import run_market_review
@@ -1509,7 +1922,7 @@ def main() -> int:
             logger.info("模式: 仅大盘复盘")
             notifier, analyzer, search_service = build_market_review_runtime(config)
 
-            _run_market_review_with_shared_lock(
+            market_review_result = _run_market_review_with_shared_lock(
                 config,
                 run_market_review,
                 notifier=notifier,
@@ -1519,11 +1932,14 @@ def main() -> int:
                 override_region=effective_region,
                 trigger_source="cli",
             )
-            return 0
+            return 0 if market_review_result else 1
 
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
             if start_serve:
+                # 模式2 + Web 服务：此路径来自 --schedule/--webui/--serve 与
+                # config.schedule_enabled 的组合（均已入 guard），由 API runtime
+                # scheduler 接管；--serve-only 已在上面 serve_only 分支返回。
                 logger.info("模式: Web/API runtime scheduler")
                 logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
                 logger.info("Web/API runtime scheduler 已接管定时任务，保存设置会作用于当前进程")
@@ -1548,13 +1964,83 @@ def main() -> int:
             logger.info(f"启动时立即执行: {should_run_immediately}")
 
             from src.scheduler import run_with_schedule
-            scheduled_stock_codes = _resolve_scheduled_stock_codes(stock_codes)
+            scheduled_stock_codes = _resolve_scheduled_stock_codes(args.stocks or None)
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
             schedule_times_provider = _build_schedule_times_provider(config.schedule_time)
 
-            def scheduled_task():
+            # Startup daily dedup gate (src/core/analysis_run_marker.py):
+            # only the startup-immediate invocation consults the gate; the
+            # daily scheduled invocations never do. --force-run bypasses the
+            # gate entirely (explicit request for an immediate full run,
+            # mirroring the trading-day skip override). The flag is consumed
+            # by the first task call whatever its outcome. Fail-open by design.
+            startup_gate_active = should_run_immediately
+
+            def scheduled_task(scheduled_for=None):
+                nonlocal startup_gate_active
+                gated, startup_gate_active = startup_gate_active, False
                 runtime_config = _reload_runtime_config()
-                run_full_analysis(runtime_config, args, scheduled_stock_codes)
+                force_run = getattr(args, "force_run", False)
+                if (
+                    gated
+                    and not force_run
+                    and getattr(runtime_config, "schedule_startup_dedup", True)
+                ):
+                    # Expected list = what THIS startup would actually
+                    # analyze, resolved through the same real target chain
+                    # as run_full_analysis (Futu portfolio first, .env
+                    # hot-reload second, trading-day filter last; schema 2
+                    # coverage gate). Only used for the skip decision; the
+                    # run below still applies its own filter. A resolution
+                    # failure or an empty portfolio resolution comes back
+                    # as a fail-open reason instead of an expected list —
+                    # the gate then never skips.
+                    expected_codes, fail_open_reason = (
+                        _resolve_gate_expected_stock_codes(
+                            runtime_config,
+                            args,
+                            stock_codes=scheduled_stock_codes,
+                        )
+                    )
+                    if fail_open_reason is not None:
+                        logger.info(
+                            "启动立即执行去重检查 fail-open(%s)，照常执行分析",
+                            fail_open_reason,
+                        )
+                    else:
+                        decision = should_skip_startup_immediate_run(
+                            runtime_config,
+                            expected_stock_codes=expected_codes,
+                        )
+                        if decision.skip:
+                            logger.info(
+                                "启动立即执行已跳过:当日全量分析已完成(%s)",
+                                decision.reason,
+                            )
+                            return
+                        logger.info(
+                            "启动立即执行去重检查通过:%s", decision.reason
+                        )
+                elif gated and force_run:
+                    logger.info("--force-run 指定,跳过启动去重检查")
+                if scheduled_for is None:
+                    result = run_full_analysis(runtime_config, args, scheduled_stock_codes)
+                else:
+                    from src.services.scheduled_analysis_claim import ScheduledAnalysisSkipped
+
+                    scheduled_args = argparse.Namespace(**vars(args))
+                    scheduled_args._scheduled_for = scheduled_for
+                    try:
+                        result = run_scheduled_analysis(runtime_config, scheduled_args, scheduled_stock_codes)
+                    except ScheduledAnalysisSkipped:
+                        logger.info("Scheduled analysis already claimed; skipping occurrence %s", scheduled_for)
+                        return
+
+                if result is False:
+                    reason = _LAST_ANALYSIS_FAILURE_REASON or "unknown"
+                    raise RuntimeError(
+                        f"scheduled analysis reported failure: {reason}"
+                    )
 
             background_tasks = []
             if getattr(config, 'agent_event_monitor_enabled', False):
@@ -1582,6 +2068,7 @@ def main() -> int:
                 "run_immediately": should_run_immediately,
                 "background_tasks": background_tasks,
                 "schedule_time_provider": schedule_time_provider,
+                "pass_scheduled_for": True,
             }
             if hasattr(config, "schedule_times"):
                 schedule_kwargs["schedule_times"] = config.schedule_times
@@ -1592,7 +2079,9 @@ def main() -> int:
         # 模式3: 正常单次运行
         if config.run_immediately:
             try:
-                _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
+                analysis_ok = _run_analysis_with_runtime_scheduler_lock(
+                    config, args, stock_codes, analysis_targets
+                )
             except FutuPortfolioError as exc:
                 if not start_serve:
                     raise
@@ -1600,6 +2089,16 @@ def main() -> int:
                     "Futu 持仓导入失败，Web/API 服务继续运行: %s",
                     exc,
                 )
+            else:
+                if analysis_ok is False:
+                    if start_serve:
+                        logger.error("启动时分析执行失败，Web/API 服务继续运行。")
+                    elif _LAST_ANALYSIS_FAILURE_REASON in {
+                        "no_report",
+                        "empty_stock_list",
+                        "report_save_failed",
+                    }:
+                        return 1
         else:
             logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
 

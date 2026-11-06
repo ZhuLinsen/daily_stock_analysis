@@ -15,7 +15,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      const path = window.location.pathname + window.location.search;
+      const path = window.location.pathname + window.location.search + window.location.hash;
       if (!path.startsWith('/login')) {
         const redirect = encodeURIComponent(path);
         window.location.assign(`/login?redirect=${redirect}`);

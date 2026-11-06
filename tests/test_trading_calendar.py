@@ -14,6 +14,25 @@ import pandas as pd
 from src.core import trading_calendar
 
 
+def test_trading_dates_preserve_session_labels_with_utc_timezone():
+    sessions = pd.to_datetime(["2024-02-08", "2024-02-19"], utc=True)
+    calendar = SimpleNamespace(sessions_in_range=lambda start, end: sessions)
+    with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), \
+            patch.object(trading_calendar.xcals, "get_calendar", return_value=calendar):
+        result = trading_calendar.get_trading_dates("cn", date(2024, 2, 8), date(2024, 2, 19))
+    assert result.equals(sessions.tz_localize(None))
+
+
+def test_trading_dates_do_not_fail_open_outside_calendar_range():
+    with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), \
+            patch.object(trading_calendar.xcals, "get_calendar", side_effect=ValueError("out of range")):
+        assert trading_calendar.get_trading_dates("cn", date(2000, 1, 1), date(2000, 1, 2)) is None
+
+
+def test_trading_dates_do_not_invent_sessions_for_unknown_market():
+    assert trading_calendar.get_trading_dates("unknown", date(2024, 1, 2), date(2024, 1, 3)) is None
+
+
 class _FakeCalendar:
     def __init__(
         self,
@@ -193,6 +212,32 @@ class HistoricalDailyBarDateTestCase(unittest.TestCase):
         for phase in (None, "unknown", "postmarket"):
             with self.subTest(phase=phase):
                 self.assertIsNone(self._resolve(date(2024, 1, 7), phase))
+
+
+class NextTradingDateTestCase(unittest.TestCase):
+    def _next(self, calendar, check_date: date) -> Optional[date]:
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(calendar),
+            create=True,
+        ):
+            return trading_calendar.get_next_trading_date("cn", check_date)
+
+    def test_skips_holiday_to_next_session(self):
+        calendar = _FakeCalendar(
+            sessions=[date(2024, 9, 30), date(2024, 10, 8)],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+        )
+        self.assertEqual(self._next(calendar, date(2024, 9, 30)), date(2024, 10, 8))
+
+    def test_returns_none_instead_of_failing_open(self):
+        calendar = _FakeCalendar(sessions=[date(2024, 9, 30)], close_hour=15, tz_name="Asia/Shanghai")
+        self.assertIsNone(self._next(calendar, date(2024, 9, 30)))  # beyond calendar range
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", False):
+            self.assertIsNone(trading_calendar.get_next_trading_date("cn", date(2024, 9, 30)))
+        self.assertIsNone(trading_calendar.get_next_trading_date("unknown", date(2024, 9, 30)))
 
 
 class EffectiveTradingDateTestCase(unittest.TestCase):

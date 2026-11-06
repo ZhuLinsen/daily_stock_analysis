@@ -113,6 +113,44 @@ def _make_mock_adapter():
     return adapter
 
 
+def _make_index_registry():
+    """Build the registered identities exercised by the scope tests."""
+    from src.services.stock_list_parser import IndexEntry, IndexRegistry
+
+    return IndexRegistry(
+        [
+            IndexEntry(
+                bare_code="000016",
+                exchange="SH",
+                canonical_id="sh000016",
+                display_name="上证50",
+                aliases=("000016.SH",),
+            ),
+            IndexEntry(
+                bare_code="000300",
+                exchange="SH",
+                canonical_id="sh000300",
+                display_name="沪深300",
+                aliases=("sz399300", "000300.SH", "000300.CSI"),
+            ),
+            IndexEntry(
+                bare_code="399001",
+                exchange="SZ",
+                canonical_id="sz399001",
+                display_name="深证成指",
+                aliases=("399001.SZ",),
+            ),
+            IndexEntry(
+                bare_code="930955",
+                exchange="CSI",
+                canonical_id="csi930955",
+                display_name="红利低波100",
+                aliases=("930955.CSI",),
+            ),
+        ]
+    )
+
+
 def _build_analysis_context_pack_summary(
     *,
     realtime_quote=None,
@@ -421,6 +459,183 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(result.stock_scope.mode, "maintain")
         self.assertEqual(result.effective_context["stock_code"], "600519")
         self.assertEqual(result.stock_scope.allowed_stock_codes, {"600519"})
+
+    def test_resolve_stock_scope_registry_explicit_index_forms_fold_to_canonical(self):
+        # PR #2312 loop 1: default chat (litellm) + explicit registered index
+        # tokens must keep the registry canonical — never stock-normalized into
+        # a bare same-code or a prefix-derived fabrication. Case-insensitive,
+        # dotted SH/SZ/CSI, and CSI-prefix forms all fold to the registry
+        # canonical; cross-exchange aliases (sz399300/399300.SZ/000300.SH) fold
+        # to sh000300 without guessing a canonical from the input prefix.
+        registry = _make_index_registry()
+        cases = [
+            ("换成 SH000016 看看", "sh000016"),
+            ("换成 000016.SH 看看", "sh000016"),
+            ("换成 000016.sh 看看", "sh000016"),
+            ("换成 sz399001 看看", "sz399001"),
+            ("换成 399001.SZ 看看", "sz399001"),
+            ("换成 CSI930955 看看", "csi930955"),
+            ("换成 930955.CSI 看看", "csi930955"),
+            ("换成 csi930955 看看", "csi930955"),
+            ("换成 sz399300 看看", "sh000300"),
+            ("换成 399300.SZ 看看", "sh000300"),
+            ("换成 000300.SH 看看", "sh000300"),
+        ]
+        for message, expected in cases:
+            with self.subTest(message=message, expected=expected):
+                result = resolve_stock_scope(
+                    message,
+                    {"stock_code": "600519", "stock_name": "贵州茅台"},
+                    registry=registry,
+                )
+                self.assertEqual(result.stock_scope.mode, "switch")
+                self.assertEqual(result.stock_scope.expected_stock_code, expected)
+                self.assertEqual(result.stock_scope.allowed_stock_codes, {expected})
+                self.assertEqual(result.effective_context["stock_code"], expected)
+                # The switched context must not reuse the previous stock name.
+                self.assertEqual(result.effective_context["stock_name"], "")
+
+    def test_resolve_stock_scope_registry_keeps_bare_code_as_stock_identity(self):
+        registry = _make_index_registry()
+        result = resolve_stock_scope(
+            "换成 000016 看看",
+            {"stock_code": "600519", "stock_name": "贵州茅台"},
+            registry=registry,
+        )
+
+        # Bare 000016 shares digits with sh000016 but stays a stock identity.
+        self.assertEqual(result.stock_scope.mode, "switch")
+        self.assertEqual(result.stock_scope.expected_stock_code, "000016")
+        self.assertEqual(result.effective_context["stock_code"], "000016")
+
+    def test_resolve_stock_scope_registry_same_code_switch_isolates_identities(self):
+        registry = _make_index_registry()
+        result = resolve_stock_scope(
+            "换成 000016 看看",
+            {"stock_code": "sh000016", "stock_name": "上证50"},
+            registry=registry,
+        )
+
+        # Explicit switch index -> bare same-code stock must send the bare
+        # identity and never reuse the index name.
+        self.assertEqual(result.stock_scope.mode, "switch")
+        self.assertEqual(result.stock_scope.expected_stock_code, "000016")
+        self.assertEqual(result.stock_scope.allowed_stock_codes, {"000016"})
+        self.assertEqual(result.effective_context["stock_code"], "000016")
+        self.assertEqual(result.effective_context["stock_name"], "")
+
+    def test_resolve_stock_scope_registry_compare_keeps_both_identities(self):
+        registry = _make_index_registry()
+        result = resolve_stock_scope(
+            "比较 sh000016 和 000016 的差异",
+            {"stock_code": "sh000016", "stock_name": "上证50"},
+            registry=registry,
+        )
+
+        # Compare keeps the active index context and admits both identities
+        # without folding them.
+        self.assertEqual(result.stock_scope.mode, "compare")
+        self.assertEqual(result.stock_scope.expected_stock_code, "sh000016")
+        self.assertEqual(
+            result.stock_scope.allowed_stock_codes,
+            {"sh000016", "000016"},
+        )
+        self.assertEqual(result.effective_context["stock_code"], "sh000016")
+
+    def test_resolve_stock_scope_registry_embedded_ascii_never_leaks_identity(self):
+        registry = _make_index_registry()
+        cases = [
+            "换成 10SH000016 看看",
+            "换成 SH000016yy 看看",
+            "换成 _SH000016 看看",
+            "换成 SH000016_x 看看",
+            "换成 10sz399001 看看",
+            "换成 sz399001xx 看看",
+        ]
+        for message in cases:
+            with self.subTest(message=message):
+                result = resolve_stock_scope(
+                    message,
+                    {"stock_code": "600519", "stock_name": "贵州茅台"},
+                    registry=registry,
+                )
+                # No index canonical and no bare code may leak from embedded
+                # ASCII strings; the current stock context stays untouched.
+                self.assertEqual(result.stock_scope.mode, "maintain")
+                self.assertEqual(result.stock_scope.expected_stock_code, "600519")
+                self.assertEqual(result.stock_scope.allowed_stock_codes, {"600519"})
+                self.assertEqual(result.effective_context["stock_code"], "600519")
+
+    def test_resolve_stock_scope_registry_embedded_ascii_strict_initial_scope(self):
+        registry = _make_index_registry()
+        result = resolve_stock_scope(
+            "比较 10SH000016 和 SH000016yy 的差异",
+            None,
+            strict_initial_scope=True,
+            registry=registry,
+        )
+
+        self.assertIsNone(result.stock_scope)
+
+    def test_resolve_stock_scope_empty_registry_falls_back_to_stock_semantics(self):
+        from src.services.stock_list_parser import IndexRegistry
+
+        for message in ("换成 sh000016 看看", "换成 10SH000016 看看"):
+            with self.subTest(message=message):
+                result = resolve_stock_scope(
+                    message,
+                    {"stock_code": "600519", "stock_name": "贵州茅台"},
+                    registry=IndexRegistry([]),
+                )
+                self.assertEqual(result.stock_scope.mode, "switch")
+                self.assertEqual(result.stock_scope.expected_stock_code, "000016")
+
+    def test_resolve_stock_scope_default_index_registry_production_branch(self):
+        cases = [
+            ("sh000016", "sh000016"),
+            ("000016.SH", "sh000016"),
+            ("930955.CSI", "csi930955"),
+            ("sz399300", "sh000300"),
+        ]
+        for form, expected in cases:
+            with self.subTest(form=form):
+                result = resolve_stock_scope(
+                    f"换成 {form} 看看",
+                    {"stock_code": "600519", "stock_name": "贵州茅台"},
+                )
+                self.assertEqual(result.stock_scope.mode, "switch")
+                self.assertEqual(result.stock_scope.expected_stock_code, expected)
+
+    def test_resolve_stock_scope_default_registry_failure_falls_back_to_stock(self):
+        with patch(
+            "src.services.stock_list_parser.default_index_registry",
+            side_effect=RuntimeError("registry unavailable"),
+        ):
+            result = resolve_stock_scope(
+                "换成 sh000016 看看",
+                {"stock_code": "600519", "stock_name": "贵州茅台"},
+            )
+
+        self.assertEqual(result.stock_scope.mode, "switch")
+        self.assertEqual(result.stock_scope.expected_stock_code, "000016")
+
+    def test_resolve_stock_scope_production_stock_guard_unchanged(self):
+        # sh600519 / SZ000001 / bare 000016 must keep stock semantics even with
+        # the default registry loaded (they are not registered index aliases).
+        cases = [
+            ("换成 sh600519 看看", "600519"),
+            ("换成 SZ000001 看看", "000001"),
+            ("换成 000016 看看", "000016"),
+            ("换成 00700.HK 看看", "HK00700"),
+            ("换成 AAPL 看看", "AAPL"),
+        ]
+        for message, expected in cases:
+            with self.subTest(message=message, expected=expected):
+                result = resolve_stock_scope(
+                    message,
+                    {"stock_code": "600519", "stock_name": "贵州茅台"},
+                )
+                self.assertEqual(result.stock_scope.expected_stock_code, expected)
 
     def test_run_agent_loop_does_not_persist_agent_usage_without_provider_usage(self):
         registry = _make_registry_with_echo()

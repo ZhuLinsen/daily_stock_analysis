@@ -137,12 +137,12 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.ai_model.AGENT_LITELLM_MODEL': {
     title: 'Agent 主模型',
     summary: '为问股、策略 Agent 等 Agent 链路单独指定模型。',
-    usage: '使用 provider/model 格式。留空时继承普通分析主模型；裸模型名会按兼容逻辑归一到 openai/<model>。选择 Codex 本地 Agent 时保留该值，但 Codex 问股不使用它。',
+    usage: '使用 provider/model 格式。留空时继承普通分析主模型；裸模型名会按兼容逻辑归一到 openai/<model>。',
     valueNotes: [
       '适合给 Agent 使用推理能力更强或上下文更长的模型。',
       '该字段只影响 Agent 链路，不会改变普通个股分析的主模型。',
     ],
-    impact: ['影响默认模型问股、策略选择和相关工具调用；不影响 Codex 本地 Agent。'],
+    impact: ['影响默认模型问股、策略选择和相关工具调用。'],
     notes: ['请确认该模型存在于已启用渠道、YAML 路由或 legacy provider key 可达范围内。'],
   },
   'settings.ai_model.LITELLM_FALLBACK_MODELS': {
@@ -284,12 +284,28 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 A 股日线回退链、实时行情、股票名称/列表与大盘复盘数据覆盖度。'],
     notes: ['不要在 issue、日志或截图中暴露真实 Key。'],
   },
+  'settings.data_source.MX_APIKEY': {
+    title: '妙想（MX_API）API Key',
+    summary: '用于启用妙想补充数据源：东财公开接口失败或被限流时，兜底获取筹码分布与个股资金流。',
+    usage: '在妙想 Skills 页面获取 API Key 后填入；未配置时系统行为完全不变。',
+    valueNotes: ['该 Key 是可选补充项，不参与日 K 主链路。'],
+    impact: ['影响筹码分布与个股资金流在东财接口异常时的可用性。'],
+    notes: ['不要在 issue、日志或截图中暴露真实 Key。'],
+  },
+  'settings.data_source.MX_PRIORITY': {
+    title: '妙想数据源优先级',
+    summary: '控制妙想补充数据源在数据源回退链中的位置。',
+    usage: '填写整数；数字越小越早尝试，默认 6。未配置 MX_APIKEY 时该优先级不会生效。',
+    valueNotes: ['该数据源不提供日 K 行情，优先级仅影响筹码分布/资金流的兜底顺序。'],
+    impact: ['影响补充数据块的兜底顺序。'],
+    notes: ['一般无需调整默认值。'],
+  },
   'settings.data_source.TICKFLOW_PRIORITY': {
     title: 'TickFlow 日 K 优先级',
-    summary: '控制 TickFlow 在 A 股日 K 数据源回退链中的位置。',
-    usage: '填写整数；数字越小越早尝试，默认 2。未配置 TICKFLOW_API_KEY 时该优先级不会生效。',
-    valueNotes: ['该设置只影响日 K 等通用数据源回退链，不控制实时行情源顺序。'],
-    impact: ['影响 A 股日 K 获取的数据源尝试顺序；实时行情仍由 REALTIME_SOURCE_PRIORITY 单独决定。'],
+    summary: '控制 TickFlow 在普通 A 股日 K 数据源回退链中的位置。',
+    usage: '填写整数；数字越小越早尝试，默认 2。未配置 TICKFLOW_API_KEY 时该优先级不会生效；已登记指数固定按 Tencent → AkShare → TickFlow → YFinance 降级，不读取本配置。',
+    valueNotes: ['该设置只影响普通 A 股日 K 等通用数据源回退链，不控制已登记指数或实时行情源顺序。'],
+    impact: ['影响普通 A 股日 K 获取的数据源尝试顺序；已登记指数和实时行情均使用各自独立顺序。'],
     notes: ['如果希望优先使用 TickFlow 日 K，可以适当调低该值；如果希望实时行情优先使用 TickFlow，请在 REALTIME_SOURCE_PRIORITY 中显式加入 tickflow。'],
   },
   'settings.data_source.TICKFLOW_KLINE_ADJUST': {
@@ -326,10 +342,10 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.base.SCREENING_ENABLED': {
     title: '选股',
-    summary: '控制是否启用选股页；实现参考 AlphaSift。',
-    usage: '默认关闭。设为 true 后显示选股入口并启用选股策略。',
+    summary: '控制是否启用选股策略；实现参考 AlphaSift。',
+    usage: '默认关闭。导航始终保留选股入口；设为 true 后可运行选股策略。',
     valueNotes: ['选股结果仅用于研究辅助，不构成投资建议。'],
-    impact: ['影响 Web 选股入口、策略读取和选股 API。'],
+    impact: ['影响策略读取和选股 API，不隐藏导航入口。'],
     notes: ['关闭时不影响原有分析、报告和通知流程。'],
   },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
@@ -350,6 +366,30 @@ const settingsHelpZhCN: SettingsHelpMap = {
     ],
     impact: ['影响现价、技术指标、盘中分析和部分报告字段。'],
     notes: ['单一数据源失败应降级到后续数据源，不应拖垮主流程。'],
+  },
+  'settings.data_source.FUTU_OPEND_HOST': {
+    title: 'Futu OpenD 地址',
+    summary: '配置 Futu OpenD 服务地址。留空时不启用 Futu 数据源。',
+    usage: '填写 IPv4 地址或可解析到 IPv4 的主机名。',
+    valueNotes: ['OpenD 必须允许 DSA 容器访问。'],
+    impact: ['影响港股 Futu 实时行情、历史行情和基本面数据访问。'],
+    notes: ['这是服务地址，不是 Futu 账号密码。'],
+  },
+  'settings.data_source.FUTU_OPEND_PORT': {
+    title: 'Futu OpenD 端口',
+    summary: '配置 Futu OpenD TCP 端口。',
+    usage: '填写 1 到 65535 之间的端口，默认 11111。',
+    valueNotes: ['端口必须与 OpenD 实际监听端口一致。'],
+    impact: ['影响 DSA 与 Futu OpenD 的连接。'],
+    notes: ['修改后通常需要重启 DSA 服务以重新建立连接。'],
+  },
+  'settings.data_source.FUTU_HK_REALTIME_SOURCE_PRIORITY': {
+    title: 'Futu 港股实时数据源优先级',
+    summary: '配置港股实时行情的 Futu/Longbridge/AkShare/Yfinance 尝试顺序。',
+    usage: '使用英文逗号分隔，可选 futu、longbridge、akshare、yfinance。',
+    valueNotes: ['前面的数据源优先尝试；失败后自动回退。'],
+    impact: ['只影响港股实时行情，不改变 A 股实时数据源优先级。'],
+    notes: ['未配置 Futu OpenD 时会自动跳过 futu。'],
   },
   'settings.data_source.search_api_keys': {
     title: '搜索服务 API Key',
@@ -673,10 +713,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.system.schedule': {
     title: '定时任务',
     summary: '控制是否启用每日定时分析以及启动时是否立即执行一次。',
-    usage: 'SCHEDULE_TIME 使用 HH:MM 24 小时格式；SCHEDULE_TIMES 可配置逗号分隔的多个 HH:MM 时间点；SCHEDULE_ENABLED 控制 runtime scheduler 是否启用。',
+    usage: 'SCHEDULE_TIME 使用 HH:MM 24 小时格式；SCHEDULE_TIMES 可配置逗号分隔的多个 HH:MM 时间点；SCHEDULE_ENABLED 控制 runtime scheduler 是否启用；DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS 控制单次 Web/API 定时分析的硬超时，默认 2700 秒、最小 60 秒。',
     valueNotes: [
       '已运行的 schedule 模式会在下一轮调度检查中读取新的 SCHEDULE_TIME / SCHEDULE_TIMES 并重建 daily jobs。',
       'WebUI/API/Desktop 长运行进程保存 SCHEDULE_ENABLED、SCHEDULE_TIME 或 SCHEDULE_TIMES 后会按新配置启停或重建 runtime scheduler。',
+      '修改 DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS 后，下一次分析会使用新值，无需重建 daily jobs；超时会终止独立分析进程。',
       '定时任务触发时会读取当前保存的 STOCK_LIST。',
     ],
     impact: ['影响 schedule 模式下自动分析频率、启动行为和通知推送时间。'],
@@ -825,21 +866,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.agent.AGENT_BACKEND': {
     title: '问股生成方式',
     showFieldKey: false,
-    summary: '选择问股 Chat 使用默认模型配置，还是调用运行 DSA 设备上的 Codex。',
-    usage: '通常保持“自动（推荐）”。自动模式不会启用实验性的 Codex；只有确认运行 DSA 的设备已安装并登录 Codex 后，才选择 Codex 本地 Agent。',
-    valueNotes: [
-      '“自动（推荐）”与“默认模型配置”都继续使用现有模型和 API 配置。',
-      '“Codex 本地 Agent（实验）”目前只支持单 Agent 问股，不支持 Codex Multi Agent 或 Codex Deep Research。',
-      'Codex 本地 Agent 当前支持 macOS、Linux，以及完整运行于 WSL 的 DSA 后端；暂不支持原生 Windows 后端。',
-      '本地 Agent 不等于离线模型；股票问题和工具结果可能由 Codex 自身配置的服务处理。',
-    ],
-    impact: ['只影响问股 Chat，不改变普通报告、定时分析、现有 Multi Agent 或 Deep Research。'],
-    notes: [
-      'DSA 不读取或保存 Codex 登录凭据，Codex 进程使用自己的登录状态。',
-      '设置页状态只检查配置、Codex 命令和所需协议，不会登录、调用模型或读取股票数据；显示“可以尝试”不代表已验证可用。',
-      '保存后可直接在问股页提问；第一次问题就是第一次真实执行，若 Codex 登录或服务不可用，页面会保留问题并显示原因。',
-      '想恢复原有行为，选择“自动（推荐）”并保存。',
-    ],
+    summary: '选择问股 Chat 的默认模型执行方式。',
+    usage: '通常保持“自动（推荐）”；自动与默认模型配置都使用现有 LiteLLM 路由。',
+    valueNotes: ['Codex App Server 已移除。旧值仍显示，须主动选择合法值并保存；不会自动切换模型或账号。'],
+    impact: ['只影响问股 Chat；独立 Codex CLI 普通报告、定时分析、Multi Agent 和 Deep Research 保持原路径。'],
+    notes: ['状态与草稿预览只检查配置，不启动外部命令或调用模型。显式保存或导入退役值会被拒绝，无关设置保存不受旧值影响。'],
     examples: [],
   },
   'settings.agent.AGENT_GENERATION_BACKEND': {
@@ -861,13 +892,13 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.agent.AGENT_MAX_STEPS': {
     title: 'Agent 最大推理步数',
-    summary: '控制默认模型 Agent 的推理步数上限，以及 Codex 单次问股可调用工具的次数上限。',
-    usage: '使用默认模型时，默认值让每个子 Agent 使用各自预设步数；调高后统一提升，调低后裁剪预设步数。使用 Codex 时，这个值限制一次问股最多可以调用多少次数据工具。',
+    summary: '控制默认模型 Agent 的推理步数上限。',
+    usage: '使用默认模型时，默认值让每个子 Agent 使用各自预设步数；调高后统一提升，调低后裁剪预设步数。',
     valueNotes: [
       '步数越高，推理越深入，但耗时和 token 消耗也越大。',
       '部分复杂场景（如多策略编排）可能需要更高步数。',
     ],
-    impact: ['影响默认模型 Agent 的推理深度，或 Codex 单次问股的数据工具调用次数，以及相应耗时和 token 消耗。'],
+    impact: ['影响默认模型 Agent 的推理深度、耗时和 token 消耗。'],
     notes: ['设为 0 或极低值可能导致推理不完整。'],
   },
   'settings.agent.AGENT_SKILLS': {
@@ -996,7 +1027,6 @@ const settingsHelpZhCN: SettingsHelpMap = {
     notes: [
       '该功能不处理 provider trace、thinking blocks、tool calls 或 tool results，也不改变同轮工具调用透传。',
       '该配置只影响问股可见历史压缩，不改变 LLM provider、模型、Base URL、保存清理或运行时优先级语义。',
-      '当前该 LLM 压缩只适用于“默认模型”问股；Codex Agent 始终使用最近 20 条用户可见对话，不会调用 Agent 主模型生成摘要。保存的压缩设置不会被清空，切回默认模型后继续生效。',
     ],
   },
   'settings.agent.event_monitor': {
@@ -1361,9 +1391,9 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.ai_model.AGENT_LITELLM_MODEL': {
     title: 'Agent Primary Model',
     summary: 'Sets a dedicated model for Agent workflows.',
-    usage: 'Use provider/model format. When empty, Agent inherits the regular primary model. The value is preserved but not used by Codex local Agent Chat.',
+    usage: 'Use provider/model format. When empty, Agent inherits the regular primary model.',
     valueNotes: ['Useful when Agent needs stronger reasoning or longer context.', 'Only affects Agent flows.'],
-    impact: ['Affects default-model Agent chat, strategy selection, and Agent tool calls; it does not affect Codex local Agent.'],
+    impact: ['Affects default-model Agent chat, strategy selection, and Agent tool calls.'],
     notes: ['Make sure the model is reachable through enabled channels, YAML routing, or legacy provider keys.'],
   },
   'settings.ai_model.LITELLM_FALLBACK_MODELS': {
@@ -1490,12 +1520,28 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects A-share daily-data fallback, realtime quotes, stock list/name lookup, and market-review coverage.'],
     notes: ['Do not expose real keys in issues, logs, or screenshots.'],
   },
+  'settings.data_source.MX_APIKEY': {
+    title: 'MiaoXiang (MX_API) API Key',
+    summary: 'Enables the MiaoXiang supplementary provider: fills chip distribution and per-stock capital flow when public eastmoney endpoints fail or are rate-limited.',
+    usage: 'Paste a MiaoXiang Skills API key here. When empty, system behavior is unchanged.',
+    valueNotes: ['Optional supplementary key; does not participate in the daily K-line chain.'],
+    impact: ['Affects chip-distribution and capital-flow availability when eastmoney endpoints misbehave.'],
+    notes: ['Do not expose real keys in issues, logs, or screenshots.'],
+  },
+  'settings.data_source.MX_PRIORITY': {
+    title: 'MiaoXiang Provider Priority',
+    summary: 'Controls where the MiaoXiang supplementary provider sits in the fallback chain.',
+    usage: 'Use an integer. Lower numbers are tried earlier. The default is 6. No effect unless MX_APIKEY is configured.',
+    valueNotes: ['This provider does not serve daily K-lines; the priority only orders supplementary blocks.'],
+    impact: ['Affects fallback order of supplementary data blocks.'],
+    notes: ['The default is fine for most setups.'],
+  },
   'settings.data_source.TICKFLOW_PRIORITY': {
     title: 'TickFlow Daily K-line Priority',
-    summary: 'Controls where TickFlow sits in the A-share daily K-line provider fallback chain.',
-    usage: 'Use an integer. Lower numbers are tried earlier. The default is 2. This has no effect unless TICKFLOW_API_KEY is configured.',
-    valueNotes: ['This setting only affects the daily K-line/general data-source fallback chain; it does not control realtime quote provider order.'],
-    impact: ['Affects provider order for A-share daily K-line fetching. Realtime quotes are still controlled separately by REALTIME_SOURCE_PRIORITY.'],
+    summary: 'Controls where TickFlow sits in the generic A-share daily K-line provider fallback chain.',
+    usage: 'Use an integer. Lower numbers are tried earlier. The default is 2. This has no effect unless TICKFLOW_API_KEY is configured. Registered indices use the fixed Tencent → AkShare → TickFlow → YFinance chain and ignore this setting.',
+    valueNotes: ['This setting only affects generic A-share daily K-lines; it does not control registered-index or realtime-quote provider order.'],
+    impact: ['Affects provider order for generic A-share daily K-line fetching. Registered indices and realtime quotes use separate ordering.'],
     notes: ['Lower this value only if you want TickFlow daily K-lines to be tried earlier. Add tickflow to REALTIME_SOURCE_PRIORITY when you want TickFlow realtime quotes in the realtime fallback chain.'],
   },
   'settings.data_source.TICKFLOW_KLINE_ADJUST': {
@@ -1522,6 +1568,30 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects request count and per-request pressure for TickFlow batch prefetch.'],
     notes: ['This setting only affects TickFlow batch paths.'],
   },
+  'settings.data_source.FUTU_OPEND_HOST': {
+    title: 'Futu OpenD Host',
+    summary: 'Configures the Futu OpenD service address. Leave empty to disable Futu.',
+    usage: 'Use an IPv4 address or a hostname resolving to IPv4.',
+    valueNotes: ['The OpenD service must be reachable from the DSA container.'],
+    impact: ['Affects Futu HK realtime, historical, and fundamental data access.'],
+    notes: ['This is a service address, not a Futu account credential.'],
+  },
+  'settings.data_source.FUTU_OPEND_PORT': {
+    title: 'Futu OpenD Port',
+    summary: 'Configures the Futu OpenD TCP port.',
+    usage: 'Use a port from 1 to 65535; the default is 11111.',
+    valueNotes: ['The port must match the OpenD listener.'],
+    impact: ['Affects the DSA connection to Futu OpenD.'],
+    notes: ['Restarting DSA is normally required after changing it.'],
+  },
+  'settings.data_source.FUTU_HK_REALTIME_SOURCE_PRIORITY': {
+    title: 'Futu HK Realtime Source Priority',
+    summary: 'Configures the Futu/Longbridge/AkShare/Yfinance order for HK realtime quotes.',
+    usage: 'Use comma-separated futu, longbridge, akshare, or yfinance values.',
+    valueNotes: ['Earlier providers are tried first; failures fall back automatically.'],
+    impact: ['Affects HK realtime quotes only, not A-share realtime priority.'],
+    notes: ['The futu entry is skipped when OpenD is not configured.'],
+  },
   'settings.data_source.stock_index_remote': {
     title: 'Remote Stock Index',
     summary: 'Fetches the latest stock autocomplete index from GitHub main and caches it locally.',
@@ -1532,10 +1602,10 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.base.SCREENING_ENABLED': {
     title: 'Screening',
-    summary: 'Controls the Screening page, implemented with reference to AlphaSift.',
-    usage: 'Disabled by default. Set it to true to show Screening and enable screening strategies.',
+    summary: 'Controls screening strategies, implemented with reference to AlphaSift.',
+    usage: 'Disabled by default. Screening stays in navigation; set this to true to run screening strategies.',
     valueNotes: ['Screening output is for research support only and is not investment advice.'],
-    impact: ['Affects the Web screening entry, strategy loading, and screening API.'],
+    impact: ['Affects strategy loading and the screening API, without hiding the navigation entry.'],
     notes: ['Disabling it does not affect existing analysis, reports, or notifications.'],
   },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
@@ -1860,10 +1930,11 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.system.schedule': {
     title: 'Schedule',
     summary: 'Controls daily scheduled analysis and whether startup runs immediately.',
-    usage: 'SCHEDULE_TIME uses HH:MM 24-hour format. SCHEDULE_TIMES accepts comma-separated HH:MM values. SCHEDULE_ENABLED controls whether the runtime scheduler is enabled.',
+    usage: 'SCHEDULE_TIME uses HH:MM 24-hour format. SCHEDULE_TIMES accepts comma-separated HH:MM values. SCHEDULE_ENABLED controls whether the runtime scheduler is enabled. DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS sets the hard timeout for each Web/API scheduled analysis (default 2700 seconds, minimum 60).',
     valueNotes: [
       'An already-running schedule mode reads new SCHEDULE_TIME / SCHEDULE_TIMES values on the next scheduler check and rebuilds the daily jobs.',
       'Long-running WebUI/API/Desktop processes start, stop, or rebuild the runtime scheduler after saving SCHEDULE_ENABLED, SCHEDULE_TIME, or SCHEDULE_TIMES.',
+      'After DSA_RUNTIME_SCHEDULER_TIMEOUT_SECONDS changes, the next analysis uses the new value without rebuilding daily jobs; the isolated analysis process is terminated on timeout.',
       'Scheduled runs read the currently saved STOCK_LIST.',
     ],
     impact: ['Affects automatic analysis frequency, startup behavior, and notification timing in schedule mode.'],
@@ -2010,23 +2081,13 @@ const settingsHelpEnUS: SettingsHelpMap = {
     notes: ['Agent mode consumes more tokens and time; best for scenarios requiring deep reasoning.'],
   },
   'settings.agent.AGENT_BACKEND': {
-    title: 'Ask-Stock Method',
+    title: 'Ask-stock method',
     showFieldKey: false,
-    summary: 'Choose whether ask-stock Chat uses the default model configuration or Codex on the device running DSA.',
-    usage: 'Keep Auto (recommended) unless Codex is installed and signed in on the device running DSA. Auto never enables the experimental Codex route.',
-    valueNotes: [
-      'Auto (recommended) and Default model settings both keep the existing model and API route.',
-      'Codex local Agent (experimental) currently supports single-agent Chat only, not Codex Multi Agent or Codex Deep Research.',
-      'Codex local Agent currently supports macOS, Linux, and a DSA backend running completely inside WSL; native Windows backends are not supported yet.',
-      'A local Agent is not an offline model; stock questions and tool results may be processed by services configured in Codex.',
-    ],
-    impact: ['Only affects ask-stock Chat. Regular reports, scheduled analysis, existing Multi Agent, and Deep Research stay unchanged.'],
-    notes: [
-      'DSA does not read or store Codex credentials. The Codex process uses its own sign-in state.',
-      'Settings checks only configuration, the Codex command, and the required protocol. It does not sign in, call a model, or read stock data; “Can try” is not a verified-success claim.',
-      'After saving, ask directly in Chat. The first question is the first real execution; if sign-in or the Codex service fails, Chat preserves the question and explains what happened.',
-      'To restore the original behavior, select Auto (recommended) and save.',
-    ],
+    summary: 'Choose the default-model execution method for ask-stock Chat.',
+    usage: 'Keep Auto (recommended). Both Auto and Default model settings use the existing LiteLLM route.',
+    valueNotes: ['Codex App Server has been removed. Existing values stay visible until you choose a supported value and save; models and accounts are never switched automatically.'],
+    impact: ['Only affects ask-stock Chat. Standalone Codex CLI reports, scheduled analysis, Multi Agent, and Deep Research keep their existing paths.'],
+    notes: ['Status and draft previews inspect configuration without external commands or models. Explicitly saving or importing the retired value is rejected; unrelated settings can still be saved.'],
     examples: [],
   },
   'settings.agent.AGENT_GENERATION_BACKEND': {
@@ -2048,13 +2109,13 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.agent.AGENT_MAX_STEPS': {
     title: 'Agent Max Steps',
-    summary: 'Caps default-model Agent reasoning steps and Codex tool calls per ask-stock turn.',
-    usage: 'With the default-model Agent, the default lets each sub-agent keep its preset; raising the value lifts all sub-agents, while lowering it caps larger presets. With Codex, the value limits how many data-tool calls one ask-stock turn may make.',
+    summary: 'Caps default-model Agent reasoning steps.',
+    usage: 'With the default-model Agent, the default lets each sub-agent keep its preset; raising the value lifts all sub-agents, while lowering it caps larger presets.',
     valueNotes: [
       'Higher steps enable deeper reasoning but increase time and token cost.',
       'Complex scenarios (e.g. multi-strategy orchestration) may need higher values.',
     ],
-    impact: ['Affects default-model reasoning depth or Codex data-tool calls per turn, together with duration and token consumption.'],
+    impact: ['Affects default-model reasoning depth, duration and token consumption.'],
     notes: ['Very low values may cause incomplete reasoning.'],
   },
   'settings.agent.AGENT_SKILLS': {
@@ -2183,7 +2244,6 @@ const settingsHelpEnUS: SettingsHelpMap = {
     notes: [
       'This feature does not process provider traces, thinking blocks, tool calls, or tool results, and does not change same-turn tool passthrough.',
       'It only affects visible ask-stock history compression; it does not change LLM provider, model, Base URL, save cleanup, or runtime priority semantics.',
-      'This LLM compression currently applies only to Default model ask-stock. Codex Agent always uses the 20 most recent user-visible messages and does not call the Agent primary model for summaries. The saved setting is retained and takes effect again after switching back to Default model.',
     ],
   },
   'settings.agent.event_monitor': {

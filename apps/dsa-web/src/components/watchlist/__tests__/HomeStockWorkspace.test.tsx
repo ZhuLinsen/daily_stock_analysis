@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
@@ -9,16 +9,20 @@ function renderWorkspace({
   watchlistRows,
   selectedRecordId,
   selectedStockCode,
+  selectedAssetType,
   activeTab = 'watchlist',
+  language = 'zh',
 }: {
   watchlistRows: HomeWatchlistRow[];
   selectedRecordId?: number;
   selectedStockCode?: string;
+  selectedAssetType?: 'stock' | 'index' | null;
   activeTab?: HomeWorkspaceTab;
+  language?: 'zh' | 'en';
 }) {
   const onHistoryItemClick = vi.fn();
   const onRemoveFromWatchlist = vi.fn().mockResolvedValue(undefined);
-  window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+  window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, language);
 
   const renderView = (rows: HomeWatchlistRow[]) => (
     <UiLanguageProvider>
@@ -42,6 +46,7 @@ function renderWorkspace({
         historyItems={[]}
         isLoadingHistory={false}
         selectedStockCode={selectedStockCode}
+        selectedAssetType={selectedAssetType ?? null}
         selectedRecordId={selectedRecordId}
         onHistoryItemClick={onHistoryItemClick}
       />
@@ -102,6 +107,120 @@ describe('HomeStockWorkspace', () => {
     expect(onHistoryItemClick).toHaveBeenCalledWith(21);
     expect(row.tagName).toBe('BUTTON');
     expect(row).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('shows change state and next-action signals for watchlist rows', () => {
+    renderWorkspace({
+      watchlistRows: [
+        {
+          code: '600519',
+          analyzedToday: true,
+          latestItem: {
+            id: 21,
+            stockCode: '600519',
+            stockName: '贵州茅台',
+            sentimentScore: 88,
+            operationAdvice: '买入',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+          },
+        },
+        {
+          code: '00700',
+          analyzedToday: false,
+          latestItem: {
+            id: 22,
+            stockCode: '00700',
+            stockName: '腾讯控股',
+            sentimentScore: 68,
+            operationAdvice: 'neutral',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-18T09:00:00+08:00',
+          },
+        },
+        {
+          code: 'AAPL',
+          analyzedToday: false,
+          activeTask: {
+            taskId: 'task-aapl',
+            stockCode: 'AAPL',
+            status: 'processing',
+            progress: 25,
+            reportType: 'simple',
+            createdAt: '2026-03-19T09:20:00+08:00',
+          },
+        },
+      ],
+    });
+
+    const analyzedRow = within(screen.getByTestId('watchlist-row-600519'));
+    expect(analyzedRow.getByText('变化')).toBeInTheDocument();
+    expect(analyzedRow.getByText('今日已更新')).toBeInTheDocument();
+    expect(analyzedRow.getByText('已完成')).toBeInTheDocument();
+    expect(analyzedRow.getByText('打开最新报告')).toBeInTheDocument();
+    const analyzedButton = analyzedRow.getByRole('button', { name: '打开 600519 最新分析详情' });
+    expect(analyzedButton).toHaveAccessibleDescription('变化：今日已更新；状态：已完成；下一步：打开最新报告');
+    const signalGrid = analyzedRow.getByText('变化').parentElement?.parentElement;
+    expect(signalGrid).toHaveClass('grid-cols-1');
+    expect(signalGrid).not.toHaveClass('sm:grid-cols-3');
+
+    const staleRow = within(screen.getByTestId('watchlist-row-00700'));
+    expect(staleRow.getByText('有历史报告')).toBeInTheDocument();
+    expect(staleRow.getByText('待更新')).toBeInTheDocument();
+    expect(staleRow.getByText('运行今日分析')).toBeInTheDocument();
+    expect(staleRow.getByRole('button', { name: '打开 00700 最新分析详情' })).toHaveAccessibleDescription(
+      '变化：有历史报告；状态：待更新；下一步：运行今日分析',
+    );
+
+    const taskRow = within(screen.getByTestId('watchlist-row-AAPL'));
+    expect(taskRow.getByText('等待首次分析')).toBeInTheDocument();
+    expect(taskRow.getAllByText('任务分析中')).toHaveLength(2);
+    expect(taskRow.getByText('等待任务完成')).toBeInTheDocument();
+    expect(taskRow.getByRole('button', { name: '暂无 AAPL 的分析详情，可先分析' })).toHaveAccessibleDescription(
+      '变化：等待首次分析；状态：任务分析中；下一步：等待任务完成',
+    );
+  });
+
+  it('keeps asset-aware selection while excluding a running index from the pending count', () => {
+    renderWorkspace({
+      selectedStockCode: '000016',
+      selectedAssetType: 'stock',
+      watchlistRows: [
+        { code: '000016', assetType: 'stock', analyzedToday: false },
+        { code: '000016.SH', assetType: 'index', identityKey: 'sh000016', analyzedToday: false,
+          activeTask: { taskId: 'index-task', stockCode: 'sh000016', status: 'processing', progress: 25,
+            reportType: 'simple', createdAt: '2026-10-01T09:20:00+08:00' } },
+      ],
+    });
+    expect(screen.getByText('今日待分析 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '暂无 000016 的分析详情，可先分析' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '暂无 000016.SH 的分析详情，可先分析' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: '暂无 000016.SH 的分析详情，可先分析' })).toHaveAccessibleDescription(
+      '变化：等待首次分析；状态：任务分析中；下一步：等待任务完成',
+    );
+  });
+
+  it('localizes watchlist signal descriptions for assistive technology', () => {
+    renderWorkspace({
+      language: 'en',
+      watchlistRows: [{
+        code: 'AAPL',
+        analyzedToday: false,
+        latestItem: {
+          id: 22,
+          stockCode: 'AAPL',
+          stockName: 'Apple',
+          sentimentScore: 68,
+          operationAdvice: 'neutral',
+          analysisCount: 1,
+          lastAnalysisTime: '2026-03-18T09:00:00+08:00',
+        },
+      }],
+    });
+
+    expect(screen.getByRole('button', { name: 'Open the latest analysis details for AAPL' })).toHaveAccessibleDescription(
+      'Change: Has prior report; State: Pending update; Next action: Run today analysis',
+    );
   });
 
   it('shows an explicit notice when a watchlist row has no detail yet', async () => {
@@ -323,5 +442,160 @@ describe('HomeStockWorkspace', () => {
     });
 
     expect(screen.getByRole('button', { name: '打开 HK700 最新分析详情' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps a same-code stock row selected without selecting the index row', () => {
+    renderWorkspace({
+      watchlistRows: [
+        {
+          code: 'sh000016',
+          assetType: 'index',
+          analyzedToday: true,
+          latestItem: {
+            id: 31,
+            stockCode: 'sh000016',
+            stockName: '上证50',
+            sentimentScore: 66,
+            operationAdvice: '观望',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'index',
+          },
+        },
+        {
+          code: '000016',
+          assetType: 'stock',
+          analyzedToday: true,
+          latestItem: {
+            id: 32,
+            stockCode: '000016',
+            stockName: '深康佳A',
+            sentimentScore: 71,
+            operationAdvice: '买入',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'stock',
+          },
+        },
+      ],
+      selectedStockCode: '000016',
+      selectedAssetType: 'stock',
+      selectedRecordId: 32,
+    });
+
+    const stockRowButton = screen.getByTestId('watchlist-row-000016').querySelector('button[aria-pressed]');
+    const indexRowButton = screen.getByTestId('watchlist-row-sh000016').querySelector('button[aria-pressed]');
+    expect(stockRowButton).toHaveAttribute('aria-pressed', 'true');
+    expect(indexRowButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('selects the index row when the index report is active', () => {
+    renderWorkspace({
+      watchlistRows: [
+        {
+          code: 'sh000016',
+          assetType: 'index',
+          analyzedToday: true,
+          latestItem: {
+            id: 41,
+            stockCode: 'SH000016',
+            stockName: '上证50',
+            sentimentScore: 66,
+            operationAdvice: '观望',
+            analysisCount: 2,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'index',
+          },
+        },
+        {
+          code: '000016',
+          assetType: 'stock',
+          analyzedToday: true,
+          latestItem: {
+            id: 42,
+            stockCode: '000016',
+            stockName: '深康佳A',
+            sentimentScore: 71,
+            operationAdvice: '买入',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'stock',
+          },
+        },
+      ],
+      selectedStockCode: 'sh000016',
+      selectedAssetType: 'index',
+      selectedRecordId: 41,
+    });
+
+    const indexRowButton = screen.getByTestId('watchlist-row-sh000016').querySelector('button[aria-pressed]');
+    const stockRowButton = screen.getByTestId('watchlist-row-000016').querySelector('button[aria-pressed]');
+    expect(indexRowButton).toHaveAttribute('aria-pressed', 'true');
+    expect(stockRowButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('selects an alias-form index row via its registry identity even without a latest detail (PR #2312)', () => {
+    renderWorkspace({
+      watchlistRows: [
+        {
+          code: '000016.SH',
+          assetType: 'index',
+          identityKey: 'sh000016',
+          analyzedToday: true,
+        },
+        {
+          code: '000016',
+          assetType: 'stock',
+          analyzedToday: true,
+        },
+      ],
+      selectedStockCode: 'sh000016',
+      selectedAssetType: 'index',
+    });
+
+    // No `selectedRecordId` and no latest detail on either row, so selection
+    // must come from the identity comparison: the canonical report pairs with
+    // the alias row through `identityKey` (HomePage's registry resolution) and
+    // never with the bare `000016` stock row.
+    const aliasRowButton = screen.getByTestId('watchlist-row-000016.SH').querySelector('button[aria-pressed]');
+    const stockRowButton = screen.getByTestId('watchlist-row-000016').querySelector('button[aria-pressed]');
+    expect(aliasRowButton).toHaveAttribute('aria-pressed', 'true');
+    expect(stockRowButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps the no-detail notice on the triggering index row instead of reusing the same-code stock row detail (PR #2312)', async () => {
+    const { onHistoryItemClick } = renderWorkspace({
+      watchlistRows: [
+        {
+          code: '000016',
+          assetType: 'stock',
+          analyzedToday: true,
+          latestItem: {
+            id: 99,
+            stockCode: '000016',
+            stockName: '深康佳A',
+            sentimentScore: 70,
+            operationAdvice: '买入',
+            analysisCount: 1,
+            lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+            assetType: 'stock',
+          },
+        },
+        {
+          code: '000016.SH',
+          assetType: 'index',
+          analyzedToday: false,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByTestId('watchlist-row-000016.SH').querySelector('button[aria-pressed]') as HTMLButtonElement);
+
+    // The index row has no detail yet. The notice carries the triggering row's
+    // own code+assetType (000016.SH / index); without that, the shared stock
+    // normalization would fold 000016.SH to 000016 and the notice would be
+    // swallowed by the stock row (which HAS a detail).
+    expect(await screen.findByRole('alert')).toHaveTextContent('暂无分析详情，可先分析。');
+    expect(onHistoryItemClick).not.toHaveBeenCalled();
   });
 });

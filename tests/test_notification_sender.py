@@ -23,6 +23,7 @@ import requests
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import Config
+from src.formatters import utf16_len
 from src.notification_sender import (
     AstrbotSender,
     CustomWebhookSender,
@@ -1996,6 +1997,22 @@ class TestTelegramSender(unittest.TestCase):
         self.assertGreaterEqual(mock_post.call_count, 2)
         payload_texts = [call.kwargs["json"]["text"] for call in mock_post.call_args_list]
         self.assertTrue(all(len(text) <= 4096 for text in payload_texts))
+        self.assertEqual("".join(payload_texts), sender._convert_to_telegram_markdown(content))
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_chunks_by_utf16_length_for_emoji_content(self, mock_post):
+        mock_post.return_value = _response(200, {"ok": True})
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        # 4000 code points, but 4200 UTF-16 units because each emoji takes two.
+        content = ("📈" + "x" * 19) * 200
+
+        result = sender.send_to_telegram(content)
+
+        self.assertTrue(result)
+        payload_texts = [call.kwargs["json"]["text"] for call in mock_post.call_args_list]
+        self.assertGreaterEqual(len(payload_texts), 2)
+        self.assertTrue(all(utf16_len(text) <= 4096 for text in payload_texts))
         self.assertEqual("".join(payload_texts), sender._convert_to_telegram_markdown(content))
 
     @mock.patch("src.notification_sender.telegram_sender.requests.post")

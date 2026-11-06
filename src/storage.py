@@ -18,6 +18,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar, Union
 
@@ -64,6 +65,7 @@ from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
+CHAT_STATE_SCHEMA_VERSION = "2026-10-06-chat-active-stock"
 INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
 
 # SQLAlchemy ORM 基类
@@ -134,15 +136,23 @@ class StockDaily(Base):
     
     # 数据来源
     data_source = Column(String(50))  # 记录数据来源（如 AkshareFetcher）
-    
+
+    # canonical_id：Phase 1 前缀格式的稳定分析目标键（如 sh000300 / sh600519 / AAPL）。
+    # Expand-Contract PR2：仅加列 + 双写，读路径仍用 ``code`` 列；PR3/PR4 再切读路径。
+    # 可空：存量行由自愈式迁移 backfill；新写由 ``save_daily_data`` 推导或显式传入。
+    # 普通索引（非唯一）：历史别名行可能共享同一 canonical_id + date，唯一索引会撞。
+    canonical_id = Column(String(32), nullable=True)
+
     # 更新时间
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-    
+
     # 唯一约束：同一股票同一日期只能有一条数据
     __table_args__ = (
         UniqueConstraint('code', 'date', name='uix_code_date'),
         Index('ix_code_date', 'code', 'date'),
+        # 普通索引：允许历史别名行（同 canonical_id + date）共存（AC 9）。
+        Index('ix_stock_daily_canonical_id', 'canonical_id'),
     )
     
     def __repr__(self):
@@ -165,6 +175,7 @@ class StockDaily(Base):
             'ma20': self.ma20,
             'volume_ratio': self.volume_ratio,
             'data_source': self.data_source,
+            'canonical_id': self.canonical_id,
         }
 
 
@@ -734,6 +745,26 @@ class ConversationSessionState(Base):
     selected_skill_ids_json = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    active_stock_code = Column(String(32), nullable=True)
+    active_stock_canonical_id = Column(String(32), nullable=True)
+    active_stock_asset_type = Column(String(16), nullable=True)
+    active_stock_name = Column(String(255), nullable=True)
+    active_stock_source_message_id = Column(Integer, nullable=True)
+    active_stock_updated_at = Column(DateTime, nullable=True)
+    state_version = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    session_generation = Column(String(36), nullable=True)
+    # Latest user turn accepted by the state contract: Web acceptance or a
+    # non-invalidating current first-party compatibility turn. Not a new stock confirmation.
+    last_accepted_user_message_id = Column(Integer, nullable=True)
+
+
+class ChatSessionStateConflict(Exception):
+    """A prepared Chat turn no longer belongs to the current session snapshot."""
+
+    code = "session_state_conflict"
+
+    def __init__(self):
+        super().__init__("Conversation changed; refresh the session before retrying.")
 
 
 class ConversationSummary(Base):
@@ -1314,21 +1345,72 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     
     def __new__(cls, *args, **kwargs):
         """单例模式实现"""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-    
+        instance = cls._instance
+        if instance is None:
+            instance = super().__new__(cls)
+            instance._initialized = False
+            cls._instance = instance
+            return instance
+
+        if getattr(instance, '_initialized', False):
+            # 单例已初始化：仅当请求的 db_url 与当前绑定的 db_url 不同时才
+            # 切换绑定，否则维持现有实例。此前任何新的 db_url 都会被忽略，
+            # 导致测试/多库场景下实例仍指向旧库（issue #2436）。
+            requested_db_url = kwargs.get('db_url')
+            if requested_db_url is None and args:
+                requested_db_url = args[0]
+            if requested_db_url is None:
+                requested_db_url = get_config().get_db_url()
+            if requested_db_url == getattr(instance, '_db_url', None):
+                return instance
+
+            logger.info(
+                "DatabaseManager 检测到不同的 db_url，切换绑定: %r -> %r",
+                getattr(instance, '_db_url', None),
+                requested_db_url,
+            )
+            # 候选绑定模式：先在全新的实例上完整初始化目标库（校验 URL →
+            # 建引擎 → 建 Session 工厂 → 建表/迁移），全部成功后才原子发布
+            # 为类级单例并返回候选；任一步失败则丢弃候选，现有健康单例与
+            # 消费者已缓存的引用原封不动，并抛出原异常。
+            # （此前的"先破坏后建设"实现会在目标库初始化成功前置
+            # _initialized=False 并 dispose 旧引擎，失败后所有已缓存引用
+            # 永久失效——评审 OR-COR-1cde6a8d / OR-COR-4d62400a 的返工要求。）
+            candidate = super().__new__(cls)
+            candidate._initialized = False
+            candidate._initialize_database(requested_db_url, is_candidate=True)
+            # 发布：单赋值原子生效；本方法运行在 _DatabaseManagerMeta.__call__
+            # 持有的 _init_lock（RLock）内，与 get_instance()/reset_instance()
+            # 互斥，无需额外加锁。
+            # 旧实例不主动 dispose：其他消费者可能仍持有其引用并正在使用旧
+            # 引擎（dispose 会让其会话立即失效）；旧引擎已在各自初始化时注册
+            # atexit 清理钩子，进程退出时统一回收。
+            cls._instance = candidate
+            return candidate
+
+        return instance
+
     def __init__(self, db_url: Optional[str] = None):
         """
         初始化数据库管理器
-        
+
         Args:
             db_url: 数据库连接 URL（可选，默认从配置读取）
         """
         if getattr(self, '_initialized', False):
+            # 已完成初始化（含 __new__ 中刚完成候选绑定并发布的新实例）：
+            # 不重复执行初始化流程。
             return
+        self._initialize_database(db_url)
 
+    def _initialize_database(self, db_url: Optional[str], *, is_candidate: bool = False) -> None:
+        """执行完整初始化流程：建引擎、建 Session 工厂、建表与迁移。
+
+        Args:
+            db_url: 数据库连接 URL（None 时从配置读取）
+            is_candidate: True 表示这是尚未发布的候选实例——失败时仅清理
+                自身，绝不清空类级单例（是否发布由 __new__ 决定）。
+        """
         created_engine = None
 
         try:
@@ -1372,9 +1454,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
+            self._ensure_stock_daily_canonical_id()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
+            self._ensure_chat_session_schema()
 
             self._initialized = True
             logger.info(f"数据库初始化完成: {db_url}")
@@ -1390,14 +1474,22 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 logger.warning("数据库初始化失败后的引擎清理也失败: %s", cleanup_exc)
             self._engine = None
             self._SessionLocal = None
-            self.__class__._instance = None
+            if not is_candidate:
+                # 冷启动失败：沿用既有语义清空类级单例，下次调用重新构建。
+                self.__class__._instance = None
+            # 候选实例失败：仅丢弃候选自身；类级单例与已发布的健康实例
+            # 保持原样（是否发布由 __new__ 决定）。
             raise
 
-    def _ensure_schema_migration_record(self) -> None:
+    def _ensure_schema_migration_record(
+        self,
+        version: str = CURRENT_SCHEMA_VERSION,
+        description: str = "Baseline schema created through SQLAlchemy metadata.create_all",
+    ) -> None:
         session = self._SessionLocal()
         values = {
-            "version": CURRENT_SCHEMA_VERSION,
-            "description": "Baseline schema created through SQLAlchemy metadata.create_all",
+            "version": version,
+            "description": description,
         }
         try:
             if self._is_sqlite_engine:
@@ -1410,7 +1502,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         except IntegrityError:
             session.rollback()
             with self._SessionLocal() as verify_session:
-                existing = verify_session.get(DatabaseSchemaMigration, CURRENT_SCHEMA_VERSION)
+                existing = verify_session.get(DatabaseSchemaMigration, version)
             if existing is None:
                 raise
         except Exception:
@@ -1418,6 +1510,95 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             raise
         finally:
             session.close()
+
+    def _ensure_chat_session_schema(self) -> None:
+        """Additive Chat state migration; old writers may omit every new column."""
+        if self._is_sqlite_engine:
+            column_sql = {
+                "active_stock_code": "VARCHAR(32)",
+                "active_stock_canonical_id": "VARCHAR(32)",
+                "active_stock_asset_type": "VARCHAR(16)",
+                "active_stock_name": "VARCHAR(255)",
+                "active_stock_source_message_id": "INTEGER",
+                "active_stock_updated_at": "DATETIME",
+                "state_version": "INTEGER NOT NULL DEFAULT 0",
+                "session_generation": "VARCHAR(36)",
+                "last_accepted_user_message_id": "INTEGER",
+            }
+            existing = {
+                column["name"] for column in inspect(self._engine).get_columns(
+                    ConversationSessionState.__tablename__
+                )
+            }
+            for name, sql_type in column_sql.items():
+                if name in existing:
+                    continue
+                for attempt in range(self._sqlite_write_retry_max + 1):
+                    try:
+                        with self._engine.begin() as connection:
+                            connection.exec_driver_sql(
+                                f"ALTER TABLE conversation_session_states ADD COLUMN {name} {sql_type}"
+                            )
+                        break
+                    except OperationalError as exc:
+                        if self._is_sqlite_duplicate_column_error(exc, name):
+                            break
+                        if self._is_sqlite_locked_error(exc) and attempt < self._sqlite_write_retry_max:
+                            time.sleep(self._sqlite_write_retry_base_delay * (2 ** attempt))
+                            continue
+                        raise
+            version_column = next(
+                column for column in inspect(self._engine).get_columns(
+                    ConversationSessionState.__tablename__
+                ) if column["name"] == "state_version"
+            )
+            if version_column["nullable"] or str(version_column["default"]).strip("'\"()") != "0":
+                raise RuntimeError("Chat state_version requires database NOT NULL DEFAULT 0")
+
+        # Initialization precedes get_session() availability. Identity metadata
+        # uses its own short transaction, never an accepted turn or a model call.
+        for attempt in range(self._sqlite_write_retry_max + 1):
+            session = self._SessionLocal()
+            try:
+                if self._is_sqlite_engine:
+                    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                states = {row.session_id: row for row in session.execute(
+                    select(ConversationSessionState)
+                ).scalars()}
+                visible_ids = session.execute(select(ConversationMessage.session_id).where(
+                    ConversationMessage.role.in_(["user", "assistant"])
+                ).distinct()).scalars().all()
+                for session_id in visible_ids:
+                    if session_id not in states:
+                        state = ConversationSessionState(
+                            session_id=session_id, selected_skill_ids_json="null",
+                            session_generation=str(uuid.uuid4()),
+                        )
+                        session.add(state)
+                        states[session_id] = state
+                for state in states.values():
+                    if state.session_generation is None:
+                        session.execute(ConversationSessionState.__table__.update().where(
+                            ConversationSessionState.session_id == state.session_id
+                        ).values(session_generation=str(uuid.uuid4()),
+                                 updated_at=ConversationSessionState.updated_at))
+                session.commit()
+                break
+            except OperationalError as exc:
+                session.rollback()
+                if self._is_sqlite_engine and self._is_sqlite_locked_error(exc) and attempt < self._sqlite_write_retry_max:
+                    time.sleep(self._sqlite_write_retry_base_delay * (2 ** attempt))
+                    continue
+                raise
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+        self._ensure_schema_migration_record(
+            CHAT_STATE_SCHEMA_VERSION,
+            "Additive Chat identity, acceptance version and active-stock state",
+        )
 
     def _ensure_decision_signal_profile_schema(self) -> None:
         """Add and backfill nullable decision_profile for existing SQLite DBs."""
@@ -1598,6 +1779,360 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             stats["non_object_count"],
             stats["invalid_profile_count"],
             stats["skipped_existing_profile_count"],
+        )
+
+    def _ensure_stock_daily_canonical_id(self) -> None:
+        """Self-healing migration: add + backfill the ``canonical_id`` column.
+
+        Expand-Contract PR2 (issue #2207). Mirrors the
+        ``_ensure_decision_signal_profile_schema`` 6-step pattern:
+
+        1. SQLite-only (non-SQLite engines rely on ``Base.metadata.create_all``).
+        2. inspect() whether the ``stock_daily`` table exists at all.
+        3. inspect() whether the ``canonical_id`` column already exists (idempotent).
+        4. ``ALTER TABLE ... ADD COLUMN canonical_id VARCHAR(32)`` (nullable —
+           SQLite can't add NOT NULL/UNIQUE columns via ALTER).
+         5. Backfill existing rows with ``_derive_canonical_id(code)`` in
+            id-batched chunks (5000/batch), using ``WHERE canonical_id IS NULL``
+            so re-runs are safe. ``_derive_canonical_id`` mirrors the parser
+            contract: a bare code always derives the stock-path
+            canonical_id (e.g. ``000300`` -> ``sz000300``), while only explicit
+            index forms (``sh000300`` / ``930955.CSI``) derive an index
+            canonical_id. Historical bare rows whose current canonical_id was
+            mis-written as an index identity (e.g. ``sh000300``) are not fixed
+            here — the idempotent ``_backfill_canonical_ids()`` repair corrects
+            that bucket in a separate pass.
+            Function-level lazy import keeps the storage layer free of a
+            circular import on ``src.services.stock_list_parser``.
+        6. Create a plain (non-unique) index ``ix_stock_daily_canonical_id`` so
+           historical alias rows sharing one canonical_id + date can coexist (AC 9).
+
+        The ``(code, date)`` unique constraint ``uix_code_date`` is untouched —
+        read paths keep using the ``code`` column (AC 4).
+        """
+
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(StockDaily.__tablename__):
+            return
+
+        try:
+            existing = {
+                column["name"]
+                for column in inspector.get_columns(StockDaily.__tablename__)
+            }
+        except Exception as exc:
+            logger.error(
+                "[StockDaily] failed to inspect canonical_id column; "
+                "canonical_id migration cannot continue safely: %s",
+                exc,
+            )
+            raise
+
+        if "canonical_id" not in existing:
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {StockDaily.__tablename__} "
+                        "ADD COLUMN canonical_id VARCHAR(32)"
+                    )
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, "canonical_id"):
+                    raise
+
+        self._backfill_stock_daily_canonical_id()
+        self._backfill_canonical_ids()
+        self._ensure_stock_daily_canonical_id_index()
+
+    def _ensure_stock_daily_canonical_id_index(self) -> None:
+        """Create the plain ``ix_stock_daily_canonical_id`` index (idempotent)."""
+
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                f"CREATE INDEX IF NOT EXISTS ix_stock_daily_canonical_id "
+                f"ON {StockDaily.__tablename__} (canonical_id)"
+            )
+
+        try:
+            actual_indexes = {
+                index["name"]: index["column_names"]
+                for index in inspect(self._engine).get_indexes(
+                    StockDaily.__tablename__
+                )
+            }
+        except Exception as exc:
+            logger.error(
+                "[StockDaily] failed to inspect canonical_id index; "
+                "canonical_id migration cannot verify index safely: %s",
+                exc,
+            )
+            raise
+        if actual_indexes.get("ix_stock_daily_canonical_id") != ["canonical_id"]:
+            raise RuntimeError(
+                "canonical_id index verification failed: "
+                f"index=ix_stock_daily_canonical_id "
+                f"expected=['canonical_id'] "
+                f"actual={actual_indexes.get('ix_stock_daily_canonical_id')}"
+            )
+
+    def _derive_canonical_id(self, code: str) -> Optional[str]:
+        """Derive a Phase 1 ``canonical_id`` for ``code``.
+
+        This method returns ``parse_analysis_target(code).canonical_id`` (or
+        ``None``) and never reads ``matched_index.canonical_id`` to override
+        the result. Bare codes always resolve to the stock-path canonical_id
+        (e.g. bare ``000300`` -> ``sz000300``), while explicit index forms
+        (``sh000300`` / ``930955.CSI``) resolve to their index canonical_id.
+        This keeps the storage derivation consistent with the parser contract
+        (bare = stock, explicit index = index).
+
+        Lazy-imports ``parse_analysis_target`` inside the method (the parser
+        module transitively touches the storage layer) and degrades to
+        ``None`` on import failure or empty canonical_id so callers can
+        persist NULL (D1) without raising.
+        """
+        try:
+            from src.services.stock_list_parser import (
+                ParseStatus,
+                parse_analysis_target,
+            )
+        except Exception as exc:
+            logger.warning(
+                "_derive_canonical_id: cannot import parse_analysis_target "
+                "for code=%r: %s — returning None",
+                code, exc,
+            )
+            return None
+        target = parse_analysis_target(code)
+        if target.asset_type == ParseStatus.UNSUPPORTED:
+            # An unsupported identity (e.g. an unregistered ``csi930956`` /
+            # ``930956.CSI``) must not enter a persistent canonical bucket.
+            # Return None so the caller persists NULL instead.
+            return None
+        return target.canonical_id or None
+
+    def _backfill_stock_daily_canonical_id(self) -> None:
+        """Backfill ``canonical_id`` for existing rows using the Phase 1 parser.
+
+        Idempotent: only rows with ``canonical_id IS NULL`` are considered, and
+        each UPDATE is guarded by the same null condition. Backfilled in
+        id-ordered batches of 5000 so large legacy tables stay within SQLite's
+        per-statement limits.
+
+        The batch scan advances a monotonic ``id`` cursor (not "re-select NULL
+        rows") so a row whose derivation fails can never trap this loop: it is
+        skipped past in this run and naturally retried on next startup while
+        its ``canonical_id`` is still NULL.
+
+        Derivation follows the parser contract: a bare code that collides with
+        an index identity (e.g. ``000300``) backfills to the stock-path
+        canonical_id (``sz000300``); only explicit index forms
+        (``sh000300`` / ``930955.CSI``) derive to an index canonical_id.
+        """
+
+        _BATCH_SIZE = 5000
+        total_backfilled = 0
+        total_skipped = 0
+        last_id = 0
+
+        while True:
+            with self._engine.begin() as connection:
+                rows = connection.execute(
+                    text(
+                        f"SELECT id, code FROM {StockDaily.__tablename__} "
+                        "WHERE canonical_id IS NULL AND id > :last_id "
+                        f"ORDER BY id LIMIT {_BATCH_SIZE}"
+                    ),
+                    {"last_id": last_id},
+                ).fetchall()
+
+            if not rows:
+                break
+
+            with self._engine.begin() as connection:
+                for row_id, code in rows:
+                    # Always advance the cursor — even when this row's
+                    # derivation fails below — so the batch scan terminates.
+                    last_id = row_id
+                    derived = None
+                    try:
+                        derived = self._derive_canonical_id(code)
+                    except Exception as exc:
+                        # D1 decision: parser failure degrades to NULL rather
+                        # than crashing the whole migration. The row keeps
+                        # ``canonical_id IS NULL`` and will be retried on the
+                        # next startup; we don't raise and don't re-loop here.
+                        logger.warning(
+                            "[StockDaily] canonical_id derivation failed for "
+                            "code=%r (id=%s): %s — leaving NULL",
+                            code, row_id, exc,
+                        )
+                        total_skipped += 1
+                        continue
+
+                    if not derived:
+                        # Parser returned an empty canonical_id (None / '')
+                        # without raising — nothing meaningful to write. Skip
+                        # so the row is not falsely counted as backfilled and
+                        # no empty string is persisted as a stable key.
+                        total_skipped += 1
+                        continue
+
+                    result = connection.execute(
+                        text(
+                            f"UPDATE {StockDaily.__tablename__} "
+                            "SET canonical_id = :canonical_id "
+                            "WHERE id = :row_id AND canonical_id IS NULL"
+                        ),
+                        {"canonical_id": derived, "row_id": row_id},
+                    )
+                    if result.rowcount == 1:
+                        total_backfilled += 1
+                    elif result.rowcount == 0:
+                        # Lost the race with a concurrent writer — safe to skip,
+                        # the row is now non-null.
+                        total_skipped += 1
+                    else:
+                        raise RuntimeError(
+                            "canonical_id backfill updated an unexpected number "
+                            f"of rows for id={row_id}: {result.rowcount}"
+                        )
+
+        logger.info(
+            "[StockDaily] canonical_id backfill stats: backfilled_count=%s "
+            "skipped_count=%s",
+            total_backfilled,
+            total_skipped,
+        )
+
+    def _backfill_canonical_ids(self) -> None:
+        """Idempotent, batched repair of historical bare-code canonical_id buckets.
+
+        The previous ``_derive_canonical_id`` behavior preferred
+        ``matched_index.canonical_id``, so a bare six-digit code that collided
+        with an index identity (e.g. ``000001`` / ``000016`` / ``000688`` /
+        ``930955``) was written with the *index* canonical_id (``sh000001`` /
+        ``csi930955``) instead of the stock-path canonical_id (``sz000001`` /
+        ``bj930955``). This method repairs those rows.
+
+        Only rows matching ALL of the following are touched:
+          * ``code`` is a bare 6-digit numeric string (no explicit prefix/suffix)
+          * current ``canonical_id`` is non-NULL and hits an active index identity
+          * the parser's stock canonical_id differs from the current value
+
+        Explicit ``sh``/``sz``/``csi`` prefix and ``.SH``/``.SZ``/``.CSI``
+        suffix rows are never modified. The repair uses a monotonic ``id``
+        cursor and a conditional UPDATE (guarded by the current value) so it is
+        idempotent and safe under concurrent writers. When the registry is
+        empty the repair is a no-op and logs a WARNING.
+        """
+        if not self._is_sqlite_engine:
+            return
+        if not inspect(self._engine).has_table(StockDaily.__tablename__):
+            return
+
+        try:
+            from src.services.stock_list_parser import parse_analysis_target
+            from src.data.stock_index_loader import _load_active_index_rows
+        except Exception as exc:
+            logger.warning(
+                "[StockDaily] canonical_id repair cannot import parser/loader: %s — skipping",
+                exc,
+            )
+            return
+
+        active_rows = _load_active_index_rows()
+        if not active_rows:
+            logger.warning("[StockDaily] canonical_id repair skipped: index registry is empty")
+            return
+
+        # Build the set of active index canonical_ids to detect mis-bucketed rows.
+        active_index_canonicals = {
+            str(row[0]).strip() for row in active_rows if row and str(row[0]).strip()
+        }
+        if not active_index_canonicals:
+            logger.warning("[StockDaily] canonical_id repair skipped: no active index canonicals")
+            return
+
+        _BATCH_SIZE = 5000
+        total_repaired = 0
+        total_skipped = 0
+        last_id = 0
+
+        # Only rows whose current canonical_id hits an active index identity are
+        # candidates for repair. Push this filter into the SQL so repeated
+        # startup repairs do not scan the full table.
+        canonical_placeholders = ", ".join(f":c{i}" for i in range(len(active_index_canonicals)))
+        canonical_params = {f"c{i}": c for i, c in enumerate(sorted(active_index_canonicals))}
+
+        while True:
+            with self._engine.begin() as connection:
+                rows = connection.execute(
+                    text(
+                        f"SELECT id, code, canonical_id FROM {StockDaily.__tablename__} "
+                        "WHERE id > :last_id "
+                        f"AND canonical_id IN ({canonical_placeholders}) "
+                        "AND length(code) = 6 "
+                        "AND code NOT GLOB '*[^0-9]*' "
+                        f"ORDER BY id LIMIT {_BATCH_SIZE}"
+                    ),
+                    {"last_id": last_id, **canonical_params},
+                ).fetchall()
+
+            if not rows:
+                break
+
+            with self._engine.begin() as connection:
+                for row_id, code, current_canonical in rows:
+                    last_id = row_id
+                    code_str = str(code or "").strip()
+                    current = str(current_canonical or "").strip()
+
+                    # Only bare 6-digit numeric codes are candidates for repair.
+                    if not (code_str.isdigit() and len(code_str) == 6):
+                        total_skipped += 1
+                        continue
+
+                    try:
+                        target = parse_analysis_target(code_str)
+                    except Exception as exc:
+                        logger.warning(
+                            "[StockDaily] canonical_id repair derivation failed for "
+                            "code=%r (id=%s): %s — skipping",
+                            code_str, row_id, exc,
+                        )
+                        total_skipped += 1
+                        continue
+
+                    derived = target.canonical_id or None
+                    if not derived or derived == current:
+                        total_skipped += 1
+                        continue
+
+                    result = connection.execute(
+                        text(
+                            f"UPDATE {StockDaily.__tablename__} "
+                            "SET canonical_id = :derived "
+                            "WHERE id = :row_id AND canonical_id = :current"
+                        ),
+                        {"derived": derived, "row_id": row_id, "current": current},
+                    )
+                    if result.rowcount == 1:
+                        total_repaired += 1
+                    elif result.rowcount == 0:
+                        # Lost the race with a concurrent writer — safe to skip.
+                        total_skipped += 1
+                    else:
+                        raise RuntimeError(
+                            "canonical_id repair updated an unexpected number "
+                            f"of rows for id={row_id}: {result.rowcount}"
+                        )
+
+        logger.info(
+            "[StockDaily] canonical_id repair stats: repaired_count=%s skipped_count=%s",
+            total_repaired,
+            total_skipped,
         )
 
     def _ensure_intelligence_items_unique_index(self) -> None:
@@ -2931,7 +3466,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         self, 
         df: pd.DataFrame, 
         code: str,
-        data_source: str = "Unknown"
+        data_source: str = "Unknown",
+        canonical_id: Optional[str] = None,
     ) -> int:
         """
         保存日线数据到数据库
@@ -2940,11 +3476,19 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         - 按 `(code, date)` 做批量 UPSERT，已存在记录会覆盖更新
         - 同一批次内若存在重复日期，以最后一条记录为准
         - SQLite 分支按 chunk 写入以避免绑定参数上限
+        - ``canonical_id``（Expand-Contract PR2）：显式传入则双写；
+          未传（``None``）时用 ``_derive_canonical_id(code)`` 延迟推导
+          （裸码恒为 stock canonical，如 ``000300`` -> ``sz000300``；
+          仅显式指数形式如 ``sh000300`` / ``930955.CSI`` 推导为指数
+          canonical_id；历史被错误写成指数桶的裸码行由
+          ``_backfill_canonical_ids()`` 幂等修复），推导失败写 NULL 降级（D1）。
         
         Args:
             df: 包含日线数据的 DataFrame
             code: 股票代码
             data_source: 数据来源名称
+            canonical_id: Phase 1 前缀格式稳定键（如 ``sh000300``）；为 ``None``
+                时自动推导。
             
         Returns:
             本次实际新增的记录数（不含更新）
@@ -2952,6 +3496,25 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         if df is None or df.empty:
             logger.warning(f"保存数据为空，跳过 {code}")
             return 0
+
+        # D1: canonical_id=None → derive via the Phase 1 parser; on failure
+        # degrade to NULL (do NOT raise — read path still uses ``code``).
+        # Empty string is treated like None (never persisted as a key).
+        # Parser contract (OR-COR-4f9ffc38): a bare code always derives the
+        # stock canonical_id (e.g. ``000300`` -> ``sz000300``); only explicit
+        # index forms (``sh000300`` / ``930955.CSI``) derive an index canonical_id.
+        # Historical bare rows mis-written as an index identity are repaired
+        # separately by the idempotent ``_backfill_canonical_ids()``.
+        if not canonical_id:
+            try:
+                canonical_id = self._derive_canonical_id(code)
+            except Exception as exc:
+                logger.warning(
+                    "save_daily_data: canonical_id derivation failed for "
+                    "code=%r: %s — writing NULL",
+                    code, exc,
+                )
+                canonical_id = None
 
         now = datetime.now()
         records_by_date: Dict[date, Dict[str, Any]] = {}
@@ -2972,6 +3535,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 'ma20': self._normalize_sql_value(row.get('ma20')),
                 'volume_ratio': self._normalize_sql_value(row.get('volume_ratio')),
                 'data_source': data_source,
+                'canonical_id': canonical_id,
                 'created_at': now,
                 'updated_at': now,
             }
@@ -2985,7 +3549,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         def _write(session: Session) -> int:
             if self._is_sqlite_engine:
                 # SQLite has a per-statement bind-parameter limit (commonly 999).
-                # Each record has ~15 columns, so chunk upserts to stay within bounds.
+                # Each record has ~17 columns, so chunk upserts to stay within bounds.
                 _SQLITE_CHUNK = 50
                 # `_run_write_transaction()` opens SQLite writes with
                 # `BEGIN IMMEDIATE`, so existence checks and upsert execute
@@ -3029,6 +3593,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                                 'ma20': excluded.ma20,
                                 'volume_ratio': excluded.volume_ratio,
                                 'data_source': excluded.data_source,
+                                # D1 degrade: never overwrite a previously
+                                # backfilled non-NULL canonical_id with NULL.
+                                'canonical_id': func.coalesce(
+                                    excluded.canonical_id,
+                                    StockDaily.canonical_id,
+                                ),
                                 'updated_at': excluded.updated_at,
                             },
                         )
@@ -3065,6 +3635,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     existing.ma20 = record['ma20']
                     existing.volume_ratio = record['volume_ratio']
                     existing.data_source = record['data_source']
+                    if record['canonical_id'] is not None:
+                        existing.canonical_id = record['canonical_id']
                     existing.updated_at = record['updated_at']
                 return new_count
 
@@ -3248,11 +3820,218 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         digest = hashlib.md5(raw_key.encode("utf-8")).hexdigest()
         return f"no-url:{code}:{digest}"
 
-    def save_conversation_message(self, session_id: str, role: str, content: str) -> int:
+    @staticmethod
+    def _chat_message_anchor(message: Optional[ConversationMessage]) -> Optional[Tuple[int, str, str]]:
+        if message is None:
+            return None
+        return (int(message.id), message.role, message.created_at.isoformat())
+
+    @staticmethod
+    def _latest_chat_user(session: Session, session_id: str) -> Optional[ConversationMessage]:
+        return session.execute(select(ConversationMessage).where(
+            ConversationMessage.session_id == session_id,
+            ConversationMessage.role == "user",
+        ).order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc()).limit(1)).scalar_one_or_none()
+
+    @staticmethod
+    def _chat_stock_from_state(state: Optional[ConversationSessionState]) -> Optional[Dict[str, Any]]:
+        if state is None or state.active_stock_code is None:
+            return None
+        return {
+            "stock_code": state.active_stock_code,
+            "canonical_id": state.active_stock_canonical_id,
+            "asset_type": state.active_stock_asset_type,
+            "stock_name": state.active_stock_name,
+            "source_message_id": state.active_stock_source_message_id,
+            "updated_at": state.active_stock_updated_at.isoformat() if state.active_stock_updated_at else None,
+        }
+
+    def ensure_chat_session_generation(
+        self, session_id: str, *, expected_generation: Optional[str] = None,
+    ) -> str:
+        """Bind an instance before preparation, without accepting any business state."""
+        def write(session: Session) -> str:
+            state = session.get(ConversationSessionState, session_id)
+            if expected_generation is not None and (
+                state is None or state.session_generation != expected_generation
+            ):
+                raise ChatSessionStateConflict()
+            if state is None:
+                state = ConversationSessionState(
+                    session_id=session_id, selected_skill_ids_json="null",
+                    session_generation=str(uuid.uuid4()),
+                )
+                session.add(state)
+            elif state.session_generation is None:
+                generation = str(uuid.uuid4())
+                session.execute(ConversationSessionState.__table__.update().where(
+                    ConversationSessionState.session_id == session_id
+                ).values(session_generation=generation, updated_at=ConversationSessionState.updated_at))
+                return generation
+            return state.session_generation
+
+        return self._run_write_transaction("ensure_chat_session_generation", write)
+
+    def read_chat_session_snapshot(self, session_id: str) -> Dict[str, Any]:
+        """Read state, Skill, visible history, source anchors and summary together.
+
+        SQLite's legacy SELECT mode does not start a database transaction merely
+        because SQLAlchemy created a Session. Explicit BEGIN gives all reads the
+        same snapshot, released before compression or analysis preparation.
+        """
+        with self.session_scope() as session:
+            if self._is_sqlite_engine:
+                session.connection().exec_driver_sql("BEGIN")
+            state = session.get(ConversationSessionState, session_id)
+            messages = session.execute(select(ConversationMessage).where(
+                ConversationMessage.session_id == session_id,
+            ).order_by(ConversationMessage.created_at, ConversationMessage.id)).scalars().all()
+            users = [message for message in messages if message.role == "user"]
+            last_accepted = next((message for message in users if state is not None and
+                                  message.id == state.last_accepted_user_message_id), None)
+            summary = session.execute(select(ConversationSummary).where(
+                ConversationSummary.session_id == session_id
+            )).scalar_one_or_none()
+            return {
+                "session_id": session_id,
+                "session_generation": state.session_generation if state else None,
+                "session_state_version": state.state_version if state else 0,
+                "selected_skill_ids": json.loads(state.selected_skill_ids_json) if state else None,
+                "active_stock_context": self._chat_stock_from_state(state),
+                "latest_user_anchor": self._chat_message_anchor(users[-1] if users else None),
+                "last_accepted_user_anchor": self._chat_message_anchor(last_accepted),
+                "messages": [
+                    {"id": int(message.id), "role": message.role, "content": message.content,
+                     "created_at": message.created_at.isoformat()}
+                    for message in messages
+                ],
+                "summary": {
+                    "id": summary.id, "session_id": summary.session_id,
+                    "summary": summary.summary, "covered_message_id": summary.covered_message_id,
+                    "source_message_count": summary.source_message_count,
+                    "estimated_tokens": summary.estimated_tokens,
+                    "created_at": summary.created_at, "updated_at": summary.updated_at,
+                } if summary else None,
+                "provider_turns": self._read_agent_provider_turns(session, session_id),
+            }
+
+    def commit_chat_user_turn(
+        self,
+        snapshot: Dict[str, Any],
+        content: str,
+        *,
+        selected_skill_ids: Optional[List[str]] = None,
+        active_stock_context: Optional[Dict[str, Any]] = None,
+        confirm_stock: bool = False,
+    ) -> Dict[str, Any]:
+        """Accept message + explicit Skill + stock exactly once with snapshot CAS.
+
+        Caller resolution happens outside this transaction. No conflict retries
+        or silent re-resolution: only the existing SQLite busy-lock retry applies.
+        """
+        session_id = snapshot["session_id"]
+
+        def write(session: Session) -> Dict[str, Any]:
+            state = session.get(ConversationSessionState, session_id)
+            if (
+                state is None or not snapshot["session_generation"]
+                or state.session_generation != snapshot["session_generation"]
+                or state.state_version != snapshot["session_state_version"]
+                or self._chat_message_anchor(self._latest_chat_user(session, session_id))
+                != snapshot["latest_user_anchor"]
+            ):
+                raise ChatSessionStateConflict()
+
+            now = datetime.now()
+            message = ConversationMessage(session_id=session_id, role="user", content=content, created_at=now)
+            session.add(message)
+            session.flush()
+            if selected_skill_ids is not None:
+                state.selected_skill_ids_json = json.dumps(selected_skill_ids, ensure_ascii=False)
+
+            if active_stock_context is None:
+                state.active_stock_code = None
+                state.active_stock_canonical_id = None
+                state.active_stock_asset_type = None
+                state.active_stock_name = None
+                state.active_stock_source_message_id = None
+                state.active_stock_updated_at = None
+            else:
+                for key in ("stock_code", "canonical_id", "asset_type"):
+                    if not isinstance(active_stock_context.get(key), str) or not active_stock_context[key]:
+                        raise ValueError(f"Chat stock identity is missing {key}")
+                if active_stock_context["asset_type"] not in ("stock", "index"):
+                    raise ValueError("Unsupported Chat stock identity type")
+                if confirm_stock:
+                    source_id, source_time = int(message.id), now
+                else:
+                    source_id = active_stock_context.get("source_message_id")
+                    source_time = active_stock_context.get("updated_at")
+                    expected_source = next((item for item in snapshot["messages"] if
+                                            item["id"] == source_id and item["role"] == "user"), None)
+                    source = session.get(ConversationMessage, source_id) if source_id is not None else None
+                    if expected_source is None or source is None or source.session_id != session_id or (
+                        self._chat_message_anchor(source)
+                        != (expected_source["id"], "user", expected_source["created_at"])
+                    ):
+                        raise ChatSessionStateConflict()
+                    if not isinstance(source_time, str):
+                        raise ValueError("Chat stock confirmation time is missing")
+                    source_time = datetime.fromisoformat(source_time)
+                state.active_stock_code = active_stock_context["stock_code"]
+                state.active_stock_canonical_id = active_stock_context["canonical_id"]
+                state.active_stock_asset_type = active_stock_context["asset_type"]
+                state.active_stock_name = active_stock_context.get("stock_name")
+                state.active_stock_source_message_id = source_id
+                state.active_stock_updated_at = source_time
+            state.state_version += 1
+            state.last_accepted_user_message_id = int(message.id)
+            state.updated_at = now
+            session.flush()
+            return {
+                "session_id": session_id, "session_generation": state.session_generation,
+                "session_state_version": state.state_version,
+                "selected_skill_ids": json.loads(state.selected_skill_ids_json),
+                "active_stock_context": self._chat_stock_from_state(state),
+                "user_message_id": int(message.id),
+                "user_message_anchor": self._chat_message_anchor(message),
+            }
+
+        return self._run_write_transaction("commit_chat_user_turn", write)
+
+    def _chat_accepted_source_matches(
+        self, session: Session, session_id: str, accepted_turn: Dict[str, Any],
+    ) -> bool:
+        state = session.get(ConversationSessionState, session_id)
+        if (accepted_turn["session_id"] != session_id or state is None
+                or not accepted_turn["session_generation"]
+                or state.session_generation != accepted_turn["session_generation"]):
+            return False
+        source = session.get(ConversationMessage, accepted_turn["user_message_id"])
+        return (source is not None and source.session_id == session_id and source.role == "user"
+                and self._chat_message_anchor(source) == accepted_turn["user_message_anchor"])
+
+    @staticmethod
+    def _check_legacy_chat_write(session: Session, session_id: str) -> None:
+        state = session.get(ConversationSessionState, session_id)
+        if state is not None and state.state_version > 0:
+            # An old/default writer cannot silently bypass the accepted Chat
+            # instance contract. Legacy version-zero callers keep their behavior.
+            raise ChatSessionStateConflict()
+
+    def save_conversation_message(
+        self, session_id: str, role: str, content: str,
+        *, accepted_turn: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
         """
         保存 Agent 对话消息
         """
-        with self.session_scope() as session:
+        def write(session: Session) -> Optional[int]:
+            if accepted_turn is not None:
+                if not self._chat_accepted_source_matches(session, session_id, accepted_turn):
+                    return None
+            elif role == "assistant":
+                self._check_legacy_chat_write(session, session_id)
             msg = ConversationMessage(
                 session_id=session_id,
                 role=role,
@@ -3262,6 +4041,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             session.flush()
             return int(msg.id)
 
+        return self._run_write_transaction("save_conversation_message", write)
+
     def save_conversation_user_turn(
         self,
         session_id: str,
@@ -3269,35 +4050,60 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         selected_skill_ids: Optional[List[str]] = None,
     ) -> int:
         """Persist a user message and an optional session Skill selection atomically."""
-        with self.session_scope() as session:
-            msg = ConversationMessage(
-                session_id=session_id,
-                role="user",
-                content=content,
-            )
-            session.add(msg)
-            session.flush()
+        def write(session: Session) -> int:
+            return int(self._insert_conversation_user_turn(session, session_id, content, selected_skill_ids).id)
+        return self._run_write_transaction("save_conversation_user_turn", write)
 
-            if selected_skill_ids is not None:
-                now = datetime.now()
-                values = {
-                    "session_id": session_id,
-                    "selected_skill_ids_json": json.dumps(selected_skill_ids, ensure_ascii=False),
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                stmt = sqlite_insert(ConversationSessionState).values(**values)
-                session.execute(
-                    stmt.on_conflict_do_update(
-                        index_elements=["session_id"],
-                        set_={
-                            "selected_skill_ids_json": values["selected_skill_ids_json"],
-                            "updated_at": now,
-                        },
-                    )
-                )
+    @staticmethod
+    def _insert_conversation_user_turn(
+        session: Session, session_id: str, content: str, selected_skill_ids: Optional[List[str]],
+    ) -> ConversationMessage:
+        msg = ConversationMessage(session_id=session_id, role="user", content=content)
+        session.add(msg)
+        session.flush()
+        if selected_skill_ids is not None:
+            now = datetime.now()
+            values = {"session_id": session_id,
+                      "selected_skill_ids_json": json.dumps(selected_skill_ids, ensure_ascii=False),
+                      "created_at": now, "updated_at": now}
+            session.execute(sqlite_insert(ConversationSessionState).values(**values).on_conflict_do_update(
+                index_elements=["session_id"],
+                set_={"selected_skill_ids_json": values["selected_skill_ids_json"], "updated_at": now},
+            ))
+        return msg
 
-            return int(msg.id)
+    def commit_legacy_chat_user_turn(
+        self, snapshot: Dict[str, Any], content: str, selected_skill_ids: Optional[List[str]] = None,
+        *, state_disposition: str = "legacy-unaware",
+    ) -> Dict[str, Any]:
+        """Bind a compatibility request without confirming stock or advancing version.
+
+        Current state-aware writers use full snapshot CAS. Only an explicitly
+        non-invalidating turn advances the trusted user anchor. Truly unaware
+        legacy callers retain their old instance-only/conservative semantics.
+        """
+        if state_disposition not in {"preserve", "invalidate", "legacy-unaware"}:
+            raise ValueError("Unknown Chat compatibility state disposition")
+        session_id = snapshot["session_id"]
+
+        def write(session: Session) -> Dict[str, Any]:
+            state = session.get(ConversationSessionState, session_id)
+            if (state is None or not snapshot["session_generation"]
+                    or state.session_generation != snapshot["session_generation"]):
+                raise ChatSessionStateConflict()
+            if state_disposition != "legacy-unaware" and (
+                state.state_version != snapshot["session_state_version"]
+                or self._chat_message_anchor(self._latest_chat_user(session, session_id))
+                != snapshot["latest_user_anchor"]
+            ):
+                raise ChatSessionStateConflict()
+            message = self._insert_conversation_user_turn(session, session_id, content, selected_skill_ids)
+            if state_disposition == "preserve":
+                state.last_accepted_user_message_id = int(message.id)
+            return {"session_id": session_id, "session_generation": state.session_generation,
+                    "user_message_id": int(message.id), "user_message_anchor": self._chat_message_anchor(message)}
+
+        return self._run_write_transaction("commit_legacy_chat_user_turn", write)
 
     def get_conversation_session_selected_skill_ids(
         self,
@@ -3391,9 +4197,20 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         contains_thinking_blocks: bool,
         must_roundtrip: bool,
         estimated_tokens: int,
-    ) -> int:
+        accepted_turn: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
         """Persist one provider protocol trace and enforce per-model retention."""
-        with self.session_scope() as session:
+        def write(session: Session) -> Optional[int]:
+            if accepted_turn is not None:
+                if (not self._chat_accepted_source_matches(session, session_id, accepted_turn)
+                        or anchor_user_message_id != accepted_turn["user_message_id"]):
+                    return None
+                if anchor_assistant_message_id:
+                    assistant = session.get(ConversationMessage, anchor_assistant_message_id)
+                    if assistant is None or assistant.session_id != session_id or assistant.role != "assistant":
+                        return None
+            else:
+                self._check_legacy_chat_write(session, session_id)
             row = AgentProviderTurn(
                 session_id=session_id,
                 run_id=run_id,
@@ -3421,6 +4238,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 )
             return row_id
 
+        return self._run_write_transaction("save_agent_provider_turn", write)
+
     def get_agent_provider_turns(
         self,
         session_id: str,
@@ -3431,49 +4250,55 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     ) -> List[Dict[str, Any]]:
         """Return provider trace turns in chronological order."""
         with self.session_scope() as session:
-            conditions = [AgentProviderTurn.session_id == session_id]
-            if provider:
-                conditions.append(AgentProviderTurn.provider == provider)
-            if model:
-                conditions.append(AgentProviderTurn.model == model)
-            if must_roundtrip_only:
-                conditions.append(AgentProviderTurn.must_roundtrip.is_(True))
-            stmt = (
-                select(AgentProviderTurn)
-                .where(and_(*conditions))
-                .order_by(AgentProviderTurn.created_at, AgentProviderTurn.id)
+            return self._read_agent_provider_turns(
+                session, session_id, provider=provider, model=model,
+                must_roundtrip_only=must_roundtrip_only,
             )
-            rows = session.execute(stmt).scalars().all()
-            result = []
-            for row in rows:
-                try:
-                    messages = json.loads(row.messages_json or "[]")
-                except json.JSONDecodeError as exc:
-                    logger.warning(
-                        "Invalid provider trace messages_json skipped for session %s turn %s: %s",
-                        row.session_id,
-                        row.id,
-                        exc,
-                    )
-                    messages = []
-                result.append({
-                    "id": row.id,
-                    "session_id": row.session_id,
-                    "run_id": row.run_id,
-                    "provider": row.provider,
-                    "model": row.model,
-                    "anchor_user_message_id": row.anchor_user_message_id,
-                    "anchor_assistant_message_id": row.anchor_assistant_message_id,
-                    "messages": messages if isinstance(messages, list) else [],
-                    "messages_json": row.messages_json,
-                    "contains_reasoning": row.contains_reasoning,
-                    "contains_tool_calls": row.contains_tool_calls,
-                    "contains_thinking_blocks": row.contains_thinking_blocks,
-                    "must_roundtrip": row.must_roundtrip,
-                    "estimated_tokens": row.estimated_tokens,
-                    "created_at": row.created_at,
-                })
-            return result
+
+    @staticmethod
+    def _read_agent_provider_turns(
+        session: Session, session_id: str, *, provider: Optional[str] = None,
+        model: Optional[str] = None, must_roundtrip_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Use the caller's read transaction for history/trace instance binding."""
+        conditions = [AgentProviderTurn.session_id == session_id]
+        if provider:
+            conditions.append(AgentProviderTurn.provider == provider)
+        if model:
+            conditions.append(AgentProviderTurn.model == model)
+        if must_roundtrip_only:
+            conditions.append(AgentProviderTurn.must_roundtrip.is_(True))
+        rows = session.execute(select(AgentProviderTurn).where(and_(*conditions)).order_by(
+            AgentProviderTurn.created_at, AgentProviderTurn.id,
+        )).scalars().all()
+        result = []
+        for row in rows:
+            try:
+                messages = json.loads(row.messages_json or "[]")
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Invalid provider trace messages_json skipped for session %s turn %s: %s",
+                    row.session_id, row.id, exc,
+                )
+                messages = []
+            result.append({
+                "id": row.id,
+                "session_id": row.session_id,
+                "run_id": row.run_id,
+                "provider": row.provider,
+                "model": row.model,
+                "anchor_user_message_id": row.anchor_user_message_id,
+                "anchor_assistant_message_id": row.anchor_assistant_message_id,
+                "messages": messages if isinstance(messages, list) else [],
+                "messages_json": row.messages_json,
+                "contains_reasoning": row.contains_reasoning,
+                "contains_tool_calls": row.contains_tool_calls,
+                "contains_thinking_blocks": row.contains_thinking_blocks,
+                "must_roundtrip": row.must_roundtrip,
+                "estimated_tokens": row.estimated_tokens,
+                "created_at": row.created_at,
+            })
+        return result
 
     def _trim_agent_provider_turns(
         self,
@@ -3512,9 +4337,39 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         covered_message_id: int,
         source_message_count: int,
         estimated_tokens: int,
-    ) -> None:
+        *, source_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Optional[bool]:
         """Create or update the rolling summary for a conversation session."""
-        with self.session_scope() as session:
+        def write(session: Session) -> Optional[bool]:
+            if source_snapshot is not None:
+                state = session.get(ConversationSessionState, session_id)
+                if (source_snapshot["session_id"] != session_id or state is None
+                        or not source_snapshot["session_generation"]
+                        or state.session_generation != source_snapshot["session_generation"]):
+                    return False
+                current = session.execute(select(ConversationSummary).where(
+                    ConversationSummary.session_id == session_id
+                )).scalar_one_or_none()
+                previous = source_snapshot["summary"]
+                if (current is None) != (previous is None):
+                    return False
+                previous_covered = int(previous["covered_message_id"]) if previous else 0
+                if current is not None and current.covered_message_id != previous_covered:
+                    return False
+                if covered_message_id <= previous_covered:
+                    return False
+                sources = [item for item in source_snapshot["messages"]
+                           if previous_covered < item["id"] <= covered_message_id]
+                if not sources or not any(item["id"] == covered_message_id for item in sources):
+                    return False
+                for item in sources:
+                    source = session.get(ConversationMessage, item["id"])
+                    if source is None or source.session_id != session_id or self._chat_message_anchor(source) != (
+                        item["id"], item["role"], item["created_at"]
+                    ):
+                        return False
+            else:
+                self._check_legacy_chat_write(session, session_id)
             now = datetime.now()
             values = {
                 "session_id": session_id,
@@ -3531,6 +4386,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     set_=values,
                 )
             )
+            return True if source_snapshot is not None else None
+
+        return self._run_write_transaction("upsert_conversation_summary", write)
 
     def conversation_session_exists(self, session_id: str) -> bool:
         """Return True when at least one message exists for the given session."""
@@ -3649,7 +4507,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         Returns:
             删除的消息数
         """
-        with self.session_scope() as session:
+        def write(session: Session) -> int:
             session.execute(
                 delete(ConversationSessionState).where(
                     ConversationSessionState.session_id == session_id
@@ -3671,6 +4529,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 )
             )
             return result.rowcount
+
+        return self._run_write_transaction("delete_conversation_session", write)
 
     # ------------------------------------------------------------------
     # LLM usage tracking

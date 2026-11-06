@@ -4,6 +4,33 @@ import { buildChatFollowUpContext } from '../chatFollowUp';
 import type { AnalysisReport } from '../../types/analysis';
 
 describe('chat follow-up context', () => {
+  test.each([
+    ['600519', '300750', undefined, undefined, false],
+    ['005930.KS', '005930.KQ', undefined, undefined, false],
+    ['sh000001', '000001', undefined, 'stock', false],
+    ['sh000001', 'sh000001', 'index', 'stock', false],
+    ['sh000001', 'SH000001', 'index', 'index', true],
+    ['005930.KS', '005930.KS', 'stock', 'stock', true],
+    ['600519', '600519', undefined, undefined, true],
+  ] as const)('only attaches the report for matching identity %s / %s', (code, reportCode, type, reportType, matches) => {
+    const report = { meta: { stockCode: reportCode, assetType: reportType },
+      summary: { analysisSummary: 'report for this identity' },
+      strategy: { buyPrice: 'controlled' }, details: { marketStructure: { status: 'ok' } },
+    } as unknown as AnalysisReport;
+    const context = buildChatFollowUpContext(code, null, report, [], type);
+    expect('previous_analysis_summary' in context).toBe(matches);
+    expect('previous_strategy' in context).toBe(matches);
+    expect('market_structure_context' in context).toBe(matches);
+  });
+
+  test('uses exact registry identity aliases without conflating SH and SZ stocks', () => {
+    const index = [{ canonicalCode: '000001.SZ', displayCode: '000001', assetType: 'stock' as const }];
+    const report = { meta: { stockCode: '000001.SZ', assetType: 'stock' },
+      summary: { analysisSummary: 'stock report' } } as AnalysisReport;
+    expect(buildChatFollowUpContext('000001', null, report, index)).toHaveProperty('previous_analysis_summary');
+    expect(buildChatFollowUpContext('SZ000001', null, report, index)).toHaveProperty('previous_analysis_summary');
+    expect(buildChatFollowUpContext('SH000001', null, report, index)).not.toHaveProperty('previous_analysis_summary');
+  });
   test('includes market_structure_context in snake_case for history follow-up', () => {
     const report = {
       meta: {

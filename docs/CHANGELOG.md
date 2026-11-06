@@ -9,9 +9,208 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 依赖锁定 `akshare<1.20.0`，避免上游目录与 HTTP 层重构导致 CI 与桌面打包失败；Python 3.10 新装限制 `litellm<1.98.0`，修复 `NotRequired` 导入错误
+- [修复] 自选及其他无关配置保存不再被已有 LLM 渠道或模型错误阻断，模型相关修改仍校验完整依赖；仅更新自选时保留运行时单例与容器环境覆盖，并补齐增删、删空和校验回归。凡本次保存会启用 Agent 路径的，同样校验完整模型依赖：切到 LiteLLM Agent 后端（`AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` 解析为 litellm）、开启 Agent 分析（`AGENT_MODE=true`）、或配置了非 `all` 的 `AGENT_SKILLS`——后两者走普通分析的 Agent 分支，自带 `LLMToolAdapter`，不受 `AGENT_BACKEND` 决定。仅关闭 `AGENT_MODE`、将 `AGENT_SKILLS` 设为 `all` 或空值、以及无关键保存仍不受 LLM 配置影响；显式保存或导入已退役的 `codex_app_server` 仍被拒绝。
+- [改进] 移除实验性 Codex App Server 问股后端及专属探针、取消与启动链；旧配置明确提示退役并可主动修正，保留默认 LiteLLM、会话接受事务及独立 Codex CLI 报告。
+- [修复] Agent 状态面板在缺少可用主模型时显示中英文配置指引，保留技术错误码；配置指南明确区分已移除后端与历史 Gate 记录。
+- [chore] Default new MiniMax channels to MiniMax-M3.1-Flash and MiniMax-M3, filter older text recommendations while retaining saved/custom models, and refresh fallback pricing.
+
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [新功能] 新增可选的 fastapi-guard 安全中间件（`GUARD_ENABLED=true`，默认关闭）：按 IP 限流、IP 白/黑名单、请求特征拦截与扫描器自动封禁，与登录失败限流叠加；客户端 IP 取值与 `TRUST_X_FORWARDED_FOR` 保持一致，启用后内置启动入口的 Uvicorn 代理头处理只信任同一组代理，默认不扫描请求体，详见 `docs/full-guide.md`。
+- [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
+
+- [新功能] 定时模式启动立即执行的当日去重（`SCHEDULE_STARTUP_DEDUP`，默认开启）：`python main.py --schedule` 在 `SCHEDULE_RUN_IMMEDIATELY=true` 触发启动补跑前检查标记文件（位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`），当天已有成功且覆盖当前应分析清单的全量分析（日期 + scope=full + 覆盖面子集判定）则跳过，否则照常补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律 fail-open 执行（绝不漏跑）；大盘复盘完成度仅记录、不参与判定（复盘补齐由每日定时任务覆盖）；设 `SCHEDULE_STARTUP_DEDUP=false` 可回到此前"每次容器重启都全量重跑"的行为；`--force-run` 可绕过启动去重检查（明确要求立即全量分析）。
+- [修复] 收紧定时模式启动去重：仅当全部应分析标的都成功时才记录当日标记（部分失败或全败、即使大盘复盘成功也不得记录，避免重启漏跑）；跳过判定改为覆盖面子集校验并升版 schema 2（v1 旧标记一律 fail-open 重跑一次以升级），`SCHEDULE_STARTUP_DEDUP` 进程环境变量与 .env 值不同时以进程为准（与 `SCHEDULE_RUN_IMMEDIATELY` 同权）。
+- [修复] 定时模式启动去重检查的预期清单改为与运行入口一致的真实目标解析链（Futu 持仓优先、其次 .env 热更新 `STOCK_LIST`、再按交易日过滤）：`--portfolio futu` 新增持仓、纯持仓部署自选为空、以及进程 env 启动后 .env 热更新三类场景不再误跳过；持仓解析失败或解析为空一律 fail-open 照常执行（绝不漏跑），非持仓空清单保持既有当日去重语义。
+
+- [文档] 文档中心补充 `market-support.md` 入口，与 README / 完整指南的市场支持链接保持一致。
+- [修复] 美股社交舆情 Reddit 个股端点切换至现行 Adanos 契约 `/reddit/stocks/v1/stock/{ticker}`（旧 `/reddit/stocks/v1/report/{ticker}` 已下线、固定 404，导致 Reddit 段落始终显示无数据）；适配官方契约 200+`found=false` 无数据语义：`get_social_context` 在证据登记前将空报告归一化为平台无数据，三源全空返回 `None` 且不再误置 `news_evidence_present`（X/Polymarket 有数据时贡献保留）；mention 正文按 `text_snippet`→`text`→`title` 回退，日线情绪 `sentiment_score` 优先且保留真实零值，旧字段 `avg_sentiment` 兼容回退（#2448）。
+- [修复] Futu OpenD 未运行或协议未就绪时，FutuFetcher 改为异步连接并最多等待 5 秒，失败后关闭连接、只记录一条警告并在 5 分钟内跳过 Futu，港股请求回退到其他数据源，不再因 SDK 同步构造无限重连而卡住整轮分析（#2447）。
+
+## [3.33.0] - 2026-10-15
+
+### 发布亮点
+
+- feat: 问股讨论对象由服务端保存，刷新、重开及 Bot/Web 交替使用可恢复；修复完整股票名称被内部短别名误判的问题。
+- feat: 新增规则化 ETF 双动量轮动，提供最新调仓信号、扣成本回测、年度对比及数据质量告警，无需 LLM。
+- feat: Web 新增只读数据中心和持仓风险与暴露看板，自选股列表提供“变化 / 状态 / 下一步”提示。
+- feat: 选股提供带来源与质量状态的入选理由和时点证据，补齐新闻事件，并修复日线新鲜度、交易日期及缓存降级判断。
+- feat: 简化 Modelflare 单 Key 配置，补充已合入的 Requesty 渠道、妙想筹码与资金流数据及 FXMacroData 宏观工具。
+- fix: 修复基本面与资金流解析、科创板成交量单位、重复定时派发和桌面 MiniRacer 资源打包；调度超时可推送已完成的部分结果。
+
+### 新功能
+
+- 问股由服务端保存已确认的主讨论对象，刷新、重开和会话切换可恢复；Bot/Web 交替问股共享已确认对象，保留股票/指数、跨市场身份及严格工具范围（#2397、#2406）。
+- 新增 `python main.py --etf-rotation` 规则化 ETF 双动量轮动，输出最新调仓信号、扣成本回测、分年度对比、参数平原检验和数据质量告警；不调用 LLM，配置与数据边界见 [ETF 轮动](etf-rotation.md)（#2376）。
+- Web 新增只读数据中心，展示 Provider 能力、数据集质量和运行时优先级，不展示 API Key 或原始配置值；短窗口中的导航列表可滚动，并保留主题、语言与退出控件（#2304）。
+- Web 持仓页新增风险与暴露看板，聚合个股/行业集中度、回撤、止损、AI 信号、价格质量、市场及币种暴露（#2297）。
+- 选股候选新增后端生成的 Why Selected / Why Now 解释、来源与质量状态；保留模型 reason/thesis 和逐条 provenance，区分真实零值与缺失占位值，旧历史不重新评分或回写（#2305）。
+- 新增 `/api/v1/screening/screen/check`，对调用方提供的单条快照解释策略硬过滤条件、阈值、当前值及通过/失败/缺失状态，不抓取行情、不调用模型、不改变既有选股结果（#2382）。
+- 新增单票决策信号复盘只读接口 `GET /api/v1/decision-signals/stocks/{stock_code}/review`，返回样本量、命中率、常见 miss 原因和置信度调整方向；启用 `AGENT_MEMORY_ENABLED` 时作为独立记忆段注入，样本不足或数据质量弱时仅供观察（#2331）。
+- 新增妙想补充数据源 `MX_APIKEY` / `MX_PRIORITY`，用于筹码分布和个股资金流降级，接入 Web 配置与每日 Actions；不提供日线能力，调用受剩余阶段预算和跨实例非阻塞准入约束（#2387、#2388）。
+- Agent 新增 FXMacroData 官方宏观数据工具，USD 基础数据无需密钥；每日 Actions 映射可选 `FXMACRODATA_API_KEY`，Windows/macOS 冻结产物收集操作目录并校验工具注册（#2336）。
+- 新增 Requesty 聚合网关预设，补齐 Web、环境示例、Actions 的 `LLM_REQUESTY_*` 映射与配置说明；模型发现返回的 vendor/model ID 保留 OpenAI-compatible 网关路由（#2367）。
+
+### 改进
+
+- Modelflare 支持只配置 `MODELFLARE_KEY`，后端、Web、选股及 Actions 自动识别渠道并补齐默认地址和模型；单渠道未声明模型时可复用主模型与 OpenAI 备用模型，否则使用默认模型，显式 YAML、模型列表和多渠道规则保持优先（#2403）。
+- 模型设置预览、连接测试及保存失败时显示具体字段与修正提示；Modelflare 预设提供条件注册链接和说明，同步简化三语 README 赞助区并使用对应语言横幅（#2403、#2407）。
+- Web 自选股新增“变化 / 状态 / 下一步”信号，结合今日分析、历史报告、运行任务和详情状态提示操作；“仅未分析”排除运行中任务，兼容股票/指数身份（#2293）。
+- Web 始终保留选股导航，未开启时提供开启提示；状态加载失败可重试，不误报功能未开启，也不自动启用或提交任务（#2392）。
+- 选股 LLM 重排前按候选上限补充新闻与事件，保留来源、发布时间和检索时间，隔离不可信资料与排序指令；长度预算包含 system 消息和重试提示，同次运行复用查询，缺失/失败不视为无风险（#2390）。
+- 研究与搜索证据保留来源观测和实际检索完成时间，在归一化、时效过滤、排序及缓存中持续传递；缓存命中不刷新检索时间，没有明确时效证据时保持 unknown（#2381、#2390）。
+- 新增意图解析器基础模块，支持二维任务组、多意图解析、跨市场候选消歧、LLM 兜底及确认状态簿记；本版本尚未将其接入 Web SSE 执行入口（#2385）。
+- Multi-Agent 轨迹评估增加阶段快照、阶段本地工具指标、局部/累计步数及完成/失败/跳过状态；顶层步数由阶段快照累计，单 Agent 既有指标保持兼容（#2351）。
+
+### 修复
+
+- 问股将完整注册名称视为一个标的，避免“长电科技”中的“长电”或“京东方A”中的代码片段触发错误澄清；独立别名、跨市场同名和名称/代码真正冲突仍沿用确认规则（#2406）。
+- 问股实时请求与旧历史恢复共用对象决策，正确处理明确切股、重复输入、普通追问、比较、否定、条件句及引用；工具和缓存保留股票/指数及跨市场身份，防止同码误读与模型名称改变新闻目标（#2397）。
+- 问股接受事务统一保存消息、显式 Skill 和对象状态，校验会话实例、版本及用户锚点；迟到列表、摘要或回复不覆盖新状态，比较或执行失败不改写已确认对象，显式空 Skill 保留默认执行语义（#2397）。
+- 严格回测按已验证身份和关联分析来源查询，兼容正常 CN 写入器的数字键及同身份存储别名，保持跨市场隔离、总数与分页一致性（#2397）。
+- Codex 问股向最终请求传递当前交易 Skill 指令，保留会话继承、显式清空及默认技能语义；能力边界限定于三个已保存数据工具，缺失数据或能力时明确披露（#2371）。
+- ETF 轮动按真实 A 股交易日历保留全池缺报价日及尾部缺口，防止调仓顺延或信号提前；缺价不虚构成交，报价恢复后计入完整持仓损益，防守资产不可买入时保留现金；日历不可用时停止计算，主回测与参数扫描共用前复权行情（#2376）。
+- 选股日线核验交易日期、有效收盘价及收盘时段，拒绝休市/未来日期、非法日期与盘前占位行情；缓存使用持久化获取时间，无时区旧时间回退文件 mtime，避免跨时区或桌面恢复误判新鲜度（#2389）。
+- 选股全源陈旧时优先保留最新合法日线，同日保留来源优先级；比较 DSA、备用来源及文件缓存，不以陈旧/非法结果覆盖 last-good，完整传递各来源错误和健康状态以参与质量评分（#2389）。
+- 选股来源仅在行情通过日期验证后记录成功，非法响应参与既有熔断和恢复；yfinance 按美东日期推进排他的 end 边界，避免收盘后漏取当日 K 线（#2389）。
+- 选股响应和历史保留当次实际因子权重（含零值），无候选时也不使用策略目录原始或后续变更权重补填；入选解释仍只消费正权重（#2389）。
+- 选股时点证据与预补充共用时效和来源校验，按新闻/事件分别刷新无效缓存，有效摘要可用于 Why Now；失败保持 unknown 和告警，无理由或仅 thesis 的 LLM 结果仍保留 inferred 标记、真实重排与风险说明（#2390、#2305）。
+- 选股后分析器完成非零调分却未给出有效摘要时，仍保留来源、质量、完成状态及分差；模型理由、本地因子和各后分析来源可同时保存在响应与历史中（#2305）。
+- Web 设置保护普通配置、模型渠道及调度未保存草稿，重置/成功导入清理旧草稿，保存及导入期间防止编辑与离开竞态；登录后保留安全站内目标及 query/hash，首次引导可滚动聚焦 `STOCK_LIST`（#2386、#2399）。
+- 持仓看板缺价、过期汇率、异常估值或行业分类覆盖不足时保持不可用，不展示误导的集中度、权重或饼图；兼容舍入后的零权重尾行，并正确聚合混合币种和零市值账户（#2297）。
+- 妙想按明确金额指标选表选列并规范列表型 nameMap，避免价格/占比被当成资金流金额；缺失值保留在交易日窗口中，超时任务结束前抑制重复请求，避免排队消耗额度（#2387、#2388）。
+- AkShare 基本面、资金流及龙虎榜超时后按操作跨管理器抑制重复后台请求；大盘统计降级调用使用可终止子进程超时，诊断耗时按实际等待记录，避免线程拒绝或超时虚报完整预算（#2345、#2372、#2380）。
+- 基本面按明确报告期与目标股票读取业绩预告、快报、机构持股和十大股东，修正市场代码；财务宽表按最新报告期与真实指标解析，补齐新浪收入/利润增长、ROE、经营现金流别名，不跨报告期补值或把空结果标成功（#2362、#2370、#2373）。
+- yfinance 财报同比按日期匹配去年同季度，缺同期时回退 info 同比，避免固定行偏移把更早季度误当作去年同期（#2365）。
+- 腾讯科创板（688/689）日线成交量按“股”保留，不再统一乘以 100；存量数据修正要求见下方升级注意事项（#2360，Fixes #2350）。
+- `REPORT_LANGUAGE=en` 使用完整英文 system/user 模板，`ko` 复用英文骨架并保留韩文指令；JSON 键名、枚举和解析契约保持不变，中文模板不变（#2368）。
+- CLI 与 Web/API 每日调度共享 SQLite 计划时刻认领，避免同一数据库上的并发或错峰重复派发；不同时间/分析范围及手动补跑独立执行，认领后失败不会自动重派（#2379）。
+- Web/API 调度硬超时后记录已完成/待完成摘要，并可推送已落库的部分结果；默认通知行为及关闭方式见下方（#2338）。
+- 告警列表披露有效环境规则和去重后数量，明确页面删除/禁用不停止环境规则；来源统计只读且请求内复用，不查实时行情或改写持仓快照；规则变更后的刷新保留当前筛选和分页（#2374、#2378）。
+- Windows/macOS 桌面后端完整收集 MiniRacer 原生运行文件并实际执行 JavaScript 检查；macOS 补齐选股策略 YAML 资源及 Bash 参数构造校验（#2361、#2384）。
+- 智能导入兼容带 UTF-8 BOM 的 CSV 与剪贴板文本，避免表头误判或有效代码丢失；默认 Web smoke 排除独立 fixture，避免错误收集需特定环境的用例（#2333、#2390）。
+
+### 升级注意事项
+
+- **默认行为变化**：Web/API 调度硬超时后，`DSA_TIMEOUT_PARTIAL_NOTIFY` 默认开启，可能新增部分完成通知；设为 `false` 可关闭。该能力不保证通知送达，也不会自动重试已认领的整轮任务。
+- **历史行情**：科创板成交量修复不自动重写已有数据；修正旧记录时须限定 `data_source = 'TencentFetcher'` 及受影响的 688/689 股票，不能统一调整其他来源或市场。
+- **会话升级与回滚**：升级前备份数据库及配置；回滚时先停止新后端，保留新增可空列与数据库版本默认值，不删列或重建数据库，避免旧新写入后端并行。旧版写入后再次升级需重新确认讨论对象，已有消息及 Skill 保留，详见 [问股事件与回滚边界](agent-stream-events.md#rollback)。
+- **功能范围**：新意图解析器仍为基础模块，尚未接入 Web SSE 执行入口；CLI 启动分析行为保持现状。ETF 轮动及可选数据/模型渠道按各自配置启用。
+
+### 测试与文档
+
+- 补充真实索引下完整名称、HTTP/SSE、会话恢复与重复确认回归；意图解析器覆盖任务切分、确认消费、LLM 结果校验及状态簿记。
+- 补充选股新鲜度、备用来源、缓存、检索时间、真实重排及响应/历史一致性验证，保留风险与缺失数据反例。
+- 告警来源和页面交互采用无后台、无密钥的确定性浏览器验收，CI 保存桌面与窄屏证据；修复名称解析冷启动并发测试竞态。
+- 同步模型、数据源、ETF 轮动、数据中心、问股升级/回滚及桌面指南，更新三语赞助说明和 SerpAPI 链接，修复文档锚点。
+
+## [3.32.0] - 2026-09-06
+
+### 发布亮点
+
+- feat: 已登记 A 股指数贯通 Web/API、Bot、CLI 与 GitHub Actions 分析入口，注册表扩展至 33 项，并统一指数身份、任务去重、历史与 Chat 上下文。
+- feat: 新增个股研究聚合 API、ResearchArtifact 结构化研究产物，以及数据源能力与数据集质量只读接口。
+- feat: 完善 Futu OpenD 港股数据源接入，新增 Web Chat 分词基础模块与 Agent 轨迹评估入口。
+- feat: 自建 SearXNG 搜索超时可配置，Tavily 改用 basic 搜索以降低 credit 消耗。
+- fix: 定时分析采用独立进程与硬超时保护，选股结果支持历史恢复，桌面端增加全局更新入口，并修复 Linux/Docker 分享图中韩文字体缺失。
+- fix: 收敛 LiteLLM 兼容版本窗口，更新 Web/桌面依赖，并修复美股数据源优先级与股票名称归一问题。
+
+### 变更明细
+
+- [修复] 入口分类的模式边界修复（PR3 review）：不消费个股列表的模式（`--backtest`/`--market-review`/`--serve-only`/`--webui-only`/`--portfolio`/`--schedule`/`config.schedule_enabled`）在模式分发前整体跳过 `--stocks` 与 GitHub Actions `STOCK_LIST` 的分类与索引刷新，未登记 `.CSI` 等坏 token 不再拦截这些模式（此前 `GITHUB_ACTIONS=true` 下 `--backtest`、`--portfolio futu`、`--schedule` 配坏 watchlist 会在进入模式主体前被整批拒绝）；`--schedule --stocks` 的"警告后忽略启动快照"语义保留；`--stocks` 与 GitHub Actions 入口的指数分类与整批拒绝契约不回归，文档同步把指数自选股配置收窄为仅这两类入口（本地 `.env`/Docker 无参数默认运行保持股票语义，分析指数请配 `--stocks`）。
+- [新功能] 指数注册表新增国证粮食（`sz399365`）与中证钢铁（`csi930606`）：已登记 seed（`scripts/stock_index_seeds/index_registry.csv`）与 bundled 指数清单（`apps/dsa-web/public/stocks.index.json`）由 31 项扩展到 33 项，已登记指数的 `sh`/`sz`/`csi` 前缀与 `.SH`/`.SZ`/`.CSI` 显式形态均可作为自选股指数目标；ETF 与美股指数不进 CN 注册表，路由语义不变。
+- [文档] 中英 full-guide 新增「指数自选股配置」小节：说明已登记指数前缀/显式后缀规则、未登记 `.CSI` 整批拒绝、裸码不自动提升为指数、NDX 等美股指数裸码即正确路由、ETF 走股票路径，并同步补充 README / DEPLOY 的 `STOCK_LIST` 提示；修正 full-guide 中已过期的「已登记 5 个沪深指数」表述。
+- [新功能] GitHub Actions 每日工作流支持已登记指数入口：`GITHUB_ACTIONS=true` 下无参数 `python main.py` 把 `STOCK_LIST` 按与一次性 `--stocks` 相同的判型规则分类为结构化 target（显式指数 token 进入指数路径、个股 token 保持既有 legacy 路径），指数与个股同批复用同一 Pipeline，不新增第二条能力矩阵；本地与 `--schedule` 热刷新默认路径不在入口构造 target，语义不变。
+- [修复] `main.py --stocks` 对未登记 `.CSI` 目标在入口明确报错并整批拒绝本轮运行（此前被静默按股票 token 交给 provider），拒绝发生在任何 provider 请求之前，与 API 层"provider 调用前明确拒绝"的边界对齐；CLI/Actions 整批拒绝与 API 异步批量仅拒绝该目标的差异已在文档中说明。
+- [测试] 新增 Bot 指数入口 transport-independent 在线 E2E smoke（`scripts/smoke_bot_index_entry.py`）：worker 子进程经真实 `CommandDispatcher.dispatch_async` 提交并在同进程轮询 `TaskService` 贯穿到 `StockAnalysisPipeline`，父进程只负责 deadline、进程树清理（Windows `taskkill /T /F`、POSIX 杀进程组）与退出码（0=成功/1=失败/124=超时），输出单行 `E2E_EVENT {json}` 事件（`phase=submitted|completed|failed|timeout`）；smoke 覆盖 `SH.000016`/`上证50`/`930955.CSI` 矩阵，期望 code/name 取脚本内置权威映射（不信任响应/结果自报身份，提交 code mismatch 输出含期望值与实际值的显式错误并携带结构化实际 `stock_code`，dispatcher 路由错误也失败），矩阵外 target 与非正 `--timeout` 在提交与 spawn 之前即被拒绝（退出码 2），completed 须 exact canonical code、exact 注册名称且 `analysis_summary`/`operation_advice`/`trend_prediction` 非空（仅空白视为空），失败或结果不完整即非零退出；超时清理进程树（Windows `taskkill /T /F`、POSIX 杀进程组），清理成功输出 `timeout` 事件并退出 124、清理失败输出含清理错误的 `failed` 事件并退出 1，不回滚 DB/报告/通知副作用；用户 Ctrl-C 中止时父进程同样先清理进程树，清理成功透传中断、清理失败输出含清理错误的 `failed` 事件并退出 1，绝不静默吞掉清理失败；worker 意外异常输出 `failed` 事件并退出 1（stderr 保留异常证据，`KeyboardInterrupt` 不按普通失败处理），父进程将 worker 任意其他退出码归一化为 1（运行时契约只暴露 0/1/124）；父进程以内部 `--worker` flag 显式拉起子进程（不依赖环境变量，防外部预置绕过硬超时）；不 mock 在线依赖、不 dry-run、不修 transport，不加入离线 gate。
+- [新功能] Bot `/analyze` 支持已登记指数入口：显式代码（`sh000016`）、CSI alias（`930955.CSI` 收敛为 `csi930955`）与注册中文名（`上证50`）均可提交，指数以结构化 `AnalysisTarget` 经 `TaskService` 贯穿到 Pipeline `process_single_stock`（`sh000016` 不再被改写为 `SH000016`）；注册名称查询独立于 parser identity alias（中文名不进入 `find_by_explicit_key`/`parse_analysis_target`），同名歧义返回明确错误并要求显式代码，未登记 CSI 与未知名称返回明确错误且不提交任务；个股代码（A/HK/US）保持既有 legacy code 路径不变，股票名称输入（如 `贵州茅台`）由本次 Bot 入口新暴露——复用既有名称解析器（`resolve_name_to_code`）解析后提交 legacy code，不携带结构化 target；提交成功响应在 `BotResponse.extra` 暴露内部任务 identity（`task_id`/`stock_code`）供在线验收等内部流程使用，文本与错误路径不变、平台适配器可忽略 `extra`。
+- [新功能] 新增最小 Agent 轨迹评估入口 `evals/agent_trajectory/`(Refs #1956):纯函数指标层只消费真实 `tool_calls_log + AgentResult`,冻结最小指标契约(工具命中、冗余/缓存、失败/重试、总步数/max_steps),`run_eval.py` 经 `build_agent_executor` 真实执行并输出文本摘要 + 结构化 JSON 报告;评估为 reporter 非 gate,零 `src/` 改动
+
+- [修复] 将 litellm 依赖窗口上界收敛到 `<1.99.0`：1.99.0 起把 `prompt_cache_key` 透传给 OpenAI provider，破坏 provider 缓存测试对不透传行为的既有断言（CI backend-tests 3/3 与 backend-gate 失败）；保留历史最低版本与 `!=1.82.7`/`!=1.82.8` 事故排除，同时同步更新各 LLM 兼容文档中写死的依赖约束表述，避免文档与 requirements.txt 漂移
+
+- [新功能] 新增 `SEARXNG_TIMEOUT_SECONDS` 配置自建 SearXNG 单次搜索超时（默认 10 秒），已接线全部 SearchService 构造入口（含题材搜索子进程重建）与默认 GitHub Actions 工作流
+
+- [修复] 美股日线路由现按各数据源当前优先级排序，单项 `*_PRIORITY` 配置（如 `YFINANCE_PRIORITY=0`）对美股即时生效；指数固定首选与 Longbridge preferred 语义保持不变
+
+- [新功能] 新增个股研究聚合 API，以统一 canonical code 返回行情、历史、研究产物、资讯、缓存持仓关系和监控规则，并对每个块独立标记 fresh/partial/unavailable。
+- [修复] 个股研究聚合拒绝交易所冲突的股票身份，在市场限定后无历史候选时保持空结果，兼容市场限定裸码与混合大小写旧数据，并从独立基本面快照补齐 ResearchArtifact 的财报与分红证据。
+
+- [新功能] 支持通过 `main.py --stocks` 一次性分析已登记板块指数，自动使用指数适用的数据与分析能力，并保持报告、历史和决策信号兼容。
+- [修复] `main.py --stocks` 在解析股票列表前先 best-effort 刷新股票索引注册表，保证首次运行能吃到刷新后的指数 alias/身份；刷新失败、超时或禁用不阻断分析。
+- [修复] 交易日过滤对市场未知的指数 code（如 `sh000016`/`csi930955`/`930955.CSI`）按 `market=cn` 参与 A 股休市过滤，避免休市日指数被 fail-open 保留；市场仍未知的非指数 code 继续保留。
+- [修复] 指数分析将实际命中的日线数据源归因保存到历史记录，并由 Dashboard/Brief aggregate 报告展示；来源无效时保持原有输出。
+- [文档] 在中英繁 README 顶部关联 DSA arXiv 论文，并新增 `CITATION.cff` 统一项目引用信息。
+- [新功能] 新增数据源能力与数据集质量只读契约，提供 `/api/v1/data/overview` 和 `/api/v1/data/capabilities`，为大盘看板、数据中心、个股详情和自选 2.0 统一暴露 provider capability、dataset quality 和 source priority。
+- [修复] 统一美股指数实时行情与数据能力概览为 YFinance-only 路由，避免 YFinance 失败后误用 Longbridge fallback。
+- [改进] PR CI 增加文档路径检测：仅修改普通文档、非治理 Markdown 或 LICENSE 时跳过后端测试分片、Docker、Web 与桌面打包，保留轻量治理和门禁汇总；契约文档、静态 API 规格与测试 fixture 仍执行后端回归。
+- [新功能] 新增 ResearchArtifact 结构化研究产物契约，在 `AnalysisReport.structured_report` 中承载 Thesis、Evidence、Invalidation Conditions、Next Actions 和 Data Quality，并提供从现有报告生成结构化产物的后端 helper 与 Web 类型。
+- [修复] 同步 ResearchArtifact 与 `AnalysisReport.structured_report` 到静态 OpenAPI，避免公开 API 规格与运行时契约漂移。
+- [修复] Linux/Docker 分享图补齐 Noto CJK 字体与中韩文字体栈，避免 PNG 只显示数字和英文、中文或韩文内容消失。
+- [修复] 股票名称归一：AkShare 部分名称带无意义内嵌空格（“五 粮 液”、“万  科Ａ”）与全角宽度拼写（“京东方Ａ” 的全角 Ａ），统一经 `_normalize_stock_name()` 做 NFKC 宽度归一 + 去空白（原 `_compact_stock_name` 仅去空白）：本地映射初值、`_build_name_map_from_df()` 构建与 `extend_AkShare()` 合并、磁盘缓存加载三个入库口（含归一后为空的条目守卫）与 `resolver_name_to_code_list()` / `is_known_stock_name()` / `resolve_name_to_code()` 三个查询入口同源归一；消除空格/全角拼写与本地无空格半角拼写比较不相等造成的假性改名别名，源形态输入（带空格/全角）与常规拼写同样可解析，覆盖 `/analyze` API、按名称导入与 Bot 文本解析等全部调用路径；全角拼写此前与分词管道 NFKC 归一后的半角输入（“京东方A”）永不相等——全名精确匹配落空且会被更短库内名误切出错误实体（“京东”），归一后半角/全角输入产出一致、展示名统一为归一拼写；磁盘缓存中的历史未归一数据（带空格/全角）经合并与加载入口自动归一，无需迁移。
+- [新功能] Web Chat 意图识别层新增分词模块：`web_intent_tokenizer` 六步管道（多股票全名实体扫描 → 标点/空白切分 → 代码形提取 → 市场关键词 → 无歧义关键词 → 残存 gap 多策略 DFS 匹配）把用户消息切分为携带语义标签的 Token 序列；配套 `web_intent_types` 数据字典（Token 结构、Market 枚举、21 个语义 tag、clean/extend 双词池与正则机器）。核心原则"宁可不做，不可做错"：Step 1~5 只做精确匹配，Step 6 要求整段 TAG 全覆盖（交叉验证）才产出，未覆盖片段保持空 tag 交下游 LLM 兜底；代码形 token 辨认为 `stock_code`（附 code/name/market 三元组）/ `wrong_{market}_code` / `unknown_{market}_code` 三态，token 层代码拼写统一 canonical 归一（a=6 位裸数字、hk=HK+5 位、us=大写 ticker）。意图枚举与意图识别结果随后续 `web_intent_resolver` PR 引入。新增 183 个分词单元测试。
+- [新功能] 完善 Futu OpenD 港股数据源接入：系统设置支持 OpenD 地址、端口和港股实时数据源优先级，保留 Longbridge、AkShare、YFinance fallback。
+- [测试] 增加 Futu 配置 schema、港股实时路由和 fallback 契约覆盖。
+
+- [新功能] 建立唯一、可生成、可校验、可降级的指数身份注册表：由 `scripts/stock_index_seeds/index_registry.csv` 的 31 项 manifest 确定性合并进 `apps/dsa-web/public/stocks.index.json`，运行时唯一真源为 JSON 中通过校验的 `active=true`/`assetType=index` 行，移除 `stock_list_parser` 的 5 项硬编码白名单；支持 `--index-only` 生成与字节稳定输出。
+- [新功能] 补齐显式 SH/SZ/CSI 指数 alias 收敛与 CSI 身份：`sh000300`/`000300.SH`/`sz399300`/`399300.SZ`/`000300.CSI` 均解析到 `sh000300`，`csi930955`/`930955.CSI` 解析到 `csi930955`；未登记 `.CSI` 输入返回 `unsupported`；裸数字恒为 stock 并仅通过 `matched_index` 暴露歧义。
+- [新功能] 数据管理器按 SH/SZ/CSI 支持矩阵映射 provider symbol：CSI 仅 AkShare 支持（`csi{code}`），Tencent/TickFlow/Yahoo 返回空 symbol 并记录 `unsupported` provider-run，不触发指数健康熔断。
+- [改进] 存储层 `_derive_canonical_id` 统一为 parser 推导（裸码=stock、显式指数=index），并新增幂等分批修复历史裸码错误 canonical 串桶（`000001`/`000016`/`000688`/`930955` 等），显式指数行与正确 stock 行不受影响，registry 为空时修复 no-op。
+- [改进] Web loader 完整解压含 index 的共享 payload，但在返回给 autocomplete/popular/group 消费面前过滤 `assetType=index`，股票与 ETF 行为保持不变。
+- [测试] 为生成器、loader、parser、provider 路由、存储修复与 Web 门槛补充 TDD 回归锚点。
+- [修复] PR #2267 review 收敛 CSI 显式身份：将 `csi` prefix（canonical）与 `.CSI` suffix（显式 alias）在 parser/build/runtime 规范化器中分离，未登记显式 `csiNNNNNN`/`NNNNNN.CSI` 一律返回 `unsupported`（不再落入美股或猜测 SH/SZ），并防止未登记 `csi000300` 被等价成已登记 `000300.CSI` alias；存储 `_derive_canonical_id` 对 unsupported 输入返回 NULL，避免进入持久化 canonical 桶。
+- [修复] 在 seed、build entry 与 runtime candidate 三层严格校验 alias 唯一性与整数 popularity：NFKC/casefold 等价 alias 跨条目冲突被拒绝（无静默覆盖），非负整数之外（小数/布尔/负值/字符串）popularity 一律拒绝，整数 `100` 保持有效。
+- [修复] 收敛已登记 CSI 显式身份在 resolver、任务去重键与历史候选中的分裂：`csi930955`/`930955.CSI`/`CSI930955` 统一解析为 parser canonical `csi930955`，未登记 `csi930956`/`930956.CSI` 保持既有降级语义；`is_code_like()`、REST/watchlist 输入边界与完整 Pipeline 透传不变。
+- [修复] 阻止任意更新的非 bundled 指数候选（含 legacy `static` 子集）在 remote 缺失/损坏时以 active-index 子集覆盖 bundled baseline：所有非 bundled 候选必须为 bundled active-index canonical 集合的合法超集，否则回退 bundled 并记录 WARNING。
+- [新功能] 桌面端全局右上角增加更新入口，与设置页共用更新状态；普通浏览器 WebUI 不展示，且不会在挂载时重复触发后台检查。
+- [修复] 桌面端右上角更新入口与设置页共用检查中状态，避免一侧检查时另一侧仍可重复触发 GitHub Releases 检查；主进程手动检查路径同步增加 in-flight 防重。
+- [新功能] Web 自动补全与搜索放行已登记指数（注册中文名/`sh`/`sz` 前缀/`csi`/`.CSI` 显式形式均可检索与提交），热门候选仍仅股票；`/analyze` API 对显式指数输入构造结构化 `AnalysisTarget`（INDEX 用 `canonical_id` 去重，与同码个股互不折叠，CSI alias 收敛），未登记 CSI 单请求返回明确 4xx、异步批量仅该目标进入响应 `rejected` 列表；指数 target 经任务队列贯穿到 Pipeline `process_single_stock`，`DecisionSignal` 以 `market_override="cn"` 落库并有真实分支测试。
+- [修复] `/analyze` 在解析前按 strip 后非空原始 token 数限制 50 上限，rejected/duplicate token 也计入，防止用拒绝或重复 token 绕过批量上限；以唯一 `is_single = len(stock_codes) == 1 and not rejected_entries` 统一驱动 metadata、409 与单任务 202，duplicate+rejected 混合批次不再误返 legacy 409（单 duplicate 仍 409、部分 rejected 仍 202、全 rejected 仍 400）。
+- [新功能] 报告 meta 补充可选 `asset_type`（`stock`/`index`），由后端 canonical code 经 `parse_analysis_target` 生成权威类型；指数报告在 Web 报告页与 Chat 自选入口隐藏 stock-only 自选操作，裸同码股票（如 `000016`）保持股票行为，market review 与旧客户端可缺省。
+- [修复] Web 批量分析把 accepted/duplicates/rejected 三类计入确认数，含 rejected 的完整 chunk 继续提交下一 chunk 而非误报 incomplete，最终以 warning 展示拒绝数量与首个拒绝原因（中英文文案）。
+- [修复] 历史筛选/删除/计数与 stock-bar 对已登记指数按 parser canonical 身份隔离：`sh000016`/`SH000016`/`000016.SH` 等显式形态互相可达（lowercase canonical + uppercase legacy canonical + 显式 alias），但永远不命中同码裸股票，裸码查询也不会命中指数记录；同一指数多条显式形态旧记录在 `/history/stocks` 合并为一行并计数全部形态，无记录删除仍返回 `deleted=0`。SH/SZ/CSI 共用同一 parser 分支，股票 alias、港股与海外市场行为不变。历史列表、历史详情与 stock-bar 对已登记指数（含旧 uppercase/显式 alias 持久化记录，如 `SZ399300`、`000300.CSI`）的 API `stock_code` 一律输出 parser canonical（`sh000300`/`csi930955`）。
+- [改进] 任务列表/SSE 事件、历史列表项与 stock-bar 项追加可选 `asset_type`（`stock`/`index`）：任务侧从已提交的 `analysis_target` 透传（不重新猜测），历史与 stock-bar 侧由持久化 `record.code` 经 `parse_analysis_target` 生成；旧客户端与 market review 可缺省，字段可选追加不破坏既有契约。
+- [修复] Web 首页与自选工作区改用资产感知身份键：任务/报告/历史的 `assetType` 优先，且被后端保证为 parser canonical 的代码只做**大小写折叠**（`SH000016`→`sh000016`），禁止再用前缀/后缀正则猜 canonical（否则 `000300.CSI` 会被误猜成 `csi000300`、`sz399300` 被误当成独立 canonical，违反注册表唯一判型真源）；仅 watchlist 原始字符串缺少类型时，才用已加载 `stocks.index.json` 的 `assetType=index` 行 canonical/display/显式 alias 精确命中（不先 normalize、不用前缀正则猜测；加载期间禁用批量分析，加载失败或请求超过 10 秒时按既有股票语义 fail-open）；行选中、active task 与完成自动选中按资产类型分桶，`sh000016` 指数行与 `000016` 股票行状态独立，完成后自动选中正确 canonical 指数报告。
+- [修复] Chat 消息恢复、发送与报告追问对显式 SH/SZ/CSI 已登记指数统一按注册表 canonical 判型并覆盖默认 LiteLLM 与 Codex：所有 Chat 后端首帧加载 registry，加载期间延迟 URL/历史恢复并禁用发送，settle 后 `sh000016`/`sz399001`/`000016.SH`/`930955.CSI`/`csi930955` 只产出一个 lowercase canonical；后端 `resolve_stock_scope`、工具守卫与 cache key 复用 parser `INDEX` 身份，保持指数与裸同码股票隔离；未登记、空 registry 或加载失败时维持既有股票 fail-open，绝不按前缀猜指数。
+- [修复] 选股结果持久化恢复：选股页新增历史记录区块，任务完成后保留 run_id，刷新页面可从历史 API 恢复上次选股结果（此前刷新后结果丢失）。
+- [修复] Web/API runtime scheduler 使用跨平台独立进程执行分析，并在默认 45 分钟硬超时或服务停止后清理进程树；停止返回后不再派发新的自动任务，避免一次卡死阻断后续调度。
+- [改进] Tavily 搜索深度由 `advanced` 调整为 `basic`，降低搜索 credit 消耗（#2314）。
+- [修复] Web 的 axios 依赖升级至 `^1.18.0`，桌面端通过 override 固定 js-yaml 为 `4.3.1`，纳入依赖安全更新（#2256、#2254）。
+
+## [3.31.0] - 2026-08-23
+
+### 发布亮点
+
+- feat: Agent 工具调用新增按类别和单工具配置的超时契约，并补齐防重试、协作取消、并发预算与热重载一致性。
+- feat: 股票名称解析、`canonical_id` 双写和 A 股指数多数据源路由共同完善股票身份与行情降级链路。
+- improve: 新闻检索为空时在报告中如实披露证据边界，Anspire 默认覆盖全球区域，公共 SearXNG 实例改为显式启用。
+- fix: 定时任务恢复、无报告失败反馈、通知发送和大盘复盘历史/诊断信息进一步收敛，减少静默失败与误导展示。
+- security: 桌面端升级 `builder-util-runtime`，修复 CVE-2026-54673 涉及的重定向凭据头信息泄露风险。
+- docs: 增加 xAI Grok 的 LiteLLM 配置示例、Grok Bot 集成说明与可复用 Skill。
+
+### 变更明细
+
+- [修复] 大盘复盘历史列表与详情统一展示持久化短摘要；旧记录缺少摘要时从完整 Markdown 生成无内部标记的纯文本节选。
+- [修复] 大盘复盘按实际执行的生成后端和模型记录诊断，避免 Codex CLI 或 fallback 被误显示为配置模型。
+- [修复] 已配置钉钉 Webhook 时不再误报“未配置通知渠道”；钉钉 Stream 仍仅用于交互，不作为定时静态推送渠道。
+- [修复] WebUI/API/Desktop 以 `--serve-only` 重启后会恢复已启用的定时任务，同时保持启动时不立即执行分析；通知路由示例补充钉钉 Webhook 渠道。
 - [改进] AIHubMix 注册与引流链接统一使用 inferera.com，改善中国大陆网络直连体验。
+- [修复] 单股推送模式在未配置通知渠道时仍会落盘本地个股报告；CLI 启动分析若因空股票列表、个股结果全失败或本地报告保存失败而未生成报告，会显式返回失败并记录原因。
+- [修复] 合并推送模式下即使个股汇总报告落盘失败，仍会先发送已有的合并通知；仅启用大盘复盘但最终未生成任何复盘内容时，分析任务会显式返回失败。
+- [修复] SearXNG 公共实例发现的默认值由启用改为关闭：公共实例普遍存在限流、下线或不返回 JSON 的情况，默认开启会让未配置搜索 key 的用户每次分析多耗 30~60 秒且新闻面最终为空。运行时默认值、配置模板、中英文档与工作流诊断同步调整；显式设为 true 的用户行为不变。
+- [改进] 新闻检索未执行或零命中时，报告中如实标注结论未纳入新闻面证据：零命中与「未配置搜索渠道」使用各自独立的文案，覆盖日报 / dashboard / brief / 个股 / 企业微信与模板渲染的详细与摘要分支、历史报告与分享导出、报告详情 API 与 Web 报告详情页，并按 `zh` / `en` / `ko` 分别本地化。此前该情况下消息面章节直接消失，读者无从区分「确实没有新闻」与「检索静默失败」。披露以本次分析实际收到的消息面证据为准，涵盖实时检索、社交情绪与本地已落库的资讯池三路来源；搜索命中数仅用于在确无证据时说明原因（未配置渠道 / 检索零命中），避免把已用到本地或社交证据的分析误报成「未纳入新闻面证据」。Agent 模式的命中数取自 Agent 实际消费的搜索工具结果，而非分析结束后为持久化情报而补打的查询。
+
+- [新功能] Agent 工具调用支持按类别（data/search/analysis/action/market）配置默认超时，并允许单工具声明 `timeout_seconds`；有效超时按 first-wins 优先级解析（显式 per-run `tool_call_timeout_seconds` > 单工具显式 `timeout_seconds` > 类别默认 > 无限制），剩余 wall-clock 预算仅作不可突破的外层 cap，超时后返回结构化 `{"timeout": true}` 错误（标记 `retriable: false` 并写入 `non_retriable_tool_results` 防重试重复执行）供 Agent 继续执行而非中断循环（fixes #1890）。
+- [修复] Agent 工具注册表（`src/agent/factory.get_tool_registry`）由模块级缓存改为按「类别超时映射的值」比对失效，规避 CPython 回收对象后地址复用（`id(config)` 相同）导致配置 reload 后的 `Config` 被误判为未变、沿用过期超时的真 bug；新增 `_coerce_config_timeout` 类型白名单，使调用方传入 `MagicMock` / 缺属性 stub / 脏字符串（如 `float(MagicMock())` 静默得到 1.0）时降级为「无类别限制」而非崩溃或强加 1 秒超时；`build_agent_executor(config)` / `build_agent_chat_executor(config)` 现已把调用方 `config` 透传给 `get_tool_registry(config)`（不再无参调用冻结首构 registry）；`main._reload_runtime_config` 与 `SystemConfigService._reload_runtime_singletons`（及 `update()`→`reload_now` 路径）在配置热重载时调用 `reset_tool_registry()` 强制重建；回归测试补充「传入新 config 后 registry 重建」「reload 后新超时应生效」及「builder 透传 config」三类场景（#1890 的 review follow-up，闭环 OR-COM-dd1e8fa7 / OR-COM-bff42110）
+- [修复] Agent 工具超时 review 闭环（fixes #1890 的 4 个 blocker）：超时解析由 min 契约改为 first-wins（显式 per-run `tool_call_timeout_seconds` > 单工具 `ToolDefinition.timeout_seconds` > 类别默认 > 无限制，剩余 wall-clock 预算只作不可突破的外层 cap；research 路径不再传 `tool_call_timeout_seconds` 以免覆盖类别限制）；超时结果标记 `retriable: false` 并写入 `non_retriable_tool_results` 阻断 LLM 同调用重试重入，且超时触发时为仍在后台运行的 handler 武装协作取消信号（`is_tool_cancellation_requested()` 与既有 `check_tool_execution()` 检查点均响应，handler 从不轮询则行为不变），作为 review 要求的「handler 内协作取消」缓解，规避 Python 线程无法 force-stop 导致的重复执行与副作用；`_coerce_config_timeout` 对 `inf`/`nan`/负数降级为「无限制」，根绝 `future.result(timeout=inf)` 触发 `OverflowError`；`get_tool_registry` / `reset_tool_registry` 加 `threading.Lock` 双检锁，且重建后返回本次构建的局部 registry（而非全局缓存），消除并发重建竞态与跨调用超时串扰；`@tool` 装饰器将 `ToolPolicy.timeout_seconds` 折叠进 `ToolDefinition` 单一来源；统一单/并行工具超时包装（单一 executor + deadline 驱动的 wait loop，消除并行路径嵌套 executor 与线程翻倍，duration 精确到各工具自身超时值），并新增快慢工具混合并行回归；同步 `docs/full-guide_EN.md` 的超时环境变量文档；测试覆盖 first-wins、non-retriable、协作取消接线、finite 校验、缓存线程安全与快慢混合并行。
+- [修复] 按最新 review 复核收敛 3 处正确性问题（OR-COM-7f3d3f5b / 3d6b61f8 / a1e8b0c2）：`BaseAgent._filtered_registry()` 携带源 registry 的类别超时映射（工具子集仍生效类别上限，不再绕过 #1890 类别超时）；并行批次 >5 时排队调用的 per-tool 超时自 worker 实际开始起算（不再提交即烧预算导致对未启动调用的假超时）；`get_tool_registry()` 缓存命中快路径在锁内读取一致对（消除与 `reset_tool_registry()` 竞态返回 `None` 或错配 registry）。新增对应回归测试。
+- [新功能] 股票名称解析引擎重构增强：新增 `resolver_name_to_code_list()` 公开 API，返回按市场排序（A 股→港股→美股）的 `Stock` 候选列表（最多 5 个），新增 `US_stock_code_match()` 匹配美股 ticker（1~5 位字母且仅限本地库已存在代码，避免 hello/open 等英文词误判为股票）；AkShare 全量 A 股数据经幂等 `extend_AkShare()` 合并进全局 `stockDB`（30 分钟缓存 + 失败 5 分钟退避 + Future 单飞：TTL 过期 stale-while-revalidate 零等待、冷启动等待上界由拉取超时推导（拉取经子进程封顶 25s）、worker 先清账唤醒等待者再做日志/落盘（finally 兜底 BaseException）、成功拉取落盘 `data/cache` 跨重启复用，非中文输入跳过网络扩展），匹配策略升级为「精确→子串（≥2 汉字）→拼音子串（≥5 字母）→difflib 模糊（0.8，单字误写 0.7 兜底）」；`resolve_name_to_code()` 保持既有本地优先语义（本地精确命中零网络，调用方离线低延迟契约不变），跨市场候选能力由 `resolver_name_to_code_list()` 独立提供；解析全链路线程安全（`stockDB` 读写加锁、名称/拼音索引随库变更自动失效），新增 40 个单元测试覆盖精确/跨市场排序/子串/拼音/模糊/幂等扩展/失败退避/多候选场景。
+- [改进] `StockDaily` 表新增可空 `canonical_id` 列并支持双写（Expand-Contract PR2，issue #2207）：自愈式迁移幂等加列 + 普通索引 `ix_stock_daily_canonical_id`，存量行与 `save_daily_data` 未显式传参时均经 index-aware 推导（裸指数码命中注册表时统一到指数 `canonical_id`，避免同一指数按输入形态分裂到不同桶——例如裸 `000300` 与显式 `sh000300` 现在都收敛到 `sh000300`，而非裸码被推导为 `sz000300`），推导失败写 NULL 降级；读路径仍用 `code` 列，`(code, date)` 唯一约束保留不变。显式登记契约漂移：PRD Glossary/FR-1/DD-3 与架构 AD-1/AD-7 中 canonical_id 的点分格式描述（`000016.SH`）已被 Phase 1 已合入代码的前缀格式（`sh000016`）取代，本变更遵循代码，PRD/架构文档的同步修正留待后续 PR 统一收敛。
+- [新功能] 当前注册表已识别的 5 个沪深 A 股指数以显式市场输入按 canonical 身份路由：名称优先使用注册表并以 Tencent、AkShare、TickFlow 兜底，日线固定使用 Tencent、AkShare、TickFlow、yfinance 多源降级链，不读取普通 A 股日 K 的 `*_PRIORITY` 配置；裸代码仍按股票处理，并隔离同码股票名称缓存。
+- [修复] Anspire 搜索默认切换为全球区域模式（`region_mode=2`），使海外股票新闻检索能够覆盖境外信息。
+- [修复] 桌面端将 `builder-util-runtime` 升级至 9.7.0，修复 CVE-2026-54673 涉及的 HTTP 重定向凭据头信息泄露风险。
+- [文档] 增加 xAI Grok 的 LiteLLM 配置示例、Grok Bot 集成指南和异步分析 Skill，明确分析模型与 AI teammate 两类接入边界。
+- [测试] 固定 yfinance 股息 TTM 与单股报告文件名的时间夹具，消除跨日期和合并后时间基准冲突造成的 CI 波动。
 
 ## [3.30.0] - 2026-08-09
 
@@ -2181,7 +2380,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.30.0...HEAD
+[Unreleased]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.32.0...HEAD
+[3.32.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.31.0...v3.32.0
+[3.31.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.30.0...v3.31.0
 [3.30.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.29.0...v3.30.0
 [3.29.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.28.0...v3.29.0
 [3.28.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.27.0...v3.28.0

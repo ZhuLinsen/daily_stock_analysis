@@ -69,6 +69,16 @@ docker-compose -f ./docker/docker-compose.yml ps
 
 如果只能使用 `512M`，请避免同时启动 `server` 和 `analyzer`，并关闭非必要的大盘复盘、新闻扩展和图片报告能力。
 
+### 3.2 避免重复定时推送
+
+建议只保留一个自动调度入口：独立 `analyzer`，或开启 `SCHEDULE_ENABLED=true` 的 `server`。排查 NAS 上遗留的 `--schedule` 容器及重复部署；两个实例使用独立数据库时无法去重。
+
+CLI 与 Web/API 的每日定时任务会在 `DATABASE_PATH` 指向的同一个 SQLite 文件中原子认领本次计划时间。相同到期时刻、自选股/持仓来源、分析/推送选项和报告口径只自动派发一次，即使第二个进程在第一个结束后才触发。不同时间点、不同自选股或不同分析/推送选项仍独立执行。到期时间按调度器所在进程的时区换算为 UTC；同一部署应保持 `TZ` 一致。官方 Compose 的两个服务默认共享 `data/`，因此共享认领记录。
+
+这是“自动派发至多一次”，不是失败自动重试或通知送达保证。认领后进程退出、超时、分析失败（可能已发出部分通知）都不会让另一个定时器重复整轮任务；确认结果后可用 Web 的“立即运行”手动补跑。认领发生在实际执行边界，并固定自选股快照，避免保存设置与异步启动之间的竞态；因忙碌而未启动的 Web 任务不会认领。启动时立即运行、手动 CLI/API 分析及“立即运行”不参与此去重，也不会被它阻止。记录自动保留约 7 天；数据库不可写或锁超时会记录错误并跳过本轮，Web 调度状态会显示认领错误。
+
+本机制依赖共享 SQLite 文件的可靠文件锁，仅覆盖同主机进程及使用同一个本地 bind mount 的容器；不承诺独立数据库、NFS 或跨主机部署的分布式去重。无需新增配置或修改历史分析数据。
+
 ### 4. 常用管理命令
 
 ```bash
@@ -213,7 +223,7 @@ journalctl -u stock-analyzer -f
 | 配置项 | 说明 | 获取方式 |
 |--------|------|----------|
 | `ANSPIRE_API_KEYS` / `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | AI 模型至少配置一个；推荐优先 Anspire 或 AIHubMix | 对应服务商控制台 |
-| `STOCK_LIST` | 自选股列表 | 逗号分隔的股票代码 |
+| `STOCK_LIST` | 自选股列表 | 逗号分隔的股票代码；已登记指数显式形态（如 `sh000016`、`930606.CSI`、`sz399365`）经一次性 `--stocks` 或 GitHub Actions 入口支持（本地 `.env`/Docker 无参数默认运行保持股票语义，指数需配 `--stocks`），规则见 [指数自选股配置](full-guide.md#指数自选股配置) |
 | 通知渠道 | 至少配置一个，如企业微信、飞书、Telegram 或邮件 | 对应通知平台 |
 
 ### 可选配置项
@@ -434,8 +444,8 @@ git push -u origin main
 | `BOCHA_API_KEYS` | 博查搜索 API Key | 可选 |
 | `BRAVE_API_KEYS` | Brave Search API Key | 可选 |
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | 可选 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
-| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
+| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时仅在显式启用公共实例发现后使用 `searx.space` | 可选 |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `false`） | 可选 |
 | `TUSHARE_TOKEN` | Tushare Token | 可选 |
 | `GEMINI_MODEL` | 模型名称（默认 gemini-2.0-flash） | 可选 |
 

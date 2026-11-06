@@ -26,7 +26,7 @@ from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.provider_trace import persist_provider_trace_turns
 from src.agent.runner import run_agent_loop, parse_dashboard_json
 from src.agent.runtime_facts import AgentRuntimeFacts
-from src.agent.stock_scope import StockScope, resolve_stock_scope
+from src.agent.stock_scope import StockScope, StockScopeResolution, resolve_stock_scope
 from src.storage import get_db
 from src.agent.tools.registry import ToolRegistry
 from src.report_language import normalize_report_language
@@ -59,6 +59,9 @@ class AgentResult:
     backend: str = ""
     error_code: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
+    # Optional whitelisted snapshots for multi-agent trajectory evaluation.
+    # Single-agent callers continue to receive the historical empty list.
+    stage_trajectories: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ============================================================
@@ -454,26 +457,6 @@ CHAT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数�
 {language_section}
 """
 
-CODEX_CHAT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，负责基于 DSA 已保存的数据解答用户的股票投资问题。
-
-## 可用数据
-
-- `get_analysis_context`：读取指定股票最近一次已保存的分析上下文。
-- `get_skill_backtest_summary`：读取指定交易技能的已保存回测汇总。
-- `get_strategy_backtest_summary`：读取整体交易策略的已保存回测汇总。
-
-## 工作方式
-
-1. 询问具体股票时，先调用 `get_analysis_context`，再依据返回的已保存数据回答。
-2. 用户询问交易技能或策略表现时，按问题调用对应的回测汇总工具。
-3. 明确说明结论基于已保存数据；若数据带有分析时间，应在回答中提示其时间范围。
-4. 工具未返回回答所需的信息时，直接说明当前保存的数据不足，不得补写或猜测数据。
-5. 自由组织面向用户的回答，不需要输出 JSON。
-
-{language_section}
-"""
-
-
 def _build_language_section(report_language: str, *, chat_mode: bool = False) -> str:
     """Build output-language guidance for the agent prompt."""
     normalized = normalize_report_language(report_language)
@@ -535,16 +518,19 @@ def prepare_agent_chat(
     skill_instructions: str,
     default_skill_policy: str,
     use_legacy_default_prompt: bool,
-    use_codex_prompt: bool,
     include_provider_trace: bool,
     strict_initial_stock_scope: bool = False,
+    scope_resolution: Optional[StockScopeResolution] = None,
+    db_manager=None,
+    source_snapshot: Optional[Dict[str, Any]] = None,
 ) -> PreparedAgentChat:
     """Build the existing Chat prompt order without choosing an Agent backend."""
-    scope_resolution = resolve_stock_scope(
-        message,
-        context,
-        strict_initial_scope=strict_initial_stock_scope,
-    )
+    if scope_resolution is None:
+        scope_resolution = resolve_stock_scope(
+            message,
+            context,
+            strict_initial_scope=strict_initial_stock_scope,
+        )
     effective_context = scope_resolution.effective_context
 
     skills_section = ""
@@ -555,9 +541,7 @@ def prepare_agent_chat(
         default_skill_policy_section = f"\n{default_skill_policy}\n"
     report_language = normalize_report_language((effective_context or {}).get("report_language", "zh"))
     stock_code = (effective_context or {}).get("stock_code", "")
-    if use_codex_prompt:
-        prompt_template = CODEX_CHAT_SYSTEM_PROMPT
-    elif use_legacy_default_prompt:
+    if use_legacy_default_prompt:
         prompt_template = LEGACY_DEFAULT_CHAT_SYSTEM_PROMPT
     else:
         prompt_template = CHAT_SYSTEM_PROMPT
@@ -571,7 +555,11 @@ def prepare_agent_chat(
 
     if include_provider_trace:
         history_messages = list(
-            build_agent_chat_context_bundle(session_id, context_llm_adapter, config).context_messages
+            build_agent_chat_context_bundle(
+                session_id, context_llm_adapter, config,
+                **({"db_manager": db_manager, "source_snapshot": source_snapshot}
+                   if source_snapshot is not None else {}),
+            ).context_messages
         )
     else:
         history_messages = list(
@@ -580,6 +568,8 @@ def prepare_agent_chat(
                 context_llm_adapter,
                 config,
                 allow_llm_compression=False,
+                **({"db_manager": db_manager, "source_snapshot": source_snapshot}
+                   if source_snapshot is not None else {}),
             )
         )
 
@@ -723,9 +713,13 @@ class AgentExecutor:
             AgentResult with the text response.
         """
         from src.agent.conversation import conversation_manager
+        from src.services.agent_chat_session_service import AgentChatSessionService
 
-        conversation_manager.get_or_create(session_id)
+        db, snapshot = conversation_manager.prepare_turn(session_id)
         config = getattr(self.llm_adapter, "_config", None) or get_config()
+        scope_resolution, disposition = AgentChatSessionService(db).prepare_compatibility_turn(
+            config, snapshot, message, context=context,
+        )
         prepared = prepare_agent_chat(
             message=message,
             session_id=session_id,
@@ -735,8 +729,10 @@ class AgentExecutor:
             skill_instructions=self.skill_instructions,
             default_skill_policy=self.default_skill_policy,
             use_legacy_default_prompt=self.use_legacy_default_prompt,
-            use_codex_prompt=False,
             include_provider_trace=True,
+            db_manager=db,
+            source_snapshot=snapshot,
+            scope_resolution=scope_resolution,
         )
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": prepared.system_prompt},
@@ -747,7 +743,8 @@ class AgentExecutor:
         run_id = str(uuid.uuid4())
 
         # Persist the user turn immediately so the session appears in history during processing
-        user_message_id = conversation_manager.add_message(session_id, "user", message)
+        accepted = conversation_manager.commit_user_turn(db, snapshot, message, state_disposition=disposition)
+        user_message_id = accepted["user_message_id"]
 
         tool_decls = self.tool_registry.to_openai_tools()
         result = self._run_loop(
@@ -760,18 +757,23 @@ class AgentExecutor:
 
         # Persist assistant reply (or error note) for context continuity
         if result.success:
-            assistant_message_id = conversation_manager.add_message(session_id, "assistant", result.content)
-            self._persist_provider_trace(
-                session_id=session_id,
-                run_id=run_id,
-                messages=result.messages,
-                baseline_len=baseline_len,
-                user_message_id=user_message_id,
-                assistant_message_id=assistant_message_id,
+            assistant_message_id = conversation_manager.add_message(
+                session_id, "assistant", result.content, accepted_turn=accepted, db_manager=db,
             )
+            if assistant_message_id is not None:
+                self._persist_provider_trace(
+                    session_id=session_id,
+                    run_id=run_id,
+                    messages=result.messages,
+                    baseline_len=baseline_len,
+                    user_message_id=user_message_id,
+                    assistant_message_id=assistant_message_id,
+                    accepted_turn=accepted,
+                    db_factory=lambda: db,
+                )
         else:
             error_note = f"[分析失败] {result.error or '未知错误'}"
-            conversation_manager.add_message(session_id, "assistant", error_note)
+            conversation_manager.add_message(session_id, "assistant", error_note, accepted_turn=accepted, db_manager=db)
 
         return result
 
@@ -784,6 +786,8 @@ class AgentExecutor:
         baseline_len: int,
         user_message_id: int,
         assistant_message_id: int,
+        accepted_turn=None,
+        db_factory=None,
     ) -> None:
         persist_provider_trace_turns(
             session_id=session_id,
@@ -792,7 +796,8 @@ class AgentExecutor:
             baseline_len=baseline_len,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
-            db_factory=get_db,
+            db_factory=db_factory if db_factory is not None else get_db,
+            accepted_turn=accepted_turn,
             log=logger,
         )
 

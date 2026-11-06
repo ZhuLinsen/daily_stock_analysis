@@ -845,6 +845,69 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         self.assertEqual(kwargs["query_source"], "api")
         self.assertEqual(kwargs["report_type"], ReportType.SIMPLE.value)
         self.assertEqual(kwargs["profile_source"], "auto_default")
+        # No index target -> no market override.
+        self.assertIsNone(kwargs["market_override"])
+
+    def test_legacy_pipeline_passes_market_override_cn_for_index_target(self):
+        """V8 — index targets must reach extract_and_persist_from_analysis_result
+        with market_override="cn" via the real wiring (not a mocked helper)."""
+        from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+        target = parse_analysis_target("sh000016")
+        self.assertEqual(target.asset_type, ParseStatus.INDEX)
+
+        pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
+        pipeline.trace_id = "trace-index"
+        pipeline.query_source = "api"
+        pipeline.db.save_analysis_history.return_value = 42
+        phase_context = SimpleNamespace(to_dict=MagicMock(return_value=_phase_payload()))
+
+        with (
+            patch("src.core.pipeline.build_market_phase_context", return_value=phase_context),
+            patch("src.core.pipeline.extract_and_persist_from_analysis_result") as mock_extract,
+        ):
+            result = pipeline.analyze_stock(
+                "sh000016",
+                ReportType.SIMPLE,
+                "q-index-signal",
+                current_time=datetime(2026, 3, 27, 10, 0),
+                analysis_target=target,
+            )
+
+        self.assertIsNotNone(result)
+        mock_extract.assert_called_once()
+        kwargs = mock_extract.call_args.kwargs
+        self.assertEqual(kwargs["source_report_id"], 42)
+        self.assertEqual(kwargs["market_override"], "cn")
+
+    def test_legacy_pipeline_passes_market_override_none_for_stock_target(self):
+        """Stock targets (and analysis_target=None) must keep market_override=None."""
+        from src.services.stock_list_parser import parse_analysis_target
+
+        target = parse_analysis_target("600519")
+        self.assertEqual(target.asset_type, "stock")
+
+        pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
+        pipeline.trace_id = "trace-stock"
+        pipeline.query_source = "api"
+        pipeline.db.save_analysis_history.return_value = 42
+        phase_context = SimpleNamespace(to_dict=MagicMock(return_value=_phase_payload()))
+
+        with (
+            patch("src.core.pipeline.build_market_phase_context", return_value=phase_context),
+            patch("src.core.pipeline.extract_and_persist_from_analysis_result") as mock_extract,
+        ):
+            result = pipeline.analyze_stock(
+                "600519",
+                ReportType.SIMPLE,
+                "q-stock-signal",
+                current_time=datetime(2026, 3, 27, 10, 0),
+                analysis_target=target,
+            )
+
+        self.assertIsNotNone(result)
+        mock_extract.assert_called_once()
+        self.assertIsNone(mock_extract.call_args.kwargs["market_override"])
 
     def test_legacy_pipeline_does_not_extract_when_history_save_fails(self):
         pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)

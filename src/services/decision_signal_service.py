@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
+from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 from src.core.trading_calendar import MarketPhase
 from src.repositories.decision_signal_repo import (
     DecisionSignalCreateResult,
@@ -1108,6 +1109,9 @@ class DecisionSignalService:
     @classmethod
     def _normalize_stock_code(cls, value: Any, *, market: Optional[str] = None) -> str:
         raw = str(value or "").strip()
+        target = parse_analysis_target(raw)
+        if target.asset_type == ParseStatus.INDEX and target.canonical_id:
+            return target.canonical_id
         if market == "us":
             code = canonical_stock_code(raw)
         elif market == "hk":

@@ -441,6 +441,13 @@ class TestSearXNGSearchProvider(unittest.TestCase):
         self.assertTrue(service.is_available)
         self.assertTrue(any(provider.name == "SearXNG" for provider in service._providers))
 
+    def test_search_service_does_not_add_public_searxng_provider_by_default(self):
+        service = SearchService()
+
+        self.assertFalse(service.is_available)
+        self.assertFalse(any(provider.name == "SearXNG" for provider in service._providers))
+        self.assertFalse(service._constructor_kwargs["searxng_public_instances_enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()

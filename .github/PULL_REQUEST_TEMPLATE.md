@@ -64,13 +64,13 @@ python -m pytest -m "not network"
 - 请在下面按实际结果填写并与 `Full-suite note` 保持一致（任一未填视为信息缺失）：
   - ai-governance：`pass` / `fail`，附链接
   - backend-gate：`pass` / `fail`，附链接
-  - docker-build：`pass` / `fail`，附链接
-  - web-gate：`pass` / `fail`，附链接
+  - docker-build：`pass` / `fail` / `skipped`，运行时附链接
+  - web-gate：`pass` / `fail` / `skipped`，运行时附链接
   - 若本 PR 修改 `.github/PULL_REQUEST_TEMPLATE.md` 等流程模板协作文件，请先说明变更必要性、影响边界，并明确回滚方式（默认 `revert this PR`）；否则请在下一版中拆为单独 chore PR。
 
 关键输出/结论 / Key output & conclusion:
 
-- 【必填】当前 Head CI：`ai-governance:pass / backend-gate:pass / docker-build:pass / web-gate:pass`（按实际结果替换）并附对应链接。  
+- 【必填】当前 Head CI：`ai-governance:pass / backend-gate:pass / docker-build:pass / web-gate:pass`（按实际结果替换）并附对应链接；按路径未运行的 Docker/Web 检查写为 `skipped`。
 - 若需保留本地失败现象，请在同段写明“本地环境差异 + 当前 CI 通过/失败结果 + CI 链接”。  
 - 若全部通过，需补充一句：`当前状态：全部通过（pass）`，并明确 Head CI 全部为 pass。  
 

@@ -14,6 +14,7 @@ from src.agent.tools.execution import (
     ToolExecutionCancelled,
     ToolExecutionDeadlineExceeded,
     check_tool_execution,
+    get_tool_analysis_target,
 )
 from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
@@ -24,6 +25,7 @@ _BACKTEST_READ_POLICY = ToolPolicy.declared(
     side_effects=["db_read"],
     permissions=["backtest:read"],
     scope_dimensions=["stock"],
+    supported_asset_types=("stock",),
 )
 _BACKTEST_GLOBAL_READ_POLICY = ToolPolicy.declared(
     read_only=True,
@@ -188,9 +190,11 @@ def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: int = 
         check_tool_execution()
         svc = _get_backtest_service()
         result = {}
+        target = get_tool_analysis_target(stock_code)
+        target_kwargs = {"analysis_target": target} if target is not None else {}
 
         # Per-stock summary
-        summary = svc.get_summary(scope="stock", code=stock_code, eval_window_days=eval_window_days)
+        summary = svc.get_summary(scope="stock", code=stock_code, eval_window_days=eval_window_days, **target_kwargs)
         check_tool_execution()
         if summary:
             result["summary"] = {
@@ -207,7 +211,7 @@ def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: int = 
             result["summary"] = None
 
         # Recent evaluations
-        evals = svc.get_recent_evaluations(code=stock_code, eval_window_days=eval_window_days, limit=limit)
+        evals = svc.get_recent_evaluations(code=stock_code, eval_window_days=eval_window_days, limit=limit, **target_kwargs)
         check_tool_execution()
         items = evals.get("items", [])
         # Slim down items to essential fields

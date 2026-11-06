@@ -47,6 +47,22 @@ def _fake_agent_config(**overrides) -> SimpleNamespace:
 
 
 class LiteLLMFallbackPricingTestCase(unittest.TestCase):
+    def test_current_minimax_fallback_rates_and_flash_limits(self) -> None:
+        with patch.object(llm_adapter.litellm, "register_model", create=True) as register, \
+                patch.object(llm_adapter.litellm, "model_cost", {}, create=True):
+            llm_adapter.register_fallback_model_pricing(["openai/MiniMax-M3.1-Flash", "openai/MiniMax-M3"])
+        flash = register.call_args_list[0].args[0]["MiniMax-M3.1-Flash"]
+        self.assertEqual(flash["context_window"], 1000000)
+        self.assertEqual(flash["max_tokens"], 524288)
+        self.assertTrue(flash["supports_vision"])
+        self.assertEqual(flash["input_cost_per_token"], 0.00000015)
+        self.assertEqual(flash["output_cost_per_token"], 0.0000006)
+        self.assertEqual(flash["cache_read_input_token_cost"], 0.000000015)
+        m3 = register.call_args_list[1].args[0]["MiniMax-M3"]
+        self.assertEqual(m3["input_cost_per_token"], 0.0000003)
+        self.assertEqual(m3["output_cost_per_token"], 0.0000012)
+        self.assertEqual(m3["cache_read_input_token_cost"], 0.00000006)
+
     def test_register_fallback_pricing_registers_unknown_openai_model(self) -> None:
         registered = []
 

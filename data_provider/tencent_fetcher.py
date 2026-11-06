@@ -34,14 +34,14 @@ class TencentFetcher(BaseFetcher):
     allow_empty_daily_data = True
 
     _KLINE_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    _QUOTE_ENDPOINT = "https://qt.gtimg.cn/q"
     _HTTP_TIMEOUT_SECONDS = 8
 
     def __init__(self) -> None:
         self.priority = _read_tencent_priority()
 
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        code = normalize_stock_code(stock_code)
-        symbol = _to_tencent_symbol(code)
+        symbol = _to_tencent_symbol(stock_code)
         if not symbol:
             raise DataFetchError(f"TencentFetcher unsupported stock code: {stock_code}")
 
@@ -103,11 +103,48 @@ class TencentFetcher(BaseFetcher):
         normalized = normalized[["date", "open", "high", "low", "close", "volume", "amount", "pct_chg"]]
         return normalized
 
+    def get_stock_name(self, stock_code: str) -> Optional[str]:
+        symbol = _to_tencent_symbol(stock_code)
+        if not symbol:
+            return None
+        try:
+            response = requests.get(
+                f"{self._QUOTE_ENDPOINT}={symbol}",
+                headers={"Referer": "https://finance.qq.com", "User-Agent": "Mozilla/5.0"},
+                timeout=self._HTTP_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            response.encoding = "gbk"
+            content = response.text.strip()
+            data_start = content.find('"')
+            data_end = content.rfind('"')
+            if data_start == -1 or data_end <= data_start:
+                return None
+            fields = content[data_start + 1:data_end].split("~")
+            if len(fields) <= 2 or fields[2].strip() != symbol[2:]:
+                return None
+            name = fields[1].strip()
+            return name or None
+        except Exception:
+            logger.debug(
+                "TencentFetcher stock name lookup failed for %s",
+                stock_code,
+                exc_info=True,
+            )
+            return None
+
 
 def _to_tencent_symbol(stock_code: str) -> str:
+    raw_code = (stock_code or "").strip().upper()
     code = normalize_stock_code(stock_code)
     if not code or not code.isdigit() or len(code) != 6:
         return ""
+    if raw_code.startswith(("SH", "SS")) or raw_code.endswith((".SH", ".SS")):
+        return f"sh{code}"
+    if raw_code.startswith("SZ") or raw_code.endswith(".SZ"):
+        return f"sz{code}"
+    if raw_code.startswith("BJ") or raw_code.endswith(".BJ"):
+        return f"bj{code}"
     if is_bse_code(code):
         return f"bj{code}"
     if code.startswith(("6", "5", "9")):
@@ -191,11 +228,30 @@ def _format_tencent_date(date_text: str) -> Optional[str]:
         return None
 
 
-def _lots_to_shares(volume: Any) -> Any:
+def _is_star_market(symbol: str) -> bool:
+    """Return True for STAR Market codes (688xxx, and 689xxx CDRs).
+
+    Accepts Tencent symbols (``sh688111``), bare codes (``688111``) and
+    suffixed codes (``688111.SH``).
+    """
+    code = (symbol or "").strip().lower()
+    if code[:2] in ("sh", "sz", "bj"):
+        code = code[2:]
+    return code.startswith(("688", "689"))
+
+
+def _lots_to_shares(volume: Any, symbol: str = "") -> Any:
+    """Convert Tencent daily K-line volume to shares.
+
+    Tencent reports volume in lots (手, 100 shares) for most A-shares, but in
+    shares (股) for STAR Market stocks (688/689). Multiplying STAR Market volume
+    by 100 inflates it 100x (Refs #2350).
+    """
     try:
-        return float(volume) * 100
+        value = float(volume)
     except (TypeError, ValueError):
         return volume
+    return value if _is_star_market(symbol) else value * 100
 
 
 def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[str, Any]]:
@@ -216,7 +272,7 @@ def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[st
                 "close": row[2],
                 "high": row[3],
                 "low": row[4],
-                "volume": _lots_to_shares(row[5]),
+                "volume": _lots_to_shares(row[5], symbol),
                 "amount": amount,
             }
         )

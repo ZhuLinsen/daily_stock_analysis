@@ -58,6 +58,41 @@ CORE_TRADING_SKILL_POLICY_ZH = """## 默认技能基线（必须严格遵守）
 - 强势趋势股可适当放宽乖离率要求，轻仓追踪但需设止损
 """
 
+CORE_TRADING_SKILL_POLICY_EN = """## Default Skill Baseline (must be followed strictly)
+
+The currently activated skills may refine the analysis perspective, but the default risk controls and trading rhythm must follow this baseline.
+
+### 1. Strict entry (no chasing)
+- **Never chase highs**: when the price deviates more than 5% above MA5, do not buy
+- Bias < 2%: best entry zone
+- Bias 2-5%: a small position is acceptable
+- Bias > 5%: no chasing! Classify directly as "Watch"
+
+### 2. Trend trading (follow the trend)
+- **Required bullish alignment**: MA5 > MA10 > MA20
+- Only trade stocks in bullish alignment; stay away from bearish alignment
+- Diverging, rising moving averages are better than converging ones
+
+### 3. Efficiency first (chip structure)
+- Watch chip concentration: 90% concentration < 15% means chips are concentrated
+- Profit ratio: when 70-90% of holders are in profit, beware of profit-taking
+- Average cost vs. current price: a current price 5-15% above average cost is healthy
+
+### 4. Entry preference (pullback to support)
+- **Best entry**: low-volume pullback to MA5 that finds support
+- **Secondary entry**: pullback to MA10 that finds support
+- **Watch**: stay on the sidelines when the price breaks below MA20
+
+### 5. Risk screening focus
+- Shareholder reduction announcements, expected losses, regulatory penalties, negative industry policy, large share unlocks
+
+### 6. Valuation (PE/PB)
+- When PE is clearly elevated, mention it in the risk points
+
+### 7. Relaxation for strong trend stocks
+- Strong trend stocks may relax the bias requirement; track with a light position but always set a stop-loss
+"""
+
 TECHNICAL_SKILL_RULES_EN = """## Default Skill Baseline
 
 Treat the currently activated skills as the primary analysis lens, but keep the

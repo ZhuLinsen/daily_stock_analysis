@@ -15,11 +15,21 @@ from api.v1.schemas.common import (
     SuccessResponse,
 )
 from api.v1.schemas.market_phase import MarketPhaseSummary
+from api.v1.schemas.research_artifact import (
+    ResearchArtifact,
+    ResearchDataQuality,
+    ResearchEvidenceItem,
+    ResearchInvalidationCondition,
+    ResearchNextAction,
+    ResearchSubject,
+    ResearchThesis,
+)
 from api.v1.schemas.analysis import (
     AnalyzeRequest,
     AnalysisResultResponse,
     TaskAccepted,
     BatchTaskAcceptedResponse,
+    RejectedTaskItem,
     TaskStatus,
 )
 from api.v1.schemas.history import (
@@ -39,6 +49,7 @@ from api.v1.schemas.stocks import (
     StockQuote,
     StockHistoryResponse,
     KLineData,
+    StockProfileResponse,
 )
 from api.v1.schemas.backtest import (
     BacktestRunRequest,
@@ -46,6 +57,14 @@ from api.v1.schemas.backtest import (
     BacktestResultItem,
     BacktestResultsResponse,
     PerformanceMetrics,
+)
+from api.v1.schemas.data_capability import (
+    DataCapabilityOverviewResponse,
+    DataDatasetQuality,
+    DataPriorityView,
+    DataProviderCapability,
+    DatasetQualityStatus,
+    ProviderCapabilityStatus,
 )
 from api.v1.schemas.system_config import (
     SystemConfigFieldSchema,
@@ -137,11 +156,20 @@ __all__ = [
     "SuccessResponse",
     # market phase
     "MarketPhaseSummary",
+    # research artifact
+    "ResearchArtifact",
+    "ResearchDataQuality",
+    "ResearchEvidenceItem",
+    "ResearchInvalidationCondition",
+    "ResearchNextAction",
+    "ResearchSubject",
+    "ResearchThesis",
     # analysis
     "AnalyzeRequest",
     "AnalysisResultResponse",
     "TaskAccepted",
     "BatchTaskAcceptedResponse",
+    "RejectedTaskItem",
     "TaskStatus",
     # history
     "HistoryItem",
@@ -159,12 +187,20 @@ __all__ = [
     "StockQuote",
     "StockHistoryResponse",
     "KLineData",
+    "StockProfileResponse",
     # backtest
     "BacktestRunRequest",
     "BacktestRunResponse",
     "BacktestResultItem",
     "BacktestResultsResponse",
     "PerformanceMetrics",
+    # data capability
+    "DataCapabilityOverviewResponse",
+    "DataDatasetQuality",
+    "DataPriorityView",
+    "DataProviderCapability",
+    "DatasetQualityStatus",
+    "ProviderCapabilityStatus",
     # system config
     "SystemConfigFieldSchema",
     "SystemConfigCategorySchema",

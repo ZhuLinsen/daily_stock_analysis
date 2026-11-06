@@ -43,7 +43,9 @@ class PipelineFetchErrorTestCase(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertIsNone(error)
-        _mock_target.assert_called_once_with("600519", current_time=current_time)
+        _mock_target.assert_called_once_with(
+            "600519", current_time=current_time, analysis_target=None
+        )
         pipeline.db.has_today_data.assert_called_once_with("600519", date(2026, 3, 27))
         pipeline.fetcher_manager.get_daily_data.assert_not_called()
 

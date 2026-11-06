@@ -96,6 +96,7 @@ class Scheduler:
         schedule_times: Optional[Sequence[str]] = None,
         schedule_times_provider: Optional[Callable[[], Union[Sequence[str], str]]] = None,
         register_signals: bool = True,
+        pass_scheduled_for: bool = False,
     ):
         """
         初始化调度器
@@ -120,10 +121,13 @@ class Scheduler:
         self._schedule_times_provider = schedule_times_provider
         self.shutdown_handler = GracefulShutdown(register_signals=register_signals)
         self._task_callback: Optional[Callable] = None
+        self._pass_scheduled_for = pass_scheduled_for
         self._daily_job: Optional[Any] = None
         self._daily_jobs: List[Any] = []
         self._background_tasks: List[Dict[str, Any]] = []
+        self._lifecycle_lock = threading.Lock()
         self._running = False
+        self._stop_requested = False
 
     def set_daily_task(self, task: Callable, run_immediately: bool = True):
         """
@@ -167,6 +171,12 @@ class Scheduler:
         self._daily_job = None
         self._daily_jobs = []
 
+    def _register_daily_job(self, schedule_time: str) -> Any:
+        job = self.schedule.every().day.at(schedule_time)
+        # schedule updates next_run after the callback, so preserve the original
+        # due date/time through delayed polling and asynchronous dispatch.
+        return job.do(lambda: self._safe_run_task(scheduled_for=job.next_run))
+
     def _configure_daily_task(self, schedule_time: str) -> bool:
         """(Re)register the daily job at the requested time."""
         candidate = (schedule_time or "").strip()
@@ -180,7 +190,7 @@ class Scheduler:
 
         previous_time = self.schedule_time
         self._cancel_daily_job()
-        self._daily_job = self.schedule.every().day.at(candidate).do(self._safe_run_task)
+        self._daily_job = self._register_daily_job(candidate)
         self.schedule_time = candidate
 
         if previous_time == candidate:
@@ -230,7 +240,7 @@ class Scheduler:
         previous_times = list(self.schedule_times)
         self._cancel_daily_job()
         self._daily_jobs = [
-            self.schedule.every().day.at(candidate).do(self._safe_run_task)
+            self._register_daily_job(candidate)
             for candidate in candidates
         ]
         self._daily_job = self._daily_jobs[0] if self._daily_jobs else None
@@ -278,7 +288,7 @@ class Scheduler:
         """Public wrapper for runtime scheduler reconciliation."""
         self._refresh_daily_schedule_if_needed()
 
-    def _safe_run_task(self):
+    def _safe_run_task(self, scheduled_for: Optional[datetime] = None):
         """安全执行任务（带异常捕获）"""
         if self._task_callback is None:
             return
@@ -288,7 +298,10 @@ class Scheduler:
             logger.info(f"定时任务开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info("=" * 50)
 
-            self._task_callback()
+            if self._pass_scheduled_for:
+                self._task_callback(scheduled_for=scheduled_for)
+            else:
+                self._task_callback()
 
             logger.info(f"定时任务执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -378,20 +391,33 @@ class Scheduler:
                 continue
             self._start_background_task(entry)
 
+    def _dispatch_background_tasks_if_running(self) -> bool:
+        """Dispatch due background tasks before a concurrent stop can return."""
+        with self._lifecycle_lock:
+            if not self._running or self.shutdown_handler.should_shutdown:
+                return False
+            self._run_background_tasks()
+            return True
+
     def run(self):
         """
         运行调度器主循环
 
         阻塞运行，直到收到退出信号
         """
-        self._running = True
+        with self._lifecycle_lock:
+            if self._stop_requested:
+                logger.info("调度器已停止，忽略迟到的启动请求")
+                return
+            self._running = True
         logger.info("调度器开始运行...")
         logger.info(f"下次执行时间: {self._get_next_run_time()}")
 
         while self._running and not self.shutdown_handler.should_shutdown:
             self._refresh_daily_schedule_if_needed()
             self.schedule.run_pending()
-            self._run_background_tasks()
+            if not self._dispatch_background_tasks_if_running():
+                break
             time.sleep(30)  # 每30秒检查一次
 
             # 每小时打印一次心跳
@@ -410,7 +436,9 @@ class Scheduler:
 
     def stop(self):
         """停止调度器"""
-        self._running = False
+        with self._lifecycle_lock:
+            self._stop_requested = True
+            self._running = False
         self._cancel_daily_job()
 
 
@@ -422,6 +450,7 @@ def run_with_schedule(
     schedule_time_provider: Optional[Callable[[], str]] = None,
     schedule_times: Optional[Sequence[str]] = None,
     schedule_times_provider: Optional[Callable[[], Union[Sequence[str], str]]] = None,
+    pass_scheduled_for: bool = False,
 ):
     """
     便捷函数：使用定时调度运行任务
@@ -444,6 +473,8 @@ def run_with_schedule(
         scheduler_kwargs["schedule_times"] = schedule_times
     if schedule_times_provider is not None:
         scheduler_kwargs["schedule_times_provider"] = schedule_times_provider
+    if pass_scheduled_for:
+        scheduler_kwargs["pass_scheduled_for"] = True
     scheduler = Scheduler(**scheduler_kwargs)
     for entry in background_tasks or []:
         scheduler.add_background_task(

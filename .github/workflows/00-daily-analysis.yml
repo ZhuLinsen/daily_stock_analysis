@@ -89,6 +89,16 @@ jobs:
           LLM_PROMPT_CACHE_HINTS_ENABLED: ${{ vars.LLM_PROMPT_CACHE_HINTS_ENABLED || secrets.LLM_PROMPT_CACHE_HINTS_ENABLED }}
           LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: ${{ vars.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL || secrets.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL }}
           LLM_CHANNELS: ${{ vars.LLM_CHANNELS || secrets.LLM_CHANNELS }}
+          # Modelflare：只需 MODELFLARE_KEY；以下渠道配置供高级覆盖。
+          MODELFLARE_KEY: ${{ secrets.MODELFLARE_KEY }}
+          LLM_MODELFLARE_PROTOCOL: ${{ vars.LLM_MODELFLARE_PROTOCOL || secrets.LLM_MODELFLARE_PROTOCOL }}
+          LLM_MODELFLARE_API_SURFACE: ${{ vars.LLM_MODELFLARE_API_SURFACE || secrets.LLM_MODELFLARE_API_SURFACE }}
+          LLM_MODELFLARE_BASE_URL: ${{ vars.LLM_MODELFLARE_BASE_URL || secrets.LLM_MODELFLARE_BASE_URL }}
+          LLM_MODELFLARE_API_KEY: ${{ secrets.LLM_MODELFLARE_API_KEY }}
+          LLM_MODELFLARE_API_KEYS: ${{ secrets.LLM_MODELFLARE_API_KEYS }}
+          LLM_MODELFLARE_MODELS: ${{ vars.LLM_MODELFLARE_MODELS || secrets.LLM_MODELFLARE_MODELS }}
+          LLM_MODELFLARE_ENABLED: ${{ vars.LLM_MODELFLARE_ENABLED || secrets.LLM_MODELFLARE_ENABLED }}
+          LLM_MODELFLARE_EXTRA_HEADERS: ${{ vars.LLM_MODELFLARE_EXTRA_HEADERS || secrets.LLM_MODELFLARE_EXTRA_HEADERS }}
           # Hermes 是本地 loopback generation preset；API Key 只从 Secrets 注入。
           # GitHub-hosted runner 的 127.0.0.1 不是用户电脑，本配置通常只适合 self-hosted runner。
           LLM_HERMES_PROTOCOL: ${{ vars.LLM_HERMES_PROTOCOL || secrets.LLM_HERMES_PROTOCOL }}
@@ -259,6 +269,15 @@ jobs:
           LLM_OPENROUTER_ENABLED: ${{ vars.LLM_OPENROUTER_ENABLED || secrets.LLM_OPENROUTER_ENABLED }}
           LLM_OPENROUTER_EXTRA_HEADERS: ${{ vars.LLM_OPENROUTER_EXTRA_HEADERS || secrets.LLM_OPENROUTER_EXTRA_HEADERS }}
 
+          LLM_REQUESTY_PROTOCOL: ${{ vars.LLM_REQUESTY_PROTOCOL || secrets.LLM_REQUESTY_PROTOCOL }}
+          LLM_REQUESTY_API_SURFACE: ${{ vars.LLM_REQUESTY_API_SURFACE || secrets.LLM_REQUESTY_API_SURFACE }}
+          LLM_REQUESTY_BASE_URL: ${{ vars.LLM_REQUESTY_BASE_URL || secrets.LLM_REQUESTY_BASE_URL }}
+          LLM_REQUESTY_API_KEY: ${{ secrets.LLM_REQUESTY_API_KEY }}
+          LLM_REQUESTY_API_KEYS: ${{ secrets.LLM_REQUESTY_API_KEYS }}
+          LLM_REQUESTY_MODELS: ${{ vars.LLM_REQUESTY_MODELS || secrets.LLM_REQUESTY_MODELS }}
+          LLM_REQUESTY_ENABLED: ${{ vars.LLM_REQUESTY_ENABLED || secrets.LLM_REQUESTY_ENABLED }}
+          LLM_REQUESTY_EXTRA_HEADERS: ${{ vars.LLM_REQUESTY_EXTRA_HEADERS || secrets.LLM_REQUESTY_EXTRA_HEADERS }}
+
           LLM_OLLAMA_PROTOCOL: ${{ vars.LLM_OLLAMA_PROTOCOL || secrets.LLM_OLLAMA_PROTOCOL }}
           LLM_OLLAMA_API_SURFACE: ${{ vars.LLM_OLLAMA_API_SURFACE || secrets.LLM_OLLAMA_API_SURFACE }}
           LLM_OLLAMA_BASE_URL: ${{ vars.LLM_OLLAMA_BASE_URL || secrets.LLM_OLLAMA_BASE_URL }}
@@ -294,6 +313,8 @@ jobs:
           LONGBRIDGE_ENABLE_OVERNIGHT: ${{ vars.LONGBRIDGE_ENABLE_OVERNIGHT || secrets.LONGBRIDGE_ENABLE_OVERNIGHT }}
           LONGBRIDGE_PUSH_CANDLESTICK_MODE: ${{ vars.LONGBRIDGE_PUSH_CANDLESTICK_MODE || secrets.LONGBRIDGE_PUSH_CANDLESTICK_MODE }}
           LONGBRIDGE_PRINT_QUOTE_PACKAGES: ${{ vars.LONGBRIDGE_PRINT_QUOTE_PACKAGES || secrets.LONGBRIDGE_PRINT_QUOTE_PACKAGES }}
+          # FXMacroData（Agent 宏观数据工具的可选授权；不设则仅使用公开 USD 数据）
+          FXMACRODATA_API_KEY: ${{ secrets.FXMACRODATA_API_KEY }}
           
           # ==========================================
           # 搜索服务
@@ -309,6 +330,9 @@ jobs:
           BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
           SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS || secrets.SEARXNG_BASE_URLS }}
           SEARXNG_PUBLIC_INSTANCES_ENABLED: ${{ vars.SEARXNG_PUBLIC_INSTANCES_ENABLED || secrets.SEARXNG_PUBLIC_INSTANCES_ENABLED }}
+          SEARXNG_TIMEOUT_SECONDS: ${{ vars.SEARXNG_TIMEOUT_SECONDS || secrets.SEARXNG_TIMEOUT_SECONDS }}
+          MX_APIKEY: ${{ secrets.MX_APIKEY }}
+          MX_PRIORITY: ${{ vars.MX_PRIORITY || secrets.MX_PRIORITY }}
           
           # ==========================================
           # 通知渠道（可同时配置多个，全部推送）
@@ -462,13 +486,14 @@ jobs:
           echo "📋 配置检查"
           echo "=========================================="
           echo "【AI 配置】"
-          if [ -n "$LITELLM_CONFIG" ] || [ -n "$LITELLM_API_KEY" ] || [ -n "$LITELLM_MODEL" ] || [ -n "$ANSPIRE_API_KEYS" ]; then
+          if [ -n "$LITELLM_CONFIG" ] || [ -n "$LITELLM_API_KEY" ] || [ -n "$LITELLM_MODEL" ] || [ -n "$LLM_CHANNELS" ] || [ -n "$MODELFLARE_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEYS" ] || [ -n "$ANSPIRE_API_KEYS" ]; then
             echo "  LiteLLM: ✅ 已配置"
           else
             echo "  LiteLLM: ❌ 未配置"
           fi
           echo "  Gemini API Key: $([ -n "$GEMINI_API_KEY" ] && echo '✅ 已配置' || echo '❌ 未配置')"
           echo "  DeepSeek Key:   $([ -n "$DEEPSEEK_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  Modelflare Key: $([ -n "$MODELFLARE_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Anspire Key:    $([ -n "$ANSPIRE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  AIHubMix Key:   $([ -n "$AIHUBMIX_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  OpenAI API Key: $([ -n "$OPENAI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
@@ -477,6 +502,7 @@ jobs:
           echo "【数据源】"
           echo "  Tushare Token: $([ -n "$TUSHARE_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  TickFlow:      $([ -n "$TICKFLOW_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  FXMacroData:   $([ -n "$FXMACRODATA_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置（仅公开 USD 数据）')"
           if [ -n "$LONGBRIDGE_APP_KEY" ] && [ -n "$LONGBRIDGE_APP_SECRET" ] && [ -n "$LONGBRIDGE_ACCESS_TOKEN" ]; then
             echo "  Longbridge: ✅ 已配置（Legacy API Key）"
           elif [ -n "$LONGBRIDGE_OAUTH_CLIENT_ID" ] || { [ -n "$LONGBRIDGE_APP_KEY" ] && [ -z "$LONGBRIDGE_ACCESS_TOKEN" ]; }; then
@@ -497,7 +523,7 @@ jobs:
               echo "  SearXNG Public Instances: ❌ 已禁用"
               ;;
             "")
-              echo "  SearXNG Public Instances: ✅ 默认开启"
+              echo "  SearXNG Public Instances: ⚪ 默认关闭（公共实例普遍限流，如需启用请显式设为 true）"
               ;;
             *)
               echo "  SearXNG Public Instances: ✅ 已启用"

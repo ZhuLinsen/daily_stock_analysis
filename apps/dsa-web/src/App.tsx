@@ -1,6 +1,11 @@
 import type React from 'react';
-import { lazy, useEffect } from 'react';
-import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { lazy, useEffect, useMemo } from 'react';
+import {
+  Navigate,
+  createBrowserRouter,
+  useLocation,
+  RouterProvider,
+} from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
 import {
   PageLoadingFallback,
@@ -10,6 +15,7 @@ import {
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { UiLanguageProvider, useUiLanguage } from './contexts/UiLanguageContext';
 import { useAgentChatStore } from './stores/agentChatStore';
+import { resolveLoginRedirect } from './utils/loginRedirect';
 import './App.css';
 
 const HomePage = lazy(() => import('./pages/HomePage'));
@@ -23,6 +29,7 @@ const DecisionSignalsPage = lazy(() => import('./pages/DecisionSignalsPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
+const DataCenterPage = lazy(() => import('./pages/DataCenterPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -62,46 +69,61 @@ const AppContent: React.FC = () => {
         </StandaloneRouteBoundary>
       );
     }
-    const redirect = encodeURIComponent(location.pathname + location.search);
+    const redirect = encodeURIComponent(location.pathname + location.search + location.hash);
     return <Navigate to={`/login?redirect=${redirect}`} replace />;
   }
 
   if (location.pathname === '/login') {
-    return <Navigate to="/" replace />;
+    // Auth refresh may render this boundary before LoginPage's submit resolves.
+    // Both paths must choose the same validated destination.
+    const redirect = resolveLoginRedirect(new URLSearchParams(location.search).get('redirect'));
+    return <Navigate to={redirect} replace />;
   }
 
   return (
-    <Routes>
-      <Route
-        element={(
-          <Shell>
-            <RouteOutletBoundary />
-          </Shell>
-        )}
-      >
-        <Route path="/" element={<HomePage />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/portfolio" element={<PortfolioPage />} />
-        <Route path="/decision-signals" element={<DecisionSignalsPage />} />
-        <Route path="/screening" element={<StockScreeningPage />} />
-        <Route path="/backtest" element={<BacktestPage />} />
-        <Route path="/alerts" element={<AlertsPage />} />
-        <Route path="/usage" element={<TokenUsagePage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-    </Routes>
+    <Shell>
+      <RouteOutletBoundary />
+    </Shell>
   );
 };
 
+const routeChildren = [
+  { path: '/', element: <HomePage /> },
+  { path: '/chat', element: <ChatPage /> },
+  { path: '/portfolio', element: <PortfolioPage /> },
+  { path: '/decision-signals', element: <DecisionSignalsPage /> },
+  { path: '/screening', element: <StockScreeningPage /> },
+  { path: '/data', element: <DataCenterPage /> },
+  { path: '/backtest', element: <BacktestPage /> },
+  { path: '/alerts', element: <AlertsPage /> },
+  { path: '/usage', element: <TokenUsagePage /> },
+  { path: '/settings', element: <SettingsPage /> },
+  { path: '*', element: <NotFoundPage /> },
+];
+
 const App: React.FC = () => {
+  // Construct the data router lazily on first mount. `createBrowserRouter`
+  // reads `window.location` at construction time, so for it to honour the
+  // current URL (especially under tests that `window.history.pushState(...)`
+  // before rendering, and to react when navigating the same module instance
+  // across different entry URLs) it must be built inside the React tree, not
+  // at module import time.
+  const router = useMemo(
+    () =>
+      createBrowserRouter([
+        {
+          element: <AppContent />,
+          children: routeChildren,
+        },
+      ]),
+    [],
+  );
+
   return (
     <UiLanguageProvider>
-      <Router>
-        <AuthProvider>
-          <AppContent />
-        </AuthProvider>
-      </Router>
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
     </UiLanguageProvider>
   );
 };

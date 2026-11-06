@@ -59,5 +59,9 @@
       "hardenedRuntime": false,
       "target": "dmg"
     }
+  },
+  "overrides": {
+    "builder-util-runtime": "9.7.0",
+    "js-yaml": "4.3.1"
   }
 }

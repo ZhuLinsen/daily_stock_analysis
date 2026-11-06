@@ -187,6 +187,9 @@ class PortfolioAccountSnapshot(BaseModel):
     cost_method: str
     total_cash: float
     total_market_value: float
+    total_market_value_aggregate: Optional[float] = Field(
+        None, description="Account market value converted into the parent snapshot currency"
+    )
     total_equity: float
     realized_pnl: float
     unrealized_pnl: float

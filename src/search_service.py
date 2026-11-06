@@ -242,6 +242,7 @@ class SearchResult:
     relevance_score: Optional[int] = None
     relevance_category: Optional[str] = None
     relevance_reasons: Optional[List[str]] = None
+    retrieved_at: Optional[str] = None  # 首次实际检索完成时间（UTC）；缓存读取不刷新
     
     def to_text(self) -> str:
         """转换为文本格式"""
@@ -267,6 +268,13 @@ class SearchResponse:
     error_message: Optional[str] = None
     search_time: float = 0.0  # 搜索耗时（秒）
     
+    def mark_retrieved(self) -> None:
+        """Record actual acquisition once; preserve timestamps on cached/copied results."""
+        retrieved_at = datetime.now(timezone.utc).isoformat()
+        for result in self.results:
+            if result.retrieved_at is None:
+                result.retrieved_at = retrieved_at
+
     def to_context(self, max_results: int = 5) -> str:
         """将搜索结果转换为可用于 AI 分析的上下文"""
         if not self.success or not self.results:
@@ -374,6 +382,7 @@ class BaseSearchProvider(ABC):
             response.search_time = time.time() - start_time
 
             if response.success:
+                response.mark_retrieved()
                 self._record_success(api_key)
                 logger.info(f"[{self._name}] 搜索 '{query}' 成功，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
             else:
@@ -450,7 +459,7 @@ class TavilySearchProvider(BaseSearchProvider):
             # 执行搜索（优化：使用advanced深度、限制最近几天）
             search_kwargs: Dict[str, Any] = {
                 "query": query,
-                "search_depth": "advanced",  # advanced 获取更多结果
+                "search_depth": "basic",  # 为控制credit使用，将advanced修改成basic
                 "max_results": max_results,
                 "include_answer": False,
                 "include_raw_content": False,
@@ -526,6 +535,7 @@ class TavilySearchProvider(BaseSearchProvider):
             response.search_time = time.time() - start_time
 
             if response.success:
+                response.mark_retrieved()
                 self._record_success(api_key)
                 logger.info(f"[{self._name}] 搜索 '{query}' 成功，返回 {len(response.results)} 条结果，耗时 {response.search_time:.2f}s")
             else:
@@ -567,7 +577,7 @@ class SerpAPISearchProvider(BaseSearchProvider):
     - 免费版每月 100 次请求
     - 返回真实的搜索结果
     
-    文档：https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis
+    文档：https://serpapi.com/github-daily-stock-analysis
     """
 
     _ORGANIC_CONTENT_FETCH_LIMIT = 1
@@ -1210,7 +1220,7 @@ class AnspireSearchProvider(BaseSearchProvider):
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "Anspire")
     
-    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7, region_mode: int = 0) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7, region_mode: int = 2) -> SearchResponse:
         """执行 Anspire 搜索"""
         try:
             import requests
@@ -1843,10 +1853,20 @@ class SearXNGSearchProvider(BaseSearchProvider):
     _public_instances_stale_retry_after: float = 0.0
     _public_instances_lock = threading.Lock()
 
-    def __init__(self, base_urls: Optional[List[str]] = None, *, use_public_instances: bool = False):
+    def __init__(
+        self,
+        base_urls: Optional[List[str]] = None,
+        *,
+        use_public_instances: bool = False,
+        self_hosted_timeout_seconds: Optional[int] = None,
+    ):
         normalized_base_urls = [url.rstrip("/") for url in (base_urls or []) if url.strip()]
         super().__init__(normalized_base_urls, "SearXNG")
         self._base_urls = normalized_base_urls
+        if self_hosted_timeout_seconds and int(self_hosted_timeout_seconds) > 0:
+            self._self_hosted_timeout_seconds = int(self_hosted_timeout_seconds)
+        else:
+            self._self_hosted_timeout_seconds = self.SELF_HOSTED_TIMEOUT_SECONDS
         self._use_public_instances = bool(use_public_instances and not self._base_urls)
         self._cursor = 0
         self._cursor_lock = threading.Lock()
@@ -2157,7 +2177,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 max_attempts=len(self._base_urls),
             )
             retry_enabled = True
-            timeout = self.SELF_HOSTED_TIMEOUT_SECONDS
+            timeout = self._self_hosted_timeout_seconds
             empty_error = "SearXNG 未配置可用实例"
         elif self._use_public_instances:
             public_instances = self._get_public_instances()
@@ -2196,6 +2216,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
             )
             response.search_time = time.time() - start_time
             if response.success:
+                response.mark_retrieved()
                 logger.info(
                     "[%s] 搜索 '%s' 成功，实例=%s，返回 %s 条结果，耗时 %.2fs",
                     self.name,
@@ -2389,7 +2410,8 @@ class SearchService:
         serpapi_keys: Optional[List[str]] = None,
         minimax_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
-        searxng_public_instances_enabled: bool = True,
+        searxng_public_instances_enabled: bool = False,
+        searxng_timeout_seconds: Optional[int] = None,
         news_max_age_days: int = 3,
         news_strategy_profile: str = "short",
     ):
@@ -2417,6 +2439,7 @@ class SearchService:
             "minimax_keys": list(minimax_keys or []),
             "searxng_base_urls": list(searxng_base_urls or []),
             "searxng_public_instances_enabled": bool(searxng_public_instances_enabled),
+            "searxng_timeout_seconds": searxng_timeout_seconds,
             "news_max_age_days": int(news_max_age_days),
             "news_strategy_profile": news_strategy_profile,
         }
@@ -2468,6 +2491,7 @@ class SearchService:
         searxng_provider = SearXNGSearchProvider(
             searxng_base_urls,
             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
+            self_hosted_timeout_seconds=searxng_timeout_seconds,
         )
         if searxng_provider.is_available:
             self._providers.append(searxng_provider)
@@ -3333,6 +3357,7 @@ class SearchService:
             relevance_score=score,
             relevance_category=category,
             relevance_reasons=reasons,
+            retrieved_at=item.retrieved_at,
         )
 
     @classmethod
@@ -3695,6 +3720,7 @@ class SearchService:
                             relevance_score=item.relevance_score,
                             relevance_category=item.relevance_category,
                             relevance_reasons=item.relevance_reasons,
+                            retrieved_at=item.retrieved_at,
                         )
                     )
                     if len(filtered) >= max_results:
@@ -3719,6 +3745,7 @@ class SearchService:
                     relevance_score=item.relevance_score,
                     relevance_category=item.relevance_category,
                     relevance_reasons=item.relevance_reasons,
+                    retrieved_at=item.retrieved_at,
                 )
             )
             if len(filtered) >= max_results:
@@ -3772,6 +3799,7 @@ class SearchService:
                     relevance_score=item.relevance_score,
                     relevance_category=item.relevance_category,
                     relevance_reasons=item.relevance_reasons,
+                    retrieved_at=item.retrieved_at,
                 )
             )
 
@@ -4038,7 +4066,13 @@ class SearchService:
             # 如果提供了关键词，直接使用关键词作为查询
             query = " ".join(focus_keywords)
         elif prefer_chinese:
-            query = f"{stock_name} {stock_code} 股票 最新消息"
+            # 指数 target 的 stock_code 可能为空（Agent 工具 _resolve_search_subject
+            # 有意只传显示名），空 code 直接省略，避免拼出 "上证50  股票" 双空格。
+            query = (
+                f"{stock_name} {stock_code} 股票 最新消息"
+                if stock_code
+                else f"{stock_name} 股票 最新消息"
+            )
         elif is_foreign:
             # 港股/美股使用英文搜索关键词；优先使用英文公司名（issue #2026）
             if english_aliases and short_name and short_name != effective_name:
@@ -4051,13 +4085,13 @@ class SearchService:
             # 默认主查询：股票名称 + 核心关键词
             query = f"{stock_name} {stock_code} 股票 最新消息"
 
+        subject_label = f"{stock_name}({stock_code})" if stock_code else stock_name
         logger.info(
             (
-                "搜索股票新闻: %s(%s), query='%s', 时间范围: 近%s天 "
+                "搜索股票新闻: %s, query='%s', 时间范围: 近%s天 "
                 "(profile=%s, NEWS_MAX_AGE_DAYS=%s, prefer_chinese=%s), 目标条数=%s, provider请求条数=%s"
             ),
-            stock_name,
-            stock_code,
+            subject_label,
             query,
             search_days,
             self.news_strategy_profile,
@@ -4890,6 +4924,7 @@ def get_search_service() -> SearchService:
                     minimax_keys=config.minimax_api_keys,
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
+                    searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
                     news_max_age_days=config.news_max_age_days,
                     news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
                 )

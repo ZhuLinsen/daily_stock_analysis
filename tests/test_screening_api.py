@@ -30,6 +30,7 @@ except ModuleNotFoundError:
 
 from api.v1.endpoints import screening as screening_endpoint
 from src.config import Config
+from src.core.trading_calendar import build_market_phase_context
 from src.services import screening_service
 from src.services.screening import REFERENCE_REVISION
 from src.services.screening.config import Config as ScreeningPipelineConfig
@@ -111,7 +112,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             )
         with patch(
             "src.services.screening_service._enrich_candidates_with_dsa",
-            side_effect=lambda candidates: (
+            side_effect=lambda candidates, **_kwargs: (
                 candidates,
                 {
                     "enabled": True,
@@ -2567,6 +2568,9 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         with (
             patch.object(daily_module, "fetch_daily_history", original_daily_fetch),
+            patch.object(daily_module, "build_market_phase_context", return_value=build_market_phase_context(
+                market="cn", current_time=datetime.fromisoformat("2026-06-03T16:00:00+08:00"),
+            )),
             _patch_screening_core(fake_module),
             patch(
                 "src.services.screening_service.get_dsa_daily_history",
@@ -2668,12 +2672,13 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                             "code": "600519",
                             "name": "贵州茅台",
                             "score": 88.5,
+                            "dsa_events": [{"title": "最新事件", "source": "测试源", "published_date": datetime.now().date().isoformat()}],
                             "dsa_context": {
                                 "enriched": True,
                                 "quote": {"price": 1688.0, "change_pct": 1.2},
                                 "warnings": ["from_screening_provider"],
                             },
-                            "dsa_news": [{"title": "贵州茅台最新公告", "source": "测试源"}],
+                            "dsa_news": [{"title": "贵州茅台最新公告", "source": "测试源", "published_date": datetime.now().date().isoformat()}],
                             "dsa_analysis_summary": "DSA新闻: 贵州茅台最新公告",
                         }
                     ]
@@ -2717,13 +2722,14 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                             "code": "600519",
                             "name": "贵州茅台",
                             "score": 88.5,
+                            "dsa_events": [{"title": "最新事件", "source": "测试源", "published_date": datetime.now().date().isoformat()}],
                             "dsa_context": {
                                 "enriched": True,
                                 "quote": {"price": 1688.0, "change_pct": 1.2},
                                 "news": {
                                     "success": True,
                                     "summary": "DSA新闻：贵州茅台最新公告",
-                                    "results": [{"title": "贵州茅台最新公告", "source": "测试源"}],
+                                    "results": [{"title": "贵州茅台最新公告", "source": "测试源", "published_date": datetime.now().date().isoformat()}],
                                 },
                                 "warnings": ["from_screening_provider"],
                             },
@@ -2937,9 +2943,9 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(context["llm"]["channels"][0]["extra_headers"], {"x-tenant": "dsa"})
         self.assertEqual(context["llm"]["model_list"][0]["litellm_params"]["extra_headers"], {"x-tenant": "dsa"})
         self.assertIn("get_candidate_context", context["dsa"])
-        self.assertEqual(context["dsa"]["mode"], "pre_rank_light")
+        self.assertEqual(context["dsa"]["mode"], "pre_rank_research")
         self.assertEqual(context["dsa"]["max_candidates"], 3)
-        self.assertFalse(context["dsa"]["include_news"])
+        self.assertTrue(context["dsa"]["include_news"])
         self.assertNotIn("search_stock_news", context["dsa"])
         self.assertEqual(payload["candidate_count"], 0)
 
@@ -3508,6 +3514,9 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         cache_path = cache_dir / "000001.auto.90.json"
 
         with (
+            patch.object(daily_module, "build_market_phase_context", return_value=build_market_phase_context(
+                market="cn", current_time=datetime.fromisoformat("2026-06-03T16:00:00+08:00"),
+            )),
             patch.object(
                 daily_module,
                 "fetch_daily_history",

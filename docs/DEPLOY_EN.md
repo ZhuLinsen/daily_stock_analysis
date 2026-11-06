@@ -65,6 +65,16 @@ The default `docker/docker-compose.yml` sets `limits.memory: 1G` and `reservatio
 
 If you can only use `512M`, avoid starting both `server` and `analyzer`, and disable non-essential market review, news expansion, and image report features.
 
+### 3.2 Avoid Duplicate Scheduled Notifications
+
+Prefer one automatic scheduler: either the standalone `analyzer`, or `server` with `SCHEDULE_ENABLED=true`. Check for old NAS `--schedule` containers and duplicate deployments. Instances with separate databases cannot deduplicate each other.
+
+Daily CLI and Web/API jobs atomically claim their due occurrence in the same SQLite file configured by `DATABASE_PATH`. The same due instant, watchlist/portfolio source, analysis/delivery options, and report settings dispatch once, including when a second process triggers after the first finishes. Different slots, watchlists, or analysis/delivery options remain independent. Due times use the scheduler process's timezone and are normalized to UTC; keep `TZ` consistent within a deployment. Both official Compose services share `data/` by default, including the claim records.
+
+This is at-most-once automatic dispatch, not automatic failure retry or guaranteed notification delivery. A crash, timeout, or analysis failure after claiming (possibly after partial notification delivery) does not cause another scheduler to repeat the whole run. Inspect the outcome, then use the Web “Run now” action to retry manually. Claiming happens at the actual execution boundary and freezes the watchlist snapshot, avoiding races with settings edits during asynchronous startup. Web dispatches rejected as busy never acquire a claim. Immediate startup runs, manual CLI/API analysis, and “Run now” bypass this deduplication. Records are retained for approximately seven days. An unwritable/busy database logs an error and skips that occurrence; Web scheduler status reports claim errors.
+
+This relies on reliable SQLite file locking and covers same-host processes and containers sharing one local bind mount. It does not promise distributed deduplication across separate databases, NFS, or multiple hosts. No new setting or historical analysis-data migration is required.
+
 ### 4. Common Management Commands
 
 ```bash
@@ -201,7 +211,7 @@ journalctl -u stock-analyzer -f
 | Config Item | Description | How to Get |
 |--------|------|----------|
 | `ANSPIRE_API_KEYS` / `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Configure at least one AI model key; Anspire or AIHubMix is recommended first | Provider console |
-| `STOCK_LIST` | Watchlist | Comma-separated stock codes |
+| `STOCK_LIST` | Watchlist | Comma-separated stock codes; registered-index explicit forms (e.g. `sh000016`, `930606.CSI`, `sz399365`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry (local `.env`/Docker no-arg default runs keep stock semantics; use `--stocks` there for indices) — see [Index watchlist configuration](full-guide_EN.md#index-watchlist-configuration) |
 | Notification channel | Configure at least one, such as WeChat Work, Feishu, Telegram, or email | Notification provider |
 
 ### Optional Configuration

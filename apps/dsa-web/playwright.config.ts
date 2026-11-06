@@ -27,6 +27,8 @@ function resolveBackendCommand() {
 
 export default defineConfig({
   testDir: './e2e',
+  // API-mocked fixtures own their server in playwright.fixture.config.ts.
+  testIgnore: '**/fixtures/**',
   fullyParallel: false,
   retries: process.env.CI ? 2 : 0,
   reporter: 'list',

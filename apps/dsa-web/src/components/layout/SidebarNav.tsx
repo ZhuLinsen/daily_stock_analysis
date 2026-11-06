@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
-import { SCREENING_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, screeningApi } from '../../api/screening';
+import React, { useState } from 'react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, Database, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
+import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
@@ -35,45 +34,17 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
   { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
   { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
+  { key: 'data', labelKey: 'layout.nav.dataCenter', to: '/data', icon: Database },
   { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
   { key: 'settings', labelKey: 'layout.nav.settings', to: '/settings', icon: Settings2 },
 ];
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate, variant = 'default' }) => {
   const { authEnabled, logout } = useAuth();
+  const location = useLocation();
   const { t } = useUiLanguage();
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [showScreeningNav, setShowScreeningNav] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-
-    const refreshScreeningStatus = async () => {
-      try {
-        const status = await screeningApi.getStatus();
-        if (active) {
-          setShowScreeningNav(status.enabled);
-        }
-      } catch {
-        if (active) {
-          setShowScreeningNav(false);
-        }
-      }
-    };
-
-    void refreshScreeningStatus();
-    window.addEventListener(SCREENING_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
-    window.addEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
-
-    return () => {
-      active = false;
-      window.removeEventListener(SCREENING_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
-      window.removeEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
-    };
-  }, []);
-
-  const navItems = showScreeningNav ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.key !== 'screening');
   const isRail = variant === 'rail';
   const itemBaseClass = cn(
     'group relative flex h-[var(--nav-item-height)] w-full items-center overflow-hidden rounded-2xl border border-transparent text-sm leading-none text-secondary-text transition-all',
@@ -92,10 +63,10 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
   const itemLabelClass = cn('truncate', isRail ? 'text-center' : '');
 
   return (
-    <div className="flex h-full flex-col">
+    <div className={cn('flex min-h-0 w-full flex-col', isRail ? '' : 'h-full')}>
       <div
         className={cn(
-          'flex items-center',
+          'flex shrink-0 items-center',
           isRail ? 'mb-5 justify-center gap-2 pt-1' : 'mb-4 gap-2 px-1',
           collapsed || isRail ? 'justify-center' : ''
         )}
@@ -113,8 +84,8 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
         ) : null}
       </div>
 
-      <nav className={cn('flex flex-col gap-1.5', isRail ? '' : 'flex-1')} aria-label={t('layout.mainNav')}>
-        {navItems.map(({ key, labelKey, to, icon: Icon, exact, badge }) => {
+      <nav className={cn('flex flex-col gap-1.5', isRail ? 'min-h-0 overflow-y-auto' : 'flex-1')} aria-label={t('layout.mainNav')}>
+        {NAV_ITEMS.map(({ key, labelKey, to, icon: Icon, exact, badge }) => {
           const label = t(labelKey);
           return (
           <NavLink
@@ -126,6 +97,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
             className={({ isActive }) =>
               cn(
                 itemInteractiveClass,
+                'shrink-0',
                 isActive ? itemActiveClass : ''
               )
             }
@@ -151,6 +123,9 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
         );
         })}
 
+      </nav>
+
+      <div className="mt-1.5 flex shrink-0 flex-col gap-1.5">
         <ThemeToggle
           variant={isRail ? 'rail' : 'nav'}
           collapsed={collapsed}
@@ -169,7 +144,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
           iconClassName={itemIconClass}
           labelClassName={itemLabelClass}
         />
-      </nav>
+      </div>
 
       {authEnabled ? (
         <button
@@ -177,6 +152,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
           onClick={() => setShowLogoutConfirm(true)}
           className={cn(
             itemInteractiveClass,
+            'shrink-0',
             isRail ? 'mt-1.5' : 'mt-5'
           )}
         >
@@ -188,7 +164,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
       <ConfirmDialog
         isOpen={showLogoutConfirm}
         title={t('layout.logoutTitle')}
-        message={t('layout.logoutMessage')}
+        message={t(/^\/settings\/?$/.test(location.pathname) ? 'layout.logoutSettingsMessage' : 'layout.logoutMessage')}
         confirmText={t('layout.logoutConfirm')}
         cancelText={t('common.cancel')}
         isDanger

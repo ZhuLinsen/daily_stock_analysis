@@ -16,6 +16,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 
+from src.core.trading_calendar import MARKET_TIMEZONE
+
 logger = logging.getLogger(__name__)
 
 _SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -222,8 +224,10 @@ def fetch_daily_history_yfinance(
     """
     import yfinance as yf
 
-    end = pd.Timestamp.now().normalize()
-    start = end - pd.Timedelta(days=max(lookback_days * 2, 180))
+    today = pd.Timestamp.now(tz=MARKET_TIMEZONE["us"]).normalize()
+    # yfinance excludes end; include today's US session regardless of host TZ.
+    end = today + pd.DateOffset(days=1)
+    start = today - pd.Timedelta(days=max(lookback_days * 2, 180))
     hist = yf.download(
         ticker,
         start=start.strftime("%Y-%m-%d"),

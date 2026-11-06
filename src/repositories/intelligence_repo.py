@@ -165,7 +165,11 @@ class IntelligenceRepository:
         if scope_type:
             conditions.append(IntelligenceItem.scope_type == scope_type)
         if scope_value:
-            conditions.append(IntelligenceItem.scope_value == self._normalize_scope_value(scope_value))
+            normalized_scope = self._normalize_scope_value(scope_value)
+            if scope_type == "symbol":
+                conditions.append(func.lower(IntelligenceItem.scope_value) == normalized_scope.lower())
+            else:
+                conditions.append(IntelligenceItem.scope_value == normalized_scope)
         if market:
             conditions.append(IntelligenceItem.market == market)
         if query:

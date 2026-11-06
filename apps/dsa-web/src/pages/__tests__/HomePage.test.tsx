@@ -70,6 +70,26 @@ vi.mock('../../hooks/useTaskStream', () => ({
   useTaskStream: vi.fn(),
 }));
 
+let stockIndexItems: Array<{
+  canonicalCode: string;
+  displayCode: string;
+  aliases?: string[];
+  assetType: string;
+}> = [];
+let stockIndexLoading = false;
+let stockIndexFallback = false;
+let stockIndexLoaded = true;
+
+vi.mock('../../hooks/useStockIndex', () => ({
+  useStockIndex: () => ({
+    index: stockIndexItems,
+    loading: stockIndexLoading,
+    error: null,
+    fallback: stockIndexFallback,
+    loaded: stockIndexLoaded,
+  }),
+}));
+
 const historyItem = {
   id: 1,
   queryId: 'q-1',
@@ -210,6 +230,10 @@ describe('HomePage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     navigateMock.mockReset();
+    stockIndexItems = [];
+    stockIndexLoading = false;
+    stockIndexFallback = false;
+    stockIndexLoaded = true;
     window.localStorage.clear();
     window.sessionStorage.clear();
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
@@ -531,6 +555,196 @@ describe('HomePage', () => {
     });
     expect(await screen.findByText('自选股详情已打开')).toBeInTheDocument();
     expect(rowButton).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps index and same-code stock watchlist rows independent when stock-bar and active tasks coexist (PR #2312)', async () => {
+    stockIndexItems = [
+      { canonicalCode: 'sh000016', displayCode: 'sh000016', aliases: ['000016.SH'], assetType: 'index' },
+    ];
+    // The index watchlist input is the raw ALIAS form (`000016.SH`) while the
+    // stock-bar items and active tasks stay on the parser canonical
+    // (`sh000016`) — the registry-resolved identity must bridge them without
+    // crossing into the bare `000016` stock row.
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['000016.SH', '000016']);
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+      total: 2,
+      items: [
+        {
+          id: 61,
+          stockCode: 'sh000016',
+          stockName: '上证50',
+          reportType: 'detailed',
+          sentimentScore: 70,
+          operationAdvice: '观察',
+          analysisCount: 3,
+          lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+          assetType: 'index',
+        },
+        {
+          id: 62,
+          stockCode: '000016',
+          stockName: '深康佳A',
+          reportType: 'detailed',
+          sentimentScore: 75,
+          operationAdvice: '买入',
+          analysisCount: 1,
+          lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+          assetType: 'stock',
+        },
+      ],
+    });
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.getTasks).mockResolvedValue({
+      total: 2,
+      pending: 1,
+      processing: 1,
+      tasks: [
+        {
+          taskId: 'task-index',
+          stockCode: 'sh000016',
+          stockName: '上证50',
+          status: 'processing',
+          progress: 40,
+          reportType: 'detailed',
+          createdAt: '2026-03-19T08:00:00Z',
+          assetType: 'index',
+        },
+        {
+          taskId: 'task-stock',
+          stockCode: '000016',
+          stockName: '深康佳A',
+          status: 'pending',
+          progress: 0,
+          reportType: 'detailed',
+          createdAt: '2026-03-19T08:00:00Z',
+          assetType: 'stock',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+
+    // The alias-form watchlist row (`000016.SH`) must pair with the INDEX
+    // stock-bar row and the INDEX task through the registry-resolved identity;
+    // the bare `000016` row must pair with the STOCK row/task. Before the fix
+    // the shared stock-normalization key folded both rows to the stock identity.
+    const indexRow = await screen.findByTestId('watchlist-row-000016.SH');
+    const stockRow = screen.getByTestId('watchlist-row-000016');
+
+    expect(indexRow).toHaveTextContent('上证50');
+    expect(indexRow).not.toHaveTextContent('深康佳A');
+    await waitFor(() => expect(indexRow).toHaveTextContent('任务分析中'));
+    expect(indexRow).not.toHaveTextContent('任务等待中');
+
+    expect(stockRow).toHaveTextContent('深康佳A');
+    expect(stockRow).not.toHaveTextContent('上证50');
+    expect(stockRow).toHaveTextContent('任务等待中');
+    expect(stockRow).not.toHaveTextContent('任务分析中');
+  });
+
+  it('keeps the watchlist workspace loading and defers history lookup until the index registry is ready (PR #2312)', async () => {
+    stockIndexItems = [
+      { canonicalCode: 'sh000016', displayCode: 'sh000016', aliases: ['000016.SH'], assetType: 'index' },
+    ];
+    stockIndexLoading = true;
+    stockIndexLoaded = false;
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['000016.SH']);
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+
+    // Registry still loading: the watchlist stays in the loading state, rows
+    // are not rendered, and no per-code history lookup runs — no transient
+    // fallback stock bucketing inside the load window.
+    expect(screen.getByTestId('home-stock-workspace')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByTestId('watchlist-row-000016.SH')).not.toBeInTheDocument();
+    });
+    const analyzeAllButton = screen.getByRole('button', { name: '分析全部' });
+    expect(analyzeAllButton).toBeDisabled();
+    fireEvent.click(analyzeAllButton);
+    expect(analysisApi.analyzeAsync).not.toHaveBeenCalled();
+
+    stockIndexLoading = false;
+    stockIndexLoaded = true;
+    view.rerender(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    // Ready: the alias row renders through the registry-resolved canonical
+    // identity, and the deferred missing-history lookup now runs for the raw
+    // watchlist code (the backend resolves the alias to the index record and
+    // the result is keyed by the canonical identity).
+    await waitFor(() => expect(screen.getByTestId('watchlist-row-000016.SH')).toBeInTheDocument());
+    expect(historyApi.getList).toHaveBeenCalledWith(
+      expect.objectContaining({ stockCode: '000016.SH', limit: 1 }),
+      expect.anything(),
+    );
+  });
+
+  it('fails open to stock identity after the index registry load fails (PR #2312)', async () => {
+    stockIndexItems = [];
+    stockIndexLoading = false;
+    stockIndexLoaded = false;
+    stockIndexFallback = true;
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['000016.SH']);
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+      total: 1,
+      items: [{
+        id: 63,
+        stockCode: '000016',
+        stockName: '深康佳A',
+        reportType: 'detailed',
+        sentimentScore: 75,
+        operationAdvice: '买入',
+        analysisCount: 1,
+        lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+        assetType: 'stock',
+      }],
+    });
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+
+    const row = await screen.findByTestId('watchlist-row-000016.SH');
+    expect(row).toHaveTextContent('深康佳A');
+    expect(screen.getByRole('button', { name: '分析全部' })).toBeEnabled();
   });
 
   it('does not open details when removing a watchlist row', async () => {
@@ -2022,6 +2236,70 @@ describe('HomePage', () => {
     expect(vi.mocked(analysisApi.getTasks).mock.calls.length).toBeGreaterThan(taskRefreshCallsBeforeSubmit);
   });
 
+  it('deduplicates index aliases while keeping the same-code stock in analyze-all (PR #2312)', async () => {
+    stockIndexItems = [
+      { canonicalCode: 'sh000016', displayCode: 'sh000016', aliases: ['000016.SH'], assetType: 'index' },
+    ];
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['000016.SH', 'sh000016', '000016']);
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+      total: 2,
+      items: [
+        {
+          id: 71,
+          stockCode: 'sh000016',
+          stockName: '上证50',
+          reportType: 'detailed',
+          sentimentScore: 70,
+          operationAdvice: '观察',
+          analysisCount: 1,
+          lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+          assetType: 'index',
+        },
+        {
+          id: 72,
+          stockCode: '000016',
+          stockName: '深康佳A',
+          reportType: 'detailed',
+          sentimentScore: 75,
+          operationAdvice: '买入',
+          analysisCount: 1,
+          lastAnalysisTime: '2026-03-19T09:00:00+08:00',
+          assetType: 'stock',
+        },
+      ],
+    });
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.analyzeAsync).mockImplementation(async ({ stockCodes = [] }) => ({
+      accepted: stockCodes.map((stockCode, index) => ({
+        taskId: `task-${index}`,
+        stockCode,
+        status: 'pending' as const,
+      })),
+      duplicates: [],
+      message: 'accepted',
+    }));
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+    fireEvent.click(await screen.findByRole('button', { name: '分析全部' }));
+
+    await waitFor(() => expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0].stockCodes).toEqual([
+      '000016.SH',
+      '000016',
+    ]);
+  });
+
   it('reports partial watchlist submission and refreshes accepted tasks after a later chunk fails', async () => {
     configureWatchlistBatch(51);
     vi.mocked(analysisApi.analyzeAsync)
@@ -2122,6 +2400,53 @@ describe('HomePage', () => {
 
     expect(await screen.findByText('已提交 0 个任务，1 个正在运行')).toBeInTheDocument();
     expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues to the next chunk when a full chunk is accepted+duplicate+rejected', async () => {
+    configureWatchlistBatch(51);
+    vi.mocked(analysisApi.analyzeAsync)
+      .mockImplementationOnce(async ({ stockCodes = [] }) => ({
+        accepted: stockCodes.slice(0, 40).map((stockCode, index) => ({
+          taskId: `task-${stockCode}-${index}`,
+          stockCode,
+          status: 'pending' as const,
+        })),
+        duplicates: stockCodes.slice(40, 45).map((stockCode, index) => ({
+          stockCode,
+          existingTaskId: `existing-${index}`,
+          message: 'already running',
+        })),
+        rejected: stockCodes.slice(45).map((stockCode) => ({
+          stockCode,
+          message: 'unregistered CSI index',
+        })),
+        message: 'accepted',
+      }))
+      .mockImplementationOnce(async ({ stockCodes = [] }) => ({
+        accepted: stockCodes.map((stockCode, index) => ({
+          taskId: `task-${stockCode}-${index}`,
+          stockCode,
+          status: 'pending' as const,
+        })),
+        duplicates: [],
+        message: 'accepted',
+      }));
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+    const taskRefreshCallsBeforeSubmit = vi.mocked(analysisApi.getTasks).mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: '分析全部' }));
+
+    // 40 accepted + 5 duplicates + 5 rejected = 50 = full chunk, so the next
+    // chunk is submitted (2 analyzeAsync calls), not reported as incomplete.
+    expect(await screen.findByText(/已提交 41 个任务，5 个正在运行，5 个被拒绝/)).toBeInTheDocument();
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analysisApi.getTasks).mock.calls.length).toBeGreaterThan(taskRefreshCallsBeforeSubmit);
   });
 
   it('removes the MARKET stock bar item after deleting market review history', async () => {
@@ -2849,6 +3174,85 @@ describe('HomePage', () => {
 
     expect(await screen.findByText('分析任务')).toBeInTheDocument();
     expect(screen.getByText('正在抓取最新行情')).toBeInTheDocument();
+  });
+
+  it('excludes watchlist rows with active tasks from pending batch submissions', async () => {
+    const activeTask = {
+      taskId: 'task-600519',
+      stockCode: '600519',
+      stockName: '贵州茅台',
+      status: 'processing' as const,
+      progress: 45,
+      message: '正在抓取最新行情',
+      reportType: 'detailed' as const,
+      createdAt: '2026-03-18T08:00:00Z',
+    };
+    vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue(['600519', 'AAPL']);
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+      total: 2,
+      items: [
+        {
+          id: 11,
+          stockCode: '600519',
+          stockName: '贵州茅台',
+          reportType: 'detailed',
+          sentimentScore: 72,
+          operationAdvice: '观察',
+          analysisCount: 1,
+          lastAnalysisTime: '2026-01-01T09:00:00+08:00',
+        },
+        {
+          id: 12,
+          stockCode: 'AAPL',
+          stockName: 'Apple',
+          reportType: 'detailed',
+          sentimentScore: 68,
+          operationAdvice: '中性',
+          analysisCount: 1,
+          lastAnalysisTime: '2026-01-01T09:20:00+08:00',
+        },
+      ],
+    });
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.getTasks).mockResolvedValue({
+      total: 1,
+      pending: 0,
+      processing: 1,
+      tasks: [activeTask],
+    });
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-aapl',
+      status: 'pending',
+    });
+
+    useStockPoolStore.setState({
+      activeTasks: [activeTask],
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '自选' }));
+
+    const analyzePendingButton = screen.getByRole('button', { name: '仅未分析' });
+    expect(analyzePendingButton).toBeEnabled();
+    fireEvent.click(analyzePendingButton);
+
+    await waitFor(() => {
+      expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+        stockCodes: ['AAPL'],
+      }));
+    });
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0].stockCodes).not.toContain('600519');
   });
 
   it('triggers reanalyze for the current report even if the search input has other text', async () => {

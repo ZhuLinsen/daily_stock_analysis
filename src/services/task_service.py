@@ -24,6 +24,7 @@ from src.enums import ReportType
 from src.storage import get_db
 from bot.models import BotMessage
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
+from src.services.stock_list_parser import AnalysisTarget, ParseStatus
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,8 @@ class TaskService:
         report_type: Union[ReportType, str] = ReportType.SIMPLE,
         source_message: Optional[BotMessage] = None,
         save_context_snapshot: Optional[bool] = None,
-        query_source: str = "bot"
+        query_source: str = "bot",
+        analysis_target: Optional[AnalysisTarget] = None
     ) -> Dict[str, Any]:
         """
         提交异步分析任务
@@ -83,6 +85,9 @@ class TaskService:
             source_message: 来源消息（用于回复）
             save_context_snapshot: 是否保存上下文快照
             query_source: 任务来源标识（bot/api/cli/system）
+            analysis_target: 可选结构化分析目标（INDEX 时原样使用
+                ``target.canonical_id`` 并跳过股票代码规范化，防止
+                ``sh000016`` 被改写为 ``SH000016``）
 
         Returns:
             任务信息字典
@@ -91,7 +96,17 @@ class TaskService:
         if isinstance(report_type, str):
             report_type = ReportType.from_str(report_type)
 
-        normalized_code = resolve_index_stock_code_for_analysis(code)
+        if (
+            analysis_target is not None
+            and analysis_target.asset_type != ParseStatus.INDEX
+        ):
+            raise ValueError("analysis_target must be an INDEX target")
+        if analysis_target is not None:
+            # INDEX target 携带时原样使用 canonical_id，不再走股票代码
+            # 规范化路径（避免 ``sh000016`` 被改写为 ``SH000016``）。
+            normalized_code = analysis_target.canonical_id
+        else:
+            normalized_code = resolve_index_stock_code_for_analysis(code)
         if not normalized_code:
             raise ValueError("股票代码不能为空或仅包含空白字符")
 
@@ -105,7 +120,8 @@ class TaskService:
             report_type,
             source_message,
             save_context_snapshot,
-            query_source
+            query_source,
+            analysis_target
         )
 
         logger.info(
@@ -153,7 +169,8 @@ class TaskService:
         report_type: ReportType = ReportType.SIMPLE,
         source_message: Optional[BotMessage] = None,
         save_context_snapshot: Optional[bool] = None,
-        query_source: str = "bot"
+        query_source: str = "bot",
+        analysis_target: Optional[AnalysisTarget] = None
     ) -> Dict[str, Any]:
         """
         执行单只股票分析
@@ -191,12 +208,15 @@ class TaskService:
             )
 
             # 执行单只股票分析（启用单股推送）
-            result = pipeline.process_single_stock(
-                code=code,
-                skip_analysis=False,
-                single_stock_notify=True,
-                report_type=report_type
-            )
+            process_kwargs = {
+                "code": code,
+                "skip_analysis": False,
+                "single_stock_notify": True,
+                "report_type": report_type,
+            }
+            if analysis_target is not None:
+                process_kwargs["analysis_target"] = analysis_target
+            result = pipeline.process_single_stock(**process_kwargs)
 
             if result and result.success:
                 result_data = {

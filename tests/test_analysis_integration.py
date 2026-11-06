@@ -67,6 +67,9 @@ class TestAnalysisIntegration:
         data = response.json()
         assert data["task_id"] == "test_task_123"
         assert data["status"] == "pending"
+        # 单股 202（TaskAccepted schema）不包含可选的 asset_type 字段；legacy
+        # MagicMock 任务即使 asset_type 是 MagicMock 子对象也必须保持该契约。
+        assert "asset_type" not in data
 
         # Verify task queue received the correct resolved code and metadata.
         # Use call_args so this integration test stays focused on analysis flow

@@ -23,6 +23,10 @@ from src.config import (
     normalize_llm_channel_api_surface,
     normalize_llm_channel_model,
     parse_env_bool,
+    resolve_llm_channel_base_url,
+    resolve_llm_channel_models,
+    resolve_llm_channel_api_keys,
+    resolve_llm_channel_names,
     resolve_llm_channel_protocol,
 )
 from src.llm.backend_registry import (
@@ -830,7 +834,7 @@ class GenerationBackendStatusService:
     @classmethod
     def _parse_llm_channels_from_map(cls, effective_map: Dict[str, str]) -> List[Dict[str, Any]]:
         channels: List[Dict[str, Any]] = []
-        for raw_name in cls._split_csv(effective_map.get("LLM_CHANNELS") or ""):
+        for raw_name in cls._split_csv(resolve_llm_channel_names(effective_map)):
             name = raw_name.strip()
             if not name:
                 continue
@@ -842,7 +846,7 @@ class GenerationBackendStatusService:
             if not parse_env_bool(enabled_raw, default=True):
                 continue
 
-            base_url = (effective_map.get(f"{prefix}_BASE_URL") or "").strip() or None
+            base_url = resolve_llm_channel_base_url(name, effective_map.get(f"{prefix}_BASE_URL")) or None
             if lower == "anspire" and not base_url:
                 base_url = (effective_map.get("ANSPIRE_LLM_BASE_URL") or ANSPIRE_LLM_BASE_URL_DEFAULT).strip() or None
             protocol_raw = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
@@ -859,8 +863,14 @@ class GenerationBackendStatusService:
                 api_keys = [single_key]
             if lower == "anspire" and not api_keys:
                 api_keys = cls._split_csv(effective_map.get("ANSPIRE_API_KEYS") or "")
+            api_keys = resolve_llm_channel_api_keys(name, api_keys, effective_map)
 
             raw_models = cls._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
+            raw_models = resolve_llm_channel_models(
+                name, raw_models, channel_names=resolve_llm_channel_names(effective_map),
+                primary_model=effective_map.get("LITELLM_MODEL") or "",
+                fallback_models=effective_map.get("LITELLM_FALLBACK_MODELS") or "",
+            )
             if lower == "anspire" and not raw_models:
                 raw_models = [(effective_map.get("ANSPIRE_LLM_MODEL") or ANSPIRE_LLM_MODEL_DEFAULT).strip()]
 

@@ -12,7 +12,7 @@ from src.agent.tools.execution import (
     ToolAccessContext,
     ToolExecutionCancelled,
     ToolExecutionDeadlineExceeded,
-    _guard_tool_stock_scope,
+    _resolve_tool_stock_access,
     bind_tool_execution_context,
     build_tool_audit,
     check_tool_execution,
@@ -127,6 +127,7 @@ class ToolSurface:
             )
 
         guard_result = None
+        access = None
         if _requires_stock_scope(tool_def):
             if ctx.stock_scope is None:
                 return self._error_result(
@@ -142,7 +143,7 @@ class ToolSurface:
                     },
                     arguments=arguments,
                 )
-            guard_result = _guard_tool_stock_scope(
+            guard_result, access = _resolve_tool_stock_access(
                 self._registry,
                 tool_name,
                 arguments,
@@ -152,8 +153,14 @@ class ToolSurface:
             result_text = serialize_tool_result(guard_result)
             return self._error_result(
                 tool_name=tool_name,
-                code="stock_scope_violation",
-                message="Tool call is outside the allowed stock scope.",
+                code=guard_result["error"],
+                message=("Accepted stock identity cannot be reliably validated."
+                         if guard_result["error"] == "stock_identity_unavailable"
+                         else "Tool does not support this target."
+                         if guard_result["error"] == "stock_tool_unsupported"
+                         else "Tool target applicability is not declared."
+                         if guard_result["error"] == "stock_tool_contract_unknown"
+                         else "Tool call is outside the allowed stock scope."),
                 started_at=started_at,
                 context=ctx,
                 retriable=False,
@@ -186,7 +193,10 @@ class ToolSurface:
             )
 
         try:
-            if controlled_execution:
+            if access is not None:
+                ctx = replace(ctx, stock_identity=access.identity, analysis_target=access.target)
+                arguments = dict(arguments, stock_code=access.identity.stock_code)
+            if controlled_execution or access is not None:
                 result = _execute_with_control(tool_def, arguments, ctx)
             else:
                 result = tool_def.handler(**arguments)

@@ -9,7 +9,10 @@ import type { ChannelProtocol } from './llmProviderTemplates';
 import {
   LLM_PROVIDER_CAPABILITY_LABELS,
   LLM_PROVIDER_TEMPLATES,
+  MODELFLARE_APP_REGISTRATION_URL,
+  MODELFLARE_DEFAULT_MODEL,
   MODEL_PLACEHOLDERS_BY_PROTOCOL,
+  filterDiscoveredTextModels,
   getProviderTemplate,
   isKnownProviderTemplate,
 } from './llmProviderTemplates';
@@ -143,6 +146,9 @@ interface LLMChannelEditorProps {
   modelProviderPrefixes?: string[];
   onSaved: (updatedItems: Array<{ key: string; value: string }>) => void | Promise<void>;
   onDraftItemsChange?: (items: Array<{ key: string; value: string }>) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  onSavingChange?: (saving: boolean) => void;
+  draftResetToken?: number;
   disabled?: boolean;
 }
 
@@ -263,6 +269,9 @@ function resolveInitialChannelApiKeySource(
   if (apiKeysValue) {
     return initialItemSourceByKey.get(apiKeysKey);
   }
+  if (upperName === 'MODELFLARE' && initialItemValueByKey.get('MODELFLARE_KEY')) {
+    return initialItemSourceByKey.get('MODELFLARE_KEY');
+  }
   return initialItemSourceByKey.get(apiKeysKey) ?? initialItemSourceByKey.get(apiKeyKey);
 }
 
@@ -292,6 +301,9 @@ function resolveInitialChannelApiKeyValue(
   }
   if (apiKeyValue) {
     return apiKeyValue;
+  }
+  if (upperName === 'MODELFLARE') {
+    return itemValueByKey.get('MODELFLARE_KEY') || '';
   }
   return itemValueByKey.get(apiKeysKey) || itemValueByKey.get(apiKeyKey) || '';
 }
@@ -414,10 +426,10 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   const runtimeCapabilityOptions = isHermesChannel(channel)
     ? RUNTIME_CAPABILITY_OPTIONS.filter((option) => option.value === 'json')
     : RUNTIME_CAPABILITY_OPTIONS;
-  const discoveredModels = discoveryState?.models || [];
+  const discoveredModels = filterDiscoveredTextModels(discoveryState?.models || []);
   const manualOnlyModels = selectedModels.filter(
     (model) => !discoveredModels.some((discoveredModel) => (
-      areModelsEquivalent(model, discoveredModel, channel.protocol, modelProviderPrefixes)
+      areModelsEquivalent(model, discoveredModel, channel.protocol, modelProviderPrefixes, channel.baseUrl)
     )),
   );
   const modelCount = selectedModels.length;
@@ -714,13 +726,13 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                       <input
                         type="checkbox"
                         checked={selectedModels.some((selectedModel) => (
-                          areModelsEquivalent(selectedModel, model, channel.protocol, modelProviderPrefixes)
+                          areModelsEquivalent(selectedModel, model, channel.protocol, modelProviderPrefixes, channel.baseUrl)
                         ))}
                         disabled={busy}
                         onChange={() => onUpdate(
                           index,
                           'models',
-                          toggleModelSelection(channel.models, model, channel.protocol, modelProviderPrefixes),
+                          toggleModelSelection(channel.models, model, channel.protocol, modelProviderPrefixes, channel.baseUrl),
                         )}
                         className="settings-input-checkbox h-4 w-4 rounded border-border/70 bg-base"
                       />
@@ -920,6 +932,10 @@ function inferProtocol(protocol: string, baseUrl: string, models: string[]): Cha
     return explicit;
   }
 
+  if (isRequestyBaseUrl(baseUrl)) {
+    return 'openai';
+  }
+
   const firstPrefixedModel = models.find((model) => model.includes('/'));
   if (firstPrefixedModel) {
     return normalizeProtocol(firstPrefixedModel.split('/', 1)[0]);
@@ -981,8 +997,9 @@ function getModelComparisonKey(
   model: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): string {
-  const normalizedModel = normalizeModelForRuntime(model, protocol, modelProviderPrefixes).trim();
+  const normalizedModel = normalizeModelForRuntime(model, protocol, modelProviderPrefixes, baseUrl).trim();
   const parsed = parseModelRef(normalizedModel);
   if (!parsed.name) {
     return '';
@@ -995,9 +1012,10 @@ function areModelsEquivalent(
   b: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): boolean {
-  const left = getModelComparisonKey(a, protocol, modelProviderPrefixes);
-  const right = getModelComparisonKey(b, protocol, modelProviderPrefixes);
+  const left = getModelComparisonKey(a, protocol, modelProviderPrefixes, baseUrl);
+  const right = getModelComparisonKey(b, protocol, modelProviderPrefixes, baseUrl);
   return left !== '' && left === right;
 }
 
@@ -1006,10 +1024,11 @@ function toggleModelSelection(
   targetModel: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): string {
   const selectedModels = splitModels(models);
   const index = selectedModels.findIndex((model) => (
-    areModelsEquivalent(model, targetModel, protocol, modelProviderPrefixes)
+    areModelsEquivalent(model, targetModel, protocol, modelProviderPrefixes, baseUrl)
   ));
   if (index >= 0) {
     return selectedModels.filter((_, itemIndex) => itemIndex !== index).join(',');
@@ -1026,14 +1045,38 @@ const PROTOCOL_ALIASES: Record<string, string> = {
   openai_compat: 'openai',
 };
 
+function isRequestyBaseUrl(baseUrl: string): boolean {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return false;
+  }
+  try {
+    const hostname = new URL(trimmed).hostname.toLowerCase();
+    return hostname === 'requesty.ai' || hostname.endsWith('.requesty.ai');
+  } catch {
+    return false;
+  }
+}
+
 function normalizeModelForRuntime(
   model: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): string {
   const trimmedModel = model.trim();
   if (!trimmedModel) {
     return trimmedModel;
+  }
+
+  // Mirrors normalize_llm_channel_model: Requesty vendor IDs keep the gateway route.
+  if (
+    protocol === 'openai'
+    && trimmedModel.includes('/')
+    && trimmedModel.split('/', 1)[0].trim().toLowerCase() !== 'openai'
+    && isRequestyBaseUrl(baseUrl)
+  ) {
+    return `openai/${trimmedModel}`;
   }
 
   if (trimmedModel.includes('/')) {
@@ -1057,9 +1100,10 @@ function resolveModelPreview(
   models: string,
   protocol: ChannelProtocol,
   modelProviderPrefixes: ReadonlySet<string>,
+  baseUrl = '',
 ): string[] {
   return splitModels(models).map((model) => (
-    normalizeModelForRuntime(model, protocol, modelProviderPrefixes)
+    normalizeModelForRuntime(model, protocol, modelProviderPrefixes, baseUrl)
   ));
 }
 
@@ -1077,7 +1121,7 @@ function resolveChannelRouteModels(
     const models = splitModels(channel.models);
     return (models.length > 0 ? models : [HERMES_DEFAULT_MODEL]).map(canonicalizeHermesRouteModel);
   }
-  return resolveModelPreview(channel.models, channel.protocol, modelProviderPrefixes);
+  return resolveModelPreview(channel.models, channel.protocol, modelProviderPrefixes, channel.baseUrl);
 }
 
 function buildRouteProvenanceMap(
@@ -1428,7 +1472,11 @@ function parseChannelsFromItems(
   itemSourceByKey: Map<string, boolean> = new Map(),
 ): ChannelConfig[] {
   const itemMap = new Map(items.map((item) => [item.key.toUpperCase(), item.value]));
-  const channelNames = (itemMap.get('LLM_CHANNELS') || '')
+  const implicitModelflare = splitModels(itemMap.get('MODELFLARE_KEY') || '').length > 0
+    || splitModels(itemMap.get('LLM_MODELFLARE_API_KEY') || '').length > 0
+    || splitModels(itemMap.get('LLM_MODELFLARE_API_KEYS') || '').length > 0;
+  const channelNames = ((itemMap.get('LLM_CHANNELS') || '').trim()
+    || (implicitModelflare ? 'modelflare' : ''))
     .split(',')
     .map((segment) => segment.trim())
     .filter(Boolean);
@@ -1436,7 +1484,14 @@ function parseChannelsFromItems(
   return channelNames.map((name, index) => {
     const upperName = name.toUpperCase();
     const baseUrl = itemMap.get(`LLM_${upperName}_BASE_URL`) || '';
-    const rawModels = itemMap.get(`LLM_${upperName}_MODELS`) || '';
+    const primaryModel = (itemMap.get('LITELLM_MODEL') || '').trim()
+      || `openai/${MODELFLARE_DEFAULT_MODEL}`;
+    const inheritedModels = channelNames.length === 1 && upperName === 'MODELFLARE'
+      && primaryModel.startsWith('openai/') && primaryModel.slice(7).trim()
+      ? [...new Set([primaryModel, ...splitModels(itemMap.get('LITELLM_FALLBACK_MODELS') || '')]
+        .filter((model) => model.startsWith('openai/') && model.slice(7).trim()))]
+      : [];
+    const rawModels = (itemMap.get(`LLM_${upperName}_MODELS`) || '').trim() || inheritedModels.join(',');
     const models = splitModels(rawModels);
 
     return {
@@ -1535,8 +1590,13 @@ function buildFilteredChannelUpdateItems({
     ...buildChangedItemKeys(channels, initialChannels, initialItemSourceByKey, savedItemMap),
     ...runtimeConfigChangedKeys(runtimeConfig, initialRuntimeConfig),
   ]);
-  return channelsToUpdateItems(channels, initialNames, runtimeConfig, managesRuntimeConfig).filter((item) => {
+  const usesSimpleModelflare = Boolean(savedItemMap.get('MODELFLARE_KEY'))
+    && !(savedItemMap.get('LLM_CHANNELS') || '').trim()
+    && !(savedItemMap.get('LLM_MODELFLARE_API_KEY') || '').trim()
+    && !(savedItemMap.get('LLM_MODELFLARE_API_KEYS') || '').trim();
+  const updates = channelsToUpdateItems(channels, initialNames, runtimeConfig, managesRuntimeConfig).filter((item) => {
     const itemKey = item.key.toUpperCase();
+    if (usesSimpleModelflare && !changedKeys.has(itemKey)) return false;
     const initialItemSource = initialItemSourceByKey.get(itemKey);
     if (initialItemSource === false) {
       return changedKeys.has(itemKey);
@@ -1546,6 +1606,15 @@ function buildFilteredChannelUpdateItems({
     }
     return true;
   });
+  if (usesSimpleModelflare) {
+    const current = channels.find((channel) => channel.name.toLowerCase() === 'modelflare');
+    const previous = initialChannels.find((channel) => channel.name.toLowerCase() === 'modelflare');
+    if (current?.apiKey !== previous?.apiKey) {
+      updates.push({ key: 'MODELFLARE_KEY', value: current?.apiKey || '' });
+    }
+    return updates.filter((item) => item.key !== 'LLM_MODELFLARE_API_KEY' && item.key !== 'LLM_MODELFLARE_API_KEYS');
+  }
+  return updates;
 }
 
 function buildChannelDraftItems({
@@ -1603,6 +1672,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   modelProviderPrefixes = [],
   onSaved,
   onDraftItemsChange,
+  onDirtyChange,
+  onSavingChange,
+  draftResetToken = 0,
   disabled = false,
 }) => {
   const initialItemSourceByKey = useMemo(() => {
@@ -1666,11 +1738,12 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const [capabilityStates, setCapabilityStates] = useState<Record<string, ChannelCapabilityState>>({});
   const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [addPreset, setAddPreset] = useState('aihubmix');
+  const [addPreset, setAddPreset] = useState(LLM_PROVIDER_TEMPLATES[0].channelId);
   const addChannelIdRef = useRef(0);
   const lastDraftFingerprintRef = useRef<string | null>(null);
   const onDraftItemsChangeRef = useRef(onDraftItemsChange);
 
+  const prevDraftResetTokenRef = useRef(draftResetToken);
   const prevChannelsRef = useRef(channelsFingerprint);
   const prevRuntimeRef = useRef(runtimeFingerprint);
   const pendingSaveFeedbackFingerprintRef = useRef<{ channels: string; runtime: string } | null>(null);
@@ -1680,9 +1753,11 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const capabilityRequestIdRef = useRef(0);
 
   useEffect(() => {
-    if (prevChannelsRef.current === channelsFingerprint && prevRuntimeRef.current === runtimeFingerprint) {
+    if (prevChannelsRef.current === channelsFingerprint && prevRuntimeRef.current === runtimeFingerprint
+      && prevDraftResetTokenRef.current === draftResetToken) {
       return;
     }
+    prevDraftResetTokenRef.current = draftResetToken;
     prevChannelsRef.current = channelsFingerprint;
     prevRuntimeRef.current = runtimeFingerprint;
     const pendingSaveFeedbackFingerprint = pendingSaveFeedbackFingerprintRef.current;
@@ -1703,7 +1778,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       setSaveWarnings([]);
     }
     setIsCollapsed(false);
-  }, [channelsFingerprint, runtimeFingerprint, initialChannels, initialRuntimeConfig]);
+  }, [channelsFingerprint, runtimeFingerprint, initialChannels, initialRuntimeConfig, draftResetToken]);
 
   const routeProvenanceMap = useMemo(() => {
     if (!managesRuntimeConfig) {
@@ -1763,6 +1838,16 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     }
     return channels.some((channel, index) => !channelsAreEqual(channel, initialChannels[index]));
   }, [channels, initialChannels, initialRuntimeConfig, runtimeConfig]);
+
+  useEffect(() => {
+    onDirtyChange?.(hasChanges);
+    return () => onDirtyChange?.(false);
+  }, [hasChanges, onDirtyChange]);
+
+  useEffect(() => {
+    onSavingChange?.(isSaving);
+    return () => onSavingChange?.(false);
+  }, [isSaving, onSavingChange]);
 
   const draftItems = useMemo(() => buildChannelDraftItems({
     hasChanges,
@@ -2323,21 +2408,33 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
               </div>
               <Badge variant="default" className="border-[var(--settings-border)] bg-[var(--settings-surface-hover)] text-muted-text">{channels.length} 个渠道</Badge>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button type="button" variant="settings-primary" className="whitespace-nowrap" disabled={busy} onClick={addChannel}>
                 + 添加渠道
               </Button>
-              <Select
-                value={addPreset}
-                onChange={setAddPreset}
-                options={LLM_PROVIDER_TEMPLATES.map((preset) => ({
-                  value: preset.channelId,
-                  label: preset.label,
-                }))}
-                disabled={busy}
-                placeholder="选择服务商"
-                className="flex-1"
-              />
+              <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:flex-1">
+                <Select
+                  value={addPreset}
+                  onChange={setAddPreset}
+                  options={LLM_PROVIDER_TEMPLATES.map((preset) => ({
+                    value: preset.channelId,
+                    label: preset.label,
+                  }))}
+                  disabled={busy}
+                  placeholder="选择服务商"
+                  className="min-w-0 flex-1"
+                />
+                {addPreset === 'modelflare' ? (
+                  <a
+                    href={MODELFLARE_APP_REGISTRATION_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="settings-button-secondary inline-flex h-11 shrink-0 items-center justify-center whitespace-nowrap rounded-xl border px-3 text-sm font-medium transition-all duration-200 hover:translate-y-[-1px] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15"
+                  >
+                    注册 Modelflare
+                  </a>
+                ) : null}
+              </div>
             </div>
           </div>
 

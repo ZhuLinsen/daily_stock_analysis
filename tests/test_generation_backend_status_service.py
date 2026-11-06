@@ -388,6 +388,34 @@ def test_litellm_channel_route_is_used_for_status_and_smoke_config() -> None:
     assert config.llm_model_list[0]["litellm_params"]["api_base"] == "https://api.example.com/v1"
 
 
+def test_modelflare_minimal_channel_is_available_for_status_and_smoke() -> None:
+    _CapturingAnalyzer.configs = []
+    effective_map = {
+        "MODELFLARE_KEY": "sk-test",
+    }
+    service = GenerationBackendStatusService(
+        effective_map=effective_map,
+        analyzer_factory=lambda config: _CapturingAnalyzer(config),
+    )
+    assert service.get_status()["primary"]["available"] is True
+    assert service.smoke_test(mode="json")["success"] is True
+    config = _CapturingAnalyzer.configs[-1]
+    assert config.litellm_model == "openai/gpt-6.1-sol"
+    assert config.llm_model_list[0]["litellm_params"]["api_base"] == "https://modelflare.dev/v1"
+    assert "LLM_MODELFLARE_BASE_URL" not in effective_map
+
+
+def test_modelflare_global_model_routes_are_used_without_channel_model_list() -> None:
+    service = GenerationBackendStatusService(effective_map={
+        "LLM_CHANNELS": "modelflare", "LLM_MODELFLARE_API_KEY": "sk-test",
+        "LITELLM_MODEL": "openai/account-model", "LITELLM_FALLBACK_MODELS": "openai/fallback-model",
+    }, analyzer_factory=lambda config: _CapturingAnalyzer(config))
+    assert service.get_status()["primary"]["available"] is True
+    assert service.smoke_test(mode="json")["success"] is True
+    config = _CapturingAnalyzer.configs[-1]
+    assert [entry["model_name"] for entry in config.llm_model_list] == ["openai/account-model", "openai/fallback-model"]
+
+
 def test_litellm_channel_route_preserves_responses_surface_for_smoke_config() -> None:
     _CapturingAnalyzer.configs = []
     service = GenerationBackendStatusService(

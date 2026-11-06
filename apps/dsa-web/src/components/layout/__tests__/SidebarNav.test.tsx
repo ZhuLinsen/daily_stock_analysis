@@ -1,10 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { SidebarNav } from '../SidebarNav';
 
 const mockLogout = vi.fn().mockResolvedValue(undefined);
-const mockGetScreeningStatus = vi.fn().mockResolvedValue({ enabled: false, available: false });
 const mockThemeToggle = vi.fn(({ collapsed }: { collapsed?: boolean }) => (
   <button type="button">{collapsed ? '切换主题(折叠)' : '切换主题'}</button>
 ));
@@ -23,61 +22,17 @@ vi.mock('../../../stores/agentChatStore', () => ({
     selector({ completionBadge: completionBadgeState.value }),
 }));
 
-vi.mock('../../../api/screening', () => ({
-  SCREENING_CONFIG_CHANGED_EVENT: 'screening-config-changed',
-  SYSTEM_CONFIG_CHANGED_EVENT: 'dsa-system-config-changed',
-  screeningApi: {
-    getStatus: () => mockGetScreeningStatus(),
-  },
-}));
-
 vi.mock('../../theme/ThemeToggle', () => ({
   ThemeToggle: (props: { collapsed?: boolean }) => mockThemeToggle(props),
 }));
 
 describe('SidebarNav', () => {
-  it('hides the screening navigation item while Screening is disabled', () => {
-    mockGetScreeningStatus.mockResolvedValueOnce({ enabled: false, available: true });
+  it('keeps screening directly after chat without requiring configuration', () => {
+    render(<MemoryRouter initialEntries={['/']}><SidebarNav /></MemoryRouter>);
 
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <SidebarNav />
-      </MemoryRouter>,
-    );
-
-    expect(screen.queryByRole('link', { name: '选股' })).not.toBeInTheDocument();
-  });
-
-  it('shows screening directly after chat when Screening is enabled', async () => {
-    mockGetScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
-
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <SidebarNav />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
+    expect(screen.getByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
     const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
     expect(hrefs.slice(0, 5)).toEqual(['/', '/chat', '/screening', '/portfolio', '/decision-signals']);
-  });
-
-  it('refreshes the controlled screening entry after config changes', async () => {
-    mockGetScreeningStatus
-      .mockResolvedValueOnce({ enabled: false, available: true })
-      .mockResolvedValueOnce({ enabled: true, available: true });
-
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <SidebarNav />
-      </MemoryRouter>,
-    );
-
-    expect(screen.queryByRole('link', { name: '选股' })).not.toBeInTheDocument();
-    window.dispatchEvent(new Event('screening-config-changed'));
-
-    expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
-    await waitFor(() => expect(mockGetScreeningStatus.mock.calls.length).toBeGreaterThanOrEqual(2));
   });
 
   it('shows the shared completion badge only when chat completion is pending', () => {
@@ -138,6 +93,43 @@ describe('SidebarNav', () => {
     expect(signalsLink).toHaveAttribute('href', '/decision-signals');
     expect(signalsLink).toHaveClass('font-medium');
   });
+
+  it('renders the data center navigation item and marks it active', () => {
+    render(
+      <MemoryRouter initialEntries={['/data']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole('link', { name: '数据中心' });
+    expect(link).toHaveAttribute('href', '/data');
+    expect(link).toHaveClass('font-medium');
+  });
+
+  it('keeps rail controls outside the scrollable navigation links', () => {
+    render(<MemoryRouter><SidebarNav variant="rail" /></MemoryRouter>);
+
+    const nav = screen.getByRole('navigation', { name: '主导航' });
+    expect(nav).toHaveClass('min-h-0', 'overflow-y-auto');
+    expect(nav).not.toContainElement(screen.getByRole('button', { name: '退出' }));
+    expect(nav).not.toContainElement(screen.getByRole('button', { name: '切换主题' }));
+    expect(screen.getByRole('link', { name: '设置' })).toHaveClass('shrink-0');
+  });
+
+  it.each(['/settings?category=system', '/settings/'])(
+    'explicitly confirms settings draft loss before logout at %s', async (path) => {
+      mockLogout.mockClear();
+      render(<MemoryRouter initialEntries={[path]}><SidebarNav /></MemoryRouter>);
+      fireEvent.click(screen.getByRole('button', { name: '退出' }));
+      expect(await screen.findByText(/退出会丢弃本页未保存的设置/)).toBeInTheDocument();
+      expect(screen.getByText(/已发出的保存请求不会因退出而撤销/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      expect(mockLogout).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: '退出' }));
+      fireEvent.click(screen.getByRole('button', { name: '确认退出' }));
+      expect(mockLogout).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('opens the logout confirmation and confirms logout', async () => {
     render(

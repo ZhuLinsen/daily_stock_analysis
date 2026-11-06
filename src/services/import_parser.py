@@ -179,7 +179,7 @@ def parse_import_from_bytes(data: bytes, filename: Optional[str] = None) -> List
         raise ValueError("仅支持 .xlsx 格式，请将 .xls 另存为 .xlsx 后重试")
 
     # CSV / text
-    for encoding in ("utf-8", "gbk"):
+    for encoding in ("utf-8-sig", "gbk"):
         try:
             text = data.decode(encoding)
             break

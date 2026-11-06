@@ -8,7 +8,7 @@ const SUPPORTED_QUERY_CHARACTERS = /^[A-Z0-9.\u3400-\u9FFF\s]+$/;
 
 const STOCK_CODE_PATTERNS = [
   /^\d{6}$/, // A-share 6-digit code
-  /^(SH|SZ|BJ)\d{6}$/, // A-share code with exchange prefix
+  /^(SH|SZ|BJ)\d{6}$/, // A-share code with exchange prefix (also covers index canonical sh000016 / sh000300)
   /^\d{6}\.(SH|SZ|SS|BJ)$/, // A-share code with exchange suffix
   /^\d{5}$/, // HK code without prefix
   /^HK\d{1,5}$/, // HK-prefixed code, for example HK00700
@@ -16,6 +16,8 @@ const STOCK_CODE_PATTERNS = [
   /^\d{4,5}\.T$/, // Japan Yahoo suffix format, for example 7203.T
   /^\d{6}\.(KS|KQ)$/, // Korea Yahoo suffix format, for example 005930.KS or 035720.KQ
   /^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$/, // Common US ticker format
+  /^CSI\d{6}$/, // Registered CSI index canonical (e.g. csi930955)
+  /^\d{6}\.CSI$/, // Registered CSI index display form (e.g. 930955.CSI)
 ];
 
 /**

@@ -30,7 +30,7 @@ export const ApiErrorAlert: React.FC<ApiErrorAlertProps> = ({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold">{error.title}</p>
-          <p className="mt-1 text-xs opacity-90">{error.message}</p>
+          <p className="mt-1 whitespace-pre-line break-words text-xs opacity-90">{error.message}</p>
         </div>
         {onDismiss ? (
           <button

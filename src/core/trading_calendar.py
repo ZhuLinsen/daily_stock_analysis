@@ -175,6 +175,42 @@ def is_market_open(market: str, check_date: date) -> bool:
         return True
 
 
+def get_trading_dates(market: str, start_date: date, end_date: date) -> Optional[pd.DatetimeIndex]:
+    """Return inclusive session date labels, or None if the calendar is unavailable.
+
+    Missing calendars must not turn weekdays or observed quote dates into sessions.
+    """
+    if not _XCALS_AVAILABLE or market not in MARKET_EXCHANGE:
+        return None
+    try:
+        sessions = xcals.get_calendar(MARKET_EXCHANGE[market]).sessions_in_range(start_date, end_date)
+        return sessions.tz_localize(None).normalize()
+    except Exception as exc:
+        logger.warning("trading_calendar.get_trading_dates unavailable: %s", exc)
+        return None
+
+
+def get_next_trading_date(market: str, check_date: date) -> Optional[date]:
+    """
+    Return the first trading session strictly after ``check_date``.
+
+    Unlike ``is_market_open`` this does not fail open: returns None when
+    exchange-calendars is unavailable, the market is unknown, or the date is
+    outside the calendar range, so callers can report "unknown" explicitly.
+    """
+    if not _XCALS_AVAILABLE:
+        return None
+    ex = MARKET_EXCHANGE.get(market)
+    if not ex:
+        return None
+    try:
+        cal = xcals.get_calendar(ex)
+        return cal.date_to_session(check_date + timedelta(days=1), direction="next").date()
+    except Exception as e:
+        logger.warning("trading_calendar.get_next_trading_date unavailable: %s", e)
+        return None
+
+
 def get_market_now(
     market: Optional[str], current_time: Optional[datetime] = None
 ) -> datetime:

@@ -304,6 +304,14 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
               <p className="mt-2 max-w-[62ch] whitespace-pre-wrap text-left text-[15px] leading-7 text-foreground">
                 {summary.analysisSummary || text.noAnalysisSummary}
               </p>
+              {details?.emptyNewsDisclosure ? (
+                <p
+                  role="note"
+                  className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-left text-sm leading-6 text-foreground"
+                >
+                  {details.emptyNewsDisclosure}
+                </p>
+              ) : null}
             </div>
           </Card>
 
@@ -373,7 +381,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
 
         {/* 右侧：情绪指标 / 自选操作 */}
         <div className="flex flex-col space-y-4">
-          {watchlist && meta.reportType !== 'market_review' && (
+          {watchlist && meta.reportType !== 'market_review' && meta.assetType !== 'index' && (
             <Card variant="bordered" padding="sm" className="home-panel-card">
               <div className="text-center space-y-3">
                 <span className="label-uppercase">{t('report.watchlist')}</span>

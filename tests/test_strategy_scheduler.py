@@ -64,6 +64,10 @@ class TestAgentSkillScheduler(unittest.TestCase):
             [opinion.agent_name for opinion in batch.opinions],
             ["skill_bull_trend", "skill_hot_theme", "skill_fund_flow"],
         )
+        self.assertEqual(
+            [result.stage_name for result in batch.stage_results],
+            ["skill_bull_trend", "skill_hot_theme", "skill_fund_flow"],
+        )
         self.assertEqual(ctx.opinions, [])
 
     def test_runs_four_selected_skills_when_concurrency_is_four(self):

@@ -80,6 +80,61 @@ class SearchToolsPersistenceTest(unittest.TestCase):
             query_context=None,
         )
 
+    def test_index_news_search_uses_name_only_and_persists_canonical_code(self) -> None:
+        response = _response("红利低波100 最新消息")
+        service = SimpleNamespace(
+            is_available=True,
+            search_stock_news=MagicMock(return_value=response),
+        )
+        db = SimpleNamespace(save_news_intel=MagicMock(return_value=1))
+
+        with patch("src.agent.tools.search_tools._get_search_service", return_value=service), \
+             patch("src.agent.tools.search_tools._get_db", return_value=db):
+            result = _handle_search_stock_news("csi930955", "stale name")
+
+        self.assertTrue(result["success"])
+        service.search_stock_news.assert_called_once_with(
+            "", "红利低波100", max_results=5
+        )
+        db.save_news_intel.assert_called_once_with(
+            code="csi930955",
+            name="红利低波100",
+            dimension="latest_news",
+            query=response.query,
+            response=response,
+            query_context=None,
+        )
+
+    def test_index_comprehensive_search_uses_name_only(self) -> None:
+        latest = _response("上证50 最新消息")
+        service = SimpleNamespace(
+            is_available=True,
+            search_comprehensive_intel=MagicMock(
+                return_value={"latest_news": latest}
+            ),
+            format_intel_report=MagicMock(return_value="report"),
+        )
+        db = SimpleNamespace(save_news_intel=MagicMock(return_value=1))
+
+        with patch("src.agent.tools.search_tools._get_search_service", return_value=service), \
+             patch("src.agent.tools.search_tools._get_db", return_value=db):
+            result = _handle_search_comprehensive_intel("sh000016", "stale name")
+
+        self.assertEqual(result["report"], "report")
+        service.search_comprehensive_intel.assert_called_once_with(
+            stock_code="",
+            stock_name="上证50",
+            max_searches=6,
+        )
+        db.save_news_intel.assert_called_once_with(
+            code="sh000016",
+            name="上证50",
+            dimension="latest_news",
+            query=latest.query,
+            response=latest,
+            query_context=None,
+        )
+
     def test_persistence_failure_keeps_search_result(self) -> None:
         response = _response("贵州茅台 600519 latest news")
         service = SimpleNamespace(

@@ -6,6 +6,7 @@
 
 - **集成方式**：openclaw Skill 通过 HTTP 调用 daily_stock_analysis（DSA）REST API
 - **适用场景**：已部署 DSA API 服务，希望在 openclaw 对话中触发分析（如「帮我分析茅台」「analyze AAPL」）
+- **同类消费方**：2026-08-11 上线的 [Grok Bot](https://x.ai/bot)（Skills / Routines / MCP / computer use）走同一套 REST 契约，不要另起平行 API。见 [Grok Bot 集成](grok-bot-integration.md)。
 
 ## 前置条件
 
@@ -173,7 +174,7 @@ curl -X POST {DSA_BASE_URL}/api/v1/agent/chat \
 |------|----------|----------|
 | 连接失败 | DSA 未运行、端口错误、防火墙 | 确认 `python main.py --serve-only` 已启动，检查 `DSA_BASE_URL` |
 | 400 错误 | stock_code 格式错误或缺失 | 检查代码格式（见上文表格），确保请求体包含 `stock_code` |
-| 500 错误 | AI 配置、数据源、网络问题 | 查看 DSA 日志，确认 GEMINI_API_KEY 等已配置 |
+| 500 错误 | AI 配置、数据源、网络问题 | 查看 DSA 日志，确认 `LITELLM_MODEL` 与对应 Key（如 `GEMINI_API_KEY` / `XAI_API_KEY`）已配置 |
 | Agent 400 | Agent 模式未启用 | 在 DSA 的 `.env` 中设置 `AGENT_MODE=true` |
 | 分析超时 | 同步模式等待时间过长 | 增加 HTTP 客户端超时，或改用 `async_mode: true` 轮询状态 |
 

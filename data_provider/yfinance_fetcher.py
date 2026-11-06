@@ -31,7 +31,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
+from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, _is_hk_market, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
 from .yfinance_fundamental_adapter import _safe_float
@@ -793,7 +793,7 @@ class YfinanceFetcher(BaseFetcher):
 
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
-        获取美股/美股指数实时行情数据
+        获取美股、港股、日韩台股票或美股指数实时行情数据
 
         支持美股股票（AAPL、TSLA）和美股指数（SPX、DJI 等）。
         数据来源：yfinance Ticker.info
@@ -815,13 +815,14 @@ class YfinanceFetcher(BaseFetcher):
                 index_name=index_name,
             )
 
-        # 仅处理美股股票或 JP/KR/TW suffix-only 股票
+        # 仅处理美股、港股或 JP/KR/TW suffix-only 股票
         if not (
             self._is_us_stock(stock_code)
+            or _is_hk_market(stock_code)
             or self._is_jp_kr_suffix_stock(stock_code)
             or self._is_tw_suffix_stock(stock_code)
         ):
-            logger.debug(f"[Yfinance] {stock_code} 不是美股或日韩 suffix 代码，跳过")
+            logger.debug(f"[Yfinance] {stock_code} 不是支持的美股、港股或日韩台代码，跳过")
             return None
 
         try:
@@ -911,7 +912,7 @@ class YfinanceFetcher(BaseFetcher):
                 code=symbol,
                 name=name,
                 source=RealtimeSource.FALLBACK,
-                market=suffix_market or ("us" if is_us_symbol else None),
+                market=suffix_market or ("hk" if _is_hk_market(stock_code) else "us" if is_us_symbol else None),
                 currency=str(ticker_info.get("currency") or "").upper() or None,
                 data_quality="partial" if missing_fields else "ok",
                 missing_fields=missing_fields or None,

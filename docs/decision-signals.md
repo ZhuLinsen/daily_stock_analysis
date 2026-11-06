@@ -227,6 +227,16 @@ P5 通过 sidecar 表保存用户反馈和后验结果，不扩展 `decision_sig
 - 后验评估只支持日线可验证的 `1d/3d/5d/10d`；`intraday/swing/long`、非方向动作、缺价和 forward bars 不足会写入 `eval_status=unable` 与明确 `unable_reason`。
 - 评估时冻结 action、market、market_phase、source_type、source_agent、plan_quality、data_quality_level、holding_state 等统计维度，历史统计不依赖后续 live join。
 
+## 单票复盘摘要（ReviewMemory）
+
+#1903 在 P5 后验数据之上增加只读、低敏的单票复盘摘要，把"已计算但从未被消费"的 outcome/feedback 聚合回 Agent 记忆，形成结果层反馈闭环：
+
+- 只读接口 `GET /api/v1/decision-signals/stocks/{stock_code}/review`（可选 `horizon=1d/3d/5d/10d` 过滤）返回 `DecisionSignalReviewMemory` 契约：`stock_code`、`scope`、`sample_size`、`completed`、`hit_rate_pct`、`avg_return_pct`、`common_miss_reasons`、`confidence_adjustment`、`notes`；聚合在 `decision_signal_outcome_service.py` / `decision_signal_outcome_repo.py` 完成，不进入 agent 层。
+- 低敏边界：契约只含聚合值与 feedback `reason_code` 标签，不暴露 raw evidence、prompt 文本、诊断信息、持仓或 feedback 备注原文。
+- 保守判定：completed 样本 < 10、unable 率 > 50%、或主导数据质量为 `low/poor` 时，`confidence_adjustment` 固定为 `observe` 且 `notes` 给出原因提示，不产生任何置信度偏移；样本充足时按命中率给出 `upgrade`（≥60%）/`downgrade`（≤40%）/`neutral` 方向建议，仍仅供观察。
+- Agent 消费：`AGENT_MEMORY_ENABLED=true` 时，`AgentMemory.get_decision_signal_review()` 读取该预摘要，`BaseAgent` 以独立的 `[Memory: decision-signal review]` section 注入 prompt（不混入 AnalysisHistory 文本），并附带"仅供观察、不作为买卖强度依据"声明；flag 关闭时全链路行为与此前完全一致。
+- 不改变 DecisionSignal 非交易边界：历史命中率不得变相成为仓位或买卖强度信号。
+
 ## 脱敏与低敏边界
 
 信号写入和状态更新使用 `src/utils/sanitize.py` 中的 `sanitize_decision_signal_text()` 与 `sanitize_decision_signal_payload()`：

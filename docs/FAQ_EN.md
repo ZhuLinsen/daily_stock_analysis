@@ -101,8 +101,9 @@ This document compiles common issues encountered by users and their solutions.
    - Saving from WebUI triggers a config reload for the current process, and runtime reads continue from the latest persisted `.env`; for example, scheduled runs keep hot-reading the saved `STOCK_LIST`
    - If you pass the same keys as startup env vars (`--env-file .env`, `docker run -e ...`, or Compose `environment:`), those startup values can still win on later restarts; update or remove the same-name overrides if you want the WebUI-saved `.env` values to take over
    - To persist WebUI-saved config, point `ENV_FILE` at a writable data-volume file such as `/app/data/runtime.env`; do not bind-mount the host `.env` as a single file over `/app/.env`
-   - Saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES` starts, stops, or rebuilds the runtime scheduler in long-running WebUI/API/Desktop processes
+   - Saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES` starts, stops, or rebuilds the runtime scheduler in long-running WebUI/API/Desktop processes; restarting a `--serve-only` or Desktop process restores enabled daily jobs without immediately running an analysis at startup
    - `SCHEDULE_RUN_IMMEDIATELY` and `RUN_IMMEDIATELY` remain startup/one-shot settings; saving them does not immediately trigger an analysis run
+   - `SCHEDULE_STARTUP_DEDUP` controls the daily dedup of the CLI scheduler startup-immediate run (the startup catch-up run is skipped when a successful full analysis is already recorded for today; see the configuration table in `docs/full-guide_EN.md`); it is likewise a startup-time setting
 3. **Manual `.env` edits in Docker**: Restart the container after changes
    ```bash
    docker-compose down && docker-compose up -d
@@ -164,8 +165,21 @@ First confirm whether `LITELLM_CONFIG` or `LLM_CHANNELS` is active, because eith
 1. **Auto-chunking**: Latest version implements automatic long message splitting
 2. **Single stock push mode**: Set `SINGLE_STOCK_NOTIFY=true`, push immediately after each stock analysis
 3. **Brief report**: Set `REPORT_TYPE=simple` for simplified format
+4. **Local file fallback**: Even with no notification channel configured, `SINGLE_STOCK_NOTIFY=true` still saves each stock report to `reports/report_YYYYMMDD_<stock_code>.md`
 
 ---
+
+### Q8.1: Analysis finished, but no report file was created under `reports/`?
+
+**Common causes**:
+1. `STOCK_LIST` is empty and market review was not enabled for this run
+2. The stock list is non-empty, but every stock analysis failed so no successful result was produced
+3. Stock results were produced, but writing to `reports/` failed (for example due to permissions or mount issues)
+
+**Current behavior**:
+1. CLI-triggered analysis now logs the exact failure reason for these cases
+2. Standalone non-`--serve` runs now return a non-zero exit code so workflows do not treat “no report generated” as success
+3. In single-stock push mode, local Markdown report saving still happens even when notifications are not configured
 
 ### Q9: Not receiving Telegram push messages?
 
@@ -269,7 +283,7 @@ Work through the following 5 checkpoints in order:
    - If Ollama runs on a different host, set `OLLAMA_API_BASE` to its actual IP, e.g. `http://192.168.1.100:11434`.
    - Make sure port 11434 is open and Ollama binds the right address (`OLLAMA_HOST=0.0.0.0:11434`).
 
-> See [LLM Config Guide → Example 4 (Ollama)](LLM_CONFIG_GUIDE_EN.md#example-4-ollama) for a complete configuration example.
+> See [LLM Config Guide → Example 4 (Ollama)](LLM_CONFIG_GUIDE_EN.md#example-4-using-ollama-local-models) for a complete configuration example.
 
 ---
 

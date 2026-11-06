@@ -43,6 +43,18 @@ CANONICAL_DECISION_SCALE_PROMPT_ZH = """## Canonical 评分与动作口径
 - 若 score >= 60 但最终 `action` 是 `hold/watch`，或 score < 40 但最终 `action` 是 `hold/watch`，必须在 `guardrail_reason` 或 `dashboard.decision_stability.reason` 中说明降级原因。"""
 
 
+CANONICAL_DECISION_SCALE_PROMPT_EN = """## Canonical Score and Action Scale
+
+- `sentiment_score`, `operation_advice`, the three-state `decision_type` and the eight-state `action` must follow the same scale.
+- 80-100: Strong Buy, `action=buy`, `decision_type=buy`.
+- 60-79: Buy, `action=buy`, `decision_type=buy`.
+- 40-59: Watch, `action=watch`, `decision_type=hold`.
+- 20-39: Reduce, `action=reduce`, `decision_type=sell`.
+- 0-19: Sell, `action=sell`, `decision_type=sell`.
+- `decision_type` only keeps `buy|hold|sell` for statistics compatibility; finer-grained advice must go into `action`.
+- If score >= 60 but the final `action` is `hold/watch`, or score < 40 but the final `action` is `hold/watch`, explain the downgrade in `guardrail_reason` or `dashboard.decision_stability.reason`."""
+
+
 def normalize_score(value: Any) -> Optional[int]:
     """Return a bounded integer score when possible."""
 

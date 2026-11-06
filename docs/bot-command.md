@@ -52,7 +52,7 @@ bot/
 ├── commands/               # 命令处理器
 │   ├── __init__.py
 │   ├── base.py             # 命令抽象基类
-│   ├── analyze.py          # /analyze 股票分析
+│   ├── analyze.py          # /analyze 股票/指数分析
 │   ├── market.py           # /market 大盘复盘
 │   ├── help.py             # /help 帮助信息
 │   └── status.py           # /status 系统状态
@@ -185,7 +185,7 @@ class CommandDispatcher:
 
 |------|------|------|------|
 
-| /analyze | /a, 分析 | 分析指定股票 | `/analyze 600519` |
+| /analyze | /a, 分析 | 分析指定股票或已登记指数 | `/analyze 600519`、`/analyze sh000016`、`/analyze 上证50` |
 
 | /market | /m, 大盘 | 大盘复盘 | `/market` |
 
@@ -194,6 +194,31 @@ class CommandDispatcher:
 | /help | /h, 帮助 | 显示帮助信息 | `/help` |
 
 | /status | /s, 状态 | 系统状态 | `/status` |
+
+### `/analyze` 支持边界
+
+- 股票：A 股 6 位数字（`600519`）、港股 `HK+5 位数字`（`hk00700`）、美股 1-5 个字母（`AAPL`、`usfd`→`USFD`）。股票名称（`贵州茅台`）由本次 Bot 入口新暴露：复用既有名称解析器（`resolve_name_to_code`）解析后提交 legacy code，不携带结构化 target。
+- 已登记指数：显式代码（`sh000016`）、CSI alias（`930955.CSI` 收敛为 `csi930955`）、注册中文名（`上证50`）均可提交；指数以结构化 `AnalysisTarget` 贯穿到分析 Pipeline，`sh000016` 不会被改写为 `SH000016`。
+- 未登记 CSI（如 `930956.CSI`）、旧闸门拒绝的代码形态（如 `12345`、裸 `00700`、`600519.SH`、未登记 `sh999999`）或无法识别的名称：返回明确错误，不提交任务。
+- 注册表内存在等价名称歧义时：要求改用显式代码，不猜测、不进入股票名称兜底。
+
+### Bot 指数入口在线 E2E smoke（`scripts/smoke_bot_index_entry.py`）
+
+用于从真实 `CommandDispatcher.dispatch_async -> AnalyzeCommand -> TaskService -> StockAnalysisPipeline` 在线贯穿单标的分析，覆盖 `SH.000016` / `上证50` / `930955.CSI` 三条矩阵场景，不经过任何 webhook transport（不 mock 在线依赖、不 dry-run）。
+
+运行（单 target 参数，`--timeout` 默认 900 秒）：
+
+```powershell
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "SH.000016"
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "上证50"
+.venv\Scripts\python.exe scripts/smoke_bot_index_entry.py "930955.CSI"
+```
+
+进程职责：worker 独立子进程提交并轮询（同进程 `TaskService`），输出单行 `E2E_EVENT {json}` 事件（`phase=submitted|completed|failed|timeout`，含 `target`，按阶段附加 `task_id`/`stock_code`/`result`/`error`）；父进程只负责 deadline、进程树清理和退出码（0=成功 / 1=失败 / 124=超时）。
+
+失败语义：任务失败、completed 但结果不完整（canonical code 或注册名称与矩阵期望不符，或 `analysis_summary`/`operation_advice`/`trend_prediction` 任一为空或仅空白）即输出 `failed` 事件并不为零退出；超时清理进程树（Windows `taskkill /T /F`，POSIX 杀进程组），清理成功输出 `timeout` 事件并退出 124，清理失败则输出含清理错误的 `failed` 事件并退出 1，不回滚 DB / 报告 / 通知等既有副作用。用户 Ctrl-C 中止时父进程同样先清理进程树：清理成功透传中断，清理失败输出含清理错误的 `failed` 事件并退出 1，绝不静默吞掉清理失败。worker 的期望 code/name 来自脚本内置的矩阵权威映射（`SH.000016`/`上证50` → `sh000016`/`上证50`，`930955.CSI` → `csi930955`/`红利低波100`），不信任响应或任务结果自报身份：提交响应的 `stock_code` 与期望不符时输出含期望值与实际值的显式 mismatch 错误（failed 事件同时携带结构化 `stock_code` 实际值）；矩阵之外的 target 与非正 `--timeout` 在提交与子进程 spawn 之前即被拒绝（参数/输入错误，退出码 2）。worker 意外异常（dispatch/轮询/事件序列化）输出 `failed` 事件并退出 1（异常证据保留在 stderr），`KeyboardInterrupt` 不按普通失败处理；父进程将 worker 的任意其他退出码归一化为 1，运行时契约只暴露 0 / 1 / 124。父进程以内部 `--worker` flag 显式拉起子进程，不依赖环境变量。
+
+前置条件：需要网络与数据源/AI 凭据配置齐全（在线链路）。本脚本不属于离线 gate，不进入 CI。
 
 ## 五、`/status` 与模型配置诊断说明
 
@@ -204,7 +229,7 @@ class CommandDispatcher:
   - `LLM_CHANNELS`
   - legacy provider 键（`GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`）
 - 当主模型（`LITELLM_MODEL` 或 `AGENT_LITELLM_MODEL`）在当前激活层无可用来源时，会展示“AI 服务未配置”，并保留用户可见原因行。
-- 本仓库 `requirements.txt` 的运行时依赖约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`，该约束内本链路以现有兼容行为为准。
+- 本仓库 `requirements.txt` 的运行时依赖约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`，该约束内本链路以现有兼容行为为准。
 - 该诊断规则与 `GET /api/v1/system/config/setup/status` 的 LLM 检查保持一致：`LITELLM_CONFIG`/`LLM_CHANNELS` 为高优先级；模式切换时不会做静默迁移，切回旧模式由用户显式恢复历史值或回滚。
 
 ### 回退与迁移边界

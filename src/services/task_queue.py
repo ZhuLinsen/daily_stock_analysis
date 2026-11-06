@@ -49,6 +49,47 @@ def _dedupe_stock_code_key(stock_code: str) -> str:
     return resolve_index_stock_code_for_analysis(normalize_stock_code(stock_code))
 
 
+def _dedupe_task_key(
+    stock_code: str,
+    analysis_target: Optional[Any] = None,
+) -> str:
+    """
+    Build the duplicate-detection key for a submitted task.
+
+    Index targets dedupe by their canonical id (``sh000016`` / ``csi930955``),
+    so an index never collapses with a same-digit stock (``000016``) and
+    registered CSI aliases converge to one key. Stock targets keep the legacy
+    code-based key, preserving existing dedup semantics for
+    ``600519``/``600519.SH`` and friends.
+    """
+    from src.services.stock_list_parser import ParseStatus
+
+    if analysis_target is not None and analysis_target.asset_type == ParseStatus.INDEX:
+        return analysis_target.canonical_id
+    return _dedupe_stock_code_key(stock_code)
+
+
+def asset_type_from_analysis_target(analysis_target: Optional[Any]) -> Optional[str]:
+    """Derive the optional ``asset_type`` from a submitted analysis target.
+
+    Uses the parser target only (never re-guesses from the code). Registered
+    index targets (``ParseStatus.INDEX``) yield ``"index"``, explicit stock
+    targets yield ``"stock"``, and targets that were not carried downstream
+    (plain stock submissions, market review) yield ``None`` so the field is
+    simply omitted from task payloads — keeping legacy clients compatible.
+    """
+    from src.services.stock_list_parser import ParseStatus
+
+    if analysis_target is None:
+        return None
+    asset_type = getattr(analysis_target, "asset_type", None)
+    if asset_type == ParseStatus.INDEX:
+        return "index"
+    if asset_type == ParseStatus.STOCK:
+        return "stock"
+    return None
+
+
 class TaskStatus(str, Enum):
     """Task status enumeration"""
     PENDING = "pending"        # Waiting for execution
@@ -88,6 +129,13 @@ class TaskInfo:
     trace_id: Optional[str] = None
     region: Optional[str] = None
     flow_events: List[Dict[str, Any]] = field(default_factory=list)
+    # 固化去重键：submit 时按 asset_type 分支算好，完成/失败移除时直接使用，
+    # 避免 key 生成/移除不一致导致 _analyzing_stocks 残留。
+    dedupe_key: Optional[str] = None
+    analysis_target: Optional[Any] = None
+    # parser 来源的可选资产类型（``index``/``stock``/``None``）；SSE 与任务列表
+    # 从这里透传，不得在消费端重新猜测。
+    asset_type: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
@@ -111,6 +159,8 @@ class TaskInfo:
         }
         if self.region is not None:
             payload["region"] = self.region
+        if self.asset_type is not None:
+            payload["asset_type"] = self.asset_type
         return payload
     
     def copy(self) -> 'TaskInfo':
@@ -138,6 +188,9 @@ class TaskInfo:
             trace_id=self.trace_id or self.task_id,
             region=self.region,
             flow_events=copy.deepcopy(self.flow_events),
+            dedupe_key=self.dedupe_key,
+            analysis_target=self.analysis_target,
+            asset_type=self.asset_type,
         )
 
 
@@ -337,6 +390,7 @@ class AnalysisTaskQueue:
         force_refresh: bool = False,
         skills: Optional[List[str]] = None,
         report_language: Optional[str] = None,
+        analysis_target: Optional[Any] = None,
     ) -> TaskInfo:
         """
         Submit a single analysis task.
@@ -349,6 +403,8 @@ class AnalysisTaskQueue:
             report_type: Report type
             analysis_phase: Requested analysis phase override
             force_refresh: Whether to bypass cache
+            analysis_target: Optional structured analysis target (index targets
+                dedupe by canonical id and flow through to the pipeline)
 
         Returns:
             TaskInfo: Accepted task information
@@ -372,6 +428,7 @@ class AnalysisTaskQueue:
             force_refresh=force_refresh,
             skills=skills,
             report_language=report_language,
+            analysis_targets=([analysis_target] if analysis_target is not None else None),
         )
         if duplicates:
             raise duplicates[0]
@@ -391,12 +448,16 @@ class AnalysisTaskQueue:
         notify: bool = True,
         skills: Optional[List[str]] = None,
         report_language: Optional[str] = None,
+        analysis_targets: Optional[List[Any]] = None,
     ) -> Tuple[List[TaskInfo], List[DuplicateTaskError]]:
         """
         Submit analysis tasks in batch.
 
         - Duplicate stocks are skipped and recorded in duplicates.
         - If executor submission fails, the current batch is rolled back.
+        - ``analysis_targets`` is an optional per-code structured target list.
+          Index targets dedupe by ``canonical_id`` (never collapsing with a
+          same-digit stock); stock targets keep the legacy code-based key.
         """
         self.validate_selection_source(selection_source)
 
@@ -404,14 +465,34 @@ class AnalysisTaskQueue:
         duplicates: List[DuplicateTaskError] = []
         created_task_ids: List[str] = []
 
-        canonical_codes = [
-            normalized for normalized in (resolve_index_stock_code_for_analysis(code) for code in stock_codes)
-            if normalized
-        ]
+        # Align per-code targets with the canonicalized code list. Index targets
+        # keep their parser canonical id (lowercase ``sh000016`` / ``csi930955``)
+        # so the pipeline and fetchers see the exact identity the API resolved;
+        # stock codes keep the legacy canonicalization path.
+        targets_by_index: Dict[int, Any] = {}
+        for idx, code in enumerate(stock_codes):
+            target = (
+                analysis_targets[idx]
+                if analysis_targets is not None and idx < len(analysis_targets)
+                else None
+            )
+            if target is not None and getattr(target, "asset_type", None) == "index":
+                targets_by_index[idx] = target
+
+        canonical_codes = []
+        for idx, code in enumerate(stock_codes):
+            target = targets_by_index.get(idx)
+            if target is not None:
+                canonical_codes.append(target.canonical_id)
+            else:
+                normalized = resolve_index_stock_code_for_analysis(code)
+                if normalized:
+                    canonical_codes.append(normalized)
 
         with self._data_lock:
-            for stock_code in canonical_codes:
-                dedupe_key = _dedupe_stock_code_key(stock_code)
+            for idx, stock_code in enumerate(canonical_codes):
+                analysis_target = targets_by_index.get(idx)
+                dedupe_key = _dedupe_task_key(stock_code, analysis_target)
                 if dedupe_key in self._analyzing_stocks:
                     existing_task_id = self._analyzing_stocks[dedupe_key]
                     duplicates.append(DuplicateTaskError(stock_code, existing_task_id))
@@ -434,6 +515,9 @@ class AnalysisTaskQueue:
                     portfolio_context=dict(portfolio_context) if isinstance(portfolio_context, dict) else None,
                     skills=task_skills,
                     report_language=report_language,
+                    dedupe_key=dedupe_key,
+                    analysis_target=analysis_target,
+                    asset_type=asset_type_from_analysis_target(analysis_target),
                 )
                 self._tasks[task_id] = task_info
                 self._analyzing_stocks[dedupe_key] = task_id
@@ -448,6 +532,7 @@ class AnalysisTaskQueue:
                         notify,
                         task_skills,
                         report_language,
+                        analysis_target,
                     )
                 except Exception:
                     # Roll back the current batch to avoid partial submission.
@@ -521,7 +606,12 @@ class AnalysisTaskQueue:
 
             task = self._tasks.pop(task_id, None)
             if task:
-                dedupe_key = _dedupe_stock_code_key(task.stock_code)
+                # 使用 submit 时固化的 dedupe_key（若存在），避免按 code 重算
+                # 与提交路径不一致导致 _analyzing_stocks 残留。
+                dedupe_key = task.dedupe_key or _dedupe_task_key(
+                    task.stock_code,
+                    getattr(task, "analysis_target", None),
+                )
                 if self._analyzing_stocks.get(dedupe_key) == task_id:
                     del self._analyzing_stocks[dedupe_key]
     
@@ -674,6 +764,7 @@ class AnalysisTaskQueue:
         notify: bool = True,
         skills: Optional[List[str]] = None,
         report_language: Optional[str] = None,
+        analysis_target: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行分析任务（在线程池中运行）
@@ -683,6 +774,7 @@ class AnalysisTaskQueue:
             stock_code: 股票代码
             report_type: 报告类型
             force_refresh: 是否强制刷新
+            analysis_target: 可选的结构化分析目标（指数目标透传到 pipeline）
             
         Returns:
             分析结果字典
@@ -736,6 +828,7 @@ class AnalysisTaskQueue:
                 query_source=query_source,
                 portfolio_context=portfolio_context,
                 report_language=report_language,
+                analysis_target=analysis_target,
             )
             reset_run_diagnostic_context(diag_token)
             diag_token = None
@@ -752,8 +845,11 @@ class AnalysisTaskQueue:
                         task.message = "分析完成"
                         task.stock_name = result.get("stock_name", task.stock_name)
                         
-                        # 从分析中集合移除
-                        dedupe_key = _dedupe_stock_code_key(task.stock_code)
+                        # 从分析中集合移除（使用 submit 时固化的 key，避免不一致残留）
+                        dedupe_key = task.dedupe_key or _dedupe_task_key(
+                            task.stock_code,
+                            getattr(task, "analysis_target", None),
+                        )
                         if dedupe_key in self._analyzing_stocks:
                             del self._analyzing_stocks[dedupe_key]
                 
@@ -782,8 +878,11 @@ class AnalysisTaskQueue:
                     task.error = error_msg[:200]  # 限制错误信息长度
                     task.message = f"分析失败: {error_msg[:50]}"
                     
-                    # 从分析中集合移除
-                    dedupe_key = _dedupe_stock_code_key(task.stock_code)
+                    # 从分析中集合移除（使用 submit 时固化的 key，避免不一致残留）
+                    dedupe_key = task.dedupe_key or _dedupe_task_key(
+                        task.stock_code,
+                        getattr(task, "analysis_target", None),
+                    )
                     if dedupe_key in self._analyzing_stocks:
                         del self._analyzing_stocks[dedupe_key]
             

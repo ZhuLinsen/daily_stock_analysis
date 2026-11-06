@@ -23,7 +23,7 @@ from src.agent.provider_trace import (
     trace_model_matches,
 )
 from src.llm.usage import should_persist_usage_telemetry
-from src.storage import get_db, persist_llm_usage
+from src.storage import ChatSessionStateConflict, DatabaseManager, get_db, persist_llm_usage
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,8 @@ def build_visible_chat_history(
     config: Any,
     *,
     allow_llm_compression: bool = True,
+    db_manager: Optional[DatabaseManager] = None,
+    source_snapshot: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, str]]:
     """Return visible chat history according to the compression state table."""
     state = _build_visible_history_state(
@@ -130,6 +132,8 @@ def build_visible_chat_history(
         llm_adapter,
         config,
         allow_llm_compression=allow_llm_compression,
+        db_manager=db_manager,
+        source_snapshot=source_snapshot,
     )
     return _strip_internal_message_ids(state.messages)
 
@@ -138,6 +142,9 @@ def build_agent_chat_context_bundle(
     session_id: str,
     llm_adapter: Any,
     config: Any,
+    *,
+    db_manager: Optional[DatabaseManager] = None,
+    source_snapshot: Optional[Dict[str, Any]] = None,
 ) -> AgentChatContextBundle:
     """Return id-spliced visible history plus provider trace messages.
 
@@ -145,9 +152,12 @@ def build_agent_chat_context_bundle(
     factual context and the current user after these messages, preserving the
     existing request assembly order.
     """
-    state = _build_visible_history_state(session_id, llm_adapter, config)
+    db = db_manager if db_manager is not None else get_db()
+    snapshot = _history_snapshot(db, session_id, source_snapshot)
+    state = _build_visible_history_state(
+        session_id, llm_adapter, config, db_manager=db, source_snapshot=snapshot,
+    )
     diagnostics = TraceDiagnostics(visible_tokens=state.visible_tokens)
-    db = get_db()
     resolution = resolve_agent_litellm_route(config)
     candidate_models = resolution.models_to_try if resolution.available else []
     if not candidate_models and not resolution.reason:
@@ -155,7 +165,7 @@ def build_agent_chat_context_bundle(
     if not candidate_models and not resolution.reason:
         candidate_models = [get_effective_agent_primary_model(config)]
     candidate_trace_targets = _build_trace_match_targets(candidate_models, config)
-    turns = db.get_agent_provider_turns(session_id, must_roundtrip_only=True)
+    turns = snapshot["provider_turns"]
     traces_by_anchor: Dict[int, List[Dict[str, Any]]] = {}
     pending_trace_tokens = 0
     pending_trace_count = 0
@@ -231,11 +241,15 @@ def _build_visible_history_state(
     config: Any,
     *,
     allow_llm_compression: bool = True,
+    db_manager: Optional[DatabaseManager] = None,
+    source_snapshot: Optional[Dict[str, Any]] = None,
 ) -> VisibleHistoryState:
     """Return visible history with private ``_message_id`` anchors."""
-    db = get_db()
+    db = db_manager if db_manager is not None else get_db()
+    snapshot = _history_snapshot(db, session_id, source_snapshot)
+    visible_messages = _visible_messages_from_rows(snapshot["messages"])
     if not allow_llm_compression or not getattr(config, "agent_context_compression_enabled", False):
-        selected = _load_visible_messages(session_id, limit=20)
+        selected = visible_messages[-20:]
         messages = _to_chat_messages(selected, include_ids=True)
         return VisibleHistoryState(
             messages=messages,
@@ -243,11 +257,10 @@ def _build_visible_history_state(
             visible_tokens=estimate_messages_tokens(_strip_internal_message_ids(messages), config),
         )
 
-    visible_messages = _load_visible_messages(session_id)
     if not visible_messages:
         return VisibleHistoryState(messages=[], visible_ids=set(), visible_tokens=0)
 
-    summary_record = db.get_conversation_summary(session_id)
+    summary_record = snapshot["summary"]
     previous_summary = (summary_record or {}).get("summary") or ""
     covered_message_id = _coerce_int((summary_record or {}).get("covered_message_id"), default=0)
     preset = get_agent_context_compression_preset(
@@ -324,12 +337,13 @@ def _build_visible_history_state(
     if summary_text:
         new_covered_message_id = max(msg.id for msg in to_summarize)
         estimated_tokens = estimate_text_tokens(summary_text, config)
-        db.upsert_conversation_summary(
+        saved = db.upsert_conversation_summary(
             session_id=session_id,
             summary=summary_text,
             covered_message_id=new_covered_message_id,
             source_message_count=len(to_summarize),
             estimated_tokens=estimated_tokens,
+            source_snapshot=snapshot,
         )
         usage = getattr(response, "usage", {}) or {}
         if should_persist_usage_telemetry(usage):
@@ -337,6 +351,27 @@ def _build_visible_history_state(
                 usage,
                 getattr(response, "model", "") or get_effective_agent_primary_model(config) or "unknown",
                 call_type="agent",
+            )
+        if not saved:
+            current = db.read_chat_session_snapshot(session_id)
+            if current["session_generation"] != snapshot["session_generation"]:
+                raise ChatSessionStateConflict()
+            # A concurrent compressor won the coverage CAS. Never inject the
+            # discarded result or call the model again; use the saved history.
+            current_summary = current["summary"]
+            current_visible = _visible_messages_from_rows(current["messages"])
+            if current_summary:
+                current_visible = [message for message in current_visible
+                                   if message.id > current_summary["covered_message_id"]]
+                messages = [build_summary_message(current_summary["summary"])]
+            else:
+                current_visible = current_visible[-20:]
+                messages = []
+            messages += _to_chat_messages(current_visible, include_ids=True)
+            return VisibleHistoryState(
+                messages=messages,
+                visible_ids={message.id for message in current_visible},
+                visible_tokens=estimate_messages_tokens(_strip_internal_message_ids(messages), config),
             )
         messages = [build_summary_message(summary_text)] + _to_chat_messages(protected_tail, include_ids=True)
         return VisibleHistoryState(
@@ -364,8 +399,20 @@ def _build_visible_history_state(
     )
 
 
-def _load_visible_messages(session_id: str, *, limit: Optional[int] = None) -> List[VisibleMessage]:
-    rows = get_db().get_visible_conversation_messages(session_id, limit=limit)
+def _history_snapshot(
+    db: DatabaseManager, session_id: str, snapshot: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if snapshot is None:
+        generation = db.ensure_chat_session_generation(session_id)
+        snapshot = db.read_chat_session_snapshot(session_id)
+        if snapshot["session_generation"] != generation:
+            raise ChatSessionStateConflict()
+    if snapshot["session_id"] != session_id or not snapshot["session_generation"]:
+        raise ChatSessionStateConflict()
+    return snapshot
+
+
+def _visible_messages_from_rows(rows: Sequence[Dict[str, Any]]) -> List[VisibleMessage]:
     messages = []
     for row in rows:
         role = str(row.get("role") or "")

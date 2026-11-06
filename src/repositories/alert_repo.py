@@ -79,7 +79,10 @@ class AlertRepository:
         if target_scope:
             conditions.append(AlertRuleRecord.target_scope == target_scope)
         if target:
-            conditions.append(AlertRuleRecord.target == target)
+            if target_scope == "single_symbol":
+                conditions.append(func.lower(AlertRuleRecord.target) == target.strip().lower())
+            else:
+                conditions.append(AlertRuleRecord.target == target)
         if source:
             conditions.append(AlertRuleRecord.source == source)
 

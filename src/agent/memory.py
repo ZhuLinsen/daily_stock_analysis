@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,43 @@ class AnalysisMemoryEntry:
     outcome_5d: Optional[float] = None  # % change after 5 days
     outcome_20d: Optional[float] = None  # % change after 20 days
     was_correct: Optional[bool] = None
+
+
+@dataclass
+class DecisionSignalReview:
+    """Pre-summarized decision-signal review for one stock (read-only).
+
+    Consumed from the service-layer ReviewMemory aggregation; never mixes
+    into the ``AnalysisHistory`` text section.  ``confidence_adjustment`` of
+    ``observe`` means the evidence base is too weak for any confidence shift
+    and the payload is a caution note only.
+    """
+    stock_code: str = ""
+    sample_size: int = 0
+    completed: int = 0
+    hit_rate_pct: Optional[float] = None
+    avg_return_pct: Optional[float] = None
+    common_miss_reasons: List[str] = field(default_factory=list)
+    confidence_adjustment: str = "observe"
+    notes: str = ""
+
+    def to_prompt_line(self) -> str:
+        """Render one compact line for prompt injection."""
+        parts = [
+            f"stock={self.stock_code}",
+            f"completed={self.completed}",
+            f"sample={self.sample_size}",
+        ]
+        if self.confidence_adjustment != "observe" and self.hit_rate_pct is not None:
+            parts.append(f"hit_rate={self.hit_rate_pct}%")
+            if self.avg_return_pct is not None:
+                parts.append(f"avg_return={self.avg_return_pct}%")
+        parts.append(f"adjustment={self.confidence_adjustment}")
+        if self.common_miss_reasons:
+            parts.append("miss_reasons=" + "/".join(self.common_miss_reasons))
+        if self.notes:
+            parts.append(f"note={self.notes}")
+        return ", ".join(parts)
 
 
 class AgentMemory:
@@ -137,6 +174,40 @@ class AgentMemory:
         except Exception as exc:
             logger.debug("[AgentMemory] get_stock_history failed: %s", exc)
             return []
+
+    # -----------------------------------------------------------------
+    # Decision-signal review (read-only feedback loop, Issue #1903)
+    # -----------------------------------------------------------------
+
+    def get_decision_signal_review(self, stock_code: str) -> Optional[DecisionSignalReview]:
+        """Return the pre-summarized decision-signal review for one stock.
+
+        The aggregation lives in the service layer (ReviewMemory contract);
+        this method only maps the payload for agent consumption.  Returns
+        ``None`` when memory is disabled, the stock code is missing, or the
+        review cannot be computed — callers must treat ``None`` as "no review
+        section", preserving pre-existing behaviour.
+        """
+        if not self.enabled or not stock_code:
+            return None
+        try:
+            from src.services.decision_signal_outcome_service import (
+                DecisionSignalOutcomeService,
+            )
+            payload = DecisionSignalOutcomeService().get_stock_review(stock_code)
+            return DecisionSignalReview(
+                stock_code=str(payload.get("stock_code") or stock_code),
+                sample_size=int(payload.get("sample_size") or 0),
+                completed=int(payload.get("completed") or 0),
+                hit_rate_pct=payload.get("hit_rate_pct"),
+                avg_return_pct=payload.get("avg_return_pct"),
+                common_miss_reasons=list(payload.get("common_miss_reasons") or []),
+                confidence_adjustment=str(payload.get("confidence_adjustment") or "observe"),
+                notes=str(payload.get("notes") or ""),
+            )
+        except Exception as exc:
+            logger.debug("[AgentMemory] get_decision_signal_review failed: %s", exc)
+            return None
 
     # -----------------------------------------------------------------
     # Confidence calibration

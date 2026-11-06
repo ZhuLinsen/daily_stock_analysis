@@ -217,6 +217,21 @@ describe('GenerationBackendStatusPanel', () => {
     });
   });
 
+  it('shows the affected fields when a draft fails configuration validation', async () => {
+    previewGenerationBackendStatus.mockRejectedValueOnce({ response: { status: 400, data: {
+      error: 'validation_failed', message: 'System configuration validation failed',
+      issues: [{ key: 'LLM_MODELFLARE_API_KEY', code: 'missing_api_key', message: 'API key required' }],
+    } } });
+    render(<GenerationBackendStatusPanel
+      items={[{ key: 'LLM_MODELFLARE_API_KEY', value: '' }]} maskToken="******"
+    />);
+    expect(await screen.findByText('配置需要调整')).toBeInTheDocument();
+    expect(screen.getByText(/LLM_MODELFLARE_API_KEY：请填写此渠道的 API Key/)).toBeInTheDocument();
+    expect(screen.queryByText('请求失败')).not.toBeInTheDocument();
+    expect(screen.queryByText('codex_cli')).not.toBeInTheDocument();
+    expect(testGenerationBackend).not.toHaveBeenCalled();
+  });
+
   it('shows smoke status even when initial status has not loaded', async () => {
     getGenerationBackendStatus.mockReturnValueOnce(new Promise(() => undefined));
 

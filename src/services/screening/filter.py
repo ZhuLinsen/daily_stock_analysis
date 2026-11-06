@@ -4,7 +4,8 @@
 """L1 hard filter — apply strategy hard_filters to snapshot DataFrame."""
 
 import logging
-from dataclasses import replace
+import math
+from dataclasses import fields, replace
 
 import pandas as pd
 
@@ -100,6 +101,92 @@ def apply_hard_filters(df: pd.DataFrame, filters: HardFilterConfig) -> pd.DataFr
     mask = _filter_max(result, mask, ["atr_20_pct"], filters.atr_20_pct_max)
 
     return result.loc[mask].copy()
+
+
+def validate_check_snapshot(snapshot: object) -> dict[str, object]:
+    """Accept a bounded, flat JSON row without echoing rejected input in errors."""
+    if not isinstance(snapshot, dict) or not 1 <= len(snapshot) <= 64:
+        raise ValueError("snapshot must be an object with 1 to 64 fields")
+    for key, value in snapshot.items():
+        if not isinstance(key, str) or not 1 <= len(key) <= 64:
+            raise ValueError("snapshot field names must contain 1 to 64 characters")
+        if value is not None and not isinstance(value, (str, int, float, bool)):
+            raise ValueError("snapshot values must be JSON scalars or null")
+        if isinstance(value, int):
+            try:
+                math.isfinite(value)
+            except OverflowError as exc:
+                raise ValueError("snapshot integers must fit the finite float range") from exc
+        if isinstance(value, str) and len(value) > 256:
+            raise ValueError("snapshot text values must not exceed 256 characters")
+    return snapshot
+
+
+def check_hard_filters(snapshot: dict[str, object], filters: HardFilterConfig) -> list[dict[str, object]]:
+    """Evaluate every active condition independently on one supplied snapshot.
+
+    Reuse the pipeline predicates with one enabled condition at a time. Missing
+    or unusable observations are explicit, never an inferred passing result.
+    No market data is loaded and the existing screening path is unchanged.
+    """
+    validate_check_snapshot(snapshot)
+    checks: list[dict[str, object]] = []
+    disabled = HardFilterConfig(exclude_st=False)
+    aliases = {
+        "exclude_st": ["name", "股票名称", "名称"],
+        "amount": ["amount", "成交额"],
+        "price": ["price", "最新价", "现价"],
+        "market_cap": ["total_mv", "总市值"],
+        "pe_ttm": ["pe_ratio", "市盈率"],
+        "pb": ["pb_ratio", "市净率"],
+        "volume_ratio": ["volume_ratio", "量比"],
+        "turnover_rate": ["turnover_rate", "换手率"],
+        "change_pct": ["change_pct", "涨跌幅"],
+    }
+    for item in fields(filters):
+        name = item.name
+        threshold = getattr(filters, name)
+        if threshold is None or threshold is False or threshold == []:
+            continue
+        field = name.removeprefix("require_").removesuffix("_whitelist")
+        field = field.removesuffix("_min").removesuffix("_max")
+        columns = aliases.get(field, [field])
+        column = next((key for key in columns if key in snapshot), None)
+        current = snapshot.get(column) if column else None
+        reason = None
+        if column is None:
+            reason = "missing_field"
+        elif current is None or (isinstance(current, str) and not current.strip()):
+            reason = "missing_value"
+        elif isinstance(current, float) and not math.isfinite(current):
+            reason = "non_finite"
+        # Match numeric coercion in _filter_min/_filter_max; never serialize NaN/Inf.
+        if name.endswith(("_min", "_max")) and reason is None:
+            current = pd.to_numeric(pd.Series([current]), errors="coerce").iloc[0]
+            if pd.isna(current):
+                reason = "invalid_numeric"
+            elif not math.isfinite(current):
+                reason = "non_finite"
+            else:
+                current = current.item() if hasattr(current, "item") else current
+        if name == "exclude_st" and reason is None and not isinstance(current, str):
+            reason = "invalid_text"
+        missing = reason is not None
+        passed = None
+        if not missing:
+            condition = replace(disabled, **{name: threshold})
+            passed = not apply_hard_filters(pd.DataFrame([snapshot]), condition).empty
+        checks.append({
+            "filter": name,
+            "field": columns[0],
+            "source_field": column,
+            "threshold": threshold,
+            "current_value": None if missing else current,
+            "status": "missing" if missing else ("pass" if passed else "fail"),
+            "passed": passed,
+            "missing_reason": reason,
+        })
+    return checks
 
 
 def hard_filter_rejection_summary(

@@ -410,6 +410,32 @@ class NotificationService(
         self._history_compare_cache[cache_key] = history_by_code
         return {"history_by_code": history_by_code}
 
+    @staticmethod
+    def _empty_news_disclosure(result: "AnalysisResult", language: str = "zh") -> Optional[str]:
+        """新闻检索未执行或零命中时返回对应披露文案。
+
+        判定与文案由 src/services/empty_news 统一持有；字符串拼接渲染器与模板
+        渲染链路共用同一实现，避免同一份分析结果在部分渠道披露、另一些渠道沉默。
+        """
+        from src.services.empty_news import empty_news_disclosure
+
+        return empty_news_disclosure(result, language)
+
+    @staticmethod
+    def _append_data_sources_line(
+        lines: List[str],
+        result: AnalysisResult,
+        labels: Dict[str, str],
+    ) -> bool:
+        data_sources = getattr(result, "data_sources", None)
+        if not isinstance(data_sources, str):
+            return False
+        data_sources = data_sources.strip()
+        if not data_sources:
+            return False
+        lines.append(f"*📋 {labels['data_sources_label']}：{data_sources}*")
+        return True
+
     def generate_aggregate_report(
         self,
         results: List[AnalysisResult],
@@ -938,6 +964,9 @@ class NotificationService(
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
+                news_disclosure = self._empty_news_disclosure(r, report_language)
+                if news_disclosure:
+                    report_lines.append(news_disclosure)
         else:
             report_lines.extend([f"## 📈 {labels['report_title']}", ""])
             # 逐个股票的详细分析
@@ -1031,12 +1060,13 @@ class NotificationService(
                     news_lines.append(f"**市场情绪**：{result.market_sentiment}")
                 if hasattr(result, 'hot_topics') and result.hot_topics:
                     news_lines.append(f"**相关热点**：{result.hot_topics}")
-                if news_lines:
-                    report_lines.extend([
-                        "#### 📰 消息面/情绪面",
-                        *news_lines,
-                        "",
-                    ])
+                news_disclosure = self._empty_news_disclosure(result, report_language)
+                if news_lines or news_disclosure:
+                    report_lines.append("#### 📰 消息面/情绪面")
+                    if news_disclosure:
+                        report_lines.append(news_disclosure)
+                    report_lines.extend(news_lines)
+                    report_lines.append("")
 
                 # 综合分析
                 if result.analysis_summary:
@@ -1056,8 +1086,7 @@ class NotificationService(
                 # 数据来源说明
                 if hasattr(result, 'search_performed') and result.search_performed:
                     report_lines.append("*🔍 已执行联网搜索*")
-                if hasattr(result, 'data_sources') and result.data_sources:
-                    report_lines.append(f"*📋 数据来源：{result.data_sources}*")
+                self._append_data_sources_line(report_lines, result, labels)
 
                 # 错误信息（如果有）
                 if not result.success and result.error_message:
@@ -1303,6 +1332,11 @@ class NotificationService(
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
+                if self._report_summary_only:
+                    news_disclosure = self._empty_news_disclosure(r, report_language)
+                    if news_disclosure:
+                        report_lines.append(news_disclosure)
+                    self._append_data_sources_line(report_lines, r, labels)
             report_lines.extend([
                 "",
                 "---",
@@ -1559,12 +1593,17 @@ class NotificationService(
                             report_lines.append(f"**{volume_analysis_label}**: {result.volume_analysis}")
                         report_lines.append("")
                     # 消息面
-                    if result.news_summary:
-                        report_lines.extend([
-                            f"### 📰 {news_heading}",
-                            f"{result.news_summary}",
-                            "",
-                        ])
+                    news_disclosure = self._empty_news_disclosure(result, report_language)
+                    if result.news_summary or news_disclosure:
+                        report_lines.append(f"### 📰 {news_heading}")
+                        if news_disclosure:
+                            report_lines.append(news_disclosure)
+                        if result.news_summary:
+                            report_lines.append(f"{result.news_summary}")
+                        report_lines.append("")
+
+                if self._append_data_sources_line(report_lines, result, labels):
+                    report_lines.append("")
 
                 report_lines.extend([
                     "---",
@@ -1637,6 +1676,9 @@ class NotificationService(
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
+                news_disclosure = self._empty_news_disclosure(r, report_language)
+                if news_disclosure:
+                    lines.append(news_disclosure)
         else:
             for result in sorted_results:
                 signal_text, signal_emoji, _ = self._get_signal_level(result)
@@ -1659,6 +1701,11 @@ class NotificationService(
                     lines.append("")
                 # 重要信息区（舆情+基本面）
                 info_lines = []
+
+                # 新闻零命中时必须披露，否则企业微信这一路会静默省略
+                news_disclosure = self._empty_news_disclosure(result, report_language)
+                if news_disclosure:
+                    info_lines.append(news_disclosure)
 
                 # 业绩预期
                 if intel.get('earnings_outlook'):
@@ -1809,6 +1856,9 @@ class NotificationService(
                 f"{labels['score_label']}:{result.sentiment_score} | "
                 f"{localize_trend_prediction(result.trend_prediction, report_language)}"
             )
+            news_disclosure = self._empty_news_disclosure(result, report_language)
+            if news_disclosure:
+                lines.append(news_disclosure)
 
             # 操作理由（截断）
             if hasattr(result, 'buy_reason') and result.buy_reason:
@@ -1894,6 +1944,11 @@ class NotificationService(
                 f"{signal_text} | "
                 f"{labels['score_label']} {r.sentiment_score} | {one}"
             )
+            news_disclosure = self._empty_news_disclosure(r, report_language)
+            if news_disclosure:
+                lines.append(news_disclosure)
+            if self._append_data_sources_line(lines, r, labels):
+                lines.append("")
         lines.append("")
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         models = self._collect_models_used(results)
@@ -1950,6 +2005,12 @@ class NotificationService(
 
         # 重要信息（舆情+基本面）
         info_added = False
+        news_disclosure = self._empty_news_disclosure(result, report_language)
+        if news_disclosure:
+            lines.append(f"### 📰 {labels['info_heading']}")
+            lines.append("")
+            lines.append(news_disclosure)
+            info_added = True
         if intel:
             if intel.get('earnings_outlook'):
                 if not info_added:
