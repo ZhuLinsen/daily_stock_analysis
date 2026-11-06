@@ -4,7 +4,7 @@
 from typing import Optional
 
 
-MARKET_REVIEW_REGION_ORDER = ("cn", "hk", "us", "jp", "kr")
+MARKET_REVIEW_REGION_ORDER = ("cn", "hk", "us", "jp", "kr", "ca")
 MARKET_REVIEW_REGION_SET = frozenset(MARKET_REVIEW_REGION_ORDER)
 MARKET_REVIEW_REGION_ALL = ",".join(MARKET_REVIEW_REGION_ORDER)
 MARKET_REVIEW_REGION_VALID_INPUTS = (*MARKET_REVIEW_REGION_ORDER, "both")

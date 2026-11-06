@@ -94,6 +94,19 @@ class YfinanceFetcher(BaseFetcher):
         """
         return is_suffix_market_symbol(stock_code, "tw")
 
+    @staticmethod
+    def _is_ca_suffix_stock(stock_code: str) -> bool:
+        """Return True for supported Canadian suffix-only Yahoo symbols.
+
+        Canadian exchanges map to Yahoo Finance suffixes `.TO` (TSX),
+        `.V` (TSX Venture) and `.CNX` (Canadian Securities Exchange), with
+        alphabetic bases such as `SHOP.TO`.
+
+        `.V` also matches the plain US ticker shape (`ABC.V`), so Canadian
+        symbols must be detected before the US branch below.
+        """
+        return is_suffix_market_symbol(stock_code, "ca")
+
     def _convert_stock_code(self, stock_code: str) -> str:
         """
         转换股票代码为 Yahoo Finance 格式
@@ -125,6 +138,13 @@ class YfinanceFetcher(BaseFetcher):
         if yf_symbol:
             logger.debug(f"识别为美股指数: {code} -> {yf_symbol}")
             return yf_symbol
+
+        # 加拿大：Yahoo Finance suffix 代码（.TO / .V / .CNX），原样传给 Yahoo。
+        # 必须早于美股分支：`.V` 也符合美股 1-5 字母 + 单字母后缀的形状
+        # （如 ABC.V），否则加拿大 TSX Venture 会被误判为美股。
+        if self._is_ca_suffix_stock(code):
+            logger.debug(f"识别为加拿大 Yahoo suffix 代码: {code}")
+            return code
 
         # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
         if is_us_stock_code(code):
@@ -353,7 +373,7 @@ class YfinanceFetcher(BaseFetcher):
         获取主要指数行情 (Yahoo Finance)，支持 A 股、美股、港股、日股、韩股与台股。
         region=us 时委托给 _get_us_main_indices。
         region=hk 时委托给 _get_hk_main_indices。
-        region=jp/kr/tw 时分别委托给对应市场指数方法。
+        region=jp/kr/tw/ca 时分别委托给对应市场指数方法。
         """
         import yfinance as yf
 
@@ -367,6 +387,8 @@ class YfinanceFetcher(BaseFetcher):
             return self._get_kr_main_indices(yf)
         if region == "tw":
             return self._get_tw_main_indices(yf)
+        if region == "ca":
+            return self._get_ca_main_indices(yf)
 
         # A 股指数：akshare 代码 -> (yfinance 代码, 显示名称)
         yf_mapping = {
@@ -524,6 +546,29 @@ class YfinanceFetcher(BaseFetcher):
                 return results
         except Exception as e:
             logger.error(f"[Yfinance] 获取台湾指数行情失败: {e}")
+        return None
+
+    def _get_ca_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
+        """获取加拿大主要指数行情（S&P/TSX Composite、S&P/TSX Venture Composite），复用 _fetch_yf_ticker_data。"""
+        ca_indices = {
+            '^GSPTSE': ('^GSPTSE', 'S&P/TSX Composite'),
+            '^CDNX': ('^CDNX', 'S&P/TSX Venture Composite'),
+        }
+        results = []
+        try:
+            for yf_symbol, name in ca_indices.items():
+                try:
+                    item = self._fetch_yf_ticker_data(yf, yf_symbol, name, yf_symbol)
+                    if item:
+                        results.append(item)
+                        logger.debug(f"[Yfinance] 获取加拿大指数 {name} 成功")
+                except Exception as e:
+                    logger.warning(f"[Yfinance] 获取加拿大指数 {name} 失败: {e}")
+            if results:
+                logger.info(f"[Yfinance] 成功获取 {len(results)} 个加拿大指数行情")
+                return results
+        except Exception as e:
+            logger.error(f"[Yfinance] 获取加拿大指数行情失败: {e}")
         return None
 
     def _is_us_stock(self, stock_code: str) -> bool:

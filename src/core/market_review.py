@@ -47,6 +47,7 @@ _MARKET_REVIEW_MARKETS = (
     ('us', 'us_title', '美股'),
     ('jp', 'jp_title', '日股'),
     ('kr', 'kr_title', '韩股'),
+    ('ca', 'ca_title', '加股'),
 )
 _MARKET_REVIEW_REGION_ORDER = MARKET_REVIEW_REGION_ORDER
 
@@ -123,6 +124,7 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "hk_title": "# HK Market Recap",
             "jp_title": "# Japan Market Recap",
             "kr_title": "# Korea Market Recap",
+            "ca_title": "# Canada Market Recap",
             "separator": "> Next market recap follows",
         }
     if normalized == "ko":
@@ -138,12 +140,13 @@ def _get_market_review_text(language: str) -> dict[str, str]:
         }
     return {
         "root_title": "# 🎯 大盘复盘",
-        "push_title": "🎯 大盘复盘",
+        "push_title": "# 🎯 大盘复盘",
         "cn_title": "# A股大盘复盘",
         "us_title": "# 美股大盘复盘",
         "hk_title": "# 港股大盘复盘",
         "jp_title": "# 日股大盘复盘",
         "kr_title": "# 韩股大盘复盘",
+        "ca_title": "# 加拿大大盘复盘",
         "separator": "> 以下为下一市场大盘复盘",
     }
 
