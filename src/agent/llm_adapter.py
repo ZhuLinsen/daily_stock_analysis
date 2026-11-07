@@ -8,6 +8,7 @@ interface consumed by the AgentExecutor, via LiteLLM.
 
 import json
 import logging
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -805,6 +806,25 @@ class LLMToolAdapter:
         """Return the raw configured temperature before per-model normalization."""
         return float(self._config.llm_temperature)
 
+    @staticmethod
+    def _nan_safe_dumps(obj: Any) -> str:
+        """Serialize to JSON, replacing NaN/Infinity/numpy-float with null."""
+        def _sanitize(o: Any) -> Any:
+            # Handle numpy types (array, float64, etc.) first via tolist()
+            if hasattr(o, "tolist"):
+                return o.tolist()
+            # Handle Python plain floats that are NaN or Infinity
+            if isinstance(o, float) and not math.isfinite(o):
+                return None
+            if isinstance(o, dict):
+                return {k: _sanitize(v) for k, v in o.items()}
+            if isinstance(o, list):
+                return [_sanitize(item) for item in o]
+            if isinstance(o, tuple):
+                return tuple(_sanitize(item) for item in o)
+            return o
+        return json.dumps(_sanitize(obj))
+
     def _convert_messages(
         self,
         messages: List[Dict[str, Any]],
@@ -826,7 +846,7 @@ class LLMToolAdapter:
                 openai_messages.append({
                     "role": "tool",
                     "tool_call_id": msg.get("tool_call_id", ""),
-                    "content": msg["content"] if isinstance(msg["content"], str) else json.dumps(msg["content"]),
+                    "content": msg["content"] if isinstance(msg["content"], str) else self._nan_safe_dumps(msg["content"]),
                 })
             elif msg["role"] == "assistant" and msg.get("tool_calls"):
                 openai_tc = []
@@ -836,7 +856,7 @@ class LLMToolAdapter:
                         "type": "function",
                         "function": {
                             "name": tc["name"],
-                            "arguments": json.dumps(tc["arguments"]),
+                            "arguments": self._nan_safe_dumps(tc["arguments"]),
                         },
                     }
                     provider_specific_fields = dict(tc.get("provider_specific_fields") or {})

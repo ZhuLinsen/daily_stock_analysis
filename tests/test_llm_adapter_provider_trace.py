@@ -496,3 +496,26 @@ def test_parse_litellm_response_hmac_covers_tool_call_wire_messages(monkeypatch)
     assert first.usage["messages_hmac"]
     assert second.usage["messages_hmac"]
     assert first.usage["messages_hmac"] != second.usage["messages_hmac"]
+
+
+def test_nan_safe_dumps_replaces_nan_and_inf_with_null() -> None:
+    """Test that _nan_safe_dumps handles NaN and Infinity correctly (#1704)."""
+    import json
+    result = LLMToolAdapter._nan_safe_dumps({"val": float("nan"), "normal": 42})
+    parsed = json.loads(result)
+    assert parsed == {"val": None, "normal": 42}
+
+    result2 = LLMToolAdapter._nan_safe_dumps({"inf": float("inf"), "neg_inf": float("-inf")})
+    parsed2 = json.loads(result2)
+    assert parsed2["inf"] is None
+    assert parsed2["neg_inf"] is None
+
+    # Nested structures
+    nested = {"outer": {"inner": [1.0, float("nan"), 3.0]}}
+    result3 = LLMToolAdapter._nan_safe_dumps(nested)
+    parsed3 = json.loads(result3)
+    assert parsed3 == {"outer": {"inner": [1.0, None, 3.0]}}
+
+    # Normal dicts still work
+    result4 = LLMToolAdapter._nan_safe_dumps({"a": 1, "b": "hello"})
+    assert json.loads(result4) == {"a": 1, "b": "hello"}
