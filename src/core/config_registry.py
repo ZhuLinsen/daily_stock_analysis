@@ -786,7 +786,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 10,
+        "display_order": 13,
         "help_key": "settings.data_source.TUSHARE_TOKEN",
         "examples": [
             "TUSHARE_TOKEN=your_tushare_token",
@@ -871,7 +871,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 20,
+        "display_order": 23,
     },
     "MX_PRIORITY": {
         "title": "MiaoXiang Data Source Priority",
@@ -885,7 +885,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "6",
         "options": [],
         "validation": {"min": 0, "max": 99},
-        "display_order": 21,
+        "display_order": 24,
     },
     "TICKFLOW_BATCH_SIZE": {
         "title": "TickFlow Batch Size",
@@ -948,8 +948,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "warning_codes": [],
     },
     "FUTU_HK_REALTIME_SOURCE_PRIORITY": {
-        "title": "Futu 港股实时数据源优先级",
-        "description": "港股实时行情优先级，可选 futu、longbridge、akshare、yfinance。未配置 OpenD 时自动跳过 futu。",
+        "title": "Futu HK Realtime Source Priority",
+        "description": "HK realtime quote provider order: futu, longbridge, akshare, or yfinance, comma-separated. futu is skipped when OpenD is not configured.",
         "category": "data_source",
         "data_type": "string",
         "ui_control": "text",
@@ -982,7 +982,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 16,
+        "display_order": 5,
         "help_key": "settings.data_source.stock_index_remote",
         "examples": [
             "STOCK_INDEX_REMOTE_UPDATE_ENABLED=true",
@@ -1045,7 +1045,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "tencent,akshare_sina,efinance,akshare_em",
         "options": [],
         "validation": {},
-        "display_order": 20,
+        "display_order": 9,
         "help_key": "settings.data_source.REALTIME_SOURCE_PRIORITY",
         "examples": [
             "REALTIME_SOURCE_PRIORITY=tencent,akshare_sina,efinance,akshare_em",
@@ -1070,7 +1070,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 21,
+        "display_order": 6,
         "help_key": "settings.data_source.realtime_quotes",
         "examples": [
             "ENABLE_REALTIME_TECHNICAL_INDICATORS=true",
@@ -1096,7 +1096,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {"multi_value": True, "delimiter": ","},
-        "display_order": 22,
+        "display_order": 25,
         "help_key": "settings.data_source.search_api_keys",
         "examples": [
             "ANSPIRE_API_KEYS=key1,key2",
@@ -1189,7 +1189,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {"multi_value": True, "delimiter": ","},
-        "display_order": 53,
+        "display_order": 54,
     },
     "SEARXNG_BASE_URLS": {
         "title": "SearXNG Base URLs",
@@ -1248,7 +1248,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 22,
+        "display_order": 7,
         "help_key": "settings.data_source.realtime_quotes",
         "examples": [
             "ENABLE_REALTIME_QUOTE=true",
@@ -1274,7 +1274,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 23,
+        "display_order": 8,
         "help_key": "settings.data_source.ENABLE_CHIP_DISTRIBUTION",
         "examples": [
             "ENABLE_CHIP_DISTRIBUTION=true",
@@ -1300,7 +1300,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "3",
         "options": [],
         "validation": {"min": 1, "max": 30},
-        "display_order": 60,
+        "display_order": 10,
         "help_key": "settings.data_source.news_window",
         "examples": [
             "NEWS_MAX_AGE_DAYS=3",
@@ -1326,7 +1326,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "short",
         "options": ["ultra_short", "short", "medium", "long"],
         "validation": {"enum": ["ultra_short", "short", "medium", "long"]},
-        "display_order": 61,
+        "display_order": 11,
         "help_key": "settings.data_source.news_window",
         "examples": [
             "NEWS_STRATEGY_PROFILE=short",
@@ -1352,7 +1352,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "5.0",
         "options": [],
         "validation": {"min": 0.0, "max": 50.0},
-        "display_order": 62,
+        "display_order": 12,
     },
     "PYTDX_HOST": {
         "title": "Pytdx Host",
