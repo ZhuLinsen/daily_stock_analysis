@@ -6,9 +6,9 @@
 
 - 指标层(`metrics.py`)是纯函数:只消费轨迹日志与 golden 样例,不 import `src/`,不触网、不调 LLM,可离线单测。
 - 入口(`run_eval.py`)通过 `build_agent_executor()` 构建真实执行器,与 `src/core/pipeline.py` 使用同一个执行捕获钩子,消费真实产物。
-- 入口支持**单 agent 与多 Agent 运行**(`AGENT_ARCH=single|multi`,默认仍为 single):多 Agent 结果保留原有扁平 `tool_calls_log` 指标,并通过显式 `stage_trajectories` 快照增加阶段状态与局部/累计步数报告。没有阶段快照时,单 agent 命令与 JSON 结构保持不变。
+- 入口支持**单 agent 与多 Agent 运行**(`AGENT_ARCH=single|multi`,默认仍为 single):多 Agent 结果保留原有扁平 `tool_calls_log` 指标,并通过显式 `stage_trajectories` 快照增加阶段状态与局部/累计步数报告。没有阶段快照时,单 agent 命令保持不变;JSON 仅追加股票范围诊断字段。
 - 入口用真实工具注册表校验 golden:`expected_tools` 拼错或过期会被判为无效样例(退出码 1),而不是静默按低命中继续评分。
-- 本次冻结**最小指标契约**,股票 guard、Codex `arguments_summary` 等扩展语义明确留给后续 PR(见文末「不在范围」)。
+- 保留原有**最小指标契约**,另以 `stock_scope_metrics` 报告股票范围诊断(Refs #2394);Codex `arguments_summary` 与严格 Chat 身份判定仍留给后续 PR。
 
 ## 快速开始
 
@@ -36,7 +36,7 @@ python evals/agent_trajectory/run_eval.py --all --json-out eval_report.json
 
 | 指标 | 定义 |
 | --- | --- |
-| `expected_hit_rate` / `missing_expected` | 期望工具按**工具名**命中(本版不做股票维度判定);`expected_total` 为去重后的期望数 |
+| `expected_hit_rate` / `missing_expected` | 期望工具仍按**工具名**命中(股票范围另行报告);`expected_total` 为去重后的期望数 |
 | `optional_tools_used` | 期望集合之外实际调用的工具;`allow_optional_tools=false` 时记为违规 |
 | `redundant_calls` | 同一 (tool, args-key) 对在首次出现之后的每一次出现(不论成败)。args-key = `json.dumps(arguments, sort_keys=True, default=str)`,与运行时缓存键同思路 |
 | `retries` | 紧跟**失败**之后重试同一 (tool, args-key) 对;`retries ⊆ redundant_calls`。成功会清除该对的失败态:`fail → success → success` 只计 1 次 retry(后一次 success 仅计冗余) |
@@ -66,7 +66,7 @@ golden 样例可选增加 `expected_stages` 字段:
 }
 ```
 
-未配置时仍会报告实际阶段和状态,但阶段命中率显示为未配置;这不会改变现有单 agent 样例的 JSON 字段。
+未配置时仍会报告实际阶段和状态,但阶段命中率显示为未配置;这不会改变现有单 agent 样例的原指标字段。
 
 ## Golden 样例 schema
 
@@ -76,7 +76,8 @@ golden 样例可选增加 `expected_stages` 字段:
 | --- | --- | --- |
 | `id` | string | 唯一样例 id(必填) |
 | `task_description` | string | 交给执行器的任务文本(必填) |
-| `stock_code` | string | 原样传入 runner context(`{"stock_code": ...}`);空串 = 无 context;不参与打分 |
+| `stock_code` | string | 原样传入 runner context(`{"stock_code": ...}`);空串 = 无 context;默认作为股票范围,不改变原工具命中率 |
+| `allowed_stock_codes` | string[] / null | 可选允许股票列表;省略或 null 使用 `stock_code`;显式列表必须非空、无空白项或重复项,支持多股对比并覆盖默认范围 |
 | `expected_tools` | string[] | 期望工具名(必填,非空、无重复) |
 | `allowed_max_steps` | int | 步数预算启发式(默认 10,>= 1) |
 | `allow_optional_tools` | bool | 是否容忍期望外工具(默认 true) |
@@ -94,7 +95,8 @@ golden 样例可选增加 `expected_stages` 字段:
   "task_description": "…",
   "stock_code": "600519",
   "metrics": { "expected_hit_rate": …, "expected_total": …, "…": "… 共 11 个字段" },
-  "violations": ["…"]
+  "violations": ["…"],
+  "stock_scope_metrics": { "enabled": true, "allowed_stock_codes": ["600519"], "…": "…" }
 }
 ```
 
@@ -102,8 +104,35 @@ golden 样例可选增加 `expected_stages` 字段:
 
 含阶段快照的多 Agent 报告会在上述对象中追加 `run_status` (`completed` / `failed`) 与 `stage_metrics` 字段;原有 `metrics` 字段继续表示扁平工具轨迹指标。运行失败但携带阶段快照时,JSON 报告仍会写出,进程退出码为 1。
 
+## 股票范围诊断(Refs #2394)
+
+`run_eval.py` 仍调用 `executor.run()`，不会为了评估建立 Chat 运行时 guard。因此诊断直接检查工具参数，不依赖 `guarded` 是否存在。原有 `metrics`、`violations`、工具名命中率和退出码保持原语义；越界先作为独立报告项，不升级为 gate，也不改变线上分析/拦截逻辑。
+
+入口通过真实工具定义和 `_is_stock_scoped_tool` 注入受限工具集合，并通过 `_normalize_guard_stock_code` 与同一指数注册表注入归一化函数。`metrics.py` 仍不 import `src/`。例如 `600519` / `SH600519`、`HK00700` / `0700.HK` 视为同一标的，注册指数与同数字股票仍分开；`get_market_indices` 等没有 `stock_code` 参数的大盘工具不参与范围判定。
+
+单样例 JSON 顶层追加 `stock_scope_metrics`，多 Agent 的每个 `stage_metrics.stage_metrics[]` 也追加同名局部诊断：
+
+| 字段 | 说明 |
+| --- | --- |
+| `enabled` / `allowed_stock_codes` | 是否配置了可评估范围及归一化后去重的允许代码；无 `stock_code` 且未声明列表时为 false，不把未知范围当成零违规证明 |
+| `evaluated_calls` / `in_scope_calls` | 有显式 `arguments.stock_code` 的受限工具调用数 / 其中落在允许范围的次数 |
+| `out_of_scope_calls` / `out_of_scope_details` | 越界请求次数及每次的 `step`、`tool`、归一化 `requested_stock_code`、允许代码和 `guarded`；失败、缓存和已拦截请求都计数 |
+| `unscorable_calls` | 配置范围后，受限工具缺少结构化 `arguments` 或 `stock_code` 的次数；不从查询文本、`arguments_summary` 或日志允许范围猜测；显式 null/空标的会被评估为越界 |
+| `guarded_calls` | 日志中 `guarded=true` 的次数，独立于越界数；身份不可用、资产不支持等原因也可能触发 guard，不能直接等同越界 |
+| `validation_issues` | 直接构造非法 golden 范围时的校验问题；禁用该非法范围的评分，避免静默放宽；文件加载路径直接拒绝非法 golden |
+
+同一调用在顶层按扁平日志统计一次，在所属阶段按该阶段日志统计一次；不要把顶层与阶段数相加。阶段明细保留局部 step，累计 step 仍由原有阶段报告提供。显式允许列表覆盖默认 `stock_code`；它只定义评分期望，不改变执行器 context 或注入运行时权限。
+
+新增 `600519_ignore_distractor` 样例要求只查询茅台，文本中另提平安银行作为干扰。以下命令会使用真实模型/数据源，可能产生费用；离线测试不调用这些服务：
+
+```bash
+python evals/agent_trajectory/run_eval.py --sample 600519_ignore_distractor --json-out scope_report.json
+python -m pytest tests/test_agent_trajectory_metrics.py tests/test_agent_trajectory_run_eval.py -q
+```
+
 ## 不在范围(后续 PR)
 
-- 股票维度命中判定与 guard 拦截语义(`guarded` / 越界调用违规)
+- 按股票维度重定义期望工具命中率,或把越界请求提升为原有 `violations` / CI 门禁
+- 改走 Chat 入口、严格 Chat 身份/资产支持校验,以及从自然语言查询推断股票范围
 - Codex App Server 的 `arguments_summary` 方言识别
 - 任何 `.env` / 运行时配置与 CI 门禁(本 PR 不改变现有分析流程、调度语义或 CI 阻断规则)

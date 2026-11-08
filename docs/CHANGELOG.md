@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [修复] 启动日志不再对 `--stocks` / `--portfolio` / `--no-notify` 已覆盖的配置项告警；单一日线数据源失败（含 Eastmoney 股票与 ETF 请求）降为 WARNING，普通股票及 A 股指数全部日线数据源失败仍为 ERROR；LLM 返回与调试日志显示实际响应模型（含流式响应），依据实际调用路由标注回退，避免将别名、供应商前缀和日期版本差异误报为回退
 - [文档] 修正 DeepSeek 默认模型说明，明确 Gemini API 与 Vertex AI 的模型生命周期及验证边界。
+- [修复] 深度研究合成阶段预算增至受剩余整体预算限制的 120 秒；阶段/provider 超时保留阶段、实际耗时与原始原因，研究 API 不再误报整体预算耗尽或清零已知 token 用量（#2475）。
+
+- [??] ?? DeepSeek ??????????? Gemini API ? Vertex AI ????????????
 
 - [改进] 更新默认模型：Gemini 主模型 `gemini-3.6-flash`、备用 `gemini-3.5-flash-lite`，选股默认同步；OpenAI 默认 `gpt-6.1-sol`（选股与 PR 审查兜底同步，不再回落到 `gpt-4o-mini`）；仅配置 `DEEPSEEK_API_KEY` 时默认 `deepseek-v4-flash`。未显式配置模型的用户将自动切换，显式配置不受影响
 - [修复] GPT-6 系列请求时省略 `temperature`，与 GPT-5 / o 系列一致，避免服务端拒绝非默认采样参数
@@ -36,7 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] 文档中心补充 `market-support.md` 入口，与 README / 完整指南的市场支持链接保持一致。
 - [修复] 美股社交舆情 Reddit 个股端点切换至现行 Adanos 契约 `/reddit/stocks/v1/stock/{ticker}`（旧 `/reddit/stocks/v1/report/{ticker}` 已下线、固定 404，导致 Reddit 段落始终显示无数据）；适配官方契约 200+`found=false` 无数据语义：`get_social_context` 在证据登记前将空报告归一化为平台无数据，三源全空返回 `None` 且不再误置 `news_evidence_present`（X/Polymarket 有数据时贡献保留）；mention 正文按 `text_snippet`→`text`→`title` 回退，日线情绪 `sentiment_score` 优先且保留真实零值，旧字段 `avg_sentiment` 兼容回退（#2448）。
 - [修复] Futu OpenD 未运行或协议未就绪时，FutuFetcher 改为异步连接并最多等待 5 秒，失败后关闭连接、只记录一条警告并在 5 分钟内跳过 Futu，港股请求回退到其他数据源，不再因 SDK 同步构造无限重连而卡住整轮分析（#2447）。
+- [改进] 持仓风险的板块集中度按股票代码在进程内缓存所属板块 24 小时（仅缓存成功结果），重复打开或刷新持仓页时不再对每只 A 股持仓重新经过数据源限速请求；此前多只持仓时每次加载风险模块都要等待数十秒，容易触发前端 30 秒超时降级（Refs #1945）。
 - [修复] 大盘 Market Light 评分和中英文指数均值排除 VIX 波动率涨跌幅，保留原始行情展示；仅有 VIX 时指数维度标为不可用，告警沿用跳过语义（#2472）。
+
+- [改进] Agent 轨迹评估增加独立股票范围诊断与干扰股票样例，区分越界请求、运行时拦截和无法判定调用，支持多股对比及阶段明细，不改变原指标或退出码。
 
 ## [3.33.0] - 2026-10-15
 
