@@ -1285,6 +1285,12 @@ System defaults to AkShare (free), also supports other data sources:
 
 ## Advanced Features
 
+### Deep Research Stage Budgets and Timeout Diagnostics
+
+`/research` and `/api/v1/agent/research` use `AGENT_DEEP_RESEARCH_TIMEOUT` as the overall research budget. Planning keeps a 15-second per-completion limit; report synthesis has a 120-second limit. Both are clamped to the remaining overall budget. Increasing the overall budget does not give each stage all remaining time, and SDK network retries are not a strict wall-clock termination guarantee.
+
+Stage/provider timeouts retain the stage, actual elapsed research time, overall budget and original cause instead of claiming the overall budget was exhausted. `ResearchResult.timed_out` still covers stage/provider and overall-deadline timeouts; callers should inspect `error`. The HTTP response schema is unchanged and preserves known `token_usage` on failure; usage not returned by a failed call is not included. A timeout still returns `success=false`, never a successful complete report.
+
 ### Hong Kong Stock Support
 
 Use `hk` prefix for HK stock codes:
