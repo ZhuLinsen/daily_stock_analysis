@@ -31,6 +31,62 @@ def test_exhausted_synthesis_budget_does_not_call_the_model():
     adapter.call_text.assert_not_called()
 
 
+@pytest.mark.parametrize("route", ["direct", "channel-router", "legacy-router"])
+@pytest.mark.parametrize("remaining,elapsed", [(600, 7), (17, 7), (17, 17)])
+def test_synthesis_budget_reaches_model_calls_and_bounds_fallback(route, remaining, elapsed):
+    from src.agent.llm_adapter import LLMToolAdapter
+    from src.config import Config
+
+    primary = "openai/research-primary"
+    fallback = "anthropic/research-fallback"
+    config = Config(litellm_model=primary, litellm_fallback_models=[fallback],
+                    llm_prompt_cache_telemetry_enabled=False)
+    if route == "channel-router":
+        config.llm_model_list = [{
+            "model_name": primary,
+            "litellm_params": {"model": primary, "api_key": "synthetic-key"},
+        }]
+    elif route == "legacy-router":
+        config.openai_api_keys = ["synthetic-key-1", "synthetic-key-2"]
+
+    clock = [0.0]
+    calls = []
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="Synthetic report", tool_calls=[]))],
+        usage={"prompt_tokens": 3, "completion_tokens": 8, "total_tokens": 11},
+    )
+
+    def complete(**kwargs):
+        calls.append((kwargs["model"], kwargs["timeout"]))
+        if kwargs["model"] == primary:
+            clock[0] += elapsed
+            raise TimeoutError("Synthetic primary request timed out")
+        return response
+
+    # Keep the real adapter/routing/recovery stack; replace only model I/O and the clock.
+    with patch("src.agent.llm_adapter.Router") as router, \
+         patch("src.agent.llm_adapter.litellm.completion", side_effect=complete) as direct, \
+         patch("src.agent.llm_adapter.time.time", side_effect=lambda: clock[0]):
+        router.return_value.completion.side_effect = complete
+        adapter = LLMToolAdapter(config=config)
+        agent = ResearchAgent(tool_registry=None, llm_adapter=adapter)
+        result = agent._synthesise_report("Synthetic question", [], None, timeout_seconds=remaining)
+
+    budget = min(120, remaining)
+    assert calls[0] == (primary, budget)
+    assert router.return_value.completion.call_count == (0 if route == "direct" else 1)
+    if elapsed < budget:
+        assert calls == [(primary, budget), (fallback, budget - elapsed)]
+        assert direct.call_count == (2 if route == "direct" else 1)
+        assert result["content"] == "Synthetic report"
+        assert result["tokens"] == 11
+    else:
+        assert calls == [(primary, budget)]
+        assert direct.call_count == (1 if route == "direct" else 0)
+        assert result["timed_out"] is True
+        assert "timed out before trying fallback" in result["error"]
+
+
 @pytest.mark.parametrize("phase", ["decompose", "sub-question 1", "synthesis"])
 def test_stage_timeout_preserves_cause_and_does_not_claim_overall_budget_exhaustion(phase):
     agent = ResearchAgent(tool_registry=None, llm_adapter=MagicMock())
