@@ -90,7 +90,7 @@ class LLMResponse:
     provider_blocks: List[Dict[str, Any]] = field(default_factory=list)  # Opaque provider content blocks (e.g. Claude thinking/redacted_thinking)
     usage: Dict[str, Any] = field(default_factory=dict)       # token usage info
     provider: str = ""                     # which provider handled this call
-    model: str = ""                        # full model name used (e.g. gemini/gemini-2.0-flash), for report meta
+    model: str = ""                        # full model name used (e.g. gemini/gemini-3.6-flash), for report meta
     raw: Any = None                        # raw provider response for debugging
 
 
