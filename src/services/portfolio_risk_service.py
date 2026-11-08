@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, timedelta
+from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import Config, get_config
@@ -20,6 +22,13 @@ DEFENSIVE_DECISION_SIGNAL_ACTIONS = ("sell", "reduce", "alert")
 
 class PortfolioRiskService:
     """Compute portfolio risk blocks on top of replayed snapshot data."""
+
+    # Board membership rarely changes, but each lookup goes through the provider
+    # rate limiter (efinance sleeps 1.5-3s per call) and the risk endpoint builds
+    # a new service per request, so non-empty results are shared per process.
+    _BELONG_BOARDS_CACHE_TTL_SECONDS = 24 * 60 * 60
+    _belong_boards_cache_lock = Lock()
+    _belong_boards_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 
     def __init__(
         self,
@@ -419,14 +428,36 @@ class PortfolioRiskService:
         board_cache[cache_key] = "UNCLASSIFIED"
         return board_cache[cache_key]
 
+    @classmethod
+    def clear_belong_boards_cache_for_tests(cls) -> None:
+        with cls._belong_boards_cache_lock:
+            cls._belong_boards_cache.clear()
+
     def _fetch_belong_boards(self, symbol: str) -> List[Dict[str, Any]]:
+        cls = self.__class__
+        now = time.monotonic()
+        with cls._belong_boards_cache_lock:
+            cached = cls._belong_boards_cache.get(symbol)
+        if cached and cached[0] > now:
+            return [dict(item) for item in cached[1]]
+
         manager = self._get_data_manager()
         if manager is None:
             return []
         result = manager.get_belong_boards(symbol)
-        if isinstance(result, list):
-            return result
-        return []
+        if not isinstance(result, list):
+            return []
+        if result:
+            # Empty or failed lookups are not cached, so the next request retries them.
+            expires_at = time.monotonic() + cls._BELONG_BOARDS_CACHE_TTL_SECONDS
+            with cls._belong_boards_cache_lock:
+                for key in [key for key, value in cls._belong_boards_cache.items() if value[0] <= now]:
+                    cls._belong_boards_cache.pop(key, None)
+                cls._belong_boards_cache[symbol] = (
+                    expires_at,
+                    [dict(item) for item in result if isinstance(item, dict)],
+                )
+        return result
 
     @staticmethod
     def _pick_primary_board_name(boards: List[Dict[str, Any]]) -> Optional[str]:
