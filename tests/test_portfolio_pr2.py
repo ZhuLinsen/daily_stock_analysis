@@ -988,6 +988,48 @@ class PortfolioRiskBoardCacheTestCase(unittest.TestCase):
         self.assertEqual(boards, [{"name": "饮料制造", "type": "行业"}])
         self.assertEqual(manager.get_belong_boards.call_count, 2)
 
+    def test_failed_lookup_through_data_manager_is_retried(self) -> None:
+        from data_provider.base import DataFetcherManager
+
+        class _FlakyBoardFetcher:
+            name = "FlakyBoardFetcher"
+            priority = 1
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_belong_board(self, stock_code: str) -> pd.DataFrame:
+                self.calls += 1
+                if self.calls == 1:
+                    raise ConnectionError("upstream timeout")
+                return pd.DataFrame({"板块名称": ["白酒"], "板块代码": ["BK0896"], "板块类型": ["行业"]})
+
+        fetcher = _FlakyBoardFetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        # The manager turns the provider error into an empty list; that must not be cached.
+        self.assertEqual(self._new_service(manager)._fetch_belong_boards("600519"), [])
+        retried = self._new_service(manager)._fetch_belong_boards("600519")
+        cached = self._new_service(manager)._fetch_belong_boards("600519")
+
+        self.assertEqual([board["name"] for board in retried], ["白酒"])
+        self.assertEqual(cached, retried)
+        self.assertEqual(fetcher.calls, 2)
+
+    def test_changing_returned_boards_does_not_change_the_cache(self) -> None:
+        manager = MagicMock()
+        manager.get_belong_boards.return_value = [{"name": "白酒", "type": "行业"}]
+
+        first = self._new_service(manager)._fetch_belong_boards("600519")
+        first[0]["name"] = "changed by caller"
+        first.append({"name": "extra", "type": "行业"})
+        hit = self._new_service(manager)._fetch_belong_boards("600519")
+        hit[0]["name"] = "changed again"
+        again = self._new_service(manager)._fetch_belong_boards("600519")
+
+        self.assertEqual(again, [{"name": "白酒", "type": "行业"}])
+        self.assertEqual(manager.get_belong_boards.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
