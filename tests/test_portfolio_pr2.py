@@ -906,5 +906,88 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertIn("stop_loss", payload)
 
 
+class PortfolioRiskBoardCacheTestCase(unittest.TestCase):
+    """Sector lookups should not hit the rate-limited provider on every risk request."""
+
+    def setUp(self) -> None:
+        PortfolioRiskService.clear_belong_boards_cache_for_tests()
+        self.addCleanup(PortfolioRiskService.clear_belong_boards_cache_for_tests)
+
+    @staticmethod
+    def _new_service(manager: MagicMock) -> PortfolioRiskService:
+        portfolio_service = MagicMock()
+        portfolio_service.convert_amount.side_effect = lambda *, amount, **_kwargs: (amount, False, "")
+        service = PortfolioRiskService(
+            repo=MagicMock(),
+            portfolio_service=portfolio_service,
+            decision_signal_service=MagicMock(),
+            config=SimpleNamespace(),
+        )
+        service._data_manager = manager
+        return service
+
+    @staticmethod
+    def _snapshot() -> dict:
+        return {
+            "total_market_value": 300.0,
+            "accounts": [
+                {
+                    "market": "cn",
+                    "base_currency": "CNY",
+                    "positions": [
+                        {"symbol": "600519", "market": "cn", "market_value_base": 200.0},
+                        {"symbol": "600036", "market": "cn", "market_value_base": 100.0},
+                    ],
+                }
+            ],
+        }
+
+    def test_sector_lookups_are_reused_by_later_requests(self) -> None:
+        boards = {
+            "600519": [{"name": "白酒", "type": "行业"}],
+            "600036": [{"name": "银行", "type": "行业"}],
+        }
+        manager = MagicMock()
+        manager.get_belong_boards.side_effect = lambda symbol: [dict(item) for item in boards[symbol]]
+
+        # The risk endpoint builds a new service for every request.
+        results = [
+            self._new_service(manager)._build_sector_concentration(
+                self._snapshot(), 50.0, as_of_date=date(2026, 1, 1)
+            )
+            for _ in range(2)
+        ]
+
+        for result in results:
+            self.assertEqual([row["sector"] for row in result["top_sectors"]], ["白酒", "银行"])
+            self.assertEqual(result["coverage"]["classified_count"], 2)
+        self.assertEqual(manager.get_belong_boards.call_count, 2)
+
+    def test_empty_belong_boards_are_not_cached(self) -> None:
+        manager = MagicMock()
+        manager.get_belong_boards.side_effect = [[], [{"name": "白酒", "type": "行业"}]]
+
+        self.assertEqual(self._new_service(manager)._fetch_belong_boards("600519"), [])
+        self.assertEqual(
+            self._new_service(manager)._fetch_belong_boards("600519"),
+            [{"name": "白酒", "type": "行业"}],
+        )
+        self.assertEqual(manager.get_belong_boards.call_count, 2)
+
+    def test_expired_belong_boards_are_fetched_again(self) -> None:
+        manager = MagicMock()
+        manager.get_belong_boards.side_effect = [
+            [{"name": "白酒", "type": "行业"}],
+            [{"name": "饮料制造", "type": "行业"}],
+        ]
+
+        with patch.object(PortfolioRiskService, "_BELONG_BOARDS_CACHE_TTL_SECONDS", -1):
+            self._new_service(manager)._fetch_belong_boards("600519")
+            boards = self._new_service(manager)._fetch_belong_boards("600519")
+
+        self.assertEqual(boards, [{"name": "饮料制造", "type": "行业"}])
+        self.assertEqual(manager.get_belong_boards.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
