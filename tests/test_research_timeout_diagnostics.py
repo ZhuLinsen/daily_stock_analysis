@@ -1,4 +1,5 @@
 """Deterministic coverage for research stage budgets and timeout provenance."""
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -72,8 +73,7 @@ def test_overall_deadline_expiry_still_stops_before_planning():
     assert "timed out after 600s" in result.error
 
 
-@pytest.mark.asyncio
-async def test_research_api_keeps_stage_error_and_known_token_usage():
+def test_research_api_keeps_stage_error_and_known_token_usage():
     from api.v1.endpoints.agent import ResearchRequest, agent_research
 
     config = SimpleNamespace(is_agent_available=lambda: True, agent_deep_research_budget=30000,
@@ -85,7 +85,7 @@ async def test_research_api_keeps_stage_error_and_known_token_usage():
          patch("src.agent.factory.get_tool_registry", return_value=MagicMock()), \
          patch("src.agent.llm_adapter.LLMToolAdapter", return_value=MagicMock()), \
          patch("api.v1.endpoints.agent._run_research_in_background", new=AsyncMock(return_value=failure)):
-        result = await agent_research(ResearchRequest(question="Synthetic question"))
+        result = asyncio.run(agent_research(ResearchRequest(question="Synthetic question")))
     assert result.success is False
     assert result.error == failure.error
     assert result.token_usage == 42
