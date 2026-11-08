@@ -1,19 +1,10 @@
 """Public macroeconomic tools consumed by the stock analysis agent."""
 
-from __future__ import annotations
-
 from copy import deepcopy
 import logging
 import os
 
-try:
-    from fxmacrodata_public import FXMacroDataClient, list_operations
-except (ImportError, FileNotFoundError):  # Optional client or frozen package data.
-    FXMacroDataClient = None
-
-    def list_operations():
-        return []
-
+from fxmacrodata_public import FXMacroDataClient, list_operations
 from src.agent.tools.registry import ToolDefinition, ToolParameter, ToolPolicy
 
 logger = logging.getLogger(__name__)

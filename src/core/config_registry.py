@@ -304,7 +304,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "LITELLM_MODEL": {
         "title": "Primary Model",
-        "description": "Primary model in provider/model format (e.g. gemini/gemini-3.1-pro-preview, deepseek/deepseek-v4-flash, anthropic/claude-sonnet-4-6). If empty, it is auto-inferred from available API keys or channel declarations.",
+        "description": "Primary model in provider/model format (e.g. gemini/gemini-3.6-flash, deepseek/deepseek-v4-flash, anthropic/claude-sonnet-4-6). If empty, it is auto-inferred from available API keys or channel declarations.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -318,7 +318,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.LITELLM_MODEL",
         "examples": [
             "LITELLM_MODEL=deepseek/deepseek-v4-flash",
-            "LITELLM_MODEL=gemini/gemini-3.1-pro-preview",
+            "LITELLM_MODEL=gemini/gemini-3.6-flash",
             "LITELLM_MODEL=ollama/qwen3:8b",
         ],
         "docs": [
@@ -361,7 +361,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.AGENT_LITELLM_MODEL",
         "examples": [
             "AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro",
-            "AGENT_LITELLM_MODEL=gemini/gemini-3.1-pro-preview",
+            "AGENT_LITELLM_MODEL=gemini/gemini-3.6-flash",
         ],
         "docs": [
             {
@@ -377,7 +377,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "LITELLM_FALLBACK_MODELS": {
         "title": "Fallback Models",
-        "description": "Comma-separated fallback models tried when the primary model fails (e.g. anthropic/claude-sonnet-4-6,openai/gpt-5.4-mini). Useful for cross-provider redundancy.",
+        "description": "Comma-separated fallback models tried when the primary model fails (e.g. anthropic/claude-sonnet-4-6,openai/gpt-6.1-terra). Useful for cross-provider redundancy.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -390,8 +390,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "display_order": 2,
         "help_key": "settings.ai_model.LITELLM_FALLBACK_MODELS",
         "examples": [
-            "LITELLM_FALLBACK_MODELS=deepseek/deepseek-v4-pro,gemini/gemini-3-flash-preview",
-            "LITELLM_FALLBACK_MODELS=openai/gpt-5.4-mini",
+            "LITELLM_FALLBACK_MODELS=deepseek/deepseek-v4-pro,gemini/gemini-3.5-flash-lite",
+            "LITELLM_FALLBACK_MODELS=openai/gpt-6.1-terra",
         ],
         "docs": [
             {
@@ -732,7 +732,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # ------------------------------------------------------------------
     "DEEPSEEK_API_KEY": {
         "title": "DeepSeek API Key",
-        "description": "Official DeepSeek API key (from https://platform.deepseek.com). For compatibility, a key set alone still auto-infers deepseek/deepseek-chat and logs a deprecation warning; new configs should migrate to deepseek/deepseek-v4-flash. Also works in multi-channel mode.",
+        "description": "Official DeepSeek API key (from https://platform.deepseek.com). A key set alone auto-infers deepseek/deepseek-v4-flash unless a higher-priority model configuration is present. Also works in multi-channel mode.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "password",
@@ -786,7 +786,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 10,
+        "display_order": 13,
         "help_key": "settings.data_source.TUSHARE_TOKEN",
         "examples": [
             "TUSHARE_TOKEN=your_tushare_token",
@@ -871,7 +871,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 20,
+        "display_order": 23,
     },
     "MX_PRIORITY": {
         "title": "MiaoXiang Data Source Priority",
@@ -885,7 +885,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "6",
         "options": [],
         "validation": {"min": 0, "max": 99},
-        "display_order": 21,
+        "display_order": 24,
     },
     "TICKFLOW_BATCH_SIZE": {
         "title": "TickFlow Batch Size",
@@ -948,8 +948,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "warning_codes": [],
     },
     "FUTU_HK_REALTIME_SOURCE_PRIORITY": {
-        "title": "Futu 港股实时数据源优先级",
-        "description": "港股实时行情优先级，可选 futu、longbridge、akshare、yfinance。未配置 OpenD 时自动跳过 futu。",
+        "title": "Futu HK Realtime Source Priority",
+        "description": "HK realtime quote provider order: futu, longbridge, akshare, or yfinance, comma-separated. futu is skipped when OpenD is not configured.",
         "category": "data_source",
         "data_type": "string",
         "ui_control": "text",
@@ -982,7 +982,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 16,
+        "display_order": 5,
         "help_key": "settings.data_source.stock_index_remote",
         "examples": [
             "STOCK_INDEX_REMOTE_UPDATE_ENABLED=true",
@@ -1045,7 +1045,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "tencent,akshare_sina,efinance,akshare_em",
         "options": [],
         "validation": {},
-        "display_order": 20,
+        "display_order": 9,
         "help_key": "settings.data_source.REALTIME_SOURCE_PRIORITY",
         "examples": [
             "REALTIME_SOURCE_PRIORITY=tencent,akshare_sina,efinance,akshare_em",
@@ -1070,7 +1070,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 21,
+        "display_order": 6,
         "help_key": "settings.data_source.realtime_quotes",
         "examples": [
             "ENABLE_REALTIME_TECHNICAL_INDICATORS=true",
@@ -1096,7 +1096,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {"multi_value": True, "delimiter": ","},
-        "display_order": 22,
+        "display_order": 25,
         "help_key": "settings.data_source.search_api_keys",
         "examples": [
             "ANSPIRE_API_KEYS=key1,key2",
@@ -1189,7 +1189,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {"multi_value": True, "delimiter": ","},
-        "display_order": 53,
+        "display_order": 54,
     },
     "SEARXNG_BASE_URLS": {
         "title": "SearXNG Base URLs",
@@ -1248,7 +1248,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 22,
+        "display_order": 7,
         "help_key": "settings.data_source.realtime_quotes",
         "examples": [
             "ENABLE_REALTIME_QUOTE=true",
@@ -1274,7 +1274,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "true",
         "options": [],
         "validation": {},
-        "display_order": 23,
+        "display_order": 8,
         "help_key": "settings.data_source.ENABLE_CHIP_DISTRIBUTION",
         "examples": [
             "ENABLE_CHIP_DISTRIBUTION=true",
@@ -1300,7 +1300,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "3",
         "options": [],
         "validation": {"min": 1, "max": 30},
-        "display_order": 60,
+        "display_order": 10,
         "help_key": "settings.data_source.news_window",
         "examples": [
             "NEWS_MAX_AGE_DAYS=3",
@@ -1326,7 +1326,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "short",
         "options": ["ultra_short", "short", "medium", "long"],
         "validation": {"enum": ["ultra_short", "short", "medium", "long"]},
-        "display_order": 61,
+        "display_order": 11,
         "help_key": "settings.data_source.news_window",
         "examples": [
             "NEWS_STRATEGY_PROFILE=short",
@@ -1352,7 +1352,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "5.0",
         "options": [],
         "validation": {"min": 0.0, "max": 50.0},
-        "display_order": 62,
+        "display_order": 12,
     },
     "PYTDX_HOST": {
         "title": "Pytdx Host",
@@ -1412,7 +1412,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.provider_keys",
         "examples": [
             "GEMINI_API_KEY=your_gemini_api_key",
-            "LITELLM_MODEL=gemini/gemini-3.1-pro-preview",
+            "LITELLM_MODEL=gemini/gemini-3.6-flash",
         ],
         "docs": [
             {
@@ -1449,7 +1449,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "gemini-3.1-pro-preview",
+        "default_value": "gemini-3.6-flash",
         "options": [],
         "validation": {},
         "display_order": 20,
@@ -1463,7 +1463,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "gemini-3-flash-preview",
+        "default_value": "gemini-3.5-flash-lite",
         "options": [],
         "validation": {},
         "display_order": 21,
@@ -1499,7 +1499,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "examples": [
             "OPENAI_API_KEY=sk-xxxx",
             "OPENAI_BASE_URL=https://api.example.com/v1",
-            "LITELLM_MODEL=openai/gpt-5.5",
+            "LITELLM_MODEL=openai/gpt-6.1-sol",
         ],
         "docs": [
             {
@@ -1566,7 +1566,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "gpt-5.5",
+        "default_value": "gpt-6.1-sol",
         "options": [],
         "validation": {},
         "display_order": 60,
@@ -4667,7 +4667,7 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.ai_model.provider_keys",
         "examples": [
             "GEMINI_API_KEYS=your_gemini_key_1,your_gemini_key_2",
-            "LITELLM_MODEL=gemini/gemini-3.1-pro-preview",
+            "LITELLM_MODEL=gemini/gemini-3.6-flash",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["secret_value", "comma_separated_keys"],
@@ -4675,8 +4675,8 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
     "GEMINI_MODEL": {
         "help_key": "settings.ai_model.legacy_provider_params",
         "examples": [
-            "GEMINI_MODEL=gemini-3.1-pro-preview",
-            "LITELLM_MODEL=gemini/gemini-3.1-pro-preview",
+            "GEMINI_MODEL=gemini-3.6-flash",
+            "LITELLM_MODEL=gemini/gemini-3.6-flash",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["legacy_provider_setting"],
@@ -4684,8 +4684,8 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
     "GEMINI_MODEL_FALLBACK": {
         "help_key": "settings.ai_model.legacy_provider_params",
         "examples": [
-            "GEMINI_MODEL_FALLBACK=gemini-3-flash-preview",
-            "LITELLM_FALLBACK_MODELS=gemini/gemini-3-flash-preview",
+            "GEMINI_MODEL_FALLBACK=gemini-3.5-flash-lite",
+            "LITELLM_FALLBACK_MODELS=gemini/gemini-3.5-flash-lite",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["legacy_provider_setting"],
@@ -4711,8 +4711,8 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
     "OPENAI_MODEL": {
         "help_key": "settings.ai_model.legacy_provider_params",
         "examples": [
-            "OPENAI_MODEL=gpt-5.5",
-            "LITELLM_MODEL=openai/gpt-5.5",
+            "OPENAI_MODEL=gpt-6.1-sol",
+            "LITELLM_MODEL=openai/gpt-6.1-sol",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["legacy_provider_setting"],
@@ -4720,8 +4720,8 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
     "OPENAI_VISION_MODEL": {
         "help_key": "settings.ai_model.legacy_provider_params",
         "examples": [
-            "OPENAI_VISION_MODEL=gpt-5.5",
-            "VISION_MODEL=openai/gpt-5.5",
+            "OPENAI_VISION_MODEL=gpt-6.1-sol",
+            "VISION_MODEL=openai/gpt-6.1-sol",
         ],
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["legacy_provider_setting"],

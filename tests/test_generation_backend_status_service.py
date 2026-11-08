@@ -62,7 +62,7 @@ def _litellm_effective_map(api_key: str = "sk-secret-value") -> dict:
     return {
         "GENERATION_BACKEND": "litellm",
         "GENERATION_FALLBACK_BACKEND": "",
-        "LITELLM_MODEL": "openai/gpt-5.5",
+        "LITELLM_MODEL": "openai/gpt-6.1-sol",
         "OPENAI_API_KEY": api_key,
     }
 
@@ -278,7 +278,7 @@ def test_litellm_aihubmix_key_builds_openai_legacy_route() -> None:
     service = GenerationBackendStatusService(
         effective_map={
             "GENERATION_BACKEND": "litellm",
-            "LITELLM_MODEL": "openai/gpt-5.5",
+            "LITELLM_MODEL": "openai/gpt-6.1-sol",
             "AIHUBMIX_KEY": "sk-aihubmix-secret",
         }
     )
@@ -302,7 +302,7 @@ def test_litellm_legacy_key_infers_runtime_model_for_smoke_config() -> None:
     payload = service.smoke_test(mode="json")
 
     assert payload["success"] is True
-    assert _CapturingAnalyzer.configs[-1].litellm_model == "gemini/gemini-3.1-pro-preview"
+    assert _CapturingAnalyzer.configs[-1].litellm_model == "gemini/gemini-3.6-flash"
 
 
 def test_litellm_validation_issues_are_not_available() -> None:

@@ -244,7 +244,7 @@ jobs:
 
   web-gate:
     name: web-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes, ai-governance]
     if: needs.changes.outputs.frontend == 'true'
     defaults:

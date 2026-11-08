@@ -1,5 +1,7 @@
 # LLM Configuration Guide
 
+> **Platform boundary (2026-11-08):** Gemini API and Vertex AI have different model lifecycles. The Vertex AI `gemini-3.6-flash` placeholder is an input example; [Google Cloud documents](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash) retirement on 2026-11-19 for that platform. Confirm model availability for your project and region; Gemini API validation does not validate Vertex AI. A DeepSeek key alone infers `deepseek/deepseek-v4-flash`; explicit models and higher-priority configuration still take precedence.
+
 Welcome! Whether you are a beginner newly exposed to AI or a veteran skilled with various APIs, this guide will help you set up Large Language Models (LLMs) quickly.
 
 This project exposes a unified AI model access flow that supports official APIs, OpenAI-compatible platforms, and local models. Under the hood it is powered by [LiteLLM](https://docs.litellm.ai/), but most users only need to think in terms of picking a provider, adding an API key, and optionally choosing a primary model or channels. To cater to different experience levels, we provide a three-tier configuration hierarchy. Choose the method that fits you best.
@@ -117,8 +119,8 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # Fill in the API Key requested from the official DeepSeek platform
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*Compatibility note: with only this line, the system still defaults to `deepseek/deepseek-chat` and logs a migration warning.*
-`deepseek-chat` / `deepseek-reasoner` still work for compatibility with old configs, but DeepSeek marks them deprecated after 2026/07/24. New configs should migrate through the Web quick channel or explicitly set `LITELLM_MODEL=deepseek/deepseek-v4-flash` for `deepseek-v4-flash` / `deepseek-v4-pro`.
+*With only this line, the system defaults to `deepseek/deepseek-v4-flash`.*
+DeepSeek announced the shutdown of `deepseek-chat` / `deepseek-reasoner` on 2026/07/24; please migrate old configs. New configs should migrate through the Web quick channel or explicitly set `LITELLM_MODEL=deepseek/deepseek-v4-flash` for `deepseek-v4-flash` / `deepseek-v4-pro`.
 
 ### Example 3: Using the Free Gemini API
 ```env
@@ -261,7 +263,7 @@ LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
 # 3. Channel 2: Configure a common relay/proxy API
 LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
 LLM_AIHUBMIX_API_KEY=sk-2222222222222
-LLM_AIHUBMIX_MODELS=gpt-5.5,claude-sonnet-4-6
+LLM_AIHUBMIX_MODELS=gpt-6.1-sol,claude-sonnet-4-6
 
 # 4. [Key Step] Specify the primary model and fallback list
 # Set your primary model:
@@ -269,7 +271,7 @@ LITELLM_MODEL=deepseek/deepseek-v4-flash
 # Optional: set an Agent-only primary model (empty = inherit the primary model)
 AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro
 # If the primary model crashes, try these fallbacks sequentially:
-LITELLM_FALLBACK_MODELS=openai/gpt-5.4-mini,anthropic/claude-sonnet-4-6
+LITELLM_FALLBACK_MODELS=openai/gpt-6.1-terra,anthropic/claude-sonnet-4-6
 ```
 
 ### Example: Ollama Channel Mode (Local Models, No API Key)
@@ -332,7 +334,7 @@ For the single-agent ask-stock path, the backend also keeps a provider-aware tra
 - Moonshot officially documents Kimi as an OpenAI-compatible API, with `https://api.moonshot.ai/v1` as the base URL: <https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart>
 - LiteLLM officially requires the `openai/` prefix for OpenAI-compatible model routing: <https://docs.litellm.ai/docs/providers/openai_compatible>
 - Moonshot's compatibility docs distinguish two fixed values: **thinking mode must use `1.0`, while non-thinking mode must use `0.6`**; other values are rejected by the API: <https://platform.moonshot.ai/docs/guide/compatibility#parameters-differences-in-request-body>
-- The OpenAI Chat Completions API treats `temperature` as optional. For GPT-5 / o-series style models that only accept the provider default temperature, this project omits `temperature` at request time instead of rewriting your saved `LLM_TEMPERATURE`: <https://platform.openai.com/docs/api-reference/chat/create>
+- The OpenAI Chat Completions API treats `temperature` as optional. For GPT-5 / GPT-6 / o-series style models that only accept the provider default temperature, this project omits `temperature` at request time instead of rewriting your saved `LLM_TEMPERATURE`: <https://platform.openai.com/docs/api-reference/chat/create>
 - The current runtime dependency constraint in this repository is `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0` (see `requirements.txt`); this compatibility fix is regression-covered under that constraint across the main analyzer, market review, direct Agent LiteLLM calls, and the system-settings channel connectivity test path.
 - This repository therefore normalizes `kimi-k2.6` and `kimi-k2.6-*` right before dispatch based on the **actual request mode**: default / thinking requests use `temperature=1.0`; if your LiteLLM YAML route alias explicitly sets `litellm_params.extra_body.thinking.type: disabled` (or an equivalent non-thinking override), it automatically switches to `temperature=0.6`. Your saved `LLM_TEMPERATURE` value in `.env` or the Web settings is not rewritten.
 - If a compatible platform returns an explicit parameter error for a not-yet-profiled model, such as unsupported `temperature`, default-only `1.0`, or unsupported `top_p`, the runtime repairs the **current request** and retries once. The strategy is cached only in the current process after the retry succeeds; it is never written back to `.env`, and a service restart re-evaluates the configured rules normally.
@@ -465,7 +467,7 @@ Certain specific features in our system (like uploading a stock chart screenshot
 
 ```env
 # Specify your dedicated vision model name
-VISION_MODEL=openai/gpt-5.5
+VISION_MODEL=openai/gpt-6.1-sol
 # Make sure to provide its corresponding provider API KEY (e.g., OPENAI_API_KEY):
 # OPENAI_API_KEY=xxx
 ```
@@ -489,11 +491,11 @@ Afraid you got the config wrong? Type the following commands in your terminal to
 
 | Weird Error You Got? | Likely Culprit | How to Fix It? |
 |----------------------|----------------|----------------|
-| **The UI says the primary model is not configured** | The system doesn't know which provider/model you want to use. | Add a clear instruction in `.env`: `LITELLM_MODEL=provider/your_model_name`. Example: `openai/gpt-5.5`. |
+| **The UI says the primary model is not configured** | The system doesn't know which provider/model you want to use. | Add a clear instruction in `.env`: `LITELLM_MODEL=provider/your_model_name`. Example: `openai/gpt-6.1-sol`. |
 | **I added multiple provider Keys, why is only one working?** | You mixed the **Simple Mode** and **Channels Mode**! | Choose one path. For simple setups, delete anything starting with `LLM_CHANNELS`. To use multi-model fallbacks, migrate all your Keys into the `LLM_CHANNELS` setup. |
 | **Returns 400, 401, or Invalid API Key** | The API Key is wrong, copied incompletely, account lacks credits, or you mistyped the model name (extremely common). | 1. Ensure there are no spaces at the start/end of your Key.<br> 2. Ensure your Base URL ends with `/v1`.<br> 3. Check if you forgot the `openai/` prefix on the model name! |
 | **Kimi K2.6 returns `invalid temperature` (it may say only `1.0` or `0.6` is allowed)** | The model requires different fixed temperatures for thinking vs non-thinking mode, while older config or call paths may still pass `0.7`. | After this fix, default / thinking `kimi-k2.6` requests automatically use `temperature=1.0`; if you explicitly disable thinking in a LiteLLM YAML route, the request automatically uses `0.6` instead. Prefer `openai/kimi-k2.6` with your Moonshot or relay OpenAI-compatible Base URL and API key. Non-Kimi fallbacks still keep your configured `LLM_TEMPERATURE`. |
-| **GPT-5 / o-series returns that `temperature` is unsupported or only the default is allowed** | These models only accept the provider default sampling parameters, while older call paths may still send `0.7`. | The request layer now omits `temperature` so the provider default is used. Your `.env` / Web `LLM_TEMPERATURE` is not rewritten, and regular models keep using it after you switch back. |
+| **GPT-5 / GPT-6 / o-series returns that `temperature` is unsupported or only the default is allowed** | These models only accept the provider default sampling parameters, while older call paths may still send `0.7`. | The request layer now omits `temperature` so the provider default is used. Your `.env` / Web `LLM_TEMPERATURE` is not rewritten, and regular models keep using it after you switch back. |
 | **Spins endlessly, eventually hits Timeout/ConnectionRefused** | You are using restricted APIs (like Google/OpenAI) in a blocked region without a proxy, or your cloud server lacks external internet access. | Highly recommend using **official regional APIs** (like DeepSeek) or **OpenAI-compatible relay platforms**. Third-party platforms bypass these network constraints. |
 | **Ollama returns 404, `Could not get model info`, or `api/generate/api/show`** | Using `OPENAI_BASE_URL` for Ollama makes the system concatenate URLs incorrectly | Use `OLLAMA_API_BASE=http://localhost:11434` or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`) instead |
 

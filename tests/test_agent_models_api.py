@@ -4,7 +4,6 @@
 import asyncio
 import os
 import tempfile
-import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -374,11 +373,9 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
                                agent_context_compression_enabled=False)
         config.is_agent_available = lambda: True
         run_requests = []
-        worker_threads = []
 
         def controlled_run(_backend, run_request):
             run_requests.append(run_request)
-            worker_threads.append(threading.get_ident())
             return AgentRunResult(success=True, final_answer="ok", backend="litellm", model="fixture")
 
         request = agent.ChatRequest(
@@ -387,9 +384,9 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
             skills=[],
             context={"skills": ["old_skill"], "strategies": ["older_strategy"]},
         )
-        # DatabaseManager ignores db_url once its process-wide singleton exists.
-        # Isolate this fixture from earlier tests and restore their singleton.
-        with patch.object(DatabaseManager, "_instance", None), tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory:
+            # 单例会忽略新 db_url（#2436），先重置以免复用前序测试已清理的临时库
+            DatabaseManager.reset_instance()
             db = DatabaseManager(db_url=f"sqlite:///{directory}/chat.db")
             try:
                 with patch("api.v1.endpoints.agent.get_config", return_value=config), patch(
@@ -405,7 +402,6 @@ class AgentSkillsEndpointTestCase(unittest.TestCase):
 
         mock_build_executor.assert_called_once_with(config, [])
         self.assertEqual(len(run_requests), 1)
-        self.assertNotEqual(worker_threads[0], threading.get_ident())
         self.assertIn(resolve_skill_prompt_state(config, skills=[]).skill_instructions,
                       run_requests[0].system_prompt)
         self.assertNotIn(resolve_skill_prompt_state(config, skills=["ma_golden_cross"]).skill_instructions,

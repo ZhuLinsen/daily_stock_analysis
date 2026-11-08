@@ -1160,7 +1160,7 @@ class DataFetcherManager:
                 )
                 errors.append(f"[{source_name}] ({error_type}) {error_reason}")
 
-        logger.warning(
+        logger.error(
             "[指数数据源终止] %s 所有指数日线数据源均失败: elapsed=%.2fs; %s",
             target.canonical_id,
             time.time() - request_start,

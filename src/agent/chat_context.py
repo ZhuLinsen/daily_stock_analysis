@@ -83,11 +83,16 @@ def build_summary_message(summary_text: str) -> Dict[str, str]:
 
 def estimate_text_tokens(text: str, config: Any) -> int:
     """Estimate tokens deterministically enough for compression decisions."""
-    normalized_text = str(text or "")
-    # Keep context preparation offline-safe. LiteLLM's token counter may lazily
-    # download a tiktoken encoding when its cache is empty, which can block an
-    # offline run while this estimate is only used to choose compression.
-    return int(math.ceil(len(normalized_text) / 3))
+    normalized_text = text or ""
+    try:
+        import litellm  # type: ignore
+
+        model = get_effective_agent_primary_model(config)
+        count = litellm.token_counter(model=model, text=normalized_text)
+        return max(0, int(count or 0))
+    except Exception as exc:
+        logger.debug("Token counter failed; using character heuristic: %s", exc)
+        return int(math.ceil(len(normalized_text) / 3))
 
 
 def estimate_messages_tokens(messages: Sequence[Dict[str, Any]], config: Any) -> int:
