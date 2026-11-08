@@ -1,5 +1,7 @@
 # LLM Configuration Guide
 
+> **Platform boundary (2026-11-08):** Gemini API and Vertex AI have different model lifecycles. The Vertex AI `gemini-3.6-flash` placeholder is an input example; [Google Cloud documents](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash) retirement on 2026-11-19 for that platform. Confirm model availability for your project and region; Gemini API validation does not validate Vertex AI. A DeepSeek key alone infers `deepseek/deepseek-v4-flash`; explicit models and higher-priority configuration still take precedence.
+
 Welcome! Whether you are a beginner newly exposed to AI or a veteran skilled with various APIs, this guide will help you set up Large Language Models (LLMs) quickly.
 
 This project exposes a unified AI model access flow that supports official APIs, OpenAI-compatible platforms, and local models. Under the hood it is powered by [LiteLLM](https://docs.litellm.ai/), but most users only need to think in terms of picking a provider, adding an API key, and optionally choosing a primary model or channels. To cater to different experience levels, we provide a three-tier configuration hierarchy. Choose the method that fits you best.
