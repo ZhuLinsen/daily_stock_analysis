@@ -134,6 +134,54 @@ class TestAnalyzerGenerateText:
             analyzer._config_override = cfg
             return analyzer
 
+    @pytest.mark.parametrize("streamed", [False, True])
+    @pytest.mark.parametrize("fallback", [False, True])
+    def test_analyze_logs_actual_response_and_only_real_route_fallback(self, caplog, streamed, fallback):
+        from src.config import Config
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override = Config(
+            litellm_model="primary-route",
+            litellm_fallback_models=["backup-route"],
+            gemini_request_delay=0,
+            report_integrity_enabled=False,
+        )
+        actual_model = "gemini/response-model" if fallback else "openai/model-2026-10-01"
+        response_text = json.dumps({
+            "sentiment_score": 70, "trend_prediction": "看多",
+            "operation_advice": "持有", "analysis_summary": "fixture",
+        })
+
+        def dispatch(model, kwargs, **_):
+            if fallback and model == "primary-route":
+                raise RuntimeError("primary unavailable")
+            if kwargs.get("stream"):
+                if not streamed:
+                    raise RuntimeError("stream unavailable")
+                return iter([SimpleNamespace(
+                    model=actual_model, usage=None,
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content=response_text))],
+                )])
+            return SimpleNamespace(
+                model=actual_model, usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(content=response_text))],
+            )
+
+        caplog.set_level("DEBUG", logger="src.analyzer")
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=dispatch), \
+             patch.object(analyzer, "_get_analysis_system_prompt", return_value="system"), \
+             patch.object(analyzer, "_get_skill_prompt_sections", return_value=(None, None, True)), \
+             patch.object(analyzer, "_format_prompt", return_value="prompt"):
+            result = analyzer.analyze({"code": "600519", "stock_name": "fixture"})
+
+        assert result.success is True
+        assert result.model_used == actual_model
+        returned = [record.message for record in caplog.records if "[LLM返回]" in record.message]
+        assert len(returned) == 1
+        assert actual_model in returned[0]
+        assert ("已回退" in returned[0]) is fallback
+        assert f"=== {actual_model} 完整响应" in caplog.text
+
     def test_legacy_market_group_normalizes_supported_markets(self):
         from src.analyzer import _legacy_market_group
 
@@ -284,6 +332,7 @@ class TestAnalyzerGenerateText:
         assert result.provider == "anthropic"
         assert result.usage["provider"] == "anthropic"
         assert result.usage["response_model"] == "anthropic/claude-sonnet-test"
+        assert result.usage["route_model"] == "analysis-route"
 
     def test_generate_text_with_metadata_preserves_fallback_provider_for_unqualified_response_model(self):
         analyzer = self._make_analyzer()
@@ -2693,6 +2742,7 @@ class TestAnalyzerGenerateText:
 
         assert text == "fallback"
         assert model_used == "provider/good-model"
+        assert usage["route_model"] == "provider/good-model"
         _assert_usage_contains(usage, {"prompt_tokens": 4, "completion_tokens": 5, "total_tokens": 9})
         assert dispatch_calls == [
             ("provider/bad-model", True),
