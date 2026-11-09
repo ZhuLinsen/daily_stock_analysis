@@ -164,6 +164,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
       - name: 🐳 Build image
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
         with:
           context: .
           file: docker/Dockerfile
