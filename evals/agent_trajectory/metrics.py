@@ -59,19 +59,19 @@ Metric semantics
 
 Scope
 -----
-This is the frozen minimal contract requested for the close-and-rebuild PR
-(Refs #1956): tool hit, redundancy / caching, failure / retry and total
-steps / max_steps only.  Stock guard and Codex ``arguments_summary``
-semantics are out of scope here and belong in follow-up PRs (see
-``docs/agent-trajectory-eval.md``).
+The original tool-name metrics (Refs #1956) remain unchanged. Stock-scope
+diagnostics (Refs #2394) are reported separately using runtime rules injected
+by the entry point. They do not reinterpret tool hits or violations. Codex
+``arguments_summary`` and strict Chat identity validation remain out of scope
+(see ``docs/agent-trajectory-eval.md``).
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional
 
 
 @dataclass
@@ -81,8 +81,9 @@ class GoldenSample:
     ``expected_tools`` are the tool names the agent should call; tools outside
     this set are tolerated only when ``allow_optional_tools`` is true.
     ``stock_code`` is carried verbatim into the runner context by
-    ``run_eval.py`` (empty string = no stock context) and does not take part
-    in scoring.
+    ``run_eval.py`` (empty string = no stock context). It also supplies the
+    default scope for the separate stock-scope reporter; it does not change
+    the original tool-name hit metrics.
     """
 
     id: str
@@ -94,6 +95,83 @@ class GoldenSample:
     # Optional expectation for the multi-agent stage-aware reporter.  An
     # empty list keeps existing single-agent samples and their reports intact.
     expected_stages: List[str] = field(default_factory=list)
+    # None inherits stock_code; a non-empty list permits comparison tasks.
+    allowed_stock_codes: Optional[List[str]] = None
+
+
+@dataclass(frozen=True)
+class StockScopePolicy:
+    """Runtime rules injected by the entry point; the metrics stay src-free."""
+
+    stock_scoped_tools: FrozenSet[str]
+    normalize_stock_code: Callable[[Any], str]
+
+
+def compute_stock_scope_metrics(
+    log: List[Dict[str, Any]], golden: GoldenSample, policy: StockScopePolicy,
+) -> Dict[str, Any]:
+    """Report requested targets independently of runtime guard execution.
+
+    Missing argument payloads are unscorable, never inferred from text or the
+    runtime's allowed list. A guarded request is counted independently: a
+    guard may have rejected identity/asset support rather than stock scope.
+    Existing tool-hit metrics deliberately retain their tool-name semantics.
+    """
+    issues = validate_golden_sample(golden)
+    scope_issues = [issue for issue in issues if issue.startswith(("stock_code ", "allowed_stock_codes "))]
+    codes = golden.allowed_stock_codes
+    if codes is None:
+        codes = [golden.stock_code] if golden.stock_code else []
+    allowed = sorted({policy.normalize_stock_code(code) for code in codes}) if not scope_issues else []
+    report: Dict[str, Any] = {
+        "enabled": bool(allowed),
+        "allowed_stock_codes": allowed,
+        "evaluated_calls": 0,
+        "in_scope_calls": 0,
+        "out_of_scope_calls": 0,
+        "unscorable_calls": 0,
+        "guarded_calls": 0,
+        "out_of_scope_details": [],
+        "validation_issues": scope_issues,
+    }
+    for entry in log:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("guarded") is True:
+            report["guarded_calls"] += 1
+        if not report["enabled"] or entry.get("tool") not in policy.stock_scoped_tools:
+            continue
+        arguments = entry.get("arguments")
+        if not isinstance(arguments, dict) or "stock_code" not in arguments:
+            report["unscorable_calls"] += 1
+            continue
+        requested = policy.normalize_stock_code(arguments["stock_code"])
+        report["evaluated_calls"] += 1
+        if requested and requested in allowed:
+            report["in_scope_calls"] += 1
+        else:
+            report["out_of_scope_calls"] += 1
+            report["out_of_scope_details"].append({
+                "step": _coerce_step(entry.get("step")),
+                "tool": entry.get("tool"),
+                "requested_stock_code": requested,
+                "allowed_stock_codes": allowed,
+                "guarded": entry.get("guarded") is True,
+            })
+    return report
+
+
+def format_stock_scope_report(report: Dict[str, Any]) -> str:
+    """Render scope observations without changing existing metric violations."""
+    scope = ", ".join(report["allowed_stock_codes"]) or "未配置"
+    lines = [
+        f"- 股票范围: {scope} | 已评估: {report['evaluated_calls']} | "
+        f"越界请求: {report['out_of_scope_calls']} | 运行时拦截: {report['guarded_calls']} | "
+        f"无法判定: {report['unscorable_calls']}",
+    ]
+    for item in report["out_of_scope_details"]:
+        lines.append(f"  step {item['step']}: {item['tool']} → {item['requested_stock_code'] or '(空标的)'}")
+    return "\n".join(lines)
 
 
 @dataclass
@@ -376,6 +454,7 @@ def format_text_report(m: TrajectoryMetrics) -> str:
 def compute_stage_trajectory_metrics(
     trajectories: List[Dict[str, Any]],
     golden: GoldenSample,
+    stock_scope_policy: Optional[StockScopePolicy] = None,
 ) -> StageTrajectoryMetrics:
     """Normalize stage-local steps and score a multi-agent trajectory.
 
@@ -479,6 +558,10 @@ def compute_stage_trajectory_metrics(
                 },
             }
         )
+        if stock_scope_policy is not None:
+            stage_metrics[-1]["stock_scope_metrics"] = compute_stock_scope_metrics(
+                raw_log, golden, stock_scope_policy,
+            )
 
     missing = [name for name in expected if name not in observed_set]
     unexpected = [name for name in observed if expected and name not in expected]
@@ -539,6 +622,8 @@ def format_stage_text_report(m: StageTrajectoryMetrics) -> str:
             f"工具失败={tool_metrics.get('failed_calls', 0)} | "
             f"重试={tool_metrics.get('retries', 0)}"
         )
+        if "stock_scope_metrics" in stage:
+            lines.append(format_stock_scope_report(stage["stock_scope_metrics"]))
     return "\n".join(lines) + "\n"
 
 
@@ -615,6 +700,14 @@ def validate_golden_sample(
         issues.append("stock_code must be a string")
     elif sample.stock_code != sample.stock_code.strip():
         issues.append("stock_code must not contain leading or trailing whitespace")
+    if sample.allowed_stock_codes is not None:
+        if not isinstance(sample.allowed_stock_codes, list) or not sample.allowed_stock_codes:
+            issues.append("allowed_stock_codes must be a non-empty list of stock codes or null")
+        elif any(not isinstance(code, str) or not code.strip() or code != code.strip()
+                 for code in sample.allowed_stock_codes):
+            issues.append("allowed_stock_codes must contain only non-empty strings without surrounding whitespace")
+        elif len(set(sample.allowed_stock_codes)) != len(sample.allowed_stock_codes):
+            issues.append("allowed_stock_codes must not contain duplicate codes")
     if not isinstance(sample.expected_tools, list):
         issues.append("expected_tools must be a list of tool names")
     elif not sample.expected_tools:

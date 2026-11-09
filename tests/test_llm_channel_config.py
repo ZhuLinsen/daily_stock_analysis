@@ -481,7 +481,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertEqual(config.openai_api_keys, [])
         self.assertEqual(config.llm_channels, [])
         self.assertEqual(config.llm_models_source, "legacy_env")
-        self.assertEqual(config.litellm_model, "gemini/gemini-3.1-pro-preview")
+        self.assertEqual(config.litellm_model, "gemini/gemini-3.6-flash")
         self.assertTrue(config.llm_model_list)
         self.assertEqual(
             [issue["code"] for issue in config.llm_channel_config_issues],
@@ -510,7 +510,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertEqual(config.openai_api_keys, [])
         self.assertEqual(config.llm_channels, [])
         self.assertEqual(config.llm_models_source, "legacy_env")
-        self.assertEqual(config.litellm_model, "gemini/gemini-3.1-pro-preview")
+        self.assertEqual(config.litellm_model, "gemini/gemini-3.6-flash")
         self.assertTrue(config.llm_model_list)
         self.assertEqual(
             [issue["code"] for issue in config.llm_channel_config_issues],
@@ -1113,7 +1113,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertFalse(config.llm_blocks_legacy_fallback)
         self.assertEqual(config.llm_channel_config_issues, [])
         self.assertEqual(config.llm_models_source, "legacy_env")
-        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
+        self.assertEqual(config.litellm_model, "openai/gpt-6.1-sol")
         self.assertTrue(config.llm_model_list)
 
     @patch("src.config.setup_env")
@@ -1199,7 +1199,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
                 {"id": "openai/gpt-4o-mini"},
                 {"id": "anthropic/claude-sonnet-4-6"},
                 {"id": "vertex/claude-sonnet-4-5"},
-                {"id": "gpt-5.4-mini"},
+                {"id": "gpt-6.1-terra"},
             ]
         }
         mock_get.return_value = mock_response
@@ -1216,7 +1216,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             "openai/openai/gpt-4o-mini",
             "openai/anthropic/claude-sonnet-4-6",
             "openai/vertex/claude-sonnet-4-5",
-            "openai/gpt-5.4-mini",
+            "openai/gpt-6.1-terra",
         ]
         self.assertEqual(payload["models"], expected)
 
@@ -1248,7 +1248,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             # Hand-typed Requesty vendor IDs keep the gateway route.
             "anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
             "vertex/claude-sonnet-4-5": "openai/vertex/claude-sonnet-4-5",
-            "gpt-5.4-mini": "openai/gpt-5.4-mini",
+            "gpt-6.1-terra": "openai/gpt-6.1-terra",
             # Already routed values are never prefixed again.
             "openai/openai/gpt-4o-mini": "openai/openai/gpt-4o-mini",
             "openai/anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
@@ -1383,13 +1383,13 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = Config._load_from_env()
 
-        self.assertEqual(config.litellm_model, "gemini/gemini-3.1-pro-preview")
+        self.assertEqual(config.litellm_model, "gemini/gemini-3.6-flash")
         self.assertAlmostEqual(config.llm_temperature, 0.15)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     @patch("src.config.logger.warning")
-    def test_deepseek_key_defaults_to_legacy_chat_model_with_deprecation_warning(
+    def test_deepseek_key_defaults_to_v4_flash_without_deprecation_warning(
         self,
         mock_warning,
         _mock_parse_yaml,
@@ -1402,12 +1402,8 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = Config._load_from_env()
 
-        self.assertEqual(config.litellm_model, "deepseek/deepseek-chat")
-        mock_warning.assert_called_once_with(
-            "Deprecation warning:\n"
-            "deepseek-chat will be deprecated on 2026-07-24,\n"
-            "please migrate to deepseek-v4-flash."
-        )
+        self.assertEqual(config.litellm_model, "deepseek/deepseek-v4-flash")
+        mock_warning.assert_not_called()
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -1650,7 +1646,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         model_list = [
             {
                 "model_name": "future_router",
-                "litellm_params": {"model": "openai/gpt-5.5"},
+                "litellm_params": {"model": "openai/gpt-6.1-sol"},
             }
         ]
 

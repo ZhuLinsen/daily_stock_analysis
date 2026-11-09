@@ -228,7 +228,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `AGENT_SEARCH_TOOL_TIMEOUT_S` | Default timeout (seconds) for Agent `search`-category tools; `0` disables and falls back to the global budget | `0` | No |
 | `AGENT_ANALYSIS_TOOL_TIMEOUT_S` | Default timeout (seconds) for Agent `analysis`-category tools; `0` disables and falls back to the global budget | `0` | No |
 | `AGENT_ACTION_TOOL_TIMEOUT_S` | Default timeout (seconds) for Agent `action`-category tools; `0` disables and falls back to the global budget | `0` | No |
-| `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.1-pro-preview`), recommended | - | No |
+| `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.6-flash`), recommended | - | No |
 | `AGENT_LITELLM_MODEL` | Optional primary model for **Default model** ask-stock; empty inherits the primary model and bare names become `openai/<model>`; Codex does not use this setting | - | No |
 | `AGENT_CONTEXT_COMPRESSION_ENABLED` | LLM compression for visible **Default model** ask-stock history; Codex uses the 20 most recent visible messages and retains this setting | `false` | No |
 | `AGENT_CONTEXT_COMPRESSION_PROFILE` | Default model ask-stock compression profile: `cost`, `balanced`, or `long_context_raw_first` | `balanced` | No |
@@ -251,13 +251,13 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key, one key for the LLM gateway and search | - | Optional |
 | `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API key, one key for multiple model families | - | Optional |
 | `GEMINI_API_KEY` | Google Gemini API Key | - | Optional |
-| `GEMINI_MODEL` | Primary model name (legacy, `LITELLM_MODEL` preferred) | `gemini-3.1-pro-preview` | No |
-| `GEMINI_MODEL_FALLBACK` | Fallback model (legacy) | `gemini-3-flash-preview` | No |
+| `GEMINI_MODEL` | Primary model name (legacy, `LITELLM_MODEL` preferred) | `gemini-3.6-flash` | No |
+| `GEMINI_MODEL_FALLBACK` | Fallback model (legacy) | `gemini-3.5-flash-lite` | No |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | - | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key | - | Optional |
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint | - | Optional |
 | `OLLAMA_API_BASE` | Ollama local service address (e.g. `http://localhost:11434`), see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | Optional |
-| `OPENAI_MODEL` | OpenAI model name (legacy) | `gpt-5.5` | Optional |
+| `OPENAI_MODEL` | OpenAI model name (legacy) | `gpt-6.1-sol` | Optional |
 
 > GitHub Actions note: the bundled `00-daily-analysis.yml` explicitly uses `litellm` when `GENERATION_FALLBACK_BACKEND` is not configured, so an unset Secret/Variable is not exported as an empty value that disables backend fallback. To disable backend fallback in Actions, set the fallback to the primary backend and let the resolver treat it as self no-op.
 
@@ -1309,6 +1309,12 @@ HOT_TOP10_COUNT=10              # hot-list items (1-30)
 - **Scope**: this is a theme-level hot-list OVERVIEW (one LLM summary covers all items), not per-stock deep analysis; use the existing stock analysis entry points for that. If the AI summary fails, a degraded data-only overview is still delivered, and no stage can break the main analysis schedule.
 - **Report content**: the header carries the generation time, ranking date and data-source note; each item lists the driver (news/funds/event attribution, speculation marked), strength (strong/medium/weak), entry advice and risks. Language follows `REPORT_LANGUAGE` (zh/en).
 
+### Deep Research Stage Budgets and Timeout Diagnostics
+
+`/research` and `/api/v1/agent/research` use `AGENT_DEEP_RESEARCH_TIMEOUT` as the overall research budget. Planning keeps a 15-second per-completion limit; report synthesis has a 120-second limit. Both are clamped to the remaining overall budget. Increasing the overall budget does not give each stage all remaining time, and SDK network retries are not a strict wall-clock termination guarantee.
+
+Stage/provider timeouts retain the stage, actual elapsed research time, overall budget and original cause instead of claiming the overall budget was exhausted. `ResearchResult.timed_out` still covers stage/provider and overall-deadline timeouts; callers should inspect `error`. The HTTP response schema is unchanged and preserves known `token_usage` on failure; usage not returned by a failed call is not included. A timeout still returns `success=false`, never a successful complete report.
+
 ### Hong Kong Stock Support
 
 Use `hk` prefix for HK stock codes:
@@ -1326,13 +1332,13 @@ Configure multiple models, system auto-switches:
 ```bash
 # Gemini (primary)
 GEMINI_API_KEY=xxx
-GEMINI_MODEL=gemini-3.1-pro-preview
+GEMINI_MODEL=gemini-3.6-flash
 
 # OpenAI compatible (backup)
 OPENAI_API_KEY=xxx
 OPENAI_BASE_URL=https://api.deepseek.com
 OPENAI_MODEL=deepseek-v4-flash
-# deepseek-chat / deepseek-reasoner remain compatible, but DeepSeek marks them deprecated after 2026/07/24
+# DeepSeek announced the shutdown of deepseek-chat / deepseek-reasoner on 2026/07/24; please migrate
 ```
 
 ### Advanced Model Routing (Powered by LiteLLM)
@@ -1346,11 +1352,11 @@ See [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md). Most users only need to think in
 ```env
 # Primary: 3 Gemini keys rotate; Router switches on 429
 GEMINI_API_KEYS=key1,key2,key3
-LITELLM_MODEL=gemini/gemini-3.1-pro-preview
+LITELLM_MODEL=gemini/gemini-3.6-flash
 
 # Cross-model fallback: when all primary keys fail, try Claude → GPT
 # Requires ANTHROPIC_API_KEY, OPENAI_API_KEY
-LITELLM_FALLBACK_MODELS=anthropic/claude-sonnet-4-6,openai/gpt-5.4-mini
+LITELLM_FALLBACK_MODELS=anthropic/claude-sonnet-4-6,openai/gpt-6.1-terra
 ```
 
 > ⚠️ `LITELLM_MODEL` must include provider prefix (e.g. `gemini/`, `anthropic/`, `openai/`). Legacy `GEMINI_MODEL` (no prefix) is only used when `LITELLM_MODEL` is not set.

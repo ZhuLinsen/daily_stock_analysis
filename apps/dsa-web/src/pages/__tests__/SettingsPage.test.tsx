@@ -2478,7 +2478,7 @@ describe('SettingsPage', () => {
           },
           {
             key: 'LLM_MY_PROXY_MODELS',
-            value: 'gpt-5.5',
+            value: 'gpt-6.1-sol',
             rawValueExists: true,
             isMasked: false,
             schema: {

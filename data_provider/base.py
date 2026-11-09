@@ -537,7 +537,8 @@ class BaseFetcher(ABC):
         except Exception as e:
             elapsed = time.time() - request_start
             error_type, error_reason = summarize_exception(e)
-            logger.error(
+            # 单一数据源失败仍可能由下一数据源兜底；全部失败时由 manager 记录 [数据源终止] ERROR
+            logger.warning(
                 f"[{self.name}] {stock_code} 获取失败: 范围={start_date} ~ {end_date}, "
                 f"error_type={error_type}, elapsed={elapsed:.2f}s, reason={error_reason}"
             )
@@ -1159,7 +1160,7 @@ class DataFetcherManager:
                 )
                 errors.append(f"[{source_name}] ({error_type}) {error_reason}")
 
-        logger.warning(
+        logger.error(
             "[指数数据源终止] %s 所有指数日线数据源均失败: elapsed=%.2fs; %s",
             target.canonical_id,
             time.time() - request_start,
