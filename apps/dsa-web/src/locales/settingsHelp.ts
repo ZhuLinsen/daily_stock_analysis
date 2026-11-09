@@ -1278,9 +1278,9 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.system.hot_top10': {
     title: '热榜 Top N 轻量分析',
     summary: '控制每日市场热榜 Top N 轻量分析的开关、执行时间和条数。',
-    usage: 'HOT_TOP10_ENABLED 开启功能（默认关闭）；HOT_TOP10_SCHEDULE_TIME 设置每日执行时间（HH:MM，非法值回退 15:10）；HOT_TOP10_COUNT 设置热榜条数（1-30，默认 10）。',
+    usage: 'HOT_TOP10_ENABLED 开启功能（默认关闭）；HOT_TOP10_SCHEDULE_TIME 设置每日执行时间（HH:MM，非法值回退 15:10）；HOT_TOP10_DATA_READY_SCHEDULE_TIME 设置数据就绪补投时间（HH:MM，默认 15:35）；HOT_TOP10_COUNT 设置热榜条数（1-30，默认 10）。',
     valueNotes: [
-      '开启后随定时模式（python main.py --schedule）每日执行，仅 A 股交易日运行；当天只推送一份，推送失败会在下次启动/触发时重试。',
+      '开启后随定时调度（CLI python main.py --schedule 与 Web/API/桌面长运行进程的运行时调度器）每个交易日执行；按榜单数据日期去重，上一交易日榜单与当日榜单可能同日分别投递（补投时间默认 15:35），同一数据日期只投递一次，投递失败会在下次触发时重试。',
       '数据来自 DSA 行业/概念排名（主题级热榜），单次 LLM 调用生成动因/强度/介入建议/风险的概览，非个股深度报告。',
       '也可用 python main.py --hot-top10 手动立即执行（手动执行不受当日去重限制）。',
     ],
@@ -2507,9 +2507,9 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.system.hot_top10': {
     title: 'Hot Themes Top-N Analysis',
     summary: 'Controls the daily market hot-theme Top-N light analysis: on/off, schedule time, and item count.',
-    usage: 'HOT_TOP10_ENABLED toggles the feature (default off); HOT_TOP10_SCHEDULE_TIME sets the daily execution time (HH:MM, invalid values fall back to 15:10); HOT_TOP10_COUNT sets how many hot-list themes to include (1-30, default 10).',
+    usage: 'HOT_TOP10_ENABLED toggles the feature (default off); HOT_TOP10_SCHEDULE_TIME sets the daily execution time (HH:MM, invalid values fall back to 15:10); HOT_TOP10_DATA_READY_SCHEDULE_TIME sets the data-ready follow-up time (HH:MM, default 15:35); HOT_TOP10_COUNT sets how many hot-list themes to include (1-30, default 10).',
     valueNotes: [
-      'When enabled it runs daily in schedule mode (python main.py --schedule), trading days only; one push per day, and a failed push retries on the next startup/trigger.',
+      'When enabled it runs every trading day through the schedulers (CLI python main.py --schedule and the runtime scheduler of long-running Web/API/Desktop processes); dedup keys on the ranking DATA date, so the previous trading day\u2019s list and today\u2019s list may both be delivered on the same day (follow-up default 15:35) — a given data date is delivered at most once, and a failed delivery retries on the next trigger.',
       'Data comes from DSA industry/concept rankings (theme-level hot list); a single LLM call produces the driver/strength/entry-advice/risk overview, not per-stock deep analysis.',
       'python main.py --hot-top10 runs it manually right away (manual runs bypass the daily dedup marker).',
     ],
