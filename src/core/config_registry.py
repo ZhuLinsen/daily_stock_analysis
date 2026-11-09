@@ -3760,7 +3760,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_editable": True,
         "default_value": "10",
         "options": [],
-        "validation": {"minimum": 1, "maximum": 30},
+        "validation": {"min": 1, "max": 30},
         "display_order": 56,
         "help_key": "settings.system.hot_top10",
         "examples": [

@@ -2106,6 +2106,32 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_type" for issue in validation["issues"]))
 
+    def test_validate_rejects_hot_top10_count_out_of_range(self) -> None:
+        """HOT_TOP10_COUNT range (1-30) must be enforced on web saves, i.e.
+        the registry validation keys must be the ones the validator actually
+        reads (min/max), not silent no-ops."""
+        below = self.service.validate(items=[{"key": "HOT_TOP10_COUNT", "value": "0"}])
+        self.assertFalse(below["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "HOT_TOP10_COUNT" and issue["code"] == "out_of_range"
+                for issue in below["issues"]
+            )
+        )
+
+        above = self.service.validate(items=[{"key": "HOT_TOP10_COUNT", "value": "31"}])
+        self.assertFalse(above["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "HOT_TOP10_COUNT" and issue["code"] == "out_of_range"
+                for issue in above["issues"]
+            )
+        )
+
+        valid = self.service.validate(items=[{"key": "HOT_TOP10_COUNT", "value": "10"}])
+        self.assertTrue(valid["valid"])
+        self.assertEqual(valid["issues"], [])
+
     def test_validate_reports_invalid_feishu_webhook_url(self) -> None:
         validation = self.service.validate(
             items=[{"key": "FEISHU_WEBHOOK_URL", "value": "feishu-hook-without-scheme"}]

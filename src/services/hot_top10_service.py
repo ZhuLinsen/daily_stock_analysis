@@ -24,6 +24,13 @@ Design rules:
 - Trading-day gate reuses ``src/core/trading_calendar.get_open_markets_today``
   (fail-open: when the calendar library is unavailable every market counts as
   open). ``force_run`` bypasses both the gate and the dedup marker.
+- Cross-slot in-flight mutex (OR-COR-9a41d2ce): the primary and data-ready
+  occurrences register under different scheduler job names, so the
+  scheduler's per-name guard does not mutually exclude them. A process-wide
+  non-reentrant mutex covers each whole run (dedup checks -> LLM -> save ->
+  deliver -> marker); a trigger arriving while another run holds it exits
+  immediately with ``already_running`` — no push, no marker — and retries on
+  the next occurrence.
 - Default OFF: with ``HOT_TOP10_ENABLED`` unset the feature registers nothing
   and changes zero behavior.
 """
@@ -34,6 +41,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -57,6 +65,12 @@ MARKER_FILE_NAME = "hot_top10_state.json"
 MARKER_SCHEMA_VERSION = 2
 LLM_MAX_TOKENS = 3000
 LLM_TEMPERATURE = 0.3
+
+# OR-COR-9a41d2ce: process-wide non-reentrant mutex held for the whole run
+# (dedup checks -> LLM -> save -> deliver -> marker). The two schedule slots
+# register under different job names, so only this service-level guard
+# mutually excludes overlapping occurrences.
+_HOT_TOP10_RUN_MUTEX = threading.Lock()
 
 _ADVICE_VALUES = {"观望", "轻仓介入", "积极介入"}
 
@@ -707,11 +721,63 @@ def run_hot_top10_analysis(
     respect_dedup: bool = True,
     force_run: bool = False,
 ) -> HotTop10RunResult:
-    """One hot-top10 run: fetch -> summarize -> render -> deliver.
+    """One hot-top10 run, guarded by the cross-slot in-flight mutex.
 
-    Never raises: every stage degrades and logs. The daily marker is recorded
-    only when the report was produced AND delivered — the push succeeded, or
-    the push was intentionally skipped/disabled AND the local save succeeded
+    OR-COR-9a41d2ce: the primary and data-ready schedule slots register
+    under different job names, so the scheduler's per-name in-flight guard
+    does not mutually exclude them, and both dedup checks happen before the
+    LLM/save/push stages — two overlapping occurrences could both pass the
+    checks and push the same list twice. This wrapper takes a process-wide
+    non-reentrant mutex around the entire critical section (dedup checks ->
+    LLM -> save -> deliver -> marker). A trigger arriving while another run
+    holds the mutex exits immediately with ``skipped=True`` and
+    ``reason="already_running"``: nothing is pushed and the day's dedup
+    marker is left untouched, so the skipped occurrence retries on its next
+    trigger (same recovery semantics as a failed delivery, OR-COR-8c2d195e).
+
+    Never raises: every stage degrades and logs; see
+    :func:`_run_hot_top10_analysis_locked` for the run itself.
+    """
+    if not _HOT_TOP10_RUN_MUTEX.acquire(blocking=False):
+        logger.warning(
+            "[HotTop10] 上一轮热榜分析仍在执行中，本次触发直接跳过"
+            "（跨时段在飞互斥：不投递、不落当日标记，等待下次触发重试）"
+        )
+        return HotTop10RunResult(
+            delivered=False,
+            skipped=True,
+            reason="already_running",
+        )
+    try:
+        return _run_hot_top10_analysis_locked(
+            config,
+            send_notification=send_notification,
+            notifier=notifier,
+            analyzer=analyzer,
+            hotspot_service=hotspot_service,
+            respect_dedup=respect_dedup,
+            force_run=force_run,
+        )
+    finally:
+        _HOT_TOP10_RUN_MUTEX.release()
+
+
+def _run_hot_top10_analysis_locked(
+    config: Any,
+    *,
+    send_notification: bool = True,
+    notifier: Any = None,
+    analyzer: Any = None,
+    hotspot_service: Any = None,
+    respect_dedup: bool = True,
+    force_run: bool = False,
+) -> HotTop10RunResult:
+    """Run body executed while holding ``_HOT_TOP10_RUN_MUTEX``.
+
+    One run: fetch -> summarize -> render -> deliver. Never raises: every
+    stage degrades and logs. The daily marker is recorded only when the
+    report was produced AND delivered — the push succeeded, or the push was
+    intentionally skipped/disabled AND the local save succeeded
     (OR-COR-8c2d195e) — so a failed push or save retries later.
     """
     count = getattr(config, "hot_top10_count", DEFAULT_HOT_TOP10_COUNT) or DEFAULT_HOT_TOP10_COUNT

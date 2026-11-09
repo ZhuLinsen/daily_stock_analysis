@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
@@ -296,6 +298,125 @@ class HotTop10ServiceTest(unittest.TestCase):
 
         self.assertEqual(result.notification_status, "sent")
         self.assertTrue(result.delivered)
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertTrue(skip)
+
+    def test_overlapping_trigger_skips_without_push_or_marker(self):
+        """OR-COR-9a41d2ce: a trigger fired while another hot-top10 run is
+        still in flight (slow LLM, e.g. the 15:10 primary still running at
+        15:35) must exit immediately — no push, no marker — and the
+        in-flight run completes alone. The two triggers are NOT joined
+        between occurrences."""
+        config = _config(self._tmp.name)
+        release_llm = threading.Event()
+
+        class _BlockingAnalyzer:
+            def __init__(self, text: str) -> None:
+                self.text = text
+                self.entered = threading.Event()
+
+            def generate_text(self, prompt: str, **kwargs: Any) -> str:
+                self.entered.set()
+                release_llm.wait(timeout=10)
+                return self.text
+
+        analyzer = _BlockingAnalyzer(_llm_json())
+        service = _FakeHotspotService(_hotspot_payload(_theme_items(3)))
+        first_notifier = _FakeNotifier()
+        first_results: Dict[str, HotTop10RunResult] = {}
+
+        def _primary_run() -> None:
+            first_results["run"] = run_hot_top10_analysis(
+                config,
+                notifier=first_notifier,
+                hotspot_service=service,
+                analyzer=analyzer,
+            )
+
+        primary = threading.Thread(target=_primary_run, daemon=True)
+        primary.start()
+        self.assertTrue(analyzer.entered.wait(timeout=5))
+
+        # The second slot fires while the first run is still inside the LLM
+        # call — no join between the two occurrences.
+        second_notifier = _FakeNotifier()
+        second = run_hot_top10_analysis(
+            config,
+            notifier=second_notifier,
+            hotspot_service=service,
+            analyzer=_FakeAnalyzer(text=_llm_json()),
+        )
+
+        self.assertFalse(second.delivered)
+        self.assertTrue(second.skipped)
+        self.assertEqual(second.reason, "already_running")
+        self.assertEqual(second_notifier.sent, [])
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)  # the overlapping trigger consumed nothing
+
+        release_llm.set()
+        primary.join(timeout=10)
+        self.assertTrue(first_results["run"].delivered)
+        self.assertEqual(len(first_notifier.sent), 1)
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertTrue(skip)  # the in-flight run recorded the marker
+
+    def test_concurrent_triggers_deliver_exactly_once(self):
+        """OR-COR-9a41d2ce: two slots firing near-simultaneously (e.g. both
+        schedule times set to the same HH:MM) must yield exactly ONE
+        delivery — the loser exits with reason=already_running and writes
+        nothing."""
+        config = _config(self._tmp.name)
+        release_llm = threading.Event()
+
+        class _BlockingAnalyzer:
+            def generate_text(self, prompt: str, **kwargs: Any) -> str:
+                release_llm.wait(timeout=10)
+                return _llm_json()
+
+        service = _FakeHotspotService(_hotspot_payload(_theme_items(3)))
+        notifier_a = _FakeNotifier()
+        notifier_b = _FakeNotifier()
+        results: Dict[str, HotTop10RunResult] = {}
+
+        def _trigger(tag: str, notifier: _FakeNotifier) -> None:
+            results[tag] = run_hot_top10_analysis(
+                config,
+                notifier=notifier,
+                hotspot_service=service,
+                analyzer=_BlockingAnalyzer(),
+            )
+
+        thread_a = threading.Thread(
+            target=_trigger, args=("a", notifier_a), daemon=True
+        )
+        thread_b = threading.Thread(
+            target=_trigger, args=("b", notifier_b), daemon=True
+        )
+        thread_a.start()
+        thread_b.start()
+
+        # The trigger that loses the mutex exits immediately instead of
+        # waiting inside the LLM call with the winner.
+        deadline = time.time() + 5
+        while time.time() < deadline and len(results) < 1:
+            time.sleep(0.02)
+        self.assertGreaterEqual(
+            len(results), 1, "both triggers stayed blocked inside the run"
+        )
+
+        release_llm.set()
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+        self.assertEqual(len(results), 2)
+
+        delivered = [r for r in results.values() if r.delivered]
+        overlapped = [
+            r for r in results.values() if r.reason == "already_running"
+        ]
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual(len(overlapped), 1)
+        self.assertEqual(len(notifier_a.sent) + len(notifier_b.sent), 1)
         skip, _ = hot_top10_already_delivered_today(config)
         self.assertTrue(skip)
 
