@@ -280,4 +280,4 @@ jobs:
           name: web-ui-evidence-${{ github.event.pull_request.head.sha }}
           path: apps/dsa-web/test-results/fixtures/
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7

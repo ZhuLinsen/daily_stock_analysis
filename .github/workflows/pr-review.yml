@@ -138,6 +138,7 @@ jobs:
         uses: actions/upload-artifact@v6
         if: always()
         with:
+          retention-days: 7
           name: ai-review-result
           path: ai_review_result.txt
           if-no-files-found: ignore
