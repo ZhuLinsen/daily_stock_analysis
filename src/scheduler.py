@@ -23,6 +23,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
+# OR-COR-f3a76b12: auxiliary daily jobs (e.g. the hot-top10 analysis) run on
+# their own background thread; a run still in flight past this timeout is
+# considered hung and its slot is released so a later occurrence can proceed.
+DEFAULT_EXTRA_JOB_RUN_TIMEOUT_SECONDS = 30 * 60
+
 
 def normalize_schedule_times(
     schedule_times: Optional[Union[Sequence[str], str]],
@@ -125,6 +130,10 @@ class Scheduler:
         self._daily_job: Optional[Any] = None
         self._daily_jobs: List[Any] = []
         self._extra_daily_jobs: List[Any] = []
+        # OR-COR-f3a76b12: in-flight workers for extra daily jobs, keyed by
+        # job name — the reentry guard for the background dispatch.
+        self._extra_job_workers: Dict[str, Dict[str, Any]] = {}
+        self._extra_job_lock = threading.Lock()
         self._background_tasks: List[Dict[str, Any]] = []
         self._lifecycle_lock = threading.Lock()
         self._running = False
@@ -314,6 +323,7 @@ class Scheduler:
         task: Callable,
         schedule_time: str,
         name: Optional[str] = None,
+        run_timeout_seconds: float = DEFAULT_EXTRA_JOB_RUN_TIMEOUT_SECONDS,
     ) -> bool:
         """Register an additional fail-open daily job at a specific time.
 
@@ -322,6 +332,15 @@ class Scheduler:
         nothing (returns False instead of raising), and the wrapped run
         captures every exception so one auxiliary job can never break the
         main scheduler loop or the other jobs.
+
+        OR-COR-f3a76b12: the wrapped job body runs on a dedicated daemon
+        thread instead of the scheduler loop thread — a slow run (LLM call,
+        notification push) must not freeze the loop or the other jobs. The
+        dispatch carries an in-flight guard (a still-running previous
+        occurrence skips the duplicate start) plus a stale-run timeout
+        (``run_timeout_seconds``): a run stuck beyond the timeout releases
+        its slot so a later occurrence can proceed while the old thread
+        keeps running detached.
         """
         candidate = (schedule_time or "").strip()
         if not self._is_valid_schedule_time(candidate):
@@ -335,19 +354,87 @@ class Scheduler:
         job_name = name or getattr(task, "__name__", "extra_daily_task")
 
         def _wrapped() -> None:
+            worker = threading.current_thread()
             try:
                 logger.info("辅助每日任务开始执行: %s", job_name)
                 task()
                 logger.info("辅助每日任务执行完成: %s", job_name)
             except Exception as exc:  # noqa: BLE001 - auxiliary jobs never break the loop
                 logger.exception("辅助每日任务执行失败 [%s]: %s", job_name, exc)
+            finally:
+                self._release_extra_job_worker(job_name, worker)
 
-        job = self.schedule.every().day.at(candidate).do(_wrapped)
+        def _dispatch() -> None:
+            # Fire-and-forget: this wrapper runs inside the schedule loop,
+            # so it must return immediately (OR-COR-f3a76b12).
+            if self._stop_requested or self.shutdown_handler.should_shutdown:
+                logger.info(
+                    "调度器停止中，跳过辅助每日任务派发: %s", job_name
+                )
+                return
+            now = time.time()
+            worker = threading.Thread(
+                target=_wrapped,
+                daemon=True,
+                name=f"extra-daily-{job_name}",
+            )
+            with self._extra_job_lock:
+                in_flight = self._extra_job_workers.get(job_name)
+                if in_flight is not None and in_flight["thread"].is_alive():
+                    elapsed = now - in_flight["started_at"]
+                    if elapsed < run_timeout_seconds:
+                        logger.warning(
+                            "辅助每日任务 [%s] 上一轮仍在后台执行（已运行 %.0f 秒），"
+                            "跳过本轮重复启动",
+                            job_name,
+                            elapsed,
+                        )
+                        return
+                    logger.warning(
+                        "辅助每日任务 [%s] 上一轮后台执行已超过 %.0f 秒，判定超时，"
+                        "本轮允许重新派发（旧线程仍在后台运行）",
+                        job_name,
+                        elapsed,
+                    )
+                self._extra_job_workers[job_name] = {
+                    "thread": worker,
+                    "started_at": now,
+                }
+            worker.start()
+
+        job = self.schedule.every().day.at(candidate).do(_dispatch)
         self._extra_daily_jobs.append(job)
         logger.info(
-            "已注册辅助每日任务: %s（执行时间: %s）", job_name, candidate
+            "已注册辅助每日任务: %s（执行时间: %s，后台线程执行，"
+            "防重入超时 %s 秒）",
+            job_name,
+            candidate,
+            run_timeout_seconds,
         )
         return True
+
+    def _release_extra_job_worker(self, job_name: str, worker: Any) -> None:
+        """Clear the in-flight slot owned by ``worker`` (guard against a
+        stale-run redispatch replacing the entry before the old thread ends)."""
+        with self._extra_job_lock:
+            info = self._extra_job_workers.get(job_name)
+            if info is not None and info["thread"] is worker:
+                self._extra_job_workers.pop(job_name, None)
+
+    def _join_extra_daily_job_workers(
+        self, timeout: Optional[float] = None
+    ) -> None:
+        """Wait for in-flight extra daily job workers to finish.
+
+        Used by graceful-shutdown paths and tests; daemon workers are never
+        joined forever (``timeout=None`` is the caller's choice)."""
+        with self._extra_job_lock:
+            workers = [
+                info["thread"]
+                for info in self._extra_job_workers.values()
+            ]
+        for worker in workers:
+            worker.join(timeout=timeout)
 
     def add_background_task(
         self,

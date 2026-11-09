@@ -4,6 +4,7 @@
 from datetime import datetime
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -45,6 +46,127 @@ class _FakeScheduleModule:
 
     def cancel_job(self, job):
         self.jobs.remove(job)
+
+
+def _join_extra_job_workers(scheduler, timeout: float = 5.0) -> None:
+    """Wait for in-flight extra daily job workers (no-op pre-mechanism)."""
+    workers_map = getattr(scheduler, "_extra_job_workers", None)
+    if not workers_map:
+        return
+    workers = [info["thread"] for info in list(workers_map.values())]
+    for worker in workers:
+        worker.join(timeout=timeout)
+
+
+class SchedulerExtraDailyJobDispatchTest(unittest.TestCase):
+    """OR-COR-f3a76b12: auxiliary daily jobs must not block the scheduler loop.
+
+    The hot-top10 daily job (a single LLM call plus save and push) used to run
+    synchronously inside the ``schedule`` loop thread, freezing every other
+    job — and the main loop itself — for the whole run. The dispatch must hand
+    the task to a controlled background worker with an in-flight guard (no
+    duplicate start) and a stale-run timeout.
+    """
+
+    def _make_scheduler(self):
+        fake_schedule = _FakeScheduleModule()
+        with patch.dict(sys.modules, {"schedule": fake_schedule}):
+            from src.scheduler import Scheduler
+
+            scheduler = Scheduler(
+                schedule_time="18:00", register_signals=False
+            )
+        self.addCleanup(_join_extra_job_workers, scheduler)
+        return scheduler, fake_schedule
+
+    def test_extra_daily_job_dispatch_does_not_block_caller(self):
+        scheduler, _ = self._make_scheduler()
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_task():
+            entered.set()
+            release.wait(timeout=6)
+
+        self.assertTrue(
+            scheduler.add_daily_task(slow_task, "15:10", name="hot_top10")
+        )
+        job_func = scheduler._extra_daily_jobs[0].job_func
+
+        started = time.perf_counter()
+        job_func()
+        elapsed = time.perf_counter() - started
+
+        self.assertTrue(entered.wait(timeout=5))
+        # The wrapper returned while the task was still running in the
+        # background: the scheduler loop is never blocked by the job body.
+        self.assertLess(
+            elapsed,
+            4.0,
+            "add_daily_task wrapper blocked the caller for %.1fs" % elapsed,
+        )
+        release.set()
+        _join_extra_job_workers(scheduler)
+
+    def test_in_flight_extra_daily_job_skips_duplicate_start(self):
+        scheduler, _ = self._make_scheduler()
+        entered = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def slow_task():
+            calls.append(1)
+            entered.set()
+            release.wait(timeout=6)
+
+        scheduler.add_daily_task(slow_task, "15:10", name="hot_top10")
+        job_func = scheduler._extra_daily_jobs[0].job_func
+
+        job_func()
+        self.assertTrue(entered.wait(timeout=5))
+        # Second occurrence fires while the first run is still in flight:
+        # it must not start a duplicate execution.
+        job_func()
+        release.set()
+        _join_extra_job_workers(scheduler)
+
+        self.assertEqual(
+            len(calls), 1, "duplicate start while previous run still in flight"
+        )
+
+    def test_stale_in_flight_job_allows_redispatch_after_timeout(self):
+        scheduler, _ = self._make_scheduler()
+        release = threading.Event()
+        calls = []
+
+        def hung_task():
+            calls.append(1)
+            release.wait(timeout=10)
+
+        scheduler.add_daily_task(
+            hung_task, "15:10", name="hot_top10", run_timeout_seconds=0.2
+        )
+        job_func = scheduler._extra_daily_jobs[0].job_func
+
+        job_func()
+        time.sleep(0.35)  # exceed the in-flight timeout window
+        job_func()  # stale slot must be released so the new occurrence runs
+        release.set()
+        _join_extra_job_workers(scheduler)
+
+        self.assertEqual(len(calls), 2, "stale in-flight slot was never released")
+
+    def test_extra_daily_job_skips_dispatch_after_stop(self):
+        scheduler, _ = self._make_scheduler()
+        ran = threading.Event()
+
+        scheduler.add_daily_task(lambda: ran.set(), "15:10", name="x")
+        job_func = scheduler._extra_daily_jobs[0].job_func
+        scheduler.stop()
+        job_func()
+        _join_extra_job_workers(scheduler)
+
+        self.assertFalse(ran.is_set(), "auxiliary job dispatched after stop()")
 
 
 class SchedulerBackgroundTaskTestCase(unittest.TestCase):

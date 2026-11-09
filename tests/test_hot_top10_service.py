@@ -107,10 +107,17 @@ class _FakeHotspotService:
 
 
 class _FakeNotifier:
-    def __init__(self, available: bool = True, send_ok: bool = True, raise_on_send: bool = False) -> None:
+    def __init__(
+        self,
+        available: bool = True,
+        send_ok: bool = True,
+        raise_on_send: bool = False,
+        raise_on_save: bool = False,
+    ) -> None:
         self.available_flag = available
         self.send_ok = send_ok
         self.raise_on_send = raise_on_send
+        self.raise_on_save = raise_on_save
         self.sent: List[str] = []
         self.saved: List[str] = []
 
@@ -118,6 +125,8 @@ class _FakeNotifier:
         return self.available_flag
 
     def save_report_to_file(self, content: str, filename: str) -> str:
+        if self.raise_on_save:
+            raise PermissionError("report directory is read-only")
         self.saved.append(filename)
         return filename
 
@@ -241,6 +250,54 @@ class HotTop10ServiceTest(unittest.TestCase):
         self.assertTrue(result.delivered)
         skip, _ = hot_top10_already_delivered_today(config)
         self.assertFalse(skip)
+
+    def test_save_failure_with_no_channel_keeps_marker_open_for_retry(self):
+        """OR-COR-8c2d195e: a save failure with no notification channel
+        delivers nothing, so the day's dedup marker must stay open and the
+        next occurrence must retry once storage recovers."""
+        config = _config(self._tmp.name)
+        broken = _FakeNotifier(available=False, raise_on_save=True)
+        first = self._run(config, notifier=broken)
+
+        self.assertEqual(first.notification_status, "no_channel")
+        self.assertFalse(first.delivered)
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)
+
+        # Storage recovered on the next occurrence: the report is saved and
+        # the marker is recorded even though no notification channel exists.
+        recovered = _FakeNotifier(available=False)
+        second = self._run(config, notifier=recovered)
+
+        self.assertEqual(second.notification_status, "no_channel")
+        self.assertTrue(second.delivered)
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertTrue(skip)
+
+    def test_save_failure_with_disabled_notification_keeps_marker_open(self):
+        """OR-COR-8c2d195e: --no-notify runs rely on the local save, so a
+        failed save must not consume the day's dedup slot either."""
+        config = _config(self._tmp.name)
+        broken = _FakeNotifier(raise_on_save=True)
+        result = self._run(config, notifier=broken, send_notification=False)
+
+        self.assertEqual(result.notification_status, "disabled")
+        self.assertFalse(result.delivered)
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)
+
+    def test_save_failure_with_successful_push_still_records_marker(self):
+        """OR-COR-8c2d195e (boundary): a successful notification push is a
+        real delivery, so the marker is recorded even when the local save
+        failed."""
+        config = _config(self._tmp.name)
+        broken = _FakeNotifier(raise_on_save=True)
+        result = self._run(config, notifier=broken)
+
+        self.assertEqual(result.notification_status, "sent")
+        self.assertTrue(result.delivered)
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertTrue(skip)
 
     def test_corrupt_marker_fails_open(self):
         config = _config(self._tmp.name)
@@ -645,9 +702,13 @@ class HotTop10SchedulerWiringTest(unittest.TestCase):
 
         self.assertTrue(scheduler.add_daily_task(job, "15:10", name="hot_top10"))
         self.assertEqual(len(scheduler._extra_daily_jobs), 1)
-        # The registered wrapper swallows the exception (fail-open).
+        # The registered wrapper dispatches to a background thread (the
+        # scheduler loop must not block) and swallows the exception there.
         scheduler._extra_daily_jobs[0].job_func()
+        scheduler._join_extra_daily_job_workers(timeout=5)
         self.assertEqual(len(calls), 1)
+        # The in-flight slot is released once the worker finished.
+        self.assertEqual(scheduler._extra_job_workers, {})
 
     def test_add_daily_task_rejects_invalid_time(self):
         from src.scheduler import Scheduler

@@ -3071,10 +3071,11 @@ class HotTop10DataReadySecondSlotScheduleTest(unittest.TestCase):
                     job["task"], job["schedule_time"], name=job["name"]
                 )
             )
-        return {
+        jobs_by_time = {
             f"{job.at_time.hour:02d}:{job.at_time.minute:02d}": job
             for job in scheduler._extra_daily_jobs
         }
+        return jobs_by_time, scheduler
 
     def test_stale_primary_then_fresh_data_ready_slot_delivers_today(self) -> None:
         import contextlib
@@ -3084,21 +3085,24 @@ class HotTop10DataReadySecondSlotScheduleTest(unittest.TestCase):
         config = self._config()
         payload_holder = {"payload": self._payload(self.yesterday)}
         notifier = SimpleNamespace(sent=[], saved=[])
-        jobs_by_time = self._register_real_jobs(config)
+        jobs_by_time, scheduler = self._register_real_jobs(config)
         with contextlib.ExitStack() as stack:
             for item in self._patches(payload_holder, notifier):
                 stack.enter_context(item)
 
             # 15:10 occurrence: the provider still serves the previous
             # trading day (before the 15:30 cut) -> stale delivery, marker
-            # stays open for today's data.
+            # stays open for today's data. The job dispatches on a
+            # background worker; join it before the next occurrence.
             jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 1)
 
             # After the 15:30 cut the data-ready slot sees today's rankings
             # -> today's report is delivered and the marker records it.
             payload_holder["payload"] = self._payload(self.today)
             jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 2)
 
             marker = json.loads(
@@ -3109,6 +3113,7 @@ class HotTop10DataReadySecondSlotScheduleTest(unittest.TestCase):
 
             # A third same-day occurrence idles: no duplicate push.
             jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 2)
 
     def test_fresh_primary_data_ready_slot_idles_without_second_push(self) -> None:
@@ -3117,17 +3122,19 @@ class HotTop10DataReadySecondSlotScheduleTest(unittest.TestCase):
         config = self._config()
         payload_holder = {"payload": self._payload(self.today)}
         notifier = SimpleNamespace(sent=[], saved=[])
-        jobs_by_time = self._register_real_jobs(config)
+        jobs_by_time, scheduler = self._register_real_jobs(config)
         with contextlib.ExitStack() as stack:
             for item in self._patches(payload_holder, notifier):
                 stack.enter_context(item)
 
             # Data already fresh at 15:10: delivered once, marker consumed.
             jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 1)
 
             # The data-ready slot must idempotently skip (no duplicate push).
             jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 1)
 
     def test_data_ready_slot_skips_when_data_still_stale(self) -> None:
@@ -3136,17 +3143,19 @@ class HotTop10DataReadySecondSlotScheduleTest(unittest.TestCase):
         config = self._config()
         payload_holder = {"payload": self._payload(self.yesterday)}
         notifier = SimpleNamespace(sent=[], saved=[])
-        jobs_by_time = self._register_real_jobs(config)
+        jobs_by_time, scheduler = self._register_real_jobs(config)
         with contextlib.ExitStack() as stack:
             for item in self._patches(payload_holder, notifier):
                 stack.enter_context(item)
 
             jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 1)
 
             # The data-ready slot fires but the provider STILL serves the
             # same stale list: no duplicate stale push.
             jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 1)
 
 

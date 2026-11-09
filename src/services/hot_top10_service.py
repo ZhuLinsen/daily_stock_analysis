@@ -17,9 +17,10 @@ Design rules:
 - Daily dedup via a persisted JSON marker next to the SQLite database
   (same directory pattern as ``src/core/analysis_run_marker.py``): missing /
   corrupt / unreadable markers fail open (the run executes again). The marker
-  is recorded only after the report was produced AND the push succeeded (or
-  the push was intentionally skipped), so a failed push retries on the next
-  restart/occurrence instead of losing the day's report.
+  is recorded only after the report was produced AND delivered — the push
+  succeeded, or the push was intentionally skipped/disabled AND the local
+  save succeeded (OR-COR-8c2d195e: a failed save with no successful push
+  delivers nothing and leaves the marker open for the next retry).
 - Trading-day gate reuses ``src/core/trading_calendar.get_open_markets_today``
   (fail-open: when the calendar library is unavailable every market counts as
   open). ``force_run`` bypasses both the gate and the dedup marker.
@@ -644,8 +645,14 @@ def _deliver(
     report_markdown: str,
     send_notification: bool,
     notifier: Any,
-) -> str:
-    """Save + push the report. Returns a status string; never raises."""
+) -> Tuple[str, bool]:
+    """Save + push the report. Returns ``(status, report_saved)``; never raises.
+
+    ``report_saved`` (OR-COR-8c2d195e) tells the caller whether the local
+    report file actually landed. With no successful notification push it is
+    the ONLY delivery that counts, so a failed save must propagate into the
+    delivery decision instead of being swallowed here.
+    """
     try:
         if notifier is None:
             from src.notification import NotificationService
@@ -655,30 +662,34 @@ def _deliver(
         logger.warning(
             "[HotTop10] 通知服务初始化失败，报告未保存也未推送: %s\n%s", exc, report_markdown
         )
-        return "notifier_init_failed"
+        return "notifier_init_failed", False
 
+    report_saved = False
     filename = f"hot_top10_{date.today():%Y%m%d}.md"
     try:
         path = notifier.save_report_to_file(report_markdown, filename)
         logger.info("[HotTop10] 报告已保存: %s", path)
+        report_saved = True
     except Exception as exc:
+        # OR-COR-8c2d195e: do NOT swallow silently — the caller must know
+        # the report exists nowhere (no save, no push) and retry.
         logger.warning("[HotTop10] 报告保存失败: %s\n%s", exc, report_markdown)
 
     if not send_notification:
         logger.info("[HotTop10] 通知推送已禁用（--no-notify）")
-        return "disabled"
+        return "disabled", report_saved
     try:
         if not notifier.is_available():
             logger.info("[HotTop10] 未配置通知渠道，跳过推送（报告仅落盘）")
-            return "no_channel"
+            return "no_channel", report_saved
         if notifier.send(report_markdown, route_type="report"):
             logger.info("[HotTop10] 通知推送成功")
-            return "sent"
+            return "sent", report_saved
         logger.warning("[HotTop10] 通知推送失败")
-        return "failed"
+        return "failed", report_saved
     except Exception as exc:
         logger.warning("[HotTop10] 通知推送异常: %s", exc)
-        return "failed"
+        return "failed", report_saved
 
 
 # --------------------------------------------------------------------------
@@ -699,8 +710,9 @@ def run_hot_top10_analysis(
     """One hot-top10 run: fetch -> summarize -> render -> deliver.
 
     Never raises: every stage degrades and logs. The daily marker is recorded
-    only when the report was produced AND the push succeeded (or the push was
-    intentionally skipped/disabled), so a failed push retries later.
+    only when the report was produced AND delivered — the push succeeded, or
+    the push was intentionally skipped/disabled AND the local save succeeded
+    (OR-COR-8c2d195e) — so a failed push or save retries later.
     """
     count = getattr(config, "hot_top10_count", DEFAULT_HOT_TOP10_COUNT) or DEFAULT_HOT_TOP10_COUNT
     try:
@@ -792,12 +804,25 @@ def run_hot_top10_analysis(
     report_markdown = render_hot_top10_report(
         items, summary, llm_completed, language, ranking_date=ranking_date
     )
-    notification_status = _deliver(report_markdown, send_notification, notifier)
+    notification_status, report_saved = _deliver(
+        report_markdown, send_notification, notifier
+    )
 
     if notification_status in {"failed", "notifier_init_failed"}:
         # Push failed: leave the marker unset so the next occurrence retries.
         logger.warning(
             "[HotTop10] 推送未成功（status=%s），不记录当日标记，等待下次重试",
+            notification_status,
+        )
+    elif not report_saved and notification_status != "sent":
+        # OR-COR-8c2d195e: no successful notification push AND the local
+        # save failed, so nothing was actually delivered. The day's dedup
+        # marker must stay open, otherwise a recoverable storage failure
+        # would silently swallow the whole day's report. (A successful push
+        # with a failed save still counts as delivered and records below.)
+        logger.warning(
+            "[HotTop10] 报告保存失败且无成功通知交付（status=%s），"
+            "不记录当日标记，等待下次重试",
             notification_status,
         )
     else:
@@ -811,10 +836,14 @@ def run_hot_top10_analysis(
             data_date=ranking_date,
         )
 
+    # The run only counts as delivered when the report reached somewhere:
+    # a successful push, or a successful local save (for the disabled /
+    # no-channel paths that rely on the file).
+    delivery_completed = report_saved or notification_status == "sent"
     return HotTop10RunResult(
-        delivered=True,
+        delivered=delivery_completed,
         skipped=False,
-        reason="ok",
+        reason="ok" if delivery_completed else f"delivery_failed: {notification_status}",
         report_markdown=report_markdown,
         llm_completed=llm_completed,
         notification_status=notification_status,

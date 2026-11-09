@@ -1188,8 +1188,10 @@ class HotTop10DailyJobRegistrationTest(unittest.TestCase):
         ) as run_mock:
             for job in extra_jobs:
                 job.job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
 
-        # Both slots run the real service with scheduler semantics.
+        # Both slots run the real service with scheduler semantics (via the
+        # background worker dispatch, OR-COR-f3a76b12).
         self.assertEqual(run_mock.call_count, 2)
         for call in run_mock.call_args_list:
             runtime_config = call.args[0]
@@ -1225,6 +1227,7 @@ class HotTop10DailyJobRegistrationTest(unittest.TestCase):
         ) as run_mock:
             for job in extra_jobs:
                 job.job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
 
         self.assertEqual(run_mock.call_count, 2)
         for call in run_mock.call_args_list:
@@ -1289,7 +1292,7 @@ class HotTop10RuntimeSameDaySecondRunTest(unittest.TestCase):
             },
         }
 
-    def _start_service(self, config: SimpleNamespace) -> dict:
+    def _start_service(self, config: SimpleNamespace):
         service = RuntimeSchedulerService(config_provider=lambda: config)
         service._reload_config = lambda: config
         with patch(
@@ -1301,10 +1304,11 @@ class HotTop10RuntimeSameDaySecondRunTest(unittest.TestCase):
 
         scheduler = service._scheduler
         assert scheduler is not None
-        return {
+        jobs_by_time = {
             f"{job.at_time.hour:02d}:{job.at_time.minute:02d}": job
             for job in scheduler._extra_daily_jobs
         }
+        return jobs_by_time, scheduler
 
     def _patches(self, payload_holder, notifier):
         class _FakeHotspotService:
@@ -1359,7 +1363,7 @@ class HotTop10RuntimeSameDaySecondRunTest(unittest.TestCase):
         config = self._config()
         payload_holder = {"payload": self._payload(yesterday)}
         notifier = SimpleNamespace(sent=[])
-        jobs_by_time = self._start_service(config)
+        jobs_by_time, scheduler = self._start_service(config)
         self.assertEqual(set(jobs_by_time), {"15:10", "15:35"})
 
         with contextlib.ExitStack() as stack:
@@ -1368,13 +1372,17 @@ class HotTop10RuntimeSameDaySecondRunTest(unittest.TestCase):
 
             # Primary 15:10 occurrence: previous-trading-day rankings (the
             # 15:30 cut has not happened) -> stale delivery, marker open.
+            # The job dispatches on a background worker; join it before the
+            # next occurrence (per-job-name guard).
             jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 1)
 
             # Data cut passes; the data-ready occurrence delivers today's
             # list through the same real service path.
             payload_holder["payload"] = self._payload(today)
             jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 2)
 
             marker = json.loads(
@@ -1392,18 +1400,20 @@ class HotTop10RuntimeSameDaySecondRunTest(unittest.TestCase):
         config = self._config()
         payload_holder = {"payload": self._payload(today)}
         notifier = SimpleNamespace(sent=[])
-        jobs_by_time = self._start_service(config)
+        jobs_by_time, scheduler = self._start_service(config)
 
         with contextlib.ExitStack() as stack:
             for item in self._patches(payload_holder, notifier):
                 stack.enter_context(item)
 
             jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 1)
 
             # Today's data was already delivered: the data-ready occurrence
             # skips via the daily marker (no duplicate push).
             jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
             self.assertEqual(len(notifier.sent), 1)
 
 
