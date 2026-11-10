@@ -235,10 +235,28 @@ class ConfigManager:
         if content and not content.endswith("\n"):
             content += "\n"
 
+        # Preserve the existing file's permission bits and group id so a config
+        # save never widens .env access (e.g. 0600 -> 0644 exposing API keys).
+        # When the file does not exist yet, default new files to 0600.
+        target_mode = 0o600
+        target_gid = None
+        if self._env_path.exists():
+            file_stat = self._env_path.stat()
+            target_mode = file_stat.st_mode & 0o777
+            target_gid = file_stat.st_gid
+
         with temp_path.open("w", encoding="utf-8", newline="\n") as file_obj:
             file_obj.write(content)
             file_obj.flush()
             os.fsync(file_obj.fileno())
+        os.chmod(temp_path, target_mode)
+        if target_gid is not None:
+            try:
+                os.chown(temp_path, -1, target_gid)
+            except OSError:
+                # chown may be unavailable or restricted in some containers;
+                # permission bits are the primary guardrail.
+                pass
 
         try:
             os.replace(temp_path, self._env_path)
@@ -250,17 +268,38 @@ class ConfigManager:
                 "Atomic replace for .env failed with errno=%s, falling back to in-place rewrite",
                 exc.errno,
             )
-            self._rewrite_in_place(content)
+            self._rewrite_in_place(content, target_mode=target_mode, target_gid=target_gid)
         finally:
             if temp_path.exists():
                 temp_path.unlink()
 
-    def _rewrite_in_place(self, content: str) -> None:
-        """Rewrite `.env` content in place when rename is unsupported by mount type."""
+    def _rewrite_in_place(
+        self,
+        content: str,
+        *,
+        target_mode: int = 0o600,
+        target_gid: Optional[int] = None,
+    ) -> None:
+        """Rewrite `.env` content in place when rename is unsupported by mount type.
+
+        Preserves the existing file's permission bits and group id instead of
+        letting an open("w") truncation reset them to the process umask.
+        """
+        if self._env_path.exists() and target_gid is None:
+            file_stat = self._env_path.stat()
+            target_mode = file_stat.st_mode & 0o777
+            target_gid = file_stat.st_gid
+
         with self._env_path.open("w", encoding="utf-8", newline="\n") as file_obj:
             file_obj.write(content)
             file_obj.flush()
             os.fsync(file_obj.fileno())
+        os.chmod(self._env_path, target_mode)
+        if target_gid is not None:
+            try:
+                os.chown(self._env_path, -1, target_gid)
+            except OSError:
+                pass
 
     def _read_entries(self) -> List[ConfigLineEntry]:
         if not self._env_path.exists():
