@@ -223,7 +223,7 @@ journalctl -u stock-analyzer -f
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
 | `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
 | `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
-| `ANSPIRE_API_KEYS` | - | Anspire API key (optional; shared by LLM and search; availability depends on account permissions) |
+| `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 
@@ -397,7 +397,7 @@ Add these Secrets:
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook (comma-separated for multiple) | Optional* |
 | `STOCK_LIST` | Watchlist, e.g., `600519,300750` | ✅ |
 | `SERPAPI_API_KEYS` | SerpAPI Key | Recommended |
-| `ANSPIRE_API_KEYS` | Anspire API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 | `TAVILY_API_KEYS` | Tavily Search API Key | Optional |
 | `BOCHA_API_KEYS` | Bocha Search API Key | Optional |
 | `BRAVE_API_KEYS` | Brave Search API Key | Optional |
