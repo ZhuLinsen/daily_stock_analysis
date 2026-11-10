@@ -235,7 +235,7 @@ journalctl -u stock-analyzer -f
 | `MARKET_REVIEW_ENABLED` | `true` | 是否启用大盘复盘 |
 | `AIHUBMIX_KEY` | - | AIHubMix 一 Key 多模型（推荐） |
 | `SERPAPI_API_KEYS` | - | SerpAPI 实时金融新闻搜索（推荐） |
-| `ANSPIRE_API_KEYS` | - | Anspire API Key（可选，模型与搜索共用；可用性以账号权限为准） |
+| `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） |
 | `TAVILY_API_KEYS` | - | Tavily 新闻搜索（可选） |
 | `MINIMAX_API_KEYS` | - | MiniMax 搜索（可选） |
 
@@ -439,7 +439,7 @@ git push -u origin main
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（多个逗号分隔） | 可选* |
 | `STOCK_LIST` | 自选股列表，如 `600519,300750` | ✅ |
 | `SERPAPI_API_KEYS` | SerpAPI Key | 推荐 |
-| `ANSPIRE_API_KEYS` | Anspire API Key（可选，模型与搜索共用；可用性以账号权限为准） | 可选 |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） | 可选 |
 | `TAVILY_API_KEYS` | Tavily 搜索 API Key | 可选 |
 | `BOCHA_API_KEYS` | 博查搜索 API Key | 可选 |
 | `BRAVE_API_KEYS` | Brave Search API Key | 可选 |

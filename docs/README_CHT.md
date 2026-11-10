@@ -121,7 +121,7 @@
 | Secret 名稱 | 說明 | 必填 |
 |-------------|------|:----:|
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)：搜尋引擎結果補強，適合即時金融新聞 | **推薦** |
-| `ANSPIRE_API_KEYS` | Anspire 搜尋 API Key，可與其模型網關共用 | 可選 |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) 搜尋 API Key，可與其模型網關共用 | 可選 |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/)：通用新聞搜尋 API | 可選 |
 | `BOCHA_API_KEYS` | [博查搜尋](https://open.bocha.cn/)：中文搜尋優化，支援 AI 摘要 | 可選 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/)：隱私優先，美股資訊補強 | 可選 |

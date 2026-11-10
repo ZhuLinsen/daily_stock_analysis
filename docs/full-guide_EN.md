@@ -64,7 +64,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `OPENAI_API_KEY` | OpenAI-compatible API Key (supports DeepSeek, Qwen, etc.) | Optional |
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (e.g., `https://api.deepseek.com`) | Optional |
 | `OPENAI_MODEL` | Model name (e.g., `deepseek-v4-flash`) | Optional |
-| `ANSPIRE_API_KEYS` | Anspire API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 
 > *Note: Configure at least one model key or channel. For Modelflare, set only `MODELFLARE_KEY`, with an optional `LITELLM_MODEL` override (single-channel default: `openai/gpt-6.1-sol`); the endpoint defaults to `https://modelflare.dev/v1`; see the complete [LLM Config Guide example](LLM_CONFIG_GUIDE_EN.md#example-modelflare). Available models depend on your account. Startup validation reports a clear error when no usable AI model key or model channel is configured.
 
@@ -152,7 +152,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594,7203.T,005930.KS`; English commas are recommended, while pasted Chinese commas, enumeration commas, semicolons, spaces, and newlines are recognized and normalized to English commas | ✅ |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis) search-engine results for realtime financial news | Recommended |
-| `ANSPIRE_API_KEYS` | Anspire API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news search) | Optional |
 | `BOCHA_API_KEYS` | [Bocha Search](https://open.bocha.cn/) Web Search API (Chinese search optimized, supports AI summaries, multiple keys comma-separated) | Optional |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API (privacy-first, US-stock news enrichment, comma-separated for multiple keys) | Optional |
@@ -257,7 +257,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint | - | Optional |
 | `OLLAMA_API_BASE` | Ollama local service address (e.g. `http://localhost:11434`), see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | Optional |
 | `OPENAI_MODEL` | OpenAI model name (legacy) | `gpt-6.1-sol` | Optional |
-| `ANSPIRE_API_KEYS` | Anspire API key (optional; shared by LLM and search; availability depends on account permissions) | - | Optional |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | - | Optional |
 
 > GitHub Actions note: the bundled `00-daily-analysis.yml` explicitly uses `litellm` when `GENERATION_FALLBACK_BACKEND` is not configured, so an unset Secret/Variable is not exported as an empty value that disables backend fallback. To disable backend fallback in Actions, set the fallback to the primary backend and let the resolver treat it as self no-op.
 
@@ -342,7 +342,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | Variable | Description | Required |
 |--------|------|:----:|
 | `SERPAPI_API_KEYS` | SerpAPI search-engine results for realtime financial news | Recommended |
-| `ANSPIRE_API_KEYS` | Anspire API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 | `TAVILY_API_KEYS` | Tavily Search API Key | Optional |
 | `BOCHA_API_KEYS` | Bocha Search API Key (Chinese optimized) | Optional |
 | `BRAVE_API_KEYS` | Brave Search API Key (US stocks optimized) | Optional |

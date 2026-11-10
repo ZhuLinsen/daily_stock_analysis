@@ -121,7 +121,7 @@ News search strongly improves sentiment, announcements, events, and catalyst qua
 | Secret Name | Description | Required |
 |-------------|-------------|:--------:|
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), search-engine results for realtime financial news | **Recommended** |
-| `ANSPIRE_API_KEYS` | Anspire search API key; can also be shared with its LLM gateway | Optional |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) search API key; can also be shared with its LLM gateway | Optional |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/), general news search API | Optional |
 | `BOCHA_API_KEYS` | [Bocha](https://open.bocha.cn/), Chinese search with AI summaries | Optional |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/), privacy-first search and US-stock news enrichment | Optional |
