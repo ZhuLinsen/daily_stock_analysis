@@ -2482,12 +2482,17 @@ class SearchService:
             self._providers.append(SerpAPISearchProvider(serpapi_keys))
             logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
 
-        # 5. MiniMax（Coding Plan Web Search，结构化结果）
+        # 5. Anspire Search（可选，位于 SerpAPI 之后）
+        if anspire_keys:
+            self._providers.append(AnspireSearchProvider(anspire_keys))
+            logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
+
+        # 6. MiniMax（Coding Plan Web Search，结构化结果）
         if minimax_keys:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
 
-        # 6. SearXNG（自建实例优先；未配置时可自动发现公共实例）
+        # 7. SearXNG（自建实例优先；未配置时可自动发现公共实例）
         searxng_provider = SearXNGSearchProvider(
             searxng_base_urls,
             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
@@ -2500,11 +2505,6 @@ class SearchService:
             else:
                 logger.info("已启用 SearXNG 公共实例自动发现模式")
 
-        # 7. Anspire Search（实时智能搜索优化）
-        if anspire_keys:
-            self._providers.insert(0, AnspireSearchProvider(anspire_keys))
-            logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
-            
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
 

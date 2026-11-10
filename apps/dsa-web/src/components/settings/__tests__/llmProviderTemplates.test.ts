@@ -28,7 +28,6 @@ describe('llmProviderTemplates', () => {
     expect(LLM_PROVIDER_TEMPLATES.map((template) => template.channelId)).toEqual([
       'modelflare',
       'aihubmix',
-      'anspire',
       'deepseek',
       'dashscope',
       'zhipu',
@@ -42,6 +41,7 @@ describe('llmProviderTemplates', () => {
       'anthropic',
       'openai',
       'ollama',
+      'anspire',
       'custom',
     ]);
   });

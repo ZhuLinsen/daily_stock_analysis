@@ -49,6 +49,7 @@ from src.config import Config, get_config
 from src.search_service import (
     AnspireSearchProvider,
     SearchService,
+    SearchResponse,
     _get_with_retry,
     get_search_service,
     reset_search_service,
@@ -441,17 +442,44 @@ class TestAnspireSearchService(unittest.TestCase):
         self.assertEqual(len(anspire_providers), 0)
     
     def test_search_service_priority(self):
-        """测试 Anspire 优先级"""
+        """Anspire 紧随 SerpAPI，位于 MiniMax 和 SearXNG 之前。"""
         service = SearchService(
             anspire_keys=["anspire_key"],
             bocha_keys=["bocha_key"],
             tavily_keys=["tavily_key"],
+            brave_keys=["brave_key"],
+            serpapi_keys=["serpapi_key"],
+            minimax_keys=["minimax_key"],
+            searxng_base_urls=["https://search.example.com"],
             searxng_public_instances_enabled=False,
             news_max_age_days=3,
             news_strategy_profile="short"
         )
         
-        self.assertIsInstance(service._providers[0], AnspireSearchProvider)
+        self.assertEqual([p.name for p in service._providers], ["Bocha", "Tavily", "Brave", "SerpAPI", "Anspire", "MiniMax", "SearXNG"])
+        calls = []
+
+        def result_for(provider, success):
+            def search(*args, **kwargs):
+                calls.append(provider.name)
+                return SearchResponse(query="test", results=[], provider=provider.name, success=success)
+            return search
+
+        # Exercise the service fallback loop with the actual configured provider order.
+        for provider in service._providers:
+            provider.search = MagicMock(side_effect=result_for(provider, provider.name == "Anspire"))
+        response = service.search_stock_events("600519", "贵州茅台")
+        self.assertTrue(response.success)
+        self.assertEqual(response.provider, "Anspire")
+        self.assertEqual(calls, ["Bocha", "Tavily", "Brave", "SerpAPI", "Anspire"])
+
+        calls.clear()
+        service._cache.clear()
+        first = service._providers[0]
+        first.search = MagicMock(side_effect=result_for(first, True))
+        response = service.search_stock_events("600519", "贵州茅台")
+        self.assertEqual(response.provider, "Bocha")
+        self.assertEqual(calls, ["Bocha"])
 
 
 class TestAnspireIntegration(unittest.TestCase):
