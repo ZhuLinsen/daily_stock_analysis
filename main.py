@@ -502,7 +502,7 @@ def _startup_config_warnings(config: Config, args: argparse.Namespace) -> List[s
 def _market_review_heading(config: Any) -> str:
     """Top-level heading for pushed market reviews, in the report language."""
     language = str(getattr(config, "report_language", "zh") or "zh").strip().lower()
-    return {"en": "# 📈 Market Review", "ko": "# 📈 시황 리뷰"}.get(language, "# 📈 大盘复盘")
+    return {"en": "# 📈 Market Review", "ko": "# 📈 시황 리뷰", "es": "# 📈 Resumen del mercado"}.get(language, "# 📈 大盘复盘")
 
 
 def _filter_by_analysis_markets(
@@ -879,12 +879,15 @@ def _save_reused_market_review_report(
     body = str(market_report or "").strip()
     if not body:
         return
+    _title_lang = str(getattr(config, "report_language", "zh")).strip().lower()
     title = (
         "# 🎯 Market Review"
-        if str(getattr(config, "report_language", "zh")).strip().lower() == "en"
+        if _title_lang == "en"
+        else "# 🎯 Resumen del mercado"
+        if _title_lang == "es"
         else "# 🎯 大盘复盘"
     )
-    if not any(body.startswith(item) for item in ("# 🎯 大盘复盘", "# 🎯 Market Review")):
+    if not any(body.startswith(item) for item in ("# 🎯 大盘复盘", "# 🎯 Market Review", "# 🎯 Resumen del mercado")):
         body = f"{title}\n\n{body}"
     try:
         date_str = datetime.now().strftime('%Y%m%d')

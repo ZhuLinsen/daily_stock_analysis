@@ -48,7 +48,7 @@ def format_market_structure_prompt_section(
         missing_fields.extend(_string_values(data_quality.get("missing_fields")))
     missing_fields = list(dict.fromkeys(missing_fields))
 
-    if language == "en":
+    if language in ("en", "es"):
         lines = _format_en(context, stock_position, active_themes, leading_concepts, leading_industries, primary_name, risk_tags, missing_fields)
         return "\n".join(lines) + "\n"
     if language == "ko":

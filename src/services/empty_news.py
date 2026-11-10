@@ -42,10 +42,20 @@ _KO_ZERO_RESULTS = (
     "아래 결론에는 뉴스 근거를 반영하지 않았습니다."
 )
 
+_ES_NOT_CONFIGURED = (
+    "⚠️ No hay ningún canal de búsqueda de noticias configurado; "
+    "este análisis no incorpora evidencia basada en noticias."
+)
+_ES_ZERO_RESULTS = (
+    "⚠️ No se pudieron obtener datos de noticias en esta ejecución; "
+    "las conclusiones siguientes no incorporan evidencia basada en noticias."
+)
+
 _DISCLOSURES = {
     "zh": (_ZH_NOT_CONFIGURED, _ZH_ZERO_RESULTS),
     "en": (_EN_NOT_CONFIGURED, _EN_ZERO_RESULTS),
     "ko": (_KO_NOT_CONFIGURED, _KO_ZERO_RESULTS),
+    "es": (_ES_NOT_CONFIGURED, _ES_ZERO_RESULTS),
 }
 
 if set(_DISCLOSURES) != set(SUPPORTED_REPORT_LANGUAGES):

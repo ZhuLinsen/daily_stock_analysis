@@ -305,16 +305,16 @@ class MarketAnalyzer:
         return normalized_fallback_model or backend
 
     def _get_output_language(self) -> str:
-        """Return the truthful report language (zh/en/ko) for payload and directives."""
+        """Return the truthful report language (zh/en/ko/es) for payload and directives."""
         return normalize_report_language(
             getattr(getattr(self, "config", None), "report_language", "zh")
         )
 
     def _get_review_language(self) -> str:
-        # Structural/template language. Korean reuses the English scaffolding;
-        # the Korean output directive is applied in the prompt builder.
+        # Structural/template language. Korean/Spanish reuse the English scaffolding;
+        # the output-language directive is applied in the prompt builder.
         language = self._get_output_language()
-        return "en" if language == "ko" else language
+        return "en" if language in ("ko", "es") else language
 
     def _get_template_review_language(self) -> str:
         return self._get_review_language()
@@ -1679,7 +1679,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         review_language = self._get_review_language()
         # Korean reuses the English structural template but the model is told to
         # write the entire shell, headings, guidance and conclusion in Korean.
-        shell_language_label = "Korean (한국어)" if self._get_output_language() == "ko" else "English"
+        _shell_labels = {"ko": "Korean (한국어)", "es": "Spanish (español de España)"}
+        shell_language_label = _shell_labels.get(self._get_output_language(), "English")
 
         # 指数行情信息（简洁格式，不用emoji）
         indices_text = ""
