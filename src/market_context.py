@@ -78,6 +78,10 @@ _MARKET_ROLES = {
         "zh": "台股",
         "en": "Taiwan stock",
     },
+    "es": {
+        "zh": "西班牙股",
+        "en": "Spain stock",
+    },
 }
 
 _MARKET_GUIDELINES = {
@@ -146,6 +150,21 @@ _MARKET_GUIDELINES = {
             "price limit; do not apply China A-share-specific concepts such as Northbound flows or Dragon Tiger lists."
         ),
     },
+    "es": {
+        "zh": (
+            "- 本次分析对象为 **西班牙股**（马德里证券交易所 BME 连续市场上市，Yahoo Finance 后缀 `.MC`），以欧元（EUR）计价。\n"
+            "- 请按西班牙/欧元区市场语境分析，关注欧洲央行（ECB）利率政策、IBEX 35 指数走势、西班牙监管机构 CNMV 公告、"
+            "银行与公用事业等权重板块周期以及股息政策；BME 无固定涨跌停，但有波动性竞价（volatility auctions）机制；"
+            "不要套用 A 股涨跌停、北向资金、龙虎榜、融资融券等 A 股专属概念。"
+        ),
+        "en": (
+            "- This analysis covers a **Spain stock** (Bolsa de Madrid / BME continuous market, Yahoo suffix `.MC`), priced in EUR.\n"
+            "- Use Spanish/eurozone context: ECB rate policy, the IBEX 35 trend, CNMV regulatory filings, "
+            "the cycles of heavyweight sectors (banks, utilities, telecoms, retail) and dividend policy; BME has no fixed "
+            "daily price limits but uses volatility auctions; do not apply China A-share concepts such as daily "
+            "price-limit boards, Northbound flows, Dragon Tiger lists, or margin-financing narratives."
+        ),
+    },
 }
 
 
@@ -160,7 +179,7 @@ def get_market_role(stock_code: Optional[str], lang: str = "zh") -> str:
         Role string like 'A 股投资分析' or 'US stock investment analysis'.
     """
     market = detect_market(stock_code)
-    lang_key = "en" if lang in ("en", "ko") else "zh"
+    lang_key = "en" if lang in ("en", "ko", "es") else "zh"
     return _MARKET_ROLES.get(market, _MARKET_ROLES["cn"])[lang_key]
 
 
@@ -175,5 +194,5 @@ def get_market_guidelines(stock_code: Optional[str], lang: str = "zh") -> str:
         Multi-line string with market-specific guidelines.
     """
     market = detect_market(stock_code)
-    lang_key = "en" if lang in ("en", "ko") else "zh"
+    lang_key = "en" if lang in ("en", "ko", "es") else "zh"
     return _MARKET_GUIDELINES.get(market, _MARKET_GUIDELINES["cn"])[lang_key]

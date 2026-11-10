@@ -29,7 +29,7 @@ PROJECT_DISPLAY_NAME = "股票智能分析系统"
 DEFAULT_XIAOHONGSHU_QR_PATH = "src/assets/share_image/xiaohongshu_qr.jpg"
 DEFAULT_XIAOHONGSHU_HANDLE = "@霸天土小豆"
 _MARKET_RE = re.compile(
-    r"(?:大盘复盘|市场复盘|market\s+(?:review|recap)|시황\s*리뷰)", re.IGNORECASE
+    r"(?:大盘复盘|市场复盘|market\s+(?:review|recap)|시황\s*리뷰|resumen\s+del\s+mercado)", re.IGNORECASE
 )
 _MARKET_SCOPE_RE = re.compile(
     r"(?:A股|港股|美股|日股|韩股|中国\s*A주|미국|홍콩|일본|한국|\b(?:cn|hk|us|jp|kr)\b|a[-\s]?share|hong\s+kong|japan|korea|u\.?s\.?)",
@@ -105,6 +105,23 @@ _POSTER_TEXT = {
         "disclaimer": "AI 생성 연구 자료이며 투자 조언이 아닙니다. 투자에는 위험이 따릅니다.",
         "source": "데이터 소스",
     },
+    "es": {
+        "brand": "Análisis de acciones con IA", "stock_subtitle": "Ficha de decisión · tesis, niveles y riesgos",
+        "market_subtitle": "Resumen de cierre de índices, amplitud, temas y riesgos", "multi_title": "Resumen multimercado",
+        "multi_subtitle": "Índices, temas y límites de riesgo por mercado", "dashboard_subtitle": "Resumen de decisiones multivalor",
+        "score": "Puntuación", "confidence": "Confianza", "trend": "Tendencia", "core": "Conclusión principal",
+        "snapshot": "Resumen de mercado", "execution": "Plan de ejecución", "technical": "Referencia técnica",
+        "next_watch": "A vigilar", "positive_catalysts": "Catalizadores positivos", "risk_alerts": "Alertas de riesgo",
+        "catalysts_risks": "Catalizadores y riesgos", "no_position": "Sin posición", "holding": "En cartera",
+        "position": "Posición", "entry": "Entrada", "risk_control": "Control de riesgo", "position_advice": "Recomendación de posición",
+        "market_signal": "Señal de mercado", "today_conclusion": "Conclusión", "breadth": "Amplitud de mercado",
+        "dimensions": "Desglose de señales", "leaders": "Sectores líderes", "laggards": "Sectores rezagados",
+        "focus_tag": "Vigilar", "avoid_tag": "Evitar", "focus": "Valores clave", "funds": "Flujo de fondos",
+        "strategy": "Plan para la próxima sesión", "risks": "Alertas de riesgo", "tagline": "Haz la investigación bursátil más sencilla y eficiente",
+        "open_source": "Código abierto · GitHub", "xiaohongshu": "Xiaohongshu",
+        "disclaimer": "Generado por IA solo para investigación; no es asesoramiento de inversión. Los mercados implican riesgo.",
+        "source": "Fuente",
+    },
 }
 _POSTER_LABELS = {
     "en": {
@@ -124,6 +141,15 @@ _POSTER_LABELS = {
         "行动窗口": "행동 구간", "下次检查": "다음 점검", "上涨": "상승", "下跌": "하락",
         "涨停": "상한가", "跌停": "하한가", "成交额": "거래대금", "赚钱效应": "시장 폭 점수",
         "指数强度": "지수 강도", "涨停结构": "상한가 구조",
+    },
+    "es": {
+        "当前/收盘": "Actual/Cierre", "现价": "Actual", "涨跌幅": "Variación", "涨跌": "Variación",
+        "量比": "Ratio de volumen", "换手率": "Rotación", "换手": "Rotación", "理想买入": "Entrada ideal",
+        "确认买入": "Entrada confirmada", "止损": "Stop loss", "目标": "Objetivo", "均线": "Alineación de medias",
+        "量能": "Volumen", "趋势分": "Puntuación de tendencia", "MA5乖离": "Desviación MM5", "支撑": "Soporte", "压力": "Resistencia",
+        "行动窗口": "Ventana de actuación", "下次检查": "Próxima revisión", "上涨": "Suben", "下跌": "Bajan",
+        "涨停": "Límite alcista", "跌停": "Límite bajista", "成交额": "Importe negociado", "赚钱效应": "Puntuación de amplitud",
+        "指数强度": "Fuerza del índice", "涨停结构": "Estructura de límites",
     },
 }
 _MARKET_LABEL_PATTERNS = (
@@ -348,6 +374,8 @@ def _poster_language(
             return "en"
         if normalized.startswith("ko"):
             return "ko"
+        if normalized.startswith("es"):
+            return "es"
         if normalized.startswith("zh"):
             return "zh"
     if re.search(r"[\uac00-\ud7af]", markdown_text or ""):
@@ -368,7 +396,7 @@ def _poster_text(language: str, key: str) -> str:
 def _poster_html_language(language: str) -> str:
     """Map the supported report language, not the market region, to HTML lang."""
 
-    return {"zh": "zh-CN", "en": "en", "ko": "ko"}.get(language, "zh-CN")
+    return {"zh": "zh-CN", "en": "en", "ko": "ko", "es": "es"}.get(language, "zh-CN")
 
 
 def _poster_label(language: str, label: str) -> str:
@@ -379,6 +407,8 @@ def _poster_label(language: str, label: str) -> str:
         return label.replace("观察 ", "Watch ", 1)
     if language == "ko" and label.startswith("观察 "):
         return label.replace("观察 ", "관찰 ", 1)
+    if language == "es" and label.startswith("观察 "):
+        return label.replace("观察 ", "Vigilar ", 1)
     return label
 
 
@@ -1276,7 +1306,7 @@ def _stock_data_from_payload(
 def _market_title(markdown_text: str) -> str:
     first_title = next((title for title, _body, _level in _extract_sections(markdown_text)), "")
     language = _poster_language(markdown_text)
-    if language in {"en", "ko"} and _is_market_review_title(first_title):
+    if language in {"en", "ko", "es"} and _is_market_review_title(first_title):
         return first_title
     market = _market_label(first_title)
     if market:

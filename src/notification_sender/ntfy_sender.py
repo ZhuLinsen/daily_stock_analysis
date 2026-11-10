@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse, urlunparse
@@ -11,10 +12,15 @@ from urllib.parse import unquote, urlparse, urlunparse
 import requests
 
 from src.config import Config
-from src.formatters import strip_hidden_markdown_metadata
+from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
+from src.report_language import get_report_labels
 
 
 logger = logging.getLogger(__name__)
+
+# ntfy.sh caps the message body at 4096 bytes; keep headroom for page markers.
+NTFY_SAFE_MAX_BYTES = 3800
+NTFY_CHUNK_INTERVAL_SECONDS = 0.5
 
 
 def resolve_ntfy_endpoint(ntfy_url: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -55,6 +61,7 @@ class NtfySender:
         self._ntfy_url = getattr(config, "ntfy_url", None)
         self._ntfy_token = getattr(config, "ntfy_token", None)
         self._webhook_verify_ssl = getattr(config, "webhook_verify_ssl", True)
+        self._report_language = getattr(config, "report_language", "zh") or "zh"
 
     def _is_ntfy_configured(self) -> bool:
         return bool(self._ntfy_url)
@@ -81,7 +88,8 @@ class NtfySender:
 
         if title is None:
             date_str = datetime.now().strftime("%Y-%m-%d")
-            title = f"📈 股票分析报告 - {date_str}"
+            report_title = get_report_labels(self._report_language).get("report_title", "股票分析报告")
+            title = f"📈 {report_title} - {date_str}"
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
 
         headers = {
@@ -92,13 +100,31 @@ class NtfySender:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        payload = {
-            "topic": topic,
-            "title": title,
-            "message": sanitized_content,
-            "markdown": True,
-        }
+        # ntfy.sh rejects message bodies over 4096 bytes with HTTP 413, so long
+        # reports are split into ordered parts, keeping headed sections intact.
+        chunks = chunk_content_by_max_bytes(sanitized_content, max_bytes=NTFY_SAFE_MAX_BYTES)
+        all_success = True
+        for index, chunk in enumerate(chunks):
+            chunk_title = title if len(chunks) == 1 else f"{title} ({index + 1}/{len(chunks)})"
+            payload = {
+                "topic": topic,
+                "title": chunk_title,
+                "message": chunk,
+                "markdown": True,
+            }
+            if not self._post_payload(server_url, payload, headers, timeout_seconds):
+                all_success = False
+            if index < len(chunks) - 1:
+                time.sleep(NTFY_CHUNK_INTERVAL_SECONDS)
+        return all_success
 
+    def _post_payload(
+        self,
+        server_url: str,
+        payload: dict,
+        headers: dict,
+        timeout_seconds: Optional[float],
+    ) -> bool:
         try:
             response = requests.post(
                 server_url,

@@ -1232,6 +1232,10 @@ class Config:
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
 
+    # Alert-on-change: only notify stocks whose score/action changed vs the previous analysis
+    alert_on_change: bool = False
+    alert_score_delta: int = 10
+
     # 报告类型：simple(精简) 或 full(完整)
     report_type: str = "simple"
     report_language: str = "zh"
@@ -2228,6 +2232,10 @@ class Config:
                 default=False,
             ),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
+            alert_on_change=os.getenv('ALERT_ON_CHANGE', 'false').lower() == 'true',
+            alert_score_delta=parse_env_int(
+                os.getenv('ALERT_SCORE_DELTA'), 10, field_name='ALERT_SCORE_DELTA', minimum=1
+            ),
             report_type=cls._parse_report_type(os.getenv('REPORT_TYPE', 'simple')),
             report_language=cls._parse_report_language(report_language_raw),
             report_summary_only=os.getenv('REPORT_SUMMARY_ONLY', 'false').lower() == 'true',
@@ -3045,7 +3053,7 @@ class Config:
         raw = (value or "").strip()
         if raw and not is_supported_report_language_value(raw):
             logging.getLogger(__name__).warning(
-                "REPORT_LANGUAGE '%s' invalid, fallback to 'zh' (valid: zh/en/ko)",
+                "REPORT_LANGUAGE '%s' invalid, fallback to 'zh' (valid: zh/en/ko/es)",
                 value,
             )
         return normalized

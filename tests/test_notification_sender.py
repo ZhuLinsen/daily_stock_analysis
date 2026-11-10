@@ -1146,6 +1146,35 @@ class TestNtfySender(unittest.TestCase):
             "# 🎯 Market Review\n\nBody",
         )
 
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_splits_long_message_under_ntfy_byte_limit(self, mock_post, _sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+        sections = [f"## Stock {i}\n\n" + ("análisis 📈 " * 120) for i in range(6)]
+
+        result = sender.send_to_ntfy("\n\n---\n\n".join(sections), title="Report")
+
+        self.assertTrue(result)
+        self.assertGreater(mock_post.call_count, 1)
+        total = mock_post.call_count
+        for index, call in enumerate(mock_post.call_args_list):
+            payload = call.kwargs["json"]
+            self.assertLessEqual(len(payload["message"].encode("utf-8")), 4096)
+            self.assertEqual(payload["title"], f"Report ({index + 1}/{total})")
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_reports_failure_if_any_chunk_fails(self, mock_post, _sleep):
+        mock_post.side_effect = [_response(200), _response(413), _response(200), _response(200)]
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("x" * 9000, title="Report")
+
+        self.assertFalse(result)
+
     @mock.patch("src.notification_sender.ntfy_sender.requests.post")
     def test_send_supports_self_hosted_path_prefix(self, mock_post):
         mock_post.return_value = _response(200)

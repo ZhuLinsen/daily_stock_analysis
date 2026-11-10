@@ -125,6 +125,17 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "kr_title": "# Korea Market Recap",
             "separator": "> Next market recap follows",
         }
+    if normalized == "es":
+        return {
+            "root_title": "# 🎯 Resumen del mercado",
+            "push_title": "🎯 Resumen del mercado",
+            "cn_title": "# Resumen del mercado de acciones A de China",
+            "us_title": "# Resumen del mercado de EE. UU.",
+            "hk_title": "# Resumen del mercado de Hong Kong",
+            "jp_title": "# Resumen del mercado de Japón",
+            "kr_title": "# Resumen del mercado de Corea",
+            "separator": "> A continuación, el resumen del siguiente mercado",
+        }
     if normalized == "ko":
         return {
             "root_title": "# 🎯 시황 리뷰",
@@ -663,7 +674,7 @@ def _render_sector_payload_markdown_block(
     if not sector_block:
         return ""
     language = normalize_report_language(payload.get("language"))
-    title = "Sector Highlights" if language == "en" else "板块主线"
+    title = {"en": "Sector Highlights", "es": "Sectores destacados"}.get(language, "板块主线")
     heading = f"{title_prefix} / {title}" if title_prefix else title
     return f"### {heading}\n\n{sector_block}".strip()
 
@@ -739,7 +750,9 @@ def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
     language = normalize_report_language(payload.get("language"))
     lines = []
     if top:
-        if language == "en":
+        if language == "es":
+            lines.extend(["#### Sectores líderes", "| Puesto | Sector | Variación |", "|------|--------|--------|"])
+        elif language == "en":
             lines.extend(["#### Leading Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
         else:
             lines.extend(["#### 领涨板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
@@ -751,7 +764,9 @@ def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
     if bottom:
         if lines:
             lines.append("")
-        if language == "en":
+        if language == "es":
+            lines.extend(["#### Sectores rezagados", "| Puesto | Sector | Variación |", "|------|--------|--------|"])
+        elif language == "en":
             lines.extend(["#### Lagging Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
         else:
             lines.extend(["#### 领跌板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
@@ -798,6 +813,10 @@ def _persist_market_review_history(
             stock_name = "Market Review"
             operation_advice = "View review"
             trend_prediction = "Market review"
+        elif report_language == "es":
+            stock_name = "Resumen del mercado"
+            operation_advice = "Ver resumen"
+            trend_prediction = "Resumen del mercado"
         elif report_language == "ko":
             stock_name = "시황 리뷰"
             operation_advice = "리뷰 보기"
@@ -908,6 +927,7 @@ def _build_market_review_context_overview(
     label = (
         "Market review" if report_language == "en"
         else "시황 리뷰" if report_language == "ko"
+        else "Resumen del mercado" if report_language == "es"
         else "大盘复盘"
     )
     return {
@@ -950,4 +970,6 @@ def _summarize_market_review(review_report: str, report_language: str) -> str:
         return "Market review report generated."
     if report_language == "ko":
         return "시황 리뷰 리포트가 생성되었습니다."
+    if report_language == "es":
+        return "Informe de resumen del mercado generado."
     return "大盘复盘报告已生成。"

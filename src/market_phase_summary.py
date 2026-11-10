@@ -142,7 +142,7 @@ def rebuild_market_phase_summary_for_stock_code(
         return None
 
     market = get_market_for_stock(str(stock_code or "").strip())
-    if market not in {"jp", "kr", "tw"}:
+    if market not in {"jp", "kr", "tw", "es"}:
         return dict(summary)
 
     phase = str(summary.get("phase", "")).strip()
@@ -191,7 +191,7 @@ def format_public_phase_pack_excerpt(
     if not phase_summary and not overview:
         return ""
     # Korean reuses the English structural summary; output language is set by directive.
-    lang = "en" if str(report_language or "").lower().startswith(("en", "ko")) else "zh"
+    lang = "en" if str(report_language or "").lower().startswith(("en", "ko", "es")) else "zh"
     source_label = _source_label(source, lang)
 
     lines: List[str] = []
@@ -248,7 +248,7 @@ def format_public_market_status_line(
         return ""
 
     # Korean reuses the English structural summary; output language is set by directive.
-    lang = "en" if str(report_language or "").lower().startswith(("en", "ko")) else "zh"
+    lang = "en" if str(report_language or "").lower().startswith(("en", "ko", "es")) else "zh"
     phase_labels = _PHASE_LABELS_EN if lang == "en" else _PHASE_LABELS_ZH
     market_labels = _MARKET_LABELS_EN if lang == "en" else _MARKET_LABELS_ZH
     phase_label = phase_labels.get(phase, phase)

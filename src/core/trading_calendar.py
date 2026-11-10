@@ -38,7 +38,10 @@ except ImportError:
     )
 
 # Market -> exchange code (exchange-calendars)
-MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS", "kr": "XKRX", "tw": "XTAI"}
+MARKET_EXCHANGE = {
+    "cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS", "kr": "XKRX", "tw": "XTAI",
+    "es": "XMAD",  # Bolsa de Madrid (BME continuous market)
+}
 
 # Market -> IANA timezone for "today"
 MARKET_TIMEZONE = {
@@ -48,6 +51,7 @@ MARKET_TIMEZONE = {
     "jp": "Asia/Tokyo",
     "kr": "Asia/Seoul",
     "tw": "Asia/Taipei",
+    "es": "Europe/Madrid",
 }
 
 # P0 market phase baseline (Issue #1386). This is an intentionally small
@@ -64,6 +68,7 @@ _CLOSING_AUCTION_WINDOW_MINUTES = {
     "jp": 5,
     "kr": 10,
     "tw": 5,
+    "es": 5,  # BME closing auction 17:30-17:35 CET
 }
 _SUPPORTED_ANALYSIS_PHASES = {
     "auto",

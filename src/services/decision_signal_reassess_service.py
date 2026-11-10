@@ -319,6 +319,8 @@ def _infer_market(code: str) -> Optional[str]:
         return "kr"
     if text.endswith((".TW", ".TWO")):
         return "tw"
+    if text.endswith(".MC"):
+        return "es"
     if text.isdigit() and len(text) == 6:
         return "cn"
     if re.fullmatch(r"[A-Z]{1,5}(?:\.[A-Z]{1,2})?", text):

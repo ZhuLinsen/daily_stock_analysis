@@ -2548,6 +2548,23 @@ class SearchService:
         return False
 
     @staticmethod
+    def _is_spanish_stock(stock_code: str) -> bool:
+        """Bolsa de Madrid symbol (``SAN.MC``): searched with Spanish-language queries."""
+        from src.services.market_symbol_utils import get_suffix_market
+
+        return get_suffix_market((stock_code or "").strip()) == "es"
+
+    _SPANISH_LEGAL_SUFFIX_RE = re.compile(r"[,\s]+(?:S\.?A\.?U?\.?|SOCIEDAD ANONIMA)\s*$", re.IGNORECASE)
+
+    @classmethod
+    def _spanish_query_name(cls, stock_code: str, stock_name: Optional[str]) -> str:
+        """Company name for Spanish queries: drop "S.A." and fall back to the ticker base."""
+        name = cls._SPANISH_LEGAL_SUFFIX_RE.sub("", (stock_name or "").strip()).strip()
+        if not name or name.upper() == (stock_code or "").upper():
+            name = (stock_code or "").split(".")[0]
+        return name
+
+    @staticmethod
     def _foreign_english_query_terms(stock_code: str, stock_name: str) -> Tuple[str, ...]:
         """Return English company name(s) to embed in foreign-stock search
         queries. issue #2026: When STOCK_NAME_MAP maps a foreign ticker to a
@@ -2663,6 +2680,8 @@ class SearchService:
             return {"search_lang": "zh-hans", "country": "CN"}
         if cls._is_us_stock(stock_code):
             return {"search_lang": "en", "country": "US"}
+        if cls._is_spanish_stock(stock_code):
+            return {"search_lang": "es", "country": "ES"}
         return {}
 
     # A-share ETF code prefixes (Shanghai 51/52/56/58, Shenzhen 15/16/18)
@@ -4062,9 +4081,14 @@ class SearchService:
         # display name is Chinese (e.g. AAPL -> 苹果), otherwise the foreign
         # branch below is unreachable and English headlines are missed.
         prefer_chinese = prefer_chinese and not (is_foreign and english_aliases)
+        is_spanish = self._is_spanish_stock(stock_code)
+        prefer_chinese = prefer_chinese and not is_spanish
         if focus_keywords:
             # 如果提供了关键词，直接使用关键词作为查询
             query = " ".join(focus_keywords)
+        elif is_spanish:
+            # Spanish stocks: Spanish financial press (Expansión, Cinco Días, ...)
+            query = f"{self._spanish_query_name(stock_code, stock_name)} acciones bolsa noticias"
         elif prefer_chinese:
             # 指数 target 的 stock_code 可能为空（Agent 工具 _resolve_search_subject
             # 有意只传显示名），空 code 直接省略，避免拼出 "上证50  股票" 双空格。
@@ -4336,7 +4360,9 @@ class SearchService:
             SearchResponse 对象
         """
         if event_types is None:
-            if self._is_foreign_stock(stock_code):
+            if self._is_spanish_stock(stock_code):
+                event_types = ["resultados trimestrales", "dividendo", "hecho relevante CNMV"]
+            elif self._is_foreign_stock(stock_code):
                 event_types = ["earnings report", "insider selling", "quarterly results"]
             else:
                 event_types = ["年报预告", "减持公告", "业绩快报"]
@@ -4409,7 +4435,48 @@ class SearchService:
         is_foreign = self._is_foreign_stock(stock_code)
         is_index_etf = self.is_index_or_etf(stock_code, stock_name)
 
-        if is_foreign:
+        if self._is_spanish_stock(stock_code):
+            # Spanish stocks: Spanish-language press for news, risks, results and
+            # sector; English for analyst ratings (international broker coverage).
+            es_name = self._spanish_query_name(stock_code, stock_name)
+            search_dimensions = [
+                {
+                    'name': 'latest_news',
+                    'query': f"{es_name} acciones noticias última hora",
+                    'desc': '最新消息',
+                    'tavily_topic': 'news',
+                    'strict_freshness': True,
+                },
+                {
+                    'name': 'market_analysis',
+                    'query': f"{es_name} analyst rating target price",
+                    'desc': '机构分析',
+                    'tavily_topic': None,
+                    'strict_freshness': False,
+                },
+                {
+                    'name': 'risk_check',
+                    'query': f"{es_name} riesgos CNMV sanción demanda litigio",
+                    'desc': '风险排查',
+                    'tavily_topic': 'news',
+                    'strict_freshness': True,
+                },
+                {
+                    'name': 'earnings',
+                    'query': f"{es_name} resultados beneficio ingresos previsiones dividendo",
+                    'desc': '业绩预期',
+                    'tavily_topic': None,
+                    'strict_freshness': False,
+                },
+                {
+                    'name': 'industry',
+                    'query': f"{es_name} sector competidores cuota de mercado perspectivas",
+                    'desc': '行业分析',
+                    'tavily_topic': None,
+                    'strict_freshness': False,
+                },
+            ]
+        elif is_foreign:
             # Issue #2026: Foreign-ticker English alias resolution from the
             # single source of truth (STOCK_ENGLISH_NAME_MAP in
             # src/data/stock_mapping.py). When STOCK_NAME_MAP maps the ticker

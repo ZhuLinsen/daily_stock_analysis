@@ -222,8 +222,11 @@ class AgentChatSessionService:
             confirm = False
             from src.report_language import normalize_report_language
 
-            if normalize_report_language((context or {}).get("report_language") or getattr(config, "report_language", "zh")) == "en":
+            _chat_lang = normalize_report_language((context or {}).get("report_language") or getattr(config, "report_language", "zh"))
+            if _chat_lang == "en":
                 clarification = "The discussion target is not confirmed. Please provide the complete stock or index code."
+            elif _chat_lang == "es":
+                clarification = "No se ha confirmado el valor a analizar. Indica el código completo de la acción o del índice."
         allowed = []
         if active is not None:
             allowed.append(_identity(active))

@@ -1,9 +1,17 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # Two evening runs on weekdays, in Madrid local time:
+  #   17:45 - after the Madrid close (17:30)  -> Spanish stocks only
+  #   22:30 - after the New York close        -> all other stocks + market review
+  # GitHub cron is UTC-only with no DST, so each run is scheduled at both its
+  # winter (CET) and summer (CEST) UTC time; the run step keeps the one that
+  # matches today's Madrid offset and skips the other.
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '45 16 * * 1-5'   # 17:45 Madrid in winter (CET)
+    - cron: '45 15 * * 1-5'   # 17:45 Madrid in summer (CEST)
+    - cron: '30 21 * * 1-5'   # 22:30 Madrid in winter (CET)
+    - cron: '30 20 * * 1-5'   # 22:30 Madrid in summer (CEST)
   
   # 手动触发
   workflow_dispatch:
@@ -59,7 +67,18 @@ jobs:
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
-      
+
+      # Persist the SQLite history (data/) across runs so backtests and
+      # alert-on-change can compare against earlier analyses. Each run saves
+      # under a unique key; restore-keys picks the newest previous snapshot.
+      # GitHub evicts caches unused for 7 days, so a long pause resets history.
+      - name: Restore analysis database
+        uses: actions/cache/restore@v4
+        with:
+          path: data/
+          key: stock-db-${{ github.run_id }}
+          restore-keys: stock-db-
+
       - name: 执行股票分析
         env:
           # ==========================================
@@ -434,6 +453,10 @@ jobs:
           REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || secrets.REPORT_LANGUAGE || '' }}
           REPORT_SHOW_LLM_MODEL: ${{ vars.REPORT_SHOW_LLM_MODEL || secrets.REPORT_SHOW_LLM_MODEL || 'true' }}
           SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
+          ALERT_ON_CHANGE: ${{ vars.ALERT_ON_CHANGE || secrets.ALERT_ON_CHANGE || 'false' }}
+          ANALYSIS_MARKETS: ${{ vars.ANALYSIS_MARKETS || '' }}
+          ALERT_SCORE_DELTA: ${{ vars.ALERT_SCORE_DELTA || secrets.ALERT_SCORE_DELTA || '10' }}
+          BACKTEST_WEEKLY_REPORT_ENABLED: ${{ vars.BACKTEST_WEEKLY_REPORT_ENABLED || secrets.BACKTEST_WEEKLY_REPORT_ENABLED || 'true' }}
           MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
           ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
           TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || secrets.TRADING_DAY_CHECK_ENABLED || 'true' }}
@@ -473,6 +496,31 @@ jobs:
 
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
+
+          # Madrid-time gate + per-run market selection. The cron string (not the
+          # clock) decides, so a delayed GitHub start still runs. ANALYSIS_MARKETS:
+          # include list (es,us) or exclusions prefixed with '-' (-es).
+          MADRID_TZ_ABBR="$(TZ=Europe/Madrid date +%Z)"
+          SCHEDULE="${{ github.event.schedule }}"
+          case "$SCHEDULE" in
+            '45 16 * * 1-5'|'30 21 * * 1-5') WANT_TZ="CET" ;;
+            '45 15 * * 1-5'|'30 20 * * 1-5') WANT_TZ="CEST" ;;
+            *) WANT_TZ="" ;;
+          esac
+          if [ -n "$WANT_TZ" ] && [ "$MADRID_TZ_ABBR" != "$WANT_TZ" ]; then
+            echo "⏭️ Cron '$SCHEDULE' is for $WANT_TZ but Madrid is on $MADRID_TZ_ABBR today, skipping"
+            exit 0
+          fi
+          case "$SCHEDULE" in
+            '45 16 * * 1-5'|'45 15 * * 1-5')
+              export ANALYSIS_MARKETS="es"
+              MODE="stocks-only"
+              ;;
+            '30 21 * * 1-5'|'30 20 * * 1-5')
+              export ANALYSIS_MARKETS="-es"
+              ;;
+          esac
+          echo "🌍 Markets for this run: ${ANALYSIS_MARKETS:-all}"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -560,6 +608,13 @@ jobs:
             python main.py $FORCE_RUN_ARG
           fi
       
+      - name: Save analysis database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/
+          key: stock-db-${{ github.run_id }}
+
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()

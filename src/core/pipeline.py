@@ -1594,7 +1594,7 @@ class StockAnalysisPipeline:
                 initial_context["analysis_context_pack_summary"] = analysis_context_pack_summary
 
             # 运行 Agent
-            if report_language in ("en", "ko"):
+            if report_language in ("en", "ko", "es"):
                 message = f"Analyze stock {code} ({stock_name}) and return the full decision dashboard JSON."
             else:
                 message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
@@ -1974,7 +1974,7 @@ class StockAnalysisPipeline:
             market = "cn"
         else:
             market = get_market_for_stock(normalize_stock_code(code))
-        if market not in {"jp", "kr", "tw"}:
+        if market not in {"jp", "kr", "tw", "es"}:
             return context
 
         try:
@@ -2308,6 +2308,7 @@ class StockAnalysisPipeline:
                 result.error_message = (
                     "Agent failed to generate a valid decision dashboard" if report_language == "en"
                     else "에이전트가 유효한 결정 대시보드를 생성하지 못했습니다" if report_language == "ko"
+                    else "El agente no pudo generar un panel de decisiones válido" if report_language == "es"
                     else "Agent 未能生成有效的决策仪表盘"
                 )
 
@@ -2531,6 +2532,8 @@ class StockAnalysisPipeline:
                 return f"Trend view: {trend}; action advice: {advice}."
             if report_language == "ko":
                 return f"추세 결론: {trend}; 대응 전략: {advice}."
+            if report_language == "es":
+                return f"Visión de tendencia: {trend}; recomendación de acción: {advice}."
             return f"趋势结论：{trend}；操作建议：{advice}。"
         return ""
 
@@ -2570,6 +2573,7 @@ class StockAnalysisPipeline:
             ) or (
                 "Analysis pending" if report_language == "en"
                 else "분석 보완 예정" if report_language == "ko"
+                else "Análisis pendiente" if report_language == "es"
                 else "分析待补充"
             )
 
@@ -3551,7 +3555,12 @@ class StockAnalysisPipeline:
                     result = future.result()
                     if result and result.success:
                         results.append(result)
-                        if single_stock_notify and send_notification and not dry_run:
+                        if (
+                            single_stock_notify
+                            and send_notification
+                            and not dry_run
+                            and self._filter_alert_on_change([result])
+                        ):
                             self._send_single_stock_notification(
                                 result,
                                 report_type=report_type,
@@ -3620,9 +3629,22 @@ class StockAnalysisPipeline:
                 logger.info("合并推送模式：跳过本次推送，将在个股+大盘复盘后统一发送")
                 self._send_notifications(results, report_type, skip_push=True)
             else:
-                self._send_notifications(results, report_type)
-        
+                push_results = self._filter_alert_on_change(results)
+                if push_results:
+                    self._send_notifications(push_results, report_type)
+                else:
+                    logger.info("alert-on-change: no stock changed materially, summary push skipped")
+                    self._send_notifications(results, report_type, skip_push=True)
+
         return results
+
+    def _filter_alert_on_change(self, results: List[AnalysisResult]) -> List[AnalysisResult]:
+        """Apply ALERT_ON_CHANGE; returns ``results`` unchanged when the mode is off."""
+        if not getattr(self.config, "alert_on_change", False):
+            return results
+        from src.services.alert_on_change import filter_changed_results
+
+        return filter_changed_results(results, getattr(self.config, "alert_score_delta", 10))
 
     def _send_single_stock_notification(
         self,
