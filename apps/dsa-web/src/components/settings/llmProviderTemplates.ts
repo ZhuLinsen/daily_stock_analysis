@@ -91,23 +91,6 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     officialSources: [{ label: 'AIHubmix', url: 'https://inferera.com/?aff=CfMq' }],
   },
   {
-    channelId: 'anspire',
-    label: 'Anspire Open',
-    protocol: 'openai',
-    baseUrl: 'https://open-gateway.anspire.cn/v6',
-    placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash',
-    capabilities: ['openai-compatible'],
-    configHint:
-      '同一 ANSPIRE_API_KEYS 可复用到搜索与 LLM 渠道。以下模型与网关为配置示例，实际可用性请以账号权限和控制台为准；建议先点“测试连接”确认。',
-    officialSources: [
-      { label: 'Anspire Open', url: 'https://open.anspire.cn/dsa?share_code=QFBC0FYC' },
-      {
-        label: 'LiteLLM OpenAI-compatible',
-        url: 'https://docs.litellm.ai/docs/providers/openai_compatible',
-      },
-    ],
-  },
-  {
     channelId: 'deepseek',
     label: 'DeepSeek 官方',
     protocol: 'deepseek',
@@ -242,6 +225,23 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     capabilities: ['local-runtime'],
     configHint: '需要本机、Docker 或 self-hosted runner 能访问 Ollama 服务。',
     officialSources: [{ label: 'Ollama API', url: 'https://github.com/ollama/ollama/blob/main/docs/api.md' }],
+  },
+  {
+    channelId: 'anspire',
+    label: 'Anspire Open',
+    protocol: 'openai',
+    baseUrl: 'https://open-gateway.anspire.cn/v6',
+    placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash',
+    capabilities: ['openai-compatible'],
+    configHint:
+      '同一 ANSPIRE_API_KEYS 可复用到搜索与 LLM 渠道。以下模型与网关为配置示例，实际可用性请以账号权限和控制台为准；建议先点“测试连接”确认。',
+    officialSources: [
+      { label: 'Anspire Open', url: 'https://open.anspire.cn/dsa?share_code=QFBC0FYC' },
+      {
+        label: 'LiteLLM OpenAI-compatible',
+        url: 'https://docs.litellm.ai/docs/providers/openai_compatible',
+      },
+    ],
   },
   {
     channelId: 'custom',
