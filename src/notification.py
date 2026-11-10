@@ -2150,7 +2150,8 @@ class NotificationService(
         mapping = self._SOURCE_DISPLAY_NAMES.get(raw_source)
         if not mapping:
             return raw_source
-        return mapping[normalize_report_language(language)]
+        # Only zh/en names exist; other languages (ko, es) use the English name.
+        return mapping.get(normalize_report_language(language)) or mapping["en"]
 
     def _append_market_snapshot(self, lines: List[str], result: AnalysisResult) -> None:
         snapshot = getattr(result, 'market_snapshot', None)

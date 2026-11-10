@@ -139,3 +139,28 @@ def test_spanish_query_name_strips_legal_suffix_and_falls_back_to_ticker():
 
 def test_spanish_brave_locale():
     assert SearchService._brave_search_locale("SAN.MC", prefer_chinese=False) == {"search_lang": "es", "country": "ES"}
+
+
+# --- Regression: Spanish reports with a data source crashed (KeyError: 'es') ---
+
+def test_spanish_reports_render_with_snapshot_source():
+    from src.analyzer import AnalysisResult
+    from src.notification import NotificationService
+
+    result = AnalysisResult(
+        code="SAN.MC", name="Banco Santander", sentiment_score=55,
+        trend_prediction="看多", operation_advice="持有",
+    )
+    result.report_language = "es"
+    result.market_snapshot = {
+        "close": "11.30", "source": "fallback", "price": "11.30",
+        "raw": {"close": 11.3, "prev_close": 10.7, "pct_chg": 5.6, "currency": "EUR"},
+    }
+    service = NotificationService()
+
+    single = service.generate_single_stock_report(result)
+    dashboard = service.generate_dashboard_report([result])
+
+    assert "€11.30" in single
+    assert "Fallback" in single
+    assert "SAN.MC" in dashboard
