@@ -183,6 +183,9 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         cases = (
             ("us", None, "us"),
             ("us", "kr,jp", "jp,kr"),
+            ("tw", None, "tw"),
+            ("cn", "TW", "tw"),
+            ("us", "tw,cn", "cn,tw"),
         )
         original_queue_instance = AnalysisTaskQueue._instance
         try:
