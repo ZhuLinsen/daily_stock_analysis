@@ -63,6 +63,18 @@ from src.schemas.decision_action import (
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
 from src.formatters import strip_hidden_markdown_metadata
+from src.report_cards import (
+    card,
+    fmt_change,
+    fmt_level,
+    fmt_money,
+    fmt_pct,
+    fmt_price,
+    fmt_shares,
+    join_values,
+    shorten,
+    to_number,
+)
 from src.utils.data_processing import (
     signal_attribution_has_content,
     signal_attribution_weight_items,
@@ -2017,14 +2029,14 @@ class NotificationService(
                     lines.append(f"### 📰 {labels['info_heading']}")
                     lines.append("")
                     info_added = True
-                lines.append(f"📊 **{labels['earnings_outlook_label']}**: {str(intel['earnings_outlook'])[:100]}")
+                lines.append(f"📊 **{labels['earnings_outlook_label']}**: {shorten(intel['earnings_outlook'], 160)}")
 
             if intel.get('sentiment_summary'):
                 if not info_added:
                     lines.append(f"### 📰 {labels['info_heading']}")
                     lines.append("")
                     info_added = True
-                lines.append(f"💭 **{labels['sentiment_summary_label']}**: {str(intel['sentiment_summary'])[:80]}")
+                lines.append(f"💭 **{labels['sentiment_summary_label']}**: {shorten(intel['sentiment_summary'], 140)}")
 
             # 风险警报
             risks = intel.get('risk_alerts', [])
@@ -2036,7 +2048,7 @@ class NotificationService(
                 lines.append("")
                 lines.append(f"🚨 **{labels['risk_alerts_label']}**:")
                 for risk in risks[:3]:
-                    lines.append(f"- {str(risk)[:60]}")
+                    lines.append(f"- {shorten(risk, 120)}")
 
             # 利好催化
             catalysts = intel.get('positive_catalysts', [])
@@ -2044,7 +2056,7 @@ class NotificationService(
                 lines.append("")
                 lines.append(f"✨ **{labels['positive_catalysts_label']}**:")
                 for cat in catalysts[:3]:
-                    lines.append(f"- {str(cat)[:60]}")
+                    lines.append(f"- {shorten(cat, 120)}")
 
         if info_added:
             lines.append("")
@@ -2052,17 +2064,16 @@ class NotificationService(
         # 狙击点位
         sniper = battle.get('sniper_points', {}) if battle else {}
         if sniper:
-            lines.extend([
-                f"### 🎯 {labels['action_points_heading']}",
-                "",
-                f"| {labels['ideal_buy_label']} | {labels['stop_loss_label']} | {labels['take_profit_label']} |",
-                "|------|------|------|",
-            ])
-            ideal_buy = sniper.get('ideal_buy', '-')
-            stop_loss = sniper.get('stop_loss', '-')
-            take_profit = sniper.get('take_profit', '-')
-            lines.append(f"| {ideal_buy} | {stop_loss} | {take_profit} |")
-            lines.append("")
+            currency = self._result_currency(result)
+            snapshot = getattr(result, "market_snapshot", None) or {}
+            raw = snapshot.get("raw") if isinstance(snapshot.get("raw"), dict) else {}
+            reference = to_number(raw.get("price")) or to_number(raw.get("close")) or to_number(snapshot.get("close"))
+            lines.extend(card(f"### 🎯 {labels['action_points_heading']}", [
+                (f"🎯 {labels['ideal_buy_label']}", fmt_level(sniper.get('ideal_buy'), currency, reference)),
+                (f"🔵 {labels['secondary_buy_label']}", fmt_level(sniper.get('secondary_buy'), currency, reference)),
+                (f"🛑 {labels['stop_loss_label']}", fmt_level(sniper.get('stop_loss'), currency, reference)),
+                (f"🎊 {labels['take_profit_label']}", fmt_level(sniper.get('take_profit'), currency, reference)),
+            ]))
 
         # ========== 信号归因分析 ==========
         signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
@@ -2146,30 +2157,60 @@ class NotificationService(
 
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
+        lang = normalize_report_language(report_language)
 
-        lines.extend([
-            f"### 📈 {labels['market_snapshot_heading']}",
-            "",
-            f"| {labels['close_label']} | {labels['prev_close_label']} | {labels['open_label']} | {labels['high_label']} | {labels['low_label']} | {labels['change_pct_label']} | {labels['change_amount_label']} | {labels['amplitude_label']} | {labels['volume_label']} | {labels['amount_label']} |",
-            "|------|------|------|------|------|-------|-------|------|--------|--------|",
-            f"| {snapshot.get('close', 'N/A')} | {snapshot.get('prev_close', 'N/A')} | "
-            f"{snapshot.get('open', 'N/A')} | {snapshot.get('high', 'N/A')} | "
-            f"{snapshot.get('low', 'N/A')} | {snapshot.get('pct_chg', 'N/A')} | "
-            f"{snapshot.get('change_amount', 'N/A')} | {snapshot.get('amplitude', 'N/A')} | "
-            f"{snapshot.get('volume', 'N/A')} | {snapshot.get('amount', 'N/A')} |",
-        ])
+        # Raw numbers (new snapshots) are formatted per locale; older snapshots
+        # only carry display strings, which to_number() parses when possible.
+        raw = snapshot.get("raw") if isinstance(snapshot.get("raw"), dict) else {}
 
-        if "price" in snapshot:
-            display_source = self._get_source_display_name(snapshot.get('source', 'N/A'), report_language)
-            lines.extend([
-                "",
-                f"| {labels['current_price_label']} | {labels['volume_ratio_label']} | {labels['turnover_rate_label']} | {labels['source_label']} |",
-                "|-------|------|--------|----------|",
-                f"| {snapshot.get('price', 'N/A')} | {snapshot.get('volume_ratio', 'N/A')} | "
-                f"{snapshot.get('turnover_rate', 'N/A')} | {display_source} |",
-            ])
+        def pick(key: str) -> Any:
+            value = raw.get(key)
+            return value if value is not None else snapshot.get(key)
 
-        lines.append("")
+        currency = raw.get("currency") or self._result_currency(result)
+        close = pick("close")
+        price = pick("price")
+        headline_price = price if to_number(price) is not None and price != close else None
+        low, high = fmt_price(pick("low"), currency), fmt_price(pick("high"), currency)
+        volume = raw.get("volume") if raw else None
+        volume_text = (
+            fmt_shares(volume, lang, labels.get("shares_unit", "shares"))
+            if volume is not None
+            else (snapshot.get("volume") if to_number(snapshot.get("volume")) is None else None)
+        )
+        amount_raw = raw.get("amount") if raw else None
+        display_source = self._get_source_display_name(snapshot.get("source"), report_language) if snapshot.get("source") else None
+
+        rows = [
+            (labels["close_label"], join_values(f"**{fmt_price(close, currency)}**" if fmt_price(close, currency) else None, fmt_change(pick("pct_chg")))),
+            (labels["current_price_label"], fmt_price(headline_price, currency)),
+            (labels["prev_close_label"], fmt_price(pick("prev_close"), currency)),
+            (labels["open_label"], fmt_price(pick("open"), currency)),
+            (labels.get("day_range_label", "Range"), f"{low} – {high}" if low and high else None),
+            (labels["amplitude_label"], fmt_pct(pick("amplitude"))),
+            (labels["volume_label"], volume_text if volume_text and str(volume_text).upper() != "N/A" else None),
+            (labels["amount_label"], fmt_money(amount_raw, currency, lang) if amount_raw else None),
+            (labels["volume_ratio_label"], fmt_pct(snapshot.get("volume_ratio")).rstrip("%") if fmt_pct(snapshot.get("volume_ratio")) else None),
+            (labels["turnover_rate_label"], fmt_pct(snapshot.get("turnover_rate"))),
+            (labels["source_label"], display_source if display_source and display_source.upper() != "N/A" else None),
+        ]
+        lines.extend(card(f"### 📈 {labels['market_snapshot_heading']}", rows))
+
+    def _result_currency(self, result: AnalysisResult) -> Optional[str]:
+        """Trading currency for display: snapshot raw currency, else fundamentals, else by market."""
+        snapshot = getattr(result, "market_snapshot", None) or {}
+        raw = snapshot.get("raw") if isinstance(snapshot, dict) and isinstance(snapshot.get("raw"), dict) else {}
+        if raw.get("currency"):
+            return raw["currency"]
+        blocks = self._get_fundamental_blocks(result)
+        for block in (blocks.get("dividend") or {}, blocks.get("financial_report") or {}):
+            if isinstance(block.get("currency"), str) and block.get("currency"):
+                return block["currency"]
+        from src.market_context import detect_market
+
+        return {
+            "us": "USD", "hk": "HKD", "cn": "CNY", "jp": "JPY", "kr": "KRW", "tw": "TWD", "es": "EUR",
+        }.get(detect_market(getattr(result, "code", None)))
 
     _CURRENCY_SUFFIX = {
         "USD": "美元",
@@ -2178,6 +2219,7 @@ class NotificationService(
         "RMB": "元",
         "CNH": "元",
         "TWD": "新台币",  # 台股 (TWSE/TPEx) 以新台币计价，避免与 A 股「元」(人民币) 混淆
+        "EUR": "欧元",  # 西班牙股 (BME .MC) 以欧元计价
     }
 
     @classmethod
@@ -2328,24 +2370,37 @@ class NotificationService(
         if all(v == "N/A" for v in cells.values()):
             return
 
-        lines.extend([
-            f"### 💼 {labels['financial_summary_heading']}",
-            "",
-            (
-                f"| {labels['report_date_label']} | {labels['revenue_label']} | "
-                f"{labels['net_profit_label']} | {labels['operating_cash_flow_label']} | "
-                f"{labels['roe_label']} | {labels['revenue_yoy_label']} | "
-                f"{labels['net_profit_yoy_label']} | {labels['gross_margin_label']} |"
-            ),
-            # 报告期居中，金额/比例右对齐 — 与现有市场快照风格保持一致
-            "|:------:|-------:|-------:|-------:|------:|------:|------:|------:|",
-            (
-                f"| {cells['report_date']} | {cells['revenue']} | {cells['net_profit']} | "
-                f"{cells['operating_cash_flow']} | {cells['roe']} | {cells['revenue_yoy']} | "
-                f"{cells['net_profit_yoy']} | {cells['gross_margin']} |"
-            ),
-            "",
-        ])
+        lang = self._labels_language(labels)
+        roe =report.get("roe") if report.get("roe") is not None else growth.get("roe")
+        report_date = cells["report_date"] if cells["report_date"] != "N/A" else None
+        title = f"### 💼 {labels['financial_summary_heading']}" + (f" · {report_date}" if report_date else "")
+        def money(value: Any) -> Optional[str]:
+            # Chinese reports keep the familiar 亿美元 / 万元 units.
+            if lang == "zh":
+                text = self._format_amount_cn(value, currency)
+                return None if text == "N/A" else text
+            return fmt_money(value, currency, lang)
+
+        lines.extend(card(title, [
+            (labels["revenue_label"], join_values(money(report.get("revenue")), self._yoy(growth.get("revenue_yoy")))),
+            (labels["net_profit_label"], join_values(money(report.get("net_profit_parent")), self._yoy(growth.get("net_profit_yoy")))),
+            (labels["operating_cash_flow_label"], money(report.get("operating_cash_flow"))),
+            (labels["gross_margin_label"], fmt_pct(growth.get("gross_margin"))),
+            (labels["roe_label"], fmt_pct(roe)),
+        ]))
+
+    @staticmethod
+    def _yoy(value: Any) -> Optional[str]:
+        pct = fmt_pct(value, signed=True)
+        return f"({pct} YoY)" if pct else None
+
+    @staticmethod
+    def _labels_language(labels: Dict[str, str]) -> str:
+        """Infer the language of a labels dict (labels carry no explicit language key)."""
+        for lang in ("en", "ko", "zh"):
+            if get_report_labels(lang).get("financial_summary_heading") == labels.get("financial_summary_heading"):
+                return lang
+        return "en"
 
     def _append_shareholder_return(
         self,
@@ -2376,20 +2431,17 @@ class NotificationService(
         if all(v == "N/A" for v in cells.values()):
             return
 
-        lines.extend([
-            f"### 💵 {labels['shareholder_return_heading']}",
-            "",
-            (
-                f"| {labels['ttm_cash_dividend_label']} | {labels['ttm_event_count_label']} | "
-                f"{labels['ttm_dividend_yield_label']} | {labels['latest_ex_dividend_label']} |"
-            ),
-            "|---------------------:|----------:|--------:|:--------:|",
-            (
-                f"| {cells['ttm_cash']} | {cells['ttm_count']} | "
-                f"{cells['ttm_yield']} | {cells['latest_ex']} |"
-            ),
-            "",
-        ])
+        per_share = (
+            (cells["ttm_cash"] if cells["ttm_cash"] != "N/A" else None)
+            if self._labels_language(labels) == "zh"
+            else fmt_price(dividend.get("ttm_cash_dividend_per_share"), dividend_currency)
+        )
+        lines.extend(card(f"### 💵 {labels['shareholder_return_heading']}", [
+            (labels["ttm_cash_dividend_label"], per_share),
+            (labels["ttm_dividend_yield_label"], fmt_pct(dividend.get("ttm_dividend_yield_pct"))),
+            (labels["ttm_event_count_label"], cells["ttm_count"] if cells["ttm_count"] != "N/A" else None),
+            (labels["latest_ex_dividend_label"], cells["latest_ex"] if cells["latest_ex"] != "N/A" else None),
+        ]))
 
     @classmethod
     def _format_net_shares(cls, value: Any) -> str:

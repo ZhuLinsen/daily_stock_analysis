@@ -4147,7 +4147,7 @@ Sector text.
         assert "- **Market Signal**: 66/100 (constructive, risk-on)" in result
         assert "- **Breadth**: Advancers 3200 / Decliners 1800 / Flat 100;" in result
         assert "Turnover 14567 (CNY 100m)" in result
-        assert "| Index | Last | Change % | Open | High | Low | Amplitude | Turnover (CNY 100m) |" in result
+        assert "| Index | Last | Change |" in result
         assert "#### Leading Industry Sectors" in result
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### Lagging Industry Sectors" in result
@@ -4216,8 +4216,8 @@ Sector text.
         assert "操作建议" in result
         assert "盘面温度" not in result
         assert "| 上涨/下跌/平盘 | 3200 / 1800 / 100 |" in result
-        assert "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |" in result
-        assert "| 上证指数 | 3300.00 | 🟢 +0.36% | 3288.00 | 3312.00 | 3276.00 | 1.10% | 1450 |" in result
+        assert "| 指数 | 最新 | 涨跌幅 |" in result
+        assert "| 上证指数 | 3,300.00 | 🟢 +0.36% |" in result
         assert "#### 行业板块领涨 Top 5" in result
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### 近三日市场线索" not in result
@@ -4936,8 +4936,8 @@ Index text.
         result = ma._build_indices_block(overview)
 
         assert "CNY 100m" not in result
-        assert "Turnover (USD bn)" in result
-        assert "| S&P 500 | 5200.00 |" in result
+        assert "| Index | Last | Change |" in result
+        assert "| S&P 500 | 5,200.00 |" in result
 
     def test_indices_block_uses_configured_red_up_color_scheme(self):
         from src.market_analyzer import MarketOverview, MarketIndex
@@ -4955,9 +4955,9 @@ Index text.
 
         result = ma._build_indices_block(overview)
 
-        assert "| 上证指数 | 3200.00 | 🔴 +0.68% |" in result
-        assert "| 深证成指 | 9800.00 | 🟢 -0.42% |" in result
-        assert "| 创业板指 | 2100.00 | ⚪ +0.00% |" in result
+        assert "| 上证指数 | 3,200.00 | 🔴 +0.68% |" in result
+        assert "| 深证成指 | 9,800.00 | 🟢 -0.42% |" in result
+        assert "| 创业板指 | 2,100.00 | ⚪ +0.00% |" in result
 
     def test_indices_block_keeps_green_up_default_color_scheme(self):
         from src.market_analyzer import MarketOverview, MarketIndex
@@ -4973,8 +4973,8 @@ Index text.
 
         result = ma._build_indices_block(overview)
 
-        assert "| 上证指数 | 3200.00 | 🟢 +0.68% |" in result
-        assert "| 深证成指 | 9800.00 | 🔴 -0.42% |" in result
+        assert "| 上证指数 | 3,200.00 | 🟢 +0.68% |" in result
+        assert "| 深证成指 | 9,800.00 | 🔴 -0.42% |" in result
 
     def test_no_private_attribute_access_in_market_analyzer_source(self):
         """Static guard: market_analyzer.py must not access private analyzer attrs."""

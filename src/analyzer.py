@@ -5223,6 +5223,21 @@ Output the complete Decision Dashboard in JSON format."""
             "amplitude": self._format_percent(amplitude),
             "volume": self._format_volume(today.get('volume')),
             "amount": self._format_amount(today.get('amount')),
+            # Unformatted values for locale-aware renderers (report cards).
+            "raw": {
+                "close": close,
+                "open": today.get('open'),
+                "high": high,
+                "low": low,
+                "prev_close": prev_close,
+                "pct_chg": today.get('pct_chg'),
+                "change_amount": change_amount,
+                "amplitude": amplitude,
+                "volume": today.get('volume'),
+                "amount": today.get('amount'),
+                "price": realtime.get('price') if realtime else None,
+                "currency": (realtime.get('currency') if realtime else None) or context.get('currency'),
+            },
         }
 
         if realtime:

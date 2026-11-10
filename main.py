@@ -499,6 +499,46 @@ def _startup_config_warnings(config: Config, args: argparse.Namespace) -> List[s
     ]
 
 
+def _market_review_heading(config: Any) -> str:
+    """Top-level heading for pushed market reviews, in the report language."""
+    language = str(getattr(config, "report_language", "zh") or "zh").strip().lower()
+    return {"en": "# 📈 Market Review", "ko": "# 📈 시황 리뷰"}.get(language, "# 📈 大盘复盘")
+
+
+def _filter_by_analysis_markets(
+    stock_codes: List[str],
+    markets_spec: Optional[str],
+) -> List[str]:
+    """Keep only stocks whose market matches ``ANALYSIS_MARKETS``.
+
+    ``markets_spec`` is a comma list of market ids. Plain ids are an include
+    list (``es,us``); ids prefixed with ``-`` are exclusions (``-es``). Empty
+    means no filtering. Codes whose market is unknown are kept unless an
+    include list is given, matching the trading-day filter's fail-open rule.
+    """
+    tokens = [t.strip().lower() for t in (markets_spec or "").split(",") if t.strip()]
+    if not tokens:
+        return list(stock_codes)
+
+    from src.core.trading_calendar import get_market_for_stock
+
+    include = {t for t in tokens if not t.startswith("-")}
+    exclude = {t[1:] for t in tokens if t.startswith("-")}
+    kept = []
+    for code in stock_codes:
+        market = get_market_for_stock(code)
+        if include and market not in include:
+            continue
+        if market in exclude:
+            continue
+        kept.append(code)
+    if len(kept) != len(stock_codes):
+        logger.info(
+            "ANALYSIS_MARKETS=%s: analyzing %d of %d stocks", markets_spec, len(kept), len(stock_codes)
+        )
+    return kept
+
+
 def _compute_trading_day_filter(
     config: Config,
     args: argparse.Namespace,
@@ -513,6 +553,8 @@ def _compute_trading_day_filter(
         - effective_region '' = all relevant markets closed, skip market review
         - should_skip_all: skip entire run when no stocks and no market review to run
     """
+    # Market selection (per-schedule ANALYSIS_MARKETS) applies even with --force-run.
+    stock_codes = _filter_by_analysis_markets(stock_codes, os.getenv("ANALYSIS_MARKETS"))
     force_run = getattr(args, 'force_run', False)
     if force_run or not getattr(config, 'trading_day_check_enabled', True):
         return (stock_codes, None, False)
@@ -881,6 +923,10 @@ def _run_auto_backtest(config: Config) -> None:
             f"saved={stats.get('saved')} completed={stats.get('completed')} "
             f"insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
         )
+
+        from src.services.backtest_weekly_report import maybe_send_weekly_report
+
+        maybe_send_weekly_report(service, getattr(config, 'stock_list', None) or [])
     except Exception as exc:
         logger.warning(f"自动回测失败（已忽略）: {exc}")
 
@@ -1191,7 +1237,7 @@ def run_full_analysis(
                     and pipeline.notifier.is_available()
                 ):
                     if pipeline.notifier.send(
-                        f"# 📈 大盘复盘\n\n{market_report}",
+                        f"{_market_review_heading(config)}\n\n{market_report}",
                         email_send_to_all=True,
                         route_type="report",
                     ):
@@ -1276,7 +1322,7 @@ def run_full_analysis(
         if merge_notification and (results or market_report) and not args.no_notify:
             parts = []
             if market_report:
-                parts.append(f"# 📈 大盘复盘\n\n{market_report}")
+                parts.append(f"{_market_review_heading(config)}\n\n{market_report}")
             if results:
                 dashboard_content = pipeline.notifier.generate_aggregate_report(
                     results,
@@ -1321,7 +1367,7 @@ def run_full_analysis(
 
                 # 添加大盘复盘内容（如果有）
                 if market_report:
-                    full_content += f"# 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
+                    full_content += f"{_market_review_heading(config)}\n\n{market_report}\n\n---\n\n"
 
                 # 添加个股决策仪表盘（使用 NotificationService 生成，按 report_type 分支）
                 if results:

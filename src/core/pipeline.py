@@ -1974,7 +1974,7 @@ class StockAnalysisPipeline:
             market = "cn"
         else:
             market = get_market_for_stock(normalize_stock_code(code))
-        if market not in {"jp", "kr", "tw"}:
+        if market not in {"jp", "kr", "tw", "es"}:
             return context
 
         try:
@@ -3551,7 +3551,12 @@ class StockAnalysisPipeline:
                     result = future.result()
                     if result and result.success:
                         results.append(result)
-                        if single_stock_notify and send_notification and not dry_run:
+                        if (
+                            single_stock_notify
+                            and send_notification
+                            and not dry_run
+                            and self._filter_alert_on_change([result])
+                        ):
                             self._send_single_stock_notification(
                                 result,
                                 report_type=report_type,
@@ -3620,9 +3625,22 @@ class StockAnalysisPipeline:
                 logger.info("合并推送模式：跳过本次推送，将在个股+大盘复盘后统一发送")
                 self._send_notifications(results, report_type, skip_push=True)
             else:
-                self._send_notifications(results, report_type)
-        
+                push_results = self._filter_alert_on_change(results)
+                if push_results:
+                    self._send_notifications(push_results, report_type)
+                else:
+                    logger.info("alert-on-change: no stock changed materially, summary push skipped")
+                    self._send_notifications(results, report_type, skip_push=True)
+
         return results
+
+    def _filter_alert_on_change(self, results: List[AnalysisResult]) -> List[AnalysisResult]:
+        """Apply ALERT_ON_CHANGE; returns ``results`` unchanged when the mode is off."""
+        if not getattr(self.config, "alert_on_change", False):
+            return results
+        from src.services.alert_on_change import filter_changed_results
+
+        return filter_changed_results(results, getattr(self.config, "alert_score_delta", 10))
 
     def _send_single_stock_notification(
         self,

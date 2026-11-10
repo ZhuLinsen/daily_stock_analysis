@@ -2,8 +2,12 @@ name: 每日股票分析
 
 on:
   # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # Two market-aligned runs (UTC, valid all year across DST changes):
+  #   16:45 UTC - after the Madrid close (17:30 CET / 17:30 CEST) -> Spanish stocks only
+  #   21:30 UTC - after the US close (16:00 ET)                   -> all other stocks + market review
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '45 16 * * 1-5'
+    - cron: '30 21 * * 1-5'
   
   # 手动触发
   workflow_dispatch:
@@ -59,7 +63,18 @@ jobs:
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
-      
+
+      # Persist the SQLite history (data/) across runs so backtests and
+      # alert-on-change can compare against earlier analyses. Each run saves
+      # under a unique key; restore-keys picks the newest previous snapshot.
+      # GitHub evicts caches unused for 7 days, so a long pause resets history.
+      - name: Restore analysis database
+        uses: actions/cache/restore@v4
+        with:
+          path: data/
+          key: stock-db-${{ github.run_id }}
+          restore-keys: stock-db-
+
       - name: 执行股票分析
         env:
           # ==========================================
@@ -434,6 +449,9 @@ jobs:
           REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || secrets.REPORT_LANGUAGE || '' }}
           REPORT_SHOW_LLM_MODEL: ${{ vars.REPORT_SHOW_LLM_MODEL || secrets.REPORT_SHOW_LLM_MODEL || 'true' }}
           SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
+          ALERT_ON_CHANGE: ${{ vars.ALERT_ON_CHANGE || secrets.ALERT_ON_CHANGE || 'false' }}
+          ALERT_SCORE_DELTA: ${{ vars.ALERT_SCORE_DELTA || secrets.ALERT_SCORE_DELTA || '10' }}
+          BACKTEST_WEEKLY_REPORT_ENABLED: ${{ vars.BACKTEST_WEEKLY_REPORT_ENABLED || secrets.BACKTEST_WEEKLY_REPORT_ENABLED || 'true' }}
           MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
           ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
           TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || secrets.TRADING_DAY_CHECK_ENABLED || 'true' }}
@@ -473,6 +491,19 @@ jobs:
 
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
+
+          # Market-aligned schedules: each cron analyzes only the markets that just closed.
+          # ANALYSIS_MARKETS accepts an include list (es,us) or exclusions prefixed with '-' (-es).
+          case "${{ github.event.schedule }}" in
+            '45 16 * * 1-5')
+              export ANALYSIS_MARKETS="es"
+              MODE="stocks-only"
+              ;;
+            '30 21 * * 1-5')
+              export ANALYSIS_MARKETS="-es"
+              ;;
+          esac
+          echo "🌍 Markets for this run: ${ANALYSIS_MARKETS:-all}"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -560,6 +591,13 @@ jobs:
             python main.py $FORCE_RUN_ARG
           fi
       
+      - name: Save analysis database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/
+          key: stock-db-${{ github.run_id }}
+
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()

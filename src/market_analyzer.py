@@ -40,6 +40,28 @@ from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
 
+# English display names for index rows in English market reviews.
+_INDEX_ENGLISH_NAMES = {
+    "标普500指数": "S&P 500",
+    "道琼斯工业指数": "Dow Jones",
+    "纳斯达克综合指数": "Nasdaq Composite",
+    "纳斯达克100指数": "Nasdaq 100",
+    "罗素2000指数": "Russell 2000",
+    "VIX恐慌指数": "VIX",
+    "上证指数": "SSE Composite",
+    "深证成指": "SZSE Component",
+    "创业板指": "ChiNext",
+    "沪深300": "CSI 300",
+    "恒生指数": "Hang Seng",
+    "恒生科技指数": "Hang Seng Tech",
+    "国企指数": "HS China Enterprises",
+    "日经225指数": "Nikkei 225",
+    "东证指数": "TOPIX",
+    "韩国综合指数": "KOSPI",
+    "台湾加权指数": "TAIEX",
+    "台湾柜买指数": "TPEx",
+}
+
 _LEGACY_ANALYZER_BACKEND_ID = "legacy_analyzer"
 
 _ENGLISH_SECTION_PATTERNS = {
@@ -1360,25 +1382,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         """构建指数行情表格"""
         if not overview.indices:
             return ""
-        if self._get_review_language() == "en":
-            lines = [
-                f"| Index | Last | Change % | Open | High | Low | Amplitude | Turnover ({self._get_turnover_unit_label()}) |",
-                "|-------|------|----------|------|------|-----|-----------|-----------------|",
-            ]
+        # Phone-friendly 3-column table (index / last / change); the wide
+        # open/high/low/amplitude/turnover columns were mostly N/A for
+        # offshore markets and unreadable in push apps.
+        english = self._get_review_language() == "en"
+        if english:
+            lines = ["| Index | Last | Change |", "|:--|--:|--:|"]
         else:
-            lines = [
-                "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |",
-                "|------|------|--------|------|------|------|------|-----------|",
-            ]
+            lines = ["| 指数 | 最新 | 涨跌幅 |", "|:--|--:|--:|"]
         for idx in overview.indices:
             arrow = self._get_index_change_arrow(idx.change_pct)
-            amount_raw = idx.amount or 0.0
-            amount_str = self._format_turnover_value(amount_raw)
-            lines.append(
-                f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | "
-                f"{self._format_optional_number(idx.open)} | {self._format_optional_number(idx.high)} | "
-                f"{self._format_optional_number(idx.low)} | {self._format_optional_pct(idx.amplitude)} | {amount_str} |"
-            )
+            name = _INDEX_ENGLISH_NAMES.get(idx.name, idx.name) if english else idx.name
+            lines.append(f"| {name} | {idx.current:,.2f} | {arrow} {idx.change_pct:+.2f}% |")
         return "\n".join(lines)
 
     def _build_sector_block(self, overview: MarketOverview) -> str:

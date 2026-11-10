@@ -8,6 +8,7 @@ without introducing import cycles.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -19,6 +20,14 @@ class SuffixMarketSpec:
     market: str
     suffixes: tuple[str, ...]
     digit_lengths: tuple[int, ...]
+    # Optional regex for alphanumeric bases (e.g. Madrid ``SAN.MC``). When set
+    # it replaces the numeric ``digit_lengths`` rule.
+    base_pattern: Optional[str] = None
+
+    def matches_base(self, base: str) -> bool:
+        if self.base_pattern is not None:
+            return re.fullmatch(self.base_pattern, base) is not None
+        return base.isdigit() and len(base) in self.digit_lengths
 
 
 _SUFFIX_MARKET_SPECS: tuple[SuffixMarketSpec, ...] = (
@@ -27,6 +36,9 @@ _SUFFIX_MARKET_SPECS: tuple[SuffixMarketSpec, ...] = (
     # Taiwan support mirrors the same suffix-only pattern; keep it here so the
     # shared helpers stay complete for all yfinance-only offshore markets.
     SuffixMarketSpec("tw", ("TW", "TWO"), (4, 5, 6)),
+    # Spain (Bolsa de Madrid / BME continuous market): letter tickers such as
+    # SAN.MC, BBVA.MC, ITX.MC, A3M.MC.
+    SuffixMarketSpec("es", ("MC",), (), base_pattern=r"[A-Z][A-Z0-9]{0,5}"),
 )
 
 _MARKET_TO_SPEC = {spec.market: spec for spec in _SUFFIX_MARKET_SPECS}
@@ -50,7 +62,7 @@ def split_suffix_symbol(stock_code: str) -> tuple[str, str] | None:
 
 
 def get_suffix_market(stock_code: str) -> Optional[str]:
-    """Return jp/kr/tw for supported suffix-only Yahoo symbols, else None."""
+    """Return jp/kr/tw/es for supported suffix-only Yahoo symbols, else None."""
 
     parts = split_suffix_symbol(stock_code)
     if parts is None:
@@ -59,7 +71,7 @@ def get_suffix_market(stock_code: str) -> Optional[str]:
     spec = _SUFFIX_TO_SPEC.get(suffix)
     if spec is None:
         return None
-    if not (base.isdigit() and len(base) in spec.digit_lengths):
+    if not spec.matches_base(base):
         return None
     return spec.market
 
@@ -83,6 +95,10 @@ def is_kr_suffix_symbol(stock_code: str) -> bool:
 
 def is_tw_suffix_symbol(stock_code: str) -> bool:
     return is_suffix_market_symbol(stock_code, "tw")
+
+
+def is_es_suffix_symbol(stock_code: str) -> bool:
+    return is_suffix_market_symbol(stock_code, "es")
 
 
 def normalize_suffix_market_symbol(stock_code: str) -> Optional[str]:

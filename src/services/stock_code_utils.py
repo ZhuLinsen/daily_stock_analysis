@@ -61,7 +61,7 @@ _SUFFIX_DIGIT_LENS: dict = {
     ".TW": (4, 5, 6),
 }
 
-_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
+_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO", ".MC"}
 _US_INDEX_CODES = {
     "SPX",
     "^GSPC",
@@ -205,6 +205,8 @@ def is_code_like(value: str) -> bool:
     explicit_parts = _split_explicit_exchange(text)
     if explicit_parts is not None:
         return _normalize_explicit_exchange_parts(explicit_parts) is not None
+    if get_suffix_market(text) is not None:
+        return True
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
         return True
     return False
@@ -237,6 +239,11 @@ def _normalize_code_and_exchange(raw: str) -> tuple[Optional[str], str]:
         return None, explicit_exchange
     suffix_symbol = normalize_suffix_market_symbol(text)
     if suffix_symbol is not None:
+        # Letter-based suffix markets (es: SAN.MC) are not recognised by the
+        # digit-based explicit-exchange parser, so carry the suffix as the
+        # exchange; otherwise parse_analysis_target falls back to "US".
+        if not explicit_exchange and get_suffix_market(suffix_symbol) == "es":
+            return suffix_symbol, suffix_symbol.rsplit(".", 1)[1]
         return suffix_symbol, explicit_exchange
     if any(text.endswith(suffix) for suffix in _PRESERVE_SUFFIXES):
         return None, explicit_exchange
@@ -455,7 +462,7 @@ def resolve_daily_stock_identity(
         candidates = [raw_code, normalized_code, refill_code]
         if suffix_base_lookup_allowed(normalized_code):
             candidates.append(normalized_code.rsplit(".", 1)[0])
-    if market not in {"jp", "kr", "tw"}:
+    if market not in {"jp", "kr", "tw", "es"}:
         for candidate in list(candidates):
             candidates.extend(
                 _build_market_code_variants(
