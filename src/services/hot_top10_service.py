@@ -43,7 +43,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -79,6 +79,118 @@ _HOT_TOP10_RUN_MUTEX = threading.Lock()
 # after finishing its own run: fresh data is fetched and the full dedup
 # semantics decide whether anything ships.
 _HOT_TOP10_PENDING_FOLLOWUP = threading.Event()
+
+# OR-COR-5c51e8d7: the process mutex above cannot exclude two INDEPENDENT
+# scheduler processes sharing the same DATABASE_PATH (CLI --schedule next to
+# the Web/API/desktop runtime scheduler, or two replicas). Delivery is
+# therefore claimed atomically per data date via an exclusive-create file
+# next to the marker: ``hot_top10_claim_<data_date>.lock``. A claim older
+# than this TTL is crash residue and is taken over.
+HOT_TOP10_CLAIM_STALE_AFTER = timedelta(hours=2)
+_HOT_TOP10_CLAIM_FILE_PREFIX = "hot_top10_claim_"
+
+
+def hot_top10_claim_path(config: Any, data_date: str) -> Path:
+    """Cross-process delivery claim file for ``data_date`` (marker's dir)."""
+    return hot_top10_marker_path(config).parent / (
+        f"{_HOT_TOP10_CLAIM_FILE_PREFIX}{data_date}.lock"
+    )
+
+
+def _write_hot_top10_claim_file(path: Path) -> bool:
+    """Exclusive-create the claim file; True when THIS process owns it.
+
+    ``O_CREAT | O_EXCL`` is the only portable atomic test-and-set across
+    processes on Windows and POSIX alike."""
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(datetime.now().isoformat(timespec="seconds"))
+        handle.write("\n")
+        handle.write(str(os.getpid()))
+    return True
+
+
+def _hot_top10_claim_timestamp(path: Path) -> Optional[datetime]:
+    """Parse the claim timestamp; None when missing/corrupt (treated stale)."""
+    try:
+        first_line = path.read_text(encoding="utf-8").strip().splitlines()[0]
+    except (OSError, IndexError):
+        return None
+    try:
+        return datetime.fromisoformat(first_line)
+    except ValueError:
+        return None
+
+
+class _HotTop10DeliveryClaim:
+    """A held cross-process delivery claim; ``release`` removes the file."""
+
+    __slots__ = ("_path", "_released")
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._released = False
+
+    def release(self) -> None:
+        """Best-effort delete; a lost race against a stale takeover is
+        tolerable (the next stale window resolves it)."""
+        if self._released:
+            return
+        self._released = True
+        try:
+            self._path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning(
+                "[HotTop10] 删除投递认领文件失败（忽略，陈旧后可被接管）: %s", exc
+            )
+
+
+def acquire_hot_top10_delivery_claim(
+    config: Any, data_date: str
+) -> Optional[_HotTop10DeliveryClaim]:
+    """Atomically claim the right to deliver ``data_date`` across processes.
+
+    Returns the claim handle, or ``None`` when another live process already
+    holds the claim (caller reports ``already_claimed``: no push, no marker,
+    retry on the next trigger). A stale claim — crash residue older than
+    ``HOT_TOP10_CLAIM_STALE_AFTER`` — is taken over via
+    unlink-then-exclusive-create, which stays atomic (at most one process
+    wins the create). Unreadable/corrupt claim files count as stale
+    (fail-open, same rules as the marker)."""
+    claim_path = hot_top10_claim_path(config, data_date)
+    try:
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "[HotTop10] 认领目录创建失败，本次退化为无跨进程互斥: %s", exc
+        )
+        return _HotTop10DeliveryClaim(claim_path)
+    for _ in range(2):
+        if _write_hot_top10_claim_file(claim_path):
+            return _HotTop10DeliveryClaim(claim_path)
+        claimed_at = _hot_top10_claim_timestamp(claim_path)
+        if (
+            claimed_at is not None
+            and datetime.now() - claimed_at < HOT_TOP10_CLAIM_STALE_AFTER
+        ):
+            return None
+        # Stale (or unreadable) claim: crash residue — take it over.
+        try:
+            claim_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning(
+                "[HotTop10] 陈旧认领文件删除失败，按已被他人持有处理: %s", exc
+            )
+            return None
+    return None
+
 
 _ADVICE_VALUES = {"观望", "轻仓介入", "积极介入"}
 
@@ -868,6 +980,7 @@ def _run_hot_top10_analysis_locked(
             skipped=True,
             reason="hotspot_data_unavailable",
         )
+    effective_data_date = ranking_date or date.today().isoformat()
     if respect_dedup and not force_run:
         # Same-day re-delivery guard (OR-COR-3e7f490e, narrowed): the
         # data-ready follow-up occurrence may fire while the provider still
@@ -875,7 +988,6 @@ def _run_hot_top10_analysis_locked(
         # primary slot already delivered. Pushing it again would duplicate
         # the stale report, so a delivery covering the exact same data date
         # recorded today skips instead.
-        effective_data_date = ranking_date or date.today().isoformat()
         same_date_skip, same_date_reason = hot_top10_data_date_delivered_today(
             config, effective_data_date
         )
@@ -896,74 +1008,126 @@ def _run_hot_top10_analysis_locked(
             ranking_date,
         )
 
-    llm_completed = False
-    summary: Optional[Dict[str, Any]] = None
+    # OR-COR-5c51e8d7: atomic cross-process claim for this data date. The
+    # run mutex above cannot exclude two INDEPENDENT processes sharing the
+    # same DATABASE_PATH (CLI --schedule beside the Web/API/desktop runtime
+    # scheduler), and the dedup checks above all happen BEFORE the
+    # LLM/save/push stages — two processes could both pass them and push
+    # the same list. The exclusive-create claim file makes check ->
+    # generate -> save -> push -> marker exclusive per data date.
+    # force_run (explicit human override) stays unclaimed.
+    delivery_claim = None
+    if not force_run:
+        delivery_claim = acquire_hot_top10_delivery_claim(
+            config, effective_data_date
+        )
+        if delivery_claim is None:
+            logger.warning(
+                "[HotTop10] 该榜单数据日期（%s）已被其他进程认领投递，本次跳过："
+                "不推送、不落当日标记，等待下次触发重试",
+                effective_data_date,
+            )
+            return HotTop10RunResult(
+                delivered=False,
+                skipped=True,
+                reason="already_claimed",
+            )
+        if respect_dedup:
+            # Close the check->claim window: the other process may have
+            # finished its whole delivery between the marker reads above and
+            # this claim being won. Its marker landed BEFORE it released the
+            # claim, so a fresh read here settles the race.
+            claimed_skip, claimed_reason = hot_top10_data_date_delivered_today(
+                config, effective_data_date
+            )
+            if claimed_skip:
+                delivery_claim.release()
+                logger.info(
+                    "[HotTop10] 认领后发现该数据日期已被投递，跳过: %s",
+                    claimed_reason,
+                )
+                return HotTop10RunResult(
+                    delivered=False,
+                    skipped=True,
+                    reason=f"same_data_date_delivered_today: {claimed_reason}",
+                )
+
     try:
-        if analyzer is None:
-            analyzer = _build_analyzer(config)
-        prompt = build_hot_top10_prompt(items, language, ranking_date=ranking_date)
-        llm_text = analyzer.generate_text(
-            prompt,
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=LLM_TEMPERATURE,
-        )
-        if isinstance(llm_text, str) and llm_text.strip():
-            summary = parse_llm_summary(llm_text)
-            if summary is not None:
-                llm_completed = True
+        llm_completed = False
+        summary: Optional[Dict[str, Any]] = None
+        try:
+            if analyzer is None:
+                analyzer = _build_analyzer(config)
+            prompt = build_hot_top10_prompt(items, language, ranking_date=ranking_date)
+            llm_text = analyzer.generate_text(
+                prompt,
+                max_tokens=LLM_MAX_TOKENS,
+                temperature=LLM_TEMPERATURE,
+            )
+            if isinstance(llm_text, str) and llm_text.strip():
+                summary = parse_llm_summary(llm_text)
+                if summary is not None:
+                    llm_completed = True
+                else:
+                    summary = {"raw": llm_text}
+                    logger.warning("[HotTop10] AI 摘要 JSON 解析失败，按原文降级渲染")
             else:
-                summary = {"raw": llm_text}
-                logger.warning("[HotTop10] AI 摘要 JSON 解析失败，按原文降级渲染")
+                logger.warning("[HotTop10] AI 摘要生成失败（返回空），降级为数据概览")
+        except Exception as exc:
+            logger.warning("[HotTop10] AI 摘要生成异常，降级为数据概览: %s", exc)
+
+        report_markdown = render_hot_top10_report(
+            items, summary, llm_completed, language, ranking_date=ranking_date
+        )
+        notification_status, report_saved = _deliver(
+            report_markdown, send_notification, notifier
+        )
+
+        if notification_status in {"failed", "notifier_init_failed"}:
+            # Push failed: leave the marker unset so the next occurrence retries.
+            logger.warning(
+                "[HotTop10] 推送未成功（status=%s），不记录当日标记，等待下次重试",
+                notification_status,
+            )
+        elif not report_saved and notification_status != "sent":
+            # OR-COR-8c2d195e: no successful notification push AND the local
+            # save failed, so nothing was actually delivered. The day's dedup
+            # marker must stay open, otherwise a recoverable storage failure
+            # would silently swallow the whole day's report. (A successful push
+            # with a failed save still counts as delivered and records below.)
+            logger.warning(
+                "[HotTop10] 报告保存失败且无成功通知交付（status=%s），"
+                "不记录当日标记，等待下次重试",
+                notification_status,
+            )
         else:
-            logger.warning("[HotTop10] AI 摘要生成失败（返回空），降级为数据概览")
-    except Exception as exc:
-        logger.warning("[HotTop10] AI 摘要生成异常，降级为数据概览: %s", exc)
+            record_hot_top10_marker(
+                config,
+                llm_completed=llm_completed,
+                notification_status=notification_status,
+                # The dedup slot belongs to the data date the report covers; a
+                # stale (previous-day) delivery therefore leaves today's slot
+                # open for the fresh data (OR-COR-3e7f490e).
+                data_date=ranking_date,
+            )
 
-    report_markdown = render_hot_top10_report(
-        items, summary, llm_completed, language, ranking_date=ranking_date
-    )
-    notification_status, report_saved = _deliver(
-        report_markdown, send_notification, notifier
-    )
-
-    if notification_status in {"failed", "notifier_init_failed"}:
-        # Push failed: leave the marker unset so the next occurrence retries.
-        logger.warning(
-            "[HotTop10] 推送未成功（status=%s），不记录当日标记，等待下次重试",
-            notification_status,
-        )
-    elif not report_saved and notification_status != "sent":
-        # OR-COR-8c2d195e: no successful notification push AND the local
-        # save failed, so nothing was actually delivered. The day's dedup
-        # marker must stay open, otherwise a recoverable storage failure
-        # would silently swallow the whole day's report. (A successful push
-        # with a failed save still counts as delivered and records below.)
-        logger.warning(
-            "[HotTop10] 报告保存失败且无成功通知交付（status=%s），"
-            "不记录当日标记，等待下次重试",
-            notification_status,
-        )
-    else:
-        record_hot_top10_marker(
-            config,
+        # The run only counts as delivered when the report reached somewhere:
+        # a successful push, or a successful local save (for the disabled /
+        # no-channel paths that rely on the file).
+        delivery_completed = report_saved or notification_status == "sent"
+        return HotTop10RunResult(
+            delivered=delivery_completed,
+            skipped=False,
+            reason="ok" if delivery_completed else f"delivery_failed: {notification_status}",
+            report_markdown=report_markdown,
             llm_completed=llm_completed,
             notification_status=notification_status,
-            # The dedup slot belongs to the data date the report covers; a
-            # stale (previous-day) delivery therefore leaves today's slot
-            # open for the fresh data (OR-COR-3e7f490e).
-            data_date=ranking_date,
+            ranking_date=ranking_date,
         )
-
-    # The run only counts as delivered when the report reached somewhere:
-    # a successful push, or a successful local save (for the disabled /
-    # no-channel paths that rely on the file).
-    delivery_completed = report_saved or notification_status == "sent"
-    return HotTop10RunResult(
-        delivered=delivery_completed,
-        skipped=False,
-        reason="ok" if delivery_completed else f"delivery_failed: {notification_status}",
-        report_markdown=report_markdown,
-        llm_completed=llm_completed,
-        notification_status=notification_status,
-        ranking_date=ranking_date,
-    )
+    finally:
+        # Release the claim on EVERY path: push/save failure leaves the
+        # MARKER open for retry (OR-COR-8c2d195e) and the released claim
+        # lets that retry proceed; after a recorded marker the claim has
+        # served its purpose (the next data date claims a fresh file).
+        if delivery_claim is not None:
+            delivery_claim.release()

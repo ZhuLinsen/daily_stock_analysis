@@ -15,11 +15,14 @@ Covers the key behaviors of ``src/services/hot_top10_service.py``:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -913,6 +916,325 @@ class HotTop10SchedulerWiringTest(unittest.TestCase):
         scheduler = Scheduler(register_signals=False, schedule_time="23:59")
         self.assertFalse(scheduler.add_daily_task(lambda: None, "25:00"))
         self.assertEqual(scheduler._extra_daily_jobs, [])
+
+
+# Child script for the cross-process claim regression: two REAL processes
+# contend for the same data date through a shared marker directory.
+_CLAIM_RUNNER_SCRIPT = """
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, sys.argv[1])
+
+from types import SimpleNamespace
+
+from src.services import hot_top10_service as svc
+
+config = SimpleNamespace(
+    database_path=sys.argv[2],
+    trading_day_check_enabled=False,
+    hot_top10_count=10,
+    report_language="zh",
+)
+data_date = sys.argv[3]
+go_file = sys.argv[4]
+llm_block_file = os.environ.get("HOT_TOP10_TEST_LLM_BLOCK", "")
+pid = os.getpid()
+
+
+class _Hotspots:
+    def get_hotspots(self, **kwargs):
+        return {
+            "status": "ok",
+            "market": "cn",
+            "trade_date": data_date,
+            "active_themes": [
+                {
+                    "name": f"主题-{pid}",
+                    "code": "BK0001",
+                    "change_pct": 1.0,
+                    "rank": 1,
+                    "source": "industry",
+                }
+            ],
+            "leading_industries": [],
+            "leading_concepts": [],
+        }
+
+
+class _Analyzer:
+    def generate_text(self, prompt, **kwargs):
+        deadline = time.time() + 30
+        while llm_block_file and not os.path.exists(llm_block_file):
+            if time.time() >= deadline:
+                break
+            time.sleep(0.02)
+        return json.dumps({"summary": "s", "items": []}, ensure_ascii=False)
+
+
+class _Notifier:
+    def is_available(self):
+        return True
+
+    def save_report_to_file(self, content, filename):
+        return filename
+
+    def send(self, content, **kwargs):
+        return True
+
+
+print("READY", flush=True)
+deadline = time.time() + 30
+while not os.path.exists(go_file):
+    if time.time() >= deadline:
+        break
+    time.sleep(0.02)
+
+result = svc.run_hot_top10_analysis(
+    config,
+    notifier=_Notifier(),
+    analyzer=_Analyzer(),
+    hotspot_service=_Hotspots(),
+)
+print(
+    "RESULT:"
+    + json.dumps(
+        {
+            "delivered": result.delivered,
+            "skipped": result.skipped,
+            "reason": result.reason,
+        }
+    ),
+    flush=True,
+)
+"""
+
+
+class HotTop10CrossProcessClaimTest(unittest.TestCase):
+    """OR-COR-5c51e8d7: the daily dedup had no cross-process mutual
+    exclusion — two scheduler processes sharing the same DATABASE_PATH both
+    passed the empty-marker check and pushed the same list twice, because
+    the run's critical section was only protected by a per-process
+    ``threading.Lock``. A per-data-date atomic claim file must make
+    check -> generate -> save -> push -> marker exclusive across processes."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value={"cn"},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _start_children(
+        self, db_path: Path, data_date: str, go_file: Path, llm_release: Path
+    ):
+        repo_root = str(Path(__file__).resolve().parents[1])
+        child_script = Path(self._tmp.name) / "claim_runner.py"
+        child_script.write_text(_CLAIM_RUNNER_SCRIPT, encoding="utf-8")
+        procs = []
+        for _ in range(2):
+            env = dict(os.environ)
+            env["HOT_TOP10_TEST_LLM_BLOCK"] = str(llm_release)
+            env["PYTHONIOENCODING"] = "utf-8"
+            procs.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(child_script),
+                        repo_root,
+                        str(db_path),
+                        data_date,
+                        str(go_file),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    env=env,
+                    cwd=repo_root,
+                )
+            )
+        self.addCleanup(self._drain_children, procs, llm_release)
+        return procs
+
+    @staticmethod
+    def _drain_children(procs, llm_release: Path) -> None:
+        try:
+            llm_release.write_text("release", encoding="utf-8")
+        except OSError:
+            pass
+        for proc in procs:
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+    def test_two_processes_deliver_same_data_date_exactly_once(self):
+        db_path = Path(self._tmp.name) / "stock_analysis.db"
+        data_date = date.today().isoformat()
+        claim_path = db_path.parent / f"hot_top10_claim_{data_date}.lock"
+        go_file = Path(self._tmp.name) / "go"
+        llm_release = Path(self._tmp.name) / "llm_release"
+        procs = self._start_children(db_path, data_date, go_file, llm_release)
+
+        for proc in procs:
+            ready = proc.stdout.readline().strip()
+            self.assertEqual(ready, "READY", "child failed to boot")
+        go_file.write_text("go", encoding="utf-8")
+
+        # The winning process holds the claim while blocked in the LLM call,
+        # so the loser must deterministically observe the claim.
+        deadline = time.time() + 15
+        while time.time() < deadline and not claim_path.exists():
+            time.sleep(0.02)
+        self.assertTrue(claim_path.exists(), "no claim file appeared")
+        llm_release.write_text("release", encoding="utf-8")
+
+        results = []
+        for proc in procs:
+            line = proc.stdout.readline().strip()
+            self.assertTrue(
+                line.startswith("RESULT:"), f"child produced no result: {line!r}"
+            )
+            results.append(json.loads(line[len("RESULT:") :]))
+        for proc in procs:
+            proc.wait(timeout=30)
+
+        delivered = [r for r in results if r["delivered"]]
+        claimed = [r for r in results if r["reason"] == "already_claimed"]
+        self.assertEqual(
+            len(delivered), 1, f"exactly one process may deliver: {results}"
+        )
+        self.assertEqual(len(claimed), 1, f"loser must report claim: {results}")
+        self.assertEqual(delivered[0]["reason"], "ok")
+
+        marker_payload = json.loads(
+            (db_path.parent / "hot_top10_state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(marker_payload.get("data_date"), data_date)
+        self.assertTrue(marker_payload.get("delivered"))
+        # The claim is released once the marker landed.
+        self.assertFalse(claim_path.exists())
+
+    def test_stale_claim_from_crashed_process_is_taken_over(self):
+        """A claim file older than the TTL (crashed process residue) must be
+        taken over instead of blocking the day's delivery forever."""
+        from src.services.hot_top10_service import hot_top10_claim_path
+
+        config = _config(self._tmp.name)
+        stale_time = (
+            datetime.now() - timedelta(hours=3)
+        ).isoformat(timespec="seconds")
+        claim_path = hot_top10_claim_path(config, date.today().isoformat())
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        claim_path.write_text(f"{stale_time}\n999999", encoding="utf-8")
+
+        result = run_hot_top10_analysis(
+            config,
+            notifier=_FakeNotifier(),
+            hotspot_service=_FakeHotspotService(
+                _hotspot_payload(_theme_items(3))
+            ),
+            analyzer=_FakeAnalyzer(text=_llm_json()),
+        )
+
+        self.assertTrue(result.delivered)
+        # Taken over for the run, then released after the marker landed.
+        self.assertFalse(claim_path.exists())
+
+    def test_fresh_claim_from_other_process_blocks_delivery(self):
+        """A live (< TTL) claim from another process must skip this run:
+        no push, no marker, retry on the next trigger."""
+        from src.services.hot_top10_service import hot_top10_claim_path
+
+        config = _config(self._tmp.name)
+        claim_path = hot_top10_claim_path(config, date.today().isoformat())
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        claim_path.write_text(
+            datetime.now().isoformat(timespec="seconds") + "\n424242",
+            encoding="utf-8",
+        )
+
+        notifier = _FakeNotifier()
+        result = run_hot_top10_analysis(
+            config,
+            notifier=notifier,
+            hotspot_service=_FakeHotspotService(
+                _hotspot_payload(_theme_items(3))
+            ),
+            analyzer=_FakeAnalyzer(text=_llm_json()),
+        )
+
+        self.assertFalse(result.delivered)
+        self.assertTrue(result.skipped)
+        self.assertEqual(result.reason, "already_claimed")
+        self.assertEqual(notifier.sent, [])
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)
+        # The other process's claim file is untouched.
+        self.assertTrue(claim_path.exists())
+
+    def test_failed_delivery_releases_claim_for_retry(self):
+        """Push failure keeps the claim from poisoning the retry: the file is
+        released even though no marker was recorded."""
+        from src.services.hot_top10_service import hot_top10_claim_path
+
+        config = _config(self._tmp.name)
+        claim_path = hot_top10_claim_path(config, date.today().isoformat())
+        release = threading.Event()
+        entered = threading.Event()
+
+        class _BlockingAnalyzer:
+            def generate_text(self, prompt: str, **kwargs: Any) -> str:
+                entered.set()
+                release.wait(timeout=10)
+                return _llm_json()
+
+        analyzer = _BlockingAnalyzer()
+        broken = _FakeNotifier(raise_on_send=True)
+        first_results: Dict[str, HotTop10RunResult] = {}
+
+        def _first_run() -> None:
+            first_results["run"] = run_hot_top10_analysis(
+                config,
+                notifier=broken,
+                hotspot_service=_FakeHotspotService(
+                    _hotspot_payload(_theme_items(3))
+                ),
+                analyzer=analyzer,
+            )
+
+        worker = threading.Thread(target=_first_run, daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=5))
+        self.assertTrue(
+            claim_path.exists(), "claim file must exist while the run delivers"
+        )
+        release.set()
+        worker.join(timeout=10)
+
+        # Failed push: no marker, but the claim was released for the retry.
+        self.assertFalse(claim_path.exists())
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)
+
+        retry = run_hot_top10_analysis(
+            config,
+            notifier=_FakeNotifier(),
+            hotspot_service=_FakeHotspotService(
+                _hotspot_payload(_theme_items(3))
+            ),
+            analyzer=_FakeAnalyzer(text=_llm_json()),
+        )
+        self.assertTrue(retry.delivered)
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertTrue(skip)
 
 
 if __name__ == "__main__":
