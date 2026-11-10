@@ -1,13 +1,17 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
-  # Two market-aligned runs (UTC, valid all year across DST changes):
-  #   16:45 UTC - after the Madrid close (17:30 CET / 17:30 CEST) -> Spanish stocks only
-  #   21:30 UTC - after the US close (16:00 ET)                   -> all other stocks + market review
+  # Two evening runs on weekdays, in Madrid local time:
+  #   17:45 - after the Madrid close (17:30)  -> Spanish stocks only
+  #   22:30 - after the New York close        -> all other stocks + market review
+  # GitHub cron is UTC-only with no DST, so each run is scheduled at both its
+  # winter (CET) and summer (CEST) UTC time; the run step keeps the one that
+  # matches today's Madrid offset and skips the other.
   schedule:
-    - cron: '45 16 * * 1-5'
-    - cron: '30 21 * * 1-5'
+    - cron: '45 16 * * 1-5'   # 17:45 Madrid in winter (CET)
+    - cron: '45 15 * * 1-5'   # 17:45 Madrid in summer (CEST)
+    - cron: '30 21 * * 1-5'   # 22:30 Madrid in winter (CET)
+    - cron: '30 20 * * 1-5'   # 22:30 Madrid in summer (CEST)
   
   # 手动触发
   workflow_dispatch:
@@ -450,6 +454,7 @@ jobs:
           REPORT_SHOW_LLM_MODEL: ${{ vars.REPORT_SHOW_LLM_MODEL || secrets.REPORT_SHOW_LLM_MODEL || 'true' }}
           SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
           ALERT_ON_CHANGE: ${{ vars.ALERT_ON_CHANGE || secrets.ALERT_ON_CHANGE || 'false' }}
+          ANALYSIS_MARKETS: ${{ vars.ANALYSIS_MARKETS || '' }}
           ALERT_SCORE_DELTA: ${{ vars.ALERT_SCORE_DELTA || secrets.ALERT_SCORE_DELTA || '10' }}
           BACKTEST_WEEKLY_REPORT_ENABLED: ${{ vars.BACKTEST_WEEKLY_REPORT_ENABLED || secrets.BACKTEST_WEEKLY_REPORT_ENABLED || 'true' }}
           MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
@@ -492,14 +497,26 @@ jobs:
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
 
-          # Market-aligned schedules: each cron analyzes only the markets that just closed.
-          # ANALYSIS_MARKETS accepts an include list (es,us) or exclusions prefixed with '-' (-es).
-          case "${{ github.event.schedule }}" in
-            '45 16 * * 1-5')
+          # Madrid-time gate + per-run market selection. The cron string (not the
+          # clock) decides, so a delayed GitHub start still runs. ANALYSIS_MARKETS:
+          # include list (es,us) or exclusions prefixed with '-' (-es).
+          MADRID_TZ_ABBR="$(TZ=Europe/Madrid date +%Z)"
+          SCHEDULE="${{ github.event.schedule }}"
+          case "$SCHEDULE" in
+            '45 16 * * 1-5'|'30 21 * * 1-5') WANT_TZ="CET" ;;
+            '45 15 * * 1-5'|'30 20 * * 1-5') WANT_TZ="CEST" ;;
+            *) WANT_TZ="" ;;
+          esac
+          if [ -n "$WANT_TZ" ] && [ "$MADRID_TZ_ABBR" != "$WANT_TZ" ]; then
+            echo "⏭️ Cron '$SCHEDULE' is for $WANT_TZ but Madrid is on $MADRID_TZ_ABBR today, skipping"
+            exit 0
+          fi
+          case "$SCHEDULE" in
+            '45 16 * * 1-5'|'45 15 * * 1-5')
               export ANALYSIS_MARKETS="es"
               MODE="stocks-only"
               ;;
-            '30 21 * * 1-5')
+            '30 21 * * 1-5'|'30 20 * * 1-5')
               export ANALYSIS_MARKETS="-es"
               ;;
           esac
