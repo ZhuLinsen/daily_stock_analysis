@@ -1417,5 +1417,101 @@ class HotTop10RuntimeSameDaySecondRunTest(unittest.TestCase):
             self.assertEqual(len(notifier.sent), 1)
 
 
+class _AliveNoopThread(_NoopThread):
+    """Loop-thread stub whose is_alive() reports True, mimicking a live
+    scheduler loop for refresh-path checks."""
+
+    def is_alive(self) -> bool:
+        return True
+
+
+class HotTop10ExtraJobRefreshTest(unittest.TestCase):
+    """OR-COR-4b61e8f3: saving a hot-top10-only config change must refresh
+    the auxiliary daily job registrations WITHOUT the full stop/start
+    rebuild — stop() terminates the in-flight main analysis subprocess."""
+
+    def _start(self, config: SimpleNamespace) -> RuntimeSchedulerService:
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._reload_config = lambda: config
+        with patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _AliveNoopThread,
+        ):
+            service.start()
+        self.addCleanup(service.stop)
+        return service
+
+    @staticmethod
+    def _config(**overrides) -> SimpleNamespace:
+        base = dict(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+            hot_top10_enabled=True,
+            hot_top10_schedule_time="15:10",
+            hot_top10_data_ready_schedule_time="15:35",
+        )
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    def test_refresh_preserves_running_analysis_and_live_scheduler(self) -> None:
+        service = self._start(self._config())
+        before_scheduler = service._scheduler
+        before_thread = service._thread
+
+        # Fabricate an in-flight main analysis subprocess, exactly what
+        # stop() would terminate via _terminate_analysis_process_tree.
+        fake_process = MagicMock()
+        with service._analysis_process_lock:
+            service._analysis_process = fake_process
+
+        changed = service.refresh_extra_daily_jobs()
+
+        self.assertTrue(changed)
+        # No full rebuild: same scheduler instance, same loop thread, and
+        # the running analysis process was NOT terminated.
+        self.assertIs(service._scheduler, before_scheduler)
+        self.assertIs(service._thread, before_thread)
+        fake_process.terminate.assert_not_called()
+        fake_process.kill.assert_not_called()
+        # The two hot-top10 slots are still registered.
+        extra_jobs = list(getattr(service._scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 2)
+
+    def test_refresh_replaces_jobs_at_new_times(self) -> None:
+        config = self._config()
+        service = self._start(config)
+        config.hot_top10_schedule_time = "15:20"
+        config.hot_top10_data_ready_schedule_time = "16:05"
+
+        changed = service.refresh_extra_daily_jobs()
+
+        self.assertTrue(changed)
+        extra_jobs = list(getattr(service._scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 2)
+        at_times = {
+            f"{job.at_time.hour:02d}:{job.at_time.minute:02d}"
+            for job in extra_jobs
+        }
+        self.assertEqual(at_times, {"15:20", "16:05"})
+
+    def test_refresh_unregisters_jobs_when_hot_top10_disabled(self) -> None:
+        config = self._config()
+        service = self._start(config)
+        config.hot_top10_enabled = False
+
+        changed = service.refresh_extra_daily_jobs()
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            list(getattr(service._scheduler, "_extra_daily_jobs", [])), []
+        )
+
+    def test_refresh_returns_false_without_live_scheduler(self) -> None:
+        service = RuntimeSchedulerService(config_provider=lambda: self._config())
+
+        self.assertFalse(service.refresh_extra_daily_jobs())
+
+
 if __name__ == "__main__":
     unittest.main()

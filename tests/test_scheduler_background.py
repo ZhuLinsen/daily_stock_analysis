@@ -168,6 +168,39 @@ class SchedulerExtraDailyJobDispatchTest(unittest.TestCase):
 
         self.assertFalse(ran.is_set(), "auxiliary job dispatched after stop()")
 
+    def test_replace_extra_daily_jobs_swaps_registrations(self):
+        """OR-COR-4b61e8f3: the auxiliary-only refresh path swaps the extra
+        daily job registrations in place, cancelling the old slots."""
+        scheduler, fake_schedule = self._make_scheduler()
+        self.assertTrue(
+            scheduler.add_daily_task(lambda: None, "15:10", name="hot_top10")
+        )
+        self.assertTrue(
+            scheduler.add_daily_task(
+                lambda: None, "15:35", name="hot_top10_data_ready"
+            )
+        )
+
+        scheduler.replace_extra_daily_jobs(
+            [
+                {"task": lambda: None, "schedule_time": "15:20", "name": "hot_top10"},
+                {
+                    "task": lambda: None,
+                    "schedule_time": "15:35",
+                    "name": "hot_top10_data_ready",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [job.at_time for job in scheduler._extra_daily_jobs],
+            ["15:20", "15:35"],
+        )
+        # The underlying schedule module holds exactly the new jobs.
+        self.assertEqual(
+            [job.at_time for job in fake_schedule.jobs], ["15:20", "15:35"]
+        )
+
 
 class SchedulerBackgroundTaskTestCase(unittest.TestCase):
     def test_background_task_runs_when_interval_elapsed(self):

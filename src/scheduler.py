@@ -413,6 +413,32 @@ class Scheduler:
         )
         return True
 
+    def replace_extra_daily_jobs(
+        self, extra_daily_jobs: Optional[List[Dict[str, Any]]] = None
+    ) -> None:
+        """Swap the auxiliary daily job registrations without stopping the
+        scheduler loop (OR-COR-4b61e8f3).
+
+        Cancels the currently registered extra jobs and registers the given
+        definitions in their place. The main daily job, the background tasks
+        and the loop thread are untouched, and an in-flight auxiliary worker
+        keeps running under its per-name in-flight guard — a same-name
+        re-registration cannot double-start while it runs.
+        """
+        for job in list(self._extra_daily_jobs):
+            if hasattr(self.schedule, "cancel_job"):
+                self.schedule.cancel_job(job)
+        self._extra_daily_jobs = []
+        for entry in extra_daily_jobs or []:
+            self.add_daily_task(
+                entry["task"],
+                schedule_time=entry["schedule_time"],
+                name=entry.get("name"),
+            )
+        logger.info(
+            "已刷新辅助每日任务注册（%d 个）", len(self._extra_daily_jobs)
+        )
+
     def _release_extra_job_worker(self, job_name: str, worker: Any) -> None:
         """Clear the in-flight slot owned by ``worker`` (guard against a
         stale-run redispatch replacing the entry before the old thread ends)."""

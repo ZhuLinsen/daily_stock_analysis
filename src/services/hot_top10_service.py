@@ -72,6 +72,14 @@ LLM_TEMPERATURE = 0.3
 # mutually excludes overlapping occurrences.
 _HOT_TOP10_RUN_MUTEX = threading.Lock()
 
+# OR-COR-7c92a610: one-shot pending follow-up request. Both schedule slots
+# are daily-only, so a trigger that loses the mutex race must not be
+# dropped outright — that would lose the day's follow-up opportunity when
+# the primary run is slow. The in-flight holder consumes the flag right
+# after finishing its own run: fresh data is fetched and the full dedup
+# semantics decide whether anything ships.
+_HOT_TOP10_PENDING_FOLLOWUP = threading.Event()
+
 _ADVICE_VALUES = {"观望", "轻仓介入", "积极介入"}
 
 
@@ -731,17 +739,29 @@ def run_hot_top10_analysis(
     non-reentrant mutex around the entire critical section (dedup checks ->
     LLM -> save -> deliver -> marker). A trigger arriving while another run
     holds the mutex exits immediately with ``skipped=True`` and
-    ``reason="already_running"``: nothing is pushed and the day's dedup
-    marker is left untouched, so the skipped occurrence retries on its next
-    trigger (same recovery semantics as a failed delivery, OR-COR-8c2d195e).
+    ``reason="already_running"`` — nothing is pushed and the day's dedup
+    marker is left untouched (OR-COR-8c2d195e recovery semantics).
+
+    OR-COR-7c92a610: that losing trigger is not dropped. Both slots are
+    daily-only, so the wrapper retains a ONE-SHOT pending follow-up request
+    and the in-flight holder re-executes the run once right after finishing
+    (fresh fetch -> full dedup semantics; a same-data-date delivery
+    dedup-skips, a new data date ships). The follow-up calls the locked body
+    directly and cannot recurse; the primary run's result stays the caller's
+    return value and the follow-up outcome is logged.
 
     Never raises: every stage degrades and logs; see
     :func:`_run_hot_top10_analysis_locked` for the run itself.
     """
     if not _HOT_TOP10_RUN_MUTEX.acquire(blocking=False):
+        # OR-COR-7c92a610: the in-flight holder will consume this one-shot
+        # request right after finishing, so the overlapping trigger is not
+        # lost for the day (both slots fire daily; there is no later slot).
+        _HOT_TOP10_PENDING_FOLLOWUP.set()
         logger.warning(
-            "[HotTop10] 上一轮热榜分析仍在执行中，本次触发直接跳过"
-            "（跨时段在飞互斥：不投递、不落当日标记，等待下次触发重试）"
+            "[HotTop10] 上一轮热榜分析仍在执行中，本次触发跳过"
+            "（已登记一次性待补投请求：不投递、不落当日标记，"
+            "首轮完成后自动补执行并重新走完整去重）"
         )
         return HotTop10RunResult(
             delivered=False,
@@ -749,7 +769,7 @@ def run_hot_top10_analysis(
             reason="already_running",
         )
     try:
-        return _run_hot_top10_analysis_locked(
+        result = _run_hot_top10_analysis_locked(
             config,
             send_notification=send_notification,
             notifier=notifier,
@@ -758,6 +778,38 @@ def run_hot_top10_analysis(
             respect_dedup=respect_dedup,
             force_run=force_run,
         )
+        # OR-COR-7c92a610: consume the pending follow-up exactly once per
+        # entry, while still holding the mutex. The follow-up calls the
+        # locked body DIRECTLY, so it can never recurse into itself; a
+        # trigger arriving during the follow-up returns already_running and
+        # (re)registers the flag for the next run entry.
+        if _HOT_TOP10_PENDING_FOLLOWUP.is_set():
+            _HOT_TOP10_PENDING_FOLLOWUP.clear()
+            logger.info(
+                "[HotTop10] 首轮执行期间有触发被互斥跳过：执行一次性补投"
+                "（重新取数 → 去重 → 生成 → 保存 → 投递 → 落标记）"
+            )
+            followup_result = _run_hot_top10_analysis_locked(
+                config,
+                send_notification=send_notification,
+                notifier=notifier,
+                analyzer=analyzer,
+                hotspot_service=hotspot_service,
+                respect_dedup=respect_dedup,
+                force_run=force_run,
+            )
+            logger.info(
+                "[HotTop10] 补投完成: delivered=%s skipped=%s reason=%s "
+                "llm_completed=%s notification=%s",
+                followup_result.delivered,
+                followup_result.skipped,
+                followup_result.reason,
+                followup_result.llm_completed,
+                followup_result.notification_status,
+            )
+        # The primary run's result stays the caller's return value; the
+        # follow-up outcome is logged and observable via the marker.
+        return result
     finally:
         _HOT_TOP10_RUN_MUTEX.release()
 

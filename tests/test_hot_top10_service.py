@@ -420,6 +420,82 @@ class HotTop10ServiceTest(unittest.TestCase):
         skip, _ = hot_top10_already_delivered_today(config)
         self.assertTrue(skip)
 
+    def test_pending_followup_delivers_fresh_data_after_overlap(self):
+        """OR-COR-7c92a610 probe: the primary run is still in flight (slow
+        LLM) when the data-ready trigger fires, and the provider has already
+        switched to today's rankings. The losing trigger must not be dropped:
+        the service keeps a one-shot pending follow-up, and after the primary
+        delivers the stale list the follow-up re-executes, fetches the fresh
+        data and delivers it (marker = new data date). The two triggers are
+        NOT joined between occurrences."""
+        config = _config(self._tmp.name)
+        release_llm = threading.Event()
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        payload_holder = {
+            "payload": _hotspot_payload(_theme_items(3)),
+        }
+        payload_holder["payload"]["trade_date"] = yesterday
+
+        class _BlockingAnalyzer:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+
+            def generate_text(self, prompt: str, **kwargs: Any) -> str:
+                self.entered.set()
+                release_llm.wait(timeout=10)
+                return _llm_json()
+
+        class _HolderHotspotService:
+            def get_hotspots(self, **kwargs: Any) -> Dict[str, Any]:
+                return payload_holder["payload"]
+
+        analyzer = _BlockingAnalyzer()
+        notifier = _FakeNotifier()
+        primary_results: Dict[str, HotTop10RunResult] = {}
+
+        def _primary_run() -> None:
+            primary_results["run"] = run_hot_top10_analysis(
+                config,
+                notifier=notifier,
+                hotspot_service=_HolderHotspotService(),
+                analyzer=analyzer,
+            )
+
+        primary = threading.Thread(target=_primary_run, daemon=True)
+        primary.start()
+        self.assertTrue(analyzer.entered.wait(timeout=5))
+
+        # The data cut passes and the provider now serves TODAY's rankings
+        # while the primary is still inside its LLM call.
+        payload_holder["payload"] = _hotspot_payload(_theme_items(3))
+        payload_holder["payload"]["trade_date"] = date.today().isoformat()
+
+        # The data-ready trigger fires — no join before this point.
+        overlap = run_hot_top10_analysis(
+            config,
+            notifier=_FakeNotifier(),
+            hotspot_service=_HolderHotspotService(),
+            analyzer=_FakeAnalyzer(text=_llm_json()),
+        )
+        self.assertFalse(overlap.delivered)
+        self.assertEqual(overlap.reason, "already_running")
+
+        # The primary finishes and the retained follow-up request must be
+        # consumed automatically: fresh data is fetched, dedup passes (the
+        # marker only covers the stale data date) and today's list ships.
+        release_llm.set()
+        primary.join(timeout=15)
+
+        self.assertTrue(primary_results["run"].delivered)
+        self.assertEqual(len(notifier.sent), 2)  # stale, then fresh
+        marker_payload = json.loads(
+            hot_top10_marker_path(config).read_text(encoding="utf-8")
+        )
+        self.assertEqual(marker_payload.get("data_date"), date.today().isoformat())
+        self.assertEqual(marker_payload.get("run_date"), date.today().isoformat())
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertTrue(skip)
+
     def test_corrupt_marker_fails_open(self):
         config = _config(self._tmp.name)
         marker = hot_top10_marker_path(config)

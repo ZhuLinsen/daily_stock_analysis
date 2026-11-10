@@ -859,6 +859,51 @@ class RuntimeSchedulerService:
         else:
             self.stop()
 
+    def refresh_extra_daily_jobs(self) -> bool:
+        """Swap the auxiliary daily job registrations on the LIVE scheduler
+        without the full stop/start rebuild (OR-COR-4b61e8f3).
+
+        ``stop()`` bumps the analysis generation and terminates the in-flight
+        main analysis subprocess, so a hot-top10-only config save must not go
+        through it. This path cancels the current extra daily jobs and
+        re-registers them from the latest config (times, enabled/disabled);
+        the main daily job, background tasks, loop thread and any running
+        analysis are untouched. When the schedule is not currently running
+        there is nothing to refresh — the next ``start()`` builds the jobs
+        from config anyway — so this returns False instead of starting one.
+
+        Returns True when the live scheduler's registrations were swapped.
+        """
+        with self._lock:
+            scheduler = self._scheduler
+            thread = self._thread
+            if (
+                not self._enabled
+                or scheduler is None
+                or thread is None
+                or not thread.is_alive()
+            ):
+                logger.info(
+                    "[RuntimeScheduler] 调度器未在运行，辅助每日任务将在下次启动时按新配置注册"
+                )
+                return False
+            config = self._config_provider()
+            try:
+                entries = self._current_extra_daily_jobs(config)
+            except Exception as exc:
+                # Keep the existing registrations rather than half-swap.
+                logger.error(
+                    "构建辅助每日任务失败，保留现有注册: %s", exc, exc_info=True
+                )
+                return False
+            scheduler.replace_extra_daily_jobs(entries)
+            logger.info(
+                "[RuntimeScheduler] 已按新配置刷新辅助每日任务（%d 个），"
+                "未中断主分析进程",
+                len(entries),
+            )
+            return True
+
     def run_now(self) -> Dict[str, Any]:
         if not self._start_analysis_watchdog():
             return {

@@ -4725,7 +4725,11 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertNotIn("它属于启动期单次运行配置", schedule_run_warning)
 
     def test_hot_top10_schedule_keys_reconcile_runtime_scheduler(self) -> None:
-        """OR-COR-0bd16091: HOT_TOP10_* schedule keys rebuild the scheduler."""
+        """OR-COR-4b61e8f3: hot-top10-only saves refresh ONLY the auxiliary
+        daily job registrations. The full stop/start reconcile would
+        terminate an in-flight main analysis subprocess, so it must stay out
+        of this path (Issue #1936: saving the keys must still take effect
+        without a process restart)."""
         scheduler = MagicMock()
         service = SystemConfigService(manager=self.manager, runtime_scheduler=scheduler)
 
@@ -4739,12 +4743,12 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
 
         self.assertTrue(response["success"])
-        scheduler.reconcile_from_config.assert_called_once_with(
-            clear_enabled_override=False,
-        )
+        scheduler.refresh_extra_daily_jobs.assert_called_once_with()
+        scheduler.reconcile_from_config.assert_not_called()
 
     def test_hot_top10_data_ready_schedule_time_reconciles_runtime_scheduler(self) -> None:
-        """OR-COR-3e7f490e: the data-ready follow-up slot time rebuilds it too."""
+        """OR-COR-3e7f490e / OR-COR-4b61e8f3: the data-ready follow-up slot
+        time also takes effect via the auxiliary-jobs-only refresh."""
         scheduler = MagicMock()
         service = SystemConfigService(manager=self.manager, runtime_scheduler=scheduler)
 
@@ -4757,12 +4761,12 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
 
         self.assertTrue(response["success"])
-        scheduler.reconcile_from_config.assert_called_once_with(
-            clear_enabled_override=False,
-        )
+        scheduler.refresh_extra_daily_jobs.assert_called_once_with()
+        scheduler.reconcile_from_config.assert_not_called()
 
     def test_hot_top10_count_change_does_not_rebuild_scheduler(self) -> None:
-        """HOT_TOP10_COUNT does not change scheduler wiring; no rebuild."""
+        """HOT_TOP10_COUNT does not change scheduler wiring; no rebuild and
+        no auxiliary refresh."""
         scheduler = MagicMock()
         service = SystemConfigService(manager=self.manager, runtime_scheduler=scheduler)
 
@@ -4774,6 +4778,26 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(response["success"])
         scheduler.reconcile_from_config.assert_not_called()
+        scheduler.refresh_extra_daily_jobs.assert_not_called()
+
+    def test_schedule_keys_save_still_full_reconciles_runtime_scheduler(self) -> None:
+        """OR-COR-4b61e8f3 preservation: schedule-level keys keep the full
+        stop/start reconcile (that behavior must not regress when hot-top10
+        saves take the narrow path)."""
+        scheduler = MagicMock()
+        service = SystemConfigService(manager=self.manager, runtime_scheduler=scheduler)
+
+        response = service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "SCHEDULE_TIME", "value": "09:30"}],
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        scheduler.reconcile_from_config.assert_called_once_with(
+            clear_enabled_override=False,
+        )
+        scheduler.refresh_extra_daily_jobs.assert_not_called()
 
     def test_update_appends_schedule_time_runtime_rebind_warning(self) -> None:
         response = self.service.update(
