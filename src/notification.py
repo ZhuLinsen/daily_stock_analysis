@@ -2195,9 +2195,10 @@ class NotificationService(
         sign = "-" if amount < 0 else ""
         abs_amount = abs(amount)
         suffix = cls._CURRENCY_SUFFIX.get((currency or "").upper(), "元")
-        if abs_amount >= 1e8:
+        # Compare the rounded figure too, so 99_999_999 reads 1.00 亿 rather than 10000.00 万.
+        if abs_amount >= 1e8 or round(abs_amount / 1e4, 2) >= 1e4:
             return f"{sign}{abs_amount / 1e8:.2f} 亿{suffix}"
-        if abs_amount >= 1e4:
+        if abs_amount >= 1e4 or round(abs_amount) >= 1e4:
             return f"{sign}{abs_amount / 1e4:.2f} 万{suffix}"
         return f"{sign}{abs_amount:.0f} {suffix}"
 
@@ -2405,9 +2406,10 @@ class NotificationService(
             return "N/A"
         sign = "+" if amount > 0 else ("-" if amount < 0 else "")
         a = abs(amount)
-        if a >= 1e8:
+        # Compare the rounded figure too, so 99_999_999 reads 1.00 亿股 rather than 10000.00 万股.
+        if a >= 1e8 or round(a / 1e4, 2) >= 1e4:
             return f"{sign}{a / 1e8:.2f} 亿股"
-        if a >= 1e4:
+        if a >= 1e4 or round(a) >= 1e4:
             return f"{sign}{a / 1e4:.2f} 万股"
         return f"{sign}{a:.0f} 股"
 
