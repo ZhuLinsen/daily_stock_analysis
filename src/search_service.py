@@ -1626,6 +1626,173 @@ class MiniMaxSearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class OutcrawlSearchProvider(BaseSearchProvider):
+    """
+    Outcrawl 搜索引擎
+
+    特点：
+    - 面向 AI Agent 的网页搜索 API
+    - 通过 OUTCRAWL_API_KEYS 配置，支持多 Key 轮询
+    - API 不原生支持日期过滤，返回结果中的 snippet 通常以发布时间前缀开头
+      （如 "2 days ago - ...", "Oct 28, 2026 - ..."），本 Provider 会将该前缀
+      拆分为 published_date，由上层的新闻时效过滤继续处理；无前缀的命中保留
+      但 published_date 为 None，交由未知日期规则处理。
+    - 响应示例：{"hits": [{"url","title","snippet","rank"}], "usage": {"credits": "2.5"}},
+      可选 "warnings" 列表（如 [{"code": "engines_refused"}]）
+
+    文档：https://outcrawl.ai/docs/search/overview
+    """
+
+    API_ENDPOINT = "https://api.outcrawl.ai/v1/search"
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "Outcrawl")
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+    ) -> SearchResponse:
+        """执行 Outcrawl 搜索。"""
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        payload = {
+            "query": query,
+            "limit": max(1, min(int(max_results), 20)),
+        }
+
+        try:
+            response = _post_with_retry(
+                self.API_ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=15,
+            )
+        except Exception as exc:
+            logger.warning(f"[Outcrawl] 请求失败: {exc}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=str(exc),
+            )
+
+        if response.status_code != 200:
+            error_msg = self._parse_outcrawl_error(response)
+            logger.warning(f"[Outcrawl] 搜索失败: {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg,
+            )
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            error_msg = f"响应JSON解析失败: {str(exc)}"
+            logger.error(f"[Outcrawl] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg,
+            )
+
+        # 可选 warnings 列表（如 engines_refused），仅记录，不丢弃 hits
+        warnings = data.get("warnings") or []
+        if warnings:
+            codes = [w.get("code") if isinstance(w, dict) else str(w) for w in warnings]
+            logger.info(f"[Outcrawl] warnings: {codes}")
+
+        hits = data.get("hits") or []
+        if not isinstance(hits, list):
+            hits = []
+
+        results = []
+        for item in hits:
+            if not isinstance(item, dict):
+                continue
+            snippet = item.get("snippet") or ""
+            published_date, snippet = self._split_date_prefix(snippet)
+            results.append(
+                SearchResult(
+                    title=item.get("title", ""),
+                    snippet=snippet,
+                    url=item.get("url", ""),
+                    source=self._extract_domain(item.get("url", "")),
+                    published_date=published_date,
+                )
+            )
+
+        logger.info(f"[Outcrawl] 搜索完成，query='{query}', 返回 {len(results)} 条结果")
+        return SearchResponse(
+            query=query,
+            results=results,
+            provider=self.name,
+            success=True,
+        )
+
+    @staticmethod
+    def _parse_outcrawl_error(response) -> str:
+        """解析 Outcrawl 错误响应。"""
+        try:
+            ct = response.headers.get("content-type", "")
+            if "json" in ct:
+                err = response.json()
+                if isinstance(err, dict):
+                    msg = err.get("message") or err.get("code") or str(err)
+                    return str(msg)
+            return f"HTTP {response.status_code}: {response.text[:200]}"
+        except Exception:
+            return f"HTTP {response.status_code}: {response.text[:200]}"
+
+    @staticmethod
+    def _split_date_prefix(snippet: str):
+        """将 snippet 开头的日期前缀拆分为 published_date 与剩余摘要。
+
+        Outcrawl 的 snippet 通常形如 "2 days ago - 正文..." 或
+        "Oct 28, 2026 - 正文..."。前缀会被解析为 published_date，正文余下
+        作为 snippet。若无法解析，published_date 为 None，snippet 原样返回。
+        """
+        if not snippet:
+            return None, snippet
+        text = snippet.strip()
+        # 尝试拆分 "前缀 - 正文" 或 "前缀 正文"
+        match = re.match(r"^([^-\n]{0,60})\s*[-–]\s*(.*)$", text, re.IGNORECASE)
+        if match:
+            prefix = match.group(1).strip()
+            rest = match.group(2)
+        else:
+            prefix = text
+            rest = ""
+
+        parsed = SearchService._normalize_news_publish_date(prefix)
+        if parsed is not None and rest:
+            return parsed, rest
+        # 整段无法作为日期，则不拆分，保留原始 snippet
+        return None, snippet
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """Extract domain from URL as source label."""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace("www.", "")
+            return domain or "未知来源"
+        except Exception:
+            return "未知来源"
+
+
 class BraveSearchProvider(BaseSearchProvider):
     """
     Brave Search 搜索引擎
@@ -2409,6 +2576,7 @@ class SearchService:
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
         minimax_keys: Optional[List[str]] = None,
+        outcrawl_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         searxng_public_instances_enabled: bool = False,
         searxng_timeout_seconds: Optional[int] = None,
@@ -2425,6 +2593,7 @@ class SearchService:
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
             minimax_keys: MiniMax API Key 列表
+            outcrawl_keys: Outcrawl API Key 列表
             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
             news_max_age_days: 新闻最大时效（天）
@@ -2437,6 +2606,7 @@ class SearchService:
             "brave_keys": list(brave_keys or []),
             "serpapi_keys": list(serpapi_keys or []),
             "minimax_keys": list(minimax_keys or []),
+            "outcrawl_keys": list(outcrawl_keys or []),
             "searxng_base_urls": list(searxng_base_urls or []),
             "searxng_public_instances_enabled": bool(searxng_public_instances_enabled),
             "searxng_timeout_seconds": searxng_timeout_seconds,
@@ -2487,7 +2657,12 @@ class SearchService:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
 
-        # 6. SearXNG（自建实例优先；未配置时可自动发现公共实例）
+        # 6. Outcrawl（可选新闻源，按 key 轮询，snippet 日期前缀用于时效过滤）
+        if outcrawl_keys:
+            self._providers.append(OutcrawlSearchProvider(outcrawl_keys))
+            logger.info(f"已配置 Outcrawl 搜索，共 {len(outcrawl_keys)} 个 API Key")
+
+        # 7. SearXNG（自建实例优先；未配置时可自动发现公共实例）
         searxng_provider = SearXNGSearchProvider(
             searxng_base_urls,
             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
@@ -4922,6 +5097,7 @@ def get_search_service() -> SearchService:
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys,
                     minimax_keys=config.minimax_api_keys,
+                    outcrawl_keys=getattr(config, "outcrawl_api_keys", None),
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
                     searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
