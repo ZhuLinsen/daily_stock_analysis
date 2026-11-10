@@ -39,8 +39,17 @@ def should_alert(
     Returns:
         True to send the notification, False to stay quiet.
     """
-    # TODO(human): implement the alert rule.
-    raise NotImplementedError
+    # First analysis of a stock: nothing to compare with, always notify.
+    if previous is None:
+        return True
+    # Any change of recommended action (e.g. hold -> reduce) is material.
+    if current.get("action") != previous.get("action"):
+        return True
+    # A missing score on either side can't prove "unchanged": notify (fail-open).
+    cur_score, prev_score = current.get("sentiment_score"), previous.get("sentiment_score")
+    if cur_score is None or prev_score is None:
+        return True
+    return abs(int(cur_score) - int(prev_score)) >= score_delta
 
 
 def _current_signal(result: Any) -> Dict[str, Any]:
