@@ -523,7 +523,7 @@ class TestTextMessageRoundTrip:
 
         # ...and the reply path uses aibot_respond_msg with req_id passthrough.
         sdk_client.reply.reset_mock()
-        with mock.patch.object(handler, "_schedule_reply", side_effect=lambda coro: coro.close()):
+        with mock.patch.object(handler, "_schedule_reply", side_effect=_fake_schedule):
             handler._reply_to_frame(
                 {"headers": {"req_id": "req-42"}}, "✅ 分析任务已提交"
             )
@@ -555,7 +555,7 @@ class TestTextMessageRoundTrip:
     def test_reply_stream_opt_in_uses_stream_frame(self):
         handler, sdk_client = _handler(reply_stream_enabled=True)
 
-        with mock.patch.object(handler, "_schedule_reply", side_effect=lambda coro: coro.close()):
+        with mock.patch.object(handler, "_schedule_reply", side_effect=_fake_schedule):
             handler._reply_to_frame({"headers": {"req_id": "req-7"}}, "hello")
 
         sdk_client.reply_stream.assert_called_once()
@@ -920,7 +920,7 @@ class TestHourlyConversationQuota:
 
         with mock.patch("bot.dispatcher.time.time", side_effect=lambda: clock[0]), \
                 mock.patch.object(handler, "_schedule_reply",
-                                  side_effect=lambda coro: coro.close()):
+                                  side_effect=_fake_schedule):
             for i in range(1020):
                 handler._reply_to_frame(
                     _text_frame(msgid=f"m{i}", chatid="chat-hour"), f"r{i}"
@@ -952,7 +952,7 @@ class TestHourlyConversationQuota:
         frame = _text_frame(msgid="m", chatid="chat-g")
 
         with mock.patch.object(handler, "_schedule_reply",
-                               side_effect=lambda coro: coro.close()):
+                               side_effect=_fake_schedule):
             for _ in range(30):
                 assert handler._reply_to_frame(frame, "r") is True
             # Minute window now full for this conversation.
@@ -1181,7 +1181,7 @@ class TestSourceContextNotification:
         with mock.patch(
             "bot.dispatcher.get_dispatcher", return_value=dispatcher
         ), mock.patch.object(handler, "_schedule_reply",
-                             side_effect=lambda coro: coro.close()):
+                             side_effect=_fake_schedule):
             handler._process_message(bot_message)
 
         assert "source_message" in captured
@@ -1333,8 +1333,8 @@ class _GateHourLimiter:
             self.record(user_id)
         return allowed
 
-    def record(self, user_id):
-        self._real.record(user_id)
+    def record(self, user_id, **kwargs):
+        self._real.record(user_id, **kwargs)
 
 
 class TestOutboundQuotaAtomicity:
@@ -1575,12 +1575,189 @@ class TestOutboundSendConfirmationQuota:
         frame = _text_frame(msgid="m", chatid="chat-ok")
 
         with mock.patch.object(handler, "_schedule_reply",
-                               side_effect=lambda coro: coro.close()):
+                               side_effect=_fake_schedule):
             assert handler._reply_to_frame(frame, "x") is True
 
         minute, hour = self._window_counts(handler, "chat-ok")
         assert (minute, hour) == (1, 1)
         sdk_client.reply.assert_called_once()
+
+    def test_interleaved_refund_removes_only_own_slot(self):
+        """场景二：A 预留后另 29 次成功、A 失败退款 → 只移除 A 的记录，
+        窗口内成功计数仍 29、放行语义正确（不多放）。"""
+        handler, _ = _handler()
+        key = "chat-mix"
+
+        # A acquires the first slot; its token identifies A's send.
+        token_a = handler._acquire_outbound_slot(key)
+        assert token_a and isinstance(token_a, str)
+
+        # 29 interleaved successful acquisitions on the same conversation
+        # (minute window is now exactly full at 30).
+        other_tokens = [handler._acquire_outbound_slot(key) for _ in range(29)]
+        assert all(token and isinstance(token, str) for token in other_tokens)
+        assert len(set(other_tokens)) == 29
+
+        # A fails and refunds by identity: only A's record may go.
+        handler._refund_outbound_send(key, token_a)
+
+        for limiter in (handler._outbound_minute_limiter,
+                        handler._outbound_hour_limiter):
+            remaining_tokens = [
+                token for (_, token) in limiter._requests[key]
+            ]
+            assert token_a not in remaining_tokens, (
+                "refund removed a record that is not A's"
+            )
+            assert len(remaining_tokens) == 29
+            assert set(remaining_tokens) == set(other_tokens)
+
+        # Admission semantics: exactly one more slot is open (29/30), and
+        # taking it makes the minute window full again (no over-admission).
+        assert handler._outbound_minute_limiter.would_allow(key) is True
+        token_x = handler._acquire_outbound_slot(key)
+        assert token_x and isinstance(token_x, str)
+        assert handler._outbound_minute_limiter.would_allow(key) is False
+
+
+# ---------------------------------------------------------------------------
+# r5 OR-COM-62e2b418 (final): identity-based refund + passive-path async
+# failure monitoring.
+# ---------------------------------------------------------------------------
+
+
+def _fake_schedule(coro):
+    """Test double for _schedule_reply: consumed the coroutine, reports
+    dispatched (truthy, non-None)."""
+    coro.close()
+    return "scheduled"
+
+
+class TestRefundByIdentity:
+    def test_refund_by_token_removes_exact_record(self):
+        """退款必须按发送标识精确移除本次记录，而非无条件弹最新一条。"""
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=30, window_seconds=60)
+        limiter.record("u", token="A")
+        limiter.record("u", token="B")
+        limiter.record("u", token="C")
+
+        assert limiter.refund("u", token="B") is True
+        tokens = [token for (_, token) in limiter._requests["u"]]
+        assert tokens == ["A", "C"]
+
+        # Idempotent / unknown tokens are no-ops.
+        assert limiter.refund("u", token="B") is False
+        assert limiter.refund("u", token="Z") is False
+        assert len(limiter._requests["u"]) == 2
+
+    def test_legacy_refund_without_token_pops_newest_untracked(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=30, window_seconds=60)
+        limiter.record("u", token="tracked")
+        limiter.record("u")  # tokenless legacy record
+
+        assert limiter.refund("u") is True  # pops the tokenless record only
+        tokens = [token for (_, token) in limiter._requests["u"]]
+        assert tokens == ["tracked"]
+
+
+class TestPassiveAsyncFailureRefund:
+    """场景一：loop 可用但发送协程失败 → 双窗口退款至 (0,0)。"""
+
+    def _handler_with_real_loop(self, reply_impl):
+        handler, sdk_client = _handler()
+        sdk_client.reply = reply_impl
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True
+        )
+        self._loop_thread.start()
+        handler._loop = self._loop
+        return handler, sdk_client
+
+    def _stop_loop(self):
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._loop_thread.join(timeout=5)
+        self._loop.close()
+
+    def _counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _wait_until_settled(self, handler, key, want, timeout=3.0):
+        """Poll until the windows reach `want` (done-callbacks fire async)."""
+        import time as _time
+
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            if self._counts(handler, key) == want:
+                return True
+            _time.sleep(0.02)
+        return False
+
+    def test_passive_async_exception_refunds_quota(self):
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_fail(frame, body):
+            raise RuntimeError("send failed")
+
+        sdk_client.reply = _reply_fail
+
+        frame = _text_frame(msgid="m-async", chatid="chat-async")
+        try:
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-async", (0, 0))
+            minute, hour = self._counts(handler, "chat-async")
+            assert settled and (minute, hour) == (0, 0), (
+                f"async failure kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
+
+    def test_passive_async_errcode_rejection_refunds_quota(self, caplog):
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_reject(frame, body):
+            return {"errcode": 44002, "errmsg": "no prior conversation"}
+
+        sdk_client.reply = _reply_reject
+
+        frame = _text_frame(msgid="m-reject", chatid="chat-reject")
+        try:
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-reject", (0, 0))
+            minute, hour = self._counts(handler, "chat-reject")
+            assert settled and (minute, hour) == (0, 0), (
+                f"rejected reply kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
+
+    def test_passive_async_success_keeps_quota(self):
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_ok(frame, body):
+            return {"errcode": 0, "errmsg": "ok"}
+
+        sdk_client.reply = _reply_ok
+
+        frame = _text_frame(msgid="m-ok", chatid="chat-ok2")
+        try:
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-ok2", (1, 1))
+            minute, hour = self._counts(handler, "chat-ok2")
+            assert settled and (minute, hour) == (1, 1), (
+                f"successful reply lost its debit: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
 
 
 if __name__ == "__main__":

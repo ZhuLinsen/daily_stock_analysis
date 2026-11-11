@@ -261,12 +261,16 @@ class WecomAibotHandler:
             self._outbound_hour_limiter.record(conversation_key)
             return True
 
-    def _acquire_outbound_slot(self, conversation_key: str) -> bool:
+    def _acquire_outbound_slot(self, conversation_key: str) -> Optional[str]:
         """可用性前置的配额获取（r4：记账不得先于发送确认）
 
         与 :meth:`_allow_outbound_reply` 同一临界区原子语义，另在扣量前
         检查 SDK 事件循环可用性：循环不可用（如重连周期间隙）直接拒绝且
         **零记账**——不会出现"记账了但发不出去"，恢复后额度完整可用。
+
+        Returns:
+            本次发送的唯一 token（uuid4）；双窗口记录携带该 token，失败
+            退款时按 token 精确移除本次记录（r5）。被拒绝时返回 None。
         """
         with self._outbound_quota_lock:
             if not self._outbound_minute_limiter.would_allow(conversation_key):
@@ -275,27 +279,29 @@ class WecomAibotHandler:
                     "回复已丢弃: key=%s",
                     conversation_key,
                 )
-                return False
+                return None
             if not self._outbound_hour_limiter.would_allow(conversation_key):
                 logger.warning(
                     "[WeCom AI Bot] 会话回复超限（分钟30条或小时1000条配额），"
                     "回复已丢弃: key=%s",
                     conversation_key,
                 )
-                return False
+                return None
             loop = self._loop
             if loop is None or loop.is_closed():
                 logger.error("[WeCom AI Bot] 无法回复：SDK 事件循环不可用")
-                return False
-            self._outbound_minute_limiter.record(conversation_key)
-            self._outbound_hour_limiter.record(conversation_key)
-            return True
+                return None
+            token = uuid.uuid4().hex
+            self._outbound_minute_limiter.record(conversation_key, token=token)
+            self._outbound_hour_limiter.record(conversation_key, token=token)
+            return token
 
-    def _refund_outbound_send(self, conversation_key: str) -> None:
-        """发送失败回滚：在配额临界区内退还双窗口本次扣量（r4）"""
+    def _refund_outbound_send(self, conversation_key: str, token: str) -> None:
+        """发送失败回滚：在配额临界区内按发送标识精确退还双窗口本次扣量
+        （r4/r5）——同会话发送交错完成时不会退错记录。"""
         with self._outbound_quota_lock:
-            self._outbound_minute_limiter.refund(conversation_key)
-            self._outbound_hour_limiter.refund(conversation_key)
+            self._outbound_minute_limiter.refund(conversation_key, token=token)
+            self._outbound_hour_limiter.refund(conversation_key, token=token)
 
     @staticmethod
     def _outbound_key_from_frame(frame: dict) -> str:
@@ -396,14 +402,16 @@ class WecomAibotHandler:
 
         配额获取（`_acquire_outbound_slot`）可用性前置：双窗口检查与事件
         循环可用性在同一临界区内，全部通过才记账（r4：无循环时零记账，
-        不虚报已放行）。调度失败则退还本次扣量。
+        不虚报已放行）。调度失败或调度后异步发送失败（协程异常 / 回执
+        errcode != 0）均按发送标识退还本次扣量（r5）。
         """
         if not frame:
             logger.warning("[WeCom AI Bot] 无回调帧，无法回复")
             return False
 
         outbound_key = self._outbound_key_from_frame(frame)
-        if not self._acquire_outbound_slot(outbound_key):
+        token = self._acquire_outbound_slot(outbound_key)
+        if token is None:
             return False
 
         if self._reply_stream_enabled:
@@ -414,25 +422,71 @@ class WecomAibotHandler:
             coro = self.sdk_client.reply(frame, body)
 
         try:
-            self._schedule_reply(coro)
+            future = self._schedule_reply(coro)
         except Exception as exc:
-            self._refund_outbound_send(outbound_key)
+            self._refund_outbound_send(outbound_key, token)
             logger.error(
                 "[WeCom AI Bot] 回复调度失败，已退还配额: key=%s, error=%s",
                 outbound_key,
                 exc,
             )
             return False
+
+        if future is None:
+            # 槽位检查后循环被清理：如实拒绝并退还本次扣量（r5）
+            self._refund_outbound_send(outbound_key, token)
+            logger.error(
+                "[WeCom AI Bot] SDK 事件循环在调度时不可用（已退还配额）: key=%s",
+                outbound_key,
+            )
+            return False
+
+        if hasattr(future, "add_done_callback"):
+            future.add_done_callback(
+                lambda done: self._on_reply_send_done(done, outbound_key, token)
+            )
         return True
 
-    def _schedule_reply(self, coro) -> None:
-        """把回复协程调度到 SDK 事件循环（回复必须走持有 WebSocket 的循环）"""
+    def _on_reply_send_done(self, done, conversation_key: str, token: str) -> None:
+        """被动回复的异步完成回调：失败（异常或 errcode != 0）按发送标识
+        退还配额（r5——此前调度后的异步失败永不退款）。"""
+        try:
+            try:
+                ack = done.result()
+            except Exception as exc:
+                self._refund_outbound_send(conversation_key, token)
+                logger.warning(
+                    "[WeCom AI Bot] 异步回复失败（已退还配额）: key=%s, error=%s",
+                    conversation_key,
+                    exc,
+                )
+                return
+            errcode = ack.get("errcode") if isinstance(ack, dict) else None
+            if errcode:
+                self._refund_outbound_send(conversation_key, token)
+                logger.warning(
+                    "[WeCom AI Bot] 异步回复被拒（已退还配额）: key=%s, "
+                    "errcode=%s, errmsg=%s",
+                    conversation_key,
+                    errcode,
+                    ack.get("errmsg") if isinstance(ack, dict) else None,
+                )
+        except Exception as exc:  # 回调自身异常不影响主流程
+            logger.error("[WeCom AI Bot] 回复完成回调异常: %s", exc)
+
+    def _schedule_reply(self, coro):
+        """把回复协程调度到 SDK 事件循环（回复必须走持有 WebSocket 的循环）
+
+        Returns:
+            concurrent.futures.Future（异步发送回执），循环不可用时返回
+            None（协程已关闭，调用方应如实按未发送处理）。
+        """
         loop = self._loop
         if loop is None or loop.is_closed():
             logger.error("[WeCom AI Bot] 无法回复：SDK 事件循环不可用")
             coro.close()
-            return
-        asyncio.run_coroutine_threadsafe(coro, loop)
+            return None
+        return asyncio.run_coroutine_threadsafe(coro, loop)
 
     def shutdown(self, wait: bool = False) -> None:
         """停止接受新消息并回收线程池"""
@@ -774,7 +828,8 @@ class WecomAibotClient:
         conversation_key = chatid or "unknown"
         handler = self._handler
 
-        # 配额 + 可用性判定（同一临界区，r3 原子语义 + r4 可用性前置）
+        # 配额 + 可用性判定（同一临界区，r3 原子语义 + r4 可用性前置；
+        # r5：记录携带发送标识 token，失败按标识精确退还）
         with handler._outbound_quota_lock:
             if not handler._outbound_minute_limiter.would_allow(conversation_key):
                 logger.warning(
@@ -800,8 +855,13 @@ class WecomAibotClient:
             if loop is None or loop.is_closed():
                 logger.error("[WeCom AI Bot] 无法主动推送：SDK 事件循环不可用")
                 return False  # 零记账
-            handler._outbound_minute_limiter.record(conversation_key)
-            handler._outbound_hour_limiter.record(conversation_key)
+            send_token = uuid.uuid4().hex
+            handler._outbound_minute_limiter.record(
+                conversation_key, token=send_token
+            )
+            handler._outbound_hour_limiter.record(
+                conversation_key, token=send_token
+            )
 
         body = {"msgtype": "markdown", "markdown": {"content": text}}
         try:
@@ -809,7 +869,7 @@ class WecomAibotClient:
                 self._sdk_client.send_message(chatid, body), loop
             ).result(timeout_seconds)
         except Exception as exc:
-            handler._refund_outbound_send(conversation_key)
+            handler._refund_outbound_send(conversation_key, send_token)
             logger.error(
                 "[WeCom AI Bot] 主动推送失败（已退还配额）: key=%s, error=%s",
                 conversation_key,
@@ -819,7 +879,7 @@ class WecomAibotClient:
 
         errcode = ack.get("errcode") if isinstance(ack, dict) else None
         if errcode:
-            handler._refund_outbound_send(conversation_key)
+            handler._refund_outbound_send(conversation_key, send_token)
             logger.warning(
                 "[WeCom AI Bot] 主动推送被拒（已退还配额）: key=%s, errcode=%s, "
                 "errmsg=%s（官方前置条件：目标用户须先与机器人建过会话）",
