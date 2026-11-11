@@ -1,6 +1,7 @@
 """Taiwan recap contracts from provider results through history and share images."""
 
 import json
+import re
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -24,6 +25,33 @@ def _index(code="TWII"):
         code=code, name="TAIEX" if code == "TWII" else "TPEx",
         current=22000, change=100, change_pct=0.46, prev_close=21900,
     )
+
+
+def _llm_report(language="en", title="Taiwan Market Recap"):
+    summary, indices, news, plan, risks = (
+        ("一、盘面总览", "二、指数结构", "五、消息催化", "六、明日交易计划", "七、风险提示")
+        if language == "zh" else
+        ("Market Summary", "Major Indices", "News Catalysts", "Strategy Plan", "Risk Alerts")
+    )
+    limits = {"zh": "数据边界", "en": "Data Limits", "ko": "데이터 한계"}[language]
+    return f"""## {title}
+
+### {summary}
+> Available evidence supports a cautious outlook.
+### {indices}
+Available index data is listed below.
+### {news}
+- Semiconductor demand is in focus.
+### {plan}
+- Wait for confirmation.
+### {risks}
+- External volatility remains.
+### {limits}
+- Market breadth is unavailable.
+- Sector rankings are unavailable.
+- Turnover is unavailable.
+- Market breadth is unavailable.
+"""
 
 
 @pytest.fixture
@@ -83,18 +111,34 @@ def test_tw_missing_indices_remain_visible_in_report_payload_and_poster(language
     assert "A-share Market Recap" not in report
 
 
-def test_tw_llm_report_cannot_omit_missing_index_notice():
-    class TextAnalyzer:
-        def is_available(self):
-            return True
-
-        def generate_text(self, prompt, **kwargs):
-            return "## Taiwan Market Recap\n\n### 1. Market Summary\nTAIEX advanced."
-
+@pytest.mark.parametrize("language", ["zh", "en", "ko"])
+@pytest.mark.parametrize("codes", [[], ["TWII"], ["TWOII"], ["TWII", "TWOII"]])
+@pytest.mark.parametrize("merged_limits", [False, True])
+def test_tw_llm_report_cannot_omit_missing_index_notice(language, codes, merged_limits):
+    llm = MagicMock(generate_text=MagicMock(return_value=_llm_report(language)))
     with patch("src.market_analyzer.DataFetcherManager"):
-        analyzer = MarketAnalyzer(region="tw", config=Config(report_language="en"), analyzer=TextAnalyzer())
-    report = analyzer.generate_market_review(MarketOverview(date="2026-11-10", indices=[_index()]), [])
-    assert "TWOII: data unavailable" in report
+        analyzer = MarketAnalyzer(region="tw", config=Config(report_language=language), analyzer=llm)
+    overview = MarketOverview(date="2026-11-10", indices=[_index(code) for code in codes])
+    report = analyzer.generate_market_review(overview, [])
+    # Historical reports can have either duplicate headings or one longer list.
+    limits = {"zh": "数据边界", "en": "Data Limits", "ko": "데이터 한계"}[language]
+    if merged_limits and len(codes) < 2:
+        head, _, tail = report.rpartition(f"### {limits}\n")
+        report = head + tail
+    payload = analyzer.build_market_review_payload(overview, [], report)
+    suffix = {"zh": "行情缺失", "en": "data unavailable", "ko": "데이터 없음"}[language]
+    for structured_payload in (None, payload):
+        html = build_share_image_html(report, structured_payload=structured_payload)
+        risk_strip = re.search(r'<section class="poster-section risk-strip">(.*?)</section>', html, re.S).group(1)
+        for code in ("TWII", "TWOII"):
+            notice = f"{code}: {suffix}"
+            assert (notice in report) == (code not in codes)
+            assert (notice in risk_strip) == (code not in codes)
+        assert "Turnover is unavailable." in risk_strip
+        assert risk_strip.count("Market breadth is unavailable.") == 1
+        assert "External volatility remains." in risk_strip
+        if codes:
+            assert '<section class="report-fallback">' not in html
 
 
 @pytest.mark.parametrize("provider_error", [False, True])
@@ -150,17 +194,24 @@ def test_tw_daily_context_target_date_uses_taiwan_market():
 
 
 @pytest.mark.parametrize("regions", ["tw", "jp,tw"])
-def test_tw_recap_round_trip_through_history_context_and_notification(isolated_db, regions):
+@pytest.mark.parametrize("use_llm", [False, True])
+def test_tw_recap_round_trip_through_history_context_and_notification(isolated_db, regions, use_llm):
     db, config = isolated_db
     notifier = MagicMock()
     notifier.is_available.return_value = notifier.send.return_value = True
+    llm = MagicMock(generate_text=MagicMock()) if use_llm else None
+    if llm:
+        llm.generate_text.side_effect = [
+            _llm_report("zh", "台股大盘复盘" if region == "tw" else "日股大盘复盘")
+            for region in regions.split(",")
+        ]
     with patch("src.market_analyzer.DataFetcherManager") as manager:
         manager.return_value.get_main_indices.side_effect = lambda region: [
             {**(_index() if region == "tw" else MarketIndex(code="N225", name="Nikkei 225", current=39000)).to_dict(),
              "prev_close": 21900 if region == "tw" else 39000}
         ]
         result = run_market_review(
-            notifier, config=config, override_region=regions, query_id="tw-round-trip",
+            notifier, analyzer=llm, config=config, override_region=regions, query_id="tw-round-trip",
             return_structured=True, save_report_file=False,
         )
 
@@ -176,9 +227,14 @@ def test_tw_recap_round_trip_through_history_context_and_notification(isolated_d
         assert snapshot["market_review_region"] == regions
         assert snapshot["market_review_payload"] == result.market_review_payload
 
-    html = build_share_image_html(result.report, structured_payload=result.market_review_payload)
-    assert "台股" in html
-    assert "TWOII: 行情缺失" in html
+    for payload in (None, snapshot["market_review_payload"]):
+        html = build_share_image_html(result.report, structured_payload=payload)
+        risk_strips = re.findall(r'<section class="poster-section risk-strip">(.*?)</section>', html, re.S)
+        assert "台股" in html
+        assert "TWOII: 行情缺失" in risk_strips[-1]
+        assert all("TWOII: 行情缺失" not in strip for strip in risk_strips[:-1])
+        if use_llm:
+            assert '<section class="report-fallback">' not in html
     if regions == "tw":
         assert "[dsa-market-region]: # (tw)" in notifier.send.call_args.args[0]
         service = DailyMarketContextService(
