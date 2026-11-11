@@ -1629,11 +1629,33 @@ class TestOutboundSendConfirmationQuota:
 # ---------------------------------------------------------------------------
 
 
+class _CompletedFakeFuture:
+    """Fake future for _fake_schedule representing an already-completed
+    SUCCESSFUL send (ack errcode=0).
+
+    r4 (OR-COR-f5a96c8b): the shared outbound gate releases its slot via the
+    scheduled future's add_done_callback; simulating a completed send keeps
+    gate slots released so the dual-window quota probes below are not
+    confounded by the <=3 per-chat concurrency cap. Refund semantics are
+    unchanged: errcode=0 means no refund, exactly as the string return did
+    before (no callback ever fired)."""
+
+    def __init__(self):
+        self._callbacks = []
+
+    def add_done_callback(self, cb):
+        self._callbacks.append(cb)
+        cb(self)
+
+    def result(self):
+        return {"errcode": 0}
+
+
 def _fake_schedule(coro):
     """Test double for _schedule_reply: consumed the coroutine, reports
-    dispatched (truthy, non-None)."""
+    dispatched with an already-completed successful send future."""
     coro.close()
-    return "scheduled"
+    return _CompletedFakeFuture()
 
 
 class TestRefundByIdentity:

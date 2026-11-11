@@ -295,9 +295,30 @@ async def app_lifespan(app: FastAPI):
     from src.services.name_to_code_resolver import warmup_akshare_cache
 
     warmup_akshare_cache()
+
+    # 企业微信智能机器人长连接（Issue #755，r4 OR-COR-3c2d44f1）：uvicorn
+    # server:app 入口此前不启动长连接（只有 main.py --serve/--serve-only
+    # 路径经 start_bot_stream_clients 启动），文档口径的部署形态下对话与
+    # 推送全不可用。此处接入启动：WECOM_AIBOT_ENABLED 配置守卫 + 幂等
+    # start（单连接互斥 + started 标志）——与 main.py 双入口不会产生第二
+    # 条连接；未启用/缺 SDK 时零副作用。
+    from bot.platforms.wecom_aibot import (
+        get_wecom_aibot_client,
+        start_wecom_aibot_background,
+    )
+    from src.config import get_config
+
+    if bool(getattr(get_config(), "wecom_aibot_enabled", False)):
+        if start_wecom_aibot_background():
+            app.state.wecom_aibot_client = get_wecom_aibot_client()
+
     try:
         yield
     finally:
+        wecom_aibot_client = getattr(app.state, "wecom_aibot_client", None)
+        if wecom_aibot_client is not None:
+            wecom_aibot_client.stop()
+            delattr(app.state, "wecom_aibot_client")
         refresh_task = getattr(app.state, "stock_index_refresh_task", None)
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()

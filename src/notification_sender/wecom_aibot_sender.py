@@ -39,15 +39,18 @@ logger = logging.getLogger(__name__)
 
 class AibotPushRateLimiter:
     """
-    aibot 推送渠道独立限流器
+    aibot 推送渠道窗口限流器（r4 起仅双窗口；并发计数下沉传输层共享闸）
 
-    官方会话级上限口径：
-    - 30 条 / 分钟（滑动窗口）
-    - 1000 条 / 小时（滑动窗口）
-    - 同会话并发 3 条（推送在途未回执计数，回执后释放）
+    官方会话级上限口径与执行位置：
+    - 30 条 / 分钟、1000 条 / 小时：本限流器滑动窗口做渠道侧预配额门；
+      另有 handler 级双窗口配额（WecomAibotClient.send_to_chat 内，与
+      回复/上下文推送同账本）兜底真实总量。
+    - 同会话并发 3 条：统一由传输层共享闸
+      （``bot.platforms.wecom_aibot._WECOM_AIBOT_OUTBOUND_GATE``）执行——
+      回复、回推、静态推送三路合计计数（r4 修复 OR-COR-f5a96c8b：
+      此前并发上限只在静态 sender 局部，回复/回推路径绕过）。
 
-    分钟/小时预算在 :meth:`acquire` 时消耗（无论后续是否 release），
-    并发槽由返回的 slot 句柄持有、``release()`` 释放。线程安全。
+    分钟/小时预算在 :meth:`acquire` 时消耗（无返还语义）。线程安全。
     """
 
     _WINDOW_SECONDS_MINUTE = 60.0
@@ -57,14 +60,11 @@ class AibotPushRateLimiter:
         self,
         max_per_minute: int = 30,
         max_per_hour: int = 1000,
-        max_concurrent_per_chat: int = 3,
     ):
         self.max_per_minute = max_per_minute
         self.max_per_hour = max_per_hour
-        self.max_concurrent_per_chat = max_concurrent_per_chat
         self._minute_events: Dict[str, deque] = defaultdict(deque)
         self._hour_events: Dict[str, deque] = defaultdict(deque)
-        self._in_flight: Dict[str, int] = defaultdict(int)
         self._lock = threading.Lock()
 
     def _evict(self, chat_id: str, now: float) -> None:
@@ -77,8 +77,11 @@ class AibotPushRateLimiter:
         while hour_events and hour_events[0] <= hour_window_start:
             hour_events.popleft()
 
-    def acquire(self, chat_id: str) -> Optional["_PushSlot"]:
-        """获取一个推送名额；限流/并发超限时返回 None（不占用任何预算）。"""
+    def acquire(self, chat_id: str) -> "_PushSlot":
+        """消耗一个双窗口推送名额；限流超限返回 None（不占预算）。
+
+        并发上限不在本层：静态推送经 ``send_to_chat`` 的共享闸统一计数。
+        """
         with self._lock:
             now = time.time()
             self._evict(chat_id, now)
@@ -87,28 +90,21 @@ class AibotPushRateLimiter:
                 return None
             if len(self._hour_events[chat_id]) >= self.max_per_hour:
                 return None
-            if self._in_flight[chat_id] >= self.max_concurrent_per_chat:
-                return None
 
             self._minute_events[chat_id].append(now)
             self._hour_events[chat_id].append(now)
-            self._in_flight[chat_id] += 1
-            return _PushSlot(self, chat_id)
-
-    def _release_slot(self, chat_id: str) -> None:
-        with self._lock:
-            count = self._in_flight.get(chat_id, 0)
-            if count <= 1:
-                self._in_flight.pop(chat_id, None)
-            else:
-                self._in_flight[chat_id] = count - 1
+            return _PushSlot(chat_id)
 
 
 class _PushSlot:
-    """一次推送占用的并发槽句柄；release 幂等。"""
+    """一次推送的窗口名额句柄。
 
-    def __init__(self, limiter: AibotPushRateLimiter, chat_id: str):
-        self._limiter = limiter
+    并发计数已下沉传输层共享闸（由 ``send_to_chat`` 在发送前后
+    acquire/release）；``release()`` 保留为兼容形状的幂等空操作——
+    窗口预算在获取时消耗、无返还语义。
+    """
+
+    def __init__(self, chat_id: str):
         self._chat_id = chat_id
         self._released = False
 
@@ -116,7 +112,6 @@ class _PushSlot:
         if self._released:
             return
         self._released = True
-        self._limiter._release_slot(self._chat_id)
 
 
 # 进程级共享推送限流器（r2 修复 OR-COR-4c720f93：所有 WecomAibotSender 实例

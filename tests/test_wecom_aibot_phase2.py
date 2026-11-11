@@ -350,50 +350,26 @@ class TestPushRateLimiting:
         assert client.send_to_chat.call_count == 30
 
     def test_rate_limit_is_per_chat(self):
-        """分钟预算按会话隔离：c1 打满（推完即释放并发槽）不影响 c2。"""
+        """分钟预算按会话隔离（r4 起 limiter 仅双窗口；并发下沉共享闸）。"""
         limiter = AibotPushRateLimiter()
         for _ in range(30):
-            slot = limiter.acquire("c1")
-            assert slot is not None
-            slot.release()
-        # c1 分钟预算耗尽（在途为 0，纯预算拒绝）
+            assert limiter.acquire("c1") is not None
+        # c1 分钟预算耗尽
         assert limiter.acquire("c1") is None
         # c2 有独立预算
         assert limiter.acquire("c2") is not None
 
     def test_hour_limit_1000_rejects_1001st(self):
-        # 分钟预算调大以隔离小时口径；每次推送完成即释放并发槽
+        # 分钟预算调大以隔离小时口径
         limiter = AibotPushRateLimiter(max_per_minute=2000, max_per_hour=1000)
         for _ in range(1000):
-            slot = limiter.acquire("c1")
-            assert slot is not None
-            slot.release()
+            assert limiter.acquire("c1") is not None
         assert limiter.acquire("c1") is None
 
-    def test_concurrent_cap_3_per_chat(self):
-        limiter = AibotPushRateLimiter()
-        slots = [limiter.acquire("c1") for _ in range(3)]
-        assert all(slot is not None for slot in slots)
-        # 第 4 条并发被拒（同会话并发上限 3）。
-        assert limiter.acquire("c1") is None
-        # 释放一条后可再获取。
-        slots[0].release()
-        assert limiter.acquire("c1") is not None
-
-    def test_slot_release_is_idempotent(self):
-        limiter = AibotPushRateLimiter()
-        slot = limiter.acquire("c1")
-        slot.release()
-        slot.release()
-        assert limiter.acquire("c1") is not None
-
-    def test_rate_budget_not_returned_on_release(self):
-        """释放并发槽不返还分钟/小时预算（预算在获取时消耗）。"""
-        limiter = AibotPushRateLimiter(max_per_minute=2, max_per_hour=10)
-        s1 = limiter.acquire("c1")
-        s1.release()
-        assert limiter.acquire("c1") is not None
-        assert limiter.acquire("c1") is None  # 分钟预算耗尽
+    # 并发上限（同会话 ≤3）自 r4 起由传输层共享闸统一执行，覆盖回复、
+    # 回推与静态推送三路合计——语义迁移测试见
+    # tests/test_wecom_aibot_outbound_gate.py（TestOutboundGate /
+    # TestSendToChatGating / TestReplyPathGating / TestMixedPathAccounting）。
 
     def test_push_rate_budget_shared_across_sender_instances(self):
         """(e) OR-COR-4c720f93：同一机器人/会话的推送预算跨发送器实例共享。

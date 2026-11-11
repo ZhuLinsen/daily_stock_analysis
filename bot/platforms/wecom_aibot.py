@@ -44,10 +44,10 @@ import logging
 import threading
 import time
 import uuid
-from collections import deque
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,77 @@ def _extract_command(text: str) -> str:
 
     text = re.sub(r"^@\S+\s*", "", text.strip())
     return text.strip()
+
+
+class _OutboundGateSlot:
+    """共享出站闸的槽位句柄；release 幂等。"""
+
+    __slots__ = ("_gate", "_chat_id", "_released")
+
+    def __init__(self, gate: "WecomAibotOutboundGate", chat_id: str):
+        self._gate = gate
+        self._chat_id = chat_id
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._gate._release(self._chat_id)
+
+
+class WecomAibotOutboundGate:
+    """共享会话级出站并发闸（官方单会话并发 ≤3 条在途）
+
+    传输层权威闸（r4 修复 OR-COR-f5a96c8b）：被动回复（aibot_respond_msg）、
+    来源会话回推与静态推送（aibot_send_msg，send_to_chat）三条出站路径统一
+    经同一实例计数——回复、回推与静态推送叠加也不会超过同会话并发上限
+    （此前并发上限只在静态 sender 局部限流器内，回复/回推路径绕过）。
+
+    拒绝语义与双窗口配额拒绝同型：try_acquire 返回 None → 调用方拒发并
+    打告警日志、双窗口零记账（不消耗额度）；槽位在发送完成（回执到达，
+    无论成败）后释放，release 幂等。
+    """
+
+    def __init__(self, max_concurrent_per_chat: int = 3):
+        self._max_concurrent_per_chat = max_concurrent_per_chat
+        self._in_flight: Dict[str, int] = defaultdict(int)
+        self._lock = threading.Lock()
+
+    def try_acquire(self, chat_id: Optional[str]) -> Optional[_OutboundGateSlot]:
+        key = chat_id or "unknown"
+        with self._lock:
+            if self._in_flight[key] >= self._max_concurrent_per_chat:
+                return None
+            self._in_flight[key] += 1
+            return _OutboundGateSlot(self, key)
+
+    def _release(self, chat_id: str) -> None:
+        with self._lock:
+            count = self._in_flight.get(chat_id, 0)
+            if count <= 1:
+                self._in_flight.pop(chat_id, None)
+            else:
+                self._in_flight[chat_id] = count - 1
+
+    def in_flight(self, chat_id: Optional[str]) -> int:
+        """诊断/测试用：某会话当前在途消息数。"""
+        with self._lock:
+            return self._in_flight.get(chat_id or "unknown", 0)
+
+
+# 传输层共享闸（模块级单例——三条出站路径必须共用同一实例才能合计计数）
+_WECOM_AIBOT_OUTBOUND_GATE = WecomAibotOutboundGate(max_concurrent_per_chat=3)
+
+
+def _reset_outbound_gate() -> None:
+    """重置共享出站闸（仅测试用）。
+
+    原地清空在途计数而非重绑实例——模块级单例的身份必须全程稳定，
+    否则 import 期绑定的引用与传输层读取的全局会分叉。
+    """
+    with _WECOM_AIBOT_OUTBOUND_GATE._lock:
+        _WECOM_AIBOT_OUTBOUND_GATE._in_flight.clear()
 
 
 class WecomAibotHandler:
@@ -414,6 +485,18 @@ class WecomAibotHandler:
         if token is None:
             return False
 
+        # 会话级并发闸（r4 OR-COR-f5a96c8b）：被动回复与回推/静态推送共享
+        # 同一传输层闸；闸满 → 退还本次配额并拒发（零虚耗）。
+        outbound_gate_slot = _WECOM_AIBOT_OUTBOUND_GATE.try_acquire(outbound_key)
+        if outbound_gate_slot is None:
+            self._refund_outbound_send(outbound_key, token)
+            logger.warning(
+                "[WeCom AI Bot] 同会话并发超限（≤3 条在途），回复已丢弃"
+                "（已退还配额）: key=%s",
+                outbound_key,
+            )
+            return False
+
         if self._reply_stream_enabled:
             stream_id = self._generate_stream_id()
             coro = self.sdk_client.reply_stream(frame, stream_id, text, True)
@@ -424,6 +507,7 @@ class WecomAibotHandler:
         try:
             future = self._schedule_reply(coro)
         except Exception as exc:
+            outbound_gate_slot.release()
             self._refund_outbound_send(outbound_key, token)
             logger.error(
                 "[WeCom AI Bot] 回复调度失败，已退还配额: key=%s, error=%s",
@@ -434,6 +518,7 @@ class WecomAibotHandler:
 
         if future is None:
             # 槽位检查后循环被清理：如实拒绝并退还本次扣量（r5）
+            outbound_gate_slot.release()
             self._refund_outbound_send(outbound_key, token)
             logger.error(
                 "[WeCom AI Bot] SDK 事件循环在调度时不可用（已退还配额）: key=%s",
@@ -443,13 +528,24 @@ class WecomAibotHandler:
 
         if hasattr(future, "add_done_callback"):
             future.add_done_callback(
-                lambda done: self._on_reply_send_done(done, outbound_key, token)
+                lambda done: self._on_reply_send_done(
+                    done, outbound_key, token, outbound_gate_slot
+                )
             )
         return True
 
-    def _on_reply_send_done(self, done, conversation_key: str, token: str) -> None:
+    def _on_reply_send_done(
+        self,
+        done,
+        conversation_key: str,
+        token: str,
+        outbound_gate_slot=None,
+    ) -> None:
         """被动回复的异步完成回调：失败（异常或 errcode != 0）按发送标识
-        退还配额（r5——此前调度后的异步失败永不退款）。"""
+        退还配额（r5——此前调度后的异步失败永不退款）；并发闸槽位在发送
+        完成后无条件释放（r4，成败皆释放）。"""
+        if outbound_gate_slot is not None:
+            outbound_gate_slot.release()
         try:
             try:
                 ack = done.result()
@@ -855,6 +951,19 @@ class WecomAibotClient:
             if loop is None or loop.is_closed():
                 logger.error("[WeCom AI Bot] 无法主动推送：SDK 事件循环不可用")
                 return False  # 零记账
+            # 会话级并发闸（r4 OR-COR-f5a96c8b）：与回复/回推路径共享同一
+            # 传输层闸，混合叠加也不超同会话并发 ≤3；拒绝零记账。
+            # （置于全部纯检查之后，杜绝检查分支上的槽位泄漏）
+            outbound_gate_slot = _WECOM_AIBOT_OUTBOUND_GATE.try_acquire(
+                conversation_key
+            )
+            if outbound_gate_slot is None:
+                logger.warning(
+                    "[WeCom AI Bot] 同会话并发超限（≤3 条在途），消息已丢弃"
+                    "（零记账）: key=%s",
+                    conversation_key,
+                )
+                return False
             send_token = uuid.uuid4().hex
             handler._outbound_minute_limiter.record(
                 conversation_key, token=send_token
@@ -865,30 +974,34 @@ class WecomAibotClient:
 
         body = {"msgtype": "markdown", "markdown": {"content": text}}
         try:
-            ack = asyncio.run_coroutine_threadsafe(
-                self._sdk_client.send_message(chatid, body), loop
-            ).result(timeout_seconds)
-        except Exception as exc:
-            handler._refund_outbound_send(conversation_key, send_token)
-            logger.error(
-                "[WeCom AI Bot] 主动推送失败（已退还配额）: key=%s, error=%s",
-                conversation_key,
-                exc,
-            )
-            return False
+            try:
+                ack = asyncio.run_coroutine_threadsafe(
+                    self._sdk_client.send_message(chatid, body), loop
+                ).result(timeout_seconds)
+            except Exception as exc:
+                handler._refund_outbound_send(conversation_key, send_token)
+                logger.error(
+                    "[WeCom AI Bot] 主动推送失败（已退还配额）: key=%s, error=%s",
+                    conversation_key,
+                    exc,
+                )
+                return False
 
-        errcode = ack.get("errcode") if isinstance(ack, dict) else None
-        if errcode:
-            handler._refund_outbound_send(conversation_key, send_token)
-            logger.warning(
-                "[WeCom AI Bot] 主动推送被拒（已退还配额）: key=%s, errcode=%s, "
-                "errmsg=%s（官方前置条件：目标用户须先与机器人建过会话）",
-                conversation_key,
-                errcode,
-                ack.get("errmsg") if isinstance(ack, dict) else None,
-            )
-            return False
-        return True
+            errcode = ack.get("errcode") if isinstance(ack, dict) else None
+            if errcode:
+                handler._refund_outbound_send(conversation_key, send_token)
+                logger.warning(
+                    "[WeCom AI Bot] 主动推送被拒（已退还配额）: key=%s, errcode=%s, "
+                    "errmsg=%s（官方前置条件：目标用户须先与机器人建过会话）",
+                    conversation_key,
+                    errcode,
+                    ack.get("errmsg") if isinstance(ack, dict) else None,
+                )
+                return False
+            return True
+        finally:
+            # 发送完成（回执到达，无论成败）即释放并发槽（r4）
+            outbound_gate_slot.release()
 
     def stop(self) -> None:
         """停止客户端"""
