@@ -53,8 +53,8 @@ class RateLimiter:
 
         # 清理过期记录
         self._requests[user_id] = [
-            t for t in self._requests[user_id]
-            if t > window_start
+            entry for entry in self._requests[user_id]
+            if entry[0] > window_start
         ]
 
         # 检查是否超限
@@ -62,8 +62,75 @@ class RateLimiter:
             return False
 
         # 记录本次请求
-        self._requests[user_id].append(now)
+        self._requests[user_id].append((now, None))
         return True
+
+    def would_allow(self, user_id: str) -> bool:
+        """
+        只读配额检查：清理滑动窗口并判断新请求是否会被放行，不记账
+
+        与 :meth:`record` 配对使用，支持调用方在单临界区内完成
+        「检查多窗口 → 统一扣量」的原子配额决策（如企微智能机器人出站
+        双窗口限流，OR-COM-62e2b418）。
+
+        Args:
+            user_id: 用户标识
+
+        Returns:
+            若立即 :meth:`record` 是否会被放行
+        """
+        now = time.time()
+        window_start = now - self.window_seconds
+
+        # 清理过期记录
+        self._requests[user_id] = [
+            entry for entry in self._requests[user_id]
+            if entry[0] > window_start
+        ]
+
+        return len(self._requests[user_id]) < self.max_requests
+
+    def record(self, user_id: str, token: Optional[str] = None) -> None:
+        """
+        记录一次已获准的请求（调用方应先经 :meth:`would_allow` 检查）
+
+        Args:
+            user_id: 用户标识
+            token: 本次请求的唯一标识（如 uuid4）；提供后可用 :meth:`refund`
+                按标识精确回滚本次记录，同会话发送交错完成时不会退错记录
+        """
+        self._requests[user_id].append((time.time(), token))
+
+    def refund(self, user_id: str, token: Optional[str] = None) -> bool:
+        """
+        撤销一次已记账请求（回滚滑动窗口计数）
+
+        带 token 时按标识精确移除本次记录（同会话发送交错完成不会退错
+        记录）；不带 token 时回退为移除最近一条无标识记录。用于「记账后
+        发送失败」的额度回滚（企微智能机器人出站配额，OR-COM-62e2b418）。
+        调用方应持有相应临界区锁保证原子性。
+
+        Args:
+            user_id: 用户标识
+            token: :meth:`record` 时传入的发送标识
+
+        Returns:
+            是否成功移除（找不到对应记录时不动作，返回 False）
+        """
+        records = self._requests.get(user_id)
+        if not records:
+            return False
+        if token is None:
+            for index in range(len(records) - 1, -1, -1):
+                if records[index][1] is None:
+                    records.pop(index)
+                    return True
+            return False
+        for index, (_, record_token) in enumerate(records):
+            if record_token == token:
+                records.pop(index)
+                return True
+        return False
 
     def get_remaining(self, user_id: str) -> int:
         """获取剩余可用请求数"""
@@ -72,8 +139,8 @@ class RateLimiter:
 
         # 清理过期记录
         self._requests[user_id] = [
-            t for t in self._requests[user_id]
-            if t > window_start
+            entry for entry in self._requests[user_id]
+            if entry[0] > window_start
         ]
 
         return max(0, self.max_requests - len(self._requests[user_id]))

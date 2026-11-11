@@ -77,14 +77,22 @@ def _text_frame(
 
 
 def _handler(**kwargs):
-    """Build a handler with a mocked SDK client (no real SDK needed)."""
+    """Build a handler with a mocked SDK client (no real SDK needed).
+
+    The handler's loop defaults to an open-loop stub so quota/scheduling
+    paths behave as "loop available" unless a test overrides it.
+    """
     sdk_client = mock.MagicMock()
     defaults = dict(
         sdk_client=sdk_client,
         reply_stream_enabled=False,
     )
     defaults.update(kwargs)
-    return wecom_aibot.WecomAibotHandler(**defaults), sdk_client
+    handler = wecom_aibot.WecomAibotHandler(**defaults)
+    loop_stub = mock.MagicMock()
+    loop_stub.is_closed.return_value = False
+    handler._loop = loop_stub
+    return handler, sdk_client
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +526,7 @@ class TestTextMessageRoundTrip:
 
         # ...and the reply path uses aibot_respond_msg with req_id passthrough.
         sdk_client.reply.reset_mock()
-        with mock.patch.object(handler, "_schedule_reply", side_effect=lambda coro: coro.close()):
+        with mock.patch.object(handler, "_schedule_reply", side_effect=_fake_schedule):
             handler._reply_to_frame(
                 {"headers": {"req_id": "req-42"}}, "✅ 分析任务已提交"
             )
@@ -550,7 +558,7 @@ class TestTextMessageRoundTrip:
     def test_reply_stream_opt_in_uses_stream_frame(self):
         handler, sdk_client = _handler(reply_stream_enabled=True)
 
-        with mock.patch.object(handler, "_schedule_reply", side_effect=lambda coro: coro.close()):
+        with mock.patch.object(handler, "_schedule_reply", side_effect=_fake_schedule):
             handler._reply_to_frame({"headers": {"req_id": "req-7"}}, "hello")
 
         sdk_client.reply_stream.assert_called_once()
@@ -915,7 +923,7 @@ class TestHourlyConversationQuota:
 
         with mock.patch("bot.dispatcher.time.time", side_effect=lambda: clock[0]), \
                 mock.patch.object(handler, "_schedule_reply",
-                                  side_effect=lambda coro: coro.close()):
+                                  side_effect=_fake_schedule):
             for i in range(1020):
                 handler._reply_to_frame(
                     _text_frame(msgid=f"m{i}", chatid="chat-hour"), f"r{i}"
@@ -927,11 +935,12 @@ class TestHourlyConversationQuota:
         assert sdk_client.reply.call_count == 1000
         assert "超限" in caplog.text or "1000" in caplog.text
 
-    def test_outbound_gate_checks_hour_window_before_minute(self):
+    def test_outbound_gate_hour_exhaustion_rejects(self):
         handler, _ = self._handler()
 
         # Isolate the hour window: pin the minute limiter open.
         minute_stub = mock.MagicMock()
+        minute_stub.would_allow.return_value = True
         minute_stub.is_allowed.return_value = True
         with mock.patch.object(handler, "_outbound_minute_limiter", minute_stub):
             # Hour exhausted -> reject even when the minute window is wide open.
@@ -946,7 +955,7 @@ class TestHourlyConversationQuota:
         frame = _text_frame(msgid="m", chatid="chat-g")
 
         with mock.patch.object(handler, "_schedule_reply",
-                               side_effect=lambda coro: coro.close()):
+                               side_effect=_fake_schedule):
             for _ in range(30):
                 assert handler._reply_to_frame(frame, "r") is True
             # Minute window now full for this conversation.
@@ -960,9 +969,9 @@ class TestHourlyConversationQuota:
         client._running = True
         client._sdk_client = mock.MagicMock()
 
-        # Exhaust the hourly quota for the conversation.
+        # Exhaust the hourly quota for the conversation (direct window fill).
         for _ in range(1000):
-            handler._allow_outbound_reply("chat-pro")
+            handler._outbound_hour_limiter.is_allowed("chat-pro")
         assert client.send_to_chat("chat-pro", "report") is False
         assert "超限" in caplog.text
 
@@ -1175,7 +1184,7 @@ class TestSourceContextNotification:
         with mock.patch(
             "bot.dispatcher.get_dispatcher", return_value=dispatcher
         ), mock.patch.object(handler, "_schedule_reply",
-                             side_effect=lambda coro: coro.close()):
+                             side_effect=_fake_schedule):
             handler._process_message(bot_message)
 
         assert "source_message" in captured
@@ -1221,6 +1230,537 @@ class TestSourceContextNotification:
         assert result.dispatched is True
         assert result.success is False
         mock_wechat.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# r3 OR-COM-62e2b418 (refined): outbound dual-window quota must be atomic —
+# check both windows read-only in one critical section, record both only when
+# both allow, minute rejection must not burn hour quota.
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimiterAtomicPrimitives:
+    """would_allow/record must split check from accounting (additive API)."""
+
+    def test_would_allow_does_not_record(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        assert limiter.would_allow("u") is True
+        # Read-only: nothing recorded yet.
+        assert len(limiter._requests["u"]) == 0
+        assert limiter.get_remaining("u") == 2
+
+    def test_would_allow_rejects_at_capacity_without_recording(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        limiter.record("u")
+        limiter.record("u")
+        assert limiter.would_allow("u") is False
+        assert len(limiter._requests["u"]) == 2  # rejection added nothing
+
+    def test_record_after_would_allow_matches_is_allowed(self):
+        from bot.dispatcher import RateLimiter
+
+        reference = RateLimiter(max_requests=3, window_seconds=60)
+        split = RateLimiter(max_requests=3, window_seconds=60)
+
+        for _ in range(3):
+            assert reference.is_allowed("u") is True
+        assert reference.is_allowed("u") is False
+
+        for _ in range(3):
+            assert split.would_allow("u") is True
+            split.record("u")
+        assert split.would_allow("u") is False
+
+        assert len(split._requests["u"]) == len(reference._requests["u"]) == 3
+        assert split.get_remaining("u") == reference.get_remaining("u") == 0
+
+    def test_refund_removes_newest_record_restores_quota(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        limiter.record("u")
+        limiter.record("u")
+        assert limiter.would_allow("u") is False
+
+        assert limiter.refund("u") is True
+        assert len(limiter._requests["u"]) == 1
+        assert limiter.would_allow("u") is True
+
+    def test_refund_on_empty_window_is_noop(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        assert limiter.refund("never-seen") is False
+        assert len(limiter._requests.get("never-seen", [])) == 0
+
+
+class _GateHourLimiter:
+    """Deterministic race injector standing in for the hour window.
+
+    Both callers' window checks complete before either caller records — the
+    reproducible form of the concurrent-overshoot race the reviewer
+    described (hour=999, two concurrent callers). Delegates window state to
+    a real RateLimiter so counts are directly inspectable.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self._pending_checks = 0
+        self._lock = threading.Lock()
+        self._checks_gate = threading.Event()
+
+    @property
+    def _requests(self):
+        return self._real._requests
+
+    def _gated_check(self, user_id):
+        allowed = self._real.would_allow(user_id)
+        with self._lock:
+            self._pending_checks += 1
+            if self._pending_checks >= 2:
+                self._checks_gate.set()
+        # Hold until every racing caller has completed its window check.
+        self._checks_gate.wait(timeout=2)
+        return allowed
+
+    def would_allow(self, user_id):
+        return self._gated_check(user_id)
+
+    def is_allowed(self, user_id):
+        allowed = self._gated_check(user_id)
+        if allowed:
+            self.record(user_id)
+        return allowed
+
+    def record(self, user_id, **kwargs):
+        self._real.record(user_id, **kwargs)
+
+
+class TestOutboundQuotaAtomicity:
+    def _handler(self):
+        handler, sdk_client = _handler()
+        return handler, sdk_client
+
+    def test_concurrent_callers_cannot_overshoot_hour_quota(self):
+        """反例①：小时额度 999 时两线程并发决策 → 恰一个 True、小时计 1000。"""
+        handler, _ = self._handler()
+
+        gate_limiter = _GateHourLimiter(handler._outbound_hour_limiter)
+
+        # Pin the minute window open so the race isolates the hour decision.
+        minute_stub = mock.MagicMock()
+        minute_stub.would_allow.return_value = True
+        minute_stub.is_allowed.return_value = True
+
+        # Preset: hour window at 999/1000 for the conversation.
+        for _ in range(999):
+            handler._outbound_hour_limiter.is_allowed("chat-x")
+
+        with mock.patch.object(handler, "_outbound_minute_limiter", minute_stub), \
+                mock.patch.object(handler, "_outbound_hour_limiter", gate_limiter,
+                                  create=True):
+            start = threading.Barrier(2, timeout=5)
+            results = []
+            errors = []
+
+            def _caller():
+                try:
+                    start.wait()
+                    results.append(handler._allow_outbound_reply("chat-x"))
+                except Exception as exc:  # pragma: no cover
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=_caller) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+
+        assert errors == []
+        # Exactly one caller wins the last hour slot.
+        assert results.count(True) == 1, f"overshoot: {results}"
+        assert len(handler._outbound_hour_limiter._requests["chat-x"]) == 1000
+
+    def test_minute_rejection_does_not_burn_hour_quota(self):
+        """反例②：分钟窗口满后的尝试不得消耗小时额度；窗口恢复后额度完整。"""
+        import time as _time
+
+        handler, _ = self._handler()
+
+        # All quota decisions run under one controlled clock so the +61s
+        # advance genuinely slides the minute window past the fill timestamps.
+        clock = [_time.time()]
+
+        def _now():
+            return clock[0]
+
+        with mock.patch("bot.dispatcher.time.time", side_effect=_now):
+            # Fill the minute window (30) for the conversation; hour untouched.
+            for _ in range(30):
+                assert handler._outbound_minute_limiter.is_allowed("chat-m") is True
+            assert len(
+                handler._outbound_hour_limiter._requests.get("chat-m", [])
+            ) == 0
+
+            for _ in range(20):
+                assert handler._allow_outbound_reply("chat-m") is False
+
+            hour_after = len(
+                handler._outbound_hour_limiter._requests.get("chat-m", [])
+            )
+            assert hour_after == 0, (
+                "minute rejection burned hour quota: "
+                f"{hour_after} slots"
+            )
+
+            # Window recovered -> full quota available again, hour debits 1.
+            clock[0] += 61
+            assert handler._allow_outbound_reply("chat-m") is True
+            assert len(
+                handler._outbound_hour_limiter._requests["chat-m"]
+            ) == 1
+
+
+# ---------------------------------------------------------------------------
+# r4 OR-COM-62e2b418 (final): quota accounting must not precede send
+# confirmation — availability-first, refund on send failure, zero accounting
+# on the passive path without an event loop.
+# ---------------------------------------------------------------------------
+
+
+class TestOutboundSendConfirmationQuota:
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def _window_counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _start_ack_loop(self, client, ack_coro):
+        """Run a real loop so run_coroutine_threadsafe works; return stopper."""
+        import threading as _threading
+
+        loop = asyncio.new_event_loop()
+        thread = _threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = ack_coro
+        return loop, thread
+
+    def test_send_to_chat_during_reconnect_zero_accounting_then_recovery(self):
+        """重连期间（_running=False）同会话 30 次 send_to_chat → 全拒且双窗口
+        计数零增量；恢复后首条回复正常放行。"""
+        client = self._client()
+        handler = client._handler
+        client._running = False  # reconnect window
+
+        for _ in range(30):
+            assert client.send_to_chat("chat-r", "x") is False
+
+        minute, hour = self._window_counts(handler, "chat-r")
+        assert (minute, hour) == (0, 0), (
+            f"reconnect-window attempts consumed quota: minute={minute} hour={hour}"
+        )
+
+        # Recovery: client back up, real loop, working ack.
+        async def _ack_ok(chatid, body):
+            return {"errcode": 0, "errmsg": "ok"}
+
+        loop, thread = self._start_ack_loop(client, _ack_ok)
+        try:
+            client._running = True
+            assert client.send_to_chat("chat-r", "x") is True
+            minute, hour = self._window_counts(handler, "chat-r")
+            assert (minute, hour) == (1, 1)
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_send_exception_refunds_both_windows(self):
+        """future 异常/超时 → 本次双窗口扣量全额退还，后续额度完整。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_timeout(chatid, body):
+            raise TimeoutError("reply ack timeout")
+
+        loop, thread = self._start_ack_loop(client, _ack_timeout)
+        try:
+            assert client.send_to_chat("chat-f", "report", timeout_seconds=2) is False
+            minute, hour = self._window_counts(handler, "chat-f")
+            assert (minute, hour) == (0, 0), (
+                f"failed send kept debits: minute={minute} hour={hour}"
+            )
+
+            # Full quota still available for the conversation.
+            async def _ack_ok(chatid, body):
+                return {"errcode": 0, "errmsg": "ok"}
+
+            client._sdk_client.send_message = _ack_ok
+            assert client.send_to_chat("chat-f", "report") is True
+            minute, hour = self._window_counts(handler, "chat-f")
+            assert (minute, hour) == (1, 1)
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_send_errcode_rejection_refunds_quota(self, caplog):
+        """errcode != 0（前置条件不满足被服务端拒）→ 本次额度退还。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_reject(chatid, body):
+            return {"errcode": 44002, "errmsg": "no prior conversation"}
+
+        loop, thread = self._start_ack_loop(client, _ack_reject)
+        try:
+            assert client.send_to_chat("chat-e", "report") is False
+            assert "会话" in caplog.text  # precondition hint
+
+            minute, hour = self._window_counts(handler, "chat-e")
+            assert (minute, hour) == (0, 0), (
+                f"rejected send kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_passive_reply_without_loop_zero_accounting(self, caplog):
+        """被动路径无事件循环 → 拒绝且零记账，不虚报已放行。"""
+        handler, sdk_client = _handler()
+        handler._loop = None
+
+        frame = _text_frame(msgid="m", chatid="chat-nl")
+        assert handler._reply_to_frame(frame, "x") is False
+
+        minute, hour = self._window_counts(handler, "chat-nl")
+        assert (minute, hour) == (0, 0), (
+            f"no-loop passive reply kept debits: minute={minute} hour={hour}"
+        )
+        sdk_client.reply.assert_not_called()
+        assert "事件循环不可用" in caplog.text
+
+    def test_passive_reply_with_loop_still_records_once(self):
+        """正常被动路径行为保持：有循环时记账一次并调度发送。"""
+        handler, sdk_client = _handler()
+        frame = _text_frame(msgid="m", chatid="chat-ok")
+
+        with mock.patch.object(handler, "_schedule_reply",
+                               side_effect=_fake_schedule):
+            assert handler._reply_to_frame(frame, "x") is True
+
+        minute, hour = self._window_counts(handler, "chat-ok")
+        assert (minute, hour) == (1, 1)
+        sdk_client.reply.assert_called_once()
+
+    def test_interleaved_refund_removes_only_own_slot(self):
+        """场景二：A 预留后另 29 次成功、A 失败退款 → 只移除 A 的记录，
+        窗口内成功计数仍 29、放行语义正确（不多放）。"""
+        handler, _ = _handler()
+        key = "chat-mix"
+
+        # A acquires the first slot; its token identifies A's send.
+        token_a = handler._acquire_outbound_slot(key)
+        assert token_a and isinstance(token_a, str)
+
+        # 29 interleaved successful acquisitions on the same conversation
+        # (minute window is now exactly full at 30).
+        other_tokens = [handler._acquire_outbound_slot(key) for _ in range(29)]
+        assert all(token and isinstance(token, str) for token in other_tokens)
+        assert len(set(other_tokens)) == 29
+
+        # A fails and refunds by identity: only A's record may go.
+        handler._refund_outbound_send(key, token_a)
+
+        for limiter in (handler._outbound_minute_limiter,
+                        handler._outbound_hour_limiter):
+            remaining_tokens = [
+                token for (_, token) in limiter._requests[key]
+            ]
+            assert token_a not in remaining_tokens, (
+                "refund removed a record that is not A's"
+            )
+            assert len(remaining_tokens) == 29
+            assert set(remaining_tokens) == set(other_tokens)
+
+        # Admission semantics: exactly one more slot is open (29/30), and
+        # taking it makes the minute window full again (no over-admission).
+        assert handler._outbound_minute_limiter.would_allow(key) is True
+        token_x = handler._acquire_outbound_slot(key)
+        assert token_x and isinstance(token_x, str)
+        assert handler._outbound_minute_limiter.would_allow(key) is False
+
+
+# ---------------------------------------------------------------------------
+# r5 OR-COM-62e2b418 (final): identity-based refund + passive-path async
+# failure monitoring.
+# ---------------------------------------------------------------------------
+
+
+def _fake_schedule(coro):
+    """Test double for _schedule_reply: consumed the coroutine, reports
+    dispatched (truthy, non-None)."""
+    coro.close()
+    return "scheduled"
+
+
+class TestRefundByIdentity:
+    def test_refund_by_token_removes_exact_record(self):
+        """退款必须按发送标识精确移除本次记录，而非无条件弹最新一条。"""
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=30, window_seconds=60)
+        limiter.record("u", token="A")
+        limiter.record("u", token="B")
+        limiter.record("u", token="C")
+
+        assert limiter.refund("u", token="B") is True
+        tokens = [token for (_, token) in limiter._requests["u"]]
+        assert tokens == ["A", "C"]
+
+        # Idempotent / unknown tokens are no-ops.
+        assert limiter.refund("u", token="B") is False
+        assert limiter.refund("u", token="Z") is False
+        assert len(limiter._requests["u"]) == 2
+
+    def test_legacy_refund_without_token_pops_newest_untracked(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=30, window_seconds=60)
+        limiter.record("u", token="tracked")
+        limiter.record("u")  # tokenless legacy record
+
+        assert limiter.refund("u") is True  # pops the tokenless record only
+        tokens = [token for (_, token) in limiter._requests["u"]]
+        assert tokens == ["tracked"]
+
+
+class TestPassiveAsyncFailureRefund:
+    """场景一：loop 可用但发送协程失败 → 双窗口退款至 (0,0)。"""
+
+    def _handler_with_real_loop(self, reply_impl):
+        handler, sdk_client = _handler()
+        sdk_client.reply = reply_impl
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True
+        )
+        self._loop_thread.start()
+        handler._loop = self._loop
+        return handler, sdk_client
+
+    def _stop_loop(self):
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._loop_thread.join(timeout=5)
+        self._loop.close()
+
+    def _counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _wait_until_settled(self, handler, key, want, timeout=3.0):
+        """Poll until the windows reach `want` (done-callbacks fire async)."""
+        import time as _time
+
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            if self._counts(handler, key) == want:
+                return True
+            _time.sleep(0.02)
+        return False
+
+    def test_passive_async_exception_refunds_quota(self):
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_fail(frame, body):
+            raise RuntimeError("send failed")
+
+        sdk_client.reply = _reply_fail
+
+        frame = _text_frame(msgid="m-async", chatid="chat-async")
+        try:
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-async", (0, 0))
+            minute, hour = self._counts(handler, "chat-async")
+            assert settled and (minute, hour) == (0, 0), (
+                f"async failure kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
+
+    def test_passive_async_errcode_rejection_refunds_quota(self, caplog):
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_reject(frame, body):
+            return {"errcode": 44002, "errmsg": "no prior conversation"}
+
+        sdk_client.reply = _reply_reject
+
+        frame = _text_frame(msgid="m-reject", chatid="chat-reject")
+        try:
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-reject", (0, 0))
+            minute, hour = self._counts(handler, "chat-reject")
+            assert settled and (minute, hour) == (0, 0), (
+                f"rejected reply kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
+
+    def test_passive_async_success_keeps_quota(self):
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_ok(frame, body):
+            return {"errcode": 0, "errmsg": "ok"}
+
+        sdk_client.reply = _reply_ok
+
+        frame = _text_frame(msgid="m-ok", chatid="chat-ok2")
+        try:
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-ok2", (1, 1))
+            minute, hour = self._counts(handler, "chat-ok2")
+            assert settled and (minute, hour) == (1, 1), (
+                f"successful reply lost its debit: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
 
 
 if __name__ == "__main__":
