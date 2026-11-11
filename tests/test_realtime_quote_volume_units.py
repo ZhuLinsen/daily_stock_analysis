@@ -23,17 +23,21 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from data_provider import akshare_fetcher as akshare_module
+from data_provider import efinance_fetcher as efinance_module
 from data_provider.akshare_fetcher import AkshareFetcher
+from data_provider.efinance_fetcher import EfinanceFetcher
 from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
 from src.services.quote_snapshot_service import QuoteSnapshotService, clear_snapshot_cache
 
 
 def _reset_em_caches() -> None:
-    """重置 akshare_fetcher 模块级行情缓存，避免用例间串数据。"""
+    """重置 akshare/efinance 模块级行情缓存，避免用例间串数据。"""
     for cache in (
         akshare_module._realtime_cache,
         akshare_module._etf_realtime_cache,
         akshare_module._hk_realtime_cache,
+        efinance_module._realtime_cache,
+        efinance_module._etf_realtime_cache,
     ):
         cache["data"] = None
         cache["timestamp"] = 0.0
@@ -232,3 +236,52 @@ def test_hanging_order_book_degrades_snapshot_promptly() -> None:
     assert snapshot["bid_ask_ratio"] is None
     assert "bid_ask_ratio" in snapshot["missing_fields"]
     assert snapshot["price"] == 1500.0, "已取到的行情主体必须正常返回"
+
+
+def test_efinance_stock_volume_normalized_lots_to_shares() -> None:
+    """r4 blocker（OR-COR-b8a36142）：efinance A 股实时成交量单位=手
+    （efinance 官方文档 + 本地 0.5.5.2 实现 f5 直接映射未乘 100），
+    必须按源归一为股，否则 efinance 路径 VWAP 百倍错。"""
+    _reset_em_caches()
+    fetcher = EfinanceFetcher(sleep_min=0, sleep_max=0)
+    frame = pd.DataFrame([
+        {
+            "股票代码": "600519",
+            "股票名称": "贵州茅台",
+            "最新价": 1500.0,
+            "涨跌幅": 1.35,
+            "涨跌额": 20.0,
+            "成交量": 20000,  # 手（efinance 官方口径）
+            "成交额": 3_000_000_000.0,
+            "换手率": 0.16,
+            "振幅": 1.69,
+            "最高": 1510.0,
+            "最低": 1485.0,
+            "开盘": 1490.0,
+            "量比": 1.2,
+            "市盈率": 30.0,
+            "总市值": 1_880_000_000_000.0,
+            "流通市值": 1_880_000_000_000.0,
+        }
+    ])
+    with patch("efinance.stock.get_realtime_quotes", return_value=frame):
+        quote = fetcher.get_realtime_quote("600519")
+
+    assert quote is not None
+    assert quote.volume == 2_000_000, (
+        f"efinance A 股成交量必须按源归一：20000 手 → 2,000,000 股，实际 {quote.volume}"
+    )
+    assert quote.amount == 3_000_000_000.0
+
+    # 集成：快照 VWAP 必须为 1500（30 亿元 / 200 万股），而非百倍错的 150000
+    clear_snapshot_cache()
+    service = QuoteSnapshotService(manager=MagicMock(), cache_ttl=0)
+    service._manager.get_realtime_quote.return_value = quote
+    service._manager.get_daily_data.side_effect = RuntimeError("no history in unit test")
+    snapshot = service.get_snapshot("600519")
+    clear_snapshot_cache()
+
+    assert snapshot is not None
+    assert snapshot["vwap"] == pytest.approx(1500.0), (
+        f"VWAP 必须为 1500（30 亿元 / 200 万股），实际 {snapshot['vwap']}"
+    )

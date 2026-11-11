@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 
 import pandas as pd
@@ -328,3 +329,39 @@ def test_snapshot_default_ttl_reads_realtime_cache_ttl_config() -> None:
     with patch("src.services.quote_snapshot_service.get_config", return_value=fake_config):
         assert service._effective_cache_ttl() == 42
     clear_snapshot_cache()
+
+
+# ============================================
+# r4 blocker（OR-COR-f52a914c）：MA 日线加载必须有快照级预算
+# ============================================
+
+def test_snapshot_ma_history_hang_degrades_within_budget() -> None:
+    """历史日线源挂起时，快照必须在 MA 预算内返回：
+    price 等已取到的字段完好，MA 全档降级 null + missing_fields，
+    不得拖到 Web 客户端 30s 超时。"""
+    clear_snapshot_cache()
+    started = time.monotonic()
+    with patch("src.services.quote_snapshot_service.DataFetcherManager") as mgr_cls, \
+            patch("src.services.quote_snapshot_service.AkshareFetcher") as akshare_cls:
+        manager = MagicMock()
+        mgr_cls.return_value = manager
+
+        def _hanging_daily(*args, **kwargs):
+            time.sleep(20)  # 模拟完整 fallback 链挂起（efinance 历史单源 60s 级）
+
+        manager.get_realtime_quote.return_value = _cn_quote()
+        manager.get_daily_data.side_effect = _hanging_daily
+        akshare_cls.return_value = MagicMock()
+        akshare_cls.return_value.get_a_share_order_book.return_value = None
+        service = QuoteSnapshotService(cache_ttl=0)
+        service.MA_LOAD_BUDGET_SECONDS = 1.0  # r4 修复暴露的实例级预算旋钮
+        snapshot = service.get_snapshot("600519")
+        elapsed = time.monotonic() - started
+    clear_snapshot_cache()
+
+    assert snapshot is not None, "历史源挂起不得拖死整份快照"
+    assert elapsed < 10, f"日线挂起必须在 MA 预算内降级返回，实际耗时 {elapsed:.1f}s"
+    assert snapshot["price"] == 1500.0, "已取到的实时行情主体必须正常返回"
+    assert snapshot["ma5"] is None
+    assert snapshot["ma60"] is None
+    assert {"ma5", "ma10", "ma20", "ma60"} <= set(snapshot["missing_fields"])

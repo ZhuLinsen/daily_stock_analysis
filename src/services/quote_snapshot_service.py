@@ -160,6 +160,11 @@ def compute_bid_ask_ratio(
 class QuoteSnapshotService:
     """装配 22 字段行情快照 + 数据质量元数据的只读服务。"""
 
+    # 快照级 MA 等待预算（r4 OR-COR-f52a914c）：日线 fallback 链最慢单源
+    # 可达 60s+（超过 Web 客户端 30s 超时），实时行情已到手时不得被 MA 拖死。
+    # 超预算 → MA 全档降级 null + missing_fields，快照整体正常返回。
+    MA_LOAD_BUDGET_SECONDS: float = 10.0
+
     def __init__(
         self,
         manager: Optional[DataFetcherManager] = None,
@@ -281,14 +286,40 @@ class QuoteSnapshotService:
         return self._manager
 
     def _load_closes(self, code: str) -> List[Any]:
-        """历史日线收盘序列；取数失败返回 []（MA 全档降级 null，不硬失败）。"""
-        try:
-            frame, _source_name = self._get_manager().get_daily_data(
-                code, days=MA_HISTORY_DAYS
+        """历史日线收盘序列；失败/超预算返回 []（MA 全档降级 null，不硬失败）。
+
+        快照级 MA 等待预算（r4 OR-COR-f52a914c）：日线取数放入后台线程，
+        join(self.MA_LOAD_BUDGET_SECONDS) 硬期限；预算内未完成则放弃等待
+        （daemon 线程继续跑完即废弃，结果不再消费），MA 全档降级 null。
+        """
+        holder: Dict[str, Any] = {}
+
+        def _fetch_daily() -> None:
+            try:
+                frame, _source_name = self._get_manager().get_daily_data(
+                    code, days=MA_HISTORY_DAYS
+                )
+                holder["frame"] = frame
+            except Exception as exc:  # noqa: BLE001 - 历史源全挂时 MA 降级
+                holder["error"] = exc
+
+        worker = threading.Thread(
+            target=_fetch_daily, name=f"quote-snapshot-ma-{code}", daemon=True
+        )
+        worker.start()
+        worker.join(self.MA_LOAD_BUDGET_SECONDS)
+        if worker.is_alive():
+            logger.warning(
+                "[行情快照] %s 日线取数超 MA 预算 %.0fs，MA 全档降级",
+                code,
+                self.MA_LOAD_BUDGET_SECONDS,
             )
-        except Exception as exc:  # noqa: BLE001 - 历史源全挂时 MA 降级
-            logger.warning("[行情快照] %s 日线取数失败，MA 全档降级: %s", code, exc)
             return []
+        error = holder.get("error")
+        if error is not None:
+            logger.warning("[行情快照] %s 日线取数失败，MA 全档降级: %s", code, error)
+            return []
+        frame = holder.get("frame")
         if frame is None:
             return []
         column = frame.get("close") if hasattr(frame, "get") else None

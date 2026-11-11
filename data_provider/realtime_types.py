@@ -91,6 +91,26 @@ def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
     return default
 
 
+def normalize_em_cn_spot_volume(value: Any) -> Optional[int]:
+    """
+    将东财 push2 现货表成交量归一为股（PR #2492 blocker C / r3 2c6d1b9a / r4 b8a36142）。
+
+    适用源（成交量单位=手，AKShare/efinance 官方字段口径）：
+    - ak.stock_zh_a_spot_em / ef.stock.get_realtime_quotes（A 股实时）
+    - ak.fund_etf_spot_em / ef.stock.get_realtime_quotes(['ETF'])（ETF 实时）
+
+    **不适用** ak.stock_hk_spot_em（港股实时）：其成交量单位本就是股，
+    乘 100 会把 volume 百倍放大、VWAP 百倍缩小（r2 曾错套，r3 已回退）。
+
+    其余源不得套用（新浪字段 8 本身是股；腾讯走 _normalize_tencent_volume
+    交叉校验；tickflow 走 _cn_lots_to_shares）——禁止全局统一 ×100。
+    """
+    hands = safe_int(value)
+    if hands is None:
+        return None
+    return hands * 100
+
+
 class RealtimeSource(Enum):
     """实时行情数据源"""
     EFINANCE = "efinance"           # 东方财富（efinance库）
