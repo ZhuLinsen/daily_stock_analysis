@@ -95,13 +95,10 @@ _STOCK_CODE_RE = re.compile(
 )
 
 
-def _validate_stock_code_format(code: str) -> str:
-    """Validate stock code format only; return the stripped raw code.
+def _validate_and_normalize_stock_code(code: str) -> str:
+    """Validate stock code format and return canonical form.
 
-    Deliberately does NOT normalize (no prefix/suffix stripping): index
-    identities (``sh000016`` / ``000016.SH``) must reach the data layer in
-    their original form so DataFetcherManager can resolve them through the
-    index chain instead of the same-numbered stock (PR #2492 blocker A).
+    Raises HTTPException(400) if the code does not match supported formats.
     """
     stripped = code.strip()
     if not stripped:
@@ -117,15 +114,7 @@ def _validate_stock_code_format(code: str) -> str:
                 "message": f"'{stripped}' 不是合法的股票代码格式",
             },
         )
-    return stripped
-
-
-def _validate_and_normalize_stock_code(code: str) -> str:
-    """Validate stock code format and return canonical form.
-
-    Raises HTTPException(400) if the code does not match supported formats.
-    """
-    return normalize_stock_code(_validate_stock_code_format(code))
+    return normalize_stock_code(stripped)
 
 
 def _watchlist_match_key(code: str) -> str:
@@ -462,7 +451,6 @@ def get_stock_profile(
     response_model=StockQuoteSnapshot,
     responses={
         200: {"description": "行情快照"},
-        400: {"description": "股票代码无效", "model": ErrorResponse},
         404: {"description": "股票不存在", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
@@ -470,9 +458,11 @@ def get_stock_profile(
     description=(
         "只读行情快照：22 字段（直出 15 + VWAP/委比/成交笔数派生 + MA5/10/20/60）"
         "+ 数据质量元数据（source/is_stale/missing_fields 等）。"
-        "指数形态代码（sh000016/000016.SH）按原始身份走指数链，不被预规范化；"
+        "代码不做入口预校验/预规范化，原样透传数据层按身份解析"
+        "（指数形态 sh000016/000016.SH 走指数链，^GSPC/NASDAQ 等美股指数别名可用）；"
         "多市场降级：缺失一律 null 并随 missing_fields 透出，不做字段级硬失败；"
-        "响应经 realtime_cache_ttl 短 TTL 缓存（缓存键为原始入参代码）。"
+        "未知/非法代码返回 404 not_found；响应经 realtime_cache_ttl 短 TTL 缓存"
+        "（缓存键为原始入参代码）。"
     ),
 )
 def get_stock_quote(stock_code: str) -> StockQuoteSnapshot:
@@ -481,24 +471,24 @@ def get_stock_quote(stock_code: str) -> StockQuoteSnapshot:
 
     只读端点：实时行情走 DataFetcherManager.get_realtime_quote() 统一入口（只读不动），
     MA 由历史日线严格全窗计算，委比仅 A 股五档盘口可得，成交笔数 em 标准接口
-    不可得恒 null。代码只做格式校验、不做预规范化——指数身份（sh000016/
-    000016.SH）按原始形态透传给数据层解析（PR #2492 blocker A）；缓存键为
-    原始入参代码（大小写归一），指数/股票形态天然不同键。未知代码与既有
-    错误范式一致：404 not_found。
+    不可得恒 null。代码**不做入口预校验/预规范化**（PR #2492 r3 blocker B：
+    窄正则会误拒 ^GSPC/NASDAQ/SH.600519 等底层已支持形态），原样透传给
+    数据层按身份解析；指数身份（sh000016/000016.SH）因此走指数链而非同码
+    股票（r2 blocker A）；缓存键为原始入参代码（大小写归一）。未知/非法
+    代码由 manager 身份解析判定，返回 404 not_found。
 
     Args:
-        stock_code: 股票代码（如 600519、sh000016、00700、AAPL）
+        stock_code: 股票代码（如 600519、sh000016、00700、AAPL、^GSPC）
 
     Returns:
         StockQuoteSnapshot: 22 字段行情快照 + 数据质量元数据
 
     Raises:
-        HTTPException: 400 - 代码格式非法；404 - 股票不存在；500 - 服务器错误
+        HTTPException: 404 - 股票不存在（含非法/无法解析代码）；500 - 服务器错误
     """
-    validated = _validate_stock_code_format(stock_code)
     try:
         # 使用 def 而非 async def，FastAPI 自动在线程池中执行
-        snapshot = QuoteSnapshotService().get_snapshot(validated)
+        snapshot = QuoteSnapshotService().get_snapshot(stock_code)
 
         if snapshot is None:
             raise HTTPException(

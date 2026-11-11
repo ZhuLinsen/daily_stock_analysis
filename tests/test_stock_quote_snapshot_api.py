@@ -265,15 +265,39 @@ def test_quote_unknown_code_returns_404_not_found() -> None:
         _teardown(temp_dir)
 
 
-def test_quote_invalid_code_returns_400_before_service_call() -> None:
+def test_quote_garbage_code_delegates_to_manager_identity_and_returns_404() -> None:
+    """r3 blocker B（OR-COR-e9b11486）：入口不做窄正则预校验——
+    非法/未知代码一律交给 manager 身份解析，按既有 404 not_found 语义返回。"""
     client, temp_dir = _make_client()
     try:
         with patch("api.v1.endpoints.stocks.QuoteSnapshotService") as service_cls:
+            service_cls.return_value.get_snapshot.return_value = None
             response = client.get("/api/v1/stocks/@@bad@@/quote")
 
-        assert response.status_code == 400, response.text
-        assert response.json()["error"] == "invalid_stock_code"
-        service_cls.assert_not_called()
+        assert response.status_code == 404, response.text
+        assert response.json()["error"] == "not_found"
+        service_cls.return_value.get_snapshot.assert_called_once_with("@@bad@@")
+    finally:
+        _teardown(temp_dir)
+
+
+def test_quote_passes_index_and_dotted_forms_without_prevalidation() -> None:
+    """r3 blocker B（OR-COR-e9b11486）：底层已支持的形态不得被入口正则提前 400——
+    ^GSPC / NASDAQ（us_index_mapping 收录）、SH.600519（normalize_stock_code 支持）。"""
+    client, temp_dir = _make_client()
+    try:
+        with patch("api.v1.endpoints.stocks.QuoteSnapshotService") as service_cls:
+            service_cls.return_value.get_snapshot.return_value = _full_cn_snapshot()
+            for raw in ("^GSPC", "NASDAQ", "SH.600519"):
+                response = client.get(f"/api/v1/stocks/{raw}/quote")
+                assert response.status_code == 200, (raw, response.text)
+
+        called_codes = [
+            call.args[0] for call in service_cls.return_value.get_snapshot.call_args_list
+        ]
+        assert called_codes == ["^GSPC", "NASDAQ", "SH.600519"], (
+            f"原始形态必须原样透传服务层，实际: {called_codes}"
+        )
     finally:
         _teardown(temp_dir)
 
