@@ -156,13 +156,15 @@ class TestAggregatePipelineWecomAibotRouting:
         client.send_to_chat.assert_not_called()
 
     def test_aibot_channel_disabled_when_sender_reports_unavailable(self):
-        """失败降级：客户端离线（sender 返回 False）→ 记录失败且不影响其它渠道。"""
+        """失败降级：客户端离线且惰性启动被拒（sender 降级 False，r7 惰性
+        启动语义）→ 记录失败且不影响其它渠道。"""
         notifier = _FakeNotifierWithAibot(
             channels=[NotificationChannel.ASTRBOT, NotificationChannel.WECOM_AIBOT]
         )
         pipeline = _build_pipeline(notifier)
         client = MagicMock()
-        client.is_running = False  # 前置条件未满足：长连接离线
+        client.is_running = False
+        client.start_background = MagicMock(return_value=False)  # 惰性启动被拒
 
         with mock.patch(
             "bot.platforms.wecom_aibot.get_wecom_aibot_client",
@@ -171,7 +173,6 @@ class TestAggregatePipelineWecomAibotRouting:
             pipeline._send_notifications(_make_results(), ReportType.SIMPLE)
 
         notifier.send_to_wecom_aibot.assert_called_once()
-        assert notifier.send_to_wecom_aibot.return_value is False or True  # 调用不抛
         notifier.send_to_astrbot.assert_called_once()
         client.send_to_chat.assert_not_called()
 

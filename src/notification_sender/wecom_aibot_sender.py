@@ -145,6 +145,10 @@ class WecomAibotSender:
     返回 bool。失败（未启用/未配置/未连接/限流/回执错误/异常）一律记录日志
     并返回 False，不抛异常、不阻断其它渠道。
 
+    惰性启动（r7 OR-COR-b365f904）：客户端未运行时首次发送触发
+    ``start_background``（幂等）并等待连接就绪（预算 10s）；纯 CLI /
+    --schedule 入口（无 lifespan 启动钩子）由此获得可用的长连接。
+
     推送复用 ``WecomAibotClient.send_to_chat``（Phase 1 r2 基底）：发送前经
     handler 级双窗口配额（30 条/分 + 1000 条/时，与被动回复/上下文推送共享
     同一账本），渠道侧共享限流器补齐 30/分、1000/时与同会话并发 3 条的
@@ -152,6 +156,7 @@ class WecomAibotSender:
     """
 
     _PUSH_TIMEOUT_SECONDS = 10.0
+    _LAZY_START_READY_BUDGET_SECONDS = 10.0  # 惰性启动后等待连接就绪预算
 
     def __init__(
         self,
@@ -225,14 +230,33 @@ class WecomAibotSender:
         from bot.platforms.wecom_aibot import get_wecom_aibot_client
 
         client = get_wecom_aibot_client()
-        if client is None or not client.is_running:
+        if client is None:
             logger.warning(
-                "[WeCom AI Bot] 长连接客户端未运行，推送失败降级。"
-                "前置条件：WECOM_AIBOT_ENABLED=true 且客户端在线，"
-                "且目标用户须先与机器人建过会话（aibot_send_msg 只能推送到"
-                "已存在的会话）"
+                "[WeCom AI Bot] 长连接客户端不可用（未配置或缺 SDK），"
+                "推送失败降级"
             )
             return False
+
+        if not client.is_running:
+            # 惰性启动（r7 OR-COR-b365f904）：纯 CLI / --schedule 入口没有
+            # lifespan/main.py 的启动钩子——通知首次实际使用时启动长连接。
+            # start_background 幂等（单连接互斥 + started 标志），与
+            # lifespan 双入口同进程只启动一次；纯 CLI 单次运行进程退出即
+            # 清理，schedule 常驻进程保持连接。
+            started = client.start_background()
+            if not started:
+                logger.warning(
+                    "[WeCom AI Bot] 长连接惰性启动失败（可能已被其他入口"
+                    "占用或缺凭证），本次推送降级失败"
+                )
+                return False
+            if not client.wait_for_ready(self._LAZY_START_READY_BUDGET_SECONDS):
+                logger.warning(
+                    "[WeCom AI Bot] 长连接 %ss 内未就绪，本次推送降级失败"
+                    "（下次发送再试）",
+                    self._LAZY_START_READY_BUDGET_SECONDS,
+                )
+                return False
 
         timeout = timeout_seconds if timeout_seconds is not None else self._PUSH_TIMEOUT_SECONDS
 

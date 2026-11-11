@@ -201,15 +201,27 @@ class TestReplyPathGating:
         thread.start()
         try:
             time.sleep(0.1)
-            assert handler._reply_to_frame(_reply_frame("c1"), "hello") is True
+            # r7 串行语义：_reply_to_frame 阻塞等待回执完成——放后台线程跑，
+            # 主线程观察"在途槽位被持有"再放行回执。
+            outcome = {}
+
+            def _bg():
+                outcome["ok"] = handler._reply_to_frame(
+                    _reply_frame("c1"), "hello"
+                )
+
+            bg = threading.Thread(target=_bg, daemon=True)
+            bg.start()
+            deadline = time.time() + 2
+            while _WECOM_AIBOT_OUTBOUND_GATE.in_flight("c1") < 1:
+                if time.time() > deadline:
+                    break
+                time.sleep(0.02)
             # 回执未到：在途槽位被持有
             assert _WECOM_AIBOT_OUTBOUND_GATE.in_flight("c1") == 1
             client._loop.call_soon_threadsafe(ack_ready.set)
-            deadline = time.time() + 2
-            while _WECOM_AIBOT_OUTBOUND_GATE.in_flight("c1") > 0:
-                if time.time() > deadline:
-                    break
-                time.sleep(0.05)
+            bg.join(timeout=5)
+            assert outcome.get("ok") is True
             # 回执到达（成败皆然）：槽位已释放
             assert _WECOM_AIBOT_OUTBOUND_GATE.in_flight("c1") == 0
         finally:

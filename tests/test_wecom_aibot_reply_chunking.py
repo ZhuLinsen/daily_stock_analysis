@@ -22,6 +22,7 @@ Contract (r6):
 
 import os
 import sys
+import time
 from unittest import mock
 
 import pytest
@@ -29,7 +30,11 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import bot.platforms.wecom_aibot as wecom_aibot
-from bot.platforms.wecom_aibot import WecomAibotHandler, _WECOM_AIBOT_OUTBOUND_GATE
+from bot.platforms.wecom_aibot import (
+    WecomAibotHandler,
+    _WECOM_AIBOT_OUTBOUND_GATE,
+    _split_wecom_aibot_text_chunks,
+)
 
 MAX_BYTES = 4000
 
@@ -44,7 +49,7 @@ class _FakeFuture:
     def add_done_callback(self, cb):
         cb(self)
 
-    def result(self):
+    def result(self, timeout=None):
         return {"errcode": self._errcode}
 
 
@@ -208,6 +213,63 @@ class TestReplyChunking:
         slots[0].release()
         with mock.patch.object(handler, "_schedule_reply", side_effect=fake_schedule):
             assert handler._reply_to_frame(_reply_frame(), reply) is True
+
+
+class TestSerialChunkCompletion:
+    """RED(OR-COR-82e5ad71)：分片必须串行等回执完成再发下一片。
+
+    _LatentFuture 不立即完成（真实语义 stub）：调度后并发闸槽位真实在途
+    （≤3 闸约束生效），result() 经短暂延迟返回 ack 0。旧行为（调度后立即
+    调度下一片）会在第 4 片被自身并发闸截断（12008B→4 片只发出 3 片）。
+    """
+
+    def _build_four_chunk_reply(self):
+        reply = ""
+        while len(_split_wecom_aibot_text_chunks(reply)) < 4:
+            reply += "贵州茅台600519：收盘价与均线出现背离，量能温和放大，评级中性偏多。\n"
+        chunks = _split_wecom_aibot_text_chunks(reply)
+        assert len(chunks) == 4
+        return reply
+
+    def test_all_chunks_sent_with_serial_wait(self):
+        reply = self._build_four_chunk_reply()
+        handler, reply_mock, _ = _handler_with_recording_schedule()
+
+        snapshots = []
+
+        class _LatentFuture:
+            """真实语义 stub：挂起、不立即完成；result 消耗短暂异步时延。"""
+
+            def __init__(self, errcode=0):
+                self._errcode = errcode
+                self._callbacks = []
+
+            def add_done_callback(self, cb):
+                self._callbacks.append(cb)  # 注册但不立即触发（真实异步占用）
+
+            def result(self, timeout=None):
+                # 在途快照：本片等待期间闸内应只有本片（前片已完成释放）
+                snapshots.append(_WECOM_AIBOT_OUTBOUND_GATE.in_flight("c1"))
+                time.sleep(0.05)
+                return {"errcode": self._errcode}
+
+        def _schedule(coro):
+            coro.close()
+            return _LatentFuture(0)
+
+        import time as _time
+        with mock.patch.object(handler, "_schedule_reply", side_effect=_schedule),                 mock.patch.object(handler, "_REPLY_ACK_TIMEOUT_SECONDS", 5.0, create=True):
+            assert handler._reply_to_frame(_reply_frame(), reply) is True
+
+        # 4 片全部发出（旧行为：第 4 片被自身并发闸截断，只发出 3 片）
+        assert reply_mock.call_count == 4
+        assert len(snapshots) == 4
+        # 串行：每片等待期间在途恒为 1（前片已完成并释放槽位）
+        assert snapshots == [1, 1, 1, 1]
+        # 全部完成后闸清空
+        assert _WECOM_AIBOT_OUTBOUND_GATE.in_flight("c1") == 0
+        # 逐片配额记账：4 片消耗 4 条分钟配额
+        assert handler._outbound_minute_limiter.get_remaining("c1") == 26
 
 
 if __name__ == "__main__":

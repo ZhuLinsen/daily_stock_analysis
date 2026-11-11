@@ -1647,7 +1647,7 @@ class _CompletedFakeFuture:
         self._callbacks.append(cb)
         cb(self)
 
-    def result(self):
+    def result(self, timeout=None):
         return {"errcode": 0}
 
 
@@ -1734,7 +1734,9 @@ class TestPassiveAsyncFailureRefund:
 
         frame = _text_frame(msgid="m-async", chatid="chat-async")
         try:
-            assert handler._reply_to_frame(frame, "x") is True
+            # r7 串行语义：发送失败同步反馈 False（退款同步完成），
+            # 不再是"调度成功、异步退款"。
+            assert handler._reply_to_frame(frame, "x") is False
 
             settled = self._wait_until_settled(handler, "chat-async", (0, 0))
             minute, hour = self._counts(handler, "chat-async")
@@ -1754,7 +1756,8 @@ class TestPassiveAsyncFailureRefund:
 
         frame = _text_frame(msgid="m-reject", chatid="chat-reject")
         try:
-            assert handler._reply_to_frame(frame, "x") is True
+            # r7 串行语义：errcode 拒绝同步反馈 False（退款同步完成）。
+            assert handler._reply_to_frame(frame, "x") is False
 
             settled = self._wait_until_settled(handler, "chat-reject", (0, 0))
             minute, hour = self._counts(handler, "chat-reject")

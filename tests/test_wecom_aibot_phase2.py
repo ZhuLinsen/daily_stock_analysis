@@ -175,13 +175,16 @@ class TestAcc5PushFailureDegradation:
 
         assert ok is False
 
-    def test_push_when_client_not_running_returns_false(self):
-        """前置条件未满足：长连接未运行（连接断开/未启动）。"""
+    def test_push_when_lazy_start_refused_returns_false(self):
+        """r7：客户端未运行时先惰性启动；启动被拒（如另一入口已占/缺凭证）
+        → 推送降级 False、零派发。惰性启动成功即投递的路径见
+        TestSenderLazyStart。"""
         sender = WecomAibotSender(
             _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
         )
         client = mock.MagicMock()
         client.is_running = False
+        client.start_background = mock.MagicMock(return_value=False)
 
         with mock.patch(
             "bot.platforms.wecom_aibot.get_wecom_aibot_client", return_value=client
@@ -573,6 +576,98 @@ class TestSettingsTestButtonConfigParity:
         assert result["success"] is False
         assert result.get("error_code") == "config_missing"
         assert "WECOM_AIBOT_NOTIFY_CHATID" in (result.get("message") or "")
+# ---------------------------------------------------------------------------
+# (b) r7: lazy start for pure CLI/schedule entrypoints (OR-COR-b365f904)
+# ---------------------------------------------------------------------------
+
+
+class TestSenderLazyStart:
+    def _not_running_client(self):
+        client = mock.MagicMock()
+        client.is_running = False
+        client.start_background = mock.MagicMock(return_value=True)
+        client.wait_for_ready = mock.MagicMock(return_value=True)
+        client.send_to_chat = mock.MagicMock(return_value=True)
+        return client
+
+    def test_cli_shape_first_send_triggers_lazy_start_and_delivers(self):
+        """RED(OR-COR-b365f904)：纯 CLI/schedule 入口（无 lifespan）配置齐全
+        → 首次发送惰性启动长连接并投递成功。"""
+        sender = WecomAibotSender(
+            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+        )
+        client = self._not_running_client()
+
+        with mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client", return_value=client
+        ):
+            assert sender.send_to_wecom_aibot("report") is True
+
+        client.start_background.assert_called_once()
+        client.wait_for_ready.assert_called_once()
+        client.send_to_chat.assert_called_once()
+
+    def test_lazy_start_budget_exceeded_degrades_and_next_send_retries(self):
+        """就绪预算内未连上 → 本次 False（不派发）；下次发送再试成功；
+        start_background 不重复调用（幂等）。"""
+        sender = WecomAibotSender(
+            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+        )
+        client = self._not_running_client()
+
+        def _start_background():
+            # 真实语义：start_background 置位运行标志（监督循环已启动）
+            client.is_running = True
+            return True
+
+        client.start_background = mock.MagicMock(side_effect=_start_background)
+        client.wait_for_ready = mock.MagicMock(return_value=False)
+
+        with mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client", return_value=client
+        ):
+            assert sender.send_to_wecom_aibot("first try") is False
+            client.send_to_chat.assert_not_called()
+
+            client.wait_for_ready = mock.MagicMock(return_value=True)
+            assert sender.send_to_wecom_aibot("second try") is True
+
+        client.start_background.assert_called_once()
+        client.send_to_chat.assert_called_once()
+
+    def test_lazy_start_refusal_returns_false(self):
+        """start_background 被拒（如另一入口已占）→ False、不等待不派发。"""
+        sender = WecomAibotSender(
+            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+        )
+        client = self._not_running_client()
+        client.start_background = mock.MagicMock(return_value=False)
+
+        with mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client", return_value=client
+        ):
+            assert sender.send_to_wecom_aibot("report") is False
+
+        client.wait_for_ready.assert_not_called()
+        client.send_to_chat.assert_not_called()
+
+    def test_ready_client_skips_lazy_start(self):
+        client = _running_client()
+
+        with mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client", return_value=client
+        ):
+            assert sender_send(client) is True
+
+        client.start_background.assert_not_called()
+        client.wait_for_ready.assert_not_called()
+
+
+def sender_send(client) -> bool:
+    sender = WecomAibotSender(
+        _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+    )
+    return sender.send_to_wecom_aibot("report")
 
 
 if __name__ == "__main__":

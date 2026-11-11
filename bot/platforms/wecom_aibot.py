@@ -286,6 +286,7 @@ class WecomAibotHandler:
         # 回复（出站）双窗口配额：官方单会话发送上限 30 条/分钟且 1000 条/小时
         # （aibot_respond_msg 被动回复与 aibot_send_msg 主动推送共用该额度）。
         # 与入站限流（_rate_limiter）分离计数，避免入站消费挤占出站配额。
+        self._reply_ack_timeout_seconds = 15.0  # 每帧回执等待上限（r7 串行分片）
         self._outbound_minute_limiter = RateLimiter(max_requests=30, window_seconds=60)
         self._outbound_hour_limiter = RateLimiter(max_requests=1000, window_seconds=3600)
         # 配额决策临界区锁：两窗口的检查与扣量必须不可分割（OR-COM-62e2b418）
@@ -574,7 +575,8 @@ class WecomAibotHandler:
         独立经配额/并发闸记账（分片多消耗配额属预期，与主动路径口径
         一致）；同步分片失败 → 记日志含已发送片数并返回 False，已发出
         的帧不回滚（respond 帧无法撤回）。异步回执失败按发送标识退还
-        本片配额（r5 语义，见 ``_on_reply_send_done``）。
+        每片串行等待回执完成（``future.result``，同 send_to_chat 语义）
+        后才发送下一片；本片配额失败退还同步完成（r7）。
         """
         if not frame:
             logger.warning("[WeCom AI Bot] 无回调帧，无法回复")
@@ -674,49 +676,36 @@ class WecomAibotHandler:
             )
             return False
 
-        if hasattr(future, "add_done_callback"):
-            future.add_done_callback(
-                lambda done: self._on_reply_send_done(
-                    done, outbound_key, token, outbound_gate_slot
-                )
-            )
-        return True
-
-    def _on_reply_send_done(
-        self,
-        done,
-        conversation_key: str,
-        token: str,
-        outbound_gate_slot=None,
-    ) -> None:
-        """被动回复的异步完成回调：失败（异常或 errcode != 0）按发送标识
-        退还配额（r5——此前调度后的异步失败永不退款）；并发闸槽位在发送
-        完成后无条件释放（r4，成败皆释放）。"""
-        if outbound_gate_slot is not None:
-            outbound_gate_slot.release()
+        # 串行等待回执完成（r7 OR-COR-82e5ad71）：同 send_to_chat 语义——
+        # 槽位在回执完成后才释放，分片循环的下一片不再被自身并发闸截断
+        # （12008B→4 片只发出 3 片的缺陷根因）。
         try:
             try:
-                ack = done.result()
+                ack = future.result(self._reply_ack_timeout_seconds)
             except Exception as exc:
-                self._refund_outbound_send(conversation_key, token)
-                logger.warning(
-                    "[WeCom AI Bot] 异步回复失败（已退还配额）: key=%s, error=%s",
-                    conversation_key,
+                self._refund_outbound_send(outbound_key, token)
+                logger.error(
+                    "[WeCom AI Bot] 回复发送失败（已退还配额）%s: key=%s, error=%s",
+                    part_suffix,
+                    outbound_key,
                     exc,
                 )
-                return
+                return False
             errcode = ack.get("errcode") if isinstance(ack, dict) else None
             if errcode:
-                self._refund_outbound_send(conversation_key, token)
+                self._refund_outbound_send(outbound_key, token)
                 logger.warning(
-                    "[WeCom AI Bot] 异步回复被拒（已退还配额）: key=%s, "
-                    "errcode=%s, errmsg=%s",
-                    conversation_key,
+                    "[WeCom AI Bot] 回复被拒（已退还配额）%s: key=%s, errcode=%s, "
+                    "errmsg=%s（官方前置条件：目标用户须先与机器人建过会话）",
+                    part_suffix,
+                    outbound_key,
                     errcode,
                     ack.get("errmsg") if isinstance(ack, dict) else None,
                 )
-        except Exception as exc:  # 回调自身异常不影响主流程
-            logger.error("[WeCom AI Bot] 回复完成回调异常: %s", exc)
+                return False
+            return True
+        finally:
+            outbound_gate_slot.release()
 
     def _schedule_reply(self, coro):
         """把回复协程调度到 SDK 事件循环（回复必须走持有 WebSocket 的循环）
@@ -1221,6 +1210,45 @@ class WecomAibotClient:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def wait_for_ready(
+        self,
+        timeout_seconds: float = 10.0,
+        poll_interval: float = 0.2,
+    ) -> bool:
+        """等待长连接就绪（r7 惰性启动预算，OR-COR-b365f904）。
+
+        就绪判定：监督循环在运行且 SDK 客户端已连接（认证成功后
+        ``sdk_client.is_connected`` 为真）。超时返回 False——调用方本次
+        推送降级失败，下次发送再试（start_background 幂等，不会重复启动）。
+        stop 事件置位时立即返回 False（进程退出路径不被拖住）。
+        """
+        deadline = time.time() + timeout_seconds
+        while True:
+            sdk_client = self._sdk_client
+            if (
+                self._running
+                and sdk_client is not None
+                and bool(getattr(sdk_client, "is_connected", False))
+            ):
+                return True
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return False
+            if self._stop_event.wait(min(poll_interval, remaining)):
+                return False
+
+    def is_transport_ready(self) -> bool:
+        """诊断/测试用：连接是否已就绪（运行中且 SDK 已连接）。"""
+        return self._is_transport_ready()
+
+    def _is_transport_ready(self) -> bool:
+        sdk_client = self._sdk_client
+        return bool(
+            self._running
+            and sdk_client is not None
+            and getattr(sdk_client, "is_connected", False)
+        )
 
 
 # 全局客户端实例（单例，进一步保证单机器人单连接）
