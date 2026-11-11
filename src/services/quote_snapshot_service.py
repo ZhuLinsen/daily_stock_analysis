@@ -22,7 +22,13 @@
 
 缓存：端点级短 TTL 响应缓存复用 ``config.realtime_cache_ttl`` 既有机制
 （该键既有语义为行情 staleness 阈值 / tickflow 内部缓存 TTL，此处以同值
-作为响应缓存 TTL；不新增 env 键）。TTL <= 0 时禁用缓存。
+作为响应缓存 TTL；不新增 env 键）。缓存键为**原始入参代码**（仅大小写归一），
+不做前缀/后缀剥离——指数形态（sh000016/000016.SH）与同码股票（000016）
+天然不同键，互不污染（PR #2492 blocker A）。TTL <= 0 时禁用缓存。
+
+代码透传契约：入参代码**原样**传给 DataFetcherManager（其内部在规范化前
+用 parse_analysis_target 解析指数身份），本服务仅在「A 股盘口探针」一处
+做身份判定与归一。
 """
 
 import logging
@@ -33,8 +39,9 @@ import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from data_provider.akshare_fetcher import AkshareFetcher
-from data_provider.base import DataFetcherManager
+from data_provider.base import DataFetcherManager, normalize_stock_code
 from src.config import get_config
+from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 
 logger = logging.getLogger(__name__)
 
@@ -234,10 +241,14 @@ class QuoteSnapshotService:
         if vwap is None:
             missing.add("vwap")
 
-        # 派生：委比（仅 A 股纯 6 位代码探五档盘口；其余市场直接 null）
+        # 派生：委比（仅 A 股股票身份探五档盘口；指数形态/其余市场直接 null）
+        # 盘口探针使用规范化后的裸 6 位代码，但行情/历史/缓存键保留原始入参
+        # （PR #2492 blocker A：sh000016/000016.SH 是指数身份，绝不能剥成裸码
+        # 去探同码股票的盘口）
         bid_ask_ratio: Optional[float] = None
-        if _A_SHARE_CODE_RE.match(code):
-            order_book = self._fetch_order_book(code)
+        order_book_code = self._a_share_order_book_code(code)
+        if order_book_code is not None:
+            order_book = self._fetch_order_book(order_book_code)
             if order_book is not None:
                 bid_ask_ratio = compute_bid_ask_ratio(
                     order_book.get("buy_volumes"), order_book.get("sell_volumes")
@@ -284,6 +295,24 @@ class QuoteSnapshotService:
         if column is None:
             return []
         return list(column.tolist())
+
+    def _a_share_order_book_code(self, code: str) -> Optional[str]:
+        """返回可探盘口的裸 6 位 A 股代码；非 A 股股票身份返回 None。
+
+        身份判定走 parse_analysis_target（与 DataFetcherManager 同一契约）：
+        - 裸 000016（股票）→ 可探；sh000016 / 000016.SH（指数）→ 不探；
+        - 600519.SH 等后缀形态归一为裸 600519 后可探（委比不因后缀形态丢失）。
+        """
+        try:
+            target = parse_analysis_target(code)
+        except Exception:  # noqa: BLE001 - 身份解析失败按不可探处理
+            return None
+        if getattr(target, "asset_type", None) != ParseStatus.STOCK:
+            return None
+        normalized = normalize_stock_code(code)
+        if _A_SHARE_CODE_RE.match(normalized):
+            return normalized
+        return None
 
     def _fetch_order_book(self, code: str) -> Optional[Dict[str, List[Optional[float]]]]:
         """A 股五档盘口（委比派生输入）；不可得返回 None（降级 null 语义）。"""

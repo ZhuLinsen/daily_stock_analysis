@@ -21,6 +21,40 @@ StockProfileStatus = Literal["fresh", "partial", "unavailable"]
 
 
 class StockQuote(BaseModel):
+    """股票实时行情（既有 profile/历史接口沿用模型，勿改为快照口径）"""
+
+    stock_code: str = Field(..., description="股票代码")
+    stock_name: Optional[str] = Field(None, description="股票名称")
+    current_price: float = Field(..., description="当前价格")
+    change: Optional[float] = Field(None, description="涨跌额")
+    change_percent: Optional[float] = Field(None, description="涨跌幅 (%)")
+    open: Optional[float] = Field(None, description="开盘价")
+    high: Optional[float] = Field(None, description="最高价")
+    low: Optional[float] = Field(None, description="最低价")
+    prev_close: Optional[float] = Field(None, description="昨收价")
+    volume: Optional[float] = Field(None, description="成交量（股）")
+    amount: Optional[float] = Field(None, description="成交额（元）")
+    update_time: Optional[str] = Field(None, description="更新时间")
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "current_price": 1800.00,
+            "change": 15.00,
+            "change_percent": 0.84,
+            "open": 1785.00,
+            "high": 1810.00,
+            "low": 1780.00,
+            "prev_close": 1785.00,
+            "volume": 10000000,
+            "amount": 18000000000,
+            "update_time": "2024-01-01T15:00:00"
+        }
+    })
+
+
+class StockQuoteSnapshot(BaseModel):
     """个股行情快照（issue #771 看板口径：22 字段 + 数据质量元数据）
 
     22 字段清单（计划默认值 4 钉死，不得增删口径）：

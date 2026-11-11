@@ -47,6 +47,7 @@ from api.v1.schemas.history import (
 )
 from api.v1.schemas.stocks import (
     StockQuote,
+    StockQuoteSnapshot,
     StockHistoryResponse,
     KLineData,
     StockProfileResponse,
@@ -185,6 +186,7 @@ __all__ = [
     "ReportDetails",
     # stocks
     "StockQuote",
+    "StockQuoteSnapshot",
     "StockHistoryResponse",
     "KLineData",
     "StockProfileResponse",

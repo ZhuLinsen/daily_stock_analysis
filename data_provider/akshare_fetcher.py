@@ -160,6 +160,24 @@ def _is_hk_code(stock_code: str) -> bool:
     return code.isdigit() and 4 <= len(code) <= 5
 
 
+def _normalize_em_spot_volume(value: Any) -> Optional[int]:
+    """
+    将东财 push2 现货表成交量归一为股（PR #2492 blocker C）。
+
+    适用源（同一东财字段族，AKShare 官方字段表：成交量单位=手）：
+    - ak.stock_zh_a_spot_em（A 股实时）
+    - ak.fund_etf_spot_em（ETF 实时）
+    - ak.stock_hk_spot_em（港股实时）
+
+    其余源不得套用（新浪字段 8 本身是股；腾讯走 _normalize_tencent_volume
+    交叉校验；tickflow 走 _cn_lots_to_shares）——禁止全局统一 ×100。
+    """
+    hands = safe_int(value)
+    if hands is None:
+        return None
+    return hands * 100
+
+
 def _normalize_tencent_volume(fields: List[str]) -> Optional[int]:
     """
     将腾讯实时行情成交量归一为股。
@@ -1228,7 +1246,7 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
+                volume=_normalize_em_spot_volume(row.get('成交量')),
                 amount=safe_float(row.get('成交额')),
                 volume_ratio=safe_float(row.get('量比')),
                 turnover_rate=safe_float(row.get('换手率')),
@@ -1634,7 +1652,7 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
+                volume=_normalize_em_spot_volume(row.get('成交量')),
                 amount=safe_float(row.get('成交额')),
                 volume_ratio=safe_float(row.get('量比')),
                 turnover_rate=safe_float(row.get('换手率')),
@@ -1702,7 +1720,7 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
+                volume=_normalize_em_spot_volume(row.get('成交量')),
                 amount=safe_float(row.get('成交额')),
                 volume_ratio=safe_float(row.get('量比')),
                 turnover_rate=safe_float(row.get('换手率')),
