@@ -267,6 +267,7 @@
     "tests/test_yfinance_hk_indices.py": 0.022,
     "tests/test_yfinance_jp_kr_indices.py": 0.012,
     "tests/test_yfinance_normalize.py": 2.374,
-    "tests/test_yfinance_us_indices.py": 1.661
+    "tests/test_yfinance_us_indices.py": 1.661,
+    "tests/test_hot_top10_service.py": 30.0
   }
 }

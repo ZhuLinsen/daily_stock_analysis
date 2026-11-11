@@ -937,6 +937,16 @@ import json
 import os
 import sys
 import time
+import threading
+
+# r8 CI hygiene: HARD self-timeout. If this child ever stalls (a fence file
+# never appears, a gate deadlocks, or pytest-timeout killed the parent test
+# without running its cleanups), the child MUST die on its own instead of
+# lingering on the runner and accumulating memory across tests —
+# pytest-timeout's thread method cannot kill external child processes.
+_watchdog = threading.Timer(60.0, lambda: os._exit(3))
+_watchdog.daemon = True
+_watchdog.start()
 
 sys.path.insert(0, sys.argv[1])
 
@@ -1076,16 +1086,25 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
 
     @staticmethod
     def _drain_children(procs, llm_release: Path) -> None:
+        """Reap the children: release any fence, then terminate -> kill ->
+        wait. Runs via addCleanup on every exit path; the child-side 60s
+        watchdog covers the pytest-timeout hard-kill case where cleanups
+        never run."""
         try:
             llm_release.write_text("release", encoding="utf-8")
         except OSError:
             pass
         for proc in procs:
             if proc.poll() is None:
+                proc.terminate()
                 try:
-                    proc.wait(timeout=10)
+                    proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
 
     def test_two_processes_deliver_same_data_date_exactly_once(self):
         db_path = Path(self._tmp.name) / "stock_analysis.db"
@@ -1117,6 +1136,13 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
             results.append(json.loads(line[len("RESULT:") :]))
         for proc in procs:
             proc.wait(timeout=30)
+            # r8 CI hygiene: a healthy child exits 0. Exit code 3 means the
+            # child's own 60s watchdog fired (a fence stalled) — the very
+            # subprocess-accumulation pattern suspected of OOM-killing the
+            # CI runner must fail loudly here, never linger.
+            self.assertEqual(
+                proc.returncode, 0, f"child exited {proc.returncode}: stalled?"
+            )
 
         delivered = [r for r in results if r["delivered"]]
         claimed = [r for r in results if r["reason"] == "already_claimed"]
@@ -1260,7 +1286,14 @@ import json
 import os
 import sys
 import time
+import threading
 from datetime import timedelta
+
+# r8 CI hygiene: HARD self-timeout (same rationale as the claim runner) —
+# a stalled child dies at 60s with exit code 3 instead of lingering.
+_watchdog = threading.Timer(60.0, lambda: os._exit(3))
+_watchdog.daemon = True
+_watchdog.start()
 
 sys.path.insert(0, sys.argv[1])
 
@@ -1401,16 +1434,24 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
 
     @staticmethod
     def _drain(proc: subprocess.Popen, llm_release: Optional[Path]) -> None:
+        """Reap the child: release any fence, then terminate -> kill -> wait.
+        Runs via addCleanup on every exit path; the child-side 60s watchdog
+        covers the pytest-timeout hard-kill case where cleanups never run."""
         try:
             if llm_release is not None:
                 llm_release.write_text("release", encoding="utf-8")
         except OSError:
             pass
         if proc.poll() is None:
+            proc.terminate()
             try:
-                proc.wait(timeout=10)
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
 
     def _read_result(self, proc: subprocess.Popen) -> Dict[str, Any]:
         line = proc.stdout.readline().strip()
@@ -1745,6 +1786,10 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         holder_result = self._read_result(holder)
         thief.wait(timeout=30)
         holder.wait(timeout=30)
+        # r8 CI hygiene: healthy children exit 0; exit code 3 = the child's
+        # own 60s watchdog fired on a stalled fence (must fail loudly).
+        self.assertEqual(thief.returncode, 0, "thief child stalled")
+        self.assertEqual(holder.returncode, 0, "holder child stalled")
 
         both = [thief_result, holder_result]
         delivered = [r for r in both if r["delivered"]]
