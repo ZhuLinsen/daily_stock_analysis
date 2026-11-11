@@ -121,6 +121,8 @@ class WecomAibotHandler:
         # 与入站限流（_rate_limiter）分离计数，避免入站消费挤占出站配额。
         self._outbound_minute_limiter = RateLimiter(max_requests=30, window_seconds=60)
         self._outbound_hour_limiter = RateLimiter(max_requests=1000, window_seconds=3600)
+        # 配额决策临界区锁：两窗口的检查与扣量必须不可分割（OR-COM-62e2b418）
+        self._outbound_quota_lock = threading.Lock()
 
         # 不同会话可并行，单会话保持 FIFO（飞书 Stream 处理器同款模式）
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="wecom-msg")
@@ -243,14 +245,21 @@ class WecomAibotHandler:
     def _allow_outbound_reply(self, conversation_key: str) -> bool:
         """出站回复双窗口配额（官方单会话发送上限：30 条/分钟且 1000 条/小时）
 
-        先检查小时窗口再消耗分钟窗口，超限返回 False（调用方丢弃回复并记日志，
-        不回执以免加剧配额压力、不排队积压）。
+        原子决策（OR-COM-62e2b418）：单一临界区内先只读检查两窗口
+        （RateLimiter.would_allow，不记账），均允许才统一扣量
+        （RateLimiter.record）；并发线程（命令回执线程 × 分析完成通知线程）
+        经进程内锁串行化，检查与扣量不可分割——不会双双过检导致超额，
+        分钟窗口拒绝也不消耗小时额度。任一窗口拒绝即返回 False（调用方
+        丢弃回复并记日志，不回执以免加剧配额压力、不排队积压）。
         """
-        if not self._outbound_hour_limiter.is_allowed(conversation_key):
-            return False
-        if not self._outbound_minute_limiter.is_allowed(conversation_key):
-            return False
-        return True
+        with self._outbound_quota_lock:
+            if not self._outbound_minute_limiter.would_allow(conversation_key):
+                return False
+            if not self._outbound_hour_limiter.would_allow(conversation_key):
+                return False
+            self._outbound_minute_limiter.record(conversation_key)
+            self._outbound_hour_limiter.record(conversation_key)
+            return True
 
     @staticmethod
     def _outbound_key_from_frame(frame: dict) -> str:

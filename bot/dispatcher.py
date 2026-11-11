@@ -65,6 +65,40 @@ class RateLimiter:
         self._requests[user_id].append(now)
         return True
 
+    def would_allow(self, user_id: str) -> bool:
+        """
+        只读配额检查：清理滑动窗口并判断新请求是否会被放行，不记账
+
+        与 :meth:`record` 配对使用，支持调用方在单临界区内完成
+        「检查多窗口 → 统一扣量」的原子配额决策（如企微智能机器人出站
+        双窗口限流，OR-COM-62e2b418）。
+
+        Args:
+            user_id: 用户标识
+
+        Returns:
+            若立即 :meth:`record` 是否会被放行
+        """
+        now = time.time()
+        window_start = now - self.window_seconds
+
+        # 清理过期记录
+        self._requests[user_id] = [
+            t for t in self._requests[user_id]
+            if t > window_start
+        ]
+
+        return len(self._requests[user_id]) < self.max_requests
+
+    def record(self, user_id: str) -> None:
+        """
+        记录一次已获准的请求（调用方应先经 :meth:`would_allow` 检查）
+
+        Args:
+            user_id: 用户标识
+        """
+        self._requests[user_id].append(time.time())
+
     def get_remaining(self, user_id: str) -> int:
         """获取剩余可用请求数"""
         now = time.time()

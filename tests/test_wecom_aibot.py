@@ -924,11 +924,12 @@ class TestHourlyConversationQuota:
         assert sdk_client.reply.call_count == 1000
         assert "超限" in caplog.text or "1000" in caplog.text
 
-    def test_outbound_gate_checks_hour_window_before_minute(self):
+    def test_outbound_gate_hour_exhaustion_rejects(self):
         handler, _ = self._handler()
 
         # Isolate the hour window: pin the minute limiter open.
         minute_stub = mock.MagicMock()
+        minute_stub.would_allow.return_value = True
         minute_stub.is_allowed.return_value = True
         with mock.patch.object(handler, "_outbound_minute_limiter", minute_stub):
             # Hour exhausted -> reject even when the minute window is wide open.
@@ -957,9 +958,9 @@ class TestHourlyConversationQuota:
         client._running = True
         client._sdk_client = mock.MagicMock()
 
-        # Exhaust the hourly quota for the conversation.
+        # Exhaust the hourly quota for the conversation (direct window fill).
         for _ in range(1000):
-            handler._allow_outbound_reply("chat-pro")
+            handler._outbound_hour_limiter.is_allowed("chat-pro")
         assert client.send_to_chat("chat-pro", "report") is False
         assert "超限" in caplog.text
 
@@ -1218,6 +1219,180 @@ class TestSourceContextNotification:
         assert result.dispatched is True
         assert result.success is False
         mock_wechat.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# r3 OR-COM-62e2b418 (refined): outbound dual-window quota must be atomic —
+# check both windows read-only in one critical section, record both only when
+# both allow, minute rejection must not burn hour quota.
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimiterAtomicPrimitives:
+    """would_allow/record must split check from accounting (additive API)."""
+
+    def test_would_allow_does_not_record(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        assert limiter.would_allow("u") is True
+        # Read-only: nothing recorded yet.
+        assert len(limiter._requests["u"]) == 0
+        assert limiter.get_remaining("u") == 2
+
+    def test_would_allow_rejects_at_capacity_without_recording(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        limiter.record("u")
+        limiter.record("u")
+        assert limiter.would_allow("u") is False
+        assert len(limiter._requests["u"]) == 2  # rejection added nothing
+
+    def test_record_after_would_allow_matches_is_allowed(self):
+        from bot.dispatcher import RateLimiter
+
+        reference = RateLimiter(max_requests=3, window_seconds=60)
+        split = RateLimiter(max_requests=3, window_seconds=60)
+
+        for _ in range(3):
+            assert reference.is_allowed("u") is True
+        assert reference.is_allowed("u") is False
+
+        for _ in range(3):
+            assert split.would_allow("u") is True
+            split.record("u")
+        assert split.would_allow("u") is False
+
+        assert len(split._requests["u"]) == len(reference._requests["u"]) == 3
+        assert split.get_remaining("u") == reference.get_remaining("u") == 0
+
+
+class _GateHourLimiter:
+    """Deterministic race injector standing in for the hour window.
+
+    Both callers' window checks complete before either caller records — the
+    reproducible form of the concurrent-overshoot race the reviewer
+    described (hour=999, two concurrent callers). Delegates window state to
+    a real RateLimiter so counts are directly inspectable.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self._pending_checks = 0
+        self._lock = threading.Lock()
+        self._checks_gate = threading.Event()
+
+    @property
+    def _requests(self):
+        return self._real._requests
+
+    def _gated_check(self, user_id):
+        allowed = self._real.would_allow(user_id)
+        with self._lock:
+            self._pending_checks += 1
+            if self._pending_checks >= 2:
+                self._checks_gate.set()
+        # Hold until every racing caller has completed its window check.
+        self._checks_gate.wait(timeout=2)
+        return allowed
+
+    def would_allow(self, user_id):
+        return self._gated_check(user_id)
+
+    def is_allowed(self, user_id):
+        allowed = self._gated_check(user_id)
+        if allowed:
+            self.record(user_id)
+        return allowed
+
+    def record(self, user_id):
+        self._real.record(user_id)
+
+
+class TestOutboundQuotaAtomicity:
+    def _handler(self):
+        handler, sdk_client = _handler()
+        return handler, sdk_client
+
+    def test_concurrent_callers_cannot_overshoot_hour_quota(self):
+        """反例①：小时额度 999 时两线程并发决策 → 恰一个 True、小时计 1000。"""
+        handler, _ = self._handler()
+
+        gate_limiter = _GateHourLimiter(handler._outbound_hour_limiter)
+
+        # Pin the minute window open so the race isolates the hour decision.
+        minute_stub = mock.MagicMock()
+        minute_stub.would_allow.return_value = True
+        minute_stub.is_allowed.return_value = True
+
+        # Preset: hour window at 999/1000 for the conversation.
+        for _ in range(999):
+            handler._outbound_hour_limiter.is_allowed("chat-x")
+
+        with mock.patch.object(handler, "_outbound_minute_limiter", minute_stub), \
+                mock.patch.object(handler, "_outbound_hour_limiter", gate_limiter,
+                                  create=True):
+            start = threading.Barrier(2, timeout=5)
+            results = []
+            errors = []
+
+            def _caller():
+                try:
+                    start.wait()
+                    results.append(handler._allow_outbound_reply("chat-x"))
+                except Exception as exc:  # pragma: no cover
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=_caller) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+
+        assert errors == []
+        # Exactly one caller wins the last hour slot.
+        assert results.count(True) == 1, f"overshoot: {results}"
+        assert len(handler._outbound_hour_limiter._requests["chat-x"]) == 1000
+
+    def test_minute_rejection_does_not_burn_hour_quota(self):
+        """反例②：分钟窗口满后的尝试不得消耗小时额度；窗口恢复后额度完整。"""
+        import time as _time
+
+        handler, _ = self._handler()
+
+        # All quota decisions run under one controlled clock so the +61s
+        # advance genuinely slides the minute window past the fill timestamps.
+        clock = [_time.time()]
+
+        def _now():
+            return clock[0]
+
+        with mock.patch("bot.dispatcher.time.time", side_effect=_now):
+            # Fill the minute window (30) for the conversation; hour untouched.
+            for _ in range(30):
+                assert handler._outbound_minute_limiter.is_allowed("chat-m") is True
+            assert len(
+                handler._outbound_hour_limiter._requests.get("chat-m", [])
+            ) == 0
+
+            for _ in range(20):
+                assert handler._allow_outbound_reply("chat-m") is False
+
+            hour_after = len(
+                handler._outbound_hour_limiter._requests.get("chat-m", [])
+            )
+            assert hour_after == 0, (
+                "minute rejection burned hour quota: "
+                f"{hour_after} slots"
+            )
+
+            # Window recovered -> full quota available again, hour debits 1.
+            clock[0] += 61
+            assert handler._allow_outbound_reply("chat-m") is True
+            assert len(
+                handler._outbound_hour_limiter._requests["chat-m"]
+            ) == 1
 
 
 if __name__ == "__main__":
