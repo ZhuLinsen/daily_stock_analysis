@@ -243,9 +243,15 @@ class WatchlistCommand(BotCommand):
 
     @staticmethod
     def _match_key(code: str) -> str:
-        """自选股条目等价键（镜像 api/v1/endpoints/stocks.py:_watchlist_match_key）：
-        裸 5 位数字视为港股并按 HK 前缀形态比较，其余按大写比较。"""
-        normalized = code.strip().upper()
+        """自选股条目等价键（镜像 api/v1/endpoints/stocks.py:_watchlist_match_key）。
+
+        既有 STOCK_LIST 条目与命令输入统一走 normalize_stock_code（r2 修复
+        OR-COR-e0e93ea0：仅大写比较会让 SH600519/600519、1810.HK/HK01810
+        判不了等价），再按裸 5 位数字加 HK 前缀形态、其余大写比较。
+        """
+        from data_provider.base import normalize_stock_code
+
+        normalized = normalize_stock_code(code.strip()).upper()
         if re.fullmatch(r"\d{5}", normalized):
             return f"HK{normalized}"
         return normalized

@@ -119,6 +119,29 @@ class _PushSlot:
         self._limiter._release_slot(self._chat_id)
 
 
+# 进程级共享推送限流器（r2 修复 OR-COR-4c720f93：所有 WecomAibotSender 实例
+# 共用全局长连接客户端，推送预算不得随 NotificationService/Pipeline 实例
+# 重建而重置）。分钟/小时窗口在此之外还有 WecomAibotClient.send_to_chat 的
+# handler 级双窗口配额兜底（与回复/上下文推送同账本，真实总量口径）。
+_shared_push_rate_limiter: Optional[AibotPushRateLimiter] = None
+_shared_push_rate_limiter_lock = threading.Lock()
+
+
+def _get_shared_push_rate_limiter() -> AibotPushRateLimiter:
+    global _shared_push_rate_limiter
+    with _shared_push_rate_limiter_lock:
+        if _shared_push_rate_limiter is None:
+            _shared_push_rate_limiter = AibotPushRateLimiter()
+        return _shared_push_rate_limiter
+
+
+def _reset_shared_push_rate_limiter() -> None:
+    """重置共享限流器（仅测试用）。"""
+    global _shared_push_rate_limiter
+    with _shared_push_rate_limiter_lock:
+        _shared_push_rate_limiter = None
+
+
 class WecomAibotSender:
     """
     企业微信智能机器人推送渠道（aibot_send_msg）
@@ -126,6 +149,11 @@ class WecomAibotSender:
     与其它渠道同接口：``send_to_wecom_aibot(content, *, timeout_seconds=None)``
     返回 bool。失败（未启用/未配置/未连接/限流/回执错误/异常）一律记录日志
     并返回 False，不抛异常、不阻断其它渠道。
+
+    推送复用 ``WecomAibotClient.send_to_chat``（Phase 1 r2 基底）：发送前经
+    handler 级双窗口配额（30 条/分 + 1000 条/时，与被动回复/上下文推送共享
+    同一账本），渠道侧共享限流器补齐 30/分、1000/时与同会话并发 3 条的
+    预配额门。
     """
 
     _PUSH_TIMEOUT_SECONDS = 10.0
@@ -138,7 +166,7 @@ class WecomAibotSender:
         """
         Args:
             config: 全局配置对象
-            rate_limiter: 可注入限流器（测试用）；默认每实例独立一份
+            rate_limiter: 可注入限流器（测试用）；默认进程级共享单例
         """
         self._notify_enabled = bool(
             getattr(config, "wecom_aibot_notify_enabled", False)
@@ -146,7 +174,7 @@ class WecomAibotSender:
         self._notify_chatids = self._parse_chatids(
             getattr(config, "wecom_aibot_notify_chatid", None)
         )
-        self._push_limiter = rate_limiter or AibotPushRateLimiter()
+        self._push_limiter = rate_limiter or _get_shared_push_rate_limiter()
 
     @staticmethod
     def _parse_chatids(raw_value: Any) -> List[str]:
@@ -211,7 +239,6 @@ class WecomAibotSender:
             )
             return False
 
-        body = {"msgtype": "markdown", "markdown": {"content": sanitized_content}}
         timeout = timeout_seconds if timeout_seconds is not None else self._PUSH_TIMEOUT_SECONDS
 
         all_ok = True
@@ -227,14 +254,18 @@ class WecomAibotSender:
                 continue
 
             try:
-                ack_frame = client.push_message(chat_id, body, timeout)
-            except Exception as exc:  # 防御分支：push_message 内部已捕获
+                # 复用 r2 基底的 send_to_chat：handler 级双窗口配额 + 回执
+                # errcode 检查 + 前置条件日志，统一真实总量口径。
+                ok = client.send_to_chat(
+                    chat_id, sanitized_content, timeout_seconds=timeout
+                )
+            except Exception as exc:  # 防御分支：send_to_chat 内部已捕获
                 logger.error("[WeCom AI Bot] 推送异常 (chat=%s): %s", chat_id, exc)
-                ack_frame = None
+                ok = False
             finally:
                 slot.release()
 
-            if ack_frame is None:
+            if not ok:
                 all_ok = False
             else:
                 logger.info("[WeCom AI Bot] 推送成功: chat=%s", chat_id)

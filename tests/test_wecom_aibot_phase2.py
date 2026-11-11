@@ -13,18 +13,17 @@ WeCom AI Bot Phase 2 测试：通知推送渠道（aibot_send_msg）+ 配置链�
 推送渠道契约（官方协议约束，PR body 同步标注）：
 - 前置条件：目标用户须先与机器人建过会话（aibot_send_msg 只能推送到
   已存在会话）；推送目标为 chatid（单聊=userid，群聊=chatid）。
-- 限流：30 条/分钟、1000 条/小时、同会话并发 3 条（渠道内独立限流器，
-  与 Phase 1 会话回复限流互不影响）。
+- 限流：30 条/分钟、1000 条/小时、同会话并发 3 条。渠道限流器为进程级
+  共享单例（跨 sender 实例共享预算，OR-COR-4c720f93），且静态推送经
+  WecomAibotClient.send_to_chat 复用 handler 级双窗口配额（真实总量口径，
+  与回复/上下文推送同账本，Phase 1 r2 基底）。
 - 默认关：WECOM_AIBOT_NOTIFY_ENABLED=false；须同时配置
   WECOM_AIBOT_NOTIFY_CHATID 才被视为已配置渠道。
 """
 
-import asyncio
 import os
 import re
 import sys
-import threading
-import time
 from pathlib import Path
 from unittest import mock
 
@@ -32,7 +31,6 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import bot.platforms.wecom_aibot as wecom_aibot
 from src.notification_sender.wecom_aibot_sender import (
     AibotPushRateLimiter,
     WecomAibotSender,
@@ -62,10 +60,10 @@ def _config(**overrides):
 
 
 def _running_client(chat_id="chat-1", result_frame=None):
-    """Mock a running WecomAibotClient whose push_message resolves OK."""
+    """Mock a running WecomAibotClient whose send_to_chat succeeds (r2 base)."""
     client = mock.MagicMock()
     client.is_running = True
-    client.push_message.return_value = result_frame or {"errcode": 0}
+    client.send_to_chat.return_value = True
     return client
 
 
@@ -151,15 +149,15 @@ class TestAcc5PushFailureDegradation:
         m_get.assert_not_called()
 
     def test_push_sdk_missing_degrades_to_false(self):
+        """SDK 缺失：get_wecom_aibot_client 返回 None（含安装提示），渠道降级。"""
         sender = WecomAibotSender(
             _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
         )
 
-        with mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", False), \
-                mock.patch(
-                    "bot.platforms.wecom_aibot.get_wecom_aibot_client",
-                    return_value=None,
-                ):
+        with mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client",
+            return_value=None,
+        ):
             ok = sender.send_to_wecom_aibot("daily report")
 
         assert ok is False
@@ -191,7 +189,7 @@ class TestAcc5PushFailureDegradation:
             ok = sender.send_to_wecom_aibot("daily report")
 
         assert ok is False
-        client.push_message.assert_not_called()
+        client.send_to_chat.assert_not_called()
 
     def test_push_empty_content_is_noop(self):
         sender = WecomAibotSender(
@@ -207,11 +205,12 @@ class TestAcc5PushFailureDegradation:
         m_get.assert_not_called()
 
     def test_push_ack_error_reports_failure(self):
+        """回执 errcode!=0 / 配额丢弃（r2 send_to_chat 返回 False）→ 渠道报失败。"""
         sender = WecomAibotSender(
             _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
         )
         client = _running_client()
-        client.push_message.return_value = None  # SDK 回执错误/超时 -> None
+        client.send_to_chat.return_value = False
 
         with mock.patch(
             "bot.platforms.wecom_aibot.get_wecom_aibot_client", return_value=client
@@ -225,7 +224,7 @@ class TestAcc5PushFailureDegradation:
             _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
         )
         client = _running_client()
-        client.push_message.side_effect = RuntimeError("ws gone")
+        client.send_to_chat.side_effect = RuntimeError("ws gone")
 
         with mock.patch(
             "bot.platforms.wecom_aibot.get_wecom_aibot_client", return_value=client
@@ -240,10 +239,7 @@ class TestAcc5PushFailureDegradation:
         )
         client = _running_client()
         # c1 成功，c2 失败 -> 整体 False。
-        client.push_message.side_effect = [
-            {"errcode": 0},
-            None,
-        ]
+        client.send_to_chat.side_effect = [True, False]
 
         with mock.patch(
             "bot.platforms.wecom_aibot.get_wecom_aibot_client", return_value=client
@@ -251,7 +247,7 @@ class TestAcc5PushFailureDegradation:
             ok = sender.send_to_wecom_aibot("daily report")
 
         assert ok is False
-        pushed = [call.args[0] for call in client.push_message.call_args_list]
+        pushed = [call.args[0] for call in client.send_to_chat.call_args_list]
         assert pushed == ["c1", "c2"]
 
 
@@ -261,7 +257,18 @@ class TestAcc5PushFailureDegradation:
 
 
 class TestPushSuccessPath:
-    def test_push_success_sends_markdown_frame_to_chatid(self):
+    @pytest.fixture(autouse=True)
+    def _fresh_shared_limiter(self):
+        from src.notification_sender.wecom_aibot_sender import (
+            _reset_shared_push_rate_limiter,
+        )
+
+        _reset_shared_push_rate_limiter()
+        yield
+        _reset_shared_push_rate_limiter()
+
+    def test_push_success_sends_content_to_chatid_via_shared_client(self):
+        """静态推送复用 r2 的 send_to_chat（共享 handler 双窗口配额 = 真实总量）。"""
         sender = WecomAibotSender(
             _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="user-9")
         )
@@ -273,12 +280,11 @@ class TestPushSuccessPath:
             ok = sender.send_to_wecom_aibot("## 每日报告\n内容")
 
         assert ok is True
-        client.push_message.assert_called_once()
-        args, kwargs = client.push_message.call_args
-        chat_id, body = args[0], args[1]
+        client.send_to_chat.assert_called_once()
+        args, kwargs = client.send_to_chat.call_args
+        chat_id, text = args[0], args[1]
         assert chat_id == "user-9"
-        assert body["msgtype"] == "markdown"
-        assert "每日报告" in body["markdown"]["content"]
+        assert "每日报告" in text
 
     def test_push_multiple_chatids_all_succeed(self):
         sender = WecomAibotSender(
@@ -295,7 +301,7 @@ class TestPushSuccessPath:
             ok = sender.send_to_wecom_aibot("report")
 
         assert ok is True
-        assert client.push_message.call_count == 2
+        assert client.send_to_chat.call_count == 2
 
     def test_push_respects_timeout_parameter(self):
         sender = WecomAibotSender(
@@ -308,9 +314,8 @@ class TestPushSuccessPath:
         ):
             sender.send_to_wecom_aibot("report", timeout_seconds=3.5)
 
-        args, kwargs = client.push_message.call_args
-        # push_message(chat_id, body, timeout_seconds=...)
-        assert kwargs.get("timeout_seconds") == 3.5 or args[2] == 3.5
+        args, kwargs = client.send_to_chat.call_args
+        assert kwargs.get("timeout_seconds") == 3.5
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +324,16 @@ class TestPushSuccessPath:
 
 
 class TestPushRateLimiting:
+    @pytest.fixture(autouse=True)
+    def _fresh_shared_limiter(self):
+        from src.notification_sender.wecom_aibot_sender import (
+            _reset_shared_push_rate_limiter,
+        )
+
+        _reset_shared_push_rate_limiter()
+        yield
+        _reset_shared_push_rate_limiter()
+
     def test_31st_push_in_one_minute_is_rejected(self):
         sender = WecomAibotSender(
             _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
@@ -332,7 +347,7 @@ class TestPushRateLimiting:
 
         assert all(results[:30])
         assert results[30] is False
-        assert client.push_message.call_count == 30
+        assert client.send_to_chat.call_count == 30
 
     def test_rate_limit_is_per_chat(self):
         """分钟预算按会话隔离：c1 打满（推完即释放并发槽）不影响 c2。"""
@@ -380,8 +395,12 @@ class TestPushRateLimiting:
         assert limiter.acquire("c1") is not None
         assert limiter.acquire("c1") is None  # 分钟预算耗尽
 
-    def test_sender_rate_state_isolated_between_instances(self):
-        """渠道限流器独立于 Phase 1 会话回复限流（互不占用预算）。"""
+    def test_push_rate_budget_shared_across_sender_instances(self):
+        """(e) OR-COR-4c720f93：同一机器人/会话的推送预算跨发送器实例共享。
+
+        所有 WecomAibotSender 共用全局长连接客户端，限流预算不得随
+        NotificationService/Pipeline 实例重建而重置。
+        """
         s1 = WecomAibotSender(
             _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
         )
@@ -395,81 +414,10 @@ class TestPushRateLimiting:
         ):
             for _ in range(30):
                 assert s1.send_to_wecom_aibot("s1")
-            # s2 有自己的预算。
-            assert s2.send_to_wecom_aibot("s2") is True
+            # s2 不得获得新预算：第 31 条（总口径）必须被拒。
+            assert s2.send_to_wecom_aibot("s2") is False
 
-
-# ---------------------------------------------------------------------------
-# WecomAibotClient.push_message (reuses the Phase 1 connection)
-# ---------------------------------------------------------------------------
-
-
-class TestClientPushMessage:
-    def _client_with_loop(self):
-        client = wecom_aibot.WecomAibotClient.__new__(wecom_aibot.WecomAibotClient)
-        client._running = True
-        client._loop = asyncio.new_event_loop()
-        client._sdk_client = mock.MagicMock()
-        client._stop_event = mock.MagicMock()
-        client._background_thread = None
-        client._handler = mock.MagicMock()
-        return client
-
-    def test_push_message_returns_ack_frame(self):
-        client = self._client_with_loop()
-        ack = {"errcode": 0}
-        client._sdk_client.send_message = mock.MagicMock(
-            return_value=asyncio.sleep(0, result=ack)
-        )
-
-        thread = threading.Thread(target=client._loop.run_forever, daemon=True)
-        thread.start()
-        try:
-            time.sleep(0.1)
-            result = client.push_message("c1", {"msgtype": "markdown"}, 5)
-            assert result == ack
-            client._sdk_client.send_message.assert_called_once_with(
-                "c1", {"msgtype": "markdown"}
-            )
-        finally:
-            client._loop.call_soon_threadsafe(client._loop.stop)
-            thread.join(timeout=2)
-            client._loop.close()
-
-    def test_push_message_returns_none_when_not_running(self):
-        client = self._client_with_loop()
-        client._running = False
-
-        assert client.push_message("c1", {"msgtype": "markdown"}, 5) is None
-
-    def test_push_message_returns_none_when_loop_closed(self):
-        client = self._client_with_loop()
-        client._loop.close()
-
-        assert client.push_message("c1", {"msgtype": "markdown"}, 5) is None
-
-    def test_push_message_returns_none_on_sdk_exception(self):
-        client = self._client_with_loop()
-
-        async def _boom():
-            raise RuntimeError("send failed")
-
-        client._sdk_client.send_message = mock.MagicMock(return_value=_boom())
-
-        thread = threading.Thread(target=client._loop.run_forever, daemon=True)
-        thread.start()
-        try:
-            time.sleep(0.1)
-            assert client.push_message("c1", {"msgtype": "markdown"}, 5) is None
-        finally:
-            client._loop.call_soon_threadsafe(client._loop.stop)
-            thread.join(timeout=2)
-            client._loop.close()
-
-
-# ---------------------------------------------------------------------------
-# Notification service integration (channel family contract)
-# ---------------------------------------------------------------------------
+        assert client.send_to_chat.call_count == 30
 
 
 class TestNotificationIntegration:
@@ -595,6 +543,60 @@ class TestConfigChainPhase2:
 
         keys = SystemConfigService._NOTIFICATION_TEST_TARGET_KEYS.get("wecom_aibot")
         assert keys == ("WECOM_AIBOT_NOTIFY_CHATID",)
+
+
+# ---------------------------------------------------------------------------
+# (d) r2: settings-page "test notification" button must pass the real config
+#     through to the aibot channel (review OR-COR-429107a0 / OR-COR-c10b8a42)
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsTestButtonConfigParity:
+    def _service(self):
+        from src.services.system_config_service import SystemConfigService
+
+        return SystemConfigService()
+
+    def test_test_button_passes_enabled_and_chatid_to_sender(self):
+        """提供真实配置时，测试入口必须以 enabled=True + chatid 构造发送器并探测。"""
+        service = self._service()
+        constructed_configs = []
+
+        class _SpySender:
+            def __init__(self, config):
+                constructed_configs.append(config)
+
+            def send_to_wecom_aibot(self, content, *, timeout_seconds=None):
+                return True
+
+        with mock.patch(
+            "src.notification_sender.WecomAibotSender", _SpySender
+        ):
+            result = service.test_notification_channel(
+                channel="wecom_aibot",
+                items=[
+                    {"key": "WECOM_AIBOT_NOTIFY_ENABLED", "value": "true"},
+                    {"key": "WECOM_AIBOT_NOTIFY_CHATID", "value": "chat-9"},
+                ],
+            )
+
+        assert result["success"] is True, result
+        assert len(constructed_configs) == 1
+        assert constructed_configs[0].wecom_aibot_notify_enabled is True
+        assert constructed_configs[0].wecom_aibot_notify_chatid == "chat-9"
+
+    def test_test_button_reports_missing_chatid_config(self):
+        """缺 CHATID 时必须报 config_missing 且点名缺失键（必填组注册）。"""
+        service = self._service()
+
+        result = service.test_notification_channel(
+            channel="wecom_aibot",
+            items=[{"key": "WECOM_AIBOT_NOTIFY_ENABLED", "value": "true"}],
+        )
+
+        assert result["success"] is False
+        assert result.get("error_code") == "config_missing"
+        assert "WECOM_AIBOT_NOTIFY_CHATID" in (result.get("message") or "")
 
 
 if __name__ == "__main__":
