@@ -116,6 +116,12 @@ class WecomAibotHandler:
         # 会话级限流：复用 dispatcher 的 RateLimiter，对齐官方 30 条/分钟
         self._rate_limiter = RateLimiter(max_requests=30, window_seconds=60)
 
+        # 回复（出站）双窗口配额：官方单会话发送上限 30 条/分钟且 1000 条/小时
+        # （aibot_respond_msg 被动回复与 aibot_send_msg 主动推送共用该额度）。
+        # 与入站限流（_rate_limiter）分离计数，避免入站消费挤占出站配额。
+        self._outbound_minute_limiter = RateLimiter(max_requests=30, window_seconds=60)
+        self._outbound_hour_limiter = RateLimiter(max_requests=1000, window_seconds=3600)
+
         # 不同会话可并行，单会话保持 FIFO（飞书 Stream 处理器同款模式）
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="wecom-msg")
         self._pending_messages: dict = {}
@@ -231,8 +237,30 @@ class WecomAibotHandler:
         return bot_message.chat_id or bot_message.user_id or "unknown"
 
     def _allow_conversation(self, conversation_key: str) -> bool:
-        """会话级限流（30 条/分钟，官方单会话回复上限口径）"""
+        """入站 flood 防护（30 条/分钟）；回复配额另见 _allow_outbound_reply"""
         return self._rate_limiter.is_allowed(conversation_key)
+
+    def _allow_outbound_reply(self, conversation_key: str) -> bool:
+        """出站回复双窗口配额（官方单会话发送上限：30 条/分钟且 1000 条/小时）
+
+        先检查小时窗口再消耗分钟窗口，超限返回 False（调用方丢弃回复并记日志，
+        不回执以免加剧配额压力、不排队积压）。
+        """
+        if not self._outbound_hour_limiter.is_allowed(conversation_key):
+            return False
+        if not self._outbound_minute_limiter.is_allowed(conversation_key):
+            return False
+        return True
+
+    @staticmethod
+    def _outbound_key_from_frame(frame: dict) -> str:
+        """从回调帧提取回复配额的会话键（群聊 chatid / 单聊 from.userid）"""
+        body = (frame or {}).get("body") or {}
+        return (
+            body.get("chatid")
+            or (body.get("from") or {}).get("userid")
+            or "unknown"
+        )
 
     @staticmethod
     def _truncate_log_content(text: str, max_len: int = 200) -> str:
@@ -319,9 +347,22 @@ class WecomAibotHandler:
         return f"stream_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
     def _reply_to_frame(self, frame: dict, text: str) -> bool:
-        """向回调帧回复文本（默认一次性 markdown；可选 stream，finish=True）"""
+        """向回调帧回复文本（默认一次性 markdown；可选 stream，finish=True）
+
+        发送前做双窗口配额检查（分钟 30 条 + 小时 1000 条，按会话计），
+        超限丢弃回复并告警——不崩、不排队积压（OR-COM-62e2b418）。
+        """
         if not frame:
             logger.warning("[WeCom AI Bot] 无回调帧，无法回复")
+            return False
+
+        outbound_key = self._outbound_key_from_frame(frame)
+        if not self._allow_outbound_reply(outbound_key):
+            logger.warning(
+                "[WeCom AI Bot] 会话回复超限（分钟30条或小时1000条配额），"
+                "回复已丢弃: key=%s",
+                outbound_key,
+            )
             return False
 
         if self._reply_stream_enabled:
@@ -367,6 +408,10 @@ class WecomAibotClient:
     _AUTH_RETRY_MAX_DELAY_SECONDS = 30.0
     _AUTH_RETRY_MAX_ATTEMPTS = 5
 
+    # 连接周期重建退避（SDK 重连预算耗尽/异常结束后重建新周期的等待）
+    _CYCLE_RETRY_BASE_DELAY_SECONDS = 2.0
+    _CYCLE_RETRY_MAX_DELAY_SECONDS = 60.0
+
     def __init__(
         self,
         bot_id: Optional[str] = None,
@@ -405,12 +450,18 @@ class WecomAibotClient:
         self._auth_attempts = 0
         self._auth_max_attempts = self._AUTH_RETRY_MAX_ATTEMPTS
 
+        # 连接周期监督状态：SDK 内部重连预算耗尽后结束当前周期，由外层
+        # 监督循环指数退避重建（预算随新周期重置），耗尽场景自愈
+        self._cycle_failed = False
+        self._planned_cycle_delay: Optional[float] = None
+        self._cycle_attempts = 0
+
     # ------------------------------------------------------------------ #
     #  SDK 客户端与事件注册                                               #
     # ------------------------------------------------------------------ #
 
     def _create_sdk_client(self) -> Any:
-        """创建 SDK 客户端并注册事件（每轮连接新建实例，保证旧连接先被弃用）"""
+        """创建 SDK 客户端（每轮连接新建实例，保证旧连接先被弃用）"""
         sdk_client = WSClient(
             WSClientOptions(
                 bot_id=self._bot_id,
@@ -418,7 +469,11 @@ class WecomAibotClient:
                 heartbeat_interval=30000,  # 官方建议 30s 心跳
             )
         )
+        self._register_sdk_events(sdk_client)
+        return sdk_client
 
+    def _register_sdk_events(self, sdk_client: Any) -> None:
+        """注册 SDK 事件处理器（独立方法，便于测试桩复用同一注册路径）"""
         self._handler.sdk_client = sdk_client
 
         @sdk_client.on("connected")
@@ -446,15 +501,13 @@ class WecomAibotClient:
         def _on_text(frame):
             self._handler.handle_frame(frame)
 
-        return sdk_client
-
     def _register_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """把当前事件循环共享给消息处理器（回复协程调度目标）"""
         self._loop = loop
         self._handler._loop = loop
 
     # ------------------------------------------------------------------ #
-    #  认证失败降级（指数退避，不崩溃）                                    #
+    #  认证失败降级（指数退避）与连接周期监督（预算耗尽自愈）              #
     # ------------------------------------------------------------------ #
 
     @classmethod
@@ -472,16 +525,45 @@ class WecomAibotClient:
             return None
         return self._auth_backoff_delay(self._auth_attempts)
 
+    def _next_cycle_retry_delay(self) -> float:
+        """连接周期重建退避（指数递增、封顶、永不放弃——耗尽场景必须自愈）"""
+        self._cycle_attempts += 1
+        return min(
+            self._CYCLE_RETRY_BASE_DELAY_SECONDS * (2 ** (self._cycle_attempts - 1)),
+            self._CYCLE_RETRY_MAX_DELAY_SECONDS,
+        )
+
     def _on_authenticated(self) -> None:
-        """认证成功：复位退避预算"""
+        """认证成功：复位认证与连接周期退避预算"""
         self._auth_attempts = 0
         self._auth_failed = False
         self._planned_auth_delay = None
+        self._cycle_failed = False
+        self._planned_cycle_delay = None
+        self._cycle_attempts = 0
         logger.info("[WeCom AI Bot] 认证成功（aibot_subscribe errcode=0），开始收消息")
 
     def _handle_auth_error(self, error: BaseException) -> None:
-        """SDK error 事件入口：仅认证失败消耗退避预算，其余错误只记日志"""
+        """SDK error 事件入口：按错误类别分流（认证失败 / 重连预算耗尽 / 其他）"""
         message = str(error or "")
+
+        # SDK 重连预算耗尽（"Max reconnect attempts exceeded"）：SDK 内部放弃
+        # 后 run_forever 会永久空转（线程活着却永不重连）。必须结束当前连接
+        # 周期，让外层监督循环在退避后重建全新周期（新 SDK 实例重置其内部
+        # 重连预算），实现耗尽自愈，无需人工重启进程（OR-COR-a12b0edd）。
+        if "Max reconnect attempts exceeded" in message:
+            self._cycle_failed = True
+            self._planned_cycle_delay = self._next_cycle_retry_delay()
+            logger.warning(
+                "[WeCom AI Bot] SDK 重连预算耗尽（%s），%.1f 秒后由监督循环"
+                "重建连接周期（第 %s 次）",
+                message,
+                self._planned_cycle_delay,
+                self._cycle_attempts,
+            )
+            self._request_loop_stop()
+            return
+
         if "Authentication failed" not in message:
             logger.error("[WeCom AI Bot] 运行错误: %s", message)
             return
@@ -545,10 +627,18 @@ class WecomAibotClient:
         return True
 
     def _run_background(self) -> None:
-        """后台主循环：一轮 = 一个事件循环 + 一个 SDK 客户端实例"""
+        """后台监督主循环：一轮 = 一个事件循环 + 一个 SDK 客户端实例
+
+        连接周期以任何原因结束（网络断开、SDK 重连预算耗尽、异常、外部
+        stop 之外的情况）后，监督循环退避等待并重建全新周期——新 SDK 实例
+        自带重置的内部重连预算，耗尽场景自愈，无需人工重启进程
+        （OR-COR-a12b0edd）。
+        """
         while self._running:
             self._auth_failed = False
             self._planned_auth_delay = None
+            self._cycle_failed = False
+            self._planned_cycle_delay = None
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -557,7 +647,7 @@ class WecomAibotClient:
 
             try:
                 loop.run_until_complete(self._sdk_client.connect())
-                if not self._auth_failed:
+                if not self._auth_failed and not self._cycle_failed:
                     loop.run_forever()
             except Exception as exc:
                 logger.error("[WeCom AI Bot] 运行异常: %s", exc)
@@ -576,11 +666,22 @@ class WecomAibotClient:
                 )
                 if self._stop_event.wait(delay):
                     break
-            else:
-                # 正常退出 run_forever（网络断开已由 SDK 内部重连处理）或
-                # 外部 stop()：短暂等待后进入下一轮
-                if self._stop_event.wait(1.0):
-                    break
+                continue
+
+            # 非认证原因结束的连接周期（SDK 重连预算耗尽、网络断开、异常等）
+            delay = (
+                self._planned_cycle_delay
+                if self._cycle_failed
+                else self._next_cycle_retry_delay()
+            )
+            logger.info(
+                "[WeCom AI Bot] 连接周期结束，%.1f 秒后重建连接周期"
+                "（第 %s 次周期重建）",
+                delay,
+                self._cycle_attempts,
+            )
+            if self._stop_event.wait(delay):
+                break
 
     def _teardown_cycle(self, loop: asyncio.AbstractEventLoop) -> None:
         """收尾一轮连接：断开 SDK 客户端并关闭事件循环"""
@@ -604,6 +705,62 @@ class WecomAibotClient:
             asyncio.set_event_loop(None)
             self._loop = None
             self._handler._loop = None
+
+    def send_to_chat(self, chatid: str, text: str, timeout_seconds: float = 15.0) -> bool:
+        """向指定会话主动推送 markdown 消息（aibot_send_msg，同步等待回执）
+
+        供 source-context 通知链路（分析报告回来源会话）使用。
+
+        - 发送前执行与被动回复相同的双窗口配额检查（分钟 30 条 + 小时
+          1000 条，按会话计；OR-COM-62e2b418），超限丢弃并告警。
+        - 官方前置条件：目标用户须先与机器人建过会话（先发过消息），否则
+          服务端回执 errcode != 0——回执非零按失败处理并在日志标注前置条件。
+
+        Returns:
+            是否发送成功
+        """
+        conversation_key = chatid or "unknown"
+        if not self._handler._allow_outbound_reply(conversation_key):
+            logger.warning(
+                "[WeCom AI Bot] 会话推送超限（分钟30条或小时1000条配额），"
+                "消息已丢弃: key=%s",
+                conversation_key,
+            )
+            return False
+
+        if not self._running or self._sdk_client is None:
+            logger.warning(
+                "[WeCom AI Bot] 长连接客户端未运行，无法主动推送: key=%s", conversation_key
+            )
+            return False
+
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            logger.error("[WeCom AI Bot] 无法主动推送：SDK 事件循环不可用")
+            return False
+
+        body = {"msgtype": "markdown", "markdown": {"content": text}}
+        try:
+            ack = asyncio.run_coroutine_threadsafe(
+                self._sdk_client.send_message(chatid, body), loop
+            ).result(timeout_seconds)
+        except Exception as exc:
+            logger.error(
+                "[WeCom AI Bot] 主动推送失败: key=%s, error=%s", conversation_key, exc
+            )
+            return False
+
+        errcode = ack.get("errcode") if isinstance(ack, dict) else None
+        if errcode:
+            logger.warning(
+                "[WeCom AI Bot] 主动推送被拒: key=%s, errcode=%s, errmsg=%s"
+                "（官方前置条件：目标用户须先与机器人建过会话）",
+                conversation_key,
+                errcode,
+                ack.get("errmsg") if isinstance(ack, dict) else None,
+            )
+            return False
+        return True
 
     def stop(self) -> None:
         """停止客户端"""

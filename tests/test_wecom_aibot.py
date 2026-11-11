@@ -26,6 +26,7 @@ installs requirements.txt) covers them.
 import asyncio
 import os
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -711,6 +712,512 @@ class TestConfigChain:
             Path(__file__).resolve().parents[1] / "requirements.txt"
         ).read_text(encoding="utf-8")
         assert "wecom-aibot-python-sdk" in requirements
+
+
+# ---------------------------------------------------------------------------
+# r2 OR-COR-a12b0edd: reconnect-budget exhaustion must self-heal via the
+# outer supervision loop (no dead-but-alive thread, no manual restart)
+# ---------------------------------------------------------------------------
+
+
+class _StubSdkClient:
+    """Stub faithful to the real SDK WSClient surface used by the adapter."""
+
+    instances = []
+
+    def __init__(self, options):
+        self.options = options
+        self._handlers = {}
+        self.connect_count = 0
+        self.disconnect_count = 0
+        _StubSdkClient.instances.append(self)
+
+    def on(self, event, handler=None):
+        if handler is not None:
+            self._handlers.setdefault(event, []).append(handler)
+            return handler
+
+        def _deco(handler_):
+            self._handlers.setdefault(event, []).append(handler_)
+            return handler_
+
+        return _deco
+
+    def emit(self, event, *args):
+        for handler in list(self._handlers.get(event, [])):
+            handler(*args)
+
+    async def connect(self):
+        self.connect_count += 1
+        # Simulate: network drop -> SDK internal reconnect budget exhausted.
+        self.emit("error", Exception("Max reconnect attempts exceeded"))
+        await asyncio.sleep(3600)  # never completes; the loop gets stopped
+
+    def disconnect(self):
+        self.disconnect_count += 1
+
+
+class TestReconnectBudgetSelfHealing:
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def test_exhaustion_error_ends_cycle_and_plans_rebuild(self):
+        client = self._client()
+
+        loop = asyncio.new_event_loop()
+        try:
+            client._loop = loop
+            with mock.patch.object(loop, "call_soon_threadsafe") as schedule_stop:
+                client._handle_auth_error(Exception("Max reconnect attempts exceeded"))
+
+            schedule_stop.assert_called_once()
+            assert schedule_stop.call_args[0][0] == loop.stop
+        finally:
+            client._loop = None
+            loop.close()
+
+        assert client._cycle_failed is True
+        assert client._planned_cycle_delay == client._CYCLE_RETRY_BASE_DELAY_SECONDS
+        # Budget exhaustion is a runtime failure, not an auth failure.
+        assert client._auth_attempts == 0
+        assert client._auth_failed is False
+
+    def test_cycle_backoff_is_exponential_capped_and_never_gives_up(self):
+        client = self._client()
+
+        delays = [client._next_cycle_retry_delay() for _ in range(12)]
+
+        assert delays[0] == client._CYCLE_RETRY_BASE_DELAY_SECONDS
+        assert delays == sorted(delays)
+        assert delays[-1] == client._CYCLE_RETRY_MAX_DELAY_SECONDS
+        # Self-heal requirement: never returns None (no give-up on rebuilds).
+        assert all(d > 0 for d in delays)
+
+    def test_cycle_budget_resets_on_authenticated(self):
+        client = self._client()
+
+        client._next_cycle_retry_delay()
+        client._next_cycle_retry_delay()
+        assert client._cycle_attempts == 2
+
+        client._on_authenticated()
+        assert client._cycle_attempts == 0
+
+    def test_supervision_loop_rebuilds_connection_cycle_after_exhaustion(self):
+        client = self._client()
+        client._running = True
+
+        # Stub factory: build the stub and register the REAL adapter event
+        # handlers on it, so the emitted "Max reconnect attempts exceeded"
+        # flows through the production error path.
+        def _make_stub():
+            stub = _StubSdkClient(None)
+            client._register_sdk_events(stub)
+            return stub
+
+        # Watchdog: without the fix the supervision loop hangs forever in the
+        # dead-idle run_forever (exactly the reviewer-reported defect); the
+        # join timeout turns that into a deterministic RED failure.
+        threads_before = threading.active_count()
+        with mock.patch.object(client, "_create_sdk_client",
+                               side_effect=_make_stub), \
+                mock.patch.object(client._stop_event, "wait",
+                                  side_effect=[False, True]):
+            worker = threading.Thread(target=client._run_background, daemon=True)
+            worker.start()
+            worker.join(timeout=15)
+            if worker.is_alive():
+                client.stop()
+                worker.join(timeout=5)
+        assert not worker.is_alive(), (
+            "supervision loop did not rebuild the connection cycle after "
+            "SDK reconnect budget exhaustion (dead-but-alive thread)"
+        )
+
+        # Two connection cycles were built by the supervision loop: the first
+        # exhausted the SDK budget, the outer loop rebuilt a fresh cycle (new
+        # SDK client instance = fresh internal reconnect budget).
+        assert len(_StubSdkClient.instances) == 2
+        assert _StubSdkClient.instances[0].connect_count == 1
+        assert _StubSdkClient.instances[1].connect_count == 1
+        # Old clients were disconnected during teardown.
+        assert all(inst.disconnect_count == 1 for inst in _StubSdkClient.instances)
+        # No thread leak: both cycles ran inside the single supervision thread.
+        assert threading.active_count() == threads_before
+        assert client._cycle_attempts >= 1
+
+    def test_auth_success_clears_cycle_failure_state(self):
+        client = self._client()
+        client._cycle_failed = True
+        client._planned_cycle_delay = 8.0
+
+        client._on_authenticated()
+
+        assert client._cycle_failed is False
+        assert client._planned_cycle_delay is None
+
+
+# ---------------------------------------------------------------------------
+# r2 OR-COM-62e2b418: dual-window (minute + hour) per-conversation reply quota
+# ---------------------------------------------------------------------------
+
+
+class TestHourlyConversationQuota:
+    def _handler(self):
+        handler, sdk_client = _handler()
+        return handler, sdk_client
+
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def test_outbound_limiters_are_dual_window(self):
+        from bot.dispatcher import RateLimiter
+
+        handler, _ = self._handler()
+        assert isinstance(handler._outbound_minute_limiter, RateLimiter)
+        assert handler._outbound_minute_limiter.max_requests == 30
+        assert handler._outbound_minute_limiter.window_seconds == 60
+        assert isinstance(handler._outbound_hour_limiter, RateLimiter)
+        assert handler._outbound_hour_limiter.max_requests == 1000
+        assert handler._outbound_hour_limiter.window_seconds == 3600
+
+    def test_reply_hourly_quota_probe_17_per_minute_for_an_hour(self, caplog):
+        """Reviewer probe: 17 msgs/min sustained for an hour must stop at the
+        1000th reply (minute window untouched, hourly window rejects)."""
+        handler, sdk_client = self._handler()
+
+        clock = [1_000_000.0]
+
+        with mock.patch("bot.dispatcher.time.time", side_effect=lambda: clock[0]), \
+                mock.patch.object(handler, "_schedule_reply",
+                                  side_effect=lambda coro: coro.close()):
+            for i in range(1020):
+                handler._reply_to_frame(
+                    _text_frame(msgid=f"m{i}", chatid="chat-hour"), f"r{i}"
+                )
+                if (i + 1) % 17 == 0:
+                    clock[0] += 61  # advance past the minute window every 17 sends
+
+        # First 1000 replies went out; replies 1001..1020 dropped by the hour.
+        assert sdk_client.reply.call_count == 1000
+        assert "超限" in caplog.text or "1000" in caplog.text
+
+    def test_outbound_gate_checks_hour_window_before_minute(self):
+        handler, _ = self._handler()
+
+        # Isolate the hour window: pin the minute limiter open.
+        minute_stub = mock.MagicMock()
+        minute_stub.is_allowed.return_value = True
+        with mock.patch.object(handler, "_outbound_minute_limiter", minute_stub):
+            # Hour exhausted -> reject even when the minute window is wide open.
+            for _ in range(handler._outbound_hour_limiter.max_requests):
+                assert handler._allow_outbound_reply("chat-x") is True
+            assert handler._allow_outbound_reply("chat-x") is False
+            # A different conversation is unaffected.
+            assert handler._allow_outbound_reply("chat-y") is True
+
+    def test_passive_reply_path_gated_by_dual_window(self):
+        handler, sdk_client = self._handler()
+        frame = _text_frame(msgid="m", chatid="chat-g")
+
+        with mock.patch.object(handler, "_schedule_reply",
+                               side_effect=lambda coro: coro.close()):
+            for _ in range(30):
+                assert handler._reply_to_frame(frame, "r") is True
+            # Minute window now full for this conversation.
+            assert handler._reply_to_frame(frame, "r") is False
+
+        assert sdk_client.reply.call_count == 30
+
+    def test_proactive_send_path_gated_and_checks_ack(self, caplog):
+        client = self._client()
+        handler = client._handler
+        client._running = True
+        client._sdk_client = mock.MagicMock()
+
+        # Exhaust the hourly quota for the conversation.
+        for _ in range(1000):
+            handler._allow_outbound_reply("chat-pro")
+        assert client.send_to_chat("chat-pro", "report") is False
+        assert "超限" in caplog.text
+
+        caplog.clear()
+        # Quota open + loop unavailable -> quota passed, loop missing rejects.
+        assert client.send_to_chat("chat-other", "report") is False
+        assert "事件循环不可用" in caplog.text
+
+    def test_send_to_chat_happy_path_and_errcode_ack(self, caplog):
+        client = self._client()
+        client._running = True
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            client._loop = loop
+            client._handler._loop = loop
+            sdk_client = mock.MagicMock()
+
+            async def _ack_ok(chatid, body):
+                return {"errcode": 0, "errmsg": "ok"}
+
+            async def _ack_err(chatid, body):
+                return {"errcode": 44002, "errmsg": "user never messaged the bot"}
+
+            client._sdk_client = sdk_client
+            sdk_client.send_message = _ack_ok
+            assert client.send_to_chat("chat-ok", "📊 报告") is True
+
+            sdk_client.send_message = _ack_err
+            assert client.send_to_chat("chat-ok", "📊 报告") is False
+            assert "会话" in caplog.text  # precondition hint on non-zero errcode
+        finally:
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_send_to_chat_refuses_when_client_not_running(self, caplog):
+        client = self._client()
+        client._running = False
+
+        assert client.send_to_chat("chat-a", "x") is False
+        assert "未运行" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# r2 OR-COR-26fa4c23: /analyze results must return to the WeCom source
+# conversation via the source-context notification channel
+# ---------------------------------------------------------------------------
+
+
+def _make_wecom_message():
+    from bot.models import BotMessage
+
+    return BotMessage(
+        platform="wecom",
+        message_id="msg-wx-1",
+        user_id="enc-user-9",
+        user_name="enc-user-9",
+        chat_id="wrk-group-9",
+        chat_type=ChatType.GROUP,
+        content="/analyze 600519",
+        raw_data={
+            "_wecom_req_id": "req-9",
+            "_wecom_frame": {"cmd": "aibot_msg_callback", "headers": {"req_id": "req-9"}},
+        },
+    )
+
+
+def _pure_wecom_config(**overrides):
+    """Config with zero static notification channels (pure WeCom aibot setup)."""
+    from src.config import Config
+
+    base = dict(
+        stock_list=[],
+        wechat_webhook_url=None,
+        dingtalk_app_key=None,
+        dingtalk_app_secret=None,
+        dingtalk_webhook_url=None,
+        feishu_webhook_url=None,
+        feishu_app_id=None,
+        feishu_app_secret=None,
+        telegram_bot_token=None,
+        telegram_chat_id=None,
+        email_sender=None,
+        email_password=None,
+        email_receivers=[],
+    )
+    base.update(overrides)
+    return Config(**base)
+
+
+class TestSourceContextNotification:
+    """OR-COR-26fa4c23: WeCom aibot registered as a source-context channel."""
+
+    def _service(self, config):
+        from src.notification import NotificationService
+
+        with mock.patch("src.notification.get_config", return_value=config):
+            return NotificationService(source_message=_make_wecom_message())
+
+    def test_wecom_source_message_is_context_channel(self):
+        service = self._service(_pure_wecom_config())
+
+        assert service._has_context_channel() is True
+        # Pure WeCom setup: no static channel configured, yet available.
+        assert service.is_available() is True
+        # And the source conversation must NOT broadcast static channels.
+        assert service.should_broadcast_static_channels() is False
+
+    def test_extract_wecom_context_chat_id(self):
+        service = self._service(_pure_wecom_config())
+
+        context = service._extract_wecom_aibot_context()
+        assert context == {"chat_id": "wrk-group-9"}
+
+    def test_send_to_context_routes_to_wecom_client(self):
+        service = self._service(_pure_wecom_config())
+
+        with mock.patch.object(service, "_send_wecom_aibot_reply",
+                               return_value=True) as send_reply:
+            assert service.send_to_context("📊 报告") is True
+        send_reply.assert_called_once_with("wrk-group-9", "📊 报告")
+
+    def test_non_wecom_platform_has_no_wecom_context(self):
+        from src.notification import NotificationService
+
+        config = _pure_wecom_config()
+        dingtalk_message = mock.MagicMock()
+        dingtalk_message.platform = "dingtalk"
+        with mock.patch("src.notification.get_config", return_value=config):
+            service = NotificationService(source_message=dingtalk_message)
+
+        assert service._extract_wecom_aibot_context() is None
+
+    def test_wecom_context_response_skips_static_channels(self):
+        from src.notification import NotificationService
+
+        config = _pure_wecom_config(
+            wechat_webhook_url="https://wechat.example/hook",
+        )
+        with mock.patch("src.notification.get_config", return_value=config):
+            service = NotificationService(source_message=_make_wecom_message())
+
+        with mock.patch.object(service, "_send_wecom_aibot_reply",
+                               return_value=True), \
+                mock.patch.object(service, "send_to_wechat",
+                                  return_value=True) as mock_wechat:
+            result = service.send_with_results("content", route_type="report")
+
+        assert result.dispatched is True
+        assert result.success is True
+        assert [item.channel for item in result.channel_results] == ["__context__"]
+        mock_wechat.assert_not_called()
+
+    def test_send_wecom_aibot_reply_calls_adapter_send_to_chat(self):
+        from src.notification import NotificationService
+
+        service = NotificationService(source_message=_make_wecom_message())
+        adapter_client = mock.MagicMock()
+        adapter_client.send_to_chat.return_value = True
+
+        with mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client",
+            return_value=adapter_client,
+        ), mock.patch(
+            "bot.platforms.wecom_aibot.WECOM_AIBOT_SDK_AVAILABLE", True
+        ):
+            assert service._send_wecom_aibot_reply("wrk-group-9", "📊 报告") is True
+
+        adapter_client.send_to_chat.assert_called_once_with("wrk-group-9", "📊 报告")
+
+    def test_send_wecom_aibot_reply_without_sdk_returns_false(self):
+        from src.notification import NotificationService
+
+        service = NotificationService(source_message=_make_wecom_message())
+
+        with mock.patch(
+            "bot.platforms.wecom_aibot.WECOM_AIBOT_SDK_AVAILABLE", False
+        ), mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client"
+        ) as get_client:
+            assert service._send_wecom_aibot_reply("wrk-group-9", "x") is False
+        get_client.assert_not_called()
+
+    def test_full_round_trip_report_returns_to_source_conversation(self):
+        """/analyze 提交 → 任务完成 → 报告回到企微来源会话（mock
+        TaskService / NotificationService 协作的端到端断言）。"""
+        handler, _ = _handler()
+        frame = _text_frame(
+            msgid="rt-1", content="/analyze 600519",
+            chatid="wrk-group-9", chattype="group",
+        )
+        bot_message = handler._parse_frame(frame)
+
+        captured = {}
+
+        async def _fake_dispatch(msg):
+            # AnalyzeCommand semantics: submit the task carrying the source
+            # message so the completion notification can route back.
+            captured["source_message"] = msg
+            return BotResponse.markdown_response("✅ 分析任务已提交")
+
+        dispatcher = mock.MagicMock()
+        dispatcher.dispatch_async = _fake_dispatch
+
+        with mock.patch(
+            "bot.dispatcher.get_dispatcher", return_value=dispatcher
+        ), mock.patch.object(handler, "_schedule_reply",
+                             side_effect=lambda coro: coro.close()):
+            handler._process_message(bot_message)
+
+        assert "source_message" in captured
+
+        from src.notification import NotificationService
+
+        adapter_client = mock.MagicMock()
+        adapter_client.send_to_chat.return_value = True
+
+        with mock.patch("src.notification.get_config",
+                        return_value=_pure_wecom_config()), \
+                mock.patch("bot.platforms.wecom_aibot.get_wecom_aibot_client",
+                           return_value=adapter_client), \
+                mock.patch("bot.platforms.wecom_aibot.WECOM_AIBOT_SDK_AVAILABLE", True):
+            service = NotificationService(source_message=captured["source_message"])
+            assert service.is_available() is True
+            assert service.should_broadcast_static_channels() is False
+
+            result = service.send_with_results("📊 600519 分析报告", route_type="report")
+
+            assert result.dispatched is True
+            assert result.success is True
+            adapter_client.send_to_chat.assert_called_once()
+            chat_id_arg, content_arg = adapter_client.send_to_chat.call_args[0]
+            assert chat_id_arg == "wrk-group-9"
+            assert "分析报告" in content_arg
+
+    def test_wecom_context_push_failure_does_not_broadcast_static(self):
+        from src.notification import NotificationService
+
+        config = _pure_wecom_config(
+            wechat_webhook_url="https://wechat.example/hook",
+        )
+        with mock.patch("src.notification.get_config", return_value=config):
+            service = NotificationService(source_message=_make_wecom_message())
+
+        with mock.patch.object(service, "_send_wecom_aibot_reply",
+                               return_value=False), \
+                mock.patch.object(service, "send_to_wechat",
+                                  return_value=True) as mock_wechat:
+            result = service.send_with_results("content", route_type="report")
+
+        assert result.dispatched is True
+        assert result.success is False
+        mock_wechat.assert_not_called()
 
 
 if __name__ == "__main__":
