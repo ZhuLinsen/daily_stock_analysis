@@ -40,6 +40,7 @@ from src.services.import_parser import (
     parse_import_from_text,
 )
 from src.services.stock_service import StockService
+from src.services.quote_snapshot_service import QuoteSnapshotService
 from src.services.stock_profile_service import InvalidStockProfileCode, StockProfileService
 from src.services.run_diagnostics import sanitize_diagnostic_text
 from src.services.stock_list_parser import split_stock_list
@@ -449,35 +450,42 @@ def get_stock_profile(
     "/{stock_code}/quote",
     response_model=StockQuote,
     responses={
-        200: {"description": "行情数据"},
+        200: {"description": "行情快照"},
+        400: {"description": "股票代码无效", "model": ErrorResponse},
         404: {"description": "股票不存在", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
-    summary="获取股票实时行情",
-    description="获取指定股票的最新行情数据"
+    summary="获取个股行情快照",
+    description=(
+        "只读行情快照：22 字段（直出 15 + VWAP/委比/成交笔数派生 + MA5/10/20/60）"
+        "+ 数据质量元数据（source/is_stale/missing_fields 等）。"
+        "多市场降级：缺失一律 null 并随 missing_fields 透出，不做字段级硬失败；"
+        "响应经 realtime_cache_ttl 短 TTL 缓存。"
+    ),
 )
 def get_stock_quote(stock_code: str) -> StockQuote:
     """
-    获取股票实时行情
-    
-    获取指定股票的最新行情数据
-    
+    获取个股行情快照（issue #771 看板口径）
+
+    只读端点：实时行情走 DataFetcherManager.get_realtime_quote() 统一入口（只读不动），
+    MA 由历史日线严格全窗计算，委比仅 A 股五档盘口可得，成交笔数 em 标准接口
+    不可得恒 null。未知代码与既有错误范式一致：404 not_found。
+
     Args:
         stock_code: 股票代码（如 600519、00700、AAPL）
-        
+
     Returns:
-        StockQuote: 实时行情数据
-        
+        StockQuote: 22 字段行情快照 + 数据质量元数据
+
     Raises:
-        HTTPException: 404 - 股票不存在
+        HTTPException: 400 - 代码格式非法；404 - 股票不存在；500 - 服务器错误
     """
+    validated = _validate_and_normalize_stock_code(stock_code)
     try:
-        service = StockService()
-        
         # 使用 def 而非 async def，FastAPI 自动在线程池中执行
-        result = service.get_realtime_quote(stock_code)
-        
-        if result is None:
+        snapshot = QuoteSnapshotService().get_snapshot(validated)
+
+        if snapshot is None:
             raise HTTPException(
                 status_code=404,
                 detail={
@@ -485,22 +493,9 @@ def get_stock_quote(stock_code: str) -> StockQuote:
                     "message": f"未找到股票 {stock_code} 的行情数据"
                 }
             )
-        
-        return StockQuote(
-            stock_code=result.get("stock_code", stock_code),
-            stock_name=result.get("stock_name"),
-            current_price=result.get("current_price", 0.0),
-            change=result.get("change"),
-            change_percent=result.get("change_percent"),
-            open=result.get("open"),
-            high=result.get("high"),
-            low=result.get("low"),
-            prev_close=result.get("prev_close"),
-            volume=result.get("volume"),
-            amount=result.get("amount"),
-            update_time=result.get("update_time")
-        )
-        
+
+        return StockQuote(**snapshot)
+
     except HTTPException:
         raise
     except Exception as e:

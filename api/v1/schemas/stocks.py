@@ -21,35 +21,102 @@ StockProfileStatus = Literal["fresh", "partial", "unavailable"]
 
 
 class StockQuote(BaseModel):
-    """股票实时行情"""
-    
+    """个股行情快照（issue #771 看板口径：22 字段 + 数据质量元数据）
+
+    22 字段清单（计划默认值 4 钉死，不得增删口径）：
+    - 直出 15（UnifiedRealtimeQuote）：price/pre_close/open_price/high/low/volume/
+      amount/change_amount/change_pct/amplitude/volume_ratio/turnover_rate/
+      change_60d/high_52w/low_52w
+    - 派生 3：vwap（amount/volume 均价口径，缺 amount 则 null）、
+      bid_ask_ratio（委比%，仅 A 股盘口可得）、trade_count（成交笔数，em 标准接口不可得恒 null）
+    - MA 4 档：ma5/ma10/ma20/ma60（历史日线严格全窗，不足 N 条 null）
+
+    多市场降级：缺失一律显式 null 并随 missing_fields 透出，前端以"—"占位，
+    不做字段级硬失败。
+    """
+
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
-    current_price: float = Field(..., description="当前价格")
-    change: Optional[float] = Field(None, description="涨跌额")
-    change_percent: Optional[float] = Field(None, description="涨跌幅 (%)")
-    open: Optional[float] = Field(None, description="开盘价")
+
+    # === 数据质量元数据（随响应透出） ===
+    source: Optional[str] = Field(None, description="数据源 token（如 akshare_em/yfinance）")
+    fetched_at: Optional[str] = Field(None, description="本系统获取时间（ISO 8601）")
+    provider_timestamp: Optional[str] = Field(None, description="行情源时间戳（ISO 8601）")
+    is_stale: Optional[bool] = Field(None, description="行情是否超过 realtime_cache_ttl 阈值")
+    stale_seconds: Optional[int] = Field(None, description="行情源时间距获取时刻秒数")
+    market: Optional[str] = Field(None, description="市场标签（cn/hk/us/jp/kr/tw）")
+    currency: Optional[str] = Field(None, description="报价币种")
+    data_quality: Optional[str] = Field(None, description="数据质量（ok/partial/unavailable）")
+    fallback_from: Optional[str] = Field(None, description="整源 fallback 的失败首选源 token")
+    missing_fields: List[str] = Field(
+        default_factory=list,
+        description="本响应中为 null 的字段名集合（含 provider 缺失与派生不可得）",
+    )
+
+    # === 直出 15（UnifiedRealtimeQuote 同名） ===
+    price: Optional[float] = Field(None, description="最新价")
+    pre_close: Optional[float] = Field(None, description="昨收价")
+    open_price: Optional[float] = Field(None, description="开盘价")
     high: Optional[float] = Field(None, description="最高价")
     low: Optional[float] = Field(None, description="最低价")
-    prev_close: Optional[float] = Field(None, description="昨收价")
-    volume: Optional[float] = Field(None, description="成交量（股）")
+    volume: Optional[int] = Field(None, description="成交量（股，与历史日线口径一致）")
     amount: Optional[float] = Field(None, description="成交额（元）")
-    update_time: Optional[str] = Field(None, description="更新时间")
-    
+    change_amount: Optional[float] = Field(None, description="涨跌额")
+    change_pct: Optional[float] = Field(None, description="涨跌幅 (%)")
+    amplitude: Optional[float] = Field(None, description="振幅 (%)")
+    volume_ratio: Optional[float] = Field(None, description="量比")
+    turnover_rate: Optional[float] = Field(None, description="换手率 (%)")
+    change_60d: Optional[float] = Field(None, description="60日涨跌幅 (%)")
+    high_52w: Optional[float] = Field(None, description="52周最高")
+    low_52w: Optional[float] = Field(None, description="52周最低")
+
+    # === 派生 3 ===
+    vwap: Optional[float] = Field(None, description="VWAP（amount/volume 均价口径；缺 amount 则 null）")
+    bid_ask_ratio: Optional[float] = Field(None, description="委比 (%)（五档盘口派生，仅 A 股可得，否则 null）")
+    trade_count: Optional[int] = Field(None, description="成交笔数（em 标准接口不可得，恒 null）")
+
+    # === MA 4 档（历史日线严格全窗，不足 N 条 null） ===
+    ma5: Optional[float] = Field(None, description="MA5（最近 5 条收盘均值，不足 5 条 null）")
+    ma10: Optional[float] = Field(None, description="MA10（最近 10 条收盘均值，不足 10 条 null）")
+    ma20: Optional[float] = Field(None, description="MA20（最近 20 条收盘均值，不足 20 条 null）")
+    ma60: Optional[float] = Field(None, description="MA60（最近 60 条收盘均值，不足 60 条 null）")
+
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "stock_code": "600519",
             "stock_name": "贵州茅台",
-            "current_price": 1800.00,
-            "change": 15.00,
-            "change_percent": 0.84,
-            "open": 1785.00,
+            "source": "akshare_em",
+            "fetched_at": "2024-01-01T15:00:00+08:00",
+            "provider_timestamp": "2024-01-01T15:00:00+08:00",
+            "is_stale": False,
+            "stale_seconds": 0,
+            "market": "cn",
+            "currency": "CNY",
+            "data_quality": "ok",
+            "fallback_from": None,
+            "missing_fields": ["trade_count"],
+            "price": 1800.00,
+            "pre_close": 1785.00,
+            "open_price": 1785.00,
             "high": 1810.00,
             "low": 1780.00,
-            "prev_close": 1785.00,
             "volume": 10000000,
             "amount": 18000000000,
-            "update_time": "2024-01-01T15:00:00"
+            "change_amount": 15.00,
+            "change_pct": 0.84,
+            "amplitude": 1.68,
+            "volume_ratio": 1.10,
+            "turnover_rate": 0.80,
+            "change_60d": 12.5,
+            "high_52w": 1900.00,
+            "low_52w": 1550.00,
+            "vwap": 1800.00,
+            "bid_ask_ratio": 8.5,
+            "trade_count": None,
+            "ma5": 1795.0,
+            "ma10": 1780.0,
+            "ma20": 1760.0,
+            "ma60": 1700.0,
         }
     })
 

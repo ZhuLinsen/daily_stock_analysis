@@ -27,6 +27,7 @@ import logging
 import multiprocessing
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -1070,6 +1071,44 @@ class AkshareFetcher(BaseFetcher):
             )
             return None
     
+    def get_a_share_order_book(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """
+        获取 A 股五档盘口量（委比派生输入，issue #771）
+
+        数据源：东方财富 push2 行情报价（ak.stock_bid_ask_em）。
+
+        探针结论（akshare 1.18.97 源码实证，2026-11-11）：
+        - 五档买卖量（buy_1..5_vol / sell_1..5_vol）可得 → 委比可派生；
+        - 成交笔数字段不存在（L2 专属）→ 上层恒 null + missing_fields。
+
+        Args:
+            stock_code: 纯 6 位 A 股代码（如 600519）；其他形态直接返回 None
+
+        Returns:
+            {"buy_volumes": [...], "sell_volumes": [...]}（含 None 占位），
+            盘口不可得/非 A 股代码/任何异常 → None（调用方降级 null 语义，不硬失败）
+        """
+        code = (stock_code or "").strip()
+        if not re.fullmatch(r"\d{6}", code):
+            return None
+        try:
+            import akshare as ak
+
+            frame = ak.stock_bid_ask_em(symbol=code)
+            if frame is None or getattr(frame, "empty", True):
+                logger.info("[盘口] %s 东财盘口返回空", code)
+                return None
+            items = dict(zip(frame["item"], frame["value"]))
+            buy_volumes = [safe_float(items.get(f"buy_{i}_vol")) for i in range(1, 6)]
+            sell_volumes = [safe_float(items.get(f"sell_{i}_vol")) for i in range(1, 6)]
+            if all(v is None for v in buy_volumes) and all(v is None for v in sell_volumes):
+                logger.info("[盘口] %s 东财盘口无五档量数据", code)
+                return None
+            return {"buy_volumes": buy_volumes, "sell_volumes": sell_volumes}
+        except Exception as exc:  # noqa: BLE001 - 盘口失败必须降级而非中断快照
+            logger.warning("[盘口] %s 东财盘口获取失败，委比降级 null: %s", code, exc)
+            return None
+
     def get_realtime_quote(self, stock_code: str, source: str = "em") -> Optional[UnifiedRealtimeQuote]:
         """
         获取实时行情数据（支持多数据源）
