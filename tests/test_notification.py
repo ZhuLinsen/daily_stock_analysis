@@ -2644,6 +2644,23 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertTrue(ok)
         mock_post.assert_called_once()
 
+    @mock.patch("src.notification_sender.telegram_sender.time.sleep")
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_telegram_via_notification_service_respects_flood_control(
+        self, mock_post, mock_get_config, mock_sleep
+    ):
+        mock_get_config.return_value = _make_config(telegram_bot_token="TOKEN", telegram_chat_id="123")
+        limited = requests.Response()
+        limited.status_code = 429
+        limited._content = b'{"ok": false, "parameters": {"retry_after": 37}}'
+        mock_post.side_effect = [limited, _make_response(200, {"ok": True})]
+
+        self.assertTrue(NotificationService().send("hello telegram"))
+
+        mock_sleep.assert_called_once_with(37)
+        self.assertEqual(mock_post.call_count, 2)
+
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
     def test_send_to_wechat_via_notification_service(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
