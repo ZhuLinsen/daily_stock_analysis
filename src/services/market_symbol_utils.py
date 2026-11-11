@@ -85,6 +85,47 @@ def is_tw_suffix_symbol(stock_code: str) -> bool:
     return is_suffix_market_symbol(stock_code, "tw")
 
 
+# Canada (Issue #2420) is a suffix-only market whose ticker base is ALPHABETIC,
+# unlike the digit-based JP/KR/TW specs above, so it cannot live in
+# ``SuffixMarketSpec``/``_SUFFIX_MARKET_SPECS``:
+# - TSX  ``.TO`` (e.g. ``SHOP.TO``): suffix match is case-insensitive, mirroring
+#   the ``.T``/``.KS`` precedent (``7203.T``/``7203.t`` both route to jp).
+# - TSXV ``.V``  (e.g. ``SHOP.V``): ONLY the uppercase ``.V`` form is treated as
+#   TSXV. A lowercase ``.v`` collides with the US single-letter class-share
+#   suffix family (``BRK.B`` / ``SHOP.U``), so it must keep the legacy US
+#   semantics. ``split_suffix_symbol`` upper-cases its input, which would
+#   destroy that distinction — hence the raw-text check below.
+_CA_BASE_MAX_LEN = 6
+
+
+def get_ca_suffix_market(stock_code: str) -> Optional[str]:
+    """Return ``"ca"`` for TSX ``.TO`` and uppercase-only TSXV ``.V`` symbols.
+
+    The suffix check is case-sensitive for ``.V`` by design: the raw token must
+    literally end with ``.V``. Bases must be purely alphabetic 1-6 letter TSX
+    tickers (``SHOP``/``BANK``/``RY``); digit bases (``7203.TO``) are rejected.
+    """
+
+    raw = (stock_code or "").strip()
+    if "." not in raw:
+        return None
+    upper = raw.upper()
+    base, suffix = upper.rsplit(".", 1)
+    if not base or len(base) > _CA_BASE_MAX_LEN or not base.isalpha():
+        return None
+    if suffix == "TO":
+        return "ca"
+    if suffix == "V" and raw.endswith(".V"):
+        return "ca"
+    return None
+
+
+def is_ca_market_symbol(stock_code: str) -> bool:
+    """Return whether a stock code is a supported Canada (TSX/TSXV) symbol."""
+
+    return get_ca_suffix_market(stock_code) == "ca"
+
+
 def normalize_suffix_market_symbol(stock_code: str) -> Optional[str]:
     """Normalize supported suffix-only symbols to upper-case Yahoo form."""
 

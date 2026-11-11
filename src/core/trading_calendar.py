@@ -38,7 +38,17 @@ except ImportError:
     )
 
 # Market -> exchange code (exchange-calendars)
-MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS", "kr": "XKRX", "tw": "XTAI"}
+MARKET_EXCHANGE = {
+    "cn": "XSHG",
+    "hk": "XHKG",
+    "us": "XNYS",
+    "jp": "XTKS",
+    "kr": "XKRX",
+    "tw": "XTAI",
+    # Canada (Issue #2420): Toronto Stock Exchange sessions drive the ca
+    # market-review trading-day filter, so ca never rides the A-share calendar.
+    "ca": "XTSX",
+}
 
 # Market -> IANA timezone for "today"
 MARKET_TIMEZONE = {
@@ -48,6 +58,7 @@ MARKET_TIMEZONE = {
     "jp": "Asia/Tokyo",
     "kr": "Asia/Seoul",
     "tw": "Asia/Taipei",
+    "ca": "America/Toronto",
 }
 
 # P0 market phase baseline (Issue #1386). This is an intentionally small
@@ -644,15 +655,17 @@ def compute_effective_region(
     Compute effective market review region given config and open markets.
 
     Args:
-        config_region: From MARKET_REVIEW_REGION ('cn' | 'hk' | 'us' | 'jp' | 'kr' | 'both' or comma subset)
+        config_region: From MARKET_REVIEW_REGION ('cn' | 'hk' | 'us' | 'jp' | 'kr' | 'ca' | 'both' or comma subset)
         open_markets: Markets open today
 
     Returns:
         None: caller uses config default (check disabled)
         '': all relevant markets closed, skip market review
-        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'both': effective subset for today
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'ca' | 'both': effective subset for today
     """
-    markets = ("cn", "hk", "us", "jp", "kr")
+    # ca (Issue #2420) is filtered by its own XTSX/America-Toronto session above;
+    # a TSX holiday skips the ca review instead of falling back to the cn calendar.
+    markets = ("cn", "hk", "us", "jp", "kr", "ca")
     normalized = (config_region or "cn").strip().lower()
     if not normalized:
         normalized = "cn"

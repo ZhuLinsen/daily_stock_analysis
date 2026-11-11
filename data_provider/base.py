@@ -26,7 +26,7 @@ import pandas as pd
 import numpy as np
 from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
-from src.services.market_symbol_utils import is_suffix_market_symbol
+from src.services.market_symbol_utils import is_ca_market_symbol, is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 from src.services.stock_list_parser import AnalysisTarget, ParseStatus, parse_analysis_target
 from .fundamental_adapter import AkshareFundamentalAdapter
@@ -199,6 +199,17 @@ def _is_tw_market(code: str) -> bool:
     仅带 .TW/.TWO 后缀的代码才识别为台股，裸 6 位代码仍按 A 股语义处理。
     """
     return is_suffix_market_symbol(code, "tw")
+
+
+def _is_ca_market(code: str) -> bool:
+    """判定是否为加拿大 Yahoo Finance suffix 代码（Issue #2420）。
+
+    TSX 上市 ``.TO``（如 SHOP.TO）大小写不敏感；TSXV ``.V`` 仅大写形态识别
+    （小写 ``.v`` 与美股单字母分类后缀形态歧义，不误判）；base 为 1-6 位纯
+    字母 ticker（数字 base 的 ``7203.TO`` 不算）。委托给共享模块
+    ``src.services.market_symbol_utils``，与 parser 侧同一口径。
+    """
+    return is_ca_market_symbol(code)
 
 
 def _is_etf_code(code: str) -> bool:
@@ -2484,15 +2495,18 @@ class DataFetcherManager:
         #   未配置长桥: YFinance/AkShare 首选, Longbridge 补充
         #   美股指数:   始终 YFinance 首选（Longbridge 不提供指数行情）
         # ----------------------------------------------------------
+        is_ca = _is_ca_market(raw_stock_code)
         is_us_index = is_us_index_code(stock_code)
-        is_us = is_us_index or _is_us_code(stock_code)
-        is_hk = (not is_us) and _is_hk_market(stock_code)
-        is_jp = (not is_us) and (not is_hk) and _is_jp_market(stock_code)
-        is_kr = (not is_us) and (not is_hk) and _is_kr_market(stock_code)
-        is_tw = (not is_us) and (not is_hk) and _is_tw_market(stock_code)
+        is_us = (not is_ca) and (is_us_index or _is_us_code(stock_code))
+        is_hk = (not is_us) and (not is_ca) and _is_hk_market(stock_code)
+        is_jp = (not is_us) and (not is_hk) and (not is_ca) and _is_jp_market(stock_code)
+        is_kr = (not is_us) and (not is_hk) and (not is_ca) and _is_kr_market(stock_code)
+        is_tw = (not is_us) and (not is_hk) and (not is_ca) and _is_tw_market(stock_code)
 
-        if is_jp or is_kr or is_tw:
-            market_label = "日股" if is_jp else "韩股" if is_kr else "台股"
+        if is_ca or is_jp or is_kr or is_tw:
+            market_label = (
+                "加股" if is_ca else "日股" if is_jp else "韩股" if is_kr else "台股"
+            )
             quote = self._try_fetcher_quote(stock_code, "YfinanceFetcher", **target_kwargs)
             if quote is not None:
                 logger.info(f"[实时行情] {market_label} {stock_code} 成功获取 (来源: YfinanceFetcher)")

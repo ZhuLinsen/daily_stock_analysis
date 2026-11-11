@@ -35,7 +35,11 @@ from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, _is_hk_market, 
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
 from .yfinance_fundamental_adapter import _safe_float
-from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
+from src.services.market_symbol_utils import (
+    get_suffix_market,
+    is_ca_market_symbol,
+    is_suffix_market_symbol,
+)
 
 # 可选导入本地股票映射补丁，若缺失则使用空字典兜底
 try:
@@ -125,6 +129,12 @@ class YfinanceFetcher(BaseFetcher):
         if yf_symbol:
             logger.debug(f"识别为美股指数: {code} -> {yf_symbol}")
             return yf_symbol
+
+        # 加拿大 TSX/TSXV suffix-only 代码原样传给 Yahoo（如 SHOP.TO / SHOP.V）。
+        # 大写 .V 形态同时命中美股单字母分类后缀正则，必须先于美股判定。
+        if is_ca_market_symbol(code):
+            logger.debug(f"识别为加拿大 Yahoo suffix 代码: {code}")
+            return code
 
         # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
         if is_us_stock_code(code):
@@ -367,6 +377,8 @@ class YfinanceFetcher(BaseFetcher):
             return self._get_kr_main_indices(yf)
         if region == "tw":
             return self._get_tw_main_indices(yf)
+        if region == "ca":
+            return self._get_ca_main_indices(yf)
 
         # A 股指数：akshare 代码 -> (yfinance 代码, 显示名称)
         yf_mapping = {
@@ -524,6 +536,33 @@ class YfinanceFetcher(BaseFetcher):
                 return results
         except Exception as e:
             logger.error(f"[Yfinance] 获取台湾指数行情失败: {e}")
+        return None
+
+    def _get_ca_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
+        """获取加拿大主要指数行情（S&P/TSX Composite ^GSPTSE），复用 _fetch_yf_ticker_data。
+
+        按 Issue #2420 边界，复盘指数仅加 S&P/TSX Composite（默认值 7）；
+        不做 TSX Venture/CSE 大盘复盘指数。Yahoo Finance 符号映射由离线单测
+        tests/test_yfinance_ca_indices.py 固化，避免在线依赖导致非确定性失败。
+        """
+        ca_indices = {
+            'GSPTSE': ('^GSPTSE', 'S&P/TSX 综合指数'),
+        }
+        results = []
+        try:
+            for code, (yf_symbol, name) in ca_indices.items():
+                try:
+                    item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
+                    if item:
+                        results.append(item)
+                        logger.debug(f"[Yfinance] 获取加拿大指数 {name} 成功")
+                except Exception as e:
+                    logger.warning(f"[Yfinance] 获取加拿大指数 {name} 失败: {e}")
+            if results:
+                logger.info(f"[Yfinance] 成功获取 {len(results)} 个加拿大指数行情")
+                return results
+        except Exception as e:
+            logger.error(f"[Yfinance] 获取加拿大指数行情失败: {e}")
         return None
 
     def _is_us_stock(self, stock_code: str) -> bool:
@@ -815,14 +854,15 @@ class YfinanceFetcher(BaseFetcher):
                 index_name=index_name,
             )
 
-        # 仅处理美股、港股或 JP/KR/TW suffix-only 股票
+        # 仅处理美股、港股或 JP/KR/TW/CA suffix-only 股票
         if not (
-            self._is_us_stock(stock_code)
+            is_ca_market_symbol(stock_code)
+            or self._is_us_stock(stock_code)
             or _is_hk_market(stock_code)
             or self._is_jp_kr_suffix_stock(stock_code)
             or self._is_tw_suffix_stock(stock_code)
         ):
-            logger.debug(f"[Yfinance] {stock_code} 不是支持的美股、港股或日韩台代码，跳过")
+            logger.debug(f"[Yfinance] {stock_code} 不是支持的美股、港股或日韩台/加股代码，跳过")
             return None
 
         try:
@@ -912,7 +952,13 @@ class YfinanceFetcher(BaseFetcher):
                 code=symbol,
                 name=name,
                 source=RealtimeSource.FALLBACK,
-                market=suffix_market or ("hk" if _is_hk_market(stock_code) else "us" if is_us_symbol else None),
+                market=suffix_market
+                or (
+                    "ca" if is_ca_market_symbol(stock_code)
+                    else "hk" if _is_hk_market(stock_code)
+                    else "us" if is_us_symbol
+                    else None
+                ),
                 currency=str(ticker_info.get("currency") or "").upper() or None,
                 data_quality="partial" if missing_fields else "ok",
                 missing_fields=missing_fields or None,
