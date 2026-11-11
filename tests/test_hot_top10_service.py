@@ -1733,5 +1733,265 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         self.assertFalse(claim_path.exists())
 
 
+class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
+    """OR-COR-5c51e8d7 r6 (review #10): three residual interleavings left
+    by the r5 protocol, each pinned with a deterministic fence.
+
+    1. Steal ABA: the takeover replaced whatever was on disk instead of the
+       exact stale claim it inspected; a late contender could clobber a
+       rival's FRESH takeover. r6 gates the replace on a byte-for-byte
+       compare-and-set.
+    2. Single delivery-path verdict: ownership was checked once before the
+       whole delivery, so a takeover DURING the report save still pushed.
+       r6 re-verifies independently before the save AND before the notify.
+    3. Release CAS gap: the ownership verdict and the unlink are separated
+       by a real (if tiny) window; a steal landing inside it loses its file.
+       The window cannot be closed without OS locks — this test pins the
+       self-healing invariant: the victim fails its own notify-time
+       re-verification, so exactly-once delivery is never broken.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value={"cn"},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    # ------------------------------------------------------------------ helpers
+
+    def _run(self, config, notifier=None) -> HotTop10RunResult:
+        notifier = notifier or _FakeNotifier()
+        with mock.patch(
+            "src.services.hot_top10_service._build_analyzer",
+            return_value=_FakeAnalyzer(text=_llm_json()),
+        ):
+            return run_hot_top10_analysis(
+                config,
+                notifier=notifier,
+                hotspot_service=_FakeHotspotService(
+                    _hotspot_payload(_theme_items(3))
+                ),
+            )
+
+    def _write_stale_legacy_claim(self, config) -> Path:
+        claim_path = hot_top10_claim_path(config, date.today().isoformat())
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_time = (
+            datetime.now() - timedelta(hours=3)
+        ).isoformat(timespec="seconds")
+        claim_path.write_text(f"{stale_time}\n999999", encoding="utf-8")
+        return claim_path
+
+    # ------------------------------------------------------------------- tests
+
+    def test_delayed_steal_cas_refuses_to_clobber_rival_takeover(self):
+        """Review #10 probe 1: two contenders read the same stale claim;
+        the late one parks between its staleness verdict and its replace
+        while the rival completes a FULL takeover-and-delivery run. The
+        late contender's replace must be refused (compare-and-set) — it
+        must not clobber the rival, must not deliver, and the day's
+        delivery stays exactly-once."""
+        config = _config(self._tmp.name)
+        claim_path = self._write_stale_legacy_claim(config)
+        entered, resume = threading.Event(), threading.Event()
+        real_steal = hot_top10_svc._steal_claim_atomically
+
+        def pausing_steal(*args, **kwargs):
+            # Only the FIRST contender (the late one) parks here; the
+            # rival's steal, running later in the main thread, passes
+            # straight through.
+            if not entered.is_set():
+                entered.set()
+                resume.wait(timeout=10)
+            return real_steal(*args, **kwargs)
+
+        loser: Dict[str, Any] = {}
+
+        def _late_contender() -> None:
+            with mock.patch.object(
+                hot_top10_svc,
+                "_steal_claim_atomically",
+                side_effect=pausing_steal,
+            ):
+                loser["claim"] = acquire_hot_top10_delivery_claim(
+                    config, date.today().isoformat()
+                )
+
+        worker = threading.Thread(target=_late_contender, daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=5))
+
+        # The rival takes the same stale claim over and runs the WHOLE
+        # delivery (steal -> verify -> save -> notify -> marker -> release)
+        # while the late contender is parked before its replace.
+        rival_notifier = _FakeNotifier()
+        rival_result = self._run(config, notifier=rival_notifier)
+
+        self.assertTrue(rival_result.delivered)
+        self.assertEqual(len(rival_notifier.sent), 1)
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertTrue(skip)
+
+        # Now the late contender resumes: its compare-and-set must detect
+        # that the bytes on disk are no longer the stale claim it inspected.
+        resume.set()
+        worker.join(timeout=10)
+
+        self.assertIsNone(
+            loser["claim"], "CAS steal must abort on a rival takeover"
+        )
+        # The refused steal left NOTHING behind: the rival's release already
+        # removed the claim and the loser must not resurrect a file there.
+        self.assertFalse(
+            claim_path.exists(),
+            "a refused steal must not clobber or recreate the claim",
+        )
+
+    def test_notify_reverify_aborts_when_claim_lost_during_save(self):
+        """Review #10 probe 2 (the load-bearing fix): the holder passes the
+        save-side ownership check, saves the report, and is overtaken while
+        parked between save and notify. The notify-time re-verification
+        must abort the push (reason=lost_claim) — the rival is the only
+        deliverer, so the mutual exclusion survives a mid-save takeover."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+        save_entered, save_resume = threading.Event(), threading.Event()
+
+        class _ParkingNotifier(_FakeNotifier):
+            def save_report_to_file(self, content, filename):
+                saved = super().save_report_to_file(content, filename)
+                save_entered.set()
+                save_resume.wait(timeout=10)
+                return saved
+
+        holder_notifier = _ParkingNotifier()
+        results: Dict[str, HotTop10RunResult] = {}
+
+        def _holder_run() -> None:
+            with mock.patch(
+                "src.services.hot_top10_service._build_analyzer",
+                return_value=_FakeAnalyzer(text=_llm_json()),
+            ):
+                results["run"] = run_hot_top10_analysis(
+                    config,
+                    notifier=holder_notifier,
+                    hotspot_service=_FakeHotspotService(
+                        _hotspot_payload(_theme_items(3))
+                    ),
+                )
+
+        worker = threading.Thread(target=_holder_run, daemon=True)
+        worker.start()
+        # Fence: wait until the holder has PASSED the save-side ownership
+        # verdict and completed the save (parked right after it) — the
+        # theft must land exactly in the save-to-notify gap.
+        self.assertTrue(save_entered.wait(timeout=5))
+
+        # A competing process steals the claim right now (TTL collapsed to
+        # zero): AFTER the save-side verdict, BEFORE the notify.
+        with mock.patch.object(
+            hot_top10_svc, "HOT_TOP10_CLAIM_STALE_AFTER", timedelta(seconds=0)
+        ):
+            thief = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(thief)
+
+        save_resume.set()
+        worker.join(timeout=15)
+        result = results["run"]
+
+        # The notify-time re-verification must abort the holder's push.
+        self.assertEqual(holder_notifier.sent, [])
+        self.assertFalse(result.delivered)
+        self.assertTrue(result.skipped)
+        self.assertEqual(result.reason, "lost_claim")
+        self.assertEqual(result.notification_status, "lost_claim_before_notify")
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)  # the loser recorded no marker
+        # The thief's claim survived the loser's release ...
+        self.assertTrue(claim_path.exists())
+        thief.release()
+        self.assertFalse(claim_path.exists())
+
+        # Mutual exclusion self-heals: the next full run delivers exactly
+        # once (the loser never pushed, so no duplicate is possible).
+        retry_notifier = _FakeNotifier()
+        retry = self._run(config, notifier=retry_notifier)
+        self.assertTrue(retry.delivered)
+        self.assertEqual(len(retry_notifier.sent), 1)
+
+    def test_release_clobber_keeps_exactly_once_invariant(self):
+        """Review #10 probe 3: a steal landing between the release's
+        ownership verdict and its unlink still deletes the successor's file
+        (the honest residual gap of a lock-free release). This pins the
+        self-healing invariant: the victim can no longer pass its own
+        ownership checks, so no double delivery is possible, and the next
+        full run delivers exactly once."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+
+        victim = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(victim)
+
+        entered, resume = threading.Event(), threading.Event()
+        # r6 release reads once and runs the ownership verdict
+        # (_text_is_ours) back-to-back with the unlink — the pause hooks the
+        # verdict itself, i.e. the instant AFTER it passed.
+        real_check = hot_top10_svc._HotTop10DeliveryClaim._text_is_ours
+
+        def pausing_check(self, text):
+            result = real_check(self, text)
+            if result and not entered.is_set():
+                entered.set()
+                resume.wait(timeout=10)
+            return result
+
+        def _releaser() -> None:
+            with mock.patch.object(
+                hot_top10_svc._HotTop10DeliveryClaim,
+                "_text_is_ours",
+                autospec=True,
+                side_effect=pausing_check,
+            ):
+                victim.release()
+
+        worker = threading.Thread(target=_releaser, daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=5))
+
+        # The thief replaces the claim right after the victim passed the
+        # release-time ownership verdict (TTL collapsed to zero).
+        with mock.patch.object(
+            hot_top10_svc, "HOT_TOP10_CLAIM_STALE_AFTER", timedelta(seconds=0)
+        ):
+            thief = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(thief)
+
+        resume.set()
+        worker.join(timeout=10)
+
+        # The residual gap is real: the victim's unlink removed the
+        # thief's claim (documented in the PR body — not fixable without
+        # OS-level locks).
+        self.assertFalse(claim_path.exists())
+
+        # The invariant holds: the victim of the clobber can no longer pass
+        # any ownership check, so it can never deliver on top of the next
+        # owner — no double delivery is possible.
+        self.assertFalse(thief.verify_owner())
+        thief.release()  # safe: file already gone
+
+        # Self-healing: the next full run delivers exactly once.
+        notifier = _FakeNotifier()
+        result = self._run(config, notifier=notifier)
+        self.assertTrue(result.delivered)
+        self.assertEqual(len(notifier.sent), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

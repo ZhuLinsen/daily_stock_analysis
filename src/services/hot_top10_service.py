@@ -39,7 +39,13 @@ Design rules:
   empty/unparseable claim files are live (never deleted), stale claims are
   taken over with one atomic rename, ownership is re-verified before every
   side effect (save/push, marker) and before release deletes, and no
-  OS-level file locks are used. ``force_run`` stays unclaimed.
+  OS-level file locks are used. r6 (review #10): the takeover is a
+  compare-and-set against the exact stale claim inspected (a late contender
+  never clobbers a rival's fresh takeover), the save and the notify each
+  carry their OWN ownership re-verification (a mid-save takeover aborts the
+  push), and the release verdict runs back-to-back with the unlink — the
+  exactly-once delivery invariant survives every documented residual window.
+  ``force_run`` stays unclaimed.
 - Default OFF: with ``HOT_TOP10_ENABLED`` unset the feature registers nothing
   and changes zero behavior.
 """
@@ -110,10 +116,13 @@ _HOT_TOP10_PENDING_FOLLOWUP = threading.Event()
 # - Reader rule: an empty/unparseable claim file is LIVE (initialization in
 #   progress, or an external occupant) — it is never deleted. Staleness is
 #   the first-line timestamp past the TTL, falling back to file mtime.
-# - Takeover of stale crash residue is one atomic rename (os.replace); the
-#   winner among racing stealers is decided by the owner token, re-verified
-#   before every side effect (save/push and marker) and before release
-#   deletes anything.
+# - Takeover of stale crash residue is one atomic rename (os.replace)
+#   guarded by a compare-and-set (r6): the disk must still hold byte-for-
+#   byte the stale claim we inspected, so a late contender never clobbers a
+#   rival's fresh takeover. The winner among racing stealers is decided by
+#   the owner token, re-verified before EVERY side effect separately (save,
+#   notify, marker — r6) and before release deletes anything; the release
+#   verdict runs back-to-back with the unlink (r6).
 # - No OS-level file locks are used.
 HOT_TOP10_CLAIM_STALE_AFTER = timedelta(hours=2)
 _HOT_TOP10_CLAIM_FILE_PREFIX = "hot_top10_claim_"
@@ -246,11 +255,26 @@ def _publish_claim_atomically(path: Path, content: str) -> bool:
         _discard_claim_tmp(tmp_path)
 
 
-def _steal_claim_atomically(path: Path, content: str) -> None:
-    """Replace a stale claim with our full content in one atomic rename."""
+def _steal_claim_atomically(
+    path: Path, content: str, expected_text: str
+) -> bool:
+    """Replace a stale claim with our full content in one atomic rename,
+    guarded by a compare-and-set (OR-COR-5c51e8d7 r6, review #10 probe 1):
+    immediately before the replace, the file on disk must STILL be
+    byte-for-byte the stale claim we inspected moments ago. Every claim
+    write carries a fresh uuid4 token, so contents can never legitimately
+    repeat — any difference means a racing stealer already took the claim
+    over (or the old owner rewrote it); we then refuse to clobber it and
+    the caller backs off. The residual race is only the microsecond gap
+    between this re-read and ``os.replace`` itself, healed by the
+    notify-time ownership re-verification (exactly-once invariant)."""
     tmp_path = _write_claim_tmp(path, content)
     try:
+        observed = _read_claim_text(path)
+        if observed != expected_text:
+            return False
         os.replace(str(tmp_path), str(path))
+        return True
     finally:
         _discard_claim_tmp(tmp_path)
 
@@ -293,11 +317,15 @@ class _HotTop10DeliveryClaim:
         text = _read_claim_text(self._path)
         if text is None:
             return False
+        return self._text_is_ours(text)
+
+    def _text_is_ours(self, text: str) -> bool:
+        """Ownership verdict on already-read content: token match; legacy
+        token-less content matches only while its first line is still the
+        timestamp we wrote (path + first-line double check)."""
         _claimed_at, token = _parse_claim_text(text)
         if token is not None:
             return token == self._token
-        # Legacy token-less content: ours only while the first line is
-        # still the timestamp we wrote (path + first-line double check).
         lines = text.strip().splitlines()
         return (
             bool(self._created_line)
@@ -306,17 +334,25 @@ class _HotTop10DeliveryClaim:
         )
 
     def release(self) -> None:
-        """Best-effort delete AFTER re-verifying ownership; a foreign claim
-        (lost steal race, or a stale takeover by another process) is left
-        untouched and only logged."""
+        """Best-effort delete AFTER re-verifying ownership (CAS release,
+        r6): the file is read ONCE and the ownership verdict runs
+        back-to-back with the ``unlink`` — nothing sits between them, so
+        the verify→unlink window is a couple of byte-code instructions
+        wide. A foreign claim (lost steal race, or a stale takeover by
+        another process) is left untouched and only logged. Even if a
+        steal lands inside that residual window and we unlink a
+        successor's claim, the victim fails its own notify-time ownership
+        re-verification and aborts — the exactly-once delivery invariant
+        survives the gap (see the PR body r6 section)."""
         if self._released:
             return
         self._released = True
         if not self._armed:
             return
-        if _read_claim_text(self._path) is None:
+        text = _read_claim_text(self._path)
+        if text is None:
             return
-        if not self.verify_owner():
+        if not self._text_is_ours(text):
             logger.warning(
                 "[HotTop10] 投递认领已易主（所有权校验不匹配），"
                 "不删除其他进程的认领文件"
@@ -329,6 +365,16 @@ class _HotTop10DeliveryClaim:
         except OSError as exc:
             logger.warning(
                 "[HotTop10] 删除投递认领文件失败（忽略，陈旧后可被接管）: %s", exc
+            )
+            return
+        # Sentry (r6): a claim reappearing immediately after our unlink
+        # means a concurrent acquirer/stealer raced this release. Log it —
+        # the mutual exclusion itself is upheld by token re-verification
+        # at every side effect, never by the unlink.
+        if _read_claim_text(self._path) is not None:
+            logger.info(
+                "[HotTop10] 认领删除后立即重现（并发接管/认领竞争），"
+                "互斥语义由各副作用点的所有权复验保障"
             )
 
 
@@ -349,9 +395,12 @@ def acquire_hot_top10_delivery_claim(
     timestamp; mtime fallback for empty/unparseable files) is crash residue
     and is taken over with one atomic ``os.replace`` that carries the
     stealer's own token — old r4 files (timestamp + pid, no token) take
-    over the same way. When several processes race the steal, the file ends
-    up owned by exactly one token and every other contender detects the
-    mismatch (at acquire time, and again before each side effect)."""
+    over the same way. r6 (review #10 probe 1): the replace is gated by a
+    compare-and-set — the on-disk bytes must still equal the stale claim we
+    inspected, so a late contender can never clobber a rival's fresh
+    takeover. When several processes race the steal, the file ends up owned
+    by exactly one token and every other contender detects the mismatch (at
+    acquire time, and again before each side effect)."""
     claim_path = hot_top10_claim_path(config, data_date)
     try:
         claim_path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,8 +423,12 @@ def acquire_hot_top10_delivery_claim(
             continue  # vanished in between: try publishing again
         if not _claim_is_stale(claim_path, text):
             return None  # live (owner / initializing / occupant): never delete
-        # Stale crash residue (r4 or r5 format): take over atomically.
-        _steal_claim_atomically(claim_path, content)
+        # Stale crash residue (r4 or r5 format): take over atomically — but
+        # ONLY if the disk still holds exactly the stale claim we inspected
+        # (CAS, r6): a racing stealer that replaced it first owns the claim
+        # now; we must never clobber a fresh takeover.
+        if not _steal_claim_atomically(claim_path, content, text):
+            return None
         current = _read_claim_text(claim_path)
         _claimed_at, current_token = (
             _parse_claim_text(current) if current is not None else (None, None)
@@ -976,6 +1029,7 @@ def _deliver(
     report_markdown: str,
     send_notification: bool,
     notifier: Any,
+    ownership_verifier: Optional[Any] = None,
 ) -> Tuple[str, bool]:
     """Save + push the report. Returns ``(status, report_saved)``; never raises.
 
@@ -983,7 +1037,19 @@ def _deliver(
     report file actually landed. With no successful notification push it is
     the ONLY delivery that counts, so a failed save must propagate into the
     delivery decision instead of being swallowed here.
+
+    ``ownership_verifier`` (OR-COR-5c51e8d7 r6, review #10 probe 2): a
+    callable re-checked immediately before EACH side effect — once before
+    the report save and again before the notification push (the save can
+    take time; the claim must still be ours the instant before we push).
+    When it reports the claim lost, that side effect and everything after
+    it is skipped (``lost_claim_before_save`` / ``lost_claim_before_notify``),
+    so a mid-save takeover can never turn into a second push.
     """
+
+    def _claim_lost() -> bool:
+        return ownership_verifier is not None and not ownership_verifier()
+
     try:
         if notifier is None:
             from src.notification import NotificationService
@@ -997,6 +1063,13 @@ def _deliver(
 
     report_saved = False
     filename = f"hot_top10_{date.today():%Y%m%d}.md"
+    # r6 save-side check: the previous single verdict before the whole
+    # delivery left the save→notify stretch unprotected.
+    if _claim_lost():
+        logger.warning(
+            "[HotTop10] 投递认领已被接管（保存前所有权复验失败），不保存报告"
+        )
+        return "lost_claim_before_save", False
     try:
         path = notifier.save_report_to_file(report_markdown, filename)
         logger.info("[HotTop10] 报告已保存: %s", path)
@@ -1009,6 +1082,15 @@ def _deliver(
     if not send_notification:
         logger.info("[HotTop10] 通知推送已禁用（--no-notify）")
         return "disabled", report_saved
+    # r6 notify-side check (the load-bearing one): re-verify the instant
+    # before the push so a takeover during the save aborts here instead of
+    # producing a second delivery.
+    if _claim_lost():
+        logger.warning(
+            "[HotTop10] 投递认领已被接管（通知前所有权复验失败），"
+            "不推送已保存的报告"
+        )
+        return "lost_claim_before_notify", report_saved
     try:
         if not notifier.is_available():
             logger.info("[HotTop10] 未配置通知渠道，跳过推送（报告仅落盘）")
@@ -1278,24 +1360,33 @@ def _run_hot_top10_analysis_locked(
         report_markdown = render_hot_top10_report(
             items, summary, llm_completed, language, ranking_date=ranking_date
         )
-        # OR-COR-5c51e8d7 r5: final ownership verdict before the delivery
-        # side effects (save + push). A steal race lost after acquire aborts
-        # here — no save, no push, no marker (reason=lost_claim) — so among
+        # OR-COR-5c51e8d7 r6 (review #10 probe 2): ownership is re-verified
+        # inside _deliver before EACH side effect (save, then notify, then
+        # the marker below) — a steal race lost at ANY point aborts with all
+        # remaining side effects suppressed (reason=lost_claim), so among
         # processes racing the same data date exactly one ever delivers.
-        if delivery_claim is not None and not delivery_claim.verify_owner():
+        notification_status, report_saved = _deliver(
+            report_markdown,
+            send_notification,
+            notifier,
+            ownership_verifier=(
+                delivery_claim.verify_owner
+                if delivery_claim is not None
+                else None
+            ),
+        )
+        if notification_status.startswith("lost_claim"):
             logger.warning(
-                "[HotTop10] 投递认领已被其他进程接管（所有权校验失败），"
-                "本次中止投递：不保存、不推送、不落当日标记"
+                "[HotTop10] 投递认领在副作用间隙被接管（%s），"
+                "本次中止投递：不推送、不落当日标记",
+                notification_status,
             )
             return HotTop10RunResult(
                 delivered=False,
                 skipped=True,
                 reason="lost_claim",
+                notification_status=notification_status,
             )
-        notification_status, report_saved = _deliver(
-            report_markdown, send_notification, notifier
-        )
-
         if notification_status in {"failed", "notifier_init_failed"}:
             # Push failed: leave the marker unset so the next occurrence retries.
             logger.warning(
@@ -1314,9 +1405,11 @@ def _run_hot_top10_analysis_locked(
                 notification_status,
             )
         else:
-            # OR-COR-5c51e8d7 r5: re-verify ownership before recording the
-            # marker too. If the claim was stolen in the narrow window since
-            # the push, the true owner records the marker — we must not.
+            # OR-COR-5c51e8d7 r6: final re-verification before recording
+            # the marker too. If the claim was stolen in the residual window
+            # since the push, the true owner records the marker — we must
+            # not (our push, if any, is the documented residual duplicate;
+            # the marker and the dedup slot stay with the rightful owner).
             if (
                 delivery_claim is not None
                 and not delivery_claim.verify_owner()
@@ -1325,12 +1418,9 @@ def _run_hot_top10_analysis_locked(
                     "[HotTop10] 落当日标记前发现认领已被接管"
                     "（所有权校验失败），不记录当日标记"
                 )
-                delivery_completed = (
-                    report_saved or notification_status == "sent"
-                )
                 return HotTop10RunResult(
-                    delivered=delivery_completed,
-                    skipped=False,
+                    delivered=False,
+                    skipped=True,
                     reason="lost_claim",
                     report_markdown=report_markdown,
                     llm_completed=llm_completed,
