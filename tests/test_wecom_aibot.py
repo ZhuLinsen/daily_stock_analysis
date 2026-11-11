@@ -1495,9 +1495,9 @@ class TestOutboundSendConfirmationQuota:
             thread.join(timeout=5)
             loop.close()
 
-    def test_send_exception_refunds_both_windows(self):
-        """确定性失败（写入期异常，非 ACK 超时）→ 本次双窗口扣量全额退还，
-        后续额度完整；等待超时属不确定，另见 r6 保守语义测试。"""
+    def test_send_runtime_error_keeps_debits(self):
+        """r7：RuntimeError（断线清理 pending ACK / 连接中断——帧可能已写出）
+        ＝结果不确定 → 保守保留记账不退款；后续成功照常记账。"""
         client = self._client()
         handler = client._handler
         client._running = True
@@ -1507,20 +1507,36 @@ class TestOutboundSendConfirmationQuota:
 
         loop, thread = self._start_ack_loop(client, _ack_write_fail)
         try:
-            assert client.send_to_chat("chat-f", "report", timeout_seconds=2) is False
+            # 同步等待异步终态决策完成（事件同步）
+            decided = threading.Event()
+            real_done = handler._on_outbound_send_done
+
+            def _spied(done, key, token):
+                try:
+                    real_done(done, key, token)
+                finally:
+                    decided.set()
+
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert client.send_to_chat(
+                    "chat-f", "report", timeout_seconds=2
+                ) is False
+                assert decided.wait(timeout=5), "terminal callback never ran"
+
             minute, hour = self._window_counts(handler, "chat-f")
-            assert (minute, hour) == (0, 0), (
-                f"failed send kept debits: minute={minute} hour={hour}"
+            assert (minute, hour) == (1, 1), (
+                f"uncertain outcome refunded: minute={minute} hour={hour}"
             )
 
-            # Full quota still available for the conversation.
+            # 后续成功照常记账（额度语义与实际发送一致）。
             async def _ack_ok(chatid, body):
                 return {"errcode": 0, "errmsg": "ok"}
 
             client._sdk_client.send_message = _ack_ok
             assert client.send_to_chat("chat-f", "report") is True
             minute, hour = self._window_counts(handler, "chat-f")
-            assert (minute, hour) == (1, 1)
+            assert (minute, hour) == (2, 2)
         finally:
             client._running = False
             client._loop = None
@@ -1700,7 +1716,9 @@ class TestPassiveAsyncFailureRefund:
             _time.sleep(0.02)
         return False
 
-    def test_passive_async_exception_refunds_quota(self):
+    def test_passive_async_runtime_error_keeps_debit(self):
+        """r7：发送结果不确定（RuntimeError 可能是断线清理 pending ACK，
+        帧可能已写出）→ 保守保留记账，不退款。"""
         handler, sdk_client = self._handler_with_real_loop(None)
 
         async def _reply_fail(frame, body):
@@ -1708,14 +1726,26 @@ class TestPassiveAsyncFailureRefund:
 
         sdk_client.reply = _reply_fail
 
+        # 同步等待异步终态决策完成（事件同步，不依赖调度时序）
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
         frame = _text_frame(msgid="m-async", chatid="chat-async")
         try:
-            assert handler._reply_to_frame(frame, "x") is True
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert handler._reply_to_frame(frame, "x") is True
+                assert decided.wait(timeout=5), "terminal callback never ran"
 
-            settled = self._wait_until_settled(handler, "chat-async", (0, 0))
             minute, hour = self._counts(handler, "chat-async")
-            assert settled and (minute, hour) == (0, 0), (
-                f"async failure kept debits: minute={minute} hour={hour}"
+            assert (minute, hour) == (1, 1), (
+                f"uncertain outcome refunded: minute={minute} hour={hour}"
             )
         finally:
             self._stop_loop()
@@ -1850,9 +1880,9 @@ class TestTimeoutConservativeQuota:
             # 让累积的后台协程自然结束，避免悬挂告警
             _time.sleep(0.4)
 
-    def test_timeout_then_definite_failure_refunds(self, caplog):
-        """场景②：超时后协程最终明确失败（写入期异常）→ 按 token 退款、
-        额度恢复；超时瞬间扣量保留（不立即退）。"""
+    def test_timeout_then_runtime_error_keeps_debit(self, caplog):
+        """r7：超时（不确定）→ 扣量保留；随后协程以 RuntimeError 收尾
+        （断线清理 pending ACK，帧可能已写出）→ 仍保守保留记账。"""
         client = self._client()
         handler = client._handler
         client._running = True
@@ -1868,20 +1898,36 @@ class TestTimeoutConservativeQuota:
         client._handler._loop = loop
         client._sdk_client = mock.MagicMock()
         client._sdk_client.send_message = _ack_never_then_fail
+
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
         try:
-            assert client.send_to_chat(
-                "chat-d", "report", timeout_seconds=0.15
-            ) is False
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert client.send_to_chat(
+                    "chat-d", "report", timeout_seconds=0.15
+                ) is False
 
-            # 超时瞬间：扣量保留（不确定 ≠ 失败）
-            minute, hour = self._counts(handler, "chat-d")
-            assert (minute, hour) == (1, 1), (
-                f"timeout immediately refunded: minute={minute} hour={hour}"
-            )
+                # 超时瞬间：扣量保留（不确定 ≠ 失败）
+                minute, hour = self._counts(handler, "chat-d")
+                assert (minute, hour) == (1, 1), (
+                    f"timeout immediately refunded: minute={minute} hour={hour}"
+                )
 
-            # 终态明确失败 → 按 token 退款
-            settled = self._wait_until_settled(handler, "chat-d", (0, 0))
-            assert settled, "definite failure did not refund by token"
+                # 终态 RuntimeError（不确定）→ 仍保守保留
+                assert decided.wait(timeout=5), "terminal callback never ran"
+                minute, hour = self._counts(handler, "chat-d")
+                assert (minute, hour) == (1, 1), (
+                    f"runtime error refunded: minute={minute} hour={hour}"
+                )
+            assert "保留记账" in caplog.text  # 同步分支 + 终态分支均保留记账
         finally:
             client._running = False
             client._loop = None
@@ -1891,7 +1937,10 @@ class TestTimeoutConservativeQuota:
             loop.close()
 
     def test_passive_ack_timeout_keeps_debit(self, caplog):
-        """被动路径同样适用：ACK 超时类异常不退款（消息可能已写入）。"""
+        """被动路径同样适用：ACK 超时类异常不退款（消息可能已写入）。
+
+        确定性构造：事件同步等待异步终态决策完成后，再断言记账状态与日志
+        （此前直接断言 caplog，回调未及执行时 CI 上日志为空——r7 修复）。"""
         handler, sdk_client = _handler()
 
         async def _reply_ack_timeout(frame, body):
@@ -1902,13 +1951,26 @@ class TestTimeoutConservativeQuota:
         thread = threading.Thread(target=loop.run_forever, daemon=True)
         thread.start()
         handler._loop = loop
+
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
         try:
             frame = _text_frame(msgid="m-to", chatid="chat-pto")
-            assert handler._reply_to_frame(frame, "x") is True
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert handler._reply_to_frame(frame, "x") is True
+                assert decided.wait(timeout=5), "terminal callback never ran"
 
-            settled = self._wait_until_settled(handler, "chat-pto", (1, 1))
+            # 回调已完成：记账状态与日志断言均为确定性
             minute, hour = self._counts(handler, "chat-pto")
-            assert settled and (minute, hour) == (1, 1), (
+            assert (minute, hour) == (1, 1), (
                 f"passive ack timeout refunded: minute={minute} hour={hour}"
             )
             assert "保留记账" in caplog.text
@@ -1917,8 +1979,9 @@ class TestTimeoutConservativeQuota:
             thread.join(timeout=5)
             loop.close()
 
-    def test_passive_write_failure_still_refunds(self):
-        """非超时的确定失败（写入期异常）→ 被动路径照常退款（既有语义）。"""
+    def test_passive_runtime_error_keeps_debit(self):
+        """r7：被动路径 RuntimeError（断线清理 pending ACK，帧可能已写出）
+        ＝结果不确定 → 保守保留记账（此前按确定失败退款，r7 收窄）。"""
         handler, sdk_client = _handler()
 
         async def _reply_write_fail(frame, body):
@@ -1929,13 +1992,27 @@ class TestTimeoutConservativeQuota:
         thread = threading.Thread(target=loop.run_forever, daemon=True)
         thread.start()
         handler._loop = loop
+
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
         try:
             frame = _text_frame(msgid="m-wf", chatid="chat-wf")
-            assert handler._reply_to_frame(frame, "x") is True
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert handler._reply_to_frame(frame, "x") is True
+                assert decided.wait(timeout=5), "terminal callback never ran"
 
-            settled = self._wait_until_settled(handler, "chat-wf", (0, 0))
             minute, hour = self._counts(handler, "chat-wf")
-            assert settled and (minute, hour) == (0, 0)
+            assert (minute, hour) == (1, 1), (
+                f"runtime error refunded: minute={minute} hour={hour}"
+            )
         finally:
             loop.call_soon_threadsafe(loop.stop)
             thread.join(timeout=5)

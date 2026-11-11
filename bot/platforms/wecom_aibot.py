@@ -448,27 +448,24 @@ class WecomAibotHandler:
         return True
 
     def _on_outbound_send_done(self, done, conversation_key: str, token: str) -> None:
-        """出站发送的异步终态回调（被动/主动共用，r6）
+        """出站发送的异步终态回调（被动/主动共用，r6/r7）
 
-        保守退款原则——宁可高估不可低估：
-        - ACK 超时（TimeoutError 族）＝结果不确定（帧可能已写入 WebSocket），
-          **保留记账**不退款；
-        - 其余异常（写入期确定性失败）→ 按 token 退还；
-        - 服务端明确拒绝（errcode != 0）→ 按 token 退还；
-        - 成功 / Future 永不完成 → 维持记账。"""
+        保守退款原则——宁可高估不可低估（r7 收窄）：
+        - **一切异常均保留记账**：ACK 超时（TimeoutError 族）、断线清理
+          pending ACK 的 RuntimeError（官方 SDK ws.py `_clear_pending_
+          messages` 以普通 RuntimeError 结束 Future——帧可能已写出）、连接
+          中断等，都无法证明帧未送达；
+        - 服务端明确拒绝（errcode != 0）→ 按 token 退还（唯一确定的远端
+          失败信号）；
+        - 成功 / Future 永不完成 → 维持记账。
+        写入前本地失败（loop 不可用等）不进入本回调——那类路径在记账前
+        已拒绝（零记账）。"""
         try:
             try:
                 ack = done.result()
-            except TimeoutError:
-                logger.warning(
-                    "[WeCom AI Bot] 发送回执超时（结果不确定，保留记账）: key=%s",
-                    conversation_key,
-                )
-                return
             except Exception as exc:
-                self._refund_outbound_send(conversation_key, token)
                 logger.warning(
-                    "[WeCom AI Bot] 后台确认发送失败（已退还配额）: key=%s, error=%s",
+                    "[WeCom AI Bot] 发送结果不确定（保留记账）: key=%s, error=%s",
                     conversation_key,
                     exc,
                 )
@@ -829,10 +826,11 @@ class WecomAibotClient:
 
         - 可用性前置（r4）：客户端运行状态与事件循环可用性在配额临界区内、
           扣量**之前**检查——不可用直接拒绝且零记账（重连期间不空耗额度）。
-        - 保守退款（r6，宁可高估不可低估）：等待超时＝结果不确定（帧可能
-          已写入 WebSocket）→ 保留记账并挂完成回调，仅当终态明确失败
-          （写入期异常 / errcode != 0）才按 token 退还；确定性失败立即
-          退还。Future 永不完成则维持记账（安全方向的轻微高估）。
+        - 保守退款（r6/r7，宁可高估不可低估）：发送结果不确定（等待超时、
+          ACK 超时、断线清理 pending ACK 的 RuntimeError——帧可能已写出）
+          → 一律保留记账并挂完成回调，仅服务端明确拒绝（errcode != 0）时
+          按 token 退还。Future 永不完成则维持记账（安全方向的轻微高估）。
+          写入前本地失败（loop 不可用等）在记账前即拒绝，零记账。
         - 官方前置条件：目标用户须先与机器人建过会话（先发过消息），否则
           服务端回执 errcode != 0——按失败处理并在日志标注前置条件。
 
@@ -883,24 +881,18 @@ class WecomAibotClient:
         )
         try:
             ack = send_future.result(timeout_seconds)
-        except TimeoutError:
-            # 等待超时＝结果不确定（SDK 先写帧后等回执，消息可能已送达）：
-            # 保留记账（宁可高估），挂完成回调——终态明确失败（写入期异常/
-            # errcode≠0）再按 token 退款；成功/永不完成维持记账（r6）。
+        except Exception as exc:
+            # 等待超时 / ACK 超时 / 断线清理 pending ACK（RuntimeError）＝
+            # 结果不确定——SDK 先写帧后等回执，帧可能已送达。保守保留记账
+            # （宁可高估），挂完成回调：服务端明确拒绝（errcode≠0）再按
+            # token 退款（r7——此前非 TimeoutError 异常一律退款，低估发送量）。
             send_future.add_done_callback(
                 lambda done: handler._on_outbound_send_done(
                     done, conversation_key, send_token
                 )
             )
             logger.warning(
-                "[WeCom AI Bot] 主动推送等待超时（结果不确定，保留记账）: key=%s",
-                conversation_key,
-            )
-            return False
-        except Exception as exc:
-            handler._refund_outbound_send(conversation_key, send_token)
-            logger.error(
-                "[WeCom AI Bot] 主动推送失败（已退还配额）: key=%s, error=%s",
+                "[WeCom AI Bot] 主动推送结果不确定（保留记账）: key=%s, error=%s",
                 conversation_key,
                 exc,
             )
