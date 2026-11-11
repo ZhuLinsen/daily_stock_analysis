@@ -153,6 +153,102 @@ def _reset_outbound_gate() -> None:
         _WECOM_AIBOT_OUTBOUND_GATE._in_flight.clear()
 
 
+# ------------------------------------------------------------------ #
+#  长文本分片（r5 OR-COR-7ab3e812：4000B 上限此前从未被发送路径消费）   #
+# ------------------------------------------------------------------ #
+
+_WECOM_AIBOT_MAX_TEXT_BYTES_DEFAULT = 4000
+
+
+def _wecom_aibot_max_text_bytes() -> int:
+    """渠道 markdown 字节上限——消费 notification_capabilities 的声明
+    （wecom_aibot.max_text_bytes=4000），单一事实源；异常时回退默认值。"""
+    try:
+        from src.notification_capabilities import get_channel_profile
+
+        limit = get_channel_profile("wecom_aibot").max_text_bytes
+        return int(limit) if limit else _WECOM_AIBOT_MAX_TEXT_BYTES_DEFAULT
+    except Exception:  # pragma: no cover - 防御分支（声明缺失时退回默认）
+        return _WECOM_AIBOT_MAX_TEXT_BYTES_DEFAULT
+
+
+def _utf8_safe_cut_offset(encoded: bytes, limit: int) -> int:
+    """返回 encoded 上 ≤limit 的最大绝对切点，且不落在 UTF-8 连续字节上。
+
+    连续字节（continuation byte）形如 0b10xxxxxx；切点落在其上意味着把
+    一个多字节字符切成两半——回退到合法字符边界。limit ≥ 总长时返回
+    总长（无需切分）。
+    """
+    if limit >= len(encoded):
+        return len(encoded)
+    cut = limit
+    while cut > 0 and (encoded[cut] & 0xC0) == 0x80:
+        cut -= 1
+    return cut
+
+
+def _split_oversized_line_bytes(line: str, max_bytes: int) -> list:
+    """把超出上限的单行按 UTF-8 安全边界切成 ≤max_bytes 的多段。"""
+    encoded = line.encode("utf-8")
+    pieces = []
+    start = 0
+    total = len(encoded)
+    while start < total:
+        cut = _utf8_safe_cut_offset(encoded, min(start + max_bytes, total))
+        if cut <= start:  # 理论不可达（单字符 ≤4B << max_bytes），兜底防死循环
+            cut = min(start + max_bytes, total)
+        pieces.append(encoded[start:cut].decode("utf-8"))
+        start = cut
+    return pieces
+
+
+def _split_wecom_aibot_text_chunks(
+    text: str, max_bytes: Optional[int] = None
+) -> list:
+    """把文本切成每片 ≤max_bytes 字节（UTF-8）的列表。
+
+    切分优先级：整段 ≤ 上限 → 原样单条；否则按行贪心累积（段落边界由
+    空行自然承载，不被切开）；单行自身超限 → 字节安全兜底切分（绝不切开
+    多字节字符）。分片拼接可还原原文（无损）。
+
+    供 ``WecomAibotClient.send_to_chat``（静态推送与来源会话回推的共享
+    咽喉点）消费 notification_capabilities 声明的 max_text_bytes。
+    """
+    if not text:
+        return []
+    limit = max_bytes or _wecom_aibot_max_text_bytes()
+    if len(text.encode("utf-8")) <= limit:
+        return [text]
+
+    chunks: list = []
+    current_lines: list = []
+    current_bytes = 0
+    for line in text.split("\n"):
+        joiner = 1 if current_lines else 0  # 行间 "\n" 的 1 字节
+        line_cost = len(line.encode("utf-8")) + joiner
+        if current_bytes + line_cost <= limit:
+            current_lines.append(line)
+            current_bytes += line_cost
+            continue
+        if current_lines:
+            chunks.append("\n".join(current_lines))
+            current_lines = []
+            current_bytes = 0
+        if len(line.encode("utf-8")) + 0 <= limit:
+            current_lines.append(line)
+            current_bytes = len(line.encode("utf-8"))
+            continue
+        # 单行自身超限：字节安全兜底切分
+        for piece in _split_oversized_line_bytes(line, limit):
+            chunks.append(piece)
+        # 兜底片段已自封行，后续行从新片开始
+        current_lines = []
+        current_bytes = 0
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+    return chunks
+
+
 class WecomAibotHandler:
     """
     企微智能机器人消息处理器
@@ -906,21 +1002,23 @@ class WecomAibotClient:
             self._loop = None
             self._handler._loop = None
 
-    def send_to_chat(self, chatid: str, text: str, timeout_seconds: float = 15.0) -> bool:
-        """向指定会话主动推送 markdown 消息（aibot_send_msg，同步等待回执）
+    def _send_single_to_chat(
+        self,
+        chatid: str,
+        text: str,
+        timeout_seconds: float,
+        part_label: str = "",
+    ) -> bool:
+        """发送单条 markdown（≤4000B，已由调用方分片）——配额/并发闸/回执
+        处理的单元；分片循环见 :meth:`send_to_chat`。
 
-        供 source-context 通知链路（分析报告回来源会话）使用。
-
-        - 可用性前置（r4）：客户端运行状态与事件循环可用性在配额临界区内、
-          扣量**之前**检查——不可用直接拒绝且零记账（重连期间不空耗额度）。
-        - 发送失败回滚（r4）：future 异常/超时或服务端 errcode != 0 时退还
-          本次双窗口扣量，超时/被拒不永久占用槽位。
-        - 官方前置条件：目标用户须先与机器人建过会话（先发过消息），否则
-          服务端回执 errcode != 0——按失败处理并在日志标注前置条件。
-
-        Returns:
-            是否发送成功
+        语义承袭（r3/r4/r5）：可用性前置（配额临界区内、扣量之前检查，
+        不可用直接拒绝且零记账）；发送失败回滚（future 异常/超时或服务端
+        errcode != 0 时按发送标识精确退还本次双窗口扣量）；官方前置条件
+        （目标用户须先与机器人建过会话）在 errcode != 0 的日志中标注。
         """
+        part_suffix = f"（{part_label}）" if part_label else ""
+
         conversation_key = chatid or "unknown"
         handler = self._handler
 
@@ -930,7 +1028,8 @@ class WecomAibotClient:
             if not handler._outbound_minute_limiter.would_allow(conversation_key):
                 logger.warning(
                     "[WeCom AI Bot] 会话推送超限（分钟30条或小时1000条配额），"
-                    "消息已丢弃: key=%s",
+                    "消息已丢弃%s: key=%s",
+                    part_suffix,
                     conversation_key,
                 )
                 return False
@@ -960,7 +1059,8 @@ class WecomAibotClient:
             if outbound_gate_slot is None:
                 logger.warning(
                     "[WeCom AI Bot] 同会话并发超限（≤3 条在途），消息已丢弃"
-                    "（零记账）: key=%s",
+                    "（零记账）%s: key=%s",
+                    part_suffix,
                     conversation_key,
                 )
                 return False
@@ -981,7 +1081,8 @@ class WecomAibotClient:
             except Exception as exc:
                 handler._refund_outbound_send(conversation_key, send_token)
                 logger.error(
-                    "[WeCom AI Bot] 主动推送失败（已退还配额）: key=%s, error=%s",
+                    "[WeCom AI Bot] 主动推送失败（已退还配额）%s: key=%s, error=%s",
+                    part_suffix,
                     conversation_key,
                     exc,
                 )
@@ -991,8 +1092,9 @@ class WecomAibotClient:
             if errcode:
                 handler._refund_outbound_send(conversation_key, send_token)
                 logger.warning(
-                    "[WeCom AI Bot] 主动推送被拒（已退还配额）: key=%s, errcode=%s, "
+                    "[WeCom AI Bot] 主动推送被拒（已退还配额）%s: key=%s, errcode=%s, "
                     "errmsg=%s（官方前置条件：目标用户须先与机器人建过会话）",
+                    part_suffix,
                     conversation_key,
                     errcode,
                     ack.get("errmsg") if isinstance(ack, dict) else None,
@@ -1002,6 +1104,56 @@ class WecomAibotClient:
         finally:
             # 发送完成（回执到达，无论成败）即释放并发槽（r4）
             outbound_gate_slot.release()
+
+    def send_to_chat(self, chatid: str, text: str, timeout_seconds: float = 15.0) -> bool:
+        """向指定会话推送 markdown 消息（aibot_send_msg，同步等待回执）。
+
+        静态推送渠道与来源会话回推（source-context 报告返回）的共享咽喉点。
+
+        - 长报告分片（r5 OR-COR-7ab3e812）：内容 UTF-8 字节数超过
+          notification_capabilities 声明的渠道上限（wecom_aibot
+          max_text_bytes=4000）时，按段落/行边界优先切分（字节安全兜底，
+          绝不切开多字节字符），顺序发送各片——**每片独立经限流、并发闸
+          与双窗口配额记账（分片会多消耗配额，属预期行为）**；任一片失败
+          → 整体返回 False，日志记录已发送片数（部分交付可观测）。
+        - ≤上限的内容原样单条发送（与 r5 之前路径零差异）。
+        - 其余语义（可用性前置、失败回滚、官方前置条件标注、幂等并发槽）
+          与 r4 版本一致，见 :meth:`_send_single_to_chat`。
+
+        Returns:
+            是否全部发送成功（分片时任一片失败即为 False）
+        """
+        chunks = _split_wecom_aibot_text_chunks(text)
+        if not chunks:
+            logger.warning(
+                "[WeCom AI Bot] 推送内容为空，跳过: key=%s",
+                chatid or "unknown",
+            )
+            return False
+        total = len(chunks)
+        sent = 0
+        for index, chunk in enumerate(chunks, start=1):
+            part_label = f"{index}/{total}" if total > 1 else ""
+            ok = self._send_single_to_chat(chatid, chunk, timeout_seconds, part_label)
+            if not ok:
+                logger.error(
+                    "[WeCom AI Bot] 报告分片 %d/%d 发送失败，本次推送整体失败"
+                    "（已发送 %d/%d 片，部分交付）: key=%s",
+                    index,
+                    total,
+                    sent,
+                    total,
+                    chatid or "unknown",
+                )
+                return False
+            sent = index
+        if total > 1:
+            logger.info(
+                "[WeCom AI Bot] 长报告已按 %d 片顺序发送完成: key=%s",
+                total,
+                chatid or "unknown",
+            )
+        return True
 
     def stop(self) -> None:
         """停止客户端"""
