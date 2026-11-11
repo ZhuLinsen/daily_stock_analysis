@@ -84,4 +84,30 @@ describe('stock code validation', () => {
   test('does not treat digit-base .TO as a valid Canada suffix code', () => {
     expect(validateStockCode('1234.TO').valid).toBe(false);
   });
+
+  // OR-COM-bfe7c5f7 (review #2): the .V/.v suffix family carries its market
+  // identity IN THE CASE — uppercase .V is TSXV (Canada), lowercase .v is the
+  // legacy US single-letter class share. validateStockCode must return the
+  // ORIGINAL casing for this family so analysis requests and watchlist
+  // entries keep the distinction; every other form stays uppercase-normalized.
+  test.each([
+    ['shop.v', 'shop.v'],
+    ['Shop.v', 'Shop.v'],
+    ['SHOP.V', 'SHOP.V'],
+  ])('preserves the original case for the .V/.v suffix family: %s', (input, normalized) => {
+    expect(validateStockCode(input)).toEqual({
+      valid: true,
+      normalized,
+    });
+    expect(isObviouslyInvalidStockQuery(input)).toBe(false);
+  });
+
+  test.each([
+    ['aapl', 'AAPL'],
+    ['7203.t', '7203.T'],
+    ['shop.to', 'SHOP.TO'],
+    ['brk.b', 'BRK.B'],
+  ])('still upper-cases non-.V forms: %s', (input, normalized) => {
+    expect(validateStockCode(input).normalized).toBe(normalized);
+  });
 });

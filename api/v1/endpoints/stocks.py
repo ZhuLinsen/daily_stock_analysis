@@ -95,6 +95,10 @@ _STOCK_CODE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Case-sensitive .V/.v suffix family (OR-COM-bfe7c5f7): uppercase .V is TSXV,
+# lowercase .v is the legacy US class share — the case is the identity.
+_V_SUFFIX_FAMILY_RE = re.compile(r"^[A-Za-z]{1,6}\.[Vv]$")
+
 
 def _validate_and_normalize_stock_code(code: str) -> str:
     """Validate stock code format and return canonical form.
@@ -119,10 +123,21 @@ def _validate_and_normalize_stock_code(code: str) -> str:
 
 
 def _watchlist_match_key(code: str) -> str:
-    """Return the equivalence key used for watchlist add/remove matching."""
+    """Return the equivalence key used for watchlist add/remove matching.
+
+    OR-COM-bfe7c5f7 (PR #2493 review #2): the ``.V``/``.v`` suffix family is
+    case-sensitive — uppercase ``.V`` is TSXV (Canada, e.g. ``SHOP.V``) while
+    lowercase ``.v`` is the legacy US single-letter class share (e.g.
+    ``shop.v``). Folding the case would merge the two identities, block
+    coexistence in STOCK_LIST, and make removing one delete the other, so
+    this family keeps the normalized (case-preserved) form as its key.
+    Every other code keeps the existing uppercase-key behavior.
+    """
     normalized = normalize_stock_code(code.strip())
     if re.fullmatch(r"\d{5}", normalized):
         return f"HK{normalized}"
+    if _V_SUFFIX_FAMILY_RE.match(normalized):
+        return normalized
     return normalized.upper()
 
 

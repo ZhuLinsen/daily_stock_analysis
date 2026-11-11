@@ -357,5 +357,97 @@ class TestPublicEntrancesAcceptCa:
         assert _is_ca_market(code) is False
 
 
+# ---------------------------------------------------------------------------
+# PR #2493 复审 #2（OR-COM-bfe7c5f7 重开）：Web/自选入口的大写化再次抹掉
+# 小写 .v 身份。评审场景 = shop.v 与 SHOP.V 必须可在自选共存且移除精确命中。
+# ---------------------------------------------------------------------------
+class TestWatchlistCaseSensitiveIdentity:
+    """自选匹配键对 .V/.v 族大小写敏感；其余代码维持现行为"""
+
+    def test_match_key_preserves_v_suffix_case(self):
+        from api.v1.endpoints.stocks import _watchlist_match_key
+
+        assert _watchlist_match_key("shop.v") == "shop.v"
+        assert _watchlist_match_key("SHOP.V") == "SHOP.V"
+        assert _watchlist_match_key("Shop.v") == "Shop.v"
+
+    def test_match_key_distinguishes_the_two_identities(self):
+        from api.v1.endpoints.stocks import _watchlist_match_key
+
+        assert _watchlist_match_key("shop.v") != _watchlist_match_key("SHOP.V"), (
+            "shop.v（美股）与 SHOP.V（TSXV）必须是两个身份，否则无法共存"
+        )
+
+    def test_match_key_other_codes_unchanged(self):
+        from api.v1.endpoints.stocks import _watchlist_match_key
+
+        assert _watchlist_match_key("AAPL") == "AAPL"
+        assert _watchlist_match_key("aapl") == "AAPL"
+        assert _watchlist_match_key("600519.SH") == "600519"
+        assert _watchlist_match_key("hk00700") == "HK00700"
+        assert _watchlist_match_key("00700") == "HK00700"
+        assert _watchlist_match_key("7203.T") == "7203.T"
+
+
+class _FakeWatchlistConfigService:
+    """仅实现 watchlist 端点用到的 get_config/update 两个面。"""
+
+    def __init__(self, seed):
+        self._codes = list(seed)
+
+    def get_config(self, include_schema=False):
+        return {
+            "config_version": "v-test",
+            "items": [{"key": "STOCK_LIST", "value": ",".join(self._codes)}],
+        }
+
+    def update(self, config_version, items, mask_token, reload_now):
+        for item in items:
+            if item.get("key") == "STOCK_LIST":
+                self._codes = [c for c in str(item.get("value", "")).split(",") if c]
+        return {"updated_keys": [item.get("key") for item in items]}
+
+
+def _make_watchlist_client(seed):
+    """Return (TestClient, fake_service) with the config-service dependency overridden."""
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+    from api.deps import get_system_config_service
+
+    fake = _FakeWatchlistConfigService(seed)
+    app = create_app(static_dir=None)
+    app.dependency_overrides[get_system_config_service] = lambda: fake
+    return TestClient(app), fake
+
+
+class TestWatchlistEndpointsCoexistence:
+    """端点层：shop.v 与 SHOP.V 共存、移除精确命中（评审场景②）"""
+
+    def test_remove_shop_v_keeps_shop_v_upper(self):
+        client, fake = _make_watchlist_client(["AAPL", "shop.v", "SHOP.V"])
+        resp = client.post("/api/v1/stocks/watchlist/remove", json={"stock_code": "shop.v"})
+        assert resp.status_code == 200, resp.text
+        assert fake._codes == ["AAPL", "SHOP.V"], "remove shop.v 必须精确移除 shop.v、保留 SHOP.V"
+
+    def test_remove_shop_v_upper_keeps_lowercase(self):
+        client, fake = _make_watchlist_client(["shop.v", "SHOP.V"])
+        resp = client.post("/api/v1/stocks/watchlist/remove", json={"stock_code": "SHOP.V"})
+        assert resp.status_code == 200, resp.text
+        assert fake._codes == ["shop.v"], "remove SHOP.V 必须精确移除 SHOP.V、保留 shop.v"
+
+    def test_add_lowercase_v_coexists_with_upper(self):
+        client, fake = _make_watchlist_client(["SHOP.V"])
+        resp = client.post("/api/v1/stocks/watchlist/add", json={"stock_code": "shop.v"})
+        assert resp.status_code == 200, resp.text
+        assert fake._codes == ["SHOP.V", "shop.v"], "add shop.v 须与既有 SHOP.V 共存为两个条目"
+
+    def test_add_same_form_still_dedupes(self):
+        client, fake = _make_watchlist_client(["shop.v"])
+        resp = client.post("/api/v1/stocks/watchlist/add", json={"stock_code": "shop.v"})
+        assert resp.status_code == 200, resp.text
+        assert fake._codes == ["shop.v"], "同形态重复 add 仍按原语义去重"
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
