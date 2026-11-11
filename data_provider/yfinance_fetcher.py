@@ -892,7 +892,7 @@ class YfinanceFetcher(BaseFetcher):
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
                 hist = ticker.history(period='2d')
                 if hist.empty:
-                    if is_us_symbol:
+                    if is_us_symbol and not is_ca_market_symbol(stock_code):
                         logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
                         return self._get_us_stock_quote_from_stooq(symbol)
                     logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
@@ -984,7 +984,7 @@ class YfinanceFetcher(BaseFetcher):
             return quote
 
         except Exception as e:
-            if self._is_us_stock(stock_code):
+            if self._is_us_stock(stock_code) and not is_ca_market_symbol(stock_code):
                 logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}，尝试 Stooq 兜底")
                 return self._get_us_stock_quote_from_stooq(stock_code)
             logger.warning(f"[Yfinance] 获取 {stock_code} 实时行情失败: {e}")

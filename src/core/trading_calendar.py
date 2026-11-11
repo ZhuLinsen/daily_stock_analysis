@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from src.services.market_symbol_utils import get_suffix_market
+from src.services.market_symbol_utils import get_ca_suffix_market, get_suffix_market
 
 logger = logging.getLogger(__name__)
 
@@ -138,11 +138,23 @@ def get_market_for_stock(code: str) -> Optional[str]:
     Infer market region for a stock code.
 
     Returns:
-        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | None (None = unrecognized, fail-open: treat as open)
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'ca' | None (None = unrecognized, fail-open: treat as open)
     """
     if not code or not isinstance(code, str):
         return None
-    code = (code or "").strip().upper()
+    raw = (code or "").strip()
+    code = raw.upper()
+
+    # Canada (Issue #2420 / PR #2493 review OR-COR-9a7fa646): TSX ``.TO`` /
+    # TSXV uppercase ``.V`` codes must be classified BEFORE the US pattern,
+    # because ``SHOP.V`` also matches the US single-letter class-share shape.
+    # A lowercase ``.v`` keeps the legacy US identity (case is the carrier).
+    # This feeds main.py's per-stock trading-day filter and the pipeline's
+    # market-phase/effective-date lookups, so ca stocks follow the Toronto
+    # (XTSX) calendar instead of failing open or riding the US calendar.
+    ca_market = get_ca_suffix_market(raw)
+    if ca_market:
+        return ca_market
 
     from data_provider import is_us_stock_code, is_us_index_code, is_hk_stock_code
 

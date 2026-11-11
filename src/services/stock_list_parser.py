@@ -207,6 +207,22 @@ def _canada_suffix_exchange(raw: str) -> Optional[str]:
     return raw.strip().upper().rsplit(".", 1)[1]
 
 
+def _is_lowercase_v_us_form(raw: str) -> bool:
+    """Return True for the legacy US single-letter class form ending in ``.v``.
+
+    PR #2493 review OR-COM-bfe7c5f7: ``shop.v`` / ``Shop.v`` keep the US
+    identity the parser has always assigned them. The suffix case is the only
+    carrier of that identity after canonicalization, so the canonical id
+    preserves the raw token verbatim. Bases must be alphabetic 1-6 letters
+    (same shape as the TSXV rule) to avoid swallowing unrelated dotted tokens.
+    """
+    stripped = (raw or "").strip()
+    if not stripped.endswith(".v"):
+        return False
+    base = stripped[:-2]
+    return bool(base) and base.isalpha() and len(base) <= 6
+
+
 def _split_prefix(token: str) -> Tuple[Optional[str], str]:
     """Split ``token`` into ``(prefix, bare_code)`` when the leader matches
     one of the known exchange prefixes (``sh``/``sz``/``bj``/``hk``/``us``).
@@ -775,6 +791,23 @@ def parse_analysis_target(
             exchange=ca_suffix_exchange,
             normalized_prefix=None,
             normalized_code=canonical,
+        )
+
+    # PR #2493 review OR-COM-bfe7c5f7: a lowercase ``.v`` token keeps the
+    # legacy US single-letter class-share identity, and the case IS the
+    # identity carrier. Canonicalize to the case-preserved form (mirroring the
+    # ``csi930955`` lowercase-canonical precedent) so downstream routers —
+    # which re-derive the market from the code string — keep treating it as
+    # US instead of flipping to the Canada suffix routing.
+    if _is_lowercase_v_us_form(raw):
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.STOCK,
+            canonical_id=raw,
+            display_code=raw,
+            exchange="US",
+            normalized_prefix=None,
+            normalized_code=raw,
         )
 
     from .stock_code_utils import _normalize_code_and_exchange

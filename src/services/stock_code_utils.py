@@ -13,6 +13,7 @@ from typing import List, Optional
 
 from data_provider.base import canonical_stock_code
 from src.services.market_symbol_utils import (
+    get_ca_suffix_market,
     get_suffix_market,
     normalize_suffix_market_symbol,
     suffix_base_lookup_allowed,
@@ -205,6 +206,12 @@ def is_code_like(value: str) -> bool:
     explicit_parts = _split_explicit_exchange(text)
     if explicit_parts is not None:
         return _normalize_explicit_exchange_parts(explicit_parts) is not None
+    # Canada TSX/TSXV suffix shapes (Issue #2420): .TO is case-insensitive,
+    # .V shares the US single-letter class shape and is already accepted by
+    # the ticker regex below; .TO needs its own alternative here so analysis
+    # inputs route to code resolution instead of name lookup.
+    if re.match(r"^[A-Z]{1,6}\.TO$", text):
+        return True
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
         return True
     return False
@@ -225,11 +232,25 @@ def normalize_code(raw: str) -> Optional[str]:
 
 def _normalize_code_and_exchange(raw: str) -> tuple[Optional[str], str]:
     """Normalize once and retain an explicit exchange for candidate expansion."""
-    text = raw.strip().upper()
+    stripped = raw.strip()
+    text = stripped.upper()
     if not text:
         return None, ""
     if text.isdigit() and len(text) in (5, 6):
         return text, ""
+    # Canada (Issue #2420 / PR #2493 r2): TSX ``.TO`` suffix forms are
+    # case-insensitive (mirroring the ``.T``/``.KS`` precedent) and round-trip
+    # with the explicit ``TO`` exchange. The ambiguous ``.V`` suffix keeps the
+    # ORIGINAL case in the normalized code — uppercase ``.V`` is TSXV, while a
+    # lowercase ``.v`` is the legacy US single-letter class form, and the case
+    # is the only identity carrier that survives canonicalization (the
+    # lowercase canonical mirrors the ``csi930955`` precedent).
+    if "." in text:
+        base, suffix = text.rsplit(".", 1)
+        if suffix == "TO" and base.isalpha() and 1 <= len(base) <= 6:
+            return f"{base}.TO", "TO"
+        if stripped.endswith(".v") and base.isalpha() and 1 <= len(base) <= 6:
+            return stripped, ""
     explicit_parts = _split_explicit_exchange(text)
     explicit_exchange = explicit_parts[0] if explicit_parts is not None else ""
     explicit_code = _normalize_explicit_exchange_parts(explicit_parts)
@@ -346,11 +367,15 @@ def resolve_daily_stock_identity(
     Persisted market metadata and the stock index may disambiguate legacy bare
     JP/KR codes before numeric CN/HK defaults are applied.
     """
-    raw_code = str(code or "").strip().upper()
+    raw_code = str(code or "").strip()
     if not raw_code:
         return None
 
-    identity_code = raw_code
+    # Preserve the ORIGINAL case for the ambiguous lowercase ``.v`` form: the
+    # case is the identity carrier between TSXV (``.V``) and the legacy US
+    # single-letter class share (``.v``), and it must survive into the
+    # normalized code (PR #2493 review OR-COM-bfe7c5f7).
+    identity_code = raw_code if raw_code.endswith(".v") else raw_code.upper()
     trusted_market = str(market_hint or "").strip().lower()
     if trusted_market == "hk" and raw_code.isdigit() and 1 <= len(raw_code) <= 3:
         identity_code = raw_code.zfill(5)
@@ -422,12 +447,21 @@ def resolve_daily_stock_identity(
         return None
 
     suffix_market = get_suffix_market(normalized_code)
+    ca_suffix_market = get_ca_suffix_market(normalized_code)
     if explicit_exchange in {"SH", "SS", "SZ", "BJ"}:
         market = "cn"
     elif explicit_exchange == "HK":
         market = "hk"
     elif suffix_market:
         market = suffix_market
+    elif ca_suffix_market == "ca":
+        market = "ca"
+    elif normalized_code.endswith(".v"):
+        # Lowercase-preserved legacy US class-share form: the case is the
+        # identity carrier, so ``shop.v`` stays a US identity here even though
+        # the uppercase shape would match the US ticker regex (which is
+        # case-sensitive and rejects the lowercase form).
+        market = "us"
     elif _is_us_index_code(normalized_code):
         market = "us"
     elif re.fullmatch(r"[A-Z]{1,5}(?:\.(?:US|[A-Z]))?", normalized_code):
@@ -455,7 +489,7 @@ def resolve_daily_stock_identity(
         candidates = [raw_code, normalized_code, refill_code]
         if suffix_base_lookup_allowed(normalized_code):
             candidates.append(normalized_code.rsplit(".", 1)[0])
-    if market not in {"jp", "kr", "tw"}:
+    if market not in {"jp", "kr", "tw", "ca"}:
         for candidate in list(candidates):
             candidates.extend(
                 _build_market_code_variants(

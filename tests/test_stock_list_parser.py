@@ -1190,8 +1190,11 @@ class TestCanadaSuffixRouting:
     @pytest.mark.parametrize(
         "code,expected_exchange,expected_canonical",
         [
-            # 小写 .v：保持既有美股语义，不得误判为 TSXV。
-            ("shop.v", "US", "SHOP.V"),
+            # 小写 .v：保持既有美股语义，不得误判为 TSXV；规范形保留大小写
+            # （仿 csi930955 小写规范形先例），下游大小写敏感路由据此保持 US 身份
+            # （PR #2493 首评 OR-COM-bfe7c5f7）。
+            ("shop.v", "US", "shop.v"),
+            ("Shop.v", "US", "Shop.v"),
             # 美股单字母分类后缀形态不受 CA 路由影响。
             ("BRK.B", "US", "BRK.B"),
             ("SHOP.U", "US", "SHOP.U"),

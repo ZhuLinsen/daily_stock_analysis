@@ -12,7 +12,7 @@ from src.repositories.portfolio_repo import PortfolioRepository
 from src.services.alert_service import AlertService
 from src.services.history_service import HistoryService
 from src.services.intelligence_service import IntelligenceService
-from src.services.market_symbol_utils import get_suffix_market
+from src.services.market_symbol_utils import get_ca_suffix_market, get_suffix_market
 from src.services.research_artifact_service import build_research_artifact
 from src.services.stock_code_utils import resolve_daily_stock_identity
 from src.services.stock_service import StockService
@@ -75,12 +75,19 @@ class StockProfileService:
         normalized = canonical_stock_code(identity.refill_code or identity.normalized_code)
         if normalized.isdigit() and len(normalized) == 5:
             return f"HK{normalized.zfill(5)}"
+        if normalized.endswith(".v"):
+            # Case-preserved legacy US class-share identity (OR-COM-bfe7c5f7);
+            # upper-casing would flip it into the TSXV routing downstream.
+            return normalized
         return normalized.upper()
 
     @staticmethod
     def market_for_code(canonical_code: str) -> str:
         if canonical_code.startswith("HK"):
             return "hk"
+        ca_market = get_ca_suffix_market(canonical_code)
+        if ca_market:
+            return ca_market
         suffix_market = get_suffix_market(canonical_code)
         if suffix_market:
             return suffix_market
