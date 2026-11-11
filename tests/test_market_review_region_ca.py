@@ -288,3 +288,18 @@ class TestMarketAnalyzerAcceptsCa:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestCaZhTemplateFallbackLabel:
+    """OR-COR-8e0bd2a1（复审 #4）：中文模板 fallback 的 market_labels 缺 ca
+    → 加股降级文案误称「今日A股市场」。"""
+
+    def test_zh_template_fallback_uses_canada_label(self):
+        from src.market_analyzer import MarketAnalyzer, MarketOverview
+
+        analyzer = MarketAnalyzer(config=SimpleNamespace(report_language="zh"), region="ca")
+        report = analyzer._generate_template_review(MarketOverview(date="2026-03-05"), [])
+
+        assert "A股" not in report, "ca 的中文降级文案不得误称 A 股"
+        assert "加股" in report
+        assert "加拿大市场" in report or "加股市场" in report
