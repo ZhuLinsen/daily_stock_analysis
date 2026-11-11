@@ -775,9 +775,12 @@ class HotTop10RankingDateTest(unittest.TestCase):
         # Stale delivery must not consume today's dedup marker.
         skip, reason = hot_top10_already_delivered_today(config)
         self.assertFalse(skip)
-        # The marker still records the data date for auditability.
+        # The marker still records the data date for auditability (its own
+        # per-date file since r7, OR-COR-341d7b5a).
         marker_payload = json.loads(
-            hot_top10_marker_path(config).read_text(encoding="utf-8")
+            hot_top10_marker_path(
+                config, self.yesterday
+            ).read_text(encoding="utf-8")
         )
         self.assertEqual(marker_payload.get("data_date"), self.yesterday)
         self.assertEqual(marker_payload.get("run_date"), date.today().isoformat())
@@ -827,9 +830,12 @@ class HotTop10RankingDateTest(unittest.TestCase):
             "same_data_date_delivered_today", second_result.reason
         )
         self.assertEqual(len(notifier.sent), 0)
-        # The marker still records the stale data date (unchanged).
+        # The marker still records the stale data date (unchanged, in its
+        # own per-date file since r7).
         marker_payload = json.loads(
-            hot_top10_marker_path(config).read_text(encoding="utf-8")
+            hot_top10_marker_path(
+                config, self.yesterday
+            ).read_text(encoding="utf-8")
         )
         self.assertEqual(marker_payload.get("data_date"), self.yesterday)
 
@@ -1121,7 +1127,9 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
         self.assertEqual(delivered[0]["reason"], "ok")
 
         marker_payload = json.loads(
-            (db_path.parent / "hot_top10_state.json").read_text(encoding="utf-8")
+            (
+                db_path.parent / f"hot_top10_state_{data_date}.json"
+            ).read_text(encoding="utf-8")
         )
         self.assertEqual(marker_payload.get("data_date"), data_date)
         self.assertTrue(marker_payload.get("delivered"))
@@ -1263,6 +1271,11 @@ from src.services import hot_top10_service as svc
 ttl_text = os.environ.get("HOT_TOP10_TEST_CLAIM_TTL_SECONDS", "")
 if ttl_text:
     svc.HOT_TOP10_CLAIM_STALE_AFTER = timedelta(seconds=float(ttl_text))
+
+# r7: force the explicitly-degraded (no OS locking) path when the parent
+# test asks for it; unset in every other test, so this is behavior-neutral.
+if os.environ.get("HOT_TOP10_TEST_CLAIM_LOCK_DISABLE", ""):
+    svc._CLAIM_LOCKING_AVAILABLE = False
 
 config = SimpleNamespace(
     database_path=sys.argv[2],
@@ -1470,10 +1483,18 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         stolen.release()
         self.assertFalse(claim_path.exists())
 
+    @mock.patch.object(
+        hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
+    )
     def test_release_does_not_delete_claim_of_new_owner(self):
         """r4 release unlinked by path only, so an old holder deleted the
         new owner's claim after a takeover. Release must re-verify
-        ownership and leave a foreign claim byte-identical."""
+        ownership and leave a foreign claim byte-identical.
+
+        (r7: runs on the explicitly degraded no-OS-locking path — the TTL-0
+        takeover of a SURVIVING holder is impossible under the delivery
+        lock, so this interleaving is only reachable without OS locking,
+        where the ownership verdict is the only guard.)"""
         config = _config(self._tmp.name)
         data_date = date.today().isoformat()
         claim_path = hot_top10_claim_path(config, data_date)
@@ -1502,11 +1523,19 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         new_owner.release()
         self.assertFalse(claim_path.exists())
 
+    @mock.patch.object(
+        hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
+    )
     def test_side_effects_aborted_when_claim_lost_before_delivery(self):
         """The final arbiter of the double-steal race: a holder overtaken
         while generating the report must abort before ANY side effect — no
         save, no push, no marker — with reason=lost_claim, and the thief's
-        claim must survive the aborted run's cleanup."""
+        claim must survive the aborted run's cleanup.
+
+        (r7: runs on the explicitly degraded no-OS-locking path — under the
+        delivery lock a surviving holder cannot be overtaken at all; the
+        per-side-effect re-verification verified here is exactly the
+        defence-in-depth that remains on degraded platforms.)"""
         config = _config(self._tmp.name)
         data_date = date.today().isoformat()
         claim_path = hot_top10_claim_path(config, data_date)
@@ -1644,6 +1673,11 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         def _spawn(go_file: Path, llm_block: str) -> subprocess.Popen:
             env = dict(os.environ)
             env["HOT_TOP10_TEST_CLAIM_TTL_SECONDS"] = "0"
+            # r7: this test pins the r6-era save/notify fences of the
+            # double-steal race, which are only reachable without OS
+            # locking (under the delivery lock a surviving holder is
+            # refused at takeover). Children run the explicit degraded path.
+            env["HOT_TOP10_TEST_CLAIM_LOCK_DISABLE"] = "1"
             env["HOT_TOP10_TEST_LLM_BLOCK"] = llm_block
             env["PYTHONIOENCODING"] = "utf-8"
             return subprocess.Popen(
@@ -1724,9 +1758,9 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         winner = delivered[0]
         self.assertEqual(winner["reason"], "ok")
         marker_payload = json.loads(
-            (db_path.parent / "hot_top10_state.json").read_text(
-                encoding="utf-8"
-            )
+            (
+                db_path.parent / f"hot_top10_state_{data_date}.json"
+            ).read_text(encoding="utf-8")
         )
         self.assertEqual(marker_payload.get("data_date"), data_date)
         self.assertTrue(marker_payload.get("delivered"))
@@ -1788,6 +1822,9 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
 
     # ------------------------------------------------------------------- tests
 
+    @mock.patch.object(
+        hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
+    )
     def test_delayed_steal_cas_refuses_to_clobber_rival_takeover(self):
         """Review #10 probe 1: two contenders read the same stale claim;
         the late one parks between its staleness verdict and its replace
@@ -1801,12 +1838,12 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
         real_steal = hot_top10_svc._steal_claim_atomically
 
         def pausing_steal(*args, **kwargs):
-            # Only the FIRST contender (the late one) parks here; the
-            # rival's steal, running later in the main thread, passes
-            # straight through.
-            if not entered.is_set():
-                entered.set()
-                resume.wait(timeout=10)
+            # Only the LOSER (worker thread) parks here; the rival's steal,
+            # running later in the main thread, passes straight through.
+            if threading.current_thread() is not threading.main_thread():
+                if not entered.is_set():
+                    entered.set()
+                    resume.wait(timeout=10)
             return real_steal(*args, **kwargs)
 
         loser: Dict[str, Any] = {}
@@ -1851,6 +1888,9 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
             "a refused steal must not clobber or recreate the claim",
         )
 
+    @mock.patch.object(
+        hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
+    )
     def test_notify_reverify_aborts_when_claim_lost_during_save(self):
         """Review #10 probe 2 (the load-bearing fix): the holder passes the
         save-side ownership check, saves the report, and is overtaken while
@@ -1924,6 +1964,9 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
         self.assertTrue(retry.delivered)
         self.assertEqual(len(retry_notifier.sent), 1)
 
+    @mock.patch.object(
+        hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
+    )
     def test_release_clobber_keeps_exactly_once_invariant(self):
         """Review #10 probe 3: a steal landing between the release's
         ownership verdict and its unlink still deletes the successor's file
@@ -1991,6 +2034,303 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
         result = self._run(config, notifier=notifier)
         self.assertTrue(result.delivered)
         self.assertEqual(len(notifier.sent), 1)
+
+
+class HotTop10ClaimOsLockR7Test(unittest.TestCase):
+    """OR-COR-5c51e8d7 r7 (review #11) + OR-COR-341d7b5a.
+
+    Review #11 verdict on the lock-free protocol: user-space read-compare-
+    write can NEVER make read and replace atomic (three CAS probe rounds
+    were each defeated), so the protocol upgrades to an OS advisory lock
+    held for the whole delivery — takeover = lock success (process death
+    releases the lock, which is the liveness oracle), release = verify ->
+    unlock -> close -> unlink. The r5/r6 owner token, per-side-effect
+    re-verification and release ownership checks are kept as defence in
+    depth INSIDE the lock. Platforms without OS locking degrade explicitly
+    to the r6 compare-and-set path (loud warning, never silent).
+
+    OR-COR-341d7b5a: the single-blob dedup marker was overwritten by a late
+    stale delivery, so the retained pending follow-up re-pushed today's
+    list. Markers are now one file per data date.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value={"cn"},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    # ------------------------------------------------------------------ helpers
+
+    def _stale_legacy_claim(self, config) -> Path:
+        claim_path = hot_top10_claim_path(config, date.today().isoformat())
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_time = (
+            datetime.now() - timedelta(hours=3)
+        ).isoformat(timespec="seconds")
+        claim_path.write_text(f"{stale_time}\n999999", encoding="utf-8")
+        return claim_path
+
+    # ------------------------------------------------------------------- tests
+
+    def test_surviving_holder_cannot_be_taken_over(self):
+        """Review #11 blocker 1, minimal deterministic form: the holder
+        exists and is alive (in r7 it holds the delivery lock); a contender
+        judging the claim stale (TTL collapsed to zero) attempts takeover.
+        v3 refuses it at the LOCK — r6 RED: the takeover replaced the
+        surviving holder's claim and handed the contender a handle."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = self._stale_legacy_claim(config)
+
+        holder = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(holder)
+        holder_content = claim_path.read_text(encoding="utf-8")
+
+        # The contender collapses the TTL and attempts the takeover of a
+        # SURVIVING holder's claim.
+        with mock.patch.object(
+            hot_top10_svc, "HOT_TOP10_CLAIM_STALE_AFTER", timedelta(seconds=0)
+        ):
+            contender = acquire_hot_top10_delivery_claim(config, data_date)
+
+        self.assertIsNone(
+            contender, "a surviving holder must refuse takeover at the lock"
+        )
+        self.assertTrue(claim_path.exists())
+        self.assertEqual(
+            claim_path.read_text(encoding="utf-8"), holder_content
+        )
+        holder.release()
+        self.assertFalse(claim_path.exists())
+
+    def test_parked_contender_cannot_clobber_surviving_holder(self):
+        """Review #11 probe, paused-resume form: the contender parks after
+        its staleness verdict and before its takeover action; the surviving
+        holder takes the claim over and KEEPS holding the delivery lock. On
+        resume the contender must still be refused — under v3 the refusal
+        happens at the lock NO MATTER where the contender was parked (the
+        window-free property the review demanded); on r6 the CAS happened
+        to refuse this exact parking point, which is why the review's own
+        probe parked one step later."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = self._stale_legacy_claim(config)
+        entered, resume = threading.Event(), threading.Event()
+        real_stale = hot_top10_svc._claim_is_stale
+
+        def pausing_stale(path, text):
+            result = real_stale(path, text)
+            if result and not entered.is_set():
+                entered.set()
+                resume.wait(timeout=10)
+            return result
+
+        loser: Dict[str, Any] = {}
+
+        def _late_contender() -> None:
+            with mock.patch.object(
+                hot_top10_svc,
+                "_claim_is_stale",
+                autospec=True,
+                side_effect=pausing_stale,
+            ):
+                loser["claim"] = acquire_hot_top10_delivery_claim(
+                    config, data_date
+                )
+
+        worker = threading.Thread(target=_late_contender, daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=5))
+
+        # The surviving holder takes the same stale claim over and keeps
+        # holding it (delivery in progress — no release yet).
+        holder = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(holder)
+        holder_content = claim_path.read_text(encoding="utf-8")
+
+        resume.set()
+        worker.join(timeout=10)
+
+        self.assertIsNone(
+            loser["claim"], "surviving holder must not be clobbered"
+        )
+        self.assertEqual(
+            claim_path.read_text(encoding="utf-8"), holder_content
+        )
+        holder.release()
+        self.assertFalse(claim_path.exists())
+
+    @unittest.skipUnless(
+        getattr(hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False),
+        "OS file locking unavailable on this platform",
+    )
+    def test_claim_lock_is_exclusive_within_process(self):
+        """Lock semantics for both platform branches (CI=ubuntu exercises
+        fcntl, Windows local exercises msvcrt): a held delivery lock refuses
+        a second handle EVEN IN THE SAME PROCESS; unlocking makes the file
+        lockable again."""
+        path = Path(self._tmp.name) / "lock_probe.lock"
+        path.write_text("payload", encoding="utf-8")
+        first = open(path, "r+b")
+        second = open(path, "r+b")
+        try:
+            self.assertTrue(hot_top10_svc._lock_claim_file(first))
+            self.assertFalse(hot_top10_svc._lock_claim_file(second))
+            hot_top10_svc._unlock_claim_file(first)
+            self.assertTrue(hot_top10_svc._lock_claim_file(second))
+            hot_top10_svc._unlock_claim_file(second)
+        finally:
+            first.close()
+            second.close()
+
+    def test_lock_unavailable_degrades_to_cas_explicitly(self):
+        """Platforms without OS locking degrade EXPLICITLY to the r6 CAS
+        path with a loud warning — never a silent pretend-success."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = self._stale_legacy_claim(config)
+        with mock.patch.object(
+            hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
+        ):
+            with self.assertLogs(
+                "src.services.hot_top10_service", level="WARNING"
+            ) as captured:
+                claim = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(claim)
+        self.assertTrue(
+            any("CAS" in line or "退化" in line for line in captured.output),
+            f"degradation must be logged loudly: {captured.output}",
+        )
+        lines = claim_path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(lines), 3)  # takeover rewrote as ours (tokened)
+        claim.release()
+        self.assertFalse(claim_path.exists())
+
+    def test_per_date_marker_blocks_stale_overwrite_double_delivery(self):
+        """Review #11 OR-COR-341d7b5a deterministic interleaving: B delivers
+        today elsewhere (its marker is recorded); A — already in flight on
+        the previous trading day's rankings with a slow LLM — delivers
+        afterwards; the retained pending follow-up must observe that
+        today's marker already exists and skip. Notifications stop at
+        [B(today), A(yesterday)] with NO second today push. r6 RED: A's
+        single-blob marker overwrote B's record, so the follow-up pushed
+        today's list a second time."""
+        config = _config(self._tmp.name)
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        today = date.today().isoformat()
+
+        class _BlockingAnalyzer:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+
+            def generate_text(self, prompt: str, **kwargs: Any) -> str:
+                self.entered.set()
+                release_a.wait(timeout=10)
+                return _llm_json()
+
+        release_a = threading.Event()
+        analyzer_a = _BlockingAnalyzer()
+        notifier_a = _FakeNotifier()
+        notifier_c = _FakeNotifier()
+        service_a = _FakeHotspotService(_hotspot_payload(_theme_items(3)))
+        service_a.payload["trade_date"] = yesterday
+
+        # A is already in flight on the stale rankings, parked in the LLM.
+        results_a: Dict[str, HotTop10RunResult] = {}
+
+        def _a_run() -> None:
+            results_a["run"] = run_hot_top10_analysis(
+                config,
+                notifier=notifier_a,
+                analyzer=analyzer_a,
+                hotspot_service=service_a,
+            )
+
+        worker = threading.Thread(target=_a_run, daemon=True)
+        worker.start()
+        self.assertTrue(analyzer_a.entered.wait(timeout=5))
+
+        # B (another process) completed today's delivery meanwhile: its
+        # marker is recorded. (Simulated at the marker boundary — the exact
+        # mechanism under review.)
+        record_hot_top10_marker(
+            config,
+            llm_completed=True,
+            notification_status="sent",
+            data_date=today,
+        )
+
+        # C: an overlapping trigger is mutex-skipped and retains the
+        # one-shot pending follow-up.
+        result_c = run_hot_top10_analysis(
+            config,
+            notifier=notifier_c,
+            analyzer=_FakeAnalyzer(text=_llm_json()),
+            hotspot_service=_FakeHotspotService(_hotspot_payload(_theme_items(3))),
+        )
+        self.assertTrue(result_c.skipped)
+        self.assertEqual(result_c.reason, "already_running")
+
+        release_a.set()
+        worker.join(timeout=15)
+        result_a = results_a["run"]
+
+        # A delivers the stale list once ...
+        self.assertTrue(result_a.delivered)
+        self.assertEqual(result_a.ranking_date, yesterday)
+        # ... and the pending follow-up must NOT re-push today's list.
+        self.assertEqual(
+            len(notifier_a.sent),
+            1,
+            "pending follow-up must observe today's marker and skip",
+        )
+        self.assertEqual(len(notifier_c.sent), 0)
+        # B's marker survived A's stale delivery.
+        marker_today = json.loads(
+            hot_top10_marker_path(config, today).read_text(encoding="utf-8")
+        )
+        self.assertEqual(marker_today.get("data_date"), today)
+        self.assertTrue(marker_today.get("delivered"))
+
+    def test_expired_per_date_markers_are_pruned_lazily(self):
+        """Cleanup policy: per-date marker files older than the retention
+        window are removed lazily after each successful write; the fresh
+        marker survives."""
+        config = _config(self._tmp.name)
+        old_date = (
+            date.today()
+            - timedelta(days=hot_top10_svc.MARKER_RETENTION_DAYS + 1)
+        ).isoformat()
+        old_marker = hot_top10_marker_path(config, old_date)
+        old_marker.parent.mkdir(parents=True, exist_ok=True)
+        old_marker.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "run_date": old_date,
+                    "data_date": old_date,
+                    "delivered": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        record_hot_top10_marker(
+            config, llm_completed=True, notification_status="sent"
+        )
+
+        self.assertFalse(
+            old_marker.exists(), "expired marker must be pruned lazily"
+        )
+        today_marker = hot_top10_marker_path(config)
+        self.assertTrue(today_marker.exists())
+        payload = json.loads(today_marker.read_text(encoding="utf-8"))
+        self.assertEqual(payload.get("data_date"), date.today().isoformat())
 
 
 if __name__ == "__main__":

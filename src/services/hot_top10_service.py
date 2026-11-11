@@ -31,21 +31,28 @@ Design rules:
   deliver -> marker); a trigger arriving while another run holds it exits
   immediately with ``already_running`` — no push, no marker — and retries on
   the next occurrence.
-- Cross-process claim ownership protocol (OR-COR-5c51e8d7 r5): independent
+- Cross-process claim ownership protocol (OR-COR-5c51e8d7 r7): independent
   scheduler processes sharing the same DATABASE_PATH arbitrate delivery per
-  data date through ``hot_top10_claim_<data_date>.lock``. The file carries
-  an owner token (uuid4 hex) behind the legacy first-line ISO timestamp;
-  publication is an atomic no-replace link of a fully written temp file,
-  empty/unparseable claim files are live (never deleted), stale claims are
-  taken over with one atomic rename, ownership is re-verified before every
-  side effect (save/push, marker) and before release deletes, and no
-  OS-level file locks are used. r6 (review #10): the takeover is a
-  compare-and-set against the exact stale claim inspected (a late contender
-  never clobbers a rival's fresh takeover), the save and the notify each
-  carry their OWN ownership re-verification (a mid-save takeover aborts the
-  push), and the release verdict runs back-to-back with the unlink — the
-  exactly-once delivery invariant survives every documented residual window.
-  ``force_run`` stays unclaimed.
+  data date through ``hot_top10_claim_<data_date>.lock`` plus an OS advisory
+  LOCK held for the whole delivery (review #11: user-space read-compare-
+  write can never make read and replace atomic — three CAS probe rounds
+  were each defeated — so the protocol now uses a real mutex). The claim
+  file keeps its serialization: line 1 is the legacy ISO timestamp, then
+  the owner token (uuid4 hex) and the pid. Publication is an atomic
+  no-replace link of a fully written temp file. Takeover = LOCK ACQUIRED on
+  the stale claim (process death releases the lock, which is the liveness
+  oracle); the holder keeps the lock until the run ends. Release runs
+  verify -> unlock -> close -> unlink. The r5/r6 owner-token checks, the
+  per-side-effect re-verification (save/notify/marker) and the release
+  ownership verdict are all kept as defence in depth inside the lock.
+  Platforms without OS locking degrade EXPLICITLY to the r6 compare-and-
+  set path with a loud warning (never silent). ``force_run`` stays
+  unclaimed; the in-process mutex stays the fast path.
+- Cross-date dedup isolation (OR-COR-341d7b5a r7): dedup markers are one
+  file per data date (``hot_top10_state_<YYYY-MM-DD>.json``), so a late
+  stale delivery can never overwrite today's record and the retained
+  pending follow-up can never re-push a data date that was already
+  delivered today. Expired markers are pruned lazily after each write.
 - Default OFF: with ``HOT_TOP10_ENABLED`` unset the feature registers nothing
   and changes zero behavior.
 """
@@ -58,6 +65,29 @@ import os
 import re
 import threading
 import uuid
+
+try:  # POSIX advisory whole-file locking (Linux/macOS CI runners)
+    import fcntl
+
+    _POSIX_LOCKING = True
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+    _POSIX_LOCKING = False
+try:  # Windows mandatory byte-range locking
+    import msvcrt
+
+    _WINDOWS_LOCKING = True
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None
+    _WINDOWS_LOCKING = False
+
+_CLAIM_LOCKING_AVAILABLE = _POSIX_LOCKING or _WINDOWS_LOCKING
+# The lock is a single byte FAR beyond any claim content (~1 MiB offset):
+# on Windows LockFile ranges are mandatory for OTHER handles, so keeping
+# the locked byte away from the content leaves every plain-content reader
+# (owner-token verification, staleness parsing) unaffected. POSIX flock is
+# advisory whole-file and does not disturb readers either.
+_CLAIM_LOCK_OFFSET = 1 << 20
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -75,7 +105,12 @@ DEFAULT_HOT_TOP10_SCHEDULE_TIME = "15:10"
 # list once the provider serves it (and idles when the primary slot already
 # delivered today's data).
 DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME = "15:35"
-MARKER_FILE_NAME = "hot_top10_state.json"
+# r7 (OR-COR-341d7b5a, review #11): one marker file per DATA DATE — a late
+# stale delivery can no longer overwrite today's dedup record, and the
+# retained pending follow-up can no longer re-push a data date that was
+# already delivered today. Expired files are pruned lazily after writes.
+MARKER_FILE_PREFIX = "hot_top10_state_"
+MARKER_RETENTION_DAYS = 7
 # v2 adds ``data_date`` (the ranking date the delivered report actually
 # covers, OR-COR-3e7f490e). v1 markers fail open and re-deliver once.
 MARKER_SCHEMA_VERSION = 2
@@ -100,7 +135,7 @@ _HOT_TOP10_PENDING_FOLLOWUP = threading.Event()
 # scheduler processes sharing the same DATABASE_PATH (CLI --schedule next to
 # the Web/API/desktop runtime scheduler, or two replicas). Delivery is
 # therefore arbitrated per data date through an ownership-protocol file next
-# to the marker: ``hot_top10_claim_<data_date>.lock`` (r5 protocol):
+# to the marker: ``hot_top10_claim_<data_date>.lock`` (protocol v3, r7):
 #
 # - Serialization (backward compatible): line 1 is the ISO claim timestamp
 #   exactly as r4 wrote it; r5 appends the owner token (uuid4 hex) and the
@@ -115,15 +150,22 @@ _HOT_TOP10_PENDING_FOLLOWUP = threading.Event()
 #   rule below.
 # - Reader rule: an empty/unparseable claim file is LIVE (initialization in
 #   progress, or an external occupant) — it is never deleted. Staleness is
-#   the first-line timestamp past the TTL, falling back to file mtime.
-# - Takeover of stale crash residue is one atomic rename (os.replace)
-#   guarded by a compare-and-set (r6): the disk must still hold byte-for-
-#   byte the stale claim we inspected, so a late contender never clobbers a
-#   rival's fresh takeover. The winner among racing stealers is decided by
-#   the owner token, re-verified before EVERY side effect separately (save,
-#   notify, marker — r6) and before release deletes anything; the release
-#   verdict runs back-to-back with the unlink (r6).
-# - No OS-level file locks are used.
+#   the first-line timestamp past the TTL, falling to file mtime when the
+#   first line cannot be parsed.
+# - REAL MUTEX (r7, review #11): user-space read-compare-write can never
+#   make read and replace atomic (review #10's CAS was defeated by pausing
+#   after the re-read), so the delivery is now guarded by an OS advisory
+#   lock on the claim file itself. The holder takes the lock at takeover /
+#   publication and holds it for the WHOLE delivery; a contender's takeover
+#   succeeds ONLY when the lock is acquired — which means the previous
+#   holder is dead (the OS released the lock) or never held one. Process
+#   death releasing the lock is the safety property crash-residue takeover
+#   relies on. The locked byte sits at a 1 MiB offset, far beyond any
+#   content, so Windows' mandatory ranges never block plain content reads.
+# - Defence in depth kept inside the lock (r5/r6): owner token, per-side-
+#   effect ownership re-verification (save/notify/marker), release verdict
+#   before the unlink, and the compare-and-set for platforms without OS
+#   locking (explicit, loud degradation — never silent).
 HOT_TOP10_CLAIM_STALE_AFTER = timedelta(hours=2)
 _HOT_TOP10_CLAIM_FILE_PREFIX = "hot_top10_claim_"
 _OWNER_TOKEN_LENGTH = 32  # uuid4().hex
@@ -259,15 +301,12 @@ def _steal_claim_atomically(
     path: Path, content: str, expected_text: str
 ) -> bool:
     """Replace a stale claim with our full content in one atomic rename,
-    guarded by a compare-and-set (OR-COR-5c51e8d7 r6, review #10 probe 1):
-    immediately before the replace, the file on disk must STILL be
-    byte-for-byte the stale claim we inspected moments ago. Every claim
-    write carries a fresh uuid4 token, so contents can never legitimately
-    repeat — any difference means a racing stealer already took the claim
-    over (or the old owner rewrote it); we then refuse to clobber it and
-    the caller backs off. The residual race is only the microsecond gap
-    between this re-read and ``os.replace`` itself, healed by the
-    notify-time ownership re-verification (exactly-once invariant)."""
+    guarded by a compare-and-set. This is the EXPLICIT DEGRADATION path for
+    platforms without OS locking (review #11: with the lock available the
+    takeover goes through :func:`_take_over_stale_claim` instead). The
+    residual read→replace window of this path is exactly what the review
+    showed cannot be closed in user space; it is healed by the notify-time
+    ownership re-verification (exactly-once invariant)."""
     tmp_path = _write_claim_tmp(path, content)
     try:
         observed = _read_claim_text(path)
@@ -279,19 +318,146 @@ def _steal_claim_atomically(
         _discard_claim_tmp(tmp_path)
 
 
+def _lock_claim_file(file_obj: Any) -> bool:
+    """Try a non-blocking exclusive advisory lock on the open claim file.
+    True when THIS handle holds it; False when someone else does. The lock
+    applies to one byte at ``_CLAIM_LOCK_OFFSET`` (far beyond any content —
+    see the module comment). Process death releases it automatically."""
+    if not _CLAIM_LOCKING_AVAILABLE:
+        return False
+    try:
+        if _POSIX_LOCKING:
+            fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        file_obj.seek(_CLAIM_LOCK_OFFSET)
+        msvcrt.locking(file_obj.fileno(), msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock_claim_file(file_obj: Any) -> None:
+    """Release the advisory lock; best-effort (closing also releases)."""
+    try:
+        if _POSIX_LOCKING:
+            fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
+        elif _WINDOWS_LOCKING:
+            file_obj.seek(_CLAIM_LOCK_OFFSET)
+            msvcrt.locking(file_obj.fileno(), msvcrt.LK_UNLCK, 1)
+    except (OSError, ValueError):
+        pass
+
+
+def _rewrite_locked_claim(file_obj: Any, content: str) -> None:
+    """Replace the whole content through the already-locked handle."""
+    file_obj.seek(0)
+    file_obj.truncate(0)
+    file_obj.write(content.encode("utf-8"))
+    file_obj.flush()
+    os.fsync(file_obj.fileno())
+
+
+_CLAIM_VANISHED = object()
+
+
+def _take_over_stale_claim(
+    path: Path, content: str, expected_text: str
+) -> Tuple[str, Optional[Any]]:
+    """Protocol v3 takeover (review #11 blocker 1): open the stale claim
+    and attempt the exclusive advisory lock.
+
+    - Lock ACQUIRED ⇒ the previous holder is DEAD (the OS released the
+      lock) or never held one — the claim is rewritten as ours through the
+      locked handle and the lock stays held for the whole delivery. From
+      this instant no other process can lock the file, so a parked
+      contender resuming after us is refused at the lock instead of
+      clobbering us — the r6 CAS read→replace window is closed at the root.
+    - Lock REFUSED ⇒ the holder is ALIVE: back off (``"busy"``).
+    - Platforms without OS locking degrade EXPLICITLY to the r6
+      compare-and-set replace (loud warning; ``("cas", None)``).
+
+    Returns ``(status, lock_file)`` with status ``"locked"`` / ``"cas"`` /
+    ``"busy"`` / ``"vanished"``.
+    """
+    if not _CLAIM_LOCKING_AVAILABLE:
+        # Explicit degradation — and deliberately WITHOUT holding any open
+        # handle: on Windows an open handle would block our own os.replace.
+        logger.warning(
+            "[HotTop10] 本平台不可用 OS 文件锁，认领接管退化为 CAS "
+            "用户态协议（互斥强度受限，仅供降级环境；不静默假成功）"
+        )
+        if _steal_claim_atomically(path, content, expected_text):
+            return "cas", None
+        return "busy", None
+    try:
+        file_obj = open(path, "r+b")
+    except FileNotFoundError:
+        return "vanished", None
+    except OSError:
+        return "busy", None
+    try:
+        if not _lock_claim_file(file_obj):
+            file_obj.close()
+            return "busy", None  # the holder is alive — the lock says so
+        # Locked. A content change since the staleness verdict can only
+        # mean another takeover finished and its process then died (the
+        # OS released its lock) — we legitimately succeed it; log only.
+        observed = file_obj.read()
+        if observed.decode("utf-8", "replace") != expected_text:
+            logger.info(
+                "[HotTop10] 接管锁成功但认领内容已变化"
+                "（前一接管者进程已死亡），按崩溃残留继承接管"
+            )
+        _rewrite_locked_claim(file_obj, content)
+        return "locked", file_obj
+    except OSError:
+        _unlock_claim_file(file_obj)
+        try:
+            file_obj.close()
+        except OSError:
+            pass
+        return "busy", None
+
+
+def _open_and_lock_claim(path: Path) -> Optional[Any]:
+    """Open the freshly published claim and take the delivery lock; ``None``
+    on any failure (the caller then falls back to token verification).
+    Degraded platforms publish without a lock (explicit fallback)."""
+    try:
+        file_obj = open(path, "r+b")
+    except OSError:
+        return None
+    if not _CLAIM_LOCKING_AVAILABLE:
+        return None
+    if not _lock_claim_file(file_obj):
+        file_obj.close()
+        return None
+    return file_obj
+
+
 class _HotTop10DeliveryClaim:
-    """A held cross-process delivery claim (r5 ownership protocol).
+    """A held cross-process delivery claim (protocol v3, r7).
 
-    Ownership is the token recorded in the file; r4 files carry no token
-    line, so a token-less file only counts as "ours" while its first line
-    is still the timestamp we wrote (path + first-line double check).
-    ``verify_owner`` re-reads the file; ``release`` deletes ONLY when
-    ownership still verifies, so an old holder can never delete a new
-    owner's claim. A disarmed claim (claim directory unavailable) verifies
-    trivially: the run proceeds fail-open without cross-process exclusion,
-    exactly as before."""
+    The mutual exclusion is the OS advisory lock held on the open claim
+    file for the WHOLE delivery (``_lock_file``); the owner token recorded
+    in the file stays as defence in depth. ``verify_owner`` re-reads the
+    file; ``release`` runs verify -> unlock -> close -> unlink in that
+    fixed order, so an old holder can never delete a new owner's claim
+    while the lock makes mid-delivery takeover impossible in the first
+    place. Lock-less handles (platforms without OS locking — explicit
+    degradation — or the microsecond first-publication window) fall back
+    to the r6 verify-then-unlink path. A disarmed claim (claim directory
+    unavailable) verifies trivially: the run proceeds fail-open without
+    cross-process exclusion, exactly as before."""
 
-    __slots__ = ("_path", "_token", "_created_line", "_released", "_armed")
+    __slots__ = (
+        "_path",
+        "_token",
+        "_created_line",
+        "_released",
+        "_armed",
+        "_lock_file",
+    )
 
     def __init__(
         self,
@@ -299,12 +465,14 @@ class _HotTop10DeliveryClaim:
         token: Optional[str] = None,
         created_line: Optional[str] = None,
         armed: bool = True,
+        lock_file: Optional[Any] = None,
     ) -> None:
         self._path = path
         self._token = token
         self._created_line = created_line
         self._released = False
         self._armed = armed
+        self._lock_file = lock_file
 
     @classmethod
     def disarmed(cls, path: Path) -> "_HotTop10DeliveryClaim":
@@ -334,21 +502,64 @@ class _HotTop10DeliveryClaim:
         )
 
     def release(self) -> None:
-        """Best-effort delete AFTER re-verifying ownership (CAS release,
-        r6): the file is read ONCE and the ownership verdict runs
-        back-to-back with the ``unlink`` — nothing sits between them, so
-        the verify→unlink window is a couple of byte-code instructions
-        wide. A foreign claim (lost steal race, or a stale takeover by
-        another process) is left untouched and only logged. Even if a
-        steal lands inside that residual window and we unlink a
-        successor's claim, the victim fails its own notify-time ownership
-        re-verification and aborts — the exactly-once delivery invariant
-        survives the gap (see the PR body r6 section)."""
+        """Best-effort delete AFTER re-verifying ownership. Protocol v3
+        fixed order: verify -> unlock -> close -> unlink. The delivery lock
+        makes mid-delivery takeover impossible, so the verify→unlink race
+        of the r6 lock-free release cannot arise against a live holder; a
+        foreign claim is still left untouched and only logged. Even in the
+        degraded no-lock path, a clobbered successor fails its own notify-
+        time ownership re-verification and aborts — the exactly-once
+        delivery invariant survives."""
         if self._released:
             return
         self._released = True
         if not self._armed:
             return
+        file_obj = self._lock_file
+        self._lock_file = None
+        if file_obj is None:
+            self._release_without_lock()
+            return
+        foreign = False
+        try:
+            text = _read_claim_text(self._path)
+            if text is not None and not self._text_is_ours(text):
+                foreign = True
+                logger.warning(
+                    "[HotTop10] 投递认领已易主（所有权校验不匹配），"
+                    "不删除其他进程的认领文件"
+                )
+        finally:
+            _unlock_claim_file(file_obj)
+            try:
+                file_obj.close()
+            except OSError:
+                pass
+        if foreign:
+            return
+        try:
+            self._path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning(
+                "[HotTop10] 删除投递认领文件失败（忽略，陈旧后可被接管）: %s", exc
+            )
+            return
+        # Sentry: a claim reappearing immediately after our unlink means a
+        # concurrent acquirer raced this release. Log it — the mutual
+        # exclusion is upheld by the delivery lock and the per-side-effect
+        # ownership re-verification, never by the unlink itself.
+        if _read_claim_text(self._path) is not None:
+            logger.info(
+                "[HotTop10] 认领删除后立即重现（并发接管/认领竞争），"
+                "互斥语义由投递锁与各副作用点的所有权复验保障"
+            )
+
+    def _release_without_lock(self) -> None:
+        """r6 release path, kept for the explicit no-OS-locking degradation
+        and for lock-less handles: read once, verdict back-to-back with the
+        unlink."""
         text = _read_claim_text(self._path)
         if text is None:
             return
@@ -367,10 +578,6 @@ class _HotTop10DeliveryClaim:
                 "[HotTop10] 删除投递认领文件失败（忽略，陈旧后可被接管）: %s", exc
             )
             return
-        # Sentry (r6): a claim reappearing immediately after our unlink
-        # means a concurrent acquirer/stealer raced this release. Log it —
-        # the mutual exclusion itself is upheld by token re-verification
-        # at every side effect, never by the unlink.
         if _read_claim_text(self._path) is not None:
             logger.info(
                 "[HotTop10] 认领删除后立即重现（并发接管/认领竞争），"
@@ -387,20 +594,19 @@ def acquire_hot_top10_delivery_claim(
     claim (caller reports ``already_claimed``: no push, no marker, retry on
     the next trigger).
 
-    r5 protocol: the first publication is an atomic no-replace ``os.link``
-    of a fully written temp file, so no reader can ever observe an empty
-    half-initialized claim — and a reader that still meets one (external
-    occupant, or the hardlink-less fallback) counts it LIVE and never
-    deletes it. A claim past ``HOT_TOP10_CLAIM_STALE_AFTER`` (first-line
-    timestamp; mtime fallback for empty/unparseable files) is crash residue
-    and is taken over with one atomic ``os.replace`` that carries the
-    stealer's own token — old r4 files (timestamp + pid, no token) take
-    over the same way. r6 (review #10 probe 1): the replace is gated by a
-    compare-and-set — the on-disk bytes must still equal the stale claim we
-    inspected, so a late contender can never clobber a rival's fresh
-    takeover. When several processes race the steal, the file ends up owned
-    by exactly one token and every other contender detects the mismatch (at
-    acquire time, and again before each side effect)."""
+    Protocol v3 (r7, review #11): the first publication is an atomic
+    no-replace ``os.link`` of a fully written temp file and takes the
+    delivery LOCK immediately; a claim past ``HOT_TOP10_CLAIM_STALE_AFTER``
+    (first-line timestamp; mtime fallback for empty/unparseable files) is
+    crash residue and is taken over by LOCKING the existing file — success
+    means the previous holder is dead (the OS released the lock) or never
+    held one, and the lock stays held for the whole delivery. Old r4 files
+    (timestamp + pid, no token) take over the same way. When several
+    processes race the takeover, the lock serializes them: exactly one
+    wins, every other contender is refused (``already_claimed``) no matter
+    where it was parked. Owner tokens, per-side-effect re-verification and
+    the release verdict remain as defence in depth; platforms without OS
+    locking degrade explicitly to the r6 compare-and-set path."""
     claim_path = hot_top10_claim_path(config, data_date)
     try:
         claim_path.parent.mkdir(parents=True, exist_ok=True)
@@ -414,8 +620,29 @@ def acquire_hot_top10_delivery_claim(
         created_line = datetime.now().isoformat(timespec="seconds")
         content = _render_claim_content(created_line, token)
         if _publish_claim_atomically(claim_path, content):
+            lock_file = None
+            if _CLAIM_LOCKING_AVAILABLE:
+                lock_file = _open_and_lock_claim(claim_path)
+                if lock_file is None:
+                    # Microsecond window: someone raced the lock (or the
+                    # file vanished). A foreign file means we lost.
+                    current = _read_claim_text(claim_path)
+                    _ca, current_token = (
+                        _parse_claim_text(current)
+                        if current is not None
+                        else (None, None)
+                    )
+                    if current_token != token:
+                        continue
+                    logger.warning(
+                        "[HotTop10] 认领发布后加锁失败但内容仍为本进程所有，"
+                        "以无锁句柄继续（副作用点复验为纵深防御）"
+                    )
             return _HotTop10DeliveryClaim(
-                claim_path, token=token, created_line=created_line
+                claim_path,
+                token=token,
+                created_line=created_line,
+                lock_file=lock_file,
             )
         # Lost the create race: someone else owns the file — inspect it.
         text = _read_claim_text(claim_path)
@@ -423,22 +650,20 @@ def acquire_hot_top10_delivery_claim(
             continue  # vanished in between: try publishing again
         if not _claim_is_stale(claim_path, text):
             return None  # live (owner / initializing / occupant): never delete
-        # Stale crash residue (r4 or r5 format): take over atomically — but
-        # ONLY if the disk still holds exactly the stale claim we inspected
-        # (CAS, r6): a racing stealer that replaced it first owns the claim
-        # now; we must never clobber a fresh takeover.
-        if not _steal_claim_atomically(claim_path, content, text):
+        # Stale crash residue (r4/r5/r6 format): protocol v3 takeover —
+        # lock the existing file. Success ⇒ previous holder dead; refusal
+        # ⇒ holder alive; no user-space window can clobber a survivor.
+        status, lock_file = _take_over_stale_claim(claim_path, content, text)
+        if status == "vanished":
+            continue
+        if status == "busy":
             return None
-        current = _read_claim_text(claim_path)
-        _claimed_at, current_token = (
-            _parse_claim_text(current) if current is not None else (None, None)
+        return _HotTop10DeliveryClaim(
+            claim_path,
+            token=token,
+            created_line=created_line,
+            lock_file=lock_file,
         )
-        if current_token == token:
-            return _HotTop10DeliveryClaim(
-                claim_path, token=token, created_line=created_line
-            )
-        # Another stealer replaced us first: it owns the claim now.
-        return None
     return None
 
 
@@ -465,10 +690,16 @@ class HotTop10RunResult:
 # --------------------------------------------------------------------------
 
 
-def hot_top10_marker_path(config: Any) -> Path:
-    """Marker location next to the SQLite database (data/ in deployments)."""
+def hot_top10_marker_path(config: Any, data_date: Optional[str] = None) -> Path:
+    """Per-data-date marker location next to the SQLite database (data/ in
+    deployments). ``None`` means today (OR-COR-341d7b5a r7: each ranking
+    date owns its own state file, so a late stale delivery can never
+    overwrite today's dedup record)."""
+    marker_date = data_date or date.today().isoformat()
     database_path = getattr(config, "database_path", "./data/stock_analysis.db")
-    return Path(database_path).parent / MARKER_FILE_NAME
+    return Path(database_path).parent / (
+        f"{MARKER_FILE_PREFIX}{marker_date}.json"
+    )
 
 
 def hot_top10_already_delivered_today(config: Any) -> tuple:
@@ -525,16 +756,19 @@ def record_hot_top10_marker(
     """Persist today's delivery marker atomically; errors are swallowed.
 
     ``data_date`` records the ranking date the delivered report actually
-    covers (OR-COR-3e7f490e). It defaults to today: an unknown provider
-    date is treated as current-day data, so the daily dedup keeps working
-    exactly as before for realtime providers.
+    covers (OR-COR-3e7f490e) — and since r7 it also selects the marker
+    FILE, so a late stale delivery writes its own file instead of
+    overwriting today's record (OR-COR-341d7b5a). It defaults to today: an
+    unknown provider date is treated as current-day data, so the daily
+    dedup keeps working exactly as before for realtime providers.
     """
     try:
-        marker_path = hot_top10_marker_path(config)
+        marker_date = data_date or date.today().isoformat()
+        marker_path = hot_top10_marker_path(config, marker_date)
         payload = {
             "schema_version": MARKER_SCHEMA_VERSION,
             "run_date": date.today().isoformat(),
-            "data_date": data_date or date.today().isoformat(),
+            "data_date": marker_date,
             "delivered": True,
             "llm_completed": bool(llm_completed),
             "notification_status": str(notification_status or "unknown"),
@@ -548,17 +782,40 @@ def record_hot_top10_marker(
             encoding="utf-8",
         )
         os.replace(tmp_path, marker_path)
+        _prune_old_hot_top10_markers(marker_path.parent)
         logger.info(
-            "[HotTop10] 已记录当日投递标记: %s", marker_path
+            "[HotTop10] 已记录投递标记（按数据日期分文件）: %s", marker_path
         )
     except Exception as exc:
         logger.warning("[HotTop10] 写入当日投递标记失败（忽略）: %s", exc)
 
 
-def _load_delivered_marker_payload(config: Any) -> Optional[Dict[str, Any]]:
-    """Read a v2 delivered marker; ``None`` on any problem (fail-open)."""
+def _prune_old_hot_top10_markers(
+    directory: Path, *, keep_days: int = MARKER_RETENTION_DAYS
+) -> None:
+    """Lazy cleanup of per-date marker files older than ``keep_days`` —
+    runs best-effort after each successful marker write; errors swallowed.
+    The legacy single-blob ``hot_top10_state.json`` does not match the
+    per-date pattern and is simply left alone (ignored by all readers)."""
     try:
-        raw = hot_top10_marker_path(config).read_text(encoding="utf-8")
+        cutoff = (date.today() - timedelta(days=keep_days)).isoformat()
+        for entry in directory.glob(f"{MARKER_FILE_PREFIX}*.json"):
+            suffix = entry.stem[len(MARKER_FILE_PREFIX) :]
+            if suffix <= cutoff:  # ISO dates sort lexicographically
+                entry.unlink()
+    except OSError:
+        pass
+
+
+def _load_delivered_marker_payload(
+    config: Any, data_date: str
+) -> Optional[Dict[str, Any]]:
+    """Read a v2 delivered marker of ``data_date``; ``None`` on any
+    problem (fail-open)."""
+    try:
+        raw = hot_top10_marker_path(config, data_date).read_text(
+            encoding="utf-8"
+        )
         payload = json.loads(raw)
     except (OSError, TypeError, ValueError):
         return None
@@ -578,10 +835,12 @@ def hot_top10_data_date_delivered_today(config: Any, data_date: str) -> tuple:
     push the same ranking date twice in one day. If today's marker already
     records a successful delivery covering exactly ``data_date`` (whether
     that is today's fresh data or the previous trading day's stale list),
-    the follow-up run skips. Markers from earlier run dates never block
-    (same-day semantics only); any marker problem fails open.
+    the follow-up run skips. Since r7 the marker lives in its OWN per-date
+    file, so a late stale delivery can never mask it. Markers from earlier
+    run dates never block (same-day semantics only); any marker problem
+    fails open.
     """
-    payload = _load_delivered_marker_payload(config)
+    payload = _load_delivered_marker_payload(config, data_date)
     if payload is None:
         return False, "no usable delivered marker, fail-open"
     marker_date = str(payload.get("run_date") or "")
