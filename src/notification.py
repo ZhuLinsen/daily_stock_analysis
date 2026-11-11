@@ -83,6 +83,7 @@ from src.notification_sender import (
     SlackSender,
     TelegramSender,
     WechatSender,
+    WecomAibotSender,
     WECHAT_IMAGE_MAX_BYTES,
     resolve_gotify_message_endpoint,
     resolve_ntfy_endpoint,
@@ -198,6 +199,7 @@ class NotificationChannel(Enum):
     DISCORD = "discord"    # Discord 机器人 (Bot)
     SLACK = "slack"        # Slack
     ASTRBOT = "astrbot"
+    WECOM_AIBOT = "wecom_aibot"  # 企业微信智能机器人（aibot_send_msg 长连接推送）
     UNKNOWN = "unknown"    # 未知
 
 
@@ -249,6 +251,7 @@ class ChannelDetector:
             NotificationChannel.DISCORD: "Discord机器人",
             NotificationChannel.SLACK: "Slack",
             NotificationChannel.ASTRBOT: "ASTRBOT机器人",
+            NotificationChannel.WECOM_AIBOT: "企微智能机器人",
             NotificationChannel.UNKNOWN: "未知渠道",
         }
         return names.get(channel, "未知渠道")
@@ -268,7 +271,8 @@ class NotificationService(
     Serverchan3Sender,
     SlackSender,
     TelegramSender,
-    WechatSender
+    WechatSender,
+    WecomAibotSender
 ):
     """
     通知服务
@@ -326,6 +330,7 @@ class NotificationService(
         SlackSender.__init__(self, config)
         TelegramSender.__init__(self, config)
         WechatSender.__init__(self, config)
+        WecomAibotSender.__init__(self, config)
         DingtalkSender.__init__(self, config)
 
         # 检测所有已配置的渠道
@@ -562,6 +567,11 @@ class NotificationService(
 
         if getattr(config, "astrbot_url", None):
             channels.append(NotificationChannel.ASTRBOT)
+
+        if getattr(config, "wecom_aibot_notify_enabled", False) and getattr(
+            config, "wecom_aibot_notify_chatid", None
+        ):
+            channels.append(NotificationChannel.WECOM_AIBOT)
 
         return channels
 
@@ -2639,6 +2649,8 @@ class NotificationService(
             return self.send_to_slack(content)
         if channel == NotificationChannel.ASTRBOT:
             return self.send_to_astrbot(sanitized_content)
+        if channel == NotificationChannel.WECOM_AIBOT:
+            return self.send_to_wecom_aibot(sanitized_content)
         logger.warning(f"不支持的通知渠道: {channel}")
         return False
 

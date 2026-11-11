@@ -181,6 +181,13 @@ CHANNEL_SPECS: Tuple[NotificationChannelSpec, ...] = (
         advanced_keys=("ASTRBOT_TOKEN", "WEBHOOK_VERIFY_SSL"),
     ),
     NotificationChannelSpec(
+        channel=NotificationChannel.WECOM_AIBOT.value,
+        display_name=ChannelDetector.get_channel_name(NotificationChannel.WECOM_AIBOT),
+        kind="configured",
+        minimal_keys=("WECOM_AIBOT_NOTIFY_ENABLED", "WECOM_AIBOT_NOTIFY_CHATID"),
+        note="aibot_send_msg long-connection push; target sessions must exist first (users must have messaged the bot).",
+    ),
+    NotificationChannelSpec(
         channel=NotificationChannel.UNKNOWN.value,
         display_name=ChannelDetector.get_channel_name(NotificationChannel.UNKNOWN),
         kind="fallback",

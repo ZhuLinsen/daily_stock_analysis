@@ -1425,6 +1425,9 @@ class Config:
     wecom_aibot_bot_id: Optional[str] = None        # 智能机器人 Bot ID
     wecom_aibot_secret: Optional[str] = None        # 长连接专用 Secret
     wecom_aibot_reply_stream: bool = False          # 是否用 stream 流式回复（默认关）
+    # 通知推送渠道（Issue #755 Phase 2，默认关；前置条件：目标用户须先与机器人建过会话）
+    wecom_aibot_notify_enabled: bool = False        # 是否启用 aibot_send_msg 通知推送渠道
+    wecom_aibot_notify_chatid: Optional[str] = None # 推送目标会话（逗号分隔；单聊=userid，群聊=chatid）
     
     # Telegram 机器人 - 已有 telegram_bot_token, telegram_chat_id
     telegram_webhook_secret: Optional[str] = None   # Webhook 密钥
@@ -2379,6 +2382,9 @@ class Config:
             wecom_aibot_bot_id=os.getenv('WECOM_AIBOT_BOT_ID'),
             wecom_aibot_secret=os.getenv('WECOM_AIBOT_SECRET'),
             wecom_aibot_reply_stream=os.getenv('WECOM_AIBOT_REPLY_STREAM', 'false').lower() == 'true',
+            # 通知推送渠道（默认关）
+            wecom_aibot_notify_enabled=os.getenv('WECOM_AIBOT_NOTIFY_ENABLED', 'false').lower() == 'true',
+            wecom_aibot_notify_chatid=os.getenv('WECOM_AIBOT_NOTIFY_CHATID'),
             # Telegram
             telegram_webhook_secret=os.getenv('TELEGRAM_WEBHOOK_SECRET'),
             # Discord 机器人扩展配置

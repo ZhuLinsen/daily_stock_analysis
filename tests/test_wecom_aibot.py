@@ -43,6 +43,9 @@ WECOM_AIBOT_KEYS = (
     "WECOM_AIBOT_BOT_ID",
     "WECOM_AIBOT_SECRET",
     "WECOM_AIBOT_REPLY_STREAM",
+    # Phase 2 (issue #755): notification push channel via aibot_send_msg
+    "WECOM_AIBOT_NOTIFY_ENABLED",
+    "WECOM_AIBOT_NOTIFY_CHATID",
 )
 
 

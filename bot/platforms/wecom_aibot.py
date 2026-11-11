@@ -616,6 +616,57 @@ class WecomAibotClient:
             thread.join(timeout=5)
         logger.info("[WeCom AI Bot] 客户端已停止")
 
+    # ------------------------------------------------------------------ #
+    #  主动推送（Phase 2：aibot_send_msg，复用现有长连接）                 #
+    # ------------------------------------------------------------------ #
+
+    def push_message(
+        self,
+        chat_id: str,
+        body: dict,
+        timeout_seconds: float = 10.0,
+    ) -> Optional[dict]:
+        """向指定会话主动推送消息（``aibot_send_msg`` 帧，线程安全）。
+
+        复用 Phase 1 长连接与 SDK 事件循环（推送协程必须调度到持有
+        WebSocket 的循环上）；SDK ``send_message`` 内部经串行回复队列等待
+        回执帧——回执 errcode != 0 / 超时 / 连接不可用时 SDK 以异常结算，
+        本方法捕获后返回 None（不向调用方抛出）。
+
+        协议前置条件（官方约束，调用方需在文档/UI 标注）：目标会话必须
+        已存在——即目标用户须先给机器人发过消息（单聊 chatid=用户 userid，
+        群聊 chatid=群 ID）。
+
+        Args:
+            chat_id: 会话 ID（单聊=userid，群聊=chatid）
+            body: 消息体（如 ``{"msgtype": "markdown", "markdown": {"content": ...}}``）
+            timeout_seconds: 等待回执帧的超时秒数
+
+        Returns:
+            回执帧（errcode==0）；连接未运行 / 超时 / 出错返回 None
+        """
+        loop = self._loop
+        sdk_client = self._sdk_client
+        if (
+            not self._running
+            or loop is None
+            or loop.is_closed()
+            or sdk_client is None
+        ):
+            logger.warning(
+                "[WeCom AI Bot] 主动推送失败：长连接未运行（目标会话须先与"
+                "机器人建过会话，且客户端在线）"
+            )
+            return None
+
+        try:
+            coro = sdk_client.send_message(chat_id, body)
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result(timeout_seconds)
+        except Exception as exc:
+            logger.error("[WeCom AI Bot] 主动推送失败 (chat=%s): %s", chat_id, exc)
+            return None
+
     @property
     def is_running(self) -> bool:
         return self._running

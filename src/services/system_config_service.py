@@ -227,6 +227,7 @@ class SystemConfigService:
         "discord",
         "slack",
         "astrbot",
+        "wecom_aibot",
     )
     _NOTIFICATION_TEST_KEY_MAP: Dict[str, Tuple[str, str]] = {
         "WECHAT_WEBHOOK_URL": ("wechat_webhook_url", "string"),
@@ -306,6 +307,7 @@ class SystemConfigService:
         "discord": ("DISCORD_WEBHOOK_URL", "DISCORD_MAIN_CHANNEL_ID", "DISCORD_CHANNEL_ID"),
         "slack": ("SLACK_WEBHOOK_URL", "SLACK_CHANNEL_ID"),
         "astrbot": ("ASTRBOT_URL",),
+        "wecom_aibot": ("WECOM_AIBOT_NOTIFY_CHATID",),
     }
 
     def __init__(self, manager: Optional[ConfigManager] = None, runtime_scheduler: Optional[Any] = None):
@@ -3138,6 +3140,7 @@ class SystemConfigService:
             SlackSender,
             TelegramSender,
             WechatSender,
+            WecomAibotSender,
             DingtalkSender,
         )
 
@@ -3184,6 +3187,7 @@ class SystemConfigService:
             "discord": lambda: DiscordSender(config).send_to_discord(titled_content, timeout_seconds=timeout_seconds),
             "slack": lambda: SlackSender(config).send_to_slack(titled_content, timeout_seconds=timeout_seconds),
             "astrbot": lambda: AstrbotSender(config).send_to_astrbot(titled_content, timeout_seconds=timeout_seconds),
+            "wecom_aibot": lambda: WecomAibotSender(config).send_to_wecom_aibot(titled_content, timeout_seconds=timeout_seconds),
         }
 
         ok = bool(dispatch[channel]())

@@ -580,6 +580,32 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['仅影响企微智能机器人的回复呈现形式，不影响命令处理逻辑。'],
     notes: ['官方限制：stream 消息需在 10 分钟内 finish。'],
   },
+  'settings.notification.WECOM_AIBOT_NOTIFY_ENABLED': {
+    title: '企微智能机器人通知推送',
+    summary: '通过企业微信智能机器人长连接（aibot_send_msg 帧）主动推送分析报告/通知，复用 WECOM_AIBOT_ENABLED 的长连接客户端；默认关闭。',
+    usage: '先开启长连接（WECOM_AIBOT_ENABLED=true 并配置 Bot ID/Secret），再开启本开关并填写 WECOM_AIBOT_NOTIFY_CHATID。',
+    valueNotes: [
+      'false（默认）：不启用智能机器人推送通道；现有企微群 Webhook 推送行为完全不变。',
+      'true：报告/通知按 WECOM_AIBOT_NOTIFY_CHATID 列出的会话逐一推送。',
+    ],
+    impact: ['新增一条通知渠道，与企微群 Webhook 渠道并存（同一内容两边都会收到）。'],
+    notes: [
+      '官方前置条件：目标会话必须已存在——目标用户须先给机器人发过消息，否则推送会失败降级。',
+      '渠道内置限流：单会话 30 条/分钟、1000 条/小时、同会话并发 3 条；超限内容丢弃并记录日志。',
+    ],
+  },
+  'settings.notification.WECOM_AIBOT_NOTIFY_CHATID': {
+    title: '企微智能机器人推送目标',
+    summary: '智能机器人推送渠道的目标会话 ID 列表（逗号分隔）：单聊填用户 userid，群聊填群 chatid。',
+    usage: 'WECOM_AIBOT_NOTIFY_CHATID=userid_a,userid_b 或填群 chatid；目标用户须先与机器人建过会话。',
+    valueNotes: [
+      '单聊目标填用户 userid（非超管机器人收到的 userid 为密文，需以回调中看到的值为准）。',
+      '群聊目标填群 chatid（先在群里 @机器人一次以建立会话）。',
+      'WECOM_AIBOT_NOTIFY_ENABLED=true 时本项才生效。',
+    ],
+    impact: ['决定智能机器人推送渠道的投递目标。'],
+    notes: ['保存后需要重启相关 bot/服务进程才会生效。'],
+  },
   'settings.notification.DINGTALK_WEBHOOK_URL': {
     title: '钉钉群机器人 Webhook',
     summary: '通过普通钉钉群机器人 Webhook 推送通知，与 App/Stream 模式相互独立。',
@@ -1860,6 +1886,32 @@ const settingsHelpEnUS: SettingsHelpMap = {
     ],
     impact: ['Only affects how WeCom AI bot replies are presented; command handling is unchanged.'],
     notes: ['Official constraint: a stream message must finish within 10 minutes.'],
+  },
+  'settings.notification.WECOM_AIBOT_NOTIFY_ENABLED': {
+    title: 'WeCom AI Bot Notify Push',
+    summary: 'Push analysis reports/notifications proactively through the WeCom AI Bot long connection (aibot_send_msg frame), reusing the stream client from WECOM_AIBOT_ENABLED; off by default.',
+    usage: 'Enable the long connection first (WECOM_AIBOT_ENABLED=true with Bot ID/Secret), then turn this on and fill in WECOM_AIBOT_NOTIFY_CHATID.',
+    valueNotes: [
+      'false (default): the AI Bot push channel is disabled; the existing WeCom group webhook push is untouched.',
+      'true: reports/notifications are pushed to every chat listed in WECOM_AIBOT_NOTIFY_CHATID.',
+    ],
+    impact: ['Adds a parallel notification channel next to the WeCom group webhook channel (content goes to both).'],
+    notes: [
+      'Official prerequisite: a target chat only exists after the user has messaged the bot at least once; otherwise the push degrades to a logged failure.',
+      'Built-in channel rate limiting: 30 msgs/min, 1000 msgs/hour, 3 concurrent per chat; over-limit items are dropped and logged.',
+    ],
+  },
+  'settings.notification.WECOM_AIBOT_NOTIFY_CHATID': {
+    title: 'WeCom AI Bot Notify Targets',
+    summary: 'Target chat IDs (comma-separated) for the AI Bot push channel: use the user userid for single chats, the group chatid for group chats.',
+    usage: 'WECOM_AIBOT_NOTIFY_CHATID=userid_a,userid_b or a group chatid; each target must have an existing conversation with the bot.',
+    valueNotes: [
+      'Single-chat targets take the user userid (for bots not created by a super admin the userid arrives encrypted; use the value observed in callbacks).',
+      'Group-chat targets take the group chatid (@mention the bot once to establish the conversation).',
+      'Only effective when WECOM_AIBOT_NOTIFY_ENABLED=true.',
+    ],
+    impact: ['Determines the delivery targets of the AI Bot push channel.'],
+    notes: ['Restart the related bot/service processes after saving.'],
   },
   'settings.notification.DINGTALK_WEBHOOK_URL': {
     title: 'DingTalk Group Bot Webhook',
