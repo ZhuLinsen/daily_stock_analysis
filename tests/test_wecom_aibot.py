@@ -1496,15 +1496,16 @@ class TestOutboundSendConfirmationQuota:
             loop.close()
 
     def test_send_exception_refunds_both_windows(self):
-        """future 异常/超时 → 本次双窗口扣量全额退还，后续额度完整。"""
+        """确定性失败（写入期异常，非 ACK 超时）→ 本次双窗口扣量全额退还，
+        后续额度完整；等待超时属不确定，另见 r6 保守语义测试。"""
         client = self._client()
         handler = client._handler
         client._running = True
 
-        async def _ack_timeout(chatid, body):
-            raise TimeoutError("reply ack timeout")
+        async def _ack_write_fail(chatid, body):
+            raise RuntimeError("connection closed before send")
 
-        loop, thread = self._start_ack_loop(client, _ack_timeout)
+        loop, thread = self._start_ack_loop(client, _ack_write_fail)
         try:
             assert client.send_to_chat("chat-f", "report", timeout_seconds=2) is False
             minute, hour = self._window_counts(handler, "chat-f")
@@ -1758,6 +1759,187 @@ class TestPassiveAsyncFailureRefund:
             )
         finally:
             self._stop_loop()
+
+
+# ---------------------------------------------------------------------------
+# r6 OR-COM-62e2b418 (final): refund only on DETERMINISTIC failure — a wait
+# timeout is uncertain (the frame may already be on the wire), so the debit
+# must be kept and the Future monitored; ack timeouts never refund.
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutConservativeQuota:
+    """评审探针：等待超时=结果不确定，宁可高估不可低估。"""
+
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def _counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _wait_until_settled(self, handler, key, want, timeout=3.0):
+        import time as _time
+
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            if self._counts(handler, key) == want:
+                return True
+            _time.sleep(0.02)
+        return False
+
+    def test_send_wait_timeout_keeps_debits_no_over_admission(self, caplog):
+        """场景①：等待超时（协程继续成功）×30 → 记录不减少（仍 30），
+        下一发送被正确拒绝（分钟窗已达限）——不出现实发 31 条而计数 0。"""
+        import time as _time
+
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _slow_ack(chatid, body):
+            await asyncio.sleep(0.3)
+            return {"errcode": 0, "errmsg": "ok"}
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = _slow_ack
+        try:
+            for _ in range(30):
+                # 每次等待 0.15s 超时：结果不确定（协程随后成功）
+                assert client.send_to_chat(
+                    "chat-t", "x", timeout_seconds=0.15
+                ) is False
+                assert "不确定" in caplog.text or "超时" in caplog.text
+
+            minute, hour = self._counts(handler, "chat-t")
+            assert (minute, hour) == (30, 30), (
+                f"timeout refunds underestimated sends: minute={minute} hour={hour}"
+            )
+
+            # 分窗已达限：下一发送被正确拒绝，计数保持
+            assert client.send_to_chat(
+                "chat-t", "x", timeout_seconds=0.15
+            ) is False
+            minute, hour = self._counts(handler, "chat-t")
+            assert (minute, hour) == (30, 30)
+            assert "超限" in caplog.text
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+            # 让累积的后台协程自然结束，避免悬挂告警
+            _time.sleep(0.4)
+
+    def test_timeout_then_definite_failure_refunds(self, caplog):
+        """场景②：超时后协程最终明确失败（写入期异常）→ 按 token 退款、
+        额度恢复；超时瞬间扣量保留（不立即退）。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_never_then_fail(chatid, body):
+            await asyncio.sleep(0.4)
+            raise RuntimeError("connection closed before ack")
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = _ack_never_then_fail
+        try:
+            assert client.send_to_chat(
+                "chat-d", "report", timeout_seconds=0.15
+            ) is False
+
+            # 超时瞬间：扣量保留（不确定 ≠ 失败）
+            minute, hour = self._counts(handler, "chat-d")
+            assert (minute, hour) == (1, 1), (
+                f"timeout immediately refunded: minute={minute} hour={hour}"
+            )
+
+            # 终态明确失败 → 按 token 退款
+            settled = self._wait_until_settled(handler, "chat-d", (0, 0))
+            assert settled, "definite failure did not refund by token"
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_passive_ack_timeout_keeps_debit(self, caplog):
+        """被动路径同样适用：ACK 超时类异常不退款（消息可能已写入）。"""
+        handler, sdk_client = _handler()
+
+        async def _reply_ack_timeout(frame, body):
+            raise TimeoutError("reply ack timeout")
+
+        sdk_client.reply = _reply_ack_timeout
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        handler._loop = loop
+        try:
+            frame = _text_frame(msgid="m-to", chatid="chat-pto")
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-pto", (1, 1))
+            minute, hour = self._counts(handler, "chat-pto")
+            assert settled and (minute, hour) == (1, 1), (
+                f"passive ack timeout refunded: minute={minute} hour={hour}"
+            )
+            assert "保留记账" in caplog.text
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_passive_write_failure_still_refunds(self):
+        """非超时的确定失败（写入期异常）→ 被动路径照常退款（既有语义）。"""
+        handler, sdk_client = _handler()
+
+        async def _reply_write_fail(frame, body):
+            raise RuntimeError("connection closed before send")
+
+        sdk_client.reply = _reply_write_fail
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        handler._loop = loop
+        try:
+            frame = _text_frame(msgid="m-wf", chatid="chat-wf")
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-wf", (0, 0))
+            minute, hour = self._counts(handler, "chat-wf")
+            assert settled and (minute, hour) == (0, 0)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
 
 
 if __name__ == "__main__":
