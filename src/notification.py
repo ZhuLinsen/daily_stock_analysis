@@ -2396,7 +2396,9 @@ class NotificationService(
     def _format_net_shares(cls, value: Any) -> str:
         """Format an institutional net buy/sell in 万股/亿股, signed (+ = net buy).
 
-        Thresholds: abs >= 1e8 -> 亿股, >= 1e4 -> 万股, else 股. None/NaN/non-numeric -> N/A.
+        Thresholds: abs >= 1e8 -> 亿股, >= 1e4 -> 万股, else 股. A value whose rounded
+        figure reaches the next unit also moves up (99_999_999 -> 1.00 亿股, 9_999.6 ->
+        1.00 万股). None/NaN/non-numeric -> N/A.
         """
         try:
             amount = float(value)
