@@ -261,6 +261,42 @@ class WecomAibotHandler:
             self._outbound_hour_limiter.record(conversation_key)
             return True
 
+    def _acquire_outbound_slot(self, conversation_key: str) -> bool:
+        """可用性前置的配额获取（r4：记账不得先于发送确认）
+
+        与 :meth:`_allow_outbound_reply` 同一临界区原子语义，另在扣量前
+        检查 SDK 事件循环可用性：循环不可用（如重连周期间隙）直接拒绝且
+        **零记账**——不会出现"记账了但发不出去"，恢复后额度完整可用。
+        """
+        with self._outbound_quota_lock:
+            if not self._outbound_minute_limiter.would_allow(conversation_key):
+                logger.warning(
+                    "[WeCom AI Bot] 会话回复超限（分钟30条或小时1000条配额），"
+                    "回复已丢弃: key=%s",
+                    conversation_key,
+                )
+                return False
+            if not self._outbound_hour_limiter.would_allow(conversation_key):
+                logger.warning(
+                    "[WeCom AI Bot] 会话回复超限（分钟30条或小时1000条配额），"
+                    "回复已丢弃: key=%s",
+                    conversation_key,
+                )
+                return False
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                logger.error("[WeCom AI Bot] 无法回复：SDK 事件循环不可用")
+                return False
+            self._outbound_minute_limiter.record(conversation_key)
+            self._outbound_hour_limiter.record(conversation_key)
+            return True
+
+    def _refund_outbound_send(self, conversation_key: str) -> None:
+        """发送失败回滚：在配额临界区内退还双窗口本次扣量（r4）"""
+        with self._outbound_quota_lock:
+            self._outbound_minute_limiter.refund(conversation_key)
+            self._outbound_hour_limiter.refund(conversation_key)
+
     @staticmethod
     def _outbound_key_from_frame(frame: dict) -> str:
         """从回调帧提取回复配额的会话键（群聊 chatid / 单聊 from.userid）"""
@@ -358,20 +394,16 @@ class WecomAibotHandler:
     def _reply_to_frame(self, frame: dict, text: str) -> bool:
         """向回调帧回复文本（默认一次性 markdown；可选 stream，finish=True）
 
-        发送前做双窗口配额检查（分钟 30 条 + 小时 1000 条，按会话计），
-        超限丢弃回复并告警——不崩、不排队积压（OR-COM-62e2b418）。
+        配额获取（`_acquire_outbound_slot`）可用性前置：双窗口检查与事件
+        循环可用性在同一临界区内，全部通过才记账（r4：无循环时零记账，
+        不虚报已放行）。调度失败则退还本次扣量。
         """
         if not frame:
             logger.warning("[WeCom AI Bot] 无回调帧，无法回复")
             return False
 
         outbound_key = self._outbound_key_from_frame(frame)
-        if not self._allow_outbound_reply(outbound_key):
-            logger.warning(
-                "[WeCom AI Bot] 会话回复超限（分钟30条或小时1000条配额），"
-                "回复已丢弃: key=%s",
-                outbound_key,
-            )
+        if not self._acquire_outbound_slot(outbound_key):
             return False
 
         if self._reply_stream_enabled:
@@ -381,7 +413,16 @@ class WecomAibotHandler:
             body = {"msgtype": "markdown", "markdown": {"content": text}}
             coro = self.sdk_client.reply(frame, body)
 
-        self._schedule_reply(coro)
+        try:
+            self._schedule_reply(coro)
+        except Exception as exc:
+            self._refund_outbound_send(outbound_key)
+            logger.error(
+                "[WeCom AI Bot] 回复调度失败，已退还配额: key=%s, error=%s",
+                outbound_key,
+                exc,
+            )
+            return False
         return True
 
     def _schedule_reply(self, coro) -> None:
@@ -720,33 +761,47 @@ class WecomAibotClient:
 
         供 source-context 通知链路（分析报告回来源会话）使用。
 
-        - 发送前执行与被动回复相同的双窗口配额检查（分钟 30 条 + 小时
-          1000 条，按会话计；OR-COM-62e2b418），超限丢弃并告警。
+        - 可用性前置（r4）：客户端运行状态与事件循环可用性在配额临界区内、
+          扣量**之前**检查——不可用直接拒绝且零记账（重连期间不空耗额度）。
+        - 发送失败回滚（r4）：future 异常/超时或服务端 errcode != 0 时退还
+          本次双窗口扣量，超时/被拒不永久占用槽位。
         - 官方前置条件：目标用户须先与机器人建过会话（先发过消息），否则
-          服务端回执 errcode != 0——回执非零按失败处理并在日志标注前置条件。
+          服务端回执 errcode != 0——按失败处理并在日志标注前置条件。
 
         Returns:
             是否发送成功
         """
         conversation_key = chatid or "unknown"
-        if not self._handler._allow_outbound_reply(conversation_key):
-            logger.warning(
-                "[WeCom AI Bot] 会话推送超限（分钟30条或小时1000条配额），"
-                "消息已丢弃: key=%s",
-                conversation_key,
-            )
-            return False
+        handler = self._handler
 
-        if not self._running or self._sdk_client is None:
-            logger.warning(
-                "[WeCom AI Bot] 长连接客户端未运行，无法主动推送: key=%s", conversation_key
-            )
-            return False
-
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            logger.error("[WeCom AI Bot] 无法主动推送：SDK 事件循环不可用")
-            return False
+        # 配额 + 可用性判定（同一临界区，r3 原子语义 + r4 可用性前置）
+        with handler._outbound_quota_lock:
+            if not handler._outbound_minute_limiter.would_allow(conversation_key):
+                logger.warning(
+                    "[WeCom AI Bot] 会话推送超限（分钟30条或小时1000条配额），"
+                    "消息已丢弃: key=%s",
+                    conversation_key,
+                )
+                return False
+            if not handler._outbound_hour_limiter.would_allow(conversation_key):
+                logger.warning(
+                    "[WeCom AI Bot] 会话推送超限（分钟30条或小时1000条配额），"
+                    "消息已丢弃: key=%s",
+                    conversation_key,
+                )
+                return False
+            if not self._running or self._sdk_client is None:
+                logger.warning(
+                    "[WeCom AI Bot] 长连接客户端未运行，无法主动推送: key=%s",
+                    conversation_key,
+                )
+                return False  # 零记账
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                logger.error("[WeCom AI Bot] 无法主动推送：SDK 事件循环不可用")
+                return False  # 零记账
+            handler._outbound_minute_limiter.record(conversation_key)
+            handler._outbound_hour_limiter.record(conversation_key)
 
         body = {"msgtype": "markdown", "markdown": {"content": text}}
         try:
@@ -754,16 +809,20 @@ class WecomAibotClient:
                 self._sdk_client.send_message(chatid, body), loop
             ).result(timeout_seconds)
         except Exception as exc:
+            handler._refund_outbound_send(conversation_key)
             logger.error(
-                "[WeCom AI Bot] 主动推送失败: key=%s, error=%s", conversation_key, exc
+                "[WeCom AI Bot] 主动推送失败（已退还配额）: key=%s, error=%s",
+                conversation_key,
+                exc,
             )
             return False
 
         errcode = ack.get("errcode") if isinstance(ack, dict) else None
         if errcode:
+            handler._refund_outbound_send(conversation_key)
             logger.warning(
-                "[WeCom AI Bot] 主动推送被拒: key=%s, errcode=%s, errmsg=%s"
-                "（官方前置条件：目标用户须先与机器人建过会话）",
+                "[WeCom AI Bot] 主动推送被拒（已退还配额）: key=%s, errcode=%s, "
+                "errmsg=%s（官方前置条件：目标用户须先与机器人建过会话）",
                 conversation_key,
                 errcode,
                 ack.get("errmsg") if isinstance(ack, dict) else None,

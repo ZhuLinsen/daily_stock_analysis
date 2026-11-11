@@ -99,6 +99,26 @@ class RateLimiter:
         """
         self._requests[user_id].append(time.time())
 
+    def refund(self, user_id: str) -> bool:
+        """
+        撤销一次已记账请求（回滚滑动窗口计数）
+
+        移除该用户最近一条窗口记录，用于「记账后发送失败」的额度回滚
+        （如企微智能机器人出站配额，OR-COM-62e2b418）。调用方应持有相应
+        临界区锁保证原子性。
+
+        Args:
+            user_id: 用户标识
+
+        Returns:
+            是否成功移除（窗口内无记录时不动作，返回 False）
+        """
+        records = self._requests.get(user_id)
+        if not records:
+            return False
+        records.pop()
+        return True
+
     def get_remaining(self, user_id: str) -> int:
         """获取剩余可用请求数"""
         now = time.time()
