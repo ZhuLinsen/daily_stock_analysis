@@ -1155,6 +1155,19 @@ crontab -e
 2. 复制 Webhook URL
 3. 设置 `WECHAT_WEBHOOK_URL`
 
+**企业微信智能机器人（对话式长连接，可选，默认关）：**
+
+除上面的群 Webhook 单向推送外，系统还支持通过企业微信"智能机器人"进行对话（发送 `/analyze 600519` 等命令并接收回复）。该通道走官方 WebSocket 长连接（`wss://openws.work.weixin.qq.com`），无需公网 IP；本系统不提供回调 URL 模式。与群 Webhook 推送相互独立，互不影响：
+
+```env
+WECOM_AIBOT_ENABLED=false          # 默认关；开启前先完成下面两项
+WECOM_AIBOT_BOT_ID=                # 企业微信后台智能机器人的 Bot ID
+WECOM_AIBOT_SECRET=                # 长连接专用 Secret（与群机器人 Token/EncodingAESKey 是不同凭据）
+WECOM_AIBOT_REPLY_STREAM=false     # 可选：用 stream 流式回复（默认一次性 markdown 回复）
+```
+
+依赖 `wecom-aibot-python-sdk>=1.0.2`（`pip install -r requirements.txt` 已包含；缺失时模块可正常导入、功能自动关闭并提示安装命令）。限制：单机器人仅一条有效长连接（系统已内置互斥与重连风暴防护）；单会话回复上限 30 条/分钟；非超管创建的机器人收到的用户 `userid` 为密文（官方协议限制）。
+
 ### 飞书
 
 > ⚠️ **关键区分**：`FEISHU_WEBHOOK_SECRET`（Webhook 签名密钥）和 `FEISHU_APP_SECRET`（飞书应用 Secret）是两个完全不同的配置，不能互换。

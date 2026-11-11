@@ -530,6 +530,56 @@ const settingsHelpZhCN: SettingsHelpMap = {
       '不要把 Stream 模式和群机器人 Webhook 混为一条配置路径。',
     ],
   },
+  'settings.notification.WECOM_AIBOT_ENABLED': {
+    title: '企微智能机器人长连接',
+    summary: '启用企业微信智能机器人的 WebSocket 长连接模式（对话式机器人命令），与企业微信群 Webhook 推送通道相互独立。',
+    usage: '先在企业微信后台创建智能机器人，填写 WECOM_AIBOT_BOT_ID 和 WECOM_AIBOT_SECRET 后开启。',
+    valueNotes: [
+      'true 表示允许运行时通过官方长连接通道收发智能机器人消息。',
+      'false 表示不启用（默认）；现有企微群 Webhook 推送行为完全不变。',
+    ],
+    impact: [
+      '影响企微智能机器人的对话命令链路。',
+      '不会改变企业微信群机器人 Webhook 的推送路径。',
+    ],
+    notes: [
+      '长连接模式无需公网 IP；本系统不提供回调 URL 模式。',
+      '保存后需要重启相关 bot/服务进程才会建立长连接。',
+    ],
+  },
+  'settings.notification.WECOM_AIBOT_BOT_ID': {
+    title: '企微智能机器人 Bot ID',
+    summary: '企业微信智能机器人的 Bot ID，在企业微信后台获取；长连接模式必填。',
+    usage: '企业微信管理后台创建智能机器人后复制其 Bot ID，填入 WECOM_AIBOT_BOT_ID。',
+    valueNotes: [
+      '仅用于长连接认证（aibot_subscribe 帧），与群机器人 Webhook 的 key 无关。',
+      'WECOM_AIBOT_ENABLED=true 时必填，缺失时客户端不会启动。',
+    ],
+    impact: ['影响企微智能机器人长连接认证是否成功。'],
+    notes: ['非超管创建的机器人收到的用户 userid 为密文，属官方协议限制。'],
+  },
+  'settings.notification.WECOM_AIBOT_SECRET': {
+    title: '企微智能机器人 Secret',
+    summary: '智能机器人长连接专用 Secret，与群机器人 Webhook 的 Token/EncodingAESKey 是不同的凭据。',
+    usage: '在企业微信后台智能机器人详情中复制长连接 Secret，填入 WECOM_AIBOT_SECRET。',
+    valueNotes: [
+      '长连接专用凭据，不要与回调模式的 Token/EncodingAESKey 混用。',
+      '按密钥保护，泄露后请在企业微信后台重置。',
+    ],
+    impact: ['影响企微智能机器人长连接认证是否成功。'],
+    notes: ['保存后需要重启相关 bot/服务进程才会生效。'],
+  },
+  'settings.notification.WECOM_AIBOT_REPLY_STREAM': {
+    title: '企微智能机器人流式回复',
+    summary: '机器人回复是否使用 stream 流式消息（打字机式），默认关闭，使用一次性 markdown 回复。',
+    usage: 'WECOM_AIBOT_REPLY_STREAM=true 开启流式回复；开启前需确认企微侧已支持 stream 回复体验。',
+    valueNotes: [
+      'false（默认）：每条回复以一条完整 markdown 消息送达。',
+      'true：回复以 stream 消息帧送达（单帧 finish=true，不做渐进式打字机）。',
+    ],
+    impact: ['仅影响企微智能机器人的回复呈现形式，不影响命令处理逻辑。'],
+    notes: ['官方限制：stream 消息需在 10 分钟内 finish。'],
+  },
   'settings.notification.DINGTALK_WEBHOOK_URL': {
     title: '钉钉群机器人 Webhook',
     summary: '通过普通钉钉群机器人 Webhook 推送通知，与 App/Stream 模式相互独立。',
@@ -1760,6 +1810,56 @@ const settingsHelpEnUS: SettingsHelpMap = {
       'Restart the relevant bot/service process after saving; existing long connections are not rebuilt automatically.',
       'Do not treat Stream mode and group bot Webhook as the same delivery path.',
     ],
+  },
+  'settings.notification.WECOM_AIBOT_ENABLED': {
+    title: 'WeCom AI Bot Stream Mode',
+    summary: 'Enables the WeCom AI (smart) robot WebSocket long-connection mode for conversational bot commands, separate from the enterprise WeChat group webhook push channel.',
+    usage: 'Create a smart robot in the enterprise WeChat console first, fill in WECOM_AIBOT_BOT_ID and WECOM_AIBOT_SECRET, then enable this switch.',
+    valueNotes: [
+      'true allows the runtime to exchange smart-robot messages over the official long connection.',
+      'false disables it (default); existing enterprise WeChat group webhook push behavior is unchanged.',
+    ],
+    impact: [
+      'Affects the WeCom AI bot conversational command path.',
+      'Does not change the enterprise WeChat group webhook delivery path.',
+    ],
+    notes: [
+      'The long-connection mode needs no public IP; a callback URL mode is not provided.',
+      'Restart the relevant bot/service process after saving to establish the connection.',
+    ],
+  },
+  'settings.notification.WECOM_AIBOT_BOT_ID': {
+    title: 'WeCom AI Bot ID',
+    summary: 'Bot ID of the WeCom AI (smart) robot from the enterprise WeChat console; required for the long-connection mode.',
+    usage: 'Copy the Bot ID from the smart robot details in the enterprise WeChat console into WECOM_AIBOT_BOT_ID.',
+    valueNotes: [
+      'Only used for long-connection authentication (aibot_subscribe frame); unrelated to the group webhook key.',
+      'Required when WECOM_AIBOT_ENABLED=true; the client will not start without it.',
+    ],
+    impact: ['Determines whether the WeCom AI bot long-connection authentication succeeds.'],
+    notes: ['For robots not created by a super admin, from.userid arrives encrypted — an official protocol limitation.'],
+  },
+  'settings.notification.WECOM_AIBOT_SECRET': {
+    title: 'WeCom AI Bot Secret',
+    summary: 'Dedicated secret for the smart-robot long-connection mode; it differs from the group webhook Token/EncodingAESKey credentials.',
+    usage: 'Copy the long-connection secret from the smart robot details into WECOM_AIBOT_SECRET.',
+    valueNotes: [
+      'Long-connection credential only; do not mix it up with callback-mode Token/EncodingAESKey.',
+      'Treat it as a secret and reset it in the console if leaked.',
+    ],
+    impact: ['Determines whether the WeCom AI bot long-connection authentication succeeds.'],
+    notes: ['Restart the relevant bot/service process after saving.'],
+  },
+  'settings.notification.WECOM_AIBOT_REPLY_STREAM': {
+    title: 'WeCom AI Bot Stream Reply',
+    summary: 'Whether bot replies use streaming (stream msgtype) messages; off by default, replies are sent as one-shot markdown.',
+    usage: 'Set WECOM_AIBOT_REPLY_STREAM=true to enable stream replies after confirming the WeCom side supports the stream reply experience.',
+    valueNotes: [
+      'false (default): each reply is delivered as one complete markdown message.',
+      'true: replies are delivered as stream message frames (single frame with finish=true, no progressive typing effect).',
+    ],
+    impact: ['Only affects how WeCom AI bot replies are presented; command handling is unchanged.'],
+    notes: ['Official constraint: a stream message must finish within 10 minutes.'],
   },
   'settings.notification.DINGTALK_WEBHOOK_URL': {
     title: 'DingTalk Group Bot Webhook',

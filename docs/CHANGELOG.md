@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新增] 企业微信智能机器人 Phase 1：WebSocket 长连接客户端基建与对话最小闭环（#755）。新增 `bot/platforms/wecom_aibot.py` 长连接适配器（`aibot_subscribe` 认证、30s 心跳、断线指数退避重连、单机器人单连接互斥、msgid 排重、会话级 30 条/分钟限流），收到文本消息复用 `bot/dispatcher` 命令分发与 `AnalyzeCommand`（一次性分析、不改自选股），经 `aibot_respond_msg` 帧回复（透传回调 req_id；`reply_stream` 可选、默认关）。引入可选依赖 `wecom-aibot-python-sdk>=1.0.2`，SDK 缺失时模块可导入、功能自动关闭。新增配置 `WECOM_AIBOT_ENABLED` / `WECOM_AIBOT_BOT_ID` / `WECOM_AIBOT_SECRET` / `WECOM_AIBOT_REPLY_STREAM`（全部默认关，不改变现有用户行为）；既有企业微信群 Webhook 推送通道行为零变化。
+
 - [文档] 恢复 README、部署指南及模型/搜索配置表中的 Anspire 可点击链接并保留推广码，继续作为 SerpAPI 后的可选搜索服务。
 
 - [改进] 下线 Anspire 合作宣传及专属额度说明，移除 README 推荐入口，调整配置示例和渠道展示顺序；新闻搜索顺序调整至 SerpAPI 之后，保留原推广码链接、已有 Key 和模型渠道兼容。

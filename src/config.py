@@ -1419,6 +1419,12 @@ class Config:
     wecom_token: Optional[str] = None               # 回调 Token
     wecom_encoding_aes_key: Optional[str] = None    # 消息加解密密钥
     wecom_agent_id: Optional[str] = None            # 应用 AgentId
+
+    # 企业微信智能机器人（WebSocket 长连接模式，Issue #755 Phase 1，默认关）
+    wecom_aibot_enabled: bool = False               # 是否启用长连接模式（无需公网IP）
+    wecom_aibot_bot_id: Optional[str] = None        # 智能机器人 Bot ID
+    wecom_aibot_secret: Optional[str] = None        # 长连接专用 Secret
+    wecom_aibot_reply_stream: bool = False          # 是否用 stream 流式回复（默认关）
     
     # Telegram 机器人 - 已有 telegram_bot_token, telegram_chat_id
     telegram_webhook_secret: Optional[str] = None   # Webhook 密钥
@@ -2368,6 +2374,11 @@ class Config:
             wecom_token=os.getenv('WECOM_TOKEN'),
             wecom_encoding_aes_key=os.getenv('WECOM_ENCODING_AES_KEY'),
             wecom_agent_id=os.getenv('WECOM_AGENT_ID'),
+            # 企业微信智能机器人（WebSocket 长连接，默认关）
+            wecom_aibot_enabled=os.getenv('WECOM_AIBOT_ENABLED', 'false').lower() == 'true',
+            wecom_aibot_bot_id=os.getenv('WECOM_AIBOT_BOT_ID'),
+            wecom_aibot_secret=os.getenv('WECOM_AIBOT_SECRET'),
+            wecom_aibot_reply_stream=os.getenv('WECOM_AIBOT_REPLY_STREAM', 'false').lower() == 'true',
             # Telegram
             telegram_webhook_secret=os.getenv('TELEGRAM_WEBHOOK_SECRET'),
             # Discord 机器人扩展配置
