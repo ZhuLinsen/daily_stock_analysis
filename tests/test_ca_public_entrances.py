@@ -449,5 +449,65 @@ class TestWatchlistEndpointsCoexistence:
         assert fake._codes == ["shop.v"], "同形态重复 add 仍按原语义去重"
 
 
+# ---------------------------------------------------------------------------
+# PR #2493 复审 #3（bfe7c5f7 第三次收窄）：YfinanceFetcher._convert_stock_code
+# 先 upper 再判族，shop.v 被折成 SHOP.V 命中加拿大分支——市场边界翻转。
+# 修法：转码在 upper 之前对原始大小写做 .V/.v 族判定，小写 .v 保持原值走
+# 美股符号；ca 身份（SHOP.V）仍走 ca 分支。
+# ---------------------------------------------------------------------------
+class TestYfinanceConvertPreservesVIdentity:
+    """转码边界：shop.v 原值直传，不被 upper 折进 ca 分支"""
+
+    def _make_fetcher(self):
+        from data_provider.yfinance_fetcher import YfinanceFetcher
+
+        return YfinanceFetcher()
+
+    def test_convert_preserves_lowercase_v(self):
+        """评审实证点：_convert_stock_code('shop.v') 必须保持 'shop.v'"""
+        fetcher = self._make_fetcher()
+        assert fetcher._convert_stock_code("shop.v") == "shop.v"
+
+    def test_convert_uppercase_v_still_routes_ca(self):
+        fetcher = self._make_fetcher()
+        assert fetcher._convert_stock_code("SHOP.V") == "SHOP.V"
+
+    def test_convert_shop_to_unaffected(self):
+        fetcher = self._make_fetcher()
+        assert fetcher._convert_stock_code("SHOP.TO") == "SHOP.TO"
+        assert fetcher._convert_stock_code("shop.to") == "SHOP.TO"
+
+    def test_convert_existing_forms_unchanged(self):
+        fetcher = self._make_fetcher()
+        assert fetcher._convert_stock_code("AAPL") == "AAPL"
+        assert fetcher._convert_stock_code("7203.T") == "7203.T"
+        assert fetcher._convert_stock_code("BRK.B") == "BRK.B"
+
+    def test_realtime_quote_identity_stays_us_for_lowercase_v(self):
+        """实时路由：shop.v 的 quote 身份保持 shop.v / market=us，不被翻转"""
+        fetcher = self._make_fetcher()
+
+        mock_fast_info = MagicMock()
+        mock_fast_info.lastPrice = 120.0
+        mock_fast_info.previousClose = 118.0
+        mock_fast_info.open = 119.0
+        mock_fast_info.dayHigh = 121.0
+        mock_fast_info.dayLow = 117.5
+        mock_fast_info.lastVolume = 1000
+        mock_fast_info.marketCap = 1000
+        mock_ticker = MagicMock()
+        mock_ticker.fast_info = mock_fast_info
+        mock_ticker.info = {"shortName": "Shopify US", "currency": "USD"}
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            quote = fetcher.get_realtime_quote("shop.v")
+
+        assert quote is not None
+        assert quote.code == "shop.v", "quote 身份必须保持原始 shop.v"
+        assert quote.market == "us"
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

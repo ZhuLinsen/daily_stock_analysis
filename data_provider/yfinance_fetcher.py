@@ -123,6 +123,7 @@ class YfinanceFetcher(BaseFetcher):
             'AAPL'
         """
         code = stock_code.strip().upper()
+        stripped = stock_code.strip()
 
         # 美股指数：映射到 Yahoo Finance 符号（如 SPX -> ^GSPC）
         yf_symbol, _ = get_us_index_yf_symbol(code)
@@ -132,14 +133,19 @@ class YfinanceFetcher(BaseFetcher):
 
         # 加拿大 TSX/TSXV suffix-only 代码原样传给 Yahoo（如 SHOP.TO / SHOP.V）。
         # 大写 .V 形态同时命中美股单字母分类后缀正则，必须先于美股判定。
-        if is_ca_market_symbol(code):
-            logger.debug(f"识别为加拿大 Yahoo suffix 代码: {code}")
+        # OR-COM-bfe7c5f7（复审 #3 第三次收窄）：族判定必须在原始大小写上做——
+        # upper 之后的 "SHOP.V" 会把小写 .v（美股单字母分类形态）误折进 ca 分支。
+        if is_ca_market_symbol(stripped):
+            logger.debug(f"识别为加拿大 Yahoo suffix 代码: {stripped}")
             return code
 
-        # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
+        # 美股：1-5 个大写字母（可选 .X 后缀），原样返回。
+        # 小写 .v 族保持原始大小写返回——case 是身份载体（US 语义），
+        # upper 会把它翻转成 TSXV 身份。
         if is_us_stock_code(code):
-            logger.debug(f"识别为美股代码: {code}")
-            return code
+            preserved = stripped if stripped.endswith(".v") else code
+            logger.debug(f"识别为美股代码: {preserved}")
+            return preserved
 
         # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
         if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
