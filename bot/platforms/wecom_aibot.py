@@ -565,18 +565,67 @@ class WecomAibotHandler:
         return f"stream_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
     def _reply_to_frame(self, frame: dict, text: str) -> bool:
-        """向回调帧回复文本（默认一次性 markdown；可选 stream，finish=True）
+        """向回调帧回复文本（默认一次性 markdown；可选 stream，finish=True）。
 
-        配额获取（`_acquire_outbound_slot`）可用性前置：双窗口检查与事件
-        循环可用性在同一临界区内，全部通过才记账（r4：无循环时零记账，
-        不虚报已放行）。调度失败或调度后异步发送失败（协程异常 / 回执
-        errcode != 0）均按发送标识退还本次扣量（r5）。
+        长回复分片（r6 OR-COR-9d6c37af）：与主动推送（r5）共用同一
+        切分器（``_split_wecom_aibot_text_chunks``，4000B 上限同源）——
+        超限回复切分为多条 aibot_respond_msg 顺序发送（SDK 按 req_id 维护
+        串行回复队列，多帧合法；stream 模式每片各成完整 stream）。每片
+        独立经配额/并发闸记账（分片多消耗配额属预期，与主动路径口径
+        一致）；同步分片失败 → 记日志含已发送片数并返回 False，已发出
+        的帧不回滚（respond 帧无法撤回）。异步回执失败按发送标识退还
+        本片配额（r5 语义，见 ``_on_reply_send_done``）。
         """
         if not frame:
             logger.warning("[WeCom AI Bot] 无回调帧，无法回复")
             return False
 
         outbound_key = self._outbound_key_from_frame(frame)
+        chunks = _split_wecom_aibot_text_chunks(text)
+        if not chunks:
+            logger.warning(
+                "[WeCom AI Bot] 回复内容为空，跳过: key=%s", outbound_key
+            )
+            return False
+
+        total = len(chunks)
+        sent = 0
+        for index, chunk in enumerate(chunks, start=1):
+            part_label = f"{index}/{total}" if total > 1 else ""
+            ok = self._reply_single_chunk(
+                frame, chunk, outbound_key, part_label
+            )
+            if not ok:
+                logger.error(
+                    "[WeCom AI Bot] 回复分片 %d/%d 发送失败，本次回复整体失败"
+                    "（已发送 %d/%d 帧，已发出帧不回滚）: key=%s",
+                    index,
+                    total,
+                    sent,
+                    total,
+                    outbound_key,
+                )
+                return False
+            sent = index
+        if total > 1:
+            logger.info(
+                "[WeCom AI Bot] 长回复已按 %d 帧顺序发送完成: key=%s",
+                total,
+                outbound_key,
+            )
+        return True
+
+    def _reply_single_chunk(
+        self,
+        frame: dict,
+        text: str,
+        outbound_key: str,
+        part_label: str = "",
+    ) -> bool:
+        """发送单帧回复（≤4000B，已由调用方分片）——配额/并发闸/调度/
+        异步回执处理的单元；分片循环见 :meth:`_reply_to_frame`。"""
+        part_suffix = f"（{part_label}）" if part_label else ""
+
         token = self._acquire_outbound_slot(outbound_key)
         if token is None:
             return False
@@ -588,7 +637,8 @@ class WecomAibotHandler:
             self._refund_outbound_send(outbound_key, token)
             logger.warning(
                 "[WeCom AI Bot] 同会话并发超限（≤3 条在途），回复已丢弃"
-                "（已退还配额）: key=%s",
+                "（已退还配额）%s: key=%s",
+                part_suffix,
                 outbound_key,
             )
             return False
@@ -606,7 +656,8 @@ class WecomAibotHandler:
             outbound_gate_slot.release()
             self._refund_outbound_send(outbound_key, token)
             logger.error(
-                "[WeCom AI Bot] 回复调度失败，已退还配额: key=%s, error=%s",
+                "[WeCom AI Bot] 回复调度失败，已退还配额%s: key=%s, error=%s",
+                part_suffix,
                 outbound_key,
                 exc,
             )
@@ -617,7 +668,8 @@ class WecomAibotHandler:
             outbound_gate_slot.release()
             self._refund_outbound_send(outbound_key, token)
             logger.error(
-                "[WeCom AI Bot] SDK 事件循环在调度时不可用（已退还配额）: key=%s",
+                "[WeCom AI Bot] SDK 事件循环在调度时不可用（已退还配额）%s: key=%s",
+                part_suffix,
                 outbound_key,
             )
             return False
