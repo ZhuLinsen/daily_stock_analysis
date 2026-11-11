@@ -7,6 +7,7 @@ import { ReportDetails } from './ReportDetails';
 import { ReportDiagnostics } from './ReportDiagnostics';
 import { AnalysisContextSummary } from './AnalysisContextSummary';
 import { MarketReviewReportView } from './MarketReviewReportView';
+import { QuotePanel } from './QuotePanel';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 
 interface ReportSummaryProps {
@@ -67,6 +68,9 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
         isHistory={isHistory}
         watchlist={watchlist}
       />
+
+      {/* 行情快照区（issue #771 看板行情面板；market_review 报告无个股，已在上方提前返回） */}
+      <QuotePanel stockCode={meta.stockCode} language={reportLanguage} />
 
       {/* 策略点位区 */}
       <ReportStrategy strategy={strategy} language={reportLanguage} />
