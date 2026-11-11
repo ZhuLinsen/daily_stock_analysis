@@ -441,6 +441,16 @@ class WecomAibotHandler:
             退款时按 token 精确移除本次记录（r5）。被拒绝时返回 None。
         """
         with self._outbound_quota_lock:
+            # 认证闸（r8 OR-COR-36f9842a）：事件由所属 client 接线；未接线
+            # （独立 handler/测试 harness）时不做认证闸，保持既有行为。
+            auth_event = getattr(self, "_authenticated_event", None)
+            if auth_event is not None and not auth_event.is_set():
+                logger.warning(
+                    "[WeCom AI Bot] 长连接未完成认证（连接中/重连中），"
+                    "回复已丢弃（零记账）: key=%s",
+                    conversation_key,
+                )
+                return None
             if not self._outbound_minute_limiter.would_allow(conversation_key):
                 logger.warning(
                     "[WeCom AI Bot] 会话回复超限（分钟30条或小时1000条配额），"
@@ -734,12 +744,19 @@ class WecomAibotClient:
     """
     企微智能机器人长连接客户端
 
+    类级默认 ``_authenticated_event = None``：__new__ 直接构造的测试客户端
+    不做认证闸；正常 __init__ 路径会创建真实 Event 实例。
+
     封装官方 SDK WSClient：
     - 单后台线程运行（单机器人单连接互斥，防重连风暴——新连接订阅成功会踢掉
       旧连接，两条并发客户端会互相踢形成风暴）
     - 认证失败（aibot_subscribe errcode != 0）时适配器层指数退避重试
     - 30s 心跳与断线重连由 SDK 内置（heartbeat_interval=30000）
     """
+
+    # 认证状态（r8 OR-COR-36f9842a）：authenticated 事件置位、周期重建/
+    # 断线清除。类级默认 None = 无闸（__new__ 构造的测试客户端）。
+    _authenticated_event: Optional[threading.Event] = None
 
     _AUTH_RETRY_BASE_DELAY_SECONDS = 2.0
     _AUTH_RETRY_MAX_DELAY_SECONDS = 30.0
@@ -774,7 +791,9 @@ class WecomAibotClient:
             getattr(config, "wecom_aibot_reply_stream", False)
         )
 
+        self._authenticated_event = threading.Event()
         self._handler = WecomAibotHandler(reply_stream_enabled=self._reply_stream_enabled)
+        self._handler._authenticated_event = self._authenticated_event
         self._sdk_client: Optional[Any] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._background_thread: Optional[threading.Thread] = None
@@ -799,6 +818,9 @@ class WecomAibotClient:
 
     def _create_sdk_client(self) -> Any:
         """创建 SDK 客户端（每轮连接新建实例，保证旧连接先被弃用）"""
+        # 新周期从未认证状态起步（r8）：认证回执（authenticated 事件）
+        # 到达后才置位，期间 wait_for_ready/发送路径均被闸住。
+        self._authenticated_event.clear()
         sdk_client = WSClient(
             WSClientOptions(
                 bot_id=self._bot_id,
@@ -823,6 +845,7 @@ class WecomAibotClient:
 
         @sdk_client.on("disconnected")
         def _on_disconnected(reason):
+            self._authenticated_event.clear()
             logger.warning("[WeCom AI Bot] 连接断开: %s", reason)
 
         @sdk_client.on("reconnecting")
@@ -871,7 +894,8 @@ class WecomAibotClient:
         )
 
     def _on_authenticated(self) -> None:
-        """认证成功：复位认证与连接周期退避预算"""
+        """认证成功：置位认证事件、复位认证与连接周期退避预算"""
+        self._authenticated_event.set()
         self._auth_attempts = 0
         self._auth_failed = False
         self._planned_auth_delay = None
@@ -1081,6 +1105,17 @@ class WecomAibotClient:
                     conversation_key,
                 )
                 return False
+            # 认证闸（r8 OR-COR-36f9842a）：TCP 已连但认证回执未到（连接中/
+            # 重连中）→ 拒发零记账，一次性 CLI 任务不丢报告。
+            auth_event = getattr(self, "_authenticated_event", None)
+            if auth_event is not None and not auth_event.is_set():
+                logger.warning(
+                    "[WeCom AI Bot] 长连接未完成认证（连接中/重连中），"
+                    "消息已丢弃（零记账）%s: key=%s",
+                    part_suffix,
+                    conversation_key,
+                )
+                return False
             if not self._running or self._sdk_client is None:
                 logger.warning(
                     "[WeCom AI Bot] 长连接客户端未运行，无法主动推送: key=%s",
@@ -1226,10 +1261,12 @@ class WecomAibotClient:
         deadline = time.time() + timeout_seconds
         while True:
             sdk_client = self._sdk_client
+            auth_event = getattr(self, "_authenticated_event", None)
             if (
                 self._running
                 and sdk_client is not None
                 and bool(getattr(sdk_client, "is_connected", False))
+                and (auth_event is None or auth_event.is_set())
             ):
                 return True
             remaining = deadline - time.time()
@@ -1239,15 +1276,17 @@ class WecomAibotClient:
                 return False
 
     def is_transport_ready(self) -> bool:
-        """诊断/测试用：连接是否已就绪（运行中且 SDK 已连接）。"""
+        """诊断/测试用：连接是否已就绪（运行中且 SDK 已连接且已认证）。"""
         return self._is_transport_ready()
 
     def _is_transport_ready(self) -> bool:
         sdk_client = self._sdk_client
+        auth_event = getattr(self, "_authenticated_event", None)
         return bool(
             self._running
             and sdk_client is not None
             and getattr(sdk_client, "is_connected", False)
+            and (auth_event is None or auth_event.is_set())
         )
 
 

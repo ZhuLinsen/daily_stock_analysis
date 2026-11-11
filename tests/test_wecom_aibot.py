@@ -220,6 +220,9 @@ class TestAuthFailureDegradation:
                 mock.patch.object(wecom_aibot, "aibot", create=True):
             client = wecom_aibot.WecomAibotClient()
         wecom_aibot._reset_wecom_aibot_client()
+        # r8：认证生命周期由 test_wecom_aibot_auth_ready.py 专属覆盖；
+        # 本组用例的对象是配额/回执/退款语义，前置为"已认证会话"。
+        client._on_authenticated()
         return client
 
     def test_auth_failure_does_not_crash_and_starts_backoff(self, caplog):
@@ -311,6 +314,9 @@ class TestSingleConnectionMutex:
                 mock.patch.object(wecom_aibot, "aibot", create=True):
             client = wecom_aibot.WecomAibotClient()
         wecom_aibot._reset_wecom_aibot_client()
+        # r8：认证生命周期由 test_wecom_aibot_auth_ready.py 专属覆盖；
+        # 本组用例的对象是配额/回执/退款语义，前置为"已认证会话"。
+        client._on_authenticated()
         return client
 
     def test_start_background_twice_never_spawns_second_thread(self, caplog):
@@ -781,6 +787,9 @@ class TestReconnectBudgetSelfHealing:
                 mock.patch.object(wecom_aibot, "aibot", create=True):
             client = wecom_aibot.WecomAibotClient()
         wecom_aibot._reset_wecom_aibot_client()
+        # r8：认证生命周期由 test_wecom_aibot_auth_ready.py 专属覆盖；
+        # 本组用例的对象是配额/回执/退款语义，前置为"已认证会话"。
+        client._on_authenticated()
         return client
 
     def test_exhaustion_error_ends_cycle_and_plans_rebuild(self):
@@ -901,6 +910,9 @@ class TestHourlyConversationQuota:
                 mock.patch.object(wecom_aibot, "aibot", create=True):
             client = wecom_aibot.WecomAibotClient()
         wecom_aibot._reset_wecom_aibot_client()
+        # r8：认证生命周期由 test_wecom_aibot_auth_ready.py 专属覆盖；
+        # 本组用例的对象是配额/回执/退款语义，前置为"已认证会话"。
+        client._on_authenticated()
         return client
 
     def test_outbound_limiters_are_dual_window(self):
@@ -1445,6 +1457,9 @@ class TestOutboundSendConfirmationQuota:
                 mock.patch.object(wecom_aibot, "aibot", create=True):
             client = wecom_aibot.WecomAibotClient()
         wecom_aibot._reset_wecom_aibot_client()
+        # r8：认证生命周期由 test_wecom_aibot_auth_ready.py 专属覆盖；
+        # 本组用例的对象是配额/回执/退款语义，前置为"已认证会话"。
+        client._on_authenticated()
         return client
 
     def _window_counts(self, handler, key):
