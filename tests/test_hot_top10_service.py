@@ -36,6 +36,12 @@ from src.services.hot_top10_service import (
     record_hot_top10_marker,
     run_hot_top10_analysis,
 )
+from src.services import hot_top10_service as hot_top10_svc
+from src.services.hot_top10_service import (
+    HOT_TOP10_CLAIM_STALE_AFTER,
+    acquire_hot_top10_delivery_claim,
+    hot_top10_claim_path,
+)
 
 
 def _hotspot_payload(items: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1235,6 +1241,496 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
         self.assertTrue(retry.delivered)
         skip, _ = hot_top10_already_delivered_today(config)
         self.assertTrue(skip)
+
+
+# Child script for the OR-COR-5c51e8d7 r5 double-steal race regression: two
+# REAL processes contend for the same data date while the claim TTL is
+# collapsed to zero, so the second process deterministically steals the claim
+# the first process is holding.
+_OWNERSHIP_RUNNER_SCRIPT = """
+import json
+import os
+import sys
+import time
+from datetime import timedelta
+
+sys.path.insert(0, sys.argv[1])
+
+from types import SimpleNamespace
+
+from src.services import hot_top10_service as svc
+
+ttl_text = os.environ.get("HOT_TOP10_TEST_CLAIM_TTL_SECONDS", "")
+if ttl_text:
+    svc.HOT_TOP10_CLAIM_STALE_AFTER = timedelta(seconds=float(ttl_text))
+
+config = SimpleNamespace(
+    database_path=sys.argv[2],
+    trading_day_check_enabled=False,
+    hot_top10_count=10,
+    report_language="zh",
+)
+data_date = sys.argv[3]
+go_file = sys.argv[4]
+llm_block_file = os.environ.get("HOT_TOP10_TEST_LLM_BLOCK", "")
+pid = os.getpid()
+
+
+class _Hotspots:
+    def get_hotspots(self, **kwargs):
+        return {
+            "status": "ok",
+            "market": "cn",
+            "trade_date": data_date,
+            "active_themes": [
+                {
+                    "name": f"主题-{pid}",
+                    "code": "BK0001",
+                    "change_pct": 1.0,
+                    "rank": 1,
+                    "source": "industry",
+                }
+            ],
+            "leading_industries": [],
+            "leading_concepts": [],
+        }
+
+
+class _Analyzer:
+    def generate_text(self, prompt, **kwargs):
+        deadline = time.time() + 30
+        while llm_block_file and not os.path.exists(llm_block_file):
+            if time.time() >= deadline:
+                break
+            time.sleep(0.02)
+        return json.dumps({"summary": "s", "items": []}, ensure_ascii=False)
+
+
+class _Notifier:
+    def is_available(self):
+        return True
+
+    def save_report_to_file(self, content, filename):
+        return filename
+
+    def send(self, content, **kwargs):
+        return True
+
+
+print("READY", flush=True)
+deadline = time.time() + 30
+while not os.path.exists(go_file):
+    if time.time() >= deadline:
+        break
+    time.sleep(0.02)
+
+result = svc.run_hot_top10_analysis(
+    config,
+    notifier=_Notifier(),
+    analyzer=_Analyzer(),
+    hotspot_service=_Hotspots(),
+)
+print(
+    "RESULT:"
+    + json.dumps(
+        {
+            "delivered": result.delivered,
+            "skipped": result.skipped,
+            "reason": result.reason,
+        }
+    ),
+    flush=True,
+)
+"""
+
+
+class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
+    """OR-COR-5c51e8d7 r5: the cross-process claim primitive must be a FULL
+    ownership protocol. r4 defects covered here:
+
+    1. initialization window: between exclusive-create and the timestamp
+       write the file was visible but empty, and readers treated empty as
+       stale and DELETED a live claim. Empty/unparseable files are live.
+    2. takeover was unlink-then-create: two processes both reading a stale
+       timestamp each unlinked the other's fresh claim and both delivered.
+       Takeover is an atomic rename and the loser detects its lost token
+       before any side effect (reason=lost_claim).
+    3. release unlinked by path only: an old holder deleted the new owner's
+       claim. Release re-verifies ownership (token; for legacy token-less
+       files, the first-line timestamp we wrote) before deleting.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value={"cn"},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    # ------------------------------------------------------------------ helpers
+
+    def _run(self, config, notifier=None) -> HotTop10RunResult:
+        notifier = notifier or _FakeNotifier()
+        with mock.patch(
+            "src.services.hot_top10_service._build_analyzer",
+            return_value=_FakeAnalyzer(text=_llm_json()),
+        ):
+            return run_hot_top10_analysis(
+                config,
+                notifier=notifier,
+                hotspot_service=_FakeHotspotService(
+                    _hotspot_payload(_theme_items(3))
+                ),
+            )
+
+    @staticmethod
+    def _drain(proc: subprocess.Popen, llm_release: Optional[Path]) -> None:
+        try:
+            if llm_release is not None:
+                llm_release.write_text("release", encoding="utf-8")
+        except OSError:
+            pass
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    def _read_result(self, proc: subprocess.Popen) -> Dict[str, Any]:
+        line = proc.stdout.readline().strip()
+        if not line.startswith("RESULT:"):
+            self.fail(f"child produced no result: {line!r}")
+        return json.loads(line[len("RESULT:") :])
+
+    # ------------------------------------------------------------------- tests
+
+    def test_empty_or_unparseable_claim_is_live_and_never_deleted(self):
+        """Initialization window: a claim file that exists but is not (yet)
+        parseable must be treated LIVE — the run skips with
+        ``already_claimed`` and NEVER deletes the file. r4 read the empty
+        file as stale and deleted a live claim mid-initialization."""
+        config = _config(self._tmp.name)
+        claim_path = hot_top10_claim_path(config, date.today().isoformat())
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # The initialization window: file visible but empty.
+        claim_path.write_text("", encoding="utf-8")
+        notifier = _FakeNotifier()
+        result = self._run(config, notifier=notifier)
+
+        self.assertTrue(result.skipped)
+        self.assertEqual(result.reason, "already_claimed")
+        self.assertEqual(notifier.sent, [])
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)
+        self.assertTrue(claim_path.exists(), "live claim must not be deleted")
+        self.assertEqual(claim_path.read_text(encoding="utf-8"), "")
+
+        # Same reader semantics for unparseable content (external occupant).
+        claim_path.write_text("not-a-timestamp\n", encoding="utf-8")
+        result2 = self._run(config)
+
+        self.assertTrue(result2.skipped)
+        self.assertEqual(result2.reason, "already_claimed")
+        self.assertTrue(claim_path.exists())
+        self.assertEqual(
+            claim_path.read_text(encoding="utf-8"), "not-a-timestamp\n"
+        )
+
+    def test_unparseable_claim_staleness_falls_back_to_mtime(self):
+        """Staleness for empty/unparseable claim files falls back to the
+        file mtime: freshly touched garbage is live (an occupant), garbage
+        older than the TTL is crash residue and is taken over."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        claim_path.write_text("garbage", encoding="utf-8")
+
+        claim = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNone(claim, "fresh garbage must count as live")
+        self.assertTrue(claim_path.exists())
+        self.assertEqual(claim_path.read_text(encoding="utf-8"), "garbage")
+
+        # Push the mtime beyond the TTL: crash residue, takeover wins.
+        old_stamp = (
+            time.time() - HOT_TOP10_CLAIM_STALE_AFTER.total_seconds() - 300
+        )
+        os.utime(claim_path, (old_stamp, old_stamp))
+        stolen = acquire_hot_top10_delivery_claim(config, data_date)
+
+        self.assertIsNotNone(stolen)
+        lines = claim_path.read_text(encoding="utf-8").strip().splitlines()
+        # The takeover published the full serialization: ts / token / pid.
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(len(lines[1]), 32)  # uuid4 hex owner token
+        stolen.release()
+        self.assertFalse(claim_path.exists())
+
+    def test_release_does_not_delete_claim_of_new_owner(self):
+        """r4 release unlinked by path only, so an old holder deleted the
+        new owner's claim after a takeover. Release must re-verify
+        ownership and leave a foreign claim byte-identical."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+
+        holder = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(holder)
+        self.assertTrue(claim_path.exists())
+
+        # A competing acquirer steals the claim (TTL collapsed to zero —
+        # the double-steal race winner now owns the file).
+        with mock.patch.object(
+            hot_top10_svc, "HOT_TOP10_CLAIM_STALE_AFTER", timedelta(seconds=0)
+        ):
+            new_owner = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(new_owner)
+        content_after_steal = claim_path.read_text(encoding="utf-8")
+
+        # The old holder's release must NOT delete the new owner's claim.
+        holder.release()
+        self.assertTrue(claim_path.exists(), "release deleted a foreign claim")
+        self.assertEqual(
+            claim_path.read_text(encoding="utf-8"), content_after_steal
+        )
+
+        # The new owner's own release does remove it.
+        new_owner.release()
+        self.assertFalse(claim_path.exists())
+
+    def test_side_effects_aborted_when_claim_lost_before_delivery(self):
+        """The final arbiter of the double-steal race: a holder overtaken
+        while generating the report must abort before ANY side effect — no
+        save, no push, no marker — with reason=lost_claim, and the thief's
+        claim must survive the aborted run's cleanup."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+        release_llm = threading.Event()
+
+        class _BlockingAnalyzer:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+
+            def generate_text(self, prompt: str, **kwargs: Any) -> str:
+                self.entered.set()
+                release_llm.wait(timeout=10)
+                return _llm_json()
+
+        analyzer = _BlockingAnalyzer()
+        notifier = _FakeNotifier()
+        results: Dict[str, HotTop10RunResult] = {}
+
+        def _holder_run() -> None:
+            with mock.patch(
+                "src.services.hot_top10_service._build_analyzer",
+                return_value=analyzer,
+            ):
+                results["run"] = run_hot_top10_analysis(
+                    config,
+                    notifier=notifier,
+                    hotspot_service=_FakeHotspotService(
+                        _hotspot_payload(_theme_items(3))
+                    ),
+                )
+
+        worker = threading.Thread(target=_holder_run, daemon=True)
+        worker.start()
+        self.assertTrue(analyzer.entered.wait(timeout=5))
+
+        # The live claim carries the owner token (ts / token / pid lines).
+        live_lines = (
+            claim_path.read_text(encoding="utf-8").strip().splitlines()
+        )
+        self.assertEqual(len(live_lines), 3)
+        self.assertEqual(len(live_lines[1]), 32)
+
+        # A competing process steals the held claim (TTL collapsed to zero).
+        with mock.patch.object(
+            hot_top10_svc, "HOT_TOP10_CLAIM_STALE_AFTER", timedelta(seconds=0)
+        ):
+            thief = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(thief)
+
+        release_llm.set()
+        worker.join(timeout=15)
+        result = results["run"]
+
+        self.assertFalse(result.delivered)
+        self.assertTrue(result.skipped)
+        self.assertEqual(result.reason, "lost_claim")
+        self.assertEqual(notifier.sent, [])
+        self.assertEqual(notifier.saved, [])
+        skip, _ = hot_top10_already_delivered_today(config)
+        self.assertFalse(skip)
+        # The thief's claim survived the aborted run's release ...
+        self.assertTrue(claim_path.exists())
+        # ... and is removed only by its rightful owner.
+        thief.release()
+        self.assertFalse(claim_path.exists())
+
+    def test_legacy_claim_takeover_and_release_timestamp_double_check(self):
+        """Backward compatibility with r4 claim files (``{ts}\\n{pid}``, no
+        token line): a stale legacy claim is taken over like any other crash
+        residue, and release of a token-less (legacy-rewritten) file uses
+        the path + first-line timestamp double check."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # (a) A stale legacy-format claim is taken over by a normal run.
+        stale_time = (
+            datetime.now() - timedelta(hours=3)
+        ).isoformat(timespec="seconds")
+        claim_path.write_text(f"{stale_time}\n999999", encoding="utf-8")
+        result = self._run(config)
+
+        self.assertTrue(result.delivered)
+        self.assertFalse(claim_path.exists())
+
+        # (b) Same first line, token stripped: still recognized as ours and
+        # deleted by release.
+        holder = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(holder)
+        first_line = claim_path.read_text(encoding="utf-8").splitlines()[0]
+        claim_path.write_text(f"{first_line}\n12345", encoding="utf-8")
+        holder.release()
+        self.assertFalse(claim_path.exists())
+
+        # (c) A foreign legacy rewrite (different first line) survives the
+        # old holder's release.
+        holder2 = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(holder2)
+        foreign_time = (
+            datetime.now() - timedelta(hours=3)
+        ).isoformat(timespec="seconds")
+        claim_path.write_text(f"{foreign_time}\n777", encoding="utf-8")
+        holder2.release()
+        self.assertTrue(claim_path.exists())
+
+        # (d) A foreign tokened rewrite survives as well.
+        holder3 = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(holder3)
+        fresh_time = datetime.now().isoformat(timespec="seconds")
+        claim_path.write_text(
+            f"{fresh_time}\n{'a' * 32}\n888", encoding="utf-8"
+        )
+        holder3.release()
+        self.assertTrue(claim_path.exists())
+
+    def test_double_steal_race_delivers_exactly_once_loser_reports_lost_claim(
+        self,
+    ):
+        """OR-COR-5c51e8d7 takeover race, end to end in two REAL processes:
+        the thief steals the claim the holder is holding (TTL collapsed to
+        zero), so the holder must abort before its side effects with
+        reason=lost_claim and the thief delivers alone. The r4
+        unlink-then-create takeover let BOTH processes deliver."""
+        db_path = Path(self._tmp.name) / "stock_analysis.db"
+        data_date = date.today().isoformat()
+        claim_path = db_path.parent / f"hot_top10_claim_{data_date}.lock"
+        go_a = Path(self._tmp.name) / "go_a"
+        go_b = Path(self._tmp.name) / "go_b"
+        llm_release = Path(self._tmp.name) / "llm_release"
+        repo_root = str(Path(__file__).resolve().parents[1])
+        child_script = Path(self._tmp.name) / "ownership_runner.py"
+        child_script.write_text(_OWNERSHIP_RUNNER_SCRIPT, encoding="utf-8")
+
+        def _spawn(go_file: Path, llm_block: str) -> subprocess.Popen:
+            env = dict(os.environ)
+            env["HOT_TOP10_TEST_CLAIM_TTL_SECONDS"] = "0"
+            env["HOT_TOP10_TEST_LLM_BLOCK"] = llm_block
+            env["PYTHONIOENCODING"] = "utf-8"
+            return subprocess.Popen(
+                [
+                    sys.executable,
+                    str(child_script),
+                    repo_root,
+                    str(db_path),
+                    data_date,
+                    str(go_file),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                env=env,
+                cwd=repo_root,
+            )
+
+        holder = _spawn(go_a, str(llm_release))
+        self.addCleanup(self._drain, holder, llm_release)
+        ready = holder.stdout.readline().strip()
+        self.assertEqual(ready, "READY", "holder child failed to boot")
+        go_a.write_text("go", encoding="utf-8")
+
+        # Deterministic fence: the holder owns the claim while it is blocked
+        # inside the LLM call.
+        deadline = time.time() + 15
+        while time.time() < deadline and not claim_path.exists():
+            time.sleep(0.02)
+        self.assertTrue(claim_path.exists(), "holder claim never appeared")
+        holder_claim_content = claim_path.read_text(encoding="utf-8")
+
+        # The thief starts with its gate already open: it observes the held
+        # claim as stale (TTL=0) and steals it via atomic rename.
+        go_b.write_text("go", encoding="utf-8")
+        thief = _spawn(go_b, "")
+        self.addCleanup(self._drain, thief, None)
+        ready = thief.stdout.readline().strip()
+        self.assertEqual(ready, "READY", "thief child failed to boot")
+
+        # Second fence: wait until the claim file CONTENT changed (or the
+        # file is gone because the thief already finished) — the thief's
+        # steal landed while the holder still blocks in LLM.
+        def _claim_state() -> str:
+            try:
+                return claim_path.read_text(encoding="utf-8")
+            except OSError:
+                return "<missing>"
+
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if _claim_state() != holder_claim_content:
+                break
+            time.sleep(0.02)
+        self.assertNotEqual(
+            _claim_state(),
+            holder_claim_content,
+            "thief never stole the held claim",
+        )
+
+        # Now wake the holder: it must detect the lost token and abort.
+        llm_release.write_text("release", encoding="utf-8")
+        thief_result = self._read_result(thief)
+        holder_result = self._read_result(holder)
+        thief.wait(timeout=30)
+        holder.wait(timeout=30)
+
+        both = [thief_result, holder_result]
+        delivered = [r for r in both if r["delivered"]]
+        lost = [r for r in both if r["reason"] == "lost_claim"]
+        self.assertEqual(
+            len(delivered), 1, f"exactly one process may deliver: {both}"
+        )
+        self.assertEqual(
+            len(lost), 1, f"the loser must abort with lost_claim: {both}"
+        )
+        winner = delivered[0]
+        self.assertEqual(winner["reason"], "ok")
+        marker_payload = json.loads(
+            (db_path.parent / "hot_top10_state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(marker_payload.get("data_date"), data_date)
+        self.assertTrue(marker_payload.get("delivered"))
+        self.assertFalse(claim_path.exists())
 
 
 if __name__ == "__main__":

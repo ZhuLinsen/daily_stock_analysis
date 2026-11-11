@@ -31,6 +31,15 @@ Design rules:
   deliver -> marker); a trigger arriving while another run holds it exits
   immediately with ``already_running`` — no push, no marker — and retries on
   the next occurrence.
+- Cross-process claim ownership protocol (OR-COR-5c51e8d7 r5): independent
+  scheduler processes sharing the same DATABASE_PATH arbitrate delivery per
+  data date through ``hot_top10_claim_<data_date>.lock``. The file carries
+  an owner token (uuid4 hex) behind the legacy first-line ISO timestamp;
+  publication is an atomic no-replace link of a fully written temp file,
+  empty/unparseable claim files are live (never deleted), stale claims are
+  taken over with one atomic rename, ownership is re-verified before every
+  side effect (save/push, marker) and before release deletes, and no
+  OS-level file locks are used. ``force_run`` stays unclaimed.
 - Default OFF: with ``HOT_TOP10_ENABLED`` unset the feature registers nothing
   and changes zero behavior.
 """
@@ -42,6 +51,7 @@ import logging
 import os
 import re
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -83,11 +93,31 @@ _HOT_TOP10_PENDING_FOLLOWUP = threading.Event()
 # OR-COR-5c51e8d7: the process mutex above cannot exclude two INDEPENDENT
 # scheduler processes sharing the same DATABASE_PATH (CLI --schedule next to
 # the Web/API/desktop runtime scheduler, or two replicas). Delivery is
-# therefore claimed atomically per data date via an exclusive-create file
-# next to the marker: ``hot_top10_claim_<data_date>.lock``. A claim older
-# than this TTL is crash residue and is taken over.
+# therefore arbitrated per data date through an ownership-protocol file next
+# to the marker: ``hot_top10_claim_<data_date>.lock`` (r5 protocol):
+#
+# - Serialization (backward compatible): line 1 is the ISO claim timestamp
+#   exactly as r4 wrote it; r5 appends the owner token (uuid4 hex) and the
+#   pid on the following lines. r4 content (``{ts}\\n{pid}``) parses
+#   unchanged: no token line means an UNOWNED claim, handled with r4
+#   semantics (stale takeover; release deletes only while the first line is
+#   still the timestamp we wrote).
+# - Publishing is atomic: the full content is written to a same-directory
+#   temp file first, then published with ``os.link`` (atomic no-replace on
+#   Windows NTFS and POSIX alike). Filesystems without hardlink support
+#   degrade to exclusive-create + immediate write, made safe by the reader
+#   rule below.
+# - Reader rule: an empty/unparseable claim file is LIVE (initialization in
+#   progress, or an external occupant) — it is never deleted. Staleness is
+#   the first-line timestamp past the TTL, falling back to file mtime.
+# - Takeover of stale crash residue is one atomic rename (os.replace); the
+#   winner among racing stealers is decided by the owner token, re-verified
+#   before every side effect (save/push and marker) and before release
+#   deletes anything.
+# - No OS-level file locks are used.
 HOT_TOP10_CLAIM_STALE_AFTER = timedelta(hours=2)
 _HOT_TOP10_CLAIM_FILE_PREFIX = "hot_top10_claim_"
+_OWNER_TOKEN_LENGTH = 32  # uuid4().hex
 
 
 def hot_top10_claim_path(config: Any, data_date: str) -> Path:
@@ -97,49 +127,201 @@ def hot_top10_claim_path(config: Any, data_date: str) -> Path:
     )
 
 
-def _write_hot_top10_claim_file(path: Path) -> bool:
-    """Exclusive-create the claim file; True when THIS process owns it.
+def _new_owner_token() -> str:
+    return uuid.uuid4().hex
 
-    ``O_CREAT | O_EXCL`` is the only portable atomic test-and-set across
-    processes on Windows and POSIX alike."""
+
+def _render_claim_content(created_line: str, token: str) -> str:
+    """Line 1: ISO timestamp (r4 first-line semantics preserved verbatim);
+    line 2: owner token; line 3: pid."""
+    return f"{created_line}\n{token}\n{os.getpid()}\n"
+
+
+def _looks_like_owner_token(value: str) -> bool:
+    """uuid4 hex tokens are exactly 32 lowercase hex chars; an r4 pid line
+    is decimal digits and far shorter, so the two can never collide."""
+    return len(value) == _OWNER_TOKEN_LENGTH and all(
+        c in "0123456789abcdef" for c in value
+    )
+
+
+def _parse_claim_text(text: str) -> Tuple[Optional[datetime], Optional[str]]:
+    """Parse claim content into ``(claimed_at, owner_token)``.
+
+    Old r4 content (``{ts}\\n{pid}`` and anything without a token line)
+    parses its first-line timestamp with ``owner_token=None`` — an UNOWNED
+    claim handled with r4 semantics. Unparseable content yields
+    ``(None, None)`` and counts as live via the mtime fallback."""
+    lines = text.strip().splitlines()
+    if not lines:
+        return None, None
+    try:
+        claimed_at = datetime.fromisoformat(lines[0].strip())
+    except ValueError:
+        return None, None
+    token: Optional[str] = None
+    if len(lines) >= 2:
+        candidate = lines[1].strip()
+        if _looks_like_owner_token(candidate):
+            token = candidate
+    return claimed_at, token
+
+
+def _read_claim_text(path: Path) -> Optional[str]:
+    """Claim file content; ``None`` when missing/unreadable."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _claim_is_stale(path: Path, text: Optional[str]) -> bool:
+    """Staleness: first-line timestamp past the TTL; for empty/unparseable
+    content fall back to the file mtime (fresh mtime = live: an occupant
+    mid-initialization is never treated stale and never deleted)."""
+    if text:
+        claimed_at, _token = _parse_claim_text(text)
+        if claimed_at is not None:
+            return datetime.now() - claimed_at >= HOT_TOP10_CLAIM_STALE_AFTER
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    return (
+        datetime.now() - datetime.fromtimestamp(mtime)
+        >= HOT_TOP10_CLAIM_STALE_AFTER
+    )
+
+
+def _write_claim_tmp(path: Path, content: str) -> Path:
+    """Write the FULL claim content to a unique same-directory temp file."""
+    tmp_path = path.with_name(
+        f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return tmp_path
+
+
+def _discard_claim_tmp(tmp_path: Path) -> None:
+    try:
+        tmp_path.unlink()
+    except OSError:
+        pass
+
+
+def _publish_claim_exclusive(path: Path, content: str) -> bool:
+    """Fallback for filesystems without hardlink support: exclusive-create
+    then write immediately. A crash in between would leave a short-lived
+    empty file, which the reader rule counts as live (never deleted)."""
     try:
         fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         return False
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(datetime.now().isoformat(timespec="seconds"))
-        handle.write("\n")
-        handle.write(str(os.getpid()))
+        handle.write(content)
     return True
 
 
-def _hot_top10_claim_timestamp(path: Path) -> Optional[datetime]:
-    """Parse the claim timestamp; None when missing/corrupt (treated stale)."""
+def _publish_claim_atomically(path: Path, content: str) -> bool:
+    """Create ``path`` with the FULL ``content`` in one atomic no-replace
+    step; True when THIS process published it. ``os.link`` is atomic
+    no-replace on Windows NTFS and POSIX alike; ``FileExistsError`` means
+    another process already owns the claim."""
+    tmp_path = _write_claim_tmp(path, content)
     try:
-        first_line = path.read_text(encoding="utf-8").strip().splitlines()[0]
-    except (OSError, IndexError):
-        return None
+        try:
+            os.link(str(tmp_path), str(path))
+            return True
+        except FileExistsError:
+            return False
+        except OSError:
+            # No hardlink support on this filesystem: degrade to
+            # exclusive-create + immediate write (the reader rule keeps the
+            # would-be initialization window safe).
+            return _publish_claim_exclusive(path, content)
+    finally:
+        _discard_claim_tmp(tmp_path)
+
+
+def _steal_claim_atomically(path: Path, content: str) -> None:
+    """Replace a stale claim with our full content in one atomic rename."""
+    tmp_path = _write_claim_tmp(path, content)
     try:
-        return datetime.fromisoformat(first_line)
-    except ValueError:
-        return None
+        os.replace(str(tmp_path), str(path))
+    finally:
+        _discard_claim_tmp(tmp_path)
 
 
 class _HotTop10DeliveryClaim:
-    """A held cross-process delivery claim; ``release`` removes the file."""
+    """A held cross-process delivery claim (r5 ownership protocol).
 
-    __slots__ = ("_path", "_released")
+    Ownership is the token recorded in the file; r4 files carry no token
+    line, so a token-less file only counts as "ours" while its first line
+    is still the timestamp we wrote (path + first-line double check).
+    ``verify_owner`` re-reads the file; ``release`` deletes ONLY when
+    ownership still verifies, so an old holder can never delete a new
+    owner's claim. A disarmed claim (claim directory unavailable) verifies
+    trivially: the run proceeds fail-open without cross-process exclusion,
+    exactly as before."""
 
-    def __init__(self, path: Path) -> None:
+    __slots__ = ("_path", "_token", "_created_line", "_released", "_armed")
+
+    def __init__(
+        self,
+        path: Path,
+        token: Optional[str] = None,
+        created_line: Optional[str] = None,
+        armed: bool = True,
+    ) -> None:
         self._path = path
+        self._token = token
+        self._created_line = created_line
         self._released = False
+        self._armed = armed
+
+    @classmethod
+    def disarmed(cls, path: Path) -> "_HotTop10DeliveryClaim":
+        return cls(path, armed=False)
+
+    def verify_owner(self) -> bool:
+        """Whether the claim file still records THIS process's ownership."""
+        if not self._armed:
+            return True
+        text = _read_claim_text(self._path)
+        if text is None:
+            return False
+        _claimed_at, token = _parse_claim_text(text)
+        if token is not None:
+            return token == self._token
+        # Legacy token-less content: ours only while the first line is
+        # still the timestamp we wrote (path + first-line double check).
+        lines = text.strip().splitlines()
+        return (
+            bool(self._created_line)
+            and bool(lines)
+            and lines[0].strip() == self._created_line
+        )
 
     def release(self) -> None:
-        """Best-effort delete; a lost race against a stale takeover is
-        tolerable (the next stale window resolves it)."""
+        """Best-effort delete AFTER re-verifying ownership; a foreign claim
+        (lost steal race, or a stale takeover by another process) is left
+        untouched and only logged."""
         if self._released:
             return
         self._released = True
+        if not self._armed:
+            return
+        if _read_claim_text(self._path) is None:
+            return
+        if not self.verify_owner():
+            logger.warning(
+                "[HotTop10] 投递认领已易主（所有权校验不匹配），"
+                "不删除其他进程的认领文件"
+            )
+            return
         try:
             self._path.unlink()
         except FileNotFoundError:
@@ -155,13 +337,21 @@ def acquire_hot_top10_delivery_claim(
 ) -> Optional[_HotTop10DeliveryClaim]:
     """Atomically claim the right to deliver ``data_date`` across processes.
 
-    Returns the claim handle, or ``None`` when another live process already
-    holds the claim (caller reports ``already_claimed``: no push, no marker,
-    retry on the next trigger). A stale claim — crash residue older than
-    ``HOT_TOP10_CLAIM_STALE_AFTER`` — is taken over via
-    unlink-then-exclusive-create, which stays atomic (at most one process
-    wins the create). Unreadable/corrupt claim files count as stale
-    (fail-open, same rules as the marker)."""
+    Returns the claim handle, or ``None`` when another live owner holds the
+    claim (caller reports ``already_claimed``: no push, no marker, retry on
+    the next trigger).
+
+    r5 protocol: the first publication is an atomic no-replace ``os.link``
+    of a fully written temp file, so no reader can ever observe an empty
+    half-initialized claim — and a reader that still meets one (external
+    occupant, or the hardlink-less fallback) counts it LIVE and never
+    deletes it. A claim past ``HOT_TOP10_CLAIM_STALE_AFTER`` (first-line
+    timestamp; mtime fallback for empty/unparseable files) is crash residue
+    and is taken over with one atomic ``os.replace`` that carries the
+    stealer's own token — old r4 files (timestamp + pid, no token) take
+    over the same way. When several processes race the steal, the file ends
+    up owned by exactly one token and every other contender detects the
+    mismatch (at acquire time, and again before each side effect)."""
     claim_path = hot_top10_claim_path(config, data_date)
     try:
         claim_path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,26 +359,33 @@ def acquire_hot_top10_delivery_claim(
         logger.warning(
             "[HotTop10] 认领目录创建失败，本次退化为无跨进程互斥: %s", exc
         )
-        return _HotTop10DeliveryClaim(claim_path)
-    for _ in range(2):
-        if _write_hot_top10_claim_file(claim_path):
-            return _HotTop10DeliveryClaim(claim_path)
-        claimed_at = _hot_top10_claim_timestamp(claim_path)
-        if (
-            claimed_at is not None
-            and datetime.now() - claimed_at < HOT_TOP10_CLAIM_STALE_AFTER
-        ):
-            return None
-        # Stale (or unreadable) claim: crash residue — take it over.
-        try:
-            claim_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.warning(
-                "[HotTop10] 陈旧认领文件删除失败，按已被他人持有处理: %s", exc
+        return _HotTop10DeliveryClaim.disarmed(claim_path)
+    for _ in range(3):
+        token = _new_owner_token()
+        created_line = datetime.now().isoformat(timespec="seconds")
+        content = _render_claim_content(created_line, token)
+        if _publish_claim_atomically(claim_path, content):
+            return _HotTop10DeliveryClaim(
+                claim_path, token=token, created_line=created_line
             )
-            return None
+        # Lost the create race: someone else owns the file — inspect it.
+        text = _read_claim_text(claim_path)
+        if text is None:
+            continue  # vanished in between: try publishing again
+        if not _claim_is_stale(claim_path, text):
+            return None  # live (owner / initializing / occupant): never delete
+        # Stale crash residue (r4 or r5 format): take over atomically.
+        _steal_claim_atomically(claim_path, content)
+        current = _read_claim_text(claim_path)
+        _claimed_at, current_token = (
+            _parse_claim_text(current) if current is not None else (None, None)
+        )
+        if current_token == token:
+            return _HotTop10DeliveryClaim(
+                claim_path, token=token, created_line=created_line
+            )
+        # Another stealer replaced us first: it owns the claim now.
+        return None
     return None
 
 
@@ -1013,8 +1210,10 @@ def _run_hot_top10_analysis_locked(
     # same DATABASE_PATH (CLI --schedule beside the Web/API/desktop runtime
     # scheduler), and the dedup checks above all happen BEFORE the
     # LLM/save/push stages — two processes could both pass them and push
-    # the same list. The exclusive-create claim file makes check ->
-    # generate -> save -> push -> marker exclusive per data date.
+    # the same list. The token-based ownership claim below makes check ->
+    # generate -> save -> push -> marker exclusive per data date: the token
+    # is re-verified before the delivery side effects and before the
+    # marker, so a lost steal race aborts with reason=lost_claim.
     # force_run (explicit human override) stays unclaimed.
     delivery_claim = None
     if not force_run:
@@ -1079,6 +1278,20 @@ def _run_hot_top10_analysis_locked(
         report_markdown = render_hot_top10_report(
             items, summary, llm_completed, language, ranking_date=ranking_date
         )
+        # OR-COR-5c51e8d7 r5: final ownership verdict before the delivery
+        # side effects (save + push). A steal race lost after acquire aborts
+        # here — no save, no push, no marker (reason=lost_claim) — so among
+        # processes racing the same data date exactly one ever delivers.
+        if delivery_claim is not None and not delivery_claim.verify_owner():
+            logger.warning(
+                "[HotTop10] 投递认领已被其他进程接管（所有权校验失败），"
+                "本次中止投递：不保存、不推送、不落当日标记"
+            )
+            return HotTop10RunResult(
+                delivered=False,
+                skipped=True,
+                reason="lost_claim",
+            )
         notification_status, report_saved = _deliver(
             report_markdown, send_notification, notifier
         )
@@ -1101,6 +1314,29 @@ def _run_hot_top10_analysis_locked(
                 notification_status,
             )
         else:
+            # OR-COR-5c51e8d7 r5: re-verify ownership before recording the
+            # marker too. If the claim was stolen in the narrow window since
+            # the push, the true owner records the marker — we must not.
+            if (
+                delivery_claim is not None
+                and not delivery_claim.verify_owner()
+            ):
+                logger.warning(
+                    "[HotTop10] 落当日标记前发现认领已被接管"
+                    "（所有权校验失败），不记录当日标记"
+                )
+                delivery_completed = (
+                    report_saved or notification_status == "sent"
+                )
+                return HotTop10RunResult(
+                    delivered=delivery_completed,
+                    skipped=False,
+                    reason="lost_claim",
+                    report_markdown=report_markdown,
+                    llm_completed=llm_completed,
+                    notification_status=notification_status,
+                    ranking_date=ranking_date,
+                )
             record_hot_top10_marker(
                 config,
                 llm_completed=llm_completed,
@@ -1129,5 +1365,7 @@ def _run_hot_top10_analysis_locked(
         # MARKER open for retry (OR-COR-8c2d195e) and the released claim
         # lets that retry proceed; after a recorded marker the claim has
         # served its purpose (the next data date claims a fresh file).
+        # The ownership check inside release only ever deletes a claim this
+        # process still owns (OR-COR-5c51e8d7 r5).
         if delivery_claim is not None:
             delivery_claim.release()
