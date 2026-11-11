@@ -15,6 +15,8 @@ const STOCK_CODE_PATTERNS = [
   /^\d{1,5}\.HK$/, // HK suffix format, for example 00700.HK
   /^\d{4,5}\.T$/, // Japan Yahoo suffix format, for example 7203.T
   /^\d{6}\.(KS|KQ)$/, // Korea Yahoo suffix format, for example 005930.KS or 035720.KQ
+  /^[A-Z]{1,6}\.TO$/, // Canada TSX Yahoo suffix format, for example SHOP.TO (Issue #2420)
+  /^[A-Z]{1,6}\.V$/, // Canada TSXV Yahoo suffix format, for example SHOP.V (uppercase .V is TSXV; lowercase .v identity is decided backend-side)
   /^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$/, // Common US ticker format
   /^CSI\d{6}$/, // Registered CSI index canonical (e.g. csi930955)
   /^\d{6}\.CSI$/, // Registered CSI index display form (e.g. 930955.CSI)

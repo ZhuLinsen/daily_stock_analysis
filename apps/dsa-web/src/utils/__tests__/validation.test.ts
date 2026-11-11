@@ -61,4 +61,27 @@ describe('stock code validation', () => {
     expect(looksLikeStockCode('930956.CSI')).toBe(true);
     expect(validateStockCode('930956.CSI').valid).toBe(true);
   });
+
+  // Canada TSX/TSXV Yahoo suffix forms (Issue #2420, PR #2493 review
+  // OR-COR-0a575f94): the Web validation layer must accept .TO / .V shapes
+  // so watchlist/profile entries are not rejected client-side. Identity
+  // (uppercase .V = TSXV vs lowercase .v = legacy US) is decided at the
+  // backend parser/routing layers, which receive the raw value.
+  test.each([
+    ['SHOP.TO', 'SHOP.TO'],
+    ['shop.to', 'SHOP.TO'],
+    ['BANK.TO', 'BANK.TO'],
+    ['SHOP.V', 'SHOP.V'],
+  ])('accepts Canada Yahoo suffix code %s', (input, normalized) => {
+    expect(looksLikeStockCode(input)).toBe(true);
+    expect(validateStockCode(input)).toEqual({
+      valid: true,
+      normalized,
+    });
+    expect(isObviouslyInvalidStockQuery(input)).toBe(false);
+  });
+
+  test('does not treat digit-base .TO as a valid Canada suffix code', () => {
+    expect(validateStockCode('1234.TO').valid).toBe(false);
+  });
 });

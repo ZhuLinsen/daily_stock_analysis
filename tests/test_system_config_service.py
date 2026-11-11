@@ -2751,7 +2751,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         market_review_schema = items["MARKET_REVIEW_REGION"]["schema"]
         self.assertEqual(
             market_review_schema["validation"]["allowed_values"],
-            ["cn", "hk", "us", "jp", "kr", "both"],
+            ["cn", "hk", "us", "jp", "kr", "ca", "both"],
         )
         self.assertEqual(market_review_schema["validation"]["delimiter"], ",")
         self.assertEqual(
