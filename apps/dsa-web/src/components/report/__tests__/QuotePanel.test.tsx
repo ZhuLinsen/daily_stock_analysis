@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StockQuoteSnapshot } from '../../../api/stocks';
 import { stocksApi } from '../../../api/stocks';
@@ -302,5 +302,57 @@ describe('QuotePanel', () => {
 
     expect(container).toBeEmptyDOMElement();
     expect(stocksApi.getQuote).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stale slow response that arrives after the stock code changed (OR-COR-8748a738)', async () => {
+    let resolveSlow: (snapshot: StockQuoteSnapshot) => void = () => {};
+    const slowPromise = new Promise<StockQuoteSnapshot>((resolve) => {
+      resolveSlow = resolve;
+    });
+    // 600519 的请求挂起，切到 AAPL 后 AAPL 先返回
+    vi.mocked(stocksApi.getQuote)
+      .mockReturnValueOnce(slowPromise)
+      .mockResolvedValueOnce(DEGRADED_US_SNAPSHOT);
+
+    const { rerender } = render(<QuotePanel stockCode="600519" />);
+    await screen.findByText('加载行情中...');
+
+    rerender(<QuotePanel stockCode="AAPL" />);
+    expect(await screen.findByText('200')).toBeInTheDocument();
+
+    // 600519 旧响应晚到：不得落地覆盖 AAPL 数据
+    await act(async () => {
+      resolveSlow(FULL_CN_SNAPSHOT);
+    });
+
+    expectCellDisplay('最新价', '200');
+    expectCellDisplay('换手率', '—');
+    expect(stocksApi.getQuote).toHaveBeenNthCalledWith(1, '600519');
+    expect(stocksApi.getQuote).toHaveBeenNthCalledWith(2, 'AAPL');
+  });
+
+  it('does not let a stale failed request override the newer successful quote (OR-COR-8748a738)', async () => {
+    let rejectSlow: (err: Error) => void = () => {};
+    const slowReject = new Promise<StockQuoteSnapshot>((_, reject) => {
+      rejectSlow = reject;
+    });
+    vi.mocked(stocksApi.getQuote)
+      .mockReturnValueOnce(slowReject)
+      .mockResolvedValueOnce(DEGRADED_US_SNAPSHOT);
+
+    const { rerender } = render(<QuotePanel stockCode="600519" />);
+    await screen.findByText('加载行情中...');
+
+    rerender(<QuotePanel stockCode="AAPL" />);
+    expect(await screen.findByText('200')).toBeInTheDocument();
+
+    // 旧请求失败晚到：不得把新标的的成功态覆盖成 error
+    await act(async () => {
+      rejectSlow(new Error('stale request failed'));
+    });
+
+    expectCellDisplay('最新价', '200');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('加载行情中...')).not.toBeInTheDocument();
   });
 });

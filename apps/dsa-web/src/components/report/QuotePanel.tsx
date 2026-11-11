@@ -251,6 +251,14 @@ export const QuotePanel: React.FC<{
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const copyResetTimerRef = useRef<number | null>(null);
+  // 请求代次守卫（OR-COR-8748a738）：stockCode 变化或手动刷新都递增代次，
+  // 晚到的旧响应（成功/失败）一律丢弃，不落地任何 state。
+  const loadGenRef = useRef(0);
+  const stockCodeRef = useRef(stockCode);
+
+  useEffect(() => {
+    stockCodeRef.current = stockCode;
+  }, [stockCode]);
 
   const clearCopyTimer = useCallback(() => {
     if (copyResetTimerRef.current !== null) {
@@ -276,21 +284,35 @@ export const QuotePanel: React.FC<{
 
   const fetchQuote = useCallback(async () => {
     if (!stockCode) return;
+    const gen = ++loadGenRef.current;
+    const requestedCode = stockCode;
+    const isCurrentRequest = () =>
+      loadGenRef.current === gen && stockCodeRef.current === requestedCode;
+
     setIsLoading(true);
     setError(null);
 
     try {
-      const data = await stocksApi.getQuote(stockCode);
+      const data = await stocksApi.getQuote(requestedCode);
+      if (!isCurrentRequest()) {
+        return;
+      }
       setSnapshot(data);
     } catch (err) {
+      if (!isCurrentRequest()) {
+        return;
+      }
       setError(getParsedApiError(err));
       setSnapshot(null);
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) {
+        setIsLoading(false);
+      }
     }
   }, [stockCode]);
 
   useEffect(() => {
+    loadGenRef.current += 1; // 作废上一代码的在途请求
     setSnapshot(null);
     setError(null);
 

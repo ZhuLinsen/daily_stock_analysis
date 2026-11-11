@@ -69,8 +69,13 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
         watchlist={watchlist}
       />
 
-      {/* 行情快照区（issue #771 看板行情面板；market_review 报告无个股，已在上方提前返回） */}
-      <QuotePanel stockCode={meta.stockCode} language={reportLanguage} />
+      {/* 行情快照区（issue #771 看板行情面板；market_review 报告无个股，已在上方提前返回）。
+          key 按股票代码重建实例（OR-COR-8748a738 复用面补充修复），组件内另有代次守卫兜底在途请求。 */}
+      <QuotePanel
+        key={`quote-${meta.stockCode}`}
+        stockCode={meta.stockCode}
+        language={reportLanguage}
+      />
 
       {/* 策略点位区 */}
       <ReportStrategy strategy={strategy} language={reportLanguage} />
