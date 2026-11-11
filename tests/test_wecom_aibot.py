@@ -2019,5 +2019,213 @@ class TestTimeoutConservativeQuota:
             loop.close()
 
 
+# ---------------------------------------------------------------------------
+# r8 ① OR-COM-95e8c4d1: errcode≠0 arrives through the REAL SDK as a plain
+# RuntimeError ("Reply ack error: errcode=..., errmsg=..." — ws.py
+# _handle_reply_ack) → it IS a server rejection and must refund; teardown /
+# queue-overflow RuntimeErrors stay conservative keeps.
+# ---------------------------------------------------------------------------
+
+_SDK_ACK_REJECTION = "Reply ack error: errcode=44002, errmsg=no prior conversation"
+_SDK_TEARDOWN = "Connection manually closed, reply for reqId: req-9 cancelled"
+_SDK_QUEUE_FULL = (
+    "Reply queue for reqId: req-9 exceeds max size (100)"
+)
+
+
+class TestServerRejectionClassification:
+    def test_ack_rejection_runtime_error_is_server_rejection(self):
+        exc = RuntimeError(_SDK_ACK_REJECTION)
+        assert wecom_aibot._is_server_rejection_error(exc) is True
+
+    def test_teardown_runtime_error_is_not_server_rejection(self):
+        exc = RuntimeError(_SDK_TEARDOWN)
+        assert wecom_aibot._is_server_rejection_error(exc) is False
+
+    def test_queue_overflow_runtime_error_is_not_server_rejection(self):
+        exc = RuntimeError(_SDK_QUEUE_FULL)
+        assert wecom_aibot._is_server_rejection_error(exc) is False
+
+    def test_timeout_is_not_server_rejection(self):
+        assert wecom_aibot._is_server_rejection_error(TimeoutError("ack timeout")) is False
+
+    def test_none_and_empty_are_not_server_rejection(self):
+        assert wecom_aibot._is_server_rejection_error(None) is False
+        assert wecom_aibot._is_server_rejection_error(RuntimeError("")) is False
+
+
+class TestErrcodeRuntimeErrorRefund:
+    def test_send_errcode_runtime_error_refunds(self):
+        """真 SDK 链路：服务端拒绝经 _handle_reply_ack 以 RuntimeError 送达
+        （消息内嵌 errcode/errmsg）→ 确定拒绝，按 token 退款。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_reject(chatid, body):
+            raise RuntimeError(_SDK_ACK_REJECTION)
+
+        loop, thread = self._start_ack_loop(client, _ack_reject)
+        try:
+            assert client.send_to_chat("chat-err", "report") is False
+
+            minute, hour = self._window_counts(handler, "chat-err")
+            assert (minute, hour) == (0, 0), (
+                f"server rejection kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_passive_errcode_runtime_error_refunds(self):
+        """被动路径同判别：errcode-RuntimeError → 退款至 (0,0)。"""
+        handler, sdk_client = _handler()
+
+        async def _reply_reject(frame, body):
+            raise RuntimeError(_SDK_ACK_REJECTION)
+
+        sdk_client.reply = _reply_reject
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        handler._loop = loop
+
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
+        try:
+            frame = _text_frame(msgid="m-err", chatid="chat-perr")
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert handler._reply_to_frame(frame, "x") is True
+                assert decided.wait(timeout=5), "terminal callback never ran"
+
+            minute, hour = self._counts(handler, "chat-perr")
+            assert (minute, hour) == (0, 0), (
+                f"server rejection kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def _window_counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _counts(self, handler, key):
+        return self._window_counts(handler, key)
+
+    def _start_ack_loop(self, client, ack_coro):
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = ack_coro
+        return loop, thread
+
+
+# ---------------------------------------------------------------------------
+# r8 ② OR-COM-7b1f3d4a: loop closed between quota check and scheduling —
+# the schedule must run inside the quota critical section, and a scheduling
+# failure must refund the token and close the coroutine (no leaks).
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleWithinQuotaCriticalSection:
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def _window_counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def test_loop_closed_before_schedule_refunds_and_closes_coro(self, caplog):
+        """确定性交错注入：配额检查通过后、调度执行前 loop 被关闭 →
+        调度失败必须零记账残留（按 token 退款）且协程被关闭（无泄漏）。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_ok(chatid, body):
+            return {"errcode": 0, "errmsg": "ok"}
+
+        captured = {}
+
+        def _send_message(chatid, body):
+            coro = _ack_ok(chatid, body)
+            captured["coro"] = coro
+            return coro
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = _send_message
+        try:
+            # Interleaving injection: by the time schedule runs, the loop has
+            # been torn down (run_coroutine_threadsafe raises).
+            with mock.patch("asyncio.run_coroutine_threadsafe",
+                            side_effect=RuntimeError("Event loop is closed")):
+                assert client.send_to_chat("chat-race", "report") is False
+
+            minute, hour = self._window_counts(handler, "chat-race")
+            assert (minute, hour) == (0, 0), (
+                f"schedule failure leaked debits: minute={minute} hour={hour}"
+            )
+            # Coroutine was closed, not leaked.
+            assert "coro" in captured
+            assert captured["coro"].cr_frame is None
+            assert "退还" in caplog.text
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+
 if __name__ == "__main__":
     unittest.main()

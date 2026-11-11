@@ -57,6 +57,25 @@ AIBOT_RESPOND_CMD = "aibot_respond_msg"
 AIBOT_CALLBACK_CMD = "aibot_msg_callback"
 WECOM_AIBOT_WS_URL = "wss://openws.work.weixin.qq.com"
 
+# 官方 SDK 回执拒绝标记（wecom-aibot-python-sdk 1.0.2 aibot/ws.py
+# `_handle_reply_ack`：errcode≠0 时向 ack Future set_exception
+# RuntimeError(f"Reply ack error: errcode={errcode}, errmsg={...}")——
+# 消息内嵌 "errcode=" 文本，SDK 无结构化异常属性，仅能按消息甄别）
+SERVER_REJECTION_MARKER = "errcode="
+
+
+def _is_server_rejection_error(exc: Optional[BaseException]) -> bool:
+    """判别异常是否为服务端明确拒绝（errcode≠0，确定性失败）
+
+    真实 SDK 链路上服务端拒绝以 RuntimeError 形态送达（消息内嵌
+    "errcode=" 标记）；断线清理 pending ACK 的 RuntimeError、队列满、
+    ACK 超时等无法证明帧未送达——均不算服务端拒绝（保守保留记账）。
+    """
+    if exc is None:
+        return False
+    return SERVER_REJECTION_MARKER in str(exc)
+
+
 # 尝试导入官方 SDK（可选依赖，缺失时模块仍可导入、功能关闭）
 try:
     from aibot import WSClient, WSClientOptions
@@ -448,15 +467,15 @@ class WecomAibotHandler:
         return True
 
     def _on_outbound_send_done(self, done, conversation_key: str, token: str) -> None:
-        """出站发送的异步终态回调（被动/主动共用，r6/r7）
+        """出站发送的异步终态回调（被动/主动共用，r6/r7/r8）
 
-        保守退款原则——宁可高估不可低估（r7 收窄）：
-        - **一切异常均保留记账**：ACK 超时（TimeoutError 族）、断线清理
-          pending ACK 的 RuntimeError（官方 SDK ws.py `_clear_pending_
-          messages` 以普通 RuntimeError 结束 Future——帧可能已写出）、连接
-          中断等，都无法证明帧未送达；
-        - 服务端明确拒绝（errcode != 0）→ 按 token 退还（唯一确定的远端
-          失败信号）；
+        保守退款原则——宁可高估不可低估（r7 收窄 + r8 甄别）：
+        - **一切异常均保留记账**，除：消息携带官方 SDK 回执拒绝标记
+          （`errcode=`，ws.py `_handle_reply_ack` 对 errcode≠0 的
+          set_exception 形态）→ 服务端明确拒绝 → 按 token 退还；
+        - 断线清理 pending ACK 的 RuntimeError（ws.py
+          `_clear_pending_messages`）、ACK 超时（TimeoutError 族）、队列满
+          等——帧可能已写出，无法证明未送达 → 保留记账；
         - 成功 / Future 永不完成 → 维持记账。
         写入前本地失败（loop 不可用等）不进入本回调——那类路径在记账前
         已拒绝（零记账）。"""
@@ -464,11 +483,21 @@ class WecomAibotHandler:
             try:
                 ack = done.result()
             except Exception as exc:
-                logger.warning(
-                    "[WeCom AI Bot] 发送结果不确定（保留记账）: key=%s, error=%s",
-                    conversation_key,
-                    exc,
-                )
+                if _is_server_rejection_error(exc):
+                    self._refund_outbound_send(conversation_key, token)
+                    logger.warning(
+                        "[WeCom AI Bot] 发送被服务端拒绝（已退还配额）: "
+                        "key=%s, error=%s",
+                        conversation_key,
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "[WeCom AI Bot] 发送结果不确定（保留记账）: key=%s, "
+                        "error=%s",
+                        conversation_key,
+                        exc,
+                    )
                 return
             errcode = ack.get("errcode") if isinstance(ack, dict) else None
             if errcode:
@@ -840,8 +869,9 @@ class WecomAibotClient:
         conversation_key = chatid or "unknown"
         handler = self._handler
 
-        # 配额 + 可用性判定（同一临界区，r3 原子语义 + r4 可用性前置；
-        # r5：记录携带发送标识 token，失败按标识精确退还）
+        # 配额 + 可用性判定 + 调度（同一临界区，r3 原子语义 + r4 可用性前置
+        # + r5 token 标识 + r8 调度入区：teardown 无法插到「扣量后、调度前」
+        # 关 loop——调度失败在区内按 token 退款并关闭协程，零残留零泄漏）
         with handler._outbound_quota_lock:
             if not handler._outbound_minute_limiter.would_allow(conversation_key):
                 logger.warning(
@@ -875,13 +905,42 @@ class WecomAibotClient:
                 conversation_key, token=send_token
             )
 
-        body = {"msgtype": "markdown", "markdown": {"content": text}}
-        send_future = asyncio.run_coroutine_threadsafe(
-            self._sdk_client.send_message(chatid, body), loop
-        )
+            body = {"msgtype": "markdown", "markdown": {"content": text}}
+            send_coro = self._sdk_client.send_message(chatid, body)
+            try:
+                send_future = asyncio.run_coroutine_threadsafe(send_coro, loop)
+            except Exception as exc:
+                # 调度失败＝写入前本地失败（如 loop 恰在检查后被关闭）：
+                # 确定未写出 → 区内按 token 退款 + 关闭协程防泄漏
+                handler._outbound_minute_limiter.refund(
+                    conversation_key, token=send_token
+                )
+                handler._outbound_hour_limiter.refund(
+                    conversation_key, token=send_token
+                )
+                send_coro.close()
+                logger.error(
+                    "[WeCom AI Bot] 主动推送调度失败（已退还配额）: key=%s, "
+                    "error=%s",
+                    conversation_key,
+                    exc,
+                )
+                return False
+
         try:
             ack = send_future.result(timeout_seconds)
         except Exception as exc:
+            if _is_server_rejection_error(exc):
+                # 服务端明确拒绝（errcode≠0 经 _handle_reply_ack 的
+                # RuntimeError 形态送达）→ 确定失败，按 token 退款
+                handler._refund_outbound_send(conversation_key, send_token)
+                logger.warning(
+                    "[WeCom AI Bot] 主动推送被服务端拒绝（已退还配额）: "
+                    "key=%s, error=%s",
+                    conversation_key,
+                    exc,
+                )
+                return False
             # 等待超时 / ACK 超时 / 断线清理 pending ACK（RuntimeError）＝
             # 结果不确定——SDK 先写帧后等回执，帧可能已送达。保守保留记账
             # （宁可高估），挂完成回调：服务端明确拒绝（errcode≠0）再按
