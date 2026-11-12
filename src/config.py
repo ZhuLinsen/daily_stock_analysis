@@ -987,6 +987,8 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    tickplus_api_key: Optional[str] = None
+    tickplus_priority: int = 0
     tickflow_api_key: Optional[str] = None
     tickflow_kline_adjust: str = "none"
     tickflow_priority: int = 2
@@ -1920,6 +1922,8 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            tickplus_api_key=os.getenv('TICKPLUS_API_KEY'),
+            tickplus_priority=parse_env_int(os.getenv('TICKPLUS_PRIORITY'), 0, field_name='TICKPLUS_PRIORITY', minimum=0),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
             tickflow_kline_adjust=normalize_tickflow_kline_adjust(os.getenv('TICKFLOW_KLINE_ADJUST')),
             tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
@@ -3131,7 +3135,7 @@ class Config:
     @classmethod
     def _resolve_realtime_source_priority(cls) -> str:
         """
-        Resolve realtime source priority with automatic tushare injection.
+        Resolve realtime source priority with configured paid-provider injection.
 
         When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
         explicitly set, automatically prepend 'tushare' to the default priority
@@ -3143,6 +3147,10 @@ class Config:
         if explicit:
             # User explicitly set priority, respect it
             return explicit
+
+        if os.getenv('TICKPLUS_API_KEY', '').strip():
+            tushare = 'tushare,' if os.getenv('TUSHARE_TOKEN', '').strip() else ''
+            return f'tickplus,{tushare}{default_priority}'
 
         tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
         if tushare_token:

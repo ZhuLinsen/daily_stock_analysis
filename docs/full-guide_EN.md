@@ -162,6 +162,8 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `SEARXNG_TIMEOUT_SECONDS` | Per-search timeout in seconds for self-hosted SearXNG instances (default `10`, minimum `1`). Increase for slow instances (e.g. NAS deployments aggregating many engines); public-instance timeout is unaffected. GitHub Actions requires explicit variable mapping | Optional |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638) Token | Optional |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP endpoint; when unset/empty defaults to the official `http://api.tushare.pro`. Set to a `http://` or `https://` URL only when routing through a corporate proxy, cross-border network, or a self-hosted mirror | Optional |
+| `TICKPLUS_API_KEY` | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395) A-share/ETF daily bars, realtime quotes and names; automatic fallback. See [details](tickplus.md) | Recommended |
+| `TICKPLUS_PRIORITY` | Daily bar priority; registered index routes unchanged; default `0` | Optional |
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API key for optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement; permission or entitlement failures fall back to existing providers | Optional |
 | `MX_APIKEY` / `MX_PRIORITY` | MiaoXiang (Eastmoney MX_API) supplementary provider: fills chip distribution and per-stock capital flow when public eastmoney endpoints fail or are rate-limited. **Strictly opt-in third-party capability**: requires a user-provided key (MiaoXiang Skills page); the current free-tier/quota policy may change and long-term free availability is not guaranteed. Not configured = no behavior change. `MX_PRIORITY` defaults to `6`. GitHub Actions requires `MX_APIKEY` in Secrets | Optional |
 
@@ -371,6 +373,8 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 |--------|------|--------|:----:|
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | Optional |
 | `TUSHARE_HTTP_URL` | Tushare Pro HTTP endpoint; defaults to `http://api.tushare.pro` when unset/empty. Set only when routing through a corporate proxy, cross-border network, or a self-hosted mirror (must start with `http://` or `https://`). | `http://api.tushare.pro` | Optional |
+| `TICKPLUS_API_KEY` | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395) A-share/ETF daily bars, realtime quotes and names; automatic fallback. See [details](tickplus.md) | - | Optional |
+| `TICKPLUS_PRIORITY` | Daily bar priority; registered index routes unchanged | `0` | Optional |
 | `TICKFLOW_API_KEY` | TickFlow API key; enables optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement. Permission failures fall back to existing providers. | - | Optional |
 | `TICKFLOW_PRIORITY` | TickFlow priority for the generic A-share daily K-line route; lower values are tried earlier. No effect unless `TICKFLOW_API_KEY` is configured. Registered indices use a separate fixed chain and ignore this variable. Realtime quotes are ordered by `REALTIME_SOURCE_PRIORITY`. | `2` | Optional |
 | `TENCENT_PRIORITY` | Tencent direct priority for the generic A-share daily K-line route; lower values are tried earlier and `5` is the default last fallback. Registered indices use a separate fixed chain and ignore this variable. Does not affect realtime quotes. | `5` | Optional |
@@ -393,6 +397,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `FUNDAMENTAL_CACHE_MAX_ENTRIES` | Maximum entries for fundamental cache (evicted by time within TTL) | `256` | Optional |
 
 > **Behavior Notes:**
+> - Prefer [TickPlus](http://www.tickplus.org/register?reg=5433cf922395) for A-shares / ETFs. Configure `TICKPLUS_API_KEY`; explicit realtime priority is respected. Indicators use `fullfactor` with basic-quote fallback. Batch prefetch groups stocks and ETFs (100 symbols per request, 30-second cache). ETF rotation uses an isolated forward-adjusted instance. Ordinary analysis remains unadjusted; existing index, market-review, fundamental and overseas routes remain available. See [details](tickplus.md).
 > - **A-shares**: Returns aggregated capabilities by `valuation/growth/earnings/institution/capital_flow/dragon_tiger/boards`.
 > - **ETFs**: Returns available items, marks missing capabilities as `not_supported`, and does not affect the original flow overall.
 > - **US/HK stocks**: Returns `valuation/growth/earnings/belong_boards` (sourced from `info.sector`/`info.industry`) via the yfinance adapter; `institution/capital_flow/dragon_tiger/boards` stay `not_supported` because no offshore data feed exists today. Falls back to a full `not_supported` block if yfinance is unavailable or returns empty payloads. Still fail-open.

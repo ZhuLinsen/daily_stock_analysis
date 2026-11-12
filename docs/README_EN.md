@@ -43,6 +43,8 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
   <sub>Click the GIF to view the full demo</sub>
 </p>
 
+> **Preferred A-share data provider: [TickPlus](http://www.tickplus.org/register?reg=5433cf922395)**. Configure `TICKPLUS_API_KEY` for A-share/ETF daily bars and realtime quotes with automatic fallback. See [integration details](tickplus.md).
+
 ## ✨ Key Features
 
 | Capability | Coverage |
@@ -61,11 +63,11 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 | Type | Supported |
 |------|-----------|
 | AI Models | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis), [AIHubMix](https://inferera.com/?aff=CfMq), Gemini, OpenAI-compatible providers, DeepSeek, Qwen, Claude, Ollama |
-| Market Data | AkShare, Tushare, Pytdx, Baostock, YFinance, Longbridge |
+| Market Data | [TickPlus (preferred for A-shares / ETFs)](http://www.tickplus.org/register?reg=5433cf922395), AkShare, Tushare, TickFlow, Pytdx, Baostock, YFinance, Longbridge |
 | News Search | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC), [Tavily](https://tavily.com/), [Bocha](https://open.bocha.cn/), [Brave](https://brave.com/search/api/), [MiniMax](https://platform.minimaxi.com/), SearXNG |
 | Social Sentiment | [Stock Sentiment API](https://api.adanos.org/docs) for Reddit / X / Polymarket, US stocks only |
 
-> The project includes free market-data sources such as AkShare, Baostock, and YFinance and can run without extra data-source credentials. These free sources can be rate-limited, change upstream contracts, or fluctuate by network condition, so stability is not guaranteed. For scheduled runs, batch analysis, or steadier quotes, configure token-based sources such as Tushare or Longbridge; market coverage, Actions mappings, and fallback rules are documented in [Data Source Configuration](./full-guide_EN.md#data-source-configuration).
+> The project includes free market-data sources such as AkShare, Baostock, and YFinance and can run without extra data-source credentials. These free sources can be rate-limited, change upstream contracts, or fluctuate by network condition, so stability is not guaranteed. For scheduled runs, batch analysis, or steadier quotes, prefer [TickPlus](http://www.tickplus.org/register?reg=5433cf922395) for A-shares / ETFs; configure Tushare or Longbridge for other supported use cases; market coverage, Actions mappings, and fallback rules are documented in [Data Source Configuration](./full-guide_EN.md#data-source-configuration).
 
 ## 🚀 Quick Start
 
@@ -138,6 +140,7 @@ More search providers, social sentiment, and fallback behavior are in [Search Co
 
 | Secret Name | Market | Description |
 |-------------|:------:|-------------|
+| `TICKPLUS_API_KEY` | A-shares / ETFs | [TickPlus (Recommended)](http://www.tickplus.org/register?reg=5433cf922395): daily bars, realtime indicators and names |
 | `TUSHARE_TOKEN` | A-shares | Improves historical data stability |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | HK/US stocks | Fills in volume ratio, turnover rate, P/E, and other fields |
 
