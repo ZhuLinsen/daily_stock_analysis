@@ -23,6 +23,13 @@ from src.formatters import (
 
 logger = logging.getLogger(__name__)
 
+# Bark 经 APNs 下发，APNs 普通通知的整个 payload 上限为 4096 字节
+# （含 aps 结构、标题、分组、category 等开销）。正文按 JSON 编码后的
+# UTF-8 字节数限制在该预算内，超限时 Bark 服务端会返回 HTTP 500
+# (PayloadTooLarge)，手机收不到任何通知。
+BARK_BODY_MAX_BYTES = 3000
+BARK_TRUNCATION_SUFFIX = "..."
+
 
 class CustomWebhookSender:
 
@@ -277,6 +284,10 @@ class CustomWebhookSender:
         自动识别常见服务并使用对应格式
         """
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        is_bark = self._is_bark_webhook(url)
+        if is_bark:
+            # 全局模板同样会把正文发给 Bark，需在渲染前按 APNs 字节上限截断
+            sanitized_content = self._truncate_bark_body(sanitized_content)
         templated_payload = self._build_custom_webhook_template_payload(sanitized_content)
         if templated_payload is not None:
             return templated_payload
@@ -312,11 +323,11 @@ class CustomWebhookSender:
                 "mrkdwn": True
             }
         
-        # Bark (iOS 推送)
-        if 'api.day.app' in url_lower:
+        # Bark (iOS 推送)，正文已按 APNs payload 字节上限截断
+        if is_bark:
             return {
                 "title": "股票分析报告",
-                "body": sanitized_content[:4000],  # Bark 限制
+                "body": sanitized_content,
                 "group": "stock"
             }
         
@@ -402,6 +413,37 @@ class CustomWebhookSender:
     def _is_dingtalk_webhook(url: str) -> bool:
         url_lower = (url or "").lower()
         return 'dingtalk' in url_lower or 'oapi.dingtalk.com' in url_lower
+
+    @staticmethod
+    def _is_bark_webhook(url: str) -> bool:
+        return 'api.day.app' in (url or "").lower()
+
+    @staticmethod
+    def _bark_encoded_bytes(text: str) -> int:
+        """Estimate the bytes ``text`` occupies inside the APNs JSON payload.
+
+        Bark server encodes the payload with Go's ``encoding/json``: non-ASCII
+        stays raw UTF-8, control characters and quotes are escaped, and
+        ``<`` / ``>`` / ``&`` become 6-byte ``\\u003c``-style escapes.
+        """
+        encoded = len(json.dumps(text, ensure_ascii=False).encode('utf-8')) - 2
+        return encoded + 5 * sum(text.count(ch) for ch in '<>&')
+
+    @classmethod
+    def _truncate_bark_body(cls, content: str, max_bytes: int = BARK_BODY_MAX_BYTES) -> str:
+        """Truncate Bark body so the APNs payload stays under its 4096-byte limit."""
+        if cls._bark_encoded_bytes(content) <= max_bytes:
+            return content
+        budget = max_bytes - cls._bark_encoded_bytes(BARK_TRUNCATION_SUFFIX)
+        # 二分查找满足字节预算的最长字符前缀
+        low, high = 0, len(content)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if cls._bark_encoded_bytes(content[:mid]) <= budget:
+                low = mid
+            else:
+                high = mid - 1
+        return content[:low].rstrip() + BARK_TRUNCATION_SUFFIX
 
     @staticmethod
     def _is_discord_webhook(url: str) -> bool:
