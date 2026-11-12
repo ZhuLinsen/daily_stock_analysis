@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] 新增 Dip Scanner（`python -m src.services.dip_scanner`）：美股固定股票池急跌筛选 + 新闻/技术面 + LLM 判断下跌原因（一次性/结构性），生成 HTML 报告（GitHub Pages）并记录信号后续 3/5/10 日表现；新增 `dip-scanner.yml` 工作流与 `DIP_*` 配置项。
 - [文档] 恢复 README、部署指南及模型/搜索配置表中的 Anspire 可点击链接并保留推广码，继续作为 SerpAPI 后的可选搜索服务。
-- [chore] 每日分析工作流 `00-daily-analysis.yml` 默认大盘复盘区域改为 `us`、报告语言改为 `en`（仍可通过 `MARKET_REVIEW_REGION` / `REPORT_LANGUAGE` 仓库变量覆盖）。
+- [chore] 每日分析工作流 `00-daily-analysis.yml` 默认大盘复盘区域改为 `us`、报告语言改为 `en`，未配置 `STOCK_LIST` 时的兜底自选股由 `600519` 改为美股 `AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA`（均可通过对应仓库变量覆盖）。
 
 - [改进] 下线 Anspire 合作宣传及专属额度说明，移除 README 推荐入口，调整配置示例和渠道展示顺序；新闻搜索顺序调整至 SerpAPI 之后，保留原推广码链接、已有 Key 和模型渠道兼容。
 
