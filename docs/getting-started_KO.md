@@ -97,9 +97,11 @@ python main.py --stocks 005930.KS,000660.KS,AAPL
 # 시장 리뷰만 실행 (.env의 MARKET_REVIEW_REGION 사용)
 python main.py --market-review
 
-# 데이터 수집 등 기본 흐름 확인: AI 분석을 생략하므로 전체 연결 검증은 아님
-python main.py --dry-run
+# 개별 종목 AI 분석과 시장 리뷰를 생략하고 데이터 수집 흐름 확인
+python main.py --dry-run --no-market-review
 ```
+
+`--dry-run`만 사용하면 개별 종목의 AI 분석만 생략하며, 활성화된 시장 리뷰는 계속 실행되어 모델 API를 호출하고 리포트를 저장·전송할 수 있습니다. 위 데이터 수집 확인 예시에서는 `--no-market-review`를 함께 지정해 시장 리뷰도 끕니다. 이 명령은 AI 모델 연결이나 알림 전송 성공을 검증하지 않습니다.
 
 운영체제에 `python3` 명령이 없다면 설치한 Python 실행 파일을 사용하세요. 가상환경을 활성화한 뒤에는 해당 환경의 `python`과 `pip`가 사용되는지 확인합니다.
 
