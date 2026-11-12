@@ -594,6 +594,7 @@ class StockAnalysisPipeline:
                 try:
                     fundamental_context = self.fetcher_manager.get_fundamental_context(
                         code,
+                        realtime_quote=realtime_quote,
                         budget_seconds=getattr(
                             self.config,
                             'fundamental_stage_timeout_seconds',

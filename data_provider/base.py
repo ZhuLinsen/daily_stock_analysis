@@ -36,6 +36,9 @@ from .realtime_types import CircuitBreaker
 # 配置日志
 logger = logging.getLogger(__name__)
 
+# Omitted means standalone fetching; explicit None means already attempted.
+_REALTIME_QUOTE_UNSET = object()
+
 
 # === 标准化列名定义 ===
 STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
@@ -3953,6 +3956,7 @@ class DataFetcherManager:
         market: str,
         budget_seconds: Optional[float] = None,
         analysis_target: Optional[AnalysisTarget] = None,
+        *, realtime_quote: Any = _REALTIME_QUOTE_UNSET,
     ) -> Dict[str, Any]:
         """HK/US fundamental aggregation via yfinance.
 
@@ -4008,7 +4012,9 @@ class DataFetcherManager:
         # Valuation: reuse realtime quote payload — yfinance returns pe/pb in the
         # same shape as AkShare, so the existing block formatter still works.
         valuation_timeout = min(fetch_timeout, stage_timeout) if stage_timeout > 0 else 0
-        if valuation_timeout > 0:
+        if realtime_quote is not _REALTIME_QUOTE_UNSET:
+            quote_payload, valuation_err, valuation_ms = realtime_quote, None, 0
+        elif valuation_timeout > 0:
             quote_payload, valuation_err, valuation_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code, **({"analysis_target": analysis_target} if analysis_target is not None else {})),
                 valuation_timeout,
@@ -4298,9 +4304,13 @@ class DataFetcherManager:
         stock_code: str,
         budget_seconds: Optional[float] = None,
         *, analysis_target: Optional[AnalysisTarget] = None,
+        realtime_quote: Any = _REALTIME_QUOTE_UNSET,
     ) -> Dict[str, Any]:
         """
         Aggregate fundamental blocks with fail-open semantics.
+
+        Reuse a supplied quote (including None after a failed/disabled fetch).
+        Omit realtime_quote to fetch valuation for standalone callers.
         """
         from src.config import get_config
 
@@ -4319,6 +4329,7 @@ class DataFetcherManager:
                 stock_code,
                 market=market,
                 budget_seconds=budget_seconds,
+                realtime_quote=realtime_quote,
                 **({"analysis_target": analysis_target} if analysis_target is not None else {}),
             )
 
@@ -4363,7 +4374,9 @@ class DataFetcherManager:
             remaining_seconds = max(0.0, remaining_seconds - consumed_ms / 1000.0)
 
         valuation_timeout = min(fetch_timeout, remaining_seconds)
-        if valuation_timeout > 0:
+        if realtime_quote is not _REALTIME_QUOTE_UNSET:
+            quote_payload, valuation_err, valuation_ms = realtime_quote, None, 0
+        elif valuation_timeout > 0:
             quote_payload, valuation_err, valuation_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code, **({"analysis_target": analysis_target} if analysis_target is not None else {})),
                 valuation_timeout,
