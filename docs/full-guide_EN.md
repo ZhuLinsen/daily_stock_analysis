@@ -1132,8 +1132,8 @@ CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$title_json,"body":$content_json,"group":"
 ```
 
 Bark delivers through APNs, whose whole notification payload is limited to 4096 bytes; an oversized
-payload makes Bark return HTTP 500 and nothing reaches the phone. The body sent to `api.day.app`
-(including `$content_json` / `$content` in a global template) is therefore truncated to about 3000
+payload makes Bark return HTTP 500 and nothing reaches the phone. For webhooks whose host is `api.day.app`,
+the `body` field of the final payload (including one rendered from a global template) is therefore truncated to about 3000
 JSON-encoded bytes and ends with `...` (roughly 1000 Chinese characters).
 
 NapCat / OneBot examples must be adjusted for your actual endpoint, `user_id`,

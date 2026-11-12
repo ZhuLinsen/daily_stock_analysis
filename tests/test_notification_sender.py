@@ -1437,7 +1437,13 @@ class TestCustomWebhookSender(unittest.TestCase):
             "group": payload.get("group", ""),
         }
         raw = json.dumps(apns, ensure_ascii=False, separators=(",", ":"))
-        for ch, escaped in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026")):
+        for ch, escaped in (
+            ("<", "\\u003c"),
+            (">", "\\u003e"),
+            ("&", "\\u0026"),
+            ("\u2028", "\\u2028"),
+            ("\u2029", "\\u2029"),
+        ):
             raw = raw.replace(ch, escaped)
         return len(raw.encode("utf-8"))
 
@@ -1487,6 +1493,51 @@ class TestCustomWebhookSender(unittest.TestCase):
         payload = sender._build_custom_webhook_payload("https://example.com/hook", report)
 
         self.assertEqual(payload["content"], report)
+
+    def test_bark_detection_uses_hostname_not_substring(self):
+        cfg = _config(custom_webhook_body_template='{"content":$content_json}')
+        sender = CustomWebhookSender(cfg)
+        report = "x" * 5000
+
+        for url in (
+            "https://notify.example.org/webhook?source=api.day.app",
+            "https://notify.example.org/api.day.app/hook",
+            "https://api.day.app.example.org/hook",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(sender._is_bark_webhook(url))
+                payload = sender._build_custom_webhook_payload(url, report)
+                self.assertEqual(payload["content"], report)
+
+        self.assertTrue(sender._is_bark_webhook("https://API.day.app/key"))
+        self.assertTrue(sender._is_bark_webhook("https://api.day.app:443/key"))
+
+    def test_bark_raw_content_template_keeps_escape_across_truncation_boundary(self):
+        """Truncation must not split a JSON escape in a raw $content template."""
+        cfg = _config(
+            custom_webhook_body_template='{"body":"$content","group":"alerts","sound":"bell"}',
+        )
+        sender = CustomWebhookSender(cfg)
+        # The raw escape "\\n" ends exactly at the 2997-byte budget, so cutting
+        # the raw text before rendering would leave a dangling backslash.
+        content = "a" * 2995 + "\\n" + "b" * 3000
+
+        payload = sender._build_custom_webhook_payload("https://api.day.app/key", content)
+
+        self.assertEqual(payload["group"], "alerts")
+        self.assertEqual(payload["sound"], "bell")
+        # Truncated after parsing: the decoded newline is trimmed, not split.
+        self.assertEqual(payload["body"], "a" * 2995 + "...")
+
+    def test_bark_counts_line_separators_as_go_json_escapes(self):
+        sender = CustomWebhookSender(_config())
+        self.assertEqual(sender._bark_encoded_bytes("\u2028\u2029"), 12)
+
+        payload = sender._build_custom_webhook_payload("https://api.day.app/key", "好\u2028" * 1000)
+
+        # Each pair is 3 + 6 bytes, so 333 pairs fill the 2997-byte budget.
+        self.assertEqual(payload["body"], "好\u2028" * 332 + "好...")
+        self.assertLess(self._apns_payload_bytes(payload), 4096)
 
     @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
     def test_send_to_custom_posts_bark_body_within_apns_limit(self, mock_post):

@@ -10,6 +10,7 @@ import json
 import time
 from string import Template
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import requests
 
@@ -283,11 +284,15 @@ class CustomWebhookSender:
         
         自动识别常见服务并使用对应格式
         """
+        payload = self._build_custom_webhook_payload_untruncated(url, content)
+        if self._is_bark_webhook(url) and isinstance(payload.get("body"), str):
+            # 在模板渲染并解析之后再截断 Bark 的 body 字段，避免截断原始正文
+            # 破坏模板中的 JSON 转义，同时覆盖全局模板与自动 payload 两条路径
+            payload["body"] = self._truncate_bark_body(payload["body"])
+        return payload
+
+    def _build_custom_webhook_payload_untruncated(self, url: str, content: str) -> dict:
         sanitized_content = strip_hidden_markdown_metadata(content).strip()
-        is_bark = self._is_bark_webhook(url)
-        if is_bark:
-            # 全局模板同样会把正文发给 Bark，需在渲染前按 APNs 字节上限截断
-            sanitized_content = self._truncate_bark_body(sanitized_content)
         templated_payload = self._build_custom_webhook_template_payload(sanitized_content)
         if templated_payload is not None:
             return templated_payload
@@ -323,8 +328,8 @@ class CustomWebhookSender:
                 "mrkdwn": True
             }
         
-        # Bark (iOS 推送)，正文已按 APNs payload 字节上限截断
-        if is_bark:
+        # Bark (iOS 推送)，正文由调用方按 APNs payload 字节上限截断
+        if self._is_bark_webhook(url):
             return {
                 "title": "股票分析报告",
                 "body": sanitized_content,
@@ -416,7 +421,12 @@ class CustomWebhookSender:
 
     @staticmethod
     def _is_bark_webhook(url: str) -> bool:
-        return 'api.day.app' in (url or "").lower()
+        # 按解析后的主机名识别，避免路径/查询参数中含 api.day.app 的非 Bark 地址被误判
+        try:
+            hostname = urlparse((url or "").strip()).hostname
+        except ValueError:
+            return False
+        return hostname == "api.day.app"
 
     @staticmethod
     def _bark_encoded_bytes(text: str) -> int:
@@ -424,10 +434,16 @@ class CustomWebhookSender:
 
         Bark server encodes the payload with Go's ``encoding/json``: non-ASCII
         stays raw UTF-8, control characters and quotes are escaped, and
-        ``<`` / ``>`` / ``&`` become 6-byte ``\\u003c``-style escapes.
+        ``<`` / ``>`` / ``&`` become 6-byte ``\\u003c``-style escapes, and
+        U+2028 / U+2029 become 6-byte ``\\u2028`` escapes (3 raw UTF-8 bytes
+        in Python's output).
         """
         encoded = len(json.dumps(text, ensure_ascii=False).encode('utf-8')) - 2
-        return encoded + 5 * sum(text.count(ch) for ch in '<>&')
+        return (
+            encoded
+            + 5 * sum(text.count(ch) for ch in '<>&')
+            + 3 * sum(text.count(ch) for ch in '\u2028\u2029')
+        )
 
     @classmethod
     def _truncate_bark_body(cls, content: str, max_bytes: int = BARK_BODY_MAX_BYTES) -> str:
