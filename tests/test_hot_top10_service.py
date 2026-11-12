@@ -92,6 +92,17 @@ def _read_child_line(proc: subprocess.Popen, what: str, timeout: float = 60.0) -
     return line
 
 
+def _assert_claim_released(claim_path: Path) -> str:
+    """r12 (review #14): after a release the claim file MUST survive on
+    disk with the RELEASED marker — the claim is lifecycle-stable and is
+    never deleted, so the handover window cannot clobber a successor."""
+    text = claim_path.read_text(encoding="utf-8")
+    assert text.splitlines()[0].strip() == "RELEASED", (
+        "released claim must survive on disk with the RELEASED marker"
+    )
+    return text
+
+
 def _hotspot_payload(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "status": "ok",
@@ -1209,8 +1220,9 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
         )
         self.assertEqual(marker_payload.get("data_date"), data_date)
         self.assertTrue(marker_payload.get("delivered"))
-        # The claim is released once the marker landed.
-        self.assertFalse(claim_path.exists())
+        # The claim is released once the marker landed (r12: the file
+        # survives in the RELEASED state — it is never deleted).
+        _assert_claim_released(claim_path)
 
     def test_stale_claim_from_crashed_process_is_taken_over(self):
         """A claim file older than the TTL (crashed process residue) must be
@@ -1235,8 +1247,9 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
         )
 
         self.assertTrue(result.delivered)
-        # Taken over for the run, then released after the marker landed.
-        self.assertFalse(claim_path.exists())
+        # Taken over for the run, then released after the marker landed
+        # (r12: released in place, file never deleted).
+        _assert_claim_released(claim_path)
 
     def test_fresh_claim_from_other_process_blocks_delivery(self):
         """A live (< TTL) claim from another process must skip this run:
@@ -1309,8 +1322,10 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
         release.set()
         worker.join(timeout=10)
 
-        # Failed push: no marker, but the claim was released for the retry.
-        self.assertFalse(claim_path.exists())
+        # Failed push: no marker, but the claim was released for the retry
+        # (r12: released in place — the surviving RELEASED file is what
+        # makes the retry claimable at once).
+        _assert_claim_released(claim_path)
         skip, _ = hot_top10_already_delivered_today(config)
         self.assertFalse(skip)
 
@@ -1572,7 +1587,7 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         self.assertEqual(len(lines), 3)
         self.assertEqual(len(lines[1]), 32)  # uuid4 hex owner token
         stolen.release()
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
     @mock.patch.object(
         hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
@@ -1610,9 +1625,10 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
             claim_path.read_text(encoding="utf-8"), content_after_steal
         )
 
-        # The new owner's own release does remove it.
+        # The new owner's own release rewrites the RELEASED state in place
+        # (r12: nothing is ever deleted).
         new_owner.release()
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
     @mock.patch.object(
         hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
@@ -1689,9 +1705,9 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         self.assertFalse(skip)
         # The thief's claim survived the aborted run's release ...
         self.assertTrue(claim_path.exists())
-        # ... and is removed only by its rightful owner.
+        # ... and is surrendered in place only by its rightful owner (r12).
         thief.release()
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
     def test_legacy_claim_takeover_and_release_timestamp_double_check(self):
         """Backward compatibility with r4 claim files (``{ts}\\n{pid}``, no
@@ -1711,16 +1727,16 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         result = self._run(config)
 
         self.assertTrue(result.delivered)
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
         # (b) Same first line, token stripped: still recognized as ours and
-        # deleted by release.
+        # released (rewritten to RELEASED) by release (r12).
         holder = acquire_hot_top10_delivery_claim(config, data_date)
         self.assertIsNotNone(holder)
         first_line = claim_path.read_text(encoding="utf-8").splitlines()[0]
         claim_path.write_text(f"{first_line}\n12345", encoding="utf-8")
         holder.release()
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
         # (c) A foreign legacy rewrite (different first line) survives the
         # old holder's release.
@@ -1863,7 +1879,7 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         )
         self.assertEqual(marker_payload.get("data_date"), data_date)
         self.assertTrue(marker_payload.get("delivered"))
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
 
 class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
@@ -1980,12 +1996,10 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
         self.assertIsNone(
             loser["claim"], "CAS steal must abort on a rival takeover"
         )
-        # The refused steal left NOTHING behind: the rival's release already
-        # removed the claim and the loser must not resurrect a file there.
-        self.assertFalse(
-            claim_path.exists(),
-            "a refused steal must not clobber or recreate the claim",
-        )
+        # The refused steal left the rival's (r12) RELEASED claim in place:
+        # the loser — which aborted with no handle — neither clobbered the
+        # rival's release nor resurrected a file of its own.
+        _assert_claim_released(claim_path)
 
     @mock.patch.object(
         hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
@@ -2054,7 +2068,7 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
         # The thief's claim survived the loser's release ...
         self.assertTrue(claim_path.exists())
         thief.release()
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
         # Mutual exclusion self-heals: the next full run delivers exactly
         # once (the loser never pushed, so no duplicate is possible).
@@ -2067,18 +2081,24 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
         hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False, create=True
     )
     def test_release_clobber_keeps_exactly_once_invariant(self):
-        """Review #10 probe 3: a steal landing between the release's
-        ownership verdict and its unlink still deletes the successor's file
-        (the honest residual gap of a lock-free release). This pins the
-        self-healing invariant: the victim can no longer pass its own
-        ownership checks, so no double delivery is possible, and the next
-        full run delivers exactly once."""
+        """Review #10 probe 3, r12 semantics. On the EXPLICIT DEGRADED
+        (no-OS-locking) path the release's verify→rewrite pair is still a
+        user-space window: a steal landing between the ownership verdict
+        and the rewrite gets overwritten by the victim's late release —
+        but r12 overwrites it with the RELEASED marker instead of DELETING
+        the file (the r6 behaviour), so the path stays lifecycle-stable and
+        the successor is blocked conservatively. This pins the exactly-once
+        invariant: the clobbered thief can no longer pass its own ownership
+        checks, so no double delivery is possible, and the next full run
+        (claiming the RELEASED file at once) delivers exactly once. Under
+        the delivery lock the whole window is closed (see the r12 class)."""
         config = _config(self._tmp.name)
         data_date = date.today().isoformat()
         claim_path = hot_top10_claim_path(config, data_date)
 
         victim = acquire_hot_top10_delivery_claim(config, data_date)
         self.assertIsNotNone(victim)
+        victim_token = victim._token
 
         entered, resume = threading.Event(), threading.Event()
         # r6 release reads once and runs the ownership verdict
@@ -2113,20 +2133,25 @@ class HotTop10ClaimMutualExclusionR6Test(unittest.TestCase):
         ):
             thief = acquire_hot_top10_delivery_claim(config, data_date)
         self.assertIsNotNone(thief)
+        thief_content = claim_path.read_text(encoding="utf-8")
 
         resume.set()
         worker.join(timeout=10)
 
-        # The residual gap is real: the victim's unlink removed the
-        # thief's claim (documented in the PR body — not fixable without
-        # OS-level locks).
-        self.assertFalse(claim_path.exists())
+        # Degraded-path residual window (verify→rewrite): the victim's late
+        # release OVERWRITES the thief's claim — with the RELEASED marker,
+        # never a delete (r6 deleted the file outright).
+        self.assertTrue(claim_path.exists())
+        released_text = _assert_claim_released(claim_path)
+        self.assertIn(victim_token, released_text)
+        self.assertNotEqual(released_text, thief_content)
 
-        # The invariant holds: the victim of the clobber can no longer pass
-        # any ownership check, so it can never deliver on top of the next
+        # The invariant holds: the clobbered thief can no longer pass any
+        # ownership check, so it can never deliver on top of the next
         # owner — no double delivery is possible.
         self.assertFalse(thief.verify_owner())
-        thief.release()  # safe: file already gone
+        thief.release()  # foreign verdict: leaves the file untouched
+        _assert_claim_released(claim_path)
 
         # Self-healing: the next full run delivers exactly once.
         notifier = _FakeNotifier()
@@ -2142,11 +2167,12 @@ class HotTop10ClaimOsLockR7Test(unittest.TestCase):
     write can NEVER make read and replace atomic (three CAS probe rounds
     were each defeated), so the protocol upgrades to an OS advisory lock
     held for the whole delivery — takeover = lock success (process death
-    releases the lock, which is the liveness oracle), release = verify ->
-    unlock -> close -> unlink. The r5/r6 owner token, per-side-effect
-    re-verification and release ownership checks are kept as defence in
-    depth INSIDE the lock. Platforms without OS locking degrade explicitly
-    to the r6 compare-and-set path (loud warning, never silent).
+    releases the lock, which is the liveness oracle); release = r12's
+    verify -> rewrite-to-RELEASED -> unlock -> close, never unlink. The
+    r5/r6 owner token, per-side-effect re-verification and release
+    ownership checks are kept as defence in depth INSIDE the lock.
+    Platforms without OS locking degrade explicitly to the r6
+    compare-and-set path (loud warning, never silent).
 
     OR-COR-341d7b5a: the single-blob dedup marker was overwritten by a late
     stale delivery, so the retained pending follow-up re-pushed today's
@@ -2205,7 +2231,7 @@ class HotTop10ClaimOsLockR7Test(unittest.TestCase):
             claim_path.read_text(encoding="utf-8"), holder_content
         )
         holder.release()
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
     def test_parked_contender_cannot_clobber_surviving_holder(self):
         """Review #11 probe, paused-resume form: the contender parks after
@@ -2262,7 +2288,7 @@ class HotTop10ClaimOsLockR7Test(unittest.TestCase):
             claim_path.read_text(encoding="utf-8"), holder_content
         )
         holder.release()
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
     @unittest.skipUnless(
         getattr(hot_top10_svc, "_CLAIM_LOCKING_AVAILABLE", False),
@@ -2308,7 +2334,7 @@ class HotTop10ClaimOsLockR7Test(unittest.TestCase):
         lines = claim_path.read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(len(lines), 3)  # takeover rewrote as ours (tokened)
         claim.release()
-        self.assertFalse(claim_path.exists())
+        _assert_claim_released(claim_path)
 
     def test_per_date_marker_blocks_stale_overwrite_double_delivery(self):
         """Review #11 OR-COR-341d7b5a deterministic interleaving: B delivers
@@ -2607,6 +2633,175 @@ class HotTop10ChildLineReadBoundedTest(unittest.TestCase):
 
         self.assertIn("closed stdout", str(ctx.exception))
         self.assertIn("boot handshake", str(ctx.exception))
+
+
+@unittest.skipUnless(
+    hot_top10_svc._CLAIM_LOCKING_AVAILABLE,
+    "OS advisory locking unavailable on this platform",
+)
+class HotTop10ClaimReleasedHandoverR12Test(unittest.TestCase):
+    """r12 protocol fix (review #14 reopened the OS-lock finding): the OLD
+    release ran verify -> unlock -> unlink, and ``flock`` protects the open
+    INODE, not the path NAME — in the unlock→delete window a successor can
+    lawfully take the lock and rewrite its own token, and the old holder's
+    unlink then deletes the successor's claim BY PATH. The successor's
+    in-flight notify then aborts, and a third party can create a fresh
+    file, take a fresh lock and push a SECOND delivery for the data date.
+
+    Fix: the claim file is NEVER unlinked. Release rewrites it, while the
+    lock is still held, to the RELEASED state; takeover locks the EXISTING
+    file and rewrites it in place — no create/replace after first
+    publication, so the path always points at the same inode."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value={"cn"},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _released_text(self, claim_path: Path) -> str:
+        text = claim_path.read_text(encoding="utf-8")
+        self.assertEqual(
+            text.splitlines()[0].strip(),
+            "RELEASED",
+            "released claim must survive on disk with the RELEASED marker",
+        )
+        return text
+
+    def test_release_rewrites_released_state_and_never_unlinks(self):
+        """Release must leave the claim file in place with the RELEASED
+        marker (original timestamp + token preserved); a repeated release
+        is a no-op and still must not delete anything."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+
+        holder = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(holder)
+        holder.release()
+
+        text = self._released_text(claim_path)
+        self.assertIn(holder._token, text)
+        holder.release()  # idempotent
+        self._released_text(claim_path)
+
+    def test_released_claim_is_taken_over_in_place(self):
+        """A RELEASED claim is immediately claimable (no TTL wait) and the
+        takeover must rewrite the EXISTING file — same inode — never
+        recreate the path (the review's "lifecycle-stable lock file")."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+
+        first = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(first)
+        first.release()
+        released_ino = os.stat(claim_path).st_ino
+
+        second = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(
+            second, "a RELEASED claim must be claimable at once"
+        )
+        taken_ino = os.stat(claim_path).st_ino
+        self.assertEqual(
+            released_ino,
+            taken_ino,
+            "takeover must rewrite the existing file, not recreate the path",
+        )
+        self.assertIn(second._token, claim_path.read_text(encoding="utf-8"))
+        second.release()
+        self._released_text(claim_path)
+
+    def test_unlock_to_delete_window_cannot_clobber_successor(self):
+        """The review #14 interleaving, deterministically: the old holder is
+        parked right after its unlock while a successor takes the lock and
+        rewrites its own token; when the parked old holder resumes, the
+        successor's claim must be untouched (the OLD protocol deleted it by
+        path exactly here)."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+
+        holder = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(holder)
+
+        unlocked = threading.Event()
+        proceed = threading.Event()
+        worker_error: List[str] = []
+
+        real_unlock = hot_top10_svc._unlock_claim_file
+
+        def _parked_unlock(file_obj: Any) -> None:
+            real_unlock(file_obj)  # the lock really is released here
+            unlocked.set()
+            proceed.wait(timeout=60)
+            # r12: release ends here — deliberately no path deletion.
+
+        with mock.patch.object(
+            hot_top10_svc, "_unlock_claim_file", _parked_unlock
+        ):
+            worker = threading.Thread(
+                target=lambda: _safe_late_release(holder, worker_error),
+                daemon=True,
+            )
+            worker.start()
+            self.assertTrue(
+                unlocked.wait(timeout=60), "holder never reached the unlock"
+            )
+            successor = acquire_hot_top10_delivery_claim(config, data_date)
+            self.assertIsNotNone(
+                successor, "successor must take the lock in the window"
+            )
+            successor_text = claim_path.read_text(encoding="utf-8")
+            proceed.set()
+            worker.join(timeout=60)
+
+        self.assertFalse(worker_error, f"late release raised: {worker_error}")
+        self.assertTrue(
+            claim_path.exists(), "successor claim must never be deleted"
+        )
+        self.assertEqual(
+            claim_path.read_text(encoding="utf-8"),
+            successor_text,
+            "successor claim content must survive the late release",
+        )
+        self.assertTrue(
+            successor.verify_owner(),
+            "successor must still verify as owner after the late release",
+        )
+        successor.release()
+
+    def test_late_foreign_release_leaves_held_claim_untouched(self):
+        """Behavioural guard: a stale handle released against a HELD
+        successor (ownership verdict mismatch) neither rewrites nor deletes
+        anything — the successor's lock and path stay intact."""
+        config = _config(self._tmp.name)
+        data_date = date.today().isoformat()
+        claim_path = hot_top10_claim_path(config, data_date)
+
+        first = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(first)
+        first.release()
+        successor = acquire_hot_top10_delivery_claim(config, data_date)
+        self.assertIsNotNone(successor)
+        before = claim_path.read_text(encoding="utf-8")
+
+        first.release()  # stale handle: idempotent no-op
+        self.assertEqual(claim_path.read_text(encoding="utf-8"), before)
+        self.assertTrue(successor.verify_owner())
+        successor.release()
+        self._released_text(claim_path)
+
+
+def _safe_late_release(holder: Any, errors: List[str]) -> None:
+    try:
+        holder.release()
+    except Exception as exc:  # pragma: no cover - surfaced via assertion
+        errors.append(repr(exc))
 
 
 if __name__ == "__main__":

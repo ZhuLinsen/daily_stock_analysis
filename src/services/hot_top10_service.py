@@ -41,10 +41,15 @@ Design rules:
   the owner token (uuid4 hex) and the pid. Publication is an atomic
   no-replace link of a fully written temp file. Takeover = LOCK ACQUIRED on
   the stale claim (process death releases the lock, which is the liveness
-  oracle); the holder keeps the lock until the run ends. Release runs
-  verify -> unlock -> close -> unlink. The r5/r6 owner-token checks, the
-  per-side-effect re-verification (save/notify/marker) and the release
-  ownership verdict are all kept as defence in depth inside the lock.
+  oracle); the holder keeps the lock until the run ends. Release (r12,
+  review #14) NEVER deletes the file: it rewrites the claim, while the lock
+  is still held, to the RELEASED state — ``flock`` protects the open inode,
+  not the path name, so the old unlock→delete window let a successor take
+  the lock and then be clobbered BY PATH by the departing holder. The claim
+  file is lifecycle-stable: first publication creates it, after that every
+  handover is an in-place rewrite under the lock. The r5/r6 owner-token
+  checks, the per-side-effect re-verification (save/notify/marker) and the
+  release ownership verdict are all kept as defence in depth inside the lock.
   Platforms without OS locking degrade EXPLICITLY to the r6 compare-and-
   set path with a loud warning (never silent). ``force_run`` stays
   unclaimed; the in-process mutex stays the fast path.
@@ -82,6 +87,10 @@ except ImportError:  # pragma: no cover - POSIX
     _WINDOWS_LOCKING = False
 
 _CLAIM_LOCKING_AVAILABLE = _POSIX_LOCKING or _WINDOWS_LOCKING
+# r12 (review #14): a claim file released by its owner keeps existing with
+# this first-line marker; a released claim is immediately claimable by the
+# next acquirer. The file itself is never deleted.
+_CLAIM_RELEASED_MARKER = "RELEASED"
 # The lock is a single byte FAR beyond any claim content (~1 MiB offset):
 # on Windows LockFile ranges are mandatory for OTHER handles, so keeping
 # the locked byte away from the content leaves every plain-content reader
@@ -229,7 +238,11 @@ def _read_claim_text(path: Path) -> Optional[str]:
 def _claim_is_stale(path: Path, text: Optional[str]) -> bool:
     """Staleness: first-line timestamp past the TTL; for empty/unparseable
     content fall back to the file mtime (fresh mtime = live: an occupant
-    mid-initialization is never treated stale and never deleted)."""
+    mid-initialization is never treated stale and never deleted). A
+    RELEASED claim is never stale — it is CLAIMABLE (see
+    :func:`_claim_is_released`), which is a strictly stronger verdict."""
+    if text and _claim_is_released(text):
+        return False
     if text:
         claimed_at, _token = _parse_claim_text(text)
         if claimed_at is not None:
@@ -241,6 +254,25 @@ def _claim_is_stale(path: Path, text: Optional[str]) -> bool:
     return (
         datetime.now() - datetime.fromtimestamp(mtime)
         >= HOT_TOP10_CLAIM_STALE_AFTER
+    )
+
+
+def _claim_is_released(text: str) -> bool:
+    """r12 (review #14): whether the claim has been voluntarily released
+    by its owner (first line is the RELEASED marker). Such a claim is
+    immediately claimable — the takeover rewrites the existing file under
+    its lock instead of waiting for a TTL or recreating the path."""
+    lines = text.strip().splitlines()
+    return bool(lines) and lines[0].strip() == _CLAIM_RELEASED_MARKER
+
+
+def _render_released_content(
+    created_line: Optional[str], token: Optional[str]
+) -> str:
+    """Released-state serialization: marker line, then the original
+    timestamp and owner token for auditability."""
+    return (
+        f"{_CLAIM_RELEASED_MARKER}\n{created_line or ''}\n{token or ''}\n"
     )
 
 
@@ -436,19 +468,21 @@ def _open_and_lock_claim(path: Path) -> Optional[Any]:
 
 
 class _HotTop10DeliveryClaim:
-    """A held cross-process delivery claim (protocol v3, r7).
+    """A held cross-process delivery claim (protocol v4, r12).
 
     The mutual exclusion is the OS advisory lock held on the open claim
     file for the WHOLE delivery (``_lock_file``); the owner token recorded
     in the file stays as defence in depth. ``verify_owner`` re-reads the
-    file; ``release`` runs verify -> unlock -> close -> unlink in that
-    fixed order, so an old holder can never delete a new owner's claim
-    while the lock makes mid-delivery takeover impossible in the first
-    place. Lock-less handles (platforms without OS locking — explicit
-    degradation — or the microsecond first-publication window) fall back
-    to the r6 verify-then-unlink path. A disarmed claim (claim directory
-    unavailable) verifies trivially: the run proceeds fail-open without
-    cross-process exclusion, exactly as before."""
+    file; ``release`` (r12, review #14) rewrites the claim to the RELEASED
+    state UNDER the still-held lock and never deletes the file — the claim
+    path is lifecycle-stable, so a successor taking over in the handover
+    window can never be clobbered by path (``flock`` protects the inode,
+    not the name). Lock-less handles (platforms without OS locking —
+    explicit degradation — or the microsecond first-publication window)
+    fall back to the verify-then-rewrite path with the same never-delete
+    rule. A disarmed claim (claim directory unavailable) verifies
+    trivially: the run proceeds fail-open without cross-process exclusion,
+    exactly as before."""
 
     __slots__ = (
         "_path",
@@ -502,14 +536,17 @@ class _HotTop10DeliveryClaim:
         )
 
     def release(self) -> None:
-        """Best-effort delete AFTER re-verifying ownership. Protocol v3
-        fixed order: verify -> unlock -> close -> unlink. The delivery lock
-        makes mid-delivery takeover impossible, so the verify→unlink race
-        of the r6 lock-free release cannot arise against a live holder; a
-        foreign claim is still left untouched and only logged. Even in the
-        degraded no-lock path, a clobbered successor fails its own notify-
-        time ownership re-verification and aborts — the exactly-once
-        delivery invariant survives."""
+        """Protocol v4 (r12, review #14): surrender the claim WITHOUT ever
+        deleting the file. Fixed order: verify -> rewrite-to-RELEASED ->
+        unlock -> close, all while the delivery lock is still held — so the
+        old unlock→delete window (a successor takes the lock, rewrites its
+        own token, and the departing holder then deletes the claim BY PATH;
+        ``flock`` protects the inode, not the name) cannot exist. The file
+        is lifecycle-stable: it survives with the RELEASED marker and is
+        immediately claimable by the next acquirer. A foreign claim (the
+        ownership verdict failed — this handle was superseded) is left
+        byte-identical: no rewrite, no delete. The lock-less handle path
+        (:meth:`_release_without_lock`) keeps the same never-delete rule."""
         if self._released:
             return
         self._released = True
@@ -520,6 +557,9 @@ class _HotTop10DeliveryClaim:
         if file_obj is None:
             self._release_without_lock()
             return
+        released_content = _render_released_content(
+            self._created_line, self._token
+        )
         foreign = False
         try:
             text = _read_claim_text(self._path)
@@ -527,61 +567,54 @@ class _HotTop10DeliveryClaim:
                 foreign = True
                 logger.warning(
                     "[HotTop10] 投递认领已易主（所有权校验不匹配），"
-                    "不删除其他进程的认领文件"
+                    "不重写也不删除其他进程的认领文件"
                 )
         finally:
+            # Rewrite while STILL holding the lock, before unlocking — the
+            # successor can only start after we unlock, and it then finds
+            # the RELEASED marker, never a stale-looking live claim.
+            if not foreign:
+                try:
+                    _rewrite_locked_claim(file_obj, released_content)
+                except OSError as exc:
+                    logger.warning(
+                        "[HotTop10] 认领释放重写失败（保留原内容，文件不删除）: %s",
+                        exc,
+                    )
             _unlock_claim_file(file_obj)
             try:
                 file_obj.close()
             except OSError:
                 pass
-        if foreign:
-            return
-        try:
-            self._path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.warning(
-                "[HotTop10] 删除投递认领文件失败（忽略，陈旧后可被接管）: %s", exc
-            )
-            return
-        # Sentry: a claim reappearing immediately after our unlink means a
-        # concurrent acquirer raced this release. Log it — the mutual
-        # exclusion is upheld by the delivery lock and the per-side-effect
-        # ownership re-verification, never by the unlink itself.
-        if _read_claim_text(self._path) is not None:
-            logger.info(
-                "[HotTop10] 认领删除后立即重现（并发接管/认领竞争），"
-                "互斥语义由投递锁与各副作用点的所有权复验保障"
-            )
+        # r12: no unlink — ever. The claim file keeps existing in the
+        # RELEASED state; the next acquirer takes it over in place.
 
     def _release_without_lock(self) -> None:
-        """r6 release path, kept for the explicit no-OS-locking degradation
-        and for lock-less handles: read once, verdict back-to-back with the
-        unlink."""
+        """r12 release path for the explicit no-OS-locking degradation and
+        for lock-less handles: verify once, then overwrite the content with
+        the RELEASED state — NEVER delete. (The old r6 verify→unlink pair
+        had the same by-path clobber window the review reopened.)"""
         text = _read_claim_text(self._path)
         if text is None:
             return
         if not self._text_is_ours(text):
             logger.warning(
                 "[HotTop10] 投递认领已易主（所有权校验不匹配），"
-                "不删除其他进程的认领文件"
+                "不重写也不删除其他进程的认领文件"
             )
             return
         try:
-            self._path.unlink()
-        except FileNotFoundError:
-            pass
+            with open(self._path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    _render_released_content(
+                        self._created_line, self._token
+                    )
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
         except OSError as exc:
             logger.warning(
-                "[HotTop10] 删除投递认领文件失败（忽略，陈旧后可被接管）: %s", exc
-            )
-            return
-        if _read_claim_text(self._path) is not None:
-            logger.info(
-                "[HotTop10] 认领删除后立即重现（并发接管/认领竞争），"
-                "互斥语义由各副作用点的所有权复验保障"
+                "[HotTop10] 认领释放重写失败（保留原内容，文件不删除）: %s", exc
             )
 
 
@@ -648,11 +681,14 @@ def acquire_hot_top10_delivery_claim(
         text = _read_claim_text(claim_path)
         if text is None:
             continue  # vanished in between: try publishing again
-        if not _claim_is_stale(claim_path, text):
+        released = _claim_is_released(text)
+        if not released and not _claim_is_stale(claim_path, text):
             return None  # live (owner / initializing / occupant): never delete
-        # Stale crash residue (r4/r5/r6 format): protocol v3 takeover —
-        # lock the existing file. Success ⇒ previous holder dead; refusal
-        # ⇒ holder alive; no user-space window can clobber a survivor.
+        # RELEASED (r12 — immediately claimable) or stale crash residue
+        # (r4/r5/r6 format): protocol takeover — lock the existing file.
+        # Success ⇒ the previous holder released or is dead; refusal ⇒
+        # holder alive; no user-space window can clobber a survivor. The
+        # rewrite happens IN PLACE — the claim file's lifecycle is stable.
         status, lock_file = _take_over_stale_claim(claim_path, content, text)
         if status == "vanished":
             continue
