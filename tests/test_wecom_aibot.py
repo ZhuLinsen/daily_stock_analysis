@@ -848,6 +848,7 @@ class TestReconnectBudgetSelfHealing:
                                side_effect=_make_stub), \
                 mock.patch.object(client._stop_event, "wait",
                                   side_effect=[False, True]):
+            _StubSdkClient.instances = []
             worker = threading.Thread(target=client._run_background, daemon=True)
             worker.start()
             worker.join(timeout=15)
@@ -880,6 +881,63 @@ class TestReconnectBudgetSelfHealing:
 
         assert client._cycle_failed is False
         assert client._planned_cycle_delay is None
+
+    def test_cycle_backoff_bounded_at_extreme_attempts(self):
+        """r10：第 1025 个重建周期的乘方不得溢出（int too large to convert
+        to float）——任意 attempt 下有界返回封顶值。"""
+        client = self._client()
+
+        # 直接置大：下一次调用即第 1025 次（评审探针原样）。
+        client._cycle_attempts = 1024
+        delay = client._next_cycle_retry_delay()
+        assert delay == client._CYCLE_RETRY_MAX_DELAY_SECONDS
+
+        # 全范围扫描：1026 次连续调用全程不抛且有界。
+        client._cycle_attempts = 0
+        delays = [client._next_cycle_retry_delay() for _ in range(1026)]
+        assert all(
+            0 < d <= client._CYCLE_RETRY_MAX_DELAY_SECONDS for d in delays
+        )
+        assert delays[-1] == client._CYCLE_RETRY_MAX_DELAY_SECONDS
+
+    def test_supervision_survives_extreme_cycle_attempts(self):
+        """监督路径探针：极高周期计数下「预算耗尽→等待有限 delay→重建」
+        依然成立（wait 收到有限值而非 None/异常）。"""
+        client = self._client()
+        client._running = True
+        client._cycle_attempts = 1024
+
+        def _make_stub():
+            stub = _StubSdkClient(None)
+            client._register_sdk_events(stub)
+            return stub
+
+        wait_calls = []
+
+        def _wait(delay=None):
+            wait_calls.append(delay)
+            return len(wait_calls) > 1  # 第 1 次等待后重建；第 2 次后退出
+
+        threads_before = threading.active_count()
+        with mock.patch.object(client, "_create_sdk_client",
+                               side_effect=_make_stub), \
+                mock.patch.object(client._stop_event, "wait", side_effect=_wait):
+            _StubSdkClient.instances = []
+            worker = threading.Thread(target=client._run_background, daemon=True)
+            worker.start()
+            worker.join(timeout=15)
+            if worker.is_alive():
+                client.stop()
+                worker.join(timeout=5)
+        assert not worker.is_alive(), (
+            "supervision loop died on extreme cycle attempt count "
+            "(OverflowError) — no self-healing without manual restart"
+        )
+
+        assert len(_StubSdkClient.instances) == 2
+        # wait 收到有限封顶值而非 None/溢出
+        assert wait_calls[0] == client._CYCLE_RETRY_MAX_DELAY_SECONDS
+        assert threading.active_count() == threads_before
 
 
 # ---------------------------------------------------------------------------

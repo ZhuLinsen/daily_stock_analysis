@@ -564,6 +564,9 @@ class WecomAibotClient:
     # 连接周期重建退避（SDK 重连预算耗尽/异常结束后重建新周期的等待）
     _CYCLE_RETRY_BASE_DELAY_SECONDS = 2.0
     _CYCLE_RETRY_MAX_DELAY_SECONDS = 60.0
+    # 乘方前指数封顶：超大周期计数（长期间隔重建）不再触发
+    # OverflowError('int too large to convert to float')（r10）
+    _CYCLE_EXPONENT_CAP = 20
 
     def __init__(
         self,
@@ -679,12 +682,15 @@ class WecomAibotClient:
         return self._auth_backoff_delay(self._auth_attempts)
 
     def _next_cycle_retry_delay(self) -> float:
-        """连接周期重建退避（指数递增、封顶、永不放弃——耗尽场景必须自愈）"""
+        """连接周期重建退避（指数递增、封顶、永不放弃——耗尽场景必须自愈）
+
+        乘方前先封顶指数（r10）：无限递增的周期计数若直接参与
+        ``2 ** attempt`` 会在第 1025 次触发 OverflowError（int too large
+        to convert to float），令监督循环崩溃且永不自愈。"""
         self._cycle_attempts += 1
-        return min(
-            self._CYCLE_RETRY_BASE_DELAY_SECONDS * (2 ** (self._cycle_attempts - 1)),
-            self._CYCLE_RETRY_MAX_DELAY_SECONDS,
-        )
+        exponent = min(self._cycle_attempts - 1, self._CYCLE_EXPONENT_CAP)
+        delay = self._CYCLE_RETRY_BASE_DELAY_SECONDS * (2 ** exponent)
+        return min(delay, self._CYCLE_RETRY_MAX_DELAY_SECONDS)
 
     def _on_authenticated(self) -> None:
         """认证成功：复位认证与连接周期退避预算"""
