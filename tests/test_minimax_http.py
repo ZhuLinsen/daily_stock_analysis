@@ -123,9 +123,13 @@ def run_transport_contract():
             "LITELLM_LOCAL_MODEL_COST_MAP": "True",
             "LITELLM_TELEMETRY": "False",
         }
+        transport_patch = (
+            patch.object(SyncAPIClient, "_send_request", send_request)
+            if hasattr(SyncAPIClient, "_send_request")
+            else patch.object(httpx.Client, "send", send_request)
+        )
         with patch.dict(os.environ, env, clear=True), patch("src.config.setup_env"), \
-                patch.object(Config, "_parse_litellm_yaml", return_value=[]), \
-                patch.object(SyncAPIClient, "_send_request", send_request), \
+                patch.object(Config, "_parse_litellm_yaml", return_value=[]), transport_patch, \
                 patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
             config = Config._load_from_env()
             assert config.litellm_model == "openai/" + model
