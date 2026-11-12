@@ -9,7 +9,7 @@ TICKPLUS_PRIORITY=0
 ```
 
 本地 / Docker 通过环境变量或 `.env` 配置；Web 配置管理中可填写 TickPlus API Key。
-GitHub Actions 使用同名 Secret `TICKPLUS_API_KEY`，优先级可用同名 Variable `TICKPLUS_PRIORITY`。
+GitHub Actions 使用同名 Secret `TICKPLUS_API_KEY`，优先级可用同名 Variable `TICKPLUS_PRIORITY`。未设置 `REALTIME_SOURCE_PRIORITY` Variable 时，工作流保留空值，由运行时自动首选 TickPlus；显式设置时保持用户顺序。
 请勿将测试 Key 或个人 Key 写入代码、README、日志或公开配置。
 
 - 普通 A 股 / ETF 日 K：配置后默认优先尝试 TickPlus（优先级 0，同值先于内置源），失败沿现有链回退。

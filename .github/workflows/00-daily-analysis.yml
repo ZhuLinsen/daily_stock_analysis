@@ -448,10 +448,10 @@ jobs:
           MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
           # 筹码分布：默认 false（云端接口不稳定）；需启用时在 Settings → Variables 添加 ENABLE_CHIP_DISTRIBUTION=true
           ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
-          # 实时行情数据源优先级（腾讯有量比且稳定，推荐首选）
+          # 实时行情数据源优先级（未设置时由运行时按已配置的 Key 自动选择）
           # 可选值: tickplus, tencent, akshare_sina, efinance, akshare_em, tickflow, tushare
           # 推荐 TickPlus；未显式配置顺序时，TICKPLUS_API_KEY 自动启用 tickplus 优先。
-          REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
+          REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY }}
           
         run: |
           # 解析自选股配置：
