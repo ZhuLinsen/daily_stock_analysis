@@ -1,0 +1,101 @@
+name: Dip Scanner
+
+on:
+  # Depois do fecho de Wall Street (21:00 UTC no inverno, 20:00 UTC no verão)
+  schedule:
+    - cron: '35 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Reprocessar o último pregão'
+        required: false
+        default: false
+        type: boolean
+      tickers:
+        description: 'Substituir universo (ex.: NVDA:SMH,TTD) — vazio = DIP_UNIVERSE / default'
+        required: false
+        default: ''
+
+concurrency:
+  group: dip-scanner
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependências
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Recuperar relatórios e registo anteriores (gh-pages)
+        run: |
+          mkdir -p site
+          if git fetch --depth 1 origin gh-pages 2>/dev/null; then
+            git archive FETCH_HEAD | tar -x -C site
+          fi
+
+      - name: Correr Dip Scanner
+        env:
+          # LLM (basta um)
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || secrets.ANTHROPIC_MODEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || secrets.OPENAI_MODEL }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
+          MODELFLARE_KEY: ${{ secrets.MODELFLARE_KEY }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || secrets.LITELLM_MODEL }}
+          # Notícias
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
+          SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS || secrets.SEARXNG_BASE_URLS }}
+          # Notificações
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # Dip Scanner
+          DIP_UNIVERSE: ${{ vars.DIP_UNIVERSE }}
+          DIP_MIN_DROP_PCT: ${{ vars.DIP_MIN_DROP_PCT }}
+          DIP_MIN_ATR_MULT: ${{ vars.DIP_MIN_ATR_MULT }}
+          DIP_MIN_VOLUME_RATIO: ${{ vars.DIP_MIN_VOLUME_RATIO }}
+          DIP_MULTIDAY_DROP_PCT: ${{ vars.DIP_MULTIDAY_DROP_PCT }}
+          DIP_MAX_SIGNALS: ${{ vars.DIP_MAX_SIGNALS }}
+          DIP_REPORT_URL: ${{ vars.DIP_REPORT_URL }}
+          DIP_OUTPUT_DIR: site
+          INPUT_FORCE: ${{ github.event.inputs.force }}
+          INPUT_TICKERS: ${{ github.event.inputs.tickers }}
+        run: |
+          ARGS=()
+          if [ "$INPUT_FORCE" = "true" ]; then ARGS+=(--force); fi
+          if [ -n "$INPUT_TICKERS" ]; then ARGS+=(--tickers "$INPUT_TICKERS"); fi
+          python -m src.services.dip_scanner "${ARGS[@]}"
+
+      - name: Publicar em gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+          commit_message: 'dip-scanner: report'
