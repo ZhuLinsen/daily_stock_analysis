@@ -5,16 +5,19 @@ Dip Scanner — swing de quedas pontuais (US equities).
 Fluxo:
     1. Universo fechado de ações + ETFs de referência (yfinance, 1 chamada).
     2. Gatilho: queda forte no dia (% ou múltiplo de ATR) com volume acima da média,
-       ou queda acumulada de 3 dias.
-    3. Para cada gatilho: notícias (SearchService) + técnica + queda relativa ao ETF.
+       ou queda acumulada de 3 dias. Tickers sem a barra do pregão atual e tickers
+       já sinalizados nas últimas DIP_COOLDOWN_SESSIONS sessões são ignorados.
+    3. Para cada gatilho: queda ajustada ao beta face ao ETF, gap de abertura,
+       datas de resultados, notícias (SearchService) e técnica.
     4. LLM classifica a causa: pontual / estrutural / incerto, e dá veredito.
     5. Níveis determinísticos (entrada, stop, alvo) calculados a partir do ATR.
     6. Relatório HTML (para GitHub Pages) + resumo nas notificações configuradas.
-    7. Registo de sinais com retorno a 3/5/10 sessões para medir a estratégia.
+    7. Registo de sinais com retorno a 3/5/10 sessões, medido a partir da abertura
+       seguinte, também face ao SPY, e estatísticas por causa e por veredito.
 
 Uso:
     python -m src.services.dip_scanner                # execução normal
-    python -m src.services.dip_scanner --dry-run      # sem LLM/notícias/notificação
+    python -m src.services.dip_scanner --dry-run      # sem LLM/notícias/resultados/notificação
     python -m src.services.dip_scanner --tickers NVDA,TTD --force
 
 Configuração (todas opcionais, ver .env.example secção "Dip Scanner").
@@ -30,8 +33,9 @@ import math
 import os
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -85,8 +89,8 @@ DEFAULT_UNIVERSE: Dict[str, Tuple[str, str]] = {
     "UNH": ("UnitedHealth", "XLV"),
     "ISRG": ("Intuitive Surgical", "XLV"),
     # Fintech / beta cripto
-    "PYPL": ("PayPal", "QQQ"),
-    "COIN": ("Coinbase", "QQQ"),
+    "PYPL": ("PayPal", "XLF"),
+    "COIN": ("Coinbase", "IBIT"),
     "HOOD": ("Robinhood", "QQQ"),
 }
 
@@ -98,7 +102,16 @@ VERDICT_LABELS = {
     "aguardar_estabilizacao": "Aguardar estabilização",
     "evitar": "Evitar",
 }
+REGIME_LABELS = {"correcao": "SPY abaixo da MM200", "alta": "SPY acima da MM200"}
 OUTCOME_HORIZONS = (3, 5, 10)
+OUTCOME_BASIS = "next_open"   # retornos medidos a partir da abertura da sessão seguinte
+MAX_HOLD_SESSIONS = 10
+BETA_WINDOW = 120             # sessões usadas no beta (exclui o dia do sinal)
+BETA_MIN_OBS = 60
+BETA_BOUNDS = (0.0, 4.0)
+EARNINGS_LOOKBACK_SESSIONS = 3
+EARNINGS_AHEAD_DAYS = 14
+STOP_ATR_BUFFER = 1.0         # stop = mínima de 5 dias − N×ATR (backtest: 0,5×ATR parava cedo demais)
 
 
 # --------------------------------------------------------------------------
@@ -138,6 +151,8 @@ class DipScanConfig:
     min_volume_ratio: float = 1.3      # volume vs média 20d
     multiday_drop_pct: float = 10.0    # queda acumulada em 3 sessões
     max_signals: int = 8               # máximo de sinais analisados pelo LLM por execução
+    cooldown_sessions: int = 5         # não repetir sinal do mesmo ticker durante N sessões
+    market_day_pct: float = 2.5        # SPY a cair >= N% = dia de mercado
     output_dir: Path = Path("site")
     report_url: str = ""
 
@@ -152,6 +167,8 @@ class DipScanConfig:
         cfg.min_volume_ratio = _env_float("DIP_MIN_VOLUME_RATIO", cfg.min_volume_ratio)
         cfg.multiday_drop_pct = _env_float("DIP_MULTIDAY_DROP_PCT", cfg.multiday_drop_pct)
         cfg.max_signals = int(_env_float("DIP_MAX_SIGNALS", cfg.max_signals))
+        cfg.cooldown_sessions = max(0, int(_env_float("DIP_COOLDOWN_SESSIONS", cfg.cooldown_sessions)))
+        cfg.market_day_pct = _env_float("DIP_MARKET_DAY_PCT", cfg.market_day_pct)
         cfg.output_dir = Path(os.getenv("DIP_OUTPUT_DIR") or cfg.output_dir)
         cfg.report_url = (os.getenv("DIP_REPORT_URL") or "").strip() or _default_pages_url()
         return cfg
@@ -201,6 +218,73 @@ def fetch_history(tickers: List[str], period: str = "1y") -> Dict[str, Any]:
     return out
 
 
+def _last_date(df) -> str:
+    return str(df.index[-1].date())
+
+
+def session_date(histories: Dict[str, Any]) -> str:
+    """Pregão de referência: a última data mais comum entre os tickers (empate → mais recente)."""
+    counts = Counter(_last_date(df) for df in histories.values())
+    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def fetch_earnings(ticker: str) -> Optional[List[Tuple[Any, Optional[float]]]]:
+    """Datas de resultados (passadas e futuras) com a surpresa de EPS. None = indisponível."""
+    try:
+        import yfinance as yf
+
+        df = yf.Ticker(ticker).get_earnings_dates(limit=12)
+    except Exception as exc:
+        logger.warning("[dip] datas de resultados %s falharam: %s", ticker, exc)
+        return None
+    if df is None or len(df) == 0:
+        return []
+    col = "Surprise(%)" if "Surprise(%)" in df.columns else None
+    return [(ts, _safe(row[col]) if col else None) for ts, row in df.iterrows()]
+
+
+def earnings_context(
+    events: Optional[List[Tuple[Any, Optional[float]]]],
+    session_dates: List[str],
+    ahead_days: int = EARNINGS_AHEAD_DAYS,
+) -> Dict[str, Any]:
+    """
+    Liga as datas de resultados aos pregões do ticker.
+
+    Um anúncio às 16:00 (ET) ou depois tem reação no pregão seguinte; antes disso,
+    no próprio dia. Devolve há quantas sessões houve reação a resultados (0 = hoje,
+    só nas últimas EARNINGS_LOOKBACK_SESSIONS) e os próximos resultados se caírem
+    nos próximos `ahead_days` dias de calendário.
+    """
+    if events is None or not session_dates:
+        return {"known": False}
+    today = session_dates[-1]
+    recent = session_dates[-EARNINGS_LOOKBACK_SESSIONS:]
+    ctx: Dict[str, Any] = {"known": True, "reaction_sessions_ago": None,
+                           "eps_surprise_pct": None, "next_date": None}
+    for ts, surprise in events:
+        try:
+            day = ts.date().isoformat()
+            after_close = ts.hour >= 16
+        except AttributeError:
+            continue
+        react = next((s for s in session_dates if (s > day if after_close else s >= day)), None)
+        if react is None:
+            if day >= today and (ctx["next_date"] is None or day < ctx["next_date"]):
+                ctx["next_date"] = day
+            continue
+        if react in recent:
+            ago = len(session_dates) - 1 - session_dates.index(react)
+            if ctx["reaction_sessions_ago"] is None or ago < ctx["reaction_sessions_ago"]:
+                ctx["reaction_sessions_ago"] = ago
+                ctx["eps_surprise_pct"] = surprise
+    if ctx["next_date"]:
+        gap = (date.fromisoformat(ctx["next_date"]) - date.fromisoformat(today)).days
+        if gap > ahead_days:
+            ctx["next_date"] = None
+    return ctx
+
+
 # --------------------------------------------------------------------------
 # Técnica
 # --------------------------------------------------------------------------
@@ -223,8 +307,25 @@ def _safe(v: float, nd: int = 2) -> Optional[float]:
     return None if math.isnan(f) or math.isinf(f) else round(f, nd)
 
 
+def _beta(close, bench_close) -> Optional[float]:
+    """Beta dos retornos diários face ao ETF nas últimas BETA_WINDOW sessões, sem o dia do sinal."""
+    import pandas as pd
+
+    rets = pd.concat([close.pct_change(), bench_close.pct_change()], axis=1, join="inner").dropna()
+    rets = rets.iloc[:-1].tail(BETA_WINDOW)
+    if len(rets) < BETA_MIN_OBS:
+        return None
+    var = float(rets.iloc[:, 1].var())
+    if not var or math.isnan(var):
+        return None
+    beta = float(rets.iloc[:, 0].cov(rets.iloc[:, 1])) / var
+    if math.isnan(beta):
+        return None
+    return min(BETA_BOUNDS[1], max(BETA_BOUNDS[0], beta))
+
+
 def compute_metrics(df, bench_df=None) -> Dict[str, Any]:
-    """Métricas do último pregão. ATR e médias de volume excluem o dia corrente."""
+    """Métricas do último pregão. ATR, médias de volume e beta excluem o dia corrente."""
     close, high, low, vol = df["Close"], df["High"], df["Low"], df["Volume"]
     prev_close = close.shift(1)
     import pandas as pd
@@ -234,8 +335,10 @@ def compute_metrics(df, bench_df=None) -> Dict[str, Any]:
 
     c, pc = float(close.iloc[-1]), float(close.iloc[-2])
     h, lo = float(high.iloc[-1]), float(low.iloc[-1])
+    o = float(df["Open"].iloc[-1]) if "Open" in df else float("nan")
     ret_1d = (c / pc - 1) * 100
-    ret_3d = (c / float(close.iloc[-4]) - 1) * 100 if len(close) > 4 else float("nan")
+    c3 = float(close.iloc[-4]) if len(close) > 4 else float("nan")
+    ret_3d = (c / c3 - 1) * 100
     avg_vol = vol.iloc[-21:-1].mean()
     sma20 = close.rolling(20).mean().iloc[-1]
     sma50 = close.rolling(50).mean().iloc[-1]
@@ -243,16 +346,24 @@ def compute_metrics(df, bench_df=None) -> Dict[str, Any]:
     high_52w = float(high.max())
     high_10d = float(high.iloc[-10:].max())
     low_5d = float(low.iloc[-5:].min())
+    atr_mult = _safe((pc - c) / atr_prev) if atr_prev else None
+    atr_mult_3d = _safe((c3 - c) / atr_prev) if atr_prev else None
+    # intensidade = queda em unidades de ATR; a de 3 sessões é normalizada por √3
+    strengths = [x for x in (atr_mult, atr_mult_3d / math.sqrt(3) if atr_mult_3d is not None else None)
+                 if x is not None]
 
     m: Dict[str, Any] = {
-        "date": str(df.index[-1].date()),
+        "date": _last_date(df),
         "close": _safe(c),
         "prev_close": _safe(pc),
         "ret_1d": _safe(ret_1d),
         "ret_3d": _safe(ret_3d),
+        "gap_pct": _safe((o / pc - 1) * 100),
         "atr": _safe(atr_prev),
         "atr_pct": _safe(atr_prev / pc * 100),
-        "atr_mult": _safe((pc - c) / atr_prev) if atr_prev else None,
+        "atr_mult": atr_mult,
+        "atr_mult_3d": atr_mult_3d,
+        "intensity": _safe(max(strengths)) if strengths else None,
         "volume_ratio": _safe(float(vol.iloc[-1]) / avg_vol) if avg_vol else None,
         "rsi14": _safe(_rsi(close), 1),
         "dist_sma20": _safe((c / sma20 - 1) * 100),
@@ -267,7 +378,12 @@ def compute_metrics(df, bench_df=None) -> Dict[str, Any]:
     if bench_df is not None and len(bench_df) >= 2:
         bc = bench_df["Close"]
         m["bench_ret_1d"] = _safe((float(bc.iloc[-1]) / float(bc.iloc[-2]) - 1) * 100)
-        m["excess_1d"] = _safe(ret_1d - m["bench_ret_1d"]) if m["bench_ret_1d"] is not None else None
+        if m["bench_ret_1d"] is not None:
+            m["excess_1d"] = _safe(ret_1d - m["bench_ret_1d"])
+            beta = _beta(close, bc)
+            m["beta"] = _safe(beta)
+            # retorno anormal: queda que o beta face ao ETF não explica
+            m["abn_1d"] = _safe(ret_1d - beta * m["bench_ret_1d"]) if beta is not None else m["excess_1d"]
     return m
 
 
@@ -291,34 +407,39 @@ def check_trigger(m: Dict[str, Any], cfg: DipScanConfig) -> Tuple[bool, List[str
     return True, reasons
 
 
-def technical_score(m: Dict[str, Any]) -> Tuple[int, List[str]]:
-    """Pontuação 0-100 de qualidade do setup de reversão (só técnica)."""
-    rsi = m.get("rsi14") or 50
-    d200, excess = m.get("dist_sma200"), m.get("excess_1d")
-    cir, vr = m.get("close_in_range"), m.get("volume_ratio") or 1
+def technical_score(m: Dict[str, Any], market: Optional[Dict[str, Any]] = None) -> Tuple[int, List[str]]:
+    """
+    Pontuação 0-100 de qualidade do setup de reversão.
+
+    Só entram regras cujo efeito no backtest (python -m src.services.dip_backtest, 15 anos,
+    universo alargado) teve o mesmo sinal em 2012-2021 e em 2022-2026. A posição face à
+    MM200 da ação e a queda relativa ao setor ficaram de fora por mudarem de sinal entre
+    períodos; continuam no relatório e no prompt do LLM.
+    """
+    market = market or {}
+    rsi = m.get("rsi14")
+    cir, vr, gap = m.get("close_in_range"), m.get("volume_ratio"), m.get("gap_pct")
+    spy_d200 = market.get("spy_d200")
     rules = [
-        (rsi < 25, 15, "RSI muito sobrevendido"),
-        (25 <= rsi < 35, 8, "RSI sobrevendido"),
-        (d200 is not None and d200 > 0, 12, "acima da MM200 (tendência de fundo intacta)"),
-        (d200 is not None and d200 < -15, -12, "muito abaixo da MM200"),
-        (excess is not None and excess > -2, 8, "queda em linha com o setor (contágio)"),
-        (excess is not None and excess < -6, -5, "queda muito acima do setor (idiossincrática)"),
-        (cir is not None and cir >= 0.5, 10, "fechou na metade superior do range (compradores)"),
-        (cir is not None and cir <= 0.1, -8, "fechou na mínima (sem estabilização)"),
-        (vr >= 3, 5, "volume de capitulação"),
+        (spy_d200 is not None and spy_d200 <= 0, 15, "mercado em correção (SPY abaixo da MM200)"),
+        (rsi is not None and 25 <= rsi < 35, 10, "RSI sobrevendido"),
+        (cir is not None and cir >= 0.5, 5, "fechou na metade superior do range (compradores)"),
+        (cir is not None and cir <= 0.1, -10, "fechou na mínima (sem estabilização)"),
+        (vr is not None and vr >= 3, -8, "volume extremo (notícia forte, risco de continuação)"),
+        (gap is not None and gap <= -3, -5, "gap forte na abertura"),
     ]
     score = 50 + sum(pts for cond, pts, _ in rules if cond)
     notes = [note for cond, _, note in rules if cond]
     return max(0, min(100, score)), notes
 
 
-def suggest_levels(m: Dict[str, Any]) -> Dict[str, Optional[float]]:
+def suggest_levels(m: Dict[str, Any], stop_atr: float = STOP_ATR_BUFFER) -> Dict[str, Optional[float]]:
     """Entrada, stop e alvo determinísticos (ATR). O LLM comenta, não inventa números."""
     c, atr = m.get("close"), m.get("atr")
     if not c or not atr:
         return {}
     stop_base = min(x for x in (m.get("low_5d"), m.get("day_low"), c) if x)
-    stop = stop_base - 0.5 * atr
+    stop = stop_base - stop_atr * atr
     high10 = m.get("high_10d") or c
     target = c + 0.5 * max(high10 - c, atr)  # recuperar metade da queda desde o topo de 10d
     entry_low = c - 0.5 * atr
@@ -331,6 +452,21 @@ def suggest_levels(m: Dict[str, Any]) -> Dict[str, Optional[float]]:
         "target": _safe(target),
         "rr": _safe(rr, 2) if rr is not None else None,
     }
+
+
+def market_context(histories: Dict[str, Any], run_date: str, cfg: DipScanConfig) -> Dict[str, Any]:
+    ctx: Dict[str, Any] = {"market_day": False}
+    for t in ("SPY", "QQQ"):
+        df = histories.get(t)
+        if df is not None and len(df) >= 2 and _last_date(df) == run_date:
+            ctx[f"{t.lower()}_ret_1d"] = _safe((float(df["Close"].iloc[-1]) / float(df["Close"].iloc[-2]) - 1) * 100)
+    spy = ctx.get("spy_ret_1d")
+    ctx["market_day"] = spy is not None and spy <= -cfg.market_day_pct
+    spy_df = histories.get("SPY")
+    if spy is not None and spy_df is not None and len(spy_df) >= 200:
+        sma200 = float(spy_df["Close"].iloc[-200:].mean())
+        ctx["spy_d200"] = _safe((float(spy_df["Close"].iloc[-1]) / sma200 - 1) * 100)
+    return ctx
 
 
 # --------------------------------------------------------------------------
@@ -360,9 +496,13 @@ comprando quedas fortes causadas por motivos PONTUAIS (não estruturais).
 
 Ação: {ticker} ({name}) — ETF de referência: {bench}
 Gatilho: {reasons}
+Mercado: {market}
+Resultados: {earnings}
 
 Dados técnicos (último pregão {date}):
 {metrics}
+(abn_1d = queda ajustada ao beta face ao ETF; perto de 0 = movimento de mercado/setor,
+muito negativa = queda própria da ação. gap_pct = abertura face ao fecho anterior.)
 
 Pontuação técnica: {tech_score}/100 — {tech_notes}
 Níveis calculados: {levels}
@@ -371,8 +511,8 @@ Notícias recentes:
 {news}
 
 Tarefa:
-1. Identifica a causa provável da queda a partir das notícias e da queda relativa ao ETF
-   (queda parecida com o ETF = movimento de mercado/setor).
+1. Identifica a causa provável da queda a partir das notícias, dos resultados e de abn_1d.
+   Se houve reação a resultados, a questão central é se o guidance ou a tese de crescimento mudou.
 2. Classifica a causa:
    - "pontual": venda generalizada, contágio de setor, downgrade, resultado ligeiramente abaixo,
      ruído macro, notícia mal interpretada, venda forçada/rebalanceamento.
@@ -380,6 +520,7 @@ Tarefa:
      problema regulatório/contabilístico/legal sério, diluição relevante, disrupção competitiva.
    - "incerto": sem informação suficiente.
 3. Dá um veredito: "entrar", "aguardar_estabilizacao" ou "evitar".
+   Se há resultados marcados dentro da janela do trade, trata isso como risco.
 4. Sê específico e cético. Não inventes notícias. Se as notícias não explicam a queda, diz isso.
 
 Responde APENAS com JSON válido, em português, neste formato:
@@ -395,6 +536,33 @@ Responde APENAS com JSON válido, em português, neste formato:
   "comment_on_levels": "comentário curto aos níveis calculados"
 }}
 """
+
+
+def describe_market(mkt: Dict[str, Any]) -> str:
+    parts = [f"{t.upper()} {_pct(mkt.get(f'{t}_ret_1d'))}" for t in ("spy", "qqq") if mkt.get(f"{t}_ret_1d") is not None]
+    text = ", ".join(parts) or "sem dados"
+    if mkt.get("spy_d200") is not None:
+        regime = "correção" if mkt["spy_d200"] <= 0 else "alta"
+        text += f"; SPY {_pct(mkt['spy_d200'])} face à MM200 (regime de {regime})"
+    if mkt.get("market_day"):
+        text += " — DIA DE MERCADO (queda generalizada)"
+    return text
+
+
+def describe_earnings(e: Optional[Dict[str, Any]]) -> str:
+    if not e or not e.get("known"):
+        return "datas de resultados indisponíveis"
+    parts = []
+    ago = e.get("reaction_sessions_ago")
+    if ago is None:
+        parts.append(f"sem resultados nas últimas {EARNINGS_LOOKBACK_SESSIONS} sessões")
+    else:
+        when = "hoje" if ago == 0 else f"há {ago} sessão(ões)"
+        surprise = e.get("eps_surprise_pct")
+        parts.append(f"reação a resultados {when}" + (f" (surpresa EPS {surprise:+.1f}%)" if surprise is not None else ""))
+    if e.get("next_date"):
+        parts.append(f"próximos resultados a {e['next_date']} (dentro da janela do trade)")
+    return "; ".join(parts)
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -418,6 +586,8 @@ def classify_with_llm(analyzer, signal: Dict[str, Any], news_ctx: str) -> Dict[s
         name=signal["name"],
         bench=signal["bench"],
         reasons=", ".join(signal["reasons"]),
+        market=describe_market(signal.get("market") or {}),
+        earnings=describe_earnings(signal.get("earnings")),
         date=m.get("date"),
         metrics=metrics_txt,
         tech_score=signal["tech_score"],
@@ -459,55 +629,107 @@ def load_journal(path: Path) -> List[Dict[str, Any]]:
         return []
 
 
+def simulate_exit(after, entry: float, stop: float, target: float) -> Optional[Tuple[str, Optional[float]]]:
+    """
+    Simula o trade com entrada na abertura da sessão seguinte ao sinal.
+
+    - abertura de entrada já abaixo do stop ou acima do alvo → "sem_entrada" (setup invalidado);
+    - gap através do stop/alvo numa sessão posterior → sai na abertura;
+    - stop e alvo tocados no mesmo dia → "ambos", conta como stop (conservador);
+    - nenhum tocado em MAX_HOLD_SESSIONS sessões → "tempo", sai no fecho.
+    """
+    window = after.iloc[:MAX_HOLD_SESSIONS]
+    for k, (_, row) in enumerate(window.iterrows()):
+        o, h, lo = float(row["Open"]), float(row["High"]), float(row["Low"])
+        if k == 0 and (o <= stop or o >= target):
+            return "sem_entrada", None
+        if o <= stop:
+            return "stop", _safe((o / entry - 1) * 100)
+        if o >= target:
+            return "alvo", _safe((o / entry - 1) * 100)
+        hit_stop, hit_target = lo <= stop, h >= target
+        if hit_stop:
+            return ("ambos" if hit_target else "stop"), _safe((stop / entry - 1) * 100)
+        if hit_target:
+            return "alvo", _safe((target / entry - 1) * 100)
+    if len(after) >= MAX_HOLD_SESSIONS:
+        return "tempo", _safe((float(window["Close"].iloc[-1]) / entry - 1) * 100)
+    return None
+
+
 def update_outcomes(journal: List[Dict[str, Any]], histories: Dict[str, Any]) -> None:
-    """Preenche retorno a N sessões e se stop/alvo foram tocados primeiro."""
+    """
+    Preenche, a partir da abertura da sessão seguinte ao sinal: retorno a N sessões,
+    retorno face ao SPY no mesmo período, se a ordem limitada em entry_low teria sido
+    executada nessa sessão e o resultado simulado do trade (stop/alvo/tempo).
+    Registos calculados com outra base (versões antigas) são recalculados.
+    """
+    spy = histories.get("SPY")
+    spy_dates = {str(d.date()): i for i, d in enumerate(spy.index)} if spy is not None else {}
     for rec in journal:
         df = histories.get(rec["ticker"])
         if df is None:
             continue
+        outcomes = rec.get("outcomes") or {}
+        if outcomes.get("basis") != OUTCOME_BASIS:
+            outcomes = {"basis": OUTCOME_BASIS}
+        rec["outcomes"] = outcomes
         idx = [str(d.date()) for d in df.index]
         if rec["date"] not in idx:
             continue
-        i0 = idx.index(rec["date"])
-        entry = rec["close"]
-        after = df.iloc[i0 + 1 :]
-        outcomes = rec.setdefault("outcomes", {})
-        for n in OUTCOME_HORIZONS:
-            if len(after) >= n and f"ret_{n}d" not in outcomes:
-                outcomes[f"ret_{n}d"] = _safe((float(after["Close"].iloc[n - 1]) / entry - 1) * 100)
+        after = df.iloc[idx.index(rec["date"]) + 1 :]
+        if after.empty:
+            continue
+        entry = float(after["Open"].iloc[0])
+        outcomes["entry_open"] = _safe(entry)
         lv = rec.get("levels") or {}
+        if lv.get("entry_low") is not None:
+            outcomes["limit_filled"] = bool(float(after["Low"].iloc[0]) <= lv["entry_low"])
+        d0 = str(after.index[0].date())
+        for n in OUTCOME_HORIZONS:
+            if len(after) < n or f"ret_{n}d" in outcomes:
+                continue
+            ret = (float(after["Close"].iloc[n - 1]) / entry - 1) * 100
+            outcomes[f"ret_{n}d"] = _safe(ret)
+            dn = str(after.index[n - 1].date())
+            if d0 in spy_dates and dn in spy_dates:
+                spy_ret = (float(spy["Close"].iloc[spy_dates[dn]]) / float(spy["Open"].iloc[spy_dates[d0]]) - 1) * 100
+                outcomes[f"excess_{n}d"] = _safe(ret - spy_ret)
         if "exit" not in outcomes and lv.get("stop") and lv.get("target"):
-            for _, row in after.iloc[:10].iterrows():
-                hit_stop = float(row["Low"]) <= lv["stop"]
-                hit_target = float(row["High"]) >= lv["target"]
-                if hit_stop and hit_target:
-                    outcomes["exit"] = "ambos"  # mesmo dia, inconclusivo
-                    break
-                if hit_stop:
-                    outcomes["exit"] = "stop"
-                    break
-                if hit_target:
-                    outcomes["exit"] = "alvo"
-                    break
-            else:
-                if len(after) >= 10:
-                    outcomes["exit"] = "tempo"
+            res = simulate_exit(after, entry, lv["stop"], lv["target"])
+            if res:
+                outcomes["exit"], outcomes["exit_ret"] = res
 
 
-def journal_stats(journal: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    stats: Dict[str, Dict[str, Any]] = {}
-    for key in list(CAUSE_LABELS) + ["todos"]:
-        recs = [r for r in journal if key == "todos" or r.get("cause_type") == key]
-        r5 = [r["outcomes"]["ret_5d"] for r in recs if r.get("outcomes", {}).get("ret_5d") is not None]
-        exits = [r["outcomes"].get("exit") for r in recs if r.get("outcomes", {}).get("exit") in ("alvo", "stop")]
-        stats[key] = {
-            "n": len(recs),
-            "n_closed": len(r5),
-            "avg_5d": _safe(sum(r5) / len(r5)) if r5 else None,
-            "win_5d": _safe(100 * sum(1 for x in r5 if x > 0) / len(r5), 0) if r5 else None,
-            "target_rate": _safe(100 * exits.count("alvo") / len(exits), 0) if exits else None,
-        }
-    return stats
+def _group_stats(recs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    outs = [r.get("outcomes") or {} for r in recs]
+    r5 = [o["ret_5d"] for o in outs if o.get("ret_5d") is not None]
+    x5 = [o["excess_5d"] for o in outs if o.get("excess_5d") is not None]
+    exits = [o.get("exit") for o in outs if o.get("exit") in ("alvo", "stop", "ambos")]
+    trades = [o["exit_ret"] for o in outs if o.get("exit_ret") is not None]
+    avg = lambda xs: _safe(sum(xs) / len(xs)) if xs else None  # noqa: E731
+    return {
+        "n": len(recs),
+        "n_closed": len(r5),
+        "avg_5d": avg(r5),
+        "avg_excess_5d": avg(x5),
+        "win_5d": _safe(100 * sum(1 for x in r5 if x > 0) / len(r5), 0) if r5 else None,
+        "target_rate": _safe(100 * exits.count("alvo") / len(exits), 0) if exits else None,
+        "avg_trade": avg(trades),
+    }
+
+
+def journal_stats(journal: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Estatísticas globais, por causa (IA), por veredito (IA) e por regime de mercado."""
+    return {
+        "todos": _group_stats(journal),
+        "causa": {k: _group_stats([r for r in journal if r.get("cause_type") == k]) for k in CAUSE_LABELS},
+        "veredito": {k: _group_stats([r for r in journal if r.get("verdict") == k]) for k in VERDICT_LABELS},
+        "regime": {
+            k: _group_stats([r for r in journal if r.get("spy_d200") is not None and (r["spy_d200"] <= 0) == (k == "correcao")])
+            for k in REGIME_LABELS
+        },
+    }
 
 
 # --------------------------------------------------------------------------
@@ -539,7 +761,8 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:32px 0 12px}.mut{color
 .tk{font-size:20px;font-weight:700}.drop{font-size:20px;font-weight:700;color:var(--r)}
 .badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;margin-right:6px;border:1px solid currentColor}
 .pontual{color:var(--g)}.estrutural{color:var(--r)}.incerto{color:var(--a)}
-.entrar{color:var(--g)}.aguardar_estabilizacao{color:var(--a)}.evitar{color:var(--r)}
+.entrar{color:var(--g)}.aguardar_estabilizacao{color:var(--a)}.evitar{color:var(--r)}.info{color:var(--acc)}
+.alert{border-color:var(--a);color:var(--a);font-weight:600}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:12px 0}
 .kv{background:var(--bg);border-radius:10px;padding:8px 10px}.kv b{display:block;font-size:15px}.kv span{font-size:12px;color:var(--mut)}
 ul{margin:6px 0;padding-left:18px}a{color:var(--acc);text-decoration:none}
@@ -551,6 +774,21 @@ footer{margin-top:40px;font-size:12px;color:var(--mut)}
 """
 
 
+def _earnings_badges(e: Optional[Dict[str, Any]]) -> str:
+    if not e or not e.get("known"):
+        return ""
+    out = ""
+    ago = e.get("reaction_sessions_ago")
+    if ago is not None:
+        label = "Resultados hoje" if ago == 0 else f"Resultados há {ago} sessão(ões)"
+        if e.get("eps_surprise_pct") is not None:
+            label += f" · EPS {e['eps_surprise_pct']:+.1f}%"
+        out += f'<span class="badge info">{_e(label)}</span>'
+    if e.get("next_date"):
+        out += f'<span class="badge evitar">Próximos resultados {_e(e["next_date"])}</span>'
+    return out
+
+
 def _signal_card(s: Dict[str, Any]) -> str:
     m, a, lv = s["metrics"], s.get("ai") or {}, s.get("levels") or {}
     cause, verdict = a.get("cause_type", "incerto"), a.get("verdict", "aguardar_estabilizacao")
@@ -560,18 +798,20 @@ def _signal_card(s: Dict[str, Any]) -> str:
         f'<span class="mut">{_e(n.get("source"))} {_e(n.get("date"))}</span></li>'
         for n in s.get("news", [])
     )
+    beta = f" (β {m['beta']:.1f})" if m.get("beta") is not None else ""
     return f"""
 <div class="card">
   <div class="top"><div><span class="tk">{_e(s['ticker'])}</span> <span class="mut">{_e(s['name'])}</span></div>
   <div class="drop">{_pct(m.get('ret_1d'))}</div></div>
   <div style="margin-top:6px"><span class="badge {cause}">{CAUSE_LABELS[cause]} · {_e(a.get('confidence', 0))}%</span>
-  <span class="badge {verdict}">{VERDICT_LABELS[verdict]}</span>
+  <span class="badge {verdict}">{VERDICT_LABELS[verdict]}</span>{_earnings_badges(s.get('earnings'))}
   <span class="mut" style="font-size:13px">{_e(', '.join(s['reasons']))}</span></div>
   <p><b>Causa:</b> {_e(a.get('cause_summary'))}</p>
   {f"<p class='mut'>{_e(a.get('why_classification'))}</p>" if a.get('why_classification') else ''}
   <div class="grid">
     <div class="kv"><span>Fecho</span><b>{_num(m.get('close'))}</b></div>
-    <div class="kv"><span>vs {_e(s['bench'])}</span><b>{_pct(m.get('excess_1d'))}</b></div>
+    <div class="kv"><span>vs {_e(s['bench'])}{_e(beta)}</span><b>{_pct(m.get('abn_1d'))}</b></div>
+    <div class="kv"><span>Gap abertura</span><b>{_pct(m.get('gap_pct'))}</b></div>
     <div class="kv"><span>RSI 14</span><b>{_e(m.get('rsi14'))}</b></div>
     <div class="kv"><span>vs MM200</span><b>{_pct(m.get('dist_sma200'))}</b></div>
     <div class="kv"><span>Do topo 52s</span><b>{_pct(m.get('from_52w_high'))}</b></div>
@@ -594,63 +834,98 @@ def _signal_card(s: Dict[str, Any]) -> str:
 </div>"""
 
 
+def _stat_row(label: str, v: Dict[str, Any]) -> str:
+    return (
+        f"<tr><td>{_e(label)}</td><td>{v['n']}</td><td>{v['n_closed']}</td>"
+        f"<td>{_pct(v['avg_5d'])}</td><td>{_pct(v['avg_excess_5d'])}</td><td>{_pct(v['win_5d'], False)}</td>"
+        f"<td>{_pct(v['target_rate'], False)}</td><td>{_pct(v['avg_trade'])}</td></tr>"
+    )
+
+
 def render_html(run_date: str, signals: List[Dict[str, Any]], watch: List[Dict[str, Any]],
-                journal: List[Dict[str, Any]], stats: Dict[str, Dict[str, Any]]) -> str:
+                journal: List[Dict[str, Any]], stats: Dict[str, Any],
+                market: Optional[Dict[str, Any]] = None, skipped: Optional[Dict[str, List[str]]] = None) -> str:
+    market, skipped = market or {}, skipped or {}
     cards = "".join(_signal_card(s) for s in signals) or (
         '<div class="card mut">Nenhuma queda relevante hoje no universo.</div>'
+    )
+    banner = (
+        f'<div class="card alert">Dia de mercado: {_e(describe_market(market))}. '
+        f'Quedas largamente explicadas pelo mercado.</div>'
+        if market.get("market_day") else ""
     )
     rows = "".join(
         f"<tr><td><b>{_e(w['ticker'])}</b></td>"
         f"<td class='{'neg' if (w.get('ret_1d') or 0) < 0 else 'pos'}'>{_pct(w.get('ret_1d'))}</td>"
-        f"<td>{_pct(w.get('excess_1d'))}</td><td>{_pct(w.get('ret_3d'))}</td><td>{_e(w.get('atr_mult'))}</td>"
-        f"<td>{_e(w.get('volume_ratio'))}</td><td>{_e(w.get('rsi14'))}</td><td>{_pct(w.get('dist_sma200'))}</td></tr>"
+        f"<td>{_pct(w.get('abn_1d'))}</td><td>{_e(w.get('beta'))}</td><td>{_pct(w.get('ret_3d'))}</td>"
+        f"<td>{_e(w.get('atr_mult'))}</td><td>{_e(w.get('volume_ratio'))}</td><td>{_e(w.get('rsi14'))}</td>"
+        f"<td>{_pct(w.get('dist_sma200'))}</td></tr>"
         for w in watch
     )
-    stat_rows = "".join(
-        f"<tr><td>{'Todos' if k == 'todos' else CAUSE_LABELS[k]}</td><td>{v['n']}</td><td>{v['n_closed']}</td>"
-        f"<td>{_pct(v['avg_5d'])}</td><td>{_pct(v['win_5d'], False)}</td><td>{_pct(v['target_rate'], False)}</td></tr>"
-        for k, v in stats.items()
-    )
+    stat_rows = _stat_row("Todos", stats["todos"])
+    stat_rows += "".join(_stat_row(f"Causa: {CAUSE_LABELS[k]}", v) for k, v in stats["causa"].items())
+    stat_rows += "".join(_stat_row(f"Veredito: {VERDICT_LABELS[k]}", v) for k, v in stats["veredito"].items())
+    stat_rows += "".join(_stat_row(f"Regime: {REGIME_LABELS[k]}", v) for k, v in stats["regime"].items())
     hist = "".join(
         f"<tr><td>{_e(r['date'])} <b>{_e(r['ticker'])}</b></td><td>{_pct(r.get('ret_1d'))}</td>"
         f"<td>{_e(CAUSE_LABELS.get(r.get('cause_type'), '—'))}</td><td>{_e(VERDICT_LABELS.get(r.get('verdict'), '—'))}</td>"
         + "".join(f"<td>{_pct((r.get('outcomes') or {}).get(f'ret_{n}d'))}</td>" for n in OUTCOME_HORIZONS)
-        + f"<td>{_e((r.get('outcomes') or {}).get('exit', '…'))}</td></tr>"
+        + f"<td>{_pct((r.get('outcomes') or {}).get('excess_5d'))}</td>"
+        + f"<td>{_e((r.get('outcomes') or {}).get('exit', '…'))} {_pct((r.get('outcomes') or {}).get('exit_ret')) if (r.get('outcomes') or {}).get('exit_ret') is not None else ''}</td></tr>"
         for r in sorted(journal, key=lambda r: r["date"], reverse=True)[:60]
+    )
+    skipped_txt = "".join(
+        f'<p class="mut">{_e(label)}: {_e(", ".join(skipped[key]))}</p>'
+        for key, label in (("stale", "Sem barra deste pregão (ignorados)"),
+                           ("cooldown", "Sinal recente, em espera (ignorados)"))
+        if skipped.get(key)
     )
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return f"""<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Dip Scanner · {run_date}</title>
 <style>{CSS}</style></head><body><main>
-<h1>Dip Scanner</h1><div class="mut">Pregão de {run_date} · {len(signals)} sinal(is) · gerado {gen}</div>
+<h1>Dip Scanner</h1><div class="mut">Pregão de {run_date} · {len(signals)} sinal(is) · {_e(describe_market(market))} · gerado {gen}</div>
+{banner}
 <h2>Sinais de hoje</h2>{cards}
 <h2>Registo de sinais</h2>
-<div class="card scroll"><table><tr><th>Causa</th><th>Sinais</th><th>Com 5d</th><th>Média 5d</th><th>% positivos 5d</th><th>% alvo antes do stop</th></tr>{stat_rows}</table></div>
-<div class="card scroll"><table><tr><th>Sinal</th><th>Dia</th><th>Causa</th><th>Veredito</th><th>3d</th><th>5d</th><th>10d</th><th>Saída</th></tr>{hist or '<tr><td colspan=8 class=mut>Ainda sem histórico.</td></tr>'}</table></div>
+<p class="mut">Retornos medidos a partir da abertura da sessão seguinte ao sinal. “vs SPY” = retorno menos o do SPY no mesmo período. “Trade médio” simula stop/alvo/10 sessões.</p>
+<div class="card scroll"><table><tr><th>Grupo</th><th>Sinais</th><th>Com 5d</th><th>Média 5d</th><th>vs SPY 5d</th><th>% positivos 5d</th><th>% alvo antes do stop</th><th>Trade médio</th></tr>{stat_rows}</table></div>
+<div class="card scroll"><table><tr><th>Sinal</th><th>Dia</th><th>Causa</th><th>Veredito</th><th>3d</th><th>5d</th><th>10d</th><th>vs SPY 5d</th><th>Saída</th></tr>{hist or '<tr><td colspan=9 class=mut>Ainda sem histórico.</td></tr>'}</table></div>
 <h2>Universo hoje</h2>
-<div class="card scroll"><table><tr><th>Ticker</th><th>Dia</th><th>vs ETF</th><th>3d</th><th>×ATR</th><th>Vol×</th><th>RSI</th><th>vs MM200</th></tr>{rows}</table></div>
+<div class="card scroll"><table><tr><th>Ticker</th><th>Dia</th><th>vs ETF (β)</th><th>β</th><th>3d</th><th>×ATR</th><th>Vol×</th><th>RSI</th><th>vs MM200</th></tr>{rows}</table>{skipped_txt}</div>
 <footer>Ferramenta de apoio à decisão. Não é aconselhamento financeiro. Níveis calculados por ATR; causa classificada por IA a partir de notícias públicas.</footer>
 </main></body></html>"""
 
 
-def build_message(run_date: str, signals: List[Dict[str, Any]], url: str) -> str:
+def build_message(run_date: str, signals: List[Dict[str, Any]], url: str,
+                  market: Optional[Dict[str, Any]] = None) -> str:
+    market = market or {}
+    head = f"📉 *Dip Scanner* · {run_date}"
+    lines = [head if not signals else f"{head} · {len(signals)} sinal(is)"]
+    if market.get("market_day"):
+        lines.append(f"⚠️ Dia de mercado: {describe_market(market)}")
     if not signals:
-        lines = [f"📉 *Dip Scanner* · {run_date}", "Nenhuma queda relevante hoje no universo."]
+        lines.append("Nenhuma queda relevante hoje no universo.")
     else:
-        lines = [f"📉 *Dip Scanner* · {run_date} · {len(signals)} sinal(is)", ""]
+        lines.append("")
         icon = {"pontual": "🟢", "estrutural": "🔴", "incerto": "🟡"}
         for s in signals:
-            a, lv, m = s.get("ai") or {}, s.get("levels") or {}, s["metrics"]
+            a, lv, m, e = s.get("ai") or {}, s.get("levels") or {}, s["metrics"], s.get("earnings") or {}
+            tags = ""
+            if e.get("reaction_sessions_ago") is not None:
+                tags += " · 📅 resultados"
             lines.append(
                 f"{icon.get(a.get('cause_type'), '🟡')} *{s['ticker']}* {_pct(m.get('ret_1d'))} "
-                f"(vs {s['bench']} {_pct(m.get('excess_1d'))}) · {CAUSE_LABELS.get(a.get('cause_type'), 'Incerto')} "
-                f"· {VERDICT_LABELS.get(a.get('verdict'), '—')}"
+                f"(vs {s['bench']} β-aj. {_pct(m.get('abn_1d'))}) · {CAUSE_LABELS.get(a.get('cause_type'), 'Incerto')} "
+                f"· {VERDICT_LABELS.get(a.get('verdict'), '—')}{tags}"
             )
             if a.get("cause_summary"):
                 lines.append(f"  {a['cause_summary']}")
             if lv:
                 lines.append(f"  Entrada {_num(lv.get('entry_low'))}–{_num(lv.get('entry_high'))} · "
                              f"Stop {_num(lv.get('stop'))} · Alvo {_num(lv.get('target'))}")
+            if e.get("next_date"):
+                lines.append(f"  ⚠️ Próximos resultados a {e['next_date']}")
             lines.append("")
     if url:
         # link Markdown: o Telegram (Markdown legado) apaga "_" em URLs soltas
@@ -662,26 +937,70 @@ def build_message(run_date: str, signals: List[Dict[str, Any]], url: str) -> str
 # Orquestração
 # --------------------------------------------------------------------------
 
-def scan(cfg: DipScanConfig, histories: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Calcula métricas de todo o universo e devolve (gatilhos, linhas da watchlist)."""
+def _sessions_since_last_signal(ticker: str, df, journal: List[Dict[str, Any]], run_date: str) -> Optional[int]:
+    """Nº de sessões do ticker desde o último sinal registado antes de run_date (None = nunca)."""
+    past = [r["date"] for r in journal if r.get("ticker") == ticker and r.get("date", "") < run_date]
+    if not past:
+        return None
+    last = max(past)
+    return sum(1 for d in df.index if str(d.date()) > last)
+
+
+def build_signal(ticker: str, name: str, bench: str, m: Dict[str, Any], reasons: List[str],
+                 market: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    score, notes = technical_score(m, market)
+    return {
+        "ticker": ticker, "name": name, "bench": bench, "metrics": m,
+        "reasons": reasons, "tech_score": score, "tech_notes": notes,
+        "levels": suggest_levels(m),
+    }
+
+
+def select_signals(candidates: List[Dict[str, Any]], cfg: DipScanConfig) -> List[Dict[str, Any]]:
+    """
+    Ordenação + limite diário, partilhados com o backtest: mais intensos primeiro (queda em
+    ATR), para não favorecer só as ações de beta alto, cortados em max_signals.
+    """
+    return sorted(candidates, key=lambda s: -(s["metrics"].get("intensity") or 0))[: cfg.max_signals]
+
+
+def scan(
+    cfg: DipScanConfig,
+    histories: Dict[str, Any],
+    run_date: Optional[str] = None,
+    journal: Optional[List[Dict[str, Any]]] = None,
+    market: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, List[str]]]:
+    """Calcula métricas de todo o universo e devolve (gatilhos, linhas da watchlist, ignorados)."""
+    run_date = run_date or session_date(histories)
+    journal = journal or []
+    market = market if market is not None else market_context(histories, run_date, cfg)
     triggered, watch = [], []
+    skipped: Dict[str, List[str]] = {"stale": [], "cooldown": []}
     for ticker, (name, bench) in cfg.universe.items():
         df = histories.get(ticker)
         if df is None:
             continue
-        m = compute_metrics(df, histories.get(bench))
+        if _last_date(df) != run_date:
+            logger.warning("[dip] %s: última barra %s ≠ pregão %s — ignorado", ticker, _last_date(df), run_date)
+            skipped["stale"].append(ticker)
+            continue
+        bench_df = histories.get(bench)
+        if bench_df is not None and _last_date(bench_df) != run_date:
+            bench_df = None
+        m = compute_metrics(df, bench_df)
         watch.append({"ticker": ticker, **m})
         ok, reasons = check_trigger(m, cfg)
-        if ok:
-            score, notes = technical_score(m)
-            triggered.append({
-                "ticker": ticker, "name": name, "bench": bench, "metrics": m,
-                "reasons": reasons, "tech_score": score, "tech_notes": notes,
-                "levels": suggest_levels(m),
-            })
+        if not ok:
+            continue
+        since = _sessions_since_last_signal(ticker, df, journal, run_date)
+        if cfg.cooldown_sessions and since is not None and since <= cfg.cooldown_sessions:
+            logger.info("[dip] %s: sinal há %d sessão(ões) — em espera", ticker, since)
+            skipped["cooldown"].append(ticker)
+            continue
+        triggered.append(build_signal(ticker, name, bench, m, reasons, market))
     watch.sort(key=lambda w: w.get("ret_1d") if w.get("ret_1d") is not None else 0)
-    triggered.sort(key=lambda s: s["metrics"].get("ret_1d") or 0)
-    return triggered[: cfg.max_signals], watch
+    return select_signals(triggered, cfg), watch, skipped
 
 
 def run(cfg: DipScanConfig, dry_run: bool = False, notify: bool = True, force: bool = False) -> int:
@@ -692,17 +1011,18 @@ def run(cfg: DipScanConfig, dry_run: bool = False, notify: bool = True, force: b
         logger.error("[dip] sem dados de mercado — abortar")
         return 1
 
-    spy = histories.get("SPY")
-    run_date = str(spy.index[-1].date()) if spy is not None else datetime.now().strftime("%Y-%m-%d")
+    run_date = session_date(histories)
     out = cfg.output_dir
     journal_path = out / "data" / "signals.json"
     journal = load_journal(journal_path)
 
-    if not force and any(r["date"] == run_date for r in journal) and (out / "reports" / f"{run_date}.html").exists():
+    # o relatório do pregão é escrito em todas as execuções, com ou sem sinais
+    if not force and (out / "reports" / f"{run_date}.html").exists():
         logger.info("[dip] pregão %s já processado — nada a fazer (use --force)", run_date)
         return 0
 
-    signals, watch = scan(cfg, histories)
+    market = market_context(histories, run_date, cfg)
+    signals, watch, skipped = scan(cfg, histories, run_date, journal, market)
     logger.info("[dip] %d gatilho(s): %s", len(signals), ", ".join(s["ticker"] for s in signals) or "—")
 
     analyzer = None
@@ -710,28 +1030,35 @@ def run(cfg: DipScanConfig, dry_run: bool = False, notify: bool = True, force: b
         from src.analyzer import get_analyzer
         analyzer = get_analyzer()
     for s in signals:
+        s["market"] = market
         if dry_run:
             s["news"] = []
+            s["earnings"] = {"known": False}
             s["ai"] = {"cause_type": "incerto", "confidence": 0,
                        "cause_summary": "dry-run: sem IA", "verdict": "aguardar_estabilizacao"}
             continue
+        session_dates = [str(d.date()) for d in histories[s["ticker"]].index]
+        s["earnings"] = earnings_context(fetch_earnings(s["ticker"]), session_dates)
         news_ctx, s["news"] = fetch_news(s["ticker"], s["name"])
         s["ai"] = classify_with_llm(analyzer, s, news_ctx)
 
     # registo: substitui sinais do mesmo pregão (re-execução com --force)
     journal = [r for r in journal if r["date"] != run_date]
     for s in signals:
-        a = s.get("ai") or {}
+        a, m, e = s.get("ai") or {}, s["metrics"], s.get("earnings") or {}
         journal.append({
-            "date": s["metrics"]["date"], "ticker": s["ticker"], "close": s["metrics"]["close"],
-            "ret_1d": s["metrics"]["ret_1d"], "excess_1d": s["metrics"].get("excess_1d"),
+            "date": m["date"], "ticker": s["ticker"], "close": m["close"],
+            "ret_1d": m["ret_1d"], "excess_1d": m.get("excess_1d"), "abn_1d": m.get("abn_1d"),
+            "beta": m.get("beta"), "gap_pct": m.get("gap_pct"), "intensity": m.get("intensity"),
+            "market_day": market.get("market_day"), "spy_d200": market.get("spy_d200"),
+            "earnings_reaction": e.get("reaction_sessions_ago"), "next_earnings": e.get("next_date"),
             "tech_score": s["tech_score"], "cause_type": a.get("cause_type"),
             "confidence": a.get("confidence"), "verdict": a.get("verdict"), "levels": s["levels"],
         })
     update_outcomes(journal, histories)
     stats = journal_stats(journal)
 
-    page = render_html(run_date, signals, watch, journal, stats)
+    page = render_html(run_date, signals, watch, journal, stats, market, skipped)
     (out / "reports").mkdir(parents=True, exist_ok=True)
     (out / "data").mkdir(parents=True, exist_ok=True)
     (out / "index.html").write_text(page, encoding="utf-8")
@@ -740,7 +1067,7 @@ def run(cfg: DipScanConfig, dry_run: bool = False, notify: bool = True, force: b
     (out / ".nojekyll").touch()
     logger.info("[dip] relatório escrito em %s", out / "index.html")
 
-    msg = build_message(run_date, signals, cfg.report_url)
+    msg = build_message(run_date, signals, cfg.report_url, market)
     print(msg)
     if notify and not dry_run:
         try:
@@ -757,7 +1084,7 @@ def run(cfg: DipScanConfig, dry_run: bool = False, notify: bool = True, force: b
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Dip Scanner — quedas pontuais para swing")
-    parser.add_argument("--dry-run", action="store_true", help="sem LLM, notícias nem notificação")
+    parser.add_argument("--dry-run", action="store_true", help="sem LLM, notícias, resultados nem notificação")
     parser.add_argument("--no-notify", action="store_true", help="não enviar notificação")
     parser.add_argument("--force", action="store_true", help="reprocessar mesmo pregão")
     parser.add_argument("--tickers", help="substitui o universo, ex.: NVDA:SMH,TTD")
