@@ -82,6 +82,8 @@ jobs:
           DIP_MIN_VOLUME_RATIO: ${{ vars.DIP_MIN_VOLUME_RATIO }}
           DIP_MULTIDAY_DROP_PCT: ${{ vars.DIP_MULTIDAY_DROP_PCT }}
           DIP_MAX_SIGNALS: ${{ vars.DIP_MAX_SIGNALS }}
+          DIP_COOLDOWN_SESSIONS: ${{ vars.DIP_COOLDOWN_SESSIONS }}
+          DIP_MARKET_DAY_PCT: ${{ vars.DIP_MARKET_DAY_PCT }}
           DIP_REPORT_URL: ${{ vars.DIP_REPORT_URL }}
           DIP_OUTPUT_DIR: site
           INPUT_FORCE: ${{ github.event.inputs.force }}
