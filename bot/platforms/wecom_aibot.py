@@ -157,6 +157,17 @@ class WecomAibotHandler:
     def handle_frame(self, frame: dict) -> None:
         """处理一条 aibot_msg_callback 帧（SDK 事件循环线程上同步调用）"""
         try:
+            # 全局机器人开关（BOT_ENABLED）契约对齐：与 webhook 统一入口
+            # （bot/handler.py）同型——关闭时静默忽略消息（不分发、不回复），
+            # 先于排重/限流检查。与 WECOM_AIBOT_ENABLED（企微通道开关）正交：
+            # 前者管全局机器人功能，后者管企微通道是否启用。
+            config = get_config()
+            if not getattr(config, "bot_enabled", True):
+                logger.info(
+                    "[WeCom AI Bot] 机器人功能未启用（BOT_ENABLED=false），消息忽略"
+                )
+                return
+
             bot_message = self._parse_frame(frame)
             if bot_message is None:
                 return

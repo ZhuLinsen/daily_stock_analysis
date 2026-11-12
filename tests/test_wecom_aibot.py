@@ -367,7 +367,9 @@ class TestMsgidDedup:
         handler, _ = _handler()
         frame = _text_frame(msgid="dup-1")
 
-        with mock.patch.object(handler, "_enqueue_message") as enqueue:
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=mock.MagicMock()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue:
             handler.handle_frame(frame)
             handler.handle_frame(frame)
 
@@ -377,7 +379,9 @@ class TestMsgidDedup:
     def test_distinct_msgids_both_processed(self):
         handler, _ = _handler()
 
-        with mock.patch.object(handler, "_enqueue_message") as enqueue:
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=mock.MagicMock()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue:
             handler.handle_frame(_text_frame(msgid="a"))
             handler.handle_frame(_text_frame(msgid="b"))
 
@@ -419,7 +423,9 @@ class TestConversationRateLimit:
         handler, _ = _handler()
         frames = [_text_frame(msgid=f"m{i}") for i in range(31)]
 
-        with mock.patch.object(handler, "_enqueue_message") as enqueue:
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=mock.MagicMock()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue:
             for frame in frames:
                 handler.handle_frame(frame)
 
@@ -2225,6 +2231,76 @@ class TestScheduleWithinQuotaCriticalSection:
             loop.call_soon_threadsafe(loop.stop)
             thread.join(timeout=5)
             loop.close()
+
+
+# ---------------------------------------------------------------------------
+# r9 OR-COR-bot-enabled-bypass: the global BOT_ENABLED contract must gate the
+# WeCom entry the same way bot/handler.py gates webhooks — disabled bot means
+# silent drop (no dispatch, no reply), checked before any message handling.
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalBotEnabledGate:
+    def _disabled_config(self):
+        from src.config import Config
+
+        return Config(stock_list=[], bot_enabled=False)
+
+    def test_bot_disabled_drops_message_before_dispatch(self, caplog):
+        """BOT_ENABLED=false + WECOM_AIBOT_ENABLED=true：收到 /analyze →
+        dispatcher 零调用、不回复（webhook 拒绝路径同款：静默忽略）。"""
+        import logging
+
+        handler, sdk_client = _handler()
+        frame = _text_frame(msgid="m-gate", content="/analyze 600519")
+        caplog.set_level(logging.INFO)
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=self._disabled_config()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue, \
+                mock.patch.object(handler, "_schedule_reply") as schedule, \
+                mock.patch("bot.dispatcher.get_dispatcher") as get_dispatcher:
+            handler.handle_frame(frame)
+
+        # 消息未进入处理管线 → dispatcher 永远不会被触达
+        assert enqueue.call_count == 0
+        get_dispatcher.assert_not_called()
+        # webhook 同款语义：静默忽略（不回复用户）
+        schedule.assert_not_called()
+        sdk_client.reply.assert_not_called()
+        assert "机器人功能未启用" in caplog.text
+
+    def test_bot_disabled_gate_precedes_dedup_and_ratelimit(self):
+        """门在排重/限流之前：禁用时连 msgid 缓存与会话限流都不消费。"""
+        handler, _ = _handler()
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=self._disabled_config()), \
+                mock.patch.object(handler, "_is_duplicate_msgid") as dup, \
+                mock.patch.object(handler, "_allow_conversation") as allow:
+            handler.handle_frame(_text_frame(msgid="m-g2"))
+
+        dup.assert_not_called()
+        allow.assert_not_called()
+
+    def test_bot_enabled_true_still_processes(self):
+        """回归守卫：默认/显式 BOT_ENABLED=true 时处理行为不变。"""
+        handler, sdk_client = _handler()
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=mock.MagicMock()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue:
+            handler.handle_frame(_text_frame(msgid="m-ok", content="/help"))
+
+        assert enqueue.call_count == 1
+
+    def test_disabled_config_read_from_real_config_semantics(self):
+        """契约锚点：Config.bot_enabled 默认 True（不改变现有用户行为），
+        与 webhook 入口的 getattr(config, 'bot_enabled', True) 同型。"""
+        from src.config import Config
+
+        assert Config(stock_list=[]).bot_enabled is True
+        assert Config(stock_list=[], bot_enabled=False).bot_enabled is False
 
 
 if __name__ == "__main__":
