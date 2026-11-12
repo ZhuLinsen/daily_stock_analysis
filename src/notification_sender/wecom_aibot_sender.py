@@ -168,6 +168,7 @@ class WecomAibotSender:
             config: 全局配置对象
             rate_limiter: 可注入限流器（测试用）；默认进程级共享单例
         """
+        self._config = config
         self._notify_enabled = bool(
             getattr(config, "wecom_aibot_notify_enabled", False)
         )
@@ -238,11 +239,23 @@ class WecomAibotSender:
             return False
 
         if not client.is_running:
+            # 主开关守卫（r9 OR-COR-f398a721）：惰性启动必须与
+            # start_wecom_aibot_background 同源检查 WECOM_AIBOT_ENABLED——
+            # 主开关关闭（凭据/通知配置残留）时不得拉起长连接通道。
+            if not bool(
+                getattr(self._config, "wecom_aibot_enabled", False)
+            ):
+                logger.warning(
+                    "[WeCom AI Bot] WECOM_AIBOT_ENABLED=false：长连接主开关"
+                    "未开启，不启动长连接，本次推送降级失败"
+                    "（如需推送请先开启主开关）"
+                )
+                return False
             # 惰性启动（r7 OR-COR-b365f904）：纯 CLI / --schedule 入口没有
             # lifespan/main.py 的启动钩子——通知首次实际使用时启动长连接。
-            # start_background 幂等（单连接互斥 + started 标志），与
-            # lifespan 双入口同进程只启动一次；纯 CLI 单次运行进程退出即
-            # 清理，schedule 常驻进程保持连接。
+            # start_background 幂等（单连接互斥 + started 标志 + r9 实例级
+            # 启动锁），与 lifespan 双入口同进程只启动一次；纯 CLI 单次
+            # 运行进程退出即清理，schedule 常驻进程保持连接。
             started = client.start_background()
             if not started:
                 logger.warning(

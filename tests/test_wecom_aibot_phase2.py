@@ -59,6 +59,15 @@ def _config(**overrides):
     return Config(**defaults)
 
 
+def _full_notify_config():
+    """CLI 配置齐全：主开关+通知开关+目标会话（r9 主开关守卫的前置）。"""
+    return _config(
+        wecom_aibot_enabled=True,
+        wecom_aibot_notify_enabled=True,
+        wecom_aibot_notify_chatid="c1",
+    )
+
+
 def _running_client(chat_id="chat-1", result_frame=None):
     """Mock a running WecomAibotClient whose send_to_chat succeeds (r2 base)."""
     client = mock.MagicMock()
@@ -151,7 +160,7 @@ class TestAcc5PushFailureDegradation:
     def test_push_sdk_missing_degrades_to_false(self):
         """SDK 缺失：get_wecom_aibot_client 返回 None（含安装提示），渠道降级。"""
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
 
         with mock.patch(
@@ -165,7 +174,7 @@ class TestAcc5PushFailureDegradation:
     def test_push_when_client_absent_returns_false(self):
         """前置条件未满足：客户端未创建（目标会话/长连接未就绪）。"""
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
 
         with mock.patch(
@@ -180,7 +189,7 @@ class TestAcc5PushFailureDegradation:
         → 推送降级 False、零派发。惰性启动成功即投递的路径见
         TestSenderLazyStart。"""
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = mock.MagicMock()
         client.is_running = False
@@ -196,7 +205,7 @@ class TestAcc5PushFailureDegradation:
 
     def test_push_empty_content_is_noop(self):
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
 
         with mock.patch(
@@ -210,7 +219,7 @@ class TestAcc5PushFailureDegradation:
     def test_push_ack_error_reports_failure(self):
         """回执 errcode!=0 / 配额丢弃（r2 send_to_chat 返回 False）→ 渠道报失败。"""
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = _running_client()
         client.send_to_chat.return_value = False
@@ -224,7 +233,7 @@ class TestAcc5PushFailureDegradation:
 
     def test_push_exception_reports_failure_not_raise(self):
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = _running_client()
         client.send_to_chat.side_effect = RuntimeError("ws gone")
@@ -308,7 +317,7 @@ class TestPushSuccessPath:
 
     def test_push_respects_timeout_parameter(self):
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = _running_client()
 
@@ -339,7 +348,7 @@ class TestPushRateLimiting:
 
     def test_31st_push_in_one_minute_is_rejected(self):
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = _running_client()
 
@@ -381,10 +390,10 @@ class TestPushRateLimiting:
         NotificationService/Pipeline 实例重建而重置。
         """
         s1 = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         s2 = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = _running_client()
 
@@ -594,7 +603,7 @@ class TestSenderLazyStart:
         """RED(OR-COR-b365f904)：纯 CLI/schedule 入口（无 lifespan）配置齐全
         → 首次发送惰性启动长连接并投递成功。"""
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = self._not_running_client()
 
@@ -611,7 +620,7 @@ class TestSenderLazyStart:
         """就绪预算内未连上 → 本次 False（不派发）；下次发送再试成功；
         start_background 不重复调用（幂等）。"""
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = self._not_running_client()
 
@@ -638,7 +647,7 @@ class TestSenderLazyStart:
     def test_lazy_start_refusal_returns_false(self):
         """start_background 被拒（如另一入口已占）→ False、不等待不派发。"""
         sender = WecomAibotSender(
-            _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+            _full_notify_config()
         )
         client = self._not_running_client()
         client.start_background = mock.MagicMock(return_value=False)
@@ -665,7 +674,7 @@ class TestSenderLazyStart:
 
 def sender_send(client) -> bool:
     sender = WecomAibotSender(
-        _config(wecom_aibot_notify_enabled=True, wecom_aibot_notify_chatid="c1")
+        _full_notify_config()
     )
     return sender.send_to_wecom_aibot("report")
 

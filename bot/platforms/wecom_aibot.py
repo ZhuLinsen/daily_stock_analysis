@@ -798,6 +798,10 @@ class WecomAibotClient:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._background_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        # 实例级启动锁（r9 OR-COR-c48c90ae）：start_background 的「查存活→
+        # 建线程→赋状态」全程临界区——与单例 map 锁分离；并发首次惰性
+        # 启动不再产生双监督线程双连接。
+        self._start_lock = threading.Lock()
         self._running = False
 
         # 认证失败退避状态（SDK 收到 errcode != 0 只上报不重试，重试在本层做）
@@ -964,28 +968,35 @@ class WecomAibotClient:
     # ------------------------------------------------------------------ #
 
     def start_background(self) -> bool:
-        """在后台线程启动客户端；已有存活线程时拒绝（单连接互斥）"""
+        """在后台线程启动客户端；已有存活线程时拒绝（单连接互斥）。
+
+        「查存活→建线程→赋状态」全程持实例级 ``_start_lock``（r9
+        OR-COR-c48c90ae）：并发首次启动（如 CLI 惰性启动与 lifespan 双
+        入口同时到达）只有一个调用方创建监督线程，其余调用方观察到存活
+        线程后幂等返回 False。
+        """
         if not WECOM_AIBOT_SDK_AVAILABLE:
             logger.warning("[WeCom AI Bot] SDK 未安装，无法启动")
             logger.warning("[WeCom AI Bot] 请运行: pip install wecom-aibot-python-sdk")
             return False
 
-        if self._background_thread and self._background_thread.is_alive():
-            logger.warning(
-                "[WeCom AI Bot] 客户端已在运行，拒绝重复启动（单机器人单连接互斥）"
-            )
-            return False
+        with self._start_lock:
+            if self._background_thread and self._background_thread.is_alive():
+                logger.warning(
+                    "[WeCom AI Bot] 客户端已在运行，拒绝重复启动（单机器人单连接互斥）"
+                )
+                return False
 
-        self._running = True
-        self._stop_event.clear()
-        self._background_thread = threading.Thread(
-            target=self._run_background,
-            daemon=True,
-            name="WecomAibotClient",
-        )
-        self._background_thread.start()
-        logger.info("[WeCom AI Bot] 后台客户端已启动")
-        return True
+            self._running = True
+            self._stop_event.clear()
+            self._background_thread = threading.Thread(
+                target=self._run_background,
+                daemon=True,
+                name="WecomAibotClient",
+            )
+            self._background_thread.start()
+            logger.info("[WeCom AI Bot] 后台客户端已启动")
+            return True
 
     def _run_background(self) -> None:
         """后台监督主循环：一轮 = 一个事件循环 + 一个 SDK 客户端实例
