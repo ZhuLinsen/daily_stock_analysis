@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] Dip Scanner：相对 ETF 跌幅改为按 120 日 beta 调整（`abn_1d`），信号按 ATR 强度排序并标记“大盘日”；新增开盘跳空与财报日/临近财报标记；信号表现改为从次日开盘计算并对比 SPY，统计按原因与 LLM 结论分组；修复节假日重复推送、同一下跌事件重复记录、行情未更新的股票被误算；新增 `DIP_COOLDOWN_SESSIONS`、`DIP_MARKET_DAY_PCT`。COIN/PYPL 默认基准改为 IBIT/XLF。
 - [新功能] 新增 Dip Scanner（`python -m src.services.dip_scanner`）：美股固定股票池急跌筛选 + 新闻/技术面 + LLM 判断下跌原因（一次性/结构性），生成 HTML 报告（GitHub Pages）并记录信号后续 3/5/10 日表现；新增 `dip-scanner.yml` 工作流与 `DIP_*` 配置项。
 - [文档] 恢复 README、部署指南及模型/搜索配置表中的 Anspire 可点击链接并保留推广码，继续作为 SerpAPI 后的可选搜索服务。
+- [chore] 每日分析工作流 `00-daily-analysis.yml` 默认大盘复盘区域改为 `us`、报告语言改为 `en`，未配置 `STOCK_LIST` 时的兜底自选股由 `600519` 改为美股 `AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA`（均可通过对应仓库变量覆盖）。
 
 - [改进] 下线 Anspire 合作宣传及专属额度说明，移除 README 推荐入口，调整配置示例和渠道展示顺序；新闻搜索顺序调整至 SerpAPI 之后，保留原推广码链接、已有 Key 和模型渠道兼容。
 
