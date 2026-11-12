@@ -77,7 +77,13 @@ jobs:
         run: python scripts/check_ai_assets.py
 
   backend-tests:
-    name: backend-tests (${{ matrix.shard }}/3)
+    # r11 dodge experiment (PR #2439): the shard3 death is a runner-side
+    # allocation problem (cancelled at the 15min cap with ZERO step logs —
+    # not even "Set up job" — while sibling shards on the same commit
+    # finished green in ~2-3 minutes). Changing the displayed job name
+    # alters the job identity to dodge the suspected unhealthy allocation
+    # slot; pure cosmetic change, job id / matrix / PYTEST_GROUP untouched.
+    name: backend-tests [shard ${{ matrix.shard }}/3]
     runs-on: ubuntu-latest
     # r10 diagnosis (PR #2439): 14 consecutive branch runs lost the runner
     # at exactly ~51min ("hosted runner lost communication", BlobNotFound
