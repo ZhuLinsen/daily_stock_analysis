@@ -39,7 +39,8 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 ## 🖥️ Product Preview
 
 <p align="center">
-  <img src="assets/readme_workspace_tour_20260510.gif" alt="DSA Web workspace demo" width="720">
+  <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web workspace demo" width="640"></a><br>
+  <sub>Click the GIF to view the full demo</sub>
 </p>
 
 ## ✨ Key Features
