@@ -42,8 +42,6 @@
   <sub>点击动图查看完整演示</sub>
 </p>
 
-> **A 股行情首选：[TickPlus](http://www.tickplus.org/register?reg=5433cf922395)** — 支持 A 股 / ETF 日 K 与实时行情。注册获取 Key 后配置 `TICKPLUS_API_KEY`，未配置或请求失败时使用其他数据源。详见 [TickPlus 接入说明](docs/tickplus.md)。
-
 ## ✨ 功能特性
 
 | 能力 | 覆盖内容 |
@@ -62,11 +60,11 @@
 | 类型 | 支持 |
 |------|------|
 | AI 模型 | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[AIHubMix](https://inferera.com/?aff=CfMq)、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
-| 行情数据 | [TickPlus（A 股 / ETF 首选）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、TickFlow、Pytdx、Baostock、YFinance、Longbridge |
+| 行情数据 | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、TickFlow、Pytdx、Baostock、YFinance、Longbridge |
 | 新闻搜索 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、[Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC)、[Tavily](https://tavily.com/)、[Bocha](https://open.bocha.cn/)、[Brave](https://brave.com/search/api/)、[MiniMax](https://platform.minimaxi.com/)、SearXNG |
 | 社交舆情 | [Stock Sentiment API](https://api.adanos.org/docs)（Reddit / X / Polymarket，仅美股，可选） |
 
-> 项目默认内置 AkShare、Baostock、YFinance 等免费行情源，可零配置运行；免费源受上游限流、接口变动和网络波动影响，稳定性不保证。长期定时、批量分析或更稳定行情A 股 / ETF 首选配置 [TickPlus](http://www.tickplus.org/register?reg=5433cf922395)，其他场景可配置 Tushare、Longbridge 等 token 型数据源，适用市场、Actions 映射和 fallback 规则见 [数据源配置](docs/full-guide.md#数据源配置)。
+> 项目默认内置 AkShare、Baostock、YFinance 等免费行情源，可零配置运行；免费源受上游限流、接口变动和网络波动影响，稳定性不保证。长期定时、批量分析或更稳定行情建议配置 Tushare、Longbridge 等 token 型数据源，适用市场、Actions 映射和 fallback 规则见 [数据源配置](docs/full-guide.md#数据源配置)。
 
 ## 🚀 快速开始
 
@@ -140,7 +138,7 @@
 
 | Secret 名称 | 适用市场 | 说明 |
 |------------|:--------:|------|
-| `TICKPLUS_API_KEY` | A 股 / ETF | [TickPlus](http://www.tickplus.org/register?reg=5433cf922395)（首选），日 K、实时行情与名称查询 |
+| `TICKPLUS_API_KEY` | A 股 / ETF | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)，日 K、实时行情与名称查询 |
 | `TUSHARE_TOKEN` | A 股 | 提升历史行情稳定性 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | 港股/美股 | 补齐量比、换手率、PE 等字段 |
 
