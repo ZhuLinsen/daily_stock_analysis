@@ -118,3 +118,8 @@ def test_run_dry_writes_site(tmp_path, monkeypatch):
     # segunda execução no mesmo pregão é ignorada
     assert ds.run(cfg, dry_run=True) == 0
     assert len(json.loads((tmp_path / "data" / "signals.json").read_text())) == 1
+
+
+def test_message_wraps_url_in_markdown_link():
+    msg = ds.build_message("2026-11-11", [], "https://x.github.io/daily_stock_analysis/")
+    assert "(https://x.github.io/daily_stock_analysis/)" in msg and "](" in msg

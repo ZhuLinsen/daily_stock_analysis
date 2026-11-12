@@ -653,7 +653,8 @@ def build_message(run_date: str, signals: List[Dict[str, Any]], url: str) -> str
                              f"Stop {_num(lv.get('stop'))} · Alvo {_num(lv.get('target'))}")
             lines.append("")
     if url:
-        lines.append(f"Relatório: {url}")
+        # link Markdown: o Telegram (Markdown legado) apaga "_" em URLs soltas
+        lines.append(f"[📊 Abrir relatório]({url})")
     return "\n".join(lines).strip()
 
 
