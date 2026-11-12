@@ -38,7 +38,8 @@
 ## 🖥️ 产品预览
 
 <p align="center">
-  <img src="docs/assets/readme_workspace_tour_20260510.gif" alt="DSA Web 工作台演示" width="720">
+  <a href="docs/assets/readme_workspace_tour_20260510.gif"><img src="docs/assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
+  <sub>点击动图查看完整演示</sub>
 </p>
 
 ## ✨ 功能特性

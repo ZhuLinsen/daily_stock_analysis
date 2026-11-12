@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 三语 README 产品预览改用 640×320、4 帧/秒的宽屏裁剪动图，减少展示高度和文件体积，点击可查看完整原版演示。
+
 - [文档] 将中、英、繁体 README 的 Trendshift 日榜徽章替换为仓库徽章，并添加仓库详情页链接。
 
 - [文档] 恢复 README、部署指南及模型/搜索配置表中的 Anspire 可点击链接并保留推广码，继续作为 SerpAPI 后的可选搜索服务。
