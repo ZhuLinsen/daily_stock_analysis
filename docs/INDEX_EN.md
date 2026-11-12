@@ -1,5 +1,7 @@
 # English Documentation Index
 
+Korean getting started: [한국어 시작 가이드](getting-started_KO.md) · [한국어 문서 안내](INDEX_KO.md).
+
 This is the entry point for project documentation. The README covers the project overview and quick start; detailed setup, configuration, deployment, feature usage, and troubleshooting docs are linked below.
 
 > For Chinese documentation, see [docs/INDEX.md](INDEX.md).
