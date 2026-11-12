@@ -276,3 +276,22 @@ def test_recommendation_metadata_links_the_project_registration_and_masks_key():
     assert field['is_sensitive'] and field['ui_control']=='password'
     assert 'Recommended' in field['title']
     assert any(doc['href']=='http://www.tickplus.org/register?reg=5433cf922395' for doc in field['docs'])
+
+
+
+@pytest.mark.parametrize('api_key,priority', [(None, 0), ('', 0), ('   ', 0), ('private-test', 0), ('private-test', 3)])
+def test_default_manager_registers_tickplus_only_for_configured_key(api_key, priority):
+    config = Config(tickplus_api_key=api_key, tickplus_priority=priority)
+    with patch('src.config.get_config', return_value=config), patch(
+        'data_provider.tickplus_fetcher.requests.get'
+    ) as get:
+        manager = DataFetcherManager()
+        get.assert_not_called()
+    fetchers = manager._get_fetchers_snapshot()
+    registered = [f for f in fetchers if f.name == 'TickPlusFetcher']
+    assert len(registered) == int(bool(api_key and api_key.strip()))
+    if registered:
+        assert registered[0].api_key == api_key
+        assert registered[0].priority == priority
+        if priority == 0:
+            assert fetchers[0] is registered[0]
