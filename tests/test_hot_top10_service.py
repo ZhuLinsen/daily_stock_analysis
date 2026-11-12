@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,53 @@ from src.services.hot_top10_service import (
     acquire_hot_top10_delivery_claim,
     hot_top10_claim_path,
 )
+
+
+def _read_child_line(proc: subprocess.Popen, what: str, timeout: float = 60.0) -> str:
+    """r9 shard3 hardening: read ONE line from a child under a HARD bound.
+
+    ``proc.stdout.readline()`` has no timeout parameter: a child that stalls
+    BEFORE its first line (import stall, fence stall, wedged interpreter)
+    parks the parent in a pipe-read syscall forever. pytest-timeout's
+    ``thread`` method cannot reliably interrupt that syscall, so the whole
+    CI job hangs until the runner is collected — the four consecutive
+    ~51-minute "hosted runner lost communication" shard3 deaths. A daemon
+    reader thread plus a bounded ``queue.get`` turns any stall into a loud,
+    located RED within ``timeout`` seconds (worst case: unknown hang point
+    surfaces as a named test failure, never a dead runner).
+
+    Raises ``AssertionError`` (loud, with ``what`` locating info) when the
+    child stalls past ``timeout`` (it is killed first so no process or pipe
+    leaks) or closes stdout without producing a line.
+    """
+    lines: "queue.Queue[str]" = queue.Queue(maxsize=1)
+
+    def _reader() -> None:
+        try:
+            lines.put(proc.stdout.readline())
+        except Exception:  # pragma: no cover - reader unwound at exit
+            pass
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+    try:
+        line = lines.get(timeout=timeout)
+    except queue.Empty:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise AssertionError(
+            f"{what}: child produced no line within {timeout:.0f}s — "
+            "stalled child detected and killed (r9 bounded-read guard)"
+        )
+    if line == "":
+        raise AssertionError(
+            f"{what}: child closed stdout before producing a line — crashed "
+            "at boot? (r9 bounded-read guard)"
+        )
+    return line
 
 
 def _hotspot_payload(items: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1114,8 +1162,10 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
         llm_release = Path(self._tmp.name) / "llm_release"
         procs = self._start_children(db_path, data_date, go_file, llm_release)
 
-        for proc in procs:
-            ready = proc.stdout.readline().strip()
+        for index, proc in enumerate(procs):
+            ready = _read_child_line(
+                proc, f"child {index} boot handshake"
+            ).strip()
             self.assertEqual(ready, "READY", "child failed to boot")
         go_file.write_text("go", encoding="utf-8")
 
@@ -1128,8 +1178,8 @@ class HotTop10CrossProcessClaimTest(unittest.TestCase):
         llm_release.write_text("release", encoding="utf-8")
 
         results = []
-        for proc in procs:
-            line = proc.stdout.readline().strip()
+        for index, proc in enumerate(procs):
+            line = _read_child_line(proc, f"child {index} result line").strip()
             self.assertTrue(
                 line.startswith("RESULT:"), f"child produced no result: {line!r}"
             )
@@ -1454,7 +1504,7 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
                     pass
 
     def _read_result(self, proc: subprocess.Popen) -> Dict[str, Any]:
-        line = proc.stdout.readline().strip()
+        line = _read_child_line(proc, "child result line").strip()
         if not line.startswith("RESULT:"):
             self.fail(f"child produced no result: {line!r}")
         return json.loads(line[len("RESULT:") :])
@@ -1740,7 +1790,9 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
 
         holder = _spawn(go_a, str(llm_release))
         self.addCleanup(self._drain, holder, llm_release)
-        ready = holder.stdout.readline().strip()
+        ready = _read_child_line(
+            holder, "holder child boot handshake"
+        ).strip()
         self.assertEqual(ready, "READY", "holder child failed to boot")
         go_a.write_text("go", encoding="utf-8")
 
@@ -1757,7 +1809,9 @@ class HotTop10ClaimOwnershipProtocolTest(unittest.TestCase):
         go_b.write_text("go", encoding="utf-8")
         thief = _spawn(go_b, "")
         self.addCleanup(self._drain, thief, None)
-        ready = thief.stdout.readline().strip()
+        ready = _read_child_line(
+            thief, "thief child boot handshake"
+        ).strip()
         self.assertEqual(ready, "READY", "thief child failed to boot")
 
         # Second fence: wait until the claim file CONTENT changed (or the
@@ -2376,6 +2430,183 @@ class HotTop10ClaimOsLockR7Test(unittest.TestCase):
         self.assertTrue(today_marker.exists())
         payload = json.loads(today_marker.read_text(encoding="utf-8"))
         self.assertEqual(payload.get("data_date"), date.today().isoformat())
+
+
+class _FileWritingNotifier:
+    """Notifier whose ``save_report_to_file`` mirrors NotificationService's
+    real behavior ('w'-mode write under the reports directory) so a test can
+    observe the actual coexistence (or overwrite) of report files."""
+
+    def __init__(self, reports_dir: Path) -> None:
+        self.reports_dir = reports_dir
+        self.sent: List[str] = []
+        self.saved: List[str] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def save_report_to_file(self, content: str, filename: str) -> str:
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        path = self.reports_dir / filename
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        self.saved.append(filename)
+        return str(path)
+
+    def send(self, content: str, **kwargs: Any) -> bool:
+        self.sent.append(content)
+        return True
+
+
+class HotTop10ReportFilenameByDataDateTest(unittest.TestCase):
+    """r9 (review #13 OR-COR-hot-top10-report-overwrite): the LOCAL report
+    file name must key on the DATA date (the list actually being delivered),
+    not the wall clock.
+
+    The 15:10 primary slot can ship the previous trading day's list while
+    the 15:35 data-ready catch-up ships today's list — same wall day, two
+    DIFFERENT data dates, both deliveries are legitimate under the r7
+    per-data-date dedup semantics. Wall-clock naming collapsed both into
+    one ``hot_top10_<wall-date>.md`` path and the 'w'-mode save silently
+    overwrote the first report — whose per-date marker was already
+    recorded, so the loss was unrecoverable. Naming by data date aligns
+    the report file with the r7 ``hot_top10_state_<data_date>.json``
+    marker semantics (one artifact per delivered data date).
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value={"cn"},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.yesterday = (date.today() - timedelta(days=1)).isoformat()
+        self.reports_dir = Path(self._tmp.name) / "reports"
+
+    def _run_with_trade_date(self, config, trade_date: str):
+        payload = _hotspot_payload(_theme_items(3))
+        payload["trade_date"] = trade_date
+        notifier = _FileWritingNotifier(self.reports_dir)
+        with mock.patch(
+            "src.services.hot_top10_service._build_analyzer",
+            return_value=_FakeAnalyzer(text=_llm_json()),
+        ):
+            result = run_hot_top10_analysis(
+                config,
+                notifier=notifier,
+                hotspot_service=_FakeHotspotService(payload),
+            )
+        return result, notifier
+
+    def test_same_day_two_data_dates_produce_two_report_files(self):
+        """Same wall day, two deliveries of DIFFERENT data dates (the
+        15:10 stale list + the 15:35 fresh list): both report files must
+        coexist; the second save must never overwrite the first."""
+        config = _config(self._tmp.name)
+        today = date.today().isoformat()
+
+        stale_result, stale_notifier = self._run_with_trade_date(
+            config, self.yesterday
+        )
+        self.assertTrue(stale_result.delivered)
+        fresh_result, fresh_notifier = self._run_with_trade_date(config, today)
+        self.assertTrue(fresh_result.delivered)
+
+        stale_name = f"hot_top10_{self.yesterday.replace('-', '')}.md"
+        fresh_name = f"hot_top10_{today.replace('-', '')}.md"
+        # Each delivery saved exactly one, differently named report.
+        self.assertEqual(len(stale_notifier.saved), 1)
+        self.assertEqual(len(fresh_notifier.saved), 1)
+        self.assertEqual(stale_notifier.saved[0], stale_name)
+        self.assertEqual(fresh_notifier.saved[0], fresh_name)
+        # Both files coexist on disk — no clobber.
+        files = {p.name for p in self.reports_dir.glob("hot_top10_*.md")}
+        self.assertEqual(
+            files, {stale_name, fresh_name}, "both reports must coexist"
+        )
+        stale_text = (self.reports_dir / stale_name).read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(self.yesterday, stale_text)
+
+    def test_unknown_data_date_degrades_to_wall_clock_name(self):
+        """A run with NO known data date keeps the legacy wall-clock name
+        (fail-open), so the naming contract only tightens when the data
+        date is actually known."""
+        config = _config(self._tmp.name)
+        payload = _hotspot_payload(_theme_items(3))
+        payload["trade_date"] = None
+        notifier = _FileWritingNotifier(self.reports_dir)
+        with mock.patch(
+            "src.services.hot_top10_service._build_analyzer",
+            return_value=_FakeAnalyzer(text=_llm_json()),
+        ):
+            result = run_hot_top10_analysis(
+                config,
+                notifier=notifier,
+                hotspot_service=_FakeHotspotService(payload),
+            )
+        self.assertTrue(result.delivered)
+        self.assertEqual(
+            notifier.saved,
+            [f"hot_top10_{date.today():%Y%m%d}.md"],
+        )
+
+
+class HotTop10ChildLineReadBoundedTest(unittest.TestCase):
+    """r9 shard3 hardening: every parent-side child-line read must be
+    bounded. A child that stalls before its first line used to park the
+    test process in an unbounded ``readline()`` syscall — the pytest-timeout
+    thread method cannot interrupt it and the CI job hung until the hosted
+    runner was collected (~51min "lost communication", 4 consecutive shard3
+    deaths). These tests pin the bound: a stalled child surfaces as a loud,
+    located AssertionError within seconds, and it is killed so nothing
+    leaks."""
+
+    def test_silent_child_times_out_loudly_within_bound(self):
+        silent = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        self.addCleanup(silent.kill)
+
+        started = time.monotonic()
+        with self.assertRaises(AssertionError) as ctx:
+            _read_child_line(silent, "boot handshake", timeout=3.0)
+        elapsed = time.monotonic() - started
+
+        self.assertLess(
+            elapsed, 30.0, "the bounded read must actually fire on time"
+        )
+        self.assertIn("no line within", str(ctx.exception))
+        self.assertIn("boot handshake", str(ctx.exception))
+        self.assertIsNotNone(
+            silent.poll(), "a stalled child must be killed, not leaked"
+        )
+
+    def test_eof_child_fails_loudly_with_location(self):
+        # Exit-without-output child: readline sees EOF (empty line).
+        eof_child = subprocess.Popen(
+            [sys.executable, "-c", "pass"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        self.addCleanup(eof_child.kill)
+        eof_child.wait(timeout=10)
+
+        with self.assertRaises(AssertionError) as ctx:
+            _read_child_line(eof_child, "boot handshake", timeout=10.0)
+
+        self.assertIn("closed stdout", str(ctx.exception))
+        self.assertIn("boot handshake", str(ctx.exception))
 
 
 if __name__ == "__main__":

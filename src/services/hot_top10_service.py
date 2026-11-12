@@ -1284,11 +1284,41 @@ def render_hot_top10_report(
 # --------------------------------------------------------------------------
 
 
+def _hot_top10_report_filename(data_date: Optional[str]) -> str:
+    """r9 (review #13 OR-COR-hot-top10-report-overwrite): name the LOCAL
+    report file by the DATA date, not the wall clock.
+
+    Same-day back-to-back deliveries of DIFFERENT data dates are legitimate
+    (15:10 primary slot ships the previous trading day's list; the 15:35
+    data-ready catch-up ships today's list — both allowed by the r7
+    per-data-date dedup semantics). Wall-clock naming collapsed both into
+    one path and the 'w'-mode save silently overwrote the earlier report
+    after its marker was already recorded — an unrecoverable loss. Keying
+    the file name on the data date aligns each report with its
+    ``hot_top10_state_<data_date>.json`` marker (one artifact per delivered
+    data date). An unknown data date degrades to the legacy wall-clock
+    name (fail-open).
+    """
+    stamp: Optional[str] = None
+    if data_date:
+        text = str(data_date).strip()
+        for fmt in ("%Y-%m-%d", "%Y%m%d"):
+            try:
+                stamp = datetime.strptime(text, fmt).strftime("%Y%m%d")
+                break
+            except ValueError:
+                continue
+    if stamp is None:
+        stamp = date.today().strftime("%Y%m%d")
+    return f"hot_top10_{stamp}.md"
+
+
 def _deliver(
     report_markdown: str,
     send_notification: bool,
     notifier: Any,
     ownership_verifier: Optional[Any] = None,
+    data_date: Optional[str] = None,
 ) -> Tuple[str, bool]:
     """Save + push the report. Returns ``(status, report_saved)``; never raises.
 
@@ -1304,6 +1334,11 @@ def _deliver(
     When it reports the claim lost, that side effect and everything after
     it is skipped (``lost_claim_before_save`` / ``lost_claim_before_notify``),
     so a mid-save takeover can never turn into a second push.
+
+    ``data_date`` (r9, review #13 OR-COR-hot-top10-report-overwrite): the
+    ISO date of the list actually being delivered; the local report file is
+    named after it so same-day deliveries of different data dates never
+    overwrite each other. See :func:`_hot_top10_report_filename`.
     """
 
     def _claim_lost() -> bool:
@@ -1321,7 +1356,7 @@ def _deliver(
         return "notifier_init_failed", False
 
     report_saved = False
-    filename = f"hot_top10_{date.today():%Y%m%d}.md"
+    filename = _hot_top10_report_filename(data_date)
     # r6 save-side check: the previous single verdict before the whole
     # delivery left the save→notify stretch unprotected.
     if _claim_lost():
@@ -1633,6 +1668,7 @@ def _run_hot_top10_analysis_locked(
                 if delivery_claim is not None
                 else None
             ),
+            data_date=effective_data_date,
         )
         if notification_status.startswith("lost_claim"):
             logger.warning(
