@@ -640,6 +640,7 @@ class DataFetcherManager:
         "TencentFetcher": {"cn"},
         "AkshareFetcher": {"cn", "hk"},
         "TushareFetcher": {"cn", "hk"},
+        "TickPlusFetcher": {"cn"},
         "TickFlowFetcher": {"cn"},
         # 妙想为垂直补充数据源（资金流/筹码分布），不提供日线行情
         "MiaoxiangFetcher": set(),
@@ -1816,6 +1817,7 @@ class DataFetcherManager:
         from .akshare_fetcher import AkshareFetcher
         from .tushare_fetcher import TushareFetcher
         from .tickflow_fetcher import TickFlowFetcher
+        from .tickplus_fetcher import TickPlusFetcher
         from .pytdx_fetcher import PytdxFetcher
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
@@ -1894,7 +1896,9 @@ class DataFetcherManager:
         # 初始化数据源列表
         self._ensure_concurrency_guards()
         with self._fetchers_lock:
+            tickplus_key = (getattr(config, "tickplus_api_key", None) or "").strip()
             self._fetchers = [
+                *([TickPlusFetcher(tickplus_key, getattr(config, "tickplus_priority", 0))] if tickplus_key else []),
                 efinance,
                 akshare,
                 pytdx,
@@ -2204,14 +2208,14 @@ class DataFetcherManager:
         批量预取实时行情数据（在分析开始前调用）
         
         策略：
-        1. 检查优先级中是否包含适合预取的数据源（efinance/akshare_em/tushare/tickflow）
+        1. 检查优先级中是否包含适合预取的数据源（efinance/akshare_em/tushare/tickplus/tickflow）
         2. 如果不包含，跳过预取（新浪/腾讯是单股票查询，无需预取）
         3. 如果自选股数量 >= 5 且使用可预取数据源，则预取填充缓存
         
         这样做的好处：
         - 使用新浪/腾讯时：每只股票独立查询，无全量拉取问题
         - 使用 efinance/东财/Tushare 时：预取一次，后续缓存命中
-        - 使用 TickFlow 时：按当前自选股批量预取，避免逐股重复请求
+        - 使用 TickPlus / TickFlow 时：按当前自选股批量预取，避免逐股重复请求
         
         Args:
             stock_codes: 待分析的股票代码列表
@@ -2247,9 +2251,9 @@ class DataFetcherManager:
         
         # 检查优先级中是否包含适合批量预取的数据源
         # efinance/akshare_em/tushare 通过一次调用填充全市场缓存；
-        # tickflow 通过 symbols 批量接口预取当前自选股缓存。
+        # tickplus / tickflow 只预取当前自选股，避免全市场请求。
         priority = config.realtime_source_priority.lower()
-        prefetch_sources = ['efinance', 'akshare_em', 'tushare', 'tickflow']
+        prefetch_sources = ['efinance', 'akshare_em', 'tushare', 'tickplus', 'tickflow']
         
         # 如果优先级中前两个都不是可预取数据源，跳过预取
         # 因为新浪/腾讯是单股票查询，不需要预取
@@ -2286,12 +2290,13 @@ class DataFetcherManager:
             stock_codes[0],
         )
         
-        # TickFlow 使用 symbols 批量接口；其他可预取源通过首次查询触发自身缓存。
-        if prefetch_source == "tickflow":
-            fetcher = self._get_fetcher_by_name("TickFlowFetcher", capability="realtime_quote")
+        # TickPlus / TickFlow 使用当前标的的批量接口；其他源通过首次查询触发自身缓存。
+        if prefetch_source in {"tickplus", "tickflow"}:
+            fetcher_name = "TickPlusFetcher" if prefetch_source == "tickplus" else "TickFlowFetcher"
+            fetcher = self._get_fetcher_by_name(fetcher_name, capability="realtime_quote")
             if fetcher is None or not hasattr(fetcher, "prefetch_realtime_quotes"):
                 logger.info(
-                    "[prefetch] component=realtime_prefetch action=skip reason=tickflow_unavailable"
+                    "[prefetch] component=realtime_prefetch action=skip reason=provider_unavailable"
                 )
                 return 0
             try:
@@ -2300,12 +2305,12 @@ class DataFetcherManager:
                         fetcher,
                         "prefetch_realtime_quotes",
                         stock_codes,
-                        batch_size=getattr(config, "tickflow_batch_size", 100),
+                        batch_size=100 if prefetch_source == "tickplus" else getattr(config, "tickflow_batch_size", 100),
                     )
                     or 0
                 )
             except Exception as exc:
-                logger.warning("[TickFlowFetcher] realtime prefetch failed: %s", exc)
+                logger.warning("[%s] realtime prefetch failed: %s", fetcher_name, exc)
                 return 0
 
         try:
@@ -2685,8 +2690,9 @@ class DataFetcherManager:
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
 
-                elif source == "tickflow":
-                    fetcher = self._get_fetcher_by_name("TickFlowFetcher", capability="realtime_quote")
+                elif source in {"tickplus", "tickflow"}:
+                    fetcher_name = "TickPlusFetcher" if source == "tickplus" else "TickFlowFetcher"
+                    fetcher = self._get_fetcher_by_name(fetcher_name, capability="realtime_quote")
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",

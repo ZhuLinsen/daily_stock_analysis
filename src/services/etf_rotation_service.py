@@ -118,11 +118,17 @@ def load_closes(
     # Never change the shared manager or quietly use raw-price fallback sources.
     adjusted_manager = None
     if isinstance(fetcher_manager, DataFetcherManager):
-        eligible = [
-            fetcher for fetcher in fetcher_manager._get_fetchers_snapshot()
-            if fetcher.name in {"EfinanceFetcher", "AkshareFetcher", "BaostockFetcher"}
-            or (fetcher.name == "TickFlowFetcher" and fetcher.kline_adjust == "forward")
-        ]
+        from data_provider.tickplus_fetcher import TickPlusFetcher
+
+        eligible = []
+        for fetcher in fetcher_manager._get_fetchers_snapshot():
+            if isinstance(fetcher, TickPlusFetcher):
+                # Rotation requires adjusted prices; keep ordinary analysis unadjusted.
+                eligible.append(TickPlusFetcher(fetcher.api_key, fetcher.priority, kline_adjust="forward"))
+            elif fetcher.name in {"EfinanceFetcher", "AkshareFetcher", "BaostockFetcher"} or (
+                fetcher.name == "TickFlowFetcher" and fetcher.kline_adjust == "forward"
+            ):
+                eligible.append(fetcher)
         if eligible:
             adjusted_manager = DataFetcherManager(fetchers=eligible)
 

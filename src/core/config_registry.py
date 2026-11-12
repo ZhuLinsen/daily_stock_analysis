@@ -803,6 +803,34 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["secret_value"],
     },
+    "TICKPLUS_API_KEY": {
+        "title": "TickPlus API Key (Recommended)",
+        "description": "Preferred TickPlus API key for A-share/ETF daily K-lines, realtime indicators and name lookup. Failures fall back to existing providers.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 15,
+    },
+    "TICKPLUS_PRIORITY": {
+        "title": "TickPlus Daily K-line Priority",
+        "description": "Priority for TickPlus A-share/ETF daily K-lines. Registered index routes are unchanged; realtime order uses REALTIME_SOURCE_PRIORITY.",
+        "category": "data_source",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "0",
+        "options": [],
+        "validation": {"min": 0, "max": 99},
+        "display_order": 16,
+    },
     "TICKFLOW_API_KEY": {
         "title": "TickFlow API Key",
         "description": "API key for optional TickFlow A-share daily K-lines, realtime quotes, stock list/name lookup, and market review enhancement. Permission failures fail open to existing providers.",
@@ -4770,6 +4798,19 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "docs": _DOC_LLM_CONFIG,
         "warning_codes": ["legacy_provider_setting"],
     },
+    "TICKPLUS_API_KEY": {
+        "help_key": "settings.data_source.TICKPLUS_API_KEY",
+        "examples": [
+            "TICKPLUS_API_KEY=your_tickplus_key",
+        ],
+        "docs": [{"label": "TickPlus (Recommended) — Register", "href": "http://www.tickplus.org/register?reg=5433cf922395"}, *_DOC_FULL_GUIDE_DATA_SOURCE],
+        "warning_codes": ["secret_value"],
+    },
+    "TICKPLUS_PRIORITY": {
+        "help_key": "settings.data_source.TICKPLUS_PRIORITY",
+        "examples": ["TICKPLUS_PRIORITY=0"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+    },
     "TICKFLOW_API_KEY": {
         "help_key": "settings.data_source.TICKFLOW_API_KEY",
         "examples": [
@@ -5193,6 +5234,7 @@ def _infer_category(key: str) -> str:
     if key.endswith("_PRIORITY") or key.startswith(
         (
             "TUSHARE",
+            "TICKPLUS",
             "TICKFLOW",
             "AKSHARE",
             "EFINANCE",
