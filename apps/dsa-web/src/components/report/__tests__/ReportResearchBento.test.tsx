@@ -119,8 +119,40 @@ describe('ReportResearchBento & ReportStrategy', () => {
 
     expect(screen.getByText('有效点位')).toBeInTheDocument();
     expect(screen.getByText('盈亏比 1:2.25')).toBeInTheDocument();
-    expect(screen.getByText('ATR 建议仓位 15%–20%')).toBeInTheDocument();
+    expect(screen.getByText('止损距离风险预算仓位 15%–20%')).toBeInTheDocument();
     expect(screen.getByText('1580.00')).toBeInTheDocument();
     expect(screen.getByText('1840.00')).toBeInTheDocument();
+  });
+
+  it('marks direction-conflicting levels as invalid instead of conditionally watchable', () => {
+    const artifact = makeArtifact({
+      metadata: {
+        levels: {
+          ideal_buy: 100,
+          secondary_buy: 90,
+          stop_loss: 95,
+          take_profit: 120,
+          status: 'invalid',
+          validation: 'direction_conflict',
+        },
+        position: { min_pct: 0, max_pct: 0 },
+      },
+    });
+    render(
+      <ReportStrategy
+        strategy={{
+          idealBuy: '100',
+          secondaryBuy: '90',
+          stopLoss: '95',
+          takeProfit: '120',
+        }}
+        currentPrice={100}
+        artifact={artifact}
+        language="zh"
+      />,
+    );
+
+    expect(screen.getByText('点位无效')).toBeInTheDocument();
+    expect(screen.getByText('点位方向冲突，请人工复核')).toBeInTheDocument();
   });
 });

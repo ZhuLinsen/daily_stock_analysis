@@ -69,6 +69,31 @@
 - 新闻缺失披露生成 `evidence` 失效条件。
 - 如果没有显式条件，生成 `manual:thesis_reassessment` 兜底复核条件。
 
+## Numeric grounding and position sizing
+
+`metadata.levels` is generated from the report strategy by parsing numeric sniper
+levels and checking the entry/secondary-entry, stop-loss and take-profit geometry.
+For offensive actions (`buy` / `add`), a stop-loss at or above either entry, a
+secondary entry above the ideal entry, or a take-profit at or below the ideal
+entry produces `validation=direction_conflict` and `status=invalid`. An entry
+that differs from the analysis-time reference price by more than 25% produces
+`validation=out_of_range`; non-offensive actions remain `conditional_watch`.
+
+`metadata.position` is a stop-distance risk-budget estimate, not an execution
+instruction and not a broker order size. It uses a default 1.2% account-risk
+budget, caps poor/limited data conservatively, and returns zero when the action
+is non-offensive, data quality is poor, or level validation fails. The returned
+`max_pct` is rounded down so the displayed percentage cannot exceed the budget
+implied by the validated stop distance. The current method name is retained for
+API compatibility; the calculation is based on validated stop distance and does
+not claim to be a historical ATR value.
+
+`metadata.risk_flags` mirrors grounding and data-quality failures for the Web
+report. When the persisted raw result contains committee disagreement or risk
+override details, they are exposed under `metadata.committee`. History detail
+and Stock Profile build the artifact from the same current-price and raw-result
+inputs so the same report does not change its grounding result by entry point.
+
 ## 兼容边界
 
 `AnalysisReport` 新增可选字段：

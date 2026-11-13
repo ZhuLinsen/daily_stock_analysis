@@ -54,20 +54,22 @@ def verify_and_normalize_levels(
     ref_current = _finite_positive(current_price)
 
     normalized_action = str(action or "").strip().lower() or None
-    status = "active" if normalized_action in _OFFENSIVE_ACTIONS else "conditional_watch"
-
-    if secondary_buy is not None and ideal_buy is not None and secondary_buy > ideal_buy:
-        ideal_buy, secondary_buy = secondary_buy, ideal_buy
-
     validation = "ok"
-    if (
+    if normalized_action in _OFFENSIVE_ACTIONS and (
+        (ideal_buy is not None and stop_loss is not None and stop_loss >= ideal_buy)
+        or (secondary_buy is not None and stop_loss is not None and stop_loss >= secondary_buy)
+        or (ideal_buy is not None and secondary_buy is not None and secondary_buy > ideal_buy)
+        or (
+            ideal_buy is not None
+            and take_profit is not None
+            and take_profit <= ideal_buy
+        )
+    ):
+        validation = "direction_conflict"
+    elif (
         ideal_buy is not None
         and stop_loss is not None
         and stop_loss >= ideal_buy
-    ) or (
-        ideal_buy is not None
-        and take_profit is not None
-        and take_profit <= ideal_buy
     ):
         validation = "direction_conflict"
     elif (
@@ -79,6 +81,12 @@ def verify_and_normalize_levels(
 
     reference_price = ref_current if ref_current is not None else ideal_buy
 
+    status = (
+        "active"
+        if normalized_action in _OFFENSIVE_ACTIONS and validation == "ok"
+        else "invalid" if normalized_action in _OFFENSIVE_ACTIONS else "conditional_watch"
+    )
+
     if ref_current is not None and ideal_buy is not None:
         entry_ref: Optional[float] = min(ref_current, ideal_buy)
     else:
@@ -86,7 +94,8 @@ def verify_and_normalize_levels(
 
     risk_reward_ratio: Optional[float] = None
     if (
-        entry_ref is not None
+        validation == "ok"
+        and entry_ref is not None
         and stop_loss is not None
         and take_profit is not None
         and entry_ref > stop_loss
@@ -130,8 +139,27 @@ def compute_atr_position_sizing(
             ),
         }
 
+    if levels.get("validation") not in (None, "ok") or levels.get("status") == "invalid":
+        return {
+            "min_pct": 0,
+            "max_pct": 0,
+            "method": "atr_risk_budget",
+            "stop_distance_pct": None,
+            "risk_budget_pct": _DEFAULT_RISK_BUDGET_PCT,
+            "cap_reason": "invalid_levels",
+        }
+
     ref_price = _finite_positive(levels.get("reference_price"))
     stop_loss = _finite_positive(levels.get("stop_loss"))
+    if ref_price is not None and stop_loss is not None and stop_loss >= ref_price:
+        return {
+            "min_pct": 0,
+            "max_pct": 0,
+            "method": "atr_risk_budget",
+            "stop_distance_pct": None,
+            "risk_budget_pct": _DEFAULT_RISK_BUDGET_PCT,
+            "cap_reason": "invalid_levels",
+        }
     if ref_price is not None and stop_loss is not None and ref_price > stop_loss:
         raw_dist = (ref_price - stop_loss) / ref_price * 100.0
     else:
@@ -146,8 +174,10 @@ def compute_atr_position_sizing(
     cap = 20.0 if quality == "limited" else 35.0
     capped_pct = min(base_pct, cap)
 
-    rounded_max = int(max(5, min(int(cap), round(capped_pct / 5.0) * 5)))
-    rounded_min = int(max(5, rounded_max - 5))
+    # Never round up: the displayed position must remain within the risk budget.
+    # A normal round can increase the displayed percentage by up to 0.005pp.
+    rounded_max = math.floor(min(capped_pct, cap) * 100.0 + 1e-9) / 100.0
+    rounded_min = round(max(0.0, rounded_max - 5.0), 2)
 
     return {
         "min_pct": rounded_min,

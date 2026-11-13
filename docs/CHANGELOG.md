@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 收敛 ResearchArtifact 点位校验、风险预算仓位和并行发现的运行期上下文：二次买入/止损冲突会使买入点位失效并归零仓位，仓位上限向下取整不突破风险预算，Technical/Intel 并行线程继承冻结交易日、新闻证据与诊断作用域；历史详情与 Stock Profile 复用同一价格和原始结果输入。
+- [文档] 补充 ResearchArtifact 的数值校验、风险预算、委员会元数据语义，以及 `server.py` 的 `API_HOST`/`API_PORT`/`API_RELOAD` 与 `main.py --serve-only` 的 `WEBUI_*` 入口差异。
+
 - [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
 
 - [修复] TickPlus 正确区分裸 000001 等股票与显式同码指数；补齐行情指标、按接口冷却与分组批量缓存，ETF 轮动使用独立前复权实例，并统一首选推荐入口。

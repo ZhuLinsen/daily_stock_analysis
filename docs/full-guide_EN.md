@@ -1511,6 +1511,8 @@ The WebUI and FastAPI API share the same service process. After startup, use the
 
 FastAPI provides RESTful API service for configuration management and triggering analysis.
 
+When running `python server.py` directly, `API_HOST`, `API_PORT`, and `API_RELOAD` control the bind address, port, and Uvicorn auto-reload; their defaults are `127.0.0.1`, `8000`, and `false`. The recommended `python main.py --serve-only` entry uses `WEBUI_HOST` / `WEBUI_PORT` (or the `--host` / `--port` CLI flags), so the two variable sets belong to different startup entries while the legacy WebUI settings remain compatible. When binding publicly, enable authentication and configure a trusted reverse proxy.
+
 ### Startup Methods
 
 | Command | Description |
