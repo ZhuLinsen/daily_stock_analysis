@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse, urlunparse
@@ -11,10 +13,16 @@ from urllib.parse import unquote, urlparse, urlunparse
 import requests
 
 from src.config import Config
-from src.formatters import strip_hidden_markdown_metadata
+from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
+
+# ntfy's default message-size-limit is 4096 bytes: a longer message is turned into an
+# attachment instead of text, and a JSON body above twice that limit is rejected with
+# HTTP 413. The per-message budget leaves room for the page marker and keeps the body
+# under 8192 bytes even if every byte needs a JSON escape.
+NTFY_MESSAGE_MAX_BYTES = 3900
 
 
 def resolve_ntfy_endpoint(ntfy_url: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -92,17 +100,60 @@ class NtfySender:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
+        chunks = [sanitized_content]
+        if len(sanitized_content.encode("utf-8")) > NTFY_MESSAGE_MAX_BYTES:
+            chunks = chunk_content_by_max_bytes(
+                sanitized_content,
+                NTFY_MESSAGE_MAX_BYTES,
+                add_page_marker=True,
+            )
+        total_chunks = len(chunks)
+        if total_chunks > 1:
+            logger.info("ntfy 消息内容超长，将分 %s 批发送", total_chunks)
+
+        success_count = 0
+        for index, chunk in enumerate(chunks):
+            chunk_title = f"{title} ({index + 1}/{total_chunks})" if total_chunks > 1 else title
+            if self._publish_ntfy_message(
+                server_url,
+                topic,
+                chunk,
+                chunk_title,
+                headers,
+                timeout_seconds=timeout_seconds,
+            ):
+                success_count += 1
+            elif total_chunks > 1:
+                logger.error("ntfy 第 %s/%s 批发送失败", index + 1, total_chunks)
+
+            # 批次间隔，避免连续发布触发限流
+            if index < total_chunks - 1:
+                time.sleep(1)
+
+        return success_count == total_chunks
+
+    def _publish_ntfy_message(
+        self,
+        server_url: str,
+        topic: str,
+        message: str,
+        title: str,
+        headers: dict,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
+        """Publish one ntfy message; the body is sent as raw UTF-8 JSON to stay within the size limit."""
         payload = {
             "topic": topic,
             "title": title,
-            "message": sanitized_content,
+            "message": message,
             "markdown": True,
         }
 
         try:
             response = requests.post(
                 server_url,
-                json=payload,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                 headers=headers,
                 timeout=timeout_seconds or 10,
                 verify=self._webhook_verify_ssl,
