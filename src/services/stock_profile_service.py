@@ -389,6 +389,12 @@ class StockProfileService:
             context_snapshot,
             raw_result,
         )
+        raw_dashboard = raw_result.get("dashboard") if isinstance(raw_result, dict) else None
+        current_price = detail.get("current_price")
+        if current_price is None and isinstance(raw_result, dict):
+            current_price = raw_result.get("current_price")
+        if current_price is None and isinstance(raw_dashboard, dict):
+            current_price = raw_dashboard.get("current_price")
         return {
             "meta": {
                 "id": detail.get("id"),
@@ -396,6 +402,7 @@ class StockProfileService:
                 "stock_code": detail.get("stock_code"),
                 "stock_name": detail.get("stock_name"),
                 "created_at": detail.get("created_at"),
+                "current_price": current_price,
             },
             "summary": {
                 "analysis_summary": detail.get("analysis_summary"),
@@ -422,6 +429,7 @@ class StockProfileService:
                 or extracted_fundamental.get("dividend_metrics")
                 or persisted_fields.get("dividend_metrics"),
                 "market_structure": detail.get("market_structure") or market_structure,
+                "raw_result": raw_result,
             },
         }
 

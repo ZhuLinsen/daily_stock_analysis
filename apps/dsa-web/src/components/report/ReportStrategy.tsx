@@ -158,8 +158,12 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {levels.status && (
-              <Badge variant={levels.status === 'active' ? 'success' : 'warning'}>
-                {levels.status === 'active' ? text.activeLevelBadge : text.conditionalWatchBadge}
+              <Badge variant={levels.status === 'active' ? 'success' : levels.status === 'invalid' ? 'danger' : 'warning'}>
+                {levels.status === 'active'
+                  ? text.activeLevelBadge
+                  : levels.status === 'invalid'
+                    ? text.invalidLevelBadge
+                    : text.conditionalWatchBadge}
               </Badge>
             )}
             {levels.riskRewardRatio != null && (
@@ -202,7 +206,7 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
               return (
                 <span
                   key={m.key}
-                  title={`${m.label}: ${m.price.toFixed(2)}`}
+                  aria-label={`${m.label}: ${m.price.toFixed(2)}`}
                   className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 h-3.5 w-3.5 rounded-full border-2 border-card ${m.toneClass}`}
                   style={{ left: `${pct}%` }}
                 />

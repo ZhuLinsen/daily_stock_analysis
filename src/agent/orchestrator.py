@@ -29,6 +29,7 @@ import inspect
 import logging
 import re
 import time
+from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from math import ceil
@@ -1034,14 +1035,18 @@ class AgentOrchestrator:
                 ))
 
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="dsa-wave1") as pool:
+            tech_context = copy_context()
             tech_future = pool.submit(
+                tech_context.run,
                 self._run_stage_agent,
                 tech_agent,
                 tech_ctx,
                 progress_callback=progress_callback,
                 timeout_seconds=timeout_seconds,
             )
+            intel_context = copy_context()
             intel_future = pool.submit(
+                intel_context.run,
                 self._run_stage_agent,
                 intel_agent,
                 intel_ctx,

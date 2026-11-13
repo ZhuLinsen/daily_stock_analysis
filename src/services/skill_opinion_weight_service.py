@@ -138,7 +138,13 @@ class SkillOpinionWeightService:
         prior_hits: float = 6.0,
         prior_misses: float = 6.0,
     ) -> Dict[str, float]:
-        """Compute continuous Empirical Bayes weights for small-sample skill calibration."""
+        """Compute opt-in continuous Empirical Bayes weights for small samples.
+
+        The runtime aggregator intentionally continues to use ``compute_weights``
+        and its established sufficient-sample contract. Callers that explicitly
+        want continuous small-sample calibration can opt into this helper
+        without changing the default aggregation behavior.
+        """
         requested = self._normalize_skill_ids(skill_ids)
         neutral = {skill_id: 1.0 for skill_id in requested}
         if not requested or not self.engine_version:

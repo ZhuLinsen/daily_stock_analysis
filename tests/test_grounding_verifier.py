@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from unittest.mock import MagicMock
 
 sys.modules.setdefault("litellm", MagicMock())
@@ -12,7 +13,14 @@ from api.v1.schemas.history import AnalysisReport, ReportMeta, ReportStrategy, R
 from src.agent.agents.intel_agent import IntelAgent
 from src.agent.agents.technical_agent import TechnicalAgent
 from src.agent.orchestrator import AgentOrchestrator
+from src.agent.news_evidence import (
+    activate_news_evidence_scope,
+    get_current_news_evidence,
+    record_news_evidence,
+    reset_news_evidence_scope,
+)
 from src.agent.protocols import AgentContext, AgentOpinion, StageResult, StageStatus
+from src.services.history_loader import get_frozen_target_date, reset_frozen_target_date, set_frozen_target_date
 from src.core.grounding_verifier import (
     compute_atr_position_sizing,
     verify_and_normalize_levels,
@@ -56,6 +64,19 @@ def test_verify_and_normalize_levels_detects_conflict_and_watch_status() -> None
     assert levels["risk_reward_ratio"] is None
 
 
+def test_verify_and_normalize_levels_rejects_secondary_buy_below_stop() -> None:
+    levels = verify_and_normalize_levels(
+        {"ideal_buy": 100, "secondary_buy": 90, "stop_loss": 95, "take_profit": 120},
+        current_price=100,
+        action="buy",
+    )
+
+    assert levels["validation"] == "direction_conflict"
+    assert levels["status"] == "invalid"
+    assert levels["risk_reward_ratio"] is None
+    assert compute_atr_position_sizing("buy", 80, levels, "good")["max_pct"] == 0
+
+
 def test_verify_and_normalize_levels_detects_out_of_range_anchor() -> None:
     strategy = {
         "ideal_buy": "60.0",
@@ -71,7 +92,7 @@ def test_compute_atr_position_sizing_caps_and_non_offensive_zero() -> None:
     levels = {"reference_price": 100.0, "stop_loss": 96.0}
 
     buy_pos = compute_atr_position_sizing("buy", 80, levels, data_quality_level="good")
-    assert buy_pos["min_pct"] >= 5
+    assert buy_pos["min_pct"] >= 0
     assert buy_pos["max_pct"] <= 35
     assert buy_pos["min_pct"] <= buy_pos["max_pct"]
     assert buy_pos["stop_distance_pct"] == 4.0
@@ -84,6 +105,42 @@ def test_compute_atr_position_sizing_caps_and_non_offensive_zero() -> None:
     assert hold_pos["min_pct"] == 0
     assert hold_pos["max_pct"] == 0
     assert hold_pos["cap_reason"] == "non_offensive_action"
+
+
+def test_compute_atr_position_sizing_does_not_round_above_risk_budget() -> None:
+    levels = verify_and_normalize_levels(
+        {"ideal_buy": 100, "stop_loss": 50, "take_profit": 160}, 100, "buy"
+    )
+    position = compute_atr_position_sizing("buy", 80, levels, "good")
+
+    assert position["max_pct"] == 2.4
+    assert position["min_pct"] == 0
+
+
+def test_parallel_discovery_wave_propagates_contextvars() -> None:
+    orch = AgentOrchestrator(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    tech_agent = TechnicalAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    intel_agent = IntelAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    frozen_token = set_frozen_target_date(date(2026, 11, 12))
+    evidence_token = activate_news_evidence_scope()
+    observed = {}
+
+    def fake_run_stage(agent, run_ctx, progress_callback=None, timeout_seconds=None):
+        observed[agent.agent_name] = (get_frozen_target_date(), get_current_news_evidence() is not None)
+        record_news_evidence(3)
+        return StageResult(stage_name=agent.agent_name, status=StageStatus.COMPLETED)
+
+    orch._run_stage_agent = fake_run_stage  # type: ignore[method-assign]
+    try:
+        orch._run_discovery_wave_parallel(tech_agent, intel_agent, AgentContext(query="test"))
+        assert observed == {
+            "technical": (date(2026, 11, 12), True),
+            "intel": (date(2026, 11, 12), True),
+        }
+        assert get_current_news_evidence().total == 6
+    finally:
+        reset_news_evidence_scope(evidence_token)
+        reset_frozen_target_date(frozen_token)
 
 
 def test_analysis_report_auto_populates_structured_report() -> None:
