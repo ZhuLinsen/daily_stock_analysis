@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
 - [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
 
 - [修复] TickPlus 正确区分裸 000001 等股票与显式同码指数；补齐行情指标、按接口冷却与分组批量缓存，ETF 轮动使用独立前复权实例，并统一首选推荐入口。
@@ -42,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [新功能] 新增可选的 fastapi-guard 安全中间件（`GUARD_ENABLED=true`，默认关闭）：按 IP 限流、IP 白/黑名单、请求特征拦截与扫描器自动封禁，与登录失败限流叠加；客户端 IP 取值与 `TRUST_X_FORWARDED_FOR` 保持一致，启用后内置启动入口的 Uvicorn 代理头处理只信任同一组代理，默认不扫描请求体，详见 `docs/full-guide.md`。
 - [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
+- [修复] Telegram 文本推送遇到 HTTP 429 时遵守响应 JSON 中的 `parameters.retry_after`，避免忽略服务端等待时间而过早重试；保留响应头和指数退避兜底及 3 次尝试上限。
 
 - [新功能] 个股分析新增跨资产上下文（cross-asset-v1）：注入“外围环境与跨资产”低敏摘要到普通分析与 Agent prompt，RiskAgent reasoning 须回答外部环境是否支持结论；risk-off 时对高置信激进买入做置信度校准（不改决策类型），支持开关 `CROSS_ASSET_CONTEXT_ENABLED` 与四级 fail-open 降级（#1910）。
 - [修复] 跨资产上下文 Prompt 渲染加固：畸形 value/change_pct（字符串/布尔/嵌套等）跳过该项不再抛 TypeError/ValueError，客户端自带的跨资产 dict 不再能打挂聊天回合；risk_tags 与资产键渲染前做 UNTRUSTED 哨兵转义，块内无有效内容时整段返回空（对齐大盘摘要渲染行为）；美元指数快照键由 "DXYDXY" 修正为 "DXY"，并发抓取的预算 deadline 改为调用栈局部变量互不覆盖（#1910）。
@@ -60,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 大盘 Market Light 评分和中英文指数均值排除 VIX 波动率涨跌幅，保留原始行情展示；仅有 VIX 时指数维度标为不可用，告警沿用跳过语义（#2472）。
 
 - [改进] Agent 轨迹评估增加独立股票范围诊断与干扰股票样例，区分越界请求、运行时拦截和无法判定调用，支持多股对比及阶段明细，不改变原指标或退出码。
+- [修复] 报告中的财务金额（`_format_amount_cn`）与三大法人净买卖股数（`_format_net_shares`）在四舍五入后达到下一单位时改用下一单位显示：如 99,999,999 元显示为 `1.00 亿元` 而不是 `10000.00 万元`，9,999.6 元显示为 `1.00 万元` 而不是 `10000 元`。
 
 ## [3.33.0] - 2026-10-15
 
