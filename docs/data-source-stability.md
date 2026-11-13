@@ -16,7 +16,7 @@ AkShare 的业绩预告、快报是按 `date=YYYYMMDD` 查询的全市场表，�
 
 如果遇到“数据源失败”，通常不是系统只能用一个源，而是免费源被限流、上游接口临时变更、网络抖动或当前市场/标的不支持。DSA 已经内置多数据源 fallback，会按场景自动尝试下一个源；如果你希望更稳定，建议至少配置一个 token 型稳定源：
 
-- A 股个股与选股：优先配置 `TUSHARE_TOKEN`，并保留 AkShare / Efinance / Tencent / TickFlow / Baostock / YFinance 兜底；普通个股日线按 priority 配置排序。
+- A 股个股 / ETF 行情：首选推荐 [TickPlus](http://www.tickplus.org/register?reg=5433cf922395)，配置 `TICKPLUS_API_KEY`；选股全市场快照仍可配 `TUSHARE_TOKEN`，保留免费源和其他商业源兜底。普通个股日线按 priority 配置排序。
 - 已登记 A 股指数：固定按 Tencent → AkShare → TickFlow → YFinance 降级，不读取普通日 K 的 `*_PRIORITY` 配置。
 - A 股大盘复盘：配置 `TICKFLOW_API_KEY` 后，复盘聚合所需的指数和市场宽度会优先尝试 TickFlow，失败后回退现有免费源；这与单标的指数日线的 Tencent-first 固定链是不同入口。
 - 港股：配置 `FUTU_OPEND_HOST` 后，Futu 可作为港股实时与基本面主源；`FUTU_HK_REALTIME_SOURCE_PRIORITY` 控制港股实时行情顺序，Longbridge、AkShare、YFinance 保留为 fallback；OpenD 未运行或 5 秒内未完成协议就绪时本次请求直接回退，并在 5 分钟内跳过 Futu，避免整轮分析阻塞。
@@ -27,9 +27,9 @@ AkShare 的业绩预告、快报是按 `date=YYYYMMDD` 查询的全市场表，�
 
 | 场景 | 已接入源 | 默认使用方式 | 失败处理 |
 | --- | --- | --- | --- |
-| A 股个股日线 / 技术面 | Efinance、Tencent、AkShare、Tushare、TickFlow、Pytdx、Baostock、YFinance | `DataFetcherManager` 按 priority 尝试；配置 `TUSHARE_TOKEN` 后 Tushare 自动进入候选源 | 单源失败后尝试下一个源；连续失败会短期熔断该源 |
+| A 股个股日线 / 技术面 | TickPlus（首选推荐）、Efinance、Tencent、AkShare、Tushare、TickFlow、Pytdx、Baostock、YFinance | `DataFetcherManager` 按 priority 尝试；配置 `TUSHARE_TOKEN` 后 Tushare 自动进入候选源 | 单源失败后尝试下一个源；连续失败会短期熔断该源 |
 | 已登记 A 股指数日线 / 技术面 | Tencent、AkShare、TickFlow、YFinance | 当前 5 个 `IndexRegistry` 标的固定按 Tencent → AkShare → TickFlow → YFinance 尝试，不读取普通日 K 的 `*_PRIORITY` 配置 | 未配置、熔断、异常或空结果均继续下一源；全部失败返回空结果并记录汇总告警 |
-| A 股实时行情 | Tencent、AkShare Sina、Efinance、AkShare EM、Tushare | `REALTIME_SOURCE_PRIORITY` 控制顺序，默认偏向 Tencent / Sina 这类轻量源 | 失败源记录 `fallback_from`，成功源继续返回 |
+| A 股实时行情 | TickPlus（首选推荐）、Tencent、AkShare Sina、Efinance、AkShare EM、Tushare、TickFlow | `REALTIME_SOURCE_PRIORITY` 控制顺序，未显式设置顺序且配置 TickPlus Key 时自动首选 TickPlus；无 Key 时默认使用 Tencent / Sina 轻量源 | 失败源记录 `fallback_from`，成功源继续返回 |
 | A 股大盘复盘 | TickFlow、AkShare、Tushare、Efinance | 配置 `TICKFLOW_API_KEY` 后，复盘聚合的主指数和市场宽度优先尝试 TickFlow；不等同于单标的指数日线链 | TickFlow 权限不足或失败时回退 AkShare / Tushare / Efinance 链路 |
 | 选股快照 | Tushare、Sina、Efinance、AkShare EM、EastMoney Datacenter | 有 `TUSHARE_TOKEN` 时自动把 `tushare` 放入快照优先级；否则使用免费源链路 | 选股引擎维护 source health；状态接口透出 snapshot/daily health |
 | 选股日线补特征 | `DataFetcherManager` | 选股引擎优先复用现有日线与缓存链路 | 现有链路失败后才回到引擎自身的日线源 |
@@ -64,7 +64,7 @@ flowchart TD
     D --> C[本地 stock_daily 缓存]
     C -->|命中且新鲜| COK[复用缓存]
     C -->|缺失或过期| DM{市场}
-    DM -->|A 股个股/未登记标的| CN[按 priority 动态排序: Efinance/AkShare/Tushare/TickFlow/Pytdx/Baostock/YFinance/Tencent]
+    DM -->|A 股个股/未登记标的| CN[按 priority 动态排序: TickPlus/Efinance/AkShare/Tushare/TickFlow/Pytdx/Baostock/YFinance/Tencent]
     DM -->|已登记沪深指数| CNI[Tencent -> AkShare -> TickFlow -> YFinance]
     DM -->|港股| HK[Futu if configured -> Longbridge/AkShare/YFinance fallback]
     DM -->|美股| US[Longbridge/YFinance -> Finnhub/AlphaVantage -> Stooq]
@@ -133,7 +133,7 @@ flowchart TD
     TS -->|yes| SP1[tushare -> sina -> efinance -> akshare_em -> em_datacenter]
     TS -->|no| SP2[sina -> efinance -> akshare_em -> em_datacenter]
     ENV --> DAILY[DSA provider context]
-    DAILY --> DFM[DataFetcherManager: Tushare/Efinance/Tencent/AkShare/TickFlow/Pytdx/Baostock/YFinance]
+    DAILY --> DFM[DataFetcherManager: TickPlus/Tushare/Efinance/Tencent/AkShare/TickFlow/Pytdx/Baostock/YFinance]
     DFM --> RESULT[候选股 + source_errors/warnings/llm_parse_errors]
 
     API --> HOT{hotspots，与 screen 并行}
@@ -159,13 +159,15 @@ ENABLE_EASTMONEY_PATCH=true
 
 ### A 股稳定模式
 
-适合经常跑选股、批量分析或对外服务。Tushare 用于增强普通 A 股日线与快照稳定性；TickFlow 可增强普通 A 股日 K、已登记指数固定 fallback、实时行情和大盘复盘（实时行情需显式加入 `REALTIME_SOURCE_PRIORITY`）；免费源继续作为兜底。
+适合经常跑选股、批量分析或对外服务。A 股 / ETF 行情首选推荐 [TickPlus](http://www.tickplus.org/register?reg=5433cf922395)；ETF 轮动使用独立前复权实例。Tushare 用于增强普通 A 股日线与快照稳定性；TickFlow 可增强普通 A 股日 K、已登记指数固定 fallback、实时行情和大盘复盘（实时行情需显式加入 `REALTIME_SOURCE_PRIORITY`）；免费源继续作为兜底。
 
 ```env
+TICKPLUS_API_KEY=your_tickplus_key
 TUSHARE_TOKEN=your_tushare_token
-TICKFLOW_API_KEY=your_tickflow_key
+# 可选：指数及大盘复盘增强
+# TICKFLOW_API_KEY=your_tickflow_key
 
-REALTIME_SOURCE_PRIORITY=tickflow,tushare,tencent,akshare_sina,efinance,akshare_em
+REALTIME_SOURCE_PRIORITY=tickplus,tushare,tencent,akshare_sina,efinance,akshare_em
 SNAPSHOT_SOURCE_PRIORITY=tushare,sina,efinance,akshare_em,em_datacenter
 
 # 选股运行期默认值；显式配置时会保留你的值
@@ -203,7 +205,7 @@ LONGBRIDGE_ACCESS_TOKEN=your_access_token
 | --- | --- |
 | 单个源失败但 fallback 成功 | 本次使用了降级数据源，分析仍可继续；报告中会标记实际成功源。 |
 | 多个源失败但有缓存 | 实时源不可用，本次使用上一次成功缓存；结论会降低置信度。 |
-| 全部源失败且无缓存 | 当前数据不可用，请稍后重试。普通 A 股可检查 Tushare/TickFlow；已登记指数应检查 Tencent/AkShare 连通性或配置 TickFlow；港美股可检查 Longbridge。 |
+| 全部源失败且无缓存 | 当前数据不可用，请稍后重试。普通 A 股 / ETF 可优先检查 TickPlus，再检查 Tushare/TickFlow；已登记指数应检查 Tencent/AkShare 连通性或配置 TickFlow；港美股可检查 Longbridge。 |
 
 普通 A 股日线使用 `cn` 健康度命名空间，已登记指数固定链使用独立的 `cn_index` 命名空间；任一链的连续失败不会熔断另一条链。指数源返回空结果时会继续 fallback 并记录诊断，四源全部失败则返回空结果和空来源；普通股票保留既有最终异常语义。
 
@@ -270,6 +272,7 @@ AkShare `stock_financial_abstract` 返回“指标行 + 报告期列”的宽表
 ## 官方资料
 
 - Tushare: https://tushare.pro/document/2
+- TickPlus（A 股 / ETF 首选推荐）: http://www.tickplus.org/register?reg=5433cf922395
 - TickFlow: https://tickflow.org/
 - AkShare: https://akshare.akfamily.xyz/
 - Longbridge OpenAPI: https://open.longportapp.com/
