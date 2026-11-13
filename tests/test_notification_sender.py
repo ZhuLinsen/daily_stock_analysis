@@ -1853,6 +1853,77 @@ class TestSlackSender(unittest.TestCase):
 class TestTelegramSender(unittest.TestCase):
     """Unit tests for TelegramSender."""
 
+    @mock.patch("src.notification_sender.telegram_sender.time.sleep")
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_respects_json_flood_control_delay(self, mock_post, mock_sleep):
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+
+        for delay, header in ((37, None), (37, "2"), (0, "2")):
+            with self.subTest(delay=delay, header=header):
+                limited = requests.Response()
+                limited.status_code = 429
+                limited._content = json.dumps({
+                    "ok": False,
+                    "error_code": 429,
+                    "parameters": {"retry_after": delay},
+                }).encode("utf-8")
+                if header is not None:
+                    limited.headers["Retry-After"] = header
+                mock_post.reset_mock()
+                mock_sleep.reset_mock()
+                mock_post.side_effect = [limited, _response(200, {"ok": True})]
+
+                self.assertTrue(sender.send_to_telegram("hello", timeout_seconds=3))
+
+                mock_sleep.assert_called_once_with(delay)
+                self.assertEqual(mock_post.call_count, 2)
+                self.assertEqual(mock_post.call_args_list[0], mock_post.call_args_list[1])
+                self.assertEqual(mock_post.call_args.kwargs["timeout"], 3)
+
+    @mock.patch("src.notification_sender.telegram_sender.time.sleep")
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_rate_limit_preserves_header_and_backoff_fallbacks(self, mock_post, mock_sleep):
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        cases = (
+            (b"{}", "7", 7),
+            (b"proxy rate limit", "7", 7),
+            (b'{"parameters": null}', "7", 7),
+            (b'{"parameters": {"retry_after": "invalid"}}', "7", 7),
+            (b"{}", None, 2),
+            (b"proxy rate limit", "invalid", 2),
+        )
+        for body, header, delay in cases:
+            with self.subTest(body=body, header=header):
+                limited = requests.Response()
+                limited.status_code = 429
+                limited._content = body
+                if header is not None:
+                    limited.headers["Retry-After"] = header
+                mock_post.reset_mock()
+                mock_sleep.reset_mock()
+                mock_post.side_effect = [limited, _response(200, {"ok": True})]
+
+                self.assertTrue(sender.send_to_telegram("hello"))
+
+                mock_sleep.assert_called_once_with(delay)
+                self.assertEqual(mock_post.call_count, 2)
+
+    @mock.patch("src.notification_sender.telegram_sender.time.sleep")
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_rate_limit_stops_after_three_attempts(self, mock_post, mock_sleep):
+        limited = requests.Response()
+        limited.status_code = 429
+        limited._content = b'{"ok": false, "parameters": {"retry_after": 37}}'
+        mock_post.return_value = limited
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+
+        self.assertFalse(TelegramSender(cfg).send_to_telegram("hello"))
+
+        self.assertEqual(mock_post.call_count, 3)
+        self.assertEqual(mock_sleep.call_args_list, [mock.call(37), mock.call(37)])
+
     def test_send_returns_false_when_not_configured(self):
         cfg = _config()
         sender = TelegramSender(cfg)
