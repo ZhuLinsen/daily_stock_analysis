@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+import copy
+import json
+import math
 import os
 import sys
 from types import SimpleNamespace
@@ -155,6 +158,75 @@ def test_convert_messages_matches_slashless_openai_target_without_provider_leaka
     assert matching[0]["reasoning_content"] == "provider-only"
     assert matching[0]["tool_calls"][0]["provider_specific_fields"] == {"thought_signature": "sig-1"}
     assert mismatched == []
+
+
+def _reject_nonfinite_json_constant(token: str) -> float:
+    """Strict JSON parser hook: RFC 8259 has no NaN/Infinity constants."""
+    raise ValueError(f"non-standard JSON constant: {token}")
+
+
+def test_convert_messages_sanitizes_nan_and_infinity_in_tool_content() -> None:
+    adapter = LLMToolAdapter.__new__(LLMToolAdapter)
+    content = {
+        "price": float("nan"),
+        "volume": float("inf"),
+        "spread": float("-inf"),
+        "history": [1.5, float("nan"), {"deep": float("inf")}],
+        "label": "NaN",
+        "count": 3,
+    }
+    original = copy.deepcopy(content)
+    messages = [
+        {"role": "tool", "tool_call_id": "call_1", "content": content},
+    ]
+
+    converted = adapter._convert_messages(messages)
+    raw = converted[0]["content"]
+
+    # Must be strict RFC 8259 JSON: no bare NaN/Infinity tokens survive.
+    parsed = json.loads(raw, parse_constant=_reject_nonfinite_json_constant)
+    assert parsed["price"] is None
+    assert parsed["volume"] is None
+    assert parsed["spread"] is None
+    assert parsed["history"] == [1.5, None, {"deep": None}]
+    # Finite values and literal strings pass through unchanged.
+    assert parsed["label"] == "NaN"
+    assert parsed["count"] == 3
+    # Original message content must not be mutated.
+    assert content == original
+    assert math.isnan(content["price"])
+
+
+def test_convert_messages_sanitizes_nan_and_infinity_in_tool_call_arguments() -> None:
+    adapter = LLMToolAdapter.__new__(LLMToolAdapter)
+    arguments = {
+        "threshold": float("nan"),
+        "gains": {"day": float("inf"), "week": float("-inf")},
+        "series": [float("nan"), 2.25],
+        "name": "Infinity",
+    }
+    original = copy.deepcopy(arguments)
+    messages = [
+        {
+            "role": "assistant",
+            "content": "checking",
+            "tool_calls": [
+                {"id": "call_1", "name": "echo", "arguments": arguments},
+            ],
+        },
+    ]
+
+    converted = adapter._convert_messages(messages)
+    raw = converted[0]["tool_calls"][0]["function"]["arguments"]
+
+    parsed = json.loads(raw, parse_constant=_reject_nonfinite_json_constant)
+    assert parsed["threshold"] is None
+    assert parsed["gains"] == {"day": None, "week": None}
+    assert parsed["series"] == [None, 2.25]
+    assert parsed["name"] == "Infinity"
+    # Original tool-call arguments must not be mutated.
+    assert arguments == original
+    assert math.isnan(arguments["threshold"])
 
 
 def test_parse_litellm_response_extracts_claude_blocks_and_tool_provider_fields() -> None:

@@ -122,6 +122,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: desktop-windows-${{ env.RELEASE_TAG }}
           path: dist/release-assets/*
           if-no-files-found: error
@@ -211,6 +212,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: desktop-macos-${{ matrix.arch }}-${{ env.RELEASE_TAG }}
           path: dist/release-assets/*.dmg
           if-no-files-found: error

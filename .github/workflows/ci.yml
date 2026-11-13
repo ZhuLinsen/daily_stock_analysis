@@ -164,6 +164,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
       - name: 🐳 Build image
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
         with:
           context: .
           file: docker/Dockerfile
@@ -280,4 +282,4 @@ jobs:
           name: web-ui-evidence-${{ github.event.pull_request.head.sha }}
           path: apps/dsa-web/test-results/fixtures/
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7

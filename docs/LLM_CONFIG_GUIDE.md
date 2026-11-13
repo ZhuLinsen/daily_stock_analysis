@@ -1,5 +1,7 @@
 # LLM (大模型) 配置指南
 
+> **平台边界（2026-11-08）：** Gemini API 与 Vertex AI 的模型生命周期不同。Vertex AI 的 `gemini-3.6-flash` 占位值仅为输入示例；[Google Cloud 文档](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash)列出的该平台退役日期为 2026-11-19。请确认模型在你的项目和区域中可用；Gemini API 验证通过不代表 Vertex AI 也已验证。仅配置 DeepSeek Key 时会推断使用 `deepseek/deepseek-v4-flash`；显式模型及更高优先级配置仍然优先。
+
 欢迎！无论你是刚接触 AI 的新手小白，还是精通各种 API 的高玩老手，这份指南都能帮你快速把大模型（LLM）跑起来。
 
 本项目对外提供统一的 AI 模型接入体验，支持主流官方 API、OpenAI 兼容平台以及本地模型。底层由 [LiteLLM](https://docs.litellm.ai/) 驱动，但大多数用户只需要理解“选服务商、填 API Key、选主模型/渠道”这条默认路径。为了照顾不同阶段的用户，我们设计了“三层优先级”配置，按需选择最适合你的方式即可。
@@ -124,8 +126,8 @@ LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3
 # 填入你在 DeepSeek 官方平台申请的 API Key
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-*兼容提示：仅填这一行时，系统仍会默认使用 `deepseek/deepseek-chat` 并在日志提示迁移。*
-`deepseek-chat` / `deepseek-reasoner` 仍可用于兼容旧配置，但 DeepSeek 官方已标记为 2026/07/24 后废弃；新配置建议通过 Web 快速渠道或显式 `LITELLM_MODEL=deepseek/deepseek-v4-flash` 迁移到 `deepseek-v4-flash` / `deepseek-v4-pro`。
+*仅填这一行时，系统默认使用 `deepseek/deepseek-v4-flash`。*
+`deepseek-chat` / `deepseek-reasoner` 已被 DeepSeek 官方公告于 2026/07/24 停用，旧配置请迁移；新配置建议通过 Web 快速渠道或显式 `LITELLM_MODEL=deepseek/deepseek-v4-flash` 迁移到 `deepseek-v4-flash` / `deepseek-v4-pro`。
 
 ### 示例 3：使用 Gemini 免费 API
 ```env
@@ -268,7 +270,7 @@ LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
 # 3. 渠道二：配置一个常用的聚合中转 API
 LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
 LLM_AIHUBMIX_API_KEY=sk-2222222222222
-LLM_AIHUBMIX_MODELS=gpt-5.5,claude-sonnet-4-6
+LLM_AIHUBMIX_MODELS=gpt-6.1-sol,claude-sonnet-4-6
 
 # 4. 【关键】指定主模型和备用模型列表
 # 平时首选用 deepseek 这款模型：
@@ -276,7 +278,7 @@ LITELLM_MODEL=deepseek/deepseek-v4-flash
 # 可选：Agent 问股单独指定主模型（留空则继承主模型）
 AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro
 # 主模型崩了立刻挨个尝试下面这俩备用模型：
-LITELLM_FALLBACK_MODELS=openai/gpt-5.4-mini,anthropic/claude-sonnet-4-6
+LITELLM_FALLBACK_MODELS=openai/gpt-6.1-terra,anthropic/claude-sonnet-4-6
 ```
 
 ### 示例：Ollama 渠道模式（本地模型，无需 API Key）
@@ -339,7 +341,7 @@ AGENT_CONTEXT_PROTECTED_TURNS=
 - Moonshot 官方说明 Kimi API 兼容 OpenAI 接口，Base URL 使用 `https://api.moonshot.ai/v1`：<https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart>
 - LiteLLM 官方要求 OpenAI Compatible 渠道模型名使用 `openai/` 前缀：<https://docs.litellm.ai/docs/providers/openai_compatible>
 - Moonshot 官方兼容性文档区分两种固定值：**thinking 模式固定 `1.0`，non-thinking 模式固定 `0.6`**；传其它值会被接口拒绝：<https://platform.moonshot.ai/docs/guide/compatibility#parameters-differences-in-request-body>
-- OpenAI Chat Completions 规范中 `temperature` 是可选参数；对 GPT-5 / o 系列等只接受默认温度的模型，本项目会在请求层省略 `temperature`，让服务端使用默认值，而不是改写你的 `LLM_TEMPERATURE`：<https://platform.openai.com/docs/api-reference/chat/create>
+- OpenAI Chat Completions 规范中 `temperature` 是可选参数；对 GPT-5 / GPT-6 / o 系列等只接受默认温度的模型，本项目会在请求层省略 `temperature`，让服务端使用默认值，而不是改写你的 `LLM_TEMPERATURE`：<https://platform.openai.com/docs/api-reference/chat/create>
 - 当前仓库的运行时依赖约束是 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0`（见 `requirements.txt`）；本次兼容逻辑按该约束回归验证了主分析、大盘复盘、Agent 直连 LiteLLM，以及系统设置页的渠道连通性测试。
 - 因此本项目会在请求发出前按**实际请求模式**归一化 `kimi-k2.6` 及其 `kimi-k2.6-*` 变体：默认 / thinking 路径使用 `temperature=1.0`；如果你的 LiteLLM YAML 路由别名里显式写了 `litellm_params.extra_body.thinking.type: disabled`（或等价 non-thinking 配置），则自动切到 `temperature=0.6`。你在 `.env` 或 Web 设置里保存的 `LLM_TEMPERATURE` 不会被改写。
 - 如果兼容平台对未收录的新模型返回明确的参数错误（例如 `temperature` 不支持、只能使用默认 `1.0`、`top_p` 不支持），运行时会对**当前请求**做一次参数修正并重试；只有重试成功后才把该策略缓存在当前进程内。该缓存不会写回 `.env`，服务重启后会重新按配置与适配规则判断。
@@ -500,7 +502,7 @@ model_list:
 
 ```env
 # 指定你看图专用的模型名
-VISION_MODEL=openai/gpt-5.5
+VISION_MODEL=openai/gpt-6.1-sol
 # 别忘了填写它对应提供商的 API KEY，如果是 OpenAI 兼容渠道就提供 OPENAI_API_KEY：
 # OPENAI_API_KEY=xxx
 ```
@@ -524,11 +526,11 @@ VISION_PROVIDER_PRIORITY=gemini,anthropic,openai
 
 | 遇到了什么诡异报错？ | 罪魁祸首可能是啥？ | 该怎么收拾它？ |
 |----------------------|----------------------|------------------|
-| **界面提示主模型未配置** | 系统不知道你到底想用哪家的哪个模型 | 在 `.env` 中写上一句明白话：`LITELLM_MODEL=provider/你的模型名`。比如 `openai/gpt-5.5` |
+| **界面提示主模型未配置** | 系统不知道你到底想用哪家的哪个模型 | 在 `.env` 中写上一句明白话：`LITELLM_MODEL=provider/你的模型名`。比如 `openai/gpt-6.1-sol` |
 | **我写了好几家的Key，为什么死活只有一个生效？修改还没用？** | 你把 **极简模式** 和 **渠道模式** 混着写了！ | 想好一条路走到黑——只要简单就删掉 `LLM_CHANNELS` 开头的；想要丰富备用切换就要全部转投到 `LLM_CHANNELS` 下的编制里。 |
 | **错误码报 400 或 401 或 Invalid API Key** | API Key 填错、少复制了一截、账号充值没到账、或者模型名字敲错（极度常见）。 | 1. 检查复制的 Key 前后是否有误填空格。<br> 2. 检查 Base URL 最后是不是少了一个 `/v1`。<br> 3. 检查模型名是否少写了 `openai/` 之类的前缀！ |
 | **Kimi K2.6 报 `invalid temperature`（可能提示只允许 `1.0` 或 `0.6`）** | 该模型按 thinking / non-thinking 模式要求不同固定 temperature；旧配置或调用入口可能还在传 `0.7`。 | 升级后系统会对 `kimi-k2.6` 默认 / thinking 请求自动使用 `temperature=1.0`；如果你在 LiteLLM YAML 路由里显式关闭 thinking，则自动改用 `0.6`。模型名建议写成 `openai/kimi-k2.6` 并配合 Moonshot / 聚合平台的 OpenAI 兼容 Base URL 与 API Key。非 Kimi fallback 仍会继续使用你配置的 `LLM_TEMPERATURE`。 |
-| **GPT-5 / o 系列报 `temperature` 不支持或只允许默认值** | 这类模型只接受服务端默认采样参数，但旧调用入口会显式传 `0.7`。 | 升级后请求层会省略 `temperature`，让服务端使用默认值；`.env` / Web 设置中的 `LLM_TEMPERATURE` 不会被改写，切回普通模型后仍按原值发送。 |
+| **GPT-5 / GPT-6 / o 系列报 `temperature` 不支持或只允许默认值** | 这类模型只接受服务端默认采样参数，但旧调用入口会显式传 `0.7`。 | 升级后请求层会省略 `temperature`，让服务端使用默认值；`.env` / Web 设置中的 `LLM_TEMPERATURE` 不会被改写，切回普通模型后仍按原值发送。 |
 | **转圈转不停，最后报 Timeout / ConnectionRefused 等** | 1. 在国内使用国外原版（像 Google、OpenAI），没开代理被墙了。<br>2. 你买的云服务器压根不能出境。 | 非常推荐使用**国内官方**（如DeepSeek、阿里）或者各种**兼容 OpenAI 的聚合中转接口**。因为中转站把网络问题帮你解决好了。 |
 | **Ollama 报 404、`Could not get model info` 或 `api/generate/api/show`** | 误用 `OPENAI_BASE_URL` 配置 Ollama，系统会错误拼接 URL | 改用 `OLLAMA_API_BASE=http://localhost:11434` 或渠道模式（`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`） |
 

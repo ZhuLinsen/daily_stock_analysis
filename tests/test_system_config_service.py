@@ -1226,7 +1226,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro",
             "LLM_MY_PROXY_PROTOCOL=openai",
             "LLM_MY_PROXY_API_KEYS=sk-key-1,sk-key-2",
-            "LLM_MY_PROXY_MODELS=gpt-5.5",
+            "LLM_MY_PROXY_MODELS=gpt-6.1-sol",
             "LLM_UNUSED_API_KEY=sk-should-not-leak",
             "DATABASE_PATH=./custom/stock_analysis.db",
         )
@@ -1238,7 +1238,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(items["LLM_DEEPSEEK_API_KEY"]["value"], "sk-test-value")
         self.assertEqual(items["LLM_DEEPSEEK_MODELS"]["value"], "deepseek-v4-flash,deepseek-v4-pro")
         self.assertEqual(items["LLM_MY_PROXY_API_KEYS"]["value"], "sk-key-1,sk-key-2")
-        self.assertEqual(items["LLM_MY_PROXY_MODELS"]["value"], "gpt-5.5")
+        self.assertEqual(items["LLM_MY_PROXY_MODELS"]["value"], "gpt-6.1-sol")
         self.assertEqual(items["LLM_MY_PROXY_API_KEYS"]["schema"]["category"], "ai_model")
         self.assertNotIn("LLM_UNUSED_API_KEY", items)
         self.assertNotIn("DATABASE_PATH", items)
@@ -1400,7 +1400,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self._rewrite_env(
             "GENERATION_BACKEND=litellm",
             "OPENAI_API_KEY=secret-key-value",
-            "OPENAI_MODEL=gpt-5.5",
+            "OPENAI_MODEL=gpt-6.1-sol",
         )
 
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
@@ -1422,7 +1422,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
             payload = self.service.preview_generation_backend_status(
-                items=[{"key": "GEMINI_MODEL", "value": "openai/gpt-5.5"}],
+                items=[{"key": "GEMINI_MODEL", "value": "openai/gpt-6.1-sol"}],
                 mask_token="******",
             )
 
@@ -1558,7 +1558,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self._rewrite_env(
             "GENERATION_BACKEND=codex_cli",
             "GENERATION_FALLBACK_BACKEND=",
-            "AGENT_LITELLM_MODEL=openai/gpt-5.5",
+            "AGENT_LITELLM_MODEL=openai/gpt-6.1-sol",
             "OPENAI_API_KEY=secret-key-value",
             "STOCK_LIST=600519",
         )
@@ -1576,7 +1576,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self._rewrite_env(
             "GENERATION_BACKEND=codex_cli",
             "GENERATION_FALLBACK_BACKEND=",
-            "LITELLM_MODEL=openai/gpt-5.5",
+            "LITELLM_MODEL=openai/gpt-6.1-sol",
             "OPENAI_API_KEY=secret-key-value",
             "STOCK_LIST=600519",
         )
@@ -1588,7 +1588,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         checks = {check["key"]: check for check in status["checks"]}
         self.assertEqual(checks["llm_agent"]["status"], "configured")
         self.assertIn(
-            "普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: openai/gpt-5.5",
+            "普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: openai/gpt-6.1-sol",
             checks["llm_agent"]["message"],
         )
 
