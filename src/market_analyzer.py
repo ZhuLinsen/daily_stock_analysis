@@ -1249,6 +1249,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
         return "\n".join(lines)
 
+    @staticmethod
+    def _get_directional_index_changes(overview: MarketOverview) -> List[float]:
+        """Exclude VIX volatility returns from the directional index average."""
+        return [
+            idx.change_pct
+            for idx in overview.indices
+            if idx.change_pct is not None
+            and str(idx.code or "").strip().upper() not in {"VIX", "^VIX"}
+        ]
+
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
         """Build a deterministic market-light snapshot from structured breadth data."""
         scores = self._build_market_light_scores(overview)
@@ -1311,7 +1321,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，亏钱效应较强")
             else:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，市场分化")
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        index_changes = self._get_directional_index_changes(overview)
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"主要指数平均涨跌幅 {avg_change:+.2f}%")
@@ -1334,7 +1344,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"advancers ratio {up_ratio:.0%}, downside pressure dominates")
             else:
                 reasons.append(f"advancers ratio {up_ratio:.0%}, breadth is mixed")
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        index_changes = self._get_directional_index_changes(overview)
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"average major-index change {avg_change:+.2f}%")
@@ -1513,8 +1523,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
 
-        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
-        index_available = bool(overview.indices and index_changes)
+        index_changes = self._get_directional_index_changes(overview)
+        index_available = bool(index_changes)
         index_score = 50
         if index_available:
             avg_change = sum(index_changes) / len(index_changes)

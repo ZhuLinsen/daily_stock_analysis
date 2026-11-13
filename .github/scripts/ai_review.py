@@ -324,7 +324,7 @@ def build_prompt(diff_content, files, truncated, pr_title, pr_body):
 def review_with_gemini(prompt):
     """Run review with Gemini API."""
     api_key = os.environ.get('GEMINI_API_KEY')
-    model = os.environ.get('GEMINI_MODEL') or os.environ.get('GEMINI_MODEL_FALLBACK') or 'gemini-2.5-flash'
+    model = os.environ.get('GEMINI_MODEL') or os.environ.get('GEMINI_MODEL_FALLBACK') or 'gemini-3.6-flash'
 
     if not api_key:
         print("❌ Gemini API Key 未配置（检查 GitHub Secrets: GEMINI_API_KEY）")
@@ -355,7 +355,7 @@ def review_with_openai(prompt):
     """Run review with OpenAI-compatible API as fallback."""
     api_key = os.environ.get('OPENAI_API_KEY')
     base_url = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1')
-    model = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
+    model = os.environ.get('OPENAI_MODEL', 'gpt-6.1-sol')
 
     if not api_key:
         print("❌ OpenAI API Key 未配置（检查 GitHub Secrets: OPENAI_API_KEY）")

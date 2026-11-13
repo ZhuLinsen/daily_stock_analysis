@@ -8,6 +8,7 @@ interface consumed by the AgentExecutor, via LiteLLM.
 
 import json
 import logging
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -90,7 +91,7 @@ class LLMResponse:
     provider_blocks: List[Dict[str, Any]] = field(default_factory=list)  # Opaque provider content blocks (e.g. Claude thinking/redacted_thinking)
     usage: Dict[str, Any] = field(default_factory=dict)       # token usage info
     provider: str = ""                     # which provider handled this call
-    model: str = ""                        # full model name used (e.g. gemini/gemini-2.0-flash), for report meta
+    model: str = ""                        # full model name used (e.g. gemini/gemini-3.6-flash), for report meta
     raw: Any = None                        # raw provider response for debugging
 
 
@@ -382,6 +383,7 @@ class LLMToolAdapter:
                 logger.debug(f"Registered custom pricing for {model_name}")
             except Exception as e:
                 logger.debug(f"Model {model_name} may already be registered or pricing error: {e}")
+
     def _has_channel_config(self) -> bool:
         """Check if multi-channel config (channels / YAML) is active."""
         return bool(self._config.llm_model_list) and not all(
@@ -805,6 +807,34 @@ class LLMToolAdapter:
         """Return the raw configured temperature before per-model normalization."""
         return float(self._config.llm_temperature)
 
+    @staticmethod
+    def _normalize_nonfinite(value: Any) -> Any:
+        """Recursively convert non-finite floats (NaN / +/-Infinity) to None.
+
+        Dicts, lists and tuples are rebuilt without mutating the original
+        values; finite numbers, strings (including literal ``"NaN"``) and all
+        other types pass through unchanged.
+        """
+        if isinstance(value, float):
+            return None if math.isnan(value) or math.isinf(value) else value
+        if isinstance(value, dict):
+            return {key: LLMToolAdapter._normalize_nonfinite(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            normalized = [LLMToolAdapter._normalize_nonfinite(item) for item in value]
+            return tuple(normalized) if isinstance(value, tuple) else normalized
+        return value
+
+    @classmethod
+    def _nan_safe_dumps(cls, value: Any) -> str:
+        """Serialize to strict RFC 8259 JSON for the provider wire format.
+
+        Normalizes non-finite floats to ``null`` first, then dumps with
+        ``allow_nan=False`` so any unhandled non-finite numeric value fails
+        locally instead of emitting invalid JSON that LiteLLM rejects with
+        ``BadRequestError: "NaN" is not valid JSON``.
+        """
+        return json.dumps(cls._normalize_nonfinite(value), allow_nan=False)
+
     def _convert_messages(
         self,
         messages: List[Dict[str, Any]],
@@ -826,7 +856,7 @@ class LLMToolAdapter:
                 openai_messages.append({
                     "role": "tool",
                     "tool_call_id": msg.get("tool_call_id", ""),
-                    "content": msg["content"] if isinstance(msg["content"], str) else json.dumps(msg["content"]),
+                    "content": msg["content"] if isinstance(msg["content"], str) else self._nan_safe_dumps(msg["content"]),
                 })
             elif msg["role"] == "assistant" and msg.get("tool_calls"):
                 openai_tc = []
@@ -836,7 +866,7 @@ class LLMToolAdapter:
                         "type": "function",
                         "function": {
                             "name": tc["name"],
-                            "arguments": json.dumps(tc["arguments"]),
+                            "arguments": self._nan_safe_dumps(tc["arguments"]),
                         },
                     }
                     provider_specific_fields = dict(tc.get("provider_specific_fields") or {})
