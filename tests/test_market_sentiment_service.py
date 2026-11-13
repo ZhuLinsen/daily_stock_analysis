@@ -452,9 +452,15 @@ class TestSourceMissingPartial(MarketSentimentServiceTestCase):
             fetcher_factory=lambda: self.fetcher,
             trade_dates_provider=_stub_calendar,
         )
-        self.service.run_snapshot_job(MONDAY_ISO)
+        summary = self.service.run_snapshot_job(MONDAY_ISO)
 
         row = self.repo.get_by_market_date("cn", MONDAY_ISO)
+        # partial 快照正常落库 → 摘要 status="partial"（非任务失败）
+        self.assertEqual(summary["status"], "partial")
+        self.assertEqual(summary["quality_status"], "partial")
+        self.assertAlmostEqual(summary["completeness"], 3 / 6, places=5)
+        self.assertEqual(summary["trade_date"], MONDAY_ISO)
+        self.assertIsNone(summary["error"])
         self.assertIsNotNone(row, "快照必须以 partial 落库，而不是不写")
         self.assertEqual(row.quality_status, "partial")
         self.assertAlmostEqual(row.completeness, 3 / 6, places=5)
@@ -488,8 +494,21 @@ class TestSourceMissingPartial(MarketSentimentServiceTestCase):
             fetcher_factory=lambda: self.fetcher,
             trade_dates_provider=_stub_calendar,
         )
-        self.assertIsNone(self.service.run_snapshot_job(MONDAY_ISO))  # 不抛
         self.assertIsNone(self.repo.get_by_market_date("cn", MONDAY_ISO))
+        # fail-open 返回 status="failed" 摘要（非 None），队列据此判任务成功
+        summary = self.service.run_snapshot_job(MONDAY_ISO)
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["trade_date"], MONDAY_ISO)
+        self.assertIsNone(summary["quality_status"])
+        self.assertIsNone(summary["completeness"])
+        self.assertIn("RuntimeError: boom", summary["error"])
+
+    def test_unparseable_trade_date_returns_failed_summary_without_fetch(self):
+        summary = self.service.run_snapshot_job("not-a-date")  # 不抛
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["trade_date"], "not-a-date")
+        self.assertIn("invalid trade_date", summary["error"])
+        self.assertEqual(self.fetcher.calls, [])  # 解析失败不产生抓取成本
 
     def test_calendar_failure_degrades_prev_groups_only(self):
         self.service = mss.MarketSentimentService(
@@ -515,6 +534,14 @@ class TestOrchestrationIntegration(MarketSentimentServiceTestCase):
 
     def test_full_chain_produces_complete_snapshot(self):
         result = self.service.run_snapshot_job(MONDAY_ISO)
+        # 后台任务体契约：返回摘要 dict（status="ok"），供任务队列判定 SUCCESS
+        self.assertEqual(result, {
+            "status": "ok",
+            "trade_date": MONDAY_ISO,
+            "quality_status": "complete",
+            "completeness": 1.0,
+            "error": None,
+        })
         row = self.repo.get_by_market_date("cn", MONDAY_ISO)
         self.assertIsNotNone(row)
         self.assertEqual(row.quality_status, "complete")
@@ -551,8 +578,6 @@ class TestOrchestrationIntegration(MarketSentimentServiceTestCase):
         trace = json.loads(row.provider_trace)
         traced_groups = {e["metric_group"] for e in trace}
         self.assertTrue(set(DEFAULT_REQUIRED_GROUPS) <= traced_groups)
-
-        self.assertIsNone(result)  # 后台任务体契约：-> None
 
     def test_get_snapshot_record_round_trip(self):
         self.service.run_snapshot_job(MONDAY_ISO)
@@ -646,6 +671,119 @@ class TestQueryTrend(MarketSentimentServiceTestCase):
         self.assertEqual(result.points, [])
         self.assertEqual(result.available_points, 0)
         self.assertEqual(result.metric, "limit_up_count")
+
+
+# ---------------------------------------------------------------------------
+# 7. 真实任务队列契约（复审 blocker OR-COR-70b15038 / OR-COR-ea7e538d）
+# ---------------------------------------------------------------------------
+
+class TestRealTaskQueueContract(MarketSentimentServiceTestCase):
+    """submit_background_task 真实路径（不 mock 队列）的契约测试。
+
+    语义边界（复审明确）：
+    - 任务失败 = job 本身抛未捕获异常（fail-open 下不可能发生）；
+    - 快照失败 = job 正常完成但摘要 ``status="failed"``，任务仍是 SUCCESS；
+    - ``run_snapshot_job`` 必须返回摘要 dict —— 返回 None 会被
+      ``_execute_background_task`` 判为 RuntimeError("任务返回空结果")，
+      把成功落库的快照任务误标 FAILED（本次修复的 blocker 根因）。
+    """
+
+    TIMEOUT_SECONDS = 30.0
+
+    def _run_via_real_queue(self, task_fn):
+        """真实 AnalysisTaskQueue 执行 task_fn，返回 (job 返回值, 终态 TaskInfo)。"""
+        from src.services.task_queue import AnalysisTaskQueue
+
+        original_instance = AnalysisTaskQueue._instance
+        AnalysisTaskQueue._instance = None
+        queue = AnalysisTaskQueue(max_workers=1)
+        try:
+            with mock.patch.object(mss, "_DEFAULT_SERVICE", self.service):
+                task_info = queue.submit_background_task(
+                    task_fn,
+                    stock_code="market_sentiment",
+                    stock_name="市场情绪快照",
+                    message="市场情绪快照任务已提交",
+                    task_id="sentiment-contract-task",
+                )
+                job_result = queue._futures[task_info.task_id].result(
+                    timeout=self.TIMEOUT_SECONDS
+                )
+                final = queue.get_task(task_info.task_id)
+        finally:
+            executor = getattr(queue, "_executor", None)
+            if executor is not None and hasattr(executor, "shutdown"):
+                executor.shutdown(wait=False, cancel_futures=True)
+            AnalysisTaskQueue._instance = original_instance
+        return job_result, final
+
+    def test_success_path_task_completes_with_ok_summary(self):
+        from src.services.task_queue import TaskStatus
+
+        now = datetime.combine(MONDAY, time(9, 0), tzinfo=SHANGHAI)
+        with mock.patch.object(mss, "_now_shanghai", return_value=now):
+            trigger = mss.trigger_snapshot()
+        self.assertEqual(trigger.status, "accepted")
+
+        job_result, final = self._run_via_real_queue(
+            lambda: mss.run_snapshot_job(trigger.trade_date)
+        )
+
+        self.assertEqual(final.status, TaskStatus.COMPLETED)
+        # 周一 09:00 触发 → 目标日 = 上一交易日周五（§4.1）
+        self.assertEqual(job_result, {
+            "status": "ok",
+            "trade_date": FRIDAY_ISO,
+            "quality_status": "complete",
+            "completeness": 1.0,
+            "error": None,
+        })
+        self.assertEqual(final.result, job_result)
+        self.assertEqual(final.error, None)
+        # 快照确实落库，且全局锁已由 worker 线程中的任务体释放
+        row = self.repo.get_by_market_date("cn", FRIDAY_ISO)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.quality_status, "complete")
+        self.assertIsNone(mss._TRIGGER_ACTIVE)
+
+    def test_fail_open_fetcher_error_task_still_completes_failed_summary(self):
+        from src.services.task_queue import TaskStatus
+
+        self.fetcher = _StubFetcher(raise_exc=RuntimeError("boom"))
+        self.service = mss.MarketSentimentService(
+            repo=self.repo,
+            fetcher_factory=lambda: self.fetcher,
+            trade_dates_provider=_stub_calendar,
+        )
+
+        job_result, final = self._run_via_real_queue(
+            lambda: mss.run_snapshot_job(MONDAY_ISO)
+        )
+
+        # fail-open 是设计语义：job 不抛错 → 任务 SUCCESS；
+        # 快照失败只体现在摘要 status="failed"，不是任务失败。
+        self.assertEqual(final.status, TaskStatus.COMPLETED)
+        self.assertEqual(job_result["status"], "failed")
+        self.assertEqual(job_result["trade_date"], MONDAY_ISO)
+        self.assertIsNone(job_result["quality_status"])
+        self.assertIsNone(job_result["completeness"])
+        self.assertIn("RuntimeError", job_result["error"])
+        self.assertIn("boom", job_result["error"])
+        self.assertEqual(final.result, job_result)
+        self.assertIsNone(self.repo.get_by_market_date("cn", MONDAY_ISO))
+
+    def test_unparseable_trade_date_task_completes_failed_summary(self):
+        from src.services.task_queue import TaskStatus
+
+        job_result, final = self._run_via_real_queue(
+            lambda: mss.run_snapshot_job("not-a-date")
+        )
+
+        self.assertEqual(final.status, TaskStatus.COMPLETED)
+        self.assertEqual(job_result["status"], "failed")
+        self.assertEqual(job_result["trade_date"], "not-a-date")
+        self.assertIn("invalid trade_date", job_result["error"])
+        self.assertIsNone(self.repo.get_by_market_date("cn", "not-a-date"))
 
 
 if __name__ == "__main__":

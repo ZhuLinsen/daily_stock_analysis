@@ -20,7 +20,13 @@ trigger semantics from the implementation plan §4.1:
   rejects concurrent triggers; cross-process races are bounded by the
   storage-layer unique constraint (§3.4 rule 5);
 - ``run_snapshot_job`` is fully fail-open: internal errors are logged, never
-  raised — a snapshot is persisted as ``partial`` whenever any data arrived.
+  raised — a snapshot is persisted as ``partial`` whenever any data arrived;
+  it returns a summary dict (``{"status", "trade_date", "quality_status",
+  "completeness", "error"}``) so the task queue can distinguish a completed
+  job (any snapshot outcome) from a real task failure (review fix for
+  OR-COR-70b15038 / OR-COR-ea7e538d: returning ``None`` made
+  ``_execute_background_task`` mark successfully-persisted snapshots as
+  FAILED via ``RuntimeError("任务返回空结果")``).
 
 Six module-level functions mirror the Wave 4 signature contract (Wave 5 maps
 API endpoints onto them mechanically).
@@ -56,6 +62,7 @@ from src.repositories.market_sentiment_repo import (
     METRIC_STATUS_TO_SECTION,
     QUALITY_STATUS_COMPLETE,
     MarketSentimentRepository,
+    SnapshotSaveResult,
 )
 from src.storage import MarketSentimentSnapshot
 
@@ -448,27 +455,64 @@ class MarketSentimentService:
 
     # -- 3. background job body ------------------------------------------------
 
-    def run_snapshot_job(self, trade_date: str) -> None:
-        """后台任务体：fetch → compute → save_snapshot，全链 fail-open 不抛。"""
+    def run_snapshot_job(self, trade_date: str) -> Dict[str, Any]:
+        """后台任务体：fetch → compute → save_snapshot，全链 fail-open 不抛。
+
+        返回摘要 dict（复审 blocker 修复 OR-COR-70b15038 / OR-COR-ea7e538d）：
+        ``_execute_background_task`` 把返回 ``None`` 的任务判为
+        ``RuntimeError("任务返回空结果")`` 并标 FAILED，成功落库的快照会被
+        调用方误判失败，因此本方法必须始终返回非 None 摘要：
+
+        - 正常完成：``{"status": "ok"|"partial", "trade_date", "quality_status",
+          "completeness", "error": None}``（镜像落库行质量）；
+        - fail-open 异常/无法解析日期：``{"status": "failed", ..., "error": 原因}``。
+
+        语义边界：任务失败 = 本方法抛未捕获异常（fail-open 下不可能）；
+        快照失败 = 正常完成但 ``status="failed"``（未落库任何快照）。
+        """
         try:
             target_date = _parse_trade_date(trade_date)
-        except ValueError:
+        except ValueError as exc:
             logger.error(
                 "[MarketSentiment] run_snapshot_job 收到无法解析的 trade_date=%r，跳过", trade_date
             )
             _release_trigger_lock()
-            return
+            return {
+                "status": "failed",
+                "trade_date": str(trade_date),
+                "quality_status": None,
+                "completeness": None,
+                "error": f"invalid trade_date: {exc}",
+            }
         try:
-            self._execute_snapshot(target_date)
-        except Exception:
+            saved = self._execute_snapshot(target_date)
+        except Exception as exc:
             logger.exception(
                 "[MarketSentiment] 快照任务内部异常 trade_date=%s（fail-open，不向上抛出）",
                 target_date.isoformat(),
             )
+            return {
+                "status": "failed",
+                "trade_date": target_date.isoformat(),
+                "quality_status": None,
+                "completeness": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         finally:
             _release_trigger_lock()
+        snapshot = saved.snapshot
+        quality = snapshot.quality_status
+        return {
+            "status": (
+                "ok" if quality == QUALITY_STATUS_COMPLETE else "partial"
+            ),
+            "trade_date": snapshot.trade_date,
+            "quality_status": quality,
+            "completeness": float(snapshot.completeness or 0.0),
+            "error": None,
+        }
 
-    def _execute_snapshot(self, target_date: date) -> None:
+    def _execute_snapshot(self, target_date: date) -> SnapshotSaveResult:
         iso = target_date.isoformat()
         compact = iso.replace("-", "")
 
@@ -498,10 +542,15 @@ class MarketSentimentService:
 
         trace = list(fetched.get("provider_trace") or [])
         result = self._get_repo().save_snapshot(payload, trace, market=MARKET_CN, trade_date=iso)
+        if not isinstance(result, SnapshotSaveResult):  # pragma: no cover - repo 契约防御
+            raise TypeError(
+                f"save_snapshot 返回类型异常: {type(result).__name__}（期望 SnapshotSaveResult）"
+            )
         logger.info(
             "[MarketSentiment] 快照落库 trade_date=%s action=%s quality=%s completeness=%.3f",
             iso, result.action, result.snapshot.quality_status, result.snapshot.completeness,
         )
+        return result
 
     def _compute_sections(
         self,
@@ -648,9 +697,16 @@ def trigger_snapshot(
     return get_market_sentiment_service().trigger_snapshot(trade_date, force)
 
 
-def run_snapshot_job(trade_date: str) -> None:
-    """后台任务体：fetch → compute → save_snapshot，全链 fail-open。"""
-    get_market_sentiment_service().run_snapshot_job(trade_date)
+def run_snapshot_job(trade_date: str) -> Dict[str, Any]:
+    """后台任务体：fetch → compute → save_snapshot，全链 fail-open。
+
+    返回摘要 dict（``{"status": "ok"|"partial"|"failed", "trade_date",
+    "quality_status", "completeness", "error"}``，详见
+    ``MarketSentimentService.run_snapshot_job``）；端点经
+    ``submit_background_task`` 提交的 lambda 透传该返回值，任务队列据此把
+    快照任务标 COMPLETED（返回 None 会被误判"任务返回空结果"→FAILED）。
+    """
+    return get_market_sentiment_service().run_snapshot_job(trade_date)
 
 
 def get_snapshot(trade_date: str) -> Optional[SnapshotRecord]:
