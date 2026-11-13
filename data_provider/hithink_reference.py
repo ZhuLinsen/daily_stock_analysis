@@ -45,12 +45,26 @@ def stock_name(fetcher: HiThinkFetcher, stock_code: str) -> Optional[str]:
 
 
 def stock_list(fetcher: HiThinkFetcher) -> pd.DataFrame:
+    """A-share directory used by ``DataFetcherManager.batch_get_stock_names``.
+
+    The analysis prefetch calls ``get_stock_name`` per code and does not load
+    this full directory. A missing list entitlement disables only later
+    directory pages, not quotes or financials.
+    """
     rows: List[Dict[str, str]] = []
     for page in range(_LIST_MAX_PAGES):
-        payload = fetcher._request(
-            _LIST_PATH,
-            {"asset_type": "a-share", "limit": _LIST_PAGE_SIZE, "offset": page * _LIST_PAGE_SIZE},
-        )
+        if not fetcher.is_available("stock_list"):
+            break
+        try:
+            payload = fetcher._request(
+                _LIST_PATH,
+                {"asset_type": "a-share", "limit": _LIST_PAGE_SIZE, "offset": page * _LIST_PAGE_SIZE},
+            )
+        except HiThinkRequestError as exc:
+            if exc.permission:
+                fetcher._remember_error(str(exc), directory_only=True)
+                break
+            raise
         data = payload.get("data") or {}
         if not isinstance(data, dict) or not isinstance(data.get("item"), list):
             raise HiThinkRequestError("HiThink ticker list response is invalid")
@@ -86,7 +100,58 @@ def hot_stocks(fetcher: HiThinkFetcher, n: int = 10) -> Optional[List[Dict[str, 
             "heat": item.get("heat"),
             "source": "HiThink热股榜",
         })
+    _fill_hot_prices(fetcher, rows)
     return rows[:limit] or None
+
+
+def _fill_hot_prices(fetcher: HiThinkFetcher, rows: List[Dict[str, Any]]) -> None:
+    """The hot-stock endpoint has no price. Fill it from the A-share snapshot."""
+    pending = [row for row in rows if row.get("code")]
+    for offset in range(0, len(pending), 10):
+        batch = pending[offset:offset + 10]
+        by_code: Dict[str, Dict[str, Any]] = {}
+        symbols: List[str] = []
+        for row in batch:
+            try:
+                thscode, _code = fetcher._thscode(str(row["code"]))
+            except Exception:
+                continue
+            symbols.append(thscode)
+            by_code[thscode.upper()] = row
+        if not symbols:
+            continue
+        try:
+            payload = fetcher._request("/api/a-share/prices/snapshot", {"thscodes": ",".join(symbols)})
+        except HiThinkRequestError as exc:
+            logger.info("[HiThinkFetcher] hot-stock snapshot skipped: %s", exc)
+            return
+        data = payload.get("data") or {}
+        if not isinstance(data, dict) or not isinstance(data.get("item"), list):
+            return
+        for item in data["item"]:
+            if not isinstance(item, dict):
+                continue
+            row = by_code.get(str(item.get("thscode") or "").upper())
+            if row is None:
+                continue
+            price = _number(item.get("last_price"))
+            change_pct = _number(item.get("price_change_ratio_pct"))
+            if price is not None:
+                row["price"] = price
+            if change_pct is not None:
+                row["change_pct"] = change_pct
+
+
+def _number(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
 
 
 def limit_up_pool(

@@ -133,6 +133,8 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         dataset_markets={
             "quote.realtime": ("cn",),
             "kline.daily": ("cn",),
+            "index.daily": ("cn",),
+            "financial.snapshot": ("cn",),
         },
     ),
     _ProviderDefinition(
@@ -430,6 +432,10 @@ class DataCapabilityService:
             and self._fetcher_available_for_capability(fetcher, capability="daily_data")
         ]
         cn_index_daily = ["tencent", "akshare", "tickflow", "yfinance"]
+        cn_index_daily_source = "DataFetcherManager._CN_INDEX_DAILY_SOURCE_ORDER"
+        if self._is_provider_configured(_PROVIDER_DEFINITION_MAP["hithink"]):
+            cn_index_daily.append("hithink")
+            cn_index_daily_source = "fixed index route, then HiThinkFetcher"
         market_overview = self._market_overview_priority(generic_daily)
         screening_priority = self._screening_snapshot_priority()
         hk_realtime_priority = _split_priority(
@@ -468,7 +474,7 @@ class DataCapabilityService:
             self._priority_view(
                 "cn.index.daily",
                 cn_index_daily,
-                "DataFetcherManager._CN_INDEX_DAILY_SOURCE_ORDER",
+                cn_index_daily_source,
                 known_sources=set(_FETCHER_TO_PROVIDER.values()),
             ),
             self._priority_view(
@@ -799,8 +805,11 @@ class DataCapabilityService:
             )
             else ["yfinance"]
         )
+        cn_providers = ["akshare"]
+        if self._is_provider_configured(_PROVIDER_DEFINITION_MAP["hithink"]):
+            cn_providers.append("hithink")
         return {
-            "cn": {"providers": ["akshare"], "warnings": []},
+            "cn": {"providers": cn_providers, "warnings": []},
             "hk": {"providers": hk_providers, "warnings": []},
             "us": {"providers": ["yfinance"], "warnings": []},
             "jp": {"providers": ["yfinance"], "warnings": []},

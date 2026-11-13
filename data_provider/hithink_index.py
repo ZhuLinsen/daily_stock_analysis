@@ -8,6 +8,7 @@ only after Tencent, AkShare, TickFlow, and YFinance have failed.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,7 +24,7 @@ _SNAPSHOT_PATH = "/api/a-share-index/prices/snapshot"
 _HISTORICAL_PATH = "/api/a-share-index/prices/historical"
 _CATALOG_PATH = "/api/a-share-index/catalog/ths-index-list"
 _RANK_BATCH = 10
-_RANK_MAX_SYMBOLS = 120
+_CATALOG_TTL_SECONDS = 300
 _MAIN_INDICES = (
     ("000001.SH", "sh000001", "上证指数"),
     ("399001.SZ", "sz399001", "深证成指"),
@@ -113,31 +114,36 @@ def index_daily_data(
 
 
 def rankings(fetcher: HiThinkFetcher, tag: str, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
-    catalog = fetcher._request(_CATALOG_PATH, {"tag": tag})
-    data = catalog.get("data") or {}
-    if not isinstance(data, dict) or not isinstance(data.get("item"), list):
-        raise HiThinkRequestError("HiThink index catalog response is invalid")
-    symbols = [
-        (str(item.get("thscode") or ""), str(item.get("name") or ""))
-        for item in data["item"]
-        if isinstance(item, dict) and item.get("thscode") and item.get("name")
-    ]
-    if len(symbols) > _RANK_MAX_SYMBOLS:
-        logger.info(
-            "[HiThinkFetcher] %s ranking scans the first %d of %d catalog entries",
-            tag,
-            _RANK_MAX_SYMBOLS,
-            len(symbols),
-        )
-        symbols = symbols[:_RANK_MAX_SYMBOLS]
+    """Rank one catalog tag.
+
+    Industry and concept catalogs are cached separately. Every symbol is
+    snapshotted in batches. A permission failure stops the remaining batches
+    and marks the rows that were already collected as partial coverage.
+    """
+    if not fetcher.is_available("index_rankings"):
+        return None
+    symbols = _catalog_symbols(fetcher, tag)
     quotes: List[Dict[str, Any]] = []
     names = {thscode: name for thscode, name in symbols}
+    partial = False
+    scanned = 0
     for offset in range(0, len(symbols), _RANK_BATCH):
+        if not fetcher.is_available("index_rankings"):
+            partial = True
+            break
         batch = [thscode for thscode, _name in symbols[offset:offset + _RANK_BATCH]]
-        payload = fetcher._request(_SNAPSHOT_PATH, {"thscodes": ",".join(batch)})
+        try:
+            payload = fetcher._request(_SNAPSHOT_PATH, {"thscodes": ",".join(batch)})
+        except HiThinkRequestError as exc:
+            if exc.permission:
+                fetcher._remember_error(str(exc), rank_only=True)
+                partial = True
+                break
+            raise
         body = payload.get("data") or {}
         if not isinstance(body, dict) or not isinstance(body.get("item"), list):
             raise HiThinkRequestError("HiThink index snapshot response is invalid")
+        scanned += len(batch)
         for item in body["item"]:
             if not isinstance(item, dict):
                 continue
@@ -148,9 +154,30 @@ def rankings(fetcher: HiThinkFetcher, tag: str, n: int = 5) -> Optional[Tuple[Li
             quotes.append({"name": names[thscode], "change_pct": change_pct})
     if not quotes:
         return None
+    if partial or scanned < len(symbols):
+        for row in quotes:
+            row["coverage"] = "partial"
     ordered = sorted(quotes, key=lambda row: row["change_pct"], reverse=True)
     limit = max(1, int(n))
     return ordered[:limit], list(reversed(ordered[-limit:]))
+
+
+def _catalog_symbols(fetcher: HiThinkFetcher, tag: str) -> List[Tuple[str, str]]:
+    now = time.monotonic()
+    cached = fetcher._index_catalog_cache.get(tag)
+    if cached is not None and now - cached[0] < _CATALOG_TTL_SECONDS:
+        return list(cached[1])
+    catalog = fetcher._request(_CATALOG_PATH, {"tag": tag})
+    data = catalog.get("data") or {}
+    if not isinstance(data, dict) or not isinstance(data.get("item"), list):
+        raise HiThinkRequestError("HiThink index catalog response is invalid")
+    symbols = [
+        (str(item.get("thscode") or ""), str(item.get("name") or ""))
+        for item in data["item"]
+        if isinstance(item, dict) and item.get("thscode") and item.get("name")
+    ]
+    fetcher._index_catalog_cache[tag] = (now, symbols)
+    return list(symbols)
 
 
 def fetcher_number(value: Any) -> Optional[float]:
