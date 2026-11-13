@@ -226,6 +226,7 @@ journalctl -u stock-analyzer -f
 | `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
+| `OUTCRAWL_API_KEYS` | - | Outcrawl search (optional) |
 
 ---
 
@@ -402,6 +403,7 @@ Add these Secrets:
 | `BOCHA_API_KEYS` | Bocha Search API Key | Optional |
 | `BRAVE_API_KEYS` | Brave Search API Key | Optional |
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | Optional |
+| `OUTCRAWL_API_KEYS` | Outcrawl Search API Key | Optional |
 | `TUSHARE_TOKEN` | Tushare Token | Optional |
 | `GEMINI_MODEL` | Model name (default gemini-3.6-flash) | Optional |
 
