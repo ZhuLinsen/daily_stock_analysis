@@ -1,0 +1,2365 @@
+# -*- coding: utf-8 -*-
+"""
+Unit tests for the WeCom AI Bot (企业微信智能机器人) WebSocket long-connection
+adapter (bot/platforms/wecom_aibot.py), Issue #755 Phase 1.
+
+Coverage matrix (per plan 默认值 3 / Wave 2 任务 7):
+- SDK-missing degradation: module imports, WECOM_AIBOT_SDK_AVAILABLE=False,
+  graceful refusal on start (install hint logged).
+- Config gating: disabled / missing credentials -> no client, zero side effects.
+- Auth failure degradation: subscribe errcode!=0 -> no crash, exponential
+  backoff, give-up after max attempts; non-auth errors do not consume budget.
+- Single-connection mutex: start_background twice never spawns a second thread.
+- msgid dedup: duplicate callback frames are dropped.
+- Conversation rate limiting: reuses dispatcher RateLimiter at 30/min.
+- Text frame -> BotMessage -> dispatcher -> AnalyzeCommand mapping round trip,
+  reply via aibot_respond_msg with callback req_id passthrough.
+- reply_stream opt-in (default off).
+- Config chain: src/config.py keys, config_registry metadata (help_key /
+  examples / docs), .env.example contract.
+
+The local venv intentionally does NOT install wecom-aibot-python-sdk (shared
+uv-managed venv). SDK-present paths are guarded with skipif so CI (which
+installs requirements.txt) covers them.
+"""
+
+import asyncio
+import os
+import sys
+import threading
+import unittest
+from unittest import mock
+
+import pytest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import bot.platforms.wecom_aibot as wecom_aibot
+from bot.models import BotResponse, ChatType
+
+SDK_PRESENT = bool(getattr(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", False))
+
+WECOM_AIBOT_KEYS = (
+    "WECOM_AIBOT_ENABLED",
+    "WECOM_AIBOT_BOT_ID",
+    "WECOM_AIBOT_SECRET",
+    "WECOM_AIBOT_REPLY_STREAM",
+)
+
+
+def _text_frame(
+    msgid="msg-1",
+    content="分析 600519",
+    userid="encrypted-userid",
+    chatid=None,
+    chattype="single",
+    req_id="aibot_msg_callback_1700000000_abcdef",
+):
+    """Build an aibot_msg_callback text frame per the official wire format."""
+    body = {
+        "msgtype": "text",
+        "msgid": msgid,
+        "aibotid": "bot-abc",
+        "chattype": chattype,
+        "text": {"content": content},
+        "from": {"userid": userid},
+    }
+    if chatid is not None:
+        body["chatid"] = chatid
+    return {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": req_id},
+        "body": body,
+    }
+
+
+def _handler(**kwargs):
+    """Build a handler with a mocked SDK client (no real SDK needed).
+
+    The handler's loop defaults to an open-loop stub so quota/scheduling
+    paths behave as "loop available" unless a test overrides it.
+    """
+    sdk_client = mock.MagicMock()
+    defaults = dict(
+        sdk_client=sdk_client,
+        reply_stream_enabled=False,
+    )
+    defaults.update(kwargs)
+    handler = wecom_aibot.WecomAibotHandler(**defaults)
+    loop_stub = mock.MagicMock()
+    loop_stub.is_closed.return_value = False
+    handler._loop = loop_stub
+    return handler, sdk_client
+
+
+# ---------------------------------------------------------------------------
+# SDK-missing degradation (runs where the SDK is NOT installed; skipped in CI)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    wecom_aibot.WECOM_AIBOT_SDK_AVAILABLE,
+    reason="wecom-aibot-python-sdk installed; SDK-missing path not applicable",
+)
+class TestSdkMissingDegradation:
+    def test_module_imports_and_flags_unavailable(self):
+        assert wecom_aibot.WECOM_AIBOT_SDK_AVAILABLE is False
+
+    def test_platforms_package_exports_flag_even_without_sdk(self):
+        import bot.platforms as platforms
+
+        assert platforms.WECOM_AIBOT_SDK_AVAILABLE is False
+        assert callable(platforms.start_wecom_aibot_background)
+
+    def test_enabled_without_sdk_refuses_gracefully(self, caplog):
+        with mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", False):
+            with mock.patch.object(
+                wecom_aibot, "get_config", return_value=mock.MagicMock()
+            ):
+                started = wecom_aibot.start_wecom_aibot_background()
+
+        assert started is False
+        assert "pip install wecom-aibot-python-sdk" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# SDK-present sanity (runs in CI where requirements.txt installs the SDK)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not SDK_PRESENT,
+    reason="wecom-aibot-python-sdk not installed in local venv",
+)
+class TestSdkPresentSanity:
+    def test_client_options_protocol_defaults(self):
+        from aibot import WSClientOptions
+
+        options = WSClientOptions(bot_id="b", secret="s")
+        assert options.heartbeat_interval == 30000
+        assert options.reconnect_interval == 1000
+        assert options.max_reconnect_attempts == 10
+
+
+# ---------------------------------------------------------------------------
+# Config gating: unconfigured -> client never starts, zero side effects
+# ---------------------------------------------------------------------------
+
+
+class TestUnconfiguredZeroSideEffects:
+    def _config(self, **overrides):
+        base = dict(
+            wecom_aibot_enabled=False,
+            wecom_aibot_bot_id=None,
+            wecom_aibot_secret=None,
+            wecom_aibot_reply_stream=False,
+        )
+        base.update(overrides)
+        return mock.MagicMock(**base)
+
+    def test_disabled_config_creates_no_client(self, caplog):
+        with mock.patch.object(wecom_aibot, "get_config", return_value=self._config()), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True) as aibot:
+            wecom_aibot._reset_wecom_aibot_client()
+            client = wecom_aibot.get_wecom_aibot_client()
+
+            assert client is None
+            aibot.WSClient.assert_not_called()
+        wecom_aibot._reset_wecom_aibot_client()
+
+    def test_enabled_without_credentials_raises_value_error(self):
+        with mock.patch.object(wecom_aibot, "get_config", return_value=self._config(
+            wecom_aibot_enabled=True
+        )), mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            with pytest.raises(ValueError):
+                wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+
+    def test_get_client_returns_none_when_credentials_missing(self, caplog):
+        with mock.patch.object(wecom_aibot, "get_config", return_value=self._config(
+            wecom_aibot_enabled=True
+        )), mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True) as aibot:
+            wecom_aibot._reset_wecom_aibot_client()
+            assert wecom_aibot.get_wecom_aibot_client() is None
+            aibot.WSClient.assert_not_called()
+        wecom_aibot._reset_wecom_aibot_client()
+
+    def test_start_background_disabled_config_is_noop(self, caplog):
+        with mock.patch.object(wecom_aibot, "get_config", return_value=self._config()), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True), \
+                mock.patch.object(wecom_aibot.threading, "Thread") as thread_cls:
+            started = wecom_aibot.start_wecom_aibot_background()
+
+            assert started is False
+            thread_cls.assert_not_called()
+        wecom_aibot._reset_wecom_aibot_client()
+
+
+# ---------------------------------------------------------------------------
+# Auth failure degradation (subscribe errcode != 0)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthFailureDegradation:
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def test_auth_failure_does_not_crash_and_starts_backoff(self, caplog):
+        client = self._client()
+
+        # SDK emits Exception("Authentication failed: ... (code: 40001)") when
+        # the subscribe frame answers errcode != 0. Must not raise.
+        client._handle_auth_error(Exception("Authentication failed: bad secret (code: 40001)"))
+
+        assert client._auth_attempts == 1
+        assert client._planned_auth_delay == client._auth_backoff_delay(1)
+        assert client._auth_backoff_delay(1) > 0
+        assert "重试" in caplog.text or "retry" in caplog.text.lower()
+
+    def test_auth_backoff_is_exponential_with_cap(self):
+        client = self._client()
+
+        delays = []
+        for _ in range(client._auth_max_attempts):
+            delay = client._next_auth_retry_delay()
+            assert delay is not None
+            delays.append(delay)
+
+        assert delays == sorted(delays)
+        assert delays[-1] == client._AUTH_RETRY_MAX_DELAY_SECONDS
+        # Exponential growth until the cap.
+        assert delays[1] == delays[0] * 2
+
+    def test_auth_gives_up_after_max_attempts(self, caplog):
+        client = self._client()
+
+        for _ in range(client._AUTH_RETRY_MAX_ATTEMPTS):
+            assert client._next_auth_retry_delay() is not None
+
+        delay = client._next_auth_retry_delay()
+        assert delay is None
+        client._handle_auth_error(Exception("Authentication failed: again"))
+        assert client._running is False
+        assert "放弃" in caplog.text or "give up" in caplog.text.lower()
+
+    def test_non_auth_error_does_not_consume_auth_budget(self):
+        client = self._client()
+
+        client._handle_auth_error(Exception("WebSocket error: connection reset"))
+
+        assert client._auth_attempts == 0
+        assert client._auth_failed is False
+
+    def test_authenticated_event_resets_auth_budget(self):
+        client = self._client()
+
+        client._handle_auth_error(Exception("Authentication failed: x"))
+        assert client._auth_attempts == 1
+
+        client._on_authenticated()
+        assert client._auth_attempts == 0
+
+    def test_auth_failure_stops_event_loop_request(self):
+        client = self._client()
+
+        loop = asyncio.new_event_loop()
+        try:
+            client._loop = loop
+            with mock.patch.object(loop, "call_soon_threadsafe") as schedule_stop:
+                client._handle_auth_error(Exception("Authentication failed: x"))
+
+            schedule_stop.assert_called_once()
+            assert schedule_stop.call_args[0][0] == loop.stop
+        finally:
+            client._loop = None
+            loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Single-connection mutex (reconnect-storm protection)
+# ---------------------------------------------------------------------------
+
+
+class TestSingleConnectionMutex:
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def test_start_background_twice_never_spawns_second_thread(self, caplog):
+        client = self._client()
+
+        alive_thread = mock.MagicMock()
+        alive_thread.is_alive.return_value = True
+        client._background_thread = alive_thread
+
+        with mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot.threading, "Thread") as thread_cls:
+            started = client.start_background()
+
+        assert started is False
+        thread_cls.assert_not_called()
+        assert "单连接" in caplog.text or "已在运行" in caplog.text
+
+    def test_start_background_creates_exactly_one_thread(self):
+        client = self._client()
+
+        with mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot.threading, "Thread") as thread_cls, \
+                mock.patch.object(client, "_run_background", lambda: None):
+            assert client.start_background() is True
+            assert thread_cls.call_count == 1
+
+            # Simulate the thread having exited: a restart is allowed again,
+            # but while it is alive the mutex holds.
+            assert client.start_background() is False
+            assert thread_cls.call_count == 1  # still alive -> no second Thread
+
+    def test_module_singleton_is_single_instance(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            wecom_aibot._reset_wecom_aibot_client()
+            first = wecom_aibot.get_wecom_aibot_client()
+            second = wecom_aibot.get_wecom_aibot_client()
+
+            assert first is second
+        wecom_aibot._reset_wecom_aibot_client()
+
+
+# ---------------------------------------------------------------------------
+# msgid dedup
+# ---------------------------------------------------------------------------
+
+
+class TestMsgidDedup:
+    def test_duplicate_msgid_dropped(self, caplog):
+        handler, _ = _handler()
+        frame = _text_frame(msgid="dup-1")
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=mock.MagicMock()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue:
+            handler.handle_frame(frame)
+            handler.handle_frame(frame)
+
+        assert enqueue.call_count == 1
+        assert "重复" in caplog.text or "duplicate" in caplog.text.lower()
+
+    def test_distinct_msgids_both_processed(self):
+        handler, _ = _handler()
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=mock.MagicMock()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue:
+            handler.handle_frame(_text_frame(msgid="a"))
+            handler.handle_frame(_text_frame(msgid="b"))
+
+        assert enqueue.call_count == 2
+
+    def test_dedup_cache_is_bounded(self):
+        handler, _ = _handler()
+
+        for i in range(handler._MSGID_CACHE_SIZE + 10):
+            handler._is_duplicate_msgid(f"m{i}")
+
+        assert len(handler._seen_msgids) <= handler._MSGID_CACHE_SIZE
+        # Oldest entry was evicted: it can be processed again.
+        assert handler._is_duplicate_msgid("m0") is False
+
+    def test_missing_msgid_is_not_deduplicated(self):
+        handler, _ = _handler()
+        frame = _text_frame(msgid="")
+        frame["body"].pop("msgid")
+
+        assert handler._is_duplicate_msgid("") is False
+
+
+# ---------------------------------------------------------------------------
+# Conversation rate limiting (30/min, reuses dispatcher RateLimiter)
+# ---------------------------------------------------------------------------
+
+
+class TestConversationRateLimit:
+    def test_rate_limiter_is_dispatcher_rate_limiter_at_30_per_minute(self):
+        from bot.dispatcher import RateLimiter
+
+        handler, _ = _handler()
+        assert isinstance(handler._rate_limiter, RateLimiter)
+        assert handler._rate_limiter.max_requests == 30
+        assert handler._rate_limiter.window_seconds == 60
+
+    def test_31st_message_in_same_conversation_dropped(self, caplog):
+        handler, _ = _handler()
+        frames = [_text_frame(msgid=f"m{i}") for i in range(31)]
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=mock.MagicMock()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue:
+            for frame in frames:
+                handler.handle_frame(frame)
+
+        assert enqueue.call_count == 30
+        assert "频率" in caplog.text or "rate" in caplog.text.lower()
+
+    def test_rate_limit_is_per_conversation(self):
+        handler, _ = _handler()
+
+        for i in range(30):
+            assert handler._allow_conversation("chat-a") is True
+        assert handler._allow_conversation("chat-a") is False
+        # A different conversation is unaffected.
+        assert handler._allow_conversation("chat-b") is True
+
+
+# ---------------------------------------------------------------------------
+# Text frame -> BotMessage -> dispatcher -> AnalyzeCommand mapping round trip
+# ---------------------------------------------------------------------------
+
+
+class TestTextMessageRoundTrip:
+    def test_parse_frame_maps_to_unified_message(self):
+        handler, _ = _handler()
+        frame = _text_frame(
+            msgid="m-9",
+            content="@股票助手 分析 600519",
+            userid="enc-user-1",
+            chatid="wrk-group-1",
+            chattype="group",
+        )
+
+        message = handler._parse_frame(frame)
+
+        assert message is not None
+        assert message.platform == "wecom"
+        assert message.message_id == "m-9"
+        assert message.user_id == "enc-user-1"
+        assert message.chat_id == "wrk-group-1"
+        assert message.chat_type == ChatType.GROUP
+        # @机器人 prefix stripped, command resolvable.
+        assert message.content == "分析 600519"
+        # Callback req_id kept for aibot_respond_msg passthrough.
+        assert message.raw_data["_wecom_req_id"] == (
+            "aibot_msg_callback_1700000000_abcdef"
+        )
+
+    def test_single_chat_uses_userid_as_chat_id(self):
+        handler, _ = _handler()
+        message = handler._parse_frame(_text_frame(chattype="single"))
+        assert message.chat_type == ChatType.PRIVATE
+        assert message.chat_id == "encrypted-userid"
+
+    def test_non_text_frame_ignored(self):
+        handler, _ = _handler()
+        frame = _text_frame()
+        frame["body"]["msgtype"] = "image"
+        assert handler._parse_frame(frame) is None
+
+    def test_userid_passthrough_no_decryption_attempt(self):
+        """Non-superadmin bots receive encrypted from.userid; the adapter must
+        pass it through verbatim (documented Phase 1 limitation — conversion
+        requires the official self-built-app/robot linking API and is out of
+        Phase 1 scope)."""
+        handler, _ = _handler()
+        message = handler._parse_frame(_text_frame(userid="EncryptedB64Payload=="))
+        assert message.user_id == "EncryptedB64Payload=="
+
+    def test_command_mapping_resolves_analyze(self):
+        handler, _ = _handler()
+        message = handler._parse_frame(_text_frame(content="分析 600519"))
+        command, args = message.get_command_and_args("/")
+        assert command == "analyze"
+        assert args == ["600519"]
+
+    def test_dispatch_and_reply_round_trip(self):
+        handler, sdk_client = _handler()
+        bot_message = handler._parse_frame(_text_frame(content="/analyze 600519"))
+
+        async def _fake_dispatch(msg):
+            assert msg.platform == "wecom"
+            assert msg.content == "/analyze 600519"
+            return BotResponse.markdown_response("✅ 分析任务已提交")
+
+        dispatcher = mock.MagicMock()
+        dispatcher.dispatch_async = _fake_dispatch
+
+        scheduled_coros = []
+
+        def _capture_schedule(coro):
+            scheduled_coros.append(coro)
+
+        with mock.patch(
+            "bot.dispatcher.get_dispatcher", return_value=dispatcher
+        ), mock.patch.object(handler, "_schedule_reply", _capture_schedule):
+            handler._process_message(bot_message)
+
+        # One reply coroutine scheduled for the dispatcher response...
+        assert len(scheduled_coros) == 1
+        scheduled_coros[0].close()
+
+        # ...and the reply path uses aibot_respond_msg with req_id passthrough.
+        sdk_client.reply.reset_mock()
+        with mock.patch.object(handler, "_schedule_reply", side_effect=_fake_schedule):
+            handler._reply_to_frame(
+                {"headers": {"req_id": "req-42"}}, "✅ 分析任务已提交"
+            )
+        sdk_client.reply.assert_called_once()
+        args, kwargs = sdk_client.reply.call_args
+        frame_arg, body_arg = args[0], args[1]
+        assert frame_arg["headers"]["req_id"] == "req-42"
+        assert body_arg["msgtype"] == "markdown"
+        assert "分析任务已提交" in body_arg["markdown"]["content"]
+        assert kwargs.get("cmd", wecom_aibot.AIBOT_RESPOND_CMD) == wecom_aibot.AIBOT_RESPOND_CMD
+
+    def test_empty_response_not_replied(self):
+        handler, sdk_client = _handler()
+        bot_message = handler._parse_frame(_text_frame(content="闲聊文本"))
+
+        async def _empty_dispatch(msg):
+            return BotResponse.text_response("")
+
+        dispatcher = mock.MagicMock()
+        dispatcher.dispatch_async = _empty_dispatch
+
+        with mock.patch(
+            "bot.dispatcher.get_dispatcher", return_value=dispatcher
+        ), mock.patch.object(handler, "_schedule_reply"):
+            handler._process_message(bot_message)
+
+        sdk_client.reply.assert_not_called()
+
+    def test_reply_stream_opt_in_uses_stream_frame(self):
+        handler, sdk_client = _handler(reply_stream_enabled=True)
+
+        with mock.patch.object(handler, "_schedule_reply", side_effect=_fake_schedule):
+            handler._reply_to_frame({"headers": {"req_id": "req-7"}}, "hello")
+
+        sdk_client.reply_stream.assert_called_once()
+        args, _ = sdk_client.reply_stream.call_args
+        frame_arg, stream_id, content, finish = args[0], args[1], args[2], args[3]
+        assert frame_arg["headers"]["req_id"] == "req-7"
+        assert stream_id
+        assert content == "hello"
+        assert finish is True
+
+    def test_schedule_reply_without_loop_logs_and_skips(self, caplog):
+        handler, _ = _handler()
+        handler._loop = None
+
+        async def _noop():
+            pass
+
+        coro = _noop()
+        handler._schedule_reply(coro)
+        coro.close()
+        assert "事件循环不可用" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# main.py lifecycle integration point
+# ---------------------------------------------------------------------------
+
+
+class TestMainLifecycleHook:
+    def _config(self, wecom_enabled):
+        return mock.MagicMock(
+            dingtalk_stream_enabled=False,
+            feishu_stream_enabled=False,
+            wecom_aibot_enabled=wecom_enabled,
+        )
+
+    def test_wecom_enabled_without_sdk_logs_install_hint(self, caplog):
+        import main
+
+        with mock.patch("bot.platforms.WECOM_AIBOT_SDK_AVAILABLE", False):
+            main.start_bot_stream_clients(self._config(True))
+
+        assert "pip install wecom-aibot-python-sdk" in caplog.text
+
+    def test_wecom_enabled_with_sdk_starts_background(self, caplog):
+        import logging
+
+        import main
+
+        caplog.set_level(logging.INFO)
+        with mock.patch("bot.platforms.WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch("bot.platforms.start_wecom_aibot_background",
+                           return_value=True) as start_bg:
+            main.start_bot_stream_clients(self._config(True))
+
+        start_bg.assert_called_once_with()
+        assert "WeCom AI Bot" in caplog.text
+
+    def test_wecom_disabled_is_silent(self, caplog):
+        import main
+
+        with mock.patch("bot.platforms.WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch("bot.platforms.start_wecom_aibot_background") as start_bg:
+            main.start_bot_stream_clients(self._config(False))
+
+        start_bg.assert_not_called()
+
+    def test_wecom_start_failure_does_not_crash(self, caplog):
+        import main
+
+        with mock.patch("bot.platforms.WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch("bot.platforms.start_wecom_aibot_background",
+                           side_effect=RuntimeError("boom")):
+            main.start_bot_stream_clients(self._config(True))
+
+        assert "Failed to start WeCom AI Bot" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Config chain: dataclass keys + env parsing + registry metadata
+# ---------------------------------------------------------------------------
+
+
+class TestConfigChain:
+    def test_config_dataclass_defaults_off(self):
+        from src.config import Config
+
+        config = Config(stock_list=[])
+        assert config.wecom_aibot_enabled is False
+        assert config.wecom_aibot_bot_id is None
+        assert config.wecom_aibot_secret is None
+        assert config.wecom_aibot_reply_stream is False
+
+    def test_config_from_env(self, monkeypatch):
+        from src.config import Config
+
+        monkeypatch.setenv("WECOM_AIBOT_ENABLED", "true")
+        monkeypatch.setenv("WECOM_AIBOT_BOT_ID", "bot-abc")
+        monkeypatch.setenv("WECOM_AIBOT_SECRET", "secret-xyz")
+        monkeypatch.setenv("WECOM_AIBOT_REPLY_STREAM", "true")
+
+        config = Config._load_from_env()
+        assert config.wecom_aibot_enabled is True
+        assert config.wecom_aibot_bot_id == "bot-abc"
+        assert config.wecom_aibot_secret == "secret-xyz"
+        assert config.wecom_aibot_reply_stream is True
+
+    def test_registry_metadata_complete(self):
+        from src.core.config_registry import get_field_definition
+
+        for key in WECOM_AIBOT_KEYS:
+            field = get_field_definition(key)
+            assert field["category"] == "notification", key
+            assert field["help_key"] == f"settings.notification.{key}", key
+            assert field["examples"], f"{key} missing examples"
+            assert field["docs"], f"{key} missing docs"
+
+    def test_env_example_keys_are_registered(self):
+        import re
+        from pathlib import Path
+
+        from src.core.config_registry import (
+            WEB_SETTINGS_HIDDEN_FROM_UI,
+            get_registered_field_keys,
+        )
+
+        env_example = Path(__file__).resolve().parents[1] / ".env.example"
+        active = {
+            m.group(1)
+            for line in env_example.read_text(encoding="utf-8").splitlines()
+            for m in [re.match(r"^([A-Z][A-Z0-9_]*)=", line.strip())]
+            if m
+        }
+        wecom_active = {k for k in active if k.startswith("WECOM_AIBOT_")}
+        assert wecom_active == set(WECOM_AIBOT_KEYS)
+        registered = set(get_registered_field_keys())
+        assert wecom_active - registered - WEB_SETTINGS_HIDDEN_FROM_UI == set()
+
+    def test_settings_help_locales_cover_help_keys(self):
+        import re
+        from pathlib import Path
+
+        help_file = (
+            Path(__file__).resolve().parents[1]
+            / "apps/dsa-web/src/locales/settingsHelp.ts"
+        )
+        content = help_file.read_text(encoding="utf-8")
+        locale_keys = set(re.findall(r"^\s*'([^']+)'\s*:\s*\{", content, flags=re.MULTILINE))
+
+        zh_count = content.count("const settingsHelpZhCN")
+        en_count = content.count("const settingsHelpEnUS")
+        assert zh_count == 1 and en_count == 1
+
+        for key in WECOM_AIBOT_KEYS:
+            help_key = f"settings.notification.{key}"
+            assert help_key in locale_keys, f"{help_key} missing in settingsHelp.ts"
+
+    def test_requirements_pin_declared(self):
+        from pathlib import Path
+
+        requirements = (
+            Path(__file__).resolve().parents[1] / "requirements.txt"
+        ).read_text(encoding="utf-8")
+        assert "wecom-aibot-python-sdk" in requirements
+
+
+# ---------------------------------------------------------------------------
+# r2 OR-COR-a12b0edd: reconnect-budget exhaustion must self-heal via the
+# outer supervision loop (no dead-but-alive thread, no manual restart)
+# ---------------------------------------------------------------------------
+
+
+class _StubSdkClient:
+    """Stub faithful to the real SDK WSClient surface used by the adapter."""
+
+    instances = []
+
+    def __init__(self, options):
+        self.options = options
+        self._handlers = {}
+        self.connect_count = 0
+        self.disconnect_count = 0
+        _StubSdkClient.instances.append(self)
+
+    def on(self, event, handler=None):
+        if handler is not None:
+            self._handlers.setdefault(event, []).append(handler)
+            return handler
+
+        def _deco(handler_):
+            self._handlers.setdefault(event, []).append(handler_)
+            return handler_
+
+        return _deco
+
+    def emit(self, event, *args):
+        for handler in list(self._handlers.get(event, [])):
+            handler(*args)
+
+    async def connect(self):
+        self.connect_count += 1
+        # Simulate: network drop -> SDK internal reconnect budget exhausted.
+        self.emit("error", Exception("Max reconnect attempts exceeded"))
+        await asyncio.sleep(3600)  # never completes; the loop gets stopped
+
+    def disconnect(self):
+        self.disconnect_count += 1
+
+
+class TestReconnectBudgetSelfHealing:
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def test_exhaustion_error_ends_cycle_and_plans_rebuild(self):
+        client = self._client()
+
+        loop = asyncio.new_event_loop()
+        try:
+            client._loop = loop
+            with mock.patch.object(loop, "call_soon_threadsafe") as schedule_stop:
+                client._handle_auth_error(Exception("Max reconnect attempts exceeded"))
+
+            schedule_stop.assert_called_once()
+            assert schedule_stop.call_args[0][0] == loop.stop
+        finally:
+            client._loop = None
+            loop.close()
+
+        assert client._cycle_failed is True
+        assert client._planned_cycle_delay == client._CYCLE_RETRY_BASE_DELAY_SECONDS
+        # Budget exhaustion is a runtime failure, not an auth failure.
+        assert client._auth_attempts == 0
+        assert client._auth_failed is False
+
+    def test_cycle_backoff_is_exponential_capped_and_never_gives_up(self):
+        client = self._client()
+
+        delays = [client._next_cycle_retry_delay() for _ in range(12)]
+
+        assert delays[0] == client._CYCLE_RETRY_BASE_DELAY_SECONDS
+        assert delays == sorted(delays)
+        assert delays[-1] == client._CYCLE_RETRY_MAX_DELAY_SECONDS
+        # Self-heal requirement: never returns None (no give-up on rebuilds).
+        assert all(d > 0 for d in delays)
+
+    def test_cycle_budget_resets_on_authenticated(self):
+        client = self._client()
+
+        client._next_cycle_retry_delay()
+        client._next_cycle_retry_delay()
+        assert client._cycle_attempts == 2
+
+        client._on_authenticated()
+        assert client._cycle_attempts == 0
+
+    def test_supervision_loop_rebuilds_connection_cycle_after_exhaustion(self):
+        client = self._client()
+        client._running = True
+
+        # Stub factory: build the stub and register the REAL adapter event
+        # handlers on it, so the emitted "Max reconnect attempts exceeded"
+        # flows through the production error path.
+        def _make_stub():
+            stub = _StubSdkClient(None)
+            client._register_sdk_events(stub)
+            return stub
+
+        # Watchdog: without the fix the supervision loop hangs forever in the
+        # dead-idle run_forever (exactly the reviewer-reported defect); the
+        # join timeout turns that into a deterministic RED failure.
+        threads_before = threading.active_count()
+        with mock.patch.object(client, "_create_sdk_client",
+                               side_effect=_make_stub), \
+                mock.patch.object(client._stop_event, "wait",
+                                  side_effect=[False, True]):
+            _StubSdkClient.instances = []
+            worker = threading.Thread(target=client._run_background, daemon=True)
+            worker.start()
+            worker.join(timeout=15)
+            if worker.is_alive():
+                client.stop()
+                worker.join(timeout=5)
+        assert not worker.is_alive(), (
+            "supervision loop did not rebuild the connection cycle after "
+            "SDK reconnect budget exhaustion (dead-but-alive thread)"
+        )
+
+        # Two connection cycles were built by the supervision loop: the first
+        # exhausted the SDK budget, the outer loop rebuilt a fresh cycle (new
+        # SDK client instance = fresh internal reconnect budget).
+        assert len(_StubSdkClient.instances) == 2
+        assert _StubSdkClient.instances[0].connect_count == 1
+        assert _StubSdkClient.instances[1].connect_count == 1
+        # Old clients were disconnected during teardown.
+        assert all(inst.disconnect_count == 1 for inst in _StubSdkClient.instances)
+        # No thread leak: both cycles ran inside the single supervision thread.
+        assert threading.active_count() == threads_before
+        assert client._cycle_attempts >= 1
+
+    def test_auth_success_clears_cycle_failure_state(self):
+        client = self._client()
+        client._cycle_failed = True
+        client._planned_cycle_delay = 8.0
+
+        client._on_authenticated()
+
+        assert client._cycle_failed is False
+        assert client._planned_cycle_delay is None
+
+    def test_cycle_backoff_bounded_at_extreme_attempts(self):
+        """r10：第 1025 个重建周期的乘方不得溢出（int too large to convert
+        to float）——任意 attempt 下有界返回封顶值。"""
+        client = self._client()
+
+        # 直接置大：下一次调用即第 1025 次（评审探针原样）。
+        client._cycle_attempts = 1024
+        delay = client._next_cycle_retry_delay()
+        assert delay == client._CYCLE_RETRY_MAX_DELAY_SECONDS
+
+        # 全范围扫描：1026 次连续调用全程不抛且有界。
+        client._cycle_attempts = 0
+        delays = [client._next_cycle_retry_delay() for _ in range(1026)]
+        assert all(
+            0 < d <= client._CYCLE_RETRY_MAX_DELAY_SECONDS for d in delays
+        )
+        assert delays[-1] == client._CYCLE_RETRY_MAX_DELAY_SECONDS
+
+    def test_supervision_survives_extreme_cycle_attempts(self):
+        """监督路径探针：极高周期计数下「预算耗尽→等待有限 delay→重建」
+        依然成立（wait 收到有限值而非 None/异常）。"""
+        client = self._client()
+        client._running = True
+        client._cycle_attempts = 1024
+
+        def _make_stub():
+            stub = _StubSdkClient(None)
+            client._register_sdk_events(stub)
+            return stub
+
+        wait_calls = []
+
+        def _wait(delay=None):
+            wait_calls.append(delay)
+            return len(wait_calls) > 1  # 第 1 次等待后重建；第 2 次后退出
+
+        threads_before = threading.active_count()
+        with mock.patch.object(client, "_create_sdk_client",
+                               side_effect=_make_stub), \
+                mock.patch.object(client._stop_event, "wait", side_effect=_wait):
+            _StubSdkClient.instances = []
+            worker = threading.Thread(target=client._run_background, daemon=True)
+            worker.start()
+            worker.join(timeout=15)
+            if worker.is_alive():
+                client.stop()
+                worker.join(timeout=5)
+        assert not worker.is_alive(), (
+            "supervision loop died on extreme cycle attempt count "
+            "(OverflowError) — no self-healing without manual restart"
+        )
+
+        assert len(_StubSdkClient.instances) == 2
+        # wait 收到有限封顶值而非 None/溢出
+        assert wait_calls[0] == client._CYCLE_RETRY_MAX_DELAY_SECONDS
+        assert threading.active_count() == threads_before
+
+
+# ---------------------------------------------------------------------------
+# r2 OR-COM-62e2b418: dual-window (minute + hour) per-conversation reply quota
+# ---------------------------------------------------------------------------
+
+
+class TestHourlyConversationQuota:
+    def _handler(self):
+        handler, sdk_client = _handler()
+        return handler, sdk_client
+
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def test_outbound_limiters_are_dual_window(self):
+        from bot.dispatcher import RateLimiter
+
+        handler, _ = self._handler()
+        assert isinstance(handler._outbound_minute_limiter, RateLimiter)
+        assert handler._outbound_minute_limiter.max_requests == 30
+        assert handler._outbound_minute_limiter.window_seconds == 60
+        assert isinstance(handler._outbound_hour_limiter, RateLimiter)
+        assert handler._outbound_hour_limiter.max_requests == 1000
+        assert handler._outbound_hour_limiter.window_seconds == 3600
+
+    def test_reply_hourly_quota_probe_17_per_minute_for_an_hour(self, caplog):
+        """Reviewer probe: 17 msgs/min sustained for an hour must stop at the
+        1000th reply (minute window untouched, hourly window rejects)."""
+        handler, sdk_client = self._handler()
+
+        clock = [1_000_000.0]
+
+        with mock.patch("bot.dispatcher.time.time", side_effect=lambda: clock[0]), \
+                mock.patch.object(handler, "_schedule_reply",
+                                  side_effect=_fake_schedule):
+            for i in range(1020):
+                handler._reply_to_frame(
+                    _text_frame(msgid=f"m{i}", chatid="chat-hour"), f"r{i}"
+                )
+                if (i + 1) % 17 == 0:
+                    clock[0] += 61  # advance past the minute window every 17 sends
+
+        # First 1000 replies went out; replies 1001..1020 dropped by the hour.
+        assert sdk_client.reply.call_count == 1000
+        assert "超限" in caplog.text or "1000" in caplog.text
+
+    def test_outbound_gate_hour_exhaustion_rejects(self):
+        handler, _ = self._handler()
+
+        # Isolate the hour window: pin the minute limiter open.
+        minute_stub = mock.MagicMock()
+        minute_stub.would_allow.return_value = True
+        minute_stub.is_allowed.return_value = True
+        with mock.patch.object(handler, "_outbound_minute_limiter", minute_stub):
+            # Hour exhausted -> reject even when the minute window is wide open.
+            for _ in range(handler._outbound_hour_limiter.max_requests):
+                assert handler._allow_outbound_reply("chat-x") is True
+            assert handler._allow_outbound_reply("chat-x") is False
+            # A different conversation is unaffected.
+            assert handler._allow_outbound_reply("chat-y") is True
+
+    def test_passive_reply_path_gated_by_dual_window(self):
+        handler, sdk_client = self._handler()
+        frame = _text_frame(msgid="m", chatid="chat-g")
+
+        with mock.patch.object(handler, "_schedule_reply",
+                               side_effect=_fake_schedule):
+            for _ in range(30):
+                assert handler._reply_to_frame(frame, "r") is True
+            # Minute window now full for this conversation.
+            assert handler._reply_to_frame(frame, "r") is False
+
+        assert sdk_client.reply.call_count == 30
+
+    def test_proactive_send_path_gated_and_checks_ack(self, caplog):
+        client = self._client()
+        handler = client._handler
+        client._running = True
+        client._sdk_client = mock.MagicMock()
+
+        # Exhaust the hourly quota for the conversation (direct window fill).
+        for _ in range(1000):
+            handler._outbound_hour_limiter.is_allowed("chat-pro")
+        assert client.send_to_chat("chat-pro", "report") is False
+        assert "超限" in caplog.text
+
+        caplog.clear()
+        # Quota open + loop unavailable -> quota passed, loop missing rejects.
+        assert client.send_to_chat("chat-other", "report") is False
+        assert "事件循环不可用" in caplog.text
+
+    def test_send_to_chat_happy_path_and_errcode_ack(self, caplog):
+        client = self._client()
+        client._running = True
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            client._loop = loop
+            client._handler._loop = loop
+            sdk_client = mock.MagicMock()
+
+            async def _ack_ok(chatid, body):
+                return {"errcode": 0, "errmsg": "ok"}
+
+            async def _ack_err(chatid, body):
+                return {"errcode": 44002, "errmsg": "user never messaged the bot"}
+
+            client._sdk_client = sdk_client
+            sdk_client.send_message = _ack_ok
+            assert client.send_to_chat("chat-ok", "📊 报告") is True
+
+            sdk_client.send_message = _ack_err
+            assert client.send_to_chat("chat-ok", "📊 报告") is False
+            assert "会话" in caplog.text  # precondition hint on non-zero errcode
+        finally:
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_send_to_chat_refuses_when_client_not_running(self, caplog):
+        client = self._client()
+        client._running = False
+
+        assert client.send_to_chat("chat-a", "x") is False
+        assert "未运行" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# r2 OR-COR-26fa4c23: /analyze results must return to the WeCom source
+# conversation via the source-context notification channel
+# ---------------------------------------------------------------------------
+
+
+def _make_wecom_message():
+    from bot.models import BotMessage
+
+    return BotMessage(
+        platform="wecom",
+        message_id="msg-wx-1",
+        user_id="enc-user-9",
+        user_name="enc-user-9",
+        chat_id="wrk-group-9",
+        chat_type=ChatType.GROUP,
+        content="/analyze 600519",
+        raw_data={
+            "_wecom_req_id": "req-9",
+            "_wecom_frame": {"cmd": "aibot_msg_callback", "headers": {"req_id": "req-9"}},
+        },
+    )
+
+
+def _pure_wecom_config(**overrides):
+    """Config with zero static notification channels (pure WeCom aibot setup)."""
+    from src.config import Config
+
+    base = dict(
+        stock_list=[],
+        wechat_webhook_url=None,
+        dingtalk_app_key=None,
+        dingtalk_app_secret=None,
+        dingtalk_webhook_url=None,
+        feishu_webhook_url=None,
+        feishu_app_id=None,
+        feishu_app_secret=None,
+        telegram_bot_token=None,
+        telegram_chat_id=None,
+        email_sender=None,
+        email_password=None,
+        email_receivers=[],
+    )
+    base.update(overrides)
+    return Config(**base)
+
+
+class TestSourceContextNotification:
+    """OR-COR-26fa4c23: WeCom aibot registered as a source-context channel."""
+
+    def _service(self, config):
+        from src.notification import NotificationService
+
+        with mock.patch("src.notification.get_config", return_value=config):
+            return NotificationService(source_message=_make_wecom_message())
+
+    def test_wecom_source_message_is_context_channel(self):
+        service = self._service(_pure_wecom_config())
+
+        assert service._has_context_channel() is True
+        # Pure WeCom setup: no static channel configured, yet available.
+        assert service.is_available() is True
+        # And the source conversation must NOT broadcast static channels.
+        assert service.should_broadcast_static_channels() is False
+
+    def test_extract_wecom_context_chat_id(self):
+        service = self._service(_pure_wecom_config())
+
+        context = service._extract_wecom_aibot_context()
+        assert context == {"chat_id": "wrk-group-9"}
+
+    def test_send_to_context_routes_to_wecom_client(self):
+        service = self._service(_pure_wecom_config())
+
+        with mock.patch.object(service, "_send_wecom_aibot_reply",
+                               return_value=True) as send_reply:
+            assert service.send_to_context("📊 报告") is True
+        send_reply.assert_called_once_with("wrk-group-9", "📊 报告")
+
+    def test_non_wecom_platform_has_no_wecom_context(self):
+        from src.notification import NotificationService
+
+        config = _pure_wecom_config()
+        dingtalk_message = mock.MagicMock()
+        dingtalk_message.platform = "dingtalk"
+        with mock.patch("src.notification.get_config", return_value=config):
+            service = NotificationService(source_message=dingtalk_message)
+
+        assert service._extract_wecom_aibot_context() is None
+
+    def test_wecom_context_response_skips_static_channels(self):
+        from src.notification import NotificationService
+
+        config = _pure_wecom_config(
+            wechat_webhook_url="https://wechat.example/hook",
+        )
+        with mock.patch("src.notification.get_config", return_value=config):
+            service = NotificationService(source_message=_make_wecom_message())
+
+        with mock.patch.object(service, "_send_wecom_aibot_reply",
+                               return_value=True), \
+                mock.patch.object(service, "send_to_wechat",
+                                  return_value=True) as mock_wechat:
+            result = service.send_with_results("content", route_type="report")
+
+        assert result.dispatched is True
+        assert result.success is True
+        assert [item.channel for item in result.channel_results] == ["__context__"]
+        mock_wechat.assert_not_called()
+
+    def test_send_wecom_aibot_reply_calls_adapter_send_to_chat(self):
+        from src.notification import NotificationService
+
+        service = NotificationService(source_message=_make_wecom_message())
+        adapter_client = mock.MagicMock()
+        adapter_client.send_to_chat.return_value = True
+
+        with mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client",
+            return_value=adapter_client,
+        ), mock.patch(
+            "bot.platforms.wecom_aibot.WECOM_AIBOT_SDK_AVAILABLE", True
+        ):
+            assert service._send_wecom_aibot_reply("wrk-group-9", "📊 报告") is True
+
+        adapter_client.send_to_chat.assert_called_once_with("wrk-group-9", "📊 报告")
+
+    def test_send_wecom_aibot_reply_without_sdk_returns_false(self):
+        from src.notification import NotificationService
+
+        service = NotificationService(source_message=_make_wecom_message())
+
+        with mock.patch(
+            "bot.platforms.wecom_aibot.WECOM_AIBOT_SDK_AVAILABLE", False
+        ), mock.patch(
+            "bot.platforms.wecom_aibot.get_wecom_aibot_client"
+        ) as get_client:
+            assert service._send_wecom_aibot_reply("wrk-group-9", "x") is False
+        get_client.assert_not_called()
+
+    def test_full_round_trip_report_returns_to_source_conversation(self):
+        """/analyze 提交 → 任务完成 → 报告回到企微来源会话（mock
+        TaskService / NotificationService 协作的端到端断言）。"""
+        handler, _ = _handler()
+        frame = _text_frame(
+            msgid="rt-1", content="/analyze 600519",
+            chatid="wrk-group-9", chattype="group",
+        )
+        bot_message = handler._parse_frame(frame)
+
+        captured = {}
+
+        async def _fake_dispatch(msg):
+            # AnalyzeCommand semantics: submit the task carrying the source
+            # message so the completion notification can route back.
+            captured["source_message"] = msg
+            return BotResponse.markdown_response("✅ 分析任务已提交")
+
+        dispatcher = mock.MagicMock()
+        dispatcher.dispatch_async = _fake_dispatch
+
+        with mock.patch(
+            "bot.dispatcher.get_dispatcher", return_value=dispatcher
+        ), mock.patch.object(handler, "_schedule_reply",
+                             side_effect=_fake_schedule):
+            handler._process_message(bot_message)
+
+        assert "source_message" in captured
+
+        from src.notification import NotificationService
+
+        adapter_client = mock.MagicMock()
+        adapter_client.send_to_chat.return_value = True
+
+        with mock.patch("src.notification.get_config",
+                        return_value=_pure_wecom_config()), \
+                mock.patch("bot.platforms.wecom_aibot.get_wecom_aibot_client",
+                           return_value=adapter_client), \
+                mock.patch("bot.platforms.wecom_aibot.WECOM_AIBOT_SDK_AVAILABLE", True):
+            service = NotificationService(source_message=captured["source_message"])
+            assert service.is_available() is True
+            assert service.should_broadcast_static_channels() is False
+
+            result = service.send_with_results("📊 600519 分析报告", route_type="report")
+
+            assert result.dispatched is True
+            assert result.success is True
+            adapter_client.send_to_chat.assert_called_once()
+            chat_id_arg, content_arg = adapter_client.send_to_chat.call_args[0]
+            assert chat_id_arg == "wrk-group-9"
+            assert "分析报告" in content_arg
+
+    def test_wecom_context_push_failure_does_not_broadcast_static(self):
+        from src.notification import NotificationService
+
+        config = _pure_wecom_config(
+            wechat_webhook_url="https://wechat.example/hook",
+        )
+        with mock.patch("src.notification.get_config", return_value=config):
+            service = NotificationService(source_message=_make_wecom_message())
+
+        with mock.patch.object(service, "_send_wecom_aibot_reply",
+                               return_value=False), \
+                mock.patch.object(service, "send_to_wechat",
+                                  return_value=True) as mock_wechat:
+            result = service.send_with_results("content", route_type="report")
+
+        assert result.dispatched is True
+        assert result.success is False
+        mock_wechat.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# r3 OR-COM-62e2b418 (refined): outbound dual-window quota must be atomic —
+# check both windows read-only in one critical section, record both only when
+# both allow, minute rejection must not burn hour quota.
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimiterAtomicPrimitives:
+    """would_allow/record must split check from accounting (additive API)."""
+
+    def test_would_allow_does_not_record(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        assert limiter.would_allow("u") is True
+        # Read-only: nothing recorded yet.
+        assert len(limiter._requests["u"]) == 0
+        assert limiter.get_remaining("u") == 2
+
+    def test_would_allow_rejects_at_capacity_without_recording(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        limiter.record("u")
+        limiter.record("u")
+        assert limiter.would_allow("u") is False
+        assert len(limiter._requests["u"]) == 2  # rejection added nothing
+
+    def test_record_after_would_allow_matches_is_allowed(self):
+        from bot.dispatcher import RateLimiter
+
+        reference = RateLimiter(max_requests=3, window_seconds=60)
+        split = RateLimiter(max_requests=3, window_seconds=60)
+
+        for _ in range(3):
+            assert reference.is_allowed("u") is True
+        assert reference.is_allowed("u") is False
+
+        for _ in range(3):
+            assert split.would_allow("u") is True
+            split.record("u")
+        assert split.would_allow("u") is False
+
+        assert len(split._requests["u"]) == len(reference._requests["u"]) == 3
+        assert split.get_remaining("u") == reference.get_remaining("u") == 0
+
+    def test_refund_removes_newest_record_restores_quota(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        limiter.record("u")
+        limiter.record("u")
+        assert limiter.would_allow("u") is False
+
+        assert limiter.refund("u") is True
+        assert len(limiter._requests["u"]) == 1
+        assert limiter.would_allow("u") is True
+
+    def test_refund_on_empty_window_is_noop(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_seconds=60)
+        assert limiter.refund("never-seen") is False
+        assert len(limiter._requests.get("never-seen", [])) == 0
+
+
+class _GateHourLimiter:
+    """Deterministic race injector standing in for the hour window.
+
+    Both callers' window checks complete before either caller records — the
+    reproducible form of the concurrent-overshoot race the reviewer
+    described (hour=999, two concurrent callers). Delegates window state to
+    a real RateLimiter so counts are directly inspectable.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self._pending_checks = 0
+        self._lock = threading.Lock()
+        self._checks_gate = threading.Event()
+
+    @property
+    def _requests(self):
+        return self._real._requests
+
+    def _gated_check(self, user_id):
+        allowed = self._real.would_allow(user_id)
+        with self._lock:
+            self._pending_checks += 1
+            if self._pending_checks >= 2:
+                self._checks_gate.set()
+        # Hold until every racing caller has completed its window check.
+        self._checks_gate.wait(timeout=2)
+        return allowed
+
+    def would_allow(self, user_id):
+        return self._gated_check(user_id)
+
+    def is_allowed(self, user_id):
+        allowed = self._gated_check(user_id)
+        if allowed:
+            self.record(user_id)
+        return allowed
+
+    def record(self, user_id, **kwargs):
+        self._real.record(user_id, **kwargs)
+
+
+class TestOutboundQuotaAtomicity:
+    def _handler(self):
+        handler, sdk_client = _handler()
+        return handler, sdk_client
+
+    def test_concurrent_callers_cannot_overshoot_hour_quota(self):
+        """反例①：小时额度 999 时两线程并发决策 → 恰一个 True、小时计 1000。"""
+        handler, _ = self._handler()
+
+        gate_limiter = _GateHourLimiter(handler._outbound_hour_limiter)
+
+        # Pin the minute window open so the race isolates the hour decision.
+        minute_stub = mock.MagicMock()
+        minute_stub.would_allow.return_value = True
+        minute_stub.is_allowed.return_value = True
+
+        # Preset: hour window at 999/1000 for the conversation.
+        for _ in range(999):
+            handler._outbound_hour_limiter.is_allowed("chat-x")
+
+        with mock.patch.object(handler, "_outbound_minute_limiter", minute_stub), \
+                mock.patch.object(handler, "_outbound_hour_limiter", gate_limiter,
+                                  create=True):
+            start = threading.Barrier(2, timeout=5)
+            results = []
+            errors = []
+
+            def _caller():
+                try:
+                    start.wait()
+                    results.append(handler._allow_outbound_reply("chat-x"))
+                except Exception as exc:  # pragma: no cover
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=_caller) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+
+        assert errors == []
+        # Exactly one caller wins the last hour slot.
+        assert results.count(True) == 1, f"overshoot: {results}"
+        assert len(handler._outbound_hour_limiter._requests["chat-x"]) == 1000
+
+    def test_minute_rejection_does_not_burn_hour_quota(self):
+        """反例②：分钟窗口满后的尝试不得消耗小时额度；窗口恢复后额度完整。"""
+        import time as _time
+
+        handler, _ = self._handler()
+
+        # All quota decisions run under one controlled clock so the +61s
+        # advance genuinely slides the minute window past the fill timestamps.
+        clock = [_time.time()]
+
+        def _now():
+            return clock[0]
+
+        with mock.patch("bot.dispatcher.time.time", side_effect=_now):
+            # Fill the minute window (30) for the conversation; hour untouched.
+            for _ in range(30):
+                assert handler._outbound_minute_limiter.is_allowed("chat-m") is True
+            assert len(
+                handler._outbound_hour_limiter._requests.get("chat-m", [])
+            ) == 0
+
+            for _ in range(20):
+                assert handler._allow_outbound_reply("chat-m") is False
+
+            hour_after = len(
+                handler._outbound_hour_limiter._requests.get("chat-m", [])
+            )
+            assert hour_after == 0, (
+                "minute rejection burned hour quota: "
+                f"{hour_after} slots"
+            )
+
+            # Window recovered -> full quota available again, hour debits 1.
+            clock[0] += 61
+            assert handler._allow_outbound_reply("chat-m") is True
+            assert len(
+                handler._outbound_hour_limiter._requests["chat-m"]
+            ) == 1
+
+
+# ---------------------------------------------------------------------------
+# r4 OR-COM-62e2b418 (final): quota accounting must not precede send
+# confirmation — availability-first, refund on send failure, zero accounting
+# on the passive path without an event loop.
+# ---------------------------------------------------------------------------
+
+
+class TestOutboundSendConfirmationQuota:
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def _window_counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _start_ack_loop(self, client, ack_coro):
+        """Run a real loop so run_coroutine_threadsafe works; return stopper."""
+        import threading as _threading
+
+        loop = asyncio.new_event_loop()
+        thread = _threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = ack_coro
+        return loop, thread
+
+    def test_send_to_chat_during_reconnect_zero_accounting_then_recovery(self):
+        """重连期间（_running=False）同会话 30 次 send_to_chat → 全拒且双窗口
+        计数零增量；恢复后首条回复正常放行。"""
+        client = self._client()
+        handler = client._handler
+        client._running = False  # reconnect window
+
+        for _ in range(30):
+            assert client.send_to_chat("chat-r", "x") is False
+
+        minute, hour = self._window_counts(handler, "chat-r")
+        assert (minute, hour) == (0, 0), (
+            f"reconnect-window attempts consumed quota: minute={minute} hour={hour}"
+        )
+
+        # Recovery: client back up, real loop, working ack.
+        async def _ack_ok(chatid, body):
+            return {"errcode": 0, "errmsg": "ok"}
+
+        loop, thread = self._start_ack_loop(client, _ack_ok)
+        try:
+            client._running = True
+            assert client.send_to_chat("chat-r", "x") is True
+            minute, hour = self._window_counts(handler, "chat-r")
+            assert (minute, hour) == (1, 1)
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_send_runtime_error_keeps_debits(self):
+        """r7：RuntimeError（断线清理 pending ACK / 连接中断——帧可能已写出）
+        ＝结果不确定 → 保守保留记账不退款；后续成功照常记账。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_write_fail(chatid, body):
+            raise RuntimeError("connection closed before send")
+
+        loop, thread = self._start_ack_loop(client, _ack_write_fail)
+        try:
+            # 同步等待异步终态决策完成（事件同步）
+            decided = threading.Event()
+            real_done = handler._on_outbound_send_done
+
+            def _spied(done, key, token):
+                try:
+                    real_done(done, key, token)
+                finally:
+                    decided.set()
+
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert client.send_to_chat(
+                    "chat-f", "report", timeout_seconds=2
+                ) is False
+                assert decided.wait(timeout=5), "terminal callback never ran"
+
+            minute, hour = self._window_counts(handler, "chat-f")
+            assert (minute, hour) == (1, 1), (
+                f"uncertain outcome refunded: minute={minute} hour={hour}"
+            )
+
+            # 后续成功照常记账（额度语义与实际发送一致）。
+            async def _ack_ok(chatid, body):
+                return {"errcode": 0, "errmsg": "ok"}
+
+            client._sdk_client.send_message = _ack_ok
+            assert client.send_to_chat("chat-f", "report") is True
+            minute, hour = self._window_counts(handler, "chat-f")
+            assert (minute, hour) == (2, 2)
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_send_errcode_rejection_refunds_quota(self, caplog):
+        """errcode != 0（前置条件不满足被服务端拒）→ 本次额度退还。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_reject(chatid, body):
+            return {"errcode": 44002, "errmsg": "no prior conversation"}
+
+        loop, thread = self._start_ack_loop(client, _ack_reject)
+        try:
+            assert client.send_to_chat("chat-e", "report") is False
+            assert "会话" in caplog.text  # precondition hint
+
+            minute, hour = self._window_counts(handler, "chat-e")
+            assert (minute, hour) == (0, 0), (
+                f"rejected send kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_passive_reply_without_loop_zero_accounting(self, caplog):
+        """被动路径无事件循环 → 拒绝且零记账，不虚报已放行。"""
+        handler, sdk_client = _handler()
+        handler._loop = None
+
+        frame = _text_frame(msgid="m", chatid="chat-nl")
+        assert handler._reply_to_frame(frame, "x") is False
+
+        minute, hour = self._window_counts(handler, "chat-nl")
+        assert (minute, hour) == (0, 0), (
+            f"no-loop passive reply kept debits: minute={minute} hour={hour}"
+        )
+        sdk_client.reply.assert_not_called()
+        assert "事件循环不可用" in caplog.text
+
+    def test_passive_reply_with_loop_still_records_once(self):
+        """正常被动路径行为保持：有循环时记账一次并调度发送。"""
+        handler, sdk_client = _handler()
+        frame = _text_frame(msgid="m", chatid="chat-ok")
+
+        with mock.patch.object(handler, "_schedule_reply",
+                               side_effect=_fake_schedule):
+            assert handler._reply_to_frame(frame, "x") is True
+
+        minute, hour = self._window_counts(handler, "chat-ok")
+        assert (minute, hour) == (1, 1)
+        sdk_client.reply.assert_called_once()
+
+    def test_interleaved_refund_removes_only_own_slot(self):
+        """场景二：A 预留后另 29 次成功、A 失败退款 → 只移除 A 的记录，
+        窗口内成功计数仍 29、放行语义正确（不多放）。"""
+        handler, _ = _handler()
+        key = "chat-mix"
+
+        # A acquires the first slot; its token identifies A's send.
+        token_a = handler._acquire_outbound_slot(key)
+        assert token_a and isinstance(token_a, str)
+
+        # 29 interleaved successful acquisitions on the same conversation
+        # (minute window is now exactly full at 30).
+        other_tokens = [handler._acquire_outbound_slot(key) for _ in range(29)]
+        assert all(token and isinstance(token, str) for token in other_tokens)
+        assert len(set(other_tokens)) == 29
+
+        # A fails and refunds by identity: only A's record may go.
+        handler._refund_outbound_send(key, token_a)
+
+        for limiter in (handler._outbound_minute_limiter,
+                        handler._outbound_hour_limiter):
+            remaining_tokens = [
+                token for (_, token) in limiter._requests[key]
+            ]
+            assert token_a not in remaining_tokens, (
+                "refund removed a record that is not A's"
+            )
+            assert len(remaining_tokens) == 29
+            assert set(remaining_tokens) == set(other_tokens)
+
+        # Admission semantics: exactly one more slot is open (29/30), and
+        # taking it makes the minute window full again (no over-admission).
+        assert handler._outbound_minute_limiter.would_allow(key) is True
+        token_x = handler._acquire_outbound_slot(key)
+        assert token_x and isinstance(token_x, str)
+        assert handler._outbound_minute_limiter.would_allow(key) is False
+
+
+# ---------------------------------------------------------------------------
+# r5 OR-COM-62e2b418 (final): identity-based refund + passive-path async
+# failure monitoring.
+# ---------------------------------------------------------------------------
+
+
+def _fake_schedule(coro):
+    """Test double for _schedule_reply: consumed the coroutine, reports
+    dispatched (truthy, non-None)."""
+    coro.close()
+    return "scheduled"
+
+
+class TestRefundByIdentity:
+    def test_refund_by_token_removes_exact_record(self):
+        """退款必须按发送标识精确移除本次记录，而非无条件弹最新一条。"""
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=30, window_seconds=60)
+        limiter.record("u", token="A")
+        limiter.record("u", token="B")
+        limiter.record("u", token="C")
+
+        assert limiter.refund("u", token="B") is True
+        tokens = [token for (_, token) in limiter._requests["u"]]
+        assert tokens == ["A", "C"]
+
+        # Idempotent / unknown tokens are no-ops.
+        assert limiter.refund("u", token="B") is False
+        assert limiter.refund("u", token="Z") is False
+        assert len(limiter._requests["u"]) == 2
+
+    def test_legacy_refund_without_token_pops_newest_untracked(self):
+        from bot.dispatcher import RateLimiter
+
+        limiter = RateLimiter(max_requests=30, window_seconds=60)
+        limiter.record("u", token="tracked")
+        limiter.record("u")  # tokenless legacy record
+
+        assert limiter.refund("u") is True  # pops the tokenless record only
+        tokens = [token for (_, token) in limiter._requests["u"]]
+        assert tokens == ["tracked"]
+
+
+class TestPassiveAsyncFailureRefund:
+    """场景一：loop 可用但发送协程失败 → 双窗口退款至 (0,0)。"""
+
+    def _handler_with_real_loop(self, reply_impl):
+        handler, sdk_client = _handler()
+        sdk_client.reply = reply_impl
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True
+        )
+        self._loop_thread.start()
+        handler._loop = self._loop
+        return handler, sdk_client
+
+    def _stop_loop(self):
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._loop_thread.join(timeout=5)
+        self._loop.close()
+
+    def _counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _wait_until_settled(self, handler, key, want, timeout=3.0):
+        """Poll until the windows reach `want` (done-callbacks fire async)."""
+        import time as _time
+
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            if self._counts(handler, key) == want:
+                return True
+            _time.sleep(0.02)
+        return False
+
+    def test_passive_async_runtime_error_keeps_debit(self):
+        """r7：发送结果不确定（RuntimeError 可能是断线清理 pending ACK，
+        帧可能已写出）→ 保守保留记账，不退款。"""
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_fail(frame, body):
+            raise RuntimeError("send failed")
+
+        sdk_client.reply = _reply_fail
+
+        # 同步等待异步终态决策完成（事件同步，不依赖调度时序）
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
+        frame = _text_frame(msgid="m-async", chatid="chat-async")
+        try:
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert handler._reply_to_frame(frame, "x") is True
+                assert decided.wait(timeout=5), "terminal callback never ran"
+
+            minute, hour = self._counts(handler, "chat-async")
+            assert (minute, hour) == (1, 1), (
+                f"uncertain outcome refunded: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
+
+    def test_passive_async_errcode_rejection_refunds_quota(self, caplog):
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_reject(frame, body):
+            return {"errcode": 44002, "errmsg": "no prior conversation"}
+
+        sdk_client.reply = _reply_reject
+
+        frame = _text_frame(msgid="m-reject", chatid="chat-reject")
+        try:
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-reject", (0, 0))
+            minute, hour = self._counts(handler, "chat-reject")
+            assert settled and (minute, hour) == (0, 0), (
+                f"rejected reply kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
+
+    def test_passive_async_success_keeps_quota(self):
+        handler, sdk_client = self._handler_with_real_loop(None)
+
+        async def _reply_ok(frame, body):
+            return {"errcode": 0, "errmsg": "ok"}
+
+        sdk_client.reply = _reply_ok
+
+        frame = _text_frame(msgid="m-ok", chatid="chat-ok2")
+        try:
+            assert handler._reply_to_frame(frame, "x") is True
+
+            settled = self._wait_until_settled(handler, "chat-ok2", (1, 1))
+            minute, hour = self._counts(handler, "chat-ok2")
+            assert settled and (minute, hour) == (1, 1), (
+                f"successful reply lost its debit: minute={minute} hour={hour}"
+            )
+        finally:
+            self._stop_loop()
+
+
+# ---------------------------------------------------------------------------
+# r6 OR-COM-62e2b418 (final): refund only on DETERMINISTIC failure — a wait
+# timeout is uncertain (the frame may already be on the wire), so the debit
+# must be kept and the Future monitored; ack timeouts never refund.
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutConservativeQuota:
+    """评审探针：等待超时=结果不确定，宁可高估不可低估。"""
+
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def _counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _wait_until_settled(self, handler, key, want, timeout=3.0):
+        import time as _time
+
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            if self._counts(handler, key) == want:
+                return True
+            _time.sleep(0.02)
+        return False
+
+    def test_send_wait_timeout_keeps_debits_no_over_admission(self, caplog):
+        """场景①：等待超时（协程继续成功）×30 → 记录不减少（仍 30），
+        下一发送被正确拒绝（分钟窗已达限）——不出现实发 31 条而计数 0。"""
+        import time as _time
+
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _slow_ack(chatid, body):
+            await asyncio.sleep(0.3)
+            return {"errcode": 0, "errmsg": "ok"}
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = _slow_ack
+        try:
+            for _ in range(30):
+                # 每次等待 0.15s 超时：结果不确定（协程随后成功）
+                assert client.send_to_chat(
+                    "chat-t", "x", timeout_seconds=0.15
+                ) is False
+                assert "不确定" in caplog.text or "超时" in caplog.text
+
+            minute, hour = self._counts(handler, "chat-t")
+            assert (minute, hour) == (30, 30), (
+                f"timeout refunds underestimated sends: minute={minute} hour={hour}"
+            )
+
+            # 分窗已达限：下一发送被正确拒绝，计数保持
+            assert client.send_to_chat(
+                "chat-t", "x", timeout_seconds=0.15
+            ) is False
+            minute, hour = self._counts(handler, "chat-t")
+            assert (minute, hour) == (30, 30)
+            assert "超限" in caplog.text
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+            # 让累积的后台协程自然结束，避免悬挂告警
+            _time.sleep(0.4)
+
+    def test_timeout_then_runtime_error_keeps_debit(self, caplog):
+        """r7：超时（不确定）→ 扣量保留；随后协程以 RuntimeError 收尾
+        （断线清理 pending ACK，帧可能已写出）→ 仍保守保留记账。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_never_then_fail(chatid, body):
+            await asyncio.sleep(0.4)
+            raise RuntimeError("connection closed before ack")
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = _ack_never_then_fail
+
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
+        try:
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert client.send_to_chat(
+                    "chat-d", "report", timeout_seconds=0.15
+                ) is False
+
+                # 超时瞬间：扣量保留（不确定 ≠ 失败）
+                minute, hour = self._counts(handler, "chat-d")
+                assert (minute, hour) == (1, 1), (
+                    f"timeout immediately refunded: minute={minute} hour={hour}"
+                )
+
+                # 终态 RuntimeError（不确定）→ 仍保守保留
+                assert decided.wait(timeout=5), "terminal callback never ran"
+                minute, hour = self._counts(handler, "chat-d")
+                assert (minute, hour) == (1, 1), (
+                    f"runtime error refunded: minute={minute} hour={hour}"
+                )
+            assert "保留记账" in caplog.text  # 同步分支 + 终态分支均保留记账
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_passive_ack_timeout_keeps_debit(self, caplog):
+        """被动路径同样适用：ACK 超时类异常不退款（消息可能已写入）。
+
+        确定性构造：事件同步等待异步终态决策完成后，再断言记账状态与日志
+        （此前直接断言 caplog，回调未及执行时 CI 上日志为空——r7 修复）。"""
+        handler, sdk_client = _handler()
+
+        async def _reply_ack_timeout(frame, body):
+            raise TimeoutError("reply ack timeout")
+
+        sdk_client.reply = _reply_ack_timeout
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        handler._loop = loop
+
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
+        try:
+            frame = _text_frame(msgid="m-to", chatid="chat-pto")
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert handler._reply_to_frame(frame, "x") is True
+                assert decided.wait(timeout=5), "terminal callback never ran"
+
+            # 回调已完成：记账状态与日志断言均为确定性
+            minute, hour = self._counts(handler, "chat-pto")
+            assert (minute, hour) == (1, 1), (
+                f"passive ack timeout refunded: minute={minute} hour={hour}"
+            )
+            assert "保留记账" in caplog.text
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_passive_runtime_error_keeps_debit(self):
+        """r7：被动路径 RuntimeError（断线清理 pending ACK，帧可能已写出）
+        ＝结果不确定 → 保守保留记账（此前按确定失败退款，r7 收窄）。"""
+        handler, sdk_client = _handler()
+
+        async def _reply_write_fail(frame, body):
+            raise RuntimeError("connection closed before send")
+
+        sdk_client.reply = _reply_write_fail
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        handler._loop = loop
+
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
+        try:
+            frame = _text_frame(msgid="m-wf", chatid="chat-wf")
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert handler._reply_to_frame(frame, "x") is True
+                assert decided.wait(timeout=5), "terminal callback never ran"
+
+            minute, hour = self._counts(handler, "chat-wf")
+            assert (minute, hour) == (1, 1), (
+                f"runtime error refunded: minute={minute} hour={hour}"
+            )
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+
+# ---------------------------------------------------------------------------
+# r8 ① OR-COM-95e8c4d1: errcode≠0 arrives through the REAL SDK as a plain
+# RuntimeError ("Reply ack error: errcode=..., errmsg=..." — ws.py
+# _handle_reply_ack) → it IS a server rejection and must refund; teardown /
+# queue-overflow RuntimeErrors stay conservative keeps.
+# ---------------------------------------------------------------------------
+
+_SDK_ACK_REJECTION = "Reply ack error: errcode=44002, errmsg=no prior conversation"
+_SDK_TEARDOWN = "Connection manually closed, reply for reqId: req-9 cancelled"
+_SDK_QUEUE_FULL = (
+    "Reply queue for reqId: req-9 exceeds max size (100)"
+)
+
+
+class TestServerRejectionClassification:
+    def test_ack_rejection_runtime_error_is_server_rejection(self):
+        exc = RuntimeError(_SDK_ACK_REJECTION)
+        assert wecom_aibot._is_server_rejection_error(exc) is True
+
+    def test_teardown_runtime_error_is_not_server_rejection(self):
+        exc = RuntimeError(_SDK_TEARDOWN)
+        assert wecom_aibot._is_server_rejection_error(exc) is False
+
+    def test_queue_overflow_runtime_error_is_not_server_rejection(self):
+        exc = RuntimeError(_SDK_QUEUE_FULL)
+        assert wecom_aibot._is_server_rejection_error(exc) is False
+
+    def test_timeout_is_not_server_rejection(self):
+        assert wecom_aibot._is_server_rejection_error(TimeoutError("ack timeout")) is False
+
+    def test_none_and_empty_are_not_server_rejection(self):
+        assert wecom_aibot._is_server_rejection_error(None) is False
+        assert wecom_aibot._is_server_rejection_error(RuntimeError("")) is False
+
+
+class TestErrcodeRuntimeErrorRefund:
+    def test_send_errcode_runtime_error_refunds(self):
+        """真 SDK 链路：服务端拒绝经 _handle_reply_ack 以 RuntimeError 送达
+        （消息内嵌 errcode/errmsg）→ 确定拒绝，按 token 退款。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_reject(chatid, body):
+            raise RuntimeError(_SDK_ACK_REJECTION)
+
+        loop, thread = self._start_ack_loop(client, _ack_reject)
+        try:
+            assert client.send_to_chat("chat-err", "report") is False
+
+            minute, hour = self._window_counts(handler, "chat-err")
+            assert (minute, hour) == (0, 0), (
+                f"server rejection kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_passive_errcode_runtime_error_refunds(self):
+        """被动路径同判别：errcode-RuntimeError → 退款至 (0,0)。"""
+        handler, sdk_client = _handler()
+
+        async def _reply_reject(frame, body):
+            raise RuntimeError(_SDK_ACK_REJECTION)
+
+        sdk_client.reply = _reply_reject
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        handler._loop = loop
+
+        decided = threading.Event()
+        real_done = handler._on_outbound_send_done
+
+        def _spied(done, key, token):
+            try:
+                real_done(done, key, token)
+            finally:
+                decided.set()
+
+        try:
+            frame = _text_frame(msgid="m-err", chatid="chat-perr")
+            with mock.patch.object(handler, "_on_outbound_send_done",
+                                   side_effect=_spied):
+                assert handler._reply_to_frame(frame, "x") is True
+                assert decided.wait(timeout=5), "terminal callback never ran"
+
+            minute, hour = self._counts(handler, "chat-perr")
+            assert (minute, hour) == (0, 0), (
+                f"server rejection kept debits: minute={minute} hour={hour}"
+            )
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def _window_counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def _counts(self, handler, key):
+        return self._window_counts(handler, key)
+
+    def _start_ack_loop(self, client, ack_coro):
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = ack_coro
+        return loop, thread
+
+
+# ---------------------------------------------------------------------------
+# r8 ② OR-COM-7b1f3d4a: loop closed between quota check and scheduling —
+# the schedule must run inside the quota critical section, and a scheduling
+# failure must refund the token and close the coroutine (no leaks).
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleWithinQuotaCriticalSection:
+    def _client(self):
+        config = mock.MagicMock(
+            wecom_aibot_enabled=True,
+            wecom_aibot_bot_id="bot-abc",
+            wecom_aibot_secret="secret-xyz",
+            wecom_aibot_reply_stream=False,
+        )
+        with mock.patch.object(wecom_aibot, "get_config", return_value=config), \
+                mock.patch.object(wecom_aibot, "WECOM_AIBOT_SDK_AVAILABLE", True), \
+                mock.patch.object(wecom_aibot, "aibot", create=True):
+            client = wecom_aibot.WecomAibotClient()
+        wecom_aibot._reset_wecom_aibot_client()
+        return client
+
+    def _window_counts(self, handler, key):
+        minute = len(handler._outbound_minute_limiter._requests.get(key, []))
+        hour = len(handler._outbound_hour_limiter._requests.get(key, []))
+        return minute, hour
+
+    def test_loop_closed_before_schedule_refunds_and_closes_coro(self, caplog):
+        """确定性交错注入：配额检查通过后、调度执行前 loop 被关闭 →
+        调度失败必须零记账残留（按 token 退款）且协程被关闭（无泄漏）。"""
+        client = self._client()
+        handler = client._handler
+        client._running = True
+
+        async def _ack_ok(chatid, body):
+            return {"errcode": 0, "errmsg": "ok"}
+
+        captured = {}
+
+        def _send_message(chatid, body):
+            coro = _ack_ok(chatid, body)
+            captured["coro"] = coro
+            return coro
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        client._loop = loop
+        client._handler._loop = loop
+        client._sdk_client = mock.MagicMock()
+        client._sdk_client.send_message = _send_message
+        try:
+            # Interleaving injection: by the time schedule runs, the loop has
+            # been torn down (run_coroutine_threadsafe raises).
+            with mock.patch("asyncio.run_coroutine_threadsafe",
+                            side_effect=RuntimeError("Event loop is closed")):
+                assert client.send_to_chat("chat-race", "report") is False
+
+            minute, hour = self._window_counts(handler, "chat-race")
+            assert (minute, hour) == (0, 0), (
+                f"schedule failure leaked debits: minute={minute} hour={hour}"
+            )
+            # Coroutine was closed, not leaked.
+            assert "coro" in captured
+            assert captured["coro"].cr_frame is None
+            assert "退还" in caplog.text
+        finally:
+            client._running = False
+            client._loop = None
+            client._handler._loop = None
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+
+# ---------------------------------------------------------------------------
+# r9 OR-COR-bot-enabled-bypass: the global BOT_ENABLED contract must gate the
+# WeCom entry the same way bot/handler.py gates webhooks — disabled bot means
+# silent drop (no dispatch, no reply), checked before any message handling.
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalBotEnabledGate:
+    def _disabled_config(self):
+        from src.config import Config
+
+        return Config(stock_list=[], bot_enabled=False)
+
+    def test_bot_disabled_drops_message_before_dispatch(self, caplog):
+        """BOT_ENABLED=false + WECOM_AIBOT_ENABLED=true：收到 /analyze →
+        dispatcher 零调用、不回复（webhook 拒绝路径同款：静默忽略）。"""
+        import logging
+
+        handler, sdk_client = _handler()
+        frame = _text_frame(msgid="m-gate", content="/analyze 600519")
+        caplog.set_level(logging.INFO)
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=self._disabled_config()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue, \
+                mock.patch.object(handler, "_schedule_reply") as schedule, \
+                mock.patch("bot.dispatcher.get_dispatcher") as get_dispatcher:
+            handler.handle_frame(frame)
+
+        # 消息未进入处理管线 → dispatcher 永远不会被触达
+        assert enqueue.call_count == 0
+        get_dispatcher.assert_not_called()
+        # webhook 同款语义：静默忽略（不回复用户）
+        schedule.assert_not_called()
+        sdk_client.reply.assert_not_called()
+        assert "机器人功能未启用" in caplog.text
+
+    def test_bot_disabled_gate_precedes_dedup_and_ratelimit(self):
+        """门在排重/限流之前：禁用时连 msgid 缓存与会话限流都不消费。"""
+        handler, _ = _handler()
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=self._disabled_config()), \
+                mock.patch.object(handler, "_is_duplicate_msgid") as dup, \
+                mock.patch.object(handler, "_allow_conversation") as allow:
+            handler.handle_frame(_text_frame(msgid="m-g2"))
+
+        dup.assert_not_called()
+        allow.assert_not_called()
+
+    def test_bot_enabled_true_still_processes(self):
+        """回归守卫：默认/显式 BOT_ENABLED=true 时处理行为不变。"""
+        handler, sdk_client = _handler()
+
+        with mock.patch.object(wecom_aibot, "get_config",
+                               return_value=mock.MagicMock()), \
+                mock.patch.object(handler, "_enqueue_message") as enqueue:
+            handler.handle_frame(_text_frame(msgid="m-ok", content="/help"))
+
+        assert enqueue.call_count == 1
+
+    def test_disabled_config_read_from_real_config_semantics(self):
+        """契约锚点：Config.bot_enabled 默认 True（不改变现有用户行为），
+        与 webhook 入口的 getattr(config, 'bot_enabled', True) 同型。"""
+        from src.config import Config
+
+        assert Config(stock_list=[]).bot_enabled is True
+        assert Config(stock_list=[], bot_enabled=False).bot_enabled is False
+
+
+if __name__ == "__main__":
+    unittest.main()

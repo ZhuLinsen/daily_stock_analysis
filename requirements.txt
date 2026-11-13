@@ -57,6 +57,7 @@ imgkit>=1.2.0              # Markdown to image; requires wkhtmltopdf
 fake-useragent>=1.4.0       # Random User-Agent support
 httpx[socks]                # HTTP client with SOCKS proxy support; optional OpenAI dependency
 dingtalk-stream >= 0.24.3    # DingTalk Stream SDK
+wecom-aibot-python-sdk >= 1.0.2    # WeCom AI Bot (smart robot) WebSocket long-connection SDK; optional at runtime (degrades gracefully when missing)
 # Database
 # SQLite is built into Python and does not need an extra package
 
