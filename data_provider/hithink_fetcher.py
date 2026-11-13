@@ -711,3 +711,43 @@ class HiThinkFetcher(BaseFetcher):
             self.kline_adjust,
         )
         raise HiThinkRequestError("HiThink batch historical response does not match the requested interval or adjustment")
+
+    def get_main_indices(self, region: str = "cn"):
+        from .hithink_index import main_indices
+
+        return main_indices(self, region)
+
+    def get_index_daily_data(self, thscode: str, start_date=None, end_date=None, days: int = 30):
+        from .hithink_index import index_daily_data
+
+        return index_daily_data(self, thscode, start_date, end_date, days)
+
+    def get_sector_rankings(self, n: int = 5):
+        from .hithink_index import rankings
+
+        return rankings(self, "industry", n)
+
+    def get_concept_rankings(self, n: int = 5):
+        from .hithink_index import rankings
+
+        return rankings(self, "cn_concept", n)
+
+    def get_stock_name(self, stock_code: str):
+        from .hithink_reference import stock_name
+
+        return stock_name(self, stock_code)
+
+    def get_stock_list(self):
+        from .hithink_reference import stock_list
+
+        return stock_list(self)
+
+    def get_hot_stocks(self, n: int = 10):
+        from .hithink_reference import hot_stocks
+
+        return hot_stocks(self, n)
+
+    def get_limit_up_pool(self, date=None, n: int = 20):
+        from .hithink_reference import limit_up_pool
+
+        return limit_up_pool(self, date, n)
