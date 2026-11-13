@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -169,6 +169,44 @@ class HiThinkFetcherTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
         self.assertIn("historical-batch", request.call_args.args[0])
         self.assertEqual(len(frame), 2)
+
+    def test_batch_prefetch_caches_every_window_beyond_ten_years(self) -> None:
+        fetcher = self._fetcher()
+        start_date = "2014-01-01"
+        end_date = (datetime(2014, 1, 1) + timedelta(days=3601)).strftime("%Y-%m-%d")
+        windows = fetcher._windows(start_date, end_date)
+        self.assertEqual(len(windows), 2)
+
+        def _batch_payload(window_start: str) -> dict:
+            year, month, day = (int(part) for part in window_start.split("-"))
+            return {
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "interval": "1d",
+                    "adjust": "none",
+                    "item": [
+                        {
+                            "thscode": "600519.SH",
+                            "timestamp": _ms(year, month, day),
+                            "item": [_bar(year, month, day, 10)],
+                        }
+                    ],
+                },
+            }
+
+        responses = [_response(_batch_payload(window_start)) for window_start, _window_end in windows]
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=responses) as request:
+            cached = fetcher.prefetch_daily_klines(["600519"], start_date=start_date, end_date=end_date)
+            self.assertEqual(cached, 1)
+            self.assertEqual(request.call_count, 2)
+            for window_start, window_end in windows:
+                frame = fetcher.get_daily_data("600519", start_date=window_start, end_date=window_end)
+                self.assertEqual(list(frame["date"].dt.strftime("%Y-%m-%d")), [window_start])
+            self.assertEqual(request.call_count, 2)
+
+        requested_starts = [call.kwargs["params"]["start"] for call in request.call_args_list]
+        self.assertEqual(len(set(requested_starts)), 2)
 
     def test_disjoint_daily_cache_does_not_cover_the_gap(self) -> None:
         fetcher = self._fetcher()
