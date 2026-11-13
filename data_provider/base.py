@@ -1165,6 +1165,38 @@ class DataFetcherManager:
                 )
                 errors.append(f"[{source_name}] ({error_type}) {error_reason}")
 
+        hithink = fetchers_by_name.get("HiThinkFetcher")
+        if hithink is not None and target.matched_index is not None:
+            entry = target.matched_index
+            if entry.exchange in {"SH", "SZ", "BJ"} and self._is_fetcher_available(hithink, capability="daily_data"):
+                thscode = f"{entry.bare_code}.{entry.exchange}"
+                try:
+                    df = self._call_fetcher_method(
+                        hithink,
+                        "get_index_daily_data",
+                        thscode,
+                        start_date,
+                        end_date,
+                        days,
+                    )
+                    if df is not None and not df.empty:
+                        logger.info(
+                            "[指数数据源完成] %s 使用 [HiThinkFetcher] 获取成功: rows=%d",
+                            target.canonical_id,
+                            len(df),
+                        )
+                        return df, "HiThinkFetcher"
+                    errors.append("[HiThinkFetcher] empty result")
+                except Exception as exc:
+                    error_type, error_reason = summarize_exception(exc)
+                    logger.warning(
+                        "[指数数据源失败] [HiThinkFetcher] %s: error_type=%s, reason=%s",
+                        target.canonical_id,
+                        error_type,
+                        error_reason,
+                    )
+                    errors.append(f"[HiThinkFetcher] ({error_type}) {error_reason}")
+
         logger.error(
             "[指数数据源终止] %s 所有指数日线数据源均失败: elapsed=%.2fs; %s",
             target.canonical_id,
@@ -1481,6 +1513,26 @@ class DataFetcherManager:
 
         logger.warning("[指数名称] 所有数据源都无法获取 %s 的名称", cache_key)
         return cache_key
+
+    def _get_hithink_fetcher(self):
+        for fetcher in self._get_fetchers_snapshot():
+            if fetcher.name == "HiThinkFetcher" and self._is_fetcher_available(fetcher):
+                return fetcher
+        return None
+
+    def _load_cn_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
+        hithink = self._get_hithink_fetcher()
+        if hithink is not None:
+            try:
+                from .hithink_fundamentals import HiThinkFundamentalAdapter
+
+                payload = HiThinkFundamentalAdapter(hithink).get_fundamental_bundle(stock_code)
+                if isinstance(payload, dict) and payload.get("status") == "partial":
+                    return payload
+                logger.info("[HiThinkFetcher] fundamental bundle empty; falling back to AkShare")
+            except Exception as exc:
+                logger.warning("[HiThinkFetcher] fundamental bundle failed: %s", exc)
+        return self._fundamental_adapter.get_fundamental_bundle(stock_code)
 
     def _get_tickflow_fetcher(self):
         """Lazily create a TickFlow fetcher for market-review-only calls."""
@@ -4431,6 +4483,12 @@ class DataFetcherManager:
             "total_mv": getattr(quote_payload, "total_mv", None) if quote_payload else None,
             "circ_mv": getattr(quote_payload, "circ_mv", None) if quote_payload else None,
         }
+        if market == "cn" and not is_etf:
+            hithink = self._get_hithink_fetcher()
+            if hithink is not None:
+                from .hithink_fundamentals import supplement_valuation
+
+                supplement_valuation(hithink, stock_code, valuation_payload)
         valuation_status = self._infer_block_status(
             valuation_payload,
             "partial" if quote_payload is not None else "not_supported",
@@ -4449,7 +4507,7 @@ class DataFetcherManager:
             [valuation_err] if valuation_err else [],
         )
 
-        # growth / earnings / institution (one AkShare call)
+        # growth / earnings / institution (HiThink when configured, otherwise AkShare)
         if remaining_seconds <= 0:
             bundle_status = "failed"
             bundle_payload: Dict[str, Any] = {}
@@ -4458,7 +4516,7 @@ class DataFetcherManager:
         else:
             bundle_timeout = min(fetch_timeout, remaining_seconds)
             bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
-                lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+                lambda: self._load_cn_fundamental_bundle(stock_code),
                 bundle_timeout,
                 "fundamental_bundle",
                 quarantine_key=("akshare", "fundamental_bundle"),

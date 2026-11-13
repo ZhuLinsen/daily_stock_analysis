@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] 新增可选 HiThink Finance A 股股票行情快照、历史日 K 和批量日 K。配置 `HITHINK_FINANCE_API_KEY` 后按默认优先级 7 进入普通日 K 回退链；未配置、Key 无效或权限不足时保持现有数据源并自动降级。已登记指数、ETF 和海外市场路由不变，实时行情仅在 `REALTIME_SOURCE_PRIORITY` 显式包含 `hithink` 时使用。
 - [修复] HiThink 日 K 只在请求区间被已获取区间完整覆盖时复用缓存，空响应不再把中间缺口算成已覆盖；批量响应的 `interval` 或 `adjust` 与请求不一致时不写入缓存，并继续走单只请求和其他数据源。超过 10 年拆成多个窗口时，批量预取会缓存每一个窗口。
+- [新功能] 配置 HiThink Key 后，A 股基本面管道会读取财务指标、利润表、资产负债表、现金流量表和估值快照；空值保持为空，失败时继续使用原有 AkShare 基本面。
+- [新功能] HiThink 提供主要指数快照、指数日 K，以及行业和概念涨跌排行。指数日 K 只在现有 Tencent、AkShare、TickFlow、YFinance 固定路由全部失败后尝试。
+- [新功能] HiThink 补充 A 股名称检索、代码表、热股榜和涨停池，仅在现有数据源没有结果时使用。
 
 - [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
 
