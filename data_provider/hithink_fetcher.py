@@ -642,10 +642,13 @@ class HiThinkFetcher(BaseFetcher):
                 windows_for_symbol = grouped.get(thscode)
                 if not windows_for_symbol:
                     continue
-                if any(
-                    self._store_daily(thscode, window_start, window_end, frame)
-                    for window_start, window_end, frame in windows_for_symbol
-                ):
+                # Store every window. any() would stop after the first success
+                # and leave later 10-year chunks out of the cache.
+                stored_any = False
+                for window_start, window_end, frame in windows_for_symbol:
+                    stored = self._store_daily(thscode, window_start, window_end, frame)
+                    stored_any = stored or stored_any
+                if stored_any:
                     cached += 1
         logger.info(
             "[HiThinkFetcher] batch daily prefetch complete: cached=%d total=%d",
