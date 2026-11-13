@@ -16,7 +16,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@remixicon/react": "^4.9.0",
     "axios": "^1.18.0",
     "camelcase-keys": "^10.0.2",
     "clsx": "^2.1.1",
