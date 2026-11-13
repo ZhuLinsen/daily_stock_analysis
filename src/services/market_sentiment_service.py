@@ -70,6 +70,25 @@ DEFAULT_CALENDAR_TIMEOUT_SECONDS = 30.0
 API_TRADE_CALENDAR = "ak.tool_trade_date_hist_sina"
 
 
+def _resolve_fetch_timeout_seconds() -> Optional[float]:
+    """MARKET_SENTIMENT_FETCH_TIMEOUT_SECONDS 配置缝（issue #1939 Wave 6）。
+
+    读取 Config 单例的 ``market_sentiment_fetch_timeout_seconds``（默认 45，
+    env 解析期已钳制 5~300）；任何配置读取失败一律返回 None，让 fetcher
+    使用内置默认 45s（与 W3 交付行为一致，fail-open 不阻断触发）。
+    """
+    try:
+        from src.config import get_config
+
+        value = getattr(get_config(), "market_sentiment_fetch_timeout_seconds", None)
+        if value is None:
+            return None
+        return float(value)
+    except Exception as exc:  # pragma: no cover - 配置不可用时的兜底路径
+        logger.warning("[MarketSentiment] 取数超时配置不可用，回退内置默认 45s: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # errors
 # ---------------------------------------------------------------------------
@@ -348,7 +367,10 @@ class MarketSentimentService:
     def _build_fetcher(self) -> Any:
         if self._fetcher_factory is not None:
             return self._fetcher_factory()
-        return MarketSentimentFetcher()
+        # Wave 6 配置接线（issue #1939）：MARKET_SENTIMENT_FETCH_TIMEOUT_SECONDS
+        # （默认 45，钳制 5~300，由 Config 解析）传入池接口子进程超时；
+        # 配置不可用时返回 None → fetcher 使用内置默认 45s，行为与 W3 交付一致。
+        return MarketSentimentFetcher(timeout=_resolve_fetch_timeout_seconds())
 
     def _get_trade_dates(
         self, override: Optional[Callable[[], List[date]]] = None

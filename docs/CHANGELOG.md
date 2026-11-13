@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 大盘 Market Light 评分和中英文指数均值排除 VIX 波动率涨跌幅，保留原始行情展示；仅有 VIX 时指数维度标为不可用，告警沿用跳过语义（#2472）。
 
 - [改进] Agent 轨迹评估增加独立股票范围诊断与干扰股票样例，区分越界请求、运行时拦截和无法判定调用，支持多股对比及阶段明细，不改变原指标或退出码。
+- [新功能] 新增可选的 A 股收盘情绪快照（`MARKET_SENTIMENT_SNAPSHOT_ENABLED`，默认关闭，#1939）：开启后暴露 `/api/v1/market-sentiment` 只读端点（手动触发 202 受理 / 日期列表 / 详情 / 趋势），按 `(market, trade_date)` 幂等落库 14 项规则指标（涨跌家数、涨停池最高板与连板梯队、炸板率、成交额环比、晋级率、昨日涨停反馈、行业板块 Top/Bottom），单源 AkShare、零定时任务、零 LLM 调用；触发只解析"最近已收盘交易日"（Asia/Shanghai ≥15:00 收盘门），任一数据源失败按组 fail-open 落 `partial` 快照并以 `null + missing_reason` 标注、绝不补零，口径/幂等合并/回滚详见 `docs/market-sentiment-snapshot.md`；配套取数超时配置 `MARKET_SENTIMENT_FETCH_TIMEOUT_SECONDS`（默认 45，范围 5~300）。
 
 ## [3.33.0] - 2026-10-15
 

@@ -48,7 +48,6 @@ from src.services import market_sentiment_service as mss
 from src.storage import DatabaseManager
 
 from api.v1.endpoints import market_sentiment as mse
-from api.v1.router import router as v1_router
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -217,12 +216,36 @@ class TestApiSurface(unittest.TestCase):
                 f"{name} 参数表必须与 §4 契约一致",
             )
 
-    def test_router_mounts_market_sentiment_prefix(self):
-        # 经 OpenAPI schema 枚举扁平化路由（_IncludedRouter 惰性代理不暴露 path）
+    def _build_app_with_router_state(self, enabled: bool):
+        """Wave 6 路由开关接线后的挂载断言缝：按开关状态 reload api.v1.router。
+
+        路由挂载发生在模块导入期（issue #1939 默认关闭），因此本用例通过
+        设置进程环境变量 + importlib.reload 构造两种开关状态下的 router，
+        断言结束后还原默认关闭状态，避免污染同进程后续用例。
+        """
+        import importlib
+
+        import api.v1.router as router_module
         from fastapi import FastAPI
 
-        app = FastAPI()
-        app.include_router(v1_router, prefix="/api/v1")
+        env_key = "MARKET_SENTIMENT_SNAPSHOT_ENABLED"
+        original = os.environ.get(env_key)
+        os.environ[env_key] = "true" if enabled else "false"
+        try:
+            router_module = importlib.reload(router_module)
+            app = FastAPI()
+            app.include_router(router_module.router, prefix="/api/v1")
+            return app
+        finally:
+            if original is None:
+                os.environ.pop(env_key, None)
+            else:
+                os.environ[env_key] = original
+            importlib.reload(router_module)  # 还原默认关闭状态的模块级 router
+
+    def test_router_mounts_market_sentiment_prefix(self):
+        # 开关开启：经 OpenAPI schema 枚举扁平化路由（_IncludedRouter 惰性代理不暴露 path）
+        app = self._build_app_with_router_state(enabled=True)
         paths = app.openapi()["paths"]
         expected = {
             "/api/v1/market-sentiment/snapshots": {"post", "get"},
@@ -235,6 +258,19 @@ class TestApiSurface(unittest.TestCase):
                 methods.issubset(set(paths[path])),
                 f"{path} 缺少方法: {methods - set(paths[path])}",
             )
+
+    def test_router_hides_market_sentiment_when_disabled(self):
+        # 开关关闭（默认）：/market-sentiment 路由不注册，OpenAPI 不可见（404 语义）
+        app = self._build_app_with_router_state(enabled=False)
+        paths = app.openapi()["paths"]
+        leaked = [p for p in paths if p.startswith("/api/v1/market-sentiment")]
+        self.assertEqual(
+            leaked,
+            [],
+            f"开关关闭时 market-sentiment 路由不应注册: {leaked}",
+        )
+        # 其余路由不受开关影响（抽查处健康端点仍挂载）
+        self.assertIn("/api/v1/health", paths)
 
     def test_trend_metric_enum_matches_plan(self):
         self.assertEqual(sorted(mss.TREND_METRICS), sorted(TREND_ENUM))
