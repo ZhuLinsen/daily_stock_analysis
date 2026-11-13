@@ -642,6 +642,7 @@ class DataFetcherManager:
         "TushareFetcher": {"cn", "hk"},
         "TickPlusFetcher": {"cn"},
         "TickFlowFetcher": {"cn"},
+        "HiThinkFetcher": {"cn"},
         # 妙想为垂直补充数据源（资金流/筹码分布），不提供日线行情
         "MiaoxiangFetcher": set(),
         "PytdxFetcher": {"cn"},
@@ -1853,6 +1854,23 @@ class DataFetcherManager:
         else:
             logger.debug("[data source init] skip TickFlowFetcher because TICKFLOW_API_KEY is not configured")
 
+        hithink_api_key = (getattr(config, "hithink_finance_api_key", None) or "").strip()
+        if hithink_api_key:
+            from .hithink_fetcher import HiThinkFetcher
+
+            optional_fetchers.append(
+                HiThinkFetcher(
+                    api_key=hithink_api_key,
+                    priority=getattr(config, "hithink_priority", 7),
+                    kline_adjust=getattr(config, "hithink_kline_adjust", "none"),
+                    batch_daily_enabled=getattr(config, "hithink_batch_daily_enabled", True),
+                    batch_size=getattr(config, "hithink_batch_size", 10),
+                    timeout=getattr(config, "hithink_timeout_sec", 15),
+                )
+            )
+        else:
+            logger.debug("[data source init] skip HiThinkFetcher because HITHINK_FINANCE_API_KEY is not configured")
+
         mx_apikey = getattr(config, "mx_apikey", None)
         if not isinstance(mx_apikey, str):
             mx_apikey = ""
@@ -2253,7 +2271,7 @@ class DataFetcherManager:
         # efinance/akshare_em/tushare 通过一次调用填充全市场缓存；
         # tickplus / tickflow 只预取当前自选股，避免全市场请求。
         priority = config.realtime_source_priority.lower()
-        prefetch_sources = ['efinance', 'akshare_em', 'tushare', 'tickplus', 'tickflow']
+        prefetch_sources = ['efinance', 'akshare_em', 'tushare', 'tickplus', 'tickflow', 'hithink']
         
         # 如果优先级中前两个都不是可预取数据源，跳过预取
         # 因为新浪/腾讯是单股票查询，不需要预取
@@ -2291,21 +2309,31 @@ class DataFetcherManager:
         )
         
         # TickPlus / TickFlow 使用当前标的的批量接口；其他源通过首次查询触发自身缓存。
-        if prefetch_source in {"tickplus", "tickflow"}:
-            fetcher_name = "TickPlusFetcher" if prefetch_source == "tickplus" else "TickFlowFetcher"
+        if prefetch_source in {"tickplus", "tickflow", "hithink"}:
+            fetcher_name = {
+                "tickplus": "TickPlusFetcher",
+                "tickflow": "TickFlowFetcher",
+                "hithink": "HiThinkFetcher",
+            }[prefetch_source]
             fetcher = self._get_fetcher_by_name(fetcher_name, capability="realtime_quote")
             if fetcher is None or not hasattr(fetcher, "prefetch_realtime_quotes"):
                 logger.info(
                     "[prefetch] component=realtime_prefetch action=skip reason=provider_unavailable"
                 )
                 return 0
+            if prefetch_source == "tickplus":
+                batch_size = 100
+            elif prefetch_source == "hithink":
+                batch_size = getattr(config, "hithink_batch_size", 10)
+            else:
+                batch_size = getattr(config, "tickflow_batch_size", 100)
             try:
                 return int(
                     self._call_fetcher_method(
                         fetcher,
                         "prefetch_realtime_quotes",
                         stock_codes,
-                        batch_size=100 if prefetch_source == "tickplus" else getattr(config, "tickflow_batch_size", 100),
+                        batch_size=batch_size,
                     )
                     or 0
                 )
@@ -2346,24 +2374,25 @@ class DataFetcherManager:
             return 0
 
     def prefetch_daily_klines(self, stock_codes: List[str], days: int = 30) -> int:
-        """Batch-prefetch TickFlow daily K-lines without changing per-stock callers."""
-        fetcher = self._get_fetcher_by_name("TickFlowFetcher", capability="daily_data")
-        if fetcher is None or not hasattr(fetcher, "prefetch_daily_klines"):
-            return 0
-
-        try:
-            return int(
-                self._call_fetcher_method(
-                    fetcher,
-                    "prefetch_daily_klines",
-                    stock_codes,
-                    days=days,
+        """Batch-prefetch optional daily K-lines without changing per-stock callers."""
+        cached = 0
+        for fetcher_name in ("TickFlowFetcher", "HiThinkFetcher"):
+            fetcher = self._get_fetcher_by_name(fetcher_name, capability="daily_data")
+            if fetcher is None or not hasattr(fetcher, "prefetch_daily_klines"):
+                continue
+            try:
+                cached += int(
+                    self._call_fetcher_method(
+                        fetcher,
+                        "prefetch_daily_klines",
+                        stock_codes,
+                        days=days,
+                    )
+                    or 0
                 )
-                or 0
-            )
-        except Exception as exc:
-            logger.warning("[TickFlowFetcher] daily K-line prefetch failed: %s", exc)
-            return 0
+            except Exception as exc:
+                logger.warning("[%s] daily K-line prefetch failed: %s", fetcher_name, exc)
+        return cached
 
     @staticmethod
     def _utc_now_iso() -> str:
@@ -2690,8 +2719,12 @@ class DataFetcherManager:
                         )
                         quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
 
-                elif source in {"tickplus", "tickflow"}:
-                    fetcher_name = "TickPlusFetcher" if source == "tickplus" else "TickFlowFetcher"
+                elif source in {"tickplus", "tickflow", "hithink"}:
+                    fetcher_name = {
+                        "tickplus": "TickPlusFetcher",
+                        "tickflow": "TickFlowFetcher",
+                        "hithink": "HiThinkFetcher",
+                    }[source]
                     fetcher = self._get_fetcher_by_name(fetcher_name, capability="realtime_quote")
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(

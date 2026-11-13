@@ -302,6 +302,13 @@ jobs:
           TICKFLOW_KLINE_ADJUST: ${{ vars.TICKFLOW_KLINE_ADJUST || secrets.TICKFLOW_KLINE_ADJUST }}
           TICKFLOW_BATCH_DAILY_ENABLED: ${{ vars.TICKFLOW_BATCH_DAILY_ENABLED || secrets.TICKFLOW_BATCH_DAILY_ENABLED }}
           TICKFLOW_BATCH_SIZE: ${{ vars.TICKFLOW_BATCH_SIZE || secrets.TICKFLOW_BATCH_SIZE }}
+          # HiThink Finance（可选 A 股股票快照与日 K；未配置则不启用）
+          HITHINK_FINANCE_API_KEY: ${{ secrets.HITHINK_FINANCE_API_KEY }}
+          HITHINK_PRIORITY: ${{ vars.HITHINK_PRIORITY || secrets.HITHINK_PRIORITY }}
+          HITHINK_KLINE_ADJUST: ${{ vars.HITHINK_KLINE_ADJUST || secrets.HITHINK_KLINE_ADJUST }}
+          HITHINK_BATCH_DAILY_ENABLED: ${{ vars.HITHINK_BATCH_DAILY_ENABLED || secrets.HITHINK_BATCH_DAILY_ENABLED }}
+          HITHINK_BATCH_SIZE: ${{ vars.HITHINK_BATCH_SIZE || secrets.HITHINK_BATCH_SIZE }}
+          HITHINK_TIMEOUT_SEC: ${{ vars.HITHINK_TIMEOUT_SEC || secrets.HITHINK_TIMEOUT_SEC }}
           # Longbridge OpenAPI（美股/港股实时行情字段补充；不设则仅 YFinance/AkShare，无 [Longbridge] 调用）
           LONGBRIDGE_OAUTH_CLIENT_ID: ${{ vars.LONGBRIDGE_OAUTH_CLIENT_ID || secrets.LONGBRIDGE_OAUTH_CLIENT_ID }}
           LONGBRIDGE_OAUTH_TOKEN_CACHE_B64: ${{ secrets.LONGBRIDGE_OAUTH_TOKEN_CACHE_B64 }}
@@ -506,6 +513,7 @@ jobs:
           echo "  Tushare Token: $([ -n "$TUSHARE_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  TickPlus (recommended): $([ -n "$TICKPLUS_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  TickFlow:      $([ -n "$TICKFLOW_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  HiThink:       $([ -n "$HITHINK_FINANCE_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  FXMacroData:   $([ -n "$FXMACRODATA_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置（仅公开 USD 数据）')"
           if [ -n "$LONGBRIDGE_APP_KEY" ] && [ -n "$LONGBRIDGE_APP_SECRET" ] && [ -n "$LONGBRIDGE_ACCESS_TOKEN" ]; then
             echo "  Longbridge: ✅ 已配置（Legacy API Key）"
