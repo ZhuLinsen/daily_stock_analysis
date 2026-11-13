@@ -1321,6 +1321,42 @@ class SkillOpinionOutcomeRecord(Base):
     )
 
 
+class MarketSentimentSnapshot(Base):
+    """Per-(market, trade_date) market sentiment snapshot (issue #1939).
+
+    One row per market + trade date; repeated runs merge idempotently in
+    ``src/repositories/market_sentiment_repo.py`` (plan §3.4). ``payload``
+    and ``provider_trace`` are stored as JSON text via ``_safe_json_dumps``.
+    """
+
+    __tablename__ = 'market_sentiment_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market = Column(String(8), nullable=False, default='cn')  # 一期仅 'cn'
+    trade_date = Column(String(10), nullable=False)  # ISO 'YYYY-MM-DD'
+    # 'complete' | 'partial'（'imported' 预留二期，仅做枚举校验，一期不产生）
+    quality_status = Column(String(16), nullable=False)
+    completeness = Column(Float, nullable=False, default=0.0)  # 已 ok 必备组数/必备组总数
+    payload = Column(Text, nullable=False)  # 完整指标 JSON（计划 §3.2，schema_version=1）
+    provider_trace = Column(Text, nullable=False, default='[]')  # 取数轨迹 JSON 数组
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('market', 'trade_date', name='uix_market_sentiment_market_date'),
+        CheckConstraint(
+            "quality_status IN ('complete', 'partial', 'imported')",
+            name='ck_market_sentiment_quality_status',
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<MarketSentimentSnapshot(market={self.market}, trade_date={self.trade_date}, "
+            f"quality_status={self.quality_status}, completeness={self.completeness})>"
+        )
+
+
 class _DatabaseManagerMeta(type):
     """Serialize DatabaseManager construction across __new__ and __init__."""
 
