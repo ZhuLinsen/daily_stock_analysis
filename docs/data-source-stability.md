@@ -27,7 +27,7 @@ AkShare 的业绩预告、快报是按 `date=YYYYMMDD` 查询的全市场表，�
 
 | 场景 | 已接入源 | 默认使用方式 | 失败处理 |
 | --- | --- | --- | --- |
-| A 股个股日线 / 技术面 | TickPlus（首选推荐）、Efinance、Tencent、AkShare、Tushare、TickFlow、Pytdx、Baostock、YFinance、HiThink Finance（可选） | `DataFetcherManager` 按 priority 尝试；配置 `TUSHARE_TOKEN` 后 Tushare 自动进入候选源。配置 `HITHINK_FINANCE_API_KEY` 后 HiThink 以默认优先级 7 追加在现有源之后，只覆盖 A 股股票，不覆盖 ETF | 单源失败后尝试下一个源；连续失败会短期熔断该源。HiThink 批量权限不足只关闭批量预取 |
+| A 股个股日线 / 技术面 | TickPlus（首选推荐）、Efinance、Tencent、AkShare、Tushare、TickFlow、Pytdx、Baostock、YFinance、HiThink Finance（可选） | `DataFetcherManager` 按 priority 尝试；配置 `TUSHARE_TOKEN` 后 Tushare 自动进入候选源。配置 `HITHINK_FINANCE_API_KEY` 后 HiThink 以默认优先级 7 追加在现有源之后，只覆盖 A 股股票，不覆盖 ETF。日 K 缓存只复用被实际区间完整覆盖的请求，批量响应的周期或复权与请求不一致时不入库 | 单源失败后尝试下一个源；连续失败会短期熔断该源。HiThink 批量权限不足、周期或复权不一致时只放弃该批缓存并继续单只请求 |
 | 已登记 A 股指数日线 / 技术面 | Tencent、AkShare、TickFlow、YFinance | 当前 5 个 `IndexRegistry` 标的固定按 Tencent → AkShare → TickFlow → YFinance 尝试，不读取普通日 K 的 `*_PRIORITY` 配置，也不使用 HiThink | 未配置、熔断、异常或空结果均继续下一源；全部失败返回空结果并记录汇总告警 |
 | A 股实时行情 | TickPlus（首选推荐）、Tencent、AkShare Sina、Efinance、AkShare EM、Tushare、TickFlow、HiThink Finance（可选） | `REALTIME_SOURCE_PRIORITY` 控制顺序，未显式设置顺序且配置 TickPlus Key 时自动首选 TickPlus；无 Key 时默认使用 Tencent / Sina 轻量源。HiThink 不会自动插入该顺序，只有显式包含 `hithink` 才参与 | 失败源记录 `fallback_from`，成功源继续返回 |
 | A 股大盘复盘 | TickFlow、AkShare、Tushare、Efinance | 配置 `TICKFLOW_API_KEY` 后，复盘聚合的主指数和市场宽度优先尝试 TickFlow；不等同于单标的指数日线链 | TickFlow 权限不足或失败时回退 AkShare / Tushare / Efinance 链路 |

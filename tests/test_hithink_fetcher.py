@@ -36,6 +36,10 @@ def _response(payload, status_code: int = 200):
     return _Response()
 
 
+def _history(*bars: dict) -> dict:
+    return {"code": 0, "message": "success", "data": {"timestamp": bars[-1]["date_ms"], "item": list(bars)}}
+
+
 def _bar(year: int, month: int, day: int, close: float) -> dict:
     return {
         "date_ms": _ms(year, month, day),
@@ -159,12 +163,113 @@ class HiThinkFetcherTests(unittest.TestCase):
 
         with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload)) as request:
             cached = fetcher.prefetch_daily_klines(["600519", "000001"], start_date="2024-05-20", end_date="2024-05-21")
-            self.assertEqual(cached, 2)
+            self.assertEqual(cached, 1)
             frame = fetcher.get_daily_data("600519", start_date="2024-05-20", end_date="2024-05-21")
 
         self.assertEqual(request.call_count, 1)
         self.assertIn("historical-batch", request.call_args.args[0])
         self.assertEqual(len(frame), 2)
+
+    def test_disjoint_daily_cache_does_not_cover_the_gap(self) -> None:
+        fetcher = self._fetcher()
+        january = _history(_bar(2024, 1, 2, 10), _bar(2024, 1, 10, 11))
+        february = _history(_bar(2024, 2, 1, 12), _bar(2024, 2, 8, 13))
+        span = _history(_bar(2024, 1, 2, 10), _bar(2024, 2, 8, 13))
+
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(january), _response(february), _response(span)],
+        ) as request:
+            fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
+            fetcher.get_daily_data("600519", start_date="2024-02-01", end_date="2024-02-10")
+            fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-02-10")
+
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(request.call_args_list[2].kwargs["params"]["thscode"], "600519.SH")
+
+    def test_adjacent_daily_cache_ranges_cover_the_joined_request(self) -> None:
+        fetcher = self._fetcher()
+        first = _history(_bar(2024, 1, 2, 10))
+        second = _history(_bar(2024, 1, 11, 12))
+
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(first), _response(second)],
+        ) as request:
+            fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
+            fetcher.get_daily_data("600519", start_date="2024-01-11", end_date="2024-01-20")
+            frame = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-20")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(list(frame["date"].dt.strftime("%Y-%m-%d")), ["2024-01-02", "2024-01-11"])
+
+    def test_empty_daily_response_does_not_extend_coverage(self) -> None:
+        fetcher = self._fetcher()
+        january = _history(_bar(2024, 1, 2, 10))
+        empty = {"code": 0, "message": "success", "data": {"timestamp": None, "item": []}}
+
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(january), _response(empty), _response(empty)],
+        ) as request:
+            cached = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
+            with self.assertRaises(DataFetchError):
+                fetcher.get_daily_data("600519", start_date="2024-02-01", end_date="2024-02-10")
+            again = fetcher.get_daily_data("600519", start_date="2024-01-01", end_date="2024-01-10")
+            with self.assertRaises(DataFetchError):
+                fetcher.get_daily_data("600519", start_date="2024-02-01", end_date="2024-02-10")
+
+        self.assertEqual(len(cached), 1)
+        self.assertEqual(len(again), 1)
+        self.assertEqual(request.call_count, 3)
+
+    def test_batch_adjustment_or_interval_mismatch_is_not_cached(self) -> None:
+        mismatched = {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "interval": "1d",
+                "adjust": "forward",
+                "item": [
+                    {"thscode": "600519.SH", "timestamp": _ms(2024, 5, 21), "item": [_bar(2024, 5, 20, 10)]},
+                ],
+            },
+        }
+        single = _history(_bar(2024, 5, 20, 10), _bar(2024, 5, 21, 11))
+        fetcher = self._fetcher()
+
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(mismatched), _response(single)],
+        ) as request:
+            cached = fetcher.prefetch_daily_klines(["600519"], start_date="2024-05-20", end_date="2024-05-21")
+            frame = fetcher.get_daily_data("600519", start_date="2024-05-20", end_date="2024-05-21")
+
+        self.assertEqual(cached, 0)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("historical-batch", request.call_args_list[0].args[0])
+        self.assertIn("/historical", request.call_args_list[1].args[0])
+        self.assertNotIn("historical-batch", request.call_args_list[1].args[0])
+        self.assertEqual(len(frame), 2)
+
+        weekly = {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "interval": "1w",
+                "adjust": "none",
+                "item": [
+                    {"thscode": "600519.SH", "timestamp": _ms(2024, 5, 21), "item": [_bar(2024, 5, 20, 10)]},
+                ],
+            },
+        }
+        weekly_fetcher = self._fetcher()
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(weekly)) as request:
+            cached = weekly_fetcher.prefetch_daily_klines(["600519"], start_date="2024-05-20", end_date="2024-05-21")
+
+        self.assertEqual(cached, 0)
+        self.assertEqual(weekly_fetcher._daily_coverage, {})
+        self.assertEqual(request.call_count, 1)
 
     def test_batch_permission_failure_falls_open_to_single_requests(self) -> None:
         fetcher = self._fetcher()

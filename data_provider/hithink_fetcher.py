@@ -104,6 +104,7 @@ class HiThinkFetcher(BaseFetcher):
         self._last_error = ""
         self._successful = False
         self._daily_cache: Dict[Tuple[str, str], pd.DataFrame] = {}
+        self._daily_coverage: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
         self._quote_cache: Dict[str, Tuple[float, UnifiedRealtimeQuote]] = {}
 
     @property
@@ -315,34 +316,83 @@ class HiThinkFetcher(BaseFetcher):
     def _cache_key(self, thscode: str) -> Tuple[str, str]:
         return thscode, self.kline_adjust
 
-    def _store_daily(self, thscode: str, start_date: str, end_date: str, frame: pd.DataFrame) -> None:
+    @staticmethod
+    def _next_day(date_str: str) -> str:
+        return (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    @classmethod
+    def _merge_coverage(
+        cls,
+        ranges: List[Tuple[str, str]],
+        start_date: str,
+        end_date: str,
+    ) -> List[Tuple[str, str]]:
+        """Merge only overlapping or adjacent inclusive ranges.
+
+        A later window must not stretch an earlier window across the dates in
+        between. January 1–10 plus February 1–10 stays two ranges.
+        """
+        if end_date < start_date:
+            return list(ranges)
+        pending = sorted([*ranges, (start_date, end_date)])
+        merged: List[Tuple[str, str]] = []
+        for start, end in pending:
+            if end < start:
+                continue
+            if not merged or start > cls._next_day(merged[-1][1]):
+                merged.append((start, end))
+                continue
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        return merged
+
+    @staticmethod
+    def _range_covered(ranges: List[Tuple[str, str]], start_date: str, end_date: str) -> bool:
+        return any(covered_start <= start_date and covered_end >= end_date for covered_start, covered_end in ranges)
+
+    @staticmethod
+    def _has_daily_rows(frame: pd.DataFrame) -> bool:
+        return (
+            frame is not None
+            and not frame.empty
+            and "date" in frame.columns
+            and bool(frame["date"].notna().any())
+        )
+
+    def _store_daily(self, thscode: str, start_date: str, end_date: str, frame: pd.DataFrame) -> bool:
+        # An empty payload is a valid response, but it is not evidence that the
+        # requested window can be reused. Keeping it would let later windows
+        # widen the covered span without those dates ever being fetched.
+        if not self._has_daily_rows(frame) or end_date < start_date:
+            return False
         with self._lock:
-            current = self._daily_cache.get(self._cache_key(thscode))
+            key = self._cache_key(thscode)
+            current = self._daily_cache.get(key)
             incoming = frame.copy()
-            incoming.attrs["start"] = start_date
-            incoming.attrs["end"] = end_date
             if current is None or current.empty:
-                self._daily_cache[self._cache_key(thscode)] = incoming
-                return
-            merged = pd.concat([current, incoming], ignore_index=True)
-            merged.attrs["start"] = min(str(current.attrs.get("start", start_date)), start_date)
-            merged.attrs["end"] = max(str(current.attrs.get("end", end_date)), end_date)
-            self._daily_cache[self._cache_key(thscode)] = merged
+                stored = incoming
+            else:
+                stored = pd.concat([current, incoming], ignore_index=True)
+                if "date" in stored.columns:
+                    stored = stored.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
+            self._daily_cache[key] = stored
+            self._daily_coverage[key] = self._merge_coverage(
+                self._daily_coverage.get(key, []),
+                start_date,
+                end_date,
+            )
+            return True
 
     def _load_daily(self, thscode: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
         with self._lock:
-            cached = self._daily_cache.get(self._cache_key(thscode))
-            if cached is None:
+            key = self._cache_key(thscode)
+            if not self._range_covered(self._daily_coverage.get(key, []), start_date, end_date):
                 return None
-            covered_start = str(cached.attrs.get("start", ""))
-            covered_end = str(cached.attrs.get("end", ""))
-            if not covered_start or not covered_end:
-                return None
-            if covered_start > start_date or covered_end < end_date:
+            cached = self._daily_cache.get(key)
+            if cached is None or cached.empty:
                 return None
             frame = cached.copy()
-        if frame.empty or "date" not in frame.columns:
-            return frame.iloc[0:0].copy()
+        if "date" not in frame.columns:
+            return None
         dates = pd.to_datetime(frame["date"], errors="coerce")
         mask = dates.notna() & (dates >= pd.Timestamp(start_date)) & (dates <= pd.Timestamp(end_date))
         return frame.loc[mask].reset_index(drop=True)
@@ -383,13 +433,12 @@ class HiThinkFetcher(BaseFetcher):
         cached = self._load_daily(thscode, start_date, end_date)
         if cached is not None:
             return cached
-        frames = [
-            self._fetch_historical_window(thscode, window_start, window_end)
-            for window_start, window_end in self._windows(start_date, end_date)
-        ]
-        frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-        self._store_daily(thscode, start_date, end_date, frame)
-        return frame
+        frames: List[pd.DataFrame] = []
+        for window_start, window_end in self._windows(start_date, end_date):
+            window = self._fetch_historical_window(thscode, window_start, window_end)
+            frames.append(window)
+            self._store_daily(thscode, window_start, window_end, window)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
         _thscode, code = self._thscode(stock_code)
@@ -590,11 +639,14 @@ class HiThinkFetcher(BaseFetcher):
                 logger.warning("[HiThinkFetcher] batch daily K-line failed: %s", exc)
                 continue
             for thscode, _stock in batch:
-                frame = grouped.get(thscode)
-                if frame is None:
+                windows_for_symbol = grouped.get(thscode)
+                if not windows_for_symbol:
                     continue
-                self._store_daily(thscode, start_date, end_date, frame)
-                cached += 1
+                if any(
+                    self._store_daily(thscode, window_start, window_end, frame)
+                    for window_start, window_end, frame in windows_for_symbol
+                ):
+                    cached += 1
         logger.info(
             "[HiThinkFetcher] batch daily prefetch complete: cached=%d total=%d",
             cached,
@@ -606,8 +658,8 @@ class HiThinkFetcher(BaseFetcher):
         self,
         thscodes: List[str],
         windows: List[Tuple[str, str]],
-    ) -> Dict[str, pd.DataFrame]:
-        grouped: Dict[str, List[pd.DataFrame]] = {}
+    ) -> Dict[str, List[Tuple[str, str, pd.DataFrame]]]:
+        grouped: Dict[str, List[Tuple[str, str, pd.DataFrame]]] = {}
         requested = set(thscodes)
         for window_start, window_end in windows:
             payload = self._request(
@@ -623,16 +675,36 @@ class HiThinkFetcher(BaseFetcher):
             data = payload.get("data") or {}
             if not isinstance(data, dict) or not isinstance(data.get("item"), list):
                 raise HiThinkRequestError("HiThink batch historical response is invalid")
+            self._require_batch_contract(data)
             # Unknown targets are omitted by the API. Do not cache those symbols,
-            # so the per-stock historical call can still run.
+            # so the per-stock historical call can still run. Nothing is stored
+            # until every window in this call matches the requested contract.
             for group in data["item"]:
                 if not isinstance(group, dict):
                     continue
                 thscode = str(group.get("thscode") or "")
                 if thscode not in requested:
                     continue
-                grouped.setdefault(thscode, []).append(self._bars_frame(group.get("item"), thscode=thscode))
-        return {
-            thscode: pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-            for thscode, frames in grouped.items()
-        }
+                grouped.setdefault(thscode, []).append(
+                    (window_start, window_end, self._bars_frame(group.get("item"), thscode=thscode))
+                )
+        return grouped
+
+    def _require_batch_contract(self, data: Dict[str, Any]) -> None:
+        """Reject a batch payload whose shared interval or adjustment differs.
+
+        The official batch envelope returns ``interval`` and ``adjust`` for the
+        whole response. Caching that payload under another adjustment would mix
+        forward-adjusted bars into the unadjusted cache.
+        """
+        interval = data.get("interval")
+        adjust = data.get("adjust")
+        if interval == "1d" and adjust == self.kline_adjust:
+            return
+        logger.warning(
+            "[HiThinkFetcher] batch historical contract mismatch: interval=%s adjust=%s expected_interval=1d expected_adjust=%s",
+            interval,
+            adjust,
+            self.kline_adjust,
+        )
+        raise HiThinkRequestError("HiThink batch historical response does not match the requested interval or adjustment")
