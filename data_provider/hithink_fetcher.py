@@ -1,0 +1,638 @@
+# -*- coding: utf-8 -*-
+"""Optional HiThink Finance adapter for A-share stocks.
+
+The public contract is the HiThink REST API (base ``https://fuyao.aicubes.cn``,
+header ``X-api-key``). This adapter covers only the documented A-share price
+endpoints:
+
+- ``GET /api/a-share/prices/snapshot``
+- ``GET /api/a-share/prices/historical``
+- ``GET /api/a-share/prices/historical-batch``
+
+Business errors use the response ``code`` while HTTP status stays 200.
+Missing credentials, permission failures, rate limits, and transport errors
+fail open so ``DataFetcherManager`` can continue with the existing providers.
+The API key is never written into logs or exception text.
+"""
+
+from __future__ import annotations
+
+import copy
+import logging
+import math
+import re
+import time
+from datetime import datetime, timedelta, timezone
+from threading import RLock
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import requests
+
+from src.services.stock_list_parser import ParseStatus, parse_analysis_target
+
+from .base import STANDARD_COLUMNS, BaseFetcher, DataFetchError, _is_etf_code
+from .realtime_types import RealtimeSource, UnifiedRealtimeQuote, safe_float, safe_int
+
+logger = logging.getLogger(__name__)
+
+_BASE_URL = "https://fuyao.aicubes.cn"
+_SNAPSHOT_PATH = "/api/a-share/prices/snapshot"
+_HISTORICAL_PATH = "/api/a-share/prices/historical"
+_HISTORICAL_BATCH_PATH = "/api/a-share/prices/historical-batch"
+_ADJUSTMENTS = {"none", "forward", "backward"}
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+# Stay under the documented 10-year window, including the end-of-day timestamp.
+_MAX_WINDOW_DAYS = 3600
+_MAX_BATCH_SYMBOLS = 10
+_AUTH_CODES = {2001, 2003}
+_PERMISSION_CODE = 2004
+_RATE_LIMIT_CODE = 4001
+_SERVER_CODES = {5001, 5002, 5003}
+_COOLDOWN_SECONDS = 60.0
+_QUOTE_CACHE_SECONDS = 30.0
+
+
+class HiThinkRequestError(DataFetchError):
+    """Business or transport failure that must not include the API key."""
+
+    def __init__(self, message: str, *, code: Optional[int] = None, permission: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.permission = permission
+
+
+def normalize_hithink_kline_adjust(value: Optional[str]) -> str:
+    """Return a documented adjustment mode, or ``none`` when the value is invalid."""
+    text = (value or "none").strip().lower()
+    if text in _ADJUSTMENTS:
+        return text
+    logger.warning("Invalid HITHINK_KLINE_ADJUST=%r; falling back to none", value)
+    return "none"
+
+
+class HiThinkFetcher(BaseFetcher):
+    """HiThink-backed optional A-share stock fetcher."""
+
+    name = "HiThinkFetcher"
+    priority = 7
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        *,
+        priority: int = 7,
+        kline_adjust: str = "none",
+        batch_daily_enabled: bool = True,
+        batch_size: int = _MAX_BATCH_SYMBOLS,
+        timeout: float = 15.0,
+        retry_backoff: float = 0.2,
+    ) -> None:
+        self.api_key = (api_key or "").strip()
+        self.priority = priority
+        self.kline_adjust = normalize_hithink_kline_adjust(kline_adjust)
+        self.batch_daily_enabled = bool(batch_daily_enabled)
+        self.batch_size = max(1, min(int(batch_size), _MAX_BATCH_SYMBOLS))
+        self.timeout = timeout
+        self.retry_backoff = max(0.0, float(retry_backoff))
+        self._lock = RLock()
+        self._cooldown_until = 0.0
+        self._batch_disabled_until = 0.0
+        self._daily_disabled_until = 0.0
+        self._realtime_disabled_until = 0.0
+        self._last_error = ""
+        self._successful = False
+        self._daily_cache: Dict[Tuple[str, str], pd.DataFrame] = {}
+        self._quote_cache: Dict[str, Tuple[float, UnifiedRealtimeQuote]] = {}
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    @property
+    def runtime_status(self) -> str:
+        with self._lock:
+            if not self.api_key or time.monotonic() < self._cooldown_until:
+                return "unavailable"
+            if self._successful:
+                return "ok"
+        return "unknown"
+
+    def is_available(self, capability: str = "") -> bool:
+        if not self.api_key:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            if now < self._cooldown_until:
+                return False
+            if capability == "daily_data" and now < self._daily_disabled_until:
+                return False
+            if capability == "realtime_quote" and now < self._realtime_disabled_until:
+                return False
+        return True
+
+    def _remember_error(
+        self,
+        message: str,
+        *,
+        cooldown: bool = False,
+        batch_only: bool = False,
+        daily_only: bool = False,
+        realtime_only: bool = False,
+    ) -> None:
+        with self._lock:
+            self._last_error = message
+            deadline = time.monotonic() + _COOLDOWN_SECONDS
+            if cooldown:
+                self._cooldown_until = deadline
+            if batch_only:
+                self._batch_disabled_until = deadline
+            if daily_only:
+                self._daily_disabled_until = deadline
+            if realtime_only:
+                self._realtime_disabled_until = deadline
+
+    def _mark_success(self) -> None:
+        with self._lock:
+            self._successful = True
+            self._last_error = ""
+
+    def _thscode(self, stock_code: str) -> Tuple[str, str]:
+        """Map a project stock code to a documented ``thscode``.
+
+        Exchange comes from the existing analysis-target parser. ETF, index,
+        and non-A-share identities are rejected instead of being sent upstream.
+        """
+        target = parse_analysis_target(stock_code)
+        if target.asset_type != ParseStatus.STOCK:
+            raise DataFetchError("HiThink prices API supports A-share stocks only")
+        if target.exchange not in {"SH", "SZ", "BJ"}:
+            raise DataFetchError("HiThink prices API supports SH, SZ, and BJ stocks only")
+        code = target.normalized_code
+        if not re.fullmatch(r"\d{6}", code):
+            raise DataFetchError("HiThink prices API supports 6-digit A-share codes only")
+        if _is_etf_code(code):
+            raise DataFetchError("HiThink prices API does not document ETF coverage")
+        return f"{code}.{target.exchange}", code
+
+    def _request(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.api_key:
+            raise DataFetchError("HiThink API key is not configured")
+        if not self.is_available():
+            raise DataFetchError("HiThink is cooling down after an authentication or rate-limit failure")
+
+        url = f"{_BASE_URL}{path}"
+        headers = {"X-api-key": self.api_key, "Accept": "application/json"}
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                response = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+            except requests.Timeout:
+                last_error = HiThinkRequestError("HiThink request timed out")
+                logger.warning("[HiThinkFetcher] request timed out: path=%s attempt=%s", path, attempt + 1)
+                self._sleep_before_retry(attempt)
+                continue
+            except requests.RequestException:
+                last_error = HiThinkRequestError("HiThink request failed")
+                logger.warning("[HiThinkFetcher] request failed: path=%s attempt=%s", path, attempt + 1)
+                self._sleep_before_retry(attempt)
+                continue
+
+            if response.status_code != 200:
+                last_error = HiThinkRequestError(f"HiThink HTTP {response.status_code}")
+                if response.status_code >= 500:
+                    self._sleep_before_retry(attempt)
+                    continue
+                if response.status_code in {401, 403}:
+                    self._remember_error("HiThink authentication failed", cooldown=True)
+                raise last_error
+
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                logger.warning("[HiThinkFetcher] invalid JSON: path=%s", path)
+                raise HiThinkRequestError("HiThink returned invalid JSON") from exc
+            if not isinstance(payload, dict):
+                logger.warning("[HiThinkFetcher] response is not an object: path=%s", path)
+                raise HiThinkRequestError("HiThink response is not an object")
+
+            code = payload.get("code")
+            if code == 0:
+                self._mark_success()
+                return payload
+
+            request_id = payload.get("request_id")
+            logger.warning(
+                "[HiThinkFetcher] business error: path=%s code=%s request_id=%s",
+                path,
+                code,
+                request_id,
+            )
+            error = self._error_from_code(code)
+            if error.code == _RATE_LIMIT_CODE and attempt < 2:
+                last_error = error
+                self._sleep_before_retry(attempt)
+                continue
+            if error.code in _SERVER_CODES and attempt < 2:
+                last_error = error
+                self._sleep_before_retry(attempt)
+                continue
+            if error.code in _AUTH_CODES or error.code == _RATE_LIMIT_CODE:
+                self._remember_error(str(error), cooldown=True)
+            elif error.permission and path == _HISTORICAL_BATCH_PATH:
+                self._remember_error(str(error), batch_only=True)
+            elif error.permission and path == _HISTORICAL_PATH:
+                self._remember_error(str(error), daily_only=True)
+            elif error.permission and path == _SNAPSHOT_PATH:
+                self._remember_error(str(error), realtime_only=True)
+            else:
+                self._remember_error(str(error))
+            raise error
+
+        if last_error is not None:
+            if isinstance(last_error, HiThinkRequestError) and last_error.code == _RATE_LIMIT_CODE:
+                self._remember_error(str(last_error), cooldown=True)
+            raise last_error
+        raise HiThinkRequestError("HiThink request failed")
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if attempt >= 2 or self.retry_backoff <= 0:
+            return
+        time.sleep(self.retry_backoff * (2 ** attempt))
+
+    @staticmethod
+    def _error_from_code(code: Any) -> HiThinkRequestError:
+        if code in _AUTH_CODES:
+            return HiThinkRequestError("HiThink authentication failed", code=int(code))
+        if code == _PERMISSION_CODE:
+            return HiThinkRequestError(
+                "HiThink credential is not authorized for this capability",
+                code=int(code),
+                permission=True,
+            )
+        if code == _RATE_LIMIT_CODE:
+            return HiThinkRequestError("HiThink rate limit", code=int(code))
+        if code in _SERVER_CODES:
+            return HiThinkRequestError("HiThink upstream error", code=int(code))
+        if code in {1001, 1002, 1003, 1004}:
+            return HiThinkRequestError(f"HiThink rejected the request parameters ({code})", code=int(code))
+        if code in {3001, 3004}:
+            return HiThinkRequestError("HiThink does not have this target", code=int(code))
+        if code == 3002:
+            return HiThinkRequestError("HiThink data is not ready", code=int(code))
+        return HiThinkRequestError("HiThink returned an unsuccessful response", code=code if isinstance(code, int) else None)
+
+    @staticmethod
+    def _date_to_ms(date_str: str, *, end_of_day: bool = False) -> int:
+        moment = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=_SHANGHAI)
+        if end_of_day:
+            moment = moment + timedelta(days=1) - timedelta(milliseconds=1)
+        return int(moment.timestamp() * 1000)
+
+    @staticmethod
+    def _ms_to_date(value: Any) -> Optional[str]:
+        number = safe_float(value)
+        if number is None:
+            return None
+        moment = datetime.fromtimestamp(number / 1000, tz=timezone.utc).astimezone(_SHANGHAI)
+        return moment.strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _windows(start_date: str, end_date: str) -> List[Tuple[str, str]]:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        if end < start:
+            return []
+        windows: List[Tuple[str, str]] = []
+        cursor = start
+        while cursor <= end:
+            chunk_end = min(end, cursor + timedelta(days=_MAX_WINDOW_DAYS))
+            windows.append((cursor.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
+            cursor = chunk_end + timedelta(days=1)
+        return windows
+
+    def _cache_key(self, thscode: str) -> Tuple[str, str]:
+        return thscode, self.kline_adjust
+
+    def _store_daily(self, thscode: str, start_date: str, end_date: str, frame: pd.DataFrame) -> None:
+        with self._lock:
+            current = self._daily_cache.get(self._cache_key(thscode))
+            incoming = frame.copy()
+            incoming.attrs["start"] = start_date
+            incoming.attrs["end"] = end_date
+            if current is None or current.empty:
+                self._daily_cache[self._cache_key(thscode)] = incoming
+                return
+            merged = pd.concat([current, incoming], ignore_index=True)
+            merged.attrs["start"] = min(str(current.attrs.get("start", start_date)), start_date)
+            merged.attrs["end"] = max(str(current.attrs.get("end", end_date)), end_date)
+            self._daily_cache[self._cache_key(thscode)] = merged
+
+    def _load_daily(self, thscode: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        with self._lock:
+            cached = self._daily_cache.get(self._cache_key(thscode))
+            if cached is None:
+                return None
+            covered_start = str(cached.attrs.get("start", ""))
+            covered_end = str(cached.attrs.get("end", ""))
+            if not covered_start or not covered_end:
+                return None
+            if covered_start > start_date or covered_end < end_date:
+                return None
+            frame = cached.copy()
+        if frame.empty or "date" not in frame.columns:
+            return frame.iloc[0:0].copy()
+        dates = pd.to_datetime(frame["date"], errors="coerce")
+        mask = dates.notna() & (dates >= pd.Timestamp(start_date)) & (dates <= pd.Timestamp(end_date))
+        return frame.loc[mask].reset_index(drop=True)
+
+    def _bars_frame(self, rows: Any, *, thscode: str) -> pd.DataFrame:
+        if rows is None:
+            return pd.DataFrame()
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise HiThinkRequestError("HiThink historical response has an invalid item list")
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            return frame
+        required = {"date_ms", "open_price", "high_price", "low_price", "close_price", "volume", "turnover"}
+        if not required.issubset(frame.columns):
+            raise HiThinkRequestError("HiThink historical response is missing required fields")
+        frame["date"] = frame["date_ms"].map(self._ms_to_date)
+        frame["thscode"] = thscode
+        return frame
+
+    def _fetch_historical_window(self, thscode: str, start_date: str, end_date: str) -> pd.DataFrame:
+        payload = self._request(
+            _HISTORICAL_PATH,
+            {
+                "thscode": thscode,
+                "interval": "1d",
+                "start": self._date_to_ms(start_date),
+                "end": self._date_to_ms(end_date, end_of_day=True),
+                "adjust": self.kline_adjust,
+            },
+        )
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            raise HiThinkRequestError("HiThink historical response data is invalid")
+        return self._bars_frame(data.get("item"), thscode=thscode)
+
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        thscode, _code = self._thscode(stock_code)
+        cached = self._load_daily(thscode, start_date, end_date)
+        if cached is not None:
+            return cached
+        frames = [
+            self._fetch_historical_window(thscode, window_start, window_end)
+            for window_start, window_end in self._windows(start_date, end_date)
+        ]
+        frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        self._store_daily(thscode, start_date, end_date, frame)
+        return frame
+
+    def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
+        _thscode, code = self._thscode(stock_code)
+        if df.empty:
+            return pd.DataFrame(columns=["code", *STANDARD_COLUMNS])
+        result = pd.DataFrame(
+            {
+                "date": df["date"],
+                "open": pd.to_numeric(df["open_price"], errors="coerce"),
+                "high": pd.to_numeric(df["high_price"], errors="coerce"),
+                "low": pd.to_numeric(df["low_price"], errors="coerce"),
+                "close": pd.to_numeric(df["close_price"], errors="coerce"),
+                "volume": pd.to_numeric(df["volume"], errors="coerce"),
+                "amount": pd.to_numeric(df["turnover"], errors="coerce"),
+            }
+        )
+        for column in ("open", "high", "low", "close", "volume", "amount"):
+            result[column] = result[column].replace([math.inf, -math.inf], pd.NA)
+        result["date"] = pd.to_datetime(result["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        result = result.dropna(subset=["date", "open", "high", "low", "close", "volume"])
+        result = result[(result["close"] > 0) & (result["volume"] >= 0)]
+        result = result.sort_values("date").drop_duplicates("date")
+        previous = result["close"].shift(1)
+        result["pct_chg"] = ((result["close"] / previous.where(previous > 0)) - 1) * 100
+        result["code"] = code
+        result = result[["code", *STANDARD_COLUMNS]].reset_index(drop=True)
+        result.attrs["price_adjustment"] = self.kline_adjust
+        return result
+
+    def _quote_from_item(self, item: Dict[str, Any], *, code: str, thscode: str, timestamp: Any) -> UnifiedRealtimeQuote:
+        returned = str(item.get("thscode") or "").upper()
+        if returned != thscode.upper():
+            raise DataFetchError("HiThink snapshot returned another target")
+        price = safe_float(item.get("last_price"))
+        if price is None or price <= 0:
+            raise DataFetchError("HiThink snapshot is missing a valid price")
+        volume = safe_float(item.get("volume"))
+        provider_timestamp = None
+        if safe_float(timestamp) is not None:
+            moment = datetime.fromtimestamp(float(timestamp) / 1000, tz=timezone.utc).astimezone(_SHANGHAI)
+            provider_timestamp = moment.isoformat()
+        return UnifiedRealtimeQuote(
+            code=code,
+            source=RealtimeSource.HITHINK,
+            price=price,
+            change_amount=safe_float(item.get("price_change")),
+            change_pct=safe_float(item.get("price_change_ratio_pct")),
+            open_price=safe_float(item.get("open_price")),
+            high=safe_float(item.get("high_price")),
+            low=safe_float(item.get("low_price")),
+            pre_close=safe_float(item.get("prev_price")),
+            volume=safe_int(volume) if volume is not None and volume >= 0 else None,
+            amount=safe_float(item.get("turnover")),
+            provider_timestamp=provider_timestamp,
+            market="cn",
+            currency="CNY",
+        )
+
+    def _load_quotes(self, codes: List[Tuple[str, str]]) -> Dict[str, UnifiedRealtimeQuote]:
+        quotes: Dict[str, UnifiedRealtimeQuote] = {}
+        for offset in range(0, len(codes), self.batch_size):
+            batch = codes[offset : offset + self.batch_size]
+            try:
+                payload = self._request(
+                    _SNAPSHOT_PATH,
+                    {"thscodes": ",".join(thscode for thscode, _code in batch)},
+                )
+            except HiThinkRequestError:
+                if len(batch) == 1:
+                    raise
+                for single in batch:
+                    quotes.update(self._load_quotes([single]))
+                continue
+            data = payload.get("data") or {}
+            if not isinstance(data, dict):
+                raise HiThinkRequestError("HiThink snapshot response data is invalid")
+            items = data.get("item")
+            if items is None:
+                items = []
+            if not isinstance(items, list):
+                raise HiThinkRequestError("HiThink snapshot response item is invalid")
+            by_code = {
+                str(item.get("thscode") or "").upper(): item
+                for item in items
+                if isinstance(item, dict)
+            }
+            for thscode, code in batch:
+                item = by_code.get(thscode.upper())
+                if item is None:
+                    continue
+                quotes[code] = self._quote_from_item(
+                    item,
+                    code=code,
+                    thscode=thscode,
+                    timestamp=data.get("timestamp"),
+                )
+        now = time.monotonic()
+        with self._lock:
+            for code, quote in quotes.items():
+                self._quote_cache[code] = (now, quote)
+        return quotes
+
+    def get_realtime_quote(self, stock_code: str) -> UnifiedRealtimeQuote:
+        thscode, code = self._thscode(stock_code)
+        with self._lock:
+            cached = self._quote_cache.get(code)
+            if cached is not None and time.monotonic() - cached[0] < _QUOTE_CACHE_SECONDS:
+                return copy.copy(cached[1])
+        quote = self._load_quotes([(thscode, code)]).get(code)
+        if quote is None:
+            raise DataFetchError("HiThink snapshot returned no quote for the requested stock")
+        return copy.copy(quote)
+
+    def prefetch_realtime_quotes(self, stock_codes: Iterable[str], batch_size: Optional[int] = None) -> int:
+        if batch_size is not None:
+            self.batch_size = max(1, min(int(batch_size), _MAX_BATCH_SYMBOLS))
+        selected: List[Tuple[str, str]] = []
+        seen = set()
+        for stock_code in stock_codes:
+            try:
+                thscode, code = self._thscode(stock_code)
+            except DataFetchError:
+                continue
+            if code in seen:
+                continue
+            seen.add(code)
+            selected.append((thscode, code))
+        if not selected:
+            return 0
+        try:
+            return len(self._load_quotes(selected))
+        except HiThinkRequestError as exc:
+            logger.info("[HiThinkFetcher] realtime prefetch failed open: %s", exc)
+            return 0
+
+    def prefetch_daily_klines(
+        self,
+        stock_codes: Iterable[str],
+        *,
+        days: int = 30,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> int:
+        """Warm the daily cache through the documented batch endpoint.
+
+        Permission failures disable only the batch path for a short cooldown
+        and return the symbols already cached. Per-stock ``get_daily_data``
+        remains available.
+        """
+        if not self.batch_daily_enabled:
+            return 0
+        with self._lock:
+            if time.monotonic() < self._batch_disabled_until:
+                return 0
+        try:
+            requested_days = int(days)
+        except (TypeError, ValueError):
+            logger.info("[HiThinkFetcher] skip daily prefetch because days is invalid: %r", days)
+            return 0
+        if requested_days <= 0:
+            return 0
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        if start_date is None:
+            start_dt = datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=requested_days * 2)
+            start_date = start_dt.strftime("%Y-%m-%d")
+
+        selected: List[Tuple[str, str]] = []
+        seen = set()
+        for stock_code in stock_codes:
+            try:
+                thscode, _code = self._thscode(stock_code)
+            except DataFetchError:
+                continue
+            if thscode in seen:
+                continue
+            seen.add(thscode)
+            selected.append((thscode, stock_code))
+        if not selected:
+            return 0
+
+        cached = 0
+        windows = self._windows(start_date, end_date)
+        for offset in range(0, len(selected), self.batch_size):
+            batch = selected[offset : offset + self.batch_size]
+            try:
+                grouped = self._fetch_historical_batch(
+                    [thscode for thscode, _stock in batch],
+                    windows,
+                )
+            except HiThinkRequestError as exc:
+                if exc.permission:
+                    self._remember_error(str(exc), batch_only=True)
+                    logger.info(
+                        "[HiThinkFetcher] batch daily K-line is not authorized; fallback to single requests"
+                    )
+                    return cached
+                logger.warning("[HiThinkFetcher] batch daily K-line failed: %s", exc)
+                continue
+            for thscode, _stock in batch:
+                frame = grouped.get(thscode)
+                if frame is None:
+                    continue
+                self._store_daily(thscode, start_date, end_date, frame)
+                cached += 1
+        logger.info(
+            "[HiThinkFetcher] batch daily prefetch complete: cached=%d total=%d",
+            cached,
+            len(selected),
+        )
+        return cached
+
+    def _fetch_historical_batch(
+        self,
+        thscodes: List[str],
+        windows: List[Tuple[str, str]],
+    ) -> Dict[str, pd.DataFrame]:
+        grouped: Dict[str, List[pd.DataFrame]] = {}
+        requested = set(thscodes)
+        for window_start, window_end in windows:
+            payload = self._request(
+                _HISTORICAL_BATCH_PATH,
+                {
+                    "thscodes": ",".join(thscodes),
+                    "interval": "1d",
+                    "start": self._date_to_ms(window_start),
+                    "end": self._date_to_ms(window_end, end_of_day=True),
+                    "adjust": self.kline_adjust,
+                },
+            )
+            data = payload.get("data") or {}
+            if not isinstance(data, dict) or not isinstance(data.get("item"), list):
+                raise HiThinkRequestError("HiThink batch historical response is invalid")
+            # Unknown targets are omitted by the API. Do not cache those symbols,
+            # so the per-stock historical call can still run.
+            for group in data["item"]:
+                if not isinstance(group, dict):
+                    continue
+                thscode = str(group.get("thscode") or "")
+                if thscode not in requested:
+                    continue
+                grouped.setdefault(thscode, []).append(self._bars_frame(group.get("item"), thscode=thscode))
+        return {
+            thscode: pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+            for thscode, frames in grouped.items()
+        }

@@ -127,6 +127,15 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         },
     ),
     _ProviderDefinition(
+        name="hithink",
+        label="HiThink Finance",
+        fetcher_name="HiThinkFetcher",
+        dataset_markets={
+            "quote.realtime": ("cn",),
+            "kline.daily": ("cn",),
+        },
+    ),
+    _ProviderDefinition(
         name="longbridge",
         label="Longbridge",
         fetcher_name="LongbridgeFetcher",
@@ -183,6 +192,7 @@ _REALTIME_SOURCE_PROVIDER = {
     "tushare": "tushare",
     "tickplus": "tickplus",
     "tickflow": "tickflow",
+    "hithink": "hithink",
     "futu": "futu",
     "longbridge": "longbridge",
     "akshare": "akshare",
@@ -207,6 +217,7 @@ _CN_REALTIME_SOURCES = {
     "tushare",
     "tickplus",
     "tickflow",
+    "hithink",
 }
 
 _SCREENING_SOURCES = {"tushare", "sina", "efinance", "akshare_em", "em_datacenter"}
@@ -368,6 +379,8 @@ class DataCapabilityService:
             return _truthy(getattr(self.config, "tickplus_api_key", None))
         if name == "tickflow":
             return _truthy(getattr(self.config, "tickflow_api_key", None))
+        if name == "hithink":
+            return _truthy(getattr(self.config, "hithink_finance_api_key", None))
         if name == "futu":
             return _truthy(getattr(self.config, "futu_opend_host", None))
         if name == "longbridge":
@@ -393,6 +406,9 @@ class DataCapabilityService:
             return priority if isinstance(priority, int) else None
         if definition.name == "tickflow":
             priority = getattr(self.config, "tickflow_priority", None)
+            return priority if isinstance(priority, int) else None
+        if definition.name == "hithink":
+            priority = getattr(self.config, "hithink_priority", None)
             return priority if isinstance(priority, int) else None
         return None
 
@@ -1241,6 +1257,9 @@ class DataCapabilityService:
         tickflow = provider_map.get("tickflow")
         if tickflow and tickflow.get("configured") and "tickflow" not in cn_realtime:
             warnings.append("tickflow_configured_but_not_in_realtime_priority")
+        hithink = provider_map.get("hithink")
+        if hithink and hithink.get("configured") and "hithink" not in cn_realtime:
+            warnings.append("hithink_configured_but_not_in_realtime_priority")
 
         for priority in priorities:
             for warning in priority.get("warnings") or []:
