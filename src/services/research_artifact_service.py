@@ -3,11 +3,16 @@
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 from api.v1.schemas.research_artifact import ResearchArtifact
+from src.core.grounding_verifier import (
+    compute_atr_position_sizing,
+    verify_and_normalize_levels,
+)
 
 
 _BULLISH_ACTIONS = {"buy", "add"}
@@ -47,6 +52,26 @@ def build_research_artifact(
     if not invalidations:
         invalidations.append(_manual_reassessment_condition())
 
+    data_quality = _build_data_quality(context_overview, evidence)
+    current_price = _as_float(_value(meta, "current_price"))
+    action = _as_text(_value(summary, "action")) or None
+    score = _as_int(_value(summary, "sentiment_score"))
+    levels = verify_and_normalize_levels(strategy, current_price, action)
+    position = compute_atr_position_sizing(action, score, levels, data_quality.get("level"))
+    committee = _extract_committee(details)
+    risk_flags = _build_risk_flags(levels, data_quality, details)
+
+    artifact_metadata: Dict[str, Any] = {
+        "source": "analysis_report",
+        "levels": levels,
+        "position": position,
+        "risk_flags": risk_flags,
+    }
+    if committee is not None:
+        artifact_metadata["committee"] = committee
+    if metadata:
+        artifact_metadata.update(dict(metadata))
+
     payload = {
         "artifact_id": artifact_id,
         "source_report_id": source_report_id,
@@ -61,11 +86,8 @@ def build_research_artifact(
         "evidence": evidence,
         "invalidation_conditions": invalidations,
         "next_actions": _build_next_actions(summary, invalidations),
-        "data_quality": _build_data_quality(context_overview, evidence),
-        "metadata": {
-            "source": "analysis_report",
-            **dict(metadata or {}),
-        },
+        "data_quality": data_quality,
+        "metadata": artifact_metadata,
     }
     return ResearchArtifact.model_validate(payload).model_dump(exclude_none=True)
 
@@ -397,6 +419,102 @@ def _as_int(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool) or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _extract_committee(details: Any) -> Optional[Dict[str, Any]]:
+    raw_result = _value(details, "raw_result")
+    if not isinstance(raw_result, dict):
+        return None
+    dashboard = raw_result.get("dashboard")
+    containers = [d for d in (raw_result, dashboard) if isinstance(d, dict)]
+
+    explanation = None
+    strategy_synthesis = None
+    for container in containers:
+        if explanation is None and isinstance(container.get("agent_disagreement_explanation"), dict):
+            explanation = container["agent_disagreement_explanation"]
+        if strategy_synthesis is None and isinstance(container.get("strategy_synthesis"), dict):
+            strategy_synthesis = container["strategy_synthesis"]
+
+    if explanation is None and strategy_synthesis is None:
+        return None
+
+    result: Dict[str, Any] = {}
+    if explanation is not None:
+        for key in (
+            "base_disagreement",
+            "risk_control",
+            "final_adjustments",
+            "decision_path",
+            "data_quality",
+        ):
+            if key in explanation:
+                result[key] = explanation[key]
+    if strategy_synthesis is not None:
+        result["strategy_synthesis"] = strategy_synthesis
+    return result or None
+
+
+def _build_risk_flags(
+    levels: Dict[str, Any],
+    data_quality: Dict[str, Any],
+    details: Any,
+) -> List[Dict[str, Any]]:
+    flags: List[Dict[str, Any]] = []
+    validation = levels.get("validation")
+    if validation == "direction_conflict":
+        flags.append({
+            "code": "LEVEL_DIRECTION_CONFLICT",
+            "severity": "critical",
+            "message": "Stop-loss or take-profit conflicts with entry direction.",
+        })
+    elif validation == "out_of_range":
+        flags.append({
+            "code": "LEVEL_ANCHOR_OUT_OF_RANGE",
+            "severity": "warning",
+            "message": "Entry level deviates more than 25% from reference price.",
+        })
+
+    rr_ratio = levels.get("risk_reward_ratio")
+    if rr_ratio is not None and rr_ratio < 1.2:
+        flags.append({
+            "code": "LOW_RISK_REWARD_RATIO",
+            "severity": "warning",
+            "message": f"Risk-reward ratio ({rr_ratio:.2f}) is below 1.2 threshold.",
+        })
+
+    quality_level = data_quality.get("level")
+    if quality_level == "poor":
+        flags.append({
+            "code": "POOR_DATA_QUALITY",
+            "severity": "critical",
+            "message": "Critical market inputs are missing or failed; treat conclusions cautiously.",
+        })
+    elif quality_level == "limited":
+        flags.append({
+            "code": "LIMITED_DATA_QUALITY",
+            "severity": "warning",
+            "message": "Partial or stale data inputs detected.",
+        })
+
+    if _as_text(_value(details, "empty_news_disclosure")):
+        flags.append({
+            "code": "EMPTY_NEWS_EVIDENCE",
+            "severity": "info",
+            "message": "No recent news items were available during analysis.",
+        })
+
+    return flags
 
 
 def _compact(value: str, limit: int = 180) -> str:

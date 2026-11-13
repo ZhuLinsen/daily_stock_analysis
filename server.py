@@ -45,14 +45,19 @@ __all__ = ['app']
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
 
     from api.middlewares.security_guard import uvicorn_proxy_kwargs
 
+    host = os.getenv("API_HOST", "127.0.0.1")
+    port = int(os.getenv("API_PORT", "8000"))
+    reload_enabled = os.getenv("API_RELOAD", "false").strip().lower() in {"1", "true", "yes"}
+
     uvicorn.run(
         "server:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
+        host=host,
+        port=port,
+        reload=reload_enabled,
         **uvicorn_proxy_kwargs(),
     )

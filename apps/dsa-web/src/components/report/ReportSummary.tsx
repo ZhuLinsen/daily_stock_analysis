@@ -2,6 +2,7 @@ import React from 'react';
 import type { AnalysisResult, AnalysisReport } from '../../types/analysis';
 import { ReportOverview } from './ReportOverview';
 import { ReportStrategy } from './ReportStrategy';
+import { ReportResearchBento } from './ReportResearchBento';
 import { ReportNews } from './ReportNews';
 import { ReportDetails } from './ReportDetails';
 import { ReportDiagnostics } from './ReportDiagnostics';
@@ -69,7 +70,18 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
       />
 
       {/* 策略点位区 */}
-      <ReportStrategy strategy={strategy} language={reportLanguage} />
+      <ReportStrategy
+        strategy={strategy}
+        language={reportLanguage}
+        currentPrice={meta.currentPrice}
+        artifact={report.structuredReport}
+      />
+
+      {/* 结构化研究决策门控 Bento 区 */}
+      <ReportResearchBento
+        artifact={report.structuredReport}
+        language={reportLanguage}
+      />
 
       {/* 资讯区 */}
       <ReportNews recordId={recordId} limit={8} language={reportLanguage} />

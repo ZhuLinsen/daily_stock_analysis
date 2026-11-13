@@ -42,6 +42,7 @@ def main() -> int:
 
         setup_env()
         setup_logging(log_prefix="web_server")
+        logger.warning("webui.py 已弃用，推荐使用 'python main.py --serve-only' 启动服务")
 
         from api.middlewares.security_guard import uvicorn_proxy_kwargs
 
