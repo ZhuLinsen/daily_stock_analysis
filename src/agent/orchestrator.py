@@ -1025,17 +1025,13 @@ class AgentOrchestrator:
         base_risk_len = len(ctx.risk_flags or [])
         base_data = dict(ctx.data or {})
         base_meta = dict(ctx.meta or {})
-        tech_progress_events: List[Dict[str, Any]] = []
-        intel_progress_events: List[Dict[str, Any]] = []
-
-        def buffer_progress_events(events: List[Dict[str, Any]]) -> Optional[Callable]:
+        def forward_progress_event(event: Dict[str, Any]) -> None:
             if progress_callback is None:
-                return None
-
-            def collect(event: Dict[str, Any]) -> None:
-                events.append(event)
-
-            return collect
+                return
+            # Worker progress must reach streaming callers while the wave is
+            # still running.  The callback is responsible for its own
+            # thread-safe delivery (the Chat SSE callback enqueues events).
+            progress_callback(event)
 
         if progress_callback:
             for agent in (tech_agent, intel_agent):
@@ -1051,7 +1047,7 @@ class AgentOrchestrator:
                 self._run_stage_agent,
                 tech_agent,
                 tech_ctx,
-                progress_callback=buffer_progress_events(tech_progress_events),
+                progress_callback=forward_progress_event if progress_callback else None,
                 timeout_seconds=timeout_seconds,
             )
             intel_future = pool.submit(
@@ -1059,7 +1055,7 @@ class AgentOrchestrator:
                 self._run_stage_agent,
                 intel_agent,
                 intel_ctx,
-                progress_callback=buffer_progress_events(intel_progress_events),
+                progress_callback=forward_progress_event if progress_callback else None,
                 timeout_seconds=timeout_seconds,
             )
             tech_result = tech_future.result()
@@ -1077,8 +1073,6 @@ class AgentOrchestrator:
                     ctx.meta[k] = v
 
         if progress_callback:
-            for event in (*tech_progress_events, *intel_progress_events):
-                progress_callback(event)
             for res in (tech_result, intel_result):
                 progress_callback(stream_event(
                     "stage_done",

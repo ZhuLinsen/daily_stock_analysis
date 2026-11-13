@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from datetime import date
 from unittest.mock import MagicMock
 
@@ -72,15 +73,40 @@ def test_orchestrator_parallel_discovery_wave_merges_in_order() -> None:
     assert ctx.get_data("trend_result") == {"ma_alignment": "bullish"}
     assert ctx.get_data("intel_opinion") == {"positive_catalysts": ["earnings"]}
     assert len(ctx.risk_flags) == 1
-    assert [e["type"] for e in events] == [
-        "stage_start",
-        "stage_start",
-        "agent_progress",
-        "agent_progress",
-        "stage_done",
-        "stage_done",
-    ]
-    assert [e["stage"] for e in events[2:4]] == ["technical", "intel"]
+    assert [e["type"] for e in events[:2]] == ["stage_start", "stage_start"]
+    assert {e["stage"] for e in events[2:4]} == {"technical", "intel"}
+    assert [e["type"] for e in events[4:]] == ["stage_done", "stage_done"]
+
+
+def test_parallel_discovery_forwards_progress_before_wave_finishes() -> None:
+    orch = AgentOrchestrator(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    tech_agent = TechnicalAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    intel_agent = IntelAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    progress_seen = threading.Event()
+    release_workers = threading.Event()
+    events = []
+
+    def fake_run_stage(agent, run_ctx, progress_callback=None, timeout_seconds=None):
+        del run_ctx, timeout_seconds
+        progress_callback({"type": "thinking", "stage": agent.agent_name})
+        progress_seen.set()
+        release_workers.wait(timeout=2)
+        return StageResult(stage_name=agent.agent_name, status=StageStatus.COMPLETED)
+
+    orch._run_stage_agent = fake_run_stage  # type: ignore[method-assign]
+    worker = threading.Thread(
+        target=orch._run_discovery_wave_parallel,
+        args=(tech_agent, intel_agent, AgentContext(stock_code="600519")),
+        kwargs={"progress_callback": events.append},
+    )
+    worker.start()
+    try:
+        assert progress_seen.wait(timeout=1)
+        assert any(event["type"] == "thinking" for event in events)
+    finally:
+        release_workers.set()
+        worker.join(timeout=2)
+    assert not worker.is_alive()
 
 
 def test_parallel_discovery_propagates_runtime_contexts() -> None:
