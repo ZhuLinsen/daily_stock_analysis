@@ -181,6 +181,14 @@ CHANNEL_PROFILES: Dict[str, ChannelProfile] = {
         default_mode="plain_fallback",
         supports_link=True,
     ),
+    "wecom_aibot": ChannelProfile(
+        channel="wecom_aibot",
+        markdown="markdown",
+        default_mode="full_report",
+        max_text_bytes=4000,
+        supports_link=True,
+        notes="WeCom AI Bot long-connection push (aibot_send_msg); target chats must exist first.",
+    ),
     "unknown": ChannelProfile(
         channel="unknown",
         markdown="plain_text",

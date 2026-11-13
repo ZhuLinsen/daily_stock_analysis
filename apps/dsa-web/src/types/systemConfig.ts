@@ -292,7 +292,8 @@ export type NotificationTestChannel =
   | 'custom'
   | 'discord'
   | 'slack'
-  | 'astrbot';
+  | 'astrbot'
+  | 'wecom_aibot';
 
 export interface NotificationTestAttempt {
   channel: NotificationTestChannel;

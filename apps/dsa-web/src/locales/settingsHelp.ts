@@ -546,6 +546,82 @@ const settingsHelpZhCN: SettingsHelpMap = {
       '不要把 Stream 模式和群机器人 Webhook 混为一条配置路径。',
     ],
   },
+  'settings.notification.WECOM_AIBOT_ENABLED': {
+    title: '企微智能机器人长连接',
+    summary: '启用企业微信智能机器人的 WebSocket 长连接模式（对话式机器人命令），与企业微信群 Webhook 推送通道相互独立。',
+    usage: '先在企业微信后台创建智能机器人，填写 WECOM_AIBOT_BOT_ID 和 WECOM_AIBOT_SECRET 后开启。',
+    valueNotes: [
+      'true 表示允许运行时通过官方长连接通道收发智能机器人消息。',
+      'false 表示不启用（默认）；现有企微群 Webhook 推送行为完全不变。',
+    ],
+    impact: [
+      '影响企微智能机器人的对话命令链路。',
+      '不会改变企业微信群机器人 Webhook 的推送路径。',
+    ],
+    notes: [
+      '长连接模式无需公网 IP；本系统不提供回调 URL 模式。',
+      '保存后需要重启相关 bot/服务进程才会建立长连接。',
+    ],
+  },
+  'settings.notification.WECOM_AIBOT_BOT_ID': {
+    title: '企微智能机器人 Bot ID',
+    summary: '企业微信智能机器人的 Bot ID，在企业微信后台获取；长连接模式必填。',
+    usage: '企业微信管理后台创建智能机器人后复制其 Bot ID，填入 WECOM_AIBOT_BOT_ID。',
+    valueNotes: [
+      '仅用于长连接认证（aibot_subscribe 帧），与群机器人 Webhook 的 key 无关。',
+      'WECOM_AIBOT_ENABLED=true 时必填，缺失时客户端不会启动。',
+    ],
+    impact: ['影响企微智能机器人长连接认证是否成功。'],
+    notes: ['非超管创建的机器人收到的用户 userid 为密文，属官方协议限制。'],
+  },
+  'settings.notification.WECOM_AIBOT_SECRET': {
+    title: '企微智能机器人 Secret',
+    summary: '智能机器人长连接专用 Secret，与群机器人 Webhook 的 Token/EncodingAESKey 是不同的凭据。',
+    usage: '在企业微信后台智能机器人详情中复制长连接 Secret，填入 WECOM_AIBOT_SECRET。',
+    valueNotes: [
+      '长连接专用凭据，不要与回调模式的 Token/EncodingAESKey 混用。',
+      '按密钥保护，泄露后请在企业微信后台重置。',
+    ],
+    impact: ['影响企微智能机器人长连接认证是否成功。'],
+    notes: ['保存后需要重启相关 bot/服务进程才会生效。'],
+  },
+  'settings.notification.WECOM_AIBOT_REPLY_STREAM': {
+    title: '企微智能机器人流式回复',
+    summary: '机器人回复是否使用 stream 流式消息（打字机式），默认关闭，使用一次性 markdown 回复。',
+    usage: 'WECOM_AIBOT_REPLY_STREAM=true 开启流式回复；开启前需确认企微侧已支持 stream 回复体验。',
+    valueNotes: [
+      'false（默认）：每条回复以一条完整 markdown 消息送达。',
+      'true：回复以 stream 消息帧送达（单帧 finish=true，不做渐进式打字机）。',
+    ],
+    impact: ['仅影响企微智能机器人的回复呈现形式，不影响命令处理逻辑。'],
+    notes: ['官方限制：stream 消息需在 10 分钟内 finish。'],
+  },
+  'settings.notification.WECOM_AIBOT_NOTIFY_ENABLED': {
+    title: '企微智能机器人通知推送',
+    summary: '通过企业微信智能机器人长连接（aibot_send_msg 帧）主动推送分析报告/通知，复用 WECOM_AIBOT_ENABLED 的长连接客户端；默认关闭。',
+    usage: '先开启长连接（WECOM_AIBOT_ENABLED=true 并配置 Bot ID/Secret），再开启本开关并填写 WECOM_AIBOT_NOTIFY_CHATID。',
+    valueNotes: [
+      'false（默认）：不启用智能机器人推送通道；现有企微群 Webhook 推送行为完全不变。',
+      'true：报告/通知按 WECOM_AIBOT_NOTIFY_CHATID 列出的会话逐一推送。',
+    ],
+    impact: ['新增一条通知渠道，与企微群 Webhook 渠道并存（同一内容两边都会收到）。'],
+    notes: [
+      '官方前置条件：目标会话必须已存在——目标用户须先给机器人发过消息，否则推送会失败降级。',
+      '渠道内置限流：单会话 30 条/分钟、1000 条/小时、同会话并发 3 条；超限内容丢弃并记录日志。',
+    ],
+  },
+  'settings.notification.WECOM_AIBOT_NOTIFY_CHATID': {
+    title: '企微智能机器人推送目标',
+    summary: '智能机器人推送渠道的目标会话 ID 列表（逗号分隔）：单聊填用户 userid，群聊填群 chatid。',
+    usage: 'WECOM_AIBOT_NOTIFY_CHATID=userid_a,userid_b 或填群 chatid；目标用户须先与机器人建过会话。',
+    valueNotes: [
+      '单聊目标填用户 userid（非超管机器人收到的 userid 为密文，需以回调中看到的值为准）。',
+      '群聊目标填群 chatid（先在群里 @机器人一次以建立会话）。',
+      'WECOM_AIBOT_NOTIFY_ENABLED=true 时本项才生效。',
+    ],
+    impact: ['决定智能机器人推送渠道的投递目标。'],
+    notes: ['保存后需要重启相关 bot/服务进程才会生效。'],
+  },
   'settings.notification.DINGTALK_WEBHOOK_URL': {
     title: '钉钉群机器人 Webhook',
     summary: '通过普通钉钉群机器人 Webhook 推送通知，与 App/Stream 模式相互独立。',
@@ -1792,6 +1868,82 @@ const settingsHelpEnUS: SettingsHelpMap = {
       'Restart the relevant bot/service process after saving; existing long connections are not rebuilt automatically.',
       'Do not treat Stream mode and group bot Webhook as the same delivery path.',
     ],
+  },
+  'settings.notification.WECOM_AIBOT_ENABLED': {
+    title: 'WeCom AI Bot Stream Mode',
+    summary: 'Enables the WeCom AI (smart) robot WebSocket long-connection mode for conversational bot commands, separate from the enterprise WeChat group webhook push channel.',
+    usage: 'Create a smart robot in the enterprise WeChat console first, fill in WECOM_AIBOT_BOT_ID and WECOM_AIBOT_SECRET, then enable this switch.',
+    valueNotes: [
+      'true allows the runtime to exchange smart-robot messages over the official long connection.',
+      'false disables it (default); existing enterprise WeChat group webhook push behavior is unchanged.',
+    ],
+    impact: [
+      'Affects the WeCom AI bot conversational command path.',
+      'Does not change the enterprise WeChat group webhook delivery path.',
+    ],
+    notes: [
+      'The long-connection mode needs no public IP; a callback URL mode is not provided.',
+      'Restart the relevant bot/service process after saving to establish the connection.',
+    ],
+  },
+  'settings.notification.WECOM_AIBOT_BOT_ID': {
+    title: 'WeCom AI Bot ID',
+    summary: 'Bot ID of the WeCom AI (smart) robot from the enterprise WeChat console; required for the long-connection mode.',
+    usage: 'Copy the Bot ID from the smart robot details in the enterprise WeChat console into WECOM_AIBOT_BOT_ID.',
+    valueNotes: [
+      'Only used for long-connection authentication (aibot_subscribe frame); unrelated to the group webhook key.',
+      'Required when WECOM_AIBOT_ENABLED=true; the client will not start without it.',
+    ],
+    impact: ['Determines whether the WeCom AI bot long-connection authentication succeeds.'],
+    notes: ['For robots not created by a super admin, from.userid arrives encrypted — an official protocol limitation.'],
+  },
+  'settings.notification.WECOM_AIBOT_SECRET': {
+    title: 'WeCom AI Bot Secret',
+    summary: 'Dedicated secret for the smart-robot long-connection mode; it differs from the group webhook Token/EncodingAESKey credentials.',
+    usage: 'Copy the long-connection secret from the smart robot details into WECOM_AIBOT_SECRET.',
+    valueNotes: [
+      'Long-connection credential only; do not mix it up with callback-mode Token/EncodingAESKey.',
+      'Treat it as a secret and reset it in the console if leaked.',
+    ],
+    impact: ['Determines whether the WeCom AI bot long-connection authentication succeeds.'],
+    notes: ['Restart the relevant bot/service process after saving.'],
+  },
+  'settings.notification.WECOM_AIBOT_REPLY_STREAM': {
+    title: 'WeCom AI Bot Stream Reply',
+    summary: 'Whether bot replies use streaming (stream msgtype) messages; off by default, replies are sent as one-shot markdown.',
+    usage: 'Set WECOM_AIBOT_REPLY_STREAM=true to enable stream replies after confirming the WeCom side supports the stream reply experience.',
+    valueNotes: [
+      'false (default): each reply is delivered as one complete markdown message.',
+      'true: replies are delivered as stream message frames (single frame with finish=true, no progressive typing effect).',
+    ],
+    impact: ['Only affects how WeCom AI bot replies are presented; command handling is unchanged.'],
+    notes: ['Official constraint: a stream message must finish within 10 minutes.'],
+  },
+  'settings.notification.WECOM_AIBOT_NOTIFY_ENABLED': {
+    title: 'WeCom AI Bot Notify Push',
+    summary: 'Push analysis reports/notifications proactively through the WeCom AI Bot long connection (aibot_send_msg frame), reusing the stream client from WECOM_AIBOT_ENABLED; off by default.',
+    usage: 'Enable the long connection first (WECOM_AIBOT_ENABLED=true with Bot ID/Secret), then turn this on and fill in WECOM_AIBOT_NOTIFY_CHATID.',
+    valueNotes: [
+      'false (default): the AI Bot push channel is disabled; the existing WeCom group webhook push is untouched.',
+      'true: reports/notifications are pushed to every chat listed in WECOM_AIBOT_NOTIFY_CHATID.',
+    ],
+    impact: ['Adds a parallel notification channel next to the WeCom group webhook channel (content goes to both).'],
+    notes: [
+      'Official prerequisite: a target chat only exists after the user has messaged the bot at least once; otherwise the push degrades to a logged failure.',
+      'Built-in channel rate limiting: 30 msgs/min, 1000 msgs/hour, 3 concurrent per chat; over-limit items are dropped and logged.',
+    ],
+  },
+  'settings.notification.WECOM_AIBOT_NOTIFY_CHATID': {
+    title: 'WeCom AI Bot Notify Targets',
+    summary: 'Target chat IDs (comma-separated) for the AI Bot push channel: use the user userid for single chats, the group chatid for group chats.',
+    usage: 'WECOM_AIBOT_NOTIFY_CHATID=userid_a,userid_b or a group chatid; each target must have an existing conversation with the bot.',
+    valueNotes: [
+      'Single-chat targets take the user userid (for bots not created by a super admin the userid arrives encrypted; use the value observed in callbacks).',
+      'Group-chat targets take the group chatid (@mention the bot once to establish the conversation).',
+      'Only effective when WECOM_AIBOT_NOTIFY_ENABLED=true.',
+    ],
+    impact: ['Determines the delivery targets of the AI Bot push channel.'],
+    notes: ['Restart the related bot/service processes after saving.'],
   },
   'settings.notification.DINGTALK_WEBHOOK_URL': {
     title: 'DingTalk Group Bot Webhook',

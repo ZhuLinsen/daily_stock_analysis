@@ -1,0 +1,305 @@
+# -*- coding: utf-8 -*-
+"""
+===================================
+企业微信智能机器人（AI Bot）推送渠道
+===================================
+
+通过官方长连接 ``aibot_send_msg`` 帧向已存在的会话主动推送通知，
+作为 notification_sender 渠道族的新成员（与 wechat_sender webhook 等
+渠道同接口接入，见 ``src/notification.py`` 的渠道分发）。
+
+协议约束（官方文档 developer.work.weixin.qq.com/document/path/101463）：
+- **前置条件**：``aibot_send_msg`` 只能推送到已存在的会话——目标用户须先
+  给机器人发过消息（单聊 chatid=用户 userid，群聊 chatid=群 ID）。无
+  webhook 式单向推送 REST API，本渠道不能替代群机器人 webhook。
+- **限流**：会话级 30 条/分钟、1000 条/小时、同用户并发 3 条。本渠道用
+  独立的 :class:`AibotPushRateLimiter` 在推送侧对齐（Phase 1 的
+  ``WecomAibotHandler`` 会话回复限流是另一份预算，互不影响）。
+- **默认关**：需同时配置 ``WECOM_AIBOT_NOTIFY_ENABLED=true`` 与
+  ``WECOM_AIBOT_NOTIFY_CHATID``（逗号分隔多会话）才会被视为已配置渠道。
+- 连接复用：经 ``bot.platforms.wecom_aibot.get_wecom_aibot_client()` 取
+  全局长连接客户端；客户端未运行（未启用/断线/认证放弃）时推送失败降级
+  返回 False，不影响其它渠道。
+
+旧企微 webhook 渠道（wechat_sender.py）保持零改动（验收第 5 条：新旧
+渠道并存）。
+"""
+
+import logging
+import threading
+import time
+from collections import defaultdict, deque
+from typing import Any, Dict, List, Optional
+
+from src.config import Config
+from src.formatters import strip_hidden_markdown_metadata
+
+logger = logging.getLogger(__name__)
+
+
+class AibotPushRateLimiter:
+    """
+    aibot 推送渠道窗口限流器（r4 起仅双窗口；并发计数下沉传输层共享闸）
+
+    官方会话级上限口径与执行位置：
+    - 30 条 / 分钟、1000 条 / 小时：本限流器滑动窗口做渠道侧预配额门；
+      另有 handler 级双窗口配额（WecomAibotClient.send_to_chat 内，与
+      回复/上下文推送同账本）兜底真实总量。
+    - 同会话并发 3 条：统一由传输层共享闸
+      （``bot.platforms.wecom_aibot._WECOM_AIBOT_OUTBOUND_GATE``）执行——
+      回复、回推、静态推送三路合计计数（r4 修复 OR-COR-f5a96c8b：
+      此前并发上限只在静态 sender 局部，回复/回推路径绕过）。
+
+    分钟/小时预算在 :meth:`acquire` 时消耗（无返还语义）。线程安全。
+    """
+
+    _WINDOW_SECONDS_MINUTE = 60.0
+    _WINDOW_SECONDS_HOUR = 3600.0
+
+    def __init__(
+        self,
+        max_per_minute: int = 30,
+        max_per_hour: int = 1000,
+    ):
+        self.max_per_minute = max_per_minute
+        self.max_per_hour = max_per_hour
+        self._minute_events: Dict[str, deque] = defaultdict(deque)
+        self._hour_events: Dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def _evict(self, chat_id: str, now: float) -> None:
+        minute_window_start = now - self._WINDOW_SECONDS_MINUTE
+        hour_window_start = now - self._WINDOW_SECONDS_HOUR
+        minute_events = self._minute_events[chat_id]
+        while minute_events and minute_events[0] <= minute_window_start:
+            minute_events.popleft()
+        hour_events = self._hour_events[chat_id]
+        while hour_events and hour_events[0] <= hour_window_start:
+            hour_events.popleft()
+
+    def acquire(self, chat_id: str) -> "_PushSlot":
+        """消耗一个双窗口推送名额；限流超限返回 None（不占预算）。
+
+        并发上限不在本层：静态推送经 ``send_to_chat`` 的共享闸统一计数。
+        """
+        with self._lock:
+            now = time.time()
+            self._evict(chat_id, now)
+
+            if len(self._minute_events[chat_id]) >= self.max_per_minute:
+                return None
+            if len(self._hour_events[chat_id]) >= self.max_per_hour:
+                return None
+
+            self._minute_events[chat_id].append(now)
+            self._hour_events[chat_id].append(now)
+            return _PushSlot(chat_id)
+
+
+class _PushSlot:
+    """一次推送的窗口名额句柄。
+
+    并发计数已下沉传输层共享闸（由 ``send_to_chat`` 在发送前后
+    acquire/release）；``release()`` 保留为兼容形状的幂等空操作——
+    窗口预算在获取时消耗、无返还语义。
+    """
+
+    def __init__(self, chat_id: str):
+        self._chat_id = chat_id
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+
+
+# 进程级共享推送限流器（r2 修复 OR-COR-4c720f93：所有 WecomAibotSender 实例
+# 共用全局长连接客户端，推送预算不得随 NotificationService/Pipeline 实例
+# 重建而重置）。分钟/小时窗口在此之外还有 WecomAibotClient.send_to_chat 的
+# handler 级双窗口配额兜底（与回复/上下文推送同账本，真实总量口径）。
+_shared_push_rate_limiter: Optional[AibotPushRateLimiter] = None
+_shared_push_rate_limiter_lock = threading.Lock()
+
+
+def _get_shared_push_rate_limiter() -> AibotPushRateLimiter:
+    global _shared_push_rate_limiter
+    with _shared_push_rate_limiter_lock:
+        if _shared_push_rate_limiter is None:
+            _shared_push_rate_limiter = AibotPushRateLimiter()
+        return _shared_push_rate_limiter
+
+
+def _reset_shared_push_rate_limiter() -> None:
+    """重置共享限流器（仅测试用）。"""
+    global _shared_push_rate_limiter
+    with _shared_push_rate_limiter_lock:
+        _shared_push_rate_limiter = None
+
+
+class WecomAibotSender:
+    """
+    企业微信智能机器人推送渠道（aibot_send_msg）
+
+    与其它渠道同接口：``send_to_wecom_aibot(content, *, timeout_seconds=None)``
+    返回 bool。失败（未启用/未配置/未连接/限流/回执错误/异常）一律记录日志
+    并返回 False，不抛异常、不阻断其它渠道。
+
+    惰性启动（r7 OR-COR-b365f904）：客户端未运行时首次发送触发
+    ``start_background``（幂等）并等待连接就绪（预算 10s）；纯 CLI /
+    --schedule 入口（无 lifespan 启动钩子）由此获得可用的长连接。
+
+    推送复用 ``WecomAibotClient.send_to_chat``（Phase 1 r2 基底）：发送前经
+    handler 级双窗口配额（30 条/分 + 1000 条/时，与被动回复/上下文推送共享
+    同一账本），渠道侧共享限流器补齐 30/分、1000/时与同会话并发 3 条的
+    预配额门。
+    """
+
+    _PUSH_TIMEOUT_SECONDS = 10.0
+    _LAZY_START_READY_BUDGET_SECONDS = 10.0  # 惰性启动后等待连接就绪预算
+
+    def __init__(
+        self,
+        config: Config,
+        rate_limiter: Optional[AibotPushRateLimiter] = None,
+    ):
+        """
+        Args:
+            config: 全局配置对象
+            rate_limiter: 可注入限流器（测试用）；默认进程级共享单例
+        """
+        self._config = config
+        self._notify_enabled = bool(
+            getattr(config, "wecom_aibot_notify_enabled", False)
+        )
+        self._notify_chatids = self._parse_chatids(
+            getattr(config, "wecom_aibot_notify_chatid", None)
+        )
+        self._push_limiter = rate_limiter or _get_shared_push_rate_limiter()
+
+    @staticmethod
+    def _parse_chatids(raw_value: Any) -> List[str]:
+        """WECOM_AIBOT_NOTIFY_CHATID 逗号/空白分隔的多会话列表。"""
+        if not raw_value:
+            return []
+        if isinstance(raw_value, (list, tuple, set)):
+            items = list(raw_value)
+        else:
+            items = str(raw_value).replace(";", ",").replace("，", ",").split(",")
+        chatids = []
+        for item in items:
+            chat_id = str(item).strip()
+            if chat_id and chat_id not in chatids:
+                chatids.append(chat_id)
+        return chatids
+
+    @property
+    def is_configured(self) -> bool:
+        """渠道是否被显式配置启用（enabled + 至少一个目标会话）。"""
+        return self._notify_enabled and bool(self._notify_chatids)
+
+    def send_to_wecom_aibot(
+        self, content: str, *, timeout_seconds: Optional[float] = None
+    ) -> bool:
+        """
+        推送消息到配置的目标会话（aibot_send_msg 帧）
+
+        Args:
+            content: Markdown 格式消息内容
+            timeout_seconds: 单会话推送回执等待秒数（默认 10s）
+
+        Returns:
+            全部目标会话推送成功返回 True；任一失败/被限流返回 False
+        """
+        if not self._notify_enabled:
+            logger.debug("[WeCom AI Bot] WECOM_AIBOT_NOTIFY_ENABLED 未开启，跳过推送")
+            return False
+
+        if not self._notify_chatids:
+            logger.warning(
+                "[WeCom AI Bot] WECOM_AIBOT_NOTIFY_CHATID 未配置，跳过推送"
+            )
+            return False
+
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        if not sanitized_content:
+            logger.warning("[WeCom AI Bot] 推送内容为空，跳过")
+            return False
+
+        # 惰性导入：SDK 缺失时 get_wecom_aibot_client 返回 None（含安装提示日志），
+        # 由下方 client 为空的降级分支统一处理
+        from bot.platforms.wecom_aibot import get_wecom_aibot_client
+
+        client = get_wecom_aibot_client()
+        if client is None:
+            logger.warning(
+                "[WeCom AI Bot] 长连接客户端不可用（未配置或缺 SDK），"
+                "推送失败降级"
+            )
+            return False
+
+        if not client.is_running:
+            # 主开关守卫（r9 OR-COR-f398a721）：惰性启动必须与
+            # start_wecom_aibot_background 同源检查 WECOM_AIBOT_ENABLED——
+            # 主开关关闭（凭据/通知配置残留）时不得拉起长连接通道。
+            if not bool(
+                getattr(self._config, "wecom_aibot_enabled", False)
+            ):
+                logger.warning(
+                    "[WeCom AI Bot] WECOM_AIBOT_ENABLED=false：长连接主开关"
+                    "未开启，不启动长连接，本次推送降级失败"
+                    "（如需推送请先开启主开关）"
+                )
+                return False
+            # 惰性启动（r7 OR-COR-b365f904）：纯 CLI / --schedule 入口没有
+            # lifespan/main.py 的启动钩子——通知首次实际使用时启动长连接。
+            # start_background 幂等（单连接互斥 + started 标志 + r9 实例级
+            # 启动锁），与 lifespan 双入口同进程只启动一次；纯 CLI 单次
+            # 运行进程退出即清理，schedule 常驻进程保持连接。
+            started = client.start_background()
+            if not started:
+                logger.warning(
+                    "[WeCom AI Bot] 长连接惰性启动失败（可能已被其他入口"
+                    "占用或缺凭证），本次推送降级失败"
+                )
+                return False
+            if not client.wait_for_ready(self._LAZY_START_READY_BUDGET_SECONDS):
+                logger.warning(
+                    "[WeCom AI Bot] 长连接 %ss 内未就绪，本次推送降级失败"
+                    "（下次发送再试）",
+                    self._LAZY_START_READY_BUDGET_SECONDS,
+                )
+                return False
+
+        timeout = timeout_seconds if timeout_seconds is not None else self._PUSH_TIMEOUT_SECONDS
+
+        all_ok = True
+        for chat_id in self._notify_chatids:
+            slot = self._push_limiter.acquire(chat_id)
+            if slot is None:
+                logger.warning(
+                    "[WeCom AI Bot] 推送触发限流（30条/分、1000条/时、同会话"
+                    "并发3条），本条丢弃: chat=%s",
+                    chat_id,
+                )
+                all_ok = False
+                continue
+
+            try:
+                # 复用 r2 基底的 send_to_chat：handler 级双窗口配额 + 回执
+                # errcode 检查 + 前置条件日志，统一真实总量口径。
+                ok = client.send_to_chat(
+                    chat_id, sanitized_content, timeout_seconds=timeout
+                )
+            except Exception as exc:  # 防御分支：send_to_chat 内部已捕获
+                logger.error("[WeCom AI Bot] 推送异常 (chat=%s): %s", chat_id, exc)
+                ok = False
+            finally:
+                slot.release()
+
+            if not ok:
+                all_ok = False
+            else:
+                logger.info("[WeCom AI Bot] 推送成功: chat=%s", chat_id)
+
+        return all_ok

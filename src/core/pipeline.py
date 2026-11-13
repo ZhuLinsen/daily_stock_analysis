@@ -4281,6 +4281,17 @@ class StockAnalysisPipeline:
                             channel_success,
                             channel_error,
                         )
+                    elif channel == NotificationChannel.WECOM_AIBOT:
+                        channel_success, channel_error = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_wecom_aibot(report),
+                        )
+                        non_wechat_success = channel_success or non_wechat_success
+                        _record_channel_result(
+                            channel.value,
+                            channel_success,
+                            channel_error,
+                        )
                     else:
                         logger.warning(f"未知通知渠道: {channel}")
 

@@ -25,6 +25,7 @@ NotificationTestChannel = Literal[
     "discord",
     "slack",
     "astrbot",
+    "wecom_aibot",
 ]
 
 

@@ -28,6 +28,7 @@ function getChannelOptions(language: 'zh' | 'en'): Array<{ value: NotificationTe
     { value: 'discord', label: 'Discord' },
     { value: 'slack', label: 'Slack' },
     { value: 'astrbot', label: 'AstrBot' },
+    { value: 'wecom_aibot', label: language === 'en' ? 'WeCom AI Bot' : '企微智能机器人' },
   ];
 }
 

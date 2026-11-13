@@ -83,6 +83,7 @@ from src.notification_sender import (
     SlackSender,
     TelegramSender,
     WechatSender,
+    WecomAibotSender,
     WECHAT_IMAGE_MAX_BYTES,
     resolve_gotify_message_endpoint,
     resolve_ntfy_endpoint,
@@ -198,6 +199,7 @@ class NotificationChannel(Enum):
     DISCORD = "discord"    # Discord 机器人 (Bot)
     SLACK = "slack"        # Slack
     ASTRBOT = "astrbot"
+    WECOM_AIBOT = "wecom_aibot"  # 企业微信智能机器人（aibot_send_msg 长连接推送）
     UNKNOWN = "unknown"    # 未知
 
 
@@ -249,6 +251,7 @@ class ChannelDetector:
             NotificationChannel.DISCORD: "Discord机器人",
             NotificationChannel.SLACK: "Slack",
             NotificationChannel.ASTRBOT: "ASTRBOT机器人",
+            NotificationChannel.WECOM_AIBOT: "企微智能机器人",
             NotificationChannel.UNKNOWN: "未知渠道",
         }
         return names.get(channel, "未知渠道")
@@ -268,7 +271,8 @@ class NotificationService(
     Serverchan3Sender,
     SlackSender,
     TelegramSender,
-    WechatSender
+    WechatSender,
+    WecomAibotSender
 ):
     """
     通知服务
@@ -326,6 +330,7 @@ class NotificationService(
         SlackSender.__init__(self, config)
         TelegramSender.__init__(self, config)
         WechatSender.__init__(self, config)
+        WecomAibotSender.__init__(self, config)
         DingtalkSender.__init__(self, config)
 
         # 检测所有已配置的渠道
@@ -563,6 +568,11 @@ class NotificationService(
         if getattr(config, "astrbot_url", None):
             channels.append(NotificationChannel.ASTRBOT)
 
+        if getattr(config, "wecom_aibot_notify_enabled", False) and getattr(
+            config, "wecom_aibot_notify_chatid", None
+        ):
+            channels.append(NotificationChannel.WECOM_AIBOT)
+
         return channels
 
     def _detect_all_channels(self) -> List[NotificationChannel]:
@@ -656,11 +666,12 @@ class NotificationService(
 
     # ===== Context channel =====
     def _has_context_channel(self) -> bool:
-        """判断是否存在基于消息上下文的临时渠道（如钉钉会话、飞书会话）"""
+        """判断是否存在基于消息上下文的临时渠道（如钉钉会话、飞书会话、企微智能机器人会话）"""
         return (
             self._extract_dingtalk_session_webhook() is not None
             or self._extract_feishu_reply_info() is not None
             or self._extract_telegram_context_chat_id() is not None
+            or self._extract_wecom_aibot_context() is not None
         )
 
     def _source_platform(self) -> str:
@@ -693,6 +704,26 @@ class NotificationService(
     def should_broadcast_static_channels(self) -> bool:
         """Whether static notification channels should receive this dispatch."""
         return not self._has_context_channel()
+
+    def _extract_wecom_aibot_context(self) -> Optional[Dict[str, str]]:
+        """从来源消息中提取企微智能机器人会话标识（用于 aibot_send_msg 异步回复）。
+
+        会话键：群聊为回调帧携带的 chatid，单聊为 from.userid（官方协议：单聊
+        主动推送 chatid 即填用户 userid；非超管创建的机器人该值为密文，原样
+        透传——见 bot/platforms/wecom_aibot.py 的已知限制说明）。
+        """
+        if not isinstance(self._source_message, BotMessage):
+            return None
+        if self._source_platform() != "wecom":
+            return None
+        raw_data = getattr(self._source_message, "raw_data", {}) or {}
+        for candidate in (
+            getattr(self._source_message, "chat_id", ""),
+            raw_data.get("_wecom_chat_id") if isinstance(raw_data, dict) else None,
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return {"chat_id": candidate.strip()}
+        return None
 
     def _extract_dingtalk_session_webhook(self) -> Optional[str]:
         """从来源消息中提取钉钉会话 Webhook（用于 Stream 模式回复）"""
@@ -781,7 +812,58 @@ class NotificationService(
             except Exception as e:
                 logger.error(f"Telegram 上下文会话推送异常: {e}")
 
+        # 尝试企微智能机器人会话上下文（aibot_send_msg 回来源会话）
+        wecom_context = self._extract_wecom_aibot_context()
+        if wecom_context:
+            try:
+                if self._send_wecom_aibot_reply(
+                    wecom_context["chat_id"], content
+                ):
+                    logger.info("已通过企微智能机器人会话推送报告")
+                    success = True
+                else:
+                    logger.error("企微智能机器人会话推送失败")
+            except Exception as e:
+                logger.error(f"企微智能机器人会话推送异常: {e}")
+
         return success
+
+    def _send_wecom_aibot_reply(self, chat_id: str, content: str) -> bool:
+        """通过企微智能机器人长连接（aibot_send_msg）发送消息到来源会话。
+
+        前置条件（官方协议）：目标用户/会话须先与机器人建过会话；长连接客户端
+        须在运行（WECOM_AIBOT_ENABLED=true 且 SDK 可用）。违反时由适配器回执
+        errcode 非零并记日志，此处按失败返回。
+        """
+        try:
+            from bot.platforms.wecom_aibot import (
+                WECOM_AIBOT_SDK_AVAILABLE,
+                get_wecom_aibot_client,
+            )
+            if not WECOM_AIBOT_SDK_AVAILABLE:
+                logger.warning("企微智能机器人 SDK 不可用，无法回推来源会话")
+                return False
+
+            client = get_wecom_aibot_client()
+            if client is None:
+                logger.warning(
+                    "企微智能机器人客户端未就绪（未启用或未配置"
+                    " WECOM_AIBOT_BOT_ID/WECOM_AIBOT_SECRET），无法回推来源会话"
+                )
+                return False
+
+            sanitized_content = strip_hidden_markdown_metadata(content).strip()
+            if not sanitized_content:
+                logger.warning("企微智能机器人回推内容为空，跳过")
+                return False
+
+            return client.send_to_chat(chat_id, sanitized_content)
+        except ImportError as e:
+            logger.error(f"导入企微智能机器人模块失败: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"企微智能机器人会话回复异常: {e}")
+            return False
 
     def _send_feishu_stream_reply(self, chat_id: str, content: str) -> bool:
         """
@@ -2643,6 +2725,8 @@ class NotificationService(
             return self.send_to_slack(content)
         if channel == NotificationChannel.ASTRBOT:
             return self.send_to_astrbot(sanitized_content)
+        if channel == NotificationChannel.WECOM_AIBOT:
+            return self.send_to_wecom_aibot(sanitized_content)
         logger.warning(f"不支持的通知渠道: {channel}")
         return False
 

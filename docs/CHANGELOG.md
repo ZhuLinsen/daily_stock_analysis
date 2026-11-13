@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 企业微信智能机器人 Phase 1：WebSocket 长连接客户端基建与对话最小闭环（#755）。新增 `bot/platforms/wecom_aibot.py` 长连接适配器（`aibot_subscribe` 认证、30s 心跳、断线指数退避重连、单机器人单连接互斥、msgid 排重、会话级限流），收到文本消息复用 `bot/dispatcher` 命令分发与 `AnalyzeCommand`（一次性分析、不改自选股），分析完成后经 source-context 链路以 `aibot_send_msg` 回推企微来源会话，回复经 `aibot_respond_msg` 帧（透传回调 req_id；`reply_stream` 可选、默认关）；出站回复/推送执行双窗口会话配额（30 条/分钟 + 1000 条/小时）。引入可选依赖 `wecom-aibot-python-sdk>=1.0.2`，SDK 缺失时模块可导入、功能自动关闭。新增配置 `WECOM_AIBOT_ENABLED` / `WECOM_AIBOT_BOT_ID` / `WECOM_AIBOT_SECRET` / `WECOM_AIBOT_REPLY_STREAM`（全部默认关，不改变现有用户行为）；既有企业微信群 Webhook 推送通道行为零变化。
 - [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
 - [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
 
