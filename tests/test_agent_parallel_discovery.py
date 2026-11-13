@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from unittest.mock import MagicMock
 
 sys.modules.setdefault("litellm", MagicMock())
+sys.modules.setdefault("fxmacrodata_public", MagicMock())
 
 from src.agent.agents.intel_agent import IntelAgent
 from src.agent.agents.technical_agent import TechnicalAgent
@@ -16,6 +18,19 @@ from src.services.skill_opinion_weight_service import (
     MAX_SKILL_OPINION_WEIGHT_FACTOR,
     MIN_SKILL_OPINION_WEIGHT_FACTOR,
     SkillOpinionWeightService,
+)
+from src.agent.news_evidence import (
+    activate_news_evidence_scope,
+    get_current_news_evidence,
+    reset_news_evidence_scope,
+    record_news_evidence,
+)
+from src.services.history_loader import get_frozen_target_date, reset_frozen_target_date, set_frozen_target_date
+from src.services.run_diagnostics import (
+    activate_run_diagnostic_context,
+    current_diagnostic_snapshot,
+    record_provider_run,
+    reset_run_diagnostic_context,
 )
 
 
@@ -27,6 +42,8 @@ def test_orchestrator_parallel_discovery_wave_merges_in_order() -> None:
     assert orch._can_parallelize_discovery_pair(tech_agent, intel_agent) is True
 
     def fake_run_stage(agent, run_ctx, progress_callback=None, timeout_seconds=None):
+        if progress_callback:
+            progress_callback({"type": "agent_progress", "stage": agent.agent_name})
         if agent.agent_name == "technical":
             op = AgentOpinion(agent_name="technical", signal="buy", confidence=0.8, reasoning="tech ok")
             run_ctx.add_opinion(op)
@@ -55,7 +72,55 @@ def test_orchestrator_parallel_discovery_wave_merges_in_order() -> None:
     assert ctx.get_data("trend_result") == {"ma_alignment": "bullish"}
     assert ctx.get_data("intel_opinion") == {"positive_catalysts": ["earnings"]}
     assert len(ctx.risk_flags) == 1
-    assert [e["type"] for e in events] == ["stage_start", "stage_start", "stage_done", "stage_done"]
+    assert [e["type"] for e in events] == [
+        "stage_start",
+        "stage_start",
+        "agent_progress",
+        "agent_progress",
+        "stage_done",
+        "stage_done",
+    ]
+    assert [e["stage"] for e in events[2:4]] == ["technical", "intel"]
+
+
+def test_parallel_discovery_propagates_runtime_contexts() -> None:
+    orch = AgentOrchestrator(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    tech_agent = TechnicalAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    intel_agent = IntelAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    observed = []
+    news_token = activate_news_evidence_scope()
+    frozen_token = set_frozen_target_date(date(2026, 5, 22))
+    diagnostic_token = activate_run_diagnostic_context(trace_id="wave-1")
+    try:
+        def make_fake_agent_run(agent_name):
+            def fake_agent_run(run_ctx, progress_callback=None, timeout_seconds=None):
+                del run_ctx, progress_callback, timeout_seconds
+                record_news_evidence(5)
+                record_provider_run(
+                    data_type="daily_history",
+                    provider=agent_name,
+                    operation="wave1",
+                    success=True,
+                    record_count=1,
+                )
+                observed.append((agent_name, get_frozen_target_date()))
+                return StageResult(stage_name=agent_name, status=StageStatus.COMPLETED)
+
+            return fake_agent_run
+
+        # Keep the real stage wrapper so this exercises the exact
+        # copy_context().run boundary used by Wave 1.
+        tech_agent.run = make_fake_agent_run("technical")  # type: ignore[method-assign]
+        intel_agent.run = make_fake_agent_run("intel")  # type: ignore[method-assign]
+        orch._run_discovery_wave_parallel(tech_agent, intel_agent, AgentContext(stock_code="600519"))
+
+        assert sorted(observed) == [("intel", date(2026, 5, 22)), ("technical", date(2026, 5, 22))]
+        assert get_current_news_evidence().total == 10
+        assert len(current_diagnostic_snapshot()["provider_runs"]) == 2
+    finally:
+        reset_run_diagnostic_context(diagnostic_token)
+        reset_frozen_target_date(frozen_token)
+        reset_news_evidence_scope(news_token)
 
 
 def test_skill_opinion_weight_service_smoothed_small_samples() -> None:

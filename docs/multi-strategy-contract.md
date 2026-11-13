@@ -423,6 +423,13 @@ Phase 4 不改变 Baseline canonical signal / valid 判定 / 共识门槛 / 阵�
 权重变化只影响 `weighted_score` 与 `confidence`，不影响 `consensus_level`
 判定路径。`AGENT_ARCH=single` 不经过 `SkillAggregator`，保持兼容。
 
+当前 `SkillOpinionWeightService.compute_smoothed_weights()` 是显式调用的辅助 API，
+尚未接入 `SkillAggregator` 的运行时链路。它只接受当前支持的 horizon，按
+`skill_id + horizon` 去重并允许低于 30 条 evaluated 的样本使用 `Beta(6, 6)`
+先验平滑；`unable` 仍按 `unable / (evaluated + observational + unable)` 计入既有
+0.25 惩罚，坏 bucket、统计读取失败或未知 Skill 保持中性 `1.0`。正式运行时仍使用
+上面的 Beta(15, 15) 与 evaluated 门槛契约。
+
 ## 消费面盘点
 
 Baseline 的七条消费面必须严格按下表分工，不得越界互相消费对方的内部数据。

@@ -143,7 +143,17 @@ class SkillOpinionWeightService:
         neutral = {skill_id: 1.0 for skill_id in requested}
         if not requested or not self.engine_version:
             return neutral
-        if prior_hits <= 0 or prior_misses <= 0:
+        try:
+            prior_hits_value = float(prior_hits)
+            prior_misses_value = float(prior_misses)
+        except (TypeError, ValueError):
+            return neutral
+        if (
+            not math.isfinite(prior_hits_value)
+            or not math.isfinite(prior_misses_value)
+            or prior_hits_value <= 0
+            or prior_misses_value <= 0
+        ):
             return neutral
 
         try:
@@ -164,7 +174,9 @@ class SkillOpinionWeightService:
             return neutral
 
         requested_set = set(requested)
-        aggregates: Dict[str, Tuple[int, int, int]] = {skill_id: (0, 0, 0) for skill_id in requested}
+        aggregates: Dict[str, Tuple[int, int, int, int]] = {
+            skill_id: (0, 0, 0, 0) for skill_id in requested
+        }
         seen_buckets: Set[Tuple[str, str]] = set()
         for bucket in buckets:
             skill_id = self._bucket_skill_id(bucket)
@@ -179,21 +191,38 @@ class SkillOpinionWeightService:
             evaluated = self._count(bucket.get("evaluated"))
             hit = self._count(bucket.get("hit"))
             miss = self._count(bucket.get("miss"))
-            unable = self._count(bucket.get("unable")) or 0
-            observational = self._count(bucket.get("observational")) or 0
-            if None in (evaluated, hit, miss) or evaluated <= 0 or hit + miss != evaluated:
+            unable = self._count(bucket.get("unable"))
+            observational = self._count(bucket.get("observational"))
+            if None in (evaluated, hit, miss, unable, observational):
                 continue
-            prev_h, prev_m, prev_u = aggregates[skill_id]
-            aggregates[skill_id] = (prev_h + hit, prev_m + miss, prev_u + unable + observational)
+            if evaluated <= 0 or hit + miss != evaluated:
+                continue
+            prev_h, prev_m, prev_u, prev_o = aggregates[skill_id]
+            aggregates[skill_id] = (
+                prev_h + hit,
+                prev_m + miss,
+                prev_u + unable,
+                prev_o + observational,
+            )
 
-        prior_total = prior_hits + prior_misses
-        for skill_id, (hits, misses, _other) in aggregates.items():
+        prior_total = prior_hits_value + prior_misses_value
+        for skill_id, (hits, misses, unable, observational) in aggregates.items():
             total_eval = hits + misses
             if total_eval <= 0:
                 continue
-            posterior_hit_rate = (prior_hits + hits) / (prior_total + total_eval)
+            posterior_hit_rate = (prior_hits_value + hits) / (prior_total + total_eval)
             direction_score = 2.0 * posterior_hit_rate - 1.0
-            factor = math.exp(math.log(MAX_SKILL_OPINION_WEIGHT_FACTOR) * direction_score)
+            terminal_count = total_eval + observational + unable
+            if terminal_count <= 0:
+                continue
+            unable_rate = unable / terminal_count
+            smoothed_score = min(
+                1.0,
+                max(-1.0, direction_score - _UNABLE_PENALTY * unable_rate),
+            )
+            factor = math.exp(
+                math.log(MAX_SKILL_OPINION_WEIGHT_FACTOR) * smoothed_score
+            )
             if math.isfinite(factor):
                 neutral[skill_id] = min(
                     MAX_SKILL_OPINION_WEIGHT_FACTOR,
