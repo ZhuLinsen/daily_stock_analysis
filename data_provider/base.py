@@ -620,6 +620,25 @@ class BaseFetcher(ABC):
         time.sleep(sleep_time)
 
 
+_HITHINK_INDEX_EXCHANGES = {"SH": "SH", "SZ": "SZ", "BJ": "BJ", "TI": "TI"}
+
+
+def _hithink_index_thscode(entry: Any) -> Optional[str]:
+    """Map a registry entry to a documented HiThink index symbol.
+
+    The current ``IndexRegistry`` only materializes SH, SZ, and CSI rows.
+    CSI codes are not sent here. ``.TI`` is accepted so a future 同花顺 index
+    entry is not dropped by an exchange allow-list.
+    """
+    if entry is None:
+        return None
+    suffix = _HITHINK_INDEX_EXCHANGES.get(getattr(entry, "exchange", ""))
+    bare = str(getattr(entry, "bare_code", "") or "").strip()
+    if not suffix or not bare:
+        return None
+    return f"{bare}.{suffix}"
+
+
 class DataFetcherManager:
     """
     数据源策略管理器
@@ -1166,36 +1185,87 @@ class DataFetcherManager:
                 errors.append(f"[{source_name}] ({error_type}) {error_reason}")
 
         hithink = fetchers_by_name.get("HiThinkFetcher")
-        if hithink is not None and target.matched_index is not None:
-            entry = target.matched_index
-            if entry.exchange in {"SH", "SZ", "BJ"} and self._is_fetcher_available(hithink, capability="daily_data"):
-                thscode = f"{entry.bare_code}.{entry.exchange}"
-                try:
-                    df = self._call_fetcher_method(
-                        hithink,
-                        "get_index_daily_data",
-                        thscode,
-                        start_date,
-                        end_date,
-                        days,
+        thscode = _hithink_index_thscode(target.matched_index)
+        if (
+            hithink is not None
+            and thscode
+            and self._is_fetcher_available(hithink, capability="daily_data")
+        ):
+            # The current registry resolves SH, SZ, and CSI only. SH/SZ use
+            # HiThink after the fixed route. BJ and 同花顺 .TI are accepted
+            # when a registry entry exists. CSI is not a documented HiThink
+            # index symbol and stays on the fixed route.
+            attempt_start = time.time()
+            record_provider_run_started(
+                data_type="daily_data",
+                provider="HiThinkFetcher",
+                operation="get_index_daily_data",
+            )
+            try:
+                df = self._call_fetcher_method(
+                    hithink,
+                    "get_index_daily_data",
+                    thscode,
+                    start_date,
+                    end_date,
+                    days,
+                )
+                duration_ms = int((time.time() - attempt_start) * 1000)
+                if df is not None and not df.empty:
+                    record_provider_run(
+                        data_type="daily_data",
+                        provider="HiThinkFetcher",
+                        operation="get_index_daily_data",
+                        success=True,
+                        latency_ms=duration_ms,
+                        record_count=len(df),
                     )
-                    if df is not None and not df.empty:
-                        logger.info(
-                            "[指数数据源完成] %s 使用 [HiThinkFetcher] 获取成功: rows=%d",
-                            target.canonical_id,
-                            len(df),
-                        )
-                        return df, "HiThinkFetcher"
-                    errors.append("[HiThinkFetcher] empty result")
-                except Exception as exc:
-                    error_type, error_reason = summarize_exception(exc)
-                    logger.warning(
-                        "[指数数据源失败] [HiThinkFetcher] %s: error_type=%s, reason=%s",
+                    self._record_daily_source_success(hithink, "cn_index")
+                    logger.info(
+                        "[指数数据源完成] %s 使用 [HiThinkFetcher] 获取成功: rows=%d",
                         target.canonical_id,
-                        error_type,
-                        error_reason,
+                        len(df),
                     )
-                    errors.append(f"[HiThinkFetcher] ({error_type}) {error_reason}")
+                    return df, "HiThinkFetcher"
+                reason = "empty result"
+                record_provider_run(
+                    data_type="daily_data",
+                    provider="HiThinkFetcher",
+                    operation="get_index_daily_data",
+                    success=False,
+                    latency_ms=duration_ms,
+                    error_type="empty",
+                    error_message=reason,
+                    fallback_to=None,
+                    record_count=0,
+                )
+                if df is not None and df.empty:
+                    self._record_daily_source_success(hithink, "cn_index")
+                else:
+                    self._record_daily_source_failure(hithink, "cn_index", reason)
+                errors.append("[HiThinkFetcher] empty result")
+            except Exception as exc:
+                error_type, error_reason = summarize_exception(exc)
+                duration_ms = int((time.time() - attempt_start) * 1000)
+                record_provider_run(
+                    data_type="daily_data",
+                    provider="HiThinkFetcher",
+                    operation="get_index_daily_data",
+                    success=False,
+                    latency_ms=duration_ms,
+                    error_type=error_type,
+                    error_message=error_reason,
+                    fallback_to=None,
+                    record_count=0,
+                )
+                self._record_daily_source_failure(hithink, "cn_index", error_reason)
+                logger.warning(
+                    "[指数数据源失败] [HiThinkFetcher] %s: error_type=%s, reason=%s",
+                    target.canonical_id,
+                    error_type,
+                    error_reason,
+                )
+                errors.append(f"[HiThinkFetcher] ({error_type}) {error_reason}")
 
         logger.error(
             "[指数数据源终止] %s 所有指数日线数据源均失败: elapsed=%.2fs; %s",
@@ -1520,19 +1590,62 @@ class DataFetcherManager:
                 return fetcher
         return None
 
-    def _load_cn_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
-        hithink = self._get_hithink_fetcher()
-        if hithink is not None:
-            try:
-                from .hithink_fundamentals import HiThinkFundamentalAdapter
+    def _load_cn_fundamental_bundle(
+        self,
+        stock_code: str,
+        budget_seconds: float,
+    ) -> Tuple[Dict[str, Any], Optional[str], int]:
+        """Load AkShare first, then fill only missing HiThink blocks.
 
-                payload = HiThinkFundamentalAdapter(hithink).get_fundamental_bundle(stock_code)
-                if isinstance(payload, dict) and payload.get("status") == "partial":
-                    return payload
-                logger.info("[HiThinkFetcher] fundamental bundle empty; falling back to AkShare")
-            except Exception as exc:
-                logger.warning("[HiThinkFetcher] fundamental bundle failed: %s", exc)
-        return self._fundamental_adapter.get_fundamental_bundle(stock_code)
+        Each provider has its own timeout and quarantine key. A HiThink call
+        that is still running cannot block the next AkShare request.
+        """
+        from .hithink_fundamentals import (
+            HiThinkFundamentalAdapter,
+            empty_fundamental_bundle,
+            merge_fundamental_bundles,
+        )
+
+        budget = max(0.0, float(budget_seconds))
+        if budget <= 0:
+            return empty_fundamental_bundle(), "fundamental stage timeout", 0
+
+        total_ms = 0
+        errors: List[str] = []
+        ak_payload, ak_error, ak_ms = self._run_with_retry(
+            lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+            budget,
+            "fundamental_bundle_akshare",
+            quarantine_key=("akshare", "fundamental_bundle"),
+        )
+        total_ms += ak_ms
+        budget = max(0.0, budget - ak_ms / 1000.0)
+        if ak_error:
+            errors.append(ak_error)
+
+        hithink_payload: Optional[Dict[str, Any]] = None
+        hithink = self._get_hithink_fetcher()
+        if hithink is not None and self._is_fetcher_available(hithink, capability="fundamental"):
+            if budget <= 0:
+                errors.append("fundamental_bundle_hithink timeout")
+            else:
+                hithink_payload, hithink_error, hithink_ms = self._run_with_retry(
+                    lambda: HiThinkFundamentalAdapter(hithink).get_fundamental_bundle(stock_code),
+                    budget,
+                    "fundamental_bundle_hithink",
+                    quarantine_key=("hithink", "fundamental_bundle"),
+                )
+                total_ms += hithink_ms
+                if hithink_error:
+                    errors.append(hithink_error)
+
+        merged = merge_fundamental_bundles(
+            ak_payload if isinstance(ak_payload, dict) else empty_fundamental_bundle(),
+            hithink_payload if isinstance(hithink_payload, dict) else empty_fundamental_bundle(),
+        )
+        if merged.get("status") != "partial" and errors:
+            merged["status"] = "failed"
+        return merged, ("; ".join(errors) or None), total_ms
 
     def _get_tickflow_fetcher(self):
         """Lazily create a TickFlow fetcher for market-review-only calls."""
@@ -4483,12 +4596,31 @@ class DataFetcherManager:
             "total_mv": getattr(quote_payload, "total_mv", None) if quote_payload else None,
             "circ_mv": getattr(quote_payload, "circ_mv", None) if quote_payload else None,
         }
+        valuation_errors = [valuation_err] if valuation_err else []
         if market == "cn" and not is_etf:
             hithink = self._get_hithink_fetcher()
-            if hithink is not None:
-                from .hithink_fundamentals import supplement_valuation
+            supplement_timeout = min(fetch_timeout, remaining_seconds)
+            if (
+                hithink is not None
+                and self._is_fetcher_available(hithink, capability="fundamental")
+                and supplement_timeout > 0
+            ):
+                from .hithink_fundamentals import HiThinkFundamentalAdapter, supplement_valuation
 
-                supplement_valuation(hithink, stock_code, valuation_payload)
+                snapshot, snapshot_error, snapshot_ms = self._run_with_retry(
+                    lambda: HiThinkFundamentalAdapter(hithink).get_valuation(stock_code),
+                    supplement_timeout,
+                    "fundamental_valuation_hithink",
+                    quarantine_key=("hithink", "valuation"),
+                )
+                _consume_budget(snapshot_ms)
+                valuation_ms += snapshot_ms
+                if snapshot_error:
+                    valuation_errors.append(snapshot_error)
+                if isinstance(snapshot, dict):
+                    supplement_valuation(hithink, stock_code, valuation_payload, snapshot=snapshot)
+            elif hithink is not None and supplement_timeout <= 0:
+                valuation_errors.append("fundamental_valuation_hithink timeout")
         valuation_status = self._infer_block_status(
             valuation_payload,
             "partial" if quote_payload is not None else "not_supported",
@@ -4504,10 +4636,10 @@ class DataFetcherManager:
                 valuation_status,
                 valuation_ms,
             ),
-            [valuation_err] if valuation_err else [],
+            valuation_errors,
         )
 
-        # growth / earnings / institution (HiThink when configured, otherwise AkShare)
+        # growth / earnings / institution: AkShare, then missing HiThink blocks
         if remaining_seconds <= 0:
             bundle_status = "failed"
             bundle_payload: Dict[str, Any] = {}
@@ -4515,11 +4647,9 @@ class DataFetcherManager:
             bundle_ms = 0
         else:
             bundle_timeout = min(fetch_timeout, remaining_seconds)
-            bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
-                lambda: self._load_cn_fundamental_bundle(stock_code),
+            bundle_payload, bundle_err_msg, bundle_ms = self._load_cn_fundamental_bundle(
+                stock_code,
                 bundle_timeout,
-                "fundamental_bundle",
-                quarantine_key=("akshare", "fundamental_bundle"),
             )
             _consume_budget(bundle_ms)
             if not isinstance(bundle_payload, dict):

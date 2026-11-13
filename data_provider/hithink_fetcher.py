@@ -101,6 +101,10 @@ class HiThinkFetcher(BaseFetcher):
         self._batch_disabled_until = 0.0
         self._daily_disabled_until = 0.0
         self._realtime_disabled_until = 0.0
+        self._fundamental_disabled_until = 0.0
+        self._rank_disabled_until = 0.0
+        self._directory_disabled_until = 0.0
+        self._index_catalog_cache: Dict[str, Tuple[float, List[Tuple[str, str]]]] = {}
         self._last_error = ""
         self._successful = False
         self._daily_cache: Dict[Tuple[str, str], pd.DataFrame] = {}
@@ -131,6 +135,12 @@ class HiThinkFetcher(BaseFetcher):
                 return False
             if capability == "realtime_quote" and now < self._realtime_disabled_until:
                 return False
+            if capability == "fundamental" and now < self._fundamental_disabled_until:
+                return False
+            if capability == "index_rankings" and now < self._rank_disabled_until:
+                return False
+            if capability == "stock_list" and now < self._directory_disabled_until:
+                return False
         return True
 
     def _remember_error(
@@ -141,6 +151,9 @@ class HiThinkFetcher(BaseFetcher):
         batch_only: bool = False,
         daily_only: bool = False,
         realtime_only: bool = False,
+        fundamental_only: bool = False,
+        rank_only: bool = False,
+        directory_only: bool = False,
     ) -> None:
         with self._lock:
             self._last_error = message
@@ -153,6 +166,12 @@ class HiThinkFetcher(BaseFetcher):
                 self._daily_disabled_until = deadline
             if realtime_only:
                 self._realtime_disabled_until = deadline
+            if fundamental_only:
+                self._fundamental_disabled_until = deadline
+            if rank_only:
+                self._rank_disabled_until = deadline
+            if directory_only:
+                self._directory_disabled_until = deadline
 
     def _mark_success(self) -> None:
         with self._lock:

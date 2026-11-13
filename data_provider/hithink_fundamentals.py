@@ -7,6 +7,7 @@ permission error, or empty payload leaves the AkShare bundle in place.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 from typing import Any, Dict, Optional
@@ -81,14 +82,9 @@ class HiThinkFundamentalAdapter:
         self.fetcher = fetcher
 
     def get_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
-        result: Dict[str, Any] = {
-            "status": "not_supported",
-            "growth": {},
-            "earnings": {},
-            "institution": {},
-            "source_chain": [],
-            "errors": [],
-        }
+        result = empty_fundamental_bundle()
+        if not self.fetcher.is_available("fundamental"):
+            return result
         try:
             thscode, _code = self.fetcher._thscode(stock_code)
         except Exception as exc:
@@ -142,8 +138,14 @@ class HiThinkFundamentalAdapter:
         return result
 
     def get_valuation(self, stock_code: str) -> Dict[str, Optional[float]]:
+        if not self.fetcher.is_available("fundamental"):
+            return {}
         thscode, _code = self.fetcher._thscode(stock_code)
-        payload = self.fetcher._request(_VALUATION_PATH, {"thscodes": thscode})
+        try:
+            payload = self.fetcher._request(_VALUATION_PATH, {"thscodes": thscode})
+        except HiThinkRequestError as exc:
+            _remember_permission(self.fetcher, exc)
+            raise
         data = payload.get("data") or {}
         if not isinstance(data, dict) or not isinstance(data.get("item"), list):
             raise HiThinkRequestError("HiThink valuation response is invalid")
@@ -159,18 +161,24 @@ class HiThinkFundamentalAdapter:
         return {}
 
     def _latest_statement(self, path: str, thscode: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.fetcher.is_available("fundamental"):
+            return {}
         try:
             payload = self.fetcher._request(path, {"thscode": thscode, "period": "quarterly", "limit": 1})
             return _latest_item(payload)
         except HiThinkRequestError as exc:
+            _remember_permission(self.fetcher, exc)
             logger.warning("[HiThinkFetcher] financial statement failed: path=%s code=%s", path, exc.code)
             result["errors"].append(f"{path}:{exc.code or type(exc).__name__}")
             return {}
 
     def _indicators(self, thscode: str, report: str, result: Dict[str, Any]) -> Dict[str, Optional[float]]:
+        if not self.fetcher.is_available("fundamental"):
+            return {}
         try:
             payload = self.fetcher._request(_INDICATORS_PATH, {"thscode": thscode, "report": report})
         except HiThinkRequestError as exc:
+            _remember_permission(self.fetcher, exc)
             logger.warning("[HiThinkFetcher] financial indicators failed: code=%s", exc.code)
             result["errors"].append(f"indicators:{exc.code or type(exc).__name__}")
             return {}
@@ -181,13 +189,117 @@ class HiThinkFundamentalAdapter:
         return _indicator_values(data)
 
 
-def supplement_valuation(fetcher: HiThinkFetcher, stock_code: str, payload: Dict[str, Any]) -> None:
+def supplement_valuation(
+    fetcher: HiThinkFetcher,
+    stock_code: str,
+    payload: Dict[str, Any],
+    snapshot: Optional[Dict[str, Optional[float]]] = None,
+) -> None:
     """Fill only missing valuation fields. Existing quote values and nulls stay intact."""
-    try:
-        snapshot = HiThinkFundamentalAdapter(fetcher).get_valuation(stock_code)
-    except Exception as exc:
-        logger.info("[HiThinkFetcher] valuation snapshot skipped: %s", exc)
-        return
+    if snapshot is None:
+        try:
+            snapshot = HiThinkFundamentalAdapter(fetcher).get_valuation(stock_code)
+        except Exception as exc:
+            logger.info("[HiThinkFetcher] valuation snapshot skipped: %s", exc)
+            return
     for key, value in snapshot.items():
         if payload.get(key) is None and value is not None:
             payload[key] = value
+
+
+def empty_fundamental_bundle() -> Dict[str, Any]:
+    return {
+        "status": "not_supported",
+        "growth": {},
+        "earnings": {},
+        "institution": {},
+        "source_chain": [],
+        "errors": [],
+    }
+
+
+def merge_fundamental_bundles(base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill missing blocks from ``extra`` without mixing report periods.
+
+    AkShare is the base because it owns forecast, quick report, dividend, and
+    institution blocks that HiThink does not provide. A HiThink statement is
+    copied only when the base has no report of its own, or both reports name
+    the same period. Fields that already have a value stay unchanged.
+    """
+    result = copy.deepcopy(base if isinstance(base, dict) else empty_fundamental_bundle())
+    if not isinstance(extra, dict):
+        return result
+    for key in ("growth", "earnings", "institution", "source_chain", "errors"):
+        result.setdefault(key, [] if key in {"source_chain", "errors"} else {})
+
+    base_report = _mapping((base.get("earnings") or {}).get("financial_report") if isinstance(base, dict) else None)
+    extra_report = _mapping((extra.get("earnings") or {}).get("financial_report"))
+    base_date = base_report.get("report_date") if _report_present(base_report) else None
+    extra_date = extra_report.get("report_date") if _report_present(extra_report) else None
+    same_period = bool(base_date and extra_date and str(base_date) == str(extra_date))
+    base_growth = _mapping(base.get("growth") if isinstance(base, dict) else None)
+    base_has_growth = any(_present(value) for value in base_growth.values())
+    base_has_report = _report_present(base_report)
+    can_share_period = same_period or (not base_has_report and not base_has_growth)
+
+    growth = _mapping(result.get("growth"))
+    if can_share_period:
+        for key, value in _mapping(extra.get("growth")).items():
+            if not _present(growth.get(key)) and _present(value):
+                growth[key] = value
+    result["growth"] = growth
+
+    earnings = _mapping(result.get("earnings"))
+    extra_earnings = _mapping(extra.get("earnings"))
+    if can_share_period and not base_has_report and _report_present(extra_report):
+        earnings["financial_report"] = copy.deepcopy(extra_report)
+    elif same_period and isinstance(earnings.get("financial_report"), dict):
+        report = dict(earnings["financial_report"])
+        for key, value in extra_report.items():
+            if key == "report_date" or _present(report.get(key)) or not _present(value):
+                continue
+            report[key] = copy.deepcopy(value)
+        earnings["financial_report"] = report
+    if can_share_period:
+        for key in ("income_statement", "balance_sheet", "cash_flow"):
+            if not _present(earnings.get(key)) and _present(extra_earnings.get(key)):
+                earnings[key] = copy.deepcopy(extra_earnings[key])
+    for key in ("forecast_summary", "quick_report_summary", "dividend"):
+        if not _present(earnings.get(key)) and _present(extra_earnings.get(key)):
+            earnings[key] = copy.deepcopy(extra_earnings[key])
+    result["earnings"] = earnings
+
+    institution = _mapping(result.get("institution"))
+    for key, value in _mapping(extra.get("institution")).items():
+        if not _present(institution.get(key)) and _present(value):
+            institution[key] = copy.deepcopy(value)
+    result["institution"] = institution
+
+    chain = list(result.get("source_chain") or [])
+    for item in extra.get("source_chain") or []:
+        if item not in chain:
+            chain.append(item)
+    result["source_chain"] = chain
+    result["errors"] = list(result.get("errors") or []) + list(extra.get("errors") or [])
+    has_content = any(_present(result.get(key)) for key in ("growth", "earnings", "institution"))
+    result["status"] = "partial" if has_content else "not_supported"
+    return result
+
+
+def _mapping(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _present(value: Any) -> bool:
+    return value is not None and value != "" and value != {} and value != []
+
+
+def _report_present(report: Dict[str, Any]) -> bool:
+    return any(key != "report_date" and _present(value) for key, value in report.items()) or _present(
+        report.get("report_date")
+    )
+
+
+def _remember_permission(fetcher: HiThinkFetcher, exc: HiThinkRequestError) -> None:
+    if exc.permission:
+        fetcher._remember_error(str(exc), fundamental_only=True)
