@@ -77,6 +77,25 @@ def test_verify_and_normalize_levels_rejects_secondary_buy_below_stop() -> None:
     assert compute_atr_position_sizing("buy", 80, levels, "good")["max_pct"] == 0
 
 
+def test_verify_and_normalize_levels_uses_secondary_entry_when_ideal_is_missing() -> None:
+    levels = verify_and_normalize_levels(
+        {"secondary_buy": 100, "stop_loss": 90, "take_profit": 95},
+        current_price=100,
+        action="buy",
+    )
+
+    assert levels["validation"] == "direction_conflict"
+    assert levels["status"] == "invalid"
+    assert compute_atr_position_sizing("buy", 80, levels, "good")["max_pct"] == 0
+
+
+def test_compute_atr_position_sizing_tolerates_invalid_sentiment_scores() -> None:
+    levels = {"reference_price": 100.0, "stop_loss": 96.0}
+
+    assert compute_atr_position_sizing("buy", "not-a-score", levels, "good")["max_pct"] == 15.0
+    assert compute_atr_position_sizing("buy", float("nan"), levels, "good")["max_pct"] == 15.0
+
+
 def test_verify_and_normalize_levels_detects_out_of_range_anchor() -> None:
     strategy = {
         "ideal_buy": "60.0",

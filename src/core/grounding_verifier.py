@@ -34,7 +34,7 @@ def _finite_positive(value: Any) -> Optional[float]:
         return None
     try:
         num = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     if not math.isfinite(num) or num <= 0:
         return None
@@ -55,14 +55,15 @@ def verify_and_normalize_levels(
 
     normalized_action = str(action or "").strip().lower() or None
     validation = "ok"
+    entry_anchor = ideal_buy if ideal_buy is not None else secondary_buy
     if normalized_action in _OFFENSIVE_ACTIONS and (
         (ideal_buy is not None and stop_loss is not None and stop_loss >= ideal_buy)
         or (secondary_buy is not None and stop_loss is not None and stop_loss >= secondary_buy)
         or (ideal_buy is not None and secondary_buy is not None and secondary_buy > ideal_buy)
         or (
-            ideal_buy is not None
+            entry_anchor is not None
             and take_profit is not None
-            and take_profit <= ideal_buy
+            and take_profit <= entry_anchor
         )
     ):
         validation = "direction_conflict"
@@ -167,7 +168,14 @@ def compute_atr_position_sizing(
 
     effective_stop_pct = max(raw_dist, _MIN_STOP_DISTANCE_PCT)
 
-    score = 60 if sentiment_score is None else int(sentiment_score)
+    try:
+        score = (
+            60
+            if sentiment_score is None or isinstance(sentiment_score, bool)
+            else int(float(sentiment_score))
+        )
+    except (TypeError, ValueError):
+        score = 60
     conviction = max(0.5, min(1.2, (score - 40) / 40.0))
 
     base_pct = (_DEFAULT_RISK_BUDGET_PCT / effective_stop_pct) * 100.0 * conviction
