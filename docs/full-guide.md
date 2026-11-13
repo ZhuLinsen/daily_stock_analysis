@@ -1253,6 +1253,8 @@ Bark 使用全局模板时需显式写出 Bark body：
 CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$title_json,"body":$content_json,"group":"stock"}
 ```
 
+Bark 受 APNs 4096 字节 payload 上限约束，发往 `api.day.app` 的正文会按约 3000 字节截断（中文约 1000 字），详见 [通知说明](notifications.md)。
+
 NapCat / OneBot 示例需按实际 endpoint、`user_id` 或 `group_id` 调整：
 
 ```env
