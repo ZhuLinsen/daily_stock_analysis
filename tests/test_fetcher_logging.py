@@ -96,6 +96,16 @@ class TestFetcherLogging(unittest.TestCase):
         self.assertIn("[数据源切换] 601006: [FailureFetcher] -> [SuccessFetcher]", log_text)
         self.assertIn("[数据源完成] 601006 使用 [SuccessFetcher] 获取成功:", log_text)
 
+    def test_manager_logs_terminal_failure_as_error(self):
+        manager = DataFetcherManager(fetchers=[_FailureFetcher()])
+
+        with self.assertLogs("data_provider.base", level="INFO") as captured:
+            with self.assertRaises(DataFetchError):
+                manager.get_daily_data("601006", start_date="2026-01-07", end_date="2026-03-08")
+
+        log_text = "\n".join(captured.output)
+        self.assertIn("ERROR:data_provider.base:[数据源终止] 601006 获取失败:", log_text)
+
     def test_manager_skips_builtin_fetchers_that_do_not_support_hk_daily(self):
         efinance = _RecordingFetcher("EfinanceFetcher", 0)
         pytdx = _RecordingFetcher("PytdxFetcher", 1)
@@ -124,7 +134,7 @@ class TestFetcherLogging(unittest.TestCase):
         mock_fetch_stock_data.assert_not_called()
         self.assertIn("不支持港股日线", str(captured.exception))
 
-    def test_efinance_logs_eastmoney_endpoint_on_remote_disconnect(self):
+    def test_efinance_remote_disconnect_then_fallback_has_no_error_logs(self):
         fetcher = EfinanceFetcher()
         fake_efinance = types.SimpleNamespace(
             stock=types.SimpleNamespace(
@@ -138,15 +148,23 @@ class TestFetcherLogging(unittest.TestCase):
             with patch.object(fetcher, "_set_random_user_agent", return_value=None), patch.object(
                 fetcher, "_enforce_rate_limit", return_value=None
             ):
-                with self.assertLogs(level="INFO") as captured:
-                    with self.assertRaises(DataFetchError):
-                        fetcher.get_daily_data("601006", start_date="2026-01-07", end_date="2026-03-08")
+                for code in ("601006", "510300"):
+                    with self.subTest(code=code):
+                        manager = DataFetcherManager(fetchers=[fetcher, _SuccessFetcher()])
+                        with self.assertLogs(level="INFO") as captured:
+                            df, source = manager.get_daily_data(
+                                code, start_date="2026-01-07", end_date="2026-03-08",
+                            )
 
-        log_text = "\n".join(captured.output)
-        self.assertIn("Eastmoney 历史K线接口失败:", log_text)
-        self.assertIn("endpoint=push2his.eastmoney.com/api/qt/stock/kline/get", log_text)
-        self.assertIn("category=remote_disconnect", log_text)
-        self.assertIn("[EfinanceFetcher] 601006 获取失败:", log_text)
+                        self.assertFalse(df.empty)
+                        self.assertEqual(source, "SuccessFetcher")
+                        self.assertTrue(all(record.levelno < logging.ERROR for record in captured.records))
+                        log_text = "\n".join(captured.output)
+                        self.assertIn("Eastmoney 历史K线接口失败:", log_text)
+                        self.assertIn("endpoint=push2his.eastmoney.com/api/qt/stock/kline/get", log_text)
+                        self.assertIn("category=remote_disconnect", log_text)
+                        self.assertIn(f"WARNING:data_provider.base:[EfinanceFetcher] {code} 获取失败:", log_text)
+                        self.assertIn(f"[数据源完成] {code} 使用 [SuccessFetcher] 获取成功:", log_text)
 
 
 if __name__ == "__main__":

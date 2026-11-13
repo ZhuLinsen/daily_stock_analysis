@@ -359,6 +359,29 @@ def test_index_daily_route_returns_standard_empty_result_when_all_sources_fail(
     ]
     assert "sh000688" in caplog.text
     assert "所有指数日线数据源" in caplog.text
+    assert any(record.levelno == logging.ERROR and "指数数据源终止" in record.message
+               for record in caplog.records)
+
+
+def test_index_daily_real_base_fetcher_errors_keep_terminal_error(caplog) -> None:
+    class FailingFetcher(_FakeFetcher):
+        get_daily_data = BaseFetcher.get_daily_data
+
+        def _fetch_raw_data(self, stock_code, start_date, end_date):
+            raise RuntimeError("provider offline")
+
+    names = ["TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher"]
+    fetchers = [FailingFetcher(name, priority=i) for i, name in enumerate(names)]
+    manager = DataFetcherManager(fetchers=fetchers)
+    with caplog.at_level(logging.WARNING):
+        df, source = manager.get_daily_data("sh000688")
+    assert df.empty and source == ""
+    errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "指数数据源终止" in errors[0].message
+    for name in names:
+        assert any(record.levelno == logging.WARNING and f"[{name}]" in record.message
+                   for record in caplog.records)
 
 
 @pytest.mark.parametrize("stock_code", ["000016", "000001", "000688"])

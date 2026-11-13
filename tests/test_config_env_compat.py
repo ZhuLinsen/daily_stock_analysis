@@ -392,7 +392,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             "OPENAI_MODEL": "gpt-4.1",
             "OPENAI_BASE_URL": "https://openai.example.com/v1",
             "OPENAI_API_KEY": "base-key-12345",
-            "LITELLM_FALLBACK_MODELS": "openai/gpt-5.5,openai/gpt-4o-mini",
+            "LITELLM_FALLBACK_MODELS": "openai/gpt-6.1-sol,openai/gpt-4o-mini",
             "VISION_MODEL": "openai/gpt-4o-mini",
         }
         with patch.dict(os.environ, base_env, clear=True):
@@ -552,8 +552,8 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             os.environ,
             {
                 "STOCK_LIST": "600519",
-                "LITELLM_MODEL": "openai/gpt-5.5",
-                "OPENAI_MODEL": "gpt-5.5",
+                "LITELLM_MODEL": "openai/gpt-6.1-sol",
+                "OPENAI_MODEL": "gpt-6.1-sol",
                 "OPENAI_API_KEY": "sk-openai-test",
                 "OPENAI_BASE_URL": "https://openai.example/v1",
                 "NEWS_INTEL_RETENTION_DAYS": "14",
@@ -566,8 +566,8 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         ):
             config = Config._load_from_env()
 
-        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
-        self.assertEqual(config.openai_model, "gpt-5.5")
+        self.assertEqual(config.litellm_model, "openai/gpt-6.1-sol")
+        self.assertEqual(config.openai_model, "gpt-6.1-sol")
         self.assertEqual(config.openai_base_url, "https://openai.example/v1")
         self.assertEqual(config.news_intel_retention_days, 14)
         self.assertEqual(config.news_intel_fetch_timeout_sec, 12.0)
@@ -975,8 +975,8 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
                 "\n".join(
                     [
                         "STOCK_LIST=600519",
-                        "LITELLM_MODEL=openai/gpt-5.5",
-                        "OPENAI_MODEL=gpt-5.5",
+                        "LITELLM_MODEL=openai/gpt-6.1-sol",
+                        "OPENAI_MODEL=gpt-6.1-sol",
                         "OPENAI_API_KEY=runtime-openai-key",
                         "OPENAI_BASE_URL=https://openai.example/v1",
                         "CUSTOM_WEBHOOK_BODY_TEMPLATE={\"title\":$$title_json,\"content\":$$content_json}",
@@ -995,8 +995,8 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             ):
                 config = Config._load_from_env()
 
-        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
-        self.assertEqual(config.openai_model, "gpt-5.5")
+        self.assertEqual(config.litellm_model, "openai/gpt-6.1-sol")
+        self.assertEqual(config.openai_model, "gpt-6.1-sol")
         self.assertEqual(config.openai_api_key, "runtime-openai-key")
         self.assertEqual(config.openai_base_url, "https://openai.example/v1")
         self.assertEqual(
