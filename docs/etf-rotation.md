@@ -11,7 +11,7 @@
 5. **只在组合变化时交易**：入选组合不变时不做任何交易，漂移后的权重也不会被重新拉回等权。
 6. **交易成本**：每次调仓按 `换手率 × ETF_ROTATION_COST_BPS` 扣除。换入、换出现金不计换手。
 
-计算仅接受明确采用前复权的 A 股 ETF 数据路径：Efinance、AkShare、Baostock，以及配置为 `forward` 的 TickFlow，保持这些来源原有的优先级和失败切换。Tushare、Pytdx、未前复权的 TickFlow 不作为本命令的兜底；没有合格来源时明确告警并剔除标的，不把未复权价格当成可用数据。调用方注入行情服务时，返回的 DataFrame 必须声明 `attrs["price_adjustment"]="forward"`。这些限制只作用于 ETF 轮动，不修改普通股票分析的数据源链。
+计算仅接受明确采用前复权的 A 股 ETF 数据路径：TickPlus（首选推荐，独立前复权实例，不改变普通分析口径）、Efinance、AkShare、Baostock，以及配置为 `forward` 的 TickFlow，保持这些来源原有的优先级和失败切换。Tushare、Pytdx、未前复权的 TickFlow 不作为本命令的兜底；没有合格来源时明确告警并剔除标的，不把未复权价格当成可用数据。调用方注入行情服务时，返回的 DataFrame 必须声明 `attrs["price_adjustment"]="forward"`。这些限制只作用于 ETF 轮动，不修改普通股票分析的数据源链。
 
 风险池中尚未上市或历史不足的 ETF，在积累够 `LOOKBACK` 天数据之前不参与排名。短缺口仅为动量计算前填最多 5 根，当前没有真实有效收盘价的 ETF 不参与当日排名；参数扫描与主回测使用同一原始行情，不重复填补。
 

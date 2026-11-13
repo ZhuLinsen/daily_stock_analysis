@@ -317,3 +317,7 @@ P0 只记录历史消费面。完整 pack 不应默认公开到历史详情或�
 - pack、日志、历史快照和 API 响应不得记录 API key、token、cookie、完整 webhook URL、邮箱密码、私有环境变量或其他密钥。
 - `source`、`timestamp`、`fallback`、`stale`、`partial` 等质量元数据只用于解释输入限制，不用于阻断分析；除非现有核心路径本来就是 fail-fast。
 - #1386 的盘前 / 盘中 phase 感知是后续 `phase` / `data_quality` 字段的重要背景；P0 只记录关系，不接入 runtime。
+
+## 实时行情与基本面取数复用
+
+普通分析主流程将本轮实时行情传给 `get_fundamental_context(realtime_quote=...)`，A 股及海外估值块直接复用，不再重复取行情、占用基本面与资金流阶段预算。显式传 `None` 表示本轮取数已失败或实时行情已禁用，也不重试；独立调用未传此参数时仍按原有超时和重试策略获取估值行情。资金流缺失时的决策保护规则保持不变，因此修复不保证建议从观望变为买入。
