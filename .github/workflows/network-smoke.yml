@@ -46,6 +46,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
+          retention-days: 7
           name: network-smoke-logs-${{ github.run_number }}
           path: |
             pytest-network.log

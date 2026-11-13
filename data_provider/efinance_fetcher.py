@@ -471,7 +471,7 @@ class EfinanceFetcher(BaseFetcher):
                 logger.warning(failure_message)
                 raise RateLimitError(f"efinance 可能被限流: {failure_message}") from e
 
-            logger.error(failure_message)
+            logger.warning(failure_message)
             raise DataFetchError(f"efinance 获取数据失败: {failure_message}") from e
     
     def _fetch_etf_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -565,7 +565,7 @@ class EfinanceFetcher(BaseFetcher):
                 logger.warning(failure_message)
                 raise RateLimitError(f"efinance 可能被限流: {failure_message}") from e
 
-            logger.error(failure_message)
+            logger.warning(failure_message)
             raise DataFetchError(f"efinance 获取 ETF 数据失败: {failure_message}") from e
     
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:

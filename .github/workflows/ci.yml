@@ -164,6 +164,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
       - name: 🐳 Build image
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
         with:
           context: .
           file: docker/Dockerfile
@@ -244,7 +246,7 @@ jobs:
 
   web-gate:
     name: web-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes, ai-governance]
     if: needs.changes.outputs.frontend == 'true'
     defaults:
@@ -280,4 +282,4 @@ jobs:
           name: web-ui-evidence-${{ github.event.pull_request.head.sha }}
           path: apps/dsa-web/test-results/fixtures/
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7

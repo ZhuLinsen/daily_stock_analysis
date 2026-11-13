@@ -120,6 +120,8 @@ class ResearchAgent:
                 total_tokens=tokens_used,
                 duration_s=round(time.monotonic() - started_at, 2),
                 timeout_seconds=timeout_seconds,
+                stage="decompose",
+                cause=sub_questions.get("error"),
             )
         logger.info("[ResearchAgent] decomposed into %d sub-questions", len(questions))
 
@@ -161,6 +163,8 @@ class ResearchAgent:
                     total_tokens=tokens_used,
                     duration_s=round(time.monotonic() - started_at, 2),
                     timeout_seconds=timeout_seconds,
+                    stage=f"sub-question {i + 1}",
+                    cause=finding.get("error"),
                 )
             all_findings.append(finding)
 
@@ -196,6 +200,8 @@ class ResearchAgent:
                 total_tokens=tokens_used,
                 duration_s=round(time.monotonic() - started_at, 2),
                 timeout_seconds=timeout_seconds,
+                stage="synthesis",
+                cause=report.get("error"),
             )
 
         duration = round(time.monotonic() - started_at, 2)
@@ -252,10 +258,21 @@ class ResearchAgent:
         total_tokens: int,
         duration_s: float,
         timeout_seconds: Optional[float],
+        stage: Optional[str] = None,
+        cause: Optional[str] = None,
     ) -> ResearchResult:
         """Build a structured timeout result without leaving detached work behind."""
         timeout_label = f"{timeout_seconds}s" if timeout_seconds is not None else "the configured limit"
-        logger.warning("[ResearchAgent] timed out after %s for query: %s", timeout_label, query[:120])
+        if stage:
+            error = (
+                f"Deep research timed out during {stage} after {duration_s}s "
+                f"(overall budget: {timeout_label})"
+            )
+        else:
+            error = f"Deep research timed out after {timeout_label}"
+        if cause:
+            error += f": {cause}"
+        logger.warning("[ResearchAgent] %s", error)
         return ResearchResult(
             success=False,
             report="",
@@ -263,7 +280,7 @@ class ResearchAgent:
             findings_count=findings_count,
             total_tokens=total_tokens,
             duration_s=duration_s,
-            error=f"Deep research timed out after {timeout_label}",
+            error=error,
             timed_out=True,
         )
 
@@ -444,7 +461,8 @@ Use Markdown formatting.  Be concise but thorough.
         ]
 
         try:
-            step_timeout = self._resolve_step_timeout(30, timeout_seconds)
+            # Report synthesis needs more time than planning, but cannot exceed the remaining budget.
+            step_timeout = self._resolve_step_timeout(120, timeout_seconds)
             if step_timeout is None:
                 return {"content": "", "tokens": 0, "timed_out": True}
             completion = self._call_text_completion(
@@ -483,4 +501,4 @@ class ResearchResult:
     total_tokens: int = 0
     duration_s: float = 0.0
     error: Optional[str] = None
-    timed_out: bool = False
+    timed_out: bool = False  # A stage/provider timeout or an exhausted overall deadline.

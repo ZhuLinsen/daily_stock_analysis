@@ -381,10 +381,14 @@ scope/type 校验是双向约束：`target_scope=market` 只能使用两类 Mark
 | dimension | `available=true` 条件 | fallback score |
 | --- | --- | --- |
 | `breadth` | `has_market_stats && (up_count + down_count) > 0` | `50` |
-| `index` | `indices` 非空且至少一个 `change_pct != None` | `50` |
+| `index` | 排除 `VIX` / `^VIX` 后，至少一个指数的 `change_pct != None` | `50` |
 | `limit` | `has_market_stats && (limit_up_count + limit_down_count) > 0` | `50` |
 
+指数维度与中英文「主要指数平均涨跌幅」使用同一份方向性指数数据。VIX 的涨跌幅表示波动率变化，不混入股票指数收益率均值；按 `code` 识别 `VIX` / `^VIX`（忽略大小写和首尾空白），其原始行情仍保留在报告指数表、模型上下文和结构化 `indices` 中。仅有 VIX、其余指数涨跌幅均缺失或指数列表为空时，`index.available=false`；普通指数的真实 `0.0` 涨跌幅仍计入均值。评分权重和状态阈值保持不变。
+
 `data_quality=unavailable` 表示 `index.available=false`，两类 market rule 都返回 `skipped` 且不触发通知；`partial` 表示至少一个维度 fallback，`ok` 表示三项均 available。`market_light_status` 在 `ok/partial` 下可触发；`partial` 触发时 diagnostics 必含 `missing_dimensions`。`market_light_score_drop` 直接比较 canonical aggregate score；任一侧 `partial` 仍允许比较，但 diagnostics 必含 `partial_comparison=true` 和 `missing_dimensions`。
+
+VIX 口径修复不重写已有报告或历史快照。升级后的首次分数下降比较可能使用旧口径历史分数；需要完全同口径的比较时，应以两个不同交易日按新口径生成的快照为基线。
 
 ### 基线、交易日与去重
 

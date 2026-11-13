@@ -594,6 +594,30 @@ class PipelineDailySourceAttributionTestCase(unittest.TestCase):
         self.assertEqual(result.data_sources, "analysis:litellm")
 
 
+class PipelineFundamentalQuoteReuseTestCase(unittest.TestCase):
+    def test_pipeline_passes_quote_or_attempted_none_to_fundamentals(self) -> None:
+        for outcome in ("success", "missing", "error", "disabled"):
+            with self.subTest(outcome=outcome):
+                pipeline = _analysis_pipeline("600519", "贵州茅台", realtime_name="贵州茅台")
+                quote = pipeline.fetcher_manager.get_realtime_quote.return_value
+                expected = quote if outcome == "success" else None
+                if outcome == "missing":
+                    pipeline.fetcher_manager.get_realtime_quote.return_value = None
+                elif outcome == "error":
+                    pipeline.fetcher_manager.get_realtime_quote.side_effect = RuntimeError("quote unavailable")
+                elif outcome == "disabled":
+                    pipeline.config.enable_realtime_quote = False
+                result = pipeline.analyze_stock("600519", ReportType.SIMPLE, "quote-reuse")
+                self.assertIsNotNone(result)
+                pipeline.fetcher_manager.get_fundamental_context.assert_called_once_with(
+                    "600519", realtime_quote=expected, budget_seconds=5.0,
+                )
+                self.assertEqual(
+                    pipeline.fetcher_manager.get_realtime_quote.call_count,
+                    0 if outcome == "disabled" else 1,
+                )
+
+
 class PipelineSearchSemanticsTestCase(unittest.TestCase):
     """V7 — index search query subject is the Chinese name only."""
 
