@@ -27,6 +27,8 @@
 
 Discord 长报告发送复用现有分片链路：单条 `content` 运行时不会超过 Discord 2000 字符限制，Webhook 与 Bot API 都会逐片发送并在片与片之间短暂等待；遇到 429 时按 Discord 返回的 `retry_after` 或 `Retry-After` 做有限重试，避免中途限流后只收到前半段报告。
 
+Telegram 文本消息遇到 HTTP 429 时，优先按 [Bot API 的 `parameters.retry_after`](https://core.telegram.org/bots/api#responseparameters) 等待；该字段不可用时使用 `Retry-After` 响应头，再回退到指数退避。每条消息仍最多尝试 3 次，最后一次失败后不再等待或重试。
+
 ## Minimal / Advanced 分层
 
 - Minimal key：足以启用一个通知渠道的最小配置。
@@ -176,6 +178,8 @@ CUSTOM_WEBHOOK_URLS=https://api.day.app/YOUR_BARK_KEY
 ```env
 CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$title_json,"body":$content_json,"group":"stock"}
 ```
+
+Bark 经 APNs 下发，单条通知的完整 payload 上限为 4096 字节，超限时 Bark 服务端返回 HTTP 500，手机收不到消息。因此主机名为 `api.day.app` 的 Webhook，其最终 payload（含全局模板渲染结果）中的 `body` 字段会按 JSON 编码后约 3000 字节截断并以 `...` 结尾，中文报告约保留 1000 字；完整报告请在 Web 页面或其他渠道查看。自建 Bark 服务 URL 不会被自动识别，需自行控制正文长度。
 
 AstrBot 已是一等通知渠道，优先使用 `ASTRBOT_URL` 和可选的 `ASTRBOT_TOKEN`。只有需要把 AstrBot 兼容端点放入 `CUSTOM_WEBHOOK_URLS` 时，才使用 custom webhook 模板，例如：
 
