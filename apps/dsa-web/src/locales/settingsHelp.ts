@@ -103,7 +103,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.ai_model.LITELLM_MODEL': {
     title: '主模型',
     summary: '指定普通分析流程默认使用的 LLM 模型。',
-    usage: '推荐使用 provider/model 格式，例如 deepseek/deepseek-v4-flash、gemini/gemini-3.1-pro-preview 或 ollama/qwen3:8b。',
+    usage: '推荐使用 provider/model 格式，例如 deepseek/deepseek-v4-flash、gemini/gemini-3.6-flash 或 ollama/qwen3:8b。',
     valueNotes: [
       '系统配置优先级为 LITELLM_CONFIG > LLM_CHANNELS > legacy provider keys。',
       '如果留空，系统会尝试根据已配置的 API Key 或渠道声明自动推断。',
@@ -275,6 +275,22 @@ const settingsHelpZhCN: SettingsHelpMap = {
     valueNotes: ['不同 Tushare 权限会影响可用接口和数据完整度。'],
     impact: ['影响部分 A 股基础数据、股票列表和相关增强数据获取。'],
     notes: ['不要把 token 提交到仓库或公开日志。'],
+  },
+  'settings.data_source.TICKPLUS_API_KEY': {
+    title: 'TickPlus API Key（推荐）',
+    summary: '首选推荐 A 股 / ETF 日 K、实时指标、名称查询；ETF 轮动使用前复权实例。',
+    usage: '在 TickPlus 控制台获取自己的 Key；未设置实时优先级时自动首选 tickplus。',
+    valueNotes: ['可选增强项，未配置时继续使用其他行情源。', '套餐额度、频率和 Key 有效期以平台确认为准。'],
+    impact: ['影响普通 A 股 / ETF 日 K、实时指标及 ETF 轮动，不改变已登记指数和海外市场路由。'],
+    notes: ['失败自动回退；不要公开测试 Key。已登记指数与海外市场保持原路由。'],
+  },
+  'settings.data_source.TICKPLUS_PRIORITY': {
+    title: 'TickPlus 日 K 优先级',
+    summary: '数字越小越优先，默认 0，同值先于内置源。',
+    usage: '仅影响普通 A 股 / ETF 日 K；实时行情由 REALTIME_SOURCE_PRIORITY 控制。',
+    valueNotes: ['填写非负整数；未配置 Key 时不启用 TickPlus。'],
+    impact: ['调整普通日 K 数据源的尝试顺序。'],
+    notes: ['显式设置的实时行情顺序会保留。'],
   },
   'settings.data_source.TICKFLOW_API_KEY': {
     title: 'TickFlow API Key',
@@ -1361,7 +1377,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.ai_model.LITELLM_MODEL': {
     title: 'Primary Model',
     summary: 'Selects the default LLM model for regular analysis flows.',
-    usage: 'Use provider/model format, such as deepseek/deepseek-v4-flash, gemini/gemini-3.1-pro-preview, or ollama/qwen3:8b.',
+    usage: 'Use provider/model format, such as deepseek/deepseek-v4-flash, gemini/gemini-3.6-flash, or ollama/qwen3:8b.',
     valueNotes: [
       'Runtime priority is LITELLM_CONFIG > LLM_CHANNELS > legacy provider keys.',
       'When empty, the system tries to infer a model from available API keys or channels.',
@@ -1511,6 +1527,22 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Available APIs depend on your Tushare permission level.'],
     impact: ['Affects some A-share base data, stock lists, and enrichment data.'],
     notes: ['Do not commit the token or print it in public logs.'],
+  },
+  'settings.data_source.TICKPLUS_API_KEY': {
+    title: 'TickPlus API Key (Recommended)',
+    summary: 'Preferred A-share/ETF daily bars, realtime indicators and names; ETF rotation uses forward adjustment.',
+    usage: 'Use your own console key. TickPlus is preferred unless realtime priority is explicitly configured.',
+    valueNotes: ['Optional: other providers remain available without a key.', 'Quota, rate limits and expiry depend on the platform.'],
+    impact: ['Affects ordinary A-share/ETF daily bars, realtime indicators and ETF rotation. Index and overseas routes are unchanged.'],
+    notes: ['Failures fall back. Never publish test keys. Registered indices and overseas routes are unchanged.'],
+  },
+  'settings.data_source.TICKPLUS_PRIORITY': {
+    title: 'TickPlus Daily Priority',
+    summary: 'Lower numbers run first; default 0, before built-in sources at the same priority.',
+    usage: 'For ordinary A-share/ETF daily bars. Realtime order uses REALTIME_SOURCE_PRIORITY.',
+    valueNotes: ['Use a non-negative integer. TickPlus requires a configured API key.'],
+    impact: ['Changes the order in which daily data providers are tried.'],
+    notes: ['Explicit realtime priority overrides are preserved.'],
   },
   'settings.data_source.TICKFLOW_API_KEY': {
     title: 'TickFlow API Key',

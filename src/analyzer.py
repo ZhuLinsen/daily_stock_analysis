@@ -110,6 +110,20 @@ from src.market_structure_prompt import format_market_structure_prompt_section
 logger = logging.getLogger(__name__)
 
 
+def _describe_llm_result_model(
+    configured_model: str,
+    model_used: Optional[str],
+    route_model: Optional[str] = None,
+) -> str:
+    """Describe the response identity; only a changed call route proves fallback."""
+    actual_model = model_used or configured_model
+    if route_model and route_model != configured_model:
+        return f"{actual_model}（配置模型 {configured_model}，已回退）"
+    if actual_model != configured_model:
+        return f"{actual_model}（配置模型 {configured_model}）"
+    return actual_model
+
+
 def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
     """Pick a deterministic fallback string for the report language (zh/en/ko)."""
     normalized = normalize_report_language(language)
@@ -1789,7 +1803,7 @@ class AnalysisResult:
     change_pct: Optional[float] = None     # 分析时的涨跌幅(%)
 
     # ========== 模型标记（Issue #528）==========
-    model_used: Optional[str] = None  # 分析使用的 LLM 模型（完整名，如 gemini/gemini-2.0-flash）
+    model_used: Optional[str] = None  # 分析使用的 LLM 模型（完整名，如 gemini/gemini-3.6-flash）
 
     # ========== 历史对比（Report Engine P0）==========
     query_id: Optional[str] = None  # 本次分析 query_id，用于历史对比时排除本次记录
@@ -3435,16 +3449,27 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         """Consume a LiteLLM stream into a single text payload."""
         chunks: List[str] = []
         usage: Dict[str, Any] = {}
+        response_model = ""
+        response_provider = provider
+        model_list = getattr(self._get_runtime_config(), "llm_model_list", [])
         chars_received = 0
         next_emit_at = 1
 
         try:
             for chunk in stream_response:
+                chunk_model, chunk_provider = self._resolve_response_model_provider(
+                    chunk,
+                    fallback_provider=response_provider,
+                    configured_model=model,
+                    model_list=model_list,
+                )
+                response_model = chunk_model or response_model
+                response_provider = chunk_provider or response_provider
                 chunk_usage = extract_usage_payload(chunk)
                 normalized_usage = self._normalize_usage(
                     chunk_usage,
-                    model=usage_model or model,
-                    provider=provider,
+                    model=response_model or usage_model or model,
+                    provider=response_provider,
                 )
                 if normalized_usage:
                     usage = normalized_usage
@@ -3474,6 +3499,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         if progress_callback and chars_received > 0:
             progress_callback(chars_received)
 
+        if response_model:
+            usage["response_model"] = response_model
+        if response_provider:
+            usage["provider"] = response_provider
         return response_text, usage
 
     def _get_generation_backend(self, backend_id: Optional[str] = None) -> GenerationBackend:
@@ -3503,6 +3532,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         if preflight_error is not None and not self._can_use_generation_fallback(preflight_error):
             raise preflight_error
         backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+        used_fallback_backend = False
         try:
             result = self._get_generation_backend(backend_id).generate(
                 prompt,
@@ -3597,6 +3627,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         "fallback_error": str(fallback_exc),
                     },
                 ) from fallback_exc
+            used_fallback_backend = True
+        if used_fallback_backend:
+            # A generation backend fallback is distinct from a model alias.
+            result.usage = {**result.usage, "route_model": result.usage.get("route_model") or result.model}
         if return_generation_result:
             return result
         return result.text, result.model, result.usage
@@ -3790,17 +3824,21 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         )
 
                 if _stream_text is not None:
+                    actual_model = _stream_usage.get("response_model") or model
                     last_response_text = _stream_text
-                    last_model = model
+                    last_model = actual_model
+                    if _stream_usage.get("provider"):
+                        last_provider = _stream_usage["provider"]
                     if usage_provider:
-                        _stream_usage["provider"] = usage_provider
+                        _stream_usage.setdefault("provider", usage_provider)
                     _stream_usage = _attach_usage_audit(_stream_usage, call_kwargs["messages"])
                     if usage_provider:
                         _stream_usage.setdefault("provider", usage_provider)
+                    _stream_usage["route_model"] = model
                     last_usage = _stream_usage
                     if response_validator is not None:
                         response_validator(_stream_text)
-                    return _stream_text, model, _stream_usage
+                    return _stream_text, actual_model, _stream_usage
 
                 response = call_litellm_with_param_recovery(
                     lambda kwargs: self._dispatch_litellm_completion(
@@ -3848,6 +3886,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     last_model = actual_model
                     if response_provider:
                         last_provider = response_provider
+                    usage["route_model"] = model
                     last_usage = usage
                     if response_validator is not None:
                         response_validator(content)
@@ -4215,7 +4254,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
                 # 记录响应信息
                 logger.info(
-                    f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
+                    f"[LLM返回] {_describe_llm_result_model(model_name, model_used, llm_usage.get('route_model'))} 响应成功, "
+                    f"耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
                 )
                 if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     response_preview = redact_diagnostic_text(response_text, limit=300)
@@ -4224,7 +4264,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 logger.info(f"[LLM返回 预览]\n{response_preview}")
                 if backend_id not in LOCAL_CLI_GENERATION_BACKEND_IDS:
                     logger.debug(
-                        f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
+                        f"=== {model_used or model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
                     )
                 # Keep parser/retry progress monotonic so task progress/message never "goes backward".
                 parse_progress = min(99, 93 + retry_count * 2)

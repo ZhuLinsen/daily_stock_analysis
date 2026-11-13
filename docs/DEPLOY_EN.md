@@ -210,7 +210,7 @@ journalctl -u stock-analyzer -f
 
 | Config Item | Description | How to Get |
 |--------|------|----------|
-| `ANSPIRE_API_KEYS` / `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Configure at least one AI model key; Anspire or AIHubMix is recommended first | Provider console |
+| `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `ANSPIRE_API_KEYS` | Configure at least one AI model key; choose a provider as needed | Provider console |
 | `STOCK_LIST` | Watchlist | Comma-separated stock codes; registered-index explicit forms (e.g. `sh000016`, `930606.CSI`, `sz399365`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry (local `.env`/Docker no-arg default runs keep stock semantics; use `--stocks` there for indices) — see [Index watchlist configuration](full-guide_EN.md#index-watchlist-configuration) |
 | Notification channel | Configure at least one, such as WeChat Work, Feishu, Telegram, or email | Notification provider |
 
@@ -221,9 +221,9 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | Enable scheduled tasks |
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
-| `ANSPIRE_API_KEYS` | - | Anspire LLM and news search (recommended) |
 | `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
 | `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
+| `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 
@@ -382,7 +382,6 @@ Add these Secrets:
 
 | Secret Name | Description | Required |
 |------------|------|------|
-| `ANSPIRE_API_KEYS` | Anspire Open API Key (one key for LLM and search) | Recommended |
 | `AIHUBMIX_KEY` | AIHubMix API Key (one key for multiple model families) | Recommended |
 | `ANTHROPIC_API_KEY` | Anthropic API Key | Optional |
 | `GEMINI_API_KEY` | Gemini AI API Key | Optional |
@@ -398,12 +397,13 @@ Add these Secrets:
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook (comma-separated for multiple) | Optional* |
 | `STOCK_LIST` | Watchlist, e.g., `600519,300750` | ✅ |
 | `SERPAPI_API_KEYS` | SerpAPI Key | Recommended |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 | `TAVILY_API_KEYS` | Tavily Search API Key | Optional |
 | `BOCHA_API_KEYS` | Bocha Search API Key | Optional |
 | `BRAVE_API_KEYS` | Brave Search API Key | Optional |
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | Optional |
 | `TUSHARE_TOKEN` | Tushare Token | Optional |
-| `GEMINI_MODEL` | Model name (default gemini-2.0-flash) | Optional |
+| `GEMINI_MODEL` | Model name (default gemini-3.6-flash) | Optional |
 
 > *Note: Configure at least one notification channel, multiple channels supported for simultaneous push
 

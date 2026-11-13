@@ -987,6 +987,8 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    tickplus_api_key: Optional[str] = None
+    tickplus_priority: int = 0
     tickflow_api_key: Optional[str] = None
     tickflow_kline_adjust: str = "none"
     tickflow_priority: int = 2
@@ -1016,7 +1018,7 @@ class Config:
     generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
     local_cli_backend_max_concurrency: int = DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY
     opencode_cli_model: str = ""
-    # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
+    # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.6-flash)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
 
@@ -1055,8 +1057,8 @@ class Config:
 
     # Legacy single-key fields (kept for backward compatibility; gemini_api_keys[0] when set)
     gemini_api_key: Optional[str] = None
-    gemini_model: str = "gemini-3.1-pro-preview"  # 主模型
-    gemini_model_fallback: str = "gemini-3-flash-preview"  # 备选模型
+    gemini_model: str = "gemini-3.6-flash"  # 主模型
+    gemini_model_fallback: str = "gemini-3.5-flash-lite"  # 备选模型
     gemini_temperature: float = 0.7  # 温度参数（0.0-2.0，控制输出随机性，默认0.7）
 
     # Gemini API 请求配置（防止 429 限流）
@@ -1073,13 +1075,13 @@ class Config:
     # OpenAI 兼容 API（备选，当 Gemini/Anthropic 不可用时使用）
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None  # 如: https://api.openai.com/v1
-    openai_model: str = "gpt-5.5"  # OpenAI 兼容模型名称
+    openai_model: str = "gpt-6.1-sol"  # OpenAI 兼容模型名称
     openai_vision_model: Optional[str] = None  # Deprecated: use VISION_MODEL instead
     openai_temperature: float = 0.7  # OpenAI 温度参数（0.0-2.0，默认0.7）
 
     # === Vision 配置 ===
     # VISION_MODEL: litellm model string used for image understanding calls.
-    # Fallback chain: VISION_MODEL → OPENAI_VISION_MODEL → gemini/gemini-2.0-flash
+    # Fallback chain: VISION_MODEL → OPENAI_VISION_MODEL → gemini/gemini-3.6-flash
     vision_model: str = ""
     # VISION_PROVIDER_PRIORITY: comma-separated provider order for Vision fallback.
     vision_provider_priority: str = "gemini,anthropic,openai"
@@ -1638,12 +1640,11 @@ class Config:
         # the higher-priority sources and Hermes blocking issues are known.
         litellm_model_explicit = os.getenv('LITELLM_MODEL', '').strip()
         litellm_model = litellm_model_explicit
-        inferred_legacy_deepseek_model = False
         _openai_model_env = os.getenv('OPENAI_MODEL', '').strip()
         if using_anspire_llm_legacy:
             _openai_model_name = _anspire_llm_model_env or _openai_model_env or ANSPIRE_LLM_MODEL_DEFAULT
         else:
-            _openai_model_name = _openai_model_env or 'gpt-5.5'
+            _openai_model_name = _openai_model_env or 'gpt-6.1-sol'
 
         # LITELLM_FALLBACK_MODELS: comma-separated list of fallback models
         _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
@@ -1712,15 +1713,14 @@ class Config:
                 llm_models_source = "legacy_env"
 
             if not litellm_model:
-                _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
+                _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.6-flash').strip()
                 _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
                 if gemini_api_keys:
                     litellm_model = f'gemini/{_gemini_model_name}'
                 elif anthropic_api_keys:
                     litellm_model = f'anthropic/{_anthropic_model_name}'
                 elif deepseek_api_keys:
-                    litellm_model = 'deepseek/deepseek-chat'
-                    inferred_legacy_deepseek_model = True
+                    litellm_model = 'deepseek/deepseek-v4-flash'
                 elif openai_api_keys:
                     # For openai-compatible models, add prefix only if not already prefixed
                     if '/' not in _openai_model_name:
@@ -1730,21 +1730,10 @@ class Config:
 
             if not litellm_fallback_models and not litellm_fallback_models_explicit:
                 # Backward compat: use gemini_model_fallback when primary is gemini
-                _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview').strip()
+                _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3.5-flash-lite').strip()
                 if litellm_model.startswith('gemini/') and _gemini_fallback:
                     _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
                     litellm_fallback_models = [_fb]
-
-        if (
-            inferred_legacy_deepseek_model
-            and llm_models_source == "legacy_env"
-            and litellm_model == 'deepseek/deepseek-chat'
-        ):
-            logger.warning(
-                "Deprecation warning:\n"
-                "deepseek-chat will be deprecated on 2026-07-24,\n"
-                "please migrate to deepseek-v4-flash."
-            )
 
         generation_backend = (
             os.getenv('GENERATION_BACKEND', LITELLM_BACKEND_ID).strip().lower()
@@ -1933,6 +1922,8 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            tickplus_api_key=os.getenv('TICKPLUS_API_KEY'),
+            tickplus_priority=parse_env_int(os.getenv('TICKPLUS_PRIORITY'), 0, field_name='TICKPLUS_PRIORITY', minimum=0),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
             tickflow_kline_adjust=normalize_tickflow_kline_adjust(os.getenv('TICKFLOW_KLINE_ADJUST')),
             tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
@@ -1987,8 +1978,8 @@ class Config:
             openai_api_keys=openai_api_keys,
             deepseek_api_keys=deepseek_api_keys,
             gemini_api_key=os.getenv('GEMINI_API_KEY'),
-            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview'),
-            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview'),
+            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.6-flash'),
+            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3.5-flash-lite'),
             gemini_temperature=parse_env_float(os.getenv('GEMINI_TEMPERATURE'), 0.7, field_name='GEMINI_TEMPERATURE'),
             gemini_request_delay=parse_env_float(os.getenv('GEMINI_REQUEST_DELAY'), 2.0, field_name='GEMINI_REQUEST_DELAY', minimum=0.0),
             gemini_max_retries=parse_env_int(os.getenv('GEMINI_MAX_RETRIES'), 5, field_name='GEMINI_MAX_RETRIES', minimum=0),
@@ -2002,7 +1993,7 @@ class Config:
             # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
             # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no explicit
             # OPENAI_BASE_URL override is provided.
-            # Model names match upstream (e.g. gemini-3.1-pro-preview, gpt-5.5, deepseek-v4-flash).
+            # Model names match upstream (e.g. gemini-3.6-flash, gpt-6.1-sol, deepseek-v4-flash).
             openai_api_key=openai_api_keys[0] if openai_api_keys else None,
             openai_base_url=openai_base_url,
             openai_model=_openai_model_name,
@@ -2526,7 +2517,7 @@ class Config:
             LLM_AIHUBMIX_API_SURFACE=chat_completions
             LLM_AIHUBMIX_BASE_URL=https://aihubmix.com/v1
             LLM_AIHUBMIX_API_KEY=sk-xxx           (or LLM_AIHUBMIX_API_KEYS=k1,k2)
-            LLM_AIHUBMIX_MODELS=gpt-5.5,claude-sonnet-4-6
+            LLM_AIHUBMIX_MODELS=gpt-6.1-sol,claude-sonnet-4-6
             LLM_AIHUBMIX_ENABLED=true
         """
         import logging
@@ -3144,7 +3135,7 @@ class Config:
     @classmethod
     def _resolve_realtime_source_priority(cls) -> str:
         """
-        Resolve realtime source priority with automatic tushare injection.
+        Resolve realtime source priority with configured paid-provider injection.
 
         When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
         explicitly set, automatically prepend 'tushare' to the default priority
@@ -3156,6 +3147,10 @@ class Config:
         if explicit:
             # User explicitly set priority, respect it
             return explicit
+
+        if os.getenv('TICKPLUS_API_KEY', '').strip():
+            tushare = 'tushare,' if os.getenv('TUSHARE_TOKEN', '').strip() else ''
+            return f'tickplus,{tushare}{default_priority}'
 
         tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
         if tushare_token:
@@ -3456,9 +3451,9 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "未配置任何可用的 AI 模型接入。请至少配置 ANSPIRE_API_KEYS、"
-                        "AIHUBMIX_KEY、GEMINI_API_KEY、ANTHROPIC_API_KEY、"
-                        "OPENAI_API_KEY 或 DEEPSEEK_API_KEY 中的一个，或配置 "
+                        "未配置任何可用的 AI 模型接入。请至少配置 AIHUBMIX_KEY、"
+                        "GEMINI_API_KEY、ANTHROPIC_API_KEY、"
+                        "OPENAI_API_KEY、DEEPSEEK_API_KEY 或 ANSPIRE_API_KEYS 中的一个，或配置 "
                         "LITELLM_CONFIG / LLM_CHANNELS 可用模型渠道。"
                     ),
                     field="LITELLM_CONFIG",
@@ -3468,7 +3463,7 @@ class Config:
                 severity="info",
                 message=(
                     "尚未明确指定主模型，系统将自动从可用 API Key 推断。"
-                    "建议尽早配置主模型（格式如 gemini/gemini-3.1-pro-preview）"
+                    "建议尽早配置主模型（格式如 gemini/gemini-3.6-flash）"
                 ),
                 field="LITELLM_MODEL",
             ))
