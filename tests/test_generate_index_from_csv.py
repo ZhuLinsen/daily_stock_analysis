@@ -141,7 +141,7 @@ class TestDetermineMarket:
 
     def test_kr_kosdaq_stock_with_yahoo_suffix(self):
         """测试韩股 KOSDAQ Yahoo 后缀"""
-        result = determine_market("035720.KQ")
+        result = determine_market("247540.KQ")
         assert result == "KR"
 
 

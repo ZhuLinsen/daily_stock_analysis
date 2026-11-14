@@ -1692,7 +1692,7 @@ python main.py --serve-only --host 0.0.0.0 --port 8888
 | HK stocks | hk + 5-digit number | `hk00700`, `hk09988` |
 | US stocks | 1-5 letters, optional `.X` suffix | `AAPL`, `TSLA`, `BRK.B` |
 | Japanese stocks | Yahoo `.T` suffix | `7203.T`, `6758.T` |
-| Korean stocks | Yahoo `.KS` / `.KQ` suffix | `005930.KS`, `035720.KQ` |
+| Korean stocks | Yahoo `.KS` / `.KQ` suffix | `005930.KS`, `247540.KQ` |
 
 ### Notes
 

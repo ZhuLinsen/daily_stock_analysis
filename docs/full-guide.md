@@ -1868,7 +1868,7 @@ python main.py --serve-only --host 0.0.0.0 --port 8888
 | 港股 | hk + 5位数字 | `hk00700`、`hk09988` |
 | 美股 | 1-5 字母（可选 .X 后缀） | `AAPL`、`TSLA`、`BRK.B` |
 | 日股 | Yahoo 后缀 `.T` | `7203.T`、`6758.T` |
-| 韩股 | Yahoo 后缀 `.KS` / `.KQ` | `005930.KS`、`035720.KQ` |
+| 韩股 | Yahoo 后缀 `.KS` / `.KQ` | `005930.KS`、`247540.KQ` |
 | 美股指数 | SPX/DJI/IXIC 等 | `SPX`、`DJI`、`NASDAQ`、`VIX` |
 
 ### 注意事项
