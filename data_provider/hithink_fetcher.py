@@ -173,7 +173,7 @@ class HiThinkFetcher(BaseFetcher):
                 return False
             if capability == "index_snapshot" and now < self._index_snapshot_disabled_until:
                 return False
-            if capability == "stock_list" and now < self._directory_disabled_until:
+            if capability in {"stock_list", "stock_name"} and now < self._directory_disabled_until:
                 return False
         return True
 
