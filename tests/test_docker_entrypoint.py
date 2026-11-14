@@ -227,3 +227,58 @@ def test_docker_entrypoint_skips_owner_chmod_when_chown_fails(tmp_path: Path) ->
     assert not (log_dir / "chmod.log").exists()
     assert "skipping owner-only chmod" in result.stderr
     assert "still not writable by dsa" in result.stderr
+
+
+def test_dockerfile_guards_arm64_openblas_coretype_for_build_smoke_imports() -> None:
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert dockerfile.count('OPENBLAS_CORETYPE="${OPENBLAS_CORETYPE:-ARMV8}"') == 2
+    assert 'python -c "import src.services.screening.pipeline; import futu"' in dockerfile
+    assert "ENV OPENBLAS_CORETYPE" not in dockerfile
+
+
+def test_docker_entrypoint_defaults_openblas_coretype_on_arm64_only(tmp_path: Path) -> None:
+    fakebin, log_dir = _prepare_fake_entrypoint_tools(tmp_path, "exit 0\n")
+    _write_fake_command(
+        fakebin,
+        "uname",
+        'printf "%s\\n" "${FAKE_UNAME_M:-x86_64}"\n',
+    )
+    _write_fake_command(
+        fakebin,
+        "id",
+        'printf "%s\\n" "${FAKE_UID:-0}"\n',
+    )
+    probe = fakebin / "print-openblas"
+    probe.write_text(
+        '#!/bin/sh\nprintf "%s" "${OPENBLAS_CORETYPE-<unset>}"\n',
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+
+    def run_probe(arch: str, uid: str = "0", preset: str | None = None) -> str:
+        env = os.environ.copy()
+        env["PATH"] = f"{fakebin}:{env['PATH']}"
+        env["FAKE_LOG_DIR"] = str(log_dir)
+        env["GOSU_WRITE_EXIT"] = "0"
+        env["CHOWN_EXIT"] = "0"
+        env["FAKE_UNAME_M"] = arch
+        env["FAKE_UID"] = uid
+        if preset is None:
+            env.pop("OPENBLAS_CORETYPE", None)
+        else:
+            env["OPENBLAS_CORETYPE"] = preset
+        proc = subprocess.run(
+            ["sh", str(REPO_ROOT / "docker" / "entrypoint.sh"), "print-openblas"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return proc.stdout
+
+    assert run_probe("aarch64", uid="0") == "ARMV8"
+    assert run_probe("arm64", uid="1000") == "ARMV8"
+    assert run_probe("aarch64", uid="0", preset="NEOVERSEN1") == "NEOVERSEN1"
+    assert run_probe("x86_64", uid="0") == "<unset>"
+
