@@ -743,6 +743,23 @@ class HistoryService:
         Convert an AnalysisHistory ORM record to a detail response dict.
         """
         raw_result = parse_json_field(record.raw_result)
+        market_fields = self._extract_history_market_fields(
+            getattr(record, "context_snapshot", None)
+        )
+        if isinstance(raw_result, dict):
+            raw_dashboard = raw_result.get("dashboard")
+            raw_market_sources = [raw_result]
+            if isinstance(raw_dashboard, dict):
+                raw_market_sources.append(raw_dashboard)
+            for field in ("current_price", "change_pct"):
+                if market_fields[field] is not None:
+                    continue
+                for source in raw_market_sources:
+                    raw_value = source.get(field)
+                    if raw_value is not None:
+                        market_fields[field] = self._safe_float(raw_value)
+                        if market_fields[field] is not None:
+                            break
 
         model_used = (raw_result or {}).get("model_used") if isinstance(raw_result, dict) else None
         model_used = normalize_model_used(model_used)
@@ -801,6 +818,7 @@ class HistoryService:
             "raw_result": raw_result,
             "context_snapshot": context_snapshot,
             "market_phase_summary": market_phase_summary,
+            **market_fields,
         }
 
     def _decision_action_fields_for_record(self, record, raw_result: Any) -> Dict[str, Any]:

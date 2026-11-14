@@ -228,6 +228,31 @@ def test_profile_research_preserves_specialized_report_evidence() -> None:
     assert artifact["data_quality"]["source_count"] == len(artifact["evidence"])
 
 
+def test_profile_research_passes_price_and_raw_result_to_artifact_builder() -> None:
+    service, dependencies = _service()
+    detail = _report_detail()
+    detail.update({
+        "current_price": 100.0,
+        "action": "buy",
+        "sentiment_score": 80,
+        "ideal_buy": "60",
+        "stop_loss": "55",
+        "take_profit": "80",
+        "raw_result": {"strategy_synthesis": {"decision_path": ["committee"]}},
+    })
+    dependencies["history_service"].get_history_detail_by_id.return_value = detail
+
+    artifact = service.get_profile("AAPL")["research"]["data"]["structured_report"]
+
+    assert artifact["metadata"]["levels"]["validation"] == "out_of_range"
+    assert artifact["metadata"]["levels"]["status"] == "invalid"
+    assert artifact["metadata"]["position"]["max_pct"] == 0
+    assert artifact["metadata"]["position"]["cap_reason"] == "invalid_levels"
+    assert artifact["metadata"]["committee"]["strategy_synthesis"] == {
+        "decision_path": ["committee"]
+    }
+
+
 def test_profile_research_reads_independent_fundamental_snapshot() -> None:
     service, dependencies = _service()
     detail = _report_detail()

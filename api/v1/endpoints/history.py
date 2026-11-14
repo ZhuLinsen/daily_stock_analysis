@@ -33,6 +33,7 @@ from api.v1.schemas.history import (
     StockBarItem,
     StockBarResponse,
 )
+from api.v1.schemas.research_artifact import ResearchArtifact
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.run_flow import RunFlowSnapshot
 from src.storage import DatabaseManager
@@ -45,6 +46,7 @@ from src.report_language import (
 )
 from src.services.history_service import HistoryService, MarkdownReportGenerationError
 from src.services.analysis_service import asset_type_from_canonical_code
+from src.services.research_artifact_service import build_research_artifact
 from src.schemas.decision_action import build_action_fields
 from src.utils.data_processing import (
     normalize_model_used,
@@ -580,6 +582,15 @@ def get_history_detail(
         raw_result = result.get("raw_result")
         if not isinstance(raw_result, dict):
             raw_result = {}
+        raw_dashboard = raw_result.get("dashboard")
+        if current_price is None:
+            current_price = raw_result.get("current_price")
+        if current_price is None and isinstance(raw_dashboard, dict):
+            current_price = raw_dashboard.get("current_price")
+        if change_pct is None:
+            change_pct = raw_result.get("change_pct")
+        if change_pct is None and isinstance(raw_dashboard, dict):
+            change_pct = raw_dashboard.get("change_pct")
         report_language = normalize_report_language(
             result.get("report_language")
             or raw_result.get("report_language")
@@ -671,12 +682,21 @@ def get_history_detail(
             market_structure=market_structure,
         )
         
-        return AnalysisReport(
+        report = AnalysisReport(
             meta=meta,
             summary=summary,
             strategy=strategy,
             details=details
         )
+        if report.structured_report is None and getattr(report.meta, "report_type", None) != "market_review":
+            report = report.model_copy(
+                update={
+                    "structured_report": ResearchArtifact.model_validate(
+                        build_research_artifact(report.model_dump())
+                    )
+                }
+            )
+        return report
         
     except HTTPException:
         raise

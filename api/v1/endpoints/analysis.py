@@ -55,6 +55,7 @@ from api.v1.schemas.history import (
     ReportStrategy,
     ReportDetails,
 )
+from api.v1.schemas.research_artifact import ResearchArtifact
 from api.v1.schemas.run_flow import RunFlowSnapshot
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.data.stock_index_loader import resolve_index_stock_code
@@ -80,6 +81,7 @@ from src.services.stock_code_utils import is_code_like, resolve_index_stock_code
 from src.services.stock_list_parser import ParseStatus, parse_analysis_target
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.schemas.decision_action import build_action_fields
+from src.services.research_artifact_service import build_research_artifact
 from src.services.name_to_code_resolver import resolve_name_to_code
 from src.services.task_queue import (
     get_task_queue,
@@ -1104,40 +1106,27 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
             query_id=query_id,
             stock_code=stock_code,
         )
-        report_task_details = report_data.get("details")
-        report_task_raw_result = (
-            report_task_details.get("raw_result")
-            if isinstance(report_task_details, dict)
-            else None
-        )
-        should_rebuild_report = (
-            context_snapshot is not None
-            or fundamental_snapshot is not None
-            or raw_result_snapshot is not None
-            or report_task_raw_result is not None
-        )
-        if should_rebuild_report:
-            try:
-                report = _build_analysis_report(
-                    _prepare_report_for_task_enrichment(
-                        report_data,
-                        payload.get("created_at"),
-                    ),
-                    query_id,
-                    stock_code,
-                    payload.get("stock_name") or getattr(task, "stock_name", None),
-                    context_snapshot=context_snapshot,
-                    fallback_fundamental_payload=fundamental_snapshot,
-                    fallback_raw_result_payload=raw_result_snapshot or payload,
-                )
-                payload["report"] = report.model_dump()
-                report_enriched = True
-            except Exception as e:
-                logger.debug(
-                    "enrich in-memory task report failed (fail-open): task_id=%s err=%s",
-                    getattr(task, "task_id", None),
-                    e,
-                )
+        try:
+            report = _build_analysis_report(
+                _prepare_report_for_task_enrichment(
+                    report_data,
+                    payload.get("created_at"),
+                ),
+                query_id,
+                stock_code,
+                payload.get("stock_name") or getattr(task, "stock_name", None),
+                context_snapshot=context_snapshot,
+                fallback_fundamental_payload=fundamental_snapshot,
+                fallback_raw_result_payload=raw_result_snapshot or payload,
+            )
+            payload["report"] = report.model_dump()
+            report_enriched = True
+        except Exception as e:
+            logger.debug(
+                "enrich in-memory task report failed (fail-open): task_id=%s err=%s",
+                getattr(task, "task_id", None),
+                e,
+            )
 
     if not report_enriched and isinstance(report_data, dict):
         meta = report_data.get("meta")
@@ -1383,7 +1372,16 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     take_profit=_stringify_report_strategy_value(getattr(record, 'take_profit', None)),
                 ),
                 details=details,
-            ).model_dump()
+            )
+            if report_dict.structured_report is None and getattr(report_dict.meta, "report_type", None) != "market_review":
+                report_dict = report_dict.model_copy(
+                    update={
+                        "structured_report": ResearchArtifact.model_validate(
+                            build_research_artifact(report_dict.model_dump())
+                        )
+                    }
+                )
+            report_dict = report_dict.model_dump()
             return TaskStatus(
                 task_id=task_id,
                 trace_id=task_id,
@@ -1650,9 +1648,18 @@ def _build_analysis_report(
             market_structure=market_structure,
         )
 
-    return AnalysisReport(
+    report = AnalysisReport(
         meta=meta,
         summary=summary,
         strategy=strategy,
         details=details
     )
+    if report.structured_report is None and getattr(report.meta, "report_type", None) != "market_review":
+        return report.model_copy(
+            update={
+                "structured_report": ResearchArtifact.model_validate(
+                    build_research_artifact(report.model_dump())
+                )
+            }
+        )
+    return report

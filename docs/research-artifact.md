@@ -25,7 +25,11 @@
 - `invalidation_conditions`：失效条件，至少一条。
 - `next_actions`：下一步动作。
 - `data_quality`：输入质量摘要。
-- `metadata`：低敏扩展字段。
+- `metadata`：低敏扩展字段。自动构建的报告会补充以下确定性快照：
+  - `levels`：四个策略点位的数值化结果，以及 `reference_price`、`risk_reward_ratio`、`status`（`active` / `conditional_watch` / `invalid`）和 `validation`（`ok` / `out_of_range` / `direction_conflict`）。对 `buy` / `add` 动作，同时校验主买入价与二次买入价、止损、止盈几何关系（保留原始入场价语义，不自动互换）；出现方向冲突或买入价偏离现价超 25% 时标记 `status=invalid`，缺省点位标记 `conditional_watch`。
+  - `position`：基于计划入场价（`ideal_buy`，缺失时回退 `reference_price`）与止损距离的风险预算仓位上下限（`method=stop_loss_risk_budget`）。非进攻动作、低质量数据、点位校验失败（`direction_conflict` / `out_of_range` / `status=invalid`）或止损依据缺失/无效时一律返回 `0%–0%` 与 `stop_distance_pct=null`。仓位上限按整数向下取整（允许低于 5%），信心系数上限 `1.0` 仅缩减不放大预算，保证 `max_pct * stop_distance_pct / 100 <= risk_budget_pct`（默认 1.2%）。该计算基于止损距离与风险预算，不使用 ATR 历史波动率。
+  - `risk_flags`：点位方向、锚点偏移、风险收益比、数据质量、新闻缺失与报告风险提醒。
+  - `committee`：从原始结果中提取的多智能体分歧、风控覆写与决策路径快照（存在时）。
 
 ## Thesis
 
@@ -77,7 +81,7 @@
 structured_report?: ResearchArtifact | null
 ```
 
-旧报告可以继续不返回该字段；Web 类型和后端 schema 都按可选字段处理。
+旧报告可以继续不返回该字段；Web 类型和后端 schema 都按可选字段处理。非大盘复盘的 `AnalysisReport` 在构建/序列化时会自动生成 `structured_report`（同步报告、异步任务结果及数据库回退、历史详情统一链路）；个股研究聚合也会从历史详情复用同一 builder，并统一透传分析时价格与 `raw_result` 委员会快照。
 
 当前 Stock Profile API 会从历史详情动态构建该产物；报告生成时冻结并持久化完整 `structured_report` 仍是后续范围。
 

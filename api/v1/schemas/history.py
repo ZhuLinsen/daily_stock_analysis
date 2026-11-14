@@ -318,6 +318,18 @@ class AnalysisReport(BaseModel):
         description="结构化研究产物，供看板、个股研究页、监控和 Copilot 复用",
     )
 
+    @model_validator(mode="after")
+    def _populate_structured_report(self) -> "AnalysisReport":
+        if self.structured_report is None and getattr(self.meta, "report_type", None) != "market_review":
+            try:
+                from src.services.research_artifact_service import build_research_artifact
+
+                artifact_payload = build_research_artifact(self)
+                self.structured_report = ResearchArtifact.model_validate(artifact_payload)
+            except Exception:
+                self.structured_report = None
+        return self
+
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "meta": {
