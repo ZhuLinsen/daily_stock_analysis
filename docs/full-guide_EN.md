@@ -888,6 +888,10 @@ P3 adds realtime quote quality metadata for the regular analysis path, but still
 
 Whole-source fallback semantics are fixed: `source` keeps the actual successful provider token, while `fallback_from` records the highest-priority whole source that failed in the current attempt; if the primary source succeeds and later providers only supplement missing fields, `fallback_from` is not set. `AnalysisContextBuilder` only maps these upstream artifacts, performs no extra fetches, and does no quality scoring; quote block status collapses as `STALE > FALLBACK > AVAILABLE`. When realtime price overlays `today`, the pipeline marks `is_partial_bar`, `is_estimated`, `estimated_fields`, `realtime_source`, and quote metadata. The `daily_bars` block still represents the complete daily-bar window in storage; partial/estimated markers only enter the technical block. Freshness scoring, intraday cache TTL tiers, Agent tool-level reuse, and API/Web display remain follow-ups.
 
+During intraday (including lunch breaks and closing auctions) and postmarket realtime overlays, if stored `today` predates the current session and a parseable provider trading date or timestamp confirms the quote belongs to that exact session, the pipeline first copies stored `today` to `yesterday`. Open-price fallback, price and volume change ratios, and the market snapshot then use that baseline. Premarket, non-trading days, missing phase context, and an already stored current-session bar keep the existing `yesterday`. Quotes with missing, unparseable or future quote dates, including cached HK quotes, also keep the existing baseline: `fetched_at` is only the system fetch time, and differences in price, previous close, or OHLC cannot establish the quote's session.
+
+Yahoo daily-bar `quote_date` identifies the trading date only and is not a `provider_timestamp` for freshness calculations. Realtime quotes use unadjusted prices.
+
 ### Analysis Phase Entrypoint and Task Queue Pass-Through (Issue #1386 P4a)
 
 P4a adds an `analysis_phase=auto|premarket|intraday|postmarket` request parameter, defaulting to `auto`, so API callers can explicitly override the phase for the current analysis. The parameter is wired through `POST /api/v1/analysis/analyze`, the async task queue, `AnalysisService`, the regular analysis pipeline, and market-phase context construction. Web frontend types and API mapping accept the field, but this phase does not add a page selector; Bot, schedule, GitHub Actions, and DB migrations remain out of scope.
@@ -1700,7 +1704,7 @@ python main.py --serve-only --host 0.0.0.0 --port 8888
 | HK stocks | hk + 5-digit number | `hk00700`, `hk09988` |
 | US stocks | 1-5 letters, optional `.X` suffix | `AAPL`, `TSLA`, `BRK.B` |
 | Japanese stocks | Yahoo `.T` suffix | `7203.T`, `6758.T` |
-| Korean stocks | Yahoo `.KS` / `.KQ` suffix | `005930.KS`, `035720.KQ` |
+| Korean stocks | Yahoo `.KS` / `.KQ` suffix | `005930.KS`, `247540.KQ` |
 
 ### Notes
 
