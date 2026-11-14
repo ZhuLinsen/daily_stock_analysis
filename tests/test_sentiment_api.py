@@ -180,7 +180,9 @@ class SentimentApiTests(unittest.TestCase):
             "broken": pd.DataFrame({"代码": ["000002"]}),
         }
         with patch("src.services.eastmoney_sentiment.datetime", wraps=datetime) as clock, \
-             patch("src.services.eastmoney_sentiment._fetch_pool", side_effect=lambda kind, _: pools[kind]), \
+             patch("src.services.eastmoney_sentiment._fetch_pool", side_effect=lambda kind, day: (
+                 pools["previous"].rename(columns={"昨日连板数": "连板数"})
+                 if kind == "closed" and day < now.date() else pools[kind])), \
              patch("src.services.eastmoney_sentiment._fetch_spot", side_effect=CsmarSourceError("timeout")):
             clock.now.return_value = now
             response = self.client.post(f"/api/v1/sentiment/snapshots/{now.date()}/generate")
@@ -212,8 +214,10 @@ class SentimentApiTests(unittest.TestCase):
                                  "最新价": [10] * 8, "涨跌幅": [10] * 4 + [3, -10, 0, 0],
                                  "成交量": [1] * 7 + [0], "成交额": [amount] * 7 + [900]})
             with patch("src.services.eastmoney_sentiment.datetime", wraps=datetime) as clock, \
-                 patch("src.services.eastmoney_sentiment._fetch_pool", side_effect=lambda kind, _: pools[kind]), \
-                 patch("src.services.eastmoney_sentiment._fetch_spot", return_value=spot):
+                 patch("src.services.eastmoney_sentiment._fetch_pool", side_effect=lambda kind, target: (
+                     pools["previous"].rename(columns={"昨日连板数": "连板数"})
+                     if kind == "closed" and target < day else pools[kind])), \
+                 patch("src.services.eastmoney_sentiment._fetch_spot", return_value=(spot, len(spot))):
                 clock.now.return_value = datetime.combine(day, datetime.min.time(), MARKET_TZ).replace(hour=18)
                 response = self.client.post(f"{base}/{day}/generate")
             self.assertEqual(response.status_code, 200, response.text)
@@ -247,20 +251,113 @@ class SentimentApiTests(unittest.TestCase):
         self.assertEqual(data["items"], [])
 
     def test_empty_down_pool_requires_same_day_provider_confirmation(self):
-        from src.services.eastmoney_sentiment import _fetch_down_codes
+        from src.services.eastmoney_sentiment import _fetch_pool_codes
 
         day = date(2026, 10, 28)
         with patch("src.services.eastmoney_sentiment._fetch_pool", return_value=pd.DataFrame()), \
              patch("requests.get") as get:
             payload = {"rc": 0, "data": {"qdate": 20261028, "tc": 0, "pool": []}}
             get.return_value.json.return_value = payload
-            self.assertEqual(_fetch_down_codes(day), set())
+            self.assertEqual(_fetch_pool_codes("down", day), set())
             payload["data"]["qdate"] = 20261027
             with self.assertRaises(CsmarSourceError):
-                _fetch_down_codes(day)
+                _fetch_pool_codes("down", day)
             get.return_value.json.return_value = {"rc": 102, "data": None}
             with self.assertRaises(CsmarSourceError):
-                _fetch_down_codes(day)
+                _fetch_pool_codes("down", day)
+
+    def test_daily_missing_candidate_or_quote_cannot_be_complete(self):
+        day = date(2026, 10, 28)
+        closed = pd.DataFrame({"代码": ["000001"], "连板数": [2], "最新价": [10]})
+        prior = pd.DataFrame({"代码": ["000001", "000002"], "连板数": [1, 1]})
+        quote = pd.DataFrame({
+            "代码": ["000001", "000002", "000003", "000004", "000005", "000006"],
+            "最新价": [10] * 6, "涨跌幅": [10, -1, 2, -10, 1, 1],
+            "成交量": [1] * 6, "成交额": [100] * 6,
+        })
+        for missing in ("candidate", "quote"):
+            with self.subTest(missing=missing):
+                def fetch(kind, target):
+                    if kind == "closed":
+                        return closed if target == day else prior
+                    if kind == "previous":
+                        previous = prior.iloc[:1] if missing == "candidate" else prior
+                        return previous.rename(columns={"连板数": "昨日连板数"})
+                    return pd.DataFrame({"代码": [{"broken": "000003", "down": "000004"}[kind]]})
+
+                spot = quote.iloc[:4] if missing == "quote" else quote
+                with patch("src.services.eastmoney_sentiment.datetime", wraps=datetime) as clock, \
+                     patch("src.services.eastmoney_sentiment._fetch_pool", side_effect=fetch), \
+                     patch("src.services.eastmoney_sentiment._fetch_spot", return_value=(spot, len(quote))):
+                    clock.now.return_value = datetime(2026, 10, 28, 18, tzinfo=MARKET_TZ)
+                    response = self.client.post(f"/api/v1/sentiment/snapshots/{day}/generate")
+                self.assertEqual(response.status_code, 200, response.text)
+                snapshot = response.json()["snapshot"]
+                metrics = snapshot["metrics"]
+                self.assertEqual(snapshot["quality_status"], "partial")
+                self.assertEqual(metrics["limit_up_count"], 1)
+                self.assertEqual(metrics["break_rate"], 0.5)
+                if missing == "candidate":
+                    self.assertIsNone(metrics["promotion_1_to_2"])
+                    self.assertIsNone(metrics["higher_board_promotions"])
+                    self.assertIsNone(snapshot["promotion_denominator"])
+                    self.assertEqual(metrics["turnover_yuan"], 600)
+                else:
+                    self.assertEqual(metrics["promotion_1_to_2"], 0.5)
+                    self.assertIsNone(metrics["turnover_yuan"])
+                    self.assertIsNone(metrics["limit_down_coverage"])
+                    self.assertIsNone(metrics["advancing_ratio"])
+                with closing(sqlite3.connect(self.database)) as db:
+                    self.assertEqual(db.execute("SELECT quality_status FROM sentiment_snapshots").fetchall(),
+                                     [("partial",)])
+                    db.execute("DELETE FROM sentiment_snapshots")
+                    db.commit()
+
+    def test_verified_zero_and_unavailable_broken_pool(self):
+        from src.services.eastmoney_sentiment import build_eastmoney_snapshot
+
+        day = date(2026, 10, 28)
+        closed = pd.DataFrame({"代码": ["000001"], "连板数": [1], "最新价": [10]})
+        prior = pd.DataFrame({"代码": ["000002"], "连板数": [1]})
+        pools = {"previous": prior.rename(columns={"连板数": "昨日连板数"}), "broken": pd.DataFrame()}
+        for confirmed in (True, False):
+            with self.subTest(confirmed=confirmed):
+                def fetch(kind, target):
+                    if kind == "closed":
+                        return closed if target == day else prior
+                    return pools[kind]
+
+                with patch("src.services.eastmoney_sentiment.datetime", wraps=datetime) as clock, \
+                     patch("src.services.eastmoney_sentiment._fetch_pool", side_effect=fetch), \
+                     patch("src.services.eastmoney_sentiment._fetch_spot", side_effect=CsmarSourceError("timeout")), \
+                     patch("requests.get") as get:
+                    clock.now.return_value = datetime(2026, 10, 28, 18, tzinfo=MARKET_TZ)
+                    get.return_value.json.return_value = {
+                        "rc": 0, "data": {"qdate": 20261028 if confirmed else 20261027, "tc": 0, "pool": []},
+                    }
+                    snapshot = build_eastmoney_snapshot(day)
+                self.assertIn("getTopicZBPool", get.call_args.args[0])
+                self.assertEqual(snapshot["metrics"]["limit_up_count"], 1)
+                self.assertEqual(snapshot["metrics"]["break_rate"], 0 if confirmed else None)
+                self.assertEqual(snapshot["components"]["break_numerator"], 0 if confirmed else None)
+
+    def test_spot_pagination_checks_each_page_against_provider_total(self):
+        from src.services.eastmoney_sentiment import _read_spot_pages
+
+        def payload(total, *codes):
+            return {"rc": 0, "data": {"total": total, "diff": [{"f12": code} for code in codes]}}
+
+        with patch("requests.Session") as session, patch("src.services.eastmoney_sentiment.time.sleep"):
+            get = session.return_value.__enter__.return_value.get
+            get.return_value.json.side_effect = [payload(3, "000001", "000002"), payload(3, "000003")]
+            frame, total = _read_spot_pages()
+            self.assertEqual(total, 3)
+            self.assertEqual(list(frame["代码"]), ["000001", "000002", "000003"])
+            self.assertEqual([call.kwargs["params"]["pn"] for call in get.call_args_list], [1, 2])
+            for second in (payload(3), payload(2, "000003")):
+                get.return_value.json.side_effect = [payload(3, "000001", "000002"), second]
+                with self.assertRaises(CsmarSourceError):
+                    _read_spot_pages()
 
     def test_eastmoney_inconsistent_pool_fails_without_writing(self):
         def fetch(kind, day):

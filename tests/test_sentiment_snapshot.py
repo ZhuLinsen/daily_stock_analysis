@@ -238,6 +238,19 @@ class SentimentSnapshotTests(unittest.TestCase):
             with self.assertRaises(CsmarSourceError):
                 read_csmar_daily(source, as_of=date(2026, 10, 30))
 
+    def test_truncated_prior_board_marks_snapshot_partial(self):
+        dates = [date(2026, 10, day) for day in (26, 27, 28)]
+        days = {day: CsmarDay(row_count=1) for day in dates}
+        for day, code in zip(dates, ("000001", "000001", "000002")):
+            days[day].closed.add(code)
+            days[day].touched.add(code)
+        dataset = CsmarDataset(days, "test", "sample.zip", 3, "sheet1", "A1:I6", 9)
+        snapshot = compute_snapshot(dataset, dates[-1])
+        self.assertEqual(snapshot["quality_status"], "partial")
+        self.assertFalse(snapshot["completeness"]["prior_streak_available"])
+        self.assertIsNone(snapshot["metrics"]["higher_board_promotions"])
+        self.assertEqual(snapshot["metrics"]["max_consecutive"], 1)
+
     def test_zero_denominators_are_null(self):
         days = {date(2026, 10, day): CsmarDay(row_count=1) for day in (26, 27, 28)}
         dataset = CsmarDataset(days, "test", "sample.zip", 3, "sheet1", "A1:A6", 9)

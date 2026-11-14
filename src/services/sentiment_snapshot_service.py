@@ -88,7 +88,7 @@ def compute_snapshot(dataset: CsmarDataset, trade_date: date) -> dict[str, Any]:
     )
     all_checks_pass = (
         not target_bad and not promotion_bad and not streak_truncated
-        and not streak_uncertain and closed_plus_broken
+        and not streak_uncertain and prior_streak_available
     )
 
     metrics = {

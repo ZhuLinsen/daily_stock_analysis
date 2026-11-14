@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import math
+import time
 
 from src.core.trading_calendar import get_trading_dates
 from src.data.csmar_daily import CsmarDataset, CsmarDay, CsmarSourceError
@@ -14,7 +15,7 @@ from src.services.sentiment_snapshot_service import compute_snapshot, higher_boa
 
 EASTMONEY_MARKET = "CN_A_EASTMONEY_POOL"
 EASTMONEY_VERSION = "eastmoney-pool-v2-market-day-streak"
-EASTMONEY_DAILY_VERSION = "eastmoney-pool-v3-daily-provider-streak"
+EASTMONEY_DAILY_VERSION = "eastmoney-pool-v4-verified-daily-inputs"
 MARKET_TZ = timezone(timedelta(hours=8))
 
 
@@ -43,17 +44,64 @@ def _fetch_pool(kind: str, day: date):
     function = getattr(ak, names[kind], None)
     if function is None:
         raise CsmarSourceError(f"Eastmoney {kind} endpoint unavailable for {day}")
-    return _fetch_frame(function, kind, day, date=day.strftime("%Y%m%d"), allow_empty=kind == "down")
+    return _fetch_frame(
+        function, kind, day, date=day.strftime("%Y%m%d"), allow_empty=kind in ("broken", "down"),
+    )
 
 
 def _fetch_spot(day: date):
-    import akshare as ak
+    from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
-    function = getattr(ak, "stock_zh_a_spot_em", None)
-    if function is None:
-        raise CsmarSourceError(f"Eastmoney spot endpoint unavailable for {day}")
-    # AkShare fetches the market in pages. Bound the entire request, including paging.
-    return _fetch_frame(function, "spot", day, timeout=120, attempts=1)
+    try:
+        return _akshare_call_with_timeout(_read_spot_pages, timeout=120, call_name="sentiment_spot")
+    except Exception as exc:
+        raise CsmarSourceError(f"Eastmoney spot unavailable for {day}") from exc
+
+
+def _read_spot_pages():
+    """Keep the total discarded by AkShare's spot DataFrame."""
+    import pandas as pd
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util import Retry
+
+    url = "https://82.push2.eastmoney.com/api/qt/clist/get"
+    fields = {"f12": "代码", "f2": "最新价", "f3": "涨跌幅", "f5": "成交量", "f6": "成交额"}
+    params = {
+        "pn": 1, "pz": 100, "po": 1, "np": 1, "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": 2, "invt": 2, "fid": "f12", "fields": ",".join(fields),
+        "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
+    }
+
+    def page(session, number):
+        response = session.get(url, params={**params, "pn": number}, timeout=12)
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict) or payload.get("rc") != 0:
+            raise CsmarSourceError("Eastmoney spot page unavailable")
+        total, rows = data.get("total"), data.get("diff")
+        if (type(total) is not int or total <= 0 or not isinstance(rows, list)
+                or any(not isinstance(row, dict) for row in rows)):
+            raise CsmarSourceError("Eastmoney spot page lacks a valid total or rows")
+        return total, rows
+
+    with requests.Session() as session:
+        session.mount(url, HTTPAdapter(max_retries=Retry(
+            total=2, backoff_factor=0.5, status_forcelist=(429, 500, 502, 503, 504),
+        )))
+        session.headers["Connection"] = "close"
+        total, rows = page(session, 1)
+        page_size = len(rows)
+        if not 0 < page_size <= min(total, params["pz"]):
+            raise CsmarSourceError("Eastmoney spot first page has an invalid row count")
+        for number in range(2, math.ceil(total / page_size) + 1):
+            time.sleep(0.5)
+            page_total, page_rows = page(session, number)
+            if page_total != total or len(page_rows) != min(page_size, total - len(rows)):
+                raise CsmarSourceError("Eastmoney spot pagination changed or lost rows")
+            rows.extend(page_rows)
+    return pd.DataFrame(rows).rename(columns=fields), total
 
 
 def _codes(frame, kind: str, day: date) -> set[str]:
@@ -70,31 +118,32 @@ def _codes(frame, kind: str, day: date) -> set[str]:
     return set(codes)
 
 
-def _fetch_down_codes(day: date) -> set[str]:
-    frame = _fetch_pool("down", day)
+def _fetch_pool_codes(kind: str, day: date) -> set[str]:
+    frame = _fetch_pool(kind, day)
     if not frame.empty:
-        return _codes(frame, "down", day)
+        return _codes(frame, kind, day)
 
     # AkShare drops the date and total from an empty response. Verify the zero
     # against the same public endpoint before treating it as a market observation.
     import requests
 
     day_key = day.strftime("%Y%m%d")
+    endpoint, order = {"down": ("getTopicDTPool", "fund:asc"), "broken": ("getTopicZBPool", "fbt:asc")}[kind]
     params = {
-        "date": day_key, "Pageindex": 0, "pagesize": 1, "sort": "fund:asc",
+        "date": day_key, "Pageindex": 0, "pagesize": 1, "sort": order,
         "dpt": "wz.ztzt", "ut": "7eea3edcaed734bea9cbfc24409ed989",
     }
     try:
-        response = requests.get("https://push2ex.eastmoney.com/getTopicDTPool", params=params, timeout=12)
+        response = requests.get(f"https://push2ex.eastmoney.com/{endpoint}", params=params, timeout=12)
         response.raise_for_status()
         payload = response.json()
         data = payload.get("data") if isinstance(payload, dict) else None
-        if (isinstance(data, dict) and payload.get("rc") == 0
-                and str(data.get("qdate")) == day_key and data.get("tc") == 0 and data.get("pool") == []):
+        if (isinstance(data, dict) and payload.get("rc") == 0 and str(data.get("qdate")) == day_key
+                and type(data.get("tc")) is int and data["tc"] == 0 and data.get("pool") == []):
             return set()
     except (requests.RequestException, ValueError) as exc:
-        raise CsmarSourceError(f"Eastmoney empty down pool could not be confirmed for {day}") from exc
-    raise CsmarSourceError(f"Eastmoney empty down pool could not be confirmed for {day}")
+        raise CsmarSourceError(f"Eastmoney empty {kind} pool could not be confirmed for {day}") from exc
+    raise CsmarSourceError(f"Eastmoney empty {kind} pool could not be confirmed for {day}")
 
 
 def _streaks(frame, field: str, day: date) -> dict[str, int]:
@@ -119,8 +168,9 @@ def _daily_breadth(day: date, closed_frame, known_traded: set[str]) -> tuple[dic
     quality = {"quote_status": "unavailable", "limit_down_status": "unavailable",
                "turnover_status": "unavailable"}
     try:
-        spot = _fetch_spot(day)
-        _codes(spot, "spot", day)
+        spot, expected_count = _fetch_spot(day)
+        if len(_codes(spot, "spot", day)) != expected_count:
+            raise CsmarSourceError("Eastmoney spot row count differs from the provider total")
         required = ["代码", "最新价", "涨跌幅", "成交量"]
         if not set(required).issubset(spot.columns):
             raise CsmarSourceError("Eastmoney spot lacks breadth fields")
@@ -164,7 +214,7 @@ def _daily_breadth(day: date, closed_frame, known_traded: set[str]) -> tuple[dic
         except (TypeError, ValueError, OverflowError):
             pass
     try:
-        down = _fetch_down_codes(day)
+        down = _fetch_pool_codes("down", day)
         if not down.issubset(eligible) or any(eligible[code][1] >= 0 for code in down):
             raise CsmarSourceError("Eastmoney down pool disagrees with the traded quote universe")
     except CsmarSourceError:
@@ -178,33 +228,49 @@ def _daily_breadth(day: date, closed_frame, known_traded: set[str]) -> tuple[dic
 def _build_daily_snapshot(trade_date: date, previous_date: date) -> dict:
     current = _fetch_pool("closed", trade_date)
     closed = _codes(current, "closed", trade_date)
-    broken = _codes(_fetch_pool("broken", trade_date), "broken", trade_date)
-    prior_pool = _fetch_pool("previous", trade_date)
-    _codes(prior_pool, "previous", trade_date)
     today_streaks = _streaks(current, "连板数", trade_date)
-    prior_streaks = _streaks(prior_pool, "昨日连板数", trade_date)
-    if closed & broken:
-        raise CsmarSourceError("Eastmoney closed and broken pools overlap")
-    if any(length != prior_streaks.get(code, 0) + 1 for code, length in today_streaks.items()):
-        raise CsmarSourceError("Eastmoney streak counts disagree with the previous pool")
+    try:
+        broken = _fetch_pool_codes("broken", trade_date)
+        if closed & broken:
+            raise CsmarSourceError("Eastmoney closed and broken pools overlap")
+    except CsmarSourceError:
+        broken = None
 
-    first_board = {code for code, length in prior_streaks.items() if length == 1}
+    try:
+        prior_pool = _fetch_pool("previous", trade_date)
+        _codes(prior_pool, "previous", trade_date)
+        prior_streaks = _streaks(prior_pool, "昨日连板数", trade_date)
+        previous_close = _fetch_pool("closed", previous_date)
+        _codes(previous_close, "closed", previous_date)
+        if prior_streaks != _streaks(previous_close, "连板数", previous_date):
+            raise CsmarSourceError("Eastmoney previous pool differs from previous session's closed pool")
+        if any(length != prior_streaks.get(code, 0) + 1 for code, length in today_streaks.items()):
+            raise CsmarSourceError("Eastmoney streak counts disagree with the previous pool")
+    except CsmarSourceError:
+        prior_streaks = None
+
+    first_board = {code for code, length in (prior_streaks or {}).items() if length == 1}
     promoted = first_board & closed
-    touched = closed | broken
-    highest = max(today_streaks.values())
-    metrics, components, breadth_quality = _daily_breadth(trade_date, current, touched)
+    touched = None if broken is None else closed | broken
+    highest = max(today_streaks.values()) if prior_streaks is not None else None
+    metrics, components, breadth_quality = _daily_breadth(trade_date, current, touched or closed)
     metrics.update(
-        limit_up_count=len(closed), break_rate=len(broken) / len(touched),
+        limit_up_count=len(closed), break_rate=len(broken) / len(touched) if touched else None,
         max_consecutive=highest, promotion_1_to_2=len(promoted) / len(first_board) if first_board else None,
-        limit_up_ladder=limit_up_ladder(today_streaks),
-        higher_board_promotions=higher_board_promotions(prior_streaks, closed),
+        limit_up_ladder=limit_up_ladder(today_streaks) if prior_streaks is not None else None,
+        higher_board_promotions=higher_board_promotions(prior_streaks, closed) if prior_streaks is not None else None,
     )
     components.update(
-        limit_up_codes=sorted(closed), broken_codes=sorted(broken), touched_codes=sorted(touched),
+        limit_up_codes=sorted(closed),
+        broken_codes=sorted(broken) if broken is not None else None,
+        touched_codes=sorted(touched) if touched is not None else None,
         max_consecutive_codes=sorted(code for code, count in today_streaks.items() if count == highest),
-        prior_first_board_codes=sorted(first_board), promoted_codes=sorted(promoted),
-        break_numerator=len(broken), break_denominator=len(touched),
-        promotion_numerator=len(promoted), promotion_denominator=len(first_board),
+        prior_first_board_codes=sorted(first_board) if prior_streaks is not None else None,
+        promoted_codes=sorted(promoted) if prior_streaks is not None else None,
+        break_numerator=len(broken) if broken is not None else None,
+        break_denominator=len(touched) if touched is not None else None,
+        promotion_numerator=len(promoted) if prior_streaks is not None else None,
+        promotion_denominator=len(first_board) if prior_streaks is not None else None,
     )
     inputs = {"today_streaks": today_streaks, "prior_streaks": prior_streaks,
               "components": components, "turnover_yuan": metrics["turnover_yuan"]}
@@ -212,15 +278,18 @@ def _build_daily_snapshot(trade_date: date, previous_date: date) -> dict:
     return {
         "market": EASTMONEY_MARKET, "trade_date": trade_date, "previous_trade_date": previous_date,
         "definition_version": EASTMONEY_DAILY_VERSION,
-        "quality_status": "complete" if all(value == "available" for value in breadth_quality.values()) else "partial",
+        "quality_status": "complete" if (
+            prior_streaks is not None and broken is not None
+            and all(value == "available" for value in breadth_quality.values())
+        ) else "partial",
         "metrics": metrics, "components": components,
         "provider_trace": {"provider": "eastmoney_akshare", "as_of_sha256": digest,
                            "retrieved_at": datetime.now(timezone.utc).isoformat()},
         "completeness": {
             "scope": "Eastmoney provider limit pools and eligible same-day spot quotes",
             "independent_market_coverage_verified": False,
-            "streak_counts_match_previous_pool": True,
-            "closed_broken_disjoint": True,
+            "streak_counts_match_previous_pool": prior_streaks is not None,
+            "closed_broken_disjoint": broken is not None,
             **breadth_quality,
         },
     }
@@ -242,7 +311,7 @@ def build_eastmoney_snapshot(trade_date: date) -> dict:
     closed = _codes(current, "closed", trade_date)
     # The broken-pool interface has the narrowest history window. Check it
     # before fetching each earlier session to fail old backfills promptly.
-    broken = _codes(_fetch_pool("broken", trade_date), "broken", trade_date)
+    broken = _fetch_pool_codes("broken", trade_date)
     if closed & broken:
         raise CsmarSourceError("Eastmoney closed and broken pools overlap")
     claimed = _streaks(current, "连板数", trade_date)
