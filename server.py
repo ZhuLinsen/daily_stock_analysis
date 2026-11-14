@@ -21,7 +21,7 @@ Daily Stock Analysis - FastAPI 后端服务入口
 
 import logging
 
-from src.config import setup_env, get_config
+from src.config import get_config, parse_env_bool, setup_env
 from src.logging_config import setup_logging
 
 # 初始化环境变量与日志
@@ -49,7 +49,7 @@ def _resolve_server_uvicorn_options() -> dict:
 
     host = os.getenv("API_HOST") or os.getenv("WEBUI_HOST") or "127.0.0.1"
     port = int(os.getenv("API_PORT") or os.getenv("WEBUI_PORT") or "8000")
-    reload_enabled = os.getenv("API_RELOAD", "false").strip().lower() in {"1", "true", "yes"}
+    reload_enabled = parse_env_bool(os.getenv("API_RELOAD"), default=False)
     return {
         "host": host,
         "port": port,

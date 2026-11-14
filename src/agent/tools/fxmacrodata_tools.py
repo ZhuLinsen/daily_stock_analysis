@@ -1,10 +1,19 @@
 """Public macroeconomic tools consumed by the stock analysis agent."""
 
+from __future__ import annotations
+
 from copy import deepcopy
 import logging
 import os
 
-from fxmacrodata_public import FXMacroDataClient, list_operations
+try:
+    from fxmacrodata_public import FXMacroDataClient, list_operations
+except ModuleNotFoundError:  # pragma: no cover - optional dependency path
+    FXMacroDataClient = None
+
+    def list_operations():
+        return []
+
 from src.agent.tools.registry import ToolDefinition, ToolParameter, ToolPolicy
 
 logger = logging.getLogger(__name__)
@@ -54,6 +63,9 @@ def build_fxmacrodata_tools(client: FXMacroDataClient | None = None) -> list[FXM
     An optional FXMACRODATA_API_KEY is read from the host environment at call
     time, never put into a tool schema, invocation argument or response.
     """
+    if FXMacroDataClient is None:
+        return []
+
     def make_handler(operation_name):
         def handler(**arguments):
             provider = client

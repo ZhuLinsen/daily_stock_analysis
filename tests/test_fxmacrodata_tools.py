@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+fxmacrodata_public = pytest.importorskip("fxmacrodata_public")
 from fxmacrodata_public import Result, list_operations
 from src.agent.tools import fxmacrodata_tools
 from src.agent.tools.fxmacrodata_tools import build_fxmacrodata_tools, fxmacrodata_tool_names

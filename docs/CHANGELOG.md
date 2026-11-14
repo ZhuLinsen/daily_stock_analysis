@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [修复] ntfy 推送按服务端默认 4096 字节消息上限分批发送（标题带 `(1/N)` 分页），并以 UTF-8 JSON 提交请求体，修复约 1350 个汉字以上的中文报告因请求体超过 8192 字节被 ntfy 以 HTTP 413 拒收、测试消息正常但完整报告收不到的问题。
+- [修复] `server.py` 直接启动改为优先使用 `API_HOST` / `API_PORT` / `API_RELOAD`，兼容回退到 `WEBUI_HOST` / `WEBUI_PORT`，默认绑定 `127.0.0.1:8000` 且关闭自动重载；标记 `webui.py` 为弃用并移除 Web 前端未使用的 `@remixicon/react` 依赖。
 - [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
 - [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
 

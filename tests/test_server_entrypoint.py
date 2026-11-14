@@ -35,7 +35,7 @@ def test_resolve_server_uvicorn_options_prefers_api_env_and_reload(monkeypatch) 
     monkeypatch.setenv("WEBUI_PORT", "9000")
     monkeypatch.setenv("API_HOST", "127.0.0.2")
     monkeypatch.setenv("API_PORT", "8088")
-    monkeypatch.setenv("API_RELOAD", "true")
+    monkeypatch.setenv("API_RELOAD", "on")
 
     assert server._resolve_server_uvicorn_options() == {
         "host": "127.0.0.2",
