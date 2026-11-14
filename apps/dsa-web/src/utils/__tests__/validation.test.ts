@@ -10,7 +10,7 @@ describe('stock code validation', () => {
     ['7203.T', '7203.T'],
     ['6758.t', '6758.T'],
     ['005930.KS', '005930.KS'],
-    ['035720.kq', '035720.KQ'],
+    ['247540.kq', '247540.KQ'],
   ])('accepts JP/KR Yahoo suffix code %s', (input, normalized) => {
     expect(looksLikeStockCode(input)).toBe(true);
     expect(validateStockCode(input)).toEqual({

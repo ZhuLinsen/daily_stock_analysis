@@ -1106,9 +1106,30 @@ class StockAnalysisPipeline:
                 if enhanced.get('yesterday') and isinstance(enhanced['yesterday'], dict):
                     yesterday_close = enhanced['yesterday'].get('close')
                 orig_today = enhanced.get('today') or {}
-                market_today = get_market_now(
-                    get_market_for_stock(normalize_stock_code(enhanced.get('code', '')))
-                ).date().isoformat()
+                market_code = get_market_for_stock(normalize_stock_code(enhanced.get('code', '')))
+                market_now = get_market_now(market_code)
+                market_today = market_now.date().isoformat()
+                phase_ctx = market_phase_context if isinstance(market_phase_context, dict) else {}
+                session_started = (
+                    phase_ctx.get('is_trading_day') is True
+                    and phase_ctx.get('phase') in (
+                        'intraday', 'lunch_break', 'closing_auction', 'postmarket',
+                    )
+                )
+                session_date = str(phase_ctx.get('session_date') or market_today)[:10]
+                orig_today_date = str(orig_today.get('date') or '')[:10] if isinstance(orig_today, dict) else ''
+                if (
+                    session_started
+                    and orig_today_date
+                    and orig_today_date < session_date
+                    and self._is_realtime_quote_for_session(
+                        realtime_quote,
+                        session_date=session_date,
+                        market_tz=market_now.tzinfo,
+                    )
+                ):
+                    enhanced['yesterday'] = dict(orig_today)
+                    yesterday_close = orig_today.get('close')
                 source = getattr(realtime_quote, 'source', None)
                 source_name = getattr(source, 'value', source)
                 source_name = str(source_name) if source_name is not None else 'unknown'
@@ -2709,6 +2730,49 @@ class StockAnalysisPipeline:
             return "明显放量"
         else:
             return "巨量"
+
+    @staticmethod
+    def _is_realtime_quote_for_session(
+        realtime_quote: Any,
+        *,
+        session_date: str,
+        market_tz: Any = None,
+    ) -> bool:
+        """Require provider-side date evidence before shifting the daily-bar baseline."""
+        for attr in ("session_date", "trade_date", "quote_date", "provider_timestamp"):
+            raw_val = getattr(realtime_quote, attr, None)
+            if raw_val is None:
+                continue
+            quote_date: Optional[str] = None
+            if isinstance(raw_val, datetime):
+                dt = raw_val
+                if dt.tzinfo is not None and market_tz is not None:
+                    dt = dt.astimezone(market_tz)
+                quote_date = dt.date().isoformat()
+            elif isinstance(raw_val, date):
+                quote_date = raw_val.isoformat()
+            else:
+                text = str(raw_val).strip()
+                if len(text) == 10 and text[4:5] == "-" and text[7:8] == "-":
+                    try:
+                        quote_date = date.fromisoformat(text).isoformat()
+                    except ValueError:
+                        quote_date = None
+                elif text:
+                    iso_text = f"{text[:-1]}+00:00" if text.endswith("Z") else text
+                    try:
+                        dt = datetime.fromisoformat(iso_text)
+                        if dt.tzinfo is not None and market_tz is not None:
+                            dt = dt.astimezone(market_tz)
+                        quote_date = dt.date().isoformat()
+                    except ValueError:
+                        quote_date = None
+            if quote_date is not None:
+                return quote_date == session_date
+
+        # Cached providers may omit timestamps and OHLC/pre_close entirely.
+        # Neither price comparisons nor fetched_at establish the quote's session.
+        return False
 
     @staticmethod
     def _compute_ma_status(close: float, ma5: float, ma10: float, ma20: float) -> str:
