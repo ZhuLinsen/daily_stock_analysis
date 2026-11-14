@@ -237,6 +237,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | Estimated-history token threshold; blank follows the selected profile preset | - | No |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | Number of recent user turns and following replies kept verbatim; blank follows the selected profile preset | - | No |
 | `LITELLM_FALLBACK_MODELS` | Fallback models, comma-separated | - | No |
+| `LLM_ANALYSIS_MAX_OUTPUT_TOKENS` | Output token budget for one per-stock analysis call (minimum `1024`). Reasoning models count thinking tokens against it; when the budget is used up and the JSON report is truncated, the call is regenerated once at double the budget. Use `16384-32768` for reasoning models, within the model's max output length | `8192` | No |
 | `LLM_CHANNELS` | Channel names (comma-separated), use with `LLM_{NAME}_*`, see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | No |
 | `MODELFLARE_KEY` | Modelflare one-key setup; enables the default channel automatically; Actions reads it from Secrets only | - | For Modelflare |
 | `LLM_MODELFLARE_API_KEY` | Advanced channel key, overrides MODELFLARE_KEY; use `LLM_MODELFLARE_API_KEYS` for multiple keys | - | No |

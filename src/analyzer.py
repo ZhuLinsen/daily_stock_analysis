@@ -124,6 +124,33 @@ def _describe_llm_result_model(
     return actual_model
 
 
+def _is_output_truncated(usage: Optional[Dict[str, Any]], max_output_tokens: int) -> bool:
+    """True when the call used its whole output budget, i.e. the response was cut off.
+
+    Reasoning models count thinking tokens against the same budget, so a long
+    chain of thought can leave too little room for the JSON report.
+    """
+    try:
+        completion_tokens = int((usage or {}).get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        return False
+    return max_output_tokens > 0 and completion_tokens >= max_output_tokens
+
+
+def _reasoning_tokens_from_usage(usage: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Best-effort reasoning token count from the raw provider usage payload."""
+    raw = (usage or {}).get("provider_usage_json")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        details = payload.get("completion_tokens_details") or {}
+        value = details.get("reasoning_tokens")
+        return int(value) if value is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
     """Pick a deterministic fallback string for the report language (zh/en/ko)."""
     normalized = normalize_report_language(language)
@@ -4215,7 +4242,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             # 设置生成配置
             generation_config = {
                 "temperature": config.llm_temperature,
-                "max_output_tokens": 8192,
+                "max_output_tokens": int(getattr(config, "llm_analysis_max_output_tokens", 8192) or 8192),
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
@@ -4225,6 +4252,8 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             current_prompt = prompt
             retry_count = 0
             max_retries = config.report_integrity_retry if config.report_integrity_enabled else 0
+            # 输出被 max_output_tokens 截断时，以双倍预算重试一次；该次重试若报错则沿用首次结果
+            truncation_fallback: Optional[Tuple[str, Optional[str], Dict[str, Any]]] = None
 
             while True:
                 start_time = time.time()
@@ -4248,9 +4277,48 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                         response_text = exc.last_response_text
                         model_used = exc.last_model
                         llm_usage = exc.last_usage
+                    elif truncation_fallback is not None:
+                        logger.warning(
+                            "[LLM截断] %s(%s): 扩大输出预算后的重试失败，沿用首次（被截断的）结果: %s",
+                            name,
+                            code,
+                            self._sanitize_hermes_exception_text(exc),
+                        )
+                        response_text, model_used, llm_usage = truncation_fallback
                     else:
                         raise
                 elapsed = time.time() - start_time
+
+                output_budget = int(generation_config["max_output_tokens"])
+                if _is_output_truncated(llm_usage, output_budget):
+                    reasoning_tokens = _reasoning_tokens_from_usage(llm_usage)
+                    if truncation_fallback is None:
+                        escalated_budget = output_budget * 2
+                        logger.warning(
+                            "[LLM截断] %s(%s): 输出用满 max_output_tokens=%d（其中推理 %s tokens），"
+                            "JSON 报告被截断；以 %d 重新生成一次。可通过 LLM_ANALYSIS_MAX_OUTPUT_TOKENS 调大默认预算",
+                            name,
+                            code,
+                            output_budget,
+                            reasoning_tokens if reasoning_tokens is not None else "未知",
+                            escalated_budget,
+                        )
+                        truncation_fallback = (response_text, model_used, llm_usage)
+                        generation_config = {**generation_config, "max_output_tokens": escalated_budget}
+                        current_prompt = prompt
+                        _emit_progress(
+                            min(99, 92 + retry_count * 2),
+                            f"{name}：输出超出长度上限被截断，正在扩大输出预算重新生成",
+                        )
+                        continue
+                    logger.warning(
+                        "[LLM截断] %s(%s): 扩大到 max_output_tokens=%d 后仍被截断（其中推理 %s tokens），"
+                        "请调大 LLM_ANALYSIS_MAX_OUTPUT_TOKENS",
+                        name,
+                        code,
+                        output_budget,
+                        reasoning_tokens if reasoning_tokens is not None else "未知",
+                    )
 
                 # 记录响应信息
                 logger.info(

@@ -266,6 +266,7 @@ daily_stock_analysis/
 | `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 历史 token 估算超过该值时触发压缩；留空则跟随 profile preset | - | 否 |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
 | `LITELLM_FALLBACK_MODELS` | 备选模型，逗号分隔 | - | 否 |
+| `LLM_ANALYSIS_MAX_OUTPUT_TOKENS` | 个股分析单次调用的输出 token 上限（最小 `1024`）。推理模型的思考 token 也计入该上限；用满上限导致 JSON 被截断时会自动以双倍预算重新生成一次。推理模型建议 `16384-32768`，且不超过模型最大输出长度 | `8192` | 否 |
 | `LLM_CHANNELS` | 渠道名称列表（逗号分隔），配合 `LLM_{NAME}_*` 使用，详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) | - | 否 |
 | `MODELFLARE_KEY` | Modelflare 单 Key 接入，自动启用默认渠道；Actions 仅从 Secrets 读取 | - | 选用时 |
 | `LLM_MODELFLARE_API_KEY` | 高级渠道 Key，优先于 MODELFLARE_KEY；多 Key 可用 `LLM_MODELFLARE_API_KEYS` | - | 否 |
