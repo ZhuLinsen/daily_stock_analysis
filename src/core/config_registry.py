@@ -931,7 +931,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "HITHINK_FINANCE_API_KEY": {
         "title": "HiThink Finance API Key",
-        "description": "API key for optional HiThink Finance A-share stock snapshots and daily K-lines. Permission or request failures fall back to existing providers. Registered indices, ETFs, and overseas markets are unchanged.",
+        "description": "API key for optional HiThink Finance A-share stock snapshots and daily K-lines. Permission or request failures fall back to existing providers. Registered indices stay on Tencent, AkShare, TickFlow, and YFinance; HiThink tries SH/SZ index daily bars only after those four fail. ETFs and overseas markets are unchanged.",
         "category": "data_source",
         "data_type": "string",
         "ui_control": "password",
@@ -945,7 +945,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "HITHINK_PRIORITY": {
         "title": "HiThink Daily K-line Priority",
-        "description": "Priority for HiThink in the generic A-share daily K-line route. The default 7 keeps existing providers ahead. Registered indices ignore this setting. Realtime order is controlled by REALTIME_SOURCE_PRIORITY.",
+        "description": "Priority for HiThink in the generic A-share daily K-line route. The default 7 keeps existing providers ahead. Registered indices ignore this priority and stay on Tencent, AkShare, TickFlow, and YFinance. After those four fail, HiThink still tries SH/SZ index daily bars. Realtime order is controlled by REALTIME_SOURCE_PRIORITY.",
         "category": "data_source",
         "data_type": "integer",
         "ui_control": "number",
