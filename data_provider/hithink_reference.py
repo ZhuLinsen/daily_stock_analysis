@@ -31,6 +31,7 @@ def stock_name(fetcher: HiThinkFetcher, stock_code: str) -> Optional[str]:
     payload = fetcher._request(
         _SEARCH_PATH,
         {"q": thscode, "asset_type": "a-share", "limit": 5},
+        capability="stock_list",
     )
     data = payload.get("data") or {}
     if not isinstance(data, dict) or not isinstance(data.get("item"), list):
@@ -62,6 +63,7 @@ def stock_list(fetcher: HiThinkFetcher) -> pd.DataFrame:
             payload = fetcher._request(
                 _LIST_PATH,
                 {"asset_type": "a-share", "limit": _LIST_PAGE_SIZE, "offset": page * _LIST_PAGE_SIZE},
+                capability="stock_list",
             )
         except HiThinkRequestError as exc:
             if exc.permission:

@@ -705,8 +705,9 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         fetcher = self._fetcher()
         calls = []
 
-        def request(_path, params):
+        def request(_path, params, capability=None):
             calls.append(params["offset"])
+            self.assertEqual(capability, "stock_list")
             raise HiThinkRequestError("denied", code=2004, permission=True)
 
         fetcher._request = request
@@ -719,6 +720,29 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         self.assertTrue(fetcher.is_available())
         fetcher.get_stock_list()
         self.assertEqual(calls, [0])
+
+    def test_ticker_search_uses_the_directory_cooldown(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2003, "message": "capability denied", "request_id": "req-search", "data": None}
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_stock_name("600519")
+            with self.assertRaises(DataFetchError):
+                fetcher.get_stock_name("000001")
+            frame = fetcher.get_stock_list()
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/meta/tickers/search"])
+        self.assertTrue(frame.empty)
+        self.assertFalse(fetcher.is_available("stock_list"))
+        self.assertFalse(fetcher.is_available("stock_name"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
 
     def test_batch_name_lookup_uses_hithink_directory_after_earlier_providers(self) -> None:
         primary = _DirectoryFetcher()
@@ -757,7 +781,8 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
     def test_stock_list_marks_a_short_page_complete(self) -> None:
         fetcher = self._fetcher()
 
-        def request(_path, params):
+        def request(_path, params, capability=None):
+            self.assertEqual(capability, "stock_list")
             self.assertEqual(params["limit"], 2)
             return _ok({"item": [{"ticker": "600519", "name": "贵州茅台", "asset_type": "a-share"}]})
 
@@ -772,7 +797,8 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         fetcher = self._fetcher()
         offsets = []
 
-        def request(_path, params):
+        def request(_path, params, capability=None):
+            self.assertEqual(capability, "stock_list")
             offsets.append(params["offset"])
             code = f"{600000 + params['offset']:06d}"
             return _ok({"item": [{"ticker": code, "name": "名称", "asset_type": "a-share"}]})
