@@ -759,6 +759,33 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertAlmostEqual(enhanced["price_change_ratio"], 0.97, places=2)
         self.assertAlmostEqual(enhanced["volume_change_ratio"], 1.21, places=2)
 
+    def test_session_shift_requires_matching_market_date_evidence(self) -> None:
+        now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
+        phase = build_market_phase_context(market="kr", current_time=now).to_dict()
+        cases = [
+            (None, False),
+            ("unparseable", False),
+            ("2026-11-13-not-a-timestamp", False),
+            ("2026-11-12T15:30:00+09:00", False),
+            ("2026-11-14T15:30:00+09:00", False),
+            ("2026-11-13", True),
+            (date(2026, 11, 13), True),
+            (datetime(2026, 11, 13, 1, tzinfo=timezone.utc), True),
+            ("2026-11-12T23:30:00Z", True),
+        ]
+        for timestamp, shifts in cases:
+            with self.subTest(timestamp=timestamp), \
+                    patch("src.core.pipeline.get_market_now", return_value=now):
+                enhanced = self.pipeline._enhance_context(
+                    self._kr_005930_context(),
+                    self._kr_005930_quote(provider_timestamp=timestamp),
+                    None, self._kr_005930_trend(), "SamsungElec",
+                    fundamental_context={"status": "not_supported"},
+                    market_phase_context=phase,
+                )
+                self.assertEqual(enhanced["yesterday"]["date"],
+                                 "2026-11-12" if shifts else "2026-11-11")
+
     def test_intraday_open_fallback_uses_shifted_yesterday_close(self) -> None:
         now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
         phase = build_market_phase_context(market="kr", current_time=now).to_dict()

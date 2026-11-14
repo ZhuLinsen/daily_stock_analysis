@@ -2766,13 +2766,9 @@ class StockAnalysisPipeline:
                             dt = dt.astimezone(market_tz)
                         quote_date = dt.date().isoformat()
                     except ValueError:
-                        if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
-                            try:
-                                quote_date = date.fromisoformat(text[:10]).isoformat()
-                            except ValueError:
-                                quote_date = None
+                        quote_date = None
             if quote_date is not None:
-                return quote_date >= session_date
+                return quote_date == session_date
 
         # Cached providers may omit timestamps and OHLC/pre_close entirely.
         # Neither price comparisons nor fetched_at establish the quote's session.

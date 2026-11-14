@@ -1012,6 +1012,8 @@ P3 补齐普通分析主路径使用的实时行情质量元数据，但仍不�
 
 盘中（含午休、临近收盘）和盘后用实时行情覆盖 `today` 时，若历史 `today` 早于当前交易日，且报价携带可解析的行情交易日或 provider 时间戳以确认已进入当前交易日，会先将历史 `today` 复制到 `yesterday`，再计算开盘价回退、涨跌幅、成交量比率和行情快照。盘前、非交易日、缺少阶段上下文或已存有当日日线时保留原 `yesterday`。缺失或无法解析行情日期的报价（包括港股缓存报价）也保留原基准；`fetched_at` 只表示系统获取时间，价格、昨收价或 OHLC 的差异不能证明报价属于当前交易日。
 
+行情日期必须与当前交易日完全一致，未来日期及格式错误的时间戳不触发基准平移。Yahoo 日线的 `quote_date` 仅代表交易日，不作为 `provider_timestamp` 计算过期时间；实时行情使用未复权价格。
+
 #### 分析阶段入口与任务队列透传（Issue #1386 P4a）
 
 P4a 新增 `analysis_phase=auto|premarket|intraday|postmarket` 请求参数，默认 `auto`，用于让 API 调用方显式覆盖本次分析阶段。该参数目前接入 `POST /api/v1/analysis/analyze`、异步任务队列、`AnalysisService`、普通分析 pipeline 和市场阶段上下文；Web 前端类型和 API mapper 已承接该字段，但不新增页面 selector，Bot、schedule、GitHub Actions 和 DB migration 也不在本阶段范围内。
