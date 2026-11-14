@@ -191,7 +191,7 @@ def _is_jp_market(code: str) -> bool:
 
 
 def _is_kr_market(code: str) -> bool:
-    """判定是否为韩国 Yahoo Finance suffix 代码（如 005930.KS / 035720.KQ）。"""
+    """判定是否为韩国 Yahoo Finance suffix 代码（如 005930.KS / 247540.KQ）。"""
     return is_suffix_market_symbol(code, "kr")
 
 
