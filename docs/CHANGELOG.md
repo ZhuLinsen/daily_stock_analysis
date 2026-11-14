@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] Web 设置-数据源 配置项排序收敛：通用配置置顶（股票索引远程更新、盘中实时技术面、启用实时行情、启用筹码分布分析、实时数据源优先级、新闻最大时效、新闻策略窗口档位、BIAS 阈值），同一厂商的配置项连续排列（TickFlow、Futu、妙想、SearXNG 等），厂商之间的相对顺序保持不变。
 - [修复] 收紧定时模式启动去重：仅当全部应分析标的都成功时才记录当日标记（部分失败或全败、即使大盘复盘成功也不得记录，避免重启漏跑）；跳过判定改为覆盖面子集校验并升版 schema 2（v1 旧标记一律 fail-open 重跑一次以升级），`SCHEDULE_STARTUP_DEDUP` 进程环境变量与 .env 值不同时以进程为准（与 `SCHEDULE_RUN_IMMEDIATELY` 同权）。
 - [修复] 定时模式启动去重检查的预期清单改为与运行入口一致的真实目标解析链（Futu 持仓优先、其次 .env 热更新 `STOCK_LIST`、再按交易日过滤）：`--portfolio futu` 新增持仓、纯持仓部署自选为空、以及进程 env 启动后 .env 热更新三类场景不再误跳过；持仓解析失败或解析为空一律 fail-open 照常执行（绝不漏跑），非持仓空清单保持既有当日去重语义。
+- [新功能] 大盘复盘结构化字段（Issue #1584）：复盘 Prompt 要求 LLM 在报告末尾输出 ```json 结构化附录，后端提取剥离后并入 payload，新增可选 `summary`（市场温度/状态/建议仓位/核心结论）、`indices[].ma_status`（MA5/MA10/MA20 技术状态与点评）、`breadth.divergence_diagnosis`（宽度与分化诊断，LLM 缺省时按指数-家数背离确定性兜底）、`style_rotation`（风格轮动信号）、`catalysts[]`（利好/利空、影响范围、持续性、是否已消化）、`next_day_plan`（明日观察清单/仓位建议/失效条件）及可选 `cross_market_note`（跨市场参考，P3）；解析失败或字段缺失逐字段降级为 null/省略，绝不中断复盘，旧 Markdown/历史/推送渲染零差异，不新增任何配置键；Web 大盘复盘视图对新增字段可选渲染（无字段时与旧版一致）。
 
 - [文档] 文档中心补充 `market-support.md` 入口，与 README / 完整指南的市场支持链接保持一致。
 - [修复] 美股社交舆情 Reddit 个股端点切换至现行 Adanos 契约 `/reddit/stocks/v1/stock/{ticker}`（旧 `/reddit/stocks/v1/report/{ticker}` 已下线、固定 404，导致 Reddit 段落始终显示无数据）；适配官方契约 200+`found=false` 无数据语义：`get_social_context` 在证据登记前将空报告归一化为平台无数据，三源全空返回 `None` 且不再误置 `news_evidence_present`（X/Polymarket 有数据时贡献保留）；mention 正文按 `text_snippet`→`text`→`title` 回退，日线情绪 `sentiment_score` 优先且保留真实零值，旧字段 `avg_sentiment` 兼容回退（#2448）。
