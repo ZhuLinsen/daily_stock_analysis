@@ -1678,6 +1678,8 @@ WebUI 与 FastAPI API 服务共用同一服务进程，启动后可在浏览器�
 
 FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 
+直接运行 `python server.py` 时，优先读取 `API_HOST`、`API_PORT` 和 `API_RELOAD` 控制监听地址、端口及 Uvicorn 自动重载；未设置 `API_HOST` / `API_PORT` 时回退至 `WEBUI_HOST` / `WEBUI_PORT`，最终默认分别为 `127.0.0.1`、`8000` 和 `false`。推荐的 `python main.py --serve-only` 入口沿用 `WEBUI_HOST` / `WEBUI_PORT`（也可用命令行 `--host` / `--port`），旧 WebUI 配置仍保持兼容。监听公网地址时应同时启用认证并配置可信反向代理。
+
 ### 启动方式
 
 | 命令 | 说明 |

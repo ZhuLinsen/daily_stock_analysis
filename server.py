@@ -44,6 +44,19 @@ from api.app import app  # noqa: E402
 __all__ = ['app']
 
 
+def _resolve_server_uvicorn_options() -> dict:
+    import os
+
+    host = os.getenv("API_HOST") or os.getenv("WEBUI_HOST") or "127.0.0.1"
+    port = int(os.getenv("API_PORT") or os.getenv("WEBUI_PORT") or "8000")
+    reload_enabled = os.getenv("API_RELOAD", "false").strip().lower() in {"1", "true", "yes"}
+    return {
+        "host": host,
+        "port": port,
+        "reload": reload_enabled,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -51,8 +64,6 @@ if __name__ == "__main__":
 
     uvicorn.run(
         "server:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
+        **_resolve_server_uvicorn_options(),
         **uvicorn_proxy_kwargs(),
     )
