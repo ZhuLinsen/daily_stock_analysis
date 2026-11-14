@@ -2751,7 +2751,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         market_review_schema = items["MARKET_REVIEW_REGION"]["schema"]
         self.assertEqual(
             market_review_schema["validation"]["allowed_values"],
-            ["cn", "hk", "us", "jp", "kr", "both"],
+            ["cn", "hk", "us", "jp", "kr", "tw", "both"],
         )
         self.assertEqual(market_review_schema["validation"]["delimiter"], ",")
         self.assertEqual(
@@ -2875,12 +2875,13 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(validation["issues"], [])
 
     def test_validate_accepts_comma_separated_market_review_region(self) -> None:
-        validation = self.service.validate(
-            items=[{"key": "MARKET_REVIEW_REGION", "value": "cn,jp,us"}]
-        )
-
-        self.assertTrue(validation["valid"])
-        self.assertEqual(validation["issues"], [])
+        for value in ("cn,jp,us", "tw", "cn,tw"):
+            with self.subTest(value=value):
+                validation = self.service.validate(
+                    items=[{"key": "MARKET_REVIEW_REGION", "value": value}]
+                )
+                self.assertTrue(validation["valid"])
+                self.assertEqual(validation["issues"], [])
 
     def test_validate_accepts_blank_context_compression_preset_fields(self) -> None:
         validation = self.service.validate(
@@ -4844,14 +4845,14 @@ class SystemConfigServiceTestCase(unittest.TestCase):
     def test_update_market_review_region_accepts_comma_separated_regions(self) -> None:
         response = self.service.update(
             config_version=self.manager.get_config_version(),
-            items=[{"key": "MARKET_REVIEW_REGION", "value": "cn,jp,us"}],
+            items=[{"key": "MARKET_REVIEW_REGION", "value": "cn,jp,us,tw"}],
             reload_now=False,
         )
 
         self.assertTrue(response["success"])
         self.assertIn("MARKET_REVIEW_REGION", response["updated_keys"])
         current_map = self.manager.read_config_map()
-        self.assertEqual(current_map["MARKET_REVIEW_REGION"], "cn,jp,us")
+        self.assertEqual(current_map["MARKET_REVIEW_REGION"], "cn,jp,us,tw")
 
     def test_import_env_market_review_region_accepts_comma_separated_regions(self) -> None:
         response = self.service.import_env(
