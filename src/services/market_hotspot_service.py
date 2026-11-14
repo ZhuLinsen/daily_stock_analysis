@@ -167,7 +167,13 @@ class MarketHotspotService:
         context = MarketThemeContext(
             status=status,
             market=normalized_market,
-            trade_date=trade_date_text,
+            # When the caller does not pin a trade date, surface the date the
+            # provider rows actually carry (Issue #1936 / OR-COR-3e7f490e) so
+            # consumers can label reports with the real list date.
+            trade_date=trade_date_text
+            or self._first_item_trade_date(
+                active_themes, leading_industries, leading_concepts, lagging_themes
+            ),
             active_themes=active_themes,
             leading_industries=leading_industries,
             leading_concepts=leading_concepts,
@@ -601,6 +607,7 @@ class MarketHotspotService:
                     rank=self._safe_int(item.get("rank")) or index,
                     source=source,
                     updated_at=self._optional_text(item.get("updated_at")),
+                    trade_date=self._optional_text(item.get("trade_date")),
                 )
             )
         return normalized
@@ -626,12 +633,23 @@ class MarketHotspotService:
                     rank=item.rank,
                     source=item.source,
                     updated_at=item.updated_at,
+                    trade_date=item.trade_date,
                     phase=self._phase_from_change(item.change_pct),
                     strength_score=self._strength_from_change(item.change_pct),
                     reason="industry/concept ranking gain",
                 )
             )
         return active
+
+    @staticmethod
+    def _first_item_trade_date(*item_groups: Any) -> Optional[str]:
+        """First non-empty per-item trade date across ranking item groups."""
+        for group in item_groups:
+            for item in group or []:
+                trade_date = getattr(item, "trade_date", None)
+                if trade_date:
+                    return str(trade_date)
+        return None
 
     @staticmethod
     def _phase_from_change(value: Optional[float]) -> str:

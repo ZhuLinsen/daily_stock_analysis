@@ -1121,5 +1121,397 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         ])
 
 
+class HotTop10DailyJobRegistrationTest(unittest.TestCase):
+    """OR-COR-0bd16091 / OR-COR-095e5cc9: Web/API/Desktop runtime wiring.
+
+    The hot-top10 daily job used to register only in the pure CLI schedule
+    branch of ``main.py``; ``RuntimeSchedulerService.start()`` never added
+    it, so long-lived API/Web/Desktop processes never ran the analysis
+    even with HOT_TOP10_ENABLED=true. The review probe (count of auxiliary
+    daily jobs after a real start()) must now include the hot-top10 job.
+    """
+
+    @staticmethod
+    def _config(*, hot_top10_enabled: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+            hot_top10_enabled=hot_top10_enabled,
+            hot_top10_schedule_time="15:10",
+            hot_top10_data_ready_schedule_time="15:35",
+        )
+
+    def _start(self, config: SimpleNamespace) -> RuntimeSchedulerService:
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._reload_config = lambda: config
+        with patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.start()
+        self.addCleanup(service.stop)
+        return service
+
+    def test_real_start_registers_hot_top10_extra_daily_job(self) -> None:
+        service = self._start(self._config(hot_top10_enabled=True))
+
+        scheduler = service._scheduler
+        self.assertIsNotNone(scheduler)
+        extra_jobs = list(getattr(scheduler, "_extra_daily_jobs", []))
+        # Two slots: the primary 15:10 occurrence plus the data-ready
+        # follow-up at 15:35 (after the 15:30 ranking data cut).
+        self.assertEqual(len(extra_jobs), 2)
+        at_times = {
+            f"{job.at_time.hour:02d}:{job.at_time.minute:02d}"
+            for job in extra_jobs
+        }
+        self.assertEqual(at_times, {"15:10", "15:35"})
+
+    def test_real_start_registers_no_hot_top10_job_when_disabled(self) -> None:
+        service = self._start(self._config(hot_top10_enabled=False))
+
+        scheduler = service._scheduler
+        self.assertIsNotNone(scheduler)
+        extra_jobs = list(getattr(scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(extra_jobs, [])
+
+    def test_registered_job_invokes_service_with_scheduler_semantics(self) -> None:
+        service = self._start(self._config(hot_top10_enabled=True))
+        scheduler = service._scheduler
+        assert scheduler is not None
+        extra_jobs = list(getattr(scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 2)
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            for job in extra_jobs:
+                job.job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+
+        # Both slots run the real service with scheduler semantics (via the
+        # background worker dispatch, OR-COR-f3a76b12).
+        self.assertEqual(run_mock.call_count, 2)
+        for call in run_mock.call_args_list:
+            runtime_config = call.args[0]
+            self.assertIs(runtime_config.hot_top10_enabled, True)
+            kwargs = call.kwargs
+            # Scheduled occurrences keep the trading-day gate and daily dedup.
+            self.assertTrue(kwargs["respect_dedup"])
+            self.assertFalse(kwargs["force_run"])
+            # Default runtime schedule args carry no_notify=False.
+            self.assertIs(kwargs["send_notification"], True)
+
+    def test_job_honors_no_notify_schedule_override(self) -> None:
+        config = self._config(hot_top10_enabled=True)
+        service = RuntimeSchedulerService(
+            config_provider=lambda: config,
+            schedule_args_overrides={"no_notify": True},
+        )
+        service._reload_config = lambda: config
+        with patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.start()
+        self.addCleanup(service.stop)
+
+        scheduler = service._scheduler
+        assert scheduler is not None
+        extra_jobs = list(getattr(scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 2)
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            for job in extra_jobs:
+                job.job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+
+        self.assertEqual(run_mock.call_count, 2)
+        for call in run_mock.call_args_list:
+            self.assertIs(call.kwargs["send_notification"], False)
+
+
+class HotTop10RuntimeSameDaySecondRunTest(unittest.TestCase):
+    """OR-COR-3e7f490e (narrowed): same-day second execution through the
+    REAL RuntimeSchedulerService start() path.
+
+    ``start()`` must register a data-ready follow-up occurrence (default
+    15:35, after the 15:30 Tushare ranking cut) alongside the primary
+    15:10 slot. When the primary slot delivered the previous trading day's
+    list (stale, marker left open), the data-ready occurrence delivers
+    today's list once the provider serves it; when the primary slot already
+    delivered today's data, the data-ready occurrence idles (no duplicate
+    push).
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _config(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+            hot_top10_enabled=True,
+            hot_top10_schedule_time="15:10",
+            hot_top10_data_ready_schedule_time="15:35",
+            hot_top10_count=10,
+            report_language="zh",
+            trading_day_check_enabled=True,
+            database_path=str(Path(self._tmp.name) / "stock_analysis.db"),
+        )
+
+    def _payload(self, trade_date: str) -> dict:
+        return {
+            "status": "ok",
+            "market": "cn",
+            "trade_date": trade_date,
+            "active_themes": [
+                {
+                    "name": "主题1",
+                    "code": "BK0001",
+                    "change_pct": 3.1,
+                    "rank": 1,
+                    "source": "industry",
+                    "phase": "accelerating",
+                    "reason": "industry ranking gain",
+                }
+            ],
+            "leading_industries": [],
+            "leading_concepts": [],
+            "lagging_themes": [],
+            "data_quality": {
+                "status": "ok",
+                "missing_fields": [],
+                "sources": [],
+                "errors": [],
+            },
+        }
+
+    def _start_service(self, config: SimpleNamespace):
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._reload_config = lambda: config
+        with patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _NoopThread,
+        ):
+            service.start()
+        self.addCleanup(service.stop)
+
+        scheduler = service._scheduler
+        assert scheduler is not None
+        jobs_by_time = {
+            f"{job.at_time.hour:02d}:{job.at_time.minute:02d}": job
+            for job in scheduler._extra_daily_jobs
+        }
+        return jobs_by_time, scheduler
+
+    def _patches(self, payload_holder, notifier):
+        class _FakeHotspotService:
+            def get_hotspots(self, **kwargs):
+                return payload_holder["payload"]
+
+        class _FakeNotificationService:
+            def is_available(self) -> bool:
+                return True
+
+            def save_report_to_file(self, content, filename) -> str:
+                return filename
+
+            def send(self, content, **kwargs) -> bool:
+                notifier.sent.append(content)
+                return True
+
+        class _FakeAnalyzer:
+            def generate_text(self, prompt, **kwargs):
+                return json.dumps(
+                    {"summary": "概览", "items": []}, ensure_ascii=False
+                )
+
+        return [
+            patch(
+                "src.services.market_hotspot_service.MarketHotspotService",
+                _FakeHotspotService,
+            ),
+            patch(
+                "src.notification.NotificationService",
+                _FakeNotificationService,
+            ),
+            patch(
+                "src.services.hot_top10_service._build_analyzer",
+                return_value=_FakeAnalyzer(),
+            ),
+            patch(
+                "src.core.trading_calendar.get_open_markets_today",
+                return_value={"cn"},
+            ),
+        ]
+
+    def test_stale_primary_then_fresh_data_ready_slot_delivers_today(self) -> None:
+        import contextlib
+        from datetime import date as date_cls
+
+        from src.services.hot_top10_service import hot_top10_marker_path
+
+        today = date_cls.today().isoformat()
+        yesterday = date_cls.fromordinal(date_cls.today().toordinal() - 1).isoformat()
+
+        config = self._config()
+        payload_holder = {"payload": self._payload(yesterday)}
+        notifier = SimpleNamespace(sent=[])
+        jobs_by_time, scheduler = self._start_service(config)
+        self.assertEqual(set(jobs_by_time), {"15:10", "15:35"})
+
+        with contextlib.ExitStack() as stack:
+            for item in self._patches(payload_holder, notifier):
+                stack.enter_context(item)
+
+            # Primary 15:10 occurrence: previous-trading-day rankings (the
+            # 15:30 cut has not happened) -> stale delivery, marker open.
+            # The job dispatches on a background worker; join it before the
+            # next occurrence (per-job-name guard).
+            jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 1)
+
+            # Data cut passes; the data-ready occurrence delivers today's
+            # list through the same real service path.
+            payload_holder["payload"] = self._payload(today)
+            jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 2)
+
+            marker = json.loads(
+                hot_top10_marker_path(config).read_text(encoding="utf-8")
+            )
+            self.assertEqual(marker["run_date"], today)
+            self.assertEqual(marker["data_date"], today)
+
+    def test_fresh_primary_data_ready_slot_idles_without_second_push(self) -> None:
+        import contextlib
+        from datetime import date as date_cls
+
+        today = date_cls.today().isoformat()
+
+        config = self._config()
+        payload_holder = {"payload": self._payload(today)}
+        notifier = SimpleNamespace(sent=[])
+        jobs_by_time, scheduler = self._start_service(config)
+
+        with contextlib.ExitStack() as stack:
+            for item in self._patches(payload_holder, notifier):
+                stack.enter_context(item)
+
+            jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 1)
+
+            # Today's data was already delivered: the data-ready occurrence
+            # skips via the daily marker (no duplicate push).
+            jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 1)
+
+
+class _AliveNoopThread(_NoopThread):
+    """Loop-thread stub whose is_alive() reports True, mimicking a live
+    scheduler loop for refresh-path checks."""
+
+    def is_alive(self) -> bool:
+        return True
+
+
+class HotTop10ExtraJobRefreshTest(unittest.TestCase):
+    """OR-COR-4b61e8f3: saving a hot-top10-only config change must refresh
+    the auxiliary daily job registrations WITHOUT the full stop/start
+    rebuild — stop() terminates the in-flight main analysis subprocess."""
+
+    def _start(self, config: SimpleNamespace) -> RuntimeSchedulerService:
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._reload_config = lambda: config
+        with patch(
+            "src.services.runtime_scheduler.threading.Thread",
+            _AliveNoopThread,
+        ):
+            service.start()
+        self.addCleanup(service.stop)
+        return service
+
+    @staticmethod
+    def _config(**overrides) -> SimpleNamespace:
+        base = dict(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+            hot_top10_enabled=True,
+            hot_top10_schedule_time="15:10",
+            hot_top10_data_ready_schedule_time="15:35",
+        )
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    def test_refresh_preserves_running_analysis_and_live_scheduler(self) -> None:
+        service = self._start(self._config())
+        before_scheduler = service._scheduler
+        before_thread = service._thread
+
+        # Fabricate an in-flight main analysis subprocess, exactly what
+        # stop() would terminate via _terminate_analysis_process_tree.
+        fake_process = MagicMock()
+        with service._analysis_process_lock:
+            service._analysis_process = fake_process
+
+        changed = service.refresh_extra_daily_jobs()
+
+        self.assertTrue(changed)
+        # No full rebuild: same scheduler instance, same loop thread, and
+        # the running analysis process was NOT terminated.
+        self.assertIs(service._scheduler, before_scheduler)
+        self.assertIs(service._thread, before_thread)
+        fake_process.terminate.assert_not_called()
+        fake_process.kill.assert_not_called()
+        # The two hot-top10 slots are still registered.
+        extra_jobs = list(getattr(service._scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 2)
+
+    def test_refresh_replaces_jobs_at_new_times(self) -> None:
+        config = self._config()
+        service = self._start(config)
+        config.hot_top10_schedule_time = "15:20"
+        config.hot_top10_data_ready_schedule_time = "16:05"
+
+        changed = service.refresh_extra_daily_jobs()
+
+        self.assertTrue(changed)
+        extra_jobs = list(getattr(service._scheduler, "_extra_daily_jobs", []))
+        self.assertEqual(len(extra_jobs), 2)
+        at_times = {
+            f"{job.at_time.hour:02d}:{job.at_time.minute:02d}"
+            for job in extra_jobs
+        }
+        self.assertEqual(at_times, {"15:20", "16:05"})
+
+    def test_refresh_unregisters_jobs_when_hot_top10_disabled(self) -> None:
+        config = self._config()
+        service = self._start(config)
+        config.hot_top10_enabled = False
+
+        changed = service.refresh_extra_daily_jobs()
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            list(getattr(service._scheduler, "_extra_daily_jobs", [])), []
+        )
+
+    def test_refresh_returns_false_without_live_scheduler(self) -> None:
+        service = RuntimeSchedulerService(config_provider=lambda: self._config())
+
+        self.assertFalse(service.refresh_extra_daily_jobs())
+
+
 if __name__ == "__main__":
     unittest.main()

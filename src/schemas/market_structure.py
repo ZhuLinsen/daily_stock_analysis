@@ -39,6 +39,11 @@ class RankedThemeItem(BaseModel):
     source: ThemeRankSource = "unknown"
     code: Optional[str] = None
     updated_at: Optional[str] = None
+    # Trading day the ranking row actually covers (Issue #1936 /
+    # OR-COR-3e7f490e). Providers that serve previous-trading-day data
+    # before the daily cut (e.g. Tushare before 15:30) set this so reports
+    # can label the real list date; realtime providers leave it empty.
+    trade_date: Optional[str] = None
 
 
 class MarketThemeItem(RankedThemeItem):

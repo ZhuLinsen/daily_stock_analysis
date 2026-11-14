@@ -476,6 +476,13 @@ def parse_arguments() -> argparse.Namespace:
         help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
+    # === Hot Top10 (Issue #1936) ===
+    parser.add_argument(
+        '--hot-top10',
+        action='store_true',
+        help='抓取市场热榜 Top N 并生成轻量热点分析报告（热榜动因/强度/介入建议，配置见 HOT_TOP10_*）'
+    )
+
     return parser.parse_args()
 
 
@@ -1696,6 +1703,84 @@ def _build_schedule_times_provider(default_schedule_time: str):
     return _provider
 
 
+def _build_hot_top10_daily_jobs(
+    args: argparse.Namespace,
+    config: Config,
+    config_provider: Optional[Callable[[], Config]] = None,
+) -> List[Dict[str, Any]]:
+    """Build the auxiliary daily hot-top10 jobs (Issue #1936, default OFF).
+
+    Two fail-open daily slots are registered when the feature is enabled:
+
+    - the primary ``HOT_TOP10_SCHEDULE_TIME`` occurrence (default 15:10),
+      which sits before the 15:30 ranking data cut and may therefore
+      deliver the previous trading day's list (labeled as such, without
+      consuming today's dedup marker);
+    - a data-ready follow-up at ``HOT_TOP10_DATA_READY_SCHEDULE_TIME``
+      (default 15:35, OR-COR-3e7f490e narrowed): once the provider serves
+      today's rankings it delivers today's list; when the primary slot
+      already delivered today's data (or the provider still serves the
+      same stale list) it idles via the daily marker — no duplicate push.
+
+    Scheduled occurrences always respect the trading-day gate and the daily
+    dedup marker; ``--force-run`` only applies to the one-shot ``--hot-top10``
+    CLI entry. The push honors the same CLI notification switch as that entry
+    (``--no-notify`` silences the scheduled push too, OR-COR-bfd74f82).
+    Returns ``[]`` (no jobs) when the feature is disabled.
+    """
+    from src.services.hot_top10_service import (
+        DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+    )
+
+    if not getattr(config, 'hot_top10_enabled', False):
+        return []
+
+    if config_provider is None:
+        config_provider = _reload_runtime_config
+    send_notification = not getattr(args, 'no_notify', False)
+
+    def hot_top10_task():
+        from src.services.hot_top10_service import run_hot_top10_analysis
+
+        runtime_cfg = config_provider()
+        if not getattr(runtime_cfg, 'hot_top10_enabled', False):
+            return
+        hot_result = run_hot_top10_analysis(
+            runtime_cfg,
+            send_notification=send_notification,
+            respect_dedup=True,
+            force_run=False,
+        )
+        logger.info(
+            "[HotTop10] 定时任务完成: delivered=%s skipped=%s reason=%s llm_completed=%s notification=%s",
+            hot_result.delivered,
+            hot_result.skipped,
+            hot_result.reason,
+            hot_result.llm_completed,
+            hot_result.notification_status,
+        )
+
+    return [
+        {
+            "task": hot_top10_task,
+            "schedule_time": config.hot_top10_schedule_time,
+            "name": "hot_top10",
+        },
+        {
+            "task": hot_top10_task,
+            "schedule_time": (
+                getattr(
+                    config,
+                    'hot_top10_data_ready_schedule_time',
+                    DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME,
+                )
+                or DEFAULT_HOT_TOP10_DATA_READY_SCHEDULE_TIME
+            ),
+            "name": "hot_top10_data_ready",
+        },
+    ]
+
+
 def main() -> int:
     """
     主入口函数
@@ -1918,6 +2003,29 @@ def main() -> int:
             )
             return 0
 
+        # 模式0.6: 热榜 Top N 轻量分析（Issue #1936）
+        # 手动一次性入口：不受当日去重标记限制，交易日检查可用 --force-run 绕过。
+        if getattr(args, 'hot_top10', False):
+            logger.info("模式: 热榜 Top N 分析")
+            from src.services.hot_top10_service import run_hot_top10_analysis
+
+            result = run_hot_top10_analysis(
+                config,
+                send_notification=not args.no_notify,
+                respect_dedup=False,
+                force_run=getattr(args, 'force_run', False),
+            )
+            if result.report_markdown is None:
+                logger.error("热榜分析未生成报告: %s", result.reason)
+                return 1
+            logger.info(
+                "热榜分析完成: delivered=%s llm_completed=%s notification=%s",
+                result.delivered,
+                result.llm_completed,
+                result.notification_status,
+            )
+            return 0
+
         # 模式1: 仅大盘复盘
         if args.market_review:
             from src.core.market_review import run_market_review
@@ -2081,6 +2189,19 @@ def main() -> int:
                     "name": "agent_event_monitor",
                 })
 
+            # Hot Top10 daily jobs (Issue #1936, default OFF): auxiliary
+            # fail-open daily schedules at HOT_TOP10_SCHEDULE_TIME (primary)
+            # and HOT_TOP10_DATA_READY_SCHEDULE_TIME (data-ready follow-up
+            # after the 15:30 ranking data cut). They run on A-share trading
+            # days only and dedup via the service's own daily marker, so the
+            # follow-up delivers today's list once the data is ready and
+            # idles otherwise; any failure is logged inside the service and
+            # never breaks the main analysis schedule. The push follows the
+            # CLI --no-notify switch, same as the one-shot --hot-top10 entry.
+            extra_daily_jobs: List[Dict[str, Any]] = _build_hot_top10_daily_jobs(
+                args, config
+            )
+
             schedule_kwargs = {
                 "task": scheduled_task,
                 "schedule_time": config.schedule_time,
@@ -2092,6 +2213,8 @@ def main() -> int:
             if hasattr(config, "schedule_times"):
                 schedule_kwargs["schedule_times"] = config.schedule_times
                 schedule_kwargs["schedule_times_provider"] = schedule_times_provider
+            if extra_daily_jobs:
+                schedule_kwargs["extra_daily_jobs"] = extra_daily_jobs
             run_with_schedule(**schedule_kwargs)
             return 0
 

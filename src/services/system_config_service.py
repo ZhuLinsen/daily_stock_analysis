@@ -2141,11 +2141,33 @@ class SystemConfigService:
             "SCHEDULE_ENABLED",
             "SCHEDULE_TIME",
             "SCHEDULE_TIMES",
+            # HOT_TOP10_ENABLED / HOT_TOP10_SCHEDULE_TIME /
+            # HOT_TOP10_DATA_READY_SCHEDULE_TIME change the runtime
+            # scheduler's auxiliary daily jobs (Issue #1936,
+            # OR-COR-0bd16091 / OR-COR-3e7f490e): saving them must take
+            # effect on the live scheduler instead of waiting for a process
+            # restart. HOT_TOP10_COUNT only changes the report size and is
+            # read per-run by the service, so it deliberately stays out of
+            # this rebuild set.
+            "HOT_TOP10_ENABLED",
+            "HOT_TOP10_SCHEDULE_TIME",
+            "HOT_TOP10_DATA_READY_SCHEDULE_TIME",
         }:
             try:
-                self._runtime_scheduler.reconcile_from_config(
-                    clear_enabled_override="SCHEDULE_ENABLED" in submitted_keys,
-                )
+                if submitted_keys & {
+                    "SCHEDULE_ENABLED",
+                    "SCHEDULE_TIME",
+                    "SCHEDULE_TIMES",
+                }:
+                    self._runtime_scheduler.reconcile_from_config(
+                        clear_enabled_override="SCHEDULE_ENABLED" in submitted_keys,
+                    )
+                else:
+                    # OR-COR-4b61e8f3: hot-top10-only saves must NOT run the
+                    # full stop/start rebuild — stop() terminates the
+                    # in-flight main analysis subprocess. Only the auxiliary
+                    # daily job registrations need to swap.
+                    self._runtime_scheduler.refresh_extra_daily_jobs()
             except Exception as exc:  # pragma: no cover - defensive branch
                 logger.error("Runtime scheduler reconcile failed: %s", exc, exc_info=True)
                 warnings.append("Configuration updated but runtime scheduler reconcile failed")

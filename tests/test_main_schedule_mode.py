@@ -2867,5 +2867,297 @@ class MainScheduleModeTestCase(unittest.TestCase):
         main._env_bootstrapped = False
 
 
+class HotTop10ScheduledNotifyTest(unittest.TestCase):
+    """OR-COR-bfd74f82: the scheduled hot-top10 job honors --no-notify.
+
+    The scheduled occurrence used to hardcode ``send_notification=True``,
+    bypassing the CLI notification switch that the manual ``--hot-top10``
+    entry already respects.
+    """
+
+    @staticmethod
+    def _jobs(no_notify: bool):
+        config = SimpleNamespace(
+            hot_top10_enabled=True,
+            hot_top10_schedule_time="15:10",
+            hot_top10_data_ready_schedule_time="15:35",
+        )
+        args = SimpleNamespace(no_notify=no_notify)
+        return main._build_hot_top10_daily_jobs(
+            args, config, config_provider=lambda: config
+        )
+
+    @staticmethod
+    def _job_by_name(jobs, name):
+        matches = [job for job in jobs if job["name"] == name]
+        assert len(matches) == 1, f"expected exactly one {name!r} job"
+        return matches[0]
+
+    def test_scheduled_job_silences_notification_with_no_notify(self) -> None:
+        jobs = self._jobs(no_notify=True)
+        self.assertEqual(len(jobs), 2)
+        job = self._job_by_name(jobs, "hot_top10")
+        self.assertEqual(job["schedule_time"], "15:10")
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            job["task"]()
+
+        run_mock.assert_called_once()
+        self.assertIs(run_mock.call_args.kwargs["send_notification"], False)
+        self.assertTrue(run_mock.call_args.kwargs["respect_dedup"])
+        self.assertFalse(run_mock.call_args.kwargs["force_run"])
+
+    def test_scheduled_job_sends_notification_by_default(self) -> None:
+        jobs = self._jobs(no_notify=False)
+        job = self._job_by_name(jobs, "hot_top10")
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            job["task"]()
+
+        run_mock.assert_called_once()
+        self.assertIs(run_mock.call_args.kwargs["send_notification"], True)
+
+    def test_disabled_config_registers_no_job(self) -> None:
+        config = SimpleNamespace(hot_top10_enabled=False)
+        jobs = main._build_hot_top10_daily_jobs(
+            SimpleNamespace(no_notify=False),
+            config,
+            config_provider=lambda: config,
+        )
+        self.assertEqual(jobs, [])
+
+    def test_job_skips_when_runtime_config_disables_feature(self) -> None:
+        config = SimpleNamespace(
+            hot_top10_enabled=True,
+            hot_top10_schedule_time="15:10",
+            hot_top10_data_ready_schedule_time="15:35",
+        )
+        runtime_config = SimpleNamespace(hot_top10_enabled=False)
+        jobs = main._build_hot_top10_daily_jobs(
+            SimpleNamespace(no_notify=False),
+            config,
+            config_provider=lambda: runtime_config,
+        )
+        self.assertEqual(len(jobs), 2)
+
+        with patch(
+            "src.services.hot_top10_service.run_hot_top10_analysis"
+        ) as run_mock:
+            for job in jobs:
+                job["task"]()
+
+        run_mock.assert_not_called()
+
+
+class HotTop10DataReadySecondSlotScheduleTest(unittest.TestCase):
+    """OR-COR-3e7f490e (narrowed): same-day second execution through the
+    REAL scheduler path of the CLI schedule branch.
+
+    The primary slot (default 15:10) sits before the 15:30 Tushare ranking
+    cut, so its delivery covers the previous trading day and leaves today's
+    dedup marker open. A data-ready follow-up slot (default 15:35) must be
+    registered through the same ``Scheduler.add_daily_task`` wiring the CLI
+    uses and deliver today's list once the provider serves it — and idle
+    (no duplicate push) when the primary slot already delivered today's
+    data, or when the provider still serves the same stale list.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.today = date.today().isoformat()
+        self.yesterday = date.fromordinal(date.today().toordinal() - 1).isoformat()
+
+    def _config(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            hot_top10_enabled=True,
+            hot_top10_schedule_time="15:10",
+            hot_top10_data_ready_schedule_time="15:35",
+            hot_top10_count=10,
+            report_language="zh",
+            trading_day_check_enabled=True,
+            database_path=str(Path(self._tmp.name) / "stock_analysis.db"),
+        )
+
+    @staticmethod
+    def _payload(trade_date: str) -> dict:
+        return {
+            "status": "ok",
+            "market": "cn",
+            "trade_date": trade_date,
+            "active_themes": [
+                {
+                    "name": "主题1",
+                    "code": "BK0001",
+                    "change_pct": 3.1,
+                    "rank": 1,
+                    "source": "industry",
+                    "phase": "accelerating",
+                    "reason": "industry ranking gain",
+                }
+            ],
+            "leading_industries": [],
+            "leading_concepts": [],
+            "lagging_themes": [],
+            "data_quality": {
+                "status": "ok",
+                "missing_fields": [],
+                "sources": [],
+                "errors": [],
+            },
+        }
+
+    def _patches(self, payload_holder, notifier):
+        """Fakes around the REAL service path (no run_hot_top10_analysis mock)."""
+
+        class _FakeHotspotService:
+            def get_hotspots(self, **kwargs):
+                return payload_holder["payload"]
+
+        class _FakeNotificationService:
+            def is_available(self) -> bool:
+                return True
+
+            def save_report_to_file(self, content, filename) -> str:
+                notifier.saved.append(filename)
+                return filename
+
+            def send(self, content, **kwargs) -> bool:
+                notifier.sent.append(content)
+                return True
+
+        class _FakeAnalyzer:
+            def generate_text(self, prompt, **kwargs):
+                return json.dumps(
+                    {"summary": "概览", "items": []}, ensure_ascii=False
+                )
+
+        return [
+            patch(
+                "src.services.market_hotspot_service.MarketHotspotService",
+                _FakeHotspotService,
+            ),
+            patch(
+                "src.notification.NotificationService",
+                _FakeNotificationService,
+            ),
+            patch(
+                "src.services.hot_top10_service._build_analyzer",
+                return_value=_FakeAnalyzer(),
+            ),
+            patch(
+                "src.core.trading_calendar.get_open_markets_today",
+                return_value={"cn"},
+            ),
+        ]
+
+    def _register_real_jobs(self, config: SimpleNamespace):
+        """Build the CLI jobs and register them on a REAL Scheduler."""
+        from src.scheduler import Scheduler
+
+        jobs = main._build_hot_top10_daily_jobs(
+            SimpleNamespace(no_notify=False),
+            config,
+            config_provider=lambda: config,
+        )
+        scheduler = Scheduler(register_signals=False, schedule_time="23:59")
+        for job in jobs:
+            self.assertTrue(
+                scheduler.add_daily_task(
+                    job["task"], job["schedule_time"], name=job["name"]
+                )
+            )
+        jobs_by_time = {
+            f"{job.at_time.hour:02d}:{job.at_time.minute:02d}": job
+            for job in scheduler._extra_daily_jobs
+        }
+        return jobs_by_time, scheduler
+
+    def test_stale_primary_then_fresh_data_ready_slot_delivers_today(self) -> None:
+        import contextlib
+
+        from src.services.hot_top10_service import hot_top10_marker_path
+
+        config = self._config()
+        payload_holder = {"payload": self._payload(self.yesterday)}
+        notifier = SimpleNamespace(sent=[], saved=[])
+        jobs_by_time, scheduler = self._register_real_jobs(config)
+        with contextlib.ExitStack() as stack:
+            for item in self._patches(payload_holder, notifier):
+                stack.enter_context(item)
+
+            # 15:10 occurrence: the provider still serves the previous
+            # trading day (before the 15:30 cut) -> stale delivery, marker
+            # stays open for today's data. The job dispatches on a
+            # background worker; join it before the next occurrence.
+            jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 1)
+
+            # After the 15:30 cut the data-ready slot sees today's rankings
+            # -> today's report is delivered and the marker records it.
+            payload_holder["payload"] = self._payload(self.today)
+            jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 2)
+
+            marker = json.loads(
+                hot_top10_marker_path(config).read_text(encoding="utf-8")
+            )
+            self.assertEqual(marker["run_date"], self.today)
+            self.assertEqual(marker["data_date"], self.today)
+
+            # A third same-day occurrence idles: no duplicate push.
+            jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 2)
+
+    def test_fresh_primary_data_ready_slot_idles_without_second_push(self) -> None:
+        import contextlib
+
+        config = self._config()
+        payload_holder = {"payload": self._payload(self.today)}
+        notifier = SimpleNamespace(sent=[], saved=[])
+        jobs_by_time, scheduler = self._register_real_jobs(config)
+        with contextlib.ExitStack() as stack:
+            for item in self._patches(payload_holder, notifier):
+                stack.enter_context(item)
+
+            # Data already fresh at 15:10: delivered once, marker consumed.
+            jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 1)
+
+            # The data-ready slot must idempotently skip (no duplicate push).
+            jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 1)
+
+    def test_data_ready_slot_skips_when_data_still_stale(self) -> None:
+        import contextlib
+
+        config = self._config()
+        payload_holder = {"payload": self._payload(self.yesterday)}
+        notifier = SimpleNamespace(sent=[], saved=[])
+        jobs_by_time, scheduler = self._register_real_jobs(config)
+        with contextlib.ExitStack() as stack:
+            for item in self._patches(payload_holder, notifier):
+                stack.enter_context(item)
+
+            jobs_by_time["15:10"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 1)
+
+            # The data-ready slot fires but the provider STILL serves the
+            # same stale list: no duplicate stale push.
+            jobs_by_time["15:35"].job_func()
+            scheduler._join_extra_daily_job_workers(timeout=30)
+            self.assertEqual(len(notifier.sent), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
