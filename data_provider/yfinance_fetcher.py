@@ -873,18 +873,6 @@ class YfinanceFetcher(BaseFetcher):
                 volume = int(today['Volume'])
                 market_cap = None
 
-            # 计算涨跌幅
-            change_amount = None
-            change_pct = None
-            if price is not None and prev_close is not None and prev_close > 0:
-                change_amount = price - prev_close
-                change_pct = (change_amount / prev_close) * 100
-
-            # 计算振幅
-            amplitude = None
-            if high is not None and low is not None and prev_close is not None and prev_close > 0:
-                amplitude = ((high - low) / prev_close) * 100
-
             # 获取股票名称与 provider 元数据
             try:
                 ticker_info = ticker.info or {}
@@ -918,6 +906,18 @@ class YfinanceFetcher(BaseFetcher):
                             provider_timestamp = pd.Timestamp(quote_history.index[-1]).isoformat()
                 except Exception:
                     logger.debug("[Yfinance] 无法读取 %s 的行情日期", symbol, exc_info=True)
+
+            # 计算最终行情字段对应的派生指标。fast_info 之后可能被 history
+            # 覆盖，不能复用覆盖前的结果。
+            change_amount = None
+            change_pct = None
+            if price is not None and prev_close is not None and prev_close > 0:
+                change_amount = price - prev_close
+                change_pct = (change_amount / prev_close) * 100
+
+            amplitude = None
+            if high is not None and low is not None and prev_close is not None and prev_close > 0:
+                amplitude = ((high - low) / prev_close) * 100
 
             try:
                 info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''

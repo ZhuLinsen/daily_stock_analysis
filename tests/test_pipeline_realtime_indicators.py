@@ -598,6 +598,41 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertEqual(enhanced["yesterday"]["date"], "2026-11-12")
         self.assertEqual(enhanced["price_change_ratio"], -0.12)
         self.assertEqual(enhanced["volume_change_ratio"], 0.45)
+        self.assertEqual(enhanced["today"]["pct_chg"], -0.12)
+
+    def test_yfinance_recomputes_derived_indicators_after_history_override(self) -> None:
+        ticker = MagicMock()
+        fast_info_history = _make_yfinance_history(
+            "2026-11-11",
+            {"Open": 197100.0, "High": 206500.0, "Low": 196300.0, "Close": 206000.0, "Volume": 16238236},
+            "2026-11-12",
+            {"Open": 208500.0, "High": 214000.0, "Low": 206000.0, "Close": 208000.0, "Volume": 19721557},
+        )
+        history = _make_yfinance_history(
+            "2026-11-12",
+            {"Open": 208500.0, "High": 214000.0, "Low": 206000.0, "Close": 208000.0, "Volume": 19721557},
+            "2026-11-13",
+            {"Open": 214000.0, "High": 216000.0, "Low": 205500.0, "Close": 207750.0, "Volume": 8796683},
+        )
+        ticker.fast_info = _HistoryBackedFastInfo(fast_info_history)
+        ticker.history.return_value = history
+        ticker.info = {"shortName": "SamsungElec", "currency": "KRW"}
+        config = SimpleNamespace(enable_realtime_quote=True, realtime_cache_ttl=600)
+
+        with (
+            patch("yfinance.Ticker", return_value=ticker),
+            patch("src.config.get_config", return_value=config),
+            patch.object(DataFetcherManager, "_utc_now_iso", return_value="2026-11-13T05:28:00+00:00"),
+        ):
+            manager = DataFetcherManager(fetchers=[YfinanceFetcher()])
+            quote = manager.get_realtime_quote("005930.KS")
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote.price, 207750.0)
+        self.assertEqual(quote.pre_close, 208000.0)
+        self.assertEqual(quote.change_amount, -250.0)
+        self.assertEqual(quote.change_pct, -0.12)
+        self.assertEqual(quote.amplitude, 5.05)
 
     def test_yfinance_stale_history_does_not_use_newer_info_timestamp(self) -> None:
         now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
