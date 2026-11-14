@@ -461,7 +461,7 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         snapshots = []
         catalogs = []
 
-        def request(path, params):
+        def request(path, params, capability=None):
             if path.endswith("ths-index-list"):
                 catalogs.append(path)
                 return {"code": 0, "data": {"item": items}}
@@ -488,7 +488,7 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         items = [{"thscode": f"881{i:03d}.TI", "name": f"概念{i}"} for i in range(11)]
         snapshots = []
 
-        def request(path, params):
+        def request(path, params, capability=None):
             if path.endswith("ths-index-list"):
                 return {"code": 0, "data": {"item": items}}
             snapshots.append(params["thscodes"])
@@ -507,6 +507,87 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         self.assertTrue(fetcher.is_available("daily_data"))
         self.assertIsNone(fetcher.get_concept_rankings(1))
         self.assertEqual(len(snapshots), 2)
+
+    def test_catalog_permission_cools_rankings_without_blocking_quotes(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-catalog", "data": None}
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            self.assertIsNone(fetcher.get_concept_rankings(1))
+            self.assertIsNone(fetcher.get_sector_rankings(1))
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share-index/catalog/ths-index-list"])
+        self.assertFalse(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertEqual(fetcher._index_catalog_cache, {})
+
+    def test_ranking_snapshot_permission_does_not_block_realtime_quotes(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-rank", "data": None}
+        catalog = _ok({"item": [{"thscode": "881001.TI", "name": "软件"}]})
+        quote = _ok({"item": [{
+            "thscode": "600519.SH",
+            "last_price": 10,
+            "price_change": 1,
+            "price_change_ratio_pct": 1,
+            "volume": 100,
+            "turnover": 1000,
+            "open_price": 9,
+            "high_price": 11,
+            "low_price": 8,
+            "prev_price": 9,
+        }]})
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            if url.endswith("ths-index-list"):
+                return _response(catalog)
+            if url.endswith("/api/a-share-index/prices/snapshot"):
+                return _response(denied)
+            return _response(quote)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            self.assertIsNone(fetcher.get_concept_rankings(1))
+            realtime = fetcher.get_realtime_quote("600519")
+
+        self.assertEqual(realtime.price, 10)
+        self.assertFalse(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertEqual(sum(url.endswith("/api/a-share/prices/snapshot") for url in calls), 1)
+
+    def test_realtime_permission_does_not_block_rankings(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-quote", "data": None}
+        catalog = _ok({"item": [{"thscode": "881001.TI", "name": "软件"}]})
+        ranked = _ok({"item": [{"thscode": "881001.TI", "price_change_ratio_pct": 1.2}]})
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            if url.endswith("/api/a-share/prices/snapshot"):
+                return _response(denied)
+            if url.endswith("ths-index-list"):
+                return _response(catalog)
+            return _response(ranked)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_realtime_quote("600519")
+            top, _bottom = fetcher.get_concept_rankings(1)
+
+        self.assertEqual(top[0]["name"], "软件")
+        self.assertNotIn("coverage", top[0])
+        self.assertFalse(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("index_rankings"))
+        self.assertEqual(sum(url.endswith("ths-index-list") for url in calls), 1)
+        self.assertEqual(sum(url.endswith("/api/a-share-index/prices/snapshot") for url in calls), 1)
 
     def test_directory_permission_does_not_repeat(self) -> None:
         fetcher = self._fetcher()

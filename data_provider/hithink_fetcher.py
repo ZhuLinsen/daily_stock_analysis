@@ -246,10 +246,22 @@ class HiThinkFetcher(BaseFetcher):
             raise DataFetchError("HiThink prices API does not document ETF coverage")
         return f"{code}.{target.exchange}", code
 
-    def _request(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _request(
+        self,
+        path: str,
+        params: Dict[str, Any],
+        capability: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Send one HiThink request.
+
+        ``capability`` is the caller's cooldown, used when the same URL serves
+        more than one product. Stock snapshots stay on ``realtime_quote``.
+        Index ranking snapshots and catalogs stay on ``index_rankings``.
+        """
         if not self.api_key:
             raise DataFetchError("HiThink API key is not configured")
-        if not self.is_available_for_request(self._request_capability(path)):
+        resolved_capability = self._request_capability(path) if capability is None else capability
+        if not self.is_available_for_request(resolved_capability):
             raise DataFetchError("HiThink is cooling down after an authentication or rate-limit failure")
 
         url = f"{_BASE_URL}{path}"
@@ -316,9 +328,11 @@ class HiThinkFetcher(BaseFetcher):
                 self._remember_error(str(error), cooldown=True)
             elif error.permission and path == _HISTORICAL_BATCH_PATH:
                 self._remember_error(str(error), batch_only=True)
+            elif error.permission and resolved_capability == "index_rankings":
+                self._remember_error(str(error), rank_only=True)
             elif error.permission and path == _HISTORICAL_PATH:
                 self._remember_error(str(error), daily_only=True)
-            elif error.permission and path == _SNAPSHOT_PATH:
+            elif error.permission and resolved_capability == "realtime_quote":
                 self._remember_error(str(error), realtime_only=True)
             elif error.permission and (
                 path.startswith("/api/a-share/financials/")
