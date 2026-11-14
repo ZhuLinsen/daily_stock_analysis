@@ -401,6 +401,33 @@ class AnalysisHistory(Base):
         }
 
 
+class SentimentSnapshot(Base):
+    """Deterministic A-share sentiment snapshot for one scoped market day."""
+
+    __tablename__ = 'sentiment_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market = Column(String(64), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    previous_trade_date = Column(Date, nullable=False)
+    definition_version = Column(String(64), nullable=False)
+    quality_status = Column(String(16), nullable=False)
+    metrics_json = Column(Text, nullable=False)
+    components_json = Column(Text, nullable=False)
+    provider_trace_json = Column(Text, nullable=False)
+    completeness_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utc_naive_now)
+
+    __table_args__ = (
+        UniqueConstraint('market', 'trade_date', name='uix_sentiment_market_date'),
+        CheckConstraint(
+            "quality_status IN ('complete', 'partial', 'imported')",
+            name='ck_sentiment_quality_status',
+        ),
+        Index('ix_sentiment_market_date', 'market', 'trade_date'),
+    )
+
+
 class BacktestResult(Base):
     """单条分析记录的回测结果。"""
 

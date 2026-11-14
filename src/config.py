@@ -1283,6 +1283,7 @@ class Config:
 
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
+    csmar_zip_path: str = ""  # Opt-in local TRD_Dalyr ZIP for manual sentiment snapshots.
     sqlite_wal_enabled: bool = True
     sqlite_busy_timeout_ms: int = 5000
     sqlite_write_retry_max: int = 3
@@ -2266,6 +2267,7 @@ class Config:
             share_image_xiaohongshu_qr_path=(os.getenv('SHARE_IMAGE_XIAOHONGSHU_QR_PATH') or '').strip() or None,
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
+            csmar_zip_path=(os.getenv('CSMAR_ZIP_PATH') or '').strip(),
             sqlite_wal_enabled=os.getenv('SQLITE_WAL_ENABLED', 'true').lower() == 'true',
             sqlite_busy_timeout_ms=parse_env_int(
                 os.getenv('SQLITE_BUSY_TIMEOUT_MS'),
