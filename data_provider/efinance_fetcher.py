@@ -63,6 +63,7 @@ from .base import (
     is_st_stock,
     is_kc_cy_stock,
     normalize_stock_code,
+    normalize_daily_volume_to_shares,
     _is_hk_market,
     _is_etf_code as _is_a_share_etf_code,
 )
@@ -610,10 +611,13 @@ class EfinanceFetcher(BaseFetcher):
             df['amount'] = 0
 
         
+        # 东财 K 线成交量单位为「手」，统一转换为项目口径「股」
+        df = normalize_daily_volume_to_shares(df, stock_code, default_multiplier=100)
+
         # 如果没有 code 列，手动添加
         if 'code' not in df.columns:
             df['code'] = stock_code
-        
+
         # 只保留需要的列
         keep_cols = ['code'] + STANDARD_COLUMNS
         existing_cols = [col for col in keep_cols if col in df.columns]

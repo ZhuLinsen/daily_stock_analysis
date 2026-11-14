@@ -91,6 +91,46 @@ def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
     return default
 
 
+def infer_lot_volume_multiplier(volume: Any, amount: Any, price: Any) -> Optional[int]:
+    """
+    根据成交额 / 价格推断成交量口径：返回 100 表示原值为「手」，1 表示已是「股」。
+
+    A 股 1 手 = 100 股，两种口径相差两个数量级，用 amount / price 估算的股数
+    即可稳定区分；价格可用收盘价或现价（与均价的偏差远小于 100 倍）。
+    任一输入缺失或非正时无法判断，返回 None，由调用方决定默认口径。
+    """
+    v = safe_float(volume)
+    a = safe_float(amount)
+    p = safe_float(price)
+    if v is None or a is None or p is None or v <= 0 or a <= 0 or p <= 0:
+        return None
+    implied_shares = a / p
+    return 100 if abs(v * 100 - implied_shares) < abs(v - implied_shares) else 1
+
+
+def compute_volume_change_ratio(
+    today_volume: Any,
+    today_amount: Any,
+    today_price: Any,
+    prev_volume: Any,
+    prev_amount: Any,
+    prev_close: Any,
+) -> Optional[float]:
+    """
+    计算「成交量较昨日」比值，两侧各自用成交额校验手/股口径后再相除。
+
+    实时行情、不同日线数据源和历史缓存的成交量口径可能不一致，直接相除会产生
+    100 倍偏差（例如把 0.62 倍缩量误报为 62 倍放量）。昨日成交量缺失或非正时返回 None。
+    """
+    tv = safe_float(today_volume)
+    pv = safe_float(prev_volume)
+    if tv is None or pv is None or pv <= 0:
+        return None
+    tv *= infer_lot_volume_multiplier(tv, today_amount, today_price) or 1
+    pv *= infer_lot_volume_multiplier(pv, prev_amount, prev_close) or 1
+    return round(tv / pv, 2)
+
+
 class RealtimeSource(Enum):
     """实时行情数据源"""
     EFINANCE = "efinance"           # 东方财富（efinance库）
