@@ -27,6 +27,7 @@ import logging
 import multiprocessing
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -50,7 +51,8 @@ from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,
 from .realtime_types import (
     UnifiedRealtimeQuote, ChipDistribution, RealtimeSource,
     get_realtime_circuit_breaker, get_chip_circuit_breaker,
-    safe_float, safe_int  # 使用统一的类型转换函数
+    safe_float, safe_int,  # 使用统一的类型转换函数
+    normalize_em_cn_spot_volume,
 )
 from .us_index_mapping import is_us_index_code, is_us_stock_code
 
@@ -416,7 +418,12 @@ class AkshareFetcher(BaseFetcher):
     
     name = "AkshareFetcher"
     priority = int(os.getenv("AKSHARE_PRIORITY", "1"))
-    
+
+    # 盘口单次调用限时（r3 OR-COR-2d4fb637）：stock_bid_ask_em 的 requests.get
+    # 无 timeout，源挂起会无限等待；经 _akshare_call_with_timeout 有界化后
+    # 超时降级 null，不拖死快照其余字段。
+    ORDER_BOOK_CALL_TIMEOUT: float = 10.0
+
     def __init__(self, sleep_min: float = 2.0, sleep_max: float = 5.0):
         """
         初始化 AkshareFetcher
@@ -1070,6 +1077,50 @@ class AkshareFetcher(BaseFetcher):
             )
             return None
     
+    def get_a_share_order_book(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """
+        获取 A 股五档盘口量（委比派生输入，issue #771）
+
+        数据源：东方财富 push2 行情报价（ak.stock_bid_ask_em）。
+
+        探针结论（akshare 1.18.97 源码实证，2026-11-11）：
+        - 五档买卖量（buy_1..5_vol / sell_1..5_vol）可得 → 委比可派生；
+        - 成交笔数字段不存在（L2 专属）→ 上层恒 null + missing_fields。
+
+        Args:
+            stock_code: 纯 6 位 A 股代码（如 600519）；其他形态直接返回 None
+
+        Returns:
+            {"buy_volumes": [...], "sell_volumes": [...]}（含 None 占位），
+            盘口不可得/非 A 股代码/任何异常 → None（调用方降级 null 语义，不硬失败）
+        """
+        code = (stock_code or "").strip()
+        if not re.fullmatch(r"\d{6}", code):
+            return None
+        try:
+            import akshare as ak
+
+            # 有界等待：盘口源挂起时超时降级，不拖死快照（r3 OR-COR-2d4fb637）
+            frame = _akshare_call_with_timeout(
+                ak.stock_bid_ask_em,
+                symbol=code,
+                timeout=self.ORDER_BOOK_CALL_TIMEOUT,
+                call_name="ak.stock_bid_ask_em",
+            )
+            if frame is None or getattr(frame, "empty", True):
+                logger.info("[盘口] %s 东财盘口返回空", code)
+                return None
+            items = dict(zip(frame["item"], frame["value"]))
+            buy_volumes = [safe_float(items.get(f"buy_{i}_vol")) for i in range(1, 6)]
+            sell_volumes = [safe_float(items.get(f"sell_{i}_vol")) for i in range(1, 6)]
+            if all(v is None for v in buy_volumes) and all(v is None for v in sell_volumes):
+                logger.info("[盘口] %s 东财盘口无五档量数据", code)
+                return None
+            return {"buy_volumes": buy_volumes, "sell_volumes": sell_volumes}
+        except Exception as exc:  # noqa: BLE001 - 盘口失败必须降级而非中断快照
+            logger.warning("[盘口] %s 东财盘口获取失败，委比降级 null: %s", code, exc)
+            return None
+
     def get_realtime_quote(self, stock_code: str, source: str = "em") -> Optional[UnifiedRealtimeQuote]:
         """
         获取实时行情数据（支持多数据源）
@@ -1189,7 +1240,7 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
+                volume=normalize_em_cn_spot_volume(row.get('成交量')),
                 amount=safe_float(row.get('成交额')),
                 volume_ratio=safe_float(row.get('量比')),
                 turnover_rate=safe_float(row.get('换手率')),
@@ -1595,7 +1646,7 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
+                volume=normalize_em_cn_spot_volume(row.get('成交量')),
                 amount=safe_float(row.get('成交额')),
                 volume_ratio=safe_float(row.get('量比')),
                 turnover_rate=safe_float(row.get('换手率')),
@@ -1663,6 +1714,7 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),
+                # 港股 em 成交量单位本就是股（AKShare 官方口径），不乘 100
                 volume=safe_int(row.get('成交量')),
                 amount=safe_float(row.get('成交额')),
                 volume_ratio=safe_float(row.get('量比')),
