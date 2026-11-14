@@ -25,6 +25,8 @@ from tests.litellm_stub import ensure_litellm_stub
 ensure_litellm_stub()
 
 from data_provider.realtime_types import UnifiedRealtimeQuote, RealtimeSource
+from data_provider.akshare_fetcher import AkshareFetcher, _hk_realtime_cache
+from data_provider.base import DataFetcherManager
 from src.analyzer import GeminiAnalyzer
 from src.core.trading_calendar import build_market_phase_context
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, TrendStatus
@@ -526,6 +528,88 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
 
         self.assertEqual(enhanced["today"]["open"], 208000.0)
         self.assertEqual(enhanced["yesterday"]["date"], "2026-11-12")
+
+    def test_missing_or_invalid_quote_time_keeps_baseline_despite_price_changes(self) -> None:
+        now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
+        phase = build_market_phase_context(market="kr", current_time=now).to_dict()
+        context = self._kr_005930_context()
+        for timestamp in (None, "invalid", "14:28:00"):
+            with self.subTest(provider_timestamp=timestamp):
+                quote = self._kr_005930_quote(
+                    provider_timestamp=timestamp, fetched_at=now.isoformat(),
+                )
+                with patch("src.core.pipeline.get_market_now", return_value=now):
+                    enhanced = self.pipeline._enhance_context(
+                        context, quote, None, self._kr_005930_trend(),
+                        stock_name="SamsungElec",
+                        fundamental_context={"status": "not_supported"},
+                        market_phase_context=phase,
+                    )
+                self.assertEqual(enhanced["yesterday"], context["yesterday"])
+
+    def test_undated_hk_adapter_quotes_preserve_baseline_and_market_snapshot(self) -> None:
+        now = datetime(2026, 11, 13, 9, 31, tzinfo=ZoneInfo("Asia/Hong_Kong"))
+        cached_rows = pd.DataFrame([{
+            "代码": "00700", "名称": "腾讯控股", "最新价": 110.0,
+            "涨跌幅": 10.0, "涨跌额": 10.0, "成交量": 1000,
+        }])
+        context = {
+            "code": "HK00700", "date": "2026-11-12",
+            "today": {"date": "2026-11-12", "close": 110.0, "volume": 1000},
+            "yesterday": {"date": "2026-11-11", "close": 100.0, "volume": 800},
+        }
+        trend = TrendAnalysisResult(code="HK00700", ma5=105.0, ma10=102.0, ma20=100.0)
+        config = SimpleNamespace(
+            enable_realtime_quote=True, realtime_source_priority="akshare_em",
+            futu_hk_realtime_source_priority="akshare", enable_eastmoney_patch=False,
+        )
+        for route in ("em_cache", "sina_fallback"):
+            with self.subTest(route=route):
+                ak = MagicMock()
+                ak.stock_hk_spot.return_value = cached_rows
+                cache = {
+                    "data": cached_rows if route == "em_cache" else None,
+                    # The EM cache was populated before the 09:30 open.
+                    "timestamp": now.timestamp() - 660 if route == "em_cache" else now.timestamp(),
+                    "last_result": "success" if route == "em_cache" else "failure",
+                }
+                with (
+                    patch.dict(sys.modules, {"akshare": ak}),
+                    patch.dict(_hk_realtime_cache, cache),
+                    patch("data_provider.akshare_fetcher.time.time", return_value=now.timestamp()),
+                    patch("data_provider.akshare_fetcher.get_config", return_value=config),
+                    patch("data_provider.akshare_fetcher.get_realtime_circuit_breaker") as breaker,
+                    patch.object(AkshareFetcher, "_set_random_user_agent"),
+                    patch.object(AkshareFetcher, "_enforce_rate_limit"),
+                    patch("src.config.get_config", return_value=config),
+                    patch.object(DataFetcherManager, "_utc_now_iso", return_value=now.isoformat()),
+                ):
+                    breaker.return_value.is_available.return_value = True
+                    manager = DataFetcherManager(fetchers=[AkshareFetcher()])
+                    quote = manager.get_realtime_quote("HK00700")
+
+                self.assertIsNotNone(quote)
+                ak.stock_hk_spot_em.assert_not_called()
+                self.assertEqual(ak.stock_hk_spot.call_count, int(route == "sina_fallback"))
+                self.assertEqual(quote.fetched_at, now.isoformat())
+                for field in ("provider_timestamp", "pre_close", "open_price", "high", "low"):
+                    self.assertIsNone(getattr(quote, field))
+
+                for session_now in (now, now.replace(hour=17)):
+                    phase = build_market_phase_context(market="hk", current_time=session_now).to_dict()
+                    with patch("src.core.pipeline.get_market_now", return_value=session_now):
+                        enhanced = self.pipeline._enhance_context(
+                            context, quote, None, trend, stock_name="腾讯控股",
+                            fundamental_context={"status": "not_supported"},
+                            market_phase_context=phase,
+                        )
+
+                    self.assertEqual(enhanced["yesterday"], context["yesterday"])
+                    self.assertEqual(enhanced["price_change_ratio"], 10.0)
+                    self.assertEqual(enhanced["volume_change_ratio"], 1.25)
+                    snapshot = GeminiAnalyzer.__new__(GeminiAnalyzer)._build_market_snapshot(enhanced)
+                    self.assertEqual(snapshot["prev_close"], "100.00")
+                    self.assertEqual(snapshot["change_amount"], "10.00")
 
     def test_postmarket_shifts_yesterday_for_current_session_quote_but_not_stale_prior_session_quote(self) -> None:
         now = datetime(2026, 11, 13, 17, 0, tzinfo=ZoneInfo("Asia/Seoul"))

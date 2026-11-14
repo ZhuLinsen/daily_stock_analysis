@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 盘中及盘后实时行情覆盖前，仅在报价有明确行情交易日证据时将历史 `today` 平移为 `yesterday`；缺少行情时间的港股缓存报价保留原基准，避免涨跌幅、成交量比率及行情快照涨跌额被错误重算（#2517）。
 - [修复] ntfy 推送按服务端默认 4096 字节消息上限分批发送（标题带 `(1/N)` 分页），并以 UTF-8 JSON 提交请求体，修复约 1350 个汉字以上的中文报告因请求体超过 8192 字节被 ntfy 以 HTTP 413 拒收、测试消息正常但完整报告收不到的问题。
 - [改进] 多 Agent standard/full/specialist 分析默认并行执行 TechnicalAgent 与 IntelAgent 的 Wave-1，并在并行线程传播新闻证据、冻结目标日期和 Provider 诊断上下文；新增 `compute_smoothed_weights()` 使用 Beta(6, 6) 对小样本 Skill Opinion 做平滑校准。该方法目前为显式调用的辅助 API，运行时仍由 `compute_weights()` 按每个 horizon 的充足样本门槛、Beta(15, 15) 先验和 unable 惩罚计算权重。
 - [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
