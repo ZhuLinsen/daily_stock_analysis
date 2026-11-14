@@ -3523,7 +3523,10 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(payload["success"])
         self.assertEqual(mock_post.call_args.args[0], "https://ntfy.sh")
-        self.assertEqual(mock_post.call_args.kwargs["json"]["topic"], "private-topic")
+        self.assertEqual(
+            json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))["topic"],
+            "private-topic",
+        )
         self.assertEqual(mock_post.call_args.kwargs["headers"]["Authorization"], "Bearer secret-token")
         self.assertEqual(mock_post.call_args.kwargs["timeout"], 4)
         self.assertIn("https://ntfy.sh/***", payload["attempts"][0]["target"])
