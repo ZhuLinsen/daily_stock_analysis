@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 报告增加可选 structured_report、研究 Bento 卡片、狙击点位价格刻度与风险预算仓位展示，聊天快捷问题跟随界面语言切换。
+- [修复] 异步任务从数据库回退时与历史详情共用分析时价格恢复逻辑，关闭上下文快照保存后仍从 raw_result / dashboard 恢复现价和涨跌幅，防止偏离现价的入场位绕过校验并显示正仓位。
+- [修复] 报告缺少有效点位校验结果时隐藏正仓位建议，防止旧报告元数据绕过风险门控。
+
 - [修复] ntfy 推送按服务端默认 4096 字节消息上限分批发送（标题带 `(1/N)` 分页），并以 UTF-8 JSON 提交请求体，修复约 1350 个汉字以上的中文报告因请求体超过 8192 字节被 ntfy 以 HTTP 413 拒收、测试消息正常但完整报告收不到的问题。
 - [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
 - [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。

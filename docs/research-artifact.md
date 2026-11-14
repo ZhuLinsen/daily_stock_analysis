@@ -83,6 +83,10 @@ structured_report?: ResearchArtifact | null
 
 旧报告可以继续不返回该字段；Web 类型和后端 schema 都按可选字段处理。非大盘复盘的 `AnalysisReport` 在构建/序列化时会自动生成 `structured_report`（同步报告、异步任务结果及数据库回退、历史详情统一链路）；个股研究聚合也会从历史详情复用同一 builder，并统一透传分析时价格与 `raw_result` 委员会快照。
 
+异步任务数据库回退与历史详情使用相同的分析时价格恢复顺序：优先上下文快照，缺失字段依次读取持久化的 `raw_result`、`raw_result.dashboard` 中的 `current_price` / `change_pct`，保留零涨跌幅。即使 `SAVE_CONTEXT_SNAPSHOT=false`，已保存的现价仍用于点位偏离校验；例如现价 100、计划买入 60、止损 55、止盈 80 的买入建议会返回 `validation=out_of_range`、`status=invalid` 和 `0%–0%` 仓位。
+
+Web 仅在 `validation=ok`、点位未标为 `invalid`、入场价与止损价有效且最大仓位对应的止损风险不超过已声明预算时展示正仓位；旧报告缺失校验结果或风险预算时不展示正仓位。持久化价格回退会跳过布尔值、非有限数和非正价格，继续尝试 dashboard。
+
 当前 Stock Profile API 会从历史详情动态构建该产物；报告生成时冻结并持久化完整 `structured_report` 仍是后续范围。
 
 ## 实现入口

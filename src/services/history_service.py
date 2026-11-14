@@ -349,9 +349,11 @@ class HistoryService:
                 return value
         return None
 
-    def _extract_history_market_fields(self, context_snapshot: Any) -> Dict[str, Optional[float]]:
+    def _extract_history_market_fields(
+        self, context_snapshot: Any, raw_result: Any = None,
+    ) -> Dict[str, Optional[float]]:
         snapshot_obj = parse_json_field(context_snapshot)
-        realtime_fields = extract_realtime_detail_fields(snapshot_obj)
+        realtime_fields = extract_realtime_detail_fields(snapshot_obj, raw_result)
 
         volume_ratio = None
         turnover_rate = None
@@ -744,22 +746,8 @@ class HistoryService:
         """
         raw_result = parse_json_field(record.raw_result)
         market_fields = self._extract_history_market_fields(
-            getattr(record, "context_snapshot", None)
+            getattr(record, "context_snapshot", None), raw_result,
         )
-        if isinstance(raw_result, dict):
-            raw_dashboard = raw_result.get("dashboard")
-            raw_market_sources = [raw_result]
-            if isinstance(raw_dashboard, dict):
-                raw_market_sources.append(raw_dashboard)
-            for field in ("current_price", "change_pct"):
-                if market_fields[field] is not None:
-                    continue
-                for source in raw_market_sources:
-                    raw_value = source.get(field)
-                    if raw_value is not None:
-                        market_fields[field] = self._safe_float(raw_value)
-                        if market_fields[field] is not None:
-                            break
 
         model_used = (raw_result or {}).get("model_used") if isinstance(raw_result, dict) else None
         model_used = normalize_model_used(model_used)

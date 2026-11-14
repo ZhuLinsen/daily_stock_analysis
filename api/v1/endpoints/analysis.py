@@ -1268,7 +1268,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
             stock_name = get_localized_stock_name(record.name, record.code, report_language)
             display_stock_code = _display_stock_code_from_index(record.code)
 
-            # Extract current_price / change_pct from context_snapshot
+            # Restore analysis-time prices even when context snapshots were disabled.
             skills = None
             context_snapshot = parse_json_field(getattr(record, 'context_snapshot', None))
             analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
@@ -1278,7 +1278,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 raw_skills = context_snapshot.get("skills")
                 if isinstance(raw_skills, list):
                     skills = [str(skill) for skill in raw_skills]
-            realtime_fields = extract_realtime_detail_fields(context_snapshot)
+            realtime_fields = extract_realtime_detail_fields(context_snapshot, raw_result)
             current_price = realtime_fields.get("current_price")
             change_pct = realtime_fields.get("change_pct")
             fallback_fundamental = db.get_latest_fundamental_snapshot(

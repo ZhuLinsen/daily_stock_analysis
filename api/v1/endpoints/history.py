@@ -575,22 +575,12 @@ def get_history_detail(
         if market_phase_summary is None:
             market_phase_summary = extract_market_phase_summary(context_snapshot)
         api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
-        realtime_fields = extract_realtime_detail_fields(context_snapshot)
-        current_price = realtime_fields.get("current_price")
-        change_pct = realtime_fields.get("change_pct")
-        
         raw_result = result.get("raw_result")
         if not isinstance(raw_result, dict):
             raw_result = {}
-        raw_dashboard = raw_result.get("dashboard")
-        if current_price is None:
-            current_price = raw_result.get("current_price")
-        if current_price is None and isinstance(raw_dashboard, dict):
-            current_price = raw_dashboard.get("current_price")
-        if change_pct is None:
-            change_pct = raw_result.get("change_pct")
-        if change_pct is None and isinstance(raw_dashboard, dict):
-            change_pct = raw_dashboard.get("change_pct")
+        realtime_fields = extract_realtime_detail_fields(context_snapshot, raw_result)
+        current_price = realtime_fields.get("current_price")
+        change_pct = realtime_fields.get("change_pct")
         report_language = normalize_report_language(
             result.get("report_language")
             or raw_result.get("report_language")

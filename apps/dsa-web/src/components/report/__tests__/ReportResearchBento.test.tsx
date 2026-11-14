@@ -139,7 +139,7 @@ describe('ReportResearchBento & ReportStrategy', () => {
     'hides legacy positive position advice when stop loss is invalid: %s',
     (stopLoss) => {
       const artifact = makeArtifact({ metadata: {
-        levels: { referencePrice: 100, idealBuy: 100, stopLoss, status: 'conditional_watch' },
+        levels: { referencePrice: 100, idealBuy: 100, stopLoss, status: 'conditional_watch', validation: 'ok' },
         position: { minPct: 25, maxPct: 30, riskBudgetPct: 1.2 },
       } });
       render(<ReportStrategy strategy={{ idealBuy: '100', takeProfit: '120' }} artifact={artifact} />);
@@ -163,12 +163,24 @@ describe('ReportResearchBento & ReportStrategy', () => {
 
   it('hides positive legacy advice without a verifiable risk budget', () => {
     const artifact = makeArtifact({ metadata: {
-      levels: { referencePrice: 100, stopLoss: 96 },
+      levels: { referencePrice: 100, stopLoss: 96, validation: 'ok' },
       position: { minPct: 25, maxPct: 30 },
     } });
     render(<ReportStrategy strategy={{ idealBuy: '100', stopLoss: '96' }} artifact={artifact} />);
     expect(screen.queryByText(/止损风险预算仓位/)).not.toBeInTheDocument();
   });
+
+  it.each([undefined, null, '', false, 'pending', 'direction_conflict', 'out_of_range'])(
+    'hides otherwise affordable position advice without successful validation: %s',
+    (validation) => {
+      const artifact = makeArtifact({ metadata: {
+        levels: { referencePrice: 100, idealBuy: 100, stopLoss: 96, status: 'active', validation },
+        position: { minPct: 25, maxPct: 30, riskBudgetPct: 1.2 },
+      } });
+      render(<ReportStrategy strategy={{ idealBuy: '100', stopLoss: '96' }} artifact={artifact} />);
+      expect(screen.queryByText(/止损风险预算仓位/)).not.toBeInTheDocument();
+    },
+  );
 
   it.each([
     { minPct: null, maxPct: 20, riskBudgetPct: 1.2 },
@@ -182,7 +194,7 @@ describe('ReportResearchBento & ReportStrategy', () => {
     { minPct: 0, maxPct: 20, riskBudgetPct: Infinity },
   ])('hides malformed legacy position metadata: %j', (position) => {
     const artifact = makeArtifact({ metadata: {
-      levels: { referencePrice: 100, stopLoss: 96 }, position,
+      levels: { referencePrice: 100, stopLoss: 96, validation: 'ok' }, position,
     } });
     render(<ReportStrategy strategy={{ idealBuy: '100', stopLoss: '96' }} artifact={artifact} />);
     expect(screen.queryByText(/止损风险预算仓位/)).not.toBeInTheDocument();

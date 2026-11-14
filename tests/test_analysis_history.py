@@ -28,10 +28,12 @@ except ModuleNotFoundError:
 try:
     from fastapi.testclient import TestClient
     from api.app import create_app
+    from api.v1.endpoints.analysis import get_analysis_status
     from api.v1.endpoints.history import delete_history_by_code, get_history_detail, get_history_list, get_stock_bar
 except ModuleNotFoundError:
     TestClient = None
     create_app = None
+    get_analysis_status = None
     delete_history_by_code = None
     get_history_detail = None
     get_history_list = None
@@ -340,6 +342,83 @@ class AnalysisHistoryTestCase(unittest.TestCase):
 
         self.assertIsNotNone(serialized)
         self.assertRegex(serialized or "", r"[+-]\d{2}:\d{2}$")
+
+    def test_completed_task_db_fallback_restores_price_for_numeric_guardrails(self) -> None:
+        """Persisted price must still gate entry levels after the task leaves memory."""
+        self.assertIsNotNone(get_analysis_status)
+        cases = (
+            ("raw_result", 100, 0, {"current_price": 110}, False),
+            ("dashboard", None, None, {"current_price": "100", "change_pct": "0%"}, False),
+            ("invalid_raw_price", "unavailable", None, {"current_price": 100, "change_pct": 0}, False),
+            ("zero_raw_price", 0, None, {"current_price": 100, "change_pct": 0}, False),
+            ("negative_raw_price", -1, None, {"current_price": 100, "change_pct": 0}, False),
+            ("boolean_raw_price", True, None, {"current_price": 100, "change_pct": 0}, False),
+            ("nonfinite_raw_price", "NaN", None, {"current_price": 100, "change_pct": 0}, False),
+            ("snapshot_priority", 60, 5, {"current_price": 110}, True),
+        )
+        for label, current_price, change_pct, dashboard_fields, save_snapshot in cases:
+            with self.subTest(source=label):
+                query_id = f"price_guardrail_{label}"
+                result = AnalysisResult(
+                    code="600519",
+                    name="贵州茅台",
+                    sentiment_score=80,
+                    trend_prediction="看多",
+                    operation_advice="买入",
+                    action="buy",
+                    analysis_summary="测试持久化价格锚点",
+                    current_price=current_price,
+                    change_pct=change_pct,
+                    dashboard={
+                        **dashboard_fields,
+                        "battle_plan": {
+                            "sniper_points": {
+                                "ideal_buy": "60",
+                                "stop_loss": "55",
+                                "take_profit": "80",
+                            },
+                        },
+                    },
+                )
+                record_id = self.db.save_analysis_history(
+                    result=result,
+                    query_id=query_id,
+                    report_type="detailed",
+                    news_content=None,
+                    context_snapshot={"realtime_quote": {"price": 100, "change_pct": 0}},
+                    save_snapshot=save_snapshot,
+                )
+                self.assertGreater(record_id, 0)
+                record = self.db.get_analysis_history(query_id=query_id, limit=1)[0]
+                if not save_snapshot:
+                    self.assertIsNone(record.context_snapshot)
+
+                with patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock:
+                    queue_mock.return_value.get_task.return_value = None
+                    status = get_analysis_status(query_id)
+
+                self.assertEqual(status.status, "completed")
+                report = status.result.report
+                self.assertEqual(report["summary"]["action"], "buy")
+                self.assertEqual(report["meta"]["current_price"], 100)
+                self.assertEqual(report["meta"]["change_pct"], 0)
+                metadata = report["structured_report"]["metadata"]
+                self.assertEqual(metadata["levels"]["reference_price"], 100)
+                self.assertEqual(metadata["levels"]["validation"], "out_of_range")
+                self.assertEqual(metadata["levels"]["status"], "invalid")
+                self.assertEqual(metadata["position"]["min_pct"], 0)
+                self.assertEqual(metadata["position"]["max_pct"], 0)
+                self.assertIsNone(metadata["position"]["stop_distance_pct"])
+                self.assertIn(
+                    "LEVEL_ANCHOR_OUT_OF_RANGE",
+                    [flag["code"] for flag in metadata["risk_flags"]],
+                )
+
+                history = get_history_detail(str(record_id), db_manager=self.db)
+                self.assertEqual(history.meta.current_price, report["meta"]["current_price"])
+                self.assertEqual(history.meta.change_pct, report["meta"]["change_pct"])
+                self.assertEqual(history.structured_report.metadata["levels"], metadata["levels"])
+                self.assertEqual(history.structured_report.metadata["position"], metadata["position"])
 
     def test_history_query_failure_is_not_returned_as_an_empty_success(self) -> None:
         db = MagicMock()

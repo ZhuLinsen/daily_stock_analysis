@@ -81,7 +81,7 @@ const extractPosition = (
     || !Number.isFinite(minPct) || !Number.isFinite(maxPct)
     || minPct < 0 || minPct > maxPct || maxPct <= 0 || maxPct > 100
     || !entryPrice || !stopLoss || stopLoss >= entryPrice
-    || status === 'invalid' || (validation && validation !== 'ok') || riskBudgetPct === null
+    || status === 'invalid' || validation !== 'ok' || riskBudgetPct === null
   ) {
     return null;
   }

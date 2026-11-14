@@ -223,16 +223,18 @@ def extract_fundamental_context(
     )
 
 
-def extract_realtime_detail_fields(context_snapshot: Any) -> Dict[str, Any]:
+def extract_realtime_detail_fields(context_snapshot: Any, raw_result: Any = None) -> Dict[str, Any]:
     """
     Extract stable realtime price/change fields from persisted context snapshots.
 
     Supports both the standard `enhanced_context.realtime` layout and the
-    agent-mode top-level `realtime_quote` compatibility shape.
+    agent-mode top-level `realtime_quote` compatibility shape. Missing fields
+    fall back to the persisted raw result, then its dashboard, independently of
+    whether context snapshot persistence was enabled.
     """
     snapshot_obj = parse_json_field(context_snapshot)
     if not isinstance(snapshot_obj, dict):
-        return {"current_price": None, "change_pct": None}
+        snapshot_obj = {}
 
     current_price = None
     change_pct = None
@@ -255,10 +257,27 @@ def extract_realtime_detail_fields(context_snapshot: Any) -> Dict[str, Any]:
         if change_pct is None:
             change_pct = realtime_payload.get("pct_chg")
 
-    return {
+    fields = {
         "current_price": current_price,
         "change_pct": change_pct,
     }
+    raw_obj = parse_json_field(raw_result)
+    if isinstance(raw_obj, dict):
+        for source in (raw_obj, raw_obj.get("dashboard")):
+            if not isinstance(source, dict):
+                continue
+            for field in fields:
+                if fields[field] is None:
+                    raw_value = source.get(field)
+                    if isinstance(raw_value, bool):
+                        continue
+                    value = _safe_float(raw_value)
+                    if (
+                        value is not None and math.isfinite(value)
+                        and (field != "current_price" or value > 0)
+                    ):
+                        fields[field] = value
+    return fields
 
 
 def extract_fundamental_detail_fields(
