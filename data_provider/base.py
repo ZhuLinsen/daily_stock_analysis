@@ -5152,7 +5152,7 @@ class DataFetcherManager:
                         if partial:
                             logger.info("[%s] 板块排行只覆盖了部分目录，继续查找完整结果", fetcher.name)
                             if partial_rankings is None:
-                                partial_rankings = (data[0], data[1], list(source_chain))
+                                partial_rankings = (data[0], data[1])
                             continue
                         logger.info(f"[{fetcher.name}] 获取板块排行成功")
                         return data[0], data[1], source_chain, ""
@@ -5181,7 +5181,7 @@ class DataFetcherManager:
                     logger.warning(f"[{fetcher.name}] 获取板块排行失败: {error_reason}")
 
             if partial_rankings is not None:
-                return partial_rankings[0], partial_rankings[1], partial_rankings[2], ""
+                return partial_rankings[0], partial_rankings[1], source_chain, ""
             return [], [], source_chain, last_error
 
     @staticmethod
