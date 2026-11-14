@@ -720,7 +720,7 @@ class YfinanceFetcher(BaseFetcher):
                 volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
             except Exception:
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
-                hist = ticker.history(period='2d')
+                hist = ticker.history(period='2d', auto_adjust=False)
                 if hist.empty:
                     logger.warning(f"[Yfinance] 无法获取 {yf_symbol} 的数据")
                     return None
@@ -833,6 +833,7 @@ class YfinanceFetcher(BaseFetcher):
 
             ticker = yf.Ticker(symbol)
             provider_timestamp = None
+            quote_date = None
             used_fast_info = False
 
             # 尝试获取 fast_info（更快，但字段较少）
@@ -853,7 +854,7 @@ class YfinanceFetcher(BaseFetcher):
             except Exception:
                 # 回退到 history 方法获取最新数据
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
-                hist = ticker.history(period='2d')
+                hist = ticker.history(period='2d', auto_adjust=False)
                 if hist.empty:
                     if is_us_symbol:
                         logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
@@ -863,7 +864,7 @@ class YfinanceFetcher(BaseFetcher):
 
                 today = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else today
-                provider_timestamp = pd.Timestamp(hist.index[-1]).isoformat()
+                quote_date = pd.Timestamp(hist.index[-1]).date().isoformat()
 
                 price = float(today['Close'])
                 prev_close = float(prev['Close'])
@@ -886,7 +887,7 @@ class YfinanceFetcher(BaseFetcher):
                 # provider timestamp.  regularMarketTime from ticker.info is
                 # not safe: it may belong to a different quote payload.
                 try:
-                    quote_history = ticker.history(period='2d')
+                    quote_history = ticker.history(period='2d', auto_adjust=False)
                     if isinstance(quote_history, pd.DataFrame) and len(quote_history) >= 2:
                         today = quote_history.iloc[-1]
                         prev = quote_history.iloc[-2]
@@ -903,7 +904,7 @@ class YfinanceFetcher(BaseFetcher):
                             high = float(today['High'])
                             low = float(today['Low'])
                             volume = int(today['Volume'])
-                            provider_timestamp = pd.Timestamp(quote_history.index[-1]).isoformat()
+                            quote_date = pd.Timestamp(quote_history.index[-1]).date().isoformat()
                 except Exception:
                     logger.debug("[Yfinance] 无法读取 %s 的行情日期", symbol, exc_info=True)
 
@@ -966,6 +967,7 @@ class YfinanceFetcher(BaseFetcher):
                 total_mv=market_cap,
                 circ_mv=None,
                 provider_timestamp=provider_timestamp,
+                quote_date=quote_date,
             )
 
             logger.info(f"[Yfinance] 获取 {symbol} 实时行情成功: 价格={price}")

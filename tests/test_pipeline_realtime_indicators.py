@@ -30,6 +30,7 @@ from data_provider.base import DataFetcherManager
 from data_provider.yfinance_fetcher import YfinanceFetcher
 from src.analyzer import GeminiAnalyzer
 from src.core.trading_calendar import build_market_phase_context
+from src.services.analysis_context_builder import AnalysisContextBuilder, PipelineAnalysisArtifacts
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, TrendStatus
 from src.core.pipeline import StockAnalysisPipeline
 
@@ -583,7 +584,34 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertIsNotNone(quote)
         self.assertEqual(quote.price, 207750.0)
         self.assertEqual(quote.volume, 8796683)
-        self.assertEqual(quote.provider_timestamp, "2026-11-12T15:00:00+00:00")
+        self.assertIsNone(quote.provider_timestamp)
+        self.assertEqual(quote.quote_date, "2026-11-13")
+        self.assertIsNone(quote.is_stale)
+        self.assertIsNone(quote.stale_seconds)
+
+        pack = AnalysisContextBuilder.build(
+            PipelineAnalysisArtifacts(
+                code="005930.KS",
+                stock_name="SamsungElec",
+                market="kr",
+                phase=phase,
+                base_context=self._kr_005930_context(),
+                enhanced_context={},
+                realtime_quote=quote,
+                trend_result=self._kr_005930_trend(),
+                chip_data=None,
+                fundamental_context={"status": "not_supported"},
+                news_context=None,
+                news_result_count=None,
+                metadata={},
+            )
+        )
+        quote_block = pack.blocks["quote"]
+        self.assertEqual(quote_block.status.value, "fallback")
+        self.assertEqual(quote_block.items["quote_date"].value, "2026-11-13")
+        self.assertNotIn("quote_stale", quote_block.warnings)
+        self.assertNotIn("provider_timestamp", quote_block.metadata)
+
         with patch("src.core.pipeline.get_market_now", return_value=now):
             enhanced = self.pipeline._enhance_context(
                 self._kr_005930_context(),
@@ -633,6 +661,53 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertEqual(quote.change_amount, -250.0)
         self.assertEqual(quote.change_pct, -0.12)
         self.assertEqual(quote.amplitude, 5.05)
+        self.assertFalse(ticker.history.call_args.kwargs["auto_adjust"])
+
+    def test_yfinance_history_override_keeps_unadjusted_previous_close(self) -> None:
+        ticker = MagicMock()
+        adjusted_history = _make_yfinance_history(
+            "2026-11-12",
+            {"Open": 95.0, "High": 97.0, "Low": 94.0, "Close": 95.0, "Volume": 1000},
+            "2026-11-13",
+            {"Open": 96.0, "High": 97.0, "Low": 95.0, "Close": 96.0, "Volume": 1200},
+        )
+        unadjusted_history = adjusted_history.copy()
+        unadjusted_history.loc[
+            unadjusted_history.index[0], ["Open", "High", "Low", "Close"]
+        ] = [100.0, 102.0, 99.0, 100.0]
+
+        ticker.fast_info = SimpleNamespace(
+            lastPrice=96.0,
+            previousClose=100.0,
+            open=96.0,
+            dayHigh=97.0,
+            dayLow=95.0,
+            lastVolume=1200,
+            marketCap=None,
+        )
+        ticker.history.side_effect = lambda **kwargs: (
+            unadjusted_history if kwargs.get("auto_adjust") is False else adjusted_history
+        )
+        ticker.info = {"shortName": "SamsungElec", "currency": "KRW"}
+        config = SimpleNamespace(enable_realtime_quote=True, realtime_cache_ttl=600)
+
+        with (
+            patch("yfinance.Ticker", return_value=ticker),
+            patch("src.config.get_config", return_value=config),
+            patch.object(DataFetcherManager, "_utc_now_iso", return_value="2026-11-13T05:28:00+00:00"),
+        ):
+            manager = DataFetcherManager(fetchers=[YfinanceFetcher()])
+            quote = manager.get_realtime_quote("005930.KS")
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote.price, 96.0)
+        self.assertEqual(quote.pre_close, 100.0)
+        self.assertEqual(quote.change_amount, -4.0)
+        self.assertEqual(quote.change_pct, -4.0)
+        self.assertEqual(quote.quote_date, "2026-11-13")
+        self.assertTrue(
+            all(call.kwargs["auto_adjust"] is False for call in ticker.history.call_args_list)
+        )
 
     def test_yfinance_stale_history_does_not_use_newer_info_timestamp(self) -> None:
         now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
@@ -665,7 +740,10 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertIsNotNone(quote)
         self.assertEqual(quote.price, 208000.0)
         self.assertEqual(quote.volume, 19721557)
-        self.assertEqual(quote.provider_timestamp, "2026-11-11T15:00:00+00:00")
+        self.assertIsNone(quote.provider_timestamp)
+        self.assertEqual(quote.quote_date, "2026-11-12")
+        self.assertIsNone(quote.is_stale)
+        self.assertIsNone(quote.stale_seconds)
         with patch("src.core.pipeline.get_market_now", return_value=now):
             enhanced = self.pipeline._enhance_context(
                 self._kr_005930_context(),
