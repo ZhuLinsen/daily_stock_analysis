@@ -42,3 +42,24 @@ def test_resolve_server_uvicorn_options_prefers_api_env_and_reload(monkeypatch) 
         "port": 8088,
         "reload": True,
     }
+
+
+def test_webui_entrypoint_warns_about_deprecation(monkeypatch) -> None:
+    import api.middlewares.security_guard as security_guard
+    import src.config
+    import src.logging_config
+    import uvicorn
+    import webui
+
+    monkeypatch.setenv("WEBUI_HOST", "127.0.0.1")
+    monkeypatch.setenv("WEBUI_PORT", "8000")
+    monkeypatch.setattr(src.config, "setup_env", lambda: None)
+    monkeypatch.setattr(src.logging_config, "setup_logging", lambda **_: None)
+    monkeypatch.setattr(security_guard, "uvicorn_proxy_kwargs", lambda: {})
+    monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
+
+    messages = []
+    monkeypatch.setattr(webui.logger, "warning", lambda message: messages.append(message))
+    assert webui.main() == 0
+
+    assert messages == ["webui.py 已弃用，推荐使用 'python main.py --serve-only' 启动服务"]

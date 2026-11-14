@@ -13,9 +13,14 @@ from src.agent.tools.registry import ToolRegistry
 
 class FixtureClient:
     def execute(self, operation, arguments):
-        return Result(operation, {"data": [{"val": 1.25, "announcement_datetime": 1000000000,
-                                          "source_url": "https://example.org/release"}],
-                                  "requested": arguments})
+        return Result(operation, {
+            "data": [{
+                "val": 1.25,
+                "announcement_datetime": 1000000000,
+                "source_url": "https://example.org/release",
+            }],
+            "requested": arguments,
+        })
 
 
 @pytest.mark.parametrize("operation", list_operations(), ids=lambda operation: operation.name)
