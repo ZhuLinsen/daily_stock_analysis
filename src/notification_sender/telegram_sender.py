@@ -173,9 +173,8 @@ class TelegramSender:
 
                     return False
             elif response.status_code == 429:
-                # Rate limited — respect Retry-After header
-                retry_after = int(response.headers.get('Retry-After', 2 ** attempt))
                 if attempt < max_retries:
+                    retry_after = self._get_telegram_retry_after_seconds(response, attempt)
                     logger.warning(f"Telegram rate limited, retrying in {retry_after}s "
                                    f"(attempt {attempt}/{max_retries})...")
                     time.sleep(retry_after)
@@ -198,6 +197,23 @@ class TelegramSender:
                 return False
 
         return False
+
+    @staticmethod
+    def _get_telegram_retry_after_seconds(response: requests.Response, attempt: int) -> int:
+        try:
+            retry_after = response.json().get("parameters", {}).get("retry_after")
+        except (AttributeError, ValueError):
+            retry_after = None
+
+        for value in (retry_after, response.headers.get("Retry-After")):
+            try:
+                delay = int(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if delay >= 0:
+                return delay
+
+        return 2 ** attempt
 
     @staticmethod
     def _should_fallback_to_plain_text(error_desc: str = "", response_text: str = "") -> bool:
