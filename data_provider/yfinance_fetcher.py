@@ -720,7 +720,7 @@ class YfinanceFetcher(BaseFetcher):
                 volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
             except Exception:
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
-                hist = ticker.history(period='2d')
+                hist = ticker.history(period='2d', auto_adjust=False)
                 if hist.empty:
                     logger.warning(f"[Yfinance] 无法获取 {yf_symbol} 的数据")
                     return None
@@ -832,6 +832,9 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
 
             ticker = yf.Ticker(symbol)
+            provider_timestamp = None
+            quote_date = None
+            used_fast_info = False
 
             # 尝试获取 fast_info（更快，但字段较少）
             try:
@@ -846,11 +849,12 @@ class YfinanceFetcher(BaseFetcher):
                 low = getattr(info, 'dayLow', None) or getattr(info, 'day_low', None)
                 volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
                 market_cap = getattr(info, 'marketCap', None) or getattr(info, 'market_cap', None)
+                used_fast_info = True
 
             except Exception:
                 # 回退到 history 方法获取最新数据
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
-                hist = ticker.history(period='2d')
+                hist = ticker.history(period='2d', auto_adjust=False)
                 if hist.empty:
                     if is_us_symbol:
                         logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
@@ -860,6 +864,7 @@ class YfinanceFetcher(BaseFetcher):
 
                 today = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else today
+                quote_date = pd.Timestamp(hist.index[-1]).date().isoformat()
 
                 price = float(today['Close'])
                 prev_close = float(prev['Close'])
@@ -869,23 +874,52 @@ class YfinanceFetcher(BaseFetcher):
                 volume = int(today['Volume'])
                 market_cap = None
 
-            # 计算涨跌幅
+            # 获取股票名称与 provider 元数据
+            try:
+                ticker_info = ticker.info or {}
+            except Exception:
+                ticker_info = {}
+
+            if used_fast_info:
+                # fast_info does not expose the quote session.  In current
+                # yfinance versions its price/OHLCV properties are backed by
+                # history, so use one history response for both values and the
+                # provider timestamp.  regularMarketTime from ticker.info is
+                # not safe: it may belong to a different quote payload.
+                try:
+                    quote_history = ticker.history(period='2d', auto_adjust=False)
+                    if isinstance(quote_history, pd.DataFrame) and len(quote_history) >= 2:
+                        today = quote_history.iloc[-1]
+                        prev = quote_history.iloc[-2]
+                        required_fields = ('Open', 'High', 'Low', 'Close', 'Volume')
+                        values = [today.get(field) for field in required_fields]
+                        previous_close = prev.get('Close')
+                        if not any(pd.isna(value) for value in values) and not pd.isna(previous_close):
+                            # Keep the selected quote values and their date in
+                            # the same provider response.  This avoids pairing
+                            # an old fast_info daily bar with a newer info time.
+                            price = float(today['Close'])
+                            prev_close = float(previous_close)
+                            open_price = float(today['Open'])
+                            high = float(today['High'])
+                            low = float(today['Low'])
+                            volume = int(today['Volume'])
+                            quote_date = pd.Timestamp(quote_history.index[-1]).date().isoformat()
+                except Exception:
+                    logger.debug("[Yfinance] 无法读取 %s 的行情日期", symbol, exc_info=True)
+
+            # 计算最终行情字段对应的派生指标。fast_info 之后可能被 history
+            # 覆盖，不能复用覆盖前的结果。
             change_amount = None
             change_pct = None
             if price is not None and prev_close is not None and prev_close > 0:
                 change_amount = price - prev_close
                 change_pct = (change_amount / prev_close) * 100
 
-            # 计算振幅
             amplitude = None
             if high is not None and low is not None and prev_close is not None and prev_close > 0:
                 amplitude = ((high - low) / prev_close) * 100
 
-            # 获取股票名称与 provider 元数据
-            try:
-                ticker_info = ticker.info or {}
-            except Exception:
-                ticker_info = {}
             try:
                 info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''
                 name = info_name if is_meaningful_stock_name(info_name, symbol) else STOCK_NAME_MAP.get(symbol, '')
@@ -932,6 +966,8 @@ class YfinanceFetcher(BaseFetcher):
                 pb_ratio=pb_ratio,
                 total_mv=market_cap,
                 circ_mv=None,
+                provider_timestamp=provider_timestamp,
+                quote_date=quote_date,
             )
 
             logger.info(f"[Yfinance] 获取 {symbol} 实时行情成功: 价格={price}")
