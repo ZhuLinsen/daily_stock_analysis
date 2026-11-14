@@ -50,6 +50,54 @@ python scripts/backfill_sentiment.py --source eastmoney --start-date 2026-10-28 
 
 ## 配置与调用
 
+### 自定义行情适配器
+
+服务端维护者可以把已有数据源封装为 Python 函数，并在启动代码中注册。以下示例可保存为 `my_server.py`，然后运行 `python -m uvicorn my_server:app`：
+
+```python
+from datetime import date
+
+from api.app import create_app
+from src.services.custom_sentiment_source import (
+    CustomSentimentData,
+    CustomSentimentDay,
+    register_sentiment_source,
+)
+
+
+def load_pools(as_of: date) -> CustomSentimentData:
+    # 用供应商接口、数据库或本地文件替换此处的合成历史。
+    history = {
+        date(2026, 10, 23): CustomSentimentDay(closed=(), touched=()),
+        date(2026, 10, 26): CustomSentimentDay(closed=("000001",), touched=("000001",)),
+        date(2026, 10, 27): CustomSentimentDay(closed=("000001", "000002"), touched=("000001", "000002")),
+        date(2026, 10, 28): CustomSentimentDay(closed=("000002",), touched=("000002", "000003")),
+    }
+    return CustomSentimentData(
+        scope="Synthetic main-board sample",
+        revision="v1",
+        days={day: pools for day, pools in history.items() if day <= as_of},
+    )
+
+
+app = create_app()
+register_sentiment_source(app, "mydata", load_pools)
+```
+
+- `closed` 是收盘封住涨停的股票，`touched` 是盘中曾触及涨停的股票，均使用去重前可核验的六位代码元组。适配器负责核实行情完整性、涨停规则和历史股票池。缺失交易日应省略该日，只有确认当天没有触板股时才返回空元组。目标日需要存在，并提供至少两个更早交易日的历史跨度，以便检查首板晋级和连续板位。
+- `scope` 描述适用股票池，会出现在响应中。更改供应商或统计口径时应使用新来源 ID 或提高 `revision`。趋势按来源和口径版本查询，重复生成保留已有快照，输入冲突返回 `409`。
+- 适配器代码由服务端维护者安装和注册。请求使用 `custom:<id>` 选择来源。函数仅在显式生成时执行，读取已保存的数据时直接查询 SQLite。每个来源 ID 在同一应用中只能注册一次。
+- 当前支持涨停家数、炸板率、最高连板、连板梯队及晋级率。成交额、上涨占比和跌停覆盖率为空。批量回填 CLI 仍支持东方财富和国泰安。
+
+```text
+POST /api/v1/sentiment/snapshots/2026-10-28/generate?source=custom:mydata
+GET  /api/v1/sentiment/snapshots/2026-10-28?source=custom:mydata
+GET  /api/v1/sentiment/snapshots?source=custom:mydata
+GET  /api/v1/sentiment/trend?source=custom:mydata&end_date=2026-10-29&limit=10
+```
+
+### 国泰安调用示例
+
 在个人 `.env` 中设置 `CSMAR_ZIP_PATH` 为压缩包绝对路径；仓库里的 `.env.example` 只保留空值。服务启动后，手动调用：
 
 ```text

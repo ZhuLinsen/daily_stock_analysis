@@ -5,10 +5,11 @@ from datetime import date, datetime
 from io import BytesIO
 import os
 from pathlib import Path
+from dataclasses import replace
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 import pandas as pd
 
@@ -20,12 +21,25 @@ from src.config import Config, get_config
 from src.storage import DatabaseManager
 from src.services.eastmoney_sentiment import MARKET_TZ, EASTMONEY_DAILY_VERSION
 from src.data.csmar_daily import CsmarSourceError
+from src.services.custom_sentiment_source import CustomSentimentData, CustomSentimentDay, register_sentiment_source
 
 
 FIELDS = [
     "Stkcd", "Trddt", "Markettype", "Trdsta", "Dnshrtrd",
     "Hiprc", "Clsprc", "LimitUp", "LimitStatus",
 ]
+
+
+def demo_sentiment_adapter(as_of: date) -> CustomSentimentData:
+    pools = {
+        date(2026, 10, 23): CustomSentimentDay((), ()),
+        date(2026, 10, 26): CustomSentimentDay(("000001",), ("000001",)),
+        date(2026, 10, 27): CustomSentimentDay(("000001", "000002"), ("000001", "000002")),
+        date(2026, 10, 28): CustomSentimentDay(("000002",), ("000002", "000003")),
+    }
+    return CustomSentimentData("Synthetic main-board sample", "v1", {
+        day: snapshot for day, snapshot in pools.items() if day <= as_of
+    })
 
 
 def write_export(path: Path, *, changed_target: bool = False, future_close: int = 10,
@@ -134,6 +148,74 @@ class SentimentApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"{base}/snapshots/2026-10-28?source=csmar").json()["metrics"], snapshot["metrics"])
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM sentiment_snapshots").fetchone()[0], 2)
+
+    def test_custom_adapter_generation_and_source_scoped_history(self):
+        adapter = Mock(wraps=demo_sentiment_adapter)
+        register_sentiment_source(self.client.app, "demo", adapter)
+        base = "/api/v1/sentiment"
+        target = f"{base}/snapshots/2026-10-28"
+        selected = {"source": "custom:demo"}
+        first = self.client.post(f"{target}/generate", params=selected)
+        self.assertEqual(first.status_code, 200, first.text)
+        result = first.json()
+        snapshot = result["snapshot"]
+        self.assertEqual(result["action"], "inserted")
+        self.assertEqual(snapshot["quality_status"], "complete")
+        self.assertEqual(snapshot["market"], "CN_A_CUSTOM:demo")
+        self.assertEqual(snapshot["metrics"]["break_rate"], 0.5)
+        self.assertEqual(snapshot["metrics"]["promotion_1_to_2"], 1.0)
+        self.assertEqual(snapshot["completeness"]["scope"], "Synthetic main-board sample")
+        self.assertIsNone(snapshot["metrics"]["turnover_yuan"])
+        self.assertNotIn("000002", first.text)
+        self.assertNotIn("demo_sentiment_adapter", first.text)
+        repeated = self.client.post(f"{target}/generate", params=selected)
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        self.assertEqual(repeated.json()["action"], "unchanged")
+        adapter.return_value = replace(demo_sentiment_adapter(date(2026, 10, 28)), revision="v2")
+        conflict = self.client.post(f"{target}/generate", params=selected)
+        self.assertEqual(conflict.status_code, 409, conflict.text)
+        self.assertEqual(conflict.json()["error"], "snapshot_conflict")
+
+        other = self.client.post(f"{target}/generate", params={"source": "csmar"})
+        self.assertEqual(other.status_code, 200, other.text)
+        adapter.reset_mock()
+        self.assertEqual(self.client.get(target, params=selected).json(), snapshot)
+        self.assertEqual(self.client.get(f"{base}/snapshots", params=selected).json()["items"], [snapshot])
+        trend = self.client.get(f"{base}/trend", params={
+            **selected, "end_date": "2026-10-29", "limit": 10,
+        })
+        self.assertEqual(trend.status_code, 200, trend.text)
+        self.assertEqual(trend.json()["items"], [snapshot])
+        self.assertEqual(self.client.get(f"{base}/snapshots").json()["items"], [])
+        adapter.assert_not_called()
+
+    def test_custom_adapter_rejects_unconfigured_sources_and_invalid_inputs(self):
+        target = "/api/v1/sentiment/snapshots/2026-10-28/generate"
+        with patch(f"{__name__}.demo_sentiment_adapter") as adapter:
+            register_sentiment_source(self.client.app, "demo", adapter)
+            self.assertEqual(self.client.post(target, params={"source": "custom:other"}).status_code, 409)
+            self.assertEqual(self.client.post(target, params={"source": "custom:os.system"}).status_code, 422)
+            self.assertEqual(self.client.post(
+                "/api/v1/sentiment/snapshots/2099-01-05/generate", params={"source": "custom:demo"},
+            ).status_code, 422)
+            adapter.assert_not_called()
+            adapter.side_effect = RuntimeError("private connector credentials")
+            failed = self.client.post(target, params={"source": "custom:demo"})
+            self.assertEqual(failed.status_code, 422, failed.text)
+            self.assertNotIn("private connector credentials", failed.text)
+            adapter.side_effect = None
+            pools = {date(2026, 10, day): CustomSentimentDay((), ()) for day in (26, 27, 28)}
+            for day, invalid in (
+                (date(2026, 10, 29), CustomSentimentDay((), ())),
+                (date(2026, 10, 28), CustomSentimentDay(("000002",), ())),
+                (date(2026, 10, 28), CustomSentimentDay(("000002", "000002"), ("000002",))),
+            ):
+                with self.subTest(day=day, pools=invalid):
+                    adapter.return_value = CustomSentimentData("Synthetic scope", "v1", {**pools, day: invalid})
+                    invalid_response = self.client.post(target, params={"source": "custom:demo"})
+                    self.assertEqual(invalid_response.status_code, 422, invalid_response.text)
+        self.assertEqual(self.client.get("/api/v1/sentiment/snapshots",
+                                         params={"source": "custom:demo"}).json()["items"], [])
 
     def test_eastmoney_source_separate_idempotent_and_conflict_safe(self):
         pools = {

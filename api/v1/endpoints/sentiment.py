@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import date, timedelta
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from api.deps import get_config_dep, get_db
@@ -24,16 +24,29 @@ from src.repositories.sentiment_repo import (
 from src.services.sentiment_snapshot_service import MARKET, generate_snapshot
 from src.services.eastmoney_sentiment import EASTMONEY_MARKET, generate_eastmoney_snapshot
 from src.services.sentiment_calendar import trading_sessions
+from src.services.custom_sentiment_source import (
+    SOURCE_PATTERN, CustomSourceNotConfigured, custom_market, generate_custom_snapshot,
+)
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+SnapshotSource = Annotated[str, Query(pattern=SOURCE_PATTERN)]
+
+
+def _snapshot_market(source: str) -> str:
+    if source == "eastmoney":
+        return EASTMONEY_MARKET
+    if source == "csmar":
+        return MARKET
+    return custom_market(source)
 
 
 @router.post("/snapshots/{trade_date}/generate", response_model=SentimentGenerateResponse)
 def generate_sentiment_snapshot(
     trade_date: date,
-    source: Literal["csmar", "eastmoney"] = "eastmoney",
+    request: Request,
+    source: SnapshotSource = "eastmoney",
     session: Session = Depends(get_db),
     config: Config = Depends(get_config_dep),
 ) -> SentimentGenerateResponse:
@@ -46,10 +59,19 @@ def generate_sentiment_snapshot(
     try:
         if source == "eastmoney":
             action, record = generate_eastmoney_snapshot(session, trade_date)
-        else:
+        elif source == "csmar":
             action, record = generate_snapshot(
                 session, source_zip=Path(config.csmar_zip_path), trade_date=trade_date,
             )
+        else:
+            action, record = generate_custom_snapshot(
+                session, source=source, sources=getattr(request.app.state, "sentiment_sources", {}),
+                trade_date=trade_date,
+            )
+    except CustomSourceNotConfigured as exc:
+        raise HTTPException(
+            status_code=409, detail={"error": "source_not_configured", "message": str(exc)},
+        ) from exc
     except CsmarSourceError as exc:
         raise HTTPException(
             status_code=422, detail={"error": "source_unavailable", "message": str(exc)},
@@ -70,24 +92,24 @@ def generate_sentiment_snapshot(
 
 @router.get("/snapshots", response_model=SentimentListResponse)
 def list_sentiment_snapshots(
-    source: Literal["csmar", "eastmoney"] = "eastmoney",
+    source: SnapshotSource = "eastmoney",
     end_date: date | None = None,
     limit: int = Query(30, ge=1, le=120),
     session: Session = Depends(get_db),
 ) -> SentimentListResponse:
     repo = SentimentRepository(session)
-    records = repo.list(EASTMONEY_MARKET if source == "eastmoney" else MARKET, end_date=end_date, limit=limit)
+    records = repo.list(_snapshot_market(source), end_date=end_date, limit=limit)
     return SentimentListResponse(items=[repo.public(record) for record in records])
 
 
 @router.get("/snapshots/{trade_date}", response_model=SentimentSnapshotItem)
 def get_sentiment_snapshot(
     trade_date: date,
-    source: Literal["csmar", "eastmoney"] = "eastmoney",
+    source: SnapshotSource = "eastmoney",
     session: Session = Depends(get_db),
 ) -> SentimentSnapshotItem:
     repo = SentimentRepository(session)
-    record = repo.get(EASTMONEY_MARKET if source == "eastmoney" else MARKET, trade_date)
+    record = repo.get(_snapshot_market(source), trade_date)
     if record is None:
         raise HTTPException(
             status_code=404,
@@ -99,7 +121,7 @@ def get_sentiment_snapshot(
 @router.get("/trend", response_model=SentimentTrendResponse)
 def get_sentiment_trend(
     end_date: date,
-    source: Literal["csmar", "eastmoney"] = "eastmoney",
+    source: SnapshotSource = "eastmoney",
     limit: int = Query(30, description="Previous trading sessions: 10, 30 or 60"),
     session: Session = Depends(get_db),
 ) -> SentimentTrendResponse:
@@ -114,8 +136,7 @@ def get_sentiment_trend(
                                                     "message": "Target session or full calendar window unavailable"})
     sessions = sorted(calendar - {end_date})[-limit:]
     repo = SentimentRepository(session)
-    market = EASTMONEY_MARKET if source == "eastmoney" else MARKET
-    records = repo.on_dates(market, sessions + [end_date])
+    records = repo.on_dates(_snapshot_market(source), sessions + [end_date])
     anchor = records.get(end_date) or next((records[day] for day in reversed(sessions) if day in records), None)
     version = anchor.definition_version if anchor is not None else None
     incompatible = [day for day in sessions if day in records and records[day].definition_version != version]
