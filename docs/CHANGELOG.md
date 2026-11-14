@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 个股分析检测到输出用满 `max_output_tokens`（推理模型思考 token 挤占预算导致 JSON 报告被截断、报 invalid JSON）时，记录截断与推理 token 数并以双倍预算重新生成一次，扩大预算的重试失败时沿用首次结果；新增 `LLM_ANALYSIS_MAX_OUTPUT_TOKENS`（默认 `8192`，行为不变）用于调整个股分析输出上限。
 - [修复] ntfy 推送按服务端默认 4096 字节消息上限分批发送（标题带 `(1/N)` 分页），并以 UTF-8 JSON 提交请求体，修复约 1350 个汉字以上的中文报告因请求体超过 8192 字节被 ntfy 以 HTTP 413 拒收、测试消息正常但完整报告收不到的问题。
 - [改进] 多 Agent standard/full/specialist 分析默认并行执行 TechnicalAgent 与 IntelAgent 的 Wave-1，并在并行线程传播新闻证据、冻结目标日期和 Provider 诊断上下文；新增 `compute_smoothed_weights()` 使用 Beta(6, 6) 对小样本 Skill Opinion 做平滑校准。该方法目前为显式调用的辅助 API，运行时仍由 `compute_weights()` 按每个 horizon 的充足样本门槛、Beta(15, 15) 先验和 unable 惩罚计算权重。
 - [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
