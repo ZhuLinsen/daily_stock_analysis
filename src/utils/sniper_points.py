@@ -14,7 +14,7 @@ SNIPER_KEYS = ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")
 def parse_sniper_value(value: Any) -> Optional[float]:
     """Parse a sniper point value from report text into a positive price."""
 
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
         parsed = float(value)

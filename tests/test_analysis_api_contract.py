@@ -2027,6 +2027,25 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertIsNone(report.strategy.secondary_buy)
         self.assertEqual(report.strategy.stop_loss, "9.5")
         self.assertEqual(report.strategy.take_profit, "11.6")
+        self.assertIsNotNone(report.structured_report)
+        self.assertEqual(report.structured_report.metadata["levels"]["ideal_buy"], 10.0)
+        self.assertEqual(report.structured_report.metadata["levels"]["status"], "conditional_watch")
+
+    def test_build_analysis_report_creates_compatible_artifact_for_legacy_report(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = _build_analysis_report(
+            report_data={"meta": {}, "summary": {"analysis_summary": "legacy"}},
+            query_id="legacy-q",
+            stock_code="AAPL",
+            stock_name="Apple",
+            context_snapshot=None,
+            fallback_fundamental_payload=None,
+        )
+
+        self.assertIsNotNone(report.structured_report)
+        self.assertEqual(report.structured_report.artifact_id, "report:AAPL:legacy-q")
 
     def test_build_analysis_report_extracts_related_board_fields_from_snapshot(self) -> None:
         if _build_analysis_report is None:

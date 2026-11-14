@@ -1459,6 +1459,11 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 self.fail("未找到保存的历史记录")
             self.assertEqual(row.id, saved)
             row.raw_result = {"model_used": "unknown", "extra": "v"}
+            row.context_snapshot = json.dumps({
+                "enhanced_context": {
+                    "realtime": {"price": 123.45, "change_pct": 0.0},
+                },
+            })
 
             service = HistoryService(self.db)
             detail = service._record_to_detail_dict(row)
@@ -1466,6 +1471,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIsNotNone(detail)
         self.assertIsInstance(detail.get("raw_result"), dict)
         self.assertIsNone(detail.get("model_used"))
+        self.assertEqual(detail.get("current_price"), 123.45)
 
     def test_history_detail_prefers_raw_sniper_strings(self) -> None:
         """History detail should display the original sniper point strings from raw_result."""

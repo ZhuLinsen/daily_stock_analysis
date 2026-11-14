@@ -87,6 +87,79 @@ def test_build_research_artifact_from_report_with_evidence_and_invalidation() ->
     assert artifact.next_actions[-1].action == "monitor_invalidation"
 
 
+def test_build_research_artifact_projects_grounded_ui_metadata() -> None:
+    artifact = ResearchArtifact.model_validate(build_research_artifact({
+        "meta": {
+            "query_id": "q-grounded",
+            "stock_code": "AAPL",
+            "current_price": 102.0,
+        },
+        "summary": {
+            "action": "buy",
+            "sentiment_score": 80,
+        },
+        "strategy": {
+            "ideal_buy": "100.00元",
+            "secondary_buy": "95.00元",
+            "stop_loss": "92.00元",
+            "take_profit": "120.00元",
+        },
+        "details": {
+            "raw_result": {
+                "dashboard": {
+                    "intelligence": {"risk_alerts": ["News risk"]},
+                    "agent_disagreement_explanation": {
+                        "base_disagreement": {
+                            "type": "bullish_with_neutral",
+                            "agents": [{"agent": "technical", "signal": "buy", "confidence": 0.8}],
+                        },
+                        "risk_control": {"applied": True},
+                        "decision_path": "risk_override",
+                    },
+                },
+            },
+        },
+    }))
+
+    levels = artifact.metadata["levels"]
+    assert levels["ideal_buy"] == 100.0
+    assert levels["reference_price"] == 102.0
+    assert levels["risk_reward_ratio"] == 2.5
+    assert levels["status"] == "active"
+    assert levels["validation"] == "ok"
+    assert artifact.metadata["position"]["max_pct"] > 0
+    assert artifact.metadata["risk_flags"] == [
+        {"code": "report_risk_alert", "severity": "warning", "message": "News risk"},
+    ]
+    assert artifact.metadata["committee"]["risk_control"]["applied"] is True
+
+
+def test_build_research_artifact_budgets_position_at_planned_entry_price() -> None:
+    artifact = ResearchArtifact.model_validate(build_research_artifact({
+        "meta": {
+            "query_id": "q-planned-entry",
+            "stock_code": "AAPL",
+            "current_price": 100.0,
+        },
+        "summary": {
+            "action": "buy",
+            "sentiment_score": 80,
+        },
+        "strategy": {
+            "ideal_buy": "105",
+            "stop_loss": "96",
+            "take_profit": "150",
+        },
+    }))
+
+    levels = artifact.metadata["levels"]
+    position = artifact.metadata["position"]
+    assert levels["reference_price"] == 100.0
+    assert position["stop_distance_pct"] == 8.58
+    assert position["max_pct"] == 13
+    assert position["max_pct"] * position["stop_distance_pct"] / 100 <= position["risk_budget_pct"]
+
+
 def test_build_research_artifact_always_includes_invalidation_conditions() -> None:
     artifact = ResearchArtifact.model_validate(build_research_artifact({
         "meta": {"query_id": "q-empty", "stock_code": "AAPL"},
@@ -96,6 +169,30 @@ def test_build_research_artifact_always_includes_invalidation_conditions() -> No
     assert artifact.artifact_id == "report:AAPL:q-empty"
     assert artifact.invalidation_conditions[0].id == "manual:thesis_reassessment"
     assert artifact.data_quality.level == "unknown"
+
+
+@pytest.mark.parametrize("stop_loss", [None, True, False, 0.00001, "unparseable", "0", "-1", "NaN", "Infinity", "100", "105", "70"])
+def test_artifact_position_preserves_stop_risk_guardrails(stop_loss) -> None:
+    artifact = ResearchArtifact.model_validate(build_research_artifact({
+        "meta": {"stock_code": "AAPL", "current_price": 100},
+        "summary": {"action": "buy", "sentiment_score": 80},
+        "strategy": {"ideal_buy": "100", "stop_loss": stop_loss, "take_profit": "150"},
+    }))
+    position = artifact.metadata["position"]
+
+    if stop_loss == "70":
+        assert artifact.metadata["levels"]["status"] == "active"
+        assert position["max_pct"] == 4
+        assert position["max_pct"] * 30 / 100 <= position["risk_budget_pct"]
+    elif stop_loss in {"100", "105"}:
+        assert artifact.metadata["levels"]["status"] == "invalid"
+        assert artifact.metadata["levels"]["validation"] == "direction_conflict"
+        assert position["min_pct"] == position["max_pct"] == 0
+        assert position["stop_distance_pct"] is None
+    else:
+        assert artifact.metadata["levels"]["status"] == "conditional_watch"
+        assert position["min_pct"] == position["max_pct"] == 0
+        assert position["stop_distance_pct"] is None
 
 
 def test_research_artifact_requires_invalidation_conditions() -> None:
