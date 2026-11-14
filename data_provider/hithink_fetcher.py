@@ -336,6 +336,12 @@ class HiThinkFetcher(BaseFetcher):
         raise HiThinkRequestError("HiThink request failed")
 
     def _sleep_before_retry(self, attempt: int) -> None:
+        """Wait before another attempt, never longer than the remaining budget.
+
+        The HTTP timeout passed to ``requests`` limits each connect or read
+        phase. It does not cancel a socket that has already been sent, and the
+        caller-side thread join remains the isolation boundary.
+        """
         if attempt >= 2 or self.retry_backoff <= 0:
             return
         delay = self.retry_backoff * (2 ** attempt)

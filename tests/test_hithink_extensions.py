@@ -636,6 +636,45 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         finally:
             DataFetcherManager.clear_concept_rankings_cache_for_tests()
 
+    def test_partial_sector_ranking_keeps_later_provider_attempts(self) -> None:
+        class _PartialSector:
+            name = "HiThinkFetcher"
+            priority = 1
+
+            def get_sector_rankings(self, n=5):
+                return (
+                    [{"name": "部分行业", "coverage": "partial"}],
+                    [{"name": "落后行业", "coverage": "partial"}],
+                )
+
+        class _EmptySector:
+            name = "AkshareFetcher"
+            priority = 2
+
+            def get_sector_rankings(self, n=5):
+                return ([], [])
+
+        class _FailedSector:
+            name = "TushareFetcher"
+            priority = 3
+
+            def get_sector_rankings(self, n=5):
+                raise RuntimeError("sector down")
+
+        manager = DataFetcherManager(fetchers=[_FailedSector(), _PartialSector(), _EmptySector()])
+        top, _bottom, chain, error = manager._get_sector_rankings_with_meta(5)
+
+        self.assertEqual(error, "")
+        self.assertEqual(top[0]["name"], "部分行业")
+        self.assertEqual(
+            [(item["provider"], item["result"]) for item in chain],
+            [
+                ("HiThinkFetcher", "partial"),
+                ("AkshareFetcher", "empty"),
+                ("TushareFetcher", "failed"),
+            ],
+        )
+
 
 class _DirectoryFetcher(BaseFetcher):
     def __init__(self):

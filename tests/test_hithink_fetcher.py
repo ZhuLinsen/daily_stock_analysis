@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import time
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -13,7 +14,7 @@ import pandas as pd
 import requests
 
 from data_provider.base import DataFetcherManager, DataFetchError
-from data_provider.hithink_fetcher import HiThinkFetcher, HiThinkRequestError
+from data_provider.hithink_fetcher import HiThinkFetcher, HiThinkRequestError, request_budget
 from data_provider.realtime_types import RealtimeSource
 from src.config import Config
 
@@ -471,6 +472,35 @@ class HiThinkFetcherTests(unittest.TestCase):
 
         self.assertEqual(request.call_count, 3)
         self.assertFalse(fetcher.is_available("realtime_quote"))
+
+    def test_retry_sleep_stays_inside_the_remaining_budget(self) -> None:
+        fetcher = HiThinkFetcher(api_key="hithink-test-key", retry_backoff=5, timeout=15)
+        server_error = {"code": 5001, "message": "upstream", "request_id": "req-up", "data": None}
+        sleeps = []
+        timeouts = []
+
+        def fake_get(_url, params=None, headers=None, timeout=None):
+            timeouts.append(timeout)
+            return _response(server_error)
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            from data_provider.hithink_fetcher import _request_budget
+
+            _request_budget.deadline = time.monotonic() - 1
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get), patch(
+            "data_provider.hithink_fetcher.time.sleep", side_effect=fake_sleep
+        ):
+            with request_budget(time.monotonic() + 0.25):
+                with self.assertRaises(DataFetchError) as caught:
+                    fetcher._request("/api/a-share/prices/snapshot", {"thscodes": "600519.SH"})
+
+        self.assertIn("budget exhausted", str(caught.exception))
+        self.assertEqual(len(timeouts), 1)
+        self.assertLessEqual(timeouts[0], 0.25)
+        self.assertEqual(len(sleeps), 1)
+        self.assertLessEqual(sleeps[0], 0.25)
 
     def test_invalid_payload_is_rejected(self) -> None:
         fetcher = self._fetcher()
