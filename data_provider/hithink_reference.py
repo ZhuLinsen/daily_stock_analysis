@@ -52,8 +52,11 @@ def stock_list(fetcher: HiThinkFetcher) -> pd.DataFrame:
     directory pages, not quotes or financials.
     """
     rows: List[Dict[str, str]] = []
+    complete = False
+    truncated = False
     for page in range(_LIST_MAX_PAGES):
         if not fetcher.is_available("stock_list"):
+            truncated = True
             break
         try:
             payload = fetcher._request(
@@ -63,6 +66,7 @@ def stock_list(fetcher: HiThinkFetcher) -> pd.DataFrame:
         except HiThinkRequestError as exc:
             if exc.permission:
                 fetcher._remember_error(str(exc), directory_only=True)
+                truncated = True
                 break
             raise
         data = payload.get("data") or {}
@@ -77,8 +81,19 @@ def stock_list(fetcher: HiThinkFetcher) -> pd.DataFrame:
             if code and name and str(item.get("asset_type") or "") == "a-share":
                 rows.append({"code": code, "name": name})
         if len(items) < _LIST_PAGE_SIZE:
+            complete = True
             break
-    return pd.DataFrame(rows, columns=["code", "name"])
+    else:
+        truncated = True
+        logger.warning(
+            "[HiThinkFetcher] stock list stopped at the page cap: pages=%s page_size=%s",
+            _LIST_MAX_PAGES,
+            _LIST_PAGE_SIZE,
+        )
+    frame = pd.DataFrame(rows, columns=["code", "name"])
+    frame.attrs["complete"] = complete and not truncated
+    frame.attrs["truncated"] = truncated
+    return frame
 
 
 def hot_stocks(fetcher: HiThinkFetcher, n: int = 10) -> Optional[List[Dict[str, Any]]]:
@@ -185,12 +200,14 @@ def limit_up_pool(
             "amount": None,
             "turnover_rate": None,
             "seal_amount": item.get("seal_money"),
-            "first_limit_time": item.get("limit_up_time") or "",
+            "first_limit_time": "",
             "last_limit_time": "",
+            "limit_up_time": item.get("limit_up_time") or "",
             "break_count": None,
             "limit_stat": item.get("continue_day_text") or "",
             "consecutive_boards": item.get("continue_day_cnt"),
-            "industry": item.get("limit_up_reason") or "",
+            "industry": "",
+            "limit_up_reason": item.get("limit_up_reason") or "",
         })
     return rows[:size] or None
 

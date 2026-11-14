@@ -1629,8 +1629,12 @@ class DataFetcherManager:
             if budget <= 0:
                 errors.append("fundamental_bundle_hithink timeout")
             else:
+                hithink_deadline = time.monotonic() + budget
                 hithink_payload, hithink_error, hithink_ms = self._run_with_retry(
-                    lambda: HiThinkFundamentalAdapter(hithink).get_fundamental_bundle(stock_code),
+                    lambda: HiThinkFundamentalAdapter(hithink).get_fundamental_bundle(
+                        stock_code,
+                        deadline=hithink_deadline,
+                    ),
                     budget,
                     "fundamental_bundle_hithink",
                     quarantine_key=("hithink", "fundamental_bundle"),
@@ -2539,14 +2543,29 @@ class DataFetcherManager:
             return 0
 
     def prefetch_daily_klines(self, stock_codes: List[str], days: int = 30) -> int:
-        """Batch-prefetch optional daily K-lines without changing per-stock callers."""
+        """Warm only the daily provider that would actually serve this batch.
+
+        A later optional provider is not prefetched while an earlier available
+        daily source can already answer ``get_daily_data``. If the earliest
+        prefetch-capable provider caches nothing, the next one may run.
+        """
         cached = 0
-        for fetcher_name in ("TickFlowFetcher", "HiThinkFetcher"):
-            fetcher = self._get_fetcher_by_name(fetcher_name, capability="daily_data")
-            if fetcher is None or not hasattr(fetcher, "prefetch_daily_klines"):
+        blocked_by_earlier_source = False
+        for fetcher in self._get_fetchers_snapshot():
+            if not self._is_fetcher_available(fetcher, capability="daily_data"):
                 continue
+            prefetch = getattr(fetcher, "prefetch_daily_klines", None)
+            can_prefetch = callable(prefetch)
+            can_serve = can_prefetch or callable(getattr(fetcher, "get_daily_data", None))
+            if not can_serve:
+                continue
+            if not can_prefetch:
+                blocked_by_earlier_source = True
+                continue
+            if blocked_by_earlier_source:
+                break
             try:
-                cached += int(
+                added = int(
                     self._call_fetcher_method(
                         fetcher,
                         "prefetch_daily_klines",
@@ -2556,7 +2575,11 @@ class DataFetcherManager:
                     or 0
                 )
             except Exception as exc:
-                logger.warning("[%s] daily K-line prefetch failed: %s", fetcher_name, exc)
+                logger.warning("[%s] daily K-line prefetch failed: %s", fetcher.name, exc)
+                added = 0
+            cached += added
+            if added > 0:
+                break
         return cached
 
     @staticmethod
@@ -4607,8 +4630,12 @@ class DataFetcherManager:
             ):
                 from .hithink_fundamentals import HiThinkFundamentalAdapter, supplement_valuation
 
+                valuation_deadline = time.monotonic() + supplement_timeout
                 snapshot, snapshot_error, snapshot_ms = self._run_with_retry(
-                    lambda: HiThinkFundamentalAdapter(hithink).get_valuation(stock_code),
+                    lambda: HiThinkFundamentalAdapter(hithink).get_valuation(
+                        stock_code,
+                        deadline=valuation_deadline,
+                    ),
                     supplement_timeout,
                     "fundamental_valuation_hithink",
                     quarantine_key=("hithink", "valuation"),
@@ -5074,6 +5101,8 @@ class DataFetcherManager:
                     [err or "boards empty from all sources"],
                 )
             board_status = "ok" if top and bottom else "partial"
+            if self._ranking_is_partial((top, bottom)):
+                board_status = "partial"
             return self._build_fundamental_block(
                 board_status,
                 {"top": top or [], "bottom": bottom or []},
@@ -5100,6 +5129,7 @@ class DataFetcherManager:
             """Get sector rankings with ordered fallback chain metadata."""
             source_chain: List[Dict[str, Any]] = []
             last_error = ""
+            partial_rankings = None
 
             # 直接遍历管理器已经按 priority 排好序的数据源列表
             for fetcher in self._fetchers:
@@ -5110,14 +5140,20 @@ class DataFetcherManager:
                 try:
                     data = fetcher.get_sector_rankings(n)
                     duration_ms = int((time.time() - start) * 1000)
-                    if data and data[0] is not None and data[1] is not None:
+                    if data and data[0] is not None and data[1] is not None and (data[0] or data[1]):
+                        partial = self._ranking_is_partial(data)
                         source_chain.append(
                             {
                                 "provider": fetcher.name,
-                                "result": "ok",
+                                "result": "partial" if partial else "ok",
                                 "duration_ms": duration_ms,
                             }
                         )
+                        if partial:
+                            logger.info("[%s] 板块排行只覆盖了部分目录，继续查找完整结果", fetcher.name)
+                            if partial_rankings is None:
+                                partial_rankings = (data[0], data[1], list(source_chain))
+                            continue
                         logger.info(f"[{fetcher.name}] 获取板块排行成功")
                         return data[0], data[1], source_chain, ""
 
@@ -5144,7 +5180,19 @@ class DataFetcherManager:
                     )
                     logger.warning(f"[{fetcher.name}] 获取板块排行失败: {error_reason}")
 
+            if partial_rankings is not None:
+                return partial_rankings[0], partial_rankings[1], partial_rankings[2], ""
             return [], [], source_chain, last_error
+
+    @staticmethod
+    def _ranking_is_partial(data: Any) -> bool:
+        if not isinstance(data, tuple):
+            return False
+        rows = []
+        for side in data[:2]:
+            if isinstance(side, list):
+                rows.extend(side)
+        return any(isinstance(row, dict) and row.get("coverage") == "partial" for row in rows)
 
     def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
         """获取板块涨跌榜（自动切换数据源）"""
@@ -5184,10 +5232,18 @@ class DataFetcherManager:
 
             top: List[Dict] = []
             bottom: List[Dict] = []
+            partial_top: Optional[List[Dict]] = None
+            partial_bottom: Optional[List[Dict]] = None
             for fetcher in self._get_fetchers_snapshot():
                 try:
                     data = fetcher.get_concept_rankings(normalized_n)
                     if data and (data[0] or data[1]):
+                        if self._ranking_is_partial(data):
+                            if partial_top is None:
+                                partial_top = data[0] or []
+                                partial_bottom = data[1] or []
+                            logger.info("[%s] 概念排行只覆盖了部分目录，继续查找完整结果", fetcher.name)
+                            continue
                         top = data[0] or []
                         bottom = data[1] or []
                         logger.info(f"[{fetcher.name}] 获取概念排行成功")
@@ -5198,13 +5254,17 @@ class DataFetcherManager:
                     last_error = f"{fetcher.name} ({error_type}) {error_reason}"
                     logger.warning(f"[{fetcher.name}] 获取概念排行失败: {error_reason}")
 
-            if not top and not bottom and last_error:
+            if not top and not bottom and partial_top is not None:
+                top = partial_top
+                bottom = partial_bottom or []
+            elif not top and not bottom and last_error:
                 logger.warning(f"[概念排行] 所有数据源均失败，最终错误: {last_error}")
 
+            partial = self._ranking_is_partial((top, bottom))
             ttl = (
-                self.__class__._CONCEPT_RANKINGS_CACHE_TTL_SECONDS
-                if top or bottom
-                else self.__class__._CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS
+                self.__class__._CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS
+                if partial or not (top or bottom)
+                else self.__class__._CONCEPT_RANKINGS_CACHE_TTL_SECONDS
             )
             cached_top = self._copy_ranking_rows(top)
             cached_bottom = self._copy_ranking_rows(bottom)

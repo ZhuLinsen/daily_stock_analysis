@@ -170,6 +170,128 @@ class HiThinkFetcherTests(unittest.TestCase):
         self.assertIn("historical-batch", request.call_args.args[0])
         self.assertEqual(len(frame), 2)
 
+    def test_repeated_prefetch_keeps_the_newer_close_and_change(self) -> None:
+        fetcher = self._fetcher()
+        first = {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "interval": "1d",
+                "adjust": "none",
+                "item": [
+                    {
+                        "thscode": "600519.SH",
+                        "timestamp": _ms(2024, 5, 21),
+                        "item": [_bar(2024, 5, 20, 10), _bar(2024, 5, 21, 11)],
+                    }
+                ],
+            },
+        }
+        second = {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "interval": "1d",
+                "adjust": "none",
+                "item": [
+                    {
+                        "thscode": "600519.SH",
+                        "timestamp": _ms(2024, 5, 21),
+                        "item": [_bar(2024, 5, 20, 10), _bar(2024, 5, 21, 12)],
+                    }
+                ],
+            },
+        }
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(first), _response(second)],
+        ) as request:
+            self.assertEqual(
+                fetcher.prefetch_daily_klines(["600519"], start_date="2024-05-20", end_date="2024-05-21"),
+                1,
+            )
+            self.assertEqual(
+                fetcher.prefetch_daily_klines(["600519"], start_date="2024-05-20", end_date="2024-05-21"),
+                1,
+            )
+            frame = fetcher.get_daily_data("600519", start_date="2024-05-20", end_date="2024-05-21")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(list(frame["close"]), [10, 12])
+        self.assertAlmostEqual(frame.iloc[1]["pct_chg"], 20.0)
+
+    def test_historical_permission_does_not_repeat_or_block_snapshot(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-denied", "data": None}
+        snapshot = {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "timestamp": _ms(2024, 5, 20),
+                "item": [{
+                    "thscode": "600519.SH",
+                    "last_price": 10,
+                    "price_change": 1,
+                    "price_change_ratio_pct": 1,
+                    "volume": 100,
+                    "turnover": 1000,
+                    "open_price": 9,
+                    "high_price": 11,
+                    "low_price": 8,
+                    "prev_price": 9,
+                }],
+            },
+        }
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(denied), _response(snapshot)],
+        ) as request:
+            with self.assertRaises(DataFetchError):
+                fetcher.get_daily_data("600519", start_date="2024-05-20", end_date="2024-05-21")
+            with self.assertRaises(DataFetchError):
+                fetcher.get_daily_data("600519", start_date="2024-05-20", end_date="2024-05-21")
+            quote = fetcher.get_realtime_quote("600519")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("snapshot", request.call_args.args[0])
+        self.assertEqual(quote.price, 10)
+        self.assertFalse(fetcher.is_available_for_request("daily_data"))
+        self.assertTrue(fetcher.is_available_for_request("realtime_quote"))
+
+    def test_snapshot_permission_does_not_repeat_or_block_history(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-denied", "data": None}
+        history = _history(_bar(2024, 5, 20, 10), _bar(2024, 5, 21, 11))
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(denied), _response(history)],
+        ) as request:
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_realtime_quote("600519")
+            with self.assertRaises(DataFetchError):
+                fetcher.get_realtime_quote("600519")
+            frame = fetcher.get_daily_data("600519", start_date="2024-05-20", end_date="2024-05-21")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("historical", request.call_args.args[0])
+        self.assertEqual(len(frame), 2)
+        self.assertFalse(fetcher.is_available_for_request("realtime_quote"))
+        self.assertTrue(fetcher.is_available_for_request("daily_data"))
+
+    def test_snapshot_permission_does_not_split_into_single_requests(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-denied", "data": None}
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            return_value=_response(denied),
+        ) as request:
+            with self.assertRaises(HiThinkRequestError):
+                fetcher._load_quotes([("600519.SH", "600519"), ("000001.SZ", "000001")])
+
+        self.assertEqual(request.call_count, 1)
+        self.assertIn("600519.SH,000001.SZ", request.call_args.kwargs["params"]["thscodes"])
+        self.assertFalse(fetcher.is_available_for_request("realtime_quote"))
+
     def test_batch_prefetch_caches_every_window_beyond_ten_years(self) -> None:
         fetcher = self._fetcher()
         start_date = "2014-01-01"
@@ -367,6 +489,23 @@ class HiThinkFetcherTests(unittest.TestCase):
         request.assert_not_called()
 
 
+class _PriorityDailyFetcher:
+    def __init__(self, name: str, priority: int, prefetch_result: int | None = None) -> None:
+        self.name = name
+        self.priority = priority
+        self.prefetch_calls = 0
+        if prefetch_result is not None:
+            self.prefetch_daily_klines = self._prefetch
+            self._prefetch_result = prefetch_result
+
+    def get_daily_data(self, stock_code, start_date=None, end_date=None, days=30):
+        return pd.DataFrame([{"date": "2024-05-21", "close": 1}])
+
+    def _prefetch(self, stock_codes, days=30):
+        self.prefetch_calls += 1
+        return self._prefetch_result
+
+
 class _FallbackFetcher:
     name = "FallbackFetcher"
     priority = 8
@@ -422,6 +561,45 @@ class HiThinkManagerTests(unittest.TestCase):
         self.assertEqual(source, "FallbackFetcher")
         self.assertEqual(len(frame), 1)
         self.assertEqual(fallback.calls, ["600519"])
+
+    def test_daily_prefetch_skips_hithink_when_an_earlier_source_can_serve(self) -> None:
+        earlier = _PriorityDailyFetcher(name="AkshareFetcher", priority=1)
+        hithink = HiThinkFetcher(api_key="manager-key", priority=7, retry_backoff=0)
+        warmed = []
+        hithink.prefetch_daily_klines = lambda stock_codes, days=30: warmed.append(stock_codes) or 1
+        manager = DataFetcherManager(fetchers=[hithink, earlier])
+
+        self.assertEqual(manager.prefetch_daily_klines(["600519"], days=30), 0)
+        self.assertEqual(warmed, [])
+
+    def test_daily_prefetch_continues_when_the_first_prefetch_caches_nothing(self) -> None:
+        earlier = _PriorityDailyFetcher(name="TickFlowFetcher", priority=1, prefetch_result=0)
+        hithink = HiThinkFetcher(api_key="manager-key", priority=7, retry_backoff=0)
+        warmed = []
+        hithink.prefetch_daily_klines = lambda stock_codes, days=30: warmed.append(list(stock_codes)) or 2
+        manager = DataFetcherManager(fetchers=[earlier, hithink])
+
+        self.assertEqual(manager.prefetch_daily_klines(["600519"], days=30), 2)
+        self.assertEqual(earlier.prefetch_calls, 1)
+        self.assertEqual(warmed, [["600519"]])
+
+    def test_historical_permission_skips_hithink_on_the_next_manager_request(self) -> None:
+        hithink = HiThinkFetcher(api_key="manager-key", priority=0, retry_backoff=0)
+        fallback = _FallbackFetcher()
+        manager = DataFetcherManager(fetchers=[hithink, fallback])
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-denied", "data": None}
+
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(denied)) as request:
+            first, first_source = manager.get_daily_data("600519", start_date="2024-05-20", end_date="2024-05-21")
+            second, second_source = manager.get_daily_data("000001", start_date="2024-05-20", end_date="2024-05-21")
+
+        self.assertEqual(first_source, "FallbackFetcher")
+        self.assertEqual(second_source, "FallbackFetcher")
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(fallback.calls, ["600519", "000001"])
+        self.assertIsNone(manager._get_fetcher_by_name("HiThinkFetcher", capability="daily_data"))
 
     def test_configured_key_does_not_change_default_realtime_priority(self) -> None:
         env = {

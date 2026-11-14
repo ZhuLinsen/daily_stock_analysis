@@ -86,6 +86,44 @@ class HiThinkExtensionTests(unittest.TestCase):
         self.assertEqual(report["roe"], 21)
         self.assertIsNone(bundle["earnings"]["balance_sheet"]["total_debt"])
 
+    def test_fundamental_budget_stops_later_statements(self) -> None:
+        fetcher = self._fetcher()
+        income = _ok({"item": [{
+            "fiscal_year": 2024,
+            "fiscal_period": "Q3",
+            "period_end_ms": _ms(2024, 9, 30),
+            "operating_income": 10,
+        }]})
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            from data_provider.hithink_fetcher import _request_budget
+
+            _request_budget.deadline = time.monotonic() - 1
+            return _response(income)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            bundle = HiThinkFundamentalAdapter(fetcher).get_fundamental_bundle(
+                "600519",
+                deadline=time.monotonic() + 5,
+            )
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share/financials/income-statements"])
+        self.assertIn("budget_exhausted", bundle["errors"])
+        self.assertIn("income_statement", bundle["earnings"])
+        self.assertNotIn("balance_sheet", bundle["earnings"])
+
+    def test_expired_fundamental_budget_makes_no_request(self) -> None:
+        fetcher = self._fetcher()
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=AssertionError("request")):
+            bundle = HiThinkFundamentalAdapter(fetcher).get_fundamental_bundle(
+                "600519",
+                deadline=time.monotonic() - 1,
+            )
+        self.assertEqual(bundle["errors"], ["budget_exhausted"])
+        self.assertEqual(bundle["earnings"], {})
+
     def test_valuation_fills_only_missing_fields(self) -> None:
         fetcher = self._fetcher()
         payload = _ok({"item": [{
@@ -183,6 +221,10 @@ class HiThinkExtensionTests(unittest.TestCase):
         self.assertEqual(hot_rows[0]["price"], 1435.26)
         self.assertEqual(hot_rows[0]["change_pct"], 1.77)
         self.assertEqual(limit_rows[0]["consecutive_boards"], 2)
+        self.assertEqual(limit_rows[0]["industry"], "")
+        self.assertEqual(limit_rows[0]["limit_up_reason"], "存储芯片")
+        self.assertEqual(limit_rows[0]["first_limit_time"], "")
+        self.assertEqual(limit_rows[0]["limit_up_time"], "09:34")
         self.assertEqual(request.call_args_list[-1].kwargs["params"]["sort_field"], "continue_day_cnt")
         self.assertIn("date_ms", request.call_args_list[-1].kwargs["params"])
 
@@ -373,7 +415,7 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
 
         stop = threading.Event()
 
-        def slow_bundle(_self, _code):
+        def slow_bundle(_self, _code, deadline=None):
             stop.wait(2)
             return _bundle()
 
@@ -398,7 +440,7 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
 
         stop = threading.Event()
 
-        def slow_valuation(_self, _code):
+        def slow_valuation(_self, _code, deadline=None):
             stop.wait(2)
             return {"pe_ratio": 9}
 
@@ -477,6 +519,8 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         fetcher._request = request
         frame = fetcher.get_stock_list()
         self.assertTrue(frame.empty)
+        self.assertTrue(frame.attrs["truncated"])
+        self.assertFalse(frame.attrs["complete"])
         self.assertEqual(calls, [0])
         self.assertFalse(fetcher.is_available("stock_list"))
         self.assertTrue(fetcher.is_available())
@@ -515,6 +559,82 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         manager = DataFetcherManager(fetchers=[fetcher])
         manager.prefetch_stock_names(["600519"], use_bulk=False)
         self.assertEqual(manager._stock_name_cache["600519"], "贵州茅台")
+
+
+    def test_stock_list_marks_a_short_page_complete(self) -> None:
+        fetcher = self._fetcher()
+
+        def request(_path, params):
+            self.assertEqual(params["limit"], 2)
+            return _ok({"item": [{"ticker": "600519", "name": "贵州茅台", "asset_type": "a-share"}]})
+
+        fetcher._request = request
+        with patch("data_provider.hithink_reference._LIST_PAGE_SIZE", 2):
+            frame = fetcher.get_stock_list()
+        self.assertEqual(len(frame), 1)
+        self.assertTrue(frame.attrs["complete"])
+        self.assertFalse(frame.attrs["truncated"])
+
+    def test_stock_list_marks_the_page_cap_as_truncated(self) -> None:
+        fetcher = self._fetcher()
+        offsets = []
+
+        def request(_path, params):
+            offsets.append(params["offset"])
+            code = f"{600000 + params['offset']:06d}"
+            return _ok({"item": [{"ticker": code, "name": "名称", "asset_type": "a-share"}]})
+
+        fetcher._request = request
+        with patch("data_provider.hithink_reference._LIST_PAGE_SIZE", 1), patch(
+            "data_provider.hithink_reference._LIST_MAX_PAGES", 2
+        ):
+            frame = fetcher.get_stock_list()
+        self.assertEqual(offsets, [0, 1])
+        self.assertEqual(len(frame), 2)
+        self.assertTrue(frame.attrs["truncated"])
+        self.assertFalse(frame.attrs["complete"])
+
+    def test_partial_concept_ranking_keeps_searching_and_uses_the_short_cache(self) -> None:
+        DataFetcherManager.clear_concept_rankings_cache_for_tests()
+
+        class _PartialRank:
+            name = "HiThinkFetcher"
+            priority = 1
+            calls = 0
+
+            def get_concept_rankings(self, n=5):
+                type(self).calls += 1
+                return ([{"name": "部分概念", "change_pct": 1, "coverage": "partial"}], [])
+
+        class _CompleteRank:
+            name = "AkshareFetcher"
+            priority = 2
+            calls = 0
+
+            def get_concept_rankings(self, n=5):
+                type(self).calls += 1
+                return ([{"name": "完整概念", "change_pct": 2}], [])
+
+        try:
+            manager = DataFetcherManager(fetchers=[_PartialRank(), _CompleteRank()])
+            top, _bottom = manager.get_concept_rankings(1)
+            self.assertEqual(top[0]["name"], "完整概念")
+            self.assertEqual(_PartialRank.calls, 1)
+            self.assertEqual(_CompleteRank.calls, 1)
+
+            _CompleteRank.calls = 0
+            only_partial = DataFetcherManager(fetchers=[_PartialRank()])
+            with patch.object(DataFetcherManager, "_CONCEPT_RANKINGS_CACHE_TTL_SECONDS", 300), patch.object(
+                DataFetcherManager, "_CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS", 0
+            ):
+                DataFetcherManager.clear_concept_rankings_cache_for_tests()
+                first, _bottom = only_partial.get_concept_rankings(3)
+                second, _bottom = only_partial.get_concept_rankings(3)
+            self.assertEqual(first[0]["coverage"], "partial")
+            self.assertEqual(second[0]["coverage"], "partial")
+            self.assertEqual(_PartialRank.calls, 3)
+        finally:
+            DataFetcherManager.clear_concept_rankings_cache_for_tests()
 
 
 class _DirectoryFetcher(BaseFetcher):

@@ -23,7 +23,7 @@ import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from threading import RLock
+from threading import RLock, local
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -36,6 +36,33 @@ from .base import STANDARD_COLUMNS, BaseFetcher, DataFetchError, _is_etf_code
 from .realtime_types import RealtimeSource, UnifiedRealtimeQuote, safe_float, safe_int
 
 logger = logging.getLogger(__name__)
+_request_budget = local()
+
+
+class request_budget:
+    """Bound later HTTP calls on this thread to an absolute monotonic deadline."""
+
+    def __init__(self, deadline: Optional[float]) -> None:
+        self.deadline = deadline
+        self.previous = None
+
+    def __enter__(self) -> "request_budget":
+        self.previous = getattr(_request_budget, "deadline", None)
+        if self.deadline is not None:
+            _request_budget.deadline = self.deadline
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if self.deadline is not None:
+            _request_budget.deadline = self.previous
+        return False
+
+
+def request_budget_remaining() -> Optional[float]:
+    deadline = getattr(_request_budget, "deadline", None)
+    if deadline is None:
+        return None
+    return deadline - time.monotonic()
 
 _BASE_URL = "https://fuyao.aicubes.cn"
 _SNAPSHOT_PATH = "/api/a-share/prices/snapshot"
@@ -143,6 +170,29 @@ class HiThinkFetcher(BaseFetcher):
                 return False
         return True
 
+    def is_available_for_request(self, capability: str = "") -> bool:
+        """Honor the manager's per-capability probe.
+
+        ``DataFetcherManager`` passes the capability only to this method.
+        A historical permission failure must not hide snapshot requests, and
+        a snapshot permission failure must not hide historical requests.
+        """
+        if capability == "daily_batch":
+            if not self.is_available():
+                return False
+            with self._lock:
+                return time.monotonic() >= self._batch_disabled_until
+        return self.is_available(capability)
+
+    def _request_capability(self, path: str) -> str:
+        if path == _HISTORICAL_PATH:
+            return "daily_data"
+        if path == _SNAPSHOT_PATH:
+            return "realtime_quote"
+        if path == _HISTORICAL_BATCH_PATH:
+            return "daily_batch"
+        return ""
+
     def _remember_error(
         self,
         message: str,
@@ -199,15 +249,19 @@ class HiThinkFetcher(BaseFetcher):
     def _request(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if not self.api_key:
             raise DataFetchError("HiThink API key is not configured")
-        if not self.is_available():
+        if not self.is_available_for_request(self._request_capability(path)):
             raise DataFetchError("HiThink is cooling down after an authentication or rate-limit failure")
 
         url = f"{_BASE_URL}{path}"
         headers = {"X-api-key": self.api_key, "Accept": "application/json"}
         last_error: Optional[Exception] = None
         for attempt in range(3):
+            remaining = request_budget_remaining()
+            if remaining is not None and remaining <= 0:
+                raise DataFetchError("HiThink request budget exhausted")
+            http_timeout = self.timeout if remaining is None else min(self.timeout, remaining)
             try:
-                response = requests.get(url, params=params, headers=headers, timeout=self.timeout)
+                response = requests.get(url, params=params, headers=headers, timeout=http_timeout)
             except requests.Timeout:
                 last_error = HiThinkRequestError("HiThink request timed out")
                 logger.warning("[HiThinkFetcher] request timed out: path=%s attempt=%s", path, attempt + 1)
@@ -266,6 +320,11 @@ class HiThinkFetcher(BaseFetcher):
                 self._remember_error(str(error), daily_only=True)
             elif error.permission and path == _SNAPSHOT_PATH:
                 self._remember_error(str(error), realtime_only=True)
+            elif error.permission and (
+                path.startswith("/api/a-share/financials/")
+                or path.startswith("/api/a-share/valuations/")
+            ):
+                self._remember_error(str(error), fundamental_only=True)
             else:
                 self._remember_error(str(error))
             raise error
@@ -279,7 +338,13 @@ class HiThinkFetcher(BaseFetcher):
     def _sleep_before_retry(self, attempt: int) -> None:
         if attempt >= 2 or self.retry_backoff <= 0:
             return
-        time.sleep(self.retry_backoff * (2 ** attempt))
+        delay = self.retry_backoff * (2 ** attempt)
+        remaining = request_budget_remaining()
+        if remaining is not None:
+            if remaining <= 0:
+                raise DataFetchError("HiThink request budget exhausted")
+            delay = min(delay, remaining)
+        time.sleep(delay)
 
     @staticmethod
     def _error_from_code(code: Any) -> HiThinkRequestError:
@@ -479,7 +544,7 @@ class HiThinkFetcher(BaseFetcher):
         result["date"] = pd.to_datetime(result["date"], errors="coerce").dt.strftime("%Y-%m-%d")
         result = result.dropna(subset=["date", "open", "high", "low", "close", "volume"])
         result = result[(result["close"] > 0) & (result["volume"] >= 0)]
-        result = result.sort_values("date").drop_duplicates("date")
+        result = result.sort_values("date").drop_duplicates("date", keep="last")
         previous = result["close"].shift(1)
         result["pct_chg"] = ((result["close"] / previous.where(previous > 0)) - 1) * 100
         result["code"] = code
@@ -525,8 +590,8 @@ class HiThinkFetcher(BaseFetcher):
                     _SNAPSHOT_PATH,
                     {"thscodes": ",".join(thscode for thscode, _code in batch)},
                 )
-            except HiThinkRequestError:
-                if len(batch) == 1:
+            except HiThinkRequestError as exc:
+                if exc.permission or len(batch) == 1:
                     raise
                 for single in batch:
                     quotes.update(self._load_quotes([single]))
