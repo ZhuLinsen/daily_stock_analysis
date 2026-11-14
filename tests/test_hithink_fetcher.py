@@ -450,6 +450,50 @@ class HiThinkFetcherTests(unittest.TestCase):
         self.assertEqual(len(frame), 2)
         self.assertTrue(fetcher.is_available("daily_data"))
 
+    def test_capability_denied_does_not_cool_other_capabilities(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2003, "message": "capability denied", "request_id": "req-cap", "data": None}
+        quote = {
+            "code": 0,
+            "message": "success",
+            "data": {"timestamp": _ms(2024, 5, 21), "item": [{
+                "thscode": "600519.SH",
+                "last_price": 10,
+                "price_change": 1,
+                "price_change_ratio_pct": 1,
+                "volume": 100,
+                "turnover": 1000,
+            }]},
+        }
+        daily = {
+            "code": 0,
+            "message": "success",
+            "data": {"timestamp": _ms(2024, 5, 21), "item": [_bar(2024, 5, 20, 10)]},
+        }
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            if url.endswith("/historical-batch"):
+                return _response(denied)
+            if url.endswith("/snapshot"):
+                return _response(quote)
+            return _response(daily)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            cached = fetcher.prefetch_daily_klines(["600519"], start_date="2024-05-20", end_date="2024-05-21")
+            frame = fetcher.get_daily_data("600519", start_date="2024-05-20", end_date="2024-05-21")
+            quote_result = fetcher.get_realtime_quote("600519")
+
+        self.assertEqual(cached, 0)
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(quote_result.price, 10)
+        self.assertTrue(fetcher.is_available())
+        self.assertFalse(fetcher.is_available_for_request("daily_batch"))
+        self.assertTrue(fetcher.is_available_for_request("daily_data"))
+        self.assertTrue(fetcher.is_available_for_request("realtime_quote"))
+        self.assertEqual(sum(url.endswith("/historical-batch") for url in calls), 1)
+
     def test_timeout_is_bounded_and_reported_without_the_key(self) -> None:
         fetcher = self._fetcher()
 

@@ -95,6 +95,11 @@ class HiThinkFundamentalAdapter:
         with request_budget(deadline):
             return self._load_fundamental_bundle(stock_code)
 
+    def _same_statement_period(self, statement: Dict[str, Any], anchor: Optional[str]) -> bool:
+        if not anchor:
+            return False
+        return self.fetcher._ms_to_date(statement.get("period_end_ms")) == anchor
+
     def _budget_exhausted(self, result: Dict[str, Any]) -> bool:
         if "budget_exhausted" in result["errors"]:
             return True
@@ -117,38 +122,38 @@ class HiThinkFundamentalAdapter:
             return result
 
         income = self._latest_statement(_INCOME_PATH, thscode, result)
-        if income:
-            report_date = self.fetcher._ms_to_date(income.get("period_end_ms"))
+        balance = self._latest_statement(_BALANCE_PATH, thscode, result) if not self._budget_exhausted(result) else {}
+        cash_flow = self._latest_statement(_CASH_FLOW_PATH, thscode, result) if not self._budget_exhausted(result) else {}
+        anchor = self.fetcher._ms_to_date(income.get("period_end_ms")) if income else None
+        if income and anchor:
             result["earnings"]["income_statement"] = income
             result["earnings"]["financial_report"] = {
-                "report_date": report_date,
+                "report_date": anchor,
                 "revenue": _number(income.get("operating_income")),
                 "net_profit_parent": _number(income.get("parent_holder_net_profit")),
                 "operating_cash_flow": None,
                 "roe": None,
             }
             result["source_chain"].append("earnings:hithink_income_statement")
-        if self._budget_exhausted(result):
-            return result
-
-        balance = self._latest_statement(_BALANCE_PATH, thscode, result)
-        if balance:
+        elif income:
+            result["errors"].append("period_missing:income_statement")
+        if balance and self._same_statement_period(balance, anchor):
             result["earnings"]["balance_sheet"] = balance
             result["source_chain"].append("earnings:hithink_balance_sheet")
-        if self._budget_exhausted(result):
-            return result
-
-        cash_flow = self._latest_statement(_CASH_FLOW_PATH, thscode, result)
-        if cash_flow:
+        elif balance:
+            result["errors"].append("period_mismatch:balance_sheet")
+        if cash_flow and self._same_statement_period(cash_flow, anchor):
             result["earnings"]["cash_flow"] = cash_flow
             report = result["earnings"].get("financial_report")
             if isinstance(report, dict):
                 report["operating_cash_flow"] = _number(cash_flow.get("act_cash_flow_net"))
             result["source_chain"].append("earnings:hithink_cash_flow")
+        elif cash_flow:
+            result["errors"].append("period_mismatch:cash_flow")
         if self._budget_exhausted(result):
             return result
 
-        report = _report_code(income) if income else None
+        report = _report_code(income) if income and anchor else None
         if report:
             indicators = self._indicators(thscode, report, result)
             growth = {
@@ -184,7 +189,11 @@ class HiThinkFundamentalAdapter:
             return {}
         thscode, _code = self.fetcher._thscode(stock_code)
         try:
-            payload = self.fetcher._request(_VALUATION_PATH, {"thscodes": thscode})
+            payload = self.fetcher._request(
+                _VALUATION_PATH,
+                {"thscodes": thscode},
+                capability="fundamental",
+            )
         except HiThinkRequestError as exc:
             _remember_permission(self.fetcher, exc)
             raise
@@ -210,7 +219,11 @@ class HiThinkFundamentalAdapter:
         if not self.fetcher.is_available("fundamental") or self._budget_exhausted(result):
             return {}
         try:
-            payload = self.fetcher._request(path, {"thscode": thscode, "period": "quarterly", "limit": 1})
+            payload = self.fetcher._request(
+                path,
+                {"thscode": thscode, "period": "quarterly", "limit": 1},
+                capability="fundamental",
+            )
             return _latest_item(payload)
         except HiThinkRequestError as exc:
             _remember_permission(self.fetcher, exc)
@@ -228,7 +241,11 @@ class HiThinkFundamentalAdapter:
         if not self.fetcher.is_available("fundamental") or self._budget_exhausted(result):
             return {}
         try:
-            payload = self.fetcher._request(_INDICATORS_PATH, {"thscode": thscode, "report": report})
+            payload = self.fetcher._request(
+                _INDICATORS_PATH,
+                {"thscode": thscode, "report": report},
+                capability="fundamental",
+            )
         except HiThinkRequestError as exc:
             _remember_permission(self.fetcher, exc)
             logger.warning("[HiThinkFetcher] financial indicators failed: code=%s", exc.code)

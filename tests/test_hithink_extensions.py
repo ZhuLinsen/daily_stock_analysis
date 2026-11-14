@@ -54,8 +54,15 @@ class HiThinkExtensionTests(unittest.TestCase):
             "operating_income": 10,
             "parent_holder_net_profit": 4,
         }]})
-        balance = _ok({"item": [{"assets_total": 20, "total_debt": None}]})
-        cash = _ok({"item": [{"act_cash_flow_net": 3}]})
+        balance = _ok({"item": [{
+            "period_end_ms": _ms(2024, 9, 30),
+            "assets_total": 20,
+            "total_debt": None,
+        }]})
+        cash = _ok({"item": [{
+            "period_end_ms": _ms(2024, 9, 30),
+            "act_cash_flow_net": 3,
+        }]})
         indicators = _ok({
             "report": "2024-3",
             "abilities": [
@@ -85,6 +92,32 @@ class HiThinkExtensionTests(unittest.TestCase):
         self.assertEqual(report["operating_cash_flow"], 3)
         self.assertEqual(report["roe"], 21)
         self.assertIsNone(bundle["earnings"]["balance_sheet"]["total_debt"])
+
+    def test_statements_from_another_period_are_not_mixed(self) -> None:
+        fetcher = self._fetcher()
+        income = _ok({"item": [{
+            "fiscal_year": 2024,
+            "fiscal_period": "Q3",
+            "period_end_ms": _ms(2024, 9, 30),
+            "operating_income": 10,
+            "parent_holder_net_profit": 4,
+        }]})
+        balance = _ok({"item": [{"period_end_ms": _ms(2024, 9, 30), "assets_total": 20}]})
+        cash = _ok({"item": [{"period_end_ms": _ms(2024, 6, 30), "act_cash_flow_net": 3}]})
+        indicators = _ok({"abilities": []})
+        with patch(
+            "data_provider.hithink_fetcher.requests.get",
+            side_effect=[_response(income), _response(balance), _response(cash), _response(indicators)],
+        ):
+            bundle = HiThinkFundamentalAdapter(fetcher).get_fundamental_bundle("600519")
+
+        report = bundle["earnings"]["financial_report"]
+        self.assertEqual(report["report_date"], "2024-09-30")
+        self.assertEqual(report["revenue"], 10)
+        self.assertIsNone(report["operating_cash_flow"])
+        self.assertIn("balance_sheet", bundle["earnings"])
+        self.assertNotIn("cash_flow", bundle["earnings"])
+        self.assertIn("period_mismatch:cash_flow", bundle["errors"])
 
     def test_fundamental_budget_stops_later_statements(self) -> None:
         fetcher = self._fetcher()
@@ -541,6 +574,26 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         fetcher.get_concept_rankings(1)
         self.assertEqual(catalogs, [catalogs[0]])
         self.assertEqual(len(snapshots), 4)
+
+    def test_missing_ranking_quotes_are_partial(self) -> None:
+        fetcher = self._fetcher()
+        items = [
+            {"thscode": "881001.TI", "name": "银行"},
+            {"thscode": "881002.TI", "name": "软件"},
+        ]
+
+        def request(path, params, capability=None):
+            if path.endswith("ths-index-list"):
+                return {"code": 0, "data": {"item": items}}
+            return {"code": 0, "data": {"item": [
+                {"thscode": "881001.TI", "price_change_ratio_pct": 1.2},
+                {"thscode": "881002.TI", "price_change_ratio_pct": None},
+            ]}}
+
+        fetcher._request = request
+        top, _bottom = fetcher.get_sector_rankings(2)
+        self.assertEqual(top[0]["coverage"], "partial")
+        self.assertEqual([row["name"] for row in top], ["银行"])
 
     def test_ranking_permission_stops_later_batches(self) -> None:
         fetcher = self._fetcher()

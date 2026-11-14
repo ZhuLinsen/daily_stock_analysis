@@ -130,8 +130,9 @@ def rankings(fetcher: HiThinkFetcher, tag: str, n: int = 5) -> Optional[Tuple[Li
     symbols = _catalog_symbols(fetcher, tag)
     quotes: List[Dict[str, Any]] = []
     names = {thscode: name for thscode, name in symbols}
+    expected = set(names)
+    covered: set[str] = set()
     partial = False
-    scanned = 0
     for offset in range(0, len(symbols), _RANK_BATCH):
         if not fetcher.is_available("index_rankings"):
             partial = True
@@ -152,18 +153,18 @@ def rankings(fetcher: HiThinkFetcher, tag: str, n: int = 5) -> Optional[Tuple[Li
         body = payload.get("data") or {}
         if not isinstance(body, dict) or not isinstance(body.get("item"), list):
             raise HiThinkRequestError("HiThink index snapshot response is invalid")
-        scanned += len(batch)
         for item in body["item"]:
             if not isinstance(item, dict):
                 continue
             change_pct = fetcher_number(item.get("price_change_ratio_pct"))
             thscode = str(item.get("thscode") or "")
-            if change_pct is None or thscode not in names:
+            if change_pct is None or thscode not in expected or thscode in covered:
                 continue
+            covered.add(thscode)
             quotes.append({"name": names[thscode], "change_pct": change_pct})
     if not quotes:
         return None
-    if partial or scanned < len(symbols):
+    if partial or covered != expected:
         for row in quotes:
             row["coverage"] = "partial"
     ordered = sorted(quotes, key=lambda row: row["change_pct"], reverse=True)

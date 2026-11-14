@@ -73,7 +73,8 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Stay under the documented 10-year window, including the end-of-day timestamp.
 _MAX_WINDOW_DAYS = 3600
 _MAX_BATCH_SYMBOLS = 10
-_AUTH_CODES = {2001, 2003}
+_AUTH_CODES = {2001}
+_CAPABILITY_DENIED_CODE = 2003
 _PERMISSION_CODE = 2004
 _RATE_LIMIT_CODE = 4001
 _SERVER_CODES = {5001, 5002, 5003}
@@ -339,23 +340,8 @@ class HiThinkFetcher(BaseFetcher):
                 continue
             if error.code in _AUTH_CODES or error.code == _RATE_LIMIT_CODE:
                 self._remember_error(str(error), cooldown=True)
-            elif error.permission and path == _HISTORICAL_BATCH_PATH:
-                self._remember_error(str(error), batch_only=True)
-            elif error.permission and resolved_capability == "index_rankings":
-                self._remember_error(str(error), rank_only=True)
-            elif error.permission and resolved_capability == "index_daily":
-                self._remember_error(str(error), index_daily_only=True)
-            elif error.permission and resolved_capability == "index_snapshot":
-                self._remember_error(str(error), index_snapshot_only=True)
-            elif error.permission and path == _HISTORICAL_PATH:
-                self._remember_error(str(error), daily_only=True)
-            elif error.permission and resolved_capability == "realtime_quote":
-                self._remember_error(str(error), realtime_only=True)
-            elif error.permission and (
-                path.startswith("/api/a-share/financials/")
-                or path.startswith("/api/a-share/valuations/")
-            ):
-                self._remember_error(str(error), fundamental_only=True)
+            elif error.permission:
+                self._remember_capability_denial(str(error), resolved_capability, path)
             else:
                 self._remember_error(str(error))
             raise error
@@ -383,11 +369,36 @@ class HiThinkFetcher(BaseFetcher):
             delay = min(delay, remaining)
         time.sleep(delay)
 
+    def _remember_capability_denial(self, message: str, capability: str, path: str) -> None:
+        """Cool only the capability that returned 2003 or 2004.
+
+        Code 2003 means this key cannot call the current capability. It is not
+        an invalid-key failure, so the global cooldown stays untouched.
+        """
+        if capability == "daily_batch" or path == _HISTORICAL_BATCH_PATH:
+            self._remember_error(message, batch_only=True)
+        elif capability == "index_rankings":
+            self._remember_error(message, rank_only=True)
+        elif capability == "index_daily":
+            self._remember_error(message, index_daily_only=True)
+        elif capability == "index_snapshot":
+            self._remember_error(message, index_snapshot_only=True)
+        elif capability == "daily_data" or path == _HISTORICAL_PATH:
+            self._remember_error(message, daily_only=True)
+        elif capability == "realtime_quote" or path == _SNAPSHOT_PATH:
+            self._remember_error(message, realtime_only=True)
+        elif capability == "fundamental" or path.startswith("/api/a-share/financials/") or path.startswith("/api/a-share/valuations/"):
+            self._remember_error(message, fundamental_only=True)
+        elif capability == "stock_list" or path.startswith("/api/meta/tickers/"):
+            self._remember_error(message, directory_only=True)
+        else:
+            self._remember_error(message)
+
     @staticmethod
     def _error_from_code(code: Any) -> HiThinkRequestError:
         if code in _AUTH_CODES:
             return HiThinkRequestError("HiThink authentication failed", code=int(code))
-        if code == _PERMISSION_CODE:
+        if code in {_CAPABILITY_DENIED_CODE, _PERMISSION_CODE}:
             return HiThinkRequestError(
                 "HiThink credential is not authorized for this capability",
                 code=int(code),
