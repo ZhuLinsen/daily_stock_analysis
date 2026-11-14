@@ -14,19 +14,32 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class SuffixMarketSpec:
-    """A suffix-only Yahoo Finance market rule."""
+    """A suffix-only Yahoo Finance market rule.
+
+    ``digit_lengths`` constrains digit-only bases (JP/KR/TW). Markets whose
+    bases are alphabetic tickers (e.g. Canadian ``SHOP.TO``) set
+    ``letter_lengths`` instead.
+    """
 
     market: str
     suffixes: tuple[str, ...]
-    digit_lengths: tuple[int, ...]
+    digit_lengths: tuple[int, ...] = ()
+    letter_lengths: tuple[int, ...] = ()
 
 
+# ``letter_lengths`` is populated for Canadian tickers; see
+# ``get_suffix_market``.
 _SUFFIX_MARKET_SPECS: tuple[SuffixMarketSpec, ...] = (
     SuffixMarketSpec("jp", ("T",), (4, 5)),
     SuffixMarketSpec("kr", ("KS", "KQ"), (6,)),
     # Taiwan support mirrors the same suffix-only pattern; keep it here so the
     # shared helpers stay complete for all yfinance-only offshore markets.
     SuffixMarketSpec("tw", ("TW", "TWO"), (4, 5, 6)),
+    # Canadian tickers use Yahoo Finance suffixes ``.TO`` (TSX), ``.V``
+    # (TSX Venture), ``.CNX`` (Canadian Securities Exchange). Base codes are
+    # alphabetic tickers rather than numeric codes, so they are gated by
+    # ``letter_lengths`` instead of ``digit_lengths``.
+    SuffixMarketSpec("ca", ("TO", "V", "CNX"), letter_lengths=(1, 2, 3, 4, 5)),
 )
 
 _MARKET_TO_SPEC = {spec.market: spec for spec in _SUFFIX_MARKET_SPECS}
@@ -50,7 +63,12 @@ def split_suffix_symbol(stock_code: str) -> tuple[str, str] | None:
 
 
 def get_suffix_market(stock_code: str) -> Optional[str]:
-    """Return jp/kr/tw for supported suffix-only Yahoo symbols, else None."""
+    """Return jp/kr/tw/ca for supported suffix-only Yahoo symbols, else None.
+
+    Numeric markets (JP/KR/TW) require a digit base of a known length.
+    Canadian tickers (CA) use alphabetic bases such as ``SHOP.TO`` and
+    ``ABC.V``, gated by ``letter_lengths`` instead.
+    """
 
     parts = split_suffix_symbol(stock_code)
     if parts is None:
@@ -59,6 +77,10 @@ def get_suffix_market(stock_code: str) -> Optional[str]:
     spec = _SUFFIX_TO_SPEC.get(suffix)
     if spec is None:
         return None
+    if spec.letter_lengths:
+        if not (base.isalpha() and len(base) in spec.letter_lengths):
+            return None
+        return spec.market
     if not (base.isdigit() and len(base) in spec.digit_lengths):
         return None
     return spec.market
@@ -83,6 +105,10 @@ def is_kr_suffix_symbol(stock_code: str) -> bool:
 
 def is_tw_suffix_symbol(stock_code: str) -> bool:
     return is_suffix_market_symbol(stock_code, "tw")
+
+
+def is_ca_suffix_symbol(stock_code: str) -> bool:
+    return is_suffix_market_symbol(stock_code, "ca")
 
 
 def normalize_suffix_market_symbol(stock_code: str) -> Optional[str]:

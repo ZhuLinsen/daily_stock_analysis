@@ -204,6 +204,15 @@ def _is_tw_market(code: str) -> bool:
     return is_suffix_market_symbol(code, "tw")
 
 
+def _is_ca_market(code: str) -> bool:
+    """判定是否为加拿大 Yahoo Finance suffix 代码（如 SHOP.TO / ABC.V）。
+
+    加拿大 tickers 为字母基数（SHOP.TO、ABC.V），而非 JP/KR/TW 的纯数字。
+    必须在美股判断之前调用，因为 `.V` 也符合美股单字母后缀的形状。
+    """
+    return is_suffix_market_symbol(code, "ca")
+
+
 def _is_etf_code(code: str) -> bool:
     """判定 A 股 ETF 基金代码（保守规则）。"""
     normalized = normalize_stock_code(code)
@@ -244,7 +253,11 @@ def _is_meaningful_chip_distribution(chip: Any) -> bool:
 
 
 def _market_tag(code: str) -> str:
-    """返回市场标签: cn/us/hk/jp/kr/tw."""
+    """返回市场标签: cn/us/hk/jp/kr/tw/ca."""
+    # 加拿大优先于美股：`.V` 后缀（TSX Venture）也符合美股 1-5 字母 +
+    # 单字母后缀的形状（如 ABC.V），顺序颠倒会把加拿大股票误标为美股。
+    if _is_ca_market(code):
+        return "ca"
     if _is_us_market(code):
         return "us"
     if _is_hk_market(code):

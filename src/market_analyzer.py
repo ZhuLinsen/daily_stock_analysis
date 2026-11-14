@@ -144,14 +144,14 @@ class MarketAnalyzer:
         Args:
             search_service: 搜索服务实例
             analyzer: AI分析器实例（用于调用LLM）
-            region: 市场区域 cn=A股 hk=港股 us=美股 jp=日本 kr=韩国
+            region: 市场区域 cn=A股 hk=港股 us=美股 jp=日本 kr=韩国 ca=加拿大
             config: 本次复盘使用的配置；未传时读取全局配置
         """
         self.config = config or get_config()
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
-        self.region = region if region in ("cn", "us", "hk", "jp", "kr") else "cn"
+        self.region = region if region in ("cn", "us", "hk", "jp", "kr", "ca") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
 

@@ -229,6 +229,35 @@ KR_BLUEPRINT = MarketStrategyBlueprint(
     ],
 )
 
+CA_BLUEPRINT = MarketStrategyBlueprint(
+    region="ca",
+    title="加拿大市场复盘策略",
+    positioning="聚焦指数趋势、资金情绪与板块轮动，形成次日交易计划。",
+    principles=[
+        "先看指数方向，再看量能结构，最后看板块持续性。",
+        "结论必须映射到仓位、节奏与风险控制动作。",
+        "判断使用当日数据与近3日新闻，不臆测未验证信息。",
+    ],
+    dimensions=[
+        StrategyDimension(
+            name="趋势结构",
+            objective="判断市场处于上升、震荡还是防守阶段。",
+            checkpoints=["S&P/TSX Composite 与主要板块指数是否同向", "放量上涨或缩量下跌是否成立", "关键支撑阻力是否被突破"],
+        ),
+        StrategyDimension(
+            name="资金情绪",
+            objective="识别短线风险偏好与情绪温度。",
+            checkpoints=["能源与资源板块成交是否扩张", "高股息权重股是否出现分歧", "加元与美股联动是否放大波动"],
+        ),
+    ],
+    action_framework=[
+        "进攻：指数放量上行 + 权重股共振 + 外部风险偏好改善。",
+        "均衡：指数与权重股分化，控制仓位并等待确认。",
+        "防守：权重股转弱或外部风险升温，优先控制回撤。",
+    ],
+)
+
+
 def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
     """Return strategy blueprint by market region."""
     if region == "us":
@@ -239,4 +268,6 @@ def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
         return JP_BLUEPRINT
     if region == "kr":
         return KR_BLUEPRINT
+    if region == "ca":
+        return CA_BLUEPRINT
     return CN_BLUEPRINT
