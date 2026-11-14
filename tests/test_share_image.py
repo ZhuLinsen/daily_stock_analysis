@@ -2024,3 +2024,72 @@ def test_japanese_market_share_image_uses_korean_report_font_contract():
     assert 'html[lang="ko"] body' in html
     assert '"Noto Sans CJK KR"' in html
     assert "日経平均株価" in html
+
+
+def test_multi_market_review_includes_canada_segment():
+    """PR #2493 复审 #4（OR-COR-d0e455c1）：both 复盘分享图不得丢加拿大段。"""
+    payload = {
+        "kind": "market_review",
+        "region": "cn,ca",
+        "language": "zh",
+        "markets": {
+            "cn": {
+                "region": "cn",
+                "title": "A股市场复盘",
+                "color_scheme": "green_up",
+                "market_light": {
+                    "score": 81,
+                    "dimensions": {
+                        "breadth": {"score": 88, "available": True},
+                    },
+                },
+                "indices": [
+                    {"name": "结构化上证", "current": 3999, "change_pct": 0.9},
+                ],
+            },
+            "ca": {
+                "region": "ca",
+                "title": "加股市场复盘",
+                "color_scheme": "green_up",
+                "market_light": {
+                    "score": 62,
+                    "dimensions": {
+                        "breadth": {"score": 55, "available": True},
+                    },
+                },
+                "indices": [
+                    {"name": "结构化TSX", "current": 25000, "change_pct": -0.4},
+                ],
+            },
+        },
+    }
+    html = build_share_image_html(
+        """# A股大盘复盘
+
+## 指数结构
+
+| 指数 | 最新 | 涨跌幅 |
+| --- | --- | --- |
+| 上证指数 | 3200 | +0.80% |
+
+---
+
+> 以下为下一市场大盘复盘
+
+# 加股大盘复盘
+
+## 指数结构
+
+| 指数 | 最新 | 涨跌幅 |
+| --- | --- | --- |
+| S&P/TSX 综合指数 | 25000 | -0.40% |
+""",
+        generated_on=date(2026, 8, 1),
+        structured_payload=payload,
+    )
+
+    assert "加股市场复盘" in html, "both 复盘分享图必须包含加拿大段标题"
+    assert "结构化TSX" in html, "markets.ca 的结构化指数数据必须被选取"
+    assert "25000" in html
+    assert "结构化上证" in html
+    assert "3999" in html

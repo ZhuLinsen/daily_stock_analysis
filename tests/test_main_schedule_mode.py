@@ -190,6 +190,27 @@ class MainScheduleModeTestCase(unittest.TestCase):
             ],
         )
 
+    def test_daily_market_context_target_date_routes_ca_calendar(self) -> None:
+        """PR #2493 复审 #4（OR-COR-9c32286a）：region=ca 须按 XTSX/Toronto 日历
+        预取，不得落回 cn 日历。"""
+        current_time = datetime(2026, 5, 7, 0, 30, tzinfo=timezone.utc)
+        calls = []
+
+        def resolve_effective_date(market, *, current_time=None):
+            calls.append((market, current_time))
+            return date(2026, 5, 7)
+
+        with patch(
+            "src.core.trading_calendar.get_effective_trading_date",
+            side_effect=resolve_effective_date,
+        ):
+            self.assertEqual(
+                main._resolve_daily_market_context_target_date("ca", current_time),
+                date(2026, 5, 7),
+            )
+
+        self.assertEqual(calls, [("ca", current_time)])
+
     def test_compute_trading_day_filter_supports_comma_list_regions(self) -> None:
         args = self._make_args()
         config = self._make_config(

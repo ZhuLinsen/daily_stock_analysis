@@ -1,3 +1,5 @@
+import { isCaseSensitiveVSuffixCode } from './stockCode';
+
 interface ValidationResult {
   valid: boolean;
   message?: string;
@@ -15,6 +17,8 @@ const STOCK_CODE_PATTERNS = [
   /^\d{1,5}\.HK$/, // HK suffix format, for example 00700.HK
   /^\d{4,5}\.T$/, // Japan Yahoo suffix format, for example 7203.T
   /^\d{6}\.(KS|KQ)$/, // Korea Yahoo suffix format, for example 005930.KS or 035720.KQ
+  /^[A-Z]{1,6}\.TO$/, // Canada TSX Yahoo suffix format, for example SHOP.TO (Issue #2420)
+  /^[A-Z]{1,6}\.V$/, // Canada TSXV Yahoo suffix format, for example SHOP.V — case-sensitive identity, see isCaseSensitiveVSuffixCode
   /^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$/, // Common US ticker format
   /^CSI\d{6}$/, // Registered CSI index canonical (e.g. csi930955)
   /^\d{6}\.CSI$/, // Registered CSI index display form (e.g. 930955.CSI)
@@ -29,10 +33,18 @@ export const looksLikeStockCode = (value: string): boolean => {
 };
 
 /**
- * Validate common A-share, HK, US, JP, and KR stock code formats.
+ * Validate common A-share, HK, US, JP, KR, and CA stock code formats.
+ *
+ * OR-COM-bfe7c5f7 (PR #2493 review #2): for the ``.V``/``.v`` suffix family
+ * the case IS the market identity — uppercase ``.V`` is TSXV (Canada),
+ * lowercase ``.v`` is the legacy US single-letter class share — so the
+ * validated result keeps the ORIGINAL casing and the backend parser/routing
+ * layers see the same identity the user typed. Every other form keeps the
+ * existing uppercase normalization.
  */
 export const validateStockCode = (value: string): ValidationResult => {
-  const normalized = value.trim().toUpperCase();
+  const trimmed = value.trim();
+  const normalized = trimmed.toUpperCase();
 
   if (!normalized) {
     return { valid: false, message: '请输入股票代码', normalized };
@@ -43,7 +55,7 @@ export const validateStockCode = (value: string): ValidationResult => {
   return {
     valid,
     message: valid ? undefined : '股票代码格式不正确',
-    normalized,
+    normalized: valid && isCaseSensitiveVSuffixCode(trimmed) ? trimmed : normalized,
   };
 };
 

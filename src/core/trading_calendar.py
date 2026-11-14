@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from src.services.market_symbol_utils import get_suffix_market
+from src.services.market_symbol_utils import get_ca_suffix_market, get_suffix_market
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,17 @@ except ImportError:
     )
 
 # Market -> exchange code (exchange-calendars)
-MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS", "kr": "XKRX", "tw": "XTAI"}
+MARKET_EXCHANGE = {
+    "cn": "XSHG",
+    "hk": "XHKG",
+    "us": "XNYS",
+    "jp": "XTKS",
+    "kr": "XKRX",
+    "tw": "XTAI",
+    # Canada (Issue #2420): Toronto Stock Exchange sessions drive the ca
+    # market-review trading-day filter, so ca never rides the A-share calendar.
+    "ca": "XTSX",
+}
 
 # Market -> IANA timezone for "today"
 MARKET_TIMEZONE = {
@@ -48,6 +58,7 @@ MARKET_TIMEZONE = {
     "jp": "Asia/Tokyo",
     "kr": "Asia/Seoul",
     "tw": "Asia/Taipei",
+    "ca": "America/Toronto",
 }
 
 # P0 market phase baseline (Issue #1386). This is an intentionally small
@@ -127,11 +138,23 @@ def get_market_for_stock(code: str) -> Optional[str]:
     Infer market region for a stock code.
 
     Returns:
-        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | None (None = unrecognized, fail-open: treat as open)
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'ca' | None (None = unrecognized, fail-open: treat as open)
     """
     if not code or not isinstance(code, str):
         return None
-    code = (code or "").strip().upper()
+    raw = (code or "").strip()
+    code = raw.upper()
+
+    # Canada (Issue #2420 / PR #2493 review OR-COR-9a7fa646): TSX ``.TO`` /
+    # TSXV uppercase ``.V`` codes must be classified BEFORE the US pattern,
+    # because ``SHOP.V`` also matches the US single-letter class-share shape.
+    # A lowercase ``.v`` keeps the legacy US identity (case is the carrier).
+    # This feeds main.py's per-stock trading-day filter and the pipeline's
+    # market-phase/effective-date lookups, so ca stocks follow the Toronto
+    # (XTSX) calendar instead of failing open or riding the US calendar.
+    ca_market = get_ca_suffix_market(raw)
+    if ca_market:
+        return ca_market
 
     from data_provider import is_us_stock_code, is_us_index_code, is_hk_stock_code
 
@@ -644,15 +667,17 @@ def compute_effective_region(
     Compute effective market review region given config and open markets.
 
     Args:
-        config_region: From MARKET_REVIEW_REGION ('cn' | 'hk' | 'us' | 'jp' | 'kr' | 'both' or comma subset)
+        config_region: From MARKET_REVIEW_REGION ('cn' | 'hk' | 'us' | 'jp' | 'kr' | 'ca' | 'both' or comma subset)
         open_markets: Markets open today
 
     Returns:
         None: caller uses config default (check disabled)
         '': all relevant markets closed, skip market review
-        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'both': effective subset for today
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'ca' | 'both': effective subset for today
     """
-    markets = ("cn", "hk", "us", "jp", "kr")
+    # ca (Issue #2420) is filtered by its own XTSX/America-Toronto session above;
+    # a TSX holiday skips the ca review instead of falling back to the cn calendar.
+    markets = ("cn", "hk", "us", "jp", "kr", "ca")
     normalized = (config_region or "cn").strip().lower()
     if not normalized:
         normalized = "cn"

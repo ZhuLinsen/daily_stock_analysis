@@ -204,4 +204,35 @@ describe('asset-aware identity keys (PR #2312)', () => {
       String.prototype.toLocaleLowerCase = original;
     }
   });
+
+  // OR-COM-bfe7c5f7 (review #2): the .V/.v suffix family keeps its case —
+  // uppercase .V is TSXV (Canada), lowercase .v is the legacy US class share.
+  // Match keys must NOT fold this family, so both identities can coexist in
+  // the watchlist and removal hits exactly one.
+  describe('case-sensitive .V/.v suffix identity', () => {
+    it('treats shop.v and SHOP.V as different identities', () => {
+      expect(areStockCodesEquivalent('shop.v', 'SHOP.V')).toBe(false);
+      expect(includesStockCode(['shop.v'], 'SHOP.V')).toBe(false);
+      expect(includesStockCode(['SHOP.V'], 'shop.v')).toBe(false);
+    });
+
+    it('matches the same case form exactly', () => {
+      expect(areStockCodesEquivalent('shop.v', 'shop.v')).toBe(true);
+      expect(areStockCodesEquivalent('SHOP.V', 'SHOP.V')).toBe(true);
+      expect(findMatchingStockCode(['shop.v', 'SHOP.V'], 'SHOP.V')).toBe('SHOP.V');
+      expect(findMatchingStockCode(['shop.v', 'SHOP.V'], 'shop.v')).toBe('shop.v');
+    });
+
+    it('keeps case-sensitive asset-aware keys for the .V/.v family', () => {
+      expect(toAssetAwareCodeKey('shop.v')).toBe('shop.v');
+      expect(toAssetAwareCodeKey('SHOP.V')).toBe('SHOP.V');
+      expect(areAssetAwareCodesEquivalent('shop.v', 'stock', 'SHOP.V', 'stock')).toBe(false);
+    });
+
+    it('still folds case for every non-.V form', () => {
+      expect(areStockCodesEquivalent('aapl', 'AAPL')).toBe(true);
+      expect(toAssetAwareCodeKey('aapl')).toBe('AAPL');
+      expect(includesStockCode(['AAPL'], 'aapl')).toBe(true);
+    });
+  });
 });

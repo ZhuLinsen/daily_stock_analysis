@@ -229,6 +229,40 @@ KR_BLUEPRINT = MarketStrategyBlueprint(
     ],
 )
 
+
+CA_BLUEPRINT = MarketStrategyBlueprint(
+    region="ca",
+    title="加拿大市场三段式复盘策略",
+    positioning="聚焦 S&P/TSX 综合指数、能源/金融权重与大宗商品链，形成次日交易计划。",
+    principles=[
+        "先看 S&P/TSX 综合指数方向，再看能源、金融、材料等权重板块线索。",
+        "把加元汇率与大宗商品（原油/金属）叙事映射到指数风险偏好。",
+        "只基于可得指数、新闻和价格行为判断，不臆造市场广度或板块统计。",
+    ],
+    dimensions=[
+        StrategyDimension(
+            name="趋势结构",
+            objective="判断加拿大市场处于上攻、震荡还是防守阶段。",
+            checkpoints=["S&P/TSX 综合指数是否同向", "关键支撑阻力是否被突破", "权重板块是否共振"],
+        ),
+        StrategyDimension(
+            name="宏观与商品",
+            objective="识别油价、金属价格和加元对加拿大权益市场的影响。",
+            checkpoints=["WTI 油价与能源板块联动", "加元方向与出口链映射", "美联储与加央行利率叙事"],
+        ),
+        StrategyDimension(
+            name="主题线索",
+            objective="提炼可延续主线与需要规避的拥挤方向。",
+            checkpoints=["金融/能源/材料权重轮动", "铁路与工业链持续性", "新闻催化是否支撑价格行为"],
+        ),
+    ],
+    action_framework=[
+        "进攻：S&P/TSX 共振上行 + 商品权重确认 + 外部风险偏好改善。",
+        "均衡：指数或权重板块分化，控制仓位并等待确认。",
+        "防守：指数转弱或商品扰动升温，优先控制回撤。",
+    ],
+)
+
 def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
     """Return strategy blueprint by market region."""
     if region == "us":
@@ -239,4 +273,6 @@ def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
         return JP_BLUEPRINT
     if region == "kr":
         return KR_BLUEPRINT
+    if region == "ca":
+        return CA_BLUEPRINT
     return CN_BLUEPRINT

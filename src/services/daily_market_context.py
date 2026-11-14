@@ -30,8 +30,12 @@ MARKET_REVIEW_HISTORY_CODE = "MARKET"
 MARKET_REVIEW_REPORT_TYPE = "market_review"
 
 
-_REGION_LABEL_ZH = {"cn": "A股", "hk": "港股", "us": "美股", "jp": "日股", "kr": "韩股"}
-_REGION_LABEL_EN = {"cn": "A-share", "hk": "HK", "us": "US", "jp": "Japan", "kr": "Korea"}
+# ca (Issue #2420 / PR #2493 review OR-COR-76be1d64): stock analysis reuses the
+# same per-region market background that MARKET_REVIEW_REGION=ca already
+# provides (^GSPTSE review pipeline); without the label the ca region is
+# silently skipped by _normalize_context_region.
+_REGION_LABEL_ZH = {"cn": "A股", "hk": "港股", "us": "美股", "jp": "日股", "kr": "韩股", "ca": "加股"}
+_REGION_LABEL_EN = {"cn": "A-share", "hk": "HK", "us": "US", "jp": "Japan", "kr": "Korea", "ca": "Canada"}
 _VALID_REGIONS = frozenset(_REGION_LABEL_ZH)
 _LEGACY_BOTH_REGIONS = frozenset({"cn", "hk", "us"})
 _UNTRUSTED_MARKET_SUMMARY_SENTINELS = (

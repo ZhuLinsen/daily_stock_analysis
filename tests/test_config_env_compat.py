@@ -117,7 +117,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(config.market_review_region, "cn,us,kr")
 
     def test_market_review_region_keeps_legacy_mixed_both_and_empty_token_compatibility(self) -> None:
-        self.assertEqual(Config._parse_market_review_region("both,us"), "cn,hk,us,jp,kr")
+        self.assertEqual(Config._parse_market_review_region("both,us"), "cn,hk,us,jp,kr,ca")
         self.assertEqual(Config._parse_market_review_region("cn,,us"), "cn,us")
 
     @patch("src.config.setup_env")
@@ -1044,6 +1044,8 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
     def test_parse_market_review_region_accepts_jp_kr_values_and_comma_lists(self) -> None:
         self.assertEqual(Config._parse_market_review_region("jp"), "jp")
         self.assertEqual(Config._parse_market_review_region("KR"), "kr")
+        self.assertEqual(Config._parse_market_review_region("ca"), "ca")
+        self.assertEqual(Config._parse_market_review_region("CA"), "ca")
         self.assertEqual(
             Config._parse_market_review_region("kr,jp,us"),
             "us,jp,kr",
@@ -1053,8 +1055,12 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             "cn,us",
         )
         self.assertEqual(
+            Config._parse_market_review_region("kr,ca"),
+            "kr,ca",
+        )
+        self.assertEqual(
             Config._parse_market_review_region("both"),
-            "cn,hk,us,jp,kr",
+            "cn,hk,us,jp,kr,ca",
         )
 
     @patch("src.config.setup_env")

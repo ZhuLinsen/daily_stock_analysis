@@ -92,6 +92,19 @@ KR_PROFILE = MarketProfile(
     has_sector_rankings=False,
 )
 
+CA_PROFILE = MarketProfile(
+    region="ca",
+    mood_index_code="GSPTSE",
+    news_queries=[
+        "加拿大股市 大盘 复盘",
+        "Canada stock market TSX",
+        "S&P/TSX Composite 行情",
+    ],
+    prompt_index_hint="分析 S&P/TSX 综合指数等加拿大主要指数走势特点",
+    has_market_stats=False,
+    has_sector_rankings=False,
+)
+
 
 def get_profile(region: str) -> MarketProfile:
     """根据 region 返回对应的 MarketProfile"""
@@ -103,4 +116,6 @@ def get_profile(region: str) -> MarketProfile:
         return JP_PROFILE
     if region == "kr":
         return KR_PROFILE
+    if region == "ca":
+        return CA_PROFILE
     return CN_PROFILE
