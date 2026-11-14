@@ -163,6 +163,20 @@ def _has_gotify_base_url(value: Optional[str]) -> bool:
     return not (path_segments and path_segments[-1].lower() == "message")
 
 
+def normalize_hithink_kline_adjust(value: Optional[str]) -> str:
+    """Normalize HiThink adjustment to the documented none/forward/backward set."""
+    import logging
+
+    text = (value or "none").strip().lower()
+    if text in {"none", "forward", "backward"}:
+        return text
+    logging.getLogger(__name__).warning(
+        "Invalid HITHINK_KLINE_ADJUST=%r; falling back to none",
+        value,
+    )
+    return "none"
+
+
 def normalize_tickflow_kline_adjust(value: Optional[str]) -> str:
     """Normalize TickFlow daily K-line adjustment mode."""
     normalized = (value or "none").strip().lower()
@@ -994,6 +1008,12 @@ class Config:
     tickflow_priority: int = 2
     tickflow_batch_daily_enabled: bool = True
     tickflow_batch_size: int = 100
+    hithink_finance_api_key: Optional[str] = None
+    hithink_priority: int = 7
+    hithink_kline_adjust: str = "none"
+    hithink_batch_daily_enabled: bool = True
+    hithink_batch_size: int = 10
+    hithink_timeout_sec: float = 15.0
     futu_opend_host: Optional[str] = None
     futu_opend_port: int = 11111
     futu_hk_realtime_source_priority: str = "futu,longbridge,akshare,yfinance"
@@ -1929,6 +1949,24 @@ class Config:
             tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
             tickflow_batch_daily_enabled=parse_env_bool(os.getenv('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
             tickflow_batch_size=parse_env_int(os.getenv('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
+            hithink_finance_api_key=os.getenv('HITHINK_FINANCE_API_KEY'),
+            hithink_priority=parse_env_int(os.getenv('HITHINK_PRIORITY'), 7, field_name='HITHINK_PRIORITY', minimum=0),
+            hithink_kline_adjust=normalize_hithink_kline_adjust(os.getenv('HITHINK_KLINE_ADJUST')),
+            hithink_batch_daily_enabled=parse_env_bool(os.getenv('HITHINK_BATCH_DAILY_ENABLED'), default=True),
+            hithink_batch_size=parse_env_int(
+                os.getenv('HITHINK_BATCH_SIZE'),
+                10,
+                field_name='HITHINK_BATCH_SIZE',
+                minimum=1,
+                maximum=10,
+            ),
+            hithink_timeout_sec=float(parse_env_int(
+                os.getenv('HITHINK_TIMEOUT_SEC'),
+                15,
+                field_name='HITHINK_TIMEOUT_SEC',
+                minimum=1,
+                maximum=120,
+            )),
             futu_opend_host=os.getenv('FUTU_OPEND_HOST') or None,
             futu_opend_port=parse_env_int(os.getenv('FUTU_OPEND_PORT'), 11111, field_name='FUTU_OPEND_PORT', minimum=1, maximum=65535),
             futu_hk_realtime_source_priority=os.getenv('FUTU_HK_REALTIME_SOURCE_PRIORITY', 'futu,longbridge,akshare,yfinance'),

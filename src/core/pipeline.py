@@ -3547,7 +3547,7 @@ class StockAnalysisPipeline:
             if daily_prefetch_count > 0:
                 logger.info(
                     "[prefetch] component=daily_kline_prefetch action=complete "
-                    "provider=TickFlowFetcher cached=%d stock_count=%d",
+                    "cached=%d stock_count=%d",
                     daily_prefetch_count,
                     len(stock_codes),
                 )

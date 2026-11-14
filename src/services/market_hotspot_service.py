@@ -367,11 +367,15 @@ class MarketHotspotService:
                 top, bottom = rankings
                 top_items = list(top) if isinstance(top, list) else []
                 bottom_items = list(bottom) if isinstance(bottom, list) else []
+                partial = any(
+                    isinstance(item, dict) and item.get("coverage") == "partial"
+                    for item in [*top_items, *bottom_items]
+                )
                 sources.append(
                     MarketStructureSource(
                         provider="dsa",
                         dataset=dataset,
-                        status="ok" if top_items or bottom_items else "empty",
+                        status="partial" if partial else ("ok" if top_items or bottom_items else "empty"),
                     )
                 )
                 return top_items, bottom_items
@@ -593,6 +597,7 @@ class MarketHotspotService:
                 if "涨跌幅" in item
                 else item.get("涨跌幅%")
             )
+            coverage = item.get("coverage")
             normalized.append(
                 RankedThemeItem(
                     name=name,
@@ -601,6 +606,7 @@ class MarketHotspotService:
                     rank=self._safe_int(item.get("rank")) or index,
                     source=source,
                     updated_at=self._optional_text(item.get("updated_at")),
+                    coverage=coverage if coverage in {"complete", "partial"} else None,
                 )
             )
         return normalized
@@ -626,6 +632,7 @@ class MarketHotspotService:
                     rank=item.rank,
                     source=item.source,
                     updated_at=item.updated_at,
+                    coverage=item.coverage,
                     phase=self._phase_from_change(item.change_pct),
                     strength_score=self._strength_from_change(item.change_pct),
                     reason="industry/concept ranking gain",

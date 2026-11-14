@@ -27,9 +27,9 @@ AkShare 的业绩预告、快报是按 `date=YYYYMMDD` 查询的全市场表，�
 
 | 场景 | 已接入源 | 默认使用方式 | 失败处理 |
 | --- | --- | --- | --- |
-| A 股个股日线 / 技术面 | TickPlus（首选推荐）、Efinance、Tencent、AkShare、Tushare、TickFlow、Pytdx、Baostock、YFinance | `DataFetcherManager` 按 priority 尝试；配置 `TUSHARE_TOKEN` 后 Tushare 自动进入候选源 | 单源失败后尝试下一个源；连续失败会短期熔断该源 |
-| 已登记 A 股指数日线 / 技术面 | Tencent、AkShare、TickFlow、YFinance | 当前 5 个 `IndexRegistry` 标的固定按 Tencent → AkShare → TickFlow → YFinance 尝试，不读取普通日 K 的 `*_PRIORITY` 配置 | 未配置、熔断、异常或空结果均继续下一源；全部失败返回空结果并记录汇总告警 |
-| A 股实时行情 | TickPlus（首选推荐）、Tencent、AkShare Sina、Efinance、AkShare EM、Tushare、TickFlow | `REALTIME_SOURCE_PRIORITY` 控制顺序，未显式设置顺序且配置 TickPlus Key 时自动首选 TickPlus；无 Key 时默认使用 Tencent / Sina 轻量源 | 失败源记录 `fallback_from`，成功源继续返回 |
+| A 股个股日线 / 技术面 | TickPlus（首选推荐）、Efinance、Tencent、AkShare、Tushare、TickFlow、Pytdx、Baostock、YFinance、HiThink Finance（可选） | `DataFetcherManager` 按 priority 尝试；配置 `TUSHARE_TOKEN` 后 Tushare 自动进入候选源。配置 `HITHINK_FINANCE_API_KEY` 后 HiThink 以默认优先级 7 追加在现有源之后，只覆盖 A 股股票，不覆盖 ETF。日 K 缓存只复用被实际区间完整覆盖的请求，批量响应的周期或复权与请求不一致时不入库 | 单源失败后尝试下一个源；连续失败会短期熔断该源。HiThink 批量权限不足、周期或复权不一致时只放弃该批缓存并继续单只请求 |
+| 已登记 A 股指数日线 / 技术面 | Tencent、AkShare、TickFlow、YFinance，其后才是已配置的 HiThink | 固定顺序仍是 Tencent → AkShare → TickFlow → YFinance，不读取普通日 K 的 `*_PRIORITY`。HiThink 不是该顺序的成员；只在四源失败后尝试 SH/SZ 代码。CSI 不送入 HiThink | 未配置、熔断、异常或空结果均继续下一源；HiThink 的成功、空结果和异常都会写入数据源诊断。全部失败返回空结果并记录汇总告警 |
+| A 股实时行情 | TickPlus（首选推荐）、Tencent、AkShare Sina、Efinance、AkShare EM、Tushare、TickFlow、HiThink Finance（可选） | `REALTIME_SOURCE_PRIORITY` 控制顺序，未显式设置顺序且配置 TickPlus Key 时自动首选 TickPlus；无 Key 时默认使用 Tencent / Sina 轻量源。HiThink 不会自动插入该顺序，只有显式包含 `hithink` 才参与 | 失败源记录 `fallback_from`，成功源继续返回 |
 | A 股大盘复盘 | TickFlow、AkShare、Tushare、Efinance | 配置 `TICKFLOW_API_KEY` 后，复盘聚合的主指数和市场宽度优先尝试 TickFlow；不等同于单标的指数日线链 | TickFlow 权限不足或失败时回退 AkShare / Tushare / Efinance 链路 |
 | 选股快照 | Tushare、Sina、Efinance、AkShare EM、EastMoney Datacenter | 有 `TUSHARE_TOKEN` 时自动把 `tushare` 放入快照优先级；否则使用免费源链路 | 选股引擎维护 source health；状态接口透出 snapshot/daily health |
 | 选股日线补特征 | `DataFetcherManager` | 选股引擎优先复用现有日线与缓存链路 | 现有链路失败后才回到引擎自身的日线源 |
@@ -207,7 +207,7 @@ LONGBRIDGE_ACCESS_TOKEN=your_access_token
 | 多个源失败但有缓存 | 实时源不可用，本次使用上一次成功缓存；结论会降低置信度。 |
 | 全部源失败且无缓存 | 当前数据不可用，请稍后重试。普通 A 股 / ETF 可优先检查 TickPlus，再检查 Tushare/TickFlow；已登记指数应检查 Tencent/AkShare 连通性或配置 TickFlow；港美股可检查 Longbridge。 |
 
-普通 A 股日线使用 `cn` 健康度命名空间，已登记指数固定链使用独立的 `cn_index` 命名空间；任一链的连续失败不会熔断另一条链。指数源返回空结果时会继续 fallback 并记录诊断，四源全部失败则返回空结果和空来源；普通股票保留既有最终异常语义。
+普通 A 股日线使用 `cn` 健康度命名空间，已登记指数固定链使用独立的 `cn_index` 命名空间；任一链的连续失败不会熔断另一条链。指数源返回空结果时会继续 fallback 并记录诊断。固定四源全部失败后，已配置的 HiThink 再记一次诊断；仍然失败才返回空结果和空来源。普通股票保留既有最终异常语义。
 
 ### 新闻面证据缺失的报告标注（已实现）
 

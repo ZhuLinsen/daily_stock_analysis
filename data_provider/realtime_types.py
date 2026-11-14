@@ -100,6 +100,7 @@ class RealtimeSource(Enum):
     TUSHARE = "tushare"             # Tushare Pro
     TICKPLUS = "tickplus"           # TickPlus
     TICKFLOW = "tickflow"           # TickFlow
+    HITHINK = "hithink"             # HiThink Finance
     TENCENT = "tencent"             # 腾讯直连
     SINA = "sina"                   # 新浪直连
     STOOQ = "stooq"                 # Stooq 美股兜底
