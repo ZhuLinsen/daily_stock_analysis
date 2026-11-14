@@ -15,7 +15,7 @@ on:
 
 jobs:
   tag:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     # Default: NO tag. Only tag when commit message contains #patch, #minor, or #major.
     if: >-
       contains(github.event.head_commit.message, '#patch') ||

@@ -11,7 +11,7 @@ concurrency:
 jobs:
   changes:
     name: 🔎 Change Detection
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     outputs:
       backend: ${{ steps.backend-filter.outputs.backend_non_web == 'true' || steps.filter.outputs.backend_contract_assets == 'true' || steps.filter.outputs.backend_web_contract == 'true' }}
       docker: ${{ steps.filter.outputs.docker }}
@@ -65,7 +65,7 @@ jobs:
 
   ai-governance:
     name: ai-governance
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v5
@@ -78,7 +78,7 @@ jobs:
 
   backend-tests:
     name: backend-tests (${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     needs: [changes, ai-governance]
     if: needs.changes.outputs.backend == 'true'
     strategy:
@@ -131,7 +131,7 @@ jobs:
 
   backend-gate:
     name: backend-gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     needs: [changes, ai-governance, backend-tests]
     if: always()
     steps:
@@ -154,7 +154,7 @@ jobs:
 
   docker-build:
     name: docker-build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-latest' }}
     needs: [changes, ai-governance]
     if: needs.changes.outputs.docker == 'true'
     steps:
@@ -246,7 +246,7 @@ jobs:
 
   web-gate:
     name: web-gate
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_UBUNTU_RUNNER || 'ubuntu-24.04' }}
     needs: [changes, ai-governance]
     if: needs.changes.outputs.frontend == 'true'
     defaults:
