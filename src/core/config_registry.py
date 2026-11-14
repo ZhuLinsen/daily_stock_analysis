@@ -1061,6 +1061,67 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             },
         ],
     },
+    "MARKET_SENTIMENT_SNAPSHOT_ENABLED": {
+        "title": "Market Sentiment Snapshot",
+        "description": (
+            "Enable the read-only /api/v1/market-sentiment endpoints (issue #1939): "
+            "manual trigger + date list + detail + trend for post-close A-share "
+            "market sentiment snapshots. Off by default; enabling exposes only the "
+            "read-only API and manual trigger - no scheduled jobs, no default "
+            "fetching, zero LLM cost. Restart required (routes mount at startup)."
+        ),
+        "category": "base",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 18,
+        "help_key": "settings.base.MARKET_SENTIMENT_SNAPSHOT_ENABLED",
+        "examples": [
+            "MARKET_SENTIMENT_SNAPSHOT_ENABLED=false",
+            "MARKET_SENTIMENT_SNAPSHOT_ENABLED=true",
+        ],
+        "docs": [
+            {
+                "label": "市场情绪快照说明",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/market-sentiment-snapshot.md",
+            },
+        ],
+        "warning_codes": ["restart_required"],
+    },
+    "MARKET_SENTIMENT_FETCH_TIMEOUT_SECONDS": {
+        "title": "Market Sentiment Fetch Timeout",
+        "description": (
+            "Subprocess timeout in seconds for one market sentiment pool API call "
+            "(limit-up / limit-down / broken / previous pools). Defaults to 45; "
+            "clamped to 5-300."
+        ),
+        "category": "data_source",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "45",
+        "options": [],
+        "validation": {"min": 5, "max": 300},
+        "display_order": 60,
+        "help_key": "settings.data_source.MARKET_SENTIMENT_FETCH_TIMEOUT_SECONDS",
+        "examples": [
+            "MARKET_SENTIMENT_FETCH_TIMEOUT_SECONDS=45",
+        ],
+        "docs": [
+            {
+                "label": "市场情绪快照说明",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/market-sentiment-snapshot.md",
+            },
+        ],
+        "warning_codes": [],
+    },
     "REALTIME_SOURCE_PRIORITY": {
         "title": "Realtime Source Priority",
         "description": "Comma-separated priority for realtime quote providers.",

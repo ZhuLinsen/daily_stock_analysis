@@ -1335,6 +1335,14 @@ class Config:
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
 
+    # === 市场情绪快照配置（Issue #1939） ===
+    # /api/v1/market-sentiment 路由总开关：默认关闭（新功能默认关闭惯例）。
+    # 开启仅暴露只读查询与手动触发端点，零后台成本：不接定时任务、零默认抓取、零 LLM 调用；
+    # 修改需重启进程生效（路由在启动时挂载）。
+    market_sentiment_snapshot_enabled: bool = False
+    # 情绪快照池接口（涨停池/跌停池/炸板池/昨日涨停池）单次子进程取数超时（秒），范围 5~300
+    market_sentiment_fetch_timeout_seconds: int = 45
+
     # === 实时行情增强数据配置 ===
     # 实时行情开关（关闭后使用历史收盘价进行分析）
     enable_realtime_quote: bool = True
@@ -2350,6 +2358,14 @@ class Config:
                 os.getenv('MARKET_REVIEW_COLOR_SCHEME', 'green_up')
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
+            market_sentiment_snapshot_enabled=os.getenv('MARKET_SENTIMENT_SNAPSHOT_ENABLED', 'false').lower() == 'true',
+            market_sentiment_fetch_timeout_seconds=parse_env_int(
+                os.getenv('MARKET_SENTIMENT_FETCH_TIMEOUT_SECONDS'),
+                45,
+                field_name='MARKET_SENTIMENT_FETCH_TIMEOUT_SECONDS',
+                minimum=5,
+                maximum=300,
+            ),
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=parse_env_int(os.getenv('WEBUI_PORT'), 8000, field_name='WEBUI_PORT', minimum=1, maximum=65535),
