@@ -55,6 +55,22 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def _format_yfinance_provider_timestamp(value: Any) -> Optional[str]:
+    """Normalize Yahoo's epoch quote timestamp without inventing one."""
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            timestamp = pd.to_datetime(value, unit="s", utc=True)
+        else:
+            timestamp = pd.to_datetime(value, utc=True)
+        if pd.isna(timestamp):
+            return None
+        return timestamp.isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 class YfinanceFetcher(BaseFetcher):
     """
     Yahoo Finance 数据源实现
@@ -832,6 +848,8 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
 
             ticker = yf.Ticker(symbol)
+            provider_timestamp = None
+            used_fast_info = False
 
             # 尝试获取 fast_info（更快，但字段较少）
             try:
@@ -846,6 +864,7 @@ class YfinanceFetcher(BaseFetcher):
                 low = getattr(info, 'dayLow', None) or getattr(info, 'day_low', None)
                 volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
                 market_cap = getattr(info, 'marketCap', None) or getattr(info, 'market_cap', None)
+                used_fast_info = True
 
             except Exception:
                 # 回退到 history 方法获取最新数据
@@ -860,6 +879,7 @@ class YfinanceFetcher(BaseFetcher):
 
                 today = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else today
+                provider_timestamp = pd.Timestamp(hist.index[-1]).isoformat()
 
                 price = float(today['Close'])
                 prev_close = float(prev['Close'])
@@ -886,6 +906,23 @@ class YfinanceFetcher(BaseFetcher):
                 ticker_info = ticker.info or {}
             except Exception:
                 ticker_info = {}
+
+            if used_fast_info:
+                # fast_info does not expose the quote session.  Prefer Yahoo's
+                # regularMarketTime, which belongs to the same quote payload as
+                # lastPrice; only fall back to the latest daily bar when that
+                # provider-side timestamp is unavailable.
+                provider_timestamp = _format_yfinance_provider_timestamp(
+                    ticker_info.get('regularMarketTime')
+                )
+                if provider_timestamp is None:
+                    try:
+                        quote_history = ticker.history(period='2d')
+                        if isinstance(quote_history, pd.DataFrame) and not quote_history.empty:
+                            provider_timestamp = pd.Timestamp(quote_history.index[-1]).isoformat()
+                    except Exception:
+                        logger.debug("[Yfinance] 无法读取 %s 的行情日期", symbol, exc_info=True)
+
             try:
                 info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''
                 name = info_name if is_meaningful_stock_name(info_name, symbol) else STOCK_NAME_MAP.get(symbol, '')
@@ -932,6 +969,7 @@ class YfinanceFetcher(BaseFetcher):
                 pb_ratio=pb_ratio,
                 total_mv=market_cap,
                 circ_mv=None,
+                provider_timestamp=provider_timestamp,
             )
 
             logger.info(f"[Yfinance] 获取 {symbol} 实时行情成功: 价格={price}")

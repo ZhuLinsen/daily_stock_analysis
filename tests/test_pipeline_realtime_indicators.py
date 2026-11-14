@@ -27,6 +27,7 @@ ensure_litellm_stub()
 from data_provider.realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from data_provider.akshare_fetcher import AkshareFetcher, _hk_realtime_cache
 from data_provider.base import DataFetcherManager
+from data_provider.yfinance_fetcher import YfinanceFetcher
 from src.analyzer import GeminiAnalyzer
 from src.core.trading_calendar import build_market_phase_context
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, TrendStatus
@@ -507,6 +508,57 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertEqual(snapshot["prev_close"], "208000.00")
         self.assertEqual(snapshot["change_amount"], "-250.00")
         self.assertEqual(snapshot["amplitude"], "5.05%")
+
+    def test_yfinance_kr_quote_date_reaches_pipeline_through_manager(self) -> None:
+        now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
+        phase = build_market_phase_context(market="kr", current_time=now).to_dict()
+        ticker = MagicMock()
+        ticker.fast_info = SimpleNamespace(
+            lastPrice=207750.0,
+            previousClose=208000.0,
+            open=214000.0,
+            dayHigh=216000.0,
+            dayLow=205500.0,
+            lastVolume=8796683,
+            marketCap=None,
+        )
+        ticker.history.return_value = pd.DataFrame(
+            {"Close": [207750.0]},
+            # Yahoo daily history can still show the prior session while
+            # fast_info already contains the current live quote.
+            index=pd.DatetimeIndex(["2026-11-12"], tz="Asia/Seoul"),
+        )
+        ticker.info = {
+            "shortName": "SamsungElec",
+            "currency": "KRW",
+            "regularMarketTime": int(now.timestamp()),
+        }
+        config = SimpleNamespace(enable_realtime_quote=True, realtime_cache_ttl=600)
+
+        with (
+            patch("yfinance.Ticker", return_value=ticker),
+            patch("src.config.get_config", return_value=config),
+            patch.object(DataFetcherManager, "_utc_now_iso", return_value=now.isoformat()),
+        ):
+            manager = DataFetcherManager(fetchers=[YfinanceFetcher()])
+            quote = manager.get_realtime_quote("005930.KS")
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote.provider_timestamp, "2026-11-13T05:28:00+00:00")
+        with patch("src.core.pipeline.get_market_now", return_value=now):
+            enhanced = self.pipeline._enhance_context(
+                self._kr_005930_context(),
+                quote,
+                None,
+                self._kr_005930_trend(),
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=phase,
+            )
+
+        self.assertEqual(enhanced["yesterday"]["date"], "2026-11-12")
+        self.assertEqual(enhanced["price_change_ratio"], -0.12)
+        self.assertEqual(enhanced["volume_change_ratio"], 0.45)
 
     def test_intraday_open_fallback_uses_shifted_yesterday_close(self) -> None:
         now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
