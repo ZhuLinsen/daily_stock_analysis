@@ -12,13 +12,21 @@ import os
 import sys
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from tests.litellm_stub import ensure_litellm_stub
+
+ensure_litellm_stub()
+
 from data_provider.realtime_types import UnifiedRealtimeQuote, RealtimeSource
+from src.analyzer import GeminiAnalyzer
+from src.core.trading_calendar import build_market_phase_context
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, TrendStatus
 from src.core.pipeline import StockAnalysisPipeline
 
@@ -421,6 +429,215 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         )
         self.assertEqual(enhanced["today"]["close"], 15.0)
         self.assertEqual(enhanced["today"]["ma5"], 14.8)
+
+    @staticmethod
+    def _kr_005930_context(today_date: str = "2026-11-12", yesterday_date: str = "2026-11-11") -> dict:
+        return {
+            "code": "005930.KS",
+            "date": today_date,
+            "today": {
+                "date": today_date,
+                "open": 208500.0,
+                "high": 214000.0,
+                "low": 206000.0,
+                "close": 208000.0,
+                "volume": 19721557.0,
+            },
+            "yesterday": {
+                "date": yesterday_date,
+                "open": 197100.0,
+                "high": 206500.0,
+                "low": 196300.0,
+                "close": 206000.0,
+                "volume": 16238236.0,
+            },
+        }
+
+    @staticmethod
+    def _kr_005930_trend() -> TrendAnalysisResult:
+        trend = TrendAnalysisResult(code="005930.KS")
+        trend.ma5, trend.ma10, trend.ma20 = 202110.0, 206725.0, 214212.5
+        return trend
+
+    @staticmethod
+    def _kr_005930_quote(**overrides) -> UnifiedRealtimeQuote:
+        payload = {
+            "code": "005930.KS",
+            "name": "SamsungElec",
+            "source": RealtimeSource.FALLBACK,
+            "price": 207750.0,
+            "change_pct": -0.12,
+            "pre_close": 208000.0,
+            "open_price": 214000.0,
+            "high": 216000.0,
+            "low": 205500.0,
+            "volume": 8796683,
+            "amount": None,
+            "provider_timestamp": "2026-11-13T14:28:00+09:00",
+        }
+        payload.update(overrides)
+        return UnifiedRealtimeQuote(**payload)
+
+    def test_intraday_shifts_stored_today_to_yesterday_and_updates_market_snapshot(self) -> None:
+        now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
+        phase = build_market_phase_context(market="kr", current_time=now).to_dict()
+        stored_context = self._kr_005930_context()
+        quote = self._kr_005930_quote()
+        trend = self._kr_005930_trend()
+
+        with patch("src.core.pipeline.get_market_now", return_value=now):
+            enhanced = self.pipeline._enhance_context(
+                stored_context,
+                quote,
+                None,
+                trend,
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=phase,
+            )
+
+        self.assertEqual(enhanced["yesterday"]["date"], "2026-11-12")
+        self.assertEqual(enhanced["yesterday"]["close"], 208000.0)
+        self.assertEqual(enhanced["price_change_ratio"], -0.12)
+        self.assertEqual(enhanced["volume_change_ratio"], 0.45)
+
+        snapshot = GeminiAnalyzer.__new__(GeminiAnalyzer)._build_market_snapshot(enhanced)
+        self.assertEqual(snapshot["prev_close"], "208000.00")
+        self.assertEqual(snapshot["change_amount"], "-250.00")
+        self.assertEqual(snapshot["amplitude"], "5.05%")
+
+    def test_intraday_open_fallback_uses_shifted_yesterday_close(self) -> None:
+        now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
+        phase = build_market_phase_context(market="kr", current_time=now).to_dict()
+        stored_context = self._kr_005930_context()
+        quote = self._kr_005930_quote(open_price=None, pre_close=None)
+        trend = self._kr_005930_trend()
+
+        with patch("src.core.pipeline.get_market_now", return_value=now):
+            enhanced = self.pipeline._enhance_context(
+                stored_context,
+                quote,
+                None,
+                trend,
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=phase,
+            )
+
+        self.assertEqual(enhanced["today"]["open"], 208000.0)
+        self.assertEqual(enhanced["yesterday"]["date"], "2026-11-12")
+
+    def test_postmarket_shifts_yesterday_for_current_session_quote_but_not_stale_prior_session_quote(self) -> None:
+        now = datetime(2026, 11, 13, 17, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+        phase = build_market_phase_context(market="kr", current_time=now).to_dict()
+        trend = self._kr_005930_trend()
+
+        current_quote = self._kr_005930_quote(provider_timestamp="2026-11-13T15:30:00+09:00")
+        with patch("src.core.pipeline.get_market_now", return_value=now):
+            enhanced_current = self.pipeline._enhance_context(
+                self._kr_005930_context(),
+                current_quote,
+                None,
+                trend,
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=phase,
+            )
+        self.assertEqual(enhanced_current["yesterday"]["date"], "2026-11-12")
+        self.assertEqual(enhanced_current["price_change_ratio"], -0.12)
+        self.assertEqual(enhanced_current["volume_change_ratio"], 0.45)
+
+        stale_ts_quote = self._kr_005930_quote(provider_timestamp="2026-11-12T15:30:00+09:00")
+        with patch("src.core.pipeline.get_market_now", return_value=now):
+            enhanced_stale_ts = self.pipeline._enhance_context(
+                self._kr_005930_context(),
+                stale_ts_quote,
+                None,
+                trend,
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=phase,
+            )
+        self.assertEqual(enhanced_stale_ts["yesterday"]["date"], "2026-11-11")
+
+        # Fallback quote with no timestamp repeating the 2026-11-12 bar must not shift yesterday to 11-12.
+        stale_fallback_quote = UnifiedRealtimeQuote(
+            code="005930.KS",
+            name="SamsungElec",
+            source=RealtimeSource.FALLBACK,
+            price=208000.0,
+            pre_close=206000.0,
+            open_price=208500.0,
+            high=214000.0,
+            low=206000.0,
+            volume=19721557,
+            provider_timestamp=None,
+        )
+        with patch("src.core.pipeline.get_market_now", return_value=now):
+            enhanced_stale_fb = self.pipeline._enhance_context(
+                self._kr_005930_context(),
+                stale_fallback_quote,
+                None,
+                trend,
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=phase,
+            )
+        self.assertEqual(enhanced_stale_fb["yesterday"]["date"], "2026-11-11")
+
+    def test_premarket_non_trading_missing_phase_and_already_stored_current_bar_keep_yesterday(self) -> None:
+        trend = self._kr_005930_trend()
+        quote = self._kr_005930_quote()
+
+        for now, expected_phase in (
+            (datetime(2026, 11, 13, 8, 0, tzinfo=ZoneInfo("Asia/Seoul")), "premarket"),
+            (datetime(2026, 11, 14, 12, 0, tzinfo=ZoneInfo("Asia/Seoul")), "non_trading"),
+        ):
+            phase = build_market_phase_context(market="kr", current_time=now).to_dict()
+            self.assertEqual(phase["phase"], expected_phase)
+            with patch("src.core.pipeline.get_market_now", return_value=now):
+                enhanced = self.pipeline._enhance_context(
+                    self._kr_005930_context(),
+                    quote,
+                    None,
+                    trend,
+                    stock_name="SamsungElec",
+                    fundamental_context={"status": "not_supported"},
+                    market_phase_context=phase,
+                )
+            self.assertEqual(enhanced["yesterday"]["date"], "2026-11-11")
+
+        # Missing market_phase_context preserves existing yesterday baseline.
+        now_intraday = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
+        with patch("src.core.pipeline.get_market_now", return_value=now_intraday):
+            enhanced_no_phase = self.pipeline._enhance_context(
+                self._kr_005930_context(),
+                quote,
+                None,
+                trend,
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=None,
+            )
+        self.assertEqual(enhanced_no_phase["yesterday"]["date"], "2026-11-11")
+
+        # When stored today already belongs to the current session, keep existing yesterday.
+        phase_intraday = build_market_phase_context(market="kr", current_time=now_intraday).to_dict()
+        already_current_ctx = self._kr_005930_context(
+            today_date="2026-11-13",
+            yesterday_date="2026-11-12",
+        )
+        with patch("src.core.pipeline.get_market_now", return_value=now_intraday):
+            enhanced_existing = self.pipeline._enhance_context(
+                already_current_ctx,
+                quote,
+                None,
+                trend,
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=phase_intraday,
+            )
+        self.assertEqual(enhanced_existing["yesterday"]["date"], "2026-11-12")
 
 
 if __name__ == "__main__":
