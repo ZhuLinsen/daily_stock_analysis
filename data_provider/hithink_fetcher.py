@@ -130,6 +130,8 @@ class HiThinkFetcher(BaseFetcher):
         self._realtime_disabled_until = 0.0
         self._fundamental_disabled_until = 0.0
         self._rank_disabled_until = 0.0
+        self._index_daily_disabled_until = 0.0
+        self._index_snapshot_disabled_until = 0.0
         self._directory_disabled_until = 0.0
         self._index_catalog_cache: Dict[str, Tuple[float, List[Tuple[str, str]]]] = {}
         self._last_error = ""
@@ -165,6 +167,10 @@ class HiThinkFetcher(BaseFetcher):
             if capability == "fundamental" and now < self._fundamental_disabled_until:
                 return False
             if capability == "index_rankings" and now < self._rank_disabled_until:
+                return False
+            if capability == "index_daily" and now < self._index_daily_disabled_until:
+                return False
+            if capability == "index_snapshot" and now < self._index_snapshot_disabled_until:
                 return False
             if capability == "stock_list" and now < self._directory_disabled_until:
                 return False
@@ -203,6 +209,8 @@ class HiThinkFetcher(BaseFetcher):
         realtime_only: bool = False,
         fundamental_only: bool = False,
         rank_only: bool = False,
+        index_daily_only: bool = False,
+        index_snapshot_only: bool = False,
         directory_only: bool = False,
     ) -> None:
         with self._lock:
@@ -220,6 +228,10 @@ class HiThinkFetcher(BaseFetcher):
                 self._fundamental_disabled_until = deadline
             if rank_only:
                 self._rank_disabled_until = deadline
+            if index_daily_only:
+                self._index_daily_disabled_until = deadline
+            if index_snapshot_only:
+                self._index_snapshot_disabled_until = deadline
             if directory_only:
                 self._directory_disabled_until = deadline
 
@@ -257,6 +269,7 @@ class HiThinkFetcher(BaseFetcher):
         ``capability`` is the caller's cooldown, used when the same URL serves
         more than one product. Stock snapshots stay on ``realtime_quote``.
         Index ranking snapshots and catalogs stay on ``index_rankings``.
+        Index quotes use ``index_snapshot`` and index history uses ``index_daily``.
         """
         if not self.api_key:
             raise DataFetchError("HiThink API key is not configured")
@@ -330,6 +343,10 @@ class HiThinkFetcher(BaseFetcher):
                 self._remember_error(str(error), batch_only=True)
             elif error.permission and resolved_capability == "index_rankings":
                 self._remember_error(str(error), rank_only=True)
+            elif error.permission and resolved_capability == "index_daily":
+                self._remember_error(str(error), index_daily_only=True)
+            elif error.permission and resolved_capability == "index_snapshot":
+                self._remember_error(str(error), index_snapshot_only=True)
             elif error.permission and path == _HISTORICAL_PATH:
                 self._remember_error(str(error), daily_only=True)
             elif error.permission and resolved_capability == "realtime_quote":

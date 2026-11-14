@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from data_provider.base import BaseFetcher, DataFetcherManager, _hithink_index_thscode
+from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager, _hithink_index_thscode
 from data_provider.hithink_fetcher import HiThinkFetcher, HiThinkRequestError
 from data_provider.hithink_fundamentals import (
     HiThinkFundamentalAdapter,
@@ -184,6 +184,49 @@ class HiThinkExtensionTests(unittest.TestCase):
         self.assertEqual(bottom[0]["name"], "银行")
         self.assertNotIn("hithink-test-key", request.call_args.args[0])
 
+    def test_index_snapshot_permission_cools_only_index_snapshot(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-index-snapshot", "data": None}
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_main_indices("cn")
+            self.assertIsNone(fetcher.get_main_indices("cn"))
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share-index/prices/snapshot"])
+        self.assertFalse(fetcher.is_available("index_snapshot"))
+        self.assertTrue(fetcher.is_available("index_daily"))
+        self.assertTrue(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+
+    def test_index_history_permission_cools_only_index_daily(self) -> None:
+        fetcher = self._fetcher()
+        denied = {"code": 2004, "message": "forbidden", "request_id": "req-index-daily", "data": None}
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append(url)
+            return _response(denied)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_index_daily_data("000001.SH", start_date="2024-05-20", end_date="2024-05-21")
+            with self.assertRaises(DataFetchError):
+                fetcher.get_index_daily_data("000001.SH", start_date="2024-05-20", end_date="2024-05-21")
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share-index/prices/historical"])
+        self.assertFalse(fetcher.is_available("index_daily"))
+        self.assertTrue(fetcher.is_available("index_snapshot"))
+        self.assertTrue(fetcher.is_available("index_rankings"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+
     def test_index_history_rejects_unexpected_adjustment(self) -> None:
         fetcher = self._fetcher()
         payload = _ok({"adjust": "forward", "item": []})
@@ -289,6 +332,22 @@ class HiThinkIndexRouteTests(unittest.TestCase):
         _frame, source = manager.get_daily_data("sh000001")
         self.assertEqual(source, "HiThinkFetcher")
         self.assertEqual(hithink.index_calls, ["000001.SH"])
+
+    def test_cooled_index_daily_is_not_called_after_the_fixed_route_fails(self) -> None:
+        class _CooledHiThink(_HiThinkIndexFake):
+            def is_available_for_request(self, capability=""):
+                return capability != "index_daily"
+
+        empty = pd.DataFrame()
+        fetchers = [
+            _IndexFake(name, empty)
+            for name in ("TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher")
+        ]
+        hithink = _CooledHiThink()
+        manager = DataFetcherManager(fetchers=[*fetchers, hithink])
+        _frame, source = manager.get_daily_data("sh000001")
+        self.assertNotEqual(source, "HiThinkFetcher")
+        self.assertEqual(hithink.index_calls, [])
 
     def test_hithink_index_history_records_provider_runs(self) -> None:
         empty = pd.DataFrame()
