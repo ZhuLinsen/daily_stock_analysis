@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 
 SNIPER_KEYS = ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")
+_PRICE_PATTERN = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
 def parse_sniper_value(value: Any) -> Optional[float]:
@@ -20,7 +21,7 @@ def parse_sniper_value(value: Any) -> Optional[float]:
         parsed = float(value)
         return parsed if parsed > 0 else None
 
-    text = str(value).replace(",", "").replace("，", "").strip()
+    text = str(value).replace(",", "").replace("，", "").replace("−", "-").replace("－", "-").strip()
     if not text or text in {"-", "—", "N/A"}:
         return None
 
@@ -30,20 +31,28 @@ def parse_sniper_value(value: Any) -> Optional[float]:
     except ValueError:
         pass
 
+    # A hyphen between prices separates a range; other minus signs must be preserved.
+    text = re.sub(r"-\s+(?=\d|\.\d)", "-", text)
+    text = re.sub(
+        r"(?<![\w.+-])((?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*-\s*(?=\d|\.\d)",
+        r"\1 ",
+        text,
+    )
+
     colon_pos = max(text.rfind("："), text.rfind(":"))
     yuan_pos = text.find("元", colon_pos + 1 if colon_pos != -1 else 0)
     if yuan_pos != -1:
         segment_start = colon_pos + 1 if colon_pos != -1 else 0
         segment = text[segment_start:yuan_pos]
         valid_numbers = []
-        for match in re.finditer(r"-?\d+(?:\.\d+)?", segment):
+        for match in _PRICE_PATTERN.finditer(segment):
             start_idx = match.start()
             if start_idx >= 2 and segment[start_idx - 2:start_idx].upper() == "MA":
                 continue
             valid_numbers.append(match.group())
         if valid_numbers:
             try:
-                parsed = abs(float(valid_numbers[-1]))
+                parsed = float(valid_numbers[-1])
                 return parsed if parsed > 0 else None
             except ValueError:
                 pass
@@ -56,7 +65,7 @@ def parse_sniper_value(value: Any) -> Optional[float]:
     search_text = text[:paren_pos].strip() or text
 
     valid_numbers = []
-    for match in re.finditer(r"\d+(?:\.\d+)?", search_text):
+    for match in _PRICE_PATTERN.finditer(search_text):
         start_idx = match.start()
         if start_idx >= 2 and search_text[start_idx - 2:start_idx].upper() == "MA":
             continue

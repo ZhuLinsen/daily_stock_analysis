@@ -16,6 +16,30 @@ from src.core.grounding_verifier import (
     compute_stop_loss_position_sizing,
     verify_and_normalize_levels,
 )
+from src.utils.sniper_points import parse_sniper_value
+
+
+_NEGATIVE_PRICE_TEXTS = (
+    "-1元", "止损：-1元", "止损: -1.5 元", "止损：-1（哨兵值）",
+    "止损：-.5元", "止损：-.5（哨兵值）", "止损：-1e2元", "止损：-1e2（哨兵值）",
+    "止损：−1元", "止损：－1元", "止损：- 1元",
+    "止损：MA20 -1元", "止损：-1-2元",
+)
+
+
+@pytest.mark.parametrize("value", _NEGATIVE_PRICE_TEXTS)
+def test_parse_sniper_value_rejects_negative_prices(value: str) -> None:
+    assert parse_sniper_value(value) is None
+
+
+@pytest.mark.parametrize("value", ["92-96元", "92 - 96元", "92 -96元", "92-96（MA20支撑）"])
+def test_parse_sniper_value_preserves_positive_ranges(value: str) -> None:
+    assert parse_sniper_value(value) == 96.0
+
+
+@pytest.mark.parametrize(("value", "expected"), [("买入：.5元", 0.5), ("买入：1e2元", 100.0)])
+def test_parse_sniper_value_preserves_decimal_and_exponent_prices(value: str, expected: float) -> None:
+    assert parse_sniper_value(value) == expected
 
 
 def test_verify_and_normalize_levels_valid_long_setup() -> None:
@@ -133,7 +157,10 @@ def test_position_sizing_uses_planned_ideal_buy_when_it_differs_from_current_pri
     assert position["max_pct"] * position["stop_distance_pct"] / 100 <= position["risk_budget_pct"]
 
 
-@pytest.mark.parametrize("stop_loss", [None, True, False, 0.00001, "unparseable", "0", "-1", "NaN", "Infinity"])
+@pytest.mark.parametrize(
+    "stop_loss",
+    [None, True, False, 0.00001, "unparseable", "0", "-1", "NaN", "Infinity", *_NEGATIVE_PRICE_TEXTS],
+)
 def test_position_requires_a_valid_stop_loss(stop_loss) -> None:
     levels = verify_and_normalize_levels(
         {"ideal_buy": "100", "stop_loss": stop_loss, "take_profit": "120"},
@@ -146,6 +173,24 @@ def test_position_requires_a_valid_stop_loss(stop_loss) -> None:
     assert position["min_pct"] == position["max_pct"] == 0
     assert position["stop_distance_pct"] is None
     assert position["cap_reason"] == "invalid_stop_basis"
+
+
+@pytest.mark.parametrize("stop_loss", _NEGATIVE_PRICE_TEXTS)
+def test_analysis_report_negative_stop_has_zero_position(stop_loss: str) -> None:
+    report = AnalysisReport(
+        meta=ReportMeta(query_id="q-negative-stop", stock_code="600519", current_price=100.0),
+        summary=ReportSummary(action="buy", sentiment_score=80),
+        strategy=ReportStrategy(ideal_buy="100元", stop_loss=stop_loss, take_profit="120元"),
+    )
+
+    assert report.structured_report is not None
+    metadata = report.structured_report.metadata
+    assert metadata["levels"]["stop_loss"] is None
+    assert metadata["levels"]["status"] == "conditional_watch"
+    assert metadata["levels"]["risk_reward_ratio"] is None
+    assert metadata["position"]["min_pct"] == metadata["position"]["max_pct"] == 0
+    assert metadata["position"]["stop_distance_pct"] is None
+    assert metadata["position"]["cap_reason"] == "invalid_stop_basis"
 
 
 def test_subprecision_reference_price_does_not_crash_normalization() -> None:
