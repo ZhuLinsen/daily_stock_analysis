@@ -3696,9 +3696,16 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             
             # 计算相比昨日的变化
             if yesterday_data.volume and yesterday_data.volume > 0:
-                context['volume_change_ratio'] = round(
-                    today_data.volume / yesterday_data.volume, 2
+                # 历史缓存可能混有不同口径（手/股）的数据源，按成交额校验后再比较；
+                # 局部导入避免 storage 模块加载时连带初始化全部数据源
+                from data_provider.realtime_types import compute_volume_change_ratio
+
+                ratio = compute_volume_change_ratio(
+                    today_data.volume, today_data.amount, today_data.close,
+                    yesterday_data.volume, yesterday_data.amount, yesterday_data.close,
                 )
+                if ratio is not None:
+                    context['volume_change_ratio'] = ratio
             
             if yesterday_data.close and yesterday_data.close > 0:
                 context['price_change_ratio'] = round(

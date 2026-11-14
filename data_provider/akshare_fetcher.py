@@ -46,7 +46,7 @@ from tenacity import (
 from src.patches.eastmoney_patch import eastmoney_patch
 from src.config import get_config
 from src.services.stock_list_parser import ParseStatus, parse_analysis_target
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
+from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, normalize_daily_volume_to_shares
 from .realtime_types import (
     UnifiedRealtimeQuote, ChipDistribution, RealtimeSource,
     get_realtime_circuit_breaker, get_chip_circuit_breaker,
@@ -1009,6 +1009,9 @@ class AkshareFetcher(BaseFetcher):
         
         # 重命名列
         df = df.rename(columns=column_mapping)
+
+        # 东财接口成交量为「手」、新浪/腾讯为「股」，按成交额逐行统一为「股」
+        df = normalize_daily_volume_to_shares(df, stock_code)
 
         # 添加股票代码列
         df['code'] = stock_code

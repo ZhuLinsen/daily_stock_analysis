@@ -29,7 +29,7 @@ from src.config import FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT, get_config, Co
 from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.base import is_bse_code, normalize_stock_code
-from data_provider.realtime_types import ChipDistribution
+from data_provider.realtime_types import ChipDistribution, compute_volume_change_ratio
 from src.analyzer import (
     GeminiAnalyzer,
     AnalysisResult,
@@ -1189,14 +1189,15 @@ class StockAnalysisPipeline:
                         enhanced['yesterday'], dict
                     ) else None
                     if yest_vol is not None:
-                        try:
-                            yv = float(yest_vol)
-                            if yv > 0:
-                                enhanced['volume_change_ratio'] = round(
-                                    float(vol) / yv, 2
-                                )
-                        except (TypeError, ValueError):
-                            pass
+                        # 实时与日线可能来自口径不同（手/股）的数据源或旧缓存
+                        ratio = compute_volume_change_ratio(
+                            vol, amt, price,
+                            yest_vol,
+                            enhanced['yesterday'].get('amount'),
+                            enhanced['yesterday'].get('close'),
+                        )
+                        if ratio is not None:
+                            enhanced['volume_change_ratio'] = ratio
 
         # ETF/index flag for analyzer prompt (Fixes #274)
         enhanced['is_index_etf'] = SearchService.is_index_or_etf(
@@ -2034,7 +2035,12 @@ class StockAnalysisPipeline:
             context["yesterday"] = yesterday
             yesterday_volume = yesterday.get("volume")
             if yesterday_volume:
-                context["volume_change_ratio"] = round(float(today.get("volume", 0)) / float(yesterday_volume), 2)
+                ratio = compute_volume_change_ratio(
+                    today.get("volume", 0), today.get("amount"), today.get("close"),
+                    yesterday_volume, yesterday.get("amount"), yesterday.get("close"),
+                )
+                if ratio is not None:
+                    context["volume_change_ratio"] = ratio
             yesterday_close = yesterday.get("close")
             if yesterday_close:
                 context["price_change_ratio"] = round(

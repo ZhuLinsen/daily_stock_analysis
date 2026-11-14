@@ -31,7 +31,7 @@ from src.services.run_diagnostics import record_provider_run, record_provider_ru
 from src.services.stock_list_parser import AnalysisTarget, ParseStatus, parse_analysis_target
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
-from .realtime_types import CircuitBreaker
+from .realtime_types import CircuitBreaker, infer_lot_volume_multiplier
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -42,6 +42,44 @@ _REALTIME_QUOTE_UNSET = object()
 
 # === 标准化列名定义 ===
 STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+
+
+def normalize_daily_volume_to_shares(
+    df: pd.DataFrame,
+    stock_code: str,
+    default_multiplier: int = 1,
+) -> pd.DataFrame:
+    """
+    将 A 股 / ETF 日线 volume 统一为「股」（项目日线与实时行情的共同口径）。
+
+    东财 K 线（efinance / ak.stock_zh_a_hist / ak.fund_etf_hist_em）等上游以「手」返回，
+    新浪 / 腾讯等以「股」返回。逐行用 amount / close 推断口径；无法推断的行
+    （缺成交额或收盘价）按已推断行的多数口径处理，全部无法推断时使用 default_multiplier。
+    已登记指数的价格是点位而非元，无法用成交额推断，保持原值。
+    """
+    if df is None or df.empty or 'volume' not in df.columns:
+        return df
+    if parse_analysis_target(stock_code).asset_type == ParseStatus.INDEX:
+        return df
+
+    amounts = df['amount'] if 'amount' in df.columns else pd.Series(None, index=df.index)
+    closes = df['close'] if 'close' in df.columns else pd.Series(None, index=df.index)
+    multipliers = [
+        infer_lot_volume_multiplier(v, a, c)
+        for v, a, c in zip(df['volume'], amounts, closes)
+    ]
+    decided = [m for m in multipliers if m is not None]
+    if decided:
+        fallback = 100 if decided.count(100) > len(decided) / 2 else 1
+    else:
+        fallback = default_multiplier
+    factors = [fallback if m is None else m for m in multipliers]
+    if all(f == 1 for f in factors):
+        return df
+
+    df = df.copy()
+    df['volume'] = pd.to_numeric(df['volume'], errors='coerce') * pd.Series(factors, index=df.index)
+    return df
 
 
 def unwrap_exception(exc: Exception) -> Exception:

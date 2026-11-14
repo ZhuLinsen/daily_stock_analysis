@@ -36,6 +36,7 @@ from .base import (
     STANDARD_COLUMNS,
     is_bse_code,
     normalize_stock_code,
+    normalize_daily_volume_to_shares,
     _is_hk_market,
 )
 import os
@@ -398,6 +399,9 @@ class PytdxFetcher(BaseFetcher):
             df['pct_chg'] = df['close'].pct_change() * 100
             df['pct_chg'] = df['pct_chg'].fillna(0).round(2)
         
+        # 通达信日线成交量口径随品种不同，按成交额统一为「股」
+        df = normalize_daily_volume_to_shares(df, stock_code)
+
         # 添加股票代码列
         df['code'] = stock_code
         
