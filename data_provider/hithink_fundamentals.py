@@ -12,7 +12,13 @@ import logging
 import math
 from typing import Any, Dict, Optional
 
-from .hithink_fetcher import HiThinkFetcher, HiThinkRequestError
+from .base import DataFetchError
+from .hithink_fetcher import (
+    HiThinkFetcher,
+    HiThinkRequestError,
+    request_budget,
+    request_budget_remaining,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +87,28 @@ class HiThinkFundamentalAdapter:
     def __init__(self, fetcher: HiThinkFetcher) -> None:
         self.fetcher = fetcher
 
-    def get_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
+    def get_fundamental_bundle(
+        self,
+        stock_code: str,
+        deadline: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        with request_budget(deadline):
+            return self._load_fundamental_bundle(stock_code)
+
+    def _budget_exhausted(self, result: Dict[str, Any]) -> bool:
+        if "budget_exhausted" in result["errors"]:
+            return True
+        remaining = request_budget_remaining()
+        if remaining is not None and remaining <= 0:
+            result["errors"].append("budget_exhausted")
+            return True
+        return False
+
+    def _load_fundamental_bundle(self, stock_code: str) -> Dict[str, Any]:
         result = empty_fundamental_bundle()
         if not self.fetcher.is_available("fundamental"):
+            return result
+        if self._budget_exhausted(result):
             return result
         try:
             thscode, _code = self.fetcher._thscode(stock_code)
@@ -103,11 +128,15 @@ class HiThinkFundamentalAdapter:
                 "roe": None,
             }
             result["source_chain"].append("earnings:hithink_income_statement")
+        if self._budget_exhausted(result):
+            return result
 
         balance = self._latest_statement(_BALANCE_PATH, thscode, result)
         if balance:
             result["earnings"]["balance_sheet"] = balance
             result["source_chain"].append("earnings:hithink_balance_sheet")
+        if self._budget_exhausted(result):
+            return result
 
         cash_flow = self._latest_statement(_CASH_FLOW_PATH, thscode, result)
         if cash_flow:
@@ -116,6 +145,8 @@ class HiThinkFundamentalAdapter:
             if isinstance(report, dict):
                 report["operating_cash_flow"] = _number(cash_flow.get("act_cash_flow_net"))
             result["source_chain"].append("earnings:hithink_cash_flow")
+        if self._budget_exhausted(result):
+            return result
 
         report = _report_code(income) if income else None
         if report:
@@ -137,14 +168,29 @@ class HiThinkFundamentalAdapter:
             result["status"] = "partial"
         return result
 
-    def get_valuation(self, stock_code: str) -> Dict[str, Optional[float]]:
+    def get_valuation(
+        self,
+        stock_code: str,
+        deadline: Optional[float] = None,
+    ) -> Dict[str, Optional[float]]:
+        with request_budget(deadline):
+            return self._load_valuation(stock_code)
+
+    def _load_valuation(self, stock_code: str) -> Dict[str, Optional[float]]:
         if not self.fetcher.is_available("fundamental"):
+            return {}
+        remaining = request_budget_remaining()
+        if remaining is not None and remaining <= 0:
             return {}
         thscode, _code = self.fetcher._thscode(stock_code)
         try:
             payload = self.fetcher._request(_VALUATION_PATH, {"thscodes": thscode})
         except HiThinkRequestError as exc:
             _remember_permission(self.fetcher, exc)
+            raise
+        except DataFetchError as exc:
+            if "budget exhausted" in str(exc):
+                return {}
             raise
         data = payload.get("data") or {}
         if not isinstance(data, dict) or not isinstance(data.get("item"), list):
@@ -161,7 +207,7 @@ class HiThinkFundamentalAdapter:
         return {}
 
     def _latest_statement(self, path: str, thscode: str, result: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.fetcher.is_available("fundamental"):
+        if not self.fetcher.is_available("fundamental") or self._budget_exhausted(result):
             return {}
         try:
             payload = self.fetcher._request(path, {"thscode": thscode, "period": "quarterly", "limit": 1})
@@ -171,9 +217,15 @@ class HiThinkFundamentalAdapter:
             logger.warning("[HiThinkFetcher] financial statement failed: path=%s code=%s", path, exc.code)
             result["errors"].append(f"{path}:{exc.code or type(exc).__name__}")
             return {}
+        except DataFetchError as exc:
+            if "budget exhausted" in str(exc):
+                if "budget_exhausted" not in result["errors"]:
+                    result["errors"].append("budget_exhausted")
+                return {}
+            raise
 
     def _indicators(self, thscode: str, report: str, result: Dict[str, Any]) -> Dict[str, Optional[float]]:
-        if not self.fetcher.is_available("fundamental"):
+        if not self.fetcher.is_available("fundamental") or self._budget_exhausted(result):
             return {}
         try:
             payload = self.fetcher._request(_INDICATORS_PATH, {"thscode": thscode, "report": report})
@@ -182,6 +234,12 @@ class HiThinkFundamentalAdapter:
             logger.warning("[HiThinkFetcher] financial indicators failed: code=%s", exc.code)
             result["errors"].append(f"indicators:{exc.code or type(exc).__name__}")
             return {}
+        except DataFetchError as exc:
+            if "budget exhausted" in str(exc):
+                if "budget_exhausted" not in result["errors"]:
+                    result["errors"].append("budget_exhausted")
+                return {}
+            raise
         data = payload.get("data") or {}
         if not isinstance(data, dict):
             result["errors"].append("indicators:invalid")
