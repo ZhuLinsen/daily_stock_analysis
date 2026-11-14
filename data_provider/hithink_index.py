@@ -133,7 +133,11 @@ def rankings(fetcher: HiThinkFetcher, tag: str, n: int = 5) -> Optional[Tuple[Li
             break
         batch = [thscode for thscode, _name in symbols[offset:offset + _RANK_BATCH]]
         try:
-            payload = fetcher._request(_SNAPSHOT_PATH, {"thscodes": ",".join(batch)})
+            payload = fetcher._request(
+                _SNAPSHOT_PATH,
+                {"thscodes": ",".join(batch)},
+                capability="index_rankings",
+            )
         except HiThinkRequestError as exc:
             if exc.permission:
                 fetcher._remember_error(str(exc), rank_only=True)
@@ -163,11 +167,19 @@ def rankings(fetcher: HiThinkFetcher, tag: str, n: int = 5) -> Optional[Tuple[Li
 
 
 def _catalog_symbols(fetcher: HiThinkFetcher, tag: str) -> List[Tuple[str, str]]:
+    if not fetcher.is_available("index_rankings"):
+        return []
     now = time.monotonic()
     cached = fetcher._index_catalog_cache.get(tag)
     if cached is not None and now - cached[0] < _CATALOG_TTL_SECONDS:
         return list(cached[1])
-    catalog = fetcher._request(_CATALOG_PATH, {"tag": tag})
+    try:
+        catalog = fetcher._request(_CATALOG_PATH, {"tag": tag}, capability="index_rankings")
+    except HiThinkRequestError as exc:
+        if exc.permission:
+            fetcher._remember_error(str(exc), rank_only=True)
+            return []
+        raise
     data = catalog.get("data") or {}
     if not isinstance(data, dict) or not isinstance(data.get("item"), list):
         raise HiThinkRequestError("HiThink index catalog response is invalid")
