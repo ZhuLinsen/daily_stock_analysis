@@ -54,6 +54,12 @@ from src.llm.provider_cache import (
 
 logger = logging.getLogger(__name__)
 
+# 本项目不注册 LiteLLM success callback，用量从响应自身统计。LiteLLM 默认会为每个
+# streaming chunk 向全局线程池提交一次 asyncio.run() 日志任务；Windows 上每次都会新建
+# Proactor 事件循环和回环 socketpair，长报告产生数千次，既耗 CPU，又会让线程池卡在
+# socketpair 的 accept() 上，导致 CLI 打印「程序执行完成」后进程无法退出。
+litellm.disable_streaming_logging = True
+
 
 def _resolve_litellm_exception(name: str) -> type[BaseException]:
     """Return a catchable LiteLLM exception class even in stubbed test environments."""
