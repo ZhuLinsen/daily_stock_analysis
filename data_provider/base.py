@@ -1189,7 +1189,7 @@ class DataFetcherManager:
         if (
             hithink is not None
             and thscode
-            and self._is_fetcher_available(hithink, capability="daily_data")
+            and self._is_fetcher_available(hithink, capability="index_daily")
         ):
             # The current registry resolves SH, SZ, and CSI only. SH/SZ use
             # HiThink after the fixed route. BJ and 同花顺 .TI are accepted

@@ -36,9 +36,13 @@ _MAIN_INDICES = (
 
 
 def main_indices(fetcher: HiThinkFetcher, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
-    if region != "cn":
+    if region != "cn" or not fetcher.is_available("index_snapshot"):
         return None
-    payload = fetcher._request(_SNAPSHOT_PATH, {"thscodes": ",".join(item[0] for item in _MAIN_INDICES)})
+    payload = fetcher._request(
+        _SNAPSHOT_PATH,
+        {"thscodes": ",".join(item[0] for item in _MAIN_INDICES)},
+        capability="index_snapshot",
+    )
     data = payload.get("data") or {}
     if not isinstance(data, dict) or not isinstance(data.get("item"), list):
         raise HiThinkRequestError("HiThink index snapshot response is invalid")
@@ -101,6 +105,7 @@ def index_daily_data(
             "start": fetcher._date_to_ms(start_date),
             "end": fetcher._date_to_ms(end_date, end_of_day=True),
         },
+        capability="index_daily",
     )
     data = payload.get("data") or {}
     if not isinstance(data, dict):
