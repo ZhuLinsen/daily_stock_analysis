@@ -5,8 +5,9 @@ Strategy synthesis helpers for skill-agent consensus.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, replace
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from src.agent.protocols import (
     AgentOpinion,
@@ -26,6 +27,20 @@ _SCORE_TO_SIGNAL = [
     (1.5, "sell"),
     (0.0, "strong_sell"),
 ]
+
+# Version marker for the strategy_synthesis payload contract (issue #2071).
+STRATEGY_SYNTHESIS_SCHEMA_VERSION = "strategy-synthesis-v1"
+
+# Camp mapping for signal_distribution: bullish=buy/strong_buy,
+# neutral=hold, bearish=sell/strong_sell.
+_DISTRIBUTION_CAMPS = ("bullish", "neutral", "bearish")
+_CAMP_BY_SIGNAL = {
+    "strong_buy": "bullish",
+    "buy": "bullish",
+    "hold": "neutral",
+    "sell": "bearish",
+    "strong_sell": "bearish",
+}
 
 
 def strategy_opinion_from_agent_opinion(opinion: AgentOpinion) -> StrategyOpinion:
@@ -219,6 +234,7 @@ class StrategySynthesizer:
         conflicts: List[StrategyConflict],
         insufficient_evidence: bool = False,
         invalid_count: int = 0,
+        opinion_weights: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
         conflict_severity = _highest_severity(conflicts)
         adjusted_confidence = self.adjust_confidence(weighted_confidence, conflict_severity)
@@ -243,9 +259,18 @@ class StrategySynthesizer:
         )
 
         valid_opinions = [op for op in opinions if not op.invalid_signal]
-        # When called directly (e.g. unit tests), infer invalid_count from the opinions
-        # list itself. In the E2E path the explicit partition value takes precedence.
+        # When called directly (e.g. unit tests), infer invalid_count from the
+        # opinions list itself. In the E2E path the explicit partition value takes precedence.
         invalid_count = max(invalid_count, sum(1 for op in opinions if op.invalid_signal))
+
+        # Distribution/dissent are purely deterministic, in-memory computations
+        # aligned index-wise with `opinions` (aggregator guarantees that order).
+        weights = _sanitize_opinion_weights(opinion_weights, len(opinions))
+        signal_distribution, primary_dissent = _build_signal_distribution(
+            opinions,
+            weights,
+            final_score,
+        )
 
         payload = {
             "final_signal": final_signal,
@@ -268,6 +293,9 @@ class StrategySynthesizer:
                 "conflict_severity": conflict_severity,
                 "conflict_count": len(conflicts),
             },
+            "schema_version": STRATEGY_SYNTHESIS_SCHEMA_VERSION,
+            "signal_distribution": signal_distribution,
+            "primary_dissent": primary_dissent,
         }
         if deliberation is not None:
             payload["deliberation"] = deliberation.to_dict()
@@ -303,22 +331,10 @@ class StrategySynthesizer:
             score = strategy_signal_score(op.signal)
             item = _opinion_to_item(op)
 
-            if final_score == 3.0:
-                if score == 3.0:
-                    supporting.append(item)
-                else:
-                    opposing.append(item)
+            if _is_supporting(score, final_score):
+                supporting.append(item)
             else:
-                opinion_bullish = score > 3.0
-                opinion_bearish = score < 3.0
-                same_side = (
-                    (opinion_bullish and final_score > 3.0)
-                    or (opinion_bearish and final_score < 3.0)
-                )
-                if same_side and abs(score - final_score) <= 1.0:
-                    supporting.append(item)
-                else:
-                    opposing.append(item)
+                opposing.append(item)
         return supporting, opposing
 
     @staticmethod
@@ -536,6 +552,114 @@ def _projection_preference(response: Any) -> tuple[float, float]:
     signal = str(getattr(response, "revised_signal", "") or "hold")
     confidence = _as_float(getattr(response, "revised_confidence", 0.0), 0.0)
     return abs(strategy_signal_score(signal) - strategy_signal_score("hold")), confidence
+
+
+def _is_supporting(score: float, final_score: float) -> bool:
+    """Shared bipartite membership rule (multi-strategy-contract §动态二分阵营).
+
+    Single source of truth for ``_group_opinions`` and the dissent camp
+    selection so the two can never drift apart.
+    """
+    if final_score == 3.0:
+        return score == 3.0
+    same_side = (score > 3.0 and final_score > 3.0) or (score < 3.0 and final_score < 3.0)
+    return same_side and abs(score - final_score) <= 1.0
+
+
+def _sanitize_opinion_weights(opinion_weights: Any, length: int) -> Optional[List[float]]:
+    """Return a float-aligned weights list, or None when unusable.
+
+    Weights must align index-wise with ``opinions``. Malformed input (wrong
+    length, non-numeric, negative, non-finite) counts as *no weight
+    information* so downstream shares/dissent stay honest instead of
+    fabricated.
+    """
+    if not isinstance(opinion_weights, (list, tuple)) or len(opinion_weights) != length:
+        return None
+    sanitized: List[float] = []
+    for weight in opinion_weights:
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            return None
+        value = float(weight)
+        if not math.isfinite(value) or value < 0.0:
+            return None
+        sanitized.append(value)
+    return sanitized
+
+
+def _build_signal_distribution(
+    opinions: List[StrategyOpinion],
+    weights: Optional[List[float]],
+    final_score: float,
+) -> tuple[Dict[str, Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Deterministic signal distribution and primary dissent (issue #2071).
+
+    Counts include only valid opinions. ``weight_share`` is the camp's valid
+    weight sum divided by the valid weight sum, rounded to 4 decimals; when
+    weights are absent or the valid weight sum is <= 0 every share is None
+    instead of a fabricated ratio.
+    """
+    counts: Dict[str, int] = {camp: 0 for camp in _DISTRIBUTION_CAMPS}
+    camp_weights: Dict[str, float] = {camp: 0.0 for camp in _DISTRIBUTION_CAMPS}
+    valid_weight_sum = 0.0
+    opposing_weighted: List[Tuple[StrategyOpinion, Optional[float]]] = []
+
+    for index, opinion in enumerate(opinions):
+        if opinion.invalid_signal:
+            continue
+        weight = weights[index] if weights is not None else None
+        if weight is not None:
+            valid_weight_sum += weight
+        camp = _CAMP_BY_SIGNAL.get(str(opinion.signal).strip().lower())
+        if camp is not None:
+            counts[camp] += 1
+            if weight is not None:
+                camp_weights[camp] += weight
+
+        try:
+            score = strategy_signal_score(opinion.signal)
+        except ValueError:
+            continue
+        if not _is_supporting(score, final_score):
+            opposing_weighted.append((opinion, weight))
+
+    if weights is None or valid_weight_sum <= 0:
+        weight_shares: Dict[str, Optional[float]] = {camp: None for camp in _DISTRIBUTION_CAMPS}
+    else:
+        weight_shares = {
+            camp: round(camp_weights[camp] / valid_weight_sum, 4)
+            for camp in _DISTRIBUTION_CAMPS
+        }
+    distribution = {
+        camp: {"count": counts[camp], "weight_share": weight_shares[camp]}
+        for camp in _DISTRIBUTION_CAMPS
+    }
+    return distribution, _primary_dissent(opposing_weighted)
+
+
+def _primary_dissent(
+    opposing_weighted: List[Tuple[StrategyOpinion, Optional[float]]],
+) -> Optional[Dict[str, Any]]:
+    """Highest applied-weight opposing opinion, deterministically ordered.
+
+    Sort: applied weight desc -> confidence desc -> skill_id asc. Returns
+    None when there is no opposing opinion or no weight information.
+    """
+    candidates = [(opinion, weight) for opinion, weight in opposing_weighted if weight is not None]
+    if not candidates:
+        return None
+    top = min(
+        candidates,
+        key=lambda pair: (-pair[1], -pair[0].confidence, pair[0].skill_id),
+    )
+    opinion = top[0]
+    return {
+        "skill_id": opinion.skill_id,
+        "agent_name": opinion.agent_name,
+        "signal": opinion.signal,
+        "confidence": round(opinion.confidence, 4),
+        "reasoning": opinion.reasoning,
+    }
 
 
 def _opinion_to_item(opinion: StrategyOpinion) -> Dict[str, Any]:

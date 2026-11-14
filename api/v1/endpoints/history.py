@@ -661,6 +661,7 @@ def get_history_detail(
             news_content=result.get("news_content"),
             empty_news_disclosure=result.get("empty_news_disclosure"),
             raw_result=result.get("raw_result"),
+            strategy_synthesis=result.get("strategy_synthesis"),
             context_snapshot=api_context_snapshot,
             analysis_context_pack_overview=analysis_context_pack_overview,
             financial_report=extracted_fundamental.get("financial_report"),
