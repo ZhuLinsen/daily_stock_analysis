@@ -138,6 +138,11 @@ def build_decision_signal_payload_from_report(
     market_structure_summary = _extract_market_structure_summary(context_snapshot, result)
     if market_structure_summary:
         metadata.update(market_structure_summary)
+    # Issue #1910 P4 reservation: pass the cross-asset risk-appetite keys
+    # through only — no statistics/derivations here (out of this round's scope).
+    cross_asset_keys = _extract_cross_asset_risk_keys(context_snapshot)
+    if cross_asset_keys:
+        metadata.update(cross_asset_keys)
     metadata["holding_state"] = _extract_holding_state(portfolio_context)
 
     payload: Dict[str, Any] = {
@@ -397,6 +402,36 @@ def _extract_market_phase_summary(
         if raw_summary.get(field_name) not in (None, "")
     }
     return summary or None
+
+
+def _extract_cross_asset_risk_keys(
+    context_snapshot: Optional[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Issue #1910 P4 reservation: passthrough only, no statistics.
+
+    When the snapshot carries the cross-asset safe dict, forward the
+    ``risk_appetite`` / ``risk_tags`` keys verbatim into signal metadata so
+    later deep-dive analytics have a stable key position. Returns ``None``
+    when the snapshot predates cross-asset context (legacy compatible).
+    """
+    snapshot = _as_mapping(context_snapshot)
+    enhanced_context = _as_mapping(snapshot.get("enhanced_context"))
+    for source in (enhanced_context, snapshot):
+        cross_asset = _as_mapping(source.get("cross_asset_context"))
+        if not cross_asset:
+            continue
+        keys: Dict[str, Any] = {}
+        risk_appetite = str(cross_asset.get("risk_appetite") or "").strip()
+        if risk_appetite:
+            keys["risk_appetite"] = risk_appetite
+        risk_tags = cross_asset.get("risk_tags")
+        if isinstance(risk_tags, list):
+            cleaned_tags = [str(tag).strip() for tag in risk_tags if str(tag).strip()]
+            if cleaned_tags:
+                keys["risk_tags"] = cleaned_tags
+        if keys:
+            return keys
+    return None
 
 
 def _extract_market_structure_summary(

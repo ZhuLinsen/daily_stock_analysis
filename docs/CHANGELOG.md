@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
 - [修复] Telegram 文本推送遇到 HTTP 429 时遵守响应 JSON 中的 `parameters.retry_after`，避免忽略服务端等待时间而过早重试；保留响应头和指数退避兜底及 3 次尝试上限。
 
+- [新功能] 个股分析新增跨资产上下文（cross-asset-v1）：注入“外围环境与跨资产”低敏摘要到普通分析与 Agent prompt，RiskAgent reasoning 须回答外部环境是否支持结论；risk-off 时对高置信激进买入做置信度校准（不改决策类型），支持开关 `CROSS_ASSET_CONTEXT_ENABLED` 与四级 fail-open 降级（#1910）。
+- [修复] 跨资产上下文 Prompt 渲染加固：畸形 value/change_pct（字符串/布尔/嵌套等）跳过该项不再抛 TypeError/ValueError，客户端自带的跨资产 dict 不再能打挂聊天回合；risk_tags 与资产键渲染前做 UNTRUSTED 哨兵转义，块内无有效内容时整段返回空（对齐大盘摘要渲染行为）；美元指数快照键由 "DXYDXY" 修正为 "DXY"，并发抓取的预算 deadline 改为调用栈局部变量互不覆盖（#1910）。
+- [修复] 披露：A股指数批量抓取中不可用符号（not_supported）补记 error="no_data" 自我说明，对齐 yfinance 分支的质量四元组契约；该 1 行产品修复此前随测试提交（5b291551）合入，此处显式披露（#1910）。
 - [新功能] 定时模式启动立即执行的当日去重（`SCHEDULE_STARTUP_DEDUP`，默认开启）：`python main.py --schedule` 在 `SCHEDULE_RUN_IMMEDIATELY=true` 触发启动补跑前检查标记文件（位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`），当天已有成功且覆盖当前应分析清单的全量分析（日期 + scope=full + 覆盖面子集判定）则跳过，否则照常补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律 fail-open 执行（绝不漏跑）；大盘复盘完成度仅记录、不参与判定（复盘补齐由每日定时任务覆盖）；设 `SCHEDULE_STARTUP_DEDUP=false` 可回到此前"每次容器重启都全量重跑"的行为；`--force-run` 可绕过启动去重检查（明确要求立即全量分析）。
 - [修复] Web 设置-数据源 中 Futu OpenD 地址/端口、妙想（MX_API）API Key 与妙想数据源优先级四项缺失中文文案，回退显示英文标题与说明的问题。
 - [修复] 港股实时数据源优先级（`FUTU_HK_REALTIME_SOURCE_PRIORITY`）的中文名称与说明改由前端维护，后端注册表恢复英文文案，英文界面不再显示中文。
