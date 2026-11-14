@@ -31,7 +31,6 @@ def run_transport_contract():
 
     import httpx
     import litellm
-    from openai._base_client import SyncAPIClient
     from src.agent.llm_adapter import LLMToolAdapter, register_fallback_model_pricing
     from src.config import Config
 
@@ -125,7 +124,7 @@ def run_transport_contract():
         }
         with patch.dict(os.environ, env, clear=True), patch("src.config.setup_env"), \
                 patch.object(Config, "_parse_litellm_yaml", return_value=[]), \
-                patch.object(SyncAPIClient, "_send_request", send_request), \
+                patch.object(httpx.Client, "send", send_request), \
                 patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
             config = Config._load_from_env()
             assert config.litellm_model == "openai/" + model
