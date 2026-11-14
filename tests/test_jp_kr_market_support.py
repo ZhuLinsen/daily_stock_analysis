@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Regression tests for Issue #1718 JP/KR suffix-only market support."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -8,8 +9,13 @@ from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager, 
 from data_provider.yfinance_fetcher import YfinanceFetcher
 from data_provider.realtime_types import UnifiedRealtimeQuote
 from src.core.trading_calendar import MARKET_EXCHANGE, MARKET_TIMEZONE, get_market_for_stock
+from src.data import stock_index_loader
 from src.market_context import detect_market, get_market_guidelines
-from src.services.stock_code_utils import is_code_like, normalize_code
+from src.services.stock_code_utils import (
+    is_code_like,
+    normalize_code,
+    resolve_index_stock_code_for_analysis,
+)
 
 
 class _FakeFetcher(BaseFetcher):
@@ -46,12 +52,12 @@ class _FakeFetcher(BaseFetcher):
 def test_normalize_and_detect_jp_kr_suffix_codes() -> None:
     assert normalize_stock_code("7203.t") == "7203.T"
     assert normalize_stock_code("005930.ks") == "005930.KS"
-    assert normalize_stock_code("035720.kq") == "035720.KQ"
+    assert normalize_stock_code("247540.kq") == "247540.KQ"
 
     assert detect_market("7203.T") == "jp"
     assert detect_market("6758.T") == "jp"
     assert detect_market("005930.KS") == "kr"
-    assert detect_market("035720.KQ") == "kr"
+    assert detect_market("247540.KQ") == "kr"
     assert detect_market("005930") == "cn"
 
     assert get_market_for_stock("7203.T") == "jp"
@@ -60,7 +66,7 @@ def test_normalize_and_detect_jp_kr_suffix_codes() -> None:
 
     assert is_code_like("7203.T") is True
     assert is_code_like("005930.KS") is True
-    assert normalize_code("035720.KQ") == "035720.KQ"
+    assert normalize_code("247540.KQ") == "247540.KQ"
 
 
 def test_market_guidelines_for_jp_kr_exclude_a_share_specific_context() -> None:
@@ -80,7 +86,7 @@ def test_yfinance_keeps_jp_kr_suffix_codes_and_indices() -> None:
 
     assert fetcher._convert_stock_code("7203.T") == "7203.T"
     assert fetcher._convert_stock_code("005930.KS") == "005930.KS"
-    assert fetcher._convert_stock_code("035720.KQ") == "035720.KQ"
+    assert fetcher._convert_stock_code("247540.KQ") == "247540.KQ"
 
     captured = []
 
@@ -142,3 +148,26 @@ def test_trading_calendar_registers_jp_kr_exchanges_and_timezones() -> None:
     assert MARKET_EXCHANGE["kr"] == "XKRX"
     assert MARKET_TIMEZONE["jp"] == "Asia/Tokyo"
     assert MARKET_TIMEZONE["kr"] == "Asia/Seoul"
+
+
+def test_kr_seed_and_index_resolve_kakao_to_kospi_and_exclude_delisted_091990() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    kr_seed_text = (repo_root / "scripts" / "stock_index_seeds" / "stock_list_kr.csv").read_text(encoding="utf-8")
+    bundled_index = repo_root / "apps" / "dsa-web" / "public" / "stocks.index.json"
+    bundled_index_text = bundled_index.read_text(encoding="utf-8")
+
+    assert "035720.KS,035720.KS,Kakao," in kr_seed_text
+    assert "035720.KQ" not in kr_seed_text
+    assert "091990.KQ" not in kr_seed_text
+    assert '["035720.KS","035720.KS","Kakao"' in bundled_index_text
+    assert "035720.KQ" not in bundled_index_text
+    assert "091990.KQ" not in bundled_index_text
+
+    stock_index_loader._clear_stock_index_cache_for_tests()
+    try:
+        with patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_index,)):
+            assert resolve_index_stock_code_for_analysis("035720") == "035720.KS"
+            assert resolve_index_stock_code_for_analysis("247540") == "247540.KQ"
+            assert resolve_index_stock_code_for_analysis("091990") == "091990"
+    finally:
+        stock_index_loader._clear_stock_index_cache_for_tests()
