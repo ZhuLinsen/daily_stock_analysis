@@ -55,22 +55,6 @@ import os
 logger = logging.getLogger(__name__)
 
 
-def _format_yfinance_provider_timestamp(value: Any) -> Optional[str]:
-    """Normalize Yahoo's epoch quote timestamp without inventing one."""
-    if value in (None, ""):
-        return None
-    try:
-        if isinstance(value, (int, float)):
-            timestamp = pd.to_datetime(value, unit="s", utc=True)
-        else:
-            timestamp = pd.to_datetime(value, utc=True)
-        if pd.isna(timestamp):
-            return None
-        return timestamp.isoformat()
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-
 class YfinanceFetcher(BaseFetcher):
     """
     Yahoo Finance 数据源实现
@@ -908,20 +892,32 @@ class YfinanceFetcher(BaseFetcher):
                 ticker_info = {}
 
             if used_fast_info:
-                # fast_info does not expose the quote session.  Prefer Yahoo's
-                # regularMarketTime, which belongs to the same quote payload as
-                # lastPrice; only fall back to the latest daily bar when that
-                # provider-side timestamp is unavailable.
-                provider_timestamp = _format_yfinance_provider_timestamp(
-                    ticker_info.get('regularMarketTime')
-                )
-                if provider_timestamp is None:
-                    try:
-                        quote_history = ticker.history(period='2d')
-                        if isinstance(quote_history, pd.DataFrame) and not quote_history.empty:
+                # fast_info does not expose the quote session.  In current
+                # yfinance versions its price/OHLCV properties are backed by
+                # history, so use one history response for both values and the
+                # provider timestamp.  regularMarketTime from ticker.info is
+                # not safe: it may belong to a different quote payload.
+                try:
+                    quote_history = ticker.history(period='2d')
+                    if isinstance(quote_history, pd.DataFrame) and len(quote_history) >= 2:
+                        today = quote_history.iloc[-1]
+                        prev = quote_history.iloc[-2]
+                        required_fields = ('Open', 'High', 'Low', 'Close', 'Volume')
+                        values = [today.get(field) for field in required_fields]
+                        previous_close = prev.get('Close')
+                        if not any(pd.isna(value) for value in values) and not pd.isna(previous_close):
+                            # Keep the selected quote values and their date in
+                            # the same provider response.  This avoids pairing
+                            # an old fast_info daily bar with a newer info time.
+                            price = float(today['Close'])
+                            prev_close = float(previous_close)
+                            open_price = float(today['Open'])
+                            high = float(today['High'])
+                            low = float(today['Low'])
+                            volume = int(today['Volume'])
                             provider_timestamp = pd.Timestamp(quote_history.index[-1]).isoformat()
-                    except Exception:
-                        logger.debug("[Yfinance] 无法读取 %s 的行情日期", symbol, exc_info=True)
+                except Exception:
+                    logger.debug("[Yfinance] 无法读取 %s 的行情日期", symbol, exc_info=True)
 
             try:
                 info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''

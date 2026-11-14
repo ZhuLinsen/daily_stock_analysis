@@ -86,6 +86,46 @@ def _make_historical_df(days: int = 25, last_date: date = None) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+class _HistoryBackedFastInfo:
+    """Model yfinance FastInfo properties backed by its daily history."""
+
+    def __init__(self, history: pd.DataFrame) -> None:
+        self._today = history.iloc[-1]
+        self._previous = history.iloc[-2]
+        self.marketCap = None
+
+    @property
+    def lastPrice(self):
+        return self._today["Close"]
+
+    @property
+    def previousClose(self):
+        return self._previous["Close"]
+
+    @property
+    def open(self):
+        return self._today["Open"]
+
+    @property
+    def dayHigh(self):
+        return self._today["High"]
+
+    @property
+    def dayLow(self):
+        return self._today["Low"]
+
+    @property
+    def lastVolume(self):
+        return self._today["Volume"]
+
+
+def _make_yfinance_history(previous_date: str, previous: dict, today_date: str, today: dict) -> pd.DataFrame:
+    return pd.DataFrame(
+        [previous, today],
+        index=pd.DatetimeIndex([previous_date, today_date], tz="Asia/Seoul"),
+    )
+
+
 class TestAugmentHistoricalWithRealtime(unittest.TestCase):
     """_augment_historical_with_realtime 的测试。"""
 
@@ -513,25 +553,22 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
         phase = build_market_phase_context(market="kr", current_time=now).to_dict()
         ticker = MagicMock()
-        ticker.fast_info = SimpleNamespace(
-            lastPrice=207750.0,
-            previousClose=208000.0,
-            open=214000.0,
-            dayHigh=216000.0,
-            dayLow=205500.0,
-            lastVolume=8796683,
-            marketCap=None,
+        history = _make_yfinance_history(
+            "2026-11-12",
+            {"Open": 208500.0, "High": 214000.0, "Low": 206000.0, "Close": 208000.0, "Volume": 19721557},
+            "2026-11-13",
+            {"Open": 214000.0, "High": 216000.0, "Low": 205500.0, "Close": 207750.0, "Volume": 8796683},
         )
-        ticker.history.return_value = pd.DataFrame(
-            {"Close": [207750.0]},
-            # Yahoo daily history can still show the prior session while
-            # fast_info already contains the current live quote.
-            index=pd.DatetimeIndex(["2026-11-12"], tz="Asia/Seoul"),
-        )
+        # FastInfo properties in yfinance are derived from the same daily
+        # history response; do not model them as an independent payload.
+        ticker.fast_info = _HistoryBackedFastInfo(history)
+        ticker.history.return_value = history
         ticker.info = {
             "shortName": "SamsungElec",
             "currency": "KRW",
-            "regularMarketTime": int(now.timestamp()),
+            # An unrelated info response must not determine the quote date.
+            "regularMarketPrice": 208000.0,
+            "regularMarketTime": int(datetime(2026, 11, 12, tzinfo=timezone.utc).timestamp()),
         }
         config = SimpleNamespace(enable_realtime_quote=True, realtime_cache_ttl=600)
 
@@ -544,7 +581,9 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
             quote = manager.get_realtime_quote("005930.KS")
 
         self.assertIsNotNone(quote)
-        self.assertEqual(quote.provider_timestamp, "2026-11-13T05:28:00+00:00")
+        self.assertEqual(quote.price, 207750.0)
+        self.assertEqual(quote.volume, 8796683)
+        self.assertEqual(quote.provider_timestamp, "2026-11-12T15:00:00+00:00")
         with patch("src.core.pipeline.get_market_now", return_value=now):
             enhanced = self.pipeline._enhance_context(
                 self._kr_005930_context(),
@@ -559,6 +598,53 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertEqual(enhanced["yesterday"]["date"], "2026-11-12")
         self.assertEqual(enhanced["price_change_ratio"], -0.12)
         self.assertEqual(enhanced["volume_change_ratio"], 0.45)
+
+    def test_yfinance_stale_history_does_not_use_newer_info_timestamp(self) -> None:
+        now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
+        phase = build_market_phase_context(market="kr", current_time=now).to_dict()
+        ticker = MagicMock()
+        history = _make_yfinance_history(
+            "2026-11-11",
+            {"Open": 197100.0, "High": 206500.0, "Low": 196300.0, "Close": 206000.0, "Volume": 16238236},
+            "2026-11-12",
+            {"Open": 208500.0, "High": 214000.0, "Low": 206000.0, "Close": 208000.0, "Volume": 19721557},
+        )
+        ticker.fast_info = _HistoryBackedFastInfo(history)
+        ticker.history.return_value = history
+        ticker.info = {
+            "shortName": "SamsungElec",
+            "currency": "KRW",
+            "regularMarketPrice": 207750.0,
+            "regularMarketTime": int(now.timestamp()),
+        }
+        config = SimpleNamespace(enable_realtime_quote=True, realtime_cache_ttl=600)
+
+        with (
+            patch("yfinance.Ticker", return_value=ticker),
+            patch("src.config.get_config", return_value=config),
+            patch.object(DataFetcherManager, "_utc_now_iso", return_value=now.isoformat()),
+        ):
+            manager = DataFetcherManager(fetchers=[YfinanceFetcher()])
+            quote = manager.get_realtime_quote("005930.KS")
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote.price, 208000.0)
+        self.assertEqual(quote.volume, 19721557)
+        self.assertEqual(quote.provider_timestamp, "2026-11-11T15:00:00+00:00")
+        with patch("src.core.pipeline.get_market_now", return_value=now):
+            enhanced = self.pipeline._enhance_context(
+                self._kr_005930_context(),
+                quote,
+                None,
+                self._kr_005930_trend(),
+                stock_name="SamsungElec",
+                fundamental_context={"status": "not_supported"},
+                market_phase_context=phase,
+            )
+
+        self.assertEqual(enhanced["yesterday"]["date"], "2026-11-11")
+        self.assertAlmostEqual(enhanced["price_change_ratio"], 0.97, places=2)
+        self.assertAlmostEqual(enhanced["volume_change_ratio"], 1.21, places=2)
 
     def test_intraday_open_fallback_uses_shifted_yesterday_close(self) -> None:
         now = datetime(2026, 11, 13, 14, 28, tzinfo=ZoneInfo("Asia/Seoul"))
