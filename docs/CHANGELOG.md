@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] HiThink 提供主要指数快照、指数日 K，以及按完整目录分批计算的行业和概念涨跌排行。指数日 K 只在现有 Tencent、AkShare、TickFlow、YFinance 固定路由全部失败后尝试，并记录数据源诊断。
 - [新功能] HiThink 补充 A 股名称检索、代码表、热股榜和涨停池，仅在现有数据源没有结果时使用。代码表接入批量名称查询，热股榜价格来自行情快照。
 
+- [修复] ntfy 推送按服务端默认 4096 字节消息上限分批发送（标题带 `(1/N)` 分页），并以 UTF-8 JSON 提交请求体，修复约 1350 个汉字以上的中文报告因请求体超过 8192 字节被 ntfy 以 HTTP 413 拒收、测试消息正常但完整报告收不到的问题。
+- [改进] 多 Agent standard/full/specialist 分析默认并行执行 TechnicalAgent 与 IntelAgent 的 Wave-1，并在并行线程传播新闻证据、冻结目标日期和 Provider 诊断上下文；新增 `compute_smoothed_weights()` 使用 Beta(6, 6) 对小样本 Skill Opinion 做平滑校准。该方法目前为显式调用的辅助 API，运行时仍由 `compute_weights()` 按每个 horizon 的充足样本门槛、Beta(15, 15) 先验和 unable 惩罚计算权重。
+- [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
 - [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
 
 - [修复] TickPlus 正确区分裸 000001 等股票与显式同码指数；补齐行情指标、按接口冷却与分组批量缓存，ETF 轮动使用独立前复权实例，并统一首选推荐入口。
@@ -54,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [新功能] 新增可选的 fastapi-guard 安全中间件（`GUARD_ENABLED=true`，默认关闭）：按 IP 限流、IP 白/黑名单、请求特征拦截与扫描器自动封禁，与登录失败限流叠加；客户端 IP 取值与 `TRUST_X_FORWARDED_FOR` 保持一致，启用后内置启动入口的 Uvicorn 代理头处理只信任同一组代理，默认不扫描请求体，详见 `docs/full-guide.md`。
 - [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
+- [修复] Telegram 文本推送遇到 HTTP 429 时遵守响应 JSON 中的 `parameters.retry_after`，避免忽略服务端等待时间而过早重试；保留响应头和指数退避兜底及 3 次尝试上限。
 
 - [新功能] 定时模式启动立即执行的当日去重（`SCHEDULE_STARTUP_DEDUP`，默认开启）：`python main.py --schedule` 在 `SCHEDULE_RUN_IMMEDIATELY=true` 触发启动补跑前检查标记文件（位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`），当天已有成功且覆盖当前应分析清单的全量分析（日期 + scope=full + 覆盖面子集判定）则跳过，否则照常补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律 fail-open 执行（绝不漏跑）；大盘复盘完成度仅记录、不参与判定（复盘补齐由每日定时任务覆盖）；设 `SCHEDULE_STARTUP_DEDUP=false` 可回到此前"每次容器重启都全量重跑"的行为；`--force-run` 可绕过启动去重检查（明确要求立即全量分析）。
 - [修复] Web 设置-数据源 中 Futu OpenD 地址/端口、妙想（MX_API）API Key 与妙想数据源优先级四项缺失中文文案，回退显示英文标题与说明的问题。
@@ -69,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 大盘 Market Light 评分和中英文指数均值排除 VIX 波动率涨跌幅，保留原始行情展示；仅有 VIX 时指数维度标为不可用，告警沿用跳过语义（#2472）。
 
 - [改进] Agent 轨迹评估增加独立股票范围诊断与干扰股票样例，区分越界请求、运行时拦截和无法判定调用，支持多股对比及阶段明细，不改变原指标或退出码。
+- [修复] 报告中的财务金额（`_format_amount_cn`）与三大法人净买卖股数（`_format_net_shares`）在四舍五入后达到下一单位时改用下一单位显示：如 99,999,999 元显示为 `1.00 亿元` 而不是 `10000.00 万元`，9,999.6 元显示为 `1.00 万元` 而不是 `10000 元`。
 
 ## [3.33.0] - 2026-10-15
 

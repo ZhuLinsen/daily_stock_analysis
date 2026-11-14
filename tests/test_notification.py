@@ -14,6 +14,7 @@ TODO:
     - 生成日报
 2. 添加 send_to_context 的测试
 """
+import json
 import os
 import sys
 import unittest
@@ -2473,7 +2474,35 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertTrue(ok)
         mock_post.assert_called_once()
         self.assertEqual(mock_post.call_args.args[0], "https://ntfy.sh")
-        self.assertEqual(mock_post.call_args.kwargs["json"]["topic"], "dsa-topic")
+        self.assertEqual(
+            json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))["topic"],
+            "dsa-topic",
+        )
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_long_report_to_ntfy_is_split_via_notification_service(
+        self,
+        mock_post: mock.MagicMock,
+        mock_get_config: mock.MagicMock,
+        _mock_sleep: mock.MagicMock,
+    ):
+        mock_get_config.return_value = _make_config(ntfy_url="https://ntfy.sh/dsa-topic")
+        mock_post.return_value = _make_response(200)
+        report = "\n\n---\n\n".join(
+            f"## 股票 {index}\n\n" + "中文分析正文。" * 120 for index in range(1, 7)
+        )
+
+        ok = NotificationService().send(report)
+
+        self.assertTrue(ok)
+        self.assertGreaterEqual(mock_post.call_count, 2)
+        for call in mock_post.call_args_list:
+            body = call.kwargs["data"]
+            self.assertLessEqual(len(body), 8192)
+            message = json.loads(body.decode("utf-8"))["message"]
+            self.assertLess(len(message.encode("utf-8")), 4096)
 
     @mock.patch("src.notification.get_config")
     def test_ntfy_url_without_topic_is_not_available(self, mock_get_config: mock.MagicMock):
@@ -2643,6 +2672,23 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+
+    @mock.patch("src.notification_sender.telegram_sender.time.sleep")
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_telegram_via_notification_service_respects_flood_control(
+        self, mock_post, mock_get_config, mock_sleep
+    ):
+        mock_get_config.return_value = _make_config(telegram_bot_token="TOKEN", telegram_chat_id="123")
+        limited = requests.Response()
+        limited.status_code = 429
+        limited._content = b'{"ok": false, "parameters": {"retry_after": 37}}'
+        mock_post.side_effect = [limited, _make_response(200, {"ok": True})]
+
+        self.assertTrue(NotificationService().send("hello telegram"))
+
+        mock_sleep.assert_called_once_with(37)
+        self.assertEqual(mock_post.call_count, 2)
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
