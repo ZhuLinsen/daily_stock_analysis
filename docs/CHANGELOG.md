@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Tushare 权限熔断仅规范化网关 URL 的协议和主机名，保留路径与查询参数大小写，避免不同路由共享拒绝缓存；切换地址后恢复 Fetcher、选股快照及日线优先源尝试，格式错误的地址仍按原有链路回退备用源。
+
 - [修复] Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。
 
 - [修复] 关闭 LiteLLM 逐 chunk 的 streaming success logging（本项目未注册 LiteLLM callback，用量统计不受影响），修复 Windows 上每个流式 chunk 新建事件循环与回环 socketpair、全局线程池卡在 `accept()`，导致 CLI 打印「程序执行完成」后进程不退出且额外占用大量 CPU 的问题。

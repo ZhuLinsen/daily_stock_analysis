@@ -398,6 +398,7 @@ def _current_tushare_scope() -> tuple[str, str] | None:
 def _refresh_permission_cooldown_locked(source: str, state: dict[str, object]) -> None:
     if source == "tushare" and state.get("disabled_by_permission"):
         if state.get("disabled_token_scope") != _current_tushare_scope():
+            state["failures"] = 0.0
             state["disabled_until"] = 0.0
             state["disabled_by_permission"] = False
             state["disabled_token_scope"] = None

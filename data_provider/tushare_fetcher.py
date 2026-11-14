@@ -22,6 +22,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List, Dict, Any
+from urllib.parse import urlsplit
 
 import pandas as pd
 import requests
@@ -219,7 +220,20 @@ def _build_tushare_token_scope(
     cleaned_token = str(token or "").strip()
     if not cleaned_token:
         return None
-    normalized_url = (api_url or _DEFAULT_TUSHARE_PRO_URL).strip().rstrip("/").lower()
+    normalized_url = (api_url or _DEFAULT_TUSHARE_PRO_URL).strip()
+    try:
+        url_parts = urlsplit(normalized_url)
+    except ValueError:
+        # Scope lookup must not block fallback on malformed gateway addresses.
+        # Keep an opaque key and let the request path report the invalid URL.
+        pass
+    else:
+        # Only scheme/host are case-insensitive; gateway routes and credentials are not.
+        userinfo, separator, host_port = url_parts.netloc.rpartition("@")
+        normalized_url = url_parts._replace(
+            scheme=url_parts.scheme.lower(),
+            netloc=f"{userinfo}{separator}{host_port.lower()}",
+        ).geturl()
     digest = hashlib.sha256(cleaned_token.encode("utf-8")).hexdigest()[:16]
     return (normalized_url, digest)
 

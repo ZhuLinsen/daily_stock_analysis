@@ -20,6 +20,7 @@ from data_provider.base import BaseFetcher, DataFetcherManager, DataFetchError, 
 from data_provider.tushare_fetcher import (
     TushareFetcher,
     TusharePermissionError,
+    _build_tushare_token_scope,
     is_tushare_permission_error,
     is_tushare_rate_limit_error,
     reset_tushare_permission_cache,
@@ -278,6 +279,146 @@ def test_token_rotation_immediately_clears_permission_circuit_breaker() -> None:
         df = fetcher_upgraded._fetch_raw_data("600519", "2026-03-19", "2026-03-20")
         assert len(df) == 1
         assert post_ok.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "other_url, same_scope",
+    [
+        ("HTTPS://GW.EXAMPLE.COM/Pro?route=AbC", True),
+        ("https://gw.example.com/pro?route=AbC", False),
+        ("https://gw.example.com/Pro?route=abc", False),
+        ("https://gw.example.com/pro?route=abc", False),
+        ("https://gw.example.com/Pro/?route=AbC", False),
+        ("https://gw.example.com/Pro?route=AbC/", False),
+    ],
+)
+def test_permission_scope_normalizes_only_scheme_and_host(other_url: str, same_scope: bool) -> None:
+    original = _build_tushare_token_scope("same-token", "https://gw.example.com/Pro?route=AbC")
+    assert (_build_tushare_token_scope("same-token", other_url) == original) is same_scope
+
+
+@pytest.mark.parametrize(
+    "new_url",
+    [
+        "https://gw.example.com/pro?route=AbC",
+        "https://gw.example.com/Pro?route=abc",
+        "https://gw.example.com/pro?route=abc",
+    ],
+)
+def test_gateway_route_change_clears_fetcher_permission_circuit(
+    monkeypatch: pytest.MonkeyPatch, new_url: str,
+) -> None:
+    old_url = "https://gw.example.com/Pro?route=AbC"
+    monkeypatch.setenv("TUSHARE_HTTP_URL", old_url)
+    with patch("data_provider.tushare_fetcher.get_config", return_value=SimpleNamespace(tushare_token="same-token")):
+        denied_fetcher = TushareFetcher()
+        denied_response = _http_json_response({"code": 40203, "msg": "抱歉，您没有接口访问权限"})
+        with patch("data_provider.tushare_fetcher.requests.post", return_value=denied_response) as post:
+            with pytest.raises(TusharePermissionError):
+                denied_fetcher._fetch_raw_data("600519", "2026-03-19", "2026-03-20")
+            assert post.call_args.args[0] == old_url
+            same_route_fetcher = TushareFetcher()
+            with pytest.raises(TusharePermissionError):
+                same_route_fetcher._fetch_raw_data("600519", "2026-03-19", "2026-03-20")
+            assert post.call_count == 1
+
+        monkeypatch.setenv("TUSHARE_HTTP_URL", new_url)
+        recovered_fetcher = TushareFetcher()
+
+    assert not recovered_fetcher.is_api_denied("daily")
+    ok_response = _http_json_response({
+        "code": 0,
+        "data": {"fields": ["ts_code", "trade_date", "close"], "items": [["600519.SH", "20260320", 1510.0]]},
+    })
+    with patch("data_provider.tushare_fetcher.requests.post", return_value=ok_response) as post:
+        assert len(recovered_fetcher._fetch_raw_data("600519", "2026-03-19", "2026-03-20")) == 1
+        post.assert_called_once()
+        assert post.call_args.args[0] == new_url
+    assert denied_fetcher.is_api_denied("daily")
+
+
+@pytest.mark.parametrize("url_env", ["TUSHARE_HTTP_URL", "TUSHARE_API_URL"])
+@pytest.mark.parametrize(
+    "new_url",
+    [
+        "https://gw.example.com/pro?route=AbC",
+        "https://gw.example.com/Pro?route=abc",
+        "https://gw.example.com/pro?route=abc",
+    ],
+)
+def test_gateway_route_change_restores_screening_sources(
+    monkeypatch: pytest.MonkeyPatch, url_env: str, new_url: str,
+) -> None:
+    old_url = "https://gw.example.com/Pro?route=AbC"
+    monkeypatch.delenv("TUSHARE_API_URL", raising=False)
+    monkeypatch.delenv("TUSHARE_HTTP_URL", raising=False)
+    monkeypatch.setenv("TUSHARE_TOKEN", "same-token")
+    monkeypatch.setenv(url_env, old_url)
+    history = pd.DataFrame({"date": pd.to_datetime(["2026-03-20"]), "close": [1510.0]})
+
+    def fetch_route(*args, **kwargs) -> pd.DataFrame:
+        if os.environ[url_env] == old_url:
+            raise RuntimeError("抱歉，您没有访问该接口的权限")
+        return history.copy()
+
+    snapshot_fetch = MagicMock(side_effect=fetch_route)
+    daily_fetch = MagicMock(side_effect=fetch_route)
+    monkeypatch.setattr(screening_snapshot, "_fetch_tushare", snapshot_fetch)
+    monkeypatch.setattr(screening_snapshot, "_fetch_sina", lambda: history.copy())
+    monkeypatch.setattr(screening_daily, "_fetch_daily_tushare", daily_fetch)
+    monkeypatch.setattr(screening_daily, "_fetch_daily_tencent", lambda *args, **kwargs: history.copy())
+    monkeypatch.setattr(screening_daily, "daily_history_is_stale", lambda *args, **kwargs: False)
+
+    for _ in range(2):
+        snapshot = screening_snapshot.fetch_snapshot_with_fallback(["tushare", "sina"])
+        daily = screening_daily.fetch_daily_history("600519", source="auto", retries=2)
+        assert snapshot.attrs["snapshot_source"] == "sina"
+        assert daily.attrs["daily_source"] == "tencent"
+    assert snapshot_fetch.call_count == daily_fetch.call_count == 1
+    assert screening_snapshot.snapshot_source_health_snapshot(["tushare"])["tushare"]["disabled"] is True
+    assert screening_daily.daily_source_health_snapshot()["tushare"]["disabled"] is True
+
+    monkeypatch.setenv(url_env, new_url)
+    snapshot = screening_snapshot.fetch_snapshot_with_fallback(["tushare", "sina"])
+    daily = screening_daily.fetch_daily_history("600519", source="auto", retries=2)
+    assert snapshot.attrs["snapshot_source"] == "tushare"
+    assert daily.attrs["daily_source"] == "tushare"
+    assert daily.attrs["daily_source_order"][0] == "tushare"
+    assert snapshot_fetch.call_count == daily_fetch.call_count == 2
+    assert screening_snapshot.snapshot_source_health_snapshot(["tushare"])["tushare"]["disabled"] is False
+    assert screening_daily.daily_source_health_snapshot()["tushare"]["disabled"] is False
+
+
+@pytest.mark.parametrize("url_env", ["TUSHARE_HTTP_URL", "TUSHARE_API_URL"])
+def test_malformed_gateway_change_preserves_screening_fallback(
+    monkeypatch: pytest.MonkeyPatch, url_env: str,
+) -> None:
+    old_url = "https://gw.example.com/Pro?route=AbC"
+    monkeypatch.delenv("TUSHARE_API_URL", raising=False)
+    monkeypatch.delenv("TUSHARE_HTTP_URL", raising=False)
+    monkeypatch.setenv("TUSHARE_TOKEN", "same-token")
+    monkeypatch.setenv(url_env, old_url)
+    history = pd.DataFrame({"date": pd.to_datetime(["2026-03-20"]), "close": [1510.0]})
+
+    def fetch_route(*args, **kwargs) -> pd.DataFrame:
+        if os.environ[url_env] == old_url:
+            raise RuntimeError("抱歉，您没有访问该接口的权限")
+        raise ValueError("Invalid IPv6 URL")
+
+    monkeypatch.setattr(screening_snapshot, "_fetch_tushare", fetch_route)
+    monkeypatch.setattr(screening_snapshot, "_fetch_sina", lambda: history.copy())
+    monkeypatch.setattr(screening_daily, "_fetch_daily_tushare", fetch_route)
+    monkeypatch.setattr(screening_daily, "_fetch_daily_tencent", lambda *args, **kwargs: history.copy())
+    monkeypatch.setattr(screening_daily, "daily_history_is_stale", lambda *args, **kwargs: False)
+
+    for url in (old_url, "https://[broken"):
+        monkeypatch.setenv(url_env, url)
+        snapshot = screening_snapshot.fetch_snapshot_with_fallback(["tushare", "sina"])
+        daily = screening_daily.fetch_daily_history("600519", source="auto", retries=0)
+        assert snapshot.attrs["snapshot_source"] == "sina"
+        assert daily.attrs["daily_source"] == "tencent"
+    assert "Invalid IPv6 URL" in snapshot.attrs["source_errors"][0]
+    assert "Invalid IPv6 URL" in daily.attrs["source_errors"][0]
 
 
 def test_screening_snapshot_and_daily_disable_tushare_on_first_permission_error_and_recover_on_token_change(
