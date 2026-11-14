@@ -39,15 +39,16 @@ type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>
 
 const QUICK_QUESTIONS: Array<{
   label: string;
+  labelEn: string;
   skill: string;
   stockContext?: ActiveStockContext;
 }> = [
-  { label: '用缠论分析茅台', skill: 'chan_theory', stockContext: { stock_code: '600519', stock_name: '贵州茅台' } },
-  { label: '波浪理论看宁德时代', skill: 'wave_theory', stockContext: { stock_code: '300750', stock_name: '宁德时代' } },
-  { label: '分析比亚迪趋势', skill: 'bull_trend', stockContext: { stock_code: '002594', stock_name: '比亚迪' } },
-  { label: '用箱体震荡分析 A 股中芯国际 688981', skill: 'box_oscillation', stockContext: { stock_code: '688981', stock_name: '中芯国际' } },
-  { label: '分析腾讯 hk00700', skill: 'bull_trend', stockContext: { stock_code: 'HK00700', stock_name: '腾讯控股' } },
-  { label: '用情绪周期分析东方财富', skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
+  { label: '用缠论分析茅台', labelEn: 'Analyze Moutai (600519) with Chan Theory', skill: 'chan_theory', stockContext: { stock_code: '600519', stock_name: '贵州茅台' } },
+  { label: '波浪理论看宁德时代', labelEn: 'Analyze CATL (300750) with Elliott Wave', skill: 'wave_theory', stockContext: { stock_code: '300750', stock_name: '宁德时代' } },
+  { label: '分析比亚迪趋势', labelEn: 'Analyze BYD (002594) trend', skill: 'bull_trend', stockContext: { stock_code: '002594', stock_name: '比亚迪' } },
+  { label: '用箱体震荡分析 A 股中芯国际 688981', labelEn: 'Analyze SMIC (688981) range oscillation', skill: 'box_oscillation', stockContext: { stock_code: '688981', stock_name: '中芯国际' } },
+  { label: '分析腾讯 hk00700', labelEn: 'Analyze Tencent (HK00700)', skill: 'bull_trend', stockContext: { stock_code: 'HK00700', stock_name: '腾讯控股' } },
+  { label: '用情绪周期分析东方财富', labelEn: 'Analyze East Money (300059) sentiment cycle', skill: 'emotion_cycle', stockContext: { stock_code: '300059', stock_name: '东方财富' } },
 ];
 
 const MAX_SELECTED_SKILLS = 3;
@@ -81,7 +82,7 @@ const getPipelineBudgetSkippedLabel = (step: ProgressStep): string => {
 };
 
 const ChatPage: React.FC = () => {
-  const { t } = useUiLanguage();
+  const { t, language: uiLanguage } = useUiLanguage();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [input, setInput] = useState('');
@@ -609,8 +610,9 @@ const ChatPage: React.FC = () => {
   };
 
   const handleQuickQuestion = (q: (typeof QUICK_QUESTIONS)[0]) => {
+    const promptText = uiLanguage === 'en' ? q.labelEn : q.label;
     setSelectedSkillIds([q.skill]);
-    handleSend(q.label, [q.skill], q.stockContext);
+    handleSend(promptText, [q.skill], q.stockContext);
   };
 
   const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
@@ -1121,7 +1123,7 @@ const ChatPage: React.FC = () => {
                           disabled={!agentAvailable}
                           className="quick-question-btn disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {q.label}
+                          {uiLanguage === 'en' ? q.labelEn : q.label}
                         </button>
                       ))}
                     </div>

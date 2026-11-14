@@ -961,7 +961,11 @@ describe('ChatPage', () => {
     });
   });
 
-  it('sends shortcut hints without treating them as confirmed state', async () => {
+  it.each([
+    { language: 'zh', prompt: '用缠论分析茅台' },
+    { language: 'en', prompt: 'Analyze Moutai (600519) with Chan Theory' },
+  ])('sends localized $language shortcut hints without treating them as confirmed state', async ({ language, prompt }) => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, language);
     mockGetStatus.mockResolvedValueOnce({
       backend: 'litellm',
       available: true,
@@ -975,15 +979,19 @@ describe('ChatPage', () => {
     });
 
     render(
-      <MemoryRouter initialEntries={['/chat']}>
-        <ChatPage />
-      </MemoryRouter>
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>
     );
-    fireEvent.click(await screen.findByRole('button', { name: '用缠论分析茅台' }));
+    fireEvent.click(await screen.findByRole('button', { name: prompt }));
 
     await waitFor(() => {
       expect(mockStartStream).toHaveBeenCalledWith(
         expect.objectContaining({
+          message: prompt,
+          skills: ['chan_theory'],
           context: { stock_code: '600519', stock_name: '贵州茅台' },
         }),
         expect.any(Object),
