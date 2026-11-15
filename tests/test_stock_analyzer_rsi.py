@@ -85,9 +85,6 @@ class ScreeningRsiTestCase(unittest.TestCase):
         self.assertIsNone(screening_daily._compute_rsi(pd.Series([10.0] * 30)))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # Short history from review OR-COR-ea5fc833: 30 daily bars, the shortest valid
 # DAILY_LOOKBACK_DAYS. The old ewm (seeded with a zero change) and the
@@ -134,3 +131,7 @@ class RsiConsistencyTestCase(unittest.TestCase):
         # Warm-up bars and bars with no price change yet are neutral (50), as before.
         self.assertTrue((alert.iloc[:20] == 50.0).all())
         self.assertIsNone(screening_daily._compute_rsi(pd.Series([10.0] * 20), 14))
+
+
+if __name__ == "__main__":
+    unittest.main()
