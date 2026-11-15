@@ -3582,6 +3582,31 @@ class DataFetcherManager:
     def _main_indices_are_partial(data: List[Dict[str, Any]]) -> bool:
         return any(isinstance(row, dict) and row.get("coverage") == "partial" for row in data)
 
+    @staticmethod
+    def _main_index_coverage_score(data: Optional[List[Dict[str, Any]]]) -> int:
+        """Count valid index prices after de-duplicating codes.
+
+        Quotes from different providers are never merged. A later partial result
+        replaces the saved one only when this count is strictly higher.
+        """
+        codes = set()
+        anonymous = 0
+        for row in data or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                price = float(row.get("current"))
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            code = str(row.get("code") or "").strip()
+            if code:
+                codes.add(code)
+            else:
+                anonymous += 1
+        return len(codes) + anonymous
+
     def _accept_main_indices(
         self,
         data: Optional[List[Dict[str, Any]]],
@@ -3591,9 +3616,24 @@ class DataFetcherManager:
         if not data:
             return None, partial_indices
         if self._main_indices_are_partial(data):
-            logger.info("[%s] 主要指数只返回部分结果，继续查找完整结果", provider)
-            if partial_indices is None:
+            incoming = self._main_index_coverage_score(data)
+            kept = self._main_index_coverage_score(partial_indices)
+            if partial_indices is None or incoming > kept:
+                if partial_indices is None:
+                    logger.info("[%s] 主要指数只返回部分结果，继续查找完整结果", provider)
+                else:
+                    logger.info(
+                        "[%s] 主要指数部分结果覆盖更高，替换先前的部分结果：%s > %s",
+                        provider,
+                        incoming,
+                        kept,
+                    )
                 partial_indices = data
+            else:
+                logger.info(
+                    "[%s] 主要指数部分结果覆盖不超过已有结果，继续查找完整结果",
+                    provider,
+                )
             return None, partial_indices
         logger.info("[%s] 获取指数行情成功", provider)
         return data, partial_indices
@@ -4659,16 +4699,16 @@ class DataFetcherManager:
 
         valuation_timeout = min(fetch_timeout, remaining_seconds)
         if realtime_quote is not _REALTIME_QUOTE_UNSET:
-            quote_payload, valuation_err, valuation_ms = realtime_quote, None, 0
+            quote_payload, valuation_err, realtime_quote_ms = realtime_quote, None, 0
         elif valuation_timeout > 0:
-            quote_payload, valuation_err, valuation_ms = self._run_with_retry(
+            quote_payload, valuation_err, realtime_quote_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code, **({"analysis_target": analysis_target} if analysis_target is not None else {})),
                 valuation_timeout,
                 "fundamental_valuation",
             )
-            _consume_budget(valuation_ms)
+            _consume_budget(realtime_quote_ms)
         else:
-            quote_payload, valuation_err, valuation_ms = None, "fundamental stage timeout", 0
+            quote_payload, valuation_err, realtime_quote_ms = None, "fundamental stage timeout", 0
 
         valuation_payload = {
             "pe_ratio": getattr(quote_payload, "pe_ratio", None) if quote_payload else None,
@@ -4678,7 +4718,7 @@ class DataFetcherManager:
         }
         valuation_errors = [valuation_err] if valuation_err else []
         filled_valuation_fields: List[str] = []
-        snapshot_ms = 0
+        hithink_valuation_ms = 0
         if market == "cn" and not is_etf:
             hithink = self._get_hithink_fetcher()
             supplement_timeout = min(fetch_timeout, remaining_seconds)
@@ -4690,7 +4730,7 @@ class DataFetcherManager:
                 from .hithink_fundamentals import HiThinkFundamentalAdapter, supplement_valuation
 
                 valuation_deadline = time.monotonic() + supplement_timeout
-                snapshot, snapshot_error, snapshot_ms = self._run_with_retry(
+                snapshot, snapshot_error, hithink_valuation_ms = self._run_with_retry(
                     lambda: HiThinkFundamentalAdapter(hithink).get_valuation(
                         stock_code,
                         deadline=valuation_deadline,
@@ -4699,8 +4739,7 @@ class DataFetcherManager:
                     "fundamental_valuation_hithink",
                     quarantine_key=("hithink", "valuation"),
                 )
-                _consume_budget(snapshot_ms)
-                valuation_ms += snapshot_ms
+                _consume_budget(hithink_valuation_ms)
                 if snapshot_error:
                     valuation_errors.append(snapshot_error)
                 if isinstance(snapshot, dict):
@@ -4725,11 +4764,11 @@ class DataFetcherManager:
         ):
             valuation_status = "failed"
         valuation_chain = [
-            {"provider": "realtime_quote", "result": valuation_status, "duration_ms": valuation_ms},
+            {"provider": "realtime_quote", "result": valuation_status, "duration_ms": realtime_quote_ms},
         ]
         if filled_valuation_fields:
             valuation_chain.append(
-                {"provider": "HiThinkFetcher", "result": "ok", "duration_ms": snapshot_ms},
+                {"provider": "HiThinkFetcher", "result": "ok", "duration_ms": hithink_valuation_ms},
             )
         result_ctx["valuation"] = self._build_fundamental_block(
             valuation_status,
@@ -4738,7 +4777,7 @@ class DataFetcherManager:
                 valuation_chain,
                 "realtime_quote",
                 valuation_status,
-                valuation_ms,
+                realtime_quote_ms,
             ),
             valuation_errors,
         )

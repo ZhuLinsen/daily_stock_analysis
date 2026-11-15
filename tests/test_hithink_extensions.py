@@ -891,6 +891,43 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         kept = only_partial.get_main_indices("cn")
         self.assertEqual(kept[0]["coverage"], "partial")
 
+    def test_best_partial_main_indices_are_kept(self) -> None:
+        def rows(codes, price):
+            return [
+                {"code": code, "name": code, "current": price, "coverage": "partial"}
+                for code in codes
+            ]
+
+        class _Provider:
+            def __init__(self, name, indices):
+                self.name = name
+                self.priority = 1
+                self.indices = indices
+                self.calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return self.indices
+
+        tickflow = _Provider("TickFlowFetcher", rows(["sh000001", "sz399001"], 1))
+        akshare = _Provider(
+            "AkshareFetcher",
+            rows(["sh000001", "sz399001", "sz399006", "sh000688", "sh000016"], 2),
+        )
+        tushare = _Provider("TushareFetcher", [])
+        manager = DataFetcherManager(fetchers=[akshare, tushare])
+        manager._get_tickflow_fetcher = lambda: tickflow
+
+        data = manager.get_main_indices("cn")
+
+        self.assertEqual([row["code"] for row in data], [
+            "sh000001", "sz399001", "sz399006", "sh000688", "sh000016",
+        ])
+        self.assertTrue(all(row["current"] == 2 and row["coverage"] == "partial" for row in data))
+        self.assertEqual(tickflow.calls, 1)
+        self.assertEqual(akshare.calls, 1)
+        self.assertEqual(tushare.calls, 1)
+
     def test_legacy_main_indices_without_coverage_still_win(self) -> None:
         class _LegacyIndices:
             name = "EfinanceFetcher"
@@ -956,6 +993,35 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         self.assertEqual(failed["valuation"]["data"]["pe_ratio"], 1.5)
         self.assertEqual(failed["valuation"]["data"]["field_sources"]["pe_ratio"], "realtime_quote")
         self.assertNotIn("HiThinkFetcher", [item["provider"] for item in failed["valuation"]["source_chain"]])
+
+    def test_valuation_source_chain_keeps_separate_durations(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: _bundle()
+        empty_block = {"status": "not_supported", "data": {}, "source_chain": [], "errors": []}
+        manager.get_capital_flow_context = lambda *args, **kwargs: empty_block
+        manager.get_dragon_tiger_context = lambda *args, **kwargs: empty_block
+        manager.get_board_context = lambda *args, **kwargs: empty_block
+        quote = SimpleNamespace(pe_ratio=None, pb_ratio=2.0, total_mv=None, circ_mv=None)
+
+        original_retry = manager._run_with_retry
+
+        def fake_retry(task, timeout, task_name, quarantine_key=None):
+            if task_name == "fundamental_valuation":
+                return quote, None, 100
+            if task_name == "fundamental_valuation_hithink":
+                return {"pe_ratio": 9, "pb_ratio": 8}, None, 300
+            return original_retry(task, timeout, task_name, quarantine_key=quarantine_key)
+
+        with patch.object(manager, "_run_with_retry", side_effect=fake_retry), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            result = manager.get_fundamental_context("600519")
+
+        chain = {item["provider"]: item for item in result["valuation"]["source_chain"]}
+        self.assertEqual(result["valuation"]["data"]["pe_ratio"], 9)
+        self.assertEqual(result["valuation"]["data"]["pb_ratio"], 2.0)
+        self.assertEqual(chain["realtime_quote"]["duration_ms"], 100)
+        self.assertEqual(chain["HiThinkFetcher"]["duration_ms"], 300)
 
     def test_batch_name_lookup_uses_hithink_directory_after_earlier_providers(self) -> None:
         primary = _DirectoryFetcher()
