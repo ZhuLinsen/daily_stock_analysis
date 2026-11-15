@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from src.utils.rsi import wilder_rsi
+
 
 TECHNICAL_ALERT_TYPES = frozenset({
     "ma_price_cross",
@@ -409,14 +411,8 @@ def _float_in_range(
 
 
 def _calculate_rsi(close: pd.Series, period: int) -> pd.Series:
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    # 使用 Wilder's EMA / SMMA 口径，不使用 rolling SMA。
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    return (100 - (100 / (1 + rs))).fillna(50)
+    # 与选股、个股分析报告共用同一 Wilder RSI（src/utils/rsi.py），口径一致。
+    return wilder_rsi(close, period)
 
 
 def _crossed_threshold(prev_value: float, curr_value: float, threshold: float, direction: str) -> bool:

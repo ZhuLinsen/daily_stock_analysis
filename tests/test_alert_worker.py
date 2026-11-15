@@ -86,12 +86,14 @@ class AlertIndicatorHelperTestCase(unittest.TestCase):
         self.assertEqual(level_only.status, "not_triggered")
 
     def test_rsi_uses_wilder_not_sma(self) -> None:
-        close = pd.Series([10.0, 9.0, 11.0])
+        # Wilder seeds with the mean of the first `period` changes (TA-Lib), then
+        # smooths; a rolling SMA re-averages only the last `period` changes.
+        close = pd.Series([10.0, 9.0, 11.0, 10.0, 12.0])
         old_sma_rsi = 66.66666666666666
         wilder_rsi = _calculate_rsi(close, 2)
 
         self.assertNotAlmostEqual(float(wilder_rsi.iloc[-1]), old_sma_rsi)
-        self.assertAlmostEqual(float(wilder_rsi.iloc[-1]), 80.0)
+        self.assertAlmostEqual(float(wilder_rsi.iloc[-1]), 76.92307692307692)
 
     def test_indicator_formulas_cover_rsi_macd_kdj_cci_and_chinese_columns(self) -> None:
         rsi_params = normalize_indicator_parameters("rsi_threshold", {
@@ -160,7 +162,8 @@ class AlertIndicatorHelperTestCase(unittest.TestCase):
         )
 
         self.assertEqual(rsi.status, "triggered")
-        self.assertAlmostEqual(rsi.observed_value, 80.0)
+        # Two changes (-1, +2): the Wilder seed is their mean, RSI = 100 - 100 / (1 + 1 / 0.5).
+        self.assertAlmostEqual(rsi.observed_value, 66.66666666666667)
         self.assertEqual(macd.status, "triggered")
         self.assertAlmostEqual(macd.observed_value, 0.321823559670782)
         self.assertEqual(kdj.status, "triggered")
