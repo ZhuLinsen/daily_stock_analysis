@@ -1932,6 +1932,8 @@ textarea {
 }
 
 .home-markdown-prose :where(td) {
+  /* Keep short labels and values readable when long text can break anywhere. */
+  min-width: 8ch;
   overflow-wrap: anywhere;
 }
 
