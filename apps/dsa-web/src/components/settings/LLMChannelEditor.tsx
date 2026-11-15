@@ -9,7 +9,6 @@ import type { ChannelProtocol } from './llmProviderTemplates';
 import {
   LLM_PROVIDER_CAPABILITY_LABELS,
   LLM_PROVIDER_TEMPLATES,
-  MODELFLARE_APP_REGISTRATION_URL,
   MODELFLARE_DEFAULT_MODEL,
   MODEL_PLACEHOLDERS_BY_PROTOCOL,
   filterDiscoveredTextModels,
@@ -1739,6 +1738,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [addPreset, setAddPreset] = useState(LLM_PROVIDER_TEMPLATES[0].channelId);
+  const registration = getProviderTemplate(addPreset)?.registration;
   const addChannelIdRef = useRef(0);
   const lastDraftFingerprintRef = useRef<string | null>(null);
   const onDraftItemsChangeRef = useRef(onDraftItemsChange);
@@ -2424,14 +2424,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                   placeholder="选择服务商"
                   className="min-w-0 flex-1"
                 />
-                {addPreset === 'modelflare' ? (
+                {registration ? (
                   <a
-                    href={MODELFLARE_APP_REGISTRATION_URL}
+                    href={registration.url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="settings-button-secondary inline-flex h-11 shrink-0 items-center justify-center whitespace-nowrap rounded-xl border px-3 text-sm font-medium transition-all duration-200 hover:translate-y-[-1px] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15"
                   >
-                    注册 Modelflare
+                    {registration.label}
                   </a>
                 ) : null}
               </div>

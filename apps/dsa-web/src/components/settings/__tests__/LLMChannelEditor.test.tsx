@@ -674,7 +674,7 @@ describe('LLMChannelEditor', () => {
     await waitFor(() => expect(lastDraftCall(onDraftItemsChange)).toContainEqual({ key: 'MODELFLARE_KEY', value: '' }));
   });
 
-  it('shows the tracked registration link beside the provider selection only for Modelflare', () => {
+  it('shows the selected sponsor registration link beside the provider selection', () => {
     render(
       <LLMChannelEditor
         items={[]}
@@ -694,9 +694,18 @@ describe('LLMChannelEditor', () => {
     expect(registrationLink).toHaveAttribute('rel', 'noopener noreferrer');
     expect(registrationLink.parentElement).toContainElement(providerSelect);
 
+    fireEvent.change(providerSelect, { target: { value: 'x6ai' } });
+    const x6Registration = screen.getByRole('link', { name: '注册 x6.ai' });
+    expect(x6Registration).toHaveAttribute('href', 'https://console.x6pro.io/register?code=zJ2qSdns');
+    expect(x6Registration).toHaveAttribute('target', '_blank');
+    expect(x6Registration).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(x6Registration.parentElement).toContainElement(providerSelect);
+    expect(screen.queryByRole('link', { name: '注册 Modelflare' })).not.toBeInTheDocument();
+
     for (const provider of ['anspire', 'aihubmix', 'deepseek', 'custom']) {
       fireEvent.change(providerSelect, { target: { value: provider } });
       expect(screen.queryByRole('link', { name: '注册 Modelflare' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: '注册 x6.ai' })).not.toBeInTheDocument();
     }
 
     fireEvent.change(providerSelect, { target: { value: 'modelflare' } });

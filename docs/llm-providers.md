@@ -63,7 +63,7 @@ MODELFLARE_KEY=sk-xxx
 
 [x6.ai 专属注册](https://console.x6pro.io/register?code=zJ2qSdns) · [API 文档](https://x6.ai/zh/docs) · [模型列表](https://x6.ai/zh/models)
 
-在 WebUI「设置 → AI 模型配置 → 快速添加渠道」中选择 `x6.ai`，填写自己的 API Key，使用「获取模型」选择当前账号可用的模型，再测试连接。默认 Base URL 为 `https://api.x6.ai/v1`，接口按服务商提供的 OpenAI-compatible Chat Completions 文档配置。该预设不会改写已有用户渠道。
+在 WebUI「设置 → AI 模型配置 → 快速添加渠道」中选择 `x6.ai`，可点击下拉框旁的「注册 x6.ai」创建账号；填写自己的 API Key，使用「获取模型」选择当前账号可用的模型，再测试连接。默认 Base URL 为 `https://api.x6.ai/v1`，接口按服务商提供的 OpenAI-compatible Chat Completions 文档配置。该预设不会改写已有用户渠道。
 
 本地或 Docker 也可配置：
 

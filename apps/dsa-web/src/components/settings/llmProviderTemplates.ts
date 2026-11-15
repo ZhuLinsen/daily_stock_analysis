@@ -22,6 +22,7 @@ export function filterDiscoveredTextModels(models: string[]): string[] {
 
 export const MODELFLARE_APP_REGISTRATION_URL =
   'https://modelflare.dev/sign-up?utm_source=daily_stock_analysis&utm_campaign=app';
+export const X6AI_REGISTRATION_URL = 'https://console.x6pro.io/register?code=zJ2qSdns';
 export const MODELFLARE_DEFAULT_MODEL = 'gpt-6.1-sol';
 
 export interface LLMProviderTemplate {
@@ -32,6 +33,7 @@ export interface LLMProviderTemplate {
   placeholderModels: string;
   capabilities: LLMProviderCapability[];
   configHint?: string;
+  registration?: { label: string; url: string };
   officialSources: Array<{
     label: string;
     url: string;
@@ -68,6 +70,7 @@ export const LLM_PROVIDER_CAPABILITY_LABELS: Record<LLMProviderCapability, { lab
 export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
   {
     channelId: 'modelflare',
+    registration: { label: '注册 Modelflare', url: MODELFLARE_APP_REGISTRATION_URL },
     label: 'Modelflare（聚合平台）',
     protocol: 'openai',
     baseUrl: 'https://modelflare.dev/v1',
@@ -83,6 +86,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
   },
   {
     channelId: 'x6ai',
+    registration: { label: '注册 x6.ai', url: X6AI_REGISTRATION_URL },
     label: 'x6.ai（聚合平台）',
     protocol: 'openai',
     baseUrl: 'https://api.x6.ai/v1',
@@ -90,7 +94,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
     configHint: '请通过“获取模型”查询账号可用的模型 ID，再选择模型并测试连接；实际能力和价格以 x6.ai 控制台为准。',
     officialSources: [
-      { label: 'x6.ai 专属注册', url: 'https://console.x6pro.io/register?code=zJ2qSdns' },
+      { label: 'x6.ai 专属注册', url: X6AI_REGISTRATION_URL },
       { label: 'x6.ai API 文档', url: 'https://x6.ai/zh/docs' },
       { label: 'x6.ai 模型列表', url: 'https://x6.ai/zh/models' },
     ],

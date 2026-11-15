@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [修复] Tushare 权限熔断仅规范化网关 URL 的协议和主机名，保留路径与查询参数大小写，避免不同路由共享拒绝缓存；切换地址后恢复 Fetcher、选股快照及日线优先源尝试，格式错误的地址仍按原有链路回退备用源。
 - [新功能] 新增 x6.ai 赞助展示与模型渠道预设，同步模型发现、OpenAI 网关路由、MiniMax 折扣模型选择及 Actions 配置。
+- [新功能] 新增 x6.ai 赞助展示、模型渠道预设及注册入口，同步模型发现、OpenAI 网关路由、MiniMax 折扣模型选择、Actions 配置与服务商展示顺序。
 
 - [修复] Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。
 
