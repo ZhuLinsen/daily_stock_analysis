@@ -95,6 +95,19 @@ def utc_local_time() -> Iterator[None]:
     _restore_local_timezone(previous_tz)
 
 
+@pytest.fixture
+def new_york_local_time() -> Iterator[None]:
+    """Run the test with the process-local clock on America/New_York.
+
+    Unlike Shanghai and UTC, New York observes daylight saving time,
+    so the local offset depends on the input date: UTC-04:00 in July,
+    UTC-05:00 in November.
+    """
+    previous_tz = _set_local_timezone("America/New_York")
+    yield
+    _restore_local_timezone(previous_tz)
+
+
 @pytest.mark.unit
 def test_factor_definitions_cover_all_scorer_factors() -> None:
     definitions = factor_definitions()
@@ -465,6 +478,89 @@ def test_contract_schema_normalizes_naive_timestamps(
     )
     assert pool_run.created_at == datetime(2026, 11, 14, 1, 30, tzinfo=timezone.utc)
     assert '"created_at":"2026-11-14T01:30:00Z"' in pool_run.model_dump_json()
+
+
+@pytest.mark.unit
+def test_dst_crossing_date_converts_with_input_date_offset(
+    new_york_local_time: Iterator[None],
+) -> None:
+    """Cross-DST regression (OR-COR-4d68c9ab).
+
+    ``created_at`` ``2026-07-14T00:30:00`` is New York daylight time
+    (UTC-04:00), so it must read 2026-07-14T04:30:00Z even when the
+    mapping runs in November standard time — never 05:30Z. The
+    offset follows the input date, not the execution date, through
+    all three mapping entry points.
+    """
+    result = _screen_result(
+        created_at="2026-07-14T00:30:00",
+        picks=[_pick(factor_scores={"value": 80.0})],
+        run_id="a1b2c3d4e5f6",
+    )
+    expected = datetime(2026, 7, 14, 4, 30, tzinfo=timezone.utc)
+
+    assert screen_result_to_pool_run(result).created_at == expected
+    snapshots = screen_result_to_factor_snapshots(result)
+    assert len(snapshots) == 1
+    assert snapshots[0].computed_at == expected
+    assert snapshots[0].scores["value"].computed_at == expected
+
+    # Third entry point: explicit naive computed_at on a Pick.
+    pick_snapshot = pick_to_factor_snapshot(
+        _pick(factor_scores={"value": 80.0}),
+        run_id="a1b2c3d4e5f6",
+        computed_at=datetime(2026, 7, 14, 0, 30),
+    )
+    assert pick_snapshot.computed_at == expected
+    assert pick_snapshot.scores["value"].computed_at == expected
+
+
+@pytest.mark.unit
+def test_standard_time_date_uses_standard_offset(
+    new_york_local_time: Iterator[None],
+) -> None:
+    """A November date converts with the standard-time offset."""
+    result = _screen_result(created_at="2026-11-14T00:30:00")
+    assert screen_result_to_pool_run(result).created_at == datetime(
+        2026, 11, 14, 5, 30, tzinfo=timezone.utc
+    )
+
+
+@pytest.mark.unit
+def test_contract_schema_normalizes_dst_crossing_timestamps(
+    new_york_local_time: Iterator[None],
+) -> None:
+    """Schema backstop resolves the offset per the input date.
+
+    All three timestamp fields — per-factor ``computed_at``,
+    snapshot ``computed_at``, run ``created_at`` — must convert a
+    July wall time with the daylight offset, not today's offset.
+    """
+    assert normalize_contract_timestamp(
+        datetime(2026, 7, 14, 0, 30)
+    ) == datetime(2026, 7, 14, 4, 30, tzinfo=timezone.utc)
+
+    score = CandidateFactorScore(
+        factor_id="value", value=80.0, computed_at=datetime(2026, 7, 14, 0, 30)
+    )
+    assert score.computed_at == datetime(2026, 7, 14, 4, 30, tzinfo=timezone.utc)
+
+    snapshot = FactorSnapshot(
+        candidate_pool_run_id="a1b2c3d4e5f6",
+        code="600519",
+        computed_at=datetime(2026, 7, 14, 0, 30),
+    )
+    assert snapshot.computed_at == datetime(2026, 7, 14, 4, 30, tzinfo=timezone.utc)
+    assert '"computed_at":"2026-07-14T04:30:00Z"' in snapshot.model_dump_json()
+
+    pool_run = CandidatePoolRun(
+        run_id="a1b2c3d4e5f6",
+        strategy="balanced_alpha",
+        market="cn",
+        created_at=datetime(2026, 7, 14, 0, 30),
+    )
+    assert pool_run.created_at == datetime(2026, 7, 14, 4, 30, tzinfo=timezone.utc)
+    assert '"created_at":"2026-07-14T04:30:00Z"' in pool_run.model_dump_json()
 
 
 @pytest.mark.unit
