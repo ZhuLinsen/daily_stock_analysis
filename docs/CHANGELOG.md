@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 选股日线特征的 RSI 改用 Wilder 平滑（`fin-primitives`，与 TA-Lib 一致），不再使用简单滚动均值，与个股分析报告及告警的 RSI 口径一致，避免同一股票在选股中被判为超卖而报告显示中性。
 - [修复] Tushare 日线接口权限拒绝不再累计整源故障，避免 ETF 与 A 股接口互相误伤；保留网络故障计数和半开探测恢复行为。
 
 - [修复] Tushare 权限熔断仅规范化网关 URL 的协议和主机名，保留路径与查询参数大小写，避免不同路由共享拒绝缓存；切换地址后恢复 Fetcher、选股快照及日线优先源尝试，格式错误的地址仍按原有链路回退备用源。
