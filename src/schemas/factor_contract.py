@@ -36,12 +36,17 @@ def normalize_contract_timestamp(value: datetime) -> datetime:
     produces ``ScreenResult.created_at`` via ``datetime.now()`` (the
     deployment runs with ``TZ=Asia/Shanghai``) — so they are read on
     the local clock and converted to UTC, never just stamped ``Z``.
-    Aware values are converted to UTC unchanged in meaning.
+    The offset is resolved per the input date's local rules, so a
+    daylight-saving date converts with the daylight offset even when
+    the mapping runs in standard time (and vice versa); attaching
+    today's fixed offset would shift cross-DST dates by an hour.
+    Ambiguous or nonexistent local times at DST transitions follow
+    the platform's default fold handling. Aware values are converted
+    to UTC unchanged in meaning.
     """
-    if value.tzinfo is None:
-        return value.replace(tzinfo=datetime.now().astimezone().tzinfo).astimezone(
-            timezone.utc
-        )
+    # astimezone() presumes a naive value is local time and resolves
+    # the offset from the platform tz database per the input date;
+    # aware values convert directly. One call covers both cases.
     return value.astimezone(timezone.utc)
 
 
