@@ -3351,7 +3351,7 @@ class DataFetcherManager:
                 continue
         return []
 
-    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
+    def get_market_stats(self, *, purpose: str = "unspecified", include_provider: bool = False) -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
         tickflow_fetcher = self._get_tickflow_fetcher()
@@ -3367,7 +3367,7 @@ class DataFetcherManager:
                         purpose,
                         elapsed,
                     )
-                    return data
+                    return {**data, "provider": tickflow_fetcher.name} if include_provider else data
                 logger.info(
                     "[MarketStats] component=market_stats action=provider_empty "
                     "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
@@ -3399,7 +3399,7 @@ class DataFetcherManager:
                         fetcher.name,
                         elapsed,
                     )
-                    return data
+                    return {**data, "provider": fetcher.name} if include_provider else data
                 logger.info(
                     "[MarketStats] component=market_stats action=provider_empty "
                     "purpose=%s provider=%s elapsed=%.2fs",
