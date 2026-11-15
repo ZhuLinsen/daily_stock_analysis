@@ -497,3 +497,94 @@ def test_screening_snapshot_and_daily_disable_tushare_on_first_permission_error_
     hist2 = screening_daily.fetch_daily_history("000001", source="auto", retries=2)
     assert hist2.attrs["daily_source"] == "tencent"
     assert tushare_daily_calls == 1  # Skipped on subsequent candidate stocks!
+
+
+@pytest.mark.parametrize(
+    "denied_api, denied_codes, allowed_code",
+    [
+        ("fund_daily", ["510300", "510500", "159915"], "600519"),
+        ("daily", ["600519", "000001", "601318"], "510300"),
+    ],
+)
+def test_manager_permission_denials_do_not_disable_other_endpoints_or_new_tokens(
+    denied_api, denied_codes, allowed_code,
+) -> None:
+    """Exercise HTTP -> fetcher -> manager, including cached denials in the same market."""
+    rows = pd.DataFrame({
+        "date": pd.to_datetime(["2026-03-20"]), "open": [10.0], "high": [11.0],
+        "low": [9.0], "close": [10.5], "volume": [100.0], "amount": [1050.0],
+        "pct_chg": [5.0],
+    })
+    fallback = _DummyFallbackFetcher(rows)
+    with patch("data_provider.tushare_fetcher.get_config", return_value=SimpleNamespace(tushare_token="old-token")):
+        fetcher = TushareFetcher()
+    manager = DataFetcherManager(fetchers=[fetcher, fallback])
+    calls = []
+
+    def fake_post(url, json, timeout):
+        calls.append((json["token"], json["api_name"]))
+        if json["token"] == "old-token" and json["api_name"] == denied_api:
+            return _http_json_response({"code": 40203, "msg": "permission denied"})
+        return _http_json_response({"code": 0, "data": {
+            "fields": ["ts_code", "trade_date", "open", "high", "low", "close", "vol", "amount", "pct_chg"],
+            "items": [[json["params"]["ts_code"], "20260320", 10, 11, 9, 10.5, 100, 1050, 5]],
+        }})
+
+    def get(provider_manager, code):
+        return provider_manager.get_daily_data(code, start_date="2026-03-19", end_date="2026-03-20")[1]
+
+    with patch("data_provider.tushare_fetcher.requests.post", side_effect=fake_post):
+        for code in denied_codes:
+            assert get(manager, code) == fallback.name
+        assert calls == [("old-token", denied_api)]
+        # Check rotation before any successful old-token request could clear health.
+        with patch("data_provider.tushare_fetcher.get_config", return_value=SimpleNamespace(tushare_token="new-token")):
+            renewed = TushareFetcher()
+        renewed_manager = DataFetcherManager(fetchers=[renewed, fallback])
+        assert get(renewed_manager, denied_codes[0]) == fetcher.name
+        assert get(manager, allowed_code) == fetcher.name
+        assert calls[1] == ("new-token", denied_api)
+        assert calls[2][0] == "old-token" and calls[2][1] != denied_api
+
+
+def test_manager_permission_denial_preserves_network_failures_and_half_open_recovery() -> None:
+    rows = pd.DataFrame({
+        "date": pd.to_datetime(["2026-03-20"]), "open": [10.0], "high": [11.0],
+        "low": [9.0], "close": [10.5], "volume": [100.0], "amount": [1050.0],
+        "pct_chg": [5.0],
+    })
+    with patch("data_provider.tushare_fetcher.get_config", return_value=SimpleNamespace(tushare_token="network-token")):
+        fetcher = TushareFetcher()
+    fallback = _DummyFallbackFetcher(rows)
+    manager = DataFetcherManager(fetchers=[fetcher, fallback])
+    key = manager._daily_health_key(fetcher, "cn")
+    clock = [1000.0]
+
+    def fake_post(url, json, timeout):
+        if json["api_name"] == "fund_daily":
+            return _http_json_response({"code": 40203, "msg": "permission denied"})
+        return MagicMock(status_code=503)
+
+    def get(code):
+        assert manager.get_daily_data(code, start_date="2026-03-19", end_date="2026-03-20")[1] == fallback.name
+
+    with patch("data_provider.tushare_fetcher.requests.post", side_effect=fake_post) as post, patch(
+        "data_provider.realtime_types.time.time", side_effect=lambda: clock[0],
+    ):
+        get("600519")
+        get("000001")
+        get("510300")  # Permission must neither increment nor clear the two failures.
+        state = manager._daily_source_health._states[key]
+        assert state["failures"] == 2 and state["state"] == "closed"
+        get("601318")
+        assert state["failures"] == 3 and state["state"] == "open"
+        calls_before = post.call_count
+        get("600519")
+        assert post.call_count == calls_before
+        clock[0] += 301
+        get("510500")  # Cached permission rejection consumes no HTTP/probe forever.
+        assert post.call_count == calls_before
+        assert state["state"] == "open" and state["failures"] == 3
+        clock[0] += 301
+        get("600519")
+        assert post.call_count == calls_before + 1
