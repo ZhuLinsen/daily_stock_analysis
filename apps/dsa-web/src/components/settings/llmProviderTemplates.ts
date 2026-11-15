@@ -82,6 +82,20 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
+    channelId: 'x6ai',
+    label: 'x6.ai（聚合平台）',
+    protocol: 'openai',
+    baseUrl: 'https://api.x6.ai/v1',
+    placeholderModels: '',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint: '请通过“获取模型”查询账号可用的模型 ID，再选择模型并测试连接；实际能力和价格以 x6.ai 控制台为准。',
+    officialSources: [
+      { label: 'x6.ai 专属注册', url: 'https://console.x6pro.io/register?code=zJ2qSdns' },
+      { label: 'x6.ai API 文档', url: 'https://x6.ai/zh/docs' },
+      { label: 'x6.ai 模型列表', url: 'https://x6.ai/zh/models' },
+    ],
+  },
+  {
     channelId: 'aihubmix',
     label: 'AIHubmix（聚合平台）',
     protocol: 'openai',
