@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .base import DataFetchError
 from .hithink_fetcher import (
@@ -269,17 +269,20 @@ def supplement_valuation(
     stock_code: str,
     payload: Dict[str, Any],
     snapshot: Optional[Dict[str, Optional[float]]] = None,
-) -> None:
-    """Fill only missing valuation fields. Existing quote values and nulls stay intact."""
+) -> List[str]:
+    """Fill only missing valuation fields and return the names actually filled."""
     if snapshot is None:
         try:
             snapshot = HiThinkFundamentalAdapter(fetcher).get_valuation(stock_code)
         except Exception as exc:
             logger.info("[HiThinkFetcher] valuation snapshot skipped: %s", exc)
-            return
+            return []
+    filled: List[str] = []
     for key, value in snapshot.items():
         if payload.get(key) is None and value is not None:
             payload[key] = value
+            filled.append(key)
+    return filled
 
 
 def empty_fundamental_bundle() -> Dict[str, Any]:

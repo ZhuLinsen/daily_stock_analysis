@@ -715,6 +715,7 @@ class DataFetcherManager:
         self._fetcher_call_locks_lock = RLock()
         self._stock_name_cache: Dict[str, str] = {}
         self._stock_name_cache_lock = RLock()
+        self._stock_directory_coverage: Dict[str, str] = {}
         
         if fetchers:
             # 按优先级排序
@@ -748,6 +749,8 @@ class DataFetcherManager:
             self._stock_name_cache = {}
         if not hasattr(self, "_stock_name_cache_lock") or self._stock_name_cache_lock is None:
             self._stock_name_cache_lock = RLock()
+        if not hasattr(self, "_stock_directory_coverage") or self._stock_directory_coverage is None:
+            self._stock_directory_coverage = {}
 
     def _get_fetchers_snapshot(self) -> List[BaseFetcher]:
         self._ensure_concurrency_guards()
@@ -3513,6 +3516,9 @@ class DataFetcherManager:
                 continue
             try:
                 stock_list = self._call_fetcher_method(fetcher, 'get_stock_list')
+                coverage = self._stock_list_coverage(stock_list)
+                if coverage:
+                    self._stock_directory_coverage[fetcher.name] = coverage
                 if stock_list is not None and not stock_list.empty:
                     cache_updates: Dict[str, str] = {}
                     for _, row in stock_list.iterrows():
@@ -3527,12 +3533,24 @@ class DataFetcherManager:
                     if cache_updates:
                         with self._stock_name_cache_lock:
                             self._stock_name_cache.update(cache_updates)
-                    
+
+                    if coverage == "partial":
+                        logger.info(
+                            "[股票名称] %s 返回部分目录，已缓存有效名称，未覆盖代码继续查询，剩余 %s 个待查",
+                            fetcher.name,
+                            len(missing_codes),
+                        )
+                    elif not missing_codes:
+                        logger.info("[股票名称] 从 %s 批量获取完成", fetcher.name)
+                    else:
+                        logger.info(f"[股票名称] 从 {fetcher.name} 批量获取完成，剩余 {len(missing_codes)} 个待查")
+
                     if not missing_codes:
                         break
-                    
-                    logger.info(f"[股票名称] 从 {fetcher.name} 批量获取完成，剩余 {len(missing_codes)} 个待查")
+                elif coverage == "partial":
+                    logger.info("[股票名称] %s 返回部分目录且没有可用名称，继续查询其他来源", fetcher.name)
             except Exception as e:
+                self._stock_directory_coverage[fetcher.name] = "failed"
                 logger.debug(f"[股票名称] {fetcher.name} 批量获取失败: {e}")
                 continue
         
@@ -3546,16 +3564,53 @@ class DataFetcherManager:
         logger.info(f"[股票名称] 批量获取完成，成功 {len(result)}/{len(stock_codes)}")
         return result
 
+    @staticmethod
+    def _stock_list_coverage(stock_list: Any) -> str:
+        """Read a provider directory flag without treating legacy lists as partial."""
+        attrs = getattr(stock_list, "attrs", None)
+        if not isinstance(attrs, dict):
+            return ""
+        if "complete" not in attrs and "truncated" not in attrs:
+            return ""
+        if attrs.get("truncated") or attrs.get("complete") is False:
+            return "partial"
+        if attrs.get("complete") is True:
+            return "complete"
+        return ""
+
+    @staticmethod
+    def _main_indices_are_partial(data: List[Dict[str, Any]]) -> bool:
+        return any(isinstance(row, dict) and row.get("coverage") == "partial" for row in data)
+
+    def _accept_main_indices(
+        self,
+        data: Optional[List[Dict[str, Any]]],
+        partial_indices: Optional[List[Dict[str, Any]]],
+        provider: str,
+    ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]]:
+        if not data:
+            return None, partial_indices
+        if self._main_indices_are_partial(data):
+            logger.info("[%s] 主要指数只返回部分结果，继续查找完整结果", provider)
+            if partial_indices is None:
+                partial_indices = data
+            return None, partial_indices
+        logger.info("[%s] 获取指数行情成功", provider)
+        return data, partial_indices
+
     def get_main_indices(self, region: str = "cn") -> List[Dict[str, Any]]:
         """获取主要指数实时行情（自动切换数据源）"""
+        partial_indices: Optional[List[Dict[str, Any]]] = None
         if region == "cn":
             tickflow_fetcher = self._get_tickflow_fetcher()
             if tickflow_fetcher is not None:
                 try:
                     data = tickflow_fetcher.get_main_indices(region=region)
-                    if data:
-                        logger.info("[TickFlowFetcher] 获取指数行情成功")
-                        return data
+                    accepted, partial_indices = self._accept_main_indices(
+                        data, partial_indices, "TickFlowFetcher",
+                    )
+                    if accepted:
+                        return accepted
                 except Exception as e:
                     logger.warning(f"[TickFlowFetcher] 获取指数行情失败: {e}")
 
@@ -3564,13 +3619,15 @@ class DataFetcherManager:
                 continue
             try:
                 data = fetcher.get_main_indices(region=region)
-                if data:
-                    logger.info(f"[{fetcher.name}] 获取指数行情成功")
-                    return data
+                accepted, partial_indices = self._accept_main_indices(
+                    data, partial_indices, fetcher.name,
+                )
+                if accepted:
+                    return accepted
             except Exception as e:
                 logger.warning(f"[{fetcher.name}] 获取指数行情失败: {e}")
                 continue
-        return []
+        return partial_indices or []
 
     def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
@@ -4620,6 +4677,8 @@ class DataFetcherManager:
             "circ_mv": getattr(quote_payload, "circ_mv", None) if quote_payload else None,
         }
         valuation_errors = [valuation_err] if valuation_err else []
+        filled_valuation_fields: List[str] = []
+        snapshot_ms = 0
         if market == "cn" and not is_etf:
             hithink = self._get_hithink_fetcher()
             supplement_timeout = min(fetch_timeout, remaining_seconds)
@@ -4645,20 +4704,38 @@ class DataFetcherManager:
                 if snapshot_error:
                     valuation_errors.append(snapshot_error)
                 if isinstance(snapshot, dict):
-                    supplement_valuation(hithink, stock_code, valuation_payload, snapshot=snapshot)
+                    filled_valuation_fields = supplement_valuation(
+                        hithink, stock_code, valuation_payload, snapshot=snapshot,
+                    )
             elif hithink is not None and supplement_timeout <= 0:
                 valuation_errors.append("fundamental_valuation_hithink timeout")
+        field_sources = {
+            field_name: "HiThinkFetcher" if field_name in filled_valuation_fields else "realtime_quote"
+            for field_name, field_value in valuation_payload.items()
+            if field_value is not None
+        }
+        if field_sources:
+            valuation_payload["field_sources"] = field_sources
         valuation_status = self._infer_block_status(
-            valuation_payload,
+            {key: value for key, value in valuation_payload.items() if key != "field_sources"},
             "partial" if quote_payload is not None else "not_supported",
         )
-        if valuation_status == "partial" and valuation_err and not self._has_meaningful_payload(valuation_payload):
+        if valuation_status == "partial" and valuation_err and not self._has_meaningful_payload(
+            {key: value for key, value in valuation_payload.items() if key != "field_sources"}
+        ):
             valuation_status = "failed"
+        valuation_chain = [
+            {"provider": "realtime_quote", "result": valuation_status, "duration_ms": valuation_ms},
+        ]
+        if filled_valuation_fields:
+            valuation_chain.append(
+                {"provider": "HiThinkFetcher", "result": "ok", "duration_ms": snapshot_ms},
+            )
         result_ctx["valuation"] = self._build_fundamental_block(
             valuation_status,
             valuation_payload,
             self._normalize_source_chain(
-                [{"provider": "realtime_quote", "result": valuation_status, "duration_ms": valuation_ms}],
+                valuation_chain,
                 "realtime_quote",
                 valuation_status,
                 valuation_ms,

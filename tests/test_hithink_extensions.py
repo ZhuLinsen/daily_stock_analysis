@@ -169,11 +169,12 @@ class HiThinkExtensionTests(unittest.TestCase):
         }]})
         target = {"pe_ratio": 1.5, "pb_ratio": None}
         with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload)):
-            supplement_valuation(fetcher, "600519", target)
+            filled = supplement_valuation(fetcher, "600519", target)
         self.assertEqual(target["pe_ratio"], 1.5)
         self.assertIsNone(target["pb_ratio"])
         self.assertEqual(target["ps_ttm"], 2)
         self.assertEqual(target["pcf_ttm"], -1)
+        self.assertEqual(filled, ["ps_ttm", "pcf_ttm"])
 
     def test_fundamental_failure_falls_back_to_akshare(self) -> None:
         fetcher = self._fetcher()
@@ -213,6 +214,7 @@ class HiThinkExtensionTests(unittest.TestCase):
             top, bottom = fetcher.get_sector_rankings(1)
         self.assertEqual(indices[0]["code"], "sh000001")
         self.assertEqual(indices[0]["name"], "上证指数")
+        self.assertEqual(indices[0]["coverage"], "partial")
         self.assertEqual(top[0]["name"], "软件")
         self.assertEqual(bottom[0]["name"], "银行")
         self.assertNotIn("hithink-test-key", request.call_args.args[0])
@@ -743,6 +745,217 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         self.assertFalse(fetcher.is_available("stock_name"))
         self.assertTrue(fetcher.is_available("realtime_quote"))
         self.assertTrue(fetcher.is_available("daily_data"))
+
+    def test_complete_directory_is_cached_as_complete(self) -> None:
+        fetcher = self._fetcher()
+        frame = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+        frame.attrs["complete"] = True
+        frame.attrs["truncated"] = False
+        fetcher.get_stock_list = lambda: frame
+        fetcher.get_stock_name = lambda code: (_ for _ in ()).throw(AssertionError("per-code lookup"))
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        names = manager.batch_get_stock_names(["600519"])
+
+        self.assertEqual(names["600519"], "贵州茅台")
+        self.assertEqual(manager._stock_name_cache["600519"], "贵州茅台")
+        self.assertEqual(manager._stock_directory_coverage["HiThinkFetcher"], "complete")
+
+    def test_partial_directory_caches_names_without_claiming_complete(self) -> None:
+        fetcher = self._fetcher()
+        calls = {"list": 0, "name": []}
+
+        def listing():
+            calls["list"] += 1
+            frame = pd.DataFrame([{"code": "600519", "name": "贵州茅台"}])
+            frame.attrs["complete"] = False
+            frame.attrs["truncated"] = True
+            return frame
+
+        def stock_name(code):
+            calls["name"].append(code)
+            return "未收录股票" if code == "123456" else None
+
+        fetcher.get_stock_list = listing
+        fetcher.get_stock_name = stock_name
+        manager = DataFetcherManager(fetchers=[fetcher])
+
+        names = manager.batch_get_stock_names(["600519", "123456"])
+        self.assertEqual(names, {"600519": "贵州茅台", "123456": "未收录股票"})
+        self.assertEqual(manager._stock_name_cache["600519"], "贵州茅台")
+        self.assertEqual(manager._stock_directory_coverage["HiThinkFetcher"], "partial")
+        self.assertEqual(calls["name"], ["123456"])
+
+        manager.batch_get_stock_names(["123457"])
+        self.assertEqual(calls["list"], 2)
+        self.assertEqual(manager._stock_directory_coverage["HiThinkFetcher"], "partial")
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+
+    def test_directory_permission_does_not_disable_other_hithink_capabilities(self) -> None:
+        fetcher = self._fetcher()
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            return _response({"code": 2004, "message": "denied", "data": None})
+
+        manager = DataFetcherManager(fetchers=[fetcher])
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            names = manager.batch_get_stock_names(["123456"])
+
+        self.assertEqual(names, {})
+        self.assertEqual(manager._stock_directory_coverage["HiThinkFetcher"], "partial")
+        self.assertFalse(fetcher.is_available("stock_list"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available("fundamental"))
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/meta/tickers/list"])
+
+    def test_legacy_directory_without_coverage_attrs_keeps_batch_behavior(self) -> None:
+        primary = _DirectoryFetcher()
+        manager = DataFetcherManager(fetchers=[primary])
+
+        names = manager.batch_get_stock_names(["000001", "123456"])
+
+        self.assertEqual(names["000001"], "平安银行")
+        self.assertNotIn("123456", names)
+        self.assertEqual(manager._stock_name_cache["000001"], "平安银行")
+        self.assertEqual(manager._stock_directory_coverage, {})
+        self.assertEqual(primary.list_calls, 1)
+
+    def test_main_index_snapshot_coverage(self) -> None:
+        from data_provider.hithink_index import _MAIN_INDICES
+
+        fetcher = self._fetcher()
+
+        def payload(codes, price=100):
+            return _ok({"item": [
+                {
+                    "thscode": code,
+                    "last_price": price,
+                    "price_change": 1,
+                    "price_change_ratio_pct": 0.1,
+                    "prev_price": 99,
+                }
+                for code in codes
+            ]})
+
+        codes = [item[0] for item in _MAIN_INDICES]
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload(codes))):
+            complete = fetcher.get_main_indices("cn")
+        self.assertEqual(len(complete), 6)
+        self.assertTrue(all(row["coverage"] == "complete" for row in complete))
+
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload(codes[:5]))):
+            missing_one = fetcher.get_main_indices("cn")
+        self.assertEqual(len(missing_one), 5)
+        self.assertTrue(all(row["coverage"] == "partial" for row in missing_one))
+
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload(codes[:2]))):
+            missing_many = fetcher.get_main_indices("cn")
+        self.assertEqual([row["code"] for row in missing_many], ["sh000001", "sz399001"])
+        self.assertTrue(all(row["coverage"] == "partial" for row in missing_many))
+
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload(codes, price=0))):
+            self.assertIsNone(fetcher.get_main_indices("cn"))
+
+    def test_partial_main_indices_do_not_stop_later_providers(self) -> None:
+        class _PartialIndices:
+            name = "HiThinkFetcher"
+            priority = 1
+            calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return [{"code": "sh000001", "name": "上证指数", "current": 1, "coverage": "partial"}]
+
+        class _CompleteIndices:
+            name = "AkshareFetcher"
+            priority = 2
+            calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return [{"code": "sh000001", "name": "上证指数", "current": 2, "coverage": "complete"}]
+
+        partial = _PartialIndices()
+        complete = _CompleteIndices()
+        manager = DataFetcherManager(fetchers=[partial, complete])
+        data = manager.get_main_indices("cn")
+        self.assertEqual(data[0]["current"], 2)
+        self.assertEqual(partial.calls, 1)
+        self.assertEqual(complete.calls, 1)
+
+        only_partial = DataFetcherManager(fetchers=[_PartialIndices()])
+        kept = only_partial.get_main_indices("cn")
+        self.assertEqual(kept[0]["coverage"], "partial")
+
+    def test_legacy_main_indices_without_coverage_still_win(self) -> None:
+        class _LegacyIndices:
+            name = "EfinanceFetcher"
+            priority = 1
+
+            def get_main_indices(self, region="cn"):
+                return [{"code": "sh000001", "name": "上证指数", "current": 3}]
+
+        class _LaterIndices:
+            name = "TushareFetcher"
+            priority = 3
+            calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return [{"code": "sh000300", "name": "沪深300", "current": 4}]
+
+        later = _LaterIndices()
+        manager = DataFetcherManager(fetchers=[_LegacyIndices(), later])
+        data = manager.get_main_indices("cn")
+        self.assertEqual(data[0]["current"], 3)
+        self.assertEqual(later.calls, 0)
+
+    def test_valuation_field_sources_follow_filled_values(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: _bundle()
+        empty_block = {"status": "not_supported", "data": {}, "source_chain": [], "errors": []}
+        manager.get_capital_flow_context = lambda *args, **kwargs: empty_block
+        manager.get_dragon_tiger_context = lambda *args, **kwargs: empty_block
+        manager.get_board_context = lambda *args, **kwargs: empty_block
+        quote = SimpleNamespace(pe_ratio=1.5, pb_ratio=2.0, total_mv=None, circ_mv=None)
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", return_value={"pe_ratio": 9, "pb_ratio": 8}), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            kept = manager.get_fundamental_context("600519", realtime_quote=quote)
+        data = kept["valuation"]["data"]
+        self.assertEqual(data["pe_ratio"], 1.5)
+        self.assertEqual(data["pb_ratio"], 2.0)
+        self.assertEqual(data["field_sources"], {"pe_ratio": "realtime_quote", "pb_ratio": "realtime_quote"})
+        self.assertNotIn("HiThinkFetcher", [item["provider"] for item in kept["valuation"]["source_chain"]])
+
+        quote_missing_pe = SimpleNamespace(pe_ratio=None, pb_ratio=2.0, total_mv=None, circ_mv=None)
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", return_value={"pe_ratio": 9, "pb_ratio": 8}), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            filled = manager.get_fundamental_context("000001", realtime_quote=quote_missing_pe)
+        filled_data = filled["valuation"]["data"]
+        self.assertEqual(filled_data["pe_ratio"], 9)
+        self.assertEqual(filled_data["pb_ratio"], 2.0)
+        self.assertEqual(filled_data["field_sources"]["pe_ratio"], "HiThinkFetcher")
+        self.assertEqual(filled_data["field_sources"]["pb_ratio"], "realtime_quote")
+        self.assertIn("HiThinkFetcher", [item["provider"] for item in filled["valuation"]["source_chain"]])
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", return_value={"pe_ratio": None, "pb_ratio": None}), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            empty = manager.get_fundamental_context("601318", realtime_quote=quote)
+        self.assertEqual(empty["valuation"]["data"]["pe_ratio"], 1.5)
+        self.assertNotIn("HiThinkFetcher", [item["provider"] for item in empty["valuation"]["source_chain"]])
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", side_effect=RuntimeError("down")), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            failed = manager.get_fundamental_context("600036", realtime_quote=quote)
+        self.assertEqual(failed["valuation"]["data"]["pe_ratio"], 1.5)
+        self.assertEqual(failed["valuation"]["data"]["field_sources"]["pe_ratio"], "realtime_quote")
+        self.assertNotIn("HiThinkFetcher", [item["provider"] for item in failed["valuation"]["source_chain"]])
 
     def test_batch_name_lookup_uses_hithink_directory_after_earlier_providers(self) -> None:
         primary = _DirectoryFetcher()

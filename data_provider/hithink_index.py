@@ -52,6 +52,8 @@ def main_indices(fetcher: HiThinkFetcher, region: str = "cn") -> Optional[List[D
         if isinstance(item, dict)
     }
     rows: List[Dict[str, Any]] = []
+    expected = {thscode for thscode, _code, _name in _MAIN_INDICES}
+    covered: set[str] = set()
     for thscode, code, name in _MAIN_INDICES:
         item = by_code.get(thscode)
         if item is None:
@@ -65,6 +67,7 @@ def main_indices(fetcher: HiThinkFetcher, region: str = "cn") -> Optional[List[D
         amplitude = None
         if prev_close and prev_close > 0 and high is not None and low is not None:
             amplitude = (high - low) / prev_close * 100
+        covered.add(thscode)
         rows.append({
             "code": code,
             "name": name,
@@ -79,7 +82,12 @@ def main_indices(fetcher: HiThinkFetcher, region: str = "cn") -> Optional[List[D
             "amount": fetcher_number(item.get("turnover")),
             "amplitude": amplitude,
         })
-    return rows or None
+    if not rows:
+        return None
+    coverage = "complete" if covered == expected else "partial"
+    for row in rows:
+        row["coverage"] = coverage
+    return rows
 
 
 def index_daily_data(
