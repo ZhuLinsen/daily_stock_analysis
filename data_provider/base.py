@@ -408,9 +408,11 @@ class BaseFetcher(ABC):
         """
         return None
 
-    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+    def get_market_stats(self, *, allow_cache: bool = True) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计
+
+        allow_cache=False 时，数据源必须发起新的行情请求。
 
         Returns:
             Dict: 包含:
@@ -3366,14 +3368,17 @@ class DataFetcherManager:
                 continue
         return []
 
-    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
+    def get_market_stats(
+        self, *, purpose: str = "unspecified", include_provider: bool = False, allow_cache: bool = True,
+    ) -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
+        stats_kwargs = {} if allow_cache else {"allow_cache": False}
         tickflow_fetcher = self._get_tickflow_fetcher()
         if tickflow_fetcher is not None:
             started_at = time.monotonic()
             try:
-                data = tickflow_fetcher.get_market_stats()
+                data = tickflow_fetcher.get_market_stats(**stats_kwargs)
                 elapsed = time.monotonic() - started_at
                 if data:
                     logger.info(
@@ -3382,7 +3387,7 @@ class DataFetcherManager:
                         purpose,
                         elapsed,
                     )
-                    return data
+                    return {**data, "provider": tickflow_fetcher.name} if include_provider else data
                 logger.info(
                     "[MarketStats] component=market_stats action=provider_empty "
                     "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
@@ -3404,7 +3409,7 @@ class DataFetcherManager:
                 continue
             started_at = time.monotonic()
             try:
-                data = fetcher.get_market_stats()
+                data = fetcher.get_market_stats(**stats_kwargs)
                 elapsed = time.monotonic() - started_at
                 if data:
                     logger.info(
@@ -3414,7 +3419,7 @@ class DataFetcherManager:
                         fetcher.name,
                         elapsed,
                     )
-                    return data
+                    return {**data, "provider": fetcher.name} if include_provider else data
                 logger.info(
                     "[MarketStats] component=market_stats action=provider_empty "
                     "purpose=%s provider=%s elapsed=%.2fs",
