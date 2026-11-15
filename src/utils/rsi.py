@@ -15,15 +15,18 @@ import pandas as pd
 NEUTRAL_RSI = 50.0
 
 
-def wilder_rsi(close: pd.Series, period: int) -> pd.Series:
+def wilder_rsi(close: pd.Series, period: int, *, fill_warmup: bool = True) -> pd.Series:
     """Wilder RSI aligned to ``close``.
 
-    Bars before the first full ``period`` of changes, and bars where the price
-    has not moved at all yet, are ``50.0`` (neutral), matching the previous
-    ``fillna(50)`` behaviour.
+    Bars where the price has not moved at all yet are ``50.0`` (neutral).
+    Bars before the first full ``period`` of changes have no RSI: they are
+    ``50.0`` when ``fill_warmup`` is true (the previous ``fillna(50)``
+    behaviour, used for display and scoring) and ``NaN`` otherwise, so edge
+    checks such as alert crossings never compare against a placeholder.
     """
     close = pd.Series(close, dtype="float64")
     values = pd.Series(fp.rsi(close, period), dtype="float64")
     values.index = close.index
     no_move_yet = close.diff().abs().fillna(0).cumsum().eq(0)
-    return values.mask(no_move_yet).fillna(NEUTRAL_RSI)
+    values = values.mask(no_move_yet & values.notna(), NEUTRAL_RSI)
+    return values.fillna(NEUTRAL_RSI) if fill_warmup else values
