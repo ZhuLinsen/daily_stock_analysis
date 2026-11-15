@@ -932,7 +932,7 @@ function inferProtocol(protocol: string, baseUrl: string, models: string[]): Cha
     return explicit;
   }
 
-  if (isRequestyBaseUrl(baseUrl)) {
+  if (isVendorModelGatewayBaseUrl(baseUrl)) {
     return 'openai';
   }
 
@@ -1045,14 +1045,14 @@ const PROTOCOL_ALIASES: Record<string, string> = {
   openai_compat: 'openai',
 };
 
-function isRequestyBaseUrl(baseUrl: string): boolean {
+function isVendorModelGatewayBaseUrl(baseUrl: string): boolean {
   const trimmed = baseUrl.trim();
   if (!trimmed) {
     return false;
   }
   try {
     const hostname = new URL(trimmed).hostname.toLowerCase();
-    return hostname === 'requesty.ai' || hostname.endsWith('.requesty.ai');
+    return hostname === 'requesty.ai' || hostname.endsWith('.requesty.ai') || hostname === 'api.x6.ai';
   } catch {
     return false;
   }
@@ -1069,12 +1069,12 @@ function normalizeModelForRuntime(
     return trimmedModel;
   }
 
-  // Mirrors normalize_llm_channel_model: Requesty vendor IDs keep the gateway route.
+  // Mirrors normalize_llm_channel_model: Vendor model IDs keep the OpenAI gateway route.
   if (
     protocol === 'openai'
     && trimmedModel.includes('/')
     && trimmedModel.split('/', 1)[0].trim().toLowerCase() !== 'openai'
-    && isRequestyBaseUrl(baseUrl)
+    && isVendorModelGatewayBaseUrl(baseUrl)
   ) {
     return `openai/${trimmedModel}`;
   }

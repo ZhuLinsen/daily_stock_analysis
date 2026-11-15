@@ -10,6 +10,10 @@ import {
 } from '../llmProviderTemplates';
 
 describe('llmProviderTemplates', () => {
+  it('preserves current MiniMax discount models returned by x6.ai', () => {
+    const models = ['openai/minimax/minimax-m3.1-flash-discount', 'minimax/minimax-m3-discount'];
+    expect(filterDiscoveredTextModels(models)).toEqual(models);
+  });
   it('filters only MiniMax text recommendations and orders Flash before M3', () => {
     const models = [
       'gpt-4o', 'MiniMax-M2.7', 'MiniMax-Text-01', 'MiniMax-VL-01', 'MiniMax-M3', 'MiniMax-M3.1-Flash',

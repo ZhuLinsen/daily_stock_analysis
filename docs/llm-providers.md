@@ -72,10 +72,12 @@ LLM_CHANNELS=x6ai
 LLM_X6AI_PROTOCOL=openai
 LLM_X6AI_BASE_URL=https://api.x6.ai/v1
 LLM_X6AI_API_KEY=sk-your-own-key
-LLM_X6AI_MODELS=your-available-model-id
+LLM_X6AI_MODELS=openai/anthropic/claude-haiku-5-5-discount
 ```
 
-注意：模型 ID 需从账号实际可用模型列表获取，测试用 Key 不应提交到仓库；GitHub Actions 的自定义 Channels 环境变量需按工作流实际透传情况配置。
+模型仅为示例，需从账号模型列表获取并测试连接。x6.ai 的 `vendor/model` ID 必须保留：WebUI「获取模型」会添加一次 `openai/` 路由层，例如 `anthropic/…` 保存为 `openai/anthropic/…`，`openai/…` 保存为 `openai/openai/…`。手动配置推荐复制获取模型后的完整值；已有配置不会被自动重写。
+
+GitHub Actions 中将 `LLM_CHANNELS=x6ai`、协议、地址和模型配置为 Variables，`LLM_X6AI_API_KEY` 或 `LLM_X6AI_API_KEYS` 配置为 Secrets；每日分析工作流已透传该渠道全部字段。Docker / Desktop 复用相同配置与 WebUI。模型目录不保证当前 Key 对每个模型都有调用权限；以测试连接结果为准，失败时可换用已验证模型。测试用 Key 不应提交到仓库。
 
 ### DeepSeek 官方渠道
 

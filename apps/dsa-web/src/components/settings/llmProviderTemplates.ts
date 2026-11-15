@@ -10,7 +10,7 @@ export type LLMProviderCapability =
 /** Filter recommendations only; saved and hand-typed model IDs stay in channel state. */
 export function filterDiscoveredTextModels(models: string[]): string[] {
   const miniMaxId = (model: string) => model.split('/').at(-1)?.toLowerCase() || '';
-  const current = (model: string) => /^minimax-m(?:3|3\.1-flash(?::free|-free)?)$/.test(miniMaxId(model));
+  const current = (model: string) => /^minimax-m(?:3|3\.1-flash)(?::free|-free|-discount)?$/.test(miniMaxId(model));
   const filtered = models.filter((model) => !/^minimax-(?:m\d|(?:text|vl)-01)/.test(miniMaxId(model)) || current(model));
   const miniMaxModels = filtered.filter(current).sort((left, right) => (
     Number(miniMaxId(right).startsWith('minimax-m3.1-flash'))
