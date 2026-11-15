@@ -1931,11 +1931,15 @@ textarea {
   padding: 4px 6px;
 }
 
+.home-markdown-prose :where(td) {
+  overflow-wrap: anywhere;
+}
+
 .home-markdown-prose :where(table) {
   display: block;
   width: 100%;
   overflow-x: auto;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .home-markdown-prose :where(th) {
