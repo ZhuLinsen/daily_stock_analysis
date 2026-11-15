@@ -59,6 +59,24 @@ MODELFLARE_KEY=sk-xxx
 
 `gpt-6.1-sol` 是本项目的 Modelflare 默认模型；实际模型列表与可用性以账号权限、控制台和 Web 设置页「测试连接」结果为准。渠道模板仅决定新建配置的初始值，不会改写已保存的渠道、主模型或 fallback。
 
+### x6.ai 聚合平台
+
+[x6.ai 专属注册](https://console.x6pro.io/register?code=zJ2qSdns) · [API 文档](https://x6.ai/zh/docs) · [模型列表](https://x6.ai/zh/models)
+
+在 WebUI「设置 → AI 模型配置 → 快速添加渠道」中选择 `x6.ai`，填写自己的 API Key，使用「获取模型」选择当前账号可用的模型，再测试连接。默认 Base URL 为 `https://api.x6.ai/v1`，接口按服务商提供的 OpenAI-compatible Chat Completions 文档配置。该预设不会改写已有用户渠道。
+
+本地或 Docker 也可配置：
+
+```env
+LLM_CHANNELS=x6ai
+LLM_X6AI_PROTOCOL=openai
+LLM_X6AI_BASE_URL=https://api.x6.ai/v1
+LLM_X6AI_API_KEY=sk-your-own-key
+LLM_X6AI_MODELS=your-available-model-id
+```
+
+注意：模型 ID 需从账号实际可用模型列表获取，测试用 Key 不应提交到仓库；GitHub Actions 的自定义 Channels 环境变量需按工作流实际透传情况配置。
+
 ### DeepSeek 官方渠道
 
 ```env
