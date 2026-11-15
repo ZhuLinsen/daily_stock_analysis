@@ -54,6 +54,21 @@ Unknown event types should be ignored or displayed with a generic fallback.
 | `done` | SSE endpoint | The request completed. | `success`, `content`, `error`, `total_steps`, `session_id` |
 | `error` | SSE endpoint | The request failed before normal completion, including preparation rejection before `accepted`. | `message`, `error_code`, `request_id`, `session_id` |
 
+## Tool Outcome Status
+
+`tool_done.success` and the matching `tool_calls_log` entry report the tool's
+outcome, not just whether its handler raised an exception. A returned dictionary
+with a truthy top-level `error` or an explicit `success: false` is unsuccessful,
+including the first call and any reuse of a cached non-retriable failure.
+Successful empty results remain successful. Nested errors, partial-data warnings,
+and a `status` field alone do not change this flag.
+
+The original serialized result still reaches the model. Failure classification
+does not add retries, change cache eligibility, or abort the agent loop; a tool
+failure can be followed by a successful final `done` response. Trajectory failure
+and retry metrics consume the corrected log status. The external ToolSurface
+envelope's `ok` field retains its separate execution-envelope semantics.
+
 ## Registered Names And Embedded Mentions
 
 Chat target preparation treats a validated full name from the stock catalogue
@@ -158,12 +173,19 @@ Recommended checks for changes to this contract:
 
 ```bash
 python -m pytest tests/test_agent_stream_events.py tests/test_agent_sse_cleanup.py tests/test_agent_chat_api.py tests/test_agent_active_stock_integration.py
+python -m pytest tests/agent/test_tool_outcome_status.py
 ```
 
 ```bash
 cd apps/dsa-web
 npm test -- src/stores/__tests__/agentChatStore.test.ts src/pages/__tests__/ChatPage.test.tsx
+npx playwright test --config playwright.fixture.config.ts agent-tool-status.spec.ts
 ```
+
+The browser fixture uses mocked SSE responses to verify that failed tool calls
+remain visibly unsuccessful after a successful final answer, while a successful
+empty search keeps its success indicator. It saves
+`test-results/fixtures/**/agent-tool-outcome-status.png` as visual evidence.
 
 The focused tests should confirm that:
 
