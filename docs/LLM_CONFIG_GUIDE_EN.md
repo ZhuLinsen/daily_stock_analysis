@@ -235,6 +235,10 @@ For the channel named `modelflare`, an omitted or blank Base URL defaults to `ht
 
 Both the client's quick-add registration button and the exclusive registration link in channel details use the app UTM; README links use the github UTM. If a new channel has no key yet, or the primary/fallback model is not declared by an enabled channel, status preview shows the affected configuration fields. Supply the key, select available models or clear invalid fallback selections, then retry. Preview does not rewrite saved settings.
 
+### Example: x6.ai
+
+Select x6.ai in the Web settings, enter your key, discover models and test the connection. For environment variables and GitHub Actions, use the [x6.ai channel example](llm-providers.md#x6ai-聚合平台); the key alone does not enable an explicit channel.
+
 ### Compatibility example: Anspire Responses API (observed GPT-5.6 model names)
 
 ```env
