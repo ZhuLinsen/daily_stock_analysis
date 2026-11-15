@@ -735,6 +735,36 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             setattr(result, "data_sources", None)
         return result
 
+    @mock.patch("src.notification.get_config")
+    def test_market_snapshot_source_names_in_report_renderers(self, mock_get_config):
+        """Known sources without Korean names must not abort report generation."""
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        renderers = {
+            "daily": lambda result: service.generate_daily_report([result]),
+            "dashboard": lambda result: service.generate_dashboard_report([result]),
+            "single_stock": service.generate_single_stock_report,
+        }
+        for source, names in service._SOURCE_DISPLAY_NAMES.items():
+            for language, expected in (("zh", names["zh"]), ("en", names["en"]), ("ko", names["en"])):
+                result = self._source_result("AAPL", "Apple", 50, source)
+                result.report_language = language
+                result.market_snapshot = {"price": 100, "source": source}
+                for renderer, render in renderers.items():
+                    with self.subTest(source=source, language=language, renderer=renderer):
+                        self.assertIn(f"| {expected} |", render(result))
+
+    @mock.patch("src.notification.get_config")
+    def test_market_snapshot_unknown_source_is_preserved(self, mock_get_config):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        for source, expected in (("custom_source", "custom_source"), (None, "N/A")):
+            result = self._source_result("AAPL", "Apple", 50, source)
+            result.report_language = "ko"
+            result.market_snapshot = {"price": 100, "source": source}
+            with self.subTest(source=source):
+                self.assertIn(f"| {expected} |", service.generate_single_stock_report(result))
+
     def test_signal_metadata_uses_resolved_eight_state_action(self):
         service = NotificationService()
         cases = [

@@ -320,6 +320,17 @@ deploy:
 
 For a constrained `512M` deployment, set `MAX_WORKERS=1`, start only one of `server` or `analyzer`, and reduce non-essential market review, news expansion, and image report tasks.
 
+### 5. `Exited (132)` or `Illegal instruction` on Apple Silicon / ARM64 Linux VMs
+
+**Symptom**: On newer-kernel `aarch64` Linux VMs running on Apple Silicon (e.g. M4 Ubuntu 26.04 VM), containers exit immediately with `Exited (132)` or `docker build` fails with `Illegal instruction (core dumped)`.
+
+**Root Cause**: Newer ARM64 VM kernels expose `HWCAP2_SME`, causing NumPy's bundled OpenBLAS dynamic dispatch to execute SME instructions unsupported in non-streaming mode.
+
+**Resolution**:
+
+- **Docker deployment**: Current `Dockerfile` and `entrypoint.sh` automatically default `OPENBLAS_CORETYPE=ARMV8` on `aarch64`/`arm64` (leaving `x86_64` untouched). If using an older image or running commands via `docker-compose exec`, add `OPENBLAS_CORETYPE=ARMV8` to `.env` (or pass `-e OPENBLAS_CORETYPE=ARMV8` to `docker run`).
+- **Direct deployment (pip + python)**: On bleeding-edge Linux distributions that default to Python 3.14 (such as Ubuntu 26.04), create your virtual environment with **Python 3.11 or 3.12** so pinned dependencies resolve prebuilt `aarch64` wheels instead of compiling C/Rust extensions from source, and `export OPENBLAS_CORETYPE=ARMV8` before starting if `Illegal instruction` occurs.
+
 ---
 
 ## Quick Migration

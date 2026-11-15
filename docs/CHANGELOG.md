@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] HiThink 提供主要指数快照、指数日 K，以及按完整目录分批计算的行业和概念涨跌排行。指数日 K 只在现有 Tencent、AkShare、TickFlow、YFinance 固定路由全部失败后尝试，并记录数据源诊断。
 - [新功能] HiThink 补充 A 股名称检索、代码表、热股榜和涨停池，仅在现有数据源没有结果时使用。代码表接入批量名称查询，热股榜价格来自行情快照。
 
+- [修复] Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。
+
+- [修复] 关闭 LiteLLM 逐 chunk 的 streaming success logging（本项目未注册 LiteLLM callback，用量统计不受影响），修复 Windows 上每个流式 chunk 新建事件循环与回环 socketpair、全局线程池卡在 `accept()`，导致 CLI 打印「程序执行完成」后进程不退出且额外占用大量 CPU 的问题。
 - [修复] 实时行情基准仅接受同交易日的有效日期；Yahoo 行情使用未复权价格并区分交易日与更新时间，避免除息日涨跌方向错误及误报过期。
 
 - [修复] 盘中及盘后实时行情覆盖前，仅在报价有明确行情交易日证据时将历史 `today` 平移为 `yesterday`；缺少行情时间的港股缓存报价保留原基准，避免涨跌幅、成交量比率及行情快照涨跌额被错误重算（#2517）。
@@ -36,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
 - [修复] 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
 
+- [修复] 韩文报告的行情快照数据源名称缺少本地化映射时回退为英文，避免 `KeyError: ko` 中断日报、决策仪表盘与单股报告生成。
 - [修复] TickPlus 正确区分裸 000001 等股票与显式同码指数；补齐行情指标、按接口冷却与分组批量缓存，ETF 轮动使用独立前复权实例，并统一首选推荐入口。
 - [新功能] 新增可选 TickPlus A 股 / ETF 日 K、实时行情与名称查询，支持配置管理、Actions Secret 和失败回退，在数据源条目中标注推荐并补充接入说明。
 
@@ -47,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] 恢复 README、部署指南及模型/搜索配置表中的 Anspire 可点击链接并保留推广码，继续作为 SerpAPI 后的可选搜索服务。
 
 - [改进] 下线 Anspire 合作宣传及专属额度说明，移除 README 推荐入口，调整配置示例和渠道展示顺序；新闻搜索顺序调整至 SerpAPI 之后，保留原推广码链接、已有 Key 和模型渠道兼容。
+- [新功能] 台股大盘复盘支持 `tw` 与组合市场：复用加权/柜买指数和新闻，覆盖 API/Web、交易日过滤、历史/通知与分享图片；明确披露缺失指数，不提供市场宽度或 Market Light。`both` 扩为六市场，保留旧五市场可配置 `cn,hk,us,jp,kr`（#2482）。
+
+- [修复] 大盘分享图片保留所有“数据边界”章节的限制项并去重，避免已有章节或超过两项时漏掉台股缺失指数提示；兼容结构化载荷、历史 Markdown 和多市场图片（#2489）。
 
 - [修复] Agent 工具消息内容与工具调用参数序列化不再透传 NaN/±Infinity：`LLMToolAdapter._convert_messages` 序列化前将非有限浮点递归归一化为 `null`，并以 `allow_nan=False` 输出严格 RFC 8259 JSON，避免 LiteLLM 以 `"NaN" is not valid JSON` 拒绝请求（#2471）。
 

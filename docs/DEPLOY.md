@@ -362,6 +362,17 @@ deploy:
 
 **验证**：用浏览器开发者工具（F12 → Network）检查是否有 `/assets/index-*.js` 和 `/assets/index-*.css` 的 404 错误；如有，说明资源缺失，按上述步骤重新构建即可。
 
+### 6. Apple Silicon / ARM64 Linux 虚拟机报 `Exited (132)` 或 `Illegal instruction`
+
+**症状**：在 Apple Silicon（如 M4）宿主机上的新内核 Linux 虚拟机（`aarch64`，如 Ubuntu 26.04 VM）中，运行容器立即以 `Exited (132)` 退出，或本地 `docker build` 在 Python 冒烟步骤报 `Illegal instruction (core dumped)`。
+
+**根因**：部分新内核 ARM64 虚拟机向客户机暴露了 `HWCAP2_SME`，触发 NumPy 内置 OpenBLAS 分发到当前非 streaming 模式不支持的 SME 指令集。
+
+**解决方法**：
+
+- **Docker 部署**：新版 `Dockerfile` 与启动入口已在 `aarch64`/`arm64` 下默认注入 `OPENBLAS_CORETYPE=ARMV8`（不影响 `x86_64`）；若使用旧镜像或通过 `docker-compose exec` 直接执行命令，可在 `.env` 中显式添加 `OPENBLAS_CORETYPE=ARMV8`（单次 `docker run` 加 `-e OPENBLAS_CORETYPE=ARMV8`）。
+- **直接部署（pip + python）**：在较新的 Linux 发行版（如默认携带 Python 3.14 的 Ubuntu 26.04）上，建议使用 **Python 3.11 或 3.12** 创建虚拟环境，以直接命中 `requirements.txt` 锁定版本的 `aarch64` 预编译 wheel、避免源码编译失败；若运行时仍出现 `Illegal instruction`，启动前设置 `export OPENBLAS_CORETYPE=ARMV8`。
+
 ---
 
 ## 🔄 快速迁移
