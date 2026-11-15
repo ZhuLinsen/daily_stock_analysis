@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from src.utils.sanitize import redact_sensitive_mapping
 
@@ -27,6 +27,26 @@ from src.utils.sanitize import redact_sensitive_mapping
 FACTOR_CONTRACT_VERSION = "1.0"
 FACTOR_SET_VERSION = "1.0"
 _CONTRACT_VERSION_ADAPTER = TypeAdapter(Literal["1.0"])
+
+
+def normalize_contract_timestamp(value: datetime) -> datetime:
+    """Return ``value`` as an aware UTC datetime.
+
+    Naive values are process-local wall time — the same clock that
+    produces ``ScreenResult.created_at`` via ``datetime.now()`` (the
+    deployment runs with ``TZ=Asia/Shanghai``) — so they are read on
+    the local clock and converted to UTC, never just stamped ``Z``.
+    Aware values are converted to UTC unchanged in meaning.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=datetime.now().astimezone().tzinfo).astimezone(
+            timezone.utc
+        )
+    return value.astimezone(timezone.utc)
+
+
+def _normalize_timestamp_field(value: datetime) -> datetime:
+    return normalize_contract_timestamp(value)
 
 FactorId = Literal[
     "value",
@@ -120,6 +140,10 @@ class CandidateFactorScore(_FactorContractModel):
     quality: FactorDataQuality = Field(default_factory=FactorDataQuality)
     computed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    normalize_computed_at = field_validator("computed_at", mode="after")(
+        _normalize_timestamp_field
+    )
+
 
 class FactorSnapshot(_FactorContractModel):
     """All factor scores for one candidate in one run.
@@ -140,6 +164,10 @@ class FactorSnapshot(_FactorContractModel):
     quality: FactorDataQuality = Field(default_factory=FactorDataQuality)
     source: str = "screening.pipeline"
     computed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    normalize_computed_at = field_validator("computed_at", mode="after")(
+        _normalize_timestamp_field
+    )
 
     @model_validator(mode="after")
     def _scores_keys_match_factor_ids(self) -> "FactorSnapshot":
@@ -189,6 +217,10 @@ class CandidatePoolRun(_FactorContractModel):
     degradation: list[str] = Field(default_factory=list)
     ranking_mode: str = "factor"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    normalize_created_at = field_validator("created_at", mode="after")(
+        _normalize_timestamp_field
+    )
 
     def to_safe_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict with sensitive mapping values redacted."""

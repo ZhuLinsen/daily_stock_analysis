@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] DSA 内部因子契约（#1902 P0）不再把无时区的本地 `created_at` 直接贴上 UTC：映射与 schema 改为按部署进程本地时钟（`TZ=Asia/Shanghai`）读取并换算为 UTC，`pick_to_factor_snapshot` 的显式 `computed_at` 同样归一化；同期修正内置引擎来源守卫的作用域，原创的 `factor_mapping.py` 不再被误判为 AlphaSift 派生文件。
+
 - [新功能] 新增 DSA 内部因子契约（`FactorDefinition`/`FactorSnapshot`/`CandidatePoolRun`/`CandidateFactorScore`，契约版本 1.0）：将选股 `factor_scores` 映射为带字段版本、来源、数据质量与降级原因的内部结构（#1902 P0）；仅新增 schema 与纯映射函数，不改变现有选股、API、回测与 DecisionSignal 行为。
 
 - [修复] Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。

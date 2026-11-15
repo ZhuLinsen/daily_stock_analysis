@@ -27,6 +27,7 @@ from src.schemas.factor_contract import (
     FactorDefinition,
     FactorFieldStatus,
     FactorSnapshot,
+    normalize_contract_timestamp,
 )
 from src.services.screening.models import Pick, ScreenResult
 
@@ -150,14 +151,15 @@ def _parse_run_timestamp(value: str, fallback: datetime) -> tuple[datetime, bool
     """Parse a ``ScreenResult.created_at`` ISO string to aware UTC.
 
     ``ScreenResult.created_at`` is a naive local ISO string
-    (``datetime.now().isoformat()``). Naive values are interpreted as
-    UTC — a documented assumption, see ``docs/factor-contract.md``.
-    Offset values are converted to UTC. Date-only strings parse to
-    midnight UTC under the same rule. Unparseable values fall back
-    to the mapping time instead of raising, so a malformed header
-    never blocks the translation; the returned flag reports whether
-    the fallback was used, so callers can record it instead of
-    failing silently.
+    (``datetime.now().isoformat()``). Naive values are read on the
+    process-local clock — the same clock that produced them, with the
+    deployment running ``TZ=Asia/Shanghai`` — and converted to UTC;
+    they are never just stamped ``Z``. Offset values are converted
+    to UTC. Date-only strings parse to local midnight under the same
+    rule. Unparseable values fall back to the mapping time instead of
+    raising, so a malformed header never blocks the translation; the
+    returned flag reports whether the fallback was used, so callers
+    can record it instead of failing silently.
     """
     normalized = value.strip()
     if normalized.endswith("Z"):
@@ -166,9 +168,7 @@ def _parse_run_timestamp(value: str, fallback: datetime) -> tuple[datetime, bool
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return fallback, True
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc), False
-    return parsed.astimezone(timezone.utc), False
+    return normalize_contract_timestamp(parsed), False
 
 
 def pick_to_factor_snapshot(
@@ -188,7 +188,11 @@ def pick_to_factor_snapshot(
     contract.
     """
     weights = effective_factor_weights if effective_factor_weights is not None else {}
-    computed = computed_at or datetime.now(timezone.utc)
+    computed = (
+        normalize_contract_timestamp(computed_at)
+        if computed_at is not None
+        else datetime.now(timezone.utc)
+    )
 
     scores: dict[str, CandidateFactorScore] = {}
     unknown_ids: list[str] = []

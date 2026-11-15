@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import time
+from collections.abc import Iterator
 from datetime import datetime, timezone
 
 import pytest
@@ -20,6 +23,7 @@ from src.schemas.factor_contract import (
     FactorDefinition,
     FactorFieldStatus,
     FactorSnapshot,
+    normalize_contract_timestamp,
 )
 from src.services.screening.factor_mapping import (
     factor_definitions,
@@ -52,6 +56,43 @@ def _screen_result(**overrides: object) -> ScreenResult:
     }
     kwargs.update(overrides)
     return ScreenResult(**kwargs)  # type: ignore[arg-type]
+
+
+def _set_local_timezone(tz_name: str) -> str | None:
+    """Point the process-local clock at ``tz_name``; return the previous TZ."""
+    previous_tz = os.environ.get("TZ")
+    os.environ["TZ"] = tz_name
+    time.tzset()
+    return previous_tz
+
+
+def _restore_local_timezone(previous_tz: str | None) -> None:
+    if previous_tz is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = previous_tz
+    time.tzset()
+
+
+@pytest.fixture
+def shanghai_local_time() -> Iterator[None]:
+    """Run the test with the process-local clock on Asia/Shanghai.
+
+    ``ScreenResult.created_at`` is produced by ``datetime.now()`` on the
+    deployment clock (``TZ=Asia/Shanghai`` in docker-compose), so naive
+    timestamps must be read on that clock, not on UTC.
+    """
+    previous_tz = _set_local_timezone("Asia/Shanghai")
+    yield
+    _restore_local_timezone(previous_tz)
+
+
+@pytest.fixture
+def utc_local_time() -> Iterator[None]:
+    """Run the test with the process-local clock on UTC."""
+    previous_tz = _set_local_timezone("UTC")
+    yield
+    _restore_local_timezone(previous_tz)
 
 
 @pytest.mark.unit
@@ -215,7 +256,9 @@ def test_pick_mapping_rejects_non_finite_factor_value() -> None:
 
 
 @pytest.mark.unit
-def test_pool_run_copies_screen_result_header_verbatim() -> None:
+def test_pool_run_copies_screen_result_header_verbatim(
+    shanghai_local_time: Iterator[None],
+) -> None:
     result = _screen_result(
         strategy_version="1.1",
         strategy_category="framework",
@@ -252,7 +295,8 @@ def test_pool_run_copies_screen_result_header_verbatim() -> None:
     assert pool_run.ranking_mode == "llm"
     assert pool_run.contract_version == FACTOR_CONTRACT_VERSION
     assert pool_run.factor_set_version == FACTOR_SET_VERSION
-    assert pool_run.created_at == datetime(2026, 11, 14, 9, 30, tzinfo=timezone.utc)
+    # Naive input is local wall time: 09:30 in Shanghai is 01:30 UTC.
+    assert pool_run.created_at == datetime(2026, 11, 14, 1, 30, tzinfo=timezone.utc)
 
 
 @pytest.mark.unit
@@ -343,7 +387,90 @@ def test_pool_run_timestamp_parses_offsets_and_falls_back_on_unparseable() -> No
 
 
 @pytest.mark.unit
-def test_screen_result_to_factor_snapshots_shares_run_header() -> None:
+def test_naive_created_at_converts_from_local_time(
+    shanghai_local_time: Iterator[None],
+) -> None:
+    """Reviewer scenario (OR-COR-771315a2 / OR-COR-37f2deeb).
+
+    ``created_at`` ``2026-11-14T00:30:00`` is Shanghai wall time, so the
+    run, the snapshot and the single-factor timestamps must all read
+    2026-11-13T16:30:00Z — never 2026-11-14T00:30:00Z.
+    """
+    result = _screen_result(
+        created_at="2026-11-14T00:30:00",
+        picks=[_pick(factor_scores={"value": 80.0})],
+        run_id="a1b2c3d4e5f6",
+    )
+    expected = datetime(2026, 11, 13, 16, 30, tzinfo=timezone.utc)
+
+    assert screen_result_to_pool_run(result).created_at == expected
+    snapshots = screen_result_to_factor_snapshots(result)
+    assert len(snapshots) == 1
+    assert snapshots[0].computed_at == expected
+    assert snapshots[0].scores["value"].computed_at == expected
+
+
+@pytest.mark.unit
+def test_naive_created_at_under_utc_keeps_wall_time(
+    utc_local_time: Iterator[None],
+) -> None:
+    """The naive rule follows the process-local clock, not a fixed zone."""
+    result = _screen_result(created_at="2026-11-14T09:30:00")
+    assert screen_result_to_pool_run(result).created_at == datetime(
+        2026, 11, 14, 9, 30, tzinfo=timezone.utc
+    )
+
+
+@pytest.mark.unit
+def test_pick_snapshot_normalizes_naive_computed_at(
+    shanghai_local_time: Iterator[None],
+) -> None:
+    """An explicit naive ``computed_at`` is local wall time, not UTC."""
+    pick = _pick(factor_scores={"value": 80.0})
+    snapshot = pick_to_factor_snapshot(
+        pick,
+        run_id="a1b2c3d4e5f6",
+        computed_at=datetime(2026, 11, 14, 9, 30),
+    )
+    expected = datetime(2026, 11, 14, 1, 30, tzinfo=timezone.utc)
+    assert snapshot.computed_at == expected
+    assert snapshot.scores["value"].computed_at == expected
+
+
+@pytest.mark.unit
+def test_contract_schema_normalizes_naive_timestamps(
+    shanghai_local_time: Iterator[None],
+) -> None:
+    """The schema backstop: naive datetimes serialize as aware UTC."""
+    assert normalize_contract_timestamp(
+        datetime(2026, 11, 14, 9, 30)
+    ) == datetime(2026, 11, 14, 1, 30, tzinfo=timezone.utc)
+    assert normalize_contract_timestamp(
+        datetime(2026, 11, 14, 17, 30, tzinfo=timezone.utc)
+    ) == datetime(2026, 11, 14, 17, 30, tzinfo=timezone.utc)
+
+    snapshot = FactorSnapshot(
+        candidate_pool_run_id="a1b2c3d4e5f6",
+        code="600519",
+        computed_at=datetime(2026, 11, 14, 9, 30),
+    )
+    assert snapshot.computed_at == datetime(2026, 11, 14, 1, 30, tzinfo=timezone.utc)
+    assert '"computed_at":"2026-11-14T01:30:00Z"' in snapshot.model_dump_json()
+
+    pool_run = CandidatePoolRun(
+        run_id="a1b2c3d4e5f6",
+        strategy="balanced_alpha",
+        market="cn",
+        created_at=datetime(2026, 11, 14, 9, 30),
+    )
+    assert pool_run.created_at == datetime(2026, 11, 14, 1, 30, tzinfo=timezone.utc)
+    assert '"created_at":"2026-11-14T01:30:00Z"' in pool_run.model_dump_json()
+
+
+@pytest.mark.unit
+def test_screen_result_to_factor_snapshots_shares_run_header(
+    shanghai_local_time: Iterator[None],
+) -> None:
     result = _screen_result(
         effective_factor_weights={"value": 0.5, "momentum": 0.5},
         picks=[
@@ -359,9 +486,15 @@ def test_screen_result_to_factor_snapshots_shares_run_header() -> None:
     assert [s.code for s in snapshots] == ["600519", "000001"]
     assert [s.rank for s in snapshots] == [1, 2]
     assert all(s.candidate_pool_run_id == "a1b2c3d4e5f6" for s in snapshots)
+    # Naive input is local wall time: 09:30 in Shanghai is 01:30 UTC.
     assert all(
-        s.computed_at == datetime(2026, 11, 14, 9, 30, tzinfo=timezone.utc)
+        s.computed_at == datetime(2026, 11, 14, 1, 30, tzinfo=timezone.utc)
         for s in snapshots
+    )
+    assert all(
+        score.computed_at == datetime(2026, 11, 14, 1, 30, tzinfo=timezone.utc)
+        for s in snapshots
+        for score in s.scores.values()
     )
     assert snapshots[0].scores["value"].weight == 0.5
     assert snapshots[1].scores["value"].value == 40.0
@@ -505,12 +638,16 @@ def test_identifiers_must_be_non_empty_and_counts_non_negative() -> None:
 
 
 @pytest.mark.unit
-def test_pool_run_timestamp_accepts_date_only_as_utc_midnight() -> None:
+def test_pool_run_timestamp_accepts_date_only_as_local_midnight(
+    shanghai_local_time: Iterator[None],
+) -> None:
     result = _screen_result(created_at="2026-11-15")
 
     pool_run = screen_result_to_pool_run(result)
 
-    assert pool_run.created_at == datetime(2026, 11, 15, 0, 0, tzinfo=timezone.utc)
+    # Date-only means local midnight: 2026-11-15 00:00 in Shanghai is
+    # 2026-11-14 16:00 UTC, not midnight UTC.
+    assert pool_run.created_at == datetime(2026, 11, 14, 16, 0, tzinfo=timezone.utc)
     assert pool_run.degradation == []
 
 
