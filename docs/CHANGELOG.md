@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Tushare 日线接口权限拒绝不再累计整源故障，避免 ETF 与 A 股接口互相误伤；保留网络故障计数和半开探测恢复行为。
+
+- [修复] Tushare 权限熔断仅规范化网关 URL 的协议和主机名，保留路径与查询参数大小写，避免不同路由共享拒绝缓存；切换地址后恢复 Fetcher、选股快照及日线优先源尝试，格式错误的地址仍按原有链路回退备用源。
+
 - [修复] Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。
 
 - [修复] 关闭 LiteLLM 逐 chunk 的 streaming success logging（本项目未注册 LiteLLM callback，用量统计不受影响），修复 Windows 上每个流式 chunk 新建事件循环与回环 socketpair、全局线程池卡在 `accept()`，导致 CLI 打印「程序执行完成」后进程不退出且额外占用大量 CPU 的问题。
@@ -27,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增可选 TickPlus A 股 / ETF 日 K、实时行情与名称查询，支持配置管理、Actions Secret 和失败回退，在数据源条目中标注推荐并补充接入说明。
 
 - [修复] 基本面估值复用本轮已获取的实时行情（包括失败结果），避免重复请求挤占基本面和资金流预算；独立调用保留原有取数行为。
+- [改进] Tushare 数据源与选股链路支持按接口粒度自动识别权限/积分不足（区分频次限流），无权限接口首次失败后自动熔断跳过并降级备用数据源，不再重复消耗请求配额或重试，同时保留同 Token 下其他有权限接口正常可用（#1696）。
 - [文档] 三语 README 产品预览改用 640×320、4 帧/秒的宽屏裁剪动图，减少展示高度和文件体积，点击可查看完整原版演示。
 
 - [文档] 将中、英、繁体 README 的 Trendshift 日榜徽章替换为仓库徽章，并添加仓库详情页链接。
