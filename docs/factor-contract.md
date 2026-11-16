@@ -45,8 +45,10 @@
 | `version` | `str` | 单因子定义版本，默认 `"1"` |
 | `source` | `str` | `screening.scorer:<评分列>` |
 | `window` | `str \| None` | 回看窗口（如 `60d`），无固定窗口时为 `None` |
-| `params` | `dict[str, float]` | 实际生效的 scoring-profile 覆盖；空表示默认值 |
+| `params` | `dict[str, float]` | 静态定义中的参数覆盖；空表示未记录覆盖，不代表实际策略未覆盖评分参数（见下注） |
 | `factor_set_version` | `str` | `FACTOR_SET_VERSION` |
+
+> **注意：** `factor_definitions()` 当前返回静态定义（见 `src/services/screening/factor_mapping.py`），`params` 默认为 `{}`。`params={}` 只表示静态定义未记录参数覆盖，不代表实际策略未覆盖评分参数；实际参数追溯（本次运行真实生效的评分参数）需在 P1 接线时补齐。
 
 ### `FactorDataQuality`
 
