@@ -1938,7 +1938,7 @@ class NotificationService(
             name = self._get_display_name(r, report_language)
             dash = r.dashboard or {}
             core = dash.get('core_conclusion', {}) or {}
-            one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
+            one = (core.get('one_sentence') or r.analysis_summary or '')[:300]
             lines.append(
                 f"**{name}({r.code})** {emoji} "
                 f"{signal_text} | "

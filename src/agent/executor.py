@@ -115,7 +115,7 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
     "confidence_level": "高/中/低",
     "dashboard": {{
         "core_conclusion": {{
-            "one_sentence": "一句话核心结论（30字以内）",
+            "one_sentence": "1-2句通俗易懂的大白话（60字以内）：这只股票现在情况如何、建议怎么做；不要使用均线、MACD、RSI、乖离率、支撑/压力位、量比等专业术语",
             "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
             "time_sensitivity": "立即行动/今日内/本周内/不急",
             "position_advice": {{
@@ -274,7 +274,7 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
     "confidence_level": "高/中/低",
     "dashboard": {{
         "core_conclusion": {{
-            "one_sentence": "一句话核心结论（30字以内）",
+            "one_sentence": "1-2句通俗易懂的大白话（60字以内）：这只股票现在情况如何、建议怎么做；不要使用均线、MACD、RSI、乖离率、支撑/压力位、量比等专业术语",
             "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
             "time_sensitivity": "立即行动/今日内/本周内/不急",
             "position_advice": {{

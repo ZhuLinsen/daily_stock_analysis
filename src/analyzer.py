@@ -1971,7 +1971,7 @@ class GeminiAnalyzer:
 
     "dashboard": {
         "core_conclusion": {
-            "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
+            "one_sentence": "1-2句通俗易懂的大白话（60字以内）：这只股票现在情况如何、建议怎么做；不要使用均线、MACD、RSI、乖离率、支撑/压力位、量比等专业术语",
             "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
             "time_sensitivity": "立即行动/今日内/本周内/不急",
             "position_advice": {
@@ -2159,7 +2159,7 @@ class GeminiAnalyzer:
 
     "dashboard": {
         "core_conclusion": {
-            "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
+            "one_sentence": "1-2句通俗易懂的大白话（60字以内）：这只股票现在情况如何、建议怎么做；不要使用均线、MACD、RSI、乖离率、支撑/压力位、量比等专业术语",
             "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
             "time_sensitivity": "立即行动/今日内/本周内/不急",
             "position_advice": {
@@ -2339,7 +2339,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
     "dashboard": {
         "core_conclusion": {
-            "one_sentence": "One-sentence core conclusion (at most 30 words, tell the user exactly what to do)",
+            "one_sentence": "1-2 short sentences in plain everyday language (at most 40 words): how the stock is doing and what to do; avoid technical jargon such as moving averages, MACD, RSI, bias rate, support/resistance or volume ratio",
             "signal_type": "🟢Buy Signal/🟡Hold and Watch/🔴Sell Signal/⚠️Risk Warning",
             "time_sensitivity": "Act now/Today/This week/No rush",
             "position_advice": {
