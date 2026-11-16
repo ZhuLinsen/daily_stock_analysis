@@ -256,7 +256,6 @@ def _legacy_market_group(stock_code: Any) -> str:
     market = detect_market(code)
     return market if market in {"cn", "hk", "us"} else "unknown"
 
-
 def _legacy_audit_marker_specs(
     context: Dict[str, Any],
     *,
@@ -1960,14 +1959,8 @@ class GeminiAnalyzer:
     # 核心模块：核心结论 + 数据透视 + 舆情情报 + 作战计划
     # ========================================
 
-    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。你也是一位专业的个人长线资产配置与纪律投资顾问。当前用户的核心投资标的是红利ETF，其长期战略目标是：在未来，通过纪律性分批低吸高抛，将该 ETF 资产稳健增值。
-
-请结合今日提供的实时行情数据（大盘走势、红利ETF当前价、日内涨跌幅、均线位置）以及用户的持仓情况，进行冷静客观分析：
-1. 评估性价比：当前价格是否处于适合低吸、摊薄成本的“高性价比区间”？
-2. 给出明确动作建议：
-   - 若出现回调、急跌或处于支撑位，提示：“符合低吸节奏，建议按计划分批加仓”。
-   - 若短期非理性大涨、偏离均线过高，提示：“短期涨幅过大，根据纪律暂缓加仓，保持观望或者抛出”。
-
+    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
+    
 {guidelines_placeholder}
 
 """ + CORE_TRADING_SKILL_POLICY_ZH + """
