@@ -92,16 +92,28 @@ const mockIndex: StockIndexItem[] = [
     popularity: 97,
   },
   {
-    canonicalCode: "035720.KQ",
-    displayCode: "035720.KQ",
+    canonicalCode: "035720.KS",
+    displayCode: "035720.KS",
     nameZh: "Kakao",
     pinyinFull: "Kakao",
     pinyinAbbr: "Kakao",
-    aliases: ["Kakao", "可可"],
+    aliases: ["Kakao", "可可", "카카오"],
     market: "KR",
     assetType: "stock",
     active: true,
     popularity: 92,
+  },
+  {
+    canonicalCode: "247540.KQ",
+    displayCode: "247540.KQ",
+    nameZh: "Ecopro BM",
+    pinyinFull: "Ecopro BM",
+    pinyinAbbr: "Ecopro BM",
+    aliases: ["Ecopro BM", "ECOPRO BM", "에코프로비엠"],
+    market: "KR",
+    assetType: "stock",
+    active: true,
+    popularity: 91,
   },
   {
     canonicalCode: "600000.SH",
@@ -271,10 +283,20 @@ describe('searchStocks', () => {
   });
 
   test('韩股 KOSDAQ Yahoo 后缀代码匹配', () => {
-    const results = searchStocks('035720.KQ', mockIndex);
+    const results = searchStocks('247540.KQ', mockIndex);
     expect(results).toHaveLength(1);
-    expect(results[0].canonicalCode).toBe('035720.KQ');
+    expect(results[0].canonicalCode).toBe('247540.KQ');
     expect(results[0].market).toBe('KR');
+  });
+
+  test('Kakao 检索返回 KOSPI 代码 035720.KS', () => {
+    const byName = searchStocks('Kakao', mockIndex);
+    expect(byName).toHaveLength(1);
+    expect(byName[0].canonicalCode).toBe('035720.KS');
+
+    const byCode = searchStocks('035720', mockIndex);
+    expect(byCode).toHaveLength(1);
+    expect(byCode[0].canonicalCode).toBe('035720.KS');
   });
 
   test('韩股中文别名匹配', () => {

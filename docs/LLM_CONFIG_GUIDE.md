@@ -242,6 +242,10 @@ MODELFLARE_KEY=sk-xxx
 
 客户端快速添加按钮及渠道说明中的「Modelflare 专属注册」都使用 app UTM，README 使用 github UTM。新建渠道尚未填写 Key，或主模型/备用模型不属于当前启用渠道时，状态预览会提示「配置需要调整」并列出具体字段；补填 Key、选择可用模型或清空无效的备用模型后重试，预览不会自动改写已保存配置。
 
+### 示例：x6.ai
+
+在 Web 设置页选择 x6.ai，填写 Key 后获取模型并测试连接。环境变量及 GitHub Actions 请参考 [x6.ai 渠道配置](llm-providers.md#x6ai-聚合平台)，显式渠道需要同时配置渠道名、协议、地址和模型。
+
 ### 兼容示例：Anspire Responses API（GPT-5.6 名称为观测样本）
 
 ```env

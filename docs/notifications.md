@@ -194,6 +194,8 @@ NTFY_URL=https://ntfy.sh/my-topic
 NTFY_TOKEN=
 ```
 
+ntfy 服务端默认 `message-size-limit` 为 4096 字节：超过上限的消息不再作为正文展示，JSON 请求体超过上限 2 倍（8192 字节）会被直接以 HTTP 413 拒收。因此超长报告会按章节边界拆成多条消息依次发送，每条正文不超过 3900 字节，标题追加 `(1/N)` 分页，请求体使用 UTF-8 JSON；任意一条发送失败时该渠道整体记为失败，其余分页仍会继续发送。短消息仍只发送一条，标题不变。
+
 Gotify 已是一等通知渠道，优先使用 `GOTIFY_URL` 和 `GOTIFY_TOKEN`。`GOTIFY_URL` 表示 Gotify server base URL，可包含反向代理 path prefix，但不包含 `/message`；系统发送时会拼接固定 `/message` API，并通过 `X-Gotify-Key` Header 发送 application token。`NTFY_URL` 是完整 topic endpoint，而 `GOTIFY_URL` 是 server base URL，这是两个服务 API 设计差异导致的刻意选择：
 
 ```env

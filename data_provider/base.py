@@ -191,7 +191,7 @@ def _is_jp_market(code: str) -> bool:
 
 
 def _is_kr_market(code: str) -> bool:
-    """判定是否为韩国 Yahoo Finance suffix 代码（如 005930.KS / 035720.KQ）。"""
+    """判定是否为韩国 Yahoo Finance suffix 代码（如 005930.KS / 247540.KQ）。"""
     return is_suffix_market_symbol(code, "kr")
 
 
@@ -874,8 +874,23 @@ class DataFetcherManager:
         cls._daily_source_health.record_success(cls._daily_health_key(fetcher, market))
 
     @classmethod
-    def _record_daily_source_failure(cls, fetcher: BaseFetcher, market: str, error: str) -> None:
-        cls._daily_source_health.record_failure(cls._daily_health_key(fetcher, market), error=error)
+    def _record_daily_source_failure(cls, fetcher: BaseFetcher, market: str, error: str | Exception) -> None:
+        # Import lazily because TushareFetcher inherits BaseFetcher from this module.
+        from .tushare_fetcher import TusharePermissionError
+
+        key = cls._daily_health_key(fetcher, market)
+        current = error
+        visited = set()
+        while isinstance(current, BaseException) and id(current) not in visited:
+            visited.add(id(current))
+            if isinstance(current, TusharePermissionError):
+                # Endpoint permission is not evidence of a provider outage. Preserve
+                # previous network failures and release any half-open probe reservation.
+                cls._daily_source_health.record_inconclusive(key)
+                return
+            current = current.__cause__ or current.__context__
+        reason = summarize_exception(error)[1] if isinstance(error, Exception) else error
+        cls._daily_source_health.record_failure(key, error=reason)
 
     @classmethod
     def reset_daily_source_health(cls) -> None:
@@ -1151,7 +1166,7 @@ class DataFetcherManager:
                     record_count=0,
                 )
                 self._record_daily_source_failure(
-                    fetcher, "cn_index", error_reason
+                    fetcher, "cn_index", exc
                 )
                 logger.warning(
                     "[指数数据源失败 %d/%d] [%s] %s: error_type=%s, reason=%s",
@@ -2103,7 +2118,7 @@ class DataFetcherManager:
                             f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
                             f"error_type={error_type}, reason={error_reason}"
                         )
-                        self._record_daily_source_failure(fetcher, market, error_reason)
+                        self._record_daily_source_failure(fetcher, market, e)
                         errors.append(error_msg)
                     break
 
@@ -2184,7 +2199,7 @@ class DataFetcherManager:
                     f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
                     f"error_type={error_type}, reason={error_reason}"
                 )
-                self._record_daily_source_failure(fetcher, market, error_reason)
+                self._record_daily_source_failure(fetcher, market, e)
                 errors.append(error_msg)
                 if attempt < total_fetchers:
                     next_fetcher = fetchers[attempt]
