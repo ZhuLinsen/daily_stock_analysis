@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -123,6 +124,57 @@ class PortfolioApiTestCase(unittest.TestCase):
         self.assertEqual(trade_resp.status_code, 200, trade_resp.text)
         self._save_close(symbol, date(2026, 1, 3), 110.0)
         return account_id
+
+    def test_event_api_rejects_non_finite_numbers_without_writes(self) -> None:
+        aid = self._create_position()
+        cases = [
+            ("trades", {"symbol": "600519", "trade_date": "2026-01-02",
+                        "side": "buy", "quantity": 10, "price": 100},
+             ("quantity", "price", "fee", "tax")),
+            ("cash-ledger", {"event_date": "2026-01-02", "direction": "in", "amount": 1000},
+             ("amount",)),
+            ("corporate-actions", {"symbol": "600519", "effective_date": "2026-01-02",
+                                   "action_type": "cash_dividend", "cash_dividend_per_share": 0},
+             ("cash_dividend_per_share", "split_ratio")),
+            ("corporate-actions", {"symbol": "600519", "effective_date": "2026-01-02",
+                                   "action_type": "split_adjustment", "split_ratio": 2},
+             ("split_ratio", "cash_dividend_per_share")),
+        ]
+        for endpoint, payload, fields in cases:
+            url = f"/api/v1/portfolio/{endpoint}"
+            before = self.client.get(url, params={"account_id": aid}).json()["total"]
+            for field in fields:
+                # Include valid JSON numbers whose float conversion overflows,
+                # as well as string inputs accepted by Pydantic's float coercion.
+                for token in ('"Infinity"', '"-Infinity"', '"NaN"', '"1e309"', '1e309', '-1e309', 'NaN'):
+                    with self.subTest(endpoint=endpoint, field=field, token=token):
+                        body = json.dumps({"account_id": aid, **payload, field: "NONFINITE"})
+                        body = body.replace('"NONFINITE"', token)
+                        resp = self.client.post(url, content=body, headers={"Content-Type": "application/json"})
+                        self.assertEqual(resp.status_code, 422, resp.text)
+                        error = resp.json()
+                        self.assertEqual(error["error"], "validation_error")
+                        self.assertEqual(error["detail"][0]["loc"], ["body", field])
+                        self.assertEqual(error["detail"][0]["type"], "finite_number")
+                        json.dumps(error, allow_nan=False)
+            self.assertEqual(self.client.get(url, params={"account_id": aid}).json()["total"], before)
+        snapshot = self.client.get("/api/v1/portfolio/snapshot", params={
+            "account_id": aid, "as_of": "2026-01-03", "include_realtime": False,
+        })
+        self.assertEqual(snapshot.status_code, 200, snapshot.text)
+        self.assertEqual(snapshot.json()["accounts"][0]["positions"][0]["quantity"], 10)
+        self.assertIsNotNone(snapshot.json()["total_equity"])
+
+    def test_validation_error_serializes_nested_non_finite_input(self) -> None:
+        body = ('{"account_id": 1, "symbol": "600519", "trade_date": "2026-01-02", '
+                '"side": {"nested": [1e309]}, "quantity": 10, "price": -1.5}')
+        resp = self.client.post("/api/v1/portfolio/trades", content=body,
+                                headers={"Content-Type": "application/json"})
+        self.assertEqual(resp.status_code, 422, resp.text)
+        errors = {item["loc"][-1]: item for item in resp.json()["detail"]}
+        self.assertEqual(errors["side"]["input"], {"nested": ["inf"]})
+        self.assertEqual(errors["price"]["input"], -1.5)
+        json.dumps(resp.json(), allow_nan=False)
 
     def test_account_event_snapshot_flow(self) -> None:
         create_resp = self.client.post(
