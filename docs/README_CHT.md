@@ -18,8 +18,6 @@
 
 每日自動分析自選股 -> 生成決策儀表盤 -> 推送到 Telegram / Discord / Slack / 郵件 / 企業微信 / 飛書。
 
-🧩 我的其他開源專案：[AlphaSift](https://github.com/ZhuLinsen/alphasift) · 智能選股 ｜ [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) · 策略回測與進化
-
 [**產品預覽**](#-產品預覽) · [**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**文檔中心**](./INDEX.md) · [**完整指南**](./full-guide.md)
 
 繁體中文 | [English](README_EN.md) | [简体中文](../README.md)
@@ -43,6 +41,10 @@
 </p>
 
 ## ✨ 功能特性
+
+🚀 **作者專案推薦：[AlphaSift · 智能選股](https://github.com/ZhuLinsen/alphasift)　｜　[AlphaEvo · 策略回測與進化](https://github.com/ZhuLinsen/alphaevo)**
+
+---
 
 | 能力 | 覆蓋內容 |
 |------|------|

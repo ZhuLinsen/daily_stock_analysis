@@ -18,8 +18,6 @@
 
 Analyze your watchlist daily -> generate a decision dashboard -> push to Telegram / Discord / Slack / Email / WeChat Work / Feishu.
 
-🧩 My other open-source projects: [AlphaSift](https://github.com/ZhuLinsen/alphasift) · Smart screening ｜ [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) · Strategy backtesting & evolution
-
 [**Product Preview**](#-product-preview) · [**Key Features**](#-key-features) · [**Quick Start**](#-quick-start) · [**Sample Output**](#-sample-output) · [**Documentation Index**](./INDEX_EN.md) · [**Full Guide**](./full-guide_EN.md)
 
 English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
@@ -43,6 +41,10 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 </p>
 
 ## ✨ Key Features
+
+🚀 **More from the author: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift)　｜　[AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)**
+
+---
 
 | Capability | Coverage |
 |------------|----------|
