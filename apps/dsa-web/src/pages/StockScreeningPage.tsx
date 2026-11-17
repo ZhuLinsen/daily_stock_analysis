@@ -45,7 +45,7 @@ import type { UiLanguage } from '../i18n/uiText';
 import { SCREENING_TEXT, screeningText, type ScreeningTextKey } from '../locales/screening';
 import { AppPage, Button, InlineAlert, Select } from '../components/common';
 
-const MARKET_IDS = ['cn'];
+const MARKET_IDS = ['cn', 'us'];
 const SCREEN_TASK_STORAGE_KEY = 'dsa.screening.activeScreenTask.v1';
 const SCREEN_TASK_POLL_INTERVAL_MS = 2000;
 const CUSTOM_STRATEGY_OPTION_VALUE = '__custom_strategy__';
@@ -99,7 +99,11 @@ const formatHistoryStrategyName = (language: UiLanguage, strategyId: string, str
 };
 
 const formatHistoryMarketLabel = (language: UiLanguage, marketId: string | null | undefined): string =>
-  marketId === 'cn' ? SCREENING_TEXT[language].marketA : marketId || 'cn';
+  marketId === 'cn'
+    ? SCREENING_TEXT[language].marketA
+    : marketId === 'us'
+      ? SCREENING_TEXT[language].marketUs
+      : marketId || 'cn';
 
 const readPersistedScreenTask = (): PersistedScreenTask | null => {
   if (typeof window === 'undefined') {

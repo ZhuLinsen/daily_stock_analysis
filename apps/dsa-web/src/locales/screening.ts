@@ -2,6 +2,7 @@ import { formatUiText, type UiLanguage, type UiTextParams } from '../i18n/uiText
 
 const zh = {
   marketA: "A 股",
+  marketUs: "美股",
   framework: "综合",
   income: "收益",
   momentum: "动量",
@@ -252,6 +253,7 @@ const zh = {
 
 const en: Record<keyof typeof zh, string> = {
   marketA: "A-shares",
+  marketUs: "US",
   framework: "Combined",
   income: "Income",
   momentum: "Momentum",
