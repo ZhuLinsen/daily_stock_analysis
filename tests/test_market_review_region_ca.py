@@ -30,13 +30,13 @@ import pytest
 # market_review_region 常量与归一化
 # ---------------------------------------------------------------------------
 class TestMarketReviewRegionConstants:
-    """MARKET_REVIEW_REGION 四常量应包含 ca（追加在 kr 之后）"""
+    """MARKET_REVIEW_REGION 四常量应包含 ca（合并 TW #2489 后追加在 tw 之后、序列末尾）"""
 
     def test_order_includes_ca_after_kr(self):
         from src.utils.market_review_region import MARKET_REVIEW_REGION_ORDER
 
         assert "ca" in MARKET_REVIEW_REGION_ORDER
-        assert MARKET_REVIEW_REGION_ORDER == ("cn", "hk", "us", "jp", "kr", "ca")
+        assert MARKET_REVIEW_REGION_ORDER == ("cn", "hk", "us", "jp", "kr", "tw", "ca")
 
     def test_set_contains_ca(self):
         from src.utils.market_review_region import MARKET_REVIEW_REGION_SET
@@ -46,7 +46,7 @@ class TestMarketReviewRegionConstants:
     def test_all_contains_ca(self):
         from src.utils.market_review_region import MARKET_REVIEW_REGION_ALL
 
-        assert MARKET_REVIEW_REGION_ALL == "cn,hk,us,jp,kr,ca"
+        assert MARKET_REVIEW_REGION_ALL == "cn,hk,us,jp,kr,tw,ca"
 
     def test_valid_inputs_contains_ca(self):
         from src.utils.market_review_region import MARKET_REVIEW_REGION_VALID_INPUTS
@@ -69,7 +69,7 @@ class TestLenientNormalizationCa:
 
         assert normalize_market_review_region_lenient("cn,ca") == "cn,ca"
         assert normalize_market_review_region_lenient("CA, CN") == "cn,ca"
-        # 规范顺序：cn,hk,us,jp,kr,ca
+        # 规范顺序：cn,hk,us,jp,kr,tw,ca
         assert normalize_market_review_region_lenient("ca,hk") == "hk,ca"
 
     def test_invalid_tokens_filtered_ca_kept(self):
@@ -80,7 +80,7 @@ class TestLenientNormalizationCa:
     def test_both_expands_with_ca(self):
         from src.utils.market_review_region import normalize_market_review_region_lenient
 
-        assert normalize_market_review_region_lenient("both") == "cn,hk,us,jp,kr,ca"
+        assert normalize_market_review_region_lenient("both") == "cn,hk,us,jp,kr,tw,ca"
 
     def test_unknown_returns_none(self):
         from src.utils.market_review_region import normalize_market_review_region_lenient
@@ -282,8 +282,8 @@ class TestMarketAnalyzerAcceptsCa:
 
     def test_zh_report_title_uses_market_scope(self):
         analyzer = self._make_analyzer("ca")
-        # jp/kr/ca 走 "{scope}大盘复盘" 形态，而非默认的"{date} 大盘复盘"
-        assert analyzer.region in ("jp", "kr", "ca")
+        # jp/kr/tw/ca 走 "{scope}大盘复盘" 形态，而非默认的"{date} 大盘复盘"
+        assert analyzer.region in ("jp", "kr", "tw", "ca")
 
 
 if __name__ == "__main__":

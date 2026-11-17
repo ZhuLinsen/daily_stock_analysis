@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ScreeningHotspotDetail } from '../../api/screening';
+import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UiLanguageToggle } from '../../components/i18n/UiLanguageToggle';
 import StockScreeningPage from '../StockScreeningPage';
 
 const {
@@ -155,12 +157,26 @@ describe('StockScreeningPage', () => {
     getRun.mockRejectedValue(Object.assign(new Error('run not found'), {
       parsedError: {
         title: '选股任务不可恢复',
+        code: 'screening_screen_task_not_found',
         message: '服务端没有找到这次选股任务，可能后端已重启或任务记录已清理，请重新运行选股。',
         rawMessage: 'screening_screen_task_not_found',
         category: 'http_error',
       },
     }));
     window.sessionStorage.clear();
+  });
+
+  it('updates disabled controls when the UI language changes', async () => {
+    localStorage.setItem('dsa.uiLanguage', 'en');
+    getScreeningStatus.mockResolvedValueOnce({ enabled: false, available: true });
+    render(<UiLanguageProvider><UiLanguageToggle /><StockScreeningPage /></UiLanguageProvider>);
+    expect(await screen.findByRole('button', { name: 'Enable screening' })).toBeEnabled();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Stock Screening');
+    expect(screen.getByRole('button', { name: 'Run screening' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Switch UI language' }));
+    expect(screen.getByRole('button', { name: '开启选股' })).toBeEnabled();
+    expect(getScreeningStatus).toHaveBeenCalledTimes(1);
+    localStorage.removeItem('dsa.uiLanguage');
   });
 
   it('keeps implementation attribution and repeated guidance off the operation page', async () => {
@@ -1260,7 +1276,8 @@ describe('StockScreeningPage', () => {
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
   });
 
-  it('clears the persisted recovery state when a restored task becomes unrecoverable', async () => {
+  it.each(['zh', 'en'])('clears an expired task and explains how to recover in %s', async (language) => {
+    localStorage.setItem('dsa.uiLanguage', language);
     getScreeningStatus.mockResolvedValue({
       enabled: true,
       available: true,
@@ -1271,22 +1288,18 @@ describe('StockScreeningPage', () => {
       strategy: 'dual_low',
       maxResults: 3,
     }));
-    getScreenTask.mockRejectedValueOnce(Object.assign(new Error('选股任务不可恢复'), {
-      parsedError: {
-        title: '选股任务不可恢复',
-        message: '服务端没有找到这次选股任务，可能后端已重启或任务记录已清理，请重新运行选股。',
-        rawMessage: 'screening_screen_task_not_found',
-        category: 'http_error',
-      },
-    }));
+    getScreenTask.mockRejectedValueOnce({
+      response: { status: 404, data: { detail: { error: 'screening_screen_task_not_found', message: 'Task expired' } } },
+    });
 
-    render(<StockScreeningPage />);
+    render(<UiLanguageProvider><StockScreeningPage /></UiLanguageProvider>);
 
     await waitFor(() => expect(getScreenTask).toHaveBeenCalledTimes(1));
-    expect(screen.getByText(/选股任务不可恢复/)).toBeInTheDocument();
-    expect(screen.queryByText('选股运行中')).not.toBeInTheDocument();
+    expect(await screen.findByText(language === 'zh' ? /选股任务不可恢复/ : /server could not find this task/)).toBeInTheDocument();
+    expect(screen.queryByText(language === 'zh' ? '选股运行中' : 'Screening in progress')).not.toBeInTheDocument();
     // 不可恢复分支必须清理持久化恢复状态，避免刷新后反复恢复同一条失效任务
     expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toBeNull();
+    localStorage.removeItem('dsa.uiLanguage');
   });
 
   it('keeps the persisted recovery state and history visible after filters change', async () => {

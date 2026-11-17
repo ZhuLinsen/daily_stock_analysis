@@ -276,6 +276,22 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响部分 A 股基础数据、股票列表和相关增强数据获取。'],
     notes: ['不要把 token 提交到仓库或公开日志。'],
   },
+  'settings.data_source.TICKPLUS_API_KEY': {
+    title: 'TickPlus API Key（推荐）',
+    summary: '首选推荐 A 股 / ETF 日 K、实时指标、名称查询；ETF 轮动使用前复权实例。',
+    usage: '在 TickPlus 控制台获取自己的 Key；未设置实时优先级时自动首选 tickplus。',
+    valueNotes: ['可选增强项，未配置时继续使用其他行情源。', '套餐额度、频率和 Key 有效期以平台确认为准。'],
+    impact: ['影响普通 A 股 / ETF 日 K、实时指标及 ETF 轮动，不改变已登记指数和海外市场路由。'],
+    notes: ['失败自动回退；不要公开测试 Key。已登记指数与海外市场保持原路由。'],
+  },
+  'settings.data_source.TICKPLUS_PRIORITY': {
+    title: 'TickPlus 日 K 优先级',
+    summary: '数字越小越优先，默认 0，同值先于内置源。',
+    usage: '仅影响普通 A 股 / ETF 日 K；实时行情由 REALTIME_SOURCE_PRIORITY 控制。',
+    valueNotes: ['填写非负整数；未配置 Key 时不启用 TickPlus。'],
+    impact: ['调整普通日 K 数据源的尝试顺序。'],
+    notes: ['显式设置的实时行情顺序会保留。'],
+  },
   'settings.data_source.TICKFLOW_API_KEY': {
     title: 'TickFlow API Key',
     summary: '用于启用 TickFlow A 股日 K、实时行情、股票列表/名称与大盘复盘增强数据。',
@@ -1267,7 +1283,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制大盘分析功能的开关、支持的市场子集和配色方案。',
     usage: 'MARKET_REVIEW_ENABLED 开启大盘分析；DAILY_MARKET_CONTEXT_ENABLED 默认开启，会把当日大盘摘要用于个股分析 Prompt 与保守护栏；MARKET_REVIEW_REGION 支持输入逗号分隔的市场子集（如 cn,us,jp 或 cn,us,jp,kr），不传可回退为 cn；MARKET_REVIEW_COLOR_SCHEME 选择配色。',
     valueNotes: [
-      'cn 覆盖 A 股，hk 覆盖港股，us 覆盖美股，jp 覆盖日股，kr 覆盖韩股，both 覆盖全部（cn,hk,us,jp,kr）。',
+      'cn 覆盖 A 股，hk 覆盖港股，us 覆盖美股，jp 覆盖日股，kr 覆盖韩股，tw 覆盖台股，ca 覆盖加股，both 覆盖全部七市场（cn,hk,us,jp,kr,tw,ca），会增加请求次数和耗时；保留旧范围请填 cn,hk,us,jp,kr。',
       'MARKET_REVIEW_REGION 直接写入文本框，支持逗号分隔的子集；空值或非法值会回退到 cn。',
       '默认开启 DAILY_MARKET_CONTEXT_ENABLED；设为 false 后仍可生成大盘复盘报告，但个股分析不会读取大盘摘要或软化买入/加仓建议。',
       '配色方案影响大盘报告中指数涨跌的颜色显示：green_up 为绿涨红跌，red_up 为红涨绿跌。',
@@ -1511,6 +1527,22 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Available APIs depend on your Tushare permission level.'],
     impact: ['Affects some A-share base data, stock lists, and enrichment data.'],
     notes: ['Do not commit the token or print it in public logs.'],
+  },
+  'settings.data_source.TICKPLUS_API_KEY': {
+    title: 'TickPlus API Key (Recommended)',
+    summary: 'Preferred A-share/ETF daily bars, realtime indicators and names; ETF rotation uses forward adjustment.',
+    usage: 'Use your own console key. TickPlus is preferred unless realtime priority is explicitly configured.',
+    valueNotes: ['Optional: other providers remain available without a key.', 'Quota, rate limits and expiry depend on the platform.'],
+    impact: ['Affects ordinary A-share/ETF daily bars, realtime indicators and ETF rotation. Index and overseas routes are unchanged.'],
+    notes: ['Failures fall back. Never publish test keys. Registered indices and overseas routes are unchanged.'],
+  },
+  'settings.data_source.TICKPLUS_PRIORITY': {
+    title: 'TickPlus Daily Priority',
+    summary: 'Lower numbers run first; default 0, before built-in sources at the same priority.',
+    usage: 'For ordinary A-share/ETF daily bars. Realtime order uses REALTIME_SOURCE_PRIORITY.',
+    valueNotes: ['Use a non-negative integer. TickPlus requires a configured API key.'],
+    impact: ['Changes the order in which daily data providers are tried.'],
+    notes: ['Explicit realtime priority overrides are preserved.'],
   },
   'settings.data_source.TICKFLOW_API_KEY': {
     title: 'TickFlow API Key',
@@ -2484,7 +2516,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Controls the market review feature: on/off, market subset input, and color scheme.',
     usage: 'MARKET_REVIEW_ENABLED toggles market review; DAILY_MARKET_CONTEXT_ENABLED is on by default and controls whether the daily market summary is injected into stock-analysis prompts and conservative guardrails; MARKET_REVIEW_REGION accepts a comma-separated region subset (for example cn,us,jp or cn,us,jp,kr), and `both` keeps all supported markets; invalid or empty values fall back to `cn`; MARKET_REVIEW_COLOR_SCHEME selects colors.',
     valueNotes: [
-      'cn covers A-shares, hk covers Hong Kong, us covers US stocks, jp covers Japan, kr covers Korea, and both covers all (cn,hk,us,jp,kr).',
+      'cn covers A-shares, hk covers Hong Kong, us covers US stocks, jp covers Japan, kr covers Korea, tw covers Taiwan, ca covers Canada, and both covers all seven (cn,hk,us,jp,kr,tw,ca), adding requests and latency. Use cn,hk,us,jp,kr to retain the previous scope.',
       'MARKET_REVIEW_REGION is free-text input; you can enter a comma-separated subset like cn,us or cn,us,jp,kr.',
       'DAILY_MARKET_CONTEXT_ENABLED is enabled by default; set it to false to keep market review reports running without injecting the summary into stock analysis or softening buy/add advice.',
       'Color scheme affects how index changes are displayed: green_up = green for gains/red for losses; red_up = red for gains/green for losses.',

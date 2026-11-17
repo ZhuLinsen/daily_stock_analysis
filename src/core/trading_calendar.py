@@ -667,17 +667,17 @@ def compute_effective_region(
     Compute effective market review region given config and open markets.
 
     Args:
-        config_region: From MARKET_REVIEW_REGION ('cn' | 'hk' | 'us' | 'jp' | 'kr' | 'ca' | 'both' or comma subset)
+        config_region: From MARKET_REVIEW_REGION ('cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'ca' | 'both' or comma subset)
         open_markets: Markets open today
 
     Returns:
         None: caller uses config default (check disabled)
         '': all relevant markets closed, skip market review
-        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'ca' | 'both': effective subset for today
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'ca' | 'both': effective subset for today
     """
     # ca (Issue #2420) is filtered by its own XTSX/America-Toronto session above;
     # a TSX holiday skips the ca review instead of falling back to the cn calendar.
-    markets = ("cn", "hk", "us", "jp", "kr", "ca")
+    markets = ("cn", "hk", "us", "jp", "kr", "tw", "ca")
     normalized = (config_region or "cn").strip().lower()
     if not normalized:
         normalized = "cn"

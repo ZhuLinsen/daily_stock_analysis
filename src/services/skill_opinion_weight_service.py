@@ -131,6 +131,106 @@ class SkillOpinionWeightService:
 
         return neutral
 
+    def compute_smoothed_weights(
+        self,
+        skill_ids: Sequence[str],
+        *,
+        prior_hits: float = 6.0,
+        prior_misses: float = 6.0,
+    ) -> Dict[str, float]:
+        """Compute continuous Empirical Bayes weights for small-sample skill calibration."""
+        requested = self._normalize_skill_ids(skill_ids)
+        neutral = {skill_id: 1.0 for skill_id in requested}
+        if not requested or not self.engine_version:
+            return neutral
+        try:
+            prior_hits_value = float(prior_hits)
+            prior_misses_value = float(prior_misses)
+        except (TypeError, ValueError):
+            return neutral
+        if (
+            not math.isfinite(prior_hits_value)
+            or not math.isfinite(prior_misses_value)
+            or prior_hits_value <= 0
+            or prior_misses_value <= 0
+        ):
+            return neutral
+
+        try:
+            stats = self.performance_service.get_stats(
+                engine_version=self.engine_version,
+                skill_ids=requested,
+            )
+            if not isinstance(stats, dict) or stats.get("engine_version") != self.engine_version:
+                return neutral
+            buckets = stats.get("buckets")
+            if not isinstance(buckets, list):
+                return neutral
+        except Exception:
+            logger.debug(
+                "Failed to read Skill Opinion performance statistics for smoothed weights",
+                exc_info=True,
+            )
+            return neutral
+
+        requested_set = set(requested)
+        aggregates: Dict[str, Tuple[int, int, int, int]] = {
+            skill_id: (0, 0, 0, 0) for skill_id in requested
+        }
+        seen_buckets: Set[Tuple[str, str]] = set()
+        for bucket in buckets:
+            skill_id = self._bucket_skill_id(bucket)
+            if skill_id not in requested_set or not self._bucket_identity_is_current(bucket):
+                continue
+            horizon = str(bucket.get("horizon") or "").strip()
+            bucket_key = (skill_id, horizon)
+            if bucket_key in seen_buckets:
+                continue
+            seen_buckets.add(bucket_key)
+
+            evaluated = self._count(bucket.get("evaluated"))
+            hit = self._count(bucket.get("hit"))
+            miss = self._count(bucket.get("miss"))
+            unable = self._count(bucket.get("unable"))
+            observational = self._count(bucket.get("observational"))
+            if None in (evaluated, hit, miss, unable, observational):
+                continue
+            if evaluated <= 0 or hit + miss != evaluated:
+                continue
+            prev_h, prev_m, prev_u, prev_o = aggregates[skill_id]
+            aggregates[skill_id] = (
+                prev_h + hit,
+                prev_m + miss,
+                prev_u + unable,
+                prev_o + observational,
+            )
+
+        prior_total = prior_hits_value + prior_misses_value
+        for skill_id, (hits, misses, unable, observational) in aggregates.items():
+            total_eval = hits + misses
+            if total_eval <= 0:
+                continue
+            posterior_hit_rate = (prior_hits_value + hits) / (prior_total + total_eval)
+            direction_score = 2.0 * posterior_hit_rate - 1.0
+            terminal_count = total_eval + observational + unable
+            if terminal_count <= 0:
+                continue
+            unable_rate = unable / terminal_count
+            smoothed_score = min(
+                1.0,
+                max(-1.0, direction_score - _UNABLE_PENALTY * unable_rate),
+            )
+            factor = math.exp(
+                math.log(MAX_SKILL_OPINION_WEIGHT_FACTOR) * smoothed_score
+            )
+            if math.isfinite(factor):
+                neutral[skill_id] = min(
+                    MAX_SKILL_OPINION_WEIGHT_FACTOR,
+                    max(MIN_SKILL_OPINION_WEIGHT_FACTOR, round(factor, 4)),
+                )
+
+        return neutral
+
     def _bucket_identity_is_current(self, bucket: Any) -> bool:
         if not isinstance(bucket, dict):
             return False
