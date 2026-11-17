@@ -33,6 +33,9 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 </table>
 </details>
 
+> [!TIP]
+> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
+
 ## 🖥️ Product Preview
 
 <p align="center">
@@ -41,10 +44,6 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 </p>
 
 ## ✨ Key Features
-
-🚀 **More from the author: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift)　｜　[AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)**
-
----
 
 | Capability | Coverage |
 |------------|----------|

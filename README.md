@@ -31,6 +31,8 @@
 </table>
 </details>
 
+> [!TIP]
+> 🚀 **作者配套开源项目**：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)
 
 ## 🖥️ 产品预览
 
@@ -40,10 +42,6 @@
 </p>
 
 ## ✨ 功能特性
-
-🚀 **作者项目推荐：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift)　｜　[AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)**
-
----
 
 | 能力 | 覆盖内容 |
 |------|------|
