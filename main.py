@@ -476,6 +476,9 @@ def parse_arguments() -> argparse.Namespace:
         help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
+    parser.add_argument('--hot-top10', action='store_true',
+                        help='抓取市场热榜 Top N 并生成轻量分析报告（默认关闭，配置见 HOT_TOP10_*）')
+
     return parser.parse_args()
 
 
@@ -1918,6 +1921,18 @@ def main() -> int:
             )
             return 0
 
+        # 模式0.6: 热榜 Top N 轻量分析（Issue #1936，手动一次性入口）
+        if getattr(args, 'hot_top10', False):
+            from src.services.hot_top10 import run_hot_top10_analysis
+
+            result = run_hot_top10_analysis(
+                config, send_notification=not args.no_notify, respect_dedup=False,
+                force_run=getattr(args, 'force_run', False),
+            )
+            logger.info("热榜分析完成: delivered=%s reason=%s notification=%s",
+                        result.delivered, result.reason, result.notification_status)
+            return 0 if result.report_markdown is not None else 1
+
         # 模式1: 仅大盘复盘
         if args.market_review:
             from src.core.market_review import run_market_review
@@ -2079,6 +2094,45 @@ def main() -> int:
                     "interval_seconds": interval_minutes * 60,
                     "run_immediately": True,
                     "name": "agent_event_monitor",
+                })
+
+            # Hot Top10 daily tick (Issue #1936, default OFF): rides the
+            # existing background-task threads; the service's per-day marker
+            # + in-process mutex make it at-most-once per trading day. Honors
+            # --no-notify like the one-shot --hot-top10 entry.
+            if getattr(config, 'hot_top10_enabled', False):
+                _hot_top10_state = {"last_attempt": ""}
+
+                def hot_top10_daily_tick():
+                    runtime_cfg = _reload_runtime_config()
+                    if not getattr(runtime_cfg, 'hot_top10_enabled', False):
+                        return
+                    now = datetime.now()
+                    if now.strftime('%H:%M') < getattr(runtime_cfg, 'hot_top10_schedule_time', '15:35'):
+                        return
+                    if _hot_top10_state["last_attempt"] == now.strftime('%Y-%m-%d'):
+                        return  # one deciding attempt per day; retry next day / manually
+                    from src.services.hot_top10 import run_hot_top10_analysis
+
+                    hot_result = run_hot_top10_analysis(
+                        runtime_cfg, send_notification=not getattr(args, 'no_notify', False)
+                    )
+                    logger.info(
+                        "[HotTop10] 定时任务完成: delivered=%s skipped=%s reason=%s "
+                        "llm_completed=%s notification=%s",
+                        hot_result.delivered, hot_result.skipped, hot_result.reason,
+                        hot_result.llm_completed, hot_result.notification_status,
+                    )
+                    # In-flight runs (already_running) re-check next tick; any
+                    # terminal outcome stops today's ticks.
+                    if not (hot_result.skipped and hot_result.reason == "already_running"):
+                        _hot_top10_state["last_attempt"] = now.strftime('%Y-%m-%d')
+
+                background_tasks.append({
+                    "task": hot_top10_daily_tick,
+                    "interval_seconds": 60,
+                    "run_immediately": True,
+                    "name": "hot_top10_daily_tick",
                 })
 
             schedule_kwargs = {
