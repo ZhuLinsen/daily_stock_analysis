@@ -16,6 +16,8 @@
 
 > 🤖 基于 AI 大模型的 A股/港股/美股/日股/韩股/台股自选股智能分析系统，每日自动分析并推送「决策仪表盘」到企业微信/飞书/Telegram/Discord/Slack/邮箱
 
+🧩 我的其他开源项目：[AlphaSift](https://github.com/ZhuLinsen/alphasift) · 智能选股 ｜ [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) · 策略回测与进化
+
 [**产品预览**](#-产品预览) · [**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**文档中心**](docs/INDEX.md) · [**完整指南**](docs/full-guide.md)
 
 简体中文 | [English](docs/README_EN.md) | [繁體中文](docs/README_CHT.md)
@@ -60,7 +62,6 @@
 | 行情数据 | [TickPlus（推荐）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
 | 新闻搜索 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG |
 | 社交舆情 | Stock Sentiment API（Reddit / X / Polymarket，仅美股，可选） |
-| 相关项目 | [AlphaSift](https://github.com/ZhuLinsen/alphasift)：选股实现参考 · [AlphaEvo](https://github.com/ZhuLinsen/alphaevo)：策略回测与进化 |
 
 > 项目默认内置 AkShare、Baostock、YFinance 等免费行情源，可零配置运行；免费源受上游限流、接口变动和网络波动影响，稳定性不保证。长期定时、批量分析或更稳定行情建议配置 Tushare、Longbridge 等 token 型数据源，适用市场、Actions 映射和 fallback 规则见 [数据源配置](docs/full-guide.md#数据源配置)。
 

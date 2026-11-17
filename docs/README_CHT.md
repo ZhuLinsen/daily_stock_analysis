@@ -18,6 +18,8 @@
 
 每日自動分析自選股 -> 生成決策儀表盤 -> 推送到 Telegram / Discord / Slack / 郵件 / 企業微信 / 飛書。
 
+🧩 我的其他開源專案：[AlphaSift](https://github.com/ZhuLinsen/alphasift) · 智能選股 ｜ [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) · 策略回測與進化
+
 [**產品預覽**](#-產品預覽) · [**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**文檔中心**](./INDEX.md) · [**完整指南**](./full-guide.md)
 
 繁體中文 | [English](README_EN.md) | [简体中文](../README.md)
@@ -61,7 +63,6 @@
 | 行情數據 | AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
 | 新聞搜尋 | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG |
 | 社交輿情 | Stock Sentiment API（Reddit / X / Polymarket，僅美股，可選） |
-| 相關專案 | [AlphaSift](https://github.com/ZhuLinsen/alphasift)：選股實作參考 · [AlphaEvo](https://github.com/ZhuLinsen/alphaevo)：策略回測與進化 |
 
 > 專案預設內建 AkShare、Baostock、YFinance 等免費行情源，可零配置執行；免費源受上游限流、介面變動和網路波動影響，穩定性不保證。長期定時、批量分析或更穩定行情建議配置 Tushare、Longbridge 等 token 型數據源，適用市場、Actions 映射和 fallback 規則見 [數據源配置](./full-guide.md#数据源配置)。
 
