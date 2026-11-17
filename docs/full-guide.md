@@ -519,6 +519,10 @@ daily_stock_analysis/
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
 | `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、tw(台股)、both(全部六市场)，支持逗号子集（如 cn,tw） | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | 大盘复盘指数涨跌颜色：`green_up`=绿涨红跌（默认），`red_up`=红涨绿跌 | `green_up` |
+| `NEWS_DIGEST_ENABLED` | 启用消息面汇总（issue #2184）：盘前/周末/节假日各一份 A 股宏观消息摘要，基于本地资讯池近 48 小时条目（按发布时间 `published_at` 过滤；缺失发布时间时按抓取时间口径纳入，并在摘要脚注标注条数）；每个自然日至多推送一份，发送失败会在窗口内自动补发；手动触发用 `python main.py --news-digest` | `false` |
+| `NEWS_DIGEST_PREMARKET_WINDOW` | 交易日盘前窗口（HH:MM-HH:MM，语义 [start, end)） | `08:00-09:15` |
+| `NEWS_DIGEST_OFFDAY_WINDOW` | 周末/节假日窗口（HH:MM-HH:MM） | `09:00-18:00` |
+| `NEWS_DIGEST_MAX_NEWS` | 单份摘要最大条数（4..30） | `12` |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |

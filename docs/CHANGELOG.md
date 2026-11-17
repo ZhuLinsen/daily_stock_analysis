@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
+- [新功能] 新增可选消息面汇总（issue #2184，默认关闭）：盘前/周末/节假日各一份 A 股宏观消息摘要，基于本地资讯池近 48 小时条目按发布时间过滤（缺失发布时间按抓取口径纳入并标注条数），每日至多推送一份、发送失败窗口内补发，支持 `python main.py --news-digest` 手动触发。
 
 ## [3.35.0] - 2026-11-16
 
