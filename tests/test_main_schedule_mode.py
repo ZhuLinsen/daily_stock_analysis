@@ -61,6 +61,9 @@ class _DummyConfig(SimpleNamespace):
     def validate(self):
         return []
 
+    def validate_structured(self):
+        return []
+
 
 class MainScheduleModeTestCase(unittest.TestCase):
     def setUp(self) -> None:

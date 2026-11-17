@@ -10,6 +10,8 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.config import Config
+
 
 def _make_mock_response(json_data, status_code=200):
     resp = MagicMock()
@@ -173,7 +175,7 @@ class TestFinnhubFetcherInit(unittest.TestCase):
 
     @patch('src.config.get_config')
     def test_init_with_key(self, mock_config):
-        mock_config.return_value = MagicMock(finnhub_api_key='sk-test-123')
+        mock_config.return_value = Config(finnhub_api_key='sk-test-123')
         from data_provider.finnhub_fetcher import FinnhubFetcher
         f = FinnhubFetcher()
         self.assertEqual(f._api_key, 'sk-test-123')
@@ -182,7 +184,7 @@ class TestFinnhubFetcherInit(unittest.TestCase):
     @patch('src.config.get_config')
     def test_init_without_key(self, mock_config):
         os.environ.pop('FINNHUB_API_KEY', None)
-        mock_config.return_value = MagicMock(finnhub_api_key=None)
+        mock_config.return_value = Config(finnhub_api_key=None)
         from data_provider.finnhub_fetcher import FinnhubFetcher
         f = FinnhubFetcher()
         self.assertIsNone(f._api_key)
@@ -193,7 +195,7 @@ class TestFinnhubFetcherRegistration(unittest.TestCase):
 
     @patch('src.config.get_config')
     def test_registered_with_key(self, mock_config):
-        mock_config.return_value = MagicMock(
+        mock_config.return_value = Config(
             finnhub_api_key='sk-test',
             alphavantage_api_key=None,
             tushare_token=None,
@@ -206,10 +208,11 @@ class TestFinnhubFetcherRegistration(unittest.TestCase):
         mgr = DataFetcherManager()
         names = [f.name for f in mgr._get_fetchers_snapshot()]
         self.assertIn('FinnhubFetcher', names)
+        self.assertNotIn('TickPlusFetcher', names)
 
     @patch('src.config.get_config')
     def test_not_registered_without_key(self, mock_config):
-        mock_config.return_value = MagicMock(
+        mock_config.return_value = Config(
             finnhub_api_key=None,
             alphavantage_api_key=None,
             tushare_token=None,
@@ -222,6 +225,7 @@ class TestFinnhubFetcherRegistration(unittest.TestCase):
         mgr = DataFetcherManager()
         names = [f.name for f in mgr._get_fetchers_snapshot()]
         self.assertNotIn('FinnhubFetcher', names)
+        self.assertNotIn('TickPlusFetcher', names)
 
 
 class TestUSDailyRoutingFallback(unittest.TestCase):
@@ -230,7 +234,7 @@ class TestUSDailyRoutingFallback(unittest.TestCase):
     @patch('src.config.get_config')
     def test_us_routing_includes_new_fetchers(self, mock_config):
         """US stock get_daily_data source_order must contain Finnhub and AlphaVantage."""
-        mock_config.return_value = MagicMock(
+        mock_config.return_value = Config(
             finnhub_api_key='sk-test',
             alphavantage_api_key='av-test',
             tushare_token=None,
@@ -245,6 +249,7 @@ class TestUSDailyRoutingFallback(unittest.TestCase):
         # Verify both fetchers are registered
         names = [f.name for f in mgr._get_fetchers_snapshot()]
         self.assertIn('FinnhubFetcher', names)
+        self.assertNotIn('TickPlusFetcher', names)
         self.assertIn('AlphaVantageFetcher', names)
 
         # Verify the US routing source_order by checking the code path

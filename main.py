@@ -479,6 +479,26 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _startup_config_warnings(config: Config, args: argparse.Namespace) -> List[str]:
+    """Return startup config messages, minus those this invocation already resolves."""
+    resolved_issues = set()
+    if getattr(args, "stocks", None) or getattr(args, "portfolio", None):
+        resolved_issues.add(
+            ("STOCK_LIST", "未配置 STOCK_LIST。请设置至少一个股票代码，例如：600519,hk00700,AAPL。")
+        )
+    if getattr(args, "no_notify", False):
+        # 该 field 是“未配置任何通知渠道”这一条告警的归属字段
+        resolved_issues.add(("WECHAT_WEBHOOK_URL", "未配置通知渠道，将不发送推送通知"))
+    return [
+        issue.message
+        for issue in config.validate_structured()
+        if not any(
+            issue.field == field and issue.message == message
+            for field, message in resolved_issues
+        )
+    ]
+
+
 def _compute_trading_day_filter(
     config: Config,
     args: argparse.Namespace,
@@ -777,7 +797,7 @@ def _resolve_daily_market_context_market(market: str, normalized_region: str) ->
     if "," not in normalized_region:
         return market
     parts = [item.strip() for item in normalized_region.split(",") if item.strip()]
-    if parts and all(item in {"jp", "kr"} for item in parts):
+    if parts and all(item in {"jp", "kr", "tw"} for item in parts):
         return parts[0]
     return market
 
@@ -787,7 +807,7 @@ def _resolve_daily_market_context_target_date(
     current_time: datetime,
 ) -> date:
     normalized_region = str(region or "cn").strip().lower()
-    market = normalized_region if normalized_region in {"cn", "hk", "us", "jp", "kr"} else "cn"
+    market = normalized_region if normalized_region in {"cn", "hk", "us", "jp", "kr", "tw"} else "cn"
 
     from src.core.trading_calendar import get_effective_trading_date
 
@@ -1717,8 +1737,7 @@ def main() -> int:
     logger.info("=" * 60)
 
     # 验证配置
-    warnings = config.validate()
-    for warning in warnings:
+    for warning in _startup_config_warnings(config, args):
         logger.warning(warning)
 
     if getattr(args, "check_notify", False):

@@ -9,7 +9,6 @@ import type { ChannelProtocol } from './llmProviderTemplates';
 import {
   LLM_PROVIDER_CAPABILITY_LABELS,
   LLM_PROVIDER_TEMPLATES,
-  MODELFLARE_APP_REGISTRATION_URL,
   MODELFLARE_DEFAULT_MODEL,
   MODEL_PLACEHOLDERS_BY_PROTOCOL,
   filterDiscoveredTextModels,
@@ -932,7 +931,7 @@ function inferProtocol(protocol: string, baseUrl: string, models: string[]): Cha
     return explicit;
   }
 
-  if (isRequestyBaseUrl(baseUrl)) {
+  if (isVendorModelGatewayBaseUrl(baseUrl)) {
     return 'openai';
   }
 
@@ -1045,14 +1044,14 @@ const PROTOCOL_ALIASES: Record<string, string> = {
   openai_compat: 'openai',
 };
 
-function isRequestyBaseUrl(baseUrl: string): boolean {
+function isVendorModelGatewayBaseUrl(baseUrl: string): boolean {
   const trimmed = baseUrl.trim();
   if (!trimmed) {
     return false;
   }
   try {
     const hostname = new URL(trimmed).hostname.toLowerCase();
-    return hostname === 'requesty.ai' || hostname.endsWith('.requesty.ai');
+    return hostname === 'requesty.ai' || hostname.endsWith('.requesty.ai') || hostname === 'api.x6.ai';
   } catch {
     return false;
   }
@@ -1069,12 +1068,12 @@ function normalizeModelForRuntime(
     return trimmedModel;
   }
 
-  // Mirrors normalize_llm_channel_model: Requesty vendor IDs keep the gateway route.
+  // Mirrors normalize_llm_channel_model: Vendor model IDs keep the OpenAI gateway route.
   if (
     protocol === 'openai'
     && trimmedModel.includes('/')
     && trimmedModel.split('/', 1)[0].trim().toLowerCase() !== 'openai'
-    && isRequestyBaseUrl(baseUrl)
+    && isVendorModelGatewayBaseUrl(baseUrl)
   ) {
     return `openai/${trimmedModel}`;
   }
@@ -1739,6 +1738,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({});
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [addPreset, setAddPreset] = useState(LLM_PROVIDER_TEMPLATES[0].channelId);
+  const registration = getProviderTemplate(addPreset)?.registration;
   const addChannelIdRef = useRef(0);
   const lastDraftFingerprintRef = useRef<string | null>(null);
   const onDraftItemsChangeRef = useRef(onDraftItemsChange);
@@ -2424,14 +2424,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                   placeholder="选择服务商"
                   className="min-w-0 flex-1"
                 />
-                {addPreset === 'modelflare' ? (
+                {registration ? (
                   <a
-                    href={MODELFLARE_APP_REGISTRATION_URL}
+                    href={registration.url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="settings-button-secondary inline-flex h-11 shrink-0 items-center justify-center whitespace-nowrap rounded-xl border px-3 text-sm font-medium transition-all duration-200 hover:translate-y-[-1px] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15"
                   >
-                    注册 Modelflare
+                    {registration.label}
                   </a>
                 ) : null}
               </div>
@@ -2566,7 +2566,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                       label="备选模型"
                       fieldKey="LITELLM_FALLBACK_MODELS"
                       helpKey="settings.llm_channel.fallback_models"
-                      examples={['LITELLM_FALLBACK_MODELS=deepseek/deepseek-v4-pro,gemini/gemini-3-flash-preview']}
+                      examples={['LITELLM_FALLBACK_MODELS=deepseek/deepseek-v4-pro,gemini/gemini-3.5-flash-lite']}
                       compact
                     />
                     <div className="space-y-2 rounded-xl border settings-border-strong settings-surface-overlay-soft p-3">
@@ -2594,7 +2594,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                       label="Vision 模型"
                       fieldKey="VISION_MODEL"
                       helpKey="settings.llm_channel.vision_model"
-                      examples={['VISION_MODEL=gemini/gemini-3.1-pro-preview']}
+                      examples={['VISION_MODEL=gemini/gemini-3.6-flash']}
                       compact
                     />
                     <Select

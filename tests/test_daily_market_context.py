@@ -168,7 +168,7 @@ def test_reuses_jp_market_review_history_without_normalizing_to_cn() -> None:
     run_review.assert_not_called()
 
 
-def test_jp_kr_request_does_not_reuse_legacy_both_history() -> None:
+def test_jp_kr_tw_request_does_not_reuse_legacy_both_history() -> None:
     db = MagicMock()
     db.get_analysis_history.return_value = [
         _history_record(
@@ -182,7 +182,7 @@ def test_jp_kr_request_does_not_reuse_legacy_both_history() -> None:
         today_fn=lambda: date(2026, 6, 6),
     )
 
-    for region in ("jp", "kr"):
+    for region in ("jp", "kr", "tw"):
         with patch("src.services.daily_market_context.run_market_review") as run_review:
             context = service.get_context(
                 region=region,

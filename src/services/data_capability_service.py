@@ -112,6 +112,10 @@ _PROVIDER_DEFINITIONS: Sequence[_ProviderDefinition] = (
         },
     ),
     _ProviderDefinition(
+        name="tickplus", label="TickPlus", fetcher_name="TickPlusFetcher",
+        dataset_markets={"quote.realtime": ("cn",), "kline.daily": ("cn",)},
+    ),
+    _ProviderDefinition(
         name="tickflow",
         label="TickFlow",
         fetcher_name="TickFlowFetcher",
@@ -177,6 +181,7 @@ _REALTIME_SOURCE_PROVIDER = {
     "akshare_qq": "akshare",
     "tencent": "akshare",
     "tushare": "tushare",
+    "tickplus": "tickplus",
     "tickflow": "tickflow",
     "futu": "futu",
     "longbridge": "longbridge",
@@ -200,6 +205,7 @@ _CN_REALTIME_SOURCES = {
     "akshare_qq",
     "tencent",
     "tushare",
+    "tickplus",
     "tickflow",
 }
 
@@ -323,6 +329,9 @@ class DataCapabilityService:
 
     @staticmethod
     def _provider_runtime_status(fetcher: Any) -> str:
+        runtime_status = getattr(fetcher, "runtime_status", None)
+        if isinstance(runtime_status, str) and runtime_status in {"ok", "unknown", "unavailable"}:
+            return runtime_status
         probe_result = DataCapabilityService._probe_fetcher_available(fetcher)
         if probe_result is True:
             return "ok"
@@ -355,6 +364,8 @@ class DataCapabilityService:
         name = definition.name
         if name == "tushare":
             return _truthy(getattr(self.config, "tushare_token", None))
+        if name == "tickplus":
+            return _truthy(getattr(self.config, "tickplus_api_key", None))
         if name == "tickflow":
             return _truthy(getattr(self.config, "tickflow_api_key", None))
         if name == "futu":
@@ -377,6 +388,9 @@ class DataCapabilityService:
         value = getattr(fetcher, "priority", None)
         if isinstance(value, int):
             return value
+        if definition.name == "tickplus":
+            priority = getattr(self.config, "tickplus_priority", 0)
+            return priority if isinstance(priority, int) else None
         if definition.name == "tickflow":
             priority = getattr(self.config, "tickflow_priority", None)
             return priority if isinstance(priority, int) else None

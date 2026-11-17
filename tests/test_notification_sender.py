@@ -1120,7 +1120,7 @@ class TestNtfySender(unittest.TestCase):
         self.assertEqual(mock_post.call_args.args[0], "https://ntfy.sh")
         call_kw = mock_post.call_args.kwargs
         self.assertEqual(
-            call_kw["json"],
+            json.loads(call_kw["data"].decode("utf-8")),
             {
                 "topic": "dsa-topic",
                 "title": "中文标题",
@@ -1128,6 +1128,8 @@ class TestNtfySender(unittest.TestCase):
                 "markdown": True,
             },
         )
+        # The body is raw UTF-8, not \uXXXX escapes that double its size.
+        self.assertIn("正文".encode("utf-8"), call_kw["data"])
         self.assertEqual(call_kw["headers"]["Authorization"], "Bearer secret-token")
         self.assertEqual(call_kw["timeout"], 5)
         self.assertFalse(call_kw["verify"])
@@ -1142,7 +1144,7 @@ class TestNtfySender(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(
-            mock_post.call_args.kwargs["json"]["message"],
+            json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))["message"],
             "# 🎯 Market Review\n\nBody",
         )
 
@@ -1156,7 +1158,94 @@ class TestNtfySender(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(mock_post.call_args.args[0], "https://example.com/ntfy")
-        self.assertEqual(mock_post.call_args.kwargs["json"]["topic"], "dsa-topic")
+        self.assertEqual(
+            json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))["topic"],
+            "dsa-topic",
+        )
+
+    @staticmethod
+    def _long_chinese_report() -> str:
+        sections = [
+            f"## 股票 {index}\n\n" + "这是一段用于验证分批发送的中文分析正文。" * 40
+            for index in range(1, 9)
+        ]
+        return "# 📊 决策仪表盘\n\n" + "\n\n---\n\n".join(sections)
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_long_report_is_split_within_ntfy_size_limits(self, mock_post, mock_sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+        report = self._long_chinese_report()
+        self.assertGreater(len(report.encode("utf-8")), 4096 * 2)
+
+        result = sender.send_to_ntfy(report, title="日报")
+
+        self.assertTrue(result)
+        total = mock_post.call_count
+        self.assertGreaterEqual(total, 2)
+        self.assertEqual(mock_sleep.call_count, total - 1)
+        for index, call in enumerate(mock_post.call_args_list, start=1):
+            body = call.kwargs["data"]
+            payload = json.loads(body.decode("utf-8"))
+            # ntfy turns a message of 4096+ bytes into an attachment and
+            # rejects a JSON body above 8192 bytes with HTTP 413.
+            self.assertLess(len(payload["message"].encode("utf-8")), 4096)
+            self.assertLessEqual(len(body), 8192)
+            self.assertEqual(payload["title"], f"日报 ({index}/{total})")
+            self.assertEqual(payload["topic"], "dsa-topic")
+            self.assertTrue(payload["markdown"])
+        sent_text = "".join(
+            json.loads(call.kwargs["data"].decode("utf-8"))["message"]
+            for call in mock_post.call_args_list
+        )
+        for index in range(1, 9):
+            self.assertIn(f"## 股票 {index}", sent_text)
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_message_full_of_json_escapes_stays_under_body_limit(self, mock_post, _mock_sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy('"\n' * 6000, title="t")
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(mock_post.call_count, 2)
+        for call in mock_post.call_args_list:
+            self.assertLessEqual(len(call.kwargs["data"]), 8192)
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_short_message_is_not_split_or_renamed(self, mock_post, mock_sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("股" * 1300, title="日报")
+
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        mock_sleep.assert_not_called()
+        payload = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        self.assertEqual(payload["title"], "日报")
+        self.assertEqual(payload["message"], "股" * 1300)
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_long_report_fails_when_any_part_fails(self, mock_post, _mock_sleep):
+        report = self._long_chinese_report()
+        mock_post.side_effect = [_response(200), _response(500)] + [_response(200)] * 20
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy(report)
+
+        self.assertFalse(result)
+        # Later parts are still attempted so one failed part does not drop the rest.
+        self.assertGreaterEqual(mock_post.call_count, 3)
 
     @mock.patch("src.notification_sender.ntfy_sender.requests.post")
     def test_send_returns_false_when_url_has_no_topic(self, mock_post):
@@ -1421,8 +1510,134 @@ class TestCustomWebhookSender(unittest.TestCase):
 
         payload = sender._build_custom_webhook_payload("https://api.day.app/key", "x" * 5000)
 
-        self.assertEqual(len(payload["body"]), 4000)
-        self.assertEqual(payload["body"], "x" * 4000)
+        self.assertEqual(payload["body"], "x" * 2997 + "...")
+
+    @staticmethod
+    def _apns_payload_bytes(payload: dict) -> int:
+        """Approximate the APNs payload Bark server builds (Go encoding/json)."""
+        apns = {
+            "aps": {
+                "alert": {"title": payload.get("title", ""), "body": payload.get("body", "")},
+                "category": "myNotificationCategory",
+                "mutable-content": 1,
+                "sound": "1107.caf",
+                "thread-id": payload.get("group", ""),
+            },
+            "group": payload.get("group", ""),
+        }
+        raw = json.dumps(apns, ensure_ascii=False, separators=(",", ":"))
+        for ch, escaped in (
+            ("<", "\\u003c"),
+            (">", "\\u003e"),
+            ("&", "\\u0026"),
+            ("\u2028", "\\u2028"),
+            ("\u2029", "\\u2029"),
+        ):
+            raw = raw.replace(ch, escaped)
+        return len(raw.encode("utf-8"))
+
+    def test_bark_payload_fits_apns_limit_for_chinese_report(self):
+        """Issue #2503: 4000 CJK chars (~12KB) exceeded APNs 4096-byte payload limit."""
+        sender = CustomWebhookSender(_config())
+        report = "\n".join(
+            f"> **贵州茅台(600519)** 建议：持有 | 评分 72 | 趋势 <多头> & 量能放大 {i}"
+            for i in range(300)
+        )
+        self.assertGreater(len(report.encode("utf-8")), 4096)
+
+        payload = sender._build_custom_webhook_payload("https://api.day.app/key", report)
+
+        self.assertTrue(payload["body"].endswith("..."))
+        self.assertTrue(report.startswith(payload["body"][:-3]))
+        self.assertLessEqual(sender._bark_encoded_bytes(payload["body"]), 3000)
+        self.assertLess(self._apns_payload_bytes(payload), 4096)
+
+    def test_bark_short_content_is_not_truncated(self):
+        sender = CustomWebhookSender(_config())
+        content = "贵州茅台 建议持有" * 50
+
+        payload = sender._build_custom_webhook_payload("https://api.day.app/key", content)
+
+        self.assertEqual(payload["body"], content)
+
+    def test_bark_custom_body_template_content_fits_apns_limit(self):
+        cfg = _config(
+            custom_webhook_body_template=(
+                '{"title":$title_json,"body":$content_json,"group":"stock"}'
+            ),
+        )
+        sender = CustomWebhookSender(cfg)
+        report = "贵州茅台建议持有，" * 1000
+
+        payload = sender._build_custom_webhook_payload("https://api.day.app/key", report)
+
+        self.assertTrue(payload["body"].endswith("..."))
+        self.assertLess(self._apns_payload_bytes(payload), 4096)
+
+    def test_custom_body_template_does_not_truncate_non_bark_url(self):
+        cfg = _config(custom_webhook_body_template='{"content":$content_json}')
+        sender = CustomWebhookSender(cfg)
+        report = "贵州茅台建议持有，" * 1000
+
+        payload = sender._build_custom_webhook_payload("https://example.com/hook", report)
+
+        self.assertEqual(payload["content"], report)
+
+    def test_bark_detection_uses_hostname_not_substring(self):
+        cfg = _config(custom_webhook_body_template='{"content":$content_json}')
+        sender = CustomWebhookSender(cfg)
+        report = "x" * 5000
+
+        for url in (
+            "https://notify.example.org/webhook?source=api.day.app",
+            "https://notify.example.org/api.day.app/hook",
+            "https://api.day.app.example.org/hook",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(sender._is_bark_webhook(url))
+                payload = sender._build_custom_webhook_payload(url, report)
+                self.assertEqual(payload["content"], report)
+
+        self.assertTrue(sender._is_bark_webhook("https://API.day.app/key"))
+        self.assertTrue(sender._is_bark_webhook("https://api.day.app:443/key"))
+
+    def test_bark_raw_content_template_keeps_escape_across_truncation_boundary(self):
+        """Truncation must not split a JSON escape in a raw $content template."""
+        cfg = _config(
+            custom_webhook_body_template='{"body":"$content","group":"alerts","sound":"bell"}',
+        )
+        sender = CustomWebhookSender(cfg)
+        # The raw escape "\\n" ends exactly at the 2997-byte budget, so cutting
+        # the raw text before rendering would leave a dangling backslash.
+        content = "a" * 2995 + "\\n" + "b" * 3000
+
+        payload = sender._build_custom_webhook_payload("https://api.day.app/key", content)
+
+        self.assertEqual(payload["group"], "alerts")
+        self.assertEqual(payload["sound"], "bell")
+        # Truncated after parsing: the decoded newline is trimmed, not split.
+        self.assertEqual(payload["body"], "a" * 2995 + "...")
+
+    def test_bark_counts_line_separators_as_go_json_escapes(self):
+        sender = CustomWebhookSender(_config())
+        self.assertEqual(sender._bark_encoded_bytes("\u2028\u2029"), 12)
+
+        payload = sender._build_custom_webhook_payload("https://api.day.app/key", "好\u2028" * 1000)
+
+        # Each pair is 3 + 6 bytes, so 333 pairs fill the 2997-byte budget.
+        self.assertEqual(payload["body"], "好\u2028" * 332 + "好...")
+        self.assertLess(self._apns_payload_bytes(payload), 4096)
+
+    @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_send_to_custom_posts_bark_body_within_apns_limit(self, mock_post):
+        mock_post.return_value = _response(200)
+        sender = CustomWebhookSender(_config(custom_webhook_urls=["https://api.day.app/key"]))
+
+        self.assertTrue(sender.send_to_custom("贵州茅台建议持有，" * 1000))
+
+        sent = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        self.assertEqual(set(sent), {"title", "body", "group"})
+        self.assertLess(self._apns_payload_bytes(sent), 4096)
 
     def test_custom_body_template_overrides_bark_auto_payload(self):
         cfg = _config(
@@ -1852,6 +2067,77 @@ class TestSlackSender(unittest.TestCase):
 
 class TestTelegramSender(unittest.TestCase):
     """Unit tests for TelegramSender."""
+
+    @mock.patch("src.notification_sender.telegram_sender.time.sleep")
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_respects_json_flood_control_delay(self, mock_post, mock_sleep):
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+
+        for delay, header in ((37, None), (37, "2"), (0, "2")):
+            with self.subTest(delay=delay, header=header):
+                limited = requests.Response()
+                limited.status_code = 429
+                limited._content = json.dumps({
+                    "ok": False,
+                    "error_code": 429,
+                    "parameters": {"retry_after": delay},
+                }).encode("utf-8")
+                if header is not None:
+                    limited.headers["Retry-After"] = header
+                mock_post.reset_mock()
+                mock_sleep.reset_mock()
+                mock_post.side_effect = [limited, _response(200, {"ok": True})]
+
+                self.assertTrue(sender.send_to_telegram("hello", timeout_seconds=3))
+
+                mock_sleep.assert_called_once_with(delay)
+                self.assertEqual(mock_post.call_count, 2)
+                self.assertEqual(mock_post.call_args_list[0], mock_post.call_args_list[1])
+                self.assertEqual(mock_post.call_args.kwargs["timeout"], 3)
+
+    @mock.patch("src.notification_sender.telegram_sender.time.sleep")
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_rate_limit_preserves_header_and_backoff_fallbacks(self, mock_post, mock_sleep):
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        cases = (
+            (b"{}", "7", 7),
+            (b"proxy rate limit", "7", 7),
+            (b'{"parameters": null}', "7", 7),
+            (b'{"parameters": {"retry_after": "invalid"}}', "7", 7),
+            (b"{}", None, 2),
+            (b"proxy rate limit", "invalid", 2),
+        )
+        for body, header, delay in cases:
+            with self.subTest(body=body, header=header):
+                limited = requests.Response()
+                limited.status_code = 429
+                limited._content = body
+                if header is not None:
+                    limited.headers["Retry-After"] = header
+                mock_post.reset_mock()
+                mock_sleep.reset_mock()
+                mock_post.side_effect = [limited, _response(200, {"ok": True})]
+
+                self.assertTrue(sender.send_to_telegram("hello"))
+
+                mock_sleep.assert_called_once_with(delay)
+                self.assertEqual(mock_post.call_count, 2)
+
+    @mock.patch("src.notification_sender.telegram_sender.time.sleep")
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_rate_limit_stops_after_three_attempts(self, mock_post, mock_sleep):
+        limited = requests.Response()
+        limited.status_code = 429
+        limited._content = b'{"ok": false, "parameters": {"retry_after": 37}}'
+        mock_post.return_value = limited
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+
+        self.assertFalse(TelegramSender(cfg).send_to_telegram("hello"))
+
+        self.assertEqual(mock_post.call_count, 3)
+        self.assertEqual(mock_sleep.call_args_list, [mock.call(37), mock.call(37)])
 
     def test_send_returns_false_when_not_configured(self):
         cfg = _config()

@@ -210,7 +210,7 @@ journalctl -u stock-analyzer -f
 
 | Config Item | Description | How to Get |
 |--------|------|----------|
-| `ANSPIRE_API_KEYS` / `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Configure at least one AI model key; Anspire or AIHubMix is recommended first | Provider console |
+| `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `ANSPIRE_API_KEYS` | Configure at least one AI model key; choose a provider as needed | Provider console |
 | `STOCK_LIST` | Watchlist | Comma-separated stock codes; registered-index explicit forms (e.g. `sh000016`, `930606.CSI`, `sz399365`) are supported via the one-shot `--stocks` argument or the GitHub Actions entry (local `.env`/Docker no-arg default runs keep stock semantics; use `--stocks` there for indices) — see [Index watchlist configuration](full-guide_EN.md#index-watchlist-configuration) |
 | Notification channel | Configure at least one, such as WeChat Work, Feishu, Telegram, or email | Notification provider |
 
@@ -221,9 +221,9 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | Enable scheduled tasks |
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
-| `ANSPIRE_API_KEYS` | - | Anspire LLM and news search (recommended) |
-| `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
+| `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access |
 | `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
+| `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 
@@ -320,6 +320,17 @@ deploy:
 
 For a constrained `512M` deployment, set `MAX_WORKERS=1`, start only one of `server` or `analyzer`, and reduce non-essential market review, news expansion, and image report tasks.
 
+### 5. `Exited (132)` or `Illegal instruction` on Apple Silicon / ARM64 Linux VMs
+
+**Symptom**: On newer-kernel `aarch64` Linux VMs running on Apple Silicon (e.g. M4 Ubuntu 26.04 VM), containers exit immediately with `Exited (132)` or `docker build` fails with `Illegal instruction (core dumped)`.
+
+**Root Cause**: Newer ARM64 VM kernels expose `HWCAP2_SME`, causing NumPy's bundled OpenBLAS dynamic dispatch to execute SME instructions unsupported in non-streaming mode.
+
+**Resolution**:
+
+- **Docker deployment**: Current `Dockerfile` and `entrypoint.sh` automatically default `OPENBLAS_CORETYPE=ARMV8` on `aarch64`/`arm64` (leaving `x86_64` untouched). If using an older image or running commands via `docker-compose exec`, add `OPENBLAS_CORETYPE=ARMV8` to `.env` (or pass `-e OPENBLAS_CORETYPE=ARMV8` to `docker run`).
+- **Direct deployment (pip + python)**: On bleeding-edge Linux distributions that default to Python 3.14 (such as Ubuntu 26.04), create your virtual environment with **Python 3.11 or 3.12** so pinned dependencies resolve prebuilt `aarch64` wheels instead of compiling C/Rust extensions from source, and `export OPENBLAS_CORETYPE=ARMV8` before starting if `Illegal instruction` occurs.
+
 ---
 
 ## Quick Migration
@@ -382,8 +393,7 @@ Add these Secrets:
 
 | Secret Name | Description | Required |
 |------------|------|------|
-| `ANSPIRE_API_KEYS` | Anspire Open API Key (one key for LLM and search) | Recommended |
-| `AIHUBMIX_KEY` | AIHubMix API Key (one key for multiple model families) | Recommended |
+| `AIHUBMIX_KEY` | AIHubMix API Key (one key for multiple model families) | Optional |
 | `ANTHROPIC_API_KEY` | Anthropic API Key | Optional |
 | `GEMINI_API_KEY` | Gemini AI API Key | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key | Optional |
@@ -398,12 +408,13 @@ Add these Secrets:
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook (comma-separated for multiple) | Optional* |
 | `STOCK_LIST` | Watchlist, e.g., `600519,300750` | ✅ |
 | `SERPAPI_API_KEYS` | SerpAPI Key | Recommended |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 | `TAVILY_API_KEYS` | Tavily Search API Key | Optional |
 | `BOCHA_API_KEYS` | Bocha Search API Key | Optional |
 | `BRAVE_API_KEYS` | Brave Search API Key | Optional |
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | Optional |
 | `TUSHARE_TOKEN` | Tushare Token | Optional |
-| `GEMINI_MODEL` | Model name (default gemini-2.0-flash) | Optional |
+| `GEMINI_MODEL` | Model name (default gemini-3.6-flash) | Optional |
 
 > *Note: Configure at least one notification channel, multiple channels supported for simultaneous push
 

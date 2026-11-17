@@ -101,10 +101,10 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
         config.litellm_model = ""
         config.llm_model_list = [
             {
-                "model_name": "openai/gpt-5.5",
+                "model_name": "openai/gpt-6.1-sol",
                 "litellm_params": {
                     "api_key": "openai-channel-key",
-                    "model": "openai/gpt-5.5",
+                    "model": "openai/gpt-6.1-sol",
                     "api_base": "https://api.openrouter.ai/v1",
                 },
             }
@@ -127,7 +127,7 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
 
     def test_build_market_review_runtime_supports_explicit_litellm_model_only(self) -> None:
         config = self._base_config()
-        config.litellm_model = "openai/gpt-5.5"
+        config.litellm_model = "openai/gpt-6.1-sol"
 
         notifier = MagicMock()
         analyzer = MagicMock()

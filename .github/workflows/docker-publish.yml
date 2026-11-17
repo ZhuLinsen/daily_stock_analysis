@@ -168,6 +168,8 @@ jobs:
 
       - name: Build and push release images
         uses: docker/build-push-action@v5
+        env:
+          DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
         with:
           context: .
           file: docker/Dockerfile

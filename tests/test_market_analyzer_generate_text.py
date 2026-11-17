@@ -134,6 +134,54 @@ class TestAnalyzerGenerateText:
             analyzer._config_override = cfg
             return analyzer
 
+    @pytest.mark.parametrize("streamed", [False, True])
+    @pytest.mark.parametrize("fallback", [False, True])
+    def test_analyze_logs_actual_response_and_only_real_route_fallback(self, caplog, streamed, fallback):
+        from src.config import Config
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override = Config(
+            litellm_model="primary-route",
+            litellm_fallback_models=["backup-route"],
+            gemini_request_delay=0,
+            report_integrity_enabled=False,
+        )
+        actual_model = "gemini/response-model" if fallback else "openai/model-2026-10-01"
+        response_text = json.dumps({
+            "sentiment_score": 70, "trend_prediction": "看多",
+            "operation_advice": "持有", "analysis_summary": "fixture",
+        })
+
+        def dispatch(model, kwargs, **_):
+            if fallback and model == "primary-route":
+                raise RuntimeError("primary unavailable")
+            if kwargs.get("stream"):
+                if not streamed:
+                    raise RuntimeError("stream unavailable")
+                return iter([SimpleNamespace(
+                    model=actual_model, usage=None,
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content=response_text))],
+                )])
+            return SimpleNamespace(
+                model=actual_model, usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(content=response_text))],
+            )
+
+        caplog.set_level("DEBUG", logger="src.analyzer")
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=dispatch), \
+             patch.object(analyzer, "_get_analysis_system_prompt", return_value="system"), \
+             patch.object(analyzer, "_get_skill_prompt_sections", return_value=(None, None, True)), \
+             patch.object(analyzer, "_format_prompt", return_value="prompt"):
+            result = analyzer.analyze({"code": "600519", "stock_name": "fixture"})
+
+        assert result.success is True
+        assert result.model_used == actual_model
+        returned = [record.message for record in caplog.records if "[LLM返回]" in record.message]
+        assert len(returned) == 1
+        assert actual_model in returned[0]
+        assert ("已回退" in returned[0]) is fallback
+        assert f"=== {actual_model} 完整响应" in caplog.text
+
     def test_legacy_market_group_normalizes_supported_markets(self):
         from src.analyzer import _legacy_market_group
 
@@ -284,6 +332,7 @@ class TestAnalyzerGenerateText:
         assert result.provider == "anthropic"
         assert result.usage["provider"] == "anthropic"
         assert result.usage["response_model"] == "anthropic/claude-sonnet-test"
+        assert result.usage["route_model"] == "analysis-route"
 
     def test_generate_text_with_metadata_preserves_fallback_provider_for_unqualified_response_model(self):
         analyzer = self._make_analyzer()
@@ -2693,6 +2742,7 @@ class TestAnalyzerGenerateText:
 
         assert text == "fallback"
         assert model_used == "provider/good-model"
+        assert usage["route_model"] == "provider/good-model"
         _assert_usage_contains(usage, {"prompt_tokens": 4, "completion_tokens": 5, "total_tokens": 9})
         assert dispatch_calls == [
             ("provider/bad-model", True),
@@ -4500,6 +4550,202 @@ Index text.
         assert snapshot["dimensions"]["breadth"] == {"score": 50, "available": False}
         assert snapshot["dimensions"]["index"]["available"] is True
         assert snapshot["dimensions"]["limit"] == {"score": 50, "available": False}
+
+    @pytest.mark.parametrize("language", ["zh", "en"])
+    @pytest.mark.parametrize("vix_code", ["VIX", "^VIX", "vix", " ^vIx "])
+    @pytest.mark.parametrize(
+        ("changes", "average", "index_score", "score", "status"),
+        [
+            ([-4.36, -5.52, -3.44, 69.66], "-4.44%", 0, 32, "red"),
+            ([0.31, 1.09, -0.46, -9.01], "+0.31%", 53, 51, "yellow"),
+        ],
+    )
+    def test_market_light_excludes_vix_but_preserves_report_quotes(
+        self, language, vix_code, changes, average, index_score, score, status
+    ):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+        from src.services.market_light_alerts import MarketLightAlert, evaluate_market_light_alert
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+        ma.config.report_language = language
+        overview = MarketOverview(
+            date="2026-11-06",
+            indices=[
+                MarketIndex(code=code, name=name, current=100.0, change_pct=change)
+                for code, name, change in zip(
+                    ("SPX", "IXIC", "DJI", vix_code),
+                    ("S&P 500", "Nasdaq", "Dow", "Volatility"),
+                    changes,
+                )
+            ],
+        )
+        original_quotes = [index.to_dict() for index in overview.indices]
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["dimensions"]["index"] == {"score": index_score, "available": True}
+        assert snapshot["score"] == score
+        assert snapshot["status"] == status
+        assert snapshot["data_quality"] == "partial"
+        reason_prefix = "主要指数平均涨跌幅 " if language == "zh" else "average major-index change "
+        assert snapshot["reasons"] == [reason_prefix + average]
+
+        sections = (
+            "### 一、盘面总览\nSummary.\n\n### 二、指数结构\nIndices."
+            if language == "zh"
+            else "### 1. Market Summary\nSummary.\n\n### 2. Major Indices\nIndices."
+        )
+        injected = ma._inject_data_into_review(sections, overview)
+        fallback = ma._generate_template_review(overview, [])
+        assert "| Volatility | 100.00 |" in injected
+        expected_fallback_quote = (
+            "- **Volatility**: 100.00" if language == "en" else "| Volatility | 100.00 |"
+        )
+        assert expected_fallback_quote in fallback
+        for report in (injected, fallback):
+            assert f"{score}/100" in report
+            assert reason_prefix + average in report
+            assert f"{changes[-1]:+.2f}%" in report
+
+        prompt = ma._build_review_prompt(overview, [])
+        direction = "↑" if changes[-1] > 0 else "↓"
+        assert f"- Volatility: 100.00 ({direction}{abs(changes[-1]):.2f}%)" in prompt
+        payload = ma.build_market_review_payload(overview, [], injected)
+        assert payload["market_light"] == snapshot
+        assert payload["indices"] == original_quotes
+        assert [index.to_dict() for index in overview.indices] == original_quotes
+
+        alert = evaluate_market_light_alert(
+            MarketLightAlert("market", "us", "market_light_status", {"statuses": ["red"]}),
+            current_snapshot=snapshot,
+        )
+        assert alert["triggered"] is (status == "red")
+        assert alert["observed_value"] == score
+
+    @pytest.mark.parametrize("language", ["zh", "en"])
+    @pytest.mark.parametrize(
+        "quotes",
+        [[], [("SPX", None)], [("VIX", 8.0)], [("^VIX", 8.0)], [("VIX", 8.0), ("SPX", None)]],
+    )
+    def test_market_light_requires_directional_index_data(self, language, quotes):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+        from src.services.market_light_alerts import MarketLightAlert, evaluate_market_light_alert
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+        ma.config.report_language = language
+        overview = MarketOverview(
+            date="2026-11-06",
+            indices=[MarketIndex(code=code, name=code, change_pct=value) for code, value in quotes],
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["dimensions"]["index"] == {"score": 50, "available": False}
+        assert snapshot["score"] == 50
+        assert snapshot["data_quality"] == "unavailable"
+        assert not any("平均涨跌幅" in reason or "average major-index" in reason for reason in snapshot["reasons"])
+        alert = evaluate_market_light_alert(
+            MarketLightAlert("market", "us", "market_light_status", {"statuses": ["red", "yellow"]}),
+            current_snapshot=snapshot,
+        )
+        assert alert["triggered"] is False
+        assert alert["record_status"] == "skipped"
+
+    def test_market_light_keeps_zero_change_and_ignores_missing_change(self):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+        overview = MarketOverview(
+            date="2026-11-06",
+            indices=[
+                MarketIndex(code="SPX", name="S&P 500", change_pct=0.0),
+                MarketIndex(code="IXIC", name="Nasdaq", change_pct=None),
+                MarketIndex(code="VIX", name="VIX", change_pct=20.0),
+            ],
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["dimensions"]["index"] == {"score": 50, "available": True}
+        assert snapshot["data_quality"] == "partial"
+        assert snapshot["reasons"] == ["主要指数平均涨跌幅 +0.00%"]
+
+    def test_market_light_score_drop_does_not_trigger_on_vix_change_alone(self):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+        from src.services.market_light_alerts import MarketLightAlert, evaluate_market_light_alert
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+        snapshots = [
+            ma.build_market_light_snapshot(MarketOverview(
+                date=date,
+                indices=[
+                    MarketIndex(code="SPX", name="S&P 500", change_pct=-0.5),
+                    MarketIndex(code="VIX", name="VIX", change_pct=vix_change),
+                ],
+            ))
+            for date, vix_change in [("2026-11-05", 20.0), ("2026-11-06", -20.0)]
+        ]
+
+        with patch("src.services.market_light_alerts.load_previous_snapshot", return_value=snapshots[0]):
+            alert = evaluate_market_light_alert(
+                MarketLightAlert("market", "us", "market_light_score_drop", {"min_drop": 10.0}),
+                current_snapshot=snapshots[1],
+            )
+
+        assert alert["triggered"] is False
+        assert alert["observed_value"] == 48.0
+        assert snapshots[0]["score"] == snapshots[1]["score"]
+
+    @pytest.mark.parametrize("language", ["zh", "en"])
+    @pytest.mark.parametrize(
+        ("region", "codes", "score"),
+        [
+            ("cn", ("000001", "399001"), 61),
+            ("hk", ("HSI", "HSTECH"), 51),
+            ("jp", ("N225", "TOPX"), 51),
+            ("kr", ("KS11", "KQ11"), 51),
+        ],
+    )
+    def test_market_light_preserves_non_us_index_scoring(self, language, region, codes, score):
+        from src.core.market_profile import get_profile
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = region
+        ma.profile = get_profile(region)
+        ma.config.report_language = language
+        overview = MarketOverview(
+            date="2026-11-06",
+            indices=[
+                MarketIndex(code=code, name=code, change_pct=change)
+                for code, change in zip(codes, (1.0, -0.5))
+            ],
+            up_count=600 if region == "cn" else 0,
+            down_count=400 if region == "cn" else 0,
+            limit_up_count=30 if region == "cn" else 0,
+            limit_down_count=10 if region == "cn" else 0,
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["dimensions"]["index"] == {"score": 53, "available": True}
+        assert snapshot["score"] == score
+        assert snapshot["status"] == ("green" if region == "cn" else "yellow")
+        assert snapshot["data_quality"] == ("ok" if region == "cn" else "partial")
+        reason_prefix = "主要指数平均涨跌幅 " if language == "zh" else "average major-index change "
+        assert reason_prefix + "+0.25%" in snapshot["reasons"]
 
     @pytest.mark.parametrize(
         ("region", "profile_name", "index_code", "index_name"),

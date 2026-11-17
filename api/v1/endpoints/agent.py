@@ -496,13 +496,13 @@ async def agent_research(request: ResearchRequest):
             timeout=research_timeout,
         )
         if getattr(result, "timed_out", False):
-            logger.warning("Agent research API timed out after %ss", research_timeout)
+            logger.warning("Agent research API timed out: %s", result.error)
             return ResearchResponse(
                 success=False,
                 content="",
                 sources=[],
-                token_usage=0,
-                error=f"Deep research timed out after {research_timeout}s",
+                token_usage=result.total_tokens,
+                error=result.error or "Deep research timed out",
             )
 
         return ResearchResponse(

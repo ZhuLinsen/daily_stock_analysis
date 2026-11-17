@@ -31,7 +31,7 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 # Add the project root to sys.path so the script also works as
 # `python evals/agent_trajectory/run_eval.py` from anywhere.
@@ -40,11 +40,14 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from evals.agent_trajectory.metrics import (
     GoldenSample,
+    StockScopePolicy,
     StageTrajectoryMetrics,
     TrajectoryMetrics,
     compute_stage_trajectory_metrics,
+    compute_stock_scope_metrics,
     compute_trajectory_metrics,
     format_stage_text_report,
+    format_stock_scope_report,
     format_text_report,
     load_golden_samples,
 )
@@ -84,6 +87,40 @@ def _write_json(path: Optional[Path], payload: Any) -> None:
 _KNOWN_TOOL_NAMES: Optional[set] = None
 
 
+def _stock_scope_policy() -> StockScopePolicy:
+    """Reuse runner classification and normalization, without running tools."""
+    from src.agent.tools.execution import (
+        _default_index_registry_or_none,
+        _is_stock_scoped_tool,
+        _normalize_guard_stock_code,
+    )
+    from src.agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    definitions = _tool_definitions()
+    for definition in definitions:
+        registry.register(definition)
+    index_registry = _default_index_registry_or_none()
+    return StockScopePolicy(
+        stock_scoped_tools=frozenset(
+            definition.name for definition in definitions
+            if _is_stock_scoped_tool(registry, definition.name)
+        ),
+        normalize_stock_code=lambda value: _normalize_guard_stock_code(value, index_registry),
+    )
+
+
+def _tool_definitions():
+    """Load the same descriptors used for golden validation and scope checks."""
+    from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
+    from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
+    from src.agent.tools.data_tools import ALL_DATA_TOOLS
+    from src.agent.tools.market_tools import ALL_MARKET_TOOLS
+    from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
+
+    return ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS + ALL_BACKTEST_TOOLS
+
+
 def _check_agent_arch() -> str:
     """Read the configured architecture without rejecting multi-agent runs."""
     from src.config import get_config
@@ -101,14 +138,7 @@ def _known_tool_names():
     """
     global _KNOWN_TOOL_NAMES
     if _KNOWN_TOOL_NAMES is None:
-        from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
-        from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
-        from src.agent.tools.data_tools import ALL_DATA_TOOLS
-        from src.agent.tools.market_tools import ALL_MARKET_TOOLS
-        from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
-
-        all_tools = ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS + ALL_BACKTEST_TOOLS
-        _KNOWN_TOOL_NAMES = {tool_def.name for tool_def in all_tools}
+        _KNOWN_TOOL_NAMES = {tool_def.name for tool_def in _tool_definitions()}
     return _KNOWN_TOOL_NAMES
 
 
@@ -136,9 +166,11 @@ def _evaluate_sample(executor, sample: GoldenSample):
         raise RuntimeError(f"agent run failed (success=false): {error or 'no error detail'}")
 
     log = getattr(result, "tool_calls_log", None) or []
+    scope_policy = _stock_scope_policy()
+    scope_metrics = compute_stock_scope_metrics(log, sample, scope_policy)
     stage_metrics = None
     if trajectories:
-        stage_metrics = compute_stage_trajectory_metrics(trajectories, sample)
+        stage_metrics = compute_stage_trajectory_metrics(trajectories, sample, scope_policy)
         # The orchestrator's public total_steps retains its historical meaning
         # (number of stages).  For trajectory scoring, the snapshots carry the
         # authoritative per-stage loop counts and must be summed once.
@@ -148,11 +180,14 @@ def _evaluate_sample(executor, sample: GoldenSample):
     metrics = compute_trajectory_metrics(log, sample, total_steps=total_steps)
     if trajectories:
         report = _build_multi_report(sample, metrics, stage_metrics)
+        report["stock_scope_metrics"] = scope_metrics
         if run_failed:
             report["run_status"] = "failed"
         run_error = (error or "agent run failed (success=false)") if run_failed else None
         return metrics, stage_metrics, report, run_error
-    return metrics, None, _build_report(sample, metrics), None
+    report = _build_report(sample, metrics)
+    report["stock_scope_metrics"] = scope_metrics
+    return metrics, None, report, None
 
 
 def run_sample(executor, sample: GoldenSample, *, json_out: Optional[Path] = None) -> TrajectoryMetrics:
@@ -170,6 +205,7 @@ def run_sample(executor, sample: GoldenSample, *, json_out: Optional[Path] = Non
     """
     metrics, stage_metrics, report, run_error = _evaluate_sample(executor, sample)
     print(format_text_report(metrics))
+    print(format_stock_scope_report(report["stock_scope_metrics"]))
     if stage_metrics is not None:
         print(format_stage_text_report(stage_metrics))
     _write_json(json_out, report)
@@ -231,6 +267,7 @@ def main(argv=None) -> int:
         try:
             metrics, stage_metrics, report, run_error = _evaluate_sample(executor, sample)
             print(format_text_report(metrics))
+            print(format_stock_scope_report(report["stock_scope_metrics"]))
             if stage_metrics is not None:
                 print(format_stage_text_report(stage_metrics))
         except Exception as exc:

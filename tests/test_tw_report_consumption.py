@@ -54,6 +54,14 @@ class TestTwCurrencyLabel(unittest.TestCase):
         # unknown currency still falls back to 元 (unchanged behaviour)
         self.assertIn("元", NotificationService._format_amount_cn(1e8, "ZZZ"))
 
+    def test_amount_moves_to_next_unit_when_rounding_reaches_it(self):
+        self.assertEqual(NotificationService._format_amount_cn(99_999_999, "CNY"), "1.00 亿元")
+        self.assertEqual(NotificationService._format_amount_cn(-99_999_999.5, "CNY"), "-1.00 亿元")
+        self.assertEqual(NotificationService._format_amount_cn(9_999.6, "CNY"), "1.00 万元")
+        # values that still round below the next unit keep their unit
+        self.assertEqual(NotificationService._format_amount_cn(99_994_999, "CNY"), "9999.50 万元")
+        self.assertEqual(NotificationService._format_amount_cn(9_999.4, "CNY"), "9999 元")
+
 
 class TestTwInstitutionRender(unittest.TestCase):
     """Point A: 三大法人 renders into the report only for a tw stock with data."""
@@ -102,6 +110,11 @@ class TestTwInstitutionRender(unittest.TestCase):
     def test_format_net_shares_signed(self):
         self.assertEqual(NotificationService._format_net_shares(-1912490), "-191.25 万股")
         self.assertEqual(NotificationService._format_net_shares(652455), "+65.25 万股")
+
+    def test_format_net_shares_moves_to_next_unit_when_rounding_reaches_it(self):
+        self.assertEqual(NotificationService._format_net_shares(99_999_999), "+1.00 亿股")
+        self.assertEqual(NotificationService._format_net_shares(-9_999.6), "-1.00 万股")
+        self.assertEqual(NotificationService._format_net_shares(99_994_999), "+9999.50 万股")
         self.assertEqual(NotificationService._format_net_shares(0), "0 股")
         self.assertEqual(NotificationService._format_net_shares(250000000), "+2.50 亿股")
         self.assertEqual(NotificationService._format_net_shares(None), "N/A")

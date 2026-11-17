@@ -555,6 +555,9 @@ class ScheduleStartupDedupIntegrationTestCase(unittest.TestCase):
             def validate(self):
                 return []
 
+            def validate_structured(self):
+                return []
+
         return _DummyConfig(**defaults)
 
     def _preset_full_marker(self, config, fingerprint_codes=None):
@@ -1181,6 +1184,9 @@ class RealRunClosureMarkerTestCase(unittest.TestCase):
             def validate(self):
                 return []
 
+            def validate_structured(self):
+                return []
+
         return _DummyConfig(**defaults)
 
     def _make_args(self, **overrides):
@@ -1418,6 +1424,9 @@ class SerialStartupDedupRegressionTestCase(unittest.TestCase):
                 pass
 
             def validate(self):
+                return []
+
+            def validate_structured(self):
                 return []
 
         return _DummyConfig(**defaults)

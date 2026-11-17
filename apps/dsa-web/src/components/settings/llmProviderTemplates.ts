@@ -10,7 +10,7 @@ export type LLMProviderCapability =
 /** Filter recommendations only; saved and hand-typed model IDs stay in channel state. */
 export function filterDiscoveredTextModels(models: string[]): string[] {
   const miniMaxId = (model: string) => model.split('/').at(-1)?.toLowerCase() || '';
-  const current = (model: string) => /^minimax-m(?:3|3\.1-flash(?::free|-free)?)$/.test(miniMaxId(model));
+  const current = (model: string) => /^minimax-m(?:3|3\.1-flash)(?::free|-free|-discount)?$/.test(miniMaxId(model));
   const filtered = models.filter((model) => !/^minimax-(?:m\d|(?:text|vl)-01)/.test(miniMaxId(model)) || current(model));
   const miniMaxModels = filtered.filter(current).sort((left, right) => (
     Number(miniMaxId(right).startsWith('minimax-m3.1-flash'))
@@ -22,6 +22,7 @@ export function filterDiscoveredTextModels(models: string[]): string[] {
 
 export const MODELFLARE_APP_REGISTRATION_URL =
   'https://modelflare.dev/sign-up?utm_source=daily_stock_analysis&utm_campaign=app';
+export const X6AI_REGISTRATION_URL = 'https://console.x6pro.io/register?code=zJ2qSdns';
 export const MODELFLARE_DEFAULT_MODEL = 'gpt-6.1-sol';
 
 export interface LLMProviderTemplate {
@@ -32,6 +33,7 @@ export interface LLMProviderTemplate {
   placeholderModels: string;
   capabilities: LLMProviderCapability[];
   configHint?: string;
+  registration?: { label: string; url: string };
   officialSources: Array<{
     label: string;
     url: string;
@@ -68,6 +70,7 @@ export const LLM_PROVIDER_CAPABILITY_LABELS: Record<LLMProviderCapability, { lab
 export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
   {
     channelId: 'modelflare',
+    registration: { label: '注册 Modelflare', url: MODELFLARE_APP_REGISTRATION_URL },
     label: 'Modelflare（聚合平台）',
     protocol: 'openai',
     baseUrl: 'https://modelflare.dev/v1',
@@ -82,30 +85,28 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
+    channelId: 'x6ai',
+    registration: { label: '注册 x6.ai', url: X6AI_REGISTRATION_URL },
+    label: 'x6.ai（聚合平台）',
+    protocol: 'openai',
+    baseUrl: 'https://api.x6.ai/v1',
+    placeholderModels: '',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint: '请通过“获取模型”查询账号可用的模型 ID，再选择模型并测试连接；实际能力和价格以 x6.ai 控制台为准。',
+    officialSources: [
+      { label: 'x6.ai 专属注册', url: X6AI_REGISTRATION_URL },
+      { label: 'x6.ai API 文档', url: 'https://x6.ai/zh/docs' },
+      { label: 'x6.ai 模型列表', url: 'https://x6.ai/zh/models' },
+    ],
+  },
+  {
     channelId: 'aihubmix',
     label: 'AIHubmix（聚合平台）',
     protocol: 'openai',
     baseUrl: 'https://aihubmix.com/v1',
-    placeholderModels: 'gpt-5.5,claude-sonnet-4-6,gemini-3.1-pro-preview',
+    placeholderModels: 'gpt-6.1-sol,claude-sonnet-4-6,gemini-3.6-flash',
     capabilities: ['openai-compatible', 'aggregator'],
     officialSources: [{ label: 'AIHubmix', url: 'https://inferera.com/?aff=CfMq' }],
-  },
-  {
-    channelId: 'anspire',
-    label: 'Anspire Open',
-    protocol: 'openai',
-    baseUrl: 'https://open-gateway.anspire.cn/v6',
-    placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash',
-    capabilities: ['openai-compatible'],
-    configHint:
-      '同一 ANSPIRE_API_KEYS 可复用到搜索与 LLM 渠道。以下模型与网关为配置示例，实际可用性请以账号权限和控制台为准；建议先点“测试连接”确认。',
-    officialSources: [
-      { label: 'Anspire Open', url: 'https://open.anspire.cn/dsa?share_code=QFBC0FYC' },
-      {
-        label: 'LiteLLM OpenAI-compatible',
-        url: 'https://docs.litellm.ai/docs/providers/openai_compatible',
-      },
-    ],
   },
   {
     channelId: 'deepseek',
@@ -197,7 +198,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'Requesty',
     protocol: 'openai',
     baseUrl: 'https://router.requesty.ai/v1',
-    placeholderModels: 'claude-sonnet-4-6,gpt-5.4',
+    placeholderModels: 'claude-sonnet-4-6,gpt-6.1-sol',
     capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
     configHint: '模型列表和模型可见性依赖账号权限与 API Key；EU 区域可将 Base URL 改为 https://router.eu.requesty.ai/v1。',
     officialSources: [
@@ -209,7 +210,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'Gemini 官方',
     protocol: 'gemini',
     baseUrl: '',
-    placeholderModels: 'gemini-3.1-pro-preview,gemini-3-flash-preview',
+    placeholderModels: 'gemini-3.6-flash,gemini-3.5-flash-lite',
     capabilities: ['official-api', 'vision'],
     officialSources: [{ label: 'Gemini Models', url: 'https://ai.google.dev/gemini-api/docs/models' }],
   },
@@ -229,7 +230,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'OpenAI 官方',
     protocol: 'openai',
     baseUrl: 'https://api.openai.com/v1',
-    placeholderModels: 'gpt-5.5,gpt-5.4-mini',
+    placeholderModels: 'gpt-6.1-sol,gpt-6.1-terra',
     capabilities: ['official-api', 'openai-compatible', 'model-discovery'],
     officialSources: [{ label: 'OpenAI Models', url: 'https://platform.openai.com/docs/models' }],
   },
@@ -242,6 +243,23 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     capabilities: ['local-runtime'],
     configHint: '需要本机、Docker 或 self-hosted runner 能访问 Ollama 服务。',
     officialSources: [{ label: 'Ollama API', url: 'https://github.com/ollama/ollama/blob/main/docs/api.md' }],
+  },
+  {
+    channelId: 'anspire',
+    label: 'Anspire Open',
+    protocol: 'openai',
+    baseUrl: 'https://open-gateway.anspire.cn/v6',
+    placeholderModels: 'Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash',
+    capabilities: ['openai-compatible'],
+    configHint:
+      '同一 ANSPIRE_API_KEYS 可复用到搜索与 LLM 渠道。以下模型与网关为配置示例，实际可用性请以账号权限和控制台为准；建议先点“测试连接”确认。',
+    officialSources: [
+      { label: 'Anspire Open', url: 'https://open.anspire.cn/dsa?share_code=QFBC0FYC' },
+      {
+        label: 'LiteLLM OpenAI-compatible',
+        url: 'https://docs.litellm.ai/docs/providers/openai_compatible',
+      },
+    ],
   },
   {
     channelId: 'custom',
@@ -270,10 +288,10 @@ export function isKnownProviderTemplate(channelId: string): boolean {
 }
 
 export const MODEL_PLACEHOLDERS_BY_PROTOCOL: Record<ChannelProtocol, string> = {
-  openai: 'gpt-5.5,qwen3.6-plus',
+  openai: 'gpt-6.1-sol,qwen3.6-plus',
   deepseek: 'deepseek-v4-flash,deepseek-v4-pro',
-  gemini: 'gemini-3.1-pro-preview,gemini-3-flash-preview',
+  gemini: 'gemini-3.6-flash,gemini-3.5-flash-lite',
   anthropic: 'claude-sonnet-4-6,claude-opus-4-7',
-  vertex_ai: 'gemini-3.1-pro-preview',
+  vertex_ai: 'gemini-3.6-flash',
   ollama: 'llama3.2,qwen2.5',
 };
