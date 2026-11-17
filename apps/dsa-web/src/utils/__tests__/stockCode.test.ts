@@ -64,7 +64,7 @@ describe('normalizeStockCode', () => {
     expect(normalizeStockCode('7203.T')).toBe('7203.T');
     expect(normalizeStockCode('6758.t')).toBe('6758.T');
     expect(normalizeStockCode('005930.KS')).toBe('005930.KS');
-    expect(normalizeStockCode('035720.kq')).toBe('035720.KQ');
+    expect(normalizeStockCode('247540.kq')).toBe('247540.KQ');
     expect(normalizeStockCode('005930')).toBe('005930');
   });
 

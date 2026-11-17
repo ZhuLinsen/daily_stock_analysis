@@ -8,7 +8,7 @@
 
 - 日本：`7203.T`、`6758.T`
 - 韩国 KOSPI：`005930.KS`
-- 韩国 KOSDAQ：`035720.KQ`
+- 韩国 KOSDAQ：`247540.KQ`
 
 约束与边界：
 
@@ -45,7 +45,7 @@
 
 ## 日本/韩国大盘复盘 v1（Issue #1815 Phase 2）
 
-大盘复盘 `MARKET_REVIEW_REGION` 新增 `jp` 与 `kr`，并纳入 `both` 的多市场顺序：`cn,hk,us,jp,kr`。
+大盘复盘 `MARKET_REVIEW_REGION` 新增 `jp` 与 `kr`，并纳入多市场复盘；当前 `both` 顺序为 `cn,hk,us,jp,kr,tw`（含下文台股扩展）。
 
 支持范围：
 
@@ -93,7 +93,7 @@ PY
 
 当前阶段支持手动输入台湾股票的 Yahoo Finance 后缀代码，进入既有个股分析、历史保存、报告渲染、DecisionSignal、Portfolio 和 Intelligence 链路。TWSE 上市股票使用 `.TW` 后缀，TPEx 上柜（柜买）股票使用 `.TWO` 后缀，二者折叠为同一 `tw` 市场标签。
 
-近期台股链路已从早期 MVP 收敛为一等个股分析市场：市场识别、数据路由、交易日历/市场阶段、YFinance 日线与基础行情、主要指数、服务层/API/Web 市场枚举、TWD 币种标注、三大法人报告区块与 LLM prompt 消费均已接入。仍需保留的边界是：台股股票池种子/自动补全、大盘复盘 `MARKET_REVIEW_REGION=tw`、Market Light 大盘红绿灯告警和完整台股市场宽度/板块排行尚未纳入。
+近期台股链路已从早期 MVP 收敛为一等个股分析市场：市场识别、数据路由、交易日历/市场阶段、YFinance 日线与基础行情、主要指数、服务层/API/Web 市场枚举、TWD 币种标注、三大法人报告区块与 LLM prompt 消费均已接入。仍需保留的边界是：台股股票池种子/自动补全、Market Light 大盘红绿灯告警和完整台股市场宽度/板块排行尚未纳入。
 
 支持格式：
 
@@ -116,11 +116,22 @@ PY
 不承诺项：
 
 - 不承诺实时行情；Yahoo Finance 数据可能延迟或字段缺失。
-- 不承诺完整基本面、行业/板块、市场宽度、涨跌家数或台股大盘复盘；`MARKET_REVIEW_REGION` 仍只接受 `cn/hk/us/jp/kr/both` 或这些市场的逗号子集。
+- 不承诺完整基本面、行业/板块、市场宽度或涨跌家数。台股大盘复盘仅覆盖下节说明的指数与新闻范围。
 - 台股股票索引/种子和 Web 自动补全仍未完整接入；告警 MarketRegion 与后端 Market Light 告警仍为 `cn/hk/us`，未含 `tw`。
 - 不补齐 Portfolio 的 TWD 汇率、成本、市值完整口径；台股 Portfolio 当前属于 partial valuation 市场。
 
 回滚方式：移除 `tw` 市场识别、交易日历注册、YFinance 路由扩展、三大法人资料层/报告消费、TWD 标注、服务层/API 市场枚举及前端市场类型放行，并删除本文档中的能力声明。
+
+## 台湾大盘复盘：指数与新闻（Issue #2482）
+
+- 设置 `MARKET_REVIEW_REGION=tw`，或在首页大盘复盘市场选择器勾选台股。支持 `cn,tw` 等子集，API `POST /api/v1/analysis/market-review` 可传 `{"region":"tw"}` 作为单次覆盖，不改写全局配置。
+- 复用已有 YFinance 主指数路由：加权指数 `TWII` / `^TWII`、柜买指数 `TWOII` / `^TWOII`，以及现有新闻检索。未新增行情源、凭证或外部 API 兼容规则。
+- 使用独立台股 profile、策略与新闻关键词；支持中英文报告和韩文 LLM 输出指令。行情可能延迟，单项失败时报告和分享图片会明确标出缺失的指数，图片保留所有“数据边界”章节的限制项（含历史记录与组合市场），不因已有章节或两项截断而丢失提示；全部失败时仅保留可用新闻/模板，不生成 A 股替代报告，也不把无数据判断为震荡。
+- 不提供市场宽度、涨跌停统计、三大法人资金流、成交额汇总、行业/概念排行、Market Light 评分或告警；成交额缺失显示 `N/A`，金额单位为新台币。
+- 启用交易日检查时，按既有 `XTAI / Asia/Taipei` 日历过滤台股；即使 A 股休市，选中的台股仍可独立执行。历史记录、通知、每日市场上下文与分享图片保留 `tw` 标签。
+- `both` 表示全部六市场 `cn,hk,us,jp,kr,tw`，增加台股数据/新闻/LLM 调用及耗时；要保留旧范围请显式配置 `cn,hk,us,jp,kr`。默认仍为 `cn`，不会自动改写历史配置。
+
+回滚：revert 本次台股复盘提交，并把配置中的 `tw` 移除或改为其他支持市场；不涉及数据库迁移，也不影响已有台股个股分析。
 
 ## 日本/韩国 Portfolio 与 Market Light 边界（Issue #1815 Phase 3）
 
@@ -130,7 +141,7 @@ Portfolio 允许 JP/KR 账户、交易和持仓快照进入现有链路，但会
 - Market Light 快照和 Market Light 告警仍只支持 `cn` / `hk` / `us`。
 - Web 告警市场下拉不展示 `jp` / `kr`；后端 `normalize_market_region()` 对 `jp` / `kr` 返回显式 unsupported 错误。
 - Web 设置页中 `MARKET_REVIEW_REGION` 从固定枚举下拉收敛为自由文本输入，用于保存 `cn,us,jp`、`cn,hk,us` 等逗号分隔子集；该 UI 变化只影响大盘复盘配置，不影响 Market Light 告警市场枚举。
-- `MARKET_REVIEW_REGION` 既有 `cn`、`hk`、`us` 可原样保留；若用户希望维持 JP/KR 扩展前 `both` 对应的三市场复盘边界，应改为 `cn,hk,us`；只有希望纳入五市场复盘时才继续使用 `both` 或显式配置 `cn,hk,us,jp,kr`。
+- `MARKET_REVIEW_REGION` 既有 `cn`、`hk`、`us` 可原样保留；若用户希望维持 JP/KR 扩展前 `both` 对应的三市场复盘边界，应改为 `cn,hk,us`；希望纳入五市场复盘时显式配置 `cn,hk,us,jp,kr`；`both` 现为包含台股的六市场复盘。
 - 该轮边界收敛不改动 LLM Provider / Model / Base URL 的持久化语义，也不执行默认模型、运行时配置清理或回写；配置更新仍是**原子 upsert**（`ConfigManager.apply_updates`），保存/导入只写入提交的键，未提交的 `LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`AGENT_LITELLM_MODEL`、`VISION_MODEL`、`OPENAI_BASE_URL` 等旧值保留不清空。
 - 可直接核验的配置兼容证据：本轮未新增或替换外部 provider/model/Base URL，仍沿用 LiteLLM OpenAI-compatible 路由（<https://docs.litellm.ai/docs/providers/openai_compatible>）、OpenAI Chat Completions 请求形状（<https://platform.openai.com/docs/api-reference/chat/create>），以及 [LLM 服务商配置指南](llm-providers.md#官方来源与兼容性) 中集中维护的各 provider 官方来源链接。当前运行时依赖窗口以 `requirements.txt` 的 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<1.99.0` 为准；旧配置没有迁移脚本或清理分支，保存/导入仍只通过 `ConfigManager.apply_updates` 写入本次提交键。回退路径是恢复变更前 `.env`/配置备份中的 `MARKET_REVIEW_REGION`，或直接 revert 本 PR；未提交的 `LITELLM_CONFIG`、`LLM_CHANNELS`、`LLM_OPENAI_*`、`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_*` 等既有运行时配置不需要迁移。回归证据为 `tests/test_system_config_service.py::SystemConfigServiceTestCase::test_update_market_review_region_does_not_trigger_runtime_model_cleanup` 与 `tests/test_config_env_compat.py::test_market_review_region_updates_do_not_change_llm_provider_model_contract`。
 - Web UI 可视证据口径：Market Light 告警目标范围切到“大盘市场”时，市场区域下拉只显示 A 股、港股、美股，不显示日股/韩股；设置页 `MARKET_REVIEW_REGION` 渲染为可输入逗号分隔值的文本框。当前仓库不保存一次性截图证据，可替代证据为 `apps/dsa-web/src/components/alerts/__tests__/AlertRuleForm.test.tsx`、`apps/dsa-web/src/components/settings/__tests__/SettingsField.test.tsx` 和 `apps/dsa-web/tests/system_config_i18n.test.ts` 的断言。
