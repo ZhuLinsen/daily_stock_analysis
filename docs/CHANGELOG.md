@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### 新功能
 
+- 新增可选跨资产上下文通道（cross-asset-v1，Issue #1910 一期，默认关闭）：显式开启 `CROSS_ASSET_CONTEXT_ENABLED=true` 后，个股分析 Prompt 注入“外围环境与跨资产”低敏摘要（一期数据源为 yfinance：港/美/日/韩/台指数 + 富时A50 尽力而为 + VIX + 美债10Y），`risk_appetite` 由确定性投票规则生成，四级 fail-open 降级（开关关→零行为差异；组装失败→unknown 最小上下文；单组失败→该组 quality 登记；单 ticker 失败→该项 not_supported）不中断主分析；Prompt 段落带 UNTRUSTED 哨兵、限行与数值溢出守卫，不配置时主流程零行为差异（Refs #1910）。
 - 新增 x6.ai 赞助展示、模型渠道预设及注册入口，同步模型发现、OpenAI 网关路由、MiniMax 折扣模型选择、Actions 配置与服务商展示顺序。
 - 新增可选 TickPlus A 股 / ETF 日 K、实时行情与名称查询，支持配置管理、Actions Secret 和失败回退，在数据源条目中标注推荐并补充接入说明。
 - 台股大盘复盘支持 `tw` 与组合市场：复用加权/柜买指数和新闻，覆盖 API/Web、交易日过滤、历史/通知与分享图片；明确披露缺失指数，不提供市场宽度或 Market Light。`both` 扩为六市场，保留旧五市场可配置 `cn,hk,us,jp,kr`（#2482）。
