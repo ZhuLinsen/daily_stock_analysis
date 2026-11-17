@@ -21,6 +21,11 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from data_provider.tushare_fetcher import (
+    TUSHARE_PERMISSION_COOLDOWN_SECONDS,
+    _build_tushare_token_scope,
+    is_tushare_permission_error,
+)
 from src.services.screening.source_guard import call_with_timeout, parse_source_timeout_seconds
 
 logger = logging.getLogger(__name__)
@@ -174,17 +179,43 @@ def _snapshot_call_timeout_seconds() -> float | None:
     )
 
 
+def _current_tushare_scope() -> tuple[str, str] | None:
+    token = (
+        os.getenv("TUSHARE_TOKEN", "").strip()
+        or os.getenv("TUSHARE_API_TOKEN", "").strip()
+    )
+    http_url = (
+        os.getenv("TUSHARE_API_URL", "").strip()
+        or os.getenv("TUSHARE_HTTP_URL", "").strip()
+        or _DEFAULT_TUSHARE_HTTP_URL
+    )
+    return _build_tushare_token_scope(token, http_url)
+
+
+def _refresh_permission_cooldown_locked(source: str, state: dict[str, object]) -> None:
+    if source == "tushare" and state.get("disabled_by_permission"):
+        if state.get("disabled_token_scope") != _current_tushare_scope():
+            state["disabled_until"] = 0.0
+            state["disabled_by_permission"] = False
+            state["disabled_token_scope"] = None
+
+
 def _source_disabled_reason(source: str) -> str | None:
     now = time.monotonic()
     with _SOURCE_HEALTH_LOCK:
         state = _SOURCE_HEALTH.get(source)
         if not state:
             return None
+        _refresh_permission_cooldown_locked(source, state)
         disabled_until = float(state.get("disabled_until", 0.0))
         if disabled_until <= now:
             if disabled_until:
                 state["disabled_until"] = 0.0
+                state["disabled_by_permission"] = False
+                state["disabled_token_scope"] = None
             return None
+        if state.get("disabled_by_permission"):
+            return f"temporarily disabled for {disabled_until - now:.1f}s due to insufficient Tushare permission/points"
         return f"temporarily disabled for {disabled_until - now:.1f}s after repeated failures"
 
 
@@ -195,6 +226,8 @@ def _record_source_success(source: str, *, rows: int | None = None) -> None:
         state["successes"] = successes
         state["failures"] = 0.0
         state["disabled_until"] = 0.0
+        state["disabled_by_permission"] = False
+        state["disabled_token_scope"] = None
         state["last_success_at"] = time.time()
         if rows is not None:
             state["last_rows"] = float(rows)
@@ -204,6 +237,11 @@ def _record_source_success(source: str, *, rows: int | None = None) -> None:
 
 def _record_source_failure(source: str, error: object | None = None) -> None:
     now = time.monotonic()
+    permission_denied = (
+        source == "tushare"
+        and isinstance(error, BaseException)
+        and is_tushare_permission_error(error)
+    )
     with _SOURCE_HEALTH_LOCK:
         state = _SOURCE_HEALTH.setdefault(source, {"failures": 0.0, "disabled_until": 0.0})
         failures = float(state.get("failures", 0.0)) + 1.0
@@ -212,8 +250,14 @@ def _record_source_failure(source: str, error: object | None = None) -> None:
         state["last_failure_at"] = time.time()
         if error is not None:
             state["last_error"] = " ".join(str(error).split())
-        if failures >= _SOURCE_HEALTH_FAILURE_THRESHOLD:
+        if permission_denied:
+            state["disabled_until"] = now + float(TUSHARE_PERMISSION_COOLDOWN_SECONDS)
+            state["disabled_by_permission"] = True
+            state["disabled_token_scope"] = _current_tushare_scope()
+        elif failures >= _SOURCE_HEALTH_FAILURE_THRESHOLD:
             state["disabled_until"] = now + _SOURCE_HEALTH_COOLDOWN_SECONDS
+            state["disabled_by_permission"] = False
+            state["disabled_token_scope"] = None
 
 
 def snapshot_source_health_snapshot(
@@ -225,7 +269,10 @@ def snapshot_source_health_snapshot(
     with _SOURCE_HEALTH_LOCK:
         snapshot: dict[str, dict[str, float | bool | str]] = {}
         for source in requested:
-            state = dict(_SOURCE_HEALTH.get(source, {}))
+            live_state = _SOURCE_HEALTH.get(source)
+            if live_state is not None:
+                _refresh_permission_cooldown_locked(source, live_state)
+            state = dict(live_state or {})
             disabled_until = float(state.get("disabled_until", 0.0))
             cooldown_remaining = max(disabled_until - now, 0.0)
             snapshot[source] = {

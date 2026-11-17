@@ -1120,7 +1120,7 @@ class TestNtfySender(unittest.TestCase):
         self.assertEqual(mock_post.call_args.args[0], "https://ntfy.sh")
         call_kw = mock_post.call_args.kwargs
         self.assertEqual(
-            call_kw["json"],
+            json.loads(call_kw["data"].decode("utf-8")),
             {
                 "topic": "dsa-topic",
                 "title": "中文标题",
@@ -1128,6 +1128,8 @@ class TestNtfySender(unittest.TestCase):
                 "markdown": True,
             },
         )
+        # The body is raw UTF-8, not \uXXXX escapes that double its size.
+        self.assertIn("正文".encode("utf-8"), call_kw["data"])
         self.assertEqual(call_kw["headers"]["Authorization"], "Bearer secret-token")
         self.assertEqual(call_kw["timeout"], 5)
         self.assertFalse(call_kw["verify"])
@@ -1142,7 +1144,7 @@ class TestNtfySender(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(
-            mock_post.call_args.kwargs["json"]["message"],
+            json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))["message"],
             "# 🎯 Market Review\n\nBody",
         )
 
@@ -1156,7 +1158,94 @@ class TestNtfySender(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(mock_post.call_args.args[0], "https://example.com/ntfy")
-        self.assertEqual(mock_post.call_args.kwargs["json"]["topic"], "dsa-topic")
+        self.assertEqual(
+            json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))["topic"],
+            "dsa-topic",
+        )
+
+    @staticmethod
+    def _long_chinese_report() -> str:
+        sections = [
+            f"## 股票 {index}\n\n" + "这是一段用于验证分批发送的中文分析正文。" * 40
+            for index in range(1, 9)
+        ]
+        return "# 📊 决策仪表盘\n\n" + "\n\n---\n\n".join(sections)
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_long_report_is_split_within_ntfy_size_limits(self, mock_post, mock_sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+        report = self._long_chinese_report()
+        self.assertGreater(len(report.encode("utf-8")), 4096 * 2)
+
+        result = sender.send_to_ntfy(report, title="日报")
+
+        self.assertTrue(result)
+        total = mock_post.call_count
+        self.assertGreaterEqual(total, 2)
+        self.assertEqual(mock_sleep.call_count, total - 1)
+        for index, call in enumerate(mock_post.call_args_list, start=1):
+            body = call.kwargs["data"]
+            payload = json.loads(body.decode("utf-8"))
+            # ntfy turns a message of 4096+ bytes into an attachment and
+            # rejects a JSON body above 8192 bytes with HTTP 413.
+            self.assertLess(len(payload["message"].encode("utf-8")), 4096)
+            self.assertLessEqual(len(body), 8192)
+            self.assertEqual(payload["title"], f"日报 ({index}/{total})")
+            self.assertEqual(payload["topic"], "dsa-topic")
+            self.assertTrue(payload["markdown"])
+        sent_text = "".join(
+            json.loads(call.kwargs["data"].decode("utf-8"))["message"]
+            for call in mock_post.call_args_list
+        )
+        for index in range(1, 9):
+            self.assertIn(f"## 股票 {index}", sent_text)
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_message_full_of_json_escapes_stays_under_body_limit(self, mock_post, _mock_sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy('"\n' * 6000, title="t")
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(mock_post.call_count, 2)
+        for call in mock_post.call_args_list:
+            self.assertLessEqual(len(call.kwargs["data"]), 8192)
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_short_message_is_not_split_or_renamed(self, mock_post, mock_sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("股" * 1300, title="日报")
+
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        mock_sleep.assert_not_called()
+        payload = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        self.assertEqual(payload["title"], "日报")
+        self.assertEqual(payload["message"], "股" * 1300)
+
+    @mock.patch("src.notification_sender.ntfy_sender.time.sleep")
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_long_report_fails_when_any_part_fails(self, mock_post, _mock_sleep):
+        report = self._long_chinese_report()
+        mock_post.side_effect = [_response(200), _response(500)] + [_response(200)] * 20
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy(report)
+
+        self.assertFalse(result)
+        # Later parts are still attempted so one failed part does not drop the rest.
+        self.assertGreaterEqual(mock_post.call_count, 3)
 
     @mock.patch("src.notification_sender.ntfy_sender.requests.post")
     def test_send_returns_false_when_url_has_no_topic(self, mock_post):

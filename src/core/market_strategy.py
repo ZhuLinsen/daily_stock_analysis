@@ -229,6 +229,35 @@ KR_BLUEPRINT = MarketStrategyBlueprint(
     ],
 )
 
+TW_BLUEPRINT = MarketStrategyBlueprint(
+    region="tw",
+    title="台股指数与新闻复盘策略",
+    positioning="根据台湾加权指数、柜买指数与可核实新闻，评估次日风险状态。",
+    principles=[
+        "先确认指数数据覆盖范围，再判断加权指数与柜买指数是否同向。",
+        "区分半导体权重股与中小型股线索，不把单一指数代表为全市场。",
+        "不臆造三大法人资金流、市场宽度、成交额汇总或板块排行。",
+    ],
+    dimensions=[
+        StrategyDimension(
+            name="指数结构",
+            objective="通过可用的加权指数与柜买指数判断趋势及分化。",
+            checkpoints=["哪些指数有可用数据", "加权指数与柜买指数是否同向", "关键支撑阻力是否得到确认"],
+        ),
+        StrategyDimension(
+            name="新闻催化",
+            objective="结合半导体、出口链与全球科技新闻识别风险线索。",
+            checkpoints=["台积电与半导体供应链新闻", "海外科技市场联动", "催化是否有可靠新闻来源"],
+        ),
+    ],
+    action_framework=[
+        "进攻：可用指数与新闻线索共振，并说明数据局限。",
+        "均衡：指数分化或覆盖不足，控制仓位并等待确认。",
+        "防守：指数转弱或外部风险上升，优先控制回撤。",
+    ],
+)
+
+
 def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
     """Return strategy blueprint by market region."""
     if region == "us":
@@ -239,4 +268,6 @@ def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
         return JP_BLUEPRINT
     if region == "kr":
         return KR_BLUEPRINT
+    if region == "tw":
+        return TW_BLUEPRINT
     return CN_BLUEPRINT

@@ -154,7 +154,7 @@ Zeabur 服务建议从 `1G` 内存起步；`512M` 仅适合轻量 Web/API、单�
 
 | 变量名 | 说明 |
 |--------|------|
-| `AIHUBMIX_KEY` | AIHubMix API 密钥（一 Key 多模型，推荐） |
+| `AIHUBMIX_KEY` | AIHubMix API 密钥（一 Key 多模型） |
 | `GEMINI_API_KEY` | Gemini API 密钥 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API 密钥 |
 | `SERPAPI_API_KEYS` | SerpAPI 密钥（推荐） |
