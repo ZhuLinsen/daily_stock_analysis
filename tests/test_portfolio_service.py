@@ -110,6 +110,42 @@ class PortfolioServiceTestCase(unittest.TestCase):
             self._save_close(self.service._normalize_symbol(symbol), close_date or date(2026, 1, 3), close)
         return aid
 
+    def test_offshore_trades_default_to_local_currency_when_omitted(self) -> None:
+        for market, symbol, expected_currency in [
+            ("jp", "7203.T", "JPY"),
+            ("kr", "005930.KS", "KRW"),
+            ("tw", "2330.TW", "TWD"),
+        ]:
+            with self.subTest(market=market):
+                account = self.service.create_account(
+                    name=f"{market}-default-ccy",
+                    broker="Demo",
+                    market=market,
+                    base_currency=expected_currency,
+                )
+                aid = account["id"]
+                self.service.record_trade(
+                    account_id=aid,
+                    symbol=symbol,
+                    trade_date=date(2026, 1, 2),
+                    side="buy",
+                    quantity=10,
+                    price=100,
+                )
+                self.service.record_corporate_action(
+                    account_id=aid,
+                    symbol=symbol,
+                    effective_date=date(2026, 1, 3),
+                    action_type="cash_dividend",
+                    cash_dividend_per_share=1.0,
+                )
+
+                trade = self.service.list_trade_events(account_id=aid)["items"][0]
+                action = self.service.list_corporate_action_events(account_id=aid)["items"][0]
+                self.assertEqual(trade["market"], market)
+                self.assertEqual(trade["currency"], expected_currency)
+                self.assertEqual(action["currency"], expected_currency)
+
     def test_event_writes_reject_non_finite_numbers_before_persistence(self) -> None:
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
         aid = account["id"]

@@ -1754,10 +1754,15 @@ class PortfolioService:
             raise ValueError("cost_method must be fifo or avg")
         return method
 
-    @staticmethod
-    def _default_currency_for_market(market: str) -> str:
-        if market == "hk":
-            return "HKD"
-        if market == "us":
-            return "USD"
-        return "CNY"
+    _MARKET_DEFAULT_CURRENCY = {
+        "cn": "CNY",
+        "hk": "HKD",
+        "us": "USD",
+        "jp": "JPY",
+        "kr": "KRW",
+        "tw": "TWD",
+    }
+
+    @classmethod
+    def _default_currency_for_market(cls, market: str) -> str:
+        return cls._MARKET_DEFAULT_CURRENCY.get(market, "CNY")
