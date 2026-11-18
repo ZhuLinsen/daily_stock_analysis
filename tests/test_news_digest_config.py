@@ -141,6 +141,21 @@ def test_cli_news_digest_invokes_service_and_prints(capsys):
     assert "[news-digest] status=success" in captured
 
 
+def test_cli_news_digest_forwards_no_notify(capsys):
+    """OR-COR-940607c8 回归：--no-notify 必须贯通到分派层（CLI 显式传给服务层）。"""
+    fake_result = {"status": "success", "reason": "no_notify", "report": "# 摘要"}
+    with patch(
+        "src.services.news_digest_service.build_news_digest_dependencies",
+        return_value={"notifier": None, "intelligence_service": None},
+    ), patch(
+        "src.services.news_digest_service.run_news_digest_once",
+        return_value=fake_result,
+    ) as run_mock:
+        exit_code = main._run_news_digest_once_cli(SimpleNamespace(), no_notify=True)
+    assert run_mock.call_args.kwargs.get("no_notify") is True, "CLI 必须把 no_notify 传递到服务层"
+    assert exit_code == 0
+
+
 def test_cli_news_digest_failed_reports_nonzero(capsys):
     fake_result = {"status": "failed", "reason": "notification_failed", "report": "# 摘要"}
     with patch(

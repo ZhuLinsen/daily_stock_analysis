@@ -542,6 +542,34 @@ def test_run_once_unexpected_exception_releases_claim(tmp_path):
     assert claim_news_digest_date(config.database_path, "2026-10-20", "cn", "premarket") is True
 
 
+def test_run_once_no_notify_never_sends_or_claims(tmp_path):
+    """OR-COR-940607c8 回归：no_notify=True 绝不推送、不占用当日名额；
+    之后的正式运行仍可正常 claim 并发送。"""
+    config = _config(tmp_path)
+    notifier = StubNotifier()
+    pool = StubIntelligenceService(rows=[
+        _feed_row("早盘消息", "https://f.cn/9", published_at=TUESDAY_PREMARKET),
+    ])
+    preview = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET, intelligence_service=pool,
+        notifier=notifier, no_notify=True,
+    )
+    assert preview["status"] == "success"
+    assert preview["notified"] is False
+    assert "no_notify" in (preview["reason"] or "")
+    assert notifier.calls == [], "明确禁用通知时绝不推送"
+    assert _claim_count(config.database_path) == 0, "预览运行不得占用当日名额"
+    assert "# 消息面汇总" in preview["report"], "预览仍需生成摘要供 CLI 打印"
+
+    formal = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET.replace(hour=8, minute=50),
+        intelligence_service=pool, notifier=notifier,
+    )
+    assert formal["status"] == "success"
+    assert len(notifier.calls) == 1
+    assert _claim_count(config.database_path) == 1
+
+
 def test_run_once_result_schema(tmp_path):
     """输出 schema：fallback_count/feed_ok/report 等元数据齐全（V5 计数对外可见）。"""
     notifier = StubNotifier()

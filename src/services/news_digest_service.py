@@ -53,6 +53,7 @@ def run_news_digest_once(
     now: datetime,
     intelligence_service: Any = None,
     notifier: Any = None,
+    no_notify: bool = False,
 ) -> Dict[str, Any]:
     """跑一次消息面汇总；永不向上抛，返回状态字典（含 report 全文供 CLI 打印）。"""
     region = "cn"
@@ -71,6 +72,21 @@ def run_news_digest_once(
     if context is None:
         logger.info("NEWS_DIGEST 当前不在汇总窗口，跳过")
         return _res("skipped", "outside_window")
+
+    if no_notify:
+        # --no-notify 契约（OR-COR-940607c8）：明确禁止推送时绝不发送，也
+        # 不占用当日 claim；仅生成摘要供 CLI 本地查看。
+        logger.info("NEWS_DIGEST --no-notify：仅生成摘要，不推送、不占用当日名额")
+        max_news = max(1, min(int(getattr(config, "news_digest_max_news", 12) or 12), 30))
+        feed_entries, feed_ok, fallback_count = collect_feed_entries(intelligence_service, now=now)
+        entries = merge_entries(feed_entries, limit=max_news)
+        report = generate_template_digest(
+            entries, context, now=now, feed_count=len(feed_entries), fallback_count=fallback_count,
+        )
+        return _res(
+            "success", "no_notify", context=context.kind, entries_count=len(entries),
+            feed_ok=feed_ok, fallback_count=fallback_count, notified=False, report=report,
+        )
 
     database_path = Path(getattr(config, "database_path", DEFAULT_NEWS_DIGEST_DATABASE_PATH))
     try:

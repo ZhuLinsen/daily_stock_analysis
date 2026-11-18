@@ -1626,9 +1626,10 @@ def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
     )
 
 
-def _run_news_digest_once_cli(config) -> int:
+def _run_news_digest_once_cli(config, *, no_notify: bool = False) -> int:
     """``--news-digest`` 一次性入口（issue #2184）：组装真实依赖（OR-COR-000c926a）
-    跑一次汇总，仍受 enabled/窗口/每日一次 claim 约束；打印 Markdown 摘要与状态行。"""
+    跑一次汇总，仍受 enabled/窗口/每日一次 claim 约束；打印 Markdown 摘要与状态行。
+    ``no_notify`` 贯通 ``--no-notify``（OR-COR-940607c8）：禁推时不发送、不占名额。"""
     from src.services.news_digest_service import (
         build_news_digest_dependencies,
         run_news_digest_once,
@@ -1645,6 +1646,7 @@ def _run_news_digest_once_cli(config) -> int:
         now=datetime.now(),
         intelligence_service=deps.get("intelligence_service"),
         notifier=deps.get("notifier"),
+        no_notify=no_notify,
     )
     status = str(result.get("status") or "unknown") if isinstance(result, dict) else "unknown"
     report = str(result.get("report") or "") if isinstance(result, dict) else ""
@@ -1991,7 +1993,9 @@ def main() -> int:
 
         # 模式1.5: 仅消息面汇总（CLI 一次性入口，issue #2184；窗口判定在服务层内建）
         if getattr(args, 'news_digest', False):
-            return _run_news_digest_once_cli(config)
+            return _run_news_digest_once_cli(
+                config, no_notify=bool(getattr(args, "no_notify", False)),
+            )
 
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
