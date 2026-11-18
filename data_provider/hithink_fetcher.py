@@ -134,6 +134,8 @@ class HiThinkFetcher(BaseFetcher):
         self._index_daily_disabled_until = 0.0
         self._index_snapshot_disabled_until = 0.0
         self._directory_disabled_until = 0.0
+        self._hot_stocks_disabled_until = 0.0
+        self._limit_up_disabled_until = 0.0
         self._index_catalog_cache: Dict[str, Tuple[float, List[Tuple[str, str]]]] = {}
         self._last_error = ""
         self._successful = False
@@ -175,6 +177,10 @@ class HiThinkFetcher(BaseFetcher):
                 return False
             if capability in {"stock_list", "stock_name"} and now < self._directory_disabled_until:
                 return False
+            if capability == "hot_stocks" and now < self._hot_stocks_disabled_until:
+                return False
+            if capability == "limit_up_pool" and now < self._limit_up_disabled_until:
+                return False
         return True
 
     def is_available_for_request(self, capability: str = "") -> bool:
@@ -213,6 +219,8 @@ class HiThinkFetcher(BaseFetcher):
         index_daily_only: bool = False,
         index_snapshot_only: bool = False,
         directory_only: bool = False,
+        hot_stocks_only: bool = False,
+        limit_up_only: bool = False,
     ) -> None:
         with self._lock:
             self._last_error = message
@@ -235,6 +243,10 @@ class HiThinkFetcher(BaseFetcher):
                 self._index_snapshot_disabled_until = deadline
             if directory_only:
                 self._directory_disabled_until = deadline
+            if hot_stocks_only:
+                self._hot_stocks_disabled_until = deadline
+            if limit_up_only:
+                self._limit_up_disabled_until = deadline
 
     def _mark_success(self) -> None:
         with self._lock:
@@ -271,6 +283,9 @@ class HiThinkFetcher(BaseFetcher):
         more than one product. Stock snapshots stay on ``realtime_quote``.
         Index ranking snapshots and catalogs stay on ``index_rankings``.
         Index quotes use ``index_snapshot`` and index history uses ``index_daily``.
+        The hot-stock list uses ``hot_stocks`` and the limit-up pool uses
+        ``limit_up_pool``. Filling hot-stock prices still uses the snapshot
+        path, so that request stays on ``realtime_quote``.
         """
         if not self.api_key:
             raise DataFetchError("HiThink API key is not configured")
@@ -391,6 +406,10 @@ class HiThinkFetcher(BaseFetcher):
             self._remember_error(message, fundamental_only=True)
         elif capability == "stock_list" or path.startswith("/api/meta/tickers/"):
             self._remember_error(message, directory_only=True)
+        elif capability == "hot_stocks":
+            self._remember_error(message, hot_stocks_only=True)
+        elif capability == "limit_up_pool":
+            self._remember_error(message, limit_up_only=True)
         else:
             self._remember_error(message)
 

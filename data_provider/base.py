@@ -15,6 +15,7 @@
 """
 
 import logging
+import math
 import random
 import time
 from threading import BoundedSemaphore, RLock, Thread
@@ -3584,13 +3585,14 @@ class DataFetcherManager:
 
     @staticmethod
     def _main_index_coverage_score(data: Optional[List[Dict[str, Any]]]) -> int:
-        """Count valid index prices after de-duplicating codes.
+        """Count distinct index codes that have a finite positive price.
 
-        Quotes from different providers are never merged. A later partial result
-        replaces the saved one only when this count is strictly higher.
+        NaN, infinity, non-positive prices, and rows without a code do not
+        count. Quotes from different providers are never merged. A later
+        partial result replaces the saved one only when this count is strictly
+        higher.
         """
         codes = set()
-        anonymous = 0
         for row in data or []:
             if not isinstance(row, dict):
                 continue
@@ -3598,14 +3600,13 @@ class DataFetcherManager:
                 price = float(row.get("current"))
             except (TypeError, ValueError):
                 continue
-            if price <= 0:
+            if not math.isfinite(price) or price <= 0:
                 continue
             code = str(row.get("code") or "").strip()
-            if code:
-                codes.add(code)
-            else:
-                anonymous += 1
-        return len(codes) + anonymous
+            if not code:
+                continue
+            codes.add(code)
+        return len(codes)
 
     def _accept_main_indices(
         self,

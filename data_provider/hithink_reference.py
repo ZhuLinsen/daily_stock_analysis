@@ -99,8 +99,14 @@ def stock_list(fetcher: HiThinkFetcher) -> pd.DataFrame:
 
 
 def hot_stocks(fetcher: HiThinkFetcher, n: int = 10) -> Optional[List[Dict[str, Any]]]:
+    if not fetcher.is_available("hot_stocks"):
+        return None
     limit = min(max(int(n), 1), 100)
-    payload = fetcher._request(_HOT_PATH, {"period": "day", "limit": limit})
+    payload = fetcher._request(
+        _HOT_PATH,
+        {"period": "day", "limit": limit},
+        capability="hot_stocks",
+    )
     data = payload.get("data") or {}
     if not isinstance(data, dict) or not isinstance(data.get("item"), list):
         raise HiThinkRequestError("HiThink hot stock response is invalid")
@@ -176,6 +182,8 @@ def limit_up_pool(
     date: Optional[str] = None,
     n: int = 20,
 ) -> Optional[List[Dict[str, Any]]]:
+    if not fetcher.is_available("limit_up_pool"):
+        return None
     size = min(max(int(n), 1), 200)
     params: Dict[str, Any] = {
         "page": 1,
@@ -186,7 +194,7 @@ def limit_up_pool(
     if date:
         moment = datetime.strptime(date, "%Y%m%d").replace(tzinfo=_SHANGHAI)
         params["date_ms"] = int(moment.timestamp() * 1000)
-    payload = fetcher._request(_LIMIT_UP_PATH, params)
+    payload = fetcher._request(_LIMIT_UP_PATH, params, capability="limit_up_pool")
     data = payload.get("data") or {}
     if not isinstance(data, dict) or not isinstance(data.get("item"), list):
         raise HiThinkRequestError("HiThink limit-up pool response is invalid")

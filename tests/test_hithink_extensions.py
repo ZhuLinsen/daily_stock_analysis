@@ -306,6 +306,46 @@ class HiThinkExtensionTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[-1].kwargs["params"]["sort_field"], "continue_day_cnt")
         self.assertIn("date_ms", request.call_args_list[-1].kwargs["params"])
 
+    def test_hot_stock_permission_cools_only_hot_stocks(self) -> None:
+        fetcher = self._fetcher()
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            return _response({"code": 2003, "message": "capability denied", "data": None})
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_hot_stocks(1)
+            self.assertIsNone(fetcher.get_hot_stocks(1))
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share/special-data/hot-stock-list"])
+        self.assertFalse(fetcher.is_available("hot_stocks"))
+        self.assertTrue(fetcher.is_available("limit_up_pool"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available())
+
+    def test_limit_up_permission_cools_only_limit_up_pool(self) -> None:
+        fetcher = self._fetcher()
+        calls = []
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            calls.append(url)
+            return _response({"code": 2004, "message": "denied", "data": None})
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            with self.assertRaises(HiThinkRequestError):
+                fetcher.get_limit_up_pool(date="20241113", n=1)
+            self.assertIsNone(fetcher.get_limit_up_pool(date="20241113", n=1))
+
+        self.assertEqual(calls, ["https://fuyao.aicubes.cn/api/a-share/special-data/limit-up-pool"])
+        self.assertFalse(fetcher.is_available("limit_up_pool"))
+        self.assertTrue(fetcher.is_available("hot_stocks"))
+        self.assertTrue(fetcher.is_available("realtime_quote"))
+        self.assertTrue(fetcher.is_available("daily_data"))
+        self.assertTrue(fetcher.is_available())
+
 
 class _IndexFake(BaseFetcher):
     def __init__(self, name: str, result):
@@ -927,6 +967,48 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         self.assertEqual(tickflow.calls, 1)
         self.assertEqual(akshare.calls, 1)
         self.assertEqual(tushare.calls, 1)
+
+    def test_partial_index_coverage_ignores_non_finite_prices_and_missing_codes(self) -> None:
+        def row(code, price):
+            return {"code": code, "name": code or "", "current": price, "coverage": "partial"}
+
+        self.assertEqual(DataFetcherManager._main_index_coverage_score([
+            row("sh000300", float("nan")),
+            row("sh000016", float("inf")),
+            row("sz399006", float("-inf")),
+            row("", 10),
+            row(None, 11),
+            row("sh000001", 12),
+            row("sh000001", 13),
+        ]), 1)
+
+        class _Provider:
+            def __init__(self, name, indices):
+                self.name = name
+                self.priority = 1
+                self.indices = indices
+                self.calls = 0
+
+            def get_main_indices(self, region="cn"):
+                self.calls += 1
+                return self.indices
+
+        tickflow = _Provider("TickFlowFetcher", [row("sh000001", 1), row("sz399001", 2)])
+        akshare = _Provider("AkshareFetcher", [
+            row("sh000001", 3),
+            row("sz399001", 4),
+            row("sz399006", float("nan")),
+            row("sh000688", float("inf")),
+            row("", 5),
+        ])
+        manager = DataFetcherManager(fetchers=[akshare])
+        manager._get_tickflow_fetcher = lambda: tickflow
+
+        data = manager.get_main_indices("cn")
+
+        self.assertEqual([item["code"] for item in data], ["sh000001", "sz399001"])
+        self.assertEqual(data[0]["current"], 1)
+        self.assertEqual(akshare.calls, 1)
 
     def test_legacy_main_indices_without_coverage_still_win(self) -> None:
         class _LegacyIndices:
