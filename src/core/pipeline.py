@@ -709,7 +709,8 @@ class StockAnalysisPipeline:
                 if intel_results:
                     news_context = self.search_service.format_intel_report(intel_results, stock_name)
                     total_results = sum(
-                        len(r.results) for r in intel_results.values() if r.success
+                        len(r.results) for dimension, r in intel_results.items()
+                        if r.success and dimension != SearchService.INDUSTRY_BACKGROUND_DIMENSION
                     )
                     news_result_count = total_results
                     logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
@@ -719,7 +720,10 @@ class StockAnalysisPipeline:
                     try:
                         query_context = self._build_query_context(query_id=query_id)
                         for dim_name, response in intel_results.items():
-                            if response and response.success and response.results:
+                            if (
+                                dim_name != SearchService.INDUSTRY_BACKGROUND_DIMENSION
+                                and response and response.success and response.results
+                            ):
                                 self.db.save_news_intel(
                                     code=code,
                                     name=stock_name,

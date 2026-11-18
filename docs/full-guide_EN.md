@@ -359,7 +359,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 
 > Anspire remains optional. Search providers are tried in this order when configured and available: Bocha → Tavily → Brave → SerpAPI → Anspire → MiniMax → SearXNG. Anspire also works when it is the only configured provider.
 
-Industry news for individual stocks must have a recognizable publication date within the effective news window. Index and ETF background results, such as constituents and sector allocations, may be undated.
+Industry news for individual stocks must have a recognizable publication date within the effective news window. If no item qualifies, one relevant undated result from the same search may appear separately as background. It is excluded from the news result count and must not be presented as a recent catalyst. Index and ETF background results, such as constituents and sector allocations, may be undated.
 
 > Behavior note: Search and social sentiment are optional enhancement services. If either service fails to initialize, the system logs a warning and degrades gracefully by skipping that stage without blocking the core analysis flow.
 

@@ -2456,6 +2456,35 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             [item.title for item in intel["industry"].results],
             ["行业深度报告：白酒景气回升"],
         )
+        self.assertNotIn(service.INDUSTRY_BACKGROUND_DIMENSION, intel)
+
+    def test_stock_industry_without_fresh_news_keeps_one_undated_background(self) -> None:
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        today = datetime.now().date()
+        recent = _response([_result("今日快讯", today.isoformat())])
+        stale_title = "贵州茅台旧行业新闻"
+        industry = _response([
+            _result(stale_title, (today - timedelta(days=10)).isoformat(), url="https://example.com/old"),
+            _result("贵州茅台行业背景", None, url="https://example.com/first"),
+            _result("贵州茅台所在行业资料", None, url="https://example.com/second"),
+        ])
+        mock_search.side_effect = [recent] * 5 + [industry]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=6)
+
+        self.assertEqual(mock_search.call_count, 6)
+        self.assertEqual(intel["industry"].results, [])
+        background = intel[service.INDUSTRY_BACKGROUND_DIMENSION].results
+        self.assertEqual(len(background), 1)
+        self.assertIsNone(background[0].published_date)
+        report = service.format_intel_report(intel, "贵州茅台")
+        self.assertIn("发布日期未知，仅供背景参考，不作为近期催化", report)
+        self.assertIn(background[0].title, report)
+        self.assertNotIn(stale_title, report)
 
     def test_industry_dimension_keeps_undated_etf_background(self) -> None:
         service, mock_search = self._create_service_with_mock_provider()

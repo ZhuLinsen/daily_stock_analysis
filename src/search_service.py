@@ -17,7 +17,7 @@ import re
 import threading
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -2275,6 +2275,7 @@ class SearchService:
     FUTURE_TOLERANCE_DAYS = 1
     ANALYTICAL_INTEL_LOOKBACK_DAYS = 180
     ANALYTICAL_INTEL_DIMENSIONS = {"market_analysis", "earnings"}
+    INDUSTRY_BACKGROUND_DIMENSION = "industry_background"
     _CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
     _US_STOCK_RE = re.compile(r"^[A-Za-z]{1,5}(\.[A-Za-z])?$")
     _DIRECT_NEWS_CATEGORY = "direct_company_news"
@@ -4540,6 +4541,17 @@ class SearchService:
             provider_max_results,
         )
         
+        def rank_for_context(candidate: SearchResponse, scope: str) -> SearchResponse:
+            ranked = self._rank_news_response(
+                candidate,
+                stock_code=stock_code,
+                stock_name=stock_name,
+                prefer_chinese=self._should_prefer_chinese_news(stock_code, stock_name),
+                max_results=provider_max_results,
+                log_scope=f"{scope}:rank",
+            )
+            return self._filter_ranked_news_for_context(ranked, log_scope=f"{scope}:admission")
+
         # 轮流使用不同的搜索引擎
         provider_index = 0
         
@@ -4601,23 +4613,27 @@ class SearchService:
                     response,
                     max_results=provider_max_results,
                 )
-            filtered_response = self._rank_news_response(
-                filtered_response,
-                stock_code=stock_code,
-                stock_name=stock_name,
-                prefer_chinese=self._should_prefer_chinese_news(stock_code, stock_name),
-                max_results=provider_max_results,
-                log_scope=f"{stock_code}:{provider.name}:{dim['name']}:rank",
-            )
-            filtered_response = self._filter_ranked_news_for_context(
-                filtered_response,
-                log_scope=f"{stock_code}:{provider.name}:{dim['name']}:admission",
-            )
+            scope = f"{stock_code}:{provider.name}:{dim['name']}"
+            filtered_response = rank_for_context(filtered_response, scope)
             filtered_response = self._limit_search_response(
                 filtered_response,
                 max_results=target_per_dimension,
             )
             results[dim['name']] = filtered_response
+            if dim['name'] == 'industry' and not is_index_etf and response.success and not filtered_response.results:
+                # Reuse the same provider response. Only undated items qualify
+                # as fallback context; known stale or future items stay out.
+                undated = [item for item in response.results
+                           if self._normalize_news_publish_date(item.published_date) is None]
+                if undated:
+                    background = rank_for_context(
+                        replace(response, results=undated),
+                        f"{scope}:background",
+                    )
+                    if background.results:
+                        results[self.INDUSTRY_BACKGROUND_DIMENSION] = self._limit_search_response(
+                            background, max_results=1,
+                        )
             search_count += 1
             
             if response.success:
@@ -4649,7 +4665,10 @@ class SearchService:
         lines = [f"【{stock_name} 情报搜索结果】"]
         
         # 维度展示顺序
-        display_order = ['latest_news', 'announcements', 'market_analysis', 'risk_check', 'earnings', 'industry']
+        display_order = [
+            'latest_news', 'announcements', 'market_analysis', 'risk_check', 'earnings', 'industry',
+            self.INDUSTRY_BACKGROUND_DIMENSION,
+        ]
 
         dim_labels = {
             'latest_news': '📰 最新消息',
@@ -4658,6 +4677,7 @@ class SearchService:
             'risk_check': '⚠️ 风险排查',
             'earnings': '📊 业绩预期',
             'industry': '🏭 行业分析',
+            self.INDUSTRY_BACKGROUND_DIMENSION: '🏭 行业背景（发布日期未知，仅供背景参考，不作为近期催化）',
         }
 
         for dim_name in display_order:
