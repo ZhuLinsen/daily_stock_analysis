@@ -39,8 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 移除实验性 Codex App Server 问股后端及专属探针、取消与启动链；旧配置明确提示退役并可主动修正，保留默认 LiteLLM、会话接受事务及独立 Codex CLI 报告。
 - [修复] Agent 状态面板在缺少可用主模型时显示中英文配置指引，保留技术错误码；配置指南明确区分已移除后端与历史 Gate 记录。
 - [chore] Default new MiniMax channels to MiniMax-M3.1-Flash and MiniMax-M3, filter older text recommendations while retaining saved/custom models, and refresh fallback pricing.
+- [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
+- [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
+
+- [改进] 历史个股栏批量统计展示股票的历史分析次数，减少刷新时的数据库查询。
+- [修复] 持仓交易、现金流水和公司行动拒绝 NaN / Infinity 等非有限数值；CSV 预览、预演和提交在写入前拒绝包含非有限数值或费税合计溢出的交易行，并返回行号和字段，避免污染账本和快照；API 校验错误中的非有限数值可安全返回 JSON。
 
 ## [3.35.0] - 2026-11-16
 

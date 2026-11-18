@@ -110,6 +110,42 @@ class PortfolioServiceTestCase(unittest.TestCase):
             self._save_close(self.service._normalize_symbol(symbol), close_date or date(2026, 1, 3), close)
         return aid
 
+    def test_event_writes_reject_non_finite_numbers_before_persistence(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        cases = [
+            (self.service.record_trade, {
+                "symbol": "600519", "trade_date": date(2026, 1, 2),
+                "side": "buy", "quantity": 10, "price": 100,
+            }, ("quantity", "price", "fee", "tax")),
+            (self.service.record_cash_ledger, {
+                "event_date": date(2026, 1, 2), "direction": "in", "amount": 1000,
+            }, ("amount",)),
+            (self.service.record_corporate_action, {
+                "symbol": "600519", "effective_date": date(2026, 1, 2),
+                "action_type": "cash_dividend", "cash_dividend_per_share": 0,
+            }, ("cash_dividend_per_share", "split_ratio")),
+            (self.service.record_corporate_action, {
+                "symbol": "600519", "effective_date": date(2026, 1, 2),
+                "action_type": "split_adjustment", "split_ratio": 2,
+            }, ("split_ratio", "cash_dividend_per_share")),
+        ]
+        for write, payload, fields in cases:
+            for field in fields:
+                for value in (float("inf"), float("-inf"), float("nan")):
+                    with self.subTest(write=write.__name__, field=field, value=value):
+                        with self.assertRaisesRegex(ValueError, f"{field} must be finite"):
+                            write(account_id=aid, **{**payload, field: value})
+        self.assertEqual(self.service.list_trade_events(account_id=aid)["total"], 0)
+        self.assertEqual(self.service.list_cash_ledger_events(account_id=aid)["total"], 0)
+        self.assertEqual(self.service.list_corporate_action_events(account_id=aid)["total"], 0)
+        # Zero fees/dividends and omitted optional fields remain valid.
+        for write, payload, _ in cases:
+            write(account_id=aid, **payload)
+        self.assertEqual(self.service.list_trade_events(account_id=aid)["total"], 1)
+        self.assertEqual(self.service.list_cash_ledger_events(account_id=aid)["total"], 1)
+        self.assertEqual(self.service.list_corporate_action_events(account_id=aid)["total"], 2)
+
     def test_current_snapshot_uses_realtime_price_when_close_missing(self) -> None:
         today = date.today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")

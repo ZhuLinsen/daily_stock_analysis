@@ -249,11 +249,11 @@ P5 支持的 `alert_type` 与 `parameters`：
 - 边缘触发包含前一根刚好等于阈值或零轴的情况：`above` / `bullish_cross` 使用 `prev <= threshold < current`，`below` / `bearish_cross` 使用 `prev >= threshold > current`。
 - partial bar 只使用服务器本地时区启发式：当前本地时间早于 16:00 时，最后一行日期等于本地今天或日期不可判定都会保守丢弃；不区分 A 股、港股、美股市场时区或交易日历。Issue #1386 P0 的市场阶段基线暂不接入技术指标规则，告警 partial bar 精确判定留到后续阶段。
 - `src/services/alert_indicators.py` 自行归一化 OHLCV 并计算 MA、RSI、MACD、KDJ、CCI，不依赖 fetcher 预计算的 MA5/MA10/MA20。
-- RSI 使用 Wilder's EMA / SMMA：`avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()`，`avg_loss` 同理，不使用 rolling SMA。
+- RSI 使用共享的 `src/utils/rsi.py`（`wilder_rsi`，基于 `fin-primitives`，与 TA-Lib 一致）：`avg_gain` / `avg_loss` 先以前 `period` 个涨跌幅的简单均值起算，之后按 Wilder's SMMA 递推（`alpha=1/period`，即 `avg = (avg * (period - 1) + 当前值) / period`），不使用 rolling SMA。告警穿越判断使用 `fill_warmup=False`，预热期为 NaN，不参与穿越判断。
 - MACD 使用 `EMA(fast_period) - EMA(slow_period)` 得到 DIF，DEA 为 DIF 的 `EMA(signal_period)`；金叉/死叉比较 DIF-DEA 相对 0 的边缘穿越。
 - KDJ 使用最近 `period` 日最高/最低价计算 RSV，并用 `alpha=1/k_period`、`alpha=1/d_period` 的 EMA 得到 K/D；金叉/死叉比较 K-D 相对 0 的边缘穿越。
 - CCI 使用典型价格 `(high + low + close) / 3`，按 `period` 日均值和平均绝对偏差计算 `(TP - MA(TP)) / (0.015 * mean_deviation)`。
-- `compute_required_bars(alert_type, params)` 定义最少有效 closed bars：MA=`window+1`，RSI=`period+1`，MACD=`slow_period+signal_period+1`，KDJ=`period+k_period+d_period+1`，CCI=`period+1`。
+- `compute_required_bars(alert_type, params)` 定义最少有效 closed bars：MA=`window+1`，RSI=`period+2`（首个有效 RSI 需 period 个涨跌幅，再多一根才有两个真实值判断穿越），MACD=`slow_period+signal_period+1`，KDJ=`period+k_period+d_period+1`，CCI=`period+1`。
 - 拉取天数使用 `requested_days = min(max(required_bars * 3, required_bars + 30), 365)`；API 会拒绝 `required_bars > 365` 的组合周期，避免创建永久样本不足的规则；同一 worker 轮次按 `(stock_code, requested_days)` 缓存日线数据，轮次结束释放。
 - 缺数据、缺列或有效样本少于 `required_bars` 写入 `degraded`；数据源异常沿用 `volume_spike` 语义返回 `evaluation_error` / `failed`，不发送通知。
 
