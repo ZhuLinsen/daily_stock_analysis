@@ -1956,10 +1956,19 @@ class AgentOrchestrator:
                 "is_bullish": str(ma_alignment).lower() == "bullish",
             }
 
+        raw_eff_bias = trend_dict.get("effective_bias_threshold")
+        bias_upper = (
+            float(raw_eff_bias)
+            if isinstance(raw_eff_bias, (int, float))
+            and not isinstance(raw_eff_bias, bool)
+            and float(raw_eff_bias) > 0
+            else 5.0
+        )
+
         def _bias_label(bias):
             if not isinstance(bias, (int, float)):
                 return ""
-            if bias > 5:
+            if bias > bias_upper:
                 return "超买"
             elif bias > 2:
                 return "偏高"

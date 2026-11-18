@@ -296,7 +296,7 @@ def _reload_env_file_values_preserving_overrides() -> None:
     _RUNTIME_ENV_FILE_KEYS = managed_keys
 
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
         description='A股自选股智能分析系统',
@@ -353,6 +353,18 @@ def parse_arguments() -> argparse.Namespace:
         '--check-notify',
         action='store_true',
         help='只读检查通知渠道配置，不发送通知'
+    )
+
+    parser.add_argument(
+        '--doctor',
+        action='store_true',
+        help='运行配置、模型、存储与通知全链路只读脱敏自检'
+    )
+
+    parser.add_argument(
+        '--json',
+        action='store_true',
+        help='以 JSON 格式输出诊断结果（配合 --doctor 使用）'
     )
 
     parser.add_argument(
@@ -476,7 +488,7 @@ def parse_arguments() -> argparse.Namespace:
         help='运行 ETF 轮动：输出最新调仓信号与规则回测报告（不调用 LLM，配置见 ETF_ROTATION_*）'
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _startup_config_warnings(config: Config, args: argparse.Namespace) -> List[str]:
@@ -1613,6 +1625,8 @@ def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
         or getattr(args, "serve_only", False)
         or getattr(args, "webui_only", False)
         or bool(getattr(args, "portfolio", None))
+        or getattr(args, "doctor", False)
+        or getattr(args, "check_notify", False)
         or getattr(args, "schedule", False)
         or getattr(config, "schedule_enabled", False)
     )
@@ -1696,7 +1710,7 @@ def _build_schedule_times_provider(default_schedule_time: str):
     return _provider
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     """
     主入口函数
 
@@ -1704,7 +1718,11 @@ def main() -> int:
         退出码（0 表示成功）
     """
     # 解析命令行参数
-    args = parse_arguments()
+    args = parse_arguments(argv)
+    if getattr(args, "json", False) and not getattr(args, "doctor", False):
+        print("ERROR: --json 目前仅支持与 --doctor 配合使用", file=sys.stderr)
+        return 2
+    doctor_json_mode = bool(getattr(args, "doctor", False) and getattr(args, "json", False))
 
     # 在配置加载前先初始化 bootstrap 日志，确保早期失败也能落盘
     try:
@@ -1721,8 +1739,31 @@ def main() -> int:
     try:
         config = get_config()
     except Exception as exc:
+        if doctor_json_mode:
+            from src.llm.local_cli_backend import redact_diagnostic_text
+
+            print(
+                json.dumps(
+                    {"status": "error", "error": redact_diagnostic_text(str(exc))},
+                    ensure_ascii=False,
+                )
+            )
+            return 1
         logger.exception("加载配置失败: %s", exc)
         return 1
+
+    if getattr(args, "doctor", False):
+        from src.services.doctor_service import (
+            format_doctor_report,
+            run_doctor_diagnostics,
+        )
+
+        report = run_doctor_diagnostics(config)
+        if doctor_json_mode:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(format_doctor_report(report))
+        return 0 if report.get("status") != "error" else 1
 
     # 配置日志（输出到控制台和文件）
     try:

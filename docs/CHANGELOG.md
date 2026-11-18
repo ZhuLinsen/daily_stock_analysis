@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 修复盘中（`intraday`、`lunch_break`、`closing_auction`）分析的回测与 Skill 观点评估起点未来函数：`resolve_stock_daily_start` 在 `engine_version >= v1.1` 时对盘中分析改锚定交易日 `T` 收盘（显式配置 `v1` 仍按旧 `T-1` 口径与隔离，保留 `premarket` 在 `T-1`），并将默认 `BACKTEST_ENGINE_VERSION` 升至 `v1.1`、`SKILL_OPINION_OUTCOME_ENGINE_VERSION` 升至 `skill-opinion-outcome-v1.1`（去未来函数后历史统计胜率预计呈诚实回落）。
+- [修复] 移除 `AgentMemory._get_accuracy_stats` 中写死的 `avg_confidence=0.6` 假校准基线（在尚无真实置信度遥测产出前保持校准因子中性，避免按固定常数缩放）。
+- [修复] 在 `StockTrendAnalyzer` 中计算并输出 `atr14`，并在决策护栏全部完成后调用 `validate_sniper_price_sanity` 对 LLM 狙击点位做确定性校验（检查多头止损/目标位倒挂、盈亏比 `<1.0` 及 ATR 合理间距，写入 `dashboard.data_perspective.price_sanity` 并同步更新 `risk_alerts`）。
+- [修复] 新闻多维情报为 `industry` 维度启用严格时效窗口（与 `search_days` 一致）与归一化标题去重，并在 `format_intel_report` 显式标注发布日期相对天数（如 `今日`/`N天前`）与 `[日期未知·勿作短期催化]` 提示。
+- [修复] 清空 `.env.example` 中 `DINGTALK_APP_KEY`/`DINGTALK_APP_SECRET`/`FEISHU_APP_ID`/`FEISHU_APP_SECRET` 的 `xxxx` 非空占位符以避免首次启动触发飞书误报 warning；同步补齐 `src/config.py` 缺 Key 报错中的 `MODELFLARE_KEY` 与 workflow 中的 `⚪` 状态展示。
+- [改进] `main.py` 的 `parse_arguments(argv)` / `main(argv)` 支持显式参数传入，将 `--check-notify` 纳入 `_skips_stock_entry`，并新增统一离线脱敏自检入口 `python main.py --doctor [--json]`（`src/services/doctor_service.py` 复用 `config_registry` 敏感键规则与 `validate_structured()`，未配通知渠道按可选 `warn` 处理而不误报阻塞）；Actions 每日任务复用 `--doctor --json` 输出脱敏 `$GITHUB_STEP_SUMMARY` 摘要及可选 `STEP_SUMMARY_REPORT` 预览开关。
+- [改进] 新增可选波动率自适应乖离率配置 `BIAS_ATR_MULTIPLIER`（默认 `0.0` 保持静态 `BIAS_THRESHOLD` 完全向后兼容；大于 `0` 时按 `max(BIAS_THRESHOLD, BIAS_ATR_MULTIPLIER × ATR14%)` 动态放宽追高阈值并输出 `effective_bias_threshold`），同时在 Web 前端全局引入金融等宽数字类 `.num`（`tabular-nums slashed-zero`）与红涨绿跌/绿涨红跌自适应 CSS Token（`[data-market-color]`）。
+- [文档] 精简重构 `README.md` 与中英繁版本，突出全链路 10 路由工作台能力并降低首屏与 Actions 上手门槛（明确仅需 1 个 AI 模型 Secret 即可跑通）；补齐 `docs/INDEX.md`/`INDEX_EN.md` 孤儿专题文档与 `docs/FAQ.md`/`FAQ_EN.md` Fork 排障说明。
+
 - [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
 - [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
 

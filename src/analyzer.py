@@ -1054,6 +1054,137 @@ def fill_price_position_if_needed(
         logger.warning("[price_position] Fill failed, skipping: %s", e)
 
 
+def _extract_positive_finite_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) and parsed > 0 else None
+    from src.utils.sniper_points import parse_sniper_value
+
+    parsed = parse_sniper_value(value)
+    return parsed if parsed is not None and math.isfinite(parsed) and parsed > 0 else None
+
+
+def validate_sniper_price_sanity(
+    result: "AnalysisResult",
+    context: Optional[Dict[str, Any]] = None,
+    *,
+    emit_log: bool = True,
+) -> List[str]:
+    """Check deterministic ordering, R:R, and ATR bounds on LLM sniper points.
+
+    Additive-only guardrail: records diagnostic metadata under
+    ``dashboard["data_perspective"]["price_sanity"]`` without failing report
+    generation or altering legacy fields.
+    """
+    if not result:
+        return []
+
+    from src.utils.sniper_points import extract_sniper_points
+
+    ctx = context if isinstance(context, dict) else {}
+    realtime = ctx.get("realtime") if isinstance(ctx.get("realtime"), dict) else {}
+    realtime_quote = ctx.get("realtime_quote") if isinstance(ctx.get("realtime_quote"), dict) else {}
+    today = ctx.get("today") if isinstance(ctx.get("today"), dict) else {}
+    trend_ctx = ctx.get("trend_result") if isinstance(ctx.get("trend_result"), dict) else {}
+    trend_analysis = ctx.get("trend_analysis") if isinstance(ctx.get("trend_analysis"), dict) else {}
+    snapshot = result.market_snapshot if isinstance(getattr(result, "market_snapshot", None), dict) else {}
+    dash = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else None
+    dp = dash.get("data_perspective") if isinstance(dash, dict) and isinstance(dash.get("data_perspective"), dict) else {}
+    pp = dp.get("price_position") if isinstance(dp.get("price_position"), dict) else {}
+
+    current_price = None
+    for candidate in (
+        getattr(result, "current_price", None),
+        realtime.get("price"),
+        realtime_quote.get("price"),
+        today.get("close"),
+        trend_ctx.get("current_price"),
+        trend_analysis.get("current_price"),
+        ctx.get("current_price"),
+        snapshot.get("current_price"),
+        snapshot.get("price"),
+        snapshot.get("close"),
+        pp.get("current_price"),
+    ):
+        current_price = _extract_positive_finite_float(candidate)
+        if current_price is not None:
+            break
+
+    atr14 = None
+    for candidate in (
+        ctx.get("atr14"),
+        realtime.get("atr14"),
+        today.get("atr14"),
+        trend_ctx.get("atr14"),
+        trend_analysis.get("atr14"),
+    ):
+        atr14 = _extract_positive_finite_float(candidate)
+        if atr14 is not None:
+            break
+
+    points = extract_sniper_points(result)
+    ideal_buy = points.get("ideal_buy")
+    stop_loss = points.get("stop_loss")
+    take_profit = points.get("take_profit")
+
+    warnings: List[str] = []
+    if getattr(result, "decision_type", None) == "buy" and current_price is not None:
+        if stop_loss is not None and stop_loss >= current_price:
+            warnings.append("stop_loss_above_current_price")
+        if take_profit is not None and take_profit <= current_price:
+            warnings.append("take_profit_below_current_price")
+        if ideal_buy is not None and stop_loss is not None and stop_loss >= ideal_buy:
+            warnings.append("stop_loss_above_ideal_buy")
+
+        ref_entry = ideal_buy if (ideal_buy is not None and ideal_buy > 0) else current_price
+        if (
+            stop_loss is not None
+            and take_profit is not None
+            and stop_loss < ref_entry < take_profit
+        ):
+            reward_risk = (take_profit - ref_entry) / (ref_entry - stop_loss)
+            if reward_risk < 1.0:
+                warnings.append("reward_risk_below_1")
+
+        if atr14 is not None and stop_loss is not None and stop_loss < ref_entry:
+            stop_dist = ref_entry - stop_loss
+            if stop_dist < 0.3 * atr14:
+                warnings.append("stop_loss_too_tight_vs_atr")
+            elif stop_dist > 6.0 * atr14:
+                warnings.append("stop_loss_too_wide_vs_atr")
+
+    if isinstance(dash, dict):
+        dp_target = dash.get("data_perspective")
+        if dp_target is None or isinstance(dp_target, dict):
+            dp_target = dp_target if isinstance(dp_target, dict) else {}
+            dash["data_perspective"] = dp_target
+            dp_target["price_sanity"] = {
+                "passed": len(warnings) == 0,
+                "warnings": list(warnings),
+            }
+        intel_target = dash.get("intelligence")
+        if isinstance(intel_target, dict) and isinstance(intel_target.get("risk_alerts"), list):
+            alerts = [
+                a for a in intel_target["risk_alerts"]
+                if not (isinstance(a, str) and (a.startswith("[点位校验]") or a.startswith("[Price Sanity]")))
+            ]
+            if warnings:
+                is_en = str(getattr(result, "report_language", "zh") or "zh").lower().startswith(("en", "ko"))
+                prefix = "[Price Sanity]" if is_en else "[点位校验]"
+                alerts.append(f"{prefix} {', '.join(warnings)}")
+            intel_target["risk_alerts"] = alerts
+
+    if warnings and emit_log:
+        logger.warning(
+            "[price_sanity] %s sniper-point sanity warnings: %s",
+            getattr(result, "code", "?"),
+            warnings,
+        )
+    return warnings
+
+
 def stabilize_decision_with_structure(
     result: "AnalysisResult",
     trend_result: Any = None,
@@ -4278,6 +4409,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 result.model_used = model_used
                 result.report_language = report_language
                 normalize_chip_structure_availability(result, context.get("chip"))
+                validate_sniper_price_sanity(result, context, emit_log=False)
 
                 # 内容完整性校验（可选）
                 if not config.report_integrity_enabled:
@@ -4763,6 +4895,14 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 language=report_language,
             )
             consistency_notes = trend.get('prompt_consistency_notes', [])
+            raw_bias_limit = trend.get('effective_bias_threshold')
+            bias_limit = (
+                float(raw_bias_limit)
+                if isinstance(raw_bias_limit, (int, float))
+                and not isinstance(raw_bias_limit, bool)
+                and float(raw_bias_limit) > 0
+                else 5.0
+            )
             if english:
                 signal_reasons = trend.get('signal_reasons')
                 risk_factors = trend.get('risk_factors')
@@ -4772,7 +4912,9 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 risk_factors_text = chr(10).join('- ' + r for r in risk_factors) if risk_factors else '- None'
                 if use_legacy_default_prompt:
                     bias_warning = (
-                        "🚨 Above 5%, do not chase!" if trend.get('bias_ma5', 0) > 5 else "✅ Safe range"
+                        f"🚨 Above {bias_limit:g}%, do not chase!"
+                        if trend.get('bias_ma5', 0) > bias_limit
+                        else "✅ Safe range"
                     )
                     trend_title = "Trend Analysis Pre-judgment (based on trading principles)"
                     alignment_note = "MA5>MA10>MA20 is bullish"
@@ -4781,7 +4923,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 else:
                     bias_warning = (
                         "🚨 Large deviation, carefully assess chasing risk"
-                        if trend.get('bias_ma5', 0) > 5
+                        if trend.get('bias_ma5', 0) > bias_limit
                         else "✅ Position relatively controlled"
                     )
                     trend_title = "Technical and Structure Analysis (reference for the active skills)"
@@ -4815,7 +4957,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 {chr(10).join('- ' + note for note in consistency_notes)}
 """
             elif use_legacy_default_prompt:
-                bias_warning = "🚨 超过5%，严禁追高！" if trend.get('bias_ma5', 0) > 5 else "✅ 安全范围"
+                bias_warning = (
+                    f"🚨 超过{bias_limit:g}%，严禁追高！"
+                    if trend.get('bias_ma5', 0) > bias_limit
+                    else "✅ 安全范围"
+                )
                 prompt += f"""
 ### 趋势分析预判（基于交易理念）
 | 指标 | 数值 | 判定 |
@@ -4845,7 +4991,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             else:
                 bias_warning = (
                     "🚨 偏离较大，需谨慎评估追高风险"
-                    if trend.get('bias_ma5', 0) > 5
+                    if trend.get('bias_ma5', 0) > bias_limit
                     else "✅ 位置相对可控"
                 )
                 prompt += f"""

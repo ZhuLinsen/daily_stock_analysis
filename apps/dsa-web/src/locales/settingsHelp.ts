@@ -439,6 +439,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响技术分析中追高风险、均线偏离和操作建议的提示强度。'],
     notes: ['阈值过低会增加风险提示噪声，过高可能弱化追高提醒。'],
   },
+  'settings.data_source.BIAS_ATR_MULTIPLIER': {
+    title: '波动率自适应乖离率倍数',
+    summary: '按标的 ATR14 波动率动态放宽 MA5 乖离率追高阈值。',
+    usage: '默认 0.0（关闭，完全沿用静态 BIAS_THRESHOLD）；设置大于 0（如 1.5）时，基准阈值取 max(BIAS_THRESHOLD, 倍数 × ATR14%)。',
+    valueNotes: ['适配创业板/科创板 20cm 标的及港美高波动趋势股，减少低波固定阈值导致的系统性踏空。'],
+    impact: ['影响技术面追高判定、有效乖离率阈值以及报告中的位置风险提示。'],
+    notes: ['建议设置在 1.2~2.0 之间；设为 0 可随时回退静态模式。'],
+  },
   'settings.data_source.pytdx': {
     title: 'Pytdx 通达信服务器',
     summary: '配置通达信行情服务器地址，覆盖内置默认服务器。',
@@ -1687,6 +1695,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Strong-trend stocks may widen the threshold according to runtime rules.'],
     impact: ['Affects technical-analysis warnings about chasing, MA deviation, and trading advice.'],
     notes: ['Too low can add noisy warnings; too high can weaken chase-risk alerts.'],
+  },
+  'settings.data_source.BIAS_ATR_MULTIPLIER': {
+    title: 'BIAS ATR14 Multiplier',
+    summary: 'Dynamically widens the MA5 bias threshold based on ATR14 volatility.',
+    usage: 'Defaults to 0.0 (disabled, preserving static BIAS_THRESHOLD). When > 0 (e.g. 1.5), base threshold uses max(BIAS_THRESHOLD, multiplier * ATR14%).',
+    valueNotes: ['Helps avoid false chase-warnings on high-beta 20% limit A-shares and US/HK momentum stocks.'],
+    impact: ['Affects technical chase-risk scoring, effective bias threshold, and price-position prompts.'],
+    notes: ['Typical values are 1.2–2.0; set back to 0.0 to restore static behavior.'],
   },
   'settings.data_source.pytdx': {
     title: 'Pytdx Servers',
