@@ -204,6 +204,7 @@ class PortfolioRepository:
         amount: float,
         currency: str,
         note: Optional[str] = None,
+        source_uid: Optional[str] = None,
     ) -> PortfolioCashLedger:
         with self.portfolio_write_session() as session:
             row = self.add_cash_ledger_in_session(
@@ -214,6 +215,7 @@ class PortfolioRepository:
                 amount=amount,
                 currency=currency,
                 note=note,
+                source_uid=source_uid,
             )
             session.expunge(row)
             return row
@@ -266,6 +268,29 @@ class PortfolioRepository:
             return False
         with self.db.get_session() as session:
             return self.has_trade_uid_in_session(session=session, account_id=account_id, trade_uid=uid)
+
+    def has_cash_source_uid(self, account_id: int, source_uid: Optional[str]) -> bool:
+        """Return True when a cash event with this source_uid already exists."""
+        uid = (source_uid or "").strip()
+        if not uid:
+            return False
+        with self.db.get_session() as session:
+            return self.has_cash_source_uid_in_session(
+                session=session, account_id=account_id, source_uid=uid
+            )
+
+    def has_cash_source_uid_in_session(
+        self, *, session: Any, account_id: int, source_uid: str
+    ) -> bool:
+        row = session.execute(
+            select(PortfolioCashLedger.id).where(
+                and_(
+                    PortfolioCashLedger.account_id == account_id,
+                    PortfolioCashLedger.source_uid == source_uid,
+                )
+            ).limit(1)
+        ).scalar_one_or_none()
+        return row is not None
 
     def has_trade_dedup_hash(self, account_id: int, dedup_hash: Optional[str]) -> bool:
         """Return True when dedup hash already exists in the account."""
@@ -362,6 +387,7 @@ class PortfolioRepository:
         amount: float,
         currency: str,
         note: Optional[str] = None,
+        source_uid: Optional[str] = None,
     ) -> PortfolioCashLedger:
         row = PortfolioCashLedger(
             account_id=account_id,
@@ -370,6 +396,7 @@ class PortfolioRepository:
             amount=amount,
             currency=currency,
             note=note,
+            source_uid=source_uid,
         )
         session.add(row)
         self._invalidate_account_cache_in_session(

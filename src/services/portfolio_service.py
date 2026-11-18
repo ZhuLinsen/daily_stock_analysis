@@ -266,6 +266,7 @@ class PortfolioService:
         amount: float,
         currency: Optional[str] = None,
         note: Optional[str] = None,
+        source_uid: Optional[str] = None,
     ) -> Dict[str, Any]:
         direction_norm = (direction or "").strip().lower()
         if direction_norm not in VALID_CASH_DIRECTIONS:
@@ -274,8 +275,15 @@ class PortfolioService:
             raise ValueError("amount must be finite")
         if amount <= 0:
             raise ValueError("amount must be > 0")
+        source_uid_norm = (source_uid or "").strip() or None
         with self.repo.portfolio_write_session() as session:
             account = self._require_active_account_in_session(session=session, account_id=account_id)
+            if source_uid_norm and self.repo.has_cash_source_uid_in_session(
+                session=session, account_id=account_id, source_uid=source_uid_norm
+            ):
+                raise PortfolioConflictError(
+                    f"Duplicate cash source_uid for account_id={account_id}: {source_uid_norm}"
+                )
             currency_norm = self._normalize_currency(currency or account.base_currency)
             row = self.repo.add_cash_ledger_in_session(
                 session=session,
@@ -285,6 +293,7 @@ class PortfolioService:
                 amount=float(amount),
                 currency=currency_norm,
                 note=(note or "").strip() or None,
+                source_uid=source_uid_norm,
             )
             return {"id": int(row.id)}
 
