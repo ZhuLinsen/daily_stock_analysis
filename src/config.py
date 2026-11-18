@@ -3454,7 +3454,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "未配置任何可用的 AI 模型接入。请至少配置 AIHUBMIX_KEY、"
+                        "未配置任何可用的 AI 模型接入。请至少配置 MODELFLARE_KEY、AIHUBMIX_KEY、"
                         "GEMINI_API_KEY、ANTHROPIC_API_KEY、"
                         "OPENAI_API_KEY、DEEPSEEK_API_KEY 或 ANSPIRE_API_KEYS 中的一个，或配置 "
                         "LITELLM_CONFIG / LLM_CHANNELS 可用模型渠道。"
