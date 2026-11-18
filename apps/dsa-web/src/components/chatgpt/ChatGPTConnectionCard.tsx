@@ -14,6 +14,8 @@ const messages: Record<string, string> = {
   chatgpt_invalid_identity: '返回的账号与已保存的注册不匹配。请用原账号重试，或选择其他账号。',
 };
 
+const disconnectStatusUnknown = '断开结果待确认。请刷新页面查看当前连接状态。';
+
 export function ChatGPTConnectionCard() {
   const { status, models, model, error, refresh, selectModel, disconnect } = useChatGPTStore();
   const [working, setWorking] = useState(false);
@@ -51,7 +53,8 @@ export function ChatGPTConnectionCard() {
     setNotice(null);
     try {
       const confirmed = await disconnect();
-      if (confirmed === false) setNotice('本地已断开。请在 ChatGPT 设置中确认远端授权是否已撤销。');
+      if (confirmed === undefined) setNotice(disconnectStatusUnknown);
+      if (confirmed === false) setNotice('本地已断开原连接。请在 ChatGPT 设置中确认远端授权是否已撤销。');
     } catch (error) {
       setNotice(getParsedApiError(error).message);
     } finally {
@@ -66,7 +69,7 @@ export function ChatGPTConnectionCard() {
     <section aria-labelledby="chatgpt-connection-title" className="space-y-3 border-t border-subtle pt-4">
       <h3 id="chatgpt-connection-title" className="text-sm font-semibold">ChatGPT 授权</h3>
       <p aria-live="polite" className="text-sm text-secondary-text">
-        {status?.pending ? '请在 ChatGPT 页面完成授权。' : status?.connected
+        {notice === disconnectStatusUnknown ? null : status?.pending ? '请在 ChatGPT 页面完成授权。' : status?.connected
           ? `已授权 · ${status.account_label || 'ChatGPT'}`
           : statusMessage || (status?.available ? '连接后可在普通单股分析或问股中选择 ChatGPT。' : null)}
       </p>

@@ -33,6 +33,8 @@
 
 在首页单股分析或问股中，按次将「模型来源」切换为「ChatGPT 授权」。普通单股分析沿用现有模式规则：`AGENT_MODE=true`、请求指定 Skill 或全局配置特定 Skill 时会进入 Agent 报告。默认配置中，让 `AGENT_MODE` 保持未设置，普通报告和单 Agent 问股都可以使用 ChatGPT。显式 `AGENT_MODE=false` 会停用问股。ChatGPT 普通报告关闭外发通知，生成后可在历史中查看。断开连接会停止该连接的新请求，已存报告和聊天仍可查看。 [管理 ChatGPT 用量](https://chatgpt.com/settings/usage)
 
+连接忙时可以稍后重试断开。如果设置页提示本地已断开但远端撤销未确认，请在 ChatGPT 设置中检查授权。如果页面提示断开结果待确认，请刷新页面查看当前连接状态。
+
 API 可在普通单股分析和问股请求中附加 `model_source`，包含 `provider: "chatgpt_siwc"`、`connection_id` 和 `model`。单股分析还须传 `notify: false`。凭据由后端保存在当前 macOS 用户的 Application Support 目录。
 
 ## Generation Backend（Phase 4）

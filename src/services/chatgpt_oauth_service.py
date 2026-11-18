@@ -1,6 +1,7 @@
 """One user-owned Sign in with ChatGPT connection for the local DSA server."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -25,11 +26,14 @@ from src.llm.model_source import ChatGPTModelSource
 ISSUER = "https://auth.openai.com"
 RESOURCE = "https://api.openai.com/v1"
 TOKEN = ISSUER + "/api/accounts/oauth/token"
+METADATA = ISSUER + "/.well-known/openid-configuration"
 DYNAMIC_CLIENT = "dynamic_agent_client"
 CALLBACK_PATH = "/auth/callback"
 SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
 REQUIRED_SCOPES = {"resource.invoke", "chatgpt.tokens.use.direct", "offline_access"}
 APP_NAME = "Daily Stock Analysis"
+DISCONNECT_TIMEOUT = 20
+DISCONNECT_LOCK_TIMEOUT = 2
 
 
 def _safe_identifier(value):
@@ -140,6 +144,10 @@ class ChatGPTOAuthService:
             response = self.http.request(method, url, **kwargs)
         except httpx.HTTPError:
             raise ChatGPTError("chatgpt_network_error", "Could not reach OpenAI") from None
+        return self._checked_response(response)
+
+    @staticmethod
+    def _checked_response(response):
         if not response.is_success:
             try:
                 body = response.json()
@@ -152,28 +160,30 @@ class ChatGPTOAuthService:
         return response
 
     def _json(self, method, url, **kwargs):
+        return self._json_body(self._request(method, url, **kwargs))
+
+    @staticmethod
+    def _json_body(response):
         try:
-            body = self._request(method, url, **kwargs).json()
+            body = response.json()
         except ValueError:
             body = None
         if not isinstance(body, dict):
             raise ChatGPTError("chatgpt_protocol_error", "OpenAI returned an invalid JSON object")
         return body
 
-    def _metadata(self):
-        metadata = self._json("GET", ISSUER + "/.well-known/openid-configuration")
+    @staticmethod
+    def _metadata_endpoint(metadata, field):
         if metadata.get("issuer") != ISSUER:
             raise ChatGPTError("chatgpt_protocol_error", "Unexpected OpenAI issuer")
-        return metadata
-
-    def _metadata_endpoint(self, field):
-        endpoint = self._metadata().get(field)
+        endpoint = metadata.get(field)
         if not isinstance(endpoint, str) or not endpoint.startswith(ISSUER + "/"):
             raise ChatGPTError("chatgpt_protocol_error", "Unexpected OpenAI metadata endpoint")
         return endpoint
 
     def _identity(self, encoded, client_id, nonce):
-        keys = self._json("GET", self._metadata_endpoint("jwks_uri")).get("keys", [])
+        jwks = self._metadata_endpoint(self._json("GET", METADATA), "jwks_uri")
+        keys = self._json("GET", jwks).get("keys", [])
         try:
             header = jwt.get_unverified_header(encoded)
             key, = [candidate for candidate in keys if candidate.get("kid") == header.get("kid")]
@@ -348,8 +358,13 @@ class ChatGPTOAuthService:
                 raise ChatGPTError("chatgpt_reauthorization_required", "Sign in to ChatGPT again",
                                    status=exc.status, upstream_code=exc.upstream_code, request_id=exc.request_id) from None
             raise
+        if "scope" not in body:
+            body["scope"] = " ".join(connection["scopes"])
+        refresh_token = body.setdefault("refresh_token", connection["refresh_token"])
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise ChatGPTError("chatgpt_protocol_error", "OpenAI returned an invalid refresh token")
         tokens = self._token_fields(body)
-        if not REQUIRED_SCOPES.issubset(tokens["scopes"]) or not tokens["refresh_token"]:
+        if not REQUIRED_SCOPES.issubset(tokens["scopes"]):
             self._save({**self.data, "connection": None, "authorization_error": "chatgpt_plan_permission_required"})
             self.models_cache = None
             raise ChatGPTError("chatgpt_plan_permission_required", "ChatGPT authorization no longer grants model use")
@@ -388,35 +403,53 @@ class ChatGPTOAuthService:
         with self.lock:
             return dispatch(self._bearer(source.connection_id))
 
-    def disconnect(self):
-        with self.lock:
+    async def _revoke(self, refresh_token):
+        async with httpx.AsyncClient(timeout=self.http.timeout, trust_env=False, follow_redirects=False) as client:
+            metadata = self._json_body(self._checked_response(await client.get(METADATA)))
+            endpoint = self._metadata_endpoint(metadata, "revocation_endpoint")
+            params = {
+                "token": refresh_token, "token_type_hint": "refresh_token",
+                "client_id": self.data["registration"]["client_id"],
+            }
+            for attempt in range(2):
+                try:
+                    response = self._checked_response(await client.post(endpoint, data=params))
+                    return response.status_code == 200
+                except (ChatGPTError, httpx.HTTPError) as error:
+                    if attempt or (isinstance(error, ChatGPTError) and error.status < 500):
+                        return False
+                await asyncio.sleep(0.25)
+
+    def disconnect(self, loop: asyncio.AbstractEventLoop):
+        deadline = time.monotonic() + DISCONNECT_TIMEOUT
+        if not self.lock.acquire(timeout=min(DISCONNECT_LOCK_TIMEOUT, DISCONNECT_TIMEOUT)):
+            raise ChatGPTError("chatgpt_connection_busy", "ChatGPT is busy. Try disconnecting again shortly")
+        try:
             self._enabled()
-            self._cancel_pending()
             connection = self.data.get("connection") or {}
+            if connection:
+                # Keep the revocation token only in memory once the user disconnects.
+                self._save({**self.data, "connection": None, "authorization_error": None})
+            self._cancel_pending()
             self.models_cache = None
             self.error = None
             if not connection:
                 return {"disconnected": True, "revocation_confirmed": None}
-            # Keep the revocation token only in memory once the user disconnects.
-            self._save({**self.data, "connection": None, "authorization_error": None})
-            confirmed = False
             try:
-                endpoint = self._metadata_endpoint("revocation_endpoint")
-                params = {
-                    "token": connection["refresh_token"], "token_type_hint": "refresh_token",
-                    "client_id": self.data["registration"]["client_id"],
-                }
-                for attempt in range(2):
-                    try:
-                        confirmed = self._request("POST", endpoint, data=params).status_code == 200
-                        break
-                    except ChatGPTError as exc:
-                        if attempt or (exc.status is not None and exc.status < 500):
-                            break
-                        time.sleep(0.25)
-            except ChatGPTError:
-                pass
+                # Keep the credential lock in the worker, and use the server loop
+                # so a stuck DNS lookup cannot delay per-request loop shutdown.
+                revocation = asyncio.run_coroutine_threadsafe(
+                    asyncio.wait_for(
+                        self._revoke(connection["refresh_token"]), timeout=deadline - time.monotonic(),
+                    ),
+                    loop,
+                )
+                confirmed = revocation.result()
+            except (asyncio.TimeoutError, ChatGPTError, httpx.HTTPError):
+                confirmed = False
             return {"disconnected": True, "revocation_confirmed": confirmed}
+        finally:
+            self.lock.release()
 
 
 _service = None

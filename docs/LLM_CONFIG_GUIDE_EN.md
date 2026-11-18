@@ -26,6 +26,8 @@ On a personal Mac, start DSA from source with `python main.py --serve-only --hos
 
 Choose ChatGPT as the model source for a single-stock report or a single-Agent chat. The existing report rules apply. `AGENT_MODE=true`, a request Skill or a specific global Skill enables Agent reports. Leaving `AGENT_MODE` unset allows both ordinary reports and single-Agent chat in the default configuration. Explicitly setting it to `false` disables chat. ChatGPT reports have external notifications disabled and can be reopened from history. Disconnecting stops new requests on that connection. Saved reports and chats remain available. [Manage ChatGPT usage](https://chatgpt.com/settings/usage)
 
+If the connection is busy, try disconnecting again shortly. If DSA reports a local disconnection with unconfirmed remote revocation, check the authorization in ChatGPT settings. If DSA cannot confirm the outcome, reload the page to see the current connection status.
+
 The single-stock analysis and Chat APIs accept a `model_source` object with `provider: "chatgpt_siwc"`, `connection_id` and `model`. Single-stock analysis also requires `notify: false`. The backend stores credentials in the current macOS user's Application Support directory.
 
 ## Generation Backend (Phase 4)

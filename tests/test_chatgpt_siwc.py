@@ -1,11 +1,14 @@
 """Regression coverage for ChatGPT connection ownership and the Responses contract."""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
+from urllib.parse import parse_qs
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,6 +21,7 @@ from src.llm.chatgpt_generation_backend import SiwcGenerationBackend
 from src.llm.chatgpt_responses import ChatGPTResponse, consume_responses
 from src.llm.model_source import ChatGPTModelSource
 from src.services.agent_backend_status_service import evaluate_agent_backend_config
+from src.services import chatgpt_oauth_service
 from src.services.chatgpt_oauth_service import ChatGPTError, ChatGPTOAuthService
 
 
@@ -47,6 +51,30 @@ def begin(service):
     attempt = {"registration": REGISTRATION, "nonce": "nonce", "verifier": "pkce", "redirect_uri": "redirect"}
     service.pending = attempt
     return attempt
+
+
+def expire_connection(service):
+    service._save({"registration": REGISTRATION, "connection": {
+        "active": True, "id": SOURCE.connection_id, "expires_at": 0, "access_token": "access-old",
+        "scopes": token_body()["scope"].split(), "refresh_token": "refresh-old",
+    }})
+    service.models_cache = (SOURCE.connection_id, ({"slug": SOURCE.model},))
+
+
+def mock_revocation_transport(monkeypatch, handler):
+    client = httpx.AsyncClient
+
+    def make_client(**options):
+        options.setdefault("transport", httpx.MockTransport(handler))
+        return client(**options)
+
+    monkeypatch.setattr(
+        chatgpt_oauth_service.httpx, "AsyncClient", make_client,
+    )
+
+
+async def disconnect_in_worker(service):
+    return await asyncio.to_thread(service.disconnect, asyncio.get_running_loop())
 
 
 @pytest.mark.parametrize("subject,scope,error", [
@@ -80,7 +108,7 @@ def test_cancel_while_token_exchange_is_in_flight(oauth, monkeypatch):
         callback = executor.submit(oauth._complete, attempt, {"code": ["code"]})
         try:
             assert started.wait(5)
-            oauth.disconnect()
+            asyncio.run(disconnect_in_worker(oauth))
         finally:
             finish.set()
         callback.result(timeout=5)
@@ -88,46 +116,122 @@ def test_cancel_while_token_exchange_is_in_flight(oauth, monkeypatch):
     assert "access-new" not in (oauth.directory / "connection.json").read_text()
 
 
+@pytest.mark.parametrize("omitted,overrides,error,saved_refresh", [
+    ("refresh_token", {}, None, "refresh-old"),
+    (None, {"scope": "openid"}, "chatgpt_plan_permission_required", None),
+    (None, {"refresh_token": {"invalid": "object"}}, "chatgpt_protocol_error", "refresh-old"),
+], ids=["keep-refresh-token", "reject-narrowed-grant", "reject-malformed-token"])
+def test_refresh_uses_existing_credentials_only_for_omitted_fields(
+    oauth, monkeypatch, omitted, overrides, error, saved_refresh,
+):
+    expire_connection(oauth)
+    body = {**token_body(), **overrides}
+    if omitted:
+        del body[omitted]
+    monkeypatch.setattr(oauth, "_json", Mock(return_value=body))
+    dispatch = Mock(return_value="started")
+    if error:
+        with pytest.raises(ChatGPTError, match=error):
+            oauth.start_request(SOURCE, dispatch)
+        dispatch.assert_not_called()
+    else:
+        assert oauth.start_request(SOURCE, dispatch) == "started"
+        dispatch.assert_called_once_with("access-new")
+    stored = json.loads((oauth.directory / "connection.json").read_text())["connection"]
+    assert (stored or {}).get("refresh_token") == saved_refresh
+    if stored:
+        assert stored["access_token"] == ("access-old" if error else "access-new")
+
+
 def test_refresh_and_disconnect_serialize_and_reconnect_changes_reference(oauth, monkeypatch):
-    oauth._save({"registration": REGISTRATION, "connection": {
-        "active": True, "id": SOURCE.connection_id, "expires_at": 0, "refresh_token": "refresh-old",
-    }})
-    oauth.models_cache = (SOURCE.connection_id, ({"slug": SOURCE.model},))
+    expire_connection(oauth)
     refreshing, release = Event(), Event()
 
     def refresh(*args, **kwargs):
         refreshing.set()
         assert release.wait(5)
-        return token_body()
+        body = token_body()
+        del body["scope"]
+        return body
 
     monkeypatch.setattr(oauth, "_json", refresh)
 
-    def revocation_endpoint(_):
+    def revoke(request):
         stored = json.loads((oauth.directory / "connection.json").read_text())
         assert stored["connection"] is None
         assert stored["registration"] == REGISTRATION
-        return "revoke"
+        if request.method == "GET":
+            return httpx.Response(200, json={
+                "issuer": chatgpt_oauth_service.ISSUER,
+                "revocation_endpoint": chatgpt_oauth_service.ISSUER + "/fixture-revoke",
+            })
+        assert parse_qs(request.content.decode())["token"] == ["refresh-new"]
+        return httpx.Response(200)
 
-    monkeypatch.setattr(oauth, "_metadata_endpoint", revocation_endpoint)
-    revoke = Mock(return_value=SimpleNamespace(status_code=200))
-    monkeypatch.setattr(oauth, "_request", revoke)
+    monkeypatch.setattr(oauth, "_request", Mock(side_effect=AssertionError("Unexpected synchronous HTTP request")))
+    mock_revocation_transport(monkeypatch, revoke)
     with ThreadPoolExecutor() as executor:
         dispatch = executor.submit(oauth.start_request, SOURCE, lambda bearer: bearer)
         try:
             assert refreshing.wait(5)
-            disconnect = executor.submit(oauth.disconnect)
+            disconnect = executor.submit(asyncio.run, disconnect_in_worker(oauth))
         finally:
             release.set()
         assert dispatch.result(timeout=5) == "access-new"
         assert disconnect.result(timeout=5)["revocation_confirmed"]
-    assert revoke.call_args.kwargs["data"]["token"] == "refresh-new"
 
     attempt = begin(oauth)
+    monkeypatch.setattr(oauth, "_json", Mock(return_value=token_body()))
     monkeypatch.setattr(oauth, "_identity", lambda *_: {"sub": "account"})
     oauth._complete(attempt, {"code": ["code"]})
     assert oauth.status()["connection_id"] != SOURCE.connection_id
+    dispatch = Mock()
     with pytest.raises(ChatGPTError, match="chatgpt_connection_inactive"):
-        oauth.ensure_active(SOURCE)
+        oauth.start_request(SOURCE, dispatch)
+    dispatch.assert_not_called()
+
+
+def test_disconnect_bounds_lock_wait_and_remote_revocation(oauth, monkeypatch):
+    expire_connection(oauth)
+    monkeypatch.setattr(chatgpt_oauth_service, "DISCONNECT_LOCK_TIMEOUT", 0.01, raising=False)
+    monkeypatch.setattr(chatgpt_oauth_service, "DISCONNECT_TIMEOUT", 0.2, raising=False)
+    monkeypatch.setattr(oauth, "_request", Mock(side_effect=AssertionError("Unexpected synchronous HTTP request")))
+    remote_finished = Event()
+    dns_started = Event()
+    finish_dns = Event()
+
+    def slow_dns_lookup():
+        dns_started.set()
+        assert finish_dns.wait(3)
+
+    async def upstream(request):
+        assert request.url == chatgpt_oauth_service.METADATA
+        try:
+            await asyncio.to_thread(slow_dns_lookup)
+        finally:
+            remote_finished.set()
+
+    mock_revocation_transport(monkeypatch, upstream)
+    with ThreadPoolExecutor() as executor:
+        with oauth.lock:
+            attempt = executor.submit(asyncio.run, disconnect_in_worker(oauth))
+            with pytest.raises(ChatGPTError, match="chatgpt_connection_busy"):
+                attempt.result(timeout=1)
+            assert oauth.status()["connected"]
+            assert not dns_started.is_set()
+
+    async def disconnect_with_slow_dns():
+        try:
+            assert await asyncio.wait_for(disconnect_in_worker(oauth), timeout=1) == {
+                "disconnected": True, "revocation_confirmed": False,
+            }
+            assert dns_started.is_set() and remote_finished.is_set()
+        finally:
+            finish_dns.set()
+
+    asyncio.run(disconnect_with_slow_dns())
+    assert json.loads((oauth.directory / "connection.json").read_text())["connection"] is None
+    assert not oauth.status()["connected"]
 
 
 def item(text, phase=None):
@@ -280,7 +384,7 @@ def test_model_source_may_be_omitted_but_not_null():
         assert error.value.errors()[0]["loc"][0] == "model_source"
 
 
-def test_connection_endpoints_require_local_admin_and_same_origin(monkeypatch):
+def test_connection_endpoints_require_local_admin_and_same_origin(oauth, monkeypatch):
     app = FastAPI()
     app.include_router(chatgpt.router)
     app.state.chatgpt_origin = "http://127.0.0.1:8765"
@@ -294,14 +398,25 @@ def test_connection_endpoints_require_local_admin_and_same_origin(monkeypatch):
     client.cookies.set(COOKIE_NAME, "valid")
     assert client.post("/disconnect").status_code == 403
     assert client.get("/status", headers={"Host": "testserver"}).status_code == 403
-    service = SimpleNamespace(disconnect=lambda: {"disconnected": True})
-    monkeypatch.setattr(chatgpt, "get_chatgpt_service", lambda: service)
-    assert client.post("/disconnect", headers={"Origin": app.state.chatgpt_origin}).json()["disconnected"]
+    def upstream(request):
+        if request.url == chatgpt_oauth_service.METADATA:
+            return httpx.Response(200, json={
+                "issuer": chatgpt_oauth_service.ISSUER,
+                "revocation_endpoint": chatgpt_oauth_service.ISSUER + "/fixture-revoke",
+            })
+        assert parse_qs(request.content.decode())["token"] == ["refresh-old"]
+        return httpx.Response(200)
+
+    expire_connection(oauth)
+    mock_revocation_transport(monkeypatch, upstream)
+    monkeypatch.setattr(chatgpt, "get_chatgpt_service", lambda: oauth)
+    response = client.post("/disconnect", headers={"Origin": app.state.chatgpt_origin})
+    assert response.json() == {"disconnected": True, "revocation_confirmed": True}
+    assert not client.get("/status").json()["connected"]
 
 
 @pytest.mark.parametrize("cache_telemetry_enabled", [True, False], ids=["cache_enabled", "cache_disabled"])
 def test_sdk_sends_only_selected_model_and_reuses_complete_done_item(monkeypatch, tmp_path, cache_telemetry_enabled):
-    import httpx
     from src.llm.chatgpt_responses import request_responses
     from src.storage import DatabaseManager, LLMUsage, persist_llm_usage
 

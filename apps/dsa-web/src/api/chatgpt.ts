@@ -29,6 +29,8 @@ export const chatgptApi = {
     })).data.models;
   },
   async disconnect() {
-    return (await apiClient.post<{ revocation_confirmed: boolean | null }>('/api/v1/chatgpt/disconnect')).data;
+    return (await apiClient.post<{ disconnected: boolean; revocation_confirmed: boolean | null }>(
+      '/api/v1/chatgpt/disconnect',
+    )).data;
   },
 };

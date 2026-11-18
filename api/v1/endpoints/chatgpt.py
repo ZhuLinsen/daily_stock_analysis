@@ -1,6 +1,9 @@
 """Manage the local ChatGPT connection without exposing model credentials."""
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from api.deps import chatgpt_unavailable_reason, require_chatgpt_access
 from src.services.chatgpt_oauth_service import ChatGPTError, get_chatgpt_service
@@ -45,5 +48,5 @@ def models(request: Request, connection_id: str, refresh: bool = False):
 
 
 @router.post("/disconnect")
-def disconnect(request: Request):
-    return _operation(request, "disconnect")
+async def disconnect(request: Request):
+    return await run_in_threadpool(_operation, request, "disconnect", asyncio.get_running_loop())
