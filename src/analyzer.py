@@ -1130,25 +1130,28 @@ def validate_sniper_price_sanity(
     take_profit = points.get("take_profit")
 
     warnings: List[str] = []
-    if getattr(result, "decision_type", None) == "buy" and current_price is not None:
-        if stop_loss is not None and stop_loss >= current_price:
+    if getattr(result, "decision_type", None) == "buy":
+        if current_price is not None and stop_loss is not None and stop_loss >= current_price:
             warnings.append("stop_loss_above_current_price")
-        if take_profit is not None and take_profit <= current_price:
+        if current_price is not None and take_profit is not None and take_profit <= current_price:
             warnings.append("take_profit_below_current_price")
         if ideal_buy is not None and stop_loss is not None and stop_loss >= ideal_buy:
             warnings.append("stop_loss_above_ideal_buy")
+        if ideal_buy is not None and take_profit is not None and take_profit <= ideal_buy:
+            warnings.append("take_profit_below_ideal_buy")
 
         ref_entry = ideal_buy if (ideal_buy is not None and ideal_buy > 0) else current_price
         if (
             stop_loss is not None
             and take_profit is not None
+            and ref_entry is not None
             and stop_loss < ref_entry < take_profit
         ):
             reward_risk = (take_profit - ref_entry) / (ref_entry - stop_loss)
             if reward_risk < 1.0:
                 warnings.append("reward_risk_below_1")
 
-        if atr14 is not None and stop_loss is not None and stop_loss < ref_entry:
+        if atr14 is not None and stop_loss is not None and ref_entry is not None and stop_loss < ref_entry:
             stop_dist = ref_entry - stop_loss
             if stop_dist < 0.3 * atr14:
                 warnings.append("stop_loss_too_tight_vs_atr")
@@ -2177,7 +2180,7 @@ class GeminiAnalyzer:
             },
             "action_checklist": [
                 "✅/⚠️/❌ 检查项1：多头排列",
-                "✅/⚠️/❌ 检查项2：乖离率合理（强势趋势可放宽）",
+                "✅/⚠️/❌ 检查项2：乖离率在有效阈值以内（已含强势趋势补偿）",
                 "✅/⚠️/❌ 检查项3：量能配合",
                 "✅/⚠️/❌ 检查项4：无重大利空",
                 "✅/⚠️/❌ 检查项5：筹码健康",
@@ -2233,19 +2236,19 @@ class GeminiAnalyzer:
 
 ### 强烈买入（80-100分）：
 - ✅ 多头排列：MA5 > MA10 > MA20
-- ✅ 低乖离率：<2%，最佳买点
+- ✅ 低乖离率：<2% 且不超过有效阈值，最佳买点
 - ✅ 缩量回调或放量突破
 - ✅ 筹码集中健康
 - ✅ 消息面有利好催化
 
 ### 买入（60-79分）：
 - ✅ 多头排列或弱势多头
-- ✅ 乖离率 <5%
+- ✅ 乖离率在当次 `effective_bias_threshold` 有效阈值以内
 - ✅ 量能正常
 - ⚪ 允许一项次要条件不满足
 
 ### 观望（40-59分）：
-- ⚠️ 乖离率 >5%（追高风险）
+- ⚠️ 乖离率超过当次 `effective_bias_threshold` 有效阈值（追高风险）
 - ⚠️ 均线缠绕趋势不明
 - ⚠️ 有风险事件
 
@@ -2620,7 +2623,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             },
             "action_checklist": [
                 "✅/⚠️/❌ Check 1: bullish alignment",
-                "✅/⚠️/❌ Check 2: reasonable bias (may be relaxed for strong trends)",
+                "✅/⚠️/❌ Check 2: bias within the effective limit (strong-trend relief already included)",
                 "✅/⚠️/❌ Check 3: volume confirms",
                 "✅/⚠️/❌ Check 4: no major negative news",
                 "✅/⚠️/❌ Check 5: healthy chip structure",
@@ -2634,19 +2637,19 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
 ### Strong Buy (80-100):
 - ✅ Bullish alignment: MA5 > MA10 > MA20
-- ✅ Low bias: <2%, best entry
+- ✅ Low bias: <2% and within the effective limit, best entry
 - ✅ Low-volume pullback or high-volume breakout
 - ✅ Concentrated, healthy chips
 - ✅ Positive news catalyst
 
 ### Buy (60-79):
 - ✅ Bullish or weakly bullish alignment
-- ✅ Bias <5%
+- ✅ Bias within this analysis's `effective_bias_threshold`
 - ✅ Normal volume
 - ⚪ One minor condition may be unmet
 
 ### Watch (40-59):
-- ⚠️ Bias >5% (chasing risk)
+- ⚠️ Bias above this analysis's `effective_bias_threshold` (chasing risk)
 - ⚠️ Tangled moving averages, unclear trend
 - ⚠️ Risk events present
 
@@ -4506,6 +4509,11 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         # the final output-language directive differs (#2352).
         english = report_language in ("en", "ko")
         _, _, use_legacy_default_prompt = self._get_skill_prompt_sections()
+        trend_context = context.get('trend_analysis')
+        raw_bias_limit = trend_context.get('effective_bias_threshold') if isinstance(trend_context, dict) else None
+        bias_limit = _extract_positive_finite_float(raw_bias_limit)
+        if bias_limit is None:
+            bias_limit = float(self._get_runtime_config().bias_threshold)
         
         # 优先使用上下文中的股票名称（从 realtime_quote 获取）
         stock_name = context.get('stock_name', name)
@@ -4895,14 +4903,6 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 language=report_language,
             )
             consistency_notes = trend.get('prompt_consistency_notes', [])
-            raw_bias_limit = trend.get('effective_bias_threshold')
-            bias_limit = (
-                float(raw_bias_limit)
-                if isinstance(raw_bias_limit, (int, float))
-                and not isinstance(raw_bias_limit, bool)
-                and float(raw_bias_limit) > 0
-                else 5.0
-            )
             if english:
                 signal_reasons = trend.get('signal_reasons')
                 risk_factors = trend.get('risk_factors')
@@ -4938,6 +4938,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 | MA Alignment | {trend.get('ma_alignment', unknown_text)} | {alignment_note} |
 | Trend Strength | {trend.get('trend_strength', 0)}/100 | |
 | **{bias_label} (MA5)** | **{trend.get('bias_ma5', 0):+.2f}%** | {bias_warning} |
+| effective_bias_threshold | {bias_limit:g}% | Includes configured ATR adaptation and strong-trend relief |
 | {bias_label} (MA10) | {trend.get('bias_ma10', 0):+.2f}% | |
 | Volume Status | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
 | System Signal | {trend.get('buy_signal', unknown_text)} | |
@@ -4970,6 +4971,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 | 均线排列 | {trend.get('ma_alignment', unknown_text)} | MA5>MA10>MA20为多头 |
 | 趋势强度 | {trend.get('trend_strength', 0)}/100 | |
 | **乖离率(MA5)** | **{trend.get('bias_ma5', 0):+.2f}%** | {bias_warning} |
+| effective_bias_threshold | {bias_limit:g}% | 已含配置的 ATR 自适应及强趋势补偿 |
 | 乖离率(MA10) | {trend.get('bias_ma10', 0):+.2f}% | |
 | 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
 | 系统信号 | {trend.get('buy_signal', unknown_text)} | |
@@ -5002,6 +5004,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 | 均线排列 | {trend.get('ma_alignment', unknown_text)} | 结合激活技能判断结构强弱 |
 | 趋势强度 | {trend.get('trend_strength', 0)}/100 | |
 | **价格位置(MA5)** | **{trend.get('bias_ma5', 0):+.2f}%** | {bias_warning} |
+| effective_bias_threshold | {bias_limit:g}% | 已含配置的 ATR 自适应及强趋势补偿 |
 | 价格位置(MA10) | {trend.get('bias_ma10', 0):+.2f}% | |
 | 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
 | 系统信号 | {trend.get('buy_signal', unknown_text)} | |
@@ -5178,11 +5181,11 @@ If the stock name shown above is "Stock {code}" or incorrect, **state the correc
 如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
 """
         if english and use_legacy_default_prompt:
-            prompt += """
+            prompt += f"""
 
 ### Key focus (must be answered explicitly):
 1. ❓ Is the MA5>MA10>MA20 bullish alignment met?
-2. ❓ Is the current bias within the safe range (<5%)? — above 5% must be marked "do not chase"
+2. ❓ Is the current bias within `effective_bias_threshold={bias_limit:g}%`? — above {bias_limit:g}% must be marked "do not chase"; this limit includes configured ATR adaptation and strong-trend relief, do not relax it again
 3. ❓ Does volume confirm (low-volume pullback/high-volume breakout)?
 4. ❓ Is the chip structure healthy?
 5. ❓ Is there any major negative news? (shareholder reductions, penalties, earnings shocks, etc.)
@@ -5202,7 +5205,7 @@ If the stock name shown above is "Stock {code}" or incorrect, **state the correc
 
 ### 重点关注（必须明确回答）：
 1. ❓ 是否满足 MA5>MA10>MA20 多头排列？
-2. ❓ 当前乖离率是否在安全范围内（<5%）？—— 超过5%必须标注"严禁追高"
+2. ❓ 当前乖离率是否在有效阈值 `effective_bias_threshold={bias_limit:g}%` 以内？—— 超过{bias_limit:g}%必须标注"严禁追高"；此阈值已含配置的 ATR 自适应及强趋势补偿，不得再次放宽
 3. ❓ 量能是否配合（缩量回调/放量突破）？
 4. ❓ 筹码结构是否健康？
 5. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）

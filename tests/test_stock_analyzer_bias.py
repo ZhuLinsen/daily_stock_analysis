@@ -157,28 +157,35 @@ class StockAnalyzerBiasTestCase(unittest.TestCase):
 
     @patch("src.stock_analyzer.get_config")
     def test_boundary_at_base_threshold(self, mock_get_config: MagicMock) -> None:
-        """bias=5.0% (exact base_threshold) -> '可小仓介入' (bias < base_threshold is False)."""
+        """The configured limit is inclusive, matching the final prompt."""
         mock_get_config.return_value.bias_threshold = 5.0
-        result = _make_result(
-            trend_status=TrendStatus.BULL,
-            bias_ma5=5.0,
-        )
+        result = _make_result(trend_status=TrendStatus.BULL, bias_ma5=5.0)
         self.analyzer._generate_signal(result)
-        # bias=5.0: bias < base_threshold (5 < 5) is False, so we go to next branch
-        # bias < 2 is False, bias < base_threshold is False (5 < 5)
-        # bias > effective_threshold: 5 > 5 False
-        # bias > base_threshold and is_strong_trend: 5 > 5 False
-        # else: 5 > 5 False, so we'd get to the else branch with "严禁追高"
-        # Actually: bias < 2 -> False, bias < base_threshold (5 < 5) -> False
-        # bias > effective_threshold (5 > 5) -> False
-        # bias > base_threshold and is_strong_trend -> False
-        # else -> bias > base_threshold (5 > 5) False... wait
-        # Let me re-read: elif bias < base_threshold -> 5 < 5 is False
-        # elif bias > effective_threshold -> 5 > 5 is False
-        # elif bias > base_threshold and is_strong_trend -> 5 > 5 is False
-        # else: risks.append 严禁追高 - so we get 严禁追高
-        # Because 5.0 is not < 5.0, not > 5.0 when effective=base=5. So we hit the else.
-        self._assert_contains(result.risk_factors, "严禁追高")
+        self._assert_contains(result.signal_reasons, "可小仓介入")
+        self._assert_not_contains(result.risk_factors, "严禁追高")
+
+    @patch("src.stock_analyzer.get_config")
+    def test_effective_limit_boundaries_match_emitted_threshold(self, mock_get_config: MagicMock) -> None:
+        for base, multiplier, status, expected in (
+            (5.0, 1.5, TrendStatus.BULL, 9.0),
+            (5.0, 1.5, TrendStatus.STRONG_BULL, 13.5),
+            (5.004, 0.0, TrendStatus.BULL, 5.004),
+            (1.0, 0.0, TrendStatus.BULL, 1.0),
+        ):
+            for delta in (0.0, 0.001):
+                with self.subTest(base=base, multiplier=multiplier, status=status, delta=delta):
+                    mock_get_config.return_value.bias_threshold = base
+                    mock_get_config.return_value.bias_atr_multiplier = multiplier
+                    result = _make_result(
+                        trend_status=status, trend_strength=80, bias_ma5=expected + delta,
+                    )
+                    result.atr14 = 0.6
+                    self.analyzer._generate_signal(result)
+                    self.assertEqual(result.effective_bias_threshold, expected)
+                    if delta > 0:
+                        self._assert_contains(result.risk_factors, "严禁追高")
+                    else:
+                        self._assert_not_contains(result.risk_factors, "严禁追高")
 
     @patch("src.stock_analyzer.get_config")
     def test_signal_thresholds_follow_canonical_score_scale(self, mock_get_config: MagicMock) -> None:
@@ -352,3 +359,25 @@ class StockAnalyzerBiasTestCase(unittest.TestCase):
         self.assertEqual(adaptive_res.effective_bias_threshold, 9.0)
         self._assert_contains(adaptive_res.signal_reasons, "可小仓介入")
         self._assert_not_contains(adaptive_res.risk_factors, "严禁追高")
+
+    @patch("src.stock_analyzer.get_config")
+    def test_agent_tool_preserves_real_atr_and_effective_limit(self, mock_get_config: MagicMock) -> None:
+        import pandas as pd
+        from src.agent.tools.analysis_tools import _handle_analyze_trend
+
+        mock_get_config.return_value.bias_threshold = 5.0
+        mock_get_config.return_value.bias_atr_multiplier = 1.5
+        prior_close = (5 * 10 / 1.07 - 10) / 4
+        close = pd.Series([prior_close] * 29 + [10.0])
+        frame = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=30),
+            "close": close, "high": close + 0.3, "low": close - 0.3, "volume": [1000] * 30,
+        })
+        expected = self.analyzer.analyze(frame.copy(), "000001")
+        with patch("src.agent.tools.analysis_tools._fetch_trend_data", return_value=frame):
+            actual = _handle_analyze_trend("000001")
+        self.assertNotIn("error", actual)
+        self.assertEqual(actual["atr14"], expected.atr14)
+        self.assertEqual(actual["effective_bias_threshold"], expected.effective_bias_threshold)
+        self.assertGreater(actual["effective_bias_threshold"], actual["bias_ma5"])
+        self.assertAlmostEqual(actual["bias_ma5"], 7.0)

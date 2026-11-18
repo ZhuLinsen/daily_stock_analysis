@@ -23,6 +23,8 @@ except ModuleNotFoundError:
 
 from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_EN, CORE_TRADING_SKILL_POLICY_ZH
 from src.analyzer import GeminiAnalyzer, _legacy_audit_marker_specs
+from src.config import Config
+from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, TrendStatus
 
 # CJK ideographs plus full-width punctuation/forms. Hangul is intentionally not
 # matched so the Korean output directive does not count as Chinese template text.
@@ -92,6 +94,73 @@ def _make_analyzer(*, legacy: bool, skill_instructions: str = "", default_skill_
 
 
 class EnglishStockPromptTemplateTestCase(unittest.TestCase):
+    def test_default_prompts_use_the_computed_bias_limit_in_all_languages(self) -> None:
+        for language in ("zh", "en", "ko"):
+            for multiplier, status, expected_limit in (
+                (0.0, TrendStatus.BULL, 5.0),
+                (1.5, TrendStatus.BULL, 9.0),
+                (1.5, TrendStatus.STRONG_BULL, 13.5),
+            ):
+                with self.subTest(language=language, multiplier=multiplier, status=status):
+                    config = Config(bias_threshold=5.0, bias_atr_multiplier=multiplier)
+                    trend = TrendAnalysisResult(
+                        code="AAPL", current_price=10, atr14=0.6, bias_ma5=7,
+                        trend_status=status, trend_strength=80,
+                    )
+                    with patch("src.stock_analyzer.get_config", return_value=config):
+                        StockTrendAnalyzer()._generate_signal(trend)
+                    self.assertEqual(trend.effective_bias_threshold, expected_limit)
+                    analyzer = _make_analyzer(legacy=True)
+                    analyzer._config_override = config
+                    context = _rich_context()
+                    context["trend_analysis"] = trend.to_dict()
+                    system = analyzer._get_analysis_system_prompt(language, stock_code="AAPL")
+                    user = analyzer._format_prompt(context, "Apple", report_language=language)
+                    self.assertIn("effective_bias_threshold", system)
+                    self.assertIn(f"effective_bias_threshold={expected_limit:g}%", user)
+                    for obsolete_rule in ("乖离率 <5%", "乖离率 >5%", "超过5%", "Bias <5%", "Bias >5%", "above 5%"):
+                        self.assertNotIn(obsolete_rule, system)
+                        if expected_limit != 5:
+                            self.assertNotIn(obsolete_rule, user)
+                    if expected_limit > 7:
+                        self.assertIn("Safe range" if language in ("en", "ko") else "安全范围", user)
+
+    def test_default_prompt_without_trend_uses_configured_bias_limit(self) -> None:
+        analyzer = _make_analyzer(legacy=True)
+        analyzer._config_override = Config(bias_threshold=8.0)
+        context = _rich_context()
+        del context["trend_analysis"]
+        for language in ("zh", "en"):
+            user = analyzer._format_prompt(context, "Apple", report_language=language)
+            self.assertIn("effective_bias_threshold=8%", user)
+
+    def test_prompt_and_scoring_agree_at_bias_limit_boundaries(self) -> None:
+        for base, multiplier, status, limit in (
+            (5.0, 1.5, TrendStatus.BULL, 9.0),
+            (5.0, 1.5, TrendStatus.STRONG_BULL, 13.5),
+            (5.004, 0.0, TrendStatus.BULL, 5.004),
+            (1.0, 0.0, TrendStatus.BULL, 1.0),
+        ):
+            config = Config(bias_threshold=base, bias_atr_multiplier=multiplier)
+            for delta in (0.0, 0.001):
+                trend = TrendAnalysisResult(
+                    code="AAPL", current_price=10, atr14=0.6, bias_ma5=limit + delta,
+                    trend_status=status, trend_strength=80,
+                )
+                with patch("src.stock_analyzer.get_config", return_value=config):
+                    StockTrendAnalyzer()._generate_signal(trend)
+                context = _rich_context()
+                context["trend_analysis"] = trend.to_dict()
+                analyzer = _make_analyzer(legacy=True)
+                analyzer._config_override = config
+                for language in ("zh", "en", "ko"):
+                    with self.subTest(base=base, status=status, delta=delta, language=language):
+                        prompt = analyzer._format_prompt(context, "Apple", report_language=language)
+                        warning = "do not chase!" if language in ("en", "ko") else "严禁追高！"
+                        has_scoring_warning = any("严禁追高" in risk for risk in trend.risk_factors)
+                        self.assertEqual(has_scoring_warning, delta > 0)
+                        self.assertEqual("🚨" in prompt and warning in prompt, has_scoring_warning)
+
     def test_english_system_prompt_has_no_chinese_template_text(self) -> None:
         for legacy in (True, False):
             analyzer = _make_analyzer(legacy=legacy, skill_instructions="### Skill 1: swing\n- watch support")
@@ -146,7 +215,7 @@ class EnglishStockPromptTemplateTestCase(unittest.TestCase):
         self.assertIn("## Output Language (highest priority)", prompt)
 
     def test_english_user_prompt_has_no_chinese_template_text(self) -> None:
-        fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short")
+        fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short", bias_threshold=5.0)
         for legacy in (True, False):
             analyzer = _make_analyzer(legacy=legacy)
             for news in ("AAPL headline", None):
@@ -167,7 +236,7 @@ class EnglishStockPromptTemplateTestCase(unittest.TestCase):
     def test_english_user_prompt_replaces_chinese_stock_name_placeholder(self) -> None:
         analyzer = _make_analyzer(legacy=True)
         context = {"code": "ZZZZ", "date": "2026-03-16", "today": {}}
-        fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short")
+        fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short", bias_threshold=5.0)
         with patch("src.analyzer.get_config", return_value=fake_cfg):
             prompt = analyzer._format_prompt(context, "", news_context=None, report_language="en")
 
@@ -176,7 +245,7 @@ class EnglishStockPromptTemplateTestCase(unittest.TestCase):
 
     def test_korean_reuses_english_scaffolding_with_korean_directive(self) -> None:
         analyzer = _make_analyzer(legacy=True)
-        fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short")
+        fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short", bias_threshold=5.0)
         with patch("src.analyzer.get_config", return_value=fake_cfg):
             ko_user = analyzer._format_prompt(copy.deepcopy(_rich_context()), "Apple", report_language="ko")
             en_user = analyzer._format_prompt(copy.deepcopy(_rich_context()), "Apple", report_language="en")
@@ -193,7 +262,7 @@ class EnglishStockPromptTemplateTestCase(unittest.TestCase):
 
     def test_chinese_prompt_keeps_chinese_template(self) -> None:
         analyzer = _make_analyzer(legacy=True)
-        fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short")
+        fake_cfg = SimpleNamespace(news_max_age_days=3, news_strategy_profile="short", bias_threshold=5.0)
         with patch("src.analyzer.get_config", return_value=fake_cfg):
             prompt = analyzer._format_prompt(_rich_context(), "Apple", news_context="n", report_language="zh")
         system_prompt = analyzer._get_analysis_system_prompt("zh", stock_code="600519")
@@ -229,6 +298,8 @@ class EnglishAnalyzeMessagesTestCase(unittest.TestCase):
         analyzer._default_skill_policy_override = ""
         analyzer._use_legacy_default_prompt_override = True
         analyzer._config_override = SimpleNamespace(
+            bias_threshold=5.0,
+            bias_atr_multiplier=1.5,
             generation_backend="litellm",
             generation_fallback_backend="litellm",
             litellm_model="ollama/qwen3:14b",
@@ -249,11 +320,29 @@ class EnglishAnalyzeMessagesTestCase(unittest.TestCase):
             captured["system"] = kwargs.get("system_prompt")
             raise RuntimeError("stop after capturing messages")
 
+        trend = TrendAnalysisResult(
+            code="AAPL", current_price=10, atr14=0.6, bias_ma5=7, trend_status=TrendStatus.BULL,
+        )
+        with patch("src.stock_analyzer.get_config", return_value=analyzer._config_override):
+            StockTrendAnalyzer()._generate_signal(trend)
+        context = _rich_context()
+        context["trend_analysis"] = trend.to_dict()
         with patch.object(analyzer, "_call_litellm", side_effect=_capture):
-            analyzer.analyze(_rich_context(), news_context="AAPL headline")
+            analyzer.analyze(context, news_context="AAPL headline")
 
         self.assertEqual(_cjk_chars(captured["system"]), "")
-        self.assertEqual(_cjk_chars(captured["user"]), "")
+        # Runtime signal reasons are authored in Chinese; only the prompt
+        # scaffolding is subject to the structural language assertion.
+        user_scaffolding = captured["user"]
+        for reason in trend.signal_reasons + trend.risk_factors:
+            user_scaffolding = user_scaffolding.replace(reason, "")
+        for value in (trend.trend_status.value, trend.buy_signal.value, trend.ma_alignment, trend.volume_status.value):
+            user_scaffolding = user_scaffolding.replace(value, "")
+        self.assertEqual(_cjk_chars(user_scaffolding), "")
+        self.assertIn("effective_bias_threshold=9%", captured["user"])
+        self.assertIn("Safe range", captured["user"])
+        self.assertNotIn("above 5%", captured["user"])
+        self.assertNotIn("Bias >5%", captured["system"])
         self.assertIn("US stock", captured["system"])
         self.assertIn("## Output Language (highest priority)", captured["system"])
         self.assertIn("### Output language requirements (highest priority)", captured["user"])

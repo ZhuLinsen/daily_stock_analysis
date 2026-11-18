@@ -654,7 +654,8 @@ class StockTrendAnalyzer:
         else:
             effective_threshold = base_threshold
             is_strong_trend = False
-        result.effective_bias_threshold = round(float(effective_threshold), 2)
+        # Consumers must compare against the same limit used for scoring.
+        result.effective_bias_threshold = float(effective_threshold)
 
         if bias < 0:
             # Price below MA5 (pullback)
@@ -667,10 +668,10 @@ class StockTrendAnalyzer:
             else:
                 score += 8
                 risks.append(f"⚠️ 乖离率过大({bias:.1f}%)，可能破位")
-        elif bias < 2:
+        elif bias < 2 and bias <= effective_threshold:
             score += 18
             reasons.append(f"✅ 价格贴近MA5({bias:.1f}%)，介入好时机")
-        elif bias < base_threshold:
+        elif bias <= base_threshold:
             score += 14
             reasons.append(f"⚡ 价格略高于MA5({bias:.1f}%)，可小仓介入")
         elif bias > effective_threshold:

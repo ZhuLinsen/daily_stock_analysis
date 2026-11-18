@@ -3314,6 +3314,42 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertAlmostEqual(result.stock_return_pct, -5.0)
             self.assertEqual(result.outcome, "loss")
 
+    def test_intraday_invalid_targets_are_excluded_from_simulation_and_summary(self) -> None:
+        for code, phase in zip(("600525", "600526", "600527"), ("intraday", "lunch_break", "closing_auction")):
+            with self.subTest(phase=phase):
+                with self.db.get_session() as session:
+                    session.add(AnalysisHistory(
+                        query_id=f"invalid_targets_{phase}", code=code, operation_advice="买入",
+                        stop_loss=95.0, take_profit=105.0, created_at=datetime(2024, 1, 5, 10, 30),
+                        context_snapshot=_phase_snapshot(
+                            date(2024, 1, 5), phase=phase, market="cn", effective_date=date(2024, 1, 4),
+                        ),
+                    ))
+                    session.add_all([
+                        StockDaily(code=code, date=date(2024, 1, 4), high=100, low=98, close=99),
+                        StockDaily(code=code, date=date(2024, 1, 5), high=111, low=99, close=110),
+                        StockDaily(code=code, date=date(2024, 1, 8), high=112, low=109, close=111),
+                    ])
+                    session.commit()
+
+                service = BacktestService(self.db)
+                stats = service.run_backtest(code=code, eval_window_days=1, min_age_days=0)
+                self.assertEqual(stats["completed"], 1)
+                item = service.get_recent_evaluations(code=code, eval_window_days=1)["items"][0]
+                self.assertEqual(item["start_price"], 110)
+                self.assertEqual(item["take_profit"], 105)  # Preserve the original plan for audit.
+                self.assertIsNone(item["hit_take_profit"])
+                self.assertIsNone(item["hit_stop_loss"])
+                self.assertIsNone(item["simulated_exit_price"])
+                self.assertIsNone(item["simulated_return_pct"])
+                self.assertEqual(item["simulated_exit_reason"], "invalid_targets")
+                summary = service.get_summary(scope="stock", code=code, eval_window_days=1)
+                self.assertEqual(summary["completed_count"], 1)
+                self.assertAlmostEqual(summary["avg_stock_return_pct"], 0.9091)
+                self.assertIsNone(summary["avg_simulated_return_pct"])
+                self.assertIsNone(summary["take_profit_trigger_rate"])
+                self.assertIsNone(summary["stop_loss_trigger_rate"])
+
     def test_premarket_snapshot_keeps_previous_session_start(self) -> None:
         res = resolve_stock_daily_start(
             stock_code="600519",
