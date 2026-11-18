@@ -83,16 +83,13 @@ def build_summary_message(summary_text: str) -> Dict[str, str]:
 
 def estimate_text_tokens(text: str, config: Any) -> int:
     """Estimate tokens deterministically enough for compression decisions."""
-    normalized_text = text or ""
-    try:
-        import litellm  # type: ignore
-
-        model = get_effective_agent_primary_model(config)
-        count = litellm.token_counter(model=model, text=normalized_text)
-        return max(0, int(count or 0))
-    except Exception as exc:
-        logger.debug("Token counter failed; using character heuristic: %s", exc)
-        return int(math.ceil(len(normalized_text) / 3))
+    del config
+    normalized_text = str(text or "")
+    # Context preparation runs on the request path and must remain offline-safe.
+    # LiteLLM's token counter can lazily load provider/tokenizer metadata, which
+    # may block an offline deployment. This estimate only drives compression
+    # decisions, so a deterministic character heuristic is sufficient.
+    return int(math.ceil(len(normalized_text) / 3))
 
 
 def estimate_messages_tokens(messages: Sequence[Dict[str, Any]], config: Any) -> int:
