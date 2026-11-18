@@ -392,6 +392,8 @@ python main.py --market-only
 2. Re-enable the workflow under `Actions -> Daily Stock Analysis -> Enable workflow` if it was paused after 60 days of inactivity.
 3. For local runs, execute `python main.py --doctor` for an offline, redacted diagnostic summary of your config, LLM readiness, notifications, and storage permissions.
 
+Storage checks reject directories blocked by regular files. Missing directories are checked against the nearest existing parent's type and permissions without creating directories.
+
 ---
 
 ## Still Have Questions?

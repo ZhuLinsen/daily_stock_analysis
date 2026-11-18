@@ -3,6 +3,8 @@
 
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -207,25 +209,37 @@ class TestAskCommandMultiStock(unittest.TestCase):
             },
         }
 
-        def slow_run(self, ctx, progress_callback=None):
-            time.sleep(0.1)
-            ctx.data["portfolio_assessment"] = {"summary": "late summary"}
-            return SimpleNamespace(success=True)
+        worker_started = Event()
+        release_worker = Event()
+        worker_finished = Event()
 
-        started_at = time.monotonic()
+        def slow_run(self, ctx, progress_callback=None):
+            worker_started.set()
+            try:
+                release_worker.wait()
+                ctx.data["portfolio_assessment"] = {"summary": "late summary"}
+                return SimpleNamespace(success=True)
+            finally:
+                worker_finished.set()
+
         with patch("src.agent.factory.get_tool_registry", return_value=MagicMock()):
             with patch("src.agent.llm_adapter.LLMToolAdapter", return_value=MagicMock()):
                 with patch("src.agent.agents.portfolio_agent.PortfolioAgent.run", new=slow_run):
-                    text = command._build_portfolio_section(
-                        SimpleNamespace(),
-                        ["600519", "000858"],
-                        results,
-                        timeout_s=0.01,
-                    )
-
-        elapsed_s = time.monotonic() - started_at
-        self.assertEqual(text, "")
-        self.assertLess(elapsed_s, 0.08)
+                    with ThreadPoolExecutor(max_workers=1) as caller:
+                        pending = caller.submit(
+                            command._build_portfolio_section,
+                            SimpleNamespace(), ["600519", "000858"], results,
+                            timeout_s=0.5,
+                        )
+                        try:
+                            self.assertTrue(worker_started.wait(timeout=3))
+                            self.assertEqual(pending.result(timeout=3), "")
+                            # The caller must return while real overlay work is
+                            # still blocked, independently of import/CPU timing.
+                            self.assertFalse(worker_finished.is_set())
+                        finally:
+                            release_worker.set()
+                            self.assertTrue(worker_finished.wait(timeout=3))
 
     def test_analyze_multi_falls_back_to_text_when_dashboard_parse_fails(self):
         command = AskCommand()

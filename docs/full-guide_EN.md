@@ -1487,6 +1487,8 @@ For a long plan, stop-loss must be below the evaluation entry and take-profit mu
 
 Standard analysis and default Agent skills use the technical analysis's `effective_bias_threshold` for chasing rules. It already includes `BIAS_THRESHOLD`, optional `BIAS_ATR_MULTIPLIER` and strong-trend relief; no fixed 5% limit or additional relaxation is applied. The limit is inclusive, scoring and prompts use the same threshold precision, and a configured limit below 2% also takes precedence over the ideal-entry zone. Buy-report price checks also require take-profit to exceed the planned entry, even when ATR is unavailable.
 
+The ATR-derived component is capped at 50% without lowering the configured `BIAS_THRESHOLD`. Strong trends still multiply the base limit by 1.5, preserving existing high-limit behavior when adaptation is disabled.
+
 ### Operation Advice Mapping
 
 | Operation Advice | Position | Expected Direction | Win Condition |

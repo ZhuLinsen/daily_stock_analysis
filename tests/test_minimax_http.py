@@ -35,6 +35,14 @@ def run_transport_contract():
     from src.agent.llm_adapter import LLMToolAdapter, register_fallback_model_pricing
     from src.config import Config
 
+    # Newer SDKs expose a send hook above both httpx and httpx2. Older
+    # supported SDKs send through httpx.Client directly; keep the same fully
+    # serialized HTTP boundary and the socket guard in either case.
+    if callable(getattr(SyncAPIClient, "_send_request", None)):
+        send_target, send_method = SyncAPIClient, "_send_request"
+    else:
+        send_target, send_method = httpx.Client, "send"
+
     assert not getattr(litellm, "__dsa_test_stub__", False)
     tools = [{"type": "function", "function": {
         "name": "get_price", "description": "Get a stock price",
@@ -125,7 +133,7 @@ def run_transport_contract():
         }
         with patch.dict(os.environ, env, clear=True), patch("src.config.setup_env"), \
                 patch.object(Config, "_parse_litellm_yaml", return_value=[]), \
-                patch.object(SyncAPIClient, "_send_request", send_request), \
+                patch.object(send_target, send_method, send_request), \
                 patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")):
             config = Config._load_from_env()
             assert config.litellm_model == "openai/" + model

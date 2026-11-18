@@ -81,10 +81,10 @@ def _check_dir_writable(path_value: Optional[str]) -> bool:
         return False
     try:
         target = Path(path_value).expanduser()
-        probe = target if target.is_dir() else target.parent
+        probe = target
         while not probe.exists() and probe != probe.parent:
             probe = probe.parent
-        return probe.exists() and os.access(probe, os.W_OK | os.X_OK)
+        return probe.is_dir() and os.access(probe, os.W_OK | os.X_OK)
     except OSError:
         return False
 

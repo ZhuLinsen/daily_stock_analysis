@@ -11,6 +11,7 @@ import logging
 import math
 import time
 import uuid
+from threading import Lock
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -361,6 +362,9 @@ class LLMToolAdapter:
     load balancing.
     """
 
+    _custom_model_pricing_lock = Lock()
+    _custom_model_pricing_registered = False
+
     def __init__(self, config=None):
         config = config or get_config()
         self._config = config
@@ -370,7 +374,6 @@ class LLMToolAdapter:
         self._backend_error: Optional[GenerationError] = None
         self._generation_backend_id = ""
         self._route_resolution: AgentLiteLLMRouteResolution = AgentLiteLLMRouteResolution(False)
-        self._register_custom_model_pricing()
         self._init_litellm()
 
     @staticmethod
@@ -379,16 +382,24 @@ class LLMToolAdapter:
 
         This prevents cost calculation errors for MiniMax-M2.7 and similar models.
         """
-        for model_name, pricing in _CUSTOM_MODEL_PRICING.items():
-            try:
-                litellm.register_model(
-                    {
-                        model_name: pricing
-                    }
-                )
-                logger.debug(f"Registered custom pricing for {model_name}")
-            except Exception as e:
-                logger.debug(f"Model {model_name} may already be registered or pricing error: {e}")
+        if LLMToolAdapter._custom_model_pricing_registered:
+            return
+        with LLMToolAdapter._custom_model_pricing_lock:
+            if LLMToolAdapter._custom_model_pricing_registered:
+                return
+            all_registered = True
+            for model_name, pricing in _CUSTOM_MODEL_PRICING.items():
+                try:
+                    litellm.register_model(
+                        {
+                            model_name: pricing
+                        }
+                    )
+                    logger.debug(f"Registered custom pricing for {model_name}")
+                except Exception as e:
+                    all_registered = False
+                    logger.debug(f"Model {model_name} may already be registered or pricing error: {e}")
+            LLMToolAdapter._custom_model_pricing_registered = all_registered
 
     def _has_channel_config(self) -> bool:
         """Check if multi-channel config (channels / YAML) is active."""
@@ -475,6 +486,8 @@ class LLMToolAdapter:
                 return
             logger.warning("Agent LLM: no effective primary model configured")
             return
+
+        self._register_custom_model_pricing()
 
         # --- Channel / YAML path ---
         if self._has_channel_config():

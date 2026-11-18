@@ -140,6 +140,8 @@ class EnglishStockPromptTemplateTestCase(unittest.TestCase):
             (5.0, 1.5, TrendStatus.STRONG_BULL, 13.5),
             (5.004, 0.0, TrendStatus.BULL, 5.004),
             (1.0, 0.0, TrendStatus.BULL, 1.0),
+            (40.0, 0.0, TrendStatus.STRONG_BULL, 60.0),
+            (50.0, 0.0, TrendStatus.STRONG_BULL, 75.0),
         ):
             config = Config(bias_threshold=base, bias_atr_multiplier=multiplier)
             for delta in (0.0, 0.001):

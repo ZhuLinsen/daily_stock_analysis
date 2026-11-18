@@ -171,6 +171,9 @@ class StockAnalyzerBiasTestCase(unittest.TestCase):
             (5.0, 1.5, TrendStatus.STRONG_BULL, 13.5),
             (5.004, 0.0, TrendStatus.BULL, 5.004),
             (1.0, 0.0, TrendStatus.BULL, 1.0),
+            (40.0, 0.0, TrendStatus.STRONG_BULL, 60.0),
+            (50.0, 0.0, TrendStatus.STRONG_BULL, 75.0),
+            (80.0, 1.5, TrendStatus.STRONG_BULL, 120.0),
         ):
             for delta in (0.0, 0.001):
                 with self.subTest(base=base, multiplier=multiplier, status=status, delta=delta):

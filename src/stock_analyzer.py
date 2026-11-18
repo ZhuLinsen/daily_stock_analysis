@@ -644,12 +644,12 @@ class StockTrendAnalyzer:
             and result.current_price > 0
         ):
             atr_pct = (float(result.atr14) / float(result.current_price)) * 100.0
-            base_threshold = min(50.0, max(base_threshold, atr_mult * atr_pct))
+            base_threshold = max(base_threshold, min(50.0, atr_mult * atr_pct))
 
         # Strong trend compensation: relax threshold for STRONG_BULL with high strength
         trend_strength = result.trend_strength if result.trend_strength == result.trend_strength else 0.0
         if result.trend_status == TrendStatus.STRONG_BULL and (trend_strength or 0) >= 70:
-            effective_threshold = min(50.0, base_threshold * 1.5)
+            effective_threshold = base_threshold * 1.5
             is_strong_trend = True
         else:
             effective_threshold = base_threshold

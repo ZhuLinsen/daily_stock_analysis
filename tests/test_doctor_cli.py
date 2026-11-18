@@ -8,6 +8,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 import main
@@ -16,6 +17,27 @@ from src.services.doctor_service import format_doctor_report, run_doctor_diagnos
 
 
 class DoctorCliTestCase(unittest.TestCase):
+    def test_doctor_rejects_file_in_storage_directory_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            blocked = Path(tmpdir) / "file"
+            blocked.write_text("not a directory", encoding="utf-8")
+            for path in (blocked, blocked / "nested"):
+                with self.subTest(path=path):
+                    cfg = Config(database_path=str(path / "analysis.db"), log_dir=str(path))
+                    report = run_doctor_diagnostics(cfg)
+                    storage = report["checks"]["storage"]
+                    self.assertEqual(storage["status"], "error")
+                    self.assertFalse(storage["database_dir_writable"])
+                    self.assertFalse(storage["log_dir_writable"])
+
+    def test_doctor_accepts_creatable_storage_directory_without_creating_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing = Path(tmpdir) / "missing" / "nested"
+            cfg = Config(database_path=str(missing / "analysis.db"), log_dir=str(missing))
+            report = run_doctor_diagnostics(cfg)
+            self.assertEqual(report["checks"]["storage"]["status"], "ok")
+            self.assertFalse(missing.exists())
+
     def test_parse_arguments_accepts_explicit_argv(self) -> None:
         args = main.parse_arguments(["--doctor", "--json", "--debug"])
         self.assertTrue(args.doctor)

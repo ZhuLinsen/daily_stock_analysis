@@ -47,6 +47,35 @@ def _fake_agent_config(**overrides) -> SimpleNamespace:
 
 
 class LiteLLMFallbackPricingTestCase(unittest.TestCase):
+    def test_custom_pricing_is_registered_once_after_success(self) -> None:
+        adapter_class = llm_adapter.LLMToolAdapter
+        with patch.object(adapter_class, "_custom_model_pricing_registered", False), \
+                patch.object(llm_adapter.litellm, "register_model", create=True) as register:
+            first = adapter_class(_fake_agent_config())
+            second = adapter_class(_fake_agent_config())
+            self.assertTrue(first.is_available)
+            self.assertTrue(second.is_available)
+            self.assertTrue(adapter_class._custom_model_pricing_registered)
+            self.assertEqual(register.call_count, len(llm_adapter._CUSTOM_MODEL_PRICING))
+
+    def test_custom_pricing_registration_retries_after_failure(self) -> None:
+        adapter_class = llm_adapter.LLMToolAdapter
+        with patch.object(adapter_class, "_custom_model_pricing_registered", False), \
+                patch.object(llm_adapter.litellm, "register_model", create=True) as register:
+            register.side_effect = RuntimeError("temporary registration failure")
+            adapter_class._register_custom_model_pricing()
+            self.assertFalse(adapter_class._custom_model_pricing_registered)
+            register.reset_mock(side_effect=True)
+            adapter_class._register_custom_model_pricing()
+            self.assertTrue(adapter_class._custom_model_pricing_registered)
+            self.assertEqual(register.call_count, len(llm_adapter._CUSTOM_MODEL_PRICING))
+
+    def test_adapter_without_usable_route_does_not_register_pricing(self) -> None:
+        with patch.object(llm_adapter.litellm, "register_model", create=True) as register:
+            adapter = llm_adapter.LLMToolAdapter(_fake_agent_config(litellm_model=""))
+        self.assertFalse(adapter.is_available)
+        register.assert_not_called()
+
     def test_current_minimax_fallback_rates_and_flash_limits(self) -> None:
         with patch.object(llm_adapter.litellm, "register_model", create=True) as register, \
                 patch.object(llm_adapter.litellm, "model_cost", {}, create=True):

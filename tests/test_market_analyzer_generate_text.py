@@ -2876,8 +2876,10 @@ class TestAnalyzerGenerateText:
         assert mock_usage.call_args.kwargs == {"call_type": "analysis", "stock_code": "600519"}
 
     def test_analyze_records_marker_positions_from_real_prompt_format(self):
+        from src.config import Config
+
         analyzer = self._make_analyzer()
-        analyzer._config_override = SimpleNamespace(
+        analyzer._config_override = Config(
             gemini_request_delay=0,
             report_language="zh",
             litellm_model="openai/gpt-4o-mini",

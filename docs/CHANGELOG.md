@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] Agent 仅在存在可用 LiteLLM 路由时注册自定义模型定价，成功后在进程内复用；注册失败可在后续初始化重试，避免重复注册与失败状态永久缓存。
+- [修复] `--doctor` 存储自检识别日志目录或数据库目录被普通文件占用的情况，避免把无法创建的目录误报为可写；仍支持只读检查尚未创建的嵌套目录。
+- [测试] 真实 Prompt 的 Token 审计回归改用项目 `Config`，同步 ATR 乖离率配置契约，修复离线 CI 因精简配置缺字段而失败的问题。
+- [测试] 真实 SDK HTTP 契约测试兼容未提供 `_send_request` 的受支持 OpenAI SDK，继续在序列化 HTTP 请求边界拦截并禁止真实网络访问。
+- [测试] 组合分析超时回归使用线程事件验证调用方先于后台任务返回，替代包含导入开销的 80ms 墙钟断言，保留真实线程池超时与清理路径。
+- [修复] ATR 自适应只限制波动率分量，不截断用户配置或原有 1.5 倍强趋势补偿，保持关闭自适应时高阈值配置的兼容性。
 - [修复] 回测对相对评估入场价失效的止盈止损方案保留方向评估，但排除模拟收益及命中率；点位护栏补查止盈不高于计划买入价的倒挂方案；普通分析及 Agent 默认提示统一使用 `effective_bias_threshold`，工具透传 ATR14 和有效阈值，统一阈值精度、等值边界及低于 2% 时的上限约束，补齐中英文指南与反例回归测试。
 - [修复] 修复盘中（`intraday`、`lunch_break`、`closing_auction`）分析的回测与 Skill 观点评估起点未来函数：`resolve_stock_daily_start` 在 `engine_version >= v1.1` 时对盘中分析改锚定交易日 `T` 收盘（显式配置 `v1` 仍按旧 `T-1` 口径与隔离，保留 `premarket` 在 `T-1`），并将默认 `BACKTEST_ENGINE_VERSION` 升至 `v1.1`、`SKILL_OPINION_OUTCOME_ENGINE_VERSION` 升至 `skill-opinion-outcome-v1.1`（去未来函数后历史统计胜率预计呈诚实回落）。
 - [修复] 移除 `AgentMemory._get_accuracy_stats` 中写死的 `avg_confidence=0.6` 假校准基线（在尚无真实置信度遥测产出前保持校准因子中性，避免按固定常数缩放）。
