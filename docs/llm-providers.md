@@ -79,6 +79,25 @@ LLM_X6AI_MODELS=openai/anthropic/claude-haiku-5-5-discount
 
 GitHub Actions 中将 `LLM_CHANNELS=x6ai`、协议、地址和模型配置为 Variables，`LLM_X6AI_API_KEY` 或 `LLM_X6AI_API_KEYS` 配置为 Secrets；每日分析工作流已透传该渠道全部字段。Docker / Desktop 复用相同配置与 WebUI。模型目录不保证当前 Key 对每个模型都有调用权限；以测试连接结果为准，失败时可换用已验证模型。测试用 Key 不应提交到仓库。
 
+### ModelGo 聚合平台
+
+[注册 ModelGo](https://console.modelgo.ai/?utm_source=daily_stock_analysis&utm_medium=provider_preset&utm_campaign=oss_integrations) · [快速开始](https://modelgo.ai/docs/quickstart/quickstart) · [API 目录](https://modelgo.ai/docs/quickstart/openapi)
+
+在 WebUI「设置 → AI 模型配置 → 快速添加渠道」中选择 `ModelGo`，填写 `mgk_` API Key，然后使用「获取模型」选择当前 Key 可用的逻辑模型并测试连接。预设的 Base URL 为 `https://api.modelgo.ai/v1`；由于每个 Key 可见模型取决于账号策略，预设不猜测默认模型。
+
+本地、Docker 或 GitHub Actions 可配置：
+
+```env
+LLM_CHANNELS=modelgo
+LLM_MODELGO_PROTOCOL=openai
+LLM_MODELGO_BASE_URL=https://api.modelgo.ai/v1
+LLM_MODELGO_API_KEY=mgk_your-own-key
+LLM_MODELGO_MODELS=gpt-6.1-sol
+LITELLM_MODEL=openai/gpt-6.1-sol
+```
+
+模型 ID 仅是配置形状示例，以当前 Key 的 `GET /v1/models` 结果为准。GitHub Actions 中将 `LLM_MODELGO_API_KEY` 或 `LLM_MODELGO_API_KEYS` 放入 Secrets，其他字段放入 Variables；每日分析工作流已透传该渠道字段。注册链接带有可见的来源参数，不会在模型请求中添加额外跟踪头。
+
 ### DeepSeek 官方渠道
 
 ```env
@@ -126,6 +145,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 服务商 | 渠道名 | 协议 | Base URL | 模型示例 |
 | --- | --- | --- | --- | --- |
 | Modelflare | `modelflare` | `openai` | `https://modelflare.dev/v1` | `gpt-6.1-sol`（以账号可用模型为准） |
+| ModelGo | `modelgo` | `openai` | `https://api.modelgo.ai/v1` | 通过 `GET /v1/models` 选择当前 Key 可用模型 |
 | AIHubmix | `aihubmix` | `openai` | `https://aihubmix.com/v1` | `gpt-6.1-sol,claude-sonnet-4-6,gemini-3.6-flash` |
 | OpenAI | `openai` | `openai` | `https://api.openai.com/v1` | `gpt-6.1-sol,gpt-6.1-terra` |
 | DeepSeek | `deepseek` | `deepseek` | `https://api.deepseek.com` | `deepseek-v4-flash,deepseek-v4-pro` |
@@ -148,6 +168,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 服务商 | 官方来源 | 兼容说明 |
 | --- | --- | --- |
 | Modelflare | [快速开始](https://docs.modelflare.dev/quickstart/)、[接入端点](https://docs.modelflare.dev/guides/endpoints/)、[模型与分组](https://docs.modelflare.dev/guides/models-and-groups/) | 使用 OpenAI-compatible Base URL `https://modelflare.dev/v1` 和标准 `LLM_MODELFLARE_*` 渠道配置；本项目默认模型为 `gpt-6.1-sol`，模型列表以账号权限与控制台为准。 |
+| ModelGo | [快速开始](https://modelgo.ai/docs/quickstart/quickstart)、[API 目录](https://modelgo.ai/docs/quickstart/openapi) | 使用 OpenAI-compatible Base URL `https://api.modelgo.ai/v1` 和 `mgk_` API Key；通过需要鉴权的 `GET /v1/models` 获取当前 Key 可用的逻辑模型。 |
 | OpenAI | [模型列表](https://platform.openai.com/docs/models) | 官方模型页建议从 `gpt-6.1-sol` 开始，低延迟/低成本场景使用 `gpt-6.1-terra`。 |
 | DeepSeek | [快速开始](https://api-docs.deepseek.com/) | 官方 OpenAI Base URL 为 `https://api.deepseek.com`；`deepseek-chat` / `deepseek-reasoner` 将于 2026-07-24 弃用，当前模板直接使用 `deepseek-v4-flash` / `deepseek-v4-pro`。 |
 | Gemini | [模型列表](https://ai.google.dev/gemini-api/docs/models) | Gemini 3.1 Pro / Gemini 3 Flash 仍为 preview；如需生产稳定性，可在控制台改回 2.5 稳定模型。 |
@@ -196,7 +217,7 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | `LLM_USAGE_HMAC_SECRET` | Secrets | 可选；只有需要跨部署比较 usage message HMAC 时才配置同一个高熵随机密钥，例如 `openssl rand -hex 32`；不要放 Variables 或提交到版本控制。 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Variables 或 Secrets | 可选；轮换 `LLM_USAGE_HMAC_SECRET` 时同步更新版本标签，避免误比较不同密钥生成的 HMAC。 |
 
-默认 workflow 已显式映射 `modelflare`、`primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
+默认 workflow 已显式映射 `modelflare`、`x6ai`、`modelgo`、`primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`requesty`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
 
 回滚 HMAC 遥测显式配置时，可移除 `LLM_USAGE_HMAC_SECRET` 并恢复或删除 `LLM_USAGE_HMAC_KEY_VERSION`；留空后系统会回到本地生成 `.llm_usage_hmac_secret` 的默认行为。
 
