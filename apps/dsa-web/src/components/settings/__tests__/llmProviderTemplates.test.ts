@@ -32,6 +32,7 @@ describe('llmProviderTemplates', () => {
     expect(LLM_PROVIDER_TEMPLATES.map((template) => template.channelId)).toEqual([
       'modelflare',
       'x6ai',
+      'modelgo',
       'aihubmix',
       'deepseek',
       'dashscope',
@@ -76,6 +77,20 @@ describe('llmProviderTemplates', () => {
         { label: 'x6.ai 专属注册', url: 'https://console.x6pro.io/register?code=zJ2qSdns' },
       ]),
     });
+  });
+
+  it('offers ModelGo with account-scoped model discovery and an attributed signup link', () => {
+    expect(LLM_PROVIDER_TEMPLATE_BY_ID.modelgo).toMatchObject({
+      protocol: 'openai',
+      baseUrl: 'https://api.modelgo.ai/v1',
+      placeholderModels: '',
+      capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+      registration: {
+        label: '注册 ModelGo',
+        url: 'https://console.modelgo.ai/?utm_source=daily_stock_analysis&utm_medium=provider_preset&utm_campaign=oss_integrations',
+      },
+    });
+    expect(LLM_PROVIDER_TEMPLATE_BY_ID.modelgo.configHint).toContain('获取模型');
   });
 
   it('keeps the Anspire LLM preset available without promotional labeling', () => {
