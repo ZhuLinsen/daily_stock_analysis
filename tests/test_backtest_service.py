@@ -61,6 +61,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                 "ENV_FILE",
                 "DATABASE_PATH",
                 "BACKTEST_EVAL_WINDOW_DAYS",
+                "BACKTEST_ENGINE_VERSION",
             )
         }
         self._env_path = os.path.join(self._temp_dir.name, ".env")
@@ -70,6 +71,8 @@ class BacktestServiceTestCase(unittest.TestCase):
         os.environ["ENV_FILE"] = self._env_path
         os.environ["DATABASE_PATH"] = self._db_path
         os.environ["BACKTEST_EVAL_WINDOW_DAYS"] = "3"
+        # API modules can load the developer's .env during test collection.
+        os.environ.pop("BACKTEST_ENGINE_VERSION", None)
 
         Config._instance = None
         DatabaseManager.reset_instance()
