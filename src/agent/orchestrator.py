@@ -74,6 +74,7 @@ from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
 from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
 from src.report_language import normalize_report_language
+from src.schemas.decision_action import localize_action_label, normalize_decision_action
 
 if TYPE_CHECKING:
     from src.agent.executor import AgentResult
@@ -85,6 +86,43 @@ logger = logging.getLogger(__name__)
 # Valid orchestrator modes (ordered by cost/depth)
 VALID_MODES = ("quick", "standard", "full", "specialist")
 NON_CRITICAL_BASE_STAGES = frozenset({"intel", "risk"})
+_INCOMPLETE_RISK_REVIEW_NOTE = {
+    "zh": "风控必审尚未完成，暂缓买入。",
+    "en": "The mandatory risk review is incomplete. Defer buying.",
+    "ko": "필수 위험 검토가 완료되지 않았습니다. 매수를 보류하세요.",
+}
+_APPLIED_RISK_REVIEW_NOTE = {
+    "zh": "风控审查已下调操作建议。",
+    "en": "Risk review downgraded the recommendation.",
+    "ko": "위험 검토 결과에 따라 투자 의견을 하향했습니다.",
+}
+
+
+def _risk_review_status(stage: Optional[StageResult]) -> StageStatus:
+    if stage is None:
+        return StageStatus.PENDING
+    if stage.success:
+        from src.agent.agents.risk_agent import is_complete_risk_review
+
+        raw_data = stage.opinion.raw_data if stage.opinion else None
+        if not is_complete_risk_review(raw_data):
+            return StageStatus.FAILED
+    return stage.status
+
+
+def _risk_review_incomplete(ctx: AgentContext) -> bool:
+    return bool(ctx.meta.get("risk_review_required")) and ctx.meta.get("risk_review_status") != StageStatus.COMPLETED
+
+
+def _dashboard_recommends_buy(payload: Dict[str, Any]) -> bool:
+    phase = payload.get("phase_decision")
+    advice = payload.get("operation_advice")
+    return any(normalize_decision_action(value) in {"buy", "add"} for value in (
+        payload.get("action"),
+        payload.get("action_label"),
+        *(advice.values() if isinstance(advice, dict) else (advice,)),
+        phase.get("immediate_action") if isinstance(phase, dict) else None,
+    ))
 
 
 def _stage_trajectory_snapshot(result: StageResult) -> Dict[str, Any]:
@@ -250,6 +288,7 @@ class AgentOrchestrator:
         dashboard = None
         content = ""
         if ctx is not None:
+            self._prepare_partial_debate_result(ctx, stats)
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
@@ -294,6 +333,7 @@ class AgentOrchestrator:
         dashboard = None
         content = ""
         if ctx is not None:
+            self._prepare_partial_debate_result(ctx, stats)
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
@@ -585,7 +625,10 @@ class AgentOrchestrator:
         timeout_s = self._get_timeout_seconds()
 
         agents = self._build_agent_chain(ctx)
+        debate_enabled = bool(getattr(self.config, "agent_debate_enabled", False))
         specialist_agents_inserted = False
+        strategy_engine_ran = False
+        risk_stage = None
         index = 0
 
         # Minimum seconds required for a stage to do useful work.  Starting
@@ -766,7 +809,7 @@ class AgentOrchestrator:
 
             if (
                 self.mode == "specialist"
-                and agent.agent_name == "decision"
+                and (agent.agent_name == "decision" or (debate_enabled and agent.agent_name == "risk"))
                 and not specialist_agents_inserted
             ):
                 specialist_agents = self._build_specialist_agents(ctx)
@@ -805,9 +848,19 @@ class AgentOrchestrator:
                     continue
 
             if agent.agent_name == "decision":
-                self._run_strategy_engine(ctx)
+                if not strategy_engine_ran:
+                    self._run_strategy_engine(ctx)
+                    strategy_engine_ran = True
+                self._prepare_decision_context(ctx, risk_stage)
+                if ctx.meta["risk_review_required"] and risk_stage is None:
+                    from src.agent.agents.risk_agent import RiskAgent
 
-            if agent.agent_name == "decision":
+                    agents.insert(index, self._build_base_agent(RiskAgent))
+                    continue
+            elif agent.agent_name == "risk" and debate_enabled and not ctx.meta.get("risk_review_required"):
+                if self.mode == "specialist":
+                    self._run_strategy_engine(ctx)
+                    strategy_engine_ran = True
                 self._prepare_decision_context(ctx)
 
             if progress_callback:
@@ -828,13 +881,21 @@ class AgentOrchestrator:
                 progress_callback=progress_callback,
                 timeout_seconds=remaining_timeout_s,
             )
+            if agent.agent_name == "risk":
+                risk_stage = result
+                if ctx.meta.get("risk_review_required"):
+                    review_status = _risk_review_status(result)
+                    ctx.meta["risk_review_status"] = review_status
+                    if result.success and review_status == StageStatus.FAILED:
+                        result.status = StageStatus.FAILED
+                        result.failure_reason = StageFailureReason.STAGE_FAILURE
+                        result.error = "Risk review did not return a complete risk assessment"
             stats.record_stage(result)
             stage_trajectories.append(_stage_trajectory_snapshot(result))
             all_tool_calls.extend(
                 tc for tc in (result.meta.get("tool_calls_log") or [])
             )
             models_used.extend(result.meta.get("models_used", []))
-
             elapsed_s = time.time() - t0
             if progress_callback:
                 progress_callback(stream_event(
@@ -953,6 +1014,14 @@ class AgentOrchestrator:
     # Agent chain construction
     # -----------------------------------------------------------------
 
+    def _build_base_agent(self, agent_type):
+        return self._prepare_agent(agent_type(
+            tool_registry=self.tool_registry,
+            llm_adapter=self.llm_adapter,
+            skill_instructions=self.skill_instructions,
+            technical_skill_policy=self.technical_skill_policy,
+        ))
+
     def _build_agent_chain(self, ctx: AgentContext) -> list:
         """Instantiate the ordered agent list based on ``self.mode``."""
         from src.agent.agents.technical_agent import TechnicalAgent
@@ -962,17 +1031,10 @@ class AgentOrchestrator:
 
         self._skill_agent_names = set()
 
-        common_kwargs = dict(
-            tool_registry=self.tool_registry,
-            llm_adapter=self.llm_adapter,
-            skill_instructions=self.skill_instructions,
-            technical_skill_policy=self.technical_skill_policy,
-        )
-
-        technical = self._prepare_agent(TechnicalAgent(**common_kwargs))
-        intel = self._prepare_agent(IntelAgent(**common_kwargs))
-        risk = self._prepare_agent(RiskAgent(**common_kwargs))
-        decision = self._prepare_agent(DecisionAgent(**common_kwargs))
+        technical = self._build_base_agent(TechnicalAgent)
+        intel = self._build_base_agent(IntelAgent)
+        risk = self._build_base_agent(RiskAgent)
+        decision = self._build_base_agent(DecisionAgent)
 
         if self.mode == "quick":
             return [technical, decision]
@@ -981,8 +1043,7 @@ class AgentOrchestrator:
         elif self.mode == "full":
             return [technical, intel, risk, decision]
         elif self.mode == "specialist":
-            # Specialist agents are inserted lazily right before the decision
-            # stage so the router can see the finished technical opinion.
+            # The router needs discovery opinions before it can select specialists.
             return [technical, intel, risk, decision]
         else:
             return [technical, intel, decision]
@@ -1341,7 +1402,7 @@ class AgentOrchestrator:
         invalid_bucket.extend(partition.invalid_records)
         ctx.meta["invalid_opinions"] = invalid_bucket
 
-    def _prepare_decision_context(self, ctx: AgentContext) -> None:
+    def _prepare_decision_context(self, ctx: AgentContext, risk_stage: Optional[StageResult] = None) -> None:
         """Populate low-sensitivity summaries consumed by DecisionAgent."""
         summary = build_agent_disagreement_summary(
             ctx,
@@ -1350,18 +1411,29 @@ class AgentOrchestrator:
         ctx.meta["agent_disagreement_summary"] = summary
         debate_enabled = bool(getattr(self.config, "agent_debate_enabled", False))
         triggered, reason = should_trigger_evidence_debate(
-            summary,
             ctx,
             enabled=debate_enabled,
         )
         if triggered:
+            previous_brief = ctx.meta.get("evidence_debate_brief")
+            if not previous_brief:
+                logger.info("[Orchestrator] evidence debate triggered (reason=%s)", reason)
             brief = build_evidence_debate_brief(ctx, summary, trigger_reason=reason)
             ctx.meta["evidence_debate_brief"] = brief
             ctx.meta["risk_review_required"] = True
-            logger.info("[Orchestrator] evidence debate triggered (reason=%s)", reason)
+            ctx.meta["risk_review_status"] = _risk_review_status(risk_stage)
         else:
             ctx.meta.pop("evidence_debate_brief", None)
             ctx.meta["risk_review_required"] = False
+            ctx.meta.pop("risk_review_status", None)
+
+    def _prepare_partial_debate_result(self, ctx: AgentContext, stats: AgentRunStats) -> None:
+        if not getattr(self.config, "agent_debate_enabled", False):
+            return
+        risk_stage = next((stage for stage in stats.stage_results if stage.stage_name == "risk"), None)
+        self._prepare_decision_context(ctx, risk_stage)
+        if ctx.meta["risk_review_required"] and risk_stage is None:
+            ctx.meta["risk_review_status"] = StageStatus.SKIPPED
 
     def _record_degraded_stage(
         self,
@@ -1533,6 +1605,9 @@ class AgentOrchestrator:
                 return None, self._fallback_summary(ctx)
             return None, ""
 
+        if _risk_review_incomplete(ctx):
+            language = normalize_report_language(ctx.meta.get("report_language"))
+            return None, _INCOMPLETE_RISK_REVIEW_NOTE[language]
         if chat_mode and isinstance(final_text, str) and final_text.strip():
             return None, final_text.strip()
         if isinstance(final_raw, str) and final_raw.strip():
@@ -1565,6 +1640,8 @@ class AgentOrchestrator:
         if prepared is None:
             return None
 
+        if ctx.meta.get("risk_review_required"):
+            self._apply_mandatory_review_to_signal(ctx, prepared)
         ctx.set_data("final_dashboard", prepared)
         self._apply_risk_override(ctx)
         post_risk = ctx.get_data("final_dashboard")
@@ -1576,6 +1653,22 @@ class AgentOrchestrator:
             return None
         ctx.set_data("final_dashboard", dashboard)
         return dashboard
+
+    def _apply_mandatory_review_to_signal(self, ctx: AgentContext, payload: Dict[str, Any]) -> None:
+        signal = payload["decision_type"]
+        nested = payload.get("dashboard")
+        has_buy_advice = _dashboard_recommends_buy(payload) or (
+            isinstance(nested, dict) and _dashboard_recommends_buy(nested)
+        )
+        if _risk_review_incomplete(ctx):
+            if signal == "buy" or has_buy_advice:
+                payload["decision_type"] = "hold"
+        elif signal != "buy" and has_buy_advice and build_risk_override_plan(
+            ctx, current_signal="buy", override_enabled=getattr(self.config, "agent_risk_override", True),
+        ).will_apply:
+            # The veto must see the buy recommendation even when the model's
+            # three-state statistics field disagrees with the actionable advice.
+            payload["decision_type"] = "buy"
 
     def _prepare_dashboard_payload(
         self,
@@ -1637,13 +1730,17 @@ class AgentOrchestrator:
                 or (base_opinion.signal if base_opinion else "hold")
             )
         )
+        review_incomplete = _risk_review_incomplete(ctx)
+        review_deferred = review_incomplete and decision_type == "hold"
+        risk_adjusted = risk_applied or review_deferred
+        review_adjusted = risk_adjusted and ctx.meta.get("risk_review_required")
         confidence = float(base_opinion.confidence if base_opinion is not None else 0.5)
         sentiment_score = payload.get("sentiment_score")
         try:
             sentiment_score = int(sentiment_score)
         except (TypeError, ValueError):
             sentiment_score = _estimate_sentiment_score(decision_type, confidence)
-        if risk_applied:
+        if risk_adjusted:
             sentiment_score = _adjust_sentiment_score(sentiment_score, decision_type)
 
         dashboard_block = payload.get("dashboard")
@@ -1672,11 +1769,16 @@ class AgentOrchestrator:
         else:
             battle = dict(battle)
 
-        analysis_summary = _first_non_empty_text(
-            payload.get("analysis_summary"),
-            core.get("one_sentence"),
-            getattr(base_opinion, "reasoning", ""),
-        )
+        report_language = normalize_report_language(ctx.meta.get("report_language"))
+        review_note = _INCOMPLETE_RISK_REVIEW_NOTE[report_language]
+        if review_adjusted:
+            analysis_summary = review_note if review_deferred else _APPLIED_RISK_REVIEW_NOTE[report_language]
+        else:
+            analysis_summary = _first_non_empty_text(
+                payload.get("analysis_summary"),
+                core.get("one_sentence"),
+                getattr(base_opinion, "reasoning", ""),
+            )
         if not analysis_summary:
             analysis_summary = f"多 Agent 未生成完整仪表盘，当前按{_signal_to_operation(decision_type)}处理。"
         if risk_applied:
@@ -1704,7 +1806,9 @@ class AgentOrchestrator:
                 trend_prediction = "待结合更多阶段结果确认"
 
         operation_advice_raw = payload.get("operation_advice")
-        if risk_applied:
+        if review_deferred:
+            operation_advice = localize_action_label("watch", report_language)
+        elif risk_applied:
             pre_risk_advice = _normalize_operation_advice_value(
                 operation_advice_raw,
                 application.from_signal.value,
@@ -1720,7 +1824,7 @@ class AgentOrchestrator:
             )
 
         existing_position = core.get("position_advice")
-        if risk_applied:
+        if risk_adjusted:
             position_advice = _post_risk_position_advice(decision_type)
         else:
             position_advice = (
@@ -1797,7 +1901,7 @@ class AgentOrchestrator:
         if latest_news and not intelligence.get("latest_news"):
             intelligence["latest_news"] = latest_news
 
-        one_sentence = _first_non_empty_text(
+        one_sentence = analysis_summary if review_adjusted else _first_non_empty_text(
             core.get("one_sentence"),
             analysis_summary,
         )
@@ -1806,15 +1910,29 @@ class AgentOrchestrator:
         core["one_sentence"] = _truncate_text(one_sentence, 60)
         if not core.get("time_sensitivity"):
             core["time_sensitivity"] = "本周内"
-        if risk_applied or not core.get("signal_type"):
+        if risk_adjusted or not core.get("signal_type"):
             core["signal_type"] = _signal_to_signal_type(decision_type)
         core["position_advice"] = position_advice
 
         battle["sniper_points"] = sniper
-        if "action_checklist" not in battle:
+        if review_adjusted:
+            action = "watch" if decision_type == "hold" else "sell"
+            action_label = localize_action_label(action, report_language)
+            for block in (payload, dashboard_block):
+                block.update(action=action, action_label=action_label)
+                phase_decision = block.get("phase_decision")
+                if isinstance(phase_decision, dict):
+                    block["phase_decision"] = {**phase_decision, "immediate_action": action_label}
+            if "decision_type" in dashboard_block:
+                dashboard_block["decision_type"] = decision_type
+            if "operation_advice" in dashboard_block:
+                dashboard_block["operation_advice"] = operation_advice
+        if review_adjusted:
+            battle["action_checklist"] = [analysis_summary]
+        elif "action_checklist" not in battle:
             battle["action_checklist"] = []
         position_strategy = battle.get("position_strategy")
-        if risk_applied:
+        if risk_adjusted:
             position_strategy = (
                 dict(position_strategy)
                 if isinstance(position_strategy, dict)
@@ -1852,12 +1970,13 @@ class AgentOrchestrator:
         dashboard_block["intelligence"] = intelligence
         dashboard_block["battle_plan"] = battle
 
-        key_points = payload.get("key_points")
+        key_points = None if review_adjusted else payload.get("key_points")
         if not isinstance(key_points, list) or not key_points:
             key_points = [
                 _truncate_text(op.reasoning, 120)
                 for op in ctx.opinions
                 if isinstance(op.reasoning, str) and op.reasoning.strip()
+                and not (review_adjusted and op.agent_name == "decision")
             ][:5]
 
         risk_warning = _first_non_empty_text(
@@ -1880,6 +1999,8 @@ class AgentOrchestrator:
                 ctx.risk_flags,
                 decision_type,
             )
+        if review_incomplete and not risk_warning.startswith(review_note):
+            risk_warning = f"{review_note} {risk_warning}"
 
         payload["stock_name"] = _first_non_empty_text(payload.get("stock_name"), ctx.stock_name, ctx.stock_code)
         payload["sentiment_score"] = sentiment_score
@@ -1891,7 +2012,7 @@ class AgentOrchestrator:
         payload["key_points"] = key_points
         payload["risk_warning"] = risk_warning
         payload["dashboard"] = dashboard_block
-        if risk_applied:
+        if risk_adjusted:
             for opinion in reversed(ctx.opinions):
                 if opinion.agent_name == "decision":
                     opinion.signal = decision_type

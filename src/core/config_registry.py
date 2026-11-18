@@ -4241,7 +4241,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_DEBATE_ENABLED": {
         "title": "Conditional Bull/Bear Debate",
-        "description": "Enable opt-in Bull/Bear evidence-bound debate brief and mandatory risk review when skills disagree or on high-conviction buy signals.",
+        "description": "In multi-agent mode, add an evidence brief and mandatory risk review when opinions disagree on direction or a buy opinion reaches 0.75 confidence.",
         "category": "agent",
         "data_type": "boolean",
         "ui_control": "switch",
@@ -4260,7 +4260,11 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "docs": [
             {
                 "label": "完整指南：Agent 配置",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#agent_debate_enabled",
+            },
+            {
+                "label": "Agent configuration guide (English)",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide_EN.md#agent_debate_enabled",
             },
         ],
         "warning_codes": [],

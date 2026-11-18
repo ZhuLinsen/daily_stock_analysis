@@ -1053,6 +1053,10 @@ Multi-Agent 结果进入 `StockAnalysisPipeline` 后，会继续完成结构与�
 
 模型返回的顶层或嵌套同名 explanation 会在共享 Agent dashboard 解析边界被删除，最终字段只由 Pipeline 构造。非法 Agent signal 沿用既有策略意见有效性规则从 runtime facts 和公开分歧统计中排除，不会静默转换成 `hold`。若自由文本无法唯一解析成八态 action，共享 resolver 保持 fail-closed：报告与历史记录保留 `action=None`，不生成 explanation，也不创建 DecisionSignal；Pipeline 不使用 `decision_type` 私自补值。字段在存在 canonical action 时随 dashboard 一起持久化，并在 DecisionSignal 提取前完成。旧报告、single Agent/非 Agent 路径和没有 `runtime_facts` 的兼容调用不要求包含该字段；本阶段不增加 Web/Desktop 专属展示、完整 trace 或 P2-P4 的权重与审计能力。
 
+##### AGENT_DEBATE_ENABLED
+
+`AGENT_DEBATE_ENABLED` 默认 `false`，设为 `true` 后仅在 `AGENT_ARCH=multi` 时生效。前序策略意见出现多空分歧，或买入/强烈买入意见置信度达到 0.75 时，决策 Agent 会收到带来源引用的多空证据对照。风控意见单独列出。触发后，`quick` 和 `standard` 会在决策前运行风险 Agent，`full` 和 `specialist` 使用已有风险阶段。启用此设置后，`specialist` 在策略评估之后运行风险阶段，以纳入策略意见。运行结果记录触发原因和风控完成状态。审查失败、结果不完整或因运行预算跳过时会暂缓买入。审查完成后的风控否决由 `AGENT_RISK_OVERRIDE` 控制。
+
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 
 P4 新增 `report.details.analysis_context_pack_overview`，历史详情和 completed `/api/v1/analysis/status/{task_id}` 会从已持久化的 `context_snapshot` 返回同一份低敏 overview；同步分析响应也会读取本次已落库的 `analysis_history.context_snapshot` 提取 overview，因此 `SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回该字段。Web 端报告页在“策略点位”和“资讯”之后展示默认折叠的数据块摘要，折叠头部展示可用数、缺失数、非零的其他状态计数和触发来源，展开后展示数据块状态、来源、warning、missing reason、状态计数和新闻结果数。API 返回的 `details.context_snapshot` 会剥离顶层 `analysis_context_pack_overview`，避免透明度面板重复展示 raw snapshot。
@@ -1168,6 +1172,8 @@ crontab -e
 3. 设置 `WECHAT_WEBHOOK_URL`
 
 ### 飞书
+
+Webhook 和 App Bot 交互卡片可附带 Web 工作台按钮。优先读取 `FEISHU_CARD_WEB_URL`，留空时读取 `DSA_WEB_URL`。填写收件人可访问的 `http://` 或 `https://` 地址，两项均清空即可停用按钮。`FEISHU_MAX_BYTES` 控制每页正文预算，Webhook 另外确保完整 JSON 请求体在 20,000 字节以内。若工作台 URL 过长导致卡片无法分页，Webhook 会省略按钮并继续发送报告。[飞书自定义机器人指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)
 
 > ⚠️ **关键区分**：`FEISHU_WEBHOOK_SECRET`（Webhook 签名密钥）和 `FEISHU_APP_SECRET`（飞书应用 Secret）是两个完全不同的配置，不能互换。
 

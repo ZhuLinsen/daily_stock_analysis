@@ -923,6 +923,10 @@ After a Multi-Agent result enters `StockAnalysisPipeline`, the Pipeline complete
 
 Any model-authored explanation at the top-level or nested dashboard location is removed at the shared Agent dashboard parsing boundary, so only the Pipeline constructs the final field. Invalid Agent signals follow the existing strategy-opinion validity rules and are excluded from runtime facts and public disagreement counts instead of being silently converted to `hold`. If free-form advice cannot resolve uniquely to an eight-state action, the shared resolver remains fail-closed: the report and history retain `action=None`, no explanation is generated, and no DecisionSignal is created; the Pipeline does not synthesize an action from `decision_type`. When a canonical action exists, the field is persisted with the dashboard in report history and completed before DecisionSignal extraction. Legacy reports, single-Agent/non-Agent paths, and compatibility callers without `runtime_facts` do not require this field. This phase does not add dedicated Web/Desktop rendering, a full trace, or the P2-P4 weighting and audit features.
 
+#### AGENT_DEBATE_ENABLED
+
+`AGENT_DEBATE_ENABLED` defaults to `false` and takes effect only with `AGENT_ARCH=multi`. When upstream strategy opinions disagree on direction or a buy or strong-buy opinion reaches 0.75 confidence, the Decision Agent receives a Bull/Bear brief with source references and a separate risk assessment. `quick` and `standard` run the Risk Agent before the decision when triggered. `full` and `specialist` use their existing risk stage. Enabling debate moves the `specialist` risk stage after strategy evaluation so it can consider those opinions. The run records the trigger reason and risk review status. The system defers buying if the review fails, returns an incomplete assessment, or runs out of time. `AGENT_RISK_OVERRIDE` controls the veto after a completed review.
+
 ### AnalysisContextPack Low-Sensitivity Visibility (Issue #1389 P4)
 
 P4 adds `report.details.analysis_context_pack_overview`. History detail and completed `/api/v1/analysis/status/{task_id}` responses read the same low-sensitivity overview from the persisted `context_snapshot`; sync analysis responses also extract the overview from the just-persisted `analysis_history.context_snapshot`, so new records do not guarantee this field when `SAVE_CONTEXT_SNAPSHOT=false`. The Web report page renders a collapsed data-block summary after Strategy and News, with available/missing counts, non-zero other status counts, and trigger source in the header and data-block status, source, warnings, missing reasons, status counts, and news result count after expansion. API `details.context_snapshot` strips the top-level `analysis_context_pack_overview` so the raw snapshot panel does not duplicate the public overview.
@@ -1030,6 +1034,8 @@ The notification channel matrix and `--check-notify` CLI details are documented 
 3. Set `WECHAT_WEBHOOK_URL`
 
 ### Feishu
+
+Webhook and App Bot interactive cards can include a button to the Web workspace. The sender reads `FEISHU_CARD_WEB_URL` first and uses `DSA_WEB_URL` when it is unset or empty. Use an `http://` or `https://` address reachable by recipients. Clear both values to remove the button. `FEISHU_MAX_BYTES` sets the content budget per page. Webhook pagination also keeps the full JSON request body within 20,000 bytes. If the workspace URL leaves too little room to paginate, the webhook sends the report without the button. [Feishu custom bot guide](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)
 
 > ⚠️ **Key distinction**: `FEISHU_WEBHOOK_SECRET` (webhook signing secret) and `FEISHU_APP_SECRET` (Feishu App Secret) are two completely different configuration variables and cannot be used interchangeably.
 

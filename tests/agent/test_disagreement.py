@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """Tests for low-sensitivity multi-agent disagreement summaries."""
 
+import json
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from src.agent.disagreement import build_agent_disagreement_summary
 from src.agent.protocols import AgentContext, AgentOpinion, StageResult, StageStatus
@@ -408,54 +411,269 @@ def test_orchestrator_rejects_non_failed_degraded_stage_markers(monkeypatch):
         raise AssertionError("only failed stage results may produce degraded markers")
 
 
-def test_evidence_debate_triggers_only_when_enabled_and_disagreed_or_high_conviction_buy(monkeypatch):
-    _mock_optional_litellm(monkeypatch)
+def test_evidence_debate_uses_agent_output_fields_and_preserves_high_risk_flags():
+    from src.agent.agents.intel_agent import IntelAgent
+    from src.agent.agents.risk_agent import RiskAgent
+    from src.agent.agents.technical_agent import TechnicalAgent
     from src.agent.disagreement import build_evidence_debate_brief, should_trigger_evidence_debate
-    from src.agent.orchestrator import AgentOrchestrator
 
-    ctx = AgentContext(query="test", stock_code="600519")
-    ctx.add_opinion(
-        AgentOpinion(
-            agent_name="technical",
-            signal="buy",
-            confidence=0.85,
-            reasoning="MA5 support holds",
-            raw_data={"evidence_ids": ["ev-tech-1"]},
-        )
-    )
-    ctx.add_opinion(
-        AgentOpinion(
-            agent_name="intel",
-            signal="sell",
-            confidence=0.72,
-            reasoning="Margin pressure",
-            raw_data={"evidence_ids": ["ev-intel-1"]},
-        )
-    )
+    ctx = AgentContext(stock_code="600519")
+    agent_kwargs = dict(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    technical = TechnicalAgent(**agent_kwargs).post_process(ctx, json.dumps({
+        "signal": "strong-buy", "confidence": 0.90, "reasoning": "MA5 support holds",
+        "trend_score": 90,
+    }))
+    ctx.add_opinion(technical)
+    assert should_trigger_evidence_debate(ctx, enabled=False) == (False, "disabled")
+    assert should_trigger_evidence_debate(ctx, enabled=True) == (True, "high_conviction_buy")
+
+    intel = IntelAgent(**agent_kwargs).post_process(ctx, json.dumps({
+        "signal": "strong-sell", "confidence": 0.72, "reasoning": "Margin pressure",
+        "key_news": [{"title": "Earnings warning", "impact": "negative"}],
+        "risk_alerts": ["First alert", "Second alert", "Third alert"],
+    }))
+    ctx.add_opinion(intel)
+    risk = RiskAgent(**agent_kwargs).post_process(ctx, json.dumps({
+        "risk_level": "high",
+        "flags": [{
+            "category": "regulatory", "severity": "high", "description": "Material investigation",
+            "source": "Exchange disclosure",
+        }],
+    }))
+    ctx.add_opinion(risk)
 
     summary = build_agent_disagreement_summary(ctx)
-    assert should_trigger_evidence_debate(summary, ctx, enabled=False) == (False, "disabled")
-    assert should_trigger_evidence_debate(summary, ctx, enabled=True) == (True, "mixed_directional_signals")
-
+    assert summary["conflict_type"] == "risk_override"
+    assert should_trigger_evidence_debate(ctx, enabled=True) == (True, "mixed_directional_signals")
     brief = build_evidence_debate_brief(ctx, summary)
-    assert brief["risk_review_required"] is True
-    assert brief["bull_arguments"][0]["source_evidence_ids"] == ["ev-tech-1"]
-    assert brief["bear_arguments"][0]["source_evidence_ids"] == ["ev-intel-1"]
+    assert brief["bull_arguments"][0]["signal"] == "strong_buy"
+    assert brief["bull_arguments"][0]["source_evidence_ids"] == ["technical#0/trend_score"]
+    assert brief["bear_arguments"][0]["signal"] == "strong_sell"
+    assert "intel#1/key_news" in brief["bear_arguments"][0]["source_evidence_ids"]
+    assert brief["risk_flags"][0] == {
+        "category": "regulatory", "severity": "high", "description": "Material investigation",
+        "source": "Exchange disclosure",
+    }
+    assert len(brief["risk_flags"]) == 3
 
-    orch_off = AgentOrchestrator(
-        tool_registry=MagicMock(),
-        llm_adapter=MagicMock(),
-        config=SimpleNamespace(agent_risk_override=True, agent_debate_enabled=False),
-    )
-    orch_off._prepare_decision_context(ctx)
-    assert "evidence_debate_brief" not in ctx.meta
-    assert ctx.meta["risk_review_required"] is False
 
-    orch_on = AgentOrchestrator(
-        tool_registry=MagicMock(),
-        llm_adapter=MagicMock(),
-        config=SimpleNamespace(agent_risk_override=True, agent_debate_enabled=True),
+@pytest.mark.parametrize("risk_level", ["none", "medium"])
+def test_risk_opinion_alone_does_not_trigger_debate(risk_level):
+    from src.agent.agents.risk_agent import RiskAgent
+    from src.agent.disagreement import should_trigger_evidence_debate
+
+    ctx = AgentContext()
+    ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.72))
+    ctx.add_opinion(AgentOpinion(agent_name="intel", signal="hold", confidence=0.62))
+    risk = RiskAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+    ctx.add_opinion(risk.post_process(ctx, json.dumps({"risk_level": risk_level, "risk_score": 85})))
+
+    assert should_trigger_evidence_debate(ctx, enabled=True) == (False, "consensus_clear")
+
+
+@pytest.mark.parametrize(
+    "mode,enabled,risk_reply,override_enabled,low_conviction",
+    [
+        ("standard", False, "high", True, False),
+        ("standard", True, "high", True, True),
+        ("standard", True, "high", True, False),
+        ("standard", True, None, False, False),
+        ("standard", True, "invalid", True, False),
+        ("standard", True, "invalid_score", True, False),
+        ("standard", True, "incomplete", True, False),
+        ("standard", True, "invalid_flags", True, False),
+        ("full", True, "high", True, False),
+        ("specialist", True, "high", False, True),
+        ("quick", True, "high", True, False),
+    ],
+)
+def test_evidence_debate_runs_through_decision_and_risk_runtime(
+    mode, enabled, risk_reply, override_enabled, low_conviction,
+):
+    from src.agent.llm_adapter import LLMResponse, ToolCall
+    from src.agent.orchestrator import AgentOrchestrator
+    from src.agent.tools.registry import ToolDefinition, ToolRegistry
+    from src.core.pipeline import StockAnalysisPipeline
+    from src.enums import ReportType
+
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(
+        name="analyze_trend", description="Technical trend", parameters=[],
+        handler=lambda: {"ma_alignment": "bullish"},
+    ))
+    decision_prompt = []
+    risk_prompt = []
+
+    def call_model(messages, tools, **kwargs):
+        user_prompt = messages[-1]["content"]
+        if user_prompt.startswith("Perform technical analysis"):
+            return LLMResponse(tool_calls=[ToolCall("trend-call", "analyze_trend", {})])
+        if messages[-1]["role"] == "tool":
+            return LLMResponse(content=json.dumps({
+                "signal": "buy", "confidence": 0.72 if low_conviction else 0.85, "reasoning": "Rising averages",
+                "trend_score": 80,
+            }))
+        if user_prompt.startswith("Gather intelligence"):
+            return LLMResponse(content=json.dumps({
+                "signal": "hold" if low_conviction else "sell", "confidence": 0.72, "reasoning": "Earnings warning",
+                "key_news": [{"title": "Earnings warning", "impact": "negative"}],
+                "risk_alerts": ["First alert", "Second alert", "Third alert"],
+            }))
+        if user_prompt.startswith("Screen stock"):
+            risk_prompt.append(user_prompt)
+            if risk_reply is None:
+                return LLMResponse(provider="error")
+            if risk_reply == "incomplete":
+                return LLMResponse(content='{"risk_level":"none"}')
+            if risk_reply in {"invalid", "invalid_score", "invalid_flags"}:
+                return LLMResponse(content=json.dumps({
+                    "risk_level": "invalid" if risk_reply == "invalid" else "high",
+                    "risk_score": "invalid" if risk_reply == "invalid_score" else 90,
+                    "signal_adjustment": "downgrade_two",
+                    "reasoning": "Unvalidated claim",
+                    "flags": [
+                        {"category": "regulatory", "severity": "high", "description": "Unvalidated claim"},
+                        *([{"severity": "high"}] if risk_reply == "invalid_flags" else []),
+                    ],
+                }))
+            return LLMResponse(content=json.dumps({
+                "risk_level": risk_reply, "risk_score": 90, "veto_buy": True,
+                "flags": [{"category": "regulatory", "severity": "high", "description": "Material investigation"}],
+                "reasoning": "A material investigation is ongoing.",
+            }))
+        if user_prompt.startswith("Evaluate **"):
+            return LLMResponse(content=json.dumps({
+                "signal": "sell", "confidence": 0.66, "conditions_met": ["Volume contraction"],
+            }))
+        decision_prompt.append(user_prompt)
+        return LLMResponse(content=json.dumps({
+            "decision_type": "hold" if mode == "full" else "buy",
+            "action": "add", "operation_advice": "立即买入", "sentiment_score": 80,
+            "analysis_summary": "可以买入", "key_points": ["立即买入"],
+            "phase_decision": {"immediate_action": "立即买入"},
+            "dashboard": {
+                "action": "buy", "phase_decision": {"immediate_action": "立即买入"},
+                "battle_plan": {"action_checklist": ["立即买入"]},
+            },
+        }))
+
+    adapter = SimpleNamespace(call_with_tools=call_model)
+    orchestrator = AgentOrchestrator(
+        tool_registry=registry,
+        llm_adapter=adapter,
+        mode=mode,
+        config=SimpleNamespace(agent_risk_override=override_enabled, agent_debate_enabled=enabled),
     )
-    orch_on._prepare_decision_context(ctx)
-    assert ctx.meta["risk_review_required"] is True
-    assert ctx.meta["evidence_debate_brief"]["trigger_reason"] == "mixed_directional_signals"
+    result = orchestrator.run("Analyze 600519", {"stock_code": "600519"})
+
+    assert result.success
+    assert len(decision_prompt) == 1
+    stages = [item["stage_name"] for item in result.stage_trajectories]
+    if not enabled or (mode == "standard" and low_conviction):
+        assert stages == ["technical", "intel", "decision"]
+        assert not risk_prompt
+        assert "Bull/Bear Evidence Debate" not in decision_prompt[0]
+        assert result.dashboard["decision_type"] == "buy"
+        assert not result.runtime_facts.risk_review_required
+        assert result.runtime_facts.risk_review_status is None
+        return
+
+    expected_discovery = ["technical"] if mode == "quick" else ["technical", "intel"]
+    assert stages[:len(expected_discovery)] == expected_discovery
+    subsequent_stages = stages[len(expected_discovery):]
+    assert subsequent_stages[-2:] == ["risk", "decision"]
+    if mode == "specialist":
+        assert subsequent_stages[:-2]
+        assert all(name.startswith("skill_") for name in subsequent_stages[:-2])
+        assert "/conditions_met" in decision_prompt[0]
+        assert "/conditions_met" in risk_prompt[0]
+    else:
+        assert subsequent_stages == ["risk", "decision"]
+    assert len(risk_prompt) == 1 and "tool:trend-call" in risk_prompt[0]
+    assert '"technical#0/trend_score": "80"' in risk_prompt[0]
+    assert "Bull/Bear Evidence Debate" in decision_prompt[0]
+    assert "tool:trend-call" in decision_prompt[0]
+    if mode != "quick" and not low_conviction:
+        assert "intel#1/key_news" in decision_prompt[0]
+    assert result.tool_calls_log[0]["tool_call_id"] == "trend-call"
+    expected_trigger = "high_conviction_buy" if mode == "quick" else "mixed_directional_signals"
+    assert result.runtime_facts.evidence_debate_trigger_reason == expected_trigger
+    assert result.runtime_facts.risk_review_required
+    if risk_reply == "high":
+        assert "Mandatory risk review status: completed" in decision_prompt[0]
+        assert '"risk_flags": [{"category": "regulatory", "severity": "high"' in decision_prompt[0]
+        assert result.runtime_facts.risk_review_status == StageStatus.COMPLETED
+        assert result.runtime_facts.risk_override_application.applied is override_enabled
+        assert result.dashboard["decision_type"] == ("hold" if override_enabled else "buy")
+        if override_enabled:
+            assert result.runtime_facts.risk_override_application.from_signal.value == "buy"
+            assert "风控审查已下调操作建议。" in result.dashboard["analysis_summary"]
+            assert result.dashboard["dashboard"]["battle_plan"]["action_checklist"] == [result.dashboard["analysis_summary"]]
+    else:
+        assert "Mandatory risk review status: failed" in decision_prompt[0]
+        assert "Unvalidated claim" not in decision_prompt[0]
+        assert result.runtime_facts.risk_review_status == StageStatus.FAILED
+        assert result.runtime_facts.risk_override_application.post_risk_signal.value == "hold"
+        assert result.dashboard["decision_type"] == "hold"
+        assert result.dashboard["operation_advice"] == "观望"
+        assert "风控必审尚未完成" in result.dashboard["analysis_summary"]
+        assert "立即买入" not in result.dashboard["key_points"]
+        assert result.dashboard["phase_decision"]["immediate_action"] == "观望"
+        assert result.dashboard["dashboard"]["phase_decision"]["immediate_action"] == "观望"
+        assert result.stage_trajectories[-2]["status"] == "failed"
+
+    if risk_reply != "high" or override_enabled:
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.config = SimpleNamespace(report_language="zh")
+        analysis = pipeline._agent_result_to_analysis_result(result, "600519", "贵州茅台", ReportType.FULL, "test")
+        assert analysis.action == "watch"
+
+
+def test_budget_skip_keeps_high_conviction_buy_on_hold():
+    from src.agent.llm_adapter import LLMResponse
+    from src.agent.orchestrator import AgentOrchestrator
+    from src.agent.tools.registry import ToolRegistry
+
+    adapter = SimpleNamespace(call_with_tools=MagicMock(
+        return_value=LLMResponse(content='{"signal":"buy","confidence":0.75,"trend_score":80}'),
+    ))
+    orchestrator = AgentOrchestrator(
+        tool_registry=ToolRegistry(), llm_adapter=adapter, mode="quick",
+        config=SimpleNamespace(agent_debate_enabled=True, agent_orchestrator_timeout_s=14),
+    )
+
+    result = orchestrator.run("Analyze 600519", {"stock_code": "600519"})
+
+    adapter.call_with_tools.assert_called_once()
+    assert result.success and "insufficient budget" in result.error
+    assert result.runtime_facts.evidence_debate_trigger_reason == "high_conviction_buy"
+    assert result.runtime_facts.risk_review_status == StageStatus.SKIPPED
+    assert result.dashboard["decision_type"] == "hold"
+
+
+def test_decision_finishing_after_timeout_does_not_trigger_its_own_debate(monkeypatch):
+    from src.agent import orchestrator as orchestrator_module
+    from src.agent.llm_adapter import LLMResponse
+    from src.agent.tools.registry import ToolRegistry
+
+    now = 0
+
+    def call_model(messages, tools, **kwargs):
+        nonlocal now
+        if messages[-1]["content"].startswith("Perform technical analysis"):
+            return LLMResponse(content='{"signal":"hold","confidence":0.75}')
+        now = 30
+        return LLMResponse(content='{"decision_type":"buy","sentiment_score":85}')
+
+    monkeypatch.setattr(orchestrator_module, "time", SimpleNamespace(time=lambda: now))
+    orchestrator = orchestrator_module.AgentOrchestrator(
+        tool_registry=ToolRegistry(), llm_adapter=SimpleNamespace(call_with_tools=call_model), mode="quick",
+        config=SimpleNamespace(agent_debate_enabled=True, agent_orchestrator_timeout_s=30),
+    )
+
+    result = orchestrator.run("Analyze 600519", {"stock_code": "600519"})
+
+    assert result.success and "timed out" in result.error
+    assert result.runtime_facts.evidence_debate_trigger_reason is None
+    assert not result.runtime_facts.risk_review_required
+    assert result.dashboard["decision_type"] == "buy"
