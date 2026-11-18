@@ -7,7 +7,9 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 import main
+from src.brokers.errors import BrokerPortfolioError
 from src.brokers.futu.portfolio import FutuPortfolioError
+from src.brokers.ibkr.flex import IbkrPortfolioError
 from src.services.runtime_scheduler import RuntimeSchedulerService
 
 
@@ -35,6 +37,48 @@ class MainPortfolioTest(unittest.TestCase):
 
     def test_resolve_portfolio_stock_codes_returns_none_when_disabled(self):
         self.assertIsNone(main._resolve_portfolio_stock_codes(SimpleNamespace()))
+
+    def test_parse_arguments_accepts_ibkr_portfolio(self):
+        with patch.object(sys, "argv", ["main.py", "--portfolio", "IBKR"]):
+            args = main.parse_arguments()
+
+        self.assertEqual(args.portfolio, "ibkr")
+
+    def test_resolve_portfolio_stock_codes_uses_ibkr_loader(self):
+        args = SimpleNamespace(portfolio="ibkr")
+        with patch(
+            "src.brokers.ibkr.portfolio.load_ibkr_stock_codes",
+            return_value=["aapl", "BRK.B", "7203.T"],
+        ) as loader, patch(
+            "src.brokers.futu.portfolio.load_futu_stock_codes",
+            side_effect=AssertionError("ibkr must not call the Futu loader"),
+        ):
+            result = main._resolve_portfolio_stock_codes(args)
+
+        self.assertEqual(result, ["AAPL", "BRK.B", "7203.T"])
+        loader.assert_called_once_with()
+
+    def test_run_full_analysis_propagates_ibkr_portfolio_load_failure(self):
+        args = SimpleNamespace(portfolio="ibkr")
+        with patch.object(
+            main,
+            "_refresh_stock_index_cache_for_analysis",
+        ), patch(
+            "src.brokers.ibkr.portfolio.load_ibkr_stock_codes",
+            side_effect=IbkrPortfolioError("IBKR Flex 错误 1015: Token is invalid."),
+        ), self.assertRaisesRegex(BrokerPortfolioError, "1015"):
+            main.run_full_analysis(SimpleNamespace(), args)
+
+    def test_empty_ibkr_portfolio_logs_ibkr_skip_reason(self):
+        args = SimpleNamespace(portfolio="ibkr", no_market_review=True)
+        config = SimpleNamespace(market_review_enabled=False, backtest_enabled=False)
+        with patch(
+            "src.brokers.ibkr.portfolio.load_ibkr_stock_codes",
+            return_value=[],
+        ), self.assertLogs(main.logger, level="INFO") as captured:
+            self.assertTrue(main.run_full_analysis(config, args))
+
+        self.assertIn("无符合条件的 IBKR 持仓", "\n".join(captured.output))
 
     def test_analysis_lock_propagates_requested_portfolio_failures(self):
         config = SimpleNamespace()

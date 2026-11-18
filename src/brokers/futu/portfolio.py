@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional
 
 from data_provider.us_index_mapping import is_us_stock_code
+from src.brokers.errors import BrokerPortfolioError
 from src.services.stock_code_utils import normalize_code
 
 
 logger = logging.getLogger(__name__)
 
 
-class FutuPortfolioError(RuntimeError):
+class FutuPortfolioError(BrokerPortfolioError):
     """Raised when a Futu portfolio cannot be resolved safely."""
 
 
