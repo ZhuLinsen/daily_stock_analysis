@@ -45,5 +45,37 @@ class HotTop10ExitCodeTestCase(unittest.TestCase):
         self.assertEqual(main._hot_top10_exit_code(result), 1)
 
 
+class HotTop10StockEntryExemptionTestCase(unittest.TestCase):
+    """OR-COR-ac05ea85: --hot-top10 never consumes the watchlist, so it must
+    be exempt from stock-entry parsing: an unrelated ``--stocks`` token (or
+    an unregistered STOCK_LIST target under GitHub Actions) must not block
+    the hot-top10 run before the branch is even reached."""
+
+    def _args(self, hot_top10):
+        import argparse
+
+        return argparse.Namespace(
+            backtest=False,
+            etf_rotation=False,
+            market_review=False,
+            serve_only=False,
+            webui_only=False,
+            portfolio=None,
+            schedule=False,
+            hot_top10=hot_top10,
+        )
+
+    def _config(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(schedule_enabled=False)
+
+    def test_hot_top10_flag_skips_stock_entry(self):
+        self.assertTrue(main._skips_stock_entry(self._args(True), self._config()))
+
+    def test_plain_run_still_consumes_stock_entry(self):
+        self.assertFalse(main._skips_stock_entry(self._args(False), self._config()))
+
+
 if __name__ == "__main__":
     unittest.main()
