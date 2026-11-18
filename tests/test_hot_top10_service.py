@@ -296,6 +296,55 @@ class DeliveryAndDedupContractTestCase(unittest.TestCase):
         self.assertEqual(result.reason, "hotspot_data_unavailable")
 
 
+class ManualEntryQuotaTestCase(unittest.TestCase):
+    """OR-COR-ca43b57a / OR-COR-104a6e00: the manual one-shot entry runs with
+    ``respect_dedup=False``. That exemption is on READ only — a manual run
+    must NOT record today's delivered marker nor consume today's dedup
+    quota, otherwise it suppresses the scheduled end-of-day report and
+    presents possibly-stale intraday data as "today, already delivered"."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.config = _config(self._tmp.name)
+        _MARKER_WRITE_FAILED_DAYS.clear()
+
+    def tearDown(self):
+        _MARKER_WRITE_FAILED_DAYS.clear()
+        self._tmp.cleanup()
+
+    def _manual(self, notifier):
+        return run_hot_top10_analysis(
+            self.config,
+            notifier=notifier,
+            analyzer=FakeAnalyzer(_LLM_JSON),
+            hotspot_service=SimpleNamespace(get_hotspots=lambda **kw: _hot_payload()),
+            respect_dedup=False,
+        )
+
+    def test_manual_run_does_not_write_marker_nor_consume_quota(self):
+        notifier = FakeNotifier(send_ok=True)
+        manual = self._manual(notifier)
+        self.assertTrue(manual.delivered)
+        self.assertFalse(
+            hot_top10_marker_path(self.config).exists(),
+            "manual runs must not record today's delivered marker",
+        )
+
+        # The scheduled end-of-day run must still deliver today's report.
+        scheduled = _run(self.config, notifier)
+        self.assertTrue(scheduled.delivered)
+        self.assertNotIn("already_delivered_today", scheduled.reason)
+        self.assertEqual(len(notifier.sent_contents), 2)
+        self.assertTrue(hot_top10_marker_path(self.config).exists())
+
+    def test_manual_run_ignores_marker_write_failed_block(self):
+        _MARKER_WRITE_FAILED_DAYS.add(date.today().isoformat())
+        notifier = FakeNotifier(send_ok=True)
+        manual = self._manual(notifier)
+        self.assertTrue(manual.delivered)
+        self.assertNotEqual(manual.reason, "marker_write_failed_blocked_today")
+
+
 class OverlapDoubleCheckTestCase(unittest.TestCase):
     """OR-COR-a8bfa126: dedup / marker-failure state must be RE-checked inside
     the run mutex. A caller whose pre-lock checks went stale (paused between

@@ -90,15 +90,16 @@ def _same_day_gate_reason(
 ) -> Optional[str]:
     """Same-day suppression reason (``None`` when the run may proceed):
     marker-write-failure block, then the delivered marker. Pure state read —
-    safe to call both before and inside the run mutex."""
-    if force_run:
+    safe to call both before and inside the run mutex. Manual one-shot runs
+    (``respect_dedup=False``) are exempt: they neither read nor consume the
+    same-day dedup state (OR-COR-ca43b57a)."""
+    if force_run or not respect_dedup:
         return None
     if today in _MARKER_WRITE_FAILED_DAYS:
         return "marker_write_failed_blocked_today"
-    if respect_dedup:
-        skip, reason = hot_top10_already_delivered_today(config)
-        if skip:
-            return f"already_delivered_today: {reason}"
+    skip, reason = hot_top10_already_delivered_today(config)
+    if skip:
+        return f"already_delivered_today: {reason}"
     return None
 
 
@@ -170,8 +171,14 @@ def run_hot_top10_analysis(
         report_markdown = _analysis.render_hot_top10_report(items, summary, llm_completed)
         notification_status, report_saved = _deliver(report_markdown, send_notification, notifier)
         delivered_result = report_saved or notification_status == "sent"
-        marker_required = notification_status == "sent" or (
-            notification_status in {"disabled", "no_channel"} and report_saved
+        # Manual one-shot runs (respect_dedup=False) are dedup-exempt on READ
+        # and stay exempt on WRITE (OR-COR-ca43b57a): recording today's marker
+        # here would consume the scheduled end-of-day run's dedup quota while
+        # the intraday provider data may still belong to the previous trading
+        # day. Only dedup-honoring (scheduled) runs record the marker.
+        marker_required = respect_dedup and (
+            notification_status == "sent"
+            or (notification_status in {"disabled", "no_channel"} and report_saved)
         )
         if marker_required:
             # Idempotency fix: marker write failure -> not delivered + same-day
