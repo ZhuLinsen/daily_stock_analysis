@@ -800,6 +800,8 @@ If `--stocks` is also present, the Futu portfolio wins. Scheduled mode reloads r
 
 In IBKR Client Portal, create an Activity Flex Query (include the Open Positions section, XML format) and enable the Flex Web Service to get a token. Then set `IBKR_FLEX_TOKEN` and `IBKR_FLEX_QUERY_ID` and run:
 
+> Only the Open Positions section is required. If the query also includes Trades / Cash Transactions / Corporate Actions, those sections are downloaded but not read. Prefer a dedicated positions-only query so a holdings refresh does not pull the full statement.
+
 ```bash
 python main.py --portfolio ibkr
 ```

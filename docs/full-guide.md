@@ -858,6 +858,8 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 
 在 IBKR Client Portal 中创建 Activity Flex Query（勾选 Open Positions 分区，格式 XML），并开启 Flex Web Service 获取 token，然后配置 `IBKR_FLEX_TOKEN` 与 `IBKR_FLEX_QUERY_ID` 并运行：
 
+> 只需包含 Open Positions 分区即可；若查询还包含 Trades / Cash Transactions / Corporate Actions 等分区，这些内容会被下载但不会被读取。建议为持仓单独创建一个最小化 positions-only 查询，避免每次刷新持仓都拉取完整报表。
+
 ```bash
 python main.py --portfolio ibkr
 ```
