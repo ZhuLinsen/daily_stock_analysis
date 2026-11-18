@@ -295,9 +295,20 @@ async def app_lifespan(app: FastAPI):
     from src.services.name_to_code_resolver import warmup_akshare_cache
 
     warmup_akshare_cache()
+    chatgpt_service = None
+    if getattr(app.state, "chatgpt_origin", None):
+        from src.services.chatgpt_oauth_service import start_chatgpt_service, stop_chatgpt_service
+
+        app.state.chatgpt_start_error = False
+        try:
+            chatgpt_service = start_chatgpt_service()
+        except (OSError, ValueError):
+            app.state.chatgpt_start_error = True
     try:
         yield
     finally:
+        if chatgpt_service is not None:
+            stop_chatgpt_service()
         refresh_task = getattr(app.state, "stock_index_refresh_task", None)
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()

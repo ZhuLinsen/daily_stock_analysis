@@ -3,11 +3,13 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
 import { agentApi } from '../../api/agent';
+import { chatgptApi } from '../../api/chatgpt';
 import { historyApi } from '../../api/history';
 import { systemConfigApi } from '../../api/systemConfig';
 import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { useTaskStream } from '../../hooks/useTaskStream';
 import { useStockPoolStore } from '../../stores';
+import { useChatGPTStore } from '../../stores/chatgptStore';
 import type { RunFlowSnapshot } from '../../types/runFlow';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
@@ -64,6 +66,10 @@ vi.mock('../../api/agent', () => ({
   agentApi: {
     getSkills: vi.fn(),
   },
+}));
+
+vi.mock('../../api/chatgpt', () => ({
+  chatgptApi: { status: vi.fn(), models: vi.fn() },
 }));
 
 vi.mock('../../hooks/useTaskStream', () => ({
@@ -238,6 +244,8 @@ describe('HomePage', () => {
     window.sessionStorage.clear();
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
     useStockPoolStore.getState().resetDashboardState();
+    useChatGPTStore.setState({ status: null, models: [], model: '', error: null });
+    vi.mocked(chatgptApi.status).mockResolvedValue({ available: false, connected: false });
     vi.mocked(analysisApi.getTasks).mockResolvedValue({
       total: 0,
       pending: 0,
@@ -3292,6 +3300,25 @@ describe('HomePage', () => {
       forceRefresh: true,
     }));
     expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0]).not.toHaveProperty('reportLanguage');
+  });
+
+  it('reanalyzes a history report with the selected ChatGPT model and notifications off', async () => {
+    const source = { provider: 'chatgpt_siwc', connection_id: 'local', model: 'selected-model' } as const;
+    const status = { available: true, connected: true, connection_id: source.connection_id };
+    vi.mocked(chatgptApi.status).mockResolvedValue(status);
+    useChatGPTStore.setState({ status, model: source.model, models: [{ slug: source.model, display_name: 'Selected model' }] });
+    vi.mocked(historyApi.getList).mockResolvedValue({ total: 1, page: 1, limit: 20, items: [historyItem] });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({ taskId: 'chatgpt-reanalyze', status: 'pending' });
+
+    render(<MemoryRouter><HomePage /></MemoryRouter>);
+    fireEvent.change(await screen.findByRole('combobox', { name: '模型来源' }), { target: { value: 'chatgpt' } });
+    fireEvent.click(await screen.findByRole('button', { name: '重新分析' }));
+
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledOnce();
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: '600519', forceRefresh: true, modelSource: source, notify: false,
+    }));
   });
 
   it('passes the selected strategy when submitting stock analysis', async () => {

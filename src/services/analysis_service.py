@@ -15,6 +15,7 @@ import copy
 import uuid
 from typing import Optional, Dict, Any, Callable, List
 
+from src.llm.model_source import ChatGPTModelSource
 from src.repositories.analysis_repo import AnalysisRepository
 from src.report_language import (
     get_sentiment_label,
@@ -89,6 +90,7 @@ class AnalysisService:
         portfolio_context: Optional[Dict[str, Any]] = None,
         report_language: Optional[str] = None,
         analysis_target: Optional[Any] = None,
+        model_source: Optional[ChatGPTModelSource] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析
@@ -136,6 +138,11 @@ class AnalysisService:
                 config = copy.copy(config)
                 config.report_language = normalized_report_language
             
+            if model_source is not None:
+                from src.services.chatgpt_oauth_service import get_chatgpt_service
+
+                get_chatgpt_service().ensure_active(model_source)
+
             # 创建分析流水线
             pipeline = StockAnalysisPipeline(
                 config=config,
@@ -146,6 +153,7 @@ class AnalysisService:
                 analysis_skills=skills,
                 analysis_phase=analysis_phase,
                 portfolio_context=portfolio_context,
+                model_source=model_source,
             )
             
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)

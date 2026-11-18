@@ -625,7 +625,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
     )
 
 
-def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
+def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None, *, model_source=None):
     """Build the backend-neutral executor used only by Agent Chat endpoints."""
     if config is None:
         from src.config import get_config
@@ -640,6 +640,8 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
 
     resolve_agent_backend_id(config)
     arch = str(getattr(config, "agent_arch", "single") or "single").strip().lower()
+    if model_source is not None and arch != "single":
+        raise ValueError("ChatGPT requires single Agent mode")
     if arch == "multi":
         return build_agent_executor(config, skills=skills)
 
@@ -648,10 +650,16 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
     # same rationale).
     registry = get_tool_registry(config)
     prompt_state = resolve_skill_prompt_state(config, skills=skills)
-    from src.agent.llm_adapter import LLMToolAdapter
+    if model_source is None:
+        from src.agent.llm_adapter import LLMToolAdapter
 
-    context_llm_adapter = LLMToolAdapter(config)
-    backend = LiteLLMAgentBackend(registry, context_llm_adapter)
+        context_llm_adapter = LLMToolAdapter(config)
+        backend = LiteLLMAgentBackend(registry, context_llm_adapter)
+    else:
+        from src.agent.chatgpt_adapter import ChatGPTToolAdapter
+
+        context_llm_adapter = ChatGPTToolAdapter(model_source, config.generation_backend_timeout_seconds)
+        backend = LiteLLMAgentBackend(registry, context_llm_adapter, backend_id=model_source.provider)
 
     return AgentChatExecutor(
         backend=backend,
@@ -660,6 +668,7 @@ def build_agent_chat_executor(config=None, skills: Optional[List[str]] = None):
         skill_instructions=prompt_state.skill_instructions,
         default_skill_policy=prompt_state.default_skill_policy,
         use_legacy_default_prompt=prompt_state.use_legacy_default_prompt,
+        include_provider_trace=model_source is None,
         max_steps=_coerce_config_int(
             getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
             AGENT_MAX_STEPS_DEFAULT,

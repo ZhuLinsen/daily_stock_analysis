@@ -85,3 +85,42 @@ def get_runtime_scheduler_service(request: Request) -> RuntimeSchedulerService:
         service = RuntimeSchedulerService()
         request.app.state.runtime_scheduler_service = service
     return service
+
+
+def chatgpt_unavailable_reason(request: Request):
+    from src.auth import is_auth_enabled
+
+    if not getattr(request.app.state, "chatgpt_origin", None):
+        return "chatgpt_deployment_unsupported"
+    if getattr(request.app.state, "chatgpt_start_error", False):
+        return "chatgpt_store_unavailable"
+    if not is_auth_enabled():
+        return "chatgpt_admin_auth_required"
+    return None
+
+
+def require_chatgpt_access(request: Request):
+    from fastapi import HTTPException
+    from src.auth import COOKIE_NAME, verify_session
+
+    reason = chatgpt_unavailable_reason(request)
+    if reason:
+        raise HTTPException(403, detail={"error": reason, "message": "ChatGPT authorization is unavailable"})
+    origin = request.app.state.chatgpt_origin
+    if request.headers.get("host") != origin.removeprefix("http://"):
+        raise HTTPException(403, detail={"error": "chatgpt_host_invalid", "message": "Use the local DSA server address"})
+    if request.method != "GET" and request.headers.get("origin") != origin:
+        raise HTTPException(403, detail={"error": "chatgpt_origin_invalid", "message": "Use the same-origin DSA Web UI"})
+    if not verify_session(request.cookies.get(COOKIE_NAME, "")):
+        raise HTTPException(401, detail={"error": "unauthorized", "message": "Login required"})
+
+
+def validate_chatgpt_source(request: Request, source):
+    from fastapi import HTTPException
+    from src.services.chatgpt_oauth_service import ChatGPTError, get_chatgpt_service
+
+    require_chatgpt_access(request)
+    try:
+        get_chatgpt_service().validate(source)
+    except ChatGPTError as exc:
+        raise HTTPException(400, detail={"error": exc.code, "message": str(exc)}) from None

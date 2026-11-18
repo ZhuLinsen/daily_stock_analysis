@@ -42,6 +42,20 @@ describe('agentApi', () => {
     });
   });
 
+  it('uses the same ChatGPT reference for status and streaming chat', async () => {
+    const modelSource = { provider: 'chatgpt_siwc', connection_id: 'local', model: 'selected' } as const;
+    get.mockResolvedValueOnce({ data: { available: true, backend: 'chatgpt_siwc' } });
+    await agentApi.getStatus(modelSource);
+    expect(get).toHaveBeenCalledWith('/api/v1/agent/status', { params: modelSource });
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(''));
+    try {
+      await agentApi.chatStream({ message: '分析 600519', model_source: modelSource });
+      expect(JSON.parse(fetch.mock.calls[0][1]?.body as string).model_source).toEqual(modelSource);
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
   it('preserves the retirement code from the real HTTP 400 stream response', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       error: 'backend_removed', message: 'Codex App Server 已移除，请修正 Agent 设置',

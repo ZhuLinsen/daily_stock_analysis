@@ -20,6 +20,14 @@ If you are choosing a concrete provider, setting up GitHub Actions Secrets / Var
 
 ---
 
+## Sign in with ChatGPT
+
+On a personal Mac, start DSA from source with `python main.py --serve-only --host 127.0.0.1`. Open the port shown in the log at `127.0.0.1`. Enable administrator authentication, sign in to DSA, then connect ChatGPT and choose a model under **Settings → AI Model → ChatGPT**. Use a single backend process and keep the Web service local to the Mac.
+
+Choose ChatGPT as the model source for a single-stock report or a single-Agent chat. The existing report rules apply. `AGENT_MODE=true`, a request Skill or a specific global Skill enables Agent reports. Leaving `AGENT_MODE` unset allows both ordinary reports and single-Agent chat in the default configuration. Explicitly setting it to `false` disables chat. ChatGPT reports have external notifications disabled and can be reopened from history. Disconnecting stops new requests on that connection. Saved reports and chats remain available. [Manage ChatGPT usage](https://chatgpt.com/settings/usage)
+
+The single-stock analysis and Chat APIs accept a `model_source` object with `provider: "chatgpt_siwc"`, `connection_id` and `model`. Single-stock analysis also requires `notify: false`. The backend stores credentials in the current macOS user's Application Support directory.
+
 ## Generation Backend (Phase 4)
 
 The generation backend is the outer runtime selector for regular stock analysis, market review, and `generate_text()`. The default remains `litellm` with zero regression. `codex_cli` / `claude_code_cli` / `opencode_cli` are explicit opt-in local CLI backends and are currently **experimental/limited**.

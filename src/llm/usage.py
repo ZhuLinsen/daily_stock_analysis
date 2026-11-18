@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
+from src.llm.model_source import CHATGPT_SIWC
+
 logger = logging.getLogger(__name__)
 
 PROVIDER_USAGE_SCHEMA_NAME = "provider_usage_v1"
@@ -343,7 +345,12 @@ def normalize_litellm_usage(
     capability = "unknown"
     has_deepseek_hit_miss_shape = _has_deepseek_hit_miss_shape(usage)
 
-    if has_deepseek_hit_miss_shape or provider_name == "deepseek":
+    if provider == CHATGPT_SIWC:
+        cache_read = _nested_int(usage, ("input_tokens_details", "cached_tokens"))
+        if cache_read is not None:
+            cache_field_observed = True
+            capability = "supported"
+    elif has_deepseek_hit_miss_shape or provider_name == "deepseek":
         hit_tokens = _first_int(usage, "prompt_cache_hit_tokens")
         miss_tokens = _first_int(usage, "prompt_cache_miss_tokens")
         if hit_tokens is not None or miss_tokens is not None:

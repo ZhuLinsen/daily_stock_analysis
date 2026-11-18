@@ -304,7 +304,7 @@ def test_agent_chat_inherits_saved_skills_without_rewriting_session_state(tmp_pa
         )
 
     assert response.status_code == 200
-    build_executor.assert_called_once_with(config, ["technical"])
+    build_executor.assert_called_once_with(config, ["technical"], model_source=None)
     context = executor.prepare_turn.call_args.kwargs["context"]
     assert "stock_code" not in context  # client hint cannot establish a fact
     assert context["skills"] == ["technical"]
@@ -334,7 +334,7 @@ def test_agent_chat_all_invalid_skills_inherit_without_clearing_state(tmp_path: 
         )
 
     assert response.status_code == 200
-    build_executor.assert_called_once_with(config, ["technical"])
+    build_executor.assert_called_once_with(config, ["technical"], model_source=None)
     assert executor.prepare_turn.call_args.kwargs["context"]["skills"] == ["technical"]
     assert executor.prepare_turn.call_args.kwargs["selected_skill_ids"] is None
     assert db.get_conversation_session_selected_skill_ids("saved-session") == [
@@ -478,7 +478,7 @@ def test_stream_forwards_normalized_skill_selection_to_prepare_turn() -> None:
         )
 
     assert [event["type"] for event in events] == ["accepted", "done"]
-    build_executor.assert_called_once_with(config, ["risk"])
+    build_executor.assert_called_once_with(config, ["risk"], model_source=None)
     executor.prepare_turn.assert_called_once()
     kwargs = executor.prepare_turn.call_args.kwargs
     assert kwargs["message"] == "check risk" and kwargs["session_id"] == "risk-session"
@@ -515,7 +515,7 @@ def test_stream_all_invalid_skills_inherit_without_clearing_state(tmp_path: Path
                 async for chunk in response.body_iterator
             ]
 
-        build_executor.assert_called_once_with(config, ["technical"])
+        build_executor.assert_called_once_with(config, ["technical"], model_source=None)
         return events
 
     events = asyncio.run(exercise())

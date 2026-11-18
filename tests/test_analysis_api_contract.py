@@ -1521,7 +1521,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             with self.assertRaises(Exception) as ctx:
                 _handle_sync_analysis(
                     "600519",
-                    SimpleNamespace(
+                    analysis_endpoint_module.AnalyzeRequest.model_construct(
                         report_type="detailed",
                         force_refresh=False,
                         notify=True,
@@ -1572,7 +1572,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
              ):
             result = _handle_sync_analysis(
                 "600519",
-                SimpleNamespace(
+                analysis_endpoint_module.AnalyzeRequest.model_construct(
                     report_type="detailed",
                     force_refresh=False,
                     notify=True,
@@ -1631,7 +1631,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
              ):
             result = _handle_sync_analysis(
                 "300024",
-                SimpleNamespace(
+                analysis_endpoint_module.AnalyzeRequest.model_construct(
                     report_type="detailed",
                     force_refresh=False,
                     notify=True,
@@ -1694,7 +1694,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
              ):
             result = _handle_sync_analysis(
                 "300024",
-                SimpleNamespace(
+                analysis_endpoint_module.AnalyzeRequest.model_construct(
                     report_type="detailed",
                     force_refresh=False,
                     notify=True,
@@ -2943,7 +2943,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with self.assertRaises(Exception) as ctx:
             trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="   ",
                     stock_codes=None,
                     report_type="detailed",
@@ -2967,7 +2967,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
             with self.assertRaises(Exception) as ctx:
                 trigger_analysis(
-                    request=SimpleNamespace(
+                    request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                         stock_code="00AAAAA",
                         stock_codes=None,
                         report_type="detailed",
@@ -2990,7 +2990,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
              patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock:
             with self.assertRaises(Exception) as ctx:
                 trigger_analysis(
-                    request=SimpleNamespace(
+                    request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                         stock_code="aaaaaaa",
                         stock_codes=None,
                         report_type="detailed",
@@ -3015,7 +3015,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
              patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="AAPL.US",
                     stock_codes=None,
                     stock_name=None,
@@ -3041,6 +3041,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_resolves_bare_code_from_stock_index_before_default_market(self) -> None:
@@ -3054,7 +3055,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
              patch("api.v1.endpoints.analysis.resolve_index_stock_code", return_value="005930.KS"), \
              patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="005930",
                     stock_codes=None,
                     stock_name=None,
@@ -3080,6 +3081,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_resolves_bare_4_digit_jp_code_before_name_resolution(self) -> None:
@@ -3093,7 +3095,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
              patch("api.v1.endpoints.analysis.resolve_index_stock_code_for_analysis", return_value="7203.T") as resolve_index_mock, \
              patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="7203",
                     stock_codes=None,
                     stock_name=None,
@@ -3120,6 +3122,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_async_index_submits_structured_target(self) -> None:
@@ -3137,7 +3140,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="sh000016",
                     stock_codes=None,
                     stock_name=None,
@@ -3176,7 +3179,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="930955.CSI",
                     stock_codes=None,
                     stock_name=None,
@@ -3205,7 +3208,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=["sh000016", "000016"],
                     stock_name=None,
@@ -3242,7 +3245,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             with self.assertRaises(Exception) as ctx:
                 trigger_analysis(
-                    request=SimpleNamespace(
+                    request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                         stock_code=None,
                         stock_codes=codes,
                         stock_name=None,
@@ -3272,7 +3275,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
              patch("api.v1.endpoints.analysis.resolve_name_to_code", return_value=None):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=codes,
                     stock_name=None,
@@ -3304,7 +3307,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=["600519", "930956.CSI"],
                     stock_name=None,
@@ -3342,7 +3345,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=["600519", "930956.CSI"],
                     stock_name="贵州茅台",
@@ -3376,7 +3379,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="600519",
                     stock_codes=None,
                     stock_name=None,
@@ -3404,7 +3407,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             with self.assertRaises(Exception) as ctx:
                 trigger_analysis(
-                    request=SimpleNamespace(
+                    request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                         stock_code="930956.CSI",
                         stock_codes=None,
                         stock_name=None,
@@ -3429,7 +3432,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with self.assertRaises(Exception) as ctx:
             trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="csi930956",
                     stock_codes=None,
                     stock_name=None,
@@ -3462,7 +3465,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=["600519", "930956.CSI"],
                     stock_name=None,
@@ -3502,7 +3505,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.resolve_name_to_code", return_value="600519") as resolve_mock, \
              patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="贵州茅台",
                     stock_codes=None,
                     stock_name="贵州茅台",
@@ -3530,7 +3533,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with self.assertRaises(Exception) as ctx:
             trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=["930956.CSI", "csi930956"],
                     stock_name=None,
@@ -3557,7 +3560,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             with self.assertRaises(Exception) as ctx:
                 trigger_analysis(
-                    request=SimpleNamespace(
+                    request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                         stock_code=None,
                         stock_codes=["930956.CSI", "csi930957"],
                         stock_name=None,
@@ -3609,6 +3612,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             force_refresh=False,
             notify=True,
             report_language="en",
+            model_source=None,
         )
 
     def test_trigger_analysis_async_passes_and_returns_analysis_phase(self) -> None:
@@ -3626,7 +3630,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="600519",
                     stock_codes=None,
                     stock_name=None,
@@ -3652,6 +3656,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="intraday",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_accepts_hk_suffix_code_from_autocomplete(self) -> None:
@@ -3664,7 +3669,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
              patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="00700.HK",
                     stock_codes=None,
                     stock_name="腾讯控股",
@@ -3689,6 +3694,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_accepts_bse_suffix_code_from_autocomplete(self) -> None:
@@ -3701,7 +3707,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
              patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="920493.BJ",
                     stock_codes=None,
                     stock_name="示例北交所股票",
@@ -3727,6 +3733,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_rejects_non_bse_code_with_bj_exchange_hint(self) -> None:
@@ -3741,7 +3748,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                      patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
                     with self.assertRaises(Exception) as exc:
                         trigger_analysis(
-                            request=SimpleNamespace(
+                            request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                                 stock_code=bad_code,
                                 stock_codes=None,
                                 stock_name=None,
@@ -3771,7 +3778,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
              patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="HK00700",
                     stock_codes=None,
                     stock_name=None,
@@ -3796,6 +3803,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_allows_stock_names_with_star_and_hyphen(self) -> None:
@@ -3808,7 +3816,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.resolve_name_to_code", return_value="688783"), \
              patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="西安奕材-U",
                     stock_codes=None,
                     stock_name=None,
@@ -3833,6 +3841,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_accepts_resolvable_free_text_input(self) -> None:
@@ -3845,7 +3854,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.resolve_name_to_code", return_value="600519"), \
              patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code="贵州茅台",
                     stock_codes=None,
                     stock_name=None,
@@ -3870,6 +3879,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_preserves_batch_metadata(self) -> None:
@@ -3881,7 +3891,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=["600519", "000001"],
                     stock_name=None,
@@ -3906,6 +3916,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_trigger_analysis_rejects_cross_request_duplicate_for_equivalent_code_shapes(self) -> None:
@@ -3920,7 +3931,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
             with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
                 first = trigger_analysis(
-                    request=SimpleNamespace(
+                    request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                         stock_code="600519",
                         stock_codes=None,
                         stock_name=None,
@@ -3935,7 +3946,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     config=SimpleNamespace(),
                 )
                 second = trigger_analysis(
-                    request=SimpleNamespace(
+                    request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                         stock_code="600519.SH",
                         stock_codes=None,
                         stock_name=None,
@@ -3975,7 +3986,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=["600519", "000001"],
                     stock_name="贵州茅台",
@@ -4000,6 +4011,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+            model_source=None,
         )
 
     def test_spa_fallback_returns_json_404_for_bare_api_path(self) -> None:
@@ -4267,7 +4279,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
                 with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
                     response = trigger_analysis(
-                        request=SimpleNamespace(
+                        request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                             stock_code=None,
                             stock_codes=request_codes,
                             stock_name=None,
@@ -4349,7 +4361,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         queue.submit_tasks_batch.return_value = ([task], [])
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
             response = trigger_analysis(
-                request=SimpleNamespace(
+                request=analysis_endpoint_module.AnalyzeRequest.model_construct(
                     stock_code=None,
                     stock_codes=["600519", "000001"],
                     stock_name=None,

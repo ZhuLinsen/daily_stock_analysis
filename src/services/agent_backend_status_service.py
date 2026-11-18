@@ -7,10 +7,12 @@ from typing import Any, Dict, Optional
 
 from src.agent.agent_backend import resolve_agent_backend_id
 from src.config import Config, parse_env_bool, parse_env_int
+from src.llm.model_source import CHATGPT_SIWC, ChatGPTModelSource
+from src.services.chatgpt_oauth_service import ChatGPTError, get_chatgpt_service
 from src.services.generation_backend_status_service import GenerationBackendStatusService
 
 
-def evaluate_agent_backend_config(config: Config) -> Dict[str, Any]:
+def evaluate_agent_backend_config(config: Config, *, model_source: Optional[ChatGPTModelSource] = None) -> Dict[str, Any]:
     """Select the backend and evaluate only request-time configuration invariants."""
     requested = str(getattr(config, "agent_backend", "auto") or "auto").strip().lower()
     try:
@@ -30,7 +32,15 @@ def evaluate_agent_backend_config(config: Config) -> Dict[str, Any]:
             "error_code": "agent_mode_disabled",
             "message": "Agent mode is disabled",
         }
-    if selected == "litellm" and not config.is_agent_available():
+    if model_source is not None:
+        selected = CHATGPT_SIWC
+        try:
+            if str(getattr(config, "agent_arch", "single") or "single").strip().lower() != "single":
+                raise ChatGPTError("chatgpt_single_agent_required", "ChatGPT requires single Agent mode")
+            get_chatgpt_service().validate(model_source)
+        except ChatGPTError as exc:
+            return {"backend": selected, "available": False, "error_code": exc.code, "message": str(exc)}
+    elif selected == "litellm" and not config.is_agent_available():
         return {
             "backend": selected,
             "available": False,
@@ -48,16 +58,20 @@ def evaluate_agent_backend_config(config: Config) -> Dict[str, Any]:
 class AgentBackendStatusService:
     """Evaluate whether the selected Chat backend can be attempted."""
 
-    def __init__(self, *, effective_map: Optional[Dict[str, str]] = None, config: Optional[Config] = None) -> None:
+    def __init__(
+        self, *, effective_map: Optional[Dict[str, str]] = None, config: Optional[Config] = None,
+        model_source: Optional[ChatGPTModelSource] = None,
+    ) -> None:
         self._effective_map = {
             str(key).upper(): "" if value is None else str(value)
             for key, value in (effective_map or {}).items()
         }
         self._config = config
+        self._model_source = model_source
 
     def get_status(self) -> Dict[str, Any]:
         config = self._build_config()
-        evaluation = evaluate_agent_backend_config(config)
+        evaluation = evaluate_agent_backend_config(config, model_source=self._model_source)
         if not evaluation["available"]:
             return self._response(
                 backend=evaluation["backend"],

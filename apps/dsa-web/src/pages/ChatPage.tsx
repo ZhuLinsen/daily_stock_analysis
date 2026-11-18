@@ -1,3 +1,5 @@
+import { ModelSourceSelect } from '../components/chatgpt/ModelSourceSelect';
+import { currentChatGPTSource, useChatGPTStore } from '../stores/chatgptStore';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import Markdown from 'react-markdown';
@@ -81,6 +83,12 @@ const getPipelineBudgetSkippedLabel = (step: ProgressStep): string => {
 };
 
 const ChatPage: React.FC = () => {
+  const [useChatGPT, setUseChatGPT] = useState(false);
+  const chatgptStatus = useChatGPTStore((state) => state.status);
+  const chatgptModel = useChatGPTStore((state) => state.model);
+  const refreshChatGPT = useChatGPTStore((state) => state.refresh);
+  useEffect(() => { void refreshChatGPT(); }, [refreshChatGPT]);
+
   const { t } = useUiLanguage();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -319,14 +327,25 @@ const ChatPage: React.FC = () => {
       });
   }, []);
 
+  const connectionId = chatgptStatus?.connected ? chatgptStatus.connection_id : undefined;
+  const sourceKey = useChatGPT ? JSON.stringify([connectionId, chatgptModel]) : 'default';
+  const [checkedSource, setCheckedSource] = useState('');
   const loadAgentStatus = useCallback(async () => {
     const requestId = agentStatusRequestIdRef.current + 1;
     agentStatusRequestIdRef.current = requestId;
     setAgentStatusChecking(true);
     try {
-      const status = await agentApi.getStatus();
+      if (useChatGPT && (!connectionId || !chatgptModel)) {
+        setAgentStatus(null);
+        setAgentStatusError(null);
+        return;
+      }
+      const status = useChatGPT && connectionId
+        ? await agentApi.getStatus({ provider: 'chatgpt_siwc', connection_id: connectionId, model: chatgptModel })
+        : await agentApi.getStatus();
       if (!isMountedRef.current || agentStatusRequestIdRef.current !== requestId) return;
       setAgentStatus(status);
+      setCheckedSource(sourceKey);
       setAgentStatusError(null);
     } catch (error: unknown) {
       if (!isMountedRef.current || agentStatusRequestIdRef.current !== requestId) return;
@@ -337,7 +356,7 @@ const ChatPage: React.FC = () => {
         setAgentStatusChecking(false);
       }
     }
-  }, []);
+  }, [chatgptModel, connectionId, sourceKey, useChatGPT]);
 
   useEffect(() => {
     void loadAgentStatus();
@@ -419,12 +438,12 @@ const ChatPage: React.FC = () => {
   const selectedSkillIdSet = new Set(selectedSkillIds);
   const skillLimitReached = selectedSkillIds.length >= MAX_SELECTED_SKILLS;
   const agentConfirmedUnavailable = Boolean(agentStatus && !agentStatus.available);
-  const agentAvailable = Boolean(agentStatus?.available) && !agentStatusChecking;
+  const agentAvailable = Boolean(agentStatus?.available) && checkedSource === sourceKey && !agentStatusChecking;
   const agentUnavailableMessage = agentStatus?.errorCode === 'backend_removed'
     ? t('settings.agentBackendRemoved')
     : agentStatus?.errorCode === 'agent_mode_disabled'
       ? t('chat.agentModeDisabled')
-      : t('chat.defaultUnavailableMessage');
+      : useChatGPT && agentStatus?.message ? agentStatus.message : t('chat.defaultUnavailableMessage');
   const agentUnavailableError = agentConfirmedUnavailable
     ? createParsedApiError({
         title: t('chat.agentBackendUnavailableTitle'),
@@ -565,6 +584,8 @@ const ChatPage: React.FC = () => {
     ) => {
       const msgText = (overrideMessage ?? input).trim();
       if (!msgText || loading || !agentAvailable || !agentStatus) return;
+      const modelSource = useChatGPT ? currentChatGPTSource(chatgptStatus, chatgptModel) : undefined;
+      if (useChatGPT && !modelSource) return;
       if (overrideMessage !== undefined) {
         setInput(msgText);
       }
@@ -579,6 +600,7 @@ const ChatPage: React.FC = () => {
 
       const payload = {
         message: msgText,
+        ...(modelSource && { model_source: modelSource }),
         session_id: sessionId,
         ...(requestedSkillIds !== null
           ? { skills: normalizeSelectedSkillIds(requestedSkillIds) }
@@ -598,7 +620,7 @@ const ChatPage: React.FC = () => {
         },
       });
     },
-    [agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream],
+    [agentAvailable, agentStatus, chatgptModel, chatgptStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, useChatGPT],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1348,8 +1370,8 @@ const ChatPage: React.FC = () => {
                 >
                   <input
                     type="checkbox"
-                    checked={contextCompressionEnabled}
-                    disabled={!contextCompressionLoaded || contextCompressionSaving}
+                    checked={!useChatGPT && contextCompressionEnabled}
+                    disabled={useChatGPT || !contextCompressionLoaded || contextCompressionSaving}
                     onChange={(event) => void updateContextCompressionEnabled(event.target.checked)}
                     className="chat-skill-checkbox"
                   />
@@ -1357,7 +1379,7 @@ const ChatPage: React.FC = () => {
                   <span className="text-xs text-muted-text">节省长会话 token</span>
                 </label>
                 <span className="text-xs text-muted-text">
-                  {contextCompressionSaving
+                  {useChatGPT ? '当前来源使用可见历史' : contextCompressionSaving
                     ? '保存中...'
                     : contextCompressionEnabled
                       ? '已启用'
@@ -1481,6 +1503,7 @@ const ChatPage: React.FC = () => {
               </div>
             )}
 
+              <ModelSourceSelect selected={useChatGPT} onChange={setUseChatGPT} />
               <div className="flex items-end gap-3">
                 <textarea
                   value={input}
