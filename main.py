@@ -1621,6 +1621,17 @@ def _skips_stock_entry(args: argparse.Namespace, config: Config) -> bool:
     )
 
 
+def _hot_top10_exit_code(result) -> int:
+    """Map a hot-top10 service outcome to the CLI exit code (OR-COR-fa50e861).
+
+    The report markdown is rendered BEFORE save/push, so its presence alone
+    must not signal success: only a run whose report actually landed (saved
+    or pushed, marker written) exits 0. Delivery failures, marker-write
+    failures and skips all exit 1 so calling scripts can detect them.
+    """
+    return 0 if bool(getattr(result, "delivered", False)) else 1
+
+
 def _reload_runtime_config() -> Config:
     """Reload config from the latest persisted `.env` values for scheduled runs."""
     _reload_env_file_values_preserving_overrides()
@@ -1931,7 +1942,7 @@ def main() -> int:
             )
             logger.info("热榜分析完成: delivered=%s reason=%s notification=%s",
                         result.delivered, result.reason, result.notification_status)
-            return 0 if result.report_markdown is not None else 1
+            return _hot_top10_exit_code(result)
 
         # 模式1: 仅大盘复盘
         if args.market_review:
