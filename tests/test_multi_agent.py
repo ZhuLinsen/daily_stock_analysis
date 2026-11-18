@@ -2871,6 +2871,41 @@ class TestAgentMemory(unittest.TestCase):
         self.assertEqual(history[0].signal, "buy")
         self.assertEqual(history[0].price_at_analysis, 1880.0)
 
+    def test_calibration_stays_neutral_when_avg_confidence_missing(self):
+        from src.agent.memory import AgentMemory
+
+        fake_service = MagicMock()
+        fake_service.get_stock_summary.return_value = {
+            "total_evaluations": 30,
+            "win_rate": 0.72,
+            "direction_accuracy": 0.75,
+        }
+        with patch("src.services.backtest_service.BacktestService", return_value=fake_service):
+            mem = AgentMemory(enabled=True, min_samples=10)
+            cal = mem.get_calibration("technical", stock_code="600519")
+
+        self.assertFalse(cal.calibrated)
+        self.assertAlmostEqual(cal.calibration_factor, 1.0)
+        self.assertAlmostEqual(cal.avg_confidence, 0.5)
+
+    def test_calibration_uses_real_avg_confidence_when_present(self):
+        from src.agent.memory import AgentMemory
+
+        fake_service = MagicMock()
+        fake_service.get_skill_summary.return_value = {
+            "total_evaluations": 30,
+            "win_rate": 0.64,
+            "direction_accuracy": 0.70,
+            "avg_confidence": 0.80,
+        }
+        with patch("src.services.backtest_service.BacktestService", return_value=fake_service):
+            mem = AgentMemory(enabled=True, min_samples=10)
+            cal = mem.get_calibration("technical", skill_id="bull_trend")
+
+        self.assertTrue(cal.calibrated)
+        self.assertAlmostEqual(cal.avg_confidence, 0.80)
+        self.assertAlmostEqual(cal.calibration_factor, 0.80)
+
 
 class TestBaseAgentMemoryIntegration(unittest.TestCase):
     """Test BaseAgent hooks for memory injection and calibration."""
