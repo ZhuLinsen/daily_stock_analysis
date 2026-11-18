@@ -23,6 +23,8 @@ export function filterDiscoveredTextModels(models: string[]): string[] {
 export const MODELFLARE_APP_REGISTRATION_URL =
   'https://modelflare.dev/sign-up?utm_source=daily_stock_analysis&utm_campaign=app';
 export const X6AI_REGISTRATION_URL = 'https://console.x6pro.io/register?code=zJ2qSdns';
+export const MODELGO_REGISTRATION_URL =
+  'https://console.modelgo.ai/?utm_source=daily_stock_analysis&utm_medium=provider_preset&utm_campaign=oss_integrations';
 export const MODELFLARE_DEFAULT_MODEL = 'gpt-6.1-sol';
 
 export interface LLMProviderTemplate {
@@ -97,6 +99,22 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
       { label: 'x6.ai 专属注册', url: X6AI_REGISTRATION_URL },
       { label: 'x6.ai API 文档', url: 'https://x6.ai/zh/docs' },
       { label: 'x6.ai 模型列表', url: 'https://x6.ai/zh/models' },
+    ],
+  },
+  {
+    channelId: 'modelgo',
+    registration: { label: '注册 ModelGo', url: MODELGO_REGISTRATION_URL },
+    label: 'ModelGo（聚合平台）',
+    protocol: 'openai',
+    baseUrl: 'https://api.modelgo.ai/v1',
+    placeholderModels: '',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint:
+      '每个 API Key 的可用逻辑模型取决于账号策略；请先通过“获取模型”选择当前 Key 可用的模型，再测试连接。',
+    officialSources: [
+      { label: 'ModelGo 控制台', url: MODELGO_REGISTRATION_URL },
+      { label: 'ModelGo 快速开始', url: 'https://modelgo.ai/docs/quickstart/quickstart' },
+      { label: 'ModelGo API 目录', url: 'https://modelgo.ai/docs/quickstart/openapi' },
     ],
   },
   {
