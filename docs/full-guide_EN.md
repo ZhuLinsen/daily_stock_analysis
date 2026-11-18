@@ -361,6 +361,15 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 
 > Behavior note: Search and social sentiment are optional enhancement services. If either service fails to initialize, the system logs a warning and degrades gracefully by skipping that stage without blocking the core analysis flow.
 
+### IBKR Portfolio Import Configuration
+
+| Variable | Description | Default | Required |
+|--------|------|--------|:----:|
+| `IBKR_FLEX_TOKEN` | IBKR Flex Web Service token (Client Portal → Performance & Reports → Flex Queries → Flex Web Service Configuration). Treat it as a secret and do not commit it; IBKR lets you set an expiry and an IP allowlist. | empty | Required for `--portfolio ibkr` |
+| `IBKR_FLEX_QUERY_ID` | Numeric ID of an Activity Flex Query that includes the Open Positions section. | empty | Required for `--portfolio ibkr` |
+
+A Flex Web Service token can only download pre-configured Flex reports; it cannot place, modify, or cancel orders. This integration only calls the read-only `SendRequest` / `GetStatement` endpoints.
+
 ### Futu Portfolio Import Configuration
 
 | Variable | Description | Default | Required |
@@ -684,6 +693,7 @@ python main.py --etf-rotation         # ETF rotation signal + rule backtest (no 
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
 python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
+python main.py --portfolio ibkr       # Use real IBKR LONG stock holdings from a Flex Query (overrides --stocks/STOCK_LIST)
 python main.py --dry-run              # Fetch data only, no AI analysis
 python main.py --no-notify            # Don't send notifications
 python main.py --schedule             # Scheduled task mode
@@ -784,6 +794,19 @@ Only non-zero positions whose direction is explicitly `LONG` and whose Futu stat
 OpenD defaults to `127.0.0.1:11111`; override it with `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT`. The pinned `futu-api==10.8.6808` networking layer uses IPv4 sockets, so `FUTU_OPEND_HOST` must be an IPv4 address or a hostname that resolves to IPv4; IPv6 addresses such as `::1` are unsupported. Inside a Docker container, `127.0.0.1` refers to the container itself. When OpenD runs on the host, set `FUTU_OPEND_HOST=host.docker.internal` on macOS or Windows; on Linux, add a `host.docker.internal:host-gateway` mapping to the container before using that hostname. Cross-host connections carry real account and position data, and [Futu recommends protocol encryption for real-trading connections](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html). This integration does not modify process-wide SDK encryption settings; prefer running OpenD on the same host, or use a trusted network or local port forwarding. When `FUTU_SECURITY_FIRM` is unset, discovery makes one call with the Futu SDK's official `SecurityFirm.NONE` auto-detection mode; it does not enumerate brokers or silently combine partial probe results. Set the variable explicitly when a fixed broker is required.
 
 If `--stocks` is also present, the Futu portfolio wins. Scheduled mode reloads real positions for every run instead of reusing a startup snapshot. If no Futu holdings qualify, stock analysis is skipped without falling back to `STOCK_LIST`; an enabled market review still runs according to its existing configuration. When no market review is requested either, the run does not refresh the stock index or construct the analysis pipeline; an enabled auto-backtest still runs as an independent step. A one-shot CLI exits non-zero only when SDK, OpenD, account discovery, position loading, or security classification fails inside the portfolio-resolution boundary. Trading-calendar, pipeline, and report failures after a successful portfolio import retain the existing analysis error semantics. An already running service or scheduler logs portfolio import errors and continues. This integration only reads accounts and positions; it does not place, modify, cancel, or unlock trades. Existing analysis logs include the stock symbols for the current run, but not account IDs, quantities, costs, or cash balances; redact those symbols as needed before sharing logs.
+
+
+### Use real IBKR holdings as the analysis list
+
+In IBKR Client Portal, create an Activity Flex Query (include the Open Positions section, XML format) and enable the Flex Web Service to get a token. Then set `IBKR_FLEX_TOKEN` and `IBKR_FLEX_QUERY_ID` and run:
+
+```bash
+python main.py --portfolio ibkr
+```
+
+`--portfolio ibkr` downloads a fresh statement through the Flex Web Service before every analysis run (`SendRequest` returns a reference code, then `GetStatement` is polled; generation-in-progress, server-busy, and throttling responses are retried a bounded number of times). No extra dependency is required. Holdings come from the Open Positions section and reflect IBKR's latest statement date (usually the previous trading day). Only `assetCategory=STK` rows with a positive position are analyzed, and multiple lots of the same holding are deduplicated; options, futures, FX, and short positions are excluded. Symbol conversion is limited to holdings whose `listingExchange` is NASDAQ / NYSE / ARCA / AMEX / BATS (US; `BRK B` becomes `BRK.B`), SEHK (HK; e.g. `700` → `HK00700`), and TSEJ (JP; e.g. `7203` → `7203.T`). Holdings on other exchanges (such as BM, SBF, LSE, IBIS) are logged as `symbol@exchange` and skipped. A Flex query without the Open Positions section, an invalid token or query ID, unparseable XML, or a stock row with a missing symbol or invalid quantity fails the whole import instead of returning a silently truncated result; error messages and logs never include the token.
+
+The `--stocks` override, per-run reload in scheduled mode, skipping stock analysis when no holdings qualify, one-shot CLI exit codes, and log-and-continue behavior in service / scheduler modes are the same as for the Futu portfolio import.
 
 ---
 
