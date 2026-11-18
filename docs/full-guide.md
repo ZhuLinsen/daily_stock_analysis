@@ -736,6 +736,7 @@ python scripts/check_env.py --config
 
 ```bash
 python main.py                        # 完整分析（个股 + 大盘复盘）
+python main.py --doctor               # 全链路离线脱敏自检（配合 --json 输出结构化诊断）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
 python main.py --etf-rotation         # ETF 轮动信号 + 规则回测（不调用 LLM，见 docs/etf-rotation.md）
