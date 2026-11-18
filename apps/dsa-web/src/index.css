@@ -1015,6 +1015,12 @@
 .text-purple {
   color: hsl(var(--color-purple));
 }
+.text-price-up {
+  color: var(--home-price-up);
+}
+.text-price-down {
+  color: var(--home-price-down);
+}
 .text-success {
   color: hsl(var(--color-success));
 }
