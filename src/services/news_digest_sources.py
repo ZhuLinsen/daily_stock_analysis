@@ -3,14 +3,15 @@
 
 时效口径（OR-COR-e5070d9a）：以 published_at 为准；缺失回退 fetched_at 并
 显式计数（V5）——fetch_enabled_sources() 会刷新旧文章的 fetched_at，绝不能
-以 fetched_at 作为时效窗口。搜索腿为后续 PR。"""
+以 fetched_at 作为时效窗口。时区口径（OR-COR-2f1e978e）：published_at 为
+UTC 无时区、fetched_at 为本地无时区，cutoff 分口径对齐。搜索腿为后续 PR。"""
 
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -33,10 +34,13 @@ def compact_field(value: Any, limit: int) -> str:
 
 
 def parse_published_datetime(value: Any) -> Optional[datetime]:
-    """发布时间规范化：仅接受 datetime（资讯池 ORM 列），时区剥除按本地解释，其余为 None。"""
-    if isinstance(value, datetime) and value.tzinfo is not None:
-        return value.replace(tzinfo=None)
-    return value if isinstance(value, datetime) else None
+    """发布时间规范化：仅接受 datetime；tz-aware 统一转 UTC 无时区（资讯池
+    intelligence_service._parse_datetime 的落库口径），naive 原样透传，其余 None。"""
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 def normalize_url(url: str) -> Optional[str]:
@@ -94,16 +98,21 @@ def collect_feed_entries(
         logger.warning("NEWS_DIGEST 资讯池回读失败，按空池处理: %s", exc)
         return [], False, 0
 
-    cutoff = now - timedelta(hours=max(1, int(lookback_hours)))
+    # 时区口径（OR-COR-2f1e978e）：池内 published_at 为 UTC 无时区（既有解析链路
+    # 统一转 UTC 落库），fetched_at 为本地无时区（ORM default=datetime.now）。
+    # cutoff 必须分口径对齐，禁止本地 cutoff 与 UTC 发布时间混用。
+    lookback = timedelta(hours=max(1, int(lookback_hours)))
+    published_cutoff = now.astimezone(timezone.utc).replace(tzinfo=None) - lookback
+    fetched_cutoff = now.astimezone().replace(tzinfo=None) - lookback
     entries: List[NewsDigestEntry] = []
     fallback_count = 0
     for row in (rows or []):
         published = parse_published_datetime(getattr(row, "published_at", None))
-        if published is not None and published < cutoff:
+        if published is not None and published < published_cutoff:
             continue  # 旧闻超窗：即使 fetched_at 刚刷新也不进池（e5070d9a）
         if published is None:
             fetched = parse_published_datetime(getattr(row, "fetched_at", None))
-            if fetched is not None and fetched < cutoff:
+            if fetched is not None and fetched < fetched_cutoff:
                 continue
             fallback_count += 1  # V5：缺失发布时间，按抓取口径纳入并计数
         entries.append(NewsDigestEntry(

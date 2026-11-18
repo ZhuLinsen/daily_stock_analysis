@@ -22,6 +22,7 @@ import src.services.news_digest_service as news_digest_service
 from src.services.news_digest_render import (
     _render_digest_footer,
     generate_template_digest,
+    utc_naive_to_local_naive,
 )
 from src.services.news_digest_sources import (
     _TRUNCATE_SNIPPET,
@@ -377,7 +378,7 @@ def test_fresh_published_row_kept_by_authoritative_filter():
 
 
 def test_tz_aware_published_normalized_to_naive():
-    """带时区的发布时间 → 剥除时区按本地时间解释（避免窗口比较偏移）。"""
+    """带时区的发布时间 → 统一转 UTC 无时区（资讯池存储口径）。"""
     tz_row = _feed_row(
         "带时区快讯", "https://f.cn/tz",
         published_at=(TUESDAY_PREMARKET - timedelta(hours=2)).replace(tzinfo=timezone.utc),
@@ -387,6 +388,58 @@ def test_tz_aware_published_normalized_to_naive():
     )
     assert entries[0].published_at == TUESDAY_PREMARKET - timedelta(hours=2)
     assert entries[0].published_at.tzinfo is None
+
+
+SHANGHAI = timezone(timedelta(hours=8))
+
+
+def test_published_utc_caliber_not_cut_by_local_cutoff():
+    """OR-COR-2f1e978e 回归：池内 published_at 为 UTC 无时区口径，cutoff 必须按 UTC 比较。
+
+    上海 (+08:00) 2026-10-24 10:00 运行；文章真实发布于 2026-10-22 16:00+08:00
+    （约 42 小时前），既有解析链路转 UTC 后落库为无时区 2026-10-22 08:00。
+    本地 cutoff（2026-10-22 10:00）会误删；UTC cutoff（2026-10-22 02:00）正确保留。
+    """
+    now_local = datetime(2026, 10, 24, 10, 0, tzinfo=SHANGHAI)
+    stored_utc_naive = datetime(2026, 10, 22, 8, 0)  # 池内存量口径（UTC 无时区）
+    row = _feed_row("42小时前快讯", "https://f.cn/tz42", published_at=stored_utc_naive)
+    entries, feed_ok, _fallback = collect_feed_entries(
+        StubIntelligenceService(rows=[row]), now=now_local,
+    )
+    assert feed_ok is True
+    assert [entry.title for entry in entries] == ["42小时前快讯"]
+
+
+def test_fetched_at_fallback_keeps_local_caliber():
+    """OR-COR-2f1e978e 回归：fetched_at 为本地无时区口径，回退窗口仍按本地比较。"""
+    now_local = datetime(2026, 10, 24, 10, 0, tzinfo=SHANGHAI)
+    stale = _feed_row("本地抓取超窗", "https://f.cn/fb1", published_at=None,
+                      fetched_at=datetime(2026, 10, 20, 9, 0))  # 本地约 61 小时前
+    fresh = _feed_row("本地抓取窗内", "https://f.cn/fb2", published_at=None,
+                      fetched_at=datetime(2026, 10, 22, 12, 0))  # 本地约 46 小时前
+    entries, feed_ok, fallback = collect_feed_entries(
+        StubIntelligenceService(rows=[stale, fresh]), now=now_local,
+    )
+    assert feed_ok is True
+    assert fallback == 1
+    assert [entry.title for entry in entries] == ["本地抓取窗内"]
+
+
+def test_utc_naive_to_local_naive_conversion():
+    """OR-COR-2f1e978e 回归：UTC 无时区展示时间必须换算本地（08:00 UTC → 16:00 +08:00）。"""
+    local = utc_naive_to_local_naive(datetime(2026, 10, 22, 8, 0), tz=SHANGHAI)
+    assert local == datetime(2026, 10, 22, 16, 0)
+    assert local.tzinfo is None
+
+
+def test_render_body_converts_utc_published_to_local():
+    """OR-COR-2f1e978e 回归：条目行展示时间按本地时区渲染，不直接展示 UTC 值。"""
+    entry = _entry("池内快讯", published_at=datetime(2026, 10, 22, 8, 0))  # UTC 无时区口径
+    report = generate_template_digest(
+        [entry], _premarket_context(), now=TUESDAY_PREMARKET, feed_count=1, fallback_count=0,
+    )
+    expected = utc_naive_to_local_naive(datetime(2026, 10, 22, 8, 0)).strftime("%Y-%m-%d %H:%M")
+    assert expected in report, "条目时间必须换算为本地时区展示"
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from src.services.news_digest_sources import NewsDigestEntry
@@ -15,6 +15,15 @@ from src.services.news_digest_window import NewsDigestContext
 
 _CONTEXT_LABELS_ZH = {"premarket": "盘前", "weekend": "周末", "holiday": "节假日"}
 _NEWS_DIGEST_EMPTY_DISCLOSURE_ZH = "本时段未收集到近 48 小时内的资讯条目；为避免误导，本份摘要不含任何推测内容。"
+
+
+def utc_naive_to_local_naive(moment: Optional[datetime], *, tz: Optional[timezone] = None) -> Optional[datetime]:
+    """池内 UTC 无时区发布时间 → 本地无时区展示时间（OR-COR-2f1e978e 展示口径）。"""
+    if moment is None:
+        return None
+    if moment.tzinfo is not None:
+        return moment.astimezone(tz).replace(tzinfo=None)
+    return moment.replace(tzinfo=timezone.utc).astimezone(tz).replace(tzinfo=None)
 
 
 def _render_digest_footer(now: datetime, feed_count: int, fallback_count: int) -> str:
@@ -36,7 +45,8 @@ def _render_template_body(entries: List[NewsDigestEntry]) -> str:
         lines.append(f"## 来源：{source}")
         for index, entry in enumerate(group, 1):
             title_part = f"[{entry.title}]({entry.url})" if entry.url else entry.title
-            time_part = f"（{entry.published_at:%Y-%m-%d %H:%M}）" if entry.published_at else ""
+            local_moment = utc_naive_to_local_naive(entry.published_at)
+            time_part = f"（{local_moment:%Y-%m-%d %H:%M}）" if local_moment else ""
             snippet_part = f" — {entry.snippet}" if entry.snippet else ""
             lines.append(f"- {index}. {title_part}{time_part}{snippet_part}")
     return "\n".join(lines)
