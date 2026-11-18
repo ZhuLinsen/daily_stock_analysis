@@ -35,7 +35,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from data_provider.cross_asset_fetcher import CrossAssetFetcher
+from data_provider.cross_asset_fetcher import CrossAssetFetcher, _change_pct
 from src.schemas.cross_asset_context import CROSS_ASSET_GROUPS
 
 TRADE_DATE = date(2026, 10, 22)
@@ -502,6 +502,71 @@ class TestTargetDateAlignment:
         # as_of one day AFTER the target: negative age must read as stale.
         assert fetcher._is_stale(date(2026, 10, 23), date(2026, 10, 22), 1) is True
         assert fetcher._is_stale(FRESH_AS_OF, TRADE_DATE, 1) is False
+
+
+class TestNonFiniteCloseRejection:
+    """OR-COR-be3a04e3 — non-finite closes (NaN keeps only NaN out via
+    dropna; +/-inf SURVIVES dropna) must be rejected at the data-entry seam,
+    not merely skipped at render time. An inf close used to become a
+    ``status="ok"`` item with ``value=inf`` / ``change_pct=inf`` that voted,
+    entered the summary and quality stats, and was cached."""
+
+    @staticmethod
+    def _yf_stub(frame):
+        return SimpleNamespace(
+            Ticker=lambda symbol: SimpleNamespace(
+                history=lambda period=None, auto_adjust=None: frame
+            )
+        )
+
+    def test_inf_close_is_rejected_at_entry(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Close": [100.0, 101.0, float("inf")]},  # dropna keeps inf
+            index=pd.DatetimeIndex(["2026-10-20", "2026-10-21", "2026-10-22"]),
+        )
+        with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
+            series = CrossAssetFetcher._fetch_yf_series("^GSPC", TRADE_DATE)
+
+        assert series is None  # before the fix: (TRADE_DATE, inf, 101.0)
+
+    def test_snapshot_surfaces_no_data_not_ok_inf_item(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Close": [100.0, 101.0, float("inf")]},
+            index=pd.DatetimeIndex(["2026-10-20", "2026-10-21", "2026-10-22"]),
+        )
+        fetcher = CrossAssetFetcher()
+        with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
+            snapshot = fetcher.fetch_market_snapshot("us", TRADE_DATE)
+
+        item = snapshot["indices"]["SPX"]
+        assert item.status == "not_supported"
+        assert item.error == "no_data"
+        assert item.value is None
+        _assert_quadruple(item)
+
+    def test_non_finite_prev_close_is_rejected(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Close": [float("inf"), 101.0]},
+            index=pd.DatetimeIndex(["2026-10-21", "2026-10-22"]),
+        )
+        with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
+            series = CrossAssetFetcher._fetch_yf_series("^GSPC", TRADE_DATE)
+
+        # prev=inf would poison change_pct into inf/nan -> reject the bar pair
+        assert series is None
+
+    def test_change_pct_non_finite_returns_none(self):
+        # overflow: (1e308 / 1e-308) * 100 overflows to inf
+        assert _change_pct(1e308, 1e-308) is None
+        assert _change_pct(float("nan"), 1.0) is None
+        # finite baseline stays intact
+        assert _change_pct(110.0, 100.0) == pytest.approx(10.0)
 
 
 class TestBudgetExceededSurfacesTimeout:

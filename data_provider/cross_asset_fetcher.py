@@ -26,6 +26,7 @@ implementation):
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import date, datetime
 from typing import Any, Dict, Optional, Tuple
@@ -117,7 +118,12 @@ def _index_label_date(value) -> Any:
 def _change_pct(last: float, prev: Optional[float]) -> Optional[float]:
     if prev is None or prev == 0:
         return None
-    return round((last - prev) / prev * 100.0, 2)
+    # OR-COR-be3a04e3: an overflow (huge ratio) or NaN input must not leak a
+    # non-finite change_pct into votes / summary / quality / cache.
+    change = (last - prev) / prev * 100.0
+    if not math.isfinite(change):
+        return None
+    return round(change, 2)
 
 
 def _filter_close_to_target(close, trade_date: date):
@@ -368,6 +374,12 @@ class CrossAssetFetcher:
         as_of = _coerce_date_value(_index_label_date(last_index))
         last = float(close.iloc[-1])
         prev = float(close.iloc[-2]) if len(close) > 1 else last
+        # OR-COR-be3a04e3: dropna() only removes NaN — +/-inf closes SURVIVE
+        # it and used to become status="ok" items with value=inf that voted,
+        # entered the summary/quality stats and were cached. Reject the bar
+        # pair at the data-entry seam instead.
+        if not math.isfinite(last) or not math.isfinite(prev):
+            return None
         if last <= 0:
             return None
         return as_of, last, prev

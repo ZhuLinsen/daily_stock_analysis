@@ -21,6 +21,7 @@ contexts are built with an empty link list while the contract field stays.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from datetime import date
@@ -64,6 +65,50 @@ _VALID_MARKETS = frozenset(_MARKET_LABELS)
 def normalize_cross_asset_market(market: Any) -> str:
     normalized = str(market or "").strip().lower()
     return normalized if normalized in _VALID_MARKETS else "cn"
+
+
+def _is_non_finite(number: Optional[float]) -> bool:
+    return number is not None and not math.isfinite(number)
+
+
+def sanitize_non_finite_items(
+    snapshot: Dict[str, Dict[str, CrossAssetItem]],
+) -> Dict[str, Dict[str, CrossAssetItem]]:
+    """OR-COR-be3a04e3: mark non-finite ok items invalid BEFORE any consumer.
+
+    Single entry-point filter applied before voting / summary / quality
+    stats / caching: an ``status="ok"`` item carrying a non-finite ``value``
+    or ``change_pct`` (+/-inf survive ``dropna()``; NaN can leak through
+    ``change_pct`` math) used to cast a valid vote, enter the summary and
+    quality counts and get cached. Such an item is rebuilt as an explicit
+    ``status="error"`` / ``error="non_finite_value"`` item with the numeric
+    fields cleared, so the quality quadruple reports the problem instead of
+    hiding it. Finite items (and error/not_supported items) pass through
+    untouched; the input snapshot is never mutated.
+    """
+
+    sanitized: Dict[str, Dict[str, CrossAssetItem]] = {}
+    replaced = False
+    for group in CROSS_ASSET_GROUPS:
+        items = snapshot.get(group) or {}
+        cleaned: Dict[str, CrossAssetItem] = {}
+        for key, item in items.items():
+            if item.status == "ok" and (
+                _is_non_finite(item.value) or _is_non_finite(item.change_pct)
+            ):
+                cleaned[key] = item.model_copy(
+                    update={
+                        "status": "error",
+                        "error": "non_finite_value",
+                        "value": None,
+                        "change_pct": None,
+                    }
+                )
+                replaced = True
+            else:
+                cleaned[key] = item
+        sanitized[group] = cleaned
+    return sanitized if replaced else snapshot
 
 
 def compute_risk_appetite(snapshot: Dict[str, Dict[str, CrossAssetItem]]) -> Tuple[str, int, int]:
@@ -260,6 +305,10 @@ def build_cross_asset_context(
 ) -> CrossAssetContext:
     """Pure rule engine: snapshot -> CrossAssetContext (no I/O)."""
 
+    # OR-COR-be3a04e3: one entry-point filter before voting, summary,
+    # quality stats and the cache — non-finite ok items are marked invalid
+    # here so no downstream consumer ever sees them.
+    snapshot = sanitize_non_finite_items(snapshot)
     normalized = normalize_cross_asset_market(market)
     risk_appetite, _net, effective_votes = compute_risk_appetite(snapshot)
     return CrossAssetContext(

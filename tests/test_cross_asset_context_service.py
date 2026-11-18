@@ -315,3 +315,99 @@ class TestManagedFetcherConfigReload:
                 )
 
         assert [fetcher.params for fetcher in created] == [(8, 2), (1, 30)]
+
+
+class TestNonFiniteSnapshotSanitization:
+    """OR-COR-be3a04e3 — non-finite values must be excluded BEFORE voting,
+    summary, quality stats and caching, not merely at render time.
+
+    Reported scenario: yfinance returns three US indices, two close 100->101
+    and one 100->+inf. ``dropna()`` keeps +inf, so the item used to become
+    ``status="ok"`` / ``value=inf`` / ``change_pct=inf``: a third valid vote
+    that flipped ``unknown`` into ``risk_on`` while quality stats still
+    reported three successes, the prompt showed an "inf" summary line and the
+    poisoned result was cached per (market, date).
+    """
+
+    def _dirty_us_snapshot(self):
+        return _snapshot(
+            indices={
+                "SPX": _item(value=101.0, change_pct=1.0),
+                "IXIC": _item(value=101.0, change_pct=0.8),
+                "DJI": _item(value=float("inf"), change_pct=float("inf")),
+            },
+            volatility={"VIX": _item(value=14.0, change_pct=1.0)},
+        )
+
+    def test_inf_index_item_cannot_vote_and_is_marked_invalid(self):
+        snapshot = self._dirty_us_snapshot()
+        context = build_cross_asset_context(
+            market="us", trade_date=TRADE_DATE, snapshot=snapshot
+        )
+
+        # two finite votes only: below MIN_EFFECTIVE_VOTES -> unknown
+        assert context.risk_appetite == "unknown"  # was "risk_on" before the fix
+        bad = context.indices["DJI"]
+        assert bad.status == "error"
+        assert bad.error == "non_finite_value"
+        assert bad.value is None
+        assert bad.change_pct is None
+        # the ok items survive untouched
+        assert context.indices["SPX"].status == "ok"
+
+    def test_quality_counts_invalid_item_as_error_not_ok(self):
+        snapshot = self._dirty_us_snapshot()
+        context = build_cross_asset_context(
+            market="us", trade_date=TRADE_DATE, snapshot=snapshot
+        )
+
+        quality = context.data_quality.indices
+        assert quality.ok_count == 2  # was 3 before the fix
+        assert quality.item_count == 3
+        assert quality.error is not None
+        assert "non_finite_value" in quality.error
+
+    def test_summary_and_tags_exclude_non_finite(self):
+        snapshot = self._dirty_us_snapshot()
+        context = build_cross_asset_context(
+            market="us", trade_date=TRADE_DATE, snapshot=snapshot
+        )
+
+        assert "inf" not in context.impact_summary  # was "道琼斯指数 inf(+inf%)"
+        assert "inf" not in ",".join(context.risk_tags)
+
+    def test_inf_vix_does_not_vote_or_tag(self):
+        snapshot = _snapshot(
+            indices={
+                "SPX": _item(change_pct=1.0),
+                "IXIC": _item(change_pct=0.8),
+            },
+            volatility={
+                "VIX": _item(value=float("inf"), change_pct=float("inf"))
+            },
+        )
+        context = build_cross_asset_context(
+            market="us", trade_date=TRADE_DATE, snapshot=snapshot
+        )
+
+        # inf used to read as a -2 VIX vote and a vix_high tag
+        assert context.risk_appetite == "unknown"  # was "neutral" before the fix
+        assert "vix_high" not in context.risk_tags
+        assert "vix_elevated" not in context.risk_tags
+        assert context.volatility["VIX"].status == "error"
+        assert context.volatility["VIX"].error == "non_finite_value"
+
+    def test_service_caches_sanitized_context(self):
+        fetcher = _StubFetcher(snapshot=self._dirty_us_snapshot())
+        config = SimpleNamespace(cross_asset_context_enabled=True)
+        service = CrossAssetContextService(fetcher=fetcher, config=config)
+
+        first = service.get_context("us", TRADE_DATE)
+        second = service.get_context("us", TRADE_DATE)
+
+        assert fetcher.calls == 1  # second read served from cache
+        assert first is second
+        assert first.risk_appetite == "unknown"
+        # the CACHED context must be the sanitized one, not the poisoned one
+        assert first.indices["DJI"].status == "error"
+        assert first.data_quality.indices.ok_count == 2
