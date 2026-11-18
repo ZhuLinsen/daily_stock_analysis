@@ -18,6 +18,50 @@ except ModuleNotFoundError:
     sys.modules["litellm"] = MagicMock()
 
 from src.analyzer import AnalysisResult, GeminiAnalyzer, check_content_integrity, apply_placeholder_fill
+from src.analyzer import append_sniper_point_order_warnings
+
+
+class TestSniperPointOrderWarnings(unittest.TestCase):
+    def make_report(self, action, entry, stop, target, language="zh"):
+        return AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="看多",
+            sentiment_score=75,
+            operation_advice="买入",
+            analysis_summary="分析摘要",
+            decision_type="buy",
+            action=action,
+            report_language=language,
+            dashboard={
+                "intelligence": {"risk_alerts": ["既有风险"]},
+                "battle_plan": {"sniper_points": {"ideal_buy": entry, "stop_loss": stop, "take_profit": target}},
+            },
+        )
+
+    def test_warns_on_inverted_and_equal_targets_without_rewriting_the_plan(self):
+        report = self.make_report("buy", "110元", "110元", "105元")
+        append_sniper_point_order_warnings(report)
+        append_sniper_point_order_warnings(report)
+        self.assertEqual(report.dashboard["intelligence"]["risk_alerts"], [
+            "既有风险", "止损价必须低于计划买入价，请复核点位。", "止盈价必须高于计划买入价，请复核点位。",
+        ])
+        self.assertEqual(report.dashboard["battle_plan"]["sniper_points"]["take_profit"], "105元")
+
+    def test_does_not_infer_an_entry_from_missing_points_or_override_final_actions(self):
+        for args in (("buy", 110, 95, 120), ("hold", 110, 120, 105), ("buy", None, 120, 105)):
+            with self.subTest(args=args):
+                report = self.make_report(*args)
+                append_sniper_point_order_warnings(report)
+                self.assertEqual(report.dashboard["intelligence"]["risk_alerts"], ["既有风险"])
+
+    def test_add_action_can_warn_when_the_risk_list_is_missing(self):
+        report = self.make_report("add", 110, 95, 110, "en")
+        report.dashboard.pop("intelligence")
+        append_sniper_point_order_warnings(report)
+        self.assertEqual(report.dashboard["intelligence"]["risk_alerts"], [
+            "Take-profit must be above the planned entry price. Review the price levels.",
+        ])
 
 
 class TestCheckContentIntegrity(unittest.TestCase):

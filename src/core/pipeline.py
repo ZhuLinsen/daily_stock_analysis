@@ -33,6 +33,7 @@ from data_provider.realtime_types import ChipDistribution
 from src.analyzer import (
     GeminiAnalyzer,
     AnalysisResult,
+    append_sniper_point_order_warnings,
     fill_price_position_if_needed,
     normalize_chip_structure_availability,
     populate_decision_action_fields,
@@ -937,6 +938,7 @@ class StockAnalysisPipeline:
                     report_type=report_type.value,
                     previous_operation_advice=action_source_advice,
                 )
+                append_sniper_point_order_warnings(result)
 
             if result:
                 self._append_daily_data_source(result, context, analysis_target)
@@ -1821,6 +1823,7 @@ class StockAnalysisPipeline:
                 result.market_phase_summary = market_phase_summary
                 result.analysis_context_pack_overview = analysis_context_pack_overview
                 final_action = normalize_decision_action(getattr(result, "action", None))
+                append_sniper_point_order_warnings(result)
                 if isinstance(result.dashboard, dict):
                     result.dashboard.pop("agent_disagreement_explanation", None)
                 if (

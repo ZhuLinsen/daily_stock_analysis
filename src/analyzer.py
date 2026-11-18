@@ -1000,6 +1000,42 @@ def fill_chip_structure_if_needed(result: "AnalysisResult", chip_data: Any) -> N
         logger.warning("[chip_structure] Fill failed, skipping: %s", e)
 
 
+def append_sniper_point_order_warnings(result: "AnalysisResult") -> None:
+    """Warn about targets that contradict the planned entry in a long report."""
+    if result.action not in ("buy", "add") or not isinstance(result.dashboard, dict):
+        return
+
+    from src.utils.sniper_points import extract_sniper_points
+
+    points = extract_sniper_points(result)
+    entry, stop_loss, take_profit = (points[key] for key in ("ideal_buy", "stop_loss", "take_profit"))
+    if entry is None or not math.isfinite(entry):
+        return
+
+    stop_invalid = stop_loss is not None and math.isfinite(stop_loss) and stop_loss >= entry
+    profit_invalid = take_profit is not None and math.isfinite(take_profit) and take_profit <= entry
+    if not (stop_invalid or profit_invalid):
+        return
+
+    language = normalize_report_language(result.report_language)
+    stop_warning, profit_warning = {
+        "zh": ("止损价必须低于计划买入价，请复核点位。", "止盈价必须高于计划买入价，请复核点位。"),
+        "en": ("Stop-loss must be below the planned entry price. Review the price levels.",
+               "Take-profit must be above the planned entry price. Review the price levels."),
+        "ko": ("손절가는 계획 매수가보다 낮아야 합니다. 가격을 확인하세요.",
+               "익절가는 계획 매수가보다 높아야 합니다. 가격을 확인하세요."),
+    }[language]
+    intelligence = result.dashboard.setdefault("intelligence", {})
+    if not isinstance(intelligence, dict):
+        return
+    alerts = intelligence.setdefault("risk_alerts", [])
+    if not isinstance(alerts, list):
+        return
+    for invalid, warning in ((stop_invalid, stop_warning), (profit_invalid, profit_warning)):
+        if invalid and warning not in alerts:
+            alerts.append(warning)
+
+
 _PRICE_POS_KEYS = ("ma5", "ma10", "ma20", "bias_ma5", "bias_status", "current_price", "support_level", "resistance_level")
 
 
