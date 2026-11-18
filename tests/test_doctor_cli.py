@@ -204,6 +204,32 @@ class DoctorCliTestCase(unittest.TestCase):
         self.assertEqual(parsed["checks"]["notifications"]["status"], "error")
         self.assertGreaterEqual(len(parsed["checks"]["notifications"]["errors"]), 1)
 
+    def test_doctor_allows_market_review_without_a_watchlist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = Config(
+                stock_list=[],
+                llm_model_list=[{
+                    "model_name": "test-model",
+                    "litellm_params": {"model": "gemini/test-model", "api_key": "test-api-key"},
+                }],
+                database_path=f"{tmpdir}/stock_analysis.db",
+                log_dir=tmpdir,
+            )
+            self.assertTrue(any(i.field == "STOCK_LIST" and i.severity == "error"
+                                for i in cfg.validate_structured()))
+            buf = io.StringIO()
+            with patch("main.get_config", return_value=cfg), redirect_stdout(buf):
+                exit_code = main.main(["--doctor", "--json"])
+
+        parsed = json.loads(buf.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(parsed["status"], "warn")
+        self.assertEqual(parsed["summary"]["errors"], 0)
+        self.assertEqual(parsed["summary"]["warnings"], 2)
+        self.assertEqual(parsed["checks"]["watchlist"]["status"], "warn")
+        self.assertIn("STOCK_LIST", parsed["checks"]["watchlist"]["message"])
+        self.assertIn("STOCK_LIST", format_doctor_report(parsed))
+
 
 def run_doctor_diagnostics_stub_notify(serp_secret: str, router_secret: str):
     from src.services.notification_diagnostics import NotificationDiagnosticIssue, NotificationDiagnosticResult

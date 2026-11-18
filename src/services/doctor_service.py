@@ -93,12 +93,17 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
     """Run offline, redacted configuration/LLM/notification/storage diagnostics."""
     secrets = _collect_secret_literals(config)
     issues = config.validate_structured()
+    watchlist_count = len(getattr(config, "stock_list", None) or [])
 
     config_errors: List[Dict[str, Any]] = []
     config_warnings: List[Dict[str, Any]] = []
     config_info: List[Dict[str, Any]] = []
     has_llm_config_error = False
     for issue in issues:
+        # An empty watchlist is already reported below. Doctor also serves
+        # deployments that run only market reviews, with no individual stocks.
+        if issue.field == "STOCK_LIST" and not watchlist_count:
+            continue
         entry = {
             "field": issue.field,
             "message": _sanitize_text(issue.message, secrets),
@@ -147,7 +152,6 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
     log_writable = _check_dir_writable(getattr(config, "log_dir", None))
     storage_status = "ok" if (db_writable and log_writable) else "error"
 
-    watchlist_count = len(getattr(config, "stock_list", None) or [])
     watchlist_status = "ok" if watchlist_count > 0 else "warn"
 
     statuses = (config_status, llm_status, notify_status, storage_status, watchlist_status)
@@ -200,6 +204,8 @@ def run_doctor_diagnostics(config: Config) -> Dict[str, Any]:
             "watchlist": {
                 "status": watchlist_status,
                 "count": watchlist_count,
+                "message": "STOCK_LIST is required only for configured individual stock analysis."
+                if watchlist_status == "warn" else "",
             },
         },
     }
@@ -240,6 +246,8 @@ def format_doctor_report(report: Dict[str, Any]) -> str:
 
     watchlist = checks.get("watchlist", {})
     lines.append(f"[watchlist] status={watchlist.get('status')} count={watchlist.get('count')}")
+    if watchlist.get("message"):
+        lines.append(f"  WARN  (STOCK_LIST): {watchlist['message']}")
 
     cfg = checks.get("config", {})
     lines.append(f"[config] status={cfg.get('status')}")
