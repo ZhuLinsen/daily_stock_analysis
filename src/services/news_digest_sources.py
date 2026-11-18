@@ -13,16 +13,18 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional, Tuple
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
 _TRUNCATE_TITLE = 90
 _TRUNCATE_SNIPPET = 220
 _TRUNCATE_SOURCE = 60
-_TRUNCATE_URL = 180
 _FEED_LOOKBACK_HOURS = 48
 _FEED_PAGE_SIZE = 200
 _CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+_TRACKING_PARAM_PREFIXES = ("utm_",)
+_TRACKING_PARAMS = frozenset({"utm", "spm"})
 
 
 def compact_field(value: Any, limit: int) -> str:
@@ -31,6 +33,12 @@ def compact_field(value: Any, limit: int) -> str:
     if limit <= 0 or len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def clean_link(value: Any) -> str:
+    """链接清洗：仅去控制字符、折叠空白；绝不截断（截断含省略号会破坏
+    链接可达性与去重身份，OR-COR-45e659d1）。"""
+    return " ".join(_CONTROL_CHARS_PATTERN.sub(" ", str(value or "")).split())
 
 
 def parse_published_datetime(value: Any) -> Optional[datetime]:
@@ -44,17 +52,31 @@ def parse_published_datetime(value: Any) -> Optional[datetime]:
 
 
 def normalize_url(url: str) -> Optional[str]:
-    """URL 规范化：去 query/fragment、去尾斜杠、小写（去重主键）。"""
-    text = str(url or "").strip().lower()
+    """URL 规范化（去重主键，OR-COR-45e659d1 最小归一化）：仅小写 scheme/host、
+    去 fragment、去跟踪参数（utm_* / spm）、去路径尾斜杠；保留 path/query 的
+    原始大小写与区分性参数，绝不合并不同文章。"""
+    text = str(url or "").strip()
     if not text:
         return None
-    text = text.split("#", 1)[0].split("?", 1)[0].rstrip("/")
-    return text or None
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return text
+    query_pairs = [
+        (key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not (key.lower().startswith(_TRACKING_PARAM_PREFIXES) or key.lower() in _TRACKING_PARAMS)
+    ]
+    normalized = urlunsplit((
+        parts.scheme.lower(), parts.netloc.lower(),
+        parts.path.rstrip("/"), urlencode(query_pairs), "",
+    ))
+    return normalized or None
 
 
 @dataclass
 class NewsDigestEntry:
-    """汇总条目；构造时即完成逐字段截断与控制字符清洗（长度上界保证）。"""
+    """汇总条目；构造时即完成逐字段截断与控制字符清洗（长度上界保证；
+    URL 例外——仅清洗、不截断，保持链接可达与去重身份）。"""
 
     title: str
     snippet: str
@@ -65,7 +87,7 @@ class NewsDigestEntry:
     def __post_init__(self) -> None:
         self.title = compact_field(self.title, _TRUNCATE_TITLE)
         self.snippet = compact_field(self.snippet, _TRUNCATE_SNIPPET)
-        self.url = compact_field(self.url, _TRUNCATE_URL)
+        self.url = clean_link(self.url)
         self.source = compact_field(self.source, _TRUNCATE_SOURCE)
         self.published_at = parse_published_datetime(self.published_at)
 

@@ -28,10 +28,10 @@ from src.services.news_digest_sources import (
     _TRUNCATE_SNIPPET,
     _TRUNCATE_SOURCE,
     _TRUNCATE_TITLE,
-    _TRUNCATE_URL,
     NewsDigestEntry,
     collect_feed_entries,
     compact_field,
+    normalize_url,
 )
 from src.services.news_digest_window import (
     NewsDigestContext,
@@ -259,9 +259,33 @@ def test_field_truncation_and_control_char_strip_at_construction():
     assert "\x1b" not in entry.source
     assert len(entry.title) <= _TRUNCATE_TITLE
     assert len(entry.snippet) <= _TRUNCATE_SNIPPET
-    assert len(entry.url) <= _TRUNCATE_URL
     assert len(entry.source) <= _TRUNCATE_SOURCE
     assert compact_field("a\x00b", 10) == "a b"
+
+
+def test_entry_url_keeps_full_link_without_ellipsis():
+    """OR-COR-45e659d1 回归：URL 不截断——截断（含省略号）会破坏原链接可达性
+    与去重身份，长路径文章必须保留完整地址。"""
+    long_url = "https://example.com/news/" + "p" * 200 + "?id=7"
+    entry = NewsDigestEntry(title="长链快讯", snippet="摘要", url=long_url, source="来源")
+    assert entry.url == long_url, "URL 必须原样保留（仅清洗控制字符），不得截断加省略号"
+
+
+def test_normalize_url_preserves_distinct_articles():
+    """OR-COR-45e659d1 回归：最小归一化不得合并不同文章。"""
+    assert normalize_url("https://example.com/article?id=1") \
+        != normalize_url("https://example.com/article?id=2"), "区分性 query 不得删除"
+    assert normalize_url("https://example.com/Article") \
+        != normalize_url("https://example.com/article"), "path 大小写不得折叠"
+
+
+def test_normalize_url_still_collapses_cosmetic_variants():
+    """去跟踪参数/fragment/尾斜杠/大小写无关的 host 变体仍视为同一文章。"""
+    assert normalize_url("https://n.cn/1?utm_source=x&utm_campaign=y&id=9") \
+        == normalize_url("https://N.cn/1?id=9"), "仅跟踪参数被剥离，区分性参数保留"
+    assert normalize_url("https://n.cn/3#frag") == normalize_url("https://n.cn/3")
+    assert normalize_url("https://n.cn/a/") == normalize_url("https://n.cn/a")
+    assert normalize_url("") is None
 
 
 def test_dedup_by_normalized_url():
