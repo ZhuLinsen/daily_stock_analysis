@@ -21,7 +21,8 @@ _TRUNCATE_TITLE = 90
 _TRUNCATE_SNIPPET = 220
 _TRUNCATE_SOURCE = 60
 _FEED_LOOKBACK_HOURS = 48
-_FEED_PAGE_SIZE = 200
+_FEED_PAGE_SIZE = 100  # 对齐真实仓储钳制上限（intelligence_repo.list_items）
+_FEED_MAX_PAGES = 10   # 翻页安全上限：最多回读 10 页，防患异常大池
 _CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 _TRACKING_PARAM_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = frozenset({"utm", "spm"})
@@ -98,12 +99,13 @@ def collect_feed_entries(
     now: datetime,
     lookback_hours: int = _FEED_LOOKBACK_HOURS,
 ) -> Tuple[List[NewsDigestEntry], bool, int]:
-    """资讯池采集：刷新落库后按 fetched 窗口回读，发布时间为权威时效口径。
+    """资讯池采集：刷新落库后按需翻页回读，发布时间为权威时效口径。
 
-    返回 (entries, feed_ok, fallback_count)。逐行以 ``now - lookback_hours``
-    为权威 cutoff 复核：发布时间超窗的旧闻即使 fetched_at 刚刷新也不进池
-    （e5070d9a）；发布时间缺失按 fetched_at 口径保留并计入 fallback（V5）。
-    刷新/回读失败按空池处理（fail-open，不致命）。
+    返回 (entries, feed_ok, fallback_count)。逐行按口径 cutoff 复核
+    （published_at 用 UTC、fetched_at 用本地，OR-COR-2f1e978e）：发布时间超窗
+    的旧闻即使 fetched_at 刚刷新也不进池（e5070d9a）；发布时间缺失按
+    fetched_at 口径保留并计入 fallback（V5）。翻页直至覆盖 total 或页提前
+    结束（OR-COR-7cf03c1e）。刷新/回读失败按空池处理（fail-open，不致命）。
     """
     if intelligence_service is None:
         return [], False, 0
@@ -112,13 +114,26 @@ def collect_feed_entries(
     except Exception as exc:  # noqa: BLE001 - 池刷新失败不致命
         logger.warning("NEWS_DIGEST 资讯池刷新失败，按空池处理: %s", exc)
         return [], False, 0
-    try:
-        rows, _total = intelligence_service.repo.list_items(
-            days=max(1, -(-int(lookback_hours) // 24)), page=1, page_size=_FEED_PAGE_SIZE,
-        )
-    except Exception as exc:  # noqa: BLE001 - 回读失败不致命
-        logger.warning("NEWS_DIGEST 资讯池回读失败，按空池处理: %s", exc)
-        return [], False, 0
+    # 按需翻页（OR-COR-7cf03c1e）：真实仓储 page_size 钳 100 且先排序分页，
+    # 只读第一页再去重会让后页窗口内有效新闻在摘要未满时被遗漏。翻页直至
+    # 覆盖 total 或页提前结束（_FEED_MAX_PAGES 兜底），去重仍在窗口层统一进行。
+    rows: List[Any] = []
+    total: Optional[int] = None
+    page = 1
+    while page <= _FEED_MAX_PAGES:
+        try:
+            page_rows, page_total = intelligence_service.repo.list_items(
+                days=max(1, -(-int(lookback_hours) // 24)), page=page, page_size=_FEED_PAGE_SIZE,
+            )
+        except Exception as exc:  # noqa: BLE001 - 回读失败不致命
+            logger.warning("NEWS_DIGEST 资讯池回读失败，按空池处理: %s", exc)
+            return [], False, 0
+        rows.extend(page_rows or [])
+        if total is None:
+            total = int(page_total or 0)
+        if not page_rows or len(page_rows) < _FEED_PAGE_SIZE or len(rows) >= total:
+            break
+        page += 1
 
     # 时区口径（OR-COR-2f1e978e）：池内 published_at 为 UTC 无时区（既有解析链路
     # 统一转 UTC 落库），fetched_at 为本地无时区（ORM default=datetime.now）。

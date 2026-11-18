@@ -333,7 +333,54 @@ def test_feed_readback_failure_yields_empty():
 def test_feed_readback_queries_fetched_window():
     stub = StubIntelligenceService(rows=[])
     collect_feed_entries(stub, now=TUESDAY_PREMARKET)
-    assert stub.list_calls == [{"days": 2, "page": 1, "page_size": 200}]
+    assert stub.list_calls == [{"days": 2, "page": 1, "page_size": 100}], (
+        "page_size 必须对齐真实仓储钳制上限（100），不浪费被静默钳掉的配额"
+    )
+
+
+class PaginatedIntelligenceService:
+    """真实仓储分页行为桩：page_size 钳 100、按给定行序切片、返回 (rows, total)。"""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.list_calls = []
+        self.repo = SimpleNamespace(list_items=self._list_items)
+
+    def fetch_enabled_sources(self):
+        return {"ok": True, "source_count": 1, "results": [], "saved_count": 0}
+
+    def _list_items(self, **kwargs):
+        self.list_calls.append(dict(kwargs))
+        safe_page = max(1, int(kwargs.get("page", 1)))
+        safe_size = max(1, min(int(kwargs.get("page_size", 100)), 100))
+        start = (safe_page - 1) * safe_size
+        return list(self._rows[start:start + safe_size]), len(self._rows)
+
+
+def test_collect_pages_until_window_covered():
+    """OR-COR-7cf03c1e 回归：第一页被 100 行高重复内容占满时，必须继续按需翻页，
+    后页仍在 48 小时窗口内的独立快讯不得因“去重发生在分页之后”被遗漏。"""
+    dup_rows = [
+        _feed_row(f"重复快讯{i % 10}", f"https://f.cn/dup{i % 10}",
+                  published_at=TUESDAY_PREMARKET - timedelta(minutes=30 + i))
+        for i in range(100)
+    ]
+    tail_rows = [
+        _feed_row("后页独家一", "https://f.cn/unique1",
+                  published_at=TUESDAY_PREMARKET - timedelta(hours=1)),
+        _feed_row("后页独家二", "https://f.cn/unique2",
+                  published_at=TUESDAY_PREMARKET - timedelta(hours=2)),
+    ]
+    stub = PaginatedIntelligenceService(rows=dup_rows + tail_rows)
+    entries, feed_ok, _fallback = collect_feed_entries(stub, now=TUESDAY_PREMARKET)
+    assert feed_ok is True
+    assert len(stub.list_calls) >= 2, "第一页满页且未覆盖 total 时必须继续翻页"
+    assert [call["page"] for call in stub.list_calls] == [1, 2]
+    assert stub.list_calls[0]["page_size"] == 100
+
+    merged = merge_entries(entries, limit=12)
+    titles = {entry.title for entry in merged}
+    assert {"后页独家一", "后页独家二"} <= titles, "后页窗口内独立快讯必须进入摘要"
 
 
 def test_stale_published_excluded_even_if_fetched_now():
