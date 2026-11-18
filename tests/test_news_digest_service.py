@@ -570,6 +570,45 @@ def test_run_once_no_notify_never_sends_or_claims(tmp_path):
     assert _claim_count(config.database_path) == 1
 
 
+def test_run_once_feed_readback_failure_never_sends_or_claims(tmp_path):
+    """OR-COR-28338a9e 回归：资讯池回读失败不得伪装成“空池成功摘要”推送，
+    也不得占用当日名额；池恢复后同窗口内可补发真实新闻。"""
+    config = _config(tmp_path)
+    notifier = StubNotifier()
+    broken = StubIntelligenceService(list_error=RuntimeError("read boom"))
+    failed = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET, intelligence_service=broken, notifier=notifier,
+    )
+    assert failed["status"] == "failed"
+    assert failed["reason"] == "feed_unavailable"
+    assert notifier.calls == [], "池读取失败绝不发送空摘要"
+    assert _claim_count(config.database_path) == 0, "池读取失败不得占用当日名额"
+
+    recovered = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET.replace(hour=8, minute=50),
+        intelligence_service=StubIntelligenceService(rows=[
+            _feed_row("恢复后的快讯", "https://f.cn/r1", published_at=TUESDAY_PREMARKET),
+        ]),
+        notifier=notifier,
+    )
+    assert recovered["status"] == "success"
+    assert "恢复后的快讯" in recovered["report"]
+    assert len(notifier.calls) == 1
+
+
+def test_run_once_missing_intelligence_service_fails_without_claim(tmp_path):
+    """OR-COR-28338a9e 回归：资讯服务降级为 None 同样视为池不可用（不发送、不占名额）。"""
+    config = _config(tmp_path)
+    notifier = StubNotifier()
+    result = run_news_digest_once(
+        config, now=TUESDAY_PREMARKET, intelligence_service=None, notifier=notifier,
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "feed_unavailable"
+    assert notifier.calls == []
+    assert _claim_count(config.database_path) == 0
+
+
 def test_run_once_result_schema(tmp_path):
     """输出 schema：fallback_count/feed_ok/report 等元数据齐全（V5 计数对外可见）。"""
     notifier = StubNotifier()
@@ -655,7 +694,10 @@ def test_run_once_send_failure_releases_claim_and_fails(tmp_path):
     working = StubNotifier()
     second = run_news_digest_once(
         config, now=TUESDAY_PREMARKET.replace(hour=8, minute=50),
-        intelligence_service=None, notifier=working,
+        intelligence_service=StubIntelligenceService(rows=[
+            _feed_row("补发快讯", "https://f.cn/r2", published_at=TUESDAY_PREMARKET),
+        ]),
+        notifier=working,
     )
     assert second["status"] == "success"
     assert second["notified"] is True
@@ -664,10 +706,15 @@ def test_run_once_send_failure_releases_claim_and_fails(tmp_path):
 
 
 def test_run_once_send_failure_still_reports_generated_content(tmp_path):
-    """失败结果仍带回已生成 report（CLI 打印可见），但 notified=False。"""
+    """发送失败结果仍带回已生成 report（CLI 打印可见），但 notified=False。
+    （资讯服务为 None 属池不可用，走 feed_unavailable，另见
+    test_run_once_missing_intelligence_service_fails_without_claim。）"""
     result = run_news_digest_once(
         _config(tmp_path), now=TUESDAY_PREMARKET,
-        intelligence_service=None, notifier=StubNotifier(send_result=False),
+        intelligence_service=StubIntelligenceService(rows=[
+            _feed_row("池内新闻", "https://f.cn/1", published_at=TUESDAY_PREMARKET),
+        ]),
+        notifier=StubNotifier(send_result=False),
     )
     assert result["status"] == "failed"
     assert result.get("report")

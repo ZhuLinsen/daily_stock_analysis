@@ -108,6 +108,15 @@ def run_news_digest_once(
     try:
         max_news = max(1, min(int(getattr(config, "news_digest_max_news", 12) or 12), 30))
         feed_entries, feed_ok, fallback_count = collect_feed_entries(intelligence_service, now=now)
+        if not feed_ok:
+            # 资讯池读取失败（OR-COR-28338a9e）：绝不把失败伪装成“空池摘要”
+            # 推送并占用当日名额；释放 claim，窗口内恢复后可补发真实新闻。
+            logger.error("NEWS_DIGEST 资讯池读取失败，本次不出摘要、释放 claim 待补发")
+            _release_claim_safely()
+            return _res(
+                "failed", "feed_unavailable", context=context.kind,
+                entries_count=0, feed_ok=False, fallback_count=0, notified=False, report="",
+            )
         entries = merge_entries(feed_entries, limit=max_news)
         report = generate_template_digest(
             entries, context, now=now, feed_count=len(feed_entries), fallback_count=fallback_count,
