@@ -1113,6 +1113,7 @@ class Config:
     news_intel_auto_fetch_enabled: bool = False  # 是否在分析前自动初始化并拉取本地资讯源
     newsnow_base_url: str = "https://newsnow.busiyi.world"  # NewsNow HTTP API base URL (数据源侧，不影响 LLM/provider base URL)
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
+    bias_atr_multiplier: float = 0.0  # 波动率自适应乖离率 ATR14 倍数（0 表示关闭，保持静态阈值向后兼容）
 
     # === Agent 模式配置 ===
     agent_backend: str = "auto"
@@ -1298,7 +1299,7 @@ class Config:
     backtest_enabled: bool = True
     backtest_eval_window_days: int = 10
     backtest_min_age_days: int = 14
-    backtest_engine_version: str = "v1"
+    backtest_engine_version: str = "v1.1"
     backtest_neutral_band_pct: float = 2.0
 
     # === ETF 轮动配置（仅 --etf-rotation 使用）===
@@ -2053,6 +2054,12 @@ class Config:
             ),
             newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
             bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
+            bias_atr_multiplier=parse_env_float(
+                os.getenv('BIAS_ATR_MULTIPLIER'),
+                0.0,
+                field_name='BIAS_ATR_MULTIPLIER',
+                minimum=0.0,
+            ),
             agent_backend=(os.getenv('AGENT_BACKEND', 'auto') or 'auto').strip().lower(),
             agent_generation_backend=agent_generation_backend,
             agent_litellm_model=agent_litellm_model,
@@ -2292,7 +2299,7 @@ class Config:
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
             backtest_eval_window_days=parse_env_int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS'), 10, field_name='BACKTEST_EVAL_WINDOW_DAYS', minimum=1),
             backtest_min_age_days=parse_env_int(os.getenv('BACKTEST_MIN_AGE_DAYS'), 14, field_name='BACKTEST_MIN_AGE_DAYS', minimum=1),
-            backtest_engine_version=os.getenv('BACKTEST_ENGINE_VERSION', 'v1'),
+            backtest_engine_version=os.getenv('BACKTEST_ENGINE_VERSION', 'v1.1'),
             backtest_neutral_band_pct=parse_env_float(
                 os.getenv('BACKTEST_NEUTRAL_BAND_PCT'),
                 2.0,
@@ -3454,7 +3461,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "未配置任何可用的 AI 模型接入。请至少配置 AIHUBMIX_KEY、"
+                        "未配置任何可用的 AI 模型接入。请至少配置 MODELFLARE_KEY、AIHUBMIX_KEY、"
                         "GEMINI_API_KEY、ANTHROPIC_API_KEY、"
                         "OPENAI_API_KEY、DEEPSEEK_API_KEY 或 ANSPIRE_API_KEYS 中的一个，或配置 "
                         "LITELLM_CONFIG / LLM_CHANNELS 可用模型渠道。"

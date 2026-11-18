@@ -126,6 +126,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `REPORT_HISTORY_COMPARE_N` | History signal comparison count, `0` off (default), `>0` enable | Optional |
 | `ANALYSIS_DELAY` | Delay between stock analysis and market review (seconds) to avoid API rate limits, e.g., `10` | Optional |
 | `SAVE_CONTEXT_SNAPSHOT` | Whether to persist analysis-history `context_snapshot`; defaults to `true`. Set to `false` or use `--no-context-snapshot` to stop persisting the full snapshot | Optional |
+| `STEP_SUMMARY_REPORT` | **GitHub Actions Repository Variable only** (`vars.STEP_SUMMARY_REPORT`, not a `.env` key): set to `true` to append report previews to the Actions Job Summary; defaults to `false` (redacted preflight summary only) | Optional |
 | `MARKDOWN_TO_IMAGE_CHANNELS` | Notification channels that receive report images: telegram,wechat,custom,email,slack | Optional |
 | `MARKDOWN_TO_IMAGE_MAX_CHARS` | Skip image conversion above this Markdown length (default 15000) | Optional |
 | `MD2IMG_ENGINE` | Image renderer: `wkhtmltoimage` (default), `markdown-to-file`, or `playwright`. Debian/Ubuntu deployments using `wkhtmltoimage` should install both `wkhtmltopdf` and `fonts-noto-cjk` so supported Chinese and Korean report text renders correctly | Optional |
@@ -398,6 +399,8 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `FUNDAMENTAL_RETRY_MAX` | Retry count for fundamental capabilities (including the first attempt) | `1` | Optional |
 | `FUNDAMENTAL_CACHE_TTL_SECONDS` | Fundamental aggregation cache TTL (seconds), short cache to reduce repeated API pulling. | `120` | Optional |
 | `FUNDAMENTAL_CACHE_MAX_ENTRIES` | Maximum entries for fundamental cache (evicted by time within TTL) | `256` | Optional |
+| `BIAS_THRESHOLD` | MA5 deviation chase-warning threshold (%); strong-trend stocks widen automatically to 1.5× | `5.0` | Optional |
+| `BIAS_ATR_MULTIPLIER` | Volatility-adaptive MA5 bias multiplier against ATR14% (`0.0` disables adaptive widening; `>0` sets base threshold to `max(BIAS_THRESHOLD, multiplier × ATR14%)`) | `0.0` | Optional |
 
 > **Behavior Notes:**
 > - Prefer [TickPlus](http://www.tickplus.org/register?reg=5433cf922395) for A-shares / ETFs. Configure `TICKPLUS_API_KEY`; explicit realtime priority is respected. Indicators use `fullfactor` with basic-quote fallback. Batch prefetch groups stocks and ETFs (100 symbols per request, 30-second cache). ETF rotation uses an isolated forward-adjusted instance. Ordinary analysis remains unadjusted; existing index, market-review, fundamental and overseas routes remain available. See [details](tickplus.md).
@@ -679,6 +682,7 @@ python scripts/check_env.py --config
 
 ```bash
 python main.py                        # Full analysis (stocks + market review)
+python main.py --doctor               # Offline redacted config/LLM/notification/storage check (--json supported)
 python main.py --market-review        # Market review only
 python main.py --etf-rotation         # ETF rotation signal + rule backtest (no LLM; see docs/etf-rotation.md, Chinese-only)
 python main.py --no-market-review     # Stock analysis only
@@ -1495,7 +1499,7 @@ Set the following variables in `.env` (all optional, have defaults):
 | `BACKTEST_ENABLED` | `true` | Whether to auto-run backtest after daily analysis |
 | `BACKTEST_EVAL_WINDOW_DAYS` | `10` | Evaluation window (trading days) |
 | `BACKTEST_MIN_AGE_DAYS` | `14` | Only backtest records older than N days to avoid incomplete data |
-| `BACKTEST_ENGINE_VERSION` | `v1` | Engine version, used to distinguish results when logic is updated |
+| `BACKTEST_ENGINE_VERSION` | `v1.1` | Engine version, used to distinguish results when logic is updated |
 | `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | Neutral band threshold (%), ±2% treated as range-bound |
 
 ### Auto-run

@@ -46,7 +46,7 @@ class BacktestResultLike(Protocol):
 class EvaluationConfig:
     eval_window_days: int
     neutral_band_pct: float = 2.0
-    engine_version: str = "v1"
+    engine_version: str = "v1.1"
 
 
 class BacktestEngine:
