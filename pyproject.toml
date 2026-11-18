@@ -1,3 +1,12 @@
+[project]
+name = "daily-stock-analysis"
+version = "3.35.0"
+description = "AI-powered stock analysis system for A-share, HK, US, JP, KR and TW markets"
+requires-python = ">=3.10"
+
+[project.scripts]
+dsa = "src.cli.app:main"
+
 [tool.black]
 line-length = 120
 target-version = ['py310', 'py311', 'py312']

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 将分析报告组装逻辑下沉至 `src/services/report_builder_service.py`（REST 与 `--json`/MCP 共用同一契约），新增薄 `dsa` CLI 入口（`src/cli/` + `pyproject.toml` `[project.scripts]`，支持 `DSA_HOME`、`--json` 及 `doctor`/`analyze`/`market`/`backtest`/`etf-rotation`/`serve`/`schedule`/`ask`/`screen`/`signals` 子命令，其中 `dsa analyze` 默认不推送通知），并新增只读 stdio MCP 服务 `dsa mcp serve`（复用 `ToolSurface` 只读工具 + `resolve_stock` + `start_stock_analysis` 默认不推送 / `get_analysis_status` / `get_latest_report`，默认关闭持仓与写配置）。
 - [修复] 修复盘中（`intraday`、`lunch_break`、`closing_auction`）分析的回测与 Skill 观点评估起点未来函数：`resolve_stock_daily_start` 在 `engine_version >= v1.1` 时对盘中分析改锚定交易日 `T` 收盘（显式配置 `v1` 仍按旧 `T-1` 口径与隔离，保留 `premarket` 在 `T-1`），并将默认 `BACKTEST_ENGINE_VERSION` 升至 `v1.1`、`SKILL_OPINION_OUTCOME_ENGINE_VERSION` 升至 `skill-opinion-outcome-v1.1`（去未来函数后历史统计胜率预计呈诚实回落）。
 - [修复] 移除 `AgentMemory._get_accuracy_stats` 中写死的 `avg_confidence=0.6` 假校准基线（在尚无真实置信度遥测产出前保持校准因子中性，避免按固定常数缩放）。
 - [修复] 在 `StockTrendAnalyzer` 中计算并输出 `atr14`，并在决策护栏全部完成后调用 `validate_sniper_price_sanity` 对 LLM 狙击点位做确定性校验（检查多头止损/目标位倒挂、盈亏比 `<1.0` 及 ATR 合理间距，写入 `dashboard.data_perspective.price_sanity` 并同步更新 `risk_alerts`）。

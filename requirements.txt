@@ -78,6 +78,11 @@ uvicorn[standard]>=0.27.0   # ASGI server
 python-multipart>=0.0.6     # FastAPI File/Form upload support
 fastapi-guard>=8.1.1        # Optional security middleware (GUARD_ENABLED=true): rate limit, IP allowlist, request screening
 
+# Thin CLI & read-only MCP adapter
+typer>=0.12.0               # `dsa` CLI entrypoint
+rich>=13.0.0                # Terminal formatting for `dsa` CLI
+mcp>=1.0.0                  # Official Model Context Protocol SDK (`dsa mcp serve`)
+
 # Public macroeconomic tools
 # Installed from a pinned GitHub release wheel (sha256 checked); if that release URL is
 # removed or replaced, update the URL and hash here or installs of this file will fail.

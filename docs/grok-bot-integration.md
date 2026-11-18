@@ -18,7 +18,7 @@
 1. 先让 DSA API 长期可访问：`python main.py --serve-only` 或 Docker。GitHub Actions 只做定时任务，不长期暴露 API。
 2. 在 Grok Bot 里放一条 Skill（可直接改 [openclaw Skill](openclaw-skill-integration.md) 的 `SKILL.md` 示例，或用 [`docs/examples/grok_bot/SKILL.md`](examples/grok_bot/SKILL.md)）。
 3. 需要盘中盯盘 / 早报时，用 Bot Routine 调 `DecisionSignal` 查询，而不是反复跑完整分析。
-4. 只有 Bot 已经能稳定调通 HTTP 之后，才考虑把同一组接口挂到 MCP Connector。本仓库 **P0 不提供 MCP server**。
+4. 只有 Bot 已经能稳定调通 HTTP 之后，才考虑把同一组接口挂到 MCP Connector；如需本地 stdio 只读 MCP，也可直接运行 `dsa mcp serve`（基于 `ToolSurface` 只读工具 + 异步分析三件套，默认关闭持仓与写配置）。
 
 ## Skill：触发个股分析
 
@@ -73,7 +73,7 @@ Grok Bot Skill 正文见 [`docs/examples/grok_bot/SKILL.md`](examples/grok_bot/S
 
 ## MCP / Connector / computer use
 
-- **MCP**：把上表 REST 包成 tool 即可（`analyze_stock`、`get_latest_signal`、`market_review`）。本仓库暂不内置 MCP server，以免和 FastAPI 契约双源漂移。
+- **MCP**：本地 Agent 客户端（Claude Code / Codex / Gemini CLI / Cursor）可直接配置 `dsa mcp serve`（stdio 只读模式，暴露行情/技术面/情报检索/`resolve_stock` 与异步 `start_stock_analysis` / `get_analysis_status` / `get_latest_report`，默认关闭持仓与写配置，日志强制输出到 `stderr`）；远程场景仍可将上表 REST 包成 HTTP tool。
 - **Connectors**：Grok Bot 可登录飞书 / 邮件等；DSA 自己的通知渠道仍走 `.env` 里已有的 webhook，不必经 Bot 转发。
 - **Computer use**：仅当 Bot 的云电脑里已经 clone 并配好 `.env` 时，才适合跑 `python main.py --stocks 600519,AAPL` 或 `python main.py --market-review`。默认仍推荐 HTTP，便于鉴权、超时和异步任务。
 
