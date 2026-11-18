@@ -181,6 +181,18 @@ class IbkrStatementParseTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(IbkrPortfolioError):
                 s.parse_statement(bad)
 
+    def test_multiple_accounts_fail(self) -> None:
+        one = (
+            '<FlexQueryResponse queryName="t" type="AF"><FlexStatements count="2">'
+            '<FlexStatement accountId="A111" fromDate="20260101" toDate="20261117" period="YearToDate">'
+            f'<Trades>{_trade()}</Trades></FlexStatement>'
+            '<FlexStatement accountId="B222" fromDate="20260101" toDate="20261117" period="YearToDate">'
+            f'<Trades>{_trade(symbol="NVDA")}</Trades></FlexStatement>'
+            '</FlexStatements></FlexQueryResponse>'
+        ).encode()
+        with self.assertRaisesRegex(IbkrPortfolioError, "多个账户"):
+            s.parse_statement(one)
+
 
 if __name__ == "__main__":
     unittest.main()
