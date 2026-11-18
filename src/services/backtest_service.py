@@ -75,7 +75,7 @@ class BacktestService:
         if min_age_days is None:
             min_age_days = getattr(config, "backtest_min_age_days", 14)
 
-        engine_version = getattr(config, "backtest_engine_version", "v1")
+        engine_version = getattr(config, "backtest_engine_version", "v1.1")
         neutral_band_pct = float(getattr(config, "backtest_neutral_band_pct", 2.0))
 
         eval_config = EvaluationConfig(
@@ -130,6 +130,7 @@ class BacktestService:
                     stock_code=analysis.code,
                     context_snapshot=analysis.context_snapshot,
                     analysis_date=analysis_date,
+                    engine_version=str(engine_version),
                 )
                 daily_identity = start_resolution.identity
                 daily_code_candidates = (
@@ -555,7 +556,7 @@ class BacktestService:
         analysis_target: Optional[AnalysisTarget] = None,
     ) -> Dict[str, Any]:
         config = get_config()
-        engine_version = str(getattr(config, "backtest_engine_version", "v1"))
+        engine_version = str(getattr(config, "backtest_engine_version", "v1.1"))
         code, identity_kwargs = self._read_identity(
             code, analysis_target, analysis_date_from=analysis_date_from,
             analysis_date_to=analysis_date_to, analysis_phase=analysis_phase,
@@ -622,7 +623,7 @@ class BacktestService:
         analysis_target: Optional[AnalysisTarget] = None,
     ) -> Optional[Dict[str, Any]]:
         config = get_config()
-        engine_version = str(getattr(config, "backtest_engine_version", "v1"))
+        engine_version = str(getattr(config, "backtest_engine_version", "v1.1"))
         if analysis_target is not None and scope != "stock":
             raise ValueError("Validated backtest identity requires stock scope")
         code, identity_kwargs = self._read_identity(
