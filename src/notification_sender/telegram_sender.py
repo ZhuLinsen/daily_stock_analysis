@@ -13,7 +13,12 @@ import time
 import re
 
 from src.config import Config
-from src.formatters import _custom_unit_to_index, strip_hidden_markdown_metadata, utf16_len
+from src.formatters import (
+    _custom_unit_to_index,
+    escape_telegram_non_link_markdown_chars,
+    strip_hidden_markdown_metadata,
+    utf16_len,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -398,22 +403,4 @@ class TelegramSender:
         # 转换 **bold** 为 *bold*
         result = re.sub(r'\*\*(.+?)\*\*', r'*\1*', result)
 
-        # Escape special characters for Telegram Markdown, but preserve link syntax [text](url)
-        # Step 1: temporarily protect markdown links
-        import uuid as _uuid
-        _link_placeholder = f"__LINK_{_uuid.uuid4().hex[:8]}__"
-        _links = []
-        def _save_link(m):
-            _links.append(m.group(0))
-            return f"{_link_placeholder}{len(_links) - 1}"
-        result = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _save_link, result)
-
-        # Step 2: escape remaining special chars
-        for char in ['[', ']', '(', ')']:
-            result = result.replace(char, f'\\{char}')
-
-        # Step 3: restore links
-        for i, link in enumerate(_links):
-            result = result.replace(f"{_link_placeholder}{i}", link)
-
-        return result
+        return escape_telegram_non_link_markdown_chars(result)

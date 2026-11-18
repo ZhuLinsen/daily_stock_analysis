@@ -2068,6 +2068,18 @@ class TestSlackSender(unittest.TestCase):
 class TestTelegramSender(unittest.TestCase):
     """Unit tests for TelegramSender."""
 
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_many_source_links_reach_the_correct_destinations(self, mock_post):
+        mock_post.return_value = _response(200, {"ok": True})
+        sender = TelegramSender(_config(telegram_bot_token="BOT", telegram_chat_id="CHAT"))
+        links = "\n".join(f"[Source {i}](https://example.org/{i})" for i in range(1, 13))
+        for prefix, expected_payloads in (("", [links]), ("x" * 4096 + "\n---\n", ["x" * 4096, links])):
+            with self.subTest(messages=len(expected_payloads)):
+                mock_post.reset_mock()
+                self.assertTrue(sender.send_to_telegram(prefix + links))
+                payloads = [call.kwargs["json"]["text"] for call in mock_post.call_args_list]
+                self.assertEqual(payloads, expected_payloads)
+
     @mock.patch("src.notification_sender.telegram_sender.time.sleep")
     @mock.patch("src.notification_sender.telegram_sender.requests.post")
     def test_send_respects_json_flood_control_delay(self, mock_post, mock_sleep):
