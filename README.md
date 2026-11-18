@@ -39,6 +39,9 @@
   <sub>点击动图查看完整演示</sub>
 </p>
 
+> [!TIP]
+> 🚀 **作者配套开源项目**：[AlphaSift · 智能选股](https://github.com/ZhuLinsen/alphasift) ｜ [AlphaEvo · 策略回测与进化](https://github.com/ZhuLinsen/alphaevo)
+
 ## ✨ 功能特性
 
 | 能力 | 覆盖内容 |
@@ -257,15 +260,6 @@ python main.py --webui-only
 - 支持自定义策略文件与多 Agent 编排（实验性）
 
 > Agent 具体参数、`skill` 命名兼容、多 Agent 模式和预算护栏见 [完整指南](docs/full-guide.md#本地-webui-管理界面) 与 [LLM 配置指南](docs/LLM_CONFIG_GUIDE.md)。
-
-## 🧩 相关项目 (Related Projects)
-
-> DSA 聚焦日常分析报告；选股实现参考 AlphaSift，AlphaEvo 用于策略验证与进化。
-
-| 项目 | 定位 |
-|------|------|
-| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | DSA 选股实现的参考项目 |
-| [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | 策略回测与自我进化，用于验证策略规则，并通过迭代探索策略参数与组合 |
 
 ## 📬 联系与合作
 
