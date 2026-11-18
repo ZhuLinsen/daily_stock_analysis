@@ -207,4 +207,99 @@ def _decision_path_hint(conflict_type: str) -> str:
     return hints.get(conflict_type, "prefer_conservative_hold_due_to_mixed_inputs")
 
 
-__all__ = ["build_agent_disagreement_summary"]
+def should_trigger_evidence_debate(
+    summary: Dict[str, Any],
+    ctx: Any,
+    *,
+    enabled: bool = False,
+) -> tuple[bool, str]:
+    """Return ``(triggered, reason)`` for opt-in Bull/Bear evidence debate.
+
+    Triggers only when explicitly enabled AND either:
+    1. Multi-agent opinions have directional conflict (``mixed_directional_signals``), or
+    2. High-conviction bullish lean (``confidence >= 0.75``) requiring mandatory risk review.
+    """
+    if not enabled:
+        return False, "disabled"
+
+    conflict_type = str((summary or {}).get("conflict_type") or "")
+    if conflict_type == "mixed_directional_signals":
+        return True, "mixed_directional_signals"
+
+    opinions = getattr(ctx, "opinions", None) or []
+    for op in opinions:
+        sig = str(getattr(op, "signal", "") or "").lower()
+        conf = getattr(op, "confidence", 0.0) or 0.0
+        if sig in ("buy", "strong_buy") and float(conf) >= 0.75:
+            return True, "high_conviction_buy"
+
+    return False, "consensus_clear"
+
+
+def build_evidence_debate_brief(
+    ctx: Any,
+    summary: Dict[str, Any],
+    *,
+    trigger_reason: str = "mixed_directional_signals",
+    max_items_per_side: int = 3,
+) -> Dict[str, Any]:
+    """Build an evidence-bound Bull/Bear contrast brief + mandatory risk checklist."""
+    opinions = getattr(ctx, "opinions", None) or []
+    bull_cases: List[Dict[str, Any]] = []
+    bear_cases: List[Dict[str, Any]] = []
+    risk_cases: List[Dict[str, Any]] = []
+
+    for idx, op in enumerate(opinions):
+        agent_name = str(getattr(op, "agent_name", "") or f"agent_{idx}")
+        sig = str(getattr(op, "signal", "") or "hold").lower()
+        conf = round(float(getattr(op, "confidence", 0.0) or 0.0), 3)
+        reasoning = str(getattr(op, "reasoning", "") or "").strip()[:240]
+        raw = getattr(op, "raw_data", None)
+        ev_ids = []
+        if isinstance(raw, dict):
+            raw_ev = raw.get("evidence_ids") or raw.get("evidence_id")
+            if isinstance(raw_ev, list):
+                ev_ids = [str(e) for e in raw_ev[:3] if e]
+            elif isinstance(raw_ev, str) and raw_ev.strip():
+                ev_ids = [raw_ev.strip()]
+        entry = {
+            "evidence_id": f"{agent_name}#{idx}",
+            "agent_name": agent_name,
+            "signal": sig,
+            "confidence": conf,
+            "claim": reasoning,
+            "source_evidence_ids": ev_ids,
+        }
+        if agent_name == "risk":
+            risk_cases.append(entry)
+        elif sig in ("buy", "strong_buy"):
+            bull_cases.append(entry)
+        elif sig in ("sell", "strong_sell"):
+            bear_cases.append(entry)
+
+    risk_flags = [
+        {
+            "category": getattr(rf, "category", "risk"),
+            "severity": getattr(rf, "severity", "medium"),
+            "description": str(getattr(rf, "description", "") or "")[:160],
+        }
+        for rf in (getattr(ctx, "risk_flags", None) or [])[:max_items_per_side]
+    ]
+
+    return {
+        "triggered": True,
+        "trigger_reason": trigger_reason,
+        "conflict_type": (summary or {}).get("conflict_type"),
+        "risk_review_required": True,
+        "bull_arguments": bull_cases[:max_items_per_side],
+        "bear_arguments": bear_cases[:max_items_per_side],
+        "risk_agent_inputs": risk_cases[:max_items_per_side],
+        "risk_flags": risk_flags,
+    }
+
+
+__all__ = [
+    "build_agent_disagreement_summary",
+    "build_evidence_debate_brief",
+    "should_trigger_evidence_debate",
+]

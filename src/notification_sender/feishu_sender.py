@@ -128,25 +128,96 @@ class FeishuSender:
 
         self._app_client: Any = _NO_CLIENT
         self._app_client_lock = threading.Lock()
+        raw_web_url = (
+            getattr(config, "feishu_card_web_url", None)
+            or os.getenv("FEISHU_CARD_WEB_URL", "")
+            or os.getenv("DSA_WEB_URL", "")
+        ).strip()
+        self._web_url = raw_web_url if raw_web_url.startswith(("http://", "https://")) else ""
 
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_card_body(content: str) -> dict:
+    def _infer_card_header(content: str) -> tuple[str, str]:
+        """Infer Feishu card title and header template color from report markdown."""
+        title = "股票智能分析报告"
+        for line in (content or "").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                candidate = stripped.lstrip("#").strip()
+                if candidate and not candidate.startswith("["):
+                    title = candidate[:60]
+                    break
+
+        text = content or ""
+        if any(tok in text for tok in ("🔴", "卖出", "清仓", "异动告警", "🚨 风险")):
+            template = "red"
+        elif any(tok in text for tok in ("🟢", "买入", "加仓")):
+            template = "green"
+        elif any(tok in text for tok in ("🟡", "观望", "持有", "减仓")):
+            template = "orange"
+        else:
+            template = "blue"
+        return title, template
+
+    @staticmethod
+    def _split_risk_section(content: str) -> tuple[str, str]:
+        """Extract a trailing risk/alert section so it renders in a distinct card panel."""
+        lines = (content or "").splitlines()
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(("🚨 风险", "⚠️ 风险", "### 🚨", "## 🚨", "**风险警报")):
+                main_body = "\n".join(lines[:idx]).strip()
+                risk_body = "\n".join(lines[idx:]).strip()
+                if main_body and risk_body:
+                    return main_body, risk_body
+        return content, ""
+
+    def _build_card_body(self, content: str, web_url: Optional[str] = None) -> dict:
         """Build a Feishu interactive-card body (without the ``msg_type`` wrapper)."""
+        title, template = self._infer_card_header(content)
+        main_body, risk_body = self._split_risk_section(content)
+        elements: list[dict] = [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": main_body},
+            }
+        ]
+        if risk_body:
+            elements.append({"tag": "hr"})
+            elements.append(
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": risk_body},
+                }
+            )
+
+        target_url = (web_url if web_url is not None else getattr(self, "_web_url", "")) or ""
+        if target_url.startswith(("http://", "https://")):
+            elements.append({"tag": "hr"})
+            elements.append(
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "打开 Web 工作台追问"},
+                            "type": "primary",
+                            "url": target_url,
+                        }
+                    ],
+                }
+            )
+
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"tag": "plain_text", "content": "股票智能分析报告"},
+                "title": {"tag": "plain_text", "content": title},
+                "template": template,
             },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": content},
-                }
-            ],
+            "elements": elements,
         }
 
     # ------------------------------------------------------------------

@@ -37,7 +37,11 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from src.agent.chat_context import build_visible_chat_history
 from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
-from src.agent.disagreement import build_agent_disagreement_summary
+from src.agent.disagreement import (
+    build_agent_disagreement_summary,
+    build_evidence_debate_brief,
+    should_trigger_evidence_debate,
+)
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.protocols import (
     AgentContext,
@@ -1339,10 +1343,25 @@ class AgentOrchestrator:
 
     def _prepare_decision_context(self, ctx: AgentContext) -> None:
         """Populate low-sensitivity summaries consumed by DecisionAgent."""
-        ctx.meta["agent_disagreement_summary"] = build_agent_disagreement_summary(
+        summary = build_agent_disagreement_summary(
             ctx,
             risk_override_enabled=getattr(self.config, "agent_risk_override", True),
         )
+        ctx.meta["agent_disagreement_summary"] = summary
+        debate_enabled = bool(getattr(self.config, "agent_debate_enabled", False))
+        triggered, reason = should_trigger_evidence_debate(
+            summary,
+            ctx,
+            enabled=debate_enabled,
+        )
+        if triggered:
+            brief = build_evidence_debate_brief(ctx, summary, trigger_reason=reason)
+            ctx.meta["evidence_debate_brief"] = brief
+            ctx.meta["risk_review_required"] = True
+            logger.info("[Orchestrator] evidence debate triggered (reason=%s)", reason)
+        else:
+            ctx.meta.pop("evidence_debate_brief", None)
+            ctx.meta["risk_review_required"] = False
 
     def _record_degraded_stage(
         self,

@@ -996,6 +996,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响最终投资建议的风险保守程度。'],
     notes: ['关闭后风险 Agent 的意见仅作参考，不会否决决策。'],
   },
+  'settings.agent.AGENT_DEBATE_ENABLED': {
+    title: '条件触发多空证据辩论',
+    summary: '在多策略分歧或高确信买入时触发结构化 Bull/Bear 证据对照与风控必审。',
+    usage: '默认关闭（false）；开启后仅在出现 mixed 分歧或高置信买入时生成证据辩论简报并标记风控必审。',
+    valueNotes: ['不触发时零额外开销；触发时要求引用已有证据锚点。'],
+    impact: ['影响多策略决策综合阶段的证据对照与风控审视强度。'],
+    notes: ['建议与 AGENT_RISK_OVERRIDE=true 配合使用。'],
+  },
   'settings.agent.DEEP_RESEARCH': {
     title: 'Deep Research',
     summary: '控制 Deep Research 的 token 预算和超时。',
@@ -2228,6 +2236,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['Only effective when AGENT_ORCHESTRATOR_MODE includes the risk stage.'],
     impact: ['Affects the risk conservatism of final investment recommendations.'],
     notes: ['When disabled, the risk agent opinion is advisory only and cannot override decisions.'],
+  },
+  'settings.agent.AGENT_DEBATE_ENABLED': {
+    title: 'Conditional Bull/Bear Evidence Debate',
+    summary: 'Triggers an evidence-bound Bull/Bear contrast brief and mandatory risk review on strategy disagreement or high-conviction buy signals.',
+    usage: 'Defaults to false. When enabled, activates only on mixed consensus or high-confidence buy opinions.',
+    valueNotes: ['Zero overhead when conditions are not met.'],
+    impact: ['Enhances evidence traceability and risk review before final decision synthesis.'],
+    notes: ['Recommended alongside AGENT_RISK_OVERRIDE=true.'],
   },
   'settings.agent.DEEP_RESEARCH': {
     title: 'Deep Research',

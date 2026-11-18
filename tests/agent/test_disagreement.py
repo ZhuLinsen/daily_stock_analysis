@@ -406,3 +406,56 @@ def test_orchestrator_rejects_non_failed_degraded_stage_markers(monkeypatch):
         assert "failed stages" in str(exc)
     else:
         raise AssertionError("only failed stage results may produce degraded markers")
+
+
+def test_evidence_debate_triggers_only_when_enabled_and_disagreed_or_high_conviction_buy(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
+    from src.agent.disagreement import build_evidence_debate_brief, should_trigger_evidence_debate
+    from src.agent.orchestrator import AgentOrchestrator
+
+    ctx = AgentContext(query="test", stock_code="600519")
+    ctx.add_opinion(
+        AgentOpinion(
+            agent_name="technical",
+            signal="buy",
+            confidence=0.85,
+            reasoning="MA5 support holds",
+            raw_data={"evidence_ids": ["ev-tech-1"]},
+        )
+    )
+    ctx.add_opinion(
+        AgentOpinion(
+            agent_name="intel",
+            signal="sell",
+            confidence=0.72,
+            reasoning="Margin pressure",
+            raw_data={"evidence_ids": ["ev-intel-1"]},
+        )
+    )
+
+    summary = build_agent_disagreement_summary(ctx)
+    assert should_trigger_evidence_debate(summary, ctx, enabled=False) == (False, "disabled")
+    assert should_trigger_evidence_debate(summary, ctx, enabled=True) == (True, "mixed_directional_signals")
+
+    brief = build_evidence_debate_brief(ctx, summary)
+    assert brief["risk_review_required"] is True
+    assert brief["bull_arguments"][0]["source_evidence_ids"] == ["ev-tech-1"]
+    assert brief["bear_arguments"][0]["source_evidence_ids"] == ["ev-intel-1"]
+
+    orch_off = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(agent_risk_override=True, agent_debate_enabled=False),
+    )
+    orch_off._prepare_decision_context(ctx)
+    assert "evidence_debate_brief" not in ctx.meta
+    assert ctx.meta["risk_review_required"] is False
+
+    orch_on = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(agent_risk_override=True, agent_debate_enabled=True),
+    )
+    orch_on._prepare_decision_context(ctx)
+    assert ctx.meta["risk_review_required"] is True
+    assert ctx.meta["evidence_debate_brief"]["trigger_reason"] == "mixed_directional_signals"

@@ -4239,6 +4239,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "AGENT_DEBATE_ENABLED": {
+        "title": "Conditional Bull/Bear Debate",
+        "description": "Enable opt-in Bull/Bear evidence-bound debate brief and mandatory risk review when skills disagree or on high-conviction buy signals.",
+        "category": "agent",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 76,
+        "help_key": "settings.agent.AGENT_DEBATE_ENABLED",
+        "examples": [
+            "AGENT_DEBATE_ENABLED=false",
+            "AGENT_DEBATE_ENABLED=true",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：Agent 配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
     "AGENT_SKILL_CONCURRENCY": {
         "title": "Strategy Skill Concurrency",
         "description": "Maximum number of specialist strategy-skill agents to run concurrently in specialist mode.",

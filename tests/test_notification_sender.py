@@ -2332,5 +2332,39 @@ class TestTelegramSender(unittest.TestCase):
         self.assertEqual(mock_post.call_count, 2)
 
 
+class TestFeishuStructuredCard(unittest.TestCase):
+    """Tests for [U4] colored Feishu structured cards and optional WebUI jump button."""
+
+    def test_structured_card_infers_header_color_splits_risk_and_adds_url_button(self):
+        cfg = _config(
+            feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+        )
+        with mock.patch.dict("os.environ", {"FEISHU_CARD_WEB_URL": "https://dsa.example.com/chat"}, clear=False):
+            sender = FeishuSender(cfg)
+            card = sender._build_card_body(
+                "# 🟢 贵州茅台 (600519) 买入信号\n\n趋势向好。\n\n🚨 风险警报:\n注意宏观波动。"
+            )
+
+        self.assertEqual(card["header"]["template"], "red")  # risk alert escalates header
+        self.assertIn("贵州茅台", card["header"]["title"]["content"])
+        tags = [el["tag"] for el in card["elements"]]
+        self.assertEqual(tags, ["div", "hr", "div", "hr", "action"])
+        self.assertEqual(
+            card["elements"][-1]["actions"][0]["url"],
+            "https://dsa.example.com/chat",
+        )
+
+    def test_structured_card_green_without_risk_or_url(self):
+        cfg = _config(
+            feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+        )
+        with mock.patch.dict("os.environ", {}, clear=False):
+            sender = FeishuSender(cfg)
+            card = sender._build_card_body("# 🟢 买入建议\n\n基本面稳健。", web_url="")
+
+        self.assertEqual(card["header"]["template"], "green")
+        self.assertEqual([el["tag"] for el in card["elements"]], ["div"])
+
+
 if __name__ == "__main__":
     unittest.main()
