@@ -40,6 +40,9 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
   <sub>Click the GIF to view the full demo</sub>
 </p>
 
+> [!TIP]
+> 🚀 **Ecosystem Projects**: [AlphaSift · Smart screening](https://github.com/ZhuLinsen/alphasift) | [AlphaEvo · Strategy backtesting & evolution](https://github.com/ZhuLinsen/alphaevo)
+
 ## ✨ Key Features
 
 | Capability | Coverage |
@@ -248,15 +251,6 @@ After configuring any available AI API key, the Web `/chat` page can use strateg
 - Supports custom strategy files and experimental multi-agent orchestration
 
 > Agent parameters, `skill` naming compatibility, multi-agent mode, and budget guards are covered in the [Full Guide](./full-guide_EN.md#local-webui-management-interface) and [LLM Config Guide](./LLM_CONFIG_GUIDE_EN.md).
-
-## 🧩 Related Projects
-
-> DSA focuses on daily analysis reports. Its screening implementation references AlphaSift, while AlphaEvo covers strategy validation and evolution.
-
-| Project | Focus |
-|---------|-------|
-| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | Reference project for DSA's screening implementation |
-| [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | Strategy backtesting and self-evolution experiments for validating rules and iteratively exploring strategy parameters and combinations |
 
 ## 📞 Contact
 
