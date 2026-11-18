@@ -3896,13 +3896,13 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "v1",
+        "default_value": "v1.1",
         "options": [],
         "validation": {},
         "display_order": 40,
         "help_key": "settings.backtest.BACKTEST_ENGINE_VERSION",
         "examples": [
-            "BACKTEST_ENGINE_VERSION=v1",
+            "BACKTEST_ENGINE_VERSION=v1.1",
         ],
         "docs": [
             {
