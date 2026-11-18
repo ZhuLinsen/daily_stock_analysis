@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -116,6 +117,25 @@ class IbkrFlexClientTest(unittest.TestCase):
         self.assertEqual(self._download(), SAMPLE_STATEMENT)
         self.assertEqual(self.sleeps[0], 10.0)
 
+    def test_retries_1001_error(self) -> None:
+        self.session.get.side_effect = [
+            _response(_flex_error("1001", "Please try again shortly.")),
+            _response(_send_ok()),
+            _response(SAMPLE_STATEMENT),
+        ]
+
+        self.assertEqual(self._download(), SAMPLE_STATEMENT)
+
+    def test_token_redactor_masks_log_record(self) -> None:
+        record = logging.LogRecord(
+            "urllib3", logging.DEBUG, __file__, 1,
+            f"... /SendRequest?t={TOKEN}&q=1712897", (), None,
+        )
+        flex._token_redactor.set_token(TOKEN)
+        self.assertTrue(flex._token_redactor.filter(record))
+        self.assertNotIn(TOKEN, record.getMessage())
+        self.assertIn("<redacted>", record.getMessage())
+
     def test_non_retryable_error_fails_without_retry(self) -> None:
         self.session.get.side_effect = [_response(_flex_error("1015", "Token is invalid."))]
 
@@ -193,6 +213,27 @@ class IbkrOpenPositionParserTest(unittest.TestCase):
         with self.assertRaisesRegex(IbkrPortfolioError, "Open Positions"):
             service.parse_open_position_codes(_statement(section=False))
 
+    def _position_without(self, attribute: str) -> bytes:
+        attrs = {
+            "accountId": "U0000000",
+            "assetCategory": "STK",
+            "symbol": "AAPL",
+            "listingExchange": "NASDAQ",
+            "currency": "USD",
+            "position": "10",
+        }
+        attrs.pop(attribute)
+        row = "<OpenPosition " + " ".join(f'{k}="{v}"' for k, v in attrs.items()) + " />"
+        return _statement(row)
+
+    def test_missing_asset_category_field_fails(self) -> None:
+        with self.assertRaisesRegex(IbkrPortfolioError, "assetCategory"):
+            service.parse_open_position_codes(self._position_without("assetCategory"))
+
+    def test_missing_listing_exchange_field_fails(self) -> None:
+        with self.assertRaisesRegex(IbkrPortfolioError, "listingExchange"):
+            service.parse_open_position_codes(self._position_without("listingExchange"))
+
     def test_invalid_stock_rows_fail_the_whole_parse(self) -> None:
         cases = {
             "non-numeric position": _statement(_position("AAPL", "NASDAQ", position="abc")),
@@ -214,6 +255,19 @@ class IbkrPortfolioLoaderTest(unittest.TestCase):
             ) as download, self.assertRaisesRegex(IbkrPortfolioError, "IBKR_FLEX_TOKEN"):
                 service.load_ibkr_stock_codes()
             download.assert_not_called()
+
+    def test_rejects_stale_statement_period(self) -> None:
+        stale = (
+            '<FlexQueryResponse queryName="t" type="AF"><FlexStatements count="1">'
+            '<FlexStatement accountId="U" fromDate="20260101" toDate="20260131" period="MonthToDate">'
+            f'<OpenPositions>{_position("AAPL", "NASDAQ")}</OpenPositions>'
+            '</FlexStatement></FlexStatements></FlexQueryResponse>'
+        ).encode()
+        env = {"IBKR_FLEX_TOKEN": TOKEN, "IBKR_FLEX_QUERY_ID": "1712897"}
+        with patch.dict(os.environ, env, clear=True), patch.object(
+            service, "download_flex_statement", return_value=stale
+        ), self.assertRaisesRegex(IbkrPortfolioError, "过旧"):
+            service.load_ibkr_stock_codes()
 
     def test_loads_codes_from_configured_query(self) -> None:
         env = {"IBKR_FLEX_TOKEN": f" {TOKEN} ", "IBKR_FLEX_QUERY_ID": "1712897"}

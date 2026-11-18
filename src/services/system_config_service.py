@@ -257,6 +257,7 @@ class SystemConfigService:
         "LLM_HERMES_API_KEYS",
         "LLM_HERMES_EXTRA_HEADERS",
         "LLM_USAGE_HMAC_SECRET",
+        "IBKR_FLEX_TOKEN",
     }
     _NOTIFICATION_TEST_CHANNELS: Tuple[str, ...] = (
         "wechat",

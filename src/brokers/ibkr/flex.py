@@ -20,6 +20,44 @@ from src.brokers.errors import BrokerPortfolioError
 
 logger = logging.getLogger(__name__)
 
+
+class _FlexTokenRedactor(logging.Filter):
+    """Redact the Flex token from any log record before it is emitted.
+
+    The token travels in a query parameter, so urllib3/requests DEBUG logging
+    (or any other logger that captures the request URL) would otherwise persist
+    it. A single module-level instance is attached to those loggers and updated
+    with the current token before each request.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._token = ""
+
+    def set_token(self, token: str) -> None:
+        self._token = token
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        token = self._token
+        if not token:
+            return True
+        if isinstance(record.msg, str) and token in record.msg:
+            record.msg = record.msg.replace(token, "<redacted>")
+        if record.args:
+            record.args = tuple(
+                value.replace(token, "<redacted>") if isinstance(value, str) else value
+                for value in record.args
+            )
+        return True
+
+
+_token_redactor = _FlexTokenRedactor()
+
+for _logger_name in ("urllib3", "requests"):
+    _http_logger = logging.getLogger(_logger_name)
+    if _token_redactor not in _http_logger.filters:
+        _http_logger.addFilter(_token_redactor)
+
 FLEX_SEND_REQUEST_URL = (
     "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/SendRequest"
 )
@@ -29,7 +67,7 @@ FLEX_GET_STATEMENT_URL = (
 FLEX_API_VERSION = "3"
 
 # "Please try again shortly" codes from the Flex Web Service error table.
-_RETRYABLE_ERROR_CODES = frozenset({"1004", "1005", "1006", "1007", "1008", "1009", "1019", "1021"})
+_RETRYABLE_ERROR_CODES = frozenset({"1001", "1004", "1005", "1006", "1007", "1008", "1009", "1019", "1021"})
 _THROTTLED_ERROR_CODE = "1018"
 _THROTTLED_DELAY_SECONDS = 10.0
 _MAX_RETRY_DELAY_SECONDS = 10.0
@@ -100,6 +138,9 @@ def download_flex_statement(
 
 
 def _get(http: requests.Session, url: str, params: dict, timeout: float) -> bytes:
+    token = str(params.get("t") or "")
+    if token:
+        _token_redactor.set_token(token)
     try:
         response = http.get(
             url,

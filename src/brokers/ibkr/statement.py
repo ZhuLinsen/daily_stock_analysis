@@ -242,7 +242,11 @@ def _parse_cash(row: ET.Element) -> Tuple[Optional[CashRecord], Optional[str]]:
 def parse_statement(xml_bytes: bytes) -> StatementParseResult:
     """Parse all FlexStatement sections into normalized ledger records."""
     result = StatementParseResult()
+    account_ids = set()
     for statement in _flex_statements(xml_bytes):
+        account_id = (statement.get("accountId") or "").strip()
+        if account_id:
+            account_ids.add(account_id)
         for row in _iter_trades(statement):
             record, reason = _parse_trade(row)
             if record is not None:
@@ -265,5 +269,11 @@ def parse_statement(xml_bytes: bytes) -> StatementParseResult:
                 result.skipped_corporate_actions.append(
                     f"{symbol or '?'}: {description or ca.get('type') or '?'}"
                 )
+
+    if len(account_ids) > 1:
+        raise IbkrPortfolioError(
+            f"IBKR Flex 报表包含多个账户（{', '.join(sorted(account_ids))}）；"
+            "请为每个账户配置单独的 Flex Query"
+        )
 
     return result
