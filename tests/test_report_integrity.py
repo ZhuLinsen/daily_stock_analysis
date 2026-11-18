@@ -526,3 +526,103 @@ class TestIntegrityRetryPrompt(unittest.TestCase):
         self.assertIn("原始提示", prompt)
         self.assertIn('{"analysis_summary": "已有内容"}', prompt)
         self.assertIn("dashboard.core_conclusion.one_sentence", prompt)
+
+
+class TestSniperPriceSanity(unittest.TestCase):
+    """Deterministic sniper-point math/ATR sanity checks."""
+
+    @staticmethod
+    def _make_buy_result(
+        *,
+        decision_type: str = "buy",
+        ideal_buy: str = "98.0",
+        stop_loss: str = "94.0",
+        take_profit: str = "110.0",
+        current_price: float = 100.0,
+    ) -> AnalysisResult:
+        return AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="看多",
+            sentiment_score=80,
+            operation_advice="买入",
+            analysis_summary="test",
+            decision_type=decision_type,
+            market_snapshot={"current_price": current_price},
+            dashboard={
+                "core_conclusion": {"one_sentence": "买入"},
+                "intelligence": {"risk_alerts": []},
+                "data_perspective": {"price_position": {"current_price": current_price}},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": ideal_buy,
+                        "stop_loss": stop_loss,
+                        "take_profit": take_profit,
+                    }
+                },
+            },
+        )
+
+    def test_valid_buy_sniper_points_pass(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        res = self._make_buy_result(ideal_buy="98", stop_loss="94", take_profit="110", current_price=100.0)
+        warnings = validate_sniper_price_sanity(res, {"atr14": 3.0})
+        self.assertEqual(warnings, [])
+        self.assertEqual(res.dashboard["data_perspective"]["price_sanity"], {"passed": True, "warnings": []})
+
+    def test_inverted_stop_loss_and_take_profit_flagged(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        res = self._make_buy_result(ideal_buy="100", stop_loss="105", take_profit="95", current_price=100.0)
+        warnings = validate_sniper_price_sanity(res)
+        self.assertIn("stop_loss_above_current_price", warnings)
+        self.assertIn("take_profit_below_current_price", warnings)
+        self.assertIn("stop_loss_above_ideal_buy", warnings)
+        self.assertFalse(res.dashboard["data_perspective"]["price_sanity"]["passed"])
+
+    def test_low_reward_risk_and_atr_bounds_flagged(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        res = self._make_buy_result(ideal_buy="100", stop_loss="90", take_profit="105", current_price=100.0)
+        warnings = validate_sniper_price_sanity(res, {"atr14": 1.0})
+        self.assertIn("reward_risk_below_1", warnings)
+        self.assertIn("stop_loss_too_wide_vs_atr", warnings)
+
+        res_tight = self._make_buy_result(ideal_buy="100", stop_loss="99.8", take_profit="110", current_price=100.0)
+        warnings_tight = validate_sniper_price_sanity(res_tight, {"atr14": 2.0})
+        self.assertIn("stop_loss_too_tight_vs_atr", warnings_tight)
+
+    def test_unparseable_points_and_hold_signal_do_not_error(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        res_hold = self._make_buy_result(decision_type="hold", stop_loss="105", take_profit="90")
+        self.assertEqual(validate_sniper_price_sanity(res_hold), [])
+
+        res_text = self._make_buy_result(ideal_buy="待定", stop_loss="N/A", take_profit="-")
+        self.assertEqual(validate_sniper_price_sanity(res_text), [])
+
+    def test_price_sanity_updates_and_clears_risk_alerts_on_downgrade(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        res = self._make_buy_result(ideal_buy="100", stop_loss="105", take_profit="95", current_price=100.0)
+        res.dashboard["intelligence"]["risk_alerts"] = ["已有风险"]
+        warnings = validate_sniper_price_sanity(res, {"trend_result": {"atr14": 2.0}})
+        self.assertTrue(warnings)
+        alerts = res.dashboard["intelligence"]["risk_alerts"]
+        self.assertEqual(alerts[0], "已有风险")
+        self.assertTrue(any(a.startswith("[点位校验]") for a in alerts))
+
+        # Simulate decision_type downgraded to hold by downstream guardrail
+        res.decision_type = "hold"
+        warnings_after = validate_sniper_price_sanity(res, {"trend_result": {"atr14": 2.0}})
+        self.assertEqual(warnings_after, [])
+        self.assertEqual(res.dashboard["intelligence"]["risk_alerts"], ["已有风险"])
+        self.assertTrue(res.dashboard["data_perspective"]["price_sanity"]["passed"])
+
+    def test_single_agent_trend_analysis_context_propagates_atr14(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        res = self._make_buy_result(ideal_buy="100", stop_loss="99.8", take_profit="110", current_price=100.0)
+        warnings = validate_sniper_price_sanity(res, {"trend_analysis": {"atr14": 2.0}})
+        self.assertIn("stop_loss_too_tight_vs_atr", warnings)

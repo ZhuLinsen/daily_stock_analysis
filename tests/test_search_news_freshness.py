@@ -2421,5 +2421,58 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn("摘要命中公司英文别名 Apple", reasons)
         self.assertNotIn("标题命中公司英文别名", reasons)
 
+    def test_industry_dimension_filters_stale_news_and_deduplicates_titles(self) -> None:
+        today = datetime.now().date()
+        stale_10d = (today - timedelta(days=10)).isoformat()
+        in_window = (today - timedelta(days=1)).isoformat()
+        fresh_text = today.isoformat()
+
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh_text)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", fresh_text)]),
+            _response([_result("announcement_item", fresh_text)]),
+            _response([_result("earnings", None)]),
+            _response([
+                _result("行业深度报告 2024", stale_10d, url="https://example.com/old"),
+                _result("行业深度报告：白酒景气回升", in_window, url="https://example.com/1"),
+                _result("行业深度报告 白酒景气回升!", in_window, url="https://example.com/2"),
+                _result("行业格局综述", None, url="https://example.com/3"),
+            ]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="600519",
+                stock_name="贵州茅台",
+                max_searches=6,
+            )
+
+        self.assertEqual(mock_search.call_args_list[-1][1]["days"], 3)
+        self.assertEqual(
+            [item.title for item in intel["industry"].results],
+            ["行业深度报告：白酒景气回升"],
+        )
+
+    def test_format_intel_report_marks_relative_age_and_undated_warning(self) -> None:
+        today = datetime.now().date()
+        two_days_ago = (today - timedelta(days=2)).isoformat()
+        service, _ = self._create_service_with_mock_provider()
+        intel = {
+            "latest_news": _response([
+                _result("今日快讯", today.isoformat(), snippet="今日重要消息内容长度足够"),
+                _result("前日快讯", two_days_ago, snippet="前日重要消息内容长度足够"),
+                _result("无日期传闻", None, snippet="没有发布日期的消息内容长度足够"),
+            ])
+        }
+        report = service.format_intel_report(intel, "贵州茅台")
+        self.assertIn(f"[{today.isoformat()} · 今日]", report)
+        self.assertIn(f"[{two_days_ago} · 2天前]", report)
+        self.assertIn("无日期传闻 [日期未知·勿作短期催化]", report)
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,9 +24,12 @@ This is the entry point for project documentation. The README covers the project
 | Document | Contents |
 | --- | --- |
 | [README (EN)](README_EN.md) | Project overview, key features, quick start, sample output |
+| [Beginner Client Setup](beginner-client-setup.md) (Chinese-only) | Desktop client download, provider API key setup, and beginner Q&A |
 | [Full Guide (EN)](full-guide_EN.md) | Environment setup, run modes, configuration, deployment paths, and common issues |
 | [FAQ (EN)](FAQ_EN.md) | Common configuration, model, notification, deployment, and runtime issues |
 | [Data-source stability diagrams](data-source-stability.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | TickPlus (preferred for A-shares / ETFs), existing-source routing, fallback chains and configuration profiles |
+| [TickPlus Integration](tickplus.md) (Chinese-only) | TickPlus A-share/ETF daily bars, realtime indicators, name lookup, and fallback rules |
+| [FXMacroData Integration](FXMACRODATA_EN.md) | FXMacroData macro/FX public client setup and tool boundaries |
 | [Data Center](data-center-diagnostics.md) (Chinese-only) | Read-only provider capabilities, exact dataset/market support, quality states, and runtime priorities |
 | [Market Support And Boundaries](market-support.md) (Chinese-only) | Market coverage, suffix rules, degraded capabilities, and explicit non-goals for A/H/US/JP/KR/TW stocks |
 | [Changelog](CHANGELOG.md) | Release notes, capability changes, and migration notes |
@@ -55,6 +58,9 @@ This is the entry point for project documentation. The README covers the project
 | [ResearchArtifact Contract](research-artifact.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Structured thesis, evidence, invalidation conditions, deterministic fallback identity, and the boundary before persistence/API integration |
 | [Portfolio Risk And Exposure Dashboard](portfolio-risk-exposure-dashboard.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Portfolio-page risk flags, market/currency exposure, classified-sector handling, and price-quality aggregation |
 | [Screening Explanation Contract](screening-explanations.md) <sub><sub>![P5 Badge](https://img.shields.io/badge/P5-orange?style=flat)</sub></sub> (Chinese-only) | Deterministic Why Selected / Why Now explanations, provenance, quality, and missing-value boundaries |
+| [Screening Engine](screening-engine.md) (Chinese-only) | Multi-factor & natural-language stock screening rules, ranking, and boundaries |
+| [Share Images](share-images.md) (Chinese-only) | Long-image report rendering, QR branding options, and fallback behavior |
+| [Agent Stream Events & Trajectory Eval](agent-stream-events.md) (Chinese-only) | Agent streaming event contract, [Multi-Strategy Contract](multi-strategy-contract.md), and [Trajectory Eval](agent-trajectory-eval.md) |
 | [Analysis Context Pack Contract, Runtime Consumption, And Visibility](analysis-context-pack.md) <sub><sub>![P6 Badge](https://img.shields.io/badge/P6-orange?style=flat)</sub></sub> (Chinese-only) | AnalysisContextPack first-scope boundaries, field quality states, P1/P2 internal contracts, P3 prompt-summary consumption, P4 history/API/Web low-sensitivity visibility, P5 data-quality scoring, and P6 migration/rollback notes, plus source anchors; the full guide adds #1386 market-phase analysis, migration, and rollback entry points |
 | [Image Extraction Prompt](image-extract-prompt.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Prompt and boundaries for extracting stock information from images |
 | [OpenClaw Skill Integration](openclaw-skill-integration.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | OpenClaw / Skill external integration notes |

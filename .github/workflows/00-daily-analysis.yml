@@ -497,12 +497,12 @@ jobs:
           echo "📋 配置检查"
           echo "=========================================="
           echo "【AI 配置】"
-          if [ -n "$LITELLM_CONFIG" ] || [ -n "$LITELLM_API_KEY" ] || [ -n "$LITELLM_MODEL" ] || [ -n "$LLM_CHANNELS" ] || [ -n "$MODELFLARE_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEYS" ] || [ -n "$ANSPIRE_API_KEYS" ]; then
-            echo "  LiteLLM: ✅ 已配置"
+          if [ -n "$LITELLM_CONFIG" ] || [ -n "$LITELLM_API_KEY" ] || [ -n "$LITELLM_MODEL" ] || [ -n "$LLM_CHANNELS" ] || [ -n "$MODELFLARE_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEYS" ] || [ -n "$ANSPIRE_API_KEYS" ] || [ -n "$GEMINI_API_KEY" ] || [ -n "$DEEPSEEK_API_KEY" ] || [ -n "$AIHUBMIX_KEY" ] || [ -n "$OPENAI_API_KEY" ] || [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$LLM_X6AI_API_KEY" ] || [ -n "$LLM_X6AI_API_KEYS" ]; then
+            echo "  AI 模型接入: ✅ 已配置"
           else
-            echo "  LiteLLM: ❌ 未配置"
+            echo "  AI 模型接入: ❌ 未配置（请至少配置一个模型 Secret）"
           fi
-          echo "  Gemini API Key: $([ -n "$GEMINI_API_KEY" ] && echo '✅ 已配置' || echo '❌ 未配置')"
+          echo "  Gemini API Key: $([ -n "$GEMINI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  DeepSeek Key:   $([ -n "$DEEPSEEK_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Modelflare Key: $([ -n "$MODELFLARE_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEY" ] || [ -n "$LLM_MODELFLARE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Anspire Key:    $([ -n "$ANSPIRE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
@@ -555,6 +555,34 @@ jobs:
           echo "  Slack: $(([ -n "$SLACK_WEBHOOK_URL" ] || ([ -n "$SLACK_BOT_TOKEN" ] && [ -n "$SLACK_CHANNEL_ID" ])) && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "=========================================="
           echo ""
+
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            DOCTOR_JSON=$(python main.py --doctor --json 2>/dev/null || true)
+            python - "$MODE" "$REPORT_TYPE" "$STOCK_LIST" "$DOCTOR_JSON" >> "$GITHUB_STEP_SUMMARY" <<'PY' || true
+          import json, re, sys
+          mode, report_type, stock_list, raw_doc = sys.argv[1:5]
+          stock_count = len([s for s in re.split(r"[,;，；\s]+", stock_list or "") if s.strip()])
+          try:
+              doc = json.loads(raw_doc) if raw_doc.strip() else {}
+          except Exception:
+              doc = {}
+          checks = doc.get("checks") or {}
+          llm_ready = (checks.get("llm") or {}).get("ready")
+          channels = (checks.get("notifications") or {}).get("configured_channels") or []
+          summary_counts = doc.get("summary") or {}
+          ai_label = "✅ 已配置" if llm_ready else "⚪ 未配置"
+          notify_label = f"✅ 已配置 ({len(channels)} 个)" if channels else "⚪ 未配置（仅输出日志/Artifact）"
+          print("## 📈 DSA 运行前自检摘要（已脱敏）\n")
+          print("| 检查项 | 状态 |")
+          print("|---|---|")
+          print(f"| 运行模式 | `{mode}` (报告类型: `{report_type}`) |")
+          print(f"| 自选股标的数 | {stock_count} |")
+          print(f"| AI 模型接入 | {ai_label} |")
+          print(f"| 通知推送渠道 | {notify_label} |")
+          print(f"| 自检统计 | errors={summary_counts.get('errors', '-')}, warnings={summary_counts.get('warnings', '-')} |\n")
+          print("> 默认不在此处输出自选股代码与报告正文，以防公开 Fork 泄露隐私；如需在 Summary 预览报告正文，请在 Repository Variables 设置 `STEP_SUMMARY_REPORT=true`。\n")
+          PY
+          fi
           
           # 构建命令行参数
           FORCE_RUN_ARG=""
@@ -600,3 +628,44 @@ jobs:
             echo "📜 最近日志（最后 30 行）:"
             tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
           fi
+
+      - name: 写入分析结果摘要
+        if: always()
+        env:
+          STEP_SUMMARY_REPORT: ${{ vars.STEP_SUMMARY_REPORT || 'false' }}
+        run: |
+          if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+            exit 0
+          fi
+          {
+            echo "### 📊 执行结果"
+            if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
+              REPORT_COUNT=$(find reports -maxdepth 1 -type f | wc -l)
+              echo "- 生成报告文件数：$REPORT_COUNT（完整产物见本页面下方 Artifacts）"
+              if [ "$STEP_SUMMARY_REPORT" = "true" ]; then
+                echo ""
+                echo "### 📝 报告预览（STEP_SUMMARY_REPORT=true）"
+                TOTAL_BYTES=0
+                MAX_BYTES=460800
+                for f in reports/*.md; do
+                  [ -f "$f" ] || continue
+                  FILE_CONTENT=$(head -c 65536 "$f")
+                  BLOCK_BYTES=${#FILE_CONTENT}
+                  if [ $((TOTAL_BYTES + BLOCK_BYTES + 128)) -gt "$MAX_BYTES" ]; then
+                    echo ""
+                    echo "> 其余报告超出 Summary 长度预算，请下载上方 Artifacts 查看完整内容。"
+                    break
+                  fi
+                  echo ""
+                  echo "<details><summary>$(basename "$f")</summary>"
+                  echo ""
+                  printf '%s\n' "$FILE_CONTENT"
+                  echo ""
+                  echo "</details>"
+                  TOTAL_BYTES=$((TOTAL_BYTES + BLOCK_BYTES + 128))
+                done
+              fi
+            else
+              echo "- 本次未生成报告文件（可能为非交易日跳过或配置缺失，请查看运行日志）"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

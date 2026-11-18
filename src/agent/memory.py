@@ -236,20 +236,23 @@ class AgentMemory:
             result.total_samples = stats.get("total", 0)
             result.historical_accuracy = stats.get("accuracy", 0.5)
             result.direction_accuracy = stats.get("direction_accuracy", 0.5)
-            result.avg_confidence = stats.get("avg_confidence", 0.5)
+            raw_avg_confidence = stats.get("avg_confidence")
+            has_real_avg_confidence = (
+                isinstance(raw_avg_confidence, (int, float))
+                and not isinstance(raw_avg_confidence, bool)
+                and raw_avg_confidence > 0
+            )
+            result.avg_confidence = float(raw_avg_confidence) if has_real_avg_confidence else 0.5
 
-            if result.total_samples >= self.min_samples:
+            if result.total_samples >= self.min_samples and has_real_avg_confidence:
                 result.calibrated = True
                 # Calibration: scale confidence towards historical accuracy
                 # If agent is overconfident: factor < 1
                 # If agent is underconfident: factor > 1
-                if result.avg_confidence > 0:
-                    result.calibration_factor = min(
-                        1.5,
-                        max(0.5, result.historical_accuracy / result.avg_confidence),
-                    )
-                else:
-                    result.calibration_factor = 1.0
+                result.calibration_factor = min(
+                    1.5,
+                    max(0.5, result.historical_accuracy / result.avg_confidence),
+                )
             else:
                 result.calibrated = False
                 result.calibration_factor = 1.0
@@ -372,12 +375,20 @@ class AgentMemory:
                 summary = service.get_global_summary() if hasattr(service, "get_global_summary") else None
 
             if summary:
+                raw_avg_conf = summary.get("avg_confidence")
+                avg_conf = (
+                    float(raw_avg_conf)
+                    if isinstance(raw_avg_conf, (int, float))
+                    and not isinstance(raw_avg_conf, bool)
+                    and raw_avg_conf > 0
+                    else None
+                )
                 return {
                     "total": summary.get("total_evaluations", 0),
                     "accuracy": summary.get("win_rate", 0.5),
                     "direction_accuracy": summary.get("direction_accuracy", 0.5),
-                    "avg_confidence": 0.6,  # approximate from historical data
+                    "avg_confidence": avg_conf,
                 }
         except Exception:
             pass
-        return {"total": 0, "accuracy": 0.5, "direction_accuracy": 0.5, "avg_confidence": 0.5}
+        return {"total": 0, "accuracy": 0.5, "direction_accuracy": 0.5, "avg_confidence": None}

@@ -37,6 +37,7 @@ from src.analyzer import (
     normalize_chip_structure_availability,
     populate_decision_action_fields,
     stabilize_decision_with_structure,
+    validate_sniper_price_sanity,
 )
 from src.notification import NotificationService, NotificationChannel
 from src.schemas.decision_action import normalize_decision_action
@@ -937,6 +938,7 @@ class StockAnalysisPipeline:
                     report_type=report_type.value,
                     previous_operation_advice=action_source_advice,
                 )
+                validate_sniper_price_sanity(result, enhanced_context, emit_log=True)
 
             if result:
                 self._append_daily_data_source(result, context, analysis_target)
@@ -1087,8 +1089,10 @@ class StockAnalysisPipeline:
                 'trend_status': trend_result.trend_status.value,
                 'ma_alignment': trend_result.ma_alignment,
                 'trend_strength': trend_result.trend_strength,
+                'atr14': trend_result.atr14,
                 'bias_ma5': trend_result.bias_ma5,
                 'bias_ma10': trend_result.bias_ma10,
+                'effective_bias_threshold': trend_result.effective_bias_threshold,
                 'volume_status': trend_result.volume_status.value,
                 'volume_trend': trend_result.volume_trend,
                 'buy_signal': trend_result.buy_signal.value,
@@ -1802,6 +1806,7 @@ class StockAnalysisPipeline:
                     report_type=report_type.value,
                     previous_operation_advice=advice_before_guardrail,
                 )
+                validate_sniper_price_sanity(result, initial_context, emit_log=True)
                 action_after_guardrail = normalize_decision_action(
                     getattr(result, "action", None)
                 )

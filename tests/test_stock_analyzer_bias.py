@@ -331,3 +331,24 @@ class StockAnalyzerBiasTestCase(unittest.TestCase):
         self.analyzer._generate_signal(result)
         self.assertEqual(result.signal_score, 75)
         self.assertEqual(result.buy_signal, BuySignal.WAIT)
+
+    @patch("src.stock_analyzer.get_config")
+    def test_volatility_adaptive_bias_multiplier_widens_threshold_when_enabled(
+        self,
+        mock_get_config: MagicMock,
+    ) -> None:
+        mock_get_config.return_value.bias_threshold = 5.0
+        mock_get_config.return_value.bias_atr_multiplier = 0.0
+        static_res = _make_result(trend_status=TrendStatus.BULL, bias_ma5=7.0)
+        static_res.atr14 = 0.6  # 6% of price=10.0
+        self.analyzer._generate_signal(static_res)
+        self.assertEqual(static_res.effective_bias_threshold, 5.0)
+        self._assert_contains(static_res.risk_factors, "严禁追高")
+
+        mock_get_config.return_value.bias_atr_multiplier = 1.5  # 1.5 * 6% = 9.0% > 5.0%
+        adaptive_res = _make_result(trend_status=TrendStatus.BULL, bias_ma5=7.0)
+        adaptive_res.atr14 = 0.6
+        self.analyzer._generate_signal(adaptive_res)
+        self.assertEqual(adaptive_res.effective_bias_threshold, 9.0)
+        self._assert_contains(adaptive_res.signal_reasons, "可小仓介入")
+        self._assert_not_contains(adaptive_res.risk_factors, "严禁追高")

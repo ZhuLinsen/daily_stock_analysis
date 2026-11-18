@@ -1382,6 +1382,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {"min": 0.0, "max": 50.0},
         "display_order": 12,
     },
+    "BIAS_ATR_MULTIPLIER": {
+        "title": "Bias ATR14 Multiplier",
+        "description": "Volatility-adaptive MA5 bias multiplier against ATR14% (0 disables adaptive widening and keeps static BIAS_THRESHOLD).",
+        "category": "data_source",
+        "data_type": "number",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "0.0",
+        "options": [],
+        "validation": {"min": 0.0, "max": 10.0},
+        "display_order": 14,
+    },
     "PYTDX_HOST": {
         "title": "Pytdx Host",
         "description": "Tongdaxin data server IP. Used with PYTDX_PORT. Overrides built-in defaults.",
@@ -3896,13 +3910,13 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "v1",
+        "default_value": "v1.1",
         "options": [],
         "validation": {},
         "display_order": 40,
         "help_key": "settings.backtest.BACKTEST_ENGINE_VERSION",
         "examples": [
-            "BACKTEST_ENGINE_VERSION=v1",
+            "BACKTEST_ENGINE_VERSION=v1.1",
         ],
         "docs": [
             {
@@ -4898,6 +4912,15 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "examples": [
             "BIAS_THRESHOLD=5.0",
             "BIAS_THRESHOLD=8.0",
+        ],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+        "warning_codes": [],
+    },
+    "BIAS_ATR_MULTIPLIER": {
+        "help_key": "settings.data_source.BIAS_ATR_MULTIPLIER",
+        "examples": [
+            "BIAS_ATR_MULTIPLIER=0.0",
+            "BIAS_ATR_MULTIPLIER=1.5",
         ],
         "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
         "warning_codes": [],

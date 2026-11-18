@@ -17,6 +17,7 @@
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Dict, Any, List
 from enum import Enum
@@ -97,11 +98,13 @@ class TrendAnalysisResult:
     ma20: float = 0.0
     ma60: float = 0.0
     current_price: float = 0.0
+    atr14: float = 0.0
     
     # 乖离率（与 MA5 的偏离度）
     bias_ma5: float = 0.0            # (Close - MA5) / MA5 * 100
     bias_ma10: float = 0.0
     bias_ma20: float = 0.0
+    effective_bias_threshold: float = 5.0
     
     # 量能分析
     volume_status: VolumeStatus = VolumeStatus.NORMAL
@@ -145,9 +148,11 @@ class TrendAnalysisResult:
             'ma20': self.ma20,
             'ma60': self.ma60,
             'current_price': self.current_price,
+            'atr14': self.atr14,
             'bias_ma5': self.bias_ma5,
             'bias_ma10': self.bias_ma10,
             'bias_ma20': self.bias_ma20,
+            'effective_bias_threshold': self.effective_bias_threshold,
             'volume_status': self.volume_status.value,
             'volume_ratio_5d': self.volume_ratio_5d,
             'volume_trend': self.volume_trend,
@@ -239,6 +244,19 @@ class StockTrendAnalyzer:
         result.ma10 = float(latest['MA10'])
         result.ma20 = float(latest['MA20'])
         result.ma60 = float(latest.get('MA60', 0))
+        if {'high', 'low', 'close'}.issubset(df.columns):
+            prev_close = df['close'].shift(1)
+            true_range = pd.concat(
+                [
+                    df['high'] - df['low'],
+                    (df['high'] - prev_close).abs(),
+                    (df['low'] - prev_close).abs(),
+                ],
+                axis=1,
+            ).max(axis=1)
+            atr_val = true_range.rolling(window=min(14, len(df)), min_periods=1).mean().iloc[-1]
+            if pd.notna(atr_val) and float(atr_val) > 0:
+                result.atr14 = round(float(atr_val), 4)
 
         # 1. 趋势判断
         self._analyze_trend(df, result)
@@ -603,20 +621,40 @@ class StockTrendAnalyzer:
         elif result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
             risks.append(f"⚠️ {result.trend_status.value}，不宜做多")
 
-        # === 乖离率评分（20分，强势趋势补偿）===
+        # === 乖离率评分（20分，强势趋势补偿 + 可选 ATR14 波动率自适应）===
         bias = result.bias_ma5
         if bias != bias or bias is None:  # NaN or None defense
             bias = 0.0
-        base_threshold = get_config().bias_threshold
+        cfg = get_config()
+        base_threshold = float(cfg.bias_threshold)
+        raw_atr_mult = getattr(cfg, "bias_atr_multiplier", 0.0)
+        atr_mult = (
+            float(raw_atr_mult)
+            if isinstance(raw_atr_mult, (int, float))
+            and not isinstance(raw_atr_mult, bool)
+            and math.isfinite(float(raw_atr_mult))
+            and float(raw_atr_mult) > 0
+            else 0.0
+        )
+        if (
+            atr_mult > 0
+            and isinstance(result.atr14, (int, float))
+            and result.atr14 > 0
+            and isinstance(result.current_price, (int, float))
+            and result.current_price > 0
+        ):
+            atr_pct = (float(result.atr14) / float(result.current_price)) * 100.0
+            base_threshold = min(50.0, max(base_threshold, atr_mult * atr_pct))
 
         # Strong trend compensation: relax threshold for STRONG_BULL with high strength
         trend_strength = result.trend_strength if result.trend_strength == result.trend_strength else 0.0
         if result.trend_status == TrendStatus.STRONG_BULL and (trend_strength or 0) >= 70:
-            effective_threshold = base_threshold * 1.5
+            effective_threshold = min(50.0, base_threshold * 1.5)
             is_strong_trend = True
         else:
             effective_threshold = base_threshold
             is_strong_trend = False
+        result.effective_bias_threshold = round(float(effective_threshold), 2)
 
         if bias < 0:
             # Price below MA5 (pullback)

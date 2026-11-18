@@ -155,8 +155,17 @@
   --home-accent-text: hsl(var(--primary));
   --home-secondary-accent-text: hsl(247 84% 66%);
   --home-title-accent: hsl(247 84% 66%);
-  --home-price-up: hsl(0 88% 62%);
-  --home-price-down: hsl(149 100% 42%);
+  --quote-red-raw: 0 88% 62%;
+  --quote-green-raw: 149 100% 42%;
+  --market-up-raw: var(--quote-red-raw);
+  --market-down-raw: var(--quote-green-raw);
+  --market-up: hsl(var(--market-up-raw));
+  --market-down: hsl(var(--market-down-raw));
+  --market-flat: hsl(var(--muted-text));
+  --market-up-bg: hsl(var(--market-up-raw) / 0.12);
+  --market-down-bg: hsl(var(--market-down-raw) / 0.12);
+  --home-price-up: var(--market-up);
+  --home-price-down: var(--market-down);
   --home-strategy-buy: hsl(149 100% 42%);
   --home-strategy-secondary: hsl(var(--primary));
   --home-strategy-stop: hsl(346 100% 63%);
@@ -430,8 +439,15 @@
   --home-accent-text: hsl(var(--primary));
   --home-secondary-accent-text: hsl(247 84% 72%);
   --home-title-accent: hsl(247 84% 72%);
-  --home-price-up: hsl(0 88% 64%);
-  --home-price-down: hsl(149 100% 44%);
+  --quote-red-raw: 0 88% 64%;
+  --quote-green-raw: 149 100% 44%;
+  --market-up: hsl(var(--market-up-raw));
+  --market-down: hsl(var(--market-down-raw));
+  --market-flat: hsl(var(--muted-text));
+  --market-up-bg: hsl(var(--market-up-raw) / 0.14);
+  --market-down-bg: hsl(var(--market-down-raw) / 0.14);
+  --home-price-up: var(--market-up);
+  --home-price-down: var(--market-down);
   --home-strategy-buy: hsl(149 100% 44%);
   --home-strategy-secondary: hsl(var(--primary));
   --home-strategy-stop: hsl(346 100% 66%);
@@ -2927,4 +2943,56 @@ textarea {
   .backtest-table-scroll-hint {
     text-align: left;
   }
+}
+
+/* =========================================
+   FINANCIAL NUMERALS & MARKET DIRECTION TOKENS
+   ========================================= */
+[data-market-color="cn"],
+[data-market-color="red-up"] {
+  --market-up-raw: var(--quote-red-raw);
+  --market-down-raw: var(--quote-green-raw);
+  --market-up: hsl(var(--market-up-raw));
+  --market-down: hsl(var(--market-down-raw));
+  --market-up-bg: hsl(var(--market-up-raw) / 0.12);
+  --market-down-bg: hsl(var(--market-down-raw) / 0.12);
+  --home-price-up: var(--market-up);
+  --home-price-down: var(--market-down);
+}
+
+[data-market-color="us"],
+[data-market-color="green-up"] {
+  --market-up-raw: var(--quote-green-raw);
+  --market-down-raw: var(--quote-red-raw);
+  --market-up: hsl(var(--market-up-raw));
+  --market-down: hsl(var(--market-down-raw));
+  --market-up-bg: hsl(var(--market-up-raw) / 0.12);
+  --market-down-bg: hsl(var(--market-down-raw) / 0.12);
+  --home-price-up: var(--market-up);
+  --home-price-down: var(--market-down);
+}
+
+.num {
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+.text-market-up {
+  color: var(--market-up);
+}
+
+.text-market-down {
+  color: var(--market-down);
+}
+
+.text-market-flat {
+  color: var(--market-flat);
+}
+
+.bg-market-up {
+  background-color: var(--market-up-bg);
+}
+
+.bg-market-down {
+  background-color: var(--market-down-bg);
 }
