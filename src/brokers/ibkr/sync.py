@@ -125,7 +125,7 @@ def sync_ibkr_portfolio(
     token, query_id = _resolve_credentials()
 
     parsed = _download_and_parse(
-        token, query_id, since=since, to_date=date.today()
+        token, query_id, since=since, to_date=date.today() - timedelta(days=1)
     )
 
     trades = sorted(parsed.trades, key=_trade_sort_key)
