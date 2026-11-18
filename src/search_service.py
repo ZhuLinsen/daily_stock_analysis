@@ -4461,7 +4461,7 @@ class SearchService:
                     ),
                     'desc': '行业分析',
                     'tavily_topic': None,
-                    'strict_freshness': False,
+                    'strict_freshness': not is_index_etf,
                 },
             ]
         else:
@@ -4518,7 +4518,7 @@ class SearchService:
                     ),
                     'desc': '行业分析',
                     'tavily_topic': None,
-                    'strict_freshness': False,
+                    'strict_freshness': not is_index_etf,
                 },
             ]
         

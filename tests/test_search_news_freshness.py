@@ -2421,5 +2421,55 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn("摘要命中公司英文别名 Apple", reasons)
         self.assertNotIn("标题命中公司英文别名", reasons)
 
+    def test_industry_dimension_filters_stale_and_undated_news(self) -> None:
+        today = datetime.now().date()
+        stale_10d = (today - timedelta(days=10)).isoformat()
+        in_window = (today - timedelta(days=1)).isoformat()
+        fresh_text = today.isoformat()
+
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh_text)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", fresh_text)]),
+            _response([_result("announcement_item", fresh_text)]),
+            _response([_result("earnings", None)]),
+            _response([
+                _result("行业深度报告 2024", stale_10d, url="https://example.com/old"),
+                _result("行业深度报告：白酒景气回升", in_window, url="https://example.com/1"),
+                _result("行业格局综述", None, url="https://example.com/3"),
+            ]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="600519",
+                stock_name="贵州茅台",
+                max_searches=6,
+            )
+
+        self.assertEqual(mock_search.call_args_list[-1][1]["days"], 3)
+        self.assertEqual(
+            [item.title for item in intel["industry"].results],
+            ["行业深度报告：白酒景气回升"],
+        )
+
+    def test_industry_dimension_keeps_undated_etf_background(self) -> None:
+        service, mock_search = self._create_service_with_mock_provider()
+        dated = _response([_result("最新新闻", datetime.now().date().isoformat())])
+        holdings = _response([_result("沪深300ETF 行业配置与成分股", None)])
+        mock_search.side_effect = [dated] * 5 + [holdings]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel("510300", "沪深300ETF", max_searches=6)
+
+        self.assertEqual(
+            [item.title for item in intel["industry"].results],
+            ["沪深300ETF 行业配置与成分股"],
+        )
+
 if __name__ == "__main__":
     unittest.main()
