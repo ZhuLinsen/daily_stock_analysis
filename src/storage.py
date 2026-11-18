@@ -584,10 +584,12 @@ class PortfolioCashLedger(Base):
     amount = Column(Float, nullable=False)
     currency = Column(String(8), nullable=False, default='CNY')
     note = Column(String(255))
+    source_uid = Column(String(128))
     created_at = Column(DateTime, default=datetime.now, index=True)
 
     __table_args__ = (
         Index('ix_portfolio_cash_account_date', 'account_id', 'event_date'),
+        Index('ix_portfolio_cash_source_uid', 'account_id', 'source_uid'),
     )
 
 
@@ -1455,6 +1457,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_stock_daily_canonical_id()
+            self._ensure_portfolio_cash_source_uid()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1780,6 +1783,41 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             stats["invalid_profile_count"],
             stats["skipped_existing_profile_count"],
         )
+
+    def _ensure_portfolio_cash_source_uid(self) -> None:
+        """Self-healing migration: add ``source_uid`` to portfolio_cash_ledger.
+
+        Enables idempotent broker-sync imports (e.g. IBKR Flex deposits) by
+        carrying the broker's stable transaction id on cash events, mirroring
+        the existing ``trade_uid`` dedup on trades.
+        """
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(
+                    PortfolioCashLedger.__tablename__
+                )
+            }
+        except Exception as exc:
+            logger.error(
+                "[PortfolioCashLedger] failed to inspect source_uid column; "
+                "migration cannot continue safely: %s",
+                exc,
+            )
+            raise
+        if "source_uid" in existing:
+            return
+        try:
+            with self._engine.begin() as connection:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {PortfolioCashLedger.__tablename__} "
+                    "ADD COLUMN source_uid VARCHAR(128)"
+                )
+        except OperationalError as exc:
+            if not self._is_sqlite_duplicate_column_error(exc, "source_uid"):
+                raise
 
     def _ensure_stock_daily_canonical_id(self) -> None:
         """Self-healing migration: add + backfill the ``canonical_id`` column.
