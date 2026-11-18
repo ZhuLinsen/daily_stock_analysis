@@ -33,7 +33,7 @@ class AlertIndicatorHelperTestCase(unittest.TestCase):
     def test_required_bars_and_requested_days_are_stable(self) -> None:
         cases = {
             "ma_price_cross": ({"window": 20, "direction": "above"}, 21),
-            "rsi_threshold": ({"period": 12, "threshold": 70, "direction": "above"}, 13),
+            "rsi_threshold": ({"period": 12, "threshold": 70, "direction": "above"}, 14),
             "macd_cross": (
                 {"fast_period": 12, "slow_period": 26, "signal_period": 9, "direction": "bullish_cross"},
                 36,
@@ -86,12 +86,34 @@ class AlertIndicatorHelperTestCase(unittest.TestCase):
         self.assertEqual(level_only.status, "not_triggered")
 
     def test_rsi_uses_wilder_not_sma(self) -> None:
-        close = pd.Series([10.0, 9.0, 11.0])
+        # Wilder seeds with the mean of the first `period` changes (TA-Lib), then
+        # smooths; a rolling SMA re-averages only the last `period` changes.
+        close = pd.Series([10.0, 9.0, 11.0, 10.0, 12.0])
         old_sma_rsi = 66.66666666666666
         wilder_rsi = _calculate_rsi(close, 2)
 
         self.assertNotAlmostEqual(float(wilder_rsi.iloc[-1]), old_sma_rsi)
-        self.assertAlmostEqual(float(wilder_rsi.iloc[-1]), 80.0)
+        self.assertAlmostEqual(float(wilder_rsi.iloc[-1]), 76.92307692307692)
+
+    def test_rsi_alert_never_crosses_from_warmup_placeholder(self) -> None:
+        # Review OR-COR-f904fc32: 13 bars only give one real RSI12, so an alert
+        # must not compare it with the warm-up placeholder (50 -> 100 "cross").
+        params_up = normalize_indicator_parameters(
+            "rsi_threshold", {"period": 12, "threshold": 70, "direction": "above"}
+        )
+        params_down = normalize_indicator_parameters(
+            "rsi_threshold", {"period": 12, "threshold": 30, "direction": "below"}
+        )
+        for bars, expected in ((13, "degraded"), (14, "not_triggered")):
+            dates = pd.date_range("2026-01-01", periods=bars)
+            rising = pd.DataFrame({"日期": dates, "收盘": [float(100 + i) for i in range(bars)]})
+            falling = pd.DataFrame({"日期": dates, "收盘": [float(100 - i) for i in range(bars)]})
+            with self.subTest(bars=bars, direction="above"):
+                self.assertEqual(evaluate_indicator_alert("rsi_threshold", "TEST", params_up, rising).status, expected)
+            with self.subTest(bars=bars, direction="below"):
+                self.assertEqual(
+                    evaluate_indicator_alert("rsi_threshold", "TEST", params_down, falling).status, expected
+                )
 
     def test_indicator_formulas_cover_rsi_macd_kdj_cci_and_chinese_columns(self) -> None:
         rsi_params = normalize_indicator_parameters("rsi_threshold", {
@@ -103,7 +125,7 @@ class AlertIndicatorHelperTestCase(unittest.TestCase):
             "rsi_threshold",
             "TEST",
             rsi_params,
-            pd.DataFrame({"日期": pd.date_range("2026-01-01", periods=3), "收盘": [10, 9, 11]}),
+            pd.DataFrame({"日期": pd.date_range("2026-01-01", periods=4), "收盘": [10, 11, 9, 12]}),
         )
 
         macd_params = normalize_indicator_parameters("macd_cross", {
@@ -160,7 +182,8 @@ class AlertIndicatorHelperTestCase(unittest.TestCase):
         )
 
         self.assertEqual(rsi.status, "triggered")
-        self.assertAlmostEqual(rsi.observed_value, 80.0)
+        # Changes +1, -2 seed RSI2 at 33.33; then +3 smooths to gain 1.75 / loss 0.5 = 77.78.
+        self.assertAlmostEqual(rsi.observed_value, 77.77777777777777)
         self.assertEqual(macd.status, "triggered")
         self.assertAlmostEqual(macd.observed_value, 0.321823559670782)
         self.assertEqual(kdj.status, "triggered")

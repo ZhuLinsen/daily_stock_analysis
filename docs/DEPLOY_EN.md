@@ -221,7 +221,7 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | Enable scheduled tasks |
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
-| `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
+| `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access |
 | `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
 | `ANSPIRE_API_KEYS` | - | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) |
 | `TAVILY_API_KEYS` | - | Tavily news search (optional) |
@@ -393,7 +393,7 @@ Add these Secrets:
 
 | Secret Name | Description | Required |
 |------------|------|------|
-| `AIHUBMIX_KEY` | AIHubMix API Key (one key for multiple model families) | Recommended |
+| `AIHUBMIX_KEY` | AIHubMix API Key (one key for multiple model families) | Optional |
 | `ANTHROPIC_API_KEY` | Anthropic API Key | Optional |
 | `GEMINI_API_KEY` | Gemini AI API Key | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key | Optional |

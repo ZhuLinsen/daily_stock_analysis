@@ -70,28 +70,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 移除实验性 Codex App Server 问股后端及专属探针、取消与启动链；旧配置明确提示退役并可主动修正，保留默认 LiteLLM、会话接受事务及独立 Codex CLI 报告。
 - [修复] Agent 状态面板在缺少可用主模型时显示中英文配置指引，保留技术错误码；配置指南明确区分已移除后端与历史 Gate 记录。
 - [chore] Default new MiniMax channels to MiniMax-M3.1-Flash and MiniMax-M3, filter older text recommendations while retaining saved/custom models, and refresh fallback pricing.
+- [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
+- [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
-<!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
-- [新功能] 新增可选的 fastapi-guard 安全中间件（`GUARD_ENABLED=true`，默认关闭）：按 IP 限流、IP 白/黑名单、请求特征拦截与扫描器自动封禁，与登录失败限流叠加；客户端 IP 取值与 `TRUST_X_FORWARDED_FOR` 保持一致，启用后内置启动入口的 Uvicorn 代理头处理只信任同一组代理，默认不扫描请求体，详见 `docs/full-guide.md`。
-- [修复] Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
-- [修复] Telegram 文本推送遇到 HTTP 429 时遵守响应 JSON 中的 `parameters.retry_after`，避免忽略服务端等待时间而过早重试；保留响应头和指数退避兜底及 3 次尝试上限。
 
-- [新功能] 定时模式启动立即执行的当日去重（`SCHEDULE_STARTUP_DEDUP`，默认开启）：`python main.py --schedule` 在 `SCHEDULE_RUN_IMMEDIATELY=true` 触发启动补跑前检查标记文件（位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`），当天已有成功且覆盖当前应分析清单的全量分析（日期 + scope=full + 覆盖面子集判定）则跳过，否则照常补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律 fail-open 执行（绝不漏跑）；大盘复盘完成度仅记录、不参与判定（复盘补齐由每日定时任务覆盖）；设 `SCHEDULE_STARTUP_DEDUP=false` 可回到此前"每次容器重启都全量重跑"的行为；`--force-run` 可绕过启动去重检查（明确要求立即全量分析）。
-- [修复] Web 设置-数据源 中 Futu OpenD 地址/端口、妙想（MX_API）API Key 与妙想数据源优先级四项缺失中文文案，回退显示英文标题与说明的问题。
-- [修复] 港股实时数据源优先级（`FUTU_HK_REALTIME_SOURCE_PRIORITY`）的中文名称与说明改由前端维护，后端注册表恢复英文文案，英文界面不再显示中文。
-- [改进] Web 设置-数据源 配置项排序收敛：通用配置置顶（股票索引远程更新、盘中实时技术面、启用实时行情、启用筹码分布分析、实时数据源优先级、新闻最大时效、新闻策略窗口档位、BIAS 阈值），同一厂商的配置项连续排列（TickFlow、Futu、妙想、SearXNG 等），厂商之间的相对顺序保持不变。
-- [修复] 收紧定时模式启动去重：仅当全部应分析标的都成功时才记录当日标记（部分失败或全败、即使大盘复盘成功也不得记录，避免重启漏跑）；跳过判定改为覆盖面子集校验并升版 schema 2（v1 旧标记一律 fail-open 重跑一次以升级），`SCHEDULE_STARTUP_DEDUP` 进程环境变量与 .env 值不同时以进程为准（与 `SCHEDULE_RUN_IMMEDIATELY` 同权）。
-- [修复] 定时模式启动去重检查的预期清单改为与运行入口一致的真实目标解析链（Futu 持仓优先、其次 .env 热更新 `STOCK_LIST`、再按交易日过滤）：`--portfolio futu` 新增持仓、纯持仓部署自选为空、以及进程 env 启动后 .env 热更新三类场景不再误跳过；持仓解析失败或解析为空一律 fail-open 照常执行（绝不漏跑），非持仓空清单保持既有当日去重语义。
+- [修复] 盘中回测与 Skill 观点评估从当日收盘起算，避免计入分析时已发生的日内涨跌；回测排除相对评估入场价失效的止盈止损方案的模拟收益及命中率，方向评估继续保留。
+- [修复] 钉钉和飞书凭据在 `.env.example` 中默认留空，避免首次配置时误报；模型缺失提示补充 `MODELFLARE_KEY`。
+- [修复] Agent 缺少真实历史置信度数据时保持中性校准，不再使用固定的估计值。
+- [文档] 将简体、英文和繁体 README 首页的 HelloGitHub 徽章替换为 Star History 全球排名徽章，与 Trendshift 徽章等高并排展示。
+- [改进] 历史个股栏批量统计展示股票的历史分析次数，减少刷新时的数据库查询。
+- [修复] 持仓交易、现金流水和公司行动拒绝 NaN / Infinity 等非有限数值；CSV 预览、预演和提交在写入前拒绝包含非有限数值或费税合计溢出的交易行，并返回行号和字段，避免污染账本和快照；API 校验错误中的非有限数值可安全返回 JSON。
 
-- [文档] 文档中心补充 `market-support.md` 入口，与 README / 完整指南的市场支持链接保持一致。
-- [修复] 美股社交舆情 Reddit 个股端点切换至现行 Adanos 契约 `/reddit/stocks/v1/stock/{ticker}`（旧 `/reddit/stocks/v1/report/{ticker}` 已下线、固定 404，导致 Reddit 段落始终显示无数据）；适配官方契约 200+`found=false` 无数据语义：`get_social_context` 在证据登记前将空报告归一化为平台无数据，三源全空返回 `None` 且不再误置 `news_evidence_present`（X/Polymarket 有数据时贡献保留）；mention 正文按 `text_snippet`→`text`→`title` 回退，日线情绪 `sentiment_score` 优先且保留真实零值，旧字段 `avg_sentiment` 兼容回退（#2448）。
-- [修复] Futu OpenD 未运行或协议未就绪时，FutuFetcher 改为异步连接并最多等待 5 秒，失败后关闭连接、只记录一条警告并在 5 分钟内跳过 Futu，港股请求回退到其他数据源，不再因 SDK 同步构造无限重连而卡住整轮分析（#2447）。
-- [改进] 持仓风险的板块集中度按股票代码在进程内缓存所属板块 24 小时（仅缓存成功结果），重复打开或刷新持仓页时不再对每只 A 股持仓重新经过数据源限速请求；此前多只持仓时每次加载风险模块都要等待数十秒，容易触发前端 30 秒超时降级（Refs #1945）。
-- [修复] 大盘 Market Light 评分和中英文指数均值排除 VIX 波动率涨跌幅，保留原始行情展示；仅有 VIX 时指数维度标为不可用，告警沿用跳过语义（#2472）。
+## [3.35.0] - 2026-11-16
 
-- [改进] Agent 轨迹评估增加独立股票范围诊断与干扰股票样例，区分越界请求、运行时拦截和无法判定调用，支持多股对比及阶段明细，不改变原指标或退出码。
-- [修复] 报告中的财务金额（`_format_amount_cn`）与三大法人净买卖股数（`_format_net_shares`）在四舍五入后达到下一单位时改用下一单位显示：如 99,999,999 元显示为 `1.00 亿元` 而不是 `10000.00 万元`，9,999.6 元显示为 `1.00 万元` 而不是 `10000 元`。
+### 发布亮点
+
+- feat: 新增台股大盘复盘与组合市场支持，接入可选 TickPlus A 股 / ETF 数据源和 x6.ai 模型渠道。
+- improve: Tushare 按接口隔离权限失败并回退备用源；基本面复用本轮行情，多 Agent 首阶段并行获取技术与资讯信息。
+- fix: 对齐实时行情交易日与历史比较基准，修正 Yahoo 除息日价格口径、韩股代码和韩文报告数据源名称回退。
+- fix: 完整报告表格支持长文本折行与宽表滚动，选股页面支持中英文切换，修正财务金额与股数的单位进位。
+- fix: 修复 Windows CLI 分析结束后无法退出，以及 ARM64 Docker 的 OpenBLAS 非法指令崩溃。
+- fix: 修复 ntfy 长报告、Bark payload 超限和 Telegram 限流重试，避免 Agent 工具消息中的非有限数值生成非法 JSON。
+
+### 新功能
+
+- 新增 x6.ai 赞助展示、模型渠道预设及注册入口，同步模型发现、OpenAI 网关路由、MiniMax 折扣模型选择、Actions 配置与服务商展示顺序。
+- 新增可选 TickPlus A 股 / ETF 日 K、实时行情与名称查询，支持配置管理、Actions Secret 和失败回退，在数据源条目中标注推荐并补充接入说明。
+- 台股大盘复盘支持 `tw` 与组合市场：复用加权/柜买指数和新闻，覆盖 API/Web、交易日过滤、历史/通知与分享图片；明确披露缺失指数，不提供市场宽度或 Market Light。`both` 扩为六市场，保留旧五市场可配置 `cn,hk,us,jp,kr`（#2482）。
+
+### 改进
+
+- 多 Agent standard/full/specialist 分析默认并行执行 TechnicalAgent 与 IntelAgent 的 Wave-1，并在并行线程传播新闻证据、冻结目标日期和 Provider 诊断上下文；新增 `compute_smoothed_weights()` 使用 Beta(6, 6) 对小样本 Skill Opinion 做平滑校准。该方法目前为显式调用的辅助 API，运行时仍由 `compute_weights()` 按每个 horizon 的充足样本门槛、Beta(15, 15) 先验和 unable 惩罚计算权重。
+- Tushare 数据源与选股链路支持按接口粒度自动识别权限/积分不足（区分频次限流），无权限接口首次失败后自动熔断跳过并降级备用数据源，不再重复消耗请求配额或重试，同时保留同 Token 下其他有权限接口正常可用（#1696）。
+- 下线 Anspire 合作宣传及专属额度说明，移除 README 推荐入口，调整配置示例和渠道展示顺序；新闻搜索顺序调整至 SerpAPI 之后，保留原推广码链接、已有 Key 和模型渠道兼容。
+
+### 修复
+
+- 个股完整报告和大盘复盘中的 Markdown 表格支持长句和连续标识符自动折行，多列表格仍可横向滚动（#2530）。
+- Tushare 日线接口权限拒绝不再累计整源故障，避免 ETF 与 A 股接口互相误伤；保留网络故障计数和半开探测恢复行为。
+- Tushare 权限熔断仅规范化网关 URL 的协议和主机名，保留路径与查询参数大小写，避免不同路由共享拒绝缓存；切换地址后恢复 Fetcher、选股快照及日线优先源尝试，格式错误的地址仍按原有链路回退备用源。
+- Docker 构建与启动入口在 ARM64 架构下默认设置 `OPENBLAS_CORETYPE=ARMV8`（保留用户显式覆盖且不影响 x86_64），修复 Apple Silicon Linux 虚拟机因 OpenBLAS SME 指令分发导致 `Illegal instruction (exit code 132)` 崩溃的问题，并补充部署排障说明。
+- 关闭 LiteLLM 逐 chunk 的 streaming success logging（本项目未注册 LiteLLM callback，用量统计不受影响），修复 Windows 上每个流式 chunk 新建事件循环与回环 socketpair、全局线程池卡在 `accept()`，导致 CLI 打印「程序执行完成」后进程不退出且额外占用大量 CPU 的问题。
+- 实时行情基准仅接受同交易日的有效日期；Yahoo 行情使用未复权价格并区分交易日与更新时间，避免除息日涨跌方向错误及误报过期。
+- 选股页面的控件、任务提示、热点、结果和历史记录支持中英文界面切换，切换时保留当前任务与结果。
+- 盘中及盘后实时行情覆盖前，仅在报价有明确行情交易日证据时将历史 `today` 平移为 `yesterday`；缺少行情时间的港股缓存报价保留原基准，避免涨跌幅、成交量比率及行情快照涨跌额被错误重算（#2517）。
+- ntfy 推送按服务端默认 4096 字节消息上限分批发送（标题带 `(1/N)` 分页），并以 UTF-8 JSON 提交请求体，修复约 1350 个汉字以上的中文报告因请求体超过 8192 字节被 ntfy 以 HTTP 413 拒收、测试消息正常但完整报告收不到的问题。
+- 更正韩国股票种子和内置搜索索引中 Kakao 的代码为 `035720.KS`，移除已退市的 `091990.KQ` 条目，避免错误代码解析与搜索推荐。
+- Bark（`api.day.app`）自定义 Webhook 最终 payload 的 `body` 字段改为按 APNs 4096 字节 payload 上限截断（含全局模板渲染结果，按主机名识别 Bark），修复中文完整报告超限导致 Bark 返回 HTTP 500、手机收不到推送而测试消息正常的问题（#2503）。
+- 每日 Actions 未设置实时行情顺序时保留空值，使仅配置 TickPlus Key 的任务正确启用自动首选及批量实时预取；保留显式顺序和无 Key 免费源回退。
+- 韩文报告的行情快照数据源名称缺少本地化映射时回退为英文，避免 `KeyError: ko` 中断日报、决策仪表盘与单股报告生成。
+- TickPlus 正确区分裸 000001 等股票与显式同码指数；补齐行情指标、按接口冷却与分组批量缓存，ETF 轮动使用独立前复权实例，并统一首选推荐入口。
+- 基本面估值复用本轮已获取的实时行情（包括失败结果），避免重复请求挤占基本面和资金流预算；独立调用保留原有取数行为。
+- 大盘分享图片保留所有“数据边界”章节的限制项并去重，避免已有章节或超过两项时漏掉台股缺失指数提示；兼容结构化载荷、历史 Markdown 和多市场图片（#2489）。
+- Agent 工具消息内容与工具调用参数序列化不再透传 NaN/±Infinity：`LLMToolAdapter._convert_messages` 序列化前将非有限浮点递归归一化为 `null`，并以 `allow_nan=False` 输出严格 RFC 8259 JSON，避免 LiteLLM 以 `"NaN" is not valid JSON` 拒绝请求（#2471）。
+- Telegram 文本推送遇到 HTTP 429 时遵守响应 JSON 中的 `parameters.retry_after`，避免忽略服务端等待时间而过早重试；保留响应头和指数退避兜底及 3 次尝试上限。
+- 报告中的财务金额（`_format_amount_cn`）与三大法人净买卖股数（`_format_net_shares`）在四舍五入后达到下一单位时改用下一单位显示：如 99,999,999 元显示为 `1.00 亿元` 而不是 `10000.00 万元`，9,999.6 元显示为 `1.00 万元` 而不是 `10000 元`。
+
+### 文档与维护
+
+- 三语 README 产品预览改用 640×320、4 帧/秒的宽屏裁剪动图，减少展示高度和文件体积，点击可查看完整原版演示。
+- 将中、英、繁体 README 的 Trendshift 日榜徽章替换为仓库徽章，并添加仓库详情页链接。
+- 恢复 README、部署指南及模型/搜索配置表中的 Anspire 可点击链接并保留推广码，继续作为 SerpAPI 后的可选搜索服务。
+
+### 升级注意事项
+
+- `MARKET_REVIEW_REGION=both` 现在包含台股，共六市场；如需维持旧五市场范围，显式配置 `cn,hk,us,jp,kr`。台股复盘不提供市场宽度或 Market Light，缺失指数会明确披露。
+- TickPlus 与 x6.ai 为可选接入；已有显式数据源顺序和模型配置继续生效。Anspire 保留已有 Key / 渠道兼容，搜索顺序调整至 SerpAPI 之后。
+- ARM64 Docker 默认设置 `OPENBLAS_CORETYPE=ARMV8`，用户显式设置优先；x86_64 不受影响。
+- Bark 超长正文按 payload 字节预算截断，ntfy 长报告分批发送；Telegram 遇到限流会等待服务端要求的时间。
+- 升级前备份配置和数据库；如需回滚，恢复 v3.34.0 桌面包或镜像，并恢复升级前的配置。发布 tag 保持不变。
+
+### 测试与维护
+
+- 补充报告表格真实浏览器回归、行情交易日、Tushare 权限隔离、通知长度与限流、Agent 并行上下文和 JSON 序列化回归。
+- CI 构建、审查产物与 Docker 构建记录保留期统一为七天；Release 下载附件不受该保留期影响。
+
+## [3.34.0] - 2026-11-09
+
+### 发布亮点
+
+- feat: 新增可选 FastAPI 安全中间件；定时模式支持跳过重复的启动分析；离线 Agent 轨迹评估新增讨论股票范围偏移诊断。
+- fix: 更新 Claude、Gemini、OpenAI、DeepSeek 默认模型，并为新建文本渠道优先选择 MiniMax M3.1 Flash，减少旧模型退役导致的配置失败。
+- fix: 修复研究任务报告合成阶段预算过短的问题，保留超时阶段、原因与已知 token 用量；Market Light 评分排除 VIX 涨跌幅，避免将波动率上涨当作市场上涨。
+- fix: 修复自选股保存被无关 LLM 配置错误阻断、数据库单例切换地址后仍使用旧连接、Telegram 消息长度计算不符合 UTF-16 限制等问题。
+- improve: 持仓风险板块查询增加按股票代码跨请求缓存；富途 OpenD 连接增加等待边界与失败降级；更新 Adanos 个股 Reddit 接口，固定存在兼容问题的依赖版本。
+- improve: 统一数据源设置展示顺序与中英文标签，改善启动和数据源日志，修复中文文档乱码；移除实验性 Codex App Server 后端，并撤回误合入的 API Route / Opper 集成。
+
+### 新功能
+
+- 新增可选的 fastapi-guard 安全中间件（`GUARD_ENABLED=true`，默认关闭）：按 IP 限流、IP 白/黑名单、请求特征拦截与扫描器自动封禁，与登录失败限流叠加；客户端 IP 取值与 `TRUST_X_FORWARDED_FOR` 保持一致，启用后内置启动入口的 Uvicorn 代理头处理只信任同一组代理，默认不扫描请求体，详见 `docs/full-guide.md`。
+- 定时模式启动立即执行的当日去重（`SCHEDULE_STARTUP_DEDUP`，默认开启）：`python main.py --schedule` 在 `SCHEDULE_RUN_IMMEDIATELY=true` 触发启动补跑前检查标记文件（位于 `DATABASE_PATH` 所在目录，默认 `data/analysis_run_state.json`），当天已有成功且覆盖当前应分析清单的全量分析（日期 + scope=full + 覆盖面子集判定）则跳过，否则照常补跑；每日定时任务与手动/API/GitHub Actions 触发永不去重；标记缺失、损坏、schema 未知或覆盖不全一律 fail-open 执行（绝不漏跑）；大盘复盘完成度仅记录、不参与判定（复盘补齐由每日定时任务覆盖）；设 `SCHEDULE_STARTUP_DEDUP=false` 可回到此前"每次容器重启都全量重跑"的行为；`--force-run` 可绕过启动去重检查（明确要求立即全量分析）。
+
+### 改进
+
+- 更新默认模型：Gemini 主模型 `gemini-3.6-flash`、备用 `gemini-3.5-flash-lite`，选股默认同步；OpenAI 默认 `gpt-6.1-sol`（选股与 PR 审查兜底同步，不再回落到 `gpt-4o-mini`）；仅配置 `DEEPSEEK_API_KEY` 时默认 `deepseek-v4-flash`。未显式配置模型的用户将自动切换，显式配置不受影响
+- 移除实验性 Codex App Server 问股后端及专属探针、取消与启动链；旧配置明确提示退役并可主动修正，保留默认 LiteLLM、会话接受事务及独立 Codex CLI 报告。
+- Web 设置-数据源 配置项排序收敛：通用配置置顶（股票索引远程更新、盘中实时技术面、启用实时行情、启用筹码分布分析、实时数据源优先级、新闻最大时效、新闻策略窗口档位、BIAS 阈值），同一厂商的配置项连续排列（TickFlow、Futu、妙想、SearXNG 等），厂商之间的相对顺序保持不变。
+- 持仓风险的板块集中度按股票代码在进程内缓存所属板块 24 小时（仅缓存成功结果），重复打开或刷新持仓页时不再对每只 A 股持仓重新经过数据源限速请求；此前多只持仓时每次加载风险模块都要等待数十秒，容易触发前端 30 秒超时降级（Refs #1945）。
+- Agent 轨迹评估增加独立股票范围诊断与干扰股票样例，区分越界请求、运行时拦截和无法判定调用，支持多股对比及阶段明细，不改变原指标或退出码。
+
+### 修复
+
+- 启动日志不再对 `--stocks` / `--portfolio` / `--no-notify` 已覆盖的配置项告警；单一日线数据源失败（含 Eastmoney 股票与 ETF 请求）降为 WARNING，普通股票及 A 股指数全部日线数据源失败仍为 ERROR；LLM 返回与调试日志显示实际响应模型（含流式响应），依据实际调用路由标注回退，避免将别名、供应商前缀和日期版本差异误报为回退
+- 深度研究合成阶段预算增至受剩余整体预算限制的 120 秒；阶段/provider 超时保留阶段、实际耗时与原始原因，研究 API 不再误报整体预算耗尽或清零已知 token 用量（#2475）。
+- GPT-6 系列请求时省略 `temperature`，与 GPT-5 / o 系列一致，避免服务端拒绝非默认采样参数
+- Anthropic 已退役 `claude-3-5-sonnet-20241022` / `claude-3-7-sonnet-20250219`：GitHub Actions 默认 `ANTHROPIC_MODEL` 与 LiteLLM 配置示例改为 `claude-sonnet-4-6`。该模型默认不启用 thinking，仍接受 `temperature` 与指定 `tool_choice`，现有请求参数与 Agent 工具往返无需调整；已通过 `ANTHROPIC_MODEL` Variable / Secret 显式配置旧模型的用户需手动更新。
+- 依赖锁定 `akshare<1.20.0`，避免上游目录与 HTTP 层重构导致 CI 与桌面打包失败；Python 3.10 新装限制 `litellm<1.98.0`，修复 `NotRequired` 导入错误
+- 自选及其他无关配置保存不再被已有 LLM 渠道或模型错误阻断，模型相关修改仍校验完整依赖；仅更新自选时保留运行时单例与容器环境覆盖，并补齐增删、删空和校验回归。凡本次保存会启用 Agent 路径的，同样校验完整模型依赖：切到 LiteLLM Agent 后端（`AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` 解析为 litellm）、开启 Agent 分析（`AGENT_MODE=true`）、或配置了非 `all` 的 `AGENT_SKILLS`——后两者走普通分析的 Agent 分支，自带 `LLMToolAdapter`，不受 `AGENT_BACKEND` 决定。仅关闭 `AGENT_MODE`、将 `AGENT_SKILLS` 设为 `all` 或空值、以及无关键保存仍不受 LLM 配置影响；显式保存或导入已退役的 `codex_app_server` 仍被拒绝。
+- Agent 状态面板在缺少可用主模型时显示中英文配置指引，保留技术错误码；配置指南明确区分已移除后端与历史 Gate 记录。
+- Telegram 推送按 UTF-16 长度判断与分段，修复含大量 emoji 的报告超出 4096 限制导致发送失败的问题。
+- Web 设置-数据源 中 Futu OpenD 地址/端口、妙想（MX_API）API Key 与妙想数据源优先级四项缺失中文文案，回退显示英文标题与说明的问题。
+- 港股实时数据源优先级（`FUTU_HK_REALTIME_SOURCE_PRIORITY`）的中文名称与说明改由前端维护，后端注册表恢复英文文案，英文界面不再显示中文。
+- 收紧定时模式启动去重：仅当全部应分析标的都成功时才记录当日标记（部分失败或全败、即使大盘复盘成功也不得记录，避免重启漏跑）；跳过判定改为覆盖面子集校验并升版 schema 2（v1 旧标记一律 fail-open 重跑一次以升级），`SCHEDULE_STARTUP_DEDUP` 进程环境变量与 .env 值不同时以进程为准（与 `SCHEDULE_RUN_IMMEDIATELY` 同权）。
+- 定时模式启动去重检查的预期清单改为与运行入口一致的真实目标解析链（Futu 持仓优先、其次 .env 热更新 `STOCK_LIST`、再按交易日过滤）：`--portfolio futu` 新增持仓、纯持仓部署自选为空、以及进程 env 启动后 .env 热更新三类场景不再误跳过；持仓解析失败或解析为空一律 fail-open 照常执行（绝不漏跑），非持仓空清单保持既有当日去重语义。
+- 美股社交舆情 Reddit 个股端点切换至现行 Adanos 契约 `/reddit/stocks/v1/stock/{ticker}`（旧 `/reddit/stocks/v1/report/{ticker}` 已下线、固定 404，导致 Reddit 段落始终显示无数据）；适配官方契约 200+`found=false` 无数据语义：`get_social_context` 在证据登记前将空报告归一化为平台无数据，三源全空返回 `None` 且不再误置 `news_evidence_present`（X/Polymarket 有数据时贡献保留）；mention 正文按 `text_snippet`→`text`→`title` 回退，日线情绪 `sentiment_score` 优先且保留真实零值，旧字段 `avg_sentiment` 兼容回退（#2448）。
+- Futu OpenD 未运行或协议未就绪时，FutuFetcher 改为异步连接并最多等待 5 秒，失败后关闭连接、只记录一条警告并在 5 分钟内跳过 Futu，港股请求回退到其他数据源，不再因 SDK 同步构造无限重连而卡住整轮分析（#2447）。
+- 大盘 Market Light 评分和中英文指数均值排除 VIX 波动率涨跌幅，保留原始行情展示；仅有 VIX 时指数维度标为不可用，告警沿用跳过语义（#2472）。
+
+### 文档与维护
+
+- 修正 DeepSeek 默认模型说明，明确 Gemini API 与 Vertex AI 的模型生命周期及验证边界。
+- 文档中心补充 `market-support.md` 入口，与 README / 完整指南的市场支持链接保持一致。
+
+### 其他维护
+
+- Default new MiniMax channels to MiniMax-M3.1-Flash and MiniMax-M3, filter older text recommendations while retaining saved/custom models, and refresh fallback pricing.
 
 ## [3.33.0] - 2026-10-15
 

@@ -99,6 +99,14 @@ jobs:
           LLM_MODELFLARE_MODELS: ${{ vars.LLM_MODELFLARE_MODELS || secrets.LLM_MODELFLARE_MODELS }}
           LLM_MODELFLARE_ENABLED: ${{ vars.LLM_MODELFLARE_ENABLED || secrets.LLM_MODELFLARE_ENABLED }}
           LLM_MODELFLARE_EXTRA_HEADERS: ${{ vars.LLM_MODELFLARE_EXTRA_HEADERS || secrets.LLM_MODELFLARE_EXTRA_HEADERS }}
+          LLM_X6AI_PROTOCOL: ${{ vars.LLM_X6AI_PROTOCOL || secrets.LLM_X6AI_PROTOCOL }}
+          LLM_X6AI_API_SURFACE: ${{ vars.LLM_X6AI_API_SURFACE || secrets.LLM_X6AI_API_SURFACE }}
+          LLM_X6AI_BASE_URL: ${{ vars.LLM_X6AI_BASE_URL || secrets.LLM_X6AI_BASE_URL }}
+          LLM_X6AI_API_KEY: ${{ secrets.LLM_X6AI_API_KEY }}
+          LLM_X6AI_API_KEYS: ${{ secrets.LLM_X6AI_API_KEYS }}
+          LLM_X6AI_MODELS: ${{ vars.LLM_X6AI_MODELS || secrets.LLM_X6AI_MODELS }}
+          LLM_X6AI_ENABLED: ${{ vars.LLM_X6AI_ENABLED || secrets.LLM_X6AI_ENABLED }}
+          LLM_X6AI_EXTRA_HEADERS: ${{ vars.LLM_X6AI_EXTRA_HEADERS || secrets.LLM_X6AI_EXTRA_HEADERS }}
           # Hermes 是本地 loopback generation preset；API Key 只从 Secrets 注入。
           # GitHub-hosted runner 的 127.0.0.1 不是用户电脑，本配置通常只适合 self-hosted runner。
           LLM_HERMES_PROTOCOL: ${{ vars.LLM_HERMES_PROTOCOL || secrets.LLM_HERMES_PROTOCOL }}

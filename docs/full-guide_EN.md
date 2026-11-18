@@ -58,7 +58,8 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | Secret Name | Description | Required |
 |------------|------|:----:|
 | `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API key; supplies the default endpoint and model automatically | Recommended |
-| `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API key, one key for multiple model families and a 10% top-up discount for this project | Recommended |
+| `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) API key for affordable access to 100+ models, including Claude and GPT | Recommended |
+| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families and a 10% top-up discount for this project | Optional |
 | `GEMINI_API_KEY` | Get free key from [Google AI Studio](https://aistudio.google.com/) | Optional |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | Optional |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key (supports DeepSeek, Qwen, etc.) | Optional |
@@ -253,7 +254,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `LITELLM_CONFIG` | Advanced model routing YAML path (expert use) | - | No |
 | `LLM_USAGE_HMAC_SECRET` | Secret for LLM usage telemetry message HMACs; leave empty to use a generated local data-dir secret file | - | No |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Version label for the LLM usage HMAC key; update it when rotating the secret | `local-v1` | No |
-| `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API key, one key for multiple model families | - | Optional |
+| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families | - | Optional |
 | `GEMINI_API_KEY` | Google Gemini API Key | - | Optional |
 | `GEMINI_MODEL` | Primary model name (legacy, `LITELLM_MODEL` preferred) | `gemini-3.6-flash` | No |
 | `GEMINI_MODEL_FALLBACK` | Fallback model (legacy) | `gemini-3.5-flash-lite` | No |
@@ -1502,8 +1503,16 @@ Set the following variables in `.env` (all optional, have defaults):
 | `BACKTEST_ENABLED` | `true` | Whether to auto-run backtest after daily analysis |
 | `BACKTEST_EVAL_WINDOW_DAYS` | `10` | Evaluation window (trading days) |
 | `BACKTEST_MIN_AGE_DAYS` | `14` | Only backtest records older than N days to avoid incomplete data |
-| `BACKTEST_ENGINE_VERSION` | `v1` | Engine version, used to distinguish results when logic is updated |
+| `BACKTEST_ENGINE_VERSION` | `v1.1` | Engine version, used to distinguish results when logic is updated |
 | `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | Neutral band threshold (%), ±2% treated as range-bound |
+
+### Intraday backtest semantics
+
+With the default `BACKTEST_ENGINE_VERSION=v1.1`, analyses in `intraday`, `lunch_break`, or `closing_auction` use session T's close as the evaluation entry anchor and forward bars from the next trading session. The already observed T-1 → T move is excluded. `premarket` keeps the T-1 close anchor. This daily-bar convention does not assume execution at the intraday analysis price. Explicitly setting `BACKTEST_ENGINE_VERSION=v1` restores the legacy T-1 intraday anchor; results remain isolated by engine version and default queries exclude v1 results.
+
+For a long plan, stop-loss must be below the evaluation entry and take-profit must be above it. If either supplied target is invalid, the original targets and direction evaluation are preserved, `simulated_exit_reason=invalid_targets`, and simulated exit price, return and both hit flags are null. These plans are excluded from simulated-return averages and target-hit rates. Target validation also applies to explicit v1; the v1 fallback restores only the old anchor convention. Existing stored results are not automatically recalculated; rerun the backtest API with `force=true` to reevaluate them.
+
+Skill opinion outcomes use the same intraday anchor. New results are stored separately under `skill-opinion-outcome-v1.1`.
 
 ### Auto-run
 
@@ -1542,7 +1551,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 - **Configuration Management** - View/modify watchlist
 - **Home workspace tri-view** - Home has History / Watchlist / Today tabs, with History as the default view; on mobile, each list's inner viewport owns vertical touch scrolling without an outer card clipping the gesture, while desktop cards keep their visual clipping boundary; a watchlist row opens its confirmed latest report with mouse or keyboard, and its notice always follows the current lookup-in-progress, lookup-failed, or confirmed-no-detail state; every stock-bar request and the data refresh after task completion enter the unsettled state immediately, so stale stock-bar and fallback reports stay unavailable while status is being reconfirmed or is unknown; Refresh retries both the watchlist and detail status, with per-stock fallback lookups using a fixed concurrency bound and obsolete batches cancelled on refresh or page-state changes; Watchlist supports batch submission for all stocks or only those not analyzed today
 - **Collapsible task panel** - The Home task panel can be collapsed or expanded; the collapsed state keeps pending/processing summaries visible, gives more sidebar space to the watchlist, and persists for the current page session
-- **UI Language Switch** - Toggle UI language (`zh`/`en`) on login page, shell/navigation, settings page, and shared controls; this switch is independent of `REPORT_LANGUAGE`.
+- **UI Language Switch** - Toggle UI language (`zh`/`en`) on login page, shell/navigation, settings page, and shared controls; this switch is independent of `REPORT_LANGUAGE`. Stock Screening uses this setting for controls, task status, history and amount units. Company names, custom strategies and provider-written analysis retain their original text.
 - **Quick Analysis** - Trigger stock analysis via API; the Home page also provides a one-run market selector next to Market Review, so Docker/server mode can use the server default or a temporary single/multi-market scope
 - **Strategy selection** - The Home page supports explicitly selecting analysis strategy skills; when `skills` is omitted, analysis uses the server default strategy so legacy clients keep existing behavior
 - **Session-level Skill selection** - Ask Stock sessions persist their current Skill selection; refresh and session switching restore each session independently, while new sessions keep the server default
@@ -1553,6 +1562,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 - **Market Review visibility** - After clicking Market Review, the API returns a `task_id` and the UI polls `GET /api/v1/analysis/status/{task_id}` to show progress; completed/failure states are rendered explicitly and failure messages are shown directly in the UI error area.
 - **Market review history dedicated entry** - Market review history is shown in a dedicated history entry and isolated from regular stock history; use `stock_code=MARKET` and `report_type=market_review` to view and replay only market-review records.
 - **Market review history replay** - Market review results are persisted with `report_type=market_review` and can be reopened from history list/detail or Markdown endpoints directly, without re-triggering a fresh analysis run.
+- **Reading report tables** - In the full stock report and market review, long text wraps within Markdown table cells. Scroll wide tables horizontally to see the remaining columns.
 - **Market-position card** - A-share stock reports show a market theme layer and a stock position layer, separating market themes, primary theme, theme phase, stock role, and missing evidence.
 - **Input data-block visibility** - Regular analysis reports expose a low-sensitivity `AnalysisContextPack` overview through history details, sync responses, and completed task status; the Web report page shows the data-block summary collapsed after Strategy and News, with block status, source, missing reasons, and fallback summaries available on expansion.
 - **Ask-stock discussion object** - The server saves an accepted explicit code or a unique indexed name. Follow-ups, reloads, reopening and session switches restore server state. Explicit switches change the main object; comparisons only expand the current turn's scope, and an initial comparison does not select a main object. A report link is a hint, not confirmation. Execution failure or stopping does not undo accepted state.
@@ -1735,6 +1745,12 @@ A: Check if Actions is enabled, and if cron expression is correct (note it's UTC
 ---
 
 ## Portfolio Web Notes
+
+### Numeric validation for portfolio events and CSV imports
+
+- Trade quantity, price, fees, taxes, cash amounts, dividends per share, and split ratios must be finite. Manual event APIs return `422` for non-finite inputs such as `NaN`, `Infinity`, and overflowing values such as `1e309`.
+- If a recognized CSV trade row contains a non-finite number or its combined fees/taxes overflow, parsing, dry-run, and commit all return `400` with the row and field. No rows from that upload are written; correct the file and retry. Blank optional fees retain their existing zero default.
+- This validation does not clean up existing ledger data or change oversell checks, deduplication, or per-row busy/conflict handling after successful parsing.
 
 ### Portfolio account archive on `/portfolio`
 
