@@ -1481,6 +1481,12 @@ The backtesting module automatically validates historical AI analysis records ag
 4. Evaluates stop-loss/take-profit hit conditions and simulates execution returns
 5. Aggregates into overall and per-stock performance metrics
 
+With the default `BACKTEST_ENGINE_VERSION=v1.1`, analyses in `intraday`, `lunch_break`, or `closing_auction` use session T's close as the evaluation entry anchor and forward bars from the next trading session. The already observed T-1 → T move is excluded. `premarket` keeps the T-1 close anchor. This daily-bar convention does not assume execution at the intraday analysis price. Explicitly setting `BACKTEST_ENGINE_VERSION=v1` restores the legacy T-1 intraday anchor; results remain isolated by engine version and default queries exclude v1 results.
+
+For a long plan, stop-loss must be below the evaluation entry and take-profit must be above it. If either supplied target is invalid, the original targets and direction evaluation are preserved, `simulated_exit_reason=invalid_targets`, and simulated exit price, return and both hit flags are null. These plans are excluded from simulated-return averages and target-hit rates. Target validation also applies to explicit v1; the v1 fallback restores only the old anchor convention. Existing stored results are not automatically recalculated; rerun the backtest API with `force=true` to reevaluate them.
+
+Standard analysis and default Agent skills use the technical analysis's `effective_bias_threshold` for chasing rules. It already includes `BIAS_THRESHOLD`, optional `BIAS_ATR_MULTIPLIER` and strong-trend relief; no fixed 5% limit or additional relaxation is applied. The limit is inclusive, scoring and prompts use the same threshold precision, and a configured limit below 2% also takes precedence over the ideal-entry zone. Buy-report price checks also require take-profit to exceed the planned entry, even when ATR is unavailable.
+
 ### Operation Advice Mapping
 
 | Operation Advice | Position | Expected Direction | Win Condition |

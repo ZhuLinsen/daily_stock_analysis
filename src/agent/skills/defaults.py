@@ -28,10 +28,11 @@ CORE_TRADING_SKILL_POLICY_ZH = """## 默认技能基线（必须严格遵守）
 当前激活的 skills 可以补充细化分析视角，但默认风险控制和交易节奏必须遵守以下基线。
 
 ### 1. 严进策略（不追高）
-- **绝对不追高**：当股价偏离 MA5 超过 5% 时，坚决不买入
-- 乖离率 < 2%：最佳买点区间
-- 乖离率 2-5%：可小仓介入
-- 乖离率 > 5%：严禁追高！直接判定为"观望"
+- **绝对不追高**：以当次技术分析的 `effective_bias_threshold`（百分比）为唯一追高阈值，包含配置、ATR 自适应及强趋势补偿，不得另用固定阈值覆盖
+- 乖离率 < 2% 且不超过有效阈值：最佳买点区间
+- 乖离率从 2% 到有效阈值以内：可小仓介入
+- 乖离率超过有效阈值：严禁追高！直接判定为"观望"
+- 缺少有效阈值时先获取技术分析，不得假定阈值
 
 ### 2. 趋势交易（顺势而为）
 - **多头排列必须条件**：MA5 > MA10 > MA20
@@ -55,7 +56,7 @@ CORE_TRADING_SKILL_POLICY_ZH = """## 默认技能基线（必须严格遵守）
 - PE 明显偏高时需在风险点中说明
 
 ### 7. 强势趋势股放宽
-- 强势趋势股可适当放宽乖离率要求，轻仓追踪但需设止损
+- 强势趋势补偿已计入有效阈值，不得再次放宽；轻仓追踪需设止损
 """
 
 CORE_TRADING_SKILL_POLICY_EN = """## Default Skill Baseline (must be followed strictly)
@@ -63,10 +64,11 @@ CORE_TRADING_SKILL_POLICY_EN = """## Default Skill Baseline (must be followed st
 The currently activated skills may refine the analysis perspective, but the default risk controls and trading rhythm must follow this baseline.
 
 ### 1. Strict entry (no chasing)
-- **Never chase highs**: when the price deviates more than 5% above MA5, do not buy
-- Bias < 2%: best entry zone
-- Bias 2-5%: a small position is acceptable
-- Bias > 5%: no chasing! Classify directly as "Watch"
+- **Never chase highs**: use this analysis's `effective_bias_threshold` (percent) as the sole chasing limit; it includes configuration, ATR adaptation and strong-trend relief. Do not override it with a fixed limit
+- Bias < 2% and within the effective limit: best entry zone
+- Bias from 2% up to the effective limit: a small position is acceptable
+- Bias above the effective limit: no chasing! Classify directly as "Watch"
+- If the effective limit is missing, obtain technical analysis first; do not assume a limit
 
 ### 2. Trend trading (follow the trend)
 - **Required bullish alignment**: MA5 > MA10 > MA20
@@ -90,7 +92,7 @@ The currently activated skills may refine the analysis perspective, but the defa
 - When PE is clearly elevated, mention it in the risk points
 
 ### 7. Relaxation for strong trend stocks
-- Strong trend stocks may relax the bias requirement; track with a light position but always set a stop-loss
+- Strong-trend relief is already included in the effective limit; do not relax it again. Track with a light position and always set a stop-loss
 """
 
 TECHNICAL_SKILL_RULES_EN = """## Default Skill Baseline
@@ -99,7 +101,9 @@ Treat the currently activated skills as the primary analysis lens, but keep the
 following default risk controls as the shared baseline:
 
 - Bullish alignment: MA5 > MA10 > MA20
-- Bias from MA5 < 2% -> ideal buy zone; 2-5% -> small position; > 5% -> no chase
+- Use `analyze_trend.effective_bias_threshold` (percent) as the sole MA5 chasing limit, including configured ATR adaptation and strong-trend relief; never substitute a fixed limit or relax it again
+- Bias from MA5 < 2% and within the effective limit -> ideal buy zone; from 2% up to the effective limit -> small position; above the effective limit -> no chase
+- Obtain technical analysis if the effective limit is missing; do not assume a limit
 - Shrink-pullback to MA5 is the preferred entry rhythm
 - Below MA20 -> hold off unless the active skill explicitly proves a better setup
 """

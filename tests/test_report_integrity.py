@@ -593,6 +593,23 @@ class TestSniperPriceSanity(unittest.TestCase):
         warnings_tight = validate_sniper_price_sanity(res_tight, {"atr14": 2.0})
         self.assertIn("stop_loss_too_tight_vs_atr", warnings_tight)
 
+    def test_take_profit_must_exceed_planned_entry_without_atr(self) -> None:
+        from src.analyzer import validate_sniper_price_sanity
+
+        for take_profit in ("105", "110"):
+            for current_price in (100.0, None):
+                with self.subTest(take_profit=take_profit, current_price=current_price):
+                    res = self._make_buy_result(
+                        ideal_buy="110", stop_loss="95", take_profit=take_profit, current_price=current_price,
+                    )
+                    warnings = validate_sniper_price_sanity(res)
+                    self.assertIn("take_profit_below_ideal_buy", warnings)
+                    self.assertFalse(res.dashboard["data_perspective"]["price_sanity"]["passed"])
+                    self.assertTrue(any(
+                        "take_profit_below_ideal_buy" in alert
+                        for alert in res.dashboard["intelligence"]["risk_alerts"]
+                    ))
+
     def test_unparseable_points_and_hold_signal_do_not_error(self) -> None:
         from src.analyzer import validate_sniper_price_sanity
 

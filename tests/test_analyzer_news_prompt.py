@@ -184,6 +184,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
             },
         }
         fake_cfg = SimpleNamespace(
+            bias_threshold=5.0,
             news_max_age_days=30,
             news_strategy_profile="medium",  # 7 days
         )
@@ -244,6 +245,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
             "news_window_days": 1,
         }
         fake_cfg = SimpleNamespace(
+            bias_threshold=5.0,
             news_max_age_days=30,
             news_strategy_profile="long",  # 30 days if fallback is used
         )

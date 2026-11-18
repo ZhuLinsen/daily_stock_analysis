@@ -227,6 +227,23 @@ def test_agent_system_prompts_require_phase_decision_contract() -> None:
 class TestAgentExecutor(unittest.TestCase):
     """Test the ReAct loop logic."""
 
+    def test_default_agent_prompt_uses_tool_effective_bias_limit(self):
+        from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_ZH, TECHNICAL_SKILL_RULES_EN
+
+        for legacy in (True, False):
+            executor = AgentExecutor(
+                _make_registry_with_echo(), _make_mock_adapter(),
+                default_skill_policy=CORE_TRADING_SKILL_POLICY_ZH, use_legacy_default_prompt=legacy,
+            )
+            with patch.object(executor, "_run_loop", return_value=AgentResult(success=True)) as run_loop:
+                executor.run("分析股票", context={"stock_code": "600519"})
+            system = run_loop.call_args.args[0][0]["content"]
+            self.assertIn("effective_bias_threshold", system)
+            self.assertNotIn("乖离率 <5%", system)
+            self.assertNotIn("乖离率 >5%", system)
+        self.assertIn("analyze_trend.effective_bias_threshold", TECHNICAL_SKILL_RULES_EN)
+        self.assertNotIn("2-5%", TECHNICAL_SKILL_RULES_EN)
+
     def test_unsupported_tool_calling_response_is_not_treated_as_agent_success(self):
         executed_calls = []
         registry = ToolRegistry()

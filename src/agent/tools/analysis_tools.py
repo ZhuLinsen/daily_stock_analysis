@@ -64,6 +64,8 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         "bias_ma5": round(result.bias_ma5, 2),
         "bias_ma10": round(result.bias_ma10, 2),
         "bias_ma20": round(result.bias_ma20, 2),
+        "atr14": result.atr14,
+        "effective_bias_threshold": result.effective_bias_threshold,
         "volume_status": result.volume_status.value,
         "volume_ratio_5d": round(result.volume_ratio_5d, 2),
         "volume_trend": result.volume_trend,
