@@ -834,6 +834,16 @@ GitHub Actions 每日工作流（`.github/workflows/00-daily-analysis.yml`）把
 - **任务 / SSE / API 元数据**：任务列表与 SSE 事件对已提交的 `analysis_target` 暴露可选 `asset_type`（`stock`/`index`），不重新猜测；历史列表项与 stock-bar 项也追加可选 `asset_type`。不认识该字段的旧客户端直接忽略，字段可选追加不破坏既有契约。
 - **Web Dashboard 身份键**：任务/报告/历史的 `assetType` 优先，且被后端保证为 parser canonical 的代码只做**大小写折叠**（`SH000016`→`sh000016`），**禁止**再用前缀/后缀正则猜 canonical（否则 `000300.CSI` 会被误猜成 `csi000300`、`sz399300` 被误当成独立 canonical，违反注册表唯一判型真源）；仅 watchlist 原始字符串缺少类型时，才使用已加载 `stocks.index.json` 中 `assetType=index` 行的 canonical/display/显式 alias **精确命中**（不做先 normalize 再匹配、不用前缀正则猜测；加载期间禁用批量分析，加载失败或请求超过 10 秒时按既有股票语义 fail-open）。行选中、active task 与完成自动选中均按资产类型分桶，指数行与同码股票行状态独立，完成后自动选中正确的 canonical 指数报告。
 
+### IBKR 账本同步
+
+在 IBKR Client Portal 中创建一个包含 Trades / CashTransactions 分区的 Activity Flex Query（如需比对持仓可再勾选 Open Positions），记录其 Query ID，并配置 `IBKR_FLEX_STATEMENT_QUERY_ID`（未设置时回退到 `IBKR_FLEX_QUERY_ID`），然后运行：
+
+```bash
+python -m src.brokers.ibkr.sync
+```
+
+首次导入可用 `--since 2024-01-01` 回填历史（按 ≤365 天分窗），默认同步最近约 400 天；`--dry-run` 只解析不写入，`--account-id` 指定目标账本账户（存在多个账户且没有唯一 IBKR 账户时必填）。同步是幂等的：成交按 IBKR `tradeID` 去重，存取款按现金流水的 `source_uid`（IBKR `transactionID`）去重，重复运行不会重复入账。导入范围仅限股票成交（按 `buySell` 方向）与 Deposits/Withdrawals；货币兑换（FX）、分红、预扣税、费用、公司行为（拆合股）以及不支持交易所（如 BM / SBF / LSE / IBIS）的持仓会记录日志后跳过。现金流水新增 `source_uid` 列由启动时的自动迁移补齐，历史数据不受影响。同步结果会以 JSON 输出导入 / 去重 / 跳过 / 错误计数。
+
 ### Futu 真实持仓作为分析列表
 
 标准源码安装（`pip install -r requirements.txt`）、官方 Docker 镜像和 Windows/macOS Desktop backend 已默认包含锁定的 `futu-api==10.8.6808`。仅在使用裁剪过的自定义 Python 环境时，才需要按 [Futu OpenAPI SDK 安装说明](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) 手动补装。启动并登录 Futu OpenD 后运行：
