@@ -50,9 +50,17 @@ def _fake_yf_series(
     table: Dict[str, Optional[Tuple[date, float, float]]],
     default: Optional[Tuple[date, float, float]] = None,
 ):
-    """Build a ``_fetch_yf_series`` stand-in driven by a symbol->series table."""
+    """Build a ``_fetch_yf_series`` stand-in driven by a symbol->series table.
 
-    def _fetch(symbol: str) -> Optional[Tuple[date, float, float]]:
+    OR-COR-d20b0d9f: the seam now receives ``(symbol, trade_date)``; the
+    table-driven stand-in ignores the target date (the REAL seam's
+    target-date alignment is covered by ``TestTargetDateAlignment`` via the
+    pandas stub).
+    """
+
+    def _fetch(
+        symbol: str, trade_date: Optional[date] = None
+    ) -> Optional[Tuple[date, float, float]]:
         if symbol in table:
             return table[symbol]
         return default
@@ -233,7 +241,7 @@ class TestProviderException:
             CrossAssetFetcher,
             "_fetch_yf_series",
             new=staticmethod(
-                lambda symbol: (
+                lambda symbol, trade_date=None: (
                     table[symbol] if symbol in table else (_boom(symbol) or None)
                 )
             ),
@@ -298,7 +306,7 @@ class TestYfSeriesTimestampCoercion:
             index=pd.DatetimeIndex(["2026-10-21", "2026-10-22"]),
         )
         with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
-            series = CrossAssetFetcher._fetch_yf_series("^GSPC")
+            series = CrossAssetFetcher._fetch_yf_series("^GSPC", TRADE_DATE)
 
         assert series is not None
         as_of, last, prev = series
@@ -314,7 +322,7 @@ class TestYfSeriesTimestampCoercion:
             index=["2026-10-21", "2026-10-22"],
         )
         with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
-            series = CrossAssetFetcher._fetch_yf_series("^GSPC")
+            series = CrossAssetFetcher._fetch_yf_series("^GSPC", TRADE_DATE)
 
         assert series is not None
         as_of, last, _prev = series
@@ -361,7 +369,7 @@ class TestBudgetDeadlineIsolation:
         first_parked = threading.Event()
         release_first = threading.Event()
 
-        def _seam(symbol: str):
+        def _seam(symbol: str, trade_date=None):
             with counter_lock:
                 n = next(counter)
             if n == 0:
@@ -390,6 +398,110 @@ class TestBudgetDeadlineIsolation:
                     continue
                 for item in snapshot[group].values():
                     _assert_quadruple(item)
+
+
+class TestTargetDateAlignment:
+    """OR-COR-d20b0d9f — the reader must align bar selection to the analysis
+    target date (``effective_daily_bar_date`` handed in as ``trade_date``).
+
+    The yfinance seam used to request ``period="5d"`` and take the LAST row
+    while ignoring the target date: during a US Monday session (target =
+    last Friday) a Monday bar was returned and stamped as fresh Friday
+    context, and a frozen run targeting a past date picked execution-time
+    bars. Newer-than-target data must never masquerade as target-day data,
+    and a negative (trade_date - as_of) day-diff must never read as fresh.
+    """
+
+    @staticmethod
+    def _yf_stub(frame):
+        return SimpleNamespace(
+            Ticker=lambda symbol: SimpleNamespace(
+                history=lambda period=None, auto_adjust=None: frame
+            )
+        )
+
+    def test_real_fetch_series_prefers_bar_on_or_before_target(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Close": [100.0, 110.0, 90.0]},
+            index=pd.DatetimeIndex(
+                ["2026-11-12", "2026-11-13", "2026-11-16"]
+            ),  # Thu, target Fri, Monday
+        )
+        with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
+            series = CrossAssetFetcher._fetch_yf_series(
+                "^GSPC", date(2026, 11, 13)
+            )
+
+        assert series is not None
+        as_of, last, prev = series
+        assert as_of == date(2026, 11, 13)  # Monday bar excluded
+        assert last == pytest.approx(110.0)
+        assert prev == pytest.approx(100.0)
+
+    def test_snapshot_marks_target_day_bar_not_latest_bar(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Close": [100.0, 110.0, 90.0]},
+            index=pd.DatetimeIndex(
+                ["2026-11-12", "2026-11-13", "2026-11-16"]
+            ),
+        )
+        fetcher = CrossAssetFetcher()
+        with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
+            snapshot = fetcher.fetch_market_snapshot("us", date(2026, 11, 13))
+
+        item = snapshot["indices"]["SPX"]
+        assert item.status == "ok"
+        assert item.as_of == "2026-11-13"  # not the Monday bar
+        assert item.value == pytest.approx(110.0)
+        assert item.change_pct == pytest.approx(10.0, abs=0.01)
+        assert item.stale is False
+        _assert_quadruple(item)
+
+    def test_all_bars_after_target_date_degrade_to_not_supported(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Close": [90.0, 91.0]},
+            index=pd.DatetimeIndex(["2026-11-16", "2026-11-17"]),
+        )
+        fetcher = CrossAssetFetcher()
+        with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
+            snapshot = fetcher.fetch_market_snapshot("us", date(2026, 11, 13))
+
+        # Every bar is newer than the target: it must NOT be presented as
+        # target-day context (fail-open -> not_supported / no_data).
+        for item in snapshot["indices"].values():
+            assert item.status == "not_supported"
+            assert item.error == "no_data"
+            _assert_quadruple(item)
+
+    def test_undatable_labels_still_degrade_via_stale(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {"Close": [100.0, 110.0]}, index=["not-a-date", "also-not"]
+        )
+        with patch.dict(sys.modules, {"yfinance": self._yf_stub(frame)}):
+            series = CrossAssetFetcher._fetch_yf_series(
+                "^GSPC", date(2026, 11, 13)
+            )
+
+        # Nothing datable -> original selection is kept and quality degrades
+        # through as_of=None / stale=True instead of fabricating a date.
+        assert series is not None
+        as_of, last, _prev = series
+        assert as_of is None
+        assert last == pytest.approx(110.0)
+
+    def test_future_as_of_is_stale(self):
+        fetcher = CrossAssetFetcher()
+        # as_of one day AFTER the target: negative age must read as stale.
+        assert fetcher._is_stale(date(2026, 10, 23), date(2026, 10, 22), 1) is True
+        assert fetcher._is_stale(FRESH_AS_OF, TRADE_DATE, 1) is False
 
 
 class TestBudgetExceededSurfacesTimeout:

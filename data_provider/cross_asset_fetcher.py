@@ -120,6 +120,41 @@ def _change_pct(last: float, prev: Optional[float]) -> Optional[float]:
     return round((last - prev) / prev * 100.0, 2)
 
 
+def _filter_close_to_target(close, trade_date: date):
+    """OR-COR-d20b0d9f: drop bars dated AFTER the analysis target date.
+
+    - Rows whose label parses to a date on/before ``trade_date`` are kept
+      (the last of them becomes the selected bar).
+    - Dated rows after the target are dropped: newer-than-target data must
+      never be presented as target-day data (e.g. a Monday bar during a US
+      Monday session whose ``effective_daily_bar_date`` is last Friday, or a
+      frozen run targeting a past date reading execution-time bars).
+    - Rows with undatable labels are ignored when any dated row qualifies;
+      when NO row is datable the original series is returned so quality
+      degrades through ``as_of=None`` / ``stale=True`` (fail-open, unchanged
+      legacy behaviour).
+    - Returns ``None`` when every dated row lies after the target: the
+      provider window holds no target-aligned bar, so the caller surfaces
+      ``no_data`` instead of fresh target-day context.
+    """
+
+    keep: list = []
+    undated: list = []
+    total = 0
+    for pos, label in enumerate(close.index):
+        total += 1
+        row_date = _coerce_date_value(_index_label_date(label))
+        if row_date is None:
+            undated.append(pos)
+        elif row_date <= trade_date:
+            keep.append(pos)
+    if keep:
+        return close.iloc[keep]
+    if undated and len(undated) == total:
+        return close
+    return None
+
+
 class CrossAssetFetcher:
     """Never-raising cross-asset snapshot reader with a cooperative budget."""
 
@@ -276,7 +311,7 @@ class CrossAssetFetcher:
         if self._budget_exceeded(deadline):
             return self._timeout_item(name=name, trade_date=trade_date)
         try:
-            series = self._fetch_yf_series(symbol)
+            series = self._fetch_yf_series(symbol, trade_date)
         except Exception as exc:
             return self._error_item(name=name, error=f"{type(exc).__name__}: {exc}", trade_date=trade_date)
         if series is None:
@@ -301,10 +336,23 @@ class CrossAssetFetcher:
         )
 
     @staticmethod
-    def _fetch_yf_series(symbol: str) -> Optional[Tuple[date, float, float]]:
-        """Return (as_of, last_close, prev_close) or None; may raise."""
+    def _fetch_yf_series(symbol: str, trade_date: date) -> Optional[Tuple[date, float, float]]:
+        """Return (as_of, last_close, prev_close) or None; may raise.
+
+        ``trade_date`` is the analysis target date (the pipeline's
+        ``effective_daily_bar_date``). OR-COR-d20b0d9f: only bars on/before
+        the target may be selected — the previous last-row-of-5d selection
+        let a bar AFTER the target (e.g. Monday data while the target is last
+        Friday, or a frozen run targeting a past date) masquerade as fresh
+        target-day context and then vote / enter the prompt.
+        """
 
         import yfinance as yf
+
+        if isinstance(trade_date, datetime):
+            trade_date = trade_date.date()
+        elif not isinstance(trade_date, date):
+            trade_date = date.today()
 
         ticker = yf.Ticker(symbol)
         history = ticker.history(period="5d", auto_adjust=False)
@@ -312,6 +360,9 @@ class CrossAssetFetcher:
             return None
         close = history["Close"].dropna()
         if close.empty:
+            return None
+        close = _filter_close_to_target(close, trade_date)
+        if close is None or close.empty:
             return None
         last_index = close.index[-1]
         as_of = _coerce_date_value(_index_label_date(last_index))
@@ -333,7 +384,12 @@ class CrossAssetFetcher:
     def _is_stale(self, as_of: Optional[date], trade_date: date, threshold_days: int) -> bool:
         if as_of is None:
             return True
-        return (trade_date - as_of).days > max(0, int(threshold_days))
+        age_days = (trade_date - as_of).days
+        if age_days < 0:
+            # OR-COR-d20b0d9f: a bar dated AFTER the target can never be
+            # "fresh" — the former negative-diff check read it as fresh.
+            return True
+        return age_days > max(0, int(threshold_days))
 
     def _timeout_item(self, *, name: str, trade_date: date) -> CrossAssetItem:
         return CrossAssetItem(
