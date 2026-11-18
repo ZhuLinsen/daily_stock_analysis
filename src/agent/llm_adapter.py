@@ -109,6 +109,13 @@ _OPT_IN_THINKING_MODELS: Dict[str, dict] = {
     "deepseek-chat": {"thinking": {"type": "enabled"}},
 }
 
+# Reasoning models whose hidden reasoning can exhaust the whole completion
+# budget and return HTTP 200 with empty ``content``. Capping the effort keeps
+# the final answer inside ``max_tokens``.
+_REASONING_EFFORT_LOW_MODELS: Dict[str, dict] = {
+    "minimax-m3.1-flash": {"reasoning_effort": "low"},
+}
+
 # Custom model pricing for models not in LiteLLM's built-in price list.
 # Official MiniMax pricing: https://platform.minimax.io/docs/guides/pricing-paygo
 # - MiniMax-M3.1-Flash: $0.15/M input, $0.60/M output, $0.015/M cache reads.
@@ -309,11 +316,17 @@ def get_thinking_extra_body(model: str) -> Optional[dict]:
       Return None to avoid duplicate activation.
     - Opt-in models (_OPT_IN_THINKING_MODELS: deepseek-chat): Return the activation
       payload to explicitly enable thinking mode.
+    - Budget-capped reasoning models (_REASONING_EFFORT_LOW_MODELS: MiniMax-M3.1-Flash):
+      Return a low-effort payload so hidden reasoning cannot consume the whole
+      completion budget and leave an empty answer.
     - All other models: Return None (no thinking mode).
     """
     if _model_matches(model, _AUTO_THINKING_MODELS):
         return None
-    return _get_opt_in_payload(model, _OPT_IN_THINKING_MODELS)
+    return (
+        _get_opt_in_payload(model, _OPT_IN_THINKING_MODELS)
+        or _get_opt_in_payload(model, _REASONING_EFFORT_LOW_MODELS)
+    )
 
 
 def resolve_fallback_litellm_wire_models(

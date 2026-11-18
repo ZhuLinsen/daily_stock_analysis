@@ -568,3 +568,13 @@ def test_parse_litellm_response_hmac_covers_tool_call_wire_messages(monkeypatch)
     assert first.usage["messages_hmac"]
     assert second.usage["messages_hmac"]
     assert first.usage["messages_hmac"] != second.usage["messages_hmac"]
+
+
+def test_thinking_extra_body_caps_minimax_reasoning_effort() -> None:
+    from src.agent.llm_adapter import get_thinking_extra_body
+
+    assert get_thinking_extra_body("MiniMax-M3.1-Flash") == {"reasoning_effort": "low"}
+    assert get_thinking_extra_body("minimax-m3.1-flash") == {"reasoning_effort": "low"}
+    assert get_thinking_extra_body("MiniMax-M3") is None
+    assert get_thinking_extra_body("deepseek-reasoner") is None
+    assert get_thinking_extra_body("deepseek-chat") == {"thinking": {"type": "enabled"}}
