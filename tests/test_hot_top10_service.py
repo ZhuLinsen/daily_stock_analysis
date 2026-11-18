@@ -296,6 +296,69 @@ class DeliveryAndDedupContractTestCase(unittest.TestCase):
         self.assertEqual(result.reason, "hotspot_data_unavailable")
 
 
+class OverlapDoubleCheckTestCase(unittest.TestCase):
+    """OR-COR-a8bfa126: dedup / marker-failure state must be RE-checked inside
+    the run mutex. A caller whose pre-lock checks went stale (paused between
+    its checks and the critical section while a peer run completed delivery)
+    must not generate and push the same-day list a second time."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.config = _config(self._tmp.name, trading_day_check_enabled=True)
+        _MARKER_WRITE_FAILED_DAYS.clear()
+
+    def tearDown(self):
+        _MARKER_WRITE_FAILED_DAYS.clear()
+        self._tmp.cleanup()
+
+    def test_stale_prelock_pass_rechecks_inside_mutex_before_push(self):
+        gate = threading.Event()       # parks call B at the pre-lock trading-day check
+        b_reached = threading.Event()  # signals B finished its pre-lock dedup pass
+        gate_calls = {"n": 0}
+        b_outcomes = []
+
+        def _gated_trading_day():
+            gate_calls["n"] += 1
+            if gate_calls["n"] == 1:  # call B: dedup already passed (no marker yet)
+                b_reached.set()
+                gate.wait(timeout=10)
+            return True  # peer A, then resumed B
+
+        notifier = FakeNotifier(send_ok=True)
+
+        def _call_b():
+            b_outcomes.append(
+                run_hot_top10_analysis(
+                    self.config,
+                    notifier=notifier,
+                    analyzer=FakeAnalyzer(_LLM_JSON),
+                    hotspot_service=SimpleNamespace(get_hotspots=lambda **kw: _hot_payload()),
+                )
+            )
+
+        with patch(
+            "src.services.hot_top10.service.is_cn_trading_day_today",
+            side_effect=_gated_trading_day,
+        ):
+            thread_b = threading.Thread(target=_call_b)
+            thread_b.start()
+            self.assertTrue(b_reached.wait(timeout=10), "call B never reached the pre-lock gate")
+            peer = _run(self.config, notifier)  # peer A completes push + marker write
+            self.assertTrue(peer.delivered)
+            gate.set()  # resume B: stale checks, must re-check inside the mutex
+            thread_b.join(timeout=10)
+
+        self.assertFalse(thread_b.is_alive(), "call B dead-locked")
+        self.assertEqual(len(b_outcomes), 1)
+        self.assertEqual(
+            len(notifier.sent_contents),
+            1,
+            "overlapping runs must stay at-most-once per day (double-checked locking)",
+        )
+        self.assertTrue(b_outcomes[0].skipped)
+        self.assertIn("already_delivered_today", b_outcomes[0].reason)
+
+
 class OptInAndZeroBehaviorTestCase(unittest.TestCase):
     """HOT_TOP10_ENABLED defaults to false: unset means zero behavior."""
 

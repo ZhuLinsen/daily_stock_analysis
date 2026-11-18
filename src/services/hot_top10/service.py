@@ -6,7 +6,11 @@
 - Marker WRITE FAILURE must not count the run as delivered nor lead to a
   same-day re-push: the day is blocked in-process, logged at ERROR (r1
   closure blocker fix — r1 swallowed the failure and re-pushed the same list).
-- In-process non-reentrant mutex serializes overlapping runs (OR-9a41d2ce).
+- In-process non-reentrant mutex serializes overlapping runs (OR-9a41d2ce);
+  the same-day gate (delivered marker / marker-write-failure block) is
+  RE-checked inside the critical section, because the pre-lock pass can go
+  stale while a peer run completes delivery (OR-COR-a8bfa126,
+  double-checked locking).
 """
 
 import logging
@@ -81,6 +85,23 @@ def _deliver(report_markdown: str, send_notification: bool, notifier: Any = None
         return "failed", report_saved
 
 
+def _same_day_gate_reason(
+    config: Any, *, respect_dedup: bool, force_run: bool, today: str
+) -> Optional[str]:
+    """Same-day suppression reason (``None`` when the run may proceed):
+    marker-write-failure block, then the delivered marker. Pure state read —
+    safe to call both before and inside the run mutex."""
+    if force_run:
+        return None
+    if today in _MARKER_WRITE_FAILED_DAYS:
+        return "marker_write_failed_blocked_today"
+    if respect_dedup:
+        skip, reason = hot_top10_already_delivered_today(config)
+        if skip:
+            return f"already_delivered_today: {reason}"
+    return None
+
+
 def run_hot_top10_analysis(
     config: Any,
     *,
@@ -97,13 +118,16 @@ def run_hot_top10_analysis(
         count = max(1, min(MAX_HOT_TOP10_COUNT, int(getattr(config, "hot_top10_count", DEFAULT_HOT_TOP10_COUNT))))
     except (TypeError, ValueError):
         count = DEFAULT_HOT_TOP10_COUNT
-    if not force_run and today in _MARKER_WRITE_FAILED_DAYS:
-        return HotTop10RunResult(False, True, "marker_write_failed_blocked_today")
-    if respect_dedup and not force_run:
-        skip, reason = hot_top10_already_delivered_today(config)
-        if skip:
-            logger.info("[HotTop10] 当日报告已投递，跳过: %s", reason)
-            return HotTop10RunResult(False, True, f"already_delivered_today: {reason}")
+    # Fast-path gate: skip without contending the run mutex. NOT authoritative:
+    # a peer run may complete delivery between this pass and the critical
+    # section, so the identical gate is re-checked inside the lock
+    # (OR-COR-a8bfa126, double-checked locking).
+    gate_reason = _same_day_gate_reason(
+        config, respect_dedup=respect_dedup, force_run=force_run, today=today
+    )
+    if gate_reason is not None:
+        logger.info("[HotTop10] 当日门禁命中，跳过: %s", gate_reason)
+        return HotTop10RunResult(False, True, gate_reason)
     if not force_run and getattr(config, "trading_day_check_enabled", True) and not is_cn_trading_day_today():
         logger.info("[HotTop10] 今日 A 股非交易日，跳过热榜分析")
         return HotTop10RunResult(False, True, "non_trading_day")
@@ -112,6 +136,15 @@ def run_hot_top10_analysis(
         return HotTop10RunResult(False, True, "already_running")
 
     try:
+        # Authoritative re-check inside the mutex (OR-COR-a8bfa126): the
+        # pre-lock pass above may be stale — a peer run can have written the
+        # delivered marker or registered a marker-write failure in between.
+        gate_reason = _same_day_gate_reason(
+            config, respect_dedup=respect_dedup, force_run=force_run, today=today
+        )
+        if gate_reason is not None:
+            logger.info("[HotTop10] 锁内复查命中当日门禁，跳过: %s", gate_reason)
+            return HotTop10RunResult(False, True, gate_reason)
         items = collect_hot_list_items(count, hotspot_service=hotspot_service)
         if not items:
             logger.warning("[HotTop10] 热榜数据获取失败，本轮不生成报告")
