@@ -5,7 +5,9 @@ from typing import Optional
 import httpx
 import openai
 
+from src.config import get_config
 from src.llm.model_source import CHATGPT_SIWC
+from src.llm.provider_cache import filter_prompt_cache_telemetry
 from src.llm.usage import normalize_litellm_usage
 from src.services.chatgpt_oauth_service import ChatGPTError, RESOURCE
 
@@ -101,6 +103,7 @@ def request_responses(service, source, *, items, instructions, timeout, tools=No
             request_id = stream.response.headers.get("x-request-id")
             result = consume_responses(stream, progress, request_id)
         service.ensure_active(source)
+        result.usage = filter_prompt_cache_telemetry(result.usage, get_config())
         return result
     except openai.APIStatusError as exc:
         raise ChatGPTError.upstream(

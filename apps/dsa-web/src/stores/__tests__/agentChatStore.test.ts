@@ -108,9 +108,10 @@ function detailState(generation: string | null, version: number, active: ActiveS
     session_state: { selected_skill_ids: skills } };
 }
 function acceptedState(requestId: string, generation: string, version: number,
-  active: ActiveStockContext | null, skills: string[] | null = []) {
+  active: ActiveStockContext | null, skills: string[] | null = [],
+  backend: 'litellm' | 'chatgpt_siwc' = 'litellm') {
   return `data: ${JSON.stringify({ ...detailState(generation, version, active, skills),
-    type: 'accepted', backend: 'litellm', request_id: requestId })}\n`;
+    type: 'accepted', backend, request_id: requestId })}\n`;
 }
 function openStream() {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -574,6 +575,30 @@ describe('agentChatStore.startStream', () => {
     });
     expect(state.messages[1].thinkingSteps).toHaveLength(2);
     expect(state.chatError).toBeNull();
+  });
+
+  it('accepts the selected ChatGPT stream and appends its final answer', async () => {
+    const onAccepted = vi.fn();
+    vi.mocked(agentApi.chatStream).mockResolvedValue(createStreamResponse([
+      acceptedState('request-siwc', 'siwc-session', 1, stockA, [], 'chatgpt_siwc'),
+      'data: {"type":"done","success":true,"content":"合成日线结果","backend":"chatgpt_siwc","request_id":"request-siwc","session_id":"session-test"}',
+    ]));
+
+    await useAgentChatStore.getState().startStream({
+      message: '分析600519',
+      request_id: 'request-siwc',
+      model_source: { provider: 'chatgpt_siwc', connection_id: 'fixture', model: 'fixture-model' },
+    }, { onAccepted });
+
+    expect(onAccepted).toHaveBeenCalledOnce();
+    expect(useAgentChatStore.getState()).toMatchObject({
+      chatError: null,
+      loading: false,
+      messages: [
+        { role: 'user', content: '分析600519', backend: 'chatgpt_siwc' },
+        { role: 'assistant', content: '合成日线结果', backend: 'chatgpt_siwc' },
+      ],
+    });
   });
 
   it('sends the store session id when the caller omits session_id', async () => {

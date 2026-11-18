@@ -55,7 +55,7 @@ export interface StreamMeta {
 
 export interface StreamAcceptedEvent extends ChatStateFields {
   type: 'accepted';
-  backend: 'litellm';
+  backend: 'litellm' | 'chatgpt_siwc';
   request_id: string;
   session_id: string;
   session_state?: { selected_skill_ids: string[] | null };
@@ -331,6 +331,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     });
 
     const streamSessionId = payload.session_id || storeSessionId;
+    const expectedBackend = payload.model_source?.provider ?? 'litellm';
     const ownsStream = () => {
       const state = get();
       return state.abortController === ac
@@ -391,7 +392,7 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             throw protocolError('Agent stream emitted accepted more than once.');
           }
           if (
-            event.backend !== 'litellm'
+            event.backend !== expectedBackend
             || event.request_id !== requestId
             || event.session_id !== streamSessionId
           ) {

@@ -299,9 +299,13 @@ def test_connection_endpoints_require_local_admin_and_same_origin(monkeypatch):
     assert client.post("/disconnect", headers={"Origin": app.state.chatgpt_origin}).json()["disconnected"]
 
 
-def test_sdk_sends_only_selected_model_and_reuses_complete_done_item(monkeypatch):
+@pytest.mark.parametrize("cache_telemetry_enabled", [True, False], ids=["cache_enabled", "cache_disabled"])
+def test_sdk_sends_only_selected_model_and_reuses_complete_done_item(monkeypatch, tmp_path, cache_telemetry_enabled):
     import httpx
     from src.llm.chatgpt_responses import request_responses
+    from src.storage import DatabaseManager, LLMUsage, persist_llm_usage
+
+    monkeypatch.setattr(Config, "_instance", Config(llm_prompt_cache_telemetry_enabled=cache_telemetry_enabled))
 
     call = _call("sdk-test")
     call.update(id="fc_test", status="completed")
@@ -310,8 +314,8 @@ def test_sdk_sends_only_selected_model_and_reuses_complete_done_item(monkeypatch
         {"type": "response.completed", "sequence_number": 1, "response": {
             "id": "resp_test", "status": "completed", "model": SOURCE.model, "output": [],
             "usage": {
-                "input_tokens": 1200, "input_tokens_details": {"cached_tokens": 1024},
-                "output_tokens": 13, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 1213,
+                "input_tokens": 36741, "input_tokens_details": {"cached_tokens": 34944},
+                "output_tokens": 38, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 36779,
             },
         }},
     ]
@@ -349,11 +353,23 @@ def test_sdk_sends_only_selected_model_and_reuses_complete_done_item(monkeypatch
     )
     assert response.items == [call]
     assert response.usage["provider"] == SOURCE.provider
-    assert response.usage["prompt_tokens"] == 1200
-    assert response.usage["completion_tokens"] == 13
-    assert response.usage["total_tokens"] == 1213
-    assert response.usage["normalized_cache_read_tokens"] == 1024
+    assert response.usage["prompt_tokens"] == 36741
+    assert response.usage["completion_tokens"] == 38
+    assert response.usage["total_tokens"] == 36779
     ensure_active.assert_called_once_with(SOURCE)
+    if cache_telemetry_enabled:
+        assert response.usage["normalized_cache_read_tokens"] == 34944
+    else:
+        monkeypatch.setattr(DatabaseManager, "_instance", None)
+        db = DatabaseManager(f"sqlite:///{tmp_path / 'usage.db'}")
+        persist_llm_usage(response.usage, SOURCE.model, call_type="agent")
+        with db.session_scope() as session:
+            row = session.query(LLMUsage).one()
+            assert (row.prompt_tokens, row.completion_tokens, row.total_tokens) == (36741, 38, 36779)
+            assert row.provider == SOURCE.provider
+            assert row.provider_usage_json is None
+            assert row.normalized_cache_read_tokens is None
+            assert row.cache_observation is None
 
 
 def test_analysis_accepted_source_and_skill_survive_queue_delay(monkeypatch):
