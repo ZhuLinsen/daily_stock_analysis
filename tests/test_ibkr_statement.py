@@ -74,7 +74,7 @@ class IbkrStatementParseTest(unittest.TestCase):
         self.assertIsNone(s._parse_flex_date("not-a-date"))
 
     def test_canonical_symbol_by_market(self) -> None:
-        self.assertEqual(s._canonical_symbol("BRK B", "us"), "BRK.B")
+        self.assertIsNone(s._canonical_symbol("BRK B", "us"))  # class share unsupported
         self.assertEqual(s._canonical_symbol("AAPL", "us"), "AAPL")
         self.assertEqual(s._canonical_symbol("700", "hk"), "HK00700")
         self.assertEqual(s._canonical_symbol("7203", "jp"), "7203.T")
@@ -95,11 +95,12 @@ class IbkrStatementParseTest(unittest.TestCase):
         self.assertEqual(trade.trade_uid, "12345")
         self.assertEqual(trade.trade_date, date(2026, 1, 2))
 
-    def test_class_share_symbol_becomes_dot_form(self) -> None:
+    def test_class_share_symbol_is_skipped(self) -> None:
         result = s.parse_statement(
             _with_trades(_trade(symbol="BRK B", listingExchange="NYSE"))
         )
-        self.assertEqual(result.trades[0].symbol, "BRK.B")
+        self.assertEqual(result.trades, [])
+        self.assertEqual(result.skipped_trades, ["BRK B@NYSE"])
 
     def test_hk_and_jp_trades(self) -> None:
         result = s.parse_statement(

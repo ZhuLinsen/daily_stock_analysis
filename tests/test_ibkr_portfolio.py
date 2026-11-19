@@ -191,8 +191,8 @@ class IbkrOpenPositionParserTest(unittest.TestCase):
     def test_keeps_supported_long_stock_holdings(self) -> None:
         codes, skipped = service.parse_open_position_codes(SAMPLE_STATEMENT)
 
-        self.assertEqual(codes, ["AAPL", "BRK.B", "QQQM", "HK00700", "7203.T"])
-        self.assertEqual(skipped, ["SAN@BM", "AI@SBF"])
+        self.assertEqual(codes, ["AAPL", "QQQM", "HK00700", "7203.T"])
+        self.assertEqual(skipped, ["BRK B@NYSE", "SAN@BM", "AI@SBF"])
 
     def test_merges_multiple_statements(self) -> None:
         one = _statement(_position("AAPL", "NASDAQ")).decode()
@@ -277,9 +277,10 @@ class IbkrPortfolioLoaderTest(unittest.TestCase):
             codes = service.load_ibkr_stock_codes()
 
         download.assert_called_once_with(TOKEN, "1712897")
-        self.assertEqual(codes, ["AAPL", "BRK.B", "QQQM", "HK00700", "7203.T"])
+        self.assertEqual(codes, ["AAPL", "QQQM", "HK00700", "7203.T"])
         log_text = "\n".join(captured.output)
         self.assertIn("SAN@BM", log_text)
+        self.assertIn("BRK B@NYSE", log_text)
         self.assertNotIn(TOKEN, log_text)
 
     def test_broker_errors_share_one_base_class(self) -> None:
