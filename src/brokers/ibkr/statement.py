@@ -245,11 +245,22 @@ def parse_statement(xml_bytes: bytes) -> StatementParseResult:
     """Parse all FlexStatement sections into normalized ledger records."""
     result = StatementParseResult()
     account_ids = set()
+    saw_trades_section = False
+    saw_cash_section = False
     for statement in _flex_statements(xml_bytes):
         account_id = (statement.get("accountId") or "").strip()
         if account_id:
             account_ids.add(account_id)
+
+        if statement.find("Trades") is not None:
+            saw_trades_section = True
+        if statement.find("CashTransactions") is not None:
+            saw_cash_section = True
+
         for row in _iter_trades(statement):
+            row_account_id = (row.get("accountId") or "").strip()
+            if row_account_id:
+                account_ids.add(row_account_id)
             record, reason = _parse_trade(row)
             if record is not None:
                 result.trades.append(record)
@@ -257,6 +268,9 @@ def parse_statement(xml_bytes: bytes) -> StatementParseResult:
                 result.skipped_trades.append(reason)
 
         for row in _iter_cash(statement):
+            row_account_id = (row.get("accountId") or "").strip()
+            if row_account_id:
+                account_ids.add(row_account_id)
             record, reason = _parse_cash(row)
             if record is not None:
                 result.cash_events.append(record)
@@ -276,6 +290,12 @@ def parse_statement(xml_bytes: bytes) -> StatementParseResult:
         raise IbkrPortfolioError(
             f"IBKR Flex 报表包含多个账户（{', '.join(sorted(account_ids))}）；"
             "请为每个账户配置单独的 Flex Query"
+        )
+
+    if not saw_trades_section and not saw_cash_section:
+        raise IbkrPortfolioError(
+            "IBKR Flex 报表缺少 Trades 与 CashTransactions 分区；"
+            "账本同步需要包含这两个分区的完整 Flex Query（而非仅 Open Positions）"
         )
 
     return result

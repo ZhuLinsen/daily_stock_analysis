@@ -174,8 +174,31 @@ class IbkrStatementParseTest(unittest.TestCase):
         self.assertEqual(len(result.skipped_cash), 3)
 
     def test_corporate_actions_reported_as_skipped(self) -> None:
-        result = s.parse_statement(_statement("<CorporateActions>" + _ca() + "</CorporateActions>"))
+        result = s.parse_statement(
+            _statement(
+                "<Trades></Trades><CashTransactions></CashTransactions>"
+                "<CorporateActions>" + _ca() + "</CorporateActions>"
+            )
+        )
         self.assertEqual(result.skipped_corporate_actions, ["AMP: AMP SPLIT 1 FOR 25"])
+
+    def test_positions_only_statement_fails(self) -> None:
+        xml = _statement(
+            '<OpenPositions><OpenPosition assetCategory="STK" symbol="AAPL" '
+            'listingExchange="NASDAQ" position="10" /></OpenPositions>'
+        )
+        with self.assertRaisesRegex(IbkrPortfolioError, "缺少 Trades 与 CashTransactions"):
+            s.parse_statement(xml)
+
+    def test_multi_account_rows_fail(self) -> None:
+        xml = _statement(
+            "<Trades>"
+            + _trade(accountId="A111")
+            + _trade(symbol="NVDA", accountId="B222")
+            + "</Trades><CashTransactions></CashTransactions>"
+        )
+        with self.assertRaisesRegex(IbkrPortfolioError, "多个账户"):
+            s.parse_statement(xml)
 
     def test_invalid_xml_or_root_fails(self) -> None:
         for bad in (b"<html>x</html>", b"<FlexStatementResponse />"):

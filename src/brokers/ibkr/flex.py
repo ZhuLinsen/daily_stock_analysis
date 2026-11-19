@@ -53,7 +53,10 @@ class _FlexTokenRedactor(logging.Filter):
 
 _token_redactor = _FlexTokenRedactor()
 
-for _logger_name in ("urllib3", "requests"):
+# Attach the redactor to the loggers that actually emit the request records
+# (``urllib3.connectionpool`` logs the URL at DEBUG; a filter on the parent
+# ``urllib3`` logger is NOT applied to records emitted by its children).
+for _logger_name in ("urllib3.connectionpool", "urllib3", "requests"):
     _http_logger = logging.getLogger(_logger_name)
     if _token_redactor not in _http_logger.filters:
         _http_logger.addFilter(_token_redactor)

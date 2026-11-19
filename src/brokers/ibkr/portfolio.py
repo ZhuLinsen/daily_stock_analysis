@@ -103,7 +103,7 @@ def parse_open_position_codes(xml_bytes: bytes) -> Tuple[List[str], List[str]]:
     return codes, skipped
 
 
-_STATEMENT_MAX_AGE_DAYS = 7
+_STATEMENT_MAX_AGE_DAYS = 3
 
 
 def _validate_statement_freshness(xml_bytes: bytes) -> None:
@@ -132,7 +132,6 @@ def _validate_statement_freshness(xml_bytes: bytes) -> None:
                 f"IBKR Flex 报表期间过旧（toDate={parsed}，距今 {(today - parsed).days} 天）；"
                 "请把 Flex Query 期间设为最近交易日"
             )
-        return
 
 
 def load_ibkr_stock_codes() -> List[str]:
