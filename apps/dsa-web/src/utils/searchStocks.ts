@@ -71,6 +71,37 @@ export function searchStocks(
   }));
 }
 
+interface NormalizedSearchFields {
+  canonicalCode: string;
+  displayCode: string;
+  name: string;
+  pinyinFull: string;
+  pinyinAbbr: string;
+  aliases: string[];
+}
+
+// Every search scores every item of the index (about 31,000 in the bundled
+// stocks.index.json). Normalizing all of their fields again for each search
+// took most of its time, so each item's normalized fields are computed on its
+// first search and reused. Index items are not modified after loading.
+const normalizedFieldsCache = new WeakMap<StockIndexItem, NormalizedSearchFields>();
+
+function getNormalizedFields(item: StockIndexItem): NormalizedSearchFields {
+  let fields = normalizedFieldsCache.get(item);
+  if (fields === undefined) {
+    fields = {
+      canonicalCode: normalizeQuery(item.canonicalCode),
+      displayCode: normalizeQuery(item.displayCode),
+      name: normalizeQuery(item.nameZh),
+      pinyinFull: normalizeQuery(item.pinyinFull || ''),
+      pinyinAbbr: normalizeQuery(item.pinyinAbbr || ''),
+      aliases: item.aliases?.map(alias => normalizeQuery(alias)) || [],
+    };
+    normalizedFieldsCache.set(item, fields);
+  }
+  return fields;
+}
+
 /**
  * Calculate match score
  *
@@ -87,12 +118,14 @@ export function searchStocks(
 function calculateMatchScore(query: string, item: StockIndexItem): number {
   let score = 0;
   const q = query.toLowerCase();
-  const normalizedCanonicalCode = normalizeQuery(item.canonicalCode);
-  const normalizedDisplayCode = normalizeQuery(item.displayCode);
-  const normalizedName = normalizeQuery(item.nameZh);
-  const normalizedPinyinFull = normalizeQuery(item.pinyinFull || '');
-  const normalizedPinyinAbbr = normalizeQuery(item.pinyinAbbr || '');
-  const normalizedAliases = item.aliases?.map(alias => normalizeQuery(alias)) || [];
+  const {
+    canonicalCode: normalizedCanonicalCode,
+    displayCode: normalizedDisplayCode,
+    name: normalizedName,
+    pinyinFull: normalizedPinyinFull,
+    pinyinAbbr: normalizedPinyinAbbr,
+    aliases: normalizedAliases,
+  } = getNormalizedFields(item);
 
   // 1. Exact match (96-100 points)
   if (q === normalizedCanonicalCode) return 100;
@@ -131,12 +164,14 @@ function determineMatchType(score: number): 'exact' | 'prefix' | 'contains' | 'f
  */
 function determineMatchField(query: string, item: StockIndexItem): 'code' | 'name' | 'pinyin' | 'alias' {
   const q = query.toLowerCase();
-  const normalizedCanonicalCode = normalizeQuery(item.canonicalCode);
-  const normalizedDisplayCode = normalizeQuery(item.displayCode);
-  const normalizedName = normalizeQuery(item.nameZh);
-  const normalizedPinyinFull = normalizeQuery(item.pinyinFull || '');
-  const normalizedPinyinAbbr = normalizeQuery(item.pinyinAbbr || '');
-  const normalizedAliases = item.aliases?.map(alias => normalizeQuery(alias)) || [];
+  const {
+    canonicalCode: normalizedCanonicalCode,
+    displayCode: normalizedDisplayCode,
+    name: normalizedName,
+    pinyinFull: normalizedPinyinFull,
+    pinyinAbbr: normalizedPinyinAbbr,
+    aliases: normalizedAliases,
+  } = getNormalizedFields(item);
 
   if (normalizedCanonicalCode.includes(q) ||
       normalizedDisplayCode.includes(q)) {
