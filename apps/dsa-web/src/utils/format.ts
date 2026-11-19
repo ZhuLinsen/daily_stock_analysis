@@ -31,16 +31,11 @@ export const toDateInputValue = (date: Date): string => {
   return `${year}-${month}-${day}`;
 };
 
-/**
- * Returns the date N days ago as YYYY-MM-DD in Asia/Shanghai timezone.
- * Consistent with getTodayInShanghai() so both ends of the date range
- * are expressed in the same timezone as the backend.
- */
-export const getRecentStartDate = (days: number): string => {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date);
-};
+export function shiftDateKey(dateKey: string, days: number): string {
+  const date = new Date(`${dateKey}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
 
 /**
  * Returns today's date as YYYY-MM-DD in Asia/Shanghai timezone.
@@ -48,6 +43,10 @@ export const getRecentStartDate = (days: number): string => {
  */
 export const getTodayInShanghai = (): string =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+
+/** Returns the Shanghai calendar date N days before today. */
+export const getRecentStartDate = (days: number): string =>
+  shiftDateKey(getTodayInShanghai(), -days);
 
 export const formatReportType = (value?: string): string => {
   if (!value) return '—';
