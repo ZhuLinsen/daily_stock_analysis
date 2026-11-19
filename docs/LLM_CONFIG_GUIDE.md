@@ -31,9 +31,9 @@
 
 在个人 macOS 上运行 `python main.py --serve-only --host 127.0.0.1`，以启动日志中的端口打开 `127.0.0.1` Web 页面。启用管理员认证并登录，然后进入「设置 → AI 模型 → ChatGPT 授权」，完成 OAuth 并选择模型。使用单后端进程，并保持 Web 服务仅供本机使用。
 
-在首页单股分析或问股中，按次将「模型来源」切换为「ChatGPT 授权」。普通单股分析沿用现有模式规则：`AGENT_MODE=true`、请求指定 Skill 或全局配置特定 Skill 时会进入 Agent 报告。默认配置中，让 `AGENT_MODE` 保持未设置，普通报告和单 Agent 问股都可以使用 ChatGPT。显式 `AGENT_MODE=false` 会停用问股。ChatGPT 普通报告关闭外发通知，生成后可在历史中查看。断开连接会停止该连接的新请求，已存报告和聊天仍可查看。 [管理 ChatGPT 用量](https://chatgpt.com/settings/usage)
+在首页单股分析或问股中，按次将「模型来源」切换为「ChatGPT 授权」。普通单股分析沿用现有模式规则：`AGENT_MODE=true`、请求指定 Skill 或全局配置特定 Skill 时会进入 Agent 报告。默认配置中，让 `AGENT_MODE` 保持未设置，普通报告和单 Agent 问股都可以使用 ChatGPT。显式 `AGENT_MODE=false` 会停用问股。用量按上游返回的每次已完成调用记录，包括报告补全和输出校验失败时已产生的用量。新问股回答的来源随消息保存。ChatGPT 普通报告关闭外发通知，生成后可在历史中查看。断开连接会停止该连接的新请求，已存报告和聊天仍可查看。 [管理 ChatGPT 用量](https://chatgpt.com/settings/usage)
 
-连接忙时可以稍后重试断开。如果设置页提示本地已断开但远端撤销未确认，请在 ChatGPT 设置中检查授权。如果页面提示断开结果待确认，请刷新页面查看当前连接状态。
+断开后可添加其他账号，也可选择已保存的账号重新授权。若该账号曾缺少套餐权限，下次选择它时会重新请求同意。每次仅使用一个活动连接。切换账号后，旧标签页会重新读取状态。设置 API 重新授权时发送所选注册的 `registration_id`，断开或取消时分别发送页面看到的 `connection_id` 或 `attempt_id`。升级后请刷新已打开的旧页面。取消时若授权交换已开始，DSA 会尝试撤销随后签发的刷新凭据。连接忙时可以稍后重试断开。如果设置页提示本地已断开但远端撤销未确认，请在 ChatGPT 设置中检查授权。如果页面提示断开结果待确认，请刷新页面查看当前连接状态。
 
 API 可在普通单股分析和问股请求中附加 `model_source`，包含 `provider: "chatgpt_siwc"`、`connection_id` 和 `model`。单股分析还须传 `notify: false`。凭据由后端保存在当前 macOS 用户的 Application Support 目录。
 

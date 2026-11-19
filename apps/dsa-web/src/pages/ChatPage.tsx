@@ -1192,7 +1192,7 @@ const ChatPage: React.FC = () => {
                         </Badge> : null}
                         {msg.backend ? (
                           <Badge variant={msg.backend === 'codex_app_server' ? 'warning' : 'history'} size="sm">
-                            {t(msg.backend === 'codex_app_server' ? 'chat.historicalCodexBackendBadge' : 'chat.defaultBackendBadge')}
+                            {t(msg.backend === 'codex_app_server' ? 'chat.historicalCodexBackendBadge' : msg.backend === 'chatgpt_siwc' ? 'chat.chatgptBackendBadge' : 'chat.defaultBackendBadge')}
                           </Badge>
                         ) : null}
                       </div>

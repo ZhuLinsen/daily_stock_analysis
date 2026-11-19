@@ -871,7 +871,7 @@ def test_real_factory_prepare_acceptance_and_late_result_keep_turn_scope(db, cha
 
     def controlled_backend(_self, request):
         requests.append(request)
-        return AgentRunResult(success=True, final_answer="controlled answer", backend="litellm",
+        return AgentRunResult(success=True, final_answer="controlled answer", backend=_self.backend_id,
                               model="fixture", messages=[])
 
     monkeypatch.setattr(LiteLLMAgentBackend, "run", controlled_backend)
@@ -1031,11 +1031,66 @@ def actual_chat_api(db, chat_stock_index, monkeypatch, tmp_path):
 
     def controlled_backend(_self, request):
         requests.append(request)
-        return AgentRunResult(success=True, final_answer="controlled API answer", backend="litellm",
+        return AgentRunResult(success=True, final_answer="controlled API answer", backend=_self.backend_id,
                               model="fixture", messages=[])
 
     monkeypatch.setattr(LiteLLMAgentBackend, "run", controlled_backend)
     return TestClient(create_app(static_dir=tmp_path / "static")), requests, config
+
+
+def test_multi_chat_reports_the_source_of_the_visible_answer(actual_chat_api, monkeypatch):
+    from src.agent.llm_adapter import LLMResponse, LLMToolAdapter
+
+    client, _, config = actual_chat_api
+    config.agent_arch = "multi"
+    config.agent_orchestrator_mode = "quick"
+    config.agent_memory_enabled = False
+    answer = '{"signal":"hold","confidence":0.5,"reasoning":"fixture answer"}'
+    monkeypatch.setattr(LLMToolAdapter, "call_with_tools", lambda *_a, **_kw: LLMResponse(
+        content=answer, model="fixture", provider="fixture",
+    ))
+    session_id = "multi-answer-source"
+    for budget, source in [(0, "litellm"), (10, None)]:
+        # A budget below 15s skips the decision stage after technical analysis.
+        config.agent_orchestrator_timeout_s = budget
+        response = client.post("/api/v1/agent/chat/stream", json={
+            "session_id": session_id, "message": "分析600519", "skills": [],
+        })
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        done = events[-1]
+        assert done["type"] == "done" and done["success"]
+        if source:
+            assert done["content"] == answer
+        else:
+            assert done["content"].startswith("# Analysis Summary:")
+        history = client.get(f"/api/v1/agent/chat/sessions/{session_id}").json()["messages"]
+        assert history[-1]["content"] == done["content"]
+        assert done["answer_backend"] == history[-1].get("backend") == source
+
+
+def test_mixed_chat_answer_sources_survive_session_reload(actual_chat_api, monkeypatch):
+    from src.auth import COOKIE_NAME
+    from unittest.mock import Mock
+
+    client, requests, config = actual_chat_api
+    origin = "http://testserver"
+    client.app.state.chatgpt_origin = origin
+    client.cookies.set(COOKIE_NAME, "fixture")
+    monkeypatch.setattr("src.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("src.auth.verify_session", lambda cookie: cookie == "fixture")
+    monkeypatch.setattr("src.services.agent_backend_status_service.get_chatgpt_service", lambda: Mock())
+    session_id = "mixed-provenance"
+    payload = {"session_id": session_id, "message": "分析600519"}
+    source = {"provider": "chatgpt_siwc", "model": "fixture", "connection_id": "fixture"}
+    results = []
+    for message in [{"message": "风险呢", "context": {"stock_code": "600519"}}, {}, {"model_source": source}]:
+        response = client.post("/api/v1/agent/chat/stream", headers={"Origin": origin}, json={**payload, **message})
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        assert events[-1]["type"] == "done" and events[-1]["success"]
+        results.append(events[-1].get("answer_backend"))
+    assert results == [None, "litellm", "chatgpt_siwc"] and len(requests) == 2
+    history = client.get(f"/api/v1/agent/chat/sessions/{session_id}").json()["messages"]
+    assert [row.get("backend") for row in history if row["role"] == "assistant"] == results
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -1100,6 +1155,7 @@ def test_actual_chat_api_clarification_accepts_without_analysis_or_compression(a
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
         assert [event["type"] for event in events] == ["accepted", "done"]
         assert events[-1]["total_steps"] == 0
+        assert events[-1].get("answer_backend") is None
     assert requests == []
     snapshot = db.read_chat_session_snapshot("api-clarify")
     assert snapshot["session_state_version"] == 1 and snapshot["active_stock_context"] is None
@@ -1282,6 +1338,9 @@ def test_chat_schema_database_default_supports_old_shape_insert(tmp_path, old_st
     path = tmp_path / "upgrade.db"
     if old_state_table:
         with sqlite3.connect(path) as old:
+            old.execute("CREATE TABLE conversation_messages (id INTEGER PRIMARY KEY, session_id TEXT, "
+                        "role TEXT, content TEXT, created_at DATETIME)")
+            old.execute("INSERT INTO conversation_messages VALUES (1, 'old-chat', 'assistant', 'old answer', '2026-01-01')")
             old.execute(
                 "CREATE TABLE conversation_session_states ("
                 "session_id VARCHAR(100) PRIMARY KEY, selected_skill_ids_json TEXT NOT NULL, "
@@ -1296,6 +1355,9 @@ def test_chat_schema_database_default_supports_old_shape_insert(tmp_path, old_st
                 old.execute("ALTER TABLE conversation_session_states ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0")
                 old.execute("UPDATE conversation_session_states SET active_stock_code='600519'")
     manager = DatabaseManager(db_url=f"sqlite:///{path}")
+    if old_state_table:
+        message, = manager.read_chat_session_snapshot("old-chat")["messages"]
+        assert message["content"] == "old answer" and message.get("backend") is None
     columns = {column["name"]: column for column in inspect(manager._engine).get_columns(
         "conversation_session_states"
     )}

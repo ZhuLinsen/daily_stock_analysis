@@ -4218,6 +4218,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             model_name = source.model if source else config.litellm_model or "unknown"
             if source:
                 legacy_audit_context["transport"] = source.provider
+                legacy_audit_context["stock_code"] = code
             if backend_id in LOCAL_CLI_GENERATION_BACKEND_IDS:
                 model_name = backend_id
                 legacy_audit_context["transport"] = backend_id
@@ -4340,7 +4341,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     )
                     break
 
-            if should_persist_usage_telemetry(llm_usage):
+            if source is None and should_persist_usage_telemetry(llm_usage):
                 persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")

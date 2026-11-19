@@ -555,7 +555,7 @@ def test_orchestrator_cleans_forged_fields_from_direct_dashboard_input():
     }
     ctx.set_data("final_dashboard", payload)
 
-    dashboard, content = orchestrator._resolve_final_output(ctx, parse_dashboard=True)
+    dashboard, content, _ = orchestrator._resolve_final_output(ctx, parse_dashboard=True)
 
     assert dashboard is not None
     assert "agent_disagreement_explanation" not in dashboard

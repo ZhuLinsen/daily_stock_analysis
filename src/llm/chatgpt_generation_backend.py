@@ -20,6 +20,7 @@ class SiwcGenerationBackend:
         try:
             response = request_responses(
                 get_chatgpt_service(), self.source, items=[{"role": "user", "content": prompt}],
+                call_type="analysis", stock_code=(audit_context or {}).get("stock_code"),
                 instructions=system_prompt or "", timeout=self.timeout, progress=stream_progress_callback,
             )
             if any(item.get("type") in {"function_call", "custom_tool_call"} for item in response.items):

@@ -92,6 +92,7 @@ class SessionStateResponse(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    answer_backend: Optional[str] = None
     success: bool
     content: str
     session_id: str
@@ -300,6 +301,7 @@ async def agent_chat(
         return ChatResponse(
             success=result.success,
             content=result.content,
+            answer_backend=(getattr(result, "backend", None) or None) if result.success and clarification is None else None,
             session_id=session_id,
             error=result.error,
             **_accepted_state_payload(accepted),
@@ -591,6 +593,7 @@ async def agent_chat_stream(
             }
             event.update({
                 "backend": getattr(result, "backend", "") or backend_id,
+                "answer_backend": (getattr(result, "backend", None) or None) if result.success else None,
                 "error_code": getattr(result, "error_code", None),
                 "request_id": request_id,
             })

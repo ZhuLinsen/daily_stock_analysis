@@ -733,6 +733,7 @@ class ConversationMessage(Base):
     session_id = Column(String(100), index=True, nullable=False)
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
+    backend = Column(String(32), nullable=True)
     created_at = Column(DateTime, default=datetime.now, index=True)
 
 
@@ -1511,6 +1512,26 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         finally:
             session.close()
 
+    def _add_chat_columns(self, table, column_sql):
+        existing = {column["name"] for column in inspect(self._engine).get_columns(table)}
+        for name, sql_type in column_sql.items():
+            if name in existing:
+                continue
+            for attempt in range(self._sqlite_write_retry_max + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(
+                            f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"
+                        )
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_duplicate_column_error(exc, name):
+                        break
+                    if self._is_sqlite_locked_error(exc) and attempt < self._sqlite_write_retry_max:
+                        time.sleep(self._sqlite_write_retry_base_delay * (2 ** attempt))
+                        continue
+                    raise
+
     def _ensure_chat_session_schema(self) -> None:
         """Additive Chat state migration; old writers may omit every new column."""
         if self._is_sqlite_engine:
@@ -1525,28 +1546,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "session_generation": "VARCHAR(36)",
                 "last_accepted_user_message_id": "INTEGER",
             }
-            existing = {
-                column["name"] for column in inspect(self._engine).get_columns(
-                    ConversationSessionState.__tablename__
-                )
-            }
-            for name, sql_type in column_sql.items():
-                if name in existing:
-                    continue
-                for attempt in range(self._sqlite_write_retry_max + 1):
-                    try:
-                        with self._engine.begin() as connection:
-                            connection.exec_driver_sql(
-                                f"ALTER TABLE conversation_session_states ADD COLUMN {name} {sql_type}"
-                            )
-                        break
-                    except OperationalError as exc:
-                        if self._is_sqlite_duplicate_column_error(exc, name):
-                            break
-                        if self._is_sqlite_locked_error(exc) and attempt < self._sqlite_write_retry_max:
-                            time.sleep(self._sqlite_write_retry_base_delay * (2 ** attempt))
-                            continue
-                        raise
+            self._add_chat_columns(ConversationSessionState.__tablename__, column_sql)
+            self._add_chat_columns(ConversationMessage.__tablename__, {"backend": "VARCHAR(32)"})
             version_column = next(
                 column for column in inspect(self._engine).get_columns(
                     ConversationSessionState.__tablename__
@@ -3902,7 +3903,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "last_accepted_user_anchor": self._chat_message_anchor(last_accepted),
                 "messages": [
                     {"id": int(message.id), "role": message.role, "content": message.content,
-                     "created_at": message.created_at.isoformat()}
+                     "created_at": message.created_at.isoformat(), **({"backend": message.backend} if message.backend else {})}
                     for message in messages
                 ],
                 "summary": {
@@ -4021,7 +4022,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
     def save_conversation_message(
         self, session_id: str, role: str, content: str,
-        *, accepted_turn: Optional[Dict[str, Any]] = None,
+        *, backend: Optional[str] = None, accepted_turn: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
         """
         保存 Agent 对话消息
@@ -4035,7 +4036,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             msg = ConversationMessage(
                 session_id=session_id,
                 role=role,
-                content=content
+                content=content, backend=backend,
             )
             session.add(msg)
             session.flush()

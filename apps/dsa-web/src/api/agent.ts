@@ -99,6 +99,7 @@ export function decodeChatState(payload: unknown, source: 'detail' | 'accepted' 
 }
 
 export interface ChatResponse extends ChatStateFields {
+  answer_backend?: string | null;
   success: boolean;
   content: string;
   session_id: string;
@@ -128,6 +129,7 @@ export interface ChatSessionItem {
 }
 
 export interface ChatSessionMessage {
+  backend?: string;
   id: string;
   role: 'user' | 'assistant';
   content: string;

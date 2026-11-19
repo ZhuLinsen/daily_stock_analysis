@@ -539,7 +539,7 @@ describe('agentChatStore.startStream', () => {
         accepted('request-success', 'session-test', 'litellm'),
         'data: {"type":"thinking","step":1,"message":"分析中"}',
         'data: {"type":"tool_done","tool":"quote","display_name":"行情","success":true,"duration":0.3}',
-        'data: {"type":"done","success":true,"content":"最终分析结果","backend":"litellm"}',
+        'data: {"type":"done","success":true,"content":"最终分析结果","backend":"litellm","answer_backend":"litellm"}',
       ]),
     );
 
@@ -581,7 +581,7 @@ describe('agentChatStore.startStream', () => {
     const onAccepted = vi.fn();
     vi.mocked(agentApi.chatStream).mockResolvedValue(createStreamResponse([
       acceptedState('request-siwc', 'siwc-session', 1, stockA, [], 'chatgpt_siwc'),
-      'data: {"type":"done","success":true,"content":"合成日线结果","backend":"chatgpt_siwc","request_id":"request-siwc","session_id":"session-test"}',
+      'data: {"type":"done","success":true,"content":"合成日线结果","answer_backend":"chatgpt_siwc","backend":"chatgpt_siwc","request_id":"request-siwc","session_id":"session-test"}',
     ]));
 
     await useAgentChatStore.getState().startStream({

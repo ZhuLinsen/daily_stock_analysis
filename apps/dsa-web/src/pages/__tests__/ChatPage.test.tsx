@@ -1129,6 +1129,15 @@ describe('ChatPage', () => {
     expect(mockStartStream.mock.calls.at(-1)?.[0]?.context).toEqual({ stock_code: '600519', stock_name: '贵州茅台' });
   });
 
+  it('labels a ChatGPT assistant answer by its recorded source', async () => {
+    mockStoreState.messages = [{ id: 'fixture', role: 'assistant', content: '已保存回答', backend: 'chatgpt_siwc' }];
+    render(<MemoryRouter><ChatPage /></MemoryRouter>);
+    const answer = await screen.findByText('已保存回答');
+    const bubble = answer.closest('.group\\/message');
+    expect(bubble).toHaveTextContent('ChatGPT 授权');
+    expect(bubble).not.toHaveTextContent('默认模型');
+  });
+
   it('keeps a quick question in the input until the server accepts it', async () => {
     mockGetSkills.mockResolvedValue({
       skills: [{ id: 'chan_theory', name: '缠论', description: '结构分析' }],

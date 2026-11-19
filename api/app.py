@@ -308,7 +308,7 @@ async def app_lifespan(app: FastAPI):
         yield
     finally:
         if chatgpt_service is not None:
-            stop_chatgpt_service()
+            await asyncio.to_thread(stop_chatgpt_service)
         refresh_task = getattr(app.state, "stock_index_refresh_task", None)
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()

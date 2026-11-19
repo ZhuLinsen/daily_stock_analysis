@@ -179,11 +179,11 @@ class AgentChatExecutor:
         if result.success:
             if turn.accepted_snapshot is not None:
                 assistant_message_id = conversation_manager.add_message(
-                    turn.session_id, "assistant", result.content, accepted_turn=turn.accepted_snapshot,
+                    turn.session_id, "assistant", result.content, backend=result.backend or None, accepted_turn=turn.accepted_snapshot,
                     db_manager=turn.db_manager,
                 )
             else:
-                assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content)
+                assistant_message_id = conversation_manager.add_message(turn.session_id, "assistant", result.content, backend=result.backend or None)
             if assistant_message_id is not None and self.include_provider_trace:
                 persist_provider_trace_turns(
                     session_id=turn.session_id,

@@ -46,14 +46,46 @@ describe('ChatGPT connection status', () => {
     expect(screen.queryByText(/已授权/)).not.toBeInTheDocument();
     expect(useChatGPTStore.getState()).toMatchObject({ status: disconnected, model: '', models: [] });
     expect(api.status).toHaveBeenCalledTimes(3);
-    expect(api.disconnect).toHaveBeenCalledTimes(1);
+    expect(api.disconnect).toHaveBeenCalledWith({ connection_id: 'old' });
+  });
+
+  it('reconciles the replacement connection when its model list discovers a lost grant', async () => {
+    await openConnectionCard();
+    api.disconnect.mockRejectedValueOnce({ isAxiosError: true, response: { status: 409, data: {
+      error: 'chatgpt_target_changed', message: 'Target changed',
+    } } });
+    api.status.mockResolvedValueOnce({ ...connected, connection_id: 'replacement' })
+      .mockResolvedValue({ ...disconnected, error: 'chatgpt_reauthorization_required' });
+    api.models.mockRejectedValueOnce({ isAxiosError: true, response: { status: 400, data: {
+      error: 'chatgpt_reauthorization_required', message: 'Lost grant',
+    } } });
+    fireEvent.click(screen.getByRole('button', { name: '断开连接' }));
+
+    expect(await screen.findByText('连接已失效，请重新授权。')).toBeVisible();
+    expect(api.models).toHaveBeenLastCalledWith('replacement', false);
+    expect(useChatGPTStore.getState()).toMatchObject({ status: { connected: false }, models: [], model: '' });
+  });
+
+  it('shows the final revocation warning after the user cancels an exchange', async () => {
+    const pending = { ...disconnected, pending: true, attempt_id: 'attempt' };
+    api.status.mockResolvedValue(pending);
+    render(<ChatGPTConnectionCard />);
+    const cancel = await screen.findByRole('button', { name: '取消授权' });
+    api.disconnect.mockResolvedValueOnce({ disconnected: true, revocation_confirmed: false });
+    api.status.mockResolvedValue({ ...pending, cancelling: true });
+    fireEvent.click(cancel);
+    expect(await screen.findByText(/本地授权已取消/)).toBeVisible();
+
+    api.status.mockResolvedValue({ ...disconnected, revocation_unconfirmed: true });
+    await act(async () => { await useChatGPTStore.getState().refresh(); });
+    expect(screen.getByText(/远端撤销未确认/)).toBeVisible();
   });
 
   it.each([
     {
       description: 'confirmed loss of authorization',
       error: { isAxiosError: true, response: { status: 400, data: {
-        detail: { error: 'chatgpt_reauthorization_required', message: 'Please reauthorize' },
+        error: 'chatgpt_reauthorization_required', message: 'Please reauthorize',
       } } },
       status: { ...disconnected, error: 'chatgpt_reauthorization_required' },
       display: '连接已失效，请重新授权。',

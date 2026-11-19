@@ -8,7 +8,8 @@ import openai
 from src.config import get_config
 from src.llm.model_source import CHATGPT_SIWC
 from src.llm.provider_cache import filter_prompt_cache_telemetry
-from src.llm.usage import normalize_litellm_usage
+from src.llm.usage import normalize_litellm_usage, should_persist_usage_telemetry
+from src.storage import persist_llm_usage
 from src.services.chatgpt_oauth_service import ChatGPTError, RESOURCE
 
 
@@ -35,14 +36,16 @@ class ChatGPTResponse:
         return text
 
     def output_error(self, message):
-        return ChatGPTError("chatgpt_invalid_output", message, request_id=self.response_id)
+        error = ChatGPTError("chatgpt_invalid_output", message, request_id=self.response_id)
+        error.usage = self.usage
+        return error
 
 
 def _dump(item):
     return item.model_dump(mode="json", by_alias=True, exclude_unset=True)
 
 
-def consume_responses(stream, progress=None, request_id=None):
+def consume_responses(stream, progress=None, request_id=None, on_completed=None):
     done_items = {}
     completed = None
     characters = 0
@@ -55,6 +58,12 @@ def consume_responses(stream, progress=None, request_id=None):
             if completed is not None:
                 raise ChatGPTError("chatgpt_protocol_error", "Repeated completion event", request_id=request_id)
             completed = event.response
+            if completed.status == "completed":
+                usage = normalize_litellm_usage(completed.usage, model=completed.model, provider=CHATGPT_SIWC)
+                usage["provider"] = CHATGPT_SIWC
+                usage = filter_prompt_cache_telemetry(usage, get_config())
+                if on_completed is not None:
+                    on_completed(usage, completed.model)
         elif event.type in {"response.failed", "response.incomplete", "error"}:
             response = getattr(event, "response", None)
             detail = getattr(response, "error", None) or getattr(response, "incomplete_details", None) or event
@@ -72,12 +81,26 @@ def consume_responses(stream, progress=None, request_id=None):
     items = [_dump(item) for item in completed.output] if completed.output else [
         done_items[index] for index in sorted(done_items)
     ]
-    usage = normalize_litellm_usage(completed.usage, model=completed.model, provider=CHATGPT_SIWC)
-    usage["provider"] = CHATGPT_SIWC
     return ChatGPTResponse(items, completed.model, usage, completed.id)
 
 
-def request_responses(service, source, *, items, instructions, timeout, tools=None, progress=None):
+def request_responses(service, source, *, call_type, items, instructions, timeout, stock_code=None, tools=None, progress=None):
+    completed_usage = None
+
+    def record_usage(usage, model):
+        nonlocal completed_usage
+        completed_usage = usage
+        if should_persist_usage_telemetry(usage):
+            persist_llm_usage(usage, model, call_type=call_type, stock_code=stock_code)
+
+    try:
+        return _stream(service, source, items, instructions, timeout, tools, progress, record_usage)
+    except ChatGPTError as exc:
+        exc.usage = completed_usage
+        raise
+
+
+def _stream(service, source, items, instructions, timeout, tools, progress, record_usage):
     payload = {
         "model": source.model, "input": items, "instructions": instructions, "store": False, "stream": True,
     }
@@ -101,9 +124,8 @@ def request_responses(service, source, *, items, instructions, timeout, tools=No
     try:
         with service.start_request(source, dispatch) as stream:
             request_id = stream.response.headers.get("x-request-id")
-            result = consume_responses(stream, progress, request_id)
+            result = consume_responses(stream, progress, request_id, record_usage)
         service.ensure_active(source)
-        result.usage = filter_prompt_cache_telemetry(result.usage, get_config())
         return result
     except openai.APIStatusError as exc:
         raise ChatGPTError.upstream(

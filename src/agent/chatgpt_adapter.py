@@ -22,7 +22,7 @@ class ChatGPTToolAdapter:
         try:
             return self._call(messages, tools, timeout)
         except ChatGPTError as exc:
-            return LLMResponse(provider="error", content=str(exc))
+            return LLMResponse(provider="error", content=str(exc), usage=exc.usage or {})
 
     def _call(self, messages, tools, timeout):
         functions = {
@@ -46,7 +46,7 @@ class ChatGPTToolAdapter:
             } for row in results)
 
         response = request_responses(
-            get_chatgpt_service(), self.source, items=self.items, instructions=self.instructions,
+            get_chatgpt_service(), self.source, call_type="agent", items=self.items, instructions=self.instructions,
             timeout=self.timeout if timeout is None else timeout,
             tools=[{
                 "type": "namespace", "name": _NAMESPACE,

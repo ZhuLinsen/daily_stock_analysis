@@ -1,7 +1,7 @@
 import { isAxiosError } from 'axios';
 import { create } from 'zustand';
-import { chatgptApi, type ChatGPTModel, type ChatGPTStatus } from '../api/chatgpt';
-import { getParsedApiError } from '../api/error';
+import { chatgptApi, type DisconnectTarget, type ChatGPTModel, type ChatGPTStatus } from '../api/chatgpt';
+import { extractErrorCode, getParsedApiError } from '../api/error';
 import type { ChatGPTModelSource } from '../types/modelSource';
 
 interface ChatGPTState {
@@ -11,7 +11,7 @@ interface ChatGPTState {
   error: string | null;
   refresh: (refreshModels?: boolean) => Promise<void>;
   selectModel: (model: string) => void;
-  disconnect: () => Promise<boolean | null | undefined>;
+  disconnect: (target: DisconnectTarget) => Promise<boolean | null | undefined>;
 }
 
 const connectionErrors = new Set([
@@ -32,9 +32,30 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
     return changed;
   }
 
-  async function readStatus(read: number) {
-    const status = await chatgptApi.status();
-    if (read === readSequence) return { status, changed: applyStatus(status) };
+  async function syncConnection(read: number, refreshModels = false) {
+    let failedConnection: string | undefined;
+    while (read === readSequence) {
+      const status = await chatgptApi.status();
+      if (read !== readSequence) return;
+      const changed = applyStatus(status);
+      const id = status.connection_id;
+      if (!status.connected || !id || id === failedConnection) return status;
+      if (!changed && !refreshModels && get().models.length) return status;
+      try {
+        const models = await chatgptApi.models(id, refreshModels);
+        if (read !== readSequence) return;
+        set({ models, model: models.some(({ slug }) => slug === get().model) ? get().model : '' });
+        return status;
+      } catch (error) {
+        if (read !== readSequence) return;
+        const code = isAxiosError(error) && extractErrorCode(error.response?.data);
+        if (!code || !connectionErrors.has(code)) throw error;
+        // This ID can no longer be selected, even if the following status read fails.
+        set({ status: null, model: '', models: [] });
+        failedConnection = id;
+        refreshModels = false;
+      }
+    }
   }
 
   return {
@@ -43,34 +64,24 @@ export const useChatGPTStore = create<ChatGPTState>((set, get) => {
     refresh: async (refreshModels = false) => {
       const read = ++readSequence;
       try {
-        const snapshot = await readStatus(read);
-        if (!snapshot || read !== readSequence) return;
-        const { status, changed } = snapshot;
-        if (!status.connected || !status.connection_id || !(changed || refreshModels || !get().models.length)) return;
-        try {
-          const models = await chatgptApi.models(status.connection_id, refreshModels);
-          if (read !== readSequence) return;
-          set({ models, model: models.some(({ slug }) => slug === get().model) ? get().model : '' });
-        } catch (error) {
-          if (read !== readSequence) return;
-          const code = isAxiosError<{ detail?: { error?: string } }>(error) && error.response?.data?.detail?.error;
-          if (!code || !connectionErrors.has(code)) throw error;
-          await readStatus(read);
-        }
+        await syncConnection(read, refreshModels);
       } catch (error) {
         if (read === readSequence) set({ error: getParsedApiError(error).message });
       }
     },
-    disconnect: async () => {
-      const connectionId = get().status?.connection_id;
+    disconnect: async (target) => {
+      const connectionId = 'connection_id' in target ? target.connection_id : undefined;
       ++readSequence;
       let result;
       try {
-        result = await chatgptApi.disconnect();
+        result = await chatgptApi.disconnect(target);
       } catch (error) {
+        if (isAxiosError(error) && extractErrorCode(error.response?.data) === 'chatgpt_target_changed') {
+          await syncConnection(++readSequence);
+          throw error;
+        }
         if (!isAxiosError(error) || error.response) throw error;
-        const snapshot = await readStatus(++readSequence).catch(() => undefined);
-        const status = snapshot?.status;
+        const status = await syncConnection(++readSequence).catch(() => undefined);
         if (status?.available && !status.connected && status.pending === false) return false;
         return undefined;
       }
