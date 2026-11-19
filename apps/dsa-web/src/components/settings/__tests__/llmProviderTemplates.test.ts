@@ -10,6 +10,10 @@ import {
 } from '../llmProviderTemplates';
 
 describe('llmProviderTemplates', () => {
+  it('preserves current MiniMax discount models returned by x6.ai', () => {
+    const models = ['openai/minimax/minimax-m3.1-flash-discount', 'minimax/minimax-m3-discount'];
+    expect(filterDiscoveredTextModels(models)).toEqual(models);
+  });
   it('filters only MiniMax text recommendations and orders Flash before M3', () => {
     const models = [
       'gpt-4o', 'MiniMax-M2.7', 'MiniMax-Text-01', 'MiniMax-VL-01', 'MiniMax-M3', 'MiniMax-M3.1-Flash',
@@ -27,6 +31,7 @@ describe('llmProviderTemplates', () => {
   it('keeps provider template order aligned with the existing preset dropdown order', () => {
     expect(LLM_PROVIDER_TEMPLATES.map((template) => template.channelId)).toEqual([
       'modelflare',
+      'x6ai',
       'aihubmix',
       'deepseek',
       'dashscope',
@@ -59,6 +64,18 @@ describe('llmProviderTemplates', () => {
       ],
     });
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.modelflare.configHint).toContain('路由分组');
+  });
+
+  it('offers x6.ai registration and a configurable OpenAI-compatible channel', () => {
+    expect(LLM_PROVIDER_TEMPLATE_BY_ID.x6ai).toMatchObject({
+      protocol: 'openai',
+      baseUrl: 'https://api.x6.ai/v1',
+      placeholderModels: '',
+      capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+      officialSources: expect.arrayContaining([
+        { label: 'x6.ai 专属注册', url: 'https://console.x6pro.io/register?code=zJ2qSdns' },
+      ]),
+    });
   });
 
   it('keeps the Anspire LLM preset available without promotional labeling', () => {

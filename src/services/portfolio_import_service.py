@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
@@ -155,7 +156,11 @@ class PortfolioImportService:
         errors: List[str] = []
 
         for idx, row in df.iterrows():
-            normalized = self._normalize_trade_row(row=row, parser_spec=parser_spec)
+            try:
+                normalized = self._normalize_trade_row(row=row, parser_spec=parser_spec)
+            except ValueError as exc:
+                # Reject the upload before commit can persist any earlier rows.
+                raise ValueError(f"CSV row {int(idx) + 2}: {exc}") from exc
             if normalized is None:
                 skipped += 1
                 continue
@@ -198,6 +203,10 @@ class PortfolioImportService:
 
         for i, record in enumerate(records):
             try:
+                for field in ("quantity", "price", "fee", "tax"):
+                    value = float(record.get(field, 0.0) or 0.0)
+                    if not math.isfinite(value):
+                        raise ValueError(f"{field} must be finite")
                 trade_uid = (record.get("trade_uid") or "").strip() or None
                 dedup_hash = (record.get("dedup_hash") or "").strip()
                 if not dedup_hash:
@@ -336,25 +345,31 @@ class PortfolioImportService:
             return None
 
         quantity = self._parse_float(
-            self._pick(row, *(broker_hints.get("quantity") or ()), "成交数量", "数量", "成交股数")
+            self._pick(row, *(broker_hints.get("quantity") or ()), "成交数量", "数量", "成交股数", skip_nan=False),
+            field="quantity",
         )
         price = self._parse_float(
-            self._pick(row, *(broker_hints.get("price") or ()), "成交均价", "成交价格", "价格", "成交价", "均价")
+            self._pick(row, *(broker_hints.get("price") or ()), "成交均价", "成交价格", "价格", "成交价", "均价", skip_nan=False),
+            field="price",
         )
         if quantity is None or quantity <= 0 or price is None or price <= 0:
             return None
 
         fee = 0.0
         for col in ("手续费", "佣金", "交易费", "规费", "过户费"):
-            value = self._parse_float(self._pick(row, col))
+            value = self._parse_float(self._pick(row, col, skip_nan=False), field=col)
             if value is not None:
                 fee += value
 
         tax = 0.0
         for col in ("印花税", "税费", "其他税费"):
-            value = self._parse_float(self._pick(row, col))
+            value = self._parse_float(self._pick(row, col, skip_nan=False), field=col)
             if value is not None:
                 tax += value
+
+        for field, value in (("fee", fee), ("tax", tax)):
+            if not math.isfinite(value):
+                raise ValueError(f"{field} must be finite")
 
         trade_uid = self._pick(
             row,
@@ -380,25 +395,28 @@ class PortfolioImportService:
         }
 
     @staticmethod
-    def _pick(row: Any, *candidates: str) -> Any:
+    def _pick(row: Any, *candidates: str, skip_nan: bool = True) -> Any:
         for name in candidates:
             if name in row.index:
                 value = row.get(name)
-                if value is not None and str(value).strip() != "" and str(value).strip().lower() != "nan":
+                if value is not None and str(value).strip() != "" and (not skip_nan or str(value).strip().lower() != "nan"):
                     return value
         return None
 
     @staticmethod
-    def _parse_float(value: Any) -> Optional[float]:
+    def _parse_float(value: Any, *, field: str) -> Optional[float]:
         if value is None:
             return None
         text = str(value).strip().replace(",", "")
-        if not text or text.lower() == "nan":
+        if not text:
             return None
         try:
-            return float(text)
+            number = float(text)
         except ValueError:
             return None
+        if not math.isfinite(number):
+            raise ValueError(f"{field} must be finite")
+        return number
 
     @staticmethod
     def _parse_date(value: Any) -> Optional[date]:

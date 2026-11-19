@@ -1189,59 +1189,60 @@ class LLMChannelConfigTestCase(unittest.TestCase):
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     @patch("src.services.system_config_service.requests.get")
-    def test_requesty_discovered_models_save_and_route_through_gateway(
+    def test_gateway_discovered_models_save_and_route_through_gateway(
         self, mock_get, _mock_parse_yaml, _mock_setup_env
     ) -> None:
-        base_url = "https://router.requesty.ai/v1"
-        mock_response = Mock(ok=True, status_code=200)
-        mock_response.json.return_value = {
-            "data": [
-                {"id": "openai/gpt-4o-mini"},
-                {"id": "anthropic/claude-sonnet-4-6"},
-                {"id": "vertex/claude-sonnet-4-5"},
-                {"id": "gpt-6.1-terra"},
-            ]
-        }
-        mock_get.return_value = mock_response
+        for channel, base_url in (("requesty", "https://router.requesty.ai/v1"), ("x6ai", "https://api.x6.ai/v1")):
+            with self.subTest(channel=channel):
+                mock_response = Mock(ok=True, status_code=200)
+                mock_response.json.return_value = {
+                    "data": [
+                        {"id": "openai/gpt-4o-mini"},
+                        {"id": "anthropic/claude-sonnet-4-6"},
+                        {"id": "vertex/claude-sonnet-4-5"},
+                        {"id": "gpt-6.1-terra"},
+                    ]
+                }
+                mock_get.return_value = mock_response
 
-        payload = SystemConfigService(manager=Mock()).discover_llm_channel_models(
-            name="requesty",
-            protocol="openai",
-            base_url=base_url,
-            api_key="sk-test-value",
-        )
+                payload = SystemConfigService(manager=Mock()).discover_llm_channel_models(
+                    name=channel,
+                    protocol="openai",
+                    base_url=base_url,
+                    api_key="sk-test-value",
+                )
 
-        self.assertTrue(payload["success"])
-        expected = [
-            "openai/openai/gpt-4o-mini",
-            "openai/anthropic/claude-sonnet-4-6",
-            "openai/vertex/claude-sonnet-4-5",
-            "openai/gpt-6.1-terra",
-        ]
-        self.assertEqual(payload["models"], expected)
+                self.assertTrue(payload["success"])
+                expected = [
+                    "openai/openai/gpt-4o-mini",
+                    "openai/anthropic/claude-sonnet-4-6",
+                    "openai/vertex/claude-sonnet-4-5",
+                    "openai/gpt-6.1-terra",
+                ]
+                self.assertEqual(payload["models"], expected)
 
-        # The Web editor saves the selected discovery values as-is.
-        env = {
-            "LLM_CHANNELS": "requesty",
-            "LLM_REQUESTY_PROTOCOL": "openai",
-            "LLM_REQUESTY_BASE_URL": base_url,
-            "LLM_REQUESTY_API_KEY": "sk-test-value",
-            "LLM_REQUESTY_MODELS": ",".join(payload["models"]),
-        }
-        with patch.dict(os.environ, env, clear=True):
-            config = Config._load_from_env()
+                # The Web editor saves the selected discovery values as-is.
+                env = {
+                    "LLM_CHANNELS": channel,
+                    f"LLM_{channel.upper()}_PROTOCOL": "openai",
+                    f"LLM_{channel.upper()}_BASE_URL": base_url,
+                    f"LLM_{channel.upper()}_API_KEY": "sk-test-value",
+                    f"LLM_{channel.upper()}_MODELS": ",".join(payload["models"]),
+                }
+                with patch.dict(os.environ, env, clear=True):
+                    config = Config._load_from_env()
 
-        self.assertEqual(config.llm_channels[0]["models"], expected)
-        self.assertEqual(
-            [entry["litellm_params"]["model"] for entry in config.llm_model_list],
-            expected,
-        )
-        self.assertEqual(
-            {entry["litellm_params"]["api_base"] for entry in config.llm_model_list},
-            {base_url},
-        )
+                self.assertEqual(config.llm_channels[0]["models"], expected)
+                self.assertEqual(
+                    [entry["litellm_params"]["model"] for entry in config.llm_model_list],
+                    expected,
+                )
+                self.assertEqual(
+                    {entry["litellm_params"]["api_base"] for entry in config.llm_model_list},
+                    {base_url},
+                )
 
-    def test_requesty_model_normalization_is_idempotent(self) -> None:
+    def test_gateway_model_normalization_is_idempotent(self) -> None:
         from src.config import normalize_llm_channel_model
 
         cases = {
@@ -1254,7 +1255,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             "openai/anthropic/claude-sonnet-4-6": "openai/anthropic/claude-sonnet-4-6",
             "openai/vertex/claude-sonnet-4-5": "openai/vertex/claude-sonnet-4-5",
         }
-        for base_url in ("https://router.requesty.ai/v1", "https://router.eu.requesty.ai/v1"):
+        for base_url in ("https://router.requesty.ai/v1", "https://router.eu.requesty.ai/v1", "https://api.x6.ai/v1"):
             for protocol in ("openai", ""):
                 for raw, expected in cases.items():
                     with self.subTest(base_url=base_url, protocol=protocol, model=raw):

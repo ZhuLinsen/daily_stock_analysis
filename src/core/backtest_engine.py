@@ -46,7 +46,7 @@ class BacktestResultLike(Protocol):
 class EvaluationConfig:
     eval_window_days: int
     neutral_band_pct: float = 2.0
-    engine_version: str = "v1"
+    engine_version: str = "v1.1"
 
 
 class BacktestEngine:
@@ -172,6 +172,8 @@ class BacktestEngine:
         - Daily bars cannot determine intraday ordering. If stop-loss and
           take-profit are both touched in the same bar, we record
           first_hit="ambiguous" and assume stop-loss first for simulated exit.
+        - Targets invalid relative to start_price retain direction evaluation
+          but have no simulated return or applicable target-hit flags.
         """
 
         if start_price is None or start_price <= 0:
@@ -229,6 +231,7 @@ class BacktestEngine:
             simulated_exit_reason,
         ) = cls._evaluate_targets(
             position=position,
+            start_price=start_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
             window_bars=window_bars,
@@ -689,6 +692,7 @@ class BacktestEngine:
         cls,
         *,
         position: str,
+        start_price: float,
         stop_loss: Optional[float],
         take_profit: Optional[float],
         window_bars: List[DailyBarLike],
@@ -712,6 +716,21 @@ class BacktestEngine:
                 None,
                 "cash",
             )
+
+        # Targets were authored at analysis time; a later entry anchor can make
+        # the original plan invalid. Keep direction evaluation, but exclude this
+        # plan from simulated returns and target-hit denominators.
+        for target, is_stop in ((stop_loss, True), (take_profit, False)):
+            if target is None:
+                continue
+            value = cls._finite_optional_float(target)
+            if (
+                value is None
+                or value <= 0
+                or (is_stop and value >= start_price)
+                or (not is_stop and value <= start_price)
+            ):
+                return (None, None, "not_applicable", None, None, None, "invalid_targets")
 
         has_any_target = stop_loss is not None or take_profit is not None
         if not has_any_target:

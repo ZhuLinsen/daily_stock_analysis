@@ -59,6 +59,26 @@ MODELFLARE_KEY=sk-xxx
 
 `gpt-6.1-sol` 是本项目的 Modelflare 默认模型；实际模型列表与可用性以账号权限、控制台和 Web 设置页「测试连接」结果为准。渠道模板仅决定新建配置的初始值，不会改写已保存的渠道、主模型或 fallback。
 
+### x6.ai 聚合平台
+
+[x6.ai 专属注册](https://console.x6pro.io/register?code=zJ2qSdns) · [API 文档](https://x6.ai/zh/docs) · [模型列表](https://x6.ai/zh/models)
+
+在 WebUI「设置 → AI 模型配置 → 快速添加渠道」中选择 `x6.ai`，可点击下拉框旁的「注册 x6.ai」创建账号；填写自己的 API Key，使用「获取模型」选择当前账号可用的模型，再测试连接。默认 Base URL 为 `https://api.x6.ai/v1`，接口按服务商提供的 OpenAI-compatible Chat Completions 文档配置。该预设不会改写已有用户渠道。
+
+本地或 Docker 也可配置：
+
+```env
+LLM_CHANNELS=x6ai
+LLM_X6AI_PROTOCOL=openai
+LLM_X6AI_BASE_URL=https://api.x6.ai/v1
+LLM_X6AI_API_KEY=sk-your-own-key
+LLM_X6AI_MODELS=openai/anthropic/claude-haiku-5-5-discount
+```
+
+模型仅为示例，需从账号模型列表获取并测试连接。x6.ai 的 `vendor/model` ID 必须保留：WebUI「获取模型」会添加一次 `openai/` 路由层，例如 `anthropic/…` 保存为 `openai/anthropic/…`，`openai/…` 保存为 `openai/openai/…`。手动配置推荐复制获取模型后的完整值；已有配置不会被自动重写。
+
+GitHub Actions 中将 `LLM_CHANNELS=x6ai`、协议、地址和模型配置为 Variables，`LLM_X6AI_API_KEY` 或 `LLM_X6AI_API_KEYS` 配置为 Secrets；每日分析工作流已透传该渠道全部字段。Docker / Desktop 复用相同配置与 WebUI。模型目录不保证当前 Key 对每个模型都有调用权限；以测试连接结果为准，失败时可换用已验证模型。测试用 Key 不应提交到仓库。
+
 ### DeepSeek 官方渠道
 
 ```env
