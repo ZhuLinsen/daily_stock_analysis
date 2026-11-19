@@ -23,17 +23,20 @@ KNOWN_AUTHOR_LOGINS = {
 
 
 def _run_git(*args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=ROOT, text=True, encoding="utf-8").strip()
+    return subprocess.check_output(["git", *args], cwd=ROOT, text=True, encoding="utf-8")
+
+
+def _section_match(text: str, version: str) -> re.Match[str] | None:
+    return re.search(
+        rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|^\[Unreleased\]:|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
 
 
 def _section_for(text: str, version: str) -> str:
-    pattern = re.compile(rf"^## \[{re.escape(version)}\].*?$", re.MULTILINE)
-    match = pattern.search(text)
-    if not match:
-        return ""
-    next_match = re.search(r"^## \[", text[match.end() :], re.MULTILINE)
-    end = match.end() + next_match.start() if next_match else len(text)
-    return text[match.end() : end].strip()
+    match = _section_match(text, version)
+    return match.group(1).strip() if match else ""
 
 
 def _highlights(section: str) -> list[str]:
@@ -169,7 +172,7 @@ def _contributors(previous_tag: str, tag: str) -> list[str]:
 
 def build(tag: str) -> str:
     previous_tag = _previous_tag(tag)
-    # GitHub applies .github/release.yml from the tag (including excluded labels).
+    # GitHub applies the categories and exclusions configured in .github/release.yml.
     args = [
         "gh", "api", "--method", "POST", "repos/{owner}/{repo}/releases/generate-notes",
         "-f", f"tag_name={tag}", "--jq", ".body",
@@ -221,16 +224,15 @@ def archive_release(tag: str) -> None:
     insert_at = next((header.start() for header in headers if _version("v" + header.group(1)) < version), end_of_versions)
     before = text[:insert_at]
     newest = not headers or insert_at == headers[0].start()
-    if newest:
-        # Carry over legacy handwritten entries present at the tag. Keep any later edits pending.
-        pending = _section_for(before, "Unreleased")
-        if pending:
-            at_tag = _section_for(_run_git("show", f"{tag}:docs/CHANGELOG.md"), "Unreleased").splitlines()
-            carried = [line for line in pending.splitlines() if line.startswith("- ") and line in at_tag]
-            if carried:
-                kept = [line for line in pending.splitlines() if line not in carried]
-                before = before.replace(pending, "\n".join(kept).strip(), 1)
-                entry += "### 补充说明\n\n" + "\n".join(carried) + "\n\n"
+    pending = _section_match(before, "Unreleased")
+    if pending:
+        # The previous tag can still contain entries waiting for its own archive.
+        pending_lines = pending.group(1).splitlines()
+        carried = _released_pending_entries(tag, pending_lines)
+        if carried:
+            kept = "\n".join(line for line in pending_lines if line not in carried).strip("\n")
+            before = before[:pending.start(1)] + (f"\n{kept}\n\n" if kept else "\n") + before[pending.end(1):]
+            entry += "### 补充说明\n\n" + "\n".join(carried) + "\n\n"
     after = text[insert_at:]
     if references:
         pending_link = references.group()
@@ -238,8 +240,25 @@ def archive_release(tag: str) -> None:
             repo_url = release["url"].rsplit("/releases/tag/", 1)[0]
             pending_link = f"[Unreleased]: {repo_url}/compare/{tag}...HEAD"
         after = after.replace(references.group(), f"{pending_link}\n[{tag[1:]}]: {release['url']}", 1)
-    CHANGELOG.write_text(before.rstrip() + "\n\n" + entry + after, encoding="utf-8")
+    CHANGELOG.write_text(before.rstrip("\n") + "\n\n" + entry + after, encoding="utf-8")
     print(f"Archived {tag} in {CHANGELOG}")
+
+
+def _released_pending_entries(tag: str, pending_lines: list[str]) -> list[str]:
+    bullets = [line for line in pending_lines if line.startswith("- ")]
+    if not bullets:
+        return []
+
+    previous_tag = _previous_tag(tag)
+    at_tag = _tag_pending_entries(tag)
+    at_previous = _tag_pending_entries(previous_tag) if previous_tag else set()
+    released_lines = at_tag - at_previous
+    return [line for line in bullets if line in released_lines]
+
+
+def _tag_pending_entries(tag: str) -> set[str]:
+    section = _section_match(_run_git("show", f"{tag}:docs/CHANGELOG.md"), "Unreleased")
+    return {line for line in section.group(1).splitlines() if line.startswith("- ")} if section else set()
 
 
 def main() -> None:

@@ -42,6 +42,7 @@ REVIEW_PATHS = [
 
 GITHUB_API_PAGE_SIZE = 100
 GITHUB_API_MAX_PAGES = 30
+GITHUB_WORKFLOW_RUN_LIMIT = 1000
 
 
 def run_git(args):
@@ -171,10 +172,11 @@ def _build_api_diff(files):
     return '\n'.join(chunks)
 
 
-def get_review_data():
+def get_review_data(pull_files=None):
     """Return review diff, changed paths, and truncation without executing PR code."""
     if os.environ.get('AI_REVIEW_SOURCE') == 'github_api':
-        pull_files = _fetch_pull_files()
+        if pull_files is None:
+            pull_files = _fetch_pull_files()
         files = [item['filename'] for item in pull_files if item.get('filename')]
         diff = _build_api_diff(pull_files)
     else:
@@ -202,24 +204,61 @@ def get_changed_files():
 def get_pr_context():
     """Read the PR metadata used to identify the version and its evidence."""
     payload = _event_payload()
-    pr = payload.get('pull_request') or {}
-    if not pr and os.environ.get('AI_REVIEW_SOURCE') == 'github_api':
+    if os.environ.get('AI_REVIEW_SOURCE') == 'github_api':
         try:
             repository = _github_repository()
             number = _pull_request_number(payload)
-            pr = _github_api_json(f'/repos/{repository}/pulls/{number}')
+            return _github_api_json(f'/repos/{repository}/pulls/{number}')
         except (RuntimeError, ValueError):
-            pr = {}
-    return pr
+            return {}
+    return payload.get('pull_request') or {}
+
+
+def _pr_revision(pr):
+    base = pr.get('base') or {}
+    return {
+        'number': pr.get('number'),
+        'head_sha': (pr.get('head') or {}).get('sha'),
+        'base_ref': base.get('ref'),
+        'base_sha': base.get('sha'),
+    }
+
+
+def _verified_pr_context(pr):
+    latest = get_pr_context()
+    revision = _pr_revision(pr)
+    if not all(revision.values()) or revision != _pr_revision(latest):
+        raise RuntimeError('无法确认审查对应的 PR 版本，请重新运行审查。')
+    return latest
+
+
+def _find_ci_run(repo, revision):
+    if not all(revision.values()):
+        return None
+    sha = revision['head_sha']
+    for page in range(1, GITHUB_WORKFLOW_RUN_LIMIT // GITHUB_API_PAGE_SIZE + 1):
+        runs = _github_api_json(
+            f'/repos/{repo}/actions/workflows/ci.yml/runs?event=pull_request&head_sha={sha}'
+            f'&per_page={GITHUB_API_PAGE_SIZE}&page={page}'
+        )['workflow_runs']
+        for run in runs:
+            pulls = run.get('pull_requests') or []
+            # Unattributed or ambiguous runs cannot establish CI coverage for this PR.
+            if run['head_sha'] == sha and len(pulls) == 1 and _pr_revision(pulls[0]) == revision:
+                return run
+        if len(runs) < GITHUB_API_PAGE_SIZE:
+            break
+    return None
 
 
 def get_review_evidence(pr):
     """Collect links as evidence leads. The text reviewer never opens images."""
-    sha = (pr.get('head') or {}).get('sha')
+    revision = _pr_revision(pr)
+    sha = revision['head_sha']
     if os.environ.get('AI_REVIEW_SOURCE') != 'github_api' or not sha:
         return '当前 Head 的 CI、评论附件和可视产物尚未核验。'
     repo = _github_repository()
-    evidence = [f'当前 Head: {sha}']
+    evidence = [f"当前 Head: {sha}，目标分支: {revision['base_ref']}，基线: {revision['base_sha']}"]
     if pr.get('merged'):
         evidence.append('GitHub 状态: 已合入。')
     elif pr.get('state') == 'closed':
@@ -227,12 +266,11 @@ def get_review_evidence(pr):
     else:
         conflict = {True: '无合并冲突', False: '存在合并冲突'}.get(pr.get('mergeable'), '合并冲突状态待核实')
         evidence.append(f"GitHub 状态: {'草稿，' if pr.get('draft') else ''}{conflict}。")
+        if pr.get('mergeable_state'):
+            evidence.append(f"GitHub 合并状态: {pr['mergeable_state']}。")
     try:
-        runs = _github_api_json(
-            f'/repos/{repo}/actions/workflows/ci.yml/runs?event=pull_request&head_sha={sha}&per_page=1'
-        )['workflow_runs']
-        if runs and runs[0]['head_sha'] == sha:
-            run = runs[0]
+        run = _find_ci_run(repo, revision)
+        if run:
             evidence.append(f"CI: {run['conclusion'] or run['status']} {run['html_url']}")
             jobs = _github_api_json(f"/repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100")['jobs']
             evidence.extend(f"- {job['name']}: {job['conclusion'] or job['status']}" for job in jobs)
@@ -243,7 +281,7 @@ def get_review_evidence(pr):
                     state = '已过期' if item['expired'] else '已列出，画面未查看'
                     evidence.append(f"Web 产物（{state}）: {run['html_url']}/artifacts/{item['id']}")
         else:
-            evidence.append('当前 Head 的 CI 运行待核实。')
+            evidence.append('当前 Head 的 CI 运行待核实。未能匹配此 PR 与目标基线。')
     except RuntimeError:
         evidence.append('CI 或 artifact 查询失败，覆盖状态待核实。')
 
@@ -375,16 +413,39 @@ def ai_review(diff_content, files, truncated, pr):
     return None
 
 
+def _format_review_scope(pull_files):
+    additions = sum(file['additions'] for file in pull_files)
+    deletions = sum(file['deletions'] for file in pull_files)
+    lines = [
+        '<details><summary>变更范围与检查信息</summary>',
+        '',
+        f'共 {len(pull_files)} 个文件，+{additions} / -{deletions}。请核对对应版本的独立 CI。',
+        '',
+    ]
+    for file in pull_files[:20]:
+        name = json.dumps(file['filename'], ensure_ascii=False)[1:-1].replace('`', '\\u0060')
+        lines.append(f"- `{name}` (+{file['additions']}/-{file['deletions']})")
+    if len(pull_files) > 20:
+        lines.extend(['', f'另有 {len(pull_files) - 20} 个文件，完整清单见本次审查步骤的日志。'])
+    return '\n'.join([*lines, '', '</details>'])
+
+
+def _review_summary_link():
+    server = os.environ.get('GITHUB_SERVER_URL')
+    run_id = os.environ.get('GITHUB_RUN_ID')
+    attempt = os.environ.get('GITHUB_RUN_ATTEMPT')
+    if server and run_id and attempt:
+        return f"{server.rstrip('/')}/{_github_repository()}/actions/runs/{run_id}/attempts/{attempt}"
+    return None
+
+
 def main():
+    github_api = os.environ.get('AI_REVIEW_SOURCE') == 'github_api'
     pr = get_pr_context()
-    diff, files, truncated = get_review_data()
-    if os.environ.get('AI_REVIEW_SOURCE') == 'github_api':
-        latest = get_pr_context()
-        for ref in ('base', 'head'):
-            sha = (pr.get(ref) or {}).get('sha')
-            if not sha or sha != (latest.get(ref) or {}).get('sha'):
-                raise RuntimeError('无法确认 diff 对应的 PR 版本，请重新运行审查。')
-        pr = latest
+    pull_files = _fetch_pull_files() if github_api else None
+    diff, files, truncated = get_review_data(pull_files)
+    if github_api:
+        pr = _verified_pr_context(pr)
 
     if not files:
         print("没有可审查的代码/文档/配置变更，跳过 AI 审查")
@@ -399,21 +460,40 @@ def main():
         print(f"⚠️ Diff 内容已截断至 {MAX_DIFF_LENGTH} 字符")
 
     review = ai_review(diff, files, truncated, pr)
+    if github_api:
+        _verified_pr_context(pr)
 
     summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
 
     strict_mode = os.environ.get('AI_REVIEW_STRICT', 'false').lower() == 'true'
 
     if review:
-        head = (pr.get('head') or {}).get('sha')
-        if head:
-            review = f"审查版本 `{head}`\n\n{review}"
+        if truncated:
+            review = f'> 文本 diff 已截断至 {MAX_DIFF_LENGTH} 字符，请核对未覆盖的补丁。\n\n{review}'
+        revision = _pr_revision(pr)
+        head = revision['head_sha']
+        heading = f"审查版本 `{head}`" if head else ''
+        if github_api:
+            heading += f"（目标分支 `{revision['base_ref']}`，基线 `{revision['base_sha']}`）"
+        if heading:
+            review = f"{heading}\n\n{review}"
+        if github_api:
+            review += f'\n\n{_format_review_scope(pull_files)}'
         if summary_file:
             with open(summary_file, 'a', encoding='utf-8') as f:
                 f.write(f"## 🤖 AI 代码审查\n\n{review}\n")
 
-        with open('ai_review_result.txt', 'w', encoding='utf-8') as f:
-            f.write(review)
+        summary_link = _review_summary_link() if github_api and summary_file else None
+        comment = review
+        if summary_link:
+            # The comment job fetches live files. Keep the review, CI and captured scope in the same snapshot.
+            comment = (
+                f'{heading}的审查正文、CI 证据及变更范围见[运行摘要]({summary_link})。\n'
+                'PR 更新后请重新运行审查。下方文件统计取自生成评论时的 PR。\n'
+            )
+        elif github_api and os.environ.get('GITHUB_ACTIONS') == 'true':
+            raise RuntimeError('无法生成审查运行摘要链接，请重新运行审查。')
+        Path('ai_review_result.txt').write_text(comment, encoding='utf-8')
 
         print("AI 审查完成")
     else:

@@ -156,7 +156,7 @@ gh run view <run_id> --log-failed
 | `web-gate` | `.github/workflows/ci.yml` | Web lint、构建、Playwright smoke 和 fixtures，上传 `web-ui-evidence-<head SHA>` | 是（触发时） |
 | `desktop-futu-package-windows/macos` | `.github/workflows/ci.yml` | 命中打包路径时验证冻结后端的 Futu SDK，macOS 另验未签名包 | 是（触发时） |
 | `network-smoke` | `.github/workflows/network-smoke.yml` | `pytest -m network` + `scripts/test.sh quick` | 否，观测项 |
-| `PR Review` | `.github/workflows/pr-review.yml` | 维护者通过 `workflow_dispatch` 指定 PR，读取元数据及 diff，生成辅助审查和标签 | 否，辅助项 |
+| `PR Review` | `.github/workflows/pr-review.yml` | 维护者通过 `workflow_dispatch` 指定 PR，审查正文与该版本的证据保存在运行摘要，PR 评论提供摘要链接，工作流也生成辅助标签 | 否，辅助项 |
 
 若 PR 上已有对应 CI 结果，可直接引用 CI 结论；若 CI 未覆盖改动面，或本地与 CI 环境差异较大，需要补充说明本地验证与缺口。
 
@@ -284,4 +284,4 @@ CI 通过只能说明自动检查通过，不能替代人工语义收敛，也�
 - 自动 tag 默认不触发，只有 commit title 包含 `#patch`、`#minor`、`#major` 才会触发版本号更新。
 - 手动打 tag 必须使用 annotated tag。
 - 用户可见变更优先通过 PR 合入，并补齐 label 与验证说明。
-- 推送版本 tag 时，`create-release.yml` 调用 GitHub 根据 `.github/release.yml` 生成发布说明。维护者可在 GitHub Release 校订中文亮点、升级步骤。发布定稿后，在已获取该 tag、已登录 GitHub CLI 的仓库中运行 `python .github/scripts/build_release_notes.py --archive vX.Y.Z`，核对差异后随发版维护 PR 归档。此命令只更新本地文件，同一版本重复执行保留已有归档。
+- 推送版本 tag 时，`create-release.yml` 调用 GitHub 根据 `.github/release.yml` 生成发布说明。维护者可在 GitHub Release 校订中文亮点、升级步骤。发布定稿后，在已获取该 tag 和上一版本 tag、已登录 GitHub CLI 的仓库中运行 `python .github/scripts/build_release_notes.py --archive vX.Y.Z`，核对差异后随发版维护 PR 归档。命令按相邻 tag 确定旧条目的归属，支持乱序归档，保留后来修改的条目及已有版本归档。
