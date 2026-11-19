@@ -7,4 +7,5 @@ applyTo: "apps/dsa-web/**,apps/dsa-desktop/**,scripts/run-desktop.ps1,scripts/bu
 - Preserve the existing Vite + React web structure and Electron desktop runtime assumptions; reuse current API/state patterns instead of adding parallel client abstractions.
 - If a change affects API fields, auth state, route behavior, Markdown/chart rendering, local backend startup, or report payloads, assess both Web and Desktop compatibility.
 - Validate Web changes with `cd apps/dsa-web && npm ci && npm run lint && npm run build` when feasible.
+- For visible changes, link the affected state in screenshots or the current web-gate fixture artifact and say what was inspected. Distinguish Web UI shared by Electron from changes to the desktop shell.
 - Validate Desktop changes by building Web first, then `apps/dsa-desktop`; if platform limits prevent full Electron validation, call out the exact risk in the final delivery.

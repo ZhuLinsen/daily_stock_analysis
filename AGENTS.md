@@ -17,10 +17,10 @@
 - 优先复用现有模块、配置入口、脚本和测试，不新增平行实现。
 - 默认稳定性优先于“顺手优化”；非当前任务直接需要的重构、抽象和基础设施迁移一律克制。
 - 新增配置项时，必须同步更新 `.env.example` 和相关文档。
-- 涉及用户可见能力、CLI/API 行为、部署方式、通知方式、报告结构变化时，必须同步更新相关文档与 `docs/CHANGELOG.md`。
+- 用户可见能力、CLI/API、部署、通知或报告行为发生变化时，更新对应的使用文档。普通 PR 用标题概括用户或维护者得到的变化，选择对应标签，在描述中说明兼容性和需要用户执行的操作。
 - 修改报告格式、报告渲染效果或 Web UI 界面时，PR 描述必须附受影响报告 / 页面截图；涉及前后差异时优先附前后对比，无法截图时说明原因与替代可视证据。
 - Issue / PR 过程截图、审查截图、一次性验收截图和临时可视证据不得作为仓库文件合入；应放在 PR 描述、PR 评论、GitHub 附件、Actions artifact 或外部可访问证据链接中。产品长期文档确需保留的示意图除外，但文件名和文档语义必须脱离具体 issue / PR 编号。
-- `docs/CHANGELOG.md` 的 `[Unreleased]` 段使用**扁平格式**：每条独立一行，格式为 `- [类型] 描述`，类型取值：`新功能`/`改进`/`修复`/`文档`/`测试`/`chore`；**禁止在 `[Unreleased]` 内新增 `### 类目标题`**，以减少并发 PR 的 merge 冲突。发版时由 maintainer 汇总整理成带标题的正式格式。
+- 发布流程根据已合入 PR 的标题和标签生成版本说明，分类及 `skip-changelog` 见 `.github/release.yml`。`docs/CHANGELOG.md` 是版本归档，由维护者按第 9 节集中更新。已有 PR 的旧条目可以随迁移保留。
 - `README.md` 只用于项目定位、核心能力总览、快速开始、主要入口、赞助/合作等首页级信息；非必要不更新 README，避免持续膨胀。
 - 更细的模块行为、页面交互、专题配置、排障说明、字段契约、实现语义和边界条件，优先更新对应 `docs/*.md` 或专题文档，不写入 README。
 - 变更中英双语文档之一时，需评估另一份是否需要同步；若未同步，交付说明里要写明原因。
@@ -34,12 +34,9 @@
 
 ## 1.2 贡献质量底线
 
-- 本仓库不接受以堆叠代码量、扩大 diff 面、补丁式响应 review 来替代真实设计收敛的 PR。
-- 贡献质量以是否解决明确问题、是否最小化影响面、是否保持现有契约一致、是否覆盖真实风险路径为准；不以新增行数、文件数量、功能宣传或“看起来完整”为准。
-- 请不要把本仓库当作低成本试验场、简历展示场或 contribution farming 场所。任何 PR 都必须证明作者理解当前系统契约，并完成基本自审、集成和验证。
-- 使用 AI 辅助开发本身不是问题；问题是提交 AI 生成后未经人工语义审查、未验证、未收敛的代码。此类 PR 会按低质量提交处理。
-- review 反馈后，不接受只在被指出的位置追加局部 patch。作者必须重新检查同一业务语义涉及的所有入口、配置、测试、文档、workflow 和用户可见路径。
-- 如果一个 PR 在多轮 review 后仍持续出现同类契约漂移、重复 fallback、测试绕过真实风险层、PR body 与实际 diff 不一致等问题，维护者可以要求关闭重做，而不是继续逐点 review。
+- 每个 PR 应解决明确问题，将改动限定在必要范围，保持相关入口的行为一致，并验证真实风险路径。评审以这些证据判断贡献价值。
+- 作者须理解现有业务契约，完成自审、集成和验证。使用 AI 辅助生成的改动同样须经作者逐项核对实际行为。
+- 收到评审反馈后，按第 8.1 节处理。
 
 ## 2. AI 协作资产治理
 
@@ -69,7 +66,7 @@ python scripts/check_ai_assets.py
   - `src/core/`：主流程编排
   - `src/services/`：业务服务层
   - `src/repositories/`：数据访问层
-  - `src/reports/`：报告生成
+  - `src/services/report_renderer.py`、`templates/`：报告模板渲染；`src/notification.py` 编排通知；`apps/dsa-web/src/components/report/` 展示 Web 和桌面端的报告
   - `src/schemas/`：Schema / 数据结构
   - `data_provider/`：多数据源适配与 fallback
   - `api/`：FastAPI API
@@ -98,8 +95,7 @@ uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ### 后端验证
 
 ```bash
-pip install -r requirements.txt
-pip install flake8 pytest
+python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
 python -m pytest -m "not network"
 python -m py_compile <changed_python_files>
@@ -114,7 +110,7 @@ npm run lint
 npm run build
 
 cd ../dsa-desktop
-npm install
+npm ci
 npm run build
 ```
 
@@ -135,13 +131,7 @@ gh run view <run_id> --log-failed
 5. 只做和当前任务直接相关的最小改动，不顺手夹带无关重构。
 6. 如果发现文档、脚本、工作流描述不一致，优先信任实际代码与工作流，再决定是否顺手修正文档。
 7. 改完后按下面的验证矩阵执行检查。
-8. 最终交付默认要说明：
-   - 改了什么
-   - 为什么这么改
-   - 验证情况
-   - 未验证项
-   - 风险点
-   - 回滚方式
+8. 按第 9 节整理交付说明。
 
 ## 6. 验证矩阵
 
@@ -152,11 +142,12 @@ gh run view <run_id> --log-failed
 | 检查项 | 来源 | 说明 | 是否阻断 |
 | --- | --- | --- | --- |
 | `ai-governance` | `.github/workflows/ci.yml` | 校验 `AGENTS.md` / `CLAUDE.md` / `.github` 指令 / `.claude/skills` 关系 | 是 |
-| `backend-gate` | `.github/workflows/ci.yml` | 执行 `./scripts/ci_gate.sh` | 是 |
-| `docker-build` | `.github/workflows/ci.yml` | Docker 构建与关键模块导入 smoke | 是 |
-| `web-gate` | `.github/workflows/ci.yml` | 前端改动时执行 `npm run lint` + `npm run build` | 是（触发时） |
+| `backend-gate` | `.github/workflows/ci.yml` | 汇总按路径触发的三个后端测试分片，涵盖 ci_gate.sh 的语法、Flake8、确定性检查及离线测试 | 是 |
+| `docker-build` | `.github/workflows/ci.yml` | 镜像构建及关键模块导入 smoke | 是（触发时） |
+| `web-gate` | `.github/workflows/ci.yml` | Web lint、构建、Playwright smoke 和 fixtures，上传 `web-ui-evidence-<head SHA>` | 是（触发时） |
+| `desktop-futu-package-windows/macos` | `.github/workflows/ci.yml` | 命中打包路径时验证冻结后端的 Futu SDK，macOS 另验未签名包 | 是（触发时） |
 | `network-smoke` | `.github/workflows/network-smoke.yml` | `pytest -m network` + `scripts/test.sh quick` | 否，观测项 |
-| `pr-review` | `.github/workflows/pr-review.yml` | PR 静态检查 + AI 审查 + 自动标签 | 否，辅助项 |
+| `PR Review` | `.github/workflows/pr-review.yml` | 维护者通过 `workflow_dispatch` 指定 PR，审查正文与该版本的证据保存在运行摘要，PR 评论提供摘要链接，工作流也生成辅助标签 | 否，辅助项 |
 
 若 PR 上已有对应 CI 结果，可直接引用 CI 结论；若 CI 未覆盖改动面，或本地与 CI 环境差异较大，需要补充说明本地验证与缺口。
 
@@ -234,14 +225,9 @@ gh run view <run_id> --log-failed
 - 每次进行 PR 创建 / 更新、PR 审查或 issue 分析前，必须先同步最新代码基线：先检查工作区状态并执行 `git fetch --all --prune`；若工作区干净且当前分支可 fast-forward，则执行 `git pull --ff-only`。如存在本地改动、冲突状态、未跟踪风险文件或无法 fast-forward，不得强行切分支、stash、reset 或覆盖本地状态；PR 审查 / issue 分析可改用已 fetch 的远端 refs/PR head 做分析，并在分析文档中明确记录未更新本地工作树的原因、当前本地 HEAD 与使用的远端基线；PR 创建 / 更新应先说明当前分支与目标基线差异，必要时请求用户确认 rebase、merge 或继续基于当前分支推进。
 - skill 默认优先读取 CI / 工作流证据，再决定是否补本地验证。
 - 除上述 PR 创建 / 更新、PR 审查 / issue 分析的安全 fast-forward 同步外，skill 不得默认执行 `git pull`、`git push`、`git tag`、`gh pr create` 等会改变远端或当前分支状态的操作；这些操作必须要求用户确认。
-- PR 审查默认顺序：
-  1. 必要性
-  2. 关联性
-  3. 标题建议（`<类型>: <修改内容>`，且不含工具/agent 前缀；不作为硬性阻断项）
-  4. 描述完整性（对照 `.github/PULL_REQUEST_TEMPLATE.md`）
-  5. 验证证据
-  6. 实现正确性
-  7. 合入判定
+- PR 审查先回答维护者的决定：谁遇到了什么问题，每一项独立改动如何改变原行为，是否值得合、是否值得拆。用一个实际操作或输入输出讲清楚原因，再给代码或测试依据。
+- 明确回答 Web、Desktop 共用页面、报告和通知展示有何变化，并交代相关 CLI/API、配置、默认行为及旧版本兼容性。对适用的画面核对当前 Head 的截图、前后对比或可复现的替代证据，记录链接、覆盖状态和缺口。具体取证方式见 `.claude/skills/analyze-pr/SKILL.md`。
+- 结合关联 Issue、实质性描述差异、回滚方式、已触发的 CI、冲突状态和未关闭的反例给出合入建议。代码判断与 GitHub 当前能否合并分别说明。
 - 对 `fix` 类 PR，必须说明：原问题、根因、修复点、回归风险。
 - 合入阻断条件：
   - 正确性或安全性问题
@@ -252,29 +238,12 @@ gh run view <run_id> --log-failed
 
 ## 8.1 Review 反馈处理与补丁堆叠禁止
 
-当你处理 review 反馈时，禁止只在 reviewer 点名的位置追加局部 patch 后声称“已全部修复”。你必须先重新理解 reviewer 指出的业务契约，再检查同一语义涉及的所有入口、配置、测试、文档、workflow 和用户可见路径。
+1. 逐条说明评审指出的问题及根因，明确应当成立的业务行为。
+2. 从反例追踪所有相关入口和消费方，包括运行时、API/Web、CLI、配置、诊断、工作流、文档和测试。在受影响的路径上统一修复，避免用宽泛的 fallback 或静默返回值掩盖问题。
+3. 用覆盖原反例的回归测试或实际入口验证修复。保留会触发问题的真实环节；若验证受限，在结论中写明缺口。仅凭 CI 通过不足以判定反例已解决。
+4. 更新 PR 描述，使范围、验证结果、兼容性、风险和回滚方式与当前提交一致。
 
-收到 review 反馈后，必须按以下顺序处理：
-
-1. 逐条列出 reviewer 指出的原问题。
-2. 说明根因，不能只描述“改了哪几行”。
-3. 找出同一语义影响的所有相关路径，例如 runtime、API/Web、CLI、diagnostics、workflow、docs、tests。
-4. 修复完整契约，而不是只修复当前失败测试或当前评论行。
-5. 补充能覆盖 reviewer 反例的回归测试、最终入口验证，或明确说明无法验证的原因。
-6. 同步更新 PR body，保证 scope、验证结果、兼容性、风险和回滚方案与当前 head 一致。
-
-如果你无法完成上述收敛，不要继续堆叠补丁，不要声称 ready for merge。应主动说明当前 PR 需要拆分、关闭重做，或请求维护者确认新的最小范围。
-
-以下行为会被视为低质量 PR：
-
-- 用 broad fallback、静默降级、`return False/None/[]` 掩盖不清晰的契约。
-- 测试 mock 掉真实风险层，只证明局部实现通过。
-- CI 通过后声称问题已关闭，但没有覆盖 reviewer 指出的反例。
-- PR body 与实际 diff、验证结果或兼容风险不一致。
-- review 后继续追加零散 patch，而不是重新收敛完整语义。
-- 同一业务语义在 runtime、Web/API、docs、workflow、tests 中表现不一致。
-
-CI 通过只能说明自动检查通过，不能替代人工语义收敛，也不能单独证明 reviewer 指出的反例已经关闭。
+若现有范围无法完整修复，提出拆分、关闭重做或请维护者确认最小范围，暂缓合入。多轮评审仍反复出现同类问题时，维护者可以要求关闭重做。
 
 ## 9. 交付与发布
 
@@ -289,3 +258,4 @@ CI 通过只能说明自动检查通过，不能替代人工语义收敛，也�
 - 自动 tag 默认不触发，只有 commit title 包含 `#patch`、`#minor`、`#major` 才会触发版本号更新。
 - 手动打 tag 必须使用 annotated tag。
 - 用户可见变更优先通过 PR 合入，并补齐 label 与验证说明。
+- 推送版本 tag 时，`create-release.yml` 调用 GitHub 根据 `.github/release.yml` 生成发布说明。维护者可在 GitHub Release 校订中文亮点、升级步骤。发布定稿后，在已获取该 tag 和上一版本 tag、已登录 GitHub CLI 的仓库中运行 `python .github/scripts/build_release_notes.py --archive vX.Y.Z`，核对差异后随发版维护 PR 归档。命令按相邻 tag 确定旧条目的归属，支持乱序归档，保留后来修改的条目及已有版本归档。
