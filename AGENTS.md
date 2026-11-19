@@ -17,10 +17,10 @@
 - 优先复用现有模块、配置入口、脚本和测试，不新增平行实现。
 - 默认稳定性优先于“顺手优化”；非当前任务直接需要的重构、抽象和基础设施迁移一律克制。
 - 新增配置项时，必须同步更新 `.env.example` 和相关文档。
-- 涉及用户可见能力、CLI/API 行为、部署方式、通知方式、报告结构变化时，必须同步更新相关文档与 `docs/CHANGELOG.md`。
+- 用户可见能力、CLI/API、部署、通知或报告行为发生变化时，更新对应的使用文档。普通 PR 用标题概括用户或维护者得到的变化，选择对应标签，在描述中说明兼容性和需要用户执行的操作。
 - 修改报告格式、报告渲染效果或 Web UI 界面时，PR 描述必须附受影响报告 / 页面截图；涉及前后差异时优先附前后对比，无法截图时说明原因与替代可视证据。
 - Issue / PR 过程截图、审查截图、一次性验收截图和临时可视证据不得作为仓库文件合入；应放在 PR 描述、PR 评论、GitHub 附件、Actions artifact 或外部可访问证据链接中。产品长期文档确需保留的示意图除外，但文件名和文档语义必须脱离具体 issue / PR 编号。
-- `docs/CHANGELOG.md` 的 `[Unreleased]` 段使用**扁平格式**：每条独立一行，格式为 `- [类型] 描述`，类型取值：`新功能`/`改进`/`修复`/`文档`/`测试`/`chore`；**禁止在 `[Unreleased]` 内新增 `### 类目标题`**，以减少并发 PR 的 merge 冲突。发版时由 maintainer 汇总整理成带标题的正式格式。
+- 发布流程根据已合入 PR 的标题和标签生成版本说明，分类及 `skip-changelog` 见 `.github/release.yml`。`docs/CHANGELOG.md` 是版本归档，由维护者按第 9 节集中更新。已有 PR 的旧条目可以随迁移保留。
 - `README.md` 只用于项目定位、核心能力总览、快速开始、主要入口、赞助/合作等首页级信息；非必要不更新 README，避免持续膨胀。
 - 更细的模块行为、页面交互、专题配置、排障说明、字段契约、实现语义和边界条件，优先更新对应 `docs/*.md` 或专题文档，不写入 README。
 - 变更中英双语文档之一时，需评估另一份是否需要同步；若未同步，交付说明里要写明原因。
@@ -152,11 +152,12 @@ gh run view <run_id> --log-failed
 | 检查项 | 来源 | 说明 | 是否阻断 |
 | --- | --- | --- | --- |
 | `ai-governance` | `.github/workflows/ci.yml` | 校验 `AGENTS.md` / `CLAUDE.md` / `.github` 指令 / `.claude/skills` 关系 | 是 |
-| `backend-gate` | `.github/workflows/ci.yml` | 执行 `./scripts/ci_gate.sh` | 是 |
-| `docker-build` | `.github/workflows/ci.yml` | Docker 构建与关键模块导入 smoke | 是 |
-| `web-gate` | `.github/workflows/ci.yml` | 前端改动时执行 `npm run lint` + `npm run build` | 是（触发时） |
+| `backend-gate` | `.github/workflows/ci.yml` | 汇总按路径触发的三个后端测试分片，涵盖 ci_gate.sh 的语法、Flake8、确定性检查及离线测试 | 是 |
+| `docker-build` | `.github/workflows/ci.yml` | 镜像构建及关键模块导入 smoke | 是（触发时） |
+| `web-gate` | `.github/workflows/ci.yml` | Web lint、构建、Playwright smoke 和 fixtures，上传 `web-ui-evidence-<head SHA>` | 是（触发时） |
+| `desktop-futu-package-windows/macos` | `.github/workflows/ci.yml` | 命中打包路径时验证冻结后端的 Futu SDK，macOS 另验未签名包 | 是（触发时） |
 | `network-smoke` | `.github/workflows/network-smoke.yml` | `pytest -m network` + `scripts/test.sh quick` | 否，观测项 |
-| `pr-review` | `.github/workflows/pr-review.yml` | PR 静态检查 + AI 审查 + 自动标签 | 否，辅助项 |
+| `PR Review` | `.github/workflows/pr-review.yml` | 维护者通过 `workflow_dispatch` 指定 PR，读取元数据及 diff，生成辅助审查和标签 | 否，辅助项 |
 
 若 PR 上已有对应 CI 结果，可直接引用 CI 结论；若 CI 未覆盖改动面，或本地与 CI 环境差异较大，需要补充说明本地验证与缺口。
 
@@ -234,14 +235,9 @@ gh run view <run_id> --log-failed
 - 每次进行 PR 创建 / 更新、PR 审查或 issue 分析前，必须先同步最新代码基线：先检查工作区状态并执行 `git fetch --all --prune`；若工作区干净且当前分支可 fast-forward，则执行 `git pull --ff-only`。如存在本地改动、冲突状态、未跟踪风险文件或无法 fast-forward，不得强行切分支、stash、reset 或覆盖本地状态；PR 审查 / issue 分析可改用已 fetch 的远端 refs/PR head 做分析，并在分析文档中明确记录未更新本地工作树的原因、当前本地 HEAD 与使用的远端基线；PR 创建 / 更新应先说明当前分支与目标基线差异，必要时请求用户确认 rebase、merge 或继续基于当前分支推进。
 - skill 默认优先读取 CI / 工作流证据，再决定是否补本地验证。
 - 除上述 PR 创建 / 更新、PR 审查 / issue 分析的安全 fast-forward 同步外，skill 不得默认执行 `git pull`、`git push`、`git tag`、`gh pr create` 等会改变远端或当前分支状态的操作；这些操作必须要求用户确认。
-- PR 审查默认顺序：
-  1. 必要性
-  2. 关联性
-  3. 标题建议（`<类型>: <修改内容>`，且不含工具/agent 前缀；不作为硬性阻断项）
-  4. 描述完整性（对照 `.github/PULL_REQUEST_TEMPLATE.md`）
-  5. 验证证据
-  6. 实现正确性
-  7. 合入判定
+- PR 审查先回答维护者的决定：谁遇到了什么问题，每一项独立改动如何改变原行为，是否值得合、是否值得拆。用一个实际操作或输入输出讲清楚原因，再给代码或测试依据。
+- 明确回答 Web、Desktop 共用页面、报告和通知展示有何变化，并交代相关 CLI/API、配置、默认行为及旧版本兼容性。对适用的画面核对当前 Head 的截图、前后对比或可复现的替代证据，记录链接、覆盖状态和缺口。具体取证方式见 `.claude/skills/analyze-pr/SKILL.md`。
+- 结合关联 Issue、实质性描述差异、回滚方式、已触发的 CI、冲突状态和未关闭的反例给出合入建议。代码判断与 GitHub 当前能否合并分别说明。
 - 对 `fix` 类 PR，必须说明：原问题、根因、修复点、回归风险。
 - 合入阻断条件：
   - 正确性或安全性问题
@@ -289,3 +285,4 @@ CI 通过只能说明自动检查通过，不能替代人工语义收敛，也�
 - 自动 tag 默认不触发，只有 commit title 包含 `#patch`、`#minor`、`#major` 才会触发版本号更新。
 - 手动打 tag 必须使用 annotated tag。
 - 用户可见变更优先通过 PR 合入，并补齐 label 与验证说明。
+- 推送版本 tag 时，`create-release.yml` 调用 GitHub 根据 `.github/release.yml` 生成发布说明。维护者可在 GitHub Release 校订中文亮点、升级步骤。发布定稿后，在已获取该 tag、已登录 GitHub CLI 的仓库中运行 `python .github/scripts/build_release_notes.py --archive vX.Y.Z`，核对差异后随发版维护 PR 归档。此命令只更新本地文件，同一版本重复执行保留已有归档。

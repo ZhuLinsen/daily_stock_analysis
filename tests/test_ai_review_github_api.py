@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / '.github' / 'scripts' / 'ai_review.py'
@@ -38,7 +40,7 @@ def test_github_api_review_data_treats_patch_as_data(monkeypatch):
 
     diff, files, truncated = ai_review.get_review_data()
 
-    assert files == ['src/example.py', 'docs/guide.md']
+    assert files == ['src/example.py', 'docs/guide.md', 'assets/chart.png']
     assert 'diff --git a/src/example.py b/src/example.py' in diff
     assert '--- /dev/null\n+++ b/docs/guide.md' in diff
     assert 'assets/chart.png' not in diff
@@ -96,16 +98,60 @@ def test_manual_dispatch_context_comes_from_github_api(monkeypatch):
         else None,
     )
 
-    assert ai_review.get_pr_context() == ('Fix review', 'Closes #2051')
+    assert ai_review.get_pr_context() == {'title': 'Fix review', 'body': 'Closes #2051'}
 
 
-def test_delegated_ci_context_does_not_claim_success(monkeypatch):
-    monkeypatch.setenv('CI_DELEGATED_TO_PULL_REQUEST', 'true')
+def test_review_with_no_ci_or_screenshot_cannot_claim_verification(monkeypatch):
+    monkeypatch.setenv('AI_REVIEW_SOURCE', 'github_api')
+    assert '尚未核验' in ai_review.get_review_evidence({})
 
-    context = ai_review._build_ci_context()
 
-    assert 'backend-gate' in context
-    assert '不假设并行 CI 已通过' in context
+@pytest.mark.parametrize('current_head', ['original', 'updated'])
+def test_review_result_is_bound_to_the_diff_revision(monkeypatch, tmp_path, current_head):
+    def revision(head):
+        return {'head': {'sha': head}, 'base': {'sha': 'main'}}
+
+    contexts = iter([revision('original'), revision(current_head)])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('AI_REVIEW_SOURCE', 'github_api')
+    monkeypatch.delenv('GITHUB_STEP_SUMMARY', raising=False)
+    monkeypatch.setattr(ai_review, 'get_pr_context', lambda: next(contexts))
+    monkeypatch.setattr(ai_review, 'get_review_data', lambda: ('patch', ['main.py'], False))
+    monkeypatch.setattr(ai_review, 'ai_review', lambda *args: 'review text')
+    result = tmp_path / 'ai_review_result.txt'
+    if current_head == 'updated':
+        with pytest.raises(RuntimeError, match='PR 版本'):
+            ai_review.main()
+        assert not result.exists()
+    else:
+        ai_review.main()
+        assert result.read_text(encoding='utf-8') == '审查版本 `original`\n\nreview text'
+
+
+def test_review_includes_current_head_ci_and_distinguishes_links_from_viewed_images(monkeypatch):
+    monkeypatch.setenv('AI_REVIEW_SOURCE', 'github_api')
+    monkeypatch.setenv('GITHUB_REPOSITORY', 'owner/repo')
+    pr = {'head': {'sha': 'abc'}, 'number': 123, 'comments': 2}
+    ci = {'id': 7, 'head_sha': 'abc', 'conclusion': 'success', 'html_url': 'https://example.org/runs/7'}
+    responses = {
+        '/repos/owner/repo/actions/workflows/ci.yml/runs?event=pull_request&head_sha=abc&per_page=1':
+            {'workflow_runs': [ci]},
+        '/repos/owner/repo/actions/runs/7/artifacts?name=web-ui-evidence-abc':
+            {'artifacts': [{'id': 8, 'name': 'web-ui-evidence-abc', 'expired': False}]},
+        '/repos/owner/repo/issues/123/comments?per_page=100&page=1': [
+            {'body': '![after](https://example.org/after.png)', 'html_url': 'https://example.org/comment/1'},
+            {'body': 'Looks good', 'html_url': 'https://example.org/comment/2'},
+        ],
+    }
+    monkeypatch.setattr(ai_review, '_github_api_json', responses.__getitem__)
+    context = ai_review.get_review_evidence(pr)
+    assert 'https://example.org/runs/7/artifacts/8' in context and '画面未查看' in context
+    assert 'https://example.org/comment/1' in context and 'comment/2' not in context
+    assert 'success' in context
+
+    ci['head_sha'] = 'older'
+    context = ai_review.get_review_evidence(pr)
+    assert 'CI 运行待核实' in context and 'runs/7' not in context
 
 
 def test_event_payload_missing_file_logs_warning(monkeypatch, tmp_path, capsys):
