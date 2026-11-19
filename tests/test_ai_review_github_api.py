@@ -131,11 +131,13 @@ def test_review_result_is_bound_to_the_diff_revision(monkeypatch, tmp_path, curr
 def test_review_includes_current_head_ci_and_distinguishes_links_from_viewed_images(monkeypatch):
     monkeypatch.setenv('AI_REVIEW_SOURCE', 'github_api')
     monkeypatch.setenv('GITHUB_REPOSITORY', 'owner/repo')
-    pr = {'head': {'sha': 'abc'}, 'number': 123, 'comments': 2}
+    pr = {'head': {'sha': 'abc'}, 'number': 123, 'comments': 2, 'mergeable': False}
     ci = {'id': 7, 'head_sha': 'abc', 'conclusion': 'success', 'html_url': 'https://example.org/runs/7'}
     responses = {
         '/repos/owner/repo/actions/workflows/ci.yml/runs?event=pull_request&head_sha=abc&per_page=1':
             {'workflow_runs': [ci]},
+        '/repos/owner/repo/actions/runs/7/jobs?per_page=100':
+            {'jobs': [{'name': 'docker-build', 'conclusion': 'skipped', 'status': 'completed'}]},
         '/repos/owner/repo/actions/runs/7/artifacts?name=web-ui-evidence-abc':
             {'artifacts': [{'id': 8, 'name': 'web-ui-evidence-abc', 'expired': False}]},
         '/repos/owner/repo/issues/123/comments?per_page=100&page=1': [
@@ -148,6 +150,7 @@ def test_review_includes_current_head_ci_and_distinguishes_links_from_viewed_ima
     assert 'https://example.org/runs/7/artifacts/8' in context and '画面未查看' in context
     assert 'https://example.org/comment/1' in context and 'comment/2' not in context
     assert 'success' in context
+    assert 'docker-build: skipped' in context and '存在合并冲突' in context
 
     ci['head_sha'] = 'older'
     context = ai_review.get_review_evidence(pr)

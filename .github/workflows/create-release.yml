@@ -26,7 +26,7 @@ jobs:
               const { data } = await github.rest.repos.getReleaseByTag({
                 ...context.repo, tag: process.env.GITHUB_REF_NAME
               });
-              return Boolean(data.body?.trim());
+              return !data.draft && Boolean(data.body?.trim());
             } catch (error) {
               if (error.status === 404) return false;
               throw error;

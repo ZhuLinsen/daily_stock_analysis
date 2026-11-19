@@ -92,8 +92,7 @@ docs: 更新 README 部署说明
 
 ```bash
 # backend gate（推荐）
-pip install -r requirements.txt
-pip install flake8 pytest
+python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
 
 # 前端 gate（如修改了 apps/dsa-web）

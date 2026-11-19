@@ -69,7 +69,7 @@ python scripts/check_ai_assets.py
   - `src/core/`：主流程编排
   - `src/services/`：业务服务层
   - `src/repositories/`：数据访问层
-  - `src/reports/`：报告生成
+  - `src/services/report_renderer.py`、`templates/`：报告模板渲染；`src/notification.py` 编排通知；`apps/dsa-web/src/components/report/` 展示 Web 和桌面端的报告
   - `src/schemas/`：Schema / 数据结构
   - `data_provider/`：多数据源适配与 fallback
   - `api/`：FastAPI API
@@ -98,8 +98,7 @@ uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ### 后端验证
 
 ```bash
-pip install -r requirements.txt
-pip install flake8 pytest
+python -m pip install -r .github/requirements-ci.txt
 ./scripts/ci_gate.sh
 python -m pytest -m "not network"
 python -m py_compile <changed_python_files>
@@ -114,7 +113,7 @@ npm run lint
 npm run build
 
 cd ../dsa-desktop
-npm install
+npm ci
 npm run build
 ```
 

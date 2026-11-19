@@ -220,6 +220,13 @@ def get_review_evidence(pr):
         return '当前 Head 的 CI、评论附件和可视产物尚未核验。'
     repo = _github_repository()
     evidence = [f'当前 Head: {sha}']
+    if pr.get('merged'):
+        evidence.append('GitHub 状态: 已合入。')
+    elif pr.get('state') == 'closed':
+        evidence.append('GitHub 状态: 已关闭。')
+    else:
+        conflict = {True: '无合并冲突', False: '存在合并冲突'}.get(pr.get('mergeable'), '合并冲突状态待核实')
+        evidence.append(f"GitHub 状态: {'草稿，' if pr.get('draft') else ''}{conflict}。")
     try:
         runs = _github_api_json(
             f'/repos/{repo}/actions/workflows/ci.yml/runs?event=pull_request&head_sha={sha}&per_page=1'
@@ -227,6 +234,8 @@ def get_review_evidence(pr):
         if runs and runs[0]['head_sha'] == sha:
             run = runs[0]
             evidence.append(f"CI: {run['conclusion'] or run['status']} {run['html_url']}")
+            jobs = _github_api_json(f"/repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100")['jobs']
+            evidence.extend(f"- {job['name']}: {job['conclusion'] or job['status']}" for job in jobs)
             name = f'web-ui-evidence-{sha}'
             artifacts = _github_api_json(f"/repos/{repo}/actions/runs/{run['id']}/artifacts?name={name}")
             for item in artifacts['artifacts']:
