@@ -93,7 +93,9 @@ def _canonical_symbol(symbol: str, market: str) -> Optional[str]:
     if not code:
         return None
     if market == "us":
-        return code.replace(" ", ".")  # IBKR class shares: "BRK B" -> "BRK.B"
+        if " " in code:
+            return None  # IBKR class share (e.g. "BRK B") — not supported by the ledger
+        return code
     if market == "hk":
         return f"HK{code.zfill(5)}" if code.isdigit() and len(code) <= 5 else None
     if market == "jp":

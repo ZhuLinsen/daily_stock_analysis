@@ -874,7 +874,7 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 python main.py --portfolio ibkr
 ```
 
-`--portfolio ibkr` 每次分析前都会通过 Flex Web Service 重新下载报表（`SendRequest` 获取 reference code 后轮询 `GetStatement`；报表生成中、服务繁忙或限流时有限次重试），不需要额外依赖。持仓取自 Open Positions 分区，反映 IBKR 最近一次报表日（通常为上一交易日）的持仓。只有 `assetCategory=STK` 且数量为正的持仓会进入分析，同一持仓的多个 lot 会按代码去重；期权、期货、外汇及空头持仓会被排除。代码转换仅支持 `listingExchange` 为 NASDAQ / NYSE / ARCA / AMEX / BATS（美股，`BRK B` 转为 `BRK.B`）、SEHK（港股，如 `700` → `HK00700`）和 TSEJ（日股，如 `7203` → `7203.T`）的持仓；其他交易所（如 BM、SBF、LSE、IBIS）的持仓会在日志中以 `代码@交易所` 列出并跳过。Flex 查询缺少 Open Positions 分区、token / query id 无效、XML 无法解析、或股票持仓缺少代码 / 数量无效时，整次导入会明确失败，不会返回静默截断的结果；错误信息与日志不会包含 token。
+`--portfolio ibkr` 每次分析前都会通过 Flex Web Service 重新下载报表（`SendRequest` 获取 reference code 后轮询 `GetStatement`；报表生成中、服务繁忙或限流时有限次重试），不需要额外依赖。持仓取自 Open Positions 分区，反映 IBKR 最近一次报表日（通常为上一交易日）的持仓。只有 `assetCategory=STK` 且数量为正的持仓会进入分析，同一持仓的多个 lot 会按代码去重；期权、期货、外汇及空头持仓会被排除。代码转换仅支持 `listingExchange` 为 NASDAQ / NYSE / ARCA / AMEX / BATS（美股；`BRK B` 这类类股会跳过）、SEHK（港股，如 `700` → `HK00700`）和 TSEJ（日股，如 `7203` → `7203.T`）的持仓；其他交易所（如 BM、SBF、LSE、IBIS）的持仓会在日志中以 `代码@交易所` 列出并跳过。Flex 查询缺少 Open Positions 分区、token / query id 无效、XML 无法解析、或股票持仓缺少代码 / 数量无效时，整次导入会明确失败，不会返回静默截断的结果；错误信息与日志不会包含 token。
 
 `--stocks` 覆盖、定时模式每轮重新读取、无符合条件持仓时跳过个股分析、单次 CLI 失败退出码以及服务 / 调度模式下记录错误后继续运行的语义，与 Futu 持仓导入一致。
 

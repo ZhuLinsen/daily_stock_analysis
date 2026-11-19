@@ -30,7 +30,8 @@ def _to_analysis_code(symbol: str, listing_exchange: str) -> Optional[str]:
     if not code:
         return None
     if exchange in _US_EXCHANGES:
-        code = code.replace(" ", ".")  # IBKR class shares: "BRK B" -> "BRK.B"
+        if " " in code:
+            return None  # IBKR class share (e.g. "BRK B") — not supported by the analysis pipeline
         return code if is_us_stock_code(code) else None
     if exchange in _HK_EXCHANGES:
         return f"HK{code.zfill(5)}" if code.isdigit() and len(code) <= 5 else None
