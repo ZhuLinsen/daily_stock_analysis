@@ -1657,8 +1657,16 @@ P5 在 Web `/decision-signals` 页面筛选区下方展示当前 outcome engine 
 | `BACKTEST_ENABLED` | `true` | 是否在每日分析后自动运行回测 |
 | `BACKTEST_EVAL_WINDOW_DAYS` | `10` | 评估窗口（交易日数） |
 | `BACKTEST_MIN_AGE_DAYS` | `14` | 仅回测 N 天前的记录，避免数据不完整 |
-| `BACKTEST_ENGINE_VERSION` | `v1` | 引擎版本号，升级逻辑时用于区分结果 |
+| `BACKTEST_ENGINE_VERSION` | `v1.1` | 引擎版本号，升级逻辑时用于区分结果 |
 | `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | 中性区间阈值（%），±2% 内视为震荡 |
+
+### 盘中回测口径
+
+默认 `BACKTEST_ENGINE_VERSION=v1.1` 时，`intraday`、`lunch_break`、`closing_auction` 分析以交易日 T 的收盘价为评估入场锚点，从下一交易日起取前向 K 线，不计入已发生的 T-1 → T 涨跌；盘前 `premarket` 仍以 T-1 收盘为锚点。这是日线评估口径，不代表按盘中分析价成交。显式设置 `BACKTEST_ENGINE_VERSION=v1` 可回退到旧的盘中 T-1 起点，结果按引擎版本隔离，默认查询不会混入 v1 结果。
+
+多头方案的止损必须低于评估入场价，止盈必须高于评估入场价；任一已提供的目标无效时，保留原始点位及方向评估，`simulated_exit_reason=invalid_targets`，模拟退出价、模拟收益和两个命中标志均为空，不计入模拟收益均值或止盈止损触发率。该校验也适用于显式 v1；v1 回退只恢复旧的起点口径。修复前已保存的结果不会自动重算，可通过回测 API 的 `force=true` 重新评估。
+
+Skill 观点评估使用同一盘中起算口径，新记录标记为 `skill-opinion-outcome-v1.1`，与旧版结果隔离。
 
 ### 自动运行
 

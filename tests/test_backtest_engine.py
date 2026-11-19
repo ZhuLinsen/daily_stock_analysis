@@ -18,6 +18,27 @@ class Bar:
 
 
 class BacktestEngineTestCase(unittest.TestCase):
+    def test_invalid_targets_do_not_simulate_a_trade_from_new_entry(self):
+        for stop_loss, take_profit in ((95, 105), (95, 110), (110, 120), (115, None)):
+            with self.subTest(stop_loss=stop_loss, take_profit=take_profit):
+                res = BacktestEngine.evaluate_single(
+                    operation_advice="买入",
+                    analysis_date=date(2024, 1, 5),
+                    start_price=110,
+                    forward_bars=[Bar(date(2024, 1, 8), high=112, low=109, close=111)],
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    config=EvaluationConfig(eval_window_days=1),
+                )
+                self.assertEqual(res["eval_status"], "completed")
+                self.assertAlmostEqual(res["stock_return_pct"], 100 / 110)
+                self.assertIsNone(res["hit_stop_loss"])
+                self.assertIsNone(res["hit_take_profit"])
+                self.assertIsNone(res["simulated_exit_price"])
+                self.assertIsNone(res["simulated_return_pct"])
+                self.assertEqual(res["simulated_exit_reason"], "invalid_targets")
+                self.assertEqual(res["first_hit"], "not_applicable")
+
     def _bars(self, start: date, closes, highs=None, lows=None):
         highs = highs or closes
         lows = lows or closes
