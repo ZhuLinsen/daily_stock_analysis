@@ -757,8 +757,8 @@ class DataFetcherManager:
         """Return market-list providers with HiThink kept as a supplement.
 
         ``HITHINK_PRIORITY`` orders only the generic daily K-line chain. Index
-        snapshots, rankings, hot stocks, and the limit-up pool still try the
-        existing sources first.
+        snapshots, rankings, hot stocks, the limit-up pool, stock names, and
+        the ticker directory still try the existing sources first.
         """
         fetchers = self._get_fetchers_snapshot()
         primary = [fetcher for fetcher in fetchers if fetcher.name != "HiThinkFetcher"]
@@ -3375,7 +3375,7 @@ class DataFetcherManager:
         from .akshare_fetcher import _is_us_code
         is_us = _is_us_code(stock_code)
         _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher"}
-        for fetcher in self._get_fetchers_snapshot():
+        for fetcher in self._market_list_fetchers():
             if not hasattr(fetcher, 'get_stock_name'):
                 continue
             if is_us and fetcher.name not in _US_CAPABLE_FETCHERS:
@@ -3529,7 +3529,7 @@ class DataFetcherManager:
             return result
         
         # 2. 尝试批量获取股票列表
-        for fetcher in self._get_fetchers_snapshot():
+        for fetcher in self._market_list_fetchers():
             if not hasattr(fetcher, 'get_stock_list') or not missing_codes:
                 continue
             if not self._is_fetcher_available(fetcher, capability="stock_list"):

@@ -408,6 +408,25 @@ class HiThinkIndexRouteTests(unittest.TestCase):
         self.assertEqual(source, "HiThinkFetcher")
         self.assertEqual(hithink.index_calls, ["000001.SH"])
 
+    def test_index_history_older_than_five_years_is_not_returned_as_success(self) -> None:
+        empty = pd.DataFrame()
+        fetchers = [
+            _IndexFake(name, empty)
+            for name in ("TencentFetcher", "AkshareFetcher", "TickFlowFetcher", "YfinanceFetcher")
+        ]
+        hithink = HiThinkFetcher(api_key="hithink-test-key", retry_backoff=0)
+        manager = DataFetcherManager(fetchers=[*fetchers, hithink])
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=AssertionError("request")):
+            frame, source = manager.get_daily_data(
+                "sh000001",
+                start_date="2010-01-04",
+                end_date="2024-05-21",
+            )
+
+        self.assertTrue(frame.empty)
+        self.assertEqual(source, "")
+
     def test_cooled_index_daily_is_not_called_after_the_fixed_route_fails(self) -> None:
         class _CooledHiThink(_HiThinkIndexFake):
             def is_available_for_request(self, capability=""):
@@ -660,11 +679,42 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         self.assertEqual(akshare.calls, 1)
         self.assertEqual(hithink.calls, 0)
 
-    def test_preloaded_partial_concept_ranking_stays_partial(self) -> None:
-        import sys
-        import types
+    def test_daily_priority_does_not_move_hithink_ahead_of_stock_names(self) -> None:
+        class _NameSource:
+            def __init__(self, name: str, priority: int, value: str) -> None:
+                self.name = name
+                self.priority = priority
+                self.value = value
+                self.calls = []
+                self.list_calls = 0
 
-        sys.modules.setdefault("fin_primitives", types.ModuleType("fin_primitives"))
+            def get_stock_name(self, stock_code: str) -> str:
+                self.calls.append(stock_code)
+                return self.value
+
+            def get_stock_list(self):
+                self.list_calls += 1
+                frame = pd.DataFrame([{"code": "689999", "name": self.value}])
+                frame.attrs["complete"] = True
+                return frame
+
+        hithink = _NameSource("HiThinkFetcher", 0, "同花顺名")
+        akshare = _NameSource("AkshareFetcher", 1, "已有名")
+        manager = DataFetcherManager(fetchers=[hithink, akshare])
+
+        self.assertEqual(manager.get_stock_name("689999", allow_realtime=False), "已有名")
+        self.assertEqual(akshare.calls, ["689999"])
+        self.assertEqual(hithink.calls, [])
+
+        batch_hithink = _NameSource("HiThinkFetcher", 0, "同花顺名")
+        batch_akshare = _NameSource("AkshareFetcher", 1, "已有名")
+        batch_manager = DataFetcherManager(fetchers=[batch_hithink, batch_akshare])
+        names = batch_manager.batch_get_stock_names(["689999"])
+        self.assertEqual(names["689999"], "已有名")
+        self.assertEqual(batch_akshare.list_calls, 1)
+        self.assertEqual(batch_hithink.list_calls, 0)
+
+    def test_preloaded_partial_concept_ranking_stays_partial(self) -> None:
         from src.services.market_hotspot_service import MarketHotspotService
         from src.services.market_structure_service import MarketStructureService
         from src.utils.data_processing import concept_board_status, extract_board_detail_fields

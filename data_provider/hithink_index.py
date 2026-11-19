@@ -104,7 +104,7 @@ def index_daily_data(
         end_date = datetime.now().strftime("%Y-%m-%d")
     if start_date is None:
         start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=days * 2)).strftime("%Y-%m-%d")
-    start_date = _clamp_five_year_start(start_date, end_date)
+    _require_five_year_window(start_date)
     payload = fetcher._request(
         _HISTORICAL_PATH,
         {
@@ -218,14 +218,21 @@ def fetcher_number(value: Any) -> Optional[float]:
     return number
 
 
-def _clamp_five_year_start(start_date: str, end_date: str) -> str:
+def _require_five_year_window(start_date: str) -> None:
+    """Reject a start that the documented index-history window cannot cover.
+
+    The official range is the last five calendar years. Rewriting an earlier
+    start and returning the shortened bars would look like a complete result
+    for the caller's original interval.
+    """
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
-    earliest = today.replace(year=today.year - 5)
+    try:
+        earliest = today.replace(year=today.year - 5)
+    except ValueError:
+        earliest = today.replace(year=today.year - 5, day=28)
     start = datetime.strptime(start_date, "%Y-%m-%d").date()
     if start < earliest:
-        logger.info("[HiThinkFetcher] index history start clamped to the documented 5-year window")
-        return earliest.strftime("%Y-%m-%d")
-    return start_date
+        raise DataFetchError("HiThink index history only covers the last 5 calendar years")
 
 
 def _normalize_index_bars(raw: pd.DataFrame, thscode: str) -> pd.DataFrame:
