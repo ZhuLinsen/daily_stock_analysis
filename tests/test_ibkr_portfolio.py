@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import unittest
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -136,6 +137,22 @@ class IbkrFlexClientTest(unittest.TestCase):
         self.assertNotIn(TOKEN, record.getMessage())
         self.assertIn("<redacted>", record.getMessage())
 
+    def test_token_redactor_masks_connectionpool_record(self) -> None:
+        flex._token_redactor.set_token(TOKEN)
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logger = logging.getLogger("urllib3.connectionpool")
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+        try:
+            logger.debug("Starting new HTTPS connection .../SendRequest?t=%s&q=1712897", TOKEN)
+        finally:
+            logger.removeHandler(handler)
+        self.assertEqual(len(records), 1)
+        self.assertNotIn(TOKEN, records[0].getMessage())
+        self.assertIn("<redacted>", records[0].getMessage())
+
     def test_non_retryable_error_fails_without_retry(self) -> None:
         self.session.get.side_effect = [_response(_flex_error("1015", "Token is invalid."))]
 
@@ -266,6 +283,22 @@ class IbkrPortfolioLoaderTest(unittest.TestCase):
         env = {"IBKR_FLEX_TOKEN": TOKEN, "IBKR_FLEX_QUERY_ID": "1712897"}
         with patch.dict(os.environ, env, clear=True), patch.object(
             service, "download_flex_statement", return_value=stale
+        ), self.assertRaisesRegex(IbkrPortfolioError, "过旧"):
+            service.load_ibkr_stock_codes()
+
+    def test_rejects_stale_statement_among_multiple(self) -> None:
+        today = date.today().strftime("%Y%m%d")
+        fresh_and_stale = (
+            '<FlexQueryResponse queryName="t" type="AF"><FlexStatements count="2">'
+            f'<FlexStatement accountId="U" fromDate="20260101" toDate="{today}" period="YearToDate">'
+            f'<OpenPositions>{_position("AAPL", "NASDAQ")}</OpenPositions></FlexStatement>'
+            '<FlexStatement accountId="U" fromDate="20260101" toDate="20260131" period="MonthToDate">'
+            f'<OpenPositions>{_position("AAPL", "NASDAQ")}</OpenPositions></FlexStatement>'
+            '</FlexStatements></FlexQueryResponse>'
+        ).encode()
+        env = {"IBKR_FLEX_TOKEN": TOKEN, "IBKR_FLEX_QUERY_ID": "1712897"}
+        with patch.dict(os.environ, env, clear=True), patch.object(
+            service, "download_flex_statement", return_value=fresh_and_stale
         ), self.assertRaisesRegex(IbkrPortfolioError, "过旧"):
             service.load_ibkr_stock_codes()
 

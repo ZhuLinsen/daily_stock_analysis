@@ -35,7 +35,6 @@ def claim_scheduled_analysis(config: Any, args: Any, scheduled_for: datetime) ->
             str(code).strip().upper() for code in getattr(config, "stock_list", [])
         }),
         "portfolio": portfolio,
-        "portfolio_query_id": portfolio_query_id,
         "options": {
             key: bool(getattr(args, key, False))
             for key in ("no_notify", "no_market_review", "dry_run", "force_run", "single_notify")
@@ -45,6 +44,8 @@ def claim_scheduled_analysis(config: Any, args: Any, scheduled_for: datetime) ->
         "report_language": getattr(config, "report_language", "zh"),
         "report_type": getattr(config, "report_type", "simple"),
     }
+    if portfolio_query_id is not None:
+        workload["portfolio_query_id"] = portfolio_query_id
     workload_key = hashlib.sha256(
         json.dumps(workload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
