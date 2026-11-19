@@ -753,6 +753,18 @@ class DataFetcherManager:
         if not hasattr(self, "_stock_directory_coverage") or self._stock_directory_coverage is None:
             self._stock_directory_coverage = {}
 
+    def _market_list_fetchers(self) -> List[BaseFetcher]:
+        """Return market-list providers with HiThink kept as a supplement.
+
+        ``HITHINK_PRIORITY`` orders only the generic daily K-line chain. Index
+        snapshots, rankings, hot stocks, and the limit-up pool still try the
+        existing sources first.
+        """
+        fetchers = self._get_fetchers_snapshot()
+        primary = [fetcher for fetcher in fetchers if fetcher.name != "HiThinkFetcher"]
+        supplement = [fetcher for fetcher in fetchers if fetcher.name == "HiThinkFetcher"]
+        return primary + supplement
+
     def _get_fetchers_snapshot(self) -> List[BaseFetcher]:
         self._ensure_concurrency_guards()
         with self._fetchers_lock:
@@ -2562,27 +2574,19 @@ class DataFetcherManager:
             return 0
 
     def prefetch_daily_klines(self, stock_codes: List[str], days: int = 30) -> int:
-        """Warm only the daily provider that would actually serve this batch.
+        """Warm prefetch-capable daily providers in priority order.
 
-        A later optional provider is not prefetched while an earlier available
-        daily source can already answer ``get_daily_data``. If the earliest
-        prefetch-capable provider caches nothing, the next one may run.
+        A source that can answer one stock but has no batch prefetch does not
+        block a later provider that does. The first prefetch that caches at
+        least one symbol stops the walk.
         """
         cached = 0
-        blocked_by_earlier_source = False
         for fetcher in self._get_fetchers_snapshot():
             if not self._is_fetcher_available(fetcher, capability="daily_data"):
                 continue
             prefetch = getattr(fetcher, "prefetch_daily_klines", None)
-            can_prefetch = callable(prefetch)
-            can_serve = can_prefetch or callable(getattr(fetcher, "get_daily_data", None))
-            if not can_serve:
+            if not callable(prefetch):
                 continue
-            if not can_prefetch:
-                blocked_by_earlier_source = True
-                continue
-            if blocked_by_earlier_source:
-                break
             try:
                 added = int(
                     self._call_fetcher_method(
@@ -3670,7 +3674,7 @@ class DataFetcherManager:
                 except Exception as e:
                     logger.warning(f"[TickFlowFetcher] 获取指数行情失败: {e}")
 
-        for fetcher in self._fetchers:
+        for fetcher in self._market_list_fetchers():
             if region == "cn" and fetcher.name == "TickFlowFetcher":
                 continue
             try:
@@ -4737,10 +4741,13 @@ class DataFetcherManager:
         hithink_valuation_ms = 0
         if market == "cn" and not is_etf:
             hithink = self._get_hithink_fetcher()
-            supplement_timeout = min(fetch_timeout, remaining_seconds)
+            # Keep half of the remaining stage budget for AkShare statements
+            # and the later fundamental blocks. A slow valuation request must
+            # not consume the whole stage.
+            supplement_timeout = min(fetch_timeout, remaining_seconds / 2)
             if (
                 hithink is not None
-                and self._is_fetcher_available(hithink, capability="fundamental")
+                and self._is_fetcher_available(hithink, capability="valuation")
                 and supplement_timeout > 0
             ):
                 from .hithink_fundamentals import HiThinkFundamentalAdapter, supplement_valuation
@@ -5263,8 +5270,9 @@ class DataFetcherManager:
             last_error = ""
             partial_rankings = None
 
-            # 直接遍历管理器已经按 priority 排好序的数据源列表
-            for fetcher in self._fetchers:
+            # HiThink stays after existing sources. Daily priority does not
+            # move it ahead of the current market-list providers.
+            for fetcher in self._market_list_fetchers():
                 if not hasattr(fetcher, 'get_sector_rankings'):
                     continue
 
@@ -5366,7 +5374,7 @@ class DataFetcherManager:
             bottom: List[Dict] = []
             partial_top: Optional[List[Dict]] = None
             partial_bottom: Optional[List[Dict]] = None
-            for fetcher in self._get_fetchers_snapshot():
+            for fetcher in self._market_list_fetchers():
                 try:
                     data = fetcher.get_concept_rankings(normalized_n)
                     if data and (data[0] or data[1]):
@@ -5410,7 +5418,7 @@ class DataFetcherManager:
     def get_hot_stocks(self, n: int = 10) -> List[Dict[str, Any]]:
         """获取市场人气股榜（自动切换数据源）。"""
         last_error = ""
-        for fetcher in self._fetchers:
+        for fetcher in self._market_list_fetchers():
             try:
                 data = fetcher.get_hot_stocks(n)
                 if data:
@@ -5432,7 +5440,7 @@ class DataFetcherManager:
     ) -> List[Dict[str, Any]]:
         """获取涨停池与连板梯队（自动切换数据源）。"""
         last_error = ""
-        for fetcher in self._fetchers:
+        for fetcher in self._market_list_fetchers():
             try:
                 data = fetcher.get_limit_up_pool(date=date, n=n)
                 if data:

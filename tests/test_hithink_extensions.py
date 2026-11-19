@@ -589,6 +589,118 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
             stop.set()
         self.assertLess(elapsed, 1.5)
 
+    def test_slow_valuation_still_calls_akshare(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        calls = []
+        manager._fundamental_adapter.get_fundamental_bundle = lambda code: calls.append(code) or _bundle()
+        stop = threading.Event()
+
+        def slow_valuation(_self, _code, deadline=None):
+            stop.wait(5)
+            return {}
+
+        with patch.object(HiThinkFundamentalAdapter, "get_valuation", slow_valuation), \
+                patch.object(HiThinkFundamentalAdapter, "get_fundamental_bundle", return_value=_bundle()):
+            manager.get_fundamental_context(
+                "600519",
+                budget_seconds=0.4,
+                realtime_quote=SimpleNamespace(),
+            )
+        stop.set()
+        self.assertEqual(calls, ["600519"])
+
+    def test_valuation_permission_does_not_block_statements(self) -> None:
+        fetcher = self._fetcher()
+        manager = DataFetcherManager(fetchers=[fetcher])
+        ak_calls = []
+        manager._fundamental_adapter.get_fundamental_bundle = (
+            lambda code: ak_calls.append(code) or _bundle()
+        )
+        urls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            urls.append(url)
+            if "valuations" in url:
+                return _response({"code": 2003, "message": "denied", "data": None})
+            return _response({"code": 0, "message": "ok", "data": {"item": []}})
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            manager.get_fundamental_context(
+                "600519",
+                budget_seconds=5,
+                realtime_quote=SimpleNamespace(),
+            )
+
+        self.assertTrue(any("valuations" in url for url in urls))
+        self.assertTrue(any("financials" in url for url in urls))
+        self.assertEqual(ak_calls, ["600519"])
+        self.assertFalse(fetcher.is_available("valuation"))
+        self.assertTrue(fetcher.is_available("fundamental"))
+
+    def test_daily_priority_does_not_move_hithink_ahead_of_hot_stocks(self) -> None:
+        class _Board:
+            def __init__(self, name: str, priority: int, code: str) -> None:
+                self.name = name
+                self.priority = priority
+                self.calls = 0
+                self._code = code
+
+            def get_hot_stocks(self, n: int = 10):
+                self.calls += 1
+                return [{"code": self._code, "name": self._code}]
+
+        hithink = _Board("HiThinkFetcher", 0, "600519")
+        akshare = _Board("AkshareFetcher", 1, "000001")
+        manager = DataFetcherManager(fetchers=[hithink, akshare])
+
+        rows = manager.get_hot_stocks(1)
+
+        self.assertEqual(rows[0]["code"], "000001")
+        self.assertEqual(akshare.calls, 1)
+        self.assertEqual(hithink.calls, 0)
+
+    def test_preloaded_partial_concept_ranking_stays_partial(self) -> None:
+        import sys
+        import types
+
+        sys.modules.setdefault("fin_primitives", types.ModuleType("fin_primitives"))
+        from src.services.market_hotspot_service import MarketHotspotService
+        from src.services.market_structure_service import MarketStructureService
+        from src.utils.data_processing import concept_board_status, extract_board_detail_fields
+
+        partial = [{"name": "A", "change_pct": 1.0, "coverage": "partial"}]
+        context: dict = {
+            "boards": {
+                "status": "ok",
+                "data": {
+                    "top": [{"name": "银行", "change_pct": 1.0}],
+                    "bottom": [{"name": "软件", "change_pct": -1.0}],
+                },
+            },
+            "concept_boards": {
+                "status": concept_board_status(partial, partial),
+                "data": {"top": list(partial), "bottom": list(partial)},
+            },
+        }
+        self.assertEqual(context["concept_boards"]["status"], "partial")
+
+        details = extract_board_detail_fields({"fundamental_context": context})
+        self.assertEqual(details["concept_rankings"]["status"], "partial")
+        self.assertEqual(details["concept_rankings"]["top"][0]["coverage"], "partial")
+
+        hotspot = MarketHotspotService(fetcher_manager=SimpleNamespace())
+        service = MarketStructureService(fetcher_manager=SimpleNamespace(), hotspot_service=hotspot)
+        built = service.build_context(
+            code="600519",
+            stock_name="茅台",
+            market="cn",
+            fundamental_context=context,
+        )
+        self.assertEqual(built["market_theme_context"]["status"], "partial")
+        self.assertEqual(built["market_theme_context"]["data_quality"]["status"], "partial")
+        self.assertNotEqual(built["status"], "ok")
+
     def test_concept_ranking_includes_the_full_catalog(self) -> None:
         fetcher = self._fetcher()
         items = [{"thscode": f"881{i:03d}.TI", "name": f"概念{i}"} for i in range(11)]
@@ -902,7 +1014,7 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
 
     def test_partial_main_indices_do_not_stop_later_providers(self) -> None:
         class _PartialIndices:
-            name = "HiThinkFetcher"
+            name = "TushareFetcher"
             priority = 1
             calls = 0
 
@@ -1178,7 +1290,7 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         DataFetcherManager.clear_concept_rankings_cache_for_tests()
 
         class _PartialRank:
-            name = "HiThinkFetcher"
+            name = "TushareFetcher"
             priority = 1
             calls = 0
 
@@ -1218,7 +1330,7 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
 
     def test_partial_sector_ranking_keeps_later_provider_attempts(self) -> None:
         class _PartialSector:
-            name = "HiThinkFetcher"
+            name = "EastmoneyFetcher"
             priority = 1
 
             def get_sector_rankings(self, n=5):
@@ -1249,7 +1361,7 @@ class HiThinkFundamentalMergeTests(unittest.TestCase):
         self.assertEqual(
             [(item["provider"], item["result"]) for item in chain],
             [
-                ("HiThinkFetcher", "partial"),
+                ("EastmoneyFetcher", "partial"),
                 ("AkshareFetcher", "empty"),
                 ("TushareFetcher", "failed"),
             ],

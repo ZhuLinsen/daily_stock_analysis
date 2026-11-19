@@ -153,6 +153,21 @@ class TestTickFlowManagerRouting(unittest.TestCase):
 
         self.assertEqual(config.tickflow_priority, 0)
 
+    def test_daily_prefetch_reaches_tickflow_when_efinance_has_no_batch_prefetch(self):
+        class _Efinance:
+            name = "EfinanceFetcher"
+            priority = 0
+
+            def get_daily_data(self, stock_code, start_date=None, end_date=None, days=30):
+                raise AssertionError("prefetch must not fetch one stock at a time")
+
+        tickflow = _FakeTickFlowFetcher()
+        manager = DataFetcherManager(fetchers=[_Efinance(), tickflow])
+        codes = ["600519", "000001", "300750", "000858", "601318"]
+
+        self.assertEqual(manager.prefetch_daily_klines(codes, days=30), 5)
+        self.assertEqual(tickflow.prefetch_daily_calls, [(codes, 30)])
+
     def test_tickflow_api_key_does_not_auto_inject_realtime_priority(self):
         with patch.dict(os.environ, {"TICKFLOW_API_KEY": "tk-test"}, clear=True):
             self.assertEqual(

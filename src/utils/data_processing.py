@@ -103,6 +103,22 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def concept_board_status(top: Any, bottom: Any) -> str:
+    """Return partial when either side is empty or any row is only partial."""
+    rows = []
+    if isinstance(top, list):
+        rows.extend(top)
+    if isinstance(bottom, list):
+        rows.extend(bottom)
+    if (
+        not top
+        or not bottom
+        or any(isinstance(item, dict) and item.get("coverage") == "partial" for item in rows)
+    ):
+        return "partial"
+    return "ok"
+
+
 def _normalize_sector_ranking_items(value: Any) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -129,6 +145,8 @@ def _normalize_sector_ranking_items(value: Any) -> List[Dict[str, Any]]:
         rank = _safe_int(item.get("rank"))
         if rank is not None:
             ranking_item["rank"] = rank
+        if item.get("coverage") in {"complete", "partial"}:
+            ranking_item["coverage"] = item.get("coverage")
         normalized.append(ranking_item)
     return normalized
 

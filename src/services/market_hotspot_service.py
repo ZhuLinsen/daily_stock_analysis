@@ -237,6 +237,11 @@ class MarketHotspotService:
             status = raw_status if raw_status in {"ok", "partial", "not_supported", "unknown"} else "ok"
         else:
             status = "ok"
+        if any(
+            isinstance(item, dict) and item.get("coverage") == "partial"
+            for item in [*top_items, *bottom_items]
+        ):
+            status = "partial"
         if not top_items and not bottom_items:
             status = "empty"
         sources.append(

@@ -76,6 +76,54 @@ class HiThinkFetcherTests(unittest.TestCase):
                 fetcher.get_realtime_quote("600519")
         request.assert_not_called()
 
+    def test_batch_snapshot_does_not_copy_the_response_timestamp_onto_every_quote(self) -> None:
+        fetcher = self._fetcher()
+        moment = _ms(2024, 5, 20)
+        items = []
+        for thscode in ("600519.SH", "000001.SZ"):
+            items.append({
+                "thscode": thscode,
+                "last_price": 10,
+                "price_change": 0.1,
+                "price_change_ratio_pct": 1,
+                "open_price": 9,
+                "high_price": 11,
+                "low_price": 9,
+                "prev_price": 9.9,
+                "volume": 100,
+                "turnover": 1000,
+            })
+        payload = {"code": 0, "message": "success", "data": {"timestamp": moment, "item": items}}
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(payload)):
+            cached = fetcher.prefetch_realtime_quotes(["600519", "000001"])
+            second = fetcher.get_realtime_quote("000001")
+            single_payload = {
+                "code": 0,
+                "message": "success",
+                "data": {"timestamp": moment, "item": [items[0]]},
+            }
+        self.assertEqual(cached, 2)
+        self.assertIsNone(second.provider_timestamp)
+        self.assertIsNone(getattr(second, "quote_date", None))
+        with patch("data_provider.hithink_fetcher.requests.get", return_value=_response(single_payload)):
+            single = HiThinkFetcher(api_key="hithink-test-key", retry_backoff=0).get_realtime_quote("600519")
+        self.assertIsNotNone(single.provider_timestamp)
+
+    def test_http_429_cools_realtime_without_splitting_the_batch(self) -> None:
+        fetcher = self._fetcher()
+        calls = []
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            calls.append((params or {}).get("thscodes"))
+            return _response({}, status_code=429)
+
+        with patch("data_provider.hithink_fetcher.requests.get", side_effect=fake_get):
+            self.assertEqual(fetcher.prefetch_realtime_quotes(["600519", "000001"]), 0)
+
+        self.assertTrue(calls)
+        self.assertTrue(all(value and "," in value for value in calls))
+        self.assertFalse(fetcher.is_available("realtime_quote"))
+
     def test_successful_snapshot_authenticates_and_normalizes_quote(self) -> None:
         fetcher = self._fetcher()
         payload = {
@@ -636,15 +684,15 @@ class HiThinkManagerTests(unittest.TestCase):
         self.assertEqual(len(frame), 1)
         self.assertEqual(fallback.calls, ["600519"])
 
-    def test_daily_prefetch_skips_hithink_when_an_earlier_source_can_serve(self) -> None:
+    def test_daily_prefetch_still_warms_hithink_when_an_earlier_source_cannot_prefetch(self) -> None:
         earlier = _PriorityDailyFetcher(name="AkshareFetcher", priority=1)
         hithink = HiThinkFetcher(api_key="manager-key", priority=7, retry_backoff=0)
         warmed = []
-        hithink.prefetch_daily_klines = lambda stock_codes, days=30: warmed.append(stock_codes) or 1
+        hithink.prefetch_daily_klines = lambda stock_codes, days=30: warmed.append(list(stock_codes)) or 1
         manager = DataFetcherManager(fetchers=[hithink, earlier])
 
-        self.assertEqual(manager.prefetch_daily_klines(["600519"], days=30), 0)
-        self.assertEqual(warmed, [])
+        self.assertEqual(manager.prefetch_daily_klines(["600519"], days=30), 1)
+        self.assertEqual(warmed, [["600519"]])
 
     def test_daily_prefetch_continues_when_the_first_prefetch_caches_nothing(self) -> None:
         earlier = _PriorityDailyFetcher(name="TickFlowFetcher", priority=1, prefetch_result=0)

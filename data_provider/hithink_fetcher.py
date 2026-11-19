@@ -85,10 +85,18 @@ _QUOTE_CACHE_SECONDS = 30.0
 class HiThinkRequestError(DataFetchError):
     """Business or transport failure that must not include the API key."""
 
-    def __init__(self, message: str, *, code: Optional[int] = None, permission: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[int] = None,
+        permission: bool = False,
+        rate_limited: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.permission = permission
+        self.rate_limited = rate_limited
 
 
 def normalize_hithink_kline_adjust(value: Optional[str]) -> str:
@@ -130,6 +138,7 @@ class HiThinkFetcher(BaseFetcher):
         self._daily_disabled_until = 0.0
         self._realtime_disabled_until = 0.0
         self._fundamental_disabled_until = 0.0
+        self._valuation_disabled_until = 0.0
         self._rank_disabled_until = 0.0
         self._index_daily_disabled_until = 0.0
         self._index_snapshot_disabled_until = 0.0
@@ -169,6 +178,8 @@ class HiThinkFetcher(BaseFetcher):
                 return False
             if capability == "fundamental" and now < self._fundamental_disabled_until:
                 return False
+            if capability == "valuation" and now < self._valuation_disabled_until:
+                return False
             if capability == "index_rankings" and now < self._rank_disabled_until:
                 return False
             if capability == "index_daily" and now < self._index_daily_disabled_until:
@@ -204,6 +215,10 @@ class HiThinkFetcher(BaseFetcher):
             return "realtime_quote"
         if path == _HISTORICAL_BATCH_PATH:
             return "daily_batch"
+        if path.startswith("/api/a-share/valuations/"):
+            return "valuation"
+        if path.startswith("/api/a-share/financials/"):
+            return "fundamental"
         return ""
 
     def _remember_error(
@@ -215,6 +230,7 @@ class HiThinkFetcher(BaseFetcher):
         daily_only: bool = False,
         realtime_only: bool = False,
         fundamental_only: bool = False,
+        valuation_only: bool = False,
         rank_only: bool = False,
         index_daily_only: bool = False,
         index_snapshot_only: bool = False,
@@ -235,6 +251,8 @@ class HiThinkFetcher(BaseFetcher):
                 self._realtime_disabled_until = deadline
             if fundamental_only:
                 self._fundamental_disabled_until = deadline
+            if valuation_only:
+                self._valuation_disabled_until = deadline
             if rank_only:
                 self._rank_disabled_until = deadline
             if index_daily_only:
@@ -315,6 +333,17 @@ class HiThinkFetcher(BaseFetcher):
                 continue
 
             if response.status_code != 200:
+                if response.status_code == 429:
+                    last_error = HiThinkRequestError(
+                        "HiThink rate limit",
+                        code=429,
+                        rate_limited=True,
+                    )
+                    if attempt < 2:
+                        self._sleep_before_retry(attempt)
+                        continue
+                    self._remember_error(str(last_error), cooldown=True)
+                    raise last_error
                 last_error = HiThinkRequestError(f"HiThink HTTP {response.status_code}")
                 if response.status_code >= 500:
                     self._sleep_before_retry(attempt)
@@ -402,7 +431,9 @@ class HiThinkFetcher(BaseFetcher):
             self._remember_error(message, daily_only=True)
         elif capability == "realtime_quote" or path == _SNAPSHOT_PATH:
             self._remember_error(message, realtime_only=True)
-        elif capability == "fundamental" or path.startswith("/api/a-share/financials/") or path.startswith("/api/a-share/valuations/"):
+        elif capability == "valuation" or path.startswith("/api/a-share/valuations/"):
+            self._remember_error(message, valuation_only=True)
+        elif capability == "fundamental" or path.startswith("/api/a-share/financials/"):
             self._remember_error(message, fundamental_only=True)
         elif capability == "stock_list" or path.startswith("/api/meta/tickers/"):
             self._remember_error(message, directory_only=True)
@@ -658,7 +689,7 @@ class HiThinkFetcher(BaseFetcher):
                     {"thscodes": ",".join(thscode for thscode, _code in batch)},
                 )
             except HiThinkRequestError as exc:
-                if exc.permission or len(batch) == 1:
+                if exc.permission or exc.rate_limited or len(batch) == 1:
                     raise
                 for single in batch:
                     quotes.update(self._load_quotes([single]))
@@ -684,7 +715,9 @@ class HiThinkFetcher(BaseFetcher):
                     item,
                     code=code,
                     thscode=thscode,
-                    timestamp=data.get("timestamp"),
+                    # data.timestamp is the newest time in the whole response,
+                    # not a per-symbol time. Only a one-symbol response can own it.
+                    timestamp=data.get("timestamp") if len(batch) == 1 else None,
                 )
         now = time.monotonic()
         with self._lock:

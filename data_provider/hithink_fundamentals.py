@@ -182,7 +182,7 @@ class HiThinkFundamentalAdapter:
             return self._load_valuation(stock_code)
 
     def _load_valuation(self, stock_code: str) -> Dict[str, Optional[float]]:
-        if not self.fetcher.is_available("fundamental"):
+        if not self.fetcher.is_available("valuation"):
             return {}
         remaining = request_budget_remaining()
         if remaining is not None and remaining <= 0:
@@ -192,10 +192,10 @@ class HiThinkFundamentalAdapter:
             payload = self.fetcher._request(
                 _VALUATION_PATH,
                 {"thscodes": thscode},
-                capability="fundamental",
+                capability="valuation",
             )
         except HiThinkRequestError as exc:
-            _remember_permission(self.fetcher, exc)
+            _remember_permission(self.fetcher, exc, valuation_only=True)
             raise
         except DataFetchError as exc:
             if "budget exhausted" in str(exc):
@@ -378,6 +378,15 @@ def _report_present(report: Dict[str, Any]) -> bool:
     )
 
 
-def _remember_permission(fetcher: HiThinkFetcher, exc: HiThinkRequestError) -> None:
-    if exc.permission:
-        fetcher._remember_error(str(exc), fundamental_only=True)
+def _remember_permission(
+    fetcher: HiThinkFetcher,
+    exc: HiThinkRequestError,
+    *,
+    valuation_only: bool = False,
+) -> None:
+    if not exc.permission:
+        return
+    if valuation_only:
+        fetcher._remember_error(str(exc), valuation_only=True)
+        return
+    fetcher._remember_error(str(exc), fundamental_only=True)
