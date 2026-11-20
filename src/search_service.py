@@ -3741,20 +3741,29 @@ class SearchService:
             current_date = self._normalize_news_publish_date(item.published_date)
             previous_official = self._is_trusted_official_news_source(previous)
             current_official = self._is_trusted_official_news_source(item)
-            previous_bad = self._has_low_quality_news_page_signal(previous)
-            current_bad = self._has_low_quality_news_page_signal(item)
+            previous_bad = (
+                self._has_low_quality_news_page_signal(previous)
+                or self._has_adult_service_spam_news_page_signal(previous)
+            )
+            current_bad = (
+                self._has_low_quality_news_page_signal(item)
+                or self._has_adult_service_spam_news_page_signal(item)
+            )
             previous_score = previous.relevance_score or 0
             current_score = item.relevance_score or 0
-            current_wins = (
-                (previous_bad and not current_bad)
-                or (previous_date is None and current_date is not None)
-                or (not previous_official and current_official)
-                or (
-                    previous_score == 0
-                    and current_score > 0
-                    and not current_bad
+            if current_bad and not previous_bad:
+                current_wins = False
+            else:
+                current_wins = (
+                    (previous_bad and not current_bad)
+                    or (previous_date is None and current_date is not None)
+                    or (not previous_official and current_official)
+                    or (
+                        previous_score == 0
+                        and current_score > 0
+                        and not current_bad
+                    )
                 )
-            )
             if current_wins:
                 selected[previous_index] = item
 
@@ -4783,7 +4792,14 @@ class SearchService:
                         pub_date = SearchService._normalize_news_publish_date(r.published_date)
                         if pub_date is not None:
                             age_days = (datetime.now().date() - pub_date).days
-                            age_label = "明日" if age_days == -1 else ("今日" if age_days == 0 else f"{age_days}天前")
+                            if age_days == -1:
+                                age_label = "明日"
+                            elif age_days < -1:
+                                age_label = f"{abs(age_days)}天后"
+                            elif age_days == 0:
+                                age_label = "今日"
+                            else:
+                                age_label = f"{age_days}天前"
                             date_str = f" [{r.published_date} · {age_label}]"
                         else:
                             date_str = f" [{r.published_date} · 日期未知·勿作短期催化]"

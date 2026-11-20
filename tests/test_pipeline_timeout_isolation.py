@@ -113,3 +113,49 @@ def test_pipeline_timeout_releases_single_worker_for_queued_stock(tmp_path) -> N
 
     assert time.monotonic() - started < 2.5
     assert [result.code for result in results] == ["FAST"]
+
+
+def test_daemon_executor_sets_cancel_context_on_timeout(tmp_path) -> None:
+    from src.core.pipeline import _DaemonThreadStockExecutor, _is_current_stock_cancelled
+
+    config = Config(
+        stock_list=["SLOW"],
+        per_stock_timeout_seconds=1,
+        max_workers=1,
+        analysis_delay=0.0,
+        database_path=str(tmp_path / "pipeline_timeout_cancel.db"),
+        report_type="simple",
+        single_stock_notify=False,
+    )
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.config = config
+    pipeline.max_workers = 1
+    pipeline.query_id = "test-cancel-ctx"
+    pipeline.db = MagicMock()
+    pipeline.notifier = MagicMock()
+
+    release_worker = threading.Event()
+    observed_cancelled = []
+
+    def slow_worker(code: str, **kwargs):
+        release_worker.wait(timeout=2.0)
+        cancelled = _is_current_stock_cancelled()
+        observed_cancelled.append(cancelled)
+        if not cancelled:
+            pipeline.db.save_analysis_history(code=code)
+        return SimpleNamespace(code=code, success=not cancelled, error_message=None, dashboard={})
+
+    executor = _DaemonThreadStockExecutor(timeout_seconds=0.15, max_workers=1)
+    try:
+        fut = executor.submit(slow_worker, "SLOW")
+        assert fut.result(timeout=1.5) is None
+        release_worker.set()
+        # Allow daemon thread a moment to reach its checkpoint before asserting
+        deadline = time.monotonic() + 1.0
+        while not observed_cancelled and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert observed_cancelled == [True]
+        pipeline.db.save_analysis_history.assert_not_called()
+    finally:
+        release_worker.set()
+        executor.shutdown(wait=True, cancel_futures=True)

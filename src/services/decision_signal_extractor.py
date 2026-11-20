@@ -490,16 +490,16 @@ def _risk_items_duplicate(current: str, previous: str) -> bool:
         return False
 
     # A negated warning and the positive alert are distinct evidence.  Keep
-    # both when the shared phrase is immediately qualified by a negation.
+    # both when the shared phrase is qualified by negation or conditional wording.
     start = longer.find(shorter)
-    prefix = longer[max(0, start - 8):start]
+    prefix = longer[:start].lower()
     negations = (
         "无", "没有", "不存在", "未见", "未发现", "暂无", "不构成", "不具备",
         "no ", "not ", "without ", "none",
     )
     qualifiers = ("若", "如", "如果", "一旦", "若有", "如有", "若出现", "如出现")
     if any(negation in prefix for negation in negations) or any(
-        prefix.endswith(qualifier) for qualifier in qualifiers
+        qualifier in prefix for qualifier in qualifiers
     ):
         return False
     return True

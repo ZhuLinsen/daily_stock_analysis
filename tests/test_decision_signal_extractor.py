@@ -705,3 +705,29 @@ def test_extract_and_persist_index_signal_with_market_override(isolated_db) -> N
     latest = service.get_latest_active(stock_code="csi930955", market="cn")
     assert latest["total"] == 1
     assert latest["items"][0]["source_report_id"] == 955
+
+
+def test_risk_summary_preserves_long_negated_warning_and_positive_alert() -> None:
+    """Negated warning with longer qualifier prefix must not suppress opposite risk alert."""
+    result = _result(
+        code="600519",
+        risk_warning="目前不存在重大的退市风险",
+    )
+    result.dashboard = {
+        "core_conclusion": {"one_sentence": "观望"},
+        "intelligence": {"risk_alerts": ["退市风险", "原材料涨价压力"]},
+        "battle_plan": {"sniper_points": {}},
+    }
+    payload = build_decision_signal_payload_from_report(
+        result,
+        context_snapshot={},
+        source_report_id=101,
+        trace_id="trace-risk-negation",
+        query_source="cli",
+        report_type="detailed",
+        profile_source=BUILD_PROFILE_SOURCE,
+    )
+    assert payload is not None
+    assert "目前不存在重大的退市风险" in payload["risk_summary"]
+    assert "退市风险" in payload["risk_summary"]
+    assert "原材料涨价压力" in payload["risk_summary"]

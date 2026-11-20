@@ -2538,6 +2538,16 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn(f"[{two_days_ago} · 2天前]", formatted)
         self.assertIn("[日期未知·勿作短期催化]", formatted)
 
+        tomorrow = (today + timedelta(days=1)).isoformat()
+        future_resp = _response([
+            _result("明日公告", tomorrow),
+            _result("不可解析日期报道", "N/A"),
+        ])
+        future_formatted = service.format_intel_report({"latest_news": future_resp}, "贵州茅台")
+        self.assertIn(f"[{tomorrow} · 明日]", future_formatted)
+        self.assertNotIn(f"[{tomorrow} · 今日]", future_formatted)
+        self.assertIn("[N/A · 日期未知·勿作短期催化]", future_formatted)
+
     def test_title_dedup_keeps_direction_and_later_official_copy(self) -> None:
         """Dedup must not merge signed figures or hide a later official page."""
         service, _ = self._create_service_with_mock_provider()
