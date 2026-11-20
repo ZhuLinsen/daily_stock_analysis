@@ -16,6 +16,7 @@ from src.services.screening.config import Config as ScreeningRuntimeConfig
 from src.services.screening.filter import check_hard_filters, validate_check_snapshot
 from src.services.screening.strategy import load_all_strategies
 from src.services.screening_service import ScreeningService, _ensure_screening_enabled
+from src.services.system_config_service import ConfigConflictError
 from src.services.task_queue import TaskStatus as QueueTaskStatus
 from src.services.task_queue import get_task_queue
 from src.storage import DatabaseManager
@@ -324,15 +325,21 @@ class ScreeningAnalyzeTopRequest(BaseModel):
 def promote_screening_run_to_watchlist(
     run_id: str,
     request: Optional[ScreeningPromoteRequest] = None,
+    config: Config = Depends(get_config_dep),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> Dict[str, Any]:
     from src.services.screening_funnel_service import promote_screening_to_watchlist
 
+    _ensure_screening_enabled(config)
     req = request or ScreeningPromoteRequest()
     try:
         return promote_screening_to_watchlist(run_id, top_n=req.top_n, db_manager=db_manager)
+    except HTTPException:
+        raise
     except LookupError as exc:
         raise api_error(404, "screening_run_not_found", str(exc)) from exc
+    except ConfigConflictError as exc:
+        raise api_error(409, "config_conflict", str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -344,10 +351,12 @@ def promote_screening_run_to_watchlist(
 def analyze_screening_run_top(
     run_id: str,
     request: Optional[ScreeningAnalyzeTopRequest] = None,
+    config: Config = Depends(get_config_dep),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> Dict[str, Any]:
     from src.services.screening_funnel_service import analyze_screening_candidates
 
+    _ensure_screening_enabled(config)
     req = request or ScreeningAnalyzeTopRequest()
     try:
         return analyze_screening_candidates(
@@ -356,6 +365,8 @@ def analyze_screening_run_top(
             report_type=req.report_type,
             db_manager=db_manager,
         )
+    except HTTPException:
+        raise
     except LookupError as exc:
         raise api_error(404, "screening_run_not_found", str(exc)) from exc
     except Exception as exc:
