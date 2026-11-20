@@ -658,6 +658,41 @@ describe('LLMChannelEditor', () => {
     expect(update.mock.calls[0][0].items).toEqual([{ key: 'MODELFLARE_KEY', value: 'sk-new' }]);
   });
 
+  it('preserves a local channel draft when a generic shorthand key changes', async () => {
+    const initialItems = [
+      { key: 'LLM_CHANNELS', value: 'modelflare' },
+      { key: 'MODELFLARE_KEY', value: 'sk-existing', rawValueExists: true },
+    ];
+    const { rerender } = render(
+      <LLMChannelEditor
+        items={initialItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Modelflare（聚合平台）/i }));
+    const baseUrl = screen.getByLabelText('Base URL');
+    fireEvent.change(baseUrl, { target: { value: 'https://draft.example/v1' } });
+
+    rerender(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'modelflare' },
+          { key: 'MODELFLARE_KEY', value: 'sk-new', rawValueExists: true },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Modelflare（聚合平台）/i }));
+    await waitFor(() => expect(screen.getByLabelText('Base URL')).toHaveValue('https://draft.example/v1'));
+    expect(screen.getByLabelText('API Key')).toHaveValue('sk-new');
+  });
+
   it('does not append Modelflare to explicitly declared channels when its shorthand key exists', () => {
     render(<LLMChannelEditor items={[
       ...openAiItems, { key: 'MODELFLARE_KEY', value: 'sk-existing' },

@@ -1746,6 +1746,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const prevDraftResetTokenRef = useRef(draftResetToken);
   const prevChannelsRef = useRef(channelsFingerprint);
   const prevRuntimeRef = useRef(runtimeFingerprint);
+  const previousInitialChannelsRef = useRef(initialChannels);
+  const previousInitialRuntimeConfigRef = useRef(initialRuntimeConfig);
   const pendingSaveFeedbackFingerprintRef = useRef<{ channels: string; runtime: string } | null>(null);
   const discoveryNonceRef = useRef<Record<string, number>>({});
   const discoveryRequestIdRef = useRef(0);
@@ -1757,15 +1759,63 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       && prevDraftResetTokenRef.current === draftResetToken) {
       return;
     }
+    const isExplicitReset = prevDraftResetTokenRef.current !== draftResetToken;
+    const previousInitialChannels = previousInitialChannelsRef.current;
+    const previousInitialRuntimeConfig = previousInitialRuntimeConfigRef.current;
     prevDraftResetTokenRef.current = draftResetToken;
     prevChannelsRef.current = channelsFingerprint;
     prevRuntimeRef.current = runtimeFingerprint;
+    previousInitialChannelsRef.current = initialChannels;
+    previousInitialRuntimeConfigRef.current = initialRuntimeConfig;
     const pendingSaveFeedbackFingerprint = pendingSaveFeedbackFingerprintRef.current;
     const preserveSaveFeedback = pendingSaveFeedbackFingerprint?.channels === channelsFingerprint
       && pendingSaveFeedbackFingerprint.runtime === runtimeFingerprint;
     pendingSaveFeedbackFingerprintRef.current = null;
-    setChannels(initialChannels);
-    setRuntimeConfig(initialRuntimeConfig);
+    if (isExplicitReset) {
+      setChannels(initialChannels);
+      setRuntimeConfig(initialRuntimeConfig);
+    } else {
+      setChannels((currentChannels) => {
+        const nextChannelNames = new Set(initialChannels.map((channel) => channel.name.toLowerCase()));
+        const mergedChannels = initialChannels.map((nextInitial) => {
+          const currentChannel = currentChannels.find(
+            (channel) => channel.id === nextInitial.id
+              || channel.name.toLowerCase() === nextInitial.name.toLowerCase(),
+          );
+          const previousInitial = previousInitialChannels.find(
+            (channel) => channel.id === nextInitial.id
+              || channel.name.toLowerCase() === nextInitial.name.toLowerCase(),
+          );
+          if (!currentChannel || !previousInitial) {
+            return nextInitial;
+          }
+          const merged = { ...nextInitial };
+          (['name', 'protocol', 'apiSurface', 'baseUrl', 'apiKey', 'models', 'enabled'] as const).forEach((field) => {
+            if (currentChannel[field] !== previousInitial[field]) {
+              Object.assign(merged, { [field]: currentChannel[field] });
+            }
+          });
+          return merged;
+        });
+
+        // A locally added channel has no previous initial snapshot. Keep it
+        // until the user explicitly resets, but drop channels removed by the
+        // external draft update.
+        return [
+          ...mergedChannels,
+          ...currentChannels.filter((channel) => !nextChannelNames.has(channel.name.toLowerCase())),
+        ];
+      });
+      setRuntimeConfig((currentRuntime) => {
+        const merged = { ...initialRuntimeConfig };
+        (['primaryModel', 'agentPrimaryModel', 'fallbackModels', 'visionModel', 'temperature'] as const).forEach((field) => {
+          if (JSON.stringify(currentRuntime[field]) !== JSON.stringify(previousInitialRuntimeConfig[field])) {
+            Object.assign(merged, { [field]: currentRuntime[field] });
+          }
+        });
+        return merged;
+      });
+    }
     setVisibleKeys({});
     setTestStates({});
     setDiscoveryStates({});

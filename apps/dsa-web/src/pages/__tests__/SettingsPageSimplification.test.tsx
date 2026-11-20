@@ -178,7 +178,7 @@ describe('SettingsPage search and essential mode', () => {
         ai_model: [
           { ...makeItem('LLM_CHANNELS', 'ai_model', 'Channel names'), value: 'text,vision' },
           makeItem('VISION_MODEL', 'ai_model', 'Vision model'),
-          makeItem('LITELLM_CONFIG', 'ai_model', 'LiteLLM config'),
+          { ...makeItem('LITELLM_CONFIG', 'ai_model', 'LiteLLM config'), value: '/missing/litellm.yaml' },
         ],
         notification: [makeItem('FEISHU_WEBHOOK_URL', 'notification', 'Feishu Webhook URL')],
       },

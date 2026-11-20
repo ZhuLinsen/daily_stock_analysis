@@ -14,6 +14,7 @@ const PaletteHarness = () => {
   return (
     <MemoryRouter initialEntries={['/']}>
       <LocationDisplay />
+      <button type="button" data-testid="background-action" onClick={() => {}}>Background action</button>
       <CommandPalette
         isOpen={open}
         onClose={() => setOpen(false)}
@@ -65,11 +66,31 @@ describe('CommandPalette', () => {
     fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByTestId('current-route')).toHaveTextContent('/');
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
 
     fireEvent.compositionEnd(input);
     fireEvent.change(input, { target: { value: 'backtest' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByTestId('current-route')).toHaveTextContent('/backtest');
+  });
+
+  it('keeps keyboard focus inside the modal and restores focus on close', () => {
+    render(<PaletteHarness />);
+    const backgroundAction = screen.getByTestId('background-action');
+    backgroundAction.focus();
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    const dialog = screen.getByRole('dialog');
+    const input = screen.getByRole('textbox');
+    input.focus();
+    fireEvent.keyDown(input, { key: 'Tab', shiftKey: true });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+
+    backgroundAction.focus();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(document.activeElement).toBe(backgroundAction);
   });
 });

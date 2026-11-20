@@ -36,17 +36,70 @@ const STATIC_COMMANDS: PaletteItem[] = [
 
 const TICKER_PATTERN = /^[A-Za-z0-9.]{2,12}$/;
 
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), [href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  ));
+}
+
 const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const navigate = useNavigate();
   const { language, t } = useUiLanguage();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const isComposingRef = useRef(false);
 
   useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
     const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
-    return () => window.clearTimeout(timer);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') {
+        return;
+      }
+      const dialog = dialogRef.current;
+      if (!dialog) {
+        return;
+      }
+      const focusable = getFocusableElements(dialog);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement = document.activeElement;
+      if (event.shiftKey) {
+        if (!activeElement || !dialog.contains(activeElement) || activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+      if (!activeElement || !dialog.contains(activeElement) || activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const handleFocusIn = (event: FocusEvent) => {
+      const dialog = dialogRef.current;
+      if (dialog && !dialog.contains(event.target as Node)) {
+        inputRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown, true);
+    document.addEventListener('focusin', handleFocusIn);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('keydown', handleKeyDown, true);
+      document.removeEventListener('focusin', handleFocusIn);
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus();
+      }
+    };
   }, []);
 
   const items = useMemo(() => {
@@ -106,6 +159,7 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label={t('palette.triggerLabel')}
@@ -185,7 +239,7 @@ const CommandPaletteDialog: React.FC<{ onClose: () => void }> = ({ onClose }) =>
 export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose, onToggle }) => {
   useEffect(() => {
     const handleGlobalKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      if (!event.isComposing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         onToggle();
       } else if (isOpen && event.key === 'Escape' && !event.isComposing) {

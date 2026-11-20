@@ -39,7 +39,12 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   }, [mobileOpen]);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div>
+      <div
+        className="min-h-screen bg-background text-foreground"
+        aria-hidden={paletteOpen ? true : undefined}
+        inert={paletteOpen || undefined}
+      >
       <div className="pointer-events-none fixed inset-x-0 top-3 z-40 flex items-start justify-between px-3">
         <button
           type="button"
@@ -97,6 +102,8 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
       >
         <SidebarNav onNavigate={() => setMobileOpen(false)} />
       </Drawer>
+
+      </div>
 
       <CommandPalette
         isOpen={paletteOpen}

@@ -199,7 +199,6 @@ function isItemHiddenInSettings(
   category: string,
   item: SystemConfigItem,
   aiModelHasConfiguredChannels: boolean,
-  aiModelHasLitellmConfig: boolean,
 ): boolean {
   if (category === 'base') {
     return BASE_HIDDEN_KEYS.has(item.key);
@@ -211,10 +210,17 @@ function isItemHiddenInSettings(
     return AGENT_HIDDEN_KEYS.has(item.key);
   }
   if (category === 'ai_model') {
+    // A non-empty YAML path is not proof that LiteLLM loaded it. When the
+    // path is invalid, runtime falls back to channel configuration, so keep
+    // the channel list out of the generic editor/search path.
     if (aiModelHasConfiguredChannels && LLM_CHANNEL_KEY_RE.test(item.key)) {
       return true;
     }
-    if (aiModelHasConfiguredChannels && !aiModelHasLitellmConfig && AI_MODEL_HIDDEN_KEYS.has(item.key)) {
+    // A configured YAML path may be missing or invalid at runtime. In that
+    // case Config falls back to LLM_CHANNELS, so exposing legacy runtime
+    // fields would allow a stale Vision/primary-model reference to be edited
+    // independently of the channel editor.
+    if (aiModelHasConfiguredChannels && AI_MODEL_HIDDEN_KEYS.has(item.key)) {
       return true;
     }
   }
@@ -960,7 +966,6 @@ const SettingsPage: React.FC = () => {
   const shouldShowScreeningSettings = activeCategory === 'base' && Boolean(screeningItem);
   const aiModelHasConfiguredChannels = Boolean((aiModelItemMap.get('LLM_CHANNELS') || '').trim()
     || (aiModelItemMap.get('MODELFLARE_KEY') || '').trim());
-  const aiModelHasLitellmConfig = Boolean((aiModelItemMap.get('LITELLM_CONFIG') || '').trim());
   const hasRuntimeSchedulerMismatch =
     schedulerRuntimeEnabled !== null
     && schedulerOverrideFromUi !== null
@@ -1029,7 +1034,7 @@ const SettingsPage: React.FC = () => {
   }, []);
 
   const activeItems = rawActiveItems.filter(
-    (item) => !isItemHiddenInSettings(activeCategory, item, aiModelHasConfiguredChannels, aiModelHasLitellmConfig),
+    (item) => !isItemHiddenInSettings(activeCategory, item, aiModelHasConfiguredChannels),
   );
   const promptCacheAdvancedItems = activeCategory === 'ai_model'
     ? activeItems.filter(isPromptCacheAdvancedSetting)
@@ -1055,7 +1060,7 @@ const SettingsPage: React.FC = () => {
       const catTitle = getCategoryTitle(category.category as SystemConfigCategory, category.title, uiLanguage);
       const list = itemsByCategory[category.category] || [];
       for (const item of list) {
-        if (isItemHiddenInSettings(category.category, item, aiModelHasConfiguredChannels, aiModelHasLitellmConfig)) {
+        if (isItemHiddenInSettings(category.category, item, aiModelHasConfiguredChannels)) {
           continue;
         }
         const localizationKey = item.schema?.key ?? item.key;
@@ -1080,7 +1085,7 @@ const SettingsPage: React.FC = () => {
       }
     }
     return matches;
-  }, [aiModelHasConfiguredChannels, aiModelHasLitellmConfig, categories, itemsByCategory, trimmedSearchQuery, uiLanguage]);
+  }, [aiModelHasConfiguredChannels, categories, itemsByCategory, trimmedSearchQuery, uiLanguage]);
   const isEnvBackupAllowed = isDesktopRuntime || authEnabled;
   const envBackupActionDisabled = isLoading || isSaving || isExportingEnv || isImportingEnv || !isEnvBackupAllowed;
 
