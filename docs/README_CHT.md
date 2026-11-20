@@ -1,5 +1,7 @@
 <div align="center">
 
+<a name="股票智能分析系統"></a>
+
 # 📈 股票智能分析系統 (DSA)
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/daily_stock_analysis?style=social)](https://github.com/ZhuLinsen/daily_stock_analysis/stargazers)
@@ -21,11 +23,11 @@
   </a>
 </p>
 
-> 🤖 覆蓋 **A股 / 港股 / 美股 / 日股 / 韓股 / 台股** 的全鏈路 AI 投研工作台：集多源行情聚合、技術/情報分析、Agent 策略問股、決策信號回測驗證、持倉風控與多渠道推送於一體
+> 🤖 基於 AI 大模型的自選股分析系統，涵蓋 A 股、港股、美股、日股、韓股和台股，支援決策報告、策略問股、回測、持倉風險追蹤和多渠道推送。
 
 [**產品預覽**](#-產品預覽) · [**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**文檔中心**](./INDEX.md) · [**完整指南**](./full-guide.md)
 
-**[下載桌面客戶端](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [5 分鐘 GitHub Actions](#方式一github-actions推薦) · [Docker / 本地 WebUI](#方式二客戶端配置教程--本地運行--docker-部署)**
+**[3 分鐘快速上手（簡中）](./QUICKSTART.md) · [下載桌面客戶端](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [GitHub Actions](#方式一github-actions推薦) · [Docker / 本地 WebUI](#方式二客戶端配置教程--本地運行--docker-部署)**
 
 繁體中文 | [English](README_EN.md) | [简体中文](../README.md)
 
@@ -40,7 +42,7 @@
 </table>
 </details>
 
-## 💻 產品預覽
+## 🖥️ 產品預覽
 
 <p align="center">
   <a href="assets/readme_workspace_tour_20260510.gif"><img src="assets/readme_workspace_preview.gif" alt="DSA Web 工作台演示" width="640"></a><br>
@@ -60,59 +62,61 @@
 | **跟蹤** | 持倉帳本與風險暴露看板（`/portfolio`、富途同步）、即時異動告警（`/alerts`）、Token 統計（`/usage`） | [組合風控](./portfolio-risk-exposure-dashboard.md) · [告警中心](./alerts.md) |
 | **觸達** | GitHub Actions 零伺服器定時任務、Electron 桌面端、企業微信 / 飛書 / Telegram / Discord / Slack / 郵件推送 | [通知配置](./notifications.md) · [Bot 接入](./bot-command.md) |
 
+<a name="-agent-策略問股"></a>
+
+在 Web 或桌面工作台使用 [策略問股](./full-guide.md#本地-webui-管理界面)。
+
 ### 技術棧與數據來源
 
 | 類型 | 支援 |
 |------|------|
 | **AI 模型** | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)、[x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)、AIHubMix、Gemini、OpenAI 兼容、DeepSeek、通義千問、Claude、Ollama 本地模型等 |
 | **行情數據** | [TickPlus（推薦）](http://www.tickplus.org/register?reg=5433cf922395)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge（內建免費源零配置可跑，批量/穩定建議配合 Token 源） |
-| **新聞與輿情** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG；美股可選 Stock Sentiment API（Reddit / X / Polymarket） |
+| **新聞與輿情** | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)、Anspire、Tavily、Bocha、Brave、MiniMax、SearXNG。美股可選 Stock Sentiment API（Reddit / X / Polymarket） |
 
 ## 🚀 快速開始
+
+<a name="-配置說明"></a>
+
+[通知配置](./notifications.md) · [完整配置與部署指南](./full-guide.md)
 
 | 上手方式 | 適合人群 | 所需前置 | 入口 |
 |------|------|------|------|
 | **桌面客戶端** | 不想折騰命令行的個人投資者 | 1 個 AI API Key | [Releases 下載](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [小白教程](./beginner-client-setup.md) |
 | **GitHub Actions** | 零伺服器每日自動分析（推薦） | **僅 1 個 AI 模型 Secret** | [下方 4 步配置](#方式一github-actions推薦) |
-| **Docker / 本地 WebUI** | 私有部署、持倉管理與 Agent 問股 | Docker 或 Python 3.10+ | [下方部署命令](#方式二客戶端配置教程--本地運行--docker-部署) · [部署指南](./DEPLOY.md) |
+| **Docker / 本地 WebUI** | 私有部署、持倉管理與 Agent 問股 | Docker 或 Git / Python / Node.js | [下方部署命令](#方式二客戶端配置教程--本地運行--docker-部署) · [部署指南](./DEPLOY.md) |
 
 ### 方式一：[GitHub Actions（推薦）](https://www.bilibili.com/video/BV11FEb66EXG/)
 
-> 5 分鐘部署，無需自備伺服器（AI 模型調用費用由你選擇的 API 渠道計費）；首次跑通**只需配置 1 個 AI 模型 Secret**，`STOCK_LIST` 預設兜底 `600519`，通知渠道可選。
+> 5 分鐘部署，無需自備伺服器（AI 模型調用費用由你選擇的 API 渠道計費）。首次跑通**只需配置 1 個 AI 模型 Secret**，`STOCK_LIST` 預設兜底 `600519`，通知渠道可選。
 
-1. **Fork 本倉庫**：點擊右上角 `Fork`（順便點個 Star ⭐ 支援一下）。
-2. **配置至少 1 個 AI 模型 Secret**（`Settings` -> `Secrets and variables` -> `Actions` -> `New repository secret`）：
-   - **單 Secret 推薦**：`MODELFLARE_KEY`（[Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)，自動補齊預設位址與模型）、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`
-   - **多變數渠道 / 相容接入**：使用 [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) 需配置 `LLM_CHANNELS=x6ai`、`LLM_X6AI_BASE_URL`、`LLM_X6AI_API_KEY` 與 `LLM_X6AI_MODELS`（見 [x6.ai 渠道範例](./llm-providers.md#x6ai-聚合平台)）；使用 OpenAI 相容 DeepSeek/通義千問需同時配置 `OPENAI_API_KEY` + `OPENAI_BASE_URL` + `OPENAI_MODEL`
-   - **可選增強**：`STOCK_LIST`（如 `600519,hk00700,AAPL,7203.T,005930.KS,2330.TW`，規則見 [指數自選股配置](./full-guide.md#指数自选股配置)）、`SERPAPI_API_KEYS`（新聞補強）、`TICKPLUS_API_KEY` / `TUSHARE_TOKEN` / `LONGBRIDGE_OAUTH_CLIENT_ID`（穩定行情）、通知渠道（`WECHAT_WEBHOOK_URL` / `FEISHU_WEBHOOK_URL` / `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID` / `DISCORD_WEBHOOK_URL` / `SLACK_BOT_TOKEN`+`SLACK_CHANNEL_ID` / `EMAIL_SENDER`+`EMAIL_PASSWORD`，詳見 [完整指南](./full-guide.md)）。
-3. **啟用 Actions**：進入 Fork 倉庫的 `Actions` 標籤 -> 點擊 `I understand my workflows, go ahead and enable them`。
-4. **手動測試與查看結果**：`Actions` -> `每日股票分析` -> `Run workflow`，執行完成後可在推送通知查看結果或下載 `analysis-reports-*` Artifact；之後每個工作日 **18:00（北京時間）** 自動執行（非交易日跳過及斷點續傳規則見 [定時任務配置](./full-guide.md#定时任务配置)）。
+1. <a name="1-fork-本倉庫"></a>**Fork 本倉庫**：點擊右上角 `Fork`。
+2. <a name="2-配置-secrets"></a>前往 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`，擇一填寫 `MODELFLARE_KEY`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或官方 `OPENAI_API_KEY`。x6.ai 與其他相容服務請參閱 [模型配置表](./full-guide.md#ai-模型配置至少配置一个)。
+3. <a name="3-啟用-actions"></a>**啟用 Actions**：進入 Fork 倉庫的 `Actions` 標籤 -> 點擊 `I understand my workflows, go ahead and enable them`。
+4. <a name="完成"></a><a name="4-手動測試"></a>**手動測試與查看結果**：`Actions` -> `每日股票分析` -> `Run workflow`，執行完成後可在推送通知查看結果或下載 `analysis-reports-*` 產物。之後每個工作日 **18:00（北京時間）** 自動執行（非交易日跳過及斷點續傳規則見 [定時任務配置](./full-guide.md#定时任务配置)）。非交易日試跑時可在手動觸發畫面勾選強制執行。
+
+依需要配置自選股、資訊來源、行情源和通知渠道，請參閱 [完整指南](./full-guide.md#github-actions-详细配置)。
 
 ### 方式二：[客戶端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地運行 / Docker 部署
 
-```bash
-# 1. 淺克隆項目（跳過歷史提交，下載更快）
-git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
+<a name="-web-介面"></a>
 
-# 2. 安裝依賴並啟動 Web 工作台（推薦直接在網頁設定頁配置模型、自選股與通知）
-pip install -r requirements.txt
-python main.py --webui-only
-```
-
-啟動後訪問 `http://127.0.0.1:8000`（支援圖片/CSV/剪貼簿智能匯入與 `/chat` Agent 問股）。如使用 `.env` 命令行模式：
+本地 WebUI 需要 Git、Python 3.10+、Node.js 20.19 或更新版本（低於 27）及 npm 10+。
 
 ```bash
-cp .env.example .env && vim .env
-python main.py                              # 全量分析（個股 + 大盤覆盤）
-python main.py --stocks 600519,hk00700,AAPL # 一次性分析指定標的
-python main.py --market-review              # 僅運行大盤覆盤
-python main.py --schedule                   # 本地定時排程
-python main.py --serve-only                 # 僅啟動 FastAPI + WebUI 服務
+git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
+python -m pip install -r requirements.txt
+(cd apps/dsa-web && npm ci && npm run build)
+python main.py --serve-only
 ```
 
-> **作為只讀金融 MCP Server 接入 Claude Code / Cursor**：`claude mcp add dsa -- python -m src.mcp_server`（6 市場行情 / K 線 / 基本面 / 新聞 / 歷史報告只讀工具，加 `--include-macro` 可額外暴露宏觀只讀工具）。Docker 部署、雲端伺服器訪問與 `--etf-rotation` 輪動請看 [完整配置與部署指南](./full-guide.md)；桌面客戶端打包請看 [桌面端打包說明](./desktop-package.md)；多模型路由與 Agent 參數請看 [LLM 配置指南](./LLM_CONFIG_GUIDE.md)。
+在瀏覽器開啟 `http://127.0.0.1:8000`，於「設定」填寫 AI Key 和自選股後開始分析。Docker 使用者請參閱 [部署指南](./DEPLOY.md)。
 
 ## 📱 推送效果
+
+<a name="決策儀表盤"></a>
+<a name="大盤復盤"></a>
 
 <details>
 <summary>點擊展開推送示例（決策儀表盤 &amp; 大盤覆盤）</summary>
@@ -127,7 +131,7 @@ python main.py --serve-only                 # 僅啟動 FastAPI + WebUI 服務
 🔴 新萊應材(300260): 賣出 | 評分 35 | 看空
 
 🚨 風險警報:
-- 主力資金大幅淨賣出，需警惕短期拋壓；籌碼偏分散，拉升阻力較大。
+- 主力資金大幅淨賣出，需警惕短期拋壓。籌碼偏分散，拉升阻力較大。
 ✨ 利好催化:
 - 受益於 AI 伺服器產業鏈，業績同比高增長提供基本面支撐。
 
@@ -138,17 +142,15 @@ python main.py --serve-only                 # 僅啟動 FastAPI + WebUI 服務
 
 </details>
 
-## 🛠️ 排障與保持更新
-
-- **Fork 保持更新**：定期在 GitHub 點擊 `Sync fork` 同步數據源與模型修復；通過 Secrets/Variables 配參數，避免改動 workflow 引發衝突。
-- **60 天定時停用**：GitHub 會在倉庫 **60 天無倉庫活動** 後自動暫停 `schedule` 定時任務，可在 `Actions` 頁重新啟用或定期 `Sync fork`，詳見 [FAQ](./FAQ.md)。
-
 ## 📬 聯繫與合作
 
 <table>
   <tr>
     <td width="92" valign="top"><strong>合作郵箱</strong></td>
-    <td valign="top"><a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a>（項目諮詢、部署支援與功能擴展）</td>
+    <td valign="top">
+      <a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a><br>
+      項目諮詢、部署支援與功能擴展
+    </td>
     <td align="center" rowspan="3" valign="middle" width="148">
       <a href="http://xhslink.com/m/tU520DWCKT" target="_blank"><img src="assets/xiaohongshu_tick.jpg" width="112" alt="小紅書二維碼"></a><br>
       <sub>掃碼關注小紅書</sub>
@@ -160,10 +162,16 @@ python main.py --serve-only                 # 僅啟動 FastAPI + WebUI 服務
   </tr>
   <tr>
     <td width="92" valign="top"><strong>問題反饋</strong></td>
-    <td valign="top"><a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues">提交 Issue</a> · <a href="./INDEX.md">文檔中心</a></td>
+    <td valign="top"><a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues">提交 Issue</a></td>
   </tr>
 </table>
 
-## 📄 License & ⚠️ 免責聲明
+## 📄 License
 
-[MIT License](../LICENSE) © 2026 ZhuLinsen — 歡迎在二次開發或引用時註明本倉庫來源。本項目僅供學習和研究使用，不構成任何投資建議；股市有風險，投資需謹慎。
+[MIT License](../LICENSE) © 2026 ZhuLinsen
+
+如果你在項目中使用或基於本項目進行二次開發，非常歡迎在 README 或文檔中註明來源並附上本倉庫鏈接。
+
+## ⚠️ 免責聲明
+
+本項目僅供學習和研究使用，不構成任何投資建議。股市有風險，投資需謹慎。作者不對使用本項目產生的任何損失負責。

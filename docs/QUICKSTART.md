@@ -1,7 +1,6 @@
 # 3 分钟快速上手（极简路径）
 
-> 第一次使用 **不需要** 看懂 `.env.example` 的 1,100+ 行参数，也 **不需要** 配置复杂的推送、数据源或 Agent 选项。
-> 跑通首次分析**只需 2 样东西**：① 1 个 AI API Key　② 自选股列表 `STOCK_LIST`（免费行情源内置兜底）。
+> 本地首次分析只需配置一个 AI API Key 和自选股 `STOCK_LIST`。行情可使用内置的免费数据源，通知可稍后配置。
 
 ---
 
@@ -9,42 +8,43 @@
 
 | 你是谁 | 推荐方式 | 前置要求 | 下一步 |
 |---|---|---|---|
-| **不想写代码 / 个人投资** | **桌面客户端**（Windows / macOS） | 1 个 AI Key | 下载 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases)，或看 [小白教程](beginner-client-setup.md) |
-| **零服务器自动跑日报** | **GitHub Actions** | 1 个 Repository Secret | Fork 仓库 → 添加 `MODELFLARE_KEY` / `GEMINI_API_KEY` → 开启 Workflows |
-| **本地终端 / WebUI** | **极简配置 + Web 工作台** | Python 3.10+ | 运行下方 **3 条步骤** |
-| **容器部署** | **Docker Compose** | Docker | 参考 [部署指南](DEPLOY.md) |
+| 想用图形界面 | 桌面客户端（Windows / macOS） | 1 个 AI Key | [下载客户端](https://github.com/ZhuLinsen/daily_stock_analysis/releases) · [安装教程](beginner-client-setup.md) |
+| 想定时跑日报 | GitHub Actions | 1 个 AI Key | [配置并运行每日股票分析](full-guide.md#github-actions-详细配置) |
+| 想在本地运行 | 命令行 | Git、Python 3.10+ | [本地三步](#本地-3-步快速起步) |
+| 想自托管 Web 工作台 | Docker Compose | Docker、1 个 AI Key | [部署指南](DEPLOY.md) |
 
 ---
 
 ## 本地 3 步快速起步
 
-```bash
-# 1. 复制配置模板并仅填写 AI Key 与自选股（见下方 3 行示例）
-cp .env.example .env
+1. 获取代码并安装 Python 依赖。
 
-# 2. 不耗费 AI 配额测试行情抓取链路是否畅通
-python main.py --dry-run
+   ```bash
+   git clone --depth 1 https://github.com/ZhuLinsen/daily_stock_analysis.git
+   cd daily_stock_analysis
+   python -m pip install -r requirements.txt
+   ```
 
-# 3. 启动 WebUI 工作台（或运行单只分析：python main.py --stocks 600519）
-python main.py --serve-only
-```
+2. 运行 `cp .env.example .env`，编辑 `.env` 中的两项。将示例值替换为你的自选股和 [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) API Key。
 
-启动后访问 `http://127.0.0.1:8000` 查看分析任务与历史决策报告。
+   ```dotenv
+   STOCK_LIST=600519
+   MODELFLARE_KEY=your_api_key
+   ```
 
----
+3. 手动运行一次个股分析。`--force-run` 允许在非交易日试跑。
 
-## 最简 `.env` 核心项示例（其余参数均留默认即可）
+   ```bash
+   python main.py --no-market-review --no-notify --force-run
+   ```
 
-```ini
-STOCK_LIST=600519,hk00700,AAPL
-GEMINI_API_KEY=
-# 如需推送到微信/飞书，再填 1 行 WECHAT_WEBHOOK_URL= 或 FEISHU_WEBHOOK_URL=
-```
+   成功后在 `reports/` 查看报告。只想先检查行情拉取时，可运行 `python main.py --dry-run --force-run`。
 
 ---
 
 ## 按需进阶（跑通后再看）
 
 - **配置与推送**：[LLM 配置指南](LLM_CONFIG_GUIDE.md) · [通知渠道配置](notifications.md) · [常见故障 FAQ](FAQ.md)
-- **进阶能力**：[组合风控与压力测试](portfolio-risk-exposure-dashboard.md) · [智能选股](screening-engine.md) · [决策信号](decision-signals.md)
+- **Web 工作台**：[本地构建与启动](../README.md#方式二客户端配置教程--本地运行--docker-部署)
+- **进阶能力**：[组合风险与暴露](portfolio-risk-exposure-dashboard.md) · [智能选股](screening-engine.md) · [决策信号](decision-signals.md)
 - **全部文档**：[完整文档索引](INDEX.md) · [完整配置与部署指南](full-guide.md)

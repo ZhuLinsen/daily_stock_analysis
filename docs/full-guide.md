@@ -55,19 +55,18 @@ daily_stock_analysis/
 
 #### AI 模型配置（至少配置一个）
 
-| Secret 名称 | 说明 | 必填 |
-|------------|------|:----:|
-| `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) 推荐单 Secret 接入（自动补齐默认地址和模型） | 推荐（1 Secret） |
-| `AIHUBMIX_KEY` | AIHubMix API Key，一 Key 切换使用全系模型，本项目可享 10% 优惠 | 可选（1 Secret） |
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 获取免费 Key | 可选 |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
-| `OPENAI_API_KEY` | OpenAI 官方 Key；如接入 DeepSeek / 通义千问等兼容服务，需同时配 `OPENAI_BASE_URL` / `OPENAI_MODEL` | 可选 |
-| `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com`） | 可选 |
-| `OPENAI_MODEL` | 模型名称（如 `gemini-3.6-flash`、`deepseek-v4-flash`、`gpt-6.1-sol`） | 可选 |
-| `LLM_CHANNELS` / `LLM_X6AI_API_KEY` | [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) 等显式渠道配置（需同时配置 `LLM_CHANNELS=x6ai`、`LLM_X6AI_BASE_URL`、`LLM_X6AI_API_KEY`、`LLM_X6AI_MODELS`，见 [x6.ai 渠道配置](llm-providers.md#x6ai-聚合平台)） | 推荐（多变量） |
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） | 可选 |
+选择下表中的任意一种接入方式。API Key 填入 Actions 的 **Secrets**，地址、模型和渠道名可填入 **Variables**。
 
-> *注：以上模型 Key / 渠道至少配置一个。Modelflare 只需填写 `MODELFLARE_KEY`，单渠道默认模型为 `openai/gpt-6.1-sol`（可通过 `LITELLM_MODEL` 覆盖），接入地址默认使用 `https://modelflare.dev/v1`，完整示例见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#示例modelflare)。实际模型以账号权限为准。启动时配置校验会在缺少可用 AI 模型 Key 或模型渠道时给出明确错误提示。
+| 接入方式 | Secrets | 配套 Variables |
+| --- | --- | --- |
+| [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis)（推荐，单 Secret） | `MODELFLARE_KEY` | 默认补齐地址和模型 |
+| AIHubMix（单 Secret） | `AIHUBMIX_KEY` | 默认补齐地址和模型。本项目可享 10% 优惠 |
+| Gemini、Anthropic 或 OpenAI 官方接口（单 Secret） | `GEMINI_API_KEY`、`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` | 使用项目为对应服务预设的模型 |
+| [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns)（显式渠道） | `LLM_X6AI_API_KEY` | `LLM_CHANNELS=x6ai`、`LLM_X6AI_BASE_URL` 和 `LLM_X6AI_MODELS`，见 [x6.ai 渠道配置](llm-providers.md#x6ai-聚合平台) |
+| OpenAI 兼容服务（如 DeepSeek、通义千问） | `OPENAI_API_KEY`（该服务签发的 Key） | `OPENAI_BASE_URL` 和 `OPENAI_MODEL` 填写该服务的地址及模型 |
+| [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` | 模型和搜索可共用 Key，以账号权限为准 |
+
+**Modelflare 默认值**为 `https://modelflare.dev/v1` 和 `openai/gpt-6.1-sol`。如果账号需要使用其他模型，可设置 `LITELLM_MODEL`。完整示例见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#示例modelflare)。
 
 #### 通知渠道配置（可同时配置多个，全部推送）
 
@@ -108,7 +107,7 @@ daily_stock_analysis/
 | `CUSTOM_WEBHOOK_BODY_TEMPLATE` | 自定义 Webhook JSON body 模板，适配 AstrBot、NapCat、自建服务等特殊 payload | 可选 |
 | `WEBHOOK_VERIFY_SSL` | 读取该配置的 webhook-style HTTPS 通知请求证书校验（默认 true）。设为 false 可支持自签名证书。警告：关闭有严重安全风险（MITM），仅限可信内网 | 可选 |
 
-> *注：至少配置一个渠道，配置多个则同时推送。启动时配置校验会提示 Telegram / 邮件成对字段缺失，以及常见 Webhook URL 未以 `http://` 或 `https://` 开头的问题。
+> *注：需要接收推送时再配置通知渠道，也可以直接从工作流产物下载报告。启动时配置校验会提示 Telegram / 邮件成对字段缺失，以及常见 Webhook URL 未以 `http://` 或 `https://` 开头的问题。
 >
 > 当前默认 `00-daily-analysis.yml` 只显式映射固定 Secret / Variable 名称，不会自动把 `STOCK_GROUP_1`、`EMAIL_GROUP_1` 这类任意编号变量导入运行环境，也不会自动导入 `NEWS_INTEL_AUTO_FETCH_ENABLED` 这类新增可选开关。所以分组邮箱功能和本地资讯自动刷新能力目前不适用于仓库自带默认 GitHub Actions workflow；它们适用于本地 `.env`、Docker，或你自行显式扩展过 `env:` 映射的运行环境。Actions 已显式映射 `CUSTOM_WEBHOOK_BODY_TEMPLATE`、`WEBHOOK_VERIFY_SSL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_WEBHOOK_KEYWORD`、`PUSHPLUS_TOPIC`、`NTFY_URL`、`NTFY_TOKEN`、`GOTIFY_URL`、`GOTIFY_TOKEN`、P3 通知路由键以及 P4 通知降噪键；`MARKDOWN_TO_IMAGE_CHANNELS` 和 `MERGE_EMAIL_NOTIFICATION` 仍作为行为开关不在默认 workflow 中自动映射。
 
@@ -160,7 +159,7 @@ daily_stock_analysis/
 
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
-| `STOCK_LIST` | 自选股代码，如 `600519,300750,002594,7203.T,005930.KS`；推荐使用英文逗号，中文逗号、顿号、分号、空格和换行会被识别并规范为英文逗号 | ✅ |
+| `STOCK_LIST` | 自选股代码，如 `600519,300750,002594,7203.T,005930.KS`。推荐使用英文逗号，中文逗号、顿号、分号、空格和换行会被识别并规范为英文逗号 | 可选（默认 `600519`） |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis) 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key（可选，模型与搜索共用；可用性以账号权限为准） | 可选 |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 可选 |
@@ -207,14 +206,7 @@ daily_stock_analysis/
 
 #### ✅ 最小配置示例
 
-如果你想快速开始，最少需要配置以下项：
-
-1. **AI 模型**：按 [Modelflare Channels 示例](LLM_CONFIG_GUIDE.md#示例modelflare) 配置，或使用 `AIHUBMIX_KEY`（[AIHubmix](https://inferera.com/?aff=CfMq)，一 Key 多模型）、`GEMINI_API_KEY` 或 `OPENAI_API_KEY`
-2. **通知渠道**：至少配置一个，如 `WECHAT_WEBHOOK_URL` 或 `EMAIL_SENDER` + `EMAIL_PASSWORD`
-3. **股票列表**：`STOCK_LIST`（必填）
-4. **搜索 API**：`SERPAPI_API_KEYS` 或 `TAVILY_API_KEYS`；`ANSPIRE_API_KEYS` 仍可选用
-
-> 💡 配置完以上 4 项即可开始使用！
+首次运行添加一个可用的模型密钥，例如上表中的 `MODELFLARE_KEY`。未设置 `STOCK_LIST` 时，工作流默认分析 `600519`。需要推送报告或补充新闻时，再配置通知渠道或搜索 API。
 
 ### 3. 启用 Actions
 
@@ -227,12 +219,12 @@ daily_stock_analysis/
 1. 进入 `Actions` 标签
 2. 左侧选择 `每日股票分析` workflow
 3. 点击右侧的 `Run workflow` 按钮
-4. 选择运行模式
+4. 选择运行模式。非交易日试跑可勾选「强制运行（跳过交易日检查）」
 5. 点击绿色的 `Run workflow` 确认
 
 ### 5. 完成！
 
-默认每个工作日 **18:00（北京时间）** 自动执行。
+运行结束后，可在工作流运行详情中下载 `analysis-reports-*` 产物。默认每个工作日 **18:00（北京时间）** 自动执行。
 
 ---
 

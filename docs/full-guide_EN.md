@@ -55,19 +55,18 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 
 #### AI Model Configuration (Configure at Least One)
 
-| Secret Name | Description | Required |
-|------------|------|:----:|
-| `MODELFLARE_KEY` | [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) 1-Secret setup; supplies the default endpoint and model automatically | Recommended (1 Secret) |
-| `AIHUBMIX_KEY` | AIHubMix API key, one key for multiple model families and a 10% top-up discount for this project | Optional (1 Secret) |
-| `GEMINI_API_KEY` | Get free key from [Google AI Studio](https://aistudio.google.com/) | Optional |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | Optional |
-| `OPENAI_API_KEY` | Official OpenAI key; for OpenAI-compatible DeepSeek / Qwen endpoints, also set `OPENAI_BASE_URL` and `OPENAI_MODEL` | Optional |
-| `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (e.g., `https://api.deepseek.com`) | Optional |
-| `OPENAI_MODEL` | Model name (e.g., `deepseek-v4-flash`) | Optional |
-| `LLM_CHANNELS` / `LLM_X6AI_API_KEY` | Explicit channel setup such as [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) (requires `LLM_CHANNELS=x6ai`, `LLM_X6AI_BASE_URL`, `LLM_X6AI_API_KEY`, `LLM_X6AI_MODELS`; see [x6.ai channel guide](llm-providers.md#x6ai-聚合平台)) | Recommended (Multi-var) |
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
+Choose one setup below. Add API keys under Actions **Secrets**. Use **Variables** for endpoints, model names, and channel names.
 
-> *Note: Configure at least one model key or channel. For Modelflare, set only `MODELFLARE_KEY`, with an optional `LITELLM_MODEL` override (single-channel default: `openai/gpt-6.1-sol`); the endpoint defaults to `https://modelflare.dev/v1`; see the complete [LLM Config Guide example](LLM_CONFIG_GUIDE_EN.md#example-modelflare). Available models depend on your account. Startup validation reports a clear error when no usable AI model key or model channel is configured.
+| Setup | Secrets | Related Variables |
+| --- | --- | --- |
+| [Modelflare](https://modelflare.dev/sign-up?utm_source=github&utm_campaign=daily_stock_analysis) (recommended, one secret) | `MODELFLARE_KEY` | Uses the default endpoint and model |
+| AIHubMix (one secret) | `AIHUBMIX_KEY` | Uses the default endpoint and model. Project users receive a 10% top-up discount |
+| Gemini, Anthropic, or the official OpenAI API (one secret) | `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` | Uses the project's default model for the selected provider |
+| [x6.ai](https://console.x6pro.io/register?code=zJ2qSdns) (explicit channel) | `LLM_X6AI_API_KEY` | `LLM_CHANNELS=x6ai`, `LLM_X6AI_BASE_URL`, and `LLM_X6AI_MODELS`. See the [x6.ai channel guide (Chinese)](llm-providers.md#x6ai-聚合平台) |
+| OpenAI-compatible provider (such as DeepSeek or Qwen) | `OPENAI_API_KEY` (issued by that provider) | Set `OPENAI_BASE_URL` and `OPENAI_MODEL` to that provider's endpoint and model |
+| [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` | The same key can serve model and search requests, subject to account permissions |
+
+**Modelflare defaults** to `https://modelflare.dev/v1` and `openai/gpt-6.1-sol`. Set `LITELLM_MODEL` to choose a different model your account can access. See the [complete Modelflare example](LLM_CONFIG_GUIDE_EN.md#example-modelflare).
 
 #### Notification Channels (Multiple can be configured, all will receive notifications)
 
@@ -107,7 +106,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `CUSTOM_WEBHOOK_BODY_TEMPLATE` | Custom Webhook JSON body template for AstrBot, NapCat, or self-hosted services with special payloads | Optional |
 | `WEBHOOK_VERIFY_SSL` | HTTPS certificate verification for webhook-style notification requests that read this setting (default true). Set to false for self-signed certs. WARNING: Disabling has serious security risk (MITM), use only on trusted internal networks | Optional |
 
-> *Note: Configure at least one channel; multiple channels will all receive notifications. Startup validation reports missing paired Telegram / email fields and common Webhook URLs that do not start with `http://` or `https://`.
+> *Note: Configure a channel if you want notifications. You can also download the report from the workflow's artifacts. Startup validation reports missing paired Telegram / email fields and common Webhook URLs that do not start with `http://` or `https://`.
 >
 > The default `00-daily-analysis.yml` in this repository only exports fixed Secret / Variable names. Arbitrary numbered env vars such as `STOCK_GROUP_1` and `EMAIL_GROUP_1` are not auto-injected into the job, so grouped email routing is not available in the stock workflow unless you explicitly extend the workflow's `env:` mapping in your own fork. Actions now maps `CUSTOM_WEBHOOK_BODY_TEMPLATE`, `WEBHOOK_VERIFY_SSL`, `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD`, `PUSHPLUS_TOPIC`, `NTFY_URL`, `NTFY_TOKEN`, `GOTIFY_URL`, `GOTIFY_TOKEN`, the P3 notification route keys, and the P4 notification noise-control keys; `MARKDOWN_TO_IMAGE_CHANNELS` and `MERGE_EMAIL_NOTIFICATION` remain behavior toggles outside the default workflow mapping.
 
@@ -153,7 +152,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 
 | Secret Name | Description | Required |
 |------------|------|:----:|
-| `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594,7203.T,005930.KS`; English commas are recommended, while pasted Chinese commas, enumeration commas, semicolons, spaces, and newlines are recognized and normalized to English commas | ✅ |
+| `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594,7203.T,005930.KS`. English commas are recommended, while pasted Chinese commas, enumeration commas, semicolons, spaces, and newlines are recognized and normalized to English commas | Optional (defaults to `600519`) |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis) search-engine results for realtime financial news | Recommended |
 | `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key (optional; shared by LLM and search; availability depends on account permissions) | Optional |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news search) | Optional |
@@ -180,14 +179,7 @@ MiaoXiang capital flow uses explicit main net-inflow amount metrics only; closin
 
 #### ✅ Minimum Configuration Example
 
-To get started quickly, you need at minimum:
-
-1. **AI Model**: Follow the [Modelflare Channels example](LLM_CONFIG_GUIDE_EN.md#example-modelflare), or use `AIHUBMIX_KEY` (one key for multiple model families), `GEMINI_API_KEY`, or `OPENAI_API_KEY`
-2. **Notification Channel**: At least one, e.g., `WECHAT_WEBHOOK_URL` or `EMAIL_SENDER` + `EMAIL_PASSWORD`
-3. **Stock List**: `STOCK_LIST` (required)
-4. **Search API**: `SERPAPI_API_KEYS` or `TAVILY_API_KEYS`; `ANSPIRE_API_KEYS` remains optional
-
-> Configure these 4 items and you're ready to go!
+Add one working model key, for example `MODELFLARE_KEY` from the table above. The workflow uses `600519` when no `STOCK_LIST` is set. Add a notification channel to receive reports and a search API key to include news when you need those features.
 
 ### 3. Enable Actions
 
@@ -198,14 +190,14 @@ To get started quickly, you need at minimum:
 ### 4. Manual Test
 
 1. Go to `Actions` tab
-2. Select `Daily Stock Analysis` workflow on the left
+2. Select `每日股票分析` (Daily Stock Analysis) on the left
 3. Click `Run workflow` button on the right
-4. Select run mode
+4. Choose a run mode. For a test on a non-trading day, enable `强制运行（跳过交易日检查）` (force run)
 5. Click green `Run workflow` to confirm
 
 ### 5. Done!
 
-Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
+When the run finishes, download the `analysis-reports-*` artifact from the run details. The workflow runs every weekday at **18:00 Beijing time** by default.
 
 ---
 
