@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -79,9 +80,11 @@ def shanghai_local_time() -> Iterator[None]:
     """Run the test with the process-local clock on Asia/Shanghai.
 
     ``ScreenResult.created_at`` is produced by ``datetime.now()`` on the
-    deployment clock (``TZ=Asia/Shanghai`` in docker-compose), so naive
-    timestamps must be read on that clock, not on UTC.
+    deployment clock (``TZ=Asia/Shanghai`` in docker-compose), so legacy
+    naive timestamps must be read on that clock, not on UTC.
     """
+    if sys.platform == "win32":
+        pytest.skip("time.tzset() is unavailable on Windows")
     previous_tz = _set_local_timezone("Asia/Shanghai")
     yield
     _restore_local_timezone(previous_tz)
@@ -90,6 +93,8 @@ def shanghai_local_time() -> Iterator[None]:
 @pytest.fixture
 def utc_local_time() -> Iterator[None]:
     """Run the test with the process-local clock on UTC."""
+    if sys.platform == "win32":
+        pytest.skip("time.tzset() is unavailable on Windows")
     previous_tz = _set_local_timezone("UTC")
     yield
     _restore_local_timezone(previous_tz)
@@ -103,6 +108,8 @@ def new_york_local_time() -> Iterator[None]:
     so the local offset depends on the input date: UTC-04:00 in July,
     UTC-05:00 in November.
     """
+    if sys.platform == "win32":
+        pytest.skip("time.tzset() is unavailable on Windows")
     previous_tz = _set_local_timezone("America/New_York")
     yield
     _restore_local_timezone(previous_tz)
@@ -435,6 +442,65 @@ def test_naive_created_at_under_utc_keeps_wall_time(
 
 
 @pytest.mark.unit
+def test_screen_result_created_at_carries_offset() -> None:
+    """Regression for OR-COR-7534d627: the run timestamp must keep its
+    UTC offset, or two runs in a DST fold hour are indistinguishable."""
+    created_at = ScreenResult(
+        strategy="balanced_alpha", market="cn", run_id="a1b2c3d4e5f6"
+    ).created_at
+    parsed = datetime.fromisoformat(created_at)
+    assert parsed.tzinfo is not None
+
+
+@pytest.mark.unit
+def test_dst_fold_offset_runs_map_to_distinct_utc(
+    new_york_local_time: Iterator[None],
+) -> None:
+    """Regression for OR-COR-7534d627: the 2026-11-01 fold hour in
+    America/New_York repeats 01:30 twice — the first run is 05:30Z
+    (EDT, -04:00) and the second is 06:30Z (EST, -05:00)."""
+    first = _screen_result(
+        created_at="2026-11-01T01:30:00-04:00",
+        picks=[_pick(factor_scores={"value": 80.0})],
+        run_id="a1b2c3d4e5f6",
+    )
+    second = _screen_result(
+        created_at="2026-11-01T01:30:00-05:00",
+        picks=[_pick(factor_scores={"value": 80.0})],
+        run_id="a1b2c3d4e5f6",
+    )
+    first_utc = datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc)
+    second_utc = datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc)
+
+    assert screen_result_to_pool_run(first).created_at == first_utc
+    assert screen_result_to_pool_run(second).created_at == second_utc
+    assert screen_result_to_factor_snapshots(first)[0].computed_at == first_utc
+    assert screen_result_to_factor_snapshots(second)[0].computed_at == second_utc
+
+
+@pytest.mark.unit
+def test_ambiguous_naive_created_at_is_recorded(
+    new_york_local_time: Iterator[None],
+) -> None:
+    """A legacy naive created_at in the fold hour cannot be
+    disambiguated after the fact: it maps as the first occurrence
+    and the ambiguity is recorded instead of silently stamped."""
+    result = _screen_result(
+        created_at="2026-11-01T01:30:00",
+        picks=[_pick(factor_scores={"value": 80.0})],
+        run_id="a1b2c3d4e5f6",
+    )
+    pool_run = screen_result_to_pool_run(result)
+    assert pool_run.created_at == datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc)
+    assert any("ambiguous created_at" in entry for entry in pool_run.degradation)
+    snapshots = screen_result_to_factor_snapshots(result)
+    assert any(
+        "ambiguous created_at" in warning
+        for warning in snapshots[0].quality.warnings
+    )
+
+
+@pytest.mark.unit
 def test_pick_snapshot_normalizes_naive_computed_at(
     shanghai_local_time: Iterator[None],
 ) -> None:
@@ -698,6 +764,26 @@ def test_snapshot_scores_keys_must_match_factor_ids() -> None:
         },
     )
     assert snapshot.scores["momentum_v2"].value == 90.0
+
+
+@pytest.mark.unit
+def test_snapshot_scores_assignment_rejection_keeps_original() -> None:
+    """Regression for OR-COR-8c18c172: a rejected scores assignment
+    must leave the snapshot untouched — previously the invalid key
+    stayed in place and the dumped snapshot failed its own JSON
+    round-trip."""
+    snapshot = FactorSnapshot(
+        candidate_pool_run_id="a1b2c3d4e5f6",
+        code="600519",
+        scores={"value": CandidateFactorScore(factor_id="value", value=80.0)},
+    )
+    with pytest.raises(ValidationError):
+        snapshot.scores = {
+            "momentum": CandidateFactorScore(factor_id="value", value=80.0)
+        }
+    assert list(snapshot.scores) == ["value"]
+    assert snapshot.scores["value"].factor_id == "value"
+    FactorSnapshot.model_validate_json(snapshot.model_dump_json())
 
 
 @pytest.mark.unit

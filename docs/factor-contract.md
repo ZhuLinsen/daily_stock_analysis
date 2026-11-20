@@ -100,7 +100,7 @@
 ## 封闭性约定
 
 - 不引入 `metadata` 万能字段：契约封闭且版本化，新增内容需随版本升级加入；将来 P2/P3 若确实需要，可在向后兼容的 minor 升级中加入。
-- 未知 JSON 键按 Pydantic 默认忽略（不使用 `extra="forbid"`），与 `AnalysisContextPack` 一致：新版本生产者写入的载荷可被旧版本读取，保证前向兼容。
+- 未知 JSON 键按 Pydantic 默认忽略（不使用 `extra="forbid"`），与 `AnalysisContextPack` 一致：同一 `contract_version` 下新版本生产者写入的载荷可被旧版本读取，保证前向兼容。不同 `contract_version` 的载荷会被版本字面量拒绝，不适用该兼容性说明。
 
 ## 暂缓字段与原因
 

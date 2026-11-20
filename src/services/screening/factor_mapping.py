@@ -147,19 +147,36 @@ def factor_definitions(
     ]
 
 
-def _parse_run_timestamp(value: str, fallback: datetime) -> tuple[datetime, bool]:
+def _is_ambiguous_local_time(value: datetime) -> bool:
+    """Report whether a naive local wall time occurs twice (DST fold).
+
+    The two folds resolve to different UTC instants; a naive string
+    carries no fold, so the mapping cannot tell them apart. The same
+    check also flags nonexistent gap times, which the platform maps
+    by its default fold handling.
+    """
+    return value.replace(fold=0).astimezone(timezone.utc) != value.replace(
+        fold=1
+    ).astimezone(timezone.utc)
+
+
+def _parse_run_timestamp(
+    value: str, fallback: datetime
+) -> tuple[datetime, bool, bool]:
     """Parse a ``ScreenResult.created_at`` ISO string to aware UTC.
 
-    ``ScreenResult.created_at`` is a naive local ISO string
-    (``datetime.now().isoformat()``). Naive values are read on the
-    process-local clock — the same clock that produced them, with the
-    deployment running ``TZ=Asia/Shanghai`` — and converted to UTC;
-    they are never just stamped ``Z``. Offset values are converted
-    to UTC. Date-only strings parse to local midnight under the same
-    rule. Unparseable values fall back to the mapping time instead of
-    raising, so a malformed header never blocks the translation; the
-    returned flag reports whether the fallback was used, so callers
-    can record it instead of failing silently.
+    ``ScreenResult.created_at`` is an offset-aware local ISO string
+    (``datetime.now().astimezone().isoformat()``); legacy naive
+    values are read on the process-local clock — the same clock that
+    produced them, with the deployment running ``TZ=Asia/Shanghai``
+    — and converted to UTC; they are never just stamped ``Z``.
+    Offset values are converted to UTC. Date-only strings parse to
+    local midnight under the same rule. Unparseable values fall back
+    to the mapping time instead of raising, so a malformed header
+    never blocks the translation; the returned flags report whether
+    the fallback was used and whether a naive value fell in a DST
+    fold (mapped as the first occurrence), so callers can record
+    either instead of failing silently.
     """
     normalized = value.strip()
     if normalized.endswith("Z"):
@@ -167,8 +184,9 @@ def _parse_run_timestamp(value: str, fallback: datetime) -> tuple[datetime, bool
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
-        return fallback, True
-    return normalize_contract_timestamp(parsed), False
+        return fallback, True, False
+    ambiguous = parsed.tzinfo is None and _is_ambiguous_local_time(parsed)
+    return normalize_contract_timestamp(parsed), False, ambiguous
 
 
 def pick_to_factor_snapshot(
@@ -260,7 +278,7 @@ def screen_result_to_pool_run(
     back to the mapping time and records a degradation entry, so the
     fallback is observable instead of silent.
     """
-    created_at, fell_back = _parse_run_timestamp(
+    created_at, fell_back, ambiguous = _parse_run_timestamp(
         result.created_at, datetime.now(timezone.utc)
     )
     degradation = list(result.degradation)
@@ -268,6 +286,11 @@ def screen_result_to_pool_run(
         degradation.append(
             f"unparseable created_at {result.created_at!r}: "
             "fell back to mapping time"
+        )
+    if ambiguous:
+        degradation.append(
+            f"ambiguous created_at {result.created_at!r}: DST fold, "
+            "mapped as the first occurrence; run time may be one hour early"
         )
     return CandidatePoolRun(
         run_id=result.run_id,
@@ -294,8 +317,10 @@ def screen_result_to_factor_snapshots(
     factor_set_version: str = FACTOR_SET_VERSION,
 ) -> list[FactorSnapshot]:
     """Translate every pick of a run, sharing run id, weights and time."""
-    computed, _ = _parse_run_timestamp(result.created_at, datetime.now(timezone.utc))
-    return [
+    computed, _, ambiguous = _parse_run_timestamp(
+        result.created_at, datetime.now(timezone.utc)
+    )
+    snapshots = [
         pick_to_factor_snapshot(
             pick,
             run_id=result.run_id,
@@ -305,3 +330,13 @@ def screen_result_to_factor_snapshots(
         )
         for pick in result.picks
     ]
+    if ambiguous:
+        # A naive created_at in a DST fold cannot be disambiguated
+        # after the fact; record it on each snapshot instead of
+        # silently stamping the first occurrence.
+        for snapshot in snapshots:
+            snapshot.quality.warnings.append(
+                f"ambiguous created_at {result.created_at!r}: DST fold, "
+                "mapped as the first occurrence; run time may be one hour early"
+            )
+    return snapshots

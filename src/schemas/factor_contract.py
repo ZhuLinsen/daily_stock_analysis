@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from src.utils.sanitize import redact_sensitive_mapping
 
@@ -174,15 +174,24 @@ class FactorSnapshot(_FactorContractModel):
         _normalize_timestamp_field
     )
 
-    @model_validator(mode="after")
-    def _scores_keys_match_factor_ids(self) -> "FactorSnapshot":
-        for key, score in self.scores.items():
+    @field_validator("scores", mode="after")
+    @classmethod
+    def _scores_keys_match_factor_ids(
+        cls, scores: dict[str, CandidateFactorScore]
+    ) -> dict[str, CandidateFactorScore]:
+        # A field validator, not a model validator: with
+        # validate_assignment=True a model validator runs after the
+        # field is already set, so a rejected assignment left the
+        # invalid scores in place (and the dumped snapshot failed its
+        # own round-trip). Validating the field value first means a
+        # rejected assignment never mutates the snapshot.
+        for key, score in scores.items():
             if key != score.factor_id:
                 raise ValueError(
                     f"scores key {key!r} does not match "
                     f"factor_id {score.factor_id!r}"
                 )
-        return self
+        return scores
 
     def to_safe_dict(self) -> dict[str, Any]:
         """Return a JSON-safe dict with sensitive mapping values redacted."""
